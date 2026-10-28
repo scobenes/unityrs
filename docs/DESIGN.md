@@ -141,7 +141,7 @@ The spike records LOC kept versus rewritten, whether upstream takes patches, obj
 
 | phase | delivers | rough size |
 |---|---|---|
-| **P0 Foundations** | CI (fmt, clippy, test, deny, about; L0-L5b on checked-in fixtures). The oracle image and a long-lived dev container. Corpus manifests with a nightly full run. `PARITY.md`. The rabex spike plus decision. The LZMA benchmark. A minimal Unity 6000.4/6000.5 fixture set for the HEAD tier. **L2 in P0** works through a tagged canonical JSON dump from the Rust CLI, compared by a Python normaliser in the oracle image against `parse_as_dict()`; no binding needed yet. | 2-3k LOC |
+| **P0 Foundations** | CI (fmt, clippy, test, deny, about; L0-L5b on checked-in fixtures). The oracle image and a long-lived dev container. Corpus manifests with a nightly full run. `PARITY.md`. The rabex spike plus decision. The LZMA benchmark. A minimal Unity 6000.4/6000.5 fixture set for the HEAD tier. **L2 in P0** works through a tagged canonical JSON dump from the Rust CLI, compared by a Python normaliser in the oracle image against `parse_as_dict()`; no binding needed yet (format: `docs/CANONICAL_DUMP.md`; oracle and comparer: `tools/parity/`). | 2-3k LOC |
 | **P1 Fast batch extraction (2D)** | The core for real-world shapes, `meshdecode`, the most common formats (BC7/DXT1/DXT5/RGBA32/RGB24) with exact modes, sprites, the NGUI cutter, PNG/WebP, `batch` with every sink and the failure model, the CLI. The first production cutover runs on this. | 10-13k |
 | **P2a Static 3D** | `mesh`, the scene graph, `gltf` (two-phase, material trait, profile), scenes, built-in meshes. | 4-5k |
 | **P2b Animation** | `anim`, humanoid retargeting (L11 in f64), clips by PPtr, batch unit export. | 4-6k |
