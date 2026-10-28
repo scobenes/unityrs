@@ -1,0 +1,6 @@
+# Lint and format settings for the parity tools: `uvx ruff check` / `uvx ruff format`.
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "B", "UP", "SIM", "I"]
