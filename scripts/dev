@@ -1,0 +1,11 @@
+#!/bin/sh
+# Run a command in the unityrs-dev container as the host user.
+#
+# The container shares the host's ~/.cargo, whose config may point the linker
+# and C compiler at host-only tools (zig on a box without gcc); the container
+# has gcc, so these overrides win over that config.
+exec docker exec -i -u "$(id -u):$(id -g)" -w /work \
+  -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc \
+  -e CC_x86_64_unknown_linux_gnu=cc \
+  -e AR_x86_64_unknown_linux_gnu=ar \
+  unityrs-dev "$@"

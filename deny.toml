@@ -1,0 +1,26 @@
+# Licences any dependency may carry. Copyleft (GPL, AGPL, LGPL, MPL) is not
+# allowed: unityrs stays permissive, and GPL projects such as AssetRipper are
+# read for format knowledge only, never copied.
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MIT-CMU",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+
+[advisories]
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
