@@ -23,6 +23,8 @@ import re
 import sys
 import time
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from multiprocessing import get_context
 from pathlib import Path
 
@@ -40,6 +42,18 @@ HAVE_BOOST = TypeTreeHelper.read_typetree_boost is not None
 
 NOTE_MAX = 300
 INDEX_KINDS = ("bundle", "unitypy-sample")
+# Inputs a worker process dumps before it is replaced, which bounds what
+# UnityPy's caches can hold.
+TASKS_PER_WORKER = 50
+
+
+def oracle_stack_problem() -> str | None:
+    """Why this interpreter is not the pinned oracle, or None when it is."""
+    if not HAVE_BOOST:
+        return "UnityPyBoost is not loaded, so UnityPy would parse with its pure-Python reader"
+    if UnityPy.__version__ != C.ORACLE_UNITYPY:
+        return f"UnityPy is {UnityPy.__version__}, not the pinned {C.ORACLE_UNITYPY}"
+    return None
 
 
 # ---------------------------------------------------------------------- hooks
@@ -376,7 +390,7 @@ def dump_input(job):
         # detection raises would raise again inside Environment.load_file.
         l0["parsed_as"] = "zip" if detected == "ZIP" else "error"
         error = {"kind": "detect"} if detected == "error" else None
-        out.append({"rec": "file", "file": [rel], "l0": l0, "l1": None, "error": error})
+        out.append({"rec": "file", "file": [C.enc_name(rel)], "l0": l0, "l1": None, "error": error})
         stats["files"] += 1
     else:
         env = UnityPy.Environment()
@@ -385,14 +399,20 @@ def dump_input(job):
         except Exception as e:  # noqa: BLE001 - a failed load is a recorded outcome
             l0["parsed_as"] = "error"
             out.append(
-                {"rec": "file", "file": [rel], "l0": l0, "l1": None, "error": {"kind": "parse", "note": note(e)}}
+                {
+                    "rec": "file",
+                    "file": [C.enc_name(rel)],
+                    "l0": l0,
+                    "l1": None,
+                    "error": {"kind": "parse", "note": note(e)},
+                }
             )
             stats["files"] += 1
             stats["load_errors"] += 1
         else:
             stats["t_load"] += time.perf_counter() - t0
             l0["parsed_as"] = parsed_as(f)
-            emit_file(f, [rel], l0, levels, out, stats)
+            emit_file(f, [C.enc_name(rel)], l0, levels, out, stats)
     text = "".join(C.dumps(r) + "\n" for r in out)
     stats["bytes_in"] += len(data)
     stats["bytes_out"] += len(text.encode("utf-8"))
@@ -444,8 +464,39 @@ def collect_inputs(args) -> list[tuple[str, str, str | None]]:
     return items
 
 
+class WorkerDied(RuntimeError):
+    """A worker process ended without returning its input's result."""
+
+
+def run_jobs(jobs, workers):
+    """dump_input over jobs, results in input order, so the output is the same as a serial run.
+
+    A worker that dies (the cgroup OOM killer, a crash inside UnityPyBoost)
+    raises WorkerDied instead of hanging the dump, as multiprocessing.Pool
+    would. Each batch gets a fresh executor, so no worker outlives
+    TASKS_PER_WORKER inputs on average.
+    """
+    if workers <= 1:
+        yield from map(dump_input, jobs)
+        return
+    batch = workers * TASKS_PER_WORKER
+    for start in range(0, len(jobs), batch):
+        chunk = jobs[start : start + batch]
+        executor = ProcessPoolExecutor(workers, mp_context=get_context("fork"))
+        try:
+            futures = [executor.submit(dump_input, job) for job in chunk]
+            for job, future in zip(chunk, futures, strict=True):
+                try:
+                    result = future.result()
+                except BrokenProcessPool as e:
+                    raise WorkerDied(f"a worker process died (killed or crashed) before {job[1]!r} was dumped") from e
+                yield result
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+
+
 def open_output(path: Path, compress: bool):
-    """The output stream; gzip with mtime 0 so equal dumps compress to equal bytes."""
+    """The output stream; gzip with mtime 0 so this producer's dumps of equal content are equal files."""
     if compress:
         raw = open(path, "wb")  # noqa: SIM115 - closed with the gzip wrapper
         return gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0), raw
@@ -469,14 +520,26 @@ def main(argv=None):
     args = ap.parse_args(argv)
     args.kind = args.kind.split(",")
     args.build = args.build.split(",") if args.build else None
-    levels = [lv for lv in C.LEVELS if lv in args.levels.split(",")]
+    asked = args.levels.split(",")
+    unknown = [lv for lv in asked if lv not in C.LEVELS]
+    if unknown:
+        ap.error(f"unknown level(s) {', '.join(map(repr, unknown))}; the levels are {', '.join(C.LEVELS)}")
+    levels = [lv for lv in C.LEVELS if lv in asked]
+    if "L0" not in levels:
+        ap.error("every dump holds L0 (each file record carries its detection)")
     if "L3" in levels and "L2" not in levels:
         ap.error("L3 needs L2 (the resave writes the parsed value)")
+    problem = oracle_stack_problem()
+    if problem:
+        ap.error(f"refusing to dump: this is not the pinned oracle ({problem})")
 
+    # The dump and the stats both name corpus inputs; neither may land in the repository.
     out_path = Path(args.output).resolve()
+    stats_path = Path(args.stats).resolve() if args.stats else None
     for root in repo_roots(Path(__file__).resolve().parent):
-        if out_path.is_relative_to(root):
-            ap.error(f"refusing to write into the repository ({root}); pick a path outside it")
+        for label, path in (("the dump", out_path), ("--stats", stats_path)):
+            if path is not None and path.is_relative_to(root):
+                ap.error(f"refusing to write {label} into the repository ({root}); pick a path outside it")
 
     inputs = collect_inputs(args)
     if not inputs:
@@ -488,7 +551,7 @@ def main(argv=None):
         "version": C.VERSION,
         "levels": levels,
         "producer": {
-            "name": "unitypy_dump.py",
+            "name": C.ORACLE_PRODUCER,
             "unitypy": UnityPy.__version__,
             "boost": HAVE_BOOST,
             "python": sys.version.split()[0],
@@ -502,18 +565,13 @@ def main(argv=None):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_name(out_path.name + ".partial")
     fh, raw = open_output(tmp, out_path.suffix == ".gz")
-    pool = None
+    results = None
     done = False
     try:
         fh.write((C.dumps(header) + "\n").encode())
         jobs = [(a, r, levels) for a, r, _ in inputs]
         expected = {r: sha for _, r, sha in inputs}
-        if args.jobs > 1:
-            # imap keeps input order, so the output is the same as a serial run.
-            pool = get_context("fork").Pool(args.jobs, maxtasksperchild=50)
-            results = pool.imap(dump_input, jobs, chunksize=1)
-        else:
-            results = map(dump_input, jobs)
+        results = run_jobs(jobs, args.jobs)
         for i, (rel, text, stats, sha) in enumerate(results, 1):
             fh.write(text.encode("utf-8"))
             totals.update(stats)
@@ -529,13 +587,12 @@ def main(argv=None):
                 )
         fh.write((C.dumps({"rec": "end", "files": totals["files"], "objects": totals["objects"]}) + "\n").encode())
         done = True
+    except WorkerDied as e:
+        print(f"unitypy_dump: {e}; no dump written", file=sys.stderr)
+        return 1
     finally:
-        if pool is not None:
-            if done:
-                pool.close()
-            else:
-                pool.terminate()
-            pool.join()
+        if results is not None:
+            results.close()
         fh.close()
         if raw is not None:
             raw.close()
@@ -550,8 +607,8 @@ def main(argv=None):
         **{k: round(v, 3) if isinstance(v, float) else v for k, v in sorted(totals.items())},
     }
     print(json.dumps(summary, indent=1), file=sys.stderr)
-    if args.stats:
-        Path(args.stats).write_text(json.dumps({"summary": summary, "inputs": per_input}, indent=1))
+    if stats_path:
+        stats_path.write_text(json.dumps({"summary": summary, "inputs": per_input}, indent=1))
     return 0
 
 

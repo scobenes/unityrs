@@ -1,9 +1,10 @@
 """unitypy_dump.py end to end: UnityPy's samples, determinism, L0 detection, the CLI rules.
 
 The samples are read at run time from $UNITYRS_UNITYPY_SAMPLES (UnityPy's
-tests/samples at commit 417d595), falling back to the corpus copy at
-/corpus/unitypy-samples. They are game bundles and are never copied into this
-repository. Needs the oracle stack; skipped elsewhere.
+tests/samples at commit 417d595), else from wherever the corpus index
+($UNITYRS_CORPUS_INDEX, default /corpus/index.json) lists its unitypy-sample
+entries. They are game bundles and are never copied into this repository.
+Needs the oracle stack; skipped elsewhere.
 """
 
 import contextlib
@@ -14,12 +15,15 @@ import json
 import os
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 import zipfile
 from collections import Counter
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
@@ -41,10 +45,45 @@ SAMPLES = {
 
 
 def samples_dir():
-    for candidate in (os.environ.get("UNITYRS_UNITYPY_SAMPLES"), "/corpus/unitypy-samples"):
+    """The pinned samples' folder: $UNITYRS_UNITYPY_SAMPLES, else the one the corpus index names."""
+    candidates = [os.environ.get("UNITYRS_UNITYPY_SAMPLES")]
+    index = Path(os.environ.get("UNITYRS_CORPUS_INDEX", "/corpus/index.json"))
+    try:
+        entries = json.loads(index.read_text())["files"]
+        candidates += sorted(
+            {str((index.parent / e["path"]).parent) for e in entries if e.get("kind") == "unitypy-sample"}
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    for candidate in candidates:
         if candidate and all((Path(candidate) / name).is_file() for name in SAMPLES):
             return Path(candidate)
     return None
+
+
+def unityraw(fmt, entries, player=b"5.x.x", engine=b"5.6.7f1"):
+    """A synthetic UnityRaw bundle holding uncompressed entries [(name bytes, data)].
+
+    Format 6 takes UnityPy's UnityFS layout (read_fs, plus one byte after the
+    flags); every other format the web/raw layout, with a hash and crc from 4.
+    """
+    head = b"UnityRaw\0" + struct.pack(">I", fmt) + player + b"\0" + engine + b"\0"
+    data = b"".join(p for _, p in entries)
+    if fmt == 6:
+        rows, off = b"", 0
+        for name, payload in entries:
+            rows += struct.pack(">qqI", off, len(payload), 4) + name + b"\0"
+            off += len(payload)
+        info = bytes(16) + struct.pack(">iIIHi", 1, len(data), len(data), 0, len(entries)) + rows
+        return head + struct.pack(">qIII", 0, len(info), len(info), 0x40) + b"\0" + info + data
+    rows, off = b"", 4 + sum(len(n) + 9 for n, _ in entries)
+    for name, payload in entries:
+        rows += name + b"\0" + struct.pack(">II", off, len(payload))
+        off += len(payload)
+    block = struct.pack(">i", len(entries)) + rows + data
+    size = len(head) + 52
+    fields = struct.pack(">IIIIiIIII", 0xC0FFEE, 0, size, 1, 1, len(block), len(block), size + len(block), 0)
+    return head + bytes(range(16)) + fields + block
 
 
 def records(path):
@@ -64,6 +103,12 @@ class DumpTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-parity-"))
         self.addCleanup(shutil.rmtree, self.tmp)
+
+    def assert_canonical(self, path):
+        """Every line the oracle wrote is in the canonical form, and the dump compares clean with itself."""
+        report, *_ = compare.run(str(path), str(path))
+        self.assertEqual(report.as_dict()["by_path"], [])
+        self.assertEqual(report.counts["identical"], len(records(path)) - 1)
 
     def sample_args(self):
         src = samples_dir()
@@ -88,6 +133,7 @@ class DumpTests(unittest.TestCase):
         )
         self.assertTrue(head["producer"]["boost"])
         self.assertEqual(end, {"rec": "end", "files": 13, "objects": 53})
+        self.assert_canonical(out)
 
         files = [r for r in recs if r["rec"] == "file"]
         objects = [r for r in recs if r["rec"] == "object"]
@@ -174,7 +220,16 @@ class DumpTests(unittest.TestCase):
         zbuf = io.BytesIO()
         with zipfile.ZipFile(zbuf, "w") as z:
             z.writestr("x.txt", "x" * 200)
+        noise = b"".join(hashlib.sha256(bytes([i])).digest() for i in range(10))
+        web = gzip.compress(b"UnityWebData1.0\0" + noise, mtime=0)
         files = {
+            "gz_garbage": b"\x1f\x8b" + bytes(range(198)),
+            "gz_web": web,
+            "gz_web_bad_crc": web[:-8] + bytes(4) + web[-4:],
+            "gz_web_junk_tail": web + b"junkjunk",
+            "gz_web_zero_padded": web + bytes(40),
+            "gz_12_bytes": gzip.compress(b"UnityWebData", mtime=0).ljust(200, b"\0"),  # last byte never read
+            "gz_13_bytes": gzip.compress(b"UnityWebData1", mtime=0).ljust(200, b"\0"),
             "tiny": b"A" * 19,
             "twenty": b"A" * 20,
             "fa_sig": b"\xfa" * 8 + b"\0" * 200,
@@ -194,6 +249,14 @@ class DumpTests(unittest.TestCase):
         self.assertEqual(
             got,
             {
+                # The whole gzip stream must decompress; the signature is read from it.
+                "gz_garbage": ("error", "error", "detect"),
+                "gz_web": ("WebFile", "error", "parse"),
+                "gz_web_bad_crc": ("error", "error", "detect"),
+                "gz_web_junk_tail": ("error", "error", "detect"),
+                "gz_web_zero_padded": ("WebFile", "error", "parse"),
+                "gz_12_bytes": ("ResourceFile", "raw", None),
+                "gz_13_bytes": ("WebFile", "error", "parse"),
                 "tiny": ("ResourceFile", "raw", None),
                 "twenty": ("error", "error", "detect"),
                 "fa_sig": ("ResourceFile", "raw", None),  # bytes FA never equal U+00FA
@@ -204,6 +267,98 @@ class DumpTests(unittest.TestCase):
                 "fake.assets": ("AssetsFile", "error", "parse"),
             },
         )
+        self.assert_canonical(out)
+
+    def test_bundle_layouts_names_and_child_failures(self):
+        d = self.tmp / "in"
+        d.mkdir()
+        broken_assets = struct.pack(">IIII", 100, 200, 17, 150) + bytes(4) + b"\xff" * 180
+        files = {
+            "raw5": unityraw(5, [(b"one", b"tiny"), (b"tw\xffo", b"abc")], player=b"5.x\xff"),
+            "raw6": unityraw(6, [(b"one", b"tiny"), (b"two", b"abc")]),
+            "raw5_bad_detect": unityraw(5, [(b"one", b"tiny"), (b"bad", b"A" * 20)]),
+            "raw5_bad_parse": unityraw(5, [(b"one", b"tiny"), (b"bad.assets", broken_assets)]),
+        }
+        for name, data in files.items():
+            (d / name).write_bytes(data)
+        out = self.tmp / "raw.jsonl"
+        self.assertEqual(dump(d, "-o", out), 0)
+        self.assert_canonical(out)
+        recs = {json.dumps(r["file"]): r for r in records(out) if r["rec"] == "file"}
+        tw = {"t": "str", "hex": b"tw\xffo".hex()}
+
+        raw5 = recs[json.dumps(["raw5"])]["l1"]
+        self.assertEqual((raw5["hash"], raw5["crc"]), (bytes(range(16)).hex(), 0xC0FFEE))
+        self.assertEqual((raw5["flags"], raw5["flags_class"], raw5["blocks_info"], raw5["blocks"]), (None,) * 4)
+        self.assertEqual([row[2:] for row in raw5["directory"]], [[None, "one"], [None, tw]])
+        self.assertEqual(raw5["version_player"], {"t": "str", "hex": b"5.x\xff".hex()}, "metadata strings use enc_name")
+        self.assertIn(json.dumps(["raw5", tw]), recs, "entry names use enc_name")
+
+        raw6 = recs[json.dumps(["raw6"])]["l1"]
+        self.assertEqual((raw6["hash"], raw6["crc"]), (None, None), "format 6 takes the UnityFS layout")
+        self.assertEqual((raw6["flags"], raw6["flags_class"], raw6["blocks"]), (0x40, "ArchiveFlagsOld", [[7, 7, 0]]))
+        self.assertEqual([row[2] for row in raw6["directory"]], [4, 4])
+
+        # A child that cannot be detected or parsed fails the whole input.
+        for name in ("raw5_bad_detect", "raw5_bad_parse"):
+            self.assertEqual([k for k in recs if json.loads(k)[0] == name], [json.dumps([name])])
+            top = recs[json.dumps([name])]
+            self.assertEqual((top["l0"]["parsed_as"], top["l1"], top["error"]["kind"]), ("error", None, "parse"))
+        self.assertTrue(all(r["error"] is None for k, r in recs.items() if len(json.loads(k)) > 1))
+
+    def test_input_names_are_hex_tagged_when_not_utf8(self):
+        d = self.tmp / "in"
+        d.mkdir()
+        with open(os.path.join(os.fsencode(d), b"bad\xffname"), "wb") as fh:
+            fh.write(b"tiny")
+        (d / "ok").write_bytes(b"tiny")
+        out = self.tmp / "names.jsonl"
+        self.assertEqual(dump(d, "-o", out), 0)
+        self.assertEqual(
+            [r["file"] for r in records(out) if r["rec"] == "file"],
+            [[{"t": "str", "hex": b"bad\xffname".hex()}], ["ok"]],
+        )
+        self.assert_canonical(out)
+
+    def test_a_dead_worker_fails_the_dump(self):
+        """-j N: a worker the OOM killer or a crash takes ends the dump with an error instead of a hang."""
+        d = self.tmp / "in"
+        d.mkdir()
+        for name in "abc":
+            (d / name).write_bytes(b"tiny")
+        out = self.tmp / "dead.jsonl"
+        script = textwrap.dedent(
+            f"""
+            import os, signal, sys
+            sys.path.insert(0, {str(HERE)!r})
+            import unitypy_dump
+            real = unitypy_dump.dump_input
+            def dying(job):
+                if job[1] == "b":
+                    os.kill(os.getpid(), signal.SIGKILL)
+                return real(job)
+            unitypy_dump.dump_input = dying
+            sys.exit(unitypy_dump.main([{str(d)!r}, "-o", {str(out)!r}, "-q", "-j", "2"]))
+            """
+        )
+        proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("worker process died", proc.stderr)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["in"], "no dump and no .partial left")
+
+    def test_refuses_without_the_pinned_oracle(self):
+        tiny = self.tmp / "tiny"
+        tiny.write_bytes(b"tiny")
+        out = self.tmp / "x.jsonl"
+        for patch in (
+            mock.patch.object(unitypy_dump, "HAVE_BOOST", False),
+            mock.patch.object(unitypy_dump.UnityPy, "__version__", "1.24.0"),
+        ):
+            with self.subTest(patch.attribute):
+                with patch, contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+                    unitypy_dump.main([str(tiny), "-o", str(out), "-q"])
+                self.assertIn("not the pinned oracle", err.getvalue())
+                self.assertFalse(out.exists())
 
     def test_index_mode_and_sha_check(self):
         src = samples_dir()
@@ -239,13 +394,27 @@ class DumpTests(unittest.TestCase):
         dump(*args, "-o", out, "--levels", "L0")
         recs = records(out)
         self.assertTrue(all(r.get("l1") is None for r in recs if r["rec"] in ("file", "object")))
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            unitypy_dump.main([*map(str, args), "-o", str(self.tmp / "x.jsonl"), "--levels", "L0,L3"])
+        for bad in ("L0,L3", "l2", "L0,L9", "L1,L2", ""):
+            with self.subTest(levels=bad), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                unitypy_dump.main([*map(str, args), "-o", str(self.tmp / "x.jsonl"), "--levels", bad])
+            self.assertFalse((self.tmp / "x.jsonl").exists())
 
     def test_refuses_output_inside_the_repository(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             unitypy_dump.main([str(HERE), "-o", str(HERE / "dump.jsonl")])
         self.assertFalse((HERE / "dump.jsonl").exists())
+
+    def test_refuses_stats_inside_the_repository(self):
+        """The stats list every input path, so they are kept out of the repository like the dump."""
+        tiny, stats = self.tmp / "tiny", HERE / "stats.json"
+        tiny.write_bytes(b"tiny")
+        try:
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                unitypy_dump.main([str(tiny), "-o", str(self.tmp / "x.jsonl"), "--stats", str(stats)])
+            self.assertFalse(stats.exists())
+            self.assertFalse((self.tmp / "x.jsonl").exists())
+        finally:
+            stats.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
