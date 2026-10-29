@@ -40,6 +40,7 @@ import re
 import stat
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -54,8 +55,8 @@ PINS = HERE / "unitypy_samples.json"
 URL_PREFIX = "https://media.githubusercontent.com/media/K0lb3/UnityPy/"
 LFS_POINTER = b"version https://git-lfs.github.com/spec/"
 ATTEMPTS = 3
-# One sample's download, retries included, gets DEADLINE_S in all; each read waits at
-# most TIMEOUT_S for data, and never past that deadline.
+# One sample's download, retries included, gets DEADLINE_S of wall time in all, wherever
+# it is held up (download); each receive waits at most TIMEOUT_S for data.
 TIMEOUT_S = 60
 DEADLINE_S = 300
 CHUNK = 1 << 20
@@ -153,30 +154,20 @@ def present(path: Path, pin: dict) -> bool:
         return False
 
 
-def read_timeout(response, seconds: float) -> None:
-    """Let the next read from `response` wait at most `seconds` for data.
-
-    urlopen's response is an http.client.HTTPResponse; its body comes from
-    `fp`, a buffered file over the connection's socket, whose timeout bounds
-    each receive. The standard library offers no public handle on that
-    socket, hence `fp.raw._sock`. A test's fake response has none.
-    """
-    sock = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
-    if sock is not None:
-        sock.settimeout(seconds)
-
-
 def download(url: str, limit: int, opener, sleep, clock=time.monotonic) -> bytes:
     """The body at `url`, read up to `limit` + 1 bytes (enough to tell it is too long).
 
     A network error is retried, up to ATTEMPTS tries in all. The whole
-    download, retries included, must end within DEADLINE_S, even while a
-    body trickles in. The body is read with read1, which returns what one
-    receive brings instead of waiting for all it asks for, so the deadline is
-    checked between the pieces; and before each read the socket's timeout is
-    set to TIMEOUT_S or the time left, whichever is less, so a read that
-    waits ends at the deadline too. A body that arrives in time is returned
-    whatever it holds, for the caller to check.
+    download, retries included, ends within DEADLINE_S of wall time, wherever
+    it is held up: looking up the name, connecting (to each address the
+    lookup gives), the TLS handshake, the status line, the headers, a chunk's
+    size line, or the body. urllib bounds each of those receives by TIMEOUT_S
+    but none of them by a deadline, so the download runs in a worker thread
+    and this thread stops waiting for it at the deadline. The worker writes
+    nothing, so what it fetches after that is discarded with it; it stops at
+    its next check of the deadline, between reads or retries (_attempts). A
+    body that arrives in time is returned whatever it holds, for the caller
+    to check.
     """
     deadline = clock() + DEADLINE_S
 
@@ -186,12 +177,38 @@ def download(url: str, limit: int, opener, sleep, clock=time.monotonic) -> bytes
             raise FetchError(f"{url}: not downloaded within {DEADLINE_S} s")
         return remaining
 
+    outcome = []
+
+    def work():
+        try:
+            outcome.append((True, _attempts(url, limit, opener, sleep, left)))
+        except BaseException as e:  # raised again in the waiting thread
+            outcome.append((False, e))
+
+    worker = threading.Thread(target=work, name=f"fetch {url}", daemon=True)
+    worker.start()
+    worker.join(DEADLINE_S)
+    if not outcome:
+        raise FetchError(f"{url}: not downloaded within {DEADLINE_S} s")
+    ok, value = outcome[0]
+    if not ok:
+        raise value
+    return value
+
+
+def _attempts(url: str, limit: int, opener, sleep, left) -> bytes:
+    """download's worker: the attempts, each receive waiting at most TIMEOUT_S, the deadline checked between them.
+
+    The body is read with read1, which returns what one receive brings
+    instead of waiting for all it asks for, so a body trickling in is cut off
+    at the first read past the deadline.
+    """
     for attempt in range(1, ATTEMPTS + 1):
         try:
             with opener(url, timeout=min(TIMEOUT_S, left())) as response:
                 chunks, total = [], 0
                 while total <= limit:
-                    read_timeout(response, min(TIMEOUT_S, left()))
+                    left()
                     chunk = response.read1(min(CHUNK, limit + 1 - total))
                     if not chunk:
                         break

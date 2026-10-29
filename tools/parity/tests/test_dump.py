@@ -10,10 +10,12 @@ Needs the oracle stack; skipped elsewhere.
 import contextlib
 import gzip
 import hashlib
+import importlib
 import io
 import json
 import os
 import pickle
+import re
 import shutil
 import signal
 import struct
@@ -916,31 +918,48 @@ class DumpTests(unittest.TestCase):
         edited file no longer hashes as its RECORD says; without one, the
         installed distribution checks out, but `UnityPy` imports from
         elsewhere. A faithful copy with its dist-info passes, so the line is
-        what is refused. The version and the UnityPyBoost binary are the
-        pinned ones throughout.
+        what is refused. The same edit in a package linked in beside the
+        module, which Python imports in the module's place, is refused as a
+        symlink. The version and the UnityPyBoost binary are the pinned ones
+        throughout.
         """
         tiny = self.tmp / "tiny"
         tiny.write_bytes(b"tiny")
         site = Path(unitypy_dump.UnityPy.__file__).resolve().parents[1]
         info = site / f"unitypy-{C.ORACLE_UNITYPY}.dist-info"
         self.assertTrue(info.is_dir())
-        for n, (label, with_info, patched, code, said) in enumerate(
+
+        def patched(text):
+            self.assertEqual(text.count("is_stripped = None"), 1)
+            return text.replace("is_stripped = None", "is_stripped = 7")
+
+        def edit(files):
+            reader = files / "ObjectReader.py"
+            reader.write_text(patched(reader.read_text(encoding="utf-8")), encoding="utf-8")
+
+        def link(files):
+            # The patched module as a package elsewhere, its relative imports one level deeper.
+            package = files.parents[2] / "linked" / "ObjectReader"
+            package.mkdir(parents=True)
+            text = re.sub(r"^(\s*from \.)", r"\1.", (files / "ObjectReader.py").read_text(encoding="utf-8"), flags=re.M)
+            (package / "__init__.py").write_text(patched(text), encoding="utf-8")
+            (files / "ObjectReader").symlink_to(package, target_is_directory=True)
+
+        for n, (label, with_info, change, code, said) in enumerate(
             (
-                ("a faithful copy with its dist-info", True, False, 0, ""),
-                ("a patched copy with its dist-info", True, True, 2, "UnityPy/files/ObjectReader.py hashes as"),
-                ("a patched copy alone", False, True, 2, "module UnityPy imports from"),
+                ("a faithful copy with its dist-info", True, None, 0, ""),
+                ("a patched copy with its dist-info", True, edit, 2, "UnityPy/files/ObjectReader.py hashes as"),
+                ("a patched copy alone", False, edit, 2, "module UnityPy imports from"),
+                ("a patched package linked in", True, link, 2, "UnityPy/files/ObjectReader is a symlink"),
             )
         ):
             with self.subTest(label):
-                shadow = self.tmp / f"shadow{n}"
+                shadow = self.tmp / f"case{n}" / "shadow"
                 shutil.copytree(site / "UnityPy", shadow / "UnityPy", ignore=shutil.ignore_patterns("__pycache__"))
                 if with_info:
                     shutil.copytree(info, shadow / info.name)
-                if patched:
-                    reader = shadow / "UnityPy" / "files" / "ObjectReader.py"
-                    text = reader.read_text(encoding="utf-8")
-                    self.assertEqual(text.count("is_stripped = None"), 1)
-                    reader.write_text(text.replace("is_stripped = None", "is_stripped = 7"), encoding="utf-8")
+                if change:
+                    change(shadow / "UnityPy" / "files")
                 out = self.tmp / f"patched{n}.jsonl"
                 proc = dump_process(tiny, "-o", out, env={"PYTHONPATH": str(shadow)})
                 self.assertEqual(proc.returncode, code, proc.stderr.decode(errors="replace"))
@@ -948,6 +967,49 @@ class DumpTests(unittest.TestCase):
                 if code:
                     self.assertIn(b"not the pinned oracle", proc.stderr)
                     self.assertIn(said.encode(), proc.stderr)
+
+    def test_refuses_a_module_from_outside_the_pins(self):
+        """A module loaded from neither the standard library nor a pinned wheel, at import or in a dump, is refused.
+
+        Pillow imports defusedxml when there is one, as it imports cffi and
+        fsspec zstandard; one on PYTHONPATH would run code that is not the
+        oracle's. test_samples is the check that the real dumps load none.
+        """
+        tiny, out = self.tmp / "tiny", self.tmp / "x.jsonl"
+        tiny.write_bytes(b"tiny")
+        planted = self.tmp / "planted"
+        (planted / "defusedxml").mkdir(parents=True)
+        (planted / "defusedxml" / "__init__.py").write_text("")
+        (planted / "defusedxml" / "ElementTree.py").write_text("")
+        (planted / "unityrs_planted.py").write_text("X = 1\n")
+        # At import.
+        proc = dump_process(tiny, "-o", out, env={"PYTHONPATH": str(planted)})
+        self.assertEqual(proc.returncode, 2, proc.stderr.decode(errors="replace"))
+        self.assertIn(b"not the pinned oracle", proc.stderr)
+        said = (
+            f"module defusedxml is loaded from {(planted / 'defusedxml' / '__init__.py').resolve()}, which is neither"
+        )
+        self.assertIn(said.encode(), proc.stderr)
+        self.assertFalse(out.exists())
+        # While an input is dumped, in its own process: the run stops with no dump.
+        dump_one = unitypy_dump._dump_input
+
+        def importing(job):
+            importlib.import_module("unityrs_planted")
+            return dump_one(job)
+
+        with (
+            mock.patch.object(unitypy_dump, "_dump_input", importing),
+            mock.patch.object(sys, "path", [str(planted), *sys.path]),
+            contextlib.redirect_stderr(io.StringIO()) as err,
+        ):
+            self.assertEqual(unitypy_dump.main(["-q", str(tiny), "-o", str(out)]), 2)
+        self.assertIn("refusing to dump: this is not the pinned oracle (while dumping 'tiny': module", err.getvalue())
+        self.assertIn(f"unityrs_planted is loaded from {(planted / 'unityrs_planted.py').resolve()}", err.getvalue())
+        self.assertNotIn("unityrs_planted", sys.modules)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["planted", "tiny"])
+        # The same input without the import is dumped.
+        self.assertEqual(dump(tiny, "-o", out), 0)
 
     def test_index_mode_and_sha_check(self):
         src = samples_dir()
@@ -1026,6 +1088,38 @@ class DumpTests(unittest.TestCase):
             self.assertFalse((self.tmp / "x.jsonl").exists())
         finally:
             stats.unlink(missing_ok=True)
+
+    def test_refuses_outputs_that_would_overwrite_each_other_or_an_input(self):
+        """The dump, its .partial file and the stats are written in turn; none may be another one, or an input."""
+        src, out = self.tmp / "in", self.tmp / "x.jsonl"
+        src.mkdir()
+        (src / "tiny").write_bytes(b"tiny")
+        (src / "old.jsonl.partial").write_bytes(b"an input")
+        out.write_bytes(b"an earlier dump")
+        (self.tmp / "link.json").symlink_to(out)
+        cases = {
+            "--stats is the dump": (["-o", out, "--stats", out], "--stats names the dump"),
+            "--stats is a symlink to the dump": (["-o", out, "--stats", self.tmp / "link.json"], "names the dump"),
+            "--stats is the .partial file": (["-o", out, "--stats", f"{out}.partial"], "names the dump's .partial"),
+            "the dump is an input": (["-o", src / "tiny"], "the dump would overwrite the input 'tiny'"),
+            "the .partial file is an input": (["-o", src / "old.jsonl"], ".partial file would overwrite the input"),
+            "--stats is an input": (["-o", out, "--stats", src / "tiny"], "--stats would overwrite the input 'tiny'"),
+        }
+        before = {p: p.read_bytes() for p in (out, src / "tiny", src / "old.jsonl.partial")}
+        for label, (args, said) in cases.items():
+            with self.subTest(label):
+                with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as cm:
+                    unitypy_dump.main(["-q", str(src), *map(str, args)])
+                self.assertEqual(cm.exception.code, 2)
+                self.assertIn(said, err.getvalue())
+                self.assertEqual({p: p.read_bytes() for p in before}, before)
+                self.assertEqual(sorted(p.name for p in src.iterdir()), ["old.jsonl.partial", "tiny"])
+                self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["in", "link.json", "x.jsonl"])
+        # Paths of their own are written.
+        stats = self.tmp / "x.stats.json"
+        self.assertEqual(dump(src, "-o", out, "--stats", stats), 0)
+        self.assertEqual(records(out)[-1], {"rec": "end", "files": 2, "objects": 0})
+        self.assertEqual(json.loads(stats.read_text())["summary"]["inputs"], 2)
 
 
 if __name__ == "__main__":

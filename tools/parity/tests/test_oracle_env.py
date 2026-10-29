@@ -7,11 +7,14 @@ import base64
 import contextlib
 import hashlib
 import importlib
+import importlib.machinery
 import io
 import json
 import shutil
 import sys
+import sysconfig
 import tempfile
+import types
 import unittest
 import zipfile
 from pathlib import Path
@@ -79,8 +82,10 @@ class PinTests(unittest.TestCase):
         self.assertEqual(len(pins), text.count("--hash=sha256:"), "one pin per hashed wheel")
         self.assertEqual(pins["unitypy"], C.ORACLE_UNITYPY)
         self.assertEqual(C.ORACLE_UNITYPY, "1.25.2")
-        # The image holds numpy and UnityPy uses it when present, so the oracle pins it.
+        # The image holds numpy and UnityPy uses it when present, so the oracle pins it; and likewise
+        # cffi (with its dependency pycparser), which Pillow imports, and zstandard, which fsspec imports.
         self.assertEqual(pins["numpy"], "2.4.6")
+        self.assertEqual((pins["cffi"], pins["pycparser"], pins["zstandard"]), ("2.1.0", "2.21", "0.25.0"))
         self.assertEqual((pins["pillow"], pins["fmod-toolkit"]), ("9.5.0", "0.1.3"))
 
     def test_names_compare_as_pep_503_does(self):
@@ -211,6 +216,52 @@ class EnvTests(unittest.TestCase):
         )
         self.assertEqual(self.check(site, {"fake-pkg": digest}, path=[site, shadow])[0], [])
 
+    def test_a_symlink_is_refused(self):
+        """No wheel installs a symlink, and the walk for stray files follows none, so each one is refused."""
+        site, elsewhere = self.tmp / "site", self.tmp / "elsewhere"
+        records = {"fake-pkg": oracle_env.record_digest(install(site))}
+
+        def a_package_beside_a_module():
+            # A folder `sub` linked in beside sub.py: Python imports the package in the module's place.
+            (elsewhere / "sub").mkdir(parents=True)
+            (elsewhere / "sub" / "__init__.py").write_bytes(b"def f():\n    return 7\n")
+            (site / PKG / "sub").symlink_to(elsewhere / "sub", target_is_directory=True)
+            loaders = (importlib.machinery.SourceFileLoader, importlib.machinery.SOURCE_SUFFIXES)
+            spec = importlib.machinery.FileFinder(str(site / PKG), loaders).find_spec(f"{PKG}.sub")
+            self.assertEqual(Path(spec.origin), site / PKG / "sub" / "__init__.py")
+
+        def a_listed_file_as_a_link_to_its_bytes():
+            elsewhere.mkdir()
+            (site / PKG / "sub.py").rename(elsewhere / "sub.py")
+            (site / PKG / "sub.py").symlink_to(elsewhere / "sub.py")
+
+        def the_package_folder():
+            elsewhere.mkdir()
+            (site / PKG).rename(elsewhere / PKG)
+            (site / PKG).symlink_to(elsewhere / PKG, target_is_directory=True)
+
+        def one_in_pycache():
+            (site / PKG / "__pycache__").mkdir()
+            (site / PKG / "__pycache__" / "sub.cpython-311.pyc").symlink_to(self.tmp / "compiled.pyc")
+
+        cases = {
+            "a folder linked in beside a module": (a_package_beside_a_module, f"{PKG}/sub", 1),
+            "a listed file linked to the same bytes": (a_listed_file_as_a_link_to_its_bytes, f"{PKG}/sub.py", 1),
+            # Its modules then import from elsewhere too.
+            "the package folder": (the_package_folder, PKG, 2),
+            "a link in __pycache__": (one_in_pycache, f"{PKG}/__pycache__/sub.cpython-311.pyc", 1),
+            "a dangling link": (lambda: (site / PKG / "x.py").symlink_to(self.tmp / "none.py"), f"{PKG}/x.py", 1),
+        }
+        for label, (plant, link, count) in cases.items():
+            with self.subTest(label):
+                shutil.rmtree(site)
+                shutil.rmtree(elsewhere, ignore_errors=True)
+                install(site)
+                plant()
+                problems, _ = self.check(site, records)
+                self.assertIn(f"fake-pkg: {link} is a symlink, which no pinned wheel installs", problems)
+                self.assertEqual(len(problems), count, problems)
+
     def test_installed_entries_leave_out_what_the_installer_writes(self):
         site = self.tmp / "site"
         entries = install(site)
@@ -291,6 +342,57 @@ class EnvTests(unittest.TestCase):
                     checked.assert_called_once_with(C.oracle_records())
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             oracle_env.main(["--pin-records", str(self.tmp / "missing")])
+
+
+class LoadedModulesTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-oracle-env-"))
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def test_pinned_files_are_the_records_files(self):
+        site = self.tmp / "site"
+        entries = install(site)
+        files = oracle_env.pinned_files({"fake-pkg": "unused"}, [str(site)])
+        self.assertEqual(files, {(site / path).resolve() for path in entries})
+        self.assertEqual(oracle_env.pinned_files({"numpy": "unused"}, [str(site)]), set())
+
+    def test_only_the_standard_library_the_tools_and_the_pins_may_load(self):
+        stdlib = Path(sysconfig.get_paths()["stdlib"])
+        site, own = self.tmp / "site", self.tmp / "own"
+
+        def module(name, file=None):
+            m = types.ModuleType(name)
+            if file is not None:
+                m.__file__ = str(file)
+            return m
+
+        early = module("early", site / "early.py")
+        modules = {
+            "json": sys.modules["json"],
+            "pinned": module("pinned", site / "pinned" / "__init__.py"),
+            "own_tool": module("own_tool", own / "tool.py"),
+            "early": early,
+            "early_alias": early,  # one module under two names, as __mp_main__ is __main__
+            "builtin": module("builtin"),
+            "foreign": module("foreign", site / "foreign" / "__init__.py"),
+            "site_in_stdlib": module("site_in_stdlib", stdlib / "site-packages" / "thing.py"),
+        }
+        check = oracle_env.LoadedModules({(site / "pinned" / "__init__.py").resolve()}, [own], [early])
+        why = "which is neither the standard library nor a pinned wheel's file"
+        expected = [
+            f"module foreign is loaded from {(site / 'foreign' / '__init__.py').resolve()}, {why}",
+            f"module site_in_stdlib is loaded from {(stdlib / 'site-packages' / 'thing.py').resolve()}, {why}",
+        ]
+        self.assertEqual(check.problems(modules), expected)
+        # Each verdict is kept: a second check looks only at what is new.
+        with mock.patch.object(check, "allowed", wraps=check.allowed) as allowed:
+            more = {**modules, "later": module("later", site / "later.py")}
+            self.assertEqual(len(check.problems(more)), 3)
+        allowed.assert_called_once_with((site / "later.py").resolve())
+        # Real modules: frozen and pure-Python standard modules, extension modules (lib-dynload), and the tools'.
+        here = oracle_env.LoadedModules(set(), [HERE], [])
+        names = ("os", "json", "unittest", "zlib", "_csv", "_json", "oracle_env", __name__)
+        self.assertEqual(here.problems({name: importlib.import_module(name) for name in names}), [])
 
 
 class RecordsFileTests(unittest.TestCase):
