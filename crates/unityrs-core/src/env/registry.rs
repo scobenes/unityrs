@@ -110,8 +110,10 @@ pub(crate) struct Dependency {
     pub(crate) open: Mutex<Option<WeakFile>>,
     /// The context it is parsed with.
     pub(crate) ctx: Arc<FileContext>,
-    /// The LRU that keeps its open handle.
-    pub(crate) cache: Arc<DepCache>,
+    /// The LRU that keeps its open handle, weakly: the LRU holds the
+    /// dependency, so a strong handle back would keep both alive after the
+    /// Environment drops.
+    pub(crate) cache: Weak<DepCache>,
 }
 
 /// A weak handle on a dependency's top-level file.
@@ -172,7 +174,9 @@ impl Dependency {
     pub(crate) fn handle(self: &Arc<Self>) -> Result<File, Error> {
         let alive = lock(&self.open).as_ref().and_then(WeakFile::upgrade);
         if let Some(f) = alive {
-            self.cache.touch(self, &f);
+            if let Some(cache) = self.cache.upgrade() {
+                cache.touch(self, &f);
+            }
             return Ok(f);
         }
         let meter = lock(&self.meter).reopen();
@@ -187,7 +191,9 @@ impl Dependency {
                 file
             }
         };
-        self.cache.touch(self, &file);
+        if let Some(cache) = self.cache.upgrade() {
+            cache.touch(self, &file);
+        }
         Ok(file)
     }
 
@@ -549,7 +555,9 @@ impl Registry {
                 let first = self.resolve_dependency(slot, dep, path);
                 match first {
                     Err(Error::Budget(b)) if b.what == Reservation::Dependency => {
-                        dep.cache.evict_others(Some(dep));
+                        if let Some(cache) = dep.cache.upgrade() {
+                            cache.evict_others(Some(dep));
+                        }
                         self.resolve_dependency(slot, dep, path)
                     }
                     other => other,

@@ -813,30 +813,41 @@ impl Environment {
     /// under [`LoadMode::Lazy`]) without a strong handle, kept in the LRU and
     /// evictable, and not added to [`Self::files`] (UnityPy has no such call;
     /// a batch engine registers its inputs this way). The returned handle is
-    /// the caller's: the dependency is not evicted while the caller holds it.
+    /// the caller's: an eviction drops only the LRU's, so while the caller
+    /// holds it the slots reach the same open file through their weak handle.
+    // The source is handed over (the frozen signature) and kept by a clone.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn load_dependency(&self, source: Source) -> Result<File, Error> {
         let name = source_name(&source);
-        self.load_dep(name, source)
+        self.load_dep(&name, &source)
     }
 
-    fn load_dep(&self, name: RawStr, source: Source) -> Result<File, Error> {
-        let ctx = self.ctx();
-        let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Dependency);
-        let file = match open_source(&name, &source, &meter, ctx) {
-            // A pool refusal evicts the others and retries once (plan 3.13).
+    fn load_dep(&self, name: &RawStr, source: &Source) -> Result<File, Error> {
+        match self.try_load_dep(name, source) {
+            // A pool refusal evicts the others and retries once (plan 3.13);
+            // a second refusal fails naming the pool, and nothing of the
+            // dependency is kept (its first attempt's charges returned
+            // with its handle).
             Err(Error::Budget(b)) if b.what == Reservation::Dependency => {
                 self.inner.cache.evict_others(None);
-                open_source(&name, &source, &meter, ctx)?
+                self.try_load_dep(name, source)
             }
-            other => other?,
-        };
+            other => other,
+        }
+    }
+
+    /// One attempt of [`Self::load_dep`], on a meter of its own.
+    fn try_load_dep(&self, name: &RawStr, source: &Source) -> Result<File, Error> {
+        let ctx = self.ctx();
+        let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Dependency);
+        let file = open_source(name, source, &meter, ctx)?;
         let dep = Arc::new(Dependency {
-            name,
-            source,
+            name: name.clone(),
+            source: source.clone(),
             meter: Mutex::new(meter),
             open: Mutex::new(WeakFile::of(&file)),
             ctx: ctx.clone(),
-            cache: self.inner.cache.clone(),
+            cache: Arc::downgrade(&self.inner.cache),
         });
         self.register_file(&dep.name, &file, &Target::Dependency(&dep))?;
         self.inner.cache.loaded.fetch_add(1, Ordering::Relaxed);
@@ -899,7 +910,7 @@ impl Environment {
         let Some(source) = resolver.resolve(name.as_bytes()) else {
             return Ok(None);
         };
-        Ok(Some(Found::File(self.load_resolved(source, None)?)))
+        Ok(Some(Found::File(self.load_resolved(&source, None)?)))
     }
 
     /// A file the resolver returned: `find_file`'s (`asked` is `None`) is a
@@ -907,14 +918,14 @@ impl Environment {
     /// `keep_resolver_loads`; a resource fallback's (`asked` is the name it
     /// asked for) is a caller's load under that name with
     /// `keep_resolver_loads`, and a dependency without it.
-    fn load_resolved(&self, source: Source, asked: Option<&RawStr>) -> Result<File, Error> {
+    fn load_resolved(&self, source: &Source, asked: Option<&RawStr>) -> Result<File, Error> {
         let keep = self.inner.options.keep_resolver_loads;
         match asked {
-            Some(name) if keep => self.load_listed(name, &source, true),
-            Some(name) => self.load_dep(name.clone(), source),
+            Some(name) if keep => self.load_listed(name, source, true),
+            Some(name) => self.load_dep(name, source),
             None => {
-                let name = source_name(&source);
-                let file = self.load_dep(name.clone(), source)?;
+                let name = source_name(source);
+                let file = self.load_dep(&name, source)?;
                 if keep {
                     let meter = file.meter().clone();
                     let key = RawStr::charged(name.as_bytes(), &meter)?;
@@ -1214,7 +1225,7 @@ impl Environment {
         let Some(source) = resolver.resolve(name.as_bytes()) else {
             return Ok(());
         };
-        self.load_resolved(source, Some(name)).map(drop)
+        self.load_resolved(&source, Some(name)).map(drop)
     }
 
     /// The first candidate a registered slot answers, read.
