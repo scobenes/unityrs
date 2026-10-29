@@ -870,6 +870,39 @@ fn many_rows_of_one_entry_stop_at_the_meter() {
     assert!(m.used() <= 2 << 20);
 }
 
+/// The block and directory counts as `range(count)` reads them (UnityPy
+/// files/BundleFile.py:145-164): a negative count is no records, a huge one
+/// fails at the end of the bytes with nothing allocated from the count.
+#[test]
+fn block_and_directory_counts_are_python_ranges() {
+    // No entries and no blocks, blocks-info stored after the aligned header:
+    // the hash (16 bytes), the block count, then the directory count.
+    let base = build(&BundleSpec {
+        info_codec: TestCodec::None,
+        entries: Vec::new(),
+        ..BundleSpec::default()
+    });
+    let nul = |from: usize| from + base[from..].iter().position(|c| *c == 0).unwrap() + 1;
+    let start = (nul(nul(12)) + 20).next_multiple_of(16);
+    assert_eq!(&base[start..start + 16], &[0; 16]);
+    let empty = open(&base);
+    assert!(empty.blocks().is_empty() && empty.directory().is_empty());
+    for at in [start + 16, start + 20] {
+        let mut neg = base.clone();
+        neg[at..at + 4].copy_from_slice(&(-5i32).to_be_bytes());
+        let b = open(&neg);
+        assert!(b.blocks().is_empty() && b.directory().is_empty(), "{at}");
+        let mut huge = base.clone();
+        huge[at..at + 4].copy_from_slice(&i32::MAX.to_be_bytes());
+        let c = ctx();
+        let m = meter_for(&c);
+        let got = open_with(&huge, &c, &m);
+        assert!(got.is_err(), "{at}: {got:?}");
+        assert_eq!(m.used(), 0, "everything returned");
+        assert!(m.granted() < 4096, "{at}: {} granted", m.granted());
+    }
+}
+
 #[test]
 fn unsupported_bundles_are_named() {
     let base = BundleSpec {
