@@ -157,7 +157,7 @@ UnityFS's total-size field and its uncompressed-data hash are left out, because 
 **UnityWeb and UnityRaw format 6** are read with the UnityFS layout (UnityPy's `read_fs`, with one extra byte after the data flags). So they have `flags`, `flags_class`, `blocks_info`, `blocks` and directory flags, and their `hash` and `crc` are `null`. Every other UnityWeb/UnityRaw format takes the web/raw layout, which has a 16-byte hash and a u32 crc from format 4.
 
 **The version-packing rule** (`engine_version_packed`, and `version_packed` below) is UnityPy's `UnityVersion.from_str`:
-- The string must match `^(\d+)\.(\d+)\.(\d+)(.)?(\d+)?(.*)$`, using Python `re` with DOTALL. So `\d` is any Unicode decimal digit (category Nd), and the groups are `major`, `minor`, `build`, the type, `number` and an ignored rest.
+- The string must match `^(\d+)\.(\d+)\.(\d+)(.+?)?(\d+)?(.*)$` (UnityPy\'s `helpers/UnityVersion.py:7-10`), using Python `re` with DOTALL. So `\d` is any Unicode decimal digit (category Nd), and the groups are `major`, `minor`, `build`, the type, `number` and an ignored rest.
 - The type is exactly one character, the first after `build`'s digits. `number` is the digits right after it, or 0 when there are none.
 - The type's value is that character lower-cased: `a` 0, `b` 1, `c` 2, `f` 3, `p` 4, `x` 5, anything else 255. A string with nothing after `build` packs as `f` (3).
 - The packed value is `major<<48 | minor<<32 | build<<16 | type<<8 | number`. It is a plain OR of unbounded integers, so a field wider than its slot spills into the next one: a `number` above 255 lands in the type byte.

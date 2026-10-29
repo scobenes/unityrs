@@ -782,18 +782,14 @@ fn matrix_file(format: u32, big_endian: bool) -> crate::serialized::SerializedSp
         types,
         objects,
         scripts: vec![(0, 11), (1, 1 << 40)],
-        // UnityPy leaves `temp_empty` unset below format 6, and the oracle
-        // dump cannot read such an external (REQUESTS-c.md).
-        externals: if format >= 6 {
-            vec![ExternalSpec {
-                temp_empty: Vec::new(),
-                guid: [3; 16],
-                kind: 3,
-                path: b"library/unity default resources".to_vec(),
-            }]
-        } else {
-            Vec::new()
-        },
+        // Below format 6 the external has no `temp_empty` (UnityPy leaves it
+        // unset and the oracle records `null`, C request 3).
+        externals: vec![ExternalSpec {
+            temp_empty: Vec::new(),
+            guid: [3; 16],
+            kind: 3,
+            path: b"library/unity default resources".to_vec(),
+        }],
         ref_types: vec![TypeSpec {
             class_id: 114,
             script_type_index: 0,

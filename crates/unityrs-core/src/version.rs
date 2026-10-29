@@ -2,8 +2,10 @@
 //! Unity versions with UnityPy's semantics, and UnityPy's two version chains.
 //!
 //! `UnityVersion.from_str` (`helpers/UnityVersion.py:62-88`) matches
-//! `^(\d+)\.(\d+)\.(\d+)(.)?(\d+)?(.*)$` with Python `re` (DOTALL; `\d` is any
-//! Unicode `Nd` digit). The type is one character, lower-cased: `a` 0, `b` 1,
+//! `^(\d+)\.(\d+)\.(\d+)(.+?)?(\d+)?(.*)$` (`helpers/UnityVersion.py:7-10`)
+//! with Python `re` (DOTALL; `\d` is any Unicode `Nd` digit). The type is one
+//! character (the lazy group takes exactly the non-digit the greedy `build`
+//! group leaves), lower-cased: `a` 0, `b` 1,
 //! `c` 2, `f` 3, `p` 4, `x` 5, anything else 255, nothing at all `f`. The packed
 //! value is `major<<48 | minor<<32 | build<<16 | type<<8 | number`, a plain OR
 //! of unbounded integers, so wide fields spill (`docs/CANONICAL_DUMP.md` 4.2).
