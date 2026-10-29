@@ -1,4 +1,4 @@
-//! G3's inputs (plan section 6): `unityrs-testkit`'s synthetic format matrix
+//! G3's and G3b's inputs (plan section 6). G3: `unityrs-testkit`'s synthetic format matrix
 //! (`bundle::matrix`: every `SerializedFile` format in both byte orders, a
 //! file without type trees, UnityFS 6-8 with every codec, blocks-info at
 //! either end, both flag sets, padding, UnityWeb and UnityRaw at format 6,
@@ -11,15 +11,27 @@
 //! unityrs dump DIR --tpk TPK -o UNITYRS.jsonl.gz
 //! python tools/parity/compare.py ORACLE.jsonl.gz UNITYRS.jsonl.gz
 //! ```
+//!
+//! G3b: `write_matrix --mutants DIR` writes instead every builder output
+//! `unityrs_testkit::mutate::builder_outputs` lists (the matrix and every
+//! Environment scene's files), each as `unityrs_testkit::mutate::PER_INPUT`
+//! seeded mutants named `<input>~<index>~<label>`, dumped and compared the
+//! same way.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-    let [dir] = args.as_slice() else {
-        eprintln!("usage: write_matrix DIR (an empty or new folder outside the repository)");
-        return ExitCode::from(2);
+    let (mutate, dir) = match args.as_slice() {
+        [dir] => (false, dir),
+        [flag, dir] if flag.as_os_str() == "--mutants" => (true, dir),
+        _ => {
+            eprintln!(
+                "usage: write_matrix [--mutants] DIR (an empty or new folder outside the repository)"
+            );
+            return ExitCode::from(2);
+        }
     };
     // The folder as it will be, resolved through its nearest existing
     // ancestor, so nothing is created inside the repository.
@@ -67,13 +79,26 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     }
-    let matrix = unityrs_testkit::bundle::matrix();
-    for (name, bytes) in &matrix {
+    let files: Vec<(String, Vec<u8>)> = if mutate {
+        use unityrs_testkit::mutate::{builder_outputs, mutants};
+        builder_outputs()
+            .into_iter()
+            .flat_map(|(name, bytes)| {
+                mutants(name.as_bytes(), &bytes)
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(i, m)| (format!("{name}~{i:03}~{}", m.label), m.bytes))
+            })
+            .collect()
+    } else {
+        unityrs_testkit::bundle::matrix()
+    };
+    for (name, bytes) in &files {
         if let Err(e) = std::fs::write(dir.join(name), bytes) {
             eprintln!("write_matrix: {name}: {e}");
             return ExitCode::from(1);
         }
     }
-    println!("{} files in {}", matrix.len(), dir.display());
+    println!("{} files in {}", files.len(), dir.display());
     ExitCode::SUCCESS
 }

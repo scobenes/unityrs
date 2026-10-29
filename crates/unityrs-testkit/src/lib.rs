@@ -8,11 +8,13 @@
 //! [`public_types`] (the `Send + Sync` source scan the crates' tests share)
 //! and [`waits`] (the no-thread, no-wait source scan) are the scaffold's
 //! (implemented); [`blob`], [`serialized`] and [`bundle`] are package C's;
-//! [`env`](mod@env) is package D's.
+//! [`env`](mod@env) is package D's; [`mutate`] (G3b's mutator) is the
+//! integration's.
 
 pub mod blob;
 pub mod bundle;
 pub mod env;
+pub mod mutate;
 pub mod public_types;
 pub mod rng;
 pub mod serialized;
