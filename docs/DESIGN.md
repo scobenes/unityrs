@@ -104,6 +104,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - `File.get_filtered_objects` with no types, or on a SerializedFile, and `File.get_assets` on a SerializedFile yield nothing, where each means to yield the value its generator `return`s or the file's objects (`PARITY.md` section 19.2);
   - `load_dependencies` loads dependencies as main files;
   - `ContainerHelper.path_dict` ignores an entry's file id;
+  - `ObjectReader.peek_name` caches a peek node by the root's name, type and version alone, so a later tree of another layout reads the wrong field;
   - the Sprite cache key ignores the FileID;
   - MeshRendererExporter fails on Unity 6;
   - ShaderConverter fails on 6000.3;
@@ -135,7 +136,7 @@ Writing has tiers of its own. Where UnityPy writes, unityrs follows the rule in 
 
 | Tier C (writing) | acceptance |
 |---|---|
-| Pre-v10 and v11 typetree writing (UnityPy raises) | the saved file reloads with the same objects |
+| Pre-v10 and v11 typetree writing (UnityPy raises), and a save below format 13 with `SERIALIZED_FILE_PARSE_TYPETREE` false (UnityPy drops the trees the format requires, and cannot read the file back) | the saved file reloads with the same objects |
 | An object holding a ReferencedObject of empty class (UnityPy raises `KeyError`) | byte-equal to its original bytes |
 | `set_image` to BC7 (UnityPy raises with the pinned etcpak) | byte-equal to what etcpak 0.9.14's `compress_bc7` writes with a default `BC7CompressBlockParams()` on the data UnityPy hands it (flipped, padded to whole 4×4 blocks, RGBA); on a Switch-swizzled texture, padded to the swizzle's size instead, and the compressed bytes swizzled |
 | `set_image` to ETC_RGB4Crunched (UnityPy tags plain ETC1 as crunched) | written as ETC_RGB4, equal to `set_image` to ETC_RGB4 |

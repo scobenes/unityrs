@@ -29,6 +29,9 @@ if ORACLE:
     from UnityPy.streams import EndianBinaryReader
 
 
+VERSION = "2021.3.2f1"  # synth.serialized_file's default engine version
+
+
 def two_ints(version, endian="<", **kw):
     """A SerializedFile of `version` holding one object (path id 7) of class 49 with two ints, a and b."""
     tree = S.Node("TextAsset", "Base", [S.Node("int", "a", byte_size=4), S.Node("int", "b", byte_size=4)], byte_size=8)
@@ -324,3 +327,332 @@ class FileRows(unittest.TestCase):
         cwd = os.getcwd()
         os.chdir(path)
         self.addCleanup(os.chdir, cwd)
+
+    # Section 12: UnityCN, on a bundle encrypted here with the inverse of UnityPy's own decryption.
+    def test_unitycn_decryption(self):
+        import hashlib
+
+        import lz4.block
+        from Crypto.Cipher import AES
+        from UnityPy.helpers import ArchiveStorageManager as M
+
+        key = b"0123456789abcdef"
+        previous = M.DECRYPT_KEY
+        self.addCleanup(setattr, M, "DECRYPT_KEY", previous)
+        # set_assetbundle_decrypt_key: 16 bytes, a str encoded with surrogateescape; any other length raises.
+        M.set_assetbundle_decrypt_key("\udcff" + "k" * 15)
+        self.assertEqual(M.DECRYPT_KEY, b"\xff" + b"k" * 15)
+        with self.assertRaisesRegex(ValueError, "should be 16 bytes and now is 15 bytes"):
+            M.set_assetbundle_decrypt_key(b"k" * 15)
+        # decrypt_key: AES-ECB encrypts the key vector with the key, then XORs the data vector.
+        aes = AES.new(key, AES.MODE_ECB)
+        self.assertEqual(M.decrypt_key(b"v" * 16, bytes(16), key), aes.encrypt(b"v" * 16))
+
+        # A header whose vectors decrypt to the signature and to nibbles whose first 16 are a permutation, so
+        # each decrypted byte has exactly one encrypted form.
+        table = bytes([7, 3, 12, 0, 15, 9, 1, 14, 4, 11, 6, 2, 13, 8, 10, 5])
+        nibbles = table + bytes(i & 0xF for i in range(5, 21))
+        plain_key = bytes((a << 4 | (b & 0xF)) for a, b in zip(nibbles[::2], nibbles[1::2], strict=True))
+        key_vec, sig_key_vec = b"K" * 16, b"S" * 16
+        vectors = (bytes(a ^ b for a, b in zip(aes.encrypt(key_vec), plain_key, strict=True)), key_vec)
+        signature = (
+            bytes(a ^ b for a, b in zip(aes.encrypt(sig_key_vec), M.UNITY3D_SIGNATURE, strict=True)),
+            sig_key_vec,
+        )
+        header = struct.pack(">I", 0x11223344) + vectors[0] + vectors[1] + b"\0" + signature[0] + signature[1] + b"\0"
+
+        def decryptor(data=header):
+            return M.ArchiveStorageDecryptor(EndianBinaryReader(data))
+
+        M.DECRYPT_KEY = None
+        with self.assertRaisesRegex(LookupError, "no key was provided"):
+            decryptor()
+        M.DECRYPT_KEY = b"another key 16 b"
+        with self.assertRaisesRegex(Exception, "^Invalid signature"):
+            decryptor()
+        M.DECRYPT_KEY = key
+        # read_vector: 16 data bytes, 16 key bytes, one skipped byte; the header is 4 + 33 + 33 bytes.
+        reader = EndianBinaryReader(header)
+        dec = M.ArchiveStorageDecryptor(reader)
+        self.assertEqual((reader.Position, dec.unknown_1), (70, 0x11223344))
+        self.assertEqual(
+            (dec.index, dec.substitute), (table, bytes(nibbles[16 + i * 4 + j] for j in range(4) for i in range(4)))
+        )
+
+        def encrypt(plain, index):
+            """The bytes decrypt_block turns into `plain`: its own walk, each byte replaced by its preimage."""
+            enc = M.ArchiveStorageDecryptor.__new__(M.ArchiveStorageDecryptor)
+            enc.index, enc.substitute = dec.index, dec.substitute
+
+            def decrypt_byte(view, offset, idx):
+                want = view[offset]
+                for candidate in range(256):
+                    probe = bytearray([candidate])
+                    M.ArchiveStorageDecryptor.decrypt_byte(dec, probe, 0, idx)
+                    if probe[0] == want:
+                        view[offset] = candidate
+                        return want, offset + 1, idx + 1
+                raise AssertionError("no preimage")
+
+            enc.decrypt_byte = decrypt_byte
+            with mock.patch.object(M, "UnityPyBoost", None):
+                return bytes(enc.decrypt_block(plain, index))
+
+        # decrypt_block: UnityPyBoost's C loop and the Python loop agree, and undo `encrypt`.
+        payload = text_asset_file("unity cn", "x" * 3000)
+        blocks = [lz4.block.compress(part, store_size=False) for part in (payload[:2000], payload[2000:])]
+        for index, block in enumerate(blocks):
+            cipher = encrypt(block, index)
+            self.assertNotEqual(cipher, block)
+            self.assertEqual(bytes(dec.decrypt_block(cipher, index)), block)
+            with mock.patch.object(M, "UnityPyBoost", None):
+                self.assertEqual(bytes(dec.decrypt_block(cipher, index)), block)
+        noise = random.Random(9).randbytes(4096)
+        with mock.patch.object(M, "UnityPyBoost", None):
+            python = bytes(dec.decrypt_block(noise, 3))
+        self.assertEqual(bytes(dec.decrypt_block(noise, 3)), python)
+        self.assertEqual(hashlib.sha256(python).hexdigest()[:16], "669156c9d687bd03", "the bytes the loop gives")
+
+        # A bundle: the decryptor header follows the flags, and each LZ4 block flagged 0x100 is decrypted with
+        # its block index; a stored block with that flag is read as it is.
+        def bundle(block_rows, flags=0x1043):
+            info = bytes(16) + struct.pack(">i", len(block_rows))
+            data = b""
+            for stored, packed, block_flags in block_rows:
+                info += struct.pack(">IIH", stored, len(packed), block_flags)
+                data += packed
+            info += struct.pack(">i", 1) + struct.pack(">qqI", 0, len(payload), 4) + b"CAB-cn\0"
+            packed_info = lz4.block.compress(info, store_size=False)
+            head = b"UnityFS\0" + struct.pack(">I", 8) + b"5.x.x\0" + b"2021.3.2f1\0"
+            out = bytearray(head + struct.pack(">qIII", 0, len(packed_info), len(info), flags) + header)
+            out += bytes(-len(out) % 16)
+            out += packed_info + data
+            struct.pack_into(">q", out, len(head), len(out))
+            return bytes(out)
+
+        rows = [(2000, encrypt(blocks[0], 0), 0x102), (len(payload) - 2000, encrypt(blocks[1], 1), 0x102)]
+        loaded = load(bundle(rows))[0]
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in loaded.files["CAB-cn"].objects.values()], ["unity cn"])
+        stored = load(bundle([(len(payload), payload, 0x100)]))[0]
+        self.assertEqual(list(stored.files["CAB-cn"].objects), [1])
+        # Encrypted under one index and read under another, the block does not decompress.
+        swapped = [(2000, encrypt(blocks[0], 1), 0x102), rows[1]]
+        with self.assertRaises(lz4.block.LZ4BlockError):
+            load(bundle(swapped))
+
+    # Sections 7.2, 18, 19.1, 19.2: SerializedFile.save by format, its header, and SERIALIZED_FILE_PARSE_TYPETREE.
+    def test_serialized_file_save(self):
+        from UnityPy import config
+
+        def source(version, **kw):
+            type_id = 0 if version >= 16 else 49
+            objects = [S.Obj(n, type_id, S.s32(f"o{n}") + S.s32("s" * n)) for n in (9, 2)]
+            return S.serialized_file(
+                [S.Type(49, TEXT_ASSET, deps=[3])],
+                objects,
+                version=version,
+                script_types=[(0, 5)],
+                externals=[S.External(b"lib/x", b"t", bytes(range(16)), 2)],
+                user_information=b"u",
+                **kw,
+            )
+
+        def flag(value):
+            config.SERIALIZED_FILE_PARSE_TYPETREE = value
+            self.addCleanup(setattr, config, "SERIALIZED_FILE_PARSE_TYPETREE", True)
+
+        expected = [(2, {"m_Name": "o2", "m_Script": "ss"}), (9, {"m_Name": "o9", "m_Script": "s" * 9})]
+        # Every save of a format below 10, or of 11, raises: SerializedType.write calls serialized_file.dump, which
+        # does not exist. 10 and 12 on write the tree as a blob, and the file reloads with every member.
+        for version in range(1, 23):
+            with self.subTest(version=version, tree_flag=True):
+                sf = load(source(version))[0]
+                if version < 10 or version == 11:
+                    with self.assertRaisesRegex(AttributeError, "'SerializedFile' object has no attribute 'dump'"):
+                        sf.save()
+                    continue
+                back = load(sf.save())[0]
+                # Objects sorted by path id; each member a format reads is written back.
+                self.assertEqual([(o.path_id, o.parse_as_dict()) for o in back.objects.values()], expected)
+                self.assertEqual((back.externals[0].path, back.externals[0].guid), ("lib/x", bytes(range(16))))
+                self.assertEqual(len(back.script_types), 1 if version >= 11 else 0)
+                self.assertEqual(back.types[0].type_dependencies, (3,) if version >= 21 else None)
+                self.assertEqual((back.userInformation, back.unity_version), ("u", VERSION))
+                self.assertEqual(sf.save(packer="lz4"), sf.save(), "packer is ignored")
+        # Format 22's header: zeros in the legacy metadata size, file size and data offset, the version kept;
+        # then the endian byte, reserved bytes, u32 metadata size, i64 file size and data offset (aligned to 16),
+        # and the file's own unknown i64. Earlier formats keep the four u32 fields.
+        raw = bytearray(source(22))
+        struct.pack_into(">q", raw, 40, 0x1122334455667788)
+        out = load(bytes(raw))[0].save()
+        meta_size, file_size, data_offset, unknown = struct.unpack_from(">Iqqq", out, 20)
+        self.assertEqual(struct.unpack_from(">IIII", out), (0, 0, 22, 0))
+        self.assertEqual((file_size, data_offset % 16, unknown, out[16]), (len(out), 0, 0x1122334455667788, 0))
+        meta, size, version, offset = struct.unpack_from(">IIII", load(source(17))[0].save())
+        self.assertEqual((version, offset % 16), (17, 0))
+        # Each object's data starts on an 8-byte boundary from the data offset.
+        back = load(out)[0]
+        self.assertEqual([o.byte_start - back.header.data_offset for o in back.objects.values()], [0, 16])
+
+        # SERIALIZED_FILE_PARSE_TYPETREE false: the trees are still read, and objects parse with them; save then
+        # writes the tree flag false and no trees, so from format 13 the file reloads through the TPK.
+        flag(False)
+        sf = load(source(22))[0]
+        self.assertIsNotNone(sf.types[0].node)
+        self.assertEqual(sf.objects[2].parse_as_dict(), expected[0][1])
+        out = sf.save()
+        flag(True)
+        back = load(out)[0]
+        self.assertEqual((back._enable_type_tree, back.types[0].node), (False, None))
+        self.assertEqual([(o.path_id, o.parse_as_dict()) for o in back.objects.values()], expected)
+        # Below 13 there is no flag: the save drops the trees all the same, and the file, whose reader expects
+        # them, does not reload (from 9 on its header is written as usual).
+        for version in (10, 12):
+            with self.subTest(version=version, tree_flag=False):
+                flag(False)
+                out = load(source(version))[0].save()
+                flag(True)
+                with self.assertRaises(IndexError):
+                    load(out)
+        # Below 9 the header names data offset 32, while the data follows the 16-byte header at 16; then come
+        # the endian byte and the metadata. UnityPy does not read it back: below 5 the file loads as a raw reader.
+        # (From 5 the load misreads sizes and allocates a gigabyte or more before it fails, so it is not run here.)
+        for version, reload in ((4, True), (8, False)):
+            with self.subTest(version=version, tree_flag=False):
+                flag(False)
+                out = load(source(version))[0].save()
+                flag(True)
+                meta, size, version_field, offset = struct.unpack_from(">IIII", out)
+                self.assertEqual((version_field, offset, size, out[16:24]), (version, 32, len(out), S.s32("o2")))
+                self.assertEqual(out[size - meta], 0, "the endian byte opens the metadata")
+                if reload:
+                    self.assertIsInstance(load(out)[0], EndianBinaryReader)
+
+    # Section 18: BundleFile.save's packer tuple, its compressed packers, and save_web_raw.
+    def test_bundle_save_packers(self):
+        import lz4.block
+
+        payload = text_asset_file("p", "q" * 300)
+        bundle = load(S.fs_bundle([(b"CAB-a", payload, 4)]))[0]
+
+        def flags(data):
+            head = data.index(b"2021.3.2f1\0") + 11
+            return struct.unpack_from(">I", data, head + 16)[0]
+
+        def block_flags(saved):
+            back = load(saved)[0]
+            return (
+                back.dataflags,
+                back._block_info_flags,
+                [o.parse_as_dict()["m_Name"] for o in back.files["CAB-a"].objects.values()],
+            )
+
+        # A tuple is (data_flag, block_info_flag): the header's flags first, the blocks' codec second.
+        saved = bundle.save(packer=(0x43, 2))
+        self.assertEqual((flags(saved), block_flags(saved)[1:]), (0x43, (2, ["p"])))
+        self.assertEqual(flags(bundle.save(packer=(0x41, 3))), 0x41)
+        # lz4 is (194, 2): the blocks info LZ4 at the end, LZ4 blocks of liblz4 HC level 9; lzma (65, 1).
+        saved = bundle.save(packer="lz4")
+        self.assertEqual((flags(saved), block_flags(saved)[1:]), (0xC2, (2, ["p"])))
+        entry = bundle.files["CAB-a"].save()  # every SerializedFile entry is saved again
+        self.assertIn(lz4.block.compress(entry, mode="high_compression", compression=9, store_size=False), saved)
+        self.assertEqual(flags(bundle.save(packer="lzma")), 0x41)
+        # lz4hc, the HEAD packer, is unknown here.
+        with self.assertRaisesRegex(NotImplementedError, "lz4hc"):
+            bundle.save(packer="lz4hc")
+        # save_web_raw: UnityWeb and UnityRaw other than format 6 save through it, formats 1 to 3 only.
+        from test_dump import unityraw
+
+        def old_raw(fmt, name, data):
+            """UnityRaw formats 1 to 3: no hash or crc; sizes, then the complete size from 2, the info size from 3."""
+            head = b"UnityRaw\0" + struct.pack(">I", fmt) + b"5.x.x\0" + b"2.6.1f1\0"
+            block = struct.pack(">i", 1) + name + b"\0" + struct.pack(">II", 4 + len(name) + 9, len(data)) + data
+            fields = 24 + 4 * (fmt >= 2) + 4 * (fmt >= 3)
+            size = len(head) + fields
+            out = head + struct.pack(">IIIiII", size + len(block), size, 1, 1, len(block), len(block))
+            out += (struct.pack(">I", size + len(block)) if fmt >= 2 else b"") + (
+                struct.pack(">I", 0) if fmt >= 3 else b""
+            )
+            return out + block
+
+        for fmt in (1, 2, 3, 4, 5, 7):
+            with self.subTest(format=fmt):
+                raw = load(old_raw(fmt, b"CAB-r", payload) if fmt <= 3 else unityraw(fmt, [(b"CAB-r", payload)]))[0]
+                if fmt > 3:
+                    with self.assertRaisesRegex(NotImplementedError, "version > 3 is not supported"):
+                        raw.save()
+                    continue
+                back = load(raw.save())[0]
+                self.assertEqual([o.parse_as_dict()["m_Name"] for o in back.files["CAB-r"].objects.values()], ["p"])
+
+    # Sections 7.1, 20: what 1.25.2 does with formats it does not know.
+    def test_formats_past_22_read_as_22(self):
+        for version in (23, 24, 25, 26, 27, 100):
+            with self.subTest(version=version):
+                sf = load(
+                    S.serialized_file([S.Type(49, TEXT_ASSET)], [S.Obj(1, 0, S.s32("n") + S.s32("s"))], version=version)
+                )[0]
+                self.assertEqual(
+                    (sf.header.version, sf.objects[1].parse_as_dict()), (version, {"m_Name": "n", "m_Script": "s"})
+                )
+        # Above 100 the sanity check fails, and the file is a raw reader.
+        raw = load(S.serialized_file([S.Type(49, TEXT_ASSET)], [S.Obj(1, 0, S.s32("n") + S.s32("s"))], version=101))[0]
+        self.assertIsInstance(raw, EndianBinaryReader)
+        # Bundle format 9 is read with format 8's layout.
+        nine = bytearray(S.fs_bundle([(b"CAB-a", text_asset_file("nine"), 4)]))
+        struct.pack_into(">I", nine, 8, 9)
+        b = load(bytes(nine))[0]
+        self.assertEqual(
+            (b.version, [o.parse_as_dict()["m_Name"] for o in b.files["CAB-a"].objects.values()]), (9, ["nine"])
+        )
+
+    # Sections 7.2, 19.2: SerializedFile.load_dependencies.
+    def test_load_dependencies(self):
+        d = self.tmp
+        (d / "dep.assets").write_bytes(text_asset_file("dep"))
+        (d / "extra.assets").write_bytes(text_asset_file("extra"))
+        externals = [S.External(b"dep.assets"), S.External(b"archive:/CAB-missing/CAB-missing")]
+        main = S.serialized_file(
+            [S.Type(49, TEXT_ASSET)], [S.Obj(1, 0, S.s32("main") + S.s32("s"))], externals=externals
+        )
+        env = UnityPy.Environment(path=str(d))
+        sf = load(main, "main.assets", env)[0]
+        # Every external by its path, then the extra names; a miss is None, with no error.
+        self.assertIsNone(quietly(sf.load_dependencies, ["extra.assets", "nope.assets"]))
+        self.assertEqual(list(env.files), ["main.assets", "dep.assets", "extra.assets"])
+        # load_file(path, True) passes True as `parent`, which load_file never hands on (parse_file gets the
+        # Environment), so what it loads is no dependency: it joins Environment.objects and the CAB registry.
+        dep = env.files["dep.assets"]
+        self.assertEqual((dep.parent, dep.is_dependency), (env, False))
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in env.objects], ["main", "dep", "extra"])
+        self.assertEqual(list(env.cabs), ["main.assets", "dep.assets", "extra.assets"])
+        # Only the extras are guarded: an external whose lookup raises (a `path` the disk cannot list) escapes.
+        lone = load(main, "main.assets", UnityPy.Environment(path=""))[0]
+        with self.assertRaises(FileNotFoundError):
+            quietly(lone.load_dependencies)
+
+    # Section 5.1: BlocksInfoAtTheEnd (0x80).
+    def test_blocks_info_at_the_end(self):
+        import lz4.block
+
+        entry = text_asset_file("at the end")
+        packed = lz4.block.compress(entry, store_size=False)
+        info = bytes(16) + struct.pack(">i", 1) + struct.pack(">IIH", len(entry), len(packed), 2)
+        info += struct.pack(">i", 1) + struct.pack(">qqI", 0, len(entry), 4) + b"CAB-end\0"
+        packed_info = lz4.block.compress(info, store_size=False)
+        head = b"UnityFS\0" + struct.pack(">I", 8) + b"5.x.x\0" + b"2021.3.2f1\0"
+
+        def bundle(trailer=b""):
+            out = bytearray(head + struct.pack(">qIII", 0, len(packed_info), len(info), 0x80 | 0x40 | 2))
+            out += bytes(-len(out) % 16)
+            out += packed + packed_info  # the data right after the header, the blocks info last
+            struct.pack_into(">q", out, len(head), len(out))
+            return bytes(out) + trailer
+
+        loaded = load(bundle())[0]
+        self.assertEqual(
+            [o.parse_as_dict()["m_Name"] for o in loaded.files["CAB-end"].objects.values()], ["at the end"]
+        )
+        # The info is read from the reader's end, whatever the header's size says: bytes after it break it.
+        with self.assertRaises(lz4.block.LZ4BlockError):
+            load(bundle(b"\0\0\0\0"))
