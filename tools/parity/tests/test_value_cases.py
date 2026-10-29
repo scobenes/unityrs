@@ -2,8 +2,8 @@
 
     python -m unittest discover -s tools/parity/tests
 
-The verdict tests are the spike's (crates/unityrs-spike-rabex/scripts/tests),
-on the copy. Needs UnityPy (the oracle image); skipped elsewhere.
+The verdict tests began as the rabex spike's script tests (removed with the
+spike), run here on the copy. Needs UnityPy (the oracle image); skipped elsewhere.
 """
 
 import contextlib

@@ -1,9 +1,10 @@
-//! F3's string site (`crates/unityrs-rabex/UPSTREAM.md`): a TPK string's
-//! 7-bit length prefix can say 2^35 - 1 bytes. rabex 0.2.1 allocated that
-//! much before reading; the fork reads through `take` and grows by the bytes
-//! that exist. Under a counting allocator, the heap a blob read adds above
-//! where it started is at most the tail's size, plus what the blob's other
-//! tables hold.
+//! A TPK string's 7-bit length prefix can say 2^35 - 1 bytes (`Tpk.py`'s
+//! `read_string`, `:445-456`). rabex 0.2.1, whose reader unityrs once used,
+//! allocated that much before reading. The port copies a string only once
+//! its bytes are known to be there, so a length past the payload's end, which
+//! it refuses (`PARITY.md` section 19.3), costs nothing: under a counting
+//! allocator, a load whose last string's length runs past a tail of any size
+//! holds the same heap at its peak, the provider's own fixed state.
 //!
 //! The allocator counts only the test's own thread
 //! (`unityrs_testkit::counted`): libtest's main thread allocates beside it.
@@ -11,10 +12,14 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use unityrs_core::limits::Limits;
+use unityrs_core::provider::TypeTreeProvider;
 use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
+use unityrs_tpk::{TpkError, TpkProvider};
 
 /// Counts live heap bytes and their peak; refuses any one request over
-/// 1 GiB, so the upstream allocation fails the test rather than the machine.
+/// 1 GiB, so an allocation at the string's length fails the test rather
+/// than the machine.
 struct Counting;
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
@@ -79,57 +84,76 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOC: Counting = Counting;
 
-/// A blob with no versions, classes, common strings or nodes, and one string
-/// whose length prefix is `len` over `tail`.
-fn blob(len: u64, tail: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(&1_i64.to_le_bytes());
-    for _ in 0..5 {
-        out.extend_from_slice(&0_i32.to_le_bytes()); // versions, classes, common, indices, nodes
+/// A stored TPK whose blob has no versions, classes or nodes, one common
+/// string (string 0), and one string whose length prefix is `len` over
+/// `tail`.
+fn tpk(len: u64, tail: &[u8]) -> Vec<u8> {
+    let mut blob = Vec::new();
+    blob.extend_from_slice(&1_i64.to_le_bytes());
+    for _ in 0..3 {
+        blob.extend_from_slice(&0_i32.to_le_bytes()); // versions, classes, common versions
     }
-    out.extend_from_slice(&1_i32.to_le_bytes()); // strings
+    blob.extend_from_slice(&1_i32.to_le_bytes()); // common indices
+    blob.extend_from_slice(&0_u16.to_le_bytes());
+    blob.extend_from_slice(&0_i32.to_le_bytes()); // nodes
+    blob.extend_from_slice(&1_i32.to_le_bytes()); // strings
     let mut n = len;
     loop {
         let byte = u8::try_from(n & 0x7F).unwrap();
         n >>= 7;
         if n == 0 {
-            out.push(byte);
+            blob.push(byte);
             break;
         }
-        out.push(byte | 0x80);
+        blob.push(byte | 0x80);
     }
-    out.extend_from_slice(tail);
+    blob.extend_from_slice(tail);
+    let mut out = b"TPK*".to_vec();
+    out.extend_from_slice(&[1, 0, 0, 0]);
+    out.extend_from_slice(&0_u32.to_le_bytes());
+    let size = u32::try_from(blob.len()).unwrap().to_le_bytes();
+    out.extend_from_slice(&size);
+    out.extend_from_slice(&size);
+    out.extend_from_slice(&blob);
     out
 }
 
 /// One test; the allocator counts its thread only.
 #[test]
-fn a_string_longer_than_its_tail_costs_at_most_the_tail() {
+fn a_string_longer_than_its_tail_costs_nothing_however_long_the_tail() {
     count_this_thread();
     others_are_not_counted(|| LIVE.load(Ordering::SeqCst));
-    for tail_len in [0, 1, 100, 8192, 8193, 100_000] {
+    let limits = Limits::default();
+    let mut peaks = Vec::new();
+    for tail_len in [0, 1, 100, 8192, 8193, 100_000, 1 << 20] {
         let tail = vec![b'a'; tail_len];
-        let bytes = blob((1 << 35) - 1, &tail);
+        let bytes = tpk((1 << 35) - 1, &tail);
         let start = LIVE.load(Ordering::SeqCst);
         PEAK.store(start, Ordering::SeqCst);
-        let got = rabex::tpk::TpkTypeTreeBlob::from_reader_bounded(
-            &mut bytes.as_slice(),
-            unityrs_tpk::TpkProvider::MAX_RECORDS,
-        );
+        let got = TpkProvider::from_bytes(&bytes, &limits);
         let peak = PEAK.load(Ordering::SeqCst) - start;
-        assert!(got.is_err(), "tail {tail_len}");
-        drop(got);
-        assert!(
-            peak <= tail_len,
-            "tail {tail_len}: the read held {peak} bytes above its start"
-        );
+        match got {
+            Err(TpkError::Malformed(m)) => assert!(m.contains("longer than"), "{m}"),
+            got => panic!("tail {tail_len}: {got:?}"),
+        }
+        peaks.push((tail_len, peak));
     }
+    let (_, first) = peaks[0];
+    assert!(
+        first < 1024,
+        "a load that fails at its string held {first} bytes"
+    );
+    assert!(
+        peaks.iter().all(|&(_, peak)| peak == first),
+        "the peak grew with the tail: {peaks:?}"
+    );
     // And a string its tail holds reads whole.
-    let bytes = blob(5, b"hello");
-    let got = rabex::tpk::TpkTypeTreeBlob::from_reader_bounded(
-        &mut bytes.as_slice(),
-        unityrs_tpk::TpkProvider::MAX_RECORDS,
-    )
-    .unwrap();
-    assert_eq!(got.string_buffer, ["hello"]);
+    let provider = TpkProvider::from_bytes(&tpk(5, b"hello"), &limits).unwrap();
+    let common: Vec<(u32, Vec<u8>)> = provider
+        .common_strings()
+        .unwrap()
+        .iter()
+        .map(|(o, s)| (o, s.as_bytes().to_vec()))
+        .collect();
+    assert_eq!(common, [(0, b"hello".to_vec())]);
 }

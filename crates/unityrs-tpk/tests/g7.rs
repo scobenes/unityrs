@@ -179,6 +179,8 @@ fn refusal(e: &TpkError) -> String {
         TpkError::TooLarge { what, .. } => (*what).to_owned(),
         TpkError::Unsupported(codec) => (*codec).to_owned(),
         TpkError::CommonStringPastBuffer { .. } => "common-string index".to_owned(),
+        // A string UnityPy reads on (`PARITY.md` section 19.3).
+        TpkError::Malformed(why) => why.to_string(),
         e => format!("{e}"),
     }
 }
@@ -213,9 +215,10 @@ fn g7_the_synthetic_tpks_give_unitypys_outcomes() {
 }
 
 /// The cases G7's synthetic set exists for are in it: each root flag
-/// combination and the class after it, the type bytes rabex refused, the
-/// 300-deep chain, both codecs and the streams on which liblz4 and liblzma
-/// decide differently from rabex's decoders, and a case past each bound.
+/// combination and the class after it, every flag byte, the type bytes rabex
+/// refused, the 300-deep chain, every count read as UnityPy reads it, both
+/// codecs and the streams on which liblz4 and liblzma decide differently
+/// from rabex's decoders, and a case past each bound.
 #[test]
 fn g7_the_synthetic_set_covers_f6_f7_and_the_deep_chain() {
     let cases = synthetic();
@@ -236,8 +239,26 @@ fn g7_the_synthetic_set_covers_f6_f7_and_the_deep_chain() {
         "lzma_end_marker_corrupt",
         "lzma_declared_smaller",
         "common_strings",
+        "flag_bytes",
+        "node_fields",
+        "string_length_5_bytes",
+        "stored_declared_u32_max",
     ] {
         assert!(names.iter().any(|n| n == name), "{name}");
+    }
+    for key in [
+        "classes", "entries", "common", "nodes", "strings", "versions", "indices",
+    ] {
+        for value in [
+            "-1",
+            "-2147483648",
+            "1073741824",
+            "2147483647",
+            "-1_items_follow",
+        ] {
+            let name = format!("count_{key}_{value}");
+            assert!(names.contains(&name), "{name}");
+        }
     }
     // UnityPy loads the offset-0 match and the short LZMA size, and raises on
     // the last-literals match and the corrupt end marker (rabex's decoders
@@ -258,6 +279,8 @@ fn g7_the_synthetic_set_covers_f6_f7_and_the_deep_chain() {
         "strings",
         "brotli",
         "common-string index",
+        "a string longer than the rest of the payload",
+        "a string length of more than 5 bytes",
     ] {
         assert!(refused.contains(&what), "no refused case for {what}");
     }

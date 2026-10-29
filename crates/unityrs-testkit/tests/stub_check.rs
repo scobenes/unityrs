@@ -93,13 +93,6 @@ fn a_tree_without_stubs_passes() {
 }
 
 #[test]
-fn the_vendored_rabex_crate_is_not_checked() {
-    let rabex = format!("pub fn upstream() {{\n    {}\n}}\n", todo_call());
-    let (code, text) = Tree::new(&with(("crates/unityrs-rabex/src/de.rs", rabex))).check();
-    assert_eq!(code, 0, "{text}");
-}
-
-#[test]
 fn every_sign_of_a_stub_fails() {
     let cases = [
         (

@@ -4,7 +4,8 @@
 //! 1. no `include_bytes!` or `include_str!` in unityrs-core (its generated
 //!    tables are literals, so nothing is exempt);
 //! 2. no crate the workspace resolves has a feature matching `*tpk*`
-//!    enabled (rabex's `embed-tpk` among them, on by default upstream);
+//!    enabled (such as rabex's `embed-tpk`, on by default in rabex 0.2.1,
+//!    whose TPK reader unityrs-tpk replaced with its port of `Tpk.py`);
 //! 3. no file under the repository matches `*.tpk`.
 
 use std::path::{Path, PathBuf};
@@ -80,10 +81,11 @@ fn no_resolved_crate_enables_a_tpk_feature() {
     );
     let meta: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let nodes = meta["resolve"]["nodes"].as_array().unwrap();
+    // The resolve holds this crate: the metadata is the workspace's.
     assert!(nodes.iter().any(|n| {
         n["id"]
             .as_str()
-            .is_some_and(|id| id.contains("unityrs-rabex"))
+            .is_some_and(|id| id.contains("unityrs-tpk"))
     }));
     for node in nodes {
         for feature in node["features"].as_array().unwrap() {

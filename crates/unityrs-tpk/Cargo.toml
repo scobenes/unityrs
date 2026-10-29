@@ -4,21 +4,14 @@ description = "A TPK (type-tree package) loaded from a path, as a unityrs-core t
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-# Its tree resolution ports UnityPy 1.25.2's helpers/Tpk.py (MIT), so the MIT
-# notice travels with it. See THIRD_PARTY_LICENSES and docs/plans/core.md
-# section 2.5.
+# It ports UnityPy 1.25.2's helpers/Tpk.py (MIT), so the MIT notice travels
+# with it. See THIRD_PARTY_LICENSES and docs/plans/core.md section 2.5.
 license = "(MIT OR Apache-2.0) AND MIT"
 repository.workspace = true
 authors.workspace = true
 
 [dependencies]
 unityrs-core = { path = "../unityrs-core" }
-# The vendored rabex 0.2.1 (crates/unityrs-rabex): its blob reader only. A
-# TPK's payload is decoded by unityrs-core's codecs, which are UnityPy's
-# (rabex's lz4_flex and lzma-rs accept other streams), and clippy.toml here
-# disallows rabex's; its codec features stay on because its code warns
-# without them. No embed-tpk: the TPK comes from a path.
-rabex = { package = "unityrs-rabex", path = "../unityrs-rabex", default-features = false, features = ["compression-lzma", "compression-lz4"] }
 thiserror = "=2.0.21"
 
 [dev-dependencies]

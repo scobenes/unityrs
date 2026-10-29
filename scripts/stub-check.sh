@@ -11,9 +11,6 @@
 #     in an attribute, on one line or several (under `deny(`, as in
 #     unityrs-core's own lib.rs, it is the opposite of a stub);
 #   - `todo!(` or `unimplemented!(` in code; a comment may name them.
-# crates/unityrs-rabex is rabex as published plus the patch ledger (plan
-# section 2.4): its upstream todo!()s are fenced, unreachable from unityrs,
-# and scripts/fork-check.sh owns that crate, so this check skips it.
 #
 # Each hit is printed with its owning package, `[X] FILE:LINE: text`: the
 # package a `STUB(X)` on the line names (for a blocked test, the package it
@@ -27,7 +24,7 @@
 set -eu
 root=${1:-"$(dirname "$0")/.."}
 cd "$root"
-hits=$(find crates -path crates/unityrs-rabex -prune -o -type f -name '*.rs' -print \
+hits=$(find crates -type f -name '*.rs' \
     | LC_ALL=C sort \
     | xargs -r awk '
         function owner_of(s) {

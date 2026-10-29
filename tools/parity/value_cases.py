@@ -7,11 +7,10 @@ G2 (docs/plans/core.md section 6): exit status 0 when every case's L2 verdict
 is "match" and none's L3 verdict is "differs" or "one_side"; 1 when one is,
 or when the binary's answer is not one well-formed line per case.
 
-A copy of the rabex spike's script (crates/unityrs-spike-rabex/scripts/
-value_cases.py, docs/spikes/rabex.md), pointed at unityrs; the spike keeps
-its own until it is removed. The corpus exercises one engine line, so each
-case targets one place where a reader can part from UnityPyBoost
-(TypeTreeHelper.cpp): alignment rules, negative lengths, ReferencedObject,
+A copy of the rabex spike's script (docs/spikes/rabex.md; the spike crate
+has since been removed), pointed at unityrs. The corpus exercises one engine
+line, so each case targets one place where a reader can part from
+UnityPyBoost (TypeTreeHelper.cpp): alignment rules, negative lengths, ReferencedObject,
 node shapes. The cases were written where reading rabex's source suggested
 it parts from Boost, and each `why` still says how rabex differed; unityrs
 ports Boost, so every case should match. A case is a tree and its bytes; the
