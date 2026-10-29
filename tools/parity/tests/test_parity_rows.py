@@ -219,7 +219,16 @@ class TestColumn(unittest.TestCase):
     # DESIGN.md section 3's resolution clause names the Tier B and C exceptions to "`obj.container` and dependency
     # resolution match". Each bullet of those lists that touches resolution (it names one of RESOLUTION) maps here
     # to the phrase the clause names it by.
-    RESOLUTION = ("find_file", "PPtr.deref", "load_file", "load_dependencies", "load_assets", "path_dict", "registry")
+    RESOLUTION = (
+        "find_file",
+        "PPtr.deref",
+        "load_file",
+        "load_dependencies",
+        "load_assets",
+        "path_dict",
+        "registry",
+        "`.splitN`",
+    )
     NAMED_BY = {
         "a stream whose `name` is not a `str`": ("B", "`PPtr.deref` reaching an `int` or `None` `files` key"),
         "a record that `PPtr.deref` resolves": ("B", "a record whose file's basename holds an upper-case letter"),
@@ -227,7 +236,9 @@ class TestColumn(unittest.TestCase):
             "B",
             "a name read through a non-local fsspec filesystem where UnityPy raises",
         ),
+        "a `.splitN` path whose part is a folder": ("B", "a path through a `.splitN` folder"),
         "two bundles holding a CAB of one name": ("C", "two bundles' same-named CABs"),
+        "a path holding `.splitN` before its end": ("C", "a path holding `.splitN` before its end"),
         "`find_file`'s suffix match": ("C", "`find_file`'s suffix match with no separator boundary"),
         "split members of a zip": ("C", "split members of a zip"),
         "a name read through a non-local fsspec filesystem where": (
@@ -1765,6 +1776,23 @@ class Rows(unittest.TestCase):
         )
         with self.assertRaisesRegex(IsADirectoryError, re.escape(str(d / "dir.split1"))):
             quietly(UnityPy.Environment().load_file, str(d / "dir.split1" / "inner.assets"))
+        # Resolution goes the same way, find_file handing the walked path to load_file: a record of the name
+        # `a.assets.split0.bak` resolves to the merged file, and one whose file sits in `dir.split1/` raises.
+        main = load(text_asset_file("main"), "main.assets", UnityPy.Environment(path=str(d)))[0]
+        for record, expected in (
+            ("a.assets.split0.bak", "merged"),
+            ("inner.assets", IsADirectoryError),
+            ("archive:/CAB-q/inner.assets", IsADirectoryError),
+            ("plain.assets", "plain"),
+        ):
+            main.externals = [SimpleNamespace(path=record)]
+            pointer = PPtr(m_FileID=1, m_PathID=1, assetsfile=main)
+            with self.subTest(record=record):
+                if isinstance(expected, str):
+                    self.assertEqual(quietly(pointer.deref).parse_as_dict()["m_Name"], expected)
+                else:
+                    with self.assertRaisesRegex(expected, re.escape(str(d / "dir.split1"))):
+                        quietly(pointer.deref)
         # Split members of a zip: load_assets reads the parts through Environment.fs, relative to the cwd, never
         # from the zip. With no such files the member loads as an empty raw reader, a CAB, and its objects are
         # lost; with files at those paths, their bytes load in its place (section 19.2).
