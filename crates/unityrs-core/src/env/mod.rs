@@ -21,7 +21,7 @@
 //! which is a container, the two modes give identical results, the
 //! container pass's `RuntimeError` included. Elsewhere they differ in
 //! exactly four ways (plan section 3.13, `PARITY.md` section 19.3, each
-//! pinned by a test in `tests/env.rs`): (a) a failing entry fails the load
+//! pinned by a test in `tests/env/modes.rs`): (a) a failing entry fails the load
 //! under `Eager` (with the partial registration above) but only the `get`
 //! that parses it under `Lazy` (an entry shadowed by a later one of its path
 //! is then never parsed; [`crate::files::BundleFile::load_all`] reproduces
@@ -108,7 +108,7 @@
 //! **Locks.** The registry, the `files` list, the LRU and a file's
 //! `path_dict` are locked only to look up or publish; a file is loaded, an
 //! entry parsed and a resolver, fetcher or provider called with no lock held
-//! ([`crate::once`]; `tests/env.rs` runs loads on another thread while a
+//! ([`crate::once`]; `tests/env/locks.rs` runs loads on another thread while a
 //! resolver or a fetch waits for them). The one
 //! caller code that may run under them is a [`crate::budget::MemoryBudget`]
 //! or [`crate::budget::PermitHome`] (a growth charged while a table is
