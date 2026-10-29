@@ -64,6 +64,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
 **Reading**
 - **Tier A: bit-exact** wherever UnityPy is right.
   - Typetree dicts equal `parse_as_dict()` with Boost semantics: lists for arrays, tuples for pairs, bytes for TypelessData, surrogate-escaped strings, float32 widened exactly.
+  - Object mode builds each class as UnityPyBoost's `parse_class` does: a slotted class with an extra field becomes an `UnknownObject`. The pure-Python path's different rule is kept where UnityPy calls it (`PARITY.md` section 9.2).
   - `obj.container` and dependency resolution match.
   - Decoded pixels **and output mode** match: BCn per Pillow `BcnDecode.c`; ETC/EAC/ATC/PVRTC/crunch per texture2ddecoder C++; ASTC via ARM astcenc.
   - OBJ/MTL text matches.
@@ -90,6 +91,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - mesh endianness is never read from the file;
   - the compressed-mesh 4th bone weight;
   - the ReferencedObject array path does not skip None;
+  - the pure-Python object-mode reader raises `AttributeError` on an extra field of a class without a `__dict__`;
   - dump_blob's common-string offset 0;
   - two bundles holding a CAB of one name share one registry entry;
   - `load_dependencies` loads dependencies as main files;

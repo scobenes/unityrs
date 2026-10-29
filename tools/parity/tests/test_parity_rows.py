@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from abc import ABC
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -32,7 +33,16 @@ try:
     import lz4.block
     import UnityPy
     from PIL import Image
-    from UnityPy.classes import GameObject, PPtr, StreamedResource, StreamingInfo, Texture2D, Texture2DArray
+    from UnityPy import classes
+    from UnityPy.classes import (
+        GameObject,
+        PPtr,
+        StreamedResource,
+        StreamingInfo,
+        Texture2D,
+        Texture2DArray,
+        UnknownObject,
+    )
     from UnityPy.enums import BuildTarget, FileType, TextureFormat
     from UnityPy.enums.GraphicsFormat import GraphicsFormat
     from UnityPy.export import AudioClipConverter, Texture2DConverter
@@ -366,6 +376,75 @@ class Rows(unittest.TestCase):
         node = TypeTreeNode(m_Level=0, m_Type="int", m_Name="²ab", m_ByteSize=4, m_Version=1)
         self.assertEqual(node._clean_name, "²ab", "UnityPyBoost: ASCII digits only")
         self.assertEqual((node_clean_name("²ab"), TypeTreeHelper.clean_name("²ab")), ("x²ab", "x²ab"))
+
+    # Sections 9.2, 14.1, 19.2: how a class node becomes an object, on UnityPyBoost and on the pure-Python path.
+    def test_object_mode_builds_classes_as_parse_class_does(self):
+        def tree(root_type, fields):
+            nodes = [{"m_Level": 0, "m_Type": root_type, "m_Name": "Base", "m_ByteSize": -1, "m_Version": 1}]
+            nodes += [
+                {"m_Level": 1, "m_Type": "int", "m_Name": name, "m_ByteSize": 4, "m_Version": 1} for name in fields
+            ]
+            return TypeTreeNode.from_list(nodes)
+
+        def parse(root_type, fields, boost):
+            data = struct.pack(f"<{len(fields)}i", *range(1, len(fields) + 1))
+            size = len(data) if boost else None  # no byte_size: the pure-Python path
+            reader = EndianBinaryReader(data, "<")
+            return TypeTreeHelper.read_typetree(tree(root_type, fields), reader, False, size, check_read=boost)
+
+        # Three kinds of class: slotted with no __dict__ (first base `object`), slotted with the __dict__ Object
+        # gives, and unslotted (attrs `slots=False`: a generated class whose first base is another class), whose
+        # `__slots__` is ABC's empty tuple, found through the MRO.
+        self.assertEqual(classes.AssetDatabaseMetrics.__bases__, (object,))
+        self.assertTrue(classes.AssetDatabaseMetrics.__slots__)
+        self.assertEqual(classes.MarshallingTestObject.__mro__[1:3], (classes.Object, ABC))
+        self.assertTrue(classes.MarshallingTestObject.__slots__)
+        for slotted in (classes.EditorSettings, classes.StreamingInfo, classes.Vector3f):
+            self.assertTrue(slotted.__slots__, slotted)
+        for unslotted in (classes.MultiplayerManager, classes.TextAsset, classes.Texture2D):
+            self.assertEqual(unslotted.__slots__, (), unslotted)
+
+        metrics = ["totalAssetCount", "nonProAssetCount", "nonProAssetsCreatedAfterProLicense"]  # 1 required
+        roles = ["m_ActiveMultiplayerRole", "m_ActiveMultiplayerRoles"]  # both optional
+        self.assertEqual([f.default is attrs.NOTHING for f in attrs.fields(classes.AssetDatabaseMetrics)], [1, 0, 0])
+        cases = {
+            # (class, fields): (UnityPyBoost's result, the pure-Python path's)
+            ("AssetDatabaseMetrics", (*metrics,)): ("AssetDatabaseMetrics", "AssetDatabaseMetrics"),
+            # A missing optional field takes its default on both paths, a missing required one gives UnknownObject.
+            ("AssetDatabaseMetrics", (metrics[0],)): ("AssetDatabaseMetrics", "AssetDatabaseMetrics"),
+            ("AssetDatabaseMetrics", (*metrics[1:],)): ("UnknownObject", "UnknownObject"),
+            # An extra field: Boost gives up on any slotted class; Python's setattr fails without a __dict__.
+            ("AssetDatabaseMetrics", (*metrics, "m_Extra")): ("UnknownObject", AttributeError),
+            ("MarshallingTestObject", ("m_Prop", "m_Extra")): ("UnknownObject", "MarshallingTestObject"),
+            # An unslotted class keeps the extra as an attribute on Boost; Python wants every annotation present.
+            ("MultiplayerManager", (*roles, "m_Extra")): ("MultiplayerManager", "MultiplayerManager"),
+            ("MultiplayerManager", ("m_Extra",)): ("MultiplayerManager", "UnknownObject"),
+            ("AssetDatabaseMetrics", (metrics[0], "m_Extra")): ("UnknownObject", "UnknownObject"),
+            # A type the module lacks.
+            ("NoSuchClass", ("a",)): ("UnknownObject", "UnknownObject"),
+        }
+        for (root, fields), results in cases.items():
+            for boost, expected in zip((True, False), results, strict=True):
+                with self.subTest(root, fields=fields, boost=boost):
+                    if expected is AttributeError:
+                        with self.assertRaisesRegex(AttributeError, "object has no attribute 'm_Extra'"):
+                            parse(root, fields, boost)
+                        continue
+                    value = parse(root, fields, boost)
+                    self.assertEqual(type(value).__name__, expected)
+                    self.assertEqual(
+                        {name: getattr(value, name) for name in fields},
+                        dict(zip(fields, range(1, len(fields) + 1), strict=True)),
+                    )
+                    if expected == "UnknownObject":
+                        # Boost always keeps the node; the pure-Python path drops it for a type the module lacks.
+                        kept = boost or root != "NoSuchClass"
+                        self.assertEqual(value.get_type(), root if kept else None)
+        # ObjectReader passes byte_size, so every object-mode parse of a loaded file goes through Boost.
+        root = S.Node("AssetDatabaseMetrics", "Base", [S.Node("int", name) for name in [*metrics, "m_Extra"]])
+        sf = load(S.serialized_file([S.Type(114, root)], [S.Obj(1, 0, struct.pack("<4i", 1, 2, 3, 4))]))[0]
+        parsed = sf.objects[1].parse_as_object()
+        self.assertEqual((type(parsed), parsed.get_type(), parsed.m_Extra), (UnknownObject, "AssetDatabaseMetrics", 4))
 
     # Section 18: BundleFile.save flags.
     def test_bundle_save_flags(self):
