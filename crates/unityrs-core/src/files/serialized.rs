@@ -396,6 +396,43 @@ impl SerializedFile {
     pub fn context(&self) -> &Arc<FileContext> {
         &self.ctx
     }
+
+    /// A file of `rows` and nothing else, for the crate's tests before
+    /// package C's `parse` lands: dict order is file order.
+    #[cfg(test)]
+    pub(crate) fn for_tests(rows: Vec<ObjectInfo>) -> Arc<Self> {
+        let meter = Meter::unlimited();
+        let order = (0..u32::try_from(rows.len()).unwrap()).collect();
+        Arc::new(Self {
+            name: RawStr::from_static(b"CAB-test"),
+            data: Bytes::new(),
+            header: SerializedHeader {
+                metadata_size: 0,
+                file_size: 0,
+                version: 22,
+                data_offset: 0,
+                endian: Endian::Little,
+                reserved: None,
+                unknown: 0,
+            },
+            unity_version: None,
+            version: None,
+            target_platform: None,
+            enable_type_tree: true,
+            big_id_enabled: 0,
+            types: Box::new([]),
+            ref_types: None,
+            script_types: Box::new([]),
+            externals: Box::new([]),
+            user_information: None,
+            object_infos: rows.into_boxed_slice(),
+            object_order: order,
+            container: ResultCell::new(),
+            parent: None,
+            charge: Charge::zero(&meter),
+            ctx: Arc::new(FileContext::unitypy()),
+        })
+    }
 }
 
 #[cfg(test)]
