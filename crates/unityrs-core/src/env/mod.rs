@@ -141,48 +141,47 @@ pub enum Source {
 
 /// Reads `path` whole for [`Source::Path`]. A file whose length is above
 /// `limits.max_input_bytes` is refused before anything is read
-/// ([`LimitKind::InputBytes`]); the buffer is charged to `meter` before it
-/// is allocated, and the read stops at the bound however long the file turns
-/// out to be (a file that grows while it is read, a pipe, a device). The
-/// returned bytes carry the charge.
+/// ([`LimitKind::InputBytes`]). The buffer is allocated once at the stat'd
+/// length, charged to `meter` first, and filled; the end of the file is then
+/// checked with a read into a fixed stack buffer, so a file that ends where
+/// its length says costs exactly its buffer (`heap_cost(len)` and the owner
+/// record, [`crate::budget::OWNER_COST`]), never a growth past it. Only a
+/// file that outlasts its stat'd length (one that grows while it is read, a
+/// pipe, a device) grows the buffer, charged as it grows, and the read stops
+/// at the bound. The returned bytes carry the charge.
 pub fn read_path(path: &Path, limits: &Limits, meter: &Arc<Meter>) -> Result<Bytes, Error> {
     let mut file = std::fs::File::open(path)?;
     let max = limits.max_input_bytes;
-    let too_long = |value: u64| {
-        Error::Limit(LimitError {
-            kind: LimitKind::InputBytes,
-            value,
-            max,
-        })
-    };
     let len = file.metadata()?.len();
     if len > max {
-        return Err(too_long(len));
+        return Err(Error::Limit(LimitError {
+            kind: LimitKind::InputBytes,
+            value: len,
+            max,
+        }));
     }
     let mut out = DecodeBuf::new(meter, len, max, LimitKind::InputBytes)?;
-    let cap = usize::try_from(max).unwrap_or(usize::MAX);
-    loop {
-        let filled = out.len();
-        let room = cap.saturating_sub(filled);
-        if room == 0 {
-            // At the bound: the file must end here.
-            let mut probe = [0_u8; 1];
-            if file.read(&mut probe)? > 0 {
-                return Err(too_long(max.saturating_add(1)));
-            }
-            break;
+    // The stat'd length, into the buffer allocated for it (no growth).
+    let stated = usize::try_from(len).unwrap_or(usize::MAX);
+    let dst = out.grow_zeroed(stated)?;
+    let mut filled = 0;
+    while let Some(rest) = dst.get_mut(filled..).filter(|r| !r.is_empty()) {
+        match file.read(rest) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e.into()),
         }
-        // The rest of the file as stat'd, or a 64 KiB step past it.
-        let want = usize::try_from(len)
-            .unwrap_or(usize::MAX)
-            .saturating_sub(filled)
-            .max(64 << 10)
-            .min(room);
-        let dst = out.grow_zeroed(want)?;
-        let n = file.read(dst)?;
-        out.truncate(filled + n);
-        if n == 0 {
-            break;
+    }
+    out.truncate(filled);
+    // Past it, a stack buffer: the buffer grows only for bytes that exist.
+    let mut probe = [0_u8; 8192];
+    loop {
+        match file.read(&mut probe) {
+            Ok(0) => break,
+            Ok(n) => out.extend_from_slice(probe.get(..n).unwrap_or_default())?,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e.into()),
         }
     }
     Ok(out.into_bytes()?)
@@ -516,6 +515,28 @@ mod tests {
             matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputMemory),
             "{e:?}"
         );
+    }
+
+    #[test]
+    fn a_path_needs_only_its_own_size_from_the_meter_and_the_budget() {
+        // Round 3: the end-of-file check grew the full buffer by 64 KiB, so
+        // the old and new blocks were charged together and a file over half
+        // the budget (or one byte under max_input_bytes) was refused.
+        use crate::budget::Counting;
+        let len = 3 << 20;
+        let path = temp_file("exact", len);
+        let need = heap_cost(u64::try_from(len).unwrap()) + OWNER_COST;
+        let limits = Limits {
+            max_input_bytes: u64::try_from(len).unwrap() + 1,
+            ..Limits::default()
+        };
+        let pool = Arc::new(Counting::new(need));
+        let meter = Meter::new(need, pool.clone(), Reservation::Dependency);
+        let bytes = read_path(&path.0, &limits, &meter).unwrap();
+        assert_eq!(bytes.len(), len);
+        assert_eq!((meter.used(), pool.used()), (need, need));
+        drop(bytes);
+        assert_eq!(pool.used(), 0);
     }
 
     #[cfg(unix)]
