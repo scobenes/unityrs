@@ -327,6 +327,14 @@ impl ProviderChain {
         self.providers.is_empty()
     }
 
+    /// Whether a provider answers script requests (UnityPy has an
+    /// `env.typetree_generator`): only then does
+    /// [`crate::env::Environment::object_tree`] dereference `m_Script`.
+    #[must_use]
+    pub fn accepts_scripts(&self) -> bool {
+        self.providers.iter().any(|p| p.accepts_scripts())
+    }
+
     /// Answers cached now.
     #[must_use]
     pub fn cached(&self) -> usize {
@@ -335,7 +343,11 @@ impl ProviderChain {
 
     /// The first provider's answer for `req`. An answer is cached while the
     /// cache has room; a miss is not cached. Providers are asked with no lock
-    /// held.
+    /// held. A script request asks only the providers that
+    /// [`TypeTreeProvider::accepts_scripts`]: UnityPy asks its
+    /// `typetree_generator` alone for a script's tree
+    /// (`files/ObjectReader.py:346-350`), never the TPK, whose class tree is
+    /// the one the request would replace.
     pub fn lookup(&self, req: &TreeRequest<'_>) -> Result<Option<TreeRef>, ProviderError> {
         let hit = self
             .cache
@@ -349,6 +361,9 @@ impl ProviderChain {
             }));
         }
         for provider in &self.providers {
+            if req.script.is_some() && !provider.accepts_scripts() {
+                continue;
+            }
             if let Some(tree) = provider.tree(req)? {
                 let name = provider.name();
                 self.publish(req, (tree.clone(), name));
@@ -419,6 +434,10 @@ mod tests {
     impl TypeTreeProvider for Counting {
         fn name(&self) -> &'static str {
             "counting"
+        }
+
+        fn accepts_scripts(&self) -> bool {
+            true
         }
 
         fn tree(&self, req: &TreeRequest<'_>) -> Result<Option<Arc<Tree>>, ProviderError> {
