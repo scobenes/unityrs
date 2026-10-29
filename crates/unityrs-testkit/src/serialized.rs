@@ -21,7 +21,7 @@ pub struct TypeSpec {
     pub stripped: bool,
     /// `script_type_index` (format 17 and up).
     pub script_type_index: i16,
-    /// `script_id`, written when the class is `MonoBehaviour` (or negative) at 13 and up.
+    /// `script_id`, written under UnityPy's condition (plan section 3.7).
     pub script_id: [u8; 16],
     /// `old_type_hash` (13 and up).
     pub old_type_hash: [u8; 16],
