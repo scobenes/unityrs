@@ -290,14 +290,15 @@ pub enum WriteError {
     Limit(LimitError),
 }
 
-/// `TypeTreeHelper.read_typetree`: [`boost::read`] over
-/// `file[byte_start..byte_start + byte_size]` (cut short at the end of a
-/// truncated file) when `byte_size > 0`, else [`python::read`] from
-/// `byte_start`; then, with `check_read`, `bytes_read != byte_size` is
-/// [`ParseError::CheckRead`] carrying the value.
+/// `TypeTreeHelper.read_typetree`: [`boost::read`] over the Python slice
+/// `file[byte_start : byte_start + byte_size]` ([`crate::stream::py_read`]:
+/// short at the end of a truncated file, from the end for a negative start)
+/// when `byte_size > 0`, else [`python::read`] from `byte_start`; then, with
+/// `check_read`, `bytes_read != byte_size` is [`ParseError::CheckRead`]
+/// carrying the value.
 pub fn read_typetree(
     file: &Bytes,
-    byte_start: i64,
+    byte_start: i128,
     byte_size: u32,
     tree: &Arc<Tree>,
     ctx: &ReadCtx<'_>,

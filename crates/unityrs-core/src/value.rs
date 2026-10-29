@@ -31,8 +31,12 @@ use bytes::Bytes;
 use crate::raw::RawStr;
 use crate::typetree::{NodeId, NodeList};
 
-/// Index of a [`NodeList`] in [`Parsed::lists`].
-pub type ListIx = u16;
+/// Index of a [`NodeList`] in [`Parsed::lists`]: the root tree's list, then
+/// one per distinct ref-type tree a `ReferencedObject` read through
+/// (deduplicated by `Arc` pointer, so the count is bounded by the file's ref
+/// types, which `Limits::max_metadata_records` caps above `u16`). A `u32`
+/// costs nothing: [`Map`] stays 32 bytes.
+pub type ListIx = u32;
 
 /// One object's value and the node lists that name its keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,8 +45,11 @@ pub struct Parsed {
     /// The value.
     pub value: Value,
     /// Where the read ended, from the object's start (the trailing alignment
-    /// included); compared with `byte_size` by `check_read`.
-    pub bytes_read: u64,
+    /// included); compared with `byte_size` by `check_read`. Signed: the
+    /// pure-Python reader's position can end before its start (a negative
+    /// `TypelessData` length moves it back; UnityPy then reports, say,
+    /// "only read -96 bytes"). UnityPyBoost's is never negative.
+    pub bytes_read: i64,
 }
 
 /// A value read through a typetree.
@@ -215,7 +222,7 @@ impl Map {
 impl Parsed {
     /// A value and the lists that name its keys (the root tree's first).
     #[must_use]
-    pub fn new(lists: Box<[Arc<NodeList>]>, value: Value, bytes_read: u64) -> Self {
+    pub fn new(lists: Box<[Arc<NodeList>]>, value: Value, bytes_read: i64) -> Self {
         Self {
             lists,
             value,
@@ -232,8 +239,9 @@ impl Parsed {
     /// The name of `key` in `map` (empty if the map's list is unknown).
     #[must_use]
     pub fn key_name(&self, map: &Map, key: NodeId) -> &[u8] {
-        self.lists
-            .get(usize::from(map.list))
+        usize::try_from(map.list)
+            .ok()
+            .and_then(|i| self.lists.get(i))
             .map_or(&[], |l| l.name(key))
     }
 
@@ -358,6 +366,40 @@ mod tests {
             "{}",
             std::mem::size_of::<Value>()
         );
+        assert_eq!(std::mem::size_of::<Map>(), 32);
+    }
+
+    #[test]
+    fn a_map_can_name_a_list_past_u16() {
+        // An object that reads through 65,536 distinct ref-type trees has 65,537
+        // lists; the last one's keys must still resolve.
+        let n = 65_537_usize;
+        let list = Arc::new(
+            NodeList::from_rows(vec![
+                NodeRow::new(0, "Base", "Base"),
+                NodeRow::new(1, "int", "x"),
+            ])
+            .unwrap(),
+        );
+        let lists: Vec<Arc<NodeList>> = (0..n).map(|_| list.clone()).collect();
+        let tail = super::ListIx::try_from(n - 1).unwrap();
+        let mut inner = Map::new(tail);
+        inner.push_unique(NodeId(1), Value::Int(5));
+        let p = Parsed::new(lists.into(), Value::Dict(inner), 4);
+        let Value::Dict(m) = &p.value else { panic!() };
+        assert_eq!(m.list(), tail);
+        assert_eq!(p.key_name(m, NodeId(1)), b"x");
+    }
+
+    #[test]
+    // The conversion keeps the test meaningful against a narrower field type.
+    #[allow(clippy::useless_conversion)]
+    fn bytes_read_can_be_negative() {
+        // UnityPy's pure-Python reader: a TypelessData length of -100 at byte 200
+        // ends the read at 104, so bytes_read is -96 (tests/fixtures: walk).
+        let list = Arc::new(NodeList::from_rows(vec![NodeRow::new(0, "Base", "Base")]).unwrap());
+        let p = Parsed::new(vec![list].into(), Value::Dict(Map::new(0)), (-96_i64).try_into().unwrap());
+        assert_eq!(p.bytes_read, -96);
     }
 
     #[test]

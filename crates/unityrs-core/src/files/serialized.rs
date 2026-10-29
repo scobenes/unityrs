@@ -49,6 +49,7 @@ use bytes::Bytes;
 use crate::container::Container;
 use crate::error::Error;
 use crate::files::Parent;
+use crate::limits::Limits;
 use crate::object::ObjectRef;
 use crate::options::FileContext;
 use crate::raw::RawStr;
@@ -105,9 +106,11 @@ pub struct SerializedType {
 }
 
 impl SerializedType {
-    /// The compiled tree, compiled on first use (package B's `Tree::compile`).
-    /// `None` when the record stores no tree.
-    pub fn tree(&self, ctx: &FileContext) -> Option<Result<Arc<Tree>, TreeError>> {
+    /// The compiled tree, compiled on first use (package B's `Tree::compile`)
+    /// and cached: the walker reaches a ref type's tree through the `Limits`
+    /// in its `ReadCtx`, so every reference reuses one compile. `None` when
+    /// the record stores no tree.
+    pub fn tree(&self, limits: &Limits) -> Option<Result<Arc<Tree>, TreeError>> {
         todo!()
     }
 }
@@ -118,8 +121,11 @@ impl SerializedType {
 pub struct ObjectInfo {
     /// `path_id`.
     pub path_id: i64,
-    /// Absolute within the `SerializedFile` (`data_offset` added).
-    pub byte_start: i64,
+    /// Absolute within the `SerializedFile`: the stored `u32` (or format 22's
+    /// `i64`) plus `data_offset`, added as Python adds them, so it can pass
+    /// `i64::MAX` (`2^63 - 1 + 144` loads in UnityPy) or go negative; a read
+    /// from it is a Python slice ([`crate::stream::py_read`]).
+    pub byte_start: i128,
     /// `byte_size`.
     pub byte_size: u32,
     /// `type_id` as stored.
@@ -316,5 +322,31 @@ impl SerializedFile {
     /// The context it was loaded with.
     pub fn context(&self) -> &Arc<FileContext> {
         &self.ctx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ObjectInfo;
+
+    #[test]
+    // The conversion keeps the test meaningful against a narrower field type.
+    #[allow(clippy::useless_conversion)]
+    fn byte_start_holds_what_python_adds() {
+        // A format-22 object stored at i64::MAX in a file with data_offset 144
+        // loads in UnityPy 1.25.2 with byte_start 9223372036854775951.
+        let start = i128::from(i64::MAX) + 144;
+        let info = ObjectInfo {
+            path_id: 1,
+            byte_start: start.try_into().unwrap(),
+            byte_size: 4,
+            type_id: 0,
+            class_id: 1,
+            type_index: Some(0),
+            is_destroyed: None,
+            is_stripped: None,
+            script_type_index: None,
+        };
+        assert_eq!(info.byte_start, start);
     }
 }

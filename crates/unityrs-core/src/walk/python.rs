@@ -26,10 +26,11 @@ use super::{ReadCtx, ReadError};
 use crate::typetree::Tree;
 use crate::value::Parsed;
 
-/// Reads one value from `file`, starting at `start`. `bytes_read` counts from `start`.
+/// Reads one value from `file`, starting at `start` (any Python position).
+/// `bytes_read` counts from `start` and may be negative.
 pub fn read(
     file: &Bytes,
-    start: i64,
+    start: i128,
     tree: &Arc<Tree>,
     ctx: &ReadCtx<'_>,
 ) -> Result<Parsed, ReadError> {
