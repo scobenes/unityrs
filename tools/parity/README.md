@@ -13,6 +13,7 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `unitypy_dump.py` | the oracle: dumps a file, a folder or a corpus index with UnityPy |
 | `compare.py` | diffs two dumps; summarises by level, class and field path |
 | `canonical.py` | the encoding rules both scripts share (standard library only) |
+| `inventory.py` | lists UnityPy's public surface and checks that [`PARITY.md`](../../PARITY.md) names all of it |
 | `tests/` | unittest self-tests |
 
 `unitypy_dump.py` needs the oracle stack, so run it in the `unityrs-dev` container. It refuses to run without UnityPyBoost or with any UnityPy other than 1.25.2, because a dump from another stack would charge UnityPy's differences to unityrs. `compare.py` and `canonical.py` need only Python 3.10 or later.
@@ -95,8 +96,18 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | `test_compare.py` | every finding kind on hand-built dumps: nested type mismatches at L1 and L2, identical noncanonical lines, level coverage, duplicates, unreadable input | stdlib |
 | `test_unitypy_boost.py` | synthetic typetrees through UnityPyBoost: float bits, NaN quieting, bool bytes, pairs, ReferencedObject and the registry scope, big-endian, every L2 error kind on both reading paths, the pure-Python path's tuples, 16-bit swap, registries in aligned class arrays, negative TypelessData lengths, and arrays of aligned vectors and TypelessData, version packing. It also checks that the spec's worked example is what the oracle writes. | UnityPy |
 | `test_dump.py` | the dumper end to end: UnityPy's samples, determinism across runs, `-j` and gzip, every line canonical, L0 detection quirks including gzip, UnityRaw formats 5 to 7, a failing entry, non-UTF-8 names; synthetic SerializedFiles (`tests/synth.py`) for the object table, check_read, resave and TPK wiring, version strings, type-record defaults by format, negative type indices, node rows and how blob rows become a tree, truncated blocks and zip entries; crash records (a killed input, a death while it returns its records, UnityPyBoost crashes), the dumper's own failures stopping the run, input names across locales and symlinks, load errors that quote bad bytes, the `None` leak, the pinned-stack refusal, index mode, the output and `--stats` guards | UnityPy, samples |
+| `test_inventory.py` | the inventory's matching rules (standard library); with the oracle, that `PARITY.md` names every UnityPy module, class, function, API member, UnityPyBoost export and `TextureFormat`, and that its TextureFormat matrix states the mode, result and `set_image` format UnityPy gives for each format | stdlib; UnityPy for the rest |
 
 **Samples.** The samples are UnityPy's `tests/samples` at commit `417d595`. They are read from `$UNITYRS_UNITYPY_SAMPLES` when set, else from the folder the corpus index (`$UNITYRS_CORPUS_INDEX`, default `/corpus/index.json`) gives for its `unitypy-sample` entries, and their sha256 is checked against pinned values. They are game bundles, so they are never copied into this repository. Without them the sample tests skip.
+
+## The inventory
+
+```sh
+scripts/dev python tools/parity/inventory.py list [--json]   # UnityPy's public symbols, by group
+scripts/dev python tools/parity/inventory.py check            # exit 1 and a list when PARITY.md misses any
+```
+
+Both need UnityPy 1.25.2 and exit 2 without it. Section 21 of `PARITY.md` gives the naming rules.
 
 ## Reproducing the numbers
 
