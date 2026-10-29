@@ -14,6 +14,7 @@
 //! lookup is implemented.
 
 /// `(offset, string)` pairs sorted by offset.
+// STUB(A): empty until tools/gen/gen_tables.py generates it (plan 2.6).
 pub static COMMON_STRINGS: &[(u32, &[u8])] = &[];
 
 /// The string at a common-string offset (the low 31 bits), if the table has one.

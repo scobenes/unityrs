@@ -16,9 +16,11 @@
 
 /// The first code point of each `Nd` run (each run is ten digits, 0-9),
 /// sorted.
+// STUB(A): only ASCII `0` until tools/gen/gen_tables.py generates it (plan 2.6).
 pub static ND_ZEROS: &[u32] = &[0x30];
 
 /// `(code point, Python's lower-case string)` pairs, sorted by code point.
+// STUB(A): empty until tools/gen/gen_tables.py generates it (plan 2.6).
 pub static LOWER_EXCEPTIONS: &[(u32, &str)] = &[];
 
 /// The digit value of `c` if it is a Unicode `Nd` digit (as Python 3.11 sees it).

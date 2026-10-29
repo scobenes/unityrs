@@ -15,6 +15,7 @@ pub const MONO_BEHAVIOUR: i32 = 114;
 pub const MONO_SCRIPT: i32 = 115;
 
 /// `(id, name)` pairs sorted by id.
+// STUB(A): empty until tools/gen/gen_tables.py generates it (plan 2.6).
 pub static CLASS_NAMES: &[(i32, &str)] = &[];
 
 /// UnityPy's `ClassIDType` name for `id`.

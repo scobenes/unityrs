@@ -145,3 +145,50 @@ fn every_sign_of_a_stub_fails() {
         assert!(out.contains("crates/b/src/m.rs"), "{what}: {out}");
     }
 }
+
+#[test]
+fn every_hit_names_its_owning_package() {
+    // Round 5: the script listed stubs with no owner, and the empty tables
+    // package A generates were not listed at all. A hit names the package
+    // its own line's marker names (a blocked test: the package it waits
+    // on), else the file's first marker's, else `?`.
+    let module = format!(
+        "// {}: delete this allow.\n#![allow({})]\npub fn f() -> u8 {{\n    {}\n}}\n#[test]\n#[ignore = \"{}: waits on the walker\"]\nfn t() {{}}\n",
+        marker('C'),
+        lint("todo"),
+        todo_call(),
+        marker('B')
+    );
+    let table = format!(
+        "/// Pairs.\n// {}: empty until the generator fills it.\npub static T: &[u8] = &[];\n",
+        marker('A')
+    );
+    let unowned = format!("pub fn g() {{\n    {}\n}}\n", todo_call());
+    let mut files = clean();
+    files.push(("crates/b/src/m.rs", module));
+    files.push(("crates/b/src/table.rs", table));
+    files.push(("crates/b/src/z.rs", unowned));
+    let (code, out) = Tree::new(&files).check();
+    assert_eq!(code, 1, "{out}");
+    let hits: Vec<&str> = out
+        .lines()
+        .filter(|l| l.starts_with('['))
+        .map(|l| l.split_once(": ").map_or(l, |(head, _)| head))
+        .collect();
+    assert_eq!(
+        hits,
+        [
+            "[C] crates/b/src/m.rs:1",
+            "[C] crates/b/src/m.rs:2",
+            "[C] crates/b/src/m.rs:4",
+            "[B] crates/b/src/m.rs:7",
+            "[A] crates/b/src/table.rs:2",
+            "[?] crates/b/src/z.rs:2",
+        ],
+        "{out}"
+    );
+    assert!(
+        out.contains("hits per package: ? 1, A 1, B 1, C 3"),
+        "{out}"
+    );
+}

@@ -15,6 +15,14 @@
 # section 2.4): its upstream todo!()s are fenced, unreachable from unityrs,
 # and scripts/fork-check.sh owns that crate, so this check skips it.
 #
+# Each hit is printed with its owning package, `[X] FILE:LINE: text`: the
+# package a `STUB(X)` on the line names (for a blocked test, the package it
+# waits on), else the one the file's first `STUB(X)` names (every stub
+# module carries one at its top), else `?`, an unowned stub. A summary of
+# the hits per package follows on stderr. A generated table the scaffold
+# ships empty carries its own `STUB(A)` line, so it is listed until A's
+# generator fills it.
+#
 #     scripts/dev sh scripts/stub-check.sh [ROOT]   # prints each hit; exits 1 if any
 set -eu
 root=${1:-"$(dirname "$0")/.."}
@@ -22,7 +30,16 @@ cd "$root"
 hits=$(find crates -path crates/unityrs-rabex -prune -o -type f -name '*.rs' -print \
     | LC_ALL=C sort \
     | xargs -r awk '
-        FNR == 1 { depth = 0; level = "" }
+        function owner_of(s) {
+            if (match(s, /STUB\([A-Za-z]+\)/)) return substr(s, RSTART + 5, RLENGTH - 6)
+            return ""
+        }
+        FNR == 1 {
+            depth = 0; level = ""; first = ""
+            while ((getline l < FILENAME) > 0) if (first == "") first = owner_of(l)
+            close(FILENAME)
+            if (first == "") first = "?"
+        }
         {
             line = $0
             code = line
@@ -48,11 +65,17 @@ hits=$(find crates -path crates/unityrs-rabex -prune -o -type f -name '*.rs' -pr
                 }
                 if (line ~ /(todo|unimplemented)!\(/) hit = 1
             }
-            if (hit) print FILENAME ":" FNR ": " line
+            if (hit) {
+                who = owner_of(line)
+                if (who == "") who = first
+                print "[" who "] " FILENAME ":" FNR ": " line
+            }
         }')
 if [ -n "$hits" ]; then
     printf '%s\n' "$hits"
-    echo "stub-check: stubs remain" >&2
+    summary=$(printf '%s\n' "$hits" | sed -n 's/^\[\([^]]*\)\].*/\1/p' | LC_ALL=C sort | uniq -c \
+        | awk '{ printf "%s%s %s", sep, $2, $1; sep = ", " }')
+    echo "stub-check: stubs remain, hits per package: $summary" >&2
     exit 1
 fi
 echo "stub-check: no stubs"
