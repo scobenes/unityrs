@@ -24,16 +24,21 @@
 //! leave nothing behind. The key's class and version are still the input's
 //! choice, and one context's chain outlives every input it reads, so the
 //! cache is bounded in entries and bytes ([`ProviderChain::with_cache_bound`]);
-//! when full it stops adding, which changes no answer. A cached key owns
-//! copies of its strings, so it never keeps an input's buffer alive. A
-//! provider is caller code: the chain calls it with no lock held, so a
-//! provider may itself call [`ProviderChain::lookup`].
+//! when full it stops adding, which changes no answer. A lookup reads the
+//! cache with a key *borrowed* from the request, so a hit (or a miss) copies
+//! nothing, however long the request's script names are; only an answer
+//! being kept copies its key's strings, so a cached key never keeps an
+//! input's buffer alive, and those copies count against the cache's byte
+//! bound. A provider is caller code: the chain calls it with no lock held,
+//! so a provider may itself call [`ProviderChain::lookup`].
 //!
 //! Owner: the scaffold (implemented). Package D adds tests and may add
 //! providers; `unityrs-tpk` (package A) implements the TPK one.
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::mem::size_of;
 use std::sync::{Arc, RwLock};
 
@@ -114,7 +119,114 @@ pub struct TreeRef {
     pub source: TreeSource,
 }
 
-type CacheKey = (i32, Packed, Option<ScriptIdent>);
+/// A cache key, owned or borrowed from a request: UnityPy's
+/// `(class, packed version)` plus the script.
+trait KeyView {
+    fn class_id(&self) -> i32;
+    fn packed(&self) -> &Packed;
+    fn script(&self) -> Option<[&[u8]; 3]>;
+}
+
+impl Hash for dyn KeyView + '_ {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        self.class_id().hash(h);
+        self.packed().hash(h);
+        self.script().hash(h);
+    }
+}
+
+impl PartialEq for dyn KeyView + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.class_id() == other.class_id()
+            && self.packed() == other.packed()
+            && self.script() == other.script()
+    }
+}
+
+impl Eq for dyn KeyView + '_ {}
+
+/// The key an answer is kept under: its strings copied out of the input's
+/// buffer.
+struct CacheKey {
+    class_id: i32,
+    packed: Packed,
+    script: Option<[Bytes; 3]>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Keys copied on this thread (the tests count them).
+    static KEY_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl CacheKey {
+    fn copy_of(req: &TreeRequest<'_>) -> Self {
+        #[cfg(test)]
+        KEY_COPIES.with(|n| n.set(n.get() + 1));
+        let own = |s: &RawStr| Bytes::copy_from_slice(s.as_bytes());
+        Self {
+            class_id: req.class_id,
+            packed: req.version.packed().clone(),
+            script: req
+                .script
+                .map(|s| [own(&s.assembly), own(&s.namespace), own(&s.class)]),
+        }
+    }
+}
+
+impl KeyView for CacheKey {
+    fn class_id(&self) -> i32 {
+        self.class_id
+    }
+    fn packed(&self) -> &Packed {
+        &self.packed
+    }
+    fn script(&self) -> Option<[&[u8]; 3]> {
+        self.script.as_ref().map(|[a, n, c]| [&a[..], &n[..], &c[..]])
+    }
+}
+
+impl Hash for CacheKey {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        (self as &dyn KeyView).hash(h);
+    }
+}
+
+impl PartialEq for CacheKey {
+    fn eq(&self, other: &Self) -> bool {
+        (self as &dyn KeyView) == (other as &dyn KeyView)
+    }
+}
+
+impl Eq for CacheKey {}
+
+impl<'a> Borrow<dyn KeyView + 'a> for CacheKey {
+    fn borrow(&self) -> &(dyn KeyView + 'a) {
+        self
+    }
+}
+
+/// A request's key, borrowed: looking it up copies nothing.
+struct RequestKey<'r, 'a>(&'r TreeRequest<'a>);
+
+impl KeyView for RequestKey<'_, '_> {
+    fn class_id(&self) -> i32 {
+        self.0.class_id
+    }
+    fn packed(&self) -> &Packed {
+        self.0.version.packed()
+    }
+    fn script(&self) -> Option<[&[u8]; 3]> {
+        self.0.script.map(|s| {
+            [
+                s.assembly.as_bytes(),
+                s.namespace.as_bytes(),
+                s.class.as_bytes(),
+            ]
+        })
+    }
+}
+
 type CacheValue = (Arc<Tree>, &'static str);
 
 #[derive(Default)]
@@ -139,25 +251,11 @@ pub struct ProviderChain {
 fn entry_cost(key: &CacheKey) -> u64 {
     let slot = size_of::<CacheKey>() + size_of::<CacheValue>() + 1;
     let strings = key
-        .2
+        .script
         .as_ref()
-        .map_or(0, |s| s.assembly.len() + s.namespace.len() + s.class.len());
-    let limbs = key.1.heap_bytes();
+        .map_or(0, |s| s.iter().map(Bytes::len).sum());
+    let limbs = key.packed.heap_bytes();
     u64::try_from(3 * slot + strings + limbs).unwrap_or(u64::MAX)
-}
-
-/// The key with its strings copied out of the input's buffer.
-fn owned_key(req: &TreeRequest<'_>) -> CacheKey {
-    let own = |s: &RawStr| RawStr::from_shared(Bytes::copy_from_slice(s.as_bytes()));
-    (
-        req.class_id,
-        req.version.packed().clone(),
-        req.script.map(|s| ScriptIdent {
-            assembly: own(&s.assembly),
-            namespace: own(&s.namespace),
-            class: own(&s.class),
-        }),
-    )
 }
 
 impl ProviderChain {
@@ -217,12 +315,11 @@ impl ProviderChain {
     /// cache has room; a miss is not cached. Providers are asked with no lock
     /// held.
     pub fn lookup(&self, req: &TreeRequest<'_>) -> Result<Option<TreeRef>, ProviderError> {
-        let key = owned_key(req);
-        let hit = self
-            .cache
-            .read()
-            .ok()
-            .and_then(|c| c.map.get(&key).cloned());
+        let hit = self.cache.read().ok().and_then(|c| {
+            c.map
+                .get(&RequestKey(req) as &dyn KeyView)
+                .cloned()
+        });
         if let Some((tree, name)) = hit {
             return Ok(Some(TreeRef {
                 tree,
@@ -232,7 +329,7 @@ impl ProviderChain {
         for provider in &self.providers {
             if let Some(tree) = provider.tree(req)? {
                 let name = provider.name();
-                self.publish(key, (tree.clone(), name));
+                self.publish(req, (tree.clone(), name));
                 return Ok(Some(TreeRef {
                     tree,
                     source: TreeSource::Provider(name),
@@ -242,12 +339,14 @@ impl ProviderChain {
         Ok(None)
     }
 
-    fn publish(&self, key: CacheKey, value: CacheValue) {
+    fn publish(&self, req: &TreeRequest<'_>, value: CacheValue) {
+        // The key is copied with no lock held, and only when it is kept.
+        let key = CacheKey::copy_of(req);
         let cost = entry_cost(&key);
         let Ok(mut cache) = self.cache.write() else {
             return;
         };
-        if cache.map.contains_key(&key)
+        if cache.map.contains_key(&key as &dyn KeyView)
             || cache.map.len() >= self.max_entries
             || cache.bytes.saturating_add(cost) > self.max_bytes
         {
@@ -376,6 +475,36 @@ mod tests {
         drop(script);
         // The only handle left on the buffer is ours: the cache copied.
         assert!(input.is_unique());
+    }
+
+    #[test]
+    fn a_lookup_copies_nothing_but_the_key_it_keeps() {
+        // Round 3: every lookup copied the request's script strings (and a
+        // big version's limbs) before it looked in the cache, hits included.
+        let copies = || super::KEY_COPIES.with(std::cell::Cell::get);
+        let p = Arc::new(Counting::default());
+        let chain = ProviderChain::new(vec![p]);
+        let v = UnityVersion::from_packed(1);
+        let long = RawStr::from_shared(bytes::Bytes::from(vec![b'n'; 1 << 20]));
+        let script = ScriptIdent {
+            assembly: long.clone(),
+            namespace: long.clone(),
+            class: long,
+        };
+        let req = |class_id| TreeRequest {
+            class_id,
+            version: &v,
+            script: Some(&script),
+        };
+        let before = copies();
+        assert!(chain.lookup(&req(1)).unwrap().is_some());
+        assert_eq!(copies() - before, 1, "the answer kept copies its key once");
+        for _ in 0..10 {
+            assert!(chain.lookup(&req(1)).unwrap().is_some());
+            assert!(chain.lookup(&req(7)).unwrap().is_none());
+        }
+        assert_eq!(copies() - before, 1, "hits and misses copy nothing");
+        assert_eq!(chain.cached(), 1);
     }
 
     #[test]
