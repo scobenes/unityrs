@@ -16,7 +16,8 @@ of it with every cell changed. The cells come:
   unverified;
 - from `RESULT_NOTES` and `RAISE_REASONS`: the words a row adds to its result, each
   shown by a test here;
-- the tier from the result, and the status from `DESIGN.md`'s P1 list.
+- the tier from the result, and the status: pinned by this test, implemented in the phase
+  `DESIGN.md`'s P1 list gives.
 
 The pixel cases are built here from each format's layout, not from UnityPy: raw
 formats from a byte pattern, block formats from solid-colour blocks whose decoded
@@ -212,7 +213,7 @@ class ThisParityFile(unittest.TestCase):
         )
 
     def test_p1_formats_are_the_five_design_names(self):
-        p1 = sorted(name for name, row in self.rows.items() if row["status"] == "planned (P1)")
+        p1 = sorted(name for name, row in self.rows.items() if row["status"] == "pinned P0; impl P1")
         self.assertEqual(p1, P1)
 
     def test_tier_and_status_follow_the_result(self):
@@ -220,7 +221,7 @@ class ThisParityFile(unittest.TestCase):
             with self.subTest(name):
                 kind = RESULT.match(row["UnityPy 1.25.2"]).group(1)
                 self.assertEqual(row["tier"], tier_of(name, kind))
-                self.assertEqual(row["status"], "planned (P1)" if name in P1 else "planned (P3)")
+                self.assertEqual(row["status"], "pinned P0; impl P1" if name in P1 else "pinned P0; impl P3")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -881,7 +882,7 @@ def expected_row(fmt):
         "UnityPy 1.25.2": result_cell(fmt, kind, raised),
         "`set_image` writes": set_image_cell(fmt),
         "tier": tier_of(fmt.name, kind),
-        "status": "planned (P1)" if fmt.name in P1 else "planned (P3)",
+        "status": "pinned P0; impl P1" if fmt.name in P1 else "pinned P0; impl P3",
     }
 
 

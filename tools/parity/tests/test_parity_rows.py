@@ -95,6 +95,35 @@ class TestColumn(unittest.TestCase):
         named = {name for module, name in cited if module == "test_parity_rows.py"}
         self.assertEqual(sorted(defined - named), [], "tests no PARITY.md row names")
 
+    def test_every_status_agrees_with_its_test_column(self):
+        """Section 0's status rules: a row that names a test is pinned or verified, one that names none is
+        unverified (source reading), n/a (tier —) or a pointer to another row; `planned` is section 17.1's."""
+        text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
+        seen = 0
+        for header, rows in inventory.tables(text):
+            if "status" not in header or "test" not in header:
+                continue
+            test, status = header.index("test"), header.index("status")
+            for cells in rows:
+                seen += 1
+                cites = bool(self.CITED.search(cells[test]) or re.search(r"`test_[a-z_]+\.py` \(all\)", cells[test]))
+                state = cells[status]
+                with self.subTest(row=cells[0][:60], status=state):
+                    if state.startswith(("pinned P0", "verified P0")):
+                        self.assertTrue(cites or "corpus dump" in cells[test], "a probed row names what probes it")
+                    elif state.startswith("unverified (source reading); impl P"):
+                        self.assertFalse(cites, "a row a test runs is not unverified")
+                    elif state.startswith("planned ("):
+                        self.assertIn("reference", header, "only section 17.1's references are planned")
+                    elif state == "n/a":
+                        self.assertEqual(cells[header.index("tier")], "—")
+                    elif state == "as above":
+                        pass
+                    else:
+                        self.assertEqual(state, "", "an unknown status")
+                        self.assertEqual(set(cells[2:]), {""}, "a row with no status points at another section")
+        self.assertGreater(seen, 500)
+
 
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class Rows(unittest.TestCase):
