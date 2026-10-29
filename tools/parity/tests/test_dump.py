@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import os
+import pickle
 import shutil
 import signal
 import struct
@@ -493,6 +494,41 @@ class DumpTests(unittest.TestCase):
             (files[("b5_zip", "z")]["l0"]["type"], files[("b5_zip", "z")]["l0"]["parsed_as"]), ("ZIP", "raw")
         )
 
+    def test_input_names_come_from_the_bytes_as_given(self):
+        """Names do not depend on the locale, and a symlink is named after itself, in either input mode."""
+        d = self.tmp / "in"
+        d.mkdir()
+        for raw in ("café".encode(), b"bad\xffname", b"b"):
+            with open(os.path.join(os.fsencode(d), raw), "wb") as fh:
+                fh.write(b"tiny")
+        c_locale = {"PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0", "LC_ALL": "C"}
+        outs = []
+        for env in ({}, c_locale):
+            out = self.tmp / f"names{len(outs)}.jsonl"
+            proc = dump_process(d, "-o", out, env=env)
+            self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+            outs.append(out.read_bytes())
+        self.assertEqual(outs[0], outs[1], "the C locale names the inputs the same")
+        self.assertEqual(
+            [r["file"] for r in records(self.tmp / "names0.jsonl") if r["rec"] == "file"],
+            [["b"], [{"t": "str", "hex": b"bad\xffname".hex()}], ["café"]],
+        )
+
+        # The name rule follows the link's name, not its target's: thing.resS stays raw.
+        (self.tmp / "store").mkdir()
+        (self.tmp / "view").mkdir()
+        tree = S.Node("MyThing", "Base", [S.Node("int", "i")])
+        (self.tmp / "store" / "0a1b2c").write_bytes(assets(tree, struct.pack("<i", 7)))
+        (self.tmp / "view" / "thing.resS").symlink_to("../store/0a1b2c")
+        single, folder = self.tmp / "single.jsonl", self.tmp / "folder.jsonl"
+        self.assertEqual(dump(self.tmp / "view" / "thing.resS", "-o", single), 0)
+        self.assertEqual(dump(self.tmp / "view", "-o", folder), 0)
+        self.assertEqual(single.read_bytes(), folder.read_bytes())
+        rec = records(single)[1]
+        self.assertEqual(
+            (rec["file"], rec["l0"]["type"], rec["l0"]["parsed_as"]), (["thing.resS"], "AssetsFile", "raw")
+        )
+
     def test_input_names_are_hex_tagged_when_not_utf8(self):
         d = self.tmp / "in"
         d.mkdir()
@@ -507,44 +543,101 @@ class DumpTests(unittest.TestCase):
         )
         self.assert_canonical(out)
 
-    def test_a_dead_or_raising_input_process_is_one_crash_record(self):
-        """An input whose process is killed (the OOM killer) or raises is recorded, and the dump goes on."""
+    def test_a_killed_input_process_is_one_crash_record(self):
+        """An input whose process is killed (the OOM killer), before or while it sends its result, is recorded."""
         d = self.tmp / "in"
         d.mkdir()
         for name in "abcd":
             (d / name).write_bytes(b"tiny")
         with open(os.path.join(os.fsencode(d), b"e\xff"), "wb") as fh:
             fh.write(b"tiny")
-        real = unitypy_dump.dump_input
+        real_dump, real_send = unitypy_dump.dump_input, unitypy_dump._send
 
-        def failing(job):
+        def killed(job):
             if job[1] in ("b", "e\udcff"):
                 os.kill(os.getpid(), signal.SIGKILL)
-            if job[1] == "c":
-                raise RuntimeError("boom \udcff")
-            return real(job)
+            return real_dump(job)
 
+        def killed_mid_send(conn, result):
+            """c: the message header and half the payload reach the pipe, then SIGKILL."""
+            if result[0] == "ok" and result[1][0] == "c":
+                payload = pickle.dumps(result)
+                os.write(conn.fileno(), struct.pack("!i", len(payload)) + payload[: len(payload) // 2])
+                os.kill(os.getpid(), signal.SIGKILL)
+            real_send(conn, result)
+
+        tiny = {"type": "ResourceFile", "parsed_as": "error", "size": 4, "sha256": hashlib.sha256(b"tiny").hexdigest()}
         outs = []
         for jobs in ("1", "3"):
             out = self.tmp / f"dead{jobs}.jsonl"
-            with mock.patch.object(unitypy_dump, "dump_input", failing):
+            with (
+                mock.patch.object(unitypy_dump, "dump_input", killed),
+                mock.patch.object(unitypy_dump, "_send", killed_mid_send),
+            ):
                 self.assertEqual(dump(d, "-o", out, "-j", jobs), 0)
             outs.append(out.read_bytes())
             self.assert_canonical(out)
-            recs = {json.dumps(r["file"][0]): r for r in records(out) if r["rec"] == "file"}
-            e_name = json.dumps({"t": "str", "hex": b"e\xff".hex()})
-            self.assertEqual(list(recs), [json.dumps(n) for n in "abcd"] + [e_name])
-            recs = {json.loads(k) if k != e_name else "e": r for k, r in recs.items()}
-            for name, why in (("b", "died of SIGKILL"), ("c", "raised RuntimeError: boom \\udcff"), ("e", "SIGKILL")):
-                rec = recs[name]
-                self.assertEqual(
-                    (rec["l0"]["type"], rec["l0"]["parsed_as"], rec["l1"]), ("ResourceFile", "error", None)
-                )
-                self.assertEqual(rec["error"]["kind"], "crash")
-                self.assertIn(why, rec["error"]["note"])
-            self.assertEqual((recs["a"]["error"], recs["d"]["error"]), (None, None))
+            recs = [r for r in records(out) if r["rec"] == "file"]
+            e_name = {"t": "str", "hex": b"e\xff".hex()}
+            self.assertEqual([r["file"] for r in recs], [["a"], ["b"], ["c"], ["d"], [e_name]])
+            for rec in (recs[1], recs[2], recs[4]):
+                self.assertEqual((rec["l0"], rec["l1"], rec["error"]["kind"]), (tiny, None, "crash"))
+                self.assertIn("died of SIGKILL", rec["error"]["note"])
+            self.assertEqual((recs[0]["error"], recs[3]["error"]), (None, None))
         self.assertEqual(outs[0], outs[1])
         self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["dead1.jsonl", "dead3.jsonl", "in"])
+
+    def test_the_dumpers_own_failure_stops_the_run(self):
+        """A raise in the dumper, or a process that ends without a result and no signal, is no input's outcome."""
+        d = self.tmp / "in"
+        d.mkdir()
+        tree = S.Node("MyThing", "Base", [S.Node("int", "i")])
+        for name in ("a.assets", "b.assets", "c.assets"):
+            (d / name).write_bytes(assets(tree, struct.pack("<i", 7)))
+        real_send = unitypy_dump._send
+
+        def buggy_l1(sf):
+            raise AttributeError("'SerializedFile' object has no attribute '_m_target_platform'")
+
+        def exit_without_result(conn, result):
+            if result[1][0] == "b.assets":
+                os._exit(1)
+            real_send(conn, result)
+
+        cases = {
+            "a bug in the record code": (
+                mock.patch.object(unitypy_dump, "serialized_l1", buggy_l1),
+                "the dumper raised",
+            ),
+            "an exit without a result": (
+                mock.patch.object(unitypy_dump, "_send", exit_without_result),
+                "exited with status 1 and no result",
+            ),
+        }
+        for label, (patch, message) in cases.items():
+            for jobs in ("1", "2"):
+                with self.subTest(label, jobs=jobs), patch, contextlib.redirect_stderr(io.StringIO()) as err:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        rc = unitypy_dump.main([str(d), "-o", str(self.tmp / "x.jsonl"), "-q", "-j", jobs])
+                    self.assertEqual(rc, 1)
+                    self.assertIn(message, err.getvalue())
+                    self.assertIn("no dump written", err.getvalue())
+                    self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["in"])
+        # A build None cannot be pinned in is refused before any input runs.
+        unpinnable = mock.patch.object(unitypy_dump, "pin_problem", lambda: "None cannot be pinned")
+        with unpinnable, contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+            unitypy_dump.main([str(d), "-o", str(self.tmp / "x.jsonl"), "-q"])
+        self.assertIn("None cannot be pinned", err.getvalue())
+
+        # Every input crashing says more about the machine than the inputs: the dump is written, the exit is 3.
+        def all_killed(job):
+            os.kill(os.getpid(), signal.SIGKILL)
+
+        with mock.patch.object(unitypy_dump, "dump_input", all_killed):
+            self.assertEqual(dump(d, "-o", self.tmp / "all.jsonl", "-j", "2"), 3)
+        self.assertEqual(
+            [r["error"]["kind"] for r in records(self.tmp / "all.jsonl") if r["rec"] == "file"], ["crash"] * 3
+        )
 
     def test_a_unitypyboost_crash_costs_only_its_input(self):
         """A typetree node name or type that is not UTF-8 crashes UnityPyBoost while the file loads (spec 7)."""
@@ -600,7 +693,11 @@ class DumpTests(unittest.TestCase):
 
     def test_empty_class_references_never_abort_the_oracle(self):
         """UnityPyBoost drops a reference to None per empty-class ReferencedObject (spec 7)."""
-        n = 2 * sys.getrefcount(None)  # more than one process holds
+        # More references than None has in a fresh dumper process, measured there: this process's count
+        # says nothing about that one. Bounded, so a surprise cannot grow the file without limit.
+        probe = f"import sys; sys.path.insert(0, {str(HERE)!r}); import unitypy_dump; print(sys.getrefcount(None))"
+        n = 2 * int(subprocess.run([sys.executable, "-B", "-c", probe], capture_output=True, check=True).stdout)
+        self.assertLess(n, 1_000_000)
         empty = struct.pack("<q", 0) + S.s32("") * 3
         tree = S.Node("MyRefs", "Base", [S.vec("refs", S.ref_object())])
         (self.tmp / "refs.assets").write_bytes(assets(tree, struct.pack("<i", n) + empty * n, ref_types=[]))

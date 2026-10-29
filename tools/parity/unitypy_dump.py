@@ -22,10 +22,12 @@ import hashlib
 import io
 import json
 import os
+import pickle
 import re
 import signal
 import sys
 import time
+import traceback
 from collections import Counter
 from multiprocessing import get_context
 from multiprocessing.connection import wait
@@ -55,7 +57,7 @@ def oracle_stack_problem() -> str | None:
         return "UnityPyBoost is not loaded, so UnityPy would parse with its pure-Python reader"
     if UnityPy.__version__ != C.ORACLE_UNITYPY:
         return f"UnityPy is {UnityPy.__version__}, not the pinned {C.ORACLE_UNITYPY}"
-    return None
+    return pin_problem()
 
 
 # ---------------------------------------------------------------------- hooks
@@ -111,6 +113,15 @@ def note(e: BaseException | str) -> str:
     return text if len(text) <= NOTE_MAX else text[: NOTE_MAX - 3] + "..."
 
 
+def pin_problem() -> str | None:
+    """Why pin_none cannot work in this interpreter, or None. main checks it before any input runs."""
+    if sys.version_info >= (3, 12):
+        return None  # None is immortal already
+    if sys.implementation.name != "cpython" or hasattr(sys, "getobjects"):
+        return "None cannot be pinned: this is not a CPython build whose objects start with their reference count"
+    return None
+
+
 def pin_none():
     """Make None immortal in this process, as Python 3.12 does (PEP 683).
 
@@ -122,8 +133,9 @@ def pin_none():
     """
     if sys.version_info >= (3, 12):
         return
-    if sys.implementation.name != "cpython" or hasattr(sys, "getobjects"):
-        raise RuntimeError("pin_none needs a CPython build whose objects start with their reference count")
+    problem = pin_problem()
+    if problem:
+        raise RuntimeError(problem)
     before = sys.getrefcount(None)
     ctypes.c_ssize_t.from_address(id(None)).value += NONE_PIN
     if sys.getrefcount(None) != before + NONE_PIN:
@@ -412,10 +424,11 @@ def dump_input(job):
 
 
 def _dump_input(job):
-    abs_path, rel, levels = job
+    path, rel, levels = job
     stats = Counter()
     t0 = time.perf_counter()
-    data = Path(abs_path).read_bytes()
+    with open(path, "rb") as fh:
+        data = fh.read()
     detected = detect(data)
     l0 = {"type": detected, "parsed_as": None, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
     out = []
@@ -429,7 +442,8 @@ def _dump_input(job):
     else:
         env = UnityPy.Environment()
         try:
-            f = env.load_file(data, name=abs_path)
+            # The input's name, for the name rule (spec 4.2).
+            f = env.load_file(data, name=rel)
         except Exception as e:  # noqa: BLE001 - a failed load is a recorded outcome
             l0["parsed_as"] = "error"
             out.append(
@@ -457,34 +471,51 @@ def _dump_input(job):
 # ------------------------------------------------------------------- inputs
 
 
-def collect_inputs(args) -> list[tuple[str, str, str | None]]:
-    """(absolute path, dump-relative path, expected sha256) in canonical order."""
-    src = Path(args.input).resolve()
+def name_of(raw: bytes) -> str:
+    """A path's bytes as the dump names them: UTF-8, with surrogate escapes for bytes that are not.
+
+    enc_name recovers the exact bytes from this, whatever the process locale.
+    """
+    return raw.decode("utf-8", "surrogateescape")
+
+
+def name_bytes(name: str) -> bytes:
+    return name.encode("utf-8", "surrogateescape")
+
+
+def collect_inputs(args) -> list[tuple[bytes, str, str | None]]:
+    """(path to read, dump name, expected sha256) in canonical order (spec 4.2 "Names", section 5).
+
+    Paths are handled as bytes, so names do not depend on the locale, and
+    as given: a symlink is named after itself, never its target.
+    """
+    given = os.fsencode(args.input)
     items = []
     if args.index:
-        index = json.loads(src.read_text())
-        root = src.parent
+        with open(given, "rb") as fh:
+            index = json.loads(fh.read().decode("utf-8"))
+        root = os.path.dirname(os.path.realpath(given))  # entries are relative to the index file itself
         for e in index["files"]:
             if e.get("kind") not in args.kind:
                 continue
             if args.build and str(e.get("build")) not in args.build:
                 continue
-            items.append((str(root / e["path"]), e["path"], e.get("sha256")))
-    elif src.is_dir():
-        for dirpath, dirnames, filenames in os.walk(src):
+            items.append((os.path.join(root, name_bytes(e["path"])), e["path"], e.get("sha256")))
+    elif os.path.isdir(given):
+        for dirpath, dirnames, filenames in os.walk(given):
             dirnames.sort()
             for name in filenames:
-                p = Path(dirpath) / name
-                if p.is_file():
-                    items.append((str(p), p.relative_to(src).as_posix(), None))
-    elif src.is_file():
-        items.append((str(src), src.name, None))
+                p = os.path.join(dirpath, name)
+                if os.path.isfile(p):
+                    items.append((p, name_of(os.path.relpath(p, given)), None))
+    elif os.path.isfile(given):
+        items.append((given, name_of(os.path.basename(given)), None))
     else:
-        raise SystemExit(f"no such input: {src}")
+        raise SystemExit(f"no such input: {args.input}")
     if args.name:
         items = [i for i in items if any(fnmatch.fnmatchcase(i[1], pat) for pat in args.name)]
-    # Paths order by their UTF-8 (filesystem) bytes, as Rust's OsStr does on Unix.
-    items.sort(key=lambda i: os.fsencode(i[1]))
+    # Names order by their bytes, as Rust's OsStr does on Unix.
+    items.sort(key=lambda i: name_bytes(i[1]))
     if args.sample and len(items) > args.sample:
         n = len(items)
         items = [items[(k * n) // args.sample] for k in range(args.sample)]
@@ -494,9 +525,10 @@ def collect_inputs(args) -> list[tuple[str, str, str | None]]:
 
 
 def crash_result(job, why):
-    """The one file record of an input whose process died or raised: error kind "crash"."""
-    abs_path, rel, _ = job
-    data = Path(abs_path).read_bytes()
+    """The one file record of an input whose process died: error kind "crash"."""
+    path, rel, _ = job
+    with open(path, "rb") as fh:
+        data = fh.read()
     sha = hashlib.sha256(data).hexdigest()
     l0 = {"type": detect(data), "parsed_as": "error", "size": len(data), "sha256": sha}
     rec = {
@@ -511,34 +543,52 @@ def crash_result(job, why):
     return rel, text, stats, sha
 
 
+class DumperError(RuntimeError):
+    """The dumper failed on an input in its own code, which no input explains, so the run stops."""
+
+
+def _send(conn, result):
+    conn.send(result)
+
+
 def _child(conn, job):
-    """One input in a fresh process; whatever happens here costs only this input."""
+    """One input in a fresh process; a death here costs only this input."""
     pin_none()
     try:
         result = ("ok", dump_input(job))
-    except BaseException as e:  # noqa: BLE001 - becomes this input's crash record
-        result = ("raised", f"the dump raised {note(e)}")
-    conn.send(result)
+    except BaseException:  # noqa: BLE001 - every UnityPy outcome is recorded inside; this is the dumper's own failure
+        result = ("raised", traceback.format_exc())
+    _send(conn, result)
     conn.close()
 
 
 def _died(code):
-    if code is not None and code < 0:
-        try:
-            return f"the process dumping this input died of {signal.Signals(-code).name}"
-        except ValueError:
-            pass
+    try:
+        return f"the process dumping this input died of {signal.Signals(-code).name}"
+    except ValueError:
         return f"the process dumping this input died of signal {-code}"
-    return f"the process dumping this input exited with status {code} and no result"
+
+
+def _settle(job, msg, exitcode):
+    """An input's result: its records, a crash record for a death by signal, or DumperError."""
+    if msg is not None and msg[0] == "ok":
+        return msg[1]
+    if msg is not None:
+        raise DumperError(f"{job[1]!r}: the dumper raised\n{msg[1].rstrip()}")
+    if exitcode is not None and exitcode < 0:
+        return crash_result(job, _died(exitcode))
+    raise DumperError(f"{job[1]!r}: the process dumping it exited with status {exitcode} and no result")
 
 
 def run_jobs(jobs, workers):
     """dump_input over jobs, results in input order, so the output is the same as a serial run.
 
     Each input runs in a process forked for it alone, at most `workers` at a
-    time. No input can see what UnityPy cached or leaked for another, and one
-    that kills its process (a UnityPyBoost crash, the cgroup OOM killer) or
-    raises becomes a crash record (crash_result) while the dump goes on.
+    time. No input can see what UnityPy cached or leaked for another. One
+    whose process dies of a signal (a UnityPyBoost crash, the cgroup OOM
+    killer), before or while it sends its result, becomes a crash record
+    (crash_result) while the dump goes on. The dumper's own failure, a raise
+    or an exit without a result, raises DumperError: it would hit any input.
     """
     ctx = get_context("fork")
     workers = max(1, workers)
@@ -561,15 +611,12 @@ def run_jobs(jobs, workers):
                         continue
                     try:
                         msg = recv.recv()
-                    except EOFError:
-                        msg = None
+                    except (EOFError, OSError, pickle.UnpicklingError):
+                        msg = None  # the process ended before or while it sent its result
                     recv.close()
                     proc.join()
                     del running[k]
-                    if msg is not None and msg[0] == "ok":
-                        finished[k] = msg[1]
-                    else:
-                        finished[k] = crash_result(jobs[k], msg[1] if msg else _died(proc.exitcode))
+                    finished[k] = _settle(jobs[k], msg, proc.exitcode)
             yield finished.pop(i)
     finally:
         for proc, recv in running.values():
@@ -672,6 +719,9 @@ def main(argv=None):
                 )
         fh.write((C.dumps({"rec": "end", "files": totals["files"], "objects": totals["objects"]}) + "\n").encode())
         done = True
+    except DumperError as e:
+        print(f"unitypy_dump: {e}\nunitypy_dump: the dumper itself failed; no dump written", file=sys.stderr)
+        return 1
     finally:
         if results is not None:
             results.close()
@@ -691,6 +741,13 @@ def main(argv=None):
     print(json.dumps(summary, indent=1), file=sys.stderr)
     if stats_path:
         stats_path.write_text(json.dumps({"summary": summary, "inputs": per_input}, indent=1))
+    if totals["crashes"] == len(inputs):
+        # One crash is an input's; every input crashing is the machine's.
+        print(
+            f"unitypy_dump: every input ({len(inputs)}) crashed; the dump is written, but check the machine",
+            file=sys.stderr,
+        )
+        return 3
     return 0
 
 

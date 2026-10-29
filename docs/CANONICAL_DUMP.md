@@ -103,7 +103,7 @@ Each record's first member is `rec`.
 | `file` | the file's identity, a list of names: `[input]` for an input, `[input, entry]` for a bundle or WebFile entry, and so on down. |
 | `l0` | detection (below) |
 | `l1` | container metadata by kind (below), or `null` when the file parsed as raw, zip or error, or when the dump has no L1 |
-| `error` | `null`, or `{"kind":K}` with `K` one of `"detect"` (`check_file_type` raised), `"parse"` (the parser raised) and `"crash"` (the process dumping the input died, or raised outside UnityPy's parse). An optional `note` gives the message. Only an input's own record carries an error (see "A failing entry" below). |
+| `error` | `null`, or `{"kind":K}` with `K` one of `"detect"` (`check_file_type` raised), `"parse"` (the parser raised) and `"crash"` (the process dumping the input died of a signal). An optional `note` gives the message. Only an input's own record carries an error (see "A failing entry" below). |
 
 **Names.**
 - `input` is the input's path relative to the dump root, with `/` separators:
@@ -111,12 +111,13 @@ Each record's first member is `rec`.
   - the path below the folder for a folder input;
   - the entry's `path` for a corpus index.
 - An entry name is the bundle directory's `path` string.
+- An input's name comes from its path's bytes, as given, decoded as UTF-8 whatever the process locale, so bytes that are not UTF-8 reach the metadata-string rule below unchanged. The path is not resolved: a symlink is named after itself, in either input mode, and the name rule (under `l0` below) tests that name.
 
 **The metadata-string rule.** Every string the dump takes from a file or a file name, other than a typetree value, is written as a name. That covers input and entry names, `signature`, `version_player`, `version_engine`, `unity_version`, `user_information`, directory, external and container paths, `temp_empty`, typetree node types and names, the class, namespace and assembly of a type record, and `root_type`. A name is a JSON string when its bytes are valid UTF-8, and otherwise `{"t":"str","hex":H}` at any length. It is never summarised: the raw-bytes rule of section 3 applies only inside values.
 
 **A failing entry fails its input.** UnityPy reads a bundle's or WebFile's entries with no error handling. An entry whose detection or parse raises (a SerializedFile that does not parse, or a broken AssetBundle object inside one) therefore fails the whole top-level input. That input gets one `file` record, with `l0.parsed_as` `"error"`, `l1` `null` and `{"kind":"parse"}`, and no records for any of its entries. So an entry record never carries an `error`, and `l0.type` is `"error"` only on an input's own record.
 
-**A crash fails its input.** The oracle dumps each input in a process of its own. When that process dies (UnityPyBoost aborts or segfaults, section 7, or the memory cap kills it) or raises outside UnityPy's parse, the input gets one `file` record, with `l0.type` as detected, `l0.parsed_as` `"error"`, `l1` `null` and `{"kind":"crash"}`, and no other records. The `note` names the signal or the exception. A kill by the memory cap (`SIGKILL`) depends on the machine and the number of jobs, not on the input.
+**A crash fails its input.** The oracle dumps each input in a process of its own. When that process dies of a signal (UnityPyBoost aborts or segfaults, section 7, or the memory cap kills it), before or while it hands back its records, the input gets one `file` record, with `l0` describing the input's bytes as detected, `l0.parsed_as` `"error"`, `l1` `null` and `{"kind":"crash"}`, and no other records. The `note` names the signal. A kill by the memory cap (`SIGKILL`) depends on the machine and the number of jobs, not on the input. A raise in the oracle's own code, or a process that ends without its records and without a signal, is no outcome of the input: the oracle stops and writes no dump.
 
 **`l0`** (member order `type`, `parsed_as`, `size`, `sha256`):
 

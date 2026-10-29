@@ -43,7 +43,10 @@ def _bytes(s):
 
 
 def blob(root, version, endian="<"):
-    """parse_blob's layout: node count, string-buffer size, packed node rows, the local strings."""
+    """parse_blob's layout: node count, string-buffer size, packed node rows, the local strings.
+
+    `root` is a Node, or the rows themselves as (level, type, name) for shapes no Node tree gives.
+    """
     rows, strings, offsets = [], bytearray(), {}
 
     def offset(s):
@@ -60,7 +63,10 @@ def blob(root, version, endian="<"):
         for child in n.children:
             walk(child, level + 1)
 
-    walk(root, 0)
+    if isinstance(root, Node):
+        walk(root, 0)
+    else:
+        rows = [(Node(t, name), level) for level, t, name in root]
     fmt = endian + "hBBIIiii" + ("Q" if version >= 19 else "")
     body = b""
     for index, (n, level) in enumerate(rows):
