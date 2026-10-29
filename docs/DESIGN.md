@@ -124,7 +124,7 @@ A Cargo workspace. Licences are declared per crate.
 | route | when |
 |---|---|
 | **Use upstream, pinned** | L1-L3 pass 100% on the corpora; the Environment, cross-file PPtr, `.resS` and container-path probes pass or layer on top cleanly; it supports a raw-bytes `Value` (or offers an extension point); throughput is at least UnityPyBoost's; no fuzz panics in one hour, or upstream accepts the fixes. |
-| **Vendor a fork** | L1 is sound, but we need invasive changes (the `Value` representation, the save layout) that upstream won't take. |
+| **Vendor a fork** | L1 is sound, but we need invasive changes (the `Value` representation, the save layout) that upstream has not accepted (we offer them upstream and revisit if they merge). |
 | **Port UnityPy's core** | The failures are structural, or more than half of rabex's core would be rewritten anyway. |
 
 The spike records LOC kept versus rewritten, whether upstream takes patches, objects/s and MB/s against UnityPyBoost, peak memory, Send+Sync under rayon, the format matrix (SF 5-26, UnityFS 6-9, flags rules, big-endian), save against UnityPy, and a TPK node-list diff. `unity-rs-core` (an MIT AssetStudio port) is a reference and a second oracle only.
