@@ -49,7 +49,12 @@
 //! `Parsed` holds the charges of what it holds. A caller's own value (one to
 //! write, a test's) goes through a builder too, on [`Meter::unlimited`] when
 //! it is not an input's; [`ValueBuilder::scalar`] wraps a value that owns no
-//! heap, and refuses one that does. `Value`'s variants are public data,
+//! heap, and refuses a list, map, tuple or run that owns an allocation. It
+//! cannot refuse a `Str` or `Bytes` that owns a plain `Vec`, since a
+//! `bytes::Bytes` does not say whether it is a slice of a charged buffer
+//! (the file's, [`crate::RawStr::charged`], a decoded block's) or owns
+//! memory no meter saw, so a string or bytes passed to it must be such a
+//! slice (round 6). `Value`'s variants are public data,
 //! though, so the types cannot prove that a value pushed into a vector as a
 //! plain `Value` owns no uncharged heap (a `List` made from a plain `Vec`).
 //! That the reader never does that is its discipline, checked by package
@@ -516,9 +521,13 @@ impl ValueBuilder {
     }
 
     /// A value that owns no heap of its own (a scalar, a string or bytes
-    /// sliced from the file, an empty list or map), as a [`Built`] with an
-    /// empty charge; one that owns heap is handed back, since only the
-    /// builder's own methods know what it was charged.
+    /// sliced from a charged buffer, an empty list or map), as a [`Built`]
+    /// with an empty charge; a list, map, tuple or run that owns an
+    /// allocation is handed back, since only the builder's own methods know
+    /// what it was charged. A `Str` or `Bytes` is taken as it is: it must be
+    /// a slice of a charged buffer (the file's, [`crate::RawStr::charged`],
+    /// a decoded block's), never one made from a `Vec` no meter charged,
+    /// which this cannot see (module docs).
     pub fn scalar(&self, value: Value) -> Result<Built, Value> {
         if owns_heap(&value) {
             return Err(value);

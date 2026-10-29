@@ -141,7 +141,7 @@ pub fn case_tree(case: &Case, limits: &Limits) -> Result<Arc<Tree>, String> {
             byte_size: -1,
             version: 1,
             type_flags: Some(0),
-            meta_flag: Some(*meta),
+            meta_flag: Some(i64::from(*meta)),
             ..NodeRow::default()
         })
         .collect();

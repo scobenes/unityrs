@@ -26,15 +26,18 @@
 //! **Work.** A computation that ends in an error its cell does not keep runs
 //! again on the next ask, so an input could make its readers repeat it
 //! without end (one type whose compile alone needs more than the meter,
-//! asked by every object of the type). Every byte the meter granted while
-//! such a computation ran is therefore counted as the open's work
-//! ([`crate::limits::Limits::max_decode_work`], shared with block decodes),
-//! and once that allowance is used up an ask that would compute keeps a
-//! [`crate::LimitKind::DecodeWork`] refusal instead, which is not
-//! transient. The count is the meter's grants between the computation's
-//! start and its end, so a grant another thread made on the same meter in
-//! that window counts too: the bound errs towards stopping early, never
-//! late.
+//! asked by every object of the type). When the input's meter itself
+//! refused it ([`CellError::is_meter_refusal`]), every byte the meter
+//! granted to the computation on its own thread is therefore counted as the
+//! open's work ([`crate::limits::Limits::max_decode_work`], shared with
+//! block decodes), and once that allowance is used up an ask that would
+//! compute keeps a [`crate::LimitKind::DecodeWork`] refusal instead, which
+//! is not transient. Nothing else counts (round 6): grants another thread
+//! made on the same meter meanwhile are that thread's work, and a refusal
+//! by the budget, an I/O failure or a provider's failure depends on what
+//! else is held or on caller code, so counting it would let contention use
+//! up a valid shared dependency's allowance for the handle's life. Those
+//! repeat as often as the caller asks, which the engine bounds (plan 4.1).
 //!
 //! A compute has no side effect but its charges: what follows from a value
 //! (registering a nested container's entries) is done from the published
@@ -47,7 +50,7 @@ use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use crate::error::LimitError;
-use crate::limits::{Charge, Meter};
+use crate::limits::{Charge, GrantScope, Meter};
 
 /// The value in `cell`, computing it with `compute` first when there is
 /// none. `compute` runs with no lock held, so it may call caller code, and
@@ -68,6 +71,11 @@ pub trait CellError: Send + Sync {
     /// refusal ([`crate::LimitKind::InputMemory`]), an I/O failure, a
     /// provider's failure. Such an error is returned, never published.
     fn is_transient(&self) -> bool;
+    /// Whether the error is the input's own meter refusing a charge
+    /// ([`crate::LimitKind::InputMemory`]), and not the budget, I/O or a
+    /// provider: what a computation that ends in it was granted counts as
+    /// its open's work (module docs).
+    fn is_meter_refusal(&self) -> bool;
     /// The heap the error owns ([`crate::limits::heap_cost`] of each box and
     /// string it holds, counted whether or not a string shares a file's
     /// buffer), charged to the input's meter while a cell keeps it.
@@ -109,9 +117,10 @@ pub type ResultCell<T, E> = OnceLock<Result<T, KeptError<E>>>;
 /// later ask; a transient error ([`CellError::is_transient`]), or one whose
 /// charge the meter refuses, is returned unpublished, so the next ask
 /// computes again. `meter` is the meter of the open the computation charges:
-/// what it granted during a computation that ended unpublished counts as
-/// that open's work, and once the work allowance is used up an ask keeps a
-/// refusal instead of computing (module docs).
+/// what it granted the computation, on this thread, counts as that open's
+/// work when the computation ends in the meter's own refusal, and once the
+/// work allowance is used up an ask keeps a refusal instead of computing
+/// (module docs).
 pub fn get_or_publish_result<'a, T, E: CellError + Clone>(
     cell: &'a ResultCell<T, E>,
     meter: &Arc<Meter>,
@@ -124,11 +133,15 @@ pub fn get_or_publish_result<'a, T, E: CellError + Clone>(
     if let Some(used_up) = meter.work_used_up() {
         return keep(cell, meter, E::work_refused(used_up));
     }
-    let before = meter.granted();
-    match compute() {
+    let scope = GrantScope::enter(meter);
+    let got = compute();
+    let own = scope.finish(meter);
+    match got {
         Ok(v) => published(cell.get_or_init(move || Ok(v))),
         Err(e) if e.is_transient() => {
-            meter.add_work(meter.granted().saturating_sub(before));
+            if e.is_meter_refusal() {
+                meter.add_work(own);
+            }
             Err(e)
         }
         Err(e) => keep(cell, meter, e),
@@ -228,6 +241,9 @@ mod tests {
         fn is_transient(&self) -> bool {
             self.transient
         }
+        fn is_meter_refusal(&self) -> bool {
+            false
+        }
         fn heap_bytes(&self) -> u64 {
             self.heap
         }
@@ -301,6 +317,80 @@ mod tests {
         );
         assert!(cell.get().is_some(), "the work refusal is kept");
         assert_eq!((m.decoded(), m.used()), (1200, 0));
+    }
+
+    #[test]
+    fn budget_refusals_count_no_work_and_the_read_succeeds_once_the_pool_empties() {
+        use crate::budget::{Counting, Reservation};
+        use crate::error::Error;
+        use crate::limits::{Limits, Meter};
+        // Round 6 (claude6 M2, C1): every transient failure's grants counted
+        // as work, budget refusals included, so a shared dependency asked
+        // while other jobs held the pool kept `DecodeWork` for good. Here
+        // each refused run is granted 300 bytes against 1,000 of work: 50
+        // refusals are fifteen times the allowance, and none of it counts.
+        let limits = Limits {
+            max_decode_work: 1000,
+            ..Limits::default()
+        };
+        let pool = Arc::new(Counting::new(1000));
+        let dep = Meter::for_input(&limits, pool.clone(), Reservation::Dependency);
+        let other = Meter::new(u64::MAX, pool.clone(), Reservation::Input);
+        let held = other.charge(600).unwrap();
+        let cell: super::ResultCell<u32, Error> = OnceLock::new();
+        let compute = || {
+            let _a = dep.charge(300)?;
+            let _b = dep.charge(300)?;
+            Ok(7)
+        };
+        for _ in 0..50 {
+            let got = super::get_or_publish_result(&cell, &dep, compute).copied();
+            assert!(matches!(got, Err(Error::Budget(_))), "{got:?}");
+        }
+        assert_eq!(dep.decoded(), 0, "contention is not the input's work");
+        drop(held);
+        let got = super::get_or_publish_result(&cell, &dep, compute).copied();
+        assert_eq!(got.ok(), Some(7));
+    }
+
+    #[test]
+    fn another_threads_grants_are_not_a_failing_computations_work() {
+        use crate::budget::{Reservation, Unbounded};
+        use crate::error::{Error, LimitKind};
+        use crate::limits::{Limits, Meter};
+        // Round 6 (claude6 M2, C3): the work counted was the meter's total
+        // grants while the computation ran, so another thread's successful
+        // work on the same open used up a failing computation's allowance.
+        // Here each failing run grants nothing itself while another thread
+        // keeps 1,000 bytes on the same meter, against 4,000 of work.
+        let limits = Limits {
+            max_decode_work: 4000,
+            ..Limits::default()
+        };
+        let m = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Input);
+        let cell: super::ResultCell<u32, Error> = OnceLock::new();
+        let mut kept = Vec::new();
+        for _ in 0..10 {
+            let got = super::get_or_publish_result(&cell, &m, || {
+                let m = m.clone();
+                kept.push(
+                    std::thread::spawn(move || m.charge(1000).unwrap())
+                        .join()
+                        .unwrap(),
+                );
+                Err(Error::Limit(crate::error::LimitError {
+                    kind: LimitKind::InputMemory,
+                    value: 1,
+                    max: 0,
+                }))
+            });
+            assert!(
+                matches!(got, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory),
+                "{got:?}"
+            );
+        }
+        assert_eq!(m.decoded(), 0, "the other thread's grants are its own");
+        assert!(cell.get().is_none(), "nothing kept");
     }
 
     #[test]

@@ -1,8 +1,11 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/UnityVersion.py, UnityPy/files/BundleFile.py, UnityPy/files/SerializedFile.py. See THIRD_PARTY_LICENSES.
 //! Unity versions with UnityPy's semantics, and UnityPy's two version chains.
 //!
 //! `UnityVersion.from_str` (`helpers/UnityVersion.py:62-88`) matches
-//! `^(\d+)\.(\d+)\.(\d+)(.)?(\d+)?(.*)$` with Python `re` (DOTALL; `\d` is any
-//! Unicode `Nd` digit). The type is one character, lower-cased: `a` 0, `b` 1,
+//! `^(\d+)\.(\d+)\.(\d+)(.+?)?(\d+)?(.*)$` (`helpers/UnityVersion.py:7-10`)
+//! with Python `re` (DOTALL; `\d` is any Unicode `Nd` digit). The type is one
+//! character (the lazy group takes exactly the non-digit the greedy `build`
+//! group leaves), lower-cased: `a` 0, `b` 1,
 //! `c` 2, `f` 3, `p` 4, `x` 5, anything else 255, nothing at all `f`. The packed
 //! value is `major<<48 | minor<<32 | build<<16 | type<<8 | number`, a plain OR
 //! of unbounded integers, so wide fields spill (`docs/CANONICAL_DUMP.md` 4.2).
@@ -37,17 +40,6 @@
 //!
 //! Owner: package C. The Unicode `Nd` table ([`crate::tables::nd_digit`]) is
 //! generated from the oracle's Python 3.11 (`tools/gen/`, package A).
-
-// STUB(C): delete this allow when the module is implemented.
-#![allow(
-    clippy::todo,
-    clippy::unused_self,
-    clippy::needless_pass_by_value,
-    clippy::must_use_candidate,
-    clippy::missing_panics_doc,
-    unused_variables,
-    dead_code
-)]
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -130,6 +122,28 @@ impl Packed {
         }
     }
 
+    /// `(self >> shift) & ((1 << width) - 1)`, for `width` up to 64.
+    fn bits(&self, shift: u32, width: u32) -> u64 {
+        let mask = if width >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << width) - 1
+        };
+        match &self.0 {
+            Repr::Small(v) => {
+                u64::try_from(v.checked_shr(shift).unwrap_or(0) & u128::from(mask)).unwrap_or(0)
+            }
+            Repr::Big(limbs) => {
+                let word = usize::try_from(shift / 64).unwrap_or(usize::MAX);
+                let bit = shift % 64;
+                let lo = limbs.get(word).copied().unwrap_or(0);
+                let hi = limbs.get(word.saturating_add(1)).copied().unwrap_or(0);
+                let v = (u128::from(hi) << 64 | u128::from(lo)) >> bit;
+                u64::try_from(v & u128::from(mask)).unwrap_or(0)
+            }
+        }
+    }
+
     /// The heap bytes the value owns (0 below 2^128).
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
@@ -166,7 +180,34 @@ impl PartialOrd for Packed {
 impl fmt::Display for Packed {
     /// The exact decimal integer, as the dump writes it.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        // Repeated division by 10^19, least significant chunk first.
+        const CHUNK: u64 = 10_000_000_000_000_000_000;
+        let limbs = match &self.0 {
+            Repr::Small(v) => return write!(f, "{v}"),
+            Repr::Big(limbs) => limbs,
+        };
+        let mut n: Vec<u64> = limbs.to_vec();
+        let mut chunks: Vec<u64> = Vec::new();
+        while n.iter().any(|l| *l != 0) {
+            let mut rem: u128 = 0;
+            for l in n.iter_mut().rev() {
+                let cur = (rem << 64) | u128::from(*l);
+                *l = u64::try_from(cur / u128::from(CHUNK)).unwrap_or(u64::MAX);
+                rem = cur % u128::from(CHUNK);
+            }
+            chunks.push(u64::try_from(rem).unwrap_or(0));
+            while n.last() == Some(&0) {
+                n.pop();
+            }
+        }
+        let mut it = chunks.iter().rev();
+        if let Some(top) = it.next() {
+            write!(f, "{top}")?;
+        }
+        for c in it {
+            write!(f, "{c:019}")?;
+        }
+        Ok(())
     }
 }
 
@@ -184,7 +225,12 @@ impl UnityVersion {
     /// is [`VersionError::NoMatch`] (module docs). The version, or the
     /// `NoMatch`, keeps a clone of `raw` (no copy: module docs).
     pub fn parse(raw: &RawStr) -> Result<Self, VersionError> {
-        todo!()
+        parse_packed(raw.as_bytes())
+            .map(|packed| Self {
+                raw: raw.clone(),
+                packed,
+            })
+            .ok_or_else(|| VersionError::NoMatch(raw.clone()))
     }
 
     /// `UnityVersion(int)`: a version from a packed integer, as a TPK stores
@@ -227,18 +273,36 @@ impl UnityVersion {
     /// 8 and 8 bits). A type byte other than 0-5 and 255 raises, as
     /// `UnityVersionType(...)` does (`UnityVersion.py:41-42`, `:109-110`).
     pub fn as_tuple(&self) -> Result<(u16, u16, u16, u8, u8), VersionError> {
-        todo!()
+        // UnityPy helpers/UnityVersion.py:28-54, :109-110
+        let ty = u8::try_from(self.packed.bits(8, 8)).unwrap_or(u8::MAX);
+        if !(ty <= 5 || ty == 255) {
+            return Err(VersionError::TypeByte(ty));
+        }
+        let field = |shift: u32| u16::try_from(self.packed.bits(shift, 16)).unwrap_or(u16::MAX);
+        Ok((
+            field(48),
+            field(32),
+            field(16),
+            ty,
+            u8::try_from(self.packed.bits(0, 8)).unwrap_or(u8::MAX),
+        ))
     }
 
     /// The 16-bit major, as UnityPy's `major` property cuts it.
+    #[must_use]
     pub fn major(&self) -> u16 {
-        todo!()
+        // UnityPy helpers/UnityVersion.py:28-30
+        u16::try_from(self.packed.bits(48, 16)).unwrap_or(u16::MAX)
     }
 
     /// `self < other` as Python compares `as_tuple()` with a shorter tuple
     /// (`version < (2020, 3, 34)`).
     pub fn lt_tuple(&self, other: &[u16]) -> Result<bool, VersionError> {
-        todo!()
+        // UnityPy helpers/UnityVersion.py:122-127: tuple order, a shorter
+        // tuple that is a prefix being the smaller.
+        let (major, minor, build, ty, number) = self.as_tuple()?;
+        let mine = [major, minor, build, u16::from(ty), u16::from(number)];
+        Ok(mine.as_slice() < other)
     }
 }
 
@@ -337,7 +401,38 @@ pub fn resolve_bundle(
     engine: &RawStr,
     policy: &VersionPolicy,
 ) -> Result<ResolvedVersion, VersionError> {
-    todo!()
+    if let Some(v) = &policy.force_bundle {
+        return Ok(ResolvedVersion {
+            version: v.clone(),
+            source: VersionSource::Forced,
+        });
+    }
+    // UnityPy files/BundleFile.py:523-536: a string that does not parse, or
+    // whose 16-bit major is 0, takes the fallback.
+    if let Ok(version) = UnityVersion::parse(engine)
+        && version.major() != 0
+    {
+        return Ok(ResolvedVersion {
+            version,
+            source: VersionSource::Own,
+        });
+    }
+    fallback(policy)
+}
+
+/// `UnityVersion.from_str(config.get_fallback_version())` (`config.py:25-32`):
+/// no fallback raises; a fallback that does not match raises too.
+fn fallback(policy: &VersionPolicy) -> Result<ResolvedVersion, VersionError> {
+    let s = policy.fallback.as_ref().ok_or(VersionError::NoFallback)?;
+    Ok(ResolvedVersion {
+        version: UnityVersion::parse(s)?,
+        source: VersionSource::Fallback,
+    })
+}
+
+/// `not s or s == "0.0.0"` (`SerializedFile.py:353`, `:358`).
+fn unusable(s: &RawStr) -> bool {
+    s.is_empty() || s.as_bytes() == b"0.0.0"
 }
 
 /// Chain 2: `SerializedFile.set_version`. `own` is the file's string (format
@@ -349,19 +444,194 @@ pub fn resolve_serialized(
     parent_engine: Option<&RawStr>,
     policy: &VersionPolicy,
 ) -> Result<ResolvedVersion, VersionError> {
-    todo!()
+    if let Some(v) = &policy.force_serialized {
+        return Ok(ResolvedVersion {
+            version: v.clone(),
+            source: VersionSource::Forced,
+        });
+    }
+    // UnityPy files/SerializedFile.py:351-360
+    let (mut s, mut source) = (own, VersionSource::Own);
+    if unusable(s) {
+        if let Some(parent) = parent_engine {
+            (s, source) = (parent, VersionSource::ParentBundle);
+        }
+        if unusable(s) {
+            return fallback(policy);
+        }
+    }
+    Ok(ResolvedVersion {
+        version: UnityVersion::parse(s)?,
+        source,
+    })
 }
 
 /// `BundleFile.py:113-121`: `ArchiveFlagsOld` below 2020, and below 2020.3.34,
 /// 2021.3.2 and 2022.1.1 on those lines.
 pub fn flags_class(engine: &UnityVersion) -> Result<FlagsClass, VersionError> {
-    todo!()
+    // UnityPy files/BundleFile.py:113-121; `version[0]` is `as_tuple()[0]`,
+    // which raises as the comparison before it does.
+    let v = engine;
+    let major = v.as_tuple()?.0;
+    let old = v.lt_tuple(&[2020])?
+        || (major == 2020 && v.lt_tuple(&[2020, 3, 34])?)
+        || (major == 2021 && v.lt_tuple(&[2021, 3, 2])?)
+        || (major == 2022 && v.lt_tuple(&[2022, 1, 1])?);
+    Ok(if old {
+        FlagsClass::Old
+    } else {
+        FlagsClass::New
+    })
 }
 
 /// `BundleFile.py:129-131`: the 16-byte alignment after the header applies at
 /// format 7 and up, or with a 2019 engine at 2019.4.15 or later.
 pub fn uses_block_alignment(format: u32, engine: &UnityVersion) -> Result<bool, VersionError> {
-    todo!()
+    // UnityPy files/BundleFile.py:129: `or` short-circuits, so from format 7
+    // the version is never compared.
+    if format >= 7 {
+        return Ok(true);
+    }
+    Ok(engine.as_tuple()?.0 == 2019 && !engine.lt_tuple(&[2019, 4, 15])?)
+}
+
+/// Limbs of a packed version: 4,300 decimal digits are 14,284 bits (224
+/// limbs), shifted by at most 48 more.
+const LIMBS: usize = 226;
+
+/// A non-negative integer of up to [`LIMBS`] little-endian limbs, on the
+/// stack, so parsing allocates nothing but a big result.
+struct Wide([u64; LIMBS]);
+
+impl Wide {
+    fn zero() -> Self {
+        Self([0; LIMBS])
+    }
+
+    /// `self = self * mul + add`.
+    fn mul_add(&mut self, mul: u64, add: u64) {
+        let mut carry = u128::from(add);
+        for l in &mut self.0 {
+            let cur = u128::from(*l) * u128::from(mul) + carry;
+            *l = u64::try_from(cur & u128::from(u64::MAX)).unwrap_or(0);
+            carry = cur >> 64;
+        }
+    }
+
+    /// `self |= other << shift`.
+    fn or_shifted(&mut self, other: &Self, shift: u32) {
+        let words = usize::try_from(shift / 64).unwrap_or(LIMBS);
+        let bits = shift % 64;
+        for (i, l) in other.0.iter().enumerate() {
+            if *l == 0 {
+                continue;
+            }
+            if let Some(dst) = self.0.get_mut(i + words) {
+                *dst |= l << bits;
+            }
+            if bits > 0
+                && let Some(dst) = self.0.get_mut(i + words + 1)
+            {
+                *dst |= l >> (64 - bits);
+            }
+        }
+    }
+}
+
+/// One unit of the string Python sees: a code point, or a byte that is not
+/// valid UTF-8 (a lone surrogate under `surrogateescape`).
+#[derive(Clone, Copy)]
+enum Unit {
+    Char(char),
+    Byte,
+}
+
+fn units(bytes: &[u8]) -> impl Iterator<Item = Unit> + '_ {
+    bytes.utf8_chunks().flat_map(|chunk| {
+        chunk
+            .valid()
+            .chars()
+            .map(Unit::Char)
+            .chain(chunk.invalid().iter().map(|_| Unit::Byte))
+    })
+}
+
+fn digit(u: Unit) -> Option<u8> {
+    match u {
+        Unit::Char(c) => crate::tables::nd_digit(c),
+        Unit::Byte => None,
+    }
+}
+
+/// A run of `\d` from `it`, through Python's `int()`: `None` for more than
+/// [`PY_INT_MAX_STR_DIGITS`] digits; the value and the digit count.
+fn digits<I: Iterator<Item = Unit>>(it: &mut std::iter::Peekable<I>) -> Option<(Wide, usize)> {
+    let mut value = Wide::zero();
+    let (mut count, mut chunk, mut chunk_len) = (0usize, 0u64, 0u32);
+    while let Some(d) = it.peek().copied().and_then(digit) {
+        it.next();
+        count += 1;
+        if count > PY_INT_MAX_STR_DIGITS {
+            return None;
+        }
+        chunk = chunk * 10 + u64::from(d);
+        chunk_len += 1;
+        if chunk_len == 19 {
+            value.mul_add(10_u64.pow(19), chunk);
+            (chunk, chunk_len) = (0, 0);
+        }
+    }
+    if chunk_len > 0 {
+        value.mul_add(10_u64.pow(chunk_len), chunk);
+    }
+    Some((value, count))
+}
+
+/// `UnityVersion.from_str` (`helpers/UnityVersion.py:62-88`): the pattern
+/// `^(\d+)\.(\d+)\.(\d+)(.+?)?(\d+)?(.*)$` under DOTALL, whose lazy type
+/// group takes exactly the one character after `build`'s digits whenever
+/// there is one (the greedy `build` leaves a non-digit there and the rest
+/// always matches), then `from_list`'s unbounded OR. `None` where it raises
+/// `ValueError`.
+fn parse_packed(raw: &[u8]) -> Option<Packed> {
+    let mut it = units(raw).peekable();
+    let mut packed = Wide::zero();
+    for (i, shift) in [48u32, 32, 16].into_iter().enumerate() {
+        let (group, n) = digits(&mut it)?;
+        if n == 0 {
+            return None;
+        }
+        if i < 2 && !matches!(it.next(), Some(Unit::Char('.'))) {
+            return None;
+        }
+        packed.or_shifted(&group, shift);
+    }
+    // No type character packs as `f` (3); `getattr(UnityVersionType,
+    // c.lower(), u)` names a type only for these six letters (no other code
+    // point lowers to one of them).
+    let (ty, number) = match it.next() {
+        None => (3u64, None),
+        Some(unit) => {
+            let ty = match unit {
+                Unit::Char('a' | 'A') => 0,
+                Unit::Char('b' | 'B') => 1,
+                Unit::Char('c' | 'C') => 2,
+                Unit::Char('f' | 'F') => 3,
+                Unit::Char('p' | 'P') => 4,
+                Unit::Char('x' | 'X') => 5,
+                _ => 255,
+            };
+            let (number, _) = digits(&mut it)?;
+            (ty, Some(number))
+        }
+    };
+    let mut t = Wide::zero();
+    t.mul_add(1, ty);
+    packed.or_shifted(&t, 8);
+    if let Some(number) = number {
+        packed.or_shifted(&number, 0);
+    }
+    Some(Packed::from_limbs(&packed.0))
 }
 
 #[cfg(test)]
