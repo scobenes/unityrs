@@ -70,16 +70,16 @@ Lines are in `environment.py`.
 
 | item | UnityPy 1.25.2 | tier | level | test | status |
 |---|---|---|---|---|---|
-| `Environment` constructor | each argument: a path that is a file with extension `.apk`/`.zip` goes to `load_zip_file`; another file sets `path` to its directory and loads it (a `.splitN` name through `load_files`); a directory sets `path` and loads it recursively; anything else loads as a stream (`:37-70`). `path` defaults to the cwd for a local fs. | A | L0 | planned: loader suite | planned (P1) |
+| `Environment` constructor | each argument: a path that is a file with extension `.apk`/`.zip` (case-sensitive) goes to `load_zip_file`; another file sets `path` to its directory and loads it (a `.splitN` name through `load_files`); a directory sets `path` and loads it recursively; a string that is neither is ignored without an error; any other argument loads as a stream (`:54-70`). `path` defaults to the cwd for a local fs. | A | L0 | planned: loader suite | planned (P1) |
 | `Environment.file` | set only when exactly one file loaded (`:72-73`) | A | API | planned: binding | planned (P3) |
 | `Environment.fs` | any fsspec filesystem (`:40`); `load_file` still tests local paths with `os.path` (`:119-128`) | A | API | planned: binding | planned (P3) |
 | `Environment.load_files` | `load_assets` with `open` (`:75-77`) | A | L0 | planned: loader suite | planned (P1) |
 | `Environment.load_folder` | every file under the folder, through `fs.walk` order (`:79-81`) | A | L0 | planned: loader suite | planned (P1) |
-| `Environment.load` | loads each existing path and keys `files` by basename (`:83-87`) | A | L0 | planned: loader suite | planned (P1) |
-| `Environment.load_file` | a `.splitN` path merges `split0..` (`:111-116`); a relative path resolves against `path`, then `{file}.split0`, then a case-insensitive walk (`find_sensitive_path`); a miss returns `None` silently (`:117-133`). Detects, parses, registers a SerializedFile or raw reader as a CAB under its simplified name (`:139-160`). | A | L0 | planned: loader suite | planned (P1) |
+| `Environment.load` | loads each existing path and keys `files` by basename (`:83-87`); `load_file` has already keyed it by the full path, so each file sits in `files` twice and `Environment.objects` lists its objects twice | A | L0 | planned: loader suite | planned (P1) |
+| `Environment.load_file` | a `.splitN` path merges its parts (`:111-116`); a relative path resolves against `path`, then `{file}.split0`, then a case-insensitive walk (`find_sensitive_path`); a miss returns `None` silently (`:117-133`). Detects, parses, keys `files` by the name as given (else the stream's `name`, else its hash), and registers a SerializedFile or raw reader as a CAB under its simplified name (`:139-160`). | A | L0 | planned: loader suite | planned (P1) |
 | `Environment.load_zip_file` | opens a zip/apk and loads every member through `load_assets` (`:162-174`); raises `TypeError` on other inputs | A | L0 | planned: zip fixture | planned (P3) |
 | `Environment.load_assets` | merges `.splitN` members once per base path, loads the rest by name (`:282-308`) | A | L0 | planned: split fixture | planned (P3) |
-| `.splitN` merging | `split0` up to the first gap, concatenated (`:89-98`); the regex `(.*?([^\/\\]+?))\.split\d+` (`:25`) | A | L0 | planned: split fixture | planned (P3) |
+| `.splitN` merging | `split0`, `split1`, … concatenated up to the first missing part after `split0` (a missing `split0` is skipped, not a stop), at most 999 parts (`:89-98`); the regex `environment.reSplit`, `(.*?([^\/\\]+?))\.split\d+` (`:25`) | A | L0 | planned: split fixture | planned (P3) |
 | `Environment.save` | writes each file with `is_changed` to `out_path/basename`, through its `save(packer=pack)` (`:176-184`) | A | L4 | planned: save suite | planned (P3) |
 | `Environment.objects` | every object of every non-dependency SerializedFile, depth-first in `files` order (`:186-206`) | A | L1 (env) | planned: env dump | planned (P1) |
 | `Environment.container` | runs every CAB's preload pass once (`_build_container_index`, `:208-215`), then joins the containers of non-dependency SerializedFiles (`:217-226`) | A | L1 (env) | planned: env dump | planned (P1) |
@@ -87,7 +87,7 @@ Lines are in `environment.py`.
 | `Environment.get` | `getattr` with a default (`:249-250`) | — | API | — | n/a |
 | `Environment.register_cab` | keys `cabs` by `simplify_name` and invalidates the container index (`:252-264`) | A | L1 (env) | planned: env dump | planned (P1) |
 | `Environment.get_cab` | case-insensitive basename lookup (`:266-280`) | A | L1 (env) | planned: env dump | planned (P1) |
-| `Environment.find_file` | CAB registry, then `path/name`, then a lazily built walk of `path` matched by exact path, simplified name, then suffix; raises `FileNotFoundError` (`:310-354`) | A | L1 (env) | planned: env dump | planned (P1) |
+| `Environment.find_file` | CAB registry, then `path/name`, then a walk of `path` built once, matched by exact path, then by simplified name (dead: it compares a bare name with the walk's full paths, `:338`, `:342`), then by plain suffix with no separator boundary, first on the paths and then on the simplified paths; raises `FileNotFoundError` (`:310-354`) | A | L1 (env) | planned: env dump | planned (P1) |
 | `environment.simplify_name` | `ntpath.basename(name).lower()`; the docstring says it drops the extension, and it does not (`:357-363`) | A | L1 (env) | planned: env dump | planned (P1) |
 | `Environment.typetree_generator` | `None` by default; `ObjectReader.generate_monobehaviour_node` reads it (`:34`) | A | L2 | planned: provider suite | planned (P3) |
 
@@ -148,7 +148,7 @@ Lines are in `files/BundleFile.py`.
 | `File.get`, `File.keys`, `File.items`, `File.values` | dict-style access to `files` (`files/File.py:127-140`) | — | API | — | n/a |
 | `File.mark_changed` | marks the file and every parent (`files/File.py:145-148`) | A | L4 | planned: save suite | planned (P3) |
 | `File.get_writeable_cab` | section 18 | | | | |
-| `ResourceReader.get_resource_data` | looks up the CAB by basename, then `{name}.resource`, `{name}.assets.resS`, `{name}.resS`; loads dependencies once; raises `FileNotFoundError` (`helpers/ResourceReader.py:10-32`) | A | L5 | planned: `.resS` texture fixture | planned (P1) |
+| `ResourceReader.get_resource_data` | looks up the CAB by basename, then `{name}.resource`, `{name}.assets.resS`, `{name}.resS`; on a miss calls `SerializedFile.load_dependencies` with those names (which loads the file's externals as non-dependencies, section 7.2) and looks again; raises `FileNotFoundError` (`helpers/ResourceReader.py:10-32`) | A | L5 | planned: `.resS` texture fixture | planned (P1) |
 | `.resS` read | `reader.Position = offset; read_bytes(size)` on the CAB (`helpers/ResourceReader.py:36-38`) | A | L5 | planned: `.resS` texture fixture | planned (P1) |
 
 ## 6. Compression codecs
@@ -170,7 +170,9 @@ Lines are in `helpers/CompressionHelper.py`. The bundle codec is `flags & 0x3F` 
 | `CompressionHelper.decompress_lzham` | as LZHAM above | U | L1 | planned: error record | planned (P1) |
 | `CompressionHelper.compress_lzma` | props `0x5D`, dictionary 8 MiB, lc 3 lp 0 pb 2, BT4, nice_len 123, optional u64 size (`:47-79`) | A | L4 | planned: save suite | planned (P3) |
 | `CompressionHelper.compress_lz4` | `lz4.block.compress` HC level 9, no size prefix (`:97-105`); used for LZ4 and LZ4HC | A | L4 | planned: save suite | planned (P3) |
-| `CompressionHelper.compress_gzip`, `CompressionHelper.compress_brotli` | library defaults (`:121-155`) | A | L4 | planned: save suite | planned (P3) |
+| `CompressionHelper.compress_gzip`, `CompressionHelper.compress_brotli` | library defaults (`:121-155`): brotli at quality 11, and gzip at level 9 with the current time as the header's mtime, so two gzip saves of one file differ | A | L4 | planned: save suite (after decompression) | planned (P3) |
+| `CompressionHelper.DECOMPRESSION_MAP`, `CompressionHelper.COMPRESSION_MAP`, `CompressionHelper.COMPRESSION_CHUNK_SIZE_MAP` | the codec tables by `CompressionFlags` (`:238-258`): LZ4HC reads and writes as LZ4 HC, chunks are 128 KiB for LZ4 and LZ4HC and `0xFFFFFFFF` otherwise. They are looked up on every block (`files/BundleFile.py:515-518`), so adding an entry is how a UnityPy user registers a custom codec; unityrs's codec registry is the counterpart (`DESIGN.md` section 4) | A | API | planned: codec-registry binding | planned (P3) |
+| `CompressionHelper.GZIP_MAGIC`, `CompressionHelper.BROTLI_MAGIC` | `1f 8b` at offset 0 and `brotli` at `0x20`, the WebFile sniffs (`:12-13`, `files/WebFile.py:20-37`) | A | L1 | planned: WebFile fixtures | planned (P3) |
 | `CompressionHelper.chunk_based_compress` | LZ4/LZ4HC in 128 KiB chunks, LZMA in one; a chunk that grows is stored with its codec bits cleared (`:158-231`, sizes `:253-258`) | A | L4 | planned: save suite | planned (P3) |
 
 ## 7. SerializedFile
@@ -195,14 +197,14 @@ Every branch on `header.version`. Lines are in `files/SerializedFile.py` unless 
 | 10, ≥ 12 | blob typetree | `TypeTreeNode.parse_blob` (`:138-139`) | A | L1 | `test_dump.py` type_indices_and_blob_trees_follow_python | verified P0 (L1); impl P1 |
 | < 10, 11 | old typetree | `TypeTreeNode.parse`, field by field (`:140-141`) | A | L1 | planned: Editor fixture | planned (P4) |
 | 2 | old node `variable_count` | read only at version 2 (`helpers/TypeTreeNode.py:98`) | A | L1 | planned: Editor fixture | planned (P4) |
-| ≠ 3 | old node `index`, `meta_flag` | absent at version 3 (`helpers/TypeTreeNode.py:99`, `:102`) | A | L1 | planned: Editor fixture | planned (P4) |
+| ≠ 3 | old node `index`, `meta_flag` | absent at version 3 (`helpers/TypeTreeNode.py:99`, `helpers/TypeTreeNode.py:102`) | A | L1 | planned: Editor fixture | planned (P4) |
 | ≥ 19 | blob `ref_type_hash` | node struct `hBBIIiii` gains `Q` (`helpers/TypeTreeNode.py:331-347`) | A | L1 | `test_dump.py` type_indices_and_blob_trees_follow_python | verified P0 (L1); impl P1 |
 | ≥ 21 | type dependencies, ref type names | plain types read an i32 array; ref types read class, namespace and assembly (`:143-149`) | A | L1 | `test_dump.py` tables_nodes_and_entries_follow_unitypy | verified P0 (L1); impl P1 |
 | 7-13 | `big_id_enabled` | i32 (`:286-288`) | A | L1 | planned: Editor fixture | planned (P4) |
 | < 14 | path id | i32, or i64 with `big_id_enabled` (`files/ObjectReader.py:73-76`) | A | L1 | planned: Editor fixture | planned (P4) |
 | ≥ 14 | path id | align 4, then i64 (`files/ObjectReader.py:77-79`) | A | L1 | `test_dump.py` object_records_follow_the_table_and_the_parse | verified P0 (L1); impl P1 |
 | ≥ 22 | byte start | i64, else u32; plus `data_offset` (`files/ObjectReader.py:81-86`) | A | L1 | `test_dump.py` object_records_follow_the_table_and_the_parse | verified P0 (L1); impl P1 |
-| < 16 | object type | u16 class id; type is the first with that class id (`files/ObjectReader.py:92-97`) | A | L1 | `test_dump.py` object_records_follow_the_table_and_the_parse | verified P0 (L1); impl P1 |
+| < 16 | object type | the i32 type id is followed by a u16 class id; the type is the first whose class id equals the i32, and the object's class id is the u16 (`files/ObjectReader.py:89-97`) | A | L1 | `test_dump.py` object_records_follow_the_table_and_the_parse | verified P0 (L1); impl P1 |
 | ≥ 16 | object type | `types[type_id]` with Python indexing (`files/ObjectReader.py:98-101`) | A | L1 | `test_dump.py` type_indices_and_blob_trees_follow_python | verified P0 (L1); impl P1 |
 | < 11 | `is_destroyed` | u16 (`files/ObjectReader.py:106-107`) | A | L1 | planned: Editor fixture | planned (P4) |
 | 11-16 | object script index | i16 written back into the shared type (`files/ObjectReader.py:109-112`) | A | L1 | `test_dump.py` object_records_follow_the_table_and_the_parse | verified P0 (L1); impl P1 |
@@ -234,8 +236,8 @@ Every branch on `header.version`. Lines are in `files/SerializedFile.py` unless 
 | `SerializedFile.set_version` | empty or `0.0.0` takes the parent bundle's `version_engine`, then the fallback (`files/SerializedFile.py:351-360`) | A | L1 | `test_dump.py` version_strings_pack_as_unitypy_packs_them | verified P0 (L1); impl P1 |
 | AssetBundle at load | the first AssetBundle object is parsed while loading and builds the container; a broken one fails the file (`files/SerializedFile.py:316-324`) | A | L1 | `test_dump.py` samples (container); the failing path: planned fixture | verified P0 (L1); impl P1 |
 | `SerializedFile.container` | the file's `ContainerHelper` (`files/SerializedFile.py:326-328`) | A | L1 | `test_dump.py` samples | verified P0 (L1); impl P1 |
-| `config.SERIALIZED_FILE_PARSE_TYPETREE` | `False` turns `_enable_type_tree` off after the types were read (`files/SerializedFile.py:310-311`, `config.py:12`) | A | L1 | planned: config suite | planned (P3) |
-| `SerializedFile.load_dependencies` | loads every external by path, then the optional extra names, ignoring `FileNotFoundError` for the extras (`files/SerializedFile.py:330-349`) | A | L1 (env) | planned: env dump | planned (P1) |
+| `config.SERIALIZED_FILE_PARSE_TYPETREE` | `False` turns `_enable_type_tree` off only after the types and ref types, trees included, were read (`files/SerializedFile.py:284`, `:308`, `:310-311`, `config.py:12`), so despite its docstring it saves no load time and reading is unchanged (`ObjectReader` still uses each type's tree, `files/ObjectReader.py:296-297`); its one effect is on `SerializedFile.save`, which then writes the tree flag as false and no trees (`files/SerializedFile.py:179`, `:405`) | A | L4 | planned: config suite | planned (P3) |
+| `SerializedFile.load_dependencies` | loads every external by path, then the optional extra names, ignoring `FileNotFoundError` for the extras (`files/SerializedFile.py:330-349`); `load_file(path, True)` passes `True` as `parent`, not `is_dependency` (`environment.py:100-106`), so what it loads counts as a non-dependency and joins `Environment.objects` and `Environment.container`; section 19.2 | A | L1 (env) | planned: env dump | planned (P1) |
 | `SerializedFile.read_string` | common-string lookup from `enums/CommonString.py`; never called (`files/SerializedFile.py:496-503`) | — | — | — | n/a |
 | `SerializedFile._cache` | per-file image cache for sprites (`files/SerializedFile.py:246-250`); see Tier C, Sprite cache key | C | L5 | planned: divergence test | planned (P1) |
 | `SerializedFile.get_writeable_cab`, `SerializedFile.save` | section 18 | | | | |
@@ -312,7 +314,7 @@ Lines are in `helpers/TypeTreeNode.py`.
 |---|---|---|---|---|---|
 | `TypeTreeNode` | node with `m_Level`, `m_Type`, `m_Name`, `m_ByteSize`, `m_Version`, `m_Children`, `m_TypeFlags`, `m_VariableCount`, `m_Index`, `m_MetaFlag`, `m_RefTypeHash` (`:52-64`, `:70`) | A | L1 | `test_dump.py` tables_nodes_and_entries_follow_unitypy | verified P0 (L1); impl P1 |
 | `TypeTreeNode.parse` | old format, stack-based, version gates of section 7.1 (`:78-109`) | A | L1 | `test_dump.py` tables_nodes_and_entries_follow_unitypy | verified P0 (L1); impl P4 |
-| `TypeTreeNode.parse_blob` | blob rows under a hidden root; only the root's first child is kept; offsets with the high bit index the TPK's whole common-string table (`:111-154`) | A | L1 | `test_dump.py` type_indices_and_blob_trees_follow_python | verified P0 (L1); impl P1 |
+| `TypeTreeNode.parse_blob` | blob rows under a hidden root; only the root's first child is kept; offsets with the high bit index the TPK's whole common-string table, and an offset missing from it becomes its decimal text (`:111-154`, `:129`) | A | L1 | `test_dump.py` type_indices_and_blob_trees_follow_python | verified P0 (L1); impl P1 |
 | `TypeTreeNode.from_list` | builds a tree from node dicts (needs `m_Level`, `m_Type`, `m_Name`; byte size and version default to 0) or nodes (`:156-188`) | A | API | planned: provider suite | planned (P3) |
 | `TypeTreeNode.traverse` | pre-order (`:71-76`) | A | API | planned: binding | planned (P3) |
 | `TypeTreeNode.get_name_peek_node` | see `ObjectReader.peek_name` (`:190-211`) | A | API | planned: peek suite | planned (P3) |
@@ -362,7 +364,7 @@ Lines are in `helpers/UnityVersion.py`. `CANONICAL_DUMP.md` section 4.2 gives th
 | `UnityVersion.type` | `UnityVersionType` of the type byte; raises `ValueError` for bytes 6-254 (`:40-42`) | A | L1 | `test_dump.py` version_strings_pack_as_unitypy_packs_them | verified P0 (L1); impl P1 |
 | `UnityVersion.type_str`, `UnityVersion.postfix` | the original type character and trailing text (`:44-50`) | A | API | planned: binding | planned (P3) |
 | `UnityVersionType` | `a b c f p x u` = 0-5, 255 (`:13-20`) | A | L1 | `test_unitypy_boost.py` version_packing | verified P0 (L1); impl P1 |
-| `str(UnityVersion)` | above 5.x drops the build and its dot: `2019.4.15f1` prints `2019.4f1` (`:90-94`); section 19.2 | A | API | planned: binding | planned (P3) |
+| `str(UnityVersion)` | above 5.x drops the build and its dot: `2019.4.15f1` prints `2019.4f1`, and `2018.4.36` (no type) prints `2018.4f0`; 5.x and below drop the type and its number: `5.6.7f1` prints `5.6.7` (`:90-94`); section 19.2 | A | API | planned: binding | planned (P3) |
 
 ## 12. UnityCN and the decryptor
 
@@ -372,7 +374,7 @@ Lines are in `helpers/ArchiveStorageManager.py`.
 |---|---|---|---|---|---|
 | encryption flag | `UsesAssetBundleEncryption` is `0x200` in `ArchiveFlagsOld` and `0x1400` in `ArchiveFlags` (`enums/BundleFile.py:12-26`); a set flag builds a decryptor (`files/BundleFile.py:123-124`) | A | L1 | `test_dump.py` bundle_layouts_names_and_child_failures | verified P0 (L1); impl P3 |
 | `ArchiveStorageManager.set_assetbundle_decrypt_key` | a 16-byte key, `str` encoded with surrogateescape; else `ValueError` (`:16-22`) | A | API | planned: UnityCN samples | planned (P3) |
-| `ArchiveStorageDecryptor` | u32 unknown, data/key vectors and signature vectors (`:62-72`); no key raises `LookupError` (`:74-85`); the AES-ECB signature must equal `#$unity3dchina!@` (`:87-89`); index and substitute tables from the decrypted key (`:91-94`) | A | L1 | planned: UnityCN samples | planned (P3) |
+| `ArchiveStorageDecryptor` | u32 unknown, data/key vectors and signature vectors (`:62-72`); no key (`ArchiveStorageManager.DECRYPT_KEY`) raises `LookupError` (`:74-85`); the AES-ECB signature must equal `ArchiveStorageManager.UNITY3D_SIGNATURE`, `#$unity3dchina!@`, else a plain `Exception` (`:12`, `:87-89`); index and substitute tables from the decrypted key (`:91-94`) | A | L1 | planned: UnityCN samples | planned (P3) |
 | `ArchiveStorageDecryptor.decrypt_block` | UnityPyBoost's `decrypt_block` when present (`:96-98`), else the Python loop (`:100-107`) | A | L1 | planned: UnityCN samples | planned (P3) |
 | `UnityPyBoost.decrypt_block` | the C version of the loop | A | L1 | planned: UnityCN samples | planned (P3) |
 | `ArchiveStorageDecryptor.decrypt`, `ArchiveStorageDecryptor.decrypt_byte` | the LZ4-token-aware byte decryption (`:109-143`) | A | L1 | planned: UnityCN samples | planned (P3) |
@@ -387,12 +389,12 @@ Lines are in `streams/EndianBinaryReader.py` and `streams/EndianBinaryWriter.py`
 
 | item | UnityPy 1.25.2 | tier | level | test | status |
 |---|---|---|---|---|---|
-| `EndianBinaryReader` | picks a memoryview, stream or local-file reader by input type; default endian `>` (`EndianBinaryReader.py:33-69`) | — | — | — | n/a |
-| `EndianBinaryReader_Memoryview`, `EndianBinaryReader_Streamable`, `EndianBinaryReader_Streamable_LocalFile` | the three readers (`EndianBinaryReader.py:231-332`) | — | — | — | n/a |
-| `EndianBinaryReader.memory_read_func`, `EndianBinaryReader.stream_read_func` | the generated primitive readers (`EndianBinaryReader.py:335-349`) | — | — | — | n/a |
-| strings to NUL | surrogate-escaped UTF-8, at most 32767 bytes; with no NUL in reach the memory reader returns 32767 bytes, or raises at the end (`EndianBinaryReader.py:275-284`) | A | L1 | `test_dump.py` l0_detection_and_name_rules | verified P0 (L1); impl P1 |
-| aligned strings | a length outside `0 < n ≤ remaining` reads `""` (`EndianBinaryReader.py:266-273`) | A | L2 | `test_unitypy_boost.py` error_kinds | verified P0 (L2); impl P1 |
-| `EndianBinaryWriter` | default endian `>`; `write_string_to_null` and `write_aligned_string` encode with surrogateescape (`EndianBinaryWriter.py:9-130`) | A | L3 | `test_dump.py` resave_aligns_after_every_aligned_array_element | verified P0 (L3); impl P3 |
+| `EndianBinaryReader` | picks a memoryview, stream or local-file reader by input type; default endian `>` (`streams/EndianBinaryReader.py:33-69`) | — | — | — | n/a |
+| `EndianBinaryReader_Memoryview`, `EndianBinaryReader_Streamable`, `EndianBinaryReader_Streamable_LocalFile` | the three readers (`streams/EndianBinaryReader.py:231-332`) | — | — | — | n/a |
+| `EndianBinaryReader.memory_read_func`, `EndianBinaryReader.stream_read_func` | the generated primitive readers (`streams/EndianBinaryReader.py:335-349`) | — | — | — | n/a |
+| strings to NUL | surrogate-escaped UTF-8, at most 32767 bytes; with no NUL in reach the memory reader returns 32767 bytes without consuming a NUL, or, when the window reaches the end, raises a plain `Exception` "String not terminated" (`streams/EndianBinaryReader.py:275-284`; `EndianBinaryReader.reNot0` is the search) | A | L1 | `test_dump.py` l0_detection_and_name_rules | verified P0 (L1); impl P1 |
+| aligned strings | a length outside `0 < n ≤ remaining` reads `""` (`streams/EndianBinaryReader.py:266-273`) | A | L2 | `test_unitypy_boost.py` error_kinds | verified P0 (L2); impl P1 |
+| `EndianBinaryWriter` | default endian `>`; `write_string_to_null` and `write_aligned_string` encode with surrogateescape (`streams/EndianBinaryWriter.py:9-130`) | A | L3 | `test_dump.py` resave_aligns_after_every_aligned_array_element | verified P0 (L3); impl P3 |
 
 ## 14. Classes
 
@@ -422,7 +424,7 @@ Every class in `classes/generated.py` is listed in Appendix A. They are attrs re
 | `generated.unitypy_define` | applies attrs `define` with temporarily rewritten bases (`classes/generated.py:26-44`) | — | — | — | n/a |
 | `ClassIDType` | an `ExtendableEnum` of 368 class ids; an unknown id becomes `Unknown (N)` instead of raising (`enums/ClassIDType.py:5`, `enums/ExtendableEnum.py:6-19`) | A | L1 | `test_dump.py` object_records_follow_the_table_and_the_parse | verified P0 (L1); impl P1 |
 | `ExtendableEnum` | the base that adds unknown members (`enums/ExtendableEnum.py:6-19`) | — | — | — | n/a |
-| class map | `classes/ClassIDTypeToClassMap.py` maps 367 class ids to generated classes (`:720`); `ObjectReader.get_class` reads it | A | API | planned: binding | planned (P3) |
+| class map | `classes/ClassIDTypeToClassMap.py` maps 358 of the 368 class ids to generated classes (`classes/ClassIDTypeToClassMap.py:720`); `ObjectReader.get_class` reads it | A | API | planned: binding | planned (P3) |
 
 ### 14.2 Classes with special handling
 
@@ -431,10 +433,10 @@ Every class in `classes/generated.py` is listed in Appendix A. They are attrs re
 | `Texture2D.image` | getter `Texture2DConverter.get_image_from_texture2d`; setter `set_image` (`classes/legacy_patch/Texture2D.py:8-11`, `:78`) | A | L5 | planned: L5 goldens per format (section 17) | planned (P1) |
 | `Texture2D.get_image_data` | `image_data` when set, else `m_StreamData` through `ResourceReader.get_resource_data`, else `ValueError` (`classes/legacy_patch/Texture2D.py:63-75`) | A | L5 | planned: `.resS` texture fixture | planned (P1) |
 | `Texture2D.set_image` | section 18 | | | | |
-| `Texture2DArray.images` | `GraphicsFormat(m_Format)` (an unknown value raises `ValueError`) through `GRAPHICS_TO_TEXTURE_MAP` (unmapped raises `NotImplementedError`); data from `image_data` or `m_StreamData`; `m_Depth` slices of `m_DataSize // m_Depth`; decoded with platform 0 and no blob, so no Switch or Xbox handling (`classes/legacy_patch/Texture2DArray.py:12-43`, `enums/GraphicsFormat.py:179-277`) | A | L5 | planned: array fixture | planned (P3) |
+| `Texture2DArray.images` | `GraphicsFormat(m_Format)` (an unknown value raises `ValueError`) through `GraphicsFormat.GRAPHICS_TO_TEXTURE_MAP` (unmapped raises `NotImplementedError`); data from `image_data`, and from `m_StreamData` only when `image_data is None`, which a parsed array never is: a streamed array's empty TypelessData reads as `b""`, so every slice raises `ValueError` "Texture2D has no image data" (checked in the oracle on 2026-10-28; section 19.2); `m_Depth` slices of `m_DataSize // m_Depth`; decoded with platform 0 and no blob, so no Switch or Xbox handling (`classes/legacy_patch/Texture2DArray.py:12-43`, `:20-21`, `enums/GraphicsFormat.py:179-277`) | A, C | L5 | planned: array fixture | planned (P3) |
 | `Sprite.image` | `SpriteHelper.get_image_from_sprite` (`classes/legacy_patch/Sprite.py:4-10`); section 15.2 | A | L5 | planned: sprite goldens | planned (P1) |
-| `SpriteAtlas` | no patch: `SpriteHelper.get_image_from_sprite` dereferences `m_SpriteAtlas`, or finds an atlas in the same file whose peeked name equals `m_AtlasTags[0]`, then takes `m_RenderDataMap[m_RenderDataKey]` (`export/SpriteHelper.py:63-81`) | A | L5 | planned: sprite goldens | planned (P1) |
-| `SpriteRenderData` | the sprite's own render data when there is no atlas; its mesh feeds `MeshHandler` (`export/SpriteHelper.py:80-81`, `:117`) | A | L5 | planned: sprite goldens | planned (P1) |
+| `SpriteAtlas` | no patch: `SpriteHelper.get_image_from_sprite` dereferences `m_SpriteAtlas`, or finds an atlas in the same file whose peeked name equals `m_AtlasTags[0]`, then takes the first `m_RenderDataMap` entry whose key equals `m_RenderDataKey`; a key the atlas lacks raises `StopIteration` (`export/SpriteHelper.py:63-81`, `:78`) | A | L5 | planned: sprite goldens | planned (P1) |
+| `SpriteRenderData` | the sprite's own render data when there is no atlas; with or without an atlas, the tight-packing mesh always comes from the sprite's own `m_RD` (`export/SpriteHelper.py:80-81`, `:117`) | A | L5 | planned: sprite goldens | planned (P1) |
 | `Mesh.export` | `MeshExporter.export_mesh(self, format)` (`classes/legacy_patch/Mesh.py:4-8`) | A | L6 | planned: OBJ goldens | planned (P3) |
 | `Renderer.export` | `MeshRendererExporter.export_mesh_renderer(self, dir)`, inherited by `MeshRenderer` and `SkinnedMeshRenderer` (`classes/legacy_patch/Renderer.py:4-8`) | C | L6 | planned: divergence test | planned (P3) |
 | `AudioClip.extension` | `AUDIO_TYPE_EXTEMSION.get(m_CompressionFormat, ".audioclip")`; the dict mixes `AudioType` and `AudioCompressionFormat` keys, so equal values collide and the later one wins (`classes/legacy_patch/AudioClip.py:5-6`, `enums/Audio.py:33-56`) | A | API | planned: binding | planned (P3) |
@@ -443,7 +445,7 @@ Every class in `classes/generated.py` is listed in Appendix A. They are attrs re
 | `GameObject.m_Components` | `[]` for `None`; `ComponentPair.component` for each pair; an empty list raises `IndexError`, and old `(classID, PPtr)` tuples raise `AttributeError` (`classes/legacy_patch/GameObject.py:9-15`); section 19.2 | A | API | planned: binding | planned (P3) |
 | `GameObject.m_Animator`, `GameObject.m_Animation`, `GameObject.m_Transform`, `GameObject.m_MeshRenderer`, `GameObject.m_SkinnedMeshRenderer`, `GameObject.m_MeshFilter` | the first component whose dereferenced type matches, else `None` (`classes/legacy_patch/GameObject.py:18-33`) | A | L1 (env) | planned: binding | planned (P3) |
 | `Transform` | no special handling; reached through `GameObject.m_Transform`; read through its typetree | A | L2 | corpus dump | verified P0 (L2); impl P1 |
-| `Material` | no patch; `MeshRendererExporter.export_material` reads `m_SavedProperties` (`export/MeshRendererExporter.py:106-245`) | A, C | L6 | planned: MTL goldens | planned (P3) |
+| `Material` | no patch; `MeshRendererExporter.export_material` reads `m_SavedProperties` (`export/MeshRendererExporter.py:106-189`) | A, C | L6 | planned: MTL goldens | planned (P3) |
 | `MonoBehaviour` | without an embedded tree: the TPK's head plus `Environment.typetree_generator` (`files/ObjectReader.py:300-304`); the extractor writes it as JSON (section 15.7) | A | L2, L7 | corpus dump (embedded trees) | verified P0 (L2); impl P1 |
 | `MonoScript` | read to build `{namespace}.{class}` for the generator (`files/ObjectReader.py:339-346`) | A | L2 | corpus dump | verified P0 (L2); impl P1 |
 | `AssetBundle` | parsed while loading for `m_Container` and `m_PreloadTable` (`files/SerializedFile.py:316-324`, `helpers/ContainerHelper.py:21-49`) | A | L1 | `test_dump.py` samples | verified P0 (L1); impl P1 |
@@ -477,7 +479,7 @@ Lines are in `export/Texture2DConverter.py`. Section 17 has the per-format detai
 | output flip | `flip=True` by default: every decoded image is flipped top to bottom (`:317-318`) | A | L5 | planned: L5 goldens | planned (P1) |
 | `Texture2DConverter.get_compressed_image_size` | pads to the block: ASTC by name, `DXT`/`BC`/`ETC`/`EAC` 4×4, PVRTC 8×4 (2 bpp) or 4×4; no padding for any other name, ATC included (`:22-50`) | A | L5 | planned: NPOT goldens | planned (P1) |
 | `Texture2DConverter.pad_image` | pads with the last column and row (NEAREST) and the corner pixel (`:53-80`) | A | L5 | planned: `set_image` round trip | planned (P3) |
-| `Texture2DConverter.swap_bytes_for_xbox` | swaps byte pairs for `XBOX_SWAP_FORMATS` on XBOX360 (`:323-328`, `:569`) | A | L5 | planned: Xbox fixture | planned (P3) |
+| `Texture2DConverter.swap_bytes_for_xbox` | swaps byte pairs for `Texture2DConverter.XBOX_SWAP_FORMATS` on XBOX360, first of all, so a crunched texture's crunch stream is swapped before it is unpacked (`:274-275`, `:323-328`, `:569`) | A | L5 | planned: Xbox fixture | planned (P3) |
 | `Texture2DConverter.pillow` | `Image.frombytes(mode, size, data, codec, args)`, then an optional channel reorder (`:331-344`) | A | L5 | planned: L5 goldens | planned (P1) |
 | `Texture2DConverter.atc` | texture2ddecoder ATC, BGRA to RGBA (`:347-353`) | A | L5 | planned: L5 goldens | planned (P3) |
 | `Texture2DConverter.astc` | astcenc into `U8`; data shorter than the block count raises `ValueError` (`:356-366`) | A | L5 | planned: L5 goldens | planned (P3) |
@@ -486,8 +488,8 @@ Lines are in `export/Texture2DConverter.py`. Section 17 has the per-format detai
 | `Texture2DConverter.pvrtc` | texture2ddecoder PVRTC, 2 or 4 bpp, BGRA to RGBA (`:400-402`) | A | L5 | planned: L5 goldens | planned (P3) |
 | `Texture2DConverter.etc` | texture2ddecoder ETC1, ETC2, ETC2 A1, ETC2 A8 (`:405-417`) | A | L5 | planned: L5 goldens | planned (P3) |
 | `Texture2DConverter.eac` | texture2ddecoder EAC R, R signed, RG, RG signed (`:420-432`) | A | L5 | planned: L5 goldens | planned (P3) |
-| `Texture2DConverter.half` | `int(half * 256)` per value, `len(codec)` values per pixel, and `CONV_TABLE` always makes `codec` the string `"raw"`, so three; values ≥ 1.0, negative or NaN raise (`:435-447`) | B, C | L5 | section 17 | planned (P3) |
-| `Texture2DConverter.rg` | declared `(data, w, h, mode, codec, args)`, but `CONV_TABLE` passes `("RGB", "raw", <codec>)`, so `codec` is `"raw"` and `RG_PADDING_MAP["raw"]` raises `KeyError` (`:450-468`) | B | L5 | section 17 | planned (P3) |
+| `Texture2DConverter.half` | `int(half * 256)` per value, truncated toward zero, `len(codec)` values per pixel, and `Texture2DConverter.CONV_TABLE` always makes `codec` the string `"raw"`, so three; a value whose result falls outside 0-255 (1.0 and above, -1/256 and below) or a NaN raises `ValueError`, an infinity `OverflowError`, and data that runs out `struct.error` (`:435-447`) | B, C | L5 | section 17 | planned (P3) |
+| `Texture2DConverter.rg` | declared `(data, w, h, mode, codec, args)`, but `CONV_TABLE` passes `("RGB", "raw", <codec>)`, so `codec` is `"raw"` and `Texture2DConverter.RG_PADDING_MAP["raw"]` raises `KeyError` (`:450-468`) | B | L5 | section 17 | planned (P3) |
 | `Texture2DConverter.rgb9e5float` | assigns floats into a `bytearray`, which raises `TypeError` (`:471-484`) | B | L5 | section 17 | planned (P3) |
 | `Texture2DConverter.image_to_texture2d` | maps the target format to the format it writes (section 17, `set_image` column), flips, pads, compresses or packs, and swizzles for Switch (`:118-234`) | A | L5 | planned: `set_image` round trip | planned (P3) |
 | `Texture2DConverter.compress_etcpak` | etcpak per format; BC7 passes `None` parameters, which etcpak 0.9.14 rejects (`:83-103`, `:95`) | A, C | L5 | planned: `set_image` round trip | planned (P3) |
@@ -504,7 +506,7 @@ Lines are in `export/SpriteHelper.py`.
 | `SpriteHelper.get_image` | decodes the texture unflipped; with an alpha texture, merges its first band as alpha; caches in the SerializedFile's `_cache` by path id only (`:44-59`) | A, C | L5 | planned: sprite goldens | planned (P1) |
 | `SpriteHelper.get_image_from_sprite` | atlas lookup (section 14.2); crop by `textureRect`, which Pillow rounds half to even; flips and rotations when packed; tight packing goes through the mesh; a final vertical flip (`:62-127`) | A | L5 | planned: sprite goldens | planned (P1) |
 | `SpriteHelper.mask_sprite` | tight sprites whose UVs are all zero: a mode `1` polygon mask from the vertices, offset to the minimum and scaled by `m_PixelsToUnits`; composite for RGBA, `putalpha` otherwise (`:130-170`) | A | L5 | planned: sprite goldens | planned (P1) |
-| `SpriteHelper.render_sprite_mesh` | tight sprites with UVs: drops the constant axis (raises for 3D), rounds positions and UVs, copies each triangle (`:173-224`) | A | L5 | planned: sprite goldens | planned (P1) |
+| `SpriteHelper.render_sprite_mesh` | tight sprites with UVs: drops the constant axis (raises for 3D), rounds positions and UVs (half to even), copies each triangle of the first submesh only, returning inside the loop; no triangles raises `ValueError` (`:173-224`, `:222`) | A | L5 | planned: sprite goldens | planned (P1) |
 | `SpriteHelper.copy_triangle` | a triangle of the same shape is pasted through a polygon mask; any other goes through an affine transform solved by numpy (`:227-301`) | A, Tol | L5 | planned: sprite goldens, affine metric | planned (P1) |
 | `SpriteHelper.linalg_solve`, `SpriteHelper.get_matrix_inverse`, `SpriteHelper.get_matrix_determinant`, `SpriteHelper.get_matrix_minor`, `SpriteHelper.transpose_matrix` | the solver used without numpy (`:304-346`); the oracle has numpy | — | — | — | n/a |
 
@@ -532,7 +534,7 @@ Lines are in `helpers/MeshHelper.py` unless named.
 | `PackedBitVector.unpack_ints` | little-endian bit stream, `m_BitSize` bits per item from `start` (`helpers/PackedBitVector.py:20-65`) | A | L6 | planned: mesh numbers | planned (P1) |
 | `PackedBitVector.unpack_floats` | bit size 0 repeats `m_Start`; else `x * range / (2^bits - 1) + start` in f64 (`helpers/PackedBitVector.py:68-85`) | A | L6 | planned: mesh numbers | planned (P1) |
 | `PackedBitVector.reshape` | rows of 1D or 2D shape (`helpers/PackedBitVector.py:7-17`) | — | — | — | n/a |
-| `VertexChannelFormat`, `VertexFormat2017`, `VertexFormat` | struct codes per format; UNorm and SNorm read as raw integers (`enums/VertexFormat.py:4-80`) | A, C | L6 | planned: mesh numbers | planned (P1) |
+| `VertexChannelFormat`, `VertexFormat2017`, `VertexFormat` | struct codes per format in `VertexFormat.VERTEX_CHANNEL_FORMAT_STRUCT_TYPE_MAP`, `VertexFormat.VERTEX_FORMAT_2017_STRUCT_TYPE_MAP` and `VertexFormat.VERTEX_FORMAT_STRUCT_TYPE_MAP`; UNorm, SNorm and the byte colour formats read as raw integers (`enums/VertexFormat.py:4-80`) | A, C | L6 | planned: mesh numbers | planned (P1) |
 | `MeshTopology`, `GfxPrimitiveType` | topology enums (`enums/MeshTopology.py`, `enums/GfxPrimitiveType.py`) | A | L6 | planned: mesh numbers | planned (P1) |
 
 ### 15.4 MeshExporter and MeshRendererExporter
@@ -540,10 +542,10 @@ Lines are in `helpers/MeshHelper.py` unless named.
 | item | UnityPy 1.25.2 | tier | level | test | status |
 |---|---|---|---|---|---|
 | `MeshExporter.export_mesh` | `"obj"` only, else `NotImplementedError` (`export/MeshExporter.py:11-14`) | A | L6 | planned: OBJ goldens | planned (P3) |
-| `MeshExporter.export_mesh_obj` | `g name`, optional `mtllib`; `v` with x negated and `{:.9G}`, `nan` written `0`; `vt`; `vn` with x negated; per submesh `g name_i`, optional `usemtl`, faces `c/c/c b/b/b a/a/a` 1-based; returns `False` without vertices (`export/MeshExporter.py:17-56`) | A | L6 | planned: OBJ goldens | planned (P3) |
+| `MeshExporter.export_mesh_obj` | `g name`, optional `mtllib`; `v` with x negated, `vt`, and `vn` with x negated, every number as `{:.9G}`: upper-case `1E-10`, `-0` for a negated zero, and `NAN`/`INF`, because the `.replace("nan", "0")` meant for NaN never matches the upper-case text (checked in the oracle on 2026-10-28; section 19.2); per submesh `g name_i`, optional `usemtl`, faces `c/c/c b/b/b a/a/a` 1-based; returns `False` without vertices (`export/MeshExporter.py:17-56`, `:33`) | A | L6 | planned: OBJ goldens | planned (P3) |
 | `MeshRendererExporter.get_mesh` | `SkinnedMeshRenderer.m_Mesh`, or the GameObject's MeshFilter mesh (`export/MeshRendererExporter.py:25-45`) | A | L6 | planned: OBJ goldens | planned (P3) |
 | `MeshRendererExporter.export_mesh_renderer` | materials per submesh offset by `m_StaticBatchInfo.firstSubMesh` or `min(m_SubsetIndices)`; writes each material texture as `{name or key}.png`, the `.obj` and the `.mtl` (`export/MeshRendererExporter.py:48-103`) | C | L6 | planned: divergence test | planned (P3) |
-| `MeshRendererExporter.export_material` | `newmtl`; `Ka`/`Kd`/`Ks` from `_SColor`/`_Color`/`_SpecularColor` with defaults, `Tr`, `Ns`, all `{:.4f}`; texture maps by key (`export/MeshRendererExporter.py:106-245`) | A, C | L6 | planned: MTL goldens | planned (P3) |
+| `MeshRendererExporter.export_material` | `newmtl`; `Ka`/`Kd`/`Ks` from `_SColor`/`_Color`/`_SpecularColor` with defaults, `Tr`, `Ns`, all `{:.4f}`; texture maps by key (`export/MeshRendererExporter.py:106-189`). Only the defaults ever print: a material holding any of the three colours raises `AttributeError`, because `clt` reads `color.R` and `ColorRGBA` has `r g b a` (`export/MeshRendererExporter.py:110`; `classes/math.py:86-91`), and one holding any texture raises `ValueError` (`export/MeshRendererExporter.py:168`); both checked in the oracle on 2026-10-28 | A, C | L6 | planned: MTL goldens | planned (P3) |
 
 ### 15.5 ShaderConverter
 
@@ -551,7 +553,7 @@ Lines are in `export/ShaderConverter.py`. `export/__init__.py` does not import i
 
 | item | UnityPy 1.25.2 | tier | level | test | status |
 |---|---|---|---|---|---|
-| `ShaderConverter.export_shader` | 5.3-5.4 `m_SubProgramBlob` through LZ4 with `GpuProgramIndex N` substituted; 5.5 and up `compressedBlob`; else `m_Script` as UTF-8; every result starts with the `NOTE: This is *not* a valid shader file` header (`:30-55`) | A, C | L7 | planned: shader text goldens | planned (P3) |
+| `ShaderConverter.export_shader` | 5.3-5.4 `m_SubProgramBlob` through LZ4, read big-endian (the reader's default), with `GpuProgramIndex N` substituted; 5.5 and up `compressedBlob`, read little-endian (`:84`); else `m_Script` as UTF-8; every result starts with `ShaderConverter.HEADER`, the `NOTE: This is *not* a valid shader file` banner (`:30-55`) | A, C | L7 | planned: shader text goldens | planned (P3) |
 | `ShaderConverter.ConvertSerializedShader` | one LZ4 slice per platform, nested-list entries take their first item, stops at the shorter length list (`:58-89`) | A | L7 | planned: shader text goldens | planned (P3) |
 | `ShaderConverter.ConvertSerializedShaderParsedForm` | `Shader`, properties, subshaders, fallback, custom editor (`:92-113`) | A | L7 | planned: shader text goldens | planned (P3) |
 | `ShaderConverter.ConvertSerializedSubShader` | LOD, tags, passes (`:116-130`) | A | L7 | planned: shader text goldens | planned (P3) |
@@ -560,11 +562,11 @@ Lines are in `export/ShaderConverter.py`. `export/__init__.py` does not import i
 | `ShaderConverter.ConvertSerializedShaderState` | name, LOD, tags, cull, ZTest, ZWrite, colour mask, blend, stencil, fog (`:230-292`) | A | L7 | planned: shader text goldens | planned (P3) |
 | `ShaderConverter.ConvertSerializedShaderRTBlendState` | an empty string; its caller is commented out (`:295-298`) | — | L7 | — | n/a |
 | `ShaderConverter.ConvertSerializedTagMap` | `Tags { "k" = "v" }` (`:301-311`) | A | L7 | planned: shader text goldens | planned (P3) |
-| `ShaderConverter.ConvertSerializedProperties`, `ShaderConverter.ConvertSerializedProperty` | property block; an unknown property type raises `ValueError` (`:314-372`) | A | L7 | planned: shader text goldens | planned (P3) |
-| `ShaderConverter.CheckGpuProgramUsable` | platform/program-type table; NaCl, Flash, PSM and unknown platforms raise `NotImplementedError` (`:375-493`) | A | L7 | planned: shader text goldens | planned (P3) |
+| `ShaderConverter.ConvertSerializedProperties`, `ShaderConverter.ConvertSerializedProperty` | property block; a property type other than Color, Vector, Float, Range and Texture raises `ValueError`, Int (5, from Unity 2021.1) included (`:314-372`, `:369`; the enum stops at 4, `enums/SerializedPropertyType.py:4-9`) | A, C | L7 | planned: shader text goldens | planned (P3) |
+| `ShaderConverter.CheckGpuProgramUsable` | platform/program-type table; NaCl, Flash and PSM raise `NotImplementedError`, and so does every platform the table lacks: PS3, `kShaderCompPlatformNone` and anything above 20 (`:375-493`) | A | L7 | planned: shader text goldens | planned (P3) |
 | `ShaderConverter.GetPlatformString` | platform names, `unknown` otherwise (`:496-540`) | A | L7 | planned: shader text goldens | planned (P3) |
 | `ShaderProgram` | sub-program table, entry size 12 from 2019.3 and 8 before (`:543-568`) | A | L7 | planned: shader text goldens | planned (P3) |
-| `ShaderSubProgram` | sub-program versions 201509030 to 202012090: keywords, local keywords in `[201806140, 202012090)`, code; GLSL, Metal and console code as text, DXBC and SPIR-V as comments (`:571-689`) | A, C | L7 | planned: shader text goldens; divergence test | planned (P3) |
+| `ShaderSubProgram` | sub-program versions 201509030 to 202012090: keywords, local keywords in `[201806140, 202012090)`, code; GLSL, Metal and console code as text, DX9 and DX11 as a `// shader disassembly not supported on DXBC` comment, SPIR-V as nothing, any other type as a `//shader disassembly not supported on {type}` comment (`:571-689`); an unknown program type raises `ValueError` (`:589`) | A, C | L7 | planned: shader text goldens; divergence test | planned (P3) |
 | `PassType`, `SerializedPropertyType`, `ShaderCompilerPlatform`, `ShaderGpuProgramType`, `TextureDimension` | enums the converter reads (`enums/PassType.py`, `enums/SerializedPropertyType.py`, `enums/ShaderCompilerPlatform.py`, `enums/ShaderGpuProgramType.py`, `enums/TextureDimension.py`); an unknown program type raises `ValueError` (`:589`) | A | L7 | planned: shader text goldens | planned (P3) |
 
 ### 15.6 TextureSwizzler
@@ -586,19 +588,20 @@ Lines are in `tools/extractor.py`. Level L9 is its output tree.
 
 | item | UnityPy 1.25.2 | tier | level | test | status |
 |---|---|---|---|---|---|
-| `extractor.extract_assets` | loads the source; by container (default) in `EXPORT_TYPES` priority, paths split on `/` minus `ignore_first_container_dirs`; or every object with its name appended (`:81-157`) | A | L9 | planned: extractor tree | planned (P3) |
-| `extractor.export_obj` | export function by type (unknown types as typetree JSON when asked); the filter sees the parsed object; `_PathID` appended on request (`:25-78`) | A | L9 | planned: extractor tree | planned (P3) |
+| `extractor.extract_assets` | loads the source; by container (default) in `extractor.EXPORT_TYPES` priority (a stable sort), paths split on `/` minus `ignore_first_container_dirs`, every entry exported with no de-duplication, so a later entry with the same path overwrites an earlier one (a Texture2D its Sprite's PNG); or every object with its name appended, skipping what an earlier export returned. Nothing catches a failure: the first export that raises ends the run (`:81-157`). | A, C (proposed, section 19.2) | L9 | planned: extractor tree | planned (P3) |
+| `extractor.export_obj` | export function by type (unknown types through `exportMonoBehaviour` when asked); the filter sees the parsed object; the path's own extension (the container's, or one in the object's name) is split off and handed to the export function, which keeps it; `append_path_id` appends `_None`, not the path id, because it reads `m_PathID` from the `ObjectReader`, whose attribute is `path_id` (`:25-78`, `:75`; `files/ObjectReader.py:223-225`); checked in the oracle on UnityPy's samples on 2026-10-28 | A, C (proposed, section 19.2) | L9 | planned: extractor tree | planned (P3) |
 | `extractor.exportTextAsset` | `{fp}.txt` (or the container's extension) from `m_Script` re-encoded with surrogateescape (`:165-174`) | A | L7 | planned: text fixture | planned (P3) |
 | `extractor.exportFont` | `m_FontData` as `.ttf`, or `.otf` for `OTTO`; nothing without data (`:177-187`) | A | L7 | planned: font fixture | planned (P3) |
-| `extractor.exportMesh` | `obj.export()` as UTF-8 text, so a vertex-less mesh writes `False` and raises (`:190-197`) | A | L6 | planned: OBJ goldens | planned (P3) |
+| `extractor.exportMesh` | `obj.export()` as UTF-8 text to `{fp}.obj`, or to the container's extension (`.asset` in UnityPy's samples), so a vertex-less mesh writes `False` and raises `TypeError` (`:190-197`) | A | L6 | planned: OBJ goldens | planned (P3) |
 | `extractor.exportShader` | `obj.export()` as UTF-8 text (`:200-207`) | A | L7 | planned: shader text goldens | planned (P3) |
-| `extractor.exportMonoBehaviour` | `json.dumps(parse_as_dict(), indent=4, ensure_ascii=False)` encoded with surrogateescape, else the raw bytes as `.bin` (`:210-224`) | A | L7 | planned: MonoBehaviour JSON goldens | planned (P3) |
-| `extractor.exportAudioClip` | one sample written as `{fp}.wav` whatever its format, several into a folder (`:227-247`) | A | L9 | planned: extractor tree | planned (P3) |
-| `extractor.exportSprite` | `sprite.image` as PNG; marks the texture and alpha texture exported (`:250-268`) | A | L5b | planned: PNG bytes | planned (P1) |
-| `extractor.exportTexture2D` | `obj.image` as PNG when `m_Width` is non-zero (`:271-281`) | A | L5b | planned: PNG bytes | planned (P1) |
-| PNG bytes | Pillow 9.5.0 `Image.save` defaults: the encoder `unityrs-imageio` matches (`DESIGN.md` section 4) | A | L5b | planned: PNG bytes | planned (P1) |
-| `extractor.exportGameObject` | crawls every reachable PPtr and exports each non-GameObject into a folder, printing failures (`:284-304`) | A | L9 | planned: extractor tree | planned (P3) |
-| `extractor.crawl_obj`, `extractor.flatten` | the crawl: PPtrs by path id alone, nested lists, tuples and dicts flattened (`:327-368`) | A | L9 | planned: extractor tree | planned (P3) |
+| `extractor.exportMonoBehaviour` | `json.dumps(parse_as_dict(), indent=4, ensure_ascii=False)` encoded with surrogateescape, else the raw bytes as `.bin` (`:210-224`). Through `export_obj` it never returns: for a MonoBehaviour it writes the JSON and then raises `AttributeError` on `obj.path_id` (`:224`), and for any other type (`export_unknown_as_typetree`) the parsed object has no `parse_as_dict` or `get_raw_data`, so it raises `AttributeError` before writing; checked in the oracle on 2026-10-28 | A, C (proposed, section 19.2) | L7 | planned: MonoBehaviour JSON goldens | planned (P3) |
+| `extractor.exportAudioClip` | one sample written as `{fp}.wav` whatever its format; several into a folder `{fp}/` as `{name}.wav`, where each name already ends in `.wav`, so `x.wav.wav` and `x-1.wav.wav` (`:227-247`) | A | L9 | planned: extractor tree | planned (P3) |
+| `extractor.exportSprite` | `sprite.image` saved as `{fp}{extension}`, Pillow choosing the format by extension, with no default: an extension-less path (every sprite in the no-container mode) raises `ValueError` "unknown file extension" (checked in the oracle on UnityPy's samples on 2026-10-28). Returns the sprite and its texture, keyed by the pointer's own file; the alpha texture never, because it reads `assets_file` from a `PPtr`, whose attribute is `assetsfile` (`:250-268`, `:264-267`) | A, C (proposed, section 19.2) | L5b | planned: PNG bytes | planned (P1) |
+| `extractor.exportTexture2D` | `obj.image` saved when `m_Width` is non-zero, as `{fp}.png` without an extension, else with the container's extension, which picks Pillow's format: `.tga` writes a TGA, `.psd` raises `KeyError`, `.jpg` raises `OSError` for RGBA (checked against Pillow 9.5.0 on 2026-10-28) (`:271-281`) | A | L5b | planned: PNG bytes | planned (P1) |
+| PNG bytes | Pillow 9.5.0 `Image.save` defaults, for the paths that end in `.png` or get it by default: the encoder `unityrs-imageio` matches (`DESIGN.md` section 4) | A | L5b | planned: PNG bytes | planned (P1) |
+| `extractor.exportGameObject` | meant to crawl every reachable PPtr and export each non-GameObject into a folder, printing failures (`:284-304`), but it always raises `AttributeError`: `crawl_obj` reads `m_PathID` from the parsed GameObject, which has none (`:350`). In container mode GameObjects sort first, so a container holding one exports nothing. Checked in the oracle on 2026-10-28. | C (proposed, section 19.2) | L9 | planned: extractor tree | planned (P3) |
+| `extractor.crawl_obj`, `extractor.flatten` | the crawl: PPtrs by path id alone, nested lists, tuples and dicts flattened (`:327-368`); a parsed object raises at `obj.m_PathID` (`:350`), and a null pointer would raise at `obj.m_Index`, which `PPtr` lacks (`:336`) | C (proposed, section 19.2) | L9 | planned: extractor tree | planned (P3) |
+| `extractor.MONOBEHAVIOUR_TYPETREES` | an empty dict nothing reads (`:324`) | — | — | — | n/a |
 
 ## 16. Audio
 
@@ -612,27 +615,27 @@ Lines are in `tools/extractor.py`. Level L9 is its output tree.
 | m4a (`ftyp` at offset 4) | returned unchanged as `{name}.m4a` (`:40-41`) | passthrough | A | L8 | planned: audio fixtures | planned (P3) |
 | anything else | `fmod_toolkit.raw_to_wav` with `m_Channels or 2` and `m_Frequency or 44100`; one WAV per subsound, `{name}.wav` or `{name}-{i}.wav` (`:43-49`) | FSB5 parser | A | L8 | planned: audio fixtures | planned (P3) |
 | FSB5 PCM8, PCM16, PCM24, PCM32 | FMOD's samples in a 44-byte RIFF header, as they are | pure Rust | Tol | L8 | planned: against FMOD | planned (P3) |
-| FSB5 PCM float | FMOD's floats converted to int16 with numpy, `clip(v * 32768)` | pure Rust | Tol | L8 | planned: against FMOD | planned (P3) |
+| FSB5 PCM float | FMOD's floats converted to int16 with numpy, `(v * 32768).clip(-32768, 32767)` truncated toward zero (fmod_toolkit 0.1.3, `fmod.py` lines 195-198) | pure Rust | Tol | L8 | planned: against FMOD | planned (P3) |
 | FSB5 Vorbis | FMOD decode to PCM | pure Rust | Tol | L8 | planned: against FMOD | planned (P3) |
 | FSB5 IMA ADPCM | FMOD decode to PCM | pure Rust | Tol | L8 | planned: against FMOD | planned (P3) |
 | FSB5 FADPCM | FMOD decode to PCM | pure Rust | Tol | L8 | planned: against FMOD | planned (P3) |
 | FSB5 MPEG | FMOD decode to PCM | optional feature | Tol | L8 | planned: against FMOD | planned (P3) |
 | FSB5 Opus | FMOD decode to PCM | optional feature | Tol | L8 | planned: against FMOD | planned (P3) |
-| any other codec (XMA, ATRAC9, VAG, HEVAG, GC ADPCM, …) | whatever the bundled `libfmod` decodes; a non-PCM result raises `NotImplementedError` | reported unsupported | gap | L8 | planned: error record | planned (P3) |
+| any other codec (XMA, ATRAC9, VAG, HEVAG, GC ADPCM, …) | whatever the bundled `libfmod` decodes; a non-PCM result raises `TypeError`, not the `NotImplementedError` fmod_toolkit means to raise, because its message concatenates a `str` and a `SOUND_FORMAT` enum (fmod_toolkit 0.1.3, `fmod.py` line 139; checked in the oracle on 2026-10-28) | reported unsupported | gap | L8 | planned: error record | planned (P3) |
 | tracker and legacy audio (IT, MOD, S3M, XM, AIFF, pre-5 MP3) | FMOD | reported unsupported | gap | L8 | planned: error record | planned (P3) |
 | `AudioClipConverter.extract_audioclip_samples` | the dispatcher above (`:13-49`) | same | A | L8 | planned: audio fixtures | planned (P3) |
 | `AudioType`, `AudioCompressionFormat` | enums (`enums/Audio.py:4-31`) | same | A | API | planned: binding | planned (P3) |
-| `AUDIO_TYPE_EXTEMSION` | extension table (`enums/Audio.py:33-56`); see `AudioClip.extension` | same | A | API | planned: binding | planned (P3) |
+| `Audio.AUDIO_TYPE_EXTEMSION` | extension table (`enums/Audio.py:33-56`); see `AudioClip.extension` | same | A | API | planned: binding | planned (P3) |
 
 ## 17. TextureFormat matrix
 
-One row per `TextureFormat` value (78; 37-40 are unassigned). Lines are in `export/Texture2DConverter.py` unless named; the conversion table is `CONV_TABLE` (`:487-566`).
+One row per `TextureFormat` value (78; 37-40 are unassigned). Lines are in `export/Texture2DConverter.py` unless named; the conversion table is `Texture2DConverter.CONV_TABLE` (`:487-566`).
 
 **Columns.**
-- **decoder** and **conversion**: what `parse_image_data` runs and how the bytes become pixels. Pillow's `bcn` is `BcnDecode.c` in Pillow 9.5.0; texture2ddecoder (1.0.5) returns BGRA, which Pillow reads as RGBA; ASTC goes through astcenc (astc-encoder-py 0.1.12) with the LDR profile and `USE_DECODE_UNORM8` (`:369-387`).
+- **decoder** and **conversion**: what `parse_image_data` runs and how the bytes become pixels. Pillow's `bcn` is `BcnDecode.c` in Pillow 9.5.0; texture2ddecoder (1.0.5) returns BGRA, which Pillow's `BGRA` raw mode turns into RGBA; ASTC goes through astcenc (astc-encoder-py 0.1.12) with the LDR profile and `USE_DECODE_UNORM8` (`:369-387`). The pixel values quoted were checked in the oracle on 2026-10-28.
 - **mode**: the Pillow mode UnityPy returns. Every image is then flipped top to bottom (`:317-318`).
-- **gates**: `pad W×H` is the block padding before decoding and the crop after (`:22-50`, `:314-315`); `no pad` means none. `sw W×H` is the Switch texel block (`helpers/TextureSwizzler.py:73-103`), used when `TextureSwizzler.is_switch_swizzled` holds; `sw —` means a swizzled texture of that format raises `KeyError`. `xbox` swaps byte pairs on XBOX360 (`:274-275`, `:569`). `crunch` unpacks with `unpack_unity_crunch` from 2017.3 and for the two ETC crunched formats at any version, and with `unpack_crunch` before 2017.3 (`:297-306`).
-- **UnityPy 1.25.2**: the result of `parse_image_data` on an 8×8 texture of `0x30` bytes, StandaloneWindows64, version 2021.3.1f3. `works` and `wrong` return an image in the listed mode; `wrong` means the pixels are wrong (section 19). `raises` names the exception. `crunch` rows need valid crunch data and were not decoded.
+- **gates**: `pad W×H` is the block padding before decoding and the crop after (`Texture2DConverter.TEXTURE_FORMAT_BLOCK_SIZE_TABLE`, `:22-50`, `:314-315`); `no pad` means none. `sw W×H` is the Switch texel block (`TextureSwizzler.TEXTURE_FORMAT_BLOCK_SIZE_MAP`, `helpers/TextureSwizzler.py:73-103`), used when `TextureSwizzler.is_switch_swizzled` holds, in place of the block padding; `sw —` means a swizzled texture of that format raises `KeyError`. `xbox` swaps byte pairs on XBOX360, before anything else, crunch unpacking included (`:274-275`, `:569`). `crunch` unpacks with `unpack_unity_crunch` from 2017.3 and for the two ETC crunched formats at any version, and with `unpack_crunch` before 2017.3 (`:297-306`).
+- **UnityPy 1.25.2**: the result of `parse_image_data` on an 8×8 texture of `0x30` bytes, as many as a real 8×8 texture of the format holds, StandaloneWindows64, version 2021.3.1f3. `works` and `wrong` return an image in the listed mode; `wrong` means the pixels are wrong (section 19). `raises` names the exception, module-qualified when it is not a builtin. `crunch` rows need valid crunch data and were not decoded.
 - **`set_image` writes**: the format `image_to_texture2d` writes for that target from an RGBA image (`:118-234`).
 - **tier** and **status**: section 0. Tier A rows get L5 goldens against the oracle, Tier B rows an independent reference, Tier C rows a pinned divergence test; `DESIGN.md` section 5 puts BC7, DXT1, DXT5, RGBA32 and RGB24 in P1 and every other format in P3.
 
@@ -642,21 +645,21 @@ One row per `TextureFormat` value (78; 37-40 are unassigned). Lines are in `expo
 |---|---|---|---|---|---|---|---|---|---|
 | 1 | `Alpha8` | Pillow raw `A` | RGBA | (0, 0, 0, A) | no pad; sw 16×1 | works (`:489`) | `Alpha8` | A | planned (P3) |
 | 2 | `ARGB4444` | Pillow raw `RGBA;4B` | RGBA | bands reordered (2, 1, 0, 3) | no pad; sw 8×1 | works (`:490`) | `RGBA32` | A | planned (P3) |
-| 3 | `RGB24` | Pillow raw `RGB` | RGB | as stored | no pad; swizzled data is read as `RGBA32` (`:279-283`) | works (`:491`) | `RGB24` | A | planned (P1) |
+| 3 | `RGB24` | Pillow raw `RGB` | RGB | as stored | no pad; swizzled data is read as `RGBA32`, so mode RGBA (`:279-283`) | works (`:491`) | `RGB24` | A | planned (P1) |
 | 4 | `RGBA32` | Pillow raw `RGBA` | RGBA | as stored | no pad; sw 4×1 | works (`:492`) | `RGBA32` | A | planned (P1) |
 | 5 | `ARGB32` | Pillow raw `ARGB` | RGBA | alpha moved last | no pad; sw 4×1 | works (`:493`) | `RGBA32` | A | planned (P3) |
 | 6 | `ARGBFloat` | Pillow raw `RGBAF` | — | — | no pad; sw 1×1 | raises `ValueError`, unknown raw mode (`:494`) | `RGBA32` | B | planned (P3) |
-| 7 | `RGB565` | Pillow raw `BGR;16` | RGB | 5-6-5 widened by Pillow | no pad; sw 8×1; xbox | works (`:495`) | `RGB24` | A | planned (P3) |
-| 8 | `BGR24` | Pillow raw `BGR` | RGB | blue and red swapped | no pad; swizzled data is read as `BGRA32` (`:279-283`) | works (`:496`) | `RGB24` | A | planned (P3) |
+| 7 | `RGB565` | Pillow raw `BGR;16` | RGB | red from the top 5 bits; each field widened as `v * 255 / 31` (green `/ 63`), truncated: red 16 gives 131, where bit replication gives 132 | no pad; sw 8×1; xbox | works (`:495`) | `RGB24` | A | planned (P3) |
+| 8 | `BGR24` | Pillow raw `BGR` | RGB | blue and red swapped | no pad; swizzled data is read as `BGRA32`, so mode RGBA (`:279-283`) | works (`:496`) | `RGB24` | A | planned (P3) |
 | 9 | `R16` | Pillow raw `R;16` into RGB | — | — | no pad; sw 8×1 | raises `ValueError`, unknown raw mode (`:498`) | `R8` | B | planned (P3) |
 | 10 | `DXT1` | Pillow `bcn` 1 | RGBA | 1-bit alpha | pad 4×4; sw 8×4; xbox | works (`:500`) | `DXT1` | A | planned (P1) |
 | 11 | `DXT3` | Pillow `bcn` 2 | RGBA | explicit 4-bit alpha | pad 4×4; sw — | works (`:501`) | `RGBA32` | A | planned (P3) |
 | 12 | `DXT5` | Pillow `bcn` 3 | RGBA | interpolated alpha | pad 4×4; sw 4×4; xbox | works (`:502`) | `DXT5` | A | planned (P1) |
 | 13 | `RGBA4444` | Pillow raw `RGBA;4B` | RGBA | bands reordered (3, 2, 1, 0) | no pad; sw 8×1 | works (`:503`) | `RGBA32` | A | planned (P3) |
 | 14 | `BGRA32` | Pillow raw `BGRA` | RGBA | blue and red swapped | no pad; sw 4×1 | works (`:504`) | `RGBA32` | A | planned (P3) |
-| 15 | `RHalf` | `half` into Pillow mode `R` | — | — | no pad; sw — | raises `ValueError`: Pillow has no mode `R`, and values ≥ 1.0 fail first (`:505`) | `R8` | B | planned (P3) |
+| 15 | `RHalf` | `half` into Pillow mode `R` | — | — | no pad; sw — | raises `struct.error`: `half` reads three halves a pixel for the one stored, so real-sized data runs out; a value outside [0, 1) raises `ValueError` first, and Pillow's missing mode `R` (`ValueError` too) is reached only with three times the data (`:505`, `:446`) | `R8` | B | planned (P3) |
 | 16 | `RGHalf` | `rg` | — | — | no pad; sw — | raises `KeyError` `'raw'` (`:506`, `:459-468`) | `RGBA32` | B | planned (P3) |
-| 17 | `RGBAHalf` | `half` into Pillow `RGB` | RGB | three halves per pixel for four stored, each `int(h * 256)`: alpha dropped, pixels misaligned | no pad; sw — | wrong; values ≥ 1.0, negative or NaN raise `ValueError` (`:507`, `:435-447`) | `RGBA32` | C | planned (P3) |
+| 17 | `RGBAHalf` | `half` into Pillow `RGB` | RGB | three halves per pixel for four stored, each `int(h * 256)`: alpha dropped, pixels misaligned (`(.5, .25, .125, .75)` repeated gives `(128, 64, 32)`, `(192, 128, 64)`, `(32, 192, 128)`, …) | no pad; sw — | wrong; a value at 1.0 or above, at -1/256 or below, or NaN raises `ValueError`, an infinity `OverflowError` (`:507`, `:435-447`) | `RGBA32` | C | planned (P3) |
 | 18 | `RFloat` | Pillow raw `RF` into RGB | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:508`) | `R8` | B | planned (P3) |
 | 19 | `RGFloat` | `rg` | — | — | no pad; sw — | raises `KeyError` `'raw'` (`:509`) | `RGBA32` | B | planned (P3) |
 | 20 | `RGBAFloat` | Pillow raw `RGBAF` | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:510`) | `RGBA32` | B | planned (P3) |
@@ -677,9 +680,9 @@ One row per `TextureFormat` value (78; 37-40 are unassigned). Lines are in `expo
 | 35 | `ATC_RGB4` | texture2ddecoder ATC RGB | RGBA | alpha 255 | no pad; sw — | works (`:524`) | `RGB24` | A | planned (P3) |
 | 36 | `ATC_RGBA8` | texture2ddecoder ATC RGBA | RGBA | BGRA to RGBA | no pad; sw — | works (`:525`) | `RGBA32` | A | planned (P3) |
 | 41 | `EAC_R` | texture2ddecoder EAC R | RGBA | (R, 0, 0, 255) | pad 4×4; sw — | works (`:526`) | `R8` | A | planned (P3) |
-| 42 | `EAC_R_SIGNED` | texture2ddecoder EAC R signed | RGBA | (R, 0, 0, 255) | pad 4×4; sw — | works (`:527`) | `R8` | A | planned (P3) |
+| 42 | `EAC_R_SIGNED` | texture2ddecoder EAC R signed | RGBA | (R + 127, 0, 0, 255), -128 clamped to -127: base 100 gives 227, -100 gives 27 | pad 4×4; sw — | works (`:527`) | `R8` | A | planned (P3) |
 | 43 | `EAC_RG` | texture2ddecoder EAC RG | RGBA | (R, G, 0, 255) | pad 4×4; sw — | works (`:528`) | `RGBA32` | A | planned (P3) |
-| 44 | `EAC_RG_SIGNED` | texture2ddecoder EAC RG signed | RGBA | (R, G, 0, 255) | pad 4×4; sw — | works (`:529`) | `RGBA32` | A | planned (P3) |
+| 44 | `EAC_RG_SIGNED` | texture2ddecoder EAC RG signed | RGBA | (R + 127, G + 127, 0, 255) | pad 4×4; sw — | works (`:529`) | `RGBA32` | A | planned (P3) |
 | 45 | `ETC2_RGB` | texture2ddecoder ETC2 | RGBA | alpha 255 | pad 4×4; sw — | works (`:530`) | `ETC2_RGB` | A | planned (P3) |
 | 46 | `ETC2_RGBA1` | texture2ddecoder ETC2 A1 | RGBA | BGRA to RGBA | pad 4×4; sw — | works (`:531`) | `ETC2_RGBA8` | A | planned (P3) |
 | 47 | `ETC2_RGBA8` | texture2ddecoder ETC2 A8 | RGBA | BGRA to RGBA | pad 4×4; sw — | works (`:532`) | `ETC2_RGBA8` | A | planned (P3) |
@@ -695,8 +698,8 @@ One row per `TextureFormat` value (78; 37-40 are unassigned). Lines are in `expo
 | 57 | `ASTC_RGBA_8x8` | astcenc LDR | RGBA | as decoded | pad 8×8; sw 8×8 | works (`:542`) | `ASTC_RGBA_8x8` | A | planned (P3) |
 | 58 | `ASTC_RGBA_10x10` | astcenc LDR | RGBA | as decoded | pad 10×10; sw 10×10 | works (`:543`) | `ASTC_RGBA_10x10` | A | planned (P3) |
 | 59 | `ASTC_RGBA_12x12` | astcenc LDR | RGBA | as decoded | pad 12×12; sw 12×12 | works (`:544`) | `ASTC_RGBA_12x12` | A | planned (P3) |
-| 60 | `ETC_RGB4_3DS` | texture2ddecoder ETC1 | RGBA | the 3DS block layout is ignored | pad 4×4; sw — | wrong (`:545`) | `ETC_RGB4_3DS` holding plain ETC1 | C | planned (P3) |
-| 61 | `ETC_RGBA8_3DS` | texture2ddecoder ETC1 | RGBA | the 3DS layout and the alpha are ignored | pad 4×4; sw — | wrong (`:546`) | `RGBA32` | C | planned (P3) |
+| 60 | `ETC_RGB4_3DS` | texture2ddecoder ETC1 | RGBA | plain ETC1 blocks in plain order; any 3DS tiling or byte order is ignored (section 19.1) | pad 4×4; sw — | wrong (`:545`) | `ETC_RGB4_3DS` holding plain ETC1 | C | planned (P3) |
+| 61 | `ETC_RGBA8_3DS` | texture2ddecoder ETC1 | RGBA | the first half of the 16-byte-per-block data read as ETC1 blocks, alpha 255; the alpha is never decoded (section 19.1) | pad 4×4; sw — | wrong (`:546`) | `RGBA32` | C | planned (P3) |
 | 62 | `RG16` | `rg` | — | — | no pad; sw 8×1 | raises `KeyError` `'raw'` (`:499`) | `RGBA32` | B | planned (P3) |
 | 63 | `R8` | Pillow raw `R` into RGB | RGB | (R, 0, 0) | no pad; sw 16×1 | works (`:497`) | `R8` | A | planned (P3) |
 | 64 | `ETC_RGB4Crunched` | crunch, then texture2ddecoder ETC1 | RGBA | alpha 255 | pad 4×4; sw —; crunch | crunch (`:547`) | `ETC_RGB4Crunched` holding plain ETC1; section 19.2 | A | planned (P3) |
@@ -730,20 +733,20 @@ Two more behaviours apply to every format: a zero width or height returns an emp
 | item | UnityPy 1.25.2 | tier | level | test | status |
 |---|---|---|---|---|---|
 | object re-save | `ObjectReader.save_typetree` (section 8) | A | L3 | `test_dump.py` resave_aligns_after_every_aligned_array_element | verified P0 (L3); impl P3 |
-| `SerializedFile.save` | metadata: version string (v ≥ 7), platform (v ≥ 8), typetree flag (v ≥ 13), types, `big_id_enabled` (7 to 13), objects sorted by path id with each data block aligned to 8 (`:415-419`), script types (v ≥ 11), externals, ref types (v ≥ 20), user information (v ≥ 5); `packer` is ignored (`files/SerializedFile.py:389-440`) | A | L4 | planned: save suite | planned (P3) |
-| header, v ≥ 9 | data offset aligned to 16; v ≥ 22 writes 0 into the four legacy fields and the 64-bit sizes and offset after them (`files/SerializedFile.py:444-478`) | A | L4 | planned: save suite | planned (P3) |
-| header, v < 9 | data first, then the endian byte and the metadata, with 32 in the data offset field (`files/SerializedFile.py:480-491`) | A | L4 | planned: Editor fixture | planned (P4) |
+| `SerializedFile.save` | metadata: version string (v ≥ 7), platform (v ≥ 8), typetree flag (v ≥ 13), types, `big_id_enabled` (7 to 13), objects sorted by path id with each data block aligned to 8 (`files/SerializedFile.py:415-419`), script types (v ≥ 11), externals, ref types (v ≥ 20), user information (v ≥ 5); `packer` is ignored (`files/SerializedFile.py:389-440`) | A | L4 | planned: save suite | planned (P3) |
+| header, v ≥ 9 | big-endian header; data offset aligned to 16; v ≥ 22 writes 0 into the legacy metadata size, file size and data offset (the version field keeps the version), then the endian byte, the reserved bytes, the u32 metadata size, the 64-bit file size and data offset, and the file's own unknown i64 back (`files/SerializedFile.py:443-478`) | A | L4 | planned: save suite | planned (P3) |
+| header, v < 9 | data right after the 16-byte header, then the endian byte and the metadata, with 32 in the data offset field (`files/SerializedFile.py:480-491`), although the data starts at 16 and the reader adds that field to every object's start (`files/ObjectReader.py:86`). Reachable only with `config.SERIALIZED_FILE_PARSE_TYPETREE` false, since below v10 the tree writer raises (next rows), and then the file lacks the trees a pre-13 reader expects. Part of pre-v10 writing. | C | L4 | planned: divergence test | planned (P3) |
 | `SerializedType.write` | class id, stripped flag (v ≥ 16), script index (v ≥ 17), script id and hash (v ≥ 13), the tree, then class names (ref types) or dependencies (v ≥ 21) (`files/SerializedFile.py:151-197`) | A | L4 | planned: save suite | planned (P3) |
 | tree as a blob (v ≥ 12, v = 10) | `TypeTreeNode.dump_blob`; the common string at offset 0 (`AABB`) is written as a local string (`helpers/TypeTreeNode.py:237-278`, `:250`) | A, C | L4 | planned: divergence test | planned (P3) |
-| pre-v10 and v11 typetree writing | calls `serialized_file.dump`, which does not exist, so it raises `AttributeError` (`files/SerializedFile.py:182-184`); `TypeTreeNode.dump` itself writes the root's fields for every node (`helpers/TypeTreeNode.py:213-235`) | C | L4 | planned: divergence test | planned (P3) |
+| pre-v10 and v11 typetree writing | calls `serialized_file.dump`, which does not exist, so it raises `AttributeError` (`files/SerializedFile.py:182-184`); below v13 every file carries trees (`files/SerializedFile.py:241`), so every save of such a file raises unless `config.SERIALIZED_FILE_PARSE_TYPETREE` is false; `TypeTreeNode.dump` itself writes the root's fields for every node (`helpers/TypeTreeNode.py:213-235`) | C | L4 | planned: divergence test | planned (P3) |
 | `ObjectReader.write` | object table row; data from `set_raw_data` or the original bytes (`files/ObjectReader.py:132-179`) | A | L4 | planned: save suite | planned (P3) |
 | `BundleFile.save` | header, then: `UnityArchive` raises `NotImplementedError`; UnityWeb and UnityRaw format 6 use `save_fs(64, 64)`, other formats `save_web_raw`; UnityFS by packer: `none` (default) `save_fs(64, 64)`, `original` the file's own flags, `lz4` `(194, 2)` (blocks info LZ4 at the end, LZ4 blocks), `lzma` `(65, 1)`, a tuple passed as `(data_flag, block_info_flag)` although the docstring says the reverse, anything else `NotImplementedError` (`files/BundleFile.py:188-236`) | A | L4 | planned: save suite | planned (P3) |
-| `BundleFile.save_fs` | directory and data rebuilt from `files`; the encryption flag is cleared from both flags (`:303-307`); `CompressionHelper.chunk_based_compress` (`:309`); `0x40` is required (`:325-326`); alignment from format 7, then the blocks info before or after the data (`0x80`) with 16-byte padding for `0x200`; the size patched in (`files/BundleFile.py:238-393`) | A | L4 | planned: save suite | planned (P3) |
+| `BundleFile.save_fs` | `data_flag` is the header's flags (layout bits and the blocks-info codec) and `block_info_flag` the data blocks' codec, despite the names; directory and data rebuilt from `files`; the encryption mask of the file's flag set is XORed out of both flags when any of its bits is set (`files/BundleFile.py:303-307`), so with `ArchiveFlags` (`0x1400`) a flag holding only `0x1000` comes out holding `0x400`, which reads back as encrypted, and the data blocks' own `0x100` bit is never cleared (section 19.2); `CompressionHelper.chunk_based_compress` (`files/BundleFile.py:309`); `0x40` is required (`files/BundleFile.py:325-326`); 16-byte alignment after the header when the read set `_uses_block_alignment` (format ≥ 7, or a 2019.4.15+ engine), then the blocks info before or after the data (`0x80`) with 16-byte padding for `0x200`; the size patched in (`files/BundleFile.py:238-393`) | A, C (proposed, section 19.2) | L4 | planned: save suite | planned (P3) |
 | `BundleFile.save_web_raw` | formats 1 to 3 only; above 3 raises `NotImplementedError` (`files/BundleFile.py:395-487`, `:408-409`) | A | L4 | planned: Editor fixture | planned (P4) |
 | compressed packers | `CompressionHelper.compress_lz4` is liblz4 HC level 9, so `lz4` output is byte-equal only with that level (section 6) | A | L4 | planned: save suite | planned (P3) |
-| `WebFile.save` | `UnityWebData1.0` table and data, then `gzip`, `brotli` or none; the default `packer="none"` never falls back to the file's own packer (`:61`, `:67-68`); an `EndianBinaryWriter` entry (from `get_writeable_cab`) raises `AttributeError` (`files/WebFile.py:58-112`, `:71`) | A | L4 | planned: save suite | planned (P3) |
+| `WebFile.save` | `UnityWebData1.0` table and data, then `gzip`, `brotli` or none; the default `packer="none"` never falls back to the file's own packer (`files/WebFile.py:61`, `:67-68`); the signature is the argument's, whatever the file's was (`TuanjieWebData` included); an `EndianBinaryWriter` entry (from `get_writeable_cab`) raises `AttributeError` (`files/WebFile.py:58-112`, `:71`) | A | L4 | planned: save suite | planned (P3) |
 | `File.get_writeable_cab` | default name `cab_file`; returns an existing writer, raises `ValueError` for an existing non-writer; copies `flags` and endian from the first `.resS`, else flags 0 (`files/File.py:92-121`) | A | L4 | planned: save suite | planned (P3) |
-| `SerializedFile.get_writeable_cab` | `None` unless the parent is a bundle or web file; path `archive:/{name}/{cab}`; registers an external once, GUID `uuid1().urn[-16:]` as ASCII, type 0, empty temp path (`files/SerializedFile.py:362-387`) | A | L4 | planned: save suite (the GUID rule, not its bytes) | planned (P3) |
+| `SerializedFile.get_writeable_cab` | `None` unless the parent is a bundle or web file; path `archive:/{name}/{cab}`; registers an external once, GUID `uuid1().urn[-16:]` as ASCII (the last three hex digits of the clock sequence, a hyphen and the 12-digit node id), type 0, empty temp path (`files/SerializedFile.py:362-387`) | A | L4 | planned: save suite (the GUID rule, not its bytes) | planned (P3) |
 | `Texture2D.set_image` | the target defaults to `m_TextureFormat`; paths and streams are opened with Pillow; `image_to_texture2d` with the reader's platform and `m_PlatformBlob`; mips halve until a side would drop below 4, each resized BICUBIC from the previous level and written with platform 0, so never Switch-swizzled; sets `m_Width`, `m_Height`, `m_MipMap`, `m_MipCount`, `image_data`, `m_CompleteImageSize` (all levels), `m_TextureFormat`, and empties `m_StreamData` (`classes/legacy_patch/Texture2D.py:14-60`) | A | L5 | planned: `set_image` round trip | planned (P3) |
 | `Environment.save`, `File.mark_changed`, `ObjectReader.set_raw_data` | sections 3, 5.2 and 8 | A | L4 | planned: save suite | planned (P3) |
 
@@ -753,17 +756,18 @@ Two more behaviours apply to every format: a zero width or height returns an emp
 
 | divergence | UnityPy 1.25.2 | unityrs | level | test | status |
 |---|---|---|---|---|---|
-| RGBAHalf returns garbage | three halves read per pixel for four stored, `int(h * 256)`, alpha dropped; values ≥ 1.0, negative or NaN raise (`export/Texture2DConverter.py:507`, `:435-447`) | half floats to RGBA | L5 | planned: divergence test | planned (P3) |
+| RGBAHalf returns garbage | three halves read per pixel for four stored, `int(h * 256)` truncated, alpha dropped; a value at 1.0 or above, at -1/256 or below, or NaN raises `ValueError`, an infinity `OverflowError`, so most HDR data raises (`export/Texture2DConverter.py:507`, `:435-447`) | half floats to RGBA | L5 | planned: divergence test | planned (P3) |
 | ASTC_HDR is wrong | HDR blocks decoded with the LDR profile into UNORM8 (`export/Texture2DConverter.py:549-554`, `:371-377`) | HDR profile | L5 | planned: divergence test | planned (P3) |
 | the UV offset | `uvSrcOffset = uvDim * m_VertexCount` assigns instead of adding, so the third and later UV channels of a compressed mesh start at the wrong offset (`helpers/MeshHelper.py:504`) | `+=` | L6 | planned: divergence test (expected-divergence mask) | planned (P2a) |
-| UNorm/SNorm not normalised | UNorm and SNorm channels are read as raw integers (`enums/VertexFormat.py:55-58`, `:70-73`, `helpers/MeshHelper.py:392`) | normalised to [0, 1] and [-1, 1] | L6 | planned: divergence test | planned (P1) |
+| UNorm/SNorm not normalised | UNorm and SNorm channels, and the byte colour formats (`kChannelFormatColor`, `kVertexFormatColor`), are read as raw integers (`enums/VertexFormat.py:46-47`, `:54-58`, `:70-73`, `helpers/MeshHelper.py:392`), while a compressed mesh's colours come out divided by 255 (`helpers/MeshHelper.py:618-628`) | normalised to [0, 1] and [-1, 1] | L6 | planned: divergence test | planned (P1) |
 | mesh endianness | `MeshHandler` defaults to `<` and no caller passes the file's endianness, so big-endian vertex data is swapped wrongly (`helpers/MeshHelper.py:73`, `:99`, `:363`; callers `export/MeshExporter.py:18`, `export/SpriteHelper.py:117`) | the file's endianness | L6 | planned: divergence test | planned (P4) |
 | the 4th bone weight | `1 - sum` with `sum` counted in 31sts, so the fourth weight is far below zero (`helpers/MeshHelper.py:604`, `:587`, `:591`) | `(31 - sum) / 31` | L6 | planned: divergence test | planned (P2a) |
-| ETC_RGB4_3DS, ETC_RGBA8_3DS | decoded as plain ETC1: no 3DS block order, no alpha (`export/Texture2DConverter.py:545-546`) | 3DS layout and alpha | L5 | planned: divergence test | planned (P3) |
+| ETC_RGB4_3DS, ETC_RGBA8_3DS | decoded as plain ETC1 in plain block order; for ETC_RGBA8_3DS only the first half of its 16-byte-per-block data is read and the alpha is never decoded (`export/Texture2DConverter.py:545-546`). That the 3DS formats store another tiling or byte order is `DESIGN.md`'s premise; no 3DS sample or reference decoder exists here to show it. | 3DS layout and alpha | L5 | planned: divergence test, once a 3DS sample settles the layout | planned (P3) |
 | ReferencedObject arrays do not skip None | the array path reads `ReferencedObjectData` with no `None` check, unlike the single-value path (`helpers/TypeTreeHelper.py:300-301` against `:201-203`); the pure-Python reader only | skips | L2 | planned: divergence test (pure-Python path) | planned (P3) |
 | dump_blob's common-string offset 0 | `if common_offset:` treats offset 0 (`AABB`) as absent and writes it locally (`helpers/TypeTreeNode.py:250`) | offset 0 is common | L4 | planned: divergence test | planned (P3) |
-| MeshRendererExporter fails on Unity 6 | `hasattr` is always true on the merged attrs classes, so an unbatched renderer reaches `min(None)` (`TypeError`) and a renderer without `m_StaticBatchInfo` reads `None.subMeshCount` (`AttributeError`) (`export/MeshRendererExporter.py:56-59`); `export_material` iterates the dict `texEnvs` as pairs, so any material with a texture property raises `ValueError` (`:117`, `:168`); both checked in the oracle on 2026-10-28 | exports | L6 | planned: divergence test | planned (P3) |
-| ShaderConverter fails on 6000.3 | `ShaderSubProgram` knows sub-program versions up to 202012090, local keywords only in `[201806140, 202012090)` (`export/ShaderConverter.py:577-605`, `:598`) | 6000.3 layout | L7 | planned: divergence test | planned (P3) |
+| MeshRendererExporter fails on Unity 6 | `hasattr` is always true on the merged attrs classes, so an unbatched renderer reaches `min(None)` (`TypeError`) and a renderer without `m_StaticBatchInfo` reads `None.subMeshCount` (`AttributeError`) (`export/MeshRendererExporter.py:56-59`); `export_material` raises `AttributeError` for any material holding `_Color`, `_SColor` or `_SpecularColor`, because `clt` reads `color.R` and `ColorRGBA` has `r g b a` (`:110`), and iterates the dict `texEnvs` as pairs, so any material with a texture property raises `ValueError` (`:117`, `:168`); all three checked in the oracle on 2026-10-28 | exports | L6 | planned: divergence test | planned (P3) |
+| ShaderConverter fails on 6000.3 | `ShaderSubProgram` knows sub-program versions up to 202012090, local keywords only in `[201806140, 202012090)` (`export/ShaderConverter.py:577-605`, `:598`), and a property of type Int (5, Unity 2021.1 and later) raises `ValueError` (`export/ShaderConverter.py:369`). On the corpus game (Unity 6000.3; 980 Shader objects, all of their 89,868 sub-programs at blob version 202012090, no Int properties), 946 exports return text and 34 raise `struct.error` reading keywords (`export/ShaderConverter.py:596`), run in the oracle on 2026-10-28; whether the 946 texts are right was not checked. | 6000.3 layout | L7 | planned: divergence test | planned (P3) |
+| pre-v10 typetree writing (`DESIGN.md` section 3, Writing) | below v10 and at v11, `SerializedType.write` calls `serialized_file.dump`, which does not exist (`files/SerializedFile.py:182-184`); `TypeTreeNode.dump` writes the root's fields for every node (`helpers/TypeTreeNode.py:218-233`); the v < 9 header names data offset 32 for data at 16 (`files/SerializedFile.py:488-489`); section 18 | writes the old format | L4 | planned: divergence test | planned (P3) |
 | the Sprite cache key ignores the FileID | the decoded texture is cached in the sprite's file by `path_id` alone, so two textures with one path id in different files share an entry (`export/SpriteHelper.py:48`, `:55`) | keyed by file and path id | L5 | planned: divergence test | planned (P1) |
 
 ### 19.2 Found while writing this inventory
@@ -778,13 +782,20 @@ These are not in `DESIGN.md` section 3. Each has a proposed tier; `DESIGN.md` de
 | Texture2DArray 8-bit integer formats | `GRAPHICS_TO_TEXTURE_MAP` maps the 8-bit UInt and SInt graphics formats to the 16-bit texture formats (`enums/GraphicsFormat.py:192-199`) | C | L5 | planned (P3) |
 | Texture2DArray platform | slices are decoded with platform 0 and no blob, so Switch and Xbox arrays are not deswizzled or swapped (`classes/legacy_patch/Texture2DArray.py:33-40`) | C | L5 | planned (P3) |
 | `set_image` mips | mips are written with platform 0, so a Switch texture gets a swizzled top level and linear mips (`classes/legacy_patch/Texture2D.py:44`) | C | L5 | planned (P3) |
-| `str(UnityVersion)` | drops the build number above 5.x (`helpers/UnityVersion.py:90-94`) | A (API) | API | planned (P3) |
+| `str(UnityVersion)` | drops the build number above 5.x, and the type and its number at 5.x and below (`helpers/UnityVersion.py:90-94`) | A (API) | API | planned (P3) |
 | `GameObject.m_Components` | an empty list raises `IndexError`; the old tuple form reads `m_GameObject` from each component pointer (`classes/legacy_patch/GameObject.py:9-15`) | C | API | planned (P3) |
 | `WebFile.save` | an `EndianBinaryWriter` entry raises `AttributeError`; the default packer never reuses the file's own (`files/WebFile.py:61`, `:67-68`, `:71`) | C | L4 | planned (P3) |
 | `BundleFile.save` tuple | the docstring says `(block_info_flag, data_flag)`, the code takes `(data_flag, block_info_flag)` (`files/BundleFile.py:193-194`, `:232-233`) | A (code) | L4 | planned (P3) |
 | vertex-less mesh export | `export_mesh_obj` returns `False` (`export/MeshExporter.py:22-23`, `:29-30`), so `extractor.exportMesh` raises on `f.write(False)` | A | L6 | planned (P3) |
 | one audio sample | `extractor.exportAudioClip` writes a single sample as `.wav` whatever its format (`tools/extractor.py:239-241`) | A | L9 | planned (P3) |
 | `ContainerHelper.path_dict` | keyed by path id alone, last entry wins (`helpers/ContainerHelper.py:28`, `:47`) | A | L1 | planned (P1) |
+| Texture2DArray streamed data | `image_data` falls back to `m_StreamData` only when it `is None`, but a parsed array's empty TypelessData is `b""`, so a streamed array never reads its `.resS` and every slice raises `ValueError` (`classes/legacy_patch/Texture2DArray.py:20-21`; `Texture2D.get_image_data` tests truthiness, `classes/legacy_patch/Texture2D.py:64`); checked in the oracle on 2026-10-28 | C | L5 | planned (P3) |
+| OBJ NaN and infinity | `{:.9G}` prints `NAN` and `INF`, so `.replace("nan", "0")` never fires and the OBJ holds `NAN` (`export/MeshExporter.py:33`, `:39`, `:45`); checked in the oracle on 2026-10-28 | A (the text) | L6 | planned (P3) |
+| `BundleFile.save_fs` encryption flags | the flag set's whole encryption mask is XORed out when any bit of it is set, so an `ArchiveFlags` header with only `0x1000` is saved with `0x400`, which UnityPy reads back as encrypted; the data blocks' `0x100` bit survives the `original` packer (`files/BundleFile.py:303-307`, `files/BundleFile.py:123-124`) | C | L4 | planned (P3) |
+| `SerializedFile.load_dependencies` | `load_file(path, True)` sets `parent`, not `is_dependency`, so dependencies it loads (a `.resS` lookup miss triggers it) join `Environment.objects` and `Environment.container` (`files/SerializedFile.py:340`, `:347`; `environment.py:100-106`) | C | L1 (env) | planned (P1) |
+| `config.SERIALIZED_FILE_PARSE_TYPETREE` | promises faster loading but is applied after the trees are parsed; its only effect is that `save` drops every tree and writes the flag false (`files/SerializedFile.py:310-311`, `:179`, `:405`) | A (save) | L4 | planned (P3) |
+| extractor crashes | `exportGameObject` always raises `AttributeError` in `crawl_obj` (`tools/extractor.py:350`), and GameObjects sort first, so a container holding one exports nothing; `exportMonoBehaviour` writes its JSON and then raises `AttributeError` on `obj.path_id` (`tools/extractor.py:224`), and with `export_unknown_as_typetree` it raises before writing; `exportSprite` has no default extension, so every sprite of the no-container mode raises `ValueError` (`tools/extractor.py:250-259`); nothing in `extract_assets` catches, so the first raise ends the run. Checked in the oracle, on UnityPy's samples where they apply, on 2026-10-28. | C | L9 | planned (P3) |
+| extractor file names | `append_path_id` appends `_None` (`tools/extractor.py:75`); images, meshes, shaders and text keep the container's extension, which picks Pillow's image format (`.tga` writes TGA, `.psd` raises); several audio samples are written `x.wav.wav`; a later container entry with the same path overwrites an earlier one; the alpha texture is never returned as exported (`tools/extractor.py:264-267`) | A (the names), C (the raises) | L9 | planned (P3) |
 
 ## 20. HEAD tier
 
@@ -816,7 +827,7 @@ scripts/dev python tools/parity/inventory.py check
 | boost | every public name of UnityPyBoost (4) | `UnityPyBoost.name` in a code span |
 | texture formats | every `TextureFormat` member (78) | a table row with the cells `` `Name` `` and its value |
 
-`check` exits 1 and lists what is missing. `tools/parity/tests/test_inventory.py` runs it against this file in the oracle image, checks the TextureFormat matrix against the oracle (section 17), and tests the matching rules with the standard library alone.
+`check` exits 1 and lists what is missing. `tools/parity/tests/test_inventory.py` runs it against this file in the oracle image, checks the TextureFormat matrix against the oracle on real-sized data (section 17), and tests the matching rules with the standard library alone.
 
 ## 22. Module index
 
@@ -852,7 +863,7 @@ Every module of UnityPy 1.25.2, with the sections that cover it.
 | `enums/BuildTarget.py` | platforms | 7, 15.1 |
 | `enums/BundleFile.py` | archive and block flags | 5.1 |
 | `enums/ClassIDType.py` | class ids | 14.1 |
-| `enums/CommonString.py` | the common string table | 9.3 |
+| `enums/CommonString.py` | a fixed common-string table, read only by the never-called `SerializedFile.read_string` | 7.2 |
 | `enums/ExtendableEnum.py` | enum base with unknown members | 14.1 |
 | `enums/FileType.py` | detection result | 4 |
 | `enums/GfxPrimitiveType.py` | primitive types | 15.3 |
