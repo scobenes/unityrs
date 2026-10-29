@@ -289,12 +289,16 @@ mod tests {
             .map(|_| super::get_or_publish_result(&cell, &m, compute).copied())
             .collect();
         assert_eq!(runs.load(Ordering::Relaxed), 4);
-        assert!(got[..4].iter().all(
-            |r| matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory)
-        ));
-        assert!(got[4..].iter().all(
-            |r| matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork)
-        ));
+        assert!(
+            got[..4]
+                .iter()
+                .all(|r| matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory))
+        );
+        assert!(
+            got[4..]
+                .iter()
+                .all(|r| matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork))
+        );
         assert!(cell.get().is_some(), "the work refusal is kept");
         assert_eq!((m.decoded(), m.used()), (1200, 0));
     }

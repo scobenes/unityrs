@@ -722,9 +722,9 @@ mod tests {
             let granted = outcomes.iter().filter(|o| o.is_ok()).count();
             let refused = outcomes
                 .iter()
-                .filter(|o| {
-                    matches!(o, Err(ChargeError::Limit(l)) if l.kind == LimitKind::DecodeWork)
-                })
+                .filter(
+                    |o| matches!(o, Err(ChargeError::Limit(l)) if l.kind == LimitKind::DecodeWork),
+                )
                 .count();
             let held = m.used();
             let decoded = m.decoded();
@@ -736,7 +736,11 @@ mod tests {
             .expect("the growths did not finish");
         assert_eq!(decoded, 4 << 20, "the work bound held");
         assert_eq!((granted, refused), (4, 4));
-        assert_eq!(held, 4 * heap_cost(1 << 20), "a refused growth kept no charge");
+        assert_eq!(
+            held,
+            4 * heap_cost(1 << 20),
+            "a refused growth kept no charge"
+        );
         assert_eq!(after, 0);
     }
 

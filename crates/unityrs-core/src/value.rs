@@ -941,10 +941,7 @@ mod tests {
         assert!(entries.charge().bytes() >= charged);
         let stray = b.scalar(Value::Int(3)).unwrap();
         assert!(!entries.set_entry(5, stray));
-        assert_eq!(
-            entries.as_slice()[0].1,
-            Value::List(vec![Value::Int(2)])
-        );
+        assert_eq!(entries.as_slice()[0].1, Value::List(vec![Value::Int(2)]));
     }
 
     #[test]

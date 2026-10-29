@@ -554,14 +554,20 @@ mod tests {
         // to 512 KiB, at `heap_cost`), so the fourth uses up the 4 MiB.
         let runs = runs.load(Ordering::Relaxed);
         assert_eq!(runs, 4, "{runs} compiles for 200 asks");
-        let memory = |e: &TreeError| {
-            matches!(e, TreeError::Charge(crate::limits::ChargeError::Limit(l)) if l.kind == crate::LimitKind::InputMemory)
-        };
+        let memory = |e: &TreeError| matches!(e, TreeError::Charge(crate::limits::ChargeError::Limit(l)) if l.kind == crate::LimitKind::InputMemory);
         let work = |e: &TreeError| matches!(e, TreeError::Limit(l) if l.kind == crate::LimitKind::DecodeWork);
-        assert!(outcomes[..runs].iter().all(memory), "{:?}", &outcomes[..runs]);
+        assert!(
+            outcomes[..runs].iter().all(memory),
+            "{:?}",
+            &outcomes[..runs]
+        );
         assert!(outcomes[runs..].iter().all(work), "{:?}", outcomes.last());
         assert!(meter.decoded() >= 4 << 20);
-        assert_eq!(meter.used(), rows_held, "every refused run returned its memory");
+        assert_eq!(
+            meter.used(),
+            rows_held,
+            "every refused run returned its memory"
+        );
     }
 
     #[test]

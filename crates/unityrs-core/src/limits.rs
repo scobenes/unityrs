@@ -427,10 +427,13 @@ impl Meter {
                 value: used.saturating_add(bytes),
                 max: limit,
             })?;
-        let permit = account.budget.try_reserve(bytes, account.what).map_err(|e| {
-            self.refund(bytes);
-            ChargeError::Budget(e)
-        })?;
+        let permit = account
+            .budget
+            .try_reserve(bytes, account.what)
+            .map_err(|e| {
+                self.refund(bytes);
+                ChargeError::Budget(e)
+            })?;
         let _ = self
             .granted
             .try_update(Ordering::AcqRel, Ordering::Acquire, |g| {
@@ -982,12 +985,19 @@ mod tests {
         meter.add_work(90);
         assert_eq!(meter.decoded(), 130);
         let used_up = meter.work_used_up().unwrap();
-        assert_eq!((used_up.kind, used_up.value, used_up.max), (LimitKind::DecodeWork, 130, 100));
+        assert_eq!(
+            (used_up.kind, used_up.value, used_up.max),
+            (LimitKind::DecodeWork, 130, 100)
+        );
         assert!(meter.count_decode(1).is_err());
         assert_eq!(meter.granted(), 0, "work is not memory");
         let c = meter.charge(7).unwrap();
         drop(c);
-        assert_eq!((meter.granted(), meter.used()), (7, 0), "grants are never returned");
+        assert_eq!(
+            (meter.granted(), meter.used()),
+            (7, 0),
+            "grants are never returned"
+        );
     }
 
     #[test]
