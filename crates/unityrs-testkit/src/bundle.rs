@@ -334,7 +334,7 @@ pub fn matrix() -> Vec<(String, Vec<u8>)> {
     blank.unity_version = Vec::new();
     out.push(("CAB-blank-version".into(), file(&blank)));
     // An AssetBundle (class 142), whose container the parse reads (C9).
-    let assetbundle = || {
+    let assetbundle = |hostile: bool| {
         use crate::env::{Bundle, Obj, row};
         crate::env::serialized(
             &["archive:/CAB-x/CAB-x"],
@@ -348,17 +348,22 @@ pub fn matrix() -> Vec<(String, Vec<u8>)> {
                             row("assets/n.prefab", (0, 2), (0, 1)),
                             row("assets/n.prefab", (1, 1), (0, 2)),
                         ],
+                        hostile,
                         ..Bundle::default()
                     },
                 ),
             ],
         )
     };
-    out.push(("CAB-assetbundle".into(), assetbundle()));
+    out.push(("CAB-assetbundle".into(), assetbundle(false)));
     out.push((
         "assetbundle.bundle".into(),
-        crate::env::bundle(&[("CAB-assetbundle", assetbundle())]),
+        crate::env::bundle(&[("CAB-assetbundle", assetbundle(false))]),
     ));
+    // The same AssetBundle's container as a damaged tree holds it
+    // (`env::Bundle::hostile`): UnityPy loads it, each row's members it
+    // holds as no string or `int` dumped as `null`.
+    out.push(("CAB-assetbundle-hostile".into(), assetbundle(true)));
 
     let codecs = [
         ("none", TestCodec::None),

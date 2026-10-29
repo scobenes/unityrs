@@ -234,19 +234,21 @@ pub struct ExternalRow {
     pub path: RawStr,
 }
 
-/// One container row: `[path, preload_index, preload_size, file_id, path_id]`.
+/// One container row: `[path, preload_index, preload_size, file_id, path_id]`,
+/// each `None` (`null`) where UnityPy's object holds no string or no `int`
+/// (`docs/CANONICAL_DUMP.md` section 4.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContainerRow {
     /// The asset path.
-    pub path: RawStr,
+    pub path: Option<RawStr>,
     /// `preloadIndex`.
-    pub preload_index: i32,
+    pub preload_index: Option<i128>,
     /// `preloadSize`.
-    pub preload_size: i32,
+    pub preload_size: Option<i128>,
     /// The asset's `m_FileID`.
-    pub file_id: i32,
+    pub file_id: Option<i128>,
     /// The asset's `m_PathID`.
-    pub path_id: i64,
+    pub path_id: Option<i128>,
 }
 
 /// `l1` of a SerializedFile.
@@ -690,12 +692,19 @@ fn serialized_l1(out: &mut String, s: &SerializedL1) {
     );
     write_array(o.key("container"), &s.container, |out, c| {
         out.push('[');
-        write_name(out, c.path.as_bytes());
-        let _ = write!(
-            out,
-            ",{},{},{},{}]",
-            c.preload_index, c.preload_size, c.file_id, c.path_id
-        );
+        match &c.path {
+            Some(p) => write_name(out, p.as_bytes()),
+            None => out.push_str("null"),
+        }
+        for v in [c.preload_index, c.preload_size, c.file_id, c.path_id] {
+            match v {
+                Some(v) => {
+                    let _ = write!(out, ",{v}");
+                }
+                None => out.push_str(",null"),
+            }
+        }
+        out.push(']');
     });
     o.end();
 }

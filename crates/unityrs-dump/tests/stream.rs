@@ -162,13 +162,22 @@ fn serialized_l1(object_order: Vec<i64>, version_packed: Option<Packed>) -> Seri
         ],
         ref_types: Some(vec![reference]),
         user_information: Some(raw(b"")),
-        container: vec![ContainerRow {
-            path: raw(b"assets/a\xff.prefab"),
-            preload_index: 0,
-            preload_size: -1,
-            file_id: 0,
-            path_id: i64::MAX,
-        }],
+        container: vec![
+            ContainerRow {
+                path: Some(raw(b"assets/a\xff.prefab")),
+                preload_index: Some(0),
+                preload_size: Some(-1),
+                file_id: Some(0),
+                path_id: Some(i128::from(u64::MAX)),
+            },
+            ContainerRow {
+                path: None,
+                preload_index: None,
+                preload_size: Some(1),
+                file_id: None,
+                path_id: Some(i128::from(i64::MIN)),
+            },
+        ],
     }
 }
 

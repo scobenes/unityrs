@@ -891,7 +891,10 @@ fn the_container_lists_rows_after_its_preload_once() {
     for _ in 0..2 {
         let rows: Vec<_> = env.container().unwrap().map(Result::unwrap).collect();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].row.path.as_bytes(), b"assets/a1.prefab");
+        assert_eq!(
+            rows[0].row.path.as_ref().map(RawStr::as_bytes),
+            Some(&b"assets/a1.prefab"[..])
+        );
     }
     let data = serialized(
         &[],
@@ -905,6 +908,67 @@ fn the_container_lists_rows_after_its_preload_once() {
     );
     env.load(src("CAB-NEW", &data)).unwrap();
     assert_eq!(env.container().unwrap().count(), 2);
+}
+
+/// A container as a damaged tree holds it (`Bundle::hostile`): the file
+/// loads, as UnityPy's does (its load reads only each asset's `path_id`,
+/// `helpers/ContainerHelper.py:21-29`); each row keeps `None` where the
+/// object holds no string or `int`; and the preload raises at the first row,
+/// as UnityPy's `info.preloadSize` does (`AttributeError`: the member is
+/// named `preloadSizX`, `:35-37`).
+#[test]
+fn a_hostile_container_loads_and_its_preload_raises() {
+    let data = serialized(
+        &[],
+        &[
+            Obj::named(1, "n", &[]),
+            Obj::asset_bundle(
+                2,
+                Bundle {
+                    preload: vec![(0, 1)],
+                    rows: vec![row("a", (0, 1), (0, 1)), row("b", (0, 1), (0, -7))],
+                    hostile: true,
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    );
+    let env = env(LoadMode::Eager);
+    env.load(src("CAB-H", &data)).unwrap();
+    let sf = serialized_cab(&env, "cab-h");
+    let rows: Vec<_> = sf
+        .container()
+        .unwrap()
+        .rows()
+        .iter()
+        .map(|r| {
+            (
+                r.path.clone(),
+                r.preload_index,
+                r.preload_size,
+                r.file_id,
+                r.path_id,
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (None, None, None, None, Some(1)),
+            (None, None, None, None, Some(-7))
+        ]
+    );
+    assert!(sf.container().unwrap().rows()[0].asset().is_none());
+    assert!(
+        matches!(
+            env.container().err(),
+            Some(Error::Malformed {
+                what: "container",
+                ..
+            })
+        ),
+        "the preload raises"
+    );
 }
 
 /// Every Environment step on random scenes, both modes: no panic.

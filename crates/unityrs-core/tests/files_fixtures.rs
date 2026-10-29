@@ -216,7 +216,7 @@ fn serialized_l1(sf: &Arc<SerializedFile>) -> J {
         .iter()
         .map(|r| {
             json!([
-                name(r.path.as_bytes()),
+                r.path.as_ref().map(|p| name(p.as_bytes())),
                 r.preload_index,
                 r.preload_size,
                 r.file_id,

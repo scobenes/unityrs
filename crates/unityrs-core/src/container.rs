@@ -8,6 +8,17 @@
 //! `preload_size` index `m_PreloadTable`, which the environment's container
 //! preload walks (plan section 3.13).
 //!
+//! **What the load needs.** UnityPy's load reads only `m_PreloadTable` (kept
+//! as it is), and each `m_Container` item's key and `value.asset.path_id`
+//! (`helpers/ContainerHelper.py:21-29`): the asset must be a `PPtr` (a
+//! `PPtr<...>` node UnityPy could build one from), and nothing else is
+//! looked at until the preload or a caller does. So on a hostile tree an
+//! `AssetInfo` that lacks `preloadIndex`, a key that is not a string, an
+//! index of another type, a preload table that is not a list or holds
+//! something that is no pointer, all load: a row keeps `None` for each
+//! member UnityPy's object does not hold as a string or an `int` (the
+//! dump's `null`), and the preload raises where UnityPy's would.
+//!
 //! **Memory.** The rows and the preload table grow in
 //! [`crate::limits::MeteredVec`]s on the file's input meter, and the
 //! [`Container`] keeps their charge (the AssetBundle's value, read to get
@@ -32,43 +43,58 @@ use crate::raw::RawStr;
 use crate::typetree::{NodeId, NodeList};
 use crate::value::{Map, Parsed, Value};
 
-/// One container row.
+/// One container row. Each member is what UnityPy's object holds there:
+/// `None` where it holds no string (the path) or no `int` (the others: a
+/// member the `AssetInfo` lacks, a `bool`, a float, a string, a class), which
+/// only a hostile tree makes (module docs).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContainerRow {
     /// The container path, as stored.
-    pub path: RawStr,
+    pub path: Option<RawStr>,
     /// `AssetInfo.preloadIndex`.
-    pub preload_index: i32,
+    pub preload_index: Option<i128>,
     /// `AssetInfo.preloadSize`.
-    pub preload_size: i32,
+    pub preload_size: Option<i128>,
     /// `AssetInfo.asset.m_FileID`.
-    pub file_id: i32,
+    pub file_id: Option<i128>,
     /// `AssetInfo.asset.m_PathID`.
-    pub path_id: i64,
+    pub path_id: Option<i128>,
 }
 
 impl ContainerRow {
-    /// The row's asset pointer.
+    /// The row's asset pointer, when its ids are an `int32` and an `int64`.
     #[must_use]
-    pub fn asset(&self) -> PPtr {
-        PPtr {
-            file_id: self.file_id,
-            path_id: self.path_id,
-        }
+    pub fn asset(&self) -> Option<PPtr> {
+        Some(PPtr {
+            file_id: i32::try_from(self.file_id?).ok()?,
+            path_id: i64::try_from(self.path_id?).ok()?,
+        })
     }
+}
+
+/// `m_PreloadTable` as the load left it.
+#[derive(Debug, PartialEq, Eq)]
+enum Preload {
+    /// No AssetBundle.
+    None,
+    /// A list: each element a pointer, or `None` for one that is no
+    /// `PPtr` of an `int32` and an `int64`.
+    List(Box<[Option<PPtr>]>),
+    /// Not a list (the preload's `len()` raises).
+    NotAList,
 }
 
 /// A file's container, with the charge for its tables.
 #[derive(Debug)]
 pub struct Container {
     rows: Box<[ContainerRow]>,
-    preload_table: Option<Box<[PPtr]>>,
+    preload: Preload,
     charge: Charge,
 }
 
 impl PartialEq for Container {
     fn eq(&self, other: &Self) -> bool {
-        self.rows == other.rows && self.preload_table == other.preload_table
+        self.rows == other.rows && self.preload == other.preload
     }
 }
 
@@ -80,7 +106,7 @@ impl Container {
     pub fn empty(meter: &Arc<Meter>) -> Self {
         Self {
             rows: Box::new([]),
-            preload_table: None,
+            preload: Preload::None,
             charge: Charge::zero(meter),
         }
     }
@@ -90,20 +116,30 @@ impl Container {
     /// first ([`MeteredVec::into_boxed_slice`]).
     pub fn new(
         rows: MeteredVec<ContainerRow>,
-        preload_table: Option<MeteredVec<PPtr>>,
+        preload_table: Option<MeteredVec<Option<PPtr>>>,
     ) -> Result<Self, ChargeError> {
         let (rows, mut charge) = rows.into_boxed_slice()?;
-        let preload_table = match preload_table {
+        let preload = match preload_table {
             Some(t) => {
                 let (t, c) = t.into_boxed_slice()?;
                 charge.absorb(c);
-                Some(t)
+                Preload::List(t)
             }
-            None => None,
+            None => Preload::None,
         };
         Ok(Self {
             rows,
-            preload_table,
+            preload,
+            charge,
+        })
+    }
+
+    /// The rows, with an `m_PreloadTable` that is not a list.
+    pub fn with_preload_not_a_list(rows: MeteredVec<ContainerRow>) -> Result<Self, ChargeError> {
+        let (rows, charge) = rows.into_boxed_slice()?;
+        Ok(Self {
+            rows,
+            preload: Preload::NotAList,
             charge,
         })
     }
@@ -114,10 +150,15 @@ impl Container {
         &self.rows
     }
 
-    /// `m_PreloadTable`, when the AssetBundle has one.
-    #[must_use]
-    pub fn preload_table(&self) -> Option<&[PPtr]> {
-        self.preload_table.as_deref()
+    /// `m_PreloadTable`, when the AssetBundle has one: `Ok(None)` without an
+    /// AssetBundle, an error when it is not a list (UnityPy's preload
+    /// raises `TypeError` at its `len()`, `helpers/ContainerHelper.py:38`).
+    pub fn preload_table(&self) -> Result<Option<&[Option<PPtr>]>, Error> {
+        match &self.preload {
+            Preload::None => Ok(None),
+            Preload::List(t) => Ok(Some(t)),
+            Preload::NotAList => Err(malformed("m_PreloadTable is not a list")),
+        }
     }
 
     /// The charge for the tables.
@@ -150,7 +191,6 @@ pub fn read_container(file: &Arc<SerializedFile>) -> Result<Container, Error> {
     let Some(view) = View::new(&parsed) else {
         return Err(malformed("no node list"));
     };
-    let list = view.list;
     // helpers/ContainerHelper.py:21-29: `container.m_PreloadTable`, then
     // `container.m_Container`, each an attribute of the object UnityPy
     // built (object mode: keyed by each child's clean name).
@@ -158,36 +198,68 @@ pub fn read_container(file: &Arc<SerializedFile>) -> Result<Container, Error> {
     let preload = view.attr(root, b"m_PreloadTable")?;
     let items = view.attr(root, b"m_Container")?;
     let mut rows = MeteredVec::new(meter);
-    let elem = view.element(items.id);
-    for item in View::items(items)? {
-        // `for key, value in container`: a pair.
-        let Value::Tuple(kv) = item else {
+    // `{key: value.asset for key, value in container}`, then
+    // `{value.asset.path_id: key ...}`: each item unpacked to two, its key
+    // and its asset's `path_id` hashed. Either failing fails the load.
+    for item in view.sequence(items)?.nodes() {
+        let Some([key, info]) = view.unpack2(item) else {
             return Err(malformed("an m_Container item is not a pair"));
         };
-        let (Some(Value::Str(path)), Some(info), [_, info_id, ..]) =
-            (kv.first(), kv.get(1), list.children(elem))
-        else {
-            return Err(malformed("an m_Container item is not (str, AssetInfo)"));
-        };
-        let info = Node::new(*info_id, info);
-        // `value.asset`, then the dump's `preloadIndex`, `preloadSize`,
-        // `asset.m_FileID`, `asset.m_PathID` (tools/parity/unitypy_dump.py).
         let asset = view.attr(info, b"asset")?;
-        let pptr = view.pptr(asset)?;
+        let (file_id, path_id) = match view.pptr_object(asset) {
+            Some((file_id, path_id)) => (Some(file_id), path_id),
+            // Any other object has a `path_id` only as a child so named.
+            None => (
+                view.attr(asset, b"m_FileID").ok(),
+                view.attr(asset, b"path_id")?,
+            ),
+        };
+        if !view.hashable(key) || !view.hashable(path_id) {
+            return Err(malformed("an m_Container key or path_id is unhashable"));
+        }
+        // The dump's members (tools/parity/unitypy_dump.py `container_row`).
+        let path_id = match view.pptr_object(asset) {
+            Some(_) => Some(path_id),
+            None => view.attr(asset, b"m_PathID").ok(),
+        };
+        let int = |n: Option<Node<'_>>| n.and_then(|n| int(n.value));
         rows.push(ContainerRow {
-            path: path.clone(),
-            preload_index: view.int(info, b"preloadIndex")?,
-            preload_size: view.int(info, b"preloadSize")?,
-            file_id: pptr.file_id,
-            path_id: pptr.path_id,
+            path: match key.value {
+                Value::Str(s) => Some(s.clone()),
+                _ => None,
+            },
+            preload_index: int(view.attr(info, b"preloadIndex").ok()),
+            preload_size: int(view.attr(info, b"preloadSize").ok()),
+            file_id: int(file_id),
+            path_id: int(path_id),
         })?;
     }
+    // `m_PreloadTable` is kept as it is; only the preload reads it.
     let mut table = MeteredVec::new(meter);
-    let elem = view.element(preload.id);
-    for p in View::items(preload)? {
-        table.push(view.pptr(Node::new(elem, p))?)?;
+    match preload.value {
+        Value::List(_) => {
+            for p in view.sequence(preload)?.nodes() {
+                table.push(view.pointer(p))?;
+            }
+        }
+        // Numbers: no pointer among them.
+        Value::Prims(p) => {
+            for _ in 0..p.len() {
+                table.push(None)?;
+            }
+        }
+        _ => return Ok(Container::with_preload_not_a_list(rows)?),
     }
     Ok(Container::new(rows, Some(table))?)
+}
+
+/// A Python `int`: an integer value; not a `bool`, a float or anything else.
+fn int(v: &Value) -> Option<i128> {
+    match v {
+        Value::Int(i) => Some(i128::from(*i)),
+        Value::UInt(u) => Some(i128::from(*u)),
+        _ => None,
+    }
 }
 
 /// `ClassIDType.AssetBundle`.
@@ -269,15 +341,6 @@ impl<'a> View<'a> {
         self.parsed.field(map, raw_name)
     }
 
-    /// An integer attribute that fits an `i32`.
-    fn int(&self, node: Node<'a>, name: &[u8]) -> Result<i32, Error> {
-        self.attr(node, name)?
-            .value
-            .as_i64()
-            .and_then(|i| i32::try_from(i).ok())
-            .ok_or_else(|| malformed("an AssetInfo index is not an int32"))
-    }
-
     /// A `PPtr` value: a `PPtr<...>` node read as `{m_FileID, m_PathID}`.
     pub(crate) fn pptr(&self, node: Node<'a>) -> Result<PPtr, Error> {
         let file_id = self
@@ -292,11 +355,85 @@ impl<'a> View<'a> {
         }
     }
 
-    /// The elements of a list value (a `vector` or `Array` node's).
-    fn items(node: Node<'a>) -> Result<&'a [Value], Error> {
+    /// What `PPtr(**kwargs)` built from a `PPtr<...>` node holds, its
+    /// `m_FileID` and `m_PathID`: UnityPyBoost calls the class with the
+    /// children's clean names and `assetsfile` (`TypeTreeHelper.cpp:476-501`),
+    /// which takes exactly those three fields (`classes/PPtr.py:16-19`) and is
+    /// slotted, so any other child or a missing id makes an `UnknownObject`
+    /// (`TypeTreeHelper.cpp:505-513`). `None` for that and for every other
+    /// value.
+    fn pptr_object(&self, node: Node<'a>) -> Option<(Node<'a>, Node<'a>)> {
+        const FIELDS: [&[u8]; 3] = [b"m_FileID", b"m_PathID", b"assetsfile"];
+        if !matches!(node.value, Value::Dict(_))
+            || !self.list.type_name(node.id).starts_with(b"PPtr<")
+            || !self.list.children(node.id).iter().all(|&c| {
+                let name = self.list.name(c);
+                FIELDS.iter().any(|f| clean_name_is(name, f))
+            })
+        {
+            return None;
+        }
+        Some((
+            self.attr(node, b"m_FileID").ok()?,
+            self.attr(node, b"m_PathID").ok()?,
+        ))
+    }
+
+    /// A preload table element as a pointer: a `PPtr` whose ids are an
+    /// `int32` and an `int64`, else `None`.
+    fn pointer(&self, node: Node<'a>) -> Option<PPtr> {
+        let (f, p) = self.pptr_object(node)?;
+        Some(PPtr {
+            file_id: i32::try_from(int(f.value)?).ok()?,
+            path_id: i64::try_from(int(p.value)?).ok()?,
+        })
+    }
+
+    /// Whether `hash()` of the value succeeds: a list never; a tuple when
+    /// its items are; a `PPtr` when its ids are (`classes/PPtr.py:101-102`);
+    /// any other object (an `UnknownObject` hashes by identity) and every
+    /// scalar always.
+    fn hashable(&self, node: Node<'a>) -> bool {
         match node.value {
-            Value::List(items) => Ok(items),
-            _ => Err(malformed("not a list")),
+            Value::List(_) | Value::Prims(_) => false,
+            Value::Tuple(items) => Seq::Tuple(self.list.children(node.id), node.id, items)
+                .nodes()
+                .all(|n| self.hashable(n)),
+            Value::Dict(_) => self
+                .pptr_object(node)
+                .is_none_or(|(f, p)| self.hashable(f) && self.hashable(p)),
+            _ => true,
+        }
+    }
+
+    /// `iter(value)`: a list's or a tuple's items. A string's, bytes' or
+    /// number run's items (characters or numbers) are no pair and have no
+    /// `asset`, so an empty one iterates to nothing and any other fails at
+    /// its first item; every other value is not iterable (`TypeError`).
+    fn sequence(&self, node: Node<'a>) -> Result<Seq<'a>, Error> {
+        match node.value {
+            Value::List(items) => Ok(Seq::List(self.element(node.id), items)),
+            Value::Tuple(items) => Ok(Seq::Tuple(self.list.children(node.id), node.id, items)),
+            Value::Prims(p) if p.is_empty() => Ok(Seq::List(node.id, &[])),
+            Value::Str(s) if s.as_bytes().is_empty() => Ok(Seq::List(node.id, &[])),
+            Value::Bytes(b) if b.is_empty() => Ok(Seq::List(node.id, &[])),
+            Value::Prims(_) | Value::Str(_) | Value::Bytes(_) => {
+                Err(malformed("an m_Container item is not a pair"))
+            }
+            _ => Err(malformed("not iterable")),
+        }
+    }
+
+    /// `key, value = item`: a list's or a tuple's two items. Any other
+    /// value either does not unpack to two or holds no `asset`.
+    fn unpack2(&self, item: Node<'a>) -> Option<[Node<'a>; 2]> {
+        if !matches!(item.value, Value::List(_) | Value::Tuple(_)) {
+            return None;
+        }
+        let mut it = self.sequence(item).ok()?.nodes();
+        match (it.next(), it.next(), it.next()) {
+            (Some(k), Some(v), None) => Some([k, v]),
+            _ => None,
         }
     }
 
@@ -308,6 +445,31 @@ impl<'a> View<'a> {
             _ => id,
         };
         self.list.children(array).get(1).copied().unwrap_or(array)
+    }
+}
+
+/// A list's or a tuple's items, each with its node.
+#[derive(Clone, Copy)]
+enum Seq<'a> {
+    /// A list: the element node and the items.
+    List(NodeId, &'a [Value]),
+    /// A tuple: its node's children, the node, and the items.
+    Tuple(&'a [NodeId], NodeId, &'a [Value]),
+}
+
+impl<'a> Seq<'a> {
+    /// The items, each with its node.
+    fn nodes(self) -> impl Iterator<Item = Node<'a>> {
+        let items = match self {
+            Self::List(_, v) | Self::Tuple(_, _, v) => v,
+        };
+        items.iter().enumerate().map(move |(i, v)| {
+            let id = match self {
+                Self::List(elem, _) => elem,
+                Self::Tuple(kids, id, _) => kids.get(i).copied().unwrap_or(id),
+            };
+            Node::new(id, v)
+        })
     }
 }
 
@@ -336,11 +498,11 @@ mod tests {
 
     fn row(i: i64) -> ContainerRow {
         ContainerRow {
-            path: "a".into(),
-            preload_index: 0,
-            preload_size: 0,
-            file_id: 0,
-            path_id: i,
+            path: Some("a".into()),
+            preload_index: Some(0),
+            preload_size: Some(0),
+            file_id: Some(0),
+            path_id: Some(i128::from(i)),
         }
     }
 
@@ -355,10 +517,10 @@ mod tests {
         for i in 0..100 {
             rows.push(row(i)).unwrap();
             preload
-                .push(PPtr {
+                .push(Some(PPtr {
                     file_id: 0,
                     path_id: i,
-                })
+                }))
                 .unwrap();
         }
         let c = Container::new(rows, Some(preload)).unwrap();
@@ -366,10 +528,13 @@ mod tests {
         assert_eq!(
             m.used(),
             exact(100 * std::mem::size_of::<ContainerRow>())
-                + exact(100 * std::mem::size_of::<PPtr>())
+                + exact(100 * std::mem::size_of::<Option<PPtr>>())
         );
         assert_eq!(
-            (c.rows().len(), c.preload_table().map(<[PPtr]>::len)),
+            (
+                c.rows().len(),
+                c.preload_table().unwrap().map(<[Option<PPtr>]>::len)
+            ),
             (100, Some(100))
         );
         assert_eq!(c.charge().records(), 0);

@@ -1305,19 +1305,36 @@ impl Environment {
     /// failure raised.
     fn preload(&self, sf: &Arc<SerializedFile>) -> Result<(), Error> {
         let container = sf.container()?;
-        let Some(table) = container.preload_table() else {
+        if matches!(container.preload_table(), Ok(None)) {
             return Ok(());
+        }
+        let malformed = |detail: &'static str| Error::Malformed {
+            what: "container",
+            detail: detail.into(),
         };
-        let len = i64::try_from(table.len()).unwrap_or(i64::MAX);
         for row in container.rows() {
-            let (start, size) = (i64::from(row.preload_index), i64::from(row.preload_size));
-            if start < 0 || size <= 0 || start + size > len {
+            // `start = info.preloadIndex`, `size = info.preloadSize`: a
+            // member the AssetInfo lacks raises; one that is no `int` raises
+            // here too (PARITY.md section 19.3).
+            let (Some(start), Some(size)) = (row.preload_index, row.preload_size) else {
+                return Err(malformed("an AssetInfo index is not an int"));
+            };
+            if start < 0 || size <= 0 {
+                continue;
+            }
+            // `len(self._preload_table)`: a table that is not a list raises.
+            let table = container.preload_table()?.unwrap_or_default();
+            if start + size > i128::try_from(table.len()).unwrap_or(i128::MAX) {
                 continue;
             }
             let (Ok(s), Ok(e)) = (usize::try_from(start), usize::try_from(start + size)) else {
                 continue;
             };
             for p in table.get(s..e).unwrap_or_default() {
+                // An element that is no pointer raises (PARITY.md 19.3).
+                let Some(p) = p else {
+                    return Err(malformed("a preload table element is not a pointer"));
+                };
                 if !p.is_set() {
                     continue;
                 }

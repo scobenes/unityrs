@@ -273,7 +273,7 @@ impl Run {
         for item in items {
             match item {
                 Ok(i) => rows.push(json!([
-                    text(i.row.path.as_bytes()),
+                    i.row.path.as_ref().map(|p| text(p.as_bytes())),
                     i.row.preload_index,
                     i.row.preload_size,
                     i.row.file_id,

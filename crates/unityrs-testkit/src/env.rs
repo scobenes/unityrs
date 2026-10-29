@@ -61,6 +61,13 @@ pub struct Bundle {
     /// Adds a second field named `m.Container` after `m_Container` (the two
     /// clean to one key; object mode keeps the last).
     pub shadow_container: Option<Vec<Row>>,
+    /// Writes `m_Container` and `m_PreloadTable` as a damaged tree can hold
+    /// them: each pair's key an `int` (the row's position) instead of a
+    /// `string`, `preloadIndex` a `float`, `preloadSize` named `preloadSizX`,
+    /// the asset's `m_FileID` a `float`, and each preload pointer with a
+    /// third child, `m_Extra` (an `int`, written as 0). UnityPy still loads
+    /// the file: its load reads only each asset's `path_id`.
+    pub hostile: bool,
 }
 
 /// What an object holds.
@@ -169,15 +176,32 @@ fn asset_info_nodes(level: u8, name: &str) -> Vec<NodeSpec> {
     n
 }
 
-fn container_nodes(name: &str) -> Vec<NodeSpec> {
+/// [`Bundle::hostile`]'s `AssetInfo`.
+fn hostile_asset_info_nodes(level: u8, name: &str) -> Vec<NodeSpec> {
+    vec![
+        NodeSpec::new(level, "AssetInfo", name),
+        NodeSpec::new(level + 1, "float", "preloadIndex").size(4),
+        NodeSpec::new(level + 1, "int", "preloadSizX").size(4),
+        NodeSpec::new(level + 1, "PPtr<Object>", "asset").size(12),
+        NodeSpec::new(level + 2, "float", "m_FileID").size(4),
+        NodeSpec::new(level + 2, "SInt64", "m_PathID").size(8),
+    ]
+}
+
+fn container_nodes(name: &str, hostile: bool) -> Vec<NodeSpec> {
     let mut n = vec![
         NodeSpec::new(1, "map", name),
         NodeSpec::new(2, "Array", "Array").size(-1),
         NodeSpec::new(3, "int", "size").size(4),
         NodeSpec::new(3, "pair", "data"),
     ];
-    n.extend(string_nodes(4, "first"));
-    n.extend(asset_info_nodes(4, "second"));
+    if hostile {
+        n.push(NodeSpec::new(4, "int", "first").size(4));
+        n.extend(hostile_asset_info_nodes(4, "second"));
+    } else {
+        n.extend(string_nodes(4, "first"));
+        n.extend(asset_info_nodes(4, "second"));
+    }
     n
 }
 
@@ -191,12 +215,23 @@ fn put_pptr(w: &mut ByteWriter, p: (i32, i64)) {
     w.i32(p.0).i64(p.1);
 }
 
-fn put_rows(w: &mut ByteWriter, rows: &[Row]) {
+fn put_rows(w: &mut ByteWriter, rows: &[Row], hostile: bool) {
     w.i32(i32::try_from(rows.len()).unwrap_or(i32::MAX));
-    for r in rows {
-        put_string(w, &r.path);
-        w.i32(r.preload_index).i32(r.preload_size);
-        put_pptr(w, r.asset);
+    for (i, r) in rows.iter().enumerate() {
+        if hostile {
+            // Small values: each is exact as an `f32`.
+            #[allow(clippy::cast_precision_loss)]
+            let (index, file_id) = (r.preload_index as f32, r.asset.0 as f32);
+            w.i32(i32::try_from(i).unwrap_or(i32::MAX))
+                .f32(index)
+                .i32(r.preload_size)
+                .f32(file_id)
+                .i64(r.asset.1);
+        } else {
+            put_string(w, &r.path);
+            w.i32(r.preload_index).i32(r.preload_size);
+            put_pptr(w, r.asset);
+        }
     }
 }
 
@@ -234,17 +269,23 @@ fn shape(o: &Obj) -> (i32, Vec<NodeSpec>, Vec<u8>) {
             nodes.push(NodeSpec::new(2, "Array", "Array").size(-1));
             nodes.push(NodeSpec::new(3, "int", "size").size(4));
             nodes.extend(pptr_nodes(3, "data"));
+            if b.hostile {
+                nodes.push(NodeSpec::new(4, "int", "m_Extra").size(4));
+            }
             w.i32(i32::try_from(b.preload.len()).unwrap_or(i32::MAX));
             for p in &b.preload {
                 put_pptr(&mut w, *p);
+                if b.hostile {
+                    w.i32(0);
+                }
             }
             if !b.no_container {
-                nodes.extend(container_nodes("m_Container"));
-                put_rows(&mut w, &b.rows);
+                nodes.extend(container_nodes("m_Container", b.hostile));
+                put_rows(&mut w, &b.rows, b.hostile);
             }
             if let Some(shadow) = &b.shadow_container {
-                nodes.extend(container_nodes("m.Container"));
-                put_rows(&mut w, shadow);
+                nodes.extend(container_nodes("m.Container", b.hostile));
+                put_rows(&mut w, shadow, b.hostile);
             }
             if !b.no_main_asset {
                 nodes.extend(asset_info_nodes(1, "m_MainAsset"));
