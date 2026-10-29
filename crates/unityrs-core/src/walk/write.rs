@@ -38,10 +38,11 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::dict::names_match;
+use super::dict::{names_match, slot_count};
 use super::{RefTypes, WriteCtx, WriteError, WriteRules, py_size_field_is_zero};
 use crate::budget::DecodeBuf;
 use crate::error::{LimitError, LimitKind};
+use crate::limits::MeteredVec;
 use crate::raw::RawStr;
 use crate::typetree::{Kind, NodeId, Tree, TreeError};
 use crate::value::{Map, Parsed, PrimArray, Value};
@@ -770,6 +771,9 @@ impl<'a> Writer<'a, '_> {
     /// `getattr(value, child._clean_name)` otherwise; the registry scope as
     /// on read.
     fn class(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
+        if let Obj::V(Value::Dict(m)) = o {
+            return self.class_dict(tree, node, m);
+        }
         let outer = self.has_registry;
         let kids = tree.list().children(node);
         for c in kids {
@@ -807,6 +811,92 @@ impl<'a> Writer<'a, '_> {
                 }
             };
             self.value(tree, *c, item)?;
+        }
+        self.has_registry = outer;
+        Ok(())
+    }
+
+    /// The class branch on a dict (`:438-446`): `value[child.m_Name]` for
+    /// each child, in a number of steps linear in the children for a dict
+    /// read through this tree. A cursor walks the entries in step with the
+    /// children (a read sets them in child order); a child whose name an
+    /// earlier child took finds its entry through a per-class table from the
+    /// name's slot to its position, charged to the value's meter. A dict
+    /// keyed by another list (a `nodes=` override, a caller's map) is
+    /// matched by name, by the cursor first, then by a scan.
+    fn class_dict(&mut self, tree: &Tree, node: NodeId, m: &'a Map) -> Result<(), WriteError> {
+        const UNSET: u32 = u32::MAX;
+        let outer = self.has_registry;
+        let kids = tree.list().children(node);
+        let entries = m.entries();
+        // Keyed by this node's children: read through it. (A dict read
+        // through a same-named sibling, which a repeated name hands this
+        // node, is keyed by that sibling's children: matched by name.)
+        let native = usize::try_from(m.list())
+            .ok()
+            .and_then(|i| self.parsed.lists().get(i))
+            .is_some_and(|l| Arc::ptr_eq(l, tree.list()))
+            && entries
+                .first()
+                .is_none_or(|(k, _)| kids.binary_search_by_key(&k.0, |c| c.0).is_ok());
+        let slots = if native { slot_count(tree, node) } else { 0 };
+        let mut found: MeteredVec<u32> = MeteredVec::new(self.parsed.charge().meter());
+        if slots < kids.len() {
+            found.reserve_exact(slots).map_err(WriteError::Charge)?;
+            for _ in 0..slots {
+                found.push(UNSET).map_err(WriteError::Charge)?;
+            }
+        }
+        let mut cursor = 0;
+        for c in kids {
+            if tree.py_kind(*c) == Kind::ManagedReferencesRegistry {
+                if self.has_registry {
+                    continue;
+                }
+                self.has_registry = true;
+            }
+            let name = tree.list().name(*c);
+            let pos = if native {
+                let (key, slot) = tree.info(*c).map_or((*c, 0), |i| (i.key, i.slot));
+                let slot = slot as usize;
+                let known = found
+                    .as_slice()
+                    .get(slot)
+                    .copied()
+                    .filter(|p| *p != UNSET)
+                    .map(|p| p as usize);
+                let pos = known.or_else(|| {
+                    if entries.get(cursor).is_some_and(|(k, _)| *k == key) {
+                        Some(cursor)
+                    } else {
+                        entries
+                            .iter()
+                            .position(|(k, _)| *k == key)
+                            // A caller's map may key a name by another node.
+                            .or_else(|| self.parsed.entries(m).position(|(n, _)| n == name))
+                    }
+                });
+                if let (Some(p), Some(f)) = (pos, found.as_mut_slice().get_mut(slot)) {
+                    *f = u32::try_from(p).unwrap_or(UNSET);
+                }
+                pos
+            } else if entries
+                .get(cursor)
+                .is_some_and(|(k, _)| self.parsed.key_name(m, *k) == name)
+            {
+                Some(cursor)
+            } else {
+                self.parsed.entries(m).position(|(n, _)| n == name)
+            };
+            let Some((_, v)) = pos.and_then(|p| entries.get(p)) else {
+                return Err(WriteError::MissingKey(Self::name(tree, *c)));
+            };
+            if let Some(p) = pos
+                && p >= cursor
+            {
+                cursor = p + 1;
+            }
+            self.value(tree, *c, Obj::V(v))?;
         }
         self.has_registry = outer;
         Ok(())
