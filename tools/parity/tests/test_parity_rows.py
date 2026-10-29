@@ -1076,8 +1076,10 @@ class Rows(unittest.TestCase):
         self.assertEqual(env._load_split_file(str(d / "big")), data)
         self.assertEqual(env._load_split_file(str(d / "nozero")), b"onetwo")
         loaded = quietly(env.load_file, str(d / "big.split1"))
-        self.assertEqual((list(env.files), [o.parse_as_dict()["m_Name"] for o in loaded.objects.values()]),
-                         ([str(d / "big")], ["split"]))
+        self.assertEqual(
+            (list(env.files), [o.parse_as_dict()["m_Name"] for o in loaded.objects.values()]),
+            ([str(d / "big")], ["split"]),
+        )
         # At most 999 parts, split0 to split998.
         fs = MemoryFileSystem()
         root = f"/{self.tmp.name}-parts"
@@ -1088,10 +1090,10 @@ class Rows(unittest.TestCase):
         # load_files (load_assets with the builtin open) merges split members once per base path. UnityPy never
         # closes what it opens there, so the files are closed here.
         (d / "sub" / "plain.assets").write_bytes(text_asset_file("plain"))
-        opened = []
+        opened, real_open = [], open  # the real one, taken before builtins.open is patched to `tracked`
 
         def tracked(path, mode="r", *args, **kw):
-            stream = io.open(path, mode, *args, **kw)  # builtins.open is patched to this function
+            stream = real_open(path, mode, *args, **kw)  # noqa: SIM115 - UnityPy reads it after the call
             opened.append(stream)
             return stream
 
@@ -1180,9 +1182,9 @@ class Rows(unittest.TestCase):
 
     # Section 6: the codec helpers and tables.
     def test_compression_helpers(self):
-        import brotli
         import lzma
 
+        import brotli
         from UnityPy.enums import CompressionFlags as C
         from UnityPy.helpers import CompressionHelper as H
 
@@ -1215,8 +1217,9 @@ class Rows(unittest.TestCase):
         self.assertEqual(H.decompress_lzma(H.compress_lzma(data)), data)
         self.assertEqual(H.decompress_lzma(H.compress_lzma(data, True), True), data)
         # LZ4: high compression at level 9, no size prefix.
-        self.assertEqual(H.compress_lz4(data), lz4.block.compress(data, mode="high_compression", compression=9,
-                                                                 store_size=False))
+        self.assertEqual(
+            H.compress_lz4(data), lz4.block.compress(data, mode="high_compression", compression=9, store_size=False)
+        )
         # brotli at the library's default quality, 11; gzip at level 9 with the time as the header's mtime.
         self.assertEqual(H.compress_brotli(data), brotli.compress(data, quality=11))
         with mock.patch("time.time", return_value=1000.0):
@@ -1258,9 +1261,12 @@ class Rows(unittest.TestCase):
         self.assertTrue(issubclass(UnityVersionFallbackError, Exception))
         self.assertTrue(issubclass(UnityVersionFallbackWarning, UserWarning))
         for value in (None, 2019):
-            with self.subTest(value=value), mock.patch.object(config, "FALLBACK_UNITY_VERSION", value):
-                with self.assertRaises(UnityVersionFallbackError):
-                    config.get_fallback_version()
+            with (
+                self.subTest(value=value),
+                mock.patch.object(config, "FALLBACK_UNITY_VERSION", value),
+                self.assertRaises(UnityVersionFallbackError),
+            ):
+                config.get_fallback_version()
         # The `once` filter UnityPy installs at import: one warning for three calls from three places, in a process
         # of its own because a test runner replaces the warning filters.
         code = (
@@ -1319,14 +1325,23 @@ class Rows(unittest.TestCase):
         # pad_image: the last column and row, then the corner pixel.
         image = Image.new("L", (2, 2))
         image.putdata([1, 2, 3, 4])
-        self.assertEqual(list(Texture2DConverter.pad_image(image, 4, 3).getdata()), [1, 2, 2, 2, 3, 4, 4, 4, 3, 4, 4, 4])
+        self.assertEqual(
+            list(Texture2DConverter.pad_image(image, 4, 3).getdata()), [1, 2, 2, 2, 3, 4, 4, 4, 3, 4, 4, 4]
+        )
         self.assertIs(Texture2DConverter.pad_image(image, 2, 2), image)
         # The Xbox swap: byte pairs, a last odd byte kept.
-        self.assertEqual(Texture2DConverter.swap_bytes_for_xbox(b"\x01\x02\x03\x04\x05"), bytearray(b"\x02\x01\x04\x03\x05"))
+        self.assertEqual(
+            Texture2DConverter.swap_bytes_for_xbox(b"\x01\x02\x03\x04\x05"), bytearray(b"\x02\x01\x04\x03\x05")
+        )
         self.assertEqual(
             Texture2DConverter.XBOX_SWAP_FORMATS,
-            [TextureFormat.RGB565, TextureFormat.DXT1, TextureFormat.DXT1Crunched, TextureFormat.DXT5,
-             TextureFormat.DXT5Crunched],
+            [
+                TextureFormat.RGB565,
+                TextureFormat.DXT1,
+                TextureFormat.DXT1Crunched,
+                TextureFormat.DXT5,
+                TextureFormat.DXT5Crunched,
+            ],
         )
         # ASTC: 16 bytes a block; data short of the blocks raises; one LDR context per thread and block size.
         self.assertEqual(Texture2DConverter.calculate_astc_compressed_size(9, 5, (4, 4)), 3 * 2 * 16)
@@ -1346,17 +1361,21 @@ class Rows(unittest.TestCase):
         self.assertEqual(context.config.profile, astc_encoder.ASTCProfile.LDR)
         self.assertEqual(context.config.flags, astc_encoder.ASTCConfigFlags.USE_DECODE_UNORM8)
         made = []
-        with mock.patch.object(astc_encoder, "ASTCConfig", lambda *a, **kw: made.append((a, kw)) or a[0]):
-            with mock.patch.object(astc_encoder, "ASTCContext", lambda config: config):
-                Texture2DConverter._get_astc_context.__wrapped__(0, (5, 5))
+        with (
+            mock.patch.object(astc_encoder, "ASTCConfig", lambda *a, **kw: made.append((a, kw)) or a[0]),
+            mock.patch.object(astc_encoder, "ASTCContext", lambda config: config),
+        ):
+            Texture2DConverter._get_astc_context.__wrapped__(0, (5, 5))
         self.assertEqual(made[0][1]["quality"], 100)
         # TextureSwizzler: the GOB, the blob, the padded size and the walk.
         self.assertEqual(
             (TextureSwizzler.GOB_X_TEXEL_COUNT, TextureSwizzler.GOB_Y_TEXEL_COUNT, TextureSwizzler.TEXEL_BYTE_SIZE),
             (4, 8, 16),
         )
-        self.assertEqual((TextureSwizzler.TEXELS_IN_GOB, sorted(TextureSwizzler.GOB_MAP)),
-                         (32, [(x, y) for x in range(4) for y in range(8)]))
+        self.assertEqual(
+            (TextureSwizzler.TEXELS_IN_GOB, sorted(TextureSwizzler.GOB_MAP)),
+            (32, [(x, y) for x in range(4) for y in range(8)]),
+        )
         blob = [0] * 8 + list((3).to_bytes(4, "little"))
         self.assertEqual(TextureSwizzler.get_switch_gobs_per_block(blob), 8)
         self.assertTrue(TextureSwizzler.is_switch_swizzled(BuildTarget.Switch, blob))
@@ -1375,15 +1394,26 @@ class Rows(unittest.TestCase):
     # Section 16: what the dispatcher does before FMOD.
     def test_audio_dispatch(self):
         def clip(data, channels=0, frequency=0):
-            return SimpleNamespace(m_AudioData=data, m_Resource=None, m_Name="c", m_Channels=channels,
-                                   m_Frequency=frequency, object_reader=None)
+            return SimpleNamespace(
+                m_AudioData=data,
+                m_Resource=None,
+                m_Name="c",
+                m_Channels=channels,
+                m_Frequency=frequency,
+                object_reader=None,
+            )
 
-        for data, name in ((b"OggS" + bytes(8), "c.ogg"), (b"RIFF" + bytes(8), "c.wav"), (b"\0\0\0\x20ftypM4A ", "c.m4a")):
+        for data, name in (
+            (b"OggS" + bytes(8), "c.ogg"),
+            (b"RIFF" + bytes(8), "c.wav"),
+            (b"\0\0\0\x20ftypM4A ", "c.m4a"),
+        ):
             with self.subTest(name):
                 self.assertEqual(AudioClipConverter.extract_audioclip_samples(clip(data)), {name: data})
         calls = []
-        with mock.patch.object(AudioClipConverter.fmod_toolkit, "raw_to_wav",
-                               lambda *a, **kw: calls.append((a, kw)) or {"done": b""}):
+        with mock.patch.object(
+            AudioClipConverter.fmod_toolkit, "raw_to_wav", lambda *a, **kw: calls.append((a, kw)) or {"done": b""}
+        ):
             self.assertEqual(AudioClipConverter.extract_audioclip_samples(clip(b"FSB5" + bytes(8))), {"done": b""})
             AudioClipConverter.extract_audioclip_samples(clip(b"FSB5", 1, 22050), convert_pcm_float=False)
         self.assertEqual(calls[0], ((b"FSB5" + bytes(8), "c", 2, 44100), {"convert_pcm_float": True}))
@@ -1392,24 +1422,52 @@ class Rows(unittest.TestCase):
 
         # 22 entries written, 20 kept: the two IntEnums share values 1 and 2, and the later entry wins.
         self.assertEqual(len(AUDIO_TYPE_EXTEMSION), 20)
-        self.assertEqual((AUDIO_TYPE_EXTEMSION[AudioType.MPEG], AUDIO_TYPE_EXTEMSION[AudioCompressionFormat.MP3]),
-                         (".mp3", ".fsb"))
+        self.assertEqual(
+            (AUDIO_TYPE_EXTEMSION[AudioType.MPEG], AUDIO_TYPE_EXTEMSION[AudioCompressionFormat.MP3]), (".mp3", ".fsb")
+        )
         from UnityPy.classes import AudioClip
 
-        extension = {fmt.name: AudioClip.extension.fget(SimpleNamespace(m_CompressionFormat=fmt))
-                     for fmt in AudioCompressionFormat}
-        self.assertEqual(extension, {"PCM": ".fsb", "Vorbis": ".fsb", "ADPCM": ".fsb", "MP3": ".fsb", "VAG": ".vag",
-                                     "HEVAG": ".vag", "XMA": ".wav", "AAC": ".m4a", "GCADPCM": ".fsb", "ATRAC9": ".at9"})
+        extension = {
+            fmt.name: AudioClip.extension.fget(SimpleNamespace(m_CompressionFormat=fmt))
+            for fmt in AudioCompressionFormat
+        }
+        self.assertEqual(
+            extension,
+            {
+                "PCM": ".fsb",
+                "Vorbis": ".fsb",
+                "ADPCM": ".fsb",
+                "MP3": ".fsb",
+                "VAG": ".vag",
+                "HEVAG": ".vag",
+                "XMA": ".wav",
+                "AAC": ".m4a",
+                "GCADPCM": ".fsb",
+                "ATRAC9": ".at9",
+            },
+        )
         self.assertEqual(AudioClip.extension.fget(SimpleNamespace(m_CompressionFormat=11)), ".audioclip")
 
     # Sections 14.1, 14.3: the base classes, the math records and PPtr.
     def test_base_classes_and_records(self):
         import copy
 
-        from UnityPy.classes import ColorRGBA, Matrix3x4f, Matrix4x4f, Quaternionf, TextAsset, Vector2f, Vector3f
-        from UnityPy.classes import Vector4f, float3, float4
+        from UnityPy.classes import (
+            ColorRGBA,
+            Matrix3x4f,
+            Matrix4x4f,
+            Quaternionf,
+            TextAsset,
+            Vector2f,
+            Vector3f,
+            Vector4f,
+            float3,
+            float4,
+        )
 
-        self.assertEqual((Vector2f(), Vector3f(), Vector4f()), (Vector2f(0, 0), Vector3f(0, 0, 0), Vector4f(0, 0, 0, 0)))
+        self.assertEqual(
+            (Vector2f(), Vector3f(), Vector4f()), (Vector2f(0, 0), Vector3f(0, 0, 0), Vector4f(0, 0, 0, 0))
+        )
         self.assertEqual((float3, float4), (Vector3f, Vector4f))
         self.assertTrue(issubclass(Quaternionf, Vector4f))
         self.assertEqual([f.name for f in attrs.fields(Matrix3x4f)], [f"e{r}{c}" for r in range(3) for c in range(4)])
@@ -1419,7 +1477,9 @@ class Rows(unittest.TestCase):
         self.assertEqual(ColorRGBA(rgba=0x80FF0040).rgba, 0x80FF0040)
         # PPtr: truthy when the path id is not 0; equality and hash on the two ids alone.
         a, b = PPtr(m_FileID=1, m_PathID=5), PPtr(m_FileID=1, m_PathID=5, assetsfile=object())
-        self.assertEqual((bool(a), bool(PPtr(m_FileID=1, m_PathID=0)), a == b, hash(a) == hash(b)), (True, False, True, True))
+        self.assertEqual(
+            (bool(a), bool(PPtr(m_FileID=1, m_PathID=0)), a == b, hash(a) == hash(b)), (True, False, True, True)
+        )
         self.assertNotEqual(a, PPtr(m_FileID=2, m_PathID=5))
         self.assertEqual((a.file_id, a.path_id), (1, 5))
         # Object: keyword fields, no reader, save raises, copy.copy rebuilds; UnknownObject.get_type.

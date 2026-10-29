@@ -3,15 +3,15 @@
     scripts/dev python tools/parity/object_mode.py
 
 Object mode looks a class node's `m_Type` up on the module `UnityPy.classes` with `getattr`
-(`PyObject_GetAttr`, `UnityPyBoost/TypeTreeHelper.cpp:488`), so every name `getattr` finds there is a type name a
-file can hold: what the module's `__dict__` holds, which `dir(module)` lists, and what the module's type holds
-(`__class__`, `__repr__`, ...), which `dir` leaves out. For each class of the module, this parses a tree of that type holding
-every attrs field the class has and one more (`m_Extra`) on both paths: UnityPyBoost's (`byte_size` given) and the
-pure-Python one (no `byte_size`). It records what each path returns, beside the `__slots__` value UnityPyBoost's
-`parse_class` reads (`UnityPyBoost/TypeTreeHelper.cpp:508-515`) and whether the class's instances have a
-`__dict__`. For every other name, it parses a class node of that type, holding no field and
-holding one, nested in a holder so that UnityPyBoost reads it; each runs in a process of its own, because
-UnityPyBoost crashes on most of them.
+(`PyObject_GetAttr`, `UnityPyBoost/TypeTreeHelper.cpp:488`), so every name `getattr` finds there is a type name
+a file can hold: what the module's `__dict__` holds, which `dir(module)` lists, and what the module's type holds
+(`__class__`, `__repr__`, ...), which `dir` leaves out. For each class of the module, this parses a tree of that
+type holding every attrs field the class has and one more (`m_Extra`) on both paths: UnityPyBoost's
+(`byte_size` given) and the pure-Python one (no `byte_size`). It records what each path returns, beside the
+`__slots__` value UnityPyBoost's `parse_class` reads (`UnityPyBoost/TypeTreeHelper.cpp:508-515`) and whether
+the class's instances have a `__dict__`. For every other name, it parses a class node of that type, holding no
+field and holding one, nested in a holder so that UnityPyBoost reads it; each runs in a process of its own,
+because UnityPyBoost crashes on most of them.
 
 `tests/test_object_mode.py` requires PARITY.md to hold exactly what this prints.
 """

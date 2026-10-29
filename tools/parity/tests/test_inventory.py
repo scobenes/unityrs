@@ -154,7 +154,9 @@ class MatchingRules(unittest.TestCase):
             COMPLETE.replace("| 3 | `RGB24` |", "| 13 | `RGB24` |"),
             COMPLETE.replace(matrix_row, "") + "\n`RGB24` is format 3.\n",
             # A row of another table names no format: the package table, or a table of the matrix's shape.
-            COMPLETE.replace(matrix_row, "").replace("| `UnityPy.files` | `File` |", "| `UnityPy.files` | `File` |\n| 3 | `RGB24` |"),
+            COMPLETE.replace(matrix_row, "").replace(
+                "| `UnityPy.files` | `File` |", "| `UnityPy.files` | `File` |\n| 3 | `RGB24` |"
+            ),
             COMPLETE.replace(matrix_row, "") + "\n| a | b | c |\n|---|---|---|\n" + matrix_row + "\n",
         ):
             with self.subTest(text=text[-60:]):

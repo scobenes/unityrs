@@ -59,7 +59,7 @@ class ObjectMode(unittest.TestCase):
                 self.assertIn(name, own + others)
         self.assertIn("__class__", others)
         self.assertNotIn("__class__", own)
-        self.assertIs(getattr(classes, "__class__"), types.ModuleType)
+        self.assertIs(classes.__class__, types.ModuleType)
         hidden = object_mode.type_names()
         self.assertEqual(len(hidden), 25)
         self.assertTrue({"__class__", "__repr__", "__hash__", "__annotations__"} <= set(hidden))
