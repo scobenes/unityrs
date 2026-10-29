@@ -5,8 +5,10 @@
     python tools/parity/unitypy_dump.py --index /corpus/index.json -o OUT.jsonl --sample 20
 
 INPUT is a file or a folder (walked recursively); with --index it is the
-corpus index.json and its bundle and sample entries are dumped. The output
-path must lie outside the repository. docs/CANONICAL_DUMP.md specifies the
+corpus index.json and its bundle and sample entries are dumped. An input
+whose sha256 differs from its index entry stops the run (exit 1, no dump)
+unless --allow-index-mismatch is given. The output path must lie outside the
+repository. docs/CANONICAL_DUMP.md specifies the
 format; this script needs only the standard library and UnityPy (the pinned
 oracle stack in the unityrs-dev container).
 """
@@ -41,9 +43,22 @@ from UnityPy.helpers import ImportHelper, TypeTreeHelper  # noqa: E402
 from UnityPy.streams import EndianBinaryReader, EndianBinaryWriter  # noqa: E402
 
 import canonical as C  # noqa: E402
+import oracle_env  # noqa: E402
 
 # What routes parse_as_dict through UnityPyBoost; without it the oracle is not the pinned one.
 HAVE_BOOST = TypeTreeHelper.read_typetree_boost is not None
+
+
+def _boost_sha256() -> str | None:
+    """The sha256 of the UnityPyBoost binary this process loaded, or None without one."""
+    module = sys.modules.get("UnityPy.UnityPyBoost")
+    if not HAVE_BOOST or module is None:
+        return None
+    with open(module.__file__, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+BOOST_SHA256 = _boost_sha256()
 
 NOTE_MAX = 300
 INDEX_KINDS = ("bundle", "unitypy-sample")
@@ -52,11 +67,27 @@ NONE_PIN = 1 << 40
 
 
 def oracle_stack_problem() -> str | None:
-    """Why this interpreter is not the pinned oracle, or None when it is."""
+    """Why this interpreter is not the pinned oracle, or None when it is.
+
+    The oracle is UnityPy with UnityPyBoost, that binary being the one the
+    pinned wheel holds, and every package requirements-oracle.txt pins
+    (numpy included, which changes what UnityPy renders) installed from its
+    pinned wheel: at its version, each file hashing as that wheel's RECORD
+    says, and imported from those files (oracle_env.wheel_problems).
+    """
     if not HAVE_BOOST:
         return "UnityPyBoost is not loaded, so UnityPy would parse with its pure-Python reader"
     if UnityPy.__version__ != C.ORACLE_UNITYPY:
         return f"UnityPy is {UnityPy.__version__}, not the pinned {C.ORACLE_UNITYPY}"
+    if BOOST_SHA256 != C.ORACLE_BOOST_SHA256:
+        return f"UnityPyBoost has sha256 {BOOST_SHA256}, not the pinned wheel's {C.ORACLE_BOOST_SHA256}"
+    problems = C.stack_problems(C.installed_packages(), C.oracle_pins())
+    if problems:
+        return f"{'; '.join(problems)} ({C.ORACLE_REQUIREMENTS.name})"
+    problems = oracle_env.installed_wheel_problems()[0]
+    if problems:
+        more = f"; and {len(problems) - 3} more" if len(problems) > 3 else ""
+        return f"{'; '.join(problems[:3])}{more} ({C.ORACLE_RECORDS.name})"
     return pin_problem()
 
 
@@ -330,9 +361,13 @@ def object_record(obj, path, encoder, levels, stats):
             try:
                 encoded = encoder.encode(value, node)
             except C.EncodeError as e:
-                parsed_ok = False
-                error = {"kind": "encode", "bytes_read": None, "note": note(e)}
-                stats["encode_errors"] += 1
+                # UnityPy read the value; the oracle's own encoder refusing it is a
+                # bug in the dumper, not an outcome of the input, so the run stops
+                # (spec 4.3: the oracle never writes an `encode` error).
+                raise DumperError(
+                    f"file {C.dumps(path)} path_id {obj.path_id}: the canonical encoder refused the value "
+                    f"UnityPy read ({e})"
+                ) from e
         stats["t_parse"] += t1 - t0
         stats["t_encode"] += time.perf_counter() - t1
         if error is not None:
@@ -547,6 +582,10 @@ class DumperError(RuntimeError):
     """The dumper failed on an input in its own code, which no input explains, so the run stops."""
 
 
+class IndexMismatch(RuntimeError):
+    """An input is not the file its index entry pins (another sha256), so the dump would not be of the corpus."""
+
+
 def _send(conn, result):
     conn.send(result)
 
@@ -640,6 +679,11 @@ def main(argv=None):
     ap.add_argument("--index", action="store_true", help="INPUT is a corpus index.json")
     ap.add_argument("--kind", default=",".join(INDEX_KINDS), help="index entry kinds to dump (comma list)")
     ap.add_argument("--build", help="index builds to dump (comma list)")
+    ap.add_argument(
+        "--allow-index-mismatch",
+        action="store_true",
+        help="with --index, dump an input whose sha256 differs from its entry (a warning) instead of stopping",
+    )
     ap.add_argument("--name", action="append", help="glob on the dump-relative path (repeatable)")
     ap.add_argument("--sample", type=int, help="keep N inputs spread evenly over the sorted list")
     ap.add_argument("--limit", type=int, help="keep the first N inputs")
@@ -648,6 +692,8 @@ def main(argv=None):
     ap.add_argument("--stats", help="write per-input timings and totals as JSON to this path")
     ap.add_argument("-q", "--quiet", action="store_true", help="no per-input progress on stderr")
     args = ap.parse_args(argv)
+    if args.allow_index_mismatch and not args.index:
+        ap.error("--allow-index-mismatch needs --index")
     args.kind = args.kind.split(",")
     args.build = args.build.split(",") if args.build else None
     asked = args.levels.split(",")
@@ -662,6 +708,7 @@ def main(argv=None):
     problem = oracle_stack_problem()
     if problem:
         ap.error(f"refusing to dump: this is not the pinned oracle ({problem})")
+    installed = C.installed_packages()
 
     # The dump and the stats both name corpus inputs; neither may land in the repository.
     for label, path in (("the dump", args.output), ("--stats", args.stats)):
@@ -684,6 +731,11 @@ def main(argv=None):
             "name": C.ORACLE_PRODUCER,
             "unitypy": UnityPy.__version__,
             "boost": HAVE_BOOST,
+            "boost_sha256": BOOST_SHA256,
+            # Every pinned package as installed: oracle_stack_problem has checked that they are the pins.
+            "packages": {name: installed[name] for name in sorted(C.oracle_pins())},
+            # The digest of each one's RECORD, whose every file oracle_stack_problem has hashed.
+            "records": oracle_env.installed_wheel_problems()[1],
             "python": sys.version.split()[0],
         },
     }
@@ -709,7 +761,10 @@ def main(argv=None):
                 print(f"warning: {rel}: {json.loads(text)['error']['note']}", file=sys.stderr)
             if expected[rel] and expected[rel] != sha:
                 totals["index_sha256_mismatch"] += 1
-                print(f"warning: {rel}: sha256 {sha} differs from the index", file=sys.stderr)
+                said = f"{rel}: sha256 {sha} differs from the index's {expected[rel]}"
+                if not args.allow_index_mismatch:
+                    raise IndexMismatch(said)
+                print(f"warning: {said}", file=sys.stderr)
             per_input.append({"path": rel, **{k: round(v, 6) if isinstance(v, float) else v for k, v in stats.items()}})
             if not args.quiet:
                 print(
@@ -721,6 +776,13 @@ def main(argv=None):
         done = True
     except DumperError as e:
         print(f"unitypy_dump: {e}\nunitypy_dump: the dumper itself failed; no dump written", file=sys.stderr)
+        return 1
+    except IndexMismatch as e:
+        print(
+            f"unitypy_dump: {e}\nunitypy_dump: the input is not the file the index pins; no dump written "
+            "(--allow-index-mismatch dumps it anyway)",
+            file=sys.stderr,
+        )
         return 1
     finally:
         if results is not None:

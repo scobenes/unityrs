@@ -36,7 +36,9 @@ try:
 except ImportError:  # pragma: no cover - outside the oracle image
     unitypy_dump = None
 
+import canonical as C  # noqa: E402
 import compare  # noqa: E402
+import oracle_env  # noqa: E402
 import synth as S  # noqa: E402
 
 SAMPLES = {
@@ -156,6 +158,13 @@ class DumpTests(unittest.TestCase):
             (head["format"], head["version"], head["levels"]), ("unityrs-canonical-dump", 1, ["L0", "L1", "L2", "L3"])
         )
         self.assertTrue(head["producer"]["boost"])
+        # The header names the stack: the Boost binary's hash and every pinned package's version.
+        self.assertEqual(head["producer"]["boost_sha256"], C.ORACLE_BOOST_SHA256)
+        self.assertEqual(head["producer"]["packages"], C.oracle_pins())
+        self.assertIn("numpy", head["producer"]["packages"])
+        # ... and each one's RECORD digest, whose files the dumper hashed: the pinned wheels'.
+        self.assertEqual(head["producer"]["records"], C.oracle_records())
+        self.assertEqual(list(head["producer"])[-2:], ["records", "python"])
         self.assertEqual(end, {"rec": "end", "files": 13, "objects": 53})
         self.assert_canonical(out)
 
@@ -752,6 +761,12 @@ class DumpTests(unittest.TestCase):
                 mock.patch.object(unitypy_dump, "_send", exit_without_result),
                 "exited with status 1 and no result",
             ),
+            # UnityPy read the value, and the oracle's own encoder refuses it: no `encode`
+            # record (spec 4.3), the run stops naming the input and the object.
+            "the canonical encoder refusing UnityPy's value": (
+                mock.patch.object(C.ValueEncoder, "encode", side_effect=C.EncodeError("float for an int node")),
+                "'a.assets': the dumper raised",
+            ),
         }
         for label, (patch, message) in cases.items():
             for jobs in ("1", "2"):
@@ -760,6 +775,12 @@ class DumpTests(unittest.TestCase):
                         rc = unitypy_dump.main([str(d), "-o", str(self.tmp / "x.jsonl"), "-q", "-j", jobs])
                     self.assertEqual(rc, 1)
                     self.assertIn(message, err.getvalue())
+                    if "encoder" in label:
+                        self.assertIn(
+                            'DumperError: file ["a.assets"] path_id 1: the canonical encoder refused the value '
+                            "UnityPy read (float for an int node)",
+                            err.getvalue(),
+                        )
                     self.assertIn("no dump written", err.getvalue())
                     self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["in"])
         # A build None cannot be pinned in is refused before any input runs.
@@ -860,15 +881,73 @@ class DumpTests(unittest.TestCase):
         tiny = self.tmp / "tiny"
         tiny.write_bytes(b"tiny")
         out = self.tmp / "x.jsonl"
-        for patch in (
-            mock.patch.object(unitypy_dump, "HAVE_BOOST", False),
-            mock.patch.object(unitypy_dump.UnityPy, "__version__", "1.24.0"),
+        installed = C.installed_packages()
+        without_numpy = {k: v for k, v in installed.items() if k != "numpy"}
+        for label, patch, said in (
+            ("no Boost", mock.patch.object(unitypy_dump, "HAVE_BOOST", False), "UnityPyBoost is not loaded"),
+            ("UnityPy", mock.patch.object(unitypy_dump.UnityPy, "__version__", "1.24.0"), "UnityPy is 1.24.0"),
+            # Another build of UnityPyBoost beside UnityPy 1.25.2.
+            ("Boost build", mock.patch.object(unitypy_dump, "BOOST_SHA256", "0" * 64), "UnityPyBoost has sha256 000"),
+            # numpy absent: UnityPy then renders sprites with its pure-Python solver.
+            ("numpy", mock.patch.object(C, "installed_packages", return_value=without_numpy), "numpy is not installed"),
+            (
+                "Pillow",
+                mock.patch.object(C, "installed_packages", return_value={**installed, "pillow": "10.0.0"}),
+                "pillow is 10.0.0, not the pinned 9.5.0",
+            ),
+            # Every version right, but a file that is not the pinned wheel's (test_refuses_a_patched_unitypy).
+            (
+                "a wheel's files",
+                mock.patch.object(oracle_env, "installed_wheel_problems", return_value=(("numpy: x hashes as y",), {})),
+                "numpy: x hashes as y (oracle_records.json)",
+            ),
         ):
-            with self.subTest(patch.attribute):
+            with self.subTest(label):
                 with patch, contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
                     unitypy_dump.main([str(tiny), "-o", str(out), "-q"])
                 self.assertIn("not the pinned oracle", err.getvalue())
+                self.assertIn(said, err.getvalue())
                 self.assertFalse(out.exists())
+
+    def test_refuses_a_patched_unitypy(self):
+        """A copy of UnityPy with one line changed, imported before the installed one, is refused.
+
+        With its dist-info the copy is the distribution Python finds, and its
+        edited file no longer hashes as its RECORD says; without one, the
+        installed distribution checks out, but `UnityPy` imports from
+        elsewhere. A faithful copy with its dist-info passes, so the line is
+        what is refused. The version and the UnityPyBoost binary are the
+        pinned ones throughout.
+        """
+        tiny = self.tmp / "tiny"
+        tiny.write_bytes(b"tiny")
+        site = Path(unitypy_dump.UnityPy.__file__).resolve().parents[1]
+        info = site / f"unitypy-{C.ORACLE_UNITYPY}.dist-info"
+        self.assertTrue(info.is_dir())
+        for n, (label, with_info, patched, code, said) in enumerate(
+            (
+                ("a faithful copy with its dist-info", True, False, 0, ""),
+                ("a patched copy with its dist-info", True, True, 2, "UnityPy/files/ObjectReader.py hashes as"),
+                ("a patched copy alone", False, True, 2, "module UnityPy imports from"),
+            )
+        ):
+            with self.subTest(label):
+                shadow = self.tmp / f"shadow{n}"
+                shutil.copytree(site / "UnityPy", shadow / "UnityPy", ignore=shutil.ignore_patterns("__pycache__"))
+                if with_info:
+                    shutil.copytree(info, shadow / info.name)
+                if patched:
+                    reader = shadow / "UnityPy" / "files" / "ObjectReader.py"
+                    text = reader.read_text(encoding="utf-8")
+                    self.assertEqual(text.count("is_stripped = None"), 1)
+                    reader.write_text(text.replace("is_stripped = None", "is_stripped = 7"), encoding="utf-8")
+                out = self.tmp / f"patched{n}.jsonl"
+                proc = dump_process(tiny, "-o", out, env={"PYTHONPATH": str(shadow)})
+                self.assertEqual(proc.returncode, code, proc.stderr.decode(errors="replace"))
+                self.assertEqual(out.exists(), code == 0)
+                if code:
+                    self.assertIn(b"not the pinned oracle", proc.stderr)
+                    self.assertIn(said.encode(), proc.stderr)
 
     def test_index_mode_and_sha_check(self):
         src = samples_dir()
@@ -887,10 +966,32 @@ class DumpTests(unittest.TestCase):
         }
         (root / "index.json").write_text(json.dumps(index))
         out, stats = self.tmp / "i.jsonl", self.tmp / "i.stats.json"
-        dump("--index", root / "index.json", "-o", out, "--stats", stats)
+        index_args = ["-q", "--index", str(root / "index.json"), "-o", str(out)]
+        # An input that is not the file its entry pins stops the run: exit 1, no dump, no stats.
+        with contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(unitypy_dump.main(index_args), 1)
+        said = f"s/atlas_test: sha256 {SAMPLES['atlas_test']} differs from the index's {'0' * 64}"
+        self.assertIn(said, err.getvalue())
+        self.assertIn("no dump written", err.getvalue())
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["corpus"])
+        # --allow-index-mismatch dumps it with a warning, and the summary counts it.
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            code = unitypy_dump.main([*index_args, "--stats", str(stats), "--allow-index-mismatch"])
+        self.assertEqual(code, 0)
+        self.assertIn("warning: s/atlas_test: sha256", err.getvalue())
         tops = [r["file"] for r in records(out) if r["rec"] == "file" and len(r["file"]) == 1]
         self.assertEqual(tops, [["s/atlas_test"], ["s/banner_1"]])
         self.assertEqual(json.loads(stats.read_text())["summary"]["index_sha256_mismatch"], 1)
+        # An index whose hashes all match needs no flag.
+        index["files"][1]["sha256"] = SAMPLES["atlas_test"]
+        (root / "index.json").write_text(json.dumps(index))
+        out.unlink()
+        self.assertEqual(dump("--index", root / "index.json", "-o", out, "--stats", stats), 0)
+        self.assertNotIn("index_sha256_mismatch", json.loads(stats.read_text())["summary"])
+        self.assertEqual(len([r for r in records(out) if r["rec"] == "file" and len(r["file"]) == 1]), 2)
+        # The flag means nothing without an index.
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            unitypy_dump.main([str(src), "-o", str(self.tmp / "x.jsonl"), "--allow-index-mismatch"])
 
     def test_levels_leave_the_rest_null(self):
         args = self.sample_args()

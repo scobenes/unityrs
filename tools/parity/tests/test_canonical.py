@@ -300,6 +300,90 @@ class CanonicalForm(unittest.TestCase):
             with self.subTest(tv=tv):
                 self.assertEqual(self.kinds(tv), want)
 
+    def test_l0_values_and_pairs(self):
+        def file_record(typ, parsed, names=("a",), error=None, size=10, sha="00" * 32):
+            l0 = {"type": typ, "parsed_as": parsed, "size": size, "sha256": sha}
+            return {"rec": "file", "file": list(names), "l0": l0, "l1": None, "error": error}
+
+        def kinds(rec):
+            return sorted((p, k) for p, k, _ in C.check_record(rec, ["L0"]))
+
+        # The review's case: values section 4.2 does not list, with no other fault.
+        self.assertEqual(
+            kinds(file_record("made_up", "made_up")), [("l0.parsed_as", "unknown_value"), ("l0.type", "unknown_value")]
+        )
+        self.assertEqual(kinds(file_record(["AssetsFile"], "raw")), [("l0.type", "unknown_value")])
+        # Every pair UnityPy builds, on an input and on an entry; an input may also fail.
+        entry_ok = {
+            "AssetsFile": ("SerializedFile", "raw"),
+            "BundleFile": ("BundleFile",),
+            "WebFile": ("WebFile",),
+            "ResourceFile": ("raw",),
+            "ZIP": ("raw",),
+            "error": (),
+        }
+        for typ in C.L0_TYPES:
+            for parsed in C.L0_PARSED_AS:
+                on_input = (
+                    parsed in entry_ok[typ]
+                    and typ != "ZIP"
+                    or parsed == "error"
+                    or (typ, parsed)
+                    == (
+                        "ZIP",
+                        "zip",
+                    )
+                )
+                on_entry = parsed in entry_ok[typ]
+                error = {"kind": "detect" if typ == "error" else "parse"} if parsed == "error" else None
+                with self.subTest(typ=typ, parsed=parsed):
+                    want = [] if on_input else [("l0.parsed_as", "l0_mismatch")]
+                    self.assertEqual(kinds(file_record(typ, parsed, error=error)), want, "input")
+                    # An entry never carries an error (section 4.2); that rule is error_mismatch's.
+                    rec = file_record(typ, parsed, names=("a", "CAB-1"), error=error)
+                    got = [k for k in kinds(rec) if k[1] != "error_mismatch"]
+                    self.assertEqual(got, [] if on_entry else [("l0.parsed_as", "l0_mismatch")], "entry")
+        # size and sha256.
+        for size in (-1, True, "10", 1.5):
+            self.assertEqual(kinds(file_record("ResourceFile", "raw", size=size)), [("l0.size", "bad_value")])
+        for sha in ("AB" * 32, "00" * 31, None):
+            self.assertEqual(kinds(file_record("ResourceFile", "raw", sha=sha)), [("l0.sha256", "bad_value")])
+
+    def test_error_kinds(self):
+        def file_record(typ, kind):
+            l0 = {"type": typ, "parsed_as": "error", "size": 1, "sha256": "00" * 32}
+            return {"rec": "file", "file": ["a"], "l0": l0, "l1": None, "error": {"kind": kind}}
+
+        def kinds(rec, levels=("L0",)):
+            return [(p, k) for p, k, _ in C.check_record(rec, list(levels))]
+
+        for typ, kind, want in (
+            ("error", "detect", []),
+            ("error", "crash", []),
+            ("AssetsFile", "parse", []),
+            ("AssetsFile", "crash", []),
+            ("error", "parse", [("error.kind", "error_mismatch")]),
+            ("BundleFile", "detect", [("error.kind", "error_mismatch")]),
+            ("AssetsFile", "boom", [("error.kind", "unknown_value")]),
+        ):
+            with self.subTest(typ=typ, kind=kind):
+                self.assertEqual(kinds(file_record(typ, kind)), want)
+        obj = {
+            "rec": "object",
+            "file": ["a"],
+            "path_id": 1,
+            "l1": None,
+            "l2": {"root_type": "T", "source": "tpk", "error": None, "value": None},
+            "l3": None,
+        }
+        for kind in C.L2_ERROR_KINDS:
+            obj["l2"]["error"] = {"kind": kind, "bytes_read": 4 if kind == "check_read" else None}
+            obj["l2"]["value"] = 1 if kind == "check_read" else None
+            self.assertEqual(kinds(obj, ("L0", "L2")), [], kind)
+        obj["l2"]["error"] = {"kind": "made_up", "bytes_read": None}
+        obj["l2"]["value"] = None
+        self.assertEqual(kinds(obj, ("L0", "L2")), [("l2.error.kind", "unknown_value")])
+
     def test_record_members(self):
         end = {"rec": "end", "files": 0, "objects": 0}
         self.assertEqual(C.check_record(end, []), [])

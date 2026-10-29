@@ -532,8 +532,25 @@ def line_problems(rec, line, saw_float, levels):
     return problems
 
 
+def reference_problems(rec):
+    """What a reference record may not hold although the format allows it: an `encode` error.
+
+    Only a producer under test writes one (spec 4.3); the oracle stops on its
+    own encoder's failure instead, so a reference that has one cannot vouch
+    for that object.
+    """
+    l2 = rec.get("l2") if rec.get("rec") == "object" else None
+    error = l2.get("error") if isinstance(l2, dict) else None
+    if isinstance(error, dict) and error.get("kind") == "encode":
+        return [("l2.error", "reference_encode", "only a producer under test writes an encode error")]
+    return []
+
+
 def check_reference_producer(header):
-    """A dump from the oracle dumper must come from the pinned stack, or every difference it finds is suspect."""
+    """A dump from the oracle dumper must come from the pinned stack, or every difference it finds is suspect.
+
+    Only the reference is checked: a candidate's `producer` is its own business.
+    """
     producer = header.get("producer")
     if not isinstance(producer, dict) or producer.get("name") != C.ORACLE_PRODUCER:
         return
@@ -541,6 +558,30 @@ def check_reference_producer(header):
         raise CompareError(
             f"the reference was dumped with UnityPy {producer.get('unitypy')} and boost={producer.get('boost')}; "
             f"the oracle is UnityPy {C.ORACLE_UNITYPY} with UnityPyBoost"
+        )
+    if producer.get("boost_sha256") != C.ORACLE_BOOST_SHA256:
+        raise CompareError(
+            f"the reference was dumped with the UnityPyBoost binary {producer.get('boost_sha256')}; "
+            f"the oracle's is {C.ORACLE_BOOST_SHA256}"
+        )
+    packages = producer.get("packages")
+    pins = C.oracle_pins()
+    if not isinstance(packages, dict) or packages != pins:
+        problems = C.stack_problems(packages, pins, exact=True) if isinstance(packages, dict) else []
+        raise CompareError(
+            f"the reference was dumped on another stack than {C.ORACLE_REQUIREMENTS.name}: "
+            f"{'; '.join(problems) or f'packages {packages!r}'}"
+        )
+    # The record digests say the dumper hashed every pinned wheel's files (oracle_env.py).
+    records, pinned = producer.get("records"), C.oracle_records()
+    if records != pinned:
+        if isinstance(records, dict):
+            names = sorted(n for n in pinned.keys() | records.keys() if records.get(n) != pinned.get(n))
+            what = f"the record digests of {', '.join(names)} are not the pinned ones"
+        else:
+            what = f"records {records!r}"
+        raise CompareError(
+            f"the reference was dumped from other files than the pinned wheels' ({C.ORACLE_RECORDS.name}): {what}"
         )
 
 
@@ -618,6 +659,8 @@ def run(path_a, path_b, levels=None, examples=3):
             if line is None:
                 continue
             rec, key, problems = shared or examine(line, side)
+            if side is a:
+                problems = [*problems, *reference_problems(rec)]
             kind = rec["rec"]
             side.kinds[kind] += 1
             if side.end is not None:

@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Run unittest suites; fail unless each ran at least its expected number of tests, every one passing.
+
+    scripts/unittest-suites SUITE=MIN [SUITE=MIN ...]
+
+Each SUITE is a folder run as `python -m unittest discover -s SUITE -v`, with
+the interpreter running this script. CI runs the Python suites through it
+where every test has what it needs, so a suite fails when:
+- unittest exits non-zero (a failure, an error, an import error);
+- its last line is anything but `OK`, such as `OK (skipped=5)`: a skipped
+  test is one that did not run;
+- it ran fewer than MIN tests. Discovery that finds nothing still ends in
+  `OK` on Python 3.11 (`Ran 0 tests`), so a module moved where discovery no
+  longer looks, or renamed away from test*.py, would otherwise pass unseen.
+
+Every suite runs, and each failure is reported. Exit status: 0 when every
+suite passed, 1 when any failed, 2 for a usage error. Under GitHub Actions
+each suite's log is folded into a group and each failure is an error
+annotation. Standard library only.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+
+RAN = re.compile(r"Ran (\d+) tests? in ")
+
+
+def parse_args(argv):
+    suites = []
+    for arg in argv:
+        suite, sep, minimum = arg.rpartition("=")
+        if not sep or not suite or not minimum.isdigit() or int(minimum) < 1:
+            raise ValueError(f"{arg!r} is not SUITE=MIN with MIN at least 1")
+        suites.append((suite, int(minimum)))
+    if not suites:
+        raise ValueError("no suites given")
+    return suites
+
+
+def verdict(returncode: int, log: str, minimum: int) -> str | None:
+    """Why the suite whose output is `log` fails the gate, or None when it passes."""
+    lines = [line for line in log.splitlines() if line.strip()]
+    last = lines[-1] if lines else "(no output)"
+    ran = [int(m.group(1)) for line in lines if (m := RAN.match(line))]
+    if returncode != 0:
+        return f"unittest exited {returncode}: {last}"
+    if last != "OK":
+        return f"{last} (every test must run and pass here)"
+    if not ran:
+        return "no 'Ran N tests' line"
+    if ran[-1] < minimum:
+        return f"ran {ran[-1]} tests, fewer than the {minimum} it holds (discovery no longer finds some)"
+    return None
+
+
+def main(argv=None) -> int:
+    try:
+        suites = parse_args(sys.argv[1:] if argv is None else argv)
+    except ValueError as e:
+        print(f"unittest-suites: {e}\nusage: unittest-suites SUITE=MIN [SUITE=MIN ...]", file=sys.stderr)
+        return 2
+    actions = os.environ.get("GITHUB_ACTIONS") == "true"
+    failed = []
+    for suite, minimum in suites:
+        print(f"::group::{suite}" if actions else f"== {suite}", flush=True)
+        proc = subprocess.run(
+            [sys.executable, "-m", "unittest", "discover", "-s", suite, "-v"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+        )
+        print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
+        if actions:
+            print("::endgroup::")
+        why = verdict(proc.returncode, proc.stdout, minimum)
+        if why:
+            failed.append(suite)
+            print(f"::error::{suite}: {why}" if actions else f"unittest-suites: {suite}: {why}", flush=True)
+    sys.stdout.flush()
+    if failed:
+        print(f"unittest-suites: {len(failed)} of {len(suites)} suites failed: {', '.join(failed)}", file=sys.stderr)
+        return 1
+    print(f"unittest-suites: all {len(suites)} suites passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
