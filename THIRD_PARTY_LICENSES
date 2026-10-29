@@ -24,8 +24,8 @@ Licence: MIT.
 
 unityrs-core ports the read and write rules of UnityPy 1.25.2 and of the
 UnityPyBoost C++ extension shipped in the same release, and unityrs-tpk
-ports UnityPy 1.25.2's UnityPy/helpers/Tpk.py (how a class's type tree is
-picked from a type-tree package). A ported file names its UnityPy source in
+ports UnityPy 1.25.2's UnityPy/helpers/Tpk.py (how a type-tree package is
+read and a class's type tree picked from it). A ported file names its UnityPy source in
 its header and cites lines of that release. The tables in
 crates/unityrs-core/src/classid.rs and
 crates/unityrs-core/src/typetree/commonstring.rs are generated from
@@ -60,65 +60,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 --------------------------------------------------------------------------------
-rabex 0.2.1
-https://github.com/jakobhellermann/RustyAssetBundleEXtractor
-https://crates.io/crates/rabex/0.2.1
-Licence: offered as MIT OR Apache-2.0. unityrs takes it under the MIT
-licence.
-
-Authors, as named in rabex's Cargo.toml: Rudolf Kolbe and Jakob Hellermann.
-rabex carries no copyright line: its LICENSE-MIT.md begins at "Permission
-is hereby granted", so none is invented here.
-
-rabex 0.2.1 is vendored as the crate crates/unityrs-rabex (library name
-rabex). Its first commit is the unmodified crates.io source; every later
-change is a numbered patch listed, with its reason, in
-crates/unityrs-rabex/UPSTREAM.md. The crate's own LICENSE-MIT.md and
-LICENSE-APACHE.md travel with it. unityrs-tpk is the only crate that uses
-it, and only its type-tree package reader.
-
-The P0 spike crate crates/unityrs-spike-rabex also depends on the
-unmodified crates.io release of rabex 0.2.1; no other crate uses that one.
-
-Its licence text, verbatim, is listed under Crates below, for both
-unityrs-rabex and the crates.io rabex.
-
---------------------------------------------------------------------------------
-CNStudio (through rabex)
-https://github.com/Razmoth/CNStudio
-Licence: MIT.
-
-rabex's src/archive_storage_manager.rs (the UnityCN block decryptor),
-vendored unmodified as crates/unityrs-rabex/src/archive_storage_manager.rs,
-credits CNStudio's AssetStudio/CNUnity.cs. It is compiled into
-unityrs-rabex, and into the crates.io rabex 0.2.1 the spike crate builds.
-CNStudio is a fork of AssetStudio and carries AssetStudio's MIT licence and
-copyright lines:
-
-MIT License
-
-Copyright (c) 2016 Radu
-Copyright (c) 2016-2020 Perfare
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
---------------------------------------------------------------------------------
 Data provenance
 crates/unityrs-core/src/typetree/commonstring.rs: the 108 common strings
 of UnityPy 1.25.2's MIT source (UnityPy/enums/CommonString.py). The table
@@ -129,14 +70,6 @@ committed.
 crates/unityrs-core/src/classid.rs: class id names generated from
 UnityPy 1.25.2's MIT UnityPy/enums/ClassIDType.py.
 
-crates/unityrs-rabex/src/commonstring.rs and
-crates/unityrs-rabex/src/objects/class_id.rs: rabex 0.2.1 generated these
-from its embedded type-tree package and from AssetRipper's TypeTreeDumps (no
-licence file). The vendored copies are regenerated from the same MIT
-UnityPy 1.25.2 sources (UnityPy/enums/CommonString.py,
-UnityPy/enums/ClassIDType.py; ledger patch F10 in
-crates/unityrs-rabex/UPSTREAM.md), and none of rabex's entries remain.
-
 crates/unityrs-core/src/tables.rs: the zero of every decimal-digit (Nd) run
 and the code points whose lower case differs between Python 3.11 and Rust,
 generated from Python 3.11's unicodedata and str.lower() (Unicode 14.0.0,
@@ -145,8 +78,8 @@ char::to_lowercase. The Unicode License v3 text is listed under Crates
 below.
 
 No type-tree package (TPK) file is included in this repository or in any
-binary built from it. unityrs-tpk loads one from a path the user supplies,
-and unityrs-rabex is built without rabex's embedded TPK. The TPK tests read
+binary built from it. unityrs-tpk loads one from a path the user supplies.
+The TPK tests read
 synthetic packages built in code (tools/fixtures/tpk.py) and, in the oracle
 image only, UnityPy's own package, from which nothing is committed.
 
@@ -500,39 +433,6 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- bitflags 2.13.2 (https://github.com/bitflags/bitflags)
-
-Copyright (c) 2014 The Rust Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-
---------------------------------------------------------------------------------
-MIT License (MIT)
-
-Used by:
 - flate2 1.1.10 (https://github.com/rust-lang/flate2-rs)
 
 Copyright (c) 2014-2026 Alex Crichton
@@ -669,40 +569,6 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- md4 0.11.0 (https://github.com/RustCrypto/hashes)
-
-Copyright (c) 2016-2026 The RustCrypto Project Developers
-Copyright (c) 2016 bacher09, Artyom Pavlov
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-
---------------------------------------------------------------------------------
-MIT License (MIT)
-
-Used by:
 - digest 0.10.7 (https://github.com/RustCrypto/traits)
 
 Copyright (c) 2017 Artyom Pavlov
@@ -731,38 +597,6 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
-
---------------------------------------------------------------------------------
-MIT License (MIT)
-
-Used by:
-- stable_deref_trait 1.2.1 (https://github.com/storyyeller/stable_deref_trait)
-
-Copyright (c) 2017 Robert Grosse
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
 
 --------------------------------------------------------------------------------
 MIT License (MIT)
@@ -1217,64 +1051,6 @@ AUTHORS: (ordered alphabetically)
 MIT License (MIT)
 
 Used by:
-- lzma-rs 0.3.0 (https://github.com/gendx/lzma-rs)
-
-MIT License
-
-Copyright (c) 2017 - 2018  Guillaume Endignoux
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-
---------------------------------------------------------------------------------
-MIT License (MIT)
-
-Used by:
-- crc 3.4.0 (https://github.com/mrhooray/crc-rs.git)
-
-MIT License
-
-Copyright (c) 2017 crc-rs Developers
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-
---------------------------------------------------------------------------------
-MIT License (MIT)
-
-Used by:
 - crc32fast 1.5.3 (https://github.com/srijs/rust-crc32fast)
 
 MIT License
@@ -1304,75 +1080,10 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- crc-catalog 2.5.0 (https://github.com/akhilles/crc-catalog.git)
-
-MIT License
-
-Copyright (c) 2019 Akhil Velagapudi
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-
---------------------------------------------------------------------------------
-MIT License (MIT)
-
-Used by:
-- elsa 1.11.2 (https://github.com/manishearth/elsa)
-
-MIT License
-
-Copyright (c) 2019 Manish Goregaokar
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-
---------------------------------------------------------------------------------
-MIT License (MIT)
-
-Used by:
 - unityrs-bench-lzma 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-cli 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-dump 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-spike-rabex 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-testkit 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-tpk 0.0.1 (https://github.com/scobenes/unityrs)
 
@@ -1497,50 +1208,12 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- unityrs-rabex 0.2.1 (https://github.com/jakobhellermann/RustyAssetBundleEXtractor)
-- rabex 0.2.1 (https://github.com/jakobhellermann/RustyAssetBundleEXtractor)
-- rustc-hash 2.1.3 (https://github.com/rust-lang/rustc-hash)
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
---------------------------------------------------------------------------------
-MIT License (MIT)
-
-Used by:
 - adler2 2.0.1 (https://github.com/oyvindln/adler2)
 - itoa 1.0.18 (https://github.com/dtolnay/itoa)
-- num_enum 0.7.6 (https://github.com/illicitonion/num_enum)
-- num_enum_derive 0.7.6 (https://github.com/illicitonion/num_enum)
 - proc-macro2 1.0.107 (https://github.com/dtolnay/proc-macro2)
 - quote 1.0.47 (https://github.com/dtolnay/quote)
-- rustversion 1.0.23 (https://github.com/dtolnay/rustversion)
-- serde 1.0.229 (https://github.com/serde-rs/serde)
 - serde_core 1.0.229 (https://github.com/serde-rs/serde)
-- serde_derive 1.0.229 (https://github.com/serde-rs/serde)
 - serde_json 1.0.154 (https://github.com/serde-rs/json)
-- syn 2.0.119 (https://github.com/dtolnay/syn)
 - syn 3.0.9 (https://github.com/dtolnay/syn)
 - thiserror-impl 2.0.21 (https://github.com/dtolnay/thiserror)
 - thiserror 2.0.21 (https://github.com/dtolnay/thiserror)
@@ -1605,7 +1278,6 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- byteorder 1.5.0 (https://github.com/BurntSushi/byteorder)
 - memchr 2.8.3 (https://github.com/BurntSushi/memchr)
 
 The MIT License (MIT)
@@ -1701,7 +1373,6 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- lz4_flex 0.13.1 (https://github.com/pseitz/lz4_flex)
 - lz4_flex 0.14.0 (https://github.com/pseitz/lz4_flex)
 
 The MIT License (MIT)

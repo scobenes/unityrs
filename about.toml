@@ -6,8 +6,7 @@
 # the crates' published sources. A crate that ships no licence file gets the
 # SPDX text, never a file fetched from its repository's current head.
 #
-# Every crate the workspace builds is listed, its own members included: a
-# vendored fork is a workspace member too, and keeps its notice that way. Each
+# Every crate the workspace builds is listed, its own members included. Each
 # member's LICENSE-MIT and LICENSE-APACHE link to the repository's own, so a
 # member is listed with its real notice; the script refuses a notice that is
 # still an SPDX template ("<year>", "<copyright holders>").

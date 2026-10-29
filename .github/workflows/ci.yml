@@ -36,26 +36,6 @@ jobs:
       - name: No stub is left (G6)
         run: sh scripts/stub-check.sh
 
-  # crates/unityrs-rabex is rabex 0.2.1 from crates.io plus the patches its
-  # UPSTREAM.md lists, and nothing else (docs/plans/core.md section 2.4):
-  # scripts/fork-check.sh unpacks the tarball Cargo.lock pins, replays the
-  # crate's patch commits onto it and compares. It reads those commits, so
-  # the checkout holds the whole history.
-  fork-check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Install the pinned toolchain
-        run: rustup show active-toolchain || rustup toolchain install
-      - name: Fetch the pinned crates
-        run: cargo fetch --locked
-      - name: Check the fork against rabex 0.2.1 and its ledger
-        run: sh scripts/fork-check.sh
-
   licenses:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -204,11 +184,10 @@ jobs:
           python tools/fixtures/files.py --check
           python tools/fixtures/env.py --check
           python tools/fixtures/dump.py --check
-      - name: Self-tests (parity tools and the spikes' scripts)
+      - name: Self-tests (parity tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
           tools/parity/tests=273
-          crates/unityrs-spike-rabex/scripts/tests=19
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6
       # and 10), each a unityrs dump compared with the oracle's: compare.py

@@ -50,15 +50,6 @@ license-files = [{ path = "AUTHORS", hash = 0xb8c72415 }]
 
 [bans]
 multiple-versions = "warn"
-# The crates.io rabex is the P0 spike's alone (docs/plans/core.md 2.3, 2.5):
-# every other crate that needs rabex's TPK reader goes through unityrs-tpk to
-# the vendored fork, crates/unityrs-rabex, whose package name differs, so the
-# fork is the only rabex the product can link. `wrappers` lets the spike
-# depend on it directly and refuses a direct dependency on it to every other
-# crate, so it reaches the graph through the spike or not at all.
-deny = [
-    { crate = "rabex", wrappers = ["unityrs-spike-rabex"], reason = "use the vendored fork through unityrs-tpk (crates/unityrs-rabex/UPSTREAM.md)" },
-]
 
 [advisories]
 yanked = "deny"

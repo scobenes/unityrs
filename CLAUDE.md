@@ -31,7 +31,7 @@ Git in a worktree under `.wt/` needs `GIT_DIR=/work/.git/worktrees/<name>
 GIT_WORK_TREE=/work/.wt/<name>` inside the container, because the worktree's
 `.git` file names a host path. A script that makes a scratch repository
 (`git init`) must unset `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and
-`GIT_COMMON_DIR` for it first, as `scripts/fork-check.sh` does: inherited, they
+`GIT_COMMON_DIR` for it first: inherited, they
 make `git init` write `core.worktree` into the main repository's config and its
 commits land on the worktree's branch.
 

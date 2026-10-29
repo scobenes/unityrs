@@ -15,7 +15,7 @@ Files:
   pure-Python `read_value` (over all the bytes, from `start`), each value
   re-saved by `write_typetree`. Case names start with the rule they pin
   (`r09_...`, `py_...`, `w5_...`).
-- `value_cases.json`: the spike's 32 value cases (G2), read as
+- `value_cases.json`: the 32 value cases of `tools/parity/value_cases.py` (G2), read as
   `parse_as_dict` reads them (`read_typetree` with `byte_size` and
   `check_read`), with UnityPy's L2 outcome and its L3 re-save.
 - `write_matrix.json`: W2, every node kind written from every value variant.
@@ -61,7 +61,6 @@ from UnityPy.UnityPyBoost import read_typetree as boost_read
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "crates/unityrs-core/tests/fixtures/walk"
 sys.path.insert(0, str(ROOT / "tools/parity"))
-sys.path.insert(0, str(ROOT / "crates/unityrs-spike-rabex/scripts"))
 
 from unitypy_dump import error_kind  # noqa: E402
 
