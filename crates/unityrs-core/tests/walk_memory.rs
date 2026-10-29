@@ -11,19 +11,22 @@
 //! at most what the meter has charged at that moment: no slack. It runs
 //! every recorded case through both readers and, after each successful
 //! read, through the writer under both rules, then a class of 2^16 + 1
-//! distinct children and a list of 2^16 + 1 strings, each with the meter
+//! distinct children, a list of 2^16 + 1 strings and two classes of one name
+//! over 2^16 + 1 children (the writer's name table), each with the meter
 //! booking an `Unbounded` budget and a `Counting` one. The largest request
 //! of each big read is the exact size of its 2^16 + 1 elements: the dict's
 //! entries and the list's items end with their capacity equal to their
-//! length (plan 3.10, "list growth"). This file holds one test so nothing
-//! else allocates while it runs.
+//! length (plan 3.10, "list growth"). The allocator counts only the test's
+//! own thread (`unityrs_testkit::counted`): libtest's main thread allocates
+//! beside it.
 
 #![allow(unsafe_code)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::Value as Json;
 use unityrs_core::budget::{
@@ -35,6 +38,7 @@ use unityrs_core::stream::Endian;
 use unityrs_core::typetree::{NodeId, NodeList, NodeRow, Tree};
 use unityrs_core::walk::{self, ReadCtx, ReadError, ReadOptions, RefTypes, WriteCtx, WriteRules};
 use unityrs_core::{Bytes, LimitKind, Parsed, RawStr, Value};
+use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
 
 struct Counting;
 
@@ -45,8 +49,11 @@ static BASE: AtomicUsize = AtomicUsize::new(0);
 static EXCESS: AtomicUsize = AtomicUsize::new(0);
 /// The largest single request while watched.
 static MAX_REQUEST: AtomicUsize = AtomicUsize::new(0);
-/// The meter being watched, or null.
-static WATCHED: AtomicPtr<Meter> = AtomicPtr::new(ptr::null_mut());
+std::thread_local! {
+    /// The meter being watched, or null: the test thread's, the only thread
+    /// counted.
+    static WATCHED: Cell<*const Meter> = const { Cell::new(ptr::null()) };
+}
 
 /// The glibc chunk a request of `n` bytes takes.
 fn chunk(n: usize) -> usize {
@@ -55,12 +62,13 @@ fn chunk(n: usize) -> usize {
 
 /// Called with the heap just after an allocation is counted.
 fn check(now: usize, request: usize) {
-    let m = WATCHED.load(Ordering::Acquire);
+    let m = WATCHED.try_with(Cell::get).unwrap_or(ptr::null());
     if m.is_null() {
         return;
     }
-    // SAFETY: `watch` stores a pointer to a meter its caller keeps alive
-    // until `unwatch` clears it; `used` reads an atomic and allocates nothing.
+    // SAFETY: `watch` stores, on this thread, a pointer to a meter its caller
+    // keeps alive until `unwatch` clears it on this thread; `used` reads an
+    // atomic and allocates nothing.
     let used = usize::try_from(unsafe { &*m }.used()).unwrap_or(usize::MAX);
     let over = now
         .saturating_sub(BASE.load(Ordering::Relaxed))
@@ -69,28 +77,38 @@ fn check(now: usize, request: usize) {
     MAX_REQUEST.fetch_max(request, Ordering::Relaxed);
 }
 
-// SAFETY: every method forwards to `System` and only counts sizes.
+// SAFETY: every method forwards to `System` and only counts sizes, on the
+// thread under test.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let c = chunk(layout.size());
-        let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
-        check(now, layout.size());
+        if counted() {
+            let c = chunk(layout.size());
+            let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
+            check(now, layout.size());
+        }
         // SAFETY: the caller's contract is `System`'s.
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        if counted() {
+            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        }
         // SAFETY: as above.
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let on = counted();
         // Count the worst case of a moving realloc: both blocks live at once.
-        let c = chunk(new_size);
-        let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
-        check(now, new_size);
+        if on {
+            let c = chunk(new_size);
+            let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
+            check(now, new_size);
+        }
         // SAFETY: as above.
         let p = unsafe { System.realloc(ptr, layout, new_size) };
-        LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        if on {
+            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        }
         p
     }
 }
@@ -104,12 +122,12 @@ fn watch(m: &Arc<Meter>) {
     BASE.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
     EXCESS.store(0, Ordering::Relaxed);
     MAX_REQUEST.store(0, Ordering::Relaxed);
-    WATCHED.store(Arc::as_ptr(m).cast_mut(), Ordering::Release);
+    WATCHED.with(|w| w.set(Arc::as_ptr(m)));
 }
 
 /// Stops watching; the excess seen, which must be zero.
 fn unwatch(what: &str) {
-    WATCHED.store(ptr::null_mut(), Ordering::Release);
+    WATCHED.with(|w| w.set(ptr::null()));
     let excess = EXCESS.load(Ordering::Relaxed);
     assert_eq!(
         excess, 0,
@@ -383,11 +401,58 @@ fn big(n: usize, counting: bool) {
     }
 }
 
+/// Two classes of one name over the same `n` names, the second's in the
+/// reverse order: the dict both are written from is keyed by the second's
+/// children, so the first finds each entry in the writer's name table, built
+/// on its first miss.
+fn renamed(n: usize, counting: bool) {
+    let mut rows = vec![NodeRow::new(0, "Base", "Base"), NodeRow::new(1, "Foo", "a")];
+    rows.extend((0..n).map(|i| NodeRow::new(2, "int", format!("n{i}").as_str())));
+    rows.push(NodeRow::new(1, "Bar", "a"));
+    rows.extend(
+        (0..n)
+            .rev()
+            .map(|i| NodeRow::new(2, "int", format!("n{i}").as_str())),
+    );
+    let tree = Tree::compile(
+        Arc::new(NodeList::trusted(rows).unwrap()),
+        &Limits::default(),
+    )
+    .unwrap();
+    let data = Bytes::from(
+        (0..2 * n)
+            .flat_map(|i| u32::try_from(i).unwrap().to_le_bytes())
+            .collect::<Vec<u8>>(),
+    );
+    let _shared = data.clone();
+    for python in [false, true] {
+        let what = if python {
+            "renamed class [python]"
+        } else {
+            "renamed class [boost]"
+        };
+        let (_, read) = measure(
+            what,
+            python,
+            &data,
+            &data,
+            &tree,
+            RefTypes::List(&[]),
+            Endian::Little,
+            counting,
+        );
+        assert!(read, "{what}: read");
+    }
+}
+
 #[test]
 fn every_allocation_of_a_read_and_a_write_is_charged() {
+    count_this_thread();
+    others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
     for counting in [false, true] {
         let ok = cases(counting);
         assert!(ok > 200, "only {ok} reads succeeded");
         big((1 << 16) + 1, counting);
+        renamed((1 << 16) + 1, counting);
     }
 }

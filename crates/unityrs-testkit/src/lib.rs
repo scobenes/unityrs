@@ -9,11 +9,13 @@
 //! and [`waits`] (the no-thread, no-wait source scan) are the scaffold's
 //! (implemented); [`blob`], [`serialized`] and [`bundle`] are package C's;
 //! [`env`](mod@env) is package D's; [`depth`] (the deep values of plan
-//! section 3.10) is package B's; [`mutate`] (G3b's mutator) is the
+//! section 3.10) and [`counted`] (the thread a counting allocator counts)
+//! are package B's; [`mutate`] (G3b's mutator) is the
 //! integration's.
 
 pub mod blob;
 pub mod bundle;
+pub mod counted;
 pub mod depth;
 pub mod env;
 pub mod mutate;

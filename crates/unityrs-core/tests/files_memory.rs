@@ -6,8 +6,9 @@
 //! string of that length), and a bundle of one large LZMA block, read eagerly
 //! and lazily, the heap the core holds is at most what the input's meter
 //! charged, plus the meter's own constant; everything returns when the
-//! handles drop. Run under both budgets. One test, so nothing else allocates
-//! while it runs.
+//! handles drop. Run under both budgets. The allocator counts only the test's
+//! own thread (`unityrs_testkit::counted`): libtest's main thread allocates
+//! beside it.
 //!
 //!     scripts/dev cargo test -p unityrs-core --test files_memory
 
@@ -27,6 +28,7 @@ use unityrs_core::{Bytes, Error, FileContext, LimitKind, RawStr};
 use unityrs_testkit::Rng;
 use unityrs_testkit::blob::NodeSpec;
 use unityrs_testkit::bundle::{BundleSpec, EntrySpec, TestCodec, build, matrix};
+use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
 use unityrs_testkit::serialized::{SerializedSpec, build as file, one_object};
 
 struct Counting;
@@ -37,23 +39,33 @@ fn chunk(n: usize) -> usize {
     usize::try_from(heap_cost(n as u64)).unwrap_or(usize::MAX)
 }
 
-// SAFETY: every method forwards to `System` and only counts sizes.
+// SAFETY: every method forwards to `System` and only counts sizes, on the
+// thread under test.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        LIVE.fetch_add(chunk(layout.size()), Ordering::Relaxed);
+        if counted() {
+            LIVE.fetch_add(chunk(layout.size()), Ordering::Relaxed);
+        }
         // SAFETY: the caller's contract is `System`'s.
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        if counted() {
+            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        }
         // SAFETY: as above.
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        LIVE.fetch_add(chunk(new_size), Ordering::Relaxed);
+        let on = counted();
+        if on {
+            LIVE.fetch_add(chunk(new_size), Ordering::Relaxed);
+        }
         // SAFETY: as above.
         let p = unsafe { System.realloc(ptr, layout, new_size) };
-        LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        if on {
+            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        }
         p
     }
 }
@@ -269,6 +281,8 @@ fn flagged_bundle() -> Vec<u8> {
 
 #[test]
 fn files_hold_no_more_than_their_meter() {
+    count_this_thread();
+    others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
     let mut inputs: Vec<(String, Bytes)> = matrix()
         .into_iter()
         .map(|(n, b)| (n, Bytes::from(b)))

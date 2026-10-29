@@ -17,8 +17,8 @@
 //! (UnityPy mode) and a `Counting` one (a batch's pools), whose permits have
 //! a home, so the owners' bookkeeping is measured too (round 3: under
 //! `Counting` each charge left an uncharged permit record, and a value's heap
-//! reached twice its charge). This file holds one test so nothing else
-//! allocates while it runs.
+//! reached twice its charge). The allocator counts only the test's own thread
+//! (`unityrs_testkit::counted`): libtest's main thread allocates beside it.
 //!
 //! **The heap is counted in glibc chunks**, [`heap_cost`] of each request
 //! (checked against `malloc_usable_size` below), the same unit the meter
@@ -40,6 +40,7 @@ use unityrs_core::limits::{ChargeError, Limits, Meter, MeteredVec, heap_cost};
 use unityrs_core::stream::{Endian, Reader};
 use unityrs_core::typetree::{NodeId, NodeList, NodeRow};
 use unityrs_core::{Bytes, LimitKind, Parsed, RawStr, Value, ValueBuilder};
+use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
 
 struct Counting;
 
@@ -51,28 +52,38 @@ fn chunk(n: usize) -> usize {
     usize::try_from(heap_cost(n as u64)).unwrap_or(usize::MAX)
 }
 
-// SAFETY: every method forwards to `System` and only counts sizes.
+// SAFETY: every method forwards to `System` and only counts sizes, on the
+// thread under test.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let c = chunk(layout.size());
-        let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
-        PEAK.fetch_max(now, Ordering::Relaxed);
+        if counted() {
+            let c = chunk(layout.size());
+            let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
+            PEAK.fetch_max(now, Ordering::Relaxed);
+        }
         // SAFETY: the caller's contract is `System`'s.
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        if counted() {
+            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        }
         // SAFETY: as above.
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let on = counted();
         // Count the worst case of a moving realloc: both blocks live at once.
-        let c = chunk(new_size);
-        let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
-        PEAK.fetch_max(now, Ordering::Relaxed);
+        if on {
+            let c = chunk(new_size);
+            let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
+            PEAK.fetch_max(now, Ordering::Relaxed);
+        }
         // SAFETY: as above.
         let p = unsafe { System.realloc(ptr, layout, new_size) };
-        LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        if on {
+            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        }
         p
     }
 }
@@ -411,6 +422,8 @@ fn heap_cost_covers_glibc() {}
 
 #[test]
 fn the_meter_bounds_every_path() {
+    count_this_thread();
+    others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
     heap_cost_covers_glibc();
 
     for counting in [false, true] {

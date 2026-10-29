@@ -1,8 +1,8 @@
 //! A decode buffer pays before it allocates (plan section 3.6): a growth the
 //! meter or the budget refuses must not allocate first and give the memory
 //! back after, and neither may a buffer's first allocation.
-//! A counting global allocator watches the heap; this file holds one test so
-//! nothing else allocates while it runs.
+//! A counting global allocator watches the heap of the test's own thread
+//! (`unityrs_testkit::counted`): libtest's main thread allocates beside it.
 
 #![allow(unsafe_code)]
 
@@ -13,32 +13,43 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use unityrs_core::LimitKind;
 use unityrs_core::budget::{Counting, DecodeBuf, Reservation, Unbounded};
 use unityrs_core::limits::{ChargeError, Meter, heap_cost};
+use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
 
 struct Watching;
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 
-// SAFETY: every method forwards to `System` and only counts sizes.
+// SAFETY: every method forwards to `System` and only counts sizes, on the
+// thread under test.
 unsafe impl GlobalAlloc for Watching {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let now = LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
-        PEAK.fetch_max(now, Ordering::Relaxed);
+        if counted() {
+            let now = LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
+            PEAK.fetch_max(now, Ordering::Relaxed);
+        }
         // SAFETY: the caller's contract is `System`'s.
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+        if counted() {
+            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+        }
         // SAFETY: as above.
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let on = counted();
         // Count the worst case of a moving realloc: both blocks live at once.
-        let now = LIVE.fetch_add(new_size, Ordering::Relaxed) + new_size;
-        PEAK.fetch_max(now, Ordering::Relaxed);
+        if on {
+            let now = LIVE.fetch_add(new_size, Ordering::Relaxed) + new_size;
+            PEAK.fetch_max(now, Ordering::Relaxed);
+        }
         // SAFETY: as above.
         let p = unsafe { System.realloc(ptr, layout, new_size) };
-        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+        if on {
+            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+        }
         p
     }
 }
@@ -62,6 +73,8 @@ fn bytes(n: usize) -> u64 {
 fn a_refused_growth_allocates_nothing() {
     const ASKED: usize = 64 << 20;
     const SMALL: usize = 1 << 20;
+    count_this_thread();
+    others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
 
     // 1. The budget refuses (a batch job's prepaid amount is spent).
     let budget = Arc::new(Counting::new(4096));
