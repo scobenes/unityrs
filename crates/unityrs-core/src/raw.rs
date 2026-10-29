@@ -11,15 +11,22 @@
 //! metadata strings and `Value::Str` cost a handle each, whatever their
 //! length and however often a hostile file repeats them (plan section 3.15).
 //! Common strings are static. Only strings the core computes (a decimal
-//! common-string offset, `py_lower`) allocate.
+//! common-string offset, `py_lower`, a registry key) allocate, and each is
+//! made with [`RawStr::charged`], which charges the input's meter for its
+//! buffer and its owner record and keeps the charge inside the buffer, so a
+//! clone of it that outlives its row still counts against the input.
 //!
 //! Owner: the scaffold (implemented). Python string semantics on top of
 //! these bytes (`str.lower`, `ntpath`) are in [`crate::pystr`].
 
 use std::borrow::Borrow;
 use std::fmt;
+use std::sync::Arc;
 
 use bytes::Bytes;
+
+use crate::budget::{BudgetExceeded, charged_bytes};
+use crate::limits::{ChargeError, Meter, heap_cost};
 
 /// Bytes UnityPy holds as a `str`. Valid UTF-8 or not.
 #[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -36,6 +43,29 @@ impl RawStr {
     #[must_use]
     pub fn from_shared(bytes: Bytes) -> Self {
         Self(bytes)
+    }
+
+    /// A string the core computes from an input (a decimal common-string
+    /// offset, a lower-cased name), charged to `meter` before it is
+    /// allocated: its buffer at [`heap_cost`] and the owner record
+    /// ([`crate::budget::OWNER_COST`]) that keeps the charge inside it, so
+    /// every clone counts until the last one drops. An empty string is
+    /// static and charges nothing.
+    pub fn charged(bytes: &[u8], meter: &Arc<Meter>) -> Result<Self, ChargeError> {
+        if bytes.is_empty() {
+            return Ok(Self::default());
+        }
+        let n = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let charge = meter.charge(heap_cost(n))?;
+        let mut buf = Vec::new();
+        if buf.try_reserve_exact(bytes.len()).is_err() {
+            return Err(ChargeError::Budget(BudgetExceeded {
+                requested: n,
+                what: meter.reservation(),
+            }));
+        }
+        buf.extend_from_slice(bytes);
+        Ok(Self(charged_bytes(buf, charge)?))
     }
 
     /// A static string (a common string, a constant name).
@@ -129,6 +159,29 @@ impl From<Bytes> for RawStr {
 #[cfg(test)]
 mod tests {
     use super::RawStr;
+
+    #[test]
+    fn a_computed_string_carries_its_charge() {
+        use std::sync::Arc;
+
+        use crate::budget::{OWNER_COST, Reservation, Unbounded};
+        use crate::limits::{Meter, heap_cost};
+        // Round 3: an unknown common-string offset's decimal string (and any
+        // string the core computes) was allocated outside the meter.
+        let m = Meter::new(1 << 20, Arc::new(Unbounded), Reservation::Input);
+        let s = RawStr::charged(b"2147483661", &m).unwrap();
+        assert_eq!(s.as_bytes(), b"2147483661");
+        assert_eq!(m.used(), heap_cost(10) + OWNER_COST);
+        let kept = s.clone();
+        drop(s);
+        assert_eq!(m.used(), heap_cost(10) + OWNER_COST, "a clone keeps it");
+        drop(kept);
+        assert_eq!(m.used(), 0);
+        let full = Meter::new(OWNER_COST, Arc::new(Unbounded), Reservation::Input);
+        assert!(RawStr::charged(b"0123456789", &full).is_err());
+        assert_eq!(full.used(), 0);
+        assert_eq!(RawStr::charged(b"", &full).unwrap(), RawStr::default());
+    }
 
     #[test]
     fn keeps_invalid_utf8() {

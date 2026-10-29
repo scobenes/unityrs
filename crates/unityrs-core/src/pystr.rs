@@ -8,6 +8,15 @@
 //! generated exception table ([`crate::tables::lower_exception`]) pins the code
 //! points whose mapping changed after 14.0 (`tools/gen/`, package A; plan risk R7).
 //!
+//! **Memory.** Each function that returns a string computes it from an
+//! input's name (a directory path, an external path, a resource path, up to
+//! the input's size) and charges it to that input's meter before it is
+//! allocated ([`RawStr::charged`]): a refusal allocates nothing. A result
+//! equal to its input (a name already lower-case and without a directory)
+//! may be returned as the input's own bytes, uncopied. Comparisons that only
+//! need to know whether two names are equal should compare without building
+//! the lowered string at all.
+//!
 //! Owner: package D.
 
 // STUB(D): delete this allow when the module is implemented.
@@ -18,10 +27,13 @@
     unused_variables
 )]
 
+use std::sync::Arc;
+
+use crate::limits::{ChargeError, Meter};
 use crate::raw::RawStr;
 
-/// `str.lower()` on surrogate-escaped bytes.
-pub fn py_lower(s: &[u8]) -> RawStr {
+/// `str.lower()` on surrogate-escaped bytes, charged to `meter`.
+pub fn py_lower(s: &RawStr, meter: &Arc<Meter>) -> Result<RawStr, ChargeError> {
     todo!()
 }
 
@@ -35,13 +47,15 @@ pub fn ntpath_splitext(p: &[u8]) -> (&[u8], &[u8]) {
     todo!()
 }
 
-/// `simplify_name`: `ntpath.basename(name).lower()`, the CAB registry's key.
-pub fn simplify_name(name: &[u8]) -> RawStr {
+/// `simplify_name`: `ntpath.basename(name).lower()`, the CAB registry's key,
+/// charged to `meter`.
+pub fn simplify_name(name: &RawStr, meter: &Arc<Meter>) -> Result<RawStr, ChargeError> {
     todo!()
 }
 
 /// `PPtr.deref`'s external path cleaning: strip a leading `archive:/`, then a
-/// leading `assets/`, keep what follows the last `/`, lower-case it.
-pub fn clean_external_path(path: &[u8]) -> RawStr {
+/// leading `assets/`, keep what follows the last `/`, lower-case it; charged
+/// to `meter`.
+pub fn clean_external_path(path: &RawStr, meter: &Arc<Meter>) -> Result<RawStr, ChargeError> {
     todo!()
 }

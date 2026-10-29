@@ -26,9 +26,14 @@
 //! and a refused one allocates nothing; growth follows the rows actually
 //! read, never `node_count`. Node names and types are zero-copy slices of the
 //! string buffer ([`crate::raw::RawStr::from_shared`]) or static common
-//! strings, so a row costs `size_of::<NodeRow>()` whatever its strings'
-//! lengths. A file that declares far more rows than it is long (LZMA
-//! compresses repeated rows well) is stopped by the meter, not by a count.
+//! strings, so such a row costs `size_of::<NodeRow>()` whatever its strings'
+//! lengths. The one string a row computes, an unknown common offset's
+//! decimal string, is made with [`crate::raw::RawStr::charged`] on the same
+//! meter (its buffer and its owner record, carried inside the string, so a
+//! clone that outlives the row still counts); a parse may share one such
+//! string between rows naming the same offset. A file that declares far more
+//! rows than it is long (LZMA compresses repeated rows well) is stopped by
+//! the meter, not by a count.
 //!
 //! Owner: package C.
 
