@@ -198,6 +198,12 @@ class CompareTests(unittest.TestCase):
         ex = next(r for r in d["by_path"] if r["kind"] == "value")["examples"][0]
         self.assertEqual((ex["a"], ex["b"]), ("f32:3f800000", "f32:3f800001"))
 
+    def test_a_longer_list_with_an_equal_prefix_is_a_length_difference(self):
+        a, b = base_records(), base_records()
+        b[1]["l2"]["value"]["v"][1][1] = [1, 2, 3]
+        _, d = self.run_compare(self.write("a.jsonl", a), self.write("b.jsonl", b))
+        self.assertEqual(self.paths(d), {("L2", "l2.value.list", "length")})
+
     def test_kinds_never_compare_equal_across_types(self):
         a, b = base_records(), base_records()
         a[1]["l2"]["value"]["v"].append(["flag", 1])

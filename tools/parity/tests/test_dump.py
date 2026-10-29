@@ -309,6 +309,9 @@ class DumpTests(unittest.TestCase):
         tw = {"t": "str", "hex": b"tw\xffo".hex()}
 
         raw5 = recs[json.dumps(["raw5"])]["l1"]
+        packed_567f1 = 5 << 48 | 6 << 32 | 7 << 16 | 3 << 8 | 1
+        self.assertEqual(raw5["engine_version_packed"], packed_567f1)
+        self.assertEqual(recs[json.dumps(["raw6"])]["l1"]["engine_version_packed"], packed_567f1)
         self.assertEqual((raw5["hash"], raw5["crc"]), (bytes(range(16)).hex(), 0xC0FFEE))
         self.assertEqual((raw5["flags"], raw5["flags_class"], raw5["blocks_info"], raw5["blocks"]), (None,) * 4)
         self.assertEqual([row[2:] for row in raw5["directory"]], [[None, "one"], [None, tw]])
@@ -327,6 +330,64 @@ class DumpTests(unittest.TestCase):
             top = recs[json.dumps([name])]
             self.assertEqual((top["l0"]["parsed_as"], top["l1"], top["error"]["kind"]), ("error", None, "parse"))
         self.assertTrue(all(r["error"] is None for k, r in recs.items() if len(json.loads(k)) > 1))
+
+    def test_object_records_follow_the_table_and_the_parse(self):
+        """The object table's dict order, a check_read value, a resave that differs, a TPK tree."""
+        d = self.tmp / "in"
+        d.mkdir()
+        tree = S.Node("MyThing", "Base", [S.Node("int", "i"), S.Node("bool", "b", meta=S.ALIGN)])
+        rows = [
+            S.Obj(5, 0, struct.pack("<i", 1) + b"\1\0\0\0"),
+            S.Obj(-3, 0, struct.pack("<i", 7) + b"\1\0\0\0", byte_size=5),  # the read ends at 8
+            S.Obj(9, 0, struct.pack("<i", 7) + b"\2\0\0\0"),  # a bool byte of 2 resaves as 1
+            S.Obj(5, 0, struct.pack("<i", 2) + b"\1\0\0\0"),  # a repeated path_id: the last entry wins
+        ]
+        (d / "obj.assets").write_bytes(S.serialized_file([S.Type(114, tree)], rows))
+        textasset = S.s32("name") + S.s32("text")
+        (d / "tpk.assets").write_bytes(
+            S.serialized_file([S.Type(49)], [S.Obj(1, 0, textasset)], enable_type_tree=False)
+        )
+        out = self.tmp / "objects.jsonl"
+        self.assertEqual(dump(d, "-o", out), 0)
+        self.assert_canonical(out)
+        recs = records(out)
+        files = {r["file"][0]: r for r in recs if r["rec"] == "file"}
+        objects = {(r["file"][0], r["path_id"]): r for r in recs if r["rec"] == "object"}
+        self.assertEqual(files["obj.assets"]["l1"]["object_order"], [5, -3, 9])
+        self.assertEqual([k for k in objects if k[0] == "obj.assets"], [("obj.assets", p) for p in (-3, 5, 9)])
+
+        def struct_value(i, b):
+            return {"t": "dict", "v": [["i", i], ["b", b]]}
+
+        short = objects[("obj.assets", -3)]
+        self.assertEqual(short["l1"]["byte_size"], 5)
+        self.assertEqual(
+            {k: v for k, v in short["l2"].items() if k != "error"},
+            {"root_type": "MyThing", "source": "embedded", "value": struct_value(7, True)},
+        )
+        self.assertEqual((short["l2"]["error"]["kind"], short["l2"]["error"]["bytes_read"]), ("check_read", 8))
+        self.assertEqual((short["l3"]["raw_size"], short["l3"]["resave"]), (5, "skipped"))
+
+        last = objects[("obj.assets", 5)]
+        self.assertEqual(last["l2"]["value"], struct_value(2, True))
+        self.assertGreater(last["l1"]["byte_start"], objects[("obj.assets", 9)]["l1"]["byte_start"])
+
+        bool2 = objects[("obj.assets", 9)]["l3"]
+        self.assertEqual(
+            (bool2["resave"], bool2["resave_size"], bool2["first_diff"]), ("differs", 8, 4), "the bool's byte"
+        )
+
+        self.assertIsNone(files["tpk.assets"]["l1"]["types"][0]["nodes"])
+        tpk = objects[("tpk.assets", 1)]["l2"]
+        self.assertEqual(
+            tpk,
+            {
+                "root_type": "TextAsset",
+                "source": "tpk",
+                "error": None,
+                "value": {"t": "dict", "v": [["m_Name", "name"], ["m_Script", "text"]]},
+            },
+        )
 
     def test_input_names_are_hex_tagged_when_not_utf8(self):
         d = self.tmp / "in"
