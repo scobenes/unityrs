@@ -5,9 +5,10 @@ Runs in the oracle image. Two parts:
 
 - The synthetic set. TPKs built here in code, each a case UnityPy's own TPK cannot show
   (a class for each root-flag combination 0, 64, 128 and 192, each followed by a class
-  with both roots; versions whose type byte is 0-6 and 255; a 300-deep chain; entries
-  out of order, removed classes, a class listed twice; ids past their tables; counts
-  read as UnityPy reads them; common strings numbered by code points; LZ4 and LZMA
+  with both roots; a class for every flag byte; versions whose type byte is 0-6 and 255;
+  a node's fields at their extremes; a 300-deep chain; entries out of order, removed
+  classes, a class listed twice; ids past their tables; counts read as UnityPy reads
+  them; string lengths; header sizes; common strings numbered by code points; LZ4 and LZMA
   payloads, with the blocks and streams on which liblz4 and liblzma decide differently
   from other decoders), run through `Tpk.py` (`TpkFile(...).GetDataBlob()`, then
   `get_typetree_node` per class and version, and `get_common_strings()`, with the blob
@@ -15,9 +16,10 @@ Runs in the oracle image. Two parts:
   are committed under crates/unityrs-tpk/tests/fixtures/tpk/, and
   `cargo test -p unityrs-tpk --test g7` replays them without Python. A case marked
   `refused` is one UnityPy loads and unityrs refuses by design (`PARITY.md` section
-  19.3): a TPK past one of `TpkProvider`'s bounds, a brotli one, or one whose common
-  strings name a string past the buffer. Only UnityPy's load, class count and common
-  strings are recorded for it.
+  19.3): a TPK past one of `TpkProvider`'s bounds, a brotli one, one with a string
+  UnityPy reads on (past the payload's end, or with a length prefix of 6 bytes), or one
+  whose common strings name a string past the buffer. Only UnityPy's load, class count
+  and common strings are recorded for it.
 - The oracle image's own TPK (`UnityPy/resources/lzma.tpk`). Nothing from it is
   committed (decision 10): its outcomes are written outside the repository and
   compared at test time.
@@ -68,7 +70,7 @@ MAGIC = 0x2A4B5054  # b"TPK*"
 NONE, LZ4, LZMA, BROTLI = 0, 1, 2, 3
 I32_MAX = 2**31 - 1
 
-# TpkProvider's bounds (crates/unityrs-tpk/src/lib.rs), for the `refused` cases.
+# TpkProvider's bounds (crates/unityrs-tpk/src/provider.rs), for the `refused` cases.
 MAX_DECODED_BYTES = 16 << 20
 MAX_RECORDS = 1 << 16
 
@@ -85,8 +87,16 @@ def ver(major: int, minor: int = 0, build: int = 0, typ: int = 3, number: int = 
     return (major << 48) | (minor << 32) | (build << 16) | (typ << 8) | number
 
 
-def node(type_name: int, name: int, subs: list[int], byte_size: int = -1, version: int = 1, meta: int = 0x4000):
-    return (type_name, name, byte_size, version, 0, meta, subs)
+def node(
+    type_name: int,
+    name: int,
+    subs: list[int],
+    byte_size: int = -1,
+    version: int = 1,
+    meta: int = 0x4000,
+    type_flags: int = 0,
+):
+    return (type_name, name, byte_size, version, type_flags, meta, subs)
 
 
 def cls(flags: int, editor: int | None = None, release: int | None = None):
@@ -116,18 +126,19 @@ def blob(
     common: list[tuple[int, int]] = (),
     indices: list[int] = (),
     counts: dict[str, int] | None = None,
+    items_anyway: bool = False,
 ) -> bytes:
     """A type-tree blob as `TpkTypeTreeBlob` reads it (`Tpk.py:232-240`).
 
     `counts` replaces a count (`versions`, `classes`, `entries` (each class's),
     `common`, `indices`, `nodes`, `strings`) with another value; for a count of zero or
-    less the items are not written.
+    less the items are not written, unless `items_anyway`.
     """
     counts = counts or {}
 
     def n(key: str, items) -> tuple[bytes, bool]:
         value = counts.get(key, len(items))
-        return struct.pack("<i", value), value > 0
+        return struct.pack("<i", value), value > 0 or items_anyway
 
     out = bytearray(struct.pack("<q", 1))
     head, write = n("versions", versions)
@@ -159,7 +170,7 @@ def blob(
     head, write = n("nodes", nodes)
     out += head
     for type_name, name, byte_size, version, type_flags, meta, subs in nodes if write else ():
-        out += struct.pack("<HHihBIH", type_name, name, byte_size, version, type_flags, meta, len(subs))
+        out += struct.pack("<HHihbIH", type_name, name, byte_size, version, type_flags, meta, len(subs))
         out += b"".join(struct.pack("<H", s) for s in subs)
     head, write = n("strings", strings)
     out += head
@@ -281,6 +292,26 @@ def synthetic_cases() -> Iterator[tuple[str, bytes, int]]:
     indices = [1, 0, 2, 1, 3, 4]
     yield "common_strings", tpk_file(blob([ver(2020)], entries, nodes, names, common, indices)), 256
 
+    # Every flag byte (`<HHb`: signed, which TpkUnityClassFlags takes as its eight bits),
+    # each class's roots written as its flags name them: the editor root under 64, the
+    # release root under 128.
+    nodes = [node(0, 1, [1]), node(2, 3, []), node(4, 5, [])]
+    entries = []
+    for flags in range(256):
+        editor = 2 if flags & 64 else None
+        release = 0 if flags & 128 else None
+        entries.append((1000 + flags, [(ver(2020), cls(flags, editor, release))]))
+    yield "flag_bytes", tpk_file(blob([ver(2020)], entries, nodes, strings(6))), 256
+
+    # A node's other fields as UnityPy keeps them: a negative version, byte sizes of
+    # every sign, type flags (`b`, not copied into the node).
+    nodes = [
+        node(0, 1, [1, 2], byte_size=0, version=-2, type_flags=-1),
+        node(2, 3, [], byte_size=-(2**31), version=-(2**15), type_flags=0x55),
+        node(4, 5, [], byte_size=2**31 - 1, version=2**15 - 1, type_flags=1),
+    ]
+    yield "node_fields", tpk_file(blob([ver(2020)], [(81, [(ver(2020), both(0))])], nodes, strings(6))), 256
+
     # Meta flags of 2^31 and more: a TPK node stores a u32 (Tpk.py:361), which UnityPy
     # keeps as a positive int, so NodeRow's i64 must not read it as negative.
     nodes = [node(0, 1, [1, 2], meta=0x8000_4000), node(2, 3, [], meta=0xFFFF_FFFF), node(4, 5, [], meta=1 << 31)]
@@ -298,15 +329,37 @@ def synthetic_cases() -> Iterator[tuple[str, bytes, int]]:
     # Counts: a negative count UnityPy reads with range() is no items; one it reads as a
     # struct format raises; a huge one runs out of bytes.
     one = ([ver(2020)], [(1, [(ver(2020), both(0))])], [node(0, 1, [1]), node(2, 3, [])], strings(4))
-    for key in ("classes", "entries", "common", "nodes", "strings", "versions", "indices"):
-        for value in (-1, I32_MAX):
+    keys = ("classes", "entries", "common", "nodes", "strings", "versions", "indices")
+    for key in keys:
+        for value in (-1, -(2**31), 2**30, I32_MAX):
             yield f"count_{key}_{value}", tpk_file(blob(*one, counts={key: value})), 256
+    # A negative count with its items written after it anyway: they are read as what
+    # follows. Only the indices' own case names a common string, so a TPK UnityPy loads
+    # is not one unityrs refuses for its common strings.
+    for key in keys:
+        indices = [0] if key == "indices" else []
+        data = blob(*one, [(ver(2020), 1)], indices, counts={key: -1}, items_anyway=True)
+        yield f"count_{key}_-1_items_follow", tpk_file(data), 256
+
+    # A string length prefix of 5 bytes, the most unityrs reads (refused_cases holds one
+    # of 6), not minimal; the string ends the payload.
+    data = blob([ver(2020)], [(1, [(ver(2020), both(0))])], [node(0, 1, [1]), node(2, 3, [])], strings(4))
+    yield "string_length_5_bytes", tpk_file(data[:-3] + b"\x82\x80\x80\x80\x00" + data[-2:]), 256
 
     # No classes at all, and a truncated file.
     yield "no_classes", tpk_file(blob([], [], [], [])), 256
     full = tpk_file(root_flags_blob())
     yield "truncated", full[: len(full) - 5], 256
     yield "negative_compressed_size", tpk_file(root_flags_blob(), sizes=(-1, 0)), 256
+    # Compressed sizes past the file, whatever the codec, and a stored payload's
+    # uncompressed size, which nothing reads.
+    payload = root_flags_blob()
+    for codec, codec_name in ((NONE, "stored"), (LZ4, "lz4"), (LZMA, "lzma")):
+        data = compress(payload, codec)
+        for size in (I32_MAX, 2**31):
+            sizes = (size, len(payload))
+            yield f"compressed_size_{codec_name}_{size}", tpk_file(payload, codec, sizes, data), 256
+    yield "stored_declared_u32_max", tpk_file(payload, sizes=(len(payload), 2**32 - 1)), 256
 
     # Compressed payloads.
     yield "lz4", tpk_file(root_flags_blob(), LZ4), 256
@@ -361,8 +414,9 @@ def codec_cases() -> Iterator[tuple[str, bytes, int]]:
 def refused_cases() -> Iterator[tuple[str, bytes, str]]:
     """`(name, TPK bytes, what unityrs refuses it for)`: TPKs UnityPy loads and
     unityrs refuses by design, each one record past a `TpkProvider` bound (the
-    `TpkError::TooLarge` it names), a brotli one (`Unsupported`), and one whose
-    common strings name a string past the buffer (`CommonStringPastBuffer`)."""
+    `TpkError::TooLarge` it names), a brotli one (`Unsupported`), two strings UnityPy
+    reads on (`Malformed`, its message), and one whose common strings name a string
+    past the buffer (`CommonStringPastBuffer`)."""
     over = MAX_RECORDS + 1
     at = ver(2020)
     nodes, names = [node(0, 1, [])], strings(2)
@@ -380,6 +434,13 @@ def refused_cases() -> Iterator[tuple[str, bytes, str]]:
     for table, data in tables:
         yield f"refused_{table.replace(' ', '_').replace('-', '_')}", tpk_file(data, LZMA), table
     yield "refused_brotli", tpk_file(root_flags_blob(), BROTLI), "brotli"
+    # The last string runs past the payload's end, which UnityPy decodes short; and a
+    # length prefix of 6 bytes, which UnityPy reads on.
+    data = blob([at], [(1, [(at, both(0))])], [node(0, 1, [1]), node(2, 3, [])], [*strings(4), "abcde"])
+    yield "refused_string_past_the_payload", tpk_file(data[:-2]), "a string longer than the rest of the payload"
+    data = blob([at], [(1, [(at, both(0))])], [node(0, 1, [1]), node(2, 3, [])], [*strings(4), ""])
+    data = data[:-1] + b"\x80\x80\x80\x80\x80\x00"
+    yield "refused_string_length_6_bytes", tpk_file(data), "a string length of more than 5 bytes"
     # A common string past the string buffer: UnityPy raises IndexError in every blob
     # parse (`get_common_strings()`); unityrs refuses the TPK.
     data = blob([at], [], nodes, strings(2), [], [0, 2])

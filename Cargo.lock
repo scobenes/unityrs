@@ -661,7 +661,6 @@ dependencies = [
  "serde_json",
  "thiserror",
  "unityrs-core",
- "unityrs-rabex",
  "unityrs-testkit",
 ]
 

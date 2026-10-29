@@ -1,0 +1,160 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/Tpk.py. See THIRD_PARTY_LICENSES.
+//! `TpkFile` (`helpers/Tpk.py:145-197`): the header, the compressed bytes,
+//! and `GetDataBlob`'s decompression, with unityrs-core's codecs in place of
+//! python-lz4 and `decompress_lzma` (crate docs, "Loading").
+
+use std::ops::Deref;
+use std::sync::Arc;
+
+use unityrs_core::budget::{DecodeBuf, Reservation, Unbounded};
+use unityrs_core::codec::{self, BlockCodec, Codec};
+use unityrs_core::limits::Meter;
+use unityrs_core::{Bytes, LimitKind};
+
+use crate::{TpkError, TpkProvider};
+
+/// `TpkFile.Struct.size`: `<IbbbbIII`.
+const HEADER: usize = 20;
+/// `TpkFile.TpkMagicBytes`, `b"TPK*"`.
+const MAGIC: u32 = 0x2A4B_5054;
+/// `TpkFile.TpkVersionNumber`.
+const VERSION: u8 = 1;
+/// `TpkCompressionType` (`Tpk.py:98-102`).
+const NONE: u8 = 0;
+const LZ4: u8 = 1;
+const LZMA: u8 = 2;
+const BROTLI: u8 = 3;
+/// `TpkDataType.TypeTreeInformation`; the members are 0-5 (`Tpk.py:105-111`).
+const TYPE_TREE_INFORMATION: u8 = 0;
+const LAST_DATA_TYPE: u8 = 5;
+
+/// A TPK's payload: its stored bytes, or what a codec decoded from them.
+pub(crate) enum Payload<'a> {
+    Stored(&'a [u8]),
+    Decoded(Bytes),
+}
+
+impl Deref for Payload<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Payload::Stored(b) => b,
+            Payload::Decoded(b) => b,
+        }
+    }
+}
+
+/// `TpkFile(stream)` and `GetDataBlob()` up to the blob (`Tpk.py:155-197`):
+/// the header checked in UnityPy's order, then the payload, decoded; the
+/// data type is checked last, as `init`'s `assert isinstance(blob,
+/// TpkTypeTreeBlob)` is (`:37-38`).
+pub(crate) fn payload(bytes: &[u8]) -> Result<Payload<'_>, TpkError> {
+    let bad = |what: &str| TpkError::Malformed(what.into());
+    // `TpkFile.Struct.unpack(stream.read(20))`.
+    let Some((head, rest)) = bytes.split_first_chunk::<HEADER>() else {
+        return Err(bad("struct.error: unpack requires a buffer of 20 bytes"));
+    };
+    // magic, versionNumber, compressionType, dataType, _, _,
+    // CompressedSize, UncompressedSize.
+    let [
+        m0,
+        m1,
+        m2,
+        m3,
+        version,
+        compression,
+        data_type,
+        _,
+        _,
+        _,
+        _,
+        _,
+        c0,
+        c1,
+        c2,
+        c3,
+        u0,
+        u1,
+        u2,
+        u3,
+    ] = *head;
+    if u32::from_le_bytes([m0, m1, m2, m3]) != MAGIC {
+        return Err(bad("Invalid TPK magic bytes"));
+    }
+    if version != VERSION {
+        return Err(bad("Invalid TPK version number"));
+    }
+    // `TpkCompressionType(...)` and `TpkDataType(...)`: the signed bytes must
+    // be members (0-3 and 0-5).
+    if compression > BROTLI {
+        return Err(bad("ValueError: not a TpkCompressionType"));
+    }
+    if data_type > LAST_DATA_TYPE {
+        return Err(bad("ValueError: not a TpkDataType"));
+    }
+    // The sizes are `I`: unsigned.
+    let compressed = u32::from_le_bytes([c0, c1, c2, c3]);
+    let uncompressed = u32::from_le_bytes([u0, u1, u2, u3]);
+    // `stream.read(self.CompressedSize)`, which must return them all.
+    let data = usize::try_from(compressed)
+        .ok()
+        .and_then(|n| rest.get(..n))
+        .ok_or_else(|| bad("Invalid compressed size"))?;
+    let decoded = match compression {
+        NONE => Payload::Stored(data),
+        LZ4 => Payload::Decoded(decode(Codec::Lz4, &codec::Lz4, data, uncompressed)?),
+        LZMA => Payload::Decoded(decode(Codec::Lzma, &codec::Lzma, data, uncompressed)?),
+        _ => return Err(TpkError::Unsupported("brotli")),
+    };
+    // `self.DataType.ToBlob(...)`, then `init`'s assertion: any other blob
+    // fails the load.
+    if data_type != TYPE_TREE_INFORMATION {
+        return Err(TpkError::NotTypeTrees);
+    }
+    Ok(decoded)
+}
+
+/// `data` decoded by `codec`, as one block of unityrs-core's: the output
+/// capped at [`TpkProvider::MAX_DECODED_BYTES`], and the output and an LZMA
+/// dictionary charged to a meter of [`TpkProvider::MAX_DECODER_MEMORY`].
+fn decode(
+    which: Codec,
+    codec: &dyn BlockCodec,
+    data: &[u8],
+    uncompressed: u32,
+) -> Result<Bytes, TpkError> {
+    let name = if which == Codec::Lz4 { "lz4" } else { "lzma" };
+    let fail = |e: unityrs_core::Error| match e {
+        unityrs_core::Error::Limit(l) => TpkError::TooLarge {
+            what: if l.kind == LimitKind::InputMemory {
+                "decoder memory"
+            } else {
+                "decoded payload"
+            },
+            value: l.value,
+            max: l.max,
+        },
+        unityrs_core::Error::Decompress { detail, .. } => TpkError::Decompress {
+            codec: name,
+            detail: Box::from(&*detail),
+        },
+        e => TpkError::Decompress {
+            codec: name,
+            detail: e.to_string().into(),
+        },
+    };
+    let meter = Meter::new(
+        TpkProvider::MAX_DECODER_MEMORY,
+        Arc::new(Unbounded),
+        Reservation::Input,
+    );
+    let cap = TpkProvider::MAX_DECODED_BYTES;
+    let mut out =
+        DecodeBuf::new(&meter, 0, cap, LimitKind::BlockOutput).map_err(|e| fail(e.into()))?;
+    let data = Bytes::copy_from_slice(data);
+    match codec::decode_block(which, codec, &data, uncompressed, &mut out, cap).map_err(fail)? {
+        Some(input) => Ok(input),
+        None => out.into_bytes().map_err(|e| fail(e.into())),
+    }
+}
