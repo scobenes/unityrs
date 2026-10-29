@@ -17,6 +17,7 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `requirements-oracle.txt` | the oracle stack as exact, hash-pinned wheels, for CI and any machine without the oracle image |
 | `oracle_records.json` | each pinned wheel's files: the digest of its RECORD, written by `oracle_env.py --pin-records` |
 | `oracle_env.py` | checks that an interpreter's packages are the pinned wheels (each pin at its version, with the pinned RECORD, every file hashing as it says, imported from those files), and with `--exact` that nothing else is installed; `--pin-records DIR` writes `oracle_records.json` |
+| `inventory.py` | lists UnityPy's public surface and checks that [`PARITY.md`](../../PARITY.md) names all of it |
 | `tests/` | unittest self-tests |
 
 `unitypy_dump.py` needs the oracle stack, so run it in the `unityrs-dev` container, or install the stack from `requirements-oracle.txt` (below). It refuses to run on any other stack, because a dump from another stack would charge UnityPy's differences to unityrs:
@@ -107,6 +108,9 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | `test_dump.py` | the dumper end to end: UnityPy's samples, determinism across runs, `-j` and gzip, every line canonical, L0 detection quirks including gzip, UnityRaw formats 5 to 7, a failing entry, non-UTF-8 names; synthetic SerializedFiles (`tests/synth.py`) for the object table, check_read, resave and TPK wiring, version strings, type-record defaults by format, negative type indices, node rows and how blob rows become a tree, truncated blocks and zip entries; crash records (a killed input, a death while it returns its records, UnityPyBoost crashes), the dumper's own failures stopping the run (its encoder refusing UnityPy's value included), input names across locales and symlinks, load errors that quote bad bytes, the `None` leak, the pinned-stack refusal (UnityPyBoost, its binary, UnityPy, a package such as numpy missing or at another version, a copy of UnityPy with one line patched, with or without its dist-info, imported first) and the stack the header records, index mode (an input that is not the indexed file stops the run unless `--allow-index-mismatch`), the output and `--stats` guards | UnityPy, samples |
 | `test_oracle_env.py` | the oracle's pins as `requirements-oracle.txt` gives them (numpy included), `oracle_records.json` against them, and `oracle_env.py`'s checks on synthetic installs and wheels: versions, `--exact`, the RECORD digest (another build), an edited, missing or planted file, a copy earlier on the path, what the installer writes, `--pin-records` | stdlib |
 | `test_fetch_samples.py` | the sample fetcher against a fake server: fetching, keeping and replacing files, LFS pointers, wrong and over-long bodies (read no further than one byte past the pin), retries and the overall deadline (on the fake, and on a loopback server whose body trickles in or stalls), redirects (two loopback servers), the repository guard; pins with names that are not plain file names or URLs off the media host; a folder holding anything but the pinned samples as regular files (extra files, symlinks, folders, stale temporary files); the exclusively created temporary file; and that `unitypy_samples.json` pins the samples `test_dump.py` checks | stdlib |
+| `test_inventory.py` | the inventory's matching rules (standard library): whole dotted chains, compact rows, enum values, a name under a wrong parent, what counts as an attribute; with the oracle, that `collect()` finds exactly the group sizes `PARITY.md` section 21 states, that `PARITY.md` names every UnityPy module, class, function, module-level table or setting, class member, attrs field, other attribute, package re-export, UnityPyBoost export or member, enum member with its value, and `TextureFormat`, and that removing any one entry, or writing it under a wrong parent, fails the check | stdlib; UnityPy for the rest |
+| `test_texture_matrix.py` | the TextureFormat matrix of `PARITY.md` section 17: its columns, and its tier and phase rules (standard library); with the oracle, every cell of every row, built from UnityPy (`CONV_TABLE`, the cited source lines, the result on real-sized data, the padding, Switch, Xbox and crunch gates observed through stand-ins, what `set_image` writes) and from the pixel cases, and a check that changing any cell fails; the decoded pixels of every format that returns an image against a reference built from the format's layout (or, for a row marked wrong, the specific wrong pixels), also swizzled for Switch and byte-swapped for XBOX360 as the gates say | stdlib; UnityPy for the rest |
+| `test_parity_rows.py` | the `PARITY.md` rows a review disputed, each run on the smallest synthetic input that shows it (UnityFS bundles, WebFiles and serialized files built by `synth.py`); each test names its rows, and each row's test column names the test back | UnityPy |
 
 **Samples.** The samples are UnityPy's `tests/samples` at commit `417d595`. They are read from `$UNITYRS_UNITYPY_SAMPLES` when set, else from the folder the corpus index (`$UNITYRS_CORPUS_INDEX`, default `/corpus/index.json`) gives for its `unitypy-sample` entries, and their sha256 is checked against pinned values. They are game bundles, so they are never copied into this repository. Without them the sample tests skip.
 
@@ -140,6 +144,17 @@ The `parity-py` job in `.github/workflows/ci.yml` runs on GitHub's Ubuntu runner
 4. In the image, `python tools/parity/oracle_env.py` checks that it holds the same wheels' files. The image holds other packages too; check that UnityPy imports none of them (`requirements-oracle.txt` says which it can), and pin any it does.
 5. When UnityPy moves, set `ORACLE_BOOST_SHA256` in `canonical.py` to the sha256 of the new wheel's UnityPyBoost binary (its RECORD entry). `ORACLE_UNITYPY` follows the pins.
 
+## The inventory
+
+```sh
+scripts/dev python tools/parity/inventory.py list [--json]   # UnityPy's public symbols, by group
+scripts/dev python tools/parity/inventory.py list --counts   # how many in each group
+scripts/dev python tools/parity/inventory.py enum-table       # the rows of PARITY.md's Appendix C
+scripts/dev python tools/parity/inventory.py check            # exit 1 and a list when PARITY.md misses any
+```
+
+They need UnityPy 1.25.2 and exit 2 without it. Section 21 of `PARITY.md` gives the naming rules.
+
 ## Reproducing the numbers
 
 Every measured number above comes from these commands, run in the `unityrs-dev` container (the oracle image `unityrs-oracle:upy1.25.2-2026-10-28`) on 2026-10-28:
@@ -156,4 +171,7 @@ scripts/dev python -c "import json; s = json.load(open('/tmp/dumps/corpus20.stat
     print(s['bytes_out'] / s['bytes_in'], s['output_bytes'] / s['bytes_in'])"
 # Comparison time (0.97-0.98 s real over three runs), and the record count in its report.
 scripts/dev bash -c 'time python tools/parity/compare.py /tmp/dumps/corpus20.jsonl /tmp/dumps/corpus20.jsonl.gz'
+# PARITY.md section 19.1's shader numbers (980 Shaders, 89,910 sub-programs, 946 texts, 34 raises),
+# over both builds, run on 2026-10-29.
+scripts/dev python tools/parity/shader_survey.py --index /corpus/index.json --build 4100,100056
 ```

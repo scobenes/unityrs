@@ -1,4 +1,4 @@
-"""Synthetic SerializedFiles for the dumper tests, built byte by byte (formats 14-22).
+"""Synthetic SerializedFiles (formats 14-22), UnityFS bundles and WebFiles for the oracle tests, built byte by byte.
 
 The layout follows UnityPy 1.25.2's reader (files/SerializedFile.py,
 files/ObjectReader.py, helpers/TypeTreeNode.py parse_blob): a big-endian header,
@@ -174,3 +174,60 @@ def serialized_file(
         header = struct.pack(">IIII", len(meta), file_size, version, data_offset) + flag
     body = header + bytes(meta)
     return body + b"\0" * (data_offset - len(body)) + data
+
+
+def fs_bundle(entries, signature=b"UnityFS", engine=b"2021.3.2f1", codec=2, stored_sizes=None, blocks=None):
+    """A UnityFS bundle (format 8, ArchiveFlags 0x43: blocks info and blocks LZ4, the info after the header).
+
+    `entries` are (name, data, flags), laid out back to back as one block unless `blocks` (a list of
+    byte strings) splits the data; `codec` compresses each block (0 none, 2 LZ4). `stored_sizes`
+    overrides the uncompressed size each block records. The directory may also be given as
+    (name, offset, size, flags) rows, for entries that do not match the data.
+    """
+    import lz4.block
+
+    def compress(data, flags):
+        return lz4.block.compress(data, store_size=False) if flags & 0x3F in (2, 3) else data
+
+    rows = []
+    data, offset = b"", 0
+    for entry in entries:
+        if len(entry) == 4:
+            rows.append(entry)
+            continue
+        name, payload, flags = entry
+        rows.append((name, offset, len(payload), flags))
+        data += payload
+        offset += len(payload)
+    if blocks is None:
+        blocks = [data] if data else []
+    info = bytes(16) + struct.pack(">i", len(blocks))
+    block_data = b""
+    for i, block in enumerate(blocks):
+        packed = compress(block, codec)
+        stored = len(block) if stored_sizes is None else stored_sizes[i]
+        info += struct.pack(">IIH", stored, len(packed), codec)
+        block_data += packed
+    info += struct.pack(">i", len(rows))
+    for name, offset, size, flags in rows:
+        info += struct.pack(">qqI", offset, size, flags) + name + b"\0"
+    packed_info = compress(info, 2)
+    head = signature + b"\0" + struct.pack(">I", 8) + b"5.x.x\0" + engine + b"\0"
+    out = bytearray(head + struct.pack(">qIII", 0, len(packed_info), len(info), 0x43))
+    out += bytes(-len(out) % 16)  # format 8 aligns after the header
+    out += packed_info + block_data
+    struct.pack_into(">q", out, len(head), len(out))
+    return bytes(out)
+
+
+def web_file(entries, signature=b"UnityWebData1.0"):
+    """A plain (uncompressed) WebFile: signature, little-endian header length, (offset, size, name) rows, data."""
+    head = signature + b"\0"
+    head_length = len(head) + 4 + sum(12 + len(name) for name, _ in entries)
+    out = bytearray(head + struct.pack("<i", head_length))
+    offset, body = head_length, b""
+    for name, payload in entries:
+        out += struct.pack("<iii", offset, len(payload), len(name)) + name
+        offset += len(payload)
+        body += payload
+    return bytes(out) + body
