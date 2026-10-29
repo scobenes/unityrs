@@ -8,8 +8,13 @@
 //!    (`FileNotFoundError`, [`DerefError::FileIdPastEnd`]), then Python
 //!    indexing: a negative `m_FileID` counts from the end, and one below
 //!    `-len` is an `IndexError` ([`DerefError::FileIdBelowStart`]). The two
-//!    are different exceptions: the container preload swallows the first and
-//!    propagates the second (`helpers/ContainerHelper.py:43-46`).
+//!    are different exceptions. The container preload
+//!    (`helpers/ContainerHelper.py:43-46`, `except (FileNotFoundError,
+//!    KeyError): continue`) swallows [`DerefError::FileIdPastEnd`],
+//!    [`DerefError::NotFound`] and [`DerefError::MissingObject`], and
+//!    propagates [`DerefError::FileIdBelowStart`], [`DerefError::RawTarget`]
+//!    (an `AttributeError`), [`DerefError::Null`] (never reached: the
+//!    preload skips null pointers first) and [`DerefError::Load`].
 //! 4. The file's container (`assetsfile.parent`, `PPtr.py:62-66`): a bundle
 //!    entry's is its bundle; a file loaded at top level has the
 //!    `Environment` that loaded it as its parent (`environment.py:154`,
