@@ -142,6 +142,8 @@ pub enum LimitKind {
     Inflate,
     /// [`crate::limits::Limits::max_metadata_records`].
     MetadataRecords,
+    /// [`crate::limits::Limits::max_tree_rows`].
+    TreeRows,
     /// [`crate::limits::Limits::max_tree_depth`].
     TreeDepth,
     /// [`crate::limits::Limits::max_value_depth`].

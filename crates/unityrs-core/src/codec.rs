@@ -19,6 +19,20 @@
 //! lays entries out by the actual lengths, as UnityPy's join does (plan
 //! section 3.6), so a codec returns what it decoded and never pads or cuts.
 //!
+//! **LZ4 acceptance is liblz4's.** UnityPy's python-lz4 4.4.4 runs liblz4
+//! 1.9.4's `LZ4_decompress_safe`, which refuses some blocks `lz4_flex` decodes:
+//! its end-of-block conditions (a literal run that ends within the last 12
+//! bytes of the declared size or the last 8 bytes of input must be the last
+//! sequence and end exactly at the end of input; a match must end at least 5
+//! bytes before the declared size; the length-extension guards). [`Lz4`]
+//! checks the sequence stream against those conditions, and the oracle
+//! fixture `tests/fixtures/scaffold/lz4_blocks.json` (python-lz4's verdict and
+//! output for a grid of blocks around each boundary) is the acceptance test.
+//!
+//! **Output.** A codec writes into a [`DecodeBuf`], which reserves from the
+//! budget and checks the caps before it grows (plan section 3.6), or hands
+//! back a zero-copy slice of its input (the stored codec).
+//!
 //! Owner: package C. The registry type is implemented by the scaffold.
 
 // STUB(C): delete this allow when the module is implemented.
@@ -35,8 +49,10 @@
 use std::fmt;
 use std::sync::Arc;
 
+use bytes::Bytes;
+
+use crate::budget::DecodeBuf;
 use crate::error::Error;
-use crate::limits::Limits;
 
 /// A block's compression, `flags & 0x3F`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -51,7 +67,9 @@ pub enum Codec {
     Lz4Hc,
     /// 4: unsupported, as in UnityPy.
     Lzham,
-    /// 5-63: a custom codec, if one is registered.
+    /// 5-63: a custom codec, if one is registered. Only these ids are
+    /// canonical: `Other(1)` names no codec (it is not `Lzma`), and the
+    /// registry refuses and never answers for it ([`Codec::is_canonical`]).
     Other(u8),
 }
 
@@ -67,6 +85,16 @@ impl Codec {
             4 => Self::Lzham,
             // `& 0x3F` keeps the value below 64, so the conversion never fails.
             n => Self::Other(u8::try_from(n).unwrap_or(u8::MAX)),
+        }
+    }
+
+    /// Whether this is the value [`Codec::from_flags`] gives for its id: every
+    /// named variant, and `Other(5..=63)`.
+    #[must_use]
+    pub fn is_canonical(self) -> bool {
+        match self {
+            Self::Other(n) => (5..64).contains(&n),
+            _ => true,
         }
     }
 
@@ -86,15 +114,19 @@ impl Codec {
 
 /// Decodes one block.
 pub trait BlockCodec: Send + Sync {
-    /// Appends the decoded block to `out`. `uncompressed` is blocks-info's
-    /// declared size; each codec treats it as UnityPy does (module docs).
+    /// Decodes `input`, a block's stored bytes (a slice of the bundle).
+    /// `uncompressed` is blocks-info's declared size; each codec treats it as
+    /// UnityPy does (module docs). The output goes into `out`, which pays and
+    /// checks the caps before it grows, and the codec returns `Ok(None)`; or,
+    /// with `out` left empty, the codec returns `Ok(Some(slice))`, a zero-copy
+    /// slice of `input` (the stored codec), which the caller checks against
+    /// the same caps and meters as if it had been written.
     fn decode(
         &self,
-        input: &[u8],
+        input: &Bytes,
         uncompressed: u32,
-        limits: &Limits,
-        out: &mut Vec<u8>,
-    ) -> Result<(), Error>;
+        out: &mut DecodeBuf<'_>,
+    ) -> Result<Option<Bytes>, Error>;
 }
 
 /// Decrypts one block in place before it is decoded (UnityCN: P3). UnityPy
@@ -124,23 +156,42 @@ impl Codecs {
     #[must_use]
     pub fn unitypy() -> Self {
         let mut c = Self::empty();
-        c.set(Codec::None, Arc::new(Stored));
-        c.set(Codec::Lzma, Arc::new(Lzma));
-        c.set(Codec::Lz4, Arc::new(Lz4));
-        c.set(Codec::Lz4Hc, Arc::new(Lz4));
+        let lz4: Arc<dyn BlockCodec> = Arc::new(Lz4);
+        for (which, codec) in [
+            (Codec::None, Arc::new(Stored) as Arc<dyn BlockCodec>),
+            (Codec::Lzma, Arc::new(Lzma)),
+            (Codec::Lz4, lz4.clone()),
+            (Codec::Lz4Hc, lz4),
+        ] {
+            if let Some(slot) = c.slots.get_mut(usize::from(which.id())) {
+                *slot = Some(codec);
+            }
+        }
         c
     }
 
-    /// Registers `codec` for `which` (a custom codec is `Codec::Other(n)`).
-    pub fn set(&mut self, which: Codec, codec: Arc<dyn BlockCodec>) {
-        if let Some(slot) = self.slots.get_mut(usize::from(which.id())) {
-            *slot = Some(codec);
+    /// Registers `codec` for `which` (a custom codec is `Codec::Other(5..=63)`).
+    /// A non-canonical value (`Other(n)` with `n` below 5 or above 63) names no
+    /// slot and is handed back.
+    pub fn set(&mut self, which: Codec, codec: Arc<dyn BlockCodec>) -> Result<(), Codec> {
+        if !which.is_canonical() {
+            return Err(which);
+        }
+        match self.slots.get_mut(usize::from(which.id())) {
+            Some(slot) => {
+                *slot = Some(codec);
+                Ok(())
+            }
+            None => Err(which),
         }
     }
 
-    /// The codec for `which`, if registered.
+    /// The codec for `which`, if registered (never for a non-canonical value).
     #[must_use]
     pub fn get(&self, which: Codec) -> Option<&Arc<dyn BlockCodec>> {
+        if !which.is_canonical() {
+            return None;
+        }
         self.slots.get(usize::from(which.id()))?.as_ref()
     }
 }
@@ -167,11 +218,10 @@ pub struct Stored;
 impl BlockCodec for Stored {
     fn decode(
         &self,
-        input: &[u8],
+        input: &Bytes,
         uncompressed: u32,
-        limits: &Limits,
-        out: &mut Vec<u8>,
-    ) -> Result<(), Error> {
+        out: &mut DecodeBuf<'_>,
+    ) -> Result<Option<Bytes>, Error> {
         todo!()
     }
 }
@@ -183,11 +233,10 @@ pub struct Lzma;
 impl BlockCodec for Lzma {
     fn decode(
         &self,
-        input: &[u8],
+        input: &Bytes,
         uncompressed: u32,
-        limits: &Limits,
-        out: &mut Vec<u8>,
-    ) -> Result<(), Error> {
+        out: &mut DecodeBuf<'_>,
+    ) -> Result<Option<Bytes>, Error> {
         todo!()
     }
 }
@@ -199,11 +248,50 @@ pub struct Lz4;
 impl BlockCodec for Lz4 {
     fn decode(
         &self,
-        input: &[u8],
+        input: &Bytes,
         uncompressed: u32,
-        limits: &Limits,
-        out: &mut Vec<u8>,
-    ) -> Result<(), Error> {
+        out: &mut DecodeBuf<'_>,
+    ) -> Result<Option<Bytes>, Error> {
         todo!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{Codec, Codecs, Lz4};
+
+    #[test]
+    fn every_id_has_one_canonical_codec() {
+        for id in 0..64u32 {
+            let c = Codec::from_flags(id);
+            assert!(c.is_canonical(), "{c:?}");
+            assert_eq!(u32::from(c.id()), id);
+            assert_eq!(Codec::from_flags(u32::from(c.id())), c);
+        }
+        for n in [0u8, 1, 2, 3, 4, 64, 200, 255] {
+            assert!(!Codec::Other(n).is_canonical(), "Other({n})");
+        }
+    }
+
+    #[test]
+    fn an_alias_neither_replaces_nor_finds_a_codec() {
+        let mut c = Codecs::unitypy();
+        let lzma = c.get(Codec::Lzma).unwrap().clone();
+        // `Other(1)` is not LZMA: registering it must not replace slot 1.
+        let _ = c.set(Codec::Other(1), Arc::new(Lz4));
+        assert!(Arc::ptr_eq(c.get(Codec::Lzma).unwrap(), &lzma));
+        assert!(c.get(Codec::Other(1)).is_none());
+        assert_eq!(format!("{c:?}"), "Codecs { registered: [0, 1, 2, 3] }");
+    }
+
+    #[test]
+    fn an_id_past_the_registry_is_handed_back() {
+        let mut c = Codecs::empty();
+        assert_eq!(c.set(Codec::Other(64), Arc::new(Lz4)), Err(Codec::Other(64)));
+        assert_eq!(c.set(Codec::Other(200), Arc::new(Lz4)), Err(Codec::Other(200)));
+        assert_eq!(c.set(Codec::Other(5), Arc::new(Lz4)), Ok(()));
+        assert!(c.get(Codec::Other(5)).is_some());
     }
 }

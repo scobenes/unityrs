@@ -5,21 +5,43 @@
 //! `:282`), so its `str` can hold any bytes, and the canonical dump writes a
 //! name that is not valid UTF-8 as hex (`docs/CANONICAL_DUMP.md` section 4.2).
 //!
+//! **Zero-copy.** A `RawStr` is a [`Bytes`]: a string read from a file is a
+//! slice of the file's buffer ([`RawStr::from_shared`]), never a copy, so a
+//! typetree's node names (each row naming an offset in one string buffer),
+//! metadata strings and `Value::Str` cost a handle each, whatever their
+//! length and however often a hostile file repeats them (plan section 3.15).
+//! Common strings are static. Only strings the core computes (a decimal
+//! common-string offset, `py_lower`) allocate.
+//!
 //! Owner: the scaffold (implemented). Python string semantics on top of
 //! these bytes (`str.lower`, `ntpath`) are in [`crate::pystr`].
 
 use std::borrow::Borrow;
 use std::fmt;
 
+use bytes::Bytes;
+
 /// Bytes UnityPy holds as a `str`. Valid UTF-8 or not.
 #[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RawStr(Box<[u8]>);
+pub struct RawStr(Bytes);
 
 impl RawStr {
-    /// Wraps bytes.
+    /// Wraps bytes (a `Vec`, a boxed slice, a static slice or a shared buffer).
     #[must_use]
-    pub fn new(bytes: impl Into<Box<[u8]>>) -> Self {
+    pub fn new(bytes: impl Into<Bytes>) -> Self {
         Self(bytes.into())
+    }
+
+    /// A slice of a file's shared buffer, kept without a copy.
+    #[must_use]
+    pub fn from_shared(bytes: Bytes) -> Self {
+        Self(bytes)
+    }
+
+    /// A static string (a common string, a constant name).
+    #[must_use]
+    pub const fn from_static(bytes: &'static [u8]) -> Self {
+        Self(Bytes::from_static(bytes))
     }
 
     /// The bytes, as read.
@@ -47,9 +69,9 @@ impl RawStr {
         self.0.is_empty()
     }
 
-    /// The bytes, consuming the string.
+    /// The shared bytes, consuming the string.
     #[must_use]
-    pub fn into_bytes(self) -> Box<[u8]> {
+    pub fn into_bytes(self) -> Bytes {
         self.0
     }
 }
@@ -79,20 +101,28 @@ impl Borrow<[u8]> for RawStr {
 }
 
 impl From<&[u8]> for RawStr {
+    /// Copies: a borrowed slice has no shared buffer to keep.
     fn from(b: &[u8]) -> Self {
-        Self(b.into())
+        Self(Bytes::copy_from_slice(b))
     }
 }
 
 impl From<Vec<u8>> for RawStr {
     fn from(b: Vec<u8>) -> Self {
-        Self(b.into_boxed_slice())
+        Self(Bytes::from(b))
     }
 }
 
 impl From<&str> for RawStr {
+    /// Copies (use [`RawStr::from_static`] for a constant).
     fn from(s: &str) -> Self {
-        Self(s.as_bytes().into())
+        Self(Bytes::copy_from_slice(s.as_bytes()))
+    }
+}
+
+impl From<Bytes> for RawStr {
+    fn from(b: Bytes) -> Self {
+        Self(b)
     }
 }
 
@@ -106,6 +136,15 @@ mod tests {
         assert_eq!(s.as_bytes(), b"a\xffb");
         assert_eq!(s.to_str(), None);
         assert_eq!(format!("{s:?}"), "\"a\\xffb\"");
+    }
+
+    #[test]
+    fn a_string_read_from_a_buffer_shares_it() {
+        // A thousand rows naming one 32 KiB string cost a handle each, not a copy.
+        let buf = bytes::Bytes::from(vec![b'x'; 32 * 1024]);
+        let names: Vec<RawStr> = (0..1000).map(|_| RawStr::from_shared(buf.slice(..))).collect();
+        assert!(names.iter().all(|n| n.as_bytes().as_ptr() == buf.as_ptr()));
+        assert_eq!(names[999].len(), 32 * 1024);
     }
 
     #[test]

@@ -21,6 +21,13 @@
 //! kept tree. Format 10 and 12 and up use blobs (`SerializedFile.py`'s
 //! `SerializedType`); the rest use the old format.
 //!
+//! **Bounds.** Each row is charged to the input's [`Meter`]
+//! ([`Metered::TreeRows`], [`Limits::max_tree_rows`]) *before* it is pushed,
+//! so a refused row allocates nothing; growth follows the bytes read, never
+//! `node_count`. Node names and types are zero-copy slices of the string
+//! buffer ([`crate::raw::RawStr::from_shared`]) or static common strings, so
+//! a row costs `size_of::<NodeRow>()` whatever its strings' lengths.
+//!
 //! Owner: package C.
 
 // STUB(C): delete this allow when the module is implemented.
@@ -35,7 +42,7 @@
 )]
 
 use crate::error::Error;
-use crate::limits::Limits;
+use crate::limits::{Limits, Meter, Metered};
 use crate::stream::Reader;
 use crate::typetree::NodeRow;
 
@@ -44,12 +51,31 @@ pub fn is_blob_format(format: u32) -> bool {
     format == 10 || format >= 12
 }
 
-/// `TypeTreeNode.parse`: an old-format tree, as pre-order rows.
-pub fn parse_old(r: &mut Reader<'_>, format: u32, limits: &Limits) -> Result<Vec<NodeRow>, Error> {
+/// `TypeTreeNode.parse`: an old-format tree, as pre-order rows. `data` is
+/// the buffer `r` reads, so strings are slices of it.
+pub fn parse_old(
+    r: &mut Reader<'_>,
+    data: &bytes::Bytes,
+    format: u32,
+    meter: &Meter,
+    limits: &Limits,
+) -> Result<Vec<NodeRow>, Error> {
     todo!()
 }
 
-/// `TypeTreeNode.parse_blob`: every stored row, in order.
-pub fn parse_blob(r: &mut Reader<'_>, format: u32, limits: &Limits) -> Result<Vec<NodeRow>, Error> {
+/// `TypeTreeNode.parse_blob`: every stored row, in order. `data` is the
+/// buffer `r` reads, so local strings are slices of its string buffer.
+pub fn parse_blob(
+    r: &mut Reader<'_>,
+    data: &bytes::Bytes,
+    format: u32,
+    meter: &Meter,
+    limits: &Limits,
+) -> Result<Vec<NodeRow>, Error> {
     todo!()
+}
+
+/// Charges one row to the input's meter before the parser keeps it.
+pub fn charge_row(meter: &Meter, limits: &Limits) -> Result<(), Error> {
+    Ok(meter.charge(Metered::TreeRows, 1, limits)?)
 }
