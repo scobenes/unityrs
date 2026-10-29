@@ -4,7 +4,9 @@
 needs UnityPy 1.25.2 (the oracle image) and is skipped elsewhere.
 
 `AgainstTheOracle` builds every cell of every row itself and requires the matrix to hold
-exactly that, so a change to any cell fails a test:
+exactly that, so a change to any cell fails a test. No builder reads PARITY.md:
+`test_no_cell_is_built_from_this_file` builds the rows again in a new process, from a copy
+of it with every cell changed. The cells come:
 - from UnityPy: the value; the decoder (`CONV_TABLE`); the mode and the result of
   `parse_image_data` on real-sized data, with the source lines the result cites; the
   padding, Switch, Xbox and crunch gates, observed by running `parse_image_data` with
@@ -28,9 +30,13 @@ and the crunch stream itself is not.
 """
 
 import inspect
+import json
 import re
+import shutil
 import struct
+import subprocess
 import sys
+import tempfile
 import unittest
 from collections import namedtuple
 from pathlib import Path
@@ -884,6 +890,35 @@ def matrix_errors(rows, expected):
     ]
 
 
+def change_cells(text, columns):
+    """`text` with " changed" added to the named columns' cells in every row of the matrix."""
+    lines = text.splitlines(keepends=True)
+    header = next(i for i, line in enumerate(lines) if line.startswith("| value | format |"))
+    end = next(i for i in range(header, len(lines)) if not lines[i].startswith("|"))
+    for i in range(header + 2, end):
+        cells = [cell.strip() for cell in lines[i].rstrip("\n").strip("|").split(" | ")]
+        cells = [cell + " changed" if column in columns else cell for column, cell in zip(COLUMNS, cells, strict=True)]
+        lines[i] = "| " + " | ".join(cells) + " |\n"
+    return "".join(lines)
+
+
+def rebuilt_elsewhere(parity_text):
+    """Every row as `expected_row` builds it in a new process, from a copy of tools/parity whose PARITY.md
+    is `parity_text`, so a builder that read PARITY.md, even at import, would build from that text."""
+    with tempfile.TemporaryDirectory(prefix="unityrs-matrix-") as root:
+        copy = Path(root) / "tools" / "parity"
+        shutil.copytree(HERE, copy, ignore=shutil.ignore_patterns("__pycache__"))
+        (Path(root) / "PARITY.md").write_text(parity_text, encoding="utf-8")
+        script = (
+            "import json, test_texture_matrix as t\n"
+            "print(json.dumps({f.name: t.expected_row(f) for f in t.TextureFormat}))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", script], cwd=copy / "tests", capture_output=True, text=True, check=True
+        )
+    return json.loads(result.stdout)
+
+
 @unittest.skipUnless(ORACLE, NEEDS_ORACLE)
 class AgainstTheOracle(unittest.TestCase):
     @classmethod
@@ -898,15 +933,22 @@ class AgainstTheOracle(unittest.TestCase):
                 with self.subTest(name, column=column):
                     self.assertEqual(self.rows[name][column], cell)
 
-    def test_a_change_to_any_cell_fails(self):
-        """Every column is built, so changing any one cell of the matrix is a difference."""
+    def test_no_cell_is_built_from_this_file(self):
+        """Every cell comes from the oracle and the pixel cases, never from PARITY.md: in a fresh process whose
+        PARITY.md has every cell of the matrix changed but the format names, the builders build the same rows,
+        and every changed cell then differs from them."""
         self.assertEqual(sorted(next(iter(self.expected.values()))), sorted(COLUMNS))
         self.assertEqual(matrix_errors(self.rows, self.expected), [])
-        for name in self.expected:
-            for column in COLUMNS:
-                rows = {key: dict(cells) for key, cells in self.rows.items()}
-                rows[name][column] += "x"
-                self.assertEqual(matrix_errors(rows, self.expected), [(name, column)])
+        text = PARITY.read_text(encoding="utf-8")
+        others = [column for column in COLUMNS if column != "format"]
+        changed = change_cells(text, others)
+        everything = sorted((name, column) for name in self.rows for column in others)
+        self.assertEqual(sorted(matrix_errors(inventory.texture_rows(changed), self.expected)), everything)
+        self.assertEqual(rebuilt_elsewhere(changed), self.expected)
+        # The format cells are compared too (keyed by the original names, since the keys change with them).
+        renamed = inventory.texture_rows(change_cells(text, ["format"]))
+        rows = dict(zip(self.rows, renamed.values(), strict=True))
+        self.assertEqual(sorted(matrix_errors(rows, self.expected)), sorted((name, "format") for name in self.rows))
         # The change Codex's review made by hand: DXT1's Switch block size.
         rows = {key: dict(cells) for key, cells in self.rows.items()}
         rows["DXT1"]["gates"] = rows["DXT1"]["gates"].replace("sw 8×4", "sw —")
