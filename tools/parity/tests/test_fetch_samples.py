@@ -28,7 +28,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
 import fetch_unitypy_samples as F  # noqa: E402
-from test_dump import SAMPLES  # noqa: E402
+from dump_harness import SAMPLES  # noqa: E402
 
 BODY_A = b"UnityFS\0synthetic sample a\0" * 40
 BODY_B = b"UnityFS\0synthetic sample b\0" * 7
