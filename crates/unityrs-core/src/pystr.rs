@@ -274,6 +274,42 @@ pub fn clean_external_path(path: &RawStr, meter: &Arc<Meter>) -> Result<RawStr, 
     lower_within(path, p.get(start..).unwrap_or_default(), meter)
 }
 
+/// Whether UnityPy's `load_file` reads a path as the parts of a split file:
+/// `reSplit.match(path)` (`environment.py:25`, `:111-116`), with `reSplit`
+/// `(.*?([^\/\\]+?))\.split\d+`, a match at the start that need not reach
+/// the end. So `.split` and a digit must follow at least one character that
+/// is no `/` or `\`, and no `\n` (which `.` does not match) may come before
+/// the last separator ahead of it. Python's `\d` is a decimal digit
+/// (category `Nd`); this takes any numeric character ([`char::is_numeric`]:
+/// `Nd`, `Nl`, `No`), so a name such as `x.split²`, which UnityPy reads as
+/// one file, is refused too: a refusal, never a misread. Linear in the path.
+#[must_use]
+pub fn is_split_path(path: &[u8]) -> bool {
+    const SPLIT: &[u8] = b".split";
+    let mut first_newline = None;
+    let mut last_sep = None;
+    for (i, &b) in path.iter().enumerate() {
+        if path.get(i..).is_some_and(|rest| rest.starts_with(SPLIT))
+            && i > 0
+            && path.get(i - 1).is_some_and(|&p| p != b'/' && p != b'\\')
+            && first_newline.is_none_or(|n| last_sep.is_none_or(|s| n > s))
+            && path
+                .get(i + SPLIT.len()..)
+                .and_then(|rest| rest.utf8_chunks().next())
+                .and_then(|c| c.valid().chars().next())
+                .is_some_and(char::is_numeric)
+        {
+            return true;
+        }
+        match b {
+            b'\n' if first_newline.is_none() => first_newline = Some(i),
+            b'/' | b'\\' => last_sep = Some(i),
+            _ => {}
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

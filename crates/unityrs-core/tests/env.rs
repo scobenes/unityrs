@@ -12,18 +12,20 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use unityrs_core::budget::{BudgetExceeded, Counting, MemoryBudget, Permit, Reservation};
+use unityrs_core::container::ContainerPath;
 use unityrs_core::env::{
-    Cab, CabResolver, DerefError, EnvOptions, Environment, Fetch, LoadMode, PPtr, RawCab, Source,
+    Cab, CabResolver, DerefError, EnvOptions, Environment, Fetch, FileEntries, LoadMode, PPtr,
+    RawCab, Source,
 };
-use unityrs_core::error::{Error, LimitKind};
+use unityrs_core::error::{Error, LimitKind, Unsupported};
 use unityrs_core::files::{BundleFile, File, SerializedFile};
 use unityrs_core::limits::Meter;
 use unityrs_core::value::Value;
 use unityrs_core::{Bytes, FileContext, ObjectRef, RawStr};
 use unityrs_testkit::Rng;
 use unityrs_testkit::env::{
-    Bundle, Obj, bad_cab, bundle, last_block_fails, nested_after_cab, res_bytes, row, scenes,
-    serialized,
+    Bundle, Obj, bad_cab, bundle, last_block_fails, nested_after_cab, nested_duplicates, res_bytes,
+    row, scenes, serialized,
 };
 
 fn src(name: &str, data: &[u8]) -> Source {
@@ -122,7 +124,7 @@ fn difference_a_a_failing_entry_fails_only_its_reads_under_lazy() {
     let scene = bad_cab();
     let eager = env(LoadMode::Eager);
     let eager_error = eager.load(file_of(&scene, 0)).unwrap_err();
-    assert!(eager.files().is_empty());
+    assert!(eager.files().next().is_none());
     assert_eq!(keys(&eager), ["cab-g", "cab-g.ress"]);
 
     let lazy = env(LoadMode::Lazy);
@@ -182,6 +184,124 @@ fn difference_b_a_nested_entry_is_a_key_until_its_first_get() {
         name_of(&object(&serialized_cab(&lazy, "cab-inner"), 2)),
         "inner"
     );
+}
+
+/// (b), and the order of expansion: a nested container's entries take the
+/// place and the value an eager load gives them, whichever nested container
+/// is asked for first, so two that hold a CAB of one name leave the second's
+/// under the key either way, as `Eager` does (review round 1: under `Lazy`
+/// the one asked for last won).
+#[test]
+fn nested_containers_register_in_directory_order_whichever_is_asked_first() {
+    let scene = nested_duplicates();
+    let eager = env(LoadMode::Eager);
+    eager.load(file_of(&scene, 0)).unwrap();
+    assert_eq!(keys(&eager), ["cab-dup"]);
+    assert_eq!(
+        name_of(&object(&serialized_cab(&eager, "cab-dup"), 1)),
+        "from-n2"
+    );
+    let mut seen = Vec::new();
+    for order in [["n1", "n2"], ["n2", "n1"]] {
+        let lazy = env(LoadMode::Lazy);
+        lazy.load(file_of(&scene, 0)).unwrap();
+        for n in order {
+            assert!(lazy.get_cab(&key(n), &unlimited()).unwrap().is_none());
+        }
+        let winner = name_of(&object(&serialized_cab(&lazy, "cab-dup"), 1));
+        seen.push((keys(&lazy), winner));
+    }
+    assert_eq!(seen[0], seen[1], "the same whichever is asked first");
+    assert_eq!(seen[0].0, ["n1", "cab-dup", "n2"]);
+    assert_eq!(seen[0].1, "from-n2");
+}
+
+/// A budget that, once a thread arms it, stops that thread at its next
+/// reservation until the test lets it go (a test's hook: a real budget
+/// never blocks).
+#[derive(Debug)]
+struct Gate {
+    armed: Mutex<Option<std::thread::ThreadId>>,
+    stopped: Mutex<Option<mpsc::Sender<()>>>,
+    go: Mutex<Option<mpsc::Receiver<()>>>,
+}
+
+impl MemoryBudget for Gate {
+    fn try_reserve(&self, bytes: u64, _: Reservation) -> Result<Permit, BudgetExceeded> {
+        let me = std::thread::current().id();
+        let stop = {
+            let mut armed = self.armed.lock().unwrap();
+            let stop = *armed == Some(me);
+            if stop {
+                *armed = None;
+            }
+            stop
+        };
+        if stop {
+            if let Some(tx) = self.stopped.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            let go = self.go.lock().unwrap().take();
+            if let Some(rx) = go {
+                let _ = rx.recv_timeout(Duration::from_secs(60));
+            }
+        }
+        Ok(Permit::detached(bytes))
+    }
+}
+
+/// (b) under threads: while one thread registers a nested container's
+/// entries, another that asks for the container and then for an entry finds
+/// the entry (review round 1: the first thread marked the container expanded
+/// before it registered anything, so the second returned at once and found
+/// nothing). The first thread is stopped at its first registration's charge.
+#[test]
+fn a_get_while_another_thread_expands_a_nested_container_sees_its_entries() {
+    let inner = bundle(&[
+        ("CAB-C1", serialized(&[], &[Obj::named(1, "c1", &[])])),
+        ("CAB-C2", serialized(&[], &[Obj::named(2, "c2", &[])])),
+    ]);
+    let data = bundle(&[("CAB-NEST", inner)]);
+    let (stopped_tx, stopped_rx) = mpsc::channel();
+    let (go_tx, go_rx) = mpsc::channel();
+    let gate = Arc::new(Gate {
+        armed: Mutex::new(None),
+        stopped: Mutex::new(Some(stopped_tx)),
+        go: Mutex::new(Some(go_rx)),
+    });
+    let mut o = EnvOptions::unitypy();
+    o.context = ctx_with(gate.clone());
+    o.load = LoadMode::Lazy;
+    let env = Environment::new(o);
+    let File::Bundle(outer) = env.load(src("o.bundle", &data)).unwrap() else {
+        panic!()
+    };
+    // Parsed now: the expanding thread's first charge is its first
+    // registration's.
+    outer.entry(0).unwrap();
+    let first = {
+        let env = env.clone();
+        let gate = gate.clone();
+        std::thread::spawn(move || {
+            *gate.armed.lock().unwrap() = Some(std::thread::current().id());
+            env.get_cab(&key("cab-nest"), &unlimited())
+                .unwrap()
+                .is_none()
+        })
+    };
+    stopped_rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the first thread stops at its first registration");
+    assert!(
+        env.get_cab(&key("cab-nest"), &unlimited())
+            .unwrap()
+            .is_none()
+    );
+    let c2 = env.get_cab(&key("cab-c2"), &unlimited()).unwrap();
+    go_tx.send(()).unwrap();
+    assert!(first.join().unwrap());
+    assert!(matches!(c2, Some(Cab::Serialized(_))), "{c2:?}");
+    assert_eq!(keys(&env), ["cab-nest", "cab-c1", "cab-c2"]);
 }
 
 /// (c): a block past every entry's bytes that fails to decode fails the
@@ -471,7 +591,7 @@ fn a_resource_through_the_dependency_handle_parses_no_slot_for_every_source() {
         let got = env.resource(&cab, &path, offset, size).unwrap();
         assert_eq!(got.as_ref(), &res_bytes(32, 0)[3..8], "{source:?}");
         assert_eq!(env.stats().entries_parsed, parsed, "{source:?}");
-        assert!(env.files().is_empty());
+        assert!(env.files().next().is_none());
     }
 }
 
@@ -525,7 +645,7 @@ fn a_missing_resource_is_loaded_through_the_resolver_then_read() {
         let (path, offset, size) = stream(&object(&sf, 2));
         let got = env.resource(&sf, &path, offset, size).unwrap();
         assert_eq!(got.as_ref(), &res_bytes(8, 4)[1..3]);
-        assert_eq!(env.files().len(), if keep { 2 } else { 1 });
+        assert_eq!(env.files().count(), if keep { 2 } else { 1 });
     }
     let env = env(LoadMode::Eager);
     env.load(src("CAB-O", &data)).unwrap();
@@ -579,7 +699,7 @@ fn batch_options_keep_no_resolver_load_in_files_objects_or_the_container() {
         let (path, offset, size) = stream(&object(&sf, 2));
         let got = env.resource(&sf, &path, offset, size).unwrap();
         assert_eq!(got.as_ref(), &res_bytes(24, 9)[2..8]);
-        assert_eq!(env.files().len(), 1, "{mode:?}");
+        assert_eq!(env.files().count(), 1, "{mode:?}");
         let objects: Vec<_> = env.objects().map(Result::unwrap).collect();
         assert_eq!(objects.len(), 3, "{mode:?}");
         assert!(objects.iter().all(|o| Arc::ptr_eq(o.file(), &sf)));
@@ -616,7 +736,7 @@ fn dependencies_are_evicted_and_reopened_and_every_charge_returns() {
             .load_dependency(src("a.bundle", &named_bundle("CAB-A", 64)))
             .unwrap();
         assert_eq!(a.meter().reservation(), Reservation::Dependency);
-        assert_eq!(env.files().len(), 1, "only the caller's file");
+        assert_eq!(env.files().count(), 1, "only the caller's file");
         let first = serialized_cab(&env, "cab-a");
         let old = first.meter().clone();
         let old_work = old.decoded();
@@ -754,7 +874,7 @@ fn a_pool_refusal_evicts_and_retries_once_then_fails_naming_the_pool() {
         "{refused:?}"
     );
     assert!(!keys(&env).contains(&"cab-big".to_owned()));
-    assert!(env.files().is_empty());
+    assert!(env.files().next().is_none());
     assert_eq!(
         env.stats().dependency_bytes,
         0,
@@ -856,7 +976,7 @@ fn a_resolver_and_a_fetch_may_call_the_environment_and_take_caller_locks() {
                     for _ in 0..50 {
                         let _held = lock.lock().unwrap();
                         let _ = env.get_cab(&RawStr::from("cab-a"), &Meter::unlimited());
-                        let _ = env.files();
+                        let _ = env.files().count();
                     }
                 })
             };
@@ -1007,6 +1127,7 @@ fn seeded_scenes_never_panic() {
                     );
                 }
                 let _ = env.resource(o.file(), &RawStr::from("archive:/x/CAB-A.resS"), 1, 4);
+                let _ = env.container_path(o);
             }
             if let Ok(items) = env.container() {
                 for _ in items.take(64) {}
@@ -1019,4 +1140,665 @@ fn seeded_scenes_never_panic() {
     }
     // Keep a raw CAB in the vocabulary of `Cab` used above.
     let _ = |c: Cab| matches!(c, Cab::Raw(RawCab::File(_)));
+}
+
+// --------------------------------------------------------- review round 1
+
+/// A resolver that finds nothing and counts what it is asked.
+#[derive(Debug, Default)]
+struct Asked(AtomicUsize);
+
+impl CabResolver for Asked {
+    fn resolve(&self, _: &[u8]) -> Option<Source> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        None
+    }
+}
+
+/// A file whose `n` container rows each span its whole `n`-pointer preload
+/// table, each pointer into its own external (`distinct`) or all into one.
+fn spanning(n: usize, distinct: bool) -> Vec<u8> {
+    let externals: Vec<String> = (0..if distinct { n } else { 1 })
+        .map(|i| format!("archive:/CAB-X{i}/CAB-X{i}"))
+        .collect();
+    let externals: Vec<&str> = externals.iter().map(String::as_str).collect();
+    let preload = (0..n)
+        .map(|i| {
+            (
+                if distinct {
+                    i32::try_from(i + 1).unwrap()
+                } else {
+                    1
+                },
+                1,
+            )
+        })
+        .collect();
+    let size = i32::try_from(n).unwrap();
+    let rows = (0..n)
+        .map(|i| row(&format!("assets/{i}.prefab"), (0, size), (0, 1)))
+        .collect();
+    serialized(
+        &externals,
+        &[
+            Obj::named(1, "o1", &[]),
+            Obj::asset_bundle(
+                2,
+                Bundle {
+                    preload,
+                    rows,
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    )
+}
+
+/// The container preload dereferences each table index once and resolves
+/// each external once, however many rows' spans cover them (review round
+/// 1: every row walked its whole span, so `n` rows over one `n`-pointer
+/// table made `n`² dereferences). Counted in steps, never by a clock.
+#[test]
+fn the_preload_dereferences_each_table_index_once() {
+    const N: usize = 64;
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        for distinct in [true, false] {
+            let asked = Arc::new(Asked::default());
+            let mut o = EnvOptions::unitypy();
+            o.load = mode;
+            o.resolver = Some(asked.clone());
+            let env = Environment::new(o);
+            env.load(src("CAB-S", &spanning(N, distinct))).unwrap();
+            assert_eq!(env.container().unwrap().count(), N);
+            let want = if distinct { N } else { 1 };
+            assert_eq!(
+                env.stats().preload_dereferences,
+                u64::try_from(N).unwrap(),
+                "{mode:?} distinct {distinct}: dereferences"
+            );
+            assert_eq!(
+                asked.0.load(Ordering::SeqCst),
+                want,
+                "{mode:?} distinct {distinct}: resolver calls"
+            );
+        }
+    }
+}
+
+/// A preload external the resolver answers with a file it names otherwise
+/// (so the next lookup of the name misses again) is loaded once per walk,
+/// not once per element and row. UnityPy cannot reach this: its `find_file`
+/// keys the file it loads by its path, whose basename is the name asked, so
+/// only a container misses again, and its first element raises. The walk's
+/// load registers a new key, so the pass then fails as UnityPy's does.
+#[test]
+fn a_preload_external_the_resolver_names_otherwise_loads_once_per_walk() {
+    #[derive(Debug)]
+    struct Other(AtomicUsize, Bytes);
+    impl CabResolver for Other {
+        fn resolve(&self, name: &[u8]) -> Option<Source> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            (name == b"cab-c").then(|| Source::Bytes {
+                name: RawStr::from("@/elsewhere"),
+                data: self.1.clone(),
+            })
+        }
+    }
+    let other = serialized(&[], &[Obj::named(5, "o5", &[])]);
+    let file = serialized(
+        &["archive:/CAB-C/CAB-C"],
+        &[
+            Obj::named(1, "s1", &[]),
+            Obj::asset_bundle(
+                2,
+                Bundle {
+                    preload: vec![(1, 5), (1, 6)],
+                    rows: (0..3)
+                        .map(|i| row(&format!("assets/{i}.prefab"), (0, 2), (0, 1)))
+                        .collect(),
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    );
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let resolver = Arc::new(Other(AtomicUsize::new(0), Bytes::from(other.clone())));
+        let mut o = EnvOptions::unitypy();
+        o.load = mode;
+        o.resolver = Some(resolver.clone());
+        let env = Environment::new(o);
+        env.load(src("CAB-S", &file)).unwrap();
+        let e = env.container().expect_err("the dict grew");
+        assert!(e.to_string().contains("changed size"), "{e}");
+        assert_eq!(resolver.0.load(Ordering::SeqCst), 1, "{mode:?}");
+        assert_eq!(env.container().unwrap().count(), 3, "{mode:?}");
+    }
+}
+
+/// Under `unitypy()` every `find_file` load of a file that does not
+/// register the name asked happens again at each dereference, as in
+/// UnityPy; each replaces the last one's keys, and the LRU lets the
+/// replaced one go (review round 1: the unbounded LRU kept every one, so
+/// the memory grew with the number of dereferences).
+#[test]
+fn a_find_file_load_replaced_by_the_next_one_leaves_the_lru() {
+    #[derive(Debug)]
+    struct Elsewhere(Bytes);
+    impl CabResolver for Elsewhere {
+        fn resolve(&self, name: &[u8]) -> Option<Source> {
+            (name == b"cab-c").then(|| Source::Bytes {
+                name: RawStr::from("@/cab-c"),
+                data: self.0.clone(),
+            })
+        }
+    }
+    let target = bundle(&[
+        ("CAB-OTHER", serialized(&[], &[Obj::named(5, "o5", &[])])),
+        ("pad.resS", res_bytes(4096, 1)),
+    ]);
+    let a = bundle(&[(
+        "CAB-A",
+        serialized(&["archive:/CAB-C/CAB-C"], &[Obj::named(1, "a1", &[(1, 5)])]),
+    )]);
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let mut o = EnvOptions::unitypy();
+        o.load = mode;
+        o.resolver = Some(Arc::new(Elsewhere(Bytes::from(target.clone()))));
+        let env = Environment::new(o);
+        env.load(src("a.bundle", &a)).unwrap();
+        let sf = serialized_cab(&env, "cab-a");
+        let mut held = Vec::new();
+        for _ in 0..20 {
+            let r = env.deref(
+                &sf,
+                PPtr {
+                    file_id: 1,
+                    path_id: 5,
+                },
+            );
+            // The resolver's file is a bundle, the pointer's container.
+            assert!(matches!(r, Err(DerefError::RawTarget { .. })), "{r:?}");
+            held.push(env.stats().dependency_bytes);
+        }
+        assert_eq!(env.stats().dependencies_loaded, 20, "{mode:?}");
+        // The first load's meter also holds its `files` entry, which the
+        // later ones replace in place.
+        assert!(held[1] > 0);
+        assert_eq!(held[19], held[1], "{mode:?}: {held:?}");
+    }
+}
+
+/// Meets another thread from inside a callback: says it is inside, then
+/// waits for the other thread to finish what it does meanwhile.
+#[derive(Debug)]
+struct Rendezvous {
+    inside: Mutex<Option<mpsc::Sender<()>>>,
+    done: Mutex<Option<mpsc::Receiver<()>>>,
+}
+
+impl Rendezvous {
+    fn new() -> (Arc<Self>, mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (inside_tx, inside_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let r = Arc::new(Self {
+            inside: Mutex::new(Some(inside_tx)),
+            done: Mutex::new(Some(done_rx)),
+        });
+        (r, inside_rx, done_tx)
+    }
+
+    /// Meets once; later calls pass.
+    fn meet(&self) {
+        let Some(tx) = self.inside.lock().unwrap().take() else {
+            return;
+        };
+        let _ = tx.send(());
+        let rx = self.done.lock().unwrap().take().unwrap();
+        rx.recv_timeout(Duration::from_secs(60)).expect(
+            "the other thread's loads finished while the core called this one: \
+             a core lock is held across a resolver or a fetch",
+        );
+    }
+}
+
+/// What a thread does while the core calls another thread's resolver or
+/// fetch: writers (a load, a dependency, a parse through a slot), which a
+/// read lock held across the call would block, and readers.
+fn writers(env: &Environment, i: usize) {
+    let name = format!("CAB-W{i}");
+    env.load(src(&format!("w{i}.bundle"), &named_bundle(&name, 16)))
+        .unwrap();
+    let dep = format!("CAB-V{i}");
+    env.load_dependency(src(&format!("v{i}.bundle"), &named_bundle(&dep, 16)))
+        .unwrap();
+    let _ = serialized_cab(env, &name.to_lowercase());
+    let _ = env.get_cab(&key("cab-b"), &unlimited());
+    let _ = env.get_cab(&key("cab-f"), &unlimited());
+    let _ = env.files().count();
+    let _ = env.registry().keys().count();
+}
+
+/// While the core calls a resolver or a fetch, another thread loads,
+/// registers and looks up (writers, which a read lock held across the call
+/// would block), in both modes, while the callback waits for it (review
+/// round 1: only readers ran beside a callback, so a lock held across one
+/// went unseen).
+#[test]
+fn a_resolver_or_a_fetch_may_wait_for_a_thread_that_loads() {
+    #[derive(Debug)]
+    struct Meeting {
+        meet: Arc<Rendezvous>,
+        data: Bytes,
+        fetch: bool,
+    }
+    impl CabResolver for Meeting {
+        fn resolve(&self, name: &[u8]) -> Option<Source> {
+            if name != b"cab-b" {
+                return None;
+            }
+            if self.fetch {
+                return Some(Source::Fetch {
+                    name: RawStr::from("cab-b"),
+                    fetch: Arc::new(MeetingFetch {
+                        meet: self.meet.clone(),
+                        data: self.data.clone(),
+                    }),
+                });
+            }
+            self.meet.meet();
+            Some(Source::Bytes {
+                name: RawStr::from("cab-b"),
+                data: self.data.clone(),
+            })
+        }
+    }
+    #[derive(Debug)]
+    struct MeetingFetch {
+        meet: Arc<Rendezvous>,
+        data: Bytes,
+    }
+    impl Fetch for MeetingFetch {
+        fn fetch(&self) -> Result<Bytes, Error> {
+            self.meet.meet();
+            Ok(self.data.clone())
+        }
+    }
+    let target = Bytes::from(serialized(&[], &[Obj::named(7, "b7", &[])]));
+    let mut round = 0;
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        for fetch in [false, true] {
+            round += 1;
+            let (meet, inside, done) = Rendezvous::new();
+            let mut o = EnvOptions::unitypy();
+            o.load = mode;
+            o.resolver = Some(Arc::new(Meeting {
+                meet: meet.clone(),
+                data: target.clone(),
+                fetch,
+            }));
+            let env = Environment::new(o);
+            let scene = unityrs_testkit::env::cross_bundle_pointer();
+            env.load(file_of(&scene, 0)).unwrap();
+            let caller = {
+                let env = env.clone();
+                std::thread::spawn(move || {
+                    let sf = serialized_cab(&env, "cab-a");
+                    let t = env.deref(
+                        &sf,
+                        PPtr {
+                            file_id: 1,
+                            path_id: 7,
+                        },
+                    );
+                    name_of(&t.unwrap())
+                })
+            };
+            inside
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the core called the resolver");
+            writers(&env, round);
+            done.send(()).unwrap();
+            assert_eq!(caller.join().unwrap(), "b7", "{mode:?} fetch {fetch}");
+        }
+    }
+}
+
+/// A fetch that meets another thread once it is armed.
+#[derive(Debug)]
+struct ArmedFetch {
+    on: std::sync::atomic::AtomicBool,
+    meet: Arc<Rendezvous>,
+    data: Bytes,
+}
+
+impl Fetch for ArmedFetch {
+    fn fetch(&self) -> Result<Bytes, Error> {
+        if self.on.load(Ordering::SeqCst) {
+            self.meet.meet();
+        }
+        Ok(self.data.clone())
+    }
+}
+
+/// As above, for the fetch of an evicted `Fetch` dependency's reopen: another
+/// thread loads, and asks for the same dependency, while it runs.
+#[test]
+fn an_evicted_dependencys_fetch_may_wait_for_a_thread_that_loads() {
+    for (round, mode) in [(1, LoadMode::Eager), (2, LoadMode::Lazy)] {
+        let (meet, inside, done) = Rendezvous::new();
+        let mut o = EnvOptions::batch(Arc::new(FileContext::unitypy()));
+        o.load = mode;
+        o.dep_cache_bytes = 1;
+        let env = Environment::new(o);
+        let fetcher = Arc::new(ArmedFetch {
+            on: std::sync::atomic::AtomicBool::new(false),
+            meet,
+            data: Bytes::from(named_bundle("CAB-F", 16)),
+        });
+        drop(
+            env.load_dependency(Source::Fetch {
+                name: RawStr::from("f.bundle"),
+                fetch: fetcher.clone(),
+            })
+            .unwrap(),
+        );
+        drop(
+            env.load_dependency(src("g.bundle", &named_bundle("CAB-G", 16)))
+                .unwrap(),
+        );
+        assert!(env.stats().dependencies_evicted > 0);
+        fetcher.on.store(true, Ordering::SeqCst);
+        let caller = {
+            let env = env.clone();
+            std::thread::spawn(move || name_of(&object(&serialized_cab(&env, "cab-f"), 1)))
+        };
+        inside
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the core called the fetch");
+        writers(&env, round);
+        done.send(()).unwrap();
+        assert_eq!(caller.join().unwrap(), "CAB-F", "{mode:?}");
+    }
+}
+
+/// The container pass holds the dependency whose table it walks, so a load
+/// the walk makes that evicts it leaves its bundle, and the pointers into
+/// its siblings, reachable (review round 1: `container()` failed with
+/// `ContainerDropped`). `get_cab_held` gives a caller the same handle;
+/// `get_cab` does not.
+#[test]
+fn the_container_pass_holds_the_dependency_it_walks() {
+    let d = bundle(&[
+        (
+            "CAB-D",
+            serialized(
+                &["archive:/CAB-X/CAB-X", "archive:/CAB-D2/CAB-D2"],
+                &[
+                    Obj::named(1, "d1", &[]),
+                    Obj::asset_bundle(
+                        2,
+                        Bundle {
+                            preload: vec![(1, 1), (2, 3)],
+                            rows: vec![row("assets/d1.prefab", (0, 2), (0, 1))],
+                            ..Bundle::default()
+                        },
+                    ),
+                ],
+            ),
+        ),
+        ("CAB-D2", serialized(&[], &[Obj::named(3, "d3", &[])])),
+    ]);
+    let x = serialized(&[], &[Obj::named(1, "x1", &[])]);
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let mut o = EnvOptions::batch(Arc::new(FileContext::unitypy()));
+        o.load = mode;
+        o.dep_cache_bytes = 1;
+        let env = Environment::new(o);
+        drop(env.load_dependency(src("CAB-X", &x)).unwrap());
+        drop(env.load_dependency(src("d.bundle", &d)).unwrap());
+        // Each use of one dependency evicts the other.
+        let evicted = env.stats().dependencies_evicted;
+        assert_eq!(env.container().unwrap().count(), 0, "{mode:?}");
+        assert!(env.stats().dependencies_evicted > evicted);
+
+        let sibling = PPtr {
+            file_id: 2,
+            path_id: 3,
+        };
+        let held = env
+            .get_cab_held(&key("cab-d"), &unlimited())
+            .unwrap()
+            .unwrap();
+        assert!(held.hold.is_some());
+        let Cab::Serialized(sf) = &held.cab else {
+            panic!()
+        };
+        let _ = serialized_cab(&env, "cab-x");
+        assert_eq!(name_of(&env.deref(sf, sibling).unwrap()), "d3");
+        drop(held);
+        let sf = serialized_cab(&env, "cab-d");
+        let _ = serialized_cab(&env, "cab-x");
+        assert!(
+            matches!(
+                env.deref(&sf, sibling),
+                Err(DerefError::ContainerDropped { .. })
+            ),
+            "{mode:?}"
+        );
+    }
+}
+
+/// A temporary directory, removed with what it holds when dropped.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(tag: &str) -> Self {
+        let path = std::env::temp_dir().join(format!("unityrs-env-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A split file's parts (`name.split0`, ...), which UnityPy joins, are
+/// refused with `Unsupported::Split` before anything is read: by a
+/// `.splitN` name, and by a missing name whose `.split0` exists
+/// (`environment.py:111-127`), in both modes and as a dependency (review
+/// round 1: under `Lazy` the first part loaded as half a bundle).
+#[test]
+fn split_files_are_refused_before_they_are_read() {
+    let dir = TempDir::new("split");
+    let data = bundle(&[
+        ("CAB-S", serialized(&[], &[Obj::named(1, "s1", &[])])),
+        ("CAB-S.resS", res_bytes(4000, 2)),
+    ]);
+    let (a, b) = data.split_at(data.len() / 2);
+    std::fs::write(dir.0.join("data.unity3d.split0"), a).unwrap();
+    std::fs::write(dir.0.join("data.unity3d.split1"), b).unwrap();
+    let split = |e: Result<File, Error>| matches!(e, Err(Error::Unsupported(Unsupported::Split)));
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let env = env(mode);
+        for name in ["data.unity3d.split0", "data.unity3d.split1", "data.unity3d"] {
+            let p = dir.0.join(name);
+            assert!(split(env.load(Source::Path(p.clone()))), "{mode:?} {name}");
+            assert!(
+                split(env.load_dependency(Source::Path(p))),
+                "{mode:?} {name}"
+            );
+        }
+        assert!(env.files().next().is_none());
+        assert_eq!(env.registry().len(), 0);
+    }
+}
+
+/// `files()` is an iterator, as the other listings are: it allocates no
+/// copy of the list (review round 1: it returned an uncharged `Vec`).
+#[test]
+fn files_is_an_iterator_over_the_list() {
+    let env = env(LoadMode::Eager);
+    env.load(src("a.bundle", &named_bundle("CAB-A", 16)))
+        .unwrap();
+    env.load(src("b.bundle", &named_bundle("CAB-B", 16)))
+        .unwrap();
+    let files: FileEntries<'_> = env.files();
+    let names: Vec<_> = files.map(|f| f.name).collect();
+    assert_eq!(names, [RawStr::from("a.bundle"), RawStr::from("b.bundle")]);
+}
+
+/// `obj.container` for objects a dependency's preload reached, where nothing
+/// is evicted: a path the row's span gave a sibling's object, none for an
+/// object no row reaches. Where a dependency may be evicted, an object of
+/// one is refused (`PARITY.md` section 19.3), in both modes.
+#[test]
+fn container_paths_of_a_dependencys_objects() {
+    let d = bundle(&[
+        (
+            "CAB-D",
+            serialized(
+                &["archive:/CAB-D2/CAB-D2"],
+                &[
+                    Obj::named(1, "d1", &[]),
+                    Obj::asset_bundle(
+                        2,
+                        Bundle {
+                            preload: vec![(1, 3)],
+                            rows: vec![row("assets/d1.prefab", (0, 1), (0, 1))],
+                            ..Bundle::default()
+                        },
+                    ),
+                ],
+            ),
+        ),
+        (
+            "CAB-D2",
+            serialized(&[], &[Obj::named(3, "d3", &[]), Obj::named(4, "d4", &[])]),
+        ),
+    ]);
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let env = env(mode);
+        drop(env.load_dependency(src("d.bundle", &d)).unwrap());
+        let path = |cab: &str, id: i64| {
+            env.container_path(&object(&serialized_cab(&env, cab), id))
+                .unwrap()
+        };
+        let d1 = ContainerPath::Str(RawStr::from("assets/d1.prefab"));
+        assert_eq!(path("cab-d", 1), Some(d1.clone()), "{mode:?}");
+        assert_eq!(path("cab-d2", 3), Some(d1), "{mode:?}");
+        assert_eq!(path("cab-d2", 4), None, "{mode:?}");
+        assert_eq!(path("cab-d", 2), None, "{mode:?}");
+
+        let mut o = EnvOptions::batch(Arc::new(FileContext::unitypy()));
+        o.load = mode;
+        let batch = Environment::new(o);
+        let _hold = batch.load_dependency(src("d.bundle", &d)).unwrap();
+        for (cab, id) in [("cab-d", 1), ("cab-d2", 3)] {
+            let r = batch.container_path(&object(&serialized_cab(&batch, cab), id));
+            assert!(
+                matches!(
+                    r,
+                    Err(Error::Unsupported(Unsupported::EvictableContainerPath))
+                ),
+                "{mode:?} {cab}: {r:?}"
+            );
+        }
+        // A file the caller loaded is never evicted: its paths are kept.
+        batch.load(src("c.bundle", &d)).unwrap();
+        let sf = match batch.files().next().unwrap().file {
+            File::Bundle(b) => match b.entry(0).unwrap() {
+                File::Serialized(sf) => sf,
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            batch.container_path(&object(&sf, 1)).unwrap(),
+            Some(ContainerPath::Str(RawStr::from("assets/d1.prefab"))),
+            "{mode:?}"
+        );
+    }
+}
+
+/// The container preload walks each registered file's table once, as
+/// UnityPy, which never evicts, does: a dependency evicted and opened again
+/// is not walked again (review round 1's fix: the mark lived in the parsed
+/// file, so a reopen walked again, and a pointer the first walk skipped
+/// could raise once a later load registered a raw file under its name).
+#[test]
+fn a_reopened_dependency_is_not_walked_again() {
+    let d = serialized(
+        &["archive:/CAB-R/CAB-R.resS"],
+        &[
+            Obj::named(1, "d1", &[]),
+            Obj::asset_bundle(
+                2,
+                Bundle {
+                    preload: vec![(1, 1)],
+                    rows: vec![row("assets/d1.prefab", (0, 1), (0, 1))],
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    );
+    let dir = TempDir::new("walk");
+    let path = dir.0.join("CAB-D");
+    std::fs::write(&path, &d).unwrap();
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let mut o = EnvOptions::batch(Arc::new(FileContext::unitypy()));
+        o.load = mode;
+        o.dep_cache_bytes = 1;
+        let env = Environment::new(o);
+        drop(env.load_dependency(Source::Path(path.clone())).unwrap());
+        // CAB-R.resS is not found: the walk skips the pointer.
+        assert_eq!(env.container().unwrap().count(), 0);
+        let walked = env.stats().preload_dereferences;
+        // Evicts CAB-D, and registers a raw file under CAB-R's key.
+        drop(
+            env.load_dependency(src("CAB-R.resS", &res_bytes(64, 3)))
+                .unwrap(),
+        );
+        assert!(env.stats().dependencies_evicted > 0, "{mode:?}");
+        // The pass after the load walks nothing again: UnityPy's would
+        // find CAB-D's table walked.
+        assert_eq!(env.container().unwrap().count(), 0, "{mode:?}");
+        assert_eq!(env.stats().preload_dereferences, walked, "{mode:?}");
+    }
+}
+
+/// `unitypy()` options evict nothing, not even for a pool refusal (which
+/// fails the read), so the paths the preload set stay (review round 1's
+/// fix: a refusal evicted under every option).
+#[test]
+fn unitypy_options_evict_nothing_for_a_pool_refusal() {
+    let a = named_bundle("CAB-A", 8192);
+    let b = named_bundle("CAB-B", 8192);
+    let (peak, held) = {
+        let pool = Arc::new(DepPool::new(u64::MAX));
+        let mut o = EnvOptions::unitypy();
+        o.context = ctx_with(pool.clone());
+        let env = Environment::new(o);
+        drop(env.load_dependency(src("a.bundle", &a)).unwrap());
+        (
+            pool.used.peak.load(Ordering::Acquire),
+            pool.used.used.load(Ordering::Acquire),
+        )
+    };
+    assert!(held > 0 && peak >= held);
+    // Room for one open and less than the second's on top of the first.
+    let pool = Arc::new(DepPool::new(peak + held / 2));
+    let mut o = EnvOptions::unitypy();
+    o.context = ctx_with(pool.clone());
+    let env = Environment::new(o);
+    drop(env.load_dependency(src("a.bundle", &a)).unwrap());
+    let refused = env.load_dependency(src("b.bundle", &b)).unwrap_err();
+    assert!(
+        matches!(&refused, Error::Budget(e) if e.what == Reservation::Dependency),
+        "{refused:?}"
+    );
+    assert_eq!(env.stats().dependencies_evicted, 0);
+    assert!(env.get_cab(&key("cab-a"), &unlimited()).unwrap().is_some());
 }

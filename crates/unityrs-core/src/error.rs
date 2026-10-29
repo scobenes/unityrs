@@ -236,6 +236,17 @@ pub enum Unsupported {
     /// A file inside a zip: P3.
     #[error("zip members")]
     Zip,
+    /// The parts of a split file (`name.split0`, `name.split1`, ...), which
+    /// UnityPy joins before it reads them (`environment.py:25`, `:111-116`,
+    /// `:126-127`): P3. Refused before anything is read
+    /// ([`crate::pystr::is_split_path`]).
+    #[error("split files (.splitN)")]
+    Split,
+    /// `obj.container` for an object of a dependency the Environment may
+    /// evict, whose paths an eviction would drop
+    /// ([`crate::env::Environment::container_path`]).
+    #[error("obj.container of an evictable dependency's object")]
+    EvictableContainerPath,
 }
 
 /// Which bound was exceeded.

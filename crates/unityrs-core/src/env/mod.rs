@@ -18,23 +18,37 @@
 //!   at once may both parse, and the first to publish wins).
 //!
 //! On a scene whose blocks all decode, whose entries all parse and none of
-//! which is a container, the two modes give identical results. Elsewhere they
-//! differ in exactly four ways (plan section 3.13): (a) a failing entry
-//! fails the load under `Eager` (with the partial registration above) but
-//! only the `get` that parses it under `Lazy` (an entry shadowed by a later
-//! one of its path is then never parsed; [`crate::files::BundleFile::load_all`]
-//! reproduces `Eager`'s error); (b) a nested container's entries are
-//! registered when it is first asked for, at the end of the registry order,
-//! not in place, and its own slot answers `None`, where `Eager` answers
-//! `None` too unless an earlier directory entry of the same path was a CAB,
-//! which `Eager` keeps under the key; (c) a block that fails to decode, or
-//! trips a limit, after the last byte any read needs fails the load under
-//! `Eager` (UnityPy decodes every block before any entry,
-//! `files/BundleFile.py:173-186`) and nothing under `Lazy`; (d) a directory
-//! whose spans nest or overlap makes `Lazy` decode and keep the shared
-//! blocks once per span, so it can stop at the input's meter
-//! ([`crate::LimitKind::InputMemory`]) or decode-work bound
-//! ([`crate::LimitKind::DecodeWork`]) where `Eager`'s one run fits.
+//! which is a container, the two modes give identical results, the
+//! container pass's `RuntimeError` included. Elsewhere they differ in
+//! exactly four ways (plan section 3.13, `PARITY.md` section 19.3, each
+//! pinned by a test in `tests/env.rs`): (a) a failing entry fails the load
+//! under `Eager` (with the partial registration above) but only the `get`
+//! that parses it under `Lazy` (an entry shadowed by a later one of its path
+//! is then never parsed; [`crate::files::BundleFile::load_all`] reproduces
+//! `Eager`'s error); (b) a nested container's own name is a key under
+//! `Lazy`, whose slot answers `None`, where `Eager` registers no such key
+//! (and keeps an earlier CAB of that path under it); its entries are
+//! registered when it is first asked for, so a lookup of one before then
+//! misses, and once registered they have the position and the value an
+//! eager load gives them, whichever nested container was asked for first
+//! ([`registry`]); (c) a block that fails to decode, or trips a limit,
+//! after the last byte any read needs fails the load under `Eager` (UnityPy
+//! decodes every block before any entry, `files/BundleFile.py:173-186`) and
+//! nothing under `Lazy`; (d) a directory whose spans nest or overlap makes
+//! `Lazy` decode and keep the shared blocks once per span, so it can stop
+//! at the input's meter ([`crate::LimitKind::InputMemory`]) or decode-work
+//! bound ([`crate::LimitKind::DecodeWork`]) where `Eager`'s one run fits.
+//!
+//! **Threads.** Concurrent calls act as if made one after another in some
+//! order: each change to the registry, the `files` list or a file's
+//! `path_dict` is published whole, so no call sees a change half made (a
+//! nested container's entries are all registered before its `get`
+//! returns). A call's result depends on what was done before it, by its
+//! thread or another, as a Python dict's does: a load, a resolver load, and
+//! under `Lazy` a nested container's first `get`. What a set of calls leaves
+//! does not depend on the order of the ones that are not loads: the
+//! registry orders entries by rank ([`registry`]), and each `path_dict`
+//! entry keeps the least stamp ([`crate::container`]).
 //!
 //! **Memory.** Each load makes its input's meter
 //! ([`crate::limits::Meter::for_input`]): [`crate::budget::Reservation::Input`]
@@ -91,9 +105,11 @@
 //! `container`, a `PARITY.md` divergence. [`Environment::load_dependency`],
 //! which UnityPy has no call for, never adds to `files`.
 //!
-//! **Locks.** The registry, the `files` list and the LRU are locked only to
-//! look up or publish; a file is loaded, an entry parsed and a resolver,
-//! fetcher or provider called with no lock held ([`crate::once`]). The one
+//! **Locks.** The registry, the `files` list, the LRU and a file's
+//! `path_dict` are locked only to look up or publish; a file is loaded, an
+//! entry parsed and a resolver, fetcher or provider called with no lock held
+//! ([`crate::once`]; `tests/env.rs` runs loads on another thread while a
+//! resolver or a fetch waits for them). The one
 //! caller code that may run under them is a [`crate::budget::MemoryBudget`]
 //! or [`crate::budget::PermitHome`] (a growth charged while a table is
 //! published, a replaced value's charge returned), whose contract forbids
@@ -120,23 +136,23 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use bytes::Bytes;
 
 pub use pptr::{DerefError, PPtr};
-pub use registry::{Cab, Keys, RawCab, Registry};
+pub use registry::{Cab, HeldCab, Keys, RawCab, Registry};
 pub use resource::{Candidate, SUFFIXES, resource_candidates};
 
 use crate::budget::{DecodeBuf, Reservation};
-use crate::container::{ContainerRow, View};
+use crate::container::{Container, ContainerPath, ContainerRow, View};
 use crate::error::{Error, LimitError, LimitKind, NotFound, Unsupported};
 use crate::files::{BundleFile, File, ParentKind, SerializedFile};
-use crate::limits::{Charge, HASH_TABLE_SHARES, Limits, Meter};
+use crate::limits::{Charge, HASH_TABLE_SHARES, Limits, Meter, MeteredVec};
 use crate::object::ObjectRef;
 use crate::options::FileContext;
 use crate::provider::{ScriptIdent, TreeRef, TreeRequest, TreeSource};
-use crate::pystr::{clean_external_path, lower_eq, simplify_name};
+use crate::pystr::{clean_external_path, lower_eq, py_lower, simplify_name};
 use crate::raw::RawStr;
 use crate::stream::py_read;
 use crate::typetree::Tree;
 use crate::walk::{ParseError, ReadDetail, ReadError, ReadErrorKind};
-use registry::{DepCache, Dependency, Slot, SlotKind, WeakFile, open_source};
+use registry::{DepCache, Dependency, Rank, Slot, SlotKind, WeakFile, load_keys_here, open_source};
 
 /// When a container's entries are parsed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -248,7 +264,12 @@ pub struct EnvOptions {
     pub context: Arc<FileContext>,
     /// When container entries are parsed.
     pub load: LoadMode,
-    /// The dependency LRU's bound, in bytes of file data.
+    /// The dependency LRU's bound, in bytes of file data. `u64::MAX` with
+    /// [`Self::keep_resolver_loads`] (as [`Self::unitypy`] sets them) evicts
+    /// nothing, not even for a pool refusal, which then fails the read; any
+    /// other setting may evict (a pool refusal evicts the others and retries
+    /// once), and [`Environment::container_path`] then refuses a
+    /// dependency's object.
     pub dep_cache_bytes: u64,
     /// The `find_file` fallback; `None` finds nothing.
     pub resolver: Option<Arc<dyn CabResolver>>,
@@ -307,6 +328,10 @@ pub struct EnvStats {
     pub dependencies_evicted: u64,
     /// Bytes the LRU holds now.
     pub dependency_bytes: u64,
+    /// Preload table pointers the container passes dereferenced: each index
+    /// of a file's table at most once per walk, however many rows' spans
+    /// cover it ([`Environment::container`]).
+    pub preload_dereferences: u64,
 }
 
 /// The iterator [`Environment::objects`] returns: a handle per nesting
@@ -377,7 +402,7 @@ impl fmt::Debug for Objects<'_> {
 /// The iterator [`Environment::container`] returns, CABs in registry order.
 pub struct ContainerItems<'a> {
     env: &'a Environment,
-    next_key: usize,
+    after: Option<Rank>,
     current: Option<(Arc<SerializedFile>, usize)>,
 }
 
@@ -399,8 +424,8 @@ impl Iterator for ContainerItems<'_> {
                 }
             }
             // UnityPy environment.py:221-224: every non-dependency CAB.
-            let (_, slot) = self.env.registry().slot_at(self.next_key)?;
-            self.next_key += 1;
+            let (rank, slot) = self.env.registry().slot_after(self.after.as_ref())?;
+            self.after = Some(rank);
             if slot.is_dependency() {
                 continue;
             }
@@ -434,6 +459,25 @@ pub struct FileEntry {
     pub is_dependency: bool,
 }
 
+/// The iterator [`Environment::files`] returns.
+#[derive(Debug)]
+pub struct FileEntries<'a> {
+    env: &'a Environment,
+    next: usize,
+}
+
+const _: () = crate::send_sync::<FileEntries<'static>>();
+
+impl Iterator for FileEntries<'_> {
+    type Item = FileEntry;
+
+    fn next(&mut self) -> Option<FileEntry> {
+        let entry = self.env.file_at(self.next)?;
+        self.next += 1;
+        Some(entry)
+    }
+}
+
 /// A container row with the object it points at, as `env.container` yields.
 #[derive(Clone, Debug)]
 pub struct ContainerItem {
@@ -450,18 +494,22 @@ struct Listed {
     _charge: Option<Charge>,
 }
 
-/// `env.files`: a dict, as a list in insertion order and an index by key.
+/// `env.files`: a dict, as a list in insertion order and an index by key,
+/// and each key lower-cased to the first position of a key that lowers to
+/// it (the scan of `files` a top-level file's pointer makes, rule 4, as one
+/// lookup).
 #[derive(Default)]
 struct Files {
     list: Vec<Listed>,
     index: HashMap<RawStr, usize>,
+    lowered: HashMap<RawStr, usize>,
 }
 
 /// What one listed resolver load costs the `files` tables: three elements
-/// of the list and [`HASH_TABLE_SHARES`] buckets of the index (as a registry
-/// slot's share, [`registry`]).
+/// of the list and [`HASH_TABLE_SHARES`] buckets of each index (as a
+/// registry slot's share, [`registry`]).
 const LISTED_SHARE: u64 = 3 * size_of::<Listed>() as u64
-    + HASH_TABLE_SHARES * (size_of::<RawStr>() + size_of::<usize>() + 1) as u64;
+    + 2 * HASH_TABLE_SHARES * (size_of::<RawStr>() + size_of::<usize>() + 1) as u64;
 
 struct EnvInner {
     options: EnvOptions,
@@ -470,6 +518,7 @@ struct EnvInner {
     cache: Arc<DepCache>,
     loaded: AtomicU64,
     eager_parsed: AtomicU64,
+    preload_derefs: AtomicU64,
 }
 
 /// UnityPy's `Environment`. A cheap handle: clones share one environment.
@@ -493,11 +542,112 @@ enum Target<'a> {
     Dependency(&'a Arc<Dependency>),
 }
 
-/// What `find_file` found: a registered CAB, or a file the resolver loaded.
+/// What a dereference reached: a registered CAB, or a file (a sibling, a
+/// `files` entry, one the resolver loaded).
+#[derive(Clone)]
 enum Found {
     Cab(Cab),
     File(File),
 }
+
+/// A container pass's index of each bundle's entry names, lower-cased, to
+/// the entry the first of them names (rule 4's scan of a bundle's `files`
+/// as one lookup): built once for each bundle the pass meets, charged to the
+/// bundle's meter, and dropped with the pass.
+#[derive(Default)]
+struct Siblings {
+    bundles: HashMap<usize, SiblingNames>,
+}
+
+struct SiblingNames {
+    /// Keeps the bundle, and so the address that keys it, for the pass.
+    _bundle: Arc<BundleFile>,
+    names: HashMap<RawStr, usize>,
+    _charge: Charge,
+}
+
+impl Siblings {
+    /// The directory index of `bundle`'s first `files` entry whose name
+    /// lowers to `clean`.
+    fn find(&mut self, bundle: &Arc<BundleFile>, clean: &RawStr) -> Result<Option<usize>, Error> {
+        let key = Arc::as_ptr(bundle).addr();
+        let entry = match self.bundles.entry(key) {
+            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                let meter = bundle.meter();
+                let slots = bundle.files();
+                let n = u64::try_from(slots.len()).unwrap_or(u64::MAX);
+                let charge = meter.charge(
+                    HASH_TABLE_SHARES
+                        .saturating_mul((size_of::<RawStr>() + size_of::<usize>() + 1) as u64)
+                        .saturating_mul(n.saturating_add(1)),
+                )?;
+                let mut names = HashMap::with_capacity(slots.len());
+                for s in slots {
+                    names
+                        .entry(py_lower(&s.name, meter)?)
+                        .or_insert(s.dir_index);
+                }
+                v.insert(SiblingNames {
+                    _bundle: bundle.clone(),
+                    names,
+                    _charge: charge,
+                })
+            }
+        };
+        Ok(entry.names.get(clean.as_bytes()).copied())
+    }
+}
+
+/// The skip list of a preload walk: `next[i]` leads to the first table
+/// index from `i` not yet dereferenced (a disjoint-set forest whose finds
+/// compress their paths), so each index is dereferenced once however many
+/// rows' spans cover it.
+struct Undone(MeteredVec<usize>);
+
+impl Undone {
+    fn new(len: usize, meter: &Arc<Meter>) -> Result<Self, Error> {
+        let mut next = MeteredVec::with_capacity(meter, len.saturating_add(1))?;
+        for i in 0..=len {
+            next.push(i)?;
+        }
+        Ok(Self(next))
+    }
+
+    /// The first index from `i` not yet done (the table's length past it).
+    fn find(&mut self, i: usize) -> usize {
+        let next = self.0.as_mut_slice();
+        let mut root = i;
+        while let Some(&n) = next.get(root) {
+            if n == root {
+                break;
+            }
+            root = n;
+        }
+        let mut at = i;
+        while let Some(n) = next.get_mut(at) {
+            let up = *n;
+            if up == root {
+                break;
+            }
+            *n = root;
+            at = up;
+        }
+        root
+    }
+
+    /// Marks `i` done.
+    fn done(&mut self, i: usize) {
+        if let Some(n) = self.0.as_mut_slice().get_mut(i) {
+            *n = i.saturating_add(1);
+        }
+    }
+}
+
+/// What one table entry of a preload walk costs the walk's map of the
+/// file's externals: [`HASH_TABLE_SHARES`] buckets.
+const TARGET_SHARE: u64 =
+    HASH_TABLE_SHARES * (size_of::<i32>() + size_of::<Option<Found>>() + 1) as u64;
 
 /// The name UnityPy keys a source by: the caller's name, or a path's string.
 fn source_name(source: &Source) -> RawStr {
@@ -573,7 +723,10 @@ impl Environment {
     /// An empty environment.
     #[must_use]
     pub fn new(options: EnvOptions) -> Self {
-        let cache = Arc::new(DepCache::new(options.dep_cache_bytes));
+        let cache = Arc::new(DepCache::new(
+            options.dep_cache_bytes,
+            !never_evicts(&options),
+        ));
         Self {
             inner: Arc::new(EnvInner {
                 options,
@@ -582,6 +735,7 @@ impl Environment {
                 cache,
                 loaded: AtomicU64::new(0),
                 eager_parsed: AtomicU64::new(0),
+                preload_derefs: AtomicU64::new(0),
             }),
         }
     }
@@ -662,6 +816,16 @@ impl Environment {
         meter: Option<&Arc<Meter>>,
     ) -> Result<(), Error> {
         let charge = meter.map(|m| m.charge(LISTED_SHARE)).transpose()?;
+        // A new key's lowered form, for rule 4's lookup: charged to the
+        // resolver load's meter, a caller's own name as the caller's.
+        let lowered = if self.files_read().index.contains_key(name.as_bytes()) {
+            None
+        } else {
+            Some(match meter {
+                Some(m) => py_lower(&name, m)?,
+                None => py_lower(&name, &Meter::unlimited())?,
+            })
+        };
         let replaced = {
             let mut files = self.files_write();
             let at = files.index.get(name.as_bytes()).copied();
@@ -679,6 +843,9 @@ impl Environment {
                     _charge: charge,
                 });
                 files.index.insert(name, at);
+                if let Some(lowered) = lowered {
+                    files.lowered.entry(lowered).or_insert(at);
+                }
                 None
             }
         };
@@ -689,29 +856,38 @@ impl Environment {
     /// Registers the CABs of a top-level `file` loaded under `name`: the
     /// file itself, or a bundle's entries (`Eager`: as UnityPy parses them;
     /// `Lazy`: every directory entry's name now, parsed on first use).
+    /// Every registration is one load's, ranked by its directory path
+    /// ([`registry`]).
     fn register_file(&self, name: &RawStr, file: &File, target: &Target<'_>) -> Result<(), Error> {
+        let reg = &self.inner.registry;
+        let load = reg.next_load();
         match file {
-            File::Serialized(sf) => {
-                self.register_cab(name, Cab::Serialized(sf.clone()), file.meter(), target, &[])
-            }
+            File::Serialized(sf) => self.register_cab(
+                name,
+                Cab::Serialized(sf.clone()),
+                file.meter(),
+                target,
+                load,
+                &[],
+            ),
             File::Raw(raw) => self.register_cab(
                 name,
                 Cab::Raw(RawCab::File(raw.clone())),
                 file.meter(),
                 target,
+                load,
                 &[],
             ),
             File::Bundle(b) => match self.inner.options.load {
-                LoadMode::Eager => self.register_eager(b, target, &mut Vec::new()),
+                LoadMode::Eager => self.register_eager(b, target, load, &mut Vec::new()),
                 LoadMode::Lazy => {
-                    let reg = &self.inner.registry;
                     for (i, d) in b.directory().iter().enumerate() {
                         match target {
                             Target::Caller => {
-                                reg.register_lazy(&d.path, b.clone(), i, b.meter())?;
+                                reg.register_entry(&d.path, b.clone(), i, load, &[i], b.meter())?;
                             }
                             Target::Dependency(dep) => {
-                                reg.register_dependency(&d.path, dep, &[i], b.meter())?;
+                                reg.register_dependency(&d.path, dep, load, &[i], b.meter())?;
                             }
                         }
                     }
@@ -728,12 +904,13 @@ impl Environment {
         cab: Cab,
         meter: &Arc<Meter>,
         target: &Target<'_>,
+        load: u64,
         path: &[usize],
     ) -> Result<(), Error> {
         let reg = &self.inner.registry;
         match target {
-            Target::Caller => reg.register(name, cab, meter),
-            Target::Dependency(dep) => reg.register_dependency(name, dep, path, meter),
+            Target::Caller => reg.register_ready(name, cab, load, path, meter),
+            Target::Dependency(dep) => reg.register_dependency(name, dep, load, path, meter),
         }
     }
 
@@ -750,6 +927,7 @@ impl Environment {
         &self,
         b: &Arc<BundleFile>,
         target: &Target<'_>,
+        load: u64,
         path: &mut Vec<usize>,
     ) -> Result<(), Error> {
         let all = b.load_all();
@@ -763,16 +941,21 @@ impl Environment {
             let step = b.entry(i).and_then(|f| {
                 self.inner.eager_parsed.fetch_add(1, Ordering::Relaxed);
                 match f {
-                    File::Bundle(nested) => self.register_eager(&nested, target, path),
-                    File::Serialized(sf) => {
-                        self.register_cab(&d.path, Cab::Serialized(sf), b.meter(), target, path)
-                    }
+                    File::Bundle(nested) => self.register_eager(&nested, target, load, path),
+                    File::Serialized(sf) => self.register_cab(
+                        &d.path,
+                        Cab::Serialized(sf),
+                        b.meter(),
+                        target,
+                        load,
+                        path,
+                    ),
                     File::Raw(_) => {
                         let cab = Cab::Raw(RawCab::InBundle {
                             bundle: b.clone(),
                             dir_index: i,
                         });
-                        self.register_cab(&d.path, cab, b.meter(), target, path)
+                        self.register_cab(&d.path, cab, b.meter(), target, load, path)
                     }
                     File::Web(_) => Ok(()),
                 }
@@ -829,7 +1012,12 @@ impl Environment {
         });
         self.register_file(&dep.name, &file, &Target::Dependency(&dep))?;
         self.inner.cache.loaded.fetch_add(1, Ordering::Relaxed);
-        self.inner.cache.touch(&dep, &file);
+        self.inner.cache.touch(&dep, &file)?;
+        // Another load registered every key this one did meanwhile: no slot
+        // reaches it, and the LRU lets go of it ([`registry`]).
+        if Arc::strong_count(&dep) == 2 {
+            self.inner.cache.forget(&dep);
+        }
         Ok(file)
     }
 
@@ -838,14 +1026,12 @@ impl Environment {
     /// (module docs), a repeated key replacing the value in place. A
     /// resolver load's entry is charged to that file's meter (its key and its
     /// share of the list, as a registry slot's are, [`registry`]), since the
-    /// input chooses how many there are.
+    /// input chooses how many there are. An iterator, as the other listings
+    /// are (module docs): it takes the lock briefly per entry and allocates
+    /// nothing but the entry it yields.
     #[must_use]
-    pub fn files(&self) -> Vec<FileEntry> {
-        self.files_read()
-            .list
-            .iter()
-            .map(|l| l.entry.clone())
-            .collect()
+    pub fn files(&self) -> FileEntries<'_> {
+        FileEntries { env: self, next: 0 }
     }
 
     /// `get_cab`: the registry under `simplify_name(name)`, an entry parsed
@@ -853,9 +1039,24 @@ impl Environment {
     /// charged to `meter` while the lookup runs (the meter of the file whose
     /// input chose `name`; a caller's own string may use
     /// [`Meter::unlimited`]), and a name already in its simplified form is
-    /// not copied ([`Registry::get`]).
+    /// not copied ([`Registry::get`]). A dependency's CAB may outlive its
+    /// bundle in the LRU: [`Self::get_cab_held`] returns the handle that
+    /// keeps it.
     pub fn get_cab(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<Cab>, Error> {
         self.inner.registry.get(name, meter)
+    }
+
+    /// [`Self::get_cab`], with the handle that keeps a dependency's CAB's
+    /// container alive while the caller holds it ([`HeldCab`]): an eviction
+    /// drops only the LRU's handle, so the CAB's pointers into its sibling
+    /// entries keep resolving (rather than failing with
+    /// [`DerefError::ContainerDropped`]).
+    pub fn get_cab_held(
+        &self,
+        name: &RawStr,
+        meter: &Arc<Meter>,
+    ) -> Result<Option<HeldCab>, Error> {
+        self.inner.registry.get_held(name, meter)
     }
 
     /// `find_file(name, is_dependency=True)`: [`Self::get_cab`], else the
@@ -935,9 +1136,23 @@ impl Environment {
         if pptr.file_id == 0 {
             return object_in(from, pptr.path_id);
         }
+        let target = self.external(from, pptr.file_id, None)?;
+        Self::object_of(&target, pptr.path_id)
+    }
+
+    /// The file `from`'s external `file_id` names (`classes/PPtr.py:57-85`):
+    /// a sibling in `from`'s container (the bundle's `files`, or for a
+    /// top-level file this Environment's), else `find_file`. `siblings` is a
+    /// container pass's index of bundle names; without it the bundle's
+    /// names are scanned.
+    fn external(
+        &self,
+        from: &Arc<SerializedFile>,
+        file_id: i32,
+        siblings: Option<&mut Siblings>,
+    ) -> Result<Found, DerefError> {
         // :57-60
         let externals = from.externals();
-        let file_id = pptr.file_id;
         let external = match pptr::external_index(file_id, externals.len()) {
             Ok(i) => externals.get(i),
             Err(pptr::ExternalIndexError::PastEnd) => {
@@ -961,35 +1176,47 @@ impl Environment {
                             name: parent.name.clone(),
                         });
                     };
-                    let mut hit = None;
-                    for slot in bundle.files() {
-                        if lower_eq(slot.name.as_bytes(), clean.as_bytes()) {
-                            hit = Some(bundle.entry(slot.dir_index)?);
-                            break;
-                        }
-                    }
-                    hit
+                    let hit = match siblings {
+                        Some(index) => index.find(&bundle, &clean)?,
+                        None => bundle
+                            .files()
+                            .iter()
+                            .find(|s| lower_eq(s.name.as_bytes(), clean.as_bytes()))
+                            .map(|s| s.dir_index),
+                    };
+                    hit.map(|i| bundle.entry(i)).transpose()?
                 }
                 ParentKind::Web => None,
             },
             None => self.files_match(&clean),
         };
-        let target = match sibling {
-            Some(f) => Found::File(f),
+        match sibling {
+            Some(f) => Ok(Found::File(f)),
             // :80-85
             None => match self.find(&clean, meter)? {
-                Some(t) => t,
-                None => {
-                    return Err(DerefError::NotFound {
-                        path: external.path.clone(),
-                    });
-                }
+                Some(t) => Ok(t),
+                None => Err(DerefError::NotFound {
+                    path: external.path.clone(),
+                }),
             },
-        };
-        // :90: `assetsfile_dst.objects[m_PathID]`.
-        match target {
+        }
+    }
+
+    /// The first `files` entry whose key lower-cases to `clean` (the
+    /// Environment as a top-level file's container, rule 4), by the lowered
+    /// index ([`Files`]).
+    fn files_match(&self, clean: &RawStr) -> Option<File> {
+        let files = self.files_read();
+        let at = *files.lowered.get(clean.as_bytes())?;
+        files.list.get(at).map(|l| l.entry.file.clone())
+    }
+
+    /// The object holding `path_id` in what a dereference reached
+    /// (`classes/PPtr.py:90`, `assetsfile_dst.objects[m_PathID]`).
+    fn object_of(target: &Found, path_id: i64) -> Result<ObjectRef, DerefError> {
+        match target.clone() {
             Found::Cab(Cab::Serialized(sf)) | Found::File(File::Serialized(sf)) => {
-                object_in(&sf, pptr.path_id)
+                object_in(&sf, path_id)
             }
             Found::Cab(Cab::Raw(RawCab::InBundle { bundle, dir_index })) => {
                 Err(DerefError::RawTarget {
@@ -1012,19 +1239,6 @@ impl Environment {
                 name: w.name().clone(),
             }),
         }
-    }
-
-    /// The first `files` entry whose key lower-cases to `clean` (the
-    /// Environment as a top-level file's container, rule 4).
-    fn files_match(&self, clean: &RawStr) -> Option<File> {
-        let mut i = 0;
-        while let Some(entry) = self.file_at(i) {
-            if lower_eq(entry.name.as_bytes(), clean.as_bytes()) {
-                return Some(entry.file);
-            }
-            i += 1;
-        }
-        None
     }
 
     /// The tree an object reads with, as UnityPy resolves it
@@ -1260,51 +1474,135 @@ impl Environment {
         self.build_container_index()?;
         Ok(ContainerItems {
             env: self,
-            next_key: 0,
+            after: None,
             current: None,
         })
     }
 
+    /// `obj.container` (`files/ObjectReader.py:199-204`): the container index
+    /// built first ([`Self::container`]'s pass, whose failure is this call's),
+    /// then the path the object's file's `path_dict` holds for its path id
+    /// ([`crate::container`]): a row of the file's own container whose asset
+    /// is the object, the last such row winning, else the first row whose
+    /// preload span reached it. The paths live in the file the object was
+    /// read from, as UnityPy's live in its `assets_file`, so a second handle
+    /// a caller opened on the same bytes holds only its own rows'.
+    ///
+    /// Where a dependency may be evicted (every option but
+    /// [`EnvOptions::unitypy`]'s, [`EnvOptions::dep_cache_bytes`]), an
+    /// object of a dependency's file is refused with
+    /// [`Unsupported::EvictableContainerPath`]: an eviction drops the paths
+    /// the preload set in that file and its reopen does not walk again, so
+    /// the answer would depend on when the LRU evicted (`PARITY.md` section
+    /// 19.3). The preload sets no path in such a file.
+    pub fn container_path(&self, obj: &ObjectRef) -> Result<Option<ContainerPath>, Error> {
+        let sf = obj.file();
+        if self.may_reopen(sf) {
+            return Err(Error::Unsupported(Unsupported::EvictableContainerPath));
+        }
+        self.build_container_index()?;
+        sf.container()?.path_of(obj.path_id(), sf.meter())
+    }
+
+    /// Whether `sf` is a dependency's file the LRU may evict and the
+    /// Environment open again.
+    fn may_reopen(&self, sf: &SerializedFile) -> bool {
+        !never_evicts(&self.inner.options) && sf.meter().reservation() == Reservation::Dependency
+    }
+
     /// `_build_container_index` (`environment.py:208-216`): once until the
-    /// next registration, every registered `SerializedFile`'s preload table,
-    /// dependencies' included. A failure leaves the index marked built, as
-    /// UnityPy sets its flag before the loop; a file's table is cleared only
-    /// when its pass finished. Under `Eager`, a pass whose dereference
-    /// registers a new CAB fails as UnityPy's loop over `cabs.values()` does
-    /// (`RuntimeError: dictionary changed size during iteration`).
+    /// next load's registration, every registered `SerializedFile`'s preload
+    /// table, dependencies' included, in registry order. UnityPy sets its
+    /// flag before the loop and each registration clears it, so a pass that
+    /// fails leaves the index built unless the pass itself registered
+    /// something; here a pass marks built the registry generation it started
+    /// at, whether it ends or fails, and any load's registration since starts
+    /// a new generation. A slot's table is marked walked only when its
+    /// walk ends (UnityPy clears `_preload_table` then). A pass whose own
+    /// dereferences make a new key fails as UnityPy's loop over
+    /// `cabs.values()` does (`RuntimeError: dictionary changed size during
+    /// iteration`), at the step after; a key a nested container's entries
+    /// make under [`LoadMode::Lazy`] is not one (an eager load made it at
+    /// load), nor is one another thread's load makes. Two passes may run at
+    /// once: each walks every table not yet marked, and each `path_dict`
+    /// entry keeps the least stamp ([`crate::container`]), so both leave
+    /// what one after the other would.
     fn build_container_index(&self) -> Result<(), Error> {
         let reg = &self.inner.registry;
-        if !reg.take_index_build() {
+        let generation = reg.generation();
+        if reg.built(generation) {
             return Ok(());
         }
-        let mut i = 0;
-        while let Some((_, slot)) = reg.slot_at(i) {
-            i += 1;
-            let Some(Cab::Serialized(sf)) = reg.resolve(&slot)? else {
+        let result = self.container_pass(generation);
+        reg.publish_built(generation);
+        result
+    }
+
+    fn container_pass(&self, generation: u64) -> Result<(), Error> {
+        let reg = &self.inner.registry;
+        let changed = || Error::Malformed {
+            what: "container",
+            detail: "dictionary changed size during iteration".into(),
+        };
+        let mut siblings = Siblings::default();
+        let mut after: Option<Rank> = None;
+        let mut grew = false;
+        while let Some((rank, slot)) = reg.slot_after(after.as_ref()) {
+            if grew {
+                return Err(changed());
+            }
+            // The dependency's file is held while its table is walked, so
+            // an eviction the walk makes cannot drop the CAB's bundle.
+            let Some(held) = reg.resolve_held(&slot)? else {
+                after = Some(rank);
                 continue;
             };
-            if slot.preloaded.load(Ordering::Acquire) {
+            let Cab::Serialized(sf) = &held.cab else {
+                after = Some(rank);
                 continue;
+            };
+            if !slot.walked() {
+                let container = sf.container()?;
+                let before = load_keys_here();
+                self.preload(sf, container, (generation, &rank), &mut siblings)?;
+                slot.set_walked();
+                grew = load_keys_here() != before;
             }
-            let before = reg.len();
-            self.preload(&sf)?;
-            slot.preloaded.store(true, Ordering::Release);
-            if self.inner.options.load == LoadMode::Eager && reg.len() != before {
-                return Err(Error::Malformed {
-                    what: "container",
-                    detail: "dictionary changed size during iteration".into(),
-                });
-            }
+            after = Some(rank);
+            drop(held);
+        }
+        if grew {
+            return Err(changed());
         }
         Ok(())
     }
 
     /// `ContainerHelper.parse_preload_table`
     /// (`helpers/ContainerHelper.py:31-49`): every row's preload pointers
-    /// dereferenced; `FileNotFoundError` and `KeyError` skipped, any other
-    /// failure raised.
-    fn preload(&self, sf: &Arc<SerializedFile>) -> Result<(), Error> {
-        let container = sf.container()?;
+    /// dereferenced, and each target's path id given the row's path in its
+    /// file's `path_dict` unless it has one (`setdefault`);
+    /// `FileNotFoundError` and `KeyError` skipped, any other failure raised.
+    ///
+    /// Linear in the rows, the table and the externals (plan decision 11),
+    /// where UnityPy's loop is quadratic (every row walks its whole span):
+    /// each table index is dereferenced once ([`Undone`]), at the first row
+    /// whose span reaches it, which is the row whose `setdefault` UnityPy
+    /// keeps; each external is resolved once ([`Self::external`]), each
+    /// bundle's names indexed once per pass ([`Siblings`]), and each row's
+    /// path copied once, charged to this file's meter. A repeated
+    /// dereference answers as the first did: the one load it can make is
+    /// `find_file`'s, which UnityPy registers under the path it found, whose
+    /// simplified basename is the name asked, so the next lookup finds it (a
+    /// container it loads, which registers other names, raises at its first
+    /// element). A resolver that names its source otherwise, which UnityPy's
+    /// walk cannot, is loaded once per walk.
+    fn preload(
+        &self,
+        sf: &Arc<SerializedFile>,
+        container: &Container,
+        at: (u64, &Rank),
+        siblings: &mut Siblings,
+    ) -> Result<(), Error> {
         if matches!(container.preload_table(), Ok(None)) {
             return Ok(());
         }
@@ -1312,7 +1610,11 @@ impl Environment {
             what: "container",
             detail: detail.into(),
         };
-        for row in container.rows() {
+        let meter = sf.meter();
+        let mut undone: Option<Undone> = None;
+        let mut targets: HashMap<i32, Option<Found>> = HashMap::new();
+        let mut targets_charge = Charge::zero(meter);
+        for (r, row) in container.rows().iter().enumerate() {
             // `start = info.preloadIndex`, `size = info.preloadSize`: a
             // member the AssetInfo lacks raises; one that is no `int` raises
             // here too (PARITY.md section 19.3).
@@ -1330,26 +1632,87 @@ impl Environment {
             let (Ok(s), Ok(e)) = (usize::try_from(start), usize::try_from(start + size)) else {
                 continue;
             };
-            for p in table.get(s..e).unwrap_or_default() {
+            let undone = match &mut undone {
+                Some(u) => u,
+                None => undone.insert(Undone::new(table.len(), meter)?),
+            };
+            let mut path: Option<Option<RawStr>> = None;
+            let mut j = undone.find(s);
+            while j < e {
+                undone.done(j);
                 // An element that is no pointer raises (PARITY.md 19.3).
-                let Some(p) = p else {
+                let Some(p) = table.get(j).copied().flatten() else {
                     return Err(malformed("a preload table element is not a pointer"));
                 };
                 if !p.is_set() {
+                    j = undone.find(j.saturating_add(1));
                     continue;
                 }
-                match self.deref(sf, *p) {
-                    Ok(_)
-                    | Err(
-                        DerefError::FileIdPastEnd { .. }
-                        | DerefError::NotFound { .. }
-                        | DerefError::MissingObject { .. },
-                    ) => {}
-                    Err(e) => return Err(deref_error(e)),
+                self.inner.preload_derefs.fetch_add(1, Ordering::Relaxed);
+                if let Some(target) =
+                    self.preload_target(sf, p, &mut targets, &mut targets_charge, siblings)?
+                    && !self.may_reopen(target.file())
+                {
+                    let tf = target.file();
+                    let path = match &path {
+                        Some(p) => p.clone(),
+                        None => path
+                            .insert(
+                                row.path
+                                    .as_ref()
+                                    .map(|p| RawStr::charged(p.as_bytes(), meter))
+                                    .transpose()?,
+                            )
+                            .clone(),
+                    };
+                    let stamp = (
+                        at.0,
+                        at.1.clone(),
+                        u32::try_from(r).unwrap_or(u32::MAX),
+                        u32::try_from(j).unwrap_or(u32::MAX),
+                    );
+                    tf.container()?
+                        .set_default(p.path_id, path.as_ref(), &stamp, tf.meter())?;
                 }
+                j = undone.find(j.saturating_add(1));
             }
         }
         Ok(())
+    }
+
+    /// `pptr.deref()` for a preload element: the object, or `None` where the
+    /// preload skips (`FileNotFoundError`, `KeyError`). Each external is
+    /// resolved once per walk, in `targets` (charged to `charge`).
+    fn preload_target(
+        &self,
+        sf: &Arc<SerializedFile>,
+        p: PPtr,
+        targets: &mut HashMap<i32, Option<Found>>,
+        charge: &mut Charge,
+        siblings: &mut Siblings,
+    ) -> Result<Option<ObjectRef>, Error> {
+        let found = if p.file_id == 0 {
+            Some(Found::File(File::Serialized(sf.clone())))
+        } else if let Some(t) = targets.get(&p.file_id) {
+            t.clone()
+        } else {
+            let t = match self.external(sf, p.file_id, Some(siblings)) {
+                Ok(t) => Some(t),
+                Err(DerefError::FileIdPastEnd { .. } | DerefError::NotFound { .. }) => None,
+                Err(e) => return Err(deref_error(e)),
+            };
+            charge.grow(TARGET_SHARE)?;
+            targets.insert(p.file_id, t.clone());
+            t
+        };
+        let Some(found) = found else {
+            return Ok(None);
+        };
+        match Self::object_of(&found, p.path_id) {
+            Ok(o) => Ok(Some(o)),
+            Err(DerefError::MissingObject { .. }) => Ok(None),
+            Err(e) => Err(deref_error(e)),
+        }
     }
 
     /// Counters.
@@ -1366,8 +1729,14 @@ impl Environment {
             dependencies_loaded: cache.loaded.load(Ordering::Relaxed),
             dependencies_evicted: cache.evicted.load(Ordering::Relaxed),
             dependency_bytes: cache.bytes(),
+            preload_dereferences: self.inner.preload_derefs.load(Ordering::Relaxed),
         }
     }
+}
+
+/// Whether the options evict nothing ([`EnvOptions::dep_cache_bytes`]).
+fn never_evicts(options: &EnvOptions) -> bool {
+    options.keep_resolver_loads && options.dep_cache_bytes == u64::MAX
 }
 
 /// When `slot` is an entry of `from`'s own input and the core can tell
@@ -1387,8 +1756,8 @@ fn own_entry(from: &SerializedFile, slot: &Slot) -> Option<(Arc<BundleFile>, usi
         {
             Some((fb, *dir_index))
         }
-        SlotKind::Dependency { dep, path } => {
-            let [i] = **path else {
+        SlotKind::Dependency { dep } => {
+            let &[i] = slot.rank.path() else {
                 return None;
             };
             let same_handle = matches!(dep.alive(), Some(File::Bundle(b)) if Arc::ptr_eq(&b, &fb));

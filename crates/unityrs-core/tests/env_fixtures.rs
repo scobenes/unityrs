@@ -1,9 +1,10 @@
 //! Package D's oracle fixtures, replayed (plan section 7.5 and G5): every
 //! testkit Environment scene, run through `tools/fixtures/env.py`'s steps,
-//! compared step by step with what UnityPy 1.25.2 recorded under `Eager`,
-//! and `Lazy` compared with `Eager` (identical on every scene but the ones
-//! the plan's differences (a)-(c) name, which `tests/env.rs` pins); and
-//! `str.lower` and `ntpath` against Python.
+//! compared step by step with what UnityPy 1.25.2 recorded under `Eager`
+//! (but the one step `PARITY.md` section 19.2 decides otherwise, pinned
+//! here), and `Lazy` compared with `Eager` (identical on every scene but the
+//! ones the plan's differences (a)-(c) name, which `tests/env.rs` pins); and
+//! `str.lower`, `ntpath` and `reSplit` against Python.
 
 // Test code: a failed lookup is a failed test.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -12,11 +13,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{Value as J, json};
+use unityrs_core::container::ContainerPath;
 use unityrs_core::env::{CabResolver, DerefError, EnvOptions, Environment, LoadMode, PPtr, Source};
 use unityrs_core::error::{Error, NotFound};
 use unityrs_core::files::File;
 use unityrs_core::limits::Meter;
-use unityrs_core::pystr::{ntpath_basename, ntpath_splitext, py_lower, simplify_name};
+use unityrs_core::pystr::{
+    is_split_path, ntpath_basename, ntpath_splitext, py_lower, simplify_name,
+};
 use unityrs_core::value::Value;
 use unityrs_core::{Bytes, RawStr};
 use unityrs_testkit::env::{Scene, scenes};
@@ -89,6 +93,11 @@ fn error_kind(e: &Error) -> String {
         } => "AttributeError".into(),
         // The preload's raise.
         Error::Deref(d) => deref_kind(d).into(),
+        // The container pass's loop over `env.cabs` when it grew.
+        Error::Malformed {
+            what: "container",
+            detail,
+        } if detail.contains("changed size") => "RuntimeError".into(),
         other => format!("core: {other}"),
     }
 }
@@ -134,7 +143,6 @@ impl Run {
         let files: Vec<J> = self
             .env
             .files()
-            .iter()
             .map(|f| json!([text(f.name.as_bytes()), f.is_dependency, kind(&f.file)]))
             .collect();
         let cabs: Vec<J> = self
@@ -285,6 +293,21 @@ impl Run {
         json!(rows)
     }
 
+    /// `obj.container` for every object.
+    fn paths(&self) -> J {
+        let out: Vec<J> = self
+            .objects()
+            .iter()
+            .map(|o| match self.env.container_path(o) {
+                Ok(None) => J::Null,
+                Ok(Some(ContainerPath::Str(s))) => json!(text(s.as_bytes())),
+                Ok(Some(ContainerPath::NotAString)) => json!("<not a str>"),
+                Err(e) => json!(error_kind(&e)),
+            })
+            .collect();
+        json!(out)
+    }
+
     fn step(&self, op: &J) -> J {
         let result = match op[0].as_str().unwrap() {
             "load" => self.load(usize::try_from(op[1].as_u64().unwrap()).unwrap()),
@@ -292,6 +315,7 @@ impl Run {
             "derefs" => self.derefs(),
             "resources" => self.resources(),
             "container" => self.container(),
+            "paths" => self.paths(),
             other => panic!("unknown step {other}"),
         };
         let mut s = self.state();
@@ -369,8 +393,22 @@ fn scenes_are_the_testkit_scenes() {
     }
 }
 
+/// The steps whose result `PARITY.md` decides otherwise than UnityPy, by
+/// scene and op: the core's `path_dict` keys a row by its asset's file and
+/// path id, UnityPy's by path id alone (section 19.2), which
+/// [`the_path_dict_keys_a_row_by_its_assets_file`] pins.
+const EAGER_DIFFERS: &[(&str, &str)] = &[("container_other_file", "paths")];
+
+/// A step without its result, for the pinned steps above.
+fn state_only(step: &J) -> J {
+    let mut s = step.clone();
+    s["result"] = J::Null;
+    s
+}
+
 /// G5's scene half: under `Eager` (UnityPy's mode, `EnvOptions::unitypy`)
-/// every step of every scene ends in UnityPy's state with UnityPy's result.
+/// every step of every scene ends in UnityPy's state with UnityPy's result
+/// (a pinned step's state only).
 #[test]
 fn eager_runs_every_scene_as_unitypy_does() {
     let mut differences = Vec::new();
@@ -378,6 +416,14 @@ fn eager_runs_every_scene_as_unitypy_does() {
         let run = Run::new(scene_by_name(&name), LoadMode::Eager);
         let ours = run.steps(&ops(&steps));
         for (want, got) in steps.iter().zip(&ours) {
+            let pinned = EAGER_DIFFERS
+                .iter()
+                .any(|(n, op)| *n == name && want["op"][0] == *op);
+            let (want, got) = if pinned {
+                (&state_only(want), &state_only(got))
+            } else {
+                (want, got)
+            };
             if want != got {
                 differences.push(format!(
                     "{name}: {}\n  unitypy {want}\n  core    {got}",
@@ -390,14 +436,37 @@ fn eager_runs_every_scene_as_unitypy_does() {
     assert!(differences.is_empty(), "{}", differences.join("\n"));
 }
 
+/// `PARITY.md` section 19.2's `path_dict` row: UnityPy gives the object of
+/// the row's path id in the container's own file the path of a row whose
+/// asset is in another file; the core gives it to neither file's object.
+#[test]
+fn the_path_dict_keys_a_row_by_its_assets_file() {
+    let (_, steps) = recorded()
+        .into_iter()
+        .find(|(n, _)| n == "container_other_file")
+        .unwrap();
+    let ops = ops(&steps);
+    let at = ops.iter().position(|op| op[0] == "paths").unwrap();
+    // `env.objects`: CAB-OF's object 1 and its AssetBundle, CAB-OG's object 1.
+    assert_eq!(
+        steps[at]["result"],
+        json!(["assets/other.prefab", null, null])
+    );
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let ours = Run::new(scene_by_name("container_other_file"), mode).steps(&ops);
+        assert_eq!(ours[at]["result"], json!([null, null, null]), "{mode:?}");
+    }
+}
+
 /// The scenes on which `Lazy` differs from `Eager`, each by one of plan
 /// 3.13's differences (`tests/env.rs` pins what each difference is).
 const LAZY_DIFFERS: &[&str] = &[
     // (a): the failing entry fails only the reads that parse it.
     "bad_cab",
     "asset_bundle_modes",
-    // (b): the nested entry is a CAB key until its first `get`.
+    // (b): a nested container's own name is a CAB key.
     "nested_after_cab",
+    "nested_duplicates",
     // (c): the block after the last entry is never decoded.
     "last_block_fails",
 ];
@@ -486,6 +555,16 @@ fn py_lower_is_python_lower_on_every_bmp_code_point() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// `is_split_path` is `reSplit.match(path) is not None`.
+#[test]
+fn split_paths_are_unitypys() {
+    let doc = load("pystr.json").expect("tests/fixtures/d/pystr.json");
+    for r in doc["split"].as_array().unwrap() {
+        let p = unhex(r[0].as_str().unwrap());
+        assert_eq!(is_split_path(&p), r[1].as_bool().unwrap(), "{:?}", text(&p));
+    }
 }
 
 /// `ntpath.basename`, `ntpath.splitext` and `simplify_name` as Python's.
