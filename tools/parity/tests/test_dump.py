@@ -35,9 +35,10 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
 try:
+    import dump_records
     import unitypy_dump
 except ImportError:  # pragma: no cover - outside the oracle image
-    unitypy_dump = None
+    dump_records = unitypy_dump = None
 
 import canonical as C  # noqa: E402
 import compare  # noqa: E402
@@ -882,7 +883,7 @@ class DumpTests(unittest.TestCase):
 
         cases = {
             "a bug in the record code": (
-                mock.patch.object(unitypy_dump, "serialized_l1", buggy_l1),
+                mock.patch.object(dump_records, "serialized_l1", buggy_l1),
                 "the dumper raised",
             ),
             "an exit without a result": (
@@ -1132,14 +1133,14 @@ class DumpTests(unittest.TestCase):
                 self.assertIn(said.encode(), proc.stderr)
                 self.assertFalse(out.exists())
         # While an input is dumped, in its own process: the run stops with no dump.
-        dump_one = unitypy_dump._dump_input
+        dump_one = dump_records._dump_input
 
         def importing(job):
             importlib.import_module("unityrs_planted")
             return dump_one(job)
 
         with (
-            mock.patch.object(unitypy_dump, "_dump_input", importing),
+            mock.patch.object(dump_records, "_dump_input", importing),
             mock.patch.object(sys, "path", [str(planted), *sys.path]),
             contextlib.redirect_stderr(io.StringIO()) as err,
         ):
