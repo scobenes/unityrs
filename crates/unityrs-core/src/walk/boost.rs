@@ -110,7 +110,7 @@ impl Reader<'_, '_> {
     }
 
     /// A read past the end (`EOFError`, or a `ValueError` "... out of
-    /// bounds"): kind `out_of_bounds` either way (`unitypy_dump.error_kind`).
+    /// bounds"): kind `out_of_bounds` either way (`dump_records.error_kind`).
     fn eof(&self, need: usize) -> ReadError {
         self.fail(
             ReadErrorKind::OutOfBounds,

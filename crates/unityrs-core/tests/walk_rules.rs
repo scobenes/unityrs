@@ -764,7 +764,7 @@ fn a_byte_vector_is_one_u8_run_on_both_readers() {
 /// E request 3: a read that ends before its start (a negative `TypelessData`
 /// length on the pure-Python path moves the position back) is `other`, not
 /// `check_read`: the oracle reads the count from the message with `(\d+)`,
-/// which takes no sign (`tools/parity/unitypy_dump.py` `error_kind`).
+/// which takes no sign (`tools/parity/dump_records.py` `error_kind`).
 #[test]
 fn a_read_ending_before_its_start_is_other() {
     let t = tree(&[

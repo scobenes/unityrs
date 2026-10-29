@@ -1,7 +1,7 @@
 //! Replays `tools/fixtures/dump.py`'s oracle fixtures without Python (plan
 //! section 6, G4): `canonical.py`'s encodings of synthetic values and names,
 //! Python's decimal form of packed integers, `unitypy_dump.py`'s input
-//! selection and `fnmatch.fnmatchcase`, and its `error_kind` on
+//! selection and `fnmatch.fnmatchcase`, and `dump_records.py`'s `error_kind` on
 //! `check_read` messages.
 
 mod common;

@@ -310,7 +310,7 @@ impl ParseError {
     /// its start (a negative `bytes_read`, the pure-Python reader's after a
     /// negative `TypelessData` length) is `other`: the oracle reads the count
     /// from the message with `(\d+)`, which takes no sign
-    /// (`tools/parity/unitypy_dump.py` `error_kind`; plan 3.10).
+    /// (`tools/parity/dump_records.py` `error_kind`; plan 3.10).
     #[must_use]
     pub fn l2_kind(&self) -> L2Kind {
         match self {

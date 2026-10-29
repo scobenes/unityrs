@@ -422,7 +422,7 @@ pub fn read_container(file: &Arc<SerializedFile>) -> Result<Container, Error> {
         // with an `int`, for a row whose asset names this file (module docs).
         let own = file_id.and_then(|f| py_int(f.value)) == Some(0);
         keys.push(if own { py_int(path_id.value) } else { None })?;
-        // The dump's members (tools/parity/unitypy_dump.py `container_row`).
+        // The dump's members (tools/parity/dump_records.py `container_row`).
         let path_id = match view.pptr_object(asset) {
             Some(_) => Some(path_id),
             None => view.attr(asset, b"m_PathID").ok(),

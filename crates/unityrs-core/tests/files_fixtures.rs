@@ -311,7 +311,7 @@ fn emit(f: &File, path: &[J], l0: &J, out: &mut Vec<J>) {
     }
 }
 
-/// One input's L0 and L1 records, as `unitypy_dump.py`'s `_dump_input`
+/// One input's L0 and L1 records, as `dump_records.py`'s `_dump_input`
 /// writes them (notes left out).
 fn dump(input: &str, data: &[u8]) -> Vec<J> {
     let ctx = Arc::new(FileContext::unitypy());

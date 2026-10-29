@@ -5,7 +5,7 @@ crates/unityrs-core/tests/fixtures/c/, which `cargo test -p unityrs-core` replay
 without Python (crates/unityrs-core/tests/files_fixtures.rs). Every input is built
 in code: the version strings and the detection inputs here, and the file matrix by
 unityrs-testkit (`bundle::matrix`), whose bytes this script asks cargo for and
-stores beside UnityPy's L0 and L1 records (tools/parity/unitypy_dump.py's own
+stores beside UnityPy's L0 and L1 records (tools/parity/dump_records.py's own
 functions, so the records are the oracle dump's). No file is read.
 
     scripts/dev python tools/fixtures/files.py           # write the fixtures
@@ -278,7 +278,7 @@ def matrix_inputs() -> list[tuple[str, bytes]]:
 
 
 def file_records(name: str, data: bytes) -> list[dict]:
-    """tools/parity/unitypy_dump.py's records for one input, at L0 and L1."""
+    """tools/parity/dump_records.py's records for one input, at L0 and L1."""
     import hashlib
 
     from collections import Counter

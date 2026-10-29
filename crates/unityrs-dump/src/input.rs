@@ -1,5 +1,5 @@
 //! One input's records, from `unityrs-core`'s public API: a port of
-//! `tools/parity/unitypy_dump.py`'s `_dump_input`, `emit_file`,
+//! `tools/parity/dump_records.py`'s `_dump_input`, `emit_file`,
 //! `object_record` and the L1 builders.
 //!
 //! **Order** (`docs/CANONICAL_DUMP.md` section 5): the input's `file`
@@ -48,7 +48,7 @@ use crate::{DumpOptions, InputDump, Levels};
 /// stores none (`files/SerializedFile.py:237`).
 pub const DEFAULT_UNITY_VERSION: &str = "2.5.0f5";
 
-/// One input's records (`unitypy_dump.py` `_dump_input`). `rel` is the
+/// One input's records (`dump_records.py` `_dump_input`). `rel` is the
 /// input's dump name, as bytes.
 #[must_use]
 pub fn dump_input(rel: &[u8], data: Bytes, opts: &DumpOptions) -> InputDump {
@@ -69,7 +69,7 @@ pub fn dump_input(rel: &[u8], data: Bytes, opts: &DumpOptions) -> InputDump {
         Ok(ty) => ty,
         Err(e) => {
             // A file whose detection raises would raise again inside
-            // `Environment.load_file` (unitypy_dump.py `_dump_input`).
+            // `Environment.load_file` (dump_records.py `_dump_input`).
             let rec = FileRecord {
                 file: vec![name],
                 l0,
@@ -185,7 +185,7 @@ pub fn prepass_reverse(file: &File) {
     }
 }
 
-/// What UnityPy built (`unitypy_dump.py` `parsed_as`).
+/// What UnityPy built (`dump_records.py` `parsed_as`).
 #[must_use]
 pub fn parsed_as_of(file: &File) -> ParsedAs {
     match file {
@@ -388,7 +388,7 @@ fn serialized_l1(sf: &Arc<SerializedFile>) -> Result<SerializedL1, Error> {
     })
 }
 
-/// `error_kind` on a `check_read` failure (`unitypy_dump.py`): its regex,
+/// `error_kind` on a `check_read` failure (`dump_records.py`): its regex,
 /// `Expected to read (\d+) bytes, but only read (\d+) bytes`, has no sign,
 /// so a negative `bytes_read` (the pure-Python reader after a negative
 /// `TypelessData` length) falls through every test to `other`, with no

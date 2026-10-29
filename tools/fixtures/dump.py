@@ -11,7 +11,7 @@ replays without Python (crates/unityrs-dump/tests/oracle_fixtures.rs):
 - select.json: unitypy_dump.py's input selection (collect_inputs) over a synthetic
   tree and corpus index built here in a temporary folder, and fnmatch.fnmatchcase
   (what --name means) over names and patterns, invalid UTF-8 included;
-- l2_kinds.json: unitypy_dump.py's error_kind on read_typetree's check_read message,
+- l2_kinds.json: dump_records.py's error_kind on read_typetree's check_read message,
   for a real pure-Python read whose bytes_read is negative, and on positive ones.
 
 Every input is built here in code; no file outside the temporary folder is read.

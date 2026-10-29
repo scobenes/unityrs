@@ -12,8 +12,8 @@
 //! the parity gate's candidate side (plan section 6).
 //!
 //! The pieces, each a port of the oracle's (`tools/parity/unitypy_dump.py`,
-//! `tools/parity/canonical.py`) and checked against it by the fixtures
-//! `tools/fixtures/dump.py` records:
+//! `tools/parity/dump_records.py`, `tools/parity/canonical.py`) and checked
+//! against it by the fixtures `tools/fixtures/dump.py` records:
 //! - [`json`]: the canonical JSON layer (section 2), and [`mod@encode`]:
 //!   values (section 3) from a [`unityrs_core::Parsed`] alone;
 //! - [`record`]: the records (section 4) and their lines;

@@ -1,7 +1,7 @@
 //! The records of `docs/CANONICAL_DUMP.md` section 4, as plain data, and
 //! their canonical lines.
 //!
-//! Each record type mirrors one of `tools/parity/unitypy_dump.py`'s record
+//! Each record type mirrors one of `tools/parity/dump_records.py`'s record
 //! builders, member for member and in its order (`canonical.py`
 //! `RECORD_MEMBERS`, `FILE_L1_MEMBERS`, `TYPE_MEMBERS`, `OBJECT_SECTIONS`):
 //! the `dump` header, a `file` record (its `l0`, an `l1` by kind, an
@@ -31,11 +31,11 @@ pub const FORMAT: &str = "unityrs-canonical-dump";
 /// The format version this crate writes.
 pub const FORMAT_VERSION: u32 = 1;
 
-/// The longest note, in characters (`unitypy_dump.py` `NOTE_MAX`).
+/// The longest note, in characters (`dump_records.py` `NOTE_MAX`).
 pub const NOTE_MAX: usize = 300;
 
 /// A note: free text, never compared, cut to [`NOTE_MAX`] characters as
-/// `unitypy_dump.py`'s `note` cuts it.
+/// `dump_records.py`'s `note` cuts it.
 #[must_use]
 pub fn note(text: &str) -> String {
     if text.chars().count() <= NOTE_MAX {
@@ -418,7 +418,7 @@ const _: () = crate::send_sync::<L3>();
 const _: () = crate::send_sync::<ObjectRecord>();
 
 /// The first offset where `a` and `b` differ, or the shorter length
-/// (`unitypy_dump.py` `first_difference`).
+/// (`dump_records.py` `first_difference`).
 #[must_use]
 pub fn first_difference(a: &[u8], b: &[u8]) -> u64 {
     let n = a
