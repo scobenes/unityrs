@@ -77,7 +77,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - a gzip-compressed WebFile, which UnityPy detects and then fails to parse;
   - a streamed Texture2DArray, whose slices all raise;
   - a Texture2DArray in one of the seven 8-bit integer formats that UnityPy maps to a 16-bit texture format that raises;
-  - `GameObject.m_Components` on an empty list or the old pair form;
+  - `GameObject.m_Components` on an empty list or the old pair form, and the component accessors (`m_Transform` and the others), which raise because they read it;
   - `Texture2D.image` of an empty 0×0 texture;
   - an empty AudioClip, whose empty resource path UnityPy fetches;
   - a ZIP opened from a path, which UnityPy loads only from bytes or a buffered stream;
@@ -109,12 +109,13 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - `ContainerHelper.path_dict` ignores an entry's file id;
   - `ObjectReader.peek_name` caches a peek node by the root's name, type and version alone, so a later tree of another layout reads the wrong field;
   - the Sprite cache key ignores the FileID;
+  - a sprite triangle whose destination corners are collinear makes `copy_triangle`'s affine matrix singular, and `LinAlgError` escapes `Sprite.image`: the triangle copies nothing;
   - MeshRendererExporter fails on Unity 6;
-  - ShaderConverter fails on 6000.3;
+  - ShaderConverter fails from 2021.3.10 and on 6000.3: it reads a pass's programs only from `m_SubPrograms`, while from 2021.3.10, 2022.1.13 and 2022.2 they can be in `m_PlayerSubPrograms`, as all of the corpus game's are (correct output reads those, with `m_ParameterBlobIndices`), and it cannot read 6000.3's sub-program layout;
   - 3.x submeshes are all read as strips;
-  - a Mesh before 3.5 and a sprite's render data before 5 fail `MeshHandler.process`'s assert;
-  - Shader export before 5.5 raises `TypeError` on `bytes(m_Script)`;
-  - the GameObject component accessors raise on an empty component list and on 5.4's pairs;
+  - a Mesh before 3.5 and a sprite's render data before 5.6 fail `MeshHandler.process`'s assert;
+  - Shader export before 5.5 raises `TypeError` on `bytes(m_Script)`, and from 5.5 on a Shader with an empty `compressedBlob` on `bytes(None)`;
+  - `ShaderSubProgram` decodes GL, GLES, console and Metal code as strict UTF-8, so code that is not UTF-8 raises: unityrs writes the comment UnityPy writes for a program type it cannot disassemble;
   - `export_mesh_renderer` gives each material to a submesh `firstSubMesh` too early, and writes no texture;
   - the extractor's crashes: GameObjects (each reachable object written once, its name ending in its path id where UnityPy's would end in `_None`), MonoBehaviours, sprites without a container, meshes without vertices, images Pillow cannot save under the container's extension, or saves as an ICO holding no image (a side below 16), and the no-container mode's missing `dst`.
 - **Unsupported until a sample and a reference exist.** unityrs refuses these with a named `Unsupported` error:
@@ -126,9 +127,11 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - ETC_RGB4_3DS and ETC_RGBA8_3DS. UnityPy decodes them as plain ETC1, but no 3DS sample or reference decoder shows what they should decode to, so the refusal is a documented divergence, not parity;
   - a Texture2DArray read from a Switch or XBOX360 file. UnityPy decodes its slices with no platform handling, and the class carries no platform blob to deswizzle with;
   - `set_image` with mips on a Switch-swizzled texture. UnityPy swizzles the top level and writes the mips linearly; no sample shows how a mip chain is laid out;
+  - a Switch-swizzled texture in a format the Switch texel-block table lacks (the matrix's `sw —`), read, or written by `set_image` (the seven ETC targets), where UnityPy raises `KeyError`: no Switch sample shows the texel block such a format is swizzled with;
   - `set_image` on XBOX360 to a format UnityPy's reader byte-swaps. UnityPy writes without swapping, so the texture reads back wrong.
+  - a 5.3-5.4 Shader whose sub-program blob does not parse big-endian, the byte order UnityPy reads it in. UnityPy raises too (`struct.error`, or `TypeError` once the blob parses), and no sample shows the byte order Unity writes.
 - **Tolerance:** the Sprite affine-triangle path, and pure-Rust audio against FMOD. Each has a stated metric and threshold.
-- **HEAD tier:** SF v23-26 and bundle format 9, equal to HEAD's dicts on Unity 6000.4/6000.5 fixtures.
+- **HEAD tier:** SF v23-26 and bundle format 9, equal to HEAD's dicts on Unity 6000.4/6000.5 fixtures; and the `lz4hc` packer, which 1.25.2 refuses and HEAD writes (Writing, below).
 
 **Writing**
 
@@ -139,6 +142,7 @@ Writing has tiers of its own. Where UnityPy writes, unityrs follows the rule in 
 | Object re-save | byte-equal |
 | File / bundle save | semantic equality plus idempotence. An optional UnityPy-layout mode is byte-equal to UnityPy's `save(packer='none')` |
 | Compressed packers | equal after decompression; byte-equal LZ4HC only with liblz4 HC level 9 (pinned) |
+| `lz4hc` packer (HEAD tier) | HEAD's `save_fs(195, 3)`: header flags `0xC3`, every block flagged 3, under the compressed-packer rule above; 1.25.2 writes the same for the tuple packer `(195, 3)`, which the rule is pinned against |
 | `File.get_writeable_cab` | UnityPy's naming rule |
 | `set_image` | equal after re-decode: Pillow 9.5 BICUBIC mips, NEAREST padding, pinned etcpak/astcenc |
 

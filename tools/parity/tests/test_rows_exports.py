@@ -635,6 +635,22 @@ class ExportRows(unittest.TestCase):
         self.assertEqual((h.m_Vertices, h.m_UV0), tuple([r[i] for r in rows] for i in range(2)))
         self.assertEqual(h.get_triangles(), [[(0, 1, 2), (1, 2, 3)]])
         self.assertEqual((h.m_BoneWeights[0], h.m_BoneIndices[3]), ((0.5, 0.5, 0.0, 0.0), (3, 1, 0, 0)))
+        # m_Skin is a Mesh field up to 2018.1 and gone from 2018.2; a 2018.1 mesh's skin is read the same way.
+        for version, has_skin in (
+            ("2017.4.40f1", True),
+            ("2018.1.0f2", True),
+            ("2018.1.9f2", True),
+            ("2018.2.0f2", False),
+        ):
+            self.assertEqual("m_Skin" in element(43, version=version), has_skin, version)
+        late = "2018.1.9f2"
+        vd = {**element(43, "m_VertexData", version=late), **vertex_data(4, {0: (0, 0, "f", [p for p, _, _ in rows])})}
+        late_skin = [{**s, "weight[0]": 0.25, "weight[1]": 0.75} for s in skin]
+        sub = submeshes(4, (0, 6, 0), version=late)
+        h = handled(
+            late, m_VertexData=vd, m_SubMeshes=sub, m_IndexBuffer=index_buffer([0, 1, 2, 2, 1, 3]), m_Skin=late_skin
+        )
+        self.assertEqual((h.m_BoneWeights[1], h.m_BoneIndices[2]), ((0.25, 0.75, 0.0, 0.0), (2, 1, 0, 0)))
         # 3.4: the Mesh holds its own vertex arrays and no m_VertexData, and process stops at its assert first.
         vertex = {"x": 1.0, "y": 2.0, "z": 3.0}
         with self.assertRaises(AssertionError):
@@ -916,18 +932,30 @@ class ExportRows(unittest.TestCase):
             self.assertEqual(sprite_obj.image, "image")
         call.assert_called_once_with(sprite_obj)
 
-        # 4.7: the render data holds `vertices` and no m_VertexData, so a tight sprite stops at process's assert.
-        old = "4.7.2f1"
-        vertex = element(213, "m_RD", "vertices", version=old)
-        rd = render_data((0, 0, 2, 2), 0, version=old, vertices=[vertex] * 3, indices=[0, 1, 2])
-        objects = [(1, 28, texture(tex, old)), (2, 213, tpk_object(213, old, m_Name="s", m_PixelsToUnits=1.0, m_RD=rd))]
-        old_sf = load(tpk_file(objects, unity_version=old.encode()))[0]
-        old_sprite = old_sf.objects[2].parse_as_object()
-        self.assertEqual(SpriteHelper.get_image(old_sprite, old_sprite.m_RD.texture, None).size, (4, 4))
-        with self.assertRaises(AssertionError):
-            _ = old_sprite.image
-        with self.assertRaises(AssertionError):
-            MeshHelper.MeshHandler(old_sprite.m_RD, old_sprite.object_reader.version).process()
+        # Before 5.6 the render data holds `vertices` and `indices` and no m_VertexData, so a tight sprite stops at
+        # process's assert; from 5.6 it holds m_VertexData, and the sprite renders.
+        def tight(version, **rd_fields):
+            rd = render_data((0, 0, 2, 2), 0, version=version, **rd_fields)
+            sprite_data = tpk_object(213, version, m_Name="s", m_PixelsToUnits=1.0, m_RD=rd)
+            objects = [(1, 28, texture(tex, version)), (2, 213, sprite_data)]
+            return load(tpk_file(objects, unity_version=version.encode()))[0].objects[2].parse_as_object()
+
+        for old in ("4.7.2f1", "5.0.0f4", "5.5.6f1"):
+            with self.subTest(old):
+                vertex = element(213, "m_RD", "vertices", version=old)
+                old_sprite = tight(old, vertices=[vertex] * 3, indices=[0, 1, 2])
+                self.assertIsNone(old_sprite.m_RD.m_VertexData)
+                self.assertEqual(SpriteHelper.get_image(old_sprite, old_sprite.m_RD.texture, None).size, (4, 4))
+                with self.assertRaises(AssertionError):
+                    _ = old_sprite.image
+                with self.assertRaises(AssertionError):
+                    MeshHelper.MeshHandler(old_sprite.m_RD, old_sprite.object_reader.version).process()
+        new = "5.6.0f1"
+        new_rd = element(213, "m_RD", version=new)
+        self.assertNotIn("vertices", new_rd)
+        quad_56 = {**new_rd["m_VertexData"], **quad}
+        mesh_56 = {**mesh, "m_VertexData": quad_56, "m_SubMeshes": submeshes(4, (0, 6, 0), class_id=213, version=new)}
+        self.assertEqual(tight(new, **mesh_56).image.size, (2, 2))
 
         # SpriteSettings: packed bit 0, packing mode bit 1, rotation bits 2-5, mesh type bit 6; rotations 5 to 15
         # are not in the enum.
@@ -1000,6 +1028,30 @@ class ExportRows(unittest.TestCase):
         self.assertEqual([round(float(v), 12) for v in a], [0.5, 0, 0, 0, 0.5, 0])
         self.assertEqual(dst.getpixel((3, 3)), (0, 0, 0, 0))
         self.assertEqual(dst.getpixel((0, 0)), texture.getpixel((0, 0)))
+        # "The same shape" is the same two edge offsets: a mirrored copy of the same size takes the affine path.
+        with mock.patch.object(SpriteHelper.np.linalg, "solve", wraps=SpriteHelper.np.linalg.solve) as solve:
+            SpriteHelper.copy_triangle(
+                texture, ((0, 0), (2, 0), (0, 2)), Image.new("RGBA", (4, 4)), ((2, 0), (0, 0), (2, 2))
+            )
+        self.assertEqual(solve.call_count, 1)
+        # A destination whose corners are collinear makes the affine matrix singular, and the error escapes, from
+        # copy_triangle and from a mesh whose positions round onto a line while its UVs do not (section 19.2).
+        for flat in (((0, 0), (1, 0), (2, 0)), ((0, 0), (1, 1), (2, 2))):
+            with self.subTest(flat), self.assertRaisesRegex(SpriteHelper.np.linalg.LinAlgError, "^Singular matrix$"):
+                SpriteHelper.copy_triangle(texture, ((0, 0), (0, 2), (2, 0)), Image.new("RGBA", (4, 4)), flat)
+        mesh = SimpleNamespace(
+            get_triangles=lambda: [[(0, 1, 2)]],
+            m_Vertices=[(0.0, 0.0, 0.0), (1.0, 0.4, 0.0), (2.0, 0.4, 0.0)],
+            m_UV0=[(0.0, 0.0), (0.5, 0.0), (0.0, 0.5)],
+        )
+        with self.assertRaisesRegex(SpriteHelper.np.linalg.LinAlgError, "^Singular matrix$"):
+            SpriteHelper.render_sprite_mesh(SimpleNamespace(m_PixelsToUnits=1.0), mesh, texture)
+        # With the source's own offsets a collinear triangle takes the translation path: a flat box copies
+        # nothing, and a diagonal one the pixels Pillow's mask of it covers.
+        for flat, covered in ((((0, 0), (1, 0), (2, 0)), []), (((0, 0), (1, 1), (2, 2)), [(0, 0), (1, 0), (1, 1)])):
+            dst = Image.new("RGBA", (4, 4))
+            SpriteHelper.copy_triangle(texture, flat, dst, flat)
+            self.assertEqual([(x, y) for y in range(4) for x in range(4) if dst.getpixel((x, y))[3]], covered)
 
     # Sections 14.2, 15.7, 19.2: the extractor, from a file and function by function.
     def test_extractor_tree(self):
@@ -1056,6 +1108,21 @@ class ExportRows(unittest.TestCase):
         exported = extractor.extract_assets(tpk_file(objects), dst, use_container=False)
         self.assertEqual(sorted(files(dst)), ["f.ttf", "g.ttf", "n.txt", "s.png"])
         self.assertEqual([path_id for _, path_id in exported], [3, 1, 5, 6, 7, 4])
+        # There, a sprite whose m_Name has an extension is saved by that extension's Pillow writer (section 15.8);
+        # only one with no extension raises.
+        for name, error in (("a.bmp", None), ("plain", "unknown file extension")):
+            dst = self.tmp / f"sprite-{name}"
+            dst.mkdir()
+            named = tpk_file([(1, 28, texture), (3, 213, tpk_object(213, m_Name=name, m_PixelsToUnits=1.0, m_RD=rd))])
+            with self.subTest(name):
+                if error:
+                    with self.assertRaisesRegex(ValueError, error):
+                        extractor.extract_assets(named, dst, use_container=False)
+                    self.assertEqual(files(dst), {})
+                else:
+                    extractor.extract_assets(named, dst, use_container=False)
+                    out = files(dst)
+                    self.assertEqual((sorted(out), out[name][:2]), ([name], b"BM"))
         # Nothing catches a failure: a mesh without vertices writes `False` and raises after opening its file,
         # and the TextAsset after it is never written. A GameObject sorts first and always raises.
         mesh = tpk_object(43, m_Name="m", m_VertexData=vertex_data(0, {}))
@@ -1248,6 +1315,102 @@ class ExportRows(unittest.TestCase):
         with mock.patch.object(SC, "export_shader", return_value="t") as export:
             self.assertEqual(parsed.export(), "t")
         export.assert_called_once_with(parsed)
+
+        # From 2021.3.10, 2022.1.13 and 2022.2 (the TPK's first versions with the field) a pass's programs are in
+        # m_PlayerSubPrograms, a list per keyword set; ShaderConverter reads only m_SubPrograms, so a shader whose
+        # programs are all there exports its state and no Program block.
+        def progs(version):
+            return set(element(48, "m_ParsedForm", "m_SubShaders", "m_Passes", "progVertex", version=version))
+
+        for version, has in (("2021.3.9f1", False), ("2021.3.10f1", True), ("2022.1.12f1", False)):
+            self.assertEqual("m_PlayerSubPrograms" in progs(version), has, version)
+        for version in ("2022.1.13f1", "2022.2.0f1", "2022.3.0f1", "6000.0.0f1"):
+            self.assertIn("m_PlayerSubPrograms", progs(version), version)
+        late = "2022.3.0f1"
+        late_node = Tpk.get_typetree_node(48, UnityVersion.from_str(late))
+        player_sub = default_value(next(n for n in late_node.traverse() if n.m_Type == "SerializedPlayerSubProgram"))
+        player_sub |= {"m_BlobIndex": 0, "m_GpuProgramType": 4}
+        late_program = program([subprogram(202012090, 4, b"late")])
+        late_packed = lz4.block.compress(late_program, store_size=False)
+
+        def late_file(field):
+            pass_ = element(48, "m_ParsedForm", "m_SubShaders", "m_Passes", version=late)
+            vertex = dict(pass_["progVertex"])
+            if field == "m_SubPrograms":
+                sub_ = element(48, "m_ParsedForm", "m_SubShaders", "m_Passes", "progVertex", field, version=late)
+                vertex[field] = [{**sub_, "m_BlobIndex": 0, "m_GpuProgramType": 4}]
+            else:
+                vertex[field] = [[player_sub]]
+            pass_ |= {"m_Type": 0, "progVertex": vertex}
+            subshader_ = {**element(48, "m_ParsedForm", "m_SubShaders", version=late), "m_Passes": [pass_]}
+            form_ = {**element(48, "m_ParsedForm", version=late), "m_Name": "Late/S", "m_SubShaders": [subshader_]}
+            data = tpk_object(
+                48,
+                late,
+                m_Name="Late/S",
+                m_ParsedForm=form_,
+                platforms=[9],
+                offsets=[[0]],
+                compressedLengths=[[len(late_packed)]],
+                decompressedLengths=[[len(late_program)]],
+                compressedBlob=list(late_packed),
+            )
+            return tpk_file([(1, 48, data)], unity_version=late.encode())
+
+        def late_text(field):
+            return load(late_file(field))[0].objects[1].parse_as_object().export()
+
+        self.assertIn('Program "vp" {\nSubProgram "gles3 " {\n"late"\n}\n}\n', late_text("m_SubPrograms"))
+        player_text = late_text("m_PlayerSubPrograms")
+        self.assertIn(" Pass {\n", player_text)
+        self.assertNotIn('Program "', player_text)
+        self.assertNotIn("SubProgram", player_text)
+        # shader_survey counts both kinds of entry, and the texts with and without a Program block (section 21).
+        import contextlib
+        import io
+
+        import shader_survey
+
+        for field in ("m_SubPrograms", "m_PlayerSubPrograms"):
+            (self.tmp / field).mkdir()
+            (self.tmp / field / "late.assets").write_bytes(late_file(field))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                shader_survey.main([str(self.tmp / field)])
+            survey = json.loads(out.getvalue())
+            with self.subTest(field):
+                self.assertEqual(
+                    survey["pass_sub_program_entries"], {"m_SubPrograms": 0, "m_PlayerSubPrograms": 0} | {field: 1}
+                )
+                kind = "text with a Program block" if field == "m_SubPrograms" else "text with no Program block"
+                self.assertEqual((survey["shaders"], survey["sub_programs"], survey["export"]), (1, 1, {kind: 1}))
+
+        # The state's lines: each only when its value is not the default; an unknown ZTest or Cull value prints
+        # the keyword alone; Offset prints each value with str() of the float32 widened exactly.
+        def state_text(**fields):
+            plain = {k: v for k, v in fields.items() if k in ("m_Name", "m_LOD", "lighting", "gpuProgramID")}
+            wrapped = {k: value(v) for k, v in fields.items() if k not in plain}
+            pass_ = {**passes, "m_Type": 0, "m_State": {**passes["m_State"], **plain, **wrapped}}
+            form_ = {**element(48, "m_ParsedForm"), "m_SubShaders": [{**element(48, "m_ParsedForm", "m_SubShaders")}]}
+            form_["m_SubShaders"][0]["m_Passes"] = [pass_]
+            data = tpk_object(48, m_Name="S", m_ParsedForm=form_, compressedBlob=[0])  # a blob, and no platform
+            text = load(tpk_file([(1, 48, data)]))[0].objects[1].parse_as_object().export()
+            return text[text.index(" Pass {\n") + len(" Pass {\n") : text.index("  GpuProgramID")]
+
+        defaults = dict(zTest=4, zWrite=1, culling=2, offsetFactor=0, offsetUnits=0, alphaToMask=0, zClip=1)
+        self.assertEqual(state_text(**defaults), "")
+        self.assertEqual(state_text(**defaults, m_Name="N", m_LOD=200), ' Name "N"\n  LOD 200\n')
+        self.assertEqual(state_text(**defaults | {"zTest": 9, "culling": 3}), " ZTest \n Cull \n")
+        names = {0: "Off", 1: "Never", 2: "Less", 3: "Equal", 5: "Greater", 6: "NotEqual", 7: "GEqual", 8: "Always"}
+        for z, name in names.items():
+            self.assertEqual(state_text(**defaults | {"zTest": z}), f" ZTest {name}\n")
+        self.assertEqual([state_text(**defaults | {"culling": c}) for c in (0, 1)], [" Cull Off\n", " Cull Front\n"])
+        self.assertEqual(state_text(**defaults | {"offsetUnits": 0.1}), " Offset 0.0, 0.10000000149011612\n")
+        self.assertEqual(state_text(**defaults | {"offsetFactor": -1}), " Offset -1.0, 0.0\n")
+        self.assertEqual(
+            state_text(**defaults | {"alphaToMask": 2, "zClip": 0, "zWrite": 2}, lighting=True),
+            " AlphaToMask On\n ZClip Off\n ZWrite Off\n  Lighting On\n",
+        )
         # A property of type 5 (Int, from 2021.1) raises once its name is written.
         int_prop = SimpleNamespace(m_Attributes=[], m_Name="_I", m_Description="I", m_Type=5)
         with self.assertRaisesRegex(ValueError, "^5$"):
@@ -1273,6 +1436,15 @@ class ExportRows(unittest.TestCase):
         self.assertEqual(exported(24, b"1234main\0metal"), '"metal"')
         with self.assertRaises(ValueError):
             exported(32, b"")
+        # The text kinds decode strictly: code that is not UTF-8 raises UnicodeDecodeError, Metal's after its entry
+        # name (section 19.2). Code of length 0 prints "" for every type.
+        for kind in (1, 4, 8, 26, 30):
+            with self.subTest(kind=kind), self.assertRaises(UnicodeDecodeError):
+                exported(kind, b"\x80\xff\x00\x01")
+        for kind, code in ((23, struct.pack("<II", 0xF00DCAFE, 8) + b"main\0\x80"), (24, b"1234main\0\x80\xff")):
+            with self.subTest(kind=kind), self.assertRaises(UnicodeDecodeError):
+                exported(kind, code)
+        self.assertEqual({exported(kind, b"") for kind in range(32)}, {'""'})
         # Local keywords are read only for versions in [201806140, 202012090); the reserved word from 201608170.
         for version, local in ((201806140, ["L"]), (202012089, ["L"]), (202012090, None), (201802150, None)):
             reader = EndianBinaryReader(subprogram(version, 4, b"c", ["K"], local) + b"\xff" * 4, endian="<")
@@ -1336,6 +1508,28 @@ class ExportRows(unittest.TestCase):
                 self.assertRaisesRegex(TypeError, "without an encoding"),
             ):
                 old.export()
+        # The blob is read before m_Script is touched: one laid out little-endian is read with a byte-swapped count
+        # (256 reads as 65536) and offsets, and raises struct.error instead.
+        little = program([subprogram(201510240, 4, b"code")] * 256, 8)
+        self.assertEqual(struct.unpack(">i", little[:4]), (65536,))
+        packed_little = list(lz4.block.compress(little, store_size=False))
+        data = tpk_object(
+            48, "5.4.6f3", m_Name="old", m_Script="x", m_SubProgramBlob=packed_little, decompressedSize=len(little)
+        )
+        old = load(tpk_file([(1, 48, data)], unity_version=b"5.4.6f3"))[0].objects[1].parse_as_object()
+        with self.assertRaises(struct.error):
+            old.export()
+        # From 5.5 a Shader has no m_Script, so one with an empty compressedBlob takes the plain path and raises on
+        # bytes(None): the plain path returns text for no version.
+        for version in ("5.5.6f1", "2021.3.2f1"):
+            self.assertNotIn("m_Script", element(48, version=version))
+            data = tpk_object(48, version, m_Name="empty")
+            empty = load(tpk_file([(1, 48, data)], unity_version=version.encode()))[0].objects[1].parse_as_object()
+            with (
+                self.subTest(version),
+                self.assertRaisesRegex(TypeError, "^cannot convert 'NoneType' object to bytes$"),
+            ):
+                empty.export()
         # The 5.4 blob itself reads big-endian and fills `GpuProgramIndex N`, N being the rest of the line.
         got = SC.ShaderProgram(EndianBinaryReader(blob), (5, 4, 6, 1))
         self.assertEqual(got.Export("Shader {\nGpuProgramIndex 0\n}"), 'Shader {\n"code"\n}')

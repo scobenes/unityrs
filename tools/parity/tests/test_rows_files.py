@@ -640,9 +640,13 @@ class FileRows(unittest.TestCase):
         entry = bundle.files["CAB-a"].save()  # every SerializedFile entry is saved again
         self.assertIn(lz4.block.compress(entry, mode="high_compression", compression=9, store_size=False), saved)
         self.assertEqual(flags(bundle.save(packer="lzma")), 0x41)
-        # lz4hc, the HEAD packer, is unknown here.
+        # lz4hc, the HEAD packer, is unknown here. HEAD writes it as save_fs(195, 3), which 1.25.2 writes for the
+        # tuple (195, 3): header flags 0xC3, blocks flagged 3, compressed with liblz4 HC level 9 as for lz4.
         with self.assertRaisesRegex(NotImplementedError, "lz4hc"):
             bundle.save(packer="lz4hc")
+        saved = bundle.save(packer=(195, 3))
+        self.assertEqual((flags(saved), block_flags(saved)[1:]), (0xC3, (3, ["p"])))
+        self.assertIn(lz4.block.compress(entry, mode="high_compression", compression=9, store_size=False), saved)
         # save_web_raw: UnityWeb and UnityRaw other than format 6 save through it, formats 1 to 3 only.
         from test_dump import unityraw
 

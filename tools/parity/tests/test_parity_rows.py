@@ -1437,6 +1437,24 @@ class Rows(unittest.TestCase):
         self.assertFalse(TextureSwizzler.is_switch_swizzled(BuildTarget.Android, blob))
         self.assertEqual(TextureSwizzler.get_padded_texture_size(5, 9, 4, 4, 2), (16, 64))
         self.assertEqual(len(TextureSwizzler.TEXTURE_FORMAT_BLOCK_SIZE_MAP), 29)
+        # set_image on a Switch-swizzled texture pads and swizzles through that table too, so a target whose written
+        # format the table lacks raises KeyError: the seven ETC targets (section 19.2). BC7 raises its own error.
+        raised = {}
+        for fmt in TextureFormat:
+            try:
+                Texture2DConverter.image_to_texture2d(Image.new("RGBA", (8, 8)), fmt, BuildTarget.Switch, blob)
+            except KeyError as e:
+                raised[fmt.name] = e.args[0].name
+            except Exception as e:  # noqa: BLE001 - every other raise is named below
+                raised[fmt.name] = type(e).__name__
+        written = {
+            "ETC_RGB4": "ETC_RGB4",
+            "ETC2_RGB": "ETC2_RGB",
+            "ETC2_RGBA1": "ETC2_RGBA8",
+            "ETC2_RGBA8": "ETC2_RGBA8",
+        }
+        written |= {"ETC_RGB4_3DS": "ETC_RGB4_3DS", "ETC_RGB4Crunched": "ETC_RGB4Crunched"}
+        self.assertEqual(raised, written | {"ETC2_RGBA8Crunched": "ETC2_RGBA8", "BC7": "ValueError"})
         data = bytes(range(256)) * 4  # one block of 2 GOBs of RGBA32: 16 x 16 pixels, 1024 bytes
         swizzled = TextureSwizzler.swizzle(data, 16, 16, 4, 1, 2)
         self.assertNotEqual(swizzled, data)
