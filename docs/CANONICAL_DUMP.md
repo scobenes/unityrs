@@ -290,6 +290,13 @@ These are UnityPy 1.25.2 facts that a unityrs producer must reproduce to match, 
 
 **Booleans.** Any non-zero byte reads as `true`. `save_typetree` writes `1`, so a stored `2` resaves as `differs`.
 
+**Array alignment.** Alignment is to 4 bytes, counted from the start of the object's data.
+- UnityPy's writer (`write_typetree`, so L3) writes an array element by element. After each element it aligns when the element node carries the align flag (`0x4000`), and after the array it aligns once more when the vector node or its `Array` node carries it.
+- UnityPyBoost reads an array of integer, float, `bool` or `pair` elements as one run, and aligns once after the run when the element node carries the flag. It reads elements of any other type (`string`, `TypelessData`, classes, vectors) one at a time, each aligning after itself as the writer does.
+- So when a run-read element with the flag, other than the last, ends off a 4-byte boundary, the writer adds padding the file does not have. The elements after it move, and the object resaves as `differs` unless the moved bytes happen to match. Three aligned `UInt8` elements `010203` in a 12-byte object resave as 20 bytes, first differing at offset 5. Two aligned `UInt32` elements after a lone `UInt8` keep the object's size and differ from offset 9.
+- A flag on the vector or `Array` node alone aligns once on both sides, and so does a one-element array, so those resave as `equal`.
+- A producer's own writer matches L3 only when it pads after each aligned element in the same way.
+
 **Parsing path.**
 - Every object with `byte_size` > 0 is read by UnityPyBoost. Its arrays are lists, and its strings are always followed by a 4-byte alignment.
 - With `byte_size` 0, UnityPy uses its pure-Python reader instead (section 4.3 says where it starts and how far it reads). It differs from UnityPyBoost in these ways:
@@ -299,6 +306,7 @@ These are UnityPy 1.25.2 facts that a unityrs producer must reproduce to match, 
   - An array of aligned `TypelessData` elements raises a `TypeError` (`other`), because the array reader calls `read_bytes()` without a length. UnityPyBoost reads each element's length and bytes.
   - In an array whose aligned element is itself a vector, a negative inner length reads as an empty list. UnityPyBoost raises `negative_length`.
   - It reads a negative or out-of-range string length as `""` instead of failing.
+  - In an array of aligned class elements it aligns once after the array, where UnityPyBoost aligns after each element. Two elements `{UInt8 x}` stored as `01000000 02000000` read as `x` 1 and 0 here, and the field after the array reads the second element's bytes.
   - Its array reader takes an array whose element node carries the align flag. For class elements it reads every child with no registry check, so the registry scope of section 3 does not hold there: an element `{r1, r2}` of two registries reads as `{r1}` on UnityPyBoost and `{r1, r2}` here. Everywhere else both paths apply the same scope.
   - It reads a TypelessData length of -1 as the rest of the SerializedFile, so the next read fails (`other`). Any other negative length `L` at position `p` reads the Python slice `[p:p+L]` of the SerializedFile's bytes and moves the position to `p+L`. The slice is empty unless `p+L` is negative, which counts from the end. The fields after it then re-read earlier bytes. UnityPyBoost raises `negative_length` for both.
 

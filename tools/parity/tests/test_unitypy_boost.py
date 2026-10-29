@@ -442,6 +442,15 @@ class ThroughBoost(unittest.TestCase):
             read_python(root, data, check_read=False)
         self.assertEqual(unitypy_dump.error_kind(e.exception), ("other", None))
 
+    def test_pure_python_path_aligns_class_element_arrays_once(self):
+        """With an aligned class element it aligns after the array, not after each element as UnityPyBoost does."""
+        elem = N("Elem", "data", [N("UInt8", "x")], meta=ALIGN)
+        root = N("Base", "Base", [vec("arr", elem), N("int", "after")])
+        data = struct.pack("<i", 2) + b"\1\0\0\0\2\0\0\0" + struct.pack("<i", 42)
+        self.assertEqual(read(root, data), {"arr": [{"x": 1}, {"x": 2}], "after": 42})
+        self.assertEqual(resave(read(root, data), root), data)  # the writer pads each element too
+        self.assertEqual(read_python(root, data, check_read=False), {"arr": [{"x": 1}, {"x": 0}], "after": 2})
+
     def test_pure_python_path_swaps_16_bit_signedness(self):
         """In aligned arrays the pure-Python reader reads UInt16 as signed and SInt16 as unsigned."""
         root = N(

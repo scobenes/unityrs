@@ -500,6 +500,72 @@ class DumpTests(unittest.TestCase):
             (files[("b5_zip", "z")]["l0"]["type"], files[("b5_zip", "z")]["l0"]["parsed_as"]), ("ZIP", "raw")
         )
 
+    def test_resave_aligns_after_every_aligned_array_element(self):
+        """Spec 7: UnityPy's writer aligns after each aligned element; UnityPyBoost reads runs and aligns once."""
+        d = self.tmp / "in"
+        d.mkdir()
+
+        def array(elem, array_meta=0):
+            return S.Node(
+                "vector", "arr", [S.Node("Array", "Array", [S.Node("int", "size"), elem], meta=array_meta, flags=1)]
+            )
+
+        after = S.Node("int", "after")
+        i42 = struct.pack("<i", 42)
+        u8s = struct.pack("<i", 3) + b"\1\2\3\0" + i42  # three bytes, then one alignment
+        pair = S.Node("pair", "data", [S.Node("UInt8", "first"), S.Node("UInt8", "second")], meta=S.ALIGN)
+        cases = {
+            "u8_elements_aligned": ([array(S.Node("UInt8", "data", meta=S.ALIGN)), after], u8s),
+            "s16_elements_aligned": (
+                [array(S.Node("SInt16", "data", meta=S.ALIGN)), after],
+                struct.pack("<ihh", 2, 1, 2) + i42,
+            ),
+            "pairs_aligned": ([array(pair), after], struct.pack("<i", 2) + b"\1\2\3\4" + i42),
+            # Four-byte elements after an unaligned field: each ends off a boundary.
+            "u32_elements_unaligned_start": (
+                [S.Node("UInt8", "pre"), array(S.Node("UInt32", "data", meta=S.ALIGN)), after],
+                b"\7" + struct.pack("<iII", 2, 1, 2) + b"\0\0\0" + i42,
+            ),
+            "u8_array_aligned": ([array(S.Node("UInt8", "data"), array_meta=S.ALIGN), after], u8s),
+            "u8_one_element": (
+                [array(S.Node("UInt8", "data", meta=S.ALIGN)), after],
+                struct.pack("<i", 1) + b"\1\0\0\0" + i42,
+            ),
+            "strings_aligned": (
+                [array(S.Node("string", "data", meta=S.ALIGN)), after],
+                struct.pack("<i", 2) + S.s32("a") + S.s32("bc") + i42,
+            ),
+        }
+        for name, (fields, data) in cases.items():
+            (d / f"{name}.assets").write_bytes(assets(S.Node("MyThing", "Base", fields), data))
+        out = self.tmp / "align.jsonl"
+        self.assertEqual(dump(d, "-o", out), 0)
+        self.assert_canonical(out)
+        objects = {r["file"][0][: -len(".assets")]: r for r in records(out) if r["rec"] == "object"}
+        values = {name: dict(r["l2"]["value"]["v"]) for name, r in objects.items()}
+        self.assertEqual(values["u8_elements_aligned"]["arr"], {"t": "u8s", "hex": "010203"})
+        self.assertEqual(values["u32_elements_unaligned_start"]["after"], 42)
+        l3 = {
+            name: [r["l3"][k] for k in ("raw_size", "resave", "resave_size", "first_diff")]
+            for name, r in objects.items()
+        }
+        self.assertEqual(
+            l3,
+            {
+                # 03000000 010203 00 -> 03000000 01000000 02000000 03000000
+                "u8_elements_aligned": [12, "differs", 20, 5],
+                "s16_elements_aligned": [12, "differs", 16, 6],
+                "pairs_aligned": [12, "differs", 16, 6],
+                # Same length: the padding moves from after the array to after its first element.
+                "u32_elements_unaligned_start": [20, "differs", 20, 9],
+                # The flag on the Array node: one alignment after the array on both sides.
+                "u8_array_aligned": [12, "equal", None, None],
+                "u8_one_element": [12, "equal", None, None],
+                # UnityPyBoost reads strings element by element, as the writer writes them.
+                "strings_aligned": [24, "equal", None, None],
+            },
+        )
+
     def test_type_indices_and_blob_trees_follow_python(self):
         """Spec 4.2-4.3: a negative type_id indexes from the end; blob rows become a tree as parse_blob builds it."""
         d = self.tmp / "in"
