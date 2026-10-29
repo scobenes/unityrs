@@ -362,6 +362,8 @@ class FileRows(unittest.TestCase):
                     f = stream(kind, payload)
                     e = quietly(UnityPy.Environment, f)
                     self.assertEqual((list(e.files), list(e.cabs)), ([f.name], [cab]))
+                    # File.name keeps the basename of a str name only: any other is "".
+                    self.assertEqual(e.files[f.name].name, "")
                 self.assertIsInstance(f.name, int if kind == "int" else type(None))
                 with self.assertRaisesRegex(AttributeError, f"^'{type_name}' object has no attribute 'endswith'$"):
                     quietly(UnityPy.Environment, stream(kind, serialized))
@@ -388,21 +390,26 @@ class FileRows(unittest.TestCase):
                     named_by_bytes[file_name] = str(error)
                     continue
             self.assertEqual(list(e.files), [os.fsencode(path)])
-            named_by_bytes[file_name] = (list(e.cabs), type(e.files[os.fsencode(path)]).__name__)
+            loaded = e.files[os.fsencode(path)]
+            named_by_bytes[file_name] = (list(e.cabs), type(loaded).__name__, getattr(loaded, "name", None))
         self.assertEqual(
             named_by_bytes,
             {
-                "B.bundle": (["cab-a"], "BundleFile"),
-                "W.data": (["cab-w"], "WebFile"),
-                "Raw.Bin": ([b"raw.bin"], "EndianBinaryReader_Streamable"),
+                "B.bundle": (["cab-a"], "BundleFile", ""),
+                "W.data": (["cab-w"], "WebFile", ""),
+                "Raw.Bin": ([b"raw.bin"], "EndianBinaryReader_Streamable", None),
                 "S.assets": "a bytes-like object is required, not 'str'",
             },
         )
+        # With a str name, File.name is os.path.basename (posix): a backslash is kept.
+        for given, name in (("dir/X.bundle", "X.bundle"), ("a\\b\\C.bundle", "a\\b\\C.bundle")):
+            self.assertEqual(quietly(UnityPy.Environment().load_file, bundle, name=given).name, name)
         # A file keyed by such a name breaks two later calls (section 19.2). PPtr.deref from a SerializedFile
-        # loaded on its own compares `key.lower()` for each Environment key in order, so an int or None key ahead
-        # of the match raises AttributeError, one after it is never reached, and a bytes key (bytes have `lower`)
-        # never matches. Environment.save of such a file, once changed, raises TypeError: ntpath.basename of an
-        # int or None, or joining out_path with a bytes basename.
+        # loaded on its own compares `key.lower()` for each Environment key in order until one matches, so an int or
+        # None key raises AttributeError unless a matching key comes first: one after the match is never reached,
+        # but with no key matching (files loaded by path, keyed by their full paths) every key is reached. A bytes
+        # key (bytes have `lower`) never matches. Environment.save of such a file, once changed, raises TypeError:
+        # ntpath.basename of an int or None, or joining out_path with a bytes basename.
         from UnityPy.classes import PPtr
 
         main = S.serialized_file(
@@ -426,6 +433,29 @@ class FileRows(unittest.TestCase):
                 self.assertEqual(deref_after(last=stream(kind, bundle)), "other")
         with open(os.fsencode(d / "bytes" / "B.bundle"), "rb") as f:
             self.assertEqual(deref_after(first=f), "other")
+        # No key matching: files loaded by path are keyed by their full paths, so the loop reaches every key before
+        # the registry finds `other.assets`, and an int or None key raises though it is the last one.
+        by_path = d / "by-path"
+        by_path.mkdir()
+        (by_path / "main.assets").write_bytes(main)
+        (by_path / "other.assets").write_bytes(text_asset_file("other"))
+
+        def deref_by_path(last=None):
+            e = UnityPy.Environment(path=str(by_path))
+            sf = quietly(e.load_file, str(by_path / "main.assets"))
+            quietly(e.load_file, str(by_path / "other.assets"))
+            if last is not None:
+                quietly(e.load_file, last)
+            self.assertEqual(list(e.files)[:2], [str(by_path / "main.assets"), str(by_path / "other.assets")])
+            return PPtr(m_FileID=1, m_PathID=1, assetsfile=sf).deref().parse_as_dict()["m_Name"]
+
+        self.assertEqual(deref_by_path(), "other")
+        for kind, type_name in (("int", "int"), ("None", "NoneType")):
+            with (
+                self.subTest(deref_by_path=kind),
+                self.assertRaisesRegex(AttributeError, f"^'{type_name}' object has no attribute 'lower'$"),
+            ):
+                deref_by_path(last=stream(kind, bundle))
         out = d / "out"
         out.mkdir()
         for kind, message in (

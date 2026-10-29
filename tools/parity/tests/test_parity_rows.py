@@ -79,6 +79,37 @@ def load(data, name="f.assets", env=None):
     return quietly(env.load_file, data, name=name), env
 
 
+def scandir_walk(root):
+    """PARITY.md section 3's walk, built from `os.scandir` and not from fsspec: a folder's files in the order
+    `os.scandir` lists them, then each subfolder in that same order, depth-first."""
+    entries = list(os.scandir(root))
+    files = [entry.path for entry in entries if not entry.is_dir(follow_symlinks=False)]
+    for entry in entries:
+        if entry.is_dir(follow_symlinks=False):
+            files += scandir_walk(entry.path)
+    return files
+
+
+def walk_tree(root):
+    """A folder whose `os.scandir` order is unlikely to be sorted: files made out of order, two subfolders holding
+    the same name, one of them nested, and a subfolder made before the files."""
+    for folder in ("s2", "s1/inner", "s0"):
+        (root / folder).mkdir(parents=True)
+    for name in ("m", "c", "x", "a", "q", "f", "s2/ab", "s1/ab", "s1/inner/z", "s0/k"):
+        (root / f"{name}.assets").write_bytes(text_asset_file(name.replace("/", "-")))
+
+
+def zip_with_a_directory():
+    """A zip listing a directory entry, `assets/`, as `zip -r` writes, with byte 4 zeroed so the detector sees a ZIP."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("assets/", b"")
+        archive.writestr("assets/a.assets", text_asset_file("a"))
+    data = bytearray(buffer.getvalue())
+    data[4] = 0
+    return bytes(data)
+
+
 class TestColumn(unittest.TestCase):
     """PARITY.md's test column and the tests it names agree (standard library)."""
 
@@ -100,6 +131,7 @@ class TestColumn(unittest.TestCase):
                 "every_status_agrees_with_its_test_column",
                 "rows_are_cited_by_item_not_by_line",
                 "head_dicts_are_a_target_while_their_fixtures_are_planned",
+                "every_resolution_exception_is_listed",
             }
             named = {name for module, name in cited if module == path.name}
             self.assertEqual(sorted(defined - named), [], f"tests no PARITY.md row names, in {path.name}")
@@ -150,6 +182,51 @@ class TestColumn(unittest.TestCase):
         line number of this file, which every edit above it moves."""
         text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
         self.assertEqual(re.findall(r"\brows? \d+", text), [])
+
+    # DESIGN.md section 3's resolution clause names the Tier B and C exceptions to "`obj.container` and dependency
+    # resolution match". Each bullet of those lists that touches resolution (it names one of RESOLUTION) maps here
+    # to the phrase the clause names it by.
+    RESOLUTION = ("find_file", "PPtr.deref", "load_file", "load_dependencies", "load_assets", "path_dict", "registry")
+    NAMED_BY = {
+        "a stream whose `name` is not a `str`": ("B", "`PPtr.deref` reaching an `int` or `None` `files` key"),
+        "a record that `PPtr.deref` resolves": ("B", "a record whose file's basename holds an upper-case letter"),
+        "a name read through a non-local fsspec filesystem, which": (
+            "B",
+            "a name read through a non-local fsspec filesystem where UnityPy raises",
+        ),
+        "two bundles holding a CAB of one name": ("C", "two bundles' same-named CABs"),
+        "`find_file`'s suffix match": ("C", "`find_file`'s suffix match with no separator boundary"),
+        "split members of a zip": ("C", "split members of a zip"),
+        "a name read through a non-local fsspec filesystem where": (
+            "C",
+            "a name read through a non-local fsspec filesystem where `load_file` returns `None`",
+        ),
+        "`load_dependencies` loads dependencies": ("C", "`load_dependencies`"),
+        "`ContainerHelper.path_dict` ignores": ("C", "`ContainerHelper.path_dict`'s file id"),
+    }
+
+    def test_every_resolution_exception_is_listed(self):
+        """Every Tier B or C bullet of DESIGN.md section 3 that touches dependency resolution is named, under its
+        tier, in the clause that lists the exceptions to "dependency resolution match"."""
+        design = (HERE.parent.parent / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        reading = design.split("**Reading**", 1)[1].split("**Writing**", 1)[0]
+        clause = next(line for line in reading.splitlines() if "dependency resolution match" in line)
+        listed = clause.split("lists below say:", 1)[1]
+        named = {"B": listed.split("(B)", 1)[0], "C": listed.split("(B)", 1)[1].split("(C)", 1)[0]}
+        tier, seen = None, 0
+        for line in reading.splitlines():
+            if line.startswith("- **"):
+                tier = "B" if line.startswith("- **Tier B") else "C" if line.startswith("- **Tier C") else None
+            elif tier and line.startswith("  - ") and any(word in line for word in self.RESOLUTION):
+                bullet = line[4:]
+                with self.subTest(tier=tier, bullet=bullet[:70]):
+                    lead = [key for key in self.NAMED_BY if bullet.startswith(key)]
+                    self.assertEqual(len(lead), 1, "a resolution exception no clause names: list it, and map it here")
+                    in_tier, phrase = self.NAMED_BY[lead[0]]
+                    self.assertEqual(in_tier, tier)
+                    self.assertIn(phrase, named[tier], "missing from the resolution clause")
+                    seen += 1
+        self.assertEqual(seen, len(self.NAMED_BY))
 
     def test_head_dicts_are_a_target_while_their_fixtures_are_planned(self):
         """Section 20's reading rows name the Unity 6000.4/6000.5 fixtures as planned, so no comparison with HEAD's
@@ -462,6 +539,16 @@ class Rows(unittest.TestCase):
             Texture2D.get_image_data(fake)
         image = Texture2DConverter.parse_image_data(b"", 0, 0, 4, (2021, 3, 2, 0), 0)
         self.assertEqual((image.mode, image.size), ("RGBA", (0, 0)), "parse_image_data's own shortcut")
+        # A zip's directory entry registers CAB "" (section 3), which answers the empty path first: it reads b"", so
+        # a 0x0 texture returns the empty image and one of non-zero size raises ValueError.
+        quietly(env.load_file, zip_with_a_directory(), name="z.bin")
+        self.assertEqual(ResourceReader.get_resource_data("", sf, 0, 8), b"")
+        fake = texture(StreamingInfo(offset=0, size=0, path=""), width=0)  # `texture` reads `fake` when called
+        image = Texture2DConverter.get_image_from_texture2d(fake)
+        self.assertEqual((image.mode, image.size), ("RGBA", (0, 0)))
+        fake = texture(StreamingInfo(offset=0, size=0, path=""))
+        with self.assertRaisesRegex(ValueError, "^Texture2D has no image data$"):
+            Texture2DConverter.get_image_from_texture2d(fake)
 
     # Sections 3, 4, 13: what reader a path gets.
     def test_a_path_reads_strings_with_the_stream_rule(self):
@@ -1139,6 +1226,14 @@ class Rows(unittest.TestCase):
         with self.assertRaises(Exception) as raised:
             AudioClipConverter.extract_audioclip_samples(clip(source))
         self.assertEqual(type(raised.exception).__name__, "FmodError")
+        # A zip's directory entry registers CAB "" (section 3): the empty path reads b"" from it, which FMOD refuses.
+        quietly(env.load_file, zip_with_a_directory(), name="z.bin")
+        for size in (0, 16):
+            with self.subTest(cab="", size=size), self.assertRaises(Exception) as raised:
+                AudioClipConverter.extract_audioclip_samples(
+                    clip(StreamedResource(m_Source="", m_Offset=0, m_Size=size))
+                )
+            self.assertEqual(type(raised.exception).__name__, "FmodError")
         # Only a clip with no m_Resource at all gets the ValueError.
         with self.assertRaisesRegex(ValueError, "^AudioClip with neither m_AudioData nor m_Resource$"):
             AudioClipConverter.extract_audioclip_samples(clip(None))
@@ -1328,6 +1423,12 @@ class Rows(unittest.TestCase):
         for record in ("ab.assets", "archive:/CAB-x/ab.assets", "AB.assets"):
             with self.subTest(record):
                 self.assertEqual(deref(record, UnityPy.Environment(path=str(f))), "xab")
+        # Without xab.assets these records read sub/ab.assets: deref hands find_file the last component lower-cased,
+        # the name the Tier C reference matches at a separator, so `AB.assets`'s reference is sub/ab.assets.
+        (f / "xab.assets").unlink()
+        for record in ("ab.assets", "archive:/CAB-x/ab.assets", "AB.assets"):
+            with self.subTest(record, without="xab.assets"):
+                self.assertEqual(deref(record, UnityPy.Environment(path=str(f))), "ab")
         # The Tier B retry matches the exact basename, not find_file's suffix match: beside sub/Shared.Assets,
         # find_file("Shared.Assets") loads MyShared.Assets, the walk listing a folder's files first.
         e = self.tmp / "e"
@@ -1337,6 +1438,16 @@ class Rows(unittest.TestCase):
         self.assertEqual(found(UnityPy.Environment(path=str(e)), "Shared.Assets"), ["my-shared"])
         with self.assertRaisesRegex(FileNotFoundError, "Shared.Assets not found!$"):
             deref("Shared.Assets", UnityPy.Environment(path=str(e)))
+        # find_file's walk is section 3's (os.scandir order, each folder's files first): its list of paths, and the
+        # first of two same-named files in it answers the name.
+        tree = self.tmp / "tree"
+        walk_tree(tree)
+        walking = UnityPy.Environment(path=str(tree))
+        self.assertEqual(found(walking, "z.assets"), ["s1-inner-z"])
+        order = scandir_walk(tree)
+        self.assertEqual(walking.local_files, order)
+        first_walked = min(("s1", "s2"), key=lambda s: order.index(str(tree / s / "ab.assets")))
+        self.assertEqual(found(UnityPy.Environment(path=str(tree)), "ab.assets"), [f"{first_walked}-ab"])
         (d / "sub" / "lower.assets").unlink()
         with self.assertRaisesRegex(FileNotFoundError, "File missing.assets not found in"):
             found(env, "missing.assets")
@@ -1461,6 +1572,19 @@ class Rows(unittest.TestCase):
         walked = ["/".join([root, f]) for root, _, files in env.fs.walk(str(folder)) for f in files]
         self.assertEqual(list(env.files), walked)
         self.assertEqual(sorted(walked), sorted(str(folder / n) for n in ("z.assets", "a.assets", "b/m.assets")))
+        # The walk's order is os.scandir's, unsorted, each folder's files before its subfolders, depth-first
+        # (section 3, the walk): `files` follows it, and of two same-named files the later one holds the CAB.
+        tree = self.tmp / "tree"
+        walk_tree(tree)
+        env = UnityPy.Environment()
+        with mock.patch("builtins.open", tracked):
+            quietly(env.load_folder, str(tree))
+        for stream in opened:
+            stream.close()
+        order = scandir_walk(tree)
+        self.assertEqual(list(env.files), order)
+        later = max(str(tree / "s1" / "ab.assets"), str(tree / "s2" / "ab.assets"), key=order.index)
+        self.assertIs(env.cabs["ab.assets"], env.files[later])
         # File: its attributes; mark_changed marks every File above; save writes the changed ones by basename.
         env = UnityPy.Environment()
         bundle = load(S.fs_bundle([(b"CAB-a", text_asset_file(), 4)]), "dir/b.bundle", env)[0]
