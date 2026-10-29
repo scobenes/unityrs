@@ -625,6 +625,52 @@ class Rows(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(ValueError, from_path):
                         quietly(UnityPy.Environment().load_file, str(web_path))
+        # An entry's i32 name length is read with the same reader: -1 reads the rest of the data as the name, from
+        # bytes and from a path; -12 from a path raises, and from bytes reads b"" and moves the reader back to the
+        # entry's start, so the loop adds that entry again and again (stopped here after three).
+        offset, size = struct.unpack_from("<ii", web, row)
+        changed = bytearray(web)
+        struct.pack_into("<i", changed, row + 8, -1)
+        web_path.write_bytes(changed)
+        for source in (bytes(changed), str(web_path)):
+            with self.subTest("web name length -1", path=isinstance(source, str)):
+                files = quietly(UnityPy.Environment().load_file, source, name="w.data").files
+                self.assertEqual({name: bytes(f.bytes) for name, f in files.items()}, {"a.resSPAYLOAD!": b"PAYLOAD!"})
+        struct.pack_into("<i", changed, row + 8, -12)
+        web_path.write_bytes(changed)
+        with self.assertRaisesRegex(ValueError, "^read length must be non-negative or -1$"):
+            quietly(UnityPy.Environment().load_file, str(web_path))
+        file_module = sys.modules["UnityPy.files.File"]
+        entries = []
+
+        class Again(Exception):
+            pass
+
+        def directory_info(*fields):
+            entries.append(fields)
+            if len(entries) == 3:
+                raise Again
+            return file_module.DirectoryInfo.__wrapped__(*fields)
+
+        directory_info.__wrapped__ = file_module.DirectoryInfo
+        with mock.patch.object(file_module, "DirectoryInfo", directory_info), self.assertRaises(Again):
+            load(bytes(changed), "w.data")
+        self.assertEqual(entries, [("", offset, size)] * 3)
+        # A UnityWeb/UnityRaw level count is an i32, past which read_web_raw skips 8 * (count - 1) bytes: -100 moves
+        # the reader before the file's start, struct.error from bytes and the stream reader's ValueError from a path.
+        from test_dump import unityraw
+
+        raw = unityraw(5, [(b"CAB-x", b"payload!")])
+        level = raw.index(bytes(range(16))) + 16 + 16
+        self.assertEqual(struct.unpack_from(">i", raw, level), (1,))
+        changed = bytearray(raw)
+        struct.pack_into(">i", changed, level, -100)
+        (self.tmp / "level.bundle").write_bytes(changed)
+        moved = level + 4 + 8 * (-100 - 1)
+        with self.assertRaisesRegex(struct.error, f"^offset {moved} out of range for {len(raw)}-byte buffer$"):
+            load(bytes(changed), "level.bundle")
+        with self.assertRaisesRegex(ValueError, "^Position cannot be negative$"):
+            quietly(UnityPy.Environment().load_file, str(self.tmp / "level.bundle"))
         # A blob typetree's node count and string-buffer size each size a read: a negative count reads a slice that
         # iter_unpack refuses unless its length is a multiple of the node size, a count of 0 leaves no root, and a
         # buffer size of -1 takes the rest of the data.
