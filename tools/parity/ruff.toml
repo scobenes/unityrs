@@ -7,4 +7,4 @@ select = ["E", "F", "W", "B", "UP", "SIM", "I"]
 
 [lint.isort]
 # The tools import each other by module name (sys.path holds tools/parity).
-known-first-party = ["canonical", "compare", "inventory", "object_mode", "pillow_tables", "references", "synth", "unitypy_dump"]
+known-first-party = ["canonical", "compare", "fetch_unitypy_samples", "inventory", "object_mode", "oracle_env", "pillow_tables", "references", "synth", "test_dump", "unitypy_dump"]

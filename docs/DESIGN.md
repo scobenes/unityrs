@@ -57,9 +57,11 @@ unityrs is the alternative, built around three things:
 | astc-encoder-py | 0.1.12 |
 | etcpak | 0.9.14 |
 | fmod_toolkit | 0.1.3 |
+| numpy | 2.4.6 (not a UnityPy dependency, but UnityPy uses it when present: sprite rendering differs without it) |
+| cffi, zstandard | 2.1.0, 0.25.0 (no dependency either, but Pillow and fsspec import them when present) |
 | liblz4 / liblzma | as installed |
 
-A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a documented step.
+`tools/parity/requirements-oracle.txt` pins the whole stack, dependencies included, as hash-checked wheels, and `tools/parity/oracle_records.json` pins each wheel's files (the digest of its RECORD). The oracle dumper refuses to run when any package is at another version, when its RECORD is not the pinned wheel's, when any of its files does not hash as that RECORD says, when its folders hold a file the RECORD does not list or a symlink, when a module imports from anywhere else, when it loads a module from outside the standard library and the pins (at import or while dumping) or a copy of a standard-library module from anywhere else (even at start-up), when `PYTHONPATH`, `PYTHONHOME`, `PYTHONPLATLIBDIR` or a user site-packages folder is in effect, or when the UnityPyBoost binary differs. A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a documented step.
 
 **Reading**
 - **Tier A: bit-exact** wherever UnityPy is right.

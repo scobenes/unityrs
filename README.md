@@ -23,7 +23,8 @@ a command-line tool and Python bindings.
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
 [MIT licence](LICENSE-MIT) at your option. Code ported from other projects keeps
-its original notices; see `THIRD_PARTY_LICENSES` once the first port lands.
+its original notices. [`THIRD_PARTY_LICENSES`](THIRD_PARTY_LICENSES) collects
+them, with the licences of the crates unityrs builds on.
 
 unityrs is not affiliated with or endorsed by Unity Technologies. "Unity" is a
 trademark of Unity Technologies.

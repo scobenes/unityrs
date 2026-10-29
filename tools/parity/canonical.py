@@ -18,9 +18,75 @@ FORMAT = "unityrs-canonical-dump"
 VERSION = 1
 LEVELS = ("L0", "L1", "L2", "L3")
 
-# The oracle stack a reference dump must come from (docs/CANONICAL_DUMP.md).
-ORACLE_UNITYPY = "1.25.2"
+# The oracle stack a reference dump must come from (docs/CANONICAL_DUMP.md):
+# every package requirements-oracle.txt pins, installed from its pinned wheel
+# (its version, and its files as oracle_records.json pins them), and the
+# UnityPyBoost binary the pinned UnityPy wheel holds.
+ORACLE_REQUIREMENTS = Path(__file__).resolve().with_name("requirements-oracle.txt")
 ORACLE_PRODUCER = "unitypy_dump.py"
+# The sha256 of UnityPy/UnityPyBoost.cpython-311-x86_64-linux-gnu.so in the
+# pinned unitypy wheel, as its RECORD lists it (in RECORD's urlsafe base64,
+# QO5PYLPXAPOONPCtIF72pivuoxH0TmH0_Lwv7s6W4SQ). test_unitypy_boost.py checks it
+# against the installed RECORD and the loaded module; re-pin it with UnityPy.
+ORACLE_BOOST_SHA256 = "40ee4f60b3d700f38e34f0ad205ef6a62beea311f44e61f4fcbc2feece96e124"
+# Each pinned wheel's files, as the digest of its RECORD (oracle_env.py writes and checks it).
+ORACLE_RECORDS = ORACLE_REQUIREMENTS.with_name("oracle_records.json")
+# pip leaves these out of `pip freeze` on Python 3.11: they install the stack and are no part of it.
+INSTALLERS = frozenset(("pip", "setuptools", "wheel", "distribute"))
+
+_PIN = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\;]+)")
+
+
+def normalise_package(name: str) -> str:
+    """A distribution name as PEP 503 compares it: lower case, each run of -_. one hyphen."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def oracle_pins(path: Path = ORACLE_REQUIREMENTS) -> dict[str, str]:
+    """{normalised name: version} for every `name==version` line of requirements-oracle.txt."""
+    pins = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        m = _PIN.match(line)
+        if m:
+            pins[normalise_package(m.group(1))] = m.group(2)
+    return pins
+
+
+def oracle_records(path: Path = ORACLE_RECORDS) -> dict[str, str]:
+    """{normalised name: record digest} of every pinned wheel, from oracle_records.json."""
+    records = json.loads(path.read_text(encoding="utf-8"))["records"]
+    return {name: records[name]["record_sha256"] for name in sorted(records)}
+
+
+def installed_packages(path: list[str] | None = None) -> dict[str, str]:
+    """{normalised name: version} of the distributions on `path` (default sys.path), the first of each name."""
+    from importlib import metadata
+
+    out = {}
+    for dist in metadata.distributions(**({} if path is None else {"path": path})):
+        name = dist.metadata["Name"]
+        if name:
+            out.setdefault(normalise_package(name), dist.version)
+    return out
+
+
+def stack_problems(installed: dict[str, str], pins: dict[str, str], exact: bool = False) -> list[str]:
+    """How `installed` differs from the pins: a pin missing or at another version; with `exact`, any extra too."""
+    problems = [
+        f"{name} is {installed[name]}, not the pinned {version}" if name in installed else f"{name} is not installed"
+        for name, version in sorted(pins.items())
+        if installed.get(name) != version
+    ]
+    if exact:
+        problems += [
+            f"{name} {version} is installed but not pinned"
+            for name, version in sorted(installed.items())
+            if name not in pins and name not in INSTALLERS
+        ]
+    return problems
+
+
+ORACLE_UNITYPY = oracle_pins()["unitypy"]
 
 # Raw-byte payloads longer than this are summarised as length + sha256. Inline
 # hex keeps small diffs readable; the summary keeps texture and vertex blobs
@@ -399,6 +465,24 @@ RECORD_MEMBERS = {
     "end": ("rec", "files", "objects"),
 }
 L0_MEMBERS = ("type", "parsed_as", "size", "sha256")
+# Section 4.2's values for l0: check_file_type's verdicts, and what UnityPy builds
+# from each. An entry gets only what its verdict builds. An input may also fail
+# ("error", whatever its verdict), and an input detected as a zip is "zip", which
+# an entry never is (UnityPy's parser has no zip branch, so it keeps a reader).
+L0_TYPES = ("AssetsFile", "BundleFile", "WebFile", "ResourceFile", "ZIP", "error")
+L0_PARSED_AS = ("SerializedFile", "BundleFile", "WebFile", "raw", "zip", "error")
+L0_ENTRY_BUILDS = {
+    "AssetsFile": ("SerializedFile", "raw"),  # raw by the name rule
+    "BundleFile": ("BundleFile",),
+    "WebFile": ("WebFile",),
+    "ResourceFile": ("raw",),
+    "ZIP": ("raw",),
+    "error": (),  # detection raising fails the input (section 4.2)
+}
+L0_INPUT_BUILDS = {**L0_ENTRY_BUILDS, "ZIP": ("zip",)}
+# Error kinds: a file's (section 4.2) and an object's l2 (section 4.3).
+FILE_ERROR_KINDS = ("detect", "parse", "crash")
+L2_ERROR_KINDS = ("no_typetree", "check_read", "out_of_bounds", "negative_length", "ref_type", "encode", "other")
 FILE_L1_MEMBERS = {
     "bundle": (
         "kind",
@@ -565,6 +649,8 @@ def check_record(rec, levels) -> list:
             check_name(name, f"file[{i}]", out, nullable=False)
     if kind == "file":
         l0_ok = _members(rec["l0"], L0_MEMBERS, "l0", out)
+        if l0_ok:
+            _check_l0(rec["l0"], type(rec["file"]) is list and len(rec["file"]) == 1, out)
         parsed = rec["l0"]["parsed_as"] if l0_ok else None
         # parsed_as says whether the file has an error and which l1 it has.
         if l0_ok and (parsed == "error") != (rec["error"] is not None):
@@ -589,8 +675,13 @@ def check_record(rec, levels) -> list:
                             for i, t in enumerate(l1[name]):
                                 _members(t, TYPE_MEMBERS, f"l1.{name}[{i}]", out)
                 _l1_names(l1, out)
-        if rec["error"] is not None:
-            _members(rec["error"], FILE_ERROR_MEMBERS, "error", out, note=True)
+        if rec["error"] is not None and _members(rec["error"], FILE_ERROR_MEMBERS, "error", out, note=True):
+            error_kind = rec["error"]["kind"]
+            if error_kind not in FILE_ERROR_KINDS:
+                out.append(("error.kind", "unknown_value", error_kind))
+            elif l0_ok and (error_kind == "detect") != (rec["l0"]["type"] == "error") and error_kind != "crash":
+                # detection raising is the "detect" error; a crash can follow either
+                out.append(("error.kind", "error_mismatch", f"{error_kind!r} for type {rec['l0']['type']!r}"))
     elif kind == "object":
         for level, name, members in OBJECT_SECTIONS:
             section = rec[name]
@@ -605,11 +696,32 @@ def check_record(rec, levels) -> list:
     return out
 
 
+def _check_l0(l0, is_input, out):
+    """Section 4.2's values and pairs for l0's members (`is_input`: the record is an input's, not an entry's)."""
+    typ, parsed, size, sha = (l0[k] for k in L0_MEMBERS)
+    typ_ok = type(typ) is str and typ in L0_TYPES
+    if not typ_ok:
+        out.append(("l0.type", "unknown_value", typ))
+    if type(parsed) is not str or parsed not in L0_PARSED_AS:
+        out.append(("l0.parsed_as", "unknown_value", parsed))
+    elif typ_ok and parsed not in (L0_INPUT_BUILDS if is_input else L0_ENTRY_BUILDS)[typ] + (
+        ("error",) if is_input else ()
+    ):
+        where = "an input" if is_input else "an entry"
+        out.append(("l0.parsed_as", "l0_mismatch", f"{parsed!r} for type {typ!r} on {where}"))
+    if type(size) is not int or size < 0:
+        out.append(("l0.size", "bad_value", size))
+    if type(sha) is not str or not _SHA256.fullmatch(sha):
+        out.append(("l0.sha256", "bad_value", sha))
+
+
 def _check_l2(l2, out):
     error = l2["error"]
     error_kind = None
     if error is not None and _members(error, L2_ERROR_MEMBERS, "l2.error", out, note=True):
         error_kind = error["kind"]
+        if error_kind not in L2_ERROR_KINDS:
+            out.append(("l2.error.kind", "unknown_value", error_kind))
     check_name(l2["root_type"], "l2.root_type", out)
     # A parse that finished has a value; so does check_read, which re-reads
     # without the check. Every other error has none.

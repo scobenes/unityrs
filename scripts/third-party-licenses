@@ -1,0 +1,71 @@
+#!/bin/sh
+# Generate THIRD_PARTY_LICENSES with cargo-about, from about.toml and about.hbs.
+#
+#     scripts/third-party-licenses           # rewrite THIRD_PARTY_LICENSES
+#     scripts/third-party-licenses --check   # fail if it is stale (CI)
+#
+# Locally, run it in the dev container (scripts/dev scripts/third-party-licenses)
+# with cargo-about on PATH, built there with
+#     cargo install --root /tmp/tools --locked --features cli cargo-about --version =VERSION
+# at the version below; CI installs the same one.
+#
+# It fails, writing nothing, when:
+# - cargo-about is not the pinned version (another version may render the same
+#   inputs differently);
+# - about.toml accepts other licences, or another order, than deny.toml allows,
+#   or a crate's accepted licences or clarification differ between the two
+#   (scripts/third_party_licenses_check.py config);
+# - cargo-about warns: a clarification whose checksums no longer match is
+#   dropped with only a warning, which would lose the licences it adds;
+# - a crate's licence cannot be satisfied (--fail);
+# - a notice is still an SPDX template, with "<year>" or "<copyright holders>"
+#   for a crate that ships no licence file (third_party_licenses_check.py notices).
+set -eu
+
+CARGO_ABOUT_VERSION=0.9.2
+
+cd "$(dirname "$0")/.."
+
+case "${1-}" in
+  '') check=0 ;;
+  --check) check=1 ;;
+  *) echo "usage: $0 [--check]" >&2; exit 2 ;;
+esac
+
+have=$(cargo about --version 2>/dev/null) || {
+  echo "third-party-licenses: cargo-about is not installed (cargo install --locked --features cli cargo-about --version =$CARGO_ABOUT_VERSION)" >&2
+  exit 1
+}
+if [ "$have" != "cargo-about $CARGO_ABOUT_VERSION" ]; then
+  echo "third-party-licenses: found $have; THIRD_PARTY_LICENSES is generated with cargo-about $CARGO_ABOUT_VERSION" >&2
+  exit 1
+fi
+
+python3 scripts/third_party_licenses_check.py config
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+cargo fetch --locked --quiet
+if ! cargo about generate --frozen --workspace --fail about.hbs -o "$tmp/THIRD_PARTY_LICENSES" 2>"$tmp/log"; then
+  cat "$tmp/log" >&2
+  echo "third-party-licenses: cargo-about failed" >&2
+  exit 1
+fi
+if [ -s "$tmp/log" ]; then
+  cat "$tmp/log" >&2
+  echo "third-party-licenses: cargo-about warned (above); resolve it in about.toml" >&2
+  exit 1
+fi
+python3 scripts/third_party_licenses_check.py notices "$tmp/THIRD_PARTY_LICENSES"
+
+if [ "$check" = 1 ]; then
+  if ! diff -u THIRD_PARTY_LICENSES "$tmp/THIRD_PARTY_LICENSES"; then
+    echo "third-party-licenses: THIRD_PARTY_LICENSES is stale; run scripts/third-party-licenses and commit the result" >&2
+    exit 1
+  fi
+  echo "THIRD_PARTY_LICENSES is up to date"
+else
+  cp "$tmp/THIRD_PARTY_LICENSES" THIRD_PARTY_LICENSES
+  echo "wrote THIRD_PARTY_LICENSES"
+fi
