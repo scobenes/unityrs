@@ -642,6 +642,44 @@ mod tests {
         }
     }
 
+    /// `-j N` runs N inputs at once and no more: each item waits (up to a
+    /// deadline) for `want` items to be running together. With `want`
+    /// workers they all meet; one worker fewer, none ever does. The window
+    /// of `2 * jobs` queued items never adds a worker.
+    #[test]
+    fn ordered_runs_jobs_items_at_once_and_no_more() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+        let meet = |jobs: usize, want: usize, deadline: Duration| -> bool {
+            let items: Vec<usize> = (0..want).collect();
+            let running = AtomicUsize::new(0);
+            let peak = AtomicUsize::new(0);
+            let f = |_: &usize| {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                let end = Instant::now() + deadline;
+                while peak.load(Ordering::SeqCst) < want && Instant::now() < end {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                running.fetch_sub(1, Ordering::SeqCst);
+            };
+            ordered(&items, jobs, &f, &mut |_, ()| Ok(())).unwrap();
+            peak.load(Ordering::SeqCst) >= want
+        };
+        assert!(
+            meet(4, 4, Duration::from_secs(20)),
+            "4 workers never ran 4 items at once"
+        );
+        assert!(
+            meet(3, 2, Duration::from_secs(20)),
+            "3 workers never ran 2 items at once"
+        );
+        assert!(
+            !meet(3, 4, Duration::from_millis(200)),
+            "3 workers ran 4 items at once"
+        );
+    }
+
     #[test]
     fn ordered_stops_on_a_panic_and_names_the_input() {
         let items: Vec<u32> = (0..10).collect();
