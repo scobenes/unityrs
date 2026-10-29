@@ -1,0 +1,18 @@
+# The scripts' own tests (scripts/tests) need the standard library and PyYAML:
+# test_ci_workflow.py parses the workflows as YAML, since a rule read line by
+# line misses what YAML can write another way (a flow-style step). For
+# CPython 3.11 on manylinux x86_64, as CI's scripts-py job installs it into a
+# fresh venv of its own:
+#
+#     python -m pip install --require-hashes -r scripts/requirements-tests.txt
+#
+# One wheel, pinned by hash: PyPI's sha256 of the cp311 manylinux x86_64
+# wheel (https://pypi.org/pypi/PyYAML/6.0.3/json). No sdist is allowed.
+# PyYAML is no part of the parity oracle, so it stays out of
+# tools/parity/requirements-oracle.txt and out of the oracle's venv.
+
+--require-hashes
+--only-binary :all:
+
+pyyaml==6.0.3 \
+    --hash=sha256:b8bb0864c5a28024fac8a632c443c87c5aa6f215c0b126c449ae1a150412f31d

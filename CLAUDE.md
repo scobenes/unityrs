@@ -16,11 +16,13 @@ settings:
     scripts/dev python tools/parity/...    # the oracle side
     scripts/dev python scripts/unittest-suites tools/parity/tests=N ...   # the Python suites, as CI runs them
 
-CI's `parity-py` job names a minimum test count per Python suite (a suite that
-runs fewer fails, so a test module discovery stops finding cannot pass unseen);
-raise it in `.github/workflows/ci.yml` when you add tests. Pin a new action
-to a full commit SHA with its tag in a comment, and give a new job a
-`timeout-minutes`; `scripts/tests/test_ci_workflow.py` checks both.
+CI's `parity-py` and `scripts-py` jobs name a minimum test count per Python
+suite (a suite that runs fewer fails, so a test module discovery stops finding
+cannot pass unseen); raise it in `.github/workflows/ci.yml` when you add tests.
+Pin a new action to a full commit SHA with its tag in a comment, and give a
+new job a `timeout-minutes`; `scripts/tests/test_ci_workflow.py` checks both,
+on the workflow as YAML. It needs PyYAML, which the container's Python lacks:
+`scripts/requirements-tests.txt` pins the wheel for a venv of its own.
 
 Never `docker run` / `docker rm` / `docker stop` anything. The container has a
 12 GB memory cap; never remove the cap.
