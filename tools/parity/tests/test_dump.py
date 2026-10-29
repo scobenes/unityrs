@@ -106,10 +106,22 @@ def dump(*argv):
         return unitypy_dump.main(["-q", *map(str, argv)])
 
 
-def dump_process(*argv, env=None):
-    """Run the dumper as its own process, for inputs that could take the test runner down with it."""
+def dump_process(*argv, env=None, flags=(), first=(), preload=()):
+    """Run the dumper as its own process, for inputs that could take the test runner down with it.
+
+    `flags` go to the interpreter. The `first` folders are put before the
+    rest of sys.path, and the `preload` modules imported, before the script
+    starts, as PYTHONPATH and a sitecustomize on it would (the dumper refuses
+    PYTHONPATH itself, so this is how a test puts a copy of a module first).
+    """
+    args = [str(HERE / "unitypy_dump.py"), "-q", *map(str, argv)]
+    if first or preload:
+        boot = f"import runpy, sys; sys.path[:0] = {list(map(str, first))!r}; "
+        boot += "".join(f"import {name}; " for name in preload)
+        boot += f"sys.argv = {args!r}; runpy.run_path(sys.argv[0], run_name='__main__')"
+        args = ["-c", boot]
     return subprocess.run(
-        [sys.executable, "-B", str(HERE / "unitypy_dump.py"), "-q", *map(str, argv)],
+        [sys.executable, "-B", *flags, *args],
         capture_output=True,
         env={**os.environ, **(env or {})},
         timeout=300,
@@ -961,7 +973,7 @@ class DumpTests(unittest.TestCase):
                 if change:
                     change(shadow / "UnityPy" / "files")
                 out = self.tmp / f"patched{n}.jsonl"
-                proc = dump_process(tiny, "-o", out, env={"PYTHONPATH": str(shadow)})
+                proc = dump_process(tiny, "-o", out, first=[shadow])
                 self.assertEqual(proc.returncode, code, proc.stderr.decode(errors="replace"))
                 self.assertEqual(out.exists(), code == 0)
                 if code:
@@ -972,8 +984,11 @@ class DumpTests(unittest.TestCase):
         """A module loaded from neither the standard library nor a pinned wheel, at import or in a dump, is refused.
 
         Pillow imports defusedxml when there is one, as it imports cffi and
-        fsspec zstandard; one on PYTHONPATH would run code that is not the
-        oracle's. test_samples is the check that the real dumps load none.
+        fsspec zstandard; one first on sys.path would run code that is not the
+        oracle's. So would a copy of a standard-library module, such as json,
+        which writes every line: it is refused even when it was loaded before
+        the script started. test_samples is the check that the real dumps load
+        none.
         """
         tiny, out = self.tmp / "tiny", self.tmp / "x.jsonl"
         tiny.write_bytes(b"tiny")
@@ -982,15 +997,26 @@ class DumpTests(unittest.TestCase):
         (planted / "defusedxml" / "__init__.py").write_text("")
         (planted / "defusedxml" / "ElementTree.py").write_text("")
         (planted / "unityrs_planted.py").write_text("X = 1\n")
-        # At import.
-        proc = dump_process(tiny, "-o", out, env={"PYTHONPATH": str(planted)})
-        self.assertEqual(proc.returncode, 2, proc.stderr.decode(errors="replace"))
-        self.assertIn(b"not the pinned oracle", proc.stderr)
-        said = (
-            f"module defusedxml is loaded from {(planted / 'defusedxml' / '__init__.py').resolve()}, which is neither"
-        )
-        self.assertIn(said.encode(), proc.stderr)
-        self.assertFalse(out.exists())
+        stdlib = Path(json.__file__).resolve().parents[1]
+        copies = self.tmp / "json_copy", self.tmp / "csv_copy"
+        shutil.copytree(stdlib / "json", copies[0] / "json", ignore=shutil.ignore_patterns("__pycache__"))
+        copies[1].mkdir()
+        shutil.copy(stdlib / "csv.py", copies[1] / "csv.py")
+        # At import, and at start-up.
+        for label, folder, file, why, preload in (
+            ("defusedxml", planted, "defusedxml/__init__.py", "which is neither the standard library nor", ()),
+            ("json, imported by the script", copies[0], "json/__init__.py", "which shadows the standard library's", ()),
+            ("json, at start-up", copies[0], "json/__init__.py", "which shadows the standard library's json", ["json"]),
+            ("csv, imported by oracle_env", copies[1], "csv.py", "which shadows the standard library's csv", ()),
+        ):
+            with self.subTest(label):
+                proc = dump_process(tiny, "-o", out, first=[folder], preload=preload)
+                self.assertEqual(proc.returncode, 2, proc.stderr.decode(errors="replace"))
+                self.assertIn(b"not the pinned oracle", proc.stderr)
+                name = Path(file).parts[0].removesuffix(".py")
+                said = f"module {name} is loaded from {(folder / file).resolve()}, {why}"
+                self.assertIn(said.encode(), proc.stderr)
+                self.assertFalse(out.exists())
         # While an input is dumped, in its own process: the run stops with no dump.
         dump_one = unitypy_dump._dump_input
 
@@ -1007,7 +1033,54 @@ class DumpTests(unittest.TestCase):
         self.assertIn("refusing to dump: this is not the pinned oracle (while dumping 'tiny': module", err.getvalue())
         self.assertIn(f"unityrs_planted is loaded from {(planted / 'unityrs_planted.py').resolve()}", err.getvalue())
         self.assertNotIn("unityrs_planted", sys.modules)
-        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["planted", "tiny"])
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["csv_copy", "json_copy", "planted", "tiny"])
+
+    def test_refuses_to_run_with_pythonpath_or_a_user_site(self):
+        """PYTHONPATH and a user site-packages folder put folders before the checks; with either the dumper refuses.
+
+        PYTHONPATH comes before the standard library on sys.path, so a copy of
+        json there would write every line, and a sitecustomize there would run
+        at start-up. Under -E or -I the interpreter ignores it, and the dump
+        is the one made without it. A user site (here through PYTHONUSERBASE)
+        runs its .pth files at start-up; -s turns it off, and so does a venv.
+        """
+        tiny, out, clean = self.tmp / "tiny", self.tmp / "x.jsonl", self.tmp / "clean.jsonl"
+        tiny.write_bytes(b"tiny")
+        shadow = self.tmp / "shadow"
+        shutil.copytree(
+            Path(json.__file__).resolve().parent, shadow / "json", ignore=shutil.ignore_patterns("__pycache__")
+        )
+        self.assertEqual(dump_process(tiny, "-o", clean).returncode, 0)
+        with_path = {"PYTHONPATH": str(shadow)}
+        proc = dump_process(tiny, "-o", out, env=with_path)
+        self.assertEqual(proc.returncode, 2, proc.stderr.decode(errors="replace"))
+        said = b"not the pinned oracle (PYTHONPATH is set; unset it, or run python with -E or -I)"
+        self.assertIn(said, proc.stderr)
+        self.assertFalse(out.exists())
+        for flag in ("-E", "-I"):
+            with self.subTest(flag):
+                proc = dump_process(tiny, "-o", out, env=with_path, flags=[flag])
+                self.assertEqual(proc.returncode, 0, proc.stderr.decode(errors="replace"))
+                self.assertEqual(out.read_bytes(), clean.read_bytes())
+                out.unlink()
+        base = self.tmp / "userbase"
+        folder = base / "lib" / f"python{sys.version_info[0]}.{sys.version_info[1]}" / "site-packages"
+        folder.mkdir(parents=True)
+        with_user = {"PYTHONUSERBASE": str(base)}
+        probe = [sys.executable, "-c", "import site; print(site.ENABLE_USER_SITE)"]
+        enabled = subprocess.run(probe, env={**os.environ, **with_user}, capture_output=True, text=True).stdout
+        proc = dump_process(tiny, "-o", out, env=with_user)
+        if enabled.strip() == "True":
+            self.assertEqual(proc.returncode, 2, proc.stderr.decode(errors="replace"))
+            said = f"the user site-packages folder {folder} is on sys.path; run python with -s or -I"
+            self.assertIn(said.encode(), proc.stderr)
+            self.assertFalse(out.exists())
+        else:  # a venv
+            self.assertEqual(proc.returncode, 0, proc.stderr.decode(errors="replace"))
+            out.unlink()
+        proc = dump_process(tiny, "-o", out, env=with_user, flags=["-s"])
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode(errors="replace"))
+        self.assertEqual(out.read_bytes(), clean.read_bytes())
         # The same input without the import is dumped.
         self.assertEqual(dump(tiny, "-o", out), 0)
 

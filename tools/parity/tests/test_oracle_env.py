@@ -10,7 +10,9 @@ import importlib
 import importlib.machinery
 import io
 import json
+import os
 import shutil
+import subprocess
 import sys
 import sysconfig
 import tempfile
@@ -367,6 +369,8 @@ class LoadedModulesTests(unittest.TestCase):
             return m
 
         early = module("early", site / "early.py")
+        # Copies of standard-library modules: one loaded at start-up, one in the tools' folder, one in a pin.
+        early_csv = module("csv", site / "csv.py")
         modules = {
             "json": sys.modules["json"],
             "pinned": module("pinned", site / "pinned" / "__init__.py"),
@@ -376,23 +380,77 @@ class LoadedModulesTests(unittest.TestCase):
             "builtin": module("builtin"),
             "foreign": module("foreign", site / "foreign" / "__init__.py"),
             "site_in_stdlib": module("site_in_stdlib", stdlib / "site-packages" / "thing.py"),
+            "csv": early_csv,
+            "hashlib": module("hashlib", own / "hashlib.py"),
+            "zlib": module("zlib", site / "pinned" / "zlib.py"),
+            "json.encoder": module("json.encoder", site / "json" / "encoder.py"),
         }
-        check = oracle_env.LoadedModules({(site / "pinned" / "__init__.py").resolve()}, [own], [early])
-        why = "which is neither the standard library nor a pinned wheel's file"
+        pinned = {(site / "pinned" / "__init__.py").resolve(), (site / "pinned" / "zlib.py").resolve()}
+        check = oracle_env.LoadedModules(pinned, [own], [early, early_csv])
+        why, shadows = (
+            "which is neither the standard library nor a pinned wheel's file",
+            "which shadows the standard library's",
+        )
         expected = [
+            f"module csv is loaded from {(site / 'csv.py').resolve()}, {shadows} csv",
             f"module foreign is loaded from {(site / 'foreign' / '__init__.py').resolve()}, {why}",
+            f"module hashlib is loaded from {(own / 'hashlib.py').resolve()}, {shadows} hashlib",
+            f"module json.encoder is loaded from {(site / 'json' / 'encoder.py').resolve()}, {shadows} json",
             f"module site_in_stdlib is loaded from {(stdlib / 'site-packages' / 'thing.py').resolve()}, {why}",
+            f"module zlib is loaded from {(site / 'pinned' / 'zlib.py').resolve()}, {shadows} zlib",
         ]
         self.assertEqual(check.problems(modules), expected)
         # Each verdict is kept: a second check looks only at what is new.
-        with mock.patch.object(check, "allowed", wraps=check.allowed) as allowed:
+        with mock.patch.object(check, "verdict", wraps=check.verdict) as verdict:
             more = {**modules, "later": module("later", site / "later.py")}
-            self.assertEqual(len(check.problems(more)), 3)
-        allowed.assert_called_once_with((site / "later.py").resolve())
+            self.assertEqual(len(check.problems(more)), 7)
+        verdict.assert_called_once_with("later", (site / "later.py").resolve())
         # Real modules: frozen and pure-Python standard modules, extension modules (lib-dynload), and the tools'.
         here = oracle_env.LoadedModules(set(), [HERE], [])
         names = ("os", "json", "unittest", "zlib", "_csv", "_json", "oracle_env", __name__)
         self.assertEqual(here.problems({name: importlib.import_module(name) for name in names}), [])
+
+
+class StartUpTests(unittest.TestCase):
+    def test_what_puts_other_folders_first_is_refused(self):
+        """PYTHONPATH, PYTHONHOME and PYTHONPLATLIBDIR, unless the interpreter ignores them, and a user site."""
+        how = "unset it, or run python with -E or -I"
+        self.assertEqual(oracle_env.start_up_problems({}, False, ""), [])
+        self.assertEqual(oracle_env.start_up_problems({"PYTHONPATH": "", "PYTHONUTF8": "1"}, False, ""), [])
+        every = {"PYTHONPATH": "/x", "PYTHONHOME": "/y", "PYTHONPLATLIBDIR": "lib64"}
+        self.assertEqual(
+            oracle_env.start_up_problems(every, False, ""),
+            [f"PYTHONPATH is set; {how}", f"PYTHONHOME is set; {how}", f"PYTHONPLATLIBDIR is set; {how}"],
+        )
+        self.assertEqual(oracle_env.start_up_problems(every, True, ""), [])
+        self.assertEqual(
+            oracle_env.start_up_problems({}, True, "/u/site-packages"),
+            ["the user site-packages folder /u/site-packages is on sys.path; run python with -s or -I"],
+        )
+
+    def test_the_user_site_is_the_one_site_added(self):
+        """user_site() names the folder when site put it on sys.path at start-up, and None under -s."""
+        with tempfile.TemporaryDirectory(prefix="unityrs-oracle-env-") as tmp:
+            base = Path(tmp)
+            folder = base / "lib" / f"python{sys.version_info[0]}.{sys.version_info[1]}" / "site-packages"
+            folder.mkdir(parents=True)
+            code = (
+                f"import site, sys; sys.path.insert(0, {str(HERE)!r}); import oracle_env; "
+                "print(site.ENABLE_USER_SITE, oracle_env.user_site(), site.getusersitepackages() in sys.path)"
+            )
+            env = {**os.environ, "PYTHONUSERBASE": str(base)}
+            for flags in ([], ["-s"]):
+                with self.subTest(flags=flags):
+                    out = subprocess.run([sys.executable, *flags, "-c", code], env=env, capture_output=True, text=True)
+                    self.assertEqual(out.returncode, 0, out.stderr)
+                    enabled, found, on_path = out.stdout.split()
+                    # A venv turns the user site off by itself, as -s does.
+                    if enabled == "True":
+                        self.assertEqual((found, on_path), (str(folder), "True"))
+                    else:
+                        self.assertEqual((found, on_path), ("None", "False"))
+                    if flags:
+                        self.assertEqual(enabled, "False")
 
 
 class RecordsFileTests(unittest.TestCase):
