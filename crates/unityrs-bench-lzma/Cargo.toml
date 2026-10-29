@@ -1,0 +1,29 @@
+[package]
+name = "unityrs-bench-lzma"
+description = "P0 spike: liblzma against lzma-rust2 on the LZMA blocks of real UnityFS bundles."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Each decoder is a feature so that a build without it measures what it adds to
+# a stripped binary (docs/spikes/lzma.md, "Binary size").
+[features]
+default = ["liblzma", "lzma-rust2", "lzma-rust2-optimization"]
+liblzma = ["dep:liblzma"]
+lzma-rust2 = ["dep:lzma-rust2"]
+# lzma-rust2's unsafe fast paths (aligned buffers, hand-written assembly).
+# Without it the crate is `forbid(unsafe_code)`.
+lzma-rust2-optimization = ["lzma-rust2", "lzma-rust2/optimization"]
+
+[dependencies]
+liblzma = { version = "=0.4.9", features = ["static"], optional = true }
+lzma-rust2 = { version = "=0.24.0", default-features = false, features = ["std"], optional = true }
+lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-decode"] }
+sha2 = "=0.10.9"
+
+[lints]
+workspace = true
