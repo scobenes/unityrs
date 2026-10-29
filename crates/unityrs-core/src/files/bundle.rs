@@ -3,7 +3,7 @@
 //! [`BundleFile::open`] reads the header, blocks-info and directory and
 //! decodes no data block, so a registry over thousands of bundles is cheap
 //! and [`BundleFile::uncompressed_size`] (the declared total) is known before
-//! any decode (the batch engine's admission).
+//! any decode (for a caller that plans with it, plan section 4.1).
 //!
 //! **One layout** (plan section 3.6). UnityPy always reads entries from the
 //! `b"".join` of every block's *actual* output (`BundleFile.py:173-186`), so
