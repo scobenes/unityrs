@@ -12,9 +12,12 @@ The groups, and how PARITY.md names a symbol of each, inside a code span (backti
 - `functions`, every public module-level function: `Module.function`
   (`ImportHelper.check_file_type`), where `Module` is the file's name without `.py`,
   or the package's name for an `__init__.py`.
-- `data`, every public name a module assigns at its top level whose value is not a
+- `data`, every public name a module binds at its top level whose value is not a
   class, function, module or typing construct (tables, registries, settings,
   caches): `Module.NAME` (`CompressionHelper.DECOMPRESSION_MAP`), `Module` as above.
+  The top level includes the blocks of its `if`, `for`, `while`, `try`, `with` and
+  `match` statements, and a `for` loop's target is bound too (`Texture2DConverter.tf`);
+  a name bound only where the import does not run is not the module's.
 - `methods`, every public callable or property a class defines in its own body
   (`Environment.load_file`), for every class UnityPy defines; for the classes of
   `classes/generated.py`, the members a `classes/legacy_patch` module adds
@@ -125,6 +128,19 @@ def _defined_in(value, prefix: str) -> bool:
     return (getattr(func, "__module__", None) or "").startswith(prefix)
 
 
+def _unpacked(targets) -> list:
+    """Assignment targets with tuples, lists and starred names unpacked."""
+    out = []
+    for target in targets:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            out += _unpacked(target.elts)
+        elif isinstance(target, ast.Starred):
+            out += _unpacked([target.value])
+        else:
+            out.append(target)
+    return out
+
+
 def _targets(node) -> list:
     """What an assignment statement binds, tuples unpacked; nothing for any other node."""
     if isinstance(node, ast.Assign):
@@ -133,22 +149,52 @@ def _targets(node) -> list:
         targets = [node.target]
     else:
         return []
-    return [name for target in targets for name in (target.elts if isinstance(target, ast.Tuple) else [target])]
+    return _unpacked(targets)
 
 
-def _bound_names(body) -> list[str]:
-    """The public names a block of statements assigns or annotates (`X = ...`, `X: T`, `X, Y = ...`)."""
-    return [
+# The compound statements whose blocks run in the scope around them; a `def`'s or a class's body has its own.
+BLOCKS = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.TryStar, ast.With, ast.AsyncWith, ast.Match)
+
+
+def _block_bindings(body, augmented: bool) -> list:
+    """The targets a block of statements binds in its own scope: its assignments (augmented ones only when asked),
+    and those of the blocks of its `if`, `for`, `while`, `try`, `with` and `match` statements, a `for` loop's target
+    and a `with`'s `as` targets included (an `except ... as` name is deleted when its handler ends)."""
+    out = []
+    for node in body:
+        if augmented or not isinstance(node, ast.AugAssign):
+            out += _targets(node)
+        if not isinstance(node, BLOCKS):
+            continue
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            out += _unpacked([node.target])
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            out += _unpacked([item.optional_vars for item in node.items if item.optional_vars is not None])
+        blocks = [getattr(node, "body", [])]  # in source order: a `try`'s handlers before its `else`
+        blocks += [handler.body for handler in getattr(node, "handlers", [])]
+        blocks += [case.body for case in getattr(node, "cases", [])]
+        blocks += [getattr(node, field, []) for field in ("orelse", "finalbody")]
+        for block in blocks:
+            out += _block_bindings(block, augmented)
+    return out
+
+
+def _bound_names(body, augmented: bool = True) -> list[str]:
+    """The public names a block of statements assigns or annotates (`X = ...`, `X: T`, `X, Y = ...`), in its
+    nested `if`, `for`, `while`, `try`, `with` and `match` blocks too, and a `for` loop's or a `with`'s targets."""
+    names = [
         target.id
-        for node in body
-        for target in _targets(node)
+        for target in _block_bindings(body, augmented)
         if isinstance(target, ast.Name) and not target.id.startswith("_")
     ]
+    return list(dict.fromkeys(names))
 
 
 def _assigned_names(source: str) -> list[str]:
-    """The public names a module's top level assigns (`X = ...`, `X: T = ...`, `X, Y = ...`)."""
-    return _bound_names(node for node in ast.parse(source).body if not isinstance(node, ast.AugAssign))
+    """The public names a module's top level binds (`X = ...`, `X: T = ...`, `X, Y = ...`, `for X in ...`), inside
+    its `if`, `for`, `while`, `try`, `with` and `match` blocks too. A name bound only in a block the import does
+    not run (`if __name__ == "__main__":`) is not the module's: `collect` keeps the names the module holds."""
+    return _bound_names(ast.parse(source).body, augmented=False)
 
 
 def _class_defs(source: str) -> dict[str, ast.ClassDef]:
@@ -244,7 +290,7 @@ def collect() -> dict:
                 add("functions", f"{label}.{name}", f"{dotted}.{name}")
                 function_names[id(value)] = f"{label}.{name}"
         for name in _assigned_names(source):
-            if _is_data(getattr(module, name)):
+            if hasattr(module, name) and _is_data(getattr(module, name)):
                 add("data", f"{label}.{name}", f"{dotted}.{name}")
 
     # Package re-exports: what `UnityPy.files.File` or `UnityPy.load` reach.

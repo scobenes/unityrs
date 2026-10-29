@@ -37,7 +37,7 @@ GROUP_SIZES = {
     "modules": 78,
     "classes": 955,
     "functions": 126,
-    "data": 65,
+    "data": 73,
     "methods": 228,
     "fields": 8456,
     "attributes": 145,
@@ -139,7 +139,30 @@ class MatchingRules(unittest.TestCase):
 
     def test_assigned_names_are_the_public_top_level_targets(self):
         source = "A = 1\nB: int = 2\nC, _D = 3, 4\n_E = 5\nif A:\n    F = 6\ndef g():\n    H = 7\n"
-        self.assertEqual(inventory._assigned_names(source), ["A", "B", "C"])
+        self.assertEqual(inventory._assigned_names(source), ["A", "B", "C", "F"])
+        # A module's top level runs the blocks of its compound statements in its own scope: a loop's target, what
+        # a loop, `if`, `while`, `try`, `with` or `match` block binds, at any depth, are module globals. A
+        # function's or a class's body, an augmented assignment and an `except ... as` name bind none.
+        source = (
+            "for tf in T:\n"
+            "    if tf:\n"
+            "        split, [*rest] = tf, ()\n"
+            "    else:\n"
+            "        block = None\n"
+            "while W:\n    w = 1\nelse:\n    w2 = 2\n"
+            "try:\n    t = 1\nexcept E as err:\n    e = 2\nelse:\n    t2 = 3\nfinally:\n    f = 4\n"
+            "with open(p) as (h, _h):\n    k = 1\n"
+            "match M:\n    case 1:\n        m = 1\n"
+            "class C:\n    c = 1\n"
+            "def g():\n    for x in y:\n        z = 1\n"
+            "A += 1\n"
+            "if A:\n    A += 2\n"
+            "for tf in U:\n    pass\n"
+        )
+        self.assertEqual(
+            inventory._assigned_names(source),
+            ["tf", "split", "rest", "block", "w", "w2", "t", "e", "t2", "f", "h", "k", "m"],
+        )
 
     def test_a_module_needs_its_whole_path(self):
         text = COMPLETE.replace("`export/Texture2DConverter.py`", "`Texture2DConverter.py`")
@@ -412,6 +435,13 @@ class AgainstTheOracle(unittest.TestCase):
         self.assertIn("UnityPyBoost.read_typetree", groups["boost"])
         self.assertIn("CompressionHelper.DECOMPRESSION_MAP", groups["data"])
         self.assertIn("config.FALLBACK_UNITY_VERSION", groups["data"])
+        # Globals a module-level loop binds: its targets and what its body assigns, nested loops included.
+        for name in ("Texture2DConverter.tf", "Texture2DConverter.split", "Texture2DConverter.block_size"):
+            self.assertIn(name, groups["data"])
+        for name in ("endian_s", "reader_type_name", "struct_type_char", "func_name", "struct"):
+            self.assertIn(f"EndianBinaryReader.{name}", groups["data"])
+        # A name bound only in a block the import does not run is not the module's (`t1`, under `__main__`).
+        self.assertNotIn("TpkClassGenerator.t1", groups["data"])
         # Not data: an alias of a class (TF = TextureFormat), a TypeVar, a typing alias.
         for name in ("Texture2DConverter.TF", "ObjectReader.T", "CompressionHelper.ByteString"):
             self.assertNotIn(name, groups["data"])
