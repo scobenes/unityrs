@@ -257,6 +257,7 @@ class DumpTests(unittest.TestCase):
             "nul.zip": b"PK\x03\x04\0" + b"\0" * 200,
             "plain.zip": zbuf.getvalue(),
             "fake.resS": assets_header,
+            "fake.RESS": assets_header,  # the name rule is case-sensitive
             "fake.assets": assets_header,
         }
         for name, data in files.items():
@@ -285,6 +286,7 @@ class DumpTests(unittest.TestCase):
                 "nul.zip": ("ZIP", "zip", None),
                 "plain.zip": ("ResourceFile", "raw", None),  # its 5th byte is 0x14, not NUL
                 "fake.resS": ("AssetsFile", "raw", None),  # the name rule
+                "fake.RESS": ("AssetsFile", "error", "parse"),
                 "fake.assets": ("AssetsFile", "error", "parse"),
             },
         )
@@ -387,6 +389,108 @@ class DumpTests(unittest.TestCase):
                 "error": None,
                 "value": {"t": "dict", "v": [["m_Name", "name"], ["m_Script", "text"]]},
             },
+        )
+
+    def test_version_strings_pack_as_unitypy_packs_them(self):
+        """Spec 4.2's version-packing rule and its failures, for SerializedFiles and bundles."""
+        d = self.tmp / "in"
+        d.mkdir()
+        tree = S.Node("MyThing", "Base", [S.Node("int", "i")])
+
+        def assets_with(version):
+            return assets(tree, struct.pack("<i", 7), unity_version=version)
+
+        files = {
+            "v_major0.assets": assets_with(b"0.5.1f1"),  # packs as it is
+            "v_wide.assets": assets_with(b"133091.1.1f1"),  # wider than u64 once packed
+            "v_nomatch.assets": assets_with(b"abc"),  # fails whatever the fallback
+            "v_empty.assets": assets_with(b""),  # wants a parent bundle, else the fallback
+            "b6_wide": unityraw(6, [(b"one", b"tiny")], engine=b"133091.1.1f1"),  # compares as 2019
+            "b6_spill": unityraw(6, [(b"one", b"tiny")], engine=b"2020.3.34f1024"),  # type byte 7
+            "b6_major64k": unityraw(6, [(b"one", b"tiny")], engine=b"65536.1.1f1"),  # major 0 once masked
+            "b5_major64k": unityraw(5, [(b"one", b"tiny")], engine=b"65536.1.1f1"),  # never parsed to load
+            "b7": unityraw(7, [(b"one", b"tiny")]),  # the web/raw layout: no alignment
+        }
+        for name, data in files.items():
+            (d / name).write_bytes(data)
+        wide = 133091 << 48 | 1 << 32 | 1 << 16 | 3 << 8 | 1
+        self.assertGreater(wide, 2**64)
+        for fallback in (None, "2021.3.2f1"):
+            out = self.tmp / f"versions{fallback}.jsonl"
+            with mock.patch.object(unitypy_dump.UnityPy.config, "FALLBACK_UNITY_VERSION", fallback):
+                self.assertEqual(dump(d, "-o", out), 0)
+            recs = {r["file"][0]: r for r in records(out) if r["rec"] == "file" and len(r["file"]) == 1}
+            with self.subTest(fallback=fallback):
+                self.assertEqual(recs["v_major0.assets"]["l1"]["version_packed"], 5 << 32 | 1 << 16 | 3 << 8 | 1)
+                self.assertEqual(recs["v_wide.assets"]["l1"]["version_packed"], wide)
+                self.assertEqual(recs["v_nomatch.assets"]["error"]["note"], "ValueError: Invalid version string: abc")
+                b6 = recs["b6_wide"]["l1"]
+                self.assertEqual((b6["engine_version_packed"], b6["flags_class"]), (wide, "ArchiveFlagsOld"))
+                self.assertEqual(recs["b6_spill"]["error"]["note"], "ValueError: 7 is not a valid UnityVersionType")
+                self.assertEqual((recs["b7"]["l1"]["block_alignment"], recs["b7"]["l1"]["blocks"]), (False, None))
+                self.assertEqual(recs["b5_major64k"]["l0"]["parsed_as"], "BundleFile")
+                self.assert_canonical(out)
+        # The oracle leaves the fallback unset: where UnityPy wants it, the input fails or the field is null.
+        recs = {
+            r["file"][0]: r
+            for r in records(self.tmp / "versionsNone.jsonl")
+            if r["rec"] == "file" and len(r["file"]) == 1
+        }
+        self.assertTrue(recs["v_empty.assets"]["error"]["note"].startswith("UnityVersionFallbackError"))
+        self.assertTrue(recs["b6_major64k"]["error"]["note"].startswith("UnityVersionFallbackError"))
+        self.assertIsNone(recs["b5_major64k"]["l1"]["engine_version_packed"])
+
+    def test_tables_nodes_and_entries_follow_unitypy(self):
+        """Spec 4.2-4.3: node rows, type-record defaults by format, object l1, truncated blocks, zip entries."""
+        d = self.tmp / "in"
+        d.mkdir()
+        tree = S.Node("MyThing", "Base", [S.Node("int", "i")])
+        nodes = S.Node(0x80000000, "Base", [S.Node(0x8000_0000 | 0x7FFF_FFF0, "x", version=-1, ref_hash=2**64 - 1)])
+        files = {
+            "nodes.assets": S.serialized_file([S.Type(114, nodes)], [S.Obj(1, 0, b"")]),
+            "v15.assets": S.serialized_file(
+                [S.Type(114, tree)], [S.Obj(1, 114, struct.pack("<i", 7), is_stripped=1)], version=15
+            ),
+            "v16.assets": S.serialized_file(
+                [S.Type(114, tree)],
+                [S.Obj(1, 0, struct.pack("<i", 7), script_type_index=3, is_stripped=-1)],
+                version=16,
+            ),
+            "deps.assets": S.serialized_file([S.Type(114, tree, deps=[1, 2])], [S.Obj(1, 0, struct.pack("<i", 7))]),
+            "nodeps.assets": S.serialized_file(
+                [S.Type(49, deps=[1, 2])], [S.Obj(1, 0, S.s32("n") + S.s32("t"))], enable_type_tree=False
+            ),
+            "b6_truncated": unityraw(6, [(b"one", b"tiny"), (b"two", b"abc")])[:-2],
+            "b5_zip": unityraw(5, [(b"z", b"PK\x03\x04\0" + bytes(200))]),
+        }
+        for name, data in files.items():
+            (d / name).write_bytes(data)
+        out = self.tmp / "tables.jsonl"
+        self.assertEqual(dump(d, "-o", out), 0)
+        self.assert_canonical(out)
+        recs = records(out)
+        files = {tuple(r["file"]): r for r in recs if r["rec"] == "file"}
+        objects = {r["file"][0]: r for r in recs if r["rec"] == "object"}
+
+        # Rows unpack as hBBIIiii(Q); a common-string offset UnityPy does not know is its decimal string.
+        self.assertEqual(
+            files[("nodes.assets",)]["l1"]["types"][0]["nodes"],
+            [[0, "AABB", "Base", -1, 1, 0, None, 0, 0, 0], [1, "2147483632", "x", -1, -1, 0, None, 1, 0, 2**64 - 1]],
+        )
+        type_fields = ("is_stripped_type", "script_type_index", "type_dependencies")
+        self.assertEqual([files[("v15.assets",)]["l1"]["types"][0][k] for k in type_fields], [None, -1, None])
+        self.assertEqual([files[("v16.assets",)]["l1"]["types"][0][k] for k in type_fields], [False, 3, None])
+        self.assertEqual(files[("deps.assets",)]["l1"]["types"][0]["type_dependencies"], [1, 2])
+        self.assertIsNone(files[("nodeps.assets",)]["l1"]["types"][0]["type_dependencies"])
+        self.assertEqual(
+            (objects["v15.assets"]["l1"]["is_stripped"], objects["v16.assets"]["l1"]["is_stripped"]), (1, -1)
+        )
+
+        # A block reports the bytes actually read; a ZIP entry is kept raw.
+        self.assertEqual(files[("b6_truncated",)]["l1"]["blocks"], [[7, 5, 0]])
+        self.assertEqual(files[("b6_truncated", "two")]["l0"]["size"], 1)
+        self.assertEqual(
+            (files[("b5_zip", "z")]["l0"]["type"], files[("b5_zip", "z")]["l0"]["parsed_as"]), ("ZIP", "raw")
         )
 
     def test_input_names_are_hex_tagged_when_not_utf8(self):

@@ -198,6 +198,22 @@ class CompareTests(unittest.TestCase):
         ex = next(r for r in d["by_path"] if r["kind"] == "value")["examples"][0]
         self.assertEqual((ex["a"], ex["b"]), ("f32:3f800000", "f32:3f800001"))
 
+    def test_u8s_compares_as_bytes_of_its_own_kind(self):
+        """A packed UInt8 vector is raw bytes: not a list of ints, not TypelessData (spec section 3)."""
+        u8s = {"t": "u8s", "hex": "000102"}
+        for other, kind in (([0, 1, 2], "type"), ({"t": "bytes", "hex": "000102"}, "value")):
+            with self.subTest(other=other):
+                a = self.write("a.jsonl", one_object(S(["u8v", u8s])))
+                b = self.write("b.jsonl", one_object(S(["u8v", other])))
+                _, d = self.run_compare(a, b)
+                self.assertEqual(self.paths(d), {("L2", "l2.value.u8v", kind)})
+        summary = {"t": "u8s", "len": 65, "sha256": C.enc_raw("u8s", bytes(65))["sha256"]}
+        _, d = self.run_compare(
+            self.write("a.jsonl", one_object(S(["u8v", summary]))),
+            self.write("b.jsonl", one_object(S(["u8v", [0] * 65]))),
+        )
+        self.assertEqual(self.paths(d), {("L2", "l2.value.u8v", "type")})
+
     def test_a_longer_list_with_an_equal_prefix_is_a_length_difference(self):
         a, b = base_records(), base_records()
         b[1]["l2"]["value"]["v"][1][1] = [1, 2, 3]

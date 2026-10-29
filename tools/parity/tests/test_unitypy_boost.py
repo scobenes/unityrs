@@ -392,6 +392,39 @@ class ThroughBoost(unittest.TestCase):
         self.assertEqual(read(root, struct.pack("<ii", 1, 2)), expected)
         self.assertEqual(read_python(root, struct.pack("<ii", 1, 2), check_read=False), expected)
 
+    def test_pure_python_path_reads_every_registry_in_aligned_class_arrays(self):
+        """Its array reader has no registry check for class elements whose node carries the align flag."""
+        elem = N(
+            "Elem",
+            "data",
+            [
+                N("ManagedReferencesRegistry", "r1", [N("int", "v")]),
+                N("ManagedReferencesRegistry", "r2", [N("int", "v")]),
+            ],
+            meta=ALIGN,
+        )
+        root = N("Base", "Base", [vec("arr", elem)])
+        data = struct.pack("<iii", 1, 11, 22)
+        self.assertEqual(read(root, data, check_read=False), {"arr": [{"r1": {"v": 11}}]})
+        self.assertEqual(read_python(root, data, check_read=False), {"arr": [{"r1": {"v": 11}, "r2": {"v": 22}}]})
+
+    def test_pure_python_path_reads_negative_typeless_lengths(self):
+        """UnityPyBoost refuses a negative TypelessData length; the pure-Python reader slices with it."""
+        root = N("Base", "Base", [N("TypelessData", "blob"), N("int", "after")])
+        for n in (-1, -4):
+            data = struct.pack("<ii", n, 0x55) + b"\1\2\3\4"
+            with self.subTest(n=n), self.assertRaises(ValueError) as e:
+                read(root, data, check_read=False)
+            self.assertEqual(unitypy_dump.error_kind(e.exception), ("negative_length", None))
+        # -4: nothing is read and the position moves back 4 bytes, so "after" re-reads the length.
+        data = struct.pack("<ii", -4, 0x55) + b"\1\2\3\4"
+        self.assertEqual(read_python(root, data, check_read=False), {"blob": b"", "after": -4})
+        # -1: the rest of the data is read, and the next read fails.
+        data = struct.pack("<ii", -1, 0x55) + b"\1\2\3\4"
+        with self.assertRaises(Exception) as e:
+            read_python(root, data, check_read=False)
+        self.assertEqual(unitypy_dump.error_kind(e.exception), ("other", None))
+
     def test_pure_python_path_swaps_16_bit_signedness(self):
         """In aligned arrays the pure-Python reader reads UInt16 as signed and SInt16 as unsigned."""
         root = N(

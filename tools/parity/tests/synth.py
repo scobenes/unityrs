@@ -16,9 +16,10 @@ ALIGN = 0x4000
 class Node:
     """A typetree node; `type` and `name` are str, bytes, or an int string offset (high bit: common string)."""
 
-    def __init__(self, type, name, children=(), meta=0, byte_size=-1, flags=0):
+    def __init__(self, type, name, children=(), meta=0, byte_size=-1, flags=0, version=1, ref_hash=0):
         self.type, self.name, self.children = type, name, list(children)
         self.meta, self.byte_size, self.flags = meta, byte_size, flags
+        self.version, self.ref_hash = version, ref_hash
 
 
 def vec(name, elem, meta=0):
@@ -63,8 +64,8 @@ def blob(root, version, endian="<"):
     fmt = endian + "hBBIIiii" + ("Q" if version >= 19 else "")
     body = b""
     for index, (n, level) in enumerate(rows):
-        fields = [1, level, n.flags, offset(n.type), offset(n.name), n.byte_size, index, n.meta]
-        body += struct.pack(fmt, *fields, *([0] if version >= 19 else []))
+        fields = [n.version, level, n.flags, offset(n.type), offset(n.name), n.byte_size, index, n.meta]
+        body += struct.pack(fmt, *fields, *([n.ref_hash] if version >= 19 else []))
     return struct.pack(endian + "ii", len(rows), len(strings)) + body + bytes(strings)
 
 
