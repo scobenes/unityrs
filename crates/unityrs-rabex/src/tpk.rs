@@ -490,11 +490,17 @@ impl TpkCommonString {
         })
     }
 
+    /// The common-string count for `target_version`: the last entry at or
+    /// below it, scanning forward and stopping at the first above it.
+    ///
+    /// F11 (unityrs): that scan is UnityPy's `get_item_for_version`'s
+    /// (`Tpk.py:472-481`), but not its outcome for a count of 0: UnityPy's
+    /// `if ret:` takes a 0 for no entry and raises `ValueError`, where this
+    /// returns `Some(0)`. unityrs never calls this (its `clippy.toml`
+    /// disallows it).
     pub fn get_count(&self, target_version: &UnityVersion) -> Option<u8> {
-        // F3 (unityrs): the forward scan, which stops at the first version
-        // above the target, is UnityPy's `get_item_for_version`; an
-        // assertion that a backward scan agrees panicked on a list out of
-        // order.
+        // F3 (unityrs): an assertion that a backward scan agrees panicked
+        // on a list out of order.
         let target_version = TpkVersion::from(target_version);
         let mut ret = None;
         for (version, item) in &self.version_information {
@@ -1413,6 +1419,12 @@ mod patch_tests {
         // UnityPy stops at the first version above the target (5 > 4).
         assert_eq!(common.get_count(&v(4)), None);
         assert_eq!(common.get_count(&v(6)), Some(1));
+        // F11: a count of 0 is `Some(0)`, which UnityPy raises on.
+        let zero = TpkCommonString {
+            version_information: vec![(tv(1), 0)],
+            string_buffer_indices: vec![],
+        };
+        assert_eq!(zero.get_count(&v(5)), Some(0));
     }
 
     #[test]
