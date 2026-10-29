@@ -66,21 +66,24 @@ unityrs is the alternative, built around three things:
 **Reading**
 - **Tier A: bit-exact** wherever UnityPy is right.
   - Typetree dicts equal `parse_as_dict()` with Boost semantics: lists for arrays, tuples for pairs, bytes for TypelessData, surrogate-escaped strings, float32 widened exactly.
+  - Object mode builds each class as UnityPyBoost's `parse_class` does: a slotted class with an extra field becomes an `UnknownObject`. The pure-Python path's different rule is kept where UnityPy calls it (`PARITY.md` section 9.2).
   - `obj.container` and dependency resolution match.
   - Decoded pixels **and output mode** match: BCn per Pillow `BcnDecode.c`; ETC/EAC/ATC/PVRTC/crunch per texture2ddecoder C++; ASTC via ARM astcenc.
   - OBJ/MTL text matches.
+  - An image file the extractor saves under a container's extension is byte-equal with what Pillow 9.5.0's writer for that extension saves at its defaults, for every writer Pillow registers; a PDF's two dates, which hold the time of the save, aside (`PARITY.md` section 15.8).
   - `save_typetree(parse())` returns the raw bytes.
   - Every patch to vendored decoders is labelled either Tier A (keeps the reference behaviour) or Tier C.
   - An observable quirk that callers can depend on and that is not wrong data (a file name, a dict key, a `str()` form, a docstring the code contradicts) is Tier A: unityrs keeps UnityPy's behaviour.
 - **Tier B: UnityPy raises on a valid request.** We produce correct output, checked against an independent reference, and `PARITY.md` names a pinned divergence test for each:
-  - 22 TextureFormats: BC6H, half and float formats, the 8 signed formats, RG16/RG32, R16, RGBA64, RGB9e5, YUY2;
+  - 21 TextureFormats: BC6H, the half and float formats but ARGBFloat, the 8 signed formats, RG16/RG32, R16, RGBA64, RGB9e5, YUY2. `PARITY.md` section 17.1 names each one's reference: a closed form (the half and float, integer, shared-exponent and BT.601 rules), or for BC6H texture2ddecoder 1.0.5's decoder, which is in the oracle image;
   - a gzip-compressed WebFile, which UnityPy detects and then fails to parse;
   - a streamed Texture2DArray, whose slices all raise;
   - a Texture2DArray in one of the seven 8-bit integer formats that UnityPy maps to a 16-bit texture format that raises;
   - `GameObject.m_Components` on an empty list or the old pair form;
   - `Texture2D.image` of an empty 0×0 texture;
   - an empty AudioClip, whose empty resource path UnityPy fetches;
-  - a ZIP opened from a path, which UnityPy loads only from bytes or a buffered stream.
+  - a ZIP opened from a path, which UnityPy loads only from bytes or a buffered stream;
+  - `set_image` from an image whose mode Pillow cannot pack for the target (an indexed or grey PNG, or an RGB image into Alpha8): unityrs converts it with Pillow's `convert("RGBA")` first (`PARITY.md` section 18.1).
 - **Tier C: UnityPy is wrong.** It returns wrong data that an independent reference shows is wrong, or one of its exporters or helpers crashes. We produce correct output, and `PARITY.md` lists each case with a pinned divergence test and, for a crash, what correct output means:
   - RGBAHalf returns garbage;
   - RGB48 decodes as packed 5-6-5;
@@ -92,6 +95,7 @@ unityrs is the alternative, built around three things:
   - mesh endianness is never read from the file;
   - the compressed-mesh 4th bone weight;
   - the ReferencedObject array path does not skip None;
+  - the pure-Python object-mode reader raises `AttributeError` on an extra field of a class without a `__dict__`;
   - dump_blob's common-string offset 0;
   - two bundles holding a CAB of one name share one registry entry;
   - `load_dependencies` loads dependencies as main files;
@@ -99,10 +103,13 @@ unityrs is the alternative, built around three things:
   - the Sprite cache key ignores the FileID;
   - MeshRendererExporter fails on Unity 6;
   - ShaderConverter fails on 6000.3;
-  - the extractor's crashes: GameObjects, MonoBehaviours, sprites without a container, meshes without vertices, and images Pillow cannot save under the container's extension.
+  - the extractor's crashes: GameObjects (each reachable object written once, its name ending in its path id where UnityPy's would end in `_None`), MonoBehaviours, sprites without a container, meshes without vertices, and images Pillow cannot save under the container's extension, or saves as an ICO holding no image (a side below 16).
 - **Unsupported until a sample and a reference exist.** unityrs refuses these with a named `Unsupported` error:
   - LZHAM, where UnityPy raises too;
   - a UnityArchive parsed as a bundle, where UnityPy raises too. Loading one is Tier A: UnityPy's detector does not know the signature and loads the file as a raw ResourceFile, and so does unityrs;
+  - ARGBFloat, where UnityPy raises too: its name says A, R, G, B, UnityPy's table reads it as B, G, R, A, and no sample or specification of the layout decides;
+  - YUY2 of odd width: no sample shows how the last pixel is stored;
+  - `set_image` from an image mode Pillow cannot convert to RGBA (BGR;15, BGR;16, BGR;24, La), where UnityPy raises too;
   - ETC_RGB4_3DS and ETC_RGBA8_3DS. UnityPy decodes them as plain ETC1, but no 3DS sample or reference decoder shows what they should decode to, so the refusal is a documented divergence, not parity;
   - a Texture2DArray read from a Switch or XBOX360 file. UnityPy decodes its slices with no platform handling, and the class carries no platform blob to deswizzle with;
   - `set_image` with mips on a Switch-swizzled texture. UnityPy swizzles the top level and writes the mips linearly; no sample shows how a mip chain is laid out;
@@ -126,7 +133,7 @@ Writing has tiers of its own. Where UnityPy writes, unityrs follows the rule in 
 |---|---|
 | Pre-v10 and v11 typetree writing (UnityPy raises) | the saved file reloads with the same objects |
 | An object holding a ReferencedObject of empty class (UnityPy raises `KeyError`) | byte-equal to its original bytes |
-| `set_image` to BC7 (UnityPy raises with the pinned etcpak) | byte-equal to what etcpak 0.9.14's `compress_bc7` writes with a default `BC7CompressBlockParams()` on the data UnityPy hands it (flipped, padded to whole 4×4 blocks, RGBA) |
+| `set_image` to BC7 (UnityPy raises with the pinned etcpak) | byte-equal to what etcpak 0.9.14's `compress_bc7` writes with a default `BC7CompressBlockParams()` on the data UnityPy hands it (flipped, padded to whole 4×4 blocks, RGBA); on a Switch-swizzled texture, padded to the swizzle's size instead, and the compressed bytes swizzled |
 | `set_image` to ETC_RGB4Crunched (UnityPy tags plain ETC1 as crunched) | written as ETC_RGB4, equal to `set_image` to ETC_RGB4 |
 | `WebFile.save` of a writer entry (UnityPy raises) | the saved WebFile reloads with the writer's bytes |
 | `BundleFile.save` with `original` and no blocks (UnityPy raises); `save_fs` encryption flags (UnityPy's output reads back as encrypted) | the saved bundle reloads, unencrypted, with the same entries |
@@ -145,7 +152,7 @@ A Cargo workspace. Licences are declared per crate.
 | `unityrs-tpk` | The class database for stripped typetrees. Optional, and loaded from a path at runtime. It is not embedded until its provenance is settled (it comes from AssetRipper's TypeTreeDumps, which has no licence file). |
 | `unityrs-meshdecode` | Vertex-data unpack for every VertexFormat table, CompressedMesh/PackedBitVector, index formats and topologies, `get_triangles`. In f64 for parity. Sprites and meshes share it. |
 | `unityrs-texture` | TextureFormats per the P0 matrix: Pillow-semantics BCn; vendored texture2ddecoder for ETC/EAC/ATC/PVRTC/crunch; ARM astcenc for ASTC LDR/HDR; Switch deswizzle; the Xbox360 swap; Texture2DArray. **Sprites:** atlas render data, alpha merge, banker's-rounding crop, rotation and flips, tight-mesh masks (a port of Pillow's `polygon_generic`), and the affine path. Encoders for `set_image` sit behind a feature. Decoders run under `catch_unwind`. |
-| `unityrs-imageio` | A mode-aware PNG encoder byte-identical to Pillow 9.5.0: colour types 0/2/4/6; filters none/up/sub/paeth by minimum abs-sum; `libz-sys` static zlib, with CI asserting no zlib-ng; IDAT chunks of max(65536, 4*w). Also lossy WebP via `libwebp-sys`, a visible-pixel hash, and a fast PNG mode. |
+| `unityrs-imageio` | A mode-aware PNG encoder byte-identical to Pillow 9.5.0: colour types 0/2/4/6; filters none/up/sub/paeth by minimum abs-sum; `libz-sys` static zlib, with CI asserting no zlib-ng; IDAT chunks of max(65536, 4*w). Also lossy WebP via `libwebp-sys`, a visible-pixel hash, and a fast PNG mode. In P3, the other writers `PARITY.md` section 15.8 makes Tier A, each byte-identical to Pillow 9.5.0's. |
 | `unityrs-mesh` | MeshHelper parity, skins, blend shapes, Unity 6 LOD info, OBJ/MTL. |
 | `unityrs-anim` | AnimationClip (streamed, dense and constant, generic bindings, legacy), Avatar/TOS, humanoid muscles, AnimatorController state machines and blend trees. |
 | `unityrs-gltf` | **Two-phase:** `sample_*()` returns an editable `AnimatedScene` (nodes, per-frame TRS, events, active curves, STEP channels), and `to_glb(scene, profile)` writes it. Callers can edit the scene in between. A **material-mapping trait** with unlit+extras and core PBR (normal, alpha, `KHR_texture_transform`) implementations. Morph targets. The **profile schema** covers root naming, layer skips, drawable/additive shader rules, inactive-root handling, material-property allowlists, clip-state lists with parameter overrides, scene roots and exclusions, built-in resource handling, extras naming and export metadata. |
@@ -193,7 +200,7 @@ The spike records LOC kept versus rewritten, whether upstream takes patches, obj
 | L3 | object re-save |
 | L4 | file save |
 | L5 | pixels, mode, visible hash |
-| L5b | PNG bytes against Pillow 9.5.0 |
+| L5b | image file bytes against Pillow 9.5.0's writers: PNG first, then every writer `PARITY.md` section 15.8 makes Tier A |
 | L6 | mesh numbers (with an expected-divergence mask) and OBJ text |
 | L7 | text exports |
 | L8 | audio |

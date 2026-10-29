@@ -9,12 +9,14 @@ import contextlib
 import gzip
 import io
 import os
+import random
 import re
 import struct
 import sys
 import tempfile
 import unittest
 import zipfile
+from abc import ABC
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -32,12 +34,21 @@ try:
     import lz4.block
     import UnityPy
     from PIL import Image
-    from UnityPy.classes import GameObject, PPtr, StreamedResource, StreamingInfo, Texture2D, Texture2DArray
+    from UnityPy import classes
+    from UnityPy.classes import (
+        GameObject,
+        PPtr,
+        StreamedResource,
+        StreamingInfo,
+        Texture2D,
+        Texture2DArray,
+        UnknownObject,
+    )
     from UnityPy.enums import BuildTarget, FileType, TextureFormat
     from UnityPy.enums.GraphicsFormat import GraphicsFormat
     from UnityPy.export import AudioClipConverter, Texture2DConverter
     from UnityPy.files import BundleFile, WebFile
-    from UnityPy.helpers import ImportHelper, ResourceReader, TextureSwizzler, Tpk, TypeTreeHelper
+    from UnityPy.helpers import ImportHelper, PackedBitVector, ResourceReader, TextureSwizzler, Tpk, TypeTreeHelper
     from UnityPy.helpers.ContainerHelper import ContainerHelper
     from UnityPy.helpers.TypeTreeNode import TypeTreeNode
     from UnityPy.helpers.TypeTreeNode import clean_name as node_clean_name
@@ -367,6 +378,75 @@ class Rows(unittest.TestCase):
         self.assertEqual(node._clean_name, "²ab", "UnityPyBoost: ASCII digits only")
         self.assertEqual((node_clean_name("²ab"), TypeTreeHelper.clean_name("²ab")), ("x²ab", "x²ab"))
 
+    # Sections 9.2, 14.1, 19.2: how a class node becomes an object, on UnityPyBoost and on the pure-Python path.
+    def test_object_mode_builds_classes_as_parse_class_does(self):
+        def tree(root_type, fields):
+            nodes = [{"m_Level": 0, "m_Type": root_type, "m_Name": "Base", "m_ByteSize": -1, "m_Version": 1}]
+            nodes += [
+                {"m_Level": 1, "m_Type": "int", "m_Name": name, "m_ByteSize": 4, "m_Version": 1} for name in fields
+            ]
+            return TypeTreeNode.from_list(nodes)
+
+        def parse(root_type, fields, boost):
+            data = struct.pack(f"<{len(fields)}i", *range(1, len(fields) + 1))
+            size = len(data) if boost else None  # no byte_size: the pure-Python path
+            reader = EndianBinaryReader(data, "<")
+            return TypeTreeHelper.read_typetree(tree(root_type, fields), reader, False, size, check_read=boost)
+
+        # Three kinds of class: slotted with no __dict__ (first base `object`), slotted with the __dict__ Object
+        # gives, and unslotted (attrs `slots=False`: a generated class whose first base is another class), whose
+        # `__slots__` is ABC's empty tuple, found through the MRO.
+        self.assertEqual(classes.AssetDatabaseMetrics.__bases__, (object,))
+        self.assertTrue(classes.AssetDatabaseMetrics.__slots__)
+        self.assertEqual(classes.MarshallingTestObject.__mro__[1:3], (classes.Object, ABC))
+        self.assertTrue(classes.MarshallingTestObject.__slots__)
+        for slotted in (classes.EditorSettings, classes.StreamingInfo, classes.Vector3f):
+            self.assertTrue(slotted.__slots__, slotted)
+        for unslotted in (classes.MultiplayerManager, classes.TextAsset, classes.Texture2D):
+            self.assertEqual(unslotted.__slots__, (), unslotted)
+
+        metrics = ["totalAssetCount", "nonProAssetCount", "nonProAssetsCreatedAfterProLicense"]  # 1 required
+        roles = ["m_ActiveMultiplayerRole", "m_ActiveMultiplayerRoles"]  # both optional
+        self.assertEqual([f.default is attrs.NOTHING for f in attrs.fields(classes.AssetDatabaseMetrics)], [1, 0, 0])
+        cases = {
+            # (class, fields): (UnityPyBoost's result, the pure-Python path's)
+            ("AssetDatabaseMetrics", (*metrics,)): ("AssetDatabaseMetrics", "AssetDatabaseMetrics"),
+            # A missing optional field takes its default on both paths, a missing required one gives UnknownObject.
+            ("AssetDatabaseMetrics", (metrics[0],)): ("AssetDatabaseMetrics", "AssetDatabaseMetrics"),
+            ("AssetDatabaseMetrics", (*metrics[1:],)): ("UnknownObject", "UnknownObject"),
+            # An extra field: Boost gives up on any slotted class; Python's setattr fails without a __dict__.
+            ("AssetDatabaseMetrics", (*metrics, "m_Extra")): ("UnknownObject", AttributeError),
+            ("MarshallingTestObject", ("m_Prop", "m_Extra")): ("UnknownObject", "MarshallingTestObject"),
+            # An unslotted class keeps the extra as an attribute on Boost; Python wants every annotation present.
+            ("MultiplayerManager", (*roles, "m_Extra")): ("MultiplayerManager", "MultiplayerManager"),
+            ("MultiplayerManager", ("m_Extra",)): ("MultiplayerManager", "UnknownObject"),
+            ("AssetDatabaseMetrics", (metrics[0], "m_Extra")): ("UnknownObject", "UnknownObject"),
+            # A type the module lacks.
+            ("NoSuchClass", ("a",)): ("UnknownObject", "UnknownObject"),
+        }
+        for (root, fields), results in cases.items():
+            for boost, expected in zip((True, False), results, strict=True):
+                with self.subTest(root, fields=fields, boost=boost):
+                    if expected is AttributeError:
+                        with self.assertRaisesRegex(AttributeError, "object has no attribute 'm_Extra'"):
+                            parse(root, fields, boost)
+                        continue
+                    value = parse(root, fields, boost)
+                    self.assertEqual(type(value).__name__, expected)
+                    self.assertEqual(
+                        {name: getattr(value, name) for name in fields},
+                        dict(zip(fields, range(1, len(fields) + 1), strict=True)),
+                    )
+                    if expected == "UnknownObject":
+                        # Boost always keeps the node; the pure-Python path drops it for a type the module lacks.
+                        kept = boost or root != "NoSuchClass"
+                        self.assertEqual(value.get_type(), root if kept else None)
+        # ObjectReader passes byte_size, so every object-mode parse of a loaded file goes through Boost.
+        root = S.Node("AssetDatabaseMetrics", "Base", [S.Node("int", name) for name in [*metrics, "m_Extra"]])
+        sf = load(S.serialized_file([S.Type(114, root)], [S.Obj(1, 0, struct.pack("<4i", 1, 2, 3, 4))]))[0]
+        parsed = sf.objects[1].parse_as_object()
+        self.assertEqual((type(parsed), parsed.get_type(), parsed.m_Extra), (UnknownObject, "AssetDatabaseMetrics", 4))
+
     # Section 18: BundleFile.save flags.
     def test_bundle_save_flags(self):
         bundle = load(S.fs_bundle([(b"CAB-test", text_asset_file(), 4)]))[0]
@@ -434,6 +514,28 @@ class Rows(unittest.TestCase):
         self.assertEqual(compress(padded.tobytes("raw", "RGBA"), 8, 8, etcpak.BC7CompressBlockParams()), reference)
         decoded = Texture2DConverter.parse_image_data(written, 6, 5, TextureFormat.BC7, (2021, 3, 1, 3), 0)
         self.assertEqual((decoded.mode, decoded.size), ("RGBA", (6, 5)))
+        # On a Switch-swizzled texture the image is padded to the swizzle's size, not to whole 4x4 blocks,
+        # compressed, and the compressed bytes swizzled with BC7's 4x4 block and the blob's GOBs.
+        blob = [0] * 8 + list((4).to_bytes(4, "little"))  # 1 << 4 = 16 GOBs per block
+        with mock.patch.object(etcpak, "compress_bc7", with_defaults):
+            switch, tag = Texture2DConverter.image_to_texture2d(image, TextureFormat.BC7, BuildTarget.Switch, blob)
+        self.assertEqual(tag, TextureFormat.BC7)
+        self.assertEqual(TextureSwizzler.TEXTURE_FORMAT_BLOCK_SIZE_MAP[TextureFormat.BC7], (4, 4))
+        width, height = TextureSwizzler.get_padded_texture_size(6, 5, 4, 4, 16)
+        self.assertEqual((width, height), (16, 512))
+        flipped = image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        linear = compress(
+            Texture2DConverter.pad_image(flipped, width, height).tobytes("raw", "RGBA"),
+            width,
+            height,
+            etcpak.BC7CompressBlockParams(),
+        )
+        self.assertEqual(switch, bytes(TextureSwizzler.swizzle(linear, width, height, 4, 4, 16)))
+        self.assertEqual((len(switch), len(written)), (8192, 64))
+        # The reader deswizzles it back: the same pixels as the linear write (its blocks hold the same texels).
+        version = (2021, 3, 1, 3)
+        back = Texture2DConverter.parse_image_data(switch, 6, 5, TextureFormat.BC7, version, BuildTarget.Switch, blob)
+        self.assertEqual(list(back.getdata()), list(decoded.getdata()))
 
     # Sections 18, 19.2: `set_image` on a swizzled or byte-swapped platform.
     def test_set_image_writes_linear_mips_and_never_swaps_for_xbox(self):
@@ -475,6 +577,59 @@ class Rows(unittest.TestCase):
         swapped = Texture2DConverter.parse_image_data(*args, BuildTarget.XBOX360)
         self.assertNotEqual(list(swapped.getdata()), list(plain.getdata()))
 
+    # Sections 15.1, 18, 18.1, 19.2: `set_image` packs the image in the mode it opened in.
+    def test_set_image_packs_only_what_pillow_packs(self):
+        image = Image.new("RGBA", (8, 8))
+        image.putdata([(x * 30, y * 30, 7, 255 - x) for y in range(8) for x in range(8)])
+
+        def texture():
+            return SimpleNamespace(
+                m_TextureFormat=TextureFormat.DXT1,
+                object_reader=None,
+                m_PlatformBlob=None,
+                m_MipMap=False,
+                m_MipCount=1,
+                m_StreamData=None,
+            )
+
+        targets = {
+            TextureFormat.DXT1: "RGBA",
+            TextureFormat.RGB24: "RGB",
+            TextureFormat.R8: "R",
+            TextureFormat.Alpha8: "A",
+        }
+        # An indexed and a grey PNG, set from a path, keep the mode Image.open gives and raise for every target.
+        for mode in ("P", "L"):
+            path = self.tmp / f"{mode}.png"
+            image.convert(mode).save(path)
+            with Image.open(path) as opened:
+                self.assertEqual(opened.mode, mode)
+            for fmt, raw in targets.items():
+                with self.subTest(mode, target=fmt.name):
+                    with self.assertRaisesRegex(ValueError, f"^No packer found from {mode} to {raw}$"):
+                        Texture2D.set_image(texture(), str(path), fmt)
+                    # The reference: UnityPy's set_image of the image converted to RGBA, which packs.
+                    converted = texture()
+                    Texture2D.set_image(converted, Image.open(path).convert("RGBA"), fmt)
+                    reference = Texture2DConverter.image_to_texture2d(Image.open(path).convert("RGBA"), fmt)[0]
+                    self.assertEqual(converted.image_data, reference)
+        # RGB raises for Alpha8 alone; converted, its alpha is 255.
+        rgb = image.convert("RGB")
+        with self.assertRaisesRegex(ValueError, "^No packer found from RGB to A$"):
+            Texture2DConverter.image_to_texture2d(rgb, TextureFormat.Alpha8)
+        for fmt in set(targets) - {TextureFormat.Alpha8}:
+            Texture2DConverter.image_to_texture2d(rgb, fmt)
+        self.assertEqual(
+            Texture2DConverter.image_to_texture2d(rgb.convert("RGBA"), TextureFormat.Alpha8)[0], b"\xff" * 64
+        )
+        # LAB packs into Alpha8: Pillow's `A` band of LAB is its a* channel.
+        lab = Image.new("LAB", (8, 8), (10, 20, 30))
+        self.assertEqual(Texture2DConverter.image_to_texture2d(lab, TextureFormat.Alpha8)[0], bytes([20]) * 64)
+        # Modes Pillow cannot convert to RGBA either: Tier U.
+        for mode in ("BGR;15", "BGR;16", "BGR;24", "La"):
+            with self.subTest(mode), self.assertRaisesRegex(ValueError, "^conversion from .* not supported$"):
+                Image.new(mode, (2, 2)).convert("RGBA")
+
     # Sections 14.2, 19.2: Texture2DArray decodes every slice with platform 0 and no blob.
     def test_texture2darray_ignores_the_platform(self):
         self.assertIn("m_PlatformBlob", attrs.fields_dict(Texture2D))
@@ -510,6 +665,32 @@ class Rows(unittest.TestCase):
             m_Width=width,
             m_Height=width,
             object_reader=SimpleNamespace(version=(2021, 3, 2, 0), platform=platform, assets_file=None),
+        )
+
+    # Sections 14.2, 19.2: a streamed array's data is never read, and the reference is the same bytes held inline.
+    def test_streamed_texture2darray_never_reads_its_resource(self):
+        data = bytes(range(64)) * 2  # two 4x4 RGBA32 slices, as the .resS would hold them
+        reads = []
+
+        def get_resource_data(path, assets_file, offset, size):
+            reads.append((path, offset, size))
+            return data[offset : offset + size]
+
+        streamed = self.texture_array(GraphicsFormat.R8G8B8A8_UNorm, b"", 4, 2)  # a parsed array's empty data
+        streamed.m_StreamData = StreamingInfo(path="archive:/CAB-x/CAB-x.resS", offset=0, size=len(data))
+        streamed.m_DataSize = len(data)
+        with mock.patch.object(ResourceReader, "get_resource_data", get_resource_data):
+            with self.assertRaisesRegex(ValueError, "^Texture2D has no image data$"):
+                Texture2DArray.images.fget(streamed)
+            self.assertEqual(reads, [], "`image_data` is b'', not None, so the .resS is never read")
+            # The reference: the bytes the .resS holds, decoded as an array holding them inline decodes them.
+            inline = Texture2DArray.images.fget(self.texture_array(GraphicsFormat.R8G8B8A8_UNorm, data, 4, 2))
+            streamed.image_data = None  # what the fallback needs to fire
+            read = Texture2DArray.images.fget(streamed)
+        self.assertEqual(reads, [("archive:/CAB-x/CAB-x.resS", 0, len(data))])
+        self.assertEqual([image.tobytes() for image in read], [image.tobytes() for image in inline])
+        self.assertEqual(
+            [image.tobytes() for image in inline], [self.flipped_rgba(data[:64]), self.flipped_rgba(data[64:])]
         )
 
     # Sections 14.2, 19.2: the 8-bit integer graphics formats map to 16-bit texture formats.
@@ -565,6 +746,22 @@ class Rows(unittest.TestCase):
         exported = extractor.export_obj(PPtr(m_FileID=0, m_PathID=1, assetsfile=sf), str(self.tmp / "go"), True, True)
         self.assertEqual(exported, [(sf, 1)])
         self.assertEqual((self.tmp / "go" / "hello_None.txt").read_bytes(), b"world")
+
+    # Section 19.2: with `_None` in place of the path id, objects of one name share one file in the crawl's folder.
+    def test_export_obj_names_collide_without_the_path_id(self):
+        objects = [S.Obj(1, 0, S.s32("") + S.s32("first")), S.Obj(2, 0, S.s32("") + S.s32("second"))]
+        data = S.serialized_file([S.Type(49, TEXT_ASSET)], objects)
+        sf = load(data, env=UnityPy.Environment(path=str(self.tmp)))[0]
+        folder = self.tmp / "go"
+        folder.mkdir()
+        for path_id in (1, 2):  # two components with an empty m_Name, as most MonoBehaviours have
+            pointer = PPtr(m_FileID=0, m_PathID=path_id, assetsfile=sf)
+            self.assertEqual(extractor.export_obj(pointer, str(folder), True, True), [(sf, path_id)])
+        # Both land on `{fp}/_None.txt`; the later overwrites the earlier.
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["_None.txt"])
+        self.assertEqual((folder / "_None.txt").read_bytes(), b"second")
+        # The names exportGameObject means to give them, with the path id appended, are distinct.
+        self.assertEqual(len({f"_{reader.path_id}.txt" for reader in sf.objects.values()}), 2)
 
     # Sections 16, 19.2: an AudioClip with no data.
     def test_an_empty_audio_clip_follows_an_empty_resource_path(self):
@@ -635,6 +832,36 @@ class Rows(unittest.TestCase):
         self.assertEqual((upper.type_str, str(upper)), ("f", "2019.4f1"))
         unknown = UnityVersion.from_str("2019.4.15q1")
         self.assertEqual((int(unknown.type), unknown.type_str, str(unknown)), (255, "q", "2019.4q1"))
+
+    # Section 15.3: PackedBitVector.unpack_floats divides before it multiplies.
+    def test_unpack_floats_divides_first(self):
+        def f32(value):
+            return struct.unpack("<f", struct.pack("<f", value))[0]
+
+        divided = multiplied = 0
+        rng = random.Random(7)
+        for _ in range(50):
+            bits = rng.choice([8, 10, 11, 12, 16, 20, 24])
+            values = [rng.randrange(1 << bits) for _ in range(32)]
+            packed = sum(v << (bits * i) for i, v in enumerate(values)).to_bytes((bits * 32 + 7) // 8, "little")
+            vector = SimpleNamespace(
+                m_NumItems=32,
+                m_BitSize=bits,
+                m_Range=f32(rng.uniform(0.01, 50)),
+                m_Start=f32(rng.uniform(-20, 20)),
+                m_Data=list(packed),
+            )
+            got = PackedBitVector.unpack_floats(vector)
+            scale = vector.m_Range / ((1 << bits) - 1)
+            self.assertEqual(got, [x * scale + vector.m_Start for x in values])
+            left_to_right = [x * vector.m_Range / ((1 << bits) - 1) + vector.m_Start for x in values]
+            divided += len(values)
+            multiplied += sum(a != b for a, b in zip(got, left_to_right, strict=True))
+        # Multiplying first rounds differently for a fair share of values.
+        self.assertGreater(multiplied, divided // 20)
+        # Bit size 0 repeats the start.
+        empty = SimpleNamespace(m_NumItems=3, m_BitSize=0, m_Range=1.0, m_Start=2.5, m_Data=[])
+        self.assertEqual(PackedBitVector.unpack_floats(empty), [2.5, 2.5, 2.5])
 
     # Sections 8, 14.3: defaults that are never used.
     def test_object_reader_get_and_container_attributes(self):
