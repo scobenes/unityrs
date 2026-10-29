@@ -352,9 +352,13 @@ def object_record(obj, path, encoder, levels, stats):
             try:
                 encoded = encoder.encode(value, node)
             except C.EncodeError as e:
-                parsed_ok = False
-                error = {"kind": "encode", "bytes_read": None, "note": note(e)}
-                stats["encode_errors"] += 1
+                # UnityPy read the value; the oracle's own encoder refusing it is a
+                # bug in the dumper, not an outcome of the input, so the run stops
+                # (spec 4.3: the oracle never writes an `encode` error).
+                raise DumperError(
+                    f"file {C.dumps(path)} path_id {obj.path_id}: the canonical encoder refused the value "
+                    f"UnityPy read ({e})"
+                ) from e
         stats["t_parse"] += t1 - t0
         stats["t_encode"] += time.perf_counter() - t1
         if error is not None:

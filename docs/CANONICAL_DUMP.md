@@ -119,7 +119,7 @@ The oracle's `producer` holds, in this order: `name` (`"unitypy_dump.py"`), `uni
 
 **A failing entry fails its input.** UnityPy reads a bundle's or WebFile's entries with no error handling. An entry whose detection or parse raises (a SerializedFile that does not parse, or a broken AssetBundle object inside one) therefore fails the whole top-level input. That input gets one `file` record, with `l0.parsed_as` `"error"`, `l1` `null` and `{"kind":"parse"}`, and no records for any of its entries. So an entry record never carries an `error`, and `l0.type` is `"error"` only on an input's own record.
 
-**A crash fails its input.** The oracle dumps each input in a process of its own. When that process dies of a signal (UnityPyBoost aborts or segfaults, section 7, or the memory cap kills it), before or while it hands back its records, the input gets one `file` record, with `l0` describing the input's bytes as detected, `l0.parsed_as` `"error"`, `l1` `null` and `{"kind":"crash"}`, and no other records. The `note` names the signal. A kill by the memory cap (`SIGKILL`) depends on the machine and the number of jobs, not on the input. A raise in the oracle's own code, or a process that ends without its records and without a signal, is no outcome of the input: the oracle stops and writes no dump.
+**A crash fails its input.** The oracle dumps each input in a process of its own. When that process dies of a signal (UnityPyBoost aborts or segfaults, section 7, or the memory cap kills it), before or while it hands back its records, the input gets one `file` record, with `l0` describing the input's bytes as detected, `l0.parsed_as` `"error"`, `l1` `null` and `{"kind":"crash"}`, and no other records. The `note` names the signal. A kill by the memory cap (`SIGKILL`) depends on the machine and the number of jobs, not on the input. A raise in the oracle's own code, or a process that ends without its records and without a signal, is no outcome of the input: the oracle stops and writes no dump. So does its encoder refusing a value UnityPy read (section 4.3, "Who writes `encode`").
 
 **`l0`** (member order `type`, `parsed_as`, `size`, `sha256`):
 
@@ -222,7 +222,7 @@ UnityFS's total-size field and its uncompressed-data hash are left out, because 
 | `out_of_bounds` | on the UnityPyBoost path, a read other than an alignment needs bytes past the object's end | `null` |
 | `negative_length` | a negative array length, or on the UnityPyBoost path a negative string or byte-array length | `null` |
 | `ref_type` | a ReferencedObject's `(class, ns, asm)` is not in `ref_types`, or the file has no `ref_types` | `null` |
-| `encode` | the value does not fit its tree (a producer bug, never expected) | `null` |
+| `encode` | a producer under test read a value its own encoder cannot write in this form (a bug in that producer) | `null` |
 | `other` | anything else: a malformed tree (a `pair` without two children), and on the pure-Python path a read past the SerializedFile's end or an aligned `SInt8` array | `null` |
 
 **The two reading paths** decide `bytes_read` and which failures raise (UnityPy's `TypeTreeHelper.read_typetree`):
@@ -230,6 +230,8 @@ UnityFS's total-size field and its uncompressed-data hash are left out, because 
 - **`byte_size` 0: the pure-Python reader** starts at `byte_start` in the whole SerializedFile and reads on into the bytes after the object. Any tree that reads at all is therefore a `check_read`, and its value comes from the bytes that follow. A tree that reads nothing is no error. This reader reads a negative or out-of-range string length as `""`, and its other differences are listed in section 7.
 
 - `value`: the encoded value (section 3).
+
+**Who writes `encode`.** Only a producer under test (the unityrs CLI) may write an `encode` error, so that one object it cannot encode still leaves the rest of its dump to compare; the object is then an L2 difference. The oracle never writes one: a value UnityPy read that the oracle's encoder (`canonical.py`) refuses is a bug in the dumper, not an outcome of the input, so the oracle stops with exit status 1, names the input and the object, and writes no dump (section 4.2). `compare.py` reports an `encode` error in the reference as a format finding (section 6).
 
 **`l3`:**
 - `raw_size` and `raw_sha256` describe `get_raw_data()`. `raw_size` can be below `byte_size` only for a truncated file.
@@ -269,7 +271,10 @@ The dump is deterministic: the same input and producer always give the same byte
   - a name (the metadata-string rule, section 4.2, at every position it lists, and the `file` members) that is neither a JSON string nor `{"t":"str","hex":H}` with lowercase, even-length `H`, or whose hex bytes are valid UTF-8;
   - a value encoding that breaks a rule a value shows on its own: a JSON array of tagged floats (it should have been packed), inline hex above 64 bytes, a summary of 64 bytes or fewer, uppercase or odd-length hex, an empty packed list, a `str` or hex-tagged dict key whose bytes are valid UTF-8, or a repeated dict key;
   - a pair of lines whose compared values agree but whose bytes differ for a reason the rules above do not name;
-  - a record after the `end` record, a missing `end` record, or one whose counts are not the integers its own dump holds.
+  - a record after the `end` record, a missing `end` record, or one whose counts are not the integers its own dump holds;
+  - an `l0` that section 4.2 does not allow: a `type` or `parsed_as` it does not list (`unknown_value`); a pair UnityPy does not build (`l0_mismatch`), where an entry gets only what its verdict builds (`SerializedFile` or `raw` from `AssetsFile`, `BundleFile`, `WebFile`, `raw` from `ResourceFile` or `ZIP`), and an input may also be `error`, and is `zip`, never `raw`, when detected as a zip; a `size` that is not a non-negative integer, or a `sha256` that is not 64 lowercase hex digits (`bad_value`);
+  - an error `kind` that sections 4.2 and 4.3 do not list (`unknown_value`), and a file error whose kind disagrees with `l0.type`: `detect` exactly when the type is `"error"`, while `crash` goes with any type (`error_mismatch`);
+  - in the reference only, an `encode` L2 error (`reference_encode`): only a producer under test writes one (section 4.3).
 - **Unreadable input** exits 2: a line that is not JSON, not UTF-8 or not valid Unicode (a lone surrogate escape), `NaN` or `Infinity`, a truncated or corrupt gzip stream, a header that is not this format and version or whose `levels` are not L0 followed by any of L1-L3 in order, a second header, or a record without a valid key (`file` not a list of names, `path_id` not an integer).
 - **Report.** Differences are counted by level and class (`root_type`), then grouped by field path, with list indices folded to `[]`, and a few concrete examples per group.
 - **What each level covers.** L0: detection, and missing or extra files. L1: container and object-table metadata, load errors, and missing or extra objects. L2: values and parse outcome. L3: resave.

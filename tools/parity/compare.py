@@ -532,6 +532,20 @@ def line_problems(rec, line, saw_float, levels):
     return problems
 
 
+def reference_problems(rec):
+    """What a reference record may not hold although the format allows it: an `encode` error.
+
+    Only a producer under test writes one (spec 4.3); the oracle stops on its
+    own encoder's failure instead, so a reference that has one cannot vouch
+    for that object.
+    """
+    l2 = rec.get("l2") if rec.get("rec") == "object" else None
+    error = l2.get("error") if isinstance(l2, dict) else None
+    if isinstance(error, dict) and error.get("kind") == "encode":
+        return [("l2.error", "reference_encode", "only a producer under test writes an encode error")]
+    return []
+
+
 def check_reference_producer(header):
     """A dump from the oracle dumper must come from the pinned stack, or every difference it finds is suspect.
 
@@ -634,6 +648,8 @@ def run(path_a, path_b, levels=None, examples=3):
             if line is None:
                 continue
             rec, key, problems = shared or examine(line, side)
+            if side is a:
+                problems = [*problems, *reference_problems(rec)]
             kind = rec["rec"]
             side.kinds[kind] += 1
             if side.end is not None:

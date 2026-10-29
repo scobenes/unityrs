@@ -289,7 +289,15 @@ class CompareTests(unittest.TestCase):
         lines = [C.dumps(r) for r in b]
         lines[0] = lines[0].replace('"size":10', '"size":10.0')
         _, d = self.run_compare(self.write("a.jsonl", a), self.write("b.jsonl", [], lines=lines))
-        self.assertEqual(self.paths(d), {("L0", "l0.size", "type"), ("format", "line (candidate)", "json_float")})
+        # A float is no size either: section 4.2 makes it an integer.
+        self.assertEqual(
+            self.paths(d),
+            {
+                ("L0", "l0.size", "type"),
+                ("format", "line (candidate)", "json_float"),
+                ("format", "l0.size (candidate)", "bad_value"),
+            },
+        )
 
     def test_path_id_must_be_an_integer(self):
         recs = one_object(S(["x", 1]))
@@ -559,6 +567,24 @@ class CompareTests(unittest.TestCase):
         with self.assertRaisesRegex(compare.CompareError, "nothing to compare"):
             compare.run(pa, pb, levels=[])
 
+    def test_an_encode_error_is_a_candidates_alone(self):
+        # Only a producer under test writes `encode` (spec 4.3): in the candidate it is an L2
+        # difference like any other; in the reference it is a format finding, even where the
+        # candidate's line is the same.
+        bad = base_records()
+        bad[1]["l2"].update(error={"kind": "encode", "bytes_read": None, "note": "EncodeError: ..."}, value=None)
+        bad[1]["l3"].update(resave="skipped", resave_size=None, resave_sha256=None, first_diff=None)
+        good, pa = base_records(), self.write("bad.jsonl", bad)
+        report, d = self.run_compare(self.write("good.jsonl", good), pa)
+        self.assertIn(("L2", "l2.error", "type"), self.paths(d))
+        self.assertNotIn("reference_encode", {k for _, _, k in self.paths(d)})
+        for candidate in (pa, self.write("good.jsonl", good)):
+            with self.subTest(candidate=candidate):
+                report, d = self.run_compare(pa, candidate)
+                self.assertIn(("format", "l2.error (reference)", "reference_encode"), self.paths(d))
+                self.assertNotIn(("format", "l2.error (candidate)", "reference_encode"), self.paths(d))
+                self.assertEqual(self.cli(pa, candidate), 1)
+
     def test_reference_must_come_from_the_pinned_oracle(self):
         recs = base_records()
         pb = self.write("b.jsonl", recs)
@@ -702,9 +728,9 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(kinds(f), [("l1", "missing_section")])
         self.assertEqual(kinds(f, ["L0"]), [])
         f = file_rec()
-        f["l0"]["parsed_as"] = "BundleFile"
+        f["l0"]["type"], f["l0"]["parsed_as"] = "BundleFile", "BundleFile"
         self.assertEqual(kinds(f), [("l1.kind", "kind_mismatch")])
-        f["l0"]["parsed_as"] = "raw"
+        f["l0"]["type"], f["l0"]["parsed_as"] = "AssetsFile", "raw"  # an AssetsFile the name rule keeps raw
         self.assertEqual(kinds(f), [("l1.kind", "kind_mismatch")])
         f["l1"] = None
         self.assertEqual(kinds(f), [])
@@ -712,7 +738,7 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(kinds(f), [("error", "error_mismatch")])
         f["error"] = {"kind": "parse"}
         self.assertEqual(kinds(f), [])
-        f["l0"]["parsed_as"] = "zip"
+        f["l0"]["type"], f["l0"]["parsed_as"] = "ZIP", "zip"
         self.assertEqual(kinds(f), [("error", "error_mismatch")])
 
         # Every name position: a valid-UTF-8 hex name, then a malformed one.

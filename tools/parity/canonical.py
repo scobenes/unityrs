@@ -456,6 +456,24 @@ RECORD_MEMBERS = {
     "end": ("rec", "files", "objects"),
 }
 L0_MEMBERS = ("type", "parsed_as", "size", "sha256")
+# Section 4.2's values for l0: check_file_type's verdicts, and what UnityPy builds
+# from each. An entry gets only what its verdict builds. An input may also fail
+# ("error", whatever its verdict), and an input detected as a zip is "zip", which
+# an entry never is (UnityPy's parser has no zip branch, so it keeps a reader).
+L0_TYPES = ("AssetsFile", "BundleFile", "WebFile", "ResourceFile", "ZIP", "error")
+L0_PARSED_AS = ("SerializedFile", "BundleFile", "WebFile", "raw", "zip", "error")
+L0_ENTRY_BUILDS = {
+    "AssetsFile": ("SerializedFile", "raw"),  # raw by the name rule
+    "BundleFile": ("BundleFile",),
+    "WebFile": ("WebFile",),
+    "ResourceFile": ("raw",),
+    "ZIP": ("raw",),
+    "error": (),  # detection raising fails the input (section 4.2)
+}
+L0_INPUT_BUILDS = {**L0_ENTRY_BUILDS, "ZIP": ("zip",)}
+# Error kinds: a file's (section 4.2) and an object's l2 (section 4.3).
+FILE_ERROR_KINDS = ("detect", "parse", "crash")
+L2_ERROR_KINDS = ("no_typetree", "check_read", "out_of_bounds", "negative_length", "ref_type", "encode", "other")
 FILE_L1_MEMBERS = {
     "bundle": (
         "kind",
@@ -622,6 +640,8 @@ def check_record(rec, levels) -> list:
             check_name(name, f"file[{i}]", out, nullable=False)
     if kind == "file":
         l0_ok = _members(rec["l0"], L0_MEMBERS, "l0", out)
+        if l0_ok:
+            _check_l0(rec["l0"], type(rec["file"]) is list and len(rec["file"]) == 1, out)
         parsed = rec["l0"]["parsed_as"] if l0_ok else None
         # parsed_as says whether the file has an error and which l1 it has.
         if l0_ok and (parsed == "error") != (rec["error"] is not None):
@@ -646,8 +666,13 @@ def check_record(rec, levels) -> list:
                             for i, t in enumerate(l1[name]):
                                 _members(t, TYPE_MEMBERS, f"l1.{name}[{i}]", out)
                 _l1_names(l1, out)
-        if rec["error"] is not None:
-            _members(rec["error"], FILE_ERROR_MEMBERS, "error", out, note=True)
+        if rec["error"] is not None and _members(rec["error"], FILE_ERROR_MEMBERS, "error", out, note=True):
+            error_kind = rec["error"]["kind"]
+            if error_kind not in FILE_ERROR_KINDS:
+                out.append(("error.kind", "unknown_value", error_kind))
+            elif l0_ok and (error_kind == "detect") != (rec["l0"]["type"] == "error") and error_kind != "crash":
+                # detection raising is the "detect" error; a crash can follow either
+                out.append(("error.kind", "error_mismatch", f"{error_kind!r} for type {rec['l0']['type']!r}"))
     elif kind == "object":
         for level, name, members in OBJECT_SECTIONS:
             section = rec[name]
@@ -662,11 +687,32 @@ def check_record(rec, levels) -> list:
     return out
 
 
+def _check_l0(l0, is_input, out):
+    """Section 4.2's values and pairs for l0's members (`is_input`: the record is an input's, not an entry's)."""
+    typ, parsed, size, sha = (l0[k] for k in L0_MEMBERS)
+    typ_ok = type(typ) is str and typ in L0_TYPES
+    if not typ_ok:
+        out.append(("l0.type", "unknown_value", typ))
+    if type(parsed) is not str or parsed not in L0_PARSED_AS:
+        out.append(("l0.parsed_as", "unknown_value", parsed))
+    elif typ_ok and parsed not in (L0_INPUT_BUILDS if is_input else L0_ENTRY_BUILDS)[typ] + (
+        ("error",) if is_input else ()
+    ):
+        where = "an input" if is_input else "an entry"
+        out.append(("l0.parsed_as", "l0_mismatch", f"{parsed!r} for type {typ!r} on {where}"))
+    if type(size) is not int or size < 0:
+        out.append(("l0.size", "bad_value", size))
+    if type(sha) is not str or not _SHA256.fullmatch(sha):
+        out.append(("l0.sha256", "bad_value", sha))
+
+
 def _check_l2(l2, out):
     error = l2["error"]
     error_kind = None
     if error is not None and _members(error, L2_ERROR_MEMBERS, "l2.error", out, note=True):
         error_kind = error["kind"]
+        if error_kind not in L2_ERROR_KINDS:
+            out.append(("l2.error.kind", "unknown_value", error_kind))
     check_name(l2["root_type"], "l2.root_type", out)
     # A parse that finished has a value; so does check_read, which re-reads
     # without the check. Every other error has none.

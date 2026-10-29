@@ -757,6 +757,12 @@ class DumpTests(unittest.TestCase):
                 mock.patch.object(unitypy_dump, "_send", exit_without_result),
                 "exited with status 1 and no result",
             ),
+            # UnityPy read the value, and the oracle's own encoder refuses it: no `encode`
+            # record (spec 4.3), the run stops naming the input and the object.
+            "the canonical encoder refusing UnityPy's value": (
+                mock.patch.object(C.ValueEncoder, "encode", side_effect=C.EncodeError("float for an int node")),
+                "'a.assets': the dumper raised",
+            ),
         }
         for label, (patch, message) in cases.items():
             for jobs in ("1", "2"):
@@ -765,6 +771,12 @@ class DumpTests(unittest.TestCase):
                         rc = unitypy_dump.main([str(d), "-o", str(self.tmp / "x.jsonl"), "-q", "-j", jobs])
                     self.assertEqual(rc, 1)
                     self.assertIn(message, err.getvalue())
+                    if "encoder" in label:
+                        self.assertIn(
+                            'DumperError: file ["a.assets"] path_id 1: the canonical encoder refused the value '
+                            "UnityPy read (float for an int node)",
+                            err.getvalue(),
+                        )
                     self.assertIn("no dump written", err.getvalue())
                     self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["in"])
         # A build None cannot be pinned in is refused before any input runs.
