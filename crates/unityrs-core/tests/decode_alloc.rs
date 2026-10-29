@@ -112,25 +112,34 @@ fn a_refused_growth_allocates_nothing() {
 
     // 4. At every step of a growing decode the heap holds no more than is
     //    charged, and a growth's peak (old and new block at once) no more
-    //    than the old and new charges.
-    let meter = Meter::new(u64::MAX, Arc::new(Unbounded), Reservation::Input);
-    let mut out = DecodeBuf::new(&meter, 0, 1 << 30, LimitKind::BlockOutput).unwrap();
-    let base = LIVE.load(Ordering::Relaxed);
-    for step in [1_usize, 100, 10_000, 1 << 20, 3 << 20] {
-        let old = meter.used();
-        let grew = rise(|| {
-            out.grow_zeroed(step).unwrap();
-        });
-        let held = LIVE.load(Ordering::Relaxed) - base;
-        assert!(
-            bytes(held) <= meter.used(),
-            "heap {held} above the charge {}",
-            meter.used()
-        );
-        assert!(
-            bytes(grew) <= old + meter.used(),
-            "a growth's peak {grew} above its charges"
-        );
+    //    than the old and new charges, whether the meter books with an
+    //    `Unbounded` budget or a `Counting` one (whose permits have a home,
+    //    so the bookkeeping is measured too).
+    for counting in [false, true] {
+        let budget: Arc<dyn unityrs_core::budget::MemoryBudget> = if counting {
+            Arc::new(Counting::new(u64::MAX))
+        } else {
+            Arc::new(Unbounded)
+        };
+        let meter = Meter::new(u64::MAX, budget, Reservation::Input);
+        let mut out = DecodeBuf::new(&meter, 0, 1 << 30, LimitKind::BlockOutput).unwrap();
+        let base = LIVE.load(Ordering::Relaxed);
+        for step in [1_usize, 100, 10_000, 1 << 20, 3 << 20] {
+            let old = meter.used();
+            let grew = rise(|| {
+                out.grow_zeroed(step).unwrap();
+            });
+            let held = LIVE.load(Ordering::Relaxed) - base;
+            assert!(
+                bytes(held) <= meter.used(),
+                "heap {held} above the charge {}",
+                meter.used()
+            );
+            assert!(
+                bytes(grew) <= old + meter.used(),
+                "a growth's peak {grew} above its charges"
+            );
+        }
+        assert_eq!(meter.used(), heap_cost(bytes(out.capacity())));
     }
-    assert_eq!(meter.used(), heap_cost(bytes(out.capacity())));
 }
