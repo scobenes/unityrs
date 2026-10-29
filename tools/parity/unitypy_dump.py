@@ -457,11 +457,6 @@ def _dump_input(job):
 # ------------------------------------------------------------------- inputs
 
 
-def repo_roots(start: Path) -> list[Path]:
-    """Every ancestor of this script that holds a .git (worktrees nest in the repo)."""
-    return [p for p in [start, *start.parents] if (p / ".git").exists()]
-
-
 def collect_inputs(args) -> list[tuple[str, str, str | None]]:
     """(absolute path, dump-relative path, expected sha256) in canonical order."""
     src = Path(args.input).resolve()
@@ -622,12 +617,12 @@ def main(argv=None):
         ap.error(f"refusing to dump: this is not the pinned oracle ({problem})")
 
     # The dump and the stats both name corpus inputs; neither may land in the repository.
+    for label, path in (("the dump", args.output), ("--stats", args.stats)):
+        root = path and C.inside_repo(path)
+        if root:
+            ap.error(f"refusing to write {label} into the repository ({root}); pick a path outside it")
     out_path = Path(args.output).resolve()
     stats_path = Path(args.stats).resolve() if args.stats else None
-    for root in repo_roots(Path(__file__).resolve().parent):
-        for label, path in (("the dump", out_path), ("--stats", stats_path)):
-            if path is not None and path.is_relative_to(root):
-                ap.error(f"refusing to write {label} into the repository ({root}); pick a path outside it")
 
     inputs = collect_inputs(args)
     if not inputs:

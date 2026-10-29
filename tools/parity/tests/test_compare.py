@@ -767,6 +767,24 @@ class CompareTests(unittest.TestCase):
                 self.assertEqual(self.cli(pa, path), 2)
                 self.assertTrue(self.errors.startswith("compare: "), self.errors)
 
+    def test_json_report_stays_out_of_the_repository(self):
+        """The report quotes input names, so --json is refused inside the repository, through symlinks too."""
+        a = self.write("a.jsonl", base_records())
+        here = Path(__file__).resolve().parents[1]
+        link = Path(self.tmp.name) / "link"
+        link.symlink_to(here)
+        for target in (here / "report.json", link / "report.json"):
+            with self.subTest(target=target):
+                try:
+                    self.assertEqual(self.cli(a, a, "--json", target), 2)
+                    self.assertIn("refusing to write --json into the repository", self.errors)
+                    self.assertFalse((here / "report.json").exists())
+                finally:
+                    (here / "report.json").unlink(missing_ok=True)
+        out = Path(self.tmp.name) / "report.json"
+        self.assertEqual(self.cli(a, a, "--json", out), 0)
+        self.assertEqual(json.loads(out.read_text())["counts"]["identical"], 4)
+
     def test_cli_exit_codes_and_report(self):
         a, b = base_records(), base_records()
         b[1]["l3"]["resave"] = "differs"

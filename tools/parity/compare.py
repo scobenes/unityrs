@@ -724,6 +724,13 @@ def main(argv=None):
     ap.add_argument("--json", help="also write the full report as JSON to this path")
     args = ap.parse_args(argv)
     levels = args.levels.split(",") if args.levels is not None else None
+    # The report quotes input names from both dumps, so it stays out of the repository.
+    root = args.json and C.inside_repo(args.json)
+    if root:
+        print(
+            f"compare: refusing to write --json into the repository ({root}); pick a path outside it", file=sys.stderr
+        )
+        return 2
     try:
         report, ha, hb, compared = run(args.reference, args.candidate, levels, args.examples)
     except (C.FormatError, CompareError, OSError) as e:

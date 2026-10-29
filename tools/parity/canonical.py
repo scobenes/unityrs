@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import struct
+from pathlib import Path
 
 FORMAT = "unityrs-canonical-dump"
 VERSION = 1
@@ -32,6 +33,21 @@ FLOAT_WIDTH = {"float": "f32", "double": "f64"}
 # blobs and index buffers are megabytes of them, and as JSON integers they
 # would dominate the dump.
 U8_TYPES = frozenset(("UInt8", "char"))
+
+
+def repo_roots(start: Path) -> list[Path]:
+    """Every ancestor of `start` that holds a .git (worktrees nest in the repository).
+
+    Dumps, stats and reports name corpus inputs, so the tools refuse to write
+    them under any of these.
+    """
+    return [p for p in [start, *start.parents] if (p / ".git").exists()]
+
+
+def inside_repo(path: str) -> Path | None:
+    """The repository root `path` resolves into (symlinks followed), or None."""
+    resolved = Path(path).resolve()
+    return next((r for r in repo_roots(Path(__file__).resolve().parent) if resolved.is_relative_to(r)), None)
 
 
 class EncodeError(ValueError):
