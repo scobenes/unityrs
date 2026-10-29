@@ -252,8 +252,10 @@ The dump is deterministic: the same input and producer always give the same byte
 - **Format findings.** Every line of both dumps is checked on its own, byte-identical pairs and the header and `end` records included. Each of these is a **format** finding:
   - a line that is not the canonical serialisation of itself, or that holds a JSON float;
   - members that are not each record's list (section 4) in order;
-  - a non-null section for a level its header does not declare;
-  - a value encoding that breaks a rule a value shows on its own: a JSON array of tagged floats (it should have been packed), inline hex above 64 bytes, a summary of 64 bytes or fewer, uppercase or odd-length hex, an empty packed list, a `str` or hex-tagged name whose bytes are valid UTF-8, or a repeated dict key;
+  - a non-null section for a level its header does not declare, and a `null` one for a level it declares: an object's `l1`, `l2` or `l3`, and a file's `l1` when `l0.parsed_as` is `SerializedFile`, `BundleFile` or `WebFile`;
+  - a file `l1` whose `kind` is not the one its `parsed_as` gives (`serialized`, `bundle`, `web`), or that is there for `raw`, `zip` or `error`; an `error` that is not `null` exactly when `parsed_as` is `"error"`; an `l2.value` that is not there exactly when `l2.error` is `null` or `check_read`;
+  - a name (the metadata-string rule, section 4.2, at every position it lists, and the `file` members) that is neither a JSON string nor `{"t":"str","hex":H}` with lowercase, even-length `H`, or whose hex bytes are valid UTF-8;
+  - a value encoding that breaks a rule a value shows on its own: a JSON array of tagged floats (it should have been packed), inline hex above 64 bytes, a summary of 64 bytes or fewer, uppercase or odd-length hex, an empty packed list, a `str` or hex-tagged dict key whose bytes are valid UTF-8, or a repeated dict key;
   - a pair of lines whose compared values agree but whose bytes differ for a reason the rules above do not name;
   - a record after the `end` record, a missing `end` record, or one whose counts are not the integers its own dump holds.
 - **Unreadable input** exits 2: a line that is not JSON, not UTF-8 or not valid Unicode (a lone surrogate escape), `NaN` or `Infinity`, a truncated or corrupt gzip stream, a header that is not this format and version or whose `levels` are not L0 followed by any of L1-L3 in order, a second header, or a record without a valid key (`file` not a list of names, `path_id` not an integer).

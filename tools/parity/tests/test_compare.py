@@ -17,6 +17,7 @@ import canonical as C  # noqa: E402
 import compare  # noqa: E402
 
 LEVELS = ["L0", "L1", "L2", "L3"]
+SIDES = ("reference", "candidate")
 
 
 def header(levels=LEVELS, version=C.VERSION, producer=None):
@@ -511,8 +512,143 @@ class CompareTests(unittest.TestCase):
         a[1]["l2"]["value"] = None
         b[2]["l2"]["value"] = None
         _, d = self.run_compare(self.write("a.jsonl", a), self.write("b.jsonl", b))
-        self.assertEqual(self.paths(d), {("L2", "l2.value", "type")})
+        # A parse without an error has a value, so each null is also a format finding.
+        self.assertEqual(
+            self.paths(d),
+            {
+                ("L2", "l2.value", "type"),
+                ("format", "l2.value (reference)", "value_mismatch"),
+                ("format", "l2.value (candidate)", "value_mismatch"),
+            },
+        )
         self.assertEqual(d["by_level"]["L2"]["records"], 2)
+
+    def test_null_sections_under_declared_levels_fail_both_dumps(self):
+        """Sections a header declares must be there: two dumps that both leave them null do not agree."""
+        recs = base_records()
+        recs[0]["l1"] = None
+        for r in recs[1:3]:
+            r["l1"] = r["l2"] = r["l3"] = None
+        path = self.write("a.jsonl", recs)
+        report, d = self.run_compare(path, path)
+        self.assertEqual(
+            self.paths(d),
+            {("format", f"{s} ({side})", "missing_section") for s in ("l1", "l2", "l3") for side in SIDES},
+        )
+        self.assertEqual(self.cli(path, path), 1)
+        # Narrowed to L0, the same dumps break no rule: the header declares what each line must hold.
+        recs = base_records()
+        for r in recs[:3]:
+            r["l1"] = None
+        for r in recs[1:3]:
+            r["l2"] = r["l3"] = None
+        path = self.write("l0.jsonl", recs, head=header(["L0"]))
+        self.assertEqual(self.cli(path, path), 0, self.output)
+
+    def test_names_break_the_metadata_string_rule_in_both_dumps(self):
+        recs = base_records()
+        a_bundle = {"t": "str", "hex": b"a.bundle".hex()}
+        for r in recs[:3]:
+            r["file"] = [a_bundle]
+        recs[0]["l1"]["unity_version"] = {"t": "str", "hex": b"2021".hex()}
+        recs[0]["l1"]["types"][0]["nodes"][0][1] = {"t": "str", "hex": "5A"}
+        recs[1]["l2"]["root_type"] = 5
+        path = self.write("a.jsonl", recs)
+        _, d = self.run_compare(path, path)
+        self.assertEqual(
+            self.paths(d),
+            {
+                (lv, f"{p} ({side})", k)
+                for lv, p, k in (
+                    ("format", "file[]", "hex_name_is_utf8"),
+                    ("format", "l1.unity_version", "hex_name_is_utf8"),
+                    ("format", "l1.types[].nodes[][]", "bad_name"),
+                    ("format", "l2.root_type", "bad_name"),
+                )
+                for side in SIDES
+            },
+        )
+
+    def test_check_record_sections_and_names(self):
+        def kinds(rec, levels=LEVELS):
+            return sorted((p, k) for p, k, _ in C.check_record(rec, levels))
+
+        good = [file_rec(), bundle_rec(), obj_rec(1, S(["x", 1]))]
+        for rec in good:
+            self.assertEqual(kinds(rec), [])
+        obj = obj_rec(1, S(["x", 1]))
+        for level, name in (("L1", "l1"), ("L2", "l2"), ("L3", "l3")):
+            rec = copy.deepcopy(obj)
+            rec[name] = None
+            self.assertEqual(kinds(rec), [(name, "missing_section")])
+            self.assertEqual(kinds(rec, [lv for lv in LEVELS if lv != level]), [])
+        # l2's value follows its error: none for a failed read, one for check_read.
+        rec = copy.deepcopy(obj)
+        rec["l2"]["error"] = {"kind": "out_of_bounds", "bytes_read": None}
+        self.assertEqual(kinds(rec), [("l2.value", "value_mismatch")])
+        rec["l2"]["value"] = None
+        self.assertEqual(kinds(rec), [])
+        rec["l2"]["error"] = {"kind": "check_read", "bytes_read": 9}
+        self.assertEqual(kinds(rec), [("l2.value", "value_mismatch")])
+
+        # A file's l1 is there exactly when L1 is declared and it parsed as a container, of the matching kind.
+        f = file_rec()
+        f["l1"] = None
+        self.assertEqual(kinds(f), [("l1", "missing_section")])
+        self.assertEqual(kinds(f, ["L0"]), [])
+        f = file_rec()
+        f["l0"]["parsed_as"] = "BundleFile"
+        self.assertEqual(kinds(f), [("l1.kind", "kind_mismatch")])
+        f["l0"]["parsed_as"] = "raw"
+        self.assertEqual(kinds(f), [("l1.kind", "kind_mismatch")])
+        f["l1"] = None
+        self.assertEqual(kinds(f), [])
+        f["l0"]["parsed_as"] = "error"
+        self.assertEqual(kinds(f), [("error", "error_mismatch")])
+        f["error"] = {"kind": "parse"}
+        self.assertEqual(kinds(f), [])
+        f["l0"]["parsed_as"] = "zip"
+        self.assertEqual(kinds(f), [("error", "error_mismatch")])
+
+        # Every name position: a valid-UTF-8 hex name, then a malformed one.
+        utf8, upper = {"t": "str", "hex": "61"}, {"t": "str", "hex": "FF"}
+        b = bundle_rec()
+        s = file_rec()
+        s["l1"]["externals"] = [["", "00" * 16, 0, "lib"]]
+        s["l1"]["container"] = [["assets/x", 0, 0, 0, 1]]
+        s["l1"]["ref_types"] = [{**type_rec(), "class_name": "C", "namespace": "N", "assembly": "A"}]
+        positions = [
+            (b, ("file", 0), "file[0]"),
+            (b, ("l1", "signature"), "l1.signature"),
+            (b, ("l1", "version_player"), "l1.version_player"),
+            (b, ("l1", "version_engine"), "l1.version_engine"),
+            (b, ("l1", "directory", 0, 3), "l1.directory[0][3]"),
+            (s, ("l1", "unity_version"), "l1.unity_version"),
+            (s, ("l1", "user_information"), "l1.user_information"),
+            (s, ("l1", "externals", 0, 0), "l1.externals[0][0]"),
+            (s, ("l1", "externals", 0, 3), "l1.externals[0][3]"),
+            (s, ("l1", "container", 0, 0), "l1.container[0][0]"),
+            (s, ("l1", "types", 0, "nodes", 0, 1), "l1.types[0].nodes[0][1]"),
+            (s, ("l1", "types", 0, "nodes", 0, 2), "l1.types[0].nodes[0][2]"),
+            (s, ("l1", "ref_types", 0, "class_name"), "l1.ref_types[0].class_name"),
+            (s, ("l1", "ref_types", 0, "namespace"), "l1.ref_types[0].namespace"),
+            (s, ("l1", "ref_types", 0, "assembly"), "l1.ref_types[0].assembly"),
+            (obj, ("file", 0), "file[0]"),
+            (obj, ("l2", "root_type"), "l2.root_type"),
+        ]
+        self.assertEqual(kinds(s), [])
+        for base, keys, path in positions:
+            for value, kind in ((utf8, "hex_name_is_utf8"), (upper, "bad_name"), (["x"], "bad_name")):
+                with self.subTest(path=path, value=value):
+                    rec = copy.deepcopy(base)
+                    target = rec
+                    for k in keys[:-1]:
+                        target = target[k]
+                    target[keys[-1]] = value
+                    self.assertEqual(kinds(rec), [(path, kind)])
+        rec = copy.deepcopy(b)
+        rec["l1"]["directory"] = [[0, 1, "x"]]
+        self.assertEqual(kinds(rec), [("l1.directory[0]", "malformed")])
 
     def test_end_counts_are_integers(self):
         recs = base_records()

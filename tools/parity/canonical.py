@@ -439,6 +439,16 @@ OBJECT_SECTIONS = (
     ("L3", "l3", ("raw_size", "raw_sha256", "resave", "resave_size", "resave_sha256", "first_diff")),
 )
 L2_ERROR_MEMBERS = ("kind", "bytes_read")
+# The l1 kind each parse result carries; a file parsed as raw, zip or error has no l1.
+FILE_L1_KIND = {"SerializedFile": "serialized", "BundleFile": "bundle", "WebFile": "web"}
+# Name positions (the metadata-string rule) in the l1 of each kind: members, and
+# (member, row length, name columns) for lists of rows.
+L1_NAMES = {
+    "bundle": (("signature", "version_player", "version_engine"), (("directory", 4, (3,)),)),
+    "web": (("signature",), (("directory", 4, (3,)),)),
+    "serialized": (("unity_version", "user_information"), (("externals", 4, (0, 3)), ("container", 5, (0,)))),
+}
+TYPE_NAMES = ("class_name", "namespace", "assembly")
 
 _EVEN_HEX = re.compile(r"(?:[0-9a-f]{2})*")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -459,6 +469,56 @@ def _is_utf8(raw: bytes) -> bool:
     return True
 
 
+def _is_hex_name(v) -> bool:
+    """Whether v has the hex form of a name: {"t":"str","hex":H} with lowercase, even-length H."""
+    return (
+        type(v) is dict
+        and list(v) == ["t", "hex"]
+        and v["t"] == "str"
+        and type(v["hex"]) is str
+        and _EVEN_HEX.fullmatch(v["hex"]) is not None
+    )
+
+
+def check_name(v, path, out, nullable=True):
+    """The metadata-string rule (section 4.2): a JSON string, or the hex of bytes that are not valid UTF-8."""
+    if type(v) is str or (v is None and nullable):
+        return
+    if not _is_hex_name(v):
+        out.append((path, "bad_name", v))
+    elif _is_utf8(bytes.fromhex(v["hex"])):
+        out.append((path, "hex_name_is_utf8", v))
+
+
+def _row_names(rows, length, columns, path, out):
+    """check_name on the given columns of a list of rows of `length` members."""
+    if rows is None:
+        return
+    if type(rows) is not list:
+        out.append((path, "malformed", rows))
+        return
+    for i, row in enumerate(rows):
+        if type(row) is not list or len(row) != length:
+            out.append((f"{path}[{i}]", "malformed", row))
+            continue
+        for col in columns:
+            check_name(row[col], f"{path}[{i}][{col}]", out)
+
+
+def _l1_names(l1, out):
+    names, rows = L1_NAMES[l1["kind"]]
+    for member in names:
+        check_name(l1[member], f"l1.{member}", out)
+    for member, length, columns in rows:
+        _row_names(l1[member], length, columns, f"l1.{member}", out)
+    for member in ("types", "ref_types") if l1["kind"] == "serialized" else ():
+        for i, t in enumerate(l1[member] if type(l1[member]) is list else []):
+            if type(t) is dict and list(t) == list(TYPE_MEMBERS):
+                for name in TYPE_NAMES:
+                    check_name(t[name], f"l1.{member}[{i}].{name}", out)
+                _row_names(t["nodes"], 10, (1, 2), f"l1.{member}[{i}].nodes", out)
+
+
 def _members(obj, expected, path, out, note=False) -> bool:
     """Whether obj is an object whose members are exactly `expected`, in order (plus a last `note`)."""
     if type(obj) is not dict:
@@ -477,40 +537,75 @@ def check_record(rec, levels) -> list:
     """Every section 2-4 rule this record breaks on its own, as (path, kind, detail) triples.
 
     `levels` is what its dump's header declares: a section of an undeclared
-    level must be null.
+    level must be null, and one of a declared level must be there wherever
+    the record has that level.
     """
     out = []
     kind = rec.get("rec")
     if not _members(rec, RECORD_MEMBERS.get(kind, ()) if type(kind) is str else (), "record", out):
         return out
+    if kind in ("file", "object") and type(rec["file"]) is list:
+        for i, name in enumerate(rec["file"]):
+            check_name(name, f"file[{i}]", out, nullable=False)
     if kind == "file":
-        _members(rec["l0"], L0_MEMBERS, "l0", out)
+        l0_ok = _members(rec["l0"], L0_MEMBERS, "l0", out)
+        parsed = rec["l0"]["parsed_as"] if l0_ok else None
+        # parsed_as says whether the file has an error and which l1 it has.
+        if l0_ok and (parsed == "error") != (rec["error"] is not None):
+            out.append(("error", "error_mismatch", f"error {rec['error']!r} for parsed_as {parsed!r}"))
+        wanted = FILE_L1_KIND.get(parsed) if type(parsed) is str else None
         l1 = rec["l1"]
         if l1 is not None and "L1" not in levels:
             out.append(("l1", "undeclared_level", "L1"))
-        elif l1 is not None:
+        elif l1 is None:
+            if wanted and "L1" in levels:
+                out.append(("l1", "missing_section", f"L1 of a {parsed}"))
+        else:
             l1_kind = l1.get("kind") if type(l1) is dict else None
             members = FILE_L1_MEMBERS.get(l1_kind) if type(l1_kind) is str else None
-            if _members(l1, members or (), "l1", out) and l1["kind"] == "serialized":
-                _members(l1["header"], SERIALIZED_HEADER_MEMBERS, "l1.header", out)
-                for name in ("types", "ref_types"):
-                    if type(l1[name]) is list:
-                        for i, t in enumerate(l1[name]):
-                            _members(t, TYPE_MEMBERS, f"l1.{name}[{i}]", out)
+            if l0_ok and l1_kind != wanted:
+                out.append(("l1.kind", "kind_mismatch", f"{l1_kind!r} for parsed_as {parsed!r}"))
+            if _members(l1, members or (), "l1", out):
+                if l1["kind"] == "serialized":
+                    _members(l1["header"], SERIALIZED_HEADER_MEMBERS, "l1.header", out)
+                    for name in ("types", "ref_types"):
+                        if type(l1[name]) is list:
+                            for i, t in enumerate(l1[name]):
+                                _members(t, TYPE_MEMBERS, f"l1.{name}[{i}]", out)
+                _l1_names(l1, out)
         if rec["error"] is not None:
             _members(rec["error"], FILE_ERROR_MEMBERS, "error", out, note=True)
     elif kind == "object":
         for level, name, members in OBJECT_SECTIONS:
             section = rec[name]
             if section is None:
+                if level in levels:
+                    out.append((name, "missing_section", level))
                 continue
             if level not in levels:
                 out.append((name, "undeclared_level", level))
             elif _members(section, members, name, out, note=name == "l3") and name == "l2":
-                if section["error"] is not None:
-                    _members(section["error"], L2_ERROR_MEMBERS, "l2.error", out, note=True)
-                check_value(section["value"], "l2.value", out)
+                _check_l2(section, out)
     return out
+
+
+def _check_l2(l2, out):
+    error = l2["error"]
+    error_kind = None
+    if error is not None and _members(error, L2_ERROR_MEMBERS, "l2.error", out, note=True):
+        error_kind = error["kind"]
+    check_name(l2["root_type"], "l2.root_type", out)
+    # A parse that finished has a value; so does check_read, which re-reads
+    # without the check. Every other error has none.
+    if (error is None or error_kind == "check_read") != (l2["value"] is not None):
+        out.append(
+            (
+                "l2.value",
+                "value_mismatch",
+                f"value {'null' if l2['value'] is None else 'present'} for error {error_kind}",
+            )
+        )
+    check_value(l2["value"], "l2.value", out)
 
 
 def check_value(tv, path, out):
@@ -564,13 +659,7 @@ def _check_dict(entries, path, out):
         key, value = entry
         if type(key) is str:
             name, ident = key, ("str", key)
-        elif (
-            type(key) is dict
-            and list(key) == ["t", "hex"]
-            and key["t"] == "str"
-            and type(key["hex"]) is str
-            and _EVEN_HEX.fullmatch(key["hex"])
-        ):
+        elif _is_hex_name(key):
             name, ident = key["hex"], ("hex", key["hex"])
             if _is_utf8(bytes.fromhex(name)):
                 out.append((f"{path}.{name}", "hex_name_is_utf8", key))
