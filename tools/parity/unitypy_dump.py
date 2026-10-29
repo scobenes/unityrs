@@ -8,7 +8,8 @@ INPUT is a file or a folder (walked recursively); with --index it is the
 corpus index.json and its bundle and sample entries are dumped. An input
 whose sha256 differs from its index entry stops the run (exit 1, no dump)
 unless --allow-index-mismatch is given. The output path must lie outside the
-repository. docs/CANONICAL_DUMP.md specifies the
+repository, and the dump, its .partial file and --stats must be different
+files, none of them an input. docs/CANONICAL_DUMP.md specifies the
 format; this script needs only the standard library and UnityPy (the pinned
 oracle stack in the unityrs-dev container).
 """
@@ -717,10 +718,21 @@ def main(argv=None):
             ap.error(f"refusing to write {label} into the repository ({root}); pick a path outside it")
     out_path = Path(args.output).resolve()
     stats_path = Path(args.stats).resolve() if args.stats else None
+    # Every file the run writes, by its resolved path, must be its own: the
+    # dump goes to .partial and is renamed when whole, then the stats are written.
+    writes = {out_path: "the dump", out_path.with_name(out_path.name + ".partial"): "the dump's .partial file"}
+    if stats_path in writes:
+        ap.error(f"--stats names {writes[stats_path]} ({stats_path}); pick another path for the stats")
+    if stats_path:
+        writes[stats_path] = "--stats"
 
     inputs = collect_inputs(args)
     if not inputs:
         ap.error("no inputs matched")
+    for path, rel, _ in inputs:
+        clash = writes.get(Path(os.fsdecode(os.path.realpath(path))))
+        if clash:
+            ap.error(f"{clash} would overwrite the input {rel!r}; pick a path that is not an input")
 
     header = {
         "rec": "dump",

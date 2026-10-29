@@ -1027,6 +1027,38 @@ class DumpTests(unittest.TestCase):
         finally:
             stats.unlink(missing_ok=True)
 
+    def test_refuses_outputs_that_would_overwrite_each_other_or_an_input(self):
+        """The dump, its .partial file and the stats are written in turn; none may be another one, or an input."""
+        src, out = self.tmp / "in", self.tmp / "x.jsonl"
+        src.mkdir()
+        (src / "tiny").write_bytes(b"tiny")
+        (src / "old.jsonl.partial").write_bytes(b"an input")
+        out.write_bytes(b"an earlier dump")
+        (self.tmp / "link.json").symlink_to(out)
+        cases = {
+            "--stats is the dump": (["-o", out, "--stats", out], "--stats names the dump"),
+            "--stats is a symlink to the dump": (["-o", out, "--stats", self.tmp / "link.json"], "names the dump"),
+            "--stats is the .partial file": (["-o", out, "--stats", f"{out}.partial"], "names the dump's .partial"),
+            "the dump is an input": (["-o", src / "tiny"], "the dump would overwrite the input 'tiny'"),
+            "the .partial file is an input": (["-o", src / "old.jsonl"], ".partial file would overwrite the input"),
+            "--stats is an input": (["-o", out, "--stats", src / "tiny"], "--stats would overwrite the input 'tiny'"),
+        }
+        before = {p: p.read_bytes() for p in (out, src / "tiny", src / "old.jsonl.partial")}
+        for label, (args, said) in cases.items():
+            with self.subTest(label):
+                with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as cm:
+                    unitypy_dump.main(["-q", str(src), *map(str, args)])
+                self.assertEqual(cm.exception.code, 2)
+                self.assertIn(said, err.getvalue())
+                self.assertEqual({p: p.read_bytes() for p in before}, before)
+                self.assertEqual(sorted(p.name for p in src.iterdir()), ["old.jsonl.partial", "tiny"])
+                self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["in", "link.json", "x.jsonl"])
+        # Paths of their own are written.
+        stats = self.tmp / "x.stats.json"
+        self.assertEqual(dump(src, "-o", out, "--stats", stats), 0)
+        self.assertEqual(records(out)[-1], {"rec": "end", "files": 2, "objects": 0})
+        self.assertEqual(json.loads(stats.read_text())["summary"]["inputs"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
