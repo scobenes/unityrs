@@ -36,16 +36,20 @@
 )]
 
 use super::{WriteCtx, WriteError};
+use crate::budget::DecodeBuf;
 use crate::typetree::Tree;
 use crate::value::Parsed;
 
 /// Writes `parsed` through `tree` (the object's own tree, or a `nodes=`
-/// override: keys are then matched by name), appending to `out`.
+/// override: keys are then matched by name), appending to `out`, a buffer
+/// on the object's input's meter that charges before it grows (a value read
+/// with a negative length can name the same bytes many times, so the output
+/// can be far larger than the value; plan section 3.15).
 pub fn write(
     parsed: &Parsed,
     tree: &Tree,
     ctx: &WriteCtx<'_>,
-    out: &mut Vec<u8>,
+    out: &mut DecodeBuf,
 ) -> Result<(), WriteError> {
     todo!()
 }

@@ -11,11 +11,30 @@
 //! Before a lazy read returns bytes ending at joined offset `X`, every block
 //! starting below `X` has a known length (`lengths`): a stored block's is
 //! known at open; an unmeasured block wholly before the read is decoded with
-//! its output discarded; the blocks the read overlaps are decoded once and
-//! cached as a run. Every entry is a zero-copy slice of its run, and a lazy
-//! read equals [`BundleFile::load_all`]'s bytes on every bundle, malformed
-//! ones included. An entry is the Python slice `data[offset : offset + size]`
-//! of the joined data (`File.py:78-81`; [`crate::stream::py_read`]).
+//! its output discarded (a measuring decode: charged while it runs, returned
+//! after). An entry is the Python slice `data[offset : offset + size]` of the
+//! joined data (`File.py:78-81`; [`crate::stream::py_read`]), and a lazy read
+//! equals [`BundleFile::load_all`]'s bytes on every bundle, malformed ones
+//! included.
+//!
+//! **Runs.** The blocks one read overlaps are decoded into one buffer, a run,
+//! cached by its block span. A read whose span a cached run covers is a
+//! zero-copy slice of it; any other read decodes its own whole span into a
+//! new run, so a block that two spans share is decoded once per span.
+//! `load_all` decodes every block into one run. [`BundleFile::entry_range`]
+//! measures like any read, slices a covering cached run when there is one,
+//! and otherwise decodes its span into a buffer it returns without caching.
+//!
+//! **Memory.** Every decode (first, measuring, repeated) writes into a
+//! [`crate::budget::DecodeBuf`] on the input's meter, one segment per block
+//! (each capped at `max_block_output`), so whatever the runs hold is charged,
+//! and a hostile directory whose spans overlap fails with
+//! `LimitKind::InputMemory` instead of growing. The header, blocks,
+//! directory, `files` and the per-row parse cells are charged at open; each
+//! parsed entry charges its own file. Decodes and user codecs run with no
+//! lock held: a run is decoded first and then published into `runs`, and an
+//! entry is parsed first and then published into its cell
+//! ([`crate::once::get_or_publish`]).
 //!
 //! UnityPy rules ported exactly (plan section 3.6):
 //! - the extra byte after the data flags only for non-UnityFS signatures
@@ -55,6 +74,7 @@ use bytes::Bytes;
 
 use crate::error::Error;
 use crate::files::{File, Parent};
+use crate::limits::{Charge, Meter, MeteredVec};
 use crate::options::FileContext;
 use crate::raw::RawStr;
 use crate::version::{FlagsClass, ResolvedVersion, VersionError};
@@ -153,10 +173,14 @@ pub struct BundleFile {
     /// Each block's actual decoded length, once known (a stored block's at
     /// open, any other's when it is first decoded or measured).
     lengths: Box<[OnceLock<u64>]>,
-    /// Decoded block runs: `(first block, end block, bytes)`.
-    runs: Mutex<Vec<(usize, usize, Bytes)>>,
-    /// Parsed entries, by directory index.
+    /// Decoded block runs: `(first block, end block, bytes)`, each run's
+    /// charge inside its `Bytes`. Locked only to look up or publish.
+    runs: Mutex<MeteredVec<(usize, usize, Bytes)>>,
+    /// Parsed entries, by directory index, published once.
     entries: Box<[OnceLock<Result<File, Error>>]>,
+    /// The handle and its tables (header, blocks, directory, `files`, the
+    /// parse cells), charged to the input at open.
+    charge: Charge,
     ctx: Arc<FileContext>,
 }
 
@@ -173,13 +197,26 @@ impl std::fmt::Debug for BundleFile {
 
 impl BundleFile {
     /// Reads the header, blocks-info and directory. Decodes no data block.
+    /// Everything it keeps is charged to `meter`, the input's.
     pub fn open(
         name: RawStr,
         data: Bytes,
         parent: Option<Parent>,
+        meter: &Arc<Meter>,
         ctx: &Arc<FileContext>,
     ) -> Result<Arc<Self>, Error> {
         todo!()
+    }
+
+    /// The meter of the input it belongs to; its entries charge it too.
+    pub fn meter(&self) -> &Arc<Meter> {
+        self.charge.meter()
+    }
+
+    /// The input bytes it was opened on (for telling two handles on one
+    /// input apart from two inputs: plan section 4.1).
+    pub fn source(&self) -> &Bytes {
+        &self.source
     }
 
     /// The name it was opened under.
@@ -231,13 +268,18 @@ impl BundleFile {
         todo!()
     }
 
-    /// A byte range of an entry, decoding only the blocks it overlaps (a
-    /// `.resS` read). Short at the end of the entry, as a Python slice.
+    /// A byte range of an entry (a `.resS` read), short at the end of the
+    /// entry as a Python slice. It measures every block before the range as
+    /// any read does, slices a cached run that covers the range's blocks, and
+    /// otherwise decodes those blocks into a buffer it returns uncached (the
+    /// buffer's charge rides in the returned `Bytes`).
     pub fn entry_range(&self, dir_index: usize, range: Range<u64>) -> Result<Bytes, Error> {
         todo!()
     }
 
-    /// Directory entry `dir_index`, detected and parsed once (`parse_file`).
+    /// Directory entry `dir_index`, detected and parsed (`parse_file`) and
+    /// published once; under contention two callers may both parse it, and
+    /// the loser's result (and its charge) is dropped.
     pub fn entry(&self, dir_index: usize) -> Result<File, Error> {
         todo!()
     }

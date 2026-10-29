@@ -31,7 +31,7 @@
 
 use std::sync::Arc;
 
-use crate::limits::Limits;
+use crate::limits::{Charge, Limits};
 use crate::typetree::{NodeId, NodeList, TreeError};
 
 /// UnityPyBoost's `NodeDataType`, decided from `m_Type` alone.
@@ -163,13 +163,32 @@ pub struct Tree {
     list: Arc<NodeList>,
     info: Box<[NodeInfo]>,
     depth: u32,
+    /// `info` and the compile's own allocations, charged to the list's
+    /// meter ([`NodeList::meter`]) before they are made.
+    charge: Charge,
 }
 
 impl Tree {
-    /// Classifies every node. Fails only when the tree is deeper than
-    /// `limits.max_tree_depth`.
+    /// Classifies every node. Fails when the tree is deeper than
+    /// `limits.max_tree_depth`, or when the list's meter refuses the
+    /// tree's memory ([`TreeError::Charge`]): `info` and any scratch grow
+    /// through [`crate::limits::MeteredVec`] on [`NodeList::meter`], so a
+    /// tree compiled from an input's rows is charged to that input.
     pub fn compile(list: Arc<NodeList>, limits: &Limits) -> Result<Arc<Self>, TreeError> {
         todo!()
+    }
+
+    /// A tree with no node facts, for the scaffold's own tests of code that
+    /// only passes trees around (the provider cache) before package B lands.
+    #[cfg(test)]
+    pub(crate) fn for_tests(list: Arc<NodeList>) -> Arc<Self> {
+        let charge = Charge::zero(list.meter());
+        Arc::new(Self {
+            list,
+            info: Box::new([]),
+            depth: 1,
+            charge,
+        })
     }
 
     /// The rows and structure this tree compiles.

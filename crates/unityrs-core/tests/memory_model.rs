@@ -1,24 +1,31 @@
-//! The memory model of plan section 3.15, measured: the sizes of the parsed
-//! records, the bytes a typetree row costs while `NodeList::from_rows` builds
-//! a tree and after it, and the per-input bound the default `Limits` give.
+//! The memory model of plan section 3.15, measured: everything the core
+//! allocates in proportion to what an input chooses is charged to the input's
+//! meter first, so one input holds at most the meter's limit plus a constant.
 //!
 //!     scripts/dev cargo test -p unityrs-core --test memory_model -- --nocapture
 //!
-//! A counting global allocator measures the heap; this file holds one test so
-//! nothing else allocates while it runs.
+//! A counting global allocator watches the heap while each path runs, and
+//! checks two things: the heap never holds more than the meter has charged
+//! (requested sizes; `heap_cost` adds the allocator's rounding, checked
+//! against glibc below), and the two inputs round 2 of the review built,
+//! overlapping directory entries and lazily re-decoded block spans, now stop
+//! with `LimitKind::InputMemory` at the meter's limit. They are run here at
+//! a 64 MiB limit, scaled down from the reviewers' 13 GiB and 748 GiB, through
+//! the same scaffold types the parsers must use (`MeteredVec` for every
+//! table, `DecodeBuf` for every decode). This file holds one test so nothing
+//! else allocates while it runs.
 
 #![allow(unsafe_code, clippy::cast_precision_loss)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::mem::size_of;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use unityrs_core::files::{
-    BlockInfo, DirEntry, External, FileSlot, ObjectInfo, ScriptRef, SerializedType,
-};
-use unityrs_core::limits::Limits;
-use unityrs_core::typetree::{NodeId, NodeInfo, NodeList, NodeRow};
-use unityrs_core::{Bytes, RawStr, Value};
+use unityrs_core::budget::{DecodeBuf, Reservation, Unbounded};
+use unityrs_core::limits::{ChargeError, Limits, Meter, MeteredVec, heap_cost};
+use unityrs_core::typetree::{NodeId, NodeList, NodeRow};
+use unityrs_core::{Bytes, LimitKind, Map, Parsed, RawStr, Value};
 
 struct Counting;
 
@@ -52,25 +59,160 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOC: Counting = Counting;
 
-const GIB: f64 = (1u64 << 30) as f64;
+const MIB: u64 = 1 << 20;
+/// The scaled-down meter limit of the two hostile inputs.
+const LIMIT: u64 = 64 * MIB;
+/// What the test's own bookkeeping (vectors of handles, the harness) may
+/// add to the heap beside what it measures.
+const SLACK: u64 = 256 << 10;
 
-fn per(bytes: usize, n: usize) -> f64 {
-    bytes as f64 / n as f64
+fn bytes(n: usize) -> u64 {
+    u64::try_from(n).unwrap()
 }
 
-#[test]
-fn the_default_limits_hold_one_input_inside_12_gib() {
-    // Rows as parse_blob makes them (strings are slices of one string buffer),
-    // in two shapes: a flat root (one long child list) and a chain (one
-    // small child list per row), the costliest for `from_rows`.
-    let n = 1 << 20;
+fn live() -> u64 {
+    bytes(LIVE.load(Ordering::Relaxed))
+}
+
+fn reset_peak() -> u64 {
+    let base = live();
+    PEAK.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+    base
+}
+
+fn peak_above(base: u64) -> u64 {
+    bytes(PEAK.load(Ordering::Relaxed)).saturating_sub(base)
+}
+
+fn meter(limit: u64) -> Arc<Meter> {
+    Meter::new(limit, Arc::new(Unbounded), Reservation::Input)
+}
+
+fn assert_limit(e: &ChargeError) {
+    assert!(
+        matches!(e, ChargeError::Limit(l) if l.kind == LimitKind::InputMemory && l.max == LIMIT),
+        "{e:?}"
+    );
+}
+
+/// Round 2's overlapping directory entries: K rows over the same bytes,
+/// each parse keeping its own copy of a type's dependency list (a
+/// `read_i32_array` that passed its `4 * count <= remaining` check). Every
+/// parse grows the table on the input's meter, so the copies stop at the
+/// limit, however many rows point at the bytes.
+fn overlapping_entries() -> usize {
+    const K: usize = 12;
+    const COUNT: usize = 2 << 20; // 8 MiB of i32 per parse
+    let m = meter(LIMIT);
+    let mut parsed: Vec<MeteredVec<i32>> = Vec::with_capacity(K);
+    let base = reset_peak();
+    let mut refused = None;
+    for _ in 0..K {
+        let mut deps = match MeteredVec::with_capacity(&m, COUNT) {
+            Ok(v) => v,
+            Err(e) => {
+                refused = Some(e);
+                break;
+            }
+        };
+        for i in 0..COUNT {
+            deps.push(i32::try_from(i & 0xff).unwrap()).unwrap();
+        }
+        parsed.push(deps);
+        assert!(live() - base <= m.used() + SLACK, "heap above the charge");
+    }
+    assert_limit(&refused.expect("the meter refused a copy"));
+    assert!(
+        peak_above(base) <= LIMIT + SLACK,
+        "peak {} above the limit",
+        peak_above(base)
+    );
+    let kept = parsed.len();
+    drop(parsed);
+    assert_eq!(m.used(), 0, "the parses return their charges");
+    kept
+}
+
+/// Round 2's lazy runs: 32 blocks, a directory of every contiguous span
+/// sorted shortest first, read in directory order, each read decoding its
+/// span into a new cached run (no shorter run covers a longer span). The
+/// spans need 5,984 block decodes; every decode is charged, so the cache
+/// stops at the limit. One eager run of all 32 blocks fits the same meter.
+fn lazy_runs() -> (usize, u64) {
+    const BLOCKS: usize = 32;
+    const BLOCK: usize = 256 << 10;
+    let m = meter(LIMIT);
+    let mut spans: Vec<(usize, usize)> = (0..BLOCKS)
+        .flat_map(|i| ((i + 1)..=BLOCKS).map(move |j| (i, j)))
+        .collect();
+    spans.sort_by_key(|(i, j)| (j - i, *i));
+    let needed: usize = spans.iter().map(|(i, j)| j - i).sum();
+    assert_eq!((spans.len(), needed), (528, 5984));
+    let mut runs: Vec<Bytes> = Vec::with_capacity(spans.len());
+    let base = reset_peak();
+    let mut refused = None;
+    'reads: for (i, j) in &spans {
+        // A run: one segment per block, each capped at max_block_output.
+        let mut out = match DecodeBuf::new(&m, 0, bytes(BLOCK), LimitKind::BlockOutput) {
+            Ok(b) => b,
+            Err(e) => {
+                refused = Some(e);
+                break;
+            }
+        };
+        for _ in *i..*j {
+            out.begin_block(bytes(BLOCK), LimitKind::BlockOutput);
+            // The codec writes the block's output (an LZMA block of zeros).
+            if let Err(e) = out.grow_zeroed(BLOCK) {
+                refused = Some(e);
+                break 'reads;
+            }
+        }
+        match out.into_bytes() {
+            Ok(run) => runs.push(run),
+            Err(e) => {
+                refused = Some(e);
+                break;
+            }
+        }
+        assert!(live() - base <= m.used() + SLACK, "heap above the charge");
+    }
+    assert_limit(&refused.expect("the meter refused a run"));
+    assert!(
+        peak_above(base) <= LIMIT + SLACK,
+        "peak {} above the limit",
+        peak_above(base)
+    );
+    let cached = runs.len();
+    drop(runs);
+    assert_eq!(m.used(), 0, "the runs return their charges");
+
+    // Eager: every block once, into one run, under the same meter.
+    let mut all = DecodeBuf::new(&m, 0, bytes(BLOCK), LimitKind::BlockOutput).unwrap();
+    for _ in 0..BLOCKS {
+        all.begin_block(bytes(BLOCK), LimitKind::BlockOutput);
+        all.grow_zeroed(BLOCK).unwrap();
+    }
+    let joined = all.into_bytes().unwrap();
+    let held = m.used();
+    assert_eq!(joined.len(), BLOCKS * BLOCK);
+    drop(joined);
+    (cached, held)
+}
+
+/// Typetree rows: the parser's row table and every table `from_rows` builds
+/// are charged, in both shapes (a flat root, and a chain, the deepest).
+fn typetree_rows() -> f64 {
+    let n: u32 = 1 << 18;
     let strings = Bytes::from(b"Base\0int\0m_Name\0".to_vec());
     let (ty, name) = (strings.slice(5..8), strings.slice(9..15));
-    let mut peak_row: f64 = 0.0;
-    let mut kept_row: f64 = 0.0;
+    let mut per_row: f64 = 0.0;
     for chain in [false, true] {
-        let rows: Vec<NodeRow> = (0..n)
-            .map(|i| NodeRow {
+        let m = meter(u64::MAX);
+        let base = reset_peak();
+        let mut rows = MeteredVec::new(&m);
+        for i in 0..n {
+            rows.push(NodeRow {
                 level: if chain {
                     i32::try_from(i).unwrap()
                 } else {
@@ -83,75 +225,137 @@ fn the_default_limits_hold_one_input_inside_12_gib() {
                 type_flags: Some(0),
                 ..NodeRow::default()
             })
-            .collect();
-        let base = LIVE.load(Ordering::Relaxed);
-        PEAK.store(base, Ordering::Relaxed);
+            .unwrap();
+        }
         let list = NodeList::from_rows(rows).unwrap();
-        let held = n * size_of::<NodeRow>();
-        peak_row = peak_row.max(per(PEAK.load(Ordering::Relaxed) - base + held, n));
-        kept_row = kept_row.max(per(LIVE.load(Ordering::Relaxed) - base + held, n));
-        assert_eq!(list.len(), n);
+        assert!(live() - base <= m.used(), "rows held above their charge");
+        assert!(
+            peak_above(base) <= m.used() * 2,
+            "from_rows's peak above twice what it keeps"
+        );
+        assert_eq!(list.charge().bytes(), m.used());
+        per_row = per_row.max(m.used() as f64 / f64::from(n));
+        drop(list);
+        assert_eq!(m.used(), 0);
     }
+    per_row
+}
 
-    let sizes = [
-        ("NodeRow", size_of::<NodeRow>()),
-        ("NodeInfo", size_of::<NodeInfo>()),
-        ("SerializedType", size_of::<SerializedType>()),
-        ("ObjectInfo", size_of::<ObjectInfo>()),
-        ("External", size_of::<External>()),
-        ("ScriptRef", size_of::<ScriptRef>()),
-        ("BlockInfo", size_of::<BlockInfo>()),
-        ("DirEntry", size_of::<DirEntry>()),
-        ("FileSlot", size_of::<FileSlot>()),
-        ("RawStr", size_of::<RawStr>()),
-        ("Value", size_of::<Value>()),
-        ("(NodeId, Value)", size_of::<(NodeId, Value)>()),
-    ];
-    for (name, size) in sizes {
-        println!("size_of {name:<16} {size:>4} bytes");
+/// Values: a `Parsed` carries the charge for every allocation of its value,
+/// so a value a caller keeps is still on the meter, and dropping it returns
+/// it.
+fn parsed_values() -> u64 {
+    let m = meter(u64::MAX);
+    let list = Arc::new(
+        NodeList::trusted(vec![
+            NodeRow::new(0, "Base", "Base"),
+            NodeRow::new(1, "int", "a"),
+            NodeRow::new(1, "int", "b"),
+        ])
+        .unwrap(),
+    );
+    let base = reset_peak();
+    let mut items: MeteredVec<Value> = MeteredVec::new(&m);
+    let mut charge = unityrs_core::limits::Charge::zero(&m);
+    for i in 0..(1 << 14) {
+        let mut entries: MeteredVec<(NodeId, Value)> = MeteredVec::with_capacity(&m, 2).unwrap();
+        entries.push((NodeId(1), Value::Int(i))).unwrap();
+        entries.push((NodeId(2), Value::Int(-i))).unwrap();
+        let (entries, c) = entries.into_parts();
+        charge.absorb(c);
+        items
+            .push(Value::Dict(Map::from_entries(0, entries)))
+            .unwrap();
     }
+    let (items, c) = items.into_parts();
+    charge.absorb(c);
+    let p = Parsed::new(vec![list].into(), Value::List(items), 0, charge);
+    assert!(live() - base <= m.used(), "a value held above its charge");
+    let kept = vec![p];
+    let held = m.used();
+    drop(kept);
+    assert_eq!(m.used(), 0, "dropping the value returns its charge");
+    held
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn heap_cost_covers_glibc() {
+    unsafe extern "C" {
+        fn malloc_usable_size(ptr: *mut std::ffi::c_void) -> usize;
+    }
+    for n in [
+        1_usize,
+        8,
+        24,
+        25,
+        100,
+        1000,
+        4096,
+        100_000,
+        131_072,
+        1 << 20,
+        5 << 20,
+    ] {
+        let layout = Layout::from_size_align(n, 8).unwrap();
+        // SAFETY: a non-zero layout; the block is freed below.
+        let p = unsafe { System.alloc(layout) };
+        assert!(!p.is_null());
+        // SAFETY: `p` came from glibc's malloc (the system allocator).
+        let usable = unsafe { malloc_usable_size(p.cast()) };
+        // SAFETY: allocated above with this layout.
+        unsafe { System.dealloc(p, layout) };
+        // A chunk is its usable size plus its header (8 bytes, 16 mmapped).
+        let header = if n < 128 << 10 { 8 } else { 16 };
+        assert!(
+            bytes(usable + header) <= heap_cost(bytes(n)),
+            "{n}: glibc's chunk {} above heap_cost {}",
+            usable + header,
+            heap_cost(bytes(n))
+        );
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn heap_cost_covers_glibc() {}
+
+#[test]
+fn the_meter_bounds_every_path() {
+    heap_cost_covers_glibc();
+
+    let kept = overlapping_entries();
     println!(
-        "typetree row: {kept_row:.1} bytes kept, {peak_row:.1} at the peak of from_rows (requested bytes)"
+        "overlapping entries: {kept} of 12 parses kept at a {} MiB meter, then InputMemory",
+        LIMIT / MIB
+    );
+    assert_eq!(kept, 7);
+
+    let (cached, eager) = lazy_runs();
+    println!(
+        "lazy runs: {cached} of 528 spans cached at a {} MiB meter, then InputMemory; one eager run holds {} MiB",
+        LIMIT / MIB,
+        eager / MIB
+    );
+    assert!(cached < 528);
+
+    let per_row = typetree_rows();
+    println!(
+        "typetree rows: at most {per_row:.1} bytes charged per row (row table and child tables)"
     );
 
-    // The largest parsed record, with the side tables kept per record (an
-    // object's dict-order index; an entry's dict slot and parse cell).
-    let record = [
-        size_of::<SerializedType>(),
-        size_of::<ObjectInfo>() + 4,
-        size_of::<External>(),
-        size_of::<ScriptRef>(),
-        size_of::<BlockInfo>() + 8,
-        size_of::<DirEntry>() + size_of::<FileSlot>() + 64,
-    ]
-    .into_iter()
-    .max()
-    .unwrap();
-    let l = Limits::default();
-    let row = peak_row + size_of::<NodeInfo>() as f64;
-    let terms = [
-        ("decoded data held", l.max_bundle_uncompressed as f64),
-        ("one block's regrowth", l.max_block_output as f64),
-        (
-            "metadata records",
-            l.max_metadata_records as f64 * record as f64,
-        ),
-        ("typetree rows", l.max_tree_rows as f64 * row),
-        (
-            "one object's values",
-            l.max_values_per_object as f64 * size_of::<(NodeId, Value)>() as f64,
-        ),
-    ];
-    let mut total = 0.0;
-    for (what, bytes) in terms {
-        println!("{what:<22} {:>6.2} GiB", bytes / GIB);
-        total += bytes;
-    }
-    println!("{:<22} {:>6.2} GiB", "one input, worst case", total / GIB);
-    assert!(record <= 200, "a record grew: {record}");
-    assert!(
-        total / GIB <= 10.0,
-        "the default limits no longer fit: {:.2} GiB",
-        total / GIB
+    let held = parsed_values();
+    println!(
+        "parsed values: 16,384 maps of 2 entries hold {held} bytes, all charged, all returned"
     );
+
+    let l = Limits::default();
+    // Not charged, and not in proportion to anything the input chooses: the
+    // meter itself (one per input), and the stack of a call bounded by the
+    // depth limits. The provider cache is per context, bounded on its own.
+    let meter_size = size_of::<Meter>() + 2 * size_of::<usize>();
+    println!(
+        "bound per input: max_input_memory {} GiB + {meter_size} bytes (the Meter) + per reading thread its stack and detection's fixed scratch; per context the provider cache, at most {} MiB",
+        l.max_input_memory >> 30,
+        unityrs_core::provider::ProviderChain::DEFAULT_CACHE_BYTES >> 20
+    );
+    assert_eq!(l.max_input_memory, 8 << 30);
 }

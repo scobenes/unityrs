@@ -21,6 +21,7 @@ use bytes::Bytes;
 
 use crate::error::Error;
 use crate::files::{DirEntry, Parent};
+use crate::limits::{Charge, Meter};
 use crate::options::FileContext;
 use crate::raw::RawStr;
 
@@ -43,6 +44,8 @@ pub struct WebFile {
     directory: Box<[DirEntry]>,
     data: Bytes,
     parent: Option<Parent>,
+    /// The handle, its directory and its inflated data, charged to the input.
+    charge: Charge,
     ctx: Arc<FileContext>,
 }
 
@@ -62,9 +65,15 @@ impl WebFile {
         name: RawStr,
         data: Bytes,
         parent: Option<Parent>,
+        meter: &Arc<Meter>,
         ctx: &Arc<FileContext>,
     ) -> Result<Arc<Self>, Error> {
         todo!()
+    }
+
+    /// The meter of the input it belongs to.
+    pub fn meter(&self) -> &Arc<Meter> {
+        self.charge.meter()
     }
 
     /// The signature.

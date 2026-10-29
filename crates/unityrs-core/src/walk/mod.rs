@@ -9,6 +9,14 @@
 //! [`write`](mod@write) ports UnityPy's pure-Python `write_typetree` (`:161-179`,
 //! `:407-458`), which does not mirror the reader (plan section 3.11).
 //!
+//! **Memory.** Every allocation a read makes for the value (a list, a map, a
+//! tuple, a primitive run) is charged to [`ReadCtx::meter`], the input's,
+//! before it is made, at [`crate::limits::heap_cost`] of its capacity, and
+//! the charges ride in the [`Parsed`] (grow through
+//! [`crate::limits::MeteredVec`], then hand its charge to the `Parsed`). A
+//! refused charge is [`ReadDetail::Charge`] (kind `other`). The writer's
+//! output grows the same way.
+//!
 //! Owner: the scaffold for the types in this file (frozen); package B owns
 //! [`read_typetree`]'s body and the three submodules.
 
@@ -30,7 +38,7 @@ use bytes::Bytes;
 
 use crate::error::LimitError;
 use crate::files::SerializedType;
-use crate::limits::Limits;
+use crate::limits::{ChargeError, Limits, Meter};
 use crate::provider::ProviderError;
 use crate::raw::RawStr;
 use crate::stream::Endian;
@@ -92,6 +100,10 @@ pub struct ReadCtx<'a> {
     pub ref_types: RefTypes<'a>,
     /// Floats and limits.
     pub options: &'a ReadOptions,
+    /// The input's meter: every allocation of the value is charged here
+    /// first, and the [`Parsed`] keeps the charges (the object's file's
+    /// [`crate::files::SerializedFile::meter`]).
+    pub meter: &'a Arc<Meter>,
 }
 
 /// What the writer needs besides the value and the tree.
@@ -202,9 +214,12 @@ pub enum ReadDetail {
     /// A pure-Python-path `TypeError` or `struct.error` (aligned `SInt8` or `TypelessData` arrays).
     #[error("python reader: {0}")]
     Python(&'static str),
-    /// A bound from [`Limits`].
+    /// A bound from [`Limits`] on work or depth.
     #[error(transparent)]
     Limit(LimitError),
+    /// The input's meter or the budget refused the value's memory.
+    #[error(transparent)]
+    Charge(ChargeError),
     /// A ref type's tree did not compile.
     #[error(transparent)]
     Tree(TreeError),
@@ -224,13 +239,15 @@ pub enum ParseError {
     #[error(transparent)]
     Read(#[from] ReadError),
     /// The read finished but did not end at `byte_size`. The value rides
-    /// along: it is what `parse_as_dict(check_read=False)` returns.
+    /// along: it is what `parse_as_dict(check_read=False)` returns. Shared,
+    /// not copied, when the error is cloned (a published result is handed to
+    /// every caller), and still charged to its input while any copy lives.
     #[error("Expected to read {expected} bytes, but only read {} bytes", .parsed.bytes_read)]
     CheckRead {
         /// `byte_size`.
         expected: u32,
         /// The full value and where the read ended.
-        parsed: Box<Parsed>,
+        parsed: Arc<Parsed>,
     },
     /// The object's tree did not compile.
     #[error(transparent)]
@@ -292,6 +309,9 @@ pub enum WriteError {
     /// A bound from [`Limits`].
     #[error(transparent)]
     Limit(LimitError),
+    /// The input's meter or the budget refused the output's memory.
+    #[error(transparent)]
+    Charge(ChargeError),
 }
 
 /// `TypeTreeHelper.read_typetree`: [`boost::read`] over the Python slice

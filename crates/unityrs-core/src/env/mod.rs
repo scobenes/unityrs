@@ -31,11 +31,26 @@
 //! `Eager` (UnityPy decodes every block before any entry,
 //! `files/BundleFile.py:173-186`) and nothing under `Lazy`.
 //!
+//! **Memory.** Each load makes its input's meter
+//! ([`crate::limits::Meter::for_input`]): [`crate::budget::Reservation::Input`]
+//! for what a caller loads, [`crate::budget::Reservation::Dependency`] for a
+//! dependency. A [`Source::Path`] is read by [`read_path`], bounded by
+//! [`crate::limits::Limits::max_input_bytes`] and charged to that meter
+//! before its bytes exist. Each registry slot is charged to the meter of
+//! the file that registered it. Listings ([`Environment::objects`],
+//! [`Environment::container`], [`Registry::keys`]) are iterators: they hold
+//! a handle per nesting level and allocate nothing per record.
+//!
 //! Dependencies (files loaded to resolve a pointer or a resource) are kept in
-//! an LRU bounded by [`EnvOptions::dep_cache_bytes`] and paid for from the
-//! context's budget ([`crate::budget::Reservation::Dependency`]); the files a
-//! caller loaded are never evicted. UnityPy keeps everything, which is
-//! [`EnvOptions::unitypy`].
+//! an LRU bounded by [`EnvOptions::dep_cache_bytes`] (the sum of their
+//! meters); evicting one drops the LRU's handle on it, which returns its
+//! runs and parsed entries once nothing else holds them, and the next read
+//! opens it again from its retained bytes. The files a caller loaded are
+//! never evicted. UnityPy keeps everything, which is [`EnvOptions::unitypy`].
+//!
+//! **Locks.** The registry, the `files` list and the LRU are locked only to
+//! look up or publish; a file is loaded, an entry parsed and a resolver,
+//! fetcher or provider called with no lock held ([`crate::once`]).
 //!
 //! Where UnityPy reaches the filesystem (`find_file`'s walk of `env.path`,
 //! `load_file`'s relative paths), the core asks a [`CabResolver`]: the core
@@ -58,18 +73,21 @@ pub mod registry;
 pub mod resource;
 
 use std::fmt;
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use bytes::Bytes;
 
 pub use pptr::{DerefError, PPtr};
-pub use registry::{Cab, RawCab, Registry};
+pub use registry::{Cab, Keys, RawCab, Registry};
 pub use resource::resource_candidates;
 
+use crate::budget::DecodeBuf;
 use crate::container::ContainerRow;
-use crate::error::Error;
+use crate::error::{Error, LimitError, LimitKind};
 use crate::files::{File, SerializedFile};
+use crate::limits::{Limits, Meter};
 use crate::object::ObjectRef;
 use crate::options::FileContext;
 use crate::raw::RawStr;
@@ -104,7 +122,12 @@ pub enum Source {
         /// The bytes.
         data: Bytes,
     },
-    /// A path the core reads (whole, into memory).
+    /// A path the core reads whole into memory, with [`read_path`]: refused
+    /// above [`Limits::max_input_bytes`], and charged to the input's meter
+    /// before it is read. (Not mapped: a mapping of a file another process
+    /// truncates faults, and the core takes no new dependency for it; a
+    /// caller who wants a mapping passes [`Source::Bytes`] or
+    /// [`Source::Fetch`], whose bytes are the caller's.)
     Path(PathBuf),
     /// Bytes fetched on demand.
     Fetch {
@@ -113,6 +136,55 @@ pub enum Source {
         /// The fetcher.
         fetch: Arc<dyn Fetch>,
     },
+}
+
+/// Reads `path` whole for [`Source::Path`]. A file whose length is above
+/// `limits.max_input_bytes` is refused before anything is read
+/// ([`LimitKind::InputBytes`]); the buffer is charged to `meter` before it
+/// is allocated, and the read stops at the bound however long the file turns
+/// out to be (a file that grows while it is read, a pipe, a device). The
+/// returned bytes carry the charge.
+pub fn read_path(path: &Path, limits: &Limits, meter: &Arc<Meter>) -> Result<Bytes, Error> {
+    let mut file = std::fs::File::open(path)?;
+    let max = limits.max_input_bytes;
+    let too_long = |value: u64| {
+        Error::Limit(LimitError {
+            kind: LimitKind::InputBytes,
+            value,
+            max,
+        })
+    };
+    let len = file.metadata()?.len();
+    if len > max {
+        return Err(too_long(len));
+    }
+    let mut out = DecodeBuf::new(meter, len, max, LimitKind::InputBytes)?;
+    let cap = usize::try_from(max).unwrap_or(usize::MAX);
+    loop {
+        let filled = out.len();
+        let room = cap.saturating_sub(filled);
+        if room == 0 {
+            // At the bound: the file must end here.
+            let mut probe = [0_u8; 1];
+            if file.read(&mut probe)? > 0 {
+                return Err(too_long(max.saturating_add(1)));
+            }
+            break;
+        }
+        // The rest of the file as stat'd, or a 64 KiB step past it.
+        let want = usize::try_from(len)
+            .unwrap_or(usize::MAX)
+            .saturating_sub(filled)
+            .max(64 << 10)
+            .min(room);
+        let dst = out.grow_zeroed(want)?;
+        let n = file.read(dst)?;
+        out.truncate(filled + n);
+        if n == 0 {
+            break;
+        }
+    }
+    Ok(out.into_bytes()?)
 }
 
 /// Finds a dependency the registry does not hold: UnityPy's `find_file`
@@ -183,6 +255,45 @@ pub struct EnvStats {
     pub dependency_bytes: u64,
 }
 
+/// The iterator [`Environment::objects`] returns: a handle per nesting
+/// level (the file list position, the bundle, the entry, the object index).
+pub struct Objects<'a> {
+    env: &'a Environment,
+}
+
+impl Iterator for Objects<'_> {
+    type Item = Result<ObjectRef, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        todo!()
+    }
+}
+
+impl fmt::Debug for Objects<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Objects").finish_non_exhaustive()
+    }
+}
+
+/// The iterator [`Environment::container`] returns, CABs in registry order.
+pub struct ContainerItems<'a> {
+    env: &'a Environment,
+}
+
+impl Iterator for ContainerItems<'_> {
+    type Item = Result<ContainerItem, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        todo!()
+    }
+}
+
+impl fmt::Debug for ContainerItems<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContainerItems").finish_non_exhaustive()
+    }
+}
+
 /// A container row with the object it points at, as `env.container` yields.
 #[derive(Clone, Debug)]
 pub struct ContainerItem {
@@ -243,7 +354,8 @@ impl Environment {
         todo!()
     }
 
-    /// `files`, in insertion order.
+    /// `files`, in insertion order: one entry per caller load (not a count
+    /// the input chooses).
     pub fn files(&self) -> Vec<(RawStr, File)> {
         todo!()
     }
@@ -294,7 +406,14 @@ impl Environment {
     }
 
     /// `get_resource_data(path, from, offset, size)`
-    /// (`helpers/ResourceReader.py:10-38`).
+    /// (`helpers/ResourceReader.py:10-38`). The candidate is resolved by
+    /// UnityPy's rule (the registry, then dependencies). When the CAB it
+    /// resolves to is an entry of the same input as `from`'s own bundle (the
+    /// same source bytes and directory index; a batch job's own handle is a
+    /// second handle on those bytes), the bytes are read through `from`'s
+    /// bundle, so a job's resource reads are charged to the job's meter, not
+    /// to the shared dependency handle's (plan section 4.1). The answer is
+    /// the same entry's bytes either way.
     pub fn resource(
         &self,
         from: &Arc<SerializedFile>,
@@ -305,19 +424,101 @@ impl Environment {
         todo!()
     }
 
-    /// `objects`: every object of every non-dependency file, in load order.
-    pub fn objects(&self) -> Result<Vec<ObjectRef>, Error> {
+    /// `objects`: every object of every non-dependency file, in load order,
+    /// as an iterator (module docs: no allocation per object). A file that
+    /// fails to load or parse on the way yields its error.
+    pub fn objects(&self) -> Objects<'_> {
         todo!()
     }
 
     /// `container`: every non-dependency CAB's container rows, CABs in
-    /// registry order, after the preload index is built (`environment.py:208-227`).
-    pub fn container(&self) -> Result<Vec<ContainerItem>, Error> {
+    /// registry order, after the preload index is built (`environment.py:208-227`),
+    /// as an iterator.
+    pub fn container(&self) -> Result<ContainerItems<'_>, Error> {
         todo!()
     }
 
     /// Counters.
     pub fn stats(&self) -> EnvStats {
         todo!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::Arc;
+
+    use super::read_path;
+    use crate::budget::OWNER_COST;
+    use crate::budget::{Reservation, Unbounded};
+    use crate::error::{Error, LimitKind};
+    use crate::limits::{Limits, Meter, heap_cost};
+
+    fn temp_file(name: &str, len: usize) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "unityrs-core-read-path-{}-{name}",
+            std::process::id()
+        ));
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(&vec![7_u8; len]).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_path_is_refused_above_the_bound_before_it_is_read() {
+        let path = temp_file("long", 4097);
+        let limits = Limits {
+            max_input_bytes: 4096,
+            ..Limits::default()
+        };
+        let meter = Meter::new(1 << 20, Arc::new(Unbounded), Reservation::Input);
+        let e = read_path(&path, &limits, &meter).unwrap_err();
+        assert!(
+            matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputBytes && l.value == 4097),
+            "{e:?}"
+        );
+        assert_eq!(meter.used(), 0, "nothing was read or charged");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_path_is_charged_to_the_meter_and_released_with_its_bytes() {
+        let path = temp_file("fits", 4096);
+        let limits = Limits {
+            max_input_bytes: 4096,
+            ..Limits::default()
+        };
+        let meter = Meter::new(1 << 20, Arc::new(Unbounded), Reservation::Input);
+        let bytes = read_path(&path, &limits, &meter).unwrap();
+        assert_eq!(bytes.len(), 4096);
+        assert_eq!(meter.used(), heap_cost(4096) + OWNER_COST);
+        drop(bytes);
+        assert_eq!(meter.used(), 0);
+        // A meter too small for the file refuses before allocating.
+        let small = Meter::new(1000, Arc::new(Unbounded), Reservation::Input);
+        let e = read_path(&path, &limits, &small).unwrap_err();
+        assert!(
+            matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputMemory),
+            "{e:?}"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_longer_than_its_length_says_stops_at_the_bound() {
+        // A device reports length 0 and never ends.
+        let limits = Limits {
+            max_input_bytes: 100_000,
+            ..Limits::default()
+        };
+        let meter = Meter::new(1 << 30, Arc::new(Unbounded), Reservation::Input);
+        let e = read_path(std::path::Path::new("/dev/zero"), &limits, &meter).unwrap_err();
+        assert!(
+            matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputBytes),
+            "{e:?}"
+        );
+        assert_eq!(meter.used(), 0);
     }
 }

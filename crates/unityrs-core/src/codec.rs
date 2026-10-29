@@ -29,9 +29,10 @@
 //! fixture `tests/fixtures/scaffold/lz4_blocks.json` (python-lz4's verdict and
 //! output for a grid of blocks around each boundary) is the acceptance test.
 //!
-//! **Output.** A codec writes into a [`DecodeBuf`], which reserves from the
-//! budget and checks the caps before it grows (plan section 3.6), or hands
-//! back a zero-copy slice of its input (the stored codec).
+//! **Output.** A codec writes into a [`DecodeBuf`], which checks the block's
+//! cap and charges the input's meter before it grows (plan section 3.6), or
+//! hands back a zero-copy slice of its input (the stored codec). A codec is
+//! caller code when a user registers it: the core calls it with no lock held.
 //!
 //! Owner: package C. The registry type is implemented by the scaffold.
 
@@ -120,12 +121,12 @@ pub trait BlockCodec: Send + Sync {
     /// checks the caps before it grows, and the codec returns `Ok(None)`; or,
     /// with `out` left empty, the codec returns `Ok(Some(slice))`, a zero-copy
     /// slice of `input` (the stored codec), which the caller checks against
-    /// the same caps and meters as if it had been written.
+    /// the block's cap as if it had been written (it holds no new memory).
     fn decode(
         &self,
         input: &Bytes,
         uncompressed: u32,
-        out: &mut DecodeBuf<'_>,
+        out: &mut DecodeBuf,
     ) -> Result<Option<Bytes>, Error>;
 }
 
@@ -220,7 +221,7 @@ impl BlockCodec for Stored {
         &self,
         input: &Bytes,
         uncompressed: u32,
-        out: &mut DecodeBuf<'_>,
+        out: &mut DecodeBuf,
     ) -> Result<Option<Bytes>, Error> {
         todo!()
     }
@@ -235,7 +236,7 @@ impl BlockCodec for Lzma {
         &self,
         input: &Bytes,
         uncompressed: u32,
-        out: &mut DecodeBuf<'_>,
+        out: &mut DecodeBuf,
     ) -> Result<Option<Bytes>, Error> {
         todo!()
     }
@@ -250,7 +251,7 @@ impl BlockCodec for Lz4 {
         &self,
         input: &Bytes,
         uncompressed: u32,
-        out: &mut DecodeBuf<'_>,
+        out: &mut DecodeBuf,
     ) -> Result<Option<Bytes>, Error> {
         todo!()
     }

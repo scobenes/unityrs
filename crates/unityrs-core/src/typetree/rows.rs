@@ -20,10 +20,19 @@
 //! (`TypeTreeNode.parse`, explicit child counts) are emitted by the parser as
 //! pre-order rows with `level` = depth, which this rule rebuilds unchanged.
 //!
+//! **Memory.** The rows arrive in a [`MeteredVec`] the parser grew on the
+//! input's meter, and every table [`NodeList::from_rows`] builds is charged
+//! to the same meter before it is allocated, with no allocation per row. The
+//! list keeps the charges, so its rows cost the input until the last `Arc`
+//! of it drops (a [`crate::Parsed`] holds its lists).
+//!
 //! Owner: the scaffold (implemented). Package B compiles a `NodeList` into a
 //! [`super::Tree`]; package C produces rows from files.
 
+use std::sync::Arc;
+
 use crate::error::LimitError;
+use crate::limits::{Charge, ChargeError, Meter, MeteredVec, heap_cost};
 use crate::raw::RawStr;
 
 /// One typetree node as stored. UnityPy's `TypeTreeNode` fields.
@@ -111,84 +120,166 @@ pub enum TreeError {
     /// A compiled-tree bound (depth) was exceeded.
     #[error(transparent)]
     Limit(#[from] LimitError),
+    /// The input's meter or the budget refused the tree's memory.
+    #[error(transparent)]
+    Charge(#[from] ChargeError),
 }
 
 /// The kept tree of a typetree, as pre-order rows with their child lists.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Not `Clone`: it is shared as `Arc<NodeList>`, and owns the charge for
+/// its rows.
+#[derive(Debug)]
 pub struct NodeList {
-    rows: Box<[NodeRow]>,
+    rows: Vec<NodeRow>,
     /// `child_start[i]..child_start[i + 1]` indexes `children` for node `i`.
-    child_start: Box<[u32]>,
-    children: Box<[NodeId]>,
+    child_start: Vec<u32>,
+    children: Vec<NodeId>,
+    /// The three tables' allocations, on the input's meter.
+    charge: Charge,
 }
+
+impl PartialEq for NodeList {
+    fn eq(&self, other: &Self) -> bool {
+        self.rows == other.rows
+            && self.child_start == other.child_start
+            && self.children == other.children
+    }
+}
+
+impl Eq for NodeList {}
 
 fn to_u32(i: usize) -> u32 {
     // Callers have checked the row count against `u32::MAX`.
     u32::try_from(i).unwrap_or(u32::MAX)
 }
 
+/// The parent stack of UnityPy's rule over a stack-depth bound: `None` is
+/// the hidden root.
+const ROOT: u32 = u32::MAX;
+
 impl NodeList {
     /// Builds the tree by UnityPy's rule (module docs). The input is every row
-    /// the file stores, in order.
-    pub fn from_rows(mut rows: Vec<NodeRow>) -> Result<Self, TreeError> {
+    /// the file stores, in order, grown by the parser on the input's meter;
+    /// the list's own tables are charged to that meter before they exist.
+    pub fn from_rows(rows: MeteredVec<NodeRow>) -> Result<Self, TreeError> {
+        let meter = rows.charge().meter().clone();
+        let (mut rows, mut charge) = rows.into_parts();
+        // The `Arc` the list is kept in (it always is), charged with it.
+        charge.grow(heap_cost(
+            u64::try_from(std::mem::size_of::<Self>() + 16).unwrap_or(u64::MAX),
+        ))?;
         if rows.is_empty() {
             return Err(TreeError::Empty);
         }
         if u32::try_from(rows.len()).is_err() {
             return Err(TreeError::TooManyNodes(rows.len()));
         }
-        // `None` is the hidden root, at level -1.
-        let level_of = |rows: &[NodeRow], node: Option<usize>| -> i64 {
-            node.and_then(|i| rows.get(i))
-                .map_or(-1, |r| i64::from(r.level))
+        let level_of = |rows: &[NodeRow], node: u32| -> i64 {
+            if node == ROOT {
+                return -1;
+            }
+            rows.get(node as usize).map_or(-1, |r| i64::from(r.level))
         };
-        let mut stack: Vec<Option<usize>> = vec![None];
-        let mut parent: Option<usize> = None;
-        let mut prev: Option<usize> = None;
-        let mut parents: Vec<Option<usize>> = Vec::with_capacity(rows.len());
+        // Pass 1: each kept row's parent, by UnityPy's stack rule.
+        let mut stack: MeteredVec<u32> = MeteredVec::new(&meter);
+        stack.push(ROOT)?;
+        let mut parents: MeteredVec<u32> = MeteredVec::with_capacity(&meter, rows.len())?;
+        let mut parent = ROOT;
+        let mut prev = ROOT;
         let mut kept_end: Option<usize> = None;
         for (i, row) in rows.iter().enumerate() {
             let level = i64::from(row.level);
             let prev_level = level_of(&rows, prev);
             if level > prev_level {
-                stack.push(parent);
+                stack.push(parent)?;
                 parent = prev;
             } else if level < prev_level {
                 while level <= level_of(&rows, parent) {
-                    parent = stack.pop().ok_or(TreeError::LevelUnderflow {
-                        row: i,
-                        level: row.level,
-                    })?;
+                    let depth = stack.len();
+                    let Some(&up) = stack.as_slice().last() else {
+                        return Err(TreeError::LevelUnderflow {
+                            row: i,
+                            level: row.level,
+                        });
+                    };
+                    stack.truncate(depth - 1);
+                    parent = up;
                 }
             }
-            if parent.is_none() && i > 0 && kept_end.is_none() {
+            if parent == ROOT && i > 0 && kept_end.is_none() {
                 kept_end = Some(i);
             }
             if kept_end.is_none() {
-                parents.push(parent);
+                parents.push(parent)?;
             }
-            prev = Some(i);
+            prev = to_u32(i);
         }
+        drop(stack);
         rows.truncate(kept_end.unwrap_or(rows.len()));
+        let n = rows.len();
 
-        let mut lists: Vec<Vec<NodeId>> = vec![Vec::new(); rows.len()];
-        for (i, p) in parents.iter().enumerate().skip(1) {
-            if let Some(list) = p.and_then(|p| lists.get_mut(p)) {
-                list.push(NodeId(to_u32(i)));
+        // Pass 2: child lists by counting, so no allocation per row.
+        let mut child_start: MeteredVec<u32> = MeteredVec::with_capacity(&meter, n + 1)?;
+        for _ in 0..=n {
+            child_start.push(0)?;
+        }
+        for &p in parents.as_slice().iter().skip(1) {
+            if let Some(c) = child_start.as_mut_slice().get_mut(p as usize + 1) {
+                *c += 1;
             }
         }
-        let mut child_start = Vec::with_capacity(rows.len() + 1);
-        let mut children = Vec::with_capacity(rows.len().saturating_sub(1));
-        for list in lists {
-            child_start.push(to_u32(children.len()));
-            children.extend(list);
+        let mut sum = 0;
+        for c in child_start.as_mut_slice() {
+            sum += *c;
+            *c = sum;
         }
-        child_start.push(to_u32(children.len()));
+        // Now `child_start[p + 1]` is the end of `p`'s list; fill each list
+        // from its start, using a cursor per node.
+        let mut cursor: MeteredVec<u32> = MeteredVec::with_capacity(&meter, n)?;
+        cursor.extend_from_slice(child_start.as_slice().get(..n).unwrap_or_default())?;
+        let mut children: MeteredVec<NodeId> =
+            MeteredVec::with_capacity(&meter, n.saturating_sub(1))?;
+        for _ in 1..n {
+            children.push(NodeId(0))?;
+        }
+        for (i, &p) in parents.as_slice().iter().enumerate().skip(1) {
+            if let Some(at) = cursor.as_mut_slice().get_mut(p as usize) {
+                if let Some(slot) = children.as_mut_slice().get_mut(*at as usize) {
+                    *slot = NodeId(to_u32(i));
+                }
+                *at += 1;
+            }
+        }
+        drop((cursor, parents));
+        let (child_start, c1) = child_start.into_parts();
+        let (children, c2) = children.into_parts();
+        charge.absorb(c1);
+        charge.absorb(c2);
         Ok(Self {
-            rows: rows.into_boxed_slice(),
-            child_start: child_start.into_boxed_slice(),
-            children: children.into_boxed_slice(),
+            rows,
+            child_start,
+            children,
+            charge,
         })
+    }
+
+    /// Builds the tree from rows that are not an input's (a TPK's, a
+    /// caller's `nodes=` list, a test's), on an unlimited meter.
+    pub fn trusted(rows: Vec<NodeRow>) -> Result<Self, TreeError> {
+        Self::from_rows(MeteredVec::from_vec(rows, &Meter::unlimited())?)
+    }
+
+    /// The charge for the list's tables; [`Charge::meter`] is the meter a
+    /// tree compiled from it charges ([`super::Tree::compile`]).
+    #[must_use]
+    pub fn charge(&self) -> &Charge {
+        &self.charge
+    }
+
+    /// The meter the list was built on.
+    #[must_use]
+    pub fn meter(&self) -> &Arc<Meter> {
+        self.charge.meter()
     }
 
     /// The root (the hidden root's first child).
@@ -246,14 +337,48 @@ impl NodeList {
 
 #[cfg(test)]
 mod tests {
-    use super::{NodeId, NodeList, NodeRow, TreeError};
+    use std::sync::Arc;
 
-    fn rows(levels: &[i32]) -> Vec<NodeRow> {
-        levels
+    use super::{NodeId, NodeList, NodeRow, TreeError};
+    use crate::budget::{Reservation, Unbounded};
+    use crate::limits::{ChargeError, Meter, MeteredVec};
+
+    fn rows(levels: &[i32]) -> MeteredVec<NodeRow> {
+        let rows = levels
             .iter()
             .enumerate()
             .map(|(i, l)| NodeRow::new(*l, "int", format!("n{i}").as_str()))
-            .collect()
+            .collect();
+        MeteredVec::from_vec(rows, &Meter::unlimited()).unwrap()
+    }
+
+    #[test]
+    fn the_list_is_charged_and_returns_its_charge_when_dropped() {
+        let meter = Meter::new(1 << 20, Arc::new(Unbounded), Reservation::Input);
+        let mut v = MeteredVec::new(&meter);
+        for l in [0, 1, 2, 2, 1] {
+            v.push(NodeRow::new(l, "int", "x")).unwrap();
+        }
+        let list = NodeList::from_rows(v).unwrap();
+        assert!(meter.used() >= u64::try_from(5 * std::mem::size_of::<NodeRow>()).unwrap());
+        assert_eq!(meter.used(), list.charge().bytes(), "nothing else is held");
+        drop(list);
+        assert_eq!(meter.used(), 0);
+
+        // A meter with no room left for the child tables refuses, and holds
+        // nothing for the rows after.
+        let mut v = MeteredVec::new(&meter);
+        v.push(NodeRow::new(0, "int", "x")).unwrap();
+        v.push(NodeRow::new(1, "int", "y")).unwrap();
+        let fill = meter.charge(meter.limit() - meter.used()).unwrap();
+        let e = NodeList::from_rows(v).unwrap_err();
+        assert!(
+            matches!(e, TreeError::Charge(ChargeError::Limit(_))),
+            "{e:?}"
+        );
+        assert_eq!(meter.used(), fill.bytes());
+        drop(fill);
+        assert_eq!(meter.used(), 0);
     }
 
     #[test]
@@ -283,7 +408,7 @@ mod tests {
 
     #[test]
     fn empty_and_underflowing_inputs_raise() {
-        assert_eq!(NodeList::from_rows(Vec::new()), Err(TreeError::Empty));
+        assert_eq!(NodeList::from_rows(rows(&[])), Err(TreeError::Empty));
         assert_eq!(
             NodeList::from_rows(rows(&[0, 1, -1])),
             Err(TreeError::LevelUnderflow { row: 2, level: -1 })

@@ -21,12 +21,14 @@
 //! kept tree. Format 10 and 12 and up use blobs (`SerializedFile.py`'s
 //! `SerializedType`); the rest use the old format.
 //!
-//! **Bounds.** Each row is charged to the input's [`Meter`]
-//! ([`Metered::TreeRows`], [`Limits::max_tree_rows`]) *before* it is pushed,
-//! so a refused row allocates nothing; growth follows the bytes read, never
-//! `node_count`. Node names and types are zero-copy slices of the string
-//! buffer ([`crate::raw::RawStr::from_shared`]) or static common strings, so
-//! a row costs `size_of::<NodeRow>()` whatever its strings' lengths.
+//! **Bounds.** Rows are pushed into a [`MeteredVec`] on the input's
+//! [`Meter`], so every growth of the row table is charged before it happens
+//! and a refused one allocates nothing; growth follows the rows actually
+//! read, never `node_count`. Node names and types are zero-copy slices of the
+//! string buffer ([`crate::raw::RawStr::from_shared`]) or static common
+//! strings, so a row costs `size_of::<NodeRow>()` whatever its strings'
+//! lengths. A file that declares far more rows than it is long (LZMA
+//! compresses repeated rows well) is stopped by the meter, not by a count.
 //!
 //! Owner: package C.
 
@@ -41,8 +43,10 @@
     dead_code
 )]
 
+use std::sync::Arc;
+
 use crate::error::Error;
-use crate::limits::{Limits, Meter, Metered};
+use crate::limits::{Limits, Meter, MeteredVec};
 use crate::stream::Reader;
 use crate::typetree::NodeRow;
 
@@ -57,9 +61,9 @@ pub fn parse_old(
     r: &mut Reader<'_>,
     data: &bytes::Bytes,
     format: u32,
-    meter: &Meter,
+    meter: &Arc<Meter>,
     limits: &Limits,
-) -> Result<Vec<NodeRow>, Error> {
+) -> Result<MeteredVec<NodeRow>, Error> {
     todo!()
 }
 
@@ -69,13 +73,8 @@ pub fn parse_blob(
     r: &mut Reader<'_>,
     data: &bytes::Bytes,
     format: u32,
-    meter: &Meter,
+    meter: &Arc<Meter>,
     limits: &Limits,
-) -> Result<Vec<NodeRow>, Error> {
+) -> Result<MeteredVec<NodeRow>, Error> {
     todo!()
-}
-
-/// Charges one row to the input's meter before the parser keeps it.
-pub fn charge_row(meter: &Meter, limits: &Limits) -> Result<(), Error> {
-    Ok(meter.charge(Metered::TreeRows, 1, limits)?)
 }

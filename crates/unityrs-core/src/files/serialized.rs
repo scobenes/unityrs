@@ -30,7 +30,15 @@
 //!   (`parse_as_object`); the core reads it in dict mode, and package D's
 //!   fixtures pin that the two agree (plan section 3.7).
 //!
-//! Owner: package C. The accessors are implemented by the scaffold.
+//! **Memory.** Every table (types, their dependency lists and trees, objects,
+//! the dict order, scripts, externals, ref types) is built in a
+//! [`crate::limits::MeteredVec`] on the input's meter, and the file keeps the
+//! charges: two directory rows over the same bytes parse twice and pay twice.
+//! Strings are zero-copy slices of the file.
+//!
+//! Owner: package C. The accessors and [`SerializedType`]'s constructors and
+//! [`SerializedType::tree`] are implemented by the scaffold, so package B can
+//! build ref types for its tests before C lands.
 
 // STUB(C): delete this allow when the module is implemented.
 #![allow(
@@ -49,8 +57,9 @@ use bytes::Bytes;
 use crate::container::Container;
 use crate::error::Error;
 use crate::files::Parent;
-use crate::limits::Limits;
+use crate::limits::{Charge, Limits, Meter};
 use crate::object::ObjectRef;
+use crate::once::get_or_publish;
 use crate::options::FileContext;
 use crate::raw::RawStr;
 use crate::stream::Endian;
@@ -78,8 +87,9 @@ pub struct SerializedHeader {
     pub unknown: i64,
 }
 
-/// A type record (`SerializedType`), plain or ref type.
-#[derive(Clone, Debug)]
+/// A type record (`SerializedType`), plain or ref type. Not `Clone`: it
+/// lives in its file's table, which paid for it.
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct SerializedType {
     /// `class_id`.
@@ -106,12 +116,52 @@ pub struct SerializedType {
 }
 
 impl SerializedType {
-    /// The compiled tree, compiled on first use (package B's `Tree::compile`)
-    /// and cached: the walker reaches a ref type's tree through the `Limits`
-    /// in its `ReadCtx`, so every reference reuses one compile. `None` when
-    /// the record stores no tree.
+    /// A plain type record: `class_id` and its stored tree, every other
+    /// field as a format below 13 leaves it (`script_type_index` -1).
+    #[must_use]
+    pub fn new(class_id: i32, nodes: Option<Arc<NodeList>>) -> Self {
+        Self {
+            class_id,
+            is_stripped_type: None,
+            script_type_index: -1,
+            script_id: None,
+            old_type_hash: None,
+            nodes,
+            type_dependencies: None,
+            class_name: None,
+            namespace: None,
+            assembly: None,
+            tree: OnceLock::new(),
+        }
+    }
+
+    /// A ref type (format 21 and up): its class, namespace and assembly
+    /// names and its stored tree.
+    #[must_use]
+    pub fn ref_type(
+        class_id: i32,
+        class_name: RawStr,
+        namespace: RawStr,
+        assembly: RawStr,
+        nodes: Option<Arc<NodeList>>,
+    ) -> Self {
+        Self {
+            class_name: Some(class_name),
+            namespace: Some(namespace),
+            assembly: Some(assembly),
+            ..Self::new(class_id, nodes)
+        }
+    }
+
+    /// The compiled tree: `Tree::compile` over [`Self::nodes`] (package B),
+    /// computed on first use and published once, so every object and every
+    /// reference of the type reuses one compile. The compile runs outside
+    /// the cell ([`get_or_publish`]): two first callers may both compile,
+    /// and the loser's tree is dropped. Its rows are charged to the meter
+    /// the `NodeList` was built on. `None` when the record stores no tree.
     pub fn tree(&self, limits: &Limits) -> Option<Result<Arc<Tree>, TreeError>> {
-        todo!()
+        let nodes = self.nodes.as_ref()?;
+        Some(get_or_publish(&self.tree, || Tree::compile(nodes.clone(), limits)).clone())
     }
 }
 
@@ -186,6 +236,8 @@ pub struct SerializedFile {
     object_order: Box<[u32]>,
     container: OnceLock<Result<Container, Error>>,
     parent: Option<Parent>,
+    /// The handle and every table above, charged to the input.
+    charge: Charge,
     ctx: Arc<FileContext>,
 }
 
@@ -202,14 +254,22 @@ impl std::fmt::Debug for SerializedFile {
 }
 
 impl SerializedFile {
-    /// `SerializedFile.__init__`.
+    /// `SerializedFile.__init__`. Everything it keeps is charged to `meter`,
+    /// the input's.
     pub fn parse(
         name: RawStr,
         data: Bytes,
         parent: Option<Parent>,
+        meter: &Arc<Meter>,
         ctx: &Arc<FileContext>,
     ) -> Result<Arc<Self>, Error> {
         todo!()
+    }
+
+    /// The meter of the input it belongs to: what reading its objects
+    /// charges ([`crate::walk::ReadCtx::meter`]).
+    pub fn meter(&self) -> &Arc<Meter> {
+        self.charge.meter()
     }
 
     /// The name it was loaded under.
@@ -309,7 +369,8 @@ impl SerializedFile {
     }
 
     /// The container rows of the first AssetBundle in dict order, read once
-    /// ([`crate::container::read_container`]).
+    /// ([`crate::container::read_container`]) and published
+    /// ([`get_or_publish`]: the read runs outside the cell).
     pub fn container(self: &Arc<Self>) -> Result<&Container, Error> {
         todo!()
     }
@@ -327,7 +388,40 @@ impl SerializedFile {
 
 #[cfg(test)]
 mod tests {
-    use super::ObjectInfo;
+    use std::sync::Arc;
+
+    use super::{ObjectInfo, SerializedType};
+    use crate::raw::RawStr;
+    use crate::typetree::{NodeList, NodeRow};
+
+    #[test]
+    fn package_b_can_build_ref_types_without_package_c() {
+        let nodes = Arc::new(
+            NodeList::trusted(vec![
+                NodeRow::new(0, "Foo", "Base"),
+                NodeRow::new(1, "int", "x"),
+            ])
+            .unwrap(),
+        );
+        let t = SerializedType::ref_type(
+            114,
+            RawStr::from("Foo"),
+            RawStr::from("Ns"),
+            RawStr::from("Asm.dll"),
+            Some(nodes),
+        );
+        assert_eq!(
+            t.class_name.as_ref().map(RawStr::as_bytes),
+            Some(&b"Foo"[..])
+        );
+        assert_eq!(t.script_type_index, -1);
+        let plain = SerializedType::new(1, None);
+        assert!(plain.class_name.is_none());
+        assert!(
+            plain.tree(&crate::limits::Limits::default()).is_none(),
+            "no stored tree, nothing to compile"
+        );
+    }
 
     #[test]
     // The conversion keeps the test meaningful against a narrower field type.

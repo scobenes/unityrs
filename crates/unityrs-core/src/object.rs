@@ -108,13 +108,15 @@ impl ObjectRef {
         self.read_typetree(None, check_read)
     }
 
-    /// `save_typetree`'s bytes: UnityPy's writer (or `rules`) over `value`.
+    /// `save_typetree`'s bytes: UnityPy's writer (or `rules`) over `value`,
+    /// written into a buffer charged to the file's input meter, whose charge
+    /// rides in the returned `Bytes`.
     pub fn write_typetree(
         &self,
         value: &Parsed,
         nodes: Option<&Arc<Tree>>,
         rules: WriteRules,
-    ) -> Result<Vec<u8>, WriteError> {
+    ) -> Result<Bytes, WriteError> {
         todo!()
     }
 }

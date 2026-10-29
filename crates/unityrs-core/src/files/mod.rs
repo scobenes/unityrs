@@ -5,6 +5,13 @@
 //! UnityPy load order, where every entry is parsed and a failing entry fails
 //! the bundle, is [`BundleFile::load_all`].
 //!
+//! **Memory.** Every file charges its input's [`Meter`] for itself and for
+//! every table it keeps, before it allocates them (plan section 3.15): a
+//! top-level load makes the meter and passes it to [`parse_file`], and a
+//! container passes its own to each entry it parses, so one input's files
+//! share one bound however many there are. Each file keeps its [`Charge`]
+//! (the bytes return when the file drops) and answers [`File::meter`].
+//!
 //! Owner: package C.
 
 // STUB(C): delete this allow when the module is implemented.
@@ -32,7 +39,7 @@ pub use web::{WebFile, WebPacker};
 
 use crate::detect::FileType;
 use crate::error::Error;
-use crate::limits::Meter;
+use crate::limits::{Charge, ChargeError, Meter, heap_cost};
 use crate::options::FileContext;
 use crate::raw::RawStr;
 
@@ -49,28 +56,63 @@ pub enum File {
     Raw(Arc<RawFile>),
 }
 
+impl File {
+    /// The meter of the input this file belongs to.
+    #[must_use]
+    pub fn meter(&self) -> &Arc<Meter> {
+        match self {
+            Self::Serialized(f) => f.meter(),
+            Self::Bundle(f) => f.meter(),
+            Self::Web(f) => f.meter(),
+            Self::Raw(f) => f.meter(),
+        }
+    }
+}
+
 /// A file UnityPy keeps as a reader.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct RawFile {
     /// The name it was loaded under.
     pub name: RawStr,
     /// Its bytes (a slice of the parent's buffer for an entry).
     pub data: Bytes,
+    /// The handle's own allocation, charged to the input.
+    charge: Charge,
+}
+
+impl RawFile {
+    /// A raw file of `data` under `name`, its allocation charged to `meter`
+    /// first (`data` is a slice of a buffer already charged, or the
+    /// caller's).
+    pub fn new(name: RawStr, data: Bytes, meter: &Arc<Meter>) -> Result<Arc<Self>, ChargeError> {
+        let charge = meter.charge(heap_cost(
+            u64::try_from(std::mem::size_of::<Self>() + 16).unwrap_or(u64::MAX),
+        ))?;
+        Ok(Arc::new(Self { name, data, charge }))
+    }
+
+    /// The meter of the input it belongs to.
+    #[must_use]
+    pub fn meter(&self) -> &Arc<Meter> {
+        self.charge.meter()
+    }
 }
 
 /// What a child knows of its container. A file loaded at top level has none
 /// (`parent: None`): UnityPy makes the `Environment` that loaded it its
 /// parent (`environment.py:154`), which is the container `PPtr.deref` scans
-/// (plan section 3.13, rule 4).
+/// (plan section 3.13, rule 4). The input's meter travels separately, as
+/// every file's [`File::meter`], top-level ones included.
 #[derive(Clone, Debug)]
 pub struct Parent {
     /// The container's name.
     pub name: RawStr,
     /// The container's kind.
     pub kind: ParentKind,
-    /// The input's meter, shared by every file inside one top-level load
-    /// ([`crate::limits`]); a top-level file makes a new one.
-    pub meter: Arc<Meter>,
+    /// How deep the child is: 1 for an entry of a top-level container. A
+    /// container at [`crate::limits::Limits::max_container_depth`] refuses to
+    /// parse an entry that is itself a container (`LimitKind::ContainerDepth`).
+    pub depth: u32,
 }
 
 /// A container kind, as the `SerializedFile` version chain and `PPtr.deref`
@@ -91,11 +133,13 @@ pub enum ParentKind {
 
 /// `parse_file`: builds the file `ty` says, under the name rule
 /// ([`crate::detect::parsed_as`]). A file with a `parent` is an entry.
+/// Everything it keeps is charged to `meter`, the input's.
 pub fn parse_file(
     name: RawStr,
     data: Bytes,
     ty: FileType,
     parent: Option<Parent>,
+    meter: &Arc<Meter>,
     ctx: &Arc<FileContext>,
 ) -> Result<File, Error> {
     todo!()

@@ -21,6 +21,13 @@
 //! lists: the root tree's first, then each ref-type tree a `ReferencedObject`
 //! read through. [`Map::list`] says which list a map's keys belong to.
 //!
+//! **Memory.** A [`Parsed`] carries the [`Charge`] for every allocation its
+//! value holds (each list, map, tuple and primitive run, at
+//! [`crate::limits::heap_cost`] of its capacity), charged to the input's
+//! meter by the reader before it allocated them. Dropping the `Parsed`
+//! returns them, so values a caller keeps count against the input's bound
+//! for as long as they are kept. That is why `Parsed` is not `Clone`.
+//!
 //! Owner: the scaffold (implemented types and helpers); package B may add
 //! methods and fast paths but not change these signatures.
 
@@ -28,18 +35,20 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
+use crate::limits::{Charge, Meter};
 use crate::raw::RawStr;
 use crate::typetree::{NodeId, NodeList};
 
 /// Index of a [`NodeList`] in [`Parsed::lists`]: the root tree's list, then
 /// one per distinct ref-type tree a `ReferencedObject` read through
 /// (deduplicated by `Arc` pointer, so the count is bounded by the file's ref
-/// types, which `Limits::max_metadata_records` caps above `u16`). A `u32`
+/// types, which the input's meter bounds, and which can pass `u16`). A `u32`
 /// costs nothing: [`Map`] stays 32 bytes.
 pub type ListIx = u32;
 
-/// One object's value and the node lists that name its keys.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One object's value, the node lists that name its keys, and the charge
+/// for the value's memory (module docs).
+#[derive(Debug)]
 pub struct Parsed {
     lists: Box<[Arc<NodeList>]>,
     /// The value.
@@ -50,7 +59,19 @@ pub struct Parsed {
     /// `TypelessData` length moves it back; UnityPy then reports, say,
     /// "only read -96 bytes"). UnityPyBoost's is never negative.
     pub bytes_read: i64,
+    charge: Charge,
 }
+
+impl PartialEq for Parsed {
+    /// The value, the lists and `bytes_read`; the charge is bookkeeping.
+    fn eq(&self, other: &Self) -> bool {
+        self.lists == other.lists
+            && self.value == other.value
+            && self.bytes_read == other.bytes_read
+    }
+}
+
+impl Eq for Parsed {}
 
 /// A value read through a typetree.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -147,13 +168,24 @@ impl Map {
         }
     }
 
-    /// An empty map with room for `n` entries.
+    /// An empty map with room for `n` entries. The reader sizes a class's
+    /// map once, by its distinct child names from the compiled tree
+    /// (`NodeInfo::slot`), and charges it first (plan section 3.10).
     #[must_use]
     pub fn with_capacity(list: ListIx, n: usize) -> Self {
         Self {
             list,
             entries: Vec::with_capacity(n),
         }
+    }
+
+    /// A map over entries the reader grew (in a
+    /// [`crate::limits::MeteredVec`], whose charge it handed to the
+    /// [`Parsed`]): no copy, so the charge still covers the map. The caller
+    /// guarantees the keys are distinct.
+    #[must_use]
+    pub fn from_entries(list: ListIx, entries: Vec<(NodeId, Value)>) -> Self {
+        Self { list, entries }
     }
 
     /// Which node list names the keys.
@@ -220,14 +252,29 @@ impl Map {
 }
 
 impl Parsed {
-    /// A value and the lists that name its keys (the root tree's first).
+    /// A value, the lists that name its keys (the root tree's first), and
+    /// the charge that paid for the value's allocations.
     #[must_use]
-    pub fn new(lists: Box<[Arc<NodeList>]>, value: Value, bytes_read: i64) -> Self {
+    pub fn new(lists: Box<[Arc<NodeList>]>, value: Value, bytes_read: i64, charge: Charge) -> Self {
         Self {
             lists,
             value,
             bytes_read,
+            charge,
         }
+    }
+
+    /// A value built by a caller rather than read from an input (a value to
+    /// write), on an unlimited meter.
+    #[must_use]
+    pub fn unmetered(lists: Box<[Arc<NodeList>]>, value: Value, bytes_read: i64) -> Self {
+        Self::new(lists, value, bytes_read, Charge::zero(&Meter::unlimited()))
+    }
+
+    /// The charge for the value's memory.
+    #[must_use]
+    pub fn charge(&self) -> &Charge {
+        &self.charge
     }
 
     /// The node lists; `[0]` is the tree the object was read with.
@@ -375,7 +422,7 @@ mod tests {
         // lists; the last one's keys must still resolve.
         let n = 65_537_usize;
         let list = Arc::new(
-            NodeList::from_rows(vec![
+            NodeList::trusted(vec![
                 NodeRow::new(0, "Base", "Base"),
                 NodeRow::new(1, "int", "x"),
             ])
@@ -385,7 +432,7 @@ mod tests {
         let tail = super::ListIx::try_from(n - 1).unwrap();
         let mut inner = Map::new(tail);
         inner.push_unique(NodeId(1), Value::Int(5));
-        let p = Parsed::new(lists.into(), Value::Dict(inner), 4);
+        let p = Parsed::unmetered(lists.into(), Value::Dict(inner), 4);
         let Value::Dict(m) = &p.value else { panic!() };
         assert_eq!(m.list(), tail);
         assert_eq!(p.key_name(m, NodeId(1)), b"x");
@@ -397,13 +444,35 @@ mod tests {
     fn bytes_read_can_be_negative() {
         // UnityPy's pure-Python reader: a TypelessData length of -100 at byte 200
         // ends the read at 104, so bytes_read is -96 (tests/fixtures: walk).
-        let list = Arc::new(NodeList::from_rows(vec![NodeRow::new(0, "Base", "Base")]).unwrap());
-        let p = Parsed::new(
+        let list = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")]).unwrap());
+        let p = Parsed::unmetered(
             vec![list].into(),
             Value::Dict(Map::new(0)),
             (-96_i64).try_into().unwrap(),
         );
         assert_eq!(p.bytes_read, -96);
+    }
+
+    #[test]
+    fn a_parsed_value_holds_its_charge_until_it_drops() {
+        use crate::budget::{Counting, Reservation};
+        use crate::limits::{Meter, MeteredVec};
+        // A batch budget sees a value a caller keeps, and gets it back on drop.
+        let budget = Arc::new(Counting::new(1 << 20));
+        let meter = Meter::new(1 << 20, budget.clone(), Reservation::Input);
+        let list = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "int", "v")]).unwrap());
+        let mut items = MeteredVec::new(&meter);
+        for i in 0..100 {
+            items.push(Value::Int(i)).unwrap();
+        }
+        let (items, charge) = items.into_parts();
+        let p = Parsed::new(vec![list].into(), Value::List(items), 4, charge);
+        assert!(budget.used() >= 100 * 40);
+        assert_eq!(meter.used(), p.charge().bytes());
+        let kept = vec![p];
+        assert!(budget.used() >= 100 * 40, "retained, still booked");
+        drop(kept);
+        assert_eq!((meter.used(), budget.used()), (0, 0));
     }
 
     #[test]
@@ -436,7 +505,7 @@ mod tests {
 
     #[test]
     fn fields_resolve_through_the_node_list() {
-        let list = NodeList::from_rows(vec![
+        let list = NodeList::trusted(vec![
             NodeRow::new(0, "Base", "Base"),
             NodeRow::new(1, "int", "a"),
             NodeRow::new(1, "string", "m_Name"),
@@ -445,7 +514,7 @@ mod tests {
         let mut m = Map::new(0);
         m.push_unique(NodeId(1), Value::Int(7));
         m.push_unique(NodeId(2), Value::Str("x".into()));
-        let p = Parsed::new(vec![Arc::new(list)].into(), Value::Dict(m), 12);
+        let p = Parsed::unmetered(vec![Arc::new(list)].into(), Value::Dict(m), 12);
         assert_eq!(p.get(&[b"m_Name"]).and_then(Value::as_str), Some("x"));
         assert_eq!(p.get(&[b"a"]).and_then(Value::as_i64), Some(7));
         assert_eq!(p.get(&[b"missing"]), None);

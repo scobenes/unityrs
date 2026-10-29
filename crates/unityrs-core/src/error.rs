@@ -2,8 +2,8 @@
 //!
 //! Object-level outcomes (the canonical dump's L2 kinds) are
 //! [`crate::walk::ParseError`]; the writer's are [`crate::walk::WriteError`].
-//! `Error` is `Clone` because single-flight caches (`OnceLock`) hand the same
-//! result to every waiter.
+//! `Error` is `Clone` because a lazily computed result, published once into
+//! a `OnceLock`, is handed to every later caller.
 //!
 //! Owner: the scaffold (frozen). A package that needs a new variant asks the
 //! integration package; `#[non_exhaustive]` keeps that additive.
@@ -13,6 +13,7 @@ use std::sync::Arc;
 use crate::budget::BudgetExceeded;
 use crate::codec::Codec;
 use crate::detect::DetectError;
+use crate::limits::ChargeError;
 use crate::raw::RawStr;
 use crate::typetree::TreeError;
 use crate::version::VersionError;
@@ -84,10 +85,11 @@ pub enum Error {
         /// Why it failed.
         source: Box<Error>,
     },
-    /// A bound from [`crate::limits::Limits`] was exceeded.
+    /// A bound from [`crate::limits::Limits`] was exceeded (the input's
+    /// meter included: [`LimitKind::InputMemory`]).
     #[error(transparent)]
     Limit(#[from] LimitError),
-    /// The memory budget refused a reservation.
+    /// The memory budget refused a reservation, or the allocator failed.
     #[error(transparent)]
     Budget(#[from] BudgetExceeded),
     /// A CAB, external, object or resource that is not there.
@@ -96,6 +98,15 @@ pub enum Error {
     /// An I/O error from a source.
     #[error("io: {0}")]
     Io(Arc<std::io::Error>),
+}
+
+impl From<ChargeError> for Error {
+    fn from(e: ChargeError) -> Self {
+        match e {
+            ChargeError::Limit(l) => Self::Limit(l),
+            ChargeError::Budget(b) => Self::Budget(b),
+        }
+    }
 }
 
 impl From<std::io::Error> for Error {
@@ -135,16 +146,16 @@ pub enum Unsupported {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum LimitKind {
+    /// [`crate::limits::Limits::max_input_memory`]: the input's meter.
+    InputMemory,
+    /// [`crate::limits::Limits::max_input_bytes`].
+    InputBytes,
     /// [`crate::limits::Limits::max_block_output`].
     BlockOutput,
-    /// [`crate::limits::Limits::max_bundle_uncompressed`].
-    BundleUncompressed,
     /// [`crate::limits::Limits::max_inflate`].
     Inflate,
-    /// [`crate::limits::Limits::max_metadata_records`].
-    MetadataRecords,
-    /// [`crate::limits::Limits::max_tree_rows`].
-    TreeRows,
+    /// [`crate::limits::Limits::max_container_depth`].
+    ContainerDepth,
     /// [`crate::limits::Limits::max_tree_depth`].
     TreeDepth,
     /// [`crate::limits::Limits::max_value_depth`].

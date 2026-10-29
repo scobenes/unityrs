@@ -100,8 +100,9 @@ impl Registry {
         todo!()
     }
 
-    /// Keys in dict order.
-    pub fn keys(&self) -> Vec<RawStr> {
+    /// Keys in dict order, as an iterator that takes the read lock briefly
+    /// per key (no snapshot of the registry).
+    pub fn keys(&self) -> Keys<'_> {
         todo!()
     }
 
@@ -113,5 +114,20 @@ impl Registry {
     /// Whether it is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+/// The iterator [`Registry::keys`] returns.
+#[derive(Debug)]
+pub struct Keys<'a> {
+    registry: &'a Registry,
+    next: usize,
+}
+
+impl Iterator for Keys<'_> {
+    type Item = RawStr;
+
+    fn next(&mut self) -> Option<RawStr> {
+        todo!()
     }
 }

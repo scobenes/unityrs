@@ -1,18 +1,18 @@
 //! Memory budgets: the mechanism in the core, the policy in the batch engine.
 //!
-//! Before core allocates a buffer whose size the input chose (a decoded block
-//! run, an inflated stream), it asks the file's [`MemoryBudget`] for a
-//! [`Permit`]. The request never blocks: blocking inside a rayon pool can
-//! deadlock, so the batch engine does its blocking admission *before* it hands
-//! work to the pool, and gives core a prepaid budget (plan section 4.1).
+//! A budget is shared by many inputs (a batch's admission pool, its
+//! dependency pool). The core never asks it directly: every charge an
+//! input's [`crate::limits::Meter`] grants is also booked here, as a
+//! [`Permit`] that rides inside the charge, so the budget sees everything
+//! every input holds, and gets it back when the last owner drops it. The
+//! request never blocks: blocking inside a rayon pool can deadlock, so the
+//! batch engine does its blocking admission *before* it hands work to the
+//! pool, and gives core a prepaid budget (plan section 4.1).
 //!
-//! A permit rides inside the buffer it paid for ([`budgeted_bytes`]), so the
-//! bytes are returned only when the last `Bytes` slice of that buffer drops,
-//! whoever holds it, and it covers the buffer's whole capacity. A decoder
-//! writes through a [`DecodeBuf`], which reserves before every growth, so no
-//! decoded byte exists unpaid. The budget pays for decoded and inflated
-//! buffers only; parsed metadata, typetree rows and values are bounded by
-//! [`crate::limits::Limits`] instead (plan section 3.15).
+//! A decoder writes through a [`DecodeBuf`], which charges the input's meter
+//! before every growth, so no decoded byte exists unpaid, a refused growth
+//! allocates nothing, and a dropped buffer (a failed decode) returns its
+//! charge.
 //!
 //! Owner: the scaffold (implemented); package C maintains it.
 
@@ -22,17 +22,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 
-use crate::error::{Error, LimitError, LimitKind};
-use crate::limits::{Limits, Meter, Metered};
+use crate::error::{LimitError, LimitKind};
+use crate::limits::{Charge, ChargeError, Meter, grow_charged, heap_cost};
 
-/// What a reservation pays for.
+/// Which kind of load a charge belongs to, so a refusal says which pool
+/// refused (plan section 4.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Reservation {
-    /// A bundle's decoded block run.
-    BundleData,
-    /// An inflated gzip or brotli stream.
-    Inflate,
-    /// A file loaded only as a dependency (the environment's LRU).
+    /// An input the caller loaded: everything its meter charges.
+    Input,
+    /// A file the environment loaded as a dependency (its LRU), and
+    /// everything that file's meter charges.
     Dependency,
 }
 
@@ -227,108 +227,102 @@ impl MemoryBudget for Counting {
     }
 }
 
-struct Budgeted {
+/// The owner of a decoded buffer inside its `Bytes`: the buffer and the
+/// charge that paid for it, returned when the last slice drops.
+struct Charged {
     buf: Vec<u8>,
-    _permit: Permit,
+    _charge: Charge,
 }
 
-impl AsRef<[u8]> for Budgeted {
+impl AsRef<[u8]> for Charged {
     fn as_ref(&self) -> &[u8] {
         &self.buf
     }
 }
 
-/// Turns a buffer and the permit that paid for it into `Bytes`, with books
-/// equal to the allocation: the buffer is shrunk to its length, then the
-/// permit is topped up from `budget` to the buffer's capacity (refused: the
-/// buffer is dropped and [`BudgetExceeded`] returned) or trimmed to it. The
-/// permit is released when the last slice of the buffer drops.
-pub fn budgeted_bytes(
-    mut buf: Vec<u8>,
-    mut permit: Permit,
-    budget: &dyn MemoryBudget,
-    what: Reservation,
-) -> Result<Bytes, BudgetExceeded> {
-    buf.shrink_to_fit();
-    let cap = u64::try_from(buf.capacity()).unwrap_or(u64::MAX);
-    let held = permit.bytes();
-    if held < cap {
-        permit.absorb(budget.try_reserve(cap - held, what)?);
-    } else {
-        permit.shrink_to(cap);
-    }
-    Ok(Bytes::from_owner(Budgeted {
+/// What wrapping a buffer in `Bytes` allocates besides the buffer: the
+/// shared owner record `Bytes::from_owner` boxes (the buffer, its charge and
+/// a reference count), with room to spare.
+pub const OWNER_COST: u64 = heap_cost(256);
+
+/// `buf` as `Bytes` that carry `charge`, which must already cover `buf`'s
+/// allocation: the owner record is charged first ([`OWNER_COST`]), and the
+/// whole charge returns when the last slice drops, whoever holds it.
+pub fn charged_bytes(buf: Vec<u8>, mut charge: Charge) -> Result<Bytes, ChargeError> {
+    charge.grow(OWNER_COST)?;
+    Ok(Bytes::from_owner(Charged {
         buf,
-        _permit: permit,
+        _charge: charge,
     }))
 }
 
 /// A decoder's output buffer that pays before it grows.
 ///
 /// A codec writes a block's output here and nowhere else
-/// ([`crate::codec::BlockCodec::decode`]). Every growth first checks the
-/// hard cap (the smaller of [`crate::limits::Limits::max_block_output`] and,
-/// with [`Self::with_meter`], what the input may still decode) and reserves
-/// the new capacity from the budget; only then does the buffer grow. So an
-/// LZMA block that declares 1 byte and decodes towards its cap is refused at
-/// the first growth past what the budget or the limits allow, before the
-/// bytes exist, and the books always cover the allocation. Capacity grows
-/// geometrically up to the cap (amortised O(1) writes).
-pub struct DecodeBuf<'a> {
+/// ([`crate::codec::BlockCodec::decode`]); the core's other byte buffers
+/// (a path read, the writer's output) use it too. Every growth first checks
+/// the current segment's cap, then charges the new allocation to the input's
+/// meter (which books it with the budget), and only then grows; a refused
+/// growth allocates nothing. Capacity grows geometrically, and a refused
+/// doubling retries at exactly the size needed.
+///
+/// **Segments.** A run of several blocks is one buffer, but each block has
+/// its own cap ([`crate::limits::Limits::max_block_output`]): the caller
+/// starts each block with [`Self::begin_block`], and a block that writes past
+/// its own cap fails there, whatever the run's size. Every decode is charged
+/// (a first decode, a re-decode, a measuring decode): the meter counts what is
+/// held, not what was first seen.
+///
+/// **Drop.** A buffer dropped unfinished (a decode that failed) returns its
+/// charge with its allocation.
+pub struct DecodeBuf {
     buf: Vec<u8>,
-    permit: Permit,
-    budget: &'a dyn MemoryBudget,
-    what: Reservation,
-    cap: u64,
-    cap_kind: LimitKind,
-    meter: Option<(&'a Meter, &'a Limits)>,
-    /// Bytes charged to the meter: the largest length reached, less refunds.
-    charged: u64,
+    charge: Charge,
+    seg_start: usize,
+    seg_cap: u64,
+    seg_kind: LimitKind,
 }
 
-impl fmt::Debug for DecodeBuf<'_> {
+impl fmt::Debug for DecodeBuf {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DecodeBuf")
             .field("len", &self.buf.len())
             .field("capacity", &self.buf.capacity())
-            .field("booked", &self.permit.bytes())
-            .field("cap", &self.cap)
+            .field("charged", &self.charge.bytes())
+            .field("seg_start", &self.seg_start)
+            .field("seg_cap", &self.seg_cap)
             .finish_non_exhaustive()
     }
 }
 
-impl<'a> DecodeBuf<'a> {
-    /// An empty buffer with room for `initial` bytes (cut to `cap`), reserved
-    /// from `budget` first. `cap` is the most it may ever hold; passing it is
-    /// a [`LimitKind`] `cap_kind` error.
+impl DecodeBuf {
+    /// An empty buffer charging `meter`, with room for `initial` bytes (cut
+    /// to `cap`), charged before it is allocated. Its first segment may hold
+    /// `cap` bytes; passing that is a `cap_kind` limit error.
     pub fn new(
-        budget: &'a dyn MemoryBudget,
-        what: Reservation,
+        meter: &Arc<Meter>,
         initial: u64,
         cap: u64,
         cap_kind: LimitKind,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, ChargeError> {
         let mut out = Self {
             buf: Vec::new(),
-            permit: Permit::detached(0),
-            budget,
-            what,
-            cap,
-            cap_kind,
-            meter: None,
-            charged: 0,
+            charge: Charge::zero(meter),
+            seg_start: 0,
+            seg_cap: cap,
+            seg_kind: cap_kind,
         };
-        out.grow_capacity(initial.min(cap))?;
+        let initial = usize::try_from(initial.min(cap)).unwrap_or(usize::MAX);
+        grow_charged(&mut out.buf, &mut out.charge, initial, initial)?;
         Ok(out)
     }
 
-    /// Also charges every byte the buffer's length reaches to `meter`'s
-    /// [`Metered::DecodedBytes`] (the first decode of a block; a block whose
-    /// actual length is already known decodes without it).
-    #[must_use]
-    pub fn with_meter(mut self, meter: &'a Meter, limits: &'a Limits) -> Self {
-        self.meter = Some((meter, limits));
-        self
+    /// Starts a new segment at the current length (the next block of a run):
+    /// from here the buffer may grow by at most `cap` bytes.
+    pub fn begin_block(&mut self, cap: u64, cap_kind: LimitKind) {
+        self.seg_start = self.buf.len();
+        self.seg_cap = cap;
+        self.seg_kind = cap_kind;
     }
 
     /// The bytes written.
@@ -349,11 +343,10 @@ impl<'a> DecodeBuf<'a> {
         self.buf.capacity()
     }
 
-    /// The bytes the budget has booked for this buffer (never below
-    /// [`Self::capacity`]).
+    /// The bytes charged for this buffer: [`heap_cost`] of its capacity.
     #[must_use]
-    pub fn booked(&self) -> u64 {
-        self.permit.bytes()
+    pub fn charged(&self) -> u64 {
+        self.charge.bytes()
     }
 
     /// The bytes written.
@@ -362,251 +355,197 @@ impl<'a> DecodeBuf<'a> {
         &self.buf
     }
 
-    fn cap_error(&self, value: u64) -> Error {
-        Error::Limit(LimitError {
-            kind: self.cap_kind,
-            value,
-            max: self.cap,
-        })
+    fn seg_end(&self) -> usize {
+        let cap = usize::try_from(self.seg_cap).unwrap_or(usize::MAX);
+        self.seg_start.saturating_add(cap)
     }
 
-    fn grow_capacity(&mut self, want: u64) -> Result<(), Error> {
-        let have = u64::try_from(self.buf.capacity()).unwrap_or(u64::MAX);
-        if want <= have {
-            return Ok(());
+    /// Makes room for `additional` more bytes: the segment's cap is checked
+    /// and the meter charged before the buffer grows. The capacity doubles
+    /// while the meter can pay for the old and the new block at once, and
+    /// grows to exactly what is needed when it cannot.
+    pub fn reserve(&mut self, additional: usize) -> Result<(), ChargeError> {
+        let need = self.buf.len().saturating_add(additional);
+        if need > self.seg_end() {
+            return Err(ChargeError::Limit(LimitError {
+                kind: self.seg_kind,
+                value: u64::try_from(need - self.seg_start).unwrap_or(u64::MAX),
+                max: self.seg_cap,
+            }));
         }
-        if want > self.cap {
-            return Err(self.cap_error(want));
-        }
-        let booked = self.permit.bytes();
-        if want > booked {
-            self.permit
-                .absorb(self.budget.try_reserve(want - booked, self.what)?);
-        }
-        let len = u64::try_from(self.buf.len()).unwrap_or(u64::MAX);
-        let extra = usize::try_from(want - len).map_err(|_| self.cap_error(want))?;
-        self.buf
-            .try_reserve_exact(extra)
-            .map_err(|_| BudgetExceeded {
-                requested: want,
-                what: self.what,
-            })?;
-        // The allocator may round up; book what it gave.
-        let got = u64::try_from(self.buf.capacity()).unwrap_or(u64::MAX);
-        let booked = self.permit.bytes();
-        if got > booked {
-            match self.budget.try_reserve(got - booked, self.what) {
-                Ok(p) => self.permit.absorb(p),
-                Err(e) => {
-                    self.buf.shrink_to(self.buf.len());
-                    return Err(e.into());
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Makes room for `additional` more bytes: the cap is checked and the
-    /// budget pays before the buffer grows.
-    pub fn reserve(&mut self, additional: usize) -> Result<(), Error> {
-        let len = u64::try_from(self.buf.len()).unwrap_or(u64::MAX);
-        let need = len.saturating_add(u64::try_from(additional).unwrap_or(u64::MAX));
-        let have = u64::try_from(self.buf.capacity()).unwrap_or(u64::MAX);
-        if need <= have {
-            return Ok(());
-        }
-        if need > self.cap {
-            return Err(self.cap_error(need));
-        }
-        let want = need.max(have.saturating_mul(2)).min(self.cap);
-        self.grow_capacity(want)
-    }
-
-    fn charge_to(&mut self, len: u64) -> Result<(), Error> {
-        if let Some((meter, limits)) = self.meter
-            && len > self.charged
-        {
-            meter.charge(Metered::DecodedBytes, len - self.charged, limits)?;
-            self.charged = len;
-        }
-        Ok(())
+        grow_charged(&mut self.buf, &mut self.charge, need, usize::MAX)
     }
 
     /// Appends `data`.
-    pub fn extend_from_slice(&mut self, data: &[u8]) -> Result<(), Error> {
+    pub fn extend_from_slice(&mut self, data: &[u8]) -> Result<(), ChargeError> {
         self.reserve(data.len())?;
-        let len = u64::try_from(self.buf.len() + data.len()).unwrap_or(u64::MAX);
-        self.charge_to(len)?;
         self.buf.extend_from_slice(data);
         Ok(())
     }
 
     /// Appends `n` zero bytes and returns them for a decoder to fill; cut the
     /// unused tail with [`Self::truncate`].
-    pub fn grow_zeroed(&mut self, n: usize) -> Result<&mut [u8], Error> {
+    pub fn grow_zeroed(&mut self, n: usize) -> Result<&mut [u8], ChargeError> {
         self.reserve(n)?;
         let start = self.buf.len();
-        let len = u64::try_from(start + n).unwrap_or(u64::MAX);
-        self.charge_to(len)?;
         self.buf.resize(start + n, 0);
         Ok(self.buf.get_mut(start..).unwrap_or_default())
     }
 
-    /// Cuts the written bytes to `len`, refunding the meter what it was
-    /// charged past `len`. The allocation and its booking stay until
-    /// [`Self::into_bytes`].
+    /// Cuts the written bytes to `len`. The allocation and its charge stay
+    /// until [`Self::into_bytes`] or drop.
     pub fn truncate(&mut self, len: usize) {
         self.buf.truncate(len);
-        let len = u64::try_from(self.buf.len()).unwrap_or(u64::MAX);
-        if let Some((meter, _)) = self.meter
-            && self.charged > len
-        {
-            meter.refund(Metered::DecodedBytes, self.charged - len);
-            self.charged = len;
-        }
+        self.seg_start = self.seg_start.min(self.buf.len());
     }
 
-    /// The output as `Bytes` that carry their booking ([`budgeted_bytes`]).
-    pub fn into_bytes(self) -> Result<Bytes, Error> {
-        Ok(budgeted_bytes(
-            self.buf,
-            self.permit,
-            self.budget,
-            self.what,
-        )?)
+    /// The output as `Bytes` that carry their charge ([`charged_bytes`]).
+    /// A buffer with spare capacity is shrunk to its length when the meter
+    /// can also pay for the smaller block while the allocator moves it, and
+    /// is kept (charged as it is) otherwise.
+    pub fn into_bytes(mut self) -> Result<Bytes, ChargeError> {
+        let len = self.buf.len();
+        let cap = self.buf.capacity();
+        if cap > len {
+            let bytes = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+            if let Ok(smaller) = self.charge.meter().charge(heap_cost(bytes(len))) {
+                self.buf.shrink_to_fit();
+                self.charge.release(heap_cost(bytes(cap)));
+                self.charge.absorb(smaller);
+            }
+        }
+        charged_bytes(self.buf, self.charge)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Counting, DecodeBuf, MemoryBudget, Permit, Reservation, Unbounded, budgeted_bytes,
-    };
-    use crate::error::{Error, LimitKind};
-    use crate::limits::{Limits, Meter, Metered};
+    use std::sync::Arc;
+
+    use super::{Counting, DecodeBuf, MemoryBudget, OWNER_COST, Permit, Reservation, Unbounded};
+    use crate::error::LimitKind;
+    use crate::limits::{ChargeError, Meter, heap_cost};
+
+    fn meter(limit: u64) -> Arc<Meter> {
+        Meter::new(limit, Arc::new(Unbounded), Reservation::Input)
+    }
 
     #[test]
     fn a_permit_lives_as_long_as_its_last_slice() {
-        let budget = Counting::new(100);
-        let permit = budget.try_reserve(60, Reservation::BundleData).unwrap();
-        assert!(budget.try_reserve(50, Reservation::BundleData).is_err());
-        let whole = budgeted_bytes(vec![7; 60], permit, &budget, Reservation::BundleData).unwrap();
+        let budget = Arc::new(Counting::new(1000));
+        let m = Meter::new(u64::MAX, budget.clone(), Reservation::Input);
+        let mut out = DecodeBuf::new(&m, 60, 1 << 20, LimitKind::BlockOutput).unwrap();
+        out.extend_from_slice(&[7; 60]).unwrap();
+        assert_eq!(
+            budget.used(),
+            heap_cost(60),
+            "the meter booked it with the budget"
+        );
+        let whole = out.into_bytes().unwrap();
         let slice = whole.slice(10..20);
         drop(whole);
-        assert_eq!(budget.used(), 60);
+        let held = heap_cost(60) + OWNER_COST;
+        assert_eq!(budget.used(), held, "the buffer and its owner record");
+        assert_eq!(m.used(), held);
         drop(slice);
-        assert_eq!(budget.used(), 0);
-        assert!(budget.try_reserve(100, Reservation::Inflate).is_ok());
+        assert_eq!((budget.used(), m.used()), (0, 0));
     }
 
     #[test]
-    fn budgeted_bytes_books_the_allocation_not_the_permit() {
-        let budget = Counting::new(1 << 20);
-        // An underpaid buffer is topped up to its capacity.
-        let mut buf = Vec::with_capacity(64);
-        buf.extend_from_slice(b"eleven byte");
-        let permit = budget.try_reserve(10, Reservation::BundleData).unwrap();
-        let b = budgeted_bytes(buf, permit, &budget, Reservation::BundleData).unwrap();
-        assert_eq!(budget.used(), 11, "shrunk to its length, then booked whole");
-        drop(b);
-        assert_eq!(budget.used(), 0);
-        // An overpaid permit gives back the excess at once.
-        let permit = budget.try_reserve(1000, Reservation::BundleData).unwrap();
-        let b = budgeted_bytes(vec![1; 100], permit, &budget, Reservation::BundleData).unwrap();
-        assert_eq!(budget.used(), 100);
-        drop(b);
-        // A 1 MiB buffer paid by a 1-byte permit is refused when the budget cannot top it up.
-        let small = Counting::new(1000);
-        let permit = small.try_reserve(1, Reservation::BundleData).unwrap();
-        let r = budgeted_bytes(vec![0; 1 << 20], permit, &small, Reservation::BundleData);
-        assert!(r.is_err());
-        assert_eq!(small.used(), 0);
-    }
-
-    #[test]
-    fn a_decode_is_refused_before_it_outgrows_the_budget() {
-        // A block declared at 10 bytes that keeps decoding: the budget holds 100.
-        let budget = Counting::new(100);
-        let mut out = DecodeBuf::new(
-            &budget,
-            Reservation::BundleData,
-            10,
-            1 << 30,
-            LimitKind::BlockOutput,
-        )
-        .unwrap();
-        assert_eq!(budget.used(), 10);
+    fn a_decode_is_refused_before_it_outgrows_the_meter() {
+        // A block declared at 10 bytes that keeps decoding: the meter holds
+        // 200 bytes of buffer, and the owner record wrapping it at the end.
+        let limit = 200 + OWNER_COST;
+        let m = meter(limit);
+        let mut out = DecodeBuf::new(&m, 10, 1 << 30, LimitKind::BlockOutput).unwrap();
+        assert_eq!(m.used(), heap_cost(10));
         out.extend_from_slice(&[1; 10]).unwrap();
-        let e = out.grow_zeroed(200).unwrap_err();
-        assert!(matches!(e, Error::Budget(_)), "{e:?}");
-        assert!(out.capacity() <= 100, "never allocated past the budget");
-        assert!(out.booked() >= u64::try_from(out.capacity()).unwrap());
+        let e = out.grow_zeroed(1000).unwrap_err();
+        assert!(
+            matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::InputMemory),
+            "{e:?}"
+        );
+        assert_eq!(out.capacity(), 10, "never allocated past the meter");
         assert_eq!(out.len(), 10);
-        // Growth the budget can pay for goes through, booked as it grows.
+        assert_eq!(m.used(), heap_cost(10), "a refused growth charges nothing");
+        // Growth the meter can pay for goes through, charged as it grows.
         out.extend_from_slice(&[2; 80]).unwrap();
-        assert!(budget.used() <= 100);
-        assert_eq!(budget.used(), out.booked());
+        assert!(m.used() <= limit);
+        assert_eq!(m.used(), out.charged());
         let bytes = out.into_bytes().unwrap();
-        assert_eq!(budget.used(), 90, "the books equal the buffer kept");
+        assert_eq!(
+            m.used(),
+            heap_cost(90) + OWNER_COST,
+            "the charge equals the buffer kept and its owner record"
+        );
         drop(bytes);
-        assert_eq!(budget.used(), 0);
+        assert_eq!(m.used(), 0);
     }
 
     #[test]
-    fn a_decode_stops_at_its_cap_and_at_the_inputs_meter() {
-        let mut out = DecodeBuf::new(
-            &Unbounded,
-            Reservation::BundleData,
-            4,
-            16,
-            LimitKind::BlockOutput,
-        )
-        .unwrap();
+    fn new_charges_before_it_allocates() {
+        let m = meter(100);
+        let _held = m.charge(90).unwrap();
+        let e = DecodeBuf::new(&m, 64 << 20, 1 << 30, LimitKind::BlockOutput).unwrap_err();
+        assert!(matches!(e, ChargeError::Limit(_)), "{e:?}");
+        assert_eq!(m.used(), 90);
+    }
+
+    #[test]
+    fn each_block_of_a_run_has_its_own_cap() {
+        let m = meter(1 << 20);
+        let mut out = DecodeBuf::new(&m, 0, 16, LimitKind::BlockOutput).unwrap();
         out.extend_from_slice(&[0; 16]).unwrap();
         let e = out.extend_from_slice(&[0]).unwrap_err();
         assert!(
-            matches!(e, Error::Limit(l) if l.kind == LimitKind::BlockOutput && l.max == 16),
+            matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::BlockOutput && l.max == 16 && l.value == 17),
             "{e:?}"
         );
-
-        let limits = Limits {
-            max_bundle_uncompressed: 50,
-            ..Limits::default()
-        };
-        let meter = Meter::new();
-        meter.charge(Metered::DecodedBytes, 40, &limits).unwrap();
-        let mut out = DecodeBuf::new(
-            &Unbounded,
-            Reservation::BundleData,
-            0,
-            1 << 20,
-            LimitKind::BlockOutput,
-        )
-        .unwrap()
-        .with_meter(&meter, &limits);
-        let filled = out.grow_zeroed(8).unwrap();
-        assert_eq!(filled.len(), 8);
-        out.truncate(5);
-        assert_eq!(
-            meter.used(Metered::DecodedBytes),
-            45,
-            "a cut tail is refunded"
-        );
-        let e = out.grow_zeroed(6).unwrap_err();
+        // The run's next block may write 16 more, and no further.
+        out.begin_block(16, LimitKind::BlockOutput);
+        out.extend_from_slice(&[1; 16]).unwrap();
+        let before = out.capacity();
+        let e = out.grow_zeroed(1).unwrap_err();
         assert!(
-            matches!(e, Error::Limit(l) if l.kind == LimitKind::BundleUncompressed),
+            matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::BlockOutput),
             "{e:?}"
         );
-        assert_eq!(meter.used(Metered::DecodedBytes), 45);
+        assert_eq!(out.capacity(), before, "the cap is checked before growing");
+        assert_eq!(out.len(), 32);
+    }
+
+    #[test]
+    fn a_dropped_decode_returns_its_charge() {
+        let m = meter(1 << 20);
+        let mut out = DecodeBuf::new(&m, 0, 1 << 20, LimitKind::BlockOutput).unwrap();
+        out.extend_from_slice(&[0; 1000]).unwrap();
+        assert!(m.used() >= 1000);
+        // The codec fails here (a corrupt stream): the buffer is dropped.
+        drop(out);
+        assert_eq!(m.used(), 0);
+    }
+
+    #[test]
+    fn a_full_meter_still_fits_data_that_fits() {
+        // 100 bytes in two writes (60 then 40) under a meter that holds 100
+        // bytes' allocation and no doubling past it.
+        let m = meter(heap_cost(60) + heap_cost(100));
+        let mut out = DecodeBuf::new(&m, 60, 1 << 20, LimitKind::BlockOutput).unwrap();
+        out.extend_from_slice(&[1; 60]).unwrap();
+        out.extend_from_slice(&[2; 40]).unwrap();
+        assert_eq!(out.len(), 100);
+        // Wrapping it needs the owner record, which this meter has no room for.
+        assert!(out.into_bytes().is_err());
+        assert_eq!(m.used(), 0);
     }
 
     #[test]
     fn absorbed_permits_from_another_home_still_return() {
         let a = Counting::new(100);
         let b = Counting::new(100);
-        let mut p = a.try_reserve(10, Reservation::BundleData).unwrap();
-        p.absorb(a.try_reserve(5, Reservation::BundleData).unwrap());
-        p.absorb(b.try_reserve(7, Reservation::BundleData).unwrap());
+        let mut p = a.try_reserve(10, Reservation::Input).unwrap();
+        p.absorb(a.try_reserve(5, Reservation::Input).unwrap());
+        p.absorb(b.try_reserve(7, Reservation::Input).unwrap());
         p.absorb(Permit::detached(3));
         assert_eq!(p.bytes(), 25);
         assert_eq!((a.used(), b.used()), (15, 7));
