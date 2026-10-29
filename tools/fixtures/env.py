@@ -18,6 +18,11 @@ temporary `env.path`; a key under it is written `@/<name>`.
 
 `pystr.json`: `str.lower` over every BMP code point (as the list of those it
 changes), astral samples and final-sigma contexts, and `ntpath` cases.
+
+    scripts/dev python tools/fixtures/env.py --g5 <env_corpus.rs output> --corpus <corpus root>
+
+checks G5's corpus probe (crates/unityrs-core/tests/env_corpus.rs) against
+UnityPy; it reads the corpus and writes nothing.
 """
 
 from __future__ import annotations
@@ -300,6 +305,60 @@ def pystr_fixture() -> dict:
     }
 
 
+# ---------------------------------------------------------------- G5 corpus
+
+
+def fnv64(b: bytes) -> str:
+    h = 0xCBF29CE484222325
+    for x in b:
+        h = ((h ^ x) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016x}"
+
+
+def check_g5(probe_path: Path, corpus: Path) -> int:
+    """G5's corpus half: UnityPy, given the bundles crates/unityrs-core/tests/env_corpus.rs
+    loaded, dereferences each pointer and reads each stream it took; each
+    must equal the core's. Reads the corpus and the probe's output (both
+    outside the repository) and prints counts only."""
+    report = json.loads(probe_path.read_text())
+    rels = report["bundles"]
+    with contextlib.redirect_stdout(io.StringIO()):
+        env = UnityPy.Environment(path=tempfile.mkdtemp())
+        for r in rels:
+            env.load_file(str(corpus / r))
+    files = {}
+    for k, f in env.files.items():
+        files[Path(k).name] = f
+    by_name = {r: files[Path(r).name] for r in rels}
+
+    def obj(case):
+        return by_name[case["bundle"]].files[case["cab"]].objects[case["path_id"]]
+
+    counts = {"pptr": [0, 0], "stream": [0, 0]}
+    for case in report["probe"]["pptr"]:
+        v = obj(case).parse_as_dict()
+        for p in case["field"]:
+            v = v[p]
+        p = PPtr(m_FileID=v["m_FileID"], m_PathID=v["m_PathID"], assetsfile=obj(case).assets_file)
+        try:
+            t = p.deref()
+            got = {"class_id": t.class_id, "name": t.parse_as_dict().get("m_Name")}
+        except Exception as e:  # noqa: BLE001
+            got = {"error": type(e).__name__}
+        counts["pptr"][0 if got == case["core"] else 1] += 1
+    for case in report["probe"]["stream"]:
+        o = obj(case)
+        sd = o.parse_as_dict()["m_StreamData"]
+        try:
+            data = bytes(get_resource_data(sd["path"], o.assets_file, sd["offset"], sd["size"]))
+            got = {"fnv64": fnv64(data), "len": len(data)}
+        except Exception as e:  # noqa: BLE001
+            got = {"error": type(e).__name__}
+        counts["stream"][0 if got == case["core"] else 1] += 1
+    print(json.dumps({"agree": {k: v[0] for k, v in counts.items()}, "differ": {k: v[1] for k, v in counts.items()}}))
+    return 0 if all(v[1] == 0 for v in counts.values()) else 1
+
+
 # -------------------------------------------------------------------- main
 
 
@@ -314,10 +373,14 @@ def fixtures() -> dict[str, dict]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--check", action="store_true", help="regenerate and compare, write nothing")
+    ap.add_argument("--g5", type=Path, help="check env_corpus.rs's output against UnityPy, write nothing")
+    ap.add_argument("--corpus", type=Path, help="the corpus root the --g5 output's bundle paths are under")
     args = ap.parse_args()
     if UnityPy.__version__ != "1.25.2":
         print(f"needs UnityPy 1.25.2, found {UnityPy.__version__}", file=sys.stderr)
         return 2
+    if args.g5:
+        return check_g5(args.g5, args.corpus)
     stale = []
     for name, body in fixtures().items():
         text = dump(body)
