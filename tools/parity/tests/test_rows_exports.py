@@ -1604,6 +1604,27 @@ class ExportRows(unittest.TestCase):
         old = load(tpk_file([(1, 48, data)], unity_version=b"5.4.6f3"))[0].objects[1].parse_as_object()
         with self.assertRaises(struct.error):
             old.export()
+        # The table of that count is allocated first, a list of that many slots: a low byte of 1 asks for 16777216
+        # and reaches the struct.error, one of 0x7F for 2130706432, which raises MemoryError where the process
+        # cannot allocate them (here, a subprocess allowed 1 GiB more than it holds after importing UnityPy).
+        import subprocess
+
+        limited = (
+            "import resource, sys\n"
+            "from UnityPy.export import ShaderConverter as SC\n"
+            "from UnityPy.streams import EndianBinaryReader\n"
+            "held = int(open('/proc/self/statm').read().split()[0]) * resource.getpagesize()\n"
+            "resource.setrlimit(resource.RLIMIT_AS, (held + (1 << 30), resource.getrlimit(resource.RLIMIT_AS)[1]))\n"
+            "try:\n"
+            "    SC.ShaderProgram(EndianBinaryReader(sys.stdin.buffer.read()), (5, 4, 6, 1))\n"
+            "except Exception as error:\n"
+            "    print(type(error).__name__)\n"
+        )
+        for count, slots, error in ((1, 16777216, "error"), (127, 2130706432, "MemoryError")):
+            little = program([subprogram(201510240, 4, b"code")] * count, 8)
+            self.assertEqual(struct.unpack(">i", little[:4]), (slots,))
+            run = subprocess.run([sys.executable, "-c", limited], input=little, capture_output=True, check=True)
+            self.assertEqual(run.stdout.decode().strip(), error, f"count {count}")
         # A count whose low byte is 0x80 or more reads big-endian as negative (128 as -2147483648): the table is
         # empty, no entry is read, and export raises the TypeError of a blob that parses. Export has no sub-program
         # for any `GpuProgramIndex N` line, and raises IndexError.
@@ -1632,16 +1653,76 @@ class ExportRows(unittest.TestCase):
                 self.assertRaisesRegex(TypeError, "^cannot convert 'NoneType' object to bytes$"),
             ):
                 empty.export()
-        # The 5.4 blob itself reads big-endian and fills `GpuProgramIndex N`, N being the rest of the line.
+        # The 5.4 blob itself reads big-endian and fills `GpuProgramIndex N`, N being int() of the rest of the line:
+        # Python's int grammar, whitespace around the number allowed (a trailing \r, so a CRLF line fills), a sign,
+        # `_` between digits and any script's digits; anything else after the number raises ValueError.
         got = SC.ShaderProgram(EndianBinaryReader(blob), (5, 4, 6, 1))
         self.assertEqual(got.Export("Shader {\nGpuProgramIndex 0\n}"), 'Shader {\n"code"\n}')
-        with self.assertRaisesRegex(ValueError, "'0 }'"):
-            got.Export("Shader { GpuProgramIndex 0 }")
-        # N is read by Python's int and indexes the table as a list: past its end raises IndexError, a negative N
-        # counts from the end.
-        with self.assertRaisesRegex(IndexError, "^list index out of range$"):
-            got.Export("GpuProgramIndex 1")
-        self.assertEqual(got.Export("GpuProgramIndex -1"), '"code"')
+        self.assertEqual(got.Export("Shader {\r\nGpuProgramIndex 0\r\n}"), 'Shader {\r\n"code"\n}')
+        for rest in ("0 ", "0\t", " 0", "\xa00\xa0", "+0", "0_0", "٠", "-1"):
+            with self.subTest(rest=rest):
+                self.assertEqual(got.Export(f"GpuProgramIndex {rest}\nX"), '"code"\nX')
+        for rest in ("0 }", "0\rX", "0x0", "zero"):
+            with self.subTest(rest=rest), self.assertRaisesRegex(ValueError, "^invalid literal for int"):
+                got.Export(f"GpuProgramIndex {rest}")
+        self.assertEqual(got.Export("GpuProgramIndex\t0"), "GpuProgramIndex\t0", "the regex wants one space")
+        # N indexes the table as a list: outside [-len, len) raises IndexError, a negative N inside counts from the
+        # end.
+        for n in (1, -2):
+            with self.subTest(n=n), self.assertRaisesRegex(IndexError, "^list index out of range$"):
+                got.Export(f"GpuProgramIndex {n}")
+        two = SC.ShaderProgram(
+            EndianBinaryReader(
+                program(
+                    [subprogram(201510240, 4, b"one", endian=">"), subprogram(201510240, 4, b"two", endian=">")],
+                    8,
+                    endian=">",
+                )
+            ),
+            (5, 4, 6, 1),
+        )
+        self.assertEqual(
+            [two.Export(f"GpuProgramIndex {n}") for n in (-2, -1, 0, 1)], ['"one"', '"two"', '"one"', '"two"']
+        )
+        # Each entry's offset sets the memory reader's Position unchecked: a negative one counts from the blob's
+        # end, and a field that straddles index 0 reads b"" (a fixed-width one raises struct.error). A negative
+        # keyword count reads no keyword; a code length of -1 reads the rest of the blob, another negative one the
+        # slice section 13 gives (b"" here). The export of each still raises the TypeError of a blob that parses.
+        sub = subprogram(201510240, 4, b"abcd", ["K"], endian=">")
+
+        def entry(offset, rest=sub):
+            return SC.ShaderProgram(EndianBinaryReader(struct.pack(">iii", 1, offset, len(rest)) + rest), (5, 4, 6, 1))
+
+        self.assertEqual(entry(12).Export("GpuProgramIndex 0"), 'Keywords { "K" }\n"abcd"')
+        trailing = sub + b"TAIL"
+        self.assertEqual(entry(-len(trailing), trailing).Export("GpuProgramIndex 0"), 'Keywords { "K" }\n"abcd"')
+        at_end = entry(-len(sub)).m_SubPrograms[0]  # the code's 4 bytes would run from -4 to index 0
+        self.assertEqual((at_end.m_Keywords, bytes(at_end.m_ProgramCode)), (["K"], b""))
+        for offset, message in ((-2, "^not enough data to unpack 4 bytes at offset -2$"), (-1000, "out of range")):
+            with self.subTest(offset=offset), self.assertRaisesRegex(struct.error, message):
+                entry(offset)
+
+        def raw(keywords, code_length):
+            return (
+                struct.pack(">ii", 201510240, 4) + bytes(12) + struct.pack(">ii", keywords, code_length) + b"abcdTAIL"
+            )
+
+        for keywords, code_length, code in ((-1, 4, b"abcd"), (-5, 4, b"abcd"), (0, -1, b"abcdTAIL"), (0, -2, b"")):
+            with self.subTest(keywords=keywords, code_length=code_length):
+                read = entry(12, raw(keywords, code_length)).m_SubPrograms[0]
+                self.assertEqual((read.m_Keywords, bytes(read.m_ProgramCode)), ([], code))
+        negative = program([raw(-1, -1)], 8, endian=">")
+        data = tpk_object(
+            48,
+            "5.4.6f3",
+            m_Name="old",
+            m_Script="GpuProgramIndex 0",
+            m_SubProgramBlob=list(lz4.block.compress(negative, store_size=False)),
+            decompressedSize=len(negative),
+        )
+        old = load(tpk_file([(1, 48, data)], unity_version=b"5.4.6f3"))[0].objects[1].parse_as_object()
+        with self.assertRaisesRegex(TypeError, "without an encoding"):
+            old.export()
 
     # Section 15.7: the bytes of Pillow's PNG writer with its defaults, rebuilt here from the PNG specification.
     def test_png_bytes(self):

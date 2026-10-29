@@ -339,6 +339,51 @@ class Rows(unittest.TestCase):
         self.assertEqual((reader.read_bytes(10), reader.Position), (b"abcd", 10))
         with self.assertRaises(struct.error):
             reader.read_int()
+        # Section 13, negative sizes and positions. The memory reader's Position takes any value, and its reads
+        # index the view with it: read(-1) reads to the end, any other size is the slice view[P:P + n].
+        data = bytes(range(20))
+        reader = EndianBinaryReader(data)
+
+        def read_at(position, size):
+            reader.Position = position
+            return reader.read(size), reader.Position
+
+        self.assertEqual(read_at(5, 0), (b"", 5))
+        self.assertEqual(read_at(5, -1), (data[5:], 20))
+        self.assertEqual(read_at(-3, -1), (data[-3:], 20))
+        self.assertEqual(read_at(5, -2), (b"", 3))
+        self.assertEqual(read_at(2, -5), (data[2:17], -3))
+        self.assertEqual(read_at(-3, 2), (data[17:19], -1))
+        self.assertEqual(read_at(-2, 4), (b"", 2))
+        minus_one = EndianBinaryReader(struct.pack(">i", -1) + data)
+        self.assertEqual(minus_one.read_byte_array(), data)
+        # A fixed-width primitive at a negative Position counts from the end, and raises when fewer bytes than its
+        # size lie from there to the end, or the Position is before the start.
+        reader.Position = -4
+        self.assertEqual((reader.read_int(), reader.Position), (struct.unpack(">i", data[-4:])[0], 0))
+        for position, message in ((-2, "^not enough data to unpack 4 bytes at offset -2$"), (-24, "out of range")):
+            reader.Position = position
+            with self.subTest(position=position), self.assertRaisesRegex(struct.error, message):
+                reader.read_int()
+        # The stream reader refuses a negative Position, and its read is the stream's own: -1 reads to the end;
+        # below -1 a buffered file raises, while a BytesIO reads to the end.
+        stream = EndianBinaryReader(io.BytesIO(data))
+        stream.Position = 5
+        self.assertEqual((stream.read(-2), stream.Position), (data[5:], 20))
+        with self.assertRaisesRegex(ValueError, "^Position cannot be negative$"):
+            stream.Position = -1
+        path = self.tmp / "data.bin"
+        path.write_bytes(data)
+        from fsspec.implementations.local import LocalFileSystem
+
+        for opener in (open, LocalFileSystem().open):
+            with opener(str(path), "rb") as opened:
+                stream = EndianBinaryReader(opened)
+                stream.Position = 18
+                self.assertEqual(stream.read(-1), data[18:])
+                stream.Position = 18
+                with self.assertRaisesRegex(ValueError, "^read length must be non-negative or -1$"):
+                    stream.read(-7)
 
     # Sections 9.1, 18: a null managed reference.
     def test_an_empty_managed_reference_does_not_resave(self):
