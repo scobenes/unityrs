@@ -254,7 +254,6 @@ fn the_provider_is_named_tpk_and_takes_no_script_requests() {
 /// Every request maps to a tree exactly where UnityPy builds a node list,
 /// and two versions that pick one entry get one `Arc<Tree>` (plan 3.12).
 #[test]
-#[ignore = "STUB(B): Tree::compile"]
 fn the_provider_answers_trees_where_unitypy_builds_them_and_shares_each() {
     for case in synthetic() {
         if case["load"].is_string() {
