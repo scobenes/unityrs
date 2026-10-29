@@ -9,6 +9,7 @@ import contextlib
 import gzip
 import io
 import os
+import random
 import re
 import struct
 import sys
@@ -47,7 +48,7 @@ try:
     from UnityPy.enums.GraphicsFormat import GraphicsFormat
     from UnityPy.export import AudioClipConverter, Texture2DConverter
     from UnityPy.files import BundleFile, WebFile
-    from UnityPy.helpers import ImportHelper, ResourceReader, TextureSwizzler, Tpk, TypeTreeHelper
+    from UnityPy.helpers import ImportHelper, PackedBitVector, ResourceReader, TextureSwizzler, Tpk, TypeTreeHelper
     from UnityPy.helpers.ContainerHelper import ContainerHelper
     from UnityPy.helpers.TypeTreeNode import TypeTreeNode
     from UnityPy.helpers.TypeTreeNode import clean_name as node_clean_name
@@ -815,6 +816,36 @@ class Rows(unittest.TestCase):
         self.assertEqual((upper.type_str, str(upper)), ("f", "2019.4f1"))
         unknown = UnityVersion.from_str("2019.4.15q1")
         self.assertEqual((int(unknown.type), unknown.type_str, str(unknown)), (255, "q", "2019.4q1"))
+
+    # Section 15.3: PackedBitVector.unpack_floats divides before it multiplies.
+    def test_unpack_floats_divides_first(self):
+        def f32(value):
+            return struct.unpack("<f", struct.pack("<f", value))[0]
+
+        divided = multiplied = 0
+        rng = random.Random(7)
+        for _ in range(50):
+            bits = rng.choice([8, 10, 11, 12, 16, 20, 24])
+            values = [rng.randrange(1 << bits) for _ in range(32)]
+            packed = sum(v << (bits * i) for i, v in enumerate(values)).to_bytes((bits * 32 + 7) // 8, "little")
+            vector = SimpleNamespace(
+                m_NumItems=32,
+                m_BitSize=bits,
+                m_Range=f32(rng.uniform(0.01, 50)),
+                m_Start=f32(rng.uniform(-20, 20)),
+                m_Data=list(packed),
+            )
+            got = PackedBitVector.unpack_floats(vector)
+            scale = vector.m_Range / ((1 << bits) - 1)
+            self.assertEqual(got, [x * scale + vector.m_Start for x in values])
+            left_to_right = [x * vector.m_Range / ((1 << bits) - 1) + vector.m_Start for x in values]
+            divided += len(values)
+            multiplied += sum(a != b for a, b in zip(got, left_to_right, strict=True))
+        # Multiplying first rounds differently for a fair share of values.
+        self.assertGreater(multiplied, divided // 20)
+        # Bit size 0 repeats the start.
+        empty = SimpleNamespace(m_NumItems=3, m_BitSize=0, m_Range=1.0, m_Start=2.5, m_Data=[])
+        self.assertEqual(PackedBitVector.unpack_floats(empty), [2.5, 2.5, 2.5])
 
     # Sections 8, 14.3: defaults that are never used.
     def test_object_reader_get_and_container_attributes(self):
