@@ -10,11 +10,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import struct
 
 FORMAT = "unityrs-canonical-dump"
 VERSION = 1
 LEVELS = ("L0", "L1", "L2", "L3")
+
+# The oracle stack a reference dump must come from (docs/CANONICAL_DUMP.md).
+ORACLE_UNITYPY = "1.25.2"
+ORACLE_PRODUCER = "unitypy_dump.py"
 
 # Raw-byte payloads longer than this are summarised as length + sha256. Inline
 # hex keeps small diffs readable; the summary keeps texture and vertex blobs
@@ -362,3 +367,244 @@ def decode_key(k):
     if type(k) is str:
         return k
     return decode(k)
+
+
+# ------------------------------------------------------------ canonical form
+#
+# The rules a single line can break whatever the other dump holds: section 4's
+# member lists and the value encodings of section 3 that the value shows on its
+# own. Packing by node type, float width and UInt8-vs-int need the typetree, so
+# only the comparison with the reference can check them.
+
+RECORD_MEMBERS = {
+    "dump": ("rec", "format", "version", "levels", "producer"),
+    "file": ("rec", "file", "l0", "l1", "error"),
+    "object": ("rec", "file", "path_id", "l1", "l2", "l3"),
+    "end": ("rec", "files", "objects"),
+}
+L0_MEMBERS = ("type", "parsed_as", "size", "sha256")
+FILE_L1_MEMBERS = {
+    "bundle": (
+        "kind",
+        "signature",
+        "format",
+        "version_player",
+        "version_engine",
+        "engine_version_packed",
+        "flags",
+        "flags_class",
+        "block_alignment",
+        "encrypted",
+        "hash",
+        "crc",
+        "blocks_info",
+        "blocks",
+        "directory",
+    ),
+    "web": ("kind", "signature", "packer", "directory"),
+    "serialized": (
+        "kind",
+        "header",
+        "unity_version",
+        "version_packed",
+        "target_platform",
+        "enable_type_tree",
+        "big_id_enabled",
+        "types",
+        "object_order",
+        "script_types",
+        "externals",
+        "ref_types",
+        "user_information",
+        "container",
+    ),
+}
+SERIALIZED_HEADER_MEMBERS = ("metadata_size", "file_size", "version", "data_offset", "endian", "reserved", "unknown")
+TYPE_MEMBERS = (
+    "class_id",
+    "is_stripped_type",
+    "script_type_index",
+    "script_id",
+    "old_type_hash",
+    "nodes",
+    "type_dependencies",
+    "class_name",
+    "namespace",
+    "assembly",
+)
+FILE_ERROR_MEMBERS = ("kind",)
+OBJECT_SECTIONS = (
+    ("L1", "l1", ("type_id", "class_id", "byte_start", "byte_size", "is_destroyed", "is_stripped")),
+    ("L2", "l2", ("root_type", "source", "error", "value")),
+    ("L3", "l3", ("raw_size", "raw_sha256", "resave", "resave_size", "resave_sha256", "first_diff")),
+)
+L2_ERROR_MEMBERS = ("kind", "bytes_read")
+
+_EVEN_HEX = re.compile(r"(?:[0-9a-f]{2})*")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+_PACKED = {
+    "f32": re.compile(r"[0-9a-f]{8}"),
+    "f64": re.compile(r"[0-9a-f]{16}"),
+    "f32s": re.compile(r"(?:[0-9a-f]{8})+"),
+    "f64s": re.compile(r"(?:[0-9a-f]{16})+"),
+}
+_RAW_TAGS = ("bytes", "u8s", "str")
+
+
+def _is_utf8(raw: bytes) -> bool:
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def _members(obj, expected, path, out, note=False) -> bool:
+    """Whether obj is an object whose members are exactly `expected`, in order (plus a last `note`)."""
+    if type(obj) is not dict:
+        out.append((path, "not_object", obj))
+        return False
+    keys = list(obj)
+    if note and keys and keys[-1] == "note":
+        keys.pop()
+    if keys != list(expected):
+        out.append((path, "members", list(obj)))
+        return False
+    return True
+
+
+def check_record(rec, levels) -> list:
+    """Every section 2-4 rule this record breaks on its own, as (path, kind, detail) triples.
+
+    `levels` is what its dump's header declares: a section of an undeclared
+    level must be null.
+    """
+    out = []
+    kind = rec.get("rec")
+    if not _members(rec, RECORD_MEMBERS.get(kind, ()) if type(kind) is str else (), "record", out):
+        return out
+    if kind == "file":
+        _members(rec["l0"], L0_MEMBERS, "l0", out)
+        l1 = rec["l1"]
+        if l1 is not None and "L1" not in levels:
+            out.append(("l1", "undeclared_level", "L1"))
+        elif l1 is not None:
+            l1_kind = l1.get("kind") if type(l1) is dict else None
+            members = FILE_L1_MEMBERS.get(l1_kind) if type(l1_kind) is str else None
+            if _members(l1, members or (), "l1", out) and l1["kind"] == "serialized":
+                _members(l1["header"], SERIALIZED_HEADER_MEMBERS, "l1.header", out)
+                for name in ("types", "ref_types"):
+                    if type(l1[name]) is list:
+                        for i, t in enumerate(l1[name]):
+                            _members(t, TYPE_MEMBERS, f"l1.{name}[{i}]", out)
+        if rec["error"] is not None:
+            _members(rec["error"], FILE_ERROR_MEMBERS, "error", out, note=True)
+    elif kind == "object":
+        for level, name, members in OBJECT_SECTIONS:
+            section = rec[name]
+            if section is None:
+                continue
+            if level not in levels:
+                out.append((name, "undeclared_level", level))
+            elif _members(section, members, name, out, note=name == "l3") and name == "l2":
+                if section["error"] is not None:
+                    _members(section["error"], L2_ERROR_MEMBERS, "l2.error", out, note=True)
+                check_value(section["value"], "l2.value", out)
+    return out
+
+
+def check_value(tv, path, out):
+    """Append (path, kind, detail) for each section 3 rule the tagged value tv breaks."""
+    t = type(tv)
+    if t is list:
+        if any(type(v) is dict and v.get("t") in ("f32", "f64") for v in tv):
+            out.append((path, "unpacked", "a list of tagged floats; vectors of float and double pack"))
+        for i, v in enumerate(tv):
+            check_value(v, f"{path}[{i}]", out)
+        return
+    if t is float:
+        out.append((path, "json_float", tv))
+        return
+    if t is not dict:
+        return  # null, bool, int, str
+    tag = tv.get("t")
+    keys = list(tv)
+    if type(tag) is not str:
+        out.append((path, "unknown_tag", tag))
+    elif tag in _RAW_TAGS:
+        _check_raw(tv, tag, keys, path, out)
+    elif tag in _PACKED or tag in ("dict", "tuple"):
+        if keys != ["t", "v"]:
+            out.append((path, "members", keys))
+            return
+        v = tv["v"]
+        if tag == "dict":
+            _check_dict(v, path, out)
+        elif tag == "tuple":
+            if type(v) is not list:
+                out.append((path, "malformed", v))
+                return
+            for i, x in enumerate(v):
+                check_value(x, f"{path}[{i}]", out)
+        elif type(v) is not str or not _PACKED[tag].fullmatch(v):
+            out.append((path, "empty_packed" if v == "" else "bad_hex", v))
+    else:
+        out.append((path, "unknown_tag", tag))
+
+
+def _check_dict(entries, path, out):
+    if type(entries) is not list:
+        out.append((path, "malformed", entries))
+        return
+    seen = set()
+    for entry in entries:
+        if type(entry) is not list or len(entry) != 2:
+            out.append((path, "malformed", entry))
+            continue
+        key, value = entry
+        if type(key) is str:
+            name, ident = key, ("str", key)
+        elif (
+            type(key) is dict
+            and list(key) == ["t", "hex"]
+            and key["t"] == "str"
+            and type(key["hex"]) is str
+            and _EVEN_HEX.fullmatch(key["hex"])
+        ):
+            name, ident = key["hex"], ("hex", key["hex"])
+            if _is_utf8(bytes.fromhex(name)):
+                out.append((f"{path}.{name}", "hex_name_is_utf8", key))
+        else:
+            out.append((path, "bad_key", key))
+            continue
+        if ident in seen:
+            out.append((f"{path}.{name}", "duplicate_key", key))
+        seen.add(ident)
+        check_value(value, f"{path}.{name}", out)
+
+
+def _check_raw(tv, tag, keys, path, out):
+    if keys == ["t", "hex"]:
+        h = tv["hex"]
+        if type(h) is not str or not _EVEN_HEX.fullmatch(h):
+            out.append((path, "bad_hex", h))
+            return
+        n, raw = len(h) // 2, bytes.fromhex(h)
+        if n > INLINE_MAX:
+            out.append((path, "inline_too_long", n))
+    elif keys == ["t", "len", "sha256"]:
+        n, sha, raw = tv["len"], tv["sha256"], None
+        if type(n) is not int or n < 0:
+            out.append((path, "bad_len", n))
+            return
+        if n <= INLINE_MAX:
+            out.append((path, "summary_too_short", n))
+        if type(sha) is not str or not _SHA256.fullmatch(sha):
+            out.append((path, "bad_sha256", sha))
+    else:
+        out.append((path, "members", keys))
+        return
+    if tag == "u8s" and n == 0:
+        out.append((path, "empty_packed", tv))
+    if tag == "str" and raw is not None and _is_utf8(raw):
+        out.append((path, "str_is_utf8", tv))

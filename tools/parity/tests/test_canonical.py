@@ -251,5 +251,77 @@ class Decoding(unittest.TestCase):
                 C.decode(bad)
 
 
+class CanonicalForm(unittest.TestCase):
+    """check_value and check_record: the rules a single line can break."""
+
+    def kinds(self, tv):
+        out = []
+        C.check_value(tv, "v", out)
+        return [(path, kind) for path, kind, _ in out]
+
+    def test_encoder_output_is_canonical(self):
+        root = Node("Base", "Base", [Node("float", "f"), vec("fs", Node("float", "data")), Node("TypelessData", "b")])
+        value = {"f": 1.0, "fs": [1.0, 2.0], "b": bytes(65)}
+        self.assertEqual(self.kinds(C.ValueEncoder().encode(value, root)), [])
+        bad_name = (b"\xff" * 70).decode("utf-8", "surrogateescape")
+        self.assertEqual(self.kinds({"t": "dict", "v": [[C.enc_name(bad_name), C.enc_str(bad_name)]]}), [])
+
+    def test_violations(self):
+        h65 = bytes(65).hex()
+        cases = [
+            ([{"t": "f32", "v": "3f800000"}], [("v", "unpacked")]),
+            ([{"t": "f64", "v": "3ff0000000000000"}, 1], [("v", "unpacked")]),
+            ({"t": "tuple", "v": [{"t": "f32", "v": "3f800000"}]}, []),  # tuples are never packed
+            (1.5, [("v", "json_float")]),
+            ({"t": "f32", "v": "3F800000"}, [("v", "bad_hex")]),
+            ({"t": "f32", "v": "3f80"}, [("v", "bad_hex")]),
+            ({"t": "f64s", "v": "3ff00000"}, [("v", "bad_hex")]),
+            ({"t": "f32s", "v": ""}, [("v", "empty_packed")]),
+            ({"v": "3f800000", "t": "f32"}, [("v", "members")]),
+            ({"t": "f32", "v": "3f800000", "x": 1}, [("v", "members")]),
+            ({"t": "bytes", "hex": h65}, [("v", "inline_too_long")]),
+            ({"t": "bytes", "len": 64, "sha256": "00" * 32}, [("v", "summary_too_short")]),
+            ({"t": "bytes", "len": 65, "sha256": "AB" * 32}, [("v", "bad_sha256")]),
+            ({"t": "bytes", "len": True, "sha256": "00" * 32}, [("v", "bad_len")]),
+            ({"t": "bytes", "hex": "abc"}, [("v", "bad_hex")]),
+            ({"t": "u8s", "hex": ""}, [("v", "empty_packed")]),
+            ({"t": "str", "hex": "616263"}, [("v", "str_is_utf8")]),
+            ({"t": "str", "hex": "ff"}, []),
+            ({"t": "nope", "v": 1}, [("v", "unknown_tag")]),
+            ({"t": ["dict"], "v": []}, [("v", "unknown_tag")]),
+            ({"t": "dict", "v": [["a", 1], ["a", 2]]}, [("v.a", "duplicate_key")]),
+            ({"t": "dict", "v": [[{"t": "str", "hex": "61"}, 1]]}, [("v.61", "hex_name_is_utf8")]),
+            ({"t": "dict", "v": [[1, 2]]}, [("v", "bad_key")]),
+            ({"t": "dict", "v": [["a"]]}, [("v", "malformed")]),
+            ({"t": "dict", "v": [["a", [{"t": "f32", "v": "00000000"}]]]}, [("v.a", "unpacked")]),
+            ({"t": "dict", "v": [["a", {"t": "tuple", "v": [1.0]}]]}, [("v.a[0]", "json_float")]),
+        ]
+        for tv, want in cases:
+            with self.subTest(tv=tv):
+                self.assertEqual(self.kinds(tv), want)
+
+    def test_record_members(self):
+        end = {"rec": "end", "files": 0, "objects": 0}
+        self.assertEqual(C.check_record(end, []), [])
+        self.assertEqual([k for _, k, _ in C.check_record({"rec": "end", "objects": 0, "files": 0}, [])], ["members"])
+        obj = {
+            "rec": "object",
+            "file": ["a"],
+            "path_id": 1,
+            "l1": None,
+            "l2": {
+                "root_type": "T",
+                "source": "tpk",
+                "error": {"kind": "other", "bytes_read": None, "note": "x"},
+                "value": None,
+            },
+            "l3": None,
+        }
+        self.assertEqual(C.check_record(obj, ["L0", "L2"]), [])
+        self.assertEqual([(p, k) for p, k, _ in C.check_record(obj, ["L0"])], [("l2", "undeclared_level")])
+        obj["l2"]["error"] = {"note": "x", "kind": "other", "bytes_read": None}
+        self.assertEqual([(p, k) for p, k, _ in C.check_record(obj, ["L0", "L2"])], [("l2.error", "members")])
+
+
 if __name__ == "__main__":
     unittest.main()

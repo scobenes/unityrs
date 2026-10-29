@@ -4,3 +4,7 @@ target-version = "py311"
 
 [lint]
 select = ["E", "F", "W", "B", "UP", "SIM", "I"]
+
+[lint.isort]
+# The tools import each other by module name (sys.path holds tools/parity).
+known-first-party = ["canonical", "compare", "unitypy_dump"]

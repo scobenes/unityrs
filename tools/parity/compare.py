@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """Diff two canonical dumps and summarise the differences by level, class and field path.
 
-    python tools/parity/compare.py REFERENCE.jsonl[.gz] CANDIDATE.jsonl[.gz] [--json report.json]
+    python tools/parity/compare.py REFERENCE.jsonl[.gz] CANDIDATE.jsonl[.gz] [--levels L0,L1] [--json report.json]
 
 REFERENCE is normally the UnityPy dump and CANDIDATE the unityrs one. Records
 are matched by key (file path, then path_id), so a candidate that orders
-records differently still compares field by field. Byte-identical lines are
-skipped unparsed. Fields named "note" are free text and never compared.
+records differently still compares field by field. Every line of both dumps,
+byte-identical pairs and the header and end records included, is checked
+against the canonical form. Fields named "note" are free text and never
+compared.
 
-Exit status: 0 when the compared levels agree, 1 when they differ, 2 when a
-dump is unreadable or not in the canonical format.
+The levels the reference holds are compared, and a level the candidate lacks is
+a difference. --levels narrows the comparison.
+
+Exit status: 0 when the compared levels agree and every line is canonical, 1
+when anything differs, 2 when a dump is unreadable or not a canonical dump, or
+when the arguments ask for a comparison the reference cannot give.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ import json
 import os
 import re
 import sys
+import zlib
 from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -30,6 +37,10 @@ import canonical as C  # noqa: E402
 MAX_DIFFS_PER_RECORD = 20
 MAX_ELEMENT_DIFFS = 5
 _INDEX = re.compile(r"\[\d+\]")
+
+
+class CompareError(Exception):
+    """A comparison that cannot be made: bad --levels, or a reference that is not the pinned oracle."""
 
 
 class Diff:
@@ -63,58 +74,79 @@ def short(v, limit=160):
 
 def open_lines(path):
     opener = gzip.open if path.endswith(".gz") else open
-    with opener(path, "rb") as fh:
-        yield from fh
+    try:
+        with opener(path, "rb") as fh:
+            yield from fh
+    except (EOFError, zlib.error, gzip.BadGzipFile) as e:
+        raise C.FormatError(f"{path}: unreadable stream: {e}") from e
+
+
+def _no_constant(name):
+    raise C.FormatError(f"{name} is not a JSON number")
+
+
+class _Floats:
+    """Set by the decoder whenever a line holds a JSON float (the format has none)."""
+
+    seen = False
+
+
+def _float(text):
+    _Floats.seen = True
+    return float(text)
+
+
+_DECODER = json.JSONDecoder(parse_float=_float, parse_constant=_no_constant)
 
 
 def parse(line: bytes):
+    """A line's record, and whether it held a JSON float. Unreadable lines raise FormatError."""
+    _Floats.seen = False
     try:
-        rec = json.loads(line)
-    except ValueError as e:
-        raise C.FormatError(f"not JSON: {e}") from e
+        rec = _DECODER.decode(line.decode("utf-8"))
+    except ValueError as e:  # JSONDecodeError, UnicodeDecodeError, NaN/Infinity
+        raise C.FormatError(f"not a JSON line: {e}") from e
     if not isinstance(rec, dict) or "rec" not in rec:
         raise C.FormatError("a line is not a record object")
-    return rec
+    return rec, _Floats.seen
 
 
-def file_key(components):
-    return tuple(c if isinstance(c, str) else json.dumps(c, sort_keys=True) for c in components)
+def canonical_line(rec) -> bytes:
+    """The bytes the spec's serialisation gives this record."""
+    try:
+        return (C.dumps(rec) + "\n").encode()
+    except UnicodeEncodeError as e:  # a lone-surrogate escape: valid JSON, not valid Unicode
+        raise C.FormatError(f"a string is not valid Unicode: {e}") from e
+
+
+def _name_key(n):
+    """A file-name component as a hashable, type-exact key, or None when it is not a name."""
+    if type(n) is str:
+        return n
+    if type(n) is dict and list(n) == ["t", "hex"] and n["t"] == "str" and type(n["hex"]) is str:
+        return ("hex", n["hex"])
+    return None
 
 
 def record_key(rec):
+    """A record's identity: ("file", names), ("object", names, path_id) or ("end",)."""
     kind = rec["rec"]
-    if kind == "file":
-        return ("file", file_key(rec["file"]))
-    if kind == "object":
-        return ("object", file_key(rec["file"]), rec["path_id"])
-    return (kind,)
-
-
-_DECODER = json.JSONDecoder()
-_REC_KIND = re.compile(rb'\{"rec":"(\w+)"')
-_PATH_ID = re.compile(r',"path_id":(-?\d+)[,}]')
-
-
-def line_key(line: bytes):
-    """A record's key read from its canonical prefix, without parsing the line.
-
-    Returns None when the line does not start the way the spec orders members;
-    the caller then parses it in full.
-    """
-    head = line[:4096].decode("utf-8", "replace")
-    if head.startswith(('{"rec":"object","file":', '{"rec":"file","file":')):
-        start = head.index('"file":') + 7
-        try:
-            components, end = _DECODER.raw_decode(head, start)
-        except ValueError:
-            return None
-        if head[8] == "f":
-            return ("file", file_key(components))
-        m = _PATH_ID.match(head, end)
-        return ("object", file_key(components), int(m.group(1))) if m else None
-    if head.startswith('{"rec":"end"'):
+    if kind in ("file", "object"):
+        names = rec.get("file")
+        keys = [_name_key(n) for n in names] if type(names) is list else []
+        if not keys or None in keys:
+            raise C.FormatError(f"a {kind} record's file {short(names)} is not a list of names")
+        if kind == "file":
+            return ("file", tuple(keys))
+        path_id = rec.get("path_id")
+        if type(path_id) is not int:
+            raise C.FormatError(f"path_id {short(path_id)} is not an integer")
+        return ("object", tuple(keys), path_id)
+    if kind == "end":
         return ("end",)
-    return None
+    if kind == "dump":
+        raise C.FormatError("a second dump header")
+    raise C.FormatError(f"unknown record kind {short(kind)}")
 
 
 def where(rec):
@@ -127,13 +159,15 @@ def where(rec):
 
 def record_class(rec):
     if rec["rec"] == "object":
-        l2 = rec.get("l2") or {}
+        l2 = rec.get("l2") if isinstance(rec.get("l2"), dict) else {}
         rt = l2.get("root_type")
         if isinstance(rt, str):
             return rt
-        return f"class_id={(rec.get('l1') or {}).get('class_id')}"
+        l1 = rec.get("l1") if isinstance(rec.get("l1"), dict) else {}
+        return f"class_id={l1.get('class_id')}"
     if rec["rec"] == "file":
-        return "file:" + str((rec.get("l0") or {}).get("parsed_as"))
+        l0 = rec.get("l0") if isinstance(rec.get("l0"), dict) else {}
+        return "file:" + str(l0.get("parsed_as"))
     return rec["rec"]
 
 
@@ -146,6 +180,18 @@ def strip_notes(v):
     if isinstance(v, list):
         return [strip_notes(x) for x in v]
     return v
+
+
+def same(a, b):
+    """Type-exact equality at any depth. Python's == is not: True == 1 == 1.0, and F32(0) == F64(0)."""
+    t = type(a)
+    if t is not type(b):
+        return False
+    if t is dict:
+        return list(a) == list(b) and all(same(a[k], b[k]) for k in a)
+    if t is list or t is tuple or t is C.Dict or t is C.Tuple:
+        return len(a) == len(b) and all(map(same, a, b))
+    return a == b
 
 
 def json_diff(a, b, path, out):
@@ -167,7 +213,7 @@ def json_diff(a, b, path, out):
             out.append((path, "length", len(a), len(b)))
         shown = 0
         for i, (x, y) in enumerate(zip(a, b, strict=False)):
-            if x != y or type(x) is not type(y):
+            if not same(x, y):
                 if shown == MAX_ELEMENT_DIFFS:
                     out.append((f"{path}[...]", "more", None, None))
                     break
@@ -181,33 +227,38 @@ def _key_text(k):
     return k if isinstance(k, str) else repr(k)
 
 
+def _key_id(k):
+    """A dict key as a type-exact dict key: "a" and a hex-tagged key never collide, nor 1 and True."""
+    return (type(k), k)
+
+
 def value_diff(a, b, path, out):
-    """Decoded typetree values (see canonical.decode): type-exact, with paths."""
+    """Decoded typetree values (see canonical.decode): type-exact at any depth, with paths."""
     ta, tb = type(a), type(b)
-    if ta is not tb or (ta is C.Blob and a.kind != b.kind):
+    if ta is not tb:
         out.append((path, "type", a, b))
         return
     if ta is C.Dict:
-        ka, kb = [k for k, _ in a], [k for k, _ in b]
-        da, db = dict(a), dict(b)
+        ka, kb = [_key_id(k) for k, _ in a], [_key_id(k) for k, _ in b]
+        da, db = {_key_id(k): v for k, v in a}, {_key_id(k): v for k, v in b}
         if ka != kb:
             if set(ka) == set(kb):
-                out.append((path, "key_order", ka, kb))
+                out.append((path, "key_order", [k for _, k in ka], [k for _, k in kb]))
             for k in ka:
                 if k not in db:
-                    out.append((f"{path}.{_key_text(k)}", "missing_key", da[k], None))
+                    out.append((f"{path}.{_key_text(k[1])}", "missing_key", da[k], None))
             for k in kb:
                 if k not in da:
-                    out.append((f"{path}.{_key_text(k)}", "extra_key", None, db[k]))
+                    out.append((f"{path}.{_key_text(k[1])}", "extra_key", None, db[k]))
         for k in ka:
             if k in db:
-                value_diff(da[k], db[k], f"{path}.{_key_text(k)}", out)
+                value_diff(da[k], db[k], f"{path}.{_key_text(k[1])}", out)
     elif ta is list or ta is C.Tuple:
         if len(a) != len(b):
             out.append((path, "length", len(a), len(b)))
         shown = 0
         for i, (x, y) in enumerate(zip(a, b, strict=False)):
-            if type(x) is not type(y) or x != y:
+            if not same(x, y):
                 if shown == MAX_ELEMENT_DIFFS:
                     out.append((f"{path}[...]", "more", None, None))
                     break
@@ -217,7 +268,15 @@ def value_diff(a, b, path, out):
         kind = "value"
         # CPython widens a float32 through the FPU, which quiets a signalling
         # NaN; UnityPy's dict cannot hold the file's bits (spec: "Floats").
-        if ta is C.F32 and (a ^ b) == 0x00400000 and (a & 0x7F800000) == 0x7F800000 and a & 0x00400000:
+        # The candidate must be that signalling NaN: a reference qNaN against
+        # an infinity differs in the same bit, and is a real error.
+        if (
+            ta is C.F32
+            and (a ^ b) == 0x00400000
+            and (a & 0x7F800000) == 0x7F800000
+            and a & 0x00400000
+            and b & 0x007FFFFF
+        ):
             kind = "f32_snan_quieted"
         out.append((path, kind, a, b))
 
@@ -240,6 +299,11 @@ def compare_section(level, cls, name, a, b, w, out, value=False):
         out.append(Diff(level, cls, path, kind, x, y, w))
 
 
+def _section(rec, name):
+    v = rec.get(name)
+    return v if isinstance(v, dict) else {}
+
+
 def compare_records(ra, rb, levels, out):
     w, cls = where(ra), record_class(ra)
     diffs = []
@@ -253,7 +317,7 @@ def compare_records(ra, rb, levels, out):
         if "L1" in levels:
             compare_section("L1", cls, "l1", ra.get("l1"), rb.get("l1"), w, diffs)
         if "L2" in levels:
-            l2a, l2b = ra.get("l2") or {}, rb.get("l2") or {}
+            l2a, l2b = _section(ra, "l2"), _section(rb, "l2")
             meta_a = {k: v for k, v in l2a.items() if k != "value"}
             meta_b = {k: v for k, v in l2b.items() if k != "value"}
             compare_section("L2", cls, "l2", meta_a, meta_b, w, diffs)
@@ -270,6 +334,21 @@ def compare_records(ra, rb, levels, out):
     return bool(diffs)
 
 
+_LEVEL_SECTION = {"L1": "l1", "L2": "l2", "L3": "l3"}
+
+
+def compared_text(rec, levels):
+    """The canonical text of what compare_records looks at, notes left out."""
+    kind = rec["rec"]
+    if kind == "file":
+        parts = [rec.get("error")] + [rec.get(lv.lower()) for lv in ("L0", "L1") if lv in levels]
+    elif kind == "object":
+        parts = [rec.get(_LEVEL_SECTION[lv]) for lv in ("L1", "L2", "L3") if lv in levels]
+    else:
+        parts = [rec]
+    return C.dumps(strip_notes(parts))
+
+
 # -------------------------------------------------------------------- driver
 
 
@@ -281,6 +360,7 @@ class Report:
         self.records_by_level = defaultdict(set)
         self.records_by_class = defaultdict(set)
         self.paths = defaultdict(lambda: {"records": set(), "fields": 0, "examples": []})
+        self.missing_levels = []
 
     def add(self, diffs):
         for d in diffs:
@@ -299,6 +379,7 @@ class Report:
     def as_dict(self):
         return {
             "counts": dict(self.counts),
+            "missing_levels": self.missing_levels,
             "by_level": {
                 lv: {"records": len(r), "fields": self.diffs_by_level[lv]}
                 for lv, r in sorted(self.records_by_level.items())
@@ -324,119 +405,186 @@ class Report:
         }
 
 
+class Side:
+    """One dump being read: its header, records waiting for a match, and what it has held."""
+
+    def __init__(self, name, path):
+        self.name, self.path = name, path
+        self.lines = open_lines(path)
+        self.pending = {}  # key -> (line, problems), waiting for the other side
+        self.seen = set()  # every key read, for duplicates
+        self.kinds = Counter()
+        self.end = None
+        self.header = self.levels = None
+
+    def read_header(self):
+        try:
+            line = next(self.lines)
+        except StopIteration as e:
+            raise C.FormatError(f"the {self.name} dump is empty") from e
+        h, saw_float = parse(line)
+        if h.get("rec") != "dump" or h.get("format") != C.FORMAT:
+            raise C.FormatError(f"the {self.name} dump does not start with a {C.FORMAT} header")
+        version = h.get("version")
+        if type(version) is not int or version != C.VERSION:
+            raise C.FormatError(f"the {self.name} dump is format version {short(version)}, this tool reads {C.VERSION}")
+        levels = h.get("levels")
+        if type(levels) is not list or levels != [lv for lv in C.LEVELS if lv in levels]:
+            raise C.FormatError(
+                f"the {self.name} header's levels {short(levels)} are not an ordered subset of {C.LEVELS}"
+            )
+        self.header, self.levels = h, levels
+        return line_problems(h, line, saw_float, levels)
+
+
+def line_problems(rec, line, saw_float, levels):
+    """Every canonical-form rule this line breaks on its own, as (path, kind, detail) triples."""
+    problems = []
+    if canonical_line(rec) != line:
+        problems.append(("line", "noncanonical_json", None))
+    if saw_float:
+        problems.append(("line", "json_float", None))
+    problems += C.check_record(rec, levels)
+    if len(problems) > MAX_DIFFS_PER_RECORD:
+        extra = len(problems) - MAX_DIFFS_PER_RECORD
+        problems = [*problems[:MAX_DIFFS_PER_RECORD], ("line", "more", extra)]
+    return problems
+
+
+def check_reference_producer(header):
+    """A dump from the oracle dumper must come from the pinned stack, or every difference it finds is suspect."""
+    producer = header.get("producer")
+    if not isinstance(producer, dict) or producer.get("name") != C.ORACLE_PRODUCER:
+        return
+    if producer.get("boost") is not True or producer.get("unitypy") != C.ORACLE_UNITYPY:
+        raise CompareError(
+            f"the reference was dumped with UnityPy {producer.get('unitypy')} and boost={producer.get('boost')}; "
+            f"the oracle is UnityPy {C.ORACLE_UNITYPY} with UnityPyBoost"
+        )
+
+
+def select_levels(held_a, held_b, levels):
+    """(levels compared record by record, levels the candidate lacks)."""
+    if levels is None:
+        wanted = list(held_a)
+    else:
+        unknown = [lv for lv in levels if lv not in C.LEVELS]
+        if unknown:
+            raise CompareError(
+                f"unknown level(s) {', '.join(map(repr, unknown))}; the levels are {', '.join(C.LEVELS)}"
+            )
+        wanted = [lv for lv in C.LEVELS if lv in levels]
+        absent = [lv for lv in wanted if lv not in held_a]
+        if absent:
+            raise CompareError(f"the reference holds no {' '.join(absent)}")
+    if not wanted:
+        raise CompareError("nothing to compare: the reference holds no levels" if levels is None else "no levels given")
+    return [lv for lv in wanted if lv in held_b], [lv for lv in wanted if lv not in held_b]
+
+
 def run(path_a, path_b, levels=None, examples=3):
     """Compare two dumps; returns (report, header_a, header_b, levels compared)."""
-    lines_a, lines_b = open_lines(path_a), open_lines(path_b)
-    try:
-        ha, hb = parse(next(lines_a)), parse(next(lines_b))
-    except StopIteration as e:
-        raise C.FormatError("empty dump") from e
-    for name, h in (("reference", ha), ("candidate", hb)):
-        if h.get("rec") != "dump" or h.get("format") != C.FORMAT:
-            raise C.FormatError(f"{name} does not start with a {C.FORMAT} header")
-        if h.get("version") != C.VERSION:
-            raise C.FormatError(f"{name} is format version {h.get('version')}, this tool reads {C.VERSION}")
-    compared = [lv for lv in C.LEVELS if lv in ha.get("levels", []) and lv in hb.get("levels", [])]
-    if levels:
-        compared = [lv for lv in compared if lv in levels]
-
+    a, b = Side("reference", path_a), Side("candidate", path_b)
     report = Report(examples)
-    pending_a, pending_b = {}, {}
-    diffs = []
+    header_problems = (a.read_header(), b.read_header())
+    check_reference_producer(a.header)
+    compared, missing = select_levels(a.levels, b.levels, levels)
+    report.missing_levels = missing
+    for side, problems in zip((a, b), header_problems, strict=True):
+        report.add([Diff("format", "dump", f"{p} ({side.name})", k, d, None, "(header)") for p, k, d in problems])
+    for lv in missing:
+        report.add([Diff(lv, "dump", "(header) levels", "missing_level", a.levels, b.levels, "(header)")])
 
-    same_levels = compared == ha.get("levels") == hb.get("levels")
+    def line_diffs(problems, side, cls, w):
+        return [Diff("format", cls, f"{p} ({side})", k, d, None, w) for p, k, d in problems]
 
-    def pair(ra, rb, la, lb):
+    def pair(la, ra, pa, lb, rb, pb):
+        """Two records with one key: la/ra/pa are the reference's line, record (or None) and problems."""
         report.counts["matched"] += 1
-        diffs.clear()
-        if compare_records(ra, rb, compared, diffs):
-            report.counts["differing"] += 1
-        # Equal values in different bytes mean a producer broke a canonical-form
-        # rule: either its line is not the spec's JSON serialisation of itself
-        # (whitespace, escapes, number spelling), or it picked another encoding
-        # of the same value (an unpacked float list, an inline long blob).
+        diffs = []
+        if la == lb:
+            report.counts["identical"] += 1
+            if not (pa or pb):
+                return
+            ra = ra or rb or parse(la)[0]
+            rb = ra
+        else:
+            ra = ra or parse(la)[0]
+            rb = rb or parse(lb)[0]
+            if compare_records(ra, rb, compared, diffs):
+                report.counts["differing"] += 1
+            elif not (pa or pb) and compared_text(ra, compared) != compared_text(rb, compared):
+                # Equal values in different bytes: one side picked another
+                # encoding of the same value.
+                diffs.append(Diff("format", record_class(ra), "line", "noncanonical_value", where=where(ra)))
         cls, w = record_class(ra), where(ra)
-        for side, rec, line in (("reference", ra, la), ("candidate", rb, lb)):
-            if (C.dumps(rec) + "\n").encode() != line:
-                diffs.append(Diff("format", cls, f"(line, {side})", "noncanonical_json", where=w))
-        if list(ra) != list(rb):
-            diffs.append(Diff("format", cls, "(members)", "member_order", list(ra), list(rb), w))
-        elif not diffs and same_levels and strip_notes(ra) != strip_notes(rb):
-            diffs.append(Diff("format", cls, "(line)", "noncanonical_value", where=w))
+        diffs += line_diffs(pa, "reference", cls, w) + line_diffs(pb, "candidate", cls, w)
         if diffs:
             report.add(diffs)
             if all(d.level == "format" for d in diffs):
                 report.counts["noncanonical"] += 1
 
-    # Lines wait, unparsed, in a per-side map until the other side yields the
-    # same key; equal lines then match without a parse. Producers that follow
-    # the canonical order keep both maps near empty.
-    seen = {"a": Counter(), "b": Counter()}
-    ends = {}
-    for la, lb in itertools.zip_longest(lines_a, lines_b):
-        for side, line in (("a", la), ("b", lb)):
-            if line is not None:
-                m = _REC_KIND.match(line)
-                kind = m.group(1).decode() if m else parse(line)["rec"]
-                seen[side][kind] += 1
-                if kind == "end":
-                    ends[side] = parse(line)
-        if la is not None and la == lb:
-            report.counts["matched"] += 1
-            report.counts["identical"] += 1
-            continue
-        for line, mine, other, side in ((la, pending_a, pending_b, "a"), (lb, pending_b, pending_a, "b")):
+    def examine(line, side):
+        rec, saw_float = parse(line)
+        return rec, record_key(rec), line_problems(rec, line, saw_float, side.levels)
+
+    # Lines wait in a per-side map until the other side yields the same key.
+    # Producers that follow the canonical order keep both maps near empty.
+    for la, lb in itertools.zip_longest(a.lines, b.lines):
+        shared = examine(la, a) if la is not None and la == lb and a.levels == b.levels else None
+        fresh = {}
+        for side, other, line in ((a, b, la), (b, a, lb)):
             if line is None:
                 continue
-            key = line_key(line)
-            rec = None
-            if key is None:
-                rec = parse(line)
-                key = record_key(rec)
-            if key not in other:
-                mine[key] = line
+            rec, key, problems = shared or examine(line, side)
+            kind = rec["rec"]
+            side.kinds[kind] += 1
+            if side.end is not None:
+                problems = [*problems, ("record", "after_end", None)]
+            if kind == "end" and side.end is None:
+                side.end = rec
+            if key in side.seen:
+                # A second record with one key: report it, and keep the first
+                # one for the comparison.
+                report.counts["duplicate"] += 1
+                level = {"file": "L0", "object": "L1"}.get(kind, "format")
+                cls, w = record_class(rec), where(rec)
+                report.add([Diff(level, cls, f"(record, {side.name})", "duplicate", where=w)])
+                report.add(line_diffs(problems, side.name, cls, w))
                 continue
-            oline = other.pop(key)
-            if oline == line:
-                report.counts["matched"] += 1
-                report.counts["identical"] += 1
+            side.seen.add(key)
+            if key not in other.pending:
+                side.pending[key] = (line, problems)
+                fresh[(side.name, key)] = rec
                 continue
-            rec = rec or parse(line)
-            orec = parse(oline)
-            if side == "a":
-                pair(rec, orec, line, oline)
+            oline, oproblems = other.pending.pop(key)
+            orec = fresh.get((other.name, key))
+            if side is a:
+                pair(line, rec, problems, oline, orec, oproblems)
             else:
-                pair(orec, rec, oline, line)
+                pair(oline, orec, oproblems, line, rec, problems)
 
     # The end record must count what its own dump holds; a mismatch means a
     # truncated or hand-edited stream.
-    for side, name in (("a", "reference"), ("b", "candidate")):
-        end = ends.get(side)
-        if end is None:
-            report.add([Diff("format", "end", f"(end, {name})", "missing_end")])
+    for side in (a, b):
+        if side.end is None:
+            report.add([Diff("format", "end", f"(end, {side.name})", "missing_end")])
             continue
         for member, rec_kind in (("files", "file"), ("objects", "object")):
-            if end.get(member) != seen[side][rec_kind]:
+            stated = side.end.get(member)
+            if type(stated) is not int or stated != side.kinds[rec_kind]:
                 report.add(
-                    [
-                        Diff(
-                            "format",
-                            "end",
-                            f"end.{member} ({name})",
-                            "end_count",
-                            end.get(member),
-                            seen[side][rec_kind],
-                        )
-                    ]
+                    [Diff("format", "end", f"end.{member} ({side.name})", "end_count", stated, side.kinds[rec_kind])]
                 )
 
-    for pending, kind in ((pending_a, "missing"), (pending_b, "extra")):
-        for key, line in pending.items():
-            rec = parse(line)
+    for side, kind in ((a, "missing"), (b, "extra")):
+        for key, (line, problems) in side.pending.items():
+            rec = parse(line)[0]
             report.counts[kind] += 1
-            level = "L0" if key[0] == "file" else "L1" if key[0] == "object" else "format"
-            report.add([Diff(level, record_class(rec), "(record)", kind, where=where(rec))])
-    return report, ha, hb, compared
+            level = {"file": "L0", "object": "L1"}.get(key[0], "format")
+            cls, w = record_class(rec), where(rec)
+            report.add([Diff(level, cls, "(record)", kind, where=w), *line_diffs(problems, side.name, cls, w)])
+    return report, a.header, b.header, compared
 
 
 def print_report(report, ha, hb, compared, path_a, path_b, max_paths, out=None):
@@ -444,11 +592,13 @@ def print_report(report, ha, hb, compared, path_a, path_b, max_paths, out=None):
     p = lambda *a: print(*a, file=out)  # noqa: E731
     p(f"reference: {path_a}  producer={json.dumps(ha.get('producer'))}")
     p(f"candidate: {path_b}  producer={json.dumps(hb.get('producer'))}")
-    p(f"levels compared: {' '.join(compared) or '(none)'}")
+    missing = f"  (the candidate lacks {' '.join(report.missing_levels)})" if report.missing_levels else ""
+    p(f"levels compared: {' '.join(compared) or '(none)'}{missing}")
     c = report.counts
     p(
         f"records: {c['matched']} matched ({c['identical']} identical lines), {c['differing']} differing, "
-        f"{c['missing']} missing from candidate, {c['extra']} extra in candidate, {c['noncanonical']} noncanonical"
+        f"{c['missing']} missing from candidate, {c['extra']} extra in candidate, {c['duplicate']} duplicate, "
+        f"{c['noncanonical']} noncanonical"
     )
     if not report.has_diffs():
         p("no differences")
@@ -474,16 +624,15 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("reference", help="reference dump (normally UnityPy's)")
     ap.add_argument("candidate", help="candidate dump (normally unityrs')")
-    ap.add_argument("--levels", help="restrict to these levels (comma list, e.g. L0,L1,L2)")
+    ap.add_argument("--levels", help="compare only these levels (comma list, e.g. L0,L1,L2); default: the reference's")
     ap.add_argument("--examples", type=int, default=3, help="examples kept per field path (default 3)")
     ap.add_argument("--max-paths", type=int, default=50, help="field paths printed (default 50)")
     ap.add_argument("--json", help="also write the full report as JSON to this path")
     args = ap.parse_args(argv)
+    levels = args.levels.split(",") if args.levels is not None else None
     try:
-        report, ha, hb, compared = run(
-            args.reference, args.candidate, args.levels.split(",") if args.levels else None, args.examples
-        )
-    except (C.FormatError, OSError) as e:
+        report, ha, hb, compared = run(args.reference, args.candidate, levels, args.examples)
+    except (C.FormatError, CompareError, OSError) as e:
         print(f"compare: {e}", file=sys.stderr)
         return 2
     print_report(report, ha, hb, compared, args.reference, args.candidate, args.max_paths)
