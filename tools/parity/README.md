@@ -79,7 +79,7 @@ python tools/parity/compare.py /tmp/dumps/unitypy.jsonl.gz /tmp/dumps/unityrs.js
 - **`format`** findings are breaks of spec sections 2-4, found line by line in both dumps, byte-identical pairs and the header and `end` records included. The kinds include `noncanonical_json` (not the line's own canonical serialisation), `json_float`, `members` (not the record's member list in order), `undeclared_level` and `missing_section` (a section the header's levels do not or do call for), `kind_mismatch`, `error_mismatch` and `value_mismatch` (a section that disagrees with `parsed_as` or with `l2.error`), `bad_name` and `hex_name_is_utf8` (the metadata-string rule), the value-encoding kinds (`unpacked`, `inline_too_long`, `summary_too_short`, `bad_hex`, `str_is_utf8`, `duplicate_key` and others), and `noncanonical_value` (equal values in other bytes). A missing `end` record, one whose counts disagree with the dump, and a record after it are `format` findings too.
 - A second record with a key already read is a `duplicate`; the first one is compared.
 
-Records are matched by key, not position: `file` by path, `object` by path and `path_id`. Every line is parsed and checked, identical ones included. Comparing the 20-bundle sample dump (38 MB, 12,880 records) with a second dump of the same inputs takes about 1 second.
+Records are matched by key, not position: `file` by path, `object` by path and `path_id`. The order is checked separately (`order`, `order_differs`; spec section 6). Every line is parsed and checked, identical ones included. Comparing the 20-bundle sample dump (38 MB, 12,880 records) with a second dump of the same inputs takes about 1 second.
 
 ## Self-tests
 
@@ -110,6 +110,6 @@ scripts/dev python tools/parity/unitypy_dump.py --index /corpus/index.json --kin
 # bytes_out / bytes_in (3.02) and output_bytes / bytes_in (0.32).
 scripts/dev python -c "import json; s = json.load(open('/tmp/dumps/corpus20.stats.json'))['summary']; \
     print(s['bytes_out'] / s['bytes_in'], s['output_bytes'] / s['bytes_in'])"
-# Comparison time (0.96-0.98 s real over three runs), and the record count in its report.
+# Comparison time (0.97-0.98 s real over three runs), and the record count in its report.
 scripts/dev bash -c 'time python tools/parity/compare.py /tmp/dumps/corpus20.jsonl /tmp/dumps/corpus20.jsonl.gz'
 ```

@@ -5,10 +5,11 @@
 
 REFERENCE is normally the UnityPy dump and CANDIDATE the unityrs one. Records
 are matched by key (file path, then path_id), so a candidate that orders
-records differently still compares field by field. Every line of both dumps,
-byte-identical pairs and the header and end records included, is checked
-against the canonical form. Fields named "note" are free text and never
-compared.
+records differently still compares field by field, and the order itself is
+checked: each dump against the spec's order, and the two against each other.
+Every line of both dumps, byte-identical pairs and the header and end records
+included, is checked against the canonical form. Fields named "note" are free
+text and never compared.
 
 The levels the reference holds are compared, and a level the candidate lacks is
 a difference. --levels narrows the comparison.
@@ -147,6 +148,83 @@ def record_key(rec):
     if kind == "dump":
         raise C.FormatError("a second dump header")
     raise C.FormatError(f"unknown record kind {short(kind)}")
+
+
+def _name_bytes(key):
+    """A file-name key's bytes (see _name_key), which order inputs; None for malformed hex."""
+    if type(key) is str:
+        return key.encode("utf-8")
+    try:
+        return bytes.fromhex(key[1])
+    except ValueError:
+        return None
+
+
+class Order:
+    """Section 5's order, checked as one dump's file and object records go past.
+
+    Inputs ascend by their names' bytes; each input is written depth first;
+    a file's objects follow its record directly, in ascending path_id; and a
+    container's entries follow its directory, a repeated path at its first
+    position. The directory is known only when the container's l1 is dumped;
+    without it, compare_orders still holds the entries to the other dump's order.
+    """
+
+    def __init__(self):
+        self.last_input = None
+        self.open = []  # the current input's file paths that are still open, outermost first
+        self.objects_of = self.last_path_id = None
+        self.entries = {}  # container path -> ({entry name: directory position}, last entry's position)
+
+    def check(self, rec, key):
+        out = []
+        if key[0] == "file":
+            names = key[1]
+            if len(names) == 1:
+                raw = _name_bytes(names[0])
+                if raw is not None and self.last_input is not None and raw < self.last_input:
+                    out.append(("record", "order", "inputs ascend by the bytes of their names"))
+                self.last_input = raw if raw is not None else self.last_input
+                self.open = []
+            else:
+                while self.open and self.open[-1] != names[: len(self.open[-1])]:
+                    self.open.pop()
+                parent = names[:-1]
+                if not self.open or self.open[-1] != parent:
+                    out.append(("record", "order", "an entry follows its container's records, before the next input"))
+                elif parent in self.entries:
+                    positions, last = self.entries[parent]
+                    pos = positions.get(names[-1])
+                    if pos is not None:
+                        if last is not None and pos < last:
+                            out.append(("record", "order", "entries follow their container's directory order"))
+                        self.entries[parent] = (positions, pos)
+            self.open.append(names)
+            self.objects_of, self.last_path_id = names, None
+            l1 = rec.get("l1")
+            directory = l1.get("directory") if type(l1) is dict else None
+            if type(directory) is list:
+                positions = {}
+                for row in directory:
+                    name = _name_key(row[3]) if type(row) is list and len(row) == 4 else None
+                    if name is not None:
+                        positions.setdefault(name, len(positions))
+                self.entries[names] = (positions, None)
+        elif key[0] == "object":
+            if key[1] != self.objects_of:
+                out.append(("record", "order", "objects follow their file's record directly"))
+            else:
+                if self.last_path_id is not None and key[2] < self.last_path_id:
+                    out.append(("record", "order", "objects ascend by path_id"))
+                self.last_path_id = key[2]
+        return out
+
+
+def compare_orders(a, b):
+    """The first pair of records the two dumps hold in different orders, or None."""
+    seq_a = [k for k in a.sequence if k in b.seen]
+    seq_b = [k for k in b.sequence if k in a.seen]
+    return next(((x, y) for x, y in zip(seq_a, seq_b, strict=True) if x != y), None)
 
 
 def where(rec):
@@ -413,6 +491,9 @@ class Side:
         self.lines = open_lines(path)
         self.pending = {}  # key -> (line, problems), waiting for the other side
         self.seen = set()  # every key read, for duplicates
+        self.order = Order()
+        self.sequence = []  # file and object keys in the order read, first records only
+        self.misordered = False
         self.kinds = Counter()
         self.end = None
         self.header = self.levels = None
@@ -553,6 +634,12 @@ def run(path_a, path_b, levels=None, examples=3):
                 report.add(line_diffs(problems, side.name, cls, w))
                 continue
             side.seen.add(key)
+            if kind in ("file", "object"):
+                misplaced = side.order.check(rec, key)
+                if misplaced:
+                    side.misordered = True
+                    problems = [*problems, *misplaced]
+                side.sequence.append(key)
             if key not in other.pending:
                 side.pending[key] = (line, problems)
                 fresh[(side.name, key)] = rec
@@ -576,6 +663,13 @@ def run(path_a, path_b, levels=None, examples=3):
                 report.add(
                     [Diff("format", "end", f"end.{member} ({side.name})", "end_count", stated, side.kinds[rec_kind])]
                 )
+
+    # Each dump can keep the spec's order and still differ from the other where
+    # the order rests on what the dump left out (a directory below L1).
+    if not (a.misordered or b.misordered):
+        first = compare_orders(a, b)
+        if first:
+            report.add([Diff("format", "dump", "(order)", "order_differs", first[0], first[1], "(dump)")])
 
     for side, kind in ((a, "missing"), (b, "extra")):
         for key, (line, problems) in side.pending.items():

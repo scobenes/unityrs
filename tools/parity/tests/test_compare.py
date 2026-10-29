@@ -298,29 +298,88 @@ class CompareTests(unittest.TestCase):
                 _, d = self.run_compare(self.write("a.jsonl", a), self.write("b.jsonl", b))
                 self.assertEqual(self.paths(d), {("L2", "l2.value.x", "value")})
 
-    def test_missing_extra_and_reordered_records(self):
+    def test_missing_and_extra_records(self):
         a, b = base_records(), base_records()
-        b[1], b[2] = b[2], b[1]  # reordered: still matched by key
-        del b[0]  # file record missing
-        b.insert(1, obj_rec(99, S()))
-        b[-1]["objects"] = 3
+        del b[1]  # object -5 missing
+        b.insert(2, obj_rec(99, S()))
         report, d = self.run_compare(self.write("a.jsonl", a), self.write("b.jsonl", b))
-        self.assertEqual(report.counts["missing"], 1)
-        self.assertEqual(report.counts["extra"], 1)
+        self.assertEqual((report.counts["missing"], report.counts["extra"]), (1, 1))
+        self.assertEqual(self.paths(d), {("L1", "(record)", "missing"), ("L1", "(record)", "extra")})
+        # Without its file record, a file's objects are out of place too.
+        del b[0]
+        b[-1]["files"] = 0
+        report, d = self.run_compare(self.write("a.jsonl", a), self.write("b.jsonl", b))
         self.assertEqual(
             self.paths(d),
             {
                 ("L0", "(record)", "missing"),
+                ("L1", "(record)", "missing"),
                 ("L1", "(record)", "extra"),
-                ("format", "end.objects", "value"),
-                ("format", "end.files (candidate)", "end_count"),
+                ("format", "record (candidate)", "order"),
+                ("format", "end.files", "value"),
             },
         )
+
+    def test_records_out_of_order_are_format_findings(self):
+        """Section 5's order is part of the content: a reordered dump is matched by key, and reported."""
+
+        def entry(name):
+            return {
+                "rec": "file",
+                "file": ["b.bundle", name],
+                "l0": {"type": "ResourceFile", "parsed_as": "raw", "size": 10, "sha256": "22" * 32},
+                "l1": None,
+                "error": None,
+            }
+
+        bundle = bundle_rec()
+        bundle["l1"]["directory"] = [[0, 10, 4, "y"], [10, 10, 4, "x"], [20, 10, 4, "y"]]
+        f, o1, o2, e = base_records()
+        ref = [f, o1, o2, bundle, entry("y"), entry("x"), end(4, 2)]
+        cases = {
+            "objects descending": [f, o2, o1, bundle, entry("y"), entry("x"), end(4, 2)],
+            "objects before their file": [o1, o2, f, bundle, entry("y"), entry("x"), end(4, 2)],
+            "inputs descending": [bundle, entry("y"), entry("x"), f, o1, o2, end(4, 2)],
+            "entries against the directory": [f, o1, o2, bundle, entry("x"), entry("y"), end(4, 2)],
+            "an entry outside its container": [f, o1, o2, bundle, entry("y"), end(4, 2)],
+        }
+        cases["an entry outside its container"].insert(1, entry("x"))
+        a = self.write("ref.jsonl", ref)
+        self.assertEqual(self.cli(a, a), 0, self.output)
+        for name, recs in cases.items():
+            with self.subTest(name):
+                b = self.write("b.jsonl", recs)
+                report, d = self.run_compare(a, b)
+                self.assertEqual(self.paths(d), {("format", "record (candidate)", "order")})
+                self.assertEqual(report.counts["differing"], 0)
+                _, d = self.run_compare(b, b)
+                self.assertEqual(
+                    self.paths(d),
+                    {("format", "record (reference)", "order"), ("format", "record (candidate)", "order")},
+                )
+
+        # Without L1 no directory is dumped, so only the other dump can show the entries' order.
+        def l0_only(recs):
+            recs = copy.deepcopy(recs)
+            for r in recs:
+                if r["rec"] in ("file", "object"):
+                    r["l1"] = None
+                if r["rec"] == "object":
+                    r["l2"] = r["l3"] = None
+            return recs
+
+        head = header(["L0"])
+        a = self.write("ref0.jsonl", l0_only(ref), head=head)
+        b = self.write("b0.jsonl", l0_only(cases["entries against the directory"]), head=head)
+        self.assertEqual(self.cli(b, b), 0, self.output)
+        _, d = self.run_compare(a, b)
+        self.assertEqual(self.paths(d), {("format", "(order)", "order_differs")})
+        self.assertEqual(self.cli(a, b), 1)
 
     def test_duplicate_records_are_reported_and_the_first_is_compared(self):
         """The candidate writes a bad copy, then a good copy, of obj 1 before the reference reaches it."""
         good, bad = S(["x", f32(0x3F800000)]), S(["x", f32(0xDEADBEEF)])
-        a = [file_rec(), obj_rec(2, good), obj_rec(1, good), end(1, 2)]
+        a = [file_rec(), obj_rec(1, good), obj_rec(2, good), end(1, 2)]
         b = [obj_rec(1, bad), obj_rec(1, good), file_rec(), obj_rec(2, good), end(1, 3)]
         report, d = self.run_compare(self.write("a.jsonl", a), self.write("b.jsonl", b))
         self.assertEqual(report.counts["duplicate"], 1)
@@ -330,10 +389,11 @@ class CompareTests(unittest.TestCase):
                 ("L1", "(record, candidate)", "duplicate"),
                 ("L2", "l2.value.x", "value"),
                 ("format", "end.objects", "value"),
+                ("format", "record (candidate)", "order"),
             },
         )
         # A copy that arrives after its key was matched is a duplicate too, not an extra record.
-        b = [file_rec(), obj_rec(2, good), obj_rec(1, good), obj_rec(1, good), end(1, 3)]
+        b = [file_rec(), obj_rec(1, good), obj_rec(2, good), obj_rec(2, good), end(1, 3)]
         report, _ = self.run_compare(self.write("a.jsonl", a), self.write("c.jsonl", b))
         self.assertEqual((report.counts["duplicate"], report.counts["extra"]), (1, 0))
 
