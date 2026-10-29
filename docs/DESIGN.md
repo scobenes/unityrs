@@ -65,7 +65,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
 - **Tier A: bit-exact** wherever UnityPy is right.
   - Typetree dicts equal `parse_as_dict()` with Boost semantics: lists for arrays, tuples for pairs, bytes for TypelessData, surrogate-escaped strings, float32 widened exactly.
   - Object mode builds each class as UnityPyBoost's `parse_class` does: a node with a field its class lacks becomes an `UnknownObject` when the class's `__slots__`, read through the MRO, is a non-empty tuple or its instances have no `__dict__`, and the class with the field as an attribute otherwise. `PARITY.md` section 9.2.1 lists every class of `UnityPy.classes` by that rule, from what `parse_class` does with each. The pure-Python path's different rule is kept where UnityPy calls it (`PARITY.md` section 9.2).
-  - `obj.container` and dependency resolution match.
+  - `obj.container` and dependency resolution match. That includes `load_file`'s case-insensitive fallback, which resolves a name only where UnityPy's walk does: `find_sensitive_path` matches a two-component path, and the name `load_file` hands it is joined to `Environment.path`, so in practice a record in another case than the file on disk is not found. unityrs adds no lookup of its own, which would load files UnityPy does not (`PARITY.md` section 19.2).
   - Decoded pixels **and output mode** match: BCn per Pillow `BcnDecode.c`; ETC/EAC/ATC/PVRTC/crunch per texture2ddecoder C++; ASTC via ARM astcenc.
   - OBJ/MTL text matches.
   - An image file the extractor saves under a container's extension is byte-equal with what Pillow 9.5.0's writer for that extension saves at its defaults to the same path, for every writer Pillow registers and every mode, size and file name it saves; a PDF's two dates, which hold the time of the save, aside (`PARITY.md` section 15.8).
@@ -81,6 +81,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - `Texture2D.image` of an empty 0×0 texture;
   - an empty AudioClip, whose empty resource path UnityPy fetches;
   - a ZIP opened from a path, which UnityPy loads only from bytes or a buffered stream;
+  - a name read through a non-local fsspec filesystem, which `load_file` tests and walks on the local disk instead;
   - a class node whose type names an attribute of `UnityPy.classes` that is not a class, where UnityPyBoost raises (`List`, `Tuple`): unityrs builds it as a type the module lacks (`PARITY.md` section 19.2);
   - `set_image` from an image whose mode Pillow cannot pack for the target (an indexed or grey PNG, or an RGB image into Alpha8): unityrs converts it with Pillow's `convert("RGBA")` first (`PARITY.md` section 18.1).
 - **Tier C: UnityPy is wrong.** It returns wrong data that an independent reference shows is wrong, or one of its exporters or helpers crashes. We produce correct output, and `PARITY.md` lists each case with a pinned divergence test and, for a crash, what correct output means:

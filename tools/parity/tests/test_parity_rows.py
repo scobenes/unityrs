@@ -346,6 +346,80 @@ class Rows(unittest.TestCase):
         loaded = quietly(env.load_file, "x")
         self.assertEqual([o.parse_as_dict()["m_Name"] for o in loaded.objects.values()], ["from env.path"])
 
+    # Sections 3, 4, 19.2: the case-insensitive walk takes `os.path.split`'s head and tail.
+    def test_the_case_insensitive_walk_takes_head_and_tail(self):
+        d = self.tmp / "d"
+        (d / "Resources" / "Sub").mkdir(parents=True)
+        for name in ("Resources/Foo.asset", "Resources/Sub/Bar.asset", "Top.asset"):
+            (d / name).write_bytes(text_asset_file(name))
+        walk = ImportHelper.find_sensitive_path
+        found = str(d / "Resources" / "Foo.asset")
+        # Exactly two components resolve; leading and trailing separators are stripped first.
+        for path in ("resources/foo.asset", "RESOURCES/FOO.ASSET", "/resources/foo.asset", "resources/foo.asset/"):
+            self.assertEqual(walk(str(d), path), found, path)
+        # A single name (an empty head) or a deeper path does not, even in exact case; nor a full path.
+        for path in ("Top.asset", "top.asset", "Resources/Sub/Bar.asset", f"{d}/resources/foo.asset"):
+            self.assertIsNone(walk(str(d), path), path)
+        # A directory the local disk does not have raises, `''` included.
+        for missing in ("", str(d / "nowhere")):
+            with self.assertRaises(FileNotFoundError):
+                walk(missing, "resources/foo.asset")
+
+        def names(path, name):
+            env = UnityPy.Environment(path=path)
+            loaded = quietly(env.load_file, name)
+            return None if loaded is None else [o.parse_as_dict()["m_Name"] for o in loaded.objects.values()]
+
+        self.chdir(self.tmp)
+        # load_file hands the walk the name joined to `path`, so a record in another case is not found.
+        self.assertIsNone(names(str(d), "resources/foo.asset"))
+        self.assertIsNone(names(str(d), "top.asset"))
+        self.assertEqual(names(str(d), "Resources/Foo.asset"), ["Resources/Foo.asset"])
+        # An absolute name is handed over as given: `/a/b` is looked up as `path/A/B`.
+        self.assertEqual(names(str(d), "/resources/foo.asset"), ["Resources/Foo.asset"])
+        # A relative one-component `path` P and a bare name n are looked up as P/P/n.
+        self.chdir(d)
+        self.assertIsNone(names("Resources", "foo.asset"))
+        (d / "Resources" / "resources").mkdir()
+        (d / "Resources" / "resources" / "FOO.asset").write_bytes(text_asset_file("doubled"))
+        self.assertEqual(names("Resources", "foo.Asset"), ["doubled"])
+        # A `path` the walk cannot list raises instead of returning None.
+        for path in ("", "nowhere"):
+            with self.subTest(path=path), self.assertRaises(FileNotFoundError):
+                names(path, "x.asset")
+
+    # Sections 3, 19.2: a filesystem other than the local one.
+    def test_a_non_local_fs_loads_only_through_load_and_streams(self):
+        from fsspec.implementations.memory import MemoryFileSystem
+
+        fs = MemoryFileSystem()  # one store per process: a folder of this test's own, removed after
+        root = f"/{self.tmp.name}"
+        fs.pipe(f"{root}/x.assets", text_asset_file("in memory"))
+        self.addCleanup(fs.rm, root, recursive=True)
+        self.assertFalse(os.path.exists(root), "nothing of that name on the local disk")
+        self.assertEqual(UnityPy.Environment(fs=fs).path, "")
+        # load_file tests a name with os.path and walks `path` with os.listdir, both on the local disk.
+        for name in (f"{root}/x.assets", "x.assets", "missing"):
+            with self.subTest(name), self.assertRaises(FileNotFoundError):
+                quietly(UnityPy.Environment(fs=fs).load_file, name)
+        with self.assertRaises(FileNotFoundError):
+            quietly(UnityPy.Environment(fs=fs, path=root).load_file, "x.assets")
+        # Where the local disk can list `path`, the walk finds nothing there and the name is None.
+        self.assertIsNone(quietly(UnityPy.Environment(fs=fs, path=str(self.tmp)).load_file, "x.assets"))
+        # The constructor takes a file through load_file, a folder through load_files' builtin open.
+        for arg in (f"{root}/x.assets", root):
+            with self.subTest(arg), self.assertRaises(FileNotFoundError):
+                quietly(UnityPy.Environment, arg, fs=fs)
+        with self.assertRaises(FileNotFoundError):
+            quietly(UnityPy.Environment(fs=fs).load_folder, root)
+        # load (fs.exists, fs.open) and a stream do read through the filesystem.
+        env = UnityPy.Environment(fs=fs)
+        quietly(env.load, [f"{root}/x.assets"])
+        self.assertEqual(list(env.files), [f"{root}/x.assets", "x.assets"])
+        with fs.open(f"{root}/x.assets", "rb") as stream:
+            loaded = quietly(UnityPy.Environment(fs=fs).load_file, stream, name="x.assets")
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in loaded.objects.values()], ["in memory"])
+
     # Sections 14.1, 14.3: file ids and the preload pass.
     def test_negative_file_ids_index_from_the_end(self):
         sf = load(text_asset_file(), env=UnityPy.Environment(path=str(self.tmp)))[0]
