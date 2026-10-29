@@ -33,7 +33,7 @@ use unityrs_core::{Bytes, LimitKind, Map, Parsed, PrimArray, RawStr, Value};
 
 /// The pure-Python reader and the writer land after UnityPyBoost's reader
 /// (package B's milestone); until then their outcomes are not compared.
-const PYTHON: bool = false;
+const PYTHON: bool = true;
 const WRITER: bool = false;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/walk/");

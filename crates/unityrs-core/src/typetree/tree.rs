@@ -131,7 +131,6 @@ pub fn kind_of(type_name: &[u8]) -> Kind {
 /// compare `m_Type` as a whole Python `str` (`FUNCTION_READ_MAP.get`,
 /// `node.m_Type == "pair"`, `TypeTreeHelper.py:190-208`, `:416-429`), with no
 /// C string's end at a NUL and no `PPtr<` rule (that is object mode's).
-#[allow(dead_code)] // The pure-Python reader's (package B's next commit).
 pub(crate) fn py_kind_of(type_name: &[u8]) -> Kind {
     if type_name.contains(&0) {
         return Kind::Unknown;
@@ -245,7 +244,6 @@ pub struct Tree {
     /// writer's whole-string kind can differ from UnityPyBoost's C-string
     /// one ([`py_kind_of`]). False for every tree a parser builds (its names
     /// end at a NUL), so they never compare a string.
-    #[allow(dead_code)] // The pure-Python reader's (package B's next commit).
     nul_types: bool,
     /// `info` and the compile's own allocations, charged to the list's
     /// meter ([`NodeList::meter`]) before they are made.
@@ -594,7 +592,6 @@ impl Tree {
     /// The kind UnityPy's pure-Python reader and writer give the node: its
     /// `m_Type` as a whole string ([`py_kind_of`]), which is the compiled
     /// [`Kind`] (a `PPtr<` read as any class) unless a type holds a NUL.
-    #[allow(dead_code)] // The pure-Python reader's (package B's next commit).
     pub(crate) fn py_kind(&self, node: NodeId) -> Kind {
         if self.nul_types {
             return py_kind_of(self.list.type_name(node));

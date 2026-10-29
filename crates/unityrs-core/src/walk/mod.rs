@@ -387,14 +387,6 @@ pub(crate) enum Out {
 }
 
 impl Out {
-    #[allow(dead_code)] // The pure-Python reader's (package B's next commit).
-    pub(crate) fn value(&self) -> &Value {
-        match self {
-            Self::Plain(v) => v,
-            Self::Built(b) => b.value(),
-        }
-    }
-
     /// Appends to a list's or a tuple's items, the charge going along.
     pub(crate) fn push_to(self, items: &mut MeteredVec<Value>) -> Result<(), ChargeError> {
         match self {
