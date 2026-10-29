@@ -33,7 +33,7 @@ use unityrs_core::Bytes;
 
 use crate::json::hex;
 use crate::select::{Input, Selection, collect};
-use crate::{DumpOptions, InputDump, end_line, header_line};
+use crate::{DumpOptions, InputDump, end_line, header_line_unbounded};
 
 /// The producer name the header carries.
 pub const PRODUCER: &str = "unityrs";
@@ -350,7 +350,7 @@ pub fn write_dump(
     dump_one: &(dyn Fn(&[u8], Bytes) -> InputDump + Sync),
 ) -> Result<(u64, u64), RunError> {
     let io = |e: std::io::Error| RunError::Failed(format!("writing the dump: {e}"));
-    w.write_all(header_line(opts.levels, PRODUCER).as_bytes())
+    w.write_all(header_line_unbounded(opts.levels, PRODUCER, &opts.unbounded).as_bytes())
         .and_then(|()| w.write_all(b"\n"))
         .map_err(io)?;
     let (mut files, mut objects) = (0u64, 0u64);

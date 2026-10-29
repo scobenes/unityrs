@@ -12,21 +12,27 @@
 //! bytes, as Python's surrogate-escaped `argv` is, so a path or a `--name`
 //! glob that is not UTF-8 reaches the run unchanged.
 //!
-//! One difference, an extension: the oracle takes one INPUT, `unityrs dump`
-//! takes one or more (every positional, wherever it stands; their dump names
-//! must not repeat, and `--index` takes one).
+//! Three extensions: the oracle takes one INPUT, `unityrs dump` takes one or
+//! more (every positional, wherever it stands; their dump names must not
+//! repeat, and `--index` takes one); `--reverse-prepass` (G1c); and
+//! `--unbounded` (G3b's limit check, never a gate dump). No option the
+//! oracle has is a prefix of either flag's name, nor either of one of its
+//! own, so every abbreviation the oracle takes still means what it does
+//! there.
 
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 
-use unityrs_dump::Levels;
+use unityrs_core::LimitKind;
 use unityrs_dump::select::INDEX_KINDS;
+use unityrs_dump::{LIFTABLE, Levels};
 
 pub const USAGE: &str = "usage: unityrs dump [-h] -o OUTPUT [--index] [--kind KIND] [--build BUILD] \
 [--allow-index-mismatch] [--name NAME] [--sample SAMPLE] [--limit LIMIT] [--levels LEVELS] \
-[-j JOBS] [--stats STATS] [-q] [--tpk TPK] [--reverse-prepass] input [input ...]";
+[-j JOBS] [--stats STATS] [-q] [--tpk TPK] [--reverse-prepass] [--unbounded UNBOUNDED] \
+input [input ...]";
 
 pub const HELP: &str = "\
 Writes the canonical dump (docs/CANONICAL_DUMP.md, format 1) of files,
@@ -56,7 +62,15 @@ options:
   --tpk TPK             the UnityPy TPK for stripped objects' typetrees
   --reverse-prepass     before dumping a bundle, parse its entries in reverse
                         directory order, nested bundles' too (the gate's G1c:
-                        the output must not change)";
+                        the output must not change)
+  --unbounded UNBOUNDED
+                        lift these limits (comma list of InputMemory,
+                        InputBytes, BlockOutput, DecodeWork, Inflate,
+                        ContainerDepth, TreeDepth, ValueDepth, ValuesPerObject,
+                        ZeroSizeElements): G3b's check that a limit refusal is
+                        the only difference from UnityPy. Bound the process
+                        instead; the header names them, and no gate takes
+                        such a dump";
 
 /// What an option stores into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,11 +90,12 @@ enum Dest {
     Quiet,
     Tpk,
     LazyReverse,
+    Unbounded,
 }
 
 /// `_option_string_actions`, in the order `add_argument` fills it: an
 /// ambiguous prefix lists its matches in this order.
-const STRINGS: [(&str, Dest); 19] = [
+const STRINGS: [(&str, Dest); 20] = [
     ("-h", Dest::Help),
     ("--help", Dest::Help),
     ("-o", Dest::Output),
@@ -100,6 +115,7 @@ const STRINGS: [(&str, Dest); 19] = [
     ("--quiet", Dest::Quiet),
     ("--tpk", Dest::Tpk),
     ("--reverse-prepass", Dest::LazyReverse),
+    ("--unbounded", Dest::Unbounded),
 ];
 
 impl Dest {
@@ -150,6 +166,9 @@ pub struct DumpArgs {
     pub tpk: Option<PathBuf>,
     /// `--reverse-prepass`, an extension: G1c's pre-pass.
     pub lazy_reverse: bool,
+    /// `--unbounded`, an extension: the limits G3b's check lifts, in
+    /// [`LIFTABLE`] order.
+    pub unbounded: Vec<LimitKind>,
 }
 
 /// The command line's outcome.
@@ -581,6 +600,10 @@ pub fn parse(args: &[Vec<u8>]) -> Result<Parsed, Usage> {
         None => "L0,L1,L2,L3".to_owned(),
     };
     let levels = Levels::parse(&levels).map_err(Usage)?;
+    let unbounded = match ns.last(Dest::Unbounded) {
+        Some(u) => unbounded(u)?,
+        None => Vec::new(),
+    };
     Ok(Parsed::Dump(Box::new(DumpArgs {
         inputs: ns.inputs.iter().map(|a| path(a)).collect(),
         output: output.unwrap_or_default(),
@@ -602,7 +625,29 @@ pub fn parse(args: &[Vec<u8>]) -> Result<Parsed, Usage> {
         quiet: ns.flag(Dest::Quiet),
         tpk: ns.last(Dest::Tpk).map(path),
         lazy_reverse: ns.flag(Dest::LazyReverse),
+        unbounded,
     })))
+}
+
+/// `--unbounded`'s comma list: each a [`LIFTABLE`] kind's name, any order,
+/// repeats allowed; returned in [`LIFTABLE`] order.
+fn unbounded(v: &[u8]) -> Result<Vec<LimitKind>, Usage> {
+    let names: Vec<String> = LIFTABLE.iter().map(|k| format!("{k:?}")).collect();
+    let mut picked = Vec::new();
+    for name in v.split(|b| *b == b',') {
+        let Some(i) = names.iter().position(|n| n.as_bytes() == name) else {
+            return Err(Usage(format!(
+                "argument --unbounded: invalid limit: {} (choose from {})",
+                py_repr(name),
+                names.join(", ")
+            )));
+        };
+        picked.push(LIFTABLE[i]);
+    }
+    Ok(LIFTABLE
+        .into_iter()
+        .filter(|k| picked.contains(k))
+        .collect())
 }
 
 #[cfg(test)]
@@ -637,6 +682,7 @@ mod tests {
         assert_eq!(a.levels, Levels::ALL);
         assert_eq!(a.jobs, 1);
         assert!(!a.index && !a.quiet && !a.allow_index_mismatch && !a.lazy_reverse);
+        assert_eq!(a.unbounded, Vec::<LimitKind>::new());
         assert!(dump(&["c", "-o", "o", "--rev"]).lazy_reverse);
         assert_eq!(
             (a.sample, a.limit, a.stats, a.tpk),
@@ -827,6 +873,57 @@ mod tests {
         assert!(error(&["x", "-o", "y", "--levels", "L1,L2"]).contains("holds L0"));
         assert!(error(&["x", "-o", "y", "--levels", "L0,L3"]).contains("L3 needs L2"));
         assert!(error(&["x", "-o", "y", "--levels", "L0,L4"]).contains("'L4'"));
+    }
+
+    #[test]
+    fn unbounded_takes_a_comma_list_of_limits() {
+        use LimitKind as K;
+        let a = dump(&[
+            "c",
+            "-o",
+            "o",
+            "--unbounded",
+            "ZeroSizeElements,TreeDepth,TreeDepth",
+        ]);
+        assert_eq!(a.unbounded, [K::TreeDepth, K::ZeroSizeElements]);
+        assert_eq!(
+            dump(&["c", "-o", "o", "--unb=Inflate"]).unbounded,
+            [K::Inflate]
+        );
+        let all = LIFTABLE.map(|k| format!("{k:?}")).join(",");
+        assert_eq!(
+            dump(&["c", "-o", "o", "--unbounded", &all]).unbounded,
+            LIFTABLE
+        );
+        for bad in ["Count", "treedepth", "", "TreeDepth,"] {
+            let e = error(&["c", "-o", "o", "--unbounded", bad]);
+            assert!(
+                e.starts_with("argument --unbounded: invalid limit: "),
+                "{bad:?}: {e}"
+            );
+        }
+        // No abbreviation the oracle takes changed meaning.
+        for o in STRINGS
+            .map(|(o, _)| o)
+            .iter()
+            .filter(|o| o.starts_with("--"))
+        {
+            for n in 3..o.len() {
+                let matches = STRINGS
+                    .iter()
+                    .filter(|(s, _)| {
+                        s.starts_with(&o[..n]) && !matches!(*s, "--unbounded" | "--reverse-prepass")
+                    })
+                    .count();
+                let with = STRINGS
+                    .iter()
+                    .filter(|(s, _)| s.starts_with(&o[..n]))
+                    .count();
+                if !matches!(*o, "--unbounded" | "--reverse-prepass") {
+                    assert_eq!(matches, with, "{}", &o[..n]);
+                }
+            }
+        }
     }
 
     #[test]

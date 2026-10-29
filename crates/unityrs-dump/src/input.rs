@@ -27,9 +27,9 @@
 use std::sync::Arc;
 
 use unityrs_core::budget::Reservation;
-use unityrs_core::detect::{FileType, ParsedAs, check_file_type};
+use unityrs_core::detect::{DetectError, FileType, ParsedAs, check_file_type};
 use unityrs_core::files::{File, LayoutKind, WebPacker, parse_file};
-use unityrs_core::limits::Meter;
+use unityrs_core::limits::{Limits, Meter};
 use unityrs_core::provider::TreeSource;
 use unityrs_core::stream::Endian;
 use unityrs_core::walk::{L2Kind, ParseError, WriteRules};
@@ -65,20 +65,23 @@ pub fn dump_input(rel: &[u8], data: Bytes, opts: &DumpOptions) -> InputDump {
         ..InputDump::default()
     };
     let ctx = &opts.context;
-    let Ok(ty) = check_file_type(&data, &ctx.limits) else {
-        // A file whose detection raises would raise again inside
-        // `Environment.load_file` (unitypy_dump.py `_dump_input`).
-        let rec = FileRecord {
-            file: vec![name],
-            l0,
-            l1: None,
-            error: Some(FileError {
-                kind: FileErrorKind::Detect,
-                note: None,
-            }),
-        };
-        out.push_file(file_line(&rec));
-        return out;
+    let ty = match check_file_type(&data, &ctx.limits) {
+        Ok(ty) => ty,
+        Err(e) => {
+            // A file whose detection raises would raise again inside
+            // `Environment.load_file` (unitypy_dump.py `_dump_input`).
+            let rec = FileRecord {
+                file: vec![name],
+                l0,
+                l1: None,
+                error: Some(FileError {
+                    kind: FileErrorKind::Detect,
+                    note: Some(failure_note(&Error::Detect(e), &ctx.limits)),
+                }),
+            };
+            out.push_file(file_line(&rec));
+            return out;
+        }
     };
     l0.ty = Some(ty);
     if ty == FileType::Zip {
@@ -124,12 +127,32 @@ pub fn dump_input(rel: &[u8], data: Bytes, opts: &DumpOptions) -> InputDump {
                 l1: None,
                 error: Some(FileError {
                     kind: FileErrorKind::Parse,
-                    note: Some(note(&e.to_string())),
+                    note: Some(failure_note(&e, &ctx.limits)),
                 }),
             }));
         }
     }
     out
+}
+
+/// The note of an input's failure: the error's text, where detection's
+/// limit refusal ([`DetectError::InflateLimit`], the input's or an entry's)
+/// leads with `limit Inflate:` and the bound, as the text of every other
+/// limit refusal ([`unityrs_core::LimitError`]) leads with `limit <Kind>:`.
+/// So a reader of the dump (G3b's `tools/parity/g3b.py`) finds every limit
+/// refusal the same way.
+fn failure_note(e: &Error, limits: &Limits) -> String {
+    let mut inner = e;
+    while let Error::Entry { source, .. } = inner {
+        inner = source;
+    }
+    if matches!(inner, Error::Detect(DetectError::InflateLimit)) {
+        return note(&format!(
+            "limit Inflate: a gzip stream inflates past {} bytes ({e})",
+            limits.max_inflate
+        ));
+    }
+    note(&e.to_string())
 }
 
 /// UnityPy's eager load: every directory entry of every bundle parsed, in
@@ -528,6 +551,47 @@ fn object_record(obj: &ObjectRef, levels: Levels, _opts: &DumpOptions) -> Object
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A gzip stream of `n` zero bytes, as detection inflates it.
+    fn gzip_of_zeros(n: usize) -> Vec<u8> {
+        use std::io::Write;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&vec![0; n]).unwrap();
+        let mut out = gz.finish().unwrap();
+        // Detection reads a gzip stream only in a file of 128 bytes or more.
+        out.resize(out.len().max(128), 0);
+        out
+    }
+
+    #[test]
+    fn a_detection_refused_at_its_limit_names_the_limit() {
+        let mut ctx = unityrs_core::FileContext::unitypy();
+        ctx.limits.max_inflate = 1000;
+        let opts = DumpOptions {
+            context: Arc::new(ctx),
+            ..DumpOptions::default()
+        };
+        let lines = dump_input(b"big.gz", Bytes::from(gzip_of_zeros(5000)), &opts).lines;
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].contains(r#""error":{"kind":"detect","note":"limit Inflate: "#),
+            "{}",
+            lines[0]
+        );
+        // Under the bound the same stream is no limit refusal.
+        let opts = DumpOptions::default();
+        let lines = dump_input(b"big.gz", Bytes::from(gzip_of_zeros(5000)), &opts).lines;
+        assert!(!lines[0].contains("limit Inflate"), "{}", lines[0]);
+        // Any other detection failure keeps its own text.
+        let mut twenty = vec![b'x'; 20];
+        twenty[0] = b'y';
+        let lines = dump_input(b"x", Bytes::from(twenty), &opts).lines;
+        assert!(
+            lines[0].contains(r#""note":"detection: unterminated"#),
+            "{}",
+            lines[0]
+        );
+    }
 
     #[test]
     fn a_negative_check_read_is_other_as_the_oracle_classifies_it() {

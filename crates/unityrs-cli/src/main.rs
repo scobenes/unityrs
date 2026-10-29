@@ -4,6 +4,7 @@
 //! unityrs dump INPUT... -o OUT.jsonl[.gz] [--index] [--kind K] [--build B]
 //!     [--allow-index-mismatch] [--name GLOB]... [--sample N] [--limit N]
 //!     [--levels L0,L1,L2,L3] [-j N] [--stats PATH] [-q] [--tpk PATH] [--reverse-prepass]
+//!     [--unbounded KIND[,KIND...]]
 //! unityrs values CASES.json
 //! ```
 //!
@@ -46,6 +47,10 @@ fn run_options(a: args::DumpArgs) -> Result<RunOptions, String> {
         lazy_reverse: a.lazy_reverse,
         ..DumpOptions::default()
     };
+    // Before `--tpk`, whose provider is opened under the context's limits.
+    dump = dump
+        .with_unbounded(&a.unbounded)
+        .map_err(|k| format!("--unbounded: {k:?} bounds no input"))?;
     if let Some(path) = &a.tpk {
         // A TPK that does not load is refused, never dumped without it.
         dump = dump

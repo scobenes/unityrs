@@ -39,8 +39,9 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-use unityrs_core::FileContext;
+use unityrs_core::limits::Limits;
 use unityrs_core::provider::ProviderChain;
+use unityrs_core::{FileContext, LimitKind};
 use unityrs_tpk::{TpkError, TpkProvider};
 
 /// Every public type of this crate is `Send + Sync`, as the core's are (plan
@@ -135,6 +136,9 @@ pub struct DumpOptions {
     /// directory order, nested bundles' included, with nothing decoded up
     /// front ([`input::prepass_reverse`]). The dump must not change.
     pub lazy_reverse: bool,
+    /// The bounds lifted by [`DumpOptions::with_unbounded`] (`--unbounded`),
+    /// in [`LIFTABLE`] order; the header's `producer` names them.
+    pub unbounded: Vec<LimitKind>,
 }
 
 impl Default for DumpOptions {
@@ -145,11 +149,70 @@ impl Default for DumpOptions {
             context: Arc::new(FileContext::unitypy()),
             tpk_path: None,
             lazy_reverse: false,
+            unbounded: Vec::new(),
         }
     }
 }
 
+/// The bounds `--unbounded` can lift: every [`LimitKind`] but `Count`, which
+/// bounds an index type, not what an input may cost.
+pub const LIFTABLE: [LimitKind; 10] = [
+    LimitKind::InputMemory,
+    LimitKind::InputBytes,
+    LimitKind::BlockOutput,
+    LimitKind::DecodeWork,
+    LimitKind::Inflate,
+    LimitKind::ContainerDepth,
+    LimitKind::TreeDepth,
+    LimitKind::ValueDepth,
+    LimitKind::ValuesPerObject,
+    LimitKind::ZeroSizeElements,
+];
+
+/// Sets `kind`'s bound in `limits` to its type's maximum, so that it never
+/// trips. `false` for a kind not in [`LIFTABLE`].
+pub fn lift(limits: &mut Limits, kind: LimitKind) -> bool {
+    match kind {
+        LimitKind::InputMemory => limits.max_input_memory = u64::MAX,
+        LimitKind::InputBytes => limits.max_input_bytes = u64::MAX,
+        LimitKind::BlockOutput => limits.max_block_output = u64::MAX,
+        LimitKind::DecodeWork => limits.max_decode_work = u64::MAX,
+        LimitKind::Inflate => limits.max_inflate = u64::MAX,
+        LimitKind::ContainerDepth => limits.max_container_depth = u32::MAX,
+        LimitKind::TreeDepth => limits.max_tree_depth = u32::MAX,
+        LimitKind::ValueDepth => limits.max_value_depth = u32::MAX,
+        LimitKind::ValuesPerObject => limits.max_values_per_object = u64::MAX,
+        LimitKind::ZeroSizeElements => limits.max_zero_size_elements = u64::MAX,
+        _ => return false,
+    }
+    true
+}
+
 impl DumpOptions {
+    /// The options with each of `kinds`' bounds lifted ([`lift`]): G3b's
+    /// check that a limit refusal is the only reason a record differs from
+    /// UnityPy's (`tools/parity/g3b.py`). Never for a gate dump: without its
+    /// bounds a hostile input costs what it asks for, so the caller bounds
+    /// the process instead. Call it before [`DumpOptions::with_tpk`], which
+    /// opens the TPK under the context's limits.
+    ///
+    /// # Errors
+    /// The first kind not in [`LIFTABLE`].
+    pub fn with_unbounded(mut self, kinds: &[LimitKind]) -> Result<Self, LimitKind> {
+        let mut context = FileContext::clone(&self.context);
+        for &kind in kinds {
+            if !lift(&mut context.limits, kind) {
+                return Err(kind);
+            }
+        }
+        self.context = Arc::new(context);
+        self.unbounded = LIFTABLE
+            .into_iter()
+            .filter(|k| kinds.contains(k) || self.unbounded.contains(k))
+            .collect();
+        Ok(self)
+    }
+
     /// The options with the TPK at `path` (`--tpk`) as the context's one
     /// typetree provider, as UnityPy's bundled class database answers a
     /// stripped object (`files/ObjectReader.py:285-307`, `helpers/Tpk.py`):
@@ -202,10 +265,24 @@ impl InputDump {
 /// The `dump` header line, for a producer named `producer`.
 #[must_use]
 pub fn header_line(levels: Levels, producer: &str) -> String {
+    header_line_unbounded(levels, producer, &[])
+}
+
+/// The `dump` header line of a run with `unbounded`'s bounds lifted
+/// ([`DumpOptions::with_unbounded`]): the producer's `unbounded` member
+/// names them, so such a dump is never taken for a gate dump. With none, the
+/// header is [`header_line`]'s.
+#[must_use]
+pub fn header_line_unbounded(levels: Levels, producer: &str, unbounded: &[LimitKind]) -> String {
     let mut members = String::from("\"name\":");
     json::write_str(&mut members, producer);
     members.push_str(",\"unityrs\":");
     json::write_str(&mut members, unityrs_core::VERSION);
+    if !unbounded.is_empty() {
+        members.push_str(",\"unbounded\":");
+        let names: Vec<String> = unbounded.iter().map(|k| format!("{k:?}")).collect();
+        json::write_array(&mut members, &names, |out, n| json::write_str(out, n));
+    }
     record::header(levels, &members)
 }
 
@@ -246,7 +323,7 @@ pub fn dump_tree(
 
 #[cfg(test)]
 mod tests {
-    use super::Levels;
+    use super::{DumpOptions, LIFTABLE, Levels, Limits, lift};
 
     #[test]
     fn level_names() {
@@ -273,6 +350,44 @@ mod tests {
         assert!(Levels::parse("L1,L2").unwrap_err().contains("L0"));
         assert!(Levels::parse("L0,L3").unwrap_err().contains("L3 needs L2"));
         assert!(Levels::parse("L0,L4").unwrap_err().contains("'L4'"));
+    }
+
+    #[test]
+    fn unbounded_lifts_each_named_bound_and_the_header_names_them() {
+        use unityrs_core::LimitKind as K;
+        let d = Limits::default();
+        let o = DumpOptions::default()
+            .with_unbounded(&[K::ZeroSizeElements, K::TreeDepth])
+            .unwrap();
+        let l = &o.context.limits;
+        assert_eq!(l.max_zero_size_elements, u64::MAX);
+        assert_eq!(l.max_tree_depth, u32::MAX);
+        assert_eq!(l.max_value_depth, d.max_value_depth);
+        assert_eq!(l.max_input_memory, d.max_input_memory);
+        assert_eq!(o.unbounded, [K::TreeDepth, K::ZeroSizeElements]);
+        assert_eq!(
+            DumpOptions::default()
+                .with_unbounded(&[K::Count])
+                .unwrap_err(),
+            K::Count
+        );
+        for k in LIFTABLE {
+            let mut l = Limits::default();
+            assert!(lift(&mut l, k), "{k:?}");
+            assert_ne!(l, Limits::default(), "{k:?}");
+        }
+        let h = super::header_line_unbounded(Levels::ALL, "unityrs", &o.unbounded);
+        assert!(
+            h.ends_with(&format!(
+                "\"producer\":{{\"name\":\"unityrs\",\"unityrs\":\"{}\",\"unbounded\":[\"TreeDepth\",\"ZeroSizeElements\"]}}}}",
+                unityrs_core::VERSION
+            )),
+            "{h}"
+        );
+        assert_eq!(
+            super::header_line_unbounded(Levels::ALL, "unityrs", &[]),
+            super::header_line(Levels::ALL, "unityrs")
+        );
     }
 
     #[test]
