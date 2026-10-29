@@ -108,6 +108,7 @@ const _: () = {
     send_sync::<env::ContainerItems<'static>>();
     send_sync::<env::EnvOptions>();
     send_sync::<env::EnvStats>();
+    send_sync::<env::FileEntry>();
     send_sync::<env::Environment>();
     send_sync::<env::Objects<'static>>();
     send_sync::<dyn env::CabResolver>();

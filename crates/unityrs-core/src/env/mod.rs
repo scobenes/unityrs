@@ -60,11 +60,36 @@
 //! exhausts a valid dependency's allowance, and a handle of the old open
 //! that someone still holds (a nested bundle a resource read kept) goes on
 //! counting against the old open's, which nothing resets. A
-//! [`Source::Bytes`] dependency keeps its bytes, which are the caller's. The files a caller loaded are never evicted. UnityPy keeps
-//! everything, which is [`EnvOptions::unitypy`]. A dependency read the pool
+//! [`Source::Bytes`] dependency keeps its bytes, which are the caller's.
+//! The files a caller loaded are never evicted. A dependency read the pool
 //! refuses evicts and retries once; the refusal is never cached
 //! ([`crate::once::get_or_publish_result`]), so a later read with room in
 //! the pool succeeds.
+//!
+//! **Resolver loads in `files`** (probed on UnityPy 1.25.2, plan section
+//! 3.13). UnityPy keeps every file it loads, those it loads to resolve a
+//! pointer or a resource included, in `env.files`, for good:
+//! - a resource read's fallback (`SerializedFile.load_dependencies`: the
+//!   file's externals and the four candidates) calls
+//!   `load_file(name, True)`, whose second positional parameter is
+//!   `parent`, so those files are **not** dependencies: keyed by the name
+//!   asked, their objects are in `env.objects` and their CABs' rows in
+//!   `env.container`, and a second fallback loads the file again and
+//!   replaces the entry in place;
+//! - `find_file` loads a file **as a dependency**, keyed by the path it
+//!   resolved (`env.path` joined with the name: `load_file` keys a path by
+//!   itself); `env.objects` and `env.container` skip it, and since
+//!   `env.container` walks `env.cabs`, where a dependency's CAB replaces a
+//!   CAB of the same key, the replaced file's rows leave the container while
+//!   its objects stay in `env.objects`, which walks `env.files`.
+//!
+//! [`EnvOptions::keep_resolver_loads`] (true in [`EnvOptions::unitypy`]) does
+//! exactly that: [`Environment::files`] lists each resolver load as a
+//! [`FileEntry`], `is_dependency` as UnityPy sets it, and none is evicted.
+//! With it false ([`EnvOptions::batch`]) resolver loads are LRU
+//! dependencies, evictable, and in neither `files`, `objects` nor
+//! `container`, a `PARITY.md` divergence. [`Environment::load_dependency`],
+//! which UnityPy has no call for, never adds to `files`.
 //!
 //! **Locks.** The registry, the `files` list and the LRU are locked only to
 //! look up or publish; a file is loaded, an entry parsed and a resolver,
@@ -228,10 +253,16 @@ pub struct EnvOptions {
     pub dep_cache_bytes: u64,
     /// The `find_file` fallback; `None` finds nothing.
     pub resolver: Option<Arc<dyn CabResolver>>,
+    /// Whether the files the resolver loads (for `find_file` and a resource
+    /// read's fallback) are kept in [`Environment::files`] as UnityPy keeps
+    /// them, and never evicted (module docs). False keeps them in the
+    /// dependency LRU only, a `PARITY.md` divergence.
+    pub keep_resolver_loads: bool,
 }
 
 impl EnvOptions {
-    /// UnityPy's behaviour: eager, nothing evicted, no resolver.
+    /// UnityPy's behaviour: eager, nothing evicted, no resolver, resolver
+    /// loads kept in `files` as UnityPy keeps them.
     #[must_use]
     pub fn unitypy() -> Self {
         Self {
@@ -239,10 +270,12 @@ impl EnvOptions {
             load: LoadMode::Eager,
             dep_cache_bytes: u64::MAX,
             resolver: None,
+            keep_resolver_loads: true,
         }
     }
 
-    /// The batch engine's: lazy, a 512 MiB dependency cache.
+    /// The batch engine's: lazy, a 512 MiB dependency cache, resolver loads
+    /// in that cache only (evictable, not in `files`).
     #[must_use]
     pub fn batch(context: Arc<FileContext>) -> Self {
         Self {
@@ -250,6 +283,7 @@ impl EnvOptions {
             load: LoadMode::Lazy,
             dep_cache_bytes: 512 << 20,
             resolver: None,
+            keep_resolver_loads: false,
         }
     }
 }
@@ -315,6 +349,21 @@ impl fmt::Debug for ContainerItems<'_> {
     }
 }
 
+/// One entry of [`Environment::files`]: UnityPy's `env.files[name]`, with
+/// the file's `is_dependency` flag.
+#[derive(Clone, Debug)]
+pub struct FileEntry {
+    /// The key: the source's name for a caller's load, the name asked for a
+    /// resource fallback's, the resolved source's name for `find_file`'s
+    /// (UnityPy keys the joined path).
+    pub name: RawStr,
+    /// The file.
+    pub file: File,
+    /// True for a `find_file` load ([`Environment::objects`] and
+    /// [`Environment::container`] skip it), false for every other.
+    pub is_dependency: bool,
+}
+
 /// A container row with the object it points at, as `env.container` yields.
 #[derive(Clone, Debug)]
 pub struct ContainerItem {
@@ -326,7 +375,7 @@ pub struct ContainerItem {
 
 struct EnvInner {
     options: EnvOptions,
-    files: RwLock<Vec<(RawStr, File)>>,
+    files: RwLock<Vec<FileEntry>>,
     registry: Registry,
     stats: RwLock<EnvStats>,
 }
@@ -386,9 +435,13 @@ impl Environment {
         todo!()
     }
 
-    /// `files`, in insertion order: one entry per caller load (not a count
-    /// the input chooses).
-    pub fn files(&self) -> Vec<(RawStr, File)> {
+    /// `files`, in insertion order: one entry per caller load, and with
+    /// [`EnvOptions::keep_resolver_loads`] one per file the resolver loaded
+    /// (module docs), a repeated key replacing the value in place. A
+    /// resolver load's entry is charged to that file's meter (its key and its
+    /// share of the list, as a registry slot's are, [`registry`]), since the
+    /// input chooses how many there are.
+    pub fn files(&self) -> Vec<FileEntry> {
         todo!()
     }
 
@@ -403,8 +456,10 @@ impl Environment {
     }
 
     /// `find_file(name, is_dependency=True)`: [`Self::get_cab`], else the
-    /// resolver, loading what it returns as a dependency. `meter` as for
-    /// [`Self::get_cab`].
+    /// resolver, loading what it returns as a dependency: with
+    /// [`EnvOptions::keep_resolver_loads`] also a [`FileEntry`] with
+    /// `is_dependency` set, under the resolved source's name, never evicted
+    /// (module docs). `meter` as for [`Self::get_cab`].
     pub fn find_file(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<Cab>, Error> {
         todo!()
     }
@@ -465,7 +520,14 @@ impl Environment {
     /// not open (evicted) cannot be compared without opening it again, so it
     /// resolves by UnityPy's rule, through the slot. Which of the two a batch
     /// engine's inputs get is its design (`docs/plans/batch.md`).
-    /// The answer is the same entry's either way. `path` is the object's
+    /// The answer is the same entry's either way. The fallback (the file's
+    /// externals and the candidates, loaded when no candidate is
+    /// registered) loads through the resolver as UnityPy's
+    /// `load_dependencies` does: with [`EnvOptions::keep_resolver_loads`]
+    /// each file it loads is a non-dependency [`FileEntry`] under the name
+    /// asked, whose objects and rows [`Self::objects`] and
+    /// [`Self::container`] list, loaded again by a later fallback (module
+    /// docs); without it, an LRU dependency. `path` is the object's
     /// string, so the candidates are slices of it
     /// ([`resource::resource_candidates`]), and each whole name and lowered
     /// key a lookup builds is charged to `from`'s meter while it lives.
@@ -479,16 +541,18 @@ impl Environment {
         todo!()
     }
 
-    /// `objects`: every object of every non-dependency file, in load order,
-    /// as an iterator (module docs: no allocation per object). A file that
-    /// fails to load or parse on the way yields its error.
+    /// `objects`: every object of every non-dependency file of
+    /// [`Self::files`], in its order, as an iterator (module docs: no
+    /// allocation per object). A file that fails to load or parse on the way
+    /// yields its error.
     pub fn objects(&self) -> Objects<'_> {
         todo!()
     }
 
     /// `container`: every non-dependency CAB's container rows, CABs in
     /// registry order, after the preload index is built (`environment.py:208-227`),
-    /// as an iterator.
+    /// as an iterator. It walks the registry, as UnityPy walks `env.cabs`, so
+    /// a CAB a dependency's replaced under its key is not listed.
     pub fn container(&self) -> Result<ContainerItems<'_>, Error> {
         todo!()
     }
@@ -504,11 +568,22 @@ mod tests {
     use std::io::Write;
     use std::sync::Arc;
 
-    use super::{Cab, Environment, Registry, read_path};
+    use super::{Cab, EnvOptions, Environment, Registry, read_path};
     use crate::budget::OWNER_COST;
     use crate::budget::{Reservation, Unbounded};
     use crate::error::{Error, LimitKind};
     use crate::limits::{Limits, Meter, heap_cost};
+
+    #[test]
+    fn unitypy_options_keep_resolver_loads_in_files_and_batch_options_do_not() {
+        // Round 5 (probed on UnityPy 1.25.2): UnityPy keeps a resource
+        // fallback's loads and `find_file`'s in `env.files` for good; the
+        // batch engine's options keep them in the evictable LRU only.
+        assert!(EnvOptions::unitypy().keep_resolver_loads);
+        assert!(EnvOptions::default().keep_resolver_loads);
+        let batch = EnvOptions::batch(Arc::new(crate::options::FileContext::unitypy()));
+        assert!(!batch.keep_resolver_loads);
+    }
 
     /// A temporary file, removed when dropped, so a failing test leaves
     /// nothing behind.
