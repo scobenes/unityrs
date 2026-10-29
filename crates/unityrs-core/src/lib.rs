@@ -144,10 +144,7 @@ const _: () = {
     send_sync::<files::web::WebFile>();
     // limits, object, options, provider, raw, stream
     send_sync::<limits::ChargeError>();
-    send_sync::<limits::Charge>();
     send_sync::<limits::Limits>();
-    send_sync::<limits::Meter>();
-    send_sync::<limits::MeteredVec<u8>>();
     send_sync::<once::KeptError<Error>>();
     send_sync::<once::ResultCell<u8, Error>>();
     send_sync::<dyn once::CellError>();
