@@ -52,19 +52,29 @@ impl RawStr {
     /// every clone counts until the last one drops. An empty string is
     /// static and charges nothing.
     pub fn charged(bytes: &[u8], meter: &Arc<Meter>) -> Result<Self, ChargeError> {
-        if bytes.is_empty() {
+        Self::charged_concat(&[bytes], meter)
+    }
+
+    /// The concatenation of `parts` (a resource candidate's stem and its
+    /// suffix), computed and charged as [`Self::charged`] is: one buffer,
+    /// charged before it is allocated.
+    pub fn charged_concat(parts: &[&[u8]], meter: &Arc<Meter>) -> Result<Self, ChargeError> {
+        let len = parts.iter().fold(0_usize, |n, p| n.saturating_add(p.len()));
+        if len == 0 {
             return Ok(Self::default());
         }
-        let n = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let n = u64::try_from(len).unwrap_or(u64::MAX);
         let charge = meter.charge(heap_cost(n))?;
         let mut buf = Vec::new();
-        if buf.try_reserve_exact(bytes.len()).is_err() {
+        if buf.try_reserve_exact(len).is_err() {
             return Err(ChargeError::Budget(BudgetExceeded {
                 requested: n,
                 what: meter.reservation(),
             }));
         }
-        buf.extend_from_slice(bytes);
+        for p in parts {
+            buf.extend_from_slice(p);
+        }
         Ok(Self(charged_bytes(buf, charge)?))
     }
 

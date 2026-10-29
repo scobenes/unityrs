@@ -181,8 +181,11 @@ impl Registry {
     }
 
     /// `get_cab(name)`, parsing a lazy slot now, or opening an evicted
-    /// dependency again from its source.
-    pub fn get(&self, name: &[u8]) -> Result<Option<Cab>, Error> {
+    /// dependency again from its source. The key is `simplify_name(name)`,
+    /// built charged to `meter` (`crate::pystr::simplify_name`) and dropped
+    /// when the lookup returns; a name already in its simplified form is
+    /// looked up as it is, with no copy.
+    pub fn get(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<Cab>, Error> {
         todo!()
     }
 

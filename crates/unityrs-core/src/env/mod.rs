@@ -101,7 +101,7 @@ use bytes::Bytes;
 
 pub use pptr::{DerefError, PPtr};
 pub use registry::{Cab, Keys, RawCab, Registry};
-pub use resource::resource_candidates;
+pub use resource::{Candidate, SUFFIXES, resource_candidates};
 
 use crate::budget::DecodeBuf;
 use crate::container::ContainerRow;
@@ -391,14 +391,19 @@ impl Environment {
     }
 
     /// `get_cab`: the registry under `simplify_name(name)`, an entry parsed
-    /// now if it was registered lazily.
-    pub fn get_cab(&self, name: &[u8]) -> Result<Option<Cab>, Error> {
+    /// now if it was registered lazily. The lowered key a lookup builds is
+    /// charged to `meter` while the lookup runs (the meter of the file whose
+    /// input chose `name`; a caller's own string may use
+    /// [`Meter::unlimited`]), and a name already in its simplified form is
+    /// not copied ([`Registry::get`]).
+    pub fn get_cab(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<Cab>, Error> {
         todo!()
     }
 
     /// `find_file(name, is_dependency=True)`: [`Self::get_cab`], else the
-    /// resolver, loading what it returns as a dependency.
-    pub fn find_file(&self, name: &[u8]) -> Result<Option<Cab>, Error> {
+    /// resolver, loading what it returns as a dependency. `meter` as for
+    /// [`Self::get_cab`].
+    pub fn find_file(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<Cab>, Error> {
         todo!()
     }
 
@@ -453,11 +458,14 @@ impl Environment {
     /// through `from`'s bundle and the shared slot is never parsed, so
     /// neither the resolution nor the read decodes anything through the
     /// shared dependency handle or charges its pool (plan section 3.13).
-    /// The answer is the same entry's either way.
+    /// The answer is the same entry's either way. `path` is the object's
+    /// string, so the candidates are slices of it
+    /// ([`resource::resource_candidates`]), and each whole name and lowered
+    /// key a lookup builds is charged to `from`'s meter while it lives.
     pub fn resource(
         &self,
         from: &Arc<SerializedFile>,
-        path: &[u8],
+        path: &RawStr,
         offset: u64,
         size: u64,
     ) -> Result<Bytes, Error> {
@@ -489,7 +497,7 @@ mod tests {
     use std::io::Write;
     use std::sync::Arc;
 
-    use super::read_path;
+    use super::{Cab, Environment, Registry, read_path};
     use crate::budget::OWNER_COST;
     use crate::budget::{Reservation, Unbounded};
     use crate::error::{Error, LimitKind};
@@ -513,6 +521,28 @@ mod tests {
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(&vec![7_u8; len]).unwrap();
         TempFile(path)
+    }
+
+    #[test]
+    fn lookups_take_the_names_string_and_a_meter_for_the_key_they_build() {
+        // Round 4: `get_cab`, `find_file`, `Registry::get` and `resource`
+        // took `&[u8]` and no meter, so the lowered key of a name an input
+        // chose (and every resource candidate) could only be built
+        // uncharged. Package D implements the bodies.
+        use crate::files::SerializedFile;
+        use crate::raw::RawStr;
+        type Lookup<S> = fn(&S, &RawStr, &Arc<Meter>) -> Result<Option<Cab>, Error>;
+        type Resource = fn(
+            &Environment,
+            &Arc<SerializedFile>,
+            &RawStr,
+            u64,
+            u64,
+        ) -> Result<bytes::Bytes, Error>;
+        let _: Lookup<Environment> = Environment::get_cab;
+        let _: Lookup<Environment> = Environment::find_file;
+        let _: Lookup<Registry> = Registry::get;
+        let _: Resource = Environment::resource;
     }
 
     #[test]
