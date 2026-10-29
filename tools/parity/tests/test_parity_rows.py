@@ -554,6 +554,59 @@ class Rows(unittest.TestCase):
         swapped = Texture2DConverter.parse_image_data(*args, BuildTarget.XBOX360)
         self.assertNotEqual(list(swapped.getdata()), list(plain.getdata()))
 
+    # Sections 15.1, 18, 18.1, 19.2: `set_image` packs the image in the mode it opened in.
+    def test_set_image_packs_only_what_pillow_packs(self):
+        image = Image.new("RGBA", (8, 8))
+        image.putdata([(x * 30, y * 30, 7, 255 - x) for y in range(8) for x in range(8)])
+
+        def texture():
+            return SimpleNamespace(
+                m_TextureFormat=TextureFormat.DXT1,
+                object_reader=None,
+                m_PlatformBlob=None,
+                m_MipMap=False,
+                m_MipCount=1,
+                m_StreamData=None,
+            )
+
+        targets = {
+            TextureFormat.DXT1: "RGBA",
+            TextureFormat.RGB24: "RGB",
+            TextureFormat.R8: "R",
+            TextureFormat.Alpha8: "A",
+        }
+        # An indexed and a grey PNG, set from a path, keep the mode Image.open gives and raise for every target.
+        for mode in ("P", "L"):
+            path = self.tmp / f"{mode}.png"
+            image.convert(mode).save(path)
+            with Image.open(path) as opened:
+                self.assertEqual(opened.mode, mode)
+            for fmt, raw in targets.items():
+                with self.subTest(mode, target=fmt.name):
+                    with self.assertRaisesRegex(ValueError, f"^No packer found from {mode} to {raw}$"):
+                        Texture2D.set_image(texture(), str(path), fmt)
+                    # The reference: UnityPy's set_image of the image converted to RGBA, which packs.
+                    converted = texture()
+                    Texture2D.set_image(converted, Image.open(path).convert("RGBA"), fmt)
+                    reference = Texture2DConverter.image_to_texture2d(Image.open(path).convert("RGBA"), fmt)[0]
+                    self.assertEqual(converted.image_data, reference)
+        # RGB raises for Alpha8 alone; converted, its alpha is 255.
+        rgb = image.convert("RGB")
+        with self.assertRaisesRegex(ValueError, "^No packer found from RGB to A$"):
+            Texture2DConverter.image_to_texture2d(rgb, TextureFormat.Alpha8)
+        for fmt in set(targets) - {TextureFormat.Alpha8}:
+            Texture2DConverter.image_to_texture2d(rgb, fmt)
+        self.assertEqual(
+            Texture2DConverter.image_to_texture2d(rgb.convert("RGBA"), TextureFormat.Alpha8)[0], b"\xff" * 64
+        )
+        # LAB packs into Alpha8: Pillow's `A` band of LAB is its a* channel.
+        lab = Image.new("LAB", (8, 8), (10, 20, 30))
+        self.assertEqual(Texture2DConverter.image_to_texture2d(lab, TextureFormat.Alpha8)[0], bytes([20]) * 64)
+        # Modes Pillow cannot convert to RGBA either: Tier U.
+        for mode in ("BGR;15", "BGR;16", "BGR;24", "La"):
+            with self.subTest(mode), self.assertRaisesRegex(ValueError, "^conversion from .* not supported$"):
+                Image.new(mode, (2, 2)).convert("RGBA")
+
     # Sections 14.2, 19.2: Texture2DArray decodes every slice with platform 0 and no blob.
     def test_texture2darray_ignores_the_platform(self):
         self.assertIn("m_PlatformBlob", attrs.fields_dict(Texture2D))

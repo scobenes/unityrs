@@ -846,10 +846,11 @@ def set_image_cell(fmt):
         cell += " holding plain ETC1"
     try:
         from_rgb = Texture2DConverter.image_to_texture2d(source.convert("RGB"), fmt)[1]
-    except Exception:  # noqa: BLE001 - an RGB image that fails is not a second format
-        from_rgb = written
-    if from_rgb != written:
-        cell += f" (`{from_rgb.name}` from an RGB image)"
+    except Exception as error:  # noqa: BLE001 - the exception is the result
+        cell += f" (an RGB image raises `{exception_name(error)}`, section 18.1)"
+    else:
+        if from_rgb != written:
+            cell += f" (`{from_rgb.name}` from an RGB image)"
     try:
         decode(data, written)
     except Exception:  # noqa: BLE001 - written data its own reader cannot read

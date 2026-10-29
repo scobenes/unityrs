@@ -68,6 +68,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - `obj.container` and dependency resolution match.
   - Decoded pixels **and output mode** match: BCn per Pillow `BcnDecode.c`; ETC/EAC/ATC/PVRTC/crunch per texture2ddecoder C++; ASTC via ARM astcenc.
   - OBJ/MTL text matches.
+  - An image file the extractor saves under a container's extension is byte-equal with what Pillow 9.5.0's writer for that extension saves at its defaults, for every writer Pillow registers; a PDF's two dates, which hold the time of the save, aside (`PARITY.md` section 15.8).
   - `save_typetree(parse())` returns the raw bytes.
   - Every patch to vendored decoders is labelled either Tier A (keeps the reference behaviour) or Tier C.
   - An observable quirk that callers can depend on and that is not wrong data (a file name, a dict key, a `str()` form, a docstring the code contradicts) is Tier A: unityrs keeps UnityPy's behaviour.
@@ -79,7 +80,8 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - `GameObject.m_Components` on an empty list or the old pair form;
   - `Texture2D.image` of an empty 0×0 texture;
   - an empty AudioClip, whose empty resource path UnityPy fetches;
-  - a ZIP opened from a path, which UnityPy loads only from bytes or a buffered stream.
+  - a ZIP opened from a path, which UnityPy loads only from bytes or a buffered stream;
+  - `set_image` from an image whose mode Pillow cannot pack for the target (an indexed or grey PNG, or an RGB image into Alpha8): unityrs converts it with Pillow's `convert("RGBA")` first (`PARITY.md` section 18.1).
 - **Tier C: UnityPy is wrong.** It returns wrong data that an independent reference shows is wrong, or one of its exporters or helpers crashes. We produce correct output, and `PARITY.md` lists each case with a pinned divergence test and, for a crash, what correct output means:
   - RGBAHalf returns garbage;
   - RGB48 decodes as packed 5-6-5;
@@ -99,12 +101,13 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - the Sprite cache key ignores the FileID;
   - MeshRendererExporter fails on Unity 6;
   - ShaderConverter fails on 6000.3;
-  - the extractor's crashes: GameObjects, MonoBehaviours, sprites without a container, meshes without vertices, and images Pillow cannot save under the container's extension.
+  - the extractor's crashes: GameObjects, MonoBehaviours, sprites without a container, meshes without vertices, and images Pillow cannot save under the container's extension, or saves as an ICO holding no image (a side below 16).
 - **Unsupported until a sample and a reference exist.** unityrs refuses these with a named `Unsupported` error:
   - LZHAM, where UnityPy raises too;
   - a UnityArchive parsed as a bundle, where UnityPy raises too. Loading one is Tier A: UnityPy's detector does not know the signature and loads the file as a raw ResourceFile, and so does unityrs;
   - ARGBFloat, where UnityPy raises too: its name says A, R, G, B, UnityPy's table reads it as B, G, R, A, and no sample or document decides;
   - YUY2 of odd width: no sample shows how the last pixel is stored;
+  - `set_image` from an image mode Pillow cannot convert to RGBA (BGR;15, BGR;16, BGR;24, La), where UnityPy raises too;
   - ETC_RGB4_3DS and ETC_RGBA8_3DS. UnityPy decodes them as plain ETC1, but no 3DS sample or reference decoder shows what they should decode to, so the refusal is a documented divergence, not parity;
   - a Texture2DArray read from a Switch or XBOX360 file. UnityPy decodes its slices with no platform handling, and the class carries no platform blob to deswizzle with;
   - `set_image` with mips on a Switch-swizzled texture. UnityPy swizzles the top level and writes the mips linearly; no sample shows how a mip chain is laid out;
@@ -147,7 +150,7 @@ A Cargo workspace. Licences are declared per crate.
 | `unityrs-tpk` | The class database for stripped typetrees. Optional, and loaded from a path at runtime. It is not embedded until its provenance is settled (it comes from AssetRipper's TypeTreeDumps, which has no licence file). |
 | `unityrs-meshdecode` | Vertex-data unpack for every VertexFormat table, CompressedMesh/PackedBitVector, index formats and topologies, `get_triangles`. In f64 for parity. Sprites and meshes share it. |
 | `unityrs-texture` | TextureFormats per the P0 matrix: Pillow-semantics BCn; vendored texture2ddecoder for ETC/EAC/ATC/PVRTC/crunch; ARM astcenc for ASTC LDR/HDR; Switch deswizzle; the Xbox360 swap; Texture2DArray. **Sprites:** atlas render data, alpha merge, banker's-rounding crop, rotation and flips, tight-mesh masks (a port of Pillow's `polygon_generic`), and the affine path. Encoders for `set_image` sit behind a feature. Decoders run under `catch_unwind`. |
-| `unityrs-imageio` | A mode-aware PNG encoder byte-identical to Pillow 9.5.0: colour types 0/2/4/6; filters none/up/sub/paeth by minimum abs-sum; `libz-sys` static zlib, with CI asserting no zlib-ng; IDAT chunks of max(65536, 4*w). Also lossy WebP via `libwebp-sys`, a visible-pixel hash, and a fast PNG mode. |
+| `unityrs-imageio` | A mode-aware PNG encoder byte-identical to Pillow 9.5.0: colour types 0/2/4/6; filters none/up/sub/paeth by minimum abs-sum; `libz-sys` static zlib, with CI asserting no zlib-ng; IDAT chunks of max(65536, 4*w). Also lossy WebP via `libwebp-sys`, a visible-pixel hash, and a fast PNG mode. In P3, the other writers `PARITY.md` section 15.8 makes Tier A, each byte-identical to Pillow 9.5.0's. |
 | `unityrs-mesh` | MeshHelper parity, skins, blend shapes, Unity 6 LOD info, OBJ/MTL. |
 | `unityrs-anim` | AnimationClip (streamed, dense and constant, generic bindings, legacy), Avatar/TOS, humanoid muscles, AnimatorController state machines and blend trees. |
 | `unityrs-gltf` | **Two-phase:** `sample_*()` returns an editable `AnimatedScene` (nodes, per-frame TRS, events, active curves, STEP channels), and `to_glb(scene, profile)` writes it. Callers can edit the scene in between. A **material-mapping trait** with unlit+extras and core PBR (normal, alpha, `KHR_texture_transform`) implementations. Morph targets. The **profile schema** covers root naming, layer skips, drawable/additive shader rules, inactive-root handling, material-property allowlists, clip-state lists with parameter overrides, scene roots and exclusions, built-in resource handling, extras naming and export metadata. |
@@ -195,7 +198,7 @@ The spike records LOC kept versus rewritten, whether upstream takes patches, obj
 | L3 | object re-save |
 | L4 | file save |
 | L5 | pixels, mode, visible hash |
-| L5b | PNG bytes against Pillow 9.5.0 |
+| L5b | image file bytes against Pillow 9.5.0's writers: PNG first, then every writer `PARITY.md` section 15.8 makes Tier A |
 | L6 | mesh numbers (with an expected-divergence mask) and OBJ text |
 | L7 | text exports |
 | L8 | audio |
