@@ -425,6 +425,23 @@ class ThroughBoost(unittest.TestCase):
             read_python(root, data, check_read=False)
         self.assertEqual(unitypy_dump.error_kind(e.exception), ("other", None))
 
+    def test_pure_python_path_in_arrays_of_aligned_vectors_and_typeless_data(self):
+        """Two more array-reader differences: a negative inner length, and TypelessData elements."""
+        inner = N("vector", "data", [N("Array", "Array", [N("int", "size"), N("int", "data")])], meta=ALIGN)
+        root = N("Base", "Base", [vec("vv", inner), N("int", "after")])
+        data = struct.pack("<iii", 1, -3, 42)
+        with self.assertRaises(ValueError) as e:
+            read(root, data, check_read=False)
+        self.assertEqual(unitypy_dump.error_kind(e.exception), ("negative_length", None))
+        self.assertEqual(read_python(root, data, check_read=False), {"vv": [[]], "after": 42})
+
+        root = N("Base", "Base", [vec("tl", N("TypelessData", "data", meta=ALIGN)), N("int", "after")])
+        data = struct.pack("<iii", 1, 0, 42)
+        self.assertEqual(read(root, data, check_read=False), {"tl": [b""], "after": 42})
+        with self.assertRaises(TypeError) as e:
+            read_python(root, data, check_read=False)
+        self.assertEqual(unitypy_dump.error_kind(e.exception), ("other", None))
+
     def test_pure_python_path_swaps_16_bit_signedness(self):
         """In aligned arrays the pure-Python reader reads UInt16 as signed and SInt16 as unsigned."""
         root = N(

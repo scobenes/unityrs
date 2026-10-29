@@ -111,6 +111,11 @@ def dump_process(*argv, env=None):
     )
 
 
+def ints_value(**fields):
+    """The encoded value of a struct of ints."""
+    return {"t": "dict", "v": [[k, v] for k, v in fields.items()]}
+
+
 def assets(tree, data, **kw):
     """A format-22 SerializedFile with one MonoBehaviour-class object (path_id 1) typed by `tree`."""
     return S.serialized_file([S.Type(114, tree)], [S.Obj(1, 0, data)], **kw)
@@ -493,6 +498,52 @@ class DumpTests(unittest.TestCase):
         self.assertEqual(
             (files[("b5_zip", "z")]["l0"]["type"], files[("b5_zip", "z")]["l0"]["parsed_as"]), ("ZIP", "raw")
         )
+
+    def test_type_indices_and_blob_trees_follow_python(self):
+        """Spec 4.2-4.3: a negative type_id indexes from the end; blob rows become a tree as parse_blob builds it."""
+        d = self.tmp / "in"
+        d.mkdir()
+        thing_a = S.Type(114, S.Node("ThingA", "Base", [S.Node("int", "a")]))
+        thing_b = S.Type(115, S.Node("ThingB", "Base", [S.Node("int", "b")]))
+        two_ints = struct.pack("<ii", 1, 2)
+        files = {
+            "negative.assets": S.serialized_file([thing_a, thing_b], [S.Obj(1, -1, struct.pack("<i", 7))]),
+            "too_negative.assets": S.serialized_file([thing_a], [S.Obj(1, -2, struct.pack("<i", 7))]),
+            "two_roots.assets": S.serialized_file(
+                [S.Type(114, [(0, "Base1", "Base"), (1, "int", "a"), (0, "Other", "Base"), (1, "int", "z")])],
+                [S.Obj(1, 0, two_ints)],
+            ),
+            "jump.assets": S.serialized_file(
+                [S.Type(114, [(0, "Base", "Base"), (2, "int", "deep"), (1, "int", "mid")])], [S.Obj(1, 0, two_ints)]
+            ),
+        }
+        for name, data in files.items():
+            (d / name).write_bytes(data)
+        out = self.tmp / "trees.jsonl"
+        self.assertEqual(dump(d, "-o", out), 0)
+        self.assert_canonical(out)
+        recs = records(out)
+        files = {r["file"][0]: r for r in recs if r["rec"] == "file"}
+        objects = {r["file"][0]: r for r in recs if r["rec"] == "object"}
+
+        neg = objects["negative.assets"]
+        self.assertEqual((neg["l1"]["type_id"], neg["l1"]["class_id"], neg["l2"]["root_type"]), (-1, 115, "ThingB"))
+        self.assertEqual(neg["l2"]["value"], {"t": "dict", "v": [["b", 7]]})
+        self.assertEqual(files["too_negative.assets"]["error"]["note"], "IndexError: list index out of range")
+
+        # Only the first root's subtree is kept, so the value reads 4 of the 8 bytes.
+        two = objects["two_roots.assets"]["l2"]
+        self.assertEqual(
+            [row[:3] for row in files["two_roots.assets"]["l1"]["types"][0]["nodes"]],
+            [[0, "Base1", "Base"], [1, "int", "a"]],
+        )
+        self.assertEqual(
+            (two["value"], two["error"]["kind"], two["error"]["bytes_read"]), (ints_value(a=1), "check_read", 4)
+        )
+
+        # A rise of two levels nests one level down; the fall to 1 stays under the root. Rows keep their levels.
+        self.assertEqual([row[0] for row in files["jump.assets"]["l1"]["types"][0]["nodes"]], [0, 2, 1])
+        self.assertEqual(objects["jump.assets"]["l2"]["value"], ints_value(deep=1, mid=2))
 
     def test_input_names_come_from_the_bytes_as_given(self):
         """Names do not depend on the locale, and a symlink is named after itself, in either input mode."""
