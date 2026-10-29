@@ -4,13 +4,15 @@
 //! never bytes copied from a real file. The builders return `Vec<u8>` and
 //! know nothing of `unityrs-core`, so core's own tests can use them.
 //!
-//! Owners (docs/plans/core.md section 7): [`writer`] and [`rng`] are the
-//! scaffold's (implemented); [`blob`], [`serialized`] and [`bundle`] are package C's;
-//! [`env`](mod@env) is package D's.
+//! Owners (docs/plans/core.md section 7): [`writer`], [`rng`] and
+//! [`public_types`] (the `Send + Sync` source scan the crates' tests share)
+//! are the scaffold's (implemented); [`blob`], [`serialized`] and [`bundle`]
+//! are package C's; [`env`](mod@env) is package D's.
 
 pub mod blob;
 pub mod bundle;
 pub mod env;
+pub mod public_types;
 pub mod rng;
 pub mod serialized;
 pub mod writer;

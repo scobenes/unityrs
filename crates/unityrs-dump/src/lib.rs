@@ -148,4 +148,13 @@ mod tests {
         };
         assert_eq!(l1.names(), ["L0", "L1"]);
     }
+
+    /// Plan section 3.16: the dump's public types are asserted as the core's
+    /// are, by full path, and a new one fails this test until it is.
+    #[test]
+    fn every_public_type_is_asserted() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let missing = unityrs_testkit::public_types::unasserted(&src);
+        assert!(missing.is_empty(), "not asserted Send + Sync: {missing:?}");
+    }
 }
