@@ -381,6 +381,46 @@ class ObjectRows(unittest.TestCase):
         with self.assertRaises(KeyError):
             _ = PPtr(m_FileID=0, m_PathID=9, assetsfile=sf).type
 
+        # Loading reads one object, the first AssetBundle (section 7.2), so a format-22 data offset that puts it
+        # before the file's start (section 8) fails the load: from a path the stream reader's ValueError; from bytes
+        # the memory reader's slice view[start:start + size] (section 13), the object's bytes where that slice ends
+        # before index 0, and b"" for an object that ends at the file's end, which UnityPyBoost refuses (EOFError).
+        # A second AssetBundle object is not read while loading.
+        import shutil
+        import tempfile
+
+        folder = Path(tempfile.mkdtemp(prefix="unityrs-rows-"))
+        self.addCleanup(shutil.rmtree, folder)
+        text = tpk_object(49, m_Name="t1", m_Script="")
+
+        def before_the_start(objects, path_id):
+            data = tpk_file(objects)
+            obj = load(data)[0].objects[path_id]
+            offset = obj.byte_start - obj.assets_file.header.data_offset
+            row = data.index(struct.pack("<qq", path_id, offset))
+            moved = bytearray(data)
+            struct.pack_into("<q", moved, row + 8, offset - len(data))
+            (folder / "moved.assets").write_bytes(moved)
+            return bytes(moved), str(folder / "moved.assets"), obj.byte_start, obj.byte_size
+
+        first, path, start, size = before_the_start([(100, 142, tpk_object(142, m_Name="ab")), (1, 49, text)], 100)
+        sf = load(first)[0]
+        self.assertEqual((sf.objects[100].byte_start, sf.assetbundle.m_Name), (start - len(first), "ab"))
+        with self.assertRaisesRegex(ValueError, "^Position cannot be negative$"):
+            quietly(UnityPy.Environment().load_file, path)
+        last, path, start, size = before_the_start([(1, 49, text), (100, 142, tpk_object(142, m_Name="ab"))], 100)
+        self.assertEqual(start + size, len(last), "the AssetBundle ends at the file's end")
+        with self.assertRaises(EOFError):
+            load(last)
+        with self.assertRaisesRegex(ValueError, "^Position cannot be negative$"):
+            quietly(UnityPy.Environment().load_file, path)
+        two = [(100, 142, tpk_object(142, m_Name="ab")), (101, 142, tpk_object(142, m_Name="ab2")), (1, 49, text)]
+        second, path, start, size = before_the_start(two, 101)
+        sf = quietly(UnityPy.Environment().load_file, path)
+        self.assertEqual((sf.assetbundle.m_Name, sf.objects[101].byte_start), ("ab", start - len(second)))
+        with self.assertRaisesRegex(ValueError, "^Position cannot be negative$"):
+            sf.objects[101].parse_as_dict()
+
     # Section 9.2: the pure-Python path's class arrays, whose rules differ from a single class's.
     def test_pure_python_class_arrays(self):
         from UnityPy import classes

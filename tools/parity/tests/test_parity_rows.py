@@ -646,7 +646,8 @@ class Rows(unittest.TestCase):
         )
         # From format 22 an object's data offset is a signed i64: one that lands before the file's start is a
         # negative byte_start, which the memory reader counts from the file's end and a path's stream reader refuses
-        # when the object is read (loading reads no object).
+        # when the object is read (loading reads no object but the first AssetBundle, `test_rows_objects.py`
+        # object_container).
         named = text_asset_file("negative")
         obj = load(named)[0].objects[1]
         data_offset = obj.assets_file.header.data_offset
@@ -661,6 +662,16 @@ class Rows(unittest.TestCase):
         self.assertEqual(from_path.byte_start, obj.byte_start - len(named))
         with self.assertRaisesRegex(ValueError, "^Position cannot be negative$"):
             from_path.parse_as_dict()
+        # The memory reader reads the slice view[start:start + size]: for an object that ends at the file's end
+        # (no padding after it) that slice ends at index 0 and is empty, which UnityPyBoost refuses.
+        flush = text_asset_file("negative", "x" * 100)
+        obj = load(flush)[0].objects[1]
+        self.assertEqual(obj.byte_start + obj.byte_size, len(flush))
+        row_at = flush.index(struct.pack("<qIi", obj.byte_start - data_offset, obj.byte_size, 0))
+        moved = bytearray(flush)
+        struct.pack_into("<q", moved, row_at, obj.byte_start - data_offset - len(flush))
+        with self.assertRaises(EOFError):
+            load(bytes(moved))[0].objects[1].parse_as_dict()
 
     # Sections 9.1, 18: a null managed reference.
     def test_an_empty_managed_reference_does_not_resave(self):
