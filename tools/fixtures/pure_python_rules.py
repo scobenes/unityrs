@@ -3,7 +3,9 @@ plan section 3.10 state, run against UnityPy 1.25.2 and UnityPyBoost.
 
 Each case builds a typetree and its bytes in code, reads them with
 UnityPyBoost's `read_typetree` and with the pure-Python `read_value`, and
-prints both outcomes: `ok <value> <position>` or `err <exception>`. With
+prints both outcomes: `ok <value> <position>`, or `err <exception> <kind>`,
+the kind being the canonical dump's L2 error kind (`unitypy_dump.error_kind`),
+since two readers can raise one exception class with different kinds. With
 `--check` it compares them with the outcomes recorded below and exits 1 on
 any difference. No file is read or written.
 
@@ -14,11 +16,15 @@ Owner: the scaffold (package B records these cases as fixtures, plan 7.3).
 
 import struct
 import sys
+from pathlib import Path
 
 from UnityPy.helpers import TypeTreeHelper
 from UnityPy.helpers.TypeTreeNode import TypeTreeNode
 from UnityPy.streams.EndianBinaryReader import EndianBinaryReader
 from UnityPy.UnityPyBoost import read_typetree as boost_read
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "parity"))
+from unitypy_dump import error_kind  # noqa: E402
 
 ALIGN = 0x4000
 
@@ -48,7 +54,7 @@ def outcome(read):
     try:
         value, position = read()
     except Exception as e:  # noqa: BLE001 - the exception class is the outcome
-        return f"err {type(e).__name__}"
+        return f"err {type(e).__name__} {error_kind(e)[0]}"
     return f"ok {value!r} {position}"
 
 
@@ -90,8 +96,8 @@ CASES = [
             f"empty array of {n}-child pair, element {'aligned' if flag else 'not aligned'}",
             vector_of(flag, "pair", PAIR_OF[n]),
             i32(0),
-            "err ValueError",
-            "err IndexError" if flag and n < 2 else "ok {'v': []} 4",
+            "err ValueError other",
+            "err IndexError other" if flag and n < 2 else "ok {'v': []} 4",
         )
         for flag in (0, ALIGN)
         for n in (0, 1, 3)
@@ -105,7 +111,7 @@ CASES = [
             vector_of(flag, "vector", INNER_ARRAY_OF[n]),
             i32(0),
             "ok {'v': []} 4",
-            "err IndexError" if flag and n < 2 else "ok {'v': []} 4",
+            "err IndexError other" if flag and n < 2 else "ok {'v': []} 4",
         )
         for flag in (0, ALIGN)
         for n in (0, 1, 3)
@@ -122,14 +128,14 @@ CASES = [
         vector_of(ALIGN, "TypelessData", [(4, "int", "size", 0), (4, "UInt8", "data", 0)]),
         i32(1, 1) + b"\x07\0\0\0",
         "ok {'v': [b'\\x07']} 12",
-        "err TypeError",
+        "err TypeError other",
     ),
     (
         "empty array of aligned SInt8",
         vector_of(ALIGN, "SInt8"),
         i32(0),
         "ok {'v': []} 4",
-        "err TypeError",
+        "err TypeError other",
     ),
     (
         "aligned pair array, first an aligned UInt8 (two elements)",
@@ -204,6 +210,37 @@ CASES = [
         i32(1) + bytes([1, 0, 0, 0, 2, 0, 0, 0]),
         "ok {'v': [({'x': 1}, 2)]} 12",
         "ok {'v': [({'x': 1}, 2)]} 12",
+    ),
+    # Outside an array the pure-Python reader reads a vector's length, and
+    # refuses a negative one, before it indexes its `Array`'s element
+    # (TypeTreeHelper.py:213-216), and reads a pair's first child before it
+    # indexes its second (:194-195); UnityPyBoost checks each arity first
+    # (TypeTreeHelper.cpp:820-833, :328-332). So a malformed one fails with
+    # whatever those reads raise first (round 5).
+    *[
+        (
+            f"vector whose Array has {n} children, length {length}",
+            [(0, "Base", "Base", 0), (1, "vector", "v", 0), (2, "Array", "Array", 0), *children],
+            i32(length),
+            "err ValueError other",
+            python,
+        )
+        for n, children in ((0, []), (1, [(3, "int", "size", 0)]))
+        for length, python in ((-1, "err ValueError negative_length"), (0, "err IndexError other"))
+    ],
+    (
+        "pair of one child, a vector of length -1",
+        [
+            (0, "Base", "Base", 0),
+            (1, "pair", "p", 0),
+            (2, "vector", "first", 0),
+            (3, "Array", "Array", 0),
+            (4, "int", "size", 0),
+            (4, "int", "data", 0),
+        ],
+        i32(-1),
+        "err ValueError other",
+        "err ValueError negative_length",
     ),
 ]
 

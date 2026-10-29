@@ -42,7 +42,14 @@
 //! is read before the loop (`:309`), where UnityPyBoost reads an empty one
 //! as `[]` (`read_value_array` reads an aligned element's `pair` children
 //! and its vector's element before its loop, and indexes everywhere else
-//! inside it); and an
+//! inside it); outside an array, a vector reads its length, and refuses a
+//! negative one, before it indexes its `Array`'s element (`:213-216`), and a
+//! `pair` reads its first child before it indexes its second (`:194-195`),
+//! so a malformed one fails with whatever those reads raise first (a vector
+//! whose `Array` has fewer than two children is `negative_length` at length
+//! -1 and `IndexError`, `other`, at 0), where UnityPyBoost checks each arity
+//! first and reports `other`: this reader never fails a compiled
+//! `BadVector` or `BadPair` on entry; and an
 //! aligned `ReferencedObject` array element whose class is empty or whose ref
 //! type has no tree raises ([`super::ReadDetail::RefTypeNoTree`]). Each
 //! difference is an oracle fixture of package B (plan section 7.3).
