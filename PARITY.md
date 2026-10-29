@@ -817,20 +817,20 @@ Two more behaviours of `parse_image_data` apply to every format: a zero width or
 Each format UnityPy raises on has the reference below, independent of UnityPy. unityrs returns exactly what the reference gives for the stored bytes: the mode stated, every pixel equal, flipped top to bottom as every format is (section 17). `tools/parity/references.py` implements each reference, and `references.decode(name, data, width, height)` is what the divergence test compares unityrs with. `test_texture_matrix.py` tier_b_references_hold_their_stated_values checks it on the values this section states.
 
 The closed forms:
-- **half and float**: each channel, IEEE 754 binary16 or binary32, little-endian, becomes `floor(min(max(v, 0), 1) * 255 + 0.5)`, computed exactly in f64, and NaN becomes 0. So 0.5 gives 128 (the only tie in [0, 1]), 1.0 and above 255, and anything below 0 gives 0. The Tier C rows `RGBAHalf` and `ASTC_HDR_*` use the same rule (section 19.1).
-- **unsigned integer**: each n-bit little-endian channel becomes its high byte, `v >> (n - 8)`, as Pillow 9.5.0's 16-bit raw modes reduce it (the `RGB48` rule, section 19.2). `0xFF00` gives 255 and `0x00FF` gives 0.
-- **signed integer**: each n-bit two's-complement channel is offset by 2^(n-1) and then reduced to its high byte, so the most negative value gives 0, 0 gives 128 and the largest gives 255, for 8 and 16 bits alike.
+- **the half and float rule**: each channel, IEEE 754 binary16 or binary32, little-endian, becomes `floor(min(max(v, 0), 1) * 255 + 0.5)`, computed exactly in f64, and NaN becomes 0. So 0.5 gives 128 (the only tie in [0, 1]), 1.0 and above 255, and anything below 0 gives 0. The Tier C rows `RGBAHalf` and `ASTC_HDR_*` use the same rule (section 19.1).
+- **the unsigned rule**: each n-bit little-endian channel becomes its high byte, `v >> (n - 8)`, as Pillow 9.5.0's 16-bit raw modes reduce it (the `RGB48` rule, section 19.2). `0xFF00` gives 255 and `0x00FF` gives 0.
+- **the signed rule**: each n-bit two's-complement channel is offset by 2^(n-1) and then reduced to its high byte, so the most negative value gives 0, 0 gives 128 and the largest gives 255, for 8 and 16 bits alike.
 - **channels**: a one-channel format returns RGB `(v, 0, 0)`, as `R8` does, and a two-channel format `(r, g, 0)`, as `BC5` does.
 
 | format | stored per pixel (little-endian) | mode | reference | test | status |
 |---|---|---|---|---|---|
-| `RHalf` | R half | RGB | the half rule | planned: divergence test against `references.decode` | planned (P3) |
-| `RGHalf` | R, G halves | RGB | the half rule | planned: divergence test against `references.decode` | planned (P3) |
-| `RFloat` | R float | RGB | the float rule | planned: divergence test against `references.decode` | planned (P3) |
-| `RGFloat` | R, G floats | RGB | the float rule | planned: divergence test against `references.decode` | planned (P3) |
-| `RGBFloat` | R, G, B floats, in the order its name gives, as `RGBAFloat`'s does | RGB | the float rule | planned: divergence test against `references.decode` | planned (P3) |
-| `RGBAFloat` | R, G, B, A floats | RGBA | the float rule | planned: divergence test against `references.decode` | planned (P3) |
-| `RGB9e5Float` | one u32 in the layout of `DXGI_FORMAT_R9G9B9E5_SHAREDEXP`: red in bits 0-8, green 9-17, blue 18-26, the exponent in 27-31 | RGB | each channel `mantissa * 2^(exponent - 24)`, then the float rule: `0x78000100` (exponent 15, red 256) gives red 0.5, so 128 | planned: divergence test against `references.decode` | planned (P3) |
+| `RHalf` | R half | RGB | the half and float rule | planned: divergence test against `references.decode` | planned (P3) |
+| `RGHalf` | R, G halves | RGB | the half and float rule | planned: divergence test against `references.decode` | planned (P3) |
+| `RFloat` | R float | RGB | the half and float rule | planned: divergence test against `references.decode` | planned (P3) |
+| `RGFloat` | R, G floats | RGB | the half and float rule | planned: divergence test against `references.decode` | planned (P3) |
+| `RGBFloat` | R, G, B floats, in the order its name gives, as `RGBAFloat`'s does | RGB | the half and float rule | planned: divergence test against `references.decode` | planned (P3) |
+| `RGBAFloat` | R, G, B, A floats | RGBA | the half and float rule | planned: divergence test against `references.decode` | planned (P3) |
+| `RGB9e5Float` | one u32 in the layout of `DXGI_FORMAT_R9G9B9E5_SHAREDEXP`: red in bits 0-8, green 9-17, blue 18-26, the exponent in 27-31 | RGB | each channel `mantissa * 2^(exponent - 24)`, then the half and float rule: `0x78000100` (exponent 15, red 256) gives red 0.5, so 128 | planned: divergence test against `references.decode` | planned (P3) |
 | `YUY2` | `Y0 U Y1 V` for each pair of pixels (FourCC `YUY2`) | RGB | ITU-R BT.601 at limited range (Y 16-235, U and V 16-240) in its 8-bit integer form: with `c = Y - 16`, `d = U - 128`, `e = V - 128`, red `(298c + 409e + 128) >> 8`, green `(298c - 100d - 208e + 128) >> 8`, blue `(298c + 516d + 128) >> 8`, each clipped to 0-255. Y 16 gives black and Y 235 white. An odd width is Tier U: no sample shows how Unity stores the last pixel | planned: divergence test against `references.decode` | planned (P3) |
 | `RG16` | R, G bytes | RGB | the unsigned rule (the bytes as stored) | planned: divergence test against `references.decode` | planned (P3) |
 | `R16` | R u16 | RGB | the unsigned rule | planned: divergence test against `references.decode` | planned (P3) |
@@ -896,8 +896,8 @@ Packed into none of them: `1`, `L`, `I`, `F`, `P`, `CMYK`, `YCbCr`, `HSV`, `RGBa
 
 | divergence | UnityPy 1.25.2 | unityrs | level | test | status |
 |---|---|---|---|---|---|
-| RGBAHalf returns garbage | three halves read per pixel for four stored, `int(h * 256)` truncated, alpha dropped; a value at 1.0 or above, at -1/256 or below, or NaN raises `ValueError`, an infinity `OverflowError`, so most HDR data raises (`export/Texture2DConverter.py:507`, `:435-447`) | half floats to RGBA, each channel by section 17.1's half rule | L5 | planned: divergence test | planned (P3) |
-| ASTC_HDR is wrong | HDR blocks decoded with the LDR profile into UNORM8 (`export/Texture2DConverter.py:549-554`, `:371-377`) | HDR profile, each channel then by section 17.1's half rule | L5 | planned: divergence test | planned (P3) |
+| RGBAHalf returns garbage | three halves read per pixel for four stored, `int(h * 256)` truncated, alpha dropped; a value at 1.0 or above, at -1/256 or below, or NaN raises `ValueError`, an infinity `OverflowError`, so most HDR data raises (`export/Texture2DConverter.py:507`, `:435-447`) | half floats to RGBA, each channel by section 17.1's half and float rule | L5 | planned: divergence test | planned (P3) |
+| ASTC_HDR is wrong | HDR blocks decoded with the LDR profile into UNORM8 (`export/Texture2DConverter.py:549-554`, `:371-377`) | HDR profile, each channel then by section 17.1's half and float rule | L5 | planned: divergence test | planned (P3) |
 | the UV offset | `uvSrcOffset = uvDim * m_VertexCount` assigns instead of adding, so the third and later UV channels of a compressed mesh start at the wrong offset (`helpers/MeshHelper.py:504`) | `+=` | L6 | planned: divergence test (expected-divergence mask) | planned (P2a) |
 | UNorm/SNorm not normalised | UNorm and SNorm channels, and the byte colour formats (`kChannelFormatColor`, `kVertexFormatColor`), are read as raw integers (`enums/VertexFormat.py:46-47`, `:54-58`, `:70-73`, `helpers/MeshHelper.py:392`), while a compressed mesh's colours come out divided by 255 (`helpers/MeshHelper.py:618-628`) | normalised to [0, 1] and [-1, 1] | L6 | planned: divergence test | planned (P1) |
 | mesh endianness | `MeshHandler` defaults to `<` and no caller passes the file's endianness, so big-endian vertex data is swapped wrongly (`helpers/MeshHelper.py:73`, `:99`, `:363`; callers `export/MeshExporter.py:18`, `export/SpriteHelper.py:117`) | the file's endianness | L6 | planned: divergence test | planned (P4) |
