@@ -106,6 +106,7 @@ fn compare<'r>(provider: &TpkProvider, head: &J, classes: impl Iterator<Item = &
         .map(version)
         .collect();
     assert_eq!(provider.versions(), &versions[..], "version list");
+    compare_common(provider, &head["common_strings"]);
     let mut listed = 0;
     let mut pairs = 0;
     // A node list compared once per outcome it is checked against.
@@ -152,6 +153,18 @@ fn compare<'r>(provider: &TpkProvider, head: &J, classes: impl Iterator<Item = &
     pairs
 }
 
+/// The provider's common strings against UnityPy's `get_common_strings()`.
+fn compare_common(provider: &TpkProvider, want: &J) {
+    let want = want.as_array().expect("UnityPy built the common strings");
+    let got: Vec<J> = provider
+        .common_strings()
+        .expect("a TPK provider has common strings")
+        .iter()
+        .map(|(o, s)| serde_json::json!([o, s.to_str().unwrap()]))
+        .collect();
+    assert_eq!(&got, want, "common strings");
+}
+
 fn compare_rows(list: &Arc<NodeList>, want: &J, at: &str) {
     let want = want.as_array().unwrap();
     assert_eq!(list.rows().len(), want.len(), "{at}: row count");
@@ -165,6 +178,7 @@ fn refusal(e: &TpkError) -> String {
     match e {
         TpkError::TooLarge { what, .. } => (*what).to_owned(),
         TpkError::Unsupported(codec) => (*codec).to_owned(),
+        TpkError::CommonStringPastBuffer { .. } => "common-string index".to_owned(),
         e => format!("{e}"),
     }
 }
@@ -221,6 +235,7 @@ fn g7_the_synthetic_set_covers_f6_f7_and_the_deep_chain() {
         "lz4_match_in_the_last_literals",
         "lzma_end_marker_corrupt",
         "lzma_declared_smaller",
+        "common_strings",
     ] {
         assert!(names.iter().any(|n| n == name), "{name}");
     }
@@ -242,9 +257,16 @@ fn g7_the_synthetic_set_covers_f6_f7_and_the_deep_chain() {
         "nodes",
         "strings",
         "brotli",
+        "common-string index",
     ] {
         assert!(refused.contains(&what), "no refused case for {what}");
     }
+    // UnityPy numbers common strings by code points, and raises on an index
+    // past the string buffer only when a blob reads the table.
+    let common = &case("common_strings")["common_strings"];
+    assert!(common.as_array().is_some_and(|t| t.len() == 6), "{common}");
+    let index = &case("refused_common_string_index")["common_strings"];
+    assert_eq!(index["error"], "IndexError");
     // A request 3: UnityPy keeps a TPK node's u32 meta flag positive.
     let high = &case("meta_flag_u32")["classes"][0]["outcomes"][0]["rows"];
     assert_eq!(high[0][8].as_i64(), Some(0x8000_4000));

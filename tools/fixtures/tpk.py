@@ -7,18 +7,23 @@ Runs in the oracle image. Two parts:
   (a class for each root-flag combination 0, 64, 128 and 192, each followed by a class
   with both roots; versions whose type byte is 0-6 and 255; a 300-deep chain; entries
   out of order, removed classes, a class listed twice; ids past their tables; counts
-  read as UnityPy reads them; LZ4 and LZMA payloads, with the blocks and streams on
-  which liblz4 and liblzma decide differently from other decoders), run through `Tpk.py`
-  (`TpkFile(...).GetDataBlob()`, then `get_typetree_node` per class and version with
-  the blob in place of the bundled one). The TPKs (hex) and UnityPy's outcomes (JSON)
+  read as UnityPy reads them; common strings numbered by code points; LZ4 and LZMA
+  payloads, with the blocks and streams on which liblz4 and liblzma decide differently
+  from other decoders), run through `Tpk.py` (`TpkFile(...).GetDataBlob()`, then
+  `get_typetree_node` per class and version, and `get_common_strings()`, with the blob
+  in place of the bundled one). The TPKs (hex) and UnityPy's outcomes (JSON)
   are committed under crates/unityrs-tpk/tests/fixtures/tpk/, and
   `cargo test -p unityrs-tpk --test g7` replays them without Python. A case marked
   `refused` is one UnityPy loads and unityrs refuses by design (`PARITY.md` section
-  19.3): a TPK past one of `TpkProvider`'s bounds, or a brotli one. Only UnityPy's
-  load and class count are recorded for it.
+  19.3): a TPK past one of `TpkProvider`'s bounds, a brotli one, or one whose common
+  strings name a string past the buffer. Only UnityPy's load, class count and common
+  strings are recorded for it.
 - The oracle image's own TPK (`UnityPy/resources/lzma.tpk`). Nothing from it is
   committed (decision 10): its outcomes are written outside the repository and
   compared at test time.
+
+Each TPK's header record holds `get_common_strings()` (`[offset, string]` pairs, or
+the exception's name), the table every blob typetree reads.
 
 An outcome is UnityPy's node list (every node in pre-order, each with all ten
 `TypeTreeNode` fields the dump reads), or "none" where UnityPy raises `KeyError`,
@@ -51,7 +56,7 @@ from pathlib import Path
 import brotli
 import lz4.block
 import UnityPy
-from UnityPy.helpers import Tpk
+from UnityPy.helpers import Tpk, TypeTreeNode
 from UnityPy.helpers.CompressionHelper import decompress_lzma
 from UnityPy.helpers.UnityVersion import UnityVersion
 
@@ -267,6 +272,15 @@ def synthetic_cases() -> Iterator[tuple[str, bytes, int]]:
     common = [(v, 1) for v in at]
     yield "version_types", tpk_file(blob(versions, entries, nodes, strings(4), common, [0])), 256
 
+    # Common strings: every index, in order, the version list unused; offsets count code
+    # points (é is two bytes, one code point), an index listed twice is numbered twice.
+    names = ["Base", "é", "日本", "", "m_X", "unused"]
+    common = [(ver(2019), 2), (ver(2021), 1)]
+    nodes = [node(0, 0, [1]), node(4, 1, [])]
+    entries = [(90, [(ver(2020), both(0))])]
+    indices = [1, 0, 2, 1, 3, 4]
+    yield "common_strings", tpk_file(blob([ver(2020)], entries, nodes, names, common, indices)), 256
+
     # Meta flags of 2^31 and more: a TPK node stores a u32 (Tpk.py:361), which UnityPy
     # keeps as a positive int, so NodeRow's i64 must not read it as negative.
     nodes = [node(0, 1, [1, 2], meta=0x8000_4000), node(2, 3, [], meta=0xFFFF_FFFF), node(4, 5, [], meta=1 << 31)]
@@ -347,7 +361,8 @@ def codec_cases() -> Iterator[tuple[str, bytes, int]]:
 def refused_cases() -> Iterator[tuple[str, bytes, str]]:
     """`(name, TPK bytes, what unityrs refuses it for)`: TPKs UnityPy loads and
     unityrs refuses by design, each one record past a `TpkProvider` bound (the
-    `TpkError::TooLarge` it names), and a brotli one (`Unsupported`)."""
+    `TpkError::TooLarge` it names), a brotli one (`Unsupported`), and one whose
+    common strings name a string past the buffer (`CommonStringPastBuffer`)."""
     over = MAX_RECORDS + 1
     at = ver(2020)
     nodes, names = [node(0, 1, [])], strings(2)
@@ -365,6 +380,10 @@ def refused_cases() -> Iterator[tuple[str, bytes, str]]:
     for table, data in tables:
         yield f"refused_{table.replace(' ', '_').replace('-', '_')}", tpk_file(data, LZMA), table
     yield "refused_brotli", tpk_file(root_flags_blob(), BROTLI), "brotli"
+    # A common string past the string buffer: UnityPy raises IndexError in every blob
+    # parse (`get_common_strings()`); unityrs refuses the TPK.
+    data = blob([at], [], nodes, strings(2), [], [0, 2])
+    yield "refused_common_string_index", tpk_file(data), "common-string index"
 
 
 # --- running Tpk.py -------------------------------------------------------------------
@@ -422,13 +441,17 @@ class Installed:
     def __enter__(self) -> None:
         self.saved = Tpk.TPKTYPETREE
         Tpk.TPKTYPETREE = self.blob
-        Tpk.CLASSES_CACHE.clear()
-        Tpk.NODES_CACHE.clear()
+        self.clear()
 
     def __exit__(self, *exc: object) -> None:
         Tpk.TPKTYPETREE = self.saved
+        self.clear()
+
+    @staticmethod
+    def clear() -> None:
         Tpk.CLASSES_CACHE.clear()
         Tpk.NODES_CACHE.clear()
+        TypeTreeNode.COMMONSTRING_CACHE.clear()
 
 
 def load(data: bytes) -> Tpk.TpkTypeTreeBlob:
@@ -446,11 +469,26 @@ def outcomes(data: bytes) -> Iterator[dict]:
         yield {"load": type(e).__name__}
         return
     versions = [int(v) for v in found.Versions]
-    yield {"load": None, "class_count": len(found.ClassInformation), "versions": [str(v) for v in versions]}
     with Installed(found):
+        yield {
+            "load": None,
+            "class_count": len(found.ClassInformation),
+            "versions": [str(v) for v in versions],
+            "common_strings": common_strings(),
+        }
         absent = max(found.ClassInformation, default=0) + 1
         for class_id in [*found.ClassInformation, absent]:
             yield class_outcomes(class_id, versions)
+
+
+def common_strings() -> list | dict:
+    """`get_common_strings()` with the installed blob (the one call, `version=None`):
+    `[offset, string]` pairs, or the exception's name."""
+    try:
+        table = TypeTreeNode.get_common_strings()
+    except Exception as e:  # noqa: BLE001 - whatever it raises
+        return {"error": type(e).__name__}
+    return [[o, s] for o, s in sorted(table.items())]
 
 
 def synthetic() -> list[dict]:
@@ -461,6 +499,8 @@ def synthetic() -> list[dict]:
         cases.append({"name": name, "tpk": data.hex(), "depth": depth, **head, "classes": classes})
     for name, data, what in refused_cases():
         found = load(data)
+        with Installed(found):
+            common = common_strings()
         cases.append(
             {
                 "name": name,
@@ -468,6 +508,7 @@ def synthetic() -> list[dict]:
                 "depth": 256,
                 "load": None,
                 "class_count": len(found.ClassInformation),
+                "common_strings": common,
                 "refused": what,
             }
         )

@@ -120,16 +120,22 @@ SOFTWARE.
 
 --------------------------------------------------------------------------------
 Data provenance
-crates/unityrs-core/src/typetree/commonstring.rs: the 112 strings that
-UnityPy 1.25.2's blob parser resolves. 108 come from UnityPy's MIT source
-(UnityPy/enums/CommonString.py). Four (1161 Hash128, 1169 RenderingLayerMask,
-1188 fixed_array, 1200 EntityId) come from the type-tree package that
-UnityPy 1.25.2 ships, which derives from AssetRipper's TypeTreeDumps (no
-licence file). They are the names of Unity engine types. The generated file
-marks the source of each entry.
+crates/unityrs-core/src/typetree/commonstring.rs: the 108 common strings
+of UnityPy 1.25.2's MIT source (UnityPy/enums/CommonString.py). The table
+UnityPy's blob parser reads is its type-tree package's, which unityrs builds
+at run time from the package the user supplies; nothing from a package is
+committed.
 
 crates/unityrs-core/src/classid.rs: class id names generated from
 UnityPy 1.25.2's MIT UnityPy/enums/ClassIDType.py.
+
+crates/unityrs-rabex/src/commonstring.rs and
+crates/unityrs-rabex/src/objects/class_id.rs: rabex 0.2.1 generated these
+from its embedded type-tree package and from AssetRipper's TypeTreeDumps (no
+licence file). The vendored copies are regenerated from the same MIT
+UnityPy 1.25.2 sources (UnityPy/enums/CommonString.py,
+UnityPy/enums/ClassIDType.py; ledger patch F10 in
+crates/unityrs-rabex/UPSTREAM.md), and none of rabex's entries remain.
 
 crates/unityrs-core/src/tables.rs: the zero of every decimal-digit (Nd) run
 and the code points whose lower case differs between Python 3.11 and Rust,

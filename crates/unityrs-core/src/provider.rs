@@ -53,6 +53,7 @@ use bytes::Bytes;
 use crate::limits::{HASH_TABLE_SHARES, heap_cost};
 use crate::raw::RawStr;
 use crate::typetree::Tree;
+use crate::typetree::commonstring::CommonStrings;
 use crate::version::{Packed, UnityVersion};
 
 /// A `MonoBehaviour`'s script, for script-tree providers.
@@ -115,6 +116,12 @@ pub trait TypeTreeProvider: Send + Sync + fmt::Debug {
     /// dereference a `MonoBehaviour`'s `m_Script` (P3; the TPK provider does not).
     fn accepts_scripts(&self) -> bool {
         false
+    }
+    /// The common strings blob typetrees index (UnityPy's
+    /// `get_common_strings()`, its TPK's table), when this provider has them:
+    /// a TPK provider does.
+    fn common_strings(&self) -> Option<&CommonStrings> {
+        None
     }
 }
 
@@ -337,6 +344,14 @@ impl ProviderChain {
     #[must_use]
     pub fn accepts_scripts(&self) -> bool {
         self.providers.iter().any(|p| p.accepts_scripts())
+    }
+
+    /// The common strings of the first provider that has them, which blob
+    /// typetrees read in place of [`crate::typetree::commonstring::COMMON_STRINGS`]
+    /// (UnityPy reads its TPK's).
+    #[must_use]
+    pub fn common_strings(&self) -> Option<&CommonStrings> {
+        self.providers.iter().find_map(|p| p.common_strings())
     }
 
     /// Answers cached now.

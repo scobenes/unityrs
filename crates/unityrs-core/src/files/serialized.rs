@@ -54,6 +54,7 @@ use crate::once::{ResultCell, get_or_publish_result};
 use crate::options::FileContext;
 use crate::raw::RawStr;
 use crate::stream::{Endian, Reader};
+use crate::typetree::commonstring::CommonStrings;
 use crate::typetree::parse::{is_blob_format, parse_blob, parse_old, string_to_null};
 use crate::typetree::{NodeList, Tree, TreeError};
 use crate::version::{ResolvedVersion, resolve_serialized};
@@ -280,6 +281,7 @@ impl SerializedFile {
             data: &data,
             meter,
             limits: &ctx.limits,
+            common: ctx.providers.common_strings(),
             version: 0,
             enable_type_tree: true,
             kept: Charge::zero(meter),
@@ -564,6 +566,9 @@ struct Parser<'a> {
     data: &'a Bytes,
     meter: &'a Arc<Meter>,
     limits: &'a Limits,
+    /// The caller's TPK's common strings, which blob trees read (`None`:
+    /// UnityPy's MIT table).
+    common: Option<&'a CommonStrings>,
     /// The format (`header.version`).
     version: u32,
     /// `_enable_type_tree` as read so far.
@@ -699,7 +704,14 @@ impl Parser<'_> {
         }
         if self.enable_type_tree {
             let rows = if is_blob_format(v) {
-                parse_blob(&mut self.r, self.data, v, self.meter, self.limits)?
+                parse_blob(
+                    &mut self.r,
+                    self.data,
+                    v,
+                    self.meter,
+                    self.limits,
+                    self.common,
+                )?
             } else {
                 parse_old(&mut self.r, self.data, v, self.meter, self.limits)?
             };

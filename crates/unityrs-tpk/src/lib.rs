@@ -19,6 +19,15 @@
 //!   one, each row's `m_Index` its position, `m_TypeFlags` left unset; one
 //!   tree per entry (`NODES_CACHE`), shared by every version that picks it.
 //!
+//! - `get_common_strings()` (`helpers/TypeTreeNode.py:308-328`), which every
+//!   blob typetree reads, is the TPK's common strings, every index of
+//!   `StringBufferIndices` (the version list unused), each numbered by the
+//!   code points before it plus one per NUL: the provider's
+//!   [`TypeTreeProvider::common_strings`], which the core reads in place of
+//!   its own MIT table. An index past the string buffer, on which UnityPy
+//!   raises `IndexError` in every blob parse, is refused at load
+//!   ([`TpkError::CommonStringPastBuffer`]).
+//!
 //! Each of the three exceptions is "no tree": [`TypeTreeProvider::tree`]
 //! answers `Ok(None)`, which the dump records as `no_typetree`. Anything else
 //! UnityPy's walk raises (a node or string id past its table: `IndexError`)
@@ -91,6 +100,7 @@ use unityrs_core::codec::{self, BlockCodec, Codec};
 use unityrs_core::limits::{Limits, Meter, MeteredVec};
 use unityrs_core::once::get_or_publish;
 use unityrs_core::provider::{ProviderError, TreeRequest, TypeTreeProvider};
+use unityrs_core::typetree::commonstring::CommonStrings;
 use unityrs_core::typetree::{NodeList, NodeRow, Tree, TreeError};
 use unityrs_core::{Bytes, LimitError, LimitKind, RawStr, UnityVersion};
 
@@ -139,6 +149,19 @@ pub enum TpkError {
     /// `TpkTypeTreeBlob`).
     #[error("the TPK holds no type trees")]
     NotTypeTrees,
+    /// A common string names a string past the string buffer. UnityPy loads
+    /// such a TPK and raises `IndexError` in every blob typetree parse after
+    /// (`get_common_strings()`); unityrs refuses it here (`PARITY.md`
+    /// section 19.3).
+    #[error("the TPK's common string {at} names string {index}, past its {strings} strings")]
+    CommonStringPastBuffer {
+        /// The common string's position in `StringBufferIndices`.
+        at: usize,
+        /// The string it names.
+        index: u16,
+        /// The string buffer's length.
+        strings: usize,
+    },
 }
 
 const _: () = send_sync::<TpkError>();
@@ -166,6 +189,8 @@ pub struct TpkProvider {
     versions: Box<[UnityVersion]>,
     /// The string buffer, each string once, shared by the rows that name it.
     strings: HashMap<Box<str>, RawStr>,
+    /// UnityPy's `get_common_strings()` over this TPK.
+    common: CommonStrings,
     limits: Limits,
     meter: Arc<Meter>,
 }
@@ -295,16 +320,18 @@ impl TpkProvider {
             .iter()
             .map(|v| UnityVersion::from_packed(v.0))
             .collect();
-        let strings = blob
+        let strings: HashMap<Box<str>, RawStr> = blob
             .string_buffer
             .iter()
             .map(|s| (Box::from(s.as_str()), RawStr::from(s.as_str())))
             .collect();
+        let common = common_strings(&blob, &strings)?;
         Ok(Self {
             blob,
             classes,
             versions,
             strings,
+            common,
             limits: *limits,
             meter: Meter::unlimited(),
         })
@@ -485,6 +512,31 @@ fn payload(bytes: &[u8]) -> Result<Bytes, TpkError> {
     Ok(decoded)
 }
 
+/// UnityPy's `get_common_strings()` (`helpers/TypeTreeNode.py:308-328`)
+/// over `blob`: `GetStrings`, the string of every index in order
+/// (`Tpk.py:425-426`), numbered as [`CommonStrings::new`] numbers them; each
+/// string shared with the rows that name it.
+fn common_strings(
+    blob: &TpkTypeTreeBlob,
+    strings: &HashMap<Box<str>, RawStr>,
+) -> Result<CommonStrings, TpkError> {
+    let indices = &blob.common_string.string_buffer_indices;
+    let mut table = Vec::new();
+    for (at, &index) in indices.iter().enumerate() {
+        let s = blob
+            .string_buffer
+            .get(usize::from(index))
+            .and_then(|s| strings.get(s.as_str()))
+            .ok_or(TpkError::CommonStringPastBuffer {
+                at,
+                index,
+                strings: blob.string_buffer.len(),
+            })?;
+        table.push(s.clone());
+    }
+    Ok(CommonStrings::new(table))
+}
+
 /// `data` decoded by `codec`, as one block of unityrs-core's: the output
 /// capped at [`TpkProvider::MAX_DECODED_BYTES`], and the output and an LZMA
 /// dictionary charged to a meter of [`TpkProvider::MAX_DECODER_MEMORY`].
@@ -531,6 +583,12 @@ fn decode(
 impl TypeTreeProvider for TpkProvider {
     fn name(&self) -> &'static str {
         Self::NAME
+    }
+
+    /// The TPK's common strings (UnityPy's `get_common_strings()`, module
+    /// docs).
+    fn common_strings(&self) -> Option<&CommonStrings> {
+        Some(&self.common)
     }
 
     /// [`TpkProvider::node_list`], compiled once per entry with

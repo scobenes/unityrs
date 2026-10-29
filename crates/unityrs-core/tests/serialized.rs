@@ -8,9 +8,11 @@ use unityrs_core::budget::Reservation;
 use unityrs_core::detect::check_file_type;
 use unityrs_core::files::{File, SerializedFile, parse_file};
 use unityrs_core::limits::{Limits, Meter};
+use unityrs_core::provider::{ProviderChain, ProviderError, TreeRequest, TypeTreeProvider};
 use unityrs_core::stream::{Endian, Reader, py_read};
-use unityrs_core::typetree::NodeList;
+use unityrs_core::typetree::commonstring::CommonStrings;
 use unityrs_core::typetree::parse::{parse_blob, parse_old};
+use unityrs_core::typetree::{NodeList, Tree};
 use unityrs_core::{Bytes, Error, FileContext, LimitKind, RawStr};
 use unityrs_testkit::Rng;
 use unityrs_testkit::blob::{NodeSpec, Strings, blob_tree, old_tree};
@@ -232,9 +234,11 @@ fn blob_rows(
     let data = Bytes::from(blob_tree(nodes, format, big, Strings::Local, &[]));
     let mut r = Reader::new(&data, if big { Endian::Big } else { Endian::Little });
     let m = Meter::unlimited();
-    Ok(parse_blob(&mut r, &data, format, &m, &Limits::default())?
-        .as_slice()
-        .to_vec())
+    Ok(
+        parse_blob(&mut r, &data, format, &m, &Limits::default(), None)?
+            .as_slice()
+            .to_vec(),
+    )
 }
 
 #[test]
@@ -265,7 +269,15 @@ fn blob_rows_are_unpacked_as_unitypy_does() {
     let common: &[(u32, &[u8])] = &[(0x7FFF_FFF0, b"Base")];
     let data = Bytes::from(blob_tree(&nodes, 17, false, Strings::Common, common));
     let mut r = Reader::new(&data, Endian::Little);
-    let rows = parse_blob(&mut r, &data, 17, &Meter::unlimited(), &Limits::default()).unwrap();
+    let rows = parse_blob(
+        &mut r,
+        &data,
+        17,
+        &Meter::unlimited(),
+        &Limits::default(),
+        None,
+    )
+    .unwrap();
     if unityrs_core::typetree::commonstring::common_string(0x7FFF_FFF0).is_none() {
         assert_eq!(rows.as_slice()[0].ty.as_bytes(), b"2147483632");
     }
@@ -275,9 +287,121 @@ fn blob_rows_are_unpacked_as_unitypy_does() {
         let common: &[(u32, &[u8])] = &[(offset, b"Base")];
         let data = Bytes::from(blob_tree(&nodes, 17, false, Strings::Common, common));
         let mut r = Reader::new(&data, Endian::Little);
-        let rows = parse_blob(&mut r, &data, 17, &Meter::unlimited(), &Limits::default()).unwrap();
+        let rows = parse_blob(
+            &mut r,
+            &data,
+            17,
+            &Meter::unlimited(),
+            &Limits::default(),
+            None,
+        )
+        .unwrap();
         assert_eq!(rows.as_slice()[0].ty.as_bytes(), text);
     }
+}
+
+/// With the caller's TPK table, a high-bit offset reads that table alone, as
+/// UnityPy reads its TPK's (`get_common_strings()`): an offset the TPK's
+/// table lacks is its decimal string even where UnityPy's MIT table, the one
+/// read without a TPK, has a string.
+#[test]
+fn a_blob_reads_the_callers_common_strings_in_place_of_the_mit_table() {
+    let table = CommonStrings::new(["Thing", "é", "m_X"].map(RawStr::from));
+    // Thing at 0, é at 6, m_X at 8 (code points, not bytes).
+    let nodes = vec![
+        NodeSpec::new(0, "Thing", "Base"),
+        NodeSpec::new(1, "m_X", "AABB"),
+    ];
+    let offsets: &[(u32, &[u8])] = &[(0, b"Thing"), (8, b"m_X"), (5, b"AABB")];
+    let data = Bytes::from(blob_tree(&nodes, 17, false, Strings::Common, offsets));
+    let read = |common: Option<&CommonStrings>| -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut r = Reader::new(&data, Endian::Little);
+        let rows = parse_blob(
+            &mut r,
+            &data,
+            17,
+            &Meter::unlimited(),
+            &Limits::default(),
+            common,
+        );
+        rows.unwrap()
+            .as_slice()
+            .iter()
+            .map(|row| (row.ty.as_bytes().to_vec(), row.name.as_bytes().to_vec()))
+            .collect()
+    };
+    let with = read(Some(&table));
+    assert_eq!(with[0], (b"Thing".to_vec(), b"Base".to_vec()));
+    // 5 is `AnimationClip` in the MIT table, absent from this one.
+    assert_eq!(with[1], (b"m_X".to_vec(), b"5".to_vec()));
+    let without = read(None);
+    assert_eq!(without[0], (b"AABB".to_vec(), b"Base".to_vec()));
+    assert_eq!(without[1], (b"8".to_vec(), b"AnimationClip".to_vec()));
+}
+
+/// A provider with common strings only.
+#[derive(Debug)]
+struct Common(CommonStrings);
+
+impl TypeTreeProvider for Common {
+    fn name(&self) -> &'static str {
+        "common"
+    }
+    fn tree(&self, _: &TreeRequest<'_>) -> Result<Option<Arc<Tree>>, ProviderError> {
+        Ok(None)
+    }
+    fn common_strings(&self) -> Option<&CommonStrings> {
+        Some(&self.0)
+    }
+}
+
+/// A file's blob trees read the common strings of the first provider in the
+/// context's chain that has them; with none, UnityPy's MIT table.
+#[test]
+fn a_files_blob_trees_read_the_chains_common_strings() {
+    let spec = SerializedSpec {
+        types: vec![TypeSpec {
+            class_id: 1,
+            nodes: tree(),
+            ..TypeSpec::default()
+        }],
+        ..SerializedSpec::default()
+    };
+    let mut data = build(&spec);
+    // The blob's counts (2 rows, the 24-byte buffer "GameObject\0Base\0int\0m_A\0"),
+    // then row 0, whose type offset (local 0) becomes common offset 0.
+    let counts = [2_i32.to_le_bytes(), 24_i32.to_le_bytes()].concat();
+    let at = data.windows(8).position(|w| w == counts).unwrap() + 8 + 4;
+    assert_eq!(data[at..at + 4], 0_u32.to_le_bytes());
+    data[at..at + 4].copy_from_slice(&0x8000_0000_u32.to_le_bytes());
+    let parse_with = |providers: Vec<Arc<dyn TypeTreeProvider>>| {
+        let mut c = FileContext::unitypy();
+        c.providers = Arc::new(ProviderChain::new(providers));
+        let c = Arc::new(c);
+        let m = Meter::for_input(&c.limits, c.budget.clone(), Reservation::Input);
+        let f = SerializedFile::parse(
+            RawStr::from("CAB-t"),
+            Bytes::copy_from_slice(&data),
+            None,
+            &m,
+            &c,
+        )
+        .unwrap();
+        let nodes = f.types()[0].nodes.clone().unwrap();
+        nodes.rows()[0].ty.as_bytes().to_vec()
+    };
+    assert_eq!(parse_with(Vec::new()), b"AABB");
+    let table = CommonStrings::new([RawStr::from("FromTheTpk")]);
+    let empty = CommonStrings::default();
+    assert_eq!(
+        parse_with(vec![Arc::new(Common(table.clone()))]),
+        b"FromTheTpk"
+    );
+    // The first provider with a table decides, even an empty one.
+    assert_eq!(
+        parse_with(vec![Arc::new(Common(empty)), Arc::new(Common(table))]),
+        b"0"
+    );
 }
 
 #[test]
@@ -291,7 +415,14 @@ fn negative_blob_counts_are_python_slices() {
         data[4..8].copy_from_slice(&size.to_le_bytes());
         let data = Bytes::from(data);
         let mut r = Reader::new(&data, Endian::Little);
-        let got = parse_blob(&mut r, &data, 17, &Meter::unlimited(), &Limits::default());
+        let got = parse_blob(
+            &mut r,
+            &data,
+            17,
+            &Meter::unlimited(),
+            &Limits::default(),
+            None,
+        );
         let (rows, pos) = py_read(data.len(), 8, i64::from(count) * 24);
         let (_, end) = py_read(data.len(), pos, i64::from(size));
         if rows.len() % 24 == 0 {
@@ -430,7 +561,7 @@ fn mutated_files_and_trees_never_panic() {
             Reservation::Input,
         );
         let _ = if round % 2 == 0 {
-            parse_blob(&mut r, &data, format, &m, &Limits::default())
+            parse_blob(&mut r, &data, format, &m, &Limits::default(), None)
         } else {
             parse_old(&mut r, &data, format, &m, &Limits::default())
         };

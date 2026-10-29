@@ -14,9 +14,11 @@
 //!   a slice that moves the position back ([`crate::stream::py_read`]); a node
 //!   area that is not a whole number of rows raises, as `struct.iter_unpack`
 //!   does. An offset with
-//!   the high bit set indexes the whole common-string table
-//!   ([`super::commonstring`]), whatever the engine version; an offset the
-//!   table lacks becomes its decimal string (`:128-129`).
+//!   the high bit set indexes the whole common-string table, whatever the
+//!   engine version: the caller's TPK's ([`super::commonstring::CommonStrings`],
+//!   UnityPy's `get_common_strings()`), or without one UnityPy's MIT
+//!   [`super::commonstring::COMMON_STRINGS`]; an offset the table lacks
+//!   becomes its decimal string (`:128-129`).
 //!
 //! Both return every stored row; [`super::NodeList::from_rows`] then builds the
 //! kept tree. Format 10 and 12 and up use blobs (`SerializedFile.py`'s
@@ -47,7 +49,7 @@ use crate::limits::{Limits, Meter, MeteredVec};
 use crate::raw::RawStr;
 use crate::stream::{Endian, Reader, STRING_TO_NULL_WINDOW, py_read, py_string_to_null};
 use crate::typetree::NodeRow;
-use crate::typetree::commonstring::common_string;
+use crate::typetree::commonstring::{CommonStrings, common_string};
 
 /// Whether a `SerializedFile` of this format stores typetrees as blobs.
 #[must_use]
@@ -177,12 +179,16 @@ impl BlobRow<'_> {
 
 /// `TypeTreeNode.parse_blob`: every stored row, in order. `data` is the
 /// buffer `r` reads, so local strings are slices of its string buffer.
+/// `common` is the common-string table of the caller's TPK
+/// ([`crate::provider::ProviderChain::common_strings`]); `None` reads
+/// [`super::commonstring::COMMON_STRINGS`].
 pub fn parse_blob(
     r: &mut Reader<'_>,
     data: &bytes::Bytes,
     format: u32,
     meter: &Arc<Meter>,
     limits: &Limits,
+    common: Option<&CommonStrings>,
 ) -> Result<MeteredVec<NodeRow>, Error> {
     let _ = limits;
     // UnityPy helpers/TypeTreeNode.py:113-118
@@ -217,8 +223,8 @@ pub fn parse_blob(
         let level = row.get(2).copied().unwrap_or(0);
         let type_flags = row.get(3).copied().unwrap_or(0);
         // UnityPy helpers/TypeTreeNode.py:135-138: the type before the name.
-        let ty = blob_string(&buffer, b.u32(4), meter, &mut last_unknown)?;
-        let name = blob_string(&buffer, b.u32(8), meter, &mut last_unknown)?;
+        let ty = blob_string(&buffer, b.u32(4), common, meter, &mut last_unknown)?;
+        let name = blob_string(&buffer, b.u32(8), common, meter, &mut last_unknown)?;
         rows.push(NodeRow {
             level: i32::from(level),
             ty,
@@ -238,11 +244,13 @@ pub fn parse_blob(
 /// `read_string` in `parse_blob` (`helpers/TypeTreeNode.py:122-129`): a
 /// local offset reads to a NUL in the string buffer from there (a reader
 /// over the buffer, the 32,767-byte window); a high-bit offset is the common
-/// string, or the offset's decimal string when the table has none, the last
-/// such string shared with the next row that names it.
+/// string (`common`'s, or [`super::commonstring::COMMON_STRINGS`]'s), or the
+/// offset's decimal string when the table has none, the last such string
+/// shared with the next row that names it.
 fn blob_string(
     buffer: &Bytes,
     value: u32,
+    common: Option<&CommonStrings>,
     meter: &Arc<Meter>,
     last_unknown: &mut Option<(u32, RawStr)>,
 ) -> Result<RawStr, Error> {
@@ -255,8 +263,17 @@ fn blob_string(
         return Ok(shared(buffer, range));
     }
     let offset = value & 0x7FFF_FFFF;
-    if let Some(s) = common_string(offset) {
-        return Ok(RawStr::from_static(s));
+    match common {
+        Some(table) => {
+            if let Some(s) = table.get(offset) {
+                return Ok(s.clone());
+            }
+        }
+        None => {
+            if let Some(s) = common_string(offset) {
+                return Ok(RawStr::from_static(s));
+            }
+        }
     }
     if let Some((o, s)) = last_unknown
         && *o == offset
