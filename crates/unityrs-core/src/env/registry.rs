@@ -5,7 +5,11 @@
 //! position, and iteration is in first-insertion order (`env.container`
 //! walks it). Values are files already parsed, or, under
 //! [`super::LoadMode::Lazy`], a bundle entry to parse on first use: the slot
-//! is a `OnceLock` so concurrent askers parse it once.
+//! is a `OnceLock` so concurrent askers parse it once. A lazy bundle registers
+//! every directory entry's name at open, in directory order. An entry that
+//! turns out to be a container is not a CAB: its slot answers `None` and its
+//! own entries are registered then, at the end of the order (plan section
+//! 3.13, difference (b)).
 //!
 //! Owner: package D.
 

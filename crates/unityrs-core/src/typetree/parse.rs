@@ -8,8 +8,11 @@
 //! - `parse_blob` ports `TypeTreeNode.parse_blob` (`:111-154`): `node_count`,
 //!   `stringbuffer_size`, rows unpacked as `hBBIIiii` plus `Q` from format 19
 //!   (`:331-347`), so `version` is `i16` and `level`/`type_flags` are `u8`. The
-//!   node area is read short at the end (memoryview), and a length that is not
-//!   a whole number of rows raises, as `struct.iter_unpack` does. An offset with
+//!   node area and the string buffer are `reader.read(n)`: a Python slice,
+//!   short at the end, and for a negative `node_count` or `stringbuffer_size`
+//!   a slice that moves the position back ([`crate::stream::py_read`]); a node
+//!   area that is not a whole number of rows raises, as `struct.iter_unpack`
+//!   does. An offset with
 //!   the high bit set indexes the whole common-string table
 //!   ([`super::commonstring`]), whatever the engine version; an offset the
 //!   table lacks becomes its decimal string (`:128-129`).

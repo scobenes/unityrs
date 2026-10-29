@@ -5,15 +5,19 @@
 //!   the rest, run to the end of the input: the declared size is ignored, a
 //!   truncated stream yields what decoded, an over-long one yields all of it.
 //!   Output is capped at [`Limits::max_block_output`] (a `PARITY.md` safety
-//!   divergence). liblzma static, as `docs/spikes/lzma.md` decided.
+//!   divergence). Fewer than 5 input bytes raise (`struct.unpack("<BI", ...)`).
+//!   liblzma static, as `docs/spikes/lzma.md` decided.
 //! - **LZ4/LZ4HC** (`:83-94`) is `lz4.block.decompress(data, uncompressed_size)`:
 //!   the declared size is the *maximum* output. A shorter output is accepted;
-//!   a longer one raises (python-lz4: `LZ4BlockError`).
+//!   a longer one raises (python-lz4: `LZ4BlockError`), and so does an empty
+//!   input, whatever the declared size (`LZ4_decompress_safe` returns -1).
 //! - **LZHAM** raises (`:234-235`), and so does an unknown type
-//!   (`files/BundleFile.py:515-521`).
+//!   (`files/BundleFile.py:515-521`; `CompressionFlags` is an `IntFlag`, so the
+//!   map lookup is what raises).
 //!
-//! A block whose decoded length differs from blocks-info makes the bundle
-//! fall back to UnityPy's joined layout (plan section 3.6).
+//! A block's decoded length can differ from blocks-info; the bundle always
+//! lays entries out by the actual lengths, as UnityPy's join does (plan
+//! section 3.6), so a codec returns what it decoded and never pads or cuts.
 //!
 //! Owner: package C. The registry type is implemented by the scaffold.
 

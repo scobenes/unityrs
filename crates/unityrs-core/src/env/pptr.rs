@@ -3,9 +3,10 @@
 //! The rules, in UnityPy's order:
 //! 1. `m_PathID == 0` raises `ValueError`.
 //! 2. `m_FileID == 0` is the pointer's own file.
-//! 3. Else `externals[m_FileID - 1]`, with Python indexing: the guard is only
-//!    `external_id >= len`, so a negative `m_FileID` counts from the end, and
-//!    below `-len` is an `IndexError`.
+//! 3. Else `externals[m_FileID - 1]`, with Python indexing, computed in `i64`
+//!    so `i32::MIN - 1` does not wrap: the guard is only `external_id >= len`,
+//!    so a negative `m_FileID` counts from the end, and below `-len` is an
+//!    `IndexError`.
 //! 4. A file with no container (`parent is None`) raises `FileNotFoundError`
 //!    ("no container is set") even when the target is loaded: UnityPy does
 //!    not consult the environment first.

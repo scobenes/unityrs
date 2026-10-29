@@ -21,9 +21,14 @@
 //!   winning; the `objects` dict keeps a repeated path id at its first position
 //!   with its last entry;
 //! - `read_string_to_null`'s 32,767-byte window for every metadata string;
+//! - every table is built with `range(count)` (`SerializedFile.py:282-308`):
+//!   a negative count is zero records, and a table grows record by record, so
+//!   no count sizes an allocation;
 //! - with [`FileContext::eager_asset_bundle`], the first AssetBundle in dict
 //!   order is read at load with `check_read`, and a failure fails the file
-//!   (`SerializedFile.py:316-324`).
+//!   (`SerializedFile.py:316-324`). UnityPy reads it in object mode
+//!   (`parse_as_object`); the core reads it in dict mode, and package D's
+//!   fixtures pin that the two agree (plan section 3.7).
 //!
 //! Owner: package C. The accessors are implemented by the scaffold.
 

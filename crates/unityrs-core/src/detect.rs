@@ -5,8 +5,14 @@
 //! Notable rules: eight U+00FA characters as a signature (the UTF-8 bytes
 //! `C3 BA` x 8, never `FA` x 8); a zip only when byte 4 is NUL; a 20-byte file
 //! with no NUL raises; a gzip file must decompress in full, every member and
-//! trailer checked (the P0 spike inflated only 20 bytes, which this fixes);
-//! `brotli` at 0x20; the SerializedFile header read big-endian.
+//! trailer checked (the P0 spike inflated only 20 bytes, which this fixes).
+//! That is UnityPy's own behaviour, not a unityrs policy: its streaming
+//! `read_string_to_null` tests `Position != Length` per byte
+//! (`streams/EndianBinaryReader.py:136-144`), and `Length` seeks the
+//! `GzipFile` to its end (`:303-308`), which inflates every member. The
+//! output is streamed through a scratch buffer and only its first 20 bytes
+//! and its length are kept, so detection reserves no budget. Also: `brotli`
+//! at 0x20; the SerializedFile header read big-endian.
 //!
 //! Owner: package C.
 

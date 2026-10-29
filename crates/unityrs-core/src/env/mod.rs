@@ -9,7 +9,16 @@
 //!   fails the bundle.
 //! - [`LoadMode::Lazy`] is the batch engine's: a bundle registers its entries'
 //!   names at open and parses an entry the first time it is asked for, once
-//!   (single flight). Results are identical; only when work happens differs.
+//!   (single flight).
+//!
+//! On a scene whose entries all parse and none of which is a container, the
+//! two modes give identical results. Elsewhere they differ in exactly two
+//! ways (plan section 3.13): (a) a failing entry fails the whole bundle at
+//! load under `Eager` but only the `get` that parses it under `Lazy` (an entry
+//! shadowed by a later one of its path is then never parsed;
+//! [`crate::files::BundleFile::load_all`] reproduces `Eager`'s error); (b) a
+//! nested container's entries are registered when it is first asked for,
+//! at the end of the registry order, not in place.
 //!
 //! Dependencies (files loaded to resolve a pointer or a resource) are kept in
 //! an LRU bounded by [`EnvOptions::dep_cache_bytes`] and paid for from the

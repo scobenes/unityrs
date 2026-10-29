@@ -2,9 +2,20 @@
 //!
 //! [`BundleFile::open`] reads the header, blocks-info and directory and
 //! decodes no data block, so a registry over thousands of bundles is cheap
-//! and [`BundleFile::uncompressed_size`] is known before any decode (the batch
-//! engine's admission). An entry decodes exactly the blocks it overlaps, once
-//! per run of blocks, cached; every entry is a zero-copy slice of its run.
+//! and [`BundleFile::uncompressed_size`] (the declared total) is known before
+//! any decode (the batch engine's admission).
+//!
+//! **One layout** (plan section 3.6). UnityPy always reads entries from the
+//! `b"".join` of every block's *actual* output (`BundleFile.py:173-186`), so
+//! an entry's offset depends on the actual length of every block before it.
+//! Before a lazy read returns bytes ending at joined offset `X`, every block
+//! starting below `X` has a known length (`lengths`): a stored block's is
+//! known at open; an unmeasured block wholly before the read is decoded with
+//! its output discarded; the blocks the read overlaps are decoded once and
+//! cached as a run. Every entry is a zero-copy slice of its run, and a lazy
+//! read equals [`BundleFile::load_all`]'s bytes on every bundle, malformed
+//! ones included. An entry is the Python slice `data[offset : offset + size]`
+//! of the joined data (`File.py:78-81`; [`crate::stream::py_read`]).
 //!
 //! UnityPy rules ported exactly (plan section 3.6):
 //! - the extra byte after the data flags only for non-UnityFS signatures
@@ -17,10 +28,8 @@
 //!   the start only under `ArchiveFlags` with 0x200 (`:170-171`);
 //! - short reads: a truncated block is read short and decoded as it is; its
 //!   `bytes_read` is what the dump writes as `compressed`;
-//! - if any block decodes to a length other than its declared size, the
-//!   bundle's data is UnityPy's `b"".join` of every block's actual output
-//!   (`:173-184`) and entries are slices of that, so lazy and eager reads are
-//!   always observationally equal.
+//! - LZMA's output can outgrow its declared size: the limits and the budget
+//!   follow the actual bytes ([`crate::limits::Limits::max_bundle_uncompressed`]).
 //!
 //! UnityWeb/UnityRaw: format 6 takes the UnityFS layout (P1); every other
 //! format is [`crate::Unsupported::WebRawLayout`] until P3. `UnityArchive` is
@@ -141,6 +150,9 @@ pub struct BundleFile {
     directory: Box<[DirEntry]>,
     files: Box<[FileSlot]>,
     parent: Option<Parent>,
+    /// Each block's actual decoded length, once known (a stored block's at
+    /// open, any other's when it is first decoded or measured).
+    lengths: Box<[OnceLock<u64>]>,
     /// Decoded block runs: `(first block, end block, bytes)`.
     runs: Mutex<Vec<(usize, usize, Bytes)>>,
     /// Parsed entries, by directory index.
@@ -205,12 +217,16 @@ impl BundleFile {
         &self.ctx
     }
 
-    /// The declared decoded size of every block: what a full decode costs.
+    /// The sum of the blocks' *declared* decoded sizes: what a full decode is
+    /// expected to cost. The actual total can differ (module docs).
     pub fn uncompressed_size(&self) -> u64 {
         todo!()
     }
 
-    /// Directory entry `dir_index`'s decoded bytes (short when the data is).
+    /// Directory entry `dir_index`'s bytes: the Python slice
+    /// `data[offset : offset + size]` of the joined data (size -1 to the end,
+    /// negative indexes from the end, short at the end). Measures every block
+    /// before the slice first (module docs).
     pub fn entry_bytes(&self, dir_index: usize) -> Result<Bytes, Error> {
         todo!()
     }
@@ -226,8 +242,10 @@ impl BundleFile {
         todo!()
     }
 
-    /// UnityPy's eager load (`File.read_files`, `File.py:76-90`): every
-    /// directory entry parsed in order; the first failure fails the bundle.
+    /// UnityPy's eager load (`File.read_files`, `File.py:76-90`): every block
+    /// decoded, every directory entry parsed in order (a path repeated in the
+    /// directory included: its earlier entry can fail the bundle though the
+    /// `files` dict keeps the later one); the first failure fails the bundle.
     pub fn load_all(&self) -> Result<(), Error> {
         todo!()
     }
