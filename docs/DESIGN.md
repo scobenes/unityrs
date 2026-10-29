@@ -75,7 +75,7 @@ unityrs is the alternative, built around three things:
   - An image file the extractor saves under a container's extension is byte-equal with what Pillow 9.5.0's writer for that extension saves at its defaults to the same path, for every writer Pillow registers and every mode, size and file name it saves; a PDF's two dates, which hold the time of the save, aside (`PARITY.md` section 15.8).
   - `save_typetree(parse())` returns the raw bytes.
   - Every patch to vendored decoders is labelled either Tier A (keeps the reference behaviour) or Tier C.
-  - An observable quirk that callers can depend on and that is not wrong data (a file name, a dict key, a `str()` form, a docstring the code contradicts) is Tier A: unityrs keeps UnityPy's behaviour.
+  - An observable quirk that callers can depend on and that is not wrong data (a file name, a dict key, a `str()` form, a docstring the code contradicts) is Tier A: unityrs keeps UnityPy's behaviour. One such key is a nameless input's `Environment.files` key, `str(obj.__hash__())`: Python's hash, randomised per process for bytes, which the binding computes in the caller's interpreter and so equals there (`PARITY.md` section 19.2).
 - **Tier B: UnityPy raises on a valid request.** We produce correct output, checked against an independent reference, and `PARITY.md` names a pinned divergence test for each:
   - 21 TextureFormats: BC6H, the half and float formats but ARGBFloat, the 8 signed formats, RG16/RG32, R16, RGBA64, RGB9e5, YUY2. `PARITY.md` section 17.1 names each one's reference: a closed form (the half and float, integer, shared-exponent and BT.601 rules), or for BC6H the decoding of the Khronos Data Format Specification 1.3, section 20.2, then the half and float rule. Neither BC6H decoder in the oracle image follows that section (texture2ddecoder 1.0.5 unquantizes the wrong endpoint value to 0xFFFF; Pillow 9.5.0 interpolates without rounding), so neither is the reference;
   - a gzip-compressed WebFile, which UnityPy detects and then fails to parse;
@@ -85,8 +85,10 @@ unityrs is the alternative, built around three things:
   - `Texture2D.image` of an empty 0×0 texture;
   - an empty AudioClip, whose empty resource path UnityPy fetches;
   - a ZIP opened from a path, which UnityPy loads only from bytes or a buffered stream;
-  - a `bytearray` passed with no name, which UnityPy's own `FileSourceType` lists and which raises computing its default key (the reference is the same bytes passed as `bytes`);
-  - a record that `PPtr.deref` resolves to a file on disk whose basename holds an upper-case letter: UnityPy lower-cases the record and so never finds the file, even when the record names it in its own case (the reference is the file whose basename equals the record's last component);
+  - a `bytearray` or a writable `memoryview` passed with no name, which raise computing their default key, though UnityPy's own `FileSourceType` lists `bytearray` (the reference is the same bytes passed as `bytes`);
+  - a SerializedFile or raw file read from a stream whose `name` is not a `str` (a `TemporaryFile`'s file descriptor, a `SpooledTemporaryFile`'s `None`), which UnityPy keys by that value and then fails to parse or register (the reference is the same bytes passed with `name=`);
+  - a `.splitN` path whose part is a folder (`dir.split1/inner.assets`): UnityPy's `re.match` takes the path for a split part and opens the folder (the reference is the file the path names);
+  - a record that `PPtr.deref` resolves to a file on disk whose basename holds an upper-case letter: UnityPy lower-cases the record and so never finds the file, even when the record names it in its own case (the reference is the file whose basename equals the record's last component exactly, the first in `find_file`'s walk; `find_file`'s own suffix match, which has no separator boundary, is not run again);
   - a name read through a non-local fsspec filesystem, which `load_file` tests and walks on the local disk instead, where that raises (the local disk cannot list `Environment.path`, as with the default `''`);
   - `File.get_objects` and `File.get_filtered_objects` of a file holding a bundle or WebFile, which they iterate as `objects`, an attribute neither has;
   - a class node whose type names an attribute of `UnityPy.classes` that is not a class, where UnityPyBoost raises (`List`, `Tuple`): unityrs builds it as a type the module lacks (`PARITY.md` section 19.2);
@@ -106,7 +108,8 @@ unityrs is the alternative, built around three things:
   - UnityPyBoost crashes the process, or returns some other value (a function, a `str`, an `int`, `None`), on a class node whose type names something `getattr` finds on `UnityPy.classes` that is not one of its classes: an attribute of the module (`math`, `__name__`, `attrs_define`) or of the module's type, which `dir` leaves out (`__class__`, `__repr__`, `__hash__`): unityrs builds it as a type the module lacks;
   - dump_blob's common-string offset 0;
   - two bundles holding a CAB of one name share one registry entry;
-  - a nameless input's `files` key, which UnityPy takes from Python's hash, randomised per process for bytes and an address for a stream, so no output can equal it: unityrs keys it by a stable rule (`PARITY.md` section 19.2);
+  - split members of a zip or apk: `load_assets` reads their parts from the disk relative to the cwd, not from the archive, so the member loads empty or from other bytes (the reference is the members' bytes concatenated, `PARITY.md` section 19.2);
+  - a path holding `.splitN` before its end (`a.assets.split0.bak`), which UnityPy takes for a split part and loads the merged parts in place of the named file (the reference is the named file);
   - a name read through a non-local fsspec filesystem where `load_file` returns `None` with no error, because the local disk can list `Environment.path` but lacks the name (the reference is the same as Tier B's: the file loaded as a stream opened from the filesystem);
   - `File.get_filtered_objects` with no types, or on a SerializedFile, and `File.get_assets` on a SerializedFile yield nothing, where each means to yield the value its generator `return`s or the file's objects (`PARITY.md` section 19.2);
   - `load_dependencies` loads dependencies as main files;

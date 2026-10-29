@@ -1161,9 +1161,24 @@ class Rows(unittest.TestCase):
         for record in ("lower.assets", "assets/sub/LOWER.Assets", "archive:/CAB-x/Lower.ASSETS"):
             with self.subTest(record):
                 self.assertEqual(deref(record, UnityPy.Environment(path=str(d))), "lower")
+        # A file loaded by path is keyed by its full path, so deref's loop over `files` misses it and the registry
+        # (find_file's first step, by CAB name) finds it; with its registry entry removed, deref raises.
         preloaded = UnityPy.Environment(path=str(d))
-        quietly(preloaded.load_file, (d / "Shared.Assets").read_bytes(), name="Shared.Assets")
+        quietly(preloaded.load_file, str(d / "Shared.Assets"))
+        self.assertEqual((list(preloaded.files), list(preloaded.cabs)), ([str(d / "Shared.Assets")], ["shared.assets"]))
         self.assertEqual(deref("Shared.Assets", preloaded), "shared")
+        preloaded.cabs.pop("shared.assets")
+        with self.assertRaisesRegex(FileNotFoundError, "Shared.Assets not found!$"):
+            deref("Shared.Assets", preloaded)
+        # The Tier B retry matches the exact basename, not find_file's suffix match: beside sub/Shared.Assets,
+        # find_file("Shared.Assets") loads MyShared.Assets, the walk listing a folder's files first.
+        e = self.tmp / "e"
+        (e / "sub").mkdir(parents=True)
+        (e / "MyShared.Assets").write_bytes(text_asset_file("my-shared"))
+        (e / "sub" / "Shared.Assets").write_bytes(text_asset_file("sub-shared"))
+        self.assertEqual(found(UnityPy.Environment(path=str(e)), "Shared.Assets"), ["my-shared"])
+        with self.assertRaisesRegex(FileNotFoundError, "Shared.Assets not found!$"):
+            deref("Shared.Assets", UnityPy.Environment(path=str(e)))
         (d / "sub" / "lower.assets").unlink()
         with self.assertRaisesRegex(FileNotFoundError, "File missing.assets not found in"):
             found(env, "missing.assets")
@@ -1180,6 +1195,9 @@ class Rows(unittest.TestCase):
 
         self.assertEqual(reSplit.pattern, r"(.*?([^\/\\]+?))\.split\d+")
         self.assertEqual(reSplit.match("a/b.c.split12").groups(), ("a/b.c", "b.c"))
+        # re.match anchors only the start: `.split` and digits anywhere make the path a split part.
+        self.assertEqual(reSplit.match("d/a.assets.split0.bak").groups(), ("d/a.assets", "a.assets"))
+        self.assertEqual(reSplit.match("d/dir.split1/inner.assets").groups(), ("d/dir", "dir"))
         d = self.tmp / "d"
         (d / "sub").mkdir(parents=True)
         data = text_asset_file("split")
@@ -1219,6 +1237,59 @@ class Rows(unittest.TestCase):
         with mock.patch("builtins.open", tracked):
             quietly(env.load_files, [str(d / "big.split0"), str(d / "big.split1"), str(d / "sub" / "plain.assets")])
         self.assertEqual(list(env.files), [str(d / "big"), str(d / "sub" / "plain.assets")])
+        # A path holding `.splitN` before its end: `a.assets.split0.bak` loads the merged parts and never reads
+        # itself, and `dir.split1/inner.assets` opens the folder `dir.split1` as a part (section 19.2).
+        whole = text_asset_file("merged")
+        (d / "a.assets.split0").write_bytes(whole[:40])
+        (d / "a.assets.split1").write_bytes(whole[40:])
+        (d / "a.assets.split0.bak").write_bytes(text_asset_file("bak"))
+        (d / "dir.split1").mkdir()
+        (d / "dir.split1" / "inner.assets").write_bytes(text_asset_file("inner"))
+        env = UnityPy.Environment()
+        loaded = quietly(env.load_file, str(d / "a.assets.split0.bak"))
+        self.assertEqual(
+            (list(env.files), [o.parse_as_dict()["m_Name"] for o in loaded.objects.values()]),
+            ([str(d / "a.assets")], ["merged"]),
+        )
+        with self.assertRaisesRegex(IsADirectoryError, re.escape(str(d / "dir.split1"))):
+            quietly(UnityPy.Environment().load_file, str(d / "dir.split1" / "inner.assets"))
+        # Split members of a zip: load_assets reads the parts through Environment.fs, relative to the cwd, never
+        # from the zip. With no such files the member loads as an empty raw reader, a CAB, and its objects are
+        # lost; with files at those paths, their bytes load in its place (section 19.2).
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("assets/bin/Data/s.assets.split0", whole[:40])
+            archive.writestr("assets/bin/Data/s.assets.split1", whole[40:])
+            archive.writestr("assets/bin/Data/plain.assets", text_asset_file("plain"))
+        apk = self.tmp / "app.apk"
+        apk.write_bytes(buffer.getvalue())
+        cwd = self.tmp / "cwd"
+        cwd.mkdir()
+        self.chdir(cwd)
+
+        def from_zip():
+            from_bytes = UnityPy.Environment()
+            quietly(from_bytes.load_zip_file, buffer.getvalue())
+            for env in (from_bytes, quietly(UnityPy.Environment, str(apk))):
+                member = env.files["assets/bin/Data/s.assets"]
+                yield (
+                    list(env.files),
+                    sorted(env.cabs),
+                    type(member).__name__,
+                    sorted(o.parse_as_dict()["m_Name"] for o in env.objects),
+                )
+
+        keys = ["assets/bin/Data/s.assets", "assets/bin/Data/plain.assets"]
+        for got in from_zip():
+            self.assertEqual(got[:2], (keys, ["plain.assets", "s.assets"]))
+            self.assertEqual(got[2:], ("EndianBinaryReader_Memoryview", ["plain"]))
+        self.assertEqual(len(UnityPy.Environment()._load_split_file("assets/bin/Data/s.assets")), 0)
+        (cwd / "assets" / "bin" / "Data").mkdir(parents=True)
+        other = text_asset_file("from the disk")
+        (cwd / "assets" / "bin" / "Data" / "s.assets.split0").write_bytes(other[:30])
+        (cwd / "assets" / "bin" / "Data" / "s.assets.split1").write_bytes(other[30:])
+        for got in from_zip():
+            self.assertEqual(got[2:], ("SerializedFile", ["from the disk", "plain"]))
         # load_folder: every file fs.walk finds, in its order, through load_files.
         folder = self.tmp / "folder"
         (folder / "b").mkdir(parents=True)

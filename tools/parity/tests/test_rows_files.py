@@ -174,16 +174,21 @@ class FileRows(unittest.TestCase):
             load(packed[:0x30] + bytes(200))
         # Content with no NUL: the memory reader reaches the end of content of at most 32767 bytes and raises a
         # plain Exception, while longer content gives a 32767-byte signature and the ValueError.
-        for size, error, message in (
-            (200, Exception, "^String not terminated$"),
-            (32766, Exception, "^String not terminated$"),
-            (32768, ValueError, "^Invalid WebFile signature: 'efgh"),
-            (40000, ValueError, "^Invalid WebFile signature: 'efgh"),
+        for size, seed, error, message in (
+            (200, 5, Exception, "^String not terminated$"),
+            (32766, 5, Exception, "^String not terminated$"),
+            (32767, 1, Exception, "^String not terminated$"),  # seed 5 at this size is stored, which the trick refuses
+            (32768, 5, ValueError, "^Invalid WebFile signature: 'efgh"),
+            (40000, 5, ValueError, "^Invalid WebFile signature: 'efgh"),
         ):
-            nul_free = bytes(random.Random(5).choices(b"abcdefgh", k=size))
+            nul_free = bytes(random.Random(seed).choices(b"abcdefgh", k=size))
             with self.subTest(size=size), self.assertRaisesRegex(error, message) as caught:
                 load(unity_brotli(nul_free))
             self.assertIs(type(caught.exception), error)
+        # The boundary is the memory reader's: no NUL in 32767 bytes raises, and from 32768 it returns 32767.
+        with self.assertRaisesRegex(Exception, "^String not terminated$"):
+            EndianBinaryReader(b"B" * 32767).read_string_to_null()
+        self.assertEqual(EndianBinaryReader(b"B" * 32768).read_string_to_null(), "B" * 32767)
         # decompress_brotli and decompress_gzip are the libraries' own.
         from UnityPy.helpers import CompressionHelper as H
 
@@ -336,15 +341,51 @@ class FileRows(unittest.TestCase):
         with open(d / "a.assets", "rb") as named:
             e = quietly(UnityPy.Environment, named)
         self.assertEqual((list(e.files), list(e.cabs)), ([str(d / "a.assets")], ["a.assets"]))
+        # A stream whose `name` is not a str is keyed by that value too: a TemporaryFile's file descriptor (an
+        # int), a SpooledTemporaryFile's None. A bundle loads under it; a SerializedFile raises AttributeError
+        # (parse_file's `name.endswith`) and a raw file TypeError (register_cab's basename). With `name=` each loads.
+        bundle, serialized = S.fs_bundle([(b"CAB-a", text_asset_file("in bundle"), 4)]), text_asset_file("t")
+        raw = b"not a unity file, " * 8
+
+        def stream(kind, data):
+            made = tempfile.TemporaryFile() if kind == "int" else tempfile.SpooledTemporaryFile()  # noqa: SIM115
+            self.addCleanup(made.close)
+            made.write(data)
+            made.seek(0)
+            return made
+
+        for kind, type_name in (("int", "int"), ("None", "NoneType")):
+            with self.subTest(name=kind):
+                f = stream(kind, bundle)
+                e = quietly(UnityPy.Environment, f)
+                self.assertEqual((list(e.files), list(e.cabs)), ([f.name], ["cab-a"]))
+                self.assertIsInstance(f.name, int if kind == "int" else type(None))
+                with self.assertRaisesRegex(AttributeError, f"^'{type_name}' object has no attribute 'endswith'$"):
+                    quietly(UnityPy.Environment, stream(kind, serialized))
+                with self.assertRaisesRegex(TypeError, f"^expected str, bytes or os.PathLike object, not {type_name}$"):
+                    quietly(UnityPy.Environment, stream(kind, raw))
+                kinds = ((serialized, "SerializedFile"), (raw, "EndianBinaryReader"), (bundle, "BundleFile"))
+                for payload, loaded in kinds:
+                    e = UnityPy.Environment()
+                    quietly(e.load_file, stream(kind, payload), name="given")
+                    self.assertEqual(list(e.files), ["given"])
+                    self.assertTrue(type(e.files["given"]).__name__.startswith(loaded))
         # Anything else is keyed by str(obj.__hash__()) (section 19.2): bytes and a read-only memoryview by the
         # bytes' hash, a nameless stream by its own id-based hash.
         data = text_asset_file("q")
         stream = io.BytesIO(data)
-        for arg, key in ((data, hash(data)), (memoryview(data), hash(data)), (stream, hash(stream))):
+        reader = EndianBinaryReader(data)
+        for arg, key in (
+            (data, hash(data)),
+            (memoryview(data), hash(data)),
+            (stream, hash(stream)),
+            (reader, hash(reader)),
+        ):
             with self.subTest(type(arg).__name__):
                 e = quietly(UnityPy.Environment, arg)
                 self.assertEqual((list(e.files), list(e.cabs)), ([str(key)], [str(key)]))
         self.assertNotEqual(str(hash(stream)), str(hash(io.BytesIO(data))), "equal streams, two keys")
+        self.assertEqual(len(quietly(UnityPy.Environment, data, memoryview(data)).files), 1, "one key, one entry")
         # A bytearray, which UnityPy's own FileSourceType lists, raises: the eagerly evaluated default key calls
         # its __hash__, which is None (Tier B, section 19.2). A writable memoryview cannot be hashed, and a Path
         # is no type the reader takes.
@@ -360,6 +401,7 @@ class FileRows(unittest.TestCase):
         e = UnityPy.Environment()
         quietly(e.load_file, data, name="custom")
         quietly(e.load_file, bytearray(text_asset_file("r")), name="from a bytearray")
+        quietly(e.load_file, memoryview(bytearray(text_asset_file("w"))), name="from a writable memoryview")
         with mock.patch("builtins.open", tracked):
             quietly(e.load_file, str(d / "a.assets"), name="ignored")
             quietly(e.load_file, str(d / "sp" / "s.assets.split0"), name="ignored too")
@@ -368,18 +410,20 @@ class FileRows(unittest.TestCase):
             {
                 "custom": "SerializedFile",
                 "from a bytearray": "SerializedFile",
+                "from a writable memoryview": "SerializedFile",
                 "D/a.assets": "SerializedFile",
                 "D/sp/s.assets": "SerializedFile",
             },
         )
         # The bytes key is the process's string hash, which PYTHONHASHSEED randomises: two processes key one
-        # input differently, so no port can reproduce it.
+        # input differently, two under one seed alike, and in each the key is str(hash(data)), which the binding
+        # computes in the caller's process (Tier A, section 19.2).
         import subprocess
 
         (d / "q.bin").write_bytes(data)
         code = "import sys, UnityPy; b = open(sys.argv[1], 'rb').read(); print(*UnityPy.Environment(b).files, hash(b))"
-        keys = set()
-        for seed in ("1", "2"):
+
+        def key_under(seed):
             run = subprocess.run(
                 [sys.executable, "-c", code, str(d / "q.bin")],
                 env=dict(os.environ, PYTHONHASHSEED=seed),
@@ -389,8 +433,10 @@ class FileRows(unittest.TestCase):
             )
             key, hashed = run.stdout.split()
             self.assertEqual(key, hashed)
-            keys.add(key)
-        self.assertEqual(len(keys), 2)
+            return key
+
+        self.assertNotEqual(key_under("1"), key_under("2"))
+        self.assertEqual(key_under("7"), key_under("7"))
 
     def chdir(self, path):
         import os
