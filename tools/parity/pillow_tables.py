@@ -174,9 +174,6 @@ def conditions(extension, modes, folder):
         assert isinstance(other, bytes), (extension, mode)
         holds_name = PDF_DATES.sub(b"", other) != PDF_DATES.sub(b"", base)
         foreign = None if isinstance(foreign, bytes) else foreign
-        # The extension is matched case-insensitively: the upper-case spelling saves the same file.
-        upper = attempt(image, os.path.join(folder, "image" + extension.upper()))
-        assert isinstance(upper, bytes) and (holds_name or upper == base), (extension, mode)
         found.add((sizes, holds_name, foreign))
     assert len(found) == 1, (extension, found)
     sizes, holds_name, foreign = found.pop()
@@ -194,6 +191,33 @@ def conditions(extension, modes, folder):
     if foreign:
         parts.append(f"a non-ASCII basename raises `{foreign}`")
     return "; ".join(parts) or "—", bool(sizes or foreign), holds_name
+
+
+def spellings(extensions, modes, folder):
+    """Where the bytes depend on how the extension is spelt: every extension of a writer, in lower and upper case.
+
+    Pillow lower-cases the extension to choose the writer, so every spelling chooses the same one; the writer may
+    still read the file name. The bytes are compared with the basename masked (IM writes it, extension included) and
+    a PDF's dates masked. Returns the cell text, or None where every spelling writes the same bytes."""
+    groups = {}
+    for extension in extensions:
+        for spelling in (extension, extension.upper()):
+            name = ("image" + spelling).encode()
+            key = []
+            for mode in modes:
+                written = attempt(sample(mode), os.path.join(folder, "image" + spelling))
+                assert isinstance(written, bytes), (spelling, mode, written)  # every spelling saves what one saves
+                key.append(PDF_DATES.sub(b"", written).replace(name, b"<name>"))
+            groups.setdefault(tuple(key), []).append(spelling)
+    if len(groups) == 1:
+        return None
+    main = max(groups.values(), key=len)
+    odd = [spelling for group in groups.values() if group is not main for spelling in group]
+    # What Pillow 9.5.0 does: a lower-case spelling apart, its upper case writing what the rest write.
+    assert all(s == s.lower() and s.upper() in main for s in odd), groups
+    named = ", ".join(f"`{s}`" for s in odd)
+    upper = ", ".join(f"`{s.upper()}`" for s in odd)
+    return f"{named} in lower case writes other bytes than every other extension and spelling, {upper} included"
 
 
 def acceptance(kinds, raises_by_condition=False, holds_name=False):
@@ -247,7 +271,10 @@ def writers():
                 assert [writer_cell(fmt, extension, m, folder)[0] for m in SAVED_MODES] == [c[0] for c in cells]
             saving = [mode for mode, (kind, _) in zip(SAVED_MODES, cells, strict=True) if kind != "raises"]
             condition, raises, holds_name = conditions(extensions[0], saving, folder) if saving else ("—", False, False)
-            tier, text = acceptance((kind for kind, _ in cells), raises, holds_name)
+            spelt = spellings(extensions, saving, folder) if saving else None
+            if spelt:
+                condition = spelt if condition == "—" else f"{condition}; {spelt}"
+            tier, text = acceptance((kind for kind, _ in cells), raises, holds_name or bool(spelt))
             spans = ", ".join(f"`{e}`" for e in extensions)
             row = " | ".join(cell for _, cell in cells)
             lines.append(f"| {fmt} | {spans} | {row} | {condition} | {tier} | {text} |")
