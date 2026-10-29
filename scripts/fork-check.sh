@@ -82,15 +82,22 @@ done
 mkdir "$tmp/patches" "$tmp/replay"
 git format-patch --quiet --relative="$crate" -o "$tmp/patches" "$f0..HEAD" -- "$crate/src"
 cp -R "$pristine/src" "$tmp/replay/src"
-git -C "$tmp/replay" init --quiet
-git -C "$tmp/replay" add -A
-git -C "$tmp/replay" -c user.name=fork-check -c user.email=fork-check@invalid \
-    commit --quiet -m pristine
+# The replay is a repository of its own: GIT_DIR and GIT_WORK_TREE, which
+# name the checkout above (the container recipe sets them), must not reach
+# it, or `init` would rewrite that repository's config and `commit` would
+# commit there.
+replay() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
+        git -C "$tmp/replay" -c user.name=fork-check -c user.email=fork-check@invalid "$@"
+}
+replay init --quiet
+[ "$(replay rev-parse --absolute-git-dir)" = "$tmp/replay/.git" ] || fail "the replay repository is not its own"
+replay add -A
+replay commit --quiet -m pristine
 patches=$(find "$tmp/patches" -name '*.patch' | LC_ALL=C sort)
 if [ -n "$patches" ]; then
     # shellcheck disable=SC2086 # one argument per patch file
-    git -C "$tmp/replay" -c user.name=fork-check -c user.email=fork-check@invalid \
-        am --quiet --whitespace=nowarn $patches >&2 || fail "the patch series does not apply to the tarball's src/"
+    replay am --quiet --whitespace=nowarn $patches >&2 || fail "the patch series does not apply to the tarball's src/"
 fi
 diff -r "$tmp/replay/src" "$crate/src" >&2 || fail "$crate/src is not the tarball's plus the ledger's patches"
 
