@@ -116,7 +116,7 @@ def version_strings() -> list[str]:
             groups = ["2019", "4", "15", "1"]
             groups[field] = "0" * (n - len(groups[field])) + groups[field]
             big.append(f"{groups[0]}.{groups[1]}.{groups[2]}f{groups[3]}")
-    nd = [arabic(s) for s in ("2019.4.15f1", "2020.3.34f1", "5.6.7")] + [arabic(s) for s in big[:2]]
+    nd = [arabic(s) for s in ("2019.4.15f1", "2020.3.34f1", "5.6.7")] + [arabic(s) for s in big]
     return base + big + nd
 
 
