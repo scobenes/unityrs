@@ -524,6 +524,45 @@ class DumpTests(unittest.TestCase):
             (files[("b5_zip", "z")]["l0"]["type"], files[("b5_zip", "z")]["l0"]["parsed_as"]), ("ZIP", "raw")
         )
 
+    def test_externals_hold_only_the_members_their_format_reads(self):
+        """Spec 4.2: below format 6 UnityPy reads no temp_empty, below 5 no guid or type; each is null, not a stop."""
+
+        def old_format(version):
+            # Formats below 9: the header, 128 bytes of data (detection needs
+            # 128), then the metadata at the end: no types, no objects, one
+            # external with the members its format reads.
+            ext = b""
+            if version >= 6:
+                ext += b"tmp\0"
+            if version >= 5:
+                ext += bytes(range(16)) + struct.pack("<i", 2)
+            ext += b"lib/x\0"
+            meta = b"\0" + struct.pack("<ii", 0, 0) + struct.pack("<i", 1) + ext
+            if version >= 5:
+                meta += b"\0"  # userInformation
+            size = 16 + 128 + len(meta)
+            return struct.pack(">IIII", len(meta), size, version, 16) + bytes(128) + meta
+
+        d = self.tmp / "in"
+        d.mkdir()
+        for version in (1, 4, 5, 6):
+            (d / f"f{version}").write_bytes(old_format(version))
+        out = self.tmp / "old.jsonl"
+        # The whole run is dumped: no input stops it.
+        self.assertEqual(dump(d, "-o", out), 0)
+        self.assert_canonical(out)
+        files = {r["file"][0]: r for r in records(out) if r["rec"] == "file"}
+        guid = bytes(range(16)).hex()
+        self.assertEqual(
+            {name: (r["l0"]["parsed_as"], r["l1"]["externals"]) for name, r in files.items()},
+            {
+                "f1": ("SerializedFile", [[None, None, None, "lib/x"]]),
+                "f4": ("SerializedFile", [[None, None, None, "lib/x"]]),
+                "f5": ("SerializedFile", [[None, guid, 2, "lib/x"]]),
+                "f6": ("SerializedFile", [["tmp", guid, 2, "lib/x"]]),
+            },
+        )
+
     def test_resave_aligns_after_every_aligned_array_element(self):
         """Spec 7: UnityPy's writer aligns after each aligned element; UnityPyBoost reads runs and aligns once."""
         d = self.tmp / "in"

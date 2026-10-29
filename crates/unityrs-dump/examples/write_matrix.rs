@@ -1,5 +1,5 @@
 //! G3's and G3b's inputs (plan section 6). G3: `unityrs-testkit`'s synthetic format matrix
-//! (`bundle::matrix`: every `SerializedFile` format in both byte orders, a
+//! (`bundle::matrix`: every `SerializedFile` format from 1 to 22 in both byte orders, a
 //! file without type trees, UnityFS 6-8 with every codec, blocks-info at
 //! either end, both flag sets, padding, UnityWeb and UnityRaw at format 6,
 //! nested bundles), one file per case, written into an empty folder outside
@@ -12,26 +12,37 @@
 //! python tools/parity/compare.py ORACLE.jsonl.gz UNITYRS.jsonl.gz
 //! ```
 //!
-//! G3b: `write_matrix --mutants DIR` writes instead every builder output
-//! `unityrs_testkit::mutate::builder_outputs` lists (the matrix and every
-//! Environment scene's files), each as `unityrs_testkit::mutate::PER_INPUT`
-//! seeded mutants named `<input>~<index>~<label>`, dumped and compared the
-//! same way.
+//! G3b: `write_matrix --mutants [-j N] DIR` writes instead the mutants of every
+//! builder output `unityrs_testkit::mutate::builder_outputs` lists (the matrix
+//! and every Environment scene's files): two for each field the output's build
+//! writes, then `unityrs_testkit::mutate::RANDOM_PER_INPUT` bit flips and
+//! truncations, named `<input>~<index>~<label>`, dumped and compared the same
+//! way. The mutants are made on `N` threads (default 4); they do not depend on
+//! `N`.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-    let (mutate, dir) = match args.as_slice() {
-        [dir] => (false, dir),
-        [flag, dir] if flag.as_os_str() == "--mutants" => (true, dir),
-        _ => {
-            eprintln!(
-                "usage: write_matrix [--mutants] DIR (an empty or new folder outside the repository)"
-            );
-            return ExitCode::from(2);
+    let threads = |n: &PathBuf| {
+        n.to_str()
+            .and_then(|n| n.parse::<usize>().ok())
+            .filter(|n| *n > 0)
+    };
+    let (mutate, threads, dir) = match args.as_slice() {
+        [dir] => (false, Some(1), dir),
+        [flag, dir] if flag.as_os_str() == "--mutants" => (true, Some(4), dir),
+        [flag, j, n, dir] if flag.as_os_str() == "--mutants" && j.as_os_str() == "-j" => {
+            (true, threads(n), dir)
         }
+        _ => (false, Some(0), &PathBuf::new()),
+    };
+    let Some(threads) = threads.filter(|_| !dir.as_os_str().is_empty()) else {
+        eprintln!(
+            "usage: write_matrix [--mutants [-j N]] DIR (an empty or new folder outside the repository)"
+        );
+        return ExitCode::from(2);
     };
     // The folder as it will be, resolved through its nearest existing
     // ancestor, so nothing is created inside the repository.
@@ -80,11 +91,10 @@ fn main() -> ExitCode {
         }
     }
     let files: Vec<(String, Vec<u8>)> = if mutate {
-        use unityrs_testkit::mutate::{builder_outputs, mutants};
-        builder_outputs()
+        unityrs_testkit::mutate::gate_mutants(threads)
             .into_iter()
-            .flat_map(|(name, bytes)| {
-                mutants(name.as_bytes(), &bytes)
+            .flat_map(|(name, mutants)| {
+                mutants
                     .into_iter()
                     .enumerate()
                     .map(move |(i, m)| (format!("{name}~{i:03}~{}", m.label), m.bytes))

@@ -32,6 +32,9 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      # G6 (docs/plans/core.md section 6): no stub is left in any crate.
+      - name: No stub is left (G6)
+        run: sh scripts/stub-check.sh
 
   # crates/unityrs-rabex is rabex 0.2.1 from crates.io plus the patches its
   # UPSTREAM.md lists, and nothing else (docs/plans/core.md section 2.4):
@@ -125,10 +128,11 @@ jobs:
 
   # The parity tools' Python side, on the pinned oracle stack (docs/DESIGN.md
   # section 3) and with UnityPy's samples, so the tests that need them run;
-  # and what core takes from the oracle: the generated tables and G7.
+  # what core takes from the oracle: the generated tables and G7; and the
+  # gate's rows that need no corpus: UnityPy's samples, G2 and G3.
   parity-py:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         # bash -eo pipefail: a step fails at its first failing command.
@@ -203,12 +207,32 @@ jobs:
       - name: Self-tests (parity tools and the spikes' scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=261
+          tools/parity/tests=273
           crates/unityrs-spike-rabex/scripts/tests=19
           crates/unityrs-bench-lzma=8
-      # A smoke test that the oracle runs here; the unityrs side is compared later.
-      - name: Dump the samples with the oracle and compare the dump with itself
+      # The gate's rows that need no corpus (docs/plans/core.md sections 6
+      # and 10), each a unityrs dump compared with the oracle's: compare.py
+      # and value_cases.py exit non-zero on any difference. TPK is the
+      # oracle's own, which UnityPy reads for a stripped object.
+      - name: Build unityrs and the matrix writer (release)
+        run: |
+          cargo build --release --locked -p unityrs-cli
+          cargo build --release --locked -p unityrs-dump --example write_matrix
+          unitypy=$(python -c 'import os, UnityPy; print(os.path.dirname(UnityPy.__file__))')
+          echo "TPK=$unitypy/resources/lzma.tpk" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/dumps"
+      - name: UnityPy's samples, dumped by the oracle and by unityrs, compare equal
         run: |
           python tools/parity/unitypy_dump.py "$UNITYRS_UNITYPY_SAMPLES" -q -o "$RUNNER_TEMP/dumps/samples.jsonl.gz"
-          python tools/parity/compare.py "$RUNNER_TEMP/dumps/samples.jsonl.gz" "$RUNNER_TEMP/dumps/samples.jsonl.gz" \
-            --json "$RUNNER_TEMP/dumps/report.json"
+          target/release/unityrs dump "$UNITYRS_UNITYPY_SAMPLES" -q --tpk "$TPK" \
+            -o "$RUNNER_TEMP/dumps/samples-unityrs.jsonl.gz"
+          python tools/parity/compare.py "$RUNNER_TEMP/dumps/samples.jsonl.gz" \
+            "$RUNNER_TEMP/dumps/samples-unityrs.jsonl.gz" --json "$RUNNER_TEMP/dumps/samples-report.json"
+      - name: G2, the value cases through `unityrs values`
+        run: python tools/parity/value_cases.py target/release/unityrs
+      - name: G3, the synthetic matrix dumped by the oracle and by unityrs, compare equal
+        run: |
+          target/release/examples/write_matrix "$RUNNER_TEMP/g3"
+          python tools/parity/unitypy_dump.py "$RUNNER_TEMP/g3" -q -o "$RUNNER_TEMP/dumps/g3.jsonl.gz"
+          target/release/unityrs dump "$RUNNER_TEMP/g3" -q --tpk "$TPK" -o "$RUNNER_TEMP/dumps/g3-unityrs.jsonl.gz"
+          python tools/parity/compare.py "$RUNNER_TEMP/dumps/g3.jsonl.gz" "$RUNNER_TEMP/dumps/g3-unityrs.jsonl.gz"

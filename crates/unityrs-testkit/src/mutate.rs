@@ -1,33 +1,38 @@
-//! G3b's seeded mutator (plan section 6): each builder output is mutated
-//! [`PER_INPUT`] times, by three operators, and both dumpers read every
-//! mutant.
+//! G3b's seeded mutator (plan section 6): every builder output, mutated by
+//! three operators, and both dumpers read every mutant.
 //!
-//! - **Fields.** Every 4- and 8-byte window, at every offset and in both
-//!   byte orders, whose value lies in `1..=len` (the file's length) is taken
-//!   for a count, a length, a size or an offset: the shapes the builders
-//!   write for each such field. Each chosen window becomes two mutants, one
-//!   with the field set negative (-1 or the type's minimum) and one huge (the
-//!   type's maximum, or 2^30 or 2^40). When an input has more candidates than
-//!   [`FIELD_SHARE`] mutants can cover, a seeded sample of them is taken.
+//! - **Fields.** Every field the build of an output writes into it (each
+//!   4- and 8-byte integer, [`crate::writer`]: every count, length, size and
+//!   offset, zero-valued ones included, and every other integer of those
+//!   widths) becomes two mutants: the field set negative (-1 or the type's
+//!   minimum) and set huge (the type's maximum, or 2^30 or 2^40). The
+//!   output is built again with that one field replaced as it is written
+//!   ([`crate::writer::with_fields`]), so a field inside a compressed block,
+//!   or in a file a bundle holds, is changed before the block is compressed
+//!   and the bundle's sizes are computed. A field belongs to the outputs
+//!   whose bytes change when it alone is replaced; one that changes no
+//!   output (a build kept only for its length) is no output's.
 //! - **Bit flips.** One to eight random bits.
 //! - **Truncation.** The input cut at a random length below its own.
 //!
-//! The field mutants come first, then the rest of the budget alternates bit
-//! flips and truncations. Each input's generator is [`SEED`] mixed with the
-//! FNV-1a hash of its name, so a mutant reproduces from its input's name and
-//! its index; its label says what was done (`f<offset>.<le|be><4|8><n|h>`,
-//! `b<bits>`, `t<length>`).
+//! Each output's field mutants come first, in write order, then
+//! [`RANDOM_PER_INPUT`] mutants alternate bit flips and truncations. Each
+//! output's generator is [`SEED`] mixed with the FNV-1a hash of its name, and
+//! picks each field's value from its pair; a mutant's label says what was
+//! done (`f<field>.<le|be><4|8><n|h>`, the field's number among the output's
+//! own, `b<bits>`, `t<length>`). The mutants depend only on the builders'
+//! code, never on how many threads made them.
+
+use std::collections::HashMap;
 
 use crate::rng::Rng;
+use crate::writer::{Field, with_fields};
 
 /// The master seed (recorded in the gate's report).
 pub const SEED: u64 = 0x6733_6200_5031_0001;
 
-/// Mutants per input.
-pub const PER_INPUT: usize = 200;
-
-/// At most this many of an input's mutants change a field.
-pub const FIELD_SHARE: usize = 120;
+/// Bit flips and truncations per output, after its field mutants.
+pub const RANDOM_PER_INPUT: usize = 80;
 
 /// One mutant: what was done, and the bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,13 +43,8 @@ pub struct Mutant {
     pub bytes: Vec<u8>,
 }
 
-/// A count, length, size or offset field candidate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Field {
-    at: usize,
-    width: usize,
-    big: bool,
-}
+/// Named outputs, in build order.
+pub type Outputs = Vec<(String, Vec<u8>)>;
 
 fn fnv1a(name: &[u8]) -> u64 {
     name.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
@@ -52,81 +52,196 @@ fn fnv1a(name: &[u8]) -> u64 {
     })
 }
 
-fn read(data: &[u8], f: Field) -> Option<u64> {
-    let w = data.get(f.at..f.at.checked_add(f.width)?)?;
-    let mut v = 0u64;
-    for i in 0..f.width {
-        let b = if f.big { w[i] } else { w[f.width - 1 - i] };
-        v = (v << 8) | u64::from(b);
-    }
-    Some(v)
-}
-
-fn write(data: &mut [u8], f: Field, v: u64) {
-    let bytes = if f.big {
-        v.to_be_bytes()
+/// All the field's bits set.
+fn mask(f: &Field) -> u64 {
+    if f.width >= 8 {
+        u64::MAX
     } else {
-        v.to_le_bytes()
-    };
-    // The field's `width` bytes: the low ones of `v`.
-    let src = if f.big {
-        bytes.get(8 - f.width..)
-    } else {
-        bytes.get(..f.width)
-    };
-    if let (Some(w), Some(src)) = (data.get_mut(f.at..f.at + f.width), src) {
-        w.copy_from_slice(src);
+        (1u64 << (8 * f.width)) - 1
     }
 }
 
-fn candidates(data: &[u8]) -> Vec<Field> {
-    let len = data.len() as u64;
-    let mut out = Vec::new();
-    for width in [4, 8] {
-        for at in 0..data.len().saturating_sub(width - 1) {
-            for big in [false, true] {
-                let f = Field { at, width, big };
-                if read(data, f).is_some_and(|v| (1..=len).contains(&v)) {
-                    out.push(f);
-                }
+/// The negative pair and the huge pair for a field of `width` bytes.
+fn pairs(width: usize) -> ([u64; 2], [u64; 2]) {
+    if width == 4 {
+        ([0xFFFF_FFFF, 0x8000_0000], [0x7FFF_FFFF, 1 << 30])
+    } else {
+        ([u64::MAX, 1 << 63], [i64::MAX.unsigned_abs(), 1 << 40])
+    }
+}
+
+/// `run` over `jobs` on up to `threads` threads; result `i` is `run(&jobs[i])`.
+fn parallel<J: Sync, R: Send>(
+    jobs: &[J],
+    threads: usize,
+    run: &(dyn Fn(&J) -> R + Sync),
+) -> Vec<R> {
+    let threads = threads.clamp(1, jobs.len().max(1));
+    if threads == 1 {
+        return jobs.iter().map(run).collect();
+    }
+    let mut all: Vec<(usize, R)> = Vec::with_capacity(jobs.len());
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..threads)
+            .map(|t| {
+                s.spawn(move || {
+                    jobs.iter()
+                        .enumerate()
+                        .skip(t)
+                        .step_by(threads)
+                        .map(|(i, j)| (i, run(j)))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for h in handles {
+            // A builder that panics is a bug in the builders: pass it on.
+            match h.join() {
+                Ok(part) => all.extend(part),
+                Err(e) => std::panic::resume_unwind(e),
             }
         }
-    }
-    out
+    });
+    all.sort_by_key(|(i, _)| *i);
+    all.into_iter().map(|(_, r)| r).collect()
 }
 
-/// [`PER_INPUT`] mutants of `data`, the builder output named `name`.
+/// The outputs of a build with `overrides`, by name.
+fn rebuild(
+    build: &(dyn Fn() -> Outputs + Sync),
+    overrides: &[(usize, u64)],
+) -> HashMap<String, Vec<u8>> {
+    with_fields(overrides, build).0.into_iter().collect()
+}
+
+/// One field mutant to make: an output, a field, its value, the label.
+struct Planned {
+    output: usize,
+    field: usize,
+    value: u64,
+    label: String,
+}
+
+/// Every output of `build` with its mutants (module docs), the work spread
+/// over `threads` threads. `build` must give the same outputs, under names
+/// that do not repeat, each time it runs.
 #[must_use]
-pub fn mutants(name: &[u8], data: &[u8]) -> Vec<Mutant> {
-    let mut rng = Rng::new(SEED ^ fnv1a(name));
-    let mut fields = candidates(data);
-    // A seeded sample when there are more than the field share covers.
-    let take = (FIELD_SHARE / 2).min(fields.len());
-    for i in 0..take {
-        let j = i + rng.below(fields.len() - i);
-        fields.swap(i, j);
-    }
-    fields.truncate(take);
-    fields.sort_by_key(|f| (f.at, f.width, f.big));
-    let mut out = Vec::with_capacity(PER_INPUT);
-    for f in fields {
-        let end = if f.big { "be" } else { "le" };
-        let (neg, huge): ([u64; 2], [u64; 2]) = if f.width == 4 {
-            ([0xFFFF_FFFF, 0x8000_0000], [0x7FFF_FFFF, 1 << 30])
-        } else {
-            ([u64::MAX, 1 << 63], [i64::MAX as u64, 1 << 40])
-        };
-        for (tag, pick) in [("n", neg), ("h", huge)] {
-            let mut bytes = data.to_vec();
-            write(&mut bytes, f, pick[rng.below(2)]);
-            out.push(Mutant {
-                label: format!("f{:x}.{end}{}{tag}", f.at, f.width),
-                bytes,
-            });
+pub fn mutants_of(
+    build: &(dyn Fn() -> Outputs + Sync),
+    threads: usize,
+) -> Vec<(String, Vec<Mutant>)> {
+    let (base, fields) = with_fields(&[], build);
+    // The outputs each field changes when it alone is replaced by its
+    // complement.
+    let ids: Vec<usize> = (0..fields.len()).collect();
+    let owners: Vec<Vec<usize>> = parallel(&ids, threads, &|k| {
+        let f = &fields[*k];
+        let again = rebuild(build, &[(*k, !f.value & mask(f))]);
+        base.iter()
+            .enumerate()
+            .filter(|(_, (name, bytes))| again.get(name).is_some_and(|b| b != bytes))
+            .map(|(o, _)| o)
+            .collect()
+    });
+    let mut own: Vec<Vec<usize>> = vec![Vec::new(); base.len()];
+    for (k, os) in owners.iter().enumerate() {
+        for o in os {
+            own[*o].push(k);
         }
     }
+    // Each output's field values come from its own generator, which then
+    // drives its random operators.
+    let mut rngs: Vec<Rng> = base
+        .iter()
+        .map(|(name, _)| Rng::new(SEED ^ fnv1a(name.as_bytes())))
+        .collect();
+    let mut planned: Vec<Vec<Planned>> = Vec::with_capacity(base.len());
+    for (o, ks) in own.iter().enumerate() {
+        let mut row = Vec::with_capacity(2 * ks.len());
+        for (i, k) in ks.iter().enumerate() {
+            let f = &fields[*k];
+            let end = if f.big_endian { "be" } else { "le" };
+            let (neg, huge) = pairs(f.width);
+            for (tag, pair) in [("n", neg), ("h", huge)] {
+                let pick = rngs[o].below(2);
+                // A field already at the picked value takes the other one.
+                let value = if pair[pick] == f.value {
+                    pair[1 - pick]
+                } else {
+                    pair[pick]
+                };
+                row.push(Planned {
+                    output: o,
+                    field: *k,
+                    value,
+                    label: format!("f{i}.{end}{}{tag}", f.width),
+                });
+            }
+        }
+        planned.push(row);
+    }
+    // A field one output alone holds is replaced together with one such
+    // field of each other output (no output sees another's); a field that
+    // several outputs hold is replaced on its own.
+    let rounds = planned.iter().map(Vec::len).max().unwrap_or(0);
+    let mut batches: Vec<Vec<&Planned>> = (0..rounds)
+        .map(|r| {
+            planned
+                .iter()
+                .filter_map(|row| row.get(r))
+                .filter(|p| owners[p.field].len() == 1)
+                .collect()
+        })
+        .collect();
+    batches.extend(
+        planned
+            .iter()
+            .flatten()
+            .filter(|p| owners[p.field].len() > 1)
+            .map(|p| vec![p]),
+    );
+    let made: Vec<Vec<(usize, usize, Mutant)>> = parallel(&batches, threads, &|batch| {
+        let overrides: Vec<(usize, u64)> = batch.iter().map(|p| (p.field, p.value)).collect();
+        let again = rebuild(build, &overrides);
+        batch
+            .iter()
+            .filter_map(|p| {
+                let (name, bytes) = &base[p.output];
+                // A replacement that leaves the output as it was is no mutant.
+                let got = again.get(name).filter(|b| *b != bytes)?;
+                let order = planned[p.output].iter().position(|q| q.label == p.label)?;
+                Some((
+                    p.output,
+                    order,
+                    Mutant {
+                        label: p.label.clone(),
+                        bytes: got.clone(),
+                    },
+                ))
+            })
+            .collect()
+    });
+    let mut by_output: Vec<Vec<(usize, Mutant)>> = vec![Vec::new(); base.len()];
+    for (o, order, m) in made.into_iter().flatten() {
+        by_output[o].push((order, m));
+    }
+    base.into_iter()
+        .zip(by_output)
+        .zip(rngs.iter_mut())
+        .map(|(((name, data), mut fm), rng)| {
+            fm.sort_by_key(|(order, _)| *order);
+            let mut out: Vec<Mutant> = fm.into_iter().map(|(_, m)| m).collect();
+            out.extend(random_mutants(&data, rng));
+            (name, out)
+        })
+        .collect()
+}
+
+/// [`RANDOM_PER_INPUT`] mutants of `data`, bit flips and truncations by turns.
+fn random_mutants(data: &[u8], rng: &mut Rng) -> Vec<Mutant> {
+    let mut out = Vec::with_capacity(RANDOM_PER_INPUT);
     let mut flip = true;
-    while out.len() < PER_INPUT && !data.is_empty() {
+    while out.len() < RANDOM_PER_INPUT && !data.is_empty() {
         let mut bytes = data.to_vec();
         let label = if flip {
             let bits = 1 + rng.below(8);
@@ -151,7 +266,7 @@ pub fn mutants(name: &[u8], data: &[u8]) -> Vec<Mutant> {
 /// the format matrix ([`crate::bundle::matrix`]) and every file of every
 /// Environment scene ([`crate::env::scenes`], named `scene-<scene>-<file>`).
 #[must_use]
-pub fn builder_outputs() -> Vec<(String, Vec<u8>)> {
+pub fn builder_outputs() -> Outputs {
     let mut out = crate::bundle::matrix();
     for (scene, s) in crate::env::scenes() {
         for (name, bytes) in s.files.into_iter().chain(s.resolver) {
@@ -162,65 +277,126 @@ pub fn builder_outputs() -> Vec<(String, Vec<u8>)> {
     out
 }
 
+/// G3b's mutants: [`mutants_of`] the [`builder_outputs`].
+#[must_use]
+pub fn gate_mutants(threads: usize) -> Vec<(String, Vec<Mutant>)> {
+    mutants_of(&builder_outputs, threads)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Field, PER_INPUT, builder_outputs, candidates, mutants, read};
+    use super::{Outputs, RANDOM_PER_INPUT, builder_outputs, mutants_of};
+    use crate::bundle::{TestCodec, compress};
+    use crate::writer::{ByteWriter, with_fields};
+
+    /// A count, a `u16` (no field) and a big-endian length.
+    fn body(count: u32) -> Vec<u8> {
+        let mut w = ByteWriter::le();
+        w.u32(count)
+            .u16(0xAAAA)
+            .set_big_endian(true)
+            .u64(3)
+            .bytes(b"xyz");
+        w.into_inner()
+    }
+
+    /// A zero count and a length, plain; the same inside an LZ4 block whose
+    /// stored size follows it; and a build kept only for its length.
+    fn small() -> Outputs {
+        let plain = body(0);
+        let packed = compress(TestCodec::Lz4, &body(3));
+        let mut w = ByteWriter::be();
+        w.u32(u32::try_from(packed.len()).unwrap()).bytes(&packed);
+        let wrapped = w.into_inner();
+        let only_its_length = body(9).len();
+        vec![
+            ("plain".into(), plain),
+            ("wrapped".into(), wrapped),
+            ("sized".into(), vec![0; only_its_length]),
+        ]
+    }
 
     #[test]
-    fn mutants_are_seeded_counted_and_change_their_input() {
+    fn every_field_of_every_output_is_set_negative_and_huge() {
+        let all = mutants_of(&small, 1);
+        let names: Vec<&str> = all.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["plain", "wrapped", "sized"]);
+        let labels = |o: usize| -> Vec<&str> {
+            all[o]
+                .1
+                .iter()
+                .filter(|m| m.label.starts_with('f'))
+                .map(|m| m.label.as_str())
+                .collect()
+        };
+        // The zero count and the big-endian length, each both ways.
+        assert_eq!(labels(0), ["f0.le4n", "f0.le4h", "f1.be8n", "f1.be8h"]);
+        // The two inside the block, then the block's stored size, written last.
+        assert_eq!(
+            labels(1),
+            [
+                "f0.le4n", "f0.le4h", "f1.be8n", "f1.be8h", "f2.be4n", "f2.be4h"
+            ]
+        );
+        // The third output holds no field of the build it was sized by.
+        assert_eq!(labels(2), Vec::<&str>::new());
+        // The zero count set negative, the rest unchanged.
+        let base = small();
+        let m = &all[0].1[0];
+        assert!(
+            [[0xFF; 4], [0, 0, 0, 0x80]].contains(&<[u8; 4]>::try_from(&m.bytes[..4]).unwrap())
+        );
+        assert_eq!(m.bytes[4..], base[0].1[4..]);
+        // The count inside the block is replaced before it is compressed.
+        let w = &all[1].1[1];
+        let size = usize::try_from(u32::from_be_bytes(w.bytes[..4].try_into().unwrap())).unwrap();
+        let inner = lz4_flex::block::decompress(&w.bytes[4..4 + size], 17).unwrap();
+        let count = u32::from_le_bytes(inner[..4].try_into().unwrap());
+        assert!([0x7FFF_FFFF, 1 << 30].contains(&count), "{count:#x}");
+        assert_eq!(inner[4..], body(3)[4..]);
+        // Then the random operators.
+        for (_, ms) in &all {
+            let random = ms.iter().filter(|m| !m.label.starts_with('f')).count();
+            assert_eq!(random, RANDOM_PER_INPUT);
+        }
+    }
+
+    #[test]
+    fn the_mutants_do_not_depend_on_the_threads() {
+        assert_eq!(mutants_of(&small, 1), mutants_of(&small, 3));
+    }
+
+    #[test]
+    fn the_gate_mutates_every_field_of_its_outputs() {
         let inputs = builder_outputs();
         assert!(inputs.len() > 98, "{}", inputs.len());
         let mut names: Vec<&String> = inputs.iter().map(|(n, _)| n).collect();
         names.sort();
         names.dedup();
         assert_eq!(names.len(), inputs.len(), "names repeat");
-        for (name, data) in inputs.iter().take(12) {
-            let a = mutants(name.as_bytes(), data);
-            assert_eq!(a, mutants(name.as_bytes(), data), "{name}: not seeded");
-            assert_eq!(a.len(), PER_INPUT, "{name}");
+        // The builders give the same bytes and fields each time, which the
+        // attribution of fields to outputs rests on.
+        assert_eq!(
+            with_fields(&[], builder_outputs),
+            with_fields(&[], builder_outputs)
+        );
+        let all = super::gate_mutants(4);
+        assert_eq!(all.len(), inputs.len());
+        let mut no_field = Vec::new();
+        for ((name, data), (n, ms)) in inputs.iter().zip(&all) {
+            assert_eq!(name, n);
             assert!(
-                a.iter().all(|m| m.bytes != *data),
+                ms.iter().all(|m| m.bytes != *data),
                 "{name}: a mutant is its input"
             );
-            assert!(
-                a.iter().any(|m| m.label.starts_with('f')),
-                "{name}: no field"
-            );
-            assert!(a.iter().any(|m| m.label.starts_with('t')), "{name}");
+            let fields = ms.iter().filter(|m| m.label.starts_with('f')).count();
+            assert_eq!(fields % 2, 0, "{name}: {fields} field mutants");
+            if fields == 0 {
+                no_field.push(name.as_str());
+            }
+            assert_eq!(ms.len(), fields + RANDOM_PER_INPUT, "{name}");
         }
-    }
-
-    #[test]
-    fn a_field_is_found_in_either_order_and_width() {
-        let mut d = vec![0u8; 24];
-        d[3..7].copy_from_slice(&5u32.to_be_bytes());
-        d[12..20].copy_from_slice(&9u64.to_le_bytes());
-        let c = candidates(&d);
-        assert!(c.contains(&Field {
-            at: 3,
-            width: 4,
-            big: true
-        }));
-        assert!(c.contains(&Field {
-            at: 12,
-            width: 8,
-            big: false
-        }));
-        assert!(c.contains(&Field {
-            at: 12,
-            width: 4,
-            big: false
-        }));
-        assert_eq!(
-            read(
-                &d,
-                Field {
-                    at: 3,
-                    width: 4,
-                    big: false
-                }
-            ),
-            Some(0x0500_0000)
-        );
+        // Only a resource file of raw bytes holds no field.
+        assert_eq!(no_field, ["scene-resolver_loads-CAB-H2.resS"]);
     }
 }

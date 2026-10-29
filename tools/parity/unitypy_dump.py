@@ -330,10 +330,17 @@ def serialized_l1(sf):
         "types": [type_record(t) for t in sf.types],
         "object_order": list(sf.objects.keys()),
         "script_types": [[s.local_serialized_file_index, s.local_identifier_in_file] for s in sf.script_types],
-        # Below format 6 UnityPy never sets temp_empty, and FileIdentifier's
-        # slots leave it unset (an AttributeError), so it is recorded as null.
+        # FileIdentifier's own __init__ sets temp_empty from format 6 and guid
+        # and type from format 5 only (files/SerializedFile.py:78-83), and its
+        # slots leave the others unset (an AttributeError): each is recorded as
+        # null, as the spec has a member its format lacks.
         "externals": [
-            [C.enc_name(getattr(e, "temp_empty", None)), C.enc_hex(e.guid), e.type, C.enc_name(e.path)]
+            [
+                C.enc_name(getattr(e, "temp_empty", None)),
+                C.enc_hex(getattr(e, "guid", None)),
+                getattr(e, "type", None),
+                C.enc_name(e.path),
+            ]
             for e in sf.externals
         ],
         "ref_types": None if ref_types is None else [type_record(t) for t in ref_types],
