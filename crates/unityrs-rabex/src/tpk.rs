@@ -51,6 +51,18 @@ pub enum Error {
         count: usize,
         max: usize,
     },
+    /// F9 (unityrs): a node walk reached a node at `depth` levels (the
+    /// root's is 1), past the `max` its caller allows.
+    WalkDepth {
+        depth: usize,
+        max: usize,
+    },
+    /// F9 (unityrs): a node walk would hold `rows` rows (those walked and
+    /// those still to walk), past the `max` its caller allows.
+    WalkRows {
+        rows: usize,
+        max: usize,
+    },
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -69,6 +81,14 @@ impl std::fmt::Display for Error {
                     "TPK {table}: {count} records, more than the {max} allowed"
                 )
             }
+            Error::WalkDepth { depth, max } => write!(
+                f,
+                "TPK node tree deeper than the walk allows: a node at depth {depth}, past {max}"
+            ),
+            Error::WalkRows { rows, max } => write!(
+                f,
+                "TPK node tree has more rows than the walk allows: {rows}, past {max}"
+            ),
         }
     }
 }
@@ -770,7 +790,9 @@ impl TpkTypeTreeBlob {
     /// release root (UnityPy asserts one, `Tpk.py:64`; an editor root does
     /// not count). The walk stops with an error at a level of `max_depth` or
     /// past `max_rows` rows, where UnityPy's never ends on a node that lists
-    /// itself or an ancestor.
+    /// itself or an ancestor: [`Error::WalkDepth`] (a node's depth counting
+    /// the root as 1, so a level of `max_depth` is a depth of
+    /// `max_depth + 1`) and [`Error::WalkRows`] (F9).
     pub fn release_rows(
         &self,
         class: &UnityClass,
@@ -832,13 +854,20 @@ impl TpkTypeTreeBlob {
             if node.sub_nodes.is_empty() {
                 continue;
             }
+            // F9 (unityrs): each bound is its own error. A child's depth,
+            // counting the root as 1, is its level plus one.
             if level + 1 >= max_depth {
-                return Err(invalid(
-                    "TPK node tree deeper than the walk allows (a node lists itself or an ancestor?)",
-                ));
+                return Err(Error::WalkDepth {
+                    depth: level + 2,
+                    max: max_depth,
+                });
             }
-            if rows + stack.len() + node.sub_nodes.len() > max_rows {
-                return Err(invalid("TPK node tree has more rows than the walk allows"));
+            let held = rows + stack.len() + node.sub_nodes.len();
+            if held > max_rows {
+                return Err(Error::WalkRows {
+                    rows: held,
+                    max: max_rows,
+                });
             }
             for &sub_node_id in node.sub_nodes.iter().rev() {
                 stack.push_front((sub_node_id, level + 1));
@@ -1626,6 +1655,53 @@ mod patch_tests {
         // The root alone fits a depth of 1.
         let tpk = chain(1).read().unwrap();
         assert_eq!(rows(&tpk, 1, 1).unwrap().unwrap(), [0]);
+    }
+
+    /// F9: each bound of the walk is its own error, naming the depth or the
+    /// rows that crossed it; the depth counts the root as 1.
+    #[test]
+    fn f9_the_walk_names_the_bound_it_stops_at() {
+        let tpk = chain(300).read().unwrap();
+        for (max, depth) in [(256, 257), (299, 300), (1, 2)] {
+            let got = rows(&tpk, 1, max);
+            assert!(
+                matches!(got, Err(Error::WalkDepth { depth: d, max: m }) if d == depth && m == max),
+                "{max}: {got:?}"
+            );
+        }
+        let mut blob = Blob::with_strings(2);
+        blob.nodes = vec![Node::new(0, 1, vec![1; 1000]), Node::new(0, 1, vec![])];
+        blob.classes = vec![(1, vec![(2 << 48, Some(Class::both(0)))])];
+        let tpk = blob.read().unwrap();
+        let class = tpk.class_entries(1).unwrap().next().unwrap().1.unwrap();
+        let got = tpk.release_rows(class, 2, 1000);
+        assert!(
+            matches!(
+                got,
+                Err(Error::WalkRows {
+                    rows: 1001,
+                    max: 1000
+                })
+            ),
+            "{got:?}"
+        );
+        // A node that lists itself reaches the depth, not a row count.
+        let mut blob = Blob::with_strings(2);
+        blob.nodes = vec![Node::new(0, 1, vec![0])];
+        blob.classes = vec![(1, vec![(2 << 48, Some(Class::both(0)))])];
+        let tpk = blob.read().unwrap();
+        let got = rows(&tpk, 1, 256);
+        assert!(
+            matches!(
+                got,
+                Err(Error::WalkDepth {
+                    depth: 257,
+                    max: 256
+                })
+            ),
+            "{got:?}"
+        );
+        assert!(!got.unwrap_err().to_string().contains("lists itself"));
     }
 
     #[test]
