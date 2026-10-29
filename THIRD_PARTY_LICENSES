@@ -1,0 +1,142 @@
+Third-party notices for unityrs
+
+unityrs includes code ported or vendored from the projects below. Each is
+used under the licence named here. The licence texts follow each entry. The
+provenance of bundled data is recorded at the end.
+
+The plan that governs this file is docs/plans/core.md, section 2.5.
+
+
+== UnityPy 1.25.2 and UnityPyBoost ==
+
+https://github.com/K0lb3/UnityPy
+Licence: MIT.
+
+unityrs-core ports the read and write rules of UnityPy 1.25.2 and of the
+UnityPyBoost C++ extension shipped in the same release. A ported file names
+its UnityPy source in its header and cites lines of that release. The tables
+in crates/unityrs-core/src/classid.rs and
+crates/unityrs-core/src/typetree/commonstring.rs are generated from
+UnityPy 1.25.2 (UnityPy.enums.ClassIDType and
+UnityPy.helpers.TypeTreeNode.get_common_strings()).
+
+The copyright line below is the one in the UnityPy 1.25.2 release's LICENSE.
+Later UnityPy revisions read "Copyright (c) 2019-2026 K0lb3"; code ported
+from a later revision cites that revision and that line.
+
+MIT License
+
+Copyright (c) 2019-2021 K0lb3
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+== rabex 0.2.1 ==
+
+https://github.com/jakobhellermann/RustyAssetBundleEXtractor
+https://crates.io/crates/rabex/0.2.1
+Licence: offered as MIT OR Apache-2.0. unityrs elects the MIT licence for
+all rabex code it vendors.
+
+Authors, as named in rabex's Cargo.toml: Rudolf Kolbe and Jakob Hellermann.
+rabex carries no copyright line: its LICENSE-MIT.md, reproduced verbatim
+below, begins at "Permission is hereby granted", so none is invented here.
+
+rabex 0.2.1 is vendored as the crate crates/unityrs-rabex (library name
+rabex). Its first commit is the unmodified crates.io source; every later
+change is a numbered patch listed, with its reason, in
+crates/unityrs-rabex/UPSTREAM.md. The crate's own LICENSE-MIT.md and
+LICENSE-APACHE.md travel with it.
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
+== CNStudio (through rabex) ==
+
+https://github.com/Razmoth/CNStudio
+Licence: MIT.
+
+rabex's src/archive_storage_manager.rs (the UnityCN block decryptor)
+credits CNStudio's AssetStudio/CNUnity.cs. CNStudio is a fork of
+AssetStudio and carries AssetStudio's MIT licence and copyright lines:
+
+MIT License
+
+Copyright (c) 2016 Radu
+Copyright (c) 2016-2020 Perfare
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+== Data provenance ==
+
+crates/unityrs-core/src/typetree/commonstring.rs: the 112 strings that
+UnityPy 1.25.2's blob parser resolves. 108 come from UnityPy's MIT source
+(UnityPy/enums/CommonString.py). Four (1161 Hash128, 1169 RenderingLayerMask,
+1188 fixed_array, 1200 EntityId) come from the type-tree package that
+UnityPy 1.25.2 ships, which derives from AssetRipper's TypeTreeDumps (no
+licence file). They are the names of Unity engine types. The generated file
+marks the source of each entry.
+
+crates/unityrs-core/src/classid.rs: class id names generated from
+UnityPy 1.25.2's MIT UnityPy/enums/ClassIDType.py.
+
+No type-tree package (TPK) file is included in this repository or in any
+binary built from it. unityrs-tpk loads one from a path the user supplies.
+
+No game data is included in this repository. Test inputs are synthetic and
+built in code.
