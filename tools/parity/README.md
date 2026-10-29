@@ -96,7 +96,7 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | `test_compare.py` | every finding kind on hand-built dumps: nested type mismatches at L1 and L2, identical noncanonical lines, level coverage, duplicates, unreadable input | stdlib |
 | `test_unitypy_boost.py` | synthetic typetrees through UnityPyBoost: float bits, NaN quieting, bool bytes, pairs, ReferencedObject and the registry scope, big-endian, every L2 error kind on both reading paths, the pure-Python path's tuples, 16-bit swap, registries in aligned class arrays, negative TypelessData lengths, and arrays of aligned vectors and TypelessData, version packing. It also checks that the spec's worked example is what the oracle writes. | UnityPy |
 | `test_dump.py` | the dumper end to end: UnityPy's samples, determinism across runs, `-j` and gzip, every line canonical, L0 detection quirks including gzip, UnityRaw formats 5 to 7, a failing entry, non-UTF-8 names; synthetic SerializedFiles (`tests/synth.py`) for the object table, check_read, resave and TPK wiring, version strings, type-record defaults by format, negative type indices, node rows and how blob rows become a tree, truncated blocks and zip entries; crash records (a killed input, a death while it returns its records, UnityPyBoost crashes), the dumper's own failures stopping the run, input names across locales and symlinks, load errors that quote bad bytes, the `None` leak, the pinned-stack refusal, index mode, the output and `--stats` guards | UnityPy, samples |
-| `test_inventory.py` | the inventory's matching rules (standard library): whole dotted chains, compact rows, a name under a wrong parent; with the oracle, that `PARITY.md` names every UnityPy module, class, function, module-level table or setting, class member, attrs field, package re-export, UnityPyBoost export and `TextureFormat`, and that removing any one entry, or writing it under a wrong parent, fails the check | stdlib; UnityPy for the rest |
+| `test_inventory.py` | the inventory's matching rules (standard library): whole dotted chains, compact rows, enum values, a name under a wrong parent, what counts as an attribute; with the oracle, that `collect()` finds exactly the group sizes `PARITY.md` section 21 states, that `PARITY.md` names every UnityPy module, class, function, module-level table or setting, class member, attrs field, other attribute, package re-export, UnityPyBoost export or member, enum member with its value, and `TextureFormat`, and that removing any one entry, or writing it under a wrong parent, fails the check | stdlib; UnityPy for the rest |
 | `test_texture_matrix.py` | the TextureFormat matrix of `PARITY.md` section 17: its tier and phase columns (standard library); with the oracle, the mode, result and `set_image` format UnityPy gives for each format on real-sized data, and the decoded pixels of every format that returns an image against a reference built from the format's layout (or, for a row marked wrong, the specific wrong pixels) | stdlib; UnityPy for the rest |
 | `test_parity_rows.py` | the `PARITY.md` rows a review disputed, each run on the smallest synthetic input that shows it (UnityFS bundles, WebFiles and serialized files built by `synth.py`); each test names its rows, and each row's test column names the test back | UnityPy |
 
@@ -107,10 +107,11 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 ```sh
 scripts/dev python tools/parity/inventory.py list [--json]   # UnityPy's public symbols, by group
 scripts/dev python tools/parity/inventory.py list --counts   # how many in each group
+scripts/dev python tools/parity/inventory.py enum-table       # the rows of PARITY.md's Appendix C
 scripts/dev python tools/parity/inventory.py check            # exit 1 and a list when PARITY.md misses any
 ```
 
-Both need UnityPy 1.25.2 and exit 2 without it. Section 21 of `PARITY.md` gives the naming rules.
+They need UnityPy 1.25.2 and exit 2 without it. Section 21 of `PARITY.md` gives the naming rules.
 
 ## Reproducing the numbers
 

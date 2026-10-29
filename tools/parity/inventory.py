@@ -21,15 +21,28 @@ The groups, and how PARITY.md names a symbol of each, inside a code span (backti
   (`Texture2D.set_image`). Inherited members are named under the class that defines them.
 - `fields`, every public attrs field a class declares itself, for every attrs class
   UnityPy defines, the generated classes included: `Class.field` (`GameObject.m_Name`).
+- `attributes`, every other public attribute of a class UnityPy defines outside
+  `classes/generated.py`, enums aside: a name its body assigns or annotates (a class
+  constant, a dataclass field, a declared instance attribute), a name its own methods
+  assign through their first parameter (`self.files = {}`), and a namedtuple's fields:
+  `Class.attribute` (`Environment.files`). A name a base class already has is named
+  under that base, and a member or field is not an attribute.
 - `exports`, every public name a package's `__init__.py` holds that it imports from
   another UnityPy module or assigns as an alias: the dotted path from `UnityPy`
   (`UnityPy.files.File`, `UnityPy.load`). A package's own submodules are `modules`.
-- `boost`, every public name UnityPyBoost exports: `UnityPyBoost.read_typetree`.
+- `boost`, every public name UnityPyBoost exports, and every public member its classes
+  define: `UnityPyBoost.read_typetree`, `UnityPyBoost.TypeTreeNode.m_Level`.
+- `enum_members`, every member of every enum UnityPy defines except `TextureFormat`:
+  its name and value, as a code span `` `NAME = value` `` in a table column headed
+  `values`, on the row whose first code span is the enum (`` `BuildTarget` ``).
 - `texture_formats`, every `TextureFormat` member: a table row with a cell
   `` `Name` `` and a cell holding its value.
 
-Out of scope: enum members and other class-level constants (an enum is named by its
-class; `TextureFormat` members have their own group), and private names.
+Out of scope: private names (a leading underscore), and an attribute that only code
+outside the class sets (`obj.x = ...` in another module, or `setattr`), because the
+collector reads a class's own body and methods. The generated classes' attributes are
+their attrs fields: the one `legacy_patch` function that assigns through `self`
+(`Texture2D.set_image`) assigns only fields.
 
 A dotted name must be written whole, from the start of its dotted chain: `` `Wrong.ImportHelper.check_file_type` ``
 does not name `ImportHelper.check_file_type`. The only prefixes allowed are the
@@ -38,12 +51,15 @@ package path that re-exports it (`UnityPy.classes.GameObject.m_Name`); the only
 suffixes are what follows the chain (a call, a subscript, a further `.attribute`).
 
 A long list may be written compactly instead: in a table with a column headed
-`fields` or `members`, a row whose first cell's first code span is `Parent` names
-`Parent.x` for every code span `` `x` `` in that column (Appendix A lists each
-generated class's fields this way).
+`fields`, `members` or `attributes`, a row whose first cell's first code span is
+`Parent` names `Parent.x` for every code span `` `x` `` in that column (Appendix A lists
+each generated class's fields this way).
 
-    scripts/dev python tools/parity/inventory.py list [--json]
+    scripts/dev python tools/parity/inventory.py list [--json | --counts]
+    scripts/dev python tools/parity/inventory.py enum-table
     scripts/dev python tools/parity/inventory.py check [PARITY.md]
+
+`enum-table` prints the rows of PARITY.md's enum appendix (Appendix C).
 
 Both need UnityPy (the oracle image). `check` exits 0 when nothing is missing, 1 when
 something is, and 2 when it cannot run.
@@ -53,6 +69,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import enum
 import importlib
 import inspect
 import json
@@ -64,9 +81,23 @@ REPO = Path(__file__).resolve().parents[2]
 DEFAULT_PARITY = REPO / "PARITY.md"
 PINNED_VERSION = "1.25.2"
 
-GROUPS = ("modules", "classes", "functions", "data", "methods", "fields", "exports", "boost", "texture_formats")
-DOTTED_GROUPS = ("classes", "functions", "data", "methods", "fields", "exports", "boost")
-COMPACT_COLUMNS = ("fields", "members")
+GROUPS = (
+    "modules",
+    "classes",
+    "functions",
+    "data",
+    "methods",
+    "fields",
+    "attributes",
+    "exports",
+    "boost",
+    "enum_members",
+    "texture_formats",
+)
+DOTTED_GROUPS = ("classes", "functions", "data", "methods", "fields", "attributes", "exports", "boost")
+COMPACT_COLUMNS = ("fields", "members", "attributes")
+VALUES_COLUMN = "values"
+ENUM_VALUE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*) = (-?[0-9]+)")
 
 # The package whose modules add members to the generated classes.
 LEGACY_PATCH = "UnityPy.classes.legacy_patch"
@@ -91,20 +122,55 @@ def _defined_in(value, prefix: str) -> bool:
     return (getattr(func, "__module__", None) or "").startswith(prefix)
 
 
+def _targets(node) -> list:
+    """What an assignment statement binds, tuples unpacked; nothing for any other node."""
+    if isinstance(node, ast.Assign):
+        targets = node.targets
+    elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+        targets = [node.target]
+    else:
+        return []
+    return [name for target in targets for name in (target.elts if isinstance(target, ast.Tuple) else [target])]
+
+
+def _bound_names(body) -> list[str]:
+    """The public names a block of statements assigns or annotates (`X = ...`, `X: T`, `X, Y = ...`)."""
+    return [
+        target.id
+        for node in body
+        for target in _targets(node)
+        if isinstance(target, ast.Name) and not target.id.startswith("_")
+    ]
+
+
 def _assigned_names(source: str) -> list[str]:
     """The public names a module's top level assigns (`X = ...`, `X: T = ...`, `X, Y = ...`)."""
+    return _bound_names(node for node in ast.parse(source).body if not isinstance(node, ast.AugAssign))
+
+
+def _class_defs(source: str) -> dict[str, ast.ClassDef]:
+    """A module's class statements by name, those inside `if` and `try` blocks included."""
+    return {node.name: node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ClassDef)}
+
+
+def _self_attributes(classdef: ast.ClassDef) -> list[str]:
+    """The public attributes a class's own methods assign through their first parameter (`self.x = ...`)."""
     names = []
-    for node in ast.parse(source).body:
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-        elif isinstance(node, ast.AnnAssign):
-            targets = [node.target]
-        else:
+    for method in classdef.body:
+        if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) or not method.args.args:
             continue
-        for target in targets:
-            for name in target.elts if isinstance(target, ast.Tuple) else [target]:
-                if isinstance(name, ast.Name) and not name.id.startswith("_"):
-                    names.append(name.id)
+        if any(isinstance(d, ast.Name) and d.id == "staticmethod" for d in method.decorator_list):
+            continue
+        first = method.args.args[0].arg
+        for node in ast.walk(method):
+            for target in _targets(node):
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == first
+                    and not target.attr.startswith("_")
+                ):
+                    names.append(target.attr)
     return names
 
 
@@ -149,6 +215,7 @@ def collect() -> dict:
     paths: dict[str, set[str]] = {}
     class_paths: dict[int, set[str]] = {}  # id(class) -> its import paths
     classes: list[tuple[type, str]] = []  # (class, its own name), each once
+    class_defs: dict[int, ast.ClassDef] = {}  # id(class) -> its class statement
     function_names: dict[int, str] = {}  # id(function) -> its short form
 
     def add(group, short, *full):
@@ -159,6 +226,7 @@ def collect() -> dict:
     for rel, dotted, module, source in modules:
         groups["modules"].append(rel)
         label = _module_label(dotted)
+        statements = _class_defs(source)
         for name, value in vars(module).items():
             if name.startswith("_") or _origin(value) != module.__name__:
                 continue
@@ -167,6 +235,8 @@ def collect() -> dict:
                 class_paths.setdefault(id(value), set()).add(f"{dotted}.{name}")
                 if name == value.__name__:
                     classes.append((value, name))
+                    if name in statements:
+                        class_defs[id(value)] = statements[name]
             elif inspect.isfunction(value):
                 add("functions", f"{label}.{name}", f"{dotted}.{name}")
                 function_names[id(value)] = f"{label}.{name}"
@@ -210,12 +280,48 @@ def collect() -> dict:
                     add("fields", f"{name}.{field.name}", *(f"{p}.{field.name}" for p in class_paths[id(cls)]))
     # legacy_patch adds members to generated classes it imports; they are found above.
 
+    from UnityPy.enums import TextureFormat
+
+    # Attributes: what a class body binds, what its methods bind through `self`, a namedtuple's
+    # fields. Enum bodies bind enum members instead.
+    own: dict[type, set[str]] = {}
+    for cls, name in classes:
+        if cls.__module__ == GENERATED:
+            continue
+        classdef = class_defs.get(id(cls))
+        if issubclass(cls, enum.Enum):
+            # The class body, not __members__, which an ExtendableEnum grows as files are read.
+            body = _bound_names(classdef.body) if classdef is not None else list(cls.__members__)
+            for member in body:
+                value = getattr(cls, member)
+                if not isinstance(value, cls):
+                    own.setdefault(cls, set()).add(member)  # not a member (`enum.nonmember`): an attribute
+                elif cls is not TextureFormat:
+                    groups["enum_members"].append([f"{name}.{member}", int(value.value)])
+                    paths.setdefault(f"{name}.{member}", set()).update(f"{p}.{member}" for p in class_paths[id(cls)])
+            continue
+        names = set(cls._fields) if issubclass(cls, tuple) and hasattr(cls, "_fields") else set()
+        if classdef is not None:
+            names.update(_bound_names(classdef.body), _self_attributes(classdef))
+        fields = attrs.fields_dict(cls) if attrs.has(cls) else {}
+        own[cls] = {n for n in names if n not in fields and not _is_member(vars(cls).get(n))}
+    for cls, name in classes:
+        inherited: set[str] = set()
+        for base in cls.__mro__[1:]:
+            inherited |= own.get(base, set()) | set(vars(base))
+        for attribute in sorted(own.get(cls, set()) - inherited):
+            add("attributes", f"{name}.{attribute}", *(f"{p}.{attribute}" for p in class_paths[id(cls)]))
+
     boost = importlib.import_module("UnityPy.UnityPyBoost")
     for name in sorted(dir(boost)):
-        if not name.startswith("_"):
-            add("boost", f"UnityPyBoost.{name}", f"UnityPy.UnityPyBoost.{name}")
-
-    from UnityPy.enums import TextureFormat
+        if name.startswith("_"):
+            continue
+        add("boost", f"UnityPyBoost.{name}", f"UnityPy.UnityPyBoost.{name}")
+        value = getattr(boost, name)
+        if inspect.isclass(value):
+            for member in vars(value):
+                if not member.startswith("_"):
+                    add("boost", f"UnityPyBoost.{name}.{member}", f"UnityPy.UnityPyBoost.{name}.{member}")
 
     groups["texture_formats"] = [[member.name, member.value] for member in TextureFormat]
     for group in DOTTED_GROUPS:
@@ -266,6 +372,7 @@ class Mentions:
     def __init__(self, text: str):
         self.paths: set[str] = set()
         self.chains: set[str] = set()  # every chain written, and every leading part of one
+        self.values: set[tuple[str, int]] = set()  # (Parent.NAME, value) from `values` columns
         self.rows: list[list[str]] = []
         for span in CODE_SPAN.findall(text):
             path = span.strip().removeprefix("UnityPy/").split(":", 1)[0]
@@ -273,11 +380,16 @@ class Mentions:
                 # A path names its module only: `files/BundleFile.py` does not name the class BundleFile.
                 self.paths.add(path)
                 continue
+            if ENUM_VALUE.fullmatch(span.strip()):
+                # An enum value names its member only (in a `values` column): the ClassIDType
+                # member `Texture2D = 28` does not name the class Texture2D.
+                continue
             for chain in DOTTED.findall(span):
                 self._add(chain)
         for header, rows in tables(text):
             self.rows += [header, *rows]
             columns = [i for i, name in enumerate(header) if name in COMPACT_COLUMNS]
+            values = [i for i, name in enumerate(header) if name == VALUES_COLUMN]
             for row in rows:
                 parent = _first_chain(row[0]) if row else None
                 if parent is None:
@@ -288,23 +400,35 @@ class Mentions:
                             match = DOTTED.fullmatch(span.strip())
                             if match:
                                 self._add(f"{parent}.{match.group(0)}")
+                for i in values:
+                    if i < len(row):
+                        for span in CODE_SPAN.findall(row[i]):
+                            match = ENUM_VALUE.fullmatch(span.strip())
+                            if match:
+                                self.values.add((f"{parent}.{match.group(1)}", int(match.group(2))))
 
     def _add(self, chain: str) -> None:
         parts = chain.split(".")
         for end in range(1, len(parts) + 1):
             self.chains.add(".".join(parts[:end]))
 
-    def names(self, short: str, full: list[str]) -> bool:
-        """Whether `short`, or a longer tail of one of its import paths, is written."""
-        if short in self.chains:
-            return True
+    @staticmethod
+    def _spellings(short: str, full: list[str]) -> set[str]:
+        """`short`, and every tail of one of its import paths longer than `short`."""
         depth = short.count(".") + 1
+        tails = {short}
         for path in full:
             parts = path.split(".")
-            for start in range(len(parts) - depth):
-                if ".".join(parts[start:]) in self.chains:
-                    return True
-        return False
+            tails.update(".".join(parts[start:]) for start in range(len(parts) - depth))
+        return tails
+
+    def names(self, short: str, full: list[str]) -> bool:
+        """Whether `short`, or a longer tail of one of its import paths, is written."""
+        return not self.chains.isdisjoint(self._spellings(short, full))
+
+    def has_value(self, short: str, full: list[str], value: int) -> bool:
+        """Whether a `values` column gives `short` (or a longer tail of an import path) this value."""
+        return any((name, value) in self.values for name in self._spellings(short, full))
 
     def has_texture_row(self, name: str, value: int) -> bool:
         return any(f"`{name}`" in row and str(value) in row for row in self.rows)
@@ -332,11 +456,25 @@ def missing(symbols: dict, text: str) -> dict[str, list[str]]:
         elif group == "texture_formats":
             formats = symbols.get(group, [])
             absent = [f"{name} ({value})" for name, value in formats if not seen.has_texture_row(name, value)]
+        elif group == "enum_members":
+            members = symbols.get(group, [])
+            absent = [
+                f"{name} ({value})" for name, value in members if not seen.has_value(name, paths.get(name, []), value)
+            ]
         else:
             absent = [name for name in symbols.get(group, []) if not seen.names(name, paths.get(name, []))]
         if absent:
             result[group] = absent
     return result
+
+
+def enum_table(symbols: dict) -> list[str]:
+    """The body rows of PARITY.md's enum appendix: one per enum, its members in declaration order."""
+    rows: dict[str, list[str]] = {}
+    for name, value in symbols["enum_members"]:
+        parent, member = name.rsplit(".", 1)
+        rows.setdefault(parent, []).append(f"`{member} = {value}`")
+    return [f"| `{parent}` | {', '.join(members)} |" for parent, members in rows.items()]
 
 
 def _installed_unitypy() -> str | None:
@@ -353,6 +491,7 @@ def main(argv: list[str] | None = None) -> int:
     list_parser = sub.add_parser("list", help="print UnityPy's public symbols by group")
     list_parser.add_argument("--json", action="store_true", help="print one JSON object instead of lines")
     list_parser.add_argument("--counts", action="store_true", help="print the number of symbols in each group")
+    sub.add_parser("enum-table", help="print the rows of PARITY.md's enum appendix")
     check_parser = sub.add_parser("check", help="report the symbols PARITY.md does not name")
     check_parser.add_argument("parity", nargs="?", type=Path, default=DEFAULT_PARITY)
     args = parser.parse_args(argv)
@@ -362,6 +501,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"inventory: needs UnityPy {PINNED_VERSION} (the oracle image), found {version}", file=sys.stderr)
         return 2
     symbols = collect()
+
+    if args.command == "enum-table":
+        for row in enum_table(symbols):
+            print(row)
+        return 0
 
     if args.command == "list":
         if args.json:

@@ -30,6 +30,23 @@ except ImportError:  # pragma: no cover - outside the oracle image
 PARITY = inventory.DEFAULT_PARITY
 NEEDS_ORACLE = "needs UnityPy 1.25.2 (the oracle image)"
 
+# What `collect()` finds in UnityPy 1.25.2, group by group (`inventory.py list --counts`). PARITY.md
+# section 21 states the same numbers. A collector that loses a kind of symbol (properties, say)
+# shrinks its group, so `check` would ask PARITY.md for less and still pass: these counts stop that.
+GROUP_SIZES = {
+    "modules": 78,
+    "classes": 955,
+    "functions": 126,
+    "data": 65,
+    "methods": 228,
+    "fields": 8456,
+    "attributes": 145,
+    "exports": 924,
+    "boost": 15,
+    "enum_members": 741,
+    "texture_formats": 78,
+}
+
 
 SYMBOLS = {
     "modules": ["files/BundleFile.py", "export/Texture2DConverter.py"],
@@ -38,8 +55,10 @@ SYMBOLS = {
     "data": ["CompressionHelper.DECOMPRESSION_MAP"],
     "methods": ["Environment.load_file", "Texture2D.set_image"],
     "fields": ["GameObject.m_Name", "GameObject.m_Layer", "ObjectReader.path_id"],
+    "attributes": ["Environment.files", "SerializedFile.objects"],
     "exports": ["UnityPy.files.File", "UnityPy.load"],
     "boost": ["UnityPyBoost.read_typetree"],
+    "enum_members": [["BuildTarget.Switch", 38], ["BuildTarget.XBOX360", 11]],
     "texture_formats": [["Alpha8", 1], ["RGB24", 3]],
     # The import paths each short form may also be written as (inventory.collect builds these).
     "paths": {
@@ -55,6 +74,10 @@ SYMBOLS = {
         ],
         "GameObject.m_Name": ["UnityPy.classes.GameObject.m_Name", "UnityPy.classes.generated.GameObject.m_Name"],
         "ObjectReader.path_id": ["UnityPy.files.ObjectReader.ObjectReader.path_id"],
+        "Environment.files": ["UnityPy.Environment.files", "UnityPy.environment.Environment.files"],
+        "SerializedFile.objects": ["UnityPy.files.SerializedFile.SerializedFile.objects"],
+        "BuildTarget.Switch": ["UnityPy.enums.BuildTarget.Switch", "UnityPy.enums.BuildTarget.BuildTarget.Switch"],
+        "BuildTarget.XBOX360": ["UnityPy.enums.BuildTarget.XBOX360"],
         "UnityPy.files.File": ["UnityPy.files.File"],
         "UnityPy.load": ["UnityPy.load"],
         "UnityPyBoost.read_typetree": ["UnityPy.UnityPyBoost.read_typetree"],
@@ -74,10 +97,16 @@ COMPLETE = """
 | `ObjectReader.path_id` | a field written whole |
 | `UnityPy.load` | a package export |
 | `UnityPyBoost.read_typetree` | a Boost export |
+| `Environment.files` | an attribute written whole |
 
-| class | bases | fields |
-|---|---|---|
-| `GameObject` | EditorExtension | `m_Layer`, `m_Name` |
+| class | bases | fields | attributes |
+|---|---|---|---|
+| `GameObject` | EditorExtension | `m_Layer`, `m_Name` | — |
+| `SerializedFile` | — | — | `objects` |
+
+| enum | values |
+|---|---|
+| `BuildTarget` | `XBOX360 = 11`, `Switch = 38` |
 
 | package | members |
 |---|---|
@@ -125,6 +154,56 @@ class MatchingRules(unittest.TestCase):
             with self.subTest(text=text[-60:]):
                 self.assertEqual(inventory.missing(SYMBOLS, text), {"texture_formats": ["RGB24 (3)"]})
 
+    def test_an_enum_member_needs_its_value_in_a_values_column(self):
+        for old, new in (
+            ("`Switch = 38`", "`Switch = 39`"),  # another value
+            ("`Switch = 38`", "`Switch=38`"),  # not the `NAME = value` form
+            ("| enum | values |", "| enum | members |"),  # not a values column
+            ("| `BuildTarget` |", "| BuildTarget |"),  # no parent
+        ):
+            with self.subTest(new):
+                text = COMPLETE.replace(old, new)
+                self.assertIn("BuildTarget.Switch (38)", inventory.missing(SYMBOLS, text).get("enum_members", []))
+        # The import path of the enum is a parent too.
+        text = COMPLETE.replace("| `BuildTarget` |", "| `UnityPy.enums.BuildTarget` |")
+        self.assertEqual(inventory.missing(SYMBOLS, text), {})
+
+    def test_an_enum_value_names_its_member_and_nothing_else(self):
+        """FileType's member `BundleFile = 1` does not name the class BundleFile."""
+        text = COMPLETE.replace("| `BundleFile` | a class |", "| bundle | a class |")
+        text = text.replace("`XBOX360 = 11`", "`XBOX360 = 11`, `BundleFile = 1`")
+        self.assertEqual(inventory.missing(SYMBOLS, text), {"classes": ["BundleFile"]})
+
+    def test_attributes_are_what_the_body_and_its_methods_bind(self):
+        source = (
+            "class C(Base):\n"
+            "    A: int\n"
+            "    B = 1\n"
+            "    _c = 2\n"
+            "    def __init__(self, x):\n"
+            "        self.d = x\n"
+            "        self.e, self._f = 1, 2\n"
+            "        other.g = 3\n"
+            "        def inner():\n"
+            "            self.h = 4\n"
+            "    @staticmethod\n"
+            "    def make(target):\n"
+            "        target.i = 5\n"
+            "    @classmethod\n"
+            "    def setup(cls):\n"
+            "        cls.j = 6\n"
+            "try:\n"
+            "    import missing\n"
+            "except ImportError:\n"
+            "    class D:\n"
+            "        k = 7\n"
+        )
+        defs = inventory._class_defs(source)
+        self.assertEqual(sorted(defs), ["C", "D"])
+        self.assertEqual(inventory._bound_names(defs["C"].body), ["A", "B"])
+        self.assertEqual(sorted(inventory._self_attributes(defs["C"])), ["d", "e", "h", "j"])
+        self.assertEqual(inventory._bound_names(defs["D"].body), ["k"])
+
     def test_an_escaped_pipe_stays_inside_its_cell(self):
         self.assertEqual(inventory.table_cells(r"| `a \| b` | c |"), [r"`a \| b`", "c"])
         self.assertIsNone(inventory.table_cells("a | b"))
@@ -156,6 +235,12 @@ class MatchingRules(unittest.TestCase):
                 "UnityPyBoost.read_typetree",
             ),
             "classes": ("`SpriteHelper.SpriteSettings`", "`MeshHelper.SpriteSettings`", "SpriteSettings"),
+            "attributes": ("`Environment.files`", "`File.Environment.files`", "Environment.files"),
+            "enum_members": (
+                "| `BuildTarget` | `XBOX360 = 11`, `Switch = 38` |",
+                "| `BuildTarget` | `XBOX360 = 11` |\n| `TextureFormat` | `Switch = 38` |",
+                "BuildTarget.Switch (38)",
+            ),
         }
         for group, (old, new, name) in cases.items():
             with self.subTest(group):
@@ -174,14 +259,17 @@ class MatchingRules(unittest.TestCase):
                 self.assertEqual(inventory.missing(SYMBOLS, text), {})
 
     def test_a_compact_row_names_its_members_under_its_own_parent(self):
-        row = "| `GameObject` | EditorExtension | `m_Layer`, `m_Name` |"
+        row = "| `GameObject` | EditorExtension | `m_Layer`, `m_Name` | — |"
         moved = COMPLETE.replace(
-            row, "| `GameObject` | EditorExtension | `m_Layer` |\n| `Texture2D` | Texture | `m_Name` |"
+            row, "| `GameObject` | EditorExtension | `m_Layer` | — |\n| `Texture2D` | Texture | `m_Name` | — |"
         )
         self.assertEqual(inventory.missing(SYMBOLS, moved), {"fields": ["GameObject.m_Name"]})
-        # Only a `fields` or `members` column counts.
-        other = COMPLETE.replace("| class | bases | fields |", "| class | bases | notes |")
-        self.assertEqual(inventory.missing(SYMBOLS, other), {"fields": ["GameObject.m_Name", "GameObject.m_Layer"]})
+        # Only a `fields`, `members` or `attributes` column counts.
+        other = COMPLETE.replace("| class | bases | fields | attributes |", "| class | bases | notes | more |")
+        self.assertEqual(
+            inventory.missing(SYMBOLS, other),
+            {"fields": ["GameObject.m_Name", "GameObject.m_Layer"], "attributes": ["SerializedFile.objects"]},
+        )
         # A member written outside a code span, or under another package, does not count.
         for new in ("| `UnityPy.files` | File |", "| `UnityPy.streams` | `File` |"):
             with self.subTest(new):
@@ -206,6 +294,8 @@ class MatchingRules(unittest.TestCase):
             "fields": ("`m_Layer`, `m_Name`", "`m_Name`", "GameObject.m_Layer"),
             "exports": ("| `UnityPy.files` | `File` |", "| `UnityPy.files` | |", "UnityPy.files.File"),
             "boost": ("`UnityPyBoost.read_typetree`", "`read_typetree`", "UnityPyBoost.read_typetree"),
+            "attributes": ("| — | `objects` |", "| — | — |", "SerializedFile.objects"),
+            "enum_members": ("`Switch = 38`", "`Switch`", "BuildTarget.Switch (38)"),
             "texture_formats": ("| 1 | `Alpha8` | works |", "", "Alpha8 (1)"),
         }
         self.assertEqual(sorted(removals), sorted(inventory.GROUPS))
@@ -231,7 +321,49 @@ class AgainstTheOracle(unittest.TestCase):
 
     def test_collect_finds_the_surface(self):
         groups = self.symbols
-        self.assertEqual(len(groups["texture_formats"]), 78)
+        self.assertEqual(sorted(GROUP_SIZES), sorted(inventory.GROUPS))
+        self.assertEqual({group: len(groups[group]) for group in inventory.GROUPS}, GROUP_SIZES)
+        # Section 21 states the same sizes, one row per group.
+        section = self.text[self.text.index("## 21.") : self.text.index("### Reproducing the numbers")]
+        stated = {}
+        for header, rows in inventory.tables(section):
+            if header[:2] == ["group", "what"]:
+                for cells in rows:
+                    count = re.search(r"\((\d[\d,]*)[,)]", cells[1])
+                    stated[cells[0].strip("`")] = int(count.group(1).replace(",", ""))
+        self.assertEqual(stated, GROUP_SIZES)
+        # One representative of each kind of symbol the collector must find.
+        kinds = {
+            "methods": [
+                "Environment.objects",  # a property
+                "Texture2D.image",  # a property a legacy_patch module adds to a generated class
+                "Environment.load_file",  # a method
+            ],
+            "exports": ["UnityPy.set_assetbundle_decrypt_key"],  # a function a package re-exports
+            "fields": ["ObjectReader.path_id", "PPtr.m_PathID", "GameObject.m_Name"],  # own and generated attrs
+            "attributes": [
+                "Environment.files",  # assigned in __init__ and annotated in the body
+                "SerializedFile.objects",
+                "BundleFile.dataflags",
+                "EndianBinaryReader.BaseOffset",
+                "Environment.typetree_generator",  # a class-level default
+                "TpkFile.TpkMagicBytes",  # a class constant
+                "NodeClass.aliases",  # a dataclass field
+                "DirectoryInfo.path",  # a namedtuple field
+                "TypeTreeError.nodes",  # set by an exception's __init__
+            ],
+            "boost": ["UnityPyBoost.read_typetree", "UnityPyBoost.TypeTreeNode.m_Level"],  # a C type's member
+        }
+        for group, names in kinds.items():
+            for name in names:
+                self.assertIn(name, groups[group], group)
+        # A base class's attribute is named under the base, and a member is not an attribute.
+        for name in ("BundleFile.signature", "WebFile.packer", "EndianBinaryReader_Memoryview.Position"):
+            self.assertNotIn(name, groups["attributes"])
+        self.assertIn("File.signature", groups["attributes"])
+        self.assertIn(["BuildTarget.Switch", 38], groups["enum_members"])
+        self.assertIn(["ClassIDType.Texture2D", 28], groups["enum_members"])
+        self.assertNotIn("TextureFormat", {name.split(".")[0] for name, _ in groups["enum_members"]})
         self.assertIn("export/Texture2DConverter.py", groups["modules"])
         self.assertIn("classes/legacy_patch/Texture2D.py", groups["modules"])
         self.assertIn("Texture2DArray", groups["classes"])
@@ -290,6 +422,8 @@ class AgainstTheOracle(unittest.TestCase):
             "fields": (r"^(\| `GameObject` \|.*)`m_IsActive`, ", r"\1", "GameObject.m_IsActive"),
             "exports": (r"^(\| `UnityPy\.files` \|.*)`DirectoryInfo`, ", r"\1", "UnityPy.files.DirectoryInfo"),
             "boost": (r"\bUnityPyBoost\.decrypt_block\b", "UnityPyBoost.decrypt_blockX", "UnityPyBoost.decrypt_block"),
+            "attributes": (r"^(\| `Environment` \|.*)`local_files`, ", r"\1", "Environment.local_files"),
+            "enum_members": (r"^(\| `BuildTarget` \|.*)`Switch = 38`", r"\1`Switch = 39`", "BuildTarget.Switch (38)"),
             "texture_formats": (r"^\| 34 \| `ETC_RGB4` \|", "| 340 | `ETC_RGB4` |", "ETC_RGB4 (34)"),
         }
         self.assertEqual(sorted(removals), sorted(inventory.GROUPS))
@@ -330,6 +464,24 @@ class AgainstTheOracle(unittest.TestCase):
                 "exports",
                 "UnityPy.files.DirectoryInfo",
             ),
+            # An attribute moved to another class's row.
+            (
+                [
+                    (r"^(\| `Environment` \|.*)`cabs`, ", r"\1"),
+                    (r"^(\| `BundleFile` \|.*) \|$", r"\1, `cabs` |"),
+                ],
+                "attributes",
+                "Environment.cabs",
+            ),
+            # An enum member moved to another enum's row.
+            (
+                [
+                    (r"^(\| `BuildTarget` \|.*)`Switch = 38`, ", r"\1"),
+                    (r"^(\| `FileType` \|.*) \|$", r"\1, `Switch = 38` |"),
+                ],
+                "enum_members",
+                "BuildTarget.Switch (38)",
+            ),
         ]
         for steps, group, name in cases:
             with self.subTest(name):
@@ -337,6 +489,11 @@ class AgainstTheOracle(unittest.TestCase):
                 for pattern, repl in steps:
                     text = mutate(self, text, pattern, repl)
                 self.assertEqual(inventory.missing(self.symbols, text), {group: [name]})
+
+    def test_appendix_c_is_the_enum_table(self):
+        appendix = self.text[self.text.index("## Appendix C.") :]
+        rows = [line for line in appendix.splitlines() if line.startswith("| `")]
+        self.assertEqual(rows, inventory.enum_table(self.symbols))
 
     def test_check_exits_1_and_lists_what_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
