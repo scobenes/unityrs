@@ -3,7 +3,8 @@
 # under 800 lines, split by responsibility (a cohesive module per concern),
 # unless scripts/file-size-allowlist.txt names it. The allowlist holds one
 # path per line, relative to the repository's root, then `# reason`: a
-# generated table, or a fixture generator.
+# generated table, a fixture generator, or a file another branch's merge
+# must come first (the allowlist's header says which).
 #
 # Each file over the limit is printed as `LINES PATH`, the longest first,
 # and the check exits 1 if there is any. A missing allowlist is an empty one.

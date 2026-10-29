@@ -37,7 +37,7 @@ jobs:
         run: sh scripts/stub-check.sh
       # No unmanageable files: no tracked .rs or .py file over 800 lines
       # outside scripts/file-size-allowlist.txt (generated tables, fixture
-      # generators).
+      # generators, and parity tools left whole until PR #5 merges).
       - name: No file is over 800 lines
         run: sh scripts/file-size-check.sh
 
