@@ -91,12 +91,26 @@ def scandir_walk(root):
 
 
 def walk_tree(root):
-    """A folder whose `os.scandir` order is unlikely to be sorted: files made out of order, two subfolders holding
-    the same name, one of them nested, and a subfolder made before the files."""
-    for folder in ("s2", "s1/inner", "s0"):
-        (root / folder).mkdir(parents=True)
-    for name in ("m", "c", "x", "a", "q", "f", "s2/ab", "s1/ab", "s1/inner/z", "s0/k"):
-        (root / f"{name}.assets").write_bytes(text_asset_file(name.replace("/", "-")))
+    """A folder, under `root`, whose `os.scandir` listing tells section 3's walk from a sorted one and from one that
+    enters a subfolder where the listing meets it: two subfolders holding the same name, one of them nested, made
+    between the files, so that a file system listing in creation order or in its reverse (tmpfs lists the newest
+    first) interleaves them. The listing has to be unsorted, with a subfolder before a file; a file system that
+    lists the folders last, or in sorted order, gets a new folder, up to 32 times, before the precondition fails."""
+    for attempt in range(32):
+        tree = root / f"tree{attempt}"
+        tree.mkdir(parents=True)
+        for name in ("m", "s2/", "c", "s1/inner/", "x", "a", "s0/", "q", "f"):
+            if name.endswith("/"):
+                (tree / name).mkdir(parents=True)
+            else:
+                (tree / f"{name}.assets").write_bytes(text_asset_file(name))
+        for name in ("s2/ab", "s1/ab", "s1/inner/z", "s0/k"):
+            (tree / f"{name}.assets").write_bytes(text_asset_file(name.replace("/", "-")))
+        listing = [entry.name for entry in os.scandir(tree)]
+        kinds = [(tree / name).is_dir() for name in listing]
+        if listing != sorted(listing) and kinds.index(True) < len(kinds) - 1 - kinds[::-1].index(False):
+            return tree
+    raise AssertionError(f"{root}: every listing sorted, or its folders last")
 
 
 def zip_with_a_directory():
@@ -1311,6 +1325,70 @@ class Rows(unittest.TestCase):
         self.assertEqual((len(env.files["assets/"].bytes), len(env.files["assets/bin/"].bytes)), (0, 0))
         self.assertEqual(list(env.cabs), ["", "a.assets"])
         self.assertIs(env.cabs[""], env.files["assets/bin/"])
+        # load_zip_file takes bytes, a bytearray or a memoryview, read-only or writable (each in an io.BytesIO), an
+        # io.BufferedIOBase (an io.BytesIO, the builtin open's io.BufferedReader) or a path string fs finds; anything
+        # else raises TypeError: a path fs does not find, fsspec's LocalFileOpener, an int. Through load_file each of
+        # the first five loads, with name= (a bytearray and a writable memoryview need it, the load_file row).
+        zipped = zip_with_a_directory()
+        (self.tmp / "dirs.zip").write_bytes(zipped)
+        members = ["assets/", "assets/a.assets"]
+
+        def given():
+            yield from (zipped, bytearray(zipped), memoryview(zipped), memoryview(bytearray(zipped)))
+            yield io.BytesIO(zipped)
+
+        with open(self.tmp / "dirs.zip", "rb") as opened:
+            for value in (*given(), opened, str(self.tmp / "dirs.zip")):
+                with self.subTest(type(value).__name__):
+                    env = UnityPy.Environment()
+                    quietly(env.load_zip_file, value)
+                    self.assertEqual(list(env.files), members)
+        for value in given():
+            with self.subTest(type(value).__name__, through="load_file"):
+                env = UnityPy.Environment()
+                self.assertIsNone(quietly(env.load_file, value, name="z.bin"))
+                self.assertEqual(list(env.files), [*members, "z.bin"])
+        with UnityPy.Environment().fs.open(str(self.tmp / "dirs.zip"), "rb") as local_opener:
+            for value in (str(self.tmp / "missing.zip"), local_opener, 3):
+                with self.subTest(type(value).__name__), self.assertRaisesRegex(TypeError, "^Unsupported type"):
+                    UnityPy.Environment().load_zip_file(value)
+        # A zip in a folder goes through detection from the stream the builtin open gives (load_files), which
+        # load_zip_file accepts: one whose fifth byte is NUL loads its members, registers CAB "" and holds None under
+        # its own path, where load_file of that path raises; Python's own zip (fifth byte 20) is a raw file.
+        folder = self.tmp / "zips"
+        folder.mkdir()
+        (folder / "z.bin").write_bytes(zipped)
+        (folder / "plain.zip").write_bytes(buffer.getvalue())
+        self.assertEqual(buffer.getvalue()[4], 20)
+        opened, real_open = [], open  # load_files never closes what it opens
+
+        def tracked(path, mode="r", *args, **kw):
+            stream = real_open(path, mode, *args, **kw)  # noqa: SIM115 - UnityPy reads it after the call
+            opened.append(stream)
+            return stream
+
+        loaded = {
+            "assets/": "EndianBinaryReader_Streamable",
+            "assets/a.assets": "SerializedFile",
+            str(folder / "z.bin"): "NoneType",
+            str(folder / "plain.zip"): "EndianBinaryReader_Streamable",
+        }
+        for how in ("constructor", "load_folder", "load_files"):
+            with self.subTest(how), mock.patch("builtins.open", tracked):
+                if how == "constructor":
+                    env = quietly(UnityPy.Environment, str(folder))
+                else:
+                    env = UnityPy.Environment()
+                    if how == "load_folder":
+                        quietly(env.load_folder, str(folder))
+                    else:
+                        quietly(env.load_files, [str(folder / "z.bin"), str(folder / "plain.zip")])
+                self.assertEqual({name: type(f).__name__ for name, f in env.files.items()}, loaded)
+                self.assertEqual(sorted(env.cabs), ["", "a.assets", "plain.zip"])
+        for stream in opened:
+            stream.close()
+        with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
+            quietly(UnityPy.Environment().load_file, str(folder / "z.bin"))
 
     # Sections 2, 2.1: the package's aliases and every re-export section 2.1 lists.
     def test_package_aliases_and_reexports(self):
@@ -1457,8 +1535,7 @@ class Rows(unittest.TestCase):
             deref("Shared.Assets", UnityPy.Environment(path=str(e)))
         # find_file's walk is section 3's (os.scandir order, each folder's files first): its list of paths, and the
         # first of two same-named files in it answers the name.
-        tree = self.tmp / "tree"
-        walk_tree(tree)
+        tree = walk_tree(self.tmp)
         walking = UnityPy.Environment(path=str(tree))
         self.assertEqual(found(walking, "z.assets"), ["s1-inner-z"])
         order = scandir_walk(tree)
@@ -1591,8 +1668,7 @@ class Rows(unittest.TestCase):
         self.assertEqual(sorted(walked), sorted(str(folder / n) for n in ("z.assets", "a.assets", "b/m.assets")))
         # The walk's order is os.scandir's, unsorted, each folder's files before its subfolders, depth-first
         # (section 3, the walk): `files` follows it, and of two same-named files the later one holds the CAB.
-        tree = self.tmp / "tree"
-        walk_tree(tree)
+        tree = walk_tree(self.tmp)
         env = UnityPy.Environment()
         with mock.patch("builtins.open", tracked):
             quietly(env.load_folder, str(tree))
@@ -1625,6 +1701,84 @@ class Rows(unittest.TestCase):
         sf._container = ContainerHelper([("a/path", info), ("b/path", info), ("a/path", info)])
         self.assertEqual(bundle.container, {"a/path": info.asset, "b/path": info.asset})
         self.assertEqual((sorted(sf.container.keys()), sf.container.values()), (["a/path", "b/path"], [info.asset]))
+
+    # Section 3, the walk: the paths it yields, links, and folders it cannot list.
+    def test_the_walk_yields_absolute_paths_and_takes_links_for_files(self):
+        opened, real_open = [], open  # load_files never closes what it opens
+
+        def tracked(path, mode="r", *args, **kw):
+            stream = real_open(path, mode, *args, **kw)  # noqa: SIM115 - UnityPy reads it after the call
+            opened.append(stream)
+            return stream
+
+        self.addCleanup(lambda: [stream.close() for stream in opened])
+        patched = mock.patch("builtins.open", tracked)
+        patched.start()
+        self.addCleanup(patched.stop)
+
+        def keys(folder):
+            env = UnityPy.Environment()
+            quietly(env.load_folder, folder)
+            return list(env.files)
+
+        # Absolute posix paths, whatever form the folder takes: joined to the cwd, `./` and a trailing `/` dropped,
+        # `~` expanded, `..` kept. `files` holds them, find_file's walk lists them, and `path` stays as given.
+        work = self.tmp / "work"
+        (work / "rel" / "sub").mkdir(parents=True)
+        (work / "rel" / "a.bin").write_bytes(text_asset_file("a"))
+        (work / "rel" / "sub" / "b.bin").write_bytes(text_asset_file("b"))
+        self.chdir(work)
+        cwd = os.getcwd()
+        absolute = [f"{cwd}/rel/a.bin", f"{cwd}/rel/sub/b.bin"]
+        for folder in ("rel", "./rel", "rel/", f"{cwd}/rel"):
+            with self.subTest(folder):
+                self.assertEqual(keys(folder), absolute)
+        self.assertEqual(keys("rel/../rel"), [f"{cwd}/rel/../rel/a.bin", f"{cwd}/rel/../rel/sub/b.bin"])
+        with mock.patch.dict(os.environ, {"HOME": cwd}):
+            self.assertEqual(keys("~/rel"), absolute)
+        env = quietly(UnityPy.Environment, "rel")
+        self.assertEqual((env.path, list(env.files), sorted(env.cabs)), ("rel", absolute, ["a.bin", "b.bin"]))
+        env = UnityPy.Environment(path="rel")
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in quietly(env.find_file, "b.bin").objects.values()], ["b"])
+        self.assertEqual(env.local_files, absolute)
+        # Links are files: a link to a folder is never entered and raises when opened, a broken one raises, a link to
+        # a file loads under its own path and name. find_file reaches a file under a linked folder only as path/name.
+        real = self.tmp / "real"
+        real.mkdir()
+        (real / "r.assets").write_bytes(text_asset_file("r"))
+        (self.tmp / "target.assets").write_bytes(text_asset_file("t"))
+        linked = {}
+        for case, target in (("folder", real), ("broken", self.tmp / "nothing"), ("file", self.tmp / "target.assets")):
+            linked[case] = self.tmp / f"{case}-link"
+            linked[case].mkdir()
+            (linked[case] / "Link.assets").symlink_to(target)
+            walk = list(UnityPy.Environment().fs.walk(str(linked[case])))
+            self.assertEqual(walk, [(str(linked[case]), [], ["Link.assets"])], case)
+        with self.assertRaisesRegex(IsADirectoryError, re.escape(str(linked["folder"] / "Link.assets"))):
+            keys(str(linked["folder"]))
+        with self.assertRaisesRegex(FileNotFoundError, re.escape(str(linked["broken"] / "Link.assets"))):
+            keys(str(linked["broken"]))
+        env = UnityPy.Environment()
+        quietly(env.load_folder, str(linked["file"]))
+        self.assertEqual((list(env.files), list(env.cabs)), ([str(linked["file"] / "Link.assets")], ["link.assets"]))
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in env.objects], ["t"])
+        with self.assertRaisesRegex(FileNotFoundError, "^File r.assets not found in "):
+            quietly(UnityPy.Environment(path=str(linked["folder"])).find_file, "r.assets")
+        found = quietly(UnityPy.Environment(path=str(linked["folder"])).find_file, "Link.assets/r.assets")
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in found.objects.values()], ["r"])
+        # A folder the walk cannot list yields nothing, with no error: a missing one, an unreadable subfolder (which
+        # only a user other than root cannot read). A file walks as itself under "", and opening path/ raises.
+        self.assertEqual(keys(str(self.tmp / "missing")), [])
+        perm = self.tmp / "perm"
+        (perm / "locked").mkdir(parents=True)
+        (perm / "ok.bin").write_bytes(text_asset_file("ok"))
+        (perm / "locked" / "x.bin").write_bytes(text_asset_file("x"))
+        os.chmod(perm / "locked", 0)
+        self.addCleanup(os.chmod, perm / "locked", 0o755)
+        readable = os.access(perm / "locked", os.R_OK)
+        self.assertEqual(keys(str(perm)), [str(perm / "ok.bin"), *([str(perm / "locked" / "x.bin")] * readable)])
+        with self.assertRaisesRegex(NotADirectoryError, re.escape(str(perm / "ok.bin") + "/")):
+            keys(str(perm / "ok.bin"))
 
     # Sections 5.2, 19.2: File's iteration and dict-style methods.
     def test_file_iteration_and_dict_access(self):
