@@ -14,6 +14,7 @@ import io
 import json
 import os
 import pickle
+import re
 import shutil
 import signal
 import struct
@@ -916,31 +917,48 @@ class DumpTests(unittest.TestCase):
         edited file no longer hashes as its RECORD says; without one, the
         installed distribution checks out, but `UnityPy` imports from
         elsewhere. A faithful copy with its dist-info passes, so the line is
-        what is refused. The version and the UnityPyBoost binary are the
-        pinned ones throughout.
+        what is refused. The same edit in a package linked in beside the
+        module, which Python imports in the module's place, is refused as a
+        symlink. The version and the UnityPyBoost binary are the pinned ones
+        throughout.
         """
         tiny = self.tmp / "tiny"
         tiny.write_bytes(b"tiny")
         site = Path(unitypy_dump.UnityPy.__file__).resolve().parents[1]
         info = site / f"unitypy-{C.ORACLE_UNITYPY}.dist-info"
         self.assertTrue(info.is_dir())
-        for n, (label, with_info, patched, code, said) in enumerate(
+
+        def patched(text):
+            self.assertEqual(text.count("is_stripped = None"), 1)
+            return text.replace("is_stripped = None", "is_stripped = 7")
+
+        def edit(files):
+            reader = files / "ObjectReader.py"
+            reader.write_text(patched(reader.read_text(encoding="utf-8")), encoding="utf-8")
+
+        def link(files):
+            # The patched module as a package elsewhere, its relative imports one level deeper.
+            package = files.parents[2] / "linked" / "ObjectReader"
+            package.mkdir(parents=True)
+            text = re.sub(r"^(\s*from \.)", r"\1.", (files / "ObjectReader.py").read_text(encoding="utf-8"), flags=re.M)
+            (package / "__init__.py").write_text(patched(text), encoding="utf-8")
+            (files / "ObjectReader").symlink_to(package, target_is_directory=True)
+
+        for n, (label, with_info, change, code, said) in enumerate(
             (
-                ("a faithful copy with its dist-info", True, False, 0, ""),
-                ("a patched copy with its dist-info", True, True, 2, "UnityPy/files/ObjectReader.py hashes as"),
-                ("a patched copy alone", False, True, 2, "module UnityPy imports from"),
+                ("a faithful copy with its dist-info", True, None, 0, ""),
+                ("a patched copy with its dist-info", True, edit, 2, "UnityPy/files/ObjectReader.py hashes as"),
+                ("a patched copy alone", False, edit, 2, "module UnityPy imports from"),
+                ("a patched package linked in", True, link, 2, "UnityPy/files/ObjectReader is a symlink"),
             )
         ):
             with self.subTest(label):
-                shadow = self.tmp / f"shadow{n}"
+                shadow = self.tmp / f"case{n}" / "shadow"
                 shutil.copytree(site / "UnityPy", shadow / "UnityPy", ignore=shutil.ignore_patterns("__pycache__"))
                 if with_info:
                     shutil.copytree(info, shadow / info.name)
-                if patched:
-                    reader = shadow / "UnityPy" / "files" / "ObjectReader.py"
-                    text = reader.read_text(encoding="utf-8")
-                    self.assertEqual(text.count("is_stripped = None"), 1)
-                    reader.write_text(text.replace("is_stripped = None", "is_stripped = 7"), encoding="utf-8")
+                if change:
+                    change(shadow / "UnityPy" / "files")
                 out = self.tmp / f"patched{n}.jsonl"
                 proc = dump_process(tiny, "-o", out, env={"PYTHONPATH": str(shadow)})
                 self.assertEqual(proc.returncode, code, proc.stderr.decode(errors="replace"))

@@ -21,7 +21,11 @@ each pin the check (also what unitypy_dump.py runs before it dumps) requires:
   sys.path (PYTHONPATH, the script's folder) cannot stand in for it;
 - no file in its packages' folders but those (`__pycache__` aside), so a
   module planted beside one, such as an extension that Python would import in
-  place of a .py file of the same name, is refused too.
+  place of a .py file of the same name, is refused too;
+- no symlink among those files or anywhere in those folders, since no wheel
+  installs one. The walk follows none, so a planted link to a folder (which
+  Python would import as a package in place of a module of the same name)
+  is refused rather than skipped.
 It guards against drift (an edited file, another build, a stray copy), not
 against someone set on deceiving it: code run at start-up from outside the
 pins (a .pth file, sitecustomize) and a compiled file planted in
@@ -173,17 +177,30 @@ def import_problems(name: str, dist, entries: dict[str, str]) -> list[str]:
 
 
 def stray_problems(name: str, dist, entries: dict[str, str]) -> list[str]:
-    """Each file in the distribution's top-level folders that its RECORD does not list (`__pycache__` aside)."""
+    """Each symlink among the distribution's files and in its top-level folders, and each file in those folders
+    that its RECORD does not list (`__pycache__` aside).
+
+    No pinned wheel installs a symlink. One to a folder would also hide what
+    it holds from the walk, which follows none, so every symlink is refused,
+    `__pycache__` included.
+    """
     site = Path(dist.locate_file(""))
-    problems = []
+    links = {path for path in entries if (site / path).is_symlink()}
+    strays = []
     for folder in _tops(entries)[0]:
-        for dirpath, dirnames, filenames in os.walk(site / folder):
-            dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
-            for filename in sorted(filenames):
+        if (site / folder).is_symlink():
+            links.add(folder)
+            continue
+        for dirpath, dirnames, filenames in os.walk(site / folder):  # followlinks=False
+            for entry in dirnames + filenames:
+                if Path(dirpath, entry).is_symlink():
+                    links.add(Path(dirpath, entry).relative_to(site).as_posix())
+            for filename in filenames:
                 path = Path(dirpath, filename).relative_to(site).as_posix()
-                if path not in entries:
-                    problems.append(f"{name}: {path} is not one of its wheel's files")
-    return problems
+                if path not in entries and path not in links and "__pycache__" not in path.split("/"):
+                    strays.append(path)
+    problems = [f"{name}: {path} is a symlink, which no pinned wheel installs" for path in sorted(links)]
+    return problems + [f"{name}: {path} is not one of its wheel's files" for path in sorted(strays)]
 
 
 def _distribution(name: str, path: list[str] | None):

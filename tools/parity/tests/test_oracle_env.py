@@ -7,6 +7,7 @@ import base64
 import contextlib
 import hashlib
 import importlib
+import importlib.machinery
 import io
 import json
 import shutil
@@ -210,6 +211,52 @@ class EnvTests(unittest.TestCase):
             ],
         )
         self.assertEqual(self.check(site, {"fake-pkg": digest}, path=[site, shadow])[0], [])
+
+    def test_a_symlink_is_refused(self):
+        """No wheel installs a symlink, and the walk for stray files follows none, so each one is refused."""
+        site, elsewhere = self.tmp / "site", self.tmp / "elsewhere"
+        records = {"fake-pkg": oracle_env.record_digest(install(site))}
+
+        def a_package_beside_a_module():
+            # A folder `sub` linked in beside sub.py: Python imports the package in the module's place.
+            (elsewhere / "sub").mkdir(parents=True)
+            (elsewhere / "sub" / "__init__.py").write_bytes(b"def f():\n    return 7\n")
+            (site / PKG / "sub").symlink_to(elsewhere / "sub", target_is_directory=True)
+            loaders = (importlib.machinery.SourceFileLoader, importlib.machinery.SOURCE_SUFFIXES)
+            spec = importlib.machinery.FileFinder(str(site / PKG), loaders).find_spec(f"{PKG}.sub")
+            self.assertEqual(Path(spec.origin), site / PKG / "sub" / "__init__.py")
+
+        def a_listed_file_as_a_link_to_its_bytes():
+            elsewhere.mkdir()
+            (site / PKG / "sub.py").rename(elsewhere / "sub.py")
+            (site / PKG / "sub.py").symlink_to(elsewhere / "sub.py")
+
+        def the_package_folder():
+            elsewhere.mkdir()
+            (site / PKG).rename(elsewhere / PKG)
+            (site / PKG).symlink_to(elsewhere / PKG, target_is_directory=True)
+
+        def one_in_pycache():
+            (site / PKG / "__pycache__").mkdir()
+            (site / PKG / "__pycache__" / "sub.cpython-311.pyc").symlink_to(self.tmp / "compiled.pyc")
+
+        cases = {
+            "a folder linked in beside a module": (a_package_beside_a_module, f"{PKG}/sub", 1),
+            "a listed file linked to the same bytes": (a_listed_file_as_a_link_to_its_bytes, f"{PKG}/sub.py", 1),
+            # Its modules then import from elsewhere too.
+            "the package folder": (the_package_folder, PKG, 2),
+            "a link in __pycache__": (one_in_pycache, f"{PKG}/__pycache__/sub.cpython-311.pyc", 1),
+            "a dangling link": (lambda: (site / PKG / "x.py").symlink_to(self.tmp / "none.py"), f"{PKG}/x.py", 1),
+        }
+        for label, (plant, link, count) in cases.items():
+            with self.subTest(label):
+                shutil.rmtree(site)
+                shutil.rmtree(elsewhere, ignore_errors=True)
+                install(site)
+                plant()
+                problems, _ = self.check(site, records)
+                self.assertIn(f"fake-pkg: {link} is a symlink, which no pinned wheel installs", problems)
+                self.assertEqual(len(problems), count, problems)
 
     def test_installed_entries_leave_out_what_the_installer_writes(self):
         site = self.tmp / "site"
