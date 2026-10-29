@@ -218,6 +218,11 @@ def synthetic_cases() -> Iterator[tuple[str, bytes, int]]:
     common = [(v, 1) for v in at]
     yield "version_types", tpk_file(blob(versions, entries, nodes, strings(4), common, [0])), 256
 
+    # Meta flags of 2^31 and more: a TPK node stores a u32 (Tpk.py:361), which UnityPy
+    # keeps as a positive int, so NodeRow's i64 must not read it as negative.
+    nodes = [node(0, 1, [1, 2], meta=0x8000_4000), node(2, 3, [], meta=0xFFFF_FFFF), node(4, 5, [], meta=1 << 31)]
+    yield "meta_flag_u32", tpk_file(blob([ver(2020)], [(80, [(ver(2020), both(0))])], nodes, strings(6))), 256
+
     # A 300-deep chain: UnityPy builds it, levels 0 to 299.
     yield "deep_chain_300", tpk_file(blob([ver(2020)], [(1, [(ver(2020), both(0))])], chain(300), strings(2))), 300
 

@@ -295,9 +295,8 @@ impl TpkProvider {
             variable_count: None,
             // Below `MAX_TREE_ROWS`.
             index: Some(i32::try_from(index).unwrap_or(i32::MAX)),
-            // UnityPy keeps the stored `u32` (`Tpk.py:361`); `NodeRow` holds
-            // an `i32`, which keeps every bit, the align flag included.
-            meta_flag: Some(row.meta_flag.cast_signed()),
+            // UnityPy keeps the stored `u32` (`Tpk.py:361`), zero-extended.
+            meta_flag: Some(i64::from(row.meta_flag)),
             ref_type_hash: None,
         }
     }

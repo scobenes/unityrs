@@ -81,7 +81,7 @@ fn row_json(row: &NodeRow) -> J {
         row.type_flags,
         row.variable_count,
         row.index,
-        row.meta_flag.map(|m| i64::from(m.cast_unsigned())),
+        row.meta_flag,
         row.ref_type_hash,
     ])
 }
@@ -183,9 +183,13 @@ fn g7_the_synthetic_set_covers_f6_f7_and_the_deep_chain() {
         "entries",
         "lz4",
         "lzma",
+        "meta_flag_u32",
     ] {
         assert!(names.iter().any(|n| n == name), "{name}");
     }
+    // A request 3: UnityPy keeps a TPK node's u32 meta flag positive.
+    let high = &case("meta_flag_u32")["classes"][0]["outcomes"][0]["rows"];
+    assert_eq!(high[0][8].as_i64(), Some(0x8000_4000));
     let flags = case("root_flags");
     let classes: Vec<i64> = flags["classes"]
         .as_array()

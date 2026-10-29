@@ -119,7 +119,7 @@ pub fn parse_old(
         let meta_flag = if format == 3 {
             None
         } else {
-            Some(r.read_i32()?)
+            Some(i64::from(r.read_i32()?))
         };
         rows.push(NodeRow {
             level,
@@ -228,7 +228,7 @@ pub fn parse_blob(
             type_flags: Some(i32::from(type_flags)),
             variable_count: None,
             index: Some(b.i32(16)),
-            meta_flag: Some(b.i32(20)),
+            meta_flag: Some(i64::from(b.i32(20))),
             ref_type_hash: (format >= 19).then(|| u64::from_le_bytes(b.bytes(24))),
         })?;
     }
