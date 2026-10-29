@@ -1,0 +1,57 @@
+# The fence (docs/plans/core.md section 2.3). unityrs-rabex is rabex 0.2.1
+# vendored whole; unityrs-core supersedes all of it but the TPK reader, so
+# this crate, its one user, may not reach the rest. Each path below is a type
+# or a function the core replaces: rabex's versions, class ids, pointers,
+# typetree nodes and providers, files, serde reader and writer, and the TPK
+# lookups that hand out rabex's own node and version types (the F4 accessor
+# is the way in). crates/unityrs-tpk/tests/fence.rs checks that no other
+# crate names rabex at all.
+disallowed-types = [
+    { path = "rabex::UnityVersion", reason = "superseded by unityrs_core::UnityVersion (UnityPy's ordering)" },
+    { path = "rabex::UnityVersionType", reason = "superseded by unityrs_core::version" },
+    { path = "rabex::objects::ClassId", reason = "class ids are i32 in unityrs (F4)" },
+    { path = "rabex::objects::ClassIdType", reason = "superseded by unityrs_core::classid" },
+    { path = "rabex::objects::PPtr", reason = "superseded by unityrs_core::env::pptr" },
+    { path = "rabex::objects::TypedPPtr", reason = "superseded by unityrs_core::env::pptr" },
+    { path = "rabex::objects::pptr::FileId", reason = "superseded by unityrs_core::env::pptr" },
+    { path = "rabex::typetree::TypeTreeNode", reason = "superseded by unityrs_core::typetree (use TpkTypeTreeBlob::release_rows)" },
+    { path = "rabex::typetree::TypeTreeProvider", reason = "superseded by unityrs_core::provider" },
+    { path = "rabex::typetree::NullTypeTreeProvider", reason = "superseded by unityrs_core::provider" },
+    { path = "rabex::typetree::typetree_cache::TypeTreeCache", reason = "keyed by class alone; superseded by unityrs_core::provider::ProviderChain" },
+    { path = "rabex::typetree::typetree_cache::sync::TypeTreeCache", reason = "keyed by class alone; superseded by unityrs_core::provider::ProviderChain" },
+    { path = "rabex::files::SerializedFile", reason = "superseded by unityrs_core::files" },
+    { path = "rabex::files::BundleFile", reason = "superseded by unityrs_core::files" },
+    { path = "rabex::files::bundlefile::BundleFileReader", reason = "superseded by unityrs_core::files" },
+    { path = "rabex::files::bundlefile::BundleFileBuilder", reason = "P3, not P1" },
+    { path = "rabex::files::serializedfile::SerializedType", reason = "superseded by unityrs_core::files" },
+    { path = "rabex::files::serializedfile::ObjectInfo", reason = "superseded by unityrs_core::files" },
+    { path = "rabex::files::serializedfile::builder::SerializedFileBuilder", reason = "P3, not P1" },
+    { path = "rabex::serde_typetree::Deserializer", reason = "superseded by unityrs_core::walk" },
+    { path = "rabex::serde_typetree::Serializer", reason = "superseded by unityrs_core::walk" },
+]
+disallowed-methods = [
+    { path = "rabex::tpk::TpkTypeTreeBlob::get_typetree_node", reason = "hands out rabex's TypeTreeNode and picks backwards; use class_entries and release_rows (F4)" },
+    { path = "rabex::tpk::TpkTypeTreeBlob::try_get_typetree_node", reason = "hands out rabex's TypeTreeNode and picks backwards; use class_entries and release_rows (F4)" },
+    { path = "rabex::tpk::TpkTypeTreeBlob::get_typetree_node_for_class", reason = "hands out rabex's TypeTreeNode; use release_rows (F4)" },
+    { path = "rabex::tpk::TpkTypeTreeBlob::try_get_typetree_node_for_class", reason = "hands out rabex's TypeTreeNode; use release_rows (F4)" },
+    { path = "rabex::tpk::TpkVersion::unity_version", reason = "rabex's UnityVersion; use unityrs_core::UnityVersion::from_packed" },
+    { path = "rabex::tpk::TpkCommonString::get_count", reason = "takes rabex's UnityVersion; the common strings are unityrs_core::typetree::commonstring" },
+    { path = "rabex::serde_typetree::from_slice", reason = "superseded by unityrs_core::walk" },
+    { path = "rabex::serde_typetree::from_reader", reason = "superseded by unityrs_core::walk" },
+    { path = "rabex::serde_typetree::from_reader_endianed", reason = "superseded by unityrs_core::walk" },
+    { path = "rabex::serde_typetree::to_vec", reason = "superseded by unityrs_core::walk" },
+    { path = "rabex::serde_typetree::to_vec_endianed", reason = "superseded by unityrs_core::walk" },
+    { path = "rabex::serde_typetree::to_writer", reason = "superseded by unityrs_core::walk" },
+]
+
+# Clippy reads only the nearest clippy.toml, so the root's list is repeated.
+doc-valid-idents = [
+  "UnityPy", "UnityPyBoost", "UnityFS", "UnityWeb", "UnityRaw", "UnityArchive",
+  "UnityCN", "UnityWebData", "TuanjieWebData", "AssetStudio", "AssetRipper",
+  "SerializedFile", "SerializedType", "BundleFile", "WebFile", "AssetsFile",
+  "ResourceFile", "AssetBundle", "AssetInfo", "TypelessData", "MonoBehaviour",
+  "MonoScript", "ReferencedObject", "ReferencedObjectData",
+  "ManagedReferencesRegistry", "ClassIDType", "ObjectReader", "TypeTreeHelper",
+  "EndianBinaryReader", "LZ4HC", "PyO3",
+  "..",
+]

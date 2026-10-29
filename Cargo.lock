@@ -654,6 +654,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "unityrs-tpk"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "thiserror",
+ "unityrs-core",
+ "unityrs-rabex",
+ "unityrs-testkit",
+]
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
