@@ -186,7 +186,7 @@ fn lzma_bad_properties_and_corrupt_data_raise() {
 #[test]
 fn lzma_matches_beyond_the_first_dictionary_decode_again_with_a_larger_one() {
     // 3 MiB of noise repeated: the second copy matches 3 MiB back, past the
-    // first attempt's 1 MiB dictionary (a declared size of 0).
+    // first attempt's 4 KiB dictionary (a declared size of 0).
     let mut seed = 0x2545_F491_4F6C_DD1Du64;
     let noise: Vec<u8> = (0..3 << 20)
         .map(|_| {
@@ -231,18 +231,33 @@ fn lzma_output_is_capped_per_block_and_charged() {
         matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::BlockOutput),
         "{got:?}"
     );
-    // A meter smaller than the output refuses it; one that holds it does
-    // not, whatever the windows the decoder asked for.
+    // A meter smaller than the output refuses it; one that holds it and the
+    // dictionary does not, whatever the windows the decoder asked for.
     let small = meter(50_000);
     let got = run_on(&small, &Lzma, &block, 100_000, u64::MAX);
     assert!(
         matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory),
         "{got:?}"
     );
-    let fits = meter(100_000 + 64);
+    // The dictionary liblzma allocates (the declared 100,000 bytes here) is
+    // charged beside the output (C request 1): a meter that holds the output
+    // alone refuses the block, and returns every byte.
+    let output_only = meter(100_000 + 64);
+    let got = run_on(&output_only, &Lzma, &block, 100_000, u64::MAX);
+    assert!(
+        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory),
+        "{got:?}"
+    );
+    assert_eq!(output_only.used(), 0);
+    let fits = meter(2 * (100_000 + 64));
     assert_eq!(
         run_on(&fits, &Lzma, &block, 100_000, u64::MAX).unwrap(),
         data
+    );
+    assert_eq!(
+        fits.used(),
+        0,
+        "the dictionary's charge ends with the decode"
     );
 }
 

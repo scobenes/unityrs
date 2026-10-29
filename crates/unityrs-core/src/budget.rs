@@ -337,6 +337,10 @@ pub struct DecodeBuf {
     seg_start: usize,
     seg_cap: u64,
     seg_kind: LimitKind,
+    /// Bumped by every [`Self::begin_block`] and every [`Self::truncate`]
+    /// below the segment's start, so [`crate::codec::decode_block`] can see
+    /// that a codec left its own segment (round 6).
+    seg_epoch: u64,
 }
 
 impl fmt::Debug for DecodeBuf {
@@ -367,6 +371,7 @@ impl DecodeBuf {
             seg_start: 0,
             seg_cap: cap,
             seg_kind: cap_kind,
+            seg_epoch: 0,
         };
         let initial = usize::try_from(initial.min(cap)).unwrap_or(usize::MAX);
         grow_charged(&mut out.buf, &mut out.charge, initial, initial)?;
@@ -379,6 +384,26 @@ impl DecodeBuf {
         self.seg_start = self.buf.len();
         self.seg_cap = cap;
         self.seg_kind = cap_kind;
+        self.seg_epoch = self.seg_epoch.wrapping_add(1);
+    }
+
+    /// The meter this buffer charges: a codec charges what it holds beside
+    /// its output (an LZMA dictionary) to the same input.
+    #[must_use]
+    pub fn meter(&self) -> &Arc<Meter> {
+        self.charge.meter()
+    }
+
+    /// The cap of the current segment ([`Self::begin_block`]'s `cap`).
+    #[must_use]
+    pub fn segment_cap(&self) -> u64 {
+        self.seg_cap
+    }
+
+    /// Changes whenever a segment begins or the bytes are cut below the
+    /// current segment's start.
+    pub(crate) fn segment_epoch(&self) -> u64 {
+        self.seg_epoch
     }
 
     /// The bytes written.
@@ -483,7 +508,10 @@ impl DecodeBuf {
     /// until [`Self::into_bytes`] or drop.
     pub fn truncate(&mut self, len: usize) {
         self.buf.truncate(len);
-        self.seg_start = self.seg_start.min(self.buf.len());
+        if self.buf.len() < self.seg_start {
+            self.seg_start = self.buf.len();
+            self.seg_epoch = self.seg_epoch.wrapping_add(1);
+        }
     }
 
     /// The output as `Bytes` that carry their charge ([`charged_bytes`]).

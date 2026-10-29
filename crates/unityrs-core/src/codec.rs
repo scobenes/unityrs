@@ -52,7 +52,7 @@ use bytes::Bytes;
 
 use crate::budget::DecodeBuf;
 use crate::error::{Error, LimitError, LimitKind};
-use crate::limits::ChargeError;
+use crate::limits::{ChargeError, heap_cost};
 
 /// A block's compression, `flags & 0x3F`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -165,7 +165,10 @@ pub trait BlockCodec: Send + Sync {
 /// empty, and fit `cap` as if it had been written. A range outside the
 /// input, or one returned with bytes written, is the codec's error
 /// ([`Error::Decompress`]); a range longer than `cap` is
-/// [`LimitKind::BlockOutput`].
+/// [`LimitKind::BlockOutput`]. A codec that left its segment (began one of
+/// its own, which would lift its cap and its work count, or cut the buffer
+/// below its block, erasing earlier blocks of the run) is the codec's error
+/// too, whatever it returned (round 6: `Written` was trusted).
 pub fn decode_block(
     which: Codec,
     codec: &dyn BlockCodec,
@@ -175,13 +178,20 @@ pub fn decode_block(
     cap: u64,
 ) -> Result<Option<Bytes>, Error> {
     out.begin_block(cap, LimitKind::BlockOutput);
-    let range = match codec.decode(input, uncompressed, out)? {
-        Decoded::Written => return Ok(None),
-        Decoded::Input(range) => range,
-    };
+    let epoch = out.segment_epoch();
+    let decoded = codec.decode(input, uncompressed, out)?;
     let bad = |detail: String| Error::Decompress {
         codec: which,
         detail: detail.into(),
+    };
+    if out.segment_epoch() != epoch {
+        return Err(bad(
+            "the codec began a segment of its own or cut the output below its block".to_owned(),
+        ));
+    }
+    let range = match decoded {
+        Decoded::Written => return Ok(None),
+        Decoded::Input(range) => range,
     };
     if out.segment_len() != 0 {
         return Err(bad(format!(
@@ -307,8 +317,9 @@ pub struct Lzma;
 /// declared size is larger (see [`Lzma`]'s `decode`).
 const LZMA_FIRST_DICT_MAX: u64 = 8 << 20;
 
-/// The dictionary the first LZMA attempt allocates at least.
-const LZMA_FIRST_DICT_MIN: u64 = 1 << 20;
+/// liblzma's smallest dictionary (`LZMA_DICT_SIZE_MIN`): a smaller size is
+/// allocated at this, and the first attempt asks for no less.
+const LZMA_DICT_SIZE_MIN: u32 = 4096;
 
 impl BlockCodec for Lzma {
     /// `decompress_lzma` (`CompressionHelper.py:17-44`): the properties byte
@@ -319,16 +330,20 @@ impl BlockCodec for Lzma {
     /// error; the declared size plays no part.
     ///
     /// **The dictionary.** liblzma allocates the dictionary the properties
-    /// name (up to 4 GiB) outside every meter. The decoder only uses it to
+    /// name (up to 4 GiB) on the C heap. The decoder only uses it to
     /// refuse a match distance at or beyond `min(output so far, dictionary)`,
     /// so a dictionary at least as large as the output decodes exactly what
     /// the named one does. The first attempt uses the declared size, between
-    /// 1 and 8 MiB, capped by the named size; an attempt that fails on data
+    /// liblzma's 4 KiB minimum and 8 MiB, capped by the named size (a
+    /// well-formed block fills exactly its declared size, so it decodes
+    /// once); an attempt that fails on data
     /// after it outgrew its dictionary is decoded again with a larger one
     /// (at least twice the output so far, capped by the named size), so the
     /// dictionary stays within a constant plus twice the block's charged
-    /// output. Plan section 3.6 charges the named dictionary instead, which
-    /// needs the block's meter and cap from [`DecodeBuf`] (REQUESTS-c.md 1).
+    /// output. Each attempt's dictionary is charged to the input's meter
+    /// ([`DecodeBuf::meter`]) before liblzma allocates it, and returned when
+    /// the attempt ends, so the meter sees it beside the output (plan
+    /// section 3.15); a refusal is the meter's, like a refused growth.
     fn decode(
         &self,
         input: &Bytes,
@@ -348,7 +363,8 @@ impl BlockCodec for Lzma {
         let lc = u32::from(props % 9);
         let rest = u32::from(props / 9);
         let (pb, lp) = (rest / 5, rest % 5);
-        let first = u64::from(uncompressed).clamp(LZMA_FIRST_DICT_MIN, LZMA_FIRST_DICT_MAX);
+        let first =
+            u64::from(uncompressed).clamp(u64::from(LZMA_DICT_SIZE_MIN), LZMA_FIRST_DICT_MAX);
         let mut dict = u32::try_from(first).unwrap_or(u32::MAX).min(named);
         let start = out.len();
         loop {
@@ -421,6 +437,11 @@ fn lzma_attempt(
         .position_bits(pb);
     let mut filters = Filters::new();
     filters.lzma1(&opts);
+    // liblzma allocates the whole dictionary (at least its 4 KiB minimum)
+    // when the decoder starts: charged first, held for the attempt.
+    let _dictionary = out
+        .meter()
+        .charge(heap_cost(u64::from(dict.max(LZMA_DICT_SIZE_MIN))))?;
     let mut stream = Stream::new_raw_decoder(&filters).map_err(|e| map(e, 0))?;
     let seg_start = out.len();
     // The first window is the declared size, which a well-formed block
@@ -874,6 +895,93 @@ mod tests {
             out.grow_zeroed(self.write)?;
             Ok(self.range.clone().map_or(Decoded::Written, Decoded::Input))
         }
+    }
+
+    /// A codec that leaves its segment: cuts the run to `cut` (when set),
+    /// optionally begins a segment of its own, writes `write` bytes and
+    /// returns `Written`.
+    struct Escapes {
+        cut: Option<usize>,
+        own_segment: bool,
+        write: usize,
+    }
+
+    impl BlockCodec for Escapes {
+        fn decode(&self, _: &Bytes, _: u32, out: &mut DecodeBuf) -> Result<Decoded, Error> {
+            if let Some(len) = self.cut {
+                out.truncate(len);
+            }
+            if self.own_segment {
+                out.begin_block(u64::MAX, LimitKind::InputBytes);
+            }
+            out.grow_zeroed(self.write)?;
+            Ok(Decoded::Written)
+        }
+    }
+
+    #[test]
+    fn a_codec_that_leaves_its_segment_is_its_error() {
+        // Round 6 (claude6 L1, K1): `Written` was trusted, so a codec could
+        // erase earlier blocks of the run, lift its cap and escape the work
+        // count by beginning a segment of its own, and `decode_block`
+        // returned `Ok(None)`.
+        let input = Bytes::from(vec![7u8; 8]);
+        let run = |codec: Escapes| {
+            let limits = crate::limits::Limits {
+                max_decode_work: 1 << 20,
+                ..crate::limits::Limits::default()
+            };
+            let m = Meter::for_input(
+                &limits,
+                Arc::new(crate::budget::Unbounded),
+                crate::budget::Reservation::Input,
+            );
+            let mut out = DecodeBuf::new(&m, 0, u64::MAX, LimitKind::BlockOutput).unwrap();
+            out.extend_from_slice(&[1; 8]).unwrap(); // block 0 of the run
+            let got = decode_block(Codec::Other(9), &codec, &input, 16, &mut out, 16);
+            (got, m.decoded())
+        };
+        for (codec, what) in [
+            (
+                Escapes {
+                    cut: Some(0),
+                    own_segment: true,
+                    write: 64,
+                },
+                "erases block 0, writes 64 bytes past a 16-byte cap",
+            ),
+            (
+                Escapes {
+                    cut: None,
+                    own_segment: true,
+                    write: 64,
+                },
+                "a segment of its own, past its cap and uncounted",
+            ),
+            (
+                Escapes {
+                    cut: Some(4),
+                    own_segment: false,
+                    write: 4,
+                },
+                "cuts into block 0",
+            ),
+        ] {
+            let (got, _) = run(codec);
+            assert!(
+                matches!(&got, Err(Error::Decompress { .. })),
+                "{what}: {got:?}"
+            );
+        }
+        // Writing within its own segment (and cutting its own tail) is fine,
+        // and every byte it wrote counts.
+        let (got, decoded) = run(Escapes {
+            cut: Some(8),
+            own_segment: false,
+            write: 16,
+        });
+        assert!(got.unwrap().is_none());
+        assert_eq!(decoded, 8 + 16);
     }
 
     #[test]
