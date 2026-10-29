@@ -116,10 +116,10 @@ fn an_lz4_payload_past_the_decoded_bound_is_refused() {
     assert_eq!(got.2, max);
 }
 
-/// The review's case: one class with 2,000,000 entries that remove it, in a
-/// small LZMA TPK, which rabex's reader held as about 350 MiB. Its payload
-/// (18 MB) passes the decoded bound; at 65,537 entries, under it, the
-/// entries' bound refuses it, and at 65,536 it loads.
+/// One class with 2,000,000 entries that remove it, in an LZMA TPK under
+/// 64 KiB, which rabex's reader kept whole, an entry record per 9 bytes. Its
+/// payload (9 bytes an entry) passes the decoded bound; at 65,537 entries,
+/// under it, the entries' bound refuses it, and at 65,536 it loads.
 #[test]
 fn many_entries_are_refused_by_the_payload_or_the_entry_bound() {
     let big = tpk(2, &removed_entries(2_000_000), 0);
