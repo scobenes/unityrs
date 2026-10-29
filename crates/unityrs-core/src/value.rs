@@ -33,16 +33,27 @@
 //! value). The reader builds every list, map, tuple and run through a
 //! [`ValueBuilder`], the one metered path; `Map` has no growth method.
 //!
+//! **A built value travels with its charge.** The builder hands each list,
+//! map, tuple and run back as a [`Built`]: the value and the charge for its
+//! heap, which no public method separates. A `Built` goes into its parent's
+//! metered vector ([`MeteredVec::push_built`], [`MeteredVec::push_entry`],
+//! [`MeteredVec::set_entry`]), which takes its charge along, or into the
+//! `Parsed` ([`ValueBuilder::finish`]); dropped anywhere, its value and its
+//! charge go together. So no value the builder made can outlive its charge,
+//! whenever the builder itself is dropped (round 5: the builder kept every
+//! charge until `finish`, and a value taken before a builder was dropped
+//! lived on uncharged).
+//!
 //! **What the types pin, and what a test pins.** A `Parsed` has no public
 //! constructor: [`ValueBuilder::finish`] is the only way to one, so every
-//! `Parsed` holds the charge its builder took. A caller's own value (one to
+//! `Parsed` holds the charges of what it holds. A caller's own value (one to
 //! write, a test's) goes through a builder too, on [`Meter::unlimited`] when
-//! it is not an input's. `Value`'s variants are public data, though, so the
-//! types cannot prove that every allocation of a value went through the
-//! builder: a value built from a plain `Vec`, or one kept after its builder
-//! was dropped without `finish`, holds heap no charge covers. That the
-//! reader never does either is its discipline, checked by package B's
-//! counting-allocator test (plan section 7.3), as `tests/memory_model.rs`
+//! it is not an input's; [`ValueBuilder::scalar`] wraps a value that owns no
+//! heap, and refuses one that does. `Value`'s variants are public data,
+//! though, so the types cannot prove that a value pushed into a vector as a
+//! plain `Value` owns no uncharged heap (a `List` made from a plain `Vec`).
+//! That the reader never does that is its discipline, checked by package
+//! B's counting-allocator test (plan section 7.3), as `tests/memory_model.rs`
 //! checks the builder itself.
 //!
 //! The snippets below must not compile. Stable rustdoc does not check a
@@ -105,6 +116,18 @@
 //! let _ = unityrs_core::Parsed::unmetered;
 //! ```
 //!
+//! ```compile_fail,E0616
+//! // A built value does not leave its charge (round 5): its fields are
+//! // private, and no method moves the value out.
+//! fn take(b: unityrs_core::value::Built) -> unityrs_core::Value {
+//!     b.value
+//! }
+//! ```
+//!
+//! ```compile_fail,E0599
+//! let _ = unityrs_core::value::Built::into_value;
+//! ```
+//!
 //! ```
 //! // What the snippets above refuse, a caller does this way.
 //! use std::sync::Arc;
@@ -112,7 +135,7 @@
 //! use unityrs_core::typetree::{NodeList, NodeRow};
 //! use unityrs_core::{Value, ValueBuilder};
 //! let root = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "int", "v")]).unwrap());
-//! let mut b = ValueBuilder::new(&Meter::unlimited(), root).unwrap();
+//! let b = ValueBuilder::new(&Meter::unlimited(), root).unwrap();
 //! let mut items = b.vec();
 //! items.push(Value::Int(1)).unwrap();
 //! let list = b.list(items);
@@ -326,26 +349,122 @@ impl Map {
     }
 }
 
+/// A list, map, tuple or primitive run a [`ValueBuilder`] made, with the
+/// charge for its heap (module docs). No public method separates the two:
+/// the value goes on only into a parent's metered vector
+/// ([`MeteredVec::push_built`], [`MeteredVec::push_entry`],
+/// [`MeteredVec::set_entry`]) or into the `Parsed` ([`ValueBuilder::finish`]),
+/// each of which takes the charge along, and dropped anywhere the two go
+/// together.
+#[derive(Debug)]
+pub struct Built {
+    value: Value,
+    charge: Charge,
+}
+
+impl Built {
+    /// The value, by reference.
+    #[must_use]
+    pub fn value(&self) -> &Value {
+        &self.value
+    }
+
+    /// The charge for the value's heap.
+    #[must_use]
+    pub fn charge(&self) -> &Charge {
+        &self.charge
+    }
+}
+
+impl MeteredVec<Value> {
+    /// Appends a built value (a list's or a tuple's item); this vector keeps
+    /// its charge from then on. A refused growth drops both.
+    pub fn push_built(&mut self, item: Built) -> Result<(), ChargeError> {
+        self.push_charged(item.value, item.charge)
+    }
+}
+
+impl MeteredVec<(NodeId, Value)> {
+    /// Appends a dict entry whose value was built; this vector keeps its
+    /// charge from then on. A refused growth drops both.
+    pub fn push_entry(&mut self, key: NodeId, item: Built) -> Result<(), ChargeError> {
+        self.push_charged((key, item.value), item.charge)
+    }
+
+    /// Replaces the value of entry `pos` with a built one, keeping its key
+    /// and position (a repeated name's `PyDict_SetItem`, plan 3.10's linear
+    /// dict), and keeps its charge. The value replaced is dropped; its charge
+    /// stays with this vector until it drops (charged, never under). False,
+    /// with `item` dropped whole, when `pos` is not an entry.
+    pub fn set_entry(&mut self, pos: usize, item: Built) -> bool {
+        let Built { value, charge } = item;
+        match self.as_mut_slice().get_mut(pos) {
+            Some((_, v)) => {
+                *v = value;
+                self.keep_charge(charge);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// A primitive run, as the reader collects it, for [`ValueBuilder::prims`].
+#[derive(Debug)]
+pub enum PrimRun {
+    /// `vector<bool>`.
+    Bool(MeteredVec<bool>),
+    /// `vector<SInt8>`.
+    I8(MeteredVec<i8>),
+    /// `vector<UInt16>`.
+    U16(MeteredVec<u16>),
+    /// `vector<SInt16>`.
+    I16(MeteredVec<i16>),
+    /// `vector<UInt32>`.
+    U32(MeteredVec<u32>),
+    /// `vector<SInt32>`.
+    I32(MeteredVec<i32>),
+    /// `vector<UInt64>`.
+    U64(MeteredVec<u64>),
+    /// `vector<SInt64>`.
+    I64(MeteredVec<i64>),
+    /// `vector<float>`: bit patterns.
+    F32(MeteredVec<u32>),
+    /// `vector<double>`: bit patterns.
+    F64(MeteredVec<u64>),
+}
+
 /// Builds one object's value on its input's meter: the reader's only way to
 /// make a [`Parsed`] (plan section 3.10).
 ///
 /// Every list, map, tuple and primitive run the reader makes grows in a
 /// [`MeteredVec`] from [`Self::vec`], so its capacity is charged before it
-/// is allocated, and is turned into its `Value` here, which takes its
-/// charge. The table of node lists ([`Parsed::lists`]) grows the same way.
-/// [`Self::finish`] hands every charge to the `Parsed`, so the value's heap
-/// is never above what it was charged, whatever budget the meter books with.
+/// is allocated, and is turned into a [`Built`] here, which carries its
+/// charge into its parent and on into the `Parsed`. The table of node lists
+/// ([`Parsed::lists`]) grows the same way. The builder keeps no value's
+/// charge, so dropping it (a read that failed) leaves nothing uncharged.
 pub struct ValueBuilder {
     lists: MeteredVec<Arc<NodeList>>,
-    charge: Charge,
 }
 
 impl std::fmt::Debug for ValueBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ValueBuilder")
             .field("lists", &self.lists.len())
-            .field("charged", &self.charge.bytes())
             .finish_non_exhaustive()
+    }
+}
+
+/// Whether `value` itself owns heap (its children aside): a list, map,
+/// tuple or run with an allocation.
+fn owns_heap(value: &Value) -> bool {
+    match value {
+        Value::List(v) => v.capacity() > 0,
+        Value::Tuple(v) => !v.is_empty(),
+        Value::Dict(m) => m.entries.capacity() > 0,
+        Value::Prims(PrimArray::U8(_)) => false,
+        Value::Prims(p) => !p.is_empty(),
+        _ => false,
     }
 }
 
@@ -355,16 +474,13 @@ impl ValueBuilder {
     pub fn new(meter: &Arc<Meter>, root: Arc<NodeList>) -> Result<Self, ChargeError> {
         let mut lists = MeteredVec::new(meter);
         lists.push(root)?;
-        Ok(Self {
-            lists,
-            charge: Charge::zero(meter),
-        })
+        Ok(Self { lists })
     }
 
     /// The meter every allocation of the value is charged to.
     #[must_use]
     pub fn meter(&self) -> &Arc<Meter> {
-        self.charge.meter()
+        self.lists.charge().meter()
     }
 
     /// An empty vector on the meter, for a list, a map's entries, a tuple or
@@ -399,41 +515,86 @@ impl ValueBuilder {
         })
     }
 
-    /// A `List` of `items`, keeping their vector's charge.
-    pub fn list(&mut self, items: MeteredVec<Value>) -> Value {
+    /// A value that owns no heap of its own (a scalar, a string or bytes
+    /// sliced from the file, an empty list or map), as a [`Built`] with an
+    /// empty charge; one that owns heap is handed back, since only the
+    /// builder's own methods know what it was charged.
+    pub fn scalar(&self, value: Value) -> Result<Built, Value> {
+        if owns_heap(&value) {
+            return Err(value);
+        }
+        Ok(Built {
+            value,
+            charge: Charge::zero(self.meter()),
+        })
+    }
+
+    /// A `List` of `items`, with their vector's charge.
+    #[must_use]
+    pub fn list(&self, items: MeteredVec<Value>) -> Built {
         let (items, charge) = items.into_parts();
-        self.charge.absorb(charge);
-        Value::List(items)
+        Built {
+            value: Value::List(items),
+            charge,
+        }
     }
 
     /// A `Dict` whose keys name nodes of list `list`, over `entries` with
-    /// distinct keys, keeping their vector's charge.
-    pub fn map(&mut self, list: ListIx, entries: MeteredVec<(NodeId, Value)>) -> Value {
-        let (entries, charge) = entries.into_parts();
-        self.charge.absorb(charge);
-        Value::Dict(Map { list, entries })
-    }
-
-    /// A boxed slice of `items` (a `Tuple`'s items, a [`PrimArray`]'s run),
-    /// moved into an exact allocation that is charged first
-    /// ([`MeteredVec::into_boxed_slice`]), keeping its charge.
-    pub fn boxed<T>(&mut self, items: MeteredVec<T>) -> Result<Box<[T]>, ChargeError> {
-        let (items, charge) = items.into_boxed_slice()?;
-        self.charge.absorb(charge);
-        Ok(items)
-    }
-
-    /// A `Tuple` of `items` ([`Self::boxed`]).
-    pub fn tuple(&mut self, items: MeteredVec<Value>) -> Result<Value, ChargeError> {
-        Ok(Value::Tuple(self.boxed(items)?))
-    }
-
-    /// The `Parsed`: `value`, where the read ended, the lists, and every
-    /// charge taken.
+    /// distinct keys, with their vector's charge.
     #[must_use]
-    pub fn finish(self, value: Value, bytes_read: i64) -> Parsed {
+    pub fn map(&self, list: ListIx, entries: MeteredVec<(NodeId, Value)>) -> Built {
+        let (entries, charge) = entries.into_parts();
+        Built {
+            value: Value::Dict(Map { list, entries }),
+            charge,
+        }
+    }
+
+    /// A `Tuple` of `items`, moved into an exact allocation that is charged
+    /// first ([`MeteredVec::into_boxed_slice`]), with its charge.
+    pub fn tuple(&self, items: MeteredVec<Value>) -> Result<Built, ChargeError> {
+        let (items, charge) = items.into_boxed_slice()?;
+        Ok(Built {
+            value: Value::Tuple(items),
+            charge,
+        })
+    }
+
+    /// A `Prims` value of `run`, moved into an exact allocation that is
+    /// charged first, with its charge. (`vector<UInt8>`/`char` is a
+    /// zero-copy slice of the file, [`PrimArray::U8`], through
+    /// [`Self::scalar`].)
+    pub fn prims(&self, run: PrimRun) -> Result<Built, ChargeError> {
+        fn boxed<T>(
+            items: MeteredVec<T>,
+            wrap: fn(Box<[T]>) -> PrimArray,
+        ) -> Result<Built, ChargeError> {
+            let (items, charge) = items.into_boxed_slice()?;
+            Ok(Built {
+                value: Value::Prims(wrap(items)),
+                charge,
+            })
+        }
+        match run {
+            PrimRun::Bool(v) => boxed(v, PrimArray::Bool),
+            PrimRun::I8(v) => boxed(v, PrimArray::I8),
+            PrimRun::U16(v) => boxed(v, PrimArray::U16),
+            PrimRun::I16(v) => boxed(v, PrimArray::I16),
+            PrimRun::U32(v) => boxed(v, PrimArray::U32),
+            PrimRun::I32(v) => boxed(v, PrimArray::I32),
+            PrimRun::U64(v) => boxed(v, PrimArray::U64),
+            PrimRun::I64(v) => boxed(v, PrimArray::I64),
+            PrimRun::F32(v) => boxed(v, PrimArray::F32),
+            PrimRun::F64(v) => boxed(v, PrimArray::F64),
+        }
+    }
+
+    /// The `Parsed`: `value`, where the read ended, the lists, and the
+    /// charges of both.
+    #[must_use]
+    pub fn finish(self, value: Built, bytes_read: i64) -> Parsed {
         let (lists, lists_charge) = self.lists.into_parts();
-        let mut charge = self.charge;
+        let Built { value, mut charge } = value;
         charge.absorb(lists_charge);
         Parsed {
             lists,
@@ -652,7 +813,7 @@ mod tests {
         let budget = Arc::new(Counting::new(1 << 20));
         let meter = Meter::new(1 << 20, budget.clone(), Reservation::Input);
         let list = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "int", "v")]).unwrap());
-        let mut b = super::ValueBuilder::new(&meter, list).unwrap();
+        let b = super::ValueBuilder::new(&meter, list).unwrap();
         let mut items = b.vec();
         for i in 0..100 {
             items.push(Value::Int(i)).unwrap();
@@ -684,12 +845,106 @@ mod tests {
             b.list_index(r).unwrap();
         }
         assert_eq!(b.list_index(&refs[99]).unwrap(), 100);
-        let p = b.finish(Value::Int(0), 0);
+        let v = b.scalar(Value::Int(0)).unwrap();
+        let p = b.finish(v, 0);
         assert_eq!(p.lists().len(), 101, "one per distinct tree");
         let table = 128 * std::mem::size_of::<Arc<NodeList>>();
         assert_eq!(meter.used(), heap_cost(u64::try_from(table).unwrap()));
         drop(p);
         assert_eq!(meter.used(), 0);
+    }
+
+    #[test]
+    fn a_built_value_keeps_its_charge_when_the_builder_is_dropped() {
+        use crate::budget::{Reservation, Unbounded};
+        use crate::limits::{Meter, heap_cost};
+        use crate::value::PrimRun;
+        // Round 5 (Codex L3): `list` moved its vector's charge into the
+        // builder and handed the value out bare, so a 1,000-item list built
+        // and kept past a dropped builder was alive with the meter at zero.
+        let meter = Meter::new(u64::MAX, Arc::new(Unbounded), Reservation::Input);
+        let root = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")]).unwrap());
+        let b = super::ValueBuilder::new(&meter, root).unwrap();
+        let mut items = b.vec();
+        for i in 0..1000 {
+            items.push(Value::Int(i)).unwrap();
+        }
+        let list = b.list(items);
+        let list_charge = list.charge().bytes();
+        let mut entries = b.vec();
+        entries.push_entry(NodeId(1), list).unwrap();
+        let mut run = b.vec();
+        run.extend_from_slice(&[1_i32, 2, 3]).unwrap();
+        let run = b.prims(PrimRun::I32(run)).unwrap();
+        entries.push_entry(NodeId(2), run).unwrap();
+        let map = b.map(0, entries);
+        // The builder holds only its table of node lists (one, the root).
+        let table = u64::try_from(std::mem::size_of::<Arc<NodeList>>()).unwrap();
+        assert_eq!(meter.used(), map.charge().bytes() + heap_cost(table));
+        drop(b);
+        assert_eq!(
+            meter.used(),
+            map.charge().bytes(),
+            "the value outlives the builder, charged"
+        );
+        assert!(map.charge().bytes() >= list_charge + heap_cost(12));
+        let Value::Dict(m) = map.value() else {
+            panic!("{map:?}")
+        };
+        assert_eq!(m.len(), 2);
+        drop(map);
+        assert_eq!(meter.used(), 0);
+    }
+
+    #[test]
+    fn a_value_with_heap_of_its_own_is_built_only_by_the_builder() {
+        use crate::limits::Meter;
+        let root = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")]).unwrap());
+        let b = super::ValueBuilder::new(&Meter::unlimited(), root).unwrap();
+        for owns in [
+            Value::List(vec![Value::Int(1)]),
+            Value::Tuple(vec![Value::Int(1)].into_boxed_slice()),
+            Value::Dict(Map::from_entries(0, vec![(NodeId(1), Value::Int(1))])),
+            Value::Prims(super::PrimArray::I32(vec![1].into_boxed_slice())),
+        ] {
+            assert!(b.scalar(owns).is_err());
+        }
+        for none in [
+            Value::Int(1),
+            Value::Str("x".into()),
+            Value::List(Vec::new()),
+            Value::Dict(Map::new(0)),
+            Value::Prims(super::PrimArray::U8(bytes::Bytes::from_static(b"ab"))),
+        ] {
+            assert_eq!(b.scalar(none).unwrap().charge().bytes(), 0);
+        }
+    }
+
+    #[test]
+    fn a_replaced_entry_takes_the_new_values_charge() {
+        use crate::budget::{Reservation, Unbounded};
+        use crate::limits::Meter;
+        let meter = Meter::new(u64::MAX, Arc::new(Unbounded), Reservation::Input);
+        let root = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")]).unwrap());
+        let b = super::ValueBuilder::new(&meter, root).unwrap();
+        let mut entries = b.vec();
+        entries
+            .push_entry(NodeId(1), b.scalar(Value::Int(1)).unwrap())
+            .unwrap();
+        let mut items = b.vec();
+        items.push(Value::Int(2)).unwrap();
+        let list = b.list(items);
+        let charged = list.charge().bytes();
+        let before = meter.used();
+        assert!(entries.set_entry(0, list));
+        assert_eq!(meter.used(), before, "the charge moved, nothing new");
+        assert!(entries.charge().bytes() >= charged);
+        let stray = b.scalar(Value::Int(3)).unwrap();
+        assert!(!entries.set_entry(5, stray));
+        assert_eq!(
+            entries.as_slice()[0].1,
+            Value::List(vec![Value::Int(2)])
+        );
     }
 
     #[test]

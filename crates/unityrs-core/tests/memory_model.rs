@@ -299,7 +299,7 @@ fn parsed_values(counting: bool) -> u64 {
     let mut kept: Vec<Parsed> = Vec::with_capacity(4096 + 2);
     let base = reset_peak();
 
-    let mut b = ValueBuilder::new(&m, list.clone()).unwrap();
+    let b = ValueBuilder::new(&m, list.clone()).unwrap();
     let mut items = b.vec();
     for i in 0..(1 << 14) {
         let mut entries = b.vec();
@@ -307,19 +307,19 @@ fn parsed_values(counting: bool) -> u64 {
         entries.push((NodeId(1), Value::Int(i))).unwrap();
         entries.push((NodeId(2), Value::Int(-i))).unwrap();
         let map = b.map(0, entries);
-        items.push(map).unwrap();
+        items.push_built(map).unwrap();
     }
     let value = b.list(items);
     kept.push(b.finish(value, 0));
     held_within_charge(base, &m, "maps");
 
-    let mut b = ValueBuilder::new(&m, list.clone()).unwrap();
+    let b = ValueBuilder::new(&m, list.clone()).unwrap();
     let mut outer = b.vec();
     for i in 0..(1 << 18) {
         let mut inner = b.vec();
         inner.push(Value::Int(i)).unwrap();
         let one = b.list(inner);
-        outer.push(one).unwrap();
+        outer.push_built(one).unwrap();
     }
     let value = b.list(outer);
     kept.push(b.finish(value, 0));
@@ -332,7 +332,7 @@ fn parsed_values(counting: bool) -> u64 {
             let ix = b.list_index(r).unwrap();
             let data = b.map(ix, b.vec());
             entries
-                .push((NodeId(u32::try_from(k).unwrap()), data))
+                .push_entry(NodeId(u32::try_from(k).unwrap()), data)
                 .unwrap();
         }
         let value = b.map(0, entries);

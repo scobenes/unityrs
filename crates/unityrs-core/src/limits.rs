@@ -745,6 +745,21 @@ impl<T> MeteredVec<T> {
         Ok(())
     }
 
+    /// Appends `value` with `charge`, the charge for the heap it owns, which
+    /// this vector keeps from then on (a built value going into its parent,
+    /// [`crate::value::Built`]). A refused growth drops both together.
+    pub(crate) fn push_charged(&mut self, value: T, charge: Charge) -> Result<(), ChargeError> {
+        self.reserve(1)?;
+        self.vec.push(value);
+        self.charge.absorb(charge);
+        Ok(())
+    }
+
+    /// Keeps `charge` with this vector's own: it returns when they do.
+    pub(crate) fn keep_charge(&mut self, charge: Charge) {
+        self.charge.absorb(charge);
+    }
+
     /// Cuts to `len` elements; the allocation and its charge stay.
     pub fn truncate(&mut self, len: usize) {
         self.vec.truncate(len);
