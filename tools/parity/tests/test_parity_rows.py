@@ -530,6 +530,82 @@ class Rows(unittest.TestCase):
                 stream.Position = 18
                 with self.assertRaisesRegex(ValueError, "^read length must be non-negative or -1$"):
                     stream.read(-7)
+        # A file's own signed offsets and sizes reach these rules, at the sites section 13 lists. A bundle's i64
+        # directory entries are applied to the blocks' data by the memory reader, from bytes and from a path alike.
+        payload = b"0123456789ABCDEF0123456789"
+        bundle_path = self.tmp / "negative.bundle"
+        for offset, size, expected in (
+            (-10, 4, payload[16:20]),
+            (2, -1, payload[2:]),
+            (2, -5, payload[2:-3]),
+            (-30, 4, b""),
+            (20, 10, payload[20:]),
+        ):
+            bundle = S.fs_bundle([(b"x.resS", offset, size, 0)], blocks=[payload])
+            bundle_path.write_bytes(bundle)
+            for source in (bundle, str(bundle_path)):
+                with self.subTest(offset=offset, size=size, path=isinstance(source, str)):
+                    entry = quietly(UnityPy.Environment().load_file, source).files["x.resS"]
+                    self.assertEqual(bytes(entry.bytes), expected)
+        # A WebFile's i32 entries are applied by the file's own reader: slices from bytes, while the stream reader of
+        # a path refuses a negative offset and, a buffered file, a size below -1.
+        web = S.web_file([(b"a.resS", b"PAYLOAD!")])
+        row = len(b"UnityWebData1.0\0") + 4
+        web_path = self.tmp / "negative.data"
+        for offset, size, from_bytes, from_path in (
+            (-4, 4, b"", "^Position cannot be negative$"),
+            (None, -1, b"PAYLOAD!", b"PAYLOAD!"),
+            (None, -3, b"", "^read length must be non-negative or -1$"),
+        ):
+            changed = bytearray(web)
+            struct.pack_into(
+                "<ii", changed, row, struct.unpack_from("<i", web, row)[0] if offset is None else offset, size
+            )
+            web_path.write_bytes(changed)
+            with self.subTest("web", offset=offset, size=size):
+                self.assertEqual(bytes(load(bytes(changed))[0].files["a.resS"].bytes), from_bytes)
+                if isinstance(from_path, bytes):
+                    entry = quietly(UnityPy.Environment().load_file, str(web_path)).files["a.resS"]
+                    self.assertEqual(bytes(entry.bytes), from_path)
+                else:
+                    with self.assertRaisesRegex(ValueError, from_path):
+                        quietly(UnityPy.Environment().load_file, str(web_path))
+        # A blob typetree's node count and string-buffer size each size a read: a negative count reads a slice that
+        # iter_unpack refuses unless its length is a multiple of the node size, a count of 0 leaves no root, and a
+        # buffer size of -1 takes the rest of the data.
+        blob = S.blob(TEXT_ASSET, 22) + b"TAIL"
+        count, strings = struct.unpack_from("<ii", blob)
+
+        def parse_blob(count, strings):
+            reader = EndianBinaryReader(struct.pack("<ii", count, strings) + blob[8:], endian="<")
+            return TypeTreeNode.parse_blob(reader, 22), reader.Position
+
+        self.assertNotEqual((len(blob) - 8 - 24) % 32, 0, "read(-32) at 8 gives view[8:-24], not whole nodes")
+        with self.assertRaisesRegex(struct.error, "multiple of 32 bytes"):
+            parse_blob(-1, strings)
+        with self.assertRaisesRegex(IndexError, "^list index out of range$"):
+            parse_blob(0, strings)
+        node, end = parse_blob(count, -1)
+        self.assertEqual(
+            (node.m_Type, [c.m_Name for c in node.m_Children], end), ("TextAsset", ["m_Name", "m_Script"], len(blob))
+        )
+        # From format 22 an object's data offset is a signed i64: one that lands before the file's start is a
+        # negative byte_start, which the memory reader counts from the file's end and a path's stream reader refuses
+        # when the object is read (loading reads no object).
+        named = text_asset_file("negative")
+        obj = load(named)[0].objects[1]
+        data_offset = obj.assets_file.header.data_offset
+        row_at = named.index(struct.pack("<qIi", obj.byte_start - data_offset, obj.byte_size, 0))
+        moved = bytearray(named)
+        struct.pack_into("<q", moved, row_at, obj.byte_start - data_offset - len(named))
+        (self.tmp / "negative.assets").write_bytes(moved)
+        from_bytes = load(bytes(moved))[0].objects[1]
+        self.assertEqual(from_bytes.byte_start, obj.byte_start - len(named))
+        self.assertEqual(from_bytes.parse_as_dict()["m_Name"], "negative")
+        from_path = quietly(UnityPy.Environment().load_file, str(self.tmp / "negative.assets")).objects[1]
+        self.assertEqual(from_path.byte_start, obj.byte_start - len(named))
+        with self.assertRaisesRegex(ValueError, "^Position cannot be negative$"):
+            from_path.parse_as_dict()
 
     # Sections 9.1, 18: a null managed reference.
     def test_an_empty_managed_reference_does_not_resave(self):
