@@ -128,4 +128,7 @@ scripts/dev python -c "import json; s = json.load(open('/tmp/dumps/corpus20.stat
     print(s['bytes_out'] / s['bytes_in'], s['output_bytes'] / s['bytes_in'])"
 # Comparison time (0.97-0.98 s real over three runs), and the record count in its report.
 scripts/dev bash -c 'time python tools/parity/compare.py /tmp/dumps/corpus20.jsonl /tmp/dumps/corpus20.jsonl.gz'
+# PARITY.md section 19.1's shader numbers (980 Shaders, 89,910 sub-programs, 946 texts, 34 raises),
+# over both builds, run on 2026-10-29.
+scripts/dev python tools/parity/shader_survey.py --index /corpus/index.json --build 4100,100056
 ```
