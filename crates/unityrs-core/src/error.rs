@@ -203,7 +203,7 @@ pub enum LimitKind {
     /// [`crate::limits::Limits::max_block_output`].
     BlockOutput,
     /// [`crate::limits::Limits::max_decode_work`]: every byte block decodes
-    /// have made room for over the input's life.
+    /// were granted room for since the input was opened.
     DecodeWork,
     /// [`crate::limits::Limits::max_inflate`].
     Inflate,

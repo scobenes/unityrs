@@ -414,9 +414,12 @@ impl DecodeBuf {
     /// and the meter charged before the buffer grows. The capacity doubles
     /// while the meter can pay for the old and the new block at once, and
     /// grows to exactly what is needed when it cannot. In a block's segment
-    /// (one capped by [`LimitKind::BlockOutput`]) the `additional` bytes also
-    /// count as decode work ([`Meter::count_decode`]) first, whatever the
-    /// decoder later keeps.
+    /// (one capped by [`LimitKind::BlockOutput`]) the `additional` bytes are
+    /// also decode work: checked against the input's bound before the growth
+    /// ([`LimitKind::DecodeWork`]), and counted once the growth was granted,
+    /// whatever the decoder later keeps. A growth the meter or the budget
+    /// refuses counts no work, so a refusal leaves the input as it was and
+    /// the same read succeeds once there is room.
     pub fn reserve(&mut self, additional: usize) -> Result<(), ChargeError> {
         let need = self.buf.len().saturating_add(additional);
         if need > self.seg_end() {
@@ -426,12 +429,16 @@ impl DecodeBuf {
                 max: self.seg_cap,
             }));
         }
-        if self.seg_kind == LimitKind::BlockOutput {
-            self.charge
-                .meter()
-                .count_decode(u64::try_from(additional).unwrap_or(u64::MAX))?;
+        let work = (self.seg_kind == LimitKind::BlockOutput)
+            .then(|| u64::try_from(additional).unwrap_or(u64::MAX));
+        if let Some(work) = work {
+            self.charge.meter().decode_fits(work)?;
         }
-        grow_charged(&mut self.buf, &mut self.charge, need, usize::MAX)
+        grow_charged(&mut self.buf, &mut self.charge, need, usize::MAX)?;
+        if let Some(work) = work {
+            self.charge.meter().add_decode(work);
+        }
+        Ok(())
     }
 
     /// Appends `data`.
@@ -623,6 +630,40 @@ mod tests {
         // A path read or a writer's output is not decode work.
         let mut path = DecodeBuf::new(&m, 0, 1 << 30, LimitKind::InputBytes).unwrap();
         path.grow_zeroed(1 << 20).unwrap();
+    }
+
+    #[test]
+    fn a_refused_growth_counts_no_work_and_the_read_succeeds_once_there_is_room() {
+        // Round 4: decode work was counted before the growth was granted, so
+        // refusals that decoded nothing used up the allowance, and the
+        // transient refusal became a permanent `DecodeWork`.
+        let limits = crate::limits::Limits {
+            max_decode_work: 4 << 20,
+            ..crate::limits::Limits::default()
+        };
+        let pool = Arc::new(Counting::new(2 << 20));
+        let m = Meter::for_input(&limits, pool.clone(), Reservation::Dependency);
+        // Another job holds all of the pool but 64 KiB.
+        let other = Meter::new(u64::MAX, pool.clone(), Reservation::Input);
+        let held = other.charge((2 << 20) - (64 << 10)).unwrap();
+        for _ in 0..10 {
+            // Ten 1 MiB refusals: more than twice the work bound.
+            let mut out = DecodeBuf::new(&m, 0, 1 << 30, LimitKind::BlockOutput).unwrap();
+            let e = out.grow_zeroed(1 << 20).unwrap_err();
+            assert!(
+                matches!(&e, ChargeError::Budget(b) if b.what == Reservation::Dependency),
+                "{e:?}"
+            );
+            assert!(e.is_transient());
+        }
+        assert_eq!(m.decoded(), 0, "a refused growth decodes nothing");
+        drop(held);
+        // The pool has room again: the same decode succeeds, and counts.
+        let mut out = DecodeBuf::new(&m, 0, 1 << 30, LimitKind::BlockOutput).unwrap();
+        out.grow_zeroed(1 << 20).unwrap();
+        assert_eq!(m.decoded(), 1 << 20);
+        drop(out);
+        assert_eq!((m.used(), pool.used()), (0, 0));
     }
 
     #[test]

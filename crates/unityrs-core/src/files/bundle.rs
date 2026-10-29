@@ -39,9 +39,10 @@
 //! into a [`crate::budget::DecodeBuf`] on the input's meter, one segment per
 //! block (each capped at `max_block_output`), so whatever the runs hold is
 //! charged, and a hostile directory whose spans overlap fails with
-//! `LimitKind::InputMemory` instead of growing; every byte decoded also
-//! counts as the input's decode work (`LimitKind::DecodeWork`), which is
-//! never returned. The header, blocks, directory, `files` and the per-row
+//! `LimitKind::InputMemory` instead of growing; every byte a decode was
+//! granted room for also counts as the input's decode work
+//! (`LimitKind::DecodeWork`), which is not returned while the input is open
+//! (a refused growth counts nothing). The header, blocks, directory, `files` and the per-row
 //! cells are charged at open; each parsed entry charges its own file, and
 //! a kept error charges its heap. Decodes and user codecs run with no
 //! lock held: a run is decoded first and then published into `runs`, and an

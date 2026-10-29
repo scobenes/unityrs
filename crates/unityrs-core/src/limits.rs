@@ -59,15 +59,25 @@ pub struct Limits {
     /// (`helpers/CompressionHelper.py:17-44`), so a bomb is stopped here
     /// before the meter. Default 1 GiB.
     pub max_block_output: u64,
-    /// The decode *work* one input may cost over its life: every byte a block
-    /// decode makes room for, kept or not (a first decode, a measuring
-    /// decode, a re-decode of a shared block, a decode that fails, a decode
-    /// after eviction). The meter bounds what is held; this bounds what is
-    /// done, so a hostile directory cannot make a reader decode the same
-    /// block for every entry ([`Meter::count_decode`]). UnityPy decodes every
-    /// block once; a lazy read in any order decodes a block at most three
-    /// times (measured, decoded, decoded again for a straddling span).
-    /// Default 32 GiB, four times [`Self::max_input_memory`].
+    /// The decode *work* one open of an input may cost: every byte a block
+    /// decode was granted room for, kept or not (a first decode, a measuring
+    /// decode whose output is dropped, a re-decode of a shared block, a
+    /// decode that fails after it wrote). The meter bounds what is held;
+    /// this bounds what is done, so an input cannot make its readers decode
+    /// without end while the meter stays empty (thousands of blocks that
+    /// each decode to the block cap, measured and dropped by a lazy read of
+    /// the last entry). A growth the meter or the budget refuses decodes
+    /// nothing and counts nothing, so a refusal never uses the allowance up
+    /// ([`Meter::count_decode`]). It is counted on the input's meter, which
+    /// every file of the input shares, and the Environment restarts it when
+    /// it opens an evicted dependency again ([`Meter::restart_decode_work`]),
+    /// so eviction churn costs work in proportion to the reads that cause
+    /// it and never exhausts a valid dependency. UnityPy decodes every block
+    /// once; a lazy read of a bundle whose entries do not overlap decodes a
+    /// block at most four times: measured, decoded for the entries wholly
+    /// inside it, and decoded again for each of the two entries that
+    /// straddle its edges (plan section 3.6, "Runs"). Default 32 GiB, four
+    /// times [`Self::max_input_memory`].
     pub max_decode_work: u64,
     /// One gzip stream inflated by detection (rule 7, streamed into a fixed
     /// scratch buffer and never held). Default 4 GiB.
@@ -226,11 +236,13 @@ impl Meter {
         )
     }
 
-    /// Counts `bytes` of block-decode work before they are decoded
-    /// ([`crate::budget::DecodeBuf`] does, for every growth of a block's
-    /// segment). Work is never returned: a refusal
-    /// ([`LimitKind::DecodeWork`]) is final for the input, whatever its
-    /// charges do later.
+    /// Counts `bytes` of block-decode work, refused when it would pass the
+    /// bound ([`LimitKind::DecodeWork`]). Work is never returned while the
+    /// input is open: once refused, every later decode on this meter is
+    /// refused too, whatever its charges do. A [`crate::budget::DecodeBuf`]
+    /// counts only what it was granted: it checks the bound
+    /// (`decode_fits`), grows, and counts the growth once the meter
+    /// and the budget granted it, so a refused growth counts nothing.
     pub fn count_decode(&self, bytes: u64) -> Result<(), ChargeError> {
         let limit = self.work_limit;
         self.work
@@ -238,13 +250,50 @@ impl Meter {
                 done.checked_add(bytes).filter(|t| *t <= limit)
             })
             .map(|_| ())
-            .map_err(|done| {
-                ChargeError::Limit(LimitError {
-                    kind: LimitKind::DecodeWork,
-                    value: done.saturating_add(bytes),
-                    max: limit,
-                })
-            })
+            .map_err(|done| self.decode_refused(done, bytes))
+    }
+
+    /// Whether `bytes` more decode work fits the bound now, counting
+    /// nothing: the check a growth makes before it allocates.
+    pub(crate) fn decode_fits(&self, bytes: u64) -> Result<(), ChargeError> {
+        let done = self.decoded();
+        match done.checked_add(bytes) {
+            Some(t) if t <= self.work_limit => Ok(()),
+            _ => Err(self.decode_refused(done, bytes)),
+        }
+    }
+
+    /// Counts `bytes` of work a growth was granted after
+    /// [`Self::decode_fits`] passed. Unchecked, so a growth granted is
+    /// never refused after it allocated; decodes of one input running at
+    /// once may pass the bound by what they were granted at once, and every
+    /// later check refuses.
+    pub(crate) fn add_decode(&self, bytes: u64) {
+        let _ = self
+            .work
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |done| {
+                Some(done.saturating_add(bytes))
+            });
+    }
+
+    fn decode_refused(&self, done: u64, bytes: u64) -> ChargeError {
+        ChargeError::Limit(LimitError {
+            kind: LimitKind::DecodeWork,
+            value: done.saturating_add(bytes),
+            max: self.work_limit,
+        })
+    }
+
+    /// Starts this meter's decode work again from zero. The Environment
+    /// calls it when it opens an evicted dependency again from its source:
+    /// the evicted handle is gone (its slot's weak handle no longer
+    /// upgrades), so no decode of the old open is running, and the new open
+    /// gets the allowance of a fresh one while the meter keeps charging
+    /// whatever the old open's values still hold. A caller that opens an
+    /// input again on the same meter itself, without restarting it, shares
+    /// one allowance between the opens.
+    pub fn restart_decode_work(&self) {
+        self.work.store(0, Ordering::Release);
     }
 
     /// Decode work counted so far.
@@ -742,6 +791,33 @@ mod tests {
                 assert!(heap_cost(n) >= worst, "{n}");
             }
         }
+    }
+
+    #[test]
+    fn decode_work_starts_again_only_when_the_meter_is_restarted() {
+        // Round 4: the allowance spanned every reopen of an evicted
+        // dependency on its one meter, so eviction churn used it up on a
+        // valid file. The Environment restarts it when it reopens one.
+        let limits = Limits {
+            max_decode_work: 100,
+            ..Limits::default()
+        };
+        let meter = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Dependency);
+        let held = meter.charge(10).unwrap();
+        meter.count_decode(100).unwrap();
+        assert!(meter.count_decode(1).is_err());
+        assert!(meter.decode_fits(1).is_err());
+        meter.restart_decode_work();
+        assert_eq!(
+            (meter.decoded(), meter.used()),
+            (0, 10),
+            "memory stays charged"
+        );
+        meter.decode_fits(100).unwrap();
+        assert_eq!(meter.decoded(), 0, "a check counts nothing");
+        meter.add_decode(100);
+        assert!(meter.decode_fits(1).is_err());
+        drop(held);
     }
 
     #[test]

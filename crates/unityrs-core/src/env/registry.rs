@@ -18,7 +18,8 @@
 //! handle the dependency LRU keeps, so evicting the dependency (dropping the
 //! LRU's handle) frees its runs, its parsed entries and, for a source that
 //! can be read again (`Path`, `Fetch`), its bytes and their charge; the next
-//! `get` opens it again from the source (plan section 3.13). Parsed entries
+//! `get` opens it again from the source, on the dependency's meter with its
+//! decode work restarted (`Meter::restart_decode_work`, plan section 3.13). Parsed entries
 //! are cached in the bundle handle's own cells
 //! ([`crate::files::BundleFile::entry`]), not in the registry, so they go
 //! with the handle.
