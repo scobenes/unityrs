@@ -869,15 +869,34 @@ mod tests {
         for i in 0..1000 {
             items.push(Value::Int(i)).unwrap();
         }
+        let cap = u64::try_from(items.capacity() * std::mem::size_of::<Value>()).unwrap();
         let list = b.list(items);
         let list_charge = list.charge().bytes();
+        assert_eq!(
+            list_charge,
+            heap_cost(cap),
+            "the list carries its vector's charge"
+        );
         let mut entries = b.vec();
         entries.push_entry(NodeId(1), list).unwrap();
         let mut run = b.vec();
         run.extend_from_slice(&[1_i32, 2, 3]).unwrap();
         let run = b.prims(PrimRun::I32(run)).unwrap();
+        let run_charge = run.charge().bytes();
+        assert_eq!(
+            run_charge,
+            heap_cost(12),
+            "the run carries its exact allocation's charge"
+        );
         entries.push_entry(NodeId(2), run).unwrap();
+        let entries_heap =
+            u64::try_from(entries.capacity() * std::mem::size_of::<(NodeId, Value)>()).unwrap();
         let map = b.map(0, entries);
+        assert_eq!(
+            map.charge().bytes(),
+            heap_cost(entries_heap) + list_charge + run_charge,
+            "the map carries its entries' charge and each child's"
+        );
         // The builder holds only its table of node lists (one, the root).
         let table = u64::try_from(std::mem::size_of::<Arc<NodeList>>()).unwrap();
         assert_eq!(meter.used(), map.charge().bytes() + heap_cost(table));
@@ -887,7 +906,6 @@ mod tests {
             map.charge().bytes(),
             "the value outlives the builder, charged"
         );
-        assert!(map.charge().bytes() >= list_charge + heap_cost(12));
         let Value::Dict(m) = map.value() else {
             panic!("{map:?}")
         };
