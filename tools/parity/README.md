@@ -15,6 +15,7 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `canonical.py` | the encoding rules both scripts share (standard library only) |
 | `inventory.py` | lists UnityPy's public surface and checks that [`PARITY.md`](../../PARITY.md) names all of it |
 | `references.py` | the independent reference for each TextureFormat UnityPy raises on (Tier B, `PARITY.md` section 17.1): closed forms, and texture2ddecoder for BC6H |
+| `object_mode.py` | prints the object-mode table of `PARITY.md` section 9.2.1: what UnityPyBoost and the pure-Python path build for every attribute of `UnityPy.classes` |
 | `pillow_tables.py` | prints the two Pillow 9.5.0 tables of `PARITY.md`: what `Image.save` writes per extension and mode (section 15.8), and the image modes `set_image` packs (section 18.1) |
 | `tests/` | unittest self-tests |
 

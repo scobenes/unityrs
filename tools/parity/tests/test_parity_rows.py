@@ -393,17 +393,19 @@ class Rows(unittest.TestCase):
             reader = EndianBinaryReader(data, "<")
             return TypeTreeHelper.read_typetree(tree(root_type, fields), reader, False, size, check_read=boost)
 
-        # Three kinds of class: slotted with no __dict__ (first base `object`), slotted with the __dict__ Object
-        # gives, and unslotted (attrs `slots=False`: a generated class whose first base is another class), whose
-        # `__slots__` is ABC's empty tuple, found through the MRO.
+        # One class of each kind section 9.2.1 lists: a non-empty `__slots__` and no __dict__; a non-empty
+        # `__slots__` and the __dict__ Object gives; and `()` (found through the MRO) with a __dict__, which holds
+        # both the classes attrs builds with slots=False and those it builds with slots=True and no fields on
+        # Object (`GameManager`). test_object_mode.py checks the rule over every class.
         self.assertEqual(classes.AssetDatabaseMetrics.__bases__, (object,))
         self.assertTrue(classes.AssetDatabaseMetrics.__slots__)
         self.assertEqual(classes.MarshallingTestObject.__mro__[1:3], (classes.Object, ABC))
         self.assertTrue(classes.MarshallingTestObject.__slots__)
         for slotted in (classes.EditorSettings, classes.StreamingInfo, classes.Vector3f):
             self.assertTrue(slotted.__slots__, slotted)
-        for unslotted in (classes.MultiplayerManager, classes.TextAsset, classes.Texture2D):
+        for unslotted in (classes.MultiplayerManager, classes.TextAsset, classes.Texture2D, classes.GameManager):
             self.assertEqual(unslotted.__slots__, (), unslotted)
+        self.assertEqual((classes.GameManager.__bases__[0], attrs.fields(classes.GameManager)), (classes.Object, ()))
 
         metrics = ["totalAssetCount", "nonProAssetCount", "nonProAssetsCreatedAfterProLicense"]  # 1 required
         roles = ["m_ActiveMultiplayerRole", "m_ActiveMultiplayerRoles"]  # both optional
@@ -414,12 +416,15 @@ class Rows(unittest.TestCase):
             # A missing optional field takes its default on both paths, a missing required one gives UnknownObject.
             ("AssetDatabaseMetrics", (metrics[0],)): ("AssetDatabaseMetrics", "AssetDatabaseMetrics"),
             ("AssetDatabaseMetrics", (*metrics[1:],)): ("UnknownObject", "UnknownObject"),
-            # An extra field: Boost gives up on any slotted class; Python's setattr fails without a __dict__.
+            # An extra field: Boost gives up where `__slots__` is a non-empty tuple; Python's setattr fails without a
+            # __dict__.
             ("AssetDatabaseMetrics", (*metrics, "m_Extra")): ("UnknownObject", AttributeError),
             ("MarshallingTestObject", ("m_Prop", "m_Extra")): ("UnknownObject", "MarshallingTestObject"),
-            # An unslotted class keeps the extra as an attribute on Boost; Python wants every annotation present.
+            # Where `__slots__` is `()`, Boost keeps the extra as an attribute; Python wants every annotation present.
             ("MultiplayerManager", (*roles, "m_Extra")): ("MultiplayerManager", "MultiplayerManager"),
             ("MultiplayerManager", ("m_Extra",)): ("MultiplayerManager", "UnknownObject"),
+            # A field-less class attrs built with slots=True on Object has `()` too, so it keeps the extra.
+            ("GameManager", ("m_Extra",)): ("GameManager", "GameManager"),
             ("AssetDatabaseMetrics", (metrics[0], "m_Extra")): ("UnknownObject", "UnknownObject"),
             # A type the module lacks.
             ("NoSuchClass", ("a",)): ("UnknownObject", "UnknownObject"),
