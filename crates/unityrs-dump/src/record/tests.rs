@@ -1,4 +1,5 @@
 use super::*;
+use crate::Levels;
 
 fn sha(b: u8) -> [u8; 32] {
     [b; 32]
