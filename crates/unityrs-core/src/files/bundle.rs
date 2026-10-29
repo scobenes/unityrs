@@ -571,13 +571,14 @@ impl BundleFile {
         got
     }
 
+    /// A run's buffer with room for `initial` bytes, which count as the
+    /// open's decode work as a block's growth does.
     fn new_buf(&self, initial: u64) -> Result<DecodeBuf, Error> {
-        Ok(DecodeBuf::new(
-            self.meter(),
-            initial,
-            u64::MAX,
-            LimitKind::InputMemory,
-        )?)
+        let buf = DecodeBuf::new(self.meter(), initial, u64::MAX, LimitKind::InputMemory)?;
+        if initial > 0 {
+            self.meter().count_decode(initial)?;
+        }
+        Ok(buf)
     }
 
     /// Every block's length, measured: unknown blocks are decoded with their
@@ -619,11 +620,20 @@ impl BundleFile {
                     self.decode_or_keep(i, b)?;
                 }
                 len
+            } else if first.is_none() {
+                // Perhaps wholly before the read: decoded on its own, kept
+                // as the run's start only when it reaches the read.
+                let mut scratch = self.new_buf(0)?;
+                let len = self.decode_or_keep(i, &mut scratch)?;
+                if acc.saturating_add(len) > lo {
+                    first = Some((i, acc));
+                    buf = Some(scratch);
+                }
+                len
             } else {
                 if buf.is_none() {
                     // Start the run with the span's known blocks so far.
-                    let mut b =
-                        self.new_buf(u64::from(self.blocks.get(i).map_or(0, |b| b.uncompressed)))?;
+                    let mut b = self.new_buf(0)?;
                     if let Some((f, _)) = first {
                         for k in f..i {
                             self.decode_or_keep(k, &mut b)?;
@@ -632,17 +642,7 @@ impl BundleFile {
                     buf = Some(b);
                 }
                 let b = buf.as_mut().ok_or_else(|| no_entry(i))?;
-                let before = b.len();
-                let len = self.decode_or_keep(i, b)?;
-                if first.is_none() {
-                    if acc.saturating_add(len) > lo {
-                        first = Some((i, acc));
-                    } else {
-                        // Wholly before the read: a measuring decode.
-                        b.truncate(before);
-                    }
-                }
-                len
+                self.decode_or_keep(i, b)?
             };
             acc = acc.saturating_add(len);
             i += 1;
