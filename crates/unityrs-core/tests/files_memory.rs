@@ -14,14 +14,17 @@
 #![allow(unsafe_code)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use unityrs_core::budget::{Counting as CountingBudget, MemoryBudget, Reservation, Unbounded};
+use unityrs_core::codec::BlockDecryptor;
 use unityrs_core::detect::check_file_type;
 use unityrs_core::files::{File, parse_file};
 use unityrs_core::limits::{Meter, heap_cost};
 use unityrs_core::{Bytes, Error, FileContext, LimitKind, RawStr};
+use unityrs_testkit::Rng;
 use unityrs_testkit::blob::NodeSpec;
 use unityrs_testkit::bundle::{BundleSpec, EntrySpec, TestCodec, build, matrix};
 use unityrs_testkit::serialized::{SerializedSpec, build as file, one_object};
@@ -58,6 +61,11 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOC: Counting = Counting;
 
+thread_local! {
+    /// The open being checked: the heap baseline and its meter.
+    static OPEN: RefCell<Option<(u64, Arc<Meter>)>> = const { RefCell::new(None) };
+}
+
 fn live() -> u64 {
     LIVE.load(Ordering::Relaxed) as u64
 }
@@ -93,6 +101,7 @@ fn load(name: &str, data: &Bytes, ctx: &Arc<FileContext>, limit: u64, eager: boo
     let mut kept: Vec<(Option<Bytes>, Option<File>)> = Vec::with_capacity(4096);
     let base = live();
     let m = Meter::new(limit, ctx.budget.clone(), Reservation::Input);
+    OPEN.with(|o| *o.borrow_mut() = Some((base, m.clone())));
     let Ok(ty) = check_file_type(&data, &ctx.limits) else {
         return;
     };
@@ -122,6 +131,7 @@ fn load(name: &str, data: &Bytes, ctx: &Arc<FileContext>, limit: u64, eager: boo
     kept.clear();
     drop(parsed);
     assert_eq!(m.used(), 0, "{name}: every charge returned");
+    OPEN.with(|o| *o.borrow_mut() = None);
     drop(m);
     assert_eq!(live(), base, "{name}: every allocation returned");
     drop(caller);
@@ -205,6 +215,58 @@ fn versions_are_shared(name: &str, data: &[u8], rows: usize) {
     );
 }
 
+/// A decryptor that XORs every byte with its key.
+/// While it runs it checks the heap against the open's meter, so a copy of
+/// the block the core did not charge fails here, not only at a checkpoint.
+struct Xor(u8);
+
+impl BlockDecryptor for Xor {
+    fn decrypt(&self, block: &mut [u8], index: usize) -> Result<(), Error> {
+        OPEN.with(|o| {
+            if let Some((base, m)) = &*o.borrow() {
+                within(*base, m, "decrypt", "block", index);
+            }
+        });
+        for b in block {
+            *b ^= self.0;
+        }
+        Ok(())
+    }
+}
+
+/// A bundle of one LZ4 block of noise flagged `0x100` (encrypted), each
+/// stored byte exclusive-or `0x5A`, for a context with [`Xor`].
+fn flagged_bundle() -> Vec<u8> {
+    let mut rng = Rng::new(11);
+    let entry: Vec<u8> = (0..200_000)
+        .map(|_| rng.next_u64().to_le_bytes()[0])
+        .collect();
+    let mut data = build(&BundleSpec {
+        info_codec: TestCodec::None,
+        data_codec: TestCodec::Lz4,
+        block_size: 1 << 20,
+        entries: vec![EntrySpec {
+            name: b"secret".to_vec(),
+            data: entry,
+            flags: 0,
+        }],
+        ..BundleSpec::default()
+    });
+    let nul = |from: usize| from + data[from..].iter().position(|c| *c == 0).unwrap() + 1;
+    let row = (nul(nul(12)) + 20).next_multiple_of(16) + 20;
+    let stored = usize::try_from(u32::from_be_bytes(
+        data[row + 4..row + 8].try_into().unwrap(),
+    ))
+    .unwrap();
+    let flags = u16::from_be_bytes([data[row + 8], data[row + 9]]) | 0x100;
+    data[row + 8..row + 10].copy_from_slice(&flags.to_be_bytes());
+    let len = data.len();
+    for b in &mut data[len - stored..] {
+        *b ^= 0x5A;
+    }
+    data
+}
+
 #[test]
 fn files_hold_no_more_than_their_meter() {
     let mut inputs: Vec<(String, Bytes)> = matrix()
@@ -252,6 +314,7 @@ fn files_hold_no_more_than_their_meter() {
             ..BundleSpec::default()
         })),
     ));
+    let flagged = Bytes::from(flagged_bundle());
     for counting in [false, true] {
         let budget: Arc<dyn MemoryBudget> = if counting {
             Arc::new(CountingBudget::new(u64::MAX))
@@ -260,13 +323,19 @@ fn files_hold_no_more_than_their_meter() {
         };
         let mut ctx = FileContext::unitypy();
         ctx.budget = budget;
+        let mut decrypting = ctx.clone();
+        decrypting.decryptor = Some(Arc::new(Xor(0x5A)));
         let ctx = Arc::new(ctx);
-        for (name, data) in &inputs {
-            for eager in [true, false] {
+        let decrypting = Arc::new(decrypting);
+        for eager in [true, false] {
+            for (name, data) in &inputs {
                 load(name, data, &ctx, u64::MAX, eager);
                 // And at a small limit, where the hostile ones stop.
                 load(name, data, &ctx, 1 << 20, eager);
             }
+            // The decrypted copy of a block is charged too.
+            load("flagged.bundle", &flagged, &decrypting, u64::MAX, eager);
+            load("flagged.bundle", &flagged, &decrypting, 300_000, eager);
         }
     }
 }

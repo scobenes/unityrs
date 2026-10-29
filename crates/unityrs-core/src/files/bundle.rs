@@ -1020,7 +1020,8 @@ fn codec_for(
 }
 
 /// The block decrypted as UnityPy decrypts it (`flags & 0x100`, not
-/// stored), into a charged copy; the input as it is otherwise.
+/// stored), in place in a charged copy; the input as it is otherwise.
+// UnityPy files/BundleFile.py:512-513
 fn decrypted(
     ctx: &FileContext,
     meter: &Arc<Meter>,
@@ -1036,10 +1037,10 @@ fn decrypted(
         return Ok(input);
     }
     let mut copy = DecodeBuf::new(meter, 0, u64::MAX, LimitKind::InputMemory)?;
-    copy.extend_from_slice(&input)?;
-    let mut owned = copy.into_bytes()?.to_vec();
-    d.decrypt(&mut owned, index)?;
-    Ok(Bytes::from(owned))
+    let block = copy.grow_zeroed(input.len())?;
+    block.copy_from_slice(&input);
+    d.decrypt(block, index)?;
+    Ok(copy.into_bytes()?)
 }
 
 /// A decode error named by the block's codec (one codec may serve two ids).
