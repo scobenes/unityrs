@@ -12,7 +12,9 @@
 //! resolved through the file's ref types in UnityPyBoost's order (R14: no
 //! file, `ref_types` absent or not a list, no `type` read yet, a missing
 //! `class`/`ns`/`asm`, all `ref_type`; then an empty class or a matched ref
-//! type with no tree skips `data`; no match is `ref_type`); `PyDict_SetItem`
+//! type with no tree skips `data`; no match is `ref_type`; a `class` that is
+//! not a `Str` skips `data` when its Python object's size field is 0, else
+//! is `ref_type`, plan R14); `PyDict_SetItem`
 //! for repeated names; float32 widened (a signalling NaN quieted under
 //! [`super::FloatMode::UnityPy`]).
 //!

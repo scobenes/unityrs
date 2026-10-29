@@ -451,13 +451,18 @@ impl Environment {
     /// `get_resource_data(path, from, offset, size)`
     /// (`helpers/ResourceReader.py:10-38`). The candidate is resolved by
     /// UnityPy's rule (the registry, then dependencies), but each candidate's
-    /// slot is first *located* without being parsed (its source bytes and
-    /// directory index). When it is an entry of the same input as `from`'s
-    /// own bundle (the same source bytes and directory index; a batch job's
-    /// own handle is a second handle on those bytes), the entry is read
-    /// through `from`'s bundle and the shared slot is never parsed, so
-    /// neither the resolution nor the read decodes anything through the
-    /// shared dependency handle or charges its pool (plan section 3.13).
+    /// slot is first *located* without being parsed. When the core can tell,
+    /// without reading anything, that the slot is an entry of `from`'s own
+    /// input, the entry is read through `from`'s bundle and the shared slot
+    /// is never parsed, so neither the resolution nor the read decodes
+    /// anything through the shared handle or charges its pool (plan section
+    /// 3.13): the slot's open handle is `from`'s bundle itself, or the slot
+    /// is a [`Source::Bytes`] whose `Bytes` are `from`'s bundle's source (the
+    /// same allocation and range) at the entry's directory index. A slot whose
+    /// source is a [`Source::Path`] or [`Source::Fetch`] and whose handle is
+    /// not open (evicted) cannot be compared without opening it again, so it
+    /// resolves by UnityPy's rule, through the slot. Which of the two a batch
+    /// engine's inputs get is its design (`docs/plans/batch.md`).
     /// The answer is the same entry's either way. `path` is the object's
     /// string, so the candidates are slices of it
     /// ([`resource::resource_candidates`]), and each whole name and lowered

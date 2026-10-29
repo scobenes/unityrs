@@ -91,8 +91,16 @@ pub struct ProviderError {
 pub trait TypeTreeProvider: Send + Sync + fmt::Debug {
     /// A short name; the dump's `l2.source` is `"tpk"` for the TPK provider.
     fn name(&self) -> &'static str;
-    /// The tree for `req`, `Ok(None)` when the provider has none (where UnityPy
-    /// raises `KeyError`/`ValueError`, which the caller turns into `no_typetree`).
+    /// The tree for `req`, or `Ok(None)` wherever UnityPy builds no node
+    /// list, which the caller turns into `no_typetree`. For a TPK that is
+    /// four cases: a class the TPK does not hold (`KeyError`); a version
+    /// below the class's first entry, and a picked entry that is `None` (the
+    /// class removed at that version), both `ValueError`
+    /// (`helpers/Tpk.py:472-481`); and a picked entry with no release root
+    /// (`AssertionError`, `Tpk.py:64`). The pick is UnityPy's floor over
+    /// **every** entry in its stored order, `None` and release-less entries
+    /// included: a provider never steps back past one of them to an earlier
+    /// entry that has a tree.
     /// Every request that maps to one entry of the provider's data gets the
     /// same `Arc` (UnityPy's `NODES_CACHE`, one tree per TPK class entry,
     /// `Tpk.py:58-88`), so the trees a chain caches are bounded by the

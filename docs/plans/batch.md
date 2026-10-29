@@ -64,8 +64,8 @@ Each is a problem this plan must solve, or show wrong, before the batch crate is
 - A job's own `.resS` was served by the shared registry handle, moving texture bytes onto the dependency pool.
 - Both pools refused with the same error, so the engine re-ran a job alone for a pool problem.
 
-**The core now provides:** registry slots that hold no strong dependency handle; eviction that frees runs, parsed entries and re-readable source bytes; resource reads located without parsing and read through `from`'s own handle when the CAB is an entry of `from`'s input; refusals tagged `Input` or `Dependency`.
-**Open:** the engine's use of each: when it evicts, how it sizes `dep_cache_bytes`, what it does with a `Dependency` refusal.
+**The core now provides:** registry slots that hold no strong dependency handle; eviction that frees runs, parsed entries and re-readable source bytes; resource reads located without parsing and read through `from`'s own handle when the core can tell without reading that the CAB is an entry of `from`'s input (the slot is `from`'s handle, or a `Source::Bytes` slot sharing its bytes); refusals tagged `Input` or `Dependency`.
+**Open:** the engine's use of each: when it evicts, how it sizes `dep_cache_bytes`, what it does with a `Dependency` refusal; and 3.8.
 
 ### 3.4 The first admission can wait forever, and the estimate is inflated
 
@@ -100,10 +100,19 @@ These were found against the batch flow but were defects of the core API, fixed 
 | `codex1-core.md` H3 (round 1) | a codec allocated its output before the budget saw it, so jobs could exceed the batch budget before a refusal | one meter per input, charged before every input-sized allocation; a refused charge allocates nothing. **Open for this plan:** admission's allowance for output still growing inside admitted jobs |
 | `codex2-core.md` H2 (round 2) | a retained `Parsed` carried no charge, so values outlived the books | every `Parsed` carries the charge for its value; values a job hands on stay counted until dropped (3.5 decides who counts them) |
 | `claude3-core-plan.md` M2 (round 3) | a cell published a pool refusal for good, so one job's refusal poisoned a shared dependency, and "evict and retry once" retried a cached error | transient refusals are never cached |
-| `claude3-core-plan.md` M3 (round 3) | resolving a resource's CAB parsed the shared slot, decoding the whole `.resS` on the pool before the redirect to the job's handle | a resource read goes through `from`'s own handle, resolution included |
+| `claude3-core-plan.md` M3 (round 3) | resolving a resource's CAB parsed the shared slot, decoding the whole `.resS` on the pool before the redirect to the job's handle | a resource read goes through `from`'s own handle, resolution included, when the core can tell without reading that the slot is `from`'s input (its handle, or a `Source::Bytes` slot sharing its bytes). **Not settled for `Path` or `Fetch` inputs:** 3.8 |
 | `claude3-core-plan.md` M5 (round 3) | eviction kept a `Path` dependency's bytes and their charge, so the pool filled with bytes eviction could not free | eviction frees what it can re-read |
 | `claude3-core-plan.md` L6 (round 3) | a dereference from a file whose bundle a job had dropped was unspecified | `DerefError::ContainerDropped`; a caller that hands out files keeps a strong bundle handle beside each |
-| `claude3-core-code.md` M4 (round 3) | under `Lazy`, decode work was unbounded: a failed block and an `entry_range` decode were redone for every read | block outcomes kept, `entry_range` runs cached, and `max_decode_work` per input |
+| `claude3-core-code.md` M4 (round 3) | under `Lazy`, decode work was unbounded: a failed block and an `entry_range` decode were redone for every read | block outcomes kept, `entry_range` runs cached, and `max_decode_work` per open input; a refused growth counts no work, and the Environment restarts a dependency's count when it reopens it after eviction (`claude4-core-code.md` M2, round 4) |
+
+### 3.8 The resource redirect and eviction cannot both hold for a job's second handle
+
+`claude4-core-plan.md` M3 (P1 round 4).
+- Step 3's job opens its own handle on its input's bytes. The core redirects a resource read through that handle only when it can tell without reading that the CAB slot is the same input: the slot is the job's handle itself, or a `Source::Bytes` slot whose `Bytes` the job's handle shares (core 3.13). An evicted `Source::Path` or `Source::Fetch` slot holds only a path or a fetcher, so the core resolves it by UnityPy's rule, reopening it on the dependency pool, which is the charge the redirect was for.
+- Eviction frees a dependency's bytes only for `Path` and `Fetch` (3.3; `claude3-core-plan.md` M5). So registering the inputs as `Bytes` keeps the redirect and the bytes for the run's life, and registering them as `Path` frees the bytes on eviction and loses the redirect for every evicted input.
+
+**The core now provides:** both behaviours, correct either way (the bytes are the same entry's), and `Environment::load_dependency`'s returned handle, which the redirect recognises whatever the source.
+**Open:** pick one and state its cost: jobs that read through the handle `load_dependency` returned (then charged to the dependency pool, not the job's), inputs registered as `Bytes` the engine keeps (no byte freed on eviction), or an input identity the core would need to carry (a request to the core, through its integration rule).
 
 ---
 
