@@ -101,7 +101,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - the Sprite cache key ignores the FileID;
   - MeshRendererExporter fails on Unity 6;
   - ShaderConverter fails on 6000.3;
-  - the extractor's crashes: GameObjects, MonoBehaviours, sprites without a container, meshes without vertices, and images Pillow cannot save under the container's extension, or saves as an ICO holding no image (a side below 16).
+  - the extractor's crashes: GameObjects (each reachable object written once, its name ending in its path id where UnityPy's would end in `_None`), MonoBehaviours, sprites without a container, meshes without vertices, and images Pillow cannot save under the container's extension, or saves as an ICO holding no image (a side below 16).
 - **Unsupported until a sample and a reference exist.** unityrs refuses these with a named `Unsupported` error:
   - LZHAM, where UnityPy raises too;
   - a UnityArchive parsed as a bundle, where UnityPy raises too. Loading one is Tier A: UnityPy's detector does not know the signature and loads the file as a raw ResourceFile, and so does unityrs;

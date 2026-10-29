@@ -747,6 +747,22 @@ class Rows(unittest.TestCase):
         self.assertEqual(exported, [(sf, 1)])
         self.assertEqual((self.tmp / "go" / "hello_None.txt").read_bytes(), b"world")
 
+    # Section 19.2: with `_None` in place of the path id, objects of one name share one file in the crawl's folder.
+    def test_export_obj_names_collide_without_the_path_id(self):
+        objects = [S.Obj(1, 0, S.s32("") + S.s32("first")), S.Obj(2, 0, S.s32("") + S.s32("second"))]
+        data = S.serialized_file([S.Type(49, TEXT_ASSET)], objects)
+        sf = load(data, env=UnityPy.Environment(path=str(self.tmp)))[0]
+        folder = self.tmp / "go"
+        folder.mkdir()
+        for path_id in (1, 2):  # two components with an empty m_Name, as most MonoBehaviours have
+            pointer = PPtr(m_FileID=0, m_PathID=path_id, assetsfile=sf)
+            self.assertEqual(extractor.export_obj(pointer, str(folder), True, True), [(sf, path_id)])
+        # Both land on `{fp}/_None.txt`; the later overwrites the earlier.
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["_None.txt"])
+        self.assertEqual((folder / "_None.txt").read_bytes(), b"second")
+        # The names exportGameObject means to give them, with the path id appended, are distinct.
+        self.assertEqual(len({f"_{reader.path_id}.txt" for reader in sf.objects.values()}), 2)
+
     # Sections 16, 19.2: an AudioClip with no data.
     def test_an_empty_audio_clip_follows_an_empty_resource_path(self):
         env = UnityPy.Environment(path=str(self.tmp))
