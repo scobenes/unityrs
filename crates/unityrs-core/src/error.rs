@@ -30,8 +30,9 @@ pub enum Error {
     OutOfBounds {
         /// What was being read.
         what: &'static str,
-        /// Offset of the read.
-        pos: u64,
+        /// The reader's position at the read: a Python position, which may be
+        /// negative or past the end ([`crate::stream::Reader::position`]).
+        pos: i128,
         /// Bytes needed.
         need: u64,
         /// Bytes left.
@@ -181,4 +182,28 @@ pub enum NotFound {
     /// A source the environment has no slot for.
     #[error("source {0}")]
     Source(u32),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn a_short_read_reports_a_negative_position() {
+        // A one-byte read at -1 (`view[-1:0]` is empty) raises at position -1.
+        let e = Error::OutOfBounds {
+            what: "u8",
+            pos: -1,
+            need: 1,
+            have: 0,
+        };
+        assert_eq!(e.to_string(), "u8: out of bounds at -1 (need 1, have 0)");
+        let far = Error::OutOfBounds {
+            what: "u8",
+            pos: i128::from(i64::MAX) + 144,
+            need: 1,
+            have: 0,
+        };
+        assert!(far.to_string().contains("9223372036854775951"));
+    }
 }
