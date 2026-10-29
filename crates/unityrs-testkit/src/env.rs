@@ -723,6 +723,141 @@ pub fn resolver_loads() -> Scene {
     }
 }
 
+/// A loose file whose preload pointer names a CAB only the resolver has:
+/// the container pass's `find_file` registers it, and UnityPy's loop over
+/// `env.cabs` raises `RuntimeError` (the dict changed size); the next pass
+/// ends.
+#[must_use]
+pub fn preload_loads_new_cab() -> Scene {
+    let file = serialized(
+        &["archive:/CAB-NEW/CAB-NEW"],
+        &[
+            Obj::named(1, "x1", &[]),
+            Obj::asset_bundle(
+                2,
+                Bundle {
+                    preload: vec![(1, 3)],
+                    rows: vec![row("assets/x1.prefab", (0, 1), (0, 1))],
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    );
+    Scene {
+        files: vec![named("x/CAB-X", file)],
+        resolver: vec![named(
+            "cab-new",
+            serialized(&[], &[Obj::named(3, "new3", &[])]),
+        )],
+    }
+}
+
+/// Container paths (`obj.container`): rows whose spans overlap (the first
+/// row to reach an object gives its path), a row's own asset (which beats
+/// any span), two rows of one asset (the last wins), and a span reaching an
+/// object in a sibling CAB.
+#[must_use]
+pub fn preload_paths() -> Scene {
+    let pp = serialized(
+        &["archive:/CAB-PQ/CAB-PQ"],
+        &[
+            Obj::named(1, "p1", &[]),
+            Obj::named(2, "p2", &[]),
+            Obj::named(3, "p3", &[]),
+            Obj::named(4, "p4", &[]),
+            Obj::named(5, "p5", &[]),
+            Obj::asset_bundle(
+                9,
+                Bundle {
+                    preload: vec![(0, 1), (0, 2), (0, 3), (1, 7), (0, 4)],
+                    rows: vec![
+                        row("assets/a.prefab", (0, 3), (0, 1)),
+                        row("assets/b.prefab", (1, 4), (0, 2)),
+                        row("assets/c.prefab", (0, 0), (0, 5)),
+                        row("assets/d.prefab", (0, 0), (0, 5)),
+                    ],
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    );
+    let pq = serialized(&[], &[Obj::named(7, "q7", &[])]);
+    Scene {
+        files: vec![named(
+            "pp.bundle",
+            bundle(&[("CAB-PP", pp), ("CAB-PQ", pq)]),
+        )],
+        resolver: Vec::new(),
+    }
+}
+
+/// A container row whose asset is in another file (`m_FileID` 1): UnityPy
+/// keys its path by path id alone, so the object of that path id in the
+/// container's own file gets it; the core keys only a row whose asset is in
+/// the container's own file (`PARITY.md` section 19.2), so neither file's
+/// object does.
+#[must_use]
+pub fn container_other_file() -> Scene {
+    let of = serialized(
+        &["archive:/CAB-OG/CAB-OG"],
+        &[
+            Obj::named(1, "of1", &[]),
+            Obj::asset_bundle(
+                9,
+                Bundle {
+                    rows: vec![row("assets/other.prefab", (0, 0), (1, 1))],
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    );
+    let og = serialized(&[], &[Obj::named(1, "og1", &[])]);
+    Scene {
+        files: vec![named(
+            "of.bundle",
+            bundle(&[("CAB-OF", of), ("CAB-OG", og)]),
+        )],
+        resolver: Vec::new(),
+    }
+}
+
+/// A resource read's fallback loads, through the resolver, a file whose
+/// object points (`m_FileID` 1) at a CAB of the loaded bundle. UnityPy's
+/// `load_file` parses the fallback's file with the Environment as its
+/// container (`environment.py:107-108`, `:154`), so the pointer resolves as
+/// a top-level file's does.
+#[must_use]
+pub fn fallback_file_pointer() -> Scene {
+    let f = serialized(
+        &["LOOSE-T"],
+        &[Obj::streamed(1, "tex", "archive:/CAB-R/CAB-R.resS", 0, 4)],
+    );
+    let t = serialized(&[], &[Obj::named(5, "t5", &[])]);
+    Scene {
+        files: vec![named("f.bundle", bundle(&[("CAB-F", f), ("CAB-T", t)]))],
+        resolver: vec![named(
+            "LOOSE-T",
+            serialized(&["archive:/CAB-T/CAB-T"], &[Obj::named(4, "l4", &[(1, 5)])]),
+        )],
+    }
+}
+
+/// A bundle of two nested bundles that each hold a CAB of one name: an
+/// eager load registers both in directory order, so the second's is the
+/// key's value; under `LoadMode::Lazy` each is registered when its nested
+/// bundle is first asked for, in either order with the same result.
+#[must_use]
+pub fn nested_duplicates() -> Scene {
+    let inner = |name: &str| bundle(&[("CAB-DUP", serialized(&[], &[Obj::named(1, name, &[])]))]);
+    Scene {
+        files: vec![named(
+            "dup.bundle",
+            bundle(&[("N1", inner("from-n1")), ("N2", inner("from-n2"))]),
+        )],
+        resolver: Vec::new(),
+    }
+}
+
 /// Every scene, by name: what `tools/fixtures/env.py` records.
 #[must_use]
 pub fn scenes() -> Vec<(&'static str, Scene)> {
@@ -738,6 +873,11 @@ pub fn scenes() -> Vec<(&'static str, Scene)> {
         ("preload_raw_target", preload_raw_target()),
         ("asset_bundle_modes", asset_bundle_modes()),
         ("resolver_loads", resolver_loads()),
+        ("preload_loads_new_cab", preload_loads_new_cab()),
+        ("preload_paths", preload_paths()),
+        ("container_other_file", container_other_file()),
+        ("fallback_file_pointer", fallback_file_pointer()),
+        ("nested_duplicates", nested_duplicates()),
     ]
 }
 

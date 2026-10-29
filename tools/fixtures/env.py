@@ -10,14 +10,17 @@ asks cargo for, and the strings here. No file is read.
     scripts/dev python tools/fixtures/env.py --check   # regenerate and compare
 
 `env.json`: each scene is run through one script of steps (load each file in
-order, read every object, dereference every pointer, read every resource, list
-the container), and after each step the Environment's state is recorded:
+order, read every object, dereference every pointer, read every resource,
+dereference every pointer again (a resource fallback may have loaded files),
+list the container, ask every object its `container` path, list the container
+again), and after each step the Environment's state is recorded:
 `env.files` (key, `is_dependency`, kind), `env.cabs` keys in order, and
 `env.objects` (file, path id, class id). The resolver's files sit in a
 temporary `env.path`; a key under it is written `@/<name>`.
 
 `pystr.json`: `str.lower` over every BMP code point (as the list of those it
-changes), astral samples and final-sigma contexts, and `ntpath` cases.
+changes), astral samples and final-sigma contexts, `ntpath` cases, and which
+paths UnityPy's `reSplit` reads as the parts of a split file.
 
     scripts/dev python tools/fixtures/env.py --g5 <env_corpus.rs output> --corpus <corpus root>
 
@@ -44,6 +47,7 @@ sys.path.insert(0, str(ROOT / "tools/fixtures"))
 
 import UnityPy  # noqa: E402
 from UnityPy.classes import PPtr  # noqa: E402
+from UnityPy.environment import reSplit  # noqa: E402
 from UnityPy.files import BundleFile, SerializedFile  # noqa: E402
 from UnityPy.helpers.ResourceReader import get_resource_data  # noqa: E402
 
@@ -63,7 +67,7 @@ def scene_inputs() -> list[dict]:
                 "test",
                 "-q",
                 "-j",
-                "3",
+                "2",
                 "--locked",
                 "-p",
                 "unityrs-core",
@@ -175,6 +179,17 @@ class Run:
             for path, info in c.container
         ]
 
+    def paths(self):
+        out = []
+        for o in self.objects():
+            try:
+                c = o.container
+            except Exception as e:  # noqa: BLE001
+                out.append(type(e).__name__)
+                continue
+            out.append(c if c is None or isinstance(c, str) else "<not a str>")
+        return out
+
     def steps(self) -> list[dict]:
         out = []
 
@@ -186,6 +201,9 @@ class Run:
         step(["reads"], self.reads())
         step(["derefs"], self.derefs())
         step(["resources"], self.resources())
+        step(["derefs"], self.derefs())
+        step(["container"], self.container())
+        step(["paths"], self.paths())
         step(["container"], self.container())
         return out
 
@@ -281,6 +299,29 @@ NTPATH = [
     "dir.d/file",
 ]
 
+SPLIT = [
+    "a.split0",
+    "a.split12",
+    "dir/a.split0",
+    "dir\\a.split3",
+    "a.split",
+    "a.splitx",
+    ".split0",
+    "/.split0",
+    "dir/.split0",
+    "\\.split0",
+    "a.split0.extra",
+    "a.SPLIT0",
+    "a.split\u0663",
+    "x\ny/a.split0",
+    "x/y\na.split0",
+    "a\n.split0",
+    "\na.split0",
+    "a.b.split0",
+    "a/b/c.split9.d",
+    "",
+]
+
 
 def lower_bmp() -> list[list[str]]:
     """Every BMP scalar `str.lower` changes, with its lowering (hex of UTF-8)."""
@@ -309,6 +350,7 @@ def pystr_fixture() -> dict:
             ]
             for p in NTPATH
         ],
+        "split": [[p.encode().hex(), reSplit.match(p) is not None] for p in SPLIT],
     }
 
 
