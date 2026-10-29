@@ -1,159 +1,18 @@
 //! Replays `tools/fixtures/dump.py`'s oracle fixtures without Python (plan
 //! section 6, G4): `canonical.py`'s encodings of synthetic values and names,
-//! and Python's decimal form of packed integers.
+//! Python's decimal form of packed integers, `unitypy_dump.py`'s input
+//! selection and `fnmatch.fnmatchcase`, and its `error_kind` on
+//! `check_read` messages.
 
-use std::path::Path;
-use std::sync::Arc;
+mod common;
 
+use common::{Tmp, fixture, parsed, s, unhex};
 use serde_json::Value as Json;
-use unityrs_core::limits::{Meter, MeteredVec};
-use unityrs_core::typetree::{NodeId, NodeList, NodeRow};
-use unityrs_core::{Built, Bytes, Parsed, PrimArray, PrimRun, RawStr, Value, ValueBuilder};
+use unityrs_core::walk::L2Kind;
 use unityrs_dump::encode::encode;
+use unityrs_dump::input::check_read_kind;
 use unityrs_dump::json::{limbs_to_decimal, write_name};
-
-fn fixture(name: &str) -> Json {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/dump")
-        .join(name);
-    let text = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    serde_json::from_slice(&text).unwrap()
-}
-
-fn unhex(s: &str) -> Vec<u8> {
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-        .collect()
-}
-
-fn s(v: &Json) -> &str {
-    v.as_str().unwrap()
-}
-
-// ------------------------------------------------------------------ values
-
-/// Every dict key name in a description, in the order `build` meets them.
-fn key_names(desc: &Json, out: &mut Vec<Vec<u8>>) {
-    let d = desc.as_array().unwrap();
-    match s(&d[0]) {
-        "list" | "tuple_array" => {
-            for item in d[2].as_array().unwrap() {
-                key_names(item, out);
-            }
-        }
-        "pair" => {
-            key_names(&d[1], out);
-            key_names(&d[2], out);
-        }
-        "dict" => {
-            for entry in d[1].as_array().unwrap() {
-                let e = entry.as_array().unwrap();
-                out.push(unhex(s(&e[0])));
-                key_names(&e[1], out);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn int(text: &str) -> Value {
-    let v: i128 = text.parse().unwrap();
-    match i64::try_from(v) {
-        Ok(i) => Value::Int(i),
-        Err(_) => Value::UInt(u64::try_from(v).unwrap()),
-    }
-}
-
-fn run<T>(b: &ValueBuilder, items: &[Json], f: impl Fn(&Json) -> T) -> MeteredVec<T> {
-    let mut v = b.vec();
-    for x in items {
-        v.push(f(x)).unwrap();
-    }
-    v
-}
-
-/// The `Value` the reader makes for a description, with its charge.
-fn build(b: &ValueBuilder, desc: &Json, next_key: &mut u32) -> Built {
-    let d = desc.as_array().unwrap();
-    let scalar = |v: Value| b.scalar(v).unwrap();
-    match s(&d[0]) {
-        "bool" => scalar(Value::Bool(d[1].as_bool().unwrap())),
-        "int" => scalar(int(s(&d[1]))),
-        "f32" => scalar(Value::F32(u32::from_str_radix(s(&d[1]), 16).unwrap())),
-        "f64" => scalar(Value::F64(u64::from_str_radix(s(&d[1]), 16).unwrap())),
-        "str" => scalar(Value::Str(RawStr::from(unhex(s(&d[1]))))),
-        "bytes" => scalar(Value::Bytes(Bytes::from(unhex(s(&d[1]))))),
-        "prims" => {
-            let elem = s(&d[1]);
-            if elem == "u8" || elem == "char" {
-                return scalar(Value::Prims(PrimArray::U8(Bytes::from(unhex(s(&d[2]))))));
-            }
-            let items = d[2].as_array().unwrap();
-            let p = |x: &Json| s(x).parse::<i128>().unwrap();
-            let r = match elem {
-                "bool" => PrimRun::Bool(run(b, items, |x| x.as_bool().unwrap())),
-                "i8" => PrimRun::I8(run(b, items, |x| i8::try_from(p(x)).unwrap())),
-                "u16" => PrimRun::U16(run(b, items, |x| u16::try_from(p(x)).unwrap())),
-                "i16" => PrimRun::I16(run(b, items, |x| i16::try_from(p(x)).unwrap())),
-                "u32" => PrimRun::U32(run(b, items, |x| u32::try_from(p(x)).unwrap())),
-                "i32" => PrimRun::I32(run(b, items, |x| i32::try_from(p(x)).unwrap())),
-                "u64" => PrimRun::U64(run(b, items, |x| u64::try_from(p(x)).unwrap())),
-                "i64" => PrimRun::I64(run(b, items, |x| i64::try_from(p(x)).unwrap())),
-                "f32" => PrimRun::F32(run(b, items, |x| u32::from_str_radix(s(x), 16).unwrap())),
-                "f64" => PrimRun::F64(run(b, items, |x| u64::from_str_radix(s(x), 16).unwrap())),
-                other => panic!("unknown element {other}"),
-            };
-            b.prims(r).unwrap()
-        }
-        kind @ ("list" | "tuple_array") => {
-            let mut v = b.vec();
-            for item in d[2].as_array().unwrap() {
-                v.push_built(build(b, item, next_key)).unwrap();
-            }
-            if kind == "list" {
-                b.list(v)
-            } else {
-                b.tuple(v).unwrap()
-            }
-        }
-        "pair" => {
-            let mut v = b.vec();
-            v.push_built(build(b, &d[1], next_key)).unwrap();
-            v.push_built(build(b, &d[2], next_key)).unwrap();
-            b.tuple(v).unwrap()
-        }
-        "dict" => {
-            let mut v = b.vec();
-            for entry in d[1].as_array().unwrap() {
-                let e = entry.as_array().unwrap();
-                let key = NodeId(*next_key);
-                *next_key += 1;
-                let item = build(b, &e[1], next_key);
-                v.push_entry(key, item).unwrap();
-            }
-            b.map(0, v)
-        }
-        other => panic!("unknown description {other}"),
-    }
-}
-
-/// A `Parsed` for a description: its keys name rows 1.. of a flat list.
-fn parsed(desc: &Json) -> Parsed {
-    let mut names = Vec::new();
-    key_names(desc, &mut names);
-    let mut rows = vec![NodeRow::new(0, "Base", "Base")];
-    rows.extend(
-        names
-            .into_iter()
-            .map(|n| NodeRow::new(1, "int", RawStr::from(n))),
-    );
-    let list = Arc::new(NodeList::trusted(rows).unwrap());
-    let b = ValueBuilder::new(&Meter::unlimited(), list).unwrap();
-    let mut next_key = 1;
-    let v = build(&b, desc, &mut next_key);
-    b.finish(v, 0)
-}
+use unityrs_dump::select::{Selection, collect, fnmatchcase};
 
 #[test]
 fn values_encode_as_canonical_py_encodes_them() {
@@ -203,4 +62,146 @@ fn packed_integers_print_exactly_as_python_prints_them() {
         assert_eq!(got, s(&c["decimal"]));
         assert_eq!(limbs_to_decimal(&limbs), s(&c["decimal"]));
     }
+}
+
+// --------------------------------------------------------------- selection
+
+#[test]
+fn globs_match_as_fnmatchcase() {
+    let f = fixture("select.json");
+    let mut failed = Vec::new();
+    for c in f["fnmatch"].as_array().unwrap() {
+        let (name, pat) = (unhex(s(&c["name"])), unhex(s(&c["pattern"])));
+        let got = fnmatchcase(&name, &pat).unwrap();
+        if got != c["match"].as_bool().unwrap() {
+            failed.push(format!(
+                "{:?} ~ {:?}: got {got}",
+                String::from_utf8_lossy(&name),
+                String::from_utf8_lossy(&pat)
+            ));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+fn make_tree(f: &Json) -> Tmp {
+    use std::os::unix::ffi::OsStrExt;
+    let tmp = Tmp::new("select");
+    let root = tmp.0.clone();
+    for e in f["tree"].as_array().unwrap() {
+        let rel = unhex(s(&e[0]));
+        let path = root.join(std::ffi::OsStr::from_bytes(&rel));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        match s(&e[1]) {
+            "file" => std::fs::write(&path, &rel).unwrap(),
+            "dir" => std::fs::create_dir_all(&path).unwrap(),
+            "symlink" => {
+                let target = unhex(s(&e[2]));
+                std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(&target), &path).unwrap();
+            }
+            other => panic!("{other}"),
+        }
+    }
+    std::fs::write(
+        root.join("corpus/index.json"),
+        serde_json::to_string(&f["index"]).unwrap(),
+    )
+    .unwrap();
+    tmp
+}
+
+#[test]
+fn inputs_are_selected_named_and_ordered_as_the_oracle_selects_them() {
+    use std::os::unix::ffi::OsStrExt;
+    let f = fixture("select.json");
+    let tmp = make_tree(&f);
+    let root = &tmp.0;
+    let mut failed = Vec::new();
+    for c in f["selections"].as_array().unwrap() {
+        let args = &c["args"];
+        let strings = |k: &str| -> Option<Vec<String>> {
+            args.get(k).map(|v| {
+                v.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|x| s(x).to_owned())
+                    .collect()
+            })
+        };
+        let mut sel = Selection {
+            inputs: vec![root.join(s(&c["input"]))],
+            index: args.get("index").and_then(Json::as_bool).unwrap_or(false),
+            builds: strings("build"),
+            names: args
+                .get("name_hex")
+                .map(|v| v.as_array().unwrap().iter().map(|x| unhex(s(x))).collect())
+                .unwrap_or_default(),
+            sample: args.get("sample").and_then(Json::as_i64),
+            limit: args.get("limit").and_then(Json::as_i64),
+            ..Selection::default()
+        };
+        if let Some(k) = strings("kind") {
+            sel.kinds = k;
+        }
+        let got: Vec<(String, String, Option<String>)> = collect(&sel)
+            .unwrap()
+            .into_iter()
+            .map(|i| {
+                let rel = i.path.strip_prefix(root).unwrap();
+                (
+                    unityrs_dump::json::hex(&i.name),
+                    unityrs_dump::json::hex(rel.as_os_str().as_bytes()),
+                    i.sha256,
+                )
+            })
+            .collect();
+        let want: Vec<(String, String, Option<String>)> = c["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    s(&r[0]).to_owned(),
+                    s(&r[1]).to_owned(),
+                    r[2].as_str().map(str::to_owned),
+                )
+            })
+            .collect();
+        if got != want {
+            failed.push(format!(
+                "{}:\n  got  {got:?}\n  want {want:?}",
+                s(&c["name"])
+            ));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+// ---------------------------------------------------------------- L2 kinds
+
+#[test]
+fn check_read_kinds_are_the_oracles() {
+    let f = fixture("l2_kinds.json");
+    let cases = f["cases"].as_array().unwrap();
+    let mut negative_probe = false;
+    for c in cases {
+        let read: i64 = if let Some(r) = c.get("read") {
+            r.as_i64().unwrap()
+        } else {
+            // A real read's message: "..., but only read N bytes".
+            let m = s(&c["message"]);
+            let n = m.rsplit("only read ").next().unwrap();
+            n.trim_end_matches(" bytes").parse().unwrap()
+        };
+        negative_probe |= c.get("read").is_none() && read < 0;
+        let (kind, bytes_read) = check_read_kind(read);
+        let want = match s(&c["kind"]) {
+            "check_read" => L2Kind::CheckRead,
+            "other" => L2Kind::Other,
+            k => panic!("{k}"),
+        };
+        assert_eq!(kind, want, "{c}");
+        assert_eq!(bytes_read, c["bytes_read"].as_i64(), "{c}");
+    }
+    assert!(negative_probe, "the fixture holds a real negative read");
 }
