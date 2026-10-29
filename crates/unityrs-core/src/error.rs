@@ -131,6 +131,13 @@ impl ChargeError {
             Self::Limit(l) => l.kind == LimitKind::InputMemory,
         }
     }
+
+    /// Whether the input's own meter refused ([`LimitKind::InputMemory`]),
+    /// not the budget ([`crate::once::CellError::is_meter_refusal`]).
+    #[must_use]
+    pub fn is_meter_refusal(&self) -> bool {
+        matches!(self, Self::Limit(l) if l.kind == LimitKind::InputMemory)
+    }
 }
 
 impl CellError for Error {
@@ -141,6 +148,16 @@ impl CellError for Error {
             Self::Tree(t) => t.is_transient(),
             Self::AssetBundle(p) => p.is_transient(),
             Self::Entry { source, .. } => source.is_transient(),
+            _ => false,
+        }
+    }
+
+    fn is_meter_refusal(&self) -> bool {
+        match self {
+            Self::Limit(l) => l.kind == LimitKind::InputMemory,
+            Self::Tree(t) => t.is_meter_refusal(),
+            Self::AssetBundle(p) => p.is_meter_refusal(),
+            Self::Entry { source, .. } => source.is_meter_refusal(),
             _ => false,
         }
     }
@@ -207,7 +224,8 @@ pub enum LimitKind {
     /// [`crate::limits::Limits::max_block_output`].
     BlockOutput,
     /// [`crate::limits::Limits::max_decode_work`]: every byte block decodes
-    /// were granted room for since the input was opened.
+    /// wrote since the input was opened, and what lazy computations the
+    /// meter refused were granted.
     DecodeWork,
     /// [`crate::limits::Limits::max_inflate`].
     Inflate,

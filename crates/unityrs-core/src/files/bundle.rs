@@ -40,12 +40,13 @@
 //! into a [`crate::budget::DecodeBuf`] on the input's meter, one segment per
 //! block (each capped at `max_block_output`), so whatever the runs hold is
 //! charged, and a hostile directory whose spans overlap fails with
-//! `LimitKind::InputMemory` instead of growing; every byte a decode was
-//! granted room for also counts as its open's work (`LimitKind::DecodeWork`,
-//! on the meter, which is this open of the input: a reopen after eviction
-//! is a new meter on the same memory, [`crate::limits::Meter::reopen`]),
-//! which is not returned while the open lives (a refused growth counts
-//! nothing, and growths on several threads never pass the bound together). The header, blocks, directory, `files` and the per-row
+//! `LimitKind::InputMemory` instead of growing; every byte a decode writes
+//! also counts as its open's work (`LimitKind::DecodeWork`, on the meter,
+//! which is this open of the input: a reopen after eviction is a new meter
+//! on the same memory, [`crate::limits::Meter::reopen`]), which is not
+//! returned while the open lives (a refused growth counts nothing, and
+//! writes on several threads never pass the bound together). The header,
+//! blocks, directory, `files` and the per-row
 //! cells are charged at open; each parsed entry charges its own file, and
 //! a kept error charges its heap. Decodes and user codecs run with no
 //! lock held: a run is decoded first and then published into `runs`, and an
@@ -571,15 +572,16 @@ impl BundleFile {
         got
     }
 
-    /// A run's buffer with room for `initial` bytes, which count as the
-    /// open's decode work as a block's growth does: the room is one growth
-    /// of a `BlockOutput` segment (uncapped until the first block's
-    /// `begin_block`), so it is charged, then counted, then allocated, and a
-    /// refusal counts nothing.
+    /// A run's buffer with room for `initial` bytes, charged before it is
+    /// allocated. The room is memory; each block's decode counts what it
+    /// writes into it as the open's work (`DecodeBuf`, round 6).
     fn new_buf(&self, initial: u64) -> Result<DecodeBuf, Error> {
-        let mut buf = DecodeBuf::new(self.meter(), 0, u64::MAX, LimitKind::BlockOutput)?;
-        buf.reserve(usize::try_from(initial).unwrap_or(usize::MAX))?;
-        Ok(buf)
+        Ok(DecodeBuf::new(
+            self.meter(),
+            initial,
+            u64::MAX,
+            LimitKind::BlockOutput,
+        )?)
     }
 
     /// Every block's length, measured: unknown blocks are decoded with their

@@ -317,12 +317,17 @@ pub fn charged_bytes(buf: Vec<u8>, mut charge: Charge) -> Result<Bytes, ChargeEr
 /// its own cap fails there, whatever the run's size. Every decode is charged
 /// (a first decode, a re-decode, a measuring decode): the meter counts what is
 /// held, not what was first seen. A block's segment (capped by
-/// [`LimitKind::BlockOutput`]) also counts every byte it makes room for as
-/// the decode work of its meter's open
-/// ([`crate::limits::Limits::max_decode_work`]), which is never returned, so
-/// a block decoded again and again (a failing block read for every entry, a
-/// span re-decoded for every range) stops there even though each attempt
-/// returns its memory.
+/// [`LimitKind::BlockOutput`]) also counts every byte written into it
+/// ([`Self::extend_from_slice`], [`Self::grow_zeroed`]) as the decode work
+/// of its meter's open ([`crate::limits::Limits::max_decode_work`]), which
+/// is never returned, so a block decoded again and again (a failing block
+/// read for every entry, a span re-decoded for every range) stops there even
+/// though each attempt returns its memory. The count is of writes, not of
+/// growths: a buffer sized up front, a scratch buffer reused across decodes
+/// and output written in small pieces count every byte (round 6: growths
+/// alone were counted, so all three decoded without bound). Room made ahead
+/// ([`Self::new`]'s `initial`, [`Self::reserve`]) is memory, charged, and
+/// counts as work only when it is written.
 ///
 /// **Drop.** A buffer dropped unfinished (a decode that failed) returns its
 /// charge with its allocation.
@@ -421,17 +426,32 @@ impl DecodeBuf {
     /// Makes room for `additional` more bytes: the segment's cap is checked
     /// and the meter charged before the buffer grows. The capacity doubles
     /// while the meter can pay for the old and the new block at once, and
-    /// grows to exactly what is needed when it cannot. In a block's segment
-    /// (one capped by [`LimitKind::BlockOutput`]) the `additional` bytes are
-    /// also the open's decode work, counted once the meter and the budget
-    /// granted the growth and before it allocates, in one atomic
-    /// check-and-add ([`crate::limits::Meter::count_decode`]): decodes on
-    /// several threads never pass the bound together, a growth the bound
-    /// refuses ([`LimitKind::DecodeWork`]) returns its charge and allocates
-    /// nothing, and a growth the meter or the budget refuses counts no work,
-    /// so a refusal leaves the input as it was and the same read succeeds
-    /// once there is room.
+    /// grows to exactly what is needed when it cannot. Room is memory, not
+    /// work: what is written into it counts ([`Self::extend_from_slice`]).
     pub fn reserve(&mut self, additional: usize) -> Result<(), ChargeError> {
+        self.make_room(additional, 0)
+    }
+
+    /// Room for `n` bytes about to be written. In a block's segment (one
+    /// capped by [`LimitKind::BlockOutput`]) the `n` bytes are also the
+    /// open's decode work, counted in one atomic check-and-add
+    /// ([`crate::limits::Meter::count_decode`]) whether or not the buffer
+    /// grows: when it grows, once the meter and the budget granted the
+    /// growth and before it allocates. Decodes on several threads never pass
+    /// the bound together, a write the bound refuses
+    /// ([`LimitKind::DecodeWork`]) writes and allocates nothing, and a growth
+    /// the meter or the budget refuses counts no work, so a refusal leaves
+    /// the input as it was and the same read succeeds once there is room.
+    fn room_to_write(&mut self, n: usize) -> Result<(), ChargeError> {
+        let work = if self.seg_kind == LimitKind::BlockOutput {
+            u64::try_from(n).unwrap_or(u64::MAX)
+        } else {
+            0
+        };
+        self.make_room(n, work)
+    }
+
+    fn make_room(&mut self, additional: usize, work: u64) -> Result<(), ChargeError> {
         let need = self.buf.len().saturating_add(additional);
         if need > self.seg_end() {
             return Err(ChargeError::Limit(LimitError {
@@ -440,25 +460,20 @@ impl DecodeBuf {
                 max: self.seg_cap,
             }));
         }
-        let work = if self.seg_kind == LimitKind::BlockOutput {
-            u64::try_from(additional).unwrap_or(u64::MAX)
-        } else {
-            0
-        };
         grow_counted(&mut self.buf, &mut self.charge, need, usize::MAX, work)
     }
 
     /// Appends `data`.
     pub fn extend_from_slice(&mut self, data: &[u8]) -> Result<(), ChargeError> {
-        self.reserve(data.len())?;
+        self.room_to_write(data.len())?;
         self.buf.extend_from_slice(data);
         Ok(())
     }
 
     /// Appends `n` zero bytes and returns them for a decoder to fill; cut the
-    /// unused tail with [`Self::truncate`].
+    /// unused tail with [`Self::truncate`]. All `n` count as written.
     pub fn grow_zeroed(&mut self, n: usize) -> Result<&mut [u8], ChargeError> {
-        self.reserve(n)?;
+        self.room_to_write(n)?;
         let start = self.buf.len();
         self.buf.resize(start + n, 0);
         Ok(self.buf.get_mut(start..).unwrap_or_default())
@@ -637,6 +652,63 @@ mod tests {
         // A path read or a writer's output is not decode work.
         let mut path = DecodeBuf::new(&m, 0, 1 << 30, LimitKind::InputBytes).unwrap();
         path.grow_zeroed(1 << 20).unwrap();
+    }
+
+    #[test]
+    fn every_byte_written_counts_whatever_the_buffer_already_holds() {
+        // Round 6 (Codex M, claude6 M1): work was counted only on a write
+        // that grew the buffer, and only that write's own bytes, so a buffer
+        // sized up front (W1), one scratch buffer reused across decodes (W2)
+        // and output written in small pieces (W3) decoded without bound.
+        let mib = 1usize << 20;
+        let work = |max: u64| {
+            let limits = crate::limits::Limits {
+                max_decode_work: max,
+                ..crate::limits::Limits::default()
+            };
+            Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Input)
+        };
+        let is_work =
+            |e: &ChargeError| matches!(e, ChargeError::Limit(l) if l.kind == LimitKind::DecodeWork);
+        // W1: pre-sized from blocks-info, ten blocks of 1 MiB.
+        let m = work(3 << 20);
+        let mut done = 0;
+        for _ in 0..10 {
+            let mut out = DecodeBuf::new(&m, 1 << 20, 1 << 30, LimitKind::BlockOutput).unwrap();
+            out.begin_block(1 << 30, LimitKind::BlockOutput);
+            match out.grow_zeroed(mib) {
+                Ok(_) => done += 1,
+                Err(e) => assert!(is_work(&e), "{e:?}"),
+            }
+        }
+        assert_eq!((done, m.decoded()), (3, 3 << 20), "W1");
+        // W2: one scratch buffer, truncated and reused for every decode.
+        let m = work(3 << 20);
+        let mut scratch = DecodeBuf::new(&m, 0, 1 << 30, LimitKind::BlockOutput).unwrap();
+        let mut done = 0;
+        for _ in 0..100 {
+            scratch.truncate(0);
+            scratch.begin_block(1 << 30, LimitKind::BlockOutput);
+            match scratch.grow_zeroed(mib) {
+                Ok(_) => done += 1,
+                Err(e) => assert!(is_work(&e), "{e:?}"),
+            }
+        }
+        assert_eq!((done, m.decoded()), (3, 3 << 20), "W2");
+        // W3: 64 MiB written in 4 KiB pieces counts all 64 MiB.
+        let m = work(u64::MAX);
+        let mut out = DecodeBuf::new(&m, 0, 1 << 30, LimitKind::BlockOutput).unwrap();
+        for _ in 0..(64 << 20) / 4096 {
+            out.extend_from_slice(&[0; 4096]).unwrap();
+        }
+        assert_eq!(m.decoded(), 64 << 20, "W3");
+        // Room made ahead is memory, not work: only what is written counts.
+        let m = work(u64::MAX);
+        let mut out = DecodeBuf::new(&m, 1 << 20, 1 << 30, LimitKind::BlockOutput).unwrap();
+        out.reserve(1 << 20).unwrap();
+        assert_eq!(m.decoded(), 0);
+        out.extend_from_slice(&[1; 10]).unwrap();
+        assert_eq!(m.decoded(), 10);
     }
 
     #[test]

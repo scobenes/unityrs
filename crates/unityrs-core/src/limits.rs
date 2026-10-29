@@ -68,21 +68,27 @@ pub struct Limits {
     /// before the meter. Default 1 GiB.
     pub max_block_output: u64,
     /// The *work* one open of an input may cost, in bytes: every byte a
-    /// block decode was granted room for, kept or not (a first decode, a
-    /// measuring decode whose output is dropped, a re-decode of a shared
-    /// block, a decode that fails after it wrote), and every byte the meter
-    /// granted to a lazy computation that ended in an error its cell does
-    /// not keep (a parse or compile the meter refused, which the next ask
-    /// runs again: [`crate::once::get_or_publish_result`]). The meter bounds
-    /// what is held; this bounds what is done, so an input cannot make its
-    /// readers decode or recompute without end while the meter stays empty
+    /// block decode writes, kept or not (a first decode, a measuring decode
+    /// whose output is dropped, a re-decode of a shared block, a decode that
+    /// fails after it wrote), whether or not its buffer had to grow for it,
+    /// and every byte the meter granted to a lazy computation, on the
+    /// computation's own thread, that the meter itself then refused
+    /// ([`LimitKind::InputMemory`]: a parse or compile that alone needs more
+    /// than the meter, which the next ask runs again:
+    /// [`crate::once::get_or_publish_result`]). The meter bounds what is
+    /// held; this bounds what is done, so an input cannot make its readers
+    /// decode or recompute without end while the meter stays empty
     /// (thousands of blocks that each decode to the block cap, measured and
     /// dropped by a lazy read of the last entry; one type whose compile alone
     /// needs more than the meter, asked by every object of the type). A
-    /// growth the meter or the budget refuses decodes nothing and counts
-    /// nothing, so a refusal never uses the allowance up; a growth is counted
-    /// atomically between its charge and its allocation, so decodes running
-    /// at once never pass the bound ([`Meter::count_decode`]). It is counted
+    /// write the meter or the budget refuses decodes nothing and counts
+    /// nothing, and a lazy computation the budget, an I/O failure or a
+    /// provider refused counts nothing either (those depend on what else is
+    /// held or on caller code, and the engine bounds its retries), so
+    /// contention never uses the allowance up; a write is counted atomically
+    /// (between a growth's charge and its allocation when it grows), so
+    /// decodes running at once never pass the bound
+    /// ([`Meter::count_decode`]). It is counted
     /// per open: every file of one open shares its meter's count, and the
     /// Environment reopens an evicted dependency on [`Meter::reopen`], so
     /// eviction churn costs work in proportion to the reads that cause it
@@ -309,10 +315,11 @@ impl Meter {
     /// counted at once from several threads never passes the bound. Work is
     /// never returned while the open lives: once refused, every later
     /// decode on this meter is refused too, whatever its charges do. A
-    /// [`crate::budget::DecodeBuf`] counts a growth after the meter and the
-    /// budget granted its memory and before it allocates, so a refused
-    /// growth counts nothing, and a growth the count refuses returns its
-    /// charge and allocates nothing.
+    /// [`crate::budget::DecodeBuf`] counts every write of a block's segment:
+    /// one that needs a growth after the meter and the budget granted its
+    /// memory and before it allocates, so a refused growth counts nothing,
+    /// and a growth the count refuses returns its charge and allocates
+    /// nothing.
     pub fn count_decode(&self, bytes: u64) -> Result<(), ChargeError> {
         let limit = self.work_limit;
         self.work
@@ -439,6 +446,7 @@ impl Meter {
             .try_update(Ordering::AcqRel, Ordering::Acquire, |g| {
                 Some(g.saturating_add(bytes))
             });
+        GrantScope::credit(self, bytes);
         Ok(permit)
     }
 
@@ -450,6 +458,105 @@ impl Meter {
             .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 Some(used.saturating_sub(bytes))
             });
+    }
+}
+
+/// How many lazy computations one thread tracks at once ([`GrantScope`]):
+/// more than any nesting the core reaches (an entry parse inside a nested
+/// bundle's, a compile inside a read, bounded by
+/// [`Limits::max_container_depth`] and the walker's limits). A deeper scope
+/// falls back to its meter's total grants, which errs towards stopping
+/// early.
+const GRANT_SCOPES: usize = 64;
+
+/// The lazy computations running on this thread, innermost last: the
+/// address of the meter each measures and what that meter granted on this
+/// thread since the computation started. A fixed array, so tracking
+/// allocates nothing (a counting-allocator test sees every heap byte).
+struct GrantFrames {
+    frames: [(usize, u64); GRANT_SCOPES],
+    len: usize,
+}
+
+thread_local! {
+    static GRANTS: std::cell::RefCell<GrantFrames> = const {
+        std::cell::RefCell::new(GrantFrames {
+            frames: [(0, 0); GRANT_SCOPES],
+            len: 0,
+        })
+    };
+}
+
+/// What one lazy computation was granted by its meter on its own thread
+/// while it ran ([`crate::once::get_or_publish_result`]): grants that other
+/// threads made on the same meter meanwhile are theirs, not its (round 6:
+/// the meter's total since the computation started was counted, so other
+/// threads' successful work used up a failing computation's allowance).
+/// Scopes nest; a grant counts for every open scope of its meter on the
+/// thread, a nested computation's grants included.
+pub(crate) struct GrantScope {
+    /// The scope's frame index, or `None` past [`GRANT_SCOPES`] (then
+    /// `fallback` holds the meter's total grants at the start).
+    depth: Option<usize>,
+    fallback: u64,
+}
+
+impl GrantScope {
+    /// Opens a scope measuring `meter`'s grants on this thread.
+    pub(crate) fn enter(meter: &Meter) -> Self {
+        let addr = std::ptr::from_ref(meter).addr();
+        let depth = GRANTS
+            .try_with(|g| {
+                let mut g = g.borrow_mut();
+                let at = g.len;
+                let frame = g.frames.get_mut(at)?;
+                *frame = (addr, 0);
+                g.len = at + 1;
+                Some(at)
+            })
+            .ok()
+            .flatten();
+        Self {
+            depth,
+            fallback: meter.granted(),
+        }
+    }
+
+    /// Closes the scope: what `meter` (the one it was opened on) granted on
+    /// this thread while it was open.
+    pub(crate) fn finish(self, meter: &Meter) -> u64 {
+        match self.depth {
+            Some(at) => GRANTS
+                .try_with(|g| g.borrow().frames.get(at).map_or(0, |f| f.1))
+                .unwrap_or(0),
+            None => meter.granted().saturating_sub(self.fallback),
+        }
+        // `self` drops here and pops its frame.
+    }
+
+    /// Adds `bytes` granted by `meter` to every open scope of it on this
+    /// thread.
+    fn credit(meter: &Meter, bytes: u64) {
+        let addr = std::ptr::from_ref(meter).addr();
+        let _ = GRANTS.try_with(|g| {
+            let mut g = g.borrow_mut();
+            let len = g.len;
+            for frame in g.frames.iter_mut().take(len) {
+                if frame.0 == addr {
+                    frame.1 = frame.1.saturating_add(bytes);
+                }
+            }
+        });
+    }
+}
+
+impl Drop for GrantScope {
+    fn drop(&mut self) {
+        if let Some(at) = self.depth {
+            // Scopes close in reverse order of opening (a stack frame each),
+            // so this is the innermost one.
+            let _ = GRANTS.try_with(|g| g.borrow_mut().len = at);
+        }
     }
 }
 
@@ -587,10 +694,11 @@ pub(crate) fn grow_charged<T>(
 }
 
 /// [`grow_charged`], counting `work` bytes of the meter's work
-/// ([`Meter::count_decode`]) once the growth's memory is granted and before
-/// it is allocated: a growth the meter or the budget refuses counts nothing,
+/// ([`Meter::count_decode`]) whether or not `vec` grows: with no growth,
+/// at once; with one, once the growth's memory is granted and before it is
+/// allocated, so a growth the meter or the budget refuses counts nothing,
 /// and one the work bound refuses returns its charge and allocates nothing.
-/// The check and the count are one atomic step, so growths on several
+/// The check and the count are one atomic step, so writes on several
 /// threads never pass the bound together.
 pub(crate) fn grow_counted<T>(
     vec: &mut Vec<T>,
@@ -601,6 +709,11 @@ pub(crate) fn grow_counted<T>(
 ) -> Result<(), ChargeError> {
     let have = vec.capacity();
     if need <= have {
+        // Round 6: the work of a write into room already there went
+        // uncounted (a pre-sized or reused buffer decoded without bound).
+        if work > 0 {
+            charge.meter().count_decode(work)?;
+        }
         return Ok(());
     }
     let doubled = have.saturating_mul(2).min(max).max(need);

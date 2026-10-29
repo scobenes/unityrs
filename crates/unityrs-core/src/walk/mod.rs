@@ -265,6 +265,18 @@ impl crate::once::CellError for ParseError {
         }
     }
 
+    fn is_meter_refusal(&self) -> bool {
+        match self {
+            Self::Read(r) => match &r.detail {
+                ReadDetail::Charge(c) => c.is_meter_refusal(),
+                ReadDetail::Tree(t) => t.is_meter_refusal(),
+                _ => false,
+            },
+            Self::Tree(t) => t.is_meter_refusal(),
+            Self::Provider(_) | Self::NoTypeTree { .. } | Self::CheckRead { .. } => false,
+        }
+    }
+
     fn heap_bytes(&self) -> u64 {
         match self {
             // The value's own heap rides in its `Parsed`'s charge.

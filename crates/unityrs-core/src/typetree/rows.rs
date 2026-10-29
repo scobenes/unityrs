@@ -134,6 +134,14 @@ impl crate::once::CellError for TreeError {
         }
     }
 
+    fn is_meter_refusal(&self) -> bool {
+        match self {
+            Self::Charge(c) => c.is_meter_refusal(),
+            Self::Limit(l) => l.kind == crate::LimitKind::InputMemory,
+            Self::Empty | Self::LevelUnderflow { .. } | Self::TooManyNodes(_) => false,
+        }
+    }
+
     fn heap_bytes(&self) -> u64 {
         0
     }
