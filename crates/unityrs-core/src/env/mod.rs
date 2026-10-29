@@ -459,14 +459,24 @@ mod tests {
     use crate::error::{Error, LimitKind};
     use crate::limits::{Limits, Meter, heap_cost};
 
-    fn temp_file(name: &str, len: usize) -> std::path::PathBuf {
+    /// A temporary file, removed when dropped, so a failing test leaves
+    /// nothing behind.
+    struct TempFile(std::path::PathBuf);
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn temp_file(name: &str, len: usize) -> TempFile {
         let path = std::env::temp_dir().join(format!(
             "unityrs-core-read-path-{}-{name}",
             std::process::id()
         ));
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(&vec![7_u8; len]).unwrap();
-        path
+        TempFile(path)
     }
 
     #[test]
@@ -477,14 +487,13 @@ mod tests {
             ..Limits::default()
         };
         let meter = Meter::new(1 << 20, Arc::new(Unbounded), Reservation::Input);
-        let e = read_path(&path, &limits, &meter).unwrap_err();
+        let e = read_path(&path.0, &limits, &meter).unwrap_err();
         // The stat'd length is refused; a read to the bound would report 4097.
         assert!(
             matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputBytes && l.value == 8192),
             "{e:?}"
         );
         assert_eq!(meter.used(), 0, "nothing was read or charged");
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -495,19 +504,18 @@ mod tests {
             ..Limits::default()
         };
         let meter = Meter::new(1 << 20, Arc::new(Unbounded), Reservation::Input);
-        let bytes = read_path(&path, &limits, &meter).unwrap();
+        let bytes = read_path(&path.0, &limits, &meter).unwrap();
         assert_eq!(bytes.len(), 4096);
         assert_eq!(meter.used(), heap_cost(4096) + OWNER_COST);
         drop(bytes);
         assert_eq!(meter.used(), 0);
         // A meter too small for the file refuses before allocating.
         let small = Meter::new(1000, Arc::new(Unbounded), Reservation::Input);
-        let e = read_path(&path, &limits, &small).unwrap_err();
+        let e = read_path(&path.0, &limits, &small).unwrap_err();
         assert!(
             matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputMemory),
             "{e:?}"
         );
-        let _ = std::fs::remove_file(path);
     }
 
     #[cfg(unix)]
