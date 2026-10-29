@@ -42,6 +42,15 @@ pub enum Error {
     UTF8(std::string::FromUtf8Error),
     UnsupportedCompression(&'static str),
     Decompression(Box<dyn std::error::Error + Send + Sync + 'static>),
+    /// F8 (unityrs): a table of [`TpkTypeTreeBlob::from_reader_bounded`]
+    /// has more records than the caller allows, refused before any of them
+    /// is read. `count` is the table's (for the class entries, those of
+    /// every class read so far).
+    TooMany {
+        table: &'static str,
+        count: usize,
+        max: usize,
+    },
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -54,6 +63,12 @@ impl std::fmt::Display for Error {
             }
             Error::UTF8(e) => write!(f, "invalid utf8: {e}"),
             Error::Decompression(e) => write!(f, "failed to decompress: {e}"),
+            Error::TooMany { table, count, max } => {
+                write!(
+                    f,
+                    "TPK {table}: {count} records, more than the {max} allowed"
+                )
+            }
         }
     }
 }
@@ -107,6 +122,14 @@ fn range_count(n: i32) -> usize {
 /// (`f"<{count}Q"`), which raises on a negative one.
 fn struct_count(n: i32) -> Result<usize> {
     usize::try_from(n).map_err(|_| invalid("negative count"))
+}
+
+/// F8 (unityrs): `count` records of `table`, refused when above `max`.
+fn bounded(table: &'static str, count: usize, max: usize) -> Result<usize> {
+    if count > max {
+        return Err(Error::TooMany { table, count, max });
+    }
+    Ok(count)
 }
 
 /// F3 (unityrs): the bounds of [`TpkTypeTreeBlob::get_typetree_node_for_class`]'s
@@ -312,8 +335,28 @@ pub struct TpkClassInformation {
 }
 impl TpkClassInformation {
     pub fn read<R: Read>(reader: &mut R) -> Result<TpkClassInformation> {
+        let mut left = usize::MAX;
+        Self::read_bounded(reader, &mut left, usize::MAX)
+    }
+
+    /// F8 (unityrs): [`Self::read`], taking its entries out of `left`, what
+    /// remains of the `max` entries every class may have together.
+    fn read_bounded<R: Read>(
+        reader: &mut R,
+        left: &mut usize,
+        max: usize,
+    ) -> Result<TpkClassInformation> {
         let id = reader.read_i32::<LittleEndian>()?;
         let count = range_count(reader.read_i32::<LittleEndian>()?);
+        if count > *left {
+            let count = (max - *left).saturating_add(count);
+            return Err(Error::TooMany {
+                table: "class entries",
+                count,
+                max,
+            });
+        }
+        *left -= count;
         let mut classes = Vec::new();
         for _ in 0..count {
             let version = TpkVersion::read(reader)?;
@@ -395,14 +438,27 @@ pub struct TpkCommonString {
 }
 impl TpkCommonString {
     pub fn read<R: Read>(reader: &mut R) -> Result<TpkCommonString> {
-        let version_count = range_count(reader.read_i32::<LittleEndian>()?);
+        Self::read_bounded(reader, usize::MAX)
+    }
+
+    /// F8 (unityrs): [`Self::read`] with each table bounded by `max`.
+    fn read_bounded<R: Read>(reader: &mut R, max: usize) -> Result<TpkCommonString> {
+        let version_count = bounded(
+            "common-string versions",
+            range_count(reader.read_i32::<LittleEndian>()?),
+            max,
+        )?;
         let mut version_information = Vec::new();
         for _ in 0..version_count {
             let version = TpkVersion::read(reader)?;
             let string_count = reader.read_u8()?;
             version_information.push((version, string_count));
         }
-        let indices_count = struct_count(reader.read_i32::<LittleEndian>()?)?;
+        let indices_count = bounded(
+            "common-string indices",
+            struct_count(reader.read_i32::<LittleEndian>()?)?,
+            max,
+        )?;
         let mut string_buffer_indices = Vec::new();
         for _ in 0..indices_count {
             string_buffer_indices.push(reader.read_u16::<LittleEndian>()?);
@@ -541,30 +597,46 @@ impl From<&UnityVersion> for TpkVersion {
 
 impl TpkTypeTreeBlob {
     pub fn from_reader<R: Read>(reader: &mut R) -> Result<TpkTypeTreeBlob> {
+        Self::from_reader_bounded(reader, usize::MAX)
+    }
+
+    /// F8 (unityrs): [`Self::from_reader`] with every table bounded by
+    /// `max_records`: the version list, the classes, the entries of every
+    /// class together, the common-string versions and indices, the nodes and
+    /// the strings. A count above it is [`Error::TooMany`], refused when it
+    /// is read, before any of its records, so what the blob holds is bounded
+    /// by the bound and not only by the bytes (a 1-byte string or a 9-byte
+    /// class entry is kept in many times its size).
+    pub fn from_reader_bounded<R: Read>(
+        reader: &mut R,
+        max_records: usize,
+    ) -> Result<TpkTypeTreeBlob> {
         let creation_time = reader.read_i64::<LittleEndian>()?;
+        let count = |reader: &mut R| reader.read_i32::<LittleEndian>();
 
         // F3 (unityrs): counts are checked and never size an allocation.
-        let version_count = struct_count(reader.read_i32::<LittleEndian>()?)?;
+        let version_count = bounded("versions", struct_count(count(reader)?)?, max_records)?;
         let mut versions = Vec::new();
         for _ in 0..version_count {
             versions.push(TpkVersion::read(reader)?);
         }
 
-        let class_count = range_count(reader.read_i32::<LittleEndian>()?);
+        let class_count = bounded("classes", range_count(count(reader)?), max_records)?;
         let mut class_information = FxHashMap::default();
+        let mut entries_left = max_records;
         for _ in 0..class_count {
-            let class = TpkClassInformation::read(reader)?;
+            let class = TpkClassInformation::read_bounded(reader, &mut entries_left, max_records)?;
             class_information.insert(ClassId(class.id), class.classes);
         }
 
-        let common_string = TpkCommonString::read(reader)?;
+        let common_string = TpkCommonString::read_bounded(reader, max_records)?;
 
-        let node_count = range_count(reader.read_i32::<LittleEndian>()?);
+        let node_count = bounded("nodes", range_count(count(reader)?), max_records)?;
         let mut node_buffer = Vec::new();
         for _ in 0..node_count {
             node_buffer.push(TpkUnityNode::read(reader)?);
         }
-        let string_count = range_count(reader.read_i32::<LittleEndian>()?);
+        let string_count = bounded("strings", range_count(count(reader)?), max_records)?;
         let mut string_buffer = Vec::new();
         for _ in 0..string_count {
             string_buffer.push(read_7bit_encoded_string(reader)?);
@@ -1598,5 +1670,60 @@ mod patch_tests {
         assert!(tpk.get_typetree_node(ClassId(1), &v(2)).is_some());
         assert!(tpk.get_typetree_node(ClassId(2), &v(2)).is_none());
         assert!(tpk.get_typetree_node(ClassId(-1), &v(2)).is_none());
+    }
+
+    /// F8: each table at the bound reads, and one record more is refused
+    /// as that table's, before its records are read (none follow here).
+    #[test]
+    fn f8_each_table_is_bounded_before_its_records_are_read() {
+        let mut blob = one_class();
+        blob.versions = vec![2 << 48; 3];
+        blob.classes = vec![
+            (1, vec![(2 << 48, Some(Class::both(0))), (3 << 48, None)]),
+            (2, vec![(2 << 48, None)]),
+        ];
+        blob.common = vec![(2 << 48, 1); 3];
+        blob.common_indices = vec![0; 3];
+        blob.nodes.push(Node::new(0, 1, vec![]));
+        blob.strings.truncate(3);
+        let bytes = blob.write().0;
+        let tpk = TpkTypeTreeBlob::from_reader_bounded(&mut bytes.as_slice(), 3).unwrap();
+        assert_eq!(tpk.class_information.len(), 2);
+        assert_eq!(tpk.node_buffer.len(), 3);
+        type At = fn(&Offsets) -> usize;
+        let tables: [(&str, At); 6] = [
+            ("versions", |o| o.version_count),
+            ("classes", |o| o.class_count),
+            ("common-string versions", |o| o.common_version_count),
+            ("common-string indices", |o| o.common_indices_count),
+            ("nodes", |o| o.node_count),
+            ("strings", |o| o.string_count),
+        ];
+        for (table, at) in tables {
+            let mut bytes = with_count(&blob, at, 4);
+            bytes.truncate(at(&blob.write().1) + 4);
+            let got = TpkTypeTreeBlob::from_reader_bounded(&mut bytes.as_slice(), 3);
+            assert!(
+                matches!(got, Err(Error::TooMany { table: t, count: 4, max: 3 }) if t == table),
+                "{table}: {got:?}"
+            );
+        }
+        // The entries count across classes: 2 + 1 fit 3; 2 + 2 do not.
+        blob.classes[1].1.push((3 << 48, None));
+        let bytes = blob.write().0;
+        let got = TpkTypeTreeBlob::from_reader_bounded(&mut bytes.as_slice(), 3);
+        assert!(
+            matches!(
+                got,
+                Err(Error::TooMany {
+                    table: "class entries",
+                    count: 4,
+                    max: 3
+                })
+            ),
+            "{got:?}"
+        );
+        // Unbounded, as before.
+        assert!(TpkTypeTreeBlob::from_reader(&mut bytes.as_slice()).is_ok());
     }
 }
