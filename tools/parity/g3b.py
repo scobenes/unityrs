@@ -19,14 +19,21 @@ class:
   type: SIGSEGV; `:1218`, a name: SIGABRT): `docs/CANONICAL_DUMP.md` section
   7's crash divergence. unityrs reads that node, hex-tagged, and records what
   follows: the whole file, or the error it meets further on.
-- `out_of_memory`: the oracle's crash record of a `MemoryError` under
-  `unitypy_dump.py --memory-cap`, the machine's limit and not UnityPy's answer.
-  `--rerun` takes a dump of those inputs made under a larger cap and uses its
-  records instead. With unityrs at a limit the input is `limit`.
+- `memory_bound`: the oracle's crash record of a `MemoryError` under
+  `unitypy_dump.py --memory-cap` (the machine's limit, not UnityPy's answer),
+  where that input, dumped again under the same cap, meets the `MemoryError` at
+  one of `ALLOCATION_SITES`: an allocation UnityPy makes from a count or a
+  header before reading what it counts. Given the memory, UnityPy reads on and
+  fails where the bytes run out, as unityrs does without allocating: the
+  `PARITY.md` section 19.3 row "a count UnityPy allocates before it reads".
+- `out_of_memory`: such a crash record at any other site. `--rerun` takes a
+  dump of some inputs made under a larger cap and uses its records instead.
+  With unityrs at a limit the input is `limit`.
 - `other`: anything else, a bug until shown otherwise.
 
 `--list` writes every differing input with its class. Exit status: 0 when every
-differing input is `limit` or `crash_non_utf8`, 1 otherwise, 2 for a usage error.
+differing input is `limit`, `crash_non_utf8` or `memory_bound`, 1 otherwise, 2
+for a usage error.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ import re
 import resource
 import signal
 import sys
+import traceback
 from collections import Counter, defaultdict
 from multiprocessing import get_context
 from multiprocessing.connection import wait
@@ -50,7 +58,17 @@ import canonical as C  # noqa: E402
 import compare  # noqa: E402
 
 LIMIT = re.compile(r"\blimit (\w+):|memory budget refused")
-ADMITTED = ("limit", "crash_non_utf8")
+ADMITTED = ("limit", "crash_non_utf8", "memory_bound")
+# Where UnityPy allocates from a count or a header before reading what it counts
+# (the innermost UnityPy frame of the MemoryError), as `path:line`.
+ALLOCATION_SITES = {
+    # An old-format tree's child count: `node.m_Children = [dummy_node] * children_count`.
+    "helpers/TypeTreeNode.py:107": "an old-format node's children_count",
+    # An LZMA block's dictionary size, from its 5-byte header: `lzma.LZMADecompressor(...)`.
+    "helpers/CompressionHelper.py:31": "an LZMA block's dictionary size",
+    # UnityPyBoost's list for an array's count (`PyList_New`) under `read_typetree_boost`.
+    "helpers/TypeTreeHelper.py:148": "an array's count, in UnityPyBoost",
+}
 # The signal UnityPyBoost dies of when a node's member is not UTF-8.
 SIGNAL_OF = {"m_Type": "SIGSEGV", "m_Name": "SIGABRT"}
 EXAMPLES = 20
@@ -114,13 +132,38 @@ class NonUtf8Node(BaseException):
     """Raised where UnityPyBoost's node constructor would crash: not an Exception, so no handler records it."""
 
 
-def _probe(conn, path, rel, cap):
-    """Dump one input with UTF-8-checked typetree nodes; send the member that is not UTF-8, or what happened."""
+def memory_site(tb) -> str:
+    """The innermost UnityPy frame of a traceback, as `path:line` below the package, or "no UnityPy frame"."""
+    for frame in reversed(traceback.extract_tb(tb)):
+        path = frame.filename.replace(os.sep, "/")
+        if "/UnityPy/" in path:
+            return f"{path.rsplit('/UnityPy/', 1)[1]}:{frame.lineno}"
+    return "no UnityPy frame"
+
+
+def _probe(conn, path, rel, cap, mode):
+    """Dump one input again in this process, under `cap`, and send what `mode` asks.
+
+    "utf8": with UTF-8-checked typetree nodes, the member that is not UTF-8.
+    "memory": as the oracle ran it, the site of its MemoryError.
+    Else what happened.
+    """
     import unitypy_dump
 
     unitypy_dump.pin_none()
     if cap:
         resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+    if mode == "memory":
+        try:
+            unitypy_dump.dump_input((str(path), rel, C.LEVELS))
+            result = "no MemoryError"
+        except MemoryError:
+            result = "site " + memory_site(sys.exc_info()[2])
+        except BaseException as e:  # noqa: BLE001 - reported, not judged
+            result = f"raised {type(e).__name__}"
+        conn.send(result)
+        conn.close()
+        return
     node = sys.modules["UnityPy.helpers.TypeTreeNode"].TypeTreeNode
     init = node.__init__
 
@@ -153,9 +196,9 @@ def probe_all(jobs, workers, cap):
     results, running, todo = {}, {}, list(jobs)
     while todo or running:
         while todo and len(running) < workers:
-            key, path, rel = todo.pop()
+            key, path, rel, mode = todo.pop()
             recv, send = ctx.Pipe(duplex=False)
-            proc = ctx.Process(target=_probe, args=(send, path, rel, cap), daemon=True)
+            proc = ctx.Process(target=_probe, args=(send, path, rel, cap, mode), daemon=True)
             proc.start()
             send.close()
             running[key] = (proc, recv)
@@ -186,17 +229,24 @@ def classify(oracle, unityrs, root, workers=1, cap=None):
             continue
         crash, limit = crash_of(a), limit_of(b)
         if crash and crash[0] == "signal":
-            probes.append((key, *input_path(root, json.loads(key))))
+            probes.append((key, *input_path(root, json.loads(key)), "utf8"))
             rows[key] = ("pending", crash[1])
         elif limit:
             rows[key] = ("limit", limit)
         elif crash:
-            rows[key] = ("out_of_memory", "MemoryError")
+            probes.append((key, *input_path(root, json.loads(key)), "memory"))
+            rows[key] = ("pending", "MemoryError")
         else:
             rows[key] = ("other", "records differ")
     for key, result in probe_all(probes, workers, cap).items():
         sig = rows[key][1]
-        if result in SIGNAL_OF and SIGNAL_OF[result] == sig:
+        if sig == "MemoryError":
+            site = result.removeprefix("site ")
+            if site in ALLOCATION_SITES:
+                rows[key] = ("memory_bound", ALLOCATION_SITES[site])
+            else:
+                rows[key] = ("out_of_memory", f"re-run: {result}")
+        elif result in SIGNAL_OF and SIGNAL_OF[result] == sig:
             rows[key] = ("crash_non_utf8", f"{result}: {sig}")
         else:
             rows[key] = ("other", f"oracle {sig}; re-run: {result}")

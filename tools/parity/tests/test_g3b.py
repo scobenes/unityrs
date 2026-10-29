@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
@@ -73,6 +74,7 @@ class G3bTests(unittest.TestCase):
             "good_crashed": GOOD,
             "limit": GOOD,
             "oom": GOOD,
+            "oom_at_a_count": GOOD,
             "wrong_signal": BAD_TYPE,
         }
         for name, data in files.items():
@@ -90,6 +92,7 @@ class G3bTests(unittest.TestCase):
                 "differs": file_rec(name, parsed_as="error", error={"kind": "parse"}),
                 "good_crashed": crash(died("SIGSEGV")),
                 "oom": crash(unitypy_dump.OUT_OF_MEMORY),
+                "oom_at_a_count": crash(unitypy_dump.OUT_OF_MEMORY),
                 "wrong_signal": crash(died("SIGABRT")),
             }.get(name, ok)
             got["file"] = [name]
@@ -102,10 +105,22 @@ class G3bTests(unittest.TestCase):
         write(self.tmp / "a.jsonl", oracle)
         write(self.tmp / "b.jsonl", unityrs)
 
-        status, report = self.run_g3b(self.tmp / "a.jsonl", self.tmp / "b.jsonl", "--list", self.tmp / "l.json")
+        # The re-run of oom_at_a_count meets its MemoryError where UnityPyBoost
+        # reads an object (an allocation site); oom's re-run meets none.
+        helper = sys.modules["UnityPy.helpers.TypeTreeHelper"]
+        boost = helper.read_typetree_boost
+
+        def short_of_memory(data, node, endian, as_dict, assetsfile, classes):
+            if assetsfile.name == "oom_at_a_count":
+                raise MemoryError
+            return boost(data, node, endian, as_dict, assetsfile, classes)
+
+        with mock.patch.object(helper, "read_typetree_boost", short_of_memory):
+            status, report = self.run_g3b(self.tmp / "a.jsonl", self.tmp / "b.jsonl", "--list", self.tmp / "l.json")
         self.assertEqual(status, 1)
         self.assertEqual(
-            report["classes"], {"agree": 1, "crash_non_utf8": 2, "limit": 1, "other": 3, "out_of_memory": 1}
+            report["classes"],
+            {"agree": 1, "crash_non_utf8": 2, "limit": 1, "memory_bound": 1, "other": 3, "out_of_memory": 1},
         )
         self.assertEqual(
             report["kinds"],
@@ -113,7 +128,8 @@ class G3bTests(unittest.TestCase):
                 "crash_non_utf8: m_Name: SIGABRT": 1,
                 "crash_non_utf8: m_Type: SIGSEGV": 1,
                 "limit: TreeDepth": 1,
-                "out_of_memory: MemoryError": 1,
+                "memory_bound: an array's count, in UnityPyBoost": 1,
+                "out_of_memory: re-run: no MemoryError": 1,
             },
         )
         listed = {r["input"]: (r["class"], r["detail"]) for r in json.loads((self.tmp / "l.json").read_text())}

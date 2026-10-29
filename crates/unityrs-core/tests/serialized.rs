@@ -339,6 +339,30 @@ fn old_trees_read_child_counts_with_a_stack() {
     );
 }
 
+/// UnityPy builds `[dummy_node] * children_count` before it reads a child
+/// (`helpers/TypeTreeNode.py:107`), so a huge count runs it out of memory
+/// (`PARITY.md` section 19.3, G3b's `memory_bound`); unityrs reads children
+/// until the bytes run out, allocating nothing from the count.
+#[test]
+fn a_huge_old_child_count_fails_at_the_end_allocating_nothing() {
+    let nodes = vec![NodeSpec::new(0, "Base", "Base")];
+    for format in [2u32, 3, 5, 9, 11] {
+        let mut data = old_tree(&nodes, format, false);
+        // The root's child count is the tree's last field.
+        let end = data.len();
+        data[end - 4..].copy_from_slice(&i32::MAX.to_le_bytes());
+        let data = Bytes::from(data);
+        let c = ctx();
+        let m = Meter::for_input(&c.limits, c.budget.clone(), Reservation::Input);
+        let mut r = Reader::new(&data, Endian::Little);
+        let got = parse_old(&mut r, &data, format, &m, &Limits::default());
+        assert!(got.is_err(), "{format}: {got:?}");
+        drop(got);
+        assert_eq!(m.used(), 0, "{format}: everything returned");
+        assert!(m.granted() < 4096, "{format}: {} granted", m.granted());
+    }
+}
+
 #[test]
 fn mutated_files_and_trees_never_panic() {
     let inputs: Vec<(String, Vec<u8>)> = matrix()
