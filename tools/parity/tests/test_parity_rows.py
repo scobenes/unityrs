@@ -885,8 +885,16 @@ class Rows(unittest.TestCase):
         with self.assertRaises(IndexError):
             PPtr(m_FileID=-1, m_PathID=1, assetsfile=sf).deref()
         sf.externals = [SimpleNamespace(path="archive:/CAB-first/CAB-first"), SimpleNamespace(path="archive:/x/y")]
-        with self.assertRaisesRegex(FileNotFoundError, "cab-first"):
+        missed = f" not found in {re.escape(str(self.tmp))}$"
+        with self.assertRaisesRegex(FileNotFoundError, "^File cab-first" + missed):
             PPtr(m_FileID=-1, m_PathID=1, assetsfile=sf).deref()  # externals[-2]
+        # A record nothing answers: find_file raises its own error, naming the last component lower-cased and
+        # Environment.path, never deref's "Failed to resolve pointer" (which needs find_file to return None).
+        for record in ("archive:/CAB-Miss/CAB-Miss", "assets/Missing.Assets", "Sub/Missing.assets"):
+            sf.externals = [SimpleNamespace(path=record)]
+            component = re.escape(record.rsplit("/")[-1].lower())
+            with self.subTest(record), self.assertRaisesRegex(FileNotFoundError, f"^File {component}{missed}"):
+                PPtr(m_FileID=1, m_PathID=1, assetsfile=sf).deref()
         sf.externals = []
 
         def preload(pptr):
@@ -1686,7 +1694,12 @@ class Rows(unittest.TestCase):
             return PPtr(m_FileID=1, m_PathID=1, assetsfile=main).deref().parse_as_dict()["m_Name"]
 
         for record in ("Shared.Assets", "archive:/x/Shared.Assets"):
-            with self.subTest(record), self.assertRaisesRegex(FileNotFoundError, f"{re.escape(record)} not found!$"):
+            with (
+                self.subTest(record),
+                self.assertRaisesRegex(
+                    FileNotFoundError, f"^Failed to resolve pointer - {re.escape(record)} not found!$"
+                ),
+            ):
                 deref(record, UnityPy.Environment(path=str(d)))
         for record in ("lower.assets", "assets/sub/LOWER.Assets", "archive:/CAB-x/Lower.ASSETS"):
             with self.subTest(record):
@@ -1698,13 +1711,39 @@ class Rows(unittest.TestCase):
         self.assertEqual((list(preloaded.files), list(preloaded.cabs)), ([str(d / "Shared.Assets")], ["shared.assets"]))
         self.assertEqual(deref("Shared.Assets", preloaded), "shared")
         preloaded.cabs.pop("shared.assets")
-        with self.assertRaisesRegex(FileNotFoundError, "Shared.Assets not found!$"):
+        with self.assertRaisesRegex(FileNotFoundError, "^Failed to resolve pointer - Shared.Assets not found!$"):
             deref("Shared.Assets", preloaded)
         # The loop compares each key lower-cased (`key.lower() ==`), so a key in any case is found by name.
         keyed = UnityPy.Environment(path=str(self.tmp))
         load(text_asset_file("keyed"), "Shared.Assets", keyed)
         keyed.cabs.pop("shared.assets")
         self.assertEqual(deref("archive:/CAB-x/SHARED.assets", keyed), "keyed")
+        # find_file loads what it finds on disk as a dependency (is_dependency=True, its default), by path/name or by
+        # the walk, and so through deref: the file joins `files` and the registry, never `objects` or `assets`, and a
+        # bundle's entries inherit the flag. A zip on disk raises load_file's TypeError.
+        (d / "dep.assets").write_bytes(text_asset_file("dep"))
+        (d / "b.bundle").write_bytes(S.fs_bundle([(b"CAB-b", text_asset_file("in bundle"), 4)]))
+        (d / "z.zip").write_bytes(zip_with_a_directory())
+        dependency = UnityPy.Environment(path=str(d))
+        self.assertEqual(deref("archive:/CAB-x/dep.assets", dependency), "dep")  # path/name
+        self.assertEqual(deref("Other.Assets", dependency), "other")  # the walk
+        bundle = quietly(dependency.find_file, "b.bundle")
+        own = dependency.files["main.assets"]
+        disk = [str(d / "dep.assets"), str(d / "sub" / "other.assets"), str(d / "b.bundle")]
+        self.assertEqual(list(dependency.files), ["main.assets", *disk])
+        self.assertEqual([dependency.files[k].is_dependency for k in disk], [True, True, True])
+        self.assertEqual(
+            (bundle.files["CAB-b"].is_dependency, bundle.files["CAB-b"].objects[1].parse_as_dict()["m_Name"]),
+            (True, "in bundle"),
+        )
+        self.assertEqual(sorted(dependency.cabs), ["cab-b", "dep.assets", "main.assets", "other.assets"])
+        self.assertEqual(
+            ([o.parse_as_dict()["m_Name"] for o in dependency.objects], dependency.assets), (["main"], [own])
+        )
+        with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
+            deref("archive:/CAB-x/z.zip", dependency)
+        for name in ("dep.assets", "b.bundle", "z.zip"):
+            (d / name).unlink()
         # The suffix steps answer a name even where the file it names exists: beside sub/ab.assets, a root
         # xab.assets answers ab.assets (the walk lists a folder's files before its subfolders), so a record in any
         # case reads the wrong file (Tier C, section 19.2). As `path/name`, sub/ab.assets is found.
