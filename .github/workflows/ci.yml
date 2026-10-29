@@ -27,3 +27,62 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # The parity tools' Python side, on the pinned oracle stack (docs/DESIGN.md
+  # section 3) and with UnityPy's samples, so the tests that need them run.
+  parity-py:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # bash -eo pipefail: a test run piped through tee still fails the step.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the oracle stack (exact wheels, hash-checked)
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes -r tools/parity/requirements-oracle.txt
+          python -m pip check
+          python -m pip freeze --all
+      # The samples are game bundles: fetched here, outside the checkout, and
+      # never committed. The cache is keyed by the pins, and a restored copy is
+      # checked against them like a download; only checked samples are saved.
+      - name: Restore UnityPy's samples
+        id: samples
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/unitypy-samples
+          key: unitypy-samples-${{ hashFiles('tools/parity/unitypy_samples.json') }}
+      - name: Fetch UnityPy's samples, or check the restored ones, against the pins
+        run: |
+          python tools/parity/fetch_unitypy_samples.py "$RUNNER_TEMP/unitypy-samples"
+          echo "UNITYRS_UNITYPY_SAMPLES=$RUNNER_TEMP/unitypy-samples" >> "$GITHUB_ENV"
+      - name: Save UnityPy's samples
+        if: steps.samples.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/unitypy-samples
+          key: ${{ steps.samples.outputs.cache-primary-key }}
+      # With the oracle stack and the samples in place, every test has what it
+      # needs, so a skipped test fails the job instead of passing unnoticed.
+      - name: Self-tests (parity tools and the spikes' scripts)
+        run: |
+          for suite in tools/parity/tests crates/unityrs-spike-rabex/scripts/tests crates/unityrs-bench-lzma; do
+            echo "::group::$suite"
+            status=0
+            python -m unittest discover -s "$suite" -v 2>&1 | tee "$RUNNER_TEMP/unittest.log" || status=$?
+            echo "::endgroup::"
+            result=$(tail -n 1 "$RUNNER_TEMP/unittest.log")
+            if [ "$status" != 0 ] || [ "$result" != OK ]; then
+              echo "::error::$suite: $result (every test must run and pass here)"
+              exit 1
+            fi
+          done
+      # A smoke test that the oracle runs here; the unityrs side is compared later.
+      - name: Dump the samples with the oracle and compare the dump with itself
+        run: |
+          python tools/parity/unitypy_dump.py "$UNITYRS_UNITYPY_SAMPLES" -q -o "$RUNNER_TEMP/dumps/samples.jsonl.gz"
+          python tools/parity/compare.py "$RUNNER_TEMP/dumps/samples.jsonl.gz" "$RUNNER_TEMP/dumps/samples.jsonl.gz" \
+            --json "$RUNNER_TEMP/dumps/report.json"

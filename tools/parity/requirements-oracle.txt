@@ -1,0 +1,54 @@
+# The parity oracle's Python stack (docs/DESIGN.md section 3), for CPython 3.11
+# on manylinux x86_64:
+#
+#     python -m pip install --require-hashes -r tools/parity/requirements-oracle.txt
+#
+# Each package, dependencies included, is pinned to one wheel: the one the
+# oracle image (unityrs-oracle:upy1.25.2-2026-10-28) holds. Installed from
+# these pins, every package file's RECORD hash equals the image's (only the
+# console-script launchers differ, since they name their interpreter). The
+# UnityPy wheel carries UnityPyBoost (UnityPyBoost.cpython-311-x86_64-linux-gnu.so);
+# without it unitypy_dump.py refuses to run. Pillow 9.5.0 has two cp311
+# manylinux wheels, and the pin is the manylinux_2_28 one the image holds. No
+# sdist is allowed, since a local build would not be the image's binary.
+# Re-pinning is in tools/parity/README.md.
+
+--require-hashes
+--only-binary :all:
+
+archspec==0.2.5 \
+    --hash=sha256:604bd4115cb4c18e50a22a9b4a1e516706712263790d7d2994aaa595e70082f6
+    # via astc-encoder-py, etcpak
+astc-encoder-py==0.1.12 \
+    --hash=sha256:1a3c0efc3187e06fd1d5992a986220a5921498c35c44d1edbd9b2971c71a8a4f
+    # via unitypy
+attrs==26.1.0 \
+    --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309
+    # via unitypy
+brotli==1.2.0 \
+    --hash=sha256:40d918bce2b427a0c4ba189df7a006ac0c7277c180aee4617d99e9ccaaf59e6a
+    # via unitypy
+etcpak==0.9.14 \
+    --hash=sha256:5147cd6ab993ae766894ede53cb3dd1239cdd9f1d2bf58f5881bd1214eb12904
+    # via unitypy
+fmod-toolkit==0.1.3 \
+    --hash=sha256:7ea99e5b8792e28c6a678ba55d929737c0a93faea0b66998f2bbadd09e06065d
+    # via unitypy
+fsspec==2025.5.1 \
+    --hash=sha256:24d3a2e663d5fc735ab256263c4075f374a174c3410c0b25e5bd1970bceaa462
+    # via unitypy
+lz4==4.4.4 \
+    --hash=sha256:80dd27d7d680ea02c261c226acf1d41de2fd77af4fb2da62b278a9376e380de0
+    # via unitypy
+pillow==9.5.0 \
+    --hash=sha256:8d935f924bbab8f0a9a28404422da8af4904e36d5c33fc6f677e4c4485515625
+    # via unitypy
+pyfmodex==0.7.2 \
+    --hash=sha256:1c42112b788e80ee7b4b57ae25bbbc0a98eb1e32a8e7c9e1246698cdf72efa9d
+    # via fmod-toolkit
+texture2ddecoder==1.0.5 \
+    --hash=sha256:a9dbf2825d74f26d489a4f971e55d57f85397054daef804cfec2e88b5d5247b8
+    # via unitypy
+unitypy==1.25.2 \
+    --hash=sha256:03723fdfc83752cae89f59d41599d9a94a551a9d439e7f3a544b0c7feab0b549
+    # the oracle

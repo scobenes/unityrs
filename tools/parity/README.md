@@ -13,9 +13,11 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `unitypy_dump.py` | the oracle: dumps a file, a folder or a corpus index with UnityPy |
 | `compare.py` | diffs two dumps; summarises by level, class and field path |
 | `canonical.py` | the encoding rules both scripts share (standard library only) |
+| `fetch_unitypy_samples.py` | fetches UnityPy's test samples at the pinned commit, checked against `unitypy_samples.json` |
+| `requirements-oracle.txt` | the oracle stack as exact, hash-pinned wheels, for CI and any machine without the oracle image |
 | `tests/` | unittest self-tests |
 
-`unitypy_dump.py` needs the oracle stack, so run it in the `unityrs-dev` container. It refuses to run without UnityPyBoost or with any UnityPy other than 1.25.2, because a dump from another stack would charge UnityPy's differences to unityrs. `compare.py` and `canonical.py` need only Python 3.10 or later.
+`unitypy_dump.py` needs the oracle stack, so run it in the `unityrs-dev` container, or install the stack from `requirements-oracle.txt` (below). It refuses to run without UnityPyBoost or with any UnityPy other than 1.25.2, because a dump from another stack would charge UnityPy's differences to unityrs. `compare.py`, `canonical.py` and `fetch_unitypy_samples.py` need only Python 3.10 or later.
 
 ## Dumping with UnityPy
 
@@ -95,8 +97,32 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | `test_compare.py` | every finding kind on hand-built dumps: nested type mismatches at L1 and L2, identical noncanonical lines, level coverage, duplicates, unreadable input | stdlib |
 | `test_unitypy_boost.py` | synthetic typetrees through UnityPyBoost: float bits, NaN quieting, bool bytes, pairs, ReferencedObject and the registry scope, big-endian, every L2 error kind on both reading paths, the pure-Python path's tuples, 16-bit swap, registries in aligned class arrays, negative TypelessData lengths, and arrays of aligned vectors and TypelessData, version packing. It also checks that the spec's worked example is what the oracle writes. | UnityPy |
 | `test_dump.py` | the dumper end to end: UnityPy's samples, determinism across runs, `-j` and gzip, every line canonical, L0 detection quirks including gzip, UnityRaw formats 5 to 7, a failing entry, non-UTF-8 names; synthetic SerializedFiles (`tests/synth.py`) for the object table, check_read, resave and TPK wiring, version strings, type-record defaults by format, negative type indices, node rows and how blob rows become a tree, truncated blocks and zip entries; crash records (a killed input, a death while it returns its records, UnityPyBoost crashes), the dumper's own failures stopping the run, input names across locales and symlinks, load errors that quote bad bytes, the `None` leak, the pinned-stack refusal, index mode, the output and `--stats` guards | UnityPy, samples |
+| `test_fetch_samples.py` | the sample fetcher against a fake server: fetching, keeping and replacing files, LFS pointers, wrong and over-long bodies (read no further than one byte past the pin), retries, the repository guard; and that `unitypy_samples.json` pins the samples `test_dump.py` checks | stdlib |
 
 **Samples.** The samples are UnityPy's `tests/samples` at commit `417d595`. They are read from `$UNITYRS_UNITYPY_SAMPLES` when set, else from the folder the corpus index (`$UNITYRS_CORPUS_INDEX`, default `/corpus/index.json`) gives for its `unitypy-sample` entries, and their sha256 is checked against pinned values. They are game bundles, so they are never copied into this repository. Without them the sample tests skip.
+
+To get them anywhere else, fetch them into a folder outside the repository:
+
+```sh
+python tools/parity/fetch_unitypy_samples.py /tmp/unitypy-samples
+UNITYRS_UNITYPY_SAMPLES=/tmp/unitypy-samples python -m unittest discover -s tools/parity/tests
+```
+
+The pins are in `unitypy_samples.json`: the commit, and each file's size and sha256, which is also its Git LFS oid. The samples are Git LFS objects. raw.githubusercontent.com serves a 130-byte LFS pointer in their place, so the fetcher downloads from media.githubusercontent.com and refuses a pointer. A file already in the folder with the pinned sha256 is kept. Any other file is downloaded again and checked before it is written. The fetcher refuses a folder inside the repository.
+
+## CI
+
+The `parity-py` job in `.github/workflows/ci.yml` runs on GitHub's Ubuntu runner with Python 3.11:
+1. It installs the oracle stack with `pip install --require-hashes -r tools/parity/requirements-oracle.txt`.
+2. It restores UnityPy's samples from the Actions cache, keyed by the hash of `unitypy_samples.json`, or fetches them. Either way `fetch_unitypy_samples.py` checks them against the pins.
+3. It runs this folder's self-tests and the spikes' script tests (`crates/unityrs-spike-rabex/scripts/tests`, `crates/unityrs-bench-lzma`) with `$UNITYRS_UNITYPY_SAMPLES` set. With the stack and the samples in place, a skipped test fails the job.
+4. It dumps the samples with `unitypy_dump.py` and compares the dump with itself: a smoke test that the oracle runs there. The unityrs side joins this comparison later.
+
+**Re-pinning the oracle stack** (DESIGN.md section 3). `requirements-oracle.txt` names one wheel per package: the cp311 manylinux x86_64 wheel the oracle image holds. A re-pin changes the image and this file together:
+1. For each package, take the sha256 of that wheel from PyPI (`https://pypi.org/pypi/NAME/VERSION/json`, the `digests` of the file whose name matches the tags in the image's `*.dist-info/WHEEL`).
+2. Install the file into a fresh venv (`python -m pip install --require-hashes -r tools/parity/requirements-oracle.txt`) and run `pip check`.
+3. Check that every installed file's RECORD hash equals the image's.
+4. Update `ORACLE_UNITYPY` in `canonical.py` if UnityPy itself moves.
 
 ## Reproducing the numbers
 
