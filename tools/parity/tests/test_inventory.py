@@ -74,6 +74,7 @@ SYMBOLS = {
     "modules": ["files/BundleFile.py", "export/Texture2DConverter.py"],
     "classes": ["BundleFile", "SpriteSettings"],
     "functions": ["ImportHelper.check_file_type"],
+    "data": ["CompressionHelper.DECOMPRESSION_MAP"],
     "methods": ["Environment.load_file", "Texture2D.set_image"],
     "boost": ["UnityPyBoost.read_typetree"],
     "texture_formats": [["Alpha8", 1], ["RGB24", 3]],
@@ -87,6 +88,7 @@ COMPLETE = """
 | `BundleFile` | a class |
 | `SpriteHelper.SpriteSettings` | a class inside a dotted name |
 | `UnityPy.helpers.ImportHelper.check_file_type(path)` | a function inside a longer chain and a call |
+| `CompressionHelper.DECOMPRESSION_MAP[4]` | module data, subscripted |
 | `Environment.load_file`, `Texture2D.set_image` | two methods in one cell |
 | `UnityPyBoost.read_typetree` | a Boost export |
 
@@ -117,6 +119,12 @@ class MatchingRules(unittest.TestCase):
     def test_a_bare_name_does_not_stand_for_a_dotted_one(self):
         text = COMPLETE.replace("`UnityPy.helpers.ImportHelper.check_file_type(path)`", "`check_file_type`")
         self.assertEqual(inventory.missing(SYMBOLS, text), {"functions": ["ImportHelper.check_file_type"]})
+        text = COMPLETE.replace("`CompressionHelper.DECOMPRESSION_MAP[4]`", "`DECOMPRESSION_MAP[4]`")
+        self.assertEqual(inventory.missing(SYMBOLS, text), {"data": ["CompressionHelper.DECOMPRESSION_MAP"]})
+
+    def test_assigned_names_are_the_public_top_level_targets(self):
+        source = "A = 1\nB: int = 2\nC, _D = 3, 4\n_E = 5\nif A:\n    F = 6\ndef g():\n    H = 7\n"
+        self.assertEqual(inventory._assigned_names(source), ["A", "B", "C"])
 
     def test_a_module_needs_its_whole_path(self):
         text = COMPLETE.replace("`export/Texture2DConverter.py`", "`Texture2DConverter.py`")
@@ -182,6 +190,11 @@ class AgainstTheOracle(unittest.TestCase):
         self.assertIn("Environment.load_file", groups["methods"])
         self.assertIn("Texture2D.set_image", groups["methods"])
         self.assertIn("UnityPyBoost.read_typetree", groups["boost"])
+        self.assertIn("CompressionHelper.DECOMPRESSION_MAP", groups["data"])
+        self.assertIn("config.FALLBACK_UNITY_VERSION", groups["data"])
+        # Not data: an alias of a class (TF = TextureFormat), a TypeVar, a typing alias.
+        for name in ("Texture2DConverter.TF", "ObjectReader.T", "CompressionHelper.ByteString"):
+            self.assertNotIn(name, groups["data"])
 
     def test_parity_md_names_every_symbol(self):
         self.assertEqual(inventory.missing(self.symbols, self.text), {})

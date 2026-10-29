@@ -4,7 +4,7 @@
 
 This is the inventory `DESIGN.md` section 3 asks for. It maps every public UnityPy API and behaviour to a tier, a verification level and a test, and gives a per-`TextureFormat` matrix. "Full parity" means every row here is green. It was built by reading UnityPy 1.25.2 as installed in the oracle image, and the claims about what UnityPy does with a texture format come from running it there (section 17).
 
-`tools/parity/inventory.py check` fails when a UnityPy module, class, module-level function, API method, UnityPyBoost export or `TextureFormat` is missing from this file (section 21).
+`tools/parity/inventory.py check` fails when a UnityPy module, class, module-level function, module-level table or setting, API method, UnityPyBoost export or `TextureFormat` is missing from this file (section 21).
 
 ## 0. How to read the tables
 
@@ -823,11 +823,12 @@ scripts/dev python tools/parity/inventory.py check
 | modules | every `.py` file under `UnityPy/` (78) | its path in a code span, alone or with `:line`; a path names its module and nothing else |
 | classes | every public class defined in a module (955, the generated classes included) | its bare name in a code span |
 | functions | every public module-level function (126) | `Module.function` in a code span |
+| data | every public name a module assigns at its top level whose value is not a class, function, module or typing construct: tables, registries, settings, caches (65) | `Module.NAME` in a code span |
 | methods | public members of the API classes, and every member a `classes/legacy_patch` module adds (133) | `Class.member` in a code span |
 | boost | every public name of UnityPyBoost (4) | `UnityPyBoost.name` in a code span |
 | texture formats | every `TextureFormat` member (78) | a table row with the cells `` `Name` `` and its value |
 
-`check` exits 1 and lists what is missing. `tools/parity/tests/test_inventory.py` runs it against this file in the oracle image, checks the TextureFormat matrix against the oracle on real-sized data (section 17), and tests the matching rules with the standard library alone.
+`check` exits 1 and lists what is missing. `tools/parity/tests/test_inventory.py` runs it against this file in the oracle image, checks the TextureFormat matrix against the oracle on real-sized data (section 17), and tests the matching rules with the standard library alone. Section 23 holds the module-level data that no other section names.
 
 ## 22. Module index
 
@@ -863,7 +864,7 @@ Every module of UnityPy 1.25.2, with the sections that cover it.
 | `enums/BuildTarget.py` | platforms | 7, 15.1 |
 | `enums/BundleFile.py` | archive and block flags | 5.1 |
 | `enums/ClassIDType.py` | class ids | 14.1 |
-| `enums/CommonString.py` | a fixed common-string table, read only by the never-called `SerializedFile.read_string` | 7.2 |
+| `enums/CommonString.py` | a fixed common-string table, read only by the never-called `SerializedFile.read_string` | 7.2, 23 |
 | `enums/ExtendableEnum.py` | enum base with unknown members | 14.1 |
 | `enums/FileType.py` | detection result | 4 |
 | `enums/GfxPrimitiveType.py` | primitive types | 15.3 |
@@ -913,6 +914,28 @@ Every module of UnityPy 1.25.2, with the sections that cover it.
 | `tools/__init__.py` | package marker | 2 |
 | `tools/TpkClassGenerator.py` | builds `classes/generated.py` | 10, 14 |
 | `tools/extractor.py` | the extractor | 15.7 |
+
+## 23. Module-level data
+
+Public tables, registries, settings and caches that no other section names (section 21, group `data`). Those named elsewhere: `config.FALLBACK_UNITY_VERSION` and `config.SERIALIZED_FILE_PARSE_TYPETREE` (sections 10 and 7.2), `environment.reSplit` (3), the `CompressionHelper` tables and magics (6), `ArchiveStorageManager.DECRYPT_KEY` and `ArchiveStorageManager.UNITY3D_SIGNATURE` (12), `Texture2DConverter.CONV_TABLE`, `Texture2DConverter.TEXTURE_FORMAT_BLOCK_SIZE_TABLE`, `Texture2DConverter.RG_PADDING_MAP` and `Texture2DConverter.XBOX_SWAP_FORMATS` (15.1, 17), `TextureSwizzler.TEXTURE_FORMAT_BLOCK_SIZE_MAP` (17), `GraphicsFormat.GRAPHICS_TO_TEXTURE_MAP` (14.2), the `VertexFormat` struct maps (15.3), `ShaderConverter.HEADER` (15.5), `Audio.AUDIO_TYPE_EXTEMSION` (16), `EndianBinaryReader.reNot0` (13), `extractor.EXPORT_TYPES` and `extractor.MONOBEHAVIOUR_TYPETREES` (15.7). The mutable tables among them (`CONV_TABLE`, `EXPORT_TYPES`, the codec maps) are extension points a UnityPy user may patch; the Python bindings (P3) decide which to mirror.
+
+| item | UnityPy 1.25.2 | tier | level | test | status |
+|---|---|---|---|---|---|
+| `TypeTreeHelper.FUNCTION_READ_MAP`, `TypeTreeHelper.FUNCTION_READ_MAP_ARRAY`, `TypeTreeHelper.FUNCTION_WRITE_MAP` | the primitive type names the pure-Python reader and writer know, `SInt8` to `TypelessData` with `Type*` and `FileSize`, and their readers and writers; the array table lacks `string` and `TypelessData`, which `read_value_array` handles itself (`helpers/TypeTreeHelper.py:29-75`, `:381-404`) | A | L2, L3 | `test_unitypy_boost.py` (all); `test_dump.py` resave_aligns_after_every_aligned_array_element | verified P0 (L2, L3); impl P1 |
+| `TypeTreeHelper.kAlignBytes` | `0x4000`, the flag `TypeTreeHelper.metaflag_is_aligned` tests (`helpers/TypeTreeHelper.py:27`) | — | L2 | — | n/a |
+| `TypeTreeNode.TYPETREENODE_KEYS` | the field order of `TypeTreeNode.to_dict` (`helpers/TypeTreeNode.py:52-64`) | — | API | — | n/a |
+| `TypeTreeNode.NAME_PEEK_NODE_CACHE`, `TypeTreeNode.SYSTEM_GLOBAL_LOCK` | the process-wide cache of `ObjectReader.peek_name`, keyed by the root's `(m_Name, m_Type, m_Version)` and filled under the lock (`helpers/TypeTreeNode.py:66-67`, `:190-211`) | — | API | — | n/a |
+| `TypeTreeNode.COMMONSTRING_CACHE` | `TypeTreeNode.get_common_strings` results by version (`helpers/TypeTreeNode.py:305-327`) | — | L1 | — | n/a |
+| `CommonString.CommonString` | a fixed offset-to-string table read only by the never-called `SerializedFile.read_string`; blob trees use the TPK's strings (`enums/CommonString.py`, `files/SerializedFile.py:496-503`) | — | — | — | n/a |
+| `ClassIDTypeToClassMap.ClassIDTypeToClassMap` | the class map of section 14.1 (`classes/ClassIDTypeToClassMap.py:720`) | A | API | planned: binding | planned (P3) |
+| `Tpk.TPKTYPETREE`, `Tpk.CLASSES_CACHE`, `Tpk.NODES_CACHE` | the loaded TPK type-tree blob, and the node caches of `Tpk.get_typetree_node` and `Tpk.generate_node` (`helpers/Tpk.py:15-17`) | — | L2b | — | n/a |
+| `Tpk.BYTE`, `Tpk.UINT16`, `Tpk.INT32`, `Tpk.INT64`, `Tpk.UINT64` | the TPK reader's structs, signed byte and little-endian integers (`helpers/Tpk.py:438-442`) | — | L2b | — | n/a |
+| `TextureSwizzler.GOB_X_TEXEL_COUNT`, `TextureSwizzler.GOB_Y_TEXEL_COUNT`, `TextureSwizzler.TEXEL_BYTE_SIZE`, `TextureSwizzler.TEXELS_IN_GOB`, `TextureSwizzler.GOB_MAP` | the Switch GOB: 4×8 texels of 16 bytes, and the order of the 32 texels inside it (`helpers/TextureSwizzler.py:6-10`) | A | L5 | planned: Switch fixture | planned (P3) |
+| `EndianBinaryReader.SYS_ENDIAN`, `EndianBinaryReader.TYPE_PARAM_SIZE_LIST`, `EndianBinaryReader.MEMORY_FUNCTIONS`, `EndianBinaryReader.STREAM_FUNCTIONS` | the host's byte order and the generated primitive readers by endian (`streams/EndianBinaryReader.py:13-30`, `:335-349`) | — | — | — | n/a |
+| `UnityVersion.VersionPattern` | the pattern of `UnityVersion.from_str` (`helpers/UnityVersion.py:7-10`) | A | L1 | `test_dump.py` version_strings_pack_as_unitypy_packs_them | verified P0 (L1); impl P1 |
+| `BundleFile.reVersion` | a version pattern nothing reads (`files/BundleFile.py:15`) | — | — | — | n/a |
+| `update_tpk.URL`, `update_tpk.RESOURCE_PATH` | where `update_tpk` downloads AssetRipper's TPK, and the folder it unpacks `lzma.tpk` into (`cli/update_tpk.py:8-9`) | — | — | — | n/a |
+| `TpkClassGenerator.ROOT`, `TpkClassGenerator.NODES`, `TpkClassGenerator.STRINGS`, `TpkClassGenerator.BASE_TYPE_MAP`, `TpkClassGenerator.GENERATED_HEADER`, `TpkClassGenerator.MATH_CLASSES`, `TpkClassGenerator.FORBIDDEN_CLASSES`, `TpkClassGenerator.CLASS_CACHE_ID`, `TpkClassGenerator.CLASS_CACHE_NAME`, `TpkClassGenerator.TYPE_CACHE` | the class generator's settings and caches (`tools/TpkClassGenerator.py:11-129`) | — | — | — | n/a |
 
 ## Appendix A. Generated classes
 

@@ -13,6 +13,9 @@ PARITY.md names each symbol inside a code span (backticks), by group:
 - `functions`, every public module-level function: `Module.function`
   (`ImportHelper.check_file_type`), where `Module` is the file's name without `.py`,
   or the package's name for an `__init__.py`.
+- `data`, every public name a module assigns at its top level whose value is not a
+  class, function, module or typing construct (tables, registries, settings,
+  caches): `Module.NAME` (`CompressionHelper.DECOMPRESSION_MAP`), `Module` as above.
 - `methods`, the public members of the API classes below and every member a
   `classes/legacy_patch` module adds: `Class.member` (`Texture2D.set_image`).
 - `boost`, every public name UnityPyBoost exports: `UnityPyBoost.read_typetree`.
@@ -29,6 +32,7 @@ something is, and 2 when it cannot run.
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib
 import inspect
 import json
@@ -60,7 +64,7 @@ API_CLASSES = (
     ("helpers.UnityVersion", "UnityVersion"),
 )
 
-GROUPS = ("modules", "classes", "functions", "methods", "boost", "texture_formats")
+GROUPS = ("modules", "classes", "functions", "data", "methods", "boost", "texture_formats")
 
 # The package whose modules add members to the generated classes.
 LEGACY_PATCH = "UnityPy.classes.legacy_patch"
@@ -82,6 +86,33 @@ def _is_member(value) -> bool:
 def _defined_in(value, prefix: str) -> bool:
     func = value.fget if isinstance(value, property) else getattr(value, "__func__", value)
     return (getattr(func, "__module__", None) or "").startswith(prefix)
+
+
+def _assigned_names(source: str) -> list[str]:
+    """The public names a module's top level assigns (`X = ...`, `X: T = ...`, `X, Y = ...`)."""
+    names = []
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        for target in targets:
+            for name in target.elts if isinstance(target, ast.Tuple) else [target]:
+                if isinstance(name, ast.Name) and not name.id.startswith("_"):
+                    names.append(name.id)
+    return names
+
+
+def _is_data(value) -> bool:
+    """Data, as opposed to an alias of a class or function, a module, a TypeVar or a type alias."""
+    return not (
+        inspect.isclass(value)
+        or inspect.isroutine(value)
+        or inspect.ismodule(value)
+        or type(value).__module__ == "typing"
+    )
 
 
 def collect() -> dict[str, list]:
@@ -109,6 +140,9 @@ def collect() -> dict[str, list]:
                         groups["methods"].append(f"{name}.{member}")
             elif inspect.isfunction(value):
                 groups["functions"].append(f"{label}.{name}")
+        for name in _assigned_names(path.read_text(encoding="utf-8")):
+            if _is_data(getattr(module, name)):
+                groups["data"].append(f"{label}.{name}")
 
     for module_name, class_name in API_CLASSES:
         cls = getattr(importlib.import_module(f"UnityPy.{module_name}"), class_name)
@@ -122,7 +156,7 @@ def collect() -> dict[str, list]:
     from UnityPy.enums import TextureFormat
 
     groups["texture_formats"] = [[member.name, member.value] for member in TextureFormat]
-    for group in ("classes", "functions", "methods"):
+    for group in ("classes", "functions", "data", "methods"):
         groups[group] = sorted(set(groups[group]))
     return groups
 
