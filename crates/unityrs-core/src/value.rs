@@ -859,7 +859,7 @@ mod tests {
         use crate::budget::{Reservation, Unbounded};
         use crate::limits::{Meter, heap_cost};
         use crate::value::PrimRun;
-        // Round 5 (Codex L3): `list` moved its vector's charge into the
+        // Round 5 (Codex): `list` moved its vector's charge into the
         // builder and handed the value out bare, so a 1,000-item list built
         // and kept past a dropped builder was alive with the meter at zero.
         let meter = Meter::new(u64::MAX, Arc::new(Unbounded), Reservation::Input);
