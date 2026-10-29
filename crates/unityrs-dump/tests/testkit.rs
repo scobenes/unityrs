@@ -303,3 +303,44 @@ fn the_lazy_reverse_prepass_changes_nothing() {
     }
     assert!(bundles >= 20, "{bundles} bundles");
 }
+
+/// `CANONICAL_DUMP` section 7's crash divergence, unityrs's side: UnityPyBoost
+/// dies loading a SerializedFile whose node name (`SIGABRT`) or node type
+/// (`SIGSEGV`) is not UTF-8, so the oracle writes its crash record; unityrs
+/// reads the file and dumps it whole, the bytes hex-tagged (`PARITY.md`
+/// section 19.3). A name the oracle would crash on is a field name; a type
+/// it would crash on reads as a class of no known kind.
+#[test]
+fn a_node_name_or_type_that_is_not_utf8_dumps_whole_hex_tagged() {
+    for (field, ty) in [(&b"m_\xffX"[..], &b"int"[..]), (b"m_X", b"in\xfft")] {
+        let mut nodes = vec![
+            NodeSpec::new(0, "GameObject", "Base"),
+            NodeSpec::new(1, "int", "m_X").size(4),
+        ];
+        nodes[1].name = field.to_vec();
+        nodes[1].ty = ty.to_vec();
+        let data = serialized::build(&one_object(1, nodes, vec![7, 0, 0, 0]));
+        let d =
+            unityrs_dump::dump_input(b"CAB-bad-name", Bytes::from(data), &DumpOptions::default());
+        let recs = records(d.text().as_bytes());
+        assert_eq!(recs.len(), 2, "{recs:?}");
+        assert!(recs[0]["error"].is_null(), "{:?}", recs[0]);
+        let bad = if field == b"m_X" { ty } else { field };
+        let tagged = serde_json::json!({"t": "str", "hex": hex(bad)});
+        let row = &recs[0]["l1"]["types"][0]["nodes"][1];
+        assert!(row.as_array().unwrap().contains(&tagged), "{row}");
+        assert!(
+            recs[1]["l2"]["error"].is_null() || ty != b"int",
+            "{:?}",
+            recs[1]["l2"]
+        );
+    }
+}
+
+fn hex(b: &[u8]) -> String {
+    use std::fmt::Write as _;
+    b.iter().fold(String::new(), |mut s, x| {
+        let _ = write!(s, "{x:02x}");
+        s
+    })
+}
