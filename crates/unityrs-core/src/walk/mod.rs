@@ -252,7 +252,7 @@ pub enum ParseError {
     /// with anything but a null pointer, which UnityPy raises
     /// (`files/ObjectReader.py:332-350`; [`crate::env::Environment::object_tree`]).
     #[error("m_Script: {0}")]
-    Deref(Box<crate::env::DerefError>),
+    Deref(Arc<crate::env::DerefError>),
 }
 
 impl crate::once::CellError for ParseError {
@@ -289,7 +289,7 @@ impl crate::once::CellError for ParseError {
             // The value's own heap rides in its `Parsed`'s charge.
             Self::CheckRead { .. } => crate::error::heap_of(std::mem::size_of::<Parsed>() + 16),
             Self::Provider(p) => crate::error::heap_of(p.detail.len()),
-            Self::Deref(d) => crate::error::heap_of(std::mem::size_of::<crate::env::DerefError>())
+            Self::Deref(d) => crate::error::arc_heap_of(size_of::<crate::env::DerefError>())
                 .saturating_add(d.heap_bytes()),
             _ => 0,
         }

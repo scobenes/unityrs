@@ -538,7 +538,7 @@ fn not_a_reader(name: &RawStr) -> Error {
 fn deref_error(e: DerefError) -> Error {
     match e {
         DerefError::Load(e) => e,
-        other => Error::Deref(Box::new(other)),
+        other => Error::Deref(Arc::new(other)),
     }
 }
 
@@ -1108,7 +1108,7 @@ impl Environment {
         let target = match self.deref(obj.file(), pptr) {
             Ok(t) => t,
             Err(DerefError::Null) => return Ok(None),
-            Err(e) => return Err(ParseError::Deref(Box::new(e))),
+            Err(e) => return Err(ParseError::Deref(Arc::new(e))),
         };
         // `parse_as_object()`, `check_read` on.
         let script = match target.read_typetree(None, true) {

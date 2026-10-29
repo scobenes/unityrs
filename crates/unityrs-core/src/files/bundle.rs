@@ -478,7 +478,7 @@ impl BundleFile {
                     .get(dir_index)
                     .map(|d| d.path.clone())
                     .unwrap_or_default(),
-                source: Box::new(e),
+                source: Arc::new(e),
             },
         }
     }

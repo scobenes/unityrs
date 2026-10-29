@@ -45,8 +45,8 @@ pub enum Error {
     Malformed {
         /// What was being read.
         what: &'static str,
-        /// The detail, for people.
-        detail: Box<str>,
+        /// The detail, for people. Shared, so a clone allocates nothing.
+        detail: Arc<str>,
     },
     /// A format or feature unityrs does not read (yet), each named.
     #[error("unsupported: {0}")]
@@ -56,8 +56,8 @@ pub enum Error {
     Decompress {
         /// The block's codec.
         codec: Codec,
-        /// The decoder's message.
-        detail: Box<str>,
+        /// The decoder's message. Shared, so a clone allocates nothing.
+        detail: Arc<str>,
     },
     /// A version string did not parse, or no fallback was set.
     #[error(transparent)]
@@ -77,14 +77,14 @@ pub enum Error {
     /// The AssetBundle object read at load failed, which fails the file
     /// (`SerializedFile.py:316-324`; `CANONICAL_DUMP.md` section 7).
     #[error("AssetBundle: {0}")]
-    AssetBundle(Box<ParseError>),
+    AssetBundle(Arc<ParseError>),
     /// A bundle entry failed, which fails the bundle (`File.py:76-90`).
     #[error("entry {name}: {source}")]
     Entry {
         /// The entry's directory path.
         name: RawStr,
         /// Why it failed.
-        source: Box<Error>,
+        source: Arc<Error>,
     },
     /// A bound from [`crate::limits::Limits`] was exceeded (the input's
     /// meter included: [`LimitKind::InputMemory`]).
@@ -100,7 +100,7 @@ pub enum Error {
     /// container preload, `helpers/ContainerHelper.py:43-46`, plan 3.13).
     /// A failure to load the target is that load's own error, never this.
     #[error(transparent)]
-    Deref(Box<crate::env::DerefError>),
+    Deref(Arc<crate::env::DerefError>),
     /// An I/O error from a source.
     #[error("io: {0}")]
     Io(IoError),
@@ -140,6 +140,11 @@ impl From<std::io::Error> for Error {
 /// [`heap_cost`] of `n` bytes.
 pub(crate) fn heap_of(n: usize) -> u64 {
     heap_cost(u64::try_from(n).unwrap_or(u64::MAX))
+}
+
+/// [`heap_cost`] of an `Arc` of `n` bytes: its two counts and the bytes.
+pub(crate) fn arc_heap_of(n: usize) -> u64 {
+    heap_of(n.saturating_add(2 * size_of::<usize>()))
 }
 
 impl ChargeError {
@@ -187,21 +192,22 @@ impl CellError for Error {
 
     fn heap_bytes(&self) -> u64 {
         match self {
-            Self::Detect(DetectError::Gzip(d)) => heap_of(d.len()),
+            Self::Detect(DetectError::Gzip(d)) => arc_heap_of(d.len()),
             Self::Malformed { detail, .. } | Self::Decompress { detail, .. } => {
-                heap_of(detail.len())
+                arc_heap_of(detail.len())
             }
             Self::Version(VersionError::NoMatch(r))
             | Self::NotFound(NotFound::Cab(r) | NotFound::Resource(r)) => heap_of(r.len()),
             Self::Tree(t) => t.heap_bytes(),
             Self::AssetBundle(p) => {
-                heap_of(std::mem::size_of::<ParseError>()).saturating_add(p.heap_bytes())
+                arc_heap_of(size_of::<ParseError>()).saturating_add(p.heap_bytes())
             }
             Self::Entry { name, source } => heap_of(name.len())
-                .saturating_add(heap_of(std::mem::size_of::<Self>()))
+                .saturating_add(arc_heap_of(size_of::<Self>()))
                 .saturating_add(source.heap_bytes()),
-            Self::Deref(d) => heap_of(std::mem::size_of::<crate::env::DerefError>())
-                .saturating_add(d.heap_bytes()),
+            Self::Deref(d) => {
+                arc_heap_of(size_of::<crate::env::DerefError>()).saturating_add(d.heap_bytes())
+            }
             _ => 0,
         }
     }
