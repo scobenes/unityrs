@@ -69,24 +69,42 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - OBJ/MTL text matches.
   - `save_typetree(parse())` returns the raw bytes.
   - Every patch to vendored decoders is labelled either Tier A (keeps the reference behaviour) or Tier C.
-- **Tier B: UnityPy raises.** 22 TextureFormats: BC6H, half and float formats, the 8 signed formats, RG16/RG32, R16, RGBA64, RGB9e5, YUY2. We produce correct output, checked against an independent reference. UnityArchive and LZHAM stay **unsupported (they raise)** until a sample and a reference exist, and so do ETC_RGB4_3DS and ETC_RGBA8_3DS: UnityPy decodes them as plain ETC1, but no 3DS sample or reference decoder shows what they should decode to, so unityrs refuses them with a named `Unsupported` error, a documented divergence.
-- **Tier C: UnityPy is wrong.** We produce correct output, and `PARITY.md` lists each case with a pinned divergence test:
+  - An observable quirk that callers can depend on and that is not wrong data (a file name, a dict key, a `str()` form, a docstring the code contradicts) is Tier A: unityrs keeps UnityPy's behaviour.
+- **Tier B: UnityPy raises on a valid request.** We produce correct output, checked against an independent reference, and `PARITY.md` names a pinned divergence test for each:
+  - 22 TextureFormats: BC6H, half and float formats, the 8 signed formats, RG16/RG32, R16, RGBA64, RGB9e5, YUY2;
+  - a gzip-compressed WebFile, which UnityPy detects and then fails to parse;
+  - a streamed Texture2DArray, whose slices all raise;
+  - `GameObject.m_Components` on an empty list or the old pair form;
+  - `Texture2D.image` of an empty 0×0 texture.
+- **Tier C: UnityPy is wrong.** It returns wrong data that an independent reference shows is wrong, or one of its exporters or helpers crashes. We produce correct output, and `PARITY.md` lists each case with a pinned divergence test and, for a crash, what correct output means:
   - RGBAHalf returns garbage;
+  - RGB48 decodes as packed 5-6-5;
   - ASTC_HDR is wrong in 1.25.2;
+  - ETC2_RGBA1 keeps a transparent punch-through pixel's colour, where the Khronos Data Format Specification makes it (0, 0, 0, 0);
+  - Texture2DArray maps the 8-bit integer formats to 16-bit ones and ignores the platform;
   - the MeshHelper.py:504 UV offset;
   - UNorm/SNorm values are not normalised;
   - mesh endianness is never read from the file;
   - the compressed-mesh 4th bone weight;
-  - ETC2_RGBA1 keeps a transparent punch-through pixel's colour, where the Khronos Data Format Specification makes it (0, 0, 0, 0);
   - the ReferencedObject array path does not skip None;
   - dump_blob's common-string offset 0;
+  - two bundles holding a CAB of one name share one registry entry;
+  - `load_dependencies` loads dependencies as main files;
+  - `ContainerHelper.path_dict` ignores an entry's file id;
+  - the Sprite cache key ignores the FileID;
   - MeshRendererExporter fails on Unity 6;
   - ShaderConverter fails on 6000.3;
-  - the Sprite cache key ignores the FileID.
+  - the extractor's crashes: GameObjects, MonoBehaviours, sprites without a container, meshes without vertices, and extensions Pillow cannot write.
+- **Unsupported until a sample and a reference exist.** unityrs refuses these with a named `Unsupported` error:
+  - LZHAM, where UnityPy raises too;
+  - a UnityArchive parsed as a bundle, where UnityPy raises too. Loading one is Tier A: UnityPy's detector does not know the signature and loads the file as a raw ResourceFile, and so does unityrs;
+  - ETC_RGB4_3DS and ETC_RGBA8_3DS. UnityPy decodes them as plain ETC1, but no 3DS sample or reference decoder shows what they should decode to, so the refusal is a documented divergence, not parity.
 - **Tolerance:** the Sprite affine-triangle path, and pure-Rust audio against FMOD. Each has a stated metric and threshold.
 - **HEAD tier:** SF v23-26 and bundle format 9, equal to HEAD's dicts on Unity 6000.4/6000.5 fixtures.
 
 **Writing**
+
+Writing has tiers of its own. Where UnityPy writes, unityrs follows the rule in the table below (Tier A for writing). Where UnityPy fails to write (it raises on a valid request, or writes data its own reader misreads), that is **Tier C (writing)**: unityrs writes, and the row states the acceptance rule the written data must meet.
 
 | what | rule |
 |---|---|
@@ -95,7 +113,16 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
 | Compressed packers | equal after decompression; byte-equal LZ4HC only with liblz4 HC level 9 (pinned) |
 | `get_writeable_cab` | UnityPy's naming and GUID rule |
 | `set_image` | equal after re-decode: Pillow 9.5 BICUBIC mips, NEAREST padding, pinned etcpak/astcenc |
-| Pre-v10 typetree writing | broken in UnityPy, so Tier C |
+
+| Tier C (writing) | acceptance |
+|---|---|
+| Pre-v10 and v11 typetree writing (UnityPy raises) | the saved file reloads with the same objects |
+| An object holding a ReferencedObject of empty class (UnityPy raises `KeyError`) | byte-equal to its original bytes |
+| `set_image` to BC7 (UnityPy raises with the pinned etcpak) | the bytes etcpak's `compress_bc7` writes with default parameters; decoded by Pillow's `BcnDecode`, a PSNR of at least 35 dB against the source image in every channel |
+| `set_image` to ETC_RGB4Crunched (UnityPy tags plain ETC1 as crunched) | written as ETC_RGB4, equal to `set_image` to ETC_RGB4 |
+| `set_image` mips on a swizzled platform (UnityPy leaves them linear) | each mip, deswizzled, equals the linear mip |
+| `WebFile.save` of a writer entry (UnityPy raises) | the saved WebFile reloads with the writer's bytes |
+| `BundleFile.save` with `original` and no blocks (UnityPy raises); `save_fs` encryption flags (UnityPy's output reads back as encrypted) | the saved bundle reloads, unencrypted, with the same entries |
 
 **Inventory.** `PARITY.md` (P0) maps every public UnityPy API and behaviour to a tier, a verification level and a test. It includes a per-TextureFormat matrix: decoder, output mode, conversion, platform/version gates, and UnityPy's own result. "Full parity" means the inventory is green. Audio lists exact formats: Ogg/RIFF/m4a passthrough; FSB5 PCM, Vorbis, ADPCM and FADPCM in pure Rust; MPEG and Opus optional; anything else reported unsupported.
 
