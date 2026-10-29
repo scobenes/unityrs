@@ -610,6 +610,7 @@ dependencies = [
  "sha2 0.11.1",
  "unityrs-core",
  "unityrs-testkit",
+ "unityrs-tpk",
 ]
 
 [[package]]
