@@ -472,20 +472,16 @@ fn versions_match_the_oracle() {
 }
 
 /// Versions written with non-ASCII `Nd` digits, which Python's `int()`
-/// reads. They need package A's generated `tables::ND_ZEROS`; until it is
-/// generated (the scaffold seeds ASCII `0` alone) the cases are only parsed,
-/// which must not panic, and the test runs in full once the table lands
-/// (REQUESTS-c.md).
+/// reads, through package A's generated `tables::ND_ZEROS` (every `Nd` run
+/// of Unicode 14.0, not the scaffold's ASCII seed).
 #[test]
 fn non_ascii_digit_versions_match_the_oracle() {
     let cases = version_cases(false);
     assert_ne!(cases.len(), 0);
-    if unityrs_core::tables::ND_ZEROS.len() < 2 {
-        for c in &cases {
-            let _ = UnityVersion::parse(&RawStr::new(unhex(c["hex"].as_str().unwrap())));
-        }
-        return;
-    }
+    assert!(
+        unityrs_core::tables::ND_ZEROS.len() > 1,
+        "ND_ZEROS holds only the ASCII seed: run tools/gen/gen_tables.py"
+    );
     for c in &cases {
         check_version(c);
     }
