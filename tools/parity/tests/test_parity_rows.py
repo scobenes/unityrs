@@ -943,6 +943,170 @@ class Rows(unittest.TestCase):
             env = quietly(UnityPy.load, stream)
         self.assertEqual(sorted(type(f).__name__ for f in env.files.values()), ["NoneType", "SerializedFile"])
 
+    # Sections 2, 2.1: the package's aliases and every re-export section 2.1 lists.
+    def test_package_aliases_and_reexports(self):
+        from UnityPy.helpers import ArchiveStorageManager
+
+        self.assertIs(UnityPy.load, UnityPy.Environment)
+        self.assertIs(UnityPy.AssetsManager, UnityPy.Environment)
+        self.assertIs(UnityPy.set_assetbundle_decrypt_key, ArchiveStorageManager.set_assetbundle_decrypt_key)
+        text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
+        rows = next(body for header, body in inventory.tables(text) if header == ["package", "source", "members"])
+        self.assertEqual(len(rows), 31)
+        for package, _, members in rows:
+            module = __import__(package.strip("`"), fromlist=["_"])
+            for member in re.findall(r"`([A-Za-z_0-9]+)`", members):
+                with self.subTest(package, member=member):
+                    value = getattr(module, member)
+                    self.assertFalse(isinstance(value, type(module)), "a re-export, not a submodule")
+        self.assertIsInstance(UnityPy.files.BundleFile, type)
+        self.assertTrue(callable(UnityPy.cli.update_tpk))
+        # helpers and export re-export only their own submodules; export leaves ShaderConverter out.
+        self.assertNotIn("ShaderConverter", UnityPy.export.__all__)
+        self.assertEqual(len(UnityPy.helpers.__all__), 6)
+
+    # Section 3: Environment.file, objects, assets, the CAB registry and find_file.
+    def test_environment_registry_and_find_file(self):
+        self.assertIsNone(UnityPy.Environment().typetree_generator)
+        one = quietly(UnityPy.Environment, text_asset_file())
+        self.assertIs(one.file, next(iter(one.files.values())), "set by the constructor for exactly one file")
+        for env in (quietly(UnityPy.Environment, text_asset_file(), text_asset_file("b")), UnityPy.Environment()):
+            self.assertFalse(hasattr(env, "file"))
+        later = UnityPy.Environment()
+        load(text_asset_file(), env=later)
+        self.assertFalse(hasattr(later, "file"), "load_file never sets it")
+        # objects and assets: depth-first in `files` order, dependencies left out.
+        env = UnityPy.Environment()
+        plain = load(text_asset_file("plain"), "plain.assets", env)[0]
+        quietly(env.load_file, text_asset_file("dependency"), name="dep.assets", is_dependency=True)
+        bundle = load(S.fs_bundle([(b"CAB-a", text_asset_file("in bundle"), 4), (b"CAB-a.resS", b"\x11" * 8, 0)]))[0]
+        quietly(env.load_file, S.fs_bundle([(b"CAB-a", text_asset_file("in bundle"), 4)]), name="b")
+        inner = env.files["b"].files["CAB-a"]
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in env.objects], ["plain", "in bundle"])
+        self.assertEqual(env.assets, [plain, inner])
+        self.assertEqual(len(bundle.files), 2)
+        # simplify_name is the lower-cased basename, extension kept; the registry is keyed by it.
+        from UnityPy.environment import simplify_name
+
+        self.assertEqual(simplify_name("dir\\Sub/CAB-AbC.resS"), "cab-abc.ress")
+        env = UnityPy.Environment()
+        first, second = object(), object()
+        env._container_index_built = True
+        env.register_cab("dir/Sub/CAB-AbC.resS", first)
+        self.assertFalse(env._container_index_built, "registering invalidates the container index")
+        self.assertIs(env.get_cab("other\\cab-abc.RESS"), first)
+        env.register_cab("elsewhere/cab-abc.ress", second)
+        self.assertEqual((list(env.cabs), env.get_cab("CAB-ABC.RESS")), (["cab-abc.ress"], second))
+        self.assertIsNone(env.get_cab("missing"))
+        # find_file: the registry, then path/name, then a walk of `path` built once.
+        d = self.tmp / "d"
+        (d / "sub").mkdir(parents=True)
+        (d / "Shared.Assets").write_bytes(text_asset_file("shared"))
+        (d / "sub" / "other.assets").write_bytes(text_asset_file("other"))
+        (d / "sub" / "xab.assets").write_bytes(text_asset_file("xab"))
+
+        def found(env, name):
+            got = quietly(env.find_file, name)
+            return got if got is None or got is first else [o.parse_as_dict()["m_Name"] for o in got.objects.values()]
+
+        env = UnityPy.Environment(path=str(d))
+        env.register_cab("CAB-registered", first)
+        self.assertIs(found(env, "cab-REGISTERED"), first)
+        self.assertEqual(found(env, "Shared.Assets"), ["shared"], "path/name")
+        self.assertEqual(found(env, "other.assets"), ["other"], "a suffix of a walked path")
+        self.assertEqual(found(env, "ab.assets"), ["xab"], "a suffix with no separator boundary")
+        # A name in another case misses the exact matches (the simplified one compares a bare name with full
+        # paths) and matches a simplified path by suffix: that path names no file, so load_file gives None.
+        self.assertIsNone(found(UnityPy.Environment(path=str(d)), "shared.assets"))
+        with self.assertRaisesRegex(FileNotFoundError, "File missing.assets not found in"):
+            found(env, "missing.assets")
+        (d / "sub" / "late.assets").write_bytes(text_asset_file("late"))
+        with self.assertRaises(FileNotFoundError):
+            found(env, "late.assets")  # the walk is not built again
+        self.assertEqual(found(UnityPy.Environment(path=str(d)), "late.assets"), ["late"])
+
+    # Sections 3, 5.2: split files, folders, Environment.save and File's own attributes.
+    def test_split_files_folders_and_save(self):
+        from fsspec.implementations.memory import MemoryFileSystem
+        from UnityPy.environment import reSplit
+        from UnityPy.files import File
+
+        self.assertEqual(reSplit.pattern, r"(.*?([^\/\\]+?))\.split\d+")
+        self.assertEqual(reSplit.match("a/b.c.split12").groups(), ("a/b.c", "b.c"))
+        d = self.tmp / "d"
+        (d / "sub").mkdir(parents=True)
+        data = text_asset_file("split")
+        half = len(data) // 2
+        (d / "big.split0").write_bytes(data[:half])
+        (d / "big.split1").write_bytes(data[half:])
+        (d / "big.split3").write_bytes(b"after a gap")
+        (d / "nozero.split1").write_bytes(b"one")
+        (d / "nozero.split2").write_bytes(b"two")
+        env = UnityPy.Environment(path=str(d))
+        # Up to the first missing part after split0; a missing split0 is skipped.
+        self.assertEqual(env._load_split_file(str(d / "big")), data)
+        self.assertEqual(env._load_split_file(str(d / "nozero")), b"onetwo")
+        loaded = quietly(env.load_file, str(d / "big.split1"))
+        self.assertEqual((list(env.files), [o.parse_as_dict()["m_Name"] for o in loaded.objects.values()]),
+                         ([str(d / "big")], ["split"]))
+        # At most 999 parts, split0 to split998.
+        fs = MemoryFileSystem()
+        root = f"/{self.tmp.name}-parts"
+        self.addCleanup(fs.rm, root, recursive=True)
+        for i in range(1001):
+            fs.pipe(f"{root}/p.split{i}", b"x")
+        self.assertEqual(len(UnityPy.Environment(fs=fs)._load_split_file(f"{root}/p")), 999)
+        # load_files (load_assets with the builtin open) merges split members once per base path. UnityPy never
+        # closes what it opens there, so the files are closed here.
+        (d / "sub" / "plain.assets").write_bytes(text_asset_file("plain"))
+        opened = []
+
+        def tracked(path, mode="r", *args, **kw):
+            stream = io.open(path, mode, *args, **kw)  # builtins.open is patched to this function
+            opened.append(stream)
+            return stream
+
+        env = UnityPy.Environment()
+        with mock.patch("builtins.open", tracked):
+            quietly(env.load_files, [str(d / "big.split0"), str(d / "big.split1"), str(d / "sub" / "plain.assets")])
+        self.assertEqual(list(env.files), [str(d / "big"), str(d / "sub" / "plain.assets")])
+        # load_folder: every file fs.walk finds, in its order, through load_files.
+        folder = self.tmp / "folder"
+        (folder / "b").mkdir(parents=True)
+        for name in ("z.assets", "a.assets", "b/m.assets"):
+            (folder / name).write_bytes(text_asset_file(name))
+        env = UnityPy.Environment()
+        with mock.patch("builtins.open", tracked):
+            quietly(env.load_folder, str(folder))
+        for stream in opened:
+            stream.close()
+        walked = ["/".join([root, f]) for root, _, files in env.fs.walk(str(folder)) for f in files]
+        self.assertEqual(list(env.files), walked)
+        self.assertEqual(sorted(walked), sorted(str(folder / n) for n in ("z.assets", "a.assets", "b/m.assets")))
+        # File: its attributes; mark_changed marks every File above; save writes the changed ones by basename.
+        env = UnityPy.Environment()
+        bundle = load(S.fs_bundle([(b"CAB-a", text_asset_file(), 4)]), "dir/b.bundle", env)[0]
+        sf = bundle.files["CAB-a"]
+        self.assertEqual(
+            (bundle.name, bundle.cab_file, bundle.is_changed, bundle.parent, bundle.environment),
+            ("b.bundle", "CAB-UnityPy_Mod.resS", False, env, env),
+        )
+        self.assertEqual((sf.name, sf.parent, sf.environment), ("CAB-a", bundle, env))
+        self.assertTrue(isinstance(bundle, File) and isinstance(sf, File))
+        sf.mark_changed()
+        self.assertEqual((sf.is_changed, bundle.is_changed), (True, True))
+        out = self.tmp / "out"
+        out.mkdir()
+        load(text_asset_file("unchanged"), "u.assets", env)
+        quietly(env.save, out_path=str(out))
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ["b.bundle"])
+        self.assertEqual((out / "b.bundle").read_bytes(), bundle.save(packer="none"))
+        # File.container: the union of its File children's containers.
+        info = SimpleNamespace(asset=PPtr(m_FileID=0, m_PathID=7), preloadIndex=0, preloadSize=0)
+        sf._container = ContainerHelper([("a/path", info), ("b/path", info), ("a/path", info)])
+        self.assertEqual(bundle.container, {"a/path": info.asset, "b/path": info.asset})
+        self.assertEqual((sorted(sf.container.keys()), sf.container.values()), (["a/path", "b/path"], [info.asset]))
+
     # Sections 5.2, 19.2: File's iteration and dict-style methods.
     def test_file_iteration_and_dict_access(self):
         def two(name):
@@ -984,6 +1148,265 @@ class Rows(unittest.TestCase):
         self.assertEqual(list(bundle.items()), [("CAB-a", sf), ("CAB-a.resS", raw)])
         self.assertIs(bundle["CAB-a"], sf)
         self.assertEqual((list(sf.keys()), sf[2]), ([1, 2], sf.objects[2]))
+
+    # Section 6: the codec helpers and tables.
+    def test_compression_helpers(self):
+        import brotli
+        import lzma
+
+        from UnityPy.enums import CompressionFlags as C
+        from UnityPy.helpers import CompressionHelper as H
+
+        data = bytes(range(256)) * 700  # 175 KiB, compressible
+        self.assertEqual(sorted(H.DECOMPRESSION_MAP), [C.NONE, C.LZMA, C.LZ4, C.LZ4HC, C.LZHAM])
+        self.assertEqual(sorted(H.COMPRESSION_MAP), [C.NONE, C.LZMA, C.LZ4, C.LZ4HC])
+        self.assertEqual(H.COMPRESSION_MAP[C.LZ4HC], H.compress_lz4)
+        self.assertEqual(H.DECOMPRESSION_MAP[C.LZ4HC], H.decompress_lz4)
+        self.assertEqual(
+            H.COMPRESSION_CHUNK_SIZE_MAP, {C.NONE: 0xFFFFFFFF, C.LZMA: 0xFFFFFFFF, C.LZ4: 0x20000, C.LZ4HC: 0x20000}
+        )
+        self.assertEqual((H.GZIP_MAGIC, H.BROTLI_MAGIC), (b"\x1f\x8b", b"brotli"))
+        # LZHAM and any other codec value.
+        with self.assertRaisesRegex(NotImplementedError, "LZHAM"):
+            H.decompress_lzham(b"x", 1)
+        bundle = load(S.fs_bundle([(b"CAB-test", text_asset_file(), 4)]))[0]
+        with self.assertRaisesRegex(NotImplementedError, "LZHAM"):
+            bundle.decompress_data(b"x", 1, 4)
+        for codec in (5, 6, 7, 8, 63, 0x40 | 9):
+            with self.subTest(codec=codec), self.assertRaisesRegex(ValueError, "^Unknown compression"):
+                bundle.decompress_data(b"x", 1, codec)
+        # LZMA: props 0x5D, an 8 MiB dictionary, lc 3 lp 0 pb 2, BT4, nice_len 123, an optional u64 size.
+        filters = [
+            {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 23, "lc": 3, "lp": 0, "pb": 2, "mf": lzma.MF_BT4}
+            | {"mode": lzma.MODE_NORMAL, "nice_len": 123}
+        ]
+        raw = lzma.compress(data, format=lzma.FORMAT_RAW, filters=filters)
+        self.assertEqual(H.compress_lzma(data), b"\x5d" + (1 << 23).to_bytes(4, "little") + raw)
+        self.assertEqual(H.compress_lzma(data, True), H.compress_lzma(data)[:5] + struct.pack("<Q", len(data)) + raw)
+        self.assertEqual(H.decompress_lzma(H.compress_lzma(data)), data)
+        self.assertEqual(H.decompress_lzma(H.compress_lzma(data, True), True), data)
+        # LZ4: high compression at level 9, no size prefix.
+        self.assertEqual(H.compress_lz4(data), lz4.block.compress(data, mode="high_compression", compression=9,
+                                                                 store_size=False))
+        # brotli at the library's default quality, 11; gzip at level 9 with the time as the header's mtime.
+        self.assertEqual(H.compress_brotli(data), brotli.compress(data, quality=11))
+        with mock.patch("time.time", return_value=1000.0):
+            first = H.compress_gzip(data)
+        with mock.patch("time.time", return_value=2000.0):
+            second = H.compress_gzip(data)
+        self.assertEqual((first[4:8], second[4:8]), (struct.pack("<I", 1000), struct.pack("<I", 2000)))
+        self.assertEqual((first[8], first[10:], H.decompress_gzip(first)), (2, second[10:], data))  # XFL 2: level 9
+        # chunk_based_compress: LZ4 in 128 KiB chunks, LZMA and none in one; a chunk that grows keeps its bytes
+        # with the codec bits cleared.
+        packed, blocks = H.chunk_based_compress(data, 0x42)
+        self.assertEqual([(size, flag) for size, _, flag in blocks], [(0x20000, 0x42), (len(data) - 0x20000, 0x42)])
+        self.assertEqual(lz4.block.decompress(packed[: blocks[0][1]], 0x20000), data[:0x20000])
+        self.assertEqual([(u, f) for u, _, f in H.chunk_based_compress(data, 1)[1]], [(len(data), 1)])
+        self.assertEqual(H.chunk_based_compress(data, 0x40), (data, [(len(data), len(data), 0x40)]))
+        noise = random.Random(3).randbytes(1000)
+        self.assertEqual(H.chunk_based_compress(noise, 0x42), (noise, [(1000, 1000, 0x40)]))
+        with self.assertRaisesRegex(NotImplementedError, "No compression function"):
+            H.chunk_based_compress(data, 4)
+
+    # Sections 5.2, 6: WebFile sniffs gzip at offset 0 and brotli at 0x20, given a reader at its start.
+    def test_webfile_sniffs_its_codec(self):
+        from UnityPy.helpers import CompressionHelper as H
+
+        plain = S.web_file([(b"a.txt", b"hello")])
+        gz = WebFile(EndianBinaryReader(gzip.compress(plain)), None)
+        self.assertEqual((gz.packer, list(gz.files)), ("gzip", ["a.txt"]))
+        marked = bytes(0x20) + b"brotli" + bytes(10)
+        with mock.patch.object(H, "decompress_brotli", lambda data: plain) as stub:
+            br = WebFile(EndianBinaryReader(marked), None)
+        self.assertEqual((br.packer, list(br.files), stub(b"")), ("brotli", ["a.txt"], plain))
+        self.assertEqual(WebFile(EndianBinaryReader(plain), None).packer, "none")
+
+    # Sections 10, 11: the fallback version, the version exceptions and UnityVersion's string form.
+    def test_fallback_version_and_version_strings(self):
+        from UnityPy import config
+        from UnityPy.exceptions import UnityVersionFallbackError, UnityVersionFallbackWarning
+
+        self.assertTrue(issubclass(UnityVersionFallbackError, Exception))
+        self.assertTrue(issubclass(UnityVersionFallbackWarning, UserWarning))
+        for value in (None, 2019):
+            with self.subTest(value=value), mock.patch.object(config, "FALLBACK_UNITY_VERSION", value):
+                with self.assertRaises(UnityVersionFallbackError):
+                    config.get_fallback_version()
+        # The `once` filter UnityPy installs at import: one warning for three calls from three places, in a process
+        # of its own because a test runner replaces the warning filters.
+        code = (
+            "import UnityPy.config as c\n"
+            "c.FALLBACK_UNITY_VERSION = '2019.4.1f1'\n"
+            "a = c.get_fallback_version()\n"
+            "b = c.get_fallback_version()\n"
+            "d = c.get_fallback_version()\n"
+            "print(a, b, d)\n"
+        )
+        run = __import__("subprocess").run([sys.executable, "-B", "-c", code], capture_output=True, text=True)
+        self.assertEqual(run.stdout, "2019.4.1f1 2019.4.1f1 2019.4.1f1\n")
+        self.assertEqual(run.stderr.count("UnityVersionFallbackWarning"), 1, run.stderr)
+        # str(): above 5.x the build and its dot go; 5.x and below the type and its number; the postfix stays.
+        cases = {
+            "2019.4.15f1": ("2019.4f1", ""),
+            "2018.4.36": ("2018.4f0", ""),
+            "5.6.7f1": ("5.6.7", ""),
+            "2019.4.15f1-custom": ("2019.4f1-custom", "-custom"),
+            "2022.3.1f1c1": ("2022.3f1c1", "c1"),
+        }
+        for text, (printed, postfix) in cases.items():
+            with self.subTest(text):
+                version = UnityVersion.from_str(text)
+                self.assertEqual((str(version), version.postfix), (printed, postfix))
+
+    # Sections 15.1, 15.6, 23: texture helpers of Texture2DConverter and TextureSwizzler.
+    def test_texture_helpers(self):
+        import threading
+
+        size = Texture2DConverter.get_compressed_image_size
+        for fmt, padded in (
+            (TextureFormat.DXT1, (8, 4)),
+            (TextureFormat.BC7, (8, 4)),
+            (TextureFormat.ETC2_RGBA8, (8, 4)),
+            (TextureFormat.EAC_R, (8, 4)),
+            (TextureFormat.PVRTC_RGB2, (8, 4)),
+            (TextureFormat.PVRTC_RGBA4, (8, 4)),
+            (TextureFormat.ASTC_RGB_6x6, (6, 6)),
+            (TextureFormat.ASTC_RGBA_10x10, (10, 10)),
+            (TextureFormat.ATC_RGBA8, (5, 3)),
+            (TextureFormat.RGBA32, (5, 3)),
+        ):
+            with self.subTest(fmt.name):
+                self.assertEqual(size(5, 3, fmt), padded)
+        self.assertEqual(size(9, 3, TextureFormat.PVRTC_RGB2), (16, 4), "PVRTC 2 bpp: 8x4 blocks")
+        # parse_image_data's checks before any format: a zero side, no data, a number outside the enum.
+        parse, version = Texture2DConverter.parse_image_data, (2021, 3, 2, 0)
+        for width, height in ((0, 4), (4, 0)):
+            empty = parse(b"\x01" * 64, width, height, TextureFormat.RGBA32, version, 0)
+            self.assertEqual((empty.mode, empty.size), ("RGBA", (0, 0)))
+        with self.assertRaisesRegex(ValueError, "^Texture2D has no image data$"):
+            parse(b"", 4, 4, TextureFormat.RGBA32, version, 0)
+        with self.assertRaisesRegex(ValueError, "is not a valid TextureFormat"):
+            parse(b"\x01" * 64, 4, 4, 999, version, 0)
+        # pad_image: the last column and row, then the corner pixel.
+        image = Image.new("L", (2, 2))
+        image.putdata([1, 2, 3, 4])
+        self.assertEqual(list(Texture2DConverter.pad_image(image, 4, 3).getdata()), [1, 2, 2, 2, 3, 4, 4, 4, 3, 4, 4, 4])
+        self.assertIs(Texture2DConverter.pad_image(image, 2, 2), image)
+        # The Xbox swap: byte pairs, a last odd byte kept.
+        self.assertEqual(Texture2DConverter.swap_bytes_for_xbox(b"\x01\x02\x03\x04\x05"), bytearray(b"\x02\x01\x04\x03\x05"))
+        self.assertEqual(
+            Texture2DConverter.XBOX_SWAP_FORMATS,
+            [TextureFormat.RGB565, TextureFormat.DXT1, TextureFormat.DXT1Crunched, TextureFormat.DXT5,
+             TextureFormat.DXT5Crunched],
+        )
+        # ASTC: 16 bytes a block; data short of the blocks raises; one LDR context per thread and block size.
+        self.assertEqual(Texture2DConverter.calculate_astc_compressed_size(9, 5, (4, 4)), 3 * 2 * 16)
+        with self.assertRaisesRegex(ValueError, "Invalid ASTC data size"):
+            Texture2DConverter.astc(bytes(15), 4, 4, (4, 4))
+        context = Texture2DConverter.get_astc_context((4, 4))
+        self.assertIs(Texture2DConverter.get_astc_context((4, 4)), context)
+        self.assertIsNot(Texture2DConverter.get_astc_context((6, 6)), context)
+        other = []
+        thread = threading.Thread(target=lambda: other.append(Texture2DConverter.get_astc_context((4, 4))))
+        thread.start()
+        thread.join()
+        self.assertIsNot(other[0], context)
+        import astc_encoder
+
+        self.assertEqual((context.config.block_x, context.config.block_y), (4, 4))
+        self.assertEqual(context.config.profile, astc_encoder.ASTCProfile.LDR)
+        self.assertEqual(context.config.flags, astc_encoder.ASTCConfigFlags.USE_DECODE_UNORM8)
+        made = []
+        with mock.patch.object(astc_encoder, "ASTCConfig", lambda *a, **kw: made.append((a, kw)) or a[0]):
+            with mock.patch.object(astc_encoder, "ASTCContext", lambda config: config):
+                Texture2DConverter._get_astc_context.__wrapped__(0, (5, 5))
+        self.assertEqual(made[0][1]["quality"], 100)
+        # TextureSwizzler: the GOB, the blob, the padded size and the walk.
+        self.assertEqual(
+            (TextureSwizzler.GOB_X_TEXEL_COUNT, TextureSwizzler.GOB_Y_TEXEL_COUNT, TextureSwizzler.TEXEL_BYTE_SIZE),
+            (4, 8, 16),
+        )
+        self.assertEqual((TextureSwizzler.TEXELS_IN_GOB, sorted(TextureSwizzler.GOB_MAP)),
+                         (32, [(x, y) for x in range(4) for y in range(8)]))
+        blob = [0] * 8 + list((3).to_bytes(4, "little"))
+        self.assertEqual(TextureSwizzler.get_switch_gobs_per_block(blob), 8)
+        self.assertTrue(TextureSwizzler.is_switch_swizzled(BuildTarget.Switch, blob))
+        self.assertFalse(TextureSwizzler.is_switch_swizzled(BuildTarget.Switch, [0] * 12), "one GOB per block")
+        self.assertFalse(TextureSwizzler.is_switch_swizzled(BuildTarget.Switch, blob[:11]), "under 12 bytes")
+        self.assertFalse(TextureSwizzler.is_switch_swizzled(BuildTarget.Android, blob))
+        self.assertEqual(TextureSwizzler.get_padded_texture_size(5, 9, 4, 4, 2), (16, 64))
+        self.assertEqual(len(TextureSwizzler.TEXTURE_FORMAT_BLOCK_SIZE_MAP), 29)
+        data = bytes(range(256)) * 4  # one block of 2 GOBs of RGBA32: 16 x 16 pixels, 1024 bytes
+        swizzled = TextureSwizzler.swizzle(data, 16, 16, 4, 1, 2)
+        self.assertNotEqual(swizzled, data)
+        self.assertEqual(TextureSwizzler.deswizzle(swizzled, 16, 16, 4, 1, 2), data)
+        # Only whole blocks of GOBs are walked: the rest of the output stays zero.
+        self.assertEqual(TextureSwizzler.deswizzle(data, 16, 8, 4, 1, 2), bytearray(len(data)))
+
+    # Section 16: what the dispatcher does before FMOD.
+    def test_audio_dispatch(self):
+        def clip(data, channels=0, frequency=0):
+            return SimpleNamespace(m_AudioData=data, m_Resource=None, m_Name="c", m_Channels=channels,
+                                   m_Frequency=frequency, object_reader=None)
+
+        for data, name in ((b"OggS" + bytes(8), "c.ogg"), (b"RIFF" + bytes(8), "c.wav"), (b"\0\0\0\x20ftypM4A ", "c.m4a")):
+            with self.subTest(name):
+                self.assertEqual(AudioClipConverter.extract_audioclip_samples(clip(data)), {name: data})
+        calls = []
+        with mock.patch.object(AudioClipConverter.fmod_toolkit, "raw_to_wav",
+                               lambda *a, **kw: calls.append((a, kw)) or {"done": b""}):
+            self.assertEqual(AudioClipConverter.extract_audioclip_samples(clip(b"FSB5" + bytes(8))), {"done": b""})
+            AudioClipConverter.extract_audioclip_samples(clip(b"FSB5", 1, 22050), convert_pcm_float=False)
+        self.assertEqual(calls[0], ((b"FSB5" + bytes(8), "c", 2, 44100), {"convert_pcm_float": True}))
+        self.assertEqual(calls[1], ((b"FSB5", "c", 1, 22050), {"convert_pcm_float": False}))
+        from UnityPy.enums.Audio import AUDIO_TYPE_EXTEMSION, AudioCompressionFormat, AudioType
+
+        # 22 entries written, 20 kept: the two IntEnums share values 1 and 2, and the later entry wins.
+        self.assertEqual(len(AUDIO_TYPE_EXTEMSION), 20)
+        self.assertEqual((AUDIO_TYPE_EXTEMSION[AudioType.MPEG], AUDIO_TYPE_EXTEMSION[AudioCompressionFormat.MP3]),
+                         (".mp3", ".fsb"))
+        from UnityPy.classes import AudioClip
+
+        extension = {fmt.name: AudioClip.extension.fget(SimpleNamespace(m_CompressionFormat=fmt))
+                     for fmt in AudioCompressionFormat}
+        self.assertEqual(extension, {"PCM": ".fsb", "Vorbis": ".fsb", "ADPCM": ".fsb", "MP3": ".fsb", "VAG": ".vag",
+                                     "HEVAG": ".vag", "XMA": ".wav", "AAC": ".m4a", "GCADPCM": ".fsb", "ATRAC9": ".at9"})
+        self.assertEqual(AudioClip.extension.fget(SimpleNamespace(m_CompressionFormat=11)), ".audioclip")
+
+    # Sections 14.1, 14.3: the base classes, the math records and PPtr.
+    def test_base_classes_and_records(self):
+        import copy
+
+        from UnityPy.classes import ColorRGBA, Matrix3x4f, Matrix4x4f, Quaternionf, TextAsset, Vector2f, Vector3f
+        from UnityPy.classes import Vector4f, float3, float4
+
+        self.assertEqual((Vector2f(), Vector3f(), Vector4f()), (Vector2f(0, 0), Vector3f(0, 0, 0), Vector4f(0, 0, 0, 0)))
+        self.assertEqual((float3, float4), (Vector3f, Vector4f))
+        self.assertTrue(issubclass(Quaternionf, Vector4f))
+        self.assertEqual([f.name for f in attrs.fields(Matrix3x4f)], [f"e{r}{c}" for r in range(3) for c in range(4)])
+        self.assertEqual([f.name for f in attrs.fields(Matrix4x4f)], [f"e{r}{c}" for r in range(4) for c in range(4)])
+        self.assertEqual(ColorRGBA(), ColorRGBA(0, 0, 0, 1))
+        self.assertEqual(ColorRGBA(rgba=0x80FF0040), ColorRGBA(128 / 255, 1.0, 0.0, 64 / 255))
+        self.assertEqual(ColorRGBA(rgba=0x80FF0040).rgba, 0x80FF0040)
+        # PPtr: truthy when the path id is not 0; equality and hash on the two ids alone.
+        a, b = PPtr(m_FileID=1, m_PathID=5), PPtr(m_FileID=1, m_PathID=5, assetsfile=object())
+        self.assertEqual((bool(a), bool(PPtr(m_FileID=1, m_PathID=0)), a == b, hash(a) == hash(b)), (True, False, True, True))
+        self.assertNotEqual(a, PPtr(m_FileID=2, m_PathID=5))
+        self.assertEqual((a.file_id, a.path_id), (1, 5))
+        # Object: keyword fields, no reader, save raises, copy.copy rebuilds; UnknownObject.get_type.
+        text = TextAsset(m_Name="n", m_Script="s")
+        self.assertIsNone((text.object_reader, text.assets_file)[1])
+        with self.assertRaisesRegex(ValueError, "^ObjectReader not set$"):
+            text.save()
+        text.set_object_reader("reader")
+        self.assertEqual(text.object_reader, "reader")
+        extra = TextAsset(m_Name="n", m_Script="s")
+        extra.m_Extra = 3
+        copied = copy.copy(extra)
+        self.assertEqual((type(copied), copied.m_Name, copied.m_Extra), (TextAsset, "n", 3))
+        self.assertIsNone(UnknownObject(a=1).get_type())
+        node = TypeTreeNode(m_Level=0, m_Type="Thing", m_Name="Base", m_ByteSize=0, m_Version=0)
+        self.assertEqual(UnknownObject(node, a=1).get_type(), "Thing")
 
     # Section 11: the type character.
     def test_version_type_str_is_lower_case_for_known_types(self):
