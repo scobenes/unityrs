@@ -300,8 +300,14 @@ fn a_bundle_of_corrupt_blocks_opens_and_decodes_nothing_until_read() {
 
 #[test]
 fn a_refused_block_is_not_kept() {
+    // The budget: K refusals of the same read count no decode work (the
+    // allowance below holds one decode of the entry, not K), and the same
+    // read succeeds once the pool has room.
     let pool = Arc::new(Counting::new(1 << 20));
-    let ctx = ctx_with(|c| c.budget = pool.clone());
+    let ctx = ctx_with(|c| {
+        c.budget = pool.clone();
+        c.limits.max_decode_work = 350_000;
+    });
     let data = build(&BundleSpec {
         block_size: 100_000,
         entries: vec![EntrySpec {
@@ -317,14 +323,37 @@ fn a_refused_block_is_not_kept() {
     let other = pool
         .try_reserve((1 << 20) - pool.used() - 1000, Reservation::Input)
         .unwrap();
-    let refused = b.entry_bytes(0);
-    assert!(matches!(refused, Err(Error::Budget(_))), "{refused:?}");
+    // The work so far: the blocks-info decoded at open.
+    let work = meter.decoded();
+    for _ in 0..8 {
+        let refused = b.entry_bytes(0);
+        assert!(matches!(refused, Err(Error::Budget(_))), "{refused:?}");
+    }
+    assert_eq!(meter.decoded(), work, "a refused growth counts no work");
     drop(other);
     assert_eq!(
         b.entry_bytes(0).unwrap().len(),
         300_000,
         "the same read succeeds once there is room"
     );
+
+    // The meter: two bundles of one open share it; while the first holds
+    // its run the second's block is refused, and once the first drops, the
+    // same read of the second succeeds.
+    // One read of the entry peaks near 500 KB (its run grows 200 KB to
+    // 300 KB holding both); two need far more.
+    let ctx = ctx_with(|c| c.limits.max_input_memory = 700_000);
+    let meter = meter_for(&ctx);
+    let first = open_with(&data, &ctx, &meter).unwrap();
+    let second = open_with(&data, &ctx, &meter).unwrap();
+    let held = first.entry_bytes(0).unwrap();
+    let refused = second.entry_bytes(0);
+    assert!(
+        matches!(&refused, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory),
+        "{refused:?}"
+    );
+    drop((held, first));
+    assert_eq!(second.entry_bytes(0).unwrap().len(), 300_000);
 }
 
 #[test]
@@ -352,6 +381,8 @@ fn decode_work_stops_a_lazy_read_and_a_reopen_on_the_same_meter_shares_it() {
     let meter = meter_for(&ctx);
     let b = open_with(&data, &ctx, &meter).unwrap();
     let held = meter.used();
+    // The last entry: every block before it measured (decoded to the block
+    // cap and dropped) until the work bound stops the read.
     let got = b.entry_bytes(1);
     assert!(
         matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork),
@@ -362,16 +393,148 @@ fn decode_work_stops_a_lazy_read_and_a_reopen_on_the_same_meter_shares_it() {
         held,
         "measuring decodes returned their memory"
     );
-    // Opened again on the same meter (no restart), the allowance is spent.
+    // Opened again on the same meter (no restart), the allowance is spent:
+    // even a read of ten blocks stops.
+    let ten = 0..4096 * 10;
     let again = open_with(&data, &ctx, &meter).unwrap();
-    let got = again.entry_bytes(1);
+    let got = again.entry_range(0, ten.clone());
     assert!(
         matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork),
         "{got:?}"
     );
-    // A reopen restarts the work.
+    // A reopen (a new open of the input) has its own allowance.
     let fresh = open_with(&data, &ctx, &meter.reopen()).unwrap();
-    assert!(fresh.entry_bytes(0).is_err() || fresh.entry_bytes(0).is_ok());
+    assert_eq!(fresh.entry_range(0, ten).unwrap().len(), 4096 * 10);
+}
+
+#[test]
+fn each_block_of_a_run_is_capped_on_its_own() {
+    let ctx = ctx_with(|c| c.limits.max_block_output = 4096);
+    let entry: Vec<u8> = (0..3 * 4096 + 100).map(|i: u32| (i % 251) as u8).collect();
+    let spec = BundleSpec {
+        block_size: 4096,
+        entries: vec![EntrySpec {
+            name: b"three-blocks".to_vec(),
+            data: entry.clone(),
+            flags: 0,
+        }],
+        ..BundleSpec::default()
+    };
+    // A run of four blocks passes the cap; each block is within it.
+    let b = open_with(&build(&spec), &ctx, &meter_for(&ctx)).unwrap();
+    assert_eq!(b.entry_bytes(0).unwrap(), entry);
+    b.load_all().unwrap();
+    // One block of 8 KiB does not.
+    let one = build(&BundleSpec {
+        block_size: 8192,
+        ..spec
+    });
+    let b = open_with(&one, &ctx, &meter_for(&ctx)).unwrap();
+    let got = b.entry_bytes(0);
+    assert!(
+        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::BlockOutput),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn an_lzma_block_that_outgrows_its_declaration_is_charged_until_the_last_slice_drops() {
+    let entry: Vec<u8> = (0..100_000u32).map(|i| (i % 7) as u8).collect();
+    let data = build(&BundleSpec {
+        data_codec: TestCodec::Lzma,
+        block_size: 1 << 20,
+        entries: vec![EntrySpec {
+            name: b"grown".to_vec(),
+            data: entry.clone(),
+            flags: 0,
+        }],
+        block_overrides: vec![BlockOverride {
+            block: 0,
+            codec: None,
+            uncompressed: Some(1000),
+            compressed: None,
+        }],
+        ..BundleSpec::default()
+    });
+    let c = ctx();
+    let meter = meter_for(&c);
+    let b = open_with(&data, &c, &meter).unwrap();
+    let held = meter.used();
+    let slice = b.entry_bytes(0).unwrap();
+    assert_eq!(
+        slice, entry,
+        "the block's actual output, not its declaration"
+    );
+    assert!(
+        meter.used() >= held + 100_000,
+        "charged at its actual length: {} over {held}",
+        meter.used()
+    );
+    drop(b);
+    assert!(meter.used() >= 100_000, "the slice keeps its run's charge");
+    drop(slice);
+    assert_eq!(meter.used(), 0, "returned with the last slice");
+}
+
+/// Round 2's second hostile input: rows whose spans are nested suffixes of
+/// the joined data, the shortest first. Read lazily in directory order,
+/// with every entry's bytes kept (as an Environment keeps what it parsed),
+/// each read decodes its own run, charged, until the meter stops one with
+/// `InputMemory`; the eager load, one run, fits.
+#[test]
+fn nested_suffix_spans_stop_a_lazy_read_at_the_meter_where_load_all_fits() {
+    const N: usize = 32;
+    const B: usize = 1 << 16;
+    let entries: Vec<EntrySpec> = (0..N)
+        .map(|k| EntrySpec {
+            name: format!("suffix-{k:02}").into_bytes(),
+            data: (0..B)
+                .map(|i| ((i * 31 + k) % 251).to_le_bytes()[0])
+                .collect(),
+            flags: 0,
+        })
+        .collect();
+    let mut data = build(&BundleSpec {
+        info_codec: TestCodec::None,
+        data_codec: TestCodec::Lz4,
+        block_size: B,
+        entries,
+        ..BundleSpec::default()
+    });
+    for k in 0..N {
+        let key = format!("suffix-{k:02}\0").into_bytes();
+        let at = data.windows(key.len()).position(|w| w == key).unwrap();
+        let offset = i64::try_from((N - 1 - k) * B).unwrap();
+        let size = i64::try_from((k + 1) * B).unwrap();
+        data[at - 20..at - 12].copy_from_slice(&offset.to_be_bytes());
+        data[at - 12..at - 4].copy_from_slice(&size.to_be_bytes());
+    }
+    let ctx = ctx_with(|c| c.limits.max_input_memory = 6 << 20);
+    let eager = open_with(&data, &ctx, &meter_for(&ctx)).unwrap();
+    eager.load_all().unwrap();
+    drop(eager);
+
+    let meter = meter_for(&ctx);
+    let lazy = open_with(&data, &ctx, &meter).unwrap();
+    let mut kept = Vec::new();
+    let mut last = meter.used();
+    let stopped = loop {
+        assert!(kept.len() < N, "every read fit");
+        match lazy.entry_bytes(kept.len()) {
+            Ok(bytes) => {
+                assert_eq!(bytes.len(), (kept.len() + 1) * B);
+                assert!(meter.used() > last, "each re-decode is charged");
+                last = meter.used();
+                kept.push(bytes);
+            }
+            Err(e) => break e,
+        }
+    };
+    assert!(
+        matches!(&stopped, Error::Limit(l) if l.kind == LimitKind::InputMemory),
+        "{stopped:?}"
+    );
+    assert!(kept.len() > 1 && meter.used() <= 6 << 20);
 }
 
 /// A codec that, while decoding, reads entries of its own bundle: another

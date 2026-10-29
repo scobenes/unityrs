@@ -572,12 +572,13 @@ impl BundleFile {
     }
 
     /// A run's buffer with room for `initial` bytes, which count as the
-    /// open's decode work as a block's growth does.
+    /// open's decode work as a block's growth does: the room is one growth
+    /// of a `BlockOutput` segment (uncapped until the first block's
+    /// `begin_block`), so it is charged, then counted, then allocated, and a
+    /// refusal counts nothing.
     fn new_buf(&self, initial: u64) -> Result<DecodeBuf, Error> {
-        let buf = DecodeBuf::new(self.meter(), initial, u64::MAX, LimitKind::InputMemory)?;
-        if initial > 0 {
-            self.meter().count_decode(initial)?;
-        }
+        let mut buf = DecodeBuf::new(self.meter(), 0, u64::MAX, LimitKind::BlockOutput)?;
+        buf.reserve(usize::try_from(initial).unwrap_or(usize::MAX))?;
         Ok(buf)
     }
 
