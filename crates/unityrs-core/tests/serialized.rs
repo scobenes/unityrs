@@ -269,6 +269,15 @@ fn blob_rows_are_unpacked_as_unitypy_does() {
     if unityrs_core::typetree::commonstring::common_string(0x7FFF_FFF0).is_none() {
         assert_eq!(rows.as_slice()[0].ty.as_bytes(), b"2147483632");
     }
+    // `str(offset)` at one digit, two, and the largest 31-bit offset.
+    for (offset, text) in [(1, &b"1"[..]), (10, b"10"), (0x7FFF_FFFF, b"2147483647")] {
+        assert!(unityrs_core::typetree::commonstring::common_string(offset).is_none());
+        let common: &[(u32, &[u8])] = &[(offset, b"Base")];
+        let data = Bytes::from(blob_tree(&nodes, 17, false, Strings::Common, common));
+        let mut r = Reader::new(&data, Endian::Little);
+        let rows = parse_blob(&mut r, &data, 17, &Meter::unlimited(), &Limits::default()).unwrap();
+        assert_eq!(rows.as_slice()[0].ty.as_bytes(), text);
+    }
 }
 
 #[test]

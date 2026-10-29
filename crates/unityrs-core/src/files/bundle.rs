@@ -722,8 +722,11 @@ impl BundleFile {
 
     /// Publishes the run of blocks `first..end`: an equal run already there
     /// answers instead, and runs it covers are dropped (after the lock).
+    /// The list they wait in is charged before it is allocated (plan 3.15);
+    /// when the meter refuses it, the new run is returned uncached and the
+    /// runs it covers stay, as when the table's growth is refused.
     fn publish(&self, first: usize, end: usize, bytes: Bytes) -> Bytes {
-        let mut dropped: Vec<(usize, usize, Bytes)> = Vec::new();
+        let mut dropped: MeteredVec<(usize, usize, Bytes)> = MeteredVec::new(self.meter());
         let out = {
             let mut runs = self.runs.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some((_, _, b)) = runs
@@ -744,15 +747,14 @@ impl BundleFile {
                         k += 1;
                     }
                 }
-                let tail: Vec<(usize, usize, Bytes)> = all
-                    .get_mut(keep_n..)
-                    .map(|t| {
-                        t.iter_mut()
-                            .map(|(f, e, b)| (*f, *e, std::mem::take(b)))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                dropped = tail;
+                let covered = all.len() - keep_n;
+                if covered > 0 && dropped.reserve_exact(covered).is_err() {
+                    return bytes;
+                }
+                for (f, e, b) in all.get_mut(keep_n..).unwrap_or_default() {
+                    // Within the room just reserved: no growth, no refusal.
+                    let _ = dropped.push((*f, *e, std::mem::take(b)));
+                }
                 runs.truncate(keep_n);
                 // A refused growth of the table keeps the run uncached.
                 let _ = runs.push((first, end, bytes.clone()));
@@ -926,7 +928,10 @@ fn files_dict(
         perm.push(i)?;
     }
     let path = |i: &usize| rows.get(*i).map(|d| d.path.as_bytes()).unwrap_or_default();
-    perm.as_mut_slice().sort_by(|a, b| path(a).cmp(path(b)));
+    // Stable by the index tiebreak, and in place: a stable sort's scratch
+    // (half the rows or more) would be heap no meter charged (plan 3.15).
+    perm.as_mut_slice()
+        .sort_unstable_by(|a, b| path(a).cmp(path(b)).then(a.cmp(b)));
     let mut groups: MeteredVec<(usize, usize)> = MeteredVec::new(meter);
     let all = perm.as_slice();
     let mut at = 0;

@@ -263,7 +263,22 @@ fn blob_string(
     {
         return Ok(s.clone());
     }
-    let s = RawStr::charged(offset.to_string().as_bytes(), meter)?;
+    // `str(offset)`, written on the stack: the only heap is the charged copy.
+    let mut digits = [0u8; 10];
+    let mut at = digits.len();
+    let mut n = offset;
+    loop {
+        at -= 1;
+        if let Some(d) = digits.get_mut(at) {
+            // `n % 10` is below 10.
+            *d = b'0' + u8::try_from(n % 10).unwrap_or(0);
+        }
+        n /= 10;
+        if n == 0 || at == 0 {
+            break;
+        }
+    }
+    let s = RawStr::charged(digits.get(at..).unwrap_or_default(), meter)?;
     *last_unknown = Some((offset, s.clone()));
     Ok(s)
 }

@@ -819,8 +819,10 @@ fn dict_order(
     for i in 0..n {
         perm.push(index(i))?;
     }
-    // Stable: equal path ids stay in file order.
-    perm.as_mut_slice().sort_by_key(path);
+    // Equal path ids stay in file order (the index breaks the tie), sorted
+    // in place: a stable sort's scratch would be heap no meter charged
+    // (plan 3.15).
+    perm.as_mut_slice().sort_unstable_by_key(|i| (path(i), *i));
     let mut by_path: MeteredVec<u32> = MeteredVec::new(meter);
     let mut groups: MeteredVec<(u32, u32)> = MeteredVec::new(meter);
     let mut at = 0;
