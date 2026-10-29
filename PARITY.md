@@ -1013,7 +1013,7 @@ scripts/dev python tools/parity/inventory.py check
 | `exports` | every public name a package's `__init__.py` imports from another UnityPy module or assigns as an alias (924) | the dotted path from `UnityPy` (`UnityPy.files.File`), or a compact row: section 2.1 |
 | `boost` | every public name of UnityPyBoost, and every public member of its classes (15) | `UnityPyBoost.name` in a code span, or a compact row: Appendix B |
 | `enum_members` | every member of every enum UnityPy defines, `TextureFormat` aside, with its value (741) | a code span `` `NAME = value` `` in a column headed `values`, on the enum's row: Appendix C |
-| `texture_formats` | every `TextureFormat` member (78) | a table row with the cells `` `Name` `` and its value |
+| `texture_formats` | every `TextureFormat` member (78) | a row of the section 17 matrix (the table whose header starts `value \| format`) whose `format` cell is `` `Name` `` and whose `value` cell is its value; a row of any other table names no format |
 
 **Whole chains.** A dotted name counts only when it is written from the start of its chain. `Wrong.ImportHelper.check_file_type` does not name `ImportHelper.check_file_type`; the only prefixes allowed are the symbol's own import path (`UnityPy.helpers.ImportHelper.check_file_type`) or a package path that re-exports it (`UnityPy.classes.GameObject.m_Name`), and the only suffixes are what follows the chain (a call, a subscript, a further `.attribute`).
 

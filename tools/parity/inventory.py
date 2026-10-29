@@ -35,8 +35,9 @@ The groups, and how PARITY.md names a symbol of each, inside a code span (backti
 - `enum_members`, every member of every enum UnityPy defines except `TextureFormat`:
   its name and value, as a code span `` `NAME = value` `` in a table column headed
   `values`, on the row whose first code span is the enum (`` `BuildTarget` ``).
-- `texture_formats`, every `TextureFormat` member: a table row with a cell
-  `` `Name` `` and a cell holding its value.
+- `texture_formats`, every `TextureFormat` member: a row of the TextureFormat matrix (the
+  table whose header starts `value | format`) whose `format` cell is `` `Name` `` and whose
+  `value` cell is its value. A row of any other table names no format.
 
 Out of scope: private names (a leading underscore), and an attribute that only code
 outside the class sets (`obj.x = ...` in another module, or `setattr`), because the
@@ -373,7 +374,6 @@ class Mentions:
         self.paths: set[str] = set()
         self.chains: set[str] = set()  # every chain written, and every leading part of one
         self.values: set[tuple[str, int]] = set()  # (Parent.NAME, value) from `values` columns
-        self.rows: list[list[str]] = []
         for span in CODE_SPAN.findall(text):
             path = span.strip().removeprefix("UnityPy/").split(":", 1)[0]
             if path.endswith(".py"):
@@ -387,7 +387,6 @@ class Mentions:
             for chain in DOTTED.findall(span):
                 self._add(chain)
         for header, rows in tables(text):
-            self.rows += [header, *rows]
             columns = [i for i, name in enumerate(header) if name in COMPACT_COLUMNS]
             values = [i for i, name in enumerate(header) if name == VALUES_COLUMN]
             for row in rows:
@@ -430,9 +429,6 @@ class Mentions:
         """Whether a `values` column gives `short` (or a longer tail of an import path) this value."""
         return any((name, value) in self.values for name in self._spellings(short, full))
 
-    def has_texture_row(self, name: str, value: int) -> bool:
-        return any(f"`{name}`" in row and str(value) in row for row in self.rows)
-
 
 def texture_rows(text: str) -> dict[str, dict[str, str]]:
     """The TextureFormat matrix (the table whose header starts `value | format`): cells by header, per format."""
@@ -454,8 +450,12 @@ def missing(symbols: dict, text: str) -> dict[str, list[str]]:
         if group == "modules":
             absent = [rel for rel in symbols.get(group, []) if rel not in seen.paths]
         elif group == "texture_formats":
-            formats = symbols.get(group, [])
-            absent = [f"{name} ({value})" for name, value in formats if not seen.has_texture_row(name, value)]
+            matrix = texture_rows(text)
+            absent = [
+                f"{name} ({value})"
+                for name, value in symbols.get(group, [])
+                if (matrix.get(name, {}).get("format"), matrix.get(name, {}).get("value")) != (f"`{name}`", str(value))
+            ]
         elif group == "enum_members":
             members = symbols.get(group, [])
             absent = [

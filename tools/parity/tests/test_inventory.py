@@ -146,10 +146,16 @@ class MatchingRules(unittest.TestCase):
         self.assertEqual(inventory.missing(SYMBOLS, text), {"modules": ["export/Texture2DConverter.py"]})
 
     def test_a_texture_format_needs_a_row_with_its_name_and_value(self):
+        matrix_row = "| 3 | `RGB24` | works |"
         for text in (
             COMPLETE.replace("| 3 | `RGB24` |", "| 4 | `RGB24` |"),
             COMPLETE.replace("| 3 | `RGB24` |", "| 3 | RGB24 |"),
-            COMPLETE.replace("| 3 | `RGB24` | works |", "") + "\n`RGB24` is format 3.\n",
+            COMPLETE.replace("| 3 | `RGB24` |", "| 3 | `RGB24` and more |"),
+            COMPLETE.replace("| 3 | `RGB24` |", "| 13 | `RGB24` |"),
+            COMPLETE.replace(matrix_row, "") + "\n`RGB24` is format 3.\n",
+            # A row of another table names no format: the package table, or a table of the matrix's shape.
+            COMPLETE.replace(matrix_row, "").replace("| `UnityPy.files` | `File` |", "| `UnityPy.files` | `File` |\n| 3 | `RGB24` |"),
+            COMPLETE.replace(matrix_row, "") + "\n| a | b | c |\n|---|---|---|\n" + matrix_row + "\n",
         ):
             with self.subTest(text=text[-60:]):
                 self.assertEqual(inventory.missing(SYMBOLS, text), {"texture_formats": ["RGB24 (3)"]})
@@ -296,7 +302,8 @@ class MatchingRules(unittest.TestCase):
             "boost": ("`UnityPyBoost.read_typetree`", "`read_typetree`", "UnityPyBoost.read_typetree"),
             "attributes": ("| — | `objects` |", "| — | — |", "SerializedFile.objects"),
             "enum_members": ("`Switch = 38`", "`Switch`", "BuildTarget.Switch (38)"),
-            "texture_formats": ("| 1 | `Alpha8` | works |", "", "Alpha8 (1)"),
+            # The whole line: a blank line would end the matrix, and the rows after it would name nothing.
+            "texture_formats": ("| 1 | `Alpha8` | works |\n", "", "Alpha8 (1)"),
         }
         self.assertEqual(sorted(removals), sorted(inventory.GROUPS))
         for group, (old, new, name) in removals.items():
