@@ -5,8 +5,11 @@
 //! negative). **Alignment is relative to the file**, not the object:
 //! `align_stream` rounds the absolute position. Its differences from
 //! UnityPyBoost are `docs/CANONICAL_DUMP.md` section 7's list: aligned
-//! primitive arrays become tuples, with 16-bit signedness swapped; aligned
-//! `SInt8` and `TypelessData` arrays raise; a negative or out-of-range string
+//! primitive arrays become tuples, with 16-bit signedness swapped; an
+//! aligned `SInt8` array raises at every length (`read_byte_array(reader,
+//! size)` before any loop), and an array of aligned `TypelessData` raises
+//! only when its length is above 0 (`read_bytes()` inside the loop; an empty
+//! one reads as `[]`); a negative or out-of-range string
 //! length reads as `""`, and a string of length 0 or read as `""` that way
 //! is not aligned after (`streams/EndianBinaryReader.py:266-273` returns
 //! before `align_stream`); in an array whose aligned element is a vector, a
@@ -18,14 +21,22 @@
 //! be negative); a `pair` with three or more children reads its first two,
 //! and an `Array` with three or more reads its elements through
 //! `m_Children[1]` (`:216`, `:309`), where UnityPyBoost raises both;
-//! an aligned `pair` array reads its children without their own align flags
+//! an aligned `pair` array reads a child whose type is a key of
+//! `FUNCTION_READ_MAP` (every primitive, `string`, `TypelessData`) through
+//! that function, without the child's own align flag (a non-empty `string`
+//! still aligns itself, as `read_aligned_string` does), and any other child
+//! (a class, a vector, a `pair`) through `read_value`, which keeps its flag
 //! (`:285-293`); a `ReferencedObject` reads `type` before anything else (a
 //! missing key is `KeyError`, `other`; a `type` with no `class`, `ns` or
 //! `asm` is `KeyError` and a non-dict `type` `AttributeError`, `:89-97`, both
 //! `other` where UnityPyBoost reports `ref_type`) and raises `SerializedFile has no
 //! ref_types` for an empty or absent list *before* the empty-class skip (no
 //! `ref_types` attribute is an `AttributeError` whose message the dump maps
-//! to `ref_type`); an empty array of malformed `pair`s reads as `[]`; and an
+//! to `ref_type`); an aligned `pair` element with fewer than two children
+//! raises `IndexError` (`other`) at every length, since `m_Children[0]` and
+//! `[1]` are read before the loop (`:282-283`), while an empty array of
+//! non-aligned malformed `pair`s, or of three-child `pair`s, reads as `[]`
+//! (the probes: `CANONICAL_DUMP.md` section 7); and an
 //! aligned `ReferencedObject` array element whose class is empty or whose ref
 //! type has no tree raises ([`super::ReadDetail::RefTypeNoTree`]). Each
 //! difference is an oracle fixture of package B (plan section 7.3).
