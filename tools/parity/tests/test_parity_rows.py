@@ -146,6 +146,7 @@ class TestColumn(unittest.TestCase):
                 "rows_are_cited_by_item_not_by_line",
                 "head_dicts_are_a_target_while_their_fixtures_are_planned",
                 "every_resolution_exception_is_listed",
+                "an_empty_path_raises_only_where_no_cab_answers_it",
             }
             named = {name for module, name in cited if module == path.name}
             self.assertEqual(sorted(defined - named), [], f"tests no PARITY.md row names, in {path.name}")
@@ -258,6 +259,24 @@ class TestColumn(unittest.TestCase):
                     self.assertIn(phrase, named[tier], "missing from the resolution clause")
                     seen += 1
         self.assertEqual(seen, len(self.NAMED_BY))
+
+    def test_an_empty_path_raises_only_where_no_cab_answers_it(self):
+        """An empty resource path is joined to `Environment.path` and raises `IsADirectoryError` only where no CAB
+        `""` is registered: a zip's directory entry registers one, which answers the path with `b""` first (section
+        3). So every PARITY.md row and DESIGN.md line that has an empty path, or a texture with no data, raise there
+        names CAB `""` too."""
+        root = HERE.parent.parent
+        lines = [("PARITY.md", line) for line in (root / "PARITY.md").read_text("utf-8").splitlines()]
+        lines += [("DESIGN.md", line) for line in (root / "docs" / "DESIGN.md").read_text("utf-8").splitlines()]
+        seen = 0
+        for name, line in lines:
+            raises = "IsADirectoryError" in line or "raises as `Texture2D.get_image_data` does" in line
+            empty = re.search(r"empty (?:stream |resource )?path|empty `m_Source`|empty name|with no data", line)
+            if raises and empty:
+                seen += 1
+                with self.subTest(name, line=line[:80]):
+                    self.assertIn('CAB `""`', line)
+        self.assertGreaterEqual(seen, 6)
 
     def test_head_dicts_are_a_target_while_their_fixtures_are_planned(self):
         """Section 20's reading rows name the Unity 6000.4/6000.5 fixtures as planned, so no comparison with HEAD's
@@ -782,6 +801,35 @@ class Rows(unittest.TestCase):
             with self.subTest(external), self.assertRaises(error):
                 table([("x", 0, 1)], [PPtr(m_FileID=1, m_PathID=1, assetsfile=sf)]).parse_preload_table()
         sf.externals = []
+        # deref's upper guard: a file id past the externals raises FileNotFoundError, before the parent is looked at.
+        sf.externals = [SimpleNamespace(path="a"), SimpleNamespace(path="b")]
+        for file_id, file in ((3, sf), (2, orphan)):
+            with (
+                self.subTest(file_id=file_id),
+                self.assertRaisesRegex(FileNotFoundError, "^Failed to resolve pointer - invalid m_FileID!$"),
+            ):
+                PPtr(m_FileID=file_id, m_PathID=1, assetsfile=file).deref()
+        # What the loop or find_file finds is used whatever it holds: a None (a zip's own key) raises
+        # FileNotFoundError naming the file id; a raw reader (by key, or a registry hit on a .resS or on CAB ""), a
+        # BundleFile or a WebFile has no `objects` and raises AttributeError.
+        env = sf.environment
+        load(b"\x02" * 30, name="dir/CAB-r.resS", env=env)
+        load(S.fs_bundle([(b"CAB-b", text_asset_file(), 4)]), name="b.bundle", env=env)
+        load(S.web_file([(b"w.txt", b"web")]), name="w.data", env=env)
+        quietly(env.load_file, zip_with_a_directory(), name="z.zip")
+        self.assertEqual(env.files["z.zip"], None)
+        for record, error, message in (
+            ("archive:/CAB-x/RAW.bin", AttributeError, "'EndianBinaryReader_Memoryview' object has no attribute"),
+            ("archive:/CAB-r/CAB-r.resS", AttributeError, "'EndianBinaryReader_Memoryview' object has no attribute"),
+            ("assets/", AttributeError, "'EndianBinaryReader_Streamable' object has no attribute 'objects'$"),
+            ("b.bundle", AttributeError, "^'BundleFile' object has no attribute 'objects'$"),
+            ("w.data", AttributeError, "^'WebFile' object has no attribute 'objects'$"),
+            ("z.zip", FileNotFoundError, "^Failed to resolve pointer - 1 not found!$"),
+        ):
+            sf.externals = [SimpleNamespace(path=record)]
+            with self.subTest(record), self.assertRaisesRegex(error, message):
+                quietly(PPtr(m_FileID=1, m_PathID=1, assetsfile=sf).deref)
+        sf.externals = []
 
     # Section 9: object-mode attribute names.
     def test_object_mode_names_use_the_boost_rule(self):
@@ -877,6 +925,12 @@ class Rows(unittest.TestCase):
         self.assertEqual(empty.files, {})
         with self.assertRaisesRegex(AttributeError, "_block_info_flags"):
             empty.save(packer="original")
+        # A bundle with no blocks can still list entries: it holds no data, so each reads b"", whatever size the
+        # directory states (an entry past the data reads short, section 13), and `original` raises for it too.
+        listed = load(S.fs_bundle([(b"e.resS", b"", 0), (b"f.resS", 0, 16, 0)]))[0]
+        self.assertEqual({name: bytes(f.bytes) for name, f in listed.files.items()}, {"e.resS": b"", "f.resS": b""})
+        with self.assertRaisesRegex(AttributeError, "_block_info_flags"):
+            listed.save(packer="original")
 
     # Sections 12, 18, 19.2: save_fs XORs the flag set's whole encryption mask out when any bit of it is set.
     def test_bundle_save_xors_the_whole_encryption_mask(self):

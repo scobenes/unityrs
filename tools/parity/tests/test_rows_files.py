@@ -1106,6 +1106,15 @@ class FileRows(unittest.TestCase):
         lone = load(main, "main.assets", UnityPy.Environment(path=""))[0]
         with self.assertRaises(FileNotFoundError):
             quietly(lone.load_dependencies)
+        # An external's `name` is ntpath.basename of its path: it splits at a backslash too, where File.name keeps
+        # one (section 5.2).
+        paths = (b"Library\\unity default resources", b"a/b\\C.assets", b"archive:/CAB-x/CAB-x", b"x/")
+        named = S.serialized_file(
+            [S.Type(49, TEXT_ASSET)], [S.Obj(1, 0, S.s32("n") + S.s32("s"))], externals=[S.External(p) for p in paths]
+        )
+        externals = load(named, "named.assets", UnityPy.Environment())[0].externals
+        self.assertEqual([e.path for e in externals], [p.decode() for p in paths])
+        self.assertEqual([e.name for e in externals], ["unity default resources", "C.assets", "CAB-x", ""])
 
     # Section 5.1: BlocksInfoAtTheEnd (0x80).
     # Section 5.1: the flag set a bundle's flags are read with, by engine version, each boundary from both sides.
