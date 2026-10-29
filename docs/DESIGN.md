@@ -105,7 +105,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
 - **Unsupported until a sample and a reference exist.** unityrs refuses these with a named `Unsupported` error:
   - LZHAM, where UnityPy raises too;
   - a UnityArchive parsed as a bundle, where UnityPy raises too. Loading one is Tier A: UnityPy's detector does not know the signature and loads the file as a raw ResourceFile, and so does unityrs;
-  - ARGBFloat, where UnityPy raises too: its name says A, R, G, B, UnityPy's table reads it as B, G, R, A, and no sample or document decides;
+  - ARGBFloat, where UnityPy raises too: its name says A, R, G, B, UnityPy's table reads it as B, G, R, A, and no sample or specification of the layout decides;
   - YUY2 of odd width: no sample shows how the last pixel is stored;
   - `set_image` from an image mode Pillow cannot convert to RGBA (BGR;15, BGR;16, BGR;24, La), where UnityPy raises too;
   - ETC_RGB4_3DS and ETC_RGBA8_3DS. UnityPy decodes them as plain ETC1, but no 3DS sample or reference decoder shows what they should decode to, so the refusal is a documented divergence, not parity;

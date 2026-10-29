@@ -828,7 +828,7 @@ The closed forms:
 | `RGHalf` | R, G halves | RGB | the half rule | planned: divergence test against `references.decode` | planned (P3) |
 | `RFloat` | R float | RGB | the float rule | planned: divergence test against `references.decode` | planned (P3) |
 | `RGFloat` | R, G floats | RGB | the float rule | planned: divergence test against `references.decode` | planned (P3) |
-| `RGBFloat` | R, G, B floats, by its name (Unity does not document this internal format) | RGB | the float rule | planned: divergence test against `references.decode` | planned (P3) |
+| `RGBFloat` | R, G, B floats, in the order its name gives, as `RGBAFloat`'s does | RGB | the float rule | planned: divergence test against `references.decode` | planned (P3) |
 | `RGBAFloat` | R, G, B, A floats | RGBA | the float rule | planned: divergence test against `references.decode` | planned (P3) |
 | `RGB9e5Float` | one u32 in the layout of `DXGI_FORMAT_R9G9B9E5_SHAREDEXP`: red in bits 0-8, green 9-17, blue 18-26, the exponent in 27-31 | RGB | each channel `mantissa * 2^(exponent - 24)`, then the float rule: `0x78000100` (exponent 15, red 256) gives red 0.5, so 128 | planned: divergence test against `references.decode` | planned (P3) |
 | `YUY2` | `Y0 U Y1 V` for each pair of pixels (FourCC `YUY2`) | RGB | ITU-R BT.601 at limited range (Y 16-235, U and V 16-240) in its 8-bit integer form: with `c = Y - 16`, `d = U - 128`, `e = V - 128`, red `(298c + 409e + 128) >> 8`, green `(298c - 100d - 208e + 128) >> 8`, blue `(298c + 516d + 128) >> 8`, each clipped to 0-255. Y 16 gives black and Y 235 white. An odd width is Tier U: no sample shows how Unity stores the last pixel | planned: divergence test against `references.decode` | planned (P3) |
@@ -846,7 +846,7 @@ The closed forms:
 | `RGBA64_SIGNED` | R, G, B, A i16 | RGBA | the signed rule | planned: divergence test against `references.decode` | planned (P3) |
 | `BC6H` | 16-byte blocks of 4×4 | RGBA | a named decoder: texture2ddecoder 1.0.5's `decode_bc6`, which is in the oracle image (UnityPy depends on texture2ddecoder, but does not call it for `BC6H`). It reads the unsigned form, the only one `GRAPHICS_TO_TEXTURE_MAP` sends to `BC6H` (`RGB_BC6H_UFloat`; `enums/GraphicsFormat.py`), and returns BGRA with alpha 255, each channel rounded to 8 bits and clamped at 255: half `0x307F` (0.1405) gives 36, `0x3B27` (0.894) gives 228, and `0x3C9B` (1.15) gives 255 (`test_texture_matrix.py` bc6h_reference_is_texture2ddecoder). The data is decoded at the size padded to whole 4×4 blocks and cropped, as UnityPy pads every `BC` format | planned: divergence test against `references.decode` | planned (P3) |
 
-`ARGBFloat` is Tier U. Unity documents neither it nor its layout: its name says A, R, G, B, while UnityPy's `CONV_TABLE` reorders it with bands (2, 1, 0, 3), as if stored B, G, R, A. With no sample to decide between them, no reference can be named, and unityrs refuses it with a named `Unsupported` error. UnityPy raises too.
+`ARGBFloat` is Tier U. Two sources disagree on its layout: its name says A, R, G, B, while UnityPy's `CONV_TABLE` reorders it with bands (2, 1, 0, 3), as if stored B, G, R, A. With no sample and no specification of the layout to decide between them, no reference can be named, and unityrs refuses it with a named `Unsupported` error. UnityPy raises too.
 
 ## 18. Writing
 

@@ -29,7 +29,7 @@ The rules:
 import math
 import struct
 
-# Unsupported here, and Tier U in PARITY.md: no sample or document fixes ARGBFloat's channel order
+# Unsupported here, and Tier U in PARITY.md: no sample or specification fixes ARGBFloat's channel order
 # (its name says A, R, G, B; UnityPy's CONV_TABLE reorders it as if stored B, G, R, A).
 UNSUPPORTED = {"ARGBFloat": "the channel order is unknown"}
 
