@@ -133,7 +133,7 @@ pub fn compress(codec: TestCodec, data: &[u8]) -> Vec<u8> {
 pub const LZMA_DICT: u32 = 1 << 19;
 
 thread_local! {
-    /// Each LZMA output by its input. G3b's mutator builds every output again
+    /// Each LZMA stream by its input. G3b's mutator builds every output again
     /// for each field it replaces (`mutate`), so most blocks repeat, and the
     /// encoder's set-up (its dictionary and match finder) costs more than the
     /// rest of a build.
@@ -141,22 +141,32 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
+/// An LZMA block as Unity stores it: the properties byte, the dictionary size
+/// (a writer field, written on every call, so a memo hit numbers the same
+/// fields), then the raw stream.
 fn lzma(data: &[u8]) -> Vec<u8> {
+    // lc 3, lp 0, pb 2: (2 * 5 + 0) * 9 + 3.
+    let mut out = ByteWriter::le();
+    out.u8(0x5D).u32(LZMA_DICT);
+    let mut out = out.into_inner();
     if let Some(hit) = LZMA_MEMO.with(|m| m.borrow().get(data).cloned()) {
-        return hit;
+        out.extend_from_slice(&hit);
+        return out;
     }
-    let out = lzma_encode(data);
+    let stream = lzma_encode(data);
     LZMA_MEMO.with(|m| {
         let mut m = m.borrow_mut();
         // A bound, so a long-lived thread does not keep every block forever.
         if m.len() >= 4096 {
             m.clear();
         }
-        m.insert(data.to_vec(), out.clone());
+        m.insert(data.to_vec(), stream.clone());
     });
+    out.extend_from_slice(&stream);
     out
 }
 
+/// The raw LZMA stream of `data` (no header), empty when the encoder fails.
 fn lzma_encode(data: &[u8]) -> Vec<u8> {
     use liblzma::stream::{Action, Filters, LzmaOptions, Status, Stream};
     let mut opts = LzmaOptions::new_preset(1).unwrap_or_else(|_| LzmaOptions::new());
@@ -166,11 +176,8 @@ fn lzma_encode(data: &[u8]) -> Vec<u8> {
         .position_bits(2);
     let mut filters = Filters::new();
     filters.lzma1(&opts);
-    // lc 3, lp 0, pb 2: (2 * 5 + 0) * 9 + 3.
-    let mut out = vec![0x5D];
-    out.extend_from_slice(&LZMA_DICT.to_le_bytes());
     let Ok(mut stream) = Stream::new_raw_encoder(&filters) else {
-        return out;
+        return Vec::new();
     };
     let mut buf = vec![0u8; data.len() + data.len() / 2 + 1024];
     loop {
@@ -184,8 +191,7 @@ fn lzma_encode(data: &[u8]) -> Vec<u8> {
         }
     }
     buf.truncate(as_usize(stream.total_out()));
-    out.extend_from_slice(&buf);
-    out
+    buf
 }
 
 fn window_full(stream: &liblzma::stream::Stream, len: usize) -> bool {
@@ -940,5 +946,27 @@ mod tests {
         assert!(!new_flags(b"2020.3.33f1"));
         assert!(!new_flags(b"2019.4.40f1"));
         assert!(new_flags(b"2021.3.2f1"));
+    }
+
+    #[test]
+    fn an_lzma_dictionary_size_is_a_field_memo_or_not() {
+        use super::{LZMA_DICT, compress};
+        use crate::writer::{Field, with_fields};
+        let data: Vec<u8> = (0..300u32).map(|i| (i % 7) as u8).collect();
+        let dict = Field {
+            width: 4,
+            big_endian: false,
+            value: u64::from(LZMA_DICT),
+        };
+        // Encoded, then served from the memo: the same bytes and fields.
+        let (first, f1) = with_fields(&[], || compress(TestCodec::Lzma, &data));
+        let (again, f2) = with_fields(&[], || compress(TestCodec::Lzma, &data));
+        assert_eq!((&first, &f1), (&again, &f2));
+        assert_eq!(f1, [dict]);
+        assert_eq!(first[1..5], LZMA_DICT.to_le_bytes());
+        // Replaced, it is written as given, the stream unchanged.
+        let (huge, _) = with_fields(&[(0, 0xFFFF_FFFF)], || compress(TestCodec::Lzma, &data));
+        assert_eq!(huge[1..5], [0xFF; 4]);
+        assert_eq!((huge[0], &huge[5..]), (first[0], &first[5..]));
     }
 }
