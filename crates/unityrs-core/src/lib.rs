@@ -93,6 +93,7 @@ const _: () = {
     send_sync::<codec::Lzma>();
     send_sync::<codec::Stored>();
     send_sync::<dyn codec::BlockCodec>();
+    send_sync::<codec::Decoded>();
     send_sync::<dyn codec::BlockDecryptor>();
     // container, detect
     send_sync::<container::Container>();

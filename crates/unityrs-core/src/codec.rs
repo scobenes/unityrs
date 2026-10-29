@@ -31,10 +31,17 @@
 //!
 //! **Output.** A codec writes into a [`DecodeBuf`], which checks the block's
 //! cap and charges the input's meter before it grows (plan section 3.6), or
-//! hands back a zero-copy slice of its input (the stored codec). A codec is
-//! caller code when a user registers it: the core calls it with no lock held.
+//! names a range of its input (the stored codec: [`Decoded::Input`]), which
+//! the caller slices. It cannot hand back bytes of its own: a buffer a
+//! registered codec allocated (a Python decompressor's `bytes`) would be
+//! input-sized memory no meter charged (round 5), so its output goes through
+//! `out` like any other. Every block is decoded through [`decode_block`],
+//! which starts the block's segment and checks what the codec returned. A
+//! codec is caller code when a user registers it: the core calls it with no
+//! lock held.
 //!
-//! Owner: package C. The registry type is implemented by the scaffold.
+//! Owner: package C. The registry type and [`decode_block`] are implemented
+//! by the scaffold.
 
 // STUB(C): delete this allow when the module is implemented.
 #![allow(
@@ -48,12 +55,13 @@
 )]
 
 use std::fmt;
+use std::ops::Range;
 use std::sync::Arc;
 
 use bytes::Bytes;
 
 use crate::budget::DecodeBuf;
-use crate::error::Error;
+use crate::error::{Error, LimitError, LimitKind};
 
 /// A block's compression, `flags & 0x3F`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -113,21 +121,98 @@ impl Codec {
     }
 }
 
+/// Where a codec put a block's output ([`BlockCodec::decode`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Decoded {
+    /// In `out`: what the codec wrote into the block's segment.
+    Written,
+    /// In the input: the output is `input[range]`, a zero-copy slice of the
+    /// stored bytes (the stored codec), with nothing written into `out`. A
+    /// range, not `Bytes`, so a codec cannot hand back a buffer of its own.
+    Input(Range<usize>),
+}
+
 /// Decodes one block.
 pub trait BlockCodec: Send + Sync {
     /// Decodes `input`, a block's stored bytes (a slice of the bundle).
     /// `uncompressed` is blocks-info's declared size; each codec treats it as
     /// UnityPy does (module docs). The output goes into `out`, which pays and
-    /// checks the caps before it grows, and the codec returns `Ok(None)`; or,
-    /// with `out` left empty, the codec returns `Ok(Some(slice))`, a zero-copy
-    /// slice of `input` (the stored codec), which the caller checks against
-    /// the block's cap as if it had been written (it holds no new memory).
+    /// checks the caps before it grows, and the codec returns
+    /// [`Decoded::Written`]; or, with `out` left empty, the codec returns
+    /// [`Decoded::Input`], a range of `input` (the stored codec), which
+    /// [`decode_block`] checks and slices.
+    ///
+    /// ```compile_fail,E0053
+    /// // A codec cannot return bytes of its own (round 5: a buffer it
+    /// // allocated was kept in the bundle's runs, charged to nothing).
+    /// use unityrs_core::budget::DecodeBuf;
+    /// use unityrs_core::codec::BlockCodec;
+    /// use unityrs_core::{Bytes, Error};
+    /// struct Own;
+    /// impl BlockCodec for Own {
+    ///     fn decode(&self, _: &Bytes, _: u32, _: &mut DecodeBuf) -> Result<Option<Bytes>, Error> {
+    ///         Ok(Some(Bytes::from(vec![0u8; 1 << 20])))
+    ///     }
+    /// }
+    /// ```
     fn decode(
         &self,
         input: &Bytes,
         uncompressed: u32,
         out: &mut DecodeBuf,
-    ) -> Result<Option<Bytes>, Error>;
+    ) -> Result<Decoded, Error>;
+}
+
+/// Decodes one block of a bundle with `codec` (the codec of `which`), as
+/// every caller does (package C's bundle; implemented by the scaffold).
+///
+/// Starts the block's segment in `out`, capped at `cap` bytes
+/// ([`DecodeBuf::begin_block`] with [`LimitKind::BlockOutput`]), runs the
+/// codec, and checks what it returned: `Ok(None)` when the output is in the
+/// segment; `Ok(Some(bytes))`, the slice of `input`, when the codec named a
+/// range of its input, which must lie within the input, leave the segment
+/// empty, and fit `cap` as if it had been written. A range outside the
+/// input, or one returned with bytes written, is the codec's error
+/// ([`Error::Decompress`]); a range longer than `cap` is
+/// [`LimitKind::BlockOutput`].
+pub fn decode_block(
+    which: Codec,
+    codec: &dyn BlockCodec,
+    input: &Bytes,
+    uncompressed: u32,
+    out: &mut DecodeBuf,
+    cap: u64,
+) -> Result<Option<Bytes>, Error> {
+    out.begin_block(cap, LimitKind::BlockOutput);
+    let range = match codec.decode(input, uncompressed, out)? {
+        Decoded::Written => return Ok(None),
+        Decoded::Input(range) => range,
+    };
+    let bad = |detail: String| Error::Decompress {
+        codec: which,
+        detail: detail.into(),
+    };
+    if out.segment_len() != 0 {
+        return Err(bad(format!(
+            "the codec wrote {} bytes and returned a range of its input",
+            out.segment_len()
+        )));
+    }
+    if range.start > range.end || range.end > input.len() {
+        return Err(bad(format!(
+            "the codec returned the range {range:?} of a {}-byte input",
+            input.len()
+        )));
+    }
+    let n = u64::try_from(range.len()).unwrap_or(u64::MAX);
+    if n > cap {
+        return Err(Error::Limit(LimitError {
+            kind: LimitKind::BlockOutput,
+            value: n,
+            max: cap,
+        }));
+    }
+    Ok(Some(input.slice(range)))
 }
 
 /// Decrypts one block in place before it is decoded (UnityCN: P3). UnityPy
@@ -222,7 +307,7 @@ impl BlockCodec for Stored {
         input: &Bytes,
         uncompressed: u32,
         out: &mut DecodeBuf,
-    ) -> Result<Option<Bytes>, Error> {
+    ) -> Result<Decoded, Error> {
         todo!()
     }
 }
@@ -237,7 +322,7 @@ impl BlockCodec for Lzma {
         input: &Bytes,
         uncompressed: u32,
         out: &mut DecodeBuf,
-    ) -> Result<Option<Bytes>, Error> {
+    ) -> Result<Decoded, Error> {
         todo!()
     }
 }
@@ -252,16 +337,141 @@ impl BlockCodec for Lz4 {
         input: &Bytes,
         uncompressed: u32,
         out: &mut DecodeBuf,
-    ) -> Result<Option<Bytes>, Error> {
+    ) -> Result<Decoded, Error> {
         todo!()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Range;
     use std::sync::Arc;
 
-    use super::{Codec, Codecs, Lz4};
+    use bytes::Bytes;
+
+    use super::{BlockCodec, Codec, Codecs, Decoded, Lz4, decode_block};
+    use crate::budget::DecodeBuf;
+    use crate::error::{Error, LimitKind};
+    use crate::limits::Meter;
+
+    /// A codec that writes `write` bytes, then returns `range` (or
+    /// `Written` when there is none).
+    struct Fake {
+        write: usize,
+        range: Option<Range<usize>>,
+    }
+
+    impl BlockCodec for Fake {
+        fn decode(&self, _: &Bytes, _: u32, out: &mut DecodeBuf) -> Result<Decoded, Error> {
+            out.grow_zeroed(self.write)?;
+            Ok(self.range.clone().map_or(Decoded::Written, Decoded::Input))
+        }
+    }
+
+    #[test]
+    fn a_codecs_range_is_checked_and_sliced_from_its_input() {
+        // Round 5: a codec's returned bytes were trusted to be a slice of its
+        // input. Now it can only name a range, which must lie in the input,
+        // with nothing written, within the block's cap.
+        let m = Meter::unlimited();
+        let input = Bytes::from(vec![7u8; 100]);
+        let run = |codec: Fake, cap: u64| {
+            let mut out = DecodeBuf::new(&m, 0, u64::MAX, LimitKind::BlockOutput).unwrap();
+            out.extend_from_slice(&[1, 2, 3]).unwrap(); // an earlier block of the run
+            let got = decode_block(Codec::Other(9), &codec, &input, 100, &mut out, cap);
+            (got, out.len())
+        };
+        let (got, len) = run(
+            Fake {
+                write: 0,
+                range: Some(10..60),
+            },
+            100,
+        );
+        let slice = got.unwrap().unwrap();
+        assert_eq!(slice.len(), 50);
+        assert_eq!(slice.as_ptr(), input[10..].as_ptr(), "a zero-copy slice");
+        assert_eq!(len, 3);
+        let (got, len) = run(
+            Fake {
+                write: 40,
+                range: None,
+            },
+            100,
+        );
+        assert!(got.unwrap().is_none());
+        assert_eq!(len, 43);
+        for (codec, cap, what) in [
+            (
+                Fake {
+                    write: 0,
+                    range: Some(90..101),
+                },
+                1000,
+                "past the end",
+            ),
+            (
+                Fake {
+                    write: 0,
+                    range: Some(1000..2000),
+                },
+                1 << 20,
+                "outside",
+            ),
+            (
+                Fake {
+                    write: 0,
+                    range: Some(Range { start: 60, end: 10 }),
+                },
+                100,
+                "reversed",
+            ),
+            (
+                Fake {
+                    write: 5,
+                    range: Some(0..10),
+                },
+                100,
+                "written and a range",
+            ),
+        ] {
+            let (got, _) = run(codec, cap);
+            assert!(
+                matches!(
+                    got,
+                    Err(Error::Decompress {
+                        codec: Codec::Other(9),
+                        ..
+                    })
+                ),
+                "{what}: {got:?}"
+            );
+        }
+        let (got, _) = run(
+            Fake {
+                write: 0,
+                range: Some(0..100),
+            },
+            99,
+        );
+        assert!(
+            matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::BlockOutput && l.value == 100),
+            "{got:?}"
+        );
+        // The segment was begun at the block's cap: a codec writing past it
+        // is refused.
+        let (got, _) = run(
+            Fake {
+                write: 50,
+                range: None,
+            },
+            49,
+        );
+        assert!(
+            matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::BlockOutput),
+            "{got:?}"
+        );
+    }
 
     #[test]
     fn every_id_has_one_canonical_codec() {

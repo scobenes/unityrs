@@ -382,6 +382,13 @@ impl DecodeBuf {
         self.buf.len()
     }
 
+    /// The bytes written in the current segment (since the last
+    /// [`Self::begin_block`]).
+    #[must_use]
+    pub fn segment_len(&self) -> usize {
+        self.buf.len().saturating_sub(self.seg_start)
+    }
+
     /// Whether nothing was written.
     #[must_use]
     pub fn is_empty(&self) -> bool {
