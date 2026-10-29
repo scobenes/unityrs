@@ -345,10 +345,10 @@ class CompareTests(unittest.TestCase):
     def test_records_out_of_order_are_format_findings(self):
         """Section 5's order is part of the content: a reordered dump is matched by key, and reported."""
 
-        def entry(name):
+        def raw(*names):
             return {
                 "rec": "file",
-                "file": ["b.bundle", name],
+                "file": list(names),
                 "l0": {"type": "ResourceFile", "parsed_as": "raw", "size": 10, "sha256": "22" * 32},
                 "l1": None,
                 "error": None,
@@ -356,16 +356,16 @@ class CompareTests(unittest.TestCase):
 
         bundle = bundle_rec()
         bundle["l1"]["directory"] = [[0, 10, 4, "y"], [10, 10, 4, "x"], [20, 10, 4, "y"]]
-        f, o1, o2, e = base_records()
-        ref = [f, o1, o2, bundle, entry("y"), entry("x"), end(4, 2)]
+        f, o1, o2, _ = base_records()
+        y, x, c = raw("b.bundle", "y"), raw("b.bundle", "x"), raw("c")
+        ref = [f, o1, o2, bundle, y, x, c, end(5, 2)]
         cases = {
-            "objects descending": [f, o2, o1, bundle, entry("y"), entry("x"), end(4, 2)],
-            "objects before their file": [o1, o2, f, bundle, entry("y"), entry("x"), end(4, 2)],
-            "inputs descending": [bundle, entry("y"), entry("x"), f, o1, o2, end(4, 2)],
-            "entries against the directory": [f, o1, o2, bundle, entry("x"), entry("y"), end(4, 2)],
-            "an entry outside its container": [f, o1, o2, bundle, entry("y"), end(4, 2)],
+            "objects descending": [f, o2, o1, bundle, y, x, c, end(5, 2)],
+            "objects before their file": [o1, o2, f, bundle, y, x, c, end(5, 2)],
+            "inputs descending": [bundle, y, x, f, o1, o2, c, end(5, 2)],
+            "entries against the directory": [f, o1, o2, bundle, x, y, c, end(5, 2)],
+            "an entry after the next input": [f, o1, o2, bundle, y, c, x, end(5, 2)],
         }
-        cases["an entry outside its container"].insert(1, entry("x"))
         a = self.write("ref.jsonl", ref)
         self.assertEqual(self.cli(a, a), 0, self.output)
         for name, recs in cases.items():

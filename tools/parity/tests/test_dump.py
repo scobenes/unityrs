@@ -513,10 +513,12 @@ class DumpTests(unittest.TestCase):
         d.mkdir()
         for name in "abcd":
             (d / name).write_bytes(b"tiny")
+        with open(os.path.join(os.fsencode(d), b"e\xff"), "wb") as fh:
+            fh.write(b"tiny")
         real = unitypy_dump.dump_input
 
         def failing(job):
-            if job[1] == "b":
+            if job[1] in ("b", "e\udcff"):
                 os.kill(os.getpid(), signal.SIGKILL)
             if job[1] == "c":
                 raise RuntimeError("boom \udcff")
@@ -529,9 +531,11 @@ class DumpTests(unittest.TestCase):
                 self.assertEqual(dump(d, "-o", out, "-j", jobs), 0)
             outs.append(out.read_bytes())
             self.assert_canonical(out)
-            recs = {r["file"][0]: r for r in records(out) if r["rec"] == "file"}
-            self.assertEqual(sorted(recs), ["a", "b", "c", "d"])
-            for name, why in (("b", "died of SIGKILL"), ("c", "raised RuntimeError: boom \\udcff")):
+            recs = {json.dumps(r["file"][0]): r for r in records(out) if r["rec"] == "file"}
+            e_name = json.dumps({"t": "str", "hex": b"e\xff".hex()})
+            self.assertEqual(list(recs), [json.dumps(n) for n in "abcd"] + [e_name])
+            recs = {json.loads(k) if k != e_name else "e": r for k, r in recs.items()}
+            for name, why in (("b", "died of SIGKILL"), ("c", "raised RuntimeError: boom \\udcff"), ("e", "SIGKILL")):
                 rec = recs[name]
                 self.assertEqual(
                     (rec["l0"]["type"], rec["l0"]["parsed_as"], rec["l1"]), ("ResourceFile", "error", None)
