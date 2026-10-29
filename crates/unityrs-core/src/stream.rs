@@ -18,6 +18,8 @@
     dead_code
 )]
 
+use std::ops::Range;
+
 use crate::error::Error;
 
 /// Byte order of a reader or a file.
@@ -33,6 +35,37 @@ pub enum Endian {
 /// Within the window the string runs to its NUL. With no NUL in the window it
 /// is cut at the window when more bytes follow, and raises otherwise.
 pub const STRING_TO_NULL_WINDOW: usize = 32_767;
+
+/// The memoryview reader's `read(size)` at `pos` over `len` bytes
+/// (`streams/EndianBinaryReader.py:248-255`), with Python's arithmetic: size
+/// 0 reads nothing and leaves the position; size -1 reads to the end; any
+/// other size is the slice `view[pos : pos + size]`, where a negative index
+/// counts from the end, indexes clamp to `0..=len` and a reversed range is
+/// empty. Returns the byte range and the new position, `pos + size` (`len`
+/// for -1), which may be negative or past the end, as a Python `Position` can
+/// be. A bundle entry (`File.py:78-81`), `parse_blob`'s node area and string
+/// buffer, and the pure-Python reader's `TypelessData` all read this way
+/// (plan section 3.6). Implemented by the scaffold.
+#[must_use]
+pub fn py_read(len: usize, pos: i128, size: i64) -> (Range<usize>, i128) {
+    if size == 0 {
+        return (0..0, pos);
+    }
+    let l = i128::try_from(len).unwrap_or(i128::MAX);
+    let size = if size == -1 {
+        l.saturating_sub(pos)
+    } else {
+        i128::from(size)
+    };
+    let stop = pos.saturating_add(size);
+    let index = |i: i128| -> usize {
+        let i = if i < 0 { i.saturating_add(l) } else { i };
+        usize::try_from(i.clamp(0, l)).unwrap_or(0)
+    };
+    let start = index(pos);
+    let end = index(stop).max(start);
+    (start..end, stop)
+}
 
 /// A cursor over `data`. Positions are absolute within `data`.
 #[derive(Clone, Debug)]
@@ -159,5 +192,38 @@ impl<'a> Reader<'a> {
     /// or a short buffer raises, as `struct.unpack` does.
     pub fn read_i32_array(&mut self) -> Result<Vec<i32>, Error> {
         todo!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::py_read;
+
+    #[test]
+    fn py_read_is_a_python_slice() {
+        // Recorded from UnityPy 1.25.2's memoryview reader over bytes(range(10)):
+        // (position, size) -> (bytes read, new position).
+        let cases: &[(i128, i64, std::ops::Range<usize>, i128)] = &[
+            (0, 4, 0..4, 4),
+            (8, 4, 8..10, 12),
+            (12, 4, 10..10, 16),
+            (3, 0, 0..0, 3),
+            (3, -1, 3..10, 10),
+            (-3, 2, 7..9, -1),
+            (-3, 5, 7..7, 2),
+            (5, -3, 5..5, 2),
+            (2, -5, 2..7, -3),
+            (-20, 5, 0..0, -15),
+            (-1, -1, 9..10, 10),
+            (i128::from(i64::MIN), i64::MAX, 0..9, -1),
+        ];
+        for (pos, size, range, new_pos) in cases {
+            let (r, p) = py_read(10, *pos, *size);
+            assert_eq!(r.len(), range.len(), "({pos}, {size})");
+            if !range.is_empty() {
+                assert_eq!(r, *range, "({pos}, {size})");
+            }
+            assert_eq!(p, *new_pos, "({pos}, {size})");
+        }
     }
 }

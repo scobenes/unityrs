@@ -129,6 +129,12 @@ pub struct NodeInfo {
     /// sibling with the same `m_Name` (a Python dict's collapse in O(1); the dict keeps
     /// that first position and the last value).
     pub key: NodeId,
+    /// The ordinal of [`Self::key`] among the parent's distinct child names, in
+    /// first-sighting order. In a `dup_names` class the walker indexes a
+    /// per-read scratch by it to find the key's entry position, so a repeated
+    /// name costs O(1) ([`crate::value::Map::replace_at`]) and a registry
+    /// child skipped at run time cannot misplace a later key (plan section 3.10).
+    pub slot: u32,
     /// A lower bound on the bytes a successful read consumes (0 for a class
     /// that can read nothing). Bounds pre-allocation and zero-size elements.
     pub min_size: u32,

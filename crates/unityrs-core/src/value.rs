@@ -156,6 +156,11 @@ impl Map {
     }
 
     /// `PyDict_SetItem`: an existing key keeps its position and takes the new value.
+    ///
+    /// This scans the entries, so it is O(n) per call. The walker never calls
+    /// it per child: a class whose children repeat a name keeps its own index
+    /// from [`crate::typetree::NodeInfo::slot`] to entry position and uses
+    /// [`Self::push_unique`] and [`Self::replace_at`] (plan section 3.10).
     pub fn insert(&mut self, key: NodeId, value: Value) {
         match self.entries.iter_mut().find(|(k, _)| *k == key) {
             Some((_, v)) => *v = value,
@@ -167,6 +172,19 @@ impl Map {
     /// (the node's children have unique names).
     pub fn push_unique(&mut self, key: NodeId, value: Value) {
         self.entries.push((key, value));
+    }
+
+    /// Replaces the value at entry position `pos`, keeping its key and
+    /// position (a repeated name's `PyDict_SetItem`, in O(1)). Returns the
+    /// value back when `pos` is not an entry.
+    pub fn replace_at(&mut self, pos: usize, value: Value) -> Result<(), Value> {
+        match self.entries.get_mut(pos) {
+            Some((_, v)) => {
+                *v = value;
+                Ok(())
+            }
+            None => Err(value),
+        }
     }
 
     /// The entries in order.
@@ -355,6 +373,19 @@ mod tests {
                 (NodeId(2), Value::Int(2))
             ]
         );
+    }
+
+    #[test]
+    fn replace_at_keeps_the_position_and_takes_the_value() {
+        let mut m = Map::new(0);
+        m.push_unique(NodeId(1), Value::Int(1));
+        m.push_unique(NodeId(2), Value::Int(2));
+        assert_eq!(m.replace_at(0, Value::Bool(true)), Ok(()));
+        assert_eq!(
+            m.entries(),
+            &[(NodeId(1), Value::Bool(true)), (NodeId(2), Value::Int(2))]
+        );
+        assert_eq!(m.replace_at(2, Value::Int(9)), Err(Value::Int(9)));
     }
 
     #[test]
