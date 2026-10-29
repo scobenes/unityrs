@@ -54,6 +54,26 @@
 //! m.push_unique(unityrs_core::typetree::NodeId(1), unityrs_core::Value::Int(1));
 //! ```
 //!
+//! ```compile_fail,E0599
+//! // Not by insertion either (a test-only helper inside the crate).
+//! let mut m = unityrs_core::Map::new(0);
+//! m.insert(unityrs_core::typetree::NodeId(1), unityrs_core::Value::Int(1));
+//! ```
+//!
+//! ```compile_fail,E0599
+//! // Nor is one allocated at an unmetered capacity.
+//! let _ = unityrs_core::Map::with_capacity(0, 1 << 20);
+//! ```
+//!
+//! ```compile_fail,E0599
+//! // A `Parsed` is not assembled from charges the caller picked: the reader
+//! // finishes a `ValueBuilder`, which charged the lists table itself.
+//! fn build(lists: Box<[std::sync::Arc<unityrs_core::typetree::NodeList>]>,
+//!          v: unityrs_core::Value, c: unityrs_core::limits::Charge) -> unityrs_core::Parsed {
+//!     unityrs_core::Parsed::new(lists, v, 0, c)
+//! }
+//! ```
+//!
 //! Owner: the scaffold (implemented types and helpers); package B may add
 //! methods and fast paths but not change these signatures.
 
