@@ -3,6 +3,7 @@
 
     python tools/parity/oracle_env.py                    # each pin installed from its pinned wheel
     python tools/parity/oracle_env.py --exact            # ... and nothing else installed
+    python tools/parity/oracle_env.py --image            # ... and the oracle image's zlib loaded
     python tools/parity/oracle_env.py --pin-records DIR  # re-pin oracle_records.json from the wheels in DIR
 
 The pins are the whole oracle (docs/DESIGN.md section 3): requirements-oracle.txt
@@ -45,6 +46,10 @@ Without options the interpreter running this script is checked: the oracle
 image holds other packages too. `--exact` also refuses any distribution that
 is not pinned, apart from the installers `pip freeze` leaves out (pip,
 setuptools, wheel); CI runs it in the fresh venv it installs the pins into.
+`--image`, for the oracle image, also requires the zlib the process loads to be
+ORACLE_IMAGE_ZLIB: the Pillow wheel links the host's libz.so.1 and bundles none,
+so the image's zlib is the reference for Pillow's PNG, ICO and ICNS bytes
+(PARITY.md section 1), and an image rebuilt on a base with another zlib is refused.
 
 `--pin-records DIR` writes oracle_records.json from DIR, which must hold the
 pinned wheels and nothing else (each one's sha256 as requirements-oracle.txt
@@ -70,12 +75,17 @@ import site
 import sys
 import sysconfig
 import zipfile
+import zlib
 from importlib import metadata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import canonical as C  # noqa: E402
+
+# The zlib the oracle image loads (`zlib.ZLIB_RUNTIME_VERSION`, the libz.so.1 Pillow's `_imaging` links too): the
+# reference for the bytes of Pillow's PNG, ICO and ICNS writers (PARITY.md section 1). CI's runner loads its own.
+ORACLE_IMAGE_ZLIB = "1.2.13"
 
 # Files an installer writes into a dist-info folder, which no wheel holds (PEP 376, PEP 610).
 INSTALLER_FILES = frozenset(("INSTALLER", "REQUESTED", "direct_url.json"))
@@ -357,6 +367,17 @@ def installed_wheel_problems() -> tuple[tuple[str, ...], dict[str, str]]:
     return tuple(problems), digests
 
 
+def image_problems(runtime: str | None = None) -> list[str]:
+    """What the oracle image holds beyond the pins: the zlib loaded (`runtime`, default this process's)."""
+    runtime = zlib.ZLIB_RUNTIME_VERSION if runtime is None else runtime
+    if runtime == ORACLE_IMAGE_ZLIB:
+        return []
+    return [
+        f"zlib {runtime} is loaded, not the oracle image's {ORACLE_IMAGE_ZLIB}, the reference for the bytes of "
+        "Pillow's PNG, ICO and ICNS writers (PARITY.md section 1)"
+    ]
+
+
 def pinned_wheels(path: Path = C.ORACLE_REQUIREMENTS) -> dict[str, tuple[str, str]]:
     """{normalised name: (version, wheel sha256)} from requirements-oracle.txt."""
     return {
@@ -402,6 +423,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Check that this interpreter's packages are the oracle's pinned wheels.")
     group = ap.add_mutually_exclusive_group()
     group.add_argument("--exact", action="store_true", help="also refuse any package that is not pinned")
+    group.add_argument("--image", action="store_true", help="also require the oracle image's zlib to be loaded")
     group.add_argument("--pin-records", metavar="DIR", help="write oracle_records.json from the pinned wheels in DIR")
     args = ap.parse_args(argv)
     pins = C.oracle_pins()
@@ -419,6 +441,8 @@ def main(argv=None) -> int:
     problems = C.stack_problems(C.installed_packages(), pins, exact=args.exact)
     if not problems:
         problems = list(wheel_problems(C.oracle_records())[0])
+    if args.image:
+        problems += image_problems()
     for p in problems:
         print(f"oracle_env: {p}", file=sys.stderr)
     if problems:
@@ -430,6 +454,8 @@ def main(argv=None) -> int:
     )
     if args.exact:
         said += ", and nothing else is installed"
+    if args.image:
+        said += f"; zlib {ORACLE_IMAGE_ZLIB} is loaded, the oracle image's"
     print(said)
     return 0
 

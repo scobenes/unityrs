@@ -176,6 +176,10 @@ class ExportRows(unittest.TestCase):
         for name, data in (("aiff", aiff), ("mod", mod), ("mp3", frame * 5)):
             with self.subTest(name):
                 self.assertEqual(fmod_toolkit.raw_to_wav(data, "c", 1, 44100), {})
+        # So their row is Tier U, not a gap, which section 0 keeps for a format UnityPy produces output for.
+        parity = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8").splitlines()
+        rows = [row.split(" | ") for row in parity if row.startswith("| tracker and legacy audio ")]
+        self.assertEqual([row[3] for row in rows], ["U"])
 
         # fmod_toolkit's own rules, on a stand-in subsound: PCM float becomes int16 as `(v * 32768)` clipped and
         # truncated toward zero, or stays float (format 3); any other format raises TypeError, its message joining

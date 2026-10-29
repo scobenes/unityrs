@@ -61,7 +61,7 @@ unityrs is the alternative, built around three things:
 | cffi, zstandard | 2.1.0, 0.25.0 (no dependency either, but Pillow and fsspec import them when present) |
 | pycryptodome | 3.23.0 (no dependency either, but UnityPy imports it to decrypt a UnityCN bundle; no UnityCN bundle loads without it) |
 | liblz4 / liblzma | as installed |
-| zlib (Pillow's PNG, ICO and ICNS writers) | the host's: the Pillow wheel links `libz.so.1` and bundles no copy. 1.2.13 in the oracle image, the reference for those bytes (`PARITY.md` section 1) |
+| zlib (Pillow's PNG, ICO and ICNS writers) | the host's: the Pillow wheel links `libz.so.1` and bundles no copy. zlib 1.2.13 in the oracle image, the reference for those bytes, which `tools/parity/oracle_env.py --image` checks (`PARITY.md` section 1) |
 
 `tools/parity/requirements-oracle.txt` pins the whole stack, dependencies included, as hash-checked wheels, and `tools/parity/oracle_records.json` pins each wheel's files (the digest of its RECORD). The oracle dumper refuses to run when any package is at another version, when its RECORD is not the pinned wheel's, when any of its files does not hash as that RECORD says, when its folders hold a file the RECORD does not list or a symlink, when a module imports from anywhere else, when it loads a module from outside the standard library and the pins (at import or while dumping) or a copy of a standard-library module from anywhere else (even at start-up), when `PYTHONPATH`, `PYTHONHOME`, `PYTHONPLATLIBDIR` or a user site-packages folder is in effect, or when the UnityPyBoost binary differs. A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a documented step.
 
@@ -128,6 +128,7 @@ unityrs is the alternative, built around three things:
   - the extractor's crashes: GameObjects (each reachable object written once, its name ending in its path id where UnityPy's would end in `_None`), MonoBehaviours, sprites without a container whose `m_Name` has no extension, meshes without vertices, images Pillow cannot save under the container's extension, or saves as an ICO holding no image (a side below 16), and the no-container mode's missing `dst`.
 - **Unsupported until a sample and a reference exist.** unityrs refuses these with a named `Unsupported` error:
   - LZHAM, where UnityPy raises too;
+  - tracker and legacy audio (IT, MOD, S3M, XM, AIFF, pre-5 MP3). FMOD opens such a clip as one sound with no subsounds, and fmod_toolkit exports subsounds only, so UnityPy returns `{}` and writes nothing, silently: the refusal is a documented divergence;
   - a UnityArchive parsed as a bundle, where UnityPy raises too. Loading one is Tier A: UnityPy's detector does not know the signature and loads the file as a raw ResourceFile, and so does unityrs;
   - ARGBFloat, where UnityPy raises too: its name says A, R, G, B, UnityPy's table reads it as B, G, R, A, and no sample or specification of the layout decides;
   - YUY2 of odd width: no sample shows how the last pixel is stored;

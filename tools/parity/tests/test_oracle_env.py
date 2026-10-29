@@ -11,6 +11,7 @@ import importlib.machinery
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,7 @@ import tempfile
 import types
 import unittest
 import zipfile
+import zlib
 from pathlib import Path
 from unittest import mock
 
@@ -330,13 +332,19 @@ class EnvTests(unittest.TestCase):
             # Every version right, one file not the wheel's: refused, with or without --exact.
             (pins, [], edited, 1, edited[0]),
             (pins, ["--exact"], edited, 1, edited[0]),
+            # --image also checks the zlib loaded.
+            (pins, ["--image"], [], 0, f"zlib {oracle_env.ORACLE_IMAGE_ZLIB} is loaded, the oracle image's"),
+            (pins, ["--image"], ["zlib"], 1, "zlib 1.3.1 is loaded, not the oracle image's"),
         ]
         for installed, args, problems, code, said in cases:
+            zlib_loaded = "1.3.1" if problems == ["zlib"] else oracle_env.ORACLE_IMAGE_ZLIB
+            problems = [] if problems == ["zlib"] else problems
             with self.subTest(args=args, said=said):
                 out, err = io.StringIO(), io.StringIO()
                 with (
                     mock.patch.object(C, "installed_packages", return_value=installed),
                     mock.patch.object(oracle_env, "wheel_problems", return_value=(problems, {})) as checked,
+                    mock.patch.object(oracle_env.zlib, "ZLIB_RUNTIME_VERSION", zlib_loaded),
                     contextlib.redirect_stdout(out),
                     contextlib.redirect_stderr(err),
                 ):
@@ -347,6 +355,30 @@ class EnvTests(unittest.TestCase):
                     checked.assert_called_once_with(C.oracle_records())
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             oracle_env.main(["--pin-records", str(self.tmp / "missing")])
+
+    def test_the_image_zlib(self):
+        """The oracle image's zlib, the reference for Pillow's PNG, ICO and ICNS bytes: the one the docs name,
+        refused when another is loaded, and, run outside a venv (the image runs its own interpreter, CI a venv),
+        the one this process loads, Pillow's included."""
+        root = HERE.parent.parent
+        for doc in ("PARITY.md", "docs/DESIGN.md"):
+            stated = re.findall(r"\bzlib (\d+(?:\.\d+)+)", (root / doc).read_text(encoding="utf-8"))
+            with self.subTest(doc):
+                self.assertTrue(stated)
+                self.assertEqual(set(stated), {oracle_env.ORACLE_IMAGE_ZLIB})
+        self.assertEqual(oracle_env.image_problems(oracle_env.ORACLE_IMAGE_ZLIB), [])
+        self.assertEqual(
+            oracle_env.image_problems("1.3.1"),
+            [
+                f"zlib 1.3.1 is loaded, not the oracle image's {oracle_env.ORACLE_IMAGE_ZLIB}, the reference for the "
+                "bytes of Pillow's PNG, ICO and ICNS writers (PARITY.md section 1)"
+            ],
+        )
+        if sys.prefix == sys.base_prefix:
+            from PIL import features
+
+            self.assertEqual(features.version("zlib"), zlib.ZLIB_RUNTIME_VERSION, "Pillow loads Python's libz")
+            self.assertEqual(oracle_env.image_problems(), [])
 
 
 class LoadedModulesTests(unittest.TestCase):
