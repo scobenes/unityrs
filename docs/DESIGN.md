@@ -74,14 +74,17 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - 22 TextureFormats: BC6H, half and float formats, the 8 signed formats, RG16/RG32, R16, RGBA64, RGB9e5, YUY2;
   - a gzip-compressed WebFile, which UnityPy detects and then fails to parse;
   - a streamed Texture2DArray, whose slices all raise;
+  - a Texture2DArray in one of the seven 8-bit integer formats that UnityPy maps to a 16-bit texture format that raises;
   - `GameObject.m_Components` on an empty list or the old pair form;
-  - `Texture2D.image` of an empty 0×0 texture.
+  - `Texture2D.image` of an empty 0×0 texture;
+  - an empty AudioClip, whose empty resource path UnityPy fetches;
+  - a ZIP opened from a path, which UnityPy loads only from bytes or a buffered stream.
 - **Tier C: UnityPy is wrong.** It returns wrong data that an independent reference shows is wrong, or one of its exporters or helpers crashes. We produce correct output, and `PARITY.md` lists each case with a pinned divergence test and, for a crash, what correct output means:
   - RGBAHalf returns garbage;
   - RGB48 decodes as packed 5-6-5;
   - ASTC_HDR is wrong in 1.25.2;
   - ETC2_RGBA1 keeps a transparent punch-through pixel's colour, where the Khronos Data Format Specification makes it (0, 0, 0, 0);
-  - Texture2DArray maps the 8-bit integer formats to 16-bit ones and ignores the platform;
+  - Texture2DArray decodes R8G8B8_UInt as RGB48;
   - the MeshHelper.py:504 UV offset;
   - UNorm/SNorm values are not normalised;
   - mesh endianness is never read from the file;
@@ -94,11 +97,14 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - the Sprite cache key ignores the FileID;
   - MeshRendererExporter fails on Unity 6;
   - ShaderConverter fails on 6000.3;
-  - the extractor's crashes: GameObjects, MonoBehaviours, sprites without a container, meshes without vertices, and extensions Pillow cannot write.
+  - the extractor's crashes: GameObjects, MonoBehaviours, sprites without a container, meshes without vertices, and images Pillow cannot save under the container's extension.
 - **Unsupported until a sample and a reference exist.** unityrs refuses these with a named `Unsupported` error:
   - LZHAM, where UnityPy raises too;
   - a UnityArchive parsed as a bundle, where UnityPy raises too. Loading one is Tier A: UnityPy's detector does not know the signature and loads the file as a raw ResourceFile, and so does unityrs;
-  - ETC_RGB4_3DS and ETC_RGBA8_3DS. UnityPy decodes them as plain ETC1, but no 3DS sample or reference decoder shows what they should decode to, so the refusal is a documented divergence, not parity.
+  - ETC_RGB4_3DS and ETC_RGBA8_3DS. UnityPy decodes them as plain ETC1, but no 3DS sample or reference decoder shows what they should decode to, so the refusal is a documented divergence, not parity;
+  - a Texture2DArray read from a Switch or XBOX360 file. UnityPy decodes its slices with no platform handling, and the class carries no platform blob to deswizzle with;
+  - `set_image` with mips on a Switch-swizzled texture. UnityPy swizzles the top level and writes the mips linearly; no sample shows how a mip chain is laid out;
+  - `set_image` on XBOX360 to a format UnityPy's reader byte-swaps. UnityPy writes without swapping, so the texture reads back wrong.
 - **Tolerance:** the Sprite affine-triangle path, and pure-Rust audio against FMOD. Each has a stated metric and threshold.
 - **HEAD tier:** SF v23-26 and bundle format 9, equal to HEAD's dicts on Unity 6000.4/6000.5 fixtures.
 
@@ -118,9 +124,8 @@ Writing has tiers of its own. Where UnityPy writes, unityrs follows the rule in 
 |---|---|
 | Pre-v10 and v11 typetree writing (UnityPy raises) | the saved file reloads with the same objects |
 | An object holding a ReferencedObject of empty class (UnityPy raises `KeyError`) | byte-equal to its original bytes |
-| `set_image` to BC7 (UnityPy raises with the pinned etcpak) | the bytes etcpak's `compress_bc7` writes with default parameters; decoded by Pillow's `BcnDecode`, a PSNR of at least 35 dB against the source image in every channel |
+| `set_image` to BC7 (UnityPy raises with the pinned etcpak) | byte-equal to what etcpak 0.9.14's `compress_bc7` writes with a default `BC7CompressBlockParams()` on the data UnityPy hands it (flipped, padded to whole 4×4 blocks, RGBA) |
 | `set_image` to ETC_RGB4Crunched (UnityPy tags plain ETC1 as crunched) | written as ETC_RGB4, equal to `set_image` to ETC_RGB4 |
-| `set_image` mips on a swizzled platform (UnityPy leaves them linear) | each mip, deswizzled, equals the linear mip |
 | `WebFile.save` of a writer entry (UnityPy raises) | the saved WebFile reloads with the writer's bytes |
 | `BundleFile.save` with `original` and no blocks (UnityPy raises); `save_fs` encryption flags (UnityPy's output reads back as encrypted) | the saved bundle reloads, unencrypted, with the same entries |
 

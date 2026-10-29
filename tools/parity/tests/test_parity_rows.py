@@ -14,8 +14,10 @@ import struct
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
@@ -25,18 +27,23 @@ import inventory  # noqa: E402
 import synth as S  # noqa: E402
 
 try:
+    import attrs
+    import etcpak
     import lz4.block
     import UnityPy
-    from UnityPy.classes import GameObject, PPtr, StreamingInfo, Texture2D
-    from UnityPy.enums import FileType
-    from UnityPy.export import Texture2DConverter
+    from PIL import Image
+    from UnityPy.classes import GameObject, PPtr, StreamedResource, StreamingInfo, Texture2D, Texture2DArray
+    from UnityPy.enums import BuildTarget, FileType, TextureFormat
+    from UnityPy.enums.GraphicsFormat import GraphicsFormat
+    from UnityPy.export import AudioClipConverter, Texture2DConverter
     from UnityPy.files import BundleFile, WebFile
-    from UnityPy.helpers import ImportHelper, ResourceReader, Tpk, TypeTreeHelper
+    from UnityPy.helpers import ImportHelper, ResourceReader, TextureSwizzler, Tpk, TypeTreeHelper
     from UnityPy.helpers.ContainerHelper import ContainerHelper
     from UnityPy.helpers.TypeTreeNode import TypeTreeNode
     from UnityPy.helpers.TypeTreeNode import clean_name as node_clean_name
     from UnityPy.helpers.UnityVersion import UnityVersion
     from UnityPy.streams import EndianBinaryReader
+    from UnityPy.tools import extractor
 
     ORACLE = UnityPy.__version__ == inventory.PINNED_VERSION
 except ImportError:  # pragma: no cover - outside the oracle image
@@ -377,10 +384,10 @@ class Rows(unittest.TestCase):
         pointer = PPtr(m_FileID=0, m_PathID=5)
         object.__setattr__(game_object, "m_Component", [])
         with self.assertRaises(IndexError):
-            game_object.m_Components
+            _ = game_object.m_Components
         object.__setattr__(game_object, "m_Component", [(4, pointer)])
         with self.assertRaisesRegex(AttributeError, "m_GameObject"):
-            game_object.m_Components
+            _ = game_object.m_Components
         object.__setattr__(game_object, "m_Component", None)
         self.assertEqual(game_object.m_Components, [])
 
@@ -403,6 +410,245 @@ class Rows(unittest.TestCase):
                     {"m_Level": 1, "m_Type": "int", "m_Name": "a"},
                 ]
             )
+
+    # Sections 15.1, 18, 19.2: the BC7 bytes `set_image` should write.
+    def test_bc7_set_image_reference_is_etcpak_default(self):
+        image = Image.new("RGBA", (6, 5))
+        image.putdata([(x * 40, y * 50, (x * y * 13) % 256, 255 - x * 30) for y in range(5) for x in range(6)])
+        with self.assertRaisesRegex(ValueError, "^params must be an instance of BC7CompressBlockParams$"):
+            Texture2DConverter.image_to_texture2d(image, TextureFormat.BC7)
+        # The call UnityPy means to make: default parameters for its None.
+        compress = etcpak.compress_bc7
+
+        def with_defaults(data, width, height, params):
+            self.assertIsNone(params)
+            return compress(data, width, height, etcpak.BC7CompressBlockParams())
+
+        with mock.patch.object(etcpak, "compress_bc7", with_defaults):
+            written, tag = Texture2DConverter.image_to_texture2d(image, TextureFormat.BC7)
+        self.assertEqual(tag, TextureFormat.BC7)
+        # The data it hands etcpak: the image flipped, padded to whole 4x4 blocks, as RGBA.
+        padded = Texture2DConverter.pad_image(image.transpose(Image.Transpose.FLIP_TOP_BOTTOM), 8, 8)
+        reference = compress(padded.tobytes("raw", "RGBA"), 8, 8, etcpak.BC7CompressBlockParams())
+        self.assertEqual(written, reference)
+        self.assertEqual(compress(padded.tobytes("raw", "RGBA"), 8, 8, etcpak.BC7CompressBlockParams()), reference)
+        decoded = Texture2DConverter.parse_image_data(written, 6, 5, TextureFormat.BC7, (2021, 3, 1, 3), 0)
+        self.assertEqual((decoded.mode, decoded.size), ("RGBA", (6, 5)))
+
+    # Sections 18, 19.2: `set_image` on a swizzled or byte-swapped platform.
+    def test_set_image_writes_linear_mips_and_never_swaps_for_xbox(self):
+        image = Image.new("RGBA", (64, 64))
+        image.putdata([(x * 4, y * 4, 128, 255) for y in range(64) for x in range(64)])
+        blob = [0] * 8 + list((4).to_bytes(4, "little"))  # 16 GOBs per block
+
+        def texture(platform, blob=None):
+            return SimpleNamespace(
+                m_TextureFormat=TextureFormat.RGBA32,
+                object_reader=SimpleNamespace(platform=platform),
+                m_PlatformBlob=blob,
+                m_MipMap=False,
+                m_MipCount=1,
+                m_StreamData=None,
+            )
+
+        switch = texture(BuildTarget.Switch, blob)
+        Texture2D.set_image(switch, image, TextureFormat.RGBA32, 2)
+        top, _ = Texture2DConverter.image_to_texture2d(image, TextureFormat.RGBA32, BuildTarget.Switch, blob)
+        mip, _ = Texture2DConverter.image_to_texture2d(
+            image.resize((32, 32), Image.Resampling.BICUBIC), TextureFormat.RGBA32
+        )
+        self.assertNotEqual(top, Texture2DConverter.image_to_texture2d(image, TextureFormat.RGBA32)[0], "swizzled")
+        self.assertEqual(switch.image_data, top + mip, "a swizzled top level, then a linear mip")
+        self.assertEqual((switch.m_MipCount, switch.m_MipMap), (2, True))
+        # A swizzled mip would be padded to whole GOB blocks: four times the linear one here.
+        swizzled_mip, _ = Texture2DConverter.image_to_texture2d(
+            image.resize((32, 32), Image.Resampling.BICUBIC), TextureFormat.RGBA32, BuildTarget.Switch, blob
+        )
+        self.assertEqual((len(mip), len(swizzled_mip)), (4096, 16384))
+        self.assertTrue(TextureSwizzler.is_switch_swizzled(BuildTarget.Switch, blob))
+        # XBOX360: the reader swaps DXT1's byte pairs, the writer never does, so a written texture reads back wrong.
+        xbox = texture(BuildTarget.XBOX360)
+        Texture2D.set_image(xbox, image, TextureFormat.DXT1)
+        self.assertEqual(xbox.image_data, Texture2DConverter.image_to_texture2d(image, TextureFormat.DXT1)[0])
+        args = (xbox.image_data, 64, 64, TextureFormat.DXT1, (2021, 3, 1, 3))
+        plain = Texture2DConverter.parse_image_data(*args, BuildTarget.StandaloneWindows64)
+        swapped = Texture2DConverter.parse_image_data(*args, BuildTarget.XBOX360)
+        self.assertNotEqual(list(swapped.getdata()), list(plain.getdata()))
+
+    # Sections 14.2, 19.2: Texture2DArray decodes every slice with platform 0 and no blob.
+    def test_texture2darray_ignores_the_platform(self):
+        self.assertIn("m_PlatformBlob", attrs.fields_dict(Texture2D))
+        self.assertNotIn("m_PlatformBlob", attrs.fields_dict(Texture2DArray))
+        data = bytes(range(64)) * 2  # two 4x4 RGBA32 slices
+        seen = []
+        parse = Texture2DConverter.parse_image_data
+
+        def record(image_data, width, height, fmt, version, platform, blob=None, flip=True):
+            seen.append((platform, blob))
+            return parse(image_data, width, height, fmt, version, platform, blob, flip)
+
+        for platform in (BuildTarget.Switch, BuildTarget.XBOX360):
+            array = self.texture_array(GraphicsFormat.R8G8B8A8_UNorm, data, 4, 2, platform)
+            with mock.patch.object(Texture2DConverter, "parse_image_data", record):
+                images = Texture2DArray.images.fget(array)
+            self.assertEqual(
+                [image.tobytes() for image in images], [self.flipped_rgba(data[:64]), self.flipped_rgba(data[64:])]
+            )
+        self.assertEqual(seen, [(0, None)] * 4)
+
+    @staticmethod
+    def flipped_rgba(data):
+        return Image.frombytes("RGBA", (4, 4), data).transpose(Image.Transpose.FLIP_TOP_BOTTOM).tobytes()
+
+    def texture_array(self, graphics_format, data, width, depth, platform=0):
+        return SimpleNamespace(
+            m_Format=int(graphics_format),
+            image_data=data,
+            m_StreamData=None,
+            m_DataSize=len(data),
+            m_Depth=depth,
+            m_Width=width,
+            m_Height=width,
+            object_reader=SimpleNamespace(version=(2021, 3, 2, 0), platform=platform, assets_file=None),
+        )
+
+    # Sections 14.2, 19.2: the 8-bit integer graphics formats map to 16-bit texture formats.
+    def test_texture2darray_8bit_integer_formats(self):
+        raises = {
+            "R8_UInt": ValueError,  # R16
+            "R8G8_UInt": KeyError,  # RG32
+            "R8G8B8A8_UInt": ValueError,  # RGBA64
+            "R8_SInt": ValueError,  # R16_SIGNED
+            "R8G8_SInt": KeyError,  # RG32_SIGNED
+            "R8G8B8_SInt": ValueError,  # RGB48_SIGNED
+            "R8G8B8A8_SInt": ValueError,  # RGBA64_SIGNED
+        }
+        for name, error in raises.items():
+            channels = name.count("8")
+            with self.subTest(name), self.assertRaises(error):
+                Texture2DArray.images.fget(self.texture_array(GraphicsFormat[name], bytes(16 * channels), 4, 1))
+        # R8G8B8_UInt decodes as RGB48, Pillow's 5-6-5 `RGB;16`: not the stored bytes.
+        data = bytes(range(48))
+        image = Texture2DArray.images.fget(self.texture_array(GraphicsFormat.R8G8B8_UInt, data, 4, 1))[0]
+        self.assertEqual(image.mode, "RGB")
+        self.assertNotEqual(
+            image.tobytes(), Image.frombytes("RGB", (4, 4), data).transpose(Image.Transpose.FLIP_TOP_BOTTOM).tobytes()
+        )
+
+    # Sections 15.7, 19.2: what Pillow saves under the container's extension.
+    def test_pillow_saves_by_extension_and_mode(self):
+        image = Image.new("RGBA", (4, 4), (1, 2, 3, 4))
+        cases = [
+            (".png", "RGBA", None),
+            (".tga", "RGBA", None),
+            (".jpg", "RGB", None),
+            (".jpg", "RGBA", OSError),
+            (".jpeg", "LA", OSError),
+            (".psd", "RGBA", KeyError),
+            (".xyz", "RGBA", ValueError),
+            ("", "RGBA", ValueError),
+        ]
+        for extension, mode, error in cases:
+            with self.subTest(extension=extension, mode=mode):
+                path = self.tmp / f"image{extension}"
+                if error is None:
+                    image.convert(mode).save(path)
+                    self.assertTrue(path.exists())
+                else:
+                    with self.assertRaises(error):
+                        image.convert(mode).save(path)
+
+    # Sections 15.7, 19.2: the names `export_obj(ref, fp, True, True)` gives, as exportGameObject means to call it.
+    def test_export_obj_appends_none_for_the_path_id(self):
+        sf = load(text_asset_file("hello", "world"), env=UnityPy.Environment(path=str(self.tmp)))[0]
+        (self.tmp / "go").mkdir()  # exportGameObject makes its folder first
+        exported = extractor.export_obj(PPtr(m_FileID=0, m_PathID=1, assetsfile=sf), str(self.tmp / "go"), True, True)
+        self.assertEqual(exported, [(sf, 1)])
+        self.assertEqual((self.tmp / "go" / "hello_None.txt").read_bytes(), b"world")
+
+    # Sections 16, 19.2: an AudioClip with no data.
+    def test_an_empty_audio_clip_follows_an_empty_resource_path(self):
+        env = UnityPy.Environment(path=str(self.tmp))
+        bundle = load(S.fs_bundle([(b"CAB-a", text_asset_file(), 4), (b"CAB-a.resS", b"\x11" * 16, 0)]), env=env)[0]
+        sf = bundle.files["CAB-a"]
+
+        def clip(resource, audio_data=b""):
+            return SimpleNamespace(
+                m_AudioData=audio_data,
+                m_Resource=resource,
+                object_reader=SimpleNamespace(assets_file=sf),
+                m_Name="clip",
+                m_Channels=1,
+                m_Frequency=44100,
+            )
+
+        empty = StreamedResource(m_Source="", m_Offset=0, m_Size=0)
+        self.assertTrue(empty, "a StreamedResource is truthy, even empty")
+        # The empty path is looked up, misses, is loaded relative to env.path, and opens the directory.
+        for size in (0, 16):
+            with self.subTest(size=size), self.assertRaises(IsADirectoryError):
+                AudioClipConverter.extract_audioclip_samples(
+                    clip(StreamedResource(m_Source="", m_Offset=0, m_Size=size))
+                )
+        # A real resource with no bytes reaches FMOD, which refuses it.
+        source = StreamedResource(m_Source="archive:/CAB-a/CAB-a.resS", m_Offset=0, m_Size=0)
+        with self.assertRaises(Exception) as raised:
+            AudioClipConverter.extract_audioclip_samples(clip(source))
+        self.assertEqual(type(raised.exception).__name__, "FmodError")
+        # Only a clip with no m_Resource at all gets the ValueError.
+        with self.assertRaisesRegex(ValueError, "^AudioClip with neither m_AudioData nor m_Resource$"):
+            AudioClipConverter.extract_audioclip_samples(clip(None))
+        ogg = b"OggS" + bytes(12)
+        self.assertEqual(AudioClipConverter.extract_audioclip_samples(clip(None, ogg)), {"clip.ogg": ogg})
+
+    # Sections 3, 4, 19.2: a ZIP is found by content, and only bytes and buffered streams load.
+    def test_a_zip_loads_from_bytes_and_raises_from_a_path(self):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("inner.assets", text_asset_file())
+        data = bytearray(buffer.getvalue())
+        self.assertEqual(
+            ImportHelper.check_file_type(bytes(data))[0], FileType.ResourceFile, "zipfile's fifth byte is 20"
+        )
+        data[4] = 0  # "version needed to extract" 0: the NUL ends the signature at four bytes
+        data = bytes(data)
+        self.assertEqual(ImportHelper.check_file_type(data)[0], FileType.ZIP)
+        env = UnityPy.Environment()
+        self.assertIsNone(quietly(env.load_file, data, name="z.bin"))
+        self.assertEqual(
+            {name: type(f).__name__ for name, f in env.files.items()},
+            {"inner.assets": "SerializedFile", "z.bin": "NoneType"},
+        )
+        path = self.tmp / "z.bin"
+        path.write_bytes(data)
+        with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
+            quietly(UnityPy.Environment().load_file, str(path))
+        with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
+            quietly(UnityPy.load, str(path))
+        with open(path, "rb") as stream:
+            env = quietly(UnityPy.load, stream)
+        self.assertEqual(sorted(type(f).__name__ for f in env.files.values()), ["NoneType", "SerializedFile"])
+
+    # Section 11: the type character.
+    def test_version_type_str_is_lower_case_for_known_types(self):
+        upper = UnityVersion.from_str("2019.4.15F1")
+        self.assertEqual((upper.type_str, str(upper)), ("f", "2019.4f1"))
+        unknown = UnityVersion.from_str("2019.4.15q1")
+        self.assertEqual((int(unknown.type), unknown.type_str, str(unknown)), (255, "q", "2019.4q1"))
+
+    # Sections 8, 14.3: defaults that are never used.
+    def test_object_reader_get_and_container_attributes(self):
+        sf = load(text_asset_file())[0]
+        reader = sf.objects[1]
+        self.assertIsNone(reader.get("nope", 5))
+        self.assertIsNone(reader.nope)
+        info = SimpleNamespace(asset=SimpleNamespace(path_id=1))
+        container = ContainerHelper([("a/path", info)])
+        self.assertIs(container.__getattr__("a/path"), info.asset)
+        with self.assertRaisesRegex(KeyError, "'x'"):
+            hasattr(container, "x")
+        with self.assertRaisesRegex(KeyError, "'x'"):
+            getattr(container, "x", None)
 
 
 if __name__ == "__main__":
