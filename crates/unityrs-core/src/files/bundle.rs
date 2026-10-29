@@ -13,28 +13,44 @@
 //! known at open; an unmeasured block wholly before the read is decoded with
 //! its output discarded (a measuring decode: charged while it runs, returned
 //! after). An entry is the Python slice `data[offset : offset + size]` of the
-//! joined data (`File.py:78-81`; [`crate::stream::py_read`]), and a lazy read
-//! equals [`BundleFile::load_all`]'s bytes on every bundle, malformed ones
-//! included.
+//! joined data (`File.py:78-81`; [`crate::stream::py_read`]). A lazy read
+//! that succeeds returns exactly the slice of [`BundleFile::load_all`]'s
+//! joined data, and a block that fails before or inside the read fails it
+//! as it fails `load_all`; a block that fails only *after* the read fails
+//! `load_all` and not the read (plan section 3.13, difference (c)).
+//!
+//! **Block outcomes.** A block's measurement is kept once known, failures
+//! included: `lengths` holds each block's length or the error its decode
+//! gave, so a block that fails is decoded once and every later read that
+//! needs it fails at once, as UnityPy fails once. A refusal that depends on
+//! what else is held (the meter, the budget) is not kept
+//! ([`crate::once::get_or_publish_result`]).
 //!
 //! **Runs.** The blocks one read overlaps are decoded into one buffer, a run,
 //! cached by its block span. A read whose span a cached run covers is a
 //! zero-copy slice of it; any other read decodes its own whole span into a
 //! new run, so a block that two spans share is decoded once per span.
 //! `load_all` decodes every block into one run. [`BundleFile::entry_range`]
-//! measures like any read, slices a covering cached run when there is one,
-//! and otherwise decodes its span into a buffer it returns without caching.
+//! is a read like any other: it measures, slices a covering cached run when
+//! there is one, and otherwise decodes its span into a run it caches, so N
+//! ranges in one block decode it once.
 //!
-//! **Memory.** Every decode (first, measuring, repeated) writes into a
-//! [`crate::budget::DecodeBuf`] on the input's meter, one segment per block
-//! (each capped at `max_block_output`), so whatever the runs hold is charged,
-//! and a hostile directory whose spans overlap fails with
-//! `LimitKind::InputMemory` instead of growing. The header, blocks,
-//! directory, `files` and the per-row parse cells are charged at open; each
-//! parsed entry charges its own file. Decodes and user codecs run with no
+//! **Memory and work.** Every decode (first, measuring, repeated) writes
+//! into a [`crate::budget::DecodeBuf`] on the input's meter, one segment per
+//! block (each capped at `max_block_output`), so whatever the runs hold is
+//! charged, and a hostile directory whose spans overlap fails with
+//! `LimitKind::InputMemory` instead of growing; every byte decoded also
+//! counts as the input's decode work (`LimitKind::DecodeWork`), which is
+//! never returned. The header, blocks, directory, `files` and the per-row
+//! cells are charged at open; each parsed entry charges its own file, and
+//! a kept error charges its heap. Decodes and user codecs run with no
 //! lock held: a run is decoded first and then published into `runs`, and an
 //! entry is parsed first and then published into its cell
-//! ([`crate::once::get_or_publish`]).
+//! ([`crate::once::get_or_publish_result`]). Publishing a run may grow the
+//! run table under its mutex, which charges the meter and so calls the
+//! budget; the budget's contract forbids it to block or call the core
+//! ([`crate::budget::MemoryBudget`]), and a run replaced or dropped under
+//! the lock is released after it.
 //!
 //! UnityPy rules ported exactly (plan section 3.6):
 //! - the extra byte after the data flags only for non-UnityFS signatures
@@ -69,13 +85,14 @@
 )]
 
 use std::ops::Range;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 
 use crate::error::Error;
 use crate::files::{File, Parent};
 use crate::limits::{Charge, Meter, MeteredVec};
+use crate::once::ResultCell;
 use crate::options::FileContext;
 use crate::raw::RawStr;
 use crate::version::{FlagsClass, ResolvedVersion, VersionError};
@@ -171,14 +188,16 @@ pub struct BundleFile {
     directory: Box<[DirEntry]>,
     files: Box<[FileSlot]>,
     parent: Option<Parent>,
-    /// Each block's actual decoded length, once known (a stored block's at
-    /// open, any other's when it is first decoded or measured).
-    lengths: Box<[OnceLock<u64>]>,
+    /// Each block's outcome, once known: its actual decoded length (a stored
+    /// block's at open, any other's when it is first decoded or measured),
+    /// or the error its decode gave, kept so it is not decoded again.
+    lengths: Box<[ResultCell<u64, Error>]>,
     /// Decoded block runs: `(first block, end block, bytes)`, each run's
     /// charge inside its `Bytes`. Locked only to look up or publish.
     runs: Mutex<MeteredVec<(usize, usize, Bytes)>>,
-    /// Parsed entries, by directory index, published once.
-    entries: Box<[OnceLock<Result<File, Error>>]>,
+    /// Parsed entries, by directory index, published once; a kept error
+    /// carries the charge for its heap, and a refused charge is not kept.
+    entries: Box<[ResultCell<File, Error>]>,
     /// The handle and its tables (header, blocks, directory, `files`, the
     /// parse cells), charged to the input at open.
     charge: Charge,
@@ -215,7 +234,8 @@ impl BundleFile {
     }
 
     /// The input bytes it was opened on (for telling two handles on one
-    /// input apart from two inputs: plan section 4.1).
+    /// input apart from two inputs: a resource read through `from`'s own
+    /// handle, plan section 3.13).
     pub fn source(&self) -> &Bytes {
         &self.source
     }
@@ -272,15 +292,17 @@ impl BundleFile {
     /// A byte range of an entry (a `.resS` read), short at the end of the
     /// entry as a Python slice. It measures every block before the range as
     /// any read does, slices a cached run that covers the range's blocks, and
-    /// otherwise decodes those blocks into a buffer it returns uncached (the
-    /// buffer's charge rides in the returned `Bytes`).
+    /// otherwise decodes those blocks into a run it caches, so later ranges
+    /// in the same blocks are slices of it.
     pub fn entry_range(&self, dir_index: usize, range: Range<u64>) -> Result<Bytes, Error> {
         todo!()
     }
 
     /// Directory entry `dir_index`, detected and parsed (`parse_file`) and
-    /// published once; under contention two callers may both parse it, and
-    /// the loser's result (and its charge) is dropped.
+    /// published once ([`crate::once::get_or_publish_result`]); under
+    /// contention two callers may both parse it, and the loser's result (and
+    /// its charge) is dropped. A parse the meter or the budget refuses is
+    /// returned and not kept.
     pub fn entry(&self, dir_index: usize) -> Result<File, Error> {
         todo!()
     }

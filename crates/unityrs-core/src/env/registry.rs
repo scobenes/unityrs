@@ -3,16 +3,42 @@
 //! Keys are [`crate::pystr::simplify_name`] of the registered name. As a
 //! Python dict: a repeated key replaces the value and keeps the first
 //! position, and iteration is in first-insertion order (`env.container`
-//! walks it). Values are files already parsed, or, under
-//! [`super::LoadMode::Lazy`], a bundle entry to parse on first use: the slot
-//! is a `OnceLock` so concurrent askers parse it once. A lazy bundle registers
-//! every directory entry's name at open, in directory order. An entry that
-//! turns out to be a container is not a CAB: its slot answers `None` and its
-//! own entries are registered then, at the end of the order (plan section
-//! 3.13, difference (b); an eager load would instead keep an earlier CAB of
-//! the same path under the key). Under eager loading a bundle registers its
-//! CABs as it parses them, so a later entry's failure leaves the earlier
-//! ones registered (difference (a)).
+//! walks it). A lazy bundle registers every directory entry's name at open,
+//! in directory order. An entry that turns out to be a container is not a
+//! CAB: its slot answers `None` and its own entries are registered then, at
+//! the end of the order (plan section 3.13, difference (b); an eager load
+//! would instead keep an earlier CAB of the same path under the key). Under
+//! eager loading a bundle registers its CABs as it parses them, so a later
+//! entry's failure leaves the earlier ones registered (difference (a)).
+//!
+//! **What a slot holds** ([`Slot`]). A file the caller loaded is never
+//! evicted, so its slot may hold its handle. A dependency's slot never
+//! holds a strong handle on it: it holds what *reopens* the dependency (its
+//! name, its [`super::Source`] and its directory index) and a `Weak` on the
+//! handle the dependency LRU keeps, so evicting the dependency (dropping the
+//! LRU's handle) frees its runs, its parsed entries and, for a source that
+//! can be read again (`Path`, `Fetch`), its bytes and their charge; the next
+//! `get` opens it again from the source (plan section 3.13). Parsed entries
+//! are cached in the bundle handle's own cells
+//! ([`crate::files::BundleFile::entry`]), not in the registry, so they go
+//! with the handle.
+//!
+//! **Cells.** A slot's parse is published with
+//! [`crate::once::get_or_publish_result`]: a budget or meter refusal is
+//! returned and not kept, so a shared dependency refused once (while other
+//! jobs held the pool) is parsed again on the next `get`. A parse has no side
+//! effect but its charges: a nested container's entries are registered from
+//! the published value, once (the slot records that it did), so a parse that
+//! lost a race registers nothing.
+//!
+//! **Memory.** Every registration is charged to the meter of the file that
+//! registers it: the key ([`crate::raw::RawStr::charged`]), the slot's
+//! `Arc`, and twice its share of the `order` vector and of the `slots` hash
+//! table at the table's worst load (a doubling table is at least 7/16 full),
+//! so the two tables' spare capacity is paid for too. The slot keeps that
+//! charge; a key registered again keeps its first slot's share of the tables
+//! and the new slot pays its own `Arc`. A refused charge registers nothing
+//! and is the registering load's error.
 //!
 //! Owner: package D.
 
@@ -27,10 +53,12 @@
 )]
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
+use super::Source;
 use crate::error::Error;
 use crate::files::{BundleFile, RawFile, SerializedFile};
+use crate::limits::{Charge, Meter};
 use crate::raw::RawStr;
 
 /// A registered CAB: what `get_cab` returns.
@@ -56,19 +84,61 @@ pub enum RawCab {
     File(Arc<RawFile>),
 }
 
-/// One registry slot.
+/// A dependency the Environment loaded (through the resolver, or
+/// `Environment::load_dependency`): what reopens it, and the handle the LRU
+/// keeps while it is cached.
 #[derive(Debug)]
-pub(crate) enum Slot {
-    /// Parsed at registration.
+pub(crate) struct Dependency {
+    /// The name it was loaded under.
+    pub(crate) name: RawStr,
+    /// Where its bytes come from again after an eviction.
+    pub(crate) source: Source,
+    /// The LRU's handle, weakly: an eviction drops the LRU's strong one.
+    pub(crate) open: Mutex<Option<WeakFile>>,
+}
+
+/// A weak handle on a dependency's top-level file.
+#[derive(Debug)]
+pub(crate) enum WeakFile {
+    /// A `SerializedFile`.
+    Serialized(Weak<SerializedFile>),
+    /// A bundle.
+    Bundle(Weak<BundleFile>),
+    /// A raw file.
+    Raw(Weak<RawFile>),
+}
+
+/// One registry slot, with the charge for its registration (module docs).
+#[derive(Debug)]
+pub(crate) struct Slot {
+    pub(crate) kind: SlotKind,
+    /// Whether a nested container's entries were registered from it.
+    pub(crate) expanded: std::sync::atomic::AtomicBool,
+    pub(crate) charge: Charge,
+}
+
+/// What a slot reaches.
+#[derive(Debug)]
+pub(crate) enum SlotKind {
+    /// A CAB of a file the caller loaded, parsed at registration (`Eager`):
+    /// never evicted.
     Ready(Cab),
-    /// A bundle entry parsed on first use.
-    Lazy {
+    /// An entry of a bundle the caller loaded `Lazy`, parsed on first use
+    /// through the bundle's own entry cell: never evicted.
+    Entry {
         /// The bundle.
         bundle: Arc<BundleFile>,
         /// Its directory index.
         dir_index: usize,
-        /// The parse, once.
-        cell: OnceLock<Result<Cab, Error>>,
+    },
+    /// A dependency's CAB: the file itself (`None`) or one of its entries,
+    /// reached through the LRU's handle and reopened from its source after an
+    /// eviction. Holds no strong handle.
+    Dependency {
+        /// The dependency.
+        dep: Arc<Dependency>,
+        /// The entry, for a bundle.
+        dir_index: Option<usize>,
     },
 }
 
@@ -85,17 +155,26 @@ struct RegistryInner {
 }
 
 impl Registry {
-    /// `register_cab(name, cab)`.
-    pub fn register(&self, name: &[u8], cab: Cab) {
+    /// `register_cab(name, cab)` for a file the caller loaded, charged to
+    /// `meter` (module docs).
+    pub fn register(&self, name: &RawStr, cab: Cab, meter: &Arc<Meter>) -> Result<(), Error> {
         todo!()
     }
 
-    /// Registers a bundle entry to parse on first use.
-    pub fn register_lazy(&self, name: &[u8], bundle: Arc<BundleFile>, dir_index: usize) {
+    /// Registers entry `dir_index` of a bundle the caller loaded `Lazy`, to
+    /// parse on first use; charged to `meter`.
+    pub fn register_lazy(
+        &self,
+        name: &RawStr,
+        bundle: Arc<BundleFile>,
+        dir_index: usize,
+        meter: &Arc<Meter>,
+    ) -> Result<(), Error> {
         todo!()
     }
 
-    /// `get_cab(name)`, parsing a lazy slot now.
+    /// `get_cab(name)`, parsing a lazy slot now, or opening an evicted
+    /// dependency again from its source.
     pub fn get(&self, name: &[u8]) -> Result<Option<Cab>, Error> {
         todo!()
     }

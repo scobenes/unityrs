@@ -14,7 +14,8 @@
 //!    [`DerefError::NotFound`] and [`DerefError::MissingObject`], and
 //!    propagates [`DerefError::FileIdBelowStart`], [`DerefError::RawTarget`]
 //!    (an `AttributeError`), [`DerefError::Null`] (never reached: the
-//!    preload skips null pointers first) and [`DerefError::Load`].
+//!    preload skips null pointers first), [`DerefError::ContainerDropped`]
+//!    and [`DerefError::Load`].
 //! 4. The file's container (`assetsfile.parent`, `PPtr.py:62-66`): a bundle
 //!    entry's is its bundle; a file loaded at top level has the
 //!    `Environment` that loaded it as its parent (`environment.py:154`,
@@ -23,7 +24,12 @@
 //!    outside any Environment, which [`super::Environment::deref`] never
 //!    sees: the core has no such refusal. (Probe: two loose files `a/CAB-A`
 //!    and `b/CAB-B`, A's external `archive:/CAB-B/CAB-B`, resolve to B's
-//!    object in UnityPy 1.25.2.)
+//!    object in UnityPy 1.25.2.) A bundle entry whose bundle has been
+//!    dropped (the `Parent`'s weak handle no longer upgrades) has no
+//!    container to scan: UnityPy cannot reach that state (an object keeps
+//!    `assets_file.parent` alive), so the core does not guess between "no
+//!    sibling" and `find_file`, and fails with
+//!    [`DerefError::ContainerDropped`].
 //! 5. The external path is cleaned ([`crate::pystr::clean_external_path`]) and
 //!    compared with each key of the container's `files` dict lower-cased with
 //!    `str.lower` (no basename): a bundle's directory paths, or the
@@ -121,6 +127,14 @@ pub enum DerefError {
         file: RawStr,
         /// `m_PathID`.
         path_id: i64,
+    },
+    /// The pointer's file is a bundle entry whose bundle has been dropped,
+    /// so its siblings cannot be scanned (rule 4; UnityPy cannot reach this:
+    /// a caller that hands out a file keeps its bundle).
+    #[error("the bundle {name} of the pointer's file was dropped")]
+    ContainerDropped {
+        /// The bundle's name ([`crate::files::Parent::name`]).
+        name: RawStr,
     },
     /// Loading the target failed.
     #[error(transparent)]

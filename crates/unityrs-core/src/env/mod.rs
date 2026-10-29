@@ -19,7 +19,7 @@
 //!
 //! On a scene whose blocks all decode, whose entries all parse and none of
 //! which is a container, the two modes give identical results. Elsewhere they
-//! differ in exactly three ways (plan section 3.13): (a) a failing entry
+//! differ in exactly four ways (plan section 3.13): (a) a failing entry
 //! fails the load under `Eager` (with the partial registration above) but
 //! only the `get` that parses it under `Lazy` (an entry shadowed by a later
 //! one of its path is then never parsed; [`crate::files::BundleFile::load_all`]
@@ -30,28 +30,45 @@
 //! which `Eager` keeps under the key; (c) a block that fails to decode, or
 //! trips a limit, after the last byte any read needs fails the load under
 //! `Eager` (UnityPy decodes every block before any entry,
-//! `files/BundleFile.py:173-186`) and nothing under `Lazy`.
+//! `files/BundleFile.py:173-186`) and nothing under `Lazy`; (d) a directory
+//! whose spans nest or overlap makes `Lazy` decode and keep the shared
+//! blocks once per span, so it can stop at the input's meter
+//! ([`crate::LimitKind::InputMemory`]) or decode-work bound
+//! ([`crate::LimitKind::DecodeWork`]) where `Eager`'s one run fits.
 //!
 //! **Memory.** Each load makes its input's meter
 //! ([`crate::limits::Meter::for_input`]): [`crate::budget::Reservation::Input`]
 //! for what a caller loads, [`crate::budget::Reservation::Dependency`] for a
 //! dependency. A [`Source::Path`] is read by [`read_path`], bounded by
 //! [`crate::limits::Limits::max_input_bytes`] and charged to that meter
-//! before its bytes exist. Each registry slot is charged to the meter of
-//! the file that registered it. Listings ([`Environment::objects`],
+//! before its bytes exist. Each registry slot, its key and its share of the
+//! registry's tables are charged to the meter of the file that registered
+//! it ([`registry`]). Listings ([`Environment::objects`],
 //! [`Environment::container`], [`Registry::keys`]) are iterators: they hold
 //! a handle per nesting level and allocate nothing per record.
 //!
-//! Dependencies (files loaded to resolve a pointer or a resource) are kept in
-//! an LRU bounded by [`EnvOptions::dep_cache_bytes`] (the sum of their
-//! meters); evicting one drops the LRU's handle on it, which returns its
-//! runs and parsed entries once nothing else holds them, and the next read
-//! opens it again from its retained bytes. The files a caller loaded are
-//! never evicted. UnityPy keeps everything, which is [`EnvOptions::unitypy`].
+//! **Dependencies** (files loaded to resolve a pointer or a resource, or by
+//! [`Environment::load_dependency`]) are kept in an LRU bounded by
+//! [`EnvOptions::dep_cache_bytes`] (the sum of their meters). The registry
+//! holds no strong handle on a dependency, only what reopens it
+//! ([`registry`]), so evicting one drops the LRU's handle and with it the
+//! dependency's runs and parsed entries, and the bytes of a source that can
+//! be read again ([`Source::Path`], [`Source::Fetch`]) with their charge,
+//! once nothing else holds them; the next read opens it again from its
+//! source (a [`Source::Bytes`] dependency keeps its bytes, which are the
+//! caller's). The files a caller loaded are never evicted. UnityPy keeps
+//! everything, which is [`EnvOptions::unitypy`]. A dependency read the pool
+//! refuses evicts and retries once; the refusal is never cached
+//! ([`crate::once::get_or_publish_result`]), so a later read with room in
+//! the pool succeeds.
 //!
 //! **Locks.** The registry, the `files` list and the LRU are locked only to
 //! look up or publish; a file is loaded, an entry parsed and a resolver,
-//! fetcher or provider called with no lock held ([`crate::once`]).
+//! fetcher or provider called with no lock held ([`crate::once`]). The one
+//! caller code that may run under them is a [`crate::budget::MemoryBudget`]
+//! or [`crate::budget::PermitHome`] (a growth charged while a table is
+//! published, a replaced value's charge returned), whose contract forbids
+//! blocking and calling the core (plan section 3.16).
 //!
 //! Where UnityPy reaches the filesystem (`find_file`'s walk of `env.path`,
 //! `load_file`'s relative paths), the core asks a [`CabResolver`]: the core
@@ -354,6 +371,17 @@ impl Environment {
         todo!()
     }
 
+    /// Loads `source` as a dependency, as `find_file` loads one through the
+    /// resolver: its own meter under [`crate::budget::Reservation::Dependency`]
+    /// (so a refusal names the dependency pool), its CABs registered (lazily
+    /// under [`LoadMode::Lazy`]) without a strong handle, kept in the LRU and
+    /// evictable, and not added to [`Self::files`] (UnityPy has no such call;
+    /// a batch engine registers its inputs this way). The returned handle is
+    /// the caller's: the dependency is not evicted while the caller holds it.
+    pub fn load_dependency(&self, source: Source) -> Result<File, Error> {
+        todo!()
+    }
+
     /// `files`, in insertion order: one entry per caller load (not a count
     /// the input chooses).
     pub fn files(&self) -> Vec<(RawStr, File)> {
@@ -378,7 +406,12 @@ impl Environment {
     /// at top level, this Environment, whose [`Self::files`] keys the sibling
     /// scan compares. `from` need not have been loaded here (a batch job's
     /// own bundle handle): its bundle siblings come from its parent, every
-    /// other CAB from this Environment.
+    /// other CAB from this Environment. When `from`'s bundle has been
+    /// dropped (its weak handle no longer upgrades) the dereference fails
+    /// with [`DerefError::ContainerDropped`] rather than guess: UnityPy
+    /// cannot reach that state, since an object keeps its file's parent
+    /// alive, so the bindings and a batch engine keep a strong bundle handle
+    /// beside every `SerializedFile` they hand out.
     pub fn deref(&self, from: &Arc<SerializedFile>, pptr: PPtr) -> Result<ObjectRef, DerefError> {
         todo!()
     }
@@ -410,13 +443,15 @@ impl Environment {
 
     /// `get_resource_data(path, from, offset, size)`
     /// (`helpers/ResourceReader.py:10-38`). The candidate is resolved by
-    /// UnityPy's rule (the registry, then dependencies). When the CAB it
-    /// resolves to is an entry of the same input as `from`'s own bundle (the
-    /// same source bytes and directory index; a batch job's own handle is a
-    /// second handle on those bytes), the bytes are read through `from`'s
-    /// bundle, so a job's resource reads are charged to the job's meter, not
-    /// to the shared dependency handle's (plan section 4.1). The answer is
-    /// the same entry's bytes either way.
+    /// UnityPy's rule (the registry, then dependencies), but each candidate's
+    /// slot is first *located* without being parsed (its source bytes and
+    /// directory index). When it is an entry of the same input as `from`'s
+    /// own bundle (the same source bytes and directory index; a batch job's
+    /// own handle is a second handle on those bytes), the entry is read
+    /// through `from`'s bundle and the shared slot is never parsed, so
+    /// neither the resolution nor the read decodes anything through the
+    /// shared dependency handle or charges its pool (plan section 3.13).
+    /// The answer is the same entry's either way.
     pub fn resource(
         &self,
         from: &Arc<SerializedFile>,
