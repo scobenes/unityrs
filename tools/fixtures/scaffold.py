@@ -20,6 +20,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import lz4
+import lz4.block
 import UnityPy
 from UnityPy.classes import PPtr
 from UnityPy.streams import EndianBinaryReader
@@ -106,7 +108,7 @@ def align_cases() -> list[dict]:
     return out
 
 
-def string_to_null_cases() -> list[dict]:
+def string_to_null_cases() -> tuple[list[str], list[dict]]:
     """`read_string_to_null(max_length)` (EndianBinaryReader.py:275-284): `re.search` clamps
     its start and end to the buffer; a miss raises when `pos + max_length >= len` and
     otherwise reads `max_length` bytes as a slice; a hit sets the absolute end."""
@@ -129,7 +131,7 @@ def string_to_null_cases() -> list[dict]:
                     )
                 except Exception as e:  # noqa: BLE001 - UnityPy raises a bare Exception here
                     out.append({"data": di, "pos": str(pos), "max": max_length, "error": type(e).__name__})
-    return {"data": [d.hex() for d in datas], "cases": out}
+    return [d.hex() for d in datas], out
 
 
 def external_cases() -> list[dict]:
@@ -160,8 +162,71 @@ def external_cases() -> list[dict]:
     return out
 
 
+def lz4_length(n: int) -> bytes:
+    """An LZ4 length extension: 255s, then the rest."""
+    out = bytearray()
+    while n >= 255:
+        out.append(255)
+        n -= 255
+    out.append(n)
+    return bytes(out)
+
+
+def lz4_sequence(literals: bytes, match: tuple[int, int] | None) -> bytes:
+    """One LZ4 sequence: token, literal length, literals, then `(offset, length)` of a match."""
+    lit = len(literals)
+    ml = match[1] - 4 if match else 0
+    out = bytearray([(min(lit, 15) << 4) | min(ml, 15)])
+    if lit >= 15:
+        out += lz4_length(lit - 15)
+    out += literals
+    if match:
+        out += match[0].to_bytes(2, "little")
+        if ml >= 15:
+            out += lz4_length(ml - 15)
+    return bytes(out)
+
+
+def lz4_cases() -> list[dict]:
+    """`lz4.block.decompress(data, uncompressed_size)` (helpers/CompressionHelper.py:83-94):
+    python-lz4 over liblz4's LZ4_decompress_safe, for a grid of blocks around its end-of-block
+    conditions, at declared sizes around each block's real output."""
+    text = bytes(range(1, 256))
+    blocks = [b""]
+    for n in (0, 1, 4, 5, 7, 8, 11, 12, 13, 14, 15, 16, 17, 254, 255, 256, 270):
+        blocks.append(lz4_sequence(text[:n] if n <= 255 else (text * 2)[:n], None))
+    for l1 in (1, 4, 8, 12, 15, 16):
+        for ml in (4, 5, 8, 15, 19, 40):
+            for offset in sorted({1, l1}):
+                head = lz4_sequence(text[:l1], (offset, ml))
+                for l2 in (0, 1, 4, 5, 6, 7, 8, 11, 12, 13, 15, 16):
+                    blocks.append(head + (lz4_sequence(text[100 : 100 + l2], None) if l2 else b""))
+    # offsets outside what was produced, and offset 0
+    for offset in (0, 5, 9):
+        blocks.append(lz4_sequence(text[:4], (offset, 4)) + lz4_sequence(text[:6], None))
+    out = []
+    for block in blocks:
+        try:
+            real = len(lz4.block.decompress(block, uncompressed_size=1 << 16))
+        except lz4.block.LZ4BlockError:
+            real = 16
+        results, output = [], None
+        for declared in sorted({0, 1, real - 1, real, real + 1, real + 4, real + 5, real + 8, real + 12, real + 13, real + 64}):
+            if declared < 0:
+                continue
+            try:
+                got = lz4.block.decompress(block, uncompressed_size=declared)
+                output = got.hex()
+                results.append([declared, len(got)])
+            except lz4.block.LZ4BlockError:
+                results.append([declared, None])
+        out.append({"block": block.hex(), "output": output, "declared": results})
+    return out
+
+
 def fixtures() -> dict[str, object]:
     meta = {"generator": "tools/fixtures/scaffold.py", "unitypy": UnityPy.__version__}
+    string_data, string_cases = string_to_null_cases()
     return {
         "reader.json": {
             **meta,
@@ -169,10 +234,37 @@ def fixtures() -> dict[str, object]:
             "unpack_from": unpack_cases(),
             "read_u_byte": byte_cases(),
             "align": align_cases(),
-            "string_to_null": string_to_null_cases(),
+            "string_to_null_data": string_data,
+            "string_to_null": string_cases,
         },
         "pptr_external.json": {**meta, "cases": external_cases()},
+        "lz4_blocks.json": {
+            **meta,
+            "python_lz4": lz4.__version__,
+            "liblz4": lz4.library_version_string(),
+            "cases": lz4_cases(),
+        },
     }
+
+
+def dump(body: dict) -> str:
+    """JSON with one list element per line, so a regenerated fixture diffs by case."""
+
+    def compact(v: object) -> str:
+        return json.dumps(v, sort_keys=True, separators=(",", ":"))
+
+    items = sorted(body.items())
+    lines = ["{"]
+    for i, (key, value) in enumerate(items):
+        comma = "," if i < len(items) - 1 else ""
+        if isinstance(value, list):
+            lines.append(f" {json.dumps(key)}: [")
+            lines += [f"  {compact(e)}" + ("," if j < len(value) - 1 else "") for j, e in enumerate(value)]
+            lines.append(" ]" + comma)
+        else:
+            lines.append(f" {json.dumps(key)}: {compact(value)}{comma}")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
 
 
 def main() -> int:
@@ -184,7 +276,7 @@ def main() -> int:
         return 2
     stale = []
     for name, body in fixtures().items():
-        text = json.dumps(body, indent=1, sort_keys=True) + "\n"
+        text = dump(body)
         path = OUT / name
         if args.check:
             if not path.exists() or path.read_text() != text:

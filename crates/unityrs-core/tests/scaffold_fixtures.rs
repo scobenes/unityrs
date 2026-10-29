@@ -91,14 +91,11 @@ fn align_is_python_floor_modulo() {
 #[test]
 fn string_to_null_clamps_the_search() {
     let doc = load("reader.json");
-    let s = &doc["string_to_null"];
-    let datas: Vec<Vec<u8>> = s["data"]
-        .as_array()
-        .unwrap()
+    let datas: Vec<Vec<u8>> = cases(&doc, "string_to_null_data")
         .iter()
         .map(|h| hex(h.as_str().unwrap()))
         .collect();
-    for c in s["cases"].as_array().unwrap() {
+    for c in cases(&doc, "string_to_null") {
         let data = &datas[usize::try_from(small(&c["data"])).unwrap()];
         let max = usize::try_from(small(&c["max"])).unwrap();
         let got = py_string_to_null(data, big(&c["pos"]), max);
@@ -125,6 +122,47 @@ fn external_index_is_python_indexing_after_a_ge_guard() {
         };
         assert_eq!(got, c["outcome"].as_str().unwrap(), "{c}");
     }
+}
+
+/// Why package C's LZ4 codec checks the sequence stream itself (plan
+/// section 3.6): the pinned `lz4_flex` and liblz4 1.9.4 disagree both ways.
+/// `lz4_flex` decodes blocks liblz4 refuses (its end-of-block conditions), so
+/// a bundle UnityPy fails would load; and liblz4 decodes a match at offset 0
+/// (a run of zeros: it writes zeros before copying from the match), which
+/// `lz4_flex` refuses. C's codec test replays this fixture and must match
+/// every verdict and output.
+#[test]
+fn lz4_flex_and_liblz4_disagree_both_ways() {
+    let doc = load("lz4_blocks.json");
+    let (mut checked, mut flex_only, mut liblz4_only) = (0, 0, 0);
+    for c in cases(&doc, "cases") {
+        let block = hex(c["block"].as_str().unwrap());
+        for r in c["declared"].as_array().unwrap() {
+            let declared = usize::try_from(r[0].as_u64().unwrap()).unwrap();
+            let mut out = vec![0; declared];
+            let flex = lz4_flex::block::decompress_into(&block, &mut out);
+            match (r[1].as_u64(), flex) {
+                (Some(n), Ok(m)) => {
+                    let n = usize::try_from(n).unwrap();
+                    assert_eq!(m, n, "{c}");
+                    assert_eq!(hex(c["output"].as_str().unwrap()), out[..n].to_vec(), "{c}");
+                }
+                (Some(_), Err(_)) => liblz4_only += 1,
+                (None, Ok(_)) => flex_only += 1,
+                (None, Err(_)) => {}
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 8000, "{checked}");
+    assert!(
+        flex_only > 0,
+        "lz4_flex now refuses every block liblz4 refuses"
+    );
+    assert!(
+        liblz4_only > 0,
+        "lz4_flex now accepts every block liblz4 accepts"
+    );
 }
 
 fn hex(s: &str) -> Vec<u8> {
