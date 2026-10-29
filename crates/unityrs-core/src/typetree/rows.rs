@@ -55,7 +55,12 @@ pub struct NodeRow {
     /// `m_Index`, as stored, never recomputed.
     pub index: Option<i32>,
     /// `m_MetaFlag`; `None` in old format version 3. `& 0x4000` aligns.
-    pub meta_flag: Option<i32>,
+    /// An `i64`, so that both stored widths keep UnityPy's value: a blob or
+    /// old-format tree stores an `i32` (`hBBIIiii`, `read_int`), widened
+    /// with its sign; a TPK node stores a `u32` (`Tpk.py:361`, `Struct
+    /// ("<HHihbIH")`), widened without one, so a flag of 2^31 or more is the
+    /// large positive int UnityPy holds (A request 3).
+    pub meta_flag: Option<i64>,
     /// `m_RefTypeHash`: blob format 19 and up.
     pub ref_type_hash: Option<u64>,
 }
@@ -75,8 +80,8 @@ impl NodeRow {
 
     /// The same row with `m_MetaFlag` set.
     #[must_use]
-    pub fn with_meta_flag(mut self, meta_flag: i32) -> Self {
-        self.meta_flag = Some(meta_flag);
+    pub fn with_meta_flag(mut self, meta_flag: impl Into<i64>) -> Self {
+        self.meta_flag = Some(meta_flag.into());
         self
     }
 
@@ -129,6 +134,14 @@ impl crate::once::CellError for TreeError {
     fn is_transient(&self) -> bool {
         match self {
             Self::Charge(c) => c.is_transient(),
+            Self::Limit(l) => l.kind == crate::LimitKind::InputMemory,
+            Self::Empty | Self::LevelUnderflow { .. } | Self::TooManyNodes(_) => false,
+        }
+    }
+
+    fn is_meter_refusal(&self) -> bool {
+        match self {
+            Self::Charge(c) => c.is_meter_refusal(),
             Self::Limit(l) => l.kind == crate::LimitKind::InputMemory,
             Self::Empty | Self::LevelUnderflow { .. } | Self::TooManyNodes(_) => false,
         }
