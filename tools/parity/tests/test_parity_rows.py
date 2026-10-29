@@ -44,7 +44,7 @@ try:
         Texture2DArray,
         UnknownObject,
     )
-    from UnityPy.enums import BuildTarget, FileType, TextureFormat
+    from UnityPy.enums import BuildTarget, ClassIDType, FileType, TextureFormat
     from UnityPy.enums.GraphicsFormat import GraphicsFormat
     from UnityPy.export import AudioClipConverter, Texture2DConverter
     from UnityPy.files import BundleFile, WebFile
@@ -904,6 +904,48 @@ class Rows(unittest.TestCase):
         with open(path, "rb") as stream:
             env = quietly(UnityPy.load, stream)
         self.assertEqual(sorted(type(f).__name__ for f in env.files.values()), ["NoneType", "SerializedFile"])
+
+    # Sections 5.2, 19.2: File's iteration and dict-style methods.
+    def test_file_iteration_and_dict_access(self):
+        def two(name):
+            objects = [S.Obj(1, 0, S.s32(name) + S.s32("s")), S.Obj(2, 0, S.s32(f"{name}2") + S.s32("s"))]
+            return S.serialized_file([S.Type(49, TEXT_ASSET)], objects)
+
+        bundle = load(S.fs_bundle([(b"CAB-a", two("a"), 4), (b"CAB-a.resS", b"\x11" * 16, 0)]), "b")[0]
+        sf, raw = bundle.files["CAB-a"], bundle.files["CAB-a.resS"]
+        self.assertIsInstance(raw, EndianBinaryReader)
+        text_asset = [ClassIDType.TextAsset]
+        # A raw reader is skipped: the bundle's objects are the SerializedFile's two.
+        self.assertEqual(list(bundle.get_objects()), list(sf.objects.values()))
+        self.assertEqual(list(bundle.get_assets()), [sf])
+        self.assertEqual([o.path_id for o in bundle.get_filtered_objects(text_asset)], [1, 2])
+        self.assertEqual(list(bundle.get_filtered_objects([ClassIDType.Texture2D])), [])
+        # With no types, `return self.get_objects()` ends the generator: nothing.
+        self.assertEqual((list(bundle.get_filtered_objects()), list(bundle.get_filtered_objects([]))), ([], []))
+        # A SerializedFile's `files` is its objects: get_objects yields them through the ObjectReader branch,
+        # get_filtered_objects takes neither branch, and get_assets' `return self` ends its generator.
+        self.assertIs(sf.files, sf.objects)
+        self.assertEqual(list(sf.get_objects()), list(sf.objects.values()))
+        self.assertEqual((list(sf.get_filtered_objects(text_asset)), list(sf.get_assets())), ([], []))
+        # A nested container is iterated as `f.objects`, which BundleFile and WebFile lack.
+        inner = S.fs_bundle([(b"CAB-i", two("i"), 4)])
+        nested = load(S.fs_bundle([(b"inner", inner, 4), (b"CAB-o", two("o"), 4)]), "n")[0]
+        web = load(S.web_file([(b"inner", inner)]), "w")[0]
+        self.assertIsInstance(web.files["inner"], BundleFile)
+        for container in (nested, web):
+            for call in (container.get_objects, lambda c=container: c.get_filtered_objects(text_asset)):
+                with self.assertRaisesRegex(AttributeError, "'BundleFile' object has no attribute 'objects'"):
+                    list(call())
+        # get_assets recurses: the reference those raises are checked against.
+        self.assertEqual([f.name for f in nested.get_assets()], ["CAB-i", "CAB-o"])
+        # `get` is an attribute lookup; keys, items, values and [] are those of `files`.
+        self.assertEqual((bundle.get("CAB-a"), bundle.get("nope", 5)), (None, 5))
+        self.assertIs(bundle.get("files"), bundle.files)
+        self.assertEqual(list(bundle.keys()), ["CAB-a", "CAB-a.resS"])
+        self.assertEqual(list(bundle.values()), [sf, raw])
+        self.assertEqual(list(bundle.items()), [("CAB-a", sf), ("CAB-a.resS", raw)])
+        self.assertIs(bundle["CAB-a"], sf)
+        self.assertEqual((list(sf.keys()), sf[2]), ([1, 2], sf.objects[2]))
 
     # Section 11: the type character.
     def test_version_type_str_is_lower_case_for_known_types(self):
