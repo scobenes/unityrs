@@ -98,6 +98,7 @@ class TestColumn(unittest.TestCase):
             defined -= {
                 "every_cited_test_exists_and_every_row_test_is_cited",
                 "every_status_agrees_with_its_test_column",
+                "rows_are_cited_by_item_not_by_line",
             }
             named = {name for module, name in cited if module == path.name}
             self.assertEqual(sorted(defined - named), [], f"tests no PARITY.md row names, in {path.name}")
@@ -142,6 +143,12 @@ class TestColumn(unittest.TestCase):
                         self.assertEqual(state, "", "an unknown status")
                         self.assertEqual(set(cells[2:]), {""}, "a row with no status points at another section")
         self.assertGreater(seen, 500)
+
+    def test_rows_are_cited_by_item_not_by_line(self):
+        """A row points at another by its item and section ("the `.splitN` merging row, section 3"), never by a
+        line number of this file, which every edit above it moves."""
+        text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r"\brows? \d+", text), [])
 
 
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
@@ -1058,6 +1065,33 @@ class Rows(unittest.TestCase):
         with open(path, "rb") as stream:
             env = quietly(UnityPy.load, stream)
         self.assertEqual(sorted(type(f).__name__ for f in env.files.values()), ["NoneType", "SerializedFile"])
+        # Every name namelist() gives loads, directory entries included (zip -r and shutil.make_archive write them):
+        # each is an empty raw reader keyed by its name and registered as CAB "", the basename of a name ending in
+        # "/", so the last one registered holds it.
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("assets/", b"")
+            archive.writestr("assets/bin/", b"")
+            archive.writestr("assets/bin/a.assets", text_asset_file("a"))
+        data = bytearray(buffer.getvalue())
+        data[4] = 0
+        env = UnityPy.Environment()
+        quietly(env.load_file, bytes(data), name="dirs.bin")
+        self.assertEqual(
+            zipfile.ZipFile(io.BytesIO(bytes(data))).namelist(), ["assets/", "assets/bin/", "assets/bin/a.assets"]
+        )
+        self.assertEqual(
+            {name: type(f).__name__ for name, f in env.files.items()},
+            {
+                "assets/": "EndianBinaryReader_Streamable",
+                "assets/bin/": "EndianBinaryReader_Streamable",
+                "assets/bin/a.assets": "SerializedFile",
+                "dirs.bin": "NoneType",
+            },
+        )
+        self.assertEqual((len(env.files["assets/"].bytes), len(env.files["assets/bin/"].bytes)), (0, 0))
+        self.assertEqual(list(env.cabs), ["", "a.assets"])
+        self.assertIs(env.cabs[""], env.files["assets/bin/"])
 
     # Sections 2, 2.1: the package's aliases and every re-export section 2.1 lists.
     def test_package_aliases_and_reexports(self):

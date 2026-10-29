@@ -342,9 +342,11 @@ class FileRows(unittest.TestCase):
             e = quietly(UnityPy.Environment, named)
         self.assertEqual((list(e.files), list(e.cabs)), ([str(d / "a.assets")], ["a.assets"]))
         # A stream whose `name` is not a str is keyed by that value too: a TemporaryFile's file descriptor (an
-        # int), a SpooledTemporaryFile's None. A bundle loads under it; a SerializedFile raises AttributeError
-        # (parse_file's `name.endswith`) and a raw file TypeError (register_cab's basename). With `name=` each loads.
+        # int), a SpooledTemporaryFile's None. A bundle or WebFile loads under it; a SerializedFile raises
+        # AttributeError (parse_file's `name.endswith`) and a raw file TypeError (register_cab's basename). With
+        # `name=` each loads.
         bundle, serialized = S.fs_bundle([(b"CAB-a", text_asset_file("in bundle"), 4)]), text_asset_file("t")
+        web = S.web_file([(b"cab-w", text_asset_file("in web"))])
         raw = b"not a unity file, " * 8
 
         def stream(kind, data):
@@ -356,9 +358,10 @@ class FileRows(unittest.TestCase):
 
         for kind, type_name in (("int", "int"), ("None", "NoneType")):
             with self.subTest(name=kind):
-                f = stream(kind, bundle)
-                e = quietly(UnityPy.Environment, f)
-                self.assertEqual((list(e.files), list(e.cabs)), ([f.name], ["cab-a"]))
+                for payload, cab in ((bundle, "cab-a"), (web, "cab-w")):
+                    f = stream(kind, payload)
+                    e = quietly(UnityPy.Environment, f)
+                    self.assertEqual((list(e.files), list(e.cabs)), ([f.name], [cab]))
                 self.assertIsInstance(f.name, int if kind == "int" else type(None))
                 with self.assertRaisesRegex(AttributeError, f"^'{type_name}' object has no attribute 'endswith'$"):
                     quietly(UnityPy.Environment, stream(kind, serialized))
@@ -370,6 +373,79 @@ class FileRows(unittest.TestCase):
                     quietly(e.load_file, stream(kind, payload), name="given")
                     self.assertEqual(list(e.files), ["given"])
                     self.assertTrue(type(e.files["given"]).__name__.startswith(loaded))
+        # A stream opened from a bytes path has a bytes `name`. A bundle, a WebFile and a raw file load under it, the
+        # raw file registered under its bytes basename lower-cased (ntpath.basename takes bytes); a SerializedFile
+        # raises TypeError, from bytes.endswith given str suffixes.
+        named_by_bytes = {}
+        for payload, file_name in ((bundle, "B.bundle"), (web, "W.data"), (raw, "Raw.Bin"), (serialized, "S.assets")):
+            path = d / "bytes" / file_name
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(payload)
+            with open(os.fsencode(path), "rb") as f:
+                try:
+                    e = quietly(UnityPy.Environment, f)
+                except TypeError as error:
+                    named_by_bytes[file_name] = str(error)
+                    continue
+            self.assertEqual(list(e.files), [os.fsencode(path)])
+            named_by_bytes[file_name] = (list(e.cabs), type(e.files[os.fsencode(path)]).__name__)
+        self.assertEqual(
+            named_by_bytes,
+            {
+                "B.bundle": (["cab-a"], "BundleFile"),
+                "W.data": (["cab-w"], "WebFile"),
+                "Raw.Bin": ([b"raw.bin"], "EndianBinaryReader_Streamable"),
+                "S.assets": "a bytes-like object is required, not 'str'",
+            },
+        )
+        # A file keyed by such a name breaks two later calls (section 19.2). PPtr.deref from a SerializedFile
+        # loaded on its own compares `key.lower()` for each Environment key in order, so an int or None key ahead
+        # of the match raises AttributeError, one after it is never reached, and a bytes key (bytes have `lower`)
+        # never matches. Environment.save of such a file, once changed, raises TypeError: ntpath.basename of an
+        # int or None, or joining out_path with a bytes basename.
+        from UnityPy.classes import PPtr
+
+        main = S.serialized_file(
+            [S.Type(49, TEXT_ASSET)], [S.Obj(1, 0, S.s32("main") + S.s32("s"))], externals=[S.External(b"other.assets")]
+        )
+
+        def deref_after(first=None, last=None):
+            e = UnityPy.Environment()
+            if first is not None:
+                quietly(e.load_file, first)
+            quietly(e.load_file, text_asset_file("other"), name="other.assets")
+            sf = quietly(e.load_file, main, name="main.assets")
+            if last is not None:
+                quietly(e.load_file, last)
+            return PPtr(m_FileID=1, m_PathID=1, assetsfile=sf).deref().parse_as_dict()["m_Name"]
+
+        for kind, type_name in (("int", "int"), ("None", "NoneType")):
+            with self.subTest(deref=kind):
+                with self.assertRaisesRegex(AttributeError, f"^'{type_name}' object has no attribute 'lower'$"):
+                    deref_after(first=stream(kind, bundle))
+                self.assertEqual(deref_after(last=stream(kind, bundle)), "other")
+        with open(os.fsencode(d / "bytes" / "B.bundle"), "rb") as f:
+            self.assertEqual(deref_after(first=f), "other")
+        out = d / "out"
+        out.mkdir()
+        for kind, message in (
+            ("int", "^expected str, bytes or os.PathLike object, not int$"),
+            ("None", "^expected str, bytes or os.PathLike object, not NoneType$"),
+            ("bytes", "^sequence item 1: expected str instance, bytes found$"),
+        ):
+            with self.subTest(save=kind):
+                e = UnityPy.Environment()
+                if kind == "bytes":
+                    with open(os.fsencode(d / "bytes" / "B.bundle"), "rb") as f:
+                        quietly(e.load_file, f).mark_changed()
+                else:
+                    quietly(e.load_file, stream(kind, bundle)).mark_changed()
+                with self.assertRaisesRegex(TypeError, message):
+                    e.save(out_path=str(out))
+                e = UnityPy.Environment()
+                quietly(e.load_file, stream("int", bundle), name=f"given-{kind}").mark_changed()
+                e.save(out_path=str(out))
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ["given-None", "given-bytes", "given-int"])
         # Anything else is keyed by str(obj.__hash__()) (section 19.2): bytes and a read-only memoryview by the
         # bytes' hash, a nameless stream by its own id-based hash.
         data = text_asset_file("q")
