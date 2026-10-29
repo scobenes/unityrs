@@ -49,25 +49,96 @@ use crate::raw::RawStr;
 pub const PY_INT_MAX_STR_DIGITS: usize = 4300;
 
 /// The packed integer, exactly. Most versions fit `u128`; a major of 2^80 or
-/// more does not, and the canonical dump writes the exact integer. Ordered as
-/// Python orders the integers (implemented by the scaffold).
+/// more does not, and the canonical dump writes the exact integer. Ordered,
+/// compared and hashed as Python's `int` (implemented by the scaffold).
+///
+/// The representation is private and always canonical: a value below 2^128
+/// is held as a `u128`, and a larger one as little-endian limbs with a
+/// non-zero top limb. So [`Packed::from_limbs`] of a value written with
+/// leading zero limbs (a 4,300-digit group of leading zeros, sized from its
+/// digit count) equals, hashes and orders as the same value from
+/// [`Packed::from_u128`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Packed {
+pub struct Packed(Repr);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Repr {
     /// Below 2^128.
     Small(u128),
-    /// 2^128 or more: little-endian `u64` limbs, the last one non-zero.
+    /// 2^128 or more: little-endian `u64` limbs, more than two, the last
+    /// one non-zero.
     Big(Box<[u64]>),
+}
+
+impl Packed {
+    /// The value `v`.
+    #[must_use]
+    pub const fn from_u128(v: u128) -> Self {
+        Self(Repr::Small(v))
+    }
+
+    /// The value of little-endian `u64` limbs, any number of them, leading
+    /// (most significant) zero limbs included.
+    #[must_use]
+    pub fn from_limbs(limbs: &[u64]) -> Self {
+        let len = limbs.iter().rposition(|l| *l != 0).map_or(0, |i| i + 1);
+        let limbs = limbs.get(..len).unwrap_or_default();
+        match limbs {
+            [] => Self::from_u128(0),
+            [lo] => Self::from_u128(u128::from(*lo)),
+            [lo, hi] => Self::from_u128(u128::from(*lo) | (u128::from(*hi) << 64)),
+            _ => Self(Repr::Big(limbs.into())),
+        }
+    }
+
+    /// The value, when it is below 2^128.
+    #[must_use]
+    pub fn as_u128(&self) -> Option<u128> {
+        match &self.0 {
+            Repr::Small(v) => Some(*v),
+            Repr::Big(_) => None,
+        }
+    }
+
+    /// The value as little-endian `u64` limbs, without leading zero limbs
+    /// (empty for 0).
+    #[must_use]
+    pub fn to_limbs(&self) -> Vec<u64> {
+        match &self.0 {
+            Repr::Small(v) => {
+                // Both halves of a u128, the high one first cut away when zero.
+                let lo = u64::try_from(v & u128::from(u64::MAX)).unwrap_or(u64::MAX);
+                let hi = u64::try_from(v >> 64).unwrap_or(u64::MAX);
+                match (lo, hi) {
+                    (0, 0) => Vec::new(),
+                    (lo, 0) => vec![lo],
+                    (lo, hi) => vec![lo, hi],
+                }
+            }
+            Repr::Big(limbs) => limbs.to_vec(),
+        }
+    }
+
+    /// The heap bytes the value owns (0 below 2^128).
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        match &self.0 {
+            Repr::Small(_) => 0,
+            Repr::Big(limbs) => limbs.len() * 8,
+        }
+    }
 }
 
 impl Ord for Packed {
     fn cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            (Self::Small(a), Self::Small(b)) => a.cmp(b),
-            (Self::Small(_), Self::Big(_)) => Ordering::Less,
-            (Self::Big(_), Self::Small(_)) => Ordering::Greater,
+        match (&self.0, &other.0) {
+            (Repr::Small(a), Repr::Small(b)) => a.cmp(b),
+            // Canonical: every `Big` is at least 2^128, above every `Small`.
+            (Repr::Small(_), Repr::Big(_)) => Ordering::Less,
+            (Repr::Big(_), Repr::Small(_)) => Ordering::Greater,
             // Limbs are little-endian with a non-zero last limb: more limbs is
             // larger, else compare from the most significant limb down.
-            (Self::Big(a), Self::Big(b)) => a
+            (Repr::Big(a), Repr::Big(b)) => a
                 .len()
                 .cmp(&b.len())
                 .then_with(|| a.iter().rev().cmp(b.iter().rev())),
@@ -112,7 +183,7 @@ impl UnityVersion {
     pub fn from_packed(packed: u64) -> Self {
         Self {
             raw: RawStr::default(),
-            packed: Packed::Small(u128::from(packed)),
+            packed: Packed::from_u128(u128::from(packed)),
         }
     }
 
@@ -129,10 +200,7 @@ impl UnityVersion {
     /// The packed value when it fits `u64` (TPK lookups compare these).
     /// Implemented by the scaffold.
     pub fn packed_u64(&self) -> Option<u64> {
-        match &self.packed {
-            Packed::Small(v) => u64::try_from(*v).ok(),
-            Packed::Big(_) => None,
-        }
+        self.packed.as_u128().and_then(|v| u64::try_from(v).ok())
     }
 
     /// `(major, minor, build, type, number)`, each cut to its slot (16, 16, 16,
@@ -294,11 +362,43 @@ mod tests {
     }
 
     #[test]
+    fn a_value_has_one_form_whatever_its_leading_zeros() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let hash = |p: &Packed| {
+            let mut h = DefaultHasher::new();
+            p.hash(&mut h);
+            h.finish()
+        };
+        // "000…01" sized from its 4,300 digits: 224 limbs, value 1.
+        let mut limbs = vec![0_u64; 224];
+        limbs[0] = 1;
+        let padded = Packed::from_limbs(&limbs);
+        let one = Packed::from_u128(1);
+        assert_eq!(padded, one);
+        assert_eq!(hash(&padded), hash(&one));
+        assert_eq!(padded.cmp(&one), std::cmp::Ordering::Equal);
+        assert!(padded < Packed::from_u128(2));
+        // Two limbs fit u128; a zero top limb is dropped.
+        assert_eq!(
+            Packed::from_limbs(&[5, 7, 0]),
+            Packed::from_u128(5 | (7 << 64))
+        );
+        assert_eq!(Packed::from_limbs(&[]), Packed::from_u128(0));
+        assert_eq!(Packed::from_limbs(&[0, 0, 1]).to_limbs(), [0, 0, 1]);
+        assert_eq!(
+            Packed::from_u128(u128::MAX).to_limbs(),
+            [u64::MAX, u64::MAX]
+        );
+        assert_eq!(Packed::from_u128(0).to_limbs(), Vec::<u64>::new());
+    }
+
+    #[test]
     fn big_packed_values_order_by_magnitude() {
-        let small = Packed::Small(u128::MAX);
-        let big_lo = Packed::Big(vec![u64::MAX, 0, 1].into());
-        let big_hi = Packed::Big(vec![0, 1, 1].into());
-        let bigger = Packed::Big(vec![0, 0, 0, 1].into());
+        let small = Packed::from_u128(u128::MAX);
+        let big_lo = Packed::from_limbs(&[u64::MAX, 0, 1]);
+        let big_hi = Packed::from_limbs(&[0, 1, 1]);
+        let bigger = Packed::from_limbs(&[0, 0, 0, 1]);
         assert!(small < big_lo);
         assert!(big_lo < big_hi, "compared from the most significant limb");
         assert!(big_hi < bigger);
