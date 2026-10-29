@@ -9,6 +9,7 @@ import contextlib
 import gzip
 import io
 import os
+import re
 import struct
 import sys
 import tempfile
@@ -58,6 +59,23 @@ def quietly(call, *args, **kw):
 def load(data, name="f.assets", env=None):
     env = env or UnityPy.Environment()
     return quietly(env.load_file, data, name=name), env
+
+
+class TestColumn(unittest.TestCase):
+    """PARITY.md's test column and the tests it names agree (standard library)."""
+
+    CITED = re.compile(r"`(test_[a-z_]+\.py)` ([a-z0-9_]+)")
+
+    def test_every_cited_test_exists_and_every_row_test_is_cited(self):
+        text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
+        cited = set(self.CITED.findall(text))
+        for module, name in sorted(cited):
+            source = (HERE / "tests" / module).read_text(encoding="utf-8")
+            self.assertIn(f"def test_{name}(", source, f"PARITY.md cites {module} {name}, which does not exist")
+        defined = set(re.findall(r"def test_([a-z0-9_]+)\(", Path(__file__).read_text(encoding="utf-8")))
+        defined.discard("every_cited_test_exists_and_every_row_test_is_cited")
+        named = {name for module, name in cited if module == "test_parity_rows.py"}
+        self.assertEqual(sorted(defined - named), [], "tests no PARITY.md row names")
 
 
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")

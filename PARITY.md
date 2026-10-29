@@ -680,7 +680,7 @@ One row per `TextureFormat` value (78; 37-40 are unassigned). Lines are in `expo
 - **`set_image` writes**: the format `image_to_texture2d` writes for that target from an RGBA image (`:118-234`).
 - **tier** and **status**: section 0. Tier A rows get L5 goldens against the oracle, Tier B rows an independent reference, Tier C rows a pinned divergence test; `DESIGN.md` section 5 puts BC7, DXT1, DXT5, RGBA32 and RGB24 in P1 and every other format in P3.
 
-`test_texture_matrix.py` checks the mode, UnityPy and `set_image` columns of every row against the oracle (texture_matrix_matches_the_oracle), and the pixels of every row that returns an image (pixels_match_the_matrix).
+In `test_texture_matrix.py`, the test texture_matrix_matches_the_oracle checks the mode, UnityPy and `set_image` columns of every row against the oracle, and pixels_match_the_matrix checks the pixels of every row that returns an image.
 
 | value | format | decoder | mode | conversion | gates | UnityPy 1.25.2 | `set_image` writes | tier | status |
 |---|---|---|---|---|---|---|---|---|---|
