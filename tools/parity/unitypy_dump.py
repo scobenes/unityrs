@@ -14,18 +14,21 @@ oracle stack in the unityrs-dev container).
 from __future__ import annotations
 
 import argparse
+import contextlib
+import ctypes
 import fnmatch
 import gzip
 import hashlib
+import io
 import json
 import os
 import re
+import signal
 import sys
 import time
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor
-from concurrent.futures.process import BrokenProcessPool
 from multiprocessing import get_context
+from multiprocessing.connection import wait
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -42,9 +45,8 @@ HAVE_BOOST = TypeTreeHelper.read_typetree_boost is not None
 
 NOTE_MAX = 300
 INDEX_KINDS = ("bundle", "unitypy-sample")
-# Inputs a worker process dumps before it is replaced, which bounds what
-# UnityPy's caches can hold.
-TASKS_PER_WORKER = 50
+# References added to None in each input's process (see pin_none).
+NONE_PIN = 1 << 40
 
 
 def oracle_stack_problem() -> str | None:
@@ -98,9 +100,34 @@ def detect(data: bytes) -> str:
         return "error"
 
 
-def note(e: BaseException) -> str:
-    text = f"{type(e).__name__}: {e}"
+def note(e: BaseException | str) -> str:
+    """A message as a note: valid Unicode, whatever bytes it quotes, and at most NOTE_MAX characters.
+
+    UnityPy puts file bytes into messages raw ("Invalid version string: ..."
+    with surrogate escapes); those are written as backslash escapes.
+    """
+    text = e if isinstance(e, str) else f"{type(e).__name__}: {e}"
+    text = text.encode("utf-8", "backslashreplace").decode("utf-8")
     return text if len(text) <= NOTE_MAX else text[: NOTE_MAX - 3] + "..."
+
+
+def pin_none():
+    """Make None immortal in this process, as Python 3.12 does (PEP 683).
+
+    UnityPyBoost drops a reference to None for every ReferencedObject with an
+    empty class name it reads (spec section 7). On Python 3.11 enough of them
+    would deallocate None and abort the process, at a point that depends on
+    everything the process read before. Each input runs in its own process
+    (run_jobs), and this pin makes the count unreachable within one input.
+    """
+    if sys.version_info >= (3, 12):
+        return
+    if sys.implementation.name != "cpython" or hasattr(sys, "getobjects"):
+        raise RuntimeError("pin_none needs a CPython build whose objects start with their reference count")
+    before = sys.getrefcount(None)
+    ctypes.c_ssize_t.from_address(id(None)).value += NONE_PIN
+    if sys.getrefcount(None) != before + NONE_PIN:
+        raise RuntimeError("could not pin None")
 
 
 def node_rows(root):
@@ -377,7 +404,14 @@ def emit_file(f, path, l0, levels, out, stats):
 
 
 def dump_input(job):
-    """Dump one input file to canonical lines; runs in a worker process."""
+    """Dump one input file to canonical lines; run_jobs runs it in a process of its own."""
+    # UnityPy prints each load error to stdout, quoting the file's bytes; with a
+    # strict stdout encoding that print raises and replaces the error.
+    with contextlib.redirect_stdout(io.StringIO()):
+        return _dump_input(job)
+
+
+def _dump_input(job):
     abs_path, rel, levels = job
     stats = Counter()
     t0 = time.perf_counter()
@@ -464,35 +498,89 @@ def collect_inputs(args) -> list[tuple[str, str, str | None]]:
     return items
 
 
-class WorkerDied(RuntimeError):
-    """A worker process ended without returning its input's result."""
+def crash_result(job, why):
+    """The one file record of an input whose process died or raised: error kind "crash"."""
+    abs_path, rel, _ = job
+    data = Path(abs_path).read_bytes()
+    sha = hashlib.sha256(data).hexdigest()
+    l0 = {"type": detect(data), "parsed_as": "error", "size": len(data), "sha256": sha}
+    rec = {
+        "rec": "file",
+        "file": [C.enc_name(rel)],
+        "l0": l0,
+        "l1": None,
+        "error": {"kind": "crash", "note": note(why)},
+    }
+    text = C.dumps(rec) + "\n"
+    stats = Counter(files=1, crashes=1, bytes_in=len(data), bytes_out=len(text.encode("utf-8")))
+    return rel, text, stats, sha
+
+
+def _child(conn, job):
+    """One input in a fresh process; whatever happens here costs only this input."""
+    pin_none()
+    try:
+        result = ("ok", dump_input(job))
+    except BaseException as e:  # noqa: BLE001 - becomes this input's crash record
+        result = ("raised", f"the dump raised {note(e)}")
+    conn.send(result)
+    conn.close()
+
+
+def _died(code):
+    if code is not None and code < 0:
+        try:
+            return f"the process dumping this input died of {signal.Signals(-code).name}"
+        except ValueError:
+            pass
+        return f"the process dumping this input died of signal {-code}"
+    return f"the process dumping this input exited with status {code} and no result"
 
 
 def run_jobs(jobs, workers):
     """dump_input over jobs, results in input order, so the output is the same as a serial run.
 
-    A worker that dies (the cgroup OOM killer, a crash inside UnityPyBoost)
-    raises WorkerDied instead of hanging the dump, as multiprocessing.Pool
-    would. Each batch gets a fresh executor, so no worker outlives
-    TASKS_PER_WORKER inputs on average.
+    Each input runs in a process forked for it alone, at most `workers` at a
+    time. No input can see what UnityPy cached or leaked for another, and one
+    that kills its process (a UnityPyBoost crash, the cgroup OOM killer) or
+    raises becomes a crash record (crash_result) while the dump goes on.
     """
-    if workers <= 1:
-        yield from map(dump_input, jobs)
-        return
-    batch = workers * TASKS_PER_WORKER
-    for start in range(0, len(jobs), batch):
-        chunk = jobs[start : start + batch]
-        executor = ProcessPoolExecutor(workers, mp_context=get_context("fork"))
-        try:
-            futures = [executor.submit(dump_input, job) for job in chunk]
-            for job, future in zip(chunk, futures, strict=True):
-                try:
-                    result = future.result()
-                except BrokenProcessPool as e:
-                    raise WorkerDied(f"a worker process died (killed or crashed) before {job[1]!r} was dumped") from e
-                yield result
-        finally:
-            executor.shutdown(wait=True, cancel_futures=True)
+    ctx = get_context("fork")
+    workers = max(1, workers)
+    running = {}  # index -> (process, receiving end)
+    finished = {}
+    started = 0
+    try:
+        for i in range(len(jobs)):
+            while i not in finished:
+                while started < len(jobs) and len(running) < workers and started - i < 2 * workers:
+                    recv, send = ctx.Pipe(duplex=False)
+                    proc = ctx.Process(target=_child, args=(send, jobs[started]), daemon=True)
+                    proc.start()
+                    send.close()
+                    running[started] = (proc, recv)
+                    started += 1
+                ready = wait([recv for _, recv in running.values()])
+                for k, (proc, recv) in list(running.items()):
+                    if recv not in ready:
+                        continue
+                    try:
+                        msg = recv.recv()
+                    except EOFError:
+                        msg = None
+                    recv.close()
+                    proc.join()
+                    del running[k]
+                    if msg is not None and msg[0] == "ok":
+                        finished[k] = msg[1]
+                    else:
+                        finished[k] = crash_result(jobs[k], msg[1] if msg else _died(proc.exitcode))
+            yield finished.pop(i)
+    finally:
+        for proc, recv in running.values():
+            proc.kill()
+            proc.join()
+            recv.close()
 
 
 def open_output(path: Path, compress: bool):
@@ -575,6 +663,8 @@ def main(argv=None):
         for i, (rel, text, stats, sha) in enumerate(results, 1):
             fh.write(text.encode("utf-8"))
             totals.update(stats)
+            if stats["crashes"]:
+                print(f"warning: {rel}: {json.loads(text)['error']['note']}", file=sys.stderr)
             if expected[rel] and expected[rel] != sha:
                 totals["index_sha256_mismatch"] += 1
                 print(f"warning: {rel}: sha256 {sha} differs from the index", file=sys.stderr)
@@ -587,9 +677,6 @@ def main(argv=None):
                 )
         fh.write((C.dumps({"rec": "end", "files": totals["files"], "objects": totals["objects"]}) + "\n").encode())
         done = True
-    except WorkerDied as e:
-        print(f"unitypy_dump: {e}; no dump written", file=sys.stderr)
-        return 1
     finally:
         if results is not None:
             results.close()

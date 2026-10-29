@@ -24,6 +24,7 @@ The format makes two promises:
 Each line is exactly what Python's `json.dumps(record, ensure_ascii=False, separators=(",", ":"))` writes. That is also what serde_json's compact writer emits when members are serialised in the listed order (use struct field order, or `serde_json` with `preserve_order`).
 - **Whitespace:** none outside strings.
 - **Member order:** exactly as each record's table below lists it. Every listed member is present, with `null` where it does not apply. The one exception is `note`, which is optional and always comes last.
+- **Notes** are free text for people and are never compared. Like every other string they are valid Unicode: the oracle writes the bytes a message quotes that are not valid UTF-8 as Python backslash escapes (`\udcff`).
 - **Strings:**
   - Escape `"` as `\"` and `\` as `\\`.
   - Escape U+0008, U+0009, U+000A, U+000C and U+000D as `\b`, `\t`, `\n`, `\f` and `\r`.
@@ -102,7 +103,7 @@ Each record's first member is `rec`.
 | `file` | the file's identity, a list of names: `[input]` for an input, `[input, entry]` for a bundle or WebFile entry, and so on down. |
 | `l0` | detection (below) |
 | `l1` | container metadata by kind (below), or `null` when the file parsed as raw, zip or error, or when the dump has no L1 |
-| `error` | `null`, or `{"kind":K}` with `K` either `"detect"` (`check_file_type` raised) or `"parse"` (the parser raised). An optional `note` gives the message. Only an input's own record carries an error (see "A failing entry" below). |
+| `error` | `null`, or `{"kind":K}` with `K` one of `"detect"` (`check_file_type` raised), `"parse"` (the parser raised) and `"crash"` (the process dumping the input died, or raised outside UnityPy's parse). An optional `note` gives the message. Only an input's own record carries an error (see "A failing entry" below). |
 
 **Names.**
 - `input` is the input's path relative to the dump root, with `/` separators:
@@ -114,6 +115,8 @@ Each record's first member is `rec`.
 **The metadata-string rule.** Every string the dump takes from a file or a file name, other than a typetree value, is written as a name. That covers input and entry names, `signature`, `version_player`, `version_engine`, `unity_version`, `user_information`, directory, external and container paths, `temp_empty`, typetree node types and names, the class, namespace and assembly of a type record, and `root_type`. A name is a JSON string when its bytes are valid UTF-8, and otherwise `{"t":"str","hex":H}` at any length. It is never summarised: the raw-bytes rule of section 3 applies only inside values.
 
 **A failing entry fails its input.** UnityPy reads a bundle's or WebFile's entries with no error handling. An entry whose detection or parse raises (a SerializedFile that does not parse, or a broken AssetBundle object inside one) therefore fails the whole top-level input. That input gets one `file` record, with `l0.parsed_as` `"error"`, `l1` `null` and `{"kind":"parse"}`, and no records for any of its entries. So an entry record never carries an `error`, and `l0.type` is `"error"` only on an input's own record.
+
+**A crash fails its input.** The oracle dumps each input in a process of its own. When that process dies (UnityPyBoost aborts or segfaults, section 7, or the memory cap kills it) or raises outside UnityPy's parse, the input gets one `file` record, with `l0.type` as detected, `l0.parsed_as` `"error"`, `l1` `null` and `{"kind":"crash"}`, and no other records. The `note` names the signal or the exception. A kill by the memory cap (`SIGKILL`) depends on the machine and the number of jobs, not on the input.
 
 **`l0`** (member order `type`, `parsed_as`, `size`, `sha256`):
 
@@ -284,7 +287,12 @@ These are UnityPy 1.25.2 facts that a unityrs producer must reproduce to match, 
   - It reads a negative or out-of-range string length as `""` instead of failing.
 - Both paths apply the same ManagedReferencesRegistry scope (section 3).
 
-**ReferencedObject.** UnityPyBoost skips the `data` of an empty class name in arrays as well. The pure-Python path does not; that bug is not reachable on the Boost path.
+**ReferencedObject.**
+- UnityPyBoost skips the `data` of an empty class name in arrays as well. The pure-Python path does not; that bug is not reachable on the Boost path.
+- UnityPy's writer needs every ReferencedObject's `data` entry, which the reader leaves out for an empty class name. An object holding one therefore resaves as `error`: `KeyError: 'data'`, or `ValueError: SerializedFile has no ref_types` when the file has none. A writer that round-trips the reference gets `equal` there.
+- UnityPyBoost drops one reference to `None` for each empty-class ReferencedObject it reads: `get_ref_type_node` returns `Py_None` without a new reference, and its caller releases one. On Python 3.11 a process that reads as many of them as `None` has references aborts (`none_dealloc`), wherever it is. The oracle pins `None` in each input's process, so no record shows the leak.
+
+**UnityPyBoost crashes.** UnityPyBoost builds typetree nodes with `PyUnicode_AsUTF8` and uses the result unchecked. A node type or name that is not valid UTF-8 therefore kills the process while the SerializedFile loads: a bad name aborts (`SIGABRT`) and a bad type segfaults (`SIGSEGV`). Such an input gets the crash record (section 4.2), so no reference exists for its contents. A unityrs producer that dumps the file, with hex-tagged names (section 4.2), records the difference as a deliberate divergence.
 
 **Object table.**
 - `objects` is a dict keyed by `path_id`, so a repeated `path_id` keeps its first position with the last entry. `object_order` and the `object` records show that collapsed view.
@@ -293,6 +301,7 @@ These are UnityPy 1.25.2 facts that a unityrs producer must reproduce to match, 
 
 **Load-time parses.**
 - A SerializedFile parses its AssetBundle object while loading, so a broken AssetBundle fails the whole top-level input (`error.kind` `"parse"`), even when the SerializedFile is a bundle entry (section 4.2).
+- UnityPy prints every load error to stdout, quoting the file's bytes raw (`Invalid version string: ` and the surrogate-escaped string). The oracle discards that print, because with a strict stdout encoding the print itself raises and replaces the error, and it escapes the note (section 2).
 - An unparseable engine version with no `UnityPy.config.FALLBACK_UNITY_VERSION` raises.
 
 ## 8. Not covered by format 1

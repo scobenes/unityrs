@@ -14,11 +14,11 @@ import io
 import json
 import os
 import shutil
+import signal
 import struct
 import subprocess
 import sys
 import tempfile
-import textwrap
 import unittest
 import zipfile
 from collections import Counter
@@ -27,6 +27,7 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE / "tests"))
 
 try:
     import unitypy_dump
@@ -34,6 +35,7 @@ except ImportError:  # pragma: no cover - outside the oracle image
     unitypy_dump = None
 
 import compare  # noqa: E402
+import synth as S  # noqa: E402
 
 SAMPLES = {
     "atlas_test": "61ee5afb5f5c64f0a4f65f039d09b2509198363e713423289c895067ac215177",
@@ -96,6 +98,21 @@ def dump(*argv):
     """Run the dumper in-process, quietly (UnityPy prints load errors); returns its exit status."""
     with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
         return unitypy_dump.main(["-q", *map(str, argv)])
+
+
+def dump_process(*argv, env=None):
+    """Run the dumper as its own process, for inputs that could take the test runner down with it."""
+    return subprocess.run(
+        [sys.executable, "-B", str(HERE / "unitypy_dump.py"), "-q", *map(str, argv)],
+        capture_output=True,
+        env={**os.environ, **(env or {})},
+        timeout=300,
+    )
+
+
+def assets(tree, data, **kw):
+    """A format-22 SerializedFile with one MonoBehaviour-class object (path_id 1) typed by `tree`."""
+    return S.serialized_file([S.Type(114, tree)], [S.Obj(1, 0, data)], **kw)
 
 
 @unittest.skipIf(unitypy_dump is None, "needs UnityPy (the oracle image)")
@@ -325,31 +342,114 @@ class DumpTests(unittest.TestCase):
         )
         self.assert_canonical(out)
 
-    def test_a_dead_worker_fails_the_dump(self):
-        """-j N: a worker the OOM killer or a crash takes ends the dump with an error instead of a hang."""
+    def test_a_dead_or_raising_input_process_is_one_crash_record(self):
+        """An input whose process is killed (the OOM killer) or raises is recorded, and the dump goes on."""
         d = self.tmp / "in"
         d.mkdir()
-        for name in "abc":
+        for name in "abcd":
             (d / name).write_bytes(b"tiny")
-        out = self.tmp / "dead.jsonl"
-        script = textwrap.dedent(
-            f"""
-            import os, signal, sys
-            sys.path.insert(0, {str(HERE)!r})
-            import unitypy_dump
-            real = unitypy_dump.dump_input
-            def dying(job):
-                if job[1] == "b":
-                    os.kill(os.getpid(), signal.SIGKILL)
-                return real(job)
-            unitypy_dump.dump_input = dying
-            sys.exit(unitypy_dump.main([{str(d)!r}, "-o", {str(out)!r}, "-q", "-j", "2"]))
-            """
+        real = unitypy_dump.dump_input
+
+        def failing(job):
+            if job[1] == "b":
+                os.kill(os.getpid(), signal.SIGKILL)
+            if job[1] == "c":
+                raise RuntimeError("boom \udcff")
+            return real(job)
+
+        outs = []
+        for jobs in ("1", "3"):
+            out = self.tmp / f"dead{jobs}.jsonl"
+            with mock.patch.object(unitypy_dump, "dump_input", failing):
+                self.assertEqual(dump(d, "-o", out, "-j", jobs), 0)
+            outs.append(out.read_bytes())
+            self.assert_canonical(out)
+            recs = {r["file"][0]: r for r in records(out) if r["rec"] == "file"}
+            self.assertEqual(sorted(recs), ["a", "b", "c", "d"])
+            for name, why in (("b", "died of SIGKILL"), ("c", "raised RuntimeError: boom \\udcff")):
+                rec = recs[name]
+                self.assertEqual(
+                    (rec["l0"]["type"], rec["l0"]["parsed_as"], rec["l1"]), ("ResourceFile", "error", None)
+                )
+                self.assertEqual(rec["error"]["kind"], "crash")
+                self.assertIn(why, rec["error"]["note"])
+            self.assertEqual((recs["a"]["error"], recs["d"]["error"]), (None, None))
+        self.assertEqual(outs[0], outs[1])
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["dead1.jsonl", "dead3.jsonl", "in"])
+
+    def test_a_unitypyboost_crash_costs_only_its_input(self):
+        """A typetree node name or type that is not UTF-8 crashes UnityPyBoost while the file loads (spec 7)."""
+        d = self.tmp / "in"
+        d.mkdir()
+        good = assets(S.Node("MyThing", "Base", [S.Node("int", "i")]), struct.pack("<i", 7))
+        (d / "a.assets").write_bytes(good)
+        (d / "b_name.assets").write_bytes(assets(S.Node("MyThing", "Base", [S.Node("int", b"a\xffb")]), bytes(4)))
+        (d / "c_type.assets").write_bytes(assets(S.Node("MyThing", "Base", [S.Node(b"in\xfft", "i")]), bytes(4)))
+        (d / "d.assets").write_bytes(good)
+        outs = []
+        for jobs in ("1", "2"):
+            out = self.tmp / f"boost{jobs}.jsonl"
+            proc = dump_process(d, "-o", out, "-j", jobs)
+            self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+            outs.append(out.read_bytes())
+            recs = {r["file"][0]: r for r in records(out) if r["rec"] == "file"}
+            for name, signame in (("b_name.assets", "SIGABRT"), ("c_type.assets", "SIGSEGV")):
+                self.assertEqual(recs[name]["l0"]["parsed_as"], "error")
+                self.assertEqual(recs[name]["error"]["kind"], "crash")
+                self.assertIn(f"died of {signame}", recs[name]["error"]["note"])
+            objects = [r for r in records(out) if r["rec"] == "object"]
+            self.assertEqual(
+                [(r["file"], r["l2"]["value"]) for r in objects],
+                [
+                    (["a.assets"], {"t": "dict", "v": [["i", 7]]}),
+                    (["d.assets"], {"t": "dict", "v": [["i", 7]]}),
+                ],
+            )
+            self.assert_canonical(out)
+        self.assertEqual(outs[0], outs[1])
+
+    def test_a_load_error_quoting_bad_bytes_is_a_parse_record_in_any_environment(self):
+        """UnityPy's message quotes the bytes raw and its print of it can raise; neither may cost the dump."""
+        d = self.tmp / "in"
+        d.mkdir()
+        (d / "bad_version.assets").write_bytes(
+            assets(S.Node("MyThing", "Base", [S.Node("int", "i")]), bytes(4), unity_version=b"\xff\xfe")
         )
-        proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
-        self.assertEqual(proc.returncode, 1, proc.stderr)
-        self.assertIn("worker process died", proc.stderr)
-        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["in"], "no dump and no .partial left")
+        (d / "ok").write_bytes(b"tiny")
+        outs = []
+        for env in ({}, {"PYTHONIOENCODING": "utf-8:strict"}):
+            out = self.tmp / f"v{len(outs)}.jsonl"
+            proc = dump_process(d, "-o", out, env=env)
+            self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+            self.assertEqual(proc.stdout, b"")
+            outs.append(out.read_bytes())
+            rec = records(out)[1]
+            self.assertEqual((rec["l0"]["parsed_as"], rec["error"]["kind"]), ("error", "parse"))
+            self.assertEqual(rec["error"]["note"], "ValueError: Invalid version string: \\udcff\\udcfe")
+            self.assert_canonical(out)
+        self.assertEqual(outs[0], outs[1])
+
+    def test_empty_class_references_never_abort_the_oracle(self):
+        """UnityPyBoost drops a reference to None per empty-class ReferencedObject (spec 7)."""
+        n = 2 * sys.getrefcount(None)  # more than one process holds
+        empty = struct.pack("<q", 0) + S.s32("") * 3
+        tree = S.Node("MyRefs", "Base", [S.vec("refs", S.ref_object())])
+        (self.tmp / "refs.assets").write_bytes(assets(tree, struct.pack("<i", n) + empty * n, ref_types=[]))
+        out = self.tmp / "refs.jsonl"
+        proc = dump_process(self.tmp / "refs.assets", "-o", out)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+        obj = records(out)[2]
+        self.assertIsNone(obj["l2"]["error"])
+        refs = dict(obj["l2"]["value"]["v"])["refs"]
+        self.assertEqual(len(refs), n)
+        self.assertEqual(
+            refs[0],
+            {"t": "dict", "v": [["rid", 0], ["type", {"t": "dict", "v": [["class", ""], ["ns", ""], ["asm", ""]]}]]},
+        )
+        # UnityPy's writer wants the data the reader left out (spec 7).
+        self.assertEqual(
+            (obj["l3"]["resave"], obj["l3"]["note"]), ("error", "ValueError: SerializedFile has no ref_types")
+        )
 
     def test_refuses_without_the_pinned_oracle(self):
         tiny = self.tmp / "tiny"
