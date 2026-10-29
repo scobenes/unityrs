@@ -382,8 +382,16 @@ def run_g7(tpk: Path) -> int:
         out = Path(tmp) / "outcomes.jsonl"
         write_outcomes(tpk, out)
         env = dict(os.environ, UNITYRS_ORACLE_TPK=str(tpk), UNITYRS_ORACLE_TPK_OUTCOMES=str(out))
-        cmd = ["cargo", "test", "--locked", "-p", "unityrs-tpk", "--test", "g7", "--", "image_tpk", "--nocapture"]
-        return subprocess.run(cmd, cwd=ROOT, env=env, check=False).returncode
+        cmd = ["cargo", "test", "--locked", "-p", "unityrs-tpk", "--test", "g7", "--", "--exact", "image_tpk", "--nocapture"]
+        run = subprocess.run(cmd, cwd=ROOT, env=env, check=False, stdout=subprocess.PIPE, text=True)
+        sys.stdout.write(run.stdout)
+        if run.returncode != 0:
+            return run.returncode
+        # A filter that matches no test passes with nothing run: G7 cannot skip.
+        if "test result: ok. 1 passed;" not in run.stdout:
+            print("G7: cargo ran no image_tpk test", file=sys.stderr)
+            return 1
+        return 0
 
 
 def main() -> int:
