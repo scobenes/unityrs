@@ -349,6 +349,11 @@ class Rows(unittest.TestCase):
             self.assertEqual(ImportHelper.check_file_type(stream)[0], FileType.ResourceFile)
         with self.assertRaisesRegex(Exception, "^String not terminated$"):
             ImportHelper.check_file_type(b"A" * 20)
+        # Only an input of exactly 20 bytes reaches the memory reader's end: a longer one takes its first 20
+        # bytes as the signature, and detection goes on.
+        for size in (21, 127, 200):
+            with self.subTest(size=size):
+                self.assertEqual(ImportHelper.check_file_type(b"A" * size)[0], FileType.ResourceFile)
         env = quietly(UnityPy.load, str(path))
         reader = env.files[str(path)]
         self.addCleanup(reader.dispose)
@@ -1076,6 +1081,24 @@ class Rows(unittest.TestCase):
         for name in ("LOWER.assets", "Lower.Assets", "sub/LOWER.ASSETS"):
             with self.subTest(name):
                 self.assertEqual(found(UnityPy.Environment(path=str(d)), name), ["lower"])
+
+        # PPtr.deref hands find_file the record's basename lower-cased, so a file whose basename on disk has an
+        # upper-case letter is never found from disk, even by a record in its own case (section 19.2), while one
+        # in lower case is found by a record in any case. A file already loaded is found through the registry.
+        def deref(record, env):
+            main = load(text_asset_file("main"), "main.assets", env)[0]
+            main.externals = [SimpleNamespace(path=record)]
+            return PPtr(m_FileID=1, m_PathID=1, assetsfile=main).deref().parse_as_dict()["m_Name"]
+
+        for record in ("Shared.Assets", "archive:/x/Shared.Assets"):
+            with self.subTest(record), self.assertRaisesRegex(FileNotFoundError, f"{re.escape(record)} not found!$"):
+                deref(record, UnityPy.Environment(path=str(d)))
+        for record in ("lower.assets", "assets/sub/LOWER.Assets", "archive:/CAB-x/Lower.ASSETS"):
+            with self.subTest(record):
+                self.assertEqual(deref(record, UnityPy.Environment(path=str(d))), "lower")
+        preloaded = UnityPy.Environment(path=str(d))
+        quietly(preloaded.load_file, (d / "Shared.Assets").read_bytes(), name="Shared.Assets")
+        self.assertEqual(deref("Shared.Assets", preloaded), "shared")
         (d / "sub" / "lower.assets").unlink()
         with self.assertRaisesRegex(FileNotFoundError, "File missing.assets not found in"):
             found(env, "missing.assets")

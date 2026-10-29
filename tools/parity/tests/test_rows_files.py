@@ -105,7 +105,10 @@ class FileRows(unittest.TestCase):
                     if version < 6:
                         with self.assertRaises(AttributeError):
                             ext.temp_empty  # noqa: B018
-                    self.assertEqual(getattr(sf, "userInformation", None), "user" if version >= 5 else None)
+                    # userInformation from 5; below, the attribute is never set (not set to None).
+                    self.assertEqual(hasattr(sf, "userInformation"), version >= 5)
+                    if version >= 5:
+                        self.assertEqual(sf.userInformation, "user")
                     # The platform from 8, the tree flag from 13; below, their defaults.
                     self.assertEqual(
                         sf.target_platform, BuildTarget(19) if version >= 8 else BuildTarget.UnknownPlatform
@@ -169,6 +172,18 @@ class FileRows(unittest.TestCase):
             load(unity_brotli(text))
         with self.assertRaisesRegex(brotli.error, "decoder failed"):
             load(packed[:0x30] + bytes(200))
+        # Content with no NUL: the memory reader reaches the end of content of at most 32767 bytes and raises a
+        # plain Exception, while longer content gives a 32767-byte signature and the ValueError.
+        for size, error, message in (
+            (200, Exception, "^String not terminated$"),
+            (32766, Exception, "^String not terminated$"),
+            (32768, ValueError, "^Invalid WebFile signature: 'efgh"),
+            (40000, ValueError, "^Invalid WebFile signature: 'efgh"),
+        ):
+            nul_free = bytes(random.Random(5).choices(b"abcdefgh", k=size))
+            with self.subTest(size=size), self.assertRaisesRegex(error, message) as caught:
+                load(unity_brotli(nul_free))
+            self.assertIs(type(caught.exception), error)
         # decompress_brotli and decompress_gzip are the libraries' own.
         from UnityPy.helpers import CompressionHelper as H
 
@@ -316,10 +331,66 @@ class FileRows(unittest.TestCase):
         # A string that is neither file nor folder is ignored, with no error.
         e, files = env(str(d / "missing"))
         self.assertEqual((e.path, files, hasattr(e, "file")), (os.getcwd(), {}, False))
-        # Anything else loads as a stream, keyed by its hash.
-        e, files = env(text_asset_file("q"))
-        self.assertEqual(list(files.values()), ["SerializedFile"])
-        self.assertTrue(next(iter(files)).lstrip("-").isdigit())
+        # Anything else goes through load_file. A stream with a `name` is keyed by that name and registered as a
+        # CAB under its basename, so a PPtr to that CAB resolves.
+        with open(d / "a.assets", "rb") as named:
+            e = quietly(UnityPy.Environment, named)
+        self.assertEqual((list(e.files), list(e.cabs)), ([str(d / "a.assets")], ["a.assets"]))
+        # Anything else is keyed by str(obj.__hash__()) (section 19.2): bytes and a read-only memoryview by the
+        # bytes' hash, a nameless stream by its own id-based hash.
+        data = text_asset_file("q")
+        stream = io.BytesIO(data)
+        for arg, key in ((data, hash(data)), (memoryview(data), hash(data)), (stream, hash(stream))):
+            with self.subTest(type(arg).__name__):
+                e = quietly(UnityPy.Environment, arg)
+                self.assertEqual((list(e.files), list(e.cabs)), ([str(key)], [str(key)]))
+        self.assertNotEqual(str(hash(stream)), str(hash(io.BytesIO(data))), "equal streams, two keys")
+        # A bytearray, which UnityPy's own FileSourceType lists, raises: the eagerly evaluated default key calls
+        # its __hash__, which is None (Tier B, section 19.2). A writable memoryview cannot be hashed, and a Path
+        # is no type the reader takes.
+        for arg, error, message in (
+            (bytearray(data), TypeError, "^'NoneType' object is not callable$"),
+            (memoryview(bytearray(data)), ValueError, "^cannot hash writable memoryview object$"),
+            (d / "a.assets", TypeError, "^Unsupported type for EndianBinaryReader"),
+        ):
+            with self.subTest(type(arg).__name__), self.assertRaisesRegex(error, message):
+                quietly(UnityPy.Environment, arg)
+        # load_file's `name=` keys a stream or bytes, a bytearray included, which then loads; a path string is
+        # keyed by the path as given, or the base path of a `.splitN` name, whatever `name=` says.
+        e = UnityPy.Environment()
+        quietly(e.load_file, data, name="custom")
+        quietly(e.load_file, bytearray(text_asset_file("r")), name="from a bytearray")
+        with mock.patch("builtins.open", tracked):
+            quietly(e.load_file, str(d / "a.assets"), name="ignored")
+            quietly(e.load_file, str(d / "sp" / "s.assets.split0"), name="ignored too")
+        self.assertEqual(
+            {k.replace(str(d), "D"): type(f).__name__ for k, f in e.files.items()},
+            {
+                "custom": "SerializedFile",
+                "from a bytearray": "SerializedFile",
+                "D/a.assets": "SerializedFile",
+                "D/sp/s.assets": "SerializedFile",
+            },
+        )
+        # The bytes key is the process's string hash, which PYTHONHASHSEED randomises: two processes key one
+        # input differently, so no port can reproduce it.
+        import subprocess
+
+        (d / "q.bin").write_bytes(data)
+        code = "import sys, UnityPy; b = open(sys.argv[1], 'rb').read(); print(*UnityPy.Environment(b).files, hash(b))"
+        keys = set()
+        for seed in ("1", "2"):
+            run = subprocess.run(
+                [sys.executable, "-c", code, str(d / "q.bin")],
+                env=dict(os.environ, PYTHONHASHSEED=seed),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            key, hashed = run.stdout.split()
+            self.assertEqual(key, hashed)
+            keys.add(key)
+        self.assertEqual(len(keys), 2)
 
     def chdir(self, path):
         import os
@@ -414,8 +485,9 @@ class FileRows(unittest.TestCase):
         self.assertEqual(hashlib.sha256(python).hexdigest()[:16], "669156c9d687bd03", "the bytes the loop gives")
 
         # A bundle: the decryptor header follows the flags, and each LZ4 block flagged 0x100 is decrypted with
-        # its block index; a stored block with that flag is read as it is.
-        def bundle(block_rows, flags=0x1043):
+        # its block index; a stored block with that flag is read as it is. `info_index` encrypts the compressed
+        # blocks info under that index.
+        def bundle(block_rows, flags=0x1043, info_index=None):
             info = bytes(16) + struct.pack(">i", len(block_rows))
             data = b""
             for stored, packed, block_flags in block_rows:
@@ -423,6 +495,8 @@ class FileRows(unittest.TestCase):
                 data += packed
             info += struct.pack(">i", 1) + struct.pack(">qqI", 0, len(payload), 4) + b"CAB-cn\0"
             packed_info = lz4.block.compress(info, store_size=False)
+            if info_index is not None:
+                packed_info = encrypt(packed_info, info_index)
             head = b"UnityFS\0" + struct.pack(">I", 8) + b"5.x.x\0" + b"2021.3.2f1\0"
             out = bytearray(head + struct.pack(">qIII", 0, len(packed_info), len(info), flags) + header)
             out += bytes(-len(out) % 16)
@@ -439,6 +513,15 @@ class FileRows(unittest.TestCase):
         swapped = [(2000, encrypt(blocks[0], 1), 0x102), rows[1]]
         with self.assertRaises(lz4.block.LZ4BlockError):
             load(bundle(swapped))
+        # With 0x100 in the header's own flags too, the compressed blocks info is decrypted before it is
+        # decompressed, at index 0: left plain, or encrypted under another index, it does not decompress.
+        loaded = load(bundle(rows, flags=0x1143, info_index=0))[0]
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in loaded.files["CAB-cn"].objects.values()], ["unity cn"])
+        for info_index in (None, 1):
+            with self.subTest(info_index=info_index), self.assertRaises(lz4.block.LZ4BlockError):
+                load(bundle(rows, flags=0x1143, info_index=info_index))
+        with self.assertRaises(lz4.block.LZ4BlockError):
+            load(bundle(rows, info_index=0))  # without the flag, the encrypted info is read as it is
 
     # Sections 7.2, 18, 19.1, 19.2: SerializedFile.save by format, its header, and SERIALIZED_FILE_PARSE_TYPETREE.
     def test_serialized_file_save(self):

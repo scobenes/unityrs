@@ -190,13 +190,35 @@ class ObjectRows(unittest.TestCase):
         plain = Generator()
         parse(mono(pptr(5), script_data=plain_script), plain)
         self.assertEqual(plain.calls, [("Asm.dll", "Cls")], "the class alone with no namespace")
-        # Every other failure escapes: a deref that finds no object or no external, or the generator's own.
+        # A ValueError from any step is swallowed, subclasses included: the generator's own, and the head
+        # parse's, which the generator is never asked after (the TPK head then fails the main parse again).
+        for error in (ValueError("generator broke"), UnicodeDecodeError("utf-8", b"\x80", 0, 1, "invalid")):
+            with self.subTest(type(error).__name__):
+                self.assertEqual(parse(mono(pptr(5)), Generator(error=error)), tpk_head)
+        negative = tpk_object(114, m_GameObject=pptr(0), m_Enabled=1, m_Script=pptr(5), m_Name="mb")
+        negative = negative[:-8] + struct.pack("<i", -1) + negative[-4:]  # m_Name's length
+        env, unasked = UnityPy.Environment(), Generator()
+        env.typetree_generator = unasked
+        obj = load(tpk_file([(1, 114, negative), (5, 115, script)]), env=env)[0].objects[1]
+        self.assertEqual(obj._get_typetree_node().m_Type, "MonoBehaviour")
+        self.assertEqual(unasked.calls, [])
+        with self.assertRaisesRegex(ValueError, "Negative length"):
+            quietly(obj.parse_as_dict)
+        # Every other failure escapes: a deref that finds no object or no external, a head parse that runs out
+        # of data, or the generator's own.
         with self.assertRaisesRegex(KeyError, "^6$"):
             parse(mono(pptr(6)), Generator())
         with self.assertRaisesRegex(FileNotFoundError, "invalid m_FileID"):
             parse(mono(pptr(5, file_id=1)), Generator())
+        cut = tpk_object(114, m_GameObject=pptr(0), m_Enabled=1, m_Script=pptr(5), m_Name="mb")[:-8]
+        with self.assertRaises(EOFError):
+            parse(tpk_file([(1, 114, cut), (5, 115, script)]), Generator())
         with self.assertRaisesRegex(RuntimeError, "^generator broke$"):
             parse(mono(pptr(5)), Generator(error=RuntimeError("generator broke")))
+        # A file with no Environment fails before the head parse, reading the generator off None.
+        orphan = UnityPy.files.SerializedFile(EndianBinaryReader(mono(pptr(5))), None).objects[1]
+        with self.assertRaisesRegex(AttributeError, "typetree_generator"):
+            quietly(orphan.parse_as_dict)
         # A node the generator returns is used as the object's tree.
         node = Tpk.get_typetree_node(114, UnityVersion.from_str(VERSION))
         extended = TypeTreeNode.from_list(
@@ -268,10 +290,10 @@ class ObjectRows(unittest.TestCase):
         )
         self.assertEqual([d["m_Name"] for d in root.to_dict_list()], ["Base", "a", "a1", "b"])
         self.assertEqual(root.to_dict_list()[2], rows[2] | {"m_Children": []})
-        # dump_structure: one line per node, the byte size in upper-case hex, and a run of 16 spaces from the
-        # backslash continuation inside the f-string; each level indents two more. dump_typetree_structure
-        # is it on the object's tree.
-        line = "{}{} {} // ByteSize{{{}}}, Index{{{}}}, " + " " * 16 + "Version{{{}}}, TypeFlags{{{}}}, MetaFlag{{{}}}"
+        # dump_structure: one line per node, the byte size in upper-case hex, the braces printed, and 17 spaces
+        # after `Index{i},`: the one before the f-string's backslash continuation and the next source line's
+        # 16-space indent; each level indents two more. dump_typetree_structure is it on the object's tree.
+        line = "{}{} {} // ByteSize{{{}}}, Index{{{}}}," + " " * 17 + "Version{{{}}}, TypeFlags{{{}}}, MetaFlag{{{}}}"
         self.assertEqual(
             root.dump_structure(),
             "\n".join(
@@ -284,6 +306,11 @@ class ObjectRows(unittest.TestCase):
             ),
         )
         self.assertTrue(root.dump_structure(indent="").startswith("AABB Base // ByteSize{C}"))
+        # A field that is None prints as `None`.
+        self.assertEqual(
+            TypeTreeNode(0, "int", "a", 4, 1, []).dump_structure(),
+            "  int a // ByteSize{4}, Index{None}," + " " * 17 + "Version{1}, TypeFlags{None}, MetaFlag{None}",
+        )
         obj = load(text_asset_file())[0].objects[1]
         self.assertEqual(obj.dump_typetree_structure(), obj._get_typetree_node().dump_structure())
         self.assertTrue(obj.dump_typetree_structure(indent="> ").startswith("> TextAsset Base"))
