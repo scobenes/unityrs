@@ -11,7 +11,7 @@
 //! eager loading a bundle registers its CABs as it parses them, so a later
 //! entry's failure leaves the earlier ones registered (difference (a)).
 //!
-//! **What a slot holds** ([`Slot`]). A file the caller loaded is never
+//! **What a slot holds** (the crate's `Slot`). A file the caller loaded is never
 //! evicted, so its slot may hold its handle. A dependency's slot never
 //! holds a strong handle on it: it holds what *reopens* the dependency (its
 //! name, its [`super::Source`] and its directory index) and a `Weak` on the

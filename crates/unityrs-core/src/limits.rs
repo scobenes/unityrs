@@ -118,7 +118,7 @@ const MMAP_THRESHOLD: u64 = 128 << 10;
 /// What one heap allocation of `bytes` costs, which is what a charge for it
 /// is: glibc's chunk on x86-64. The request gets its 8-byte header and is
 /// rounded to 16, with a 32-byte minimum (`request2size`); a chunk of
-/// [`MMAP_THRESHOLD`] or more may be `mmap`ped instead, which adds another
+/// 128 KiB (glibc's default `M_MMAP_THRESHOLD`) or more may be `mmap`ped instead, which adds another
 /// 8 bytes and rounds to a 4 KiB page (`sysmalloc`'s
 /// `ALIGN_UP(nb + SIZE_SZ, pagesize)`), and that is the larger of the two.
 /// So a charge covers the allocator's rounding too, and many small
