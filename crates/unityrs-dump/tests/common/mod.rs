@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 
 use serde_json::Value as Json;
@@ -177,4 +178,66 @@ impl Tmp {
         std::fs::create_dir_all(&base).unwrap();
         Self(std::fs::canonicalize(&base).unwrap())
     }
+}
+
+// ------------------------------------------------------------ compare.py
+
+pub fn repo() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// `python3 tools/parity/compare.py A B`'s exit status and output.
+pub fn compare(a: &Path, b: &Path) -> (i32, String) {
+    let out = Command::new("python3")
+        .arg(repo().join("tools/parity/compare.py"))
+        .arg(a)
+        .arg(b)
+        .output()
+        .expect("python3 runs compare.py (tools/parity needs only the standard library)");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.code().unwrap_or(-1), text)
+}
+
+/// `compare.py`'s per-line canonical checks (`line_problems`, and the
+/// header's own) on every line of a dump: `(line number, problems)` for each
+/// line that has any.
+pub fn line_problems(path: &Path) -> String {
+    let script = r#"
+import sys
+sys.path.insert(0, sys.argv[1])
+import compare
+side = compare.Side("candidate", sys.argv[2])
+print(side.read_header() or "", end="")
+for n, line in enumerate(side.lines, 2):
+    rec, saw_float = compare.parse(line)
+    problems = compare.line_problems(rec, line, saw_float, side.levels)
+    if problems:
+        print(n, problems)
+"#;
+    let out = Command::new("python3")
+        .arg("-c")
+        .arg(script)
+        .arg(repo().join("tools/parity"))
+        .arg(path)
+        .output()
+        .expect("python3");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+pub fn gunzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(bytes)
+        .read_to_end(&mut out)
+        .unwrap();
+    out
 }
