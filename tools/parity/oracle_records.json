@@ -1,0 +1,83 @@
+{
+ "about": "Written by `python tools/parity/oracle_env.py --pin-records DIR` from the wheels requirements-oracle.txt pins: for each, the number of its RECORD's hashed entries (`files`) and their digest (`record_sha256`, oracle_env.record_digest). The oracle's installed files must be these.",
+ "records": {
+  "archspec": {
+   "version": "0.2.5",
+   "wheel_sha256": "604bd4115cb4c18e50a22a9b4a1e516706712263790d7d2994aaa595e70082f6",
+   "files": 73,
+   "record_sha256": "274cba912a661d7b31b5a8ac1e6c03a74c37db66e4fd4ea55b2afffb9f7e32f0"
+  },
+  "astc-encoder-py": {
+   "version": "0.1.12",
+   "wheel_sha256": "1a3c0efc3187e06fd1d5992a986220a5921498c35c44d1edbd9b2971c71a8a4f",
+   "files": 14,
+   "record_sha256": "6b13cbfe0f17492cf6e767dd977be0edb3721a1eb24a7952143adaeea4c145f7"
+  },
+  "attrs": {
+   "version": "26.1.0",
+   "wheel_sha256": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309",
+   "files": 34,
+   "record_sha256": "8d8d4da7dd969b58ecdb8ad1194d62ffe1e179b93862eb9b249123b857ebc0e6"
+  },
+  "brotli": {
+   "version": "1.2.0",
+   "wheel_sha256": "40d918bce2b427a0c4ba189df7a006ac0c7277c180aee4617d99e9ccaaf59e6a",
+   "files": 6,
+   "record_sha256": "5cd4135e275886d8385253c7b048aca09887587a19cb7e6275600b96a22a5e27"
+  },
+  "etcpak": {
+   "version": "0.9.14",
+   "wheel_sha256": "5147cd6ab993ae766894ede53cb3dd1239cdd9f1d2bf58f5881bd1214eb12904",
+   "files": 11,
+   "record_sha256": "8dc9c229c2e3f62c62332193b62dab034ece559f4caad26fc469773dc945d520"
+  },
+  "fmod-toolkit": {
+   "version": "0.1.3",
+   "wheel_sha256": "7ea99e5b8792e28c6a678ba55d929737c0a93faea0b66998f2bbadd09e06065d",
+   "files": 8,
+   "record_sha256": "50c250d56571040ca4111fb9204533471233970b798164afd826d634bc0a0d94"
+  },
+  "fsspec": {
+   "version": "2025.5.1",
+   "wheel_sha256": "24d3a2e663d5fc735ab256263c4075f374a174c3410c0b25e5bd1970bceaa462",
+   "files": 59,
+   "record_sha256": "0a9a5210607d292b1c23cccad45527c6350afdcad31f2e4aba59322af83960a7"
+  },
+  "lz4": {
+   "version": "4.4.4",
+   "wheel_sha256": "80dd27d7d680ea02c261c226acf1d41de2fd77af4fb2da62b278a9376e380de0",
+   "files": 11,
+   "record_sha256": "45bbe0d7b2504c3a9607f713c0863c5a0879737942c3f2571be67c123c45f38b"
+  },
+  "numpy": {
+   "version": "2.4.6",
+   "wheel_sha256": "89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93",
+   "files": 1041,
+   "record_sha256": "7d1a8431384127c394e533ee72d6b21498bc23f50eabc6aff095722bc4b410ad"
+  },
+  "pillow": {
+   "version": "9.5.0",
+   "wheel_sha256": "8d935f924bbab8f0a9a28404422da8af4904e36d5c33fc6f677e4c4485515625",
+   "files": 123,
+   "record_sha256": "27277fb691fb1aa83fa78ecea59cd16da42deb2828f5a38f1de3bdbb6bc3869a"
+  },
+  "pyfmodex": {
+   "version": "0.7.2",
+   "wheel_sha256": "1c42112b788e80ee7b4b57ae25bbbc0a98eb1e32a8e7c9e1246698cdf72efa9d",
+   "files": 41,
+   "record_sha256": "4793bc79786163cce906d0ceaba6925738428b383c3ccc44ed886785b4db0e5a"
+  },
+  "texture2ddecoder": {
+   "version": "1.0.5",
+   "wheel_sha256": "a9dbf2825d74f26d489a4f971e55d57f85397054daef804cfec2e88b5d5247b8",
+   "files": 8,
+   "record_sha256": "acebbb7070854024b9ca48ba164885e07cad4f848347cd0fd585a1d3a67e6ad1"
+  },
+  "unitypy": {
+   "version": "1.25.2",
+   "wheel_sha256": "03723fdfc83752cae89f59d41599d9a94a551a9d439e7f3a544b0c7feab0b549",
+   "files": 95,
+   "record_sha256": "5b5afcdd48a976a02e54cafb45cdfebc8bc710f19db17704f63a6520f3368aa8"
+  }
+ }
+}

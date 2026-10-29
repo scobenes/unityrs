@@ -572,6 +572,17 @@ def check_reference_producer(header):
             f"the reference was dumped on another stack than {C.ORACLE_REQUIREMENTS.name}: "
             f"{'; '.join(problems) or f'packages {packages!r}'}"
         )
+    # The record digests say the dumper hashed every pinned wheel's files (oracle_env.py).
+    records, pinned = producer.get("records"), C.oracle_records()
+    if records != pinned:
+        if isinstance(records, dict):
+            names = sorted(n for n in pinned.keys() | records.keys() if records.get(n) != pinned.get(n))
+            what = f"the record digests of {', '.join(names)} are not the pinned ones"
+        else:
+            what = f"records {records!r}"
+        raise CompareError(
+            f"the reference was dumped from other files than the pinned wheels' ({C.ORACLE_RECORDS.name}): {what}"
+        )
 
 
 def select_levels(held_a, held_b, levels):

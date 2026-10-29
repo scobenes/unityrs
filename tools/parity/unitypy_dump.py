@@ -43,6 +43,7 @@ from UnityPy.helpers import ImportHelper, TypeTreeHelper  # noqa: E402
 from UnityPy.streams import EndianBinaryReader, EndianBinaryWriter  # noqa: E402
 
 import canonical as C  # noqa: E402
+import oracle_env  # noqa: E402
 
 # What routes parse_as_dict through UnityPyBoost; without it the oracle is not the pinned one.
 HAVE_BOOST = TypeTreeHelper.read_typetree_boost is not None
@@ -69,8 +70,10 @@ def oracle_stack_problem() -> str | None:
     """Why this interpreter is not the pinned oracle, or None when it is.
 
     The oracle is UnityPy with UnityPyBoost, that binary being the one the
-    pinned wheel holds, and every package requirements-oracle.txt pins at its
-    version (numpy included, which changes what UnityPy renders).
+    pinned wheel holds, and every package requirements-oracle.txt pins
+    (numpy included, which changes what UnityPy renders) installed from its
+    pinned wheel: at its version, each file hashing as that wheel's RECORD
+    says, and imported from those files (oracle_env.wheel_problems).
     """
     if not HAVE_BOOST:
         return "UnityPyBoost is not loaded, so UnityPy would parse with its pure-Python reader"
@@ -81,6 +84,10 @@ def oracle_stack_problem() -> str | None:
     problems = C.stack_problems(C.installed_packages(), C.oracle_pins())
     if problems:
         return f"{'; '.join(problems)} ({C.ORACLE_REQUIREMENTS.name})"
+    problems = oracle_env.installed_wheel_problems()[0]
+    if problems:
+        more = f"; and {len(problems) - 3} more" if len(problems) > 3 else ""
+        return f"{'; '.join(problems[:3])}{more} ({C.ORACLE_RECORDS.name})"
     return pin_problem()
 
 
@@ -727,6 +734,8 @@ def main(argv=None):
             "boost_sha256": BOOST_SHA256,
             # Every pinned package as installed: oracle_stack_problem has checked that they are the pins.
             "packages": {name: installed[name] for name in sorted(C.oracle_pins())},
+            # The digest of each one's RECORD, whose every file oracle_stack_problem has hashed.
+            "records": oracle_env.installed_wheel_problems()[1],
             "python": sys.version.split()[0],
         },
     }

@@ -38,6 +38,7 @@ except ImportError:  # pragma: no cover - outside the oracle image
 
 import canonical as C  # noqa: E402
 import compare  # noqa: E402
+import oracle_env  # noqa: E402
 import synth as S  # noqa: E402
 
 SAMPLES = {
@@ -161,6 +162,9 @@ class DumpTests(unittest.TestCase):
         self.assertEqual(head["producer"]["boost_sha256"], C.ORACLE_BOOST_SHA256)
         self.assertEqual(head["producer"]["packages"], C.oracle_pins())
         self.assertIn("numpy", head["producer"]["packages"])
+        # ... and each one's RECORD digest, whose files the dumper hashed: the pinned wheels'.
+        self.assertEqual(head["producer"]["records"], C.oracle_records())
+        self.assertEqual(list(head["producer"])[-2:], ["records", "python"])
         self.assertEqual(end, {"rec": "end", "files": 13, "objects": 53})
         self.assert_canonical(out)
 
@@ -891,6 +895,12 @@ class DumpTests(unittest.TestCase):
                 mock.patch.object(C, "installed_packages", return_value={**installed, "pillow": "10.0.0"}),
                 "pillow is 10.0.0, not the pinned 9.5.0",
             ),
+            # Every version right, but a file that is not the pinned wheel's (test_refuses_a_patched_unitypy).
+            (
+                "a wheel's files",
+                mock.patch.object(oracle_env, "installed_wheel_problems", return_value=(("numpy: x hashes as y",), {})),
+                "numpy: x hashes as y (oracle_records.json)",
+            ),
         ):
             with self.subTest(label):
                 with patch, contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
@@ -898,6 +908,46 @@ class DumpTests(unittest.TestCase):
                 self.assertIn("not the pinned oracle", err.getvalue())
                 self.assertIn(said, err.getvalue())
                 self.assertFalse(out.exists())
+
+    def test_refuses_a_patched_unitypy(self):
+        """A copy of UnityPy with one line changed, imported before the installed one, is refused.
+
+        With its dist-info the copy is the distribution Python finds, and its
+        edited file no longer hashes as its RECORD says; without one, the
+        installed distribution checks out, but `UnityPy` imports from
+        elsewhere. A faithful copy with its dist-info passes, so the line is
+        what is refused. The version and the UnityPyBoost binary are the
+        pinned ones throughout.
+        """
+        tiny = self.tmp / "tiny"
+        tiny.write_bytes(b"tiny")
+        site = Path(unitypy_dump.UnityPy.__file__).resolve().parents[1]
+        info = site / f"unitypy-{C.ORACLE_UNITYPY}.dist-info"
+        self.assertTrue(info.is_dir())
+        for n, (label, with_info, patched, code, said) in enumerate(
+            (
+                ("a faithful copy with its dist-info", True, False, 0, ""),
+                ("a patched copy with its dist-info", True, True, 2, "UnityPy/files/ObjectReader.py hashes as"),
+                ("a patched copy alone", False, True, 2, "module UnityPy imports from"),
+            )
+        ):
+            with self.subTest(label):
+                shadow = self.tmp / f"shadow{n}"
+                shutil.copytree(site / "UnityPy", shadow / "UnityPy", ignore=shutil.ignore_patterns("__pycache__"))
+                if with_info:
+                    shutil.copytree(info, shadow / info.name)
+                if patched:
+                    reader = shadow / "UnityPy" / "files" / "ObjectReader.py"
+                    text = reader.read_text(encoding="utf-8")
+                    self.assertEqual(text.count("is_stripped = None"), 1)
+                    reader.write_text(text.replace("is_stripped = None", "is_stripped = 7"), encoding="utf-8")
+                out = self.tmp / f"patched{n}.jsonl"
+                proc = dump_process(tiny, "-o", out, env={"PYTHONPATH": str(shadow)})
+                self.assertEqual(proc.returncode, code, proc.stderr.decode(errors="replace"))
+                self.assertEqual(out.exists(), code == 0)
+                if code:
+                    self.assertIn(b"not the pinned oracle", proc.stderr)
+                    self.assertIn(said.encode(), proc.stderr)
 
     def test_index_mode_and_sha_check(self):
         src = samples_dir()

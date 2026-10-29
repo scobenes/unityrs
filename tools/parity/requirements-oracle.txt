@@ -4,10 +4,10 @@
 #     python -m pip install --require-hashes -r tools/parity/requirements-oracle.txt
 #
 # Each package, dependencies included, is pinned to one wheel: the one the
-# oracle image (unityrs-oracle:upy1.25.2-2026-10-28) holds. Installed from
-# these pins, every package file's RECORD hash equals the image's, except the
-# console-script launchers (they name their interpreter) and each INSTALLER
-# file (the installer's own name). The UnityPy wheel carries UnityPyBoost
+# oracle image (unityrs-oracle:upy1.25.2-2026-10-28) holds. oracle_records.json
+# pins each wheel's files (the digest of its RECORD, written from the wheels by
+# `oracle_env.py --pin-records`); installed from these pins, or in the image,
+# every file hashes as that RECORD says. The UnityPy wheel carries UnityPyBoost
 # (UnityPyBoost.cpython-311-x86_64-linux-gnu.so); without it, or with another
 # build of it, unitypy_dump.py refuses to run. Pillow 9.5.0 has two cp311
 # manylinux wheels, and the pin is the manylinux_2_28 one the image holds. No
@@ -22,8 +22,9 @@
 # decryption key is set, which the oracle never does.
 #
 # The pinned set is the whole oracle: tools/parity/oracle_env.py checks that an
-# interpreter holds each pin at its version (--exact: and nothing else, as in
-# CI's venv), and unitypy_dump.py refuses to run when one differs.
+# interpreter holds each pin's wheel, its version and every file (--exact: and
+# nothing else, as in CI's venv), and unitypy_dump.py refuses to run when one
+# differs.
 # Re-pinning is in tools/parity/README.md.
 
 --require-hashes

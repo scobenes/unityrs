@@ -595,6 +595,7 @@ class CompareTests(unittest.TestCase):
             "boost": True,
             "boost_sha256": C.ORACLE_BOOST_SHA256,
             "packages": pins,
+            "records": C.oracle_records(),
             "python": "3.11",
         }
         self.assertEqual(self.cli(self.write("a.jsonl", recs, head=header(producer=oracle)), pb), 0)
@@ -612,6 +613,14 @@ class CompareTests(unittest.TestCase):
             ({"packages": {**pins, "pillow": "10.0.0"}}, "pillow is 10.0.0, not the pinned 9.5.0"),
             ({"packages": {**pins, "scipy": "1.17.1"}}, "scipy 1.17.1 is installed but not pinned"),
             ({"packages": None}, "packages None"),
+            # The pinned wheels' files: another build of a pinned version (another RECORD), or a dump
+            # from before the dumper hashed every file (no records).
+            (
+                {"records": {**C.oracle_records(), "pillow": "0" * 64}},
+                "the record digests of pillow are not the pinned ones",
+            ),
+            ({"records": {k: v for k, v in C.oracle_records().items() if k != "numpy"}}, "of numpy are not"),
+            ({"records": None}, "records None"),
         ]
         for change, said in changes:
             with self.subTest(change):
