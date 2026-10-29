@@ -61,6 +61,7 @@ unityrs is the alternative, built around three things:
 | cffi, zstandard | 2.1.0, 0.25.0 (no dependency either, but Pillow and fsspec import them when present) |
 | pycryptodome | 3.23.0 (no dependency either, but UnityPy imports it to decrypt a UnityCN bundle; no UnityCN bundle loads without it) |
 | liblz4 / liblzma | as installed |
+| zlib (Pillow's PNG, ICO and ICNS writers) | the host's: the Pillow wheel links `libz.so.1` and bundles no copy. 1.2.13 in the oracle image, the reference for those bytes (`PARITY.md` section 1) |
 
 `tools/parity/requirements-oracle.txt` pins the whole stack, dependencies included, as hash-checked wheels, and `tools/parity/oracle_records.json` pins each wheel's files (the digest of its RECORD). The oracle dumper refuses to run when any package is at another version, when its RECORD is not the pinned wheel's, when any of its files does not hash as that RECORD says, when its folders hold a file the RECORD does not list or a symlink, when a module imports from anywhere else, when it loads a module from outside the standard library and the pins (at import or while dumping) or a copy of a standard-library module from anywhere else (even at start-up), when `PYTHONPATH`, `PYTHONHOME`, `PYTHONPLATLIBDIR` or a user site-packages folder is in effect, or when the UnityPyBoost binary differs. A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a documented step.
 

@@ -3,6 +3,7 @@
     scripts/dev python tools/parity/pillow_tables.py packers   # section 18.1: the image modes `set_image` packs
     scripts/dev python tools/parity/pillow_tables.py writers   # section 15.8: what `Image.save` writes, by extension
     scripts/dev python tools/parity/pillow_tables.py libraries # section 1: the libraries whose code writes the bytes
+    scripts/dev python tools/parity/pillow_tables.py host      # section 1: those the wheel does not bundle, as loaded
 
 `tests/test_pillow_tables.py` requires PARITY.md to hold exactly what this prints.
 """
@@ -283,15 +284,38 @@ def writers():
     return "\n".join(lines)
 
 
-# The libraries bundled with Pillow 9.5.0 that a writer can call, with `features.version`'s key, and the Pillow
-# encoders that call each one. libwebp is called through `_webp.WebPEncode`, not through an encoder.
+# The libraries a Pillow 9.5.0 writer can call, with `features.version`'s key, the Pillow encoders that call each
+# one, and the file-name stem of its shared object. libwebp is called through `_webp.WebPEncode`, not through an
+# encoder. The wheel bundles a library as `Pillow.libs/{stem}-{hash}.so...`; one it does not bundle is the host's.
 LIBRARIES = (
-    ("libjpeg-turbo", "libjpeg_turbo", {"jpeg"}),
-    ("libwebp", "webp", {"libwebp"}),
-    ("OpenJPEG", "jpg_2000", {"jpeg2k"}),
-    ("zlib", "zlib", {"zip"}),
-    ("libtiff", "libtiff", {"libtiff"}),
+    ("libjpeg-turbo", "libjpeg_turbo", {"jpeg"}, "libjpeg"),
+    ("libwebp", "webp", {"libwebp"}, "libwebp"),
+    ("OpenJPEG", "jpg_2000", {"jpeg2k"}, "libopenjp2"),
+    ("zlib", "zlib", {"zip"}, "libz"),
+    ("libtiff", "libtiff", {"libtiff"}, "libtiff"),
 )
+
+
+def bundled(stem):
+    """Whether the installed Pillow wheel holds the library `stem` names in `Pillow.libs` (auditwheel's copies)."""
+    import importlib.metadata
+
+    return any(
+        file.parent.name == "Pillow.libs" and file.name.startswith(stem + "-")
+        for file in importlib.metadata.files("pillow")
+    )
+
+
+def loaded_file(stem):
+    """The file this process maps for the library `stem` names (a bundled copy or the host's), or None."""
+    from PIL import Image  # noqa: F401 - loads _imaging, which links the libraries
+
+    pattern = re.compile(re.escape(stem) + r"(-[0-9a-f]{8})?\.so")
+    for line in Path("/proc/self/maps").read_text().splitlines():
+        fields = line.split(maxsplit=5)
+        if len(fields) == 6 and pattern.match(os.path.basename(fields[5])):
+            return fields[5]
+    return None
 
 
 def encoders():
@@ -323,15 +347,18 @@ def encoders():
     return found
 
 
-def libraries():
-    """Section 1's row for the libraries bundled with Pillow: what each one decides, from the encoders called."""
+def libraries(found=None):
+    """Section 1's row for the libraries the Pillow writers call: what each one decides, from the encoders called.
+
+    The row holds what the pinned wheel decides, and nothing of the host's: a library the wheel does not bundle
+    (zlib) is named as the host's, with no version; `host()` prints it as loaded."""
     from PIL import TiffImagePlugin, features
 
-    found = encoders()
+    found = encoders() if found is None else found
     calls, idle = [], []
-    for name, key, names in LIBRARIES:
+    for name, key, names, stem in LIBRARIES:
         formats = sorted(fmt for fmt, seen in found.items() if seen & names)
-        version = features.version(key)
+        version = features.version(key) if bundled(stem) else None
         if formats:
             via = ", ".join(f"`{n}`" for n in sorted(names - {"libwebp"}))
             listed = ", ".join(formats[:-1]) + (" and " if len(formats) > 1 else "") + formats[-1]
@@ -339,12 +366,20 @@ def libraries():
         else:
             idle.append((name, version))
     assert [name for name, _ in idle] == ["libtiff"] and TiffImagePlugin.WRITE_LIBTIFF is False, idle
+    assert idle[0][1] is not None, "libtiff is bundled"
     assert found["TIFF"] == {"raw"}, found["TIFF"]
-    library_names = set().union(*(names for _, _, names in LIBRARIES))
+    library_names = set().union(*(names for _, _, names, _ in LIBRARIES))
     own = sorted(set().union(*found.values()) - library_names)
+    ours = [(name, version) for name, version, _ in calls if version is not None]
+    hosts = [name for name, version, _ in calls if version is None]
+    named = f"{', '.join(name for name, _ in ours)} (bundled with Pillow)"
+    versions = f"{', '.join(version for _, version in ours)}, as `tools/parity/pillow_tables.py libraries` prints them"
+    if hosts:
+        them = "it" if len(hosts) == 1 else "them"
+        named += f"; {', '.join(hosts)} (the host's: the wheel links {them} and bundles no copy)"
+        versions += f"; {', '.join(hosts)}: the host's, as `tools/parity/pillow_tables.py host` prints it"
     return (
-        f"| {', '.join(name for name, _, _ in calls)} (bundled with Pillow) "
-        f"| {', '.join(version for _, version, _ in calls)}, as `tools/parity/pillow_tables.py libraries` prints them "
+        f"| {named} | {versions} "
         f"| the bytes of the Pillow writers that call them (section 15.8): {'; '.join(text for _, _, text in calls)}. "
         f"The other writers use encoders of Pillow's own ({', '.join(f'`{n}`' for n in own)}). TIFF is one of them: "
         f"`TiffImagePlugin.WRITE_LIBTIFF` is false, so Pillow writes TIFF with `raw`, and libtiff "
@@ -352,11 +387,22 @@ def libraries():
     )
 
 
+def host():
+    """Each library of LIBRARIES that the Pillow wheel does not bundle: its version and the file this process loads."""
+    from PIL import features
+
+    lines = []
+    for name, key, _, stem in LIBRARIES:
+        if not bundled(stem):
+            lines.append(f"{name} {features.version(key)}: {loaded_file(stem)}")
+    return "\n".join(lines)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("table", choices=["packers", "writers", "libraries"])
+    parser.add_argument("table", choices=["packers", "writers", "libraries", "host"])
     args = parser.parse_args(argv)
-    print({"packers": packers, "writers": writers, "libraries": libraries}[args.table]())
+    print({"packers": packers, "writers": writers, "libraries": libraries, "host": host}[args.table]())
 
 
 if __name__ == "__main__":

@@ -442,9 +442,9 @@ class FileRows(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "^Invalid signature"):
             decryptor()
         # decrypt_key imports pycryptodome's AES when it runs: without pycryptodome no UnityCN bundle loads.
-        with mock.patch.dict(sys.modules, {"Crypto": None, "Crypto.Cipher": None}):
-            with self.assertRaisesRegex(ModuleNotFoundError, "^import of Crypto"):
-                decryptor()
+        no_crypto = mock.patch.dict(sys.modules, {"Crypto": None, "Crypto.Cipher": None})
+        with no_crypto, self.assertRaisesRegex(ModuleNotFoundError, "^import of Crypto"):
+            decryptor()
         M.DECRYPT_KEY = key
         # read_vector: 16 data bytes, 16 key bytes, one skipped byte; the header is 4 + 33 + 33 bytes.
         reader = EndianBinaryReader(header)
