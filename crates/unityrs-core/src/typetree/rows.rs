@@ -137,6 +137,10 @@ impl crate::once::CellError for TreeError {
     fn heap_bytes(&self) -> u64 {
         0
     }
+
+    fn work_refused(limit: LimitError) -> Self {
+        Self::Limit(limit)
+    }
 }
 
 /// The kept tree of a typetree, as pre-order rows with their child lists.

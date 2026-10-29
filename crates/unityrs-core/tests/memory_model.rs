@@ -30,7 +30,6 @@
 #![allow(unsafe_code, clippy::cast_precision_loss)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -435,14 +434,27 @@ fn the_meter_bounds_every_path() {
         );
     }
 
+    // The meter's own heap, as the constant says: its account and the meter,
+    // then one more meter per reopen.
+    let budget: Arc<dyn MemoryBudget> = Arc::new(Unbounded);
+    let base = live();
+    let first = Meter::new(u64::MAX, budget, Reservation::Dependency);
+    assert_eq!(live() - base, Meter::OWN_HEAP);
+    let again = first.reopen();
+    assert_eq!(live() - base, Meter::OWN_HEAP + Meter::REOPEN_HEAP);
+    drop((first, again));
+
     let l = Limits::default();
     // Not charged, and not in proportion to anything the input chooses: the
-    // meter itself (one per input), and the stack of a call bounded by the
-    // depth limits. The provider cache is per context, bounded on its own.
-    let meter_size = size_of::<Meter>() + 2 * size_of::<usize>();
+    // meter itself and its memory account (one per input, and one more meter
+    // per reopen of an evicted dependency), and the stack of a call bounded
+    // by the depth limits. The provider cache is per context, bounded on its
+    // own.
     println!(
-        "bound per input: max_input_memory {} GiB + {meter_size} bytes (the Meter) + per reading thread its stack and detection's fixed scratch; per context the provider cache, at most {} MiB",
+        "bound per input: max_input_memory {} GiB + {} bytes (the meter and its account; {} more per reopen) + per reading thread its stack and detection's fixed scratch; per context the provider cache, at most {} MiB",
         l.max_input_memory >> 30,
+        Meter::OWN_HEAP,
+        Meter::REOPEN_HEAP,
         unityrs_core::provider::ProviderChain::DEFAULT_CACHE_BYTES >> 20
     );
     assert_eq!(l.max_input_memory, 8 << 30);

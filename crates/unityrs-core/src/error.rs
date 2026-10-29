@@ -163,6 +163,10 @@ impl CellError for Error {
             _ => 0,
         }
     }
+
+    fn work_refused(limit: LimitError) -> Self {
+        Self::Limit(limit)
+    }
 }
 
 /// Formats and features that are named and refused, never guessed at.

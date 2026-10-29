@@ -23,6 +23,19 @@
 //! is charged to the input's meter for the heap it owns ([`CellError`]), so
 //! a table of failing cells is paid for like any other.
 //!
+//! **Work.** A computation that ends in an error its cell does not keep runs
+//! again on the next ask, so an input could make its readers repeat it
+//! without end (one type whose compile alone needs more than the meter,
+//! asked by every object of the type). Every byte the meter granted while
+//! such a computation ran is therefore counted as the open's work
+//! ([`crate::limits::Limits::max_decode_work`], shared with block decodes),
+//! and once that allowance is used up an ask that would compute keeps a
+//! [`crate::LimitKind::DecodeWork`] refusal instead, which is not
+//! transient. The count is the meter's grants between the computation's
+//! start and its end, so a grant another thread made on the same meter in
+//! that window counts too: the bound errs towards stopping early, never
+//! late.
+//!
 //! A compute has no side effect but its charges: what follows from a value
 //! (registering a nested container's entries) is done from the published
 //! value, after publishing, so a value that lost the race leaves nothing.
@@ -33,6 +46,7 @@
 use std::fmt;
 use std::sync::{Arc, OnceLock};
 
+use crate::error::LimitError;
 use crate::limits::{Charge, Meter};
 
 /// The value in `cell`, computing it with `compute` first when there is
@@ -58,6 +72,12 @@ pub trait CellError: Send + Sync {
     /// string it holds, counted whether or not a string shares a file's
     /// buffer), charged to the input's meter while a cell keeps it.
     fn heap_bytes(&self) -> u64;
+    /// The error for an ask refused because its open's work allowance is
+    /// used up (`limit` is a [`crate::LimitKind::DecodeWork`] refusal): not
+    /// transient, so the cell keeps it (module docs).
+    fn work_refused(limit: LimitError) -> Self
+    where
+        Self: Sized;
 }
 
 /// An error a cell keeps, with the charge for its heap.
@@ -88,7 +108,10 @@ pub type ResultCell<T, E> = OnceLock<Result<T, KeptError<E>>>;
 /// with a charge on `meter` for its heap, and returned (cloned) to every
 /// later ask; a transient error ([`CellError::is_transient`]), or one whose
 /// charge the meter refuses, is returned unpublished, so the next ask
-/// computes again.
+/// computes again. `meter` is the meter of the open the computation charges:
+/// what it granted during a computation that ended unpublished counts as
+/// that open's work, and once the work allowance is used up an ask keeps a
+/// refusal instead of computing (module docs).
 pub fn get_or_publish_result<'a, T, E: CellError + Clone>(
     cell: &'a ResultCell<T, E>,
     meter: &Arc<Meter>,
@@ -98,19 +121,39 @@ pub fn get_or_publish_result<'a, T, E: CellError + Clone>(
     if let Some(r) = cell.get() {
         return published(r);
     }
+    if let Some(used_up) = meter.work_used_up() {
+        return keep(cell, meter, E::work_refused(used_up));
+    }
+    let before = meter.granted();
     match compute() {
         Ok(v) => published(cell.get_or_init(move || Ok(v))),
-        Err(e) if e.is_transient() => Err(e),
-        Err(e) => match meter.charge(e.heap_bytes()) {
-            Ok(charge) => {
-                let kept = KeptError {
-                    error: e,
-                    _charge: charge,
-                };
-                published(cell.get_or_init(move || Err(kept)))
-            }
-            Err(_) => Err(e),
-        },
+        Err(e) if e.is_transient() => {
+            meter.add_work(meter.granted().saturating_sub(before));
+            Err(e)
+        }
+        Err(e) => keep(cell, meter, e),
+    }
+}
+
+/// Publishes `e` in `cell` with a charge on `meter` for its heap and returns
+/// what the cell holds; an error the meter has no room to keep is returned
+/// unpublished.
+fn keep<'a, T, E: CellError + Clone>(
+    cell: &'a ResultCell<T, E>,
+    meter: &Arc<Meter>,
+    e: E,
+) -> Result<&'a T, E> {
+    match meter.charge(e.heap_bytes()) {
+        Ok(charge) => {
+            let kept = KeptError {
+                error: e,
+                _charge: charge,
+            };
+            cell.get_or_init(move || Err(kept))
+                .as_ref()
+                .map_err(|k| k.error.clone())
+        }
+        Err(_) => Err(e),
     }
 }
 
@@ -188,6 +231,12 @@ mod tests {
         fn heap_bytes(&self) -> u64 {
             self.heap
         }
+        fn work_refused(_: crate::error::LimitError) -> Self {
+            Self {
+                transient: false,
+                heap: 0,
+            }
+        }
     }
 
     #[test]
@@ -210,6 +259,44 @@ mod tests {
         let second = super::get_or_publish_result(&cell, &dep, compute).map(|v| v.0);
         assert_eq!(second.ok(), Some(7));
         assert_eq!(pool.used(), 20, "the published value keeps its charge");
+    }
+
+    #[test]
+    fn a_compute_refused_on_its_own_stops_at_the_work_bound() {
+        use crate::budget::{Reservation, Unbounded};
+        use crate::error::{Error, LimitKind};
+        use crate::limits::{Limits, Meter};
+        // Round 5: a compute the meter refuses with nothing else held is not
+        // the pool's contention but the input's own need, and it ran again
+        // on every ask. Its grants count as work: 300 bytes per refused run
+        // against 1,000 of work, so the fourth run uses the allowance up and
+        // every later ask answers the kept refusal without computing.
+        let limits = Limits {
+            max_input_memory: 500,
+            max_decode_work: 1000,
+            ..Limits::default()
+        };
+        let m = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Input);
+        let cell: super::ResultCell<u32, Error> = OnceLock::new();
+        let runs = AtomicUsize::new(0);
+        let compute = || {
+            runs.fetch_add(1, Ordering::Relaxed);
+            let _a = m.charge(300)?;
+            let _b = m.charge(300)?;
+            Ok(7)
+        };
+        let got: Vec<_> = (0..50)
+            .map(|_| super::get_or_publish_result(&cell, &m, compute).copied())
+            .collect();
+        assert_eq!(runs.load(Ordering::Relaxed), 4);
+        assert!(got[..4].iter().all(
+            |r| matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory)
+        ));
+        assert!(got[4..].iter().all(
+            |r| matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork)
+        ));
+        assert!(cell.get().is_some(), "the work refusal is kept");
+        assert_eq!((m.decoded(), m.used()), (1200, 0));
     }
 
     #[test]

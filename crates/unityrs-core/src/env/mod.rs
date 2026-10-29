@@ -55,9 +55,11 @@
 //! dependency's runs and parsed entries, and the bytes of a source that can
 //! be read again ([`Source::Path`], [`Source::Fetch`]) with their charge,
 //! once nothing else holds them; the next read opens it again from its
-//! source, on the same meter with its decode work restarted
-//! ([`crate::limits::Meter::restart_decode_work`]: the old open is gone, so
-//! eviction churn never exhausts a valid dependency's allowance), and a
+//! source on [`crate::limits::Meter::reopen`] of its meter: the same memory
+//! account, and the new open's own work allowance, so eviction churn never
+//! exhausts a valid dependency's allowance, and a handle of the old open
+//! that someone still holds (a nested bundle a resource read kept) goes on
+//! counting against the old open's, which nothing resets. A
 //! [`Source::Bytes`] dependency keeps its bytes, which are the caller's. The files a caller loaded are never evicted. UnityPy keeps
 //! everything, which is [`EnvOptions::unitypy`]. A dependency read the pool
 //! refuses evicts and retries once; the refusal is never cached

@@ -280,6 +280,15 @@ impl crate::once::CellError for ParseError {
             _ => 0,
         }
     }
+
+    /// A [`Limits`] bound, so kind `other` (R16).
+    fn work_refused(limit: LimitError) -> Self {
+        Self::Read(ReadError {
+            kind: ReadErrorKind::Other,
+            at: 0,
+            detail: ReadDetail::Limit(limit),
+        })
+    }
 }
 
 impl ParseError {

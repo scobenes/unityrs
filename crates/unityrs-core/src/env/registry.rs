@@ -14,15 +14,20 @@
 //! **What a slot holds** (the crate's `Slot`). A file the caller loaded is never
 //! evicted, so its slot may hold its handle. A dependency's slot never
 //! holds a strong handle on it: it holds what *reopens* the dependency (its
-//! name, its [`super::Source`] and its directory index) and a `Weak` on the
-//! handle the dependency LRU keeps, so evicting the dependency (dropping the
-//! LRU's handle) frees its runs, its parsed entries and, for a source that
-//! can be read again (`Path`, `Fetch`), its bytes and their charge; the next
-//! `get` opens it again from the source, on the dependency's meter with its
-//! decode work restarted (`Meter::restart_decode_work`, plan section 3.13). Parsed entries
-//! are cached in the bundle handle's own cells
+//! name, its [`super::Source`], its meter, and the path of directory indexes
+//! from its top-level file to the CAB) and a `Weak` on the handle the
+//! dependency LRU keeps, so evicting the dependency (dropping the LRU's
+//! handle) frees its runs, its parsed entries, its nested bundles and, for a
+//! source that can be read again (`Path`, `Fetch`), its bytes and their
+//! charge; the next `get` opens it again from the source on
+//! [`crate::limits::Meter::reopen`] of its meter (the same memory account,
+//! the new open's own work allowance, plan section 3.13) and walks the path
+//! to the CAB. Parsed entries are cached in the bundle handle's own cells
 //! ([`crate::files::BundleFile::entry`]), not in the registry, so they go
-//! with the handle.
+//! with the handle. A CAB inside a nested bundle of a dependency is slotted
+//! by its path (the outer entry's index, then the inner one's), never by a
+//! handle on the inner bundle, which would keep it, and the slice of the
+//! outer's decoded run it is made from, alive past the eviction.
 //!
 //! **Cells.** A slot's parse is published with
 //! [`crate::once::get_or_publish_result`]: a budget or meter refusal is
@@ -100,6 +105,11 @@ pub(crate) struct Dependency {
     pub(crate) name: RawStr,
     /// Where its bytes come from again after an eviction.
     pub(crate) source: Source,
+    /// The meter of its current open. An eviction keeps it; the next open
+    /// is on its [`Meter::reopen`], which charges the same memory account
+    /// and has its own work allowance, so an old open's handle that someone
+    /// still holds keeps counting against the old one (plan section 3.13).
+    pub(crate) meter: Mutex<Arc<Meter>>,
     /// The LRU's handle, weakly: an eviction drops the LRU's strong one.
     pub(crate) open: Mutex<Option<WeakFile>>,
 }
@@ -138,14 +148,18 @@ pub(crate) enum SlotKind {
         /// Its directory index.
         dir_index: usize,
     },
-    /// A dependency's CAB: the file itself (`None`) or one of its entries,
-    /// reached through the LRU's handle and reopened from its source after an
-    /// eviction. Holds no strong handle.
+    /// A dependency's CAB, reached from the LRU's handle on its top-level
+    /// file and reopened from its source after an eviction. Holds no strong
+    /// handle.
     Dependency {
         /// The dependency.
         dep: Arc<Dependency>,
-        /// The entry, for a bundle.
-        dir_index: Option<usize>,
+        /// The directory indexes from the top-level file to the CAB: empty
+        /// for the file itself, `[i]` for entry `i` of a bundle, `[i, j]` for
+        /// entry `j` of the bundle that is entry `i`, and so on (at most
+        /// [`crate::limits::Limits::max_container_depth`] long, charged with
+        /// the slot).
+        path: Box<[usize]>,
     },
 }
 

@@ -517,6 +517,54 @@ mod tests {
     }
 
     #[test]
+    fn a_compile_the_meter_refuses_on_its_own_runs_a_bounded_number_of_times() {
+        // Round 5 (claude5 code M1): a compile that by itself needs more than
+        // the input's meter was refused as transient, never kept, and run
+        // again by every ask (every object of the type), each time up to the
+        // meter's limit. What each refused run was granted now counts as the
+        // open's work, and once that is used up the cell keeps a refusal.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::budget::{Reservation, Unbounded};
+        use crate::limits::{Limits, Meter, MeteredVec};
+        use crate::typetree::{Tree, TreeError};
+        let limits = Limits {
+            max_input_memory: 1 << 20,
+            max_decode_work: 4 << 20,
+            ..Limits::default()
+        };
+        let meter = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Input);
+        let rows = MeteredVec::from_vec(vec![NodeRow::new(0, "Base", "Base")], &meter).unwrap();
+        let t = SerializedType::new(1, Some(Arc::new(NodeList::from_rows(rows).unwrap())));
+        let rows_held = meter.used();
+        let runs = AtomicUsize::new(0);
+        let compile = |nodes: Arc<NodeList>| -> Result<Arc<Tree>, TreeError> {
+            runs.fetch_add(1, Ordering::Relaxed);
+            // A table that grows towards twice the meter.
+            let mut table: MeteredVec<u8> = MeteredVec::new(nodes.meter());
+            for _ in 0..(2 << 20) / 4096 {
+                table.extend_from_slice(&[0; 4096])?;
+            }
+            Ok(Tree::for_tests(nodes))
+        };
+        let outcomes: Vec<TreeError> = (0..200)
+            .map(|_| t.tree_with(compile).unwrap().unwrap_err())
+            .collect();
+        // Each refused run is granted just over 1 MiB (its table doubling up
+        // to 512 KiB, at `heap_cost`), so the fourth uses up the 4 MiB.
+        let runs = runs.load(Ordering::Relaxed);
+        assert_eq!(runs, 4, "{runs} compiles for 200 asks");
+        let memory = |e: &TreeError| {
+            matches!(e, TreeError::Charge(crate::limits::ChargeError::Limit(l)) if l.kind == crate::LimitKind::InputMemory)
+        };
+        let work = |e: &TreeError| matches!(e, TreeError::Limit(l) if l.kind == crate::LimitKind::DecodeWork);
+        assert!(outcomes[..runs].iter().all(memory), "{:?}", &outcomes[..runs]);
+        assert!(outcomes[runs..].iter().all(work), "{:?}", outcomes.last());
+        assert!(meter.decoded() >= 4 << 20);
+        assert_eq!(meter.used(), rows_held, "every refused run returned its memory");
+    }
+
+    #[test]
     // The conversion keeps the test meaningful against a narrower field type.
     #[allow(clippy::useless_conversion)]
     fn byte_start_holds_what_python_adds() {

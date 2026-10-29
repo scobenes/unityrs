@@ -21,6 +21,14 @@
 //! states). A top-level load makes the meter; every file inside it (a
 //! bundle's entries, nested bundles) charges the same one.
 //!
+//! **A meter is one open of its input.** Its memory is the input's: an
+//! account every open of the input shares, so the bound holds across opens.
+//! Its *work* ([`Limits::max_decode_work`]) is the open's own: the
+//! Environment opens an evicted dependency again on [`Meter::reopen`], a new
+//! meter on the same account with a fresh allowance, while a handle of the
+//! old open that someone still holds (a nested bundle a resource read kept)
+//! goes on counting against the old meter's, which nothing resets.
+//!
 //! **One accounting path.** The meter books every charge it grants with the
 //! load's [`MemoryBudget`] as well ([`crate::FileContext::budget`]), so a
 //! batch engine's budget sees exactly what every input holds, and a refusal
@@ -59,20 +67,26 @@ pub struct Limits {
     /// (`helpers/CompressionHelper.py:17-44`), so a bomb is stopped here
     /// before the meter. Default 1 GiB.
     pub max_block_output: u64,
-    /// The decode *work* one open of an input may cost: every byte a block
-    /// decode was granted room for, kept or not (a first decode, a measuring
-    /// decode whose output is dropped, a re-decode of a shared block, a
-    /// decode that fails after it wrote). The meter bounds what is held;
-    /// this bounds what is done, so an input cannot make its readers decode
-    /// without end while the meter stays empty (thousands of blocks that
-    /// each decode to the block cap, measured and dropped by a lazy read of
-    /// the last entry). A growth the meter or the budget refuses decodes
-    /// nothing and counts nothing, so a refusal never uses the allowance up
-    /// ([`Meter::count_decode`]). It is counted on the input's meter, which
-    /// every file of the input shares, and the Environment restarts it when
-    /// it opens an evicted dependency again ([`Meter::restart_decode_work`]),
-    /// so eviction churn costs work in proportion to the reads that cause
-    /// it and never exhausts a valid dependency. UnityPy decodes every block
+    /// The *work* one open of an input may cost, in bytes: every byte a
+    /// block decode was granted room for, kept or not (a first decode, a
+    /// measuring decode whose output is dropped, a re-decode of a shared
+    /// block, a decode that fails after it wrote), and every byte the meter
+    /// granted to a lazy computation that ended in an error its cell does
+    /// not keep (a parse or compile the meter refused, which the next ask
+    /// runs again: [`crate::once::get_or_publish_result`]). The meter bounds
+    /// what is held; this bounds what is done, so an input cannot make its
+    /// readers decode or recompute without end while the meter stays empty
+    /// (thousands of blocks that each decode to the block cap, measured and
+    /// dropped by a lazy read of the last entry; one type whose compile alone
+    /// needs more than the meter, asked by every object of the type). A
+    /// growth the meter or the budget refuses decodes nothing and counts
+    /// nothing, so a refusal never uses the allowance up; a growth is counted
+    /// atomically between its charge and its allocation, so decodes running
+    /// at once never pass the bound ([`Meter::count_decode`]). It is counted
+    /// per open: every file of one open shares its meter's count, and the
+    /// Environment reopens an evicted dependency on [`Meter::reopen`], so
+    /// eviction churn costs work in proportion to the reads that cause it
+    /// and never exhausts a valid dependency. UnityPy decodes every block
     /// once; a lazy read of a bundle whose entries do not overlap decodes a
     /// block at most four times: measured, decoded for the entries wholly
     /// inside it, and decoded again for each of the two entries that
@@ -168,31 +182,57 @@ pub enum ChargeError {
     Budget(#[from] BudgetExceeded),
 }
 
-/// What one input holds, against [`Limits::max_input_memory`] (module docs).
-/// Thread-safe: a lazily read bundle's entries charge one meter from any
-/// thread. Shared as `Arc<Meter>`; every [`Charge`] keeps it alive.
-pub struct Meter {
+/// The bytes an `Arc` of a `T` of `size` bytes asks for: the value and the
+/// two reference counts.
+const fn arc_bytes(size: usize) -> u64 {
+    size as u64 + 2 * size_of::<usize>() as u64
+}
+
+/// What every open of one input holds: the memory account its meters share.
+struct Account {
     used: AtomicU64,
     limit: u64,
-    /// Decode work done so far ([`Limits::max_decode_work`]).
-    work: AtomicU64,
-    work_limit: u64,
     budget: Arc<dyn MemoryBudget>,
     what: Reservation,
+}
+
+/// One open of an input: what the input holds, against
+/// [`Limits::max_input_memory`], and what this open has done, against
+/// [`Limits::max_decode_work`] (module docs). Thread-safe: a lazily read
+/// bundle's entries charge one meter from any thread. Shared as
+/// `Arc<Meter>`; every [`Charge`] keeps it alive.
+pub struct Meter {
+    /// The input's memory, shared by every open of it ([`Self::reopen`]).
+    account: Arc<Account>,
+    /// Work done by this open ([`Limits::max_decode_work`]).
+    work: AtomicU64,
+    work_limit: u64,
+    /// Every byte this meter ever granted, never returned: what a lazy
+    /// computation is measured by ([`crate::once::get_or_publish_result`]).
+    granted: AtomicU64,
 }
 
 impl fmt::Debug for Meter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Meter")
             .field("used", &self.used())
-            .field("limit", &self.limit)
+            .field("limit", &self.limit())
             .field("decoded", &self.decoded())
-            .field("what", &self.what)
+            .field("what", &self.reservation())
             .finish_non_exhaustive()
     }
 }
 
 impl Meter {
+    /// The heap an input's first meter takes itself, outside every charge,
+    /// in glibc chunks ([`heap_cost`]): the meter and the memory account, each
+    /// in its `Arc` (plan section 3.15's constant per input). Each
+    /// [`Self::reopen`] adds [`Self::REOPEN_HEAP`].
+    pub const OWN_HEAP: u64 = Self::REOPEN_HEAP + heap_cost(arc_bytes(size_of::<Account>()));
+
+    /// The heap one more open's meter takes, in glibc chunks.
+    pub const REOPEN_HEAP: u64 = heap_cost(arc_bytes(size_of::<Self>()));
+
     /// A meter of `limit` bytes whose charges are booked with `budget` as
     /// `what`, with no bound on decode work.
     #[must_use]
@@ -210,12 +250,15 @@ impl Meter {
         what: Reservation,
     ) -> Arc<Self> {
         Arc::new(Self {
-            used: AtomicU64::new(0),
-            limit,
+            account: Arc::new(Account {
+                used: AtomicU64::new(0),
+                limit,
+                budget,
+                what,
+            }),
             work: AtomicU64::new(0),
             work_limit: max_decode_work,
-            budget,
-            what,
+            granted: AtomicU64::new(0),
         })
     }
 
@@ -236,13 +279,40 @@ impl Meter {
         )
     }
 
-    /// Counts `bytes` of block-decode work, refused when it would pass the
-    /// bound ([`LimitKind::DecodeWork`]). Work is never returned while the
-    /// input is open: once refused, every later decode on this meter is
-    /// refused too, whatever its charges do. A [`crate::budget::DecodeBuf`]
-    /// counts only what it was granted: it checks the bound
-    /// (`decode_fits`), grows, and counts the growth once the meter
-    /// and the budget granted it, so a refused growth counts nothing.
+    /// A meter for opening the same input again: it charges the same memory
+    /// account, so everything every open holds counts against one
+    /// [`Limits::max_input_memory`], and its work starts from zero with the
+    /// same bound. The Environment opens an evicted dependency again on it
+    /// (plan section 3.13). The old meter keeps its own count, so a handle
+    /// of the old open that something still holds (a nested bundle a
+    /// resource read kept) goes on counting against the old allowance, which
+    /// nothing resets, and every open's work stays bounded.
+    #[must_use]
+    pub fn reopen(&self) -> Arc<Self> {
+        Arc::new(Self {
+            account: self.account.clone(),
+            work: AtomicU64::new(0),
+            work_limit: self.work_limit,
+            granted: AtomicU64::new(0),
+        })
+    }
+
+    /// Whether `other` charges the same input's memory (one of them is a
+    /// [`Self::reopen`] of the other, or they are the same meter).
+    #[must_use]
+    pub fn same_input(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.account, &other.account)
+    }
+
+    /// Counts `bytes` of this open's work, refused when it would pass the
+    /// bound ([`LimitKind::DecodeWork`]): one atomic check-and-add, so work
+    /// counted at once from several threads never passes the bound. Work is
+    /// never returned while the open lives: once refused, every later
+    /// decode on this meter is refused too, whatever its charges do. A
+    /// [`crate::budget::DecodeBuf`] counts a growth after the meter and the
+    /// budget granted its memory and before it allocates, so a refused
+    /// growth counts nothing, and a growth the count refuses returns its
+    /// charge and allocates nothing.
     pub fn count_decode(&self, bytes: u64) -> Result<(), ChargeError> {
         let limit = self.work_limit;
         self.work
@@ -253,27 +323,38 @@ impl Meter {
             .map_err(|done| self.decode_refused(done, bytes))
     }
 
-    /// Whether `bytes` more decode work fits the bound now, counting
-    /// nothing: the check a growth makes before it allocates.
-    pub(crate) fn decode_fits(&self, bytes: u64) -> Result<(), ChargeError> {
-        let done = self.decoded();
-        match done.checked_add(bytes) {
-            Some(t) if t <= self.work_limit => Ok(()),
-            _ => Err(self.decode_refused(done, bytes)),
-        }
+    /// Takes back `bytes` counted by [`Self::count_decode`] for a growth
+    /// the allocator then failed (nothing was allocated).
+    pub(crate) fn uncount_decode(&self, bytes: u64) {
+        let _ = self
+            .work
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |done| {
+                Some(done.saturating_sub(bytes))
+            });
     }
 
-    /// Counts `bytes` of work a growth was granted after
-    /// [`Self::decode_fits`] passed. Unchecked, so a growth granted is
-    /// never refused after it allocated; decodes of one input running at
-    /// once may pass the bound by what they were granted at once, and every
-    /// later check refuses.
-    pub(crate) fn add_decode(&self, bytes: u64) {
+    /// Counts `bytes` of work already done, unchecked: what a lazy
+    /// computation that ended unkept was granted
+    /// ([`crate::once::get_or_publish_result`]). The work is done whatever
+    /// the bound says; what follows is refused ([`Self::work_used_up`]).
+    pub(crate) fn add_work(&self, bytes: u64) {
         let _ = self
             .work
             .try_update(Ordering::AcqRel, Ordering::Acquire, |done| {
                 Some(done.saturating_add(bytes))
             });
+    }
+
+    /// The refusal a new piece of work gets once this open's allowance is
+    /// used up (no byte of it left), or `None` while some is left.
+    #[must_use]
+    pub fn work_used_up(&self) -> Option<LimitError> {
+        let done = self.decoded();
+        (done >= self.work_limit).then_some(LimitError {
+            kind: LimitKind::DecodeWork,
+            value: done,
+            max: self.work_limit,
+        })
     }
 
     fn decode_refused(&self, done: u64, bytes: u64) -> ChargeError {
@@ -284,22 +365,16 @@ impl Meter {
         })
     }
 
-    /// Starts this meter's decode work again from zero. The Environment
-    /// calls it when it opens an evicted dependency again from its source:
-    /// the evicted handle is gone (its slot's weak handle no longer
-    /// upgrades), so no decode of the old open is running, and the new open
-    /// gets the allowance of a fresh one while the meter keeps charging
-    /// whatever the old open's values still hold. A caller that opens an
-    /// input again on the same meter itself, without restarting it, shares
-    /// one allowance between the opens.
-    pub fn restart_decode_work(&self) {
-        self.work.store(0, Ordering::Release);
-    }
-
-    /// Decode work counted so far.
+    /// Work counted so far by this open.
     #[must_use]
     pub fn decoded(&self) -> u64 {
         self.work.load(Ordering::Acquire)
+    }
+
+    /// Every byte this meter has granted since it was made, returned or not.
+    #[must_use]
+    pub fn granted(&self) -> u64 {
+        self.granted.load(Ordering::Acquire)
     }
 
     /// A meter with no bound and no budget, for data that is not an input's:
@@ -309,22 +384,22 @@ impl Meter {
         Self::new(u64::MAX, Arc::new(Unbounded), Reservation::Input)
     }
 
-    /// Bytes charged and not yet returned.
+    /// Bytes charged to the input and not yet returned, by every open of it.
     #[must_use]
     pub fn used(&self) -> u64 {
-        self.used.load(Ordering::Acquire)
+        self.account.used.load(Ordering::Acquire)
     }
 
     /// The bound.
     #[must_use]
     pub fn limit(&self) -> u64 {
-        self.limit
+        self.account.limit
     }
 
     /// How the budget books this meter's charges.
     #[must_use]
     pub fn reservation(&self) -> Reservation {
-        self.what
+        self.account.what
     }
 
     /// Charges `bytes`: against the bound, then with the budget. A refusal
@@ -340,8 +415,10 @@ impl Meter {
     }
 
     fn reserve(&self, bytes: u64) -> Result<Permit, ChargeError> {
-        let limit = self.limit;
-        self.used
+        let account = &self.account;
+        let limit = account.limit;
+        account
+            .used
             .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 used.checked_add(bytes).filter(|t| *t <= limit)
             })
@@ -350,15 +427,22 @@ impl Meter {
                 value: used.saturating_add(bytes),
                 max: limit,
             })?;
-        self.budget.try_reserve(bytes, self.what).map_err(|e| {
+        let permit = account.budget.try_reserve(bytes, account.what).map_err(|e| {
             self.refund(bytes);
             ChargeError::Budget(e)
-        })
+        })?;
+        let _ = self
+            .granted
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |g| {
+                Some(g.saturating_add(bytes))
+            });
+        Ok(permit)
     }
 
     fn refund(&self, bytes: u64) {
         // Saturating: a refund never takes the count below zero.
         let _ = self
+            .account
             .used
             .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 Some(used.saturating_sub(bytes))
@@ -496,24 +580,60 @@ pub(crate) fn grow_charged<T>(
     need: usize,
     max: usize,
 ) -> Result<(), ChargeError> {
+    grow_counted(vec, charge, need, max, 0)
+}
+
+/// [`grow_charged`], counting `work` bytes of the meter's work
+/// ([`Meter::count_decode`]) once the growth's memory is granted and before
+/// it is allocated: a growth the meter or the budget refuses counts nothing,
+/// and one the work bound refuses returns its charge and allocates nothing.
+/// The check and the count are one atomic step, so growths on several
+/// threads never pass the bound together.
+pub(crate) fn grow_counted<T>(
+    vec: &mut Vec<T>,
+    charge: &mut Charge,
+    need: usize,
+    max: usize,
+    work: u64,
+) -> Result<(), ChargeError> {
     let have = vec.capacity();
     if need <= have {
         return Ok(());
     }
     let doubled = have.saturating_mul(2).min(max).max(need);
-    if doubled > need && grow_exact(vec, charge, doubled).is_ok() {
-        return Ok(());
+    if doubled > need {
+        match grow_exact(vec, charge, doubled, work) {
+            Ok(()) => return Ok(()),
+            // The work bound refuses the exact size as well.
+            Err(ChargeError::Limit(l)) if l.kind == LimitKind::DecodeWork => {
+                return Err(ChargeError::Limit(l));
+            }
+            Err(_) => {}
+        }
     }
-    grow_exact(vec, charge, need)
+    grow_exact(vec, charge, need, work)
 }
 
-fn grow_exact<T>(vec: &mut Vec<T>, charge: &mut Charge, cap: usize) -> Result<(), ChargeError> {
+fn grow_exact<T>(
+    vec: &mut Vec<T>,
+    charge: &mut Charge,
+    cap: usize,
+    work: u64,
+) -> Result<(), ChargeError> {
     let old = heap_cost(bytes_of::<T>(vec.capacity()));
     let new = heap_cost(bytes_of::<T>(cap));
     let mut extra = charge.meter().charge(new)?;
+    if work > 0 {
+        // `extra` drops on a refusal: the memory granted is returned.
+        charge.meter().count_decode(work)?;
+    }
     let additional = cap.saturating_sub(vec.len());
     if vec.try_reserve_exact(additional).is_err() {
-        // `extra` drops here: nothing stays charged for a failed allocation.
+        // `extra` drops here: nothing stays charged or counted for a failed
+        // allocation.
+        if work > 0 {
+            charge.meter().uncount_decode(work);
+        }
         return Err(ChargeError::Budget(BudgetExceeded {
             requested: new,
             what: charge.meter().reservation(),
@@ -794,30 +914,65 @@ mod tests {
     }
 
     #[test]
-    fn decode_work_starts_again_only_when_the_meter_is_restarted() {
-        // Round 4: the allowance spanned every reopen of an evicted
-        // dependency on its one meter, so eviction churn used it up on a
-        // valid file. The Environment restarts it when it reopens one.
+    fn a_reopen_has_its_own_work_and_shares_the_inputs_memory() {
+        // Round 5: the Environment restarted the one meter's count when it
+        // reopened an evicted dependency, so a nested bundle of the old open
+        // that a resource read still held went on decoding on the restarted
+        // allowance, and every reopen gave it a fresh one. A reopen is a new
+        // meter on the same memory account; the old open keeps its count.
+        let limits = Limits {
+            max_input_memory: 1000,
+            max_decode_work: 100,
+            ..Limits::default()
+        };
+        let old = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Dependency);
+        let held = old.charge(600).unwrap();
+        old.count_decode(100).unwrap();
+        assert!(old.work_used_up().is_some());
+        let new = old.reopen();
+        assert!(new.same_input(&old));
+        assert_eq!(new.reservation(), Reservation::Dependency);
+        new.count_decode(100).unwrap();
+        let e = old.count_decode(1).unwrap_err();
+        assert!(
+            matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::DecodeWork),
+            "the old open stays used up: {e:?}"
+        );
+        assert_eq!((old.decoded(), new.decoded()), (100, 100));
+        // Both opens charge one memory bound.
+        assert_eq!(new.used(), 600);
+        let e = new.charge(401).unwrap_err();
+        assert!(
+            matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::InputMemory && l.value == 1001),
+            "{e:?}"
+        );
+        let more = new.charge(400).unwrap();
+        assert_eq!((old.used(), new.used()), (1000, 1000));
+        drop((held, more));
+        assert_eq!(old.used(), 0);
+        let other = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Input);
+        assert!(!other.same_input(&old));
+    }
+
+    #[test]
+    fn work_done_is_counted_past_the_bound_and_refuses_what_follows() {
         let limits = Limits {
             max_decode_work: 100,
             ..Limits::default()
         };
-        let meter = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Dependency);
-        let held = meter.charge(10).unwrap();
-        meter.count_decode(100).unwrap();
+        let meter = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Input);
+        meter.count_decode(40).unwrap();
+        assert!(meter.work_used_up().is_none());
+        // A computation that ended unkept was granted 90 bytes: counted as done.
+        meter.add_work(90);
+        assert_eq!(meter.decoded(), 130);
+        let used_up = meter.work_used_up().unwrap();
+        assert_eq!((used_up.kind, used_up.value, used_up.max), (LimitKind::DecodeWork, 130, 100));
         assert!(meter.count_decode(1).is_err());
-        assert!(meter.decode_fits(1).is_err());
-        meter.restart_decode_work();
-        assert_eq!(
-            (meter.decoded(), meter.used()),
-            (0, 10),
-            "memory stays charged"
-        );
-        meter.decode_fits(100).unwrap();
-        assert_eq!(meter.decoded(), 0, "a check counts nothing");
-        meter.add_decode(100);
-        assert!(meter.decode_fits(1).is_err());
-        drop(held);
+        assert_eq!(meter.granted(), 0, "work is not memory");
+        let c = meter.charge(7).unwrap();
+        drop(c);
+        assert_eq!((meter.granted(), meter.used()), (7, 0), "grants are never returned");
     }
 
     #[test]

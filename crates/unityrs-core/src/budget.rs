@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytes::Bytes;
 
 use crate::error::{LimitError, LimitKind};
-use crate::limits::{Charge, ChargeError, Meter, grow_charged, heap_cost};
+use crate::limits::{Charge, ChargeError, Meter, grow_charged, grow_counted, heap_cost};
 
 /// Which kind of load a charge belongs to, so a refusal says which pool
 /// refused (plan section 4.1).
@@ -318,10 +318,11 @@ pub fn charged_bytes(buf: Vec<u8>, mut charge: Charge) -> Result<Bytes, ChargeEr
 /// (a first decode, a re-decode, a measuring decode): the meter counts what is
 /// held, not what was first seen. A block's segment (capped by
 /// [`LimitKind::BlockOutput`]) also counts every byte it makes room for as
-/// the input's decode work ([`crate::limits::Limits::max_decode_work`]), which
-/// is never returned, so a block decoded again and again (a failing block
-/// read for every entry, a span re-decoded for every range) stops there
-/// even though each attempt returns its memory.
+/// the decode work of its meter's open
+/// ([`crate::limits::Limits::max_decode_work`]), which is never returned, so
+/// a block decoded again and again (a failing block read for every entry, a
+/// span re-decoded for every range) stops there even though each attempt
+/// returns its memory.
 ///
 /// **Drop.** A buffer dropped unfinished (a decode that failed) returns its
 /// charge with its allocation.
@@ -415,11 +416,14 @@ impl DecodeBuf {
     /// while the meter can pay for the old and the new block at once, and
     /// grows to exactly what is needed when it cannot. In a block's segment
     /// (one capped by [`LimitKind::BlockOutput`]) the `additional` bytes are
-    /// also decode work: checked against the input's bound before the growth
-    /// ([`LimitKind::DecodeWork`]), and counted once the growth was granted,
-    /// whatever the decoder later keeps. A growth the meter or the budget
-    /// refuses counts no work, so a refusal leaves the input as it was and
-    /// the same read succeeds once there is room.
+    /// also the open's decode work, counted once the meter and the budget
+    /// granted the growth and before it allocates, in one atomic
+    /// check-and-add ([`crate::limits::Meter::count_decode`]): decodes on
+    /// several threads never pass the bound together, a growth the bound
+    /// refuses ([`LimitKind::DecodeWork`]) returns its charge and allocates
+    /// nothing, and a growth the meter or the budget refuses counts no work,
+    /// so a refusal leaves the input as it was and the same read succeeds
+    /// once there is room.
     pub fn reserve(&mut self, additional: usize) -> Result<(), ChargeError> {
         let need = self.buf.len().saturating_add(additional);
         if need > self.seg_end() {
@@ -429,16 +433,12 @@ impl DecodeBuf {
                 max: self.seg_cap,
             }));
         }
-        let work = (self.seg_kind == LimitKind::BlockOutput)
-            .then(|| u64::try_from(additional).unwrap_or(u64::MAX));
-        if let Some(work) = work {
-            self.charge.meter().decode_fits(work)?;
-        }
-        grow_charged(&mut self.buf, &mut self.charge, need, usize::MAX)?;
-        if let Some(work) = work {
-            self.charge.meter().add_decode(work);
-        }
-        Ok(())
+        let work = if self.seg_kind == LimitKind::BlockOutput {
+            u64::try_from(additional).unwrap_or(u64::MAX)
+        } else {
+            0
+        };
+        grow_counted(&mut self.buf, &mut self.charge, need, usize::MAX, work)
     }
 
     /// Appends `data`.
@@ -664,6 +664,80 @@ mod tests {
         assert_eq!(m.decoded(), 1 << 20);
         drop(out);
         assert_eq!((m.used(), pool.used()), (0, 0));
+    }
+
+    #[test]
+    fn decodes_on_several_threads_never_pass_the_work_bound_together() {
+        // Round 5 (Codex M1): the bound was checked before a growth and
+        // counted after it, so threads that checked at once all passed and
+        // all counted. This budget holds each thread at its first
+        // reservation until all eight have arrived (a test budget may block;
+        // a real one must not), so every thread has checked the bound before
+        // any of them counts: eight 1 MiB growths against 4 MiB of work.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        #[derive(Debug)]
+        struct Gate {
+            barrier: std::sync::Barrier,
+            arrived: AtomicUsize,
+            threads: usize,
+        }
+        impl MemoryBudget for Gate {
+            fn try_reserve(
+                &self,
+                bytes: u64,
+                _what: Reservation,
+            ) -> Result<Permit, super::BudgetExceeded> {
+                if self.arrived.fetch_add(1, Ordering::AcqRel) < self.threads {
+                    self.barrier.wait();
+                }
+                Ok(Permit::detached(bytes))
+            }
+        }
+        const THREADS: usize = 8;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let limits = crate::limits::Limits {
+                max_decode_work: 4 << 20,
+                ..crate::limits::Limits::default()
+            };
+            let gate = Arc::new(Gate {
+                barrier: std::sync::Barrier::new(THREADS),
+                arrived: AtomicUsize::new(0),
+                threads: THREADS,
+            });
+            let m = Meter::for_input(&limits, gate, Reservation::Input);
+            let outcomes: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    let m = m.clone();
+                    std::thread::spawn(move || {
+                        let mut out = DecodeBuf::new(&m, 0, 1 << 30, LimitKind::BlockOutput)?;
+                        out.grow_zeroed(1 << 20)?;
+                        Ok::<_, ChargeError>(out)
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .collect();
+            let granted = outcomes.iter().filter(|o| o.is_ok()).count();
+            let refused = outcomes
+                .iter()
+                .filter(|o| {
+                    matches!(o, Err(ChargeError::Limit(l)) if l.kind == LimitKind::DecodeWork)
+                })
+                .count();
+            let held = m.used();
+            let decoded = m.decoded();
+            drop(outcomes);
+            let _ = tx.send((granted, refused, decoded, held, m.used()));
+        });
+        let (granted, refused, decoded, held, after) = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the growths did not finish");
+        assert_eq!(decoded, 4 << 20, "the work bound held");
+        assert_eq!((granted, refused), (4, 4));
+        assert_eq!(held, 4 * heap_cost(1 << 20), "a refused growth kept no charge");
+        assert_eq!(after, 0);
     }
 
     #[test]
