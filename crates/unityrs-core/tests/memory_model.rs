@@ -5,9 +5,8 @@
 //!     scripts/dev cargo test -p unityrs-core --test memory_model -- --nocapture
 //!
 //! A counting global allocator watches the heap while each path runs, and
-//! checks two things: the heap never holds more than the meter has charged
-//! (requested sizes; `heap_cost` adds the allocator's rounding, checked
-//! against glibc below), and the two inputs round 2 of the review built,
+//! checks two things: the heap never holds more than the meter has charged,
+//! with no slack, and the two inputs round 2 of the review built,
 //! overlapping directory entries and lazily re-decoded block spans, now stop
 //! with `LimitKind::InputMemory` at the meter's limit. They are run here at
 //! a 64 MiB limit, scaled down from the reviewers' 13 GiB and 748 GiB, through
@@ -20,6 +19,13 @@
 //! `Counting` each charge left an uncharged permit record, and a value's heap
 //! reached twice its charge). This file holds one test so nothing else
 //! allocates while it runs.
+//!
+//! **The heap is counted in glibc chunks**, [`heap_cost`] of each request
+//! (checked against `malloc_usable_size` below), the same unit the meter
+//! charges. Counting requested sizes instead would leave every charged
+//! allocation's rounding (8 to 23 bytes, a page for an mmapped chunk) as
+//! room in which an uncharged allocation could hide: an 8-byte box per list
+//! costs a 32-byte chunk and would pass (round 4).
 
 #![allow(unsafe_code, clippy::cast_precision_loss)]
 
@@ -40,26 +46,33 @@ struct Counting;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 
+/// The glibc chunk a request of `n` bytes takes (module docs).
+fn chunk(n: usize) -> usize {
+    usize::try_from(heap_cost(n as u64)).unwrap_or(usize::MAX)
+}
+
 // SAFETY: every method forwards to `System` and only counts sizes.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let now = LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
+        let c = chunk(layout.size());
+        let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
         PEAK.fetch_max(now, Ordering::Relaxed);
         // SAFETY: the caller's contract is `System`'s.
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+        LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
         // SAFETY: as above.
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         // Count the worst case of a moving realloc: both blocks live at once.
-        let now = LIVE.fetch_add(new_size, Ordering::Relaxed) + new_size;
+        let c = chunk(new_size);
+        let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
         PEAK.fetch_max(now, Ordering::Relaxed);
         // SAFETY: as above.
         let p = unsafe { System.realloc(ptr, layout, new_size) };
-        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+        LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
         p
     }
 }
@@ -70,9 +83,6 @@ static ALLOC: Counting = Counting;
 const MIB: u64 = 1 << 20;
 /// The scaled-down meter limit of the two hostile inputs.
 const LIMIT: u64 = 64 * MIB;
-/// What the test's own bookkeeping (vectors of handles, the harness) may
-/// add to the heap beside what it measures.
-const SLACK: u64 = 256 << 10;
 
 fn bytes(n: usize) -> u64 {
     u64::try_from(n).unwrap()
@@ -103,7 +113,7 @@ fn meter(limit: u64, counting: bool) -> Arc<Meter> {
     Meter::new(limit, budget, Reservation::Input)
 }
 
-/// The heap above `base` is at most what `m` charged.
+/// The heap above `base`, in glibc chunks, is at most what `m` charged.
 fn held_within_charge(base: u64, m: &Meter, what: &str) {
     let live = live().saturating_sub(base);
     assert!(
@@ -144,11 +154,11 @@ fn overlapping_entries(counting: bool) -> usize {
             deps.push(i32::try_from(i & 0xff).unwrap()).unwrap();
         }
         parsed.push(deps);
-        assert!(live() - base <= m.used() + SLACK, "heap above the charge");
+        held_within_charge(base, &m, "overlapping entries");
     }
     assert_limit(&refused.expect("the meter refused a copy"));
     assert!(
-        peak_above(base) <= LIMIT + SLACK,
+        peak_above(base) <= LIMIT,
         "peak {} above the limit",
         peak_above(base)
     );
@@ -200,11 +210,11 @@ fn lazy_runs(counting: bool) -> (usize, u64) {
                 break;
             }
         }
-        assert!(live() - base <= m.used() + SLACK, "heap above the charge");
+        held_within_charge(base, &m, "lazy runs");
     }
     assert_limit(&refused.expect("the meter refused a run"));
     assert!(
-        peak_above(base) <= LIMIT + SLACK,
+        peak_above(base) <= LIMIT,
         "peak {} above the limit",
         peak_above(base)
     );
@@ -253,7 +263,7 @@ fn typetree_rows(counting: bool) -> f64 {
             .unwrap();
         }
         let list = NodeList::from_rows(rows).unwrap();
-        assert!(live() - base <= m.used(), "rows held above their charge");
+        held_within_charge(base, &m, "typetree rows");
         assert!(
             peak_above(base) <= m.used() * 2,
             "from_rows's peak above twice what it keeps"
