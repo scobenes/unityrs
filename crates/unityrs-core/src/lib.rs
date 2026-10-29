@@ -218,7 +218,7 @@ mod tests {
     }
 
     /// Plan 4.1: outside its tests the core starts no thread and never
-    /// sleeps, parks, or waits on a condition, a barrier or a channel
+    /// sleeps, parks, spins, or waits on a condition, a barrier or a channel
     /// (`unityrs_testkit::waits`), so a batch engine's pool threads cannot
     /// block inside a core call, and the engine alone decides the threads.
     #[test]
@@ -228,6 +228,21 @@ mod tests {
         assert!(
             found.is_empty(),
             "the core waits or starts a thread: {found:?}"
+        );
+    }
+
+    /// Plan 4.1 and 3.16: no lazy value is computed inside its cell. Every
+    /// cell outside `once.rs` is filled through `once::get_or_publish` or
+    /// `get_or_publish_result` (`unityrs_testkit::waits::cell_fills`), whose
+    /// tests pin that only a move runs inside the cell, so a callback that
+    /// re-enters a cell, or a thread holding the GIL, never waits on one.
+    #[test]
+    fn every_cell_is_filled_through_the_once_helper() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let found = unityrs_testkit::waits::cell_fills(&src);
+        assert!(
+            found.is_empty(),
+            "a cell filled outside the once helper: {found:?}"
         );
     }
 }

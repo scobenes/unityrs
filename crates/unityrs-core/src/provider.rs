@@ -606,6 +606,59 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_holding_a_lock_a_provider_needs_does_not_wait_on_the_chain() {
+        // Plan 4.1: a provider is caller code (a Python one takes the GIL).
+        // Thread A's lookup runs a provider that needs `gil`; thread B holds
+        // `gil` and looks up another class through the same chain. Had the
+        // chain held its cache lock across A's provider, B would wait on it
+        // while holding what A's provider waits for.
+        #[derive(Debug)]
+        struct NeedsLock {
+            gil: Arc<std::sync::Mutex<()>>,
+            started: Arc<std::sync::Barrier>,
+        }
+        impl TypeTreeProvider for NeedsLock {
+            fn name(&self) -> &'static str {
+                "needs-lock"
+            }
+            fn tree(&self, req: &TreeRequest<'_>) -> Result<Option<Arc<Tree>>, ProviderError> {
+                if req.class_id == 1 {
+                    self.started.wait();
+                    let _held = self.gil.lock().unwrap();
+                }
+                let list = NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")]).unwrap();
+                Ok(Some(Tree::for_tests(Arc::new(list))))
+            }
+        }
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let gil = Arc::new(std::sync::Mutex::new(()));
+            let started = Arc::new(std::sync::Barrier::new(2));
+            let chain = Arc::new(ProviderChain::new(vec![Arc::new(NeedsLock {
+                gil: gil.clone(),
+                started: started.clone(),
+            })]));
+            let a = {
+                let chain = chain.clone();
+                std::thread::spawn(move || {
+                    let v = UnityVersion::from_packed(1);
+                    chain.lookup(&request(1, &v)).map(|t| t.is_some())
+                })
+            };
+            let held = gil.lock().unwrap();
+            started.wait();
+            let v = UnityVersion::from_packed(1);
+            let b = chain.lookup(&request(2, &v)).map(|t| t.is_some());
+            drop(held);
+            let _ = tx.send((a.join().unwrap(), b));
+        });
+        let got = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("deadlocked: the chain held a lock across a provider");
+        assert_eq!(got, (Ok(true), Ok(true)));
+    }
+
+    #[test]
     fn a_provider_may_call_the_chain_from_inside_its_answer() {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
