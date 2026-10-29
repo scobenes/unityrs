@@ -148,6 +148,7 @@ class TestColumn(unittest.TestCase):
                 "every_resolution_exception_is_listed",
                 "an_empty_path_raises_only_where_no_cab_answers_it",
                 "the_gpu_program_index_rule_is_int_in_base_10",
+                "a_failure_to_write_is_tier_c_writing",
             }
             named = {name for module, name in cited if module == path.name}
             self.assertEqual(sorted(defined - named), [], f"tests no PARITY.md row names, in {path.name}")
@@ -307,6 +308,44 @@ class TestColumn(unittest.TestCase):
                         refusals += 1
                         self.assertIn("`int()` in base 10", line)
         self.assertGreaterEqual(refusals, 2)
+
+    WRITER = re.compile(r"set_image|image_to_texture2d|\bsave\b|save_fs|save_typetree|get_writeable_cab|set_raw_data")
+
+    def test_a_failure_to_write_is_tier_c_writing(self):
+        """DESIGN.md section 3, Writing: where UnityPy raises on a valid write, the case is Tier C (writing), never
+        Tier B. So no Tier B bullet of DESIGN.md names a writer unless it sends that writer to Tier C (writing), no
+        PARITY.md tier clause that starts with B names one or sits in a writer's row, and the two cases that once
+        stood in Tier B have their Tier C (writing) rows."""
+        root = HERE.parent.parent
+        design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        reading = design.split("**Reading**", 1)[1].split("**Writing**", 1)[0]
+        tier = None
+        for line in reading.splitlines():
+            if line.startswith("- **"):
+                tier = line[4:10]
+            elif tier == "Tier B" and line.startswith("  - ") and self.WRITER.search(line):
+                with self.subTest("DESIGN.md Tier B", bullet=line[4:70]):
+                    self.assertIn("is Tier C (writing)", line)
+        writing = design.split("| Tier C (writing) | acceptance |", 1)[1].split("\n\n", 1)[0]
+        for lead in (
+            "| `set_image` from an image whose mode Pillow cannot pack",
+            "| `Environment.save` of a file keyed by a stream `name` that is not a `str`",
+        ):
+            self.assertIn("\n" + lead, writing)
+        rows = 0
+        for line in (root / "PARITY.md").read_text(encoding="utf-8").splitlines():
+            cells = [cell.strip() for cell in line.strip("|").split(" | ")]
+            if not line.startswith("| ") or line.startswith("|---") or len(cells) < 6:
+                continue
+            item, clauses = cells[0], [clause.strip() for clause in cells[2].split(";")]
+            for clause in clauses:
+                if re.match(r"B\b", clause):
+                    rows += 1
+                    with self.subTest("PARITY.md", item=item[:60], clause=clause[:60]):
+                        self.assertNotRegex(clause, self.WRITER)
+                        self.assertNotIn("cannot pack", clause)
+                        self.assertNotRegex(item, self.WRITER)
+        self.assertGreater(rows, 20)
 
     def test_head_dicts_are_a_target_while_their_fixtures_are_planned(self):
         """Section 20's reading rows name the Unity 6000.4/6000.5 fixtures as planned, so no comparison with HEAD's

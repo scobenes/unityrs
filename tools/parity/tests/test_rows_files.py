@@ -6,6 +6,7 @@ Needs UnityPy 1.25.2 (the oracle image); skipped elsewhere.
 """
 
 import gzip
+import ntpath
 import random
 import shutil
 import struct
@@ -470,12 +471,22 @@ class FileRows(unittest.TestCase):
                         quietly(e.load_file, f).mark_changed()
                 else:
                     quietly(e.load_file, stream(kind, bundle)).mark_changed()
+                (key,) = e.files
+                self.assertIsInstance(key, {"int": int, "None": type(None), "bytes": bytes}[kind])
                 with self.assertRaisesRegex(TypeError, message):
                     e.save(out_path=str(out))
+                # The Tier C (writing) reference: the same bytes loaded with name= the key's str(), or os.fsdecode()
+                # of bytes, which UnityPy saves under that string's basename.
+                name = os.fsdecode(key) if isinstance(key, bytes) else str(key)
                 e = UnityPy.Environment()
-                quietly(e.load_file, stream("int", bundle), name=f"given-{kind}").mark_changed()
-                e.save(out_path=str(out))
-        self.assertEqual(sorted(p.name for p in out.iterdir()), ["given-None", "given-bytes", "given-int"])
+                quietly(e.load_file, bundle, name=name).mark_changed()
+                (out / kind).mkdir()
+                e.save(out_path=str(out / kind))
+                self.assertEqual([p.name for p in (out / kind).iterdir()], [ntpath.basename(name)])
+                saved = (out / kind / ntpath.basename(name)).read_bytes()
+                self.assertEqual(sorted(load(saved)[0].files), sorted(load(bundle)[0].files))
+        self.assertEqual(sorted(p.name for p in (out / "None").iterdir()), ["None"])
+        self.assertEqual(sorted(p.name for p in (out / "bytes").iterdir()), ["B.bundle"])
         # Anything else is keyed by str(obj.__hash__()) (section 19.2): bytes and a read-only memoryview by the
         # bytes' hash, a nameless stream by its own id-based hash.
         data = text_asset_file("q")
