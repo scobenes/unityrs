@@ -537,6 +537,58 @@ fn a_missing_resource_is_loaded_through_the_resolver_then_read() {
     ));
 }
 
+/// Under `EnvOptions::batch()` (no `keep_resolver_loads`) every file the
+/// resolver loads is an LRU dependency: none is in `files`, `objects` or
+/// the container, and the pointer and the resource still resolve.
+#[test]
+fn batch_options_keep_no_resolver_load_in_files_objects_or_the_container() {
+    #[derive(Debug)]
+    struct SceneResolver(Vec<(Vec<u8>, Vec<u8>)>);
+    impl CabResolver for SceneResolver {
+        fn resolve(&self, name: &[u8]) -> Option<Source> {
+            let (n, d) = self.0.iter().find(|(n, _)| n == name)?;
+            Some(Source::Bytes {
+                name: RawStr::new(n.clone()),
+                data: Bytes::from(d.clone()),
+            })
+        }
+    }
+    let scene = unityrs_testkit::env::resolver_loads();
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let mut o = EnvOptions::batch(Arc::new(FileContext::unitypy()));
+        o.load = mode;
+        o.resolver = Some(Arc::new(SceneResolver(scene.resolver.clone())));
+        let env = Environment::new(o);
+        env.load(file_of(&scene, 0)).unwrap();
+        let sf = serialized_cab(&env, "cab-h");
+        let loose = PPtr {
+            file_id: 2,
+            path_id: 5,
+        };
+        assert_eq!(name_of(&env.deref(&sf, loose).unwrap()), "loose5");
+        assert_eq!(env.container().unwrap().count(), 1, "{mode:?}");
+        // `cab-dep` is a bundle: loaded, it is the pointer's container.
+        let to_dep = PPtr {
+            file_id: 1,
+            path_id: 3,
+        };
+        assert!(matches!(
+            env.deref(&sf, to_dep),
+            Err(DerefError::RawTarget { .. })
+        ));
+        let (path, offset, size) = stream(&object(&sf, 2));
+        let got = env.resource(&sf, &path, offset, size).unwrap();
+        assert_eq!(got.as_ref(), &res_bytes(24, 9)[2..8]);
+        assert_eq!(env.files().len(), 1, "{mode:?}");
+        let objects: Vec<_> = env.objects().map(Result::unwrap).collect();
+        assert_eq!(objects.len(), 3, "{mode:?}");
+        assert!(objects.iter().all(|o| Arc::ptr_eq(o.file(), &sf)));
+        assert!(env.stats().dependencies_loaded >= 2, "{mode:?}");
+        // `cab-dep`'s own `CAB-H` took the key: no caller CAB is left with rows.
+        assert_eq!(env.container().unwrap().count(), 0, "{mode:?}");
+    }
+}
+
 // --------------------------------------------------------- the LRU
 
 fn named_bundle(cab: &str, pad: usize) -> Vec<u8> {

@@ -322,8 +322,14 @@ def check_g5(probe_path: Path, corpus: Path) -> int:
     outside the repository) and prints counts only."""
     report = json.loads(probe_path.read_text())
     rels = report["bundles"]
+    with tempfile.TemporaryDirectory() as empty:
+        return check_g5_in(report, rels, corpus, empty)
+
+
+def check_g5_in(report: dict, rels: list[str], corpus: Path, empty: str) -> int:
+    """check_g5 with `empty` as env.path, so find_file finds only the loaded bundles."""
     with contextlib.redirect_stdout(io.StringIO()):
-        env = UnityPy.Environment(path=tempfile.mkdtemp())
+        env = UnityPy.Environment(path=empty)
         for r in rels:
             env.load_file(str(corpus / r))
     files = {}
