@@ -2,8 +2,9 @@
 
 The rule tests need only the standard library. The others need UnityPy 1.25.2 (the
 oracle image) and are skipped elsewhere: they list UnityPy's surface, require
-PARITY.md to name all of it, and run every TextureFormat through UnityPy to check
-what the matrix says UnityPy does.
+PARITY.md to name all of it, and require `check` to fail when any one entry is
+removed or written under a wrong parent. `test_texture_matrix.py` checks what the
+TextureFormat matrix says UnityPy does.
 """
 
 import contextlib
@@ -21,9 +22,6 @@ import inventory  # noqa: E402
 
 try:
     import UnityPy
-    from PIL import Image
-    from UnityPy.enums import BuildTarget, TextureFormat
-    from UnityPy.export import Texture2DConverter
 
     ORACLE = UnityPy.__version__ == inventory.PINNED_VERSION
 except ImportError:  # pragma: no cover - outside the oracle image
@@ -32,52 +30,35 @@ except ImportError:  # pragma: no cover - outside the oracle image
 PARITY = inventory.DEFAULT_PARITY
 NEEDS_ORACLE = "needs UnityPy 1.25.2 (the oracle image)"
 
-# What Unity stores for one pixel of each uncompressed TextureFormat, by name.
-BYTES_PER_PIXEL = {
-    name: size
-    for size, names in {
-        1: "Alpha8 R8 R8_SIGNED",
-        2: "ARGB4444 RGBA4444 RGB565 R16 RHalf RG16 RG16_SIGNED R16_SIGNED YUY2",
-        3: "RGB24 BGR24 RGB24_SIGNED",
-        4: "RGBA32 ARGB32 BGRA32 RFloat RGHalf RGB9e5Float RG32 RGBA32_SIGNED RG32_SIGNED",
-        6: "RGB48 RGB48_SIGNED",
-        8: "RGBAHalf RGFloat RGBA64 RGBA64_SIGNED",
-        12: "RGBFloat",
-        16: "ARGBFloat RGBAFloat",
-    }.items()
-    for name in names.split()
-}
-# Block formats whose blocks are 8 bytes; every other block format has 16-byte blocks.
-EIGHT_BYTE_BLOCKS = set(
-    "DXT1 BC4 ETC_RGB4 ETC_RGB4_3DS ETC2_RGB ETC2_RGBA1 EAC_R EAC_R_SIGNED ATC_RGB4"
-    " PVRTC_RGB2 PVRTC_RGBA2 PVRTC_RGB4 PVRTC_RGBA4".split()
-)
-
-
-def stored_size(fmt, width, height):
-    """The bytes a real texture of `fmt` holds for its top level: what `parse_image_data` gets from Unity."""
-    if fmt.name in BYTES_PER_PIXEL:
-        return BYTES_PER_PIXEL[fmt.name] * width * height
-    # UnityPy's own block table; ATC is absent from it (it pads nothing) and has 4x4 blocks.
-    block_w, block_h = Texture2DConverter.TEXTURE_FORMAT_BLOCK_SIZE_TABLE[fmt] or (4, 4)
-    blocks = -(-width // block_w) * -(-height // block_h)
-    return blocks * (8 if fmt.name in EIGHT_BYTE_BLOCKS else 16)
-
-
-def exception_name(error):
-    """`ValueError` for a builtin, `struct.error` for anything else: how the matrix names a raise."""
-    kind = type(error)
-    return kind.__qualname__ if kind.__module__ == "builtins" else f"{kind.__module__}.{kind.__qualname__}"
-
 
 SYMBOLS = {
     "modules": ["files/BundleFile.py", "export/Texture2DConverter.py"],
-    "classes": ["BundleFile", "SpriteSettings"],
+    "classes": ["BundleFile", "SpriteSettings", "GameObject"],
     "functions": ["ImportHelper.check_file_type"],
     "data": ["CompressionHelper.DECOMPRESSION_MAP"],
     "methods": ["Environment.load_file", "Texture2D.set_image"],
+    "fields": ["GameObject.m_Name", "GameObject.m_Layer", "ObjectReader.path_id"],
+    "exports": ["UnityPy.files.File", "UnityPy.load"],
     "boost": ["UnityPyBoost.read_typetree"],
     "texture_formats": [["Alpha8", 1], ["RGB24", 3]],
+    # The import paths each short form may also be written as (inventory.collect builds these).
+    "paths": {
+        "BundleFile": ["UnityPy.files.BundleFile", "UnityPy.files.BundleFile.BundleFile"],
+        "SpriteSettings": ["UnityPy.export.SpriteHelper.SpriteSettings"],
+        "GameObject": ["UnityPy.classes.GameObject", "UnityPy.classes.generated.GameObject"],
+        "ImportHelper.check_file_type": ["UnityPy.helpers.ImportHelper.check_file_type"],
+        "CompressionHelper.DECOMPRESSION_MAP": ["UnityPy.helpers.CompressionHelper.DECOMPRESSION_MAP"],
+        "Environment.load_file": [
+            "UnityPy.Environment.load_file",
+            "UnityPy.environment.Environment.load_file",
+            "UnityPy.load.load_file",
+        ],
+        "GameObject.m_Name": ["UnityPy.classes.GameObject.m_Name", "UnityPy.classes.generated.GameObject.m_Name"],
+        "ObjectReader.path_id": ["UnityPy.files.ObjectReader.ObjectReader.path_id"],
+        "UnityPy.files.File": ["UnityPy.files.File"],
+        "UnityPy.load": ["UnityPy.load"],
+        "UnityPyBoost.read_typetree": ["UnityPy.UnityPyBoost.read_typetree"],
+    },
 }
 
 COMPLETE = """
@@ -86,22 +67,27 @@ COMPLETE = """
 | `UnityPy/files/BundleFile.py:188-236` | a path, with its package prefix and a line range |
 | `export/Texture2DConverter.py` | a bare path |
 | `BundleFile` | a class |
-| `SpriteHelper.SpriteSettings` | a class inside a dotted name |
-| `UnityPy.helpers.ImportHelper.check_file_type(path)` | a function inside a longer chain and a call |
+| `SpriteHelper.SpriteSettings` | a class behind its module |
+| `UnityPy.helpers.ImportHelper.check_file_type(path)` | a function behind its import path, called |
 | `CompressionHelper.DECOMPRESSION_MAP[4]` | module data, subscripted |
 | `Environment.load_file`, `Texture2D.set_image` | two methods in one cell |
+| `ObjectReader.path_id` | a field written whole |
+| `UnityPy.load` | a package export |
 | `UnityPyBoost.read_typetree` | a Boost export |
+
+| class | bases | fields |
+|---|---|---|
+| `GameObject` | EditorExtension | `m_Layer`, `m_Name` |
+
+| package | members |
+|---|---|
+| `UnityPy.files` | `File` |
 
 | value | format | result |
 |---|---|---|
 | 1 | `Alpha8` | works |
 | 3 | `RGB24` | works |
 """
-
-
-def first_span(cell):
-    match = re.search(r"`([^`]+)`", cell)
-    return match.group(1) if match else None
 
 
 class MatchingRules(unittest.TestCase):
@@ -148,29 +134,92 @@ class MatchingRules(unittest.TestCase):
         self.assertEqual(sorted(rows), ["Alpha8", "RGB24"])
         self.assertEqual(rows["RGB24"], {"value": "3", "format": "`RGB24`", "result": "works"})
 
+    def test_a_name_under_a_wrong_parent_names_nothing(self):
+        """The chain must start at the symbol or at one of its import paths, never inside another chain."""
+        cases = {
+            "functions": (
+                "`UnityPy.helpers.ImportHelper.check_file_type(path)`",
+                "`Wrong.ImportHelper.check_file_type`",
+                "ImportHelper.check_file_type",
+            ),
+            "data": (
+                "`CompressionHelper.DECOMPRESSION_MAP[4]`",
+                "`helpers.Wrong.CompressionHelper.DECOMPRESSION_MAP`",
+                "CompressionHelper.DECOMPRESSION_MAP",
+            ),
+            "methods": ("`Environment.load_file`,", "`Wrong.Environment.load_file`,", "Environment.load_file"),
+            "fields": ("`ObjectReader.path_id`", "`SerializedFile.ObjectReader.path_id`", "ObjectReader.path_id"),
+            "exports": ("`UnityPy.load`", "`Wrong.UnityPy.load`", "UnityPy.load"),
+            "boost": (
+                "`UnityPyBoost.read_typetree`",
+                "`UnityPy.helpers.UnityPyBoost.read_typetree`",
+                "UnityPyBoost.read_typetree",
+            ),
+            "classes": ("`SpriteHelper.SpriteSettings`", "`MeshHelper.SpriteSettings`", "SpriteSettings"),
+        }
+        for group, (old, new, name) in cases.items():
+            with self.subTest(group):
+                self.assertIn(old, COMPLETE)
+                self.assertEqual(inventory.missing(SYMBOLS, COMPLETE.replace(old, new)), {group: [name]})
 
-class ThisParityFile(unittest.TestCase):
-    """What PARITY.md says, read without the oracle."""
+    def test_an_import_path_and_a_trailing_attribute_name_the_symbol(self):
+        for span in (
+            "`UnityPy.environment.Environment.load_file`",
+            "`UnityPy.Environment.load_file`",
+            "`environment.Environment.load_file`",
+            "`Environment.load_file.__doc__`",
+        ):
+            with self.subTest(span):
+                text = COMPLETE.replace("`Environment.load_file`,", span + ",")
+                self.assertEqual(inventory.missing(SYMBOLS, text), {})
 
-    def setUp(self):
-        self.rows = inventory.texture_rows(PARITY.read_text(encoding="utf-8"))
+    def test_a_compact_row_names_its_members_under_its_own_parent(self):
+        row = "| `GameObject` | EditorExtension | `m_Layer`, `m_Name` |"
+        moved = COMPLETE.replace(
+            row, "| `GameObject` | EditorExtension | `m_Layer` |\n| `Texture2D` | Texture | `m_Name` |"
+        )
+        self.assertEqual(inventory.missing(SYMBOLS, moved), {"fields": ["GameObject.m_Name"]})
+        # Only a `fields` or `members` column counts.
+        other = COMPLETE.replace("| class | bases | fields |", "| class | bases | notes |")
+        self.assertEqual(inventory.missing(SYMBOLS, other), {"fields": ["GameObject.m_Name", "GameObject.m_Layer"]})
+        # A member written outside a code span, or under another package, does not count.
+        for new in ("| `UnityPy.files` | File |", "| `UnityPy.streams` | `File` |"):
+            with self.subTest(new):
+                text = COMPLETE.replace("| `UnityPy.files` | `File` |", new)
+                self.assertEqual(inventory.missing(SYMBOLS, text), {"exports": ["UnityPy.files.File"]})
 
-    def test_the_matrix_has_one_row_per_texture_format(self):
-        self.assertEqual(len(self.rows), 78)
-        self.assertEqual(len({row["value"] for row in self.rows.values()}), 78)
+    def test_removing_any_one_entry_is_reported(self):
+        removals = {
+            "modules": ("`export/Texture2DConverter.py`", "`export/Converter.py`", "export/Texture2DConverter.py"),
+            "classes": ("| `BundleFile` | a class |", "| bundle | a class |", "BundleFile"),
+            "functions": (
+                "`UnityPy.helpers.ImportHelper.check_file_type(path)`",
+                "`check_file_type`",
+                "ImportHelper.check_file_type",
+            ),
+            "data": (
+                "`CompressionHelper.DECOMPRESSION_MAP[4]`",
+                "`DECOMPRESSION_MAP`",
+                "CompressionHelper.DECOMPRESSION_MAP",
+            ),
+            "methods": ("`Texture2D.set_image` |", "`set_image` |", "Texture2D.set_image"),
+            "fields": ("`m_Layer`, `m_Name`", "`m_Name`", "GameObject.m_Layer"),
+            "exports": ("| `UnityPy.files` | `File` |", "| `UnityPy.files` | |", "UnityPy.files.File"),
+            "boost": ("`UnityPyBoost.read_typetree`", "`read_typetree`", "UnityPyBoost.read_typetree"),
+            "texture_formats": ("| 1 | `Alpha8` | works |", "", "Alpha8 (1)"),
+        }
+        self.assertEqual(sorted(removals), sorted(inventory.GROUPS))
+        for group, (old, new, name) in removals.items():
+            with self.subTest(group):
+                self.assertIn(old, COMPLETE)
+                self.assertEqual(inventory.missing(SYMBOLS, COMPLETE.replace(old, new)), {group: [name]})
 
-    def test_tier_b_has_the_22_formats_design_names(self):
-        tier_b = sorted(name for name, row in self.rows.items() if row["tier"] == "B")
-        signed = [name for name in self.rows if name.endswith("_SIGNED") and not name.startswith("EAC")]
-        expected = ["BC6H", "RHalf", "RGHalf", "RFloat", "RGFloat", "RGBAFloat", "ARGBFloat", "RGBFloat"]
-        expected += signed + ["RG16", "RG32", "R16", "RGBA64", "RGB9e5Float", "YUY2"]
-        self.assertEqual(len(signed), 8)
-        self.assertEqual(tier_b, sorted(expected))
-        self.assertEqual(len(tier_b), 22)
 
-    def test_p1_formats_are_the_five_design_names(self):
-        p1 = sorted(name for name, row in self.rows.items() if row["status"] == "planned (P1)")
-        self.assertEqual(p1, ["BC7", "DXT1", "DXT5", "RGB24", "RGBA32"])
+def mutate(test, text, pattern, repl):
+    """`text` with every match of `pattern` replaced; the test fails if nothing matched."""
+    new, count = re.subn(pattern, repl, text, flags=re.M)
+    test.assertGreater(count, 0, pattern)
+    return new
 
 
 @unittest.skipUnless(ORACLE, NEEDS_ORACLE)
@@ -189,15 +238,105 @@ class AgainstTheOracle(unittest.TestCase):
         self.assertIn("Texture2DConverter.parse_image_data", groups["functions"])
         self.assertIn("Environment.load_file", groups["methods"])
         self.assertIn("Texture2D.set_image", groups["methods"])
+        self.assertIn("EndianBinaryReader.read_string_to_null", groups["methods"], "a class outside any fixed list")
         self.assertIn("UnityPyBoost.read_typetree", groups["boost"])
         self.assertIn("CompressionHelper.DECOMPRESSION_MAP", groups["data"])
         self.assertIn("config.FALLBACK_UNITY_VERSION", groups["data"])
         # Not data: an alias of a class (TF = TextureFormat), a TypeVar, a typing alias.
         for name in ("Texture2DConverter.TF", "ObjectReader.T", "CompressionHelper.ByteString"):
             self.assertNotIn(name, groups["data"])
+        # Generated-class fields, and the fields of UnityPy's own attrs records.
+        for name in ("GameObject.m_Name", "Texture2D.m_Width", "ObjectReader.path_id", "PPtr.m_PathID"):
+            self.assertIn(name, groups["fields"])
+        # Package re-exports, aliases included; a package's own submodules are modules, not exports.
+        for name in ("UnityPy.files.File", "UnityPy.load", "UnityPy.classes.GameObject", "UnityPy.enums.CommonString"):
+            self.assertIn(name, groups["exports"])
+        for name in ("UnityPy.helpers.ImportHelper", "UnityPy.classes.ABC", "UnityPy.cli.ArgumentParser"):
+            self.assertNotIn(name, groups["exports"])
+        self.assertIn("UnityPy.classes.GameObject.m_Name", groups["paths"]["GameObject.m_Name"])
 
     def test_parity_md_names_every_symbol(self):
         self.assertEqual(inventory.missing(self.symbols, self.text), {})
+
+    def test_appendix_a_has_one_row_per_generated_class(self):
+        import UnityPy.classes.generated as generated
+
+        defined = {
+            name
+            for name, value in vars(generated).items()
+            if isinstance(value, type) and value.__module__ == generated.__name__ and not name.startswith("_")
+        }
+        appendix = self.text[self.text.index("## Appendix A.") : self.text.index("## Appendix B.")]
+        rows = [cells[0].strip("`") for header, body in inventory.tables(appendix) for cells in body]
+        self.assertEqual(len(defined), 869)
+        self.assertEqual(sorted(rows), sorted(defined))
+
+    def test_removing_one_entry_of_any_group_fails_the_check(self):
+        """One representative entry per group, removed everywhere PARITY.md names it."""
+        removals = {
+            "modules": (r"files/WebFile\.py", "files/WebFileX.py", "files/WebFile.py"),
+            "classes": (r"`AnnotationManager`", "`AnnotationManagerX`", "AnnotationManager"),
+            "functions": (
+                r"\bImportHelper\.check_file_type\b",
+                "ImportHelper.check_file_typeX",
+                "ImportHelper.check_file_type",
+            ),
+            "data": (
+                r"\bCompressionHelper\.DECOMPRESSION_MAP\b",
+                "CompressionHelper.DECOMPRESSION_MAPX",
+                "CompressionHelper.DECOMPRESSION_MAP",
+            ),
+            "methods": (r"\bEnvironment\.load_file\b", "Environment.load_fileX", "Environment.load_file"),
+            "fields": (r"^(\| `GameObject` \|.*)`m_IsActive`, ", r"\1", "GameObject.m_IsActive"),
+            "exports": (r"^(\| `UnityPy\.files` \|.*)`DirectoryInfo`, ", r"\1", "UnityPy.files.DirectoryInfo"),
+            "boost": (r"\bUnityPyBoost\.decrypt_block\b", "UnityPyBoost.decrypt_blockX", "UnityPyBoost.decrypt_block"),
+            "texture_formats": (r"^\| 34 \| `ETC_RGB4` \|", "| 340 | `ETC_RGB4` |", "ETC_RGB4 (34)"),
+        }
+        self.assertEqual(sorted(removals), sorted(inventory.GROUPS))
+        for group, (pattern, repl, name) in removals.items():
+            with self.subTest(group):
+                absent = inventory.missing(self.symbols, mutate(self, self.text, pattern, repl))
+                self.assertIn(name, absent.get(group, []))
+
+    def test_a_name_under_a_wrong_parent_fails_the_check(self):
+        cases = [
+            # A module-level function behind a wrong module.
+            (
+                [(r"(?<![\w.])((?:UnityPy\.helpers\.)?ImportHelper\.check_file_type)", r"Wrong.\1")],
+                "functions",
+                "ImportHelper.check_file_type",
+            ),
+            # A method behind a wrong class path.
+            (
+                [(r"(?<![\w.])Environment\.load_file\b", "Wrong.Environment.load_file")],
+                "methods",
+                "Environment.load_file",
+            ),
+            # A generated class's field moved to another class's row.
+            (
+                [
+                    (r"^(\| `GameObject` \|.*)`m_IsActive`, ", r"\1"),
+                    (r"^(\| `AABB` \|.*) \|$", r"\1, `m_IsActive` |"),
+                ],
+                "fields",
+                "GameObject.m_IsActive",
+            ),
+            # An export moved to another package's row.
+            (
+                [
+                    (r"^(\| `UnityPy\.files` \|.*)`DirectoryInfo`, ", r"\1"),
+                    (r"^(\| `UnityPy\.streams` \|.*) \|$", r"\1, `DirectoryInfo` |"),
+                ],
+                "exports",
+                "UnityPy.files.DirectoryInfo",
+            ),
+        ]
+        for steps, group, name in cases:
+            with self.subTest(name):
+                text = self.text
+                for pattern, repl in steps:
+                    text = mutate(self, text, pattern, repl)
+                self.assertEqual(inventory.missing(self.symbols, text), {group: [name]})
 
     def test_check_exits_1_and_lists_what_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -208,38 +347,6 @@ class AgainstTheOracle(unittest.TestCase):
                 status = inventory.main(["check", str(path)])
         self.assertEqual(status, 1)
         self.assertIn("functions: 1 missing\n  Texture2DConverter.parse_image_data\n", stderr.getvalue())
-
-    def test_texture_matrix_matches_the_oracle(self):
-        """Each row's mode, UnityPy and `set_image` cells, on 8x8 of 0x30 bytes, real-sized (section 17)."""
-        rows = inventory.texture_rows(self.text)
-        source = Image.new("RGBA", (8, 8), (10, 20, 30, 40))
-        for fmt in TextureFormat:
-            row = rows[fmt.name]
-            with self.subTest(fmt.name):
-                result = re.match(r"(works|wrong|raises|crunch)\b", row["UnityPy 1.25.2"])
-                self.assertIsNotNone(result, row["UnityPy 1.25.2"])
-                if result.group(1) != "crunch":
-                    # As many bytes as a real 8x8 texture holds: a converter that reads past them
-                    # (RHalf reads three halves a pixel) fails as it does on real data.
-                    data = bytes([0x30]) * stored_size(fmt, 8, 8)
-                    try:
-                        image = Texture2DConverter.parse_image_data(
-                            data, 8, 8, fmt, (2021, 3, 1, 3), BuildTarget.StandaloneWindows64
-                        )
-                        got = ("image", image.mode, image.size)
-                    except Exception as error:  # noqa: BLE001 - the exception type is the result
-                        got = ("raises", exception_name(error))
-                    if result.group(1) == "raises":
-                        self.assertEqual(got, ("raises", first_span(row["UnityPy 1.25.2"])))
-                    else:
-                        self.assertEqual(got, ("image", row["mode"], (8, 8)))
-
-                cell = row["`set_image` writes"]
-                try:
-                    written = ("writes", Texture2DConverter.image_to_texture2d(source, fmt)[1].name)
-                except Exception as error:  # noqa: BLE001
-                    written = ("raises", exception_name(error))
-                self.assertEqual(written, ("raises" if cell.startswith("raises") else "writes", first_span(cell)))
 
 
 if __name__ == "__main__":

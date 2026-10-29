@@ -5,22 +5,42 @@
 behaviour to a tier. This script keeps that inventory complete: `list` prints what
 the installed UnityPy defines, and `check` fails when PARITY.md leaves any of it out.
 
-PARITY.md names each symbol inside a code span (backticks), by group:
+The groups, and how PARITY.md names a symbol of each, inside a code span (backticks):
 - `modules`, every `.py` file under `UnityPy/`: its path, alone or with `:line`
   (`helpers/MeshHelper.py:504`). A path names its module and nothing else.
-- `classes`, every public class defined in any module: its bare name (`Texture2D`),
-  alone or inside a dotted name.
+- `classes`, every public class a module defines: its name (`Texture2D`).
 - `functions`, every public module-level function: `Module.function`
   (`ImportHelper.check_file_type`), where `Module` is the file's name without `.py`,
   or the package's name for an `__init__.py`.
 - `data`, every public name a module assigns at its top level whose value is not a
   class, function, module or typing construct (tables, registries, settings,
   caches): `Module.NAME` (`CompressionHelper.DECOMPRESSION_MAP`), `Module` as above.
-- `methods`, the public members of the API classes below and every member a
-  `classes/legacy_patch` module adds: `Class.member` (`Texture2D.set_image`).
+- `methods`, every public callable or property a class defines in its own body
+  (`Environment.load_file`), for every class UnityPy defines; for the classes of
+  `classes/generated.py`, the members a `classes/legacy_patch` module adds
+  (`Texture2D.set_image`). Inherited members are named under the class that defines them.
+- `fields`, every public attrs field a class declares itself, for every attrs class
+  UnityPy defines, the generated classes included: `Class.field` (`GameObject.m_Name`).
+- `exports`, every public name a package's `__init__.py` holds that it imports from
+  another UnityPy module or assigns as an alias: the dotted path from `UnityPy`
+  (`UnityPy.files.File`, `UnityPy.load`). A package's own submodules are `modules`.
 - `boost`, every public name UnityPyBoost exports: `UnityPyBoost.read_typetree`.
 - `texture_formats`, every `TextureFormat` member: a table row with a cell
   `` `Name` `` and a cell holding its value.
+
+Out of scope: enum members and other class-level constants (an enum is named by its
+class; `TextureFormat` members have their own group), and private names.
+
+A dotted name must be written whole, from the start of its dotted chain: `` `Wrong.ImportHelper.check_file_type` ``
+does not name `ImportHelper.check_file_type`. The only prefixes allowed are the
+symbol's own import path (`UnityPy.helpers.ImportHelper.check_file_type`), or a
+package path that re-exports it (`UnityPy.classes.GameObject.m_Name`); the only
+suffixes are what follows the chain (a call, a subscript, a further `.attribute`).
+
+A long list may be written compactly instead: in a table with a column headed
+`fields` or `members`, a row whose first cell's first code span is `Parent` names
+`Parent.x` for every code span `` `x` `` in that column (Appendix A lists each
+generated class's fields this way).
 
     scripts/dev python tools/parity/inventory.py list [--json]
     scripts/dev python tools/parity/inventory.py check [PARITY.md]
@@ -44,39 +64,22 @@ REPO = Path(__file__).resolve().parents[2]
 DEFAULT_PARITY = REPO / "PARITY.md"
 PINNED_VERSION = "1.25.2"
 
-# The classes whose members make up UnityPy's object API, as (module, class).
-API_CLASSES = (
-    ("environment", "Environment"),
-    ("files.File", "File"),
-    ("files.BundleFile", "BundleFile"),
-    ("files.WebFile", "WebFile"),
-    ("files.SerializedFile", "SerializedFile"),
-    ("files.SerializedFile", "SerializedType"),
-    ("files.ObjectReader", "ObjectReader"),
-    ("classes.Object", "Object"),
-    ("classes.PPtr", "PPtr"),
-    ("classes.UnknownObject", "UnknownObject"),
-    ("helpers.ContainerHelper", "ContainerHelper"),
-    ("helpers.TypeTreeNode", "TypeTreeNode"),
-    ("helpers.TypeTreeGenerator", "TypeTreeGenerator"),
-    ("helpers.MeshHelper", "MeshHandler"),
-    ("helpers.ArchiveStorageManager", "ArchiveStorageDecryptor"),
-    ("helpers.UnityVersion", "UnityVersion"),
-)
-
-GROUPS = ("modules", "classes", "functions", "data", "methods", "boost", "texture_formats")
+GROUPS = ("modules", "classes", "functions", "data", "methods", "fields", "exports", "boost", "texture_formats")
+DOTTED_GROUPS = ("classes", "functions", "data", "methods", "fields", "exports", "boost")
+COMPACT_COLUMNS = ("fields", "members")
 
 # The package whose modules add members to the generated classes.
 LEGACY_PATCH = "UnityPy.classes.legacy_patch"
+GENERATED = "UnityPy.classes.generated"
 
 CODE_SPAN = re.compile(r"`([^`\n]+)`")
 DOTTED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
 
 
-def _module_label(rel: str) -> str:
-    path = Path(rel)
-    return path.parent.name if path.stem == "__init__" else path.stem
+def _module_label(dotted: str) -> str:
+    """`ImportHelper` for `UnityPy.helpers.ImportHelper`; a package's own name for its `__init__.py`."""
+    return dotted.rsplit(".", 1)[-1]
 
 
 def _is_member(value) -> bool:
@@ -111,53 +114,113 @@ def _is_data(value) -> bool:
         inspect.isclass(value)
         or inspect.isroutine(value)
         or inspect.ismodule(value)
-        or type(value).__module__ == "typing"
+        or type(value).__module__ in ("typing", "__future__")
     )
 
 
-def collect() -> dict[str, list]:
-    """Every public symbol of the installed UnityPy, by group, in a stable order."""
-    import UnityPy
+def _origin(value) -> str | None:
+    """The module that defines a class or function, None for anything else."""
+    if inspect.isclass(value) or inspect.isroutine(value):
+        return getattr(value, "__module__", None)
+    return None
 
-    root = Path(UnityPy.__file__).resolve().parent
-    groups: dict[str, list] = {group: [] for group in GROUPS}
+
+def _modules(root: Path):
+    """(relative path, dotted name, module, source) for every module under UnityPy/, sorted by path."""
     for path in sorted(root.rglob("*.py")):
         rel = path.relative_to(root).as_posix()
         if "__pycache__" in rel:
             continue
+        dotted = ("UnityPy." + rel[: -len(".py")].replace("/", ".")).removesuffix(".__init__")
+        yield rel, dotted, importlib.import_module(dotted), path.read_text(encoding="utf-8")
+
+
+def collect() -> dict:
+    """Every public symbol of the installed UnityPy, by group, in a stable order.
+
+    The dotted groups hold each symbol's short form (the one PARITY.md must name), and
+    `paths` maps each short form to the full import paths it may also be named by.
+    """
+    import attrs
+    import UnityPy
+
+    root = Path(UnityPy.__file__).resolve().parent
+    groups: dict[str, list] = {group: [] for group in GROUPS}
+    paths: dict[str, set[str]] = {}
+    class_paths: dict[int, set[str]] = {}  # id(class) -> its import paths
+    classes: list[tuple[type, str]] = []  # (class, its own name), each once
+    function_names: dict[int, str] = {}  # id(function) -> its short form
+
+    def add(group, short, *full):
+        groups[group].append(short)
+        paths.setdefault(short, set()).update(full)
+
+    modules = list(_modules(root))
+    for rel, dotted, module, source in modules:
         groups["modules"].append(rel)
-        dotted = "UnityPy." + rel[: -len(".py")].replace("/", ".")
-        dotted = dotted.removesuffix(".__init__")
-        module = importlib.import_module(dotted)
-        label = _module_label(rel)
+        label = _module_label(dotted)
         for name, value in vars(module).items():
-            if name.startswith("_") or getattr(value, "__module__", None) != module.__name__:
+            if name.startswith("_") or _origin(value) != module.__name__:
                 continue
             if inspect.isclass(value):
-                groups["classes"].append(name)
-                for member, attr in vars(value).items():
-                    if not member.startswith("_") and _is_member(attr) and _defined_in(attr, LEGACY_PATCH):
-                        groups["methods"].append(f"{name}.{member}")
+                add("classes", name, f"{dotted}.{name}")
+                class_paths.setdefault(id(value), set()).add(f"{dotted}.{name}")
+                if name == value.__name__:
+                    classes.append((value, name))
             elif inspect.isfunction(value):
-                groups["functions"].append(f"{label}.{name}")
-        for name in _assigned_names(path.read_text(encoding="utf-8")):
+                add("functions", f"{label}.{name}", f"{dotted}.{name}")
+                function_names[id(value)] = f"{label}.{name}"
+        for name in _assigned_names(source):
             if _is_data(getattr(module, name)):
-                groups["data"].append(f"{label}.{name}")
+                add("data", f"{label}.{name}", f"{dotted}.{name}")
 
-    for module_name, class_name in API_CLASSES:
-        cls = getattr(importlib.import_module(f"UnityPy.{module_name}"), class_name)
+    # Package re-exports: what `UnityPy.files.File` or `UnityPy.load` reach.
+    for rel, dotted, module, source in modules:
+        if not rel.endswith("__init__.py"):
+            continue
+        assigned = set(_assigned_names(source))
+        for name, value in vars(module).items():
+            if name.startswith("_") or inspect.ismodule(value):
+                continue
+            origin = _origin(value)
+            if origin is not None:
+                if not origin.startswith("UnityPy") or (origin == dotted and name == value.__name__):
+                    continue  # imported from outside UnityPy, or defined here (classes, functions)
+            elif not _is_data(value) or name in assigned:
+                continue  # a typing construct, or the package's own data
+            export = f"{dotted}.{name}"
+            add("exports", export, export)
+            if inspect.isclass(value):
+                class_paths.setdefault(id(value), set()).add(export)
+                paths.setdefault(value.__name__, set()).add(export)
+            elif id(value) in function_names:
+                paths[function_names[id(value)]].add(export)
+
+    for cls, name in classes:
+        generated = cls.__module__ == GENERATED
         for member, attr in vars(cls).items():
-            if not member.startswith("_") and _is_member(attr):
-                groups["methods"].append(f"{class_name}.{member}")
+            if member.startswith("_") or not _is_member(attr):
+                continue
+            if generated and not _defined_in(attr, LEGACY_PATCH):
+                continue
+            add("methods", f"{name}.{member}", *(f"{p}.{member}" for p in class_paths[id(cls)]))
+        if attrs.has(cls):
+            for field in attrs.fields(cls):
+                if not field.name.startswith("_") and not field.inherited:
+                    add("fields", f"{name}.{field.name}", *(f"{p}.{field.name}" for p in class_paths[id(cls)]))
+    # legacy_patch adds members to generated classes it imports; they are found above.
 
     boost = importlib.import_module("UnityPy.UnityPyBoost")
-    groups["boost"] = [f"UnityPyBoost.{name}" for name in sorted(dir(boost)) if not name.startswith("_")]
+    for name in sorted(dir(boost)):
+        if not name.startswith("_"):
+            add("boost", f"UnityPyBoost.{name}", f"UnityPy.UnityPyBoost.{name}")
 
     from UnityPy.enums import TextureFormat
 
     groups["texture_formats"] = [[member.name, member.value] for member in TextureFormat]
-    for group in ("classes", "functions", "data", "methods"):
+    for group in DOTTED_GROUPS:
         groups[group] = sorted(set(groups[group]))
+    groups["paths"] = {short: sorted(full) for short, full in sorted(paths.items())}
     return groups
 
 
@@ -169,12 +232,40 @@ def table_cells(line: str) -> list[str] | None:
     return [cell.strip() for cell in UNESCAPED_PIPE.split(line[1:-1])]
 
 
+def _is_separator(cells: list[str]) -> bool:
+    return bool(cells) and set("".join(cells)) <= set("-: ")
+
+
+def tables(text: str):
+    """Each Markdown table as (header cells, body rows)."""
+    header: list[str] | None = None
+    rows: list[list[str]] = []
+    for line in text.splitlines() + [""]:
+        cells = table_cells(line)
+        if cells is None:
+            if header is not None:
+                yield header, rows
+            header, rows = None, []
+        elif header is None:
+            header = cells
+        elif not _is_separator(cells):
+            rows.append(cells)
+
+
+def _first_chain(cell: str) -> str | None:
+    for span in CODE_SPAN.findall(cell):
+        match = DOTTED.match(span.strip())
+        if match:
+            return match.group(0)
+    return None
+
+
 class Mentions:
     """What a Markdown document names inside its code spans and table rows."""
 
     def __init__(self, text: str):
         self.paths: set[str] = set()
-        self.names: set[str] = set()
+        self.chains: set[str] = set()  # every chain written, and every leading part of one
         self.rows: list[list[str]] = []
         for span in CODE_SPAN.findall(text):
             path = span.strip().removeprefix("UnityPy/").split(":", 1)[0]
@@ -183,14 +274,37 @@ class Mentions:
                 self.paths.add(path)
                 continue
             for chain in DOTTED.findall(span):
-                parts = chain.split(".")
-                for start in range(len(parts)):
-                    for end in range(start + 1, len(parts) + 1):
-                        self.names.add(".".join(parts[start:end]))
-        for line in text.splitlines():
-            cells = table_cells(line)
-            if cells is not None:
-                self.rows.append(cells)
+                self._add(chain)
+        for header, rows in tables(text):
+            self.rows += [header, *rows]
+            columns = [i for i, name in enumerate(header) if name in COMPACT_COLUMNS]
+            for row in rows:
+                parent = _first_chain(row[0]) if row else None
+                if parent is None:
+                    continue
+                for i in columns:
+                    if i < len(row):
+                        for span in CODE_SPAN.findall(row[i]):
+                            match = DOTTED.fullmatch(span.strip())
+                            if match:
+                                self._add(f"{parent}.{match.group(0)}")
+
+    def _add(self, chain: str) -> None:
+        parts = chain.split(".")
+        for end in range(1, len(parts) + 1):
+            self.chains.add(".".join(parts[:end]))
+
+    def names(self, short: str, full: list[str]) -> bool:
+        """Whether `short`, or a longer tail of one of its import paths, is written."""
+        if short in self.chains:
+            return True
+        depth = short.count(".") + 1
+        for path in full:
+            parts = path.split(".")
+            for start in range(len(parts) - depth):
+                if ".".join(parts[start:]) in self.chains:
+                    return True
+        return False
 
     def has_texture_row(self, name: str, value: int) -> bool:
         return any(f"`{name}`" in row and str(value) in row for row in self.rows)
@@ -199,22 +313,18 @@ class Mentions:
 def texture_rows(text: str) -> dict[str, dict[str, str]]:
     """The TextureFormat matrix (the table whose header starts `value | format`): cells by header, per format."""
     rows: dict[str, dict[str, str]] = {}
-    header: list[str] | None = None
-    for line in text.splitlines():
-        cells = table_cells(line)
-        if cells is None:
-            header = None
-        elif header is None:
-            header = cells if cells[:2] == ["value", "format"] else []
-        elif header and not set("".join(cells)) <= set("-: "):
-            row = dict(zip(header, cells, strict=False))
-            rows[row["format"].strip("`")] = row
+    for header, body in tables(text):
+        if header[:2] == ["value", "format"]:
+            for cells in body:
+                row = dict(zip(header, cells, strict=False))
+                rows[row["format"].strip("`")] = row
     return rows
 
 
-def missing(symbols: dict[str, list], text: str) -> dict[str, list[str]]:
+def missing(symbols: dict, text: str) -> dict[str, list[str]]:
     """The symbols, by group, that `text` does not name the way the module docstring asks."""
     seen = Mentions(text)
+    paths = symbols.get("paths", {})
     result: dict[str, list[str]] = {}
     for group in GROUPS:
         if group == "modules":
@@ -223,7 +333,7 @@ def missing(symbols: dict[str, list], text: str) -> dict[str, list[str]]:
             formats = symbols.get(group, [])
             absent = [f"{name} ({value})" for name, value in formats if not seen.has_texture_row(name, value)]
         else:
-            absent = [name for name in symbols.get(group, []) if name not in seen.names]
+            absent = [name for name in symbols.get(group, []) if not seen.names(name, paths.get(name, []))]
         if absent:
             result[group] = absent
     return result
@@ -242,6 +352,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     list_parser = sub.add_parser("list", help="print UnityPy's public symbols by group")
     list_parser.add_argument("--json", action="store_true", help="print one JSON object instead of lines")
+    list_parser.add_argument("--counts", action="store_true", help="print the number of symbols in each group")
     check_parser = sub.add_parser("check", help="report the symbols PARITY.md does not name")
     check_parser.add_argument("parity", nargs="?", type=Path, default=DEFAULT_PARITY)
     args = parser.parse_args(argv)
@@ -254,7 +365,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "list":
         if args.json:
-            print(json.dumps(symbols, indent=1))
+            print(json.dumps({group: symbols[group] for group in GROUPS}, indent=1))
+        elif args.counts:
+            for group in GROUPS:
+                print(f"{group}\t{len(symbols[group])}")
         else:
             for group in GROUPS:
                 for item in symbols[group]:
@@ -267,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"inventory: cannot read {args.parity}: {error.strerror}", file=sys.stderr)
         return 2
     absent = missing(symbols, text)
-    total = sum(len(items) for items in symbols.values())
+    total = sum(len(symbols[group]) for group in GROUPS)
     for group, items in absent.items():
         print(f"{group}: {len(items)} missing", file=sys.stderr)
         for item in items:

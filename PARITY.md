@@ -4,7 +4,7 @@
 
 This is the inventory `DESIGN.md` section 3 asks for. It maps every public UnityPy API and behaviour to a tier, a verification level and a test, and gives a per-`TextureFormat` matrix. "Full parity" means every row here is green. It was built by reading UnityPy 1.25.2 as installed in the oracle image, and the claims about what UnityPy does with a texture format come from running it there (section 17).
 
-`tools/parity/inventory.py check` fails when a UnityPy module, class, module-level function, module-level table or setting, API method, UnityPyBoost export or `TextureFormat` is missing from this file (section 21).
+`tools/parity/inventory.py check` fails when a UnityPy module, class, module-level function, module-level table or setting, class member, attrs field (the generated classes' included), package re-export, UnityPyBoost export or `TextureFormat` is missing from this file, or is named only under a wrong parent (section 21).
 
 ## 0. How to read the tables
 
@@ -61,8 +61,48 @@ TypeTreeGeneratorAPI is not installed, so `TypeTreeGenerator` raises `ImportErro
 | `python -m UnityPy` | runs `cli.main` (`__main__.py:1-4`) | — | — | — | n/a |
 | `cli.main` | argparse front end with one sub-command, `update_tpk` (`cli/__init__.py:6-24`) | — | — | — | n/a |
 | `update_tpk.update_tpk` | downloads AssetRipper's TPK over HTTP and regenerates `classes/generated.py` (`cli/update_tpk.py:12-24`). unityrs loads a TPK from a path instead (`DESIGN.md` section 4, `unityrs-tpk`). | — | — | — | n/a |
-| package re-exports | `files/__init__.py`, `helpers/__init__.py`, `streams/__init__.py`, `export/__init__.py`, `enums/__init__.py`, `classes/__init__.py`, `classes/legacy_patch/__init__.py`; `export/__init__.py` leaves `ShaderConverter` out of `__all__` | — | — | — | n/a |
+| package re-exports | `files/__init__.py`, `helpers/__init__.py`, `streams/__init__.py`, `export/__init__.py`, `enums/__init__.py`, `classes/__init__.py`, `classes/legacy_patch/__init__.py`, `cli/__init__.py`: section 2.1 | A | API | planned: binding | planned (P3) |
 | empty packages | `resources/__init__.py` (holds `lzma.tpk`), `tools/__init__.py` | — | — | — | n/a |
+
+### 2.1 Package re-exports
+
+What a package's `__init__.py` makes reachable from `import UnityPy` (`inventory.py` group `exports`). Each name is the same object as the class, function or table whose own row gives its tier; this table is its import path, which the Python bindings mirror. `UnityPy.helpers` and `UnityPy.export` re-export only their own submodules (their `__all__`; sections 22 and 15), and `export/__init__.py` leaves `ShaderConverter` out. `resources` and `tools` re-export nothing.
+
+Every row is tier A at level API, test planned: binding, status planned (P3).
+
+| package | source | members |
+|---|---|---|
+| `UnityPy` | `__init__.py:3-11`; `load` and `AssetsManager` are aliases of `Environment` | `Environment`, `load`, `AssetsManager`, `set_assetbundle_decrypt_key` |
+| `UnityPy.files` | `files/__init__.py:1-5`; `UnityPy.files.BundleFile` is the class, not the module | `BundleFile`, `DirectoryInfo`, `File`, `ObjectReader`, `SerializedFile`, `WebFile` |
+| `UnityPy.streams` | `streams/__init__.py:1-2` | `EndianBinaryReader`, `EndianBinaryWriter` |
+| `UnityPy.enums` | `enums/__init__.py:1-17`; `AUDIO_TYPE_EXTEMSION` and `CommonString` are tables, the rest enums | `AUDIO_TYPE_EXTEMSION`, `ArchiveFlags`, `ArchiveFlagsOld`, `AudioCompressionFormat`, `AudioType`, `BuildTarget`, `ClassIDType`, `CommonString`, `CompressionFlags`, `FileType`, `GfxPrimitiveType`, `GraphicsFormat`, `PassType`, `SerializedPropertyType`, `ShaderCompilerPlatform`, `ShaderGpuProgramType`, `SpriteMeshType`, `SpritePackingMode`, `SpritePackingRotation`, `TextureDimension`, `TextureFormat` |
+| `UnityPy.cli` | `cli/__init__.py:3`; the function, not the module | `update_tpk` |
+| `UnityPy.classes.legacy_patch` | `classes/legacy_patch/__init__.py:1-8`: the generated classes it patches | `AudioClip`, `GameObject`, `Mesh`, `Renderer`, `Shader`, `Sprite`, `Texture2D`, `Texture2DArray` |
+| `UnityPy.classes` | `classes/__init__.py:1-28`, through `from .generated import *`: the base classes, the math records and `generated.unitypy_define` | `ColorRGBA`, `Matrix3x4f`, `Matrix4x4f`, `Object`, `PPtr`, `Quaternionf`, `UnknownObject`, `Vector2f`, `Vector3f`, `Vector4f`, `float3`, `float4`, `unitypy_define` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting A | `AABB`, `ASTCImporter`, `AddedComponent`, `AddedGameObject`, `AimConstraint`, `AnchoredJoint2D`, `AndroidAssetPackImporter`, `AndroidDeviceFilterData`, `Animation`, `AnimationClip`, `AnimationClipBindingConstant`, `AnimationClipOverride`, `AnimationCurve`, `AnimationEvent`, `AnimationManager`, `Animator`, `AnimatorCondition`, `AnimatorController`, `AnimatorOverrideController`, `AnimatorState`, `AnimatorStateMachine`, `AnimatorStateTransition`, `AnimatorTransition`, `AnimatorTransitionBase`, `Annotation`, `AnnotationManager`, `AreaEffector2D`, `ArticulationBody`, `ArticulationDrive`, `AspectRatios`, `AssemblyDefinitionAsset`, `AssemblyDefinitionImporter`, `AssemblyDefinitionReferenceAsset`, `AssemblyDefinitionReferenceImporter`, `AssemblyJsonAsset`, `AssemblyJsonImporter`, `Asset`, `AssetBundle`, `AssetBundleFullName`, `AssetBundleInfo`, `AssetBundleManifest`, `AssetBundleScriptInfo`, `AssetDatabase`, `AssetDatabaseMetrics`, `AssetDatabaseV1`, `AssetImportInProgressProxy`, `AssetImporter`, `AssetImporterHashKey`, `AssetImporterLog`, `AssetImporter_ImportError`, `AssetInfo`, `AssetLabels`, `AssetMetaData`, `AssetServerCache`, `AssetStats`, `AssetTimeStamp`, `AttachmentIndexArray`, `AttachmentInfo`, `AudioBehaviour`, `AudioBuildInfo`, `AudioChorusFilter`, `AudioClip`, `AudioContainerElement`, `AudioDistortionFilter`, `AudioEchoFilter`, `AudioFilter`, `AudioHighPassFilter`, `AudioImporter`, `AudioImporterOutput`, `AudioListener`, `AudioLowPassFilter`, `AudioManager`, `AudioMixer`, `AudioMixerConstant`, `AudioMixerController`, `AudioMixerEffectController`, `AudioMixerGroup`, `AudioMixerGroupController`, `AudioMixerLiveUpdateBool`, `AudioMixerLiveUpdateFloat`, `AudioMixerSnapshot`, `AudioMixerSnapshotController`, `AudioRandomContainer`, `AudioResource`, `AudioReverbFilter`, `AudioReverbZone`, `AudioSource`, `AutoOffMeshLinkData`, `Avatar`, `AvatarBodyMask`, `AvatarConstant`, `AvatarMask`, `AvatarSkeletonMask`, `AvatarSkeletonMaskElement`, `Axes` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting B | `BaseAnimationTrack`, `BaseVideoTexture`, `Behaviour`, `BillboardAsset`, `BillboardRenderer`, `BitField`, `Blend1dDataConstant`, `Blend2dDataConstant`, `BlendDirectDataConstant`, `BlendShapeData`, `BlendShapeVertex`, `BlendTree`, `BlendTreeConstant`, `BlendTreeNodeConstant`, `BlobObject`, `BlockShaderContainer`, `BlockShaderErrors`, `BlockShaderImporter`, `BlockShaderSourceArtifact`, `BlockShaderSyntaxTree`, `BoneInfluence`, `BoneWeights4`, `BoxCollider`, `BoxCollider2D`, `BranchWindLevel`, `BrokenPrefabAsset`, `BufferBinding`, `BuildArchiveImporter`, `BuildInstructionImporter`, `BuildMetaDataImporter`, `BuildReport`, `BuildReportFile`, `BuildReportPackedAssetInfo`, `BuildReportScenesUsingAsset`, `BuildSettings`, `BuildStepInfo`, `BuildStepMessage`, `BuildSummary`, `BuildTargetSettings`, `BuildTextureStackReference`, `BuiltAssetBundleInfo`, `BuiltAssetBundleInfoSet`, `BuiltinShaderSettings`, `BuoyancyEffector2D`, `bitset` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting C | `C4DImporter`, `CGProgram`, `CachedAssetMetaData`, `CachedSpriteAtlas`, `CachedSpriteAtlasRuntimeData`, `Camera`, `Canvas`, `CanvasGroup`, `CanvasRenderer`, `CapsuleCollider`, `CapsuleCollider2D`, `Channel`, `ChannelInfo`, `CharacterController`, `CharacterInfo`, `CharacterJoint`, `Child`, `ChildAnimatorState`, `ChildAnimatorStateMachine`, `ChildMotion`, `CircleCollider2D`, `ClampVelocityModule`, `ClassInfo`, `ClassMethodInfo`, `Clip`, `ClipAnimationInfo`, `ClipAnimationInfoCurve`, `ClipMuscleConstant`, `Cloth`, `ClothAttachment`, `ClothConstrainCoefficients`, `ClothRenderer`, `ClothSphereColliderPair`, `CloudServiceHandlerBehaviour`, `CloudWebServicesManager`, `ClusterInput`, `ClusterInputManager`, `CollabEditorSettings`, `Collider`, `Collider2D`, `Collision`, `Collision2D`, `CollisionModule`, `ColorBySpeedModule`, `ColorModule`, `Component`, `ComponentPair`, `CompositeCollider2D`, `CompressedAnimationCurve`, `CompressedMesh`, `ComputeBufferCounter`, `ComputeShader`, `ComputeShaderBuiltinSampler`, `ComputeShaderCB`, `ComputeShaderImporter`, `ComputeShaderKernel`, `ComputeShaderKernelParent`, `ComputeShaderParam`, `ComputeShaderPlatformVariant`, `ComputeShaderResource`, `ComputeShaderVariant`, `Condition`, `ConditionConstant`, `ConfigSetting`, `ConfigurableJoint`, `ConstantBuffer`, `ConstantClip`, `ConstantForce`, `ConstantForce2D`, `ConstraintSource`, `ContentSummary`, `ControllerConstant`, `CrashReportManager`, `CrashReportingSettings`, `Cubemap`, `CubemapArray`, `CustomCollider2D`, `CustomDataModule`, `CustomRenderTexture` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting D | `D3D12DeviceFilterData`, `D3D12DeviceFilterLists`, `D3D12GraphicsJobsDeviceFilterData`, `DDSImporter`, `DataTemplate`, `DateTime`, `DefaultAsset`, `DefaultImporter`, `DefaultPreset`, `DefaultPresetList`, `DelayedCallManager`, `DeletedItem`, `DenseClip`, `Derived`, `DetailDatabase`, `DetailPatch`, `DetailPrototype`, `DeviceNone`, `DifferentMarshallingTestObject`, `DirectorGenericBinding`, `DirectorPlayer`, `DistanceJoint2D` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting E | `EdgeCollider2D`, `EditorBuildSettings`, `EditorExtension`, `EditorExtensionImpl`, `EditorProjectAccess`, `EditorSettings`, `EditorUserBuildSettings`, `EditorUserSettings`, `EffectConstant`, `Effector2D`, `EllipsoidParticleEmitter`, `EmbeddedNativeType`, `EmissionModule`, `EmptyObject`, `EnlightenRendererInformation`, `EnlightenSceneMapping`, `EnlightenSystemAtlasInformation`, `EnlightenSystemInformation`, `EnlightenTerrainChunksInformation`, `EntityId`, `Error`, `ExpandedData`, `ExposedReferenceTable`, `Expression`, `ExtensionPropertyValue`, `ExternalForcesModule` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting F | `FBXImporter`, `FakeComponent`, `FalloffTable`, `FastPropertyName`, `FixedJoint`, `FixedJoint2D`, `Flare`, `FlareElement`, `FlareLayer`, `FloatCurve`, `Font`, `ForceModule`, `FrictionJoint2D` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting G | `GISettings`, `GLTextureSettings`, `GUID`, `GUIDSerializer`, `GUIElement`, `GUILayer`, `GUIText`, `GUITexture`, `GameManager`, `GameObject`, `GameObjectRecorder`, `GenericBinding`, `GfxBlendState`, `GfxDepthState`, `GfxRasterState`, `GfxRenderTargetBlendState`, `GfxStencilState`, `GlobalGameManager`, `Google`, `Gradient`, `GradientNEW`, `GraphicsSettings`, `GraphicsStateCollection`, `GraphicsStateInfo`, `Grid`, `GridLayout`, `GroupConnection`, `GroupConstant` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting H | `Halo`, `HaloLayer`, `HaloManager`, `Hand`, `HandPose`, `Handle`, `Hash128`, `HeightMeshBVNode`, `HeightMeshData`, `Heightmap`, `HeightmapData`, `HierarchicalSceneData`, `HierarchyState`, `HingeJoint`, `HingeJoint2D`, `HoloLens`, `Human`, `HumanBone`, `HumanDescription`, `HumanGoal`, `HumanHandle`, `HumanLayerConstant`, `HumanPose`, `HumanPoseMask`, `HumanTemplate` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting I | `IConstraint`, `IHVImageFormatImporter`, `Image`, `ImportLog`, `ImportLog_ImportLogEntry`, `InheritVelocityModule`, `InitialModule`, `InputAxis`, `InputImportSettings`, `InputManager`, `InsightsSettings`, `InspectorExpandedState`, `IntPoint`, `InteractiveCloth`, `Item`, `int2_storage`, `int3_storage` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting J | `Joint`, `Joint2D`, `JointAngleLimit2D`, `JointAngleLimits2D`, `JointDrive`, `JointLimits`, `JointMotor`, `JointMotor2D`, `JointSpring`, `JointSuspension2D`, `JointTranslationLimits2D` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting K | `KTXImporter`, `Keyframe` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting L | `LOD`, `LODGroup`, `LODRenderer`, `LayerConstant`, `LayoutDataOne`, `LayoutDataThree`, `LayoutDataTwo`, `LeafInfoConstant`, `LensFlare`, `LevelGameManager`, `LibraryAssetImporter`, `LibraryRepresentation`, `LifetimeByEmitterSpeedModule`, `Light`, `LightBakingOutput`, `LightProbeData`, `LightProbeGroup`, `LightProbeOcclusion`, `LightProbeProxyVolume`, `LightProbes`, `LightingDataAsset`, `LightingDataAssetParent`, `LightingSettings`, `LightmapBakeMode`, `LightmapData`, `LightmapParameters`, `LightmapSettings`, `LightmapSnapshot`, `LightsModule`, `Limit`, `LineParameters`, `LineRenderer`, `LocalizationAsset`, `LocalizationImporter`, `LodSelectionCurve`, `LookAtConstraint`, `LowerResBlitTexture`, `Lumin` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting M | `MarshallingTestObject`, `MasterServerInterface`, `Material`, `MaterialImportOutput`, `MaterialInstanceSettings`, `MatrixParameter`, `MdFour`, `MemorySettings`, `Mesh`, `Mesh3DSImporter`, `MeshBlendShape`, `MeshBlendShapeChannel`, `MeshBlendShapeVertex`, `MeshCollider`, `MeshFilter`, `MeshLodInfo`, `MeshLodRange`, `MeshLodSubMesh`, `MeshParticleEmitter`, `MeshRenderer`, `MinMaxAABB`, `MinMaxCurve`, `MinMaxGradient`, `MipmapLimitSettings`, `ModelImporter`, `Module`, `MonoAssemblyImporter`, `MonoBehaviour`, `MonoImporter`, `MonoManager`, `MonoObject`, `MonoScript`, `Motion`, `MotionNeighborList`, `MovieImporter`, `MovieTexture`, `MultiArtifactTestImporter`, `MultiModeParameter`, `MultiplayerManager`, `MultiplayerRolesData` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting N | `NScreenBridge`, `NameToObjectMap`, `NamedObject`, `NativeFormatImporter`, `NativeObjectType`, `NativeType`, `NavMesh`, `NavMeshAgent`, `NavMeshAreaData`, `NavMeshAreas`, `NavMeshBuildDebugSettings`, `NavMeshBuildSettings`, `NavMeshData`, `NavMeshLayerData`, `NavMeshLayers`, `NavMeshObsolete`, `NavMeshObstacle`, `NavMeshParams`, `NavMeshProjectSettings`, `NavMeshSettings`, `NavMeshTileData`, `NetworkManager`, `NetworkView`, `NetworkViewID`, `NewAnimationTrack`, `Node`, `NoiseModule`, `NonAlignedStruct`, `NotificationManager` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting O | `ObjectRolePair`, `OcclusionArea`, `OcclusionCullingData`, `OcclusionCullingSettings`, `OcclusionPortal`, `OcclusionScene`, `Oculus`, `OffMeshLink`, `OffsetPtr`, `Output` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting P | `PPtrCurve`, `PPtrKeyframe`, `PVRImporter`, `PackageManifest`, `PackageManifestImporter`, `PackedAssets`, `PackedBitVector`, `PackingSettings`, `PanelRenderer`, `Parameter`, `ParentConstraint`, `ParserBindChannels`, `ParticleAnimator`, `ParticleEmitter`, `ParticleRenderer`, `ParticleSystem`, `ParticleSystemEmissionBurst`, `ParticleSystemForceField`, `ParticleSystemForceFieldParameters`, `ParticleSystemRenderer`, `PerLODSettings`, `PerformanceReportingManager`, `PerformanceReportingSettings`, `PhysicMaterial`, `Physics2DSettings`, `PhysicsJobOptions2D`, `PhysicsManager`, `PhysicsMaterial`, `PhysicsMaterial2D`, `PhysicsShape`, `PhysicsShapeGroup2D`, `PhysicsUpdateBehaviour2D`, `Pipeline`, `PlatformEffector2D`, `PlatformModuleSetup`, `PlatformSettings`, `PlatformSettingsData`, `PlatformShaderDefines`, `PlatformShaderSettings`, `PlayableDirector`, `PlayerSettings`, `PluginBuildInfo`, `PluginImportOutput`, `PluginImporter`, `PointEffector2D`, `Polygon2D`, `PolygonCollider2D`, `PolygonColliderBase2D`, `PositionConstraint`, `Prefab`, `PrefabImporter`, `PrefabInstance`, `PrefabModification`, `PreloadData`, `Preset`, `PresetManager`, `PresetType`, `PreviewAnimationClip`, `PreviewData`, `PreviewImporter`, `ProbeSetIndex`, `ProbeSetTetrahedralization`, `ProceduralMaterial`, `ProceduralMaterialInformation`, `ProceduralTexture`, `ProceduralTextureAssignment`, `Projector`, `PropertyModification`, `PropertyModificationsTargetTestNativeObject`, `PropertyModificationsTargetTestObject` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting Q | `QualitySetting`, `QualitySettings`, `QuaternionCurve` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting R | `RationalTime`, `RayTracingShader`, `RayTracingShaderBuiltinSampler`, `RayTracingShaderConstantBuffer`, `RayTracingShaderFunctionDesc`, `RayTracingShaderID`, `RayTracingShaderImporter`, `RayTracingShaderParam`, `RayTracingShaderPlatformVariant`, `RayTracingShaderReflectionData`, `RayTracingShaderResource`, `RayTracingShaderResources`, `RayTracingShaderVariant`, `RaycastCollider`, `RectTransform`, `Rectf`, `ReferencesArtifactGenerator`, `ReflectionProbe`, `RelativeJoint2D`, `RenderAs2D`, `RenderManager`, `RenderPassAttachment`, `RenderPassInfo`, `RenderSettings`, `RenderStateBlock`, `RenderStateInfo`, `RenderTexture`, `Renderer`, `RendererData`, `RendererFake`, `ResourceManager`, `ResourceManager_Dependency`, `Rigidbody`, `Rigidbody2D`, `RippleGroup`, `RootMotionData`, `RoslynAdditionalFileAsset`, `RoslynAdditionalFileImporter`, `RoslynAnalyzerConfigAsset`, `RoslynAnalyzerConfigImporter`, `RotationBySpeedModule`, `RotationConstraint`, `RotationModule`, `RuleSetFileAsset`, `RuleSetFileImporter`, `RuntimeAnimatorController`, `RuntimeInitializeOnLoadManager` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting S | `SBranchWindLevel`, `SParams`, `SWindGroup`, `SampleClip`, `SampleSettings`, `SamplerParameter`, `ScaleConstraint`, `Scene`, `SceneAsset`, `SceneDataContainer`, `SceneIdentifier`, `SceneObjectIdentifier`, `SceneRoots`, `SceneSettings`, `SceneVisibilityData`, `SceneVisibilityState`, `ScenesUsingAssets`, `ScriptMapper`, `ScriptableCamera`, `ScriptedImporter`, `SecondarySpriteTexture`, `SecondaryTextureSettings`, `SelectorStateConstant`, `SelectorTransitionConstant`, `SerializableManagedHost`, `SerializableManagedRefTestClass`, `SerializedCustomEditorForRenderPipeline`, `SerializedPass`, `SerializedPlayerSubProgram`, `SerializedProgram`, `SerializedProgramParameters`, `SerializedProperties`, `SerializedProperty`, `SerializedShader`, `SerializedShaderDependency`, `SerializedShaderFloatValue`, `SerializedShaderRTBlendState`, `SerializedShaderState`, `SerializedShaderVectorValue`, `SerializedStencilOp`, `SerializedSubProgram`, `SerializedSubShader`, `SerializedTagMap`, `SerializedTextureProperty`, `Shader`, `ShaderBindChannel`, `ShaderContainer`, `ShaderImporter`, `ShaderInclude`, `ShaderIncludeImporter`, `ShaderInfo`, `ShaderNameRegistry`, `ShaderVariantCollection`, `ShadowSettings`, `ShapeModule`, `SiblingDerived`, `SizeBySpeedModule`, `SizeModule`, `Skeleton`, `SkeletonBone`, `SkeletonBoneLimit`, `SkeletonMask`, `SkeletonMaskElement`, `SkeletonPose`, `SketchUpImportCamera`, `SketchUpImportData`, `SketchUpImportScene`, `SketchUpImporter`, `SkinnedCloth`, `SkinnedMeshRenderer`, `Skybox`, `SliderJoint2D`, `SnapshotConstant`, `SoftJointLimit`, `SoftJointLimitSpring`, `SortingGroup`, `SortingLayerEntry`, `SourceAssetIdentifier`, `SourceTextureInformation`, `SparseTexture`, `SpeedTreeImporter`, `SpeedTreeWind`, `SpeedTreeWindAsset`, `SpeedTreeWindConfig8`, `SpeedTreeWindConfig9`, `SphereCollider`, `SphericalHarmonicsL2`, `SplashScreenLogo`, `SplatDatabase`, `SplatPrototype`, `SpringJoint`, `SpringJoint2D`, `Sprite`, `SpriteAtlas`, `SpriteAtlasAsset`, `SpriteAtlasAssetData`, `SpriteAtlasData`, `SpriteAtlasDatabase`, `SpriteAtlasEditorData`, `SpriteAtlasImporter`, `SpriteBone`, `SpriteCustomDataEntry`, `SpriteCustomMetadata`, `SpriteData`, `SpriteMask`, `SpriteMetaData`, `SpriteRenderData`, `SpriteRenderer`, `SpriteShapeRenderer`, `SpriteSheetMetaData`, `SpriteTilingProperty`, `SpriteVertex`, `State`, `StateConstant`, `StateKey`, `StateMachine`, `StateMachineBehaviourVectorDescription`, `StateMachineConstant`, `StateRange`, `StaticBatchInfo`, `StreamInfo`, `StreamedClip`, `StreamedResource`, `StreamingController`, `StreamingInfo`, `StreamingManager`, `StructParameter`, `StyleSheetImporter`, `SubCollider`, `SubDerived`, `SubEmitterData`, `SubMesh`, `SubModule`, `SubPassDescriptor`, `SubstanceArchive`, `SubstanceEnumItem`, `SubstanceImporter`, `SubstanceInput`, `SubstanceValue`, `SurfaceEffector2D` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting T | `TagManager`, `TakeInfo`, `TargetJoint2D`, `Terrain`, `TerrainCollider`, `TerrainData`, `TerrainLayer`, `TestObjectVectorPairStringBool`, `TestObjectWithSerializedAnimationCurve`, `TestObjectWithSerializedArray`, `TestObjectWithSerializedMapStringBool`, `TestObjectWithSerializedMapStringNonAlignedStruct`, `TestObjectWithSpecialLayoutOne`, `TestObjectWithSpecialLayoutTwo`, `Tetrahedron`, `TextAsset`, `TextMesh`, `TextScriptImporter`, `Texture`, `Texture2D`, `Texture2DArray`, `Texture3D`, `TextureImportInstructions`, `TextureImportOutput`, `TextureImporter`, `TextureImporterPlatformSettings`, `TextureParameter`, `TextureParameters`, `TextureSettings`, `TicksPerSecond`, `TierGraphicsSettings`, `Tile`, `TileAnimationData`, `Tilemap`, `TilemapCollider2D`, `TilemapEditorUserSettings`, `TilemapRefCountedData`, `TilemapRenderer`, `TimeManager`, `TrailModule`, `TrailRenderer`, `Transform`, `TransformMaskElement`, `Transition`, `TransitionConstant`, `Tree`, `TreeInstance`, `TreePrototype`, `TriggerModule`, `TrueTypeFontImporter`, `TypeStats` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting U | `UAVParameter`, `UIRenderer`, `UVAnimation`, `UVModule`, `UnityAdsManager`, `UnityAdsSettings`, `UnityAnalyticsManager`, `UnityAnalyticsSettings`, `UnityConnectSettings`, `UnityPropertySheet`, `UnityPurchasingSettings`, `UnitySceneHandle`, `UnityTexEnv`, `UpdateZoneInfo` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting V | `VFXCPUBufferData`, `VFXCPUBufferDesc`, `VFXEditorSystemDesc`, `VFXEditorTaskDesc`, `VFXEntryExposed`, `VFXEntryExpressionValue`, `VFXEventDesc`, `VFXExposedMapping`, `VFXExpressionContainer`, `VFXField`, `VFXGPUBufferDesc`, `VFXInstanceSplitDesc`, `VFXLayoutElementDesc`, `VFXLayoutOffset`, `VFXManager`, `VFXMapping`, `VFXMappingTemporary`, `VFXPropertySheetSerializedBase`, `VFXRenderer`, `VFXRendererSettings`, `VFXShaderSourceDesc`, `VFXSystemDesc`, `VFXTaskDesc`, `VFXTemplate`, `VFXTemporaryGPUBufferDesc`, `VRSettings`, `ValueArray`, `ValueArrayConstant`, `ValueConstant`, `ValueDelta`, `VariableBoneCountWeights`, `VariantInfo`, `Vector3Curve`, `VectorParameter`, `VelocityModule`, `VersionControlSettings`, `VertexData`, `VertexLayoutInfo`, `VideoBuildInfo`, `VideoClip`, `VideoClipImporter`, `VideoClipImporterOutput`, `VideoClipImporterTargetSettings`, `VideoPlayer`, `VisualEffect`, `VisualEffectAsset`, `VisualEffectImporter`, `VisualEffectInfo`, `VisualEffectObject`, `VisualEffectResource`, `VisualEffectSettings`, `VisualEffectSubgraph`, `VisualEffectSubgraphBlock`, `VisualEffectSubgraphOperator`, `VulkanDeviceFilterLists`, `VulkanGraphicsJobsDeviceFilterData` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting W | `WebCamTexture`, `WheelCollider`, `WheelFrictionCurve`, `WheelJoint2D`, `WindZone`, `WorldAnchor`, `WorldParticleCollider` |
+| `UnityPy.classes` | the generated classes (Appendix A) starting X | `xform` |
 
 ## 3. Environment and loading
 
@@ -639,7 +679,7 @@ One row per `TextureFormat` value (78; 37-40 are unassigned). Lines are in `expo
 - **`set_image` writes**: the format `image_to_texture2d` writes for that target from an RGBA image (`:118-234`).
 - **tier** and **status**: section 0. Tier A rows get L5 goldens against the oracle, Tier B rows an independent reference, Tier C rows a pinned divergence test; `DESIGN.md` section 5 puts BC7, DXT1, DXT5, RGBA32 and RGB24 in P1 and every other format in P3.
 
-`test_inventory.py` checks the mode, UnityPy and `set_image` columns of every row against the oracle (texture_matrix_matches_the_oracle).
+`test_texture_matrix.py` checks the mode, UnityPy and `set_image` columns of every row against the oracle (texture_matrix_matches_the_oracle).
 
 | value | format | decoder | mode | conversion | gates | UnityPy 1.25.2 | `set_image` writes | tier | status |
 |---|---|---|---|---|---|---|---|---|---|
@@ -821,14 +861,26 @@ scripts/dev python tools/parity/inventory.py check
 | group | what | named here as |
 |---|---|---|
 | modules | every `.py` file under `UnityPy/` (78) | its path in a code span, alone or with `:line`; a path names its module and nothing else |
-| classes | every public class defined in a module (955, the generated classes included) | its bare name in a code span |
+| classes | every public class a module defines (955, the generated classes included) | its name in a code span |
 | functions | every public module-level function (126) | `Module.function` in a code span |
 | data | every public name a module assigns at its top level whose value is not a class, function, module or typing construct: tables, registries, settings, caches (65) | `Module.NAME` in a code span |
-| methods | public members of the API classes, and every member a `classes/legacy_patch` module adds (133) | `Class.member` in a code span |
+| methods | every public callable or property a class defines in its own body, for every class UnityPy defines; for the generated classes, the members a `classes/legacy_patch` module adds (228) | `Class.member` in a code span, or a compact row (below) |
+| fields | every public attrs field a class declares itself, for every attrs class UnityPy defines, the 869 generated classes included (8,456) | `Class.field` in a code span, or a compact row: Appendix A for the generated classes, Appendix B for the rest |
+| exports | every public name a package's `__init__.py` imports from another UnityPy module or assigns as an alias (924) | the dotted path from `UnityPy` (`UnityPy.files.File`), or a compact row: section 2.1 |
 | boost | every public name of UnityPyBoost (4) | `UnityPyBoost.name` in a code span |
 | texture formats | every `TextureFormat` member (78) | a table row with the cells `` `Name` `` and its value |
 
-`check` exits 1 and lists what is missing. `tools/parity/tests/test_inventory.py` runs it against this file in the oracle image, checks the TextureFormat matrix against the oracle on real-sized data (section 17), and tests the matching rules with the standard library alone. Section 23 holds the module-level data that no other section names.
+**Whole chains.** A dotted name counts only when it is written from the start of its chain. `Wrong.ImportHelper.check_file_type` does not name `ImportHelper.check_file_type`; the only prefixes allowed are the symbol's own import path (`UnityPy.helpers.ImportHelper.check_file_type`) or a package path that re-exports it (`UnityPy.classes.GameObject.m_Name`), and the only suffixes are what follows the chain (a call, a subscript, a further `.attribute`).
+
+**Compact rows.** In a table with a column headed `fields` or `members`, a row whose first cell's first code span is `` `Parent` `` names `Parent.x` for every code span `` `x` `` in that column, and nothing under any other parent.
+
+**Out of scope.** Enum members and other class-level constants are named by their class (the `TextureFormat` members have their own group), and private names are not inventoried.
+
+`check` exits 1 and lists what is missing. `tools/parity/tests/test_inventory.py` runs it against this file in the oracle image, requires it to fail when one entry of any group is removed or a name is written under a wrong parent, and tests the matching rules with the standard library alone; `tools/parity/tests/test_texture_matrix.py` checks the TextureFormat matrix against the oracle (section 17). Section 23 holds the module-level data that no other section names.
+
+### Reproducing the numbers
+
+The group sizes above come from `scripts/dev python tools/parity/inventory.py list --counts` in the oracle image. The 869 generated classes, and the 869 rows of Appendix A, are counted by `test_inventory.py` appendix_a_has_one_row_per_generated_class.
 
 ## 22. Module index
 
@@ -939,876 +991,912 @@ Public tables, registries, settings and caches that no other section names (sect
 
 ## Appendix A. Generated classes
 
-Every class in `classes/generated.py` (869), with its bases and the class ids `classes/ClassIDTypeToClassMap.py` maps to it. They are read through the typetree: Tier A at L2 through the dict (verified in P0 wherever the samples and the corpus hold them), and at the API level in object mode (planned P3, section 9.2).
+Every class in `classes/generated.py` (869), with its bases, the class ids `classes/ClassIDTypeToClassMap.py` maps to it, and the attrs fields it declares (`inventory.py` group `fields`; a generated class declares every one of its fields itself, so none is inherited). They are read through the typetree: Tier A at L2 through the dict (verified in P0 wherever the samples and the corpus hold them), and at the API level in object mode (planned P3, section 9.2).
 
-| class | bases | class ids |
-|---|---|---|
-| `AnnotationManager` | Object | 1049 |
-| `AssetDatabaseV1` | Object | 1004 |
-| `AssetMetaData` | Object | 1028 |
-| `AssetServerCache` | Object | 1037 |
-| `AudioBuildInfo` | Object | 641289076 |
-| `BlockShaderSourceArtifact` | Object | — |
-| `BuiltAssetBundleInfoSet` | Object | 668709126 |
-| `ContentSummary` | Object | — |
-| `Derived` | Object | 1091556383 |
-| `SubDerived` | Derived | 367388927 |
-| `DifferentMarshallingTestObject` | Object | — |
-| `EditorBuildSettings` | Object | 1045 |
-| `EditorExtension` | Object, ABC | 18 |
-| `Component` | EditorExtension | 2 |
-| `Behaviour` | Component | 8 |
-| `Animation` | Behaviour | 111 |
-| `Animator` | Behaviour | 95 |
-| `ArticulationBody` | Behaviour | 171741748 |
-| `AudioBehaviour` | Behaviour | 180 |
-| `AudioListener` | AudioBehaviour | 81 |
-| `AudioSource` | AudioBehaviour | 82 |
-| `AudioFilter` | Behaviour | 181 |
-| `AudioChorusFilter` | AudioFilter | 166 |
-| `AudioDistortionFilter` | AudioFilter | 170 |
-| `AudioEchoFilter` | AudioFilter | 168 |
-| `AudioHighPassFilter` | AudioFilter | 165 |
-| `AudioLowPassFilter` | AudioFilter | 169 |
-| `AudioReverbFilter` | AudioFilter | 164 |
-| `AudioReverbZone` | Behaviour | 167 |
-| `Camera` | Behaviour | 20 |
-| `ScriptableCamera` | Camera | 488575907 |
-| `Canvas` | Behaviour | 223 |
-| `CanvasGroup` | Behaviour | 225 |
-| `Cloth` | Behaviour | 183 |
-| `InteractiveCloth` | Cloth | 160 |
-| `SkinnedCloth` | Cloth | 163 |
-| `CloudServiceHandlerBehaviour` | Behaviour | — |
-| `Collider2D` | Behaviour | 53 |
-| `BoxCollider2D` | Collider2D | 61 |
-| `CapsuleCollider2D` | Collider2D | 70 |
-| `CircleCollider2D` | Collider2D | 58 |
-| `CompositeCollider2D` | Collider2D | 66 |
-| `CustomCollider2D` | Collider2D | — |
-| `EdgeCollider2D` | Collider2D | 68 |
-| `PolygonCollider2D` | Collider2D | 60 |
-| `PolygonColliderBase2D` | Collider2D | — |
-| `TilemapCollider2D` | Collider2D | 19719996 |
-| `ConstantForce` | Behaviour | 75 |
-| `Effector2D` | Behaviour | 248 |
-| `AreaEffector2D` | Effector2D | 249 |
-| `BuoyancyEffector2D` | Effector2D | 253 |
-| `PlatformEffector2D` | Effector2D | 251 |
-| `PointEffector2D` | Effector2D | 250 |
-| `SurfaceEffector2D` | Effector2D | 252 |
-| `FlareLayer` | Behaviour | 124 |
-| `GUIElement` | Behaviour | 133 |
-| `GUIText` | GUIElement | 132 |
-| `GUITexture` | GUIElement | 131 |
-| `GUILayer` | Behaviour | 92 |
-| `GridLayout` | Behaviour | 1742807556 |
-| `Grid` | GridLayout | 156049354 |
-| `Tilemap` | GridLayout | 1839735485 |
-| `Halo` | Behaviour | 122 |
-| `HaloLayer` | Behaviour | 125 |
-| `IConstraint` | Behaviour | 285090594 |
-| `AimConstraint` | IConstraint | 895512359 |
-| `LookAtConstraint` | IConstraint | 1183024399 |
-| `ParentConstraint` | IConstraint | 1773428102 |
-| `PositionConstraint` | IConstraint | 1818360608 |
-| `RotationConstraint` | IConstraint | 1818360609 |
-| `ScaleConstraint` | IConstraint | 1818360610 |
-| `Joint2D` | Behaviour | 230 |
-| `AnchoredJoint2D` | Joint2D | 229 |
-| `DistanceJoint2D` | AnchoredJoint2D | 232 |
-| `FixedJoint2D` | AnchoredJoint2D | 255 |
-| `FrictionJoint2D` | AnchoredJoint2D | 256 |
-| `HingeJoint2D` | AnchoredJoint2D | 233 |
-| `SliderJoint2D` | AnchoredJoint2D | 234 |
-| `SpringJoint2D` | AnchoredJoint2D | 231 |
-| `WheelJoint2D` | AnchoredJoint2D | 235 |
-| `RelativeJoint2D` | Joint2D | 254 |
-| `TargetJoint2D` | Joint2D | 257 |
-| `LensFlare` | Behaviour | 123 |
-| `Light` | Behaviour | 108 |
-| `LightProbeGroup` | Behaviour | 220 |
-| `LightProbeProxyVolume` | Behaviour | 259 |
-| `MonoBehaviour` | Behaviour | 114 |
-| `NavMeshAgent` | Behaviour | 195 |
-| `NavMeshObstacle` | Behaviour | 208 |
-| `NetworkView` | Behaviour | 148 |
-| `OffMeshLink` | Behaviour | 191 |
-| `ParticleSystemForceField` | Behaviour | 330 |
-| `PhysicsUpdateBehaviour2D` | Behaviour | 246 |
-| `ConstantForce2D` | PhysicsUpdateBehaviour2D | 247 |
-| `PlayableDirector` | Behaviour | 320 |
-| `Projector` | Behaviour | 119 |
-| `ReflectionProbe` | Behaviour | 215, 216 |
-| `Skybox` | Behaviour | 45 |
-| `SortingGroup` | Behaviour | 210 |
-| `StreamingController` | Behaviour | 1542919678 |
-| `Terrain` | Behaviour | 218 |
-| `VideoPlayer` | Behaviour | 328 |
-| `VisualEffect` | Behaviour | 2083052967 |
-| `WindZone` | Behaviour | 182 |
-| `CanvasRenderer` | Component | 222 |
-| `Collider` | Component | 56 |
-| `BoxCollider` | Collider | 65 |
-| `CapsuleCollider` | Collider | 136 |
-| `CharacterController` | Collider | 143 |
-| `MeshCollider` | Collider | 64 |
-| `RaycastCollider` | Collider | 140 |
-| `SphereCollider` | Collider | 135 |
-| `TerrainCollider` | Collider | 154 |
-| `WheelCollider` | Collider | 146 |
-| `FakeComponent` | Component | 1803986026 |
-| `Joint` | Component | 57 |
-| `CharacterJoint` | Joint | 144 |
-| `ConfigurableJoint` | Joint | 153 |
-| `FixedJoint` | Joint | 138 |
-| `HingeJoint` | Joint | 59 |
-| `SpringJoint` | Joint | 145 |
-| `LODGroup` | Component | 205 |
-| `MeshFilter` | Component | 33 |
-| `MultiplayerRolesData` | Component | — |
-| `OcclusionArea` | Component | 192 |
-| `OcclusionPortal` | Component | 41 |
-| `ParticleAnimator` | Component | 12 |
-| `ParticleEmitter` | Component | 88 |
-| `EllipsoidParticleEmitter` | ParticleEmitter | 15 |
-| `MeshParticleEmitter` | ParticleEmitter | 87 |
-| `ParticleSystem` | Component | 198 |
-| `Pipeline` | Component | 17 |
-| `Renderer` | Component | 25 |
-| `BillboardRenderer` | Renderer | 227 |
-| `ClothRenderer` | Renderer | 161 |
-| `LineRenderer` | Renderer | 120 |
-| `RendererFake` | LineRenderer | 646504946 |
-| `MeshRenderer` | Renderer | 23 |
-| `PanelRenderer` | Renderer | — |
-| `ParticleRenderer` | Renderer | 26 |
-| `ParticleSystemRenderer` | Renderer | 199 |
-| `RenderAs2D` | Renderer | — |
-| `SkinnedMeshRenderer` | Renderer | 137 |
-| `SpriteMask` | Renderer | 331 |
-| `SpriteRenderer` | Renderer | 212 |
-| `SpriteShapeRenderer` | Renderer | 1971053207 |
-| `TilemapRenderer` | Renderer | 483693784 |
-| `TrailRenderer` | Renderer | 96 |
-| `UIRenderer` | Renderer | — |
-| `VFXRenderer` | Renderer | 73398921 |
-| `Rigidbody` | Component | 54 |
-| `Rigidbody2D` | Component | 50 |
-| `TextMesh` | Component | 102 |
-| `Transform` | Component | 4 |
-| `RectTransform` | Transform | 224 |
-| `Tree` | Component | 193 |
-| `WorldAnchor` | Component | 362 |
-| `WorldParticleCollider` | Component | 76 |
-| `GameObject` | EditorExtension | 1 |
-| `NamedObject` | EditorExtension, ABC | 130 |
-| `AnimatorState` | NamedObject | 1102 |
-| `AnimatorStateMachine` | NamedObject | 1107 |
-| `AnimatorTransitionBase` | NamedObject | 1111 |
-| `AnimatorStateTransition` | AnimatorTransitionBase | 1101 |
-| `AnimatorTransition` | AnimatorTransitionBase | 1109 |
-| `AssetBundle` | NamedObject | 142 |
-| `AssetBundleManifest` | NamedObject | 290 |
-| `AssetImportInProgressProxy` | NamedObject | 369655926 |
-| `AssetImporter` | NamedObject, ABC | 1003 |
-| `ASTCImporter` | AssetImporter | 1053 |
-| `AndroidAssetPackImporter` | AssetImporter | — |
-| `AssemblyDefinitionImporter` | AssetImporter | 1766753193 |
-| `AssemblyDefinitionReferenceImporter` | AssetImporter | 294290339 |
-| `AudioImporter` | AssetImporter | 1020 |
-| `BlockShaderImporter` | AssetImporter | — |
-| `BuildArchiveImporter` | AssetImporter | — |
-| `BuildInstructionImporter` | AssetImporter | — |
-| `BuildMetaDataImporter` | AssetImporter | — |
-| `C4DImporter` | AssetImporter | — |
-| `ComputeShaderImporter` | AssetImporter | 1008 |
-| `DDSImporter` | AssetImporter | 1046 |
-| `DefaultImporter` | AssetImporter | 1030 |
-| `IHVImageFormatImporter` | AssetImporter | 1055 |
-| `KTXImporter` | AssetImporter | 1054 |
-| `LibraryAssetImporter` | AssetImporter | 1038 |
-| `LocalizationImporter` | AssetImporter | 1027052791 |
-| `ModelImporter` | AssetImporter, ABC | 1040 |
-| `FBXImporter` | ModelImporter | 1041 |
-| `Mesh3DSImporter` | ModelImporter | 1005 |
-| `SketchUpImporter` | ModelImporter | 1124 |
-| `MonoImporter` | AssetImporter | 1035 |
-| `MovieImporter` | AssetImporter | 1044 |
-| `MultiArtifactTestImporter` | AssetImporter | 1223240404 |
-| `NativeFormatImporter` | AssetImporter | 1034 |
-| `PVRImporter` | AssetImporter | 1052 |
-| `PackageManifestImporter` | AssetImporter | 1896753126 |
-| `PluginImporter` | AssetImporter | 1050 |
-| `PrefabImporter` | AssetImporter | 468431735 |
-| `PreviewImporter` | AssetImporter | — |
-| `RayTracingShaderImporter` | AssetImporter | 747330370 |
-| `ReferencesArtifactGenerator` | AssetImporter | 1114811875 |
-| `RoslynAdditionalFileImporter` | AssetImporter | — |
-| `RoslynAnalyzerConfigImporter` | AssetImporter | — |
-| `RuleSetFileImporter` | AssetImporter | — |
-| `ScriptedImporter` | AssetImporter | 2089858483 |
-| `ShaderImporter` | AssetImporter | 1007 |
-| `ShaderIncludeImporter` | AssetImporter | — |
-| `SpeedTreeImporter` | AssetImporter | 1110 |
-| `SpriteAtlasImporter` | AssetImporter | 1210832254 |
-| `StyleSheetImporter` | AssetImporter | — |
-| `SubstanceImporter` | AssetImporter | 1112 |
-| `TextScriptImporter` | AssetImporter | 1031 |
-| `TextureImporter` | AssetImporter | 1006 |
-| `TrueTypeFontImporter` | AssetImporter | 1042 |
-| `VideoClipImporter` | AssetImporter | 1127 |
-| `VisualEffectImporter` | AssetImporter | 2058629510 |
-| `AudioContainerElement` | NamedObject | — |
-| `AudioMixer` | NamedObject | 240 |
-| `AudioMixerController` | AudioMixer | 241 |
-| `AudioMixerEffectController` | NamedObject | 244 |
-| `AudioMixerGroup` | NamedObject | 273 |
-| `AudioMixerGroupController` | AudioMixerGroup | 243 |
-| `AudioMixerSnapshot` | NamedObject | 272 |
-| `AudioMixerSnapshotController` | AudioMixerSnapshot | 245 |
-| `AudioResource` | NamedObject | — |
-| `AudioRandomContainer` | AudioResource | — |
-| `SampleClip` | AudioResource | 271 |
-| `AudioClip` | SampleClip | 83 |
-| `Avatar` | NamedObject | 90 |
-| `AvatarMask` | NamedObject | 319 |
-| `AvatarSkeletonMask` | NamedObject | — |
-| `BaseAnimationTrack` | NamedObject, ABC | 110 |
-| `NewAnimationTrack` | BaseAnimationTrack | 118 |
-| `BillboardAsset` | NamedObject | 226 |
-| `BlobObject` | NamedObject | — |
-| `BlockShaderContainer` | NamedObject | — |
-| `BlockShaderErrors` | NamedObject | — |
-| `BlockShaderSyntaxTree` | NamedObject | — |
-| `BuildReport` | NamedObject | 1125 |
-| `CachedSpriteAtlas` | NamedObject | 214 |
-| `CachedSpriteAtlasRuntimeData` | NamedObject | 644342135 |
-| `ComputeShader` | NamedObject | 72 |
-| `D3D12DeviceFilterLists` | NamedObject | — |
-| `DefaultAsset` | NamedObject | 1029 |
-| `BrokenPrefabAsset` | DefaultAsset | — |
-| `SceneAsset` | DefaultAsset | 1032 |
-| `EditorProjectAccess` | NamedObject | 426301858 |
-| `Flare` | NamedObject | 121 |
-| `Font` | NamedObject | 128 |
-| `GameObjectRecorder` | NamedObject | 1268269756 |
-| `GraphicsStateCollection` | NamedObject | — |
-| `HumanTemplate` | NamedObject | 1105 |
-| `ImportLog` | NamedObject | — |
-| `LightProbes` | NamedObject | 197, 258 |
-| `LightingDataAsset` | NamedObject | 1120 |
-| `LightingDataAssetParent` | NamedObject | 1325145578 |
-| `LightingSettings` | NamedObject | 850595691 |
-| `LightmapParameters` | NamedObject | 1113 |
-| `LocalizationAsset` | NamedObject | 2083778819 |
-| `Material` | NamedObject | 21 |
-| `ProceduralMaterial` | Material | 185 |
-| `Mesh` | NamedObject | 43 |
-| `Motion` | NamedObject, ABC | 207 |
-| `AnimationClip` | Motion | 74 |
-| `PreviewAnimationClip` | AnimationClip | 1108 |
-| `BlendTree` | Motion | 206 |
-| `NavMeshData` | NamedObject | 238 |
-| `NavMeshObsolete` | NamedObject | 194 |
-| `OcclusionCullingData` | NamedObject | 363 |
-| `PhysicsMaterial` | NamedObject | — |
-| `PhysicsMaterial2D` | NamedObject | 62 |
-| `PreloadData` | NamedObject | 150 |
-| `Preset` | NamedObject | 181963792 |
-| `RayTracingShader` | NamedObject | 825902497 |
-| `RoslynAdditionalFileAsset` | NamedObject | — |
-| `RoslynAnalyzerConfigAsset` | NamedObject | — |
-| `RuntimeAnimatorController` | NamedObject | 93 |
-| `AnimatorController` | RuntimeAnimatorController | 91 |
-| `AnimatorOverrideController` | RuntimeAnimatorController | 221 |
-| `Shader` | NamedObject | 48 |
-| `ShaderVariantCollection` | NamedObject | 200 |
-| `SpeedTreeWindAsset` | NamedObject | 228 |
-| `Sprite` | NamedObject | 213 |
-| `SpriteAtlas` | NamedObject | 687078895 |
-| `SpriteAtlasAsset` | NamedObject | 612988286 |
-| `SubstanceArchive` | NamedObject | 184 |
-| `TerrainData` | NamedObject | 156 |
-| `TerrainLayer` | NamedObject | 1953259897 |
-| `TextAsset` | NamedObject | 49 |
-| `AssemblyDefinitionAsset` | TextAsset | 1152215463 |
-| `AssemblyDefinitionReferenceAsset` | TextAsset | 662584278 |
-| `MonoScript` | TextAsset | 115 |
-| `PackageManifest` | TextAsset | 1896753125 |
-| `RuleSetFileAsset` | TextAsset | — |
-| `ShaderInclude` | TextAsset | — |
-| `Texture` | NamedObject, ABC | 27 |
-| `BaseVideoTexture` | Texture, ABC | 237 |
-| `WebCamTexture` | BaseVideoTexture | 158 |
-| `CubemapArray` | Texture | 188 |
-| `LowerResBlitTexture` | Texture | 1480428607 |
-| `MovieTexture` | Texture | 152 |
-| `ProceduralTexture` | Texture | 186 |
-| `RenderTexture` | Texture | 84 |
-| `CustomRenderTexture` | RenderTexture | 86 |
-| `SparseTexture` | Texture | 171 |
-| `Texture2D` | Texture | 28 |
-| `Cubemap` | Texture2D | 89 |
-| `Texture2DArray` | Texture | 187 |
-| `Texture3D` | Texture | 117 |
-| `VideoClip` | NamedObject | 329 |
-| `VisualEffectObject` | NamedObject, ABC | 2059678085 |
-| `VisualEffectAsset` | VisualEffectObject | 2058629509 |
-| `VisualEffectSubgraph` | VisualEffectObject, ABC | 994735392 |
-| `VisualEffectSubgraphBlock` | VisualEffectSubgraph | 994735404 |
-| `VisualEffectSubgraphOperator` | VisualEffectSubgraph | 994735403 |
-| `VisualEffectResource` | NamedObject | 2058629511 |
-| `VulkanDeviceFilterLists` | NamedObject | — |
-| `EditorExtensionImpl` | Object | 1002 |
-| `EditorSettings` | Object | 159 |
-| `EditorUserBuildSettings` | Object | 1051 |
-| `EditorUserSettings` | Object | 162 |
-| `EmptyObject` | Object | 277625683 |
-| `GUIDSerializer` | Object | 1027 |
-| `GameManager` | Object, ABC | 9 |
-| `GlobalGameManager` | GameManager, ABC | 6 |
-| `AnimationManager` | GlobalGameManager | — |
-| `AudioManager` | GlobalGameManager | 11 |
-| `BuildSettings` | GlobalGameManager | 141 |
-| `CloudWebServicesManager` | GlobalGameManager | 301 |
-| `ClusterInputManager` | GlobalGameManager | 236 |
-| `CrashReportManager` | GlobalGameManager | 304 |
-| `DelayedCallManager` | GlobalGameManager | 98 |
-| `GraphicsSettings` | GlobalGameManager | 30 |
-| `InputManager` | GlobalGameManager | 13 |
-| `MasterServerInterface` | GlobalGameManager | 155 |
-| `MonoManager` | GlobalGameManager | 116 |
-| `MultiplayerManager` | GlobalGameManager | — |
-| `NavMeshProjectSettings` | GlobalGameManager | 126 |
-| `NetworkManager` | GlobalGameManager | 149 |
-| `NotificationManager` | GlobalGameManager | — |
-| `PerformanceReportingManager` | GlobalGameManager | 305 |
-| `Physics2DSettings` | GlobalGameManager | 19, 51 |
-| `PhysicsManager` | GlobalGameManager | 55 |
-| `PlayerSettings` | GlobalGameManager | 129 |
-| `QualitySettings` | GlobalGameManager | 47 |
-| `ResourceManager` | GlobalGameManager | 147 |
-| `RuntimeInitializeOnLoadManager` | GlobalGameManager | 300 |
-| `ShaderNameRegistry` | GlobalGameManager | — |
-| `StreamingManager` | GlobalGameManager | 1403656975 |
-| `TagManager` | GlobalGameManager | 78 |
-| `TimeManager` | GlobalGameManager | 5 |
-| `UnityAdsManager` | GlobalGameManager | 292 |
-| `UnityAnalyticsManager` | GlobalGameManager | 303 |
-| `UnityConnectSettings` | GlobalGameManager | 310 |
-| `VFXManager` | GlobalGameManager | 937362698 |
-| `LevelGameManager` | GameManager, ABC | 3 |
-| `HaloManager` | LevelGameManager | 127 |
-| `LightmapSettings` | LevelGameManager | 157 |
-| `NavMeshSettings` | LevelGameManager | 196 |
-| `OcclusionCullingSettings` | LevelGameManager | 29 |
-| `RenderSettings` | LevelGameManager | 104 |
-| `HierarchyState` | Object | 1026 |
-| `InspectorExpandedState` | Object | 1048 |
-| `MarshallingTestObject` | Object | — |
-| `MemorySettings` | Object | — |
-| `NScreenBridge` | Object | 280 |
-| `NativeObjectType` | Object | 1977754360 |
-| `PackedAssets` | Object | 1126 |
-| `PlatformModuleSetup` | Object | 877146078 |
-| `PluginBuildInfo` | Object | 382020655 |
-| `Prefab` | Object | — |
-| `PrefabInstance` | Object | 1001 |
-| `PresetManager` | Object | 1386491679 |
-| `PropertyModificationsTargetTestObject` | Object | 1111377672 |
-| `RenderPassAttachment` | Object | 1571458007 |
-| `SceneRoots` | Object | — |
-| `SceneVisibilityState` | Object | 1154873562 |
-| `ScenesUsingAssets` | Object | 156483287 |
-| `SerializableManagedHost` | Object | 1995898324 |
-| `SerializableManagedRefTestClass` | Object | 76251197 |
-| `ShaderContainer` | Object | — |
-| `SiblingDerived` | Object | 334799969 |
-| `SpriteAtlasDatabase` | Object | 638013454 |
-| `TestObjectVectorPairStringBool` | Object | 1628831178 |
-| `TestObjectWithSerializedAnimationCurve` | Object | 478637459 |
-| `TestObjectWithSerializedArray` | Object | 478637458 |
-| `TestObjectWithSerializedMapStringBool` | Object | 1981279845 |
-| `TestObjectWithSerializedMapStringNonAlignedStruct` | Object | 342846651 |
-| `TestObjectWithSpecialLayoutOne` | Object | 293259124 |
-| `TestObjectWithSpecialLayoutTwo` | Object | 1392443030 |
-| `TilemapEditorUserSettings` | Object | — |
-| `VersionControlSettings` | Object | 890905787 |
-| `VideoBuildInfo` | Object | — |
-| `AABB` | object | — |
-| `AddedComponent` | object | — |
-| `AddedGameObject` | object | — |
-| `AndroidDeviceFilterData` | object | — |
-| `AnimationClipBindingConstant` | object | — |
-| `AnimationClipOverride` | object | — |
-| `AnimationCurve` | object | — |
-| `AnimationEvent` | object | — |
-| `AnimatorCondition` | object | — |
-| `Annotation` | object | — |
-| `ArticulationDrive` | object | — |
-| `AspectRatios` | object | — |
-| `AssemblyJsonAsset` | TextAsset | — |
-| `AssemblyJsonImporter` | AssetImporter | — |
-| `Asset` | object | — |
-| `AssetBundleFullName` | object | — |
-| `AssetBundleInfo` | object | — |
-| `AssetBundleScriptInfo` | object | — |
-| `AssetDatabase` | Object | — |
-| `AssetDatabaseMetrics` | object | — |
-| `AssetImporterHashKey` | object | — |
-| `AssetImporterLog` | NamedObject | 41386430 |
-| `AssetImporter_ImportError` | object | — |
-| `AssetInfo` | object | — |
-| `AssetLabels` | object | — |
-| `AssetStats` | object | — |
-| `AssetTimeStamp` | object | — |
-| `AttachmentIndexArray` | object | — |
-| `AttachmentInfo` | object | — |
-| `AudioImporterOutput` | object | — |
-| `AudioMixerConstant` | object | — |
-| `AudioMixerLiveUpdateBool` | ABC | 100009 |
-| `AudioMixerLiveUpdateFloat` | ABC | 100008 |
-| `AutoOffMeshLinkData` | object | — |
-| `AvatarBodyMask` | NamedObject | — |
-| `AvatarConstant` | object | — |
-| `AvatarSkeletonMaskElement` | object | — |
-| `Axes` | object | — |
-| `BitField` | object | — |
-| `Blend1dDataConstant` | object | — |
-| `Blend2dDataConstant` | object | — |
-| `BlendDirectDataConstant` | object | — |
-| `BlendShapeData` | object | — |
-| `BlendShapeVertex` | object | — |
-| `BlendTreeConstant` | object | — |
-| `BlendTreeNodeConstant` | object | — |
-| `BoneInfluence` | object | — |
-| `BoneWeights4` | object | — |
-| `BranchWindLevel` | object | — |
-| `BufferBinding` | object | — |
-| `BuildReportFile` | object | — |
-| `BuildReportPackedAssetInfo` | object | — |
-| `BuildReportScenesUsingAsset` | object | — |
-| `BuildStepInfo` | object | — |
-| `BuildStepMessage` | object | — |
-| `BuildSummary` | object | — |
-| `BuildTargetSettings` | object | — |
-| `BuildTextureStackReference` | object | — |
-| `BuiltAssetBundleInfo` | object | — |
-| `BuiltinShaderSettings` | object | — |
-| `CGProgram` | TextAsset | 109 |
-| `CachedAssetMetaData` | object | — |
-| `Channel` | object | — |
-| `ChannelInfo` | object | — |
-| `CharacterInfo` | object | — |
-| `Child` | object | — |
-| `ChildAnimatorState` | object | — |
-| `ChildAnimatorStateMachine` | object | — |
-| `ChildMotion` | object | — |
-| `ClampVelocityModule` | object | — |
-| `ClassInfo` | object | — |
-| `ClassMethodInfo` | object | — |
-| `Clip` | object | — |
-| `ClipAnimationInfo` | object | — |
-| `ClipAnimationInfoCurve` | object | — |
-| `ClipMuscleConstant` | object | — |
-| `ClothAttachment` | object | — |
-| `ClothConstrainCoefficients` | object | — |
-| `ClothSphereColliderPair` | object | — |
-| `ClusterInput` | object | — |
-| `CollabEditorSettings` | object | — |
-| `Collision` | ABC | 100004 |
-| `Collision2D` | ABC | 100007 |
-| `CollisionModule` | object | — |
-| `ColorBySpeedModule` | object | — |
-| `ColorModule` | object | — |
-| `ComponentPair` | object | — |
-| `CompressedAnimationCurve` | object | — |
-| `CompressedMesh` | object | — |
-| `ComputeBufferCounter` | object | — |
-| `ComputeShaderBuiltinSampler` | object | — |
-| `ComputeShaderCB` | object | — |
-| `ComputeShaderKernel` | object | — |
-| `ComputeShaderKernelParent` | object | — |
-| `ComputeShaderParam` | object | — |
-| `ComputeShaderPlatformVariant` | object | — |
-| `ComputeShaderResource` | object | — |
-| `ComputeShaderVariant` | object | — |
-| `Condition` | object | — |
-| `ConditionConstant` | object | — |
-| `ConfigSetting` | object | — |
-| `ConstantBuffer` | object | — |
-| `ConstantClip` | object | — |
-| `ConstraintSource` | object | — |
-| `ControllerConstant` | object | — |
-| `CrashReportingSettings` | object | — |
-| `CustomDataModule` | object | — |
-| `D3D12DeviceFilterData` | object | — |
-| `D3D12GraphicsJobsDeviceFilterData` | object | — |
-| `DataTemplate` | NamedObject | — |
-| `DateTime` | object | — |
-| `DefaultPreset` | object | — |
-| `DefaultPresetList` | object | — |
-| `DeletedItem` | object | — |
-| `DenseClip` | object | — |
-| `DetailDatabase` | object | — |
-| `DetailPatch` | object | — |
-| `DetailPrototype` | object | — |
-| `DeviceNone` | object | — |
-| `DirectorGenericBinding` | object | — |
-| `DirectorPlayer` | Behaviour | — |
-| `EffectConstant` | object | — |
-| `EmbeddedNativeType` | object | — |
-| `EmissionModule` | object | — |
-| `EnlightenRendererInformation` | object | — |
-| `EnlightenSceneMapping` | object | — |
-| `EnlightenSystemAtlasInformation` | object | — |
-| `EnlightenSystemInformation` | object | — |
-| `EnlightenTerrainChunksInformation` | object | — |
-| `EntityId` | object | — |
-| `Error` | object | — |
-| `ExpandedData` | object | — |
-| `ExposedReferenceTable` | object | — |
-| `Expression` | object | — |
-| `ExtensionPropertyValue` | object | — |
-| `ExternalForcesModule` | object | — |
-| `FalloffTable` | object | — |
-| `FastPropertyName` | object | — |
-| `FlareElement` | object | — |
-| `FloatCurve` | object | — |
-| `ForceModule` | object | — |
-| `GISettings` | object | — |
-| `GLTextureSettings` | object | — |
-| `GUID` | object | — |
-| `GenericBinding` | object | — |
-| `GfxBlendState` | object | — |
-| `GfxDepthState` | object | — |
-| `GfxRasterState` | object | — |
-| `GfxRenderTargetBlendState` | object | — |
-| `GfxStencilState` | object | — |
-| `Google` | object | — |
-| `Gradient` | object | — |
-| `GradientNEW` | object | — |
-| `GraphicsStateInfo` | object | — |
-| `GroupConnection` | object | — |
-| `GroupConstant` | object | — |
-| `Hand` | object | — |
-| `HandPose` | object | — |
-| `Handle` | object | — |
-| `Hash128` | object | — |
-| `HeightMeshBVNode` | object | — |
-| `HeightMeshData` | object | — |
-| `Heightmap` | object | — |
-| `HeightmapData` | object | — |
-| `HierarchicalSceneData` | object | — |
-| `HoloLens` | object | — |
-| `Human` | object | — |
-| `HumanBone` | object | — |
-| `HumanDescription` | object | — |
-| `HumanGoal` | object | — |
-| `HumanHandle` | object | — |
-| `HumanLayerConstant` | object | — |
-| `HumanPose` | object | — |
-| `HumanPoseMask` | object | — |
-| `Image` | object | — |
-| `ImportLog_ImportLogEntry` | object | — |
-| `InheritVelocityModule` | object | — |
-| `InitialModule` | object | — |
-| `InputAxis` | object | — |
-| `InputImportSettings` | object | — |
-| `InsightsSettings` | object | — |
-| `IntPoint` | object | — |
-| `Item` | object | — |
-| `JointAngleLimit2D` | object | — |
-| `JointAngleLimits2D` | object | — |
-| `JointDrive` | object | — |
-| `JointLimits` | object | — |
-| `JointMotor` | object | — |
-| `JointMotor2D` | object | — |
-| `JointSpring` | object | — |
-| `JointSuspension2D` | object | — |
-| `JointTranslationLimits2D` | object | — |
-| `Keyframe` | object | — |
-| `LOD` | object | — |
-| `LODRenderer` | object | — |
-| `LayerConstant` | object | — |
-| `LayoutDataOne` | object | — |
-| `LayoutDataThree` | object | — |
-| `LayoutDataTwo` | object | — |
-| `LeafInfoConstant` | object | — |
-| `LibraryRepresentation` | object | — |
-| `LifetimeByEmitterSpeedModule` | object | — |
-| `LightBakingOutput` | object | — |
-| `LightProbeData` | object | — |
-| `LightProbeOcclusion` | object | — |
-| `LightmapBakeMode` | object | — |
-| `LightmapData` | object | — |
-| `LightmapSnapshot` | NamedObject | — |
-| `LightsModule` | object | — |
-| `Limit` | object | — |
-| `LineParameters` | object | — |
-| `LodSelectionCurve` | object | — |
-| `Lumin` | object | — |
-| `MaterialImportOutput` | object | — |
-| `MaterialInstanceSettings` | object | — |
-| `MatrixParameter` | object | — |
-| `MdFour` | object | — |
-| `MeshBlendShape` | object | — |
-| `MeshBlendShapeChannel` | object | — |
-| `MeshBlendShapeVertex` | object | — |
-| `MeshLodInfo` | object | — |
-| `MeshLodRange` | object | — |
-| `MeshLodSubMesh` | object | — |
-| `MinMaxAABB` | object | — |
-| `MinMaxCurve` | object | — |
-| `MinMaxGradient` | object | — |
-| `MipmapLimitSettings` | object | — |
-| `Module` | object | — |
-| `MonoAssemblyImporter` | AssetImporter | — |
-| `MonoObject` | ABC | 100003 |
-| `MotionNeighborList` | object | — |
-| `MultiModeParameter` | object | — |
-| `NameToObjectMap` | object | — |
-| `NativeType` | object | — |
-| `NavMesh` | NamedObject | — |
-| `NavMeshAreaData` | object | — |
-| `NavMeshAreas` | GlobalGameManager | — |
-| `NavMeshBuildDebugSettings` | object | — |
-| `NavMeshBuildSettings` | object | — |
-| `NavMeshLayerData` | object | — |
-| `NavMeshLayers` | GlobalGameManager | — |
-| `NavMeshParams` | object | — |
-| `NavMeshTileData` | object | — |
-| `NetworkViewID` | object | — |
-| `Node` | object | — |
-| `NoiseModule` | object | — |
-| `NonAlignedStruct` | object | — |
-| `ObjectRolePair` | object | — |
-| `OcclusionScene` | object | — |
-| `Oculus` | object | — |
-| `OffsetPtr` | object | — |
-| `Output` | object | — |
-| `PPtrCurve` | object | — |
-| `PPtrKeyframe` | object | — |
-| `PackedBitVector` | object | — |
-| `PackingSettings` | object | — |
-| `Parameter` | object | — |
-| `ParserBindChannels` | object | — |
-| `ParticleSystemEmissionBurst` | object | — |
-| `ParticleSystemForceFieldParameters` | object | — |
-| `PerLODSettings` | object | — |
-| `PerformanceReportingSettings` | object | — |
-| `PhysicMaterial` | NamedObject | 134 |
-| `PhysicsJobOptions2D` | object | — |
-| `PhysicsShape` | object | — |
-| `PhysicsShapeGroup2D` | object | — |
-| `PlatformSettings` | object | — |
-| `PlatformSettingsData` | object | — |
-| `PlatformShaderDefines` | object | — |
-| `PlatformShaderSettings` | object | — |
-| `PluginImportOutput` | object | — |
-| `Polygon2D` | ABC | 100010 |
-| `PrefabModification` | object | — |
-| `PresetType` | object | — |
-| `PreviewData` | object | — |
-| `ProbeSetIndex` | object | — |
-| `ProbeSetTetrahedralization` | object | — |
-| `ProceduralMaterialInformation` | object | — |
-| `ProceduralTextureAssignment` | object | — |
-| `PropertyModification` | object | — |
-| `PropertyModificationsTargetTestNativeObject` | object | — |
-| `QualitySetting` | object | — |
-| `QuaternionCurve` | object | — |
-| `RationalTime` | object | — |
-| `RayTracingShaderBuiltinSampler` | object | — |
-| `RayTracingShaderConstantBuffer` | object | — |
-| `RayTracingShaderFunctionDesc` | object | — |
-| `RayTracingShaderID` | object | — |
-| `RayTracingShaderParam` | object | — |
-| `RayTracingShaderPlatformVariant` | object | — |
-| `RayTracingShaderReflectionData` | object | — |
-| `RayTracingShaderResource` | object | — |
-| `RayTracingShaderResources` | object | — |
-| `RayTracingShaderVariant` | object | — |
-| `Rectf` | object | — |
-| `RenderManager` | GlobalGameManager | — |
-| `RenderPassInfo` | object | — |
-| `RenderStateBlock` | object | — |
-| `RenderStateInfo` | object | — |
-| `RendererData` | object | — |
-| `ResourceManager_Dependency` | object | — |
-| `RippleGroup` | object | — |
-| `RootMotionData` | ABC | 100006 |
-| `RotationBySpeedModule` | object | — |
-| `RotationModule` | object | — |
-| `SBranchWindLevel` | object | — |
-| `SParams` | object | — |
-| `SWindGroup` | object | — |
-| `SampleSettings` | object | — |
-| `SamplerParameter` | object | — |
-| `Scene` | LevelGameManager | — |
-| `SceneDataContainer` | object | — |
-| `SceneIdentifier` | object | — |
-| `SceneObjectIdentifier` | object | — |
-| `SceneSettings` | LevelGameManager | — |
-| `SceneVisibilityData` | object | — |
-| `ScriptMapper` | GlobalGameManager | 94 |
-| `SecondarySpriteTexture` | object | — |
-| `SecondaryTextureSettings` | object | — |
-| `SelectorStateConstant` | object | — |
-| `SelectorTransitionConstant` | object | — |
-| `SerializedCustomEditorForRenderPipeline` | object | — |
-| `SerializedPass` | object | — |
-| `SerializedPlayerSubProgram` | object | — |
-| `SerializedProgram` | object | — |
-| `SerializedProgramParameters` | object | — |
-| `SerializedProperties` | object | — |
-| `SerializedProperty` | object | — |
-| `SerializedShader` | object | — |
-| `SerializedShaderDependency` | object | — |
-| `SerializedShaderFloatValue` | object | — |
-| `SerializedShaderRTBlendState` | object | — |
-| `SerializedShaderState` | object | — |
-| `SerializedShaderVectorValue` | object | — |
-| `SerializedStencilOp` | object | — |
-| `SerializedSubProgram` | object | — |
-| `SerializedSubShader` | object | — |
-| `SerializedTagMap` | object | — |
-| `SerializedTextureProperty` | object | — |
-| `ShaderBindChannel` | object | — |
-| `ShaderInfo` | object | — |
-| `ShadowSettings` | object | — |
-| `ShapeModule` | object | — |
-| `SizeBySpeedModule` | object | — |
-| `SizeModule` | object | — |
-| `Skeleton` | object | — |
-| `SkeletonBone` | object | — |
-| `SkeletonBoneLimit` | object | — |
-| `SkeletonMask` | object | — |
-| `SkeletonMaskElement` | object | — |
-| `SkeletonPose` | object | — |
-| `SketchUpImportCamera` | object | — |
-| `SketchUpImportData` | object | — |
-| `SketchUpImportScene` | object | — |
-| `SnapshotConstant` | object | — |
-| `SoftJointLimit` | object | — |
-| `SoftJointLimitSpring` | object | — |
-| `SortingLayerEntry` | object | — |
-| `SourceAssetIdentifier` | object | — |
-| `SourceTextureInformation` | object | — |
-| `SpeedTreeWind` | object | — |
-| `SpeedTreeWindConfig8` | object | — |
-| `SpeedTreeWindConfig9` | object | — |
-| `SphericalHarmonicsL2` | object | — |
-| `SplashScreenLogo` | object | — |
-| `SplatDatabase` | object | — |
-| `SplatPrototype` | object | — |
-| `SpriteAtlasAssetData` | object | — |
-| `SpriteAtlasData` | object | — |
-| `SpriteAtlasEditorData` | object | — |
-| `SpriteBone` | object | — |
-| `SpriteCustomDataEntry` | object | — |
-| `SpriteCustomMetadata` | object | — |
-| `SpriteData` | object | — |
-| `SpriteMetaData` | object | — |
-| `SpriteRenderData` | object | — |
-| `SpriteSheetMetaData` | object | — |
-| `SpriteTilingProperty` | object | — |
-| `SpriteVertex` | object | — |
-| `State` | NamedObject | — |
-| `StateConstant` | object | — |
-| `StateKey` | object | — |
-| `StateMachine` | NamedObject | — |
-| `StateMachineBehaviourVectorDescription` | object | — |
-| `StateMachineConstant` | object | — |
-| `StateRange` | object | — |
-| `StaticBatchInfo` | object | — |
-| `StreamInfo` | object | — |
-| `StreamedClip` | object | — |
-| `StreamedResource` | object | — |
-| `StreamingInfo` | object | — |
-| `StructParameter` | object | — |
-| `SubCollider` | object | — |
-| `SubEmitterData` | object | — |
-| `SubMesh` | object | — |
-| `SubModule` | object | — |
-| `SubPassDescriptor` | object | — |
-| `SubstanceEnumItem` | object | — |
-| `SubstanceInput` | object | — |
-| `SubstanceValue` | object | — |
-| `TakeInfo` | object | — |
-| `Tetrahedron` | object | — |
-| `TextureImportInstructions` | object | — |
-| `TextureImportOutput` | object | — |
-| `TextureImporterPlatformSettings` | object | — |
-| `TextureParameter` | object | — |
-| `TextureParameters` | object | — |
-| `TextureSettings` | object | — |
-| `TicksPerSecond` | object | — |
-| `TierGraphicsSettings` | object | — |
-| `Tile` | object | — |
-| `TileAnimationData` | object | — |
-| `TilemapRefCountedData` | object | — |
-| `TrailModule` | object | — |
-| `TransformMaskElement` | object | — |
-| `Transition` | NamedObject | — |
-| `TransitionConstant` | object | — |
-| `TreeInstance` | object | — |
-| `TreePrototype` | object | — |
-| `TriggerModule` | object | — |
-| `TypeStats` | object | — |
-| `UAVParameter` | object | — |
-| `UVAnimation` | object | — |
-| `UVModule` | object | — |
-| `UnityAdsSettings` | GlobalGameManager | — |
-| `UnityAnalyticsSettings` | object | — |
-| `UnityPropertySheet` | object | — |
-| `UnityPurchasingSettings` | object | — |
-| `UnitySceneHandle` | object | — |
-| `UnityTexEnv` | object | — |
-| `UpdateZoneInfo` | object | — |
-| `VFXCPUBufferData` | object | — |
-| `VFXCPUBufferDesc` | object | — |
-| `VFXEditorSystemDesc` | object | — |
-| `VFXEditorTaskDesc` | object | — |
-| `VFXEntryExposed` | object | — |
-| `VFXEntryExpressionValue` | object | — |
-| `VFXEventDesc` | object | — |
-| `VFXExposedMapping` | object | — |
-| `VFXExpressionContainer` | object | — |
-| `VFXField` | object | — |
-| `VFXGPUBufferDesc` | object | — |
-| `VFXInstanceSplitDesc` | object | — |
-| `VFXLayoutElementDesc` | object | — |
-| `VFXLayoutOffset` | object | — |
-| `VFXMapping` | object | — |
-| `VFXMappingTemporary` | object | — |
-| `VFXPropertySheetSerializedBase` | object | — |
-| `VFXRendererSettings` | object | — |
-| `VFXShaderSourceDesc` | object | — |
-| `VFXSystemDesc` | object | — |
-| `VFXTaskDesc` | object | — |
-| `VFXTemplate` | object | — |
-| `VFXTemporaryGPUBufferDesc` | object | — |
-| `VRSettings` | object | — |
-| `ValueArray` | object | — |
-| `ValueArrayConstant` | object | — |
-| `ValueConstant` | object | — |
-| `ValueDelta` | object | — |
-| `VariableBoneCountWeights` | object | — |
-| `VariantInfo` | object | — |
-| `Vector3Curve` | object | — |
-| `VectorParameter` | object | — |
-| `VelocityModule` | object | — |
-| `VertexData` | object | — |
-| `VertexLayoutInfo` | object | — |
-| `VideoClipImporterOutput` | object | — |
-| `VideoClipImporterTargetSettings` | object | — |
-| `VisualEffectInfo` | object | — |
-| `VisualEffectSettings` | object | — |
-| `VulkanGraphicsJobsDeviceFilterData` | object | — |
-| `WheelFrictionCurve` | object | — |
-| `bitset` | object | — |
-| `int2_storage` | object | — |
-| `int3_storage` | object | — |
-| `xform` | object | — |
+| class | bases | class ids | fields |
+|---|---|---|---|
+| `AnnotationManager` | Object | 1049 | `m_CurrentPreset_m_AnnotationList`, `m_RecentlyChanged`, `m_FadeGizmoSize`, `m_FadeGizmos`, `m_IconSize`, `m_ShowGrid`, `m_ShowLODLabels`, `m_ShowSelectionOutline`, `m_ShowSelectionWire`, `m_Use3dGizmos`, `m_WorldIconSize` |
+| `AssetDatabaseV1` | Object | 1004 | `m_AssetBundleNames`, `m_AssetTimeStamps`, `m_Assets`, `m_Metrics`, `m_UnityShadersVersion`, `m_lastValidVersionHashes`, `m_lastValidVersions` |
+| `AssetMetaData` | Object | 1028 | `assetStoreRef`, `guid`, `labels`, `originalName`, `pathName`, `licenseType`, `originalChangeset`, `originalDigest`, `originalParent`, `timeCreated` |
+| `AssetServerCache` | Object | 1037 | `m_CachesInitialized`, `m_CommitItemSelection`, `m_DeletedItems`, `m_Items`, `m_LastCommitMessage`, `m_LatestServerChangeset`, `m_ModifiedItems`, `m_WorkingItemMetaData` |
+| `AudioBuildInfo` | Object | 641289076 | `m_AudioClipCount`, `m_AudioMixerCount`, `m_IsAudioDisabled` |
+| `BlockShaderSourceArtifact` | Object | — | `shaderName`, `shaderSource` |
+| `BuiltAssetBundleInfoSet` | Object | 668709126 | `bundleInfos` |
+| `ContentSummary` | Object | — | `m_assetStatsList`, `m_generatedFileCount`, `m_generatedFileSize`, `m_headerSize`, `m_objectCount`, `m_resourceDataSize`, `m_resourceFileCount`, `m_serializedFileCount`, `m_serializedFileSize`, `m_sizeReusedContentInOutputDirectory`, `m_typeStatsList` |
+| `Derived` | Object | 1091556383 | — |
+| `SubDerived` | Derived | 367388927 | — |
+| `DifferentMarshallingTestObject` | Object | — | — |
+| `EditorBuildSettings` | Object | 1045 | `m_Scenes`, `m_UseUCBPForAssetBundles`, `m_configObjects` |
+| `EditorExtension` | Object, ABC | 18 | — |
+| `Component` | EditorExtension | 2 | `m_GameObject` |
+| `Behaviour` | Component | 8 | `m_GameObject` |
+| `Animation` | Behaviour | 111 | `m_AnimatePhysics`, `m_Animation`, `m_Animations`, `m_CullingType`, `m_Enabled`, `m_GameObject`, `m_PlayAutomatically`, `m_WrapMode`, `m_UpdateMode`, `m_UserAABB` |
+| `Animator` | Behaviour | 95 | `m_ApplyRootMotion`, `m_Avatar`, `m_Controller`, `m_CullingMode`, `m_Enabled`, `m_GameObject`, `m_AllowConstantClipSamplingOptimization`, `m_AnimatePhysics`, `m_HasTransformHierarchy`, `m_KeepAnimatorControllerStateOnDisable`, `m_KeepAnimatorStateOnDisable`, `m_LinearVelocityBlending`, `m_StabilizeFeet`, `m_UpdateMode`, `m_WriteDefaultValuesOnDisable` |
+| `ArticulationBody` | Behaviour | 171741748 | `m_AnchorPosition`, `m_AnchorRotation`, `m_AngularDamping`, `m_ArticulationJointType`, `m_Enabled`, `m_GameObject`, `m_Immovable`, `m_JointFriction`, `m_LinearDamping`, `m_LinearX`, `m_LinearY`, `m_LinearZ`, `m_Mass`, `m_ParentAnchorPosition`, `m_ParentAnchorRotation`, `m_SwingY`, `m_SwingZ`, `m_Twist`, `m_XDrive`, `m_YDrive`, `m_ZDrive`, `m_CenterOfMass`, `m_CollisionDetectionMode`, `m_ComputeParentAnchor`, `m_ExcludeLayers`, `m_ImplicitCom`, `m_ImplicitTensor`, `m_IncludeLayers`, `m_InertiaRotation`, `m_InertiaTensor`, `m_MatchAnchors`, `m_UseGravity` |
+| `AudioBehaviour` | Behaviour | 180 | `m_GameObject` |
+| `AudioListener` | AudioBehaviour | 81 | `m_Enabled`, `m_GameObject`, `m_ExtensionPropertyValues` |
+| `AudioSource` | AudioBehaviour | 82 | `BypassEffects`, `DopplerLevel`, `Loop`, `MaxDistance`, `MinDistance`, `Mute`, `Pan2D`, `Priority`, `m_Enabled`, `m_GameObject`, `m_Pitch`, `m_PlayOnAwake`, `m_Volume`, `m_audioClip`, `panLevelCustomCurve`, `rolloffCustomCurve`, `rolloffMode`, `spreadCustomCurve`, `BypassListenerEffects`, `BypassReverbZones`, `OutputAudioMixerGroup`, `Spatialize`, `SpatializePostEffects`, `m_ExtensionPropertyValues`, `m_Resource`, `reverbZoneMixCustomCurve` |
+| `AudioFilter` | Behaviour | 181 | `m_GameObject` |
+| `AudioChorusFilter` | AudioFilter | 166 | `m_Delay`, `m_Depth`, `m_DryMix`, `m_Enabled`, `m_GameObject`, `m_Rate`, `m_WetMix1`, `m_WetMix2`, `m_WetMix3`, `m_FeedBack` |
+| `AudioDistortionFilter` | AudioFilter | 170 | `m_DistortionLevel`, `m_Enabled`, `m_GameObject` |
+| `AudioEchoFilter` | AudioFilter | 168 | `m_DecayRatio`, `m_Delay`, `m_DryMix`, `m_Enabled`, `m_GameObject`, `m_WetMix` |
+| `AudioHighPassFilter` | AudioFilter | 165 | `m_CutoffFrequency`, `m_Enabled`, `m_GameObject`, `m_HighpassResonanceQ` |
+| `AudioLowPassFilter` | AudioFilter | 169 | `lowpassLevelCustomCurve`, `m_Enabled`, `m_GameObject`, `m_LowpassResonanceQ`, `m_CutoffFrequency` |
+| `AudioReverbFilter` | AudioFilter | 164 | `m_DecayHFRatio`, `m_DecayTime`, `m_Density`, `m_Diffusion`, `m_DryLevel`, `m_Enabled`, `m_GameObject`, `m_HFReference`, `m_LFReference`, `m_ReflectionsDelay`, `m_ReflectionsLevel`, `m_ReverbDelay`, `m_ReverbLevel`, `m_ReverbPreset`, `m_Room`, `m_RoomHF`, `m_RoomLF`, `m_RoomRolloff` |
+| `AudioReverbZone` | Behaviour | 167 | `m_DecayHFRatio`, `m_DecayTime`, `m_Density`, `m_Diffusion`, `m_Enabled`, `m_GameObject`, `m_HFReference`, `m_LFReference`, `m_MaxDistance`, `m_MinDistance`, `m_Reflections`, `m_ReflectionsDelay`, `m_Reverb`, `m_ReverbDelay`, `m_ReverbPreset`, `m_Room`, `m_RoomHF`, `m_RoomLF`, `m_RoomRolloffFactor` |
+| `Camera` | Behaviour | 20 | `far_clip_plane`, `field_of_view`, `m_BackGroundColor`, `m_ClearFlags`, `m_CullingMask`, `m_Depth`, `m_Enabled`, `m_GameObject`, `m_NormalizedViewPortRect`, `m_RenderingPath`, `m_TargetTexture`, `near_clip_plane`, `orthographic`, `orthographic_size`, `m_AllowDynamicResolution`, `m_AllowMSAA`, `m_Anamorphism`, `m_Aperture`, `m_BarrelClipping`, `m_BladeCount`, `m_Curvature`, `m_FocalLength`, `m_FocusDistance`, `m_ForceIntoRT`, `m_GateFitMode`, `m_HDR`, `m_Iso`, `m_LensShift`, `m_OcclusionCulling`, `m_SensorSize`, `m_ShutterSpeed`, `m_StereoConvergence`, `m_StereoMirrorMode`, `m_StereoSeparation`, `m_TargetDisplay`, `m_TargetEye`, `m_projectionMatrixMode` |
+| `ScriptableCamera` | Camera | 488575907 | `far_clip_plane`, `field_of_view`, `m_AllowDynamicResolution`, `m_AllowMSAA`, `m_BackGroundColor`, `m_ClearFlags`, `m_CullingMask`, `m_Depth`, `m_Enabled`, `m_FocalLength`, `m_ForceIntoRT`, `m_GameObject`, `m_GateFitMode`, `m_HDR`, `m_LensShift`, `m_NormalizedViewPortRect`, `m_OcclusionCulling`, `m_RenderingPath`, `m_Script`, `m_SensorSize`, `m_StereoConvergence`, `m_StereoSeparation`, `m_TargetDisplay`, `m_TargetEye`, `m_TargetTexture`, `m_projectionMatrixMode`, `near_clip_plane`, `orthographic`, `orthographic_size` |
+| `Canvas` | Behaviour | 223 | `m_Camera`, `m_Enabled`, `m_GameObject`, `m_PixelPerfect`, `m_RenderMode`, `m_AdditionalShaderChannelsFlag`, `m_Alpha`, `m_Normals`, `m_OverridePixelPerfect`, `m_OverrideSorting`, `m_PlaneDistance`, `m_PositionUVs`, `m_ReceivesEvents`, `m_SortingBucketNormalizedSize`, `m_SortingLayerID`, `m_SortingOrder`, `m_TargetDisplay`, `m_UpdateRectTransformForStandalone`, `m_UseReflectionProbes`, `m_VertexColorAlwaysGammaSpace` |
+| `CanvasGroup` | Behaviour | 225 | `m_Alpha`, `m_BlocksRaycasts`, `m_GameObject`, `m_IgnoreParentGroups`, `m_Interactable`, `m_Enabled` |
+| `Cloth` | Behaviour | 183 | `m_GameObject`, `m_BendingStiffness`, `m_CapsuleColliders`, `m_Coefficients`, `m_CollisionMassScale`, `m_Damping`, `m_Enabled`, `m_ExternalAcceleration`, `m_Friction`, `m_RandomAcceleration`, `m_SelfAndInterCollisionIndices`, `m_SelfCollisionDistance`, `m_SelfCollisionStiffness`, `m_SleepThreshold`, `m_SolverFrequency`, `m_SphereColliders`, `m_StretchingStiffness`, `m_UseContinuousCollision`, `m_UseGravity`, `m_UseTethers`, `m_UseVirtualParticles`, `m_VirtualParticleIndices`, `m_VirtualParticleWeights`, `m_WorldAccelerationScale`, `m_WorldVelocityScale` |
+| `InteractiveCloth` | Cloth | 160 | `m_AttachedColliders`, `m_AttachmentResponse`, `m_AttachmentTearFactor`, `m_BendingStiffness`, `m_CollisionResponse`, `m_Damping`, `m_Density`, `m_Enabled`, `m_ExternalAcceleration`, `m_Friction`, `m_GameObject`, `m_Mesh`, `m_Pressure`, `m_RandomAcceleration`, `m_SelfCollision`, `m_StretchingStiffness`, `m_TearFactor`, `m_Thickness`, `m_UseGravity` |
+| `SkinnedCloth` | Cloth | 163 | `m_BendingStiffness`, `m_Coefficients`, `m_Damping`, `m_Enabled`, `m_ExternalAcceleration`, `m_GameObject`, `m_RandomAcceleration`, `m_SelfCollision`, `m_StretchingStiffness`, `m_Thickness`, `m_UseGravity`, `m_WorldAccelerationScale`, `m_WorldVelocityScale` |
+| `CloudServiceHandlerBehaviour` | Behaviour | — | `m_Enabled`, `m_GameObject` |
+| `Collider2D` | Behaviour | 53 | `m_GameObject` |
+| `BoxCollider2D` | Collider2D | 61 | `m_Enabled`, `m_GameObject`, `m_IsTrigger`, `m_Material`, `m_Size`, `m_AutoTiling`, `m_CallbackLayers`, `m_Center`, `m_CompositeOperation`, `m_CompositeOrder`, `m_ContactCaptureLayers`, `m_Density`, `m_EdgeRadius`, `m_ExcludeLayers`, `m_ForceReceiveLayers`, `m_ForceSendLayers`, `m_IncludeLayers`, `m_LayerOverridePriority`, `m_Offset`, `m_SpriteTilingProperty`, `m_UsedByComposite`, `m_UsedByEffector` |
+| `CapsuleCollider2D` | Collider2D | 70 | `m_Density`, `m_Direction`, `m_Enabled`, `m_GameObject`, `m_IsTrigger`, `m_Material`, `m_Offset`, `m_Size`, `m_UsedByEffector`, `m_CallbackLayers`, `m_CompositeOperation`, `m_CompositeOrder`, `m_ContactCaptureLayers`, `m_ExcludeLayers`, `m_ForceReceiveLayers`, `m_ForceSendLayers`, `m_IncludeLayers`, `m_LayerOverridePriority`, `m_UsedByComposite` |
+| `CircleCollider2D` | Collider2D | 58 | `m_Enabled`, `m_GameObject`, `m_IsTrigger`, `m_Material`, `m_Radius`, `m_CallbackLayers`, `m_Center`, `m_CompositeOperation`, `m_CompositeOrder`, `m_ContactCaptureLayers`, `m_Density`, `m_ExcludeLayers`, `m_ForceReceiveLayers`, `m_ForceSendLayers`, `m_IncludeLayers`, `m_LayerOverridePriority`, `m_Offset`, `m_UsedByComposite`, `m_UsedByEffector` |
+| `CompositeCollider2D` | Collider2D | 66 | `m_ColliderPaths`, `m_CompositePaths`, `m_Density`, `m_Enabled`, `m_GameObject`, `m_GenerationType`, `m_GeometryType`, `m_IsTrigger`, `m_Material`, `m_Offset`, `m_UsedByEffector`, `m_VertexDistance`, `m_CallbackLayers`, `m_CompositeGameObject`, `m_CompositeOperation`, `m_CompositeOrder`, `m_ContactCaptureLayers`, `m_EdgeRadius`, `m_ExcludeLayers`, `m_ForceReceiveLayers`, `m_ForceSendLayers`, `m_IncludeLayers`, `m_LayerOverridePriority`, `m_OffsetDistance`, `m_UseDelaunayMesh`, `m_UsedByComposite` |
+| `CustomCollider2D` | Collider2D | — | `m_CustomShapes`, `m_Density`, `m_Enabled`, `m_GameObject`, `m_IsTrigger`, `m_Material`, `m_Offset`, `m_UsedByEffector`, `m_CallbackLayers`, `m_CompositeOperation`, `m_CompositeOrder`, `m_ContactCaptureLayers`, `m_ExcludeLayers`, `m_ForceReceiveLayers`, `m_ForceSendLayers`, `m_IncludeLayers`, `m_LayerOverridePriority`, `m_UsedByComposite` |
+| `EdgeCollider2D` | Collider2D | 68 | `m_Enabled`, `m_GameObject`, `m_IsTrigger`, `m_Material`, `m_Points`, `m_AdjacentEndPoint`, `m_AdjacentStartPoint`, `m_CallbackLayers`, `m_CompositeOperation`, `m_CompositeOrder`, `m_ContactCaptureLayers`, `m_Density`, `m_EdgeRadius`, `m_ExcludeLayers`, `m_ForceReceiveLayers`, `m_ForceSendLayers`, `m_IncludeLayers`, `m_LayerOverridePriority`, `m_Offset`, `m_UseAdjacentEndPoint`, `m_UseAdjacentStartPoint`, `m_UsedByComposite`, `m_UsedByEffector` |
+| `PolygonCollider2D` | Collider2D | 60 | `m_Enabled`, `m_GameObject`, `m_IsTrigger`, `m_Material`, `m_AutoTiling`, `m_CallbackLayers`, `m_CompositeOperation`, `m_CompositeOrder`, `m_ContactCaptureLayers`, `m_Density`, `m_ExcludeLayers`, `m_ForceReceiveLayers`, `m_ForceSendLayers`, `m_IncludeLayers`, `m_LayerOverridePriority`, `m_Offset`, `m_Points`, `m_Poly`, `m_SpriteTilingProperty`, `m_UseDelaunayMesh`, `m_UsedByComposite`, `m_UsedByEffector` |
+| `PolygonColliderBase2D` | Collider2D | — | `m_GameObject` |
+| `TilemapCollider2D` | Collider2D | 19719996 | `m_Density`, `m_Enabled`, `m_GameObject`, `m_IsTrigger`, `m_Material`, `m_Offset`, `m_UsedByEffector`, `m_CallbackLayers`, `m_CompositeOperation`, `m_CompositeOrder`, `m_ContactCaptureLayers`, `m_ExcludeLayers`, `m_ExtrusionFactor`, `m_ForceReceiveLayers`, `m_ForceSendLayers`, `m_IncludeLayers`, `m_LayerOverridePriority`, `m_MaximumTileChangeCount`, `m_UseDelaunayMesh`, `m_UsedByComposite` |
+| `ConstantForce` | Behaviour | 75 | `m_Enabled`, `m_Force`, `m_GameObject`, `m_RelativeForce`, `m_RelativeTorque`, `m_Torque` |
+| `Effector2D` | Behaviour | 248 | `m_GameObject` |
+| `AreaEffector2D` | Effector2D | 249 | `m_ColliderMask`, `m_Enabled`, `m_ForceMagnitude`, `m_ForceTarget`, `m_ForceVariation`, `m_GameObject`, `m_AngularDamping`, `m_AngularDrag`, `m_Drag`, `m_ForceAngle`, `m_ForceDirection`, `m_LinearDamping`, `m_UseColliderMask`, `m_UseGlobalAngle` |
+| `BuoyancyEffector2D` | Effector2D | 253 | `m_ColliderMask`, `m_Density`, `m_Enabled`, `m_FlowAngle`, `m_FlowMagnitude`, `m_FlowVariation`, `m_GameObject`, `m_SurfaceLevel`, `m_UseColliderMask`, `m_AngularDamping`, `m_AngularDrag`, `m_LinearDamping`, `m_LinearDrag` |
+| `PlatformEffector2D` | Effector2D | 251 | `m_ColliderMask`, `m_Enabled`, `m_GameObject`, `m_OneWay`, `m_RotationalOffset`, `m_SideAngleVariance`, `m_SideArc`, `m_SideBounce`, `m_SideFriction`, `m_SurfaceArc`, `m_UseColliderMask`, `m_UseOneWay`, `m_UseOneWayGrouping`, `m_UseSideBounce`, `m_UseSideFriction` |
+| `PointEffector2D` | Effector2D | 250 | `m_ColliderMask`, `m_DistanceScale`, `m_Enabled`, `m_ForceMagnitude`, `m_ForceMode`, `m_ForceSource`, `m_ForceTarget`, `m_ForceVariation`, `m_GameObject`, `m_AngularDamping`, `m_AngularDrag`, `m_Drag`, `m_LinearDamping`, `m_UseColliderMask` |
+| `SurfaceEffector2D` | Effector2D | 252 | `m_ColliderMask`, `m_Enabled`, `m_GameObject`, `m_Speed`, `m_SpeedVariation`, `m_ForceScale`, `m_UseBounce`, `m_UseColliderMask`, `m_UseContactForce`, `m_UseFriction` |
+| `FlareLayer` | Behaviour | 124 | `m_Enabled`, `m_GameObject` |
+| `GUIElement` | Behaviour | 133 | `m_GameObject` |
+| `GUIText` | GUIElement | 132 | `m_Alignment`, `m_Anchor`, `m_Enabled`, `m_Font`, `m_FontSize`, `m_FontStyle`, `m_GameObject`, `m_LineSpacing`, `m_Material`, `m_PixelCorrect`, `m_PixelOffset`, `m_TabSize`, `m_Text`, `m_Color`, `m_RichText` |
+| `GUITexture` | GUIElement | 131 | `m_BottomBorder`, `m_Color`, `m_Enabled`, `m_GameObject`, `m_LeftBorder`, `m_PixelInset`, `m_RightBorder`, `m_Texture`, `m_TopBorder` |
+| `GUILayer` | Behaviour | 92 | `m_Enabled`, `m_GameObject` |
+| `GridLayout` | Behaviour | 1742807556 | `m_GameObject` |
+| `Grid` | GridLayout | 156049354 | `m_CellGap`, `m_CellLayout`, `m_CellSize`, `m_CellSwizzle`, `m_Enabled`, `m_GameObject` |
+| `Tilemap` | GridLayout | 1839735485 | `m_AnimatedTiles`, `m_AnimationFrameRate`, `m_Color`, `m_Enabled`, `m_GameObject`, `m_Origin`, `m_Size`, `m_TileAnchor`, `m_TileAssetArray`, `m_TileColorArray`, `m_TileMatrixArray`, `m_TileOrientation`, `m_TileOrientationMatrix`, `m_TileSpriteArray`, `m_Tiles`, `m_TileObjectToInstantiateArray` |
+| `Halo` | Behaviour | 122 | `m_Color`, `m_Enabled`, `m_GameObject`, `m_Size` |
+| `HaloLayer` | Behaviour | 125 | `m_Enabled`, `m_GameObject` |
+| `IConstraint` | Behaviour | 285090594 | `m_GameObject` |
+| `AimConstraint` | IConstraint | 895512359 | `m_AffectRotationX`, `m_AffectRotationY`, `m_AffectRotationZ`, `m_AimVector`, `m_Enabled`, `m_GameObject`, `m_RotationAtRest`, `m_RotationOffset`, `m_Sources`, `m_UpType`, `m_UpVector`, `m_Weight`, `m_WorldUpObject`, `m_WorldUpVector`, `m_Active`, `m_IsContraintActive` |
+| `LookAtConstraint` | IConstraint | 1183024399 | `m_Enabled`, `m_GameObject`, `m_Roll`, `m_RotationAtRest`, `m_RotationOffset`, `m_Sources`, `m_UseUpObject`, `m_Weight`, `m_WorldUpObject`, `m_Active`, `m_IsContraintActive` |
+| `ParentConstraint` | IConstraint | 1773428102 | `m_AffectRotationX`, `m_AffectRotationY`, `m_AffectRotationZ`, `m_AffectTranslationX`, `m_AffectTranslationY`, `m_AffectTranslationZ`, `m_Enabled`, `m_GameObject`, `m_RotationAtRest`, `m_RotationOffsets`, `m_Sources`, `m_TranslationAtRest`, `m_TranslationOffsets`, `m_Weight`, `m_Active`, `m_IsContraintActive` |
+| `PositionConstraint` | IConstraint | 1818360608 | `m_AffectTranslationX`, `m_AffectTranslationY`, `m_AffectTranslationZ`, `m_Enabled`, `m_GameObject`, `m_Sources`, `m_TranslationAtRest`, `m_TranslationOffset`, `m_Weight`, `m_Active`, `m_IsContraintActive` |
+| `RotationConstraint` | IConstraint | 1818360609 | `m_AffectRotationX`, `m_AffectRotationY`, `m_AffectRotationZ`, `m_Enabled`, `m_GameObject`, `m_RotationAtRest`, `m_RotationOffset`, `m_Sources`, `m_Weight`, `m_Active`, `m_IsContraintActive` |
+| `ScaleConstraint` | IConstraint | 1818360610 | `m_AffectScalingX`, `m_AffectScalingY`, `m_AffectScalingZ`, `m_Enabled`, `m_GameObject`, `m_ScaleAtRest`, `m_ScaleOffset`, `m_Sources`, `m_Weight`, `m_Active`, `m_IsContraintActive` |
+| `Joint2D` | Behaviour | 230 | `m_GameObject` |
+| `AnchoredJoint2D` | Joint2D | 229 | `m_GameObject` |
+| `DistanceJoint2D` | AnchoredJoint2D | 232 | `m_Anchor`, `m_ConnectedAnchor`, `m_ConnectedRigidBody`, `m_Distance`, `m_Enabled`, `m_GameObject`, `m_AutoConfigureConnectedAnchor`, `m_AutoConfigureDistance`, `m_BreakAction`, `m_BreakForce`, `m_BreakTorque`, `m_CollideConnected`, `m_EnableCollision`, `m_MaxDistanceOnly` |
+| `FixedJoint2D` | AnchoredJoint2D | 255 | `m_Anchor`, `m_AutoConfigureConnectedAnchor`, `m_BreakForce`, `m_BreakTorque`, `m_ConnectedAnchor`, `m_ConnectedRigidBody`, `m_DampingRatio`, `m_EnableCollision`, `m_Enabled`, `m_Frequency`, `m_GameObject`, `m_BreakAction` |
+| `FrictionJoint2D` | AnchoredJoint2D | 256 | `m_Anchor`, `m_AutoConfigureConnectedAnchor`, `m_BreakForce`, `m_BreakTorque`, `m_ConnectedAnchor`, `m_ConnectedRigidBody`, `m_EnableCollision`, `m_Enabled`, `m_GameObject`, `m_MaxForce`, `m_MaxTorque`, `m_BreakAction` |
+| `HingeJoint2D` | AnchoredJoint2D | 233 | `m_Anchor`, `m_AngleLimits`, `m_ConnectedAnchor`, `m_ConnectedRigidBody`, `m_Enabled`, `m_GameObject`, `m_Motor`, `m_UseLimits`, `m_UseMotor`, `m_AutoConfigureConnectedAnchor`, `m_BreakAction`, `m_BreakForce`, `m_BreakTorque`, `m_CollideConnected`, `m_EnableCollision`, `m_UseConnectedAnchor` |
+| `SliderJoint2D` | AnchoredJoint2D | 234 | `m_Anchor`, `m_Angle`, `m_ConnectedAnchor`, `m_ConnectedRigidBody`, `m_Enabled`, `m_GameObject`, `m_Motor`, `m_TranslationLimits`, `m_UseLimits`, `m_UseMotor`, `m_AutoConfigureAngle`, `m_AutoConfigureConnectedAnchor`, `m_BreakAction`, `m_BreakForce`, `m_BreakTorque`, `m_CollideConnected`, `m_EnableCollision` |
+| `SpringJoint2D` | AnchoredJoint2D | 231 | `m_Anchor`, `m_ConnectedAnchor`, `m_ConnectedRigidBody`, `m_DampingRatio`, `m_Distance`, `m_Enabled`, `m_Frequency`, `m_GameObject`, `m_AutoConfigureConnectedAnchor`, `m_AutoConfigureDistance`, `m_BreakAction`, `m_BreakForce`, `m_BreakTorque`, `m_CollideConnected`, `m_EnableCollision` |
+| `WheelJoint2D` | AnchoredJoint2D | 235 | `m_Anchor`, `m_ConnectedAnchor`, `m_ConnectedRigidBody`, `m_Enabled`, `m_GameObject`, `m_Motor`, `m_Suspension`, `m_UseMotor`, `m_AutoConfigureConnectedAnchor`, `m_BreakAction`, `m_BreakForce`, `m_BreakTorque`, `m_CollideConnected`, `m_EnableCollision` |
+| `RelativeJoint2D` | Joint2D | 254 | `m_AngularOffset`, `m_AutoConfigureOffset`, `m_BreakForce`, `m_BreakTorque`, `m_ConnectedRigidBody`, `m_CorrectionScale`, `m_EnableCollision`, `m_Enabled`, `m_GameObject`, `m_LinearOffset`, `m_MaxForce`, `m_MaxTorque`, `m_BreakAction` |
+| `TargetJoint2D` | Joint2D | 257 | `m_Anchor`, `m_AutoConfigureTarget`, `m_BreakForce`, `m_BreakTorque`, `m_ConnectedRigidBody`, `m_DampingRatio`, `m_EnableCollision`, `m_Enabled`, `m_Frequency`, `m_GameObject`, `m_MaxForce`, `m_Target`, `m_BreakAction` |
+| `LensFlare` | Behaviour | 123 | `m_Brightness`, `m_Color`, `m_Directional`, `m_Enabled`, `m_Flare`, `m_GameObject`, `m_IgnoreLayers`, `m_FadeSpeed` |
+| `Light` | Behaviour | 108 | `m_Color`, `m_Cookie`, `m_CullingMask`, `m_DrawHalo`, `m_Enabled`, `m_Flare`, `m_GameObject`, `m_Intensity`, `m_Lightmapping`, `m_Range`, `m_RenderMode`, `m_Shadows`, `m_SpotAngle`, `m_Type`, `m_ActuallyLightmapped`, `m_AreaSize`, `m_BakedIndex`, `m_BakingOutput`, `m_BounceIntensity`, `m_BoundingSphereOverride`, `m_CCT`, `m_ColorTemperature`, `m_CookieSize`, `m_CookieSize2D`, `m_EnableSpotReflector`, `m_FalloffTable`, `m_ForceVisible`, `m_InnerSpotAngle`, `m_LightShadowCasterMode`, `m_LightUnit`, `m_LuxAtDistance`, `m_RenderingLayerMask`, `m_Shape`, `m_ShapeRadius`, `m_UseBoundingSphereOverride`, `m_UseColorTemperature`, `m_UseViewFrustumForShadowCasterCull` |
+| `LightProbeGroup` | Behaviour | 220 | `m_GameObject`, `m_Enabled` |
+| `LightProbeProxyVolume` | Behaviour | 259 | `m_BoundingBoxMode`, `m_BoundingBoxOrigin`, `m_BoundingBoxSize`, `m_Enabled`, `m_GameObject`, `m_ProbePositionMode`, `m_RefreshMode`, `m_ResolutionMode`, `m_ResolutionProbesPerUnit`, `m_ResolutionX`, `m_ResolutionY`, `m_ResolutionZ`, `m_DataFormat`, `m_QualityMode` |
+| `MonoBehaviour` | Behaviour | 114 | `m_Enabled`, `m_GameObject`, `m_Name`, `m_Script` |
+| `NavMeshAgent` | Behaviour | 195 | `m_Acceleration`, `m_AngularSpeed`, `m_AutoRepath`, `m_AutoTraverseOffMeshLink`, `m_BaseOffset`, `m_Enabled`, `m_GameObject`, `m_Height`, `m_ObstacleAvoidanceType`, `m_Radius`, `m_Speed`, `m_StoppingDistance`, `m_WalkableMask`, `avoidancePriority`, `m_AgentTypeID`, `m_AutoBraking` |
+| `NavMeshObstacle` | Behaviour | 208 | `m_Enabled`, `m_GameObject`, `m_Carve`, `m_CarveOnlyStationary`, `m_Center`, `m_Extents`, `m_Height`, `m_MoveThreshold`, `m_Radius`, `m_Shape`, `m_TimeToStationary` |
+| `NetworkView` | Behaviour | 148 | `m_Enabled`, `m_GameObject`, `m_Observed`, `m_StateSynchronization`, `m_ViewID` |
+| `OffMeshLink` | Behaviour | 191 | `m_Activated`, `m_BiDirectional`, `m_CostOverride`, `m_End`, `m_GameObject`, `m_Start`, `m_AgentTypeID`, `m_AreaIndex`, `m_AutoUpdatePositions`, `m_DtPolyRef`, `m_Enabled`, `m_NavMeshLayer` |
+| `ParticleSystemForceField` | Behaviour | 330 | `m_Enabled`, `m_GameObject`, `m_Parameters` |
+| `PhysicsUpdateBehaviour2D` | Behaviour | 246 | `m_GameObject` |
+| `ConstantForce2D` | PhysicsUpdateBehaviour2D | 247 | `m_Enabled`, `m_Force`, `m_GameObject`, `m_RelativeForce`, `m_Torque` |
+| `PlayableDirector` | Behaviour | 320 | `m_DirectorUpdateMode`, `m_Enabled`, `m_ExposedReferences`, `m_GameObject`, `m_InitialState`, `m_InitialTime`, `m_PlayableAsset`, `m_SceneBindings`, `m_WrapMode` |
+| `Projector` | Behaviour | 119 | `m_AspectRatio`, `m_Enabled`, `m_FarClipPlane`, `m_FieldOfView`, `m_GameObject`, `m_IgnoreLayers`, `m_Material`, `m_NearClipPlane`, `m_Orthographic`, `m_OrthographicSize` |
+| `ReflectionProbe` | Behaviour | 215, 216 | `m_BackGroundColor`, `m_BakedTexture`, `m_BoxOffset`, `m_BoxProjection`, `m_BoxSize`, `m_ClearFlags`, `m_CullingMask`, `m_CustomBakedTexture`, `m_Enabled`, `m_FarClip`, `m_GameObject`, `m_HDR`, `m_Importance`, `m_IntensityMultiplier`, `m_Mode`, `m_NearClip`, `m_RefreshMode`, `m_RenderDynamicObjects`, `m_Resolution`, `m_ShadowDistance`, `m_TimeSlicingMode`, `m_Type`, `m_UpdateFrequency`, `m_UseOcclusionCulling`, `m_BlendDistance` |
+| `Skybox` | Behaviour | 45 | `m_CustomSkybox`, `m_Enabled`, `m_GameObject` |
+| `SortingGroup` | Behaviour | 210 | `m_Enabled`, `m_GameObject`, `m_SortingLayer`, `m_SortingOrder`, `m_Sort3DAs2D`, `m_SortAtRoot`, `m_SortingLayerID` |
+| `StreamingController` | Behaviour | 1542919678 | `m_Enabled`, `m_GameObject`, `m_StreamingMipmapBias` |
+| `Terrain` | Behaviour | 218 | `m_BakeLightProbesForTrees`, `m_ChunkDynamicUVST`, `m_DetailObjectDensity`, `m_DetailObjectDistance`, `m_DrawHeightmap`, `m_DrawTreesAndFoliage`, `m_DynamicUVST`, `m_Enabled`, `m_GameObject`, `m_HeightmapMaximumLOD`, `m_HeightmapPixelError`, `m_LightmapIndex`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffset`, `m_LightmapTilingOffsetDynamic`, `m_MaterialTemplate`, `m_ReflectionProbeUsage`, `m_SplatMapDistance`, `m_TerrainData`, `m_TreeBillboardDistance`, `m_TreeCrossFadeLength`, `m_TreeDistance`, `m_TreeMaximumFullLODCount`, `m_AllowAutoConnect`, `m_CastShadows`, `m_DefaultSmoothness`, `m_DrawInstanced`, `m_EnableHeightmapRayTracing`, `m_EnableTreesAndDetailsRayTracing`, `m_ExplicitProbeSetHash`, `m_GroupingID`, `m_HeightmapMinimumLODSimplification`, `m_IgnoreQualitySettings`, `m_LegacyShininess`, `m_LegacySpecular`, `m_MaterialType`, `m_PreserveTreePrototypeLayers`, `m_RenderingLayerMask`, `m_ShadowCastingMode`, `m_StaticShadowCaster`, `m_TreeMotionVectorModeOverride`, `m_UseDefaultSmoothness` |
+| `VideoPlayer` | Behaviour | 328 | `m_AspectRatio`, `m_AudioOutputMode`, `m_ControlledAudioTrackCount`, `m_DataSource`, `m_DirectAudioMutes`, `m_DirectAudioVolumes`, `m_Enabled`, `m_EnabledAudioTracks`, `m_FrameReadyEventEnabled`, `m_GameObject`, `m_Looping`, `m_PlayOnAwake`, `m_PlaybackSpeed`, `m_RenderMode`, `m_SkipOnDrop`, `m_TargetAudioSources`, `m_TargetCamera`, `m_TargetCameraAlpha`, `m_TargetMaterialProperty`, `m_TargetMaterialRenderer`, `m_TargetTexture`, `m_Url`, `m_VideoClip`, `m_WaitForFirstFrame`, `m_TargetCamera3DLayout`, `m_TargetMaterialName`, `m_TimeReference`, `m_TimeUpdateMode`, `m_VideoShaders` |
+| `VisualEffect` | Behaviour | 2083052967 | `m_Asset`, `m_Enabled`, `m_GameObject`, `m_PropertySheet`, `m_ResetSeedOnPlay`, `m_StartSeed`, `m_AllowInstancing`, `m_InitialEventName`, `m_InitialEventNameOverriden`, `m_ReleaseInstanceOnDisable` |
+| `WindZone` | Behaviour | 182 | `m_Enabled`, `m_GameObject`, `m_Mode`, `m_Radius`, `m_WindMain`, `m_WindPulseFrequency`, `m_WindPulseMagnitude`, `m_WindTurbulence` |
+| `CanvasRenderer` | Component | 222 | `m_GameObject`, `m_CullTransparentMesh` |
+| `Collider` | Component | 56 | `m_GameObject`, `m_MaxLimitX`, `m_MaxLimitY`, `m_MaxLimitZ`, `m_MinLimitX`, `m_Type`, `m_X`, `m_XMotionType`, `m_YMotionType`, `m_ZMotionType` |
+| `BoxCollider` | Collider | 65 | `m_Center`, `m_Enabled`, `m_GameObject`, `m_IsTrigger`, `m_Material`, `m_Size`, `m_ExcludeLayers`, `m_IncludeLayers`, `m_LayerOverridePriority`, `m_ProvidesContacts` |
+| `CapsuleCollider` | Collider | 136 | `m_Center`, `m_Direction`, `m_Enabled`, `m_GameObject`, `m_Height`, `m_IsTrigger`, `m_Material`, `m_Radius`, `m_ExcludeLayers`, `m_IncludeLayers`, `m_LayerOverridePriority`, `m_ProvidesContacts` |
+| `CharacterController` | Collider | 143 | `m_Center`, `m_GameObject`, `m_Height`, `m_MinMoveDistance`, `m_Radius`, `m_SkinWidth`, `m_SlopeLimit`, `m_StepOffset`, `m_Enabled`, `m_ExcludeLayers`, `m_IncludeLayers`, `m_IsTrigger`, `m_LayerOverridePriority`, `m_Material`, `m_ProvidesContacts` |
+| `MeshCollider` | Collider | 64 | `m_Convex`, `m_Enabled`, `m_GameObject`, `m_IsTrigger`, `m_Material`, `m_Mesh`, `m_CookingOptions`, `m_ExcludeLayers`, `m_IncludeLayers`, `m_InflateMesh`, `m_LayerOverridePriority`, `m_ProvidesContacts`, `m_SkinWidth`, `m_SmoothSphereCollisions` |
+| `RaycastCollider` | Collider | 140 | `m_Center`, `m_Enabled`, `m_GameObject`, `m_IsTrigger`, `m_Length`, `m_Material` |
+| `SphereCollider` | Collider | 135 | `m_Center`, `m_Enabled`, `m_GameObject`, `m_IsTrigger`, `m_Material`, `m_Radius`, `m_ExcludeLayers`, `m_IncludeLayers`, `m_LayerOverridePriority`, `m_ProvidesContacts` |
+| `TerrainCollider` | Collider | 154 | `m_Enabled`, `m_GameObject`, `m_TerrainData`, `m_CreateTreeColliders`, `m_EnableTreeColliders`, `m_ExcludeLayers`, `m_IncludeLayers`, `m_IsTrigger`, `m_LayerOverridePriority`, `m_Material`, `m_ProvidesContacts` |
+| `WheelCollider` | Collider | 146 | `m_Center`, `m_ForwardFriction`, `m_GameObject`, `m_Mass`, `m_Radius`, `m_SidewaysFriction`, `m_SuspensionDistance`, `m_SuspensionSpring`, `m_Enabled`, `m_ExcludeLayers`, `m_ForceAppPointDistance`, `m_IncludeLayers`, `m_LayerOverridePriority`, `m_ProvidesContacts`, `m_WheelDampingRate` |
+| `FakeComponent` | Component | 1803986026 | `m_GameObject` |
+| `Joint` | Component | 57 | `m_GameObject` |
+| `CharacterJoint` | Joint | 144 | `m_Anchor`, `m_Axis`, `m_BreakForce`, `m_BreakTorque`, `m_ConnectedBody`, `m_GameObject`, `m_HighTwistLimit`, `m_LowTwistLimit`, `m_Swing1Limit`, `m_Swing2Limit`, `m_SwingAxis`, `m_AutoConfigureConnectedAnchor`, `m_ConnectedAnchor`, `m_ConnectedArticulationBody`, `m_ConnectedMassScale`, `m_EnableCollision`, `m_EnablePreprocessing`, `m_EnableProjection`, `m_Enabled`, `m_MassScale`, `m_ProjectionAngle`, `m_ProjectionDistance`, `m_SwingLimitSpring`, `m_TwistLimitSpring` |
+| `ConfigurableJoint` | Joint | 153 | `m_Anchor`, `m_AngularXDrive`, `m_AngularXMotion`, `m_AngularYLimit`, `m_AngularYMotion`, `m_AngularYZDrive`, `m_AngularZLimit`, `m_AngularZMotion`, `m_Axis`, `m_BreakForce`, `m_BreakTorque`, `m_ConfiguredInWorldSpace`, `m_ConnectedBody`, `m_GameObject`, `m_HighAngularXLimit`, `m_LinearLimit`, `m_LowAngularXLimit`, `m_ProjectionAngle`, `m_ProjectionDistance`, `m_ProjectionMode`, `m_RotationDriveMode`, `m_SecondaryAxis`, `m_SlerpDrive`, `m_TargetAngularVelocity`, `m_TargetPosition`, `m_TargetRotation`, `m_TargetVelocity`, `m_XDrive`, `m_XMotion`, `m_YDrive`, `m_YMotion`, `m_ZDrive`, `m_ZMotion`, `m_AngularXLimitSpring`, `m_AngularYZLimitSpring`, `m_AutoConfigureConnectedAnchor`, `m_ConnectedAnchor`, `m_ConnectedArticulationBody`, `m_ConnectedMassScale`, `m_EnableCollision`, `m_EnablePreprocessing`, `m_Enabled`, `m_LinearLimitSpring`, `m_MassScale`, `m_SwapBodies` |
+| `FixedJoint` | Joint | 138 | `m_BreakForce`, `m_BreakTorque`, `m_ConnectedBody`, `m_GameObject`, `m_ConnectedArticulationBody`, `m_ConnectedMassScale`, `m_EnableCollision`, `m_EnablePreprocessing`, `m_Enabled`, `m_MassScale` |
+| `HingeJoint` | Joint | 59 | `m_Anchor`, `m_Axis`, `m_BreakForce`, `m_BreakTorque`, `m_ConnectedBody`, `m_GameObject`, `m_Limits`, `m_Motor`, `m_Spring`, `m_UseLimits`, `m_UseMotor`, `m_UseSpring`, `m_AutoConfigureConnectedAnchor`, `m_ConnectedAnchor`, `m_ConnectedArticulationBody`, `m_ConnectedMassScale`, `m_EnableCollision`, `m_EnablePreprocessing`, `m_Enabled`, `m_ExtendedLimits`, `m_MassScale`, `m_UseAcceleration` |
+| `SpringJoint` | Joint | 145 | `m_Anchor`, `m_BreakForce`, `m_BreakTorque`, `m_ConnectedBody`, `m_Damper`, `m_GameObject`, `m_MaxDistance`, `m_MinDistance`, `m_Spring`, `m_AutoConfigureConnectedAnchor`, `m_Axis`, `m_ConnectedAnchor`, `m_ConnectedArticulationBody`, `m_ConnectedMassScale`, `m_EnableCollision`, `m_EnablePreprocessing`, `m_Enabled`, `m_MassScale`, `m_Tolerance` |
+| `LODGroup` | Component | 205 | `m_Enabled`, `m_GameObject`, `m_LODs`, `m_LocalReferencePoint`, `m_Size`, `m_AnimateCrossFading`, `m_FadeMode`, `m_GlobalIlluminationLOD`, `m_LastLODIsBillboard`, `m_ScreenRelativeTransitionHeight` |
+| `MeshFilter` | Component | 33 | `m_GameObject`, `m_Mesh` |
+| `MultiplayerRolesData` | Component | — | `m_ComponentsRolesMasks`, `m_GameObject`, `m_GameObjectRolesMask` |
+| `OcclusionArea` | Component | 192 | `m_Center`, `m_GameObject`, `m_IsViewVolume`, `m_Size`, `m_IsTargetVolume`, `m_TargetResolution` |
+| `OcclusionPortal` | Component | 41 | `m_Center`, `m_GameObject`, `m_Open`, `m_Size` |
+| `ParticleAnimator` | Component | 12 | `Does_Animate_Color`, `autodestruct`, `colorAnimation_0_`, `colorAnimation_1_`, `colorAnimation_2_`, `colorAnimation_3_`, `colorAnimation_4_`, `damping`, `force`, `localRotationAxis`, `m_GameObject`, `rndForce`, `sizeGrow`, `stopSimulation`, `worldRotationAxis` |
+| `ParticleEmitter` | Component | 88 | `m_GameObject` |
+| `EllipsoidParticleEmitter` | ParticleEmitter | 15 | `Simulate_in_Worldspace`, `angularVelocity`, `emitterVelocityScale`, `localVelocity`, `m_Ellipsoid`, `m_Emit`, `m_Enabled`, `m_GameObject`, `m_MinEmitterRange`, `m_OneShot`, `maxEmission`, `maxEnergy`, `maxSize`, `minEmission`, `minEnergy`, `minSize`, `rndAngularVelocity`, `rndRotation`, `rndVelocity`, `tangentVelocity`, `worldVelocity` |
+| `MeshParticleEmitter` | ParticleEmitter | 87 | `Simulate_in_Worldspace`, `angularVelocity`, `emitterVelocityScale`, `localVelocity`, `m_Emit`, `m_Enabled`, `m_GameObject`, `m_InterpolateTriangles`, `m_MaxNormalVelocity`, `m_Mesh`, `m_MinNormalVelocity`, `m_OneShot`, `m_Systematic`, `maxEmission`, `maxEnergy`, `maxSize`, `minEmission`, `minEnergy`, `minSize`, `rndAngularVelocity`, `rndRotation`, `rndVelocity`, `tangentVelocity`, `worldVelocity` |
+| `ParticleSystem` | Component | 198 | `ClampVelocityModule`, `CollisionModule`, `ColorBySpeedModule`, `ColorModule`, `EmissionModule`, `ForceModule`, `InitialModule`, `RotationBySpeedModule`, `RotationModule`, `ShapeModule`, `SizeBySpeedModule`, `SizeModule`, `SubModule`, `UVModule`, `VelocityModule`, `lengthInSec`, `looping`, `m_GameObject`, `moveWithTransform`, `playOnAwake`, `prewarm`, `randomSeed`, `startDelay`, `CustomDataModule`, `ExternalForcesModule`, `InheritVelocityModule`, `LifetimeByEmitterSpeedModule`, `LightsModule`, `NoiseModule`, `TrailModule`, `TriggerModule`, `autoRandomSeed`, `cullingMode`, `emitterVelocityMode`, `moveWithCustomTransform`, `ringBufferLoopRange`, `ringBufferMode`, `scalingMode`, `simulationSpeed`, `speed`, `stopAction`, `useRigidbodyForVelocity`, `useUnscaledTime` |
+| `Pipeline` | Component | 17 | `m_GameObject` |
+| `Renderer` | Component | 25 | `m_GameObject` |
+| `BillboardRenderer` | Renderer | 227 | `m_Billboard`, `m_CastShadows`, `m_Enabled`, `m_GameObject`, `m_LightmapIndex`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffset`, `m_LightmapTilingOffsetDynamic`, `m_Materials`, `m_ProbeAnchor`, `m_ReceiveShadows`, `m_ReflectionProbeUsage`, `m_SortingOrder`, `m_StaticBatchRoot`, `m_DynamicOccludee`, `m_ForceMeshLod`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_MaskInteraction`, `m_MeshLodSelectionBias`, `m_MotionVectors`, `m_RayTraceProcedural`, `m_RayTracingAccelStructBuildFlags`, `m_RayTracingAccelStructBuildFlagsOverride`, `m_RayTracingMode`, `m_RendererPriority`, `m_RenderingLayerMask`, `m_SmallMeshCulling`, `m_SortingLayer`, `m_SortingLayerID`, `m_StaticBatchInfo`, `m_StaticShadowCaster`, `m_SubsetIndices`, `m_UseLightProbes` |
+| `ClothRenderer` | Renderer | 161 | `m_CastShadows`, `m_Enabled`, `m_GameObject`, `m_LightmapIndex`, `m_LightmapTilingOffset`, `m_Materials`, `m_PauseWhenNotVisible`, `m_ReceiveShadows`, `m_StaticBatchRoot`, `m_SubsetIndices`, `m_LightProbeAnchor`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_UseLightProbes` |
+| `LineRenderer` | Renderer | 120 | `m_CastShadows`, `m_Enabled`, `m_GameObject`, `m_LightmapIndex`, `m_LightmapTilingOffset`, `m_Materials`, `m_Parameters`, `m_Positions`, `m_ReceiveShadows`, `m_StaticBatchRoot`, `m_UseWorldSpace`, `m_ApplyActiveColorSpace`, `m_DynamicOccludee`, `m_ForceMeshLod`, `m_LightProbeAnchor`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffsetDynamic`, `m_Loop`, `m_MaskInteraction`, `m_MeshLodSelectionBias`, `m_MotionVectors`, `m_ProbeAnchor`, `m_RayTraceProcedural`, `m_RayTracingAccelStructBuildFlags`, `m_RayTracingAccelStructBuildFlagsOverride`, `m_RayTracingMode`, `m_ReflectionProbeUsage`, `m_RendererPriority`, `m_RenderingLayerMask`, `m_SmallMeshCulling`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_StaticBatchInfo`, `m_StaticShadowCaster`, `m_SubsetIndices`, `m_UseLightProbes` |
+| `RendererFake` | LineRenderer | 646504946 | `m_CastShadows`, `m_DynamicOccludee`, `m_Enabled`, `m_GameObject`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndex`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffset`, `m_LightmapTilingOffsetDynamic`, `m_Loop`, `m_Materials`, `m_MotionVectors`, `m_Parameters`, `m_Positions`, `m_ProbeAnchor`, `m_ReceiveShadows`, `m_ReflectionProbeUsage`, `m_RendererPriority`, `m_RenderingLayerMask`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_StaticBatchInfo`, `m_StaticBatchRoot`, `m_UseWorldSpace`, `m_RayTraceProcedural`, `m_RayTracingMode` |
+| `MeshRenderer` | Renderer | 23 | `m_CastShadows`, `m_Enabled`, `m_GameObject`, `m_LightmapIndex`, `m_LightmapTilingOffset`, `m_Materials`, `m_ReceiveShadows`, `m_StaticBatchRoot`, `m_AdditionalVertexStreams`, `m_DynamicOccludee`, `m_EnlightenVertexStream`, `m_ForceMeshLod`, `m_LightProbeAnchor`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffsetDynamic`, `m_MaskInteraction`, `m_MeshLodSelectionBias`, `m_MotionVectors`, `m_ProbeAnchor`, `m_RayTraceProcedural`, `m_RayTracingAccelStructBuildFlags`, `m_RayTracingAccelStructBuildFlagsOverride`, `m_RayTracingMode`, `m_ReflectionProbeUsage`, `m_RendererPriority`, `m_RenderingLayerMask`, `m_SmallMeshCulling`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_StaticBatchInfo`, `m_StaticShadowCaster`, `m_SubsetIndices`, `m_UseLightProbes` |
+| `PanelRenderer` | Renderer | — | `m_CastShadows`, `m_DynamicOccludee`, `m_Enabled`, `m_ForceMeshLod`, `m_GameObject`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndex`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffset`, `m_LightmapTilingOffsetDynamic`, `m_MaskInteraction`, `m_Materials`, `m_MeshLodSelectionBias`, `m_MotionVectors`, `m_PanelSettings`, `m_ParentUI`, `m_Pivot`, `m_PivotReferenceSize`, `m_Position`, `m_ProbeAnchor`, `m_RayTraceProcedural`, `m_RayTracingAccelStructBuildFlags`, `m_RayTracingAccelStructBuildFlagsOverride`, `m_RayTracingMode`, `m_ReceiveShadows`, `m_ReflectionProbeUsage`, `m_RendererPriority`, `m_RenderingLayerMask`, `m_SmallMeshCulling`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_StaticBatchInfo`, `m_StaticBatchRoot`, `m_StaticShadowCaster`, `m_WorldSpaceHeight`, `m_WorldSpaceSizeMode`, `m_WorldSpaceWidth`, `sourceAsset` |
+| `ParticleRenderer` | Renderer | 26 | `UV_Animation`, `m_CameraVelocityScale`, `m_CastShadows`, `m_Enabled`, `m_GameObject`, `m_LengthScale`, `m_LightmapIndex`, `m_LightmapTilingOffset`, `m_Materials`, `m_MaxParticleSize`, `m_ReceiveShadows`, `m_StaticBatchRoot`, `m_StretchParticles`, `m_VelocityScale`, `m_DynamicOccludee`, `m_LightProbeAnchor`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffsetDynamic`, `m_MotionVectors`, `m_ProbeAnchor`, `m_ReflectionProbeUsage`, `m_RenderingLayerMask`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_StaticBatchInfo`, `m_SubsetIndices`, `m_UseLightProbes` |
+| `ParticleSystemRenderer` | Renderer | 199 | `m_CameraVelocityScale`, `m_CastShadows`, `m_Enabled`, `m_GameObject`, `m_LengthScale`, `m_LightmapIndex`, `m_LightmapTilingOffset`, `m_Materials`, `m_MaxParticleSize`, `m_Mesh`, `m_ReceiveShadows`, `m_RenderMode`, `m_SortMode`, `m_SortingFudge`, `m_StaticBatchRoot`, `m_VelocityScale`, `m_AllowRoll`, `m_ApplyActiveColorSpace`, `m_DynamicOccludee`, `m_EnableGPUInstancing`, `m_Flip`, `m_ForceMeshLod`, `m_FreeformStretching`, `m_LightProbeAnchor`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffsetDynamic`, `m_MaskInteraction`, `m_Mesh1`, `m_Mesh2`, `m_Mesh3`, `m_MeshDistribution`, `m_MeshLodSelectionBias`, `m_MeshWeighting`, `m_MeshWeighting1`, `m_MeshWeighting2`, `m_MeshWeighting3`, `m_MinParticleSize`, `m_MotionVectors`, `m_NormalDirection`, `m_Pivot`, `m_ProbeAnchor`, `m_RayTraceProcedural`, `m_RayTracingAccelStructBuildFlags`, `m_RayTracingAccelStructBuildFlagsOverride`, `m_RayTracingMode`, `m_ReflectionProbeUsage`, `m_RenderAlignment`, `m_RendererPriority`, `m_RenderingLayerMask`, `m_RotateWithStretchDirection`, `m_ShadowBias`, `m_SmallMeshCulling`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_StaticBatchInfo`, `m_StaticShadowCaster`, `m_SubsetIndices`, `m_TrailVertexStreams`, `m_UseCustomTrailVertexStreams`, `m_UseCustomVertexStreams`, `m_UseLightProbes`, `m_VertexStreamMask`, `m_VertexStreams` |
+| `RenderAs2D` | Renderer | — | `m_CastShadows`, `m_DynamicOccludee`, `m_Enabled`, `m_ForceMeshLod`, `m_GameObject`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndex`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffset`, `m_LightmapTilingOffsetDynamic`, `m_MaskInteraction`, `m_Materials`, `m_MeshLodSelectionBias`, `m_MotionVectors`, `m_ProbeAnchor`, `m_RayTraceProcedural`, `m_RayTracingAccelStructBuildFlags`, `m_RayTracingAccelStructBuildFlagsOverride`, `m_RayTracingMode`, `m_ReceiveShadows`, `m_ReflectionProbeUsage`, `m_RendererPriority`, `m_RenderingLayerMask`, `m_SmallMeshCulling`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_StaticBatchInfo`, `m_StaticBatchRoot`, `m_StaticShadowCaster`, `m_Owner`, `m_OwningSortingGroup` |
+| `SkinnedMeshRenderer` | Renderer | 137 | `m_AABB`, `m_Bones`, `m_CastShadows`, `m_DirtyAABB`, `m_Enabled`, `m_GameObject`, `m_LightmapIndex`, `m_LightmapTilingOffset`, `m_Materials`, `m_Mesh`, `m_Quality`, `m_ReceiveShadows`, `m_StaticBatchRoot`, `m_UpdateWhenOffscreen`, `m_BlendShapeWeights`, `m_DynamicOccludee`, `m_ForceMeshLod`, `m_LightProbeAnchor`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffsetDynamic`, `m_MaskInteraction`, `m_MeshLodSelectionBias`, `m_MotionVectors`, `m_ProbeAnchor`, `m_RayTraceProcedural`, `m_RayTracingAccelStructBuildFlags`, `m_RayTracingAccelStructBuildFlagsOverride`, `m_RayTracingMode`, `m_ReflectionProbeUsage`, `m_RendererPriority`, `m_RenderingLayerMask`, `m_RootBone`, `m_SkinnedMotionVectors`, `m_SmallMeshCulling`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_StaticBatchInfo`, `m_StaticShadowCaster`, `m_SubsetIndices`, `m_UseLightProbes` |
+| `SpriteMask` | Renderer | 331 | `m_BackSortingLayer`, `m_BackSortingOrder`, `m_CastShadows`, `m_Enabled`, `m_FrontSortingLayer`, `m_FrontSortingOrder`, `m_GameObject`, `m_IsCustomRangeActive`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndex`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffset`, `m_LightmapTilingOffsetDynamic`, `m_MaskAlphaCutoff`, `m_Materials`, `m_MotionVectors`, `m_ProbeAnchor`, `m_ReceiveShadows`, `m_ReflectionProbeUsage`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_Sprite`, `m_StaticBatchInfo`, `m_StaticBatchRoot`, `m_BackSortingLayerID`, `m_DynamicOccludee`, `m_ForceMeshLod`, `m_FrontSortingLayerID`, `m_MaskInteraction`, `m_MaskSource`, `m_MeshLodSelectionBias`, `m_RayTraceProcedural`, `m_RayTracingAccelStructBuildFlags`, `m_RayTracingAccelStructBuildFlagsOverride`, `m_RayTracingMode`, `m_RendererPriority`, `m_RenderingLayerMask`, `m_SmallMeshCulling`, `m_SpriteSortPoint`, `m_StaticShadowCaster` |
+| `SpriteRenderer` | Renderer | 212 | `m_CastShadows`, `m_Color`, `m_Enabled`, `m_GameObject`, `m_LightmapIndex`, `m_LightmapTilingOffset`, `m_Materials`, `m_ReceiveShadows`, `m_SortingOrder`, `m_Sprite`, `m_StaticBatchRoot`, `m_AdaptiveModeThreshold`, `m_DrawMode`, `m_DynamicOccludee`, `m_FlipX`, `m_FlipY`, `m_ForceMeshLod`, `m_LightProbeAnchor`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffsetDynamic`, `m_MaskInteraction`, `m_MeshLodSelectionBias`, `m_MotionVectors`, `m_ProbeAnchor`, `m_RayTraceProcedural`, `m_RayTracingAccelStructBuildFlags`, `m_RayTracingAccelStructBuildFlagsOverride`, `m_RayTracingMode`, `m_ReflectionProbeUsage`, `m_RendererPriority`, `m_RenderingLayerMask`, `m_Size`, `m_SmallMeshCulling`, `m_SortingLayer`, `m_SortingLayerID`, `m_SpriteSortPoint`, `m_SpriteTileMode`, `m_StaticBatchInfo`, `m_StaticShadowCaster`, `m_SubsetIndices`, `m_UseLightProbes`, `m_WasSpriteAssigned` |
+| `SpriteShapeRenderer` | Renderer | 1971053207 | `m_CastShadows`, `m_Color`, `m_DynamicOccludee`, `m_Enabled`, `m_GameObject`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndex`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffset`, `m_LightmapTilingOffsetDynamic`, `m_LocalAABB`, `m_MaskInteraction`, `m_Materials`, `m_MotionVectors`, `m_ProbeAnchor`, `m_ReceiveShadows`, `m_ReflectionProbeUsage`, `m_RenderingLayerMask`, `m_ShapeTexture`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_Sprites`, `m_StaticBatchInfo`, `m_StaticBatchRoot`, `m_ForceMeshLod`, `m_MeshLodSelectionBias`, `m_RayTraceProcedural`, `m_RayTracingAccelStructBuildFlags`, `m_RayTracingAccelStructBuildFlagsOverride`, `m_RayTracingMode`, `m_RendererPriority`, `m_SmallMeshCulling`, `m_SpriteSortPoint`, `m_StaticShadowCaster` |
+| `TilemapRenderer` | Renderer | 483693784 | `m_CastShadows`, `m_ChunkSize`, `m_DynamicOccludee`, `m_Enabled`, `m_GameObject`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndex`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffset`, `m_LightmapTilingOffsetDynamic`, `m_MaskInteraction`, `m_Materials`, `m_MaxChunkCount`, `m_MaxFrameAge`, `m_MotionVectors`, `m_ProbeAnchor`, `m_ReceiveShadows`, `m_ReflectionProbeUsage`, `m_SortOrder`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_StaticBatchInfo`, `m_StaticBatchRoot`, `m_ChunkCullingBounds`, `m_DetectChunkCullingBounds`, `m_ForceMeshLod`, `m_MeshLodSelectionBias`, `m_Mode`, `m_RayTraceProcedural`, `m_RayTracingAccelStructBuildFlags`, `m_RayTracingAccelStructBuildFlagsOverride`, `m_RayTracingMode`, `m_RendererPriority`, `m_RenderingLayerMask`, `m_SmallMeshCulling`, `m_StaticShadowCaster` |
+| `TrailRenderer` | Renderer | 96 | `m_Autodestruct`, `m_CastShadows`, `m_Enabled`, `m_GameObject`, `m_LightmapIndex`, `m_LightmapTilingOffset`, `m_Materials`, `m_MinVertexDistance`, `m_ReceiveShadows`, `m_StaticBatchRoot`, `m_Time`, `m_ApplyActiveColorSpace`, `m_Colors`, `m_DynamicOccludee`, `m_Emitting`, `m_EndWidth`, `m_ForceMeshLod`, `m_LightProbeAnchor`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffsetDynamic`, `m_MaskInteraction`, `m_MeshLodSelectionBias`, `m_MotionVectors`, `m_Parameters`, `m_ProbeAnchor`, `m_RayTraceProcedural`, `m_RayTracingAccelStructBuildFlags`, `m_RayTracingAccelStructBuildFlagsOverride`, `m_RayTracingMode`, `m_ReflectionProbeUsage`, `m_RendererPriority`, `m_RenderingLayerMask`, `m_SmallMeshCulling`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_StartWidth`, `m_StaticBatchInfo`, `m_StaticShadowCaster`, `m_SubsetIndices`, `m_UseLightProbes` |
+| `UIRenderer` | Renderer | — | `m_GameObject`, `m_CastShadows`, `m_DynamicOccludee`, `m_Enabled`, `m_ForceMeshLod`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndex`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffset`, `m_LightmapTilingOffsetDynamic`, `m_MaskInteraction`, `m_Materials`, `m_MeshLodSelectionBias`, `m_MotionVectors`, `m_ProbeAnchor`, `m_RayTraceProcedural`, `m_RayTracingAccelStructBuildFlags`, `m_RayTracingAccelStructBuildFlagsOverride`, `m_RayTracingMode`, `m_ReceiveShadows`, `m_ReflectionProbeUsage`, `m_RendererPriority`, `m_RenderingLayerMask`, `m_SmallMeshCulling`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_StaticBatchInfo`, `m_StaticBatchRoot`, `m_StaticShadowCaster` |
+| `VFXRenderer` | Renderer | 73398921 | `m_CastShadows`, `m_DynamicOccludee`, `m_Enabled`, `m_GameObject`, `m_LightProbeUsage`, `m_LightProbeVolumeOverride`, `m_LightmapIndex`, `m_LightmapIndexDynamic`, `m_LightmapTilingOffset`, `m_LightmapTilingOffsetDynamic`, `m_MotionVectors`, `m_ProbeAnchor`, `m_ReceiveShadows`, `m_ReflectionProbeUsage`, `m_RendererPriority`, `m_RenderingLayerMask`, `m_SortingLayer`, `m_SortingLayerID`, `m_SortingOrder`, `m_StaticBatchInfo`, `m_StaticBatchRoot`, `m_ForceMeshLod`, `m_MaskInteraction`, `m_Materials`, `m_MeshLodSelectionBias`, `m_RayTraceProcedural`, `m_RayTracingAccelStructBuildFlags`, `m_RayTracingAccelStructBuildFlagsOverride`, `m_RayTracingMode`, `m_SmallMeshCulling`, `m_StaticShadowCaster` |
+| `Rigidbody` | Component | 54 | `m_CollisionDetection`, `m_Constraints`, `m_GameObject`, `m_Interpolate`, `m_IsKinematic`, `m_Mass`, `m_UseGravity`, `m_AngularDamping`, `m_AngularDrag`, `m_CenterOfMass`, `m_Drag`, `m_ExcludeLayers`, `m_ImplicitCom`, `m_ImplicitTensor`, `m_IncludeLayers`, `m_InertiaRotation`, `m_InertiaTensor`, `m_LinearDamping` |
+| `Rigidbody2D` | Component | 50 | `m_CollisionDetection`, `m_GameObject`, `m_GravityScale`, `m_Interpolate`, `m_Mass`, `m_SleepingMode`, `m_AngularDamping`, `m_AngularDrag`, `m_BodyType`, `m_Constraints`, `m_ExcludeLayers`, `m_FixedAngle`, `m_IncludeLayers`, `m_IsKinematic`, `m_LinearDamping`, `m_LinearDrag`, `m_Material`, `m_Simulated`, `m_UseAutoMass`, `m_UseFullKinematicContacts` |
+| `TextMesh` | Component | 102 | `m_Alignment`, `m_Anchor`, `m_CharacterSize`, `m_Font`, `m_FontSize`, `m_FontStyle`, `m_GameObject`, `m_LineSpacing`, `m_OffsetZ`, `m_TabSize`, `m_Text`, `m_Color`, `m_RichText` |
+| `Transform` | Component | 4 | `m_Children`, `m_Father`, `m_GameObject`, `m_LocalPosition`, `m_LocalRotation`, `m_LocalScale` |
+| `RectTransform` | Transform | 224 | `m_AnchorMax`, `m_AnchorMin`, `m_GameObject`, `m_Pivot`, `m_SizeDelta`, `m_AnchoredPosition`, `m_Children`, `m_Father`, `m_LocalPosition`, `m_LocalRotation`, `m_LocalScale`, `m_Position` |
+| `Tree` | Component | 193 | `m_GameObject`, `m_SpeedTreeWindAsset` |
+| `WorldAnchor` | Component | 362 | `m_GameObject` |
+| `WorldParticleCollider` | Component | 76 | `m_BounceFactor`, `m_CollidesWith`, `m_CollisionEnergyLoss`, `m_GameObject`, `m_MinKillVelocity`, `m_SendCollisionMessage` |
+| `GameObject` | EditorExtension | 1 | `m_Component`, `m_IsActive`, `m_Layer`, `m_Name`, `m_Tag` |
+| `NamedObject` | EditorExtension, ABC | 130 | — |
+| `AnimatorState` | NamedObject | 1102 | `m_CycleOffset`, `m_IKOnFeet`, `m_Mirror`, `m_Motion`, `m_Name`, `m_Position`, `m_Speed`, `m_StateMachineBehaviours`, `m_Tag`, `m_Transitions`, `m_WriteDefaultValues`, `m_CycleOffsetParameter`, `m_CycleOffsetParameterActive`, `m_MirrorParameter`, `m_MirrorParameterActive`, `m_SpeedParameter`, `m_SpeedParameterActive`, `m_TimeParameter`, `m_TimeParameterActive` |
+| `AnimatorStateMachine` | NamedObject | 1107 | `m_AnyStatePosition`, `m_AnyStateTransitions`, `m_ChildStateMachines`, `m_ChildStates`, `m_DefaultState`, `m_EntryPosition`, `m_EntryTransitions`, `m_ExitPosition`, `m_Name`, `m_ParentStateMachinePosition`, `m_StateMachineBehaviours`, `m_StateMachineTransitions` |
+| `AnimatorTransitionBase` | NamedObject | 1111 | `m_Conditions`, `m_DstState`, `m_DstStateMachine`, `m_IsExit`, `m_Mute`, `m_Name`, `m_Solo` |
+| `AnimatorStateTransition` | AnimatorTransitionBase | 1101 | `m_CanTransitionToSelf`, `m_Conditions`, `m_DstState`, `m_DstStateMachine`, `m_ExitTime`, `m_HasExitTime`, `m_InterruptionSource`, `m_IsExit`, `m_Mute`, `m_Name`, `m_OrderedInterruption`, `m_Solo`, `m_TransitionDuration`, `m_TransitionOffset`, `m_HasFixedDuration` |
+| `AnimatorTransition` | AnimatorTransitionBase | 1109 | `m_Conditions`, `m_DstState`, `m_DstStateMachine`, `m_IsExit`, `m_Mute`, `m_Name`, `m_Solo` |
+| `AssetBundle` | NamedObject | 142 | `m_Container`, `m_MainAsset`, `m_Name`, `m_PreloadTable`, `m_AssetBundleName`, `m_ClassCompatibility`, `m_ClassVersionMap`, `m_Dependencies`, `m_ExplicitDataLayout`, `m_IsStreamedSceneAssetBundle`, `m_PathFlags`, `m_RuntimeCompatibility`, `m_SceneHashes`, `m_ScriptCompatibility` |
+| `AssetBundleManifest` | NamedObject | 290 | `AssetBundleInfos`, `AssetBundleNames`, `AssetBundlesWithVariant`, `m_Name` |
+| `AssetImportInProgressProxy` | NamedObject | 369655926 | `m_Name` |
+| `AssetImporter` | NamedObject, ABC | 1003 | — |
+| `ASTCImporter` | AssetImporter | 1053 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_Name`, `m_UserData` |
+| `AndroidAssetPackImporter` | AssetImporter | — | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `AssemblyDefinitionImporter` | AssetImporter | 1766753193 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UserData`, `m_UsedFileIDs` |
+| `AssemblyDefinitionReferenceImporter` | AssetImporter | 294290339 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `AudioImporter` | AssetImporter | 1020 | `m_3D`, `m_ForceToMono`, `m_Name`, `audio_preview_data`, `m_Ambisonic`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_DefaultSettings`, `m_ExternalObjects`, `m_FileIDToRecycleName`, `m_Format`, `m_LoadInBackground`, `m_Loopable`, `m_NewHashIdentity`, `m_Normalize`, `m_OldHashIdentity`, `m_Output`, `m_PlatformSettingOverrides`, `m_PreloadAudioData`, `m_PreviewData`, `m_PreviewDataLength`, `m_Quality`, `m_Stream`, `m_UseHardware`, `m_UsedFileIDs`, `m_UserData` |
+| `BlockShaderImporter` | AssetImporter | — | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_EmbedBlocksInGeneratedShader`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `BuildArchiveImporter` | AssetImporter | — | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `BuildInstructionImporter` | AssetImporter | — | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `BuildMetaDataImporter` | AssetImporter | — | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `C4DImporter` | AssetImporter | — | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `ComputeShaderImporter` | AssetImporter | 1008 | `m_Name`, `m_UserData`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_CurrentAPIMask`, `m_CurrentBuildTarget`, `m_ExternalObjects`, `m_PreprocessorOverride`, `m_UsedFileIDs` |
+| `DDSImporter` | AssetImporter | 1046 | `m_Name`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_FileIDToRecycleName`, `m_IsReadable`, `m_NewHashIdentity`, `m_OldHashIdentity`, `m_UserData` |
+| `DefaultImporter` | AssetImporter | 1030 | `m_Name`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_FileIDToRecycleName`, `m_NewHashIdentity`, `m_OldHashIdentity`, `m_UsedFileIDs`, `m_UserData` |
+| `IHVImageFormatImporter` | AssetImporter | 1055 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_IsReadable`, `m_Name`, `m_TextureSettings`, `m_UserData`, `m_ExternalObjects`, `m_IgnoreMipmapLimit`, `m_MipmapLimitGroupName`, `m_StreamingMipmaps`, `m_StreamingMipmapsPriority`, `m_UsedFileIDs`, `m_sRGBTexture` |
+| `KTXImporter` | AssetImporter | 1054 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_Name`, `m_UserData` |
+| `LibraryAssetImporter` | AssetImporter | 1038 | `m_Name`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_FileIDToRecycleName`, `m_NewHashIdentity`, `m_OldHashIdentity`, `m_UsedFileIDs`, `m_UserData` |
+| `LocalizationImporter` | AssetImporter | 1027052791 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UserData`, `m_UsedFileIDs` |
+| `ModelImporter` | AssetImporter, ABC | 1040 | — |
+| `FBXImporter` | ModelImporter | 1041 | `m_AddColliders`, `m_AnimationCompression`, `m_AnimationPositionError`, `m_AnimationRotationError`, `m_AnimationScaleError`, `m_AnimationWrapMode`, `m_BakeSimulation`, `m_ClipAnimations`, `m_GlobalScale`, `m_HasExtraRoot`, `m_ImportedRoots`, `m_MeshCompression`, `m_Name`, `m_UseFileUnits`, `normalSmoothAngle`, `bakeAxisConversion`, `blendShapeNormalImportMode`, `calculateBlendshapeNormalsDeltaFromImportedNormals`, `generateMeshLods`, `generateSecondaryUV`, `indexFormat`, `keepQuads`, `legacyComputeAllNormalsFromSmoothingGroupsWhenMeshHasBlendShapes`, `m_AddHumanoidExtraRootOnlyWhenUsingAvatar`, `m_AdditionalBone`, `m_AnimationDoRetargetingWarnings`, `m_AnimationImportErrors`, `m_AnimationImportWarnings`, `m_AnimationRetargetingWarnings`, `m_AnimationType`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_AutoGenerateAvatarMappingIfUnspecified`, `m_AutoMapExternalMaterials`, `m_AvatarSetup`, `m_ContainsAnimation`, `m_CopyAvatar`, `m_ExternalObjects`, `m_ExtraExposedTransformPaths`, `m_ExtraUserProperties`, `m_FileIDToRecycleName`, `m_FileIdsGeneration`, `m_FileScale`, `m_FileScaleFactor`, `m_FileScaleUnit`, `m_FirstImportVersion`, `m_GenerateAnimations`, `m_GenerateMaterials`, `m_HasEmbeddedTextures`, `m_HasPreviousCalculatedGlobalScale`, `m_HumanDescription`, `m_HumanoidOversampling`, `m_ImportAnimatedCustomProperties`, `m_ImportAnimation`, `m_ImportBlendShapeDeformPercent`, `m_ImportBlendShapes`, `m_ImportCameras`, `m_ImportConstraints`, `m_ImportLights`, `m_ImportMaterials`, `m_ImportPhysicalCameras`, `m_ImportVisibility`, `m_ImportedTakeInfos`, `m_InternalIDToNameTable`, `m_IsReadable`, `m_LODScreenPercentages`, `m_LastHumanDescriptionAvatarSource`, `m_LegacyGenerateAnimations`, `m_MaterialImportMode`, `m_MaterialLocation`, `m_MaterialName`, `m_MaterialSearch`, `m_Materials`, `m_MeshSettings_generateSecondaryUV`, `m_MeshSettings_normalImportMode`, `m_MeshSettings_secondaryUVAngleDistortion`, `m_MeshSettings_secondaryUVAreaDistortion`, `m_MeshSettings_secondaryUVHardAngle`, `m_MeshSettings_secondaryUVPackMargin`, `m_MeshSettings_swapUVChannels`, `m_MeshSettings_tangentImportMode`, `m_MotionNodeName`, `m_NewHashIdentity`, `m_NodeNameCollisionStrategy`, `m_OldHashIdentity`, `m_OptimizeGameObjects`, `m_PreserveHierarchy`, `m_PreviousCalculatedGlobalScale`, `m_ReferencedClips`, `m_RemapMaterialsIfMaterialImportModeIsNone`, `m_RemoveConstantScaleCurves`, `m_ResampleCurves`, `m_ResampleRotations`, `m_RigImportErrors`, `m_RigImportWarnings`, `m_SortHierarchyByName`, `m_SplitAnimations`, `m_StrictVertexDataChecks`, `m_SupportsEmbeddedMaterials`, `m_UseFileScale`, `m_UseSRGBMaterialColor`, `m_UsedFileIDs`, `m_UserData`, `maxBonesPerVertex`, `maximumMeshLod`, `meshLodGenerationFlags`, `meshOptimizationFlags`, `minBoneWeight`, `normalCalculationMode`, `normalImportMode`, `normalSmoothingSource`, `optimizeBones`, `optimizeMesh`, `optimizeMeshForGPU`, `secondaryUVAngleDistortion`, `secondaryUVAreaDistortion`, `secondaryUVHardAngle`, `secondaryUVMarginMethod`, `secondaryUVMinLightmapResolution`, `secondaryUVMinObjectScale`, `secondaryUVPackMargin`, `skinWeightsMode`, `splitTangentsAcrossUV`, `swapUVChannels`, `tangentImportMode`, `weldVertices` |
+| `Mesh3DSImporter` | ModelImporter | 1005 | `m_AddColliders`, `m_AnimationCompression`, `m_AnimationPositionError`, `m_AnimationRotationError`, `m_AnimationScaleError`, `m_AnimationWrapMode`, `m_BakeSimulation`, `m_ClipAnimations`, `m_GlobalScale`, `m_HasExtraRoot`, `m_ImportedRoots`, `m_MeshCompression`, `m_Name`, `m_UseFileUnits`, `normalSmoothAngle`, `bakeAxisConversion`, `blendShapeNormalImportMode`, `calculateBlendshapeNormalsDeltaFromImportedNormals`, `generateMeshLods`, `generateSecondaryUV`, `indexFormat`, `keepQuads`, `legacyComputeAllNormalsFromSmoothingGroupsWhenMeshHasBlendShapes`, `m_AddHumanoidExtraRootOnlyWhenUsingAvatar`, `m_AdditionalBone`, `m_AnimationDoRetargetingWarnings`, `m_AnimationImportErrors`, `m_AnimationImportWarnings`, `m_AnimationRetargetingWarnings`, `m_AnimationType`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_AutoGenerateAvatarMappingIfUnspecified`, `m_AutoMapExternalMaterials`, `m_AvatarSetup`, `m_ContainsAnimation`, `m_CopyAvatar`, `m_ExternalObjects`, `m_ExtraExposedTransformPaths`, `m_ExtraUserProperties`, `m_FileIDToRecycleName`, `m_FileIdsGeneration`, `m_FileScale`, `m_FileScaleFactor`, `m_FileScaleUnit`, `m_FirstImportVersion`, `m_GenerateAnimations`, `m_GenerateMaterials`, `m_HasEmbeddedTextures`, `m_HasPreviousCalculatedGlobalScale`, `m_HumanDescription`, `m_HumanoidOversampling`, `m_ImportAnimatedCustomProperties`, `m_ImportAnimation`, `m_ImportBlendShapeDeformPercent`, `m_ImportBlendShapes`, `m_ImportCameras`, `m_ImportConstraints`, `m_ImportLights`, `m_ImportMaterials`, `m_ImportPhysicalCameras`, `m_ImportVisibility`, `m_ImportedTakeInfos`, `m_InternalIDToNameTable`, `m_IsReadable`, `m_LODScreenPercentages`, `m_LastHumanDescriptionAvatarSource`, `m_LegacyGenerateAnimations`, `m_MaterialImportMode`, `m_MaterialLocation`, `m_MaterialName`, `m_MaterialSearch`, `m_Materials`, `m_MeshSettings_generateSecondaryUV`, `m_MeshSettings_normalImportMode`, `m_MeshSettings_secondaryUVAngleDistortion`, `m_MeshSettings_secondaryUVAreaDistortion`, `m_MeshSettings_secondaryUVHardAngle`, `m_MeshSettings_secondaryUVPackMargin`, `m_MeshSettings_swapUVChannels`, `m_MeshSettings_tangentImportMode`, `m_MotionNodeName`, `m_NewHashIdentity`, `m_NodeNameCollisionStrategy`, `m_OldHashIdentity`, `m_OptimizeGameObjects`, `m_PreserveHierarchy`, `m_PreviousCalculatedGlobalScale`, `m_ReferencedClips`, `m_RemapMaterialsIfMaterialImportModeIsNone`, `m_RemoveConstantScaleCurves`, `m_ResampleCurves`, `m_ResampleRotations`, `m_RigImportErrors`, `m_RigImportWarnings`, `m_SortHierarchyByName`, `m_SplitAnimations`, `m_StrictVertexDataChecks`, `m_SupportsEmbeddedMaterials`, `m_UseFileScale`, `m_UseSRGBMaterialColor`, `m_UsedFileIDs`, `m_UserData`, `maxBonesPerVertex`, `maximumMeshLod`, `meshLodGenerationFlags`, `meshOptimizationFlags`, `minBoneWeight`, `normalCalculationMode`, `normalImportMode`, `normalSmoothingSource`, `optimizeBones`, `optimizeMesh`, `optimizeMeshForGPU`, `secondaryUVAngleDistortion`, `secondaryUVAreaDistortion`, `secondaryUVHardAngle`, `secondaryUVMarginMethod`, `secondaryUVMinLightmapResolution`, `secondaryUVMinObjectScale`, `secondaryUVPackMargin`, `skinWeightsMode`, `splitTangentsAcrossUV`, `swapUVChannels`, `tangentImportMode`, `weldVertices` |
+| `SketchUpImporter` | ModelImporter | 1124 | `generateSecondaryUV`, `keepQuads`, `m_AddColliders`, `m_AdditionalBone`, `m_AnimationCompression`, `m_AnimationDoRetargetingWarnings`, `m_AnimationImportErrors`, `m_AnimationImportWarnings`, `m_AnimationPositionError`, `m_AnimationRetargetingWarnings`, `m_AnimationRotationError`, `m_AnimationScaleError`, `m_AnimationType`, `m_AnimationWrapMode`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_AssetHash`, `m_BakeSimulation`, `m_ClipAnimations`, `m_ExtraExposedTransformPaths`, `m_FileScale`, `m_FileUnit`, `m_GenerateBackFace`, `m_GlobalScale`, `m_HasExtraRoot`, `m_HumanDescription`, `m_ImportAnimation`, `m_ImportBlendShapes`, `m_ImportedRoots`, `m_ImportedTakeInfos`, `m_IsReadable`, `m_LODScreenPercentages`, `m_LastHumanDescriptionAvatarSource`, `m_Latitude`, `m_LegacyGenerateAnimations`, `m_Longitude`, `m_MaterialName`, `m_MaterialSearch`, `m_MergeCoplanarFaces`, `m_MeshCompression`, `m_MotionNodeName`, `m_Name`, `m_NorthCorrection`, `m_OptimizeGameObjects`, `m_ReferencedClips`, `m_SelectedNodes`, `m_SketchUpImportData`, `m_UseFileScale`, `m_UseFileUnits`, `m_UserData`, `normalImportMode`, `normalSmoothAngle`, `secondaryUVAngleDistortion`, `secondaryUVAreaDistortion`, `secondaryUVHardAngle`, `secondaryUVPackMargin`, `swapUVChannels`, `tangentImportMode`, `weldVertices`, `bakeAxisConversion`, `blendShapeNormalImportMode`, `calculateBlendshapeNormalsDeltaFromImportedNormals`, `generateMeshLods`, `indexFormat`, `legacyComputeAllNormalsFromSmoothingGroupsWhenMeshHasBlendShapes`, `m_AddHumanoidExtraRootOnlyWhenUsingAvatar`, `m_AutoGenerateAvatarMappingIfUnspecified`, `m_AutoMapExternalMaterials`, `m_AvatarSetup`, `m_ContainsAnimation`, `m_CopyAvatar`, `m_ExternalObjects`, `m_ExtraUserProperties`, `m_FileIDToRecycleName`, `m_FileIdsGeneration`, `m_FileScaleFactor`, `m_FileScaleUnit`, `m_HasEmbeddedTextures`, `m_HasPreviousCalculatedGlobalScale`, `m_HumanoidOversampling`, `m_ImportAnimatedCustomProperties`, `m_ImportBlendShapeDeformPercent`, `m_ImportCameras`, `m_ImportConstraints`, `m_ImportLights`, `m_ImportMaterials`, `m_ImportPhysicalCameras`, `m_ImportVisibility`, `m_InternalIDToNameTable`, `m_MaterialImportMode`, `m_MaterialLocation`, `m_Materials`, `m_NodeNameCollisionStrategy`, `m_PreserveHierarchy`, `m_PreviousCalculatedGlobalScale`, `m_RemapMaterialsIfMaterialImportModeIsNone`, `m_RemoveConstantScaleCurves`, `m_ResampleCurves`, `m_ResampleRotations`, `m_RigImportErrors`, `m_RigImportWarnings`, `m_SortHierarchyByName`, `m_StrictVertexDataChecks`, `m_SupportsEmbeddedMaterials`, `m_UseSRGBMaterialColor`, `m_UsedFileIDs`, `maxBonesPerVertex`, `maximumMeshLod`, `meshLodGenerationFlags`, `meshOptimizationFlags`, `minBoneWeight`, `normalCalculationMode`, `normalSmoothingSource`, `optimizeBones`, `optimizeMeshForGPU`, `secondaryUVMarginMethod`, `secondaryUVMinLightmapResolution`, `secondaryUVMinObjectScale`, `skinWeightsMode`, `splitTangentsAcrossUV` |
+| `MonoImporter` | AssetImporter | 1035 | `executionOrder`, `icon`, `m_DefaultReferences`, `m_Name`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_FileIDToRecycleName`, `m_NewHashIdentity`, `m_OldHashIdentity`, `m_UsedFileIDs`, `m_UserData` |
+| `MovieImporter` | AssetImporter | 1044 | `m_Name`, `m_Quality`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_FileIDToRecycleName`, `m_LinearTexture`, `m_NewHashIdentity`, `m_OldHashIdentity`, `m_UsedFileIDs`, `m_UserData` |
+| `MultiArtifactTestImporter` | AssetImporter | 1223240404 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `NativeFormatImporter` | AssetImporter | 1034 | `m_Name`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_FileIDToRecycleName`, `m_MainObjectFileID`, `m_NewHashIdentity`, `m_OldHashIdentity`, `m_UsedFileIDs`, `m_UserData` |
+| `PVRImporter` | AssetImporter | 1052 | `m_Name`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_FileIDToRecycleName`, `m_NewHashIdentity`, `m_OldHashIdentity`, `m_UserData` |
+| `PackageManifestImporter` | AssetImporter | 1896753126 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `PluginImporter` | AssetImporter | 1050 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExecutionOrder`, `m_IconMap`, `m_IsPreloaded`, `m_Name`, `m_Output`, `m_PlatformData`, `m_UserData`, `m_DefineConstraints`, `m_ExternalObjects`, `m_IsExplicitlyReferenced`, `m_IsOverridable`, `m_UsedFileIDs`, `m_ValidateReferences` |
+| `PrefabImporter` | AssetImporter | 468431735 | `m_AddedObjectFileIDs`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_IsPrefabVariant`, `m_Name`, `m_UserData`, `m_UnableToImportOnPreviousDomainReload`, `m_UsedFileIDs`, `m_VariantParentGUID` |
+| `PreviewImporter` | AssetImporter | — | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `RayTracingShaderImporter` | AssetImporter | 747330370 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData`, `m_CurrentAPIMask` |
+| `ReferencesArtifactGenerator` | AssetImporter | 1114811875 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `RoslynAdditionalFileImporter` | AssetImporter | — | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `RoslynAnalyzerConfigImporter` | AssetImporter | — | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `RuleSetFileImporter` | AssetImporter | — | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `ScriptedImporter` | AssetImporter | 2089858483 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_Name`, `m_Script`, `m_UserData`, `m_ExternalObjects`, `m_FileIDToRecycleName`, `m_InternalIDToNameTable`, `m_UsedFileIDs` |
+| `ShaderImporter` | AssetImporter | 1007 | `m_Name`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_DefaultTextures`, `m_ExternalObjects`, `m_FileIDToRecycleName`, `m_NewHashIdentity`, `m_NonModifiableTextures`, `m_OldHashIdentity`, `m_PreprocessorOverride`, `m_UsedFileIDs`, `m_UserData` |
+| `ShaderIncludeImporter` | AssetImporter | — | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData` |
+| `SpeedTreeImporter` | AssetImporter | 1110 | `m_AlphaTestRef`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_BestWindQuality`, `m_BillboardTransitionCrossFadeWidth`, `m_EnableSmoothLODTransition`, `m_FadeOutWidth`, `m_HasBillboard`, `m_HueVariation`, `m_LODSettings`, `m_MainColor`, `m_Name`, `m_ScaleFactor`, `m_UserData`, `m_AnimateCrossFading`, `m_EnableBumpMapping`, `m_EnableHueVariation`, `m_EnableLightProbes`, `m_EnableShadowCasting`, `m_EnableShadowReceiving`, `m_EnableSubsurfaceScattering`, `m_ExternalObjects`, `m_FileIDType`, `m_GenerateColliders`, `m_GenerateRigidbody`, `m_MaterialLocation`, `m_MaterialVersion`, `m_Materials`, `m_MotionVectorModeEnumValue`, `m_ReflectionProbeEnumValue`, `m_SelectedWindQuality`, `m_Shininess`, `m_SpecColor`, `m_SupportsEmbeddedMaterials`, `m_UnitConversionEnumValue`, `m_UsedFileIDs` |
+| `SpriteAtlasImporter` | AssetImporter | 1210832254 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UsedFileIDs`, `m_UserData`, `m_BindAsDefault`, `m_PackingSettings`, `m_PlatformSettings`, `m_SecondaryTextureSettings`, `m_TextureSettings`, `m_VariantMultiplier` |
+| `StyleSheetImporter` | AssetImporter | — | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_Name`, `m_UserData` |
+| `SubstanceImporter` | AssetImporter | 1112 | `m_Name`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_DeletedPrototypes`, `m_ExternalObjects`, `m_FileIDToRecycleName`, `m_IsFirstImport`, `m_MaterialImportOutputs`, `m_MaterialInstances`, `m_NewHashIdentity`, `m_OldHashIdentity`, `m_UsedFileIDs`, `m_UserData` |
+| `TextScriptImporter` | AssetImporter | 1031 | `m_Name`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_FileIDToRecycleName`, `m_NewHashIdentity`, `m_OldHashIdentity`, `m_UsedFileIDs`, `m_UserData` |
+| `TextureImporter` | AssetImporter | 1006 | `m_BorderMipMap`, `m_ConvertToNormalMap`, `m_EnableMipMap`, `m_ExternalNormalMap`, `m_FadeOut`, `m_GenerateCubemap`, `m_GrayScaleToAlpha`, `m_HeightScale`, `m_IsReadable`, `m_Lightmap`, `m_MaxTextureSize`, `m_MipMapFadeDistanceEnd`, `m_MipMapFadeDistanceStart`, `m_MipMapMode`, `m_NPOTScale`, `m_Name`, `m_NormalMapFilter`, `m_TextureFormat`, `m_TextureSettings`, `m_TextureType`, `correctGamma`, `m_Alignment`, `m_AllowsAlphaSplitting`, `m_AlphaIsTransparency`, `m_AlphaTestReferenceValue`, `m_AlphaUsage`, `m_ApplyGammaDecoding`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_BuildTargetSettings`, `m_CompressionQuality`, `m_CompressionQualitySet`, `m_CookieLightType`, `m_CorrectGamma`, `m_CubemapConvolution`, `m_CubemapConvolutionExponent`, `m_CubemapConvolutionSteps`, `m_ExternalObjects`, `m_FileIDToRecycleName`, `m_FlipGreenChannel`, `m_FlipbookColumns`, `m_FlipbookRows`, `m_IgnoreMasterTextureLimit`, `m_IgnoreMipmapLimit`, `m_IgnorePngGamma`, `m_InternalIDToNameTable`, `m_LinearTexture`, `m_MaxTextureSizeSet`, `m_MipMapsPreserveCoverage`, `m_MipmapLimitGroupName`, `m_NewHashIdentity`, `m_OldHashIdentity`, `m_Output`, `m_PSDRemoveMatte`, `m_PSDShowRemoveMatteOption`, `m_PlatformSettings`, `m_PushPullDilation`, `m_RGBM`, `m_RecommendedTextureFormat`, `m_SeamlessCubemap`, `m_SingleChannelComponent`, `m_SourceTextureInformation`, `m_SpriteBorder`, `m_SpriteExtrude`, `m_SpriteGenerateFallbackPhysicsShape`, `m_SpriteMeshType`, `m_SpriteMode`, `m_SpritePackingTag`, `m_SpritePivot`, `m_SpritePixelsToUnits`, `m_SpriteSheet`, `m_SpriteTessellationDetail`, `m_StreamingMipmaps`, `m_StreamingMipmapsPriority`, `m_Swizzle`, `m_TextureFormatSet`, `m_TextureShape`, `m_UsedFileIDs`, `m_UserData`, `m_VTOnly`, `m_sRGBTexture` |
+| `TrueTypeFontImporter` | AssetImporter | 1042 | `m_FontNames`, `m_FontSize`, `m_ForceTextureCase`, `m_IncludeFontData`, `m_Name`, `m_AscentCalculationMode`, `m_AssetBundleName`, `m_AssetBundleVariant`, `m_CharacterPadding`, `m_CharacterSpacing`, `m_CustomCharacters`, `m_ExternalObjects`, `m_FallbackFontReferences`, `m_FileIDToRecycleName`, `m_FontColor`, `m_FontName`, `m_FontRenderingMode`, `m_NewHashIdentity`, `m_OldHashIdentity`, `m_Output`, `m_RenderMode`, `m_ShouldRoundAdvanceValue`, `m_Style`, `m_Use2xBehaviour`, `m_UseLegacyBoundsCalculation`, `m_UsedFileIDs`, `m_UserData` |
+| `VideoClipImporter` | AssetImporter | 1127 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ColorSpace`, `m_Deinterlace`, `m_EncodeAlpha`, `m_EndFrame`, `m_FlipHorizontal`, `m_FlipVertical`, `m_FrameRange`, `m_Name`, `m_Output`, `m_StartFrame`, `m_TargetSettings`, `m_UserData`, `m_AudioImportMode`, `m_ExternalObjects`, `m_FrameCount`, `m_FrameRate`, `m_ImportAudio`, `m_IsColorLinear`, `m_OriginalHeight`, `m_OriginalWidth`, `m_PixelAspectRatioDenominator`, `m_PixelAspectRatioNumerator`, `m_Quality`, `m_SourceAudioChannelCount`, `m_SourceAudioSampleRate`, `m_SourceFileSize`, `m_SourceHasAlpha`, `m_UseLegacyImporter`, `m_UsedFileIDs` |
+| `VisualEffectImporter` | AssetImporter | 2058629510 | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_ExternalObjects`, `m_Name`, `m_UserData`, `m_Template`, `m_UseAsTemplate`, `m_UsedFileIDs` |
+| `AudioContainerElement` | NamedObject | — | `m_AudioClip`, `m_Enabled`, `m_Name`, `m_Volume` |
+| `AudioMixer` | NamedObject | 240 | `m_EnableSuspend`, `m_MasterGroup`, `m_MixerConstant`, `m_Name`, `m_OutputGroup`, `m_Snapshots`, `m_StartSnapshot`, `m_SuspendThreshold`, `m_UpdateMode` |
+| `AudioMixerController` | AudioMixer | 241 | `m_EnableSuspend`, `m_MasterGroup`, `m_MixerConstant`, `m_Name`, `m_OutputGroup`, `m_Snapshots`, `m_StartSnapshot`, `m_SuspendThreshold`, `m_UpdateMode` |
+| `AudioMixerEffectController` | NamedObject | 244 | `m_Bypass`, `m_EffectID`, `m_EffectName`, `m_EnableWetMix`, `m_MixLevel`, `m_Name`, `m_Parameters`, `m_SendTarget` |
+| `AudioMixerGroup` | NamedObject | 273 | `m_AudioMixer`, `m_Children`, `m_GroupID`, `m_Name` |
+| `AudioMixerGroupController` | AudioMixerGroup | 243 | `m_AudioMixer`, `m_Children`, `m_GroupID`, `m_Name` |
+| `AudioMixerSnapshot` | NamedObject | 272 | `m_AudioMixer`, `m_Name`, `m_SnapshotID` |
+| `AudioMixerSnapshotController` | AudioMixerSnapshot | 245 | `m_AudioMixer`, `m_Name`, `m_SnapshotID` |
+| `AudioResource` | NamedObject | — | `m_Name` |
+| `AudioRandomContainer` | AudioResource | — | `m_AutomaticTriggerMode`, `m_AutomaticTriggerTime`, `m_AutomaticTriggerTimeRandomizationEnabled`, `m_AutomaticTriggerTimeRandomizationRange`, `m_AvoidRepeatingLast`, `m_Elements`, `m_LoopCount`, `m_LoopCountRandomizationEnabled`, `m_LoopCountRandomizationRange`, `m_LoopMode`, `m_Name`, `m_Pitch`, `m_PitchRandomizationEnabled`, `m_PitchRandomizationRange`, `m_PlaybackMode`, `m_TriggerMode`, `m_Volume`, `m_VolumeRandomizationEnabled`, `m_VolumeRandomizationRange` |
+| `SampleClip` | AudioResource | 271 | `m_Name` |
+| `AudioClip` | SampleClip | 83 | `m_Name`, `m_3D`, `m_Ambisonic`, `m_AudioData`, `m_BitsPerSample`, `m_Channels`, `m_CompressionFormat`, `m_Format`, `m_Frequency`, `m_IsTrackerFormat`, `m_Legacy3D`, `m_Length`, `m_LoadInBackground`, `m_LoadType`, `m_PreloadAudioData`, `m_Resource`, `m_Stream`, `m_SubsoundIndex`, `m_Type`, `m_UseHardware` |
+| `Avatar` | NamedObject | 90 | `m_Avatar`, `m_AvatarSize`, `m_Name`, `m_TOS`, `m_HumanDescription` |
+| `AvatarMask` | NamedObject | 319 | `m_Elements`, `m_Mask`, `m_Name` |
+| `AvatarSkeletonMask` | NamedObject | — | `elements`, `m_Name` |
+| `BaseAnimationTrack` | NamedObject, ABC | 110 | — |
+| `NewAnimationTrack` | BaseAnimationTrack | 118 | `m_ClassID`, `m_Curves`, `m_Name` |
+| `BillboardAsset` | NamedObject | 226 | `bottom`, `height`, `imageTexCoords`, `indices`, `m_Name`, `material`, `vertices`, `width`, `rotated` |
+| `BlobObject` | NamedObject | — | `m_BlobData`, `m_BlobTypeHash`, `m_Name`, `m_NestedBlobObjectReferenceOffsets`, `m_NestedBlobObjectReferences` |
+| `BlockShaderContainer` | NamedObject | — | `blob`, `dependencies`, `generatedPaths`, `guid`, `m_Name`, `state` |
+| `BlockShaderErrors` | NamedObject | — | `errors`, `filePath`, `m_Name` |
+| `BlockShaderSyntaxTree` | NamedObject | — | `filePath`, `m_Name`, `source` |
+| `BuildReport` | NamedObject | 1125 | `m_Appendices`, `m_BuildSteps`, `m_Files`, `m_Name`, `m_Summary`, `m_RootAssetPaths` |
+| `CachedSpriteAtlas` | NamedObject | 214 | `frames`, `textures`, `alphaTextures` |
+| `CachedSpriteAtlasRuntimeData` | NamedObject | 644342135 | `alphaTextures`, `frames`, `textures`, `currentPackingHash` |
+| `ComputeShader` | NamedObject | 72 | `m_Name`, `constantBuffers`, `kernels`, `variants` |
+| `D3D12DeviceFilterLists` | NamedObject | — | `m_AllowFilterList`, `m_DenyFilterList`, `m_GraphicsJobsFilterList`, `m_Name` |
+| `DefaultAsset` | NamedObject | 1029 | `m_Name`, `m_ErrorCode`, `m_IsWarning`, `m_Message` |
+| `BrokenPrefabAsset` | DefaultAsset | — | `m_BrokenParentPrefab`, `m_IsPrefabFileValid`, `m_IsVariant`, `m_IsWarning`, `m_Message`, `m_Name`, `m_ErrorCode` |
+| `SceneAsset` | DefaultAsset | 1032 | `m_Name`, `m_ErrorCode`, `m_IsWarning`, `m_Message` |
+| `EditorProjectAccess` | NamedObject | 426301858 | `m_Name` |
+| `Flare` | NamedObject | 121 | `m_Elements`, `m_FlareTexture`, `m_Name`, `m_TextureLayout`, `m_UseFog` |
+| `Font` | NamedObject | 128 | `m_Ascent`, `m_AsciiStartOffset`, `m_CharacterRects`, `m_ConvertCase`, `m_DefaultMaterial`, `m_DefaultStyle`, `m_FontData`, `m_FontNames`, `m_FontSize`, `m_KerningValues`, `m_LineSpacing`, `m_Name`, `m_Texture`, `m_CharacterPadding`, `m_CharacterSpacing`, `m_Descent`, `m_FallbackFonts`, `m_FontCountX`, `m_FontCountY`, `m_FontRenderingMode`, `m_GridFont`, `m_Kerning`, `m_PerCharacterKerning`, `m_PixelScale`, `m_ShouldRoundAdvanceValue`, `m_Tracking`, `m_UseLegacyBoundsCalculation` |
+| `GameObjectRecorder` | NamedObject | 1268269756 | `m_Name` |
+| `GraphicsStateCollection` | NamedObject | — | `m_DeviceRenderer`, `m_Name`, `m_QualityLevelName`, `m_RenderPassInfoMap`, `m_RenderStateMap`, `m_RuntimePlatform`, `m_VariantInfoMap`, `m_Version`, `m_VertexLayoutInfoMap` |
+| `HumanTemplate` | NamedObject | 1105 | `m_BoneTemplate`, `m_Name` |
+| `ImportLog` | NamedObject | — | `m_Logs`, `m_Name` |
+| `LightProbes` | NamedObject | 197, 258 | `m_Name`, `bakedCoefficients`, `bakedPositions`, `hullRays`, `m_BakedCoefficients`, `m_BakedLightOcclusion`, `m_Data`, `m_HasBeenEdited`, `tetrahedra` |
+| `LightingDataAsset` | NamedObject | 1120 | `m_BakedAmbientProbeInLinear`, `m_BakedReflectionProbeCubemaps`, `m_BakedReflectionProbes`, `m_EnlightenData`, `m_EnlightenSceneMapping`, `m_EnlightenSceneMappingRendererIDs`, `m_LightProbes`, `m_LightmappedRendererData`, `m_LightmappedRendererDataIDs`, `m_Lightmaps`, `m_Lights`, `m_Name`, `m_AOTextures`, `m_BakedLightIndices`, `m_BakedReflectionProbeCubemapCacheFiles`, `m_EnlightenDataVersion`, `m_LightBakingOutputs`, `m_LightmapsCacheFiles`, `m_LightmapsMode`, `m_Scene`, `m_SceneGUID` |
+| `LightingDataAssetParent` | NamedObject | 1325145578 | `m_Name` |
+| `LightingSettings` | NamedObject | 850595691 | `m_AlbedoBoost`, `m_BounceScale`, `m_EnableBakedLightmaps`, `m_EnableRealtimeLightmaps`, `m_Name`, `m_RealtimeEnvironmentLighting`, `m_UsingShadowmask`, `m_AO`, `m_AOMaxDistance`, `m_BakeBackend`, `m_BakeResolution`, `m_CompAOExponent`, `m_CompAOExponentDirect`, `m_ExportTrainingData`, `m_ExtractAO`, `m_FilterMode`, `m_FinalGather`, `m_FinalGatherFiltering`, `m_FinalGatherRayCount`, `m_ForceUpdates`, `m_ForceWhiteAlbedo`, `m_GIWorkflowMode`, `m_IndirectOutputScale`, `m_LightmapMaxSize`, `m_LightmapParameters`, `m_LightmapsBakeMode`, `m_MixedBakeMode`, `m_PVRBounces`, `m_PVRCulling`, `m_PVRDenoiserTypeAO`, `m_PVRDenoiserTypeDirect`, `m_PVRDenoiserTypeIndirect`, `m_PVRDirectSampleCount`, `m_PVREnvironmentMIS`, `m_PVREnvironmentReferencePointCount`, `m_PVREnvironmentSampleCount`, `m_PVRFilterTypeAO`, `m_PVRFilterTypeDirect`, `m_PVRFilterTypeIndirect`, `m_PVRFilteringAtrousPositionSigmaAO`, `m_PVRFilteringAtrousPositionSigmaDirect`, `m_PVRFilteringAtrousPositionSigmaIndirect`, `m_PVRFilteringGaussRadiusAO`, `m_PVRFilteringGaussRadiusDirect`, `m_PVRFilteringGaussRadiusIndirect`, `m_PVRFilteringMode`, `m_PVRSampleCount`, `m_PVRSampling`, `m_Padding`, `m_RealtimeResolution`, `m_TextureCompression`, `m_TrainingDataDestination` |
+| `LightmapParameters` | NamedObject | 1113 | `AOAntiAliasingSamples`, `AOQuality`, `antiAliasingSamples`, `backFaceTolerance`, `bakedLightmapTag`, `blurRadius`, `clusterResolution`, `directLightQuality`, `edgeStitching`, `irradianceBudget`, `irradianceQuality`, `isTransparent`, `m_Name`, `modellingTolerance`, `resolution`, `systemTag`, `limitLightmapCount`, `maxLightmapCount`, `pushoff` |
+| `LocalizationAsset` | NamedObject | 2083778819 | `Editor_Asset`, `Locale_ISO_Code`, `String_Table`, `m_Name` |
+| `Material` | NamedObject | 21 | `m_Name`, `m_SavedProperties`, `m_Shader`, `disabledShaderPasses`, `m_BuildTextureStacks`, `m_CustomRenderQueue`, `m_DoubleSidedGI`, `m_EnableInstancingVariants`, `m_InvalidKeywords`, `m_LightmapFlags`, `m_ShaderKeywords`, `m_ValidKeywords`, `stringTagMap` |
+| `ProceduralMaterial` | Material | 185 | `m_Name`, `m_SavedProperties`, `m_Shader`, `disabledShaderPasses`, `m_AnimationUpdateRate`, `m_BuildTextureStacks`, `m_CacheSize`, `m_CustomRenderQueue`, `m_DoubleSidedGI`, `m_EnableInstancingVariants`, `m_Flags`, `m_GenerateMipmaps`, `m_Hash`, `m_Height`, `m_Inputs`, `m_InvalidKeywords`, `m_LightmapFlags`, `m_LoadingBehavior`, `m_MaximumSize`, `m_PrototypeName`, `m_ShaderKeywords`, `m_SubstancePackage`, `m_Textures`, `m_ValidKeywords`, `m_Width`, `stringTagMap` |
+| `Mesh` | NamedObject | 43 | `m_BindPose`, `m_CompressedMesh`, `m_IndexBuffer`, `m_LocalAABB`, `m_MeshCompression`, `m_MeshUsageFlags`, `m_Name`, `m_SubMeshes`, `m_BakedConvexCollisionMesh`, `m_BakedTriangleCollisionMesh`, `m_BoneNameHashes`, `m_BonesAABB`, `m_CollisionTriangles`, `m_CollisionVertexCount`, `m_Colors`, `m_CookingOptions`, `m_IndexFormat`, `m_IsReadable`, `m_KeepIndices`, `m_KeepVertices`, `m_MeshLodInfo`, `m_MeshMetrics_0_`, `m_MeshMetrics_1_`, `m_Normals`, `m_RootBoneNameHash`, `m_ShapeVertices`, `m_Shapes`, `m_Skin`, `m_StreamCompression`, `m_StreamData`, `m_Tangents`, `m_UV`, `m_UV1`, `m_Use16BitIndices`, `m_VariableBoneCountWeights`, `m_VertexData`, `m_Vertices` |
+| `Motion` | NamedObject, ABC | 207 | — |
+| `AnimationClip` | Motion | 74 | `m_Bounds`, `m_Compressed`, `m_CompressedRotationCurves`, `m_Events`, `m_FloatCurves`, `m_Name`, `m_PositionCurves`, `m_RotationCurves`, `m_SampleRate`, `m_ScaleCurves`, `m_WrapMode`, `m_AnimationType`, `m_ClipBindingConstant`, `m_EulerCurves`, `m_HasGenericRootTransform`, `m_HasMotionFloatCurves`, `m_Legacy`, `m_MuscleClip`, `m_MuscleClipSize`, `m_PPtrCurves`, `m_UseHighQualityCurve` |
+| `PreviewAnimationClip` | AnimationClip | 1108 | `m_Bounds`, `m_ClipBindingConstant`, `m_Compressed`, `m_CompressedRotationCurves`, `m_EulerCurves`, `m_Events`, `m_FloatCurves`, `m_Legacy`, `m_MuscleClip`, `m_MuscleClipSize`, `m_Name`, `m_PPtrCurves`, `m_PositionCurves`, `m_RotationCurves`, `m_SampleRate`, `m_ScaleCurves`, `m_UseHighQualityCurve`, `m_WrapMode`, `m_HasGenericRootTransform`, `m_HasMotionFloatCurves` |
+| `BlendTree` | Motion | 206 | `m_Childs`, `m_MaxThreshold`, `m_MinThreshold`, `m_Name`, `m_UseAutomaticThresholds`, `m_BlendEvent`, `m_BlendEventY`, `m_BlendParameter`, `m_BlendParameterY`, `m_BlendType`, `m_NormalizedBlendValues` |
+| `NavMeshData` | NamedObject | 238 | `m_HeightMeshes`, `m_Heightmaps`, `m_Name`, `m_NavMeshTiles`, `m_OffMeshLinks`, `m_AgentTypeID`, `m_NavMeshBuildSettings`, `m_NavMeshParams`, `m_Position`, `m_Rotation`, `m_SourceBounds` |
+| `NavMeshObsolete` | NamedObject | 194 | `m_Name` |
+| `OcclusionCullingData` | NamedObject | 363 | `m_Name`, `m_PVSData`, `m_Scenes` |
+| `PhysicsMaterial` | NamedObject | — | `m_Name`, `bounceCombine`, `bounciness`, `dynamicFriction`, `frictionCombine`, `m_BounceCombine`, `m_Bounciness`, `m_DynamicFriction`, `m_FrictionCombine`, `m_StaticFriction`, `staticFriction` |
+| `PhysicsMaterial2D` | NamedObject | 62 | `bounciness`, `friction`, `m_Name`, `m_BounceCombine`, `m_FrictionCombine` |
+| `PreloadData` | NamedObject | 150 | `m_Assets`, `m_Name`, `m_Dependencies`, `m_ExplicitDataLayout` |
+| `Preset` | NamedObject | 181963792 | `m_Name`, `m_Properties`, `m_TargetType`, `m_CoupledProperties`, `m_CoupledType`, `m_ExcludedProperties` |
+| `RayTracingShader` | NamedObject | 825902497 | `m_MaxRecursionDepth`, `m_Name`, `variants`, `m_EnableRayPayloadSizeChecks` |
+| `RoslynAdditionalFileAsset` | NamedObject | — | `m_Name` |
+| `RoslynAnalyzerConfigAsset` | NamedObject | — | `m_Name` |
+| `RuntimeAnimatorController` | NamedObject | 93 | `m_AnimationClips`, `m_Controller`, `m_ControllerSize`, `m_Name`, `m_TOS` |
+| `AnimatorController` | RuntimeAnimatorController | 91 | `m_AnimationClips`, `m_Controller`, `m_ControllerSize`, `m_Name`, `m_TOS`, `m_EvaluateTransitionsOnStart`, `m_MultiThreadedStateMachine`, `m_StateMachineBehaviourVectorDescription`, `m_StateMachineBehaviours` |
+| `AnimatorOverrideController` | RuntimeAnimatorController | 221 | `m_Clips`, `m_Controller`, `m_Name` |
+| `Shader` | NamedObject | 48 | `m_Name`, `compressedBlob`, `compressedLengths`, `decompressedLengths`, `decompressedSize`, `m_AssetGUID`, `m_AssetLocalIdentifierInFile`, `m_Dependencies`, `m_NonModifiableTextures`, `m_ParsedForm`, `m_PathName`, `m_Script`, `m_ShaderIsBaked`, `m_SubProgramBlob`, `offsets`, `platforms`, `stageCounts` |
+| `ShaderVariantCollection` | NamedObject | 200 | `m_Name`, `m_Shaders` |
+| `SpeedTreeWindAsset` | NamedObject | 228 | `m_Name`, `m_Config8`, `m_Config9`, `m_Wind`, `m_eVersion` |
+| `Sprite` | NamedObject | 213 | `m_Extrude`, `m_Name`, `m_Offset`, `m_PixelsToUnits`, `m_RD`, `m_Rect`, `m_AtlasTags`, `m_Bones`, `m_Border`, `m_IsPolygon`, `m_PhysicsShape`, `m_Pivot`, `m_RenderDataKey`, `m_ScriptableObjects`, `m_SpriteAtlas` |
+| `SpriteAtlas` | NamedObject | 687078895 | `m_IsVariant`, `m_Name`, `m_PackedSpriteNamesToIndex`, `m_PackedSprites`, `m_RenderDataMap`, `m_Tag`, `m_Guid` |
+| `SpriteAtlasAsset` | NamedObject | 612988286 | `m_ImporterData`, `m_IsVariant`, `m_MasterAtlas`, `m_Name`, `m_ScriptablePacker` |
+| `SubstanceArchive` | NamedObject | 184 | `m_Name`, `m_PackageData` |
+| `TerrainData` | NamedObject | 156 | `m_DetailDatabase`, `m_Heightmap`, `m_Name`, `m_SplatDatabase`, `m_PreloadShaders` |
+| `TerrainLayer` | NamedObject | 1953259897 | `m_DiffuseRemapMax`, `m_DiffuseRemapMin`, `m_DiffuseTexture`, `m_MaskMapRemapMax`, `m_MaskMapRemapMin`, `m_MaskMapTexture`, `m_Metallic`, `m_Name`, `m_NormalMapTexture`, `m_NormalScale`, `m_Smoothness`, `m_Specular`, `m_TileOffset`, `m_TileSize`, `m_SmoothnessSource` |
+| `TextAsset` | NamedObject | 49 | `m_Name`, `m_Script`, `m_PathName` |
+| `AssemblyDefinitionAsset` | TextAsset | 1152215463 | `m_Name`, `m_Script` |
+| `AssemblyDefinitionReferenceAsset` | TextAsset | 662584278 | `m_Name`, `m_Script` |
+| `MonoScript` | TextAsset | 115 | `m_AssemblyName`, `m_ClassName`, `m_ExecutionOrder`, `m_Name`, `m_Namespace`, `m_PropertiesHash`, `m_IsEditorScript` |
+| `PackageManifest` | TextAsset | 1896753125 | `m_Name`, `m_Script` |
+| `RuleSetFileAsset` | TextAsset | — | `m_Name`, `m_Script` |
+| `ShaderInclude` | TextAsset | — | `m_Name`, `m_Script` |
+| `Texture` | NamedObject, ABC | 27 | — |
+| `BaseVideoTexture` | Texture, ABC | 237 | — |
+| `WebCamTexture` | BaseVideoTexture | 158 | `m_Name`, `m_DownscaleFallback`, `m_ForcedFallbackFormat`, `m_IsAlphaChannelOptional` |
+| `CubemapArray` | Texture | 188 | `image_data`, `m_ColorSpace`, `m_CubemapCount`, `m_DataSize`, `m_Format`, `m_IsReadable`, `m_MipCount`, `m_Name`, `m_TextureSettings`, `m_Width`, `m_DownscaleFallback`, `m_ForcedFallbackFormat`, `m_IsAlphaChannelOptional`, `m_StreamData`, `m_UsageMode` |
+| `LowerResBlitTexture` | Texture | 1480428607 | `m_Name`, `m_DownscaleFallback`, `m_ForcedFallbackFormat`, `m_IsAlphaChannelOptional` |
+| `MovieTexture` | Texture | 152 | `m_Name`, `m_AudioClip`, `m_ColorSpace`, `m_DownscaleFallback`, `m_ForcedFallbackFormat`, `m_IsAlphaChannelOptional`, `m_Loop`, `m_MovieData` |
+| `ProceduralTexture` | Texture | 186 | `m_Name`, `AlphaSource`, `AlphaSourceIsGrayscale`, `Format`, `Type`, `m_AlphaSourceIsInverted`, `m_AlphaSourceUID`, `m_BakedData`, `m_BakedParameters`, `m_ColorSpace`, `m_DownscaleFallback`, `m_ForcedFallbackFormat`, `m_IsAlphaChannelOptional`, `m_LightmapFormat`, `m_Mipmaps`, `m_SubstanceMaterial`, `m_SubstanceTextureUID`, `m_TextureParameters`, `m_TextureSettings` |
+| `RenderTexture` | Texture | 84 | `m_ColorFormat`, `m_Height`, `m_MipMap`, `m_Name`, `m_TextureSettings`, `m_Width`, `m_AntiAliasing`, `m_BindMS`, `m_DepthFormat`, `m_DepthStencilFormat`, `m_Dimension`, `m_DownscaleFallback`, `m_EnableCompatibleFormat`, `m_EnableRandomWrite`, `m_ForcedFallbackFormat`, `m_GenerateMips`, `m_IsAlphaChannelOptional`, `m_IsCubemap`, `m_IsPowerOfTwo`, `m_MipCount`, `m_SRGB`, `m_ShadowSamplingMode`, `m_UseDynamicScale`, `m_UseDynamicScaleExplicit`, `m_VolumeDepth` |
+| `CustomRenderTexture` | RenderTexture | 86 | `m_AntiAliasing`, `m_ColorFormat`, `m_CubemapFaceMask`, `m_CurrentUpdateZoneSpace`, `m_Dimension`, `m_DoubleBuffered`, `m_GenerateMips`, `m_Height`, `m_InitColor`, `m_InitMaterial`, `m_InitTexture`, `m_InitializationMode`, `m_Material`, `m_MipMap`, `m_Name`, `m_SRGB`, `m_ShaderPass`, `m_TextureSettings`, `m_UpdateMode`, `m_UpdatePeriod`, `m_UpdateZoneSpace`, `m_UpdateZones`, `m_VolumeDepth`, `m_Width`, `m_WrapUpdateZones`, `m_BindMS`, `m_DepthFormat`, `m_DepthStencilFormat`, `m_DownscaleFallback`, `m_EnableCompatibleFormat`, `m_EnableRandomWrite`, `m_ForcedFallbackFormat`, `m_InitSource`, `m_IsAlphaChannelOptional`, `m_MipCount`, `m_ShadowSamplingMode`, `m_UseDynamicScale`, `m_UseDynamicScaleExplicit` |
+| `SparseTexture` | Texture | 171 | `m_ColorSpace`, `m_Format`, `m_Height`, `m_MipCount`, `m_Name`, `m_TextureSettings`, `m_Width`, `m_DownscaleFallback`, `m_ForcedFallbackFormat`, `m_IsAlphaChannelOptional` |
+| `Texture2D` | Texture | 28 | `image_data`, `m_CompleteImageSize`, `m_Height`, `m_ImageCount`, `m_IsReadable`, `m_LightmapFormat`, `m_Name`, `m_TextureDimension`, `m_TextureFormat`, `m_TextureSettings`, `m_Width`, `m_ColorSpace`, `m_DownscaleFallback`, `m_ForcedFallbackFormat`, `m_IgnoreMasterTextureLimit`, `m_IgnoreMipmapLimit`, `m_IsAlphaChannelOptional`, `m_IsPreProcessed`, `m_MipCount`, `m_MipMap`, `m_MipmapLimitGroupName`, `m_MipsStripped`, `m_PlatformBlob`, `m_ReadAllowed`, `m_StreamData`, `m_StreamingMipmaps`, `m_StreamingMipmapsPriority` |
+| `Cubemap` | Texture2D | 89 | `image_data`, `m_CompleteImageSize`, `m_Height`, `m_ImageCount`, `m_IsReadable`, `m_LightmapFormat`, `m_Name`, `m_TextureDimension`, `m_TextureFormat`, `m_TextureSettings`, `m_Width`, `m_ColorSpace`, `m_DownscaleFallback`, `m_ForcedFallbackFormat`, `m_IgnoreMasterTextureLimit`, `m_IgnoreMipmapLimit`, `m_IsAlphaChannelOptional`, `m_IsPreProcessed`, `m_MipCount`, `m_MipMap`, `m_MipmapLimitGroupName`, `m_MipsStripped`, `m_PlatformBlob`, `m_ReadAllowed`, `m_SourceTextures`, `m_StreamData`, `m_StreamingMipmaps`, `m_StreamingMipmapsPriority` |
+| `Texture2DArray` | Texture | 187 | `image_data`, `m_ColorSpace`, `m_DataSize`, `m_Depth`, `m_Format`, `m_Height`, `m_IsReadable`, `m_MipCount`, `m_Name`, `m_TextureSettings`, `m_Width`, `m_DownscaleFallback`, `m_ForcedFallbackFormat`, `m_IgnoreMipmapLimit`, `m_IsAlphaChannelOptional`, `m_MipmapLimitGroupName`, `m_MipsStripped`, `m_StreamData`, `m_UsageMode` |
+| `Texture3D` | Texture | 117 | `image_data`, `m_Height`, `m_Name`, `m_TextureSettings`, `m_Width`, `m_ColorSpace`, `m_CompleteImageSize`, `m_DataSize`, `m_Depth`, `m_DownscaleFallback`, `m_ForcedFallbackFormat`, `m_Format`, `m_ImageCount`, `m_IsAlphaChannelOptional`, `m_IsReadable`, `m_LightmapFormat`, `m_MipCount`, `m_MipMap`, `m_ReadAllowed`, `m_StreamData`, `m_TextureDimension`, `m_TextureFormat`, `m_UsageMode` |
+| `VideoClip` | NamedObject | 329 | `Height`, `Width`, `m_AudioChannelCount`, `m_AudioLanguage`, `m_AudioSampleRate`, `m_ExternalResources`, `m_Format`, `m_FrameCount`, `m_FrameRate`, `m_HasSplitAlpha`, `m_Name`, `m_OriginalPath`, `m_ProxyHeight`, `m_ProxyWidth`, `m_PixelAspecRatioDen`, `m_PixelAspecRatioNum`, `m_VideoShaders`, `m_sRGB` |
+| `VisualEffectObject` | NamedObject, ABC | 2059678085 | — |
+| `VisualEffectAsset` | VisualEffectObject | 2058629509 | `m_Infos`, `m_Name`, `m_Systems` |
+| `VisualEffectSubgraph` | VisualEffectObject, ABC | 994735392 | — |
+| `VisualEffectSubgraphBlock` | VisualEffectSubgraph | 994735404 | `m_Name` |
+| `VisualEffectSubgraphOperator` | VisualEffectSubgraph | 994735403 | `m_Name` |
+| `VisualEffectResource` | NamedObject | 2058629511 | `m_Graph`, `m_Infos`, `m_Name`, `m_ShaderSources`, `m_Systems` |
+| `VulkanDeviceFilterLists` | NamedObject | — | `m_GfxJobFilterList`, `m_Name`, `m_VulkanAllowFilterList`, `m_VulkanDenyFilterList` |
+| `EditorExtensionImpl` | Object | 1002 | `gFlattenedTypeTree`, `m_DataTemplate`, `m_Object`, `m_OverrideVariable`, `m_TemplateFather` |
+| `EditorSettings` | Object | 159 | `m_AssetNamingUsesSpace`, `m_AssetPipelineMode`, `m_AsyncShaderCompilation`, `m_Bc7TextureCompressor`, `m_BlockShaders`, `m_CacheServerDownloadBatchSize`, `m_CacheServerEnableAuth`, `m_CacheServerEnableDownload`, `m_CacheServerEnableTls`, `m_CacheServerEnableUpload`, `m_CacheServerEndpoint`, `m_CacheServerMode`, `m_CacheServerNamespacePrefix`, `m_CacheServerValidationMode`, `m_CachingShaderPreprocessor`, `m_CollabEditorSettings`, `m_DefaultBehaviorMode`, `m_DisableCookiesInLightmapper`, `m_EnableEditorAsyncCPUTextureLoading`, `m_EnableEnlightenBakedGI`, `m_EnableRoslynAnalyzers`, `m_EnableTextureStreamingInEditMode`, `m_EnableTextureStreamingInPlayMode`, `m_EnterPlayModeOptions`, `m_EnterPlayModeOptionsEnabled`, `m_EtcTextureBestCompressor`, `m_EtcTextureCompressorBehavior`, `m_EtcTextureFastCompressor`, `m_EtcTextureNormalCompressor`, `m_ExternalVersionControlSupport`, `m_ForceAssetUnloadAndGCOnSceneLoad`, `m_GameObjectNamingDigits`, `m_GameObjectNamingScheme`, `m_HideBuildProfileClassicPlatforms`, `m_InspectorUseIMGUIDefaultInspector`, `m_LineEndingsForNewScripts`, `m_PrefabModeAllowAutoSave`, `m_PrefabRegularEnvironment`, `m_PrefabUIEnvironment`, `m_ProjectGenerationIncludedExtensions`, `m_ProjectGenerationRootNamespace`, `m_RecalculateEnvironmentLighting`, `m_ReferencedClipsExactNaming`, `m_RefreshImportMode`, `m_SerializationMode`, `m_SerializeInlineMappingsOnOneLine`, `m_ShadowmaskStitching`, `m_ShowLightmapResolutionOverlay`, `m_SpritePackerCacheSize`, `m_SpritePackerMode`, `m_SpritePackerPaddingPower`, `m_UnlockBlockShaders`, `m_UseLegacyProbeSampleCount`, `m_UserGeneratedProjectSuffix`, `m_WebSecurityEmulationEnabled`, `m_WebSecurityEmulationHostUrl` |
+| `EditorUserBuildSettings` | Object | 1051 | `m_ActiveBuildTarget`, `m_AllowDebugging`, `m_ArchitectureFlags`, `m_BuildLocation`, `m_ConnectProfiler`, `m_Development`, `m_InstallInBuildFolder`, `m_SelectedAndroidSubtarget`, `m_SelectedBuildTargetGroup`, `m_SelectedStandaloneTarget`, `m_ActiveBuildPlatformGroupName`, `m_ActiveBuildProfile`, `m_ActiveBuildTargetGroup`, `m_ActivePlatformGuid`, `m_ActiveProfilePath`, `m_ActiveStandaloneBuildSubtarget`, `m_AndroidBuildSystem`, `m_AndroidBuildType`, `m_AndroidCreateSymbols`, `m_AndroidCreateSymbolsZip`, `m_AndroidCurrentDeploymentTargetId`, `m_AndroidDebugMinification`, `m_AndroidDeviceSocketAddress`, `m_AndroidReleaseMinification`, `m_AndroidUseLegacySdkTools`, `m_BuildAppBundle`, `m_BuildOutputToBuildMetadataMap`, `m_BuildScriptsOnly`, `m_BuildWithCodeCoverage`, `m_BuildWithDeepProfilingSupport`, `m_CompressFilesInPackage`, `m_CompressWithPsArc`, `m_CreateRomFileForSwitch`, `m_CreateSolutionFileForSwitch`, `m_DatalessPlayer`, `m_EnableDebugPadForSwitch`, `m_EnableHeadlessMode`, `m_EnableHeapInspectorForSwitch`, `m_EnableHostIOForSwitch`, `m_EnableMemoryTrackerForSwitch`, `m_EnableRomCompressionForSwitch`, `m_EnableUnpublishableErrorsForSwitch`, `m_ExplicitArrayBoundsChecks`, `m_ExplicitDivideByZeroChecks`, `m_ExplicitNullChecks`, `m_ExportAsGoogleAndroidProject`, `m_FacebookAccessToken`, `m_FacebookCreatePackageForSubmission`, `m_ForceInstallation`, `m_ForceOptimizeScriptCompilation`, `m_GenerateMetroReferenceProjects`, `m_GenerateNintendoSwitchShaderInfo`, `m_GenerateWSAReferenceProjects`, `m_HTCSScriptDebuggingForSwitch`, `m_Il2CppCodeGeneration`, `m_MovePackageToDiscOuterEdge`, `m_NVNAftermath`, `m_NVNAftermathLevel`, `m_NVNDrawValidation`, `m_NVNDrawValidationHeavy`, `m_NVNDrawValidationLight`, `m_NVNGraphicsDebuggerForSwitch`, `m_NVNShaderDebugging`, `m_NeedSubmissionMaterials`, `m_OverrideMaxTextureSize`, `m_OverrideTextureCompression`, `m_PS4HardwareTarget`, `m_PS5KeepPackageFiles`, `m_PS5WorkspaceName`, `m_PathOnRemoteDevice`, `m_PlatformSettings`, `m_RedirectWritesToHostMountForSwitch`, `m_RemoteDeviceAddress`, `m_RemoteDeviceExports`, `m_RemoteDeviceInfo`, `m_RemoteDeviceUsername`, `m_RomCompressionConfigForSwitch`, `m_RomCompressionLevelForSwitch`, `m_RomCompressionTypeForSwitch`, `m_SaveADFForSwitch`, `m_SelectedAndroidETC2Fallback`, `m_SelectedBlackBerryBuildType`, `m_SelectedBlackBerrySubtarget`, `m_SelectedBuildPlatformGroupName`, `m_SelectedBuildTarget`, `m_SelectedCompressionType`, `m_SelectedDiagnosticSetting`, `m_SelectedEmbeddedLinuxArchitecture`, `m_SelectedFacebookTarget`, `m_SelectedIOSBuildType`, `m_SelectedMetroBuildAndRunDeployTarget`, `m_SelectedMetroBuildType`, `m_SelectedMetroSDK`, `m_SelectedMetroTarget`, `m_SelectedPS3Subtarget`, `m_SelectedPS4Subtarget`, `m_SelectedPS5CompressionLevel`, `m_SelectedPS5CompressionType`, `m_SelectedPS5Subtarget`, `m_SelectedPSMSubtarget`, `m_SelectedPSP2Subtarget`, `m_SelectedQNXArchitecture`, `m_SelectedQNXOsVersion`, `m_SelectedStandaloneBuildSubtarget`, `m_SelectedTizenSubtarget`, `m_SelectedWSAArchitecture`, `m_SelectedWSABuildAndRunDeployTarget`, `m_SelectedWSAMinUWPSDK`, `m_SelectedWSASDK`, `m_SelectedWSASubtarget`, `m_SelectedWSAUWPBuildType`, `m_SelectedWSAUWPSDK`, `m_SelectedWSAUWPVSVersion`, `m_SelectedWebGLSubtarget`, `m_SelectedWiiDebugLevel`, `m_SelectedWiiSubtarget`, `m_SelectedWiiUBootMode`, `m_SelectedWiiUBuildOutput`, `m_SelectedWiiUDebugLevel`, `m_SelectedWindowsBuildAndRunDeployTarget`, `m_SelectedXboxOneDeployDrive`, `m_SelectedXboxOneDeployMethod`, `m_SelectedXboxRunMethod`, `m_SelectedXboxSubtarget`, `m_SymlinkLibraries`, `m_SymlinkSources`, `m_SymlinkTrampoline`, `m_UseLegacyNvnPoolAllocatorForSwitch`, `m_WSADotNetNativeEnabled`, `m_WaitForPlayerConnection`, `m_WaitForSwitchMemoryTrackerOnStartup`, `m_WebGLClientBrowserPath`, `m_WebGLClientBrowserType`, `m_WebGLClientPlatform`, `m_WebGLOptimizationLevel`, `m_WebGLUsePreBuiltUnityEngine`, `m_WebPlayerDeployOnline`, `m_WebPlayerNaClSupport`, `m_WebPlayerOfflineDeployment`, `m_WebPlayerStreamed`, `m_WiiUEnableNetAPI`, `m_WindowsDevicePortalAddress`, `m_WindowsDevicePortalUsername`, `m_WsaHolographicRemoting`, `m_XboxCompressedXex`, `m_XboxOneNetworkSharePath`, `m_XboxOneStreamingInstallLaunchChunkRange`, `m_XboxOneUsername`, `m_macosXcodeBuildConfig` |
+| `EditorUserSettings` | Object | 162 | `m_VCAutomaticAdd`, `m_VCDebugCmd`, `m_VCDebugCom`, `m_VCDebugOut`, `m_ArtifactGarbageCollection`, `m_AssetPipelineMode`, `m_AssetPipelineMode2`, `m_CacheServerMode`, `m_CacheServers`, `m_CompressAssetsOnImport`, `m_ConfigSettings`, `m_ConfigValues`, `m_DesiredImportWorkerCount`, `m_IdleImportWorkerShutdownDelay`, `m_SemanticMergeMode`, `m_StandbyImportWorkerCount`, `m_VCAllowAsyncUpdate`, `m_VCHierarchyOverlayIcons`, `m_VCOtherOverlayIcons`, `m_VCOverlayIcons`, `m_VCOverwriteFailedCheckoutAssets`, `m_VCPassword`, `m_VCProjectOverlayIcons`, `m_VCScanLocalPackagesOnConnect`, `m_VCServer`, `m_VCShowFailedCheckout`, `m_VCUserName`, `m_VCWorkspace` |
+| `EmptyObject` | Object | 277625683 | — |
+| `GUIDSerializer` | Object | 1027 | `guidToPath` |
+| `GameManager` | Object, ABC | 9 | — |
+| `GlobalGameManager` | GameManager, ABC | 6 | — |
+| `AnimationManager` | GlobalGameManager | — | — |
+| `AudioManager` | GlobalGameManager | 11 | `Default_Speaker_Mode`, `Doppler_Factor`, `Rolloff_Scale`, `m_DSPBufferSize`, `m_Volume`, `m_AmbisonicDecoderPlugin`, `m_AudioFoundation`, `m_DisableAudio`, `m_OutputChannelLayout`, `m_OutputSamplingRate`, `m_RealVoiceCount`, `m_RequestedDSPBufferSize`, `m_SampleRate`, `m_SpatializerPlugin`, `m_SpeedOfSound`, `m_VirtualVoiceCount`, `m_VirtualizeEffects` |
+| `BuildSettings` | GlobalGameManager | 141 | `enableDynamicBatching`, `hasAdvancedVersion`, `hasPROVersion`, `hasPublishingRights`, `hasShadows`, `isEducationalBuild`, `m_Version`, `buildGUID`, `buildTags`, `enableMultipleDisplays`, `enabledVRDevices`, `hasClusterRendering`, `hasLocalLightShadows`, `hasOculusPlugin`, `hasRenderTexture`, `hasSoftShadows`, `isDebugBuild`, `isEmbedded`, `isNoWatermarkBuild`, `isPrototypingBuild`, `isTrial`, `isWsaHolographicRemotingEnabled`, `levels`, `m_AuthToken`, `m_GraphicsAPIs`, `preloadedPlugins`, `runtimeClassHashes`, `scenes`, `scriptHashes`, `usesOnMouseEvents` |
+| `CloudWebServicesManager` | GlobalGameManager | 301 | — |
+| `ClusterInputManager` | GlobalGameManager | 236 | `m_Inputs` |
+| `CrashReportManager` | GlobalGameManager | 304 | — |
+| `DelayedCallManager` | GlobalGameManager | 98 | — |
+| `GraphicsSettings` | GlobalGameManager | 30 | `m_AlwaysIncludedShaders`, `m_AllowEnlightenSupportForUpgradedProject`, `m_CameraRelativeLightCulling`, `m_CameraRelativeShadowCulling`, `m_CurrentRenderPipelineGlobalSettings`, `m_CustomRenderPipeline`, `m_DefaultRenderingLayerMask`, `m_Deferred`, `m_DeferredReflections`, `m_DepthNormals`, `m_LegacyDeferred`, `m_LensFlare`, `m_LightHalo`, `m_LightProbeOutsideHullStrategy`, `m_LightsUseCCT`, `m_LightsUseColorTemperature`, `m_LightsUseLinearIntensity`, `m_LogWhenShaderIsCompiled`, `m_MotionVectors`, `m_PreloadShadersBatchTimeLimit`, `m_PreloadedShaders`, `m_SRPDefaultSettings`, `m_ScreenSpaceShadows`, `m_ShaderDefinesPerShaderCompiler`, `m_ShaderSettings`, `m_ShaderSettings_Tier1`, `m_ShaderSettings_Tier2`, `m_ShaderSettings_Tier3`, `m_SpritesDefaultMaterial`, `m_TierSettings_Tier1`, `m_TierSettings_Tier2`, `m_TierSettings_Tier3`, `m_TransparencySortAxis`, `m_TransparencySortMode`, `m_VideoShadersIncludeMode` |
+| `InputManager` | GlobalGameManager | 13 | `m_Axes`, `m_UsePhysicalKeys` |
+| `MasterServerInterface` | GlobalGameManager | 155 | — |
+| `MonoManager` | GlobalGameManager | 116 | `m_Scripts`, `m_AssemblyNames`, `m_AssemblyTypes`, `m_RuntimeClassHashes`, `m_ScriptHashes` |
+| `MultiplayerManager` | GlobalGameManager | — | `m_ActiveMultiplayerRole`, `m_ActiveMultiplayerRoles` |
+| `NavMeshProjectSettings` | GlobalGameManager | 126 | `areas`, `m_LastAgentTypeID`, `m_SettingNames`, `m_Settings` |
+| `NetworkManager` | GlobalGameManager | 149 | `m_AssetToPrefab`, `m_DebugLevel`, `m_Sendrate` |
+| `NotificationManager` | GlobalGameManager | — | — |
+| `PerformanceReportingManager` | GlobalGameManager | 305 | — |
+| `Physics2DSettings` | GlobalGameManager | 19, 51 | `m_DefaultMaterial`, `m_Gravity`, `m_LayerCollisionMatrix`, `m_PositionIterations`, `m_VelocityIterations`, `m_AngularSleepTolerance`, `m_AutoSimulation`, `m_AutoSyncTransforms`, `m_BaumgarteScale`, `m_BaumgarteTimeOfImpactScale`, `m_BounceThreshold`, `m_CallbacksOnDisable`, `m_ChangeStopsCallbacks`, `m_ContactThreshold`, `m_DefaultContactOffset`, `m_DeleteStopsCallbacks`, `m_JobOptions`, `m_LinearSleepTolerance`, `m_MaxAngularCorrection`, `m_MaxLinearCorrection`, `m_MaxRotationSpeed`, `m_MaxSubStepCount`, `m_MaxTranslationSpeed`, `m_MinPenetrationForPenalty`, `m_MinSubStepFPS`, `m_PhysicsLowLevelSettings`, `m_QueriesHitTriggers`, `m_QueriesStartInColliders`, `m_RaycastsHitTriggers`, `m_RaycastsStartInColliders`, `m_ReuseCollisionCallbacks`, `m_SimulationLayers`, `m_SimulationMode`, `m_TimeToSleep`, `m_UseSubStepContacts`, `m_UseSubStepping`, `m_VelocityThreshold` |
+| `PhysicsManager` | GlobalGameManager | 55 | `m_BounceThreshold`, `m_DefaultMaterial`, `m_Gravity`, `m_LayerCollisionMatrix`, `m_AutoSimulation`, `m_AutoSyncTransforms`, `m_BroadphaseType`, `m_ClothGravity`, `m_ClothInterCollisionDistance`, `m_ClothInterCollisionSettingsToggle`, `m_ClothInterCollisionStiffness`, `m_ContactPairsMode`, `m_ContactsGeneration`, `m_CurrentBackendId`, `m_DefaultContactOffset`, `m_DefaultMaxAngluarSpeed`, `m_DefaultMaxAngularSpeed`, `m_DefaultMaxDepenetrationVelocity`, `m_DefaultSolverIterations`, `m_DefaultSolverVelocityIterations`, `m_EnableAdaptiveForce`, `m_EnableEnhancedDeterminism`, `m_EnablePCM`, `m_EnableUnifiedHeightmaps`, `m_FastMotionThreshold`, `m_FrictionType`, `m_GenerateOnTriggerStayEvents`, `m_ImprovedPatchFriction`, `m_IncrementalStaticBroadphase`, `m_InvokeCollisionCallbacks`, `m_LogVerbosity`, `m_MaxAngularVelocity`, `m_MinPenetrationForPenalty`, `m_QueriesHitBackfaces`, `m_QueriesHitTriggers`, `m_RaycastsHitTriggers`, `m_ReleaseSceneBuffers`, `m_ReuseCollisionCallbacks`, `m_SceneBuffersReleaseInterval`, `m_ScratchBufferChunkCount`, `m_SimulationMode`, `m_SleepAngularVelocity`, `m_SleepThreshold`, `m_SleepVelocity`, `m_SolverIterationCount`, `m_SolverType`, `m_SolverVelocityIterations`, `m_WorldBounds`, `m_WorldSubdivisions` |
+| `PlayerSettings` | GlobalGameManager | 129 | `AndroidProfiler`, `allowedAutorotateToLandscapeLeft`, `allowedAutorotateToLandscapeRight`, `allowedAutorotateToPortrait`, `allowedAutorotateToPortraitUpsideDown`, `companyName`, `defaultScreenHeight`, `defaultScreenHeightWeb`, `defaultScreenOrientation`, `defaultScreenWidth`, `defaultScreenWidthWeb`, `productName`, `runInBackground`, `targetDevice`, `use32BitDisplayBuffer`, `useMacAppStoreValidation`, `useOSAutorotation`, `usePlayerLog`, `AID`, `AndroidEnableSustainedPerformanceMode`, `AndroidFilterTouchesWhenObscured`, `AndroidLicensePublicKey`, `D3DHDRBitDepth`, `Force_IOS_Speakers_When_Recording`, `Override_IPod_Music`, `Prepare_IOS_For_Recording`, `accelerometerFrequency`, `activeInputHandler`, `adjustIOSFPSUsingThermalState`, `allowFullscreenSwitch`, `allowHDRDisplaySupport`, `allowedHttpConnections`, `androidApplicationEntry`, `androidAutoRotationBehavior`, `androidBlitType`, `androidDefaultWindowHeight`, `androidDefaultWindowWidth`, `androidDisplayOptions`, `androidFullscreenMode`, `androidMaxAspectRatio`, `androidMinAspectRatio`, `androidMinimumWindowHeight`, `androidMinimumWindowWidth`, `androidPredictiveBackSupport`, `androidRenderOutsideSafeArea`, `androidRequestedVisibleInsets`, `androidResizableWindow`, `androidResizeableActivity`, `androidShowActivityIndicatorOnLoading`, `androidStartInFullscreen`, `androidSupportedAspectRatio`, `androidSystemBarsBehavior`, `androidUseSwappy`, `androidVulkanAllowFilterList`, `androidVulkanDenyFilterList`, `androidVulkanDeviceFilterListAsset`, `audioSpatialExperience`, `bakeCollisionMeshes`, `bundleIdentifier`, `bundleVersion`, `captureSingleScreen`, `cloudEnabled`, `cloudProjectId`, `cpuConfiguration`, `cursorHotspot`, `d3d11ForceExclusiveMode`, `d3d11FullscreenMode`, `d3d12DeviceFilterListAsset`, `d3d9FullscreenMode`, `debugUnloadMode`, `dedicatedServerOptimizations`, `defaultCursor`, `defaultIsFullScreen`, `defaultIsNativeResolution`, `deferSystemGesturesMode`, `disableDepthAndStencilBuffers`, `disableOldInputManagerSupport`, `displayResolutionDialog`, `enableFrameTimingStats`, `enableGamepadInput`, `enableHWStatistics`, `enableNativePlatformBackendsForNewInputSystem`, `enableNewInputSystem`, `enableOpenGLProfilerGPURecorders`, `forceSRGBBlit`, `forceSingleInstance`, `framebufferDepthMemorylessMode`, `fullscreenMode`, `gpuSkinning`, `graphicsJobMode`, `graphicsJobs`, `hdrBitDepth`, `hideHomeButton`, `hmiLoadingImage`, `iPhoneBundleIdentifier`, `ignoreAlphaClear`, `insecureHttpOption`, `invalidatedPatternTexture`, `iosAllowHTTPDownload`, `iosAppInBackgroundBehavior`, `iosShowActivityIndicatorOnLoading`, `iosUseCustomAppBackgroundBehavior`, `isWsaHolographicRemotingEnabled`, `legacyClampBlendShapeWeights`, `loadStoreDebugModeEnabled`, `m_ActiveColorSpace`, `m_ColorGamuts`, `m_HolographicPauseOnTrackingLoss`, `m_HolographicTrackingLossScreen`, `m_MTRendering`, `m_MobileMTRendering`, `m_MobileRenderingPath`, `m_RenderingPath`, `m_ShowUnitySplashLogo`, `m_ShowUnitySplashScreen`, `m_SplashScreenAnimation`, `m_SplashScreenBackgroundAnimationZoom`, `m_SplashScreenBackgroundColor`, `m_SplashScreenBackgroundLandscape`, `m_SplashScreenBackgroundLandscapeAspect`, `m_SplashScreenBackgroundLandscapeUvs`, `m_SplashScreenBackgroundPortrait`, `m_SplashScreenBackgroundPortraitAspect`, `m_SplashScreenBackgroundPortraitUvs`, `m_SplashScreenDrawMode`, `m_SplashScreenLogoAnimationZoom`, `m_SplashScreenLogoStyle`, `m_SplashScreenLogos`, `m_SplashScreenOverlayOpacity`, `m_SplashScreenStyle`, `m_SpriteBatchMaxVertexCount`, `m_SpriteBatchVertexThreshold`, `m_StackTraceTypes`, `m_StereoRenderingPath`, `m_Stereoscopic3D`, `m_SupportedAspectRatios`, `m_UnitySplashLogo`, `m_UseDX11`, `m_VirtualRealitySplashScreen`, `macAppStoreCategory`, `macFullscreenMode`, `macRetinaSupport`, `meshDeformation`, `metalFramebufferOnly`, `metroEnableIndependentInputSource`, `metroEnableLowLatencyPresentationAPI`, `metroInputSource`, `mipStripping`, `mobileMTRenderingBaked`, `muteOtherAudioSources`, `n3dsDisableStereoscopicView`, `n3dsEnableSharedListOpt`, `n3dsEnableVSync`, `numberOfMipsStripped`, `numberOfMipsStrippedPerMipmapLimitGroup`, `organizationId`, `platformRequiresReadableAssets`, `playerDataPath`, `playerMinOpenGLESVersion`, `preloadedAssets`, `preserveFramebufferAlpha`, `productGUID`, `projectId`, `projectName`, `protectGraphicsMemory`, `ps3SplashScreen`, `psp2AcquireBGM`, `psp2PowerMode`, `qualitySettingsNames`, `resetResolutionOnWindowResize`, `resizableWindow`, `resolutionScalingMode`, `singlePassStereoRendering`, `stadiaPresentMode`, `stadiaTargetFramerate`, `stripPhysics`, `submitAnalytics`, `switchAllowGpuScratchShrinking`, `switchGpuScratchPoolGranularity`, `switchGraphicsJobsSyncAfterKick`, `switchMaxWorkerMultiple`, `switchNVNDefaultPoolsGranularity`, `switchNVNGraphicsFirmwareMemory`, `switchNVNMaxPublicSamplerIDCount`, `switchNVNMaxPublicTextureIDCount`, `switchNVNOtherPoolsGranularity`, `switchNVNShaderPoolsGranularity`, `switchQueueCommandMemory`, `switchQueueComputeMemory`, `switchQueueControlMemory`, `targetGlesGraphics`, `targetIOSGraphics`, `targetPixelDensity`, `targetPlatform`, `targetResolution`, `thermalStateCriticalIOSFPS`, `thermalStateSeriousIOSFPS`, `tizenShowActivityIndicatorOnLoading`, `tvOSBundleVersion`, `uiUse16BitDepthBuffer`, `unsupportedMSAAFallback`, `uploadClearedTextureDataAfterCreationFromScript`, `use24BitDepthBuffer`, `useAlphaInDashboard`, `useFlipModelSwapchain`, `useHDRDisplay`, `useOnDemandResources`, `videoMemoryForVertexBuffers`, `virtualRealitySupported`, `virtualTexturingSupportEnabled`, `visibleInBackground`, `visionOSBundleVersion`, `vrSettings`, `vulkanEnableCommandBufferRecycling`, `vulkanEnableLateAcquireNextImage`, `vulkanEnablePreTransform`, `vulkanEnableSetSRGBWrite`, `vulkanNumSwapchainBuffers`, `vulkanUseSWCommandBuffers`, `wiiHio2Usage`, `wiiLoadingScreenBackground`, `wiiLoadingScreenFileName`, `wiiLoadingScreenPeriod`, `wiiLoadingScreenRect`, `wiiLoadingScreenRectPlacement`, `wiiUAllowScreenCapture`, `wiiUControllerCount`, `wiiUGamePadMSAA`, `wiiUSupportsBalanceBoard`, `wiiUSupportsClassicController`, `wiiUSupportsMotionPlus`, `wiiUSupportsNunchuk`, `wiiUSupportsProController`, `wiiUTVResolution`, `windowsGamepadBackendHint`, `wsaTransparentSwapchain`, `xboxEnableAvatar`, `xboxEnableEnableRenderThreadRunsJobs`, `xboxEnableFitness`, `xboxEnableGuest`, `xboxEnableHeadOrientation`, `xboxEnableKinect`, `xboxEnableKinectAutoTracking`, `xboxEnablePIXSampling`, `xboxEnableSpeech`, `xboxOneDisableEsram`, `xboxOneDisableKinectGpuReservation`, `xboxOneEnable7thCore`, `xboxOneEnableTypeOptimization`, `xboxOneLoggingLevel`, `xboxOneMonoLoggingLevel`, `xboxOnePresentImmediateThreshold`, `xboxOneResolution`, `xboxOneSResolution`, `xboxOneXResolution`, `xboxPIXTextureCapture`, `xboxSkinOnGPU`, `xboxSpeechDB` |
+| `QualitySettings` | GlobalGameManager | 47 | `Beautiful`, `Fantastic`, `Fast`, `Fastest`, `Good`, `Simple`, `m_CurrentQuality`, `m_DefaultMobileQuality`, `m_DefaultStandaloneQuality`, `m_DefaultWebPlayerQuality`, `m_EditorQuality`, `m_QualitySettings`, `m_StrippedMaximumLODLevel`, `m_TextureMipmapLimitGroupNames` |
+| `ResourceManager` | GlobalGameManager | 147 | `m_Container`, `m_DependentAssets` |
+| `RuntimeInitializeOnLoadManager` | GlobalGameManager | 300 | `m_AfterAssembliesLoadedMethodExecutionOrders`, `m_AfterAssembliesLoadedUnityMethodExecutionOrders`, `m_AfterMethodExecutionOrders`, `m_AfterUnityMethodExecutionOrders`, `m_AssemblyNames`, `m_BeforeMethodExecutionOrders`, `m_BeforeSplashScreenMethodExecutionOrders`, `m_BeforeSplashScreenUnityMethodExecutionOrders`, `m_BeforeUnityMethodExecutionOrders`, `m_ClassInfos`, `m_ClassMethodInfos`, `m_MethodExecutionOrders`, `m_NamespaceNames`, `m_SubsystemRegistrationMethodExecutionOrders`, `m_SubsystemRegistrationUnityMethodExecutionOrders`, `m_UnityMethodExecutionOrders` |
+| `ShaderNameRegistry` | GlobalGameManager | — | `m_PreloadShaders`, `m_Shaders` |
+| `StreamingManager` | GlobalGameManager | 1403656975 | — |
+| `TagManager` | GlobalGameManager | 78 | `tags`, `Builtin_Layer_0`, `Builtin_Layer_1`, `Builtin_Layer_2`, `Builtin_Layer_3`, `Builtin_Layer_4`, `Builtin_Layer_5`, `Builtin_Layer_6`, `Builtin_Layer_7`, `User_Layer_10`, `User_Layer_11`, `User_Layer_12`, `User_Layer_13`, `User_Layer_14`, `User_Layer_15`, `User_Layer_16`, `User_Layer_17`, `User_Layer_18`, `User_Layer_19`, `User_Layer_20`, `User_Layer_21`, `User_Layer_22`, `User_Layer_23`, `User_Layer_24`, `User_Layer_25`, `User_Layer_26`, `User_Layer_27`, `User_Layer_28`, `User_Layer_29`, `User_Layer_30`, `User_Layer_31`, `User_Layer_8`, `User_Layer_9`, `layers`, `m_RenderingLayers`, `m_SortingLayers` |
+| `TimeManager` | GlobalGameManager | 5 | `Fixed_Timestep`, `Maximum_Allowed_Timestep`, `m_TimeScale`, `Maximum_Particle_Timestep` |
+| `UnityAdsManager` | GlobalGameManager | 292 | — |
+| `UnityAnalyticsManager` | GlobalGameManager | 303 | `m_Enabled`, `m_InitializeOnStartup`, `m_TestConfigUrl`, `m_TestEventUrl`, `m_TestMode` |
+| `UnityConnectSettings` | GlobalGameManager | 310 | `UnityAnalyticsSettings`, `UnityPurchasingSettings`, `CrashReportingSettings`, `InsightsSettings`, `PerformanceReportingSettings`, `UnityAdsSettings`, `m_ConfigUrl`, `m_DashboardUrl`, `m_Enabled`, `m_EventOldUrl`, `m_EventUrl`, `m_TestConfigUrl`, `m_TestEventUrl`, `m_TestInitMode`, `m_TestMode` |
+| `VFXManager` | GlobalGameManager | 937362698 | `m_CopyBufferShader`, `m_FixedTimeStep`, `m_IndirectShader`, `m_MaxDeltaTime`, `m_RenderPipeSettingsPath`, `m_SortShader`, `m_BatchEmptyLifetime`, `m_CompiledVersion`, `m_EmptyShader`, `m_MaxCapacity`, `m_MaxScrubTime`, `m_PrefixSumShader`, `m_RuntimeResources`, `m_RuntimeVersion`, `m_StripUpdateShader` |
+| `LevelGameManager` | GameManager, ABC | 3 | — |
+| `HaloManager` | LevelGameManager | 127 | — |
+| `LightmapSettings` | LevelGameManager | 157 | `m_Lightmaps`, `m_LightmapsMode`, `m_BakeOnSceneLoad`, `m_BakedColorSpace`, `m_EnlightenSceneMapping`, `m_GISettings`, `m_LightProbes`, `m_LightingSettings`, `m_RuntimeCPUUsage`, `m_ShadowMaskMode`, `m_UseDualLightmapsInForward`, `m_UseShadowmask` |
+| `NavMeshSettings` | LevelGameManager | 196 | `m_NavMesh`, `m_NavMeshData` |
+| `OcclusionCullingSettings` | LevelGameManager | 29 | `m_OcclusionCullingData`, `m_Portals`, `m_SceneGUID`, `m_StaticRenderers` |
+| `RenderSettings` | LevelGameManager | 104 | `m_FlareStrength`, `m_Fog`, `m_FogColor`, `m_FogDensity`, `m_FogMode`, `m_HaloStrength`, `m_HaloTexture`, `m_LinearFogEnd`, `m_LinearFogStart`, `m_SkyboxMaterial`, `m_SpotCookie`, `m_AmbientEquatorColor`, `m_AmbientGroundColor`, `m_AmbientIntensity`, `m_AmbientLight`, `m_AmbientMode`, `m_AmbientProbe`, `m_AmbientProbeInGamma`, `m_AmbientSkyColor`, `m_CustomReflection`, `m_DefaultReflectionMode`, `m_DefaultReflectionResolution`, `m_FlareFadeSpeed`, `m_GeneratedSkyboxReflection`, `m_IndirectSpecularColor`, `m_ReflectionBounces`, `m_ReflectionIntensity`, `m_SubtractiveShadowColor`, `m_Sun`, `m_UseRadianceAmbientProbe` |
+| `HierarchyState` | Object | 1026 | `expanded`, `selection`, `scrollposition_x`, `scrollposition_y` |
+| `InspectorExpandedState` | Object | 1048 | `m_ExpandedData` |
+| `MarshallingTestObject` | Object | — | `m_Prop` |
+| `MemorySettings` | Object | — | — |
+| `NScreenBridge` | Object | 280 | — |
+| `NativeObjectType` | Object | 1977754360 | `m_Inner` |
+| `PackedAssets` | Object | 1126 | `m_Contents`, `m_Overhead`, `m_ShortPath`, `m_File` |
+| `PlatformModuleSetup` | Object | 877146078 | `modules` |
+| `PluginBuildInfo` | Object | 382020655 | `m_EditorPlugins`, `m_RuntimePlugins` |
+| `Prefab` | Object | — | `m_RootGameObject`, `m_ContainsMissingSerializeReferenceTypes`, `m_HideFlagsBehaviour`, `m_IsExploded`, `m_IsPrefabAsset`, `m_IsPrefabParent`, `m_Modification`, `m_ParentPrefab`, `m_SourcePrefab` |
+| `PrefabInstance` | Object | 1001 | `m_Modification`, `m_RootGameObject`, `m_SourcePrefab` |
+| `PresetManager` | Object | 1386491679 | `m_DefaultList`, `m_DefaultPresets` |
+| `PropertyModificationsTargetTestObject` | Object | 1111377672 | `m_Array`, `m_Data`, `m_FloatTestValue`, `byte_data`, `m_Bytes`, `m_BytesSize`, `m_Floats` |
+| `RenderPassAttachment` | Object | 1571458007 | — |
+| `SceneRoots` | Object | — | `m_Roots` |
+| `SceneVisibilityState` | Object | 1154873562 | `m_IsolationMode`, `m_MainStageIsolated`, `m_PrefabStageIsolated`, `m_SceneData`, `m_ScenePickingData`, `m_SceneVisibilityData`, `m_SceneVisibilityDataIsolated` |
+| `ScenesUsingAssets` | Object | 156483287 | `m_ListOfScenesUsingEachAsset`, `m_ScenesUsingAssets` |
+| `SerializableManagedHost` | Object | 1995898324 | `m_Script` |
+| `SerializableManagedRefTestClass` | Object | 76251197 | `m_Script` |
+| `ShaderContainer` | Object | — | — |
+| `SiblingDerived` | Object | 334799969 | — |
+| `SpriteAtlasDatabase` | Object | 638013454 | — |
+| `TestObjectVectorPairStringBool` | Object | 1628831178 | `m_Map`, `m_String` |
+| `TestObjectWithSerializedAnimationCurve` | Object | 478637459 | `m_Curve` |
+| `TestObjectWithSerializedArray` | Object | 478637458 | `m_ClampTestValue`, `m_IntegerArray` |
+| `TestObjectWithSerializedMapStringBool` | Object | 1981279845 | `m_Map`, `m_String` |
+| `TestObjectWithSerializedMapStringNonAlignedStruct` | Object | 342846651 | `m_Map`, `m_String` |
+| `TestObjectWithSpecialLayoutOne` | Object | 293259124 | `differentLayout`, `sameLayout` |
+| `TestObjectWithSpecialLayoutTwo` | Object | 1392443030 | `differentLayout`, `sameLayout` |
+| `TilemapEditorUserSettings` | Object | — | `m_FocusMode`, `m_LastUsedPalette` |
+| `VersionControlSettings` | Object | 890905787 | `m_Mode`, `m_CollabEditorSettings`, `m_TrackPackagesOutsideProject` |
+| `VideoBuildInfo` | Object | — | `m_IsVideoModuleDisabled`, `m_VideoClipCount` |
+| `AABB` | object | — | `m_Center`, `m_Extent` |
+| `AddedComponent` | object | — | `addedObject`, `insertIndex`, `targetCorrespondingSourceObject` |
+| `AddedGameObject` | object | — | `addedObject`, `insertIndex`, `targetCorrespondingSourceObject` |
+| `AndroidDeviceFilterData` | object | — | `androidOsVersionString`, `brandName`, `deviceName`, `driverVersionString`, `productName`, `vendorName`, `vulkanApiVersionString` |
+| `AnimationClipBindingConstant` | object | — | `genericBindings`, `pptrCurveMapping` |
+| `AnimationClipOverride` | object | — | `m_OriginalClip`, `m_OverrideClip` |
+| `AnimationCurve` | object | — | `m_Curve`, `m_PostInfinity`, `m_PreInfinity`, `m_RotationOrder` |
+| `AnimationEvent` | object | — | `data`, `floatParameter`, `functionName`, `intParameter`, `messageOptions`, `objectReferenceParameter`, `time` |
+| `AnimatorCondition` | object | — | `m_ConditionEvent`, `m_ConditionMode`, `m_EventTreshold` |
+| `Annotation` | object | — | `m_ClassID`, `m_Flags`, `m_GizmoEnabled`, `m_IconEnabled`, `m_ScriptClass` |
+| `ArticulationDrive` | object | — | `damping`, `forceLimit`, `lowerLimit`, `stiffness`, `target`, `targetVelocity`, `upperLimit`, `driveType` |
+| `AspectRatios` | object | — | `Others`, `x16_10`, `x16_9`, `x4_3`, `x5_4` |
+| `AssemblyJsonAsset` | TextAsset | — | `m_Name`, `m_Script`, `m_PathName` |
+| `AssemblyJsonImporter` | AssetImporter | — | `m_AssetBundleName`, `m_AssetBundleVariant`, `m_Name`, `m_UserData`, `m_ExternalObjects` |
+| `Asset` | object | — | `children`, `labels`, `mainRepresentation`, `parent`, `representations`, `type`, `assetBundleIndex`, `digest`, `guidOfPathLocationDependencies`, `hash`, `hashOfImportedAssetDependencies`, `hashOfSourceAssetDependencies`, `importerClassId`, `importerVersionHash`, `metaModificationDate_0_`, `metaModificationDate_1_`, `modificationDate_0_`, `modificationDate_1_`, `scriptedImporterClassID` |
+| `AssetBundleFullName` | object | — | `m_AssetBundleName`, `m_AssetBundleVariant` |
+| `AssetBundleInfo` | object | — | `AssetBundleDependencies`, `AssetBundleHash` |
+| `AssetBundleScriptInfo` | object | — | `assemblyName`, `className`, `hash`, `nameSpace` |
+| `AssetDatabase` | Object | — | `m_Assets`, `m_AssetBundleNames`, `m_AssetTimeStamps`, `m_Metrics`, `m_UnityShadersVersion`, `m_lastValidVersionHashes` |
+| `AssetDatabaseMetrics` | object | — | `totalAssetCount`, `nonProAssetCount`, `nonProAssetsCreatedAfterProLicense` |
+| `AssetImporterHashKey` | object | — | `ScriptClass`, `type` |
+| `AssetImporterLog` | NamedObject | 41386430 | `m_Logs`, `m_Name` |
+| `AssetImporter_ImportError` | object | — | `error`, `file`, `line`, `mode`, `object` |
+| `AssetInfo` | object | — | `asset`, `preloadIndex`, `preloadSize` |
+| `AssetLabels` | object | — | `m_Labels` |
+| `AssetStats` | object | — | `objectCount`, `resourceCount`, `size`, `sourceAssetGUID`, `sourceAssetPath` |
+| `AssetTimeStamp` | object | — | `metaModificationDate_0_`, `metaModificationDate_1_`, `modificationDate_0_`, `modificationDate_1_` |
+| `AttachmentIndexArray` | object | — | `activeAttachments`, `attachments` |
+| `AttachmentInfo` | object | — | `format`, `needsResolve`, `canMultiview`, `loadAction`, `sampleCount`, `storeAction` |
+| `AudioImporterOutput` | object | — | `editorOutputContainerFormat`, `editorOutputSettings`, `outputContainerFormat`, `outputSettings`, `playerResource` |
+| `AudioMixerConstant` | object | — | `effectGUIDs`, `effects`, `exposedParameterIndices`, `exposedParameterNames`, `groupGUIDs`, `groupNameBuffer`, `groups`, `numSideChainBuffers`, `pluginEffectNameBuffer`, `snapshotGUIDs`, `snapshotNameBuffer`, `snapshots`, `groupConnections` |
+| `AudioMixerLiveUpdateBool` | ABC | 100009 | — |
+| `AudioMixerLiveUpdateFloat` | ABC | 100008 | — |
+| `AutoOffMeshLinkData` | object | — | `m_Area`, `m_End`, `m_LinkDirection`, `m_LinkType`, `m_Radius`, `m_Start` |
+| `AvatarBodyMask` | NamedObject | — | `m_Mask`, `m_Name` |
+| `AvatarConstant` | object | — | `m_Human`, `m_HumanSkeletonIndexArray`, `m_RootMotionBoneIndex`, `m_RootMotionBoneX`, `m_AvatarSkeleton`, `m_AvatarSkeletonPose`, `m_DefaultPose`, `m_HumanSkeletonReverseIndexArray`, `m_RootMotionSkeleton`, `m_RootMotionSkeletonIndexArray`, `m_RootMotionSkeletonPose`, `m_Skeleton`, `m_SkeletonNameIDArray`, `m_SkeletonPose` |
+| `AvatarSkeletonMaskElement` | object | — | `path`, `weight` |
+| `Axes` | object | — | `m_Length`, `m_Limit`, `m_PostQ`, `m_PreQ`, `m_Sgn`, `m_Type` |
+| `BitField` | object | — | `m_Bits` |
+| `Blend1dDataConstant` | object | — | `m_ChildThresholdArray` |
+| `Blend2dDataConstant` | object | — | `m_ChildMagnitudeArray`, `m_ChildNeighborListArray`, `m_ChildPairAvgMagInvArray`, `m_ChildPairVectorArray`, `m_ChildPositionArray`, `m_ChildThresholdArray` |
+| `BlendDirectDataConstant` | object | — | `m_ChildBlendEventIDArray`, `m_NormalizedBlendValues` |
+| `BlendShapeData` | object | — | `channels`, `fullWeights`, `shapes`, `vertices` |
+| `BlendShapeVertex` | object | — | `index`, `normal`, `tangent`, `vertex` |
+| `BlendTreeConstant` | object | — | `m_NodeArray`, `m_BlendEventArrayConstant` |
+| `BlendTreeNodeConstant` | object | — | `m_BlendEventID`, `m_ChildIndices`, `m_ClipID`, `m_Duration`, `m_Blend1dData`, `m_Blend2dData`, `m_BlendDirectData`, `m_BlendEventYID`, `m_BlendType`, `m_ChildThresholdArray`, `m_ClipIndex`, `m_CycleOffset`, `m_Mirror` |
+| `BoneInfluence` | object | — | `boneIndex_0_`, `boneIndex_1_`, `boneIndex_2_`, `boneIndex_3_`, `weight_0_`, `weight_1_`, `weight_2_`, `weight_3_` |
+| `BoneWeights4` | object | — | `boneIndex_0_`, `boneIndex_1_`, `boneIndex_2_`, `boneIndex_3_`, `weight_0_`, `weight_1_`, `weight_2_`, `weight_3_` |
+| `BranchWindLevel` | object | — | `m_afBend_0`, `m_afBend_1`, `m_afBend_10`, `m_afBend_11`, `m_afBend_12`, `m_afBend_13`, `m_afBend_14`, `m_afBend_15`, `m_afBend_16`, `m_afBend_17`, `m_afBend_18`, `m_afBend_19`, `m_afBend_2`, `m_afBend_3`, `m_afBend_4`, `m_afBend_5`, `m_afBend_6`, `m_afBend_7`, `m_afBend_8`, `m_afBend_9`, `m_afFlexibility_0`, `m_afFlexibility_1`, `m_afFlexibility_10`, `m_afFlexibility_11`, `m_afFlexibility_12`, `m_afFlexibility_13`, `m_afFlexibility_14`, `m_afFlexibility_15`, `m_afFlexibility_16`, `m_afFlexibility_17`, `m_afFlexibility_18`, `m_afFlexibility_19`, `m_afFlexibility_2`, `m_afFlexibility_3`, `m_afFlexibility_4`, `m_afFlexibility_5`, `m_afFlexibility_6`, `m_afFlexibility_7`, `m_afFlexibility_8`, `m_afFlexibility_9`, `m_afOscillation_0`, `m_afOscillation_1`, `m_afOscillation_10`, `m_afOscillation_11`, `m_afOscillation_12`, `m_afOscillation_13`, `m_afOscillation_14`, `m_afOscillation_15`, `m_afOscillation_16`, `m_afOscillation_17`, `m_afOscillation_18`, `m_afOscillation_19`, `m_afOscillation_2`, `m_afOscillation_3`, `m_afOscillation_4`, `m_afOscillation_5`, `m_afOscillation_6`, `m_afOscillation_7`, `m_afOscillation_8`, `m_afOscillation_9`, `m_afSpeed_0`, `m_afSpeed_1`, `m_afSpeed_10`, `m_afSpeed_11`, `m_afSpeed_12`, `m_afSpeed_13`, `m_afSpeed_14`, `m_afSpeed_15`, `m_afSpeed_16`, `m_afSpeed_17`, `m_afSpeed_18`, `m_afSpeed_19`, `m_afSpeed_2`, `m_afSpeed_3`, `m_afSpeed_4`, `m_afSpeed_5`, `m_afSpeed_6`, `m_afSpeed_7`, `m_afSpeed_8`, `m_afSpeed_9`, `m_afTurbulence_0`, `m_afTurbulence_1`, `m_afTurbulence_10`, `m_afTurbulence_11`, `m_afTurbulence_12`, `m_afTurbulence_13`, `m_afTurbulence_14`, `m_afTurbulence_15`, `m_afTurbulence_16`, `m_afTurbulence_17`, `m_afTurbulence_18`, `m_afTurbulence_19`, `m_afTurbulence_2`, `m_afTurbulence_3`, `m_afTurbulence_4`, `m_afTurbulence_5`, `m_afTurbulence_6`, `m_afTurbulence_7`, `m_afTurbulence_8`, `m_afTurbulence_9`, `m_fIndependence` |
+| `BufferBinding` | object | — | `m_Index`, `m_NameIndex`, `m_ArraySize` |
+| `BuildReportFile` | object | — | `id`, `path`, `role`, `totalSize`, `flags` |
+| `BuildReportPackedAssetInfo` | object | — | `classID`, `fileID`, `packedSize`, `sourceAssetGUID`, `buildTimeAssetPath`, `offset` |
+| `BuildReportScenesUsingAsset` | object | — | `assetPath`, `scenePaths` |
+| `BuildStepInfo` | object | — | `messages`, `stepName`, `depth`, `duration`, `durationTicks` |
+| `BuildStepMessage` | object | — | `content`, `type` |
+| `BuildSummary` | object | — | `assetBundleOptions`, `crc`, `options`, `outputPath`, `platformName`, `totalErrors`, `totalSize`, `totalWarnings`, `buildContentOptions`, `buildGUID`, `buildManifestHash`, `buildResult`, `buildStartTime`, `buildType`, `dataPath`, `multiProcessEnabled`, `name`, `platformGroupName`, `subtarget`, `success`, `totalTimeMS`, `totalTimeTicks` |
+| `BuildTargetSettings` | object | — | `m_BuildTarget`, `m_TextureFormat`, `m_AllowsAlphaSplitting`, `m_CompressionQuality`, `m_LoadingBehavior`, `m_MaxTextureSize`, `m_TextureHeight`, `m_TextureWidth` |
+| `BuildTextureStackReference` | object | — | `groupName`, `itemName` |
+| `BuiltAssetBundleInfo` | object | — | `bundleArchiveFile`, `bundleName`, `packagedFileIndices` |
+| `BuiltinShaderSettings` | object | — | `m_Mode`, `m_Shader` |
+| `CGProgram` | TextAsset | 109 | `m_Name`, `m_Script`, `m_PathName` |
+| `CachedAssetMetaData` | object | — | `guid`, `originalChangeset`, `originalDigest`, `originalName`, `originalParent`, `pathName` |
+| `Channel` | object | — | `attributeName`, `byteOffset`, `curve` |
+| `ChannelInfo` | object | — | `dimension`, `format`, `offset`, `stream` |
+| `CharacterInfo` | object | — | `index`, `uv`, `vert`, `advance`, `flipped`, `width` |
+| `Child` | object | — | `m_IsAnim`, `m_Motion`, `m_Threshold`, `m_TimeScale`, `m_CycleOffset`, `m_Mirror`, `m_Position` |
+| `ChildAnimatorState` | object | — | `m_Position`, `m_State` |
+| `ChildAnimatorStateMachine` | object | — | `m_Position`, `m_StateMachine` |
+| `ChildMotion` | object | — | `m_CycleOffset`, `m_DirectBlendParameter`, `m_Mirror`, `m_Motion`, `m_Position`, `m_Threshold`, `m_TimeScale` |
+| `ClampVelocityModule` | object | — | `dampen`, `enabled`, `magnitude`, `separateAxis`, `x`, `y`, `z`, `drag`, `inWorldSpace`, `multiplyDragByParticleSize`, `multiplyDragByParticleVelocity` |
+| `ClassInfo` | object | — | `m_AssemblyNameIndex`, `m_ClassName`, `m_IsUnityClass`, `m_MethodIndex`, `m_NamespaceIndex`, `m_NumOfMethods`, `m_NamespaceName` |
+| `ClassMethodInfo` | object | — | `m_ClassIndex`, `m_MethodName`, `m_OrderNumber` |
+| `Clip` | object | — | `m_DenseClip`, `m_StreamedClip`, `m_Binding`, `m_ConstantClip` |
+| `ClipAnimationInfo` | object | — | `firstFrame`, `lastFrame`, `loop`, `name`, `wrapMode`, `additiveReferencePoseFrame`, `bodyMask`, `curves`, `cycleOffset`, `events`, `hasAdditiveReferencePose`, `heightFromFeet`, `internalID`, `keepAdditionalBonesAnimation`, `keepOriginalOrientation`, `keepOriginalPositionXZ`, `keepOriginalPositionY`, `level`, `loopBlend`, `loopBlendOrientation`, `loopBlendPositionXZ`, `loopBlendPositionY`, `loopTime`, `maskSource`, `maskType`, `mirror`, `orientationOffsetY`, `skeletonMaskElements`, `takeName`, `transformMask` |
+| `ClipAnimationInfoCurve` | object | — | `curve`, `name` |
+| `ClipMuscleConstant` | object | — | `m_AverageAngularSpeed`, `m_AverageSpeed`, `m_Clip`, `m_CycleOffset`, `m_DeltaPose`, `m_HeightFromFeet`, `m_IndexArray`, `m_KeepOriginalOrientation`, `m_KeepOriginalPositionXZ`, `m_KeepOriginalPositionY`, `m_LeftFootStartX`, `m_Level`, `m_LoopBlend`, `m_LoopBlendOrientation`, `m_LoopBlendPositionXZ`, `m_LoopBlendPositionY`, `m_Mirror`, `m_OrientationOffsetY`, `m_RightFootStartX`, `m_StartTime`, `m_StartX`, `m_StopTime`, `m_ValueArrayDelta`, `m_AdditionalCurveIndexArray`, `m_LoopTime`, `m_MotionStartX`, `m_MotionStopX`, `m_StartAtOrigin`, `m_StopX`, `m_ValueArrayReferencePose` |
+| `ClothAttachment` | object | — | `m_Collider`, `m_Tearable`, `m_TwoWayInteraction` |
+| `ClothConstrainCoefficients` | object | — | `collisionSphereDistance`, `maxDistance`, `collisionSphereRadius`, `maxDistanceBias` |
+| `ClothSphereColliderPair` | object | — | `first`, `second` |
+| `ClusterInput` | object | — | `m_DeviceName`, `m_Index`, `m_Name`, `m_ServerUrl`, `m_Type` |
+| `CollabEditorSettings` | object | — | `inProgressEnabled` |
+| `Collision` | ABC | 100004 | — |
+| `Collision2D` | ABC | 100007 | — |
+| `CollisionModule` | object | — | `enabled`, `minKillSpeed`, `type`, `bounce`, `colliderForce`, `collidesWith`, `collidesWithDynamic`, `collisionMessages`, `collisionMode`, `dampen`, `energyLossOnCollision`, `interiorCollisions`, `m_Bounce`, `m_Dampen`, `m_EnergyLossOnCollision`, `m_Planes`, `maxCollisionShapes`, `maxKillSpeed`, `multiplyColliderForceByCollisionAngle`, `multiplyColliderForceByParticleSize`, `multiplyColliderForceByParticleSpeed`, `particleRadius`, `plane0`, `plane1`, `plane2`, `plane3`, `plane4`, `plane5`, `quality`, `radiusScale`, `voxelSize` |
+| `ColorBySpeedModule` | object | — | `enabled`, `gradient`, `range` |
+| `ColorModule` | object | — | `enabled`, `gradient` |
+| `ComponentPair` | object | — | `component` |
+| `CompressedAnimationCurve` | object | — | `m_Path`, `m_PostInfinity`, `m_PreInfinity`, `m_Slopes`, `m_Times`, `m_Values` |
+| `CompressedMesh` | object | — | `m_BoneIndices`, `m_NormalSigns`, `m_Normals`, `m_TangentSigns`, `m_Tangents`, `m_Triangles`, `m_UV`, `m_Vertices`, `m_Weights`, `m_BindPoses`, `m_Colors`, `m_FloatColors`, `m_UVInfo` |
+| `ComputeBufferCounter` | object | — | `bindpoint`, `offset` |
+| `ComputeShaderBuiltinSampler` | object | — | `bindPoint`, `sampler` |
+| `ComputeShaderCB` | object | — | `byteSize`, `name`, `params` |
+| `ComputeShaderKernel` | object | — | `builtinSamplers`, `cbs`, `code`, `inBuffers`, `outBuffers`, `textures`, `cbVariantIndices`, `name`, `requirements`, `threadGroupSize` |
+| `ComputeShaderKernelParent` | object | — | `name`, `dynamicKeywords`, `globalKeywords`, `localKeywords`, `uniqueVariants`, `validKeywords`, `variantIndices`, `variantMap` |
+| `ComputeShaderParam` | object | — | `arraySize`, `colCount`, `name`, `offset`, `rowCount`, `type` |
+| `ComputeShaderPlatformVariant` | object | — | `constantBuffers`, `kernels`, `resourcesResolved`, `targetLevel`, `targetRenderer` |
+| `ComputeShaderResource` | object | — | `bindPoint`, `name`, `counter`, `generatedName`, `resType`, `samplerBindPoint`, `secondaryBindPoint`, `texDimension` |
+| `ComputeShaderVariant` | object | — | `constantBuffers`, `kernels`, `targetLevel`, `targetRenderer`, `resourcesResolved` |
+| `Condition` | object | — | `m_ConditionEvent`, `m_ConditionMode`, `m_EventTreshold`, `m_ExitTime` |
+| `ConditionConstant` | object | — | `m_ConditionMode`, `m_EventID`, `m_EventThreshold`, `m_ExitTime` |
+| `ConfigSetting` | object | — | `flags`, `value` |
+| `ConstantBuffer` | object | — | `m_MatrixParams`, `m_NameIndex`, `m_Size`, `m_VectorParams`, `m_IsPartialCB`, `m_StructParams` |
+| `ConstantClip` | object | — | `data` |
+| `ConstraintSource` | object | — | `sourceTransform`, `weight` |
+| `ControllerConstant` | object | — | `m_DefaultValues`, `m_StateMachineArray`, `m_Values`, `m_HumanLayerArray`, `m_LayerArray` |
+| `CrashReportingSettings` | object | — | `m_EventUrl`, `m_EnableCloudDiagnosticsReporting`, `m_Enabled`, `m_LogBufferSize`, `m_NativeEventUrl` |
+| `CustomDataModule` | object | — | `color0`, `color1`, `enabled`, `mode0`, `mode1`, `vector0_0`, `vector0_1`, `vector0_2`, `vector0_3`, `vector1_0`, `vector1_1`, `vector1_2`, `vector1_3`, `vectorComponentCount0`, `vectorComponentCount1` |
+| `D3D12DeviceFilterData` | object | — | `deviceName`, `deviceType`, `driverVersion`, `driverVersionComparator`, `featureLevel`, `featureLevelComparator`, `graphicsMemory`, `graphicsMemoryComparator`, `processorCount`, `processorCountComparator`, `vendorName` |
+| `D3D12GraphicsJobsDeviceFilterData` | object | — | `filter`, `preferredMode` |
+| `DataTemplate` | NamedObject | — | `m_Father`, `m_IsDataTemplate`, `m_LastMergeIdentifier`, `m_Name`, `m_Objects` |
+| `DateTime` | object | — | `ticks` |
+| `DefaultPreset` | object | — | `m_Preset`, `m_Disabled`, `m_Filter` |
+| `DefaultPresetList` | object | — | `defaultPresets`, `type` |
+| `DeletedItem` | object | — | `changeset`, `digest`, `fullPath`, `guid`, `parent`, `type` |
+| `DenseClip` | object | — | `m_BeginTime`, `m_CurveCount`, `m_FrameCount`, `m_SampleArray`, `m_SampleRate` |
+| `DetailDatabase` | object | — | `WavingGrassTint`, `m_DetailPrototypes`, `m_PatchCount`, `m_PatchSamples`, `m_Patches`, `m_PreloadTextureAtlasData`, `m_TreeInstances`, `m_TreePrototypes`, `m_WavingGrassAmount`, `m_WavingGrassSpeed`, `m_WavingGrassStrength`, `m_DefaultShaders_0_`, `m_DefaultShaders_1_`, `m_DefaultShaders_2_`, `m_DetailBillboardShader`, `m_DetailMeshGrassShader`, `m_DetailMeshLitShader`, `m_DetailScatterMode`, `m_RandomRotations` |
+| `DetailPatch` | object | — | `layerIndices`, `bounds`, `coverage`, `numberOfObjects` |
+| `DetailPrototype` | object | — | `dryColor`, `healthyColor`, `maxHeight`, `maxWidth`, `minHeight`, `minWidth`, `noiseSpread`, `prototype`, `prototypeTexture`, `renderMode`, `usePrototypeMesh`, `alignToGround`, `bendFactor`, `density`, `holeTestRadius`, `lightmapFactor`, `noiseSeed`, `positionJitter`, `positionOrderliness`, `targetCoverage`, `useDensityScaling`, `useInstancing` |
+| `DeviceNone` | object | — | — |
+| `DirectorGenericBinding` | object | — | `key`, `value` |
+| `DirectorPlayer` | Behaviour | — | `m_GameObject` |
+| `EffectConstant` | object | — | `bypass`, `groupConstantIndex`, `parameterIndices`, `prevEffectIndex`, `sendTargetEffectIndex`, `type`, `wetMixLevelIndex` |
+| `EmbeddedNativeType` | object | — | `m_FloatArray`, `m_String` |
+| `EmissionModule` | object | — | `enabled`, `m_BurstCount`, `cnt0`, `cnt1`, `cnt2`, `cnt3`, `cntmax0`, `cntmax1`, `cntmax2`, `cntmax3`, `m_Bursts`, `m_Type`, `rate`, `rateOverDistance`, `rateOverTime`, `time0`, `time1`, `time2`, `time3` |
+| `EnlightenRendererInformation` | object | — | `dynamicLightmapSTInSystem`, `instanceHash`, `renderer`, `systemId` |
+| `EnlightenSceneMapping` | object | — | `m_Renderers`, `m_SystemAtlases`, `m_Systems`, `m_TerrainChunks`, `m_Probesets` |
+| `EnlightenSystemAtlasInformation` | object | — | `atlasHash`, `atlasSize`, `firstSystemId` |
+| `EnlightenSystemInformation` | object | — | `atlasIndex`, `atlasOffsetX`, `atlasOffsetY`, `inputSystemHash`, `radiositySystemHash`, `rendererIndex`, `rendererSize` |
+| `EnlightenTerrainChunksInformation` | object | — | `firstSystemId`, `numChunksInX`, `numChunksInY` |
+| `EntityId` | object | — | — |
+| `Error` | object | — | `filePath`, `message`, `severity`, `startChar`, `startLine` |
+| `ExpandedData` | object | — | `m_ClassID`, `m_ExpandedProperties`, `m_InspectorExpanded`, `m_ScriptClass` |
+| `ExposedReferenceTable` | object | — | `m_References` |
+| `Expression` | object | — | `data_0_`, `data_1_`, `data_2_`, `data_3_`, `op`, `valueIndex` |
+| `ExtensionPropertyValue` | object | — | `extensionName`, `pluginName`, `propertyName`, `propertyValue` |
+| `ExternalForcesModule` | object | — | `enabled`, `influenceFilter`, `influenceList`, `influenceMask`, `multiplier`, `multiplierCurve` |
+| `FalloffTable` | object | — | `m_Table_0_`, `m_Table_10_`, `m_Table_11_`, `m_Table_12_`, `m_Table_1_`, `m_Table_2_`, `m_Table_3_`, `m_Table_4_`, `m_Table_5_`, `m_Table_6_`, `m_Table_7_`, `m_Table_8_`, `m_Table_9_` |
+| `FastPropertyName` | object | — | `name` |
+| `FlareElement` | object | — | `m_Color`, `m_Fade`, `m_ImageIndex`, `m_Position`, `m_Rotate`, `m_Size`, `m_UseLightColor`, `m_Zoom` |
+| `FloatCurve` | object | — | `attribute`, `classID`, `curve`, `path`, `script`, `flags` |
+| `ForceModule` | object | — | `enabled`, `inWorldSpace`, `randomizePerFrame`, `x`, `y`, `z` |
+| `GISettings` | object | — | `m_AlbedoBoost`, `m_BounceScale`, `m_EnableBakedLightmaps`, `m_EnableRealtimeLightmaps`, `m_EnvironmentLightingMode`, `m_IndirectOutputScale`, `m_TemporalCoherenceThreshold` |
+| `GLTextureSettings` | object | — | `m_Aniso`, `m_FilterMode`, `m_MipBias`, `m_WrapMode`, `m_WrapU`, `m_WrapV`, `m_WrapW` |
+| `GUID` | object | — | `data_0_`, `data_1_`, `data_2_`, `data_3_` |
+| `GenericBinding` | object | — | `attribute`, `customType`, `isPPtrCurve`, `path`, `script`, `classID`, `isIntCurve`, `isSerializeReferenceCurve`, `typeID` |
+| `GfxBlendState` | object | — | `alphaToMask`, `rt`, `separateMRTBlend` |
+| `GfxDepthState` | object | — | `depthFunc`, `depthWrite` |
+| `GfxRasterState` | object | — | `conservative`, `cullMode`, `depthBias`, `depthClip`, `slopeScaledDepthBias` |
+| `GfxRenderTargetBlendState` | object | — | `blendOp`, `blendOpAlpha`, `dstBlend`, `dstBlendAlpha`, `srcBlend`, `srcBlendAlpha`, `writeMask` |
+| `GfxStencilState` | object | — | `padding`, `readMask`, `stencilEnable`, `stencilFailOpBack`, `stencilFailOpFront`, `stencilFuncBack`, `stencilFuncFront`, `stencilPassOpBack`, `stencilPassOpFront`, `stencilZFailOpBack`, `stencilZFailOpFront`, `writeMask` |
+| `Google` | object | — | `depthFormat`, `enableTransitionView`, `enableVideoLayer`, `maximumSupportedHeadTracking`, `minimumSupportedHeadTracking`, `useProtectedVideoMemory`, `useSustainedPerformanceMode` |
+| `Gradient` | object | — | `atime0`, `atime1`, `atime2`, `atime3`, `atime4`, `atime5`, `atime6`, `atime7`, `ctime0`, `ctime1`, `ctime2`, `ctime3`, `ctime4`, `ctime5`, `ctime6`, `ctime7`, `key0`, `key1`, `key2`, `key3`, `key4`, `key5`, `key6`, `key7`, `m_ColorSpace`, `m_Color_0_`, `m_Color_1_`, `m_Color_2_`, `m_Color_3_`, `m_Color_4_`, `m_Mode`, `m_NumAlphaKeys`, `m_NumColorKeys` |
+| `GradientNEW` | object | — | `atime0`, `atime1`, `atime2`, `atime3`, `atime4`, `atime5`, `atime6`, `atime7`, `ctime0`, `ctime1`, `ctime2`, `ctime3`, `ctime4`, `ctime5`, `ctime6`, `ctime7`, `key0`, `key1`, `key2`, `key3`, `key4`, `key5`, `key6`, `key7`, `m_NumAlphaKeys`, `m_NumColorKeys` |
+| `GraphicsStateInfo` | object | — | `appBackface`, `depthBias`, `forceCullMode`, `invertProjectionMatrix`, `renderPass`, `renderState`, `slopeDepthBias`, `subPassIndex`, `topology`, `userBackface`, `vertexLayout`, `wireframe`, `baseShadingRate`, `nonfilteringSamplerBindings`, `shadingRateCombinerFragment`, `shadingRateCombinerPrimitive`, `unfilterableTextureBindings` |
+| `GroupConnection` | object | — | `sendEffectIndex`, `sourceGroupIndex`, `targetGroupIndex` |
+| `GroupConstant` | object | — | `bypassEffects`, `mute`, `parentConstantIndex`, `pitchIndex`, `solo`, `volumeIndex`, `sendIndex` |
+| `Hand` | object | — | `m_HandBoneIndex` |
+| `HandPose` | object | — | `m_CloseOpen`, `m_DoFArray`, `m_Grab`, `m_GrabX`, `m_InOut`, `m_Override` |
+| `Handle` | object | — | `m_ID`, `m_ParentHumanIndex`, `m_X` |
+| `Hash128` | object | — | `bytes_0_`, `bytes_10_`, `bytes_11_`, `bytes_12_`, `bytes_13_`, `bytes_14_`, `bytes_15_`, `bytes_1_`, `bytes_2_`, `bytes_3_`, `bytes_4_`, `bytes_5_`, `bytes_6_`, `bytes_7_`, `bytes_8_`, `bytes_9_` |
+| `HeightMeshBVNode` | object | — | `i`, `max`, `min`, `n` |
+| `HeightMeshData` | object | — | `m_Bounds`, `m_Indices`, `m_Nodes`, `m_Vertices` |
+| `Heightmap` | object | — | `m_Heights`, `m_Levels`, `m_MinMaxPatchHeights`, `m_PrecomputedError`, `m_Scale`, `m_DefaultPhysicMaterial`, `m_EnableHolesTextureCompression`, `m_EnableSurfaceMaskTextureCompression`, `m_Height`, `m_Holes`, `m_HolesLOD`, `m_Resolution`, `m_SurfaceMask`, `m_SurfaceMaskLOD`, `m_Thickness`, `m_Width` |
+| `HeightmapData` | object | — | `terrainData`, `isRotated`, `position`, `surfaceToTerrain` |
+| `HierarchicalSceneData` | object | — | `m_SceneGUID` |
+| `HoloLens` | object | — | `depthFormat`, `depthBufferSharingEnabled` |
+| `Human` | object | — | `m_ArmStretch`, `m_ArmTwist`, `m_FeetSpacing`, `m_ForeArmTwist`, `m_HasLeftHand`, `m_HasRightHand`, `m_HumanBoneIndex`, `m_HumanBoneMass`, `m_LeftHand`, `m_LegStretch`, `m_LegTwist`, `m_RightHand`, `m_RootX`, `m_Scale`, `m_Skeleton`, `m_SkeletonPose`, `m_UpperLegTwist`, `m_ColliderArray`, `m_ColliderIndex`, `m_Handles`, `m_HasTDoF` |
+| `HumanBone` | object | — | `m_BoneName`, `m_HumanName`, `m_Limit` |
+| `HumanDescription` | object | — | `m_ArmStretch`, `m_ArmTwist`, `m_FeetSpacing`, `m_ForeArmTwist`, `m_Human`, `m_LegStretch`, `m_LegTwist`, `m_RootMotionBoneName`, `m_Skeleton`, `m_UpperLegTwist`, `m_GlobalScale`, `m_Handles`, `m_HasExtraRoot`, `m_HasTranslationDoF`, `m_RootMotionBoneRotation`, `m_SkeletonHasParents` |
+| `HumanGoal` | object | — | `m_WeightR`, `m_WeightT`, `m_X`, `m_HintT`, `m_HintWeightT` |
+| `HumanHandle` | object | — | `m_BoneName`, `m_LookAt`, `m_Name`, `m_Position`, `m_Rotation`, `m_Scale` |
+| `HumanLayerConstant` | object | — | `m_Binding`, `m_BodyMask`, `m_IKPass`, `m_LayerBlendingMode`, `m_SkeletonMask`, `m_StateMachineIndex`, `m_StateMachineMotionSetIndex`, `m_DefaultWeight`, `m_SyncedLayerAffectsTiming` |
+| `HumanPose` | object | — | `m_DoFArray`, `m_GoalArray`, `m_LeftHandPose`, `m_LookAtPosition`, `m_LookAtWeight`, `m_RightHandPose`, `m_RootX`, `m_TDoFArray` |
+| `HumanPoseMask` | object | — | `word0`, `word1`, `word2` |
+| `Image` | object | — | `image_data`, `m_Format`, `m_Height`, `m_RowBytes`, `m_Width` |
+| `ImportLog_ImportLogEntry` | object | — | `file`, `line`, `message`, `mode`, `object` |
+| `InheritVelocityModule` | object | — | `enabled`, `m_Curve`, `m_Mode` |
+| `InitialModule` | object | — | `enabled`, `gravityModifier`, `maxNumParticles`, `startColor`, `startLifetime`, `startRotation`, `startSize`, `startSpeed`, `customEmitterVelocity`, `gravitySource`, `inheritVelocity`, `randomizeRotationDirection`, `rotation3D`, `size3D`, `startRotationX`, `startRotationY`, `startSizeY`, `startSizeZ` |
+| `InputAxis` | object | — | `altNegativeButton`, `altPositiveButton`, `axis`, `dead`, `descriptiveName`, `descriptiveNegativeName`, `gravity`, `invert`, `joyNum`, `m_Name`, `negativeButton`, `positiveButton`, `sensitivity`, `snap`, `type` |
+| `InputImportSettings` | object | — | `name`, `alphaSource`, `aniso`, `filterMode`, `value`, `wrapMode` |
+| `InsightsSettings` | object | — | `m_Enabled`, `m_EngineDiagnosticsEnabled`, `m_EventUrl`, `m_StackTraceUrl` |
+| `IntPoint` | object | — | `X`, `Y` |
+| `Item` | object | — | `changeFlags`, `changeset`, `digest`, `downloadResolution`, `guid`, `markedForRemoval`, `name`, `nameConflictResolution`, `oldVersion`, `origin`, `parent`, `parentFolderID`, `type` |
+| `JointAngleLimit2D` | object | — | `m_LowerAngle`, `m_UpperAngle` |
+| `JointAngleLimits2D` | object | — | `m_LowerAngle`, `m_UpperAngle` |
+| `JointDrive` | object | — | `maximumForce`, `positionDamper`, `positionSpring`, `mode`, `useAcceleration` |
+| `JointLimits` | object | — | `max`, `min`, `bounceMinVelocity`, `bounciness`, `contactDistance`, `maxBounce`, `minBounce` |
+| `JointMotor` | object | — | `force`, `freeSpin`, `targetVelocity` |
+| `JointMotor2D` | object | — | `m_MaximumMotorForce`, `m_MotorSpeed` |
+| `JointSpring` | object | — | `damper`, `spring`, `targetPosition` |
+| `JointSuspension2D` | object | — | `m_Angle`, `m_DampingRatio`, `m_Frequency` |
+| `JointTranslationLimits2D` | object | — | `m_LowerTranslation`, `m_UpperTranslation` |
+| `Keyframe` | object | — | `inSlope`, `outSlope`, `time`, `value`, `inWeight`, `outWeight`, `weightedMode` |
+| `LOD` | object | — | `renderers`, `screenRelativeHeight`, `fadeMode`, `fadeTransitionWidth` |
+| `LODRenderer` | object | — | `renderer` |
+| `LayerConstant` | object | — | `m_Binding`, `m_BodyMask`, `m_DefaultWeight`, `m_IKPass`, `m_LayerBlendingMode`, `m_SkeletonMask`, `m_StateMachineIndex`, `m_SyncedLayerAffectsTiming`, `m_StateMachineMotionSetIndex`, `m_StateMachineSynchronizedLayerIndex` |
+| `LayoutDataOne` | object | — | `m_FloatArray` |
+| `LayoutDataThree` | object | — | `m_AnotherFloatArray` |
+| `LayoutDataTwo` | object | — | `m_FloatValue`, `m_IntegerValue` |
+| `LeafInfoConstant` | object | — | `m_IDArray`, `m_IndexOffset` |
+| `LibraryRepresentation` | object | — | `name`, `scriptClassName`, `thumbnail`, `thumbnailClassID`, `flags`, `guid`, `localIdentifier`, `object`, `path` |
+| `LifetimeByEmitterSpeedModule` | object | — | `enabled`, `m_Curve`, `m_Range` |
+| `LightBakingOutput` | object | — | `probeOcclusionLightIndex`, `isBaked`, `lightmapBakeMode`, `lightmappingMask`, `occlusionMaskChannel`, `shadowMaskChannel` |
+| `LightProbeData` | object | — | `m_NonTetrahedralizedProbeSetIndexMap`, `m_Positions`, `m_ProbeSets`, `m_Tetrahedralization` |
+| `LightProbeOcclusion` | object | — | `m_Occlusion`, `m_BakedLightIndex`, `m_OcclusionMaskChannel`, `m_ProbeOcclusionLightIndex`, `m_ShadowMaskChannel` |
+| `LightmapBakeMode` | object | — | `lightmapBakeType`, `mixedLightingMode` |
+| `LightmapData` | object | — | `m_DirLightmap`, `m_IndirectLightmap`, `m_Lightmap`, `m_ShadowMask`, `sh_0_`, `sh_10_`, `sh_11_`, `sh_12_`, `sh_13_`, `sh_14_`, `sh_15_`, `sh_16_`, `sh_17_`, `sh_18_`, `sh_19_`, `sh_1_`, `sh_20_`, `sh_21_`, `sh_22_`, `sh_23_`, `sh_24_`, `sh_25_`, `sh_26_`, `sh_2_`, `sh_3_`, `sh_4_`, `sh_5_`, `sh_6_`, `sh_7_`, `sh_8_`, `sh_9_` |
+| `LightmapSnapshot` | NamedObject | — | `m_BakedReflectionProbeCubemaps`, `m_BakedReflectionProbes`, `m_EnlightenData`, `m_EnlightenSceneMapping`, `m_EnlightenSceneMappingRendererIDs`, `m_LightProbes`, `m_LightmappedRendererData`, `m_LightmappedRendererDataIDs`, `m_Lightmaps`, `m_Lights`, `m_Name`, `m_BakedAmbientProbeInGamma`, `m_BakedAmbientProbeInLinear`, `m_BakedAmbientProbesInGamma`, `m_BakedAmbientProbesInLinear`, `m_BakedSkyboxProbeCubemaps`, `m_SceneGUID` |
+| `LightsModule` | object | — | `color`, `enabled`, `intensity`, `intensityCurve`, `light`, `maxLights`, `randomDistribution`, `range`, `rangeCurve`, `ratio` |
+| `Limit` | object | — | `m_Max`, `m_Min` |
+| `LineParameters` | object | — | `alignment`, `colorGradient`, `endWidth`, `generateLightingData`, `m_EndColor`, `m_StartColor`, `numCapVertices`, `numCornerVertices`, `shadowBias`, `startWidth`, `textureMode`, `textureScale`, `widthCurve`, `widthMultiplier` |
+| `LodSelectionCurve` | object | — | `m_LodBias`, `m_LodSlope` |
+| `Lumin` | object | — | `depthFormat`, `enableGLCache`, `frameTiming`, `glCacheMaxBlobSize`, `glCacheMaxFileSize` |
+| `MaterialImportOutput` | object | — | `baked`, `currentSettings` |
+| `MaterialInstanceSettings` | object | — | `buildTargetSettings`, `inputs`, `materialInformation`, `materialProperties`, `name`, `prototypeName`, `textureParameters`, `lightmapFlags`, `renderQueue`, `shader`, `shaderKeywords`, `shaderName`, `textureAssignments` |
+| `MatrixParameter` | object | — | `m_ArraySize`, `m_Index`, `m_NameIndex`, `m_RowCount`, `m_Type` |
+| `MdFour` | object | — | `md4_hash` |
+| `MeshBlendShape` | object | — | `firstVertex`, `hasNormals`, `hasTangents`, `vertexCount`, `aabbMaxDelta`, `aabbMinDelta`, `name` |
+| `MeshBlendShapeChannel` | object | — | `frameCount`, `frameIndex`, `name`, `nameHash` |
+| `MeshBlendShapeVertex` | object | — | `index`, `normal`, `tangent`, `vertex` |
+| `MeshLodInfo` | object | — | `m_LodSelectionCurve`, `m_NumLevels`, `m_SubMeshes` |
+| `MeshLodRange` | object | — | `m_IndexCount`, `m_IndexStart` |
+| `MeshLodSubMesh` | object | — | `m_Levels` |
+| `MinMaxAABB` | object | — | `m_Max`, `m_Min` |
+| `MinMaxCurve` | object | — | `maxCurve`, `minCurve`, `minMaxState`, `scalar`, `minScalar` |
+| `MinMaxGradient` | object | — | `maxColor`, `maxGradient`, `minColor`, `minGradient`, `minMaxState` |
+| `MipmapLimitSettings` | object | — | `limitBias`, `limitBiasMode` |
+| `Module` | object | — | `dependencies`, `name`, `strippable`, `controlledByBuiltinPackage` |
+| `MonoAssemblyImporter` | AssetImporter | — | `m_ExecutionOrder`, `m_IconMap`, `m_Name`, `m_FileIDToRecycleName`, `m_NewHashIdentity`, `m_OldHashIdentity`, `m_UserData` |
+| `MonoObject` | ABC | 100003 | — |
+| `MotionNeighborList` | object | — | `m_NeighborArray` |
+| `MultiModeParameter` | object | — | `mode`, `speed`, `spread`, `value` |
+| `NameToObjectMap` | object | — | `m_ObjectToName` |
+| `NativeType` | object | — | `a`, `b`, `embedded` |
+| `NavMesh` | NamedObject | — | `m_Heightmaps`, `m_MeshData`, `m_Name` |
+| `NavMeshAreaData` | object | — | `cost`, `name` |
+| `NavMeshAreas` | GlobalGameManager | — | `areas` |
+| `NavMeshBuildDebugSettings` | object | — | `m_Flags` |
+| `NavMeshBuildSettings` | object | — | `agentClimb`, `agentHeight`, `agentRadius`, `agentSlope`, `agentTypeID`, `cellSize`, `ledgeDropHeight`, `manualCellSize`, `manualTileSize`, `maxJumpAcrossDistance`, `minRegionArea`, `tileSize`, `accuratePlacement`, `buildHeightMesh`, `debug`, `keepTiles`, `maxJobWorkers`, `preserveTilesOutsideBounds` |
+| `NavMeshLayerData` | object | — | `cost`, `editType`, `name` |
+| `NavMeshLayers` | GlobalGameManager | — | `Built_in_Layer_0`, `Built_in_Layer_1`, `Built_in_Layer_2`, `User_Layer_0`, `User_Layer_1`, `User_Layer_10`, `User_Layer_11`, `User_Layer_12`, `User_Layer_13`, `User_Layer_14`, `User_Layer_15`, `User_Layer_16`, `User_Layer_17`, `User_Layer_18`, `User_Layer_19`, `User_Layer_2`, `User_Layer_20`, `User_Layer_21`, `User_Layer_22`, `User_Layer_23`, `User_Layer_24`, `User_Layer_25`, `User_Layer_26`, `User_Layer_27`, `User_Layer_28`, `User_Layer_3`, `User_Layer_4`, `User_Layer_5`, `User_Layer_6`, `User_Layer_7`, `User_Layer_8`, `User_Layer_9` |
+| `NavMeshParams` | object | — | `cellSize`, `tileSize`, `walkableClimb`, `walkableHeight`, `walkableRadius` |
+| `NavMeshTileData` | object | — | `m_MeshData`, `m_Hash` |
+| `NetworkViewID` | object | — | `m_ID`, `m_Type` |
+| `Node` | object | — | `m_AxesId`, `m_ParentId` |
+| `NoiseModule` | object | — | `damping`, `enabled`, `frequency`, `octaveMultiplier`, `octaveScale`, `octaves`, `quality`, `remap`, `remapEnabled`, `remapY`, `remapZ`, `scrollSpeed`, `separateAxes`, `strength`, `strengthY`, `strengthZ`, `positionAmount`, `rotationAmount`, `sizeAmount` |
+| `NonAlignedStruct` | object | — | `m_Bool` |
+| `ObjectRolePair` | object | — | `m_Object`, `m_RolesMask` |
+| `OcclusionScene` | object | — | `indexPortals`, `indexRenderers`, `scene`, `sizePortals`, `sizeRenderers` |
+| `Oculus` | object | — | `dashSupport`, `sharedDepthBuffer`, `lowOverheadMode`, `protectedContext`, `v2Signing` |
+| `OffsetPtr` | object | — | `data` |
+| `Output` | object | — | `hasEmptyFontData`, `importedType`, `previewData` |
+| `PPtrCurve` | object | — | `attribute`, `classID`, `curve`, `path`, `script`, `flags` |
+| `PPtrKeyframe` | object | — | `time`, `value` |
+| `PackedBitVector` | object | — | `m_Data`, `m_NumItems`, `m_BitSize`, `m_Range`, `m_Start` |
+| `PackingSettings` | object | — | `allowAlphaSplitting`, `blockOffset`, `enableRotation`, `enableTightPacking`, `padding`, `enableAlphaDilation` |
+| `Parameter` | object | — | `m_GUID`, `m_ParameterName` |
+| `ParserBindChannels` | object | — | `m_Channels`, `m_SourceMap` |
+| `ParticleSystemEmissionBurst` | object | — | `cycleCount`, `repeatInterval`, `time`, `countCurve`, `maxCount`, `minCount`, `probability` |
+| `ParticleSystemForceFieldParameters` | object | — | `m_DirectionCurveX`, `m_DirectionCurveY`, `m_DirectionCurveZ`, `m_DragCurve`, `m_EndRange`, `m_GravityCurve`, `m_GravityFocus`, `m_Length`, `m_MultiplyDragByParticleSize`, `m_MultiplyDragByParticleVelocity`, `m_RotationAttractionCurve`, `m_RotationRandomness`, `m_RotationSpeedCurve`, `m_Shape`, `m_StartRange`, `m_VectorField`, `m_VectorFieldAttractionCurve`, `m_VectorFieldSpeedCurve` |
+| `PerLODSettings` | object | — | `castShadows`, `enableBump`, `enableHue`, `height`, `receiveShadows`, `reflectionProbeUsage`, `useLightProbes`, `windQuality`, `enableSettingOverride`, `enableSubsurface` |
+| `PerformanceReportingSettings` | object | — | `m_Enabled` |
+| `PhysicMaterial` | NamedObject | 134 | `bounceCombine`, `bounciness`, `dynamicFriction`, `frictionCombine`, `m_Name`, `staticFriction`, `dynamicFriction2`, `frictionDirection2`, `staticFriction2` |
+| `PhysicsJobOptions2D` | object | — | `m_ClearBodyForcesPerJob`, `m_ClearFlagsPerJob`, `m_CollideContactsPerJob`, `m_FindNearestContactsPerJob`, `m_InterpolationPosesPerJob`, `m_IslandSolverBodiesPerJob`, `m_IslandSolverBodyCostScale`, `m_IslandSolverContactCostScale`, `m_IslandSolverContactsPerJob`, `m_IslandSolverCostThreshold`, `m_IslandSolverJointCostScale`, `m_NewContactsPerJob`, `m_SyncContinuousFixturesPerJob`, `m_SyncDiscreteFixturesPerJob`, `m_UpdateTriggerContactsPerJob`, `m_UseConsistencySorting`, `m_UseMultithreading`, `useConsistencySorting`, `useMultithreading` |
+| `PhysicsShape` | object | — | `m_AdjacentEnd`, `m_AdjacentStart`, `m_Radius`, `m_ShapeType`, `m_UseAdjacentEnd`, `m_UseAdjacentStart`, `m_VertexCount`, `m_VertexStartIndex` |
+| `PhysicsShapeGroup2D` | object | — | `m_Shapes`, `m_Vertices` |
+| `PlatformSettings` | object | — | `m_AllowsAlphaSplitting`, `m_BuildTarget`, `m_CompressionQuality`, `m_CrunchedCompression`, `m_MaxTextureSize`, `m_Overridden`, `m_TextureCompression`, `m_TextureFormat`, `m_ResizeAlgorithm` |
+| `PlatformSettingsData` | object | — | `settings`, `enabled` |
+| `PlatformShaderDefines` | object | — | `defines_Tier1`, `defines_Tier2`, `defines_Tier3`, `shaderPlatform` |
+| `PlatformShaderSettings` | object | — | `useCascadedShadowMaps`, `useScreenSpaceShadows` |
+| `PluginImportOutput` | object | — | `dllType`, `pluginType`, `scriptingRuntimeVersion` |
+| `Polygon2D` | ABC | 100010 | `m_Paths` |
+| `PrefabModification` | object | — | `m_Modifications`, `m_RemovedComponents`, `m_TransformParent`, `m_AddedComponents`, `m_AddedGameObjects`, `m_RemovedGameObjects` |
+| `PresetType` | object | — | `m_ManagedTypeFallback`, `m_ManagedTypePPtr`, `m_NativeTypeID` |
+| `PreviewData` | object | — | `m_CompSize`, `m_OrigSize`, `m_PreviewData` |
+| `ProbeSetIndex` | object | — | `m_Hash`, `m_Offset`, `m_Size` |
+| `ProbeSetTetrahedralization` | object | — | `m_HullRays`, `m_Tetrahedra` |
+| `ProceduralMaterialInformation` | object | — | `m_Offset`, `m_Scale`, `m_AnimationUpdateRate`, `m_GenerateAllOutputs`, `m_GenerateMipmaps`, `m_GeneratedAtLoading` |
+| `ProceduralTextureAssignment` | object | — | `baseUID`, `material`, `shaderProp` |
+| `PropertyModification` | object | — | `objectReference`, `propertyPath`, `target`, `value` |
+| `PropertyModificationsTargetTestNativeObject` | object | — | `m_FloatValue`, `m_IntegerValue` |
+| `QualitySetting` | object | — | `anisotropicTextures`, `antiAliasing`, `pixelLightCount`, `shadowCascades`, `shadowDistance`, `shadowProjection`, `shadowResolution`, `shadows`, `softParticles`, `softVegetation`, `vSyncCount`, `adaptiveVsync`, `adaptiveVsyncExtraA`, `adaptiveVsyncExtraB`, `asyncUploadBufferSize`, `asyncUploadPersistentBuffer`, `asyncUploadTimeSlice`, `billboardsFaceCameraPosition`, `blendWeights`, `customRenderPipeline`, `enableLODCrossFade`, `globalTextureMipmapLimit`, `lodBias`, `maximumLODLevel`, `meshLodThreshold`, `name`, `particleRaycastBudget`, `realtimeGICPUUsage`, `realtimeReflectionProbes`, `resolutionScalingFixedDPIFactor`, `shadowCascade2Split`, `shadowCascade4Split`, `shadowNearPlaneOffset`, `shadowmaskMode`, `skinWeights`, `streamingMipmapsActive`, `streamingMipmapsAddAllCameras`, `streamingMipmapsMaxFileIORequests`, `streamingMipmapsMaxLevelReduction`, `streamingMipmapsMemoryBudget`, `streamingMipmapsRenderersPerFrame`, `terrainBasemapDistance`, `terrainBillboardStart`, `terrainDetailDensityScale`, `terrainDetailDistance`, `terrainFadeLength`, `terrainMaxTrees`, `terrainPixelError`, `terrainQualityOverrides`, `terrainTreeDistance`, `textureMipmapLimitSettings`, `textureQuality`, `useLegacyDetailDistribution` |
+| `QuaternionCurve` | object | — | `curve`, `path` |
+| `RationalTime` | object | — | `m_Count`, `m_Rate` |
+| `RayTracingShaderBuiltinSampler` | object | — | `bindPoint`, `sampler` |
+| `RayTracingShaderConstantBuffer` | object | — | `byteSize`, `name`, `params`, `hash` |
+| `RayTracingShaderFunctionDesc` | object | — | `attributeSizeInBytes`, `identifier`, `payloadSizeInBytes` |
+| `RayTracingShaderID` | object | — | `name`, `type` |
+| `RayTracingShaderParam` | object | — | `arraySize`, `colCount`, `name`, `offset`, `rowCount`, `dataSize`, `dataType`, `propertySheetType`, `type` |
+| `RayTracingShaderPlatformVariant` | object | — | `dynamicKeywords`, `editorOnlyVariant`, `globalKeywords`, `localKeywords`, `targetRenderer`, `uniqueVariants`, `variantIndices` |
+| `RayTracingShaderReflectionData` | object | — | `code`, `functions`, `globalResources`, `hasErrors`, `localResources`, `codeHash`, `precompiled`, `requirements` |
+| `RayTracingShaderResource` | object | — | `bindPoint`, `name`, `rayGenMask`, `samplerBindPoint`, `texDimension`, `arraySize`, `multisampled` |
+| `RayTracingShaderResources` | object | — | `builtinSamplers`, `constantBuffers`, `constantBuffersDesc`, `inputBuffers`, `outputBuffers`, `textures` |
+| `RayTracingShaderVariant` | object | — | `resourceReflectionData`, `targetRenderer`, `editorOnlyVariant` |
+| `Rectf` | object | — | `height`, `width`, `x`, `y` |
+| `RenderManager` | GlobalGameManager | — | — |
+| `RenderPassInfo` | object | — | `attachmentCount`, `attachments`, `depthAttachmentIndex`, `multiviewCount`, `sampleCount`, `shadingRateIndex`, `subPassCount`, `subPasses`, `foveationImageIndex`, `hasEyeTexture` |
+| `RenderStateBlock` | object | — | `blendState`, `depthState`, `mask`, `rasterState`, `stencilRef`, `stencilState` |
+| `RenderStateInfo` | object | — | `renderState` |
+| `RendererData` | object | — | `lightmapIndex`, `lightmapIndexDynamic`, `lightmapST`, `lightmapSTDynamic`, `terrainChunkDynamicUVST`, `terrainDynamicUVST`, `uvMesh`, `explicitProbeSetHash` |
+| `ResourceManager_Dependency` | object | — | `m_Dependencies`, `m_Object` |
+| `RippleGroup` | object | — | `m_afDirectional_0`, `m_afDirectional_1`, `m_afDirectional_10`, `m_afDirectional_11`, `m_afDirectional_12`, `m_afDirectional_13`, `m_afDirectional_14`, `m_afDirectional_15`, `m_afDirectional_16`, `m_afDirectional_17`, `m_afDirectional_18`, `m_afDirectional_19`, `m_afDirectional_2`, `m_afDirectional_3`, `m_afDirectional_4`, `m_afDirectional_5`, `m_afDirectional_6`, `m_afDirectional_7`, `m_afDirectional_8`, `m_afDirectional_9`, `m_afFlexibility_0`, `m_afFlexibility_1`, `m_afFlexibility_10`, `m_afFlexibility_11`, `m_afFlexibility_12`, `m_afFlexibility_13`, `m_afFlexibility_14`, `m_afFlexibility_15`, `m_afFlexibility_16`, `m_afFlexibility_17`, `m_afFlexibility_18`, `m_afFlexibility_19`, `m_afFlexibility_2`, `m_afFlexibility_3`, `m_afFlexibility_4`, `m_afFlexibility_5`, `m_afFlexibility_6`, `m_afFlexibility_7`, `m_afFlexibility_8`, `m_afFlexibility_9`, `m_afPlanar_0`, `m_afPlanar_1`, `m_afPlanar_10`, `m_afPlanar_11`, `m_afPlanar_12`, `m_afPlanar_13`, `m_afPlanar_14`, `m_afPlanar_15`, `m_afPlanar_16`, `m_afPlanar_17`, `m_afPlanar_18`, `m_afPlanar_19`, `m_afPlanar_2`, `m_afPlanar_3`, `m_afPlanar_4`, `m_afPlanar_5`, `m_afPlanar_6`, `m_afPlanar_7`, `m_afPlanar_8`, `m_afPlanar_9`, `m_afSpeed_0`, `m_afSpeed_1`, `m_afSpeed_10`, `m_afSpeed_11`, `m_afSpeed_12`, `m_afSpeed_13`, `m_afSpeed_14`, `m_afSpeed_15`, `m_afSpeed_16`, `m_afSpeed_17`, `m_afSpeed_18`, `m_afSpeed_19`, `m_afSpeed_2`, `m_afSpeed_3`, `m_afSpeed_4`, `m_afSpeed_5`, `m_afSpeed_6`, `m_afSpeed_7`, `m_afSpeed_8`, `m_afSpeed_9`, `m_fIndependence`, `m_fShimmer` |
+| `RootMotionData` | ABC | 100006 | — |
+| `RotationBySpeedModule` | object | — | `curve`, `enabled`, `range`, `separateAxes`, `x`, `y` |
+| `RotationModule` | object | — | `curve`, `enabled`, `separateAxes`, `x`, `y` |
+| `SBranchWindLevel` | object | — | `m_afDirectionAdherence_0`, `m_afDirectionAdherence_1`, `m_afDirectionAdherence_2`, `m_afDirectionAdherence_3`, `m_afDirectionAdherence_4`, `m_afDirectionAdherence_5`, `m_afDirectionAdherence_6`, `m_afDirectionAdherence_7`, `m_afDirectionAdherence_8`, `m_afDirectionAdherence_9`, `m_afDistance_0`, `m_afDistance_1`, `m_afDistance_2`, `m_afDistance_3`, `m_afDistance_4`, `m_afDistance_5`, `m_afDistance_6`, `m_afDistance_7`, `m_afDistance_8`, `m_afDistance_9`, `m_afWhip_0`, `m_afWhip_1`, `m_afWhip_2`, `m_afWhip_3`, `m_afWhip_4`, `m_afWhip_5`, `m_afWhip_6`, `m_afWhip_7`, `m_afWhip_8`, `m_afWhip_9`, `m_fTurbulence`, `m_fTwitch`, `m_fTwitchFreqScale` |
+| `SParams` | object | — | `BranchLevel1`, `BranchLevel2`, `LeafGroup1`, `LeafGroup2`, `Oscillation0_0`, `Oscillation0_1`, `Oscillation0_2`, `Oscillation0_3`, `Oscillation0_4`, `Oscillation0_5`, `Oscillation0_6`, `Oscillation0_7`, `Oscillation0_8`, `Oscillation0_9`, `Oscillation1_0`, `Oscillation1_1`, `Oscillation1_2`, `Oscillation1_3`, `Oscillation1_4`, `Oscillation1_5`, `Oscillation1_6`, `Oscillation1_7`, `Oscillation1_8`, `Oscillation1_9`, `Oscillation2_0`, `Oscillation2_1`, `Oscillation2_2`, `Oscillation2_3`, `Oscillation2_4`, `Oscillation2_5`, `Oscillation2_6`, `Oscillation2_7`, `Oscillation2_8`, `Oscillation2_9`, `Oscillation3_0`, `Oscillation3_1`, `Oscillation3_2`, `Oscillation3_3`, `Oscillation3_4`, `Oscillation3_5`, `Oscillation3_6`, `Oscillation3_7`, `Oscillation3_8`, `Oscillation3_9`, `Oscillation4_0`, `Oscillation4_1`, `Oscillation4_2`, `Oscillation4_3`, `Oscillation4_4`, `Oscillation4_5`, `Oscillation4_6`, `Oscillation4_7`, `Oscillation4_8`, `Oscillation4_9`, `Oscillation5_0`, `Oscillation5_1`, `Oscillation5_2`, `Oscillation5_3`, `Oscillation5_4`, `Oscillation5_5`, `Oscillation5_6`, `Oscillation5_7`, `Oscillation5_8`, `Oscillation5_9`, `Oscillation6_0`, `Oscillation6_1`, `Oscillation6_2`, `Oscillation6_3`, `Oscillation6_4`, `Oscillation6_5`, `Oscillation6_6`, `Oscillation6_7`, `Oscillation6_8`, `Oscillation6_9`, `Oscillation7_0`, `Oscillation7_1`, `Oscillation7_2`, `Oscillation7_3`, `Oscillation7_4`, `Oscillation7_5`, `Oscillation7_6`, `Oscillation7_7`, `Oscillation7_8`, `Oscillation7_9`, `Oscillation8_0`, `Oscillation8_1`, `Oscillation8_2`, `Oscillation8_3`, `Oscillation8_4`, `Oscillation8_5`, `Oscillation8_6`, `Oscillation8_7`, `Oscillation8_8`, `Oscillation8_9`, `Oscillation9_0`, `Oscillation9_1`, `Oscillation9_2`, `Oscillation9_3`, `Oscillation9_4`, `Oscillation9_5`, `Oscillation9_6`, `Oscillation9_7`, `Oscillation9_8`, `Oscillation9_9`, `m_afFrondRippleDistance_0`, `m_afFrondRippleDistance_1`, `m_afFrondRippleDistance_2`, `m_afFrondRippleDistance_3`, `m_afFrondRippleDistance_4`, `m_afFrondRippleDistance_5`, `m_afFrondRippleDistance_6`, `m_afFrondRippleDistance_7`, `m_afFrondRippleDistance_8`, `m_afFrondRippleDistance_9`, `m_afGlobalDirectionAdherence_0`, `m_afGlobalDirectionAdherence_1`, `m_afGlobalDirectionAdherence_2`, `m_afGlobalDirectionAdherence_3`, `m_afGlobalDirectionAdherence_4`, `m_afGlobalDirectionAdherence_5`, `m_afGlobalDirectionAdherence_6`, `m_afGlobalDirectionAdherence_7`, `m_afGlobalDirectionAdherence_8`, `m_afGlobalDirectionAdherence_9`, `m_afGlobalDistance_0`, `m_afGlobalDistance_1`, `m_afGlobalDistance_2`, `m_afGlobalDistance_3`, `m_afGlobalDistance_4`, `m_afGlobalDistance_5`, `m_afGlobalDistance_6`, `m_afGlobalDistance_7`, `m_afGlobalDistance_8`, `m_afGlobalDistance_9`, `m_fAnchorDistanceScale`, `m_fAnchorOffset`, `m_fDirectionResponse`, `m_fFrondRippleLightingScalar`, `m_fFrondRippleTile`, `m_fGlobalHeight`, `m_fGlobalHeightExponent`, `m_fGustDurationMax`, `m_fGustDurationMin`, `m_fGustFallScalar`, `m_fGustFrequency`, `m_fGustRiseScalar`, `m_fGustStrengthMax`, `m_fGustStrengthMin`, `m_fRollingBranchFieldMin`, `m_fRollingBranchLightingAdjust`, `m_fRollingBranchVerticalOffset`, `m_fRollingLeafRippleMin`, `m_fRollingLeafTumbleMin`, `m_fRollingNoisePeriod`, `m_fRollingNoiseSize`, `m_fRollingNoiseSpeed`, `m_fRollingNoiseTurbulence`, `m_fRollingNoiseTwist`, `m_fStrengthResponse` |
+| `SWindGroup` | object | — | `m_afRippleDistance_0`, `m_afRippleDistance_1`, `m_afRippleDistance_2`, `m_afRippleDistance_3`, `m_afRippleDistance_4`, `m_afRippleDistance_5`, `m_afRippleDistance_6`, `m_afRippleDistance_7`, `m_afRippleDistance_8`, `m_afRippleDistance_9`, `m_afTumbleDirectionAdherence_0`, `m_afTumbleDirectionAdherence_1`, `m_afTumbleDirectionAdherence_2`, `m_afTumbleDirectionAdherence_3`, `m_afTumbleDirectionAdherence_4`, `m_afTumbleDirectionAdherence_5`, `m_afTumbleDirectionAdherence_6`, `m_afTumbleDirectionAdherence_7`, `m_afTumbleDirectionAdherence_8`, `m_afTumbleDirectionAdherence_9`, `m_afTumbleFlip_0`, `m_afTumbleFlip_1`, `m_afTumbleFlip_2`, `m_afTumbleFlip_3`, `m_afTumbleFlip_4`, `m_afTumbleFlip_5`, `m_afTumbleFlip_6`, `m_afTumbleFlip_7`, `m_afTumbleFlip_8`, `m_afTumbleFlip_9`, `m_afTumbleTwist_0`, `m_afTumbleTwist_1`, `m_afTumbleTwist_2`, `m_afTumbleTwist_3`, `m_afTumbleTwist_4`, `m_afTumbleTwist_5`, `m_afTumbleTwist_6`, `m_afTumbleTwist_7`, `m_afTumbleTwist_8`, `m_afTumbleTwist_9`, `m_afTwitchThrow_0`, `m_afTwitchThrow_1`, `m_afTwitchThrow_2`, `m_afTwitchThrow_3`, `m_afTwitchThrow_4`, `m_afTwitchThrow_5`, `m_afTwitchThrow_6`, `m_afTwitchThrow_7`, `m_afTwitchThrow_8`, `m_afTwitchThrow_9`, `m_fLeewardScalar`, `m_fRollMaxScale`, `m_fRollMinScale`, `m_fRollSeparation`, `m_fRollSpeed`, `m_fTwitchSharpness` |
+| `SampleSettings` | object | — | `compressionFormat`, `conversionMode`, `loadType`, `quality`, `sampleRateOverride`, `sampleRateSetting`, `preloadAudioData` |
+| `SamplerParameter` | object | — | `bindPoint`, `sampler` |
+| `Scene` | LevelGameManager | — | `enabled`, `guid`, `m_PVSData`, `m_PVSObjectsArray`, `m_PVSPortalsArray`, `m_QueryMode`, `path` |
+| `SceneDataContainer` | object | — | `m_SceneData` |
+| `SceneIdentifier` | object | — | `guid`, `handle` |
+| `SceneObjectIdentifier` | object | — | `targetObject`, `targetPrefab` |
+| `SceneSettings` | LevelGameManager | — | `m_PVSData`, `m_PVSObjectsArray`, `m_PVSPortalsArray`, `m_QueryMode` |
+| `SceneVisibilityData` | object | — | `m_SceneGUID` |
+| `ScriptMapper` | GlobalGameManager | 94 | `m_Shaders`, `m_PreloadShaders` |
+| `SecondarySpriteTexture` | object | — | `name`, `texture` |
+| `SecondaryTextureSettings` | object | — | `platformSettings`, `sRGB` |
+| `SelectorStateConstant` | object | — | `m_FullPathID`, `m_IsEntry`, `m_TransitionConstantArray` |
+| `SelectorTransitionConstant` | object | — | `m_ConditionConstantArray`, `m_Destination` |
+| `SerializedCustomEditorForRenderPipeline` | object | — | `customEditorName`, `renderPipelineType` |
+| `SerializedPass` | object | — | `m_HasInstancingVariant`, `m_Name`, `m_NameIndices`, `m_ProgramMask`, `m_State`, `m_Tags`, `m_TextureName`, `m_Type`, `m_UseName`, `progDomain`, `progFragment`, `progGeometry`, `progHull`, `progVertex`, `m_EditorDataHash`, `m_GlobalKeywordMask`, `m_HasProceduralInstancingVariant`, `m_LocalKeywordMask`, `m_Platforms`, `m_SerializedKeywordStateMask`, `progRayTracing` |
+| `SerializedPlayerSubProgram` | object | — | `m_BlobIndex`, `m_GpuProgramType`, `m_KeywordIndices`, `m_ShaderRequirements` |
+| `SerializedProgram` | object | — | `m_SubPrograms`, `m_CommonParameters`, `m_ParameterBlobIndices`, `m_PlayerSubPrograms`, `m_SerializedKeywordStateMask` |
+| `SerializedProgramParameters` | object | — | `m_BufferParams`, `m_ConstantBufferBindings`, `m_ConstantBuffers`, `m_MatrixParams`, `m_Samplers`, `m_TextureParams`, `m_UAVParams`, `m_VectorParams` |
+| `SerializedProperties` | object | — | `m_Props` |
+| `SerializedProperty` | object | — | `m_Attributes`, `m_DefTexture`, `m_DefValue_0_`, `m_DefValue_1_`, `m_DefValue_2_`, `m_DefValue_3_`, `m_Description`, `m_Flags`, `m_Name`, `m_Type` |
+| `SerializedShader` | object | — | `m_CustomEditorName`, `m_Dependencies`, `m_DisableNoSubshadersMessage`, `m_FallbackName`, `m_Name`, `m_PropInfo`, `m_SubShaders`, `m_CustomEditorForRenderPipelines`, `m_KeywordFlags`, `m_KeywordNames` |
+| `SerializedShaderDependency` | object | — | `from_`, `to` |
+| `SerializedShaderFloatValue` | object | — | `name`, `val` |
+| `SerializedShaderRTBlendState` | object | — | `blendOp`, `blendOpAlpha`, `colMask`, `destBlend`, `destBlendAlpha`, `srcBlend`, `srcBlendAlpha` |
+| `SerializedShaderState` | object | — | `alphaToMask`, `culling`, `fogColor`, `fogDensity`, `fogEnd`, `fogMode`, `fogStart`, `gpuProgramID`, `lighting`, `m_LOD`, `m_Name`, `m_Tags`, `offsetFactor`, `offsetUnits`, `rtBlend0`, `rtBlend1`, `rtBlend2`, `rtBlend3`, `rtBlend4`, `rtBlend5`, `rtBlend6`, `rtBlend7`, `rtSeparateBlend`, `stencilOp`, `stencilOpBack`, `stencilOpFront`, `stencilReadMask`, `stencilRef`, `stencilWriteMask`, `zTest`, `zWrite`, `conservative`, `zClip` |
+| `SerializedShaderVectorValue` | object | — | `name`, `w`, `x`, `y`, `z` |
+| `SerializedStencilOp` | object | — | `comp`, `fail`, `pass_`, `zFail` |
+| `SerializedSubProgram` | object | — | `m_BlobIndex`, `m_Channels`, `m_GpuProgramType`, `m_ShaderHardwareTier`, `m_BufferParams`, `m_ConstantBufferBindings`, `m_ConstantBuffers`, `m_GlobalKeywordIndices`, `m_KeywordIndices`, `m_LocalKeywordIndices`, `m_MatrixParams`, `m_Parameters`, `m_Samplers`, `m_ShaderRequirements`, `m_TextureParams`, `m_UAVParams`, `m_VectorParams` |
+| `SerializedSubShader` | object | — | `m_LOD`, `m_Passes`, `m_Tags` |
+| `SerializedTagMap` | object | — | `tags` |
+| `SerializedTextureProperty` | object | — | `m_DefaultName`, `m_TexDim` |
+| `ShaderBindChannel` | object | — | `source`, `target` |
+| `ShaderInfo` | object | — | `variants` |
+| `ShadowSettings` | object | — | `m_Bias`, `m_Resolution`, `m_Strength`, `m_Type`, `m_CullingMatrixOverride`, `m_CustomResolution`, `m_NearPlane`, `m_NormalBias`, `m_Softness`, `m_SoftnessFade`, `m_UseCullingMatrixOverride` |
+| `ShapeModule` | object | — | `angle`, `enabled`, `m_Mesh`, `placementMode`, `radius`, `type`, `alignToDirection`, `arc`, `boxThickness`, `boxX`, `boxY`, `boxZ`, `donutRadius`, `length`, `m_MeshMaterialIndex`, `m_MeshNormalOffset`, `m_MeshRenderer`, `m_MeshScale`, `m_MeshSpawn`, `m_Position`, `m_Rotation`, `m_Scale`, `m_SkinnedMeshRenderer`, `m_Sprite`, `m_SpriteRenderer`, `m_Texture`, `m_TextureAlphaAffectsParticles`, `m_TextureBilinearFiltering`, `m_TextureClipChannel`, `m_TextureClipThreshold`, `m_TextureColorAffectsParticles`, `m_TextureUVChannel`, `m_UseMeshColors`, `m_UseMeshMaterialIndex`, `radiusThickness`, `randomDirection`, `randomDirectionAmount`, `randomPositionAmount`, `sphericalDirectionAmount` |
+| `SizeBySpeedModule` | object | — | `curve`, `enabled`, `range`, `separateAxes`, `y`, `z` |
+| `SizeModule` | object | — | `curve`, `enabled`, `separateAxes`, `y`, `z` |
+| `Skeleton` | object | — | `m_AxesArray`, `m_ID`, `m_Node` |
+| `SkeletonBone` | object | — | `m_Name`, `m_Position`, `m_Rotation`, `m_Scale`, `m_ParentName`, `m_TransformModified` |
+| `SkeletonBoneLimit` | object | — | `m_Length`, `m_Max`, `m_Min`, `m_Modified`, `m_Value`, `m_PostQ`, `m_PreQ` |
+| `SkeletonMask` | object | — | `m_Data` |
+| `SkeletonMaskElement` | object | — | `m_Weight`, `m_Index`, `m_PathHash` |
+| `SkeletonPose` | object | — | `m_X` |
+| `SketchUpImportCamera` | object | — | `aspectRatio`, `fov`, `isPerspective`, `lookAt`, `orthoSize`, `position`, `up`, `farPlane`, `nearPlane` |
+| `SketchUpImportData` | object | — | `defaultCamera`, `scenes` |
+| `SketchUpImportScene` | object | — | `camera`, `name` |
+| `SnapshotConstant` | object | — | `nameHash`, `transitionIndices`, `transitionTypes`, `values` |
+| `SoftJointLimit` | object | — | `bounciness`, `limit`, `contactDistance`, `damper`, `spring` |
+| `SoftJointLimitSpring` | object | — | `damper`, `spring` |
+| `SortingLayerEntry` | object | — | `name`, `uniqueID`, `userID` |
+| `SourceAssetIdentifier` | object | — | `assembly`, `name`, `type` |
+| `SourceTextureInformation` | object | — | `doesTextureContainAlpha`, `height`, `width`, `doesTextureContainColor`, `sourceWasHDR` |
+| `SpeedTreeWind` | object | — | `BRANCH_DIRECTIONAL_1`, `BRANCH_DIRECTIONAL_2`, `BRANCH_DIRECTIONAL_FROND_1`, `BRANCH_DIRECTIONAL_FROND_2`, `BRANCH_OSC_COMPLEX_1`, `BRANCH_OSC_COMPLEX_2`, `BRANCH_SIMPLE_1`, `BRANCH_SIMPLE_2`, `BRANCH_TURBULENCE_1`, `BRANCH_TURBULENCE_2`, `BRANCH_WHIP_1`, `BRANCH_WHIP_2`, `BranchWindAnchor0`, `BranchWindAnchor1`, `BranchWindAnchor2`, `FROND_RIPPLE_ADJUST_LIGHTING`, `FROND_RIPPLE_ONE_SIDED`, `FROND_RIPPLE_TWO_SIDED`, `GLOBAL_PRESERVE_SHAPE`, `GLOBAL_WIND`, `LEAF_OCCLUSION_1`, `LEAF_OCCLUSION_2`, `LEAF_RIPPLE_COMPUTED_1`, `LEAF_RIPPLE_COMPUTED_2`, `LEAF_RIPPLE_VERTEX_NORMAL_1`, `LEAF_RIPPLE_VERTEX_NORMAL_2`, `LEAF_TUMBLE_1`, `LEAF_TUMBLE_2`, `LEAF_TWITCH_1`, `LEAF_TWITCH_2`, `ROLLING`, `m_fMaxBranchLevel1Length`, `m_sParams` |
+| `SpeedTreeWindConfig8` | object | — | `BRANCH_DIRECTIONAL_1`, `BRANCH_DIRECTIONAL_2`, `BRANCH_DIRECTIONAL_FROND_1`, `BRANCH_DIRECTIONAL_FROND_2`, `BRANCH_OSC_COMPLEX_1`, `BRANCH_OSC_COMPLEX_2`, `BRANCH_SIMPLE_1`, `BRANCH_SIMPLE_2`, `BRANCH_TURBULENCE_1`, `BRANCH_TURBULENCE_2`, `BRANCH_WHIP_1`, `BRANCH_WHIP_2`, `BranchLevel1`, `BranchLevel2`, `BranchWindAnchor0`, `BranchWindAnchor1`, `BranchWindAnchor2`, `FROND_RIPPLE_ADJUST_LIGHTING`, `FROND_RIPPLE_ONE_SIDED`, `FROND_RIPPLE_TWO_SIDED`, `GLOBAL_PRESERVE_SHAPE`, `GLOBAL_WIND`, `LEAF_OCCLUSION_1`, `LEAF_OCCLUSION_2`, `LEAF_RIPPLE_COMPUTED_1`, `LEAF_RIPPLE_COMPUTED_2`, `LEAF_RIPPLE_VERTEX_NORMAL_1`, `LEAF_RIPPLE_VERTEX_NORMAL_2`, `LEAF_TUMBLE_1`, `LEAF_TUMBLE_2`, `LEAF_TWITCH_1`, `LEAF_TWITCH_2`, `LeafGroup1`, `LeafGroup2`, `Oscillation0_0`, `Oscillation0_1`, `Oscillation0_2`, `Oscillation0_3`, `Oscillation0_4`, `Oscillation0_5`, `Oscillation0_6`, `Oscillation0_7`, `Oscillation0_8`, `Oscillation0_9`, `Oscillation1_0`, `Oscillation1_1`, `Oscillation1_2`, `Oscillation1_3`, `Oscillation1_4`, `Oscillation1_5`, `Oscillation1_6`, `Oscillation1_7`, `Oscillation1_8`, `Oscillation1_9`, `Oscillation2_0`, `Oscillation2_1`, `Oscillation2_2`, `Oscillation2_3`, `Oscillation2_4`, `Oscillation2_5`, `Oscillation2_6`, `Oscillation2_7`, `Oscillation2_8`, `Oscillation2_9`, `Oscillation3_0`, `Oscillation3_1`, `Oscillation3_2`, `Oscillation3_3`, `Oscillation3_4`, `Oscillation3_5`, `Oscillation3_6`, `Oscillation3_7`, `Oscillation3_8`, `Oscillation3_9`, `Oscillation4_0`, `Oscillation4_1`, `Oscillation4_2`, `Oscillation4_3`, `Oscillation4_4`, `Oscillation4_5`, `Oscillation4_6`, `Oscillation4_7`, `Oscillation4_8`, `Oscillation4_9`, `Oscillation5_0`, `Oscillation5_1`, `Oscillation5_2`, `Oscillation5_3`, `Oscillation5_4`, `Oscillation5_5`, `Oscillation5_6`, `Oscillation5_7`, `Oscillation5_8`, `Oscillation5_9`, `Oscillation6_0`, `Oscillation6_1`, `Oscillation6_2`, `Oscillation6_3`, `Oscillation6_4`, `Oscillation6_5`, `Oscillation6_6`, `Oscillation6_7`, `Oscillation6_8`, `Oscillation6_9`, `Oscillation7_0`, `Oscillation7_1`, `Oscillation7_2`, `Oscillation7_3`, `Oscillation7_4`, `Oscillation7_5`, `Oscillation7_6`, `Oscillation7_7`, `Oscillation7_8`, `Oscillation7_9`, `Oscillation8_0`, `Oscillation8_1`, `Oscillation8_2`, `Oscillation8_3`, `Oscillation8_4`, `Oscillation8_5`, `Oscillation8_6`, `Oscillation8_7`, `Oscillation8_8`, `Oscillation8_9`, `Oscillation9_0`, `Oscillation9_1`, `Oscillation9_2`, `Oscillation9_3`, `Oscillation9_4`, `Oscillation9_5`, `Oscillation9_6`, `Oscillation9_7`, `Oscillation9_8`, `Oscillation9_9`, `ROLLING`, `m_afFrondRippleDistance_0`, `m_afFrondRippleDistance_1`, `m_afFrondRippleDistance_2`, `m_afFrondRippleDistance_3`, `m_afFrondRippleDistance_4`, `m_afFrondRippleDistance_5`, `m_afFrondRippleDistance_6`, `m_afFrondRippleDistance_7`, `m_afFrondRippleDistance_8`, `m_afFrondRippleDistance_9`, `m_afGlobalDirectionAdherence_0`, `m_afGlobalDirectionAdherence_1`, `m_afGlobalDirectionAdherence_2`, `m_afGlobalDirectionAdherence_3`, `m_afGlobalDirectionAdherence_4`, `m_afGlobalDirectionAdherence_5`, `m_afGlobalDirectionAdherence_6`, `m_afGlobalDirectionAdherence_7`, `m_afGlobalDirectionAdherence_8`, `m_afGlobalDirectionAdherence_9`, `m_afGlobalDistance_0`, `m_afGlobalDistance_1`, `m_afGlobalDistance_2`, `m_afGlobalDistance_3`, `m_afGlobalDistance_4`, `m_afGlobalDistance_5`, `m_afGlobalDistance_6`, `m_afGlobalDistance_7`, `m_afGlobalDistance_8`, `m_afGlobalDistance_9`, `m_fAnchorDistanceScale`, `m_fAnchorOffset`, `m_fDirectionResponse`, `m_fFrondRippleLightingScalar`, `m_fFrondRippleTile`, `m_fGlobalHeight`, `m_fGlobalHeightExponent`, `m_fGustDurationMax`, `m_fGustDurationMin`, `m_fGustFallScalar`, `m_fGustFrequency`, `m_fGustRiseScalar`, `m_fGustStrengthMax`, `m_fGustStrengthMin`, `m_fMaxBranchLevel1Length`, `m_fRollingBranchFieldMin`, `m_fRollingBranchLightingAdjust`, `m_fRollingBranchVerticalOffset`, `m_fRollingLeafRippleMin`, `m_fRollingLeafTumbleMin`, `m_fRollingNoisePeriod`, `m_fRollingNoiseSize`, `m_fRollingNoiseSpeed`, `m_fRollingNoiseTurbulence`, `m_fRollingNoiseTwist`, `m_fStrengthResponse` |
+| `SpeedTreeWindConfig9` | object | — | `m_bDoBranch1`, `m_bDoBranch2`, `m_bDoRipple`, `m_bDoShared`, `m_bDoShimmer`, `m_bLodFade`, `m_fBranch1StretchLimit`, `m_fBranch2StretchLimit`, `m_fDirectionResponse`, `m_fGustDurationMax`, `m_fGustDurationMin`, `m_fGustFallScalar`, `m_fGustFrequency`, `m_fGustRiseScalar`, `m_fGustStrengthMax`, `m_fGustStrengthMin`, `m_fSharedHeightStart`, `m_fStrengthResponse`, `m_fWindIndependence`, `m_sBranch1`, `m_sBranch2`, `m_sRipple`, `m_sShared`, `m_vTreeExtents`, `m_fImportScaling`, `pad` |
+| `SphericalHarmonicsL2` | object | — | `sh_10_`, `sh_11_`, `sh_12_`, `sh_13_`, `sh_14_`, `sh_15_`, `sh_16_`, `sh_17_`, `sh_18_`, `sh_19_`, `sh_20_`, `sh_21_`, `sh_22_`, `sh_23_`, `sh_24_`, `sh_25_`, `sh_26_`, `sh__0_`, `sh__1_`, `sh__2_`, `sh__3_`, `sh__4_`, `sh__5_`, `sh__6_`, `sh__7_`, `sh__8_`, `sh__9_` |
+| `SplashScreenLogo` | object | — | `duration`, `logo` |
+| `SplatDatabase` | object | — | `m_AlphaTextures`, `m_AlphamapResolution`, `m_BaseMapResolution`, `m_ColorSpace`, `m_MaterialRequiresMetallic`, `m_MaterialRequiresSmoothness`, `m_Splats`, `m_TerrainLayers` |
+| `SplatPrototype` | object | — | `texture`, `tileOffset`, `tileSize`, `normalMap`, `smoothness`, `specularMetallic` |
+| `SpriteAtlasAssetData` | object | — | `packables` |
+| `SpriteAtlasData` | object | — | `alphaTexture`, `downscaleMultiplier`, `settingsRaw`, `texture`, `textureRect`, `textureRectOffset`, `uvTransform`, `atlasRectOffset`, `secondaryTextures` |
+| `SpriteAtlasEditorData` | object | — | `bindAsDefault`, `cachedData`, `isAtlasV2`, `packables`, `packingSettings`, `platformSettings`, `textureSettings`, `variantMultiplier`, `secondaryTextureSettings`, `storedHash`, `totalSpriteSurfaceArea` |
+| `SpriteBone` | object | — | `length`, `name`, `parentId`, `position`, `rotation`, `color`, `guid` |
+| `SpriteCustomDataEntry` | object | — | `m_Key`, `m_Value` |
+| `SpriteCustomMetadata` | object | — | `m_Entries` |
+| `SpriteData` | object | — | `sprite` |
+| `SpriteMetaData` | object | — | `m_Alignment`, `m_Name`, `m_Pivot`, `m_Rect`, `m_Bones`, `m_Border`, `m_CustomData`, `m_Edges`, `m_Indices`, `m_InternalID`, `m_Outline`, `m_PhysicsShape`, `m_SpriteID`, `m_TessellationDetail`, `m_Vertices`, `m_Weights` |
+| `SpriteRenderData` | object | — | `settingsRaw`, `texture`, `textureRect`, `textureRectOffset`, `alphaTexture`, `atlasRectOffset`, `downscaleMultiplier`, `indices`, `m_Bindpose`, `m_IndexBuffer`, `m_SourceSkin`, `m_SubMeshes`, `m_VertexData`, `secondaryTextures`, `uvTransform`, `vertices` |
+| `SpriteSheetMetaData` | object | — | `m_Sprites`, `m_Bones`, `m_CustomData`, `m_Edges`, `m_Indices`, `m_InternalID`, `m_NameFileIdTable`, `m_Outline`, `m_PhysicsShape`, `m_SecondaryTextures`, `m_SpriteCustomMetadata`, `m_SpriteID`, `m_Vertices`, `m_Weights` |
+| `SpriteTilingProperty` | object | — | `adaptiveTiling`, `adaptiveTilingThreshold`, `border`, `drawMode`, `newSize`, `oldSize`, `pivot` |
+| `SpriteVertex` | object | — | `pos`, `uv` |
+| `State` | NamedObject | — | `m_IKOnFeet`, `m_Motions`, `m_Name`, `m_ParentStateMachine`, `m_Position`, `m_Speed`, `m_Tag`, `m_CycleOffset`, `m_Mirror` |
+| `StateConstant` | object | — | `m_BlendTreeConstantArray`, `m_BlendTreeConstantIndexArray`, `m_IKOnFeet`, `m_Loop`, `m_Speed`, `m_TagID`, `m_TransitionConstantArray`, `m_CycleOffset`, `m_CycleOffsetParamID`, `m_FullPathID`, `m_ID`, `m_LeafInfoArray`, `m_Mirror`, `m_MirrorParamID`, `m_NameID`, `m_PathID`, `m_SpeedParamID`, `m_TimeParamID`, `m_WriteDefaultValues` |
+| `StateKey` | object | — | `m_LayerIndex`, `m_StateID` |
+| `StateMachine` | NamedObject | — | `m_AnyStatePosition`, `m_ChildStateMachine`, `m_ChildStateMachinePosition`, `m_DefaultState`, `m_MotionSetCount`, `m_Name`, `m_OrderedTransitions`, `m_ParentStateMachinePosition`, `m_States`, `m_LocalTransitions` |
+| `StateMachineBehaviourVectorDescription` | object | — | `m_StateMachineBehaviourIndices`, `m_StateMachineBehaviourRanges` |
+| `StateMachineConstant` | object | — | `m_AnyStateTransitionConstantArray`, `m_DefaultState`, `m_StateConstantArray`, `m_EvaluateTransitionsOnStart`, `m_MotionSetCount`, `m_SelectorStateConstantArray`, `m_SynchronizedLayerCount` |
+| `StateRange` | object | — | `m_Count`, `m_StartIndex` |
+| `StaticBatchInfo` | object | — | `firstSubMesh`, `subMeshCount` |
+| `StreamInfo` | object | — | `channelMask`, `offset`, `stride`, `align`, `dividerOp`, `frequency` |
+| `StreamedClip` | object | — | `curveCount`, `data`, `discreteCurveCount` |
+| `StreamedResource` | object | — | `m_Offset`, `m_Size`, `m_Source` |
+| `StreamingInfo` | object | — | `offset`, `path`, `size` |
+| `StructParameter` | object | — | `m_ArraySize`, `m_Index`, `m_MatrixMembers`, `m_NameIndex`, `m_StructSize`, `m_VectorMembers` |
+| `SubCollider` | object | — | `m_Collider`, `m_ColliderPaths` |
+| `SubEmitterData` | object | — | `emitter`, `properties`, `type`, `emitProbability` |
+| `SubMesh` | object | — | `firstByte`, `firstVertex`, `indexCount`, `localAABB`, `vertexCount`, `baseVertex`, `isTriStrip`, `topology`, `triangleCount` |
+| `SubModule` | object | — | `enabled`, `subEmitterBirth`, `subEmitterBirth1`, `subEmitterCollision`, `subEmitterCollision1`, `subEmitterDeath`, `subEmitterDeath1`, `subEmitters` |
+| `SubPassDescriptor` | object | — | `colorOutputs`, `flags`, `inputs` |
+| `SubstanceEnumItem` | object | — | `text`, `value` |
+| `SubstanceInput` | object | — | `alteredTexturesUID`, `enumValues`, `flags`, `internalIndex`, `internalType`, `maximum`, `minimum`, `name`, `step`, `type`, `value`, `componentLabels`, `group`, `internalIdentifier`, `label`, `visibleIf` |
+| `SubstanceValue` | object | — | `scalar_0_`, `scalar_1_`, `scalar_2_`, `scalar_3_`, `texture`, `stringvalue` |
+| `TakeInfo` | object | — | `bakeStartTime`, `bakeStopTime`, `clip`, `defaultClipName`, `name`, `sampleRate`, `startTime`, `stopTime`, `internalID` |
+| `Tetrahedron` | object | — | `indices_0_`, `indices_1_`, `indices_2_`, `indices_3_`, `matrix`, `neighbors_0_`, `neighbors_1_`, `neighbors_2_`, `neighbors_3_` |
+| `TextureImportInstructions` | object | — | `colorSpace`, `compressedFormat`, `compressionQuality`, `height`, `uncompressedFormat`, `usageMode`, `width`, `androidETC2FallbackDownscale`, `androidETC2FallbackFormat`, `cubeIntermediateSize`, `cubeLayout`, `cubeMode`, `depth`, `desiredFormat`, `recommendedFormat`, `vtOnly` |
+| `TextureImportOutput` | object | — | `sourceTextureInformation`, `textureImportInstructions`, `importInspectorWarnings` |
+| `TextureImporterPlatformSettings` | object | — | `m_AllowsAlphaSplitting`, `m_AndroidETC2FallbackOverride`, `m_BuildTarget`, `m_CompressionQuality`, `m_CrunchedCompression`, `m_MaxTextureSize`, `m_Overridden`, `m_ResizeAlgorithm`, `m_TextureCompression`, `m_TextureFormat`, `m_ForceMaximumCompressionQuality_BC6H_BC7`, `m_IgnorePlatformSupport` |
+| `TextureParameter` | object | — | `m_Dim`, `m_Index`, `m_NameIndex`, `m_SamplerIndex`, `m_MultiSampled` |
+| `TextureParameters` | object | — | `height`, `mipLevels`, `textureFormat`, `width` |
+| `TextureSettings` | object | — | `anisoLevel`, `compressionQuality`, `crunchedCompression`, `filterMode`, `generateMipMaps`, `maxTextureSize`, `readable`, `sRGB`, `textureCompression` |
+| `TicksPerSecond` | object | — | `m_Denominator`, `m_Numerator` |
+| `TierGraphicsSettings` | object | — | `renderingPath`, `useCascadedShadowMaps`, `enableLPPV`, `hdrMode`, `prefer32BitShadowMaps`, `realtimeGICPUUsage`, `useHDR` |
+| `Tile` | object | — | `m_TileColorIndex`, `m_TileIndex`, `m_TileMatrixIndex`, `m_TileSpriteIndex`, `dummyAlignment`, `m_AllTileFlags`, `m_ColliderType`, `m_ObjectToInstantiate`, `m_TileFlags`, `m_TileObjectToInstantiateIndex` |
+| `TileAnimationData` | object | — | `m_AnimatedSprites`, `m_AnimationSpeed`, `m_AnimationTimeOffset`, `m_Flags`, `m_IsLooping` |
+| `TilemapRefCountedData` | object | — | `m_Data`, `m_RefCount` |
+| `TrailModule` | object | — | `colorOverLifetime`, `colorOverTrail`, `dieWithParticles`, `enabled`, `inheritParticleColor`, `lifetime`, `minVertexDistance`, `ratio`, `sizeAffectsLifetime`, `sizeAffectsWidth`, `textureMode`, `widthOverTrail`, `worldSpace`, `attachRibbonsToTransform`, `generateLightingData`, `mode`, `ribbonCount`, `shadowBias`, `splitSubEmitterRibbons`, `textureScale` |
+| `TransformMaskElement` | object | — | `m_Path`, `m_Weight` |
+| `Transition` | NamedObject | — | `m_Atomic`, `m_Conditions`, `m_DstState`, `m_Mute`, `m_Name`, `m_Solo`, `m_SrcState`, `m_TransitionDuration`, `m_TransitionOffset`, `m_CanTransitionToSelf` |
+| `TransitionConstant` | object | — | `m_ConditionConstantArray`, `m_DestinationState`, `m_ID`, `m_TransitionDuration`, `m_TransitionOffset`, `m_UserID`, `m_Atomic`, `m_CanTransitionToSelf`, `m_ExitTime`, `m_FullPathID`, `m_HasExitTime`, `m_HasFixedDuration`, `m_InterruptionSource`, `m_OrderedInterruption` |
+| `TreeInstance` | object | — | `color`, `heightScale`, `index`, `lightmapColor`, `position`, `widthScale`, `rotation` |
+| `TreePrototype` | object | — | `bendFactor`, `prefab`, `navMeshLod` |
+| `TriggerModule` | object | — | `enabled`, `enter`, `exit`, `inside`, `outside`, `radiusScale`, `colliderQueryMode`, `collisionShape0`, `collisionShape1`, `collisionShape2`, `collisionShape3`, `collisionShape4`, `collisionShape5`, `primitives` |
+| `TypeStats` | object | — | `classID`, `objectCount`, `resourceCount`, `size` |
+| `UAVParameter` | object | — | `m_Index`, `m_NameIndex`, `m_OriginalIndex` |
+| `UVAnimation` | object | — | `cycles`, `x_Tile`, `y_Tile` |
+| `UVModule` | object | — | `animationType`, `cycles`, `enabled`, `frameOverTime`, `rowIndex`, `tilesX`, `tilesY`, `flipU`, `flipV`, `fps`, `mode`, `randomRow`, `rowMode`, `speedRange`, `sprites`, `startFrame`, `timeMode`, `uvChannelMask` |
+| `UnityAdsSettings` | GlobalGameManager | — | `m_Enabled`, `m_InitializeOnStartup`, `m_TestMode`, `m_AndroidGameId`, `m_EnabledPlatforms`, `m_GameId`, `m_IosGameId` |
+| `UnityAnalyticsSettings` | object | — | `m_Enabled`, `m_TestMode`, `m_InitializeOnStartup`, `m_PackageRequiringCoreStatsPresent`, `m_TestConfigUrl`, `m_TestEventUrl` |
+| `UnityPropertySheet` | object | — | `m_Colors`, `m_Floats`, `m_TexEnvs`, `m_Ints` |
+| `UnityPurchasingSettings` | object | — | `m_Enabled`, `m_TestMode` |
+| `UnitySceneHandle` | object | — | `value` |
+| `UnityTexEnv` | object | — | `m_Offset`, `m_Scale`, `m_Texture` |
+| `UpdateZoneInfo` | object | — | `needSwap`, `passIndex`, `rotation`, `updateZoneCenter`, `updateZoneSize` |
+| `VFXCPUBufferData` | object | — | `data` |
+| `VFXCPUBufferDesc` | object | — | `capacity`, `initialData`, `layout`, `stride` |
+| `VFXEditorSystemDesc` | object | — | `buffers`, `capacity`, `flags`, `layer`, `tasks`, `type`, `values`, `name` |
+| `VFXEditorTaskDesc` | object | — | `buffers`, `params`, `processor`, `shaderSourceIndex`, `type`, `values`, `temporaryBuffers` |
+| `VFXEntryExposed` | object | — | `m_Name`, `m_Overridden`, `m_Value` |
+| `VFXEntryExpressionValue` | object | — | `m_ExpressionIndex`, `m_Value` |
+| `VFXEventDesc` | object | — | `name`, `playSystems`, `stopSystems`, `initSystems` |
+| `VFXExposedMapping` | object | — | `mapping`, `space` |
+| `VFXExpressionContainer` | object | — | `m_Expressions`, `m_NeedsLocalToWorld`, `m_NeedsWorldToLocal`, `m_ConstantBakeCurveCount`, `m_ConstantBakeGradientCount`, `m_DynamicBakeCurveCount`, `m_DynamicBakeGradientCount`, `m_MaxCommonExpressionsIndex`, `m_NeededMainCameraBuffers`, `m_NeedsMainCamera` |
+| `VFXField` | object | — | `m_Array` |
+| `VFXGPUBufferDesc` | object | — | `capacity`, `layout`, `size`, `stride`, `mode`, `target`, `type` |
+| `VFXInstanceSplitDesc` | object | — | `values` |
+| `VFXLayoutElementDesc` | object | — | `name`, `offset`, `type` |
+| `VFXLayoutOffset` | object | — | `bucket`, `element`, `structure` |
+| `VFXMapping` | object | — | `index`, `nameId` |
+| `VFXMappingTemporary` | object | — | `mapping`, `pastFrameIndex`, `perCameraBuffer` |
+| `VFXPropertySheetSerializedBase` | object | — | `m_AnimationCurve`, `m_Bool`, `m_Float`, `m_Gradient`, `m_Int`, `m_Matrix4x4f`, `m_NamedObject`, `m_Uint`, `m_Vector2f`, `m_Vector3f`, `m_Vector4f` |
+| `VFXRendererSettings` | object | — | `motionVectorGenerationMode`, `shadowCastingMode`, `lightProbeUsage`, `rayTracingMode`, `receiveShadows`, `reflectionProbeUsage`, `transparencyPriority` |
+| `VFXShaderSourceDesc` | object | — | `compute`, `name`, `source` |
+| `VFXSystemDesc` | object | — | `buffers`, `capacity`, `flags`, `layer`, `tasks`, `type`, `values`, `instanceSplitDescs`, `name` |
+| `VFXTaskDesc` | object | — | `buffers`, `params`, `processor`, `type`, `values`, `instanceSplitIndex`, `temporaryBuffers` |
+| `VFXTemplate` | object | — | `category`, `description`, `icon`, `name`, `thumbnail`, `order` |
+| `VFXTemporaryGPUBufferDesc` | object | — | `desc`, `frameCount` |
+| `VRSettings` | object | — | `cardboard`, `daydream`, `enable360StereoCapture`, `hololens`, `lumin`, `none`, `oculus` |
+| `ValueArray` | object | — | `m_BoolValues`, `m_FloatValues`, `m_IntValues`, `m_EntityIdValues`, `m_PositionValues`, `m_QuaternionValues`, `m_ScaleValues`, `m_VectorValues` |
+| `ValueArrayConstant` | object | — | `m_ValueArray` |
+| `ValueConstant` | object | — | `m_ID`, `m_Index`, `m_Type`, `m_TypeID` |
+| `ValueDelta` | object | — | `m_Start`, `m_Stop` |
+| `VariableBoneCountWeights` | object | — | `m_Data` |
+| `VariantInfo` | object | — | `graphicsStateInfoSet`, `keywordNames`, `keywords`, `passIndex`, `passType`, `shader`, `shaderAssetGUID`, `shaderAssetLocalIdentifierInFile`, `shaderName`, `subShaderIndex` |
+| `Vector3Curve` | object | — | `curve`, `path` |
+| `VectorParameter` | object | — | `m_ArraySize`, `m_Dim`, `m_Index`, `m_NameIndex`, `m_Type` |
+| `VelocityModule` | object | — | `enabled`, `inWorldSpace`, `x`, `y`, `z`, `orbitalOffsetX`, `orbitalOffsetY`, `orbitalOffsetZ`, `orbitalX`, `orbitalY`, `orbitalZ`, `radial`, `speedModifier` |
+| `VertexData` | object | — | `m_DataSize`, `m_VertexCount`, `m_Channels`, `m_CurrentChannels`, `m_Streams`, `m_Streams_0_`, `m_Streams_1_`, `m_Streams_2_`, `m_Streams_3_` |
+| `VertexLayoutInfo` | object | — | `vertexChannelsInfo`, `vertexStreamCount`, `vertexStrides` |
+| `VideoClipImporterOutput` | object | — | `encodedEndFrame`, `encodedHeight`, `encodedSettings`, `encodedStartFrame`, `encodedWidth`, `format`, `originalFrameCount`, `originalHeight`, `originalWidth`, `settings`, `sourceAudioChannelCount`, `sourceAudioSampleRate`, `sourceFileSize`, `sourceFrameRate`, `sourceHasAlpha`, `sourcePixelAspectRatioDenominator`, `sourcePixelAspectRatioNumerator`, `streamedResource`, `transcodeSkipped` |
+| `VideoClipImporterTargetSettings` | object | — | `aspectRatio`, `bitrateMode`, `codec`, `customHeight`, `customWidth`, `enableTranscoding`, `resizeFormat`, `spatialQuality` |
+| `VisualEffectInfo` | object | — | `m_Buffers`, `m_CPUBuffers`, `m_CullingFlags`, `m_Events`, `m_ExposedExpressions`, `m_Expressions`, `m_PropertySheet`, `m_RendererSettings`, `m_UpdateMode`, `m_CompilationVersion`, `m_InitialEventName`, `m_InstancingCapacity`, `m_InstancingDisabledReason`, `m_InstancingMode`, `m_PreWarmDeltaTime`, `m_PreWarmStepCount`, `m_RuntimeVersion`, `m_TemporaryBuffers` |
+| `VisualEffectSettings` | object | — | `m_CullingFlags`, `m_InitialEventName`, `m_PreWarmDeltaTime`, `m_PreWarmStepCount`, `m_RendererSettings`, `m_UpdateMode`, `m_InstancingCapacity`, `m_InstancingDisabledReason`, `m_InstancingMode` |
+| `VulkanGraphicsJobsDeviceFilterData` | object | — | `filter`, `preferredMode` |
+| `WheelFrictionCurve` | object | — | `asymptoteSlip`, `asymptoteValue`, `extremumSlip`, `extremumValue`, `m_AsymptoteSlip`, `m_AsymptoteValue`, `m_ExtremumSlip`, `m_ExtremumValue`, `m_Stiffness`, `stiffnessFactor` |
+| `bitset` | object | — | `bitCount`, `bitblocks` |
+| `int2_storage` | object | — | `x`, `y` |
+| `int3_storage` | object | — | `x`, `y`, `z` |
+| `xform` | object | — | `q`, `s`, `t` |
+
+## Appendix B. Fields and members of UnityPy's own classes
+
+The attrs fields and the public members (`inventory.py` groups `fields` and `methods`) of the classes UnityPy defines outside `classes/generated.py` that no row above names one by one. The tier and level are those of the class's row in the section given; a member listed under a base class (`EndianBinaryReader`) is inherited by its subclasses, which list only what they redefine.
+
+| class | covered in | tier | fields | members |
+|---|---|---|---|---|
+| `SerializedFileHeader` | 7.2 | — | `data_offset`, `endian`, `file_size`, `metadata_size`, `reserved`, `version` | — |
+| `SerializedType` | 7.2 | A | `class_id`, `is_stripped_type`, `m_AssemblyName`, `m_ClassName`, `m_NameSpace`, `node`, `old_type_hash`, `script_id`, `script_type_index`, `type_dependencies` | — |
+| `FileIdentifier` | 7.2 | A | `guid`, `path`, `temp_empty`, `type` | `name`, `write` |
+| `LocalSerializedObjectIdentifier` | 7.2 | A | `local_identifier_in_file`, `local_serialized_file_index` | `write` |
+| `ObjectReader` | 8 | A | `assets_file`, `byte_size`, `byte_start`, `class_id`, `data`, `is_destroyed`, `is_stripped`, `path_id`, `reader`, `serialized_type`, `type`, `type_id` | — |
+| `TypeTreeConfig` | 9.1 | — | `as_dict`, `assetsfile`, `has_registry` | `copy` |
+| `TpkClassInformation` | 10 | — | — | `getVersionedClass` |
+| `TpkCommonString` | 10 | — | — | `GetCount`, `GetStrings` |
+| `TpkDataType` | 10 | — | — | `ToBlob` |
+| `TpkFile` | 10 | — | — | `GetDataBlob` |
+| `TpkUnityClass` | 10 | — | — | `to_dict` |
+| `TypeTreeGeneratorBase` | 10 | — | — | `get_nodes`, `get_nodes_as_json`, `load_dll`, `load_il2cpp` |
+| `NodeClass` | 10 | — | — | `generate_str`, `sort_fields` |
+| `NodeClassField` | 10 | — | — | `clean_name`, `generate_str` |
+| `EndianBinaryReader` | 13 | — | — | `align_stream`, `bytes`, `endian`, `read`, `read_aligned_string`, `read_array`, `read_array_struct`, `read_boolean`, `read_boolean_array`, `read_byte`, `read_byte_array`, `read_bytes`, `read_double`, `read_double_array`, `read_float`, `read_float_array`, `read_int`, `read_int_array`, `read_long`, `read_long_array`, `read_short`, `read_short_array`, `read_string`, `read_string_array`, `read_string_to_null`, `read_the_rest`, `read_u_byte`, `read_u_byte_array`, `read_u_int`, `read_u_int_array`, `read_u_long`, `read_u_long_array`, `read_u_short`, `read_u_short_array`, `real_offset`, `seek`, `tell` |
+| `EndianBinaryReader_Memoryview` | 13 | — | — | `bytes`, `dispose`, `read`, `read_aligned_string`, `read_array_struct`, `read_string_to_null` |
+| `EndianBinaryReader_Streamable` | 13 | — | — | `Length`, `Position`, `bytes`, `dispose` |
+| `EndianBinaryWriter` | 13 | — | — | `Length`, `align_stream`, `bytes`, `dispose`, `write`, `write_aligned_string`, `write_array`, `write_boolean`, `write_boolean_array`, `write_byte`, `write_byte_array`, `write_bytes`, `write_double`, `write_float`, `write_float_array`, `write_int`, `write_int_array`, `write_long`, `write_short`, `write_string_array`, `write_string_to_null`, `write_u_byte`, `write_u_int`, `write_u_int_array`, `write_u_long`, `write_u_short`, `write_u_short_array` |
+| `PPtr` | 14.1 | A | `assetsfile`, `m_FileID`, `m_PathID` | — |
+| `Vector2f` | 14.1 | A | `x`, `y` | — |
+| `Vector3f` | 14.1 | A | `x`, `y`, `z` | — |
+| `Vector4f` | 14.1 | A | `w`, `x`, `y`, `z` | — |
+| `Quaternionf` | 14.1 | A | `w`, `x`, `y`, `z` | — |
+| `Matrix3x4f` | 14.1 | A | `e00`, `e01`, `e02`, `e03`, `e10`, `e11`, `e12`, `e13`, `e20`, `e21`, `e22`, `e23` | — |
+| `Matrix4x4f` | 14.1 | A | `e00`, `e01`, `e02`, `e03`, `e10`, `e11`, `e12`, `e13`, `e20`, `e21`, `e22`, `e23`, `e30`, `e31`, `e32`, `e33` | — |
+| `ColorRGBA` | 14.1 | A | `a`, `b`, `g`, `r` | `rgba` |
+| `ContainerHelper` | 14.3 | A | `container`, `container_dict` | — |
+| `ShaderProgram` | 15.5 | A | — | `Export` |
+| `ShaderSubProgram` | 15.5 | A | — | `Export` |
