@@ -866,6 +866,143 @@ class FileRows(unittest.TestCase):
             (b.version, [o.parse_as_dict()["m_Name"] for o in b.files["CAB-a"].objects.values()]), (9, ["nine"])
         )
 
+    # Sections 18, 20: HEAD's own bundle writer and reader (UnityPy git 417d595, run from head_417d595/ by
+    # head_oracle.py): its `lz4hc` rule on several chunks at formats 8 and 9, and a format-9 save with every packer,
+    # against the rule section 20 states and against what 1.25.2 writes.
+    def test_head_saves(self):
+        import lz4.block
+        from UnityPy.helpers import CompressionHelper as H
+
+        import head_oracle
+
+        helper, head = head_oracle.load()
+        chunk = 0x20000
+
+        def rule(data, flag, version):
+            """Section 20's rule: (uncompressed, compressed, flags, offset) per block, and the bytes written."""
+            switch = flag & 0x3F
+            if switch == 0:
+                return [(len(data), len(data), flag, 0 if version >= 9 else None)], len(data)
+            size = chunk if switch in (2, 3) else 0xFFFFFFFF  # LZ4 and LZ4HC in 128 KiB chunks, LZMA in one
+            blocks, written = [], 0
+            for start in range(0, len(data), size):
+                piece = data[start : start + size]
+                if written >= size:  # the bytes written before it, padding included
+                    packed, flags = piece, flag ^ switch
+                elif switch == 1:
+                    packed, flags = H.compress_lzma(piece), flag
+                else:
+                    packed = lz4.block.compress(piece, mode="high_compression", compression=9, store_size=False)
+                    flags = flag
+                blocks.append((len(piece), len(packed), flags, written if version >= 9 else None))
+                written += len(packed)
+                written += -written % 16 if version >= 9 else 0
+            return blocks, written
+
+        halves = b"".join(random.Random(i).randbytes(chunk // 2) + bytes(chunk // 2) for i in range(3))
+        inputs = {
+            "compressible": b"".join(bytes([i]) * chunk for i in range(5)),
+            "random": random.Random(1).randbytes(2 * chunk),
+            "half-compressible": halves,
+            "a chunk and a half": random.Random(2).randbytes(chunk + chunk // 2),
+            "short": b"q" * 300,
+        }
+        got = {}
+        for name, data in inputs.items():
+            for version in (8, 9):
+                for flag in (0x40, 1, 2, 3):
+                    with self.subTest(name, version=version, flag=flag):
+                        out, infos = helper.chunk_based_compress(data, flag, version)
+                        blocks = [(b.uncompressedSize, b.compressedSize, b.flags, b.offset) for b in infos]
+                        self.assertEqual((blocks, len(out)), rule(data, flag, version))
+                        got[name, version, flag] = [f for _, _, f, _ in blocks]
+        # Where HEAD's lz4hc blocks differ from 1.25.2's tuple packer: the first chunk is compressed even when it
+        # grows, and a chunk that shrinks is stored once 0x20000 bytes are out.
+        old = {name: [f for _, _, f in H.chunk_based_compress(data, 3)[1]] for name, data in inputs.items()}
+        self.assertEqual((got["random", 8, 3], old["random"]), ([3, 0], [0, 0]))
+        self.assertEqual((got["half-compressible", 9, 3], old["half-compressible"]), ([3, 3, 0], [3, 3, 3]))
+        self.assertEqual(got["compressible", 9, 3], [3] * 5)
+        # HEAD's LZMA is one chunk, compressed although it grows; 1.25.2 stores a chunk that grows.
+        self.assertEqual(
+            (got["random", 9, 1], [f for _, _, f in H.chunk_based_compress(inputs["random"], 1)[1]]), ([1], [0])
+        )
+
+        # The save path: HEAD's `save` hands chunk_based_compress the entries concatenated, the blocks' codec and
+        # the bundle's format, and its reader, seeking each block by its offset from format 9, reads the entries
+        # back. A format-9 bundle is made by HEAD's own save of a format-8 one.
+        def entries(bundle):
+            return {
+                k: [o.parse_as_dict()["m_Name"] for o in f.objects.values()] if hasattr(f, "objects") else f.bytes
+                for k, f in bundle.files.items()
+            }
+
+        def head_bundle(data):
+            return quietly(head.BundleFile, EndianBinaryReader(data), UnityPy.Environment(), name="h")
+
+        def header(saved):
+            """The format, and the blocks info's uncompressed size and the flags, from a UnityFS header."""
+            engine_end = saved.index(b"\0", saved.index(b"\0", 12) + 1)  # after the signature, format and player
+            info_size, flags = struct.unpack_from(">II", saved, engine_end + 1 + 12)
+            return {"format": struct.unpack_from(">I", saved, 8)[0], "info": info_size, "flags": flags}
+
+        def payload_of(bundle):
+            """The entries concatenated as `save_fs` writes them: a raw reader's bytes, any other entry saved."""
+            return b"".join(
+                bytes(f.bytes) if isinstance(f, EndianBinaryReader) else f.save() for f in bundle.files.values()
+            )
+
+        payload = text_asset_file("p", "q" * 300)
+        source = S.fs_bundle([(b"CAB-a", payload, 4), (b"CAB-a.resS", halves, 0)])
+        eight = head_bundle(source)
+        eight.version = 9
+        nine_bytes = eight.save()
+        eight.version = 8
+        nine = head_bundle(nine_bytes)
+        self.assertEqual((nine.version, entries(nine)), (9, entries(eight)))
+        directory = sum(8 + 8 + 4 + len(name) + 1 for name in nine.files)
+        self.assertEqual(header(nine_bytes), {"format": 9, "info": 16 + 4 + 18 + 4 + directory, "flags": 0x40})
+        real = helper.chunk_based_compress
+        for bundle, version in ((eight, 8), (nine, 9)):
+            packers = [
+                ("none", 0x40, 0x40),
+                ("lz4", 0xC2, 2),
+                ("lz4hc", 0xC3, 3),
+                ("lzma", 0x41, 1),
+                ((0x43, 3), 0x43, 3),
+                ("original", bundle.dataflags, bundle._block_info_flags),
+            ]
+            for packer, data_flag, block_flag in packers:
+                with self.subTest(version=version, packer=packer):
+                    seen = []
+
+                    def spy(data, flag, version, seen=seen):
+                        out = real(data, flag, version)
+                        seen.append((bytes(data), flag, version, out))
+                        return out
+
+                    with mock.patch.object(helper, "chunk_based_compress", spy):
+                        saved = bundle.save(packer=packer)
+                    (data, flag, at, (out, infos)) = seen[0]
+                    self.assertEqual((len(seen), flag, at), (1, block_flag, version))
+                    self.assertEqual((header(saved)["format"], header(saved)["flags"]), (version, int(data_flag)))
+                    self.assertEqual(data, payload_of(bundle))
+                    blocks = [(b.uncompressedSize, b.compressedSize, b.flags, b.offset) for b in infos]
+                    self.assertEqual((blocks, len(out)), rule(data, flag, version))
+                    self.assertEqual(entries(head_bundle(saved)), entries(bundle))
+        # 1.25.2 reads a format-9 bundle with format 8's layout and saves it so, under version 9: 10-byte block
+        # entries with no offset. HEAD's reader takes each for 18 bytes, so the `none` save holds no entry for it
+        # and the `lz4` one fails; and 1.25.2 reads HEAD's format-9 save as a bundle with no entries.
+        laid_out_as_8 = bytearray(source)
+        struct.pack_into(">I", laid_out_as_8, 8, 9)
+        old_nine = load(bytes(laid_out_as_8))[0]
+        saved = old_nine.save(packer="none")
+        self.assertEqual(header(saved), {"format": 9, "info": 16 + 4 + 10 + 4 + directory, "flags": 0x40})
+        self.assertEqual(entries(load(saved)[0]), entries(nine))
+        self.assertEqual(head_bundle(saved).files, {})
+        with self.assertRaises(lz4.block.LZ4BlockError):
+            head_bundle(old_nine.save(packer="lz4"))
+        self.assertEqual(load(nine_bytes)[0].files, {})
+
     # Sections 7.2, 19.2: SerializedFile.load_dependencies.
     def test_load_dependencies(self):
         d = self.tmp

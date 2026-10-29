@@ -139,7 +139,7 @@ unityrs is the alternative, built around three things:
   - `set_image` on XBOX360 to a format UnityPy's reader byte-swaps. UnityPy writes without swapping, so the texture reads back wrong.
   - a 5.3-5.4 Shader whose sub-program blob does not parse big-endian, the byte order UnityPy reads it in. UnityPy raises too (`struct.error`, or `TypeError` once the blob parses), and no sample shows the byte order Unity writes.
 - **Tolerance:** the Sprite affine-triangle path, and pure-Rust audio against FMOD. Each has a stated metric and threshold.
-- **HEAD tier:** SF v23-26 and bundle format 9, equal to HEAD's dicts on Unity 6000.4/6000.5 fixtures; and the `lz4hc` packer, which 1.25.2 refuses and HEAD writes (Writing, below).
+- **HEAD tier:** SF v23-26 and bundle format 9, equal to HEAD's dicts on Unity 6000.4/6000.5 fixtures; the `lz4hc` packer, which 1.25.2 refuses and HEAD writes; and every save of a format-9 bundle, which 1.25.2 writes with format 8's block entries, a layout HEAD's reader misreads (Writing, below). The image installs 1.25.2 only, so the writing tests run HEAD's own two writer files, kept byte for byte under `tools/parity/tests/head_417d595/`.
 
 **Writing**
 
@@ -148,9 +148,10 @@ Writing has tiers of its own. Where UnityPy writes, unityrs follows the rule in 
 | what | rule |
 |---|---|
 | Object re-save | byte-equal |
-| File / bundle save | semantic equality plus idempotence. An optional UnityPy-layout mode is byte-equal to UnityPy's `save(packer='none')` |
+| File / bundle save | semantic equality plus idempotence. An optional UnityPy-layout mode is byte-equal to UnityPy's `save(packer='none')`, except for a format-9 bundle (next rows) |
 | Compressed packers | equal after decompression; byte-equal LZ4HC only with liblz4 HC level 9 (pinned) |
 | `lz4hc` packer (HEAD tier) | byte-equal with HEAD's `save_fs(195, 3)`: header flags `0xC3`; the data in 128 KiB chunks of liblz4 HC level 9, each flagged 3 while the compressed output before it is under 0x20000 bytes (even when it grew) and stored, flagged 0, from there on; from format 9 each block padded to 16 bytes, with its offset in the blocks info (`PARITY.md` section 20). 1.25.2's tuple packer `(195, 3)` stores a chunk only when it grows, so it writes other blocks and is no reference |
+| Save of a format-9 bundle (HEAD tier) | byte-equal with HEAD's save, every packer: each block entry with its u64 offset, the bytes written before the block; `none` one block at offset 0; `lz4`, `lz4hc` and a tuple in the `lz4hc` row's chunks; `lzma` one block, compressed and flagged 1 even when it grew; every compressed packer's blocks padded to 16 bytes (`PARITY.md` section 20). 1.25.2 writes such a bundle with format 8's 10-byte entries under version 9, which HEAD's reader misreads, so it is no reference |
 | `File.get_writeable_cab` | UnityPy's naming rule |
 | `set_image` | equal after re-decode: Pillow 9.5 BICUBIC mips, NEAREST padding, pinned etcpak/astcenc |
 
