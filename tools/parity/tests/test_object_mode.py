@@ -48,6 +48,23 @@ class ObjectMode(unittest.TestCase):
         headings = [line for line in lines[:start] if line.startswith("### ")]
         self.assertEqual(headings[-1], "### 9.2.1 By class")
 
+    def test_every_name_getattr_finds_is_in_a_table(self):
+        """Section 9.2.1 takes every name `getattr` finds on the module, not only those `dir` lists: the attributes
+        of the module's type too, `__class__` (a class, but not one of the module's) among them."""
+        import types
+
+        own, others = object_mode.names()
+        for name in sorted(set(dir(types.ModuleType)) | set(dir(object))):
+            if hasattr(classes, name):
+                self.assertIn(name, own + others)
+        self.assertIn("__class__", others)
+        self.assertNotIn("__class__", own)
+        self.assertIs(getattr(classes, "__class__"), types.ModuleType)
+        hidden = object_mode.type_names()
+        self.assertEqual(len(hidden), 25)
+        self.assertTrue({"__class__", "__repr__", "__hash__", "__annotations__"} <= set(hidden))
+        self.assertTrue(set(hidden).isdisjoint(object_mode.module_dir()))
+
     def test_an_extra_field_follows_slots_and_dict_for_every_class(self):
         """Section 9.2: UnityPyBoost gives an `UnknownObject` for an extra field exactly when `__slots__`, read
         through the MRO, is a non-empty tuple, or the instances have no `__dict__`; never by the first base."""

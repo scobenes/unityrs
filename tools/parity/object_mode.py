@@ -2,18 +2,21 @@
 
     scripts/dev python tools/parity/object_mode.py
 
-Object mode looks a class node's `m_Type` up on the module `UnityPy.classes` with `getattr`, so every attribute
-of that module is a type name a file can hold. For each class among them, this parses a tree of that type holding
+Object mode looks a class node's `m_Type` up on the module `UnityPy.classes` with `getattr`
+(`PyObject_GetAttr`, `UnityPyBoost/TypeTreeHelper.cpp:488`), so every name `getattr` finds there is a type name a
+file can hold: what the module's `__dict__` holds, which `dir(module)` lists, and what the module's type holds
+(`__class__`, `__repr__`, ...), which `dir` leaves out. For each class of the module, this parses a tree of that type holding
 every attrs field the class has and one more (`m_Extra`) on both paths: UnityPyBoost's (`byte_size` given) and the
 pure-Python one (no `byte_size`). It records what each path returns, beside the `__slots__` value UnityPyBoost's
 `parse_class` reads (`UnityPyBoost/TypeTreeHelper.cpp:508-515`) and whether the class's instances have a
-`__dict__`. For each attribute that is not a class, it parses a class node of that type, holding no field and
+`__dict__`. For every other name, it parses a class node of that type, holding no field and
 holding one, nested in a holder so that UnityPyBoost reads it; each runs in a process of its own, because
 UnityPyBoost crashes on most of them.
 
 `tests/test_object_mode.py` requires PARITY.md to hold exactly what this prints.
 """
 
+import functools
 import inspect
 import json
 import signal
@@ -71,13 +74,34 @@ def parse(root_type, fields, boost):
     return TypeTreeHelper.read_typetree(tree(root_type, fields), reader, False, size, check_read=boost)
 
 
+@functools.cache
+def module_dir():
+    """`dir(UnityPy.classes)` just after its import, read in a process of its own: looking `__annotations__` up on
+    a module stores it in the module's `__dict__`, so in this process `dir` would depend on what ran before."""
+    code = "import json, UnityPy.classes as m; print(json.dumps(dir(m)))"
+    run = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True, check=True, timeout=120)
+    return tuple(json.loads(run.stdout))
+
+
 def names():
-    """Every attribute of `UnityPy.classes` (`dir`, dunders included), split into classes and the rest."""
+    """Every name `getattr` finds on `UnityPy.classes`, split into the module's classes and the rest.
+
+    `getattr` on a module finds what the module's `__dict__` holds, which `dir(module)` lists, and what its type's
+    MRO holds, which `dir(type(module))` lists; `UnityPy.classes` defines no module `__getattr__`. A class found
+    on the module's type (`__class__`, the module type itself) is not a class of the module: it goes with the rest.
+    """
     import UnityPy.classes as module
 
-    every = sorted(dir(module))
-    classes = [name for name in every if inspect.isclass(getattr(module, name))]
+    assert "__getattr__" not in vars(module)
+    own = set(module_dir())
+    every = sorted(name for name in own | set(dir(type(module))) if hasattr(module, name))
+    classes = [name for name in every if name in own and inspect.isclass(getattr(module, name))]
     return classes, [name for name in every if name not in classes]
+
+
+def type_names():
+    """The names of `names()`'s rest that `dir(UnityPy.classes)` leaves out: attributes of the module's type."""
+    return [name for name in names()[1] if name not in module_dir()]
 
 
 def fields_of(clz):
@@ -136,7 +160,7 @@ def child_outcome(name, count):
     if type_name == "UnknownObject":
         assert detail == name, (name, detail)
         return "`UnknownObject` with the node"
-    return f"returns a `{type_name}`"
+    return f"returns {'an' if type_name[0] in 'AEIOUaeiou' else 'a'} `{type_name}`"
 
 
 def other_rows():
@@ -167,13 +191,23 @@ def table():
         lines.append(f"| {slots} | {has_dict} | {len(members)}: {spans(members)} | {boost} | {python} |")
     lines += [
         "",
-        "| other attributes of `UnityPy.classes` | no field | one field |",
+        "| other names `getattr` finds on `UnityPy.classes` | no field | one field |",
         "|---|---|---|",
     ]
     groups = other_rows()
     for key in sorted(groups, key=lambda k: (-len(groups[k]), k)):
         lines.append(f"| {len(groups[key])}: {spans(groups[key])} | {key[0]} | {key[1]} |")
-    lines += ["", f"{len(classes)} classes and {len(others)} other attributes."]
+    import UnityPy.classes as module
+
+    hidden = type_names()
+    found = [name for name in hidden if inspect.isclass(getattr(module, name))]
+    assert found == ["__class__"], found  # the module type
+    lines += [
+        "",
+        f"{len(classes)} classes and {len(others)} other names: {len(others) - len(hidden)} attributes "
+        f"`dir(UnityPy.classes)` lists, and {len(hidden)} attributes of the module's type that it leaves out, "
+        f"of which {spans(found)}, the module type, is a class.",
+    ]
     return "\n".join(lines)
 
 

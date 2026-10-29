@@ -97,7 +97,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - the compressed-mesh 4th bone weight;
   - the ReferencedObject array path does not skip None;
   - the pure-Python object-mode reader raises `AttributeError` on an extra field of a class without a `__dict__`;
-  - UnityPyBoost crashes the process, or returns a function, on a class node whose type names an attribute of `UnityPy.classes` that is not a class (`math`, `__name__`, `attrs_define`): unityrs builds it as a type the module lacks;
+  - UnityPyBoost crashes the process, or returns some other value (a function, a `str`, an `int`, `None`), on a class node whose type names something `getattr` finds on `UnityPy.classes` that is not one of its classes: an attribute of the module (`math`, `__name__`, `attrs_define`) or of the module's type, which `dir` leaves out (`__class__`, `__repr__`, `__hash__`): unityrs builds it as a type the module lacks;
   - dump_blob's common-string offset 0;
   - two bundles holding a CAB of one name share one registry entry;
   - `File.get_filtered_objects` with no types, or on a SerializedFile, and `File.get_assets` on a SerializedFile yield nothing, where each means to yield the value its generator `return`s or the file's objects (`PARITY.md` section 19.2);
