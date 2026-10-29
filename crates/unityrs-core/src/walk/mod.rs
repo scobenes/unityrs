@@ -20,15 +20,8 @@
 //! Owner: the scaffold for the types in this file (frozen); package B owns
 //! [`read_typetree`]'s body and the three submodules.
 
-// STUB(B): delete this allow when `read_typetree` is implemented.
-#![allow(
-    clippy::todo,
-    clippy::needless_pass_by_value,
-    clippy::missing_panics_doc,
-    unused_variables
-)]
-
 pub mod boost;
+mod dict;
 pub mod python;
 pub mod write;
 
@@ -36,14 +29,14 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use crate::error::LimitError;
+use crate::error::{LimitError, LimitKind};
 use crate::files::SerializedType;
-use crate::limits::{ChargeError, Limits, Meter};
+use crate::limits::{ChargeError, Limits, Meter, MeteredVec};
 use crate::provider::ProviderError;
 use crate::raw::RawStr;
-use crate::stream::Endian;
-use crate::typetree::{Tree, TreeError};
-use crate::value::Parsed;
+use crate::stream::{Endian, py_read};
+use crate::typetree::{NodeId, Tree, TreeError};
+use crate::value::{Built, Parsed, Value};
 
 /// How a float32 signalling NaN reaches the value.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -362,5 +355,253 @@ pub fn read_typetree(
     ctx: &ReadCtx<'_>,
     check_read: bool,
 ) -> Result<Parsed, ParseError> {
-    todo!()
+    // UnityPy TypeTreeHelper.py:146-153: `byte_size and read_typetree_boost`.
+    let parsed = if byte_size > 0 {
+        // UnityPy TypeTreeHelper.py:147: `reader.read_bytes(byte_size)`, a
+        // Python slice of the file from `byte_start`.
+        let (range, _) = py_read(file.len(), byte_start, i64::from(byte_size));
+        boost::read(&file.slice(range), tree, ctx)?
+    } else {
+        python::read(file, byte_start, tree, ctx)?
+    };
+    // UnityPy TypeTreeHelper.py:155-156.
+    if check_read && parsed.bytes_read != i64::from(byte_size) {
+        return Err(ParseError::CheckRead {
+            expected: byte_size,
+            parsed: Arc::new(parsed),
+        });
+    }
+    Ok(parsed)
+}
+
+/// A value as a reader returns it to its parent: one that owns no heap
+/// (a scalar, a string or bytes sliced from the file), pushed as it is, or
+/// a [`Built`] list, map, tuple or run that carries its charge (plan 3.9).
+/// A plain scalar costs no charge record, so the hot path stays one move.
+#[derive(Debug)]
+pub(crate) enum Out {
+    /// Owns no heap.
+    Plain(Value),
+    /// Owns heap, with its charge.
+    Built(Built),
+}
+
+impl Out {
+    /// Appends to a list's or a tuple's items, the charge going along.
+    pub(crate) fn push_to(self, items: &mut MeteredVec<Value>) -> Result<(), ChargeError> {
+        match self {
+            Self::Plain(v) => items.push(v),
+            Self::Built(b) => items.push_built(b),
+        }
+    }
+
+    /// Appends a dict entry, the charge going along.
+    pub(crate) fn push_entry(
+        self,
+        entries: &mut MeteredVec<(NodeId, Value)>,
+        key: NodeId,
+    ) -> Result<(), ChargeError> {
+        match self {
+            Self::Plain(v) => entries.push((key, v)),
+            Self::Built(b) => entries.push_entry(key, b),
+        }
+    }
+
+    /// Replaces entry `pos`'s value (`PyDict_SetItem` on a key already in
+    /// the dict: first position, last value).
+    pub(crate) fn set_entry(self, entries: &mut MeteredVec<(NodeId, Value)>, pos: usize) {
+        match self {
+            Self::Plain(v) => {
+                if let Some(e) = entries.as_mut_slice().get_mut(pos) {
+                    e.1 = v;
+                }
+            }
+            Self::Built(b) => {
+                entries.set_entry(pos, b);
+            }
+        }
+    }
+
+    /// The `Built` a [`crate::value::ValueBuilder::finish`] takes. A plain
+    /// value owns no heap, so `scalar` always takes it; were one to own
+    /// heap, the read fails rather than keep it uncharged.
+    pub(crate) fn into_built(
+        self,
+        builder: &crate::value::ValueBuilder,
+        at: u64,
+    ) -> Result<Built, ReadError> {
+        match self {
+            Self::Built(b) => Ok(b),
+            Self::Plain(v) => builder.scalar(v).map_err(|_| ReadError {
+                kind: ReadErrorKind::Other,
+                at,
+                detail: ReadDetail::Python("a plain value owned heap"),
+            }),
+        }
+    }
+}
+
+/// UnityPyBoost's float widening: `PyFloat_FromDouble((double)f)`
+/// (UnityPy TypeTreeHelper.cpp:172-175) on x86-64 sets a signalling NaN's
+/// quiet bit; [`FloatMode::Lossless`] keeps the file's bits.
+pub(crate) fn f32_bits(bits: u32, mode: FloatMode) -> u32 {
+    let nan = bits & 0x7f80_0000 == 0x7f80_0000 && bits & 0x007f_ffff != 0;
+    if nan && mode == FloatMode::UnityPy {
+        bits | 0x0040_0000
+    } else {
+        bits
+    }
+}
+
+/// An `i64` as a Python `int`'s value variant.
+pub(crate) fn int(v: i64) -> Value {
+    Value::Int(v)
+}
+
+/// A `u64` as a Python `int`'s value variant: `UInt` only above `i64::MAX`.
+pub(crate) fn uint(v: u64) -> Value {
+    i64::try_from(v).map_or(Value::UInt(v), Value::Int)
+}
+
+/// `CPython` 3.11's `PyUnicode_GET_LENGTH(cls) == 0` on whatever object the
+/// reader made for a `ReferencedObject`'s `class` (UnityPy
+/// TypeTreeHelper.cpp:637): the macro reads the third machine word of the
+/// object, which is a `str`'s length, an `int`'s or a `bool`'s `ob_size`
+/// (0 only for zero and `False`), a `float`'s value bits, a `bytes`',
+/// `list`'s or `tuple`'s `ob_size` and a `dict`'s `ma_used`; so it is 0
+/// exactly for an empty string, `0`, `False`, `+0.0`, and an empty bytes,
+/// list, tuple or dict (plan R14).
+pub(crate) fn py_size_field_is_zero(v: &Value) -> bool {
+    match v {
+        Value::Str(s) => s.is_empty(),
+        Value::Int(i) => *i == 0,
+        Value::UInt(_) => false,
+        Value::Bool(b) => !*b,
+        Value::F32(b) => f64::from(f32::from_bits(*b)).to_bits() == 0,
+        Value::F64(b) => *b == 0,
+        Value::Bytes(b) => b.is_empty(),
+        Value::Prims(p) => p.is_empty(),
+        Value::List(l) => l.is_empty(),
+        Value::Tuple(t) => t.is_empty(),
+        Value::Dict(m) => m.is_empty(),
+    }
+}
+
+/// A [`Limits`] bound crossed while reading: kind `other` (R16).
+pub(crate) fn limit_error(at: u64, kind: LimitKind, value: u64, max: u64) -> ReadError {
+    ReadError {
+        kind: ReadErrorKind::Other,
+        at,
+        detail: ReadDetail::Limit(LimitError { kind, value, max }),
+    }
+}
+
+/// A refused charge while reading: kind `other` (plan 3.10, "Bounds").
+pub(crate) fn charge_error(at: u64, e: ChargeError) -> ReadError {
+    ReadError {
+        kind: ReadErrorKind::Other,
+        at,
+        detail: ReadDetail::Charge(e),
+    }
+}
+
+/// The capacity a list of `len` elements reserves before its elements are
+/// read: `min(len, remaining / min_size, max_prealloc)` (plan 3.10,
+/// "Bounds"); it then grows by [`grow_step`].
+pub(crate) fn first_reserve(
+    len: usize,
+    remaining: usize,
+    min_size: u32,
+    max_prealloc: usize,
+) -> usize {
+    let backed = if min_size == 0 {
+        usize::MAX
+    } else {
+        remaining / (min_size as usize)
+    };
+    len.min(backed).min(max_prealloc)
+}
+
+/// Before pushing element `items.len()` of `len`: grows a full vector by
+/// at most `max_prealloc`, exactly, never past `len`, so the list holds no
+/// spare capacity once it is complete.
+pub(crate) fn grow_step<T>(
+    items: &mut MeteredVec<T>,
+    len: usize,
+    max_prealloc: usize,
+) -> Result<(), ChargeError> {
+    if items.len() < items.capacity() {
+        return Ok(());
+    }
+    let step = len
+        .saturating_sub(items.len())
+        .min(max_prealloc.max(1))
+        .max(1);
+    items.reserve_exact(step)
+}
+
+/// The reader's limits on work, shared by both readers (plan 3.10, "Bounds").
+#[derive(Debug)]
+pub(crate) struct Work {
+    pub(crate) values: u64,
+    pub(crate) zero_size: u64,
+    pub(crate) depth: u32,
+    pub(crate) limits: Limits,
+}
+
+impl Work {
+    pub(crate) fn new(limits: Limits) -> Self {
+        Self {
+            values: 0,
+            zero_size: 0,
+            depth: 0,
+            limits,
+        }
+    }
+
+    /// Counts `n` values against `max_values_per_object`.
+    pub(crate) fn values(&mut self, n: u64, at: u64) -> Result<(), ReadError> {
+        self.values = self.values.saturating_add(n);
+        if self.values > self.limits.max_values_per_object {
+            return Err(limit_error(
+                at,
+                LimitKind::ValuesPerObject,
+                self.values,
+                self.limits.max_values_per_object,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Counts one element whose minimum size is 0.
+    pub(crate) fn zero_size(&mut self, at: u64) -> Result<(), ReadError> {
+        self.zero_size = self.zero_size.saturating_add(1);
+        if self.zero_size > self.limits.max_zero_size_elements {
+            return Err(limit_error(
+                at,
+                LimitKind::ZeroSizeElements,
+                self.zero_size,
+                self.limits.max_zero_size_elements,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Enters one level of value nesting.
+    pub(crate) fn enter(&mut self, at: u64) -> Result<(), ReadError> {
+        self.depth = self.depth.saturating_add(1);
+        if self.depth > self.limits.max_value_depth {
+            return Err(limit_error(
+                at,
+                LimitKind::ValueDepth,
+                u64::from(self.depth),
+                u64::from(self.limits.max_value_depth),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
 }
