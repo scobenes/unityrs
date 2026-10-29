@@ -24,17 +24,14 @@ use unityrs_core::budget::DecodeBuf;
 use unityrs_core::files::SerializedType;
 use unityrs_core::limits::{Limits, Meter};
 use unityrs_core::stream::Endian;
-use unityrs_core::typetree::{NodeList, NodeRow, Tree};
+use unityrs_core::typetree::{NodeId, NodeList, NodeRow, Tree};
 use unityrs_core::walk::{
     self, ParseError, ReadCtx, ReadError, ReadErrorKind, ReadOptions, RefTypes, WriteCtx,
     WriteRules,
 };
-use unityrs_core::{Bytes, LimitKind, Map, Parsed, PrimArray, RawStr, Value};
-
-/// The pure-Python reader and the writer land after UnityPyBoost's reader
-/// (package B's milestone); until then their outcomes are not compared.
-const PYTHON: bool = true;
-const WRITER: bool = false;
+use unityrs_core::{
+    Bytes, LimitKind, Map, Parsed, PrimArray, PrimRun, RawStr, Value, ValueBuilder,
+};
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/walk/");
 
@@ -247,21 +244,20 @@ fn replay(c: &Json) -> Vec<String> {
     };
     let mut bad = Vec::new();
     let object = data.slice(usize::try_from(start).unwrap()..);
-    let mut readers = vec![("boost", walk::boost::read(&object, &tree, &ctx))];
-    if PYTHON {
-        readers.push((
+    for (reader, got) in [
+        ("boost", walk::boost::read(&object, &tree, &ctx)),
+        (
             "python",
             walk::python::read(&data, i128::from(start), &tree, &ctx),
-        ));
-    }
-    for (reader, got) in readers {
+        ),
+    ] {
         let want = expected(&c[reader]);
         let have = outcome(&got);
         if have != want {
             bad.push(format!("{name} [{reader}]\n  want {want}\n  have {have}"));
             continue;
         }
-        if let (true, Ok(p)) = (WRITER, got) {
+        if let Ok(p) = got {
             let want = expected_write(&c[format!("{reader}_write")]);
             let have = write_out(&p, &tree, endian(c), refs.get(), WriteRules::UnityPy);
             if have != want {
@@ -408,6 +404,84 @@ fn w7_referenced_object_write_failures() {
     replay_prefix("w7_");
 }
 
+/// `WriteRules::MirrorReader` (plan 3.11): each value UnityPyBoost reads
+/// from a tree that repeats no name (a repeated name keeps its last value
+/// only) writes, under the mirror, to bytes the reader reads back to the
+/// same value and the same `bytes_read`. Under `WriteRules::UnityPy` some do
+/// not: a flagged run's elements each pad, and an empty-class
+/// `ReferencedObject` fails, so the mirror is what makes the round trip.
+#[test]
+fn mirror_reader_round_trips_what_the_reader_reads() {
+    let cases = load("cases.json");
+    let (mut n, mut unitypy_differs) = (0, 0);
+    let mut bad = Vec::new();
+    for c in cases.as_array().unwrap() {
+        let name = c["name"].as_str().unwrap();
+        let tree = compile(&c["nodes"]);
+        let unique = (0..tree.list().len()).all(|i| {
+            let id = NodeId(u32::try_from(i).unwrap());
+            tree.info(id).is_none_or(|x| x.key == id)
+        });
+        let refs = Refs::of(c.get("ref_types"));
+        // A ref type's own tree may repeat names too.
+        let ref_unique = match &refs {
+            Refs::List(l) => l.iter().all(|r| match r.tree(&Limits::default()) {
+                Some(Ok(t)) => (0..t.list().len()).all(|i| {
+                    let id = NodeId(u32::try_from(i).unwrap());
+                    t.info(id).is_none_or(|x| x.key == id)
+                }),
+                _ => true,
+            }),
+            _ => true,
+        };
+        let data = Bytes::from(unhex(c["hex"].as_str().unwrap()));
+        let start = usize::try_from(c.get("start").and_then(Json::as_i64).unwrap_or(0)).unwrap();
+        let options = ReadOptions::default();
+        let meter = Meter::unlimited();
+        let ctx = ReadCtx {
+            endian: endian(c),
+            ref_types: refs.get(),
+            options: &options,
+            meter: &meter,
+        };
+        let Ok(first) = walk::boost::read(&data.slice(start..), &tree, &ctx) else {
+            continue;
+        };
+        if !unique || !ref_unique {
+            continue;
+        }
+        n += 1;
+        for rules in [WriteRules::MirrorReader, WriteRules::UnityPy] {
+            let written = write_out(&first, &tree, endian(c), refs.get(), rules);
+            let again = written["hex"]
+                .as_str()
+                .map(|h| walk::boost::read(&Bytes::from(unhex(h)), &tree, &ctx));
+            let same = match &again {
+                Some(Ok(p)) => {
+                    enc(p, p.value()) == enc(&first, first.value())
+                        && p.bytes_read == first.bytes_read
+                        && i64::try_from(unhex(written["hex"].as_str().unwrap()).len()).unwrap()
+                            == first.bytes_read
+                }
+                _ => false,
+            };
+            match rules {
+                WriteRules::MirrorReader if !same => bad.push(format!("{name}: {written}")),
+                WriteRules::UnityPy if !same => unitypy_differs += 1,
+                _ => {}
+            }
+        }
+    }
+    assert!(n > 80, "only {n} cases read");
+    assert!(
+        bad.is_empty(),
+        "{} of {n} do not round-trip:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+    assert!(unitypy_differs > 0, "no case needs the mirror");
+}
+
 /// G2: the spike's 32 value cases, read as `parse_as_dict` reads them
 /// (`read_typetree` with `check_read`), and re-saved (L2 and L3).
 #[test]
@@ -451,9 +525,6 @@ fn value_cases_l2_and_l3() {
             bad.push(format!("{name} L2\n  want {}\n  have {l2}", c["l2"]));
             continue;
         }
-        if !WRITER {
-            continue;
-        }
         let l3 = parsed.map_or(Json::Null, |p| {
             write_out(
                 p,
@@ -478,4 +549,166 @@ fn value_cases_l2_and_l3() {
         bad.len(),
         bad.join("\n")
     );
+}
+
+/// Builds a W2 value spec into `items` (a list's or a tuple's) or returns it.
+struct Specs {
+    builder: ValueBuilder,
+    aux: Arc<NodeList>,
+    aux_ix: u32,
+}
+
+impl Specs {
+    fn new(root: Arc<NodeList>) -> Self {
+        let mut builder = ValueBuilder::new(&Meter::unlimited(), root).unwrap();
+        let aux = nodes(&json!([
+            [0, "Aux", "Aux", 0],
+            [1, "int", "a", 0],
+            [1, "int", "real", 0],
+            [1, "int", "x", 0]
+        ]));
+        let aux_ix = builder.list_index(&aux).unwrap();
+        Self {
+            builder,
+            aux,
+            aux_ix,
+        }
+    }
+
+    fn key(&self, name: &str) -> NodeId {
+        (0..self.aux.len())
+            .map(|i| NodeId(u32::try_from(i).unwrap()))
+            .find(|k| self.aux.name(*k) == name.as_bytes())
+            .unwrap()
+    }
+
+    fn build(&self, spec: &Json) -> unityrs_core::Built {
+        let b = &self.builder;
+        let (tag, v) = spec.as_object().unwrap().iter().next().unwrap();
+        let scalar = |v: Value| b.scalar(v).unwrap();
+        match tag.as_str() {
+            "bool" => scalar(Value::Bool(v.as_bool().unwrap())),
+            "int" => scalar(Value::Int(v.as_i64().unwrap())),
+            "uint" => scalar(Value::UInt(v.as_u64().unwrap())),
+            "f32" => scalar(Value::F32(
+                u32::from_str_radix(v.as_str().unwrap(), 16).unwrap(),
+            )),
+            "f64" => scalar(Value::F64(
+                u64::from_str_radix(v.as_str().unwrap(), 16).unwrap(),
+            )),
+            "str" => scalar(Value::Str(RawStr::from(unhex(v.as_str().unwrap())))),
+            "bytes" => scalar(Value::Bytes(Bytes::from(unhex(v.as_str().unwrap())))),
+            "prims_u8" => scalar(Value::Prims(PrimArray::U8(Bytes::from(unhex(
+                v.as_str().unwrap(),
+            ))))),
+            "prims_i32" => {
+                let mut items = b.vec();
+                for x in v.as_array().unwrap() {
+                    items
+                        .push(i32::try_from(x.as_i64().unwrap()).unwrap())
+                        .unwrap();
+                }
+                b.prims(PrimRun::I32(items)).unwrap()
+            }
+            "prims_f32" => {
+                let mut items = b.vec();
+                for x in v.as_array().unwrap() {
+                    items
+                        .push(u32::from_str_radix(x.as_str().unwrap(), 16).unwrap())
+                        .unwrap();
+                }
+                b.prims(PrimRun::F32(items)).unwrap()
+            }
+            "prims_bool" => {
+                let mut items = b.vec();
+                for x in v.as_array().unwrap() {
+                    items.push(x.as_bool().unwrap()).unwrap();
+                }
+                b.prims(PrimRun::Bool(items)).unwrap()
+            }
+            "list" | "tuple" => {
+                let mut items = b.vec();
+                for x in v.as_array().unwrap() {
+                    items.push_built(self.build(x)).unwrap();
+                }
+                if tag == "list" {
+                    b.list(items)
+                } else {
+                    b.tuple(items).unwrap()
+                }
+            }
+            "dict" => {
+                let mut entries = b.vec();
+                for e in v.as_array().unwrap() {
+                    let key = self.key(e[0].as_str().unwrap());
+                    entries.push_entry(key, self.build(&e[1])).unwrap();
+                }
+                b.map(self.aux_ix, entries)
+            }
+            other => panic!("spec {other}"),
+        }
+    }
+}
+
+/// W2: every node kind written from every value variant, duck typing as
+/// Python's operations do.
+#[test]
+fn w2_every_node_kind_from_every_value_variant() {
+    let m = load("write_matrix.json");
+    let mut bad = Vec::new();
+    for case in m["cases"].as_array().unwrap() {
+        let (kname, vname) = (case[0].as_str().unwrap(), case[1].as_str().unwrap());
+        let tree = compile(&m["nodes"][kname]);
+        let specs = Specs::new(tree.list().clone());
+        let field = specs.build(&m["values"][vname]);
+        let b = &specs.builder;
+        let mut entries = b.vec();
+        entries.push_entry(NodeId(1), field).unwrap();
+        let root = b.map(0, entries);
+        let Specs { builder, .. } = specs;
+        let parsed = builder.finish(root, 0);
+        let refs: [SerializedType; 0] = [];
+        let have = write_out(
+            &parsed,
+            &tree,
+            Endian::Little,
+            RefTypes::List(&refs),
+            WriteRules::UnityPy,
+        );
+        let want = expected_write(&case[2]);
+        if have != want {
+            bad.push(format!("{kname} <- {vname}\n  want {want}\n  have {have}"));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{} cases differ:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+}
+
+/// The writer's model of `getattr` on each Python type a value becomes
+/// equals Python 3.11's non-dunder attributes (W2).
+#[test]
+fn w2_python_attributes_match_the_oracle() {
+    let attrs = load("py_attrs.json");
+    for (ty, names) in attrs.as_object().unwrap() {
+        let want: Vec<(String, String)> = names
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                (
+                    a[0].as_str().unwrap().to_owned(),
+                    a[1].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let have: Vec<(String, String)> = walk::write::python_attributes(ty)
+            .iter()
+            .map(|(n, k)| ((*n).to_owned(), (*k).to_owned()))
+            .collect();
+        assert_eq!(have, want, "{ty}");
+    }
 }
