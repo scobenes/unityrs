@@ -559,7 +559,7 @@ fn decode(
         },
         unityrs_core::Error::Decompress { detail, .. } => TpkError::Decompress {
             codec: name,
-            detail,
+            detail: Box::from(&*detail),
         },
         e => TpkError::Decompress {
             codec: name,
