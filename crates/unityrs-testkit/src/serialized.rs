@@ -1,4 +1,6 @@
-//! `SerializedFile`s, every format from 9 to 22, built from a spec.
+//! `SerializedFile`s, every format from 1 to 22 (below 9 the header's endian
+//! byte sits at `file_size - metadata_size`), built from a spec, with
+//! overrides for the fields a parser test needs to get wrong.
 //!
 //! Owner: package C.
 
@@ -47,6 +49,13 @@ pub struct ObjectSpec {
     pub data: Vec<u8>,
     /// Overrides the stored `byte_size` (for mismatch tests).
     pub byte_size: Option<u32>,
+    /// The object row's `script_type_index` (formats 11-16), which loading
+    /// writes back into the object's type; `None` writes -1.
+    pub script_type_index: Option<i16>,
+    /// `is_destroyed` (below format 11); `None` writes 0.
+    pub is_destroyed: Option<u16>,
+    /// `is_stripped` (formats 15 and 16); `None` writes 0.
+    pub is_stripped: Option<i8>,
 }
 
 /// One external.
@@ -87,6 +96,15 @@ pub struct SerializedSpec {
     pub ref_types: Vec<TypeSpec>,
     /// `userInformation` (5 and up).
     pub user_information: Vec<u8>,
+    /// `big_id_enabled` (formats 7-13): path ids as `i64` when non-zero.
+    pub big_id_enabled: i32,
+    /// Overrides the header's `metadata_size` (below 9 it also places the
+    /// endian byte, at `file_size - metadata_size`).
+    pub metadata_size: Option<u32>,
+    /// Overrides the header's `file_size`.
+    pub file_size: Option<i64>,
+    /// Overrides the header's `data_offset`.
+    pub data_offset: Option<i64>,
 }
 
 impl Default for SerializedSpec {
@@ -103,6 +121,10 @@ impl Default for SerializedSpec {
             externals: Vec::new(),
             ref_types: Vec::new(),
             user_information: Vec::new(),
+            big_id_enabled: 0,
+            metadata_size: None,
+            file_size: None,
+            data_offset: None,
         }
     }
 }
@@ -110,4 +132,26 @@ impl Default for SerializedSpec {
 /// The file's bytes.
 pub fn build(spec: &SerializedSpec) -> Vec<u8> {
     todo!()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ObjectSpec, SerializedSpec};
+    use crate::blob::NodeSpec;
+
+    #[test]
+    fn overrides_default_to_what_unity_writes() {
+        let o = ObjectSpec::default();
+        assert_eq!(
+            (o.script_type_index, o.is_destroyed, o.is_stripped),
+            (None, None, None)
+        );
+        let s = SerializedSpec::default();
+        assert_eq!(s.big_id_enabled, 0);
+        assert_eq!(
+            (s.metadata_size, s.file_size, s.data_offset),
+            (None, None, None)
+        );
+        assert_eq!(NodeSpec::new(0, "Base", "Base").index, None);
+    }
 }

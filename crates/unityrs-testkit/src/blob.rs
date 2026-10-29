@@ -25,6 +25,10 @@ pub struct NodeSpec {
     pub meta_flag: i32,
     /// `m_RefTypeHash` (blob format 19 and up).
     pub ref_type_hash: u64,
+    /// `m_Index` as stored; `None` writes the row's pre-order index. The core
+    /// keeps it as stored, never recomputed, which a test pins with a value
+    /// that differs from the position.
+    pub index: Option<i32>,
 }
 
 impl NodeSpec {
@@ -39,6 +43,7 @@ impl NodeSpec {
             type_flags: 0,
             meta_flag: 0,
             ref_type_hash: 0,
+            index: None,
         }
     }
 

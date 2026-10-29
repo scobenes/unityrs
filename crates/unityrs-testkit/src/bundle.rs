@@ -27,6 +27,22 @@ pub enum TestCodec {
     Raw(u8),
 }
 
+/// Overrides for one block, so a test can place a malformed block before the
+/// entry it reads (plan section 7.4, "one layout").
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BlockOverride {
+    /// Which block, in file order.
+    pub block: usize,
+    /// This block's codec instead of [`BundleSpec::data_codec`].
+    pub codec: Option<TestCodec>,
+    /// The declared decoded size written to blocks-info (an LZ4 block that
+    /// decodes short, an LZMA block that outgrows it, a stored block whose
+    /// declaration differs from its bytes).
+    pub uncompressed: Option<u32>,
+    /// The declared stored size written to blocks-info.
+    pub compressed: Option<u32>,
+}
+
 /// One directory entry.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EntrySpec {
@@ -60,6 +76,10 @@ pub struct BundleSpec {
     /// Extra data flags, combined with a bitwise or (0x200 block-info padding, 0x400 the old
     /// encryption bit, ...).
     pub extra_flags: u32,
+    /// Per-block overrides.
+    pub block_overrides: Vec<BlockOverride>,
+    /// Cut the finished file to this length (a truncated last block).
+    pub truncate_to: Option<usize>,
 }
 
 impl Default for BundleSpec {
@@ -74,6 +94,8 @@ impl Default for BundleSpec {
             info_at_end: false,
             entries: Vec::new(),
             extra_flags: 0,
+            block_overrides: Vec::new(),
+            truncate_to: None,
         }
     }
 }
