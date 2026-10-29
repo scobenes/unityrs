@@ -89,9 +89,6 @@ const _: () = {
     // codec
     send_sync::<codec::Codec>();
     send_sync::<codec::Codecs>();
-    send_sync::<codec::Lz4>();
-    send_sync::<codec::Lzma>();
-    send_sync::<codec::Stored>();
     send_sync::<dyn codec::BlockCodec>();
     send_sync::<codec::Decoded>();
     send_sync::<dyn codec::BlockDecryptor>();
