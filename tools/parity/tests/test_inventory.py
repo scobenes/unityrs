@@ -153,7 +153,7 @@ class MatchingRules(unittest.TestCase):
             COMPLETE.replace("| 3 | `RGB24` |", "| 3 | `RGB24` and more |"),
             COMPLETE.replace("| 3 | `RGB24` |", "| 13 | `RGB24` |"),
             COMPLETE.replace(matrix_row, "") + "\n`RGB24` is format 3.\n",
-            # A row of another table names no format: the package table, or a table of the matrix's shape.
+            # A row of another table names no format: the package table, or a table of the matrix's width.
             COMPLETE.replace(matrix_row, "").replace(
                 "| `UnityPy.files` | `File` |", "| `UnityPy.files` | `File` |\n| 3 | `RGB24` |"
             ),
@@ -161,6 +161,20 @@ class MatchingRules(unittest.TestCase):
         ):
             with self.subTest(text=text[-60:]):
                 self.assertEqual(inventory.missing(SYMBOLS, text), {"texture_formats": ["RGB24 (3)"]})
+        # A second table with the matrix's header fails the check, whether it holds the row the matrix lacks, a
+        # copy of one the matrix has, or two columns only.
+        for text in (
+            COMPLETE.replace(matrix_row, "") + "\n| value | format | result |\n|---|---|---|\n" + matrix_row + "\n",
+            COMPLETE.replace(matrix_row, "") + "\n| value | format |\n|---|---|\n| 3 | `RGB24` |\n",
+            COMPLETE + "\n| value | format |\n|---|---|\n| 3 | `RGB24` |\n",
+        ):
+            with self.subTest(text=text[-60:]):
+                self.assertEqual(
+                    inventory.missing(SYMBOLS, text),
+                    {"texture_formats": ["2 tables have the matrix's header `value | format`; only the matrix may"]},
+                )
+            with self.subTest(text=text[-60:]), self.assertRaisesRegex(ValueError, "2 tables"):
+                inventory.texture_rows(text)
 
     def test_an_enum_member_needs_its_value_in_a_values_column(self):
         for old, new in (

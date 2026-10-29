@@ -37,7 +37,8 @@ The groups, and how PARITY.md names a symbol of each, inside a code span (backti
   `values`, on the row whose first code span is the enum (`` `BuildTarget` ``).
 - `texture_formats`, every `TextureFormat` member: a row of the TextureFormat matrix (the
   table whose header starts `value | format`) whose `format` cell is `` `Name` `` and whose
-  `value` cell is its value. A row of any other table names no format.
+  `value` cell is its value. A row of any other table names no format, and a second table
+  with the matrix's header fails the check, since either could then be the matrix.
 
 Out of scope: private names (a leading underscore), and an attribute that only code
 outside the class sets (`obj.x = ...` in another module, or `setattr`), because the
@@ -430,14 +431,22 @@ class Mentions:
         return any((name, value) in self.values for name in self._spellings(short, full))
 
 
+MATRIX_HEADER = ["value", "format"]
+
+
 def texture_rows(text: str) -> dict[str, dict[str, str]]:
-    """The TextureFormat matrix (the table whose header starts `value | format`): cells by header, per format."""
+    """The TextureFormat matrix (the table whose header starts `value | format`): cells by header, per format.
+
+    Raises ValueError when more than one table has that header, since either could then be the matrix.
+    """
+    matrices = [(header, body) for header, body in tables(text) if header[:2] == MATRIX_HEADER]
+    if len(matrices) > 1:
+        raise ValueError(f"{len(matrices)} tables have the matrix's header `value | format`; only the matrix may")
     rows: dict[str, dict[str, str]] = {}
-    for header, body in tables(text):
-        if header[:2] == ["value", "format"]:
-            for cells in body:
-                row = dict(zip(header, cells, strict=False))
-                rows[row["format"].strip("`")] = row
+    for header, body in matrices:
+        for cells in body:
+            row = dict(zip(header, cells, strict=False))
+            rows[row["format"].strip("`")] = row
     return rows
 
 
@@ -450,7 +459,11 @@ def missing(symbols: dict, text: str) -> dict[str, list[str]]:
         if group == "modules":
             absent = [rel for rel in symbols.get(group, []) if rel not in seen.paths]
         elif group == "texture_formats":
-            matrix = texture_rows(text)
+            try:
+                matrix = texture_rows(text)
+            except ValueError as e:
+                result[group] = [str(e)]
+                continue
             absent = [
                 f"{name} ({value})"
                 for name, value in symbols.get(group, [])
