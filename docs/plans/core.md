@@ -313,7 +313,7 @@ The positions that go negative, each a named test of its owner: `parse_blob` wit
 | R15 | after a value, `align4` when the node (for an array, its `Array`) is flagged | `:877-880` |
 | R16 | error kinds are structural: `out_of_bounds`, `negative_length`, `ref_type`, `other`; a `Limits` bound maps to `other`, the kind UnityPy's `MemoryError` and `RecursionError` get | `walk/mod.rs` `L2Kind` |
 
-**The pure-Python reader** (`walk/python.rs`, `TypeTreeHelper.py:182-361`) starts at `byte_start` in the whole file, reads with the stream rules of 3.3 at any position, and **aligns relative to the file**, not the object (`align_stream` rounds the absolute position: an object at byte 1 with `[UInt8 a (aligned), UInt8 c]` reads `c` at 4 and 4 bytes where Boost reads it at 5 and 5 bytes). It differs as CANONICAL_DUMP section 7 lists: aligned primitive arrays are tuples with `UInt16`/`SInt16` signedness swapped; an aligned `SInt8` array raises `TypeError` (`other`) at every length, the empty one included, and an array of aligned `TypelessData` raises `TypeError` once it has an element (an empty one is `[]`); a negative or out-of-range string length reads as `""`; in an array whose aligned element is a vector, a negative inner length reads as `[]`, unless the inner element is an aligned primitive, whose `read_*_array` builds a `struct` format from the count and rejects a negative one (`struct.error`, `other`); arrays of aligned class elements align once and skip the registry check; a `TypelessData` length of -1 reads to the end of the file and other negative lengths follow Python slice semantics (so `bytes_read` can be negative); a read past the end of the file is `other`; and, probed on UnityPy 1.25.2:
+**The pure-Python reader** (`walk/python.rs`, `TypeTreeHelper.py:182-361`) starts at `byte_start` in the whole file, reads with the stream rules of 3.3 at any position, and **aligns relative to the file**, not the object (`align_stream` rounds the absolute position: an object at byte 1 with `[UInt8 a (aligned), UInt8 c]` reads `c` at 4 and 4 bytes where Boost reads it at 5 and 5 bytes). It differs as CANONICAL_DUMP section 7 lists: aligned primitive arrays are tuples with `UInt16`/`SInt16` signedness swapped; an aligned `SInt8` array raises `TypeError` (`other`) at every length, the empty one included, and an array of aligned `TypelessData` raises `TypeError` once it has an element (an empty one is `[]`); a negative or out-of-range string length reads as `""`; in an array whose aligned element is a vector, a negative inner length reads as `[]`, unless the inner element is an aligned primitive, whose `read_*_array` builds a `struct` format from the count and rejects a negative one (`struct.error`, `other`); arrays of aligned class elements align once and skip the registry check; a `TypelessData` length of -1 reads to the end of the file and other negative lengths follow Python slice semantics (so `bytes_read` can be negative, and the dump reports such a read as `other`, as `unitypy_dump.py`'s `error_kind` does: its pattern takes no sign); a read past the end of the file is `other`; and, probed on UnityPy 1.25.2:
 - a `pair` with three or more children reads its first two (`:193-196`), where Boost raises;
 - an aligned `pair` array reads each child through `FUNCTION_READ_MAP.get(child.m_Type, lambda: read_value(child))` (`:285-293`): a child whose type is in the map (a primitive, a `string`, a `TypelessData`) is read without its own align flag, though a non-empty `string` still aligns itself; any other child (a class, a vector, a `pair`) goes through `read_value` and keeps its flag;
 - a `ReferencedObject` reads `ref_object["type"]` before anything else (a missing key is `KeyError`, `other`), and raises "SerializedFile has no ref_types" for an empty or absent list *before* the empty-class skip (no `ref_types` attribute at all is an `AttributeError`, which the dump maps to `ref_type`), where Boost skips `data`;
@@ -619,11 +619,19 @@ sh scripts/stub-check.sh                                 # G6; lists the stubs l
 # 2.4's F1: the feature values rabex 0.2.1's source tests (seven), in the cargo registry's copy
 grep -rhoE 'feature = "[^"]+"' "$(ls -d ~/.cargo/registry/src/*/rabex-0.2.1 | head -1)/src" | sort -u
 
-# The gate (E), outputs outside the repository:
-scripts/dev python tools/parity/unitypy_dump.py --index /corpus/index.json -j 8 -o /tmp/p1/oracle.jsonl.gz
+# The gate (E), outputs outside the repository (T is the oracle image's UnityPy TPK,
+# /usr/local/lib/python3.11/site-packages/UnityPy/resources/lzma.tpk in unityrs-dev):
+scripts/dev python tools/parity/unitypy_dump.py --index /corpus/index.json -j 8 -o /tmp/p1/oracle.jsonl.gz   # G1
 scripts/dev cargo run --release -p unityrs-cli -- dump --index /corpus/index.json -j 8 \
-    --tpk <the oracle image's UnityPy TPK> -o /tmp/p1/unityrs.jsonl.gz
+    --tpk $T -o /tmp/p1/unityrs.jsonl.gz
 scripts/dev python tools/parity/compare.py /tmp/p1/oracle.jsonl.gz /tmp/p1/unityrs.jsonl.gz
-scripts/dev python tools/parity/value_cases.py target/release/unityrs
-sh scripts/stub-check.sh
+scripts/dev target/release/unityrs dump --index /corpus/index.json -j 1 --tpk $T -o /tmp/p1/unityrs-j1.jsonl.gz
+# G1b: zcat each of unityrs.jsonl.gz and unityrs-j1.jsonl.gz | sha256sum, equal
+scripts/dev python tools/parity/value_cases.py target/release/unityrs                                         # G2
+scripts/dev cargo run -p unityrs-dump --example write_matrix -- /tmp/p1/g3                                     # G3
+scripts/dev python tools/parity/unitypy_dump.py /tmp/p1/g3 -o /tmp/p1/g3-oracle.jsonl.gz
+scripts/dev target/release/unityrs dump /tmp/p1/g3 --tpk $T -o /tmp/p1/g3-unityrs.jsonl.gz
+scripts/dev python tools/parity/compare.py /tmp/p1/g3-oracle.jsonl.gz /tmp/p1/g3-unityrs.jsonl.gz
+for f in tools/fixtures/*.py; do scripts/dev python $f --check; done                                       # G4
+sh scripts/stub-check.sh                                                                                       # G6
 ```

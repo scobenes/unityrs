@@ -1,4 +1,4 @@
-# Package E requests (wave 1)
+# Package E requests (waves 1 and 2)
 
 Changes E needs in files it does not own, and disagreements found between
 the plan and UnityPy's oracle. E works around each one in its own files
@@ -9,8 +9,10 @@ where it can; nothing below blocks wave 1.
 - **File:** `.github/workflows/ci.yml` (scaffold, frozen; E maintains it at
   integration).
 - **What:**
-  1. In the oracle job (`parity-py`), after the oracle stack is installed,
-     add a step running `python tools/fixtures/dump.py --check`.
+  1. In the oracle job (`parity-py`), add `python tools/fixtures/dump.py --check`
+     to the step "The scaffold's, package B's and package C's oracle fixtures
+     are current" (integration wave 1 added that step with the other four
+     fixture scripts; `dump.py` is the one G4 script it still leaves out).
   2. In "Self-tests (parity tools and the spikes' scripts)", raise
      `tools/parity/tests=156` to `tools/parity/tests=258`.
 - **Why:** G4 says `tools/fixtures/*.py --check` reproduces every committed
@@ -60,9 +62,9 @@ where it can; nothing below blocks wave 1.
   UnityPy's oracle wins:
   1. Done on this branch (E owns the file): CANONICAL_DUMP section 7 and the
      `other` row of section 4.3 now say that such a read is `other`.
-  2. Plan 3.10: after "(so `bytes_read` can be negative)" add "and the
-     dump reports such a read as `other`, as `unitypy_dump.py`'s
-     `error_kind` does".
+  2. Done in wave 2 (E owns the plan's text): plan 3.10 now says the dump
+     reports such a read as `other`, as `unitypy_dump.py`'s `error_kind`
+     does.
   3. Optional, B: `ParseError::l2_kind` returns `L2Kind::CheckRead` for every
      `CheckRead`. The dump does not use it there; it classifies with
      `unityrs_dump::input::check_read_kind(bytes_read: i64) -> (L2Kind,
@@ -71,16 +73,6 @@ where it can; nothing below blocks wave 1.
 - **Why:** with a `check_read` there, a dump would hold a record the oracle
   never writes, and G1 would report a difference.
 
-## E4. A: `unityrs-tpk` for `--tpk` (wave 2)
-
-- **Files:** `crates/unityrs-tpk/**` (A); `Cargo.lock` (A, then E).
-- **What:** nothing new beyond plan 5: `TpkProvider::open(path: &Path) ->
-  Result<TpkProvider, _>` implementing `unityrs_core::provider::TypeTreeProvider`
-  with `name() == "tpk"`. Until it lands, `unityrs dump --tpk` exits 2 with
-  "the TPK typetree provider (unityrs-tpk) is not built yet"
-  (`crates/unityrs-cli/src/main.rs`, marked `STUB(A)`). In wave 2, E adds
-  the dependency to `unityrs-cli` and `unityrs-dump` and pushes the
-  provider into `DumpOptions::context`'s `ProviderChain`.
-- **Why:** G1 dumps stripped objects through the oracle image's TPK. A dump
-  without the provider would write `no_typetree` where the oracle reads a
-  value. So the CLI refuses `--tpk` instead of silently ignoring it.
+E4 (`--tpk` through `unityrs-tpk`) is done in wave 2: `DumpOptions::with_tpk`
+makes the TPK the context's one provider, and E added the dependency to
+`unityrs-dump` and `Cargo.lock` itself (E may change the lock for it, plan 7.1).
