@@ -132,7 +132,32 @@ pub fn compress(codec: TestCodec, data: &[u8]) -> Vec<u8> {
 /// The dictionary size the LZMA blocks declare (Unity's 512 KiB).
 pub const LZMA_DICT: u32 = 1 << 19;
 
+thread_local! {
+    /// Each LZMA output by its input. G3b's mutator builds every output again
+    /// for each field it replaces (`mutate`), so most blocks repeat, and the
+    /// encoder's set-up (its dictionary and match finder) costs more than the
+    /// rest of a build.
+    static LZMA_MEMO: std::cell::RefCell<std::collections::HashMap<Vec<u8>, Vec<u8>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 fn lzma(data: &[u8]) -> Vec<u8> {
+    if let Some(hit) = LZMA_MEMO.with(|m| m.borrow().get(data).cloned()) {
+        return hit;
+    }
+    let out = lzma_encode(data);
+    LZMA_MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        // A bound, so a long-lived thread does not keep every block forever.
+        if m.len() >= 4096 {
+            m.clear();
+        }
+        m.insert(data.to_vec(), out.clone());
+    });
+    out
+}
+
+fn lzma_encode(data: &[u8]) -> Vec<u8> {
     use liblzma::stream::{Action, Filters, LzmaOptions, Status, Stream};
     let mut opts = LzmaOptions::new_preset(1).unwrap_or_else(|_| LzmaOptions::new());
     opts.dict_size(LZMA_DICT)
@@ -291,9 +316,11 @@ pub fn build_with_signature(spec: &BundleSpec, signature: &[u8]) -> Vec<u8> {
         w.bytes(&info_stored);
     }
     let mut file = w.into_inner();
-    let total = i64::try_from(file.len()).unwrap_or(i64::MAX);
+    // Through a writer, so the total is a field (`writer::with_fields`).
+    let mut total = ByteWriter::be();
+    total.i64(i64::try_from(file.len()).unwrap_or(i64::MAX));
     if let Some(at) = file.get_mut(size_at..size_at + 8) {
-        at.copy_from_slice(&total.to_be_bytes());
+        at.copy_from_slice(total.as_slice());
     }
     if let Some(n) = spec.truncate_to {
         file.truncate(n);
@@ -315,9 +342,7 @@ pub fn build_with_signature(spec: &BundleSpec, signature: &[u8]) -> Vec<u8> {
 pub fn matrix() -> Vec<(String, Vec<u8>)> {
     use crate::serialized::build as file;
     let mut out = Vec::new();
-    for format in [
-        5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22,
-    ] {
+    for format in 1..=22 {
         for big in [false, true] {
             let end = if big { "be" } else { "le" };
             out.push((
@@ -796,7 +821,13 @@ fn matrix_file(format: u32, big_endian: bool) -> crate::serialized::SerializedSp
         path_id,
         type_id: type_id(t),
         class_id: class(t),
-        data: vec![1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0],
+        // m_A, m_B aligned, and m_C's count (0), each written as a field
+        // (`writer::with_fields`).
+        data: {
+            let mut w = ByteWriter::le();
+            w.i32(1).u8(2).align(4).i32(0);
+            w.into_inner()
+        },
         script_type_index: script,
         ..ObjectSpec::default()
     };
