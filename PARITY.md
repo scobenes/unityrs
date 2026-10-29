@@ -47,7 +47,7 @@ The pins are `DESIGN.md` section 3's. The image also carries these libraries, wh
 | pyfmodex | 0.7.2 | FMOD bindings under fmod_toolkit 0.1.3, which ships its own `libfmod` |
 | fsspec | 2025.5.1 | `Environment(fs=...)` |
 | attrs | 26.1.0 | the generated classes and `ObjectReader` |
-| libjpeg-turbo, libwebp, OpenJPEG, zlib, libtiff (bundled with Pillow) | 2.1.5.1, 1.3.0, 2.5.0, 1.2.13, 4.5.0, as `tools/parity/pillow_tables.py writers` prints them | the bytes of Pillow's writers (section 15.8): JPEG, MPO and PDF; WebP; JPEG 2000 and PDF; PNG, ICNS and ICO; TIFF |
+| libjpeg-turbo, libwebp, OpenJPEG, zlib (bundled with Pillow) | 2.1.5.1, 1.3.0, 2.5.0, 1.2.13, as `tools/parity/pillow_tables.py libraries` prints them | the bytes of the Pillow writers that call them (section 15.8): JPEG, MPO and PDF (`jpeg`); WEBP; JPEG2000 and PDF (`jpeg2k`); ICNS, ICO and PNG (`zip`). The other writers use encoders of Pillow's own (`eps`, `gif`, `pcx`, `raw`). TIFF is one of them: `TiffImagePlugin.WRITE_LIBTIFF` is false, so Pillow writes TIFF with `raw`, and libtiff 4.5.0, also bundled with Pillow, decides no bytes |
 
 TypeTreeGeneratorAPI is not installed, so `TypeTreeGenerator` raises `ImportError` in the oracle (section 10).
 
@@ -714,7 +714,7 @@ Lines are in `tools/extractor.py`. Level L9 is its output tree.
 | WMF | `.emf`, `.wmf` | raises `OSError` | raises `OSError` | raises `OSError` | raises `OSError` | — | C | writes `{fp}{extension}.png` (section 19.2) |
 | XBM | `.xbm` | raises `OSError` | raises `OSError` | raises `OSError` | raises `OSError` | — | C | writes `{fp}{extension}.png` (section 19.2) |
 
-51 extensions, 28 formats. Libraries in the oracle image: libjpeg-turbo 2.1.5.1, libwebp 1.3.0, OpenJPEG 2.5.0, zlib 1.2.13, libtiff 4.5.0.
+51 extensions, 28 formats. The libraries the writers call are section 1's.
 
 ## 16. Audio
 
@@ -1025,7 +1025,7 @@ scripts/dev python tools/parity/inventory.py check
 
 ### Reproducing the numbers
 
-The group sizes above come from `scripts/dev python tools/parity/inventory.py list --counts` in the oracle image, and `test_inventory.py` collect_finds_the_surface requires `collect()` to find exactly these sizes, so a change to UnityPy's surface or to the collector has to be made here too. The 869 generated classes, and the 869 rows of Appendix A, are counted by `test_inventory.py` appendix_a_has_one_row_per_generated_class. Appendix C's rows are what `scripts/dev python tools/parity/inventory.py enum-table` prints. The tables of sections 15.8 and 18.1, with their counts and the library versions of section 1, are what `scripts/dev python tools/parity/pillow_tables.py writers` and `scripts/dev python tools/parity/pillow_tables.py packers` print, and `test_pillow_tables.py` packers_table_is_what_pillow_does and writers_table_is_what_pillow_does hold them to it. The tables of section 9.2.1, with their counts, are what `scripts/dev python tools/parity/object_mode.py` prints, and `test_object_mode.py` table_is_what_parse_class_does holds them to it. The Tier B count of section 17 (21) is pinned by `test_texture_matrix.py` tier_b_has_the_21_formats_design_names, and the example values of section 17.1 by `test_texture_matrix.py` tier_b_references_hold_their_stated_values and bc6h_reference_is_the_specification, and the departures of section 19.2's BC6H decoders by `test_texture_matrix.py` bc6h_libraries_depart_from_the_specification.
+The group sizes above come from `scripts/dev python tools/parity/inventory.py list --counts` in the oracle image, and `test_inventory.py` collect_finds_the_surface requires `collect()` to find exactly these sizes, so a change to UnityPy's surface or to the collector has to be made here too. The 869 generated classes, and the 869 rows of Appendix A, are counted by `test_inventory.py` appendix_a_has_one_row_per_generated_class. Appendix C's rows are what `scripts/dev python tools/parity/inventory.py enum-table` prints. The tables of sections 15.8 and 18.1, with their counts, and section 1's row for the libraries bundled with Pillow, with their versions, are what `scripts/dev python tools/parity/pillow_tables.py writers`, `scripts/dev python tools/parity/pillow_tables.py packers` and `scripts/dev python tools/parity/pillow_tables.py libraries` print, and `test_pillow_tables.py` packers_table_is_what_pillow_does, writers_table_is_what_pillow_does and libraries_row_is_what_the_writers_call hold them to it. The tables of section 9.2.1, with their counts, are what `scripts/dev python tools/parity/object_mode.py` prints, and `test_object_mode.py` table_is_what_parse_class_does holds them to it. The Tier B count of section 17 (21) is pinned by `test_texture_matrix.py` tier_b_has_the_21_formats_design_names, and the example values of section 17.1 by `test_texture_matrix.py` tier_b_references_hold_their_stated_values and bc6h_reference_is_the_specification, and the departures of section 19.2's BC6H decoders by `test_texture_matrix.py` bc6h_libraries_depart_from_the_specification.
 
 The shader numbers of section 19.1 (ShaderConverter fails on 6000.3) come from `scripts/dev python tools/parity/shader_survey.py --index /corpus/index.json --build 4100,100056`, which prints them as JSON; `--build 4100` or `--build 100056` gives one build's share.
 

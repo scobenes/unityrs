@@ -64,6 +64,17 @@ class PillowTables(unittest.TestCase):
         self.assertEqual(block(self.text, "| format | extensions |", printed.splitlines()[-1][:12]), printed)
         self.assertEqual(self.heading_before(printed), "### 15.8 Image files by extension")
 
+    def test_libraries_row_is_what_the_writers_call(self):
+        """Section 1: the libraries bundled with Pillow that decide a writer's bytes are those its encoders call;
+        TIFF is written with Pillow's own `raw`, so libtiff decides none."""
+        printed = pillow_tables.libraries()
+        self.assertTrue(printed in self.text.splitlines(), "section 1 has no such row")
+        above = self.text[: self.text.index(printed)]
+        self.assertEqual([line for line in above.splitlines() if line.startswith("## ")][-1], "## 1. The oracle stack")
+        found = pillow_tables.encoders()
+        self.assertEqual(found["TIFF"], {"raw"})
+        self.assertEqual(found["PNG"], {"zip"})
+
 
 if __name__ == "__main__":
     unittest.main()

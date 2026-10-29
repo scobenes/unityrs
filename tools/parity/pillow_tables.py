@@ -1,12 +1,14 @@
-"""Print the two Pillow 9.5.0 tables PARITY.md holds, observed in the oracle image.
+"""Print the Pillow 9.5.0 tables PARITY.md holds, observed in the oracle image.
 
     scripts/dev python tools/parity/pillow_tables.py packers   # section 18.1: the image modes `set_image` packs
     scripts/dev python tools/parity/pillow_tables.py writers   # section 15.8: what `Image.save` writes, by extension
+    scripts/dev python tools/parity/pillow_tables.py libraries # section 1: the libraries whose code writes the bytes
 
 `tests/test_pillow_tables.py` requires PARITY.md to hold exactly what this prints.
 """
 
 import argparse
+import contextlib
 import os
 import re
 import sys
@@ -218,14 +220,20 @@ def acceptance(kinds, raises_by_condition=False, holds_name=False):
     return tier, text
 
 
-def writers():
-    from PIL import Image, features
+def writer_extensions():
+    """The extensions of each format Pillow 9.5.0 can save, by format."""
+    from PIL import Image
 
     Image.init()
     by_format = {}
     for extension, fmt in sorted(Image.registered_extensions().items()):
         if fmt in Image.SAVE:
             by_format.setdefault(fmt, []).append(extension)
+    return by_format
+
+
+def writers():
+    by_format = writer_extensions()
     lines = [
         "| format | extensions | `RGBA` | `RGB` | `L` | `LA` | size and file name | tier "
         "| unityrs writes, and the acceptance |",
@@ -244,25 +252,84 @@ def writers():
             row = " | ".join(cell for _, cell in cells)
             lines.append(f"| {fmt} | {spans} | {row} | {condition} | {tier} | {text} |")
     count = sum(len(e) for e in by_format.values())
-    versions = ", ".join(
-        f"{name} {features.version(key)}"
-        for name, key in (
-            ("libjpeg-turbo", "libjpeg_turbo"),
-            ("libwebp", "webp"),
-            ("OpenJPEG", "jpg_2000"),
-            ("zlib", "zlib"),
-            ("libtiff", "libtiff"),
-        )
-    )
-    lines += ["", f"{count} extensions, {len(by_format)} formats. Libraries in the oracle image: {versions}."]
+    lines += ["", f"{count} extensions, {len(by_format)} formats. The libraries the writers call are section 1's."]
     return "\n".join(lines)
+
+
+# The libraries bundled with Pillow 9.5.0 that a writer can call, with `features.version`'s key, and the Pillow
+# encoders that call each one. libwebp is called through `_webp.WebPEncode`, not through an encoder.
+LIBRARIES = (
+    ("libjpeg-turbo", "libjpeg_turbo", {"jpeg"}),
+    ("libwebp", "webp", {"libwebp"}),
+    ("OpenJPEG", "jpg_2000", {"jpeg2k"}),
+    ("zlib", "zlib", {"zip"}),
+    ("libtiff", "libtiff", {"libtiff"}),
+)
+
+
+def encoders():
+    """The encoders each writer calls for the modes of SAVED_MODES it saves, `libwebp` for libwebp."""
+    from PIL import Image, WebPImagePlugin
+
+    getencoder, webp_encode = Image._getencoder, WebPImagePlugin._webp.WebPEncode
+    found = {}
+    with tempfile.TemporaryDirectory(prefix="unityrs-encoders-") as folder:
+        for fmt, extensions in sorted(writer_extensions().items()):
+            seen = set()
+
+            def spy(mode, name, *args, seen=seen, **kw):
+                seen.add(name)
+                return getencoder(mode, name, *args, **kw)
+
+            def webp_spy(*args, seen=seen, **kw):
+                seen.add("libwebp")
+                return webp_encode(*args, **kw)
+
+            for mode in SAVED_MODES:
+                patches = (
+                    mock.patch.object(Image, "_getencoder", spy),
+                    mock.patch.object(WebPImagePlugin._webp, "WebPEncode", webp_spy),
+                )
+                with patches[0], patches[1], contextlib.suppress(Exception):
+                    save(sample(mode), os.path.join(folder, "image" + extensions[0]), CLOCKS[0])
+            found[fmt] = seen
+    return found
+
+
+def libraries():
+    """Section 1's row for the libraries bundled with Pillow: what each one decides, from the encoders called."""
+    from PIL import TiffImagePlugin, features
+
+    found = encoders()
+    calls, idle = [], []
+    for name, key, names in LIBRARIES:
+        formats = sorted(fmt for fmt, seen in found.items() if seen & names)
+        version = features.version(key)
+        if formats:
+            via = ", ".join(f"`{n}`" for n in sorted(names - {"libwebp"}))
+            listed = ", ".join(formats[:-1]) + (" and " if len(formats) > 1 else "") + formats[-1]
+            calls.append((name, version, listed + (f" ({via})" if via else "")))
+        else:
+            idle.append((name, version))
+    assert [name for name, _ in idle] == ["libtiff"] and TiffImagePlugin.WRITE_LIBTIFF is False, idle
+    assert found["TIFF"] == {"raw"}, found["TIFF"]
+    library_names = set().union(*(names for _, _, names in LIBRARIES))
+    own = sorted(set().union(*found.values()) - library_names)
+    return (
+        f"| {', '.join(name for name, _, _ in calls)} (bundled with Pillow) "
+        f"| {', '.join(version for _, version, _ in calls)}, as `tools/parity/pillow_tables.py libraries` prints them "
+        f"| the bytes of the Pillow writers that call them (section 15.8): {'; '.join(text for _, _, text in calls)}. "
+        f"The other writers use encoders of Pillow's own ({', '.join(f'`{n}`' for n in own)}). TIFF is one of them: "
+        f"`TiffImagePlugin.WRITE_LIBTIFF` is false, so Pillow writes TIFF with `raw`, and libtiff "
+        f"{idle[0][1]}, also bundled with Pillow, decides no bytes |"
+    )
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("table", choices=["packers", "writers"])
+    parser.add_argument("table", choices=["packers", "writers", "libraries"])
     args = parser.parse_args(argv)
-    print(packers() if args.table == "packers" else writers())
+    print({"packers": packers, "writers": writers, "libraries": libraries}[args.table]())
 
 
 if __name__ == "__main__":
