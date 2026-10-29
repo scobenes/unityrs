@@ -48,10 +48,32 @@ class PillowTables(unittest.TestCase):
         self.assertEqual(self.heading_before(printed), "### 18.1 Image modes `set_image` packs")
 
     def test_writers_table_is_what_pillow_does(self):
-        """Section 15.8: per writer, what `Image.save` does with RGBA, RGB and L, and what unityrs writes."""
+        """Section 15.8: per writer, what `Image.save` does with RGBA, RGB, L and LA, what the size and the file name
+        change, and what unityrs writes."""
+        # The modes: a decoded texture's, and what `mask_sprite`'s `putalpha` makes of a sprite that is not RGBA.
+        from PIL import Image
+
+        made = {}
+        for mode in ("RGB", "L"):
+            sprite = Image.new(mode, (2, 2))
+            sprite.putalpha(Image.new("1", (2, 2)))
+            made[mode] = sprite.mode
+        self.assertEqual(made, {"RGB": "RGBA", "L": "LA"})
+        self.assertEqual(pillow_tables.SAVED_MODES, ("RGBA", "RGB", "L", "LA"))
         printed = pillow_tables.writers()
         self.assertEqual(block(self.text, "| format | extensions |", printed.splitlines()[-1][:12]), printed)
         self.assertEqual(self.heading_before(printed), "### 15.8 Image files by extension")
+
+    def test_libraries_row_is_what_the_writers_call(self):
+        """Section 1: the libraries bundled with Pillow that decide a writer's bytes are those its encoders call;
+        TIFF is written with Pillow's own `raw`, so libtiff decides none."""
+        printed = pillow_tables.libraries()
+        self.assertTrue(printed in self.text.splitlines(), "section 1 has no such row")
+        above = self.text[: self.text.index(printed)]
+        self.assertEqual([line for line in above.splitlines() if line.startswith("## ")][-1], "## 1. The oracle stack")
+        found = pillow_tables.encoders()
+        self.assertEqual(found["TIFF"], {"raw"})
+        self.assertEqual(found["PNG"], {"zip"})
 
 
 if __name__ == "__main__":

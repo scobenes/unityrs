@@ -31,6 +31,8 @@ and the crunch stream itself is not.
 
 import inspect
 import json
+import math
+import random
 import re
 import shutil
 import struct
@@ -1090,7 +1092,7 @@ class AgainstTheOracle(unittest.TestCase):
 
 
 class TierBReferences(unittest.TestCase):
-    """Section 17.1's references hold the values it states (standard library; BC6H needs texture2ddecoder)."""
+    """Section 17.1's references hold the values it states (standard library; the BC6H libraries need the oracle)."""
 
     def one(self, name, data, width=1, height=1):
         mode, pixels = references.decode(name, data, width, height)
@@ -1137,28 +1139,100 @@ class TierBReferences(unittest.TestCase):
         mode, pixels = references.decode("R16", struct.pack("<2H", 0x0100, 0x0200), 1, 2)
         self.assertEqual(pixels, [(2, 0, 0), (1, 0, 0)])
 
-    def test_bc6h_reference_is_texture2ddecoder(self):
-        try:
-            import texture2ddecoder  # noqa: F401
-        except ImportError:  # pragma: no cover - outside the oracle image
-            self.skipTest("needs texture2ddecoder 1.0.5 (the oracle image)")
+    def test_bc6h_reference_is_the_specification(self):
+        """BC6H's reference decodes as the Khronos Data Format Specification 1.3, section 20.2, says."""
 
-        def block(r, g, b):
-            # Mode 11 (mode bits 00011): one region, 10-bit endpoints; every index 0 picks endpoint 0.
+        def block(e0, e1, index=0):
+            # Mode 3 (mode bits 00011): one subset, 10-bit endpoints stored as they are; texel 0, the anchor, keeps
+            # 3 index bits and the others 4, and every texel takes `index`.
             bits, shift = 0b00011, 5
-            for channel in (r, g, b, 0, 0, 0):
+            for channel in (*e0, *e1):
                 bits |= channel << shift
                 shift += 10
+            bits |= (index & 7) << shift
+            for texel in range(1, 16):
+                bits |= index << (shift + 3 + 4 * (texel - 1))
             return bits.to_bytes(16, "little")
 
-        def half(endpoint):  # the unsigned BC6H unquantize and finish
+        def half(endpoint):  # the unsigned unquantize of a 10-bit endpoint, and the final 31/64
             return ((((endpoint << 16) + 0x8000) >> 10) * 31) >> 6
 
         self.assertEqual([hex(half(e)) for e in (400, 488, 500)], ["0x307f", "0x3b27", "0x3c9b"])
-        mode, pixels = references.decode("BC6H", block(400, 488, 500), 4, 4)
-        self.assertEqual((mode, set(pixels)), ("RGBA", {(36, 228, 255, 255)}))
+        mode, pixels = references.decode("BC6H", block((400, 488, 500), (0, 0, 0)), 4, 4)
+        self.assertEqual((mode, set(pixels)), ("RGB", {(36, 228, 255)}))
         # Cropped from whole 4x4 blocks, as UnityPy pads every BC format.
-        self.assertEqual(references.decode("BC6H", block(400, 488, 500), 3, 2), ("RGBA", [(36, 228, 255, 255)] * 6))
+        self.assertEqual(
+            references.decode("BC6H", block((400, 488, 500), (0, 0, 0)), 3, 2), ("RGB", [(36, 228, 255)] * 6)
+        )
+
+        # An endpoint equal to 2^(bits-1) unquantizes by the formula: 512 of 10 bits to 32800, not 0xFFFF. With
+        # weight 34 (index 8) towards 0: (32800 * 30 + 32) >> 6 = 15375, times 31/64 = 0x1d17, 0.00477, red 1.
+        self.assertEqual(references.bc6h_unquantize(512, 10), 32800)
+        self.assertEqual(references.bc6h_unquantize(1023, 10), 0xFFFF)
+        reviewer = block((512, 100, 100), (0, 0, 0), 8)
+        texels = references.bc6h_block(reviewer)
+        self.assertEqual(texels[1:], [(0x1D17, 0x05B4, 0x05B4)] * 15)
+        self.assertEqual(texels[0], (0x3E0F, 0x0C2B, 0x0C2B))  # the anchor's 3 bits hold 0: endpoint 0
+        mode, pixels = references.decode("BC6H", reviewer, 4, 4)
+        self.assertEqual(pixels[12:], [(255, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0)])  # flipped: texel 0 is last
+        # Equation 2 rounds (+ 32): weight 4 (index 1) from 0 towards 1023 (0xFFFF) gives (0xFFFF * 4 + 32) >> 6
+        # = 4096, times 31/64 = 0x7c0; without the + 32, 4095 and 0x7bf.
+        ramp = block((0, 0, 0), (1023, 1023, 1023), 1)
+        self.assertEqual(references.bc6h_block(ramp)[1], (0x7C0,) * 3)
+        self.assertEqual(references.bc6h_block(ramp, rounding=0)[1], (0x7BF,) * 3)
+
+    def test_bc6h_libraries_depart_from_the_specification(self):
+        """Section 19.2: texture2ddecoder 1.0.5 and Pillow 9.5.0 each equal section 20.2's decoding with one
+        departure, on random blocks of every mode, and the departure shows on the reviewer's block."""
+        if not ORACLE:
+            self.skipTest("needs texture2ddecoder 1.0.5 and Pillow 9.5.0 (the oracle image)")
+
+        def bimg_unquantize(value, bits):  # texture2ddecoder's src/Texture2DDecoder/bcn.cpp, unsigned
+            if bits >= 15:
+                return value
+            if value == 0:
+                return 0
+            if value == 1 << (bits - 1):  # section 20.2 tests (1 << bits) - 1
+                return 0xFFFF
+            return ((value << 15) + 0x4000) >> (bits - 1)
+
+        def as_bytes(texels, convert):
+            return [tuple(convert(references.half_bits_to_float(h)) for h in texel) for texel in texels]
+
+        def truncate(value):  # Pillow's bc6_clamp: clamped to [0, 1], then (UINT8)(value * 255.0f)
+            return 255 if value > 1 else math.floor(value * 255)
+
+        def t2d(data):
+            bgra = texture2ddecoder.decode_bc6(data, 4, 4)
+            return [(bgra[i + 2], bgra[i + 1], bgra[i]) for i in range(0, 64, 4)]
+
+        def pillow(data):
+            return list(Image.frombytes("RGB", (4, 4), data, "bcn", 6).getdata())
+
+        rng = random.Random(29)
+        modes = sorted(references.BC6H_MODES) + [19, 23, 27, 31]  # the last four are reserved
+        differs = {"texture2ddecoder": 0, "Pillow": 0}
+        for mode in modes:
+            for _ in range(60):
+                width = 2 if mode < 2 else 5
+                data = (rng.getrandbits(128) >> width << width | mode).to_bytes(16, "little")
+                spec = as_bytes(references.bc6h_block(data), references.float_to_byte)
+                with self.subTest(mode=mode, data=data.hex()):
+                    self.assertEqual(
+                        t2d(data), as_bytes(references.bc6h_block(data, bimg_unquantize), references.float_to_byte)
+                    )
+                    self.assertEqual(pillow(data), as_bytes(references.bc6h_block(data, rounding=0), truncate))
+                differs["texture2ddecoder"] += t2d(data) != spec
+                differs["Pillow"] += pillow(data) != spec
+        self.assertTrue(all(differs.values()), differs)
+        # The reviewer's block: red endpoint 0 at 512 of 10 bits, endpoint 1 at 0, index 8 (texel 1 onwards).
+        bits = 0b00011 | 512 << 5 | 100 << 15 | 100 << 25
+        for texel in range(1, 16):
+            bits |= 8 << (65 + 3 + 4 * (texel - 1))
+        data = bits.to_bytes(16, "little")
+        self.assertEqual(as_bytes(references.bc6h_block(data), references.float_to_byte)[1], (1, 0, 0))
+        self.assertEqual(t2d(data)[1], (195, 0, 0))
+        self.assertEqual(pillow(data)[1], (1, 0, 0))
 
 
 def swizzle(data, fmt, block_w, block_h):

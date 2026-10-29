@@ -66,16 +66,16 @@ unityrs is the alternative, built around three things:
 **Reading**
 - **Tier A: bit-exact** wherever UnityPy is right.
   - Typetree dicts equal `parse_as_dict()` with Boost semantics: lists for arrays, tuples for pairs, bytes for TypelessData, surrogate-escaped strings, float32 widened exactly.
-  - Object mode builds each class as UnityPyBoost's `parse_class` does: a slotted class with an extra field becomes an `UnknownObject`. The pure-Python path's different rule is kept where UnityPy calls it (`PARITY.md` section 9.2).
+  - Object mode builds each class as UnityPyBoost's `parse_class` does: a node with a field its class lacks becomes an `UnknownObject` when the class's `__slots__`, read through the MRO, is a non-empty tuple or its instances have no `__dict__`, and the class with the field as an attribute otherwise. `PARITY.md` section 9.2.1 lists every class of `UnityPy.classes` by that rule, from what `parse_class` does with each. The pure-Python path's different rule is kept where UnityPy calls it (`PARITY.md` section 9.2).
   - `obj.container` and dependency resolution match.
   - Decoded pixels **and output mode** match: BCn per Pillow `BcnDecode.c`; ETC/EAC/ATC/PVRTC/crunch per texture2ddecoder C++; ASTC via ARM astcenc.
   - OBJ/MTL text matches.
-  - An image file the extractor saves under a container's extension is byte-equal with what Pillow 9.5.0's writer for that extension saves at its defaults, for every writer Pillow registers; a PDF's two dates, which hold the time of the save, aside (`PARITY.md` section 15.8).
+  - An image file the extractor saves under a container's extension is byte-equal with what Pillow 9.5.0's writer for that extension saves at its defaults to the same path, for every writer Pillow registers and every mode, size and file name it saves; a PDF's two dates, which hold the time of the save, aside (`PARITY.md` section 15.8).
   - `save_typetree(parse())` returns the raw bytes.
   - Every patch to vendored decoders is labelled either Tier A (keeps the reference behaviour) or Tier C.
   - An observable quirk that callers can depend on and that is not wrong data (a file name, a dict key, a `str()` form, a docstring the code contradicts) is Tier A: unityrs keeps UnityPy's behaviour.
 - **Tier B: UnityPy raises on a valid request.** We produce correct output, checked against an independent reference, and `PARITY.md` names a pinned divergence test for each:
-  - 21 TextureFormats: BC6H, the half and float formats but ARGBFloat, the 8 signed formats, RG16/RG32, R16, RGBA64, RGB9e5, YUY2. `PARITY.md` section 17.1 names each one's reference: a closed form (the half and float, integer, shared-exponent and BT.601 rules), or for BC6H texture2ddecoder 1.0.5's decoder, which is in the oracle image;
+  - 21 TextureFormats: BC6H, the half and float formats but ARGBFloat, the 8 signed formats, RG16/RG32, R16, RGBA64, RGB9e5, YUY2. `PARITY.md` section 17.1 names each one's reference: a closed form (the half and float, integer, shared-exponent and BT.601 rules), or for BC6H the decoding of the Khronos Data Format Specification 1.3, section 20.2, then the half and float rule. Neither BC6H decoder in the oracle image follows that section (texture2ddecoder 1.0.5 unquantizes the wrong endpoint value to 0xFFFF; Pillow 9.5.0 interpolates without rounding), so neither is the reference;
   - a gzip-compressed WebFile, which UnityPy detects and then fails to parse;
   - a streamed Texture2DArray, whose slices all raise;
   - a Texture2DArray in one of the seven 8-bit integer formats that UnityPy maps to a 16-bit texture format that raises;
@@ -83,6 +83,7 @@ unityrs is the alternative, built around three things:
   - `Texture2D.image` of an empty 0×0 texture;
   - an empty AudioClip, whose empty resource path UnityPy fetches;
   - a ZIP opened from a path, which UnityPy loads only from bytes or a buffered stream;
+  - a class node whose type names an attribute of `UnityPy.classes` that is not a class, where UnityPyBoost raises (`List`, `Tuple`): unityrs builds it as a type the module lacks (`PARITY.md` section 19.2);
   - `set_image` from an image whose mode Pillow cannot pack for the target (an indexed or grey PNG, or an RGB image into Alpha8): unityrs converts it with Pillow's `convert("RGBA")` first (`PARITY.md` section 18.1).
 - **Tier C: UnityPy is wrong.** It returns wrong data that an independent reference shows is wrong, or one of its exporters or helpers crashes. We produce correct output, and `PARITY.md` lists each case with a pinned divergence test and, for a crash, what correct output means:
   - RGBAHalf returns garbage;
@@ -96,6 +97,7 @@ unityrs is the alternative, built around three things:
   - the compressed-mesh 4th bone weight;
   - the ReferencedObject array path does not skip None;
   - the pure-Python object-mode reader raises `AttributeError` on an extra field of a class without a `__dict__`;
+  - UnityPyBoost crashes the process, or returns a function, on a class node whose type names an attribute of `UnityPy.classes` that is not a class (`math`, `__name__`, `attrs_define`): unityrs builds it as a type the module lacks;
   - dump_blob's common-string offset 0;
   - two bundles holding a CAB of one name share one registry entry;
   - `load_dependencies` loads dependencies as main files;
