@@ -33,6 +33,22 @@
 //! value). The reader builds every list, map, tuple and run through a
 //! [`ValueBuilder`], the one metered path; `Map` has no growth method.
 //!
+//! **What the types pin, and what a test pins.** A `Parsed` has no public
+//! constructor: [`ValueBuilder::finish`] is the only way to one, so every
+//! `Parsed` holds the charge its builder took. A caller's own value (one to
+//! write, a test's) goes through a builder too, on [`Meter::unlimited`] when
+//! it is not an input's. `Value`'s variants are public data, though, so the
+//! types cannot prove that every allocation of a value went through the
+//! builder: a value built from a plain `Vec`, or one kept after its builder
+//! was dropped without `finish`, holds heap no charge covers. That the
+//! reader never does either is its discipline, checked by package B's
+//! counting-allocator test (plan section 7.3), as `tests/memory_model.rs`
+//! checks the builder itself.
+//!
+//! The snippets below must not compile. Stable rustdoc does not check a
+//! `compile_fail` test's error code, so each is written to fail one way
+//! only: the item it names is missing, private or not `Clone`.
+//!
 //! ```compile_fail,E0616
 //! // The value cannot be moved out of its `Parsed` (round 3: the charge
 //! // dropped with the rest of the `Parsed` while the value lived on).
@@ -41,37 +57,67 @@
 //! }
 //! ```
 //!
-//! ```compile_fail,E0599
-//! // Nor copied without a charge.
-//! fn copy(p: &unityrs_core::Parsed) -> unityrs_core::Value {
-//!     p.value().clone()
-//! }
+//! ```compile_fail,E0277
+//! // Nor copied without a charge: `Value` is not `Clone`.
+//! fn clone<T: Clone>() {}
+//! clone::<unityrs_core::Value>();
+//! ```
+//!
+//! ```compile_fail,E0277
+//! fn clone<T: Clone>() {}
+//! clone::<unityrs_core::Parsed>();
+//! ```
+//!
+//! ```compile_fail,E0277
+//! fn clone<T: Clone>() {}
+//! clone::<unityrs_core::Map>();
+//! ```
+//!
+//! ```compile_fail,E0277
+//! fn clone<T: Clone>() {}
+//! clone::<unityrs_core::PrimArray>();
 //! ```
 //!
 //! ```compile_fail,E0599
 //! // A map does not grow outside the reader's metered builder.
-//! let mut m = unityrs_core::Map::new(0);
-//! m.push_unique(unityrs_core::typetree::NodeId(1), unityrs_core::Value::Int(1));
+//! let _ = unityrs_core::Map::push_unique;
 //! ```
 //!
 //! ```compile_fail,E0599
 //! // Not by insertion either (a test-only helper inside the crate).
-//! let mut m = unityrs_core::Map::new(0);
-//! m.insert(unityrs_core::typetree::NodeId(1), unityrs_core::Value::Int(1));
+//! let _ = unityrs_core::Map::insert;
 //! ```
 //!
 //! ```compile_fail,E0599
 //! // Nor is one allocated at an unmetered capacity.
-//! let _ = unityrs_core::Map::with_capacity(0, 1 << 20);
+//! let _ = unityrs_core::Map::with_capacity;
 //! ```
 //!
 //! ```compile_fail,E0599
-//! // A `Parsed` is not assembled from charges the caller picked: the reader
-//! // finishes a `ValueBuilder`, which charged the lists table itself.
-//! fn build(lists: Box<[std::sync::Arc<unityrs_core::typetree::NodeList>]>,
-//!          v: unityrs_core::Value, c: unityrs_core::limits::Charge) -> unityrs_core::Parsed {
-//!     unityrs_core::Parsed::new(lists, v, 0, c)
-//! }
+//! // A `Parsed` is not assembled from charges the caller picked, with any
+//! // arguments: the reader finishes a `ValueBuilder`.
+//! let _ = unityrs_core::Parsed::new;
+//! ```
+//!
+//! ```compile_fail,E0599
+//! // Nor without a charge (round 4): a caller's value goes through a
+//! // builder on `Meter::unlimited()`.
+//! let _ = unityrs_core::Parsed::unmetered;
+//! ```
+//!
+//! ```
+//! // What the snippets above refuse, a caller does this way.
+//! use std::sync::Arc;
+//! use unityrs_core::limits::Meter;
+//! use unityrs_core::typetree::{NodeList, NodeRow};
+//! use unityrs_core::{Value, ValueBuilder};
+//! let root = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "int", "v")]).unwrap());
+//! let mut b = ValueBuilder::new(&Meter::unlimited(), root).unwrap();
+//! let mut items = b.vec();
+//! items.push(Value::Int(1)).unwrap();
+//! let list = b.list(items);
+//! let p = b.finish(list, 4);
+//! assert_eq!(p.value(), &Value::List(vec![Value::Int(1)]));
 //! ```
 //!
 //! Owner: the scaffold (implemented types and helpers); package B may add
@@ -399,12 +445,10 @@ impl ValueBuilder {
 }
 
 impl Parsed {
-    /// A value built by a caller rather than read from an input (a value to
-    /// write, a test's), with the lists that name its keys (the root tree's
-    /// first). Nothing is charged: the reader's values come from a
-    /// [`ValueBuilder`].
-    #[must_use]
-    pub fn unmetered(lists: Vec<Arc<NodeList>>, value: Value, bytes_read: i64) -> Self {
+    /// A value with lists the crate's tests make (65,537 copies of one list,
+    /// which a builder would deduplicate), charging nothing.
+    #[cfg(test)]
+    pub(crate) fn for_tests(lists: Vec<Arc<NodeList>>, value: Value, bytes_read: i64) -> Self {
         Self {
             lists,
             value,
@@ -579,7 +623,7 @@ mod tests {
         let lists: Vec<Arc<NodeList>> = (0..n).map(|_| list.clone()).collect();
         let tail = super::ListIx::try_from(n - 1).unwrap();
         let inner = Map::from_entries(tail, vec![(NodeId(1), Value::Int(5))]);
-        let p = Parsed::unmetered(lists, Value::Dict(inner), 4);
+        let p = Parsed::for_tests(lists, Value::Dict(inner), 4);
         let Value::Dict(m) = &p.value else { panic!() };
         assert_eq!(m.list(), tail);
         assert_eq!(p.key_name(m, NodeId(1)), b"x");
@@ -592,7 +636,7 @@ mod tests {
         // UnityPy's pure-Python reader: a TypelessData length of -100 at byte 200
         // ends the read at 104, so bytes_read is -96 (tests/fixtures: walk).
         let list = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")]).unwrap());
-        let p = Parsed::unmetered(
+        let p = Parsed::for_tests(
             vec![list],
             Value::Dict(Map::new(0)),
             (-96_i64).try_into().unwrap(),
@@ -692,7 +736,7 @@ mod tests {
                 (NodeId(2), Value::Str("x".into())),
             ],
         );
-        let p = Parsed::unmetered(vec![Arc::new(list)], Value::Dict(m), 12);
+        let p = Parsed::for_tests(vec![Arc::new(list)], Value::Dict(m), 12);
         assert_eq!(p.get(&[b"m_Name"]).and_then(Value::as_str), Some("x"));
         assert_eq!(p.get(&[b"a"]).and_then(Value::as_i64), Some(7));
         assert_eq!(p.get(&[b"missing"]), None);
