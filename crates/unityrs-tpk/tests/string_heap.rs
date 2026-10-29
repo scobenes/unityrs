@@ -106,7 +106,10 @@ fn a_string_longer_than_its_tail_costs_at_most_the_tail() {
         let bytes = blob((1 << 35) - 1, &tail);
         let start = LIVE.load(Ordering::SeqCst);
         PEAK.store(start, Ordering::SeqCst);
-        let got = rabex::tpk::TpkTypeTreeBlob::from_reader(&mut bytes.as_slice());
+        let got = rabex::tpk::TpkTypeTreeBlob::from_reader_bounded(
+            &mut bytes.as_slice(),
+            unityrs_tpk::TpkProvider::MAX_RECORDS,
+        );
         let peak = PEAK.load(Ordering::SeqCst) - start;
         assert!(got.is_err(), "tail {tail_len}");
         drop(got);
@@ -117,6 +120,10 @@ fn a_string_longer_than_its_tail_costs_at_most_the_tail() {
     }
     // And a string its tail holds reads whole.
     let bytes = blob(5, b"hello");
-    let got = rabex::tpk::TpkTypeTreeBlob::from_reader(&mut bytes.as_slice()).unwrap();
+    let got = rabex::tpk::TpkTypeTreeBlob::from_reader_bounded(
+        &mut bytes.as_slice(),
+        unityrs_tpk::TpkProvider::MAX_RECORDS,
+    )
+    .unwrap();
     assert_eq!(got.string_buffer, ["hello"]);
 }

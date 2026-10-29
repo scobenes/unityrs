@@ -140,12 +140,12 @@ fn the_lock_file_links_each_rabex_to_its_one_crate() {
 }
 
 /// This crate's own sources reach rabex only through `rabex::tpk`, and there
-/// only through the reader and the F4 accessor's types; never through the
-/// blob's raw class map, whose keys are rabex's `ClassId`.
+/// only through the blob reader and the F4 accessor's types (not `TpkFile`,
+/// whose codecs are not UnityPy's); never through the blob's raw class map,
+/// whose keys are rabex's `ClassId`.
 #[test]
 fn this_crate_reaches_only_the_tpk_reader() {
-    const ALLOWED: [&str; 6] = [
-        "TpkFile",
+    const ALLOWED: [&str; 5] = [
         "TpkNodeRow",
         "TpkTypeTreeBlob",
         "UnityClass",
@@ -192,4 +192,42 @@ fn this_crate_reaches_only_the_tpk_reader() {
         found.is_empty(),
         "rabex reached past the TPK reader: {found:#?}"
     );
+}
+
+/// The crate's public API names no rabex type: `TpkError` is unityrs's
+/// own, so a caller classifies a load failure without naming the fork,
+/// which the fence above forbids it. Every name this crate takes from
+/// `rabex::tpk` (aliases included) stays out of `TpkError` and out of every
+/// `pub` line.
+#[test]
+fn the_public_api_names_no_rabex_type() {
+    let src =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs")).unwrap();
+    let mut names = vec!["rabex".to_owned()];
+    for line in src.lines().filter(|l| l.starts_with("use rabex::")) {
+        let list = line.split('{').nth(1).and_then(|l| l.split('}').next());
+        for item in list.unwrap_or_default().split(',') {
+            // `Error as BlobError` is named `BlobError` here.
+            if let Some(name) = item.split_whitespace().last() {
+                names.push(name.to_owned());
+            }
+        }
+    }
+    assert!(names.len() > 1, "no `use rabex::tpk::{{...}}` line");
+    let start = src.find("pub enum TpkError").unwrap();
+    let error = &src[start..start + src[start..].find("\n}\n").unwrap()];
+    let public = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//") && l.trim_start().starts_with("pub "));
+    for line in error.lines().chain(public) {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        for name in &names {
+            let found = line
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|w| w == name);
+            assert!(!found, "the public API names rabex's `{name}`: {line}");
+        }
+    }
 }

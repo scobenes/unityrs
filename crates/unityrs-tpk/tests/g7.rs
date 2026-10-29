@@ -4,9 +4,15 @@
 //! `KeyError`, `ValueError` or `AssertionError`, and an error where it raises
 //! anything else; and the TPK's class count is UnityPy's.
 //!
+//! Each answer is checked twice: the node list ([`TpkProvider::node_list`])
+//! and the compiled tree ([`TypeTreeProvider::tree`]), which must be the
+//! node list's, compiled, wherever UnityPy builds one.
+//!
 //! Two sets. The synthetic TPKs of `tools/fixtures/tpk.py`, committed with
 //! UnityPy's outcomes under `tests/fixtures/tpk/`, are replayed here without
-//! Python. UnityPy's own TPK (`resources/lzma.tpk` in the oracle image) is
+//! Python; a case marked `refused` is one UnityPy loads and unityrs refuses
+//! by design (`PARITY.md` section 19.3), and must be refused for the reason
+//! it names. UnityPy's own TPK (`resources/lzma.tpk` in the oracle image) is
 //! read at test time, never committed: `tools/fixtures/tpk.py --check` writes
 //! its outcomes outside the repository and runs [`image_tpk`] with
 //! `UNITYRS_ORACLE_TPK` and `UNITYRS_ORACLE_TPK_OUTCOMES` set; run by plain
@@ -20,11 +26,11 @@ use std::process::Command;
 use std::sync::Arc;
 
 use serde_json::Value as J;
-use unityrs_core::UnityVersion;
 use unityrs_core::limits::Limits;
 use unityrs_core::provider::{TreeRequest, TypeTreeProvider};
 use unityrs_core::typetree::{NodeList, NodeRow};
-use unityrs_tpk::TpkProvider;
+use unityrs_core::{LimitError, LimitKind, UnityVersion};
+use unityrs_tpk::{TpkError, TpkProvider};
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -100,6 +106,7 @@ fn compare<'r>(provider: &TpkProvider, head: &J, classes: impl Iterator<Item = &
         .map(version)
         .collect();
     assert_eq!(provider.versions(), &versions[..], "version list");
+    compare_common(provider, &head["common_strings"]);
     let mut listed = 0;
     let mut pairs = 0;
     // A node list compared once per outcome it is checked against.
@@ -114,17 +121,27 @@ fn compare<'r>(provider: &TpkProvider, head: &J, classes: impl Iterator<Item = &
             let index = usize::try_from(pick.as_u64().unwrap()).unwrap();
             let want = &outcomes[index];
             let got = provider.node_list(class_id, v);
+            let tree = provider.tree(&TreeRequest {
+                class_id,
+                version: v,
+                script: None,
+            });
             let at = || format!("class {class_id} at {:?}", v.packed());
-            match (want.get("rows"), got) {
-                (Some(rows), Ok(Some(list))) => {
+            match (want.get("rows"), got, tree) {
+                (Some(rows), Ok(Some(list)), Ok(Some(tree))) => {
+                    assert!(Arc::ptr_eq(tree.list(), &list), "{}: the tree's list", at());
                     let key = (Arc::as_ptr(&list) as usize, index);
                     if checked.insert(key) {
                         compare_rows(&list, rows, &at());
                     }
                 }
-                (None, Ok(None)) => assert!(want.get("none").is_some(), "{}: {want}", at()),
-                (None, Err(_)) => assert!(want.get("error").is_some(), "{}: {want}", at()),
-                (_, got) => panic!("{}: UnityPy {want}, unityrs {got:?}", at()),
+                (None, Ok(None), Ok(None)) => {
+                    assert!(want.get("none").is_some(), "{}: {want}", at());
+                }
+                (None, Err(_), Err(_)) => assert!(want.get("error").is_some(), "{}: {want}", at()),
+                (_, got, tree) => {
+                    panic!("{}: UnityPy {want}, unityrs {got:?}, tree {tree:?}", at())
+                }
             }
             pairs += 1;
         }
@@ -136,11 +153,33 @@ fn compare<'r>(provider: &TpkProvider, head: &J, classes: impl Iterator<Item = &
     pairs
 }
 
+/// The provider's common strings against UnityPy's `get_common_strings()`.
+fn compare_common(provider: &TpkProvider, want: &J) {
+    let want = want.as_array().expect("UnityPy built the common strings");
+    let got: Vec<J> = provider
+        .common_strings()
+        .expect("a TPK provider has common strings")
+        .iter()
+        .map(|(o, s)| serde_json::json!([o, s.to_str().unwrap()]))
+        .collect();
+    assert_eq!(&got, want, "common strings");
+}
+
 fn compare_rows(list: &Arc<NodeList>, want: &J, at: &str) {
     let want = want.as_array().unwrap();
     assert_eq!(list.rows().len(), want.len(), "{at}: row count");
     for (i, (row, want)) in list.rows().iter().zip(want).enumerate() {
         assert_eq!(&row_json(row), want, "{at}: row {i}");
+    }
+}
+
+/// What a refusal names: a bound's `what`, or the unsupported codec.
+fn refusal(e: &TpkError) -> String {
+    match e {
+        TpkError::TooLarge { what, .. } => (*what).to_owned(),
+        TpkError::Unsupported(codec) => (*codec).to_owned(),
+        TpkError::CommonStringPastBuffer { .. } => "common-string index".to_owned(),
+        e => format!("{e}"),
     }
 }
 
@@ -152,6 +191,12 @@ fn g7_the_synthetic_tpks_give_unitypys_outcomes() {
     for case in &cases {
         let name = case["name"].as_str().unwrap();
         let provider = open(case);
+        if let Some(what) = case["refused"].as_str() {
+            assert_eq!(case["load"], J::Null, "{name}: UnityPy refused it too");
+            let e = provider.err().unwrap_or_else(|| panic!("{name}: loaded"));
+            assert_eq!(refusal(&e), what, "{name}: {e}");
+            continue;
+        }
         if case["load"].is_string() {
             assert!(
                 provider.is_err(),
@@ -169,10 +214,12 @@ fn g7_the_synthetic_tpks_give_unitypys_outcomes() {
 
 /// The cases G7's synthetic set exists for are in it: each root flag
 /// combination and the class after it, the type bytes rabex refused, the
-/// 300-deep chain, and both codecs.
+/// 300-deep chain, both codecs and the streams on which liblz4 and liblzma
+/// decide differently from rabex's decoders, and a case past each bound.
 #[test]
 fn g7_the_synthetic_set_covers_f6_f7_and_the_deep_chain() {
-    let names: Vec<String> = synthetic()
+    let cases = synthetic();
+    let names: Vec<String> = cases
         .iter()
         .map(|c| c["name"].as_str().unwrap().to_owned())
         .collect();
@@ -184,9 +231,42 @@ fn g7_the_synthetic_set_covers_f6_f7_and_the_deep_chain() {
         "lz4",
         "lzma",
         "meta_flag_u32",
+        "lz4_offset_0_match",
+        "lz4_match_in_the_last_literals",
+        "lzma_end_marker_corrupt",
+        "lzma_declared_smaller",
+        "common_strings",
     ] {
         assert!(names.iter().any(|n| n == name), "{name}");
     }
+    // UnityPy loads the offset-0 match and the short LZMA size, and raises on
+    // the last-literals match and the corrupt end marker (rabex's decoders
+    // did the opposite of each).
+    assert_eq!(case("lz4_offset_0_match")["load"], J::Null);
+    assert_eq!(case("lzma_declared_smaller")["load"], J::Null);
+    assert!(case("lz4_match_in_the_last_literals")["load"].is_string());
+    assert!(case("lzma_end_marker_corrupt")["load"].is_string());
+    let refused: Vec<&str> = cases.iter().filter_map(|c| c["refused"].as_str()).collect();
+    for what in [
+        "decoded payload",
+        "versions",
+        "classes",
+        "class entries",
+        "common-string versions",
+        "common-string indices",
+        "nodes",
+        "strings",
+        "brotli",
+        "common-string index",
+    ] {
+        assert!(refused.contains(&what), "no refused case for {what}");
+    }
+    // UnityPy numbers common strings by code points, and raises on an index
+    // past the string buffer only when a blob reads the table.
+    let common = &case("common_strings")["common_strings"];
+    assert!(common.as_array().is_some_and(|t| t.len() == 6), "{common}");
+    let index = &case("refused_common_string_index")["common_strings"];
+    assert_eq!(index["error"], "IndexError");
     // A request 3: UnityPy keeps a TPK node's u32 meta flag positive.
     let high = &case("meta_flag_u32")["classes"][0]["outcomes"][0]["rows"];
     assert_eq!(high[0][8].as_i64(), Some(0x8000_4000));
@@ -212,8 +292,10 @@ fn g7_the_synthetic_set_covers_f6_f7_and_the_deep_chain() {
 }
 
 /// UnityPy builds the 300-deep chain; with the default limits (a depth of
-/// 256) the provider refuses it with an error, never a wrapped level or a
-/// shorter tree (a safety divergence, plan 2.4's F3).
+/// 256) the provider refuses it with a `TreeDepth` limit error naming the
+/// first depth past the limit (the root's is 1), from the node list and the
+/// tree alike, never a wrapped level or a shorter tree (a safety divergence,
+/// plan 2.4's F3).
 #[test]
 fn a_tree_deeper_than_the_limit_is_an_error_not_a_wrap() {
     let case = case("deep_chain_300");
@@ -221,7 +303,21 @@ fn a_tree_deeper_than_the_limit_is_an_error_not_a_wrap() {
     let v = version(&case["versions"][0]);
     for depth in [256, 299] {
         let provider = TpkProvider::from_bytes(&bytes, &limits(depth)).unwrap();
-        assert!(provider.node_list(1, &v).is_err(), "depth {depth}");
+        let want = LimitError {
+            kind: LimitKind::TreeDepth,
+            value: u64::from(depth) + 1,
+            max: u64::from(depth),
+        };
+        let list = provider.node_list(1, &v).unwrap_err();
+        assert_eq!(list.limit, Some(want), "depth {depth}: {list}");
+        assert_eq!(&*list.detail, want.to_string(), "depth {depth}");
+        let req = TreeRequest {
+            class_id: 1,
+            version: &v,
+            script: None,
+        };
+        let tree = provider.tree(&req).unwrap_err();
+        assert_eq!(tree.limit, Some(want), "depth {depth}: {tree}");
     }
     let provider = TpkProvider::from_bytes(&bytes, &limits(300)).unwrap();
     let list = provider.node_list(1, &v).unwrap().unwrap();
@@ -260,7 +356,7 @@ fn the_provider_is_named_tpk_and_takes_no_script_requests() {
 #[test]
 fn the_provider_answers_trees_where_unitypy_builds_them_and_shares_each() {
     for case in synthetic() {
-        if case["load"].is_string() {
+        if case["load"].is_string() || case.get("refused").is_some() {
             continue;
         }
         let provider = open(&case).unwrap();

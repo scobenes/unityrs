@@ -54,6 +54,7 @@ use crate::once::{ResultCell, get_or_publish_result};
 use crate::options::FileContext;
 use crate::raw::RawStr;
 use crate::stream::{Endian, Reader};
+use crate::typetree::commonstring::CommonStrings;
 use crate::typetree::parse::{is_blob_format, parse_blob, parse_old, string_to_null};
 use crate::typetree::{NodeList, Tree, TreeError};
 use crate::version::{ResolvedVersion, resolve_serialized};
@@ -280,6 +281,7 @@ impl SerializedFile {
             data: &data,
             meter,
             limits: &ctx.limits,
+            common: ctx.providers.common_strings(),
             version: 0,
             enable_type_tree: true,
             kept: Charge::zero(meter),
@@ -564,6 +566,9 @@ struct Parser<'a> {
     data: &'a Bytes,
     meter: &'a Arc<Meter>,
     limits: &'a Limits,
+    /// The caller's TPK's common strings, which blob trees read (`None`:
+    /// UnityPy's MIT table).
+    common: Option<&'a CommonStrings>,
     /// The format (`header.version`).
     version: u32,
     /// `_enable_type_tree` as read so far.
@@ -699,7 +704,14 @@ impl Parser<'_> {
         }
         if self.enable_type_tree {
             let rows = if is_blob_format(v) {
-                parse_blob(&mut self.r, self.data, v, self.meter, self.limits)?
+                parse_blob(
+                    &mut self.r,
+                    self.data,
+                    v,
+                    self.meter,
+                    self.limits,
+                    self.common,
+                )?
             } else {
                 parse_old(&mut self.r, self.data, v, self.meter, self.limits)?
             };
@@ -819,8 +831,10 @@ fn dict_order(
     for i in 0..n {
         perm.push(index(i))?;
     }
-    // Stable: equal path ids stay in file order.
-    perm.as_mut_slice().sort_by_key(path);
+    // Equal path ids stay in file order (the index breaks the tie), sorted
+    // in place: a stable sort's scratch would be heap no meter charged
+    // (plan 3.15).
+    perm.as_mut_slice().sort_unstable_by_key(|i| (path(i), *i));
     let mut by_path: MeteredVec<u32> = MeteredVec::new(meter);
     let mut groups: MeteredVec<(u32, u32)> = MeteredVec::new(meter);
     let mut at = 0;
