@@ -380,6 +380,11 @@ fn pure_python_reader_list() {
 }
 
 #[test]
+fn w1_dispatch_type_name_pair_ref_object_array_child_class() {
+    replay_prefix("w1_");
+}
+
+#[test]
 fn w3_strings_always_align() {
     replay_prefix("w3_");
 }

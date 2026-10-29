@@ -469,6 +469,12 @@ RUNS_BY_TYPE = {
 def w_cases():
     c = []
     add = lambda name, nodes, data, **kw: c.append(dict(name=name, nodes=nodes, hex=data.hex(), **kw))  # noqa: E731
+    # W1: the type name first (FUNCTION_WRITE_MAP), then `pair`, then
+    # `ReferencedObject`, then an `Array` first child, then a class.
+    add("w1_type_name_before_array_child", base([[0, "int", "i", 0], [1, "Array", "Array", 0], [2, "int", "size", 0], [2, "int", "data", 0]], [[0, "string", "s", 0], [1, "Array", "Array", 0], [2, "int", "size", 0], [2, "int", "data", 0]], [[0, "TypelessData", "t", 0], [1, "Array", "Array", 0], [2, "int", "size", 0], [2, "int", "data", 0]]), i32(7) + s("ab") + i32(1) + b"x")
+    add("w1_pair_before_array_child", base([[0, "pair", "p", 0], [1, "Array", "Array", 0], [2, "int", "size", 0], [2, "int", "data", 0], [1, "int", "second", 0]]), i32(1, 5, 9))
+    add("w1_ref_object_before_array_child", base([[0, "ReferencedObject", "o", 0], [1, "Array", "Array", 0], [2, "int", "size", 0], [2, "int", "data", 0]]), i32(1, 5))
+    add("w1_array_child_before_class", base([[0, "Foo", "v", 0], [1, "Array", "Array", 0], [2, "int", "size", 0], [2, "int", "data", 0]], [[0, "Foo", "c", 0], [1, "int", "a", 0], [1, "Array", "Array", 0], [2, "int", "size", 0], [2, "int", "data", 0]]), i32(2, 5, 6, 3, 1, 4))
     add("w3_strings_align", base(leaf("string", "s"), U8("c"), leaf("string", "t")), s("abc") + b"\x09" + b"\0\0\0" + s(""))
     add("w4_bytes_flag", base([[0, "TypelessData", "t", 0]], [[0, "TypelessData", "u", ALIGN]], U8("c")), i32(1) + b"\x01" + i32(1) + b"\x02\0\0\0\x09")
     add("w5_array_elements_align_each", base(vec("v", U8("data", ALIGN)), vec("p", pair("data", U8("first"), U8("second"), ALIGN)), U8("c")), i32(2) + b"\x01\x02\0\0" + i32(1) + b"\x03\x04\0\0\x09")
