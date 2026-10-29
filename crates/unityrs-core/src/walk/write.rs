@@ -5,7 +5,10 @@
 //! its node is flagged, then the vector or `Array` flag aligns once; a class
 //! writes `value[child.m_Name]` for every child, a missing key failing and an
 //! extra key ignored; `ReferencedObject` data needs a non-empty `ref_types`
-//! and a `data` entry; integers are range-checked as `struct.pack` checks them.
+//! (`:99-100`) and a ref type with a tree: an empty class, or a matched ref
+//! type with no tree, fails (`KeyError: 'data'` when the reader left `data`
+//! out, else an `AttributeError` on the `None` node); integers are
+//! range-checked as `struct.pack` checks them.
 //!
 //! **Duck typing (W2).** The writer takes any value Python's operations
 //! accept, not only the variant the reader makes for the node, which a
