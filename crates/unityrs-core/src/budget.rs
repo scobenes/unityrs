@@ -5,9 +5,9 @@
 //! input's [`crate::limits::Meter`] grants is also booked here, as a
 //! [`Permit`] that rides inside the charge, so the budget sees everything
 //! every input holds, and gets it back when the last owner drops it. The
-//! request never blocks: blocking inside a rayon pool can deadlock, so the
-//! batch engine does its blocking admission *before* it hands work to the
-//! pool, and gives core a prepaid budget (plan section 4.1).
+//! request never blocks: blocking inside a rayon pool can deadlock, so a
+//! batch engine does any waiting of its own *before* it hands work to the
+//! pool (plan section 4.1 lists what the core guarantees it).
 //!
 //! A decoder writes through a [`DecodeBuf`], which charges the input's meter
 //! before every growth, so no decoded byte exists unpaid, a refused growth
@@ -46,13 +46,28 @@ pub struct BudgetExceeded {
     pub what: Reservation,
 }
 
-/// A source of permits. Implementations must not block.
+/// A source of permits.
+///
+/// **Contract** (plan section 3.16). The core calls a budget, and a permit's
+/// home, wherever it charges or returns memory, *including while it holds
+/// one of its own locks* (publishing a decoded run grows the bundle's run
+/// table under its mutex; a value replaced in a cell or a registry slot
+/// returns its charge as it drops). So an implementation must not block (it
+/// refuses instead: blocking inside a pool can deadlock it), must not call
+/// into the core, and must not take a lock that a thread may hold while it
+/// calls the core (Python's GIL among them): a budget that does any of these
+/// can deadlock against a core lock. [`Unbounded`] and [`Counting`] are
+/// atomic counters. The permits of one pool share one home (one
+/// `Arc<dyn PermitHome>`): the core merges permits by home, and keeps one
+/// record per distinct home a charge absorbs, so a budget that made a home
+/// per reservation would grow every owner's bookkeeping.
 pub trait MemoryBudget: Send + Sync + fmt::Debug {
     /// Reserves `bytes`, or refuses at once.
     fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded>;
 }
 
-/// Where a permit returns its bytes.
+/// Where a permit returns its bytes. The same contract as [`MemoryBudget`]:
+/// called under core locks, so it must not block or call the core.
 pub trait PermitHome: Send + Sync {
     /// Takes `bytes` back.
     fn release(&self, bytes: u64);
@@ -62,12 +77,16 @@ pub trait PermitHome: Send + Sync {
 ///
 /// A permit can take in another ([`Permit::absorb`]), so a buffer that grew
 /// past its first reservation carries every top-up in one owner, and can give
-/// back what its buffer no longer holds ([`Permit::shrink_to`]).
+/// back what its buffer no longer holds ([`Permit::shrink_to`]). Permits
+/// merge by home: an empty permit takes the home of the first one it
+/// absorbs, a permit of the same home adds its bytes, and one of another
+/// home merges into the record kept for that home, so a permit holds one
+/// record per distinct home whatever it absorbed ([`Self::records`]).
 #[must_use = "a permit returns its bytes when dropped"]
 pub struct Permit {
     bytes: u64,
     home: Option<Arc<dyn PermitHome>>,
-    /// Absorbed permits whose home differs from this one's.
+    /// Absorbed permits whose home differs from this one's, one per home.
     more: Vec<Permit>,
 }
 
@@ -107,16 +126,42 @@ impl Permit {
             .fold(self.bytes, |n, p| n.saturating_add(p.bytes()))
     }
 
-    /// Takes `other` in: its bytes are returned when this permit drops.
+    /// Takes `other` in: its bytes are returned when this permit drops
+    /// (merged by home, type docs).
     pub fn absorb(&mut self, mut other: Permit) {
-        self.more.append(&mut other.more);
+        for p in std::mem::take(&mut other.more) {
+            self.absorb(p);
+        }
+        if other.bytes == 0 {
+            // Nothing to return: dropped without a record.
+            other.home = None;
+            return;
+        }
         if same_home(self.home.as_ref(), other.home.as_ref()) {
             self.bytes = self.bytes.saturating_add(other.bytes);
-            other.bytes = 0;
-            other.home = None;
+        } else if let Some(kept) = self
+            .more
+            .iter_mut()
+            .find(|p| same_home(p.home.as_ref(), other.home.as_ref()))
+        {
+            kept.bytes = kept.bytes.saturating_add(other.bytes);
+        } else if self.bytes == 0 {
+            // An empty permit (a charge's first, detached) takes the home.
+            self.home = other.home.take();
+            self.bytes = other.bytes;
         } else {
             self.more.push(other);
+            return;
         }
+        other.bytes = 0;
+        other.home = None;
+    }
+
+    /// How many records this permit keeps besides its own: one per other
+    /// home it absorbed.
+    #[must_use]
+    pub fn records(&self) -> usize {
+        self.more.len()
     }
 
     /// Returns every byte above `keep` to its budget now.
@@ -271,7 +316,12 @@ pub fn charged_bytes(buf: Vec<u8>, mut charge: Charge) -> Result<Bytes, ChargeEr
 /// starts each block with [`Self::begin_block`], and a block that writes past
 /// its own cap fails there, whatever the run's size. Every decode is charged
 /// (a first decode, a re-decode, a measuring decode): the meter counts what is
-/// held, not what was first seen.
+/// held, not what was first seen. A block's segment (capped by
+/// [`LimitKind::BlockOutput`]) also counts every byte it makes room for as
+/// the input's decode work ([`crate::limits::Limits::max_decode_work`]), which
+/// is never returned, so a block decoded again and again (a failing block
+/// read for every entry, a span re-decoded for every range) stops there
+/// even though each attempt returns its memory.
 ///
 /// **Drop.** A buffer dropped unfinished (a decode that failed) returns its
 /// charge with its allocation.
@@ -363,7 +413,10 @@ impl DecodeBuf {
     /// Makes room for `additional` more bytes: the segment's cap is checked
     /// and the meter charged before the buffer grows. The capacity doubles
     /// while the meter can pay for the old and the new block at once, and
-    /// grows to exactly what is needed when it cannot.
+    /// grows to exactly what is needed when it cannot. In a block's segment
+    /// (one capped by [`LimitKind::BlockOutput`]) the `additional` bytes also
+    /// count as decode work ([`Meter::count_decode`]) first, whatever the
+    /// decoder later keeps.
     pub fn reserve(&mut self, additional: usize) -> Result<(), ChargeError> {
         let need = self.buf.len().saturating_add(additional);
         if need > self.seg_end() {
@@ -372,6 +425,11 @@ impl DecodeBuf {
                 value: u64::try_from(need - self.seg_start).unwrap_or(u64::MAX),
                 max: self.seg_cap,
             }));
+        }
+        if self.seg_kind == LimitKind::BlockOutput {
+            self.charge
+                .meter()
+                .count_decode(u64::try_from(additional).unwrap_or(u64::MAX))?;
         }
         grow_charged(&mut self.buf, &mut self.charge, need, usize::MAX)
     }
@@ -537,6 +595,51 @@ mod tests {
         // Wrapping it needs the owner record, which this meter has no room for.
         assert!(out.into_bytes().is_err());
         assert_eq!(m.used(), 0);
+    }
+
+    #[test]
+    fn a_decode_repeated_for_every_read_stops_at_the_work_bound() {
+        // Round 3: a block that fails after decoding 1 MiB, measured again
+        // by every entry's read. Each attempt returns its memory; the work
+        // is counted and stops the fourth attempt before it allocates.
+        let limits = crate::limits::Limits {
+            max_decode_work: 3 << 20,
+            ..crate::limits::Limits::default()
+        };
+        let m = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Input);
+        for _ in 0..3 {
+            let mut out = DecodeBuf::new(&m, 0, 1 << 30, LimitKind::BlockOutput).unwrap();
+            out.grow_zeroed(1 << 20).unwrap();
+            drop(out); // the codec failed
+        }
+        assert_eq!(m.used(), 0);
+        let mut out = DecodeBuf::new(&m, 0, 1 << 30, LimitKind::BlockOutput).unwrap();
+        let e = out.grow_zeroed(1 << 20).unwrap_err();
+        assert!(
+            matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::DecodeWork),
+            "{e:?}"
+        );
+        assert_eq!(out.capacity(), 0, "refused before it allocated");
+        // A path read or a writer's output is not decode work.
+        let mut path = DecodeBuf::new(&m, 0, 1 << 30, LimitKind::InputBytes).unwrap();
+        path.grow_zeroed(1 << 20).unwrap();
+    }
+
+    #[test]
+    fn permits_merge_by_home() {
+        let a = Counting::new(1000);
+        let b = Counting::new(1000);
+        // A charge's first permit is detached and empty: it takes the home.
+        let mut p = Permit::detached(0);
+        for _ in 0..100 {
+            p.absorb(a.try_reserve(1, Reservation::Input).unwrap());
+            p.absorb(Permit::detached(0));
+            p.absorb(b.try_reserve(2, Reservation::Input).unwrap());
+        }
+        assert_eq!(p.records(), 1, "one record for the second home");
+        assert_eq!((p.bytes(), a.used(), b.used()), (300, 100, 200));
+        drop(p);
+        assert_eq!((a.used(), b.used()), (0, 0));
     }
 
     #[test]

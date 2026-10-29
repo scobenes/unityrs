@@ -59,7 +59,7 @@ use crate::error::Error;
 use crate::files::Parent;
 use crate::limits::{Charge, Limits, Meter};
 use crate::object::ObjectRef;
-use crate::once::get_or_publish;
+use crate::once::{ResultCell, get_or_publish_result};
 use crate::options::FileContext;
 use crate::raw::RawStr;
 use crate::stream::Endian;
@@ -112,7 +112,7 @@ pub struct SerializedType {
     pub namespace: Option<RawStr>,
     /// `m_AssemblyName`.
     pub assembly: Option<RawStr>,
-    tree: OnceLock<Result<Arc<Tree>, TreeError>>,
+    tree: ResultCell<Arc<Tree>, TreeError>,
 }
 
 impl SerializedType {
@@ -156,12 +156,22 @@ impl SerializedType {
     /// The compiled tree: `Tree::compile` over [`Self::nodes`] (package B),
     /// computed on first use and published once, so every object and every
     /// reference of the type reuses one compile. The compile runs outside
-    /// the cell ([`get_or_publish`]): two first callers may both compile,
-    /// and the loser's tree is dropped. Its rows are charged to the meter
-    /// the `NodeList` was built on. `None` when the record stores no tree.
+    /// the cell ([`get_or_publish_result`]): two first callers may both
+    /// compile, and the loser's tree is dropped. Its rows are charged to the
+    /// meter the `NodeList` was built on. A compile the meter or the budget
+    /// refuses is returned and not kept, so the next call compiles again;
+    /// a failure the rows decide (depth) is kept. `None` when the record
+    /// stores no tree.
     pub fn tree(&self, limits: &Limits) -> Option<Result<Arc<Tree>, TreeError>> {
+        self.tree_with(|nodes| Tree::compile(nodes, limits))
+    }
+
+    fn tree_with(
+        &self,
+        compile: impl FnOnce(Arc<NodeList>) -> Result<Arc<Tree>, TreeError>,
+    ) -> Option<Result<Arc<Tree>, TreeError>> {
         let nodes = self.nodes.as_ref()?;
-        Some(get_or_publish(&self.tree, || Tree::compile(nodes.clone(), limits)).clone())
+        Some(get_or_publish_result(&self.tree, nodes.meter(), || compile(nodes.clone())).cloned())
     }
 }
 
@@ -234,7 +244,8 @@ pub struct SerializedFile {
     user_information: Option<RawStr>,
     object_infos: Box<[ObjectInfo]>,
     object_order: Box<[u32]>,
-    container: OnceLock<Result<Container, Error>>,
+    /// Published by [`get_or_publish_result`]: a refused charge is not kept.
+    container: ResultCell<Container, Error>,
     parent: Option<Parent>,
     /// The handle and every table above, charged to the input.
     charge: Charge,
@@ -370,7 +381,8 @@ impl SerializedFile {
 
     /// The container rows of the first AssetBundle in dict order, read once
     /// ([`crate::container::read_container`]) and published
-    /// ([`get_or_publish`]: the read runs outside the cell).
+    /// ([`get_or_publish_result`]: the read runs outside the cell, and a
+    /// refused charge is returned, not kept).
     pub fn container(self: &Arc<Self>) -> Result<&Container, Error> {
         todo!()
     }
@@ -421,6 +433,42 @@ mod tests {
             plain.tree(&crate::limits::Limits::default()).is_none(),
             "no stored tree, nothing to compile"
         );
+    }
+
+    #[test]
+    fn a_refused_compile_is_not_kept() {
+        use crate::budget::{Counting, Reservation};
+        use crate::limits::{ChargeError, Meter, MeteredVec};
+        use crate::typetree::{Tree, TreeError};
+        // Round 3: a compile the pool refused (while another reader held it)
+        // was published, failing every object of the type for good.
+        let pool = Arc::new(Counting::new(4096));
+        let meter = Meter::new(u64::MAX, pool.clone(), Reservation::Dependency);
+        let rows = MeteredVec::from_vec(vec![NodeRow::new(0, "Base", "Base")], &meter).unwrap();
+        let t = SerializedType::new(1, Some(Arc::new(NodeList::from_rows(rows).unwrap())));
+        let compile = |nodes: Arc<NodeList>| {
+            let _scratch = nodes.meter().charge(1024).map_err(TreeError::Charge)?;
+            Ok(Tree::for_tests(nodes))
+        };
+        let other = meter.charge(4096 - pool.used()).unwrap();
+        let refused = t.tree_with(compile).unwrap();
+        assert!(
+            matches!(&refused, Err(TreeError::Charge(ChargeError::Budget(_)))),
+            "{refused:?}"
+        );
+        drop(other);
+        assert!(t.tree_with(compile).unwrap().is_ok(), "compiled again once the pool had room");
+        // A failure the rows decide is kept.
+        let deep = SerializedType::new(2, t.nodes.clone());
+        let too_deep = |_: Arc<NodeList>| {
+            Err(TreeError::Limit(crate::LimitError {
+                kind: crate::LimitKind::TreeDepth,
+                value: 2,
+                max: 1,
+            }))
+        };
+        assert!(deep.tree_with(too_deep).unwrap().is_err());
+        assert!(deep.tree_with(compile).unwrap().is_err(), "the kept error answers");
     }
 
     #[test]

@@ -257,6 +257,33 @@ pub enum ParseError {
     Provider(#[from] ProviderError),
 }
 
+impl crate::once::CellError for ParseError {
+    fn is_transient(&self) -> bool {
+        match self {
+            Self::Read(r) => match &r.detail {
+                ReadDetail::Charge(c) => c.is_transient(),
+                ReadDetail::Tree(t) => t.is_transient(),
+                _ => false,
+            },
+            Self::Tree(t) => t.is_transient(),
+            // A provider is caller code: its failure is not the input's.
+            Self::Provider(_) => true,
+            Self::NoTypeTree { .. } | Self::CheckRead { .. } => false,
+        }
+    }
+
+    fn heap_bytes(&self) -> u64 {
+        match self {
+            // The value's own heap rides in its `Parsed`'s charge.
+            Self::CheckRead { .. } => {
+                crate::error::heap_of(std::mem::size_of::<Parsed>() + 16)
+            }
+            Self::Provider(p) => crate::error::heap_of(p.detail.len()),
+            _ => 0,
+        }
+    }
+}
+
 impl ParseError {
     /// The canonical dump's kind for this outcome.
     #[must_use]

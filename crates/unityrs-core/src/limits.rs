@@ -59,6 +59,16 @@ pub struct Limits {
     /// (`helpers/CompressionHelper.py:17-44`), so a bomb is stopped here
     /// before the meter. Default 1 GiB.
     pub max_block_output: u64,
+    /// The decode *work* one input may cost over its life: every byte a block
+    /// decode makes room for, kept or not (a first decode, a measuring
+    /// decode, a re-decode of a shared block, a decode that fails, a decode
+    /// after eviction). The meter bounds what is held; this bounds what is
+    /// done, so a hostile directory cannot make a reader decode the same
+    /// block for every entry ([`Meter::count_decode`]). UnityPy decodes every
+    /// block once; a lazy read in any order decodes a block at most three
+    /// times (measured, decoded, decoded again for a straddling span).
+    /// Default 32 GiB, four times [`Self::max_input_memory`].
+    pub max_decode_work: u64,
     /// One gzip stream inflated by detection (rule 7, streamed into a fixed
     /// scratch buffer and never held). Default 4 GiB.
     pub max_inflate: u64,
@@ -88,6 +98,7 @@ impl Default for Limits {
             max_input_memory: 8 << 30,
             max_input_bytes: 4 << 30,
             max_block_output: 1 << 30,
+            max_decode_work: 32 << 30,
             max_inflate: 4 << 30,
             max_container_depth: 16,
             max_tree_depth: 256,
@@ -99,25 +110,30 @@ impl Default for Limits {
     }
 }
 
-/// Below this, glibc's malloc serves an allocation from its heap; at or
-/// above it, possibly from `mmap` (its threshold starts here and can rise).
+/// glibc's default `M_MMAP_THRESHOLD`: a chunk of at least this many bytes
+/// may be `mmap`ped (the threshold starts here and can only rise, which
+/// serves more chunks from the heap, never fewer).
 const MMAP_THRESHOLD: u64 = 128 << 10;
 
 /// What one heap allocation of `bytes` costs, which is what a charge for it
-/// is: glibc's chunk on x86-64, its 8-byte header added and rounded to 16
-/// with a 32-byte minimum, and for a large allocation (one that may be
-/// `mmap`ped) the 16-byte header added and rounded to a 4 KiB page. So a
-/// charge covers the allocator's rounding too, and many small allocations
-/// cannot hold more than they were charged. 0 for no allocation.
+/// is: glibc's chunk on x86-64. The request gets its 8-byte header and is
+/// rounded to 16, with a 32-byte minimum (`request2size`); a chunk of
+/// [`MMAP_THRESHOLD`] or more may be `mmap`ped instead, which adds another
+/// 8 bytes and rounds to a 4 KiB page (`sysmalloc`'s
+/// `ALIGN_UP(nb + SIZE_SZ, pagesize)`), and that is the larger of the two.
+/// So a charge covers the allocator's rounding too, and many small
+/// allocations cannot hold more than they were charged. 0 for no allocation.
 #[must_use]
 pub const fn heap_cost(bytes: u64) -> u64 {
     if bytes == 0 {
-        0
-    } else if bytes < MMAP_THRESHOLD {
-        let chunk = bytes.saturating_add(8 + 15) & !15;
-        if chunk < 32 { 32 } else { chunk }
+        return 0;
+    }
+    let chunk = bytes.saturating_add(8 + 15) & !15;
+    let chunk = if chunk < 32 { 32 } else { chunk };
+    if chunk < MMAP_THRESHOLD {
+        chunk
     } else {
-        bytes.saturating_add(16 + 4095) & !4095
+        chunk.saturating_add(8 + 4095) & !4095
     }
 }
 
@@ -139,6 +155,9 @@ pub enum ChargeError {
 pub struct Meter {
     used: AtomicU64,
     limit: u64,
+    /// Decode work done so far ([`Limits::max_decode_work`]).
+    work: AtomicU64,
+    work_limit: u64,
     budget: Arc<dyn MemoryBudget>,
     what: Reservation,
 }
@@ -148,31 +167,81 @@ impl fmt::Debug for Meter {
         f.debug_struct("Meter")
             .field("used", &self.used())
             .field("limit", &self.limit)
+            .field("decoded", &self.decoded())
             .field("what", &self.what)
             .finish_non_exhaustive()
     }
 }
 
 impl Meter {
-    /// A meter of `limit` bytes whose charges are booked with `budget` as `what`.
+    /// A meter of `limit` bytes whose charges are booked with `budget` as
+    /// `what`, with no bound on decode work.
     #[must_use]
     pub fn new(limit: u64, budget: Arc<dyn MemoryBudget>, what: Reservation) -> Arc<Self> {
+        Self::with_decode_work(limit, u64::MAX, budget, what)
+    }
+
+    /// A meter of `limit` bytes that also counts decode work up to
+    /// `max_decode_work` bytes ([`Self::count_decode`]).
+    #[must_use]
+    pub fn with_decode_work(
+        limit: u64,
+        max_decode_work: u64,
+        budget: Arc<dyn MemoryBudget>,
+        what: Reservation,
+    ) -> Arc<Self> {
         Arc::new(Self {
             used: AtomicU64::new(0),
             limit,
+            work: AtomicU64::new(0),
+            work_limit: max_decode_work,
             budget,
             what,
         })
     }
 
-    /// The meter of one input loaded with `limits` and `budget`.
+    /// The meter of one input loaded with `limits` and `budget`: its memory
+    /// bound is [`Limits::max_input_memory`] and its decode-work bound
+    /// [`Limits::max_decode_work`].
     #[must_use]
     pub fn for_input(
         limits: &Limits,
         budget: Arc<dyn MemoryBudget>,
         what: Reservation,
     ) -> Arc<Self> {
-        Self::new(limits.max_input_memory, budget, what)
+        Self::with_decode_work(
+            limits.max_input_memory,
+            limits.max_decode_work,
+            budget,
+            what,
+        )
+    }
+
+    /// Counts `bytes` of block-decode work before they are decoded
+    /// ([`crate::budget::DecodeBuf`] does, for every growth of a block's
+    /// segment). Work is never returned: a refusal
+    /// ([`LimitKind::DecodeWork`]) is final for the input, whatever its
+    /// charges do later.
+    pub fn count_decode(&self, bytes: u64) -> Result<(), ChargeError> {
+        let limit = self.work_limit;
+        self.work
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |done| {
+                done.checked_add(bytes).filter(|t| *t <= limit)
+            })
+            .map(|_| ())
+            .map_err(|done| {
+                ChargeError::Limit(LimitError {
+                    kind: LimitKind::DecodeWork,
+                    value: done.saturating_add(bytes),
+                    max: limit,
+                })
+            })
+    }
+
+    /// Decode work counted so far.
+    #[must_use]
+    pub fn decoded(&self) -> u64 {
+        self.work.load(Ordering::Acquire)
     }
 
     /// A meter with no bound and no budget, for data that is not an input's:
@@ -241,12 +310,21 @@ impl Meter {
 
 /// Bytes charged to a [`Meter`] (and booked with its budget), returned when
 /// the charge drops. It rides inside whatever it paid for.
+///
+/// **Bookkeeping.** A charge holds one [`Permit`] for its own meter, and
+/// every charge it absorbs from that meter merges into it (bytes added,
+/// permits merged by home), so a value built from any number of charged
+/// tables keeps one record, however its budget books it. A charge absorbed
+/// from *another* meter is kept as one record per distinct meter. Neither
+/// grows with the input: one meter and one budget home (every budget of the
+/// core: [`Unbounded`], [`crate::budget::Counting`]) allocate no record at
+/// all (`tests/memory_model.rs` checks this under `Counting`).
 #[must_use = "a charge returns its bytes when dropped"]
 pub struct Charge {
     meter: Arc<Meter>,
     bytes: u64,
     permit: Permit,
-    /// Absorbed charges of other meters.
+    /// Absorbed charges of other meters, one per meter.
     more: Vec<Charge>,
 }
 
@@ -301,17 +379,37 @@ impl Charge {
         self.permit.shrink_to(self.bytes);
     }
 
-    /// Takes `other` in: its bytes are returned when this charge drops.
+    /// Takes `other` in: its bytes are returned when this charge drops. A
+    /// charge of this meter merges into this one; a charge of another meter
+    /// merges into the record this charge keeps for that meter (type docs).
     pub fn absorb(&mut self, mut other: Charge) {
-        self.more.append(&mut other.more);
+        for c in std::mem::take(&mut other.more) {
+            self.absorb(c);
+        }
         if Arc::ptr_eq(&self.meter, &other.meter) {
             self.bytes = self.bytes.saturating_add(other.bytes);
             other.bytes = 0;
             self.permit
                 .absorb(std::mem::replace(&mut other.permit, Permit::detached(0)));
         } else if other.bytes > 0 {
-            self.more.push(other);
+            match self
+                .more
+                .iter_mut()
+                .find(|c| Arc::ptr_eq(&c.meter, &other.meter))
+            {
+                Some(kept) => kept.absorb(other),
+                None => self.more.push(other),
+            }
         }
+    }
+
+    /// How many records this charge keeps besides its own: one per other
+    /// meter it absorbed, plus its permit's ([`Permit::records`]).
+    #[must_use]
+    pub fn records(&self) -> usize {
+        self.more
+            .iter()
+            .fold(self.permit.records(), |n, c| n + 1 + c.records())
     }
 }
 
@@ -479,6 +577,24 @@ impl<T> MeteredVec<T> {
     pub fn into_parts(self) -> (Vec<T>, Charge) {
         (self.vec, self.charge)
     }
+
+    /// The elements as a boxed slice, and its charge. A vector with spare
+    /// capacity is moved into an exact allocation first, which is charged
+    /// before it is made (both blocks exist while the allocator moves it),
+    /// so a refusal leaves nothing allocated beyond what was charged.
+    pub fn into_boxed_slice(self) -> Result<(Box<[T]>, Charge), ChargeError> {
+        let (mut vec, mut charge) = (self.vec, self.charge);
+        if vec.capacity() > vec.len() {
+            let smaller = charge
+                .meter()
+                .charge(heap_cost(bytes_of::<T>(vec.len())))?;
+            let old = heap_cost(bytes_of::<T>(vec.capacity()));
+            vec.shrink_to_fit();
+            charge.release(old);
+            charge.absorb(smaller);
+        }
+        Ok((vec.into_boxed_slice(), charge))
+    }
 }
 
 impl<T: Clone> MeteredVec<T> {
@@ -494,7 +610,7 @@ impl<T: Clone> MeteredVec<T> {
 mod tests {
     use std::sync::Arc;
 
-    use super::{ChargeError, Limits, Meter, MeteredVec, heap_cost};
+    use super::{Charge, ChargeError, Limits, Meter, MeteredVec, heap_cost};
     use crate::budget::{Counting, Reservation, Unbounded};
     use crate::error::LimitKind;
 
@@ -595,6 +711,96 @@ mod tests {
         for n in 1..5000_u64 {
             assert!(heap_cost(n) >= n + 8, "{n}");
         }
+    }
+
+    #[test]
+    fn heap_cost_is_glibcs_mmapped_chunk_at_every_residue() {
+        // glibc: nb = (n + 23) & !15, and an mmapped chunk is
+        // ALIGN_UP(nb + 8, 4096). Round 3's probe: n = 200,684 takes 204,800
+        // bytes, a page more than n + 16 rounded up.
+        assert_eq!(heap_cost(200_684), 204_800);
+        assert_eq!(heap_cost(4_095_984), 4_100_096);
+        // A request whose padded chunk reaches the threshold may be mmapped.
+        assert_eq!(heap_cost(131_049), 135_168);
+        for k in [32_u64, 33, 49, 1024, 1025] {
+            for r in 0..=40 {
+                let n = 4096 * k - r;
+                let nb = (n + 23) & !15;
+                // Only a padded chunk at the threshold or above may be mmapped.
+                let worst = if nb < 128 << 10 {
+                    nb
+                } else {
+                    (nb + 8 + 4095) & !4095
+                };
+                assert!(heap_cost(n) >= worst, "{n}");
+            }
+        }
+    }
+
+    #[test]
+    fn decode_work_is_counted_and_never_returned() {
+        let limits = Limits {
+            max_decode_work: 100,
+            ..Limits::default()
+        };
+        let meter = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Input);
+        meter.count_decode(60).unwrap();
+        meter.count_decode(40).unwrap();
+        let e = meter.count_decode(1).unwrap_err();
+        assert!(
+            matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::DecodeWork && l.value == 101 && l.max == 100),
+            "{e:?}"
+        );
+        assert_eq!(meter.decoded(), 100, "a refusal counts nothing");
+        assert_eq!(meter.used(), 0, "work is not memory");
+    }
+
+    #[test]
+    fn a_charge_keeps_one_record_per_meter_and_per_home() {
+        // Round 3: under a Counting budget every growth left a Permit in its
+        // owner's bookkeeping, uncharged.
+        let budget = Arc::new(Counting::new(u64::MAX));
+        let m1 = Meter::new(u64::MAX, budget.clone(), Reservation::Input);
+        let m2 = Meter::new(u64::MAX, budget.clone(), Reservation::Input);
+        let mut owner = Charge::zero(&m1);
+        for i in 0..10_000_u64 {
+            let mut c = Charge::zero(&m1);
+            c.grow(1 + i % 7).unwrap();
+            owner.absorb(c);
+            owner.absorb(Charge::zero(&m1));
+            owner.grow(3).unwrap();
+            owner.absorb(m2.charge(2).unwrap());
+        }
+        assert_eq!(owner.records(), 1, "one record, for the other meter");
+        assert_eq!(budget.used(), owner.bytes());
+        let mut v: MeteredVec<u64> = MeteredVec::new(&m1);
+        for i in 0..100_000 {
+            v.push(i).unwrap();
+        }
+        assert_eq!(v.charge().records(), 0);
+        drop((owner, v));
+        assert_eq!((budget.used(), m1.used(), m2.used()), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_boxed_slice_is_charged_at_its_exact_size() {
+        let meter = Meter::new(u64::MAX, Arc::new(Unbounded), Reservation::Input);
+        let mut v: MeteredVec<u32> = MeteredVec::new(&meter);
+        for i in 0..1000 {
+            v.push(i).unwrap();
+        }
+        assert!(v.capacity() > 1000);
+        let (b, charge) = v.into_boxed_slice().unwrap();
+        assert_eq!(b.len(), 1000);
+        assert_eq!(meter.used(), heap_cost(4000));
+        assert_eq!(charge.bytes(), heap_cost(4000));
+        drop((b, charge));
+        // A meter with no room for the exact copy refuses and keeps nothing.
+        let tight = Meter::new(heap_cost(8 * 4), Arc::new(Unbounded), Reservation::Input);
+        let mut v: MeteredVec<u32> = MeteredVec::with_capacity(&tight, 8).unwrap();
+        v.push(1).unwrap();
+        assert!(v.into_boxed_slice().is_err());
+        assert_eq!(tight.used(), 0);
     }
 
     #[test]

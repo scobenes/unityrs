@@ -149,6 +149,8 @@ const _: () = {
     send_sync::<limits::Limits>();
     send_sync::<limits::Meter>();
     send_sync::<limits::MeteredVec<u8>>();
+    send_sync::<once::KeptError<Error>>();
+    send_sync::<dyn once::CellError>();
     send_sync::<object::ObjectRef>();
     send_sync::<options::FileContext>();
     send_sync::<provider::TreeSource>();

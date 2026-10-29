@@ -125,6 +125,20 @@ pub enum TreeError {
     Charge(#[from] ChargeError),
 }
 
+impl crate::once::CellError for TreeError {
+    fn is_transient(&self) -> bool {
+        match self {
+            Self::Charge(c) => c.is_transient(),
+            Self::Limit(l) => l.kind == crate::LimitKind::InputMemory,
+            Self::Empty | Self::LevelUnderflow { .. } | Self::TooManyNodes(_) => false,
+        }
+    }
+
+    fn heap_bytes(&self) -> u64 {
+        0
+    }
+}
+
 /// The kept tree of a typetree, as pre-order rows with their child lists.
 /// Not `Clone`: it is shared as `Arc<NodeList>`, and owns the charge for
 /// its rows.

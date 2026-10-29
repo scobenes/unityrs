@@ -13,7 +13,8 @@ use std::sync::Arc;
 use crate::budget::BudgetExceeded;
 use crate::codec::Codec;
 use crate::detect::DetectError;
-use crate::limits::ChargeError;
+use crate::limits::{ChargeError, heap_cost};
+use crate::once::CellError;
 use crate::raw::RawStr;
 use crate::typetree::TreeError;
 use crate::version::VersionError;
@@ -115,6 +116,53 @@ impl From<std::io::Error> for Error {
     }
 }
 
+/// [`heap_cost`] of `n` bytes.
+pub(crate) fn heap_of(n: usize) -> u64 {
+    heap_cost(u64::try_from(n).unwrap_or(u64::MAX))
+}
+
+impl ChargeError {
+    /// Whether the refusal depends on what else is held (a budget, or the
+    /// input's meter), not on the input alone ([`crate::once`]).
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Budget(_) => true,
+            Self::Limit(l) => l.kind == LimitKind::InputMemory,
+        }
+    }
+}
+
+impl CellError for Error {
+    fn is_transient(&self) -> bool {
+        match self {
+            Self::Budget(_) | Self::Io(_) => true,
+            Self::Limit(l) => l.kind == LimitKind::InputMemory,
+            Self::Tree(t) => t.is_transient(),
+            Self::AssetBundle(p) => p.is_transient(),
+            Self::Entry { source, .. } => source.is_transient(),
+            _ => false,
+        }
+    }
+
+    fn heap_bytes(&self) -> u64 {
+        match self {
+            Self::Detect(DetectError::Gzip(d)) => heap_of(d.len()),
+            Self::Malformed { detail, .. } | Self::Decompress { detail, .. } => heap_of(detail.len()),
+            Self::Version(VersionError::NoMatch(r))
+            | Self::NotFound(NotFound::Cab(r) | NotFound::Resource(r)) => heap_of(r.len()),
+            Self::Tree(t) => t.heap_bytes(),
+            Self::AssetBundle(p) => {
+                heap_of(std::mem::size_of::<ParseError>()).saturating_add(p.heap_bytes())
+            }
+            Self::Entry { name, source } => heap_of(name.len())
+                .saturating_add(heap_of(std::mem::size_of::<Self>()))
+                .saturating_add(source.heap_bytes()),
+            _ => 0,
+        }
+    }
+}
+
 /// Formats and features that are named and refused, never guessed at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -152,6 +200,9 @@ pub enum LimitKind {
     InputBytes,
     /// [`crate::limits::Limits::max_block_output`].
     BlockOutput,
+    /// [`crate::limits::Limits::max_decode_work`]: every byte block decodes
+    /// have made room for over the input's life.
+    DecodeWork,
     /// [`crate::limits::Limits::max_inflate`].
     Inflate,
     /// [`crate::limits::Limits::max_container_depth`].
