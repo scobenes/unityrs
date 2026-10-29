@@ -39,11 +39,17 @@ fn usage_error(usage: &str, prog: &str, msg: &str) -> ExitCode {
 }
 
 fn run_options(a: args::DumpArgs) -> Result<RunOptions, String> {
-    if a.tpk.is_some() {
-        // STUB(A): the TPK provider is package A's `unityrs-tpk`, not in the
-        // workspace yet. Until it is, a dump asking for one is refused
-        // rather than written without it.
-        return Err("--tpk: the TPK typetree provider (unityrs-tpk) is not built yet".into());
+    let mut dump = DumpOptions {
+        levels: a.levels,
+        // `run_jobs`: `workers = max(1, workers)`.
+        jobs: usize::try_from(a.jobs.max(1)).unwrap_or(usize::MAX),
+        ..DumpOptions::default()
+    };
+    if let Some(path) = &a.tpk {
+        // A TPK that does not load is refused, never dumped without it.
+        dump = dump
+            .with_tpk(path)
+            .map_err(|e| format!("--tpk {}: {e}", path.display()))?;
     }
     Ok(RunOptions {
         selection: Selection {
@@ -56,13 +62,7 @@ fn run_options(a: args::DumpArgs) -> Result<RunOptions, String> {
             limit: a.limit,
         },
         output: a.output,
-        dump: DumpOptions {
-            levels: a.levels,
-            // `run_jobs`: `workers = max(1, workers)`.
-            jobs: usize::try_from(a.jobs.max(1)).unwrap_or(usize::MAX),
-            tpk_path: a.tpk,
-            ..DumpOptions::default()
-        },
+        dump,
         stats: a.stats,
         quiet: a.quiet,
         allow_index_mismatch: a.allow_index_mismatch,
@@ -209,8 +209,10 @@ mod tests {
     }
 
     #[test]
-    fn tpk_waits_for_its_provider() {
-        let e = opts(&["x", "-o", "y", "--tpk", "t.tpk"]).unwrap_err();
-        assert!(e.contains("unityrs-tpk"), "{e}");
+    fn a_tpk_that_does_not_load_is_refused() {
+        let e = opts(&["x", "-o", "y", "--tpk", "/nonexistent/t.tpk"]).unwrap_err();
+        assert!(e.starts_with("--tpk /nonexistent/t.tpk: "), "{e}");
+        let o = opts(&["x", "-o", "y"]).unwrap();
+        assert!(o.dump.tpk_path.is_none() && o.dump.context.providers.is_empty());
     }
 }

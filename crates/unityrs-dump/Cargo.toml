@@ -11,6 +11,8 @@ publish = false
 
 [dependencies]
 unityrs-core = { path = "../unityrs-core" }
+# `--tpk`: the oracle image's TPK as the context's typetree provider.
+unityrs-tpk = { path = "../unityrs-tpk" }
 # The raw-bytes rule's summaries (CANONICAL_DUMP section 3).
 sha2 = "=0.11.1"
 # Output streams; the oracle writes level 9 with mtime 0.

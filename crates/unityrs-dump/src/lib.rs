@@ -40,6 +40,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use unityrs_core::FileContext;
+use unityrs_core::provider::ProviderChain;
+use unityrs_tpk::{TpkError, TpkProvider};
 
 /// Every public type of this crate is `Send + Sync`, as the core's are (plan
 /// section 3.16): `-j N` shares the options and the records across rayon
@@ -138,6 +140,22 @@ impl Default for DumpOptions {
             context: Arc::new(FileContext::unitypy()),
             tpk_path: None,
         }
+    }
+}
+
+impl DumpOptions {
+    /// The options with the TPK at `path` (`--tpk`) as the context's one
+    /// typetree provider, as UnityPy's bundled class database answers a
+    /// stripped object (`files/ObjectReader.py:285-307`, `helpers/Tpk.py`):
+    /// the dump's `l2.source` is then `"tpk"` for an object whose file
+    /// embeds no tree. Its trees are as deep as the context's limits allow.
+    pub fn with_tpk(mut self, path: &Path) -> Result<Self, TpkError> {
+        let tpk = TpkProvider::open_with(path, &self.context.limits)?;
+        let mut context = FileContext::clone(&self.context);
+        context.providers = Arc::new(ProviderChain::new(vec![Arc::new(tpk)]));
+        self.context = Arc::new(context);
+        self.tpk_path = Some(path.to_path_buf());
+        Ok(self)
     }
 }
 
@@ -261,6 +279,63 @@ mod tests {
                 unityrs_core::VERSION
             )
         );
+    }
+
+    /// `--tpk`: the TPK answers a stripped class through the context's
+    /// chain, named `tpk` (the dump's `l2.source`); a file that is no TPK is
+    /// an error, never a dump without the provider.
+    #[test]
+    fn with_tpk_puts_the_tpk_in_the_context_chain() {
+        use unityrs_core::UnityVersion;
+        use unityrs_core::provider::{TreeRequest, TreeSource};
+
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../unityrs-tpk/tests/fixtures/tpk/synthetic.json");
+        let all: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
+        let case = all["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "meta_flag_u32")
+            .unwrap();
+        let hex = case["tpk"].as_str().unwrap();
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let dir = std::env::temp_dir().join(format!("unityrs-dump-tpk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (good, bad) = (dir.join("good.tpk"), dir.join("bad.tpk"));
+        std::fs::write(&good, &bytes).unwrap();
+        std::fs::write(&bad, b"not a tpk").unwrap();
+
+        let plain = super::DumpOptions::default();
+        assert!(plain.context.providers.is_empty());
+        let opts = plain.with_tpk(&good).unwrap();
+        assert_eq!(opts.tpk_path.as_deref(), Some(good.as_path()));
+        let version =
+            UnityVersion::from_packed(case["versions"][0].as_str().unwrap().parse().unwrap());
+        let found = |class_id| {
+            opts.context
+                .providers
+                .lookup(&TreeRequest {
+                    class_id,
+                    version: &version,
+                    script: None,
+                })
+                .unwrap()
+        };
+        let tree = found(80).expect("class 80 has a tree at this version");
+        assert_eq!(tree.source, TreeSource::Provider("tpk"));
+        assert!(found(81).is_none(), "class 81 is not in the TPK");
+        assert!(super::DumpOptions::default().with_tpk(&bad).is_err());
+        assert!(
+            super::DumpOptions::default()
+                .with_tpk(&dir.join("missing.tpk"))
+                .is_err()
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Plan section 3.16: the dump's public types are asserted as the core's
