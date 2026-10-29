@@ -7,7 +7,15 @@
 # SPDX text, never a file fetched from its repository's current head.
 #
 # Every crate the workspace builds is listed, its own members included: a
-# vendored fork is a workspace member too, and keeps its notice that way.
+# vendored fork is a workspace member too, and keeps its notice that way. Each
+# member's LICENSE-MIT and LICENSE-APACHE link to the repository's own, so a
+# member is listed with its real notice; the script refuses a notice that is
+# still an SPDX template ("<year>", "<copyright holders>").
+#
+# deny.toml must say the same: its allow list equals `accepted` below, and each
+# crate's clarification and accepted licences here have a clarification and an
+# exception there (scripts/third_party_licenses_check.py checks both ways), so
+# cargo-deny rejects what cargo-about would list.
 
 # The same licences, in the same order, as deny.toml's [licenses] allow list;
 # the script checks that they match. The order is cargo-about's preference:
@@ -30,7 +38,7 @@ accepted = [
 # checksums tie it to the files of the release it was written against: when a
 # release changes one, cargo-about drops the clarification with a warning, and
 # the script fails on any warning, so it cannot lapse unseen. 0BSD is accepted
-# for this crate only.
+# for this crate only, here and in deny.toml's exception.
 [liblzma-sys]
 accepted = ["0BSD"]
 
@@ -51,3 +59,15 @@ checksum = "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
 path = "xz/COPYING.0BSD"
 license = "0BSD"
 checksum = "0b01625d853911cd0e2e088dcfb743261034a091bb379246cb25a14cc4c74bf1"
+
+# r-efi ships no licence file: its AUTHORS file holds the MIT permission
+# notice and the copyright lines, so the clarification takes the MIT text
+# from there instead of the SPDX template (whose "<year> <copyright holders>"
+# scripts/third-party-licenses refuses). The expression is the crate's own.
+[r-efi.clarify]
+license = "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
+
+[[r-efi.clarify.files]]
+path = "AUTHORS"
+license = "MIT"
+checksum = "d027e91dbc9cdbb2f1190068e498bd6b61cff022b6a032b191021ba658d96111"

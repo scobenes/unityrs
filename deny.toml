@@ -1,6 +1,11 @@
 # Licences any dependency may carry. Copyleft (GPL, AGPL, LGPL, MPL) is not
 # allowed: unityrs stays permissive, and GPL projects such as AssetRipper are
 # read for format knowledge only, never copied.
+#
+# about.toml (cargo-about, which writes THIRD_PARTY_LICENSES) must say the same:
+# scripts/third_party_licenses_check.py holds the allow list equal to its
+# `accepted`, and each clarification and exception below equal to its
+# per-crate clarification and accepted licences.
 [licenses]
 allow = [
     "MIT",
@@ -14,6 +19,34 @@ allow = [
     "Unicode-3.0",
 ]
 confidence-threshold = 0.9
+# An exception no crate uses fails the check. A clarification applies only
+# while its files hash as listed; when one no longer applies, the licence it
+# adds is never seen, its exception goes unused, and the check fails.
+unused-license-exception = "deny"
+
+# liblzma-sys is "MIT OR Apache-2.0", but with the `static` feature its build
+# script compiles the xz sources it vendors, which are 0BSD (see about.toml).
+# The hashes are cargo-deny's: xxHash32 of each file with its line endings
+# normalised to LF.
+[[licenses.clarify]]
+crate = "liblzma-sys"
+expression = "(MIT OR Apache-2.0) AND 0BSD"
+license-files = [
+    { path = "LICENSE-MIT", hash = 0x09841695 },
+    { path = "LICENSE-APACHE", hash = 0x24b54f4b },
+    { path = "xz/COPYING.0BSD", hash = 0xcc44b1e6 },
+]
+
+[[licenses.exceptions]]
+crate = "liblzma-sys"
+allow = ["0BSD"]
+
+# r-efi ships no licence file; its AUTHORS file holds the notices (see
+# about.toml). The expression is the crate's own.
+[[licenses.clarify]]
+crate = "r-efi"
+expression = "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
+license-files = [{ path = "AUTHORS", hash = 0xb8c72415 }]
 
 [bans]
 multiple-versions = "warn"

@@ -32,4 +32,7 @@ Never `docker run` / `docker rm` / `docker stop` anything. The container has a
 - **Third-party notices.** `THIRD_PARTY_LICENSES` is generated: after a change to
   `Cargo.lock`, `about.toml` or `about.hbs`, run `scripts/third-party-licenses`
   (it says how to install the pinned cargo-about), or CI fails. A port's notice
-  goes into `about.hbs`.
+  goes into `about.hbs`. A new crate under `crates/` links `LICENSE-MIT` and
+  `LICENSE-APACHE` to the repository's (`ln -s ../../LICENSE-MIT`), or the
+  script refuses its template notice. A licence clarified or accepted for one
+  crate in `about.toml` is mirrored in `deny.toml`, which the script checks.
