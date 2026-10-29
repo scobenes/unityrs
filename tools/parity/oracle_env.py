@@ -31,11 +31,16 @@ A process that runs the oracle also checks what it loads (LoadedModules):
 every module it imports, at import time or while it dumps, must come from
 the standard library, the parity tools, or a pinned wheel's files. So a
 package a pin imports only when it is installed (requirements-oracle.txt
-names those the image holds) cannot change the dump unseen.
+names those the image holds) cannot change the dump unseen. A module named
+as one of the standard library's must come from the standard library's
+folder, even one loaded at start-up, and the process refuses to run with
+PYTHONPATH, PYTHONHOME or PYTHONPLATLIBDIR in effect, or a user
+site-packages folder (start_up_problems).
 It guards against drift (an edited file, another build, a stray copy), not
-against someone set on deceiving it: code run at start-up from outside the
-pins (a .pth file, sitecustomize) and a compiled file planted in
-`__pycache__` with its source's timestamp are not looked for.
+against someone set on deceiving it: code run at start-up from the
+site-packages folder (a .pth file, sitecustomize), with whatever it changes
+in modules the check allows, and a compiled file planted in `__pycache__`
+with its source's timestamp are not looked for.
 Without options the interpreter running this script is checked: the oracle
 image holds other packages too. `--exact` also refuses any distribution that
 is not pinned, apart from the installers `pip freeze` leaves out (pip,
@@ -61,6 +66,7 @@ import io
 import json
 import os
 import re
+import site
 import sys
 import sysconfig
 import zipfile
@@ -257,13 +263,16 @@ def pinned_files(records: dict[str, str], path: list[str] | None = None) -> set[
 class LoadedModules:
     """Which loaded modules come from anywhere but the standard library, the `own` folders, or the pinned `files`.
 
-    Modules in `before`, loaded before the oracle's script imported
-    anything, are the interpreter's start-up (site, .pth files), which this
-    check does not look at; neither are modules without a file (built in,
-    frozen without a source, namespace packages). A module under the standard
-    library's folder but in a site-packages or dist-packages folder is not
-    the standard library's. Each module's verdict is kept, so a process
-    forked after a check re-checks only what it loads itself.
+    A module named as one of the standard library's (sys.stdlib_module_names)
+    must come from the standard library's folder, whenever it was loaded: a
+    copy earlier on sys.path would stand in for it. Any other module in
+    `before`, the modules the interpreter loaded at start-up (site, .pth
+    files) before the oracle's script ran, is not looked at; neither is a
+    module without a file (built in, frozen without a source, a namespace
+    package). A module under the standard library's folder but in a
+    site-packages or dist-packages folder is not the standard library's.
+    Each module's verdict is kept, so a process forked after a check
+    re-checks only what it loads itself.
     """
 
     def __init__(self, files, own, before):
@@ -273,30 +282,72 @@ class LoadedModules:
         self.before = {id(module): module for module in before}  # held, so no id is reused
         self.verdicts = {}
 
-    def allowed(self, path: Path) -> bool:
-        if path in self.files or any(path.is_relative_to(own) for own in self.own):
-            return True
+    def in_stdlib(self, path: Path) -> bool:
         for stdlib in self.stdlib:
             if path.is_relative_to(stdlib):
                 return not {"site-packages", "dist-packages"} & set(path.relative_to(stdlib).parts)
         return False
+
+    def verdict(self, name: str, path: Path) -> str | None:
+        """Why the module `name` may not come from `path`, or None when it may."""
+        top = name.partition(".")[0]
+        if top in sys.stdlib_module_names:
+            return None if self.in_stdlib(path) else f"which shadows the standard library's {top}"
+        if path in self.files or any(path.is_relative_to(own) for own in self.own) or self.in_stdlib(path):
+            return None
+        return "which is neither the standard library nor a pinned wheel's file"
 
     def problems(self, modules: dict | None = None) -> list[str]:
         """'module NAME is loaded from PATH, ...' for each module of `modules` (default sys.modules) not allowed."""
         problems = []
         for name, module in sorted(list((sys.modules if modules is None else modules).items()), key=lambda kv: kv[0]):
             file = getattr(module, "__file__", None)
-            if id(module) in self.before or not isinstance(file, str):
+            if not isinstance(file, str):
+                continue
+            if id(module) in self.before and name.partition(".")[0] not in sys.stdlib_module_names:
                 continue
             if (name, file) not in self.verdicts:
                 path = Path(file).resolve()
-                self.verdicts[name, file] = None if self.allowed(path) else path
+                why = self.verdict(name, path)
+                self.verdicts[name, file] = why and f"module {name} is loaded from {path}, {why}"
             if self.verdicts[name, file] is not None:
-                problems.append(
-                    f"module {name} is loaded from {self.verdicts[name, file]}, "
-                    "which is neither the standard library nor a pinned wheel's file"
-                )
+                problems.append(self.verdicts[name, file])
         return problems
+
+
+# What decides where the interpreter looks for modules, the standard
+# library's among them, unless -E or -I has it ignore the environment.
+MODULE_PATH_VARIABLES = ("PYTHONPATH", "PYTHONHOME", "PYTHONPLATLIBDIR")
+
+
+def user_site() -> str | None:
+    """The user site-packages folder when site added it to sys.path at start-up, else None."""
+    path = site.getusersitepackages() if site.ENABLE_USER_SITE else None
+    return path if path and os.path.isdir(path) else None
+
+
+def start_up_problems(environ=None, ignore_environment=None, user_site_folder=None) -> list[str]:
+    """Why this interpreter may run or import code from outside its own folders before any module is checked.
+
+    PYTHONPATH puts folders before the standard library on sys.path, and a
+    sitecustomize there runs at start-up; PYTHONHOME and PYTHONPLATLIBDIR move
+    the standard library itself. Each is refused unless -E or -I has the
+    interpreter ignore them. A user site-packages folder (on sys.path unless
+    -s, -I or PYTHONNOUSERSITE turns it off) has its .pth files and
+    usercustomize run at start-up, so it is refused too. The defaults are this
+    process's environment, flags and user site; the arguments are for tests.
+    """
+    environ = os.environ if environ is None else environ
+    ignore = sys.flags.ignore_environment if ignore_environment is None else ignore_environment
+    problems = []
+    if not ignore:
+        problems += [
+            f"{var} is set; unset it, or run python with -E or -I" for var in MODULE_PATH_VARIABLES if environ.get(var)
+        ]
+    folder = user_site() if user_site_folder is None else user_site_folder
+    if folder:
+        problems.append(f"the user site-packages folder {folder} is on sys.path; run python with -s or -I")
+    return problems
 
 
 @functools.cache
