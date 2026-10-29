@@ -69,7 +69,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - OBJ/MTL text matches.
   - `save_typetree(parse())` returns the raw bytes.
   - Every patch to vendored decoders is labelled either Tier A (keeps the reference behaviour) or Tier C.
-- **Tier B: UnityPy raises.** 22 TextureFormats: BC6H, half and float formats, the 8 signed formats, RG16/RG32, R16, RGBA64, RGB9e5, YUY2. We produce correct output, checked against an independent reference. UnityArchive and LZHAM stay **unsupported (they raise)** until a sample and a reference exist.
+- **Tier B: UnityPy raises.** 22 TextureFormats: BC6H, half and float formats, the 8 signed formats, RG16/RG32, R16, RGBA64, RGB9e5, YUY2. We produce correct output, checked against an independent reference. UnityArchive and LZHAM stay **unsupported (they raise)** until a sample and a reference exist, and so do ETC_RGB4_3DS and ETC_RGBA8_3DS: UnityPy decodes them as plain ETC1, but no 3DS sample or reference decoder shows what they should decode to, so unityrs refuses them with a named `Unsupported` error, a documented divergence.
 - **Tier C: UnityPy is wrong.** We produce correct output, and `PARITY.md` lists each case with a pinned divergence test:
   - RGBAHalf returns garbage;
   - ASTC_HDR is wrong in 1.25.2;
@@ -77,7 +77,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - UNorm/SNorm values are not normalised;
   - mesh endianness is never read from the file;
   - the compressed-mesh 4th bone weight;
-  - ETC_RGB4_3DS and ETC_RGBA8_3DS;
+  - ETC2_RGBA1 keeps a transparent punch-through pixel's colour, where the Khronos Data Format Specification makes it (0, 0, 0, 0);
   - the ReferencedObject array path does not skip None;
   - dump_blob's common-string offset 0;
   - MeshRendererExporter fails on Unity 6;
