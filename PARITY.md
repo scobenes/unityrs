@@ -673,46 +673,47 @@ Lines are in `tools/extractor.py`. Level L9 is its output tree.
 One row per `TextureFormat` value (78; 37-40 are unassigned). Lines are in `export/Texture2DConverter.py` unless named; the conversion table is `Texture2DConverter.CONV_TABLE` (`:487-566`).
 
 **Columns.**
-- **decoder** and **conversion**: what `parse_image_data` runs and how the bytes become pixels. Pillow's `bcn` is `BcnDecode.c` in Pillow 9.5.0; texture2ddecoder (1.0.5) returns BGRA, which Pillow's `BGRA` raw mode turns into RGBA; ASTC goes through astcenc (astc-encoder-py 0.1.12) with the LDR profile and `USE_DECODE_UNORM8` (`:369-387`). The pixel values quoted were checked in the oracle on 2026-10-28.
+- **decoder**: the format's `CONV_TABLE` entry. Pillow raw `M` into `X` is `Image.frombytes(X, size, data, "raw", M)`, and Pillow `bcn` N into `X` the same with Pillow 9.5.0's BCn decoder `N` (`BcnDecode.c`); ", bands (…)" is the channel reorder that follows (`:331-344`). `half`, then … converts half floats to bytes first (`:435-447`). `rg` (…) names the arguments `CONV_TABLE` passes to `rg` (`:459-468`). texture2ddecoder (1.0.5) returns BGRA, which Pillow's `BGRA` raw mode turns into RGBA. "astcenc LDR, W×H blocks" is astc-encoder-py 0.1.12 with the LDR profile and `USE_DECODE_UNORM8` (`:369-387`). "crunch, then …" unpacks first (gates). "none" is a format with no entry.
+- **conversion**: how the bytes become pixels, as shown by the pixel cases of the matrix test (below).
 - **mode**: the Pillow mode UnityPy returns. Every image is then flipped top to bottom (`:317-318`).
-- **gates**: `pad W×H` is the block padding before decoding and the crop after (`Texture2DConverter.TEXTURE_FORMAT_BLOCK_SIZE_TABLE`, `:22-50`, `:314-315`); `no pad` means none. `sw W×H` is the Switch texel block (`TextureSwizzler.TEXTURE_FORMAT_BLOCK_SIZE_MAP`, `helpers/TextureSwizzler.py:73-103`), used when `TextureSwizzler.is_switch_swizzled` holds, in place of the block padding; `sw —` means a swizzled texture of that format raises `KeyError`. `xbox` swaps byte pairs on XBOX360, before anything else, crunch unpacking included (`:274-275`, `:569`). `crunch` unpacks with `unpack_unity_crunch` from 2017.3 and for the two ETC crunched formats at any version, and with `unpack_crunch` before 2017.3 (`:297-306`).
-- **UnityPy 1.25.2**: the result of `parse_image_data` on an 8×8 texture, StandaloneWindows64, version 2021.3.1f3. `raises` names the exception, module-qualified when it is not a builtin, on `0x30` bytes, as many as a real 8×8 texture of the format holds. `works`, `wrong` and `unverified` return an image in the listed mode, checked down to the pixels on input built from the format's layout (raw formats from a byte pattern, block formats from one solid-colour block per block position): `works` gives the pixels that layout fixes and the conversion column states; `wrong` gives the wrong pixels the conversion column states, not those (section 19); `unverified` has no reference to check against, and the pixels UnityPy returns are pinned. `crunch` rows need valid crunch data and were not decoded.
-- **`set_image` writes**: the format `image_to_texture2d` writes for that target from an RGBA image (`:118-234`).
-- **tier** and **status**: section 0. Tier A rows get L5 goldens against the oracle, Tier B rows an independent reference, Tier C rows a pinned divergence test; `DESIGN.md` section 5 puts BC7, DXT1, DXT5, RGBA32 and RGB24 in P1 and every other format in P3.
+- **gates**: what `parse_image_data` does before decoding, observed on a 1×1 texture with stand-ins for the decoders, the deswizzle and the crunch unpackers. `pad W×H` is the block padding before decoding and the crop after (`Texture2DConverter.TEXTURE_FORMAT_BLOCK_SIZE_TABLE`, `:22-50`, `:314-315`); `no pad` means none. `sw W×H` is the Switch texel block (`TextureSwizzler.TEXTURE_FORMAT_BLOCK_SIZE_MAP`, `helpers/TextureSwizzler.py:73-103`), used when `TextureSwizzler.is_switch_swizzled` holds, in place of the block padding (`:279-291`); ", read as `F`" means the swizzled data is decoded as format `F`; `sw —` means a swizzled texture of that format raises `KeyError`. `xbox` swaps byte pairs on XBOX360, before anything else, crunch unpacking included (`:274-275`, `:569`). "crunch:" names the unpacker each version gets: 2017.3 is the boundary (`:297-306`).
+- **UnityPy 1.25.2**: the result of `parse_image_data` on an 8×8 texture, StandaloneWindows64, version 2021.3.1f3, on `0x30` bytes, as many as a real 8×8 texture of the format holds; the first line cited is the format's `CONV_TABLE` entry, when it has one. `raises` names the exception, module-qualified when it is not a builtin, and its second line is where it left `Texture2DConverter.py`. `works`, `wrong` and `unverified` return an image in the listed mode, checked down to the pixels on input built from the format's layout (raw formats from a byte pattern, block formats from one solid-colour block per block position): `works` gives the pixels that layout fixes and the conversion column states; `wrong` gives the wrong pixels the conversion column states, not those (section 19); `unverified` has no reference to check against, and the pixels UnityPy returns are pinned. `crunch` rows are decoded with the unpacker handing the data on unchanged, as their base format's data: their conversion is checked, and crunch decoding is not.
+- **`set_image` writes**: the format `image_to_texture2d` writes for that target from an RGBA image (`:118-234`); "(`F` from an RGB image)" when an RGB image gets another; "holding plain ETC1" when the data is what it writes for `ETC_RGB4`; "Tier C (writing)" when it raises, or when its own reader cannot read what it wrote.
+- **tier** and **status**: section 0. The tier follows the result: `works` and `crunch` A, `raises` B, `wrong` C, `unverified` U. Tier A rows get L5 goldens against the oracle, Tier B rows an independent reference, Tier C rows a pinned divergence test; `DESIGN.md` section 5 puts BC7, DXT1, DXT5, RGBA32 and RGB24 in P1 and every other format in P3.
 
-In `test_texture_matrix.py`, the test texture_matrix_matches_the_oracle checks the mode, UnityPy and `set_image` columns of every row against the oracle, and pixels_match_the_matrix checks the pixels of every row that returns an image.
+`test_texture_matrix.py` texture_matrix_matches_the_oracle builds every cell of every row from the oracle and the pixel cases, and requires the matrix to hold exactly that, so a change to any cell fails it (`test_texture_matrix.py` a_change_to_any_cell_fails tries each one). pixels_match_the_matrix checks the pixels of every row that returns an image; switch_and_xbox_data_decode_as_the_gates_say decodes each pixel case swizzled with the stated Switch block, and byte-swapped on XBOX360; half_values_outside_a_byte_raise shows the half-float raises the `RHalf` and `RGBAHalf` rows state.
 
 | value | format | decoder | mode | conversion | gates | UnityPy 1.25.2 | `set_image` writes | tier | status |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 | `Alpha8` | Pillow raw `A` | RGBA | (0, 0, 0, A) | no pad; sw 16×1 | works (`:489`) | `Alpha8` | A | planned (P3) |
-| 2 | `ARGB4444` | Pillow raw `RGBA;4B` | RGBA | bands reordered (2, 1, 0, 3) | no pad; sw 8×1 | works (`:490`) | `RGBA32` | A | planned (P3) |
-| 3 | `RGB24` | Pillow raw `RGB` | RGB | as stored | no pad; swizzled data is read as `RGBA32`, so mode RGBA (`:279-283`) | works (`:491`) | `RGB24` | A | planned (P1) |
-| 4 | `RGBA32` | Pillow raw `RGBA` | RGBA | as stored | no pad; sw 4×1 | works (`:492`) | `RGBA32` | A | planned (P1) |
-| 5 | `ARGB32` | Pillow raw `ARGB` | RGBA | alpha moved last | no pad; sw 4×1 | works (`:493`) | `RGBA32` | A | planned (P3) |
-| 6 | `ARGBFloat` | Pillow raw `RGBAF` | — | — | no pad; sw 1×1 | raises `ValueError`, unknown raw mode (`:494`) | `RGBA32` | B | planned (P3) |
-| 7 | `RGB565` | Pillow raw `BGR;16` | RGB | red from the top 5 bits; each field widened as `v * 255 / 31` (green `/ 63`), truncated: red 16 gives 131, where bit replication gives 132 | no pad; sw 8×1; xbox | works (`:495`) | `RGB24` | A | planned (P3) |
-| 8 | `BGR24` | Pillow raw `BGR` | RGB | blue and red swapped | no pad; swizzled data is read as `BGRA32`, so mode RGBA (`:279-283`) | works (`:496`) | `RGB24` | A | planned (P3) |
-| 9 | `R16` | Pillow raw `R;16` into RGB | — | — | no pad; sw 8×1 | raises `ValueError`, unknown raw mode (`:498`) | `R8` | B | planned (P3) |
-| 10 | `DXT1` | Pillow `bcn` 1 | RGBA | 1-bit alpha | pad 4×4; sw 8×4; xbox | works (`:500`) | `DXT1` | A | planned (P1) |
-| 11 | `DXT3` | Pillow `bcn` 2 | RGBA | explicit 4-bit alpha | pad 4×4; sw — | works (`:501`) | `RGBA32` | A | planned (P3) |
-| 12 | `DXT5` | Pillow `bcn` 3 | RGBA | interpolated alpha | pad 4×4; sw 4×4; xbox | works (`:502`) | `DXT5` | A | planned (P1) |
-| 13 | `RGBA4444` | Pillow raw `RGBA;4B` | RGBA | bands reordered (3, 2, 1, 0) | no pad; sw 8×1 | works (`:503`) | `RGBA32` | A | planned (P3) |
-| 14 | `BGRA32` | Pillow raw `BGRA` | RGBA | blue and red swapped | no pad; sw 4×1 | works (`:504`) | `RGBA32` | A | planned (P3) |
-| 15 | `RHalf` | `half` into Pillow mode `R` | — | — | no pad; sw — | raises `struct.error`: `half` reads three halves a pixel for the one stored, so real-sized data runs out; a value outside [0, 1) raises `ValueError` first, and Pillow's missing mode `R` (`ValueError` too) is reached only with three times the data (`:505`, `:446`) | `R8` | B | planned (P3) |
-| 16 | `RGHalf` | `rg` | — | — | no pad; sw — | raises `KeyError` `'raw'` (`:506`, `:459-468`) | `RGBA32` | B | planned (P3) |
-| 17 | `RGBAHalf` | `half` into Pillow `RGB` | RGB | three halves per pixel for four stored, each `int(h * 256)`: alpha dropped, pixels misaligned (`(.5, .25, .125, .75)` repeated gives `(128, 64, 32)`, `(192, 128, 64)`, `(32, 192, 128)`, …) | no pad; sw — | wrong; a value at 1.0 or above, at -1/256 or below, or NaN raises `ValueError`, an infinity `OverflowError` (`:507`, `:435-447`) | `RGBA32` | C | planned (P3) |
-| 18 | `RFloat` | Pillow raw `RF` into RGB | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:508`) | `R8` | B | planned (P3) |
-| 19 | `RGFloat` | `rg` | — | — | no pad; sw — | raises `KeyError` `'raw'` (`:509`) | `RGBA32` | B | planned (P3) |
-| 20 | `RGBAFloat` | Pillow raw `RGBAF` | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:510`) | `RGBA32` | B | planned (P3) |
-| 21 | `YUY2` | none: the entry is commented out (`:511`) | — | — | no pad; sw — | raises `NotImplementedError` (`:308-309`) | `RGBA32` | B | planned (P3) |
+| 1 | `Alpha8` | Pillow raw `A` into `RGBA` | RGBA | (0, 0, 0, A) | no pad; sw 16×1 | works (`:489`) | `Alpha8` | A | planned (P3) |
+| 2 | `ARGB4444` | Pillow raw `RGBA;4B` into `RGBA`, bands (2, 1, 0, 3) | RGBA | bands reordered (2, 1, 0, 3) | no pad; sw 8×1 | works (`:490`) | `RGBA32` | A | planned (P3) |
+| 3 | `RGB24` | Pillow raw `RGB` into `RGB` | RGB | as stored | no pad; sw 4×1, read as `RGBA32` | works (`:491`) | `RGB24` | A | planned (P1) |
+| 4 | `RGBA32` | Pillow raw `RGBA` into `RGBA` | RGBA | as stored | no pad; sw 4×1 | works (`:492`) | `RGBA32` | A | planned (P1) |
+| 5 | `ARGB32` | Pillow raw `ARGB` into `RGBA` | RGBA | alpha moved last | no pad; sw 4×1 | works (`:493`) | `RGBA32` | A | planned (P3) |
+| 6 | `ARGBFloat` | Pillow raw `RGBAF` into `RGBA`, bands (2, 1, 0, 3) | — | — | no pad; sw 1×1 | raises `ValueError`, unknown raw mode (`:494`, `:340`) | `RGBA32` | B | planned (P3) |
+| 7 | `RGB565` | Pillow raw `BGR;16` into `RGB` | RGB | red from the top 5 bits; each field widened as `v * 255 / 31` (green `/ 63`), truncated: red 16 gives 131, where bit replication gives 132 | no pad; sw 8×1; xbox | works (`:495`) | `RGB24` | A | planned (P3) |
+| 8 | `BGR24` | Pillow raw `BGR` into `RGB` | RGB | blue and red swapped | no pad; sw 4×1, read as `BGRA32` | works (`:496`) | `RGB24` | A | planned (P3) |
+| 9 | `R16` | Pillow raw `R;16` into `RGB` | — | — | no pad; sw 8×1 | raises `ValueError`, unknown raw mode (`:498`, `:340`) | `R8` | B | planned (P3) |
+| 10 | `DXT1` | Pillow `bcn` 1 into `RGBA` | RGBA | 1-bit alpha | pad 4×4; sw 8×4; xbox | works (`:500`) | `DXT1` | A | planned (P1) |
+| 11 | `DXT3` | Pillow `bcn` 2 into `RGBA` | RGBA | explicit 4-bit alpha | pad 4×4; sw — | works (`:501`) | `RGBA32` | A | planned (P3) |
+| 12 | `DXT5` | Pillow `bcn` 3 into `RGBA` | RGBA | interpolated alpha | pad 4×4; sw 4×4; xbox | works (`:502`) | `DXT5` | A | planned (P1) |
+| 13 | `RGBA4444` | Pillow raw `RGBA;4B` into `RGBA`, bands (3, 2, 1, 0) | RGBA | bands reordered (3, 2, 1, 0) | no pad; sw 8×1 | works (`:503`) | `RGBA32` | A | planned (P3) |
+| 14 | `BGRA32` | Pillow raw `BGRA` into `RGBA` | RGBA | blue and red swapped | no pad; sw 4×1 | works (`:504`) | `RGBA32` | A | planned (P3) |
+| 15 | `RHalf` | `half`, then Pillow raw `R` into `R` | — | — | no pad; sw — | raises `struct.error`: `half` reads three halves a pixel for the one stored, so real-sized data runs out; a value at 1.0 or above, at -1/256 or below, or NaN raises `ValueError` first, an infinity `OverflowError`, and Pillow's missing mode `R` (`ValueError` too) is reached only with three times the data (`:505`, `:446`) | `R8` | B | planned (P3) |
+| 16 | `RGHalf` | `rg` (`RGB`, `raw`, `RGE`) | — | — | no pad; sw — | raises `KeyError` `'raw'` (`:506`, `:461`) | `RGBA32` | B | planned (P3) |
+| 17 | `RGBAHalf` | `half`, then Pillow raw `RGB` into `RGB` | RGB | three halves per pixel for four stored, each `int(h * 256)`: alpha dropped, pixels misaligned (`(.5, .25, .125, .75)` repeated gives `(128, 64, 32)`, `(192, 128, 64)`, `(32, 192, 128)`, …) | no pad; sw — | wrong; a value at 1.0 or above, at -1/256 or below, or NaN raises `ValueError`, an infinity `OverflowError` (`:507`, `:435-447`) | `RGBA32` | C | planned (P3) |
+| 18 | `RFloat` | Pillow raw `RF` into `RGB` | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:508`, `:340`) | `R8` | B | planned (P3) |
+| 19 | `RGFloat` | `rg` (`RGB`, `raw`, `RGF`) | — | — | no pad; sw — | raises `KeyError` `'raw'` (`:509`, `:461`) | `RGBA32` | B | planned (P3) |
+| 20 | `RGBAFloat` | Pillow raw `RGBAF` into `RGBA` | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:510`, `:340`) | `RGBA32` | B | planned (P3) |
+| 21 | `YUY2` | none: the entry is commented out (`:511`) | — | — | no pad; sw — | raises `NotImplementedError` (`:309`) | `RGBA32` | B | planned (P3) |
 | 22 | `RGB9e5Float` | `rgb9e5float` | — | — | no pad; sw — | raises `TypeError`, floats into a bytearray (`:512`, `:482`) | `RGB24` | B | planned (P3) |
-| 23 | `RGBFloat` | none: no entry | — | — | no pad; sw — | raises `NotImplementedError` (`:308-309`) | `RGBA32` | B | planned (P3) |
-| 24 | `BC6H` | Pillow `bcn` 6 | — | — | pad 4×4; sw 4×4 | raises `ValueError`, bad image mode (`:515`) | `RGBA32` | B | planned (P3) |
-| 25 | `BC7` | Pillow `bcn` 7 | RGBA | as decoded | pad 4×4; sw 4×4 | works (`:516`) | raises `ValueError` (`:95`); Tier C (writing), section 19.2 | A | planned (P1) |
-| 26 | `BC4` | Pillow `bcn` 4 | L | one channel | pad 4×4; sw 8×4 | works (`:513`) | `BC4` | A | planned (P3) |
-| 27 | `BC5` | Pillow `bcn` 5 | RGB | (R, G, 0) | pad 4×4; sw 4×4 | works (`:514`) | `BC5` | A | planned (P3) |
-| 28 | `DXT1Crunched` | crunch, then Pillow `bcn` 1 | RGBA | 1-bit alpha | pad 4×4; sw —; xbox; crunch | crunch (`:517`) | `DXT1` | A | planned (P3) |
-| 29 | `DXT5Crunched` | crunch, then Pillow `bcn` 3 | RGBA | interpolated alpha | pad 4×4; sw —; xbox; crunch | crunch (`:518`) | `DXT5` | A | planned (P3) |
+| 23 | `RGBFloat` | none: no entry | — | — | no pad; sw — | raises `NotImplementedError` (`:309`) | `RGBA32` | B | planned (P3) |
+| 24 | `BC6H` | Pillow `bcn` 6 into `RGBA` | — | — | pad 4×4; sw 4×4 | raises `ValueError`, bad image mode (`:515`, `:340`) | `RGBA32` | B | planned (P3) |
+| 25 | `BC7` | Pillow `bcn` 7 into `RGBA` | RGBA | as decoded | pad 4×4; sw 4×4 | works (`:516`) | raises `ValueError` (`:95`); Tier C (writing), section 19.2 | A | planned (P1) |
+| 26 | `BC4` | Pillow `bcn` 4 into `L` | L | one channel | pad 4×4; sw 8×4 | works (`:513`) | `BC4` | A | planned (P3) |
+| 27 | `BC5` | Pillow `bcn` 5 into `RGB` | RGB | (R, G, 0) | pad 4×4; sw 4×4 | works (`:514`) | `BC5` | A | planned (P3) |
+| 28 | `DXT1Crunched` | crunch, then Pillow `bcn` 1 into `RGBA` | RGBA | 1-bit alpha | pad 4×4; sw —; xbox; crunch: `unpack_crunch` before 2017.3, `unpack_unity_crunch` from 2017.3 | crunch (`:517`) | `DXT1` | A | planned (P3) |
+| 29 | `DXT5Crunched` | crunch, then Pillow `bcn` 3 into `RGBA` | RGBA | interpolated alpha | pad 4×4; sw —; xbox; crunch: `unpack_crunch` before 2017.3, `unpack_unity_crunch` from 2017.3 | crunch (`:518`) | `DXT5` | A | planned (P3) |
 | 30 | `PVRTC_RGB2` | texture2ddecoder PVRTC 2 bpp | RGBA | BGRA to RGBA | pad 8×4; sw — | works (`:519`) | `RGB24` | A | planned (P3) |
 | 31 | `PVRTC_RGBA2` | texture2ddecoder PVRTC 2 bpp | RGBA | BGRA to RGBA | pad 8×4; sw — | works (`:520`) | `RGBA32` | A | planned (P3) |
 | 32 | `PVRTC_RGB4` | texture2ddecoder PVRTC 4 bpp | RGBA | BGRA to RGBA | pad 4×4; sw — | works (`:521`) | `RGB24` | A | planned (P3) |
@@ -727,41 +728,41 @@ In `test_texture_matrix.py`, the test texture_matrix_matches_the_oracle checks t
 | 45 | `ETC2_RGB` | texture2ddecoder ETC2 | RGBA | alpha 255 | pad 4×4; sw — | works (`:530`) | `ETC2_RGB` | A | planned (P3) |
 | 46 | `ETC2_RGBA1` | texture2ddecoder ETC2 A1 | RGBA | BGRA to RGBA; a transparent punch-through pixel keeps its colour and gets alpha 0 | pad 4×4; sw — | wrong: the Khronos Data Format Specification 1.3, section 22.9, makes a transparent punch-through pixel (0, 0, 0, 0) (`:531`) | `ETC2_RGBA8` | C | planned (P3) |
 | 47 | `ETC2_RGBA8` | texture2ddecoder ETC2 A8 | RGBA | BGRA to RGBA | pad 4×4; sw — | works (`:532`) | `ETC2_RGBA8` | A | planned (P3) |
-| 48 | `ASTC_RGB_4x4` | astcenc LDR | RGBA | as decoded | pad 4×4; sw 4×4 | works (`:533`) | `ASTC_RGB_4x4` | A | planned (P3) |
-| 49 | `ASTC_RGB_5x5` | astcenc LDR | RGBA | as decoded | pad 5×5; sw 5×5 | works (`:534`) | `ASTC_RGB_5x5` | A | planned (P3) |
-| 50 | `ASTC_RGB_6x6` | astcenc LDR | RGBA | as decoded | pad 6×6; sw 6×6 | works (`:535`) | `ASTC_RGB_6x6` | A | planned (P3) |
-| 51 | `ASTC_RGB_8x8` | astcenc LDR | RGBA | as decoded | pad 8×8; sw 8×8 | works (`:536`) | `ASTC_RGB_8x8` | A | planned (P3) |
-| 52 | `ASTC_RGB_10x10` | astcenc LDR | RGBA | as decoded | pad 10×10; sw 10×10 | works (`:537`) | `ASTC_RGB_10x10` | A | planned (P3) |
-| 53 | `ASTC_RGB_12x12` | astcenc LDR | RGBA | as decoded | pad 12×12; sw 12×12 | works (`:538`) | `ASTC_RGB_12x12` | A | planned (P3) |
-| 54 | `ASTC_RGBA_4x4` | astcenc LDR | RGBA | as decoded | pad 4×4; sw 4×4 | works (`:539`) | `ASTC_RGBA_4x4` | A | planned (P3) |
-| 55 | `ASTC_RGBA_5x5` | astcenc LDR | RGBA | as decoded | pad 5×5; sw 5×5 | works (`:540`) | `ASTC_RGBA_5x5` | A | planned (P3) |
-| 56 | `ASTC_RGBA_6x6` | astcenc LDR | RGBA | as decoded | pad 6×6; sw 6×6 | works (`:541`) | `ASTC_RGBA_6x6` | A | planned (P3) |
-| 57 | `ASTC_RGBA_8x8` | astcenc LDR | RGBA | as decoded | pad 8×8; sw 8×8 | works (`:542`) | `ASTC_RGBA_8x8` | A | planned (P3) |
-| 58 | `ASTC_RGBA_10x10` | astcenc LDR | RGBA | as decoded | pad 10×10; sw 10×10 | works (`:543`) | `ASTC_RGBA_10x10` | A | planned (P3) |
-| 59 | `ASTC_RGBA_12x12` | astcenc LDR | RGBA | as decoded | pad 12×12; sw 12×12 | works (`:544`) | `ASTC_RGBA_12x12` | A | planned (P3) |
+| 48 | `ASTC_RGB_4x4` | astcenc LDR, 4×4 blocks | RGBA | as decoded | pad 4×4; sw 4×4 | works (`:533`) | `ASTC_RGB_4x4` | A | planned (P3) |
+| 49 | `ASTC_RGB_5x5` | astcenc LDR, 5×5 blocks | RGBA | as decoded | pad 5×5; sw 5×5 | works (`:534`) | `ASTC_RGB_5x5` | A | planned (P3) |
+| 50 | `ASTC_RGB_6x6` | astcenc LDR, 6×6 blocks | RGBA | as decoded | pad 6×6; sw 6×6 | works (`:535`) | `ASTC_RGB_6x6` | A | planned (P3) |
+| 51 | `ASTC_RGB_8x8` | astcenc LDR, 8×8 blocks | RGBA | as decoded | pad 8×8; sw 8×8 | works (`:536`) | `ASTC_RGB_8x8` | A | planned (P3) |
+| 52 | `ASTC_RGB_10x10` | astcenc LDR, 10×10 blocks | RGBA | as decoded | pad 10×10; sw 10×10 | works (`:537`) | `ASTC_RGB_10x10` | A | planned (P3) |
+| 53 | `ASTC_RGB_12x12` | astcenc LDR, 12×12 blocks | RGBA | as decoded | pad 12×12; sw 12×12 | works (`:538`) | `ASTC_RGB_12x12` | A | planned (P3) |
+| 54 | `ASTC_RGBA_4x4` | astcenc LDR, 4×4 blocks | RGBA | as decoded | pad 4×4; sw 4×4 | works (`:539`) | `ASTC_RGBA_4x4` | A | planned (P3) |
+| 55 | `ASTC_RGBA_5x5` | astcenc LDR, 5×5 blocks | RGBA | as decoded | pad 5×5; sw 5×5 | works (`:540`) | `ASTC_RGBA_5x5` | A | planned (P3) |
+| 56 | `ASTC_RGBA_6x6` | astcenc LDR, 6×6 blocks | RGBA | as decoded | pad 6×6; sw 6×6 | works (`:541`) | `ASTC_RGBA_6x6` | A | planned (P3) |
+| 57 | `ASTC_RGBA_8x8` | astcenc LDR, 8×8 blocks | RGBA | as decoded | pad 8×8; sw 8×8 | works (`:542`) | `ASTC_RGBA_8x8` | A | planned (P3) |
+| 58 | `ASTC_RGBA_10x10` | astcenc LDR, 10×10 blocks | RGBA | as decoded | pad 10×10; sw 10×10 | works (`:543`) | `ASTC_RGBA_10x10` | A | planned (P3) |
+| 59 | `ASTC_RGBA_12x12` | astcenc LDR, 12×12 blocks | RGBA | as decoded | pad 12×12; sw 12×12 | works (`:544`) | `ASTC_RGBA_12x12` | A | planned (P3) |
 | 60 | `ETC_RGB4_3DS` | texture2ddecoder ETC1 | RGBA | plain ETC1 blocks in plain order; any 3DS tiling or byte order is ignored | pad 4×4; sw — | unverified (`:545`) | `ETC_RGB4_3DS` holding plain ETC1 | U | planned (P3) |
 | 61 | `ETC_RGBA8_3DS` | texture2ddecoder ETC1 | RGBA | the first half of the 16-byte-per-block data read as ETC1 blocks, alpha 255; the alpha is never decoded | pad 4×4; sw — | unverified (`:546`) | `RGBA32` | U | planned (P3) |
-| 62 | `RG16` | `rg` | — | — | no pad; sw 8×1 | raises `KeyError` `'raw'` (`:499`) | `RGBA32` | B | planned (P3) |
-| 63 | `R8` | Pillow raw `R` into RGB | RGB | (R, 0, 0) | no pad; sw 16×1 | works (`:497`) | `R8` | A | planned (P3) |
-| 64 | `ETC_RGB4Crunched` | crunch, then texture2ddecoder ETC1 | RGBA | alpha 255 | pad 4×4; sw —; crunch | crunch (`:547`) | `ETC_RGB4Crunched` holding plain ETC1; Tier C (writing), section 19.2 | A | planned (P3) |
-| 65 | `ETC2_RGBA8Crunched` | crunch, then texture2ddecoder ETC2 A8 | RGBA | BGRA to RGBA | pad 4×4; sw —; crunch | crunch (`:548`) | `ETC2_RGBA8` | A | planned (P3) |
-| 66 | `ASTC_HDR_4x4` | astcenc LDR | RGBA | HDR blocks decoded with the LDR profile: an FP16 constant-colour block decodes as white, because astcenc's LDR profile writes 0xFFFF for one | pad 4×4; sw — | wrong (`:549`, `:371-377`) | `ASTC_RGBA_4x4` (`ASTC_RGB_4x4` from an RGB image) | C | planned (P3) |
-| 67 | `ASTC_HDR_5x5` | astcenc LDR | RGBA | HDR blocks decoded with the LDR profile, as `ASTC_HDR_4x4` | pad 5×5; sw — | wrong (`:550`) | `ASTC_RGBA_5x5` (`ASTC_RGB_5x5` from an RGB image) | C | planned (P3) |
-| 68 | `ASTC_HDR_6x6` | astcenc LDR | RGBA | HDR blocks decoded with the LDR profile, as `ASTC_HDR_4x4` | pad 6×6; sw — | wrong (`:551`) | `ASTC_RGBA_6x6` (`ASTC_RGB_6x6` from an RGB image) | C | planned (P3) |
-| 69 | `ASTC_HDR_8x8` | astcenc LDR | RGBA | HDR blocks decoded with the LDR profile, as `ASTC_HDR_4x4` | pad 8×8; sw — | wrong (`:552`) | `ASTC_RGBA_8x8` (`ASTC_RGB_8x8` from an RGB image) | C | planned (P3) |
-| 70 | `ASTC_HDR_10x10` | astcenc LDR | RGBA | HDR blocks decoded with the LDR profile, as `ASTC_HDR_4x4` | pad 10×10; sw — | wrong (`:553`) | `ASTC_RGBA_10x10` (`ASTC_RGB_10x10` from an RGB image) | C | planned (P3) |
-| 71 | `ASTC_HDR_12x12` | astcenc LDR | RGBA | HDR blocks decoded with the LDR profile, as `ASTC_HDR_4x4` | pad 12×12; sw — | wrong (`:554`) | `ASTC_RGBA_12x12` (`ASTC_RGB_12x12` from an RGB image) | C | planned (P3) |
-| 72 | `RG32` | `rg` | — | — | no pad; sw — | raises `KeyError` `'raw'` (`:555`) | `RGBA32` | B | planned (P3) |
-| 73 | `RGB48` | Pillow raw `RGB;16` | RGB | Pillow reads `RGB;16` as packed 5-6-5 (red in the low five bits), two bytes per pixel for six stored: pure red `(0xFFFF, 0, 0)` gives white, black, black, white, … in data order | no pad; sw — | wrong (`:556`) | `RGBA32` | C | planned (P3) |
-| 74 | `RGBA64` | Pillow raw `RGBA;16` | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:557`) | `RGBA32` | B | planned (P3) |
-| 75 | `R8_SIGNED` | Pillow raw `R;8s` into mode `R` | — | — | no pad; sw — | raises `ValueError`, unrecognized image mode (`:558`) | `RGBA32` | B | planned (P3) |
-| 76 | `RG16_SIGNED` | `rg` | — | — | no pad; sw — | raises `KeyError` `'raw'` (`:559`) | `RGBA32` | B | planned (P3) |
-| 77 | `RGB24_SIGNED` | Pillow raw `RGB;8s` | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:560`) | `RGBA32` | B | planned (P3) |
-| 78 | `RGBA32_SIGNED` | Pillow raw `RGBA;8s` | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:561`) | `RGBA32` | B | planned (P3) |
-| 79 | `R16_SIGNED` | Pillow raw `R;16s` into mode `R` | — | — | no pad; sw — | raises `ValueError`, unrecognized image mode (`:562`) | `RGBA32` | B | planned (P3) |
-| 80 | `RG32_SIGNED` | `rg` | — | — | no pad; sw — | raises `KeyError` `'raw'` (`:563`) | `RGBA32` | B | planned (P3) |
-| 81 | `RGB48_SIGNED` | Pillow raw `RGB;16s` | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:564`) | `RGBA32` | B | planned (P3) |
-| 82 | `RGBA64_SIGNED` | Pillow raw `RGBA;16s` | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:565`) | `RGBA32` | B | planned (P3) |
+| 62 | `RG16` | `rg` (`RGB`, `raw`, `RG`) | — | — | no pad; sw 8×1 | raises `KeyError` `'raw'` (`:499`, `:461`) | `RGBA32` | B | planned (P3) |
+| 63 | `R8` | Pillow raw `R` into `RGB` | RGB | (R, 0, 0) | no pad; sw 16×1 | works (`:497`) | `R8` | A | planned (P3) |
+| 64 | `ETC_RGB4Crunched` | crunch, then texture2ddecoder ETC1 | RGBA | alpha 255 | pad 4×4; sw —; crunch: `unpack_unity_crunch` at any version | crunch (`:547`) | `ETC_RGB4Crunched` holding plain ETC1; Tier C (writing), section 19.2 | A | planned (P3) |
+| 65 | `ETC2_RGBA8Crunched` | crunch, then texture2ddecoder ETC2 A8 | RGBA | BGRA to RGBA | pad 4×4; sw —; crunch: `unpack_unity_crunch` at any version | crunch (`:548`) | `ETC2_RGBA8` | A | planned (P3) |
+| 66 | `ASTC_HDR_4x4` | astcenc LDR, 4×4 blocks | RGBA | HDR blocks decoded with the LDR profile: an FP16 constant-colour block decodes as white, because astcenc's LDR profile writes 0xFFFF for one | pad 4×4; sw — | wrong (`:549`, `:371-377`) | `ASTC_RGBA_4x4` (`ASTC_RGB_4x4` from an RGB image) | C | planned (P3) |
+| 67 | `ASTC_HDR_5x5` | astcenc LDR, 5×5 blocks | RGBA | HDR blocks decoded with the LDR profile, as `ASTC_HDR_4x4` | pad 5×5; sw — | wrong (`:550`, `:371-377`) | `ASTC_RGBA_5x5` (`ASTC_RGB_5x5` from an RGB image) | C | planned (P3) |
+| 68 | `ASTC_HDR_6x6` | astcenc LDR, 6×6 blocks | RGBA | HDR blocks decoded with the LDR profile, as `ASTC_HDR_4x4` | pad 6×6; sw — | wrong (`:551`, `:371-377`) | `ASTC_RGBA_6x6` (`ASTC_RGB_6x6` from an RGB image) | C | planned (P3) |
+| 69 | `ASTC_HDR_8x8` | astcenc LDR, 8×8 blocks | RGBA | HDR blocks decoded with the LDR profile, as `ASTC_HDR_4x4` | pad 8×8; sw — | wrong (`:552`, `:371-377`) | `ASTC_RGBA_8x8` (`ASTC_RGB_8x8` from an RGB image) | C | planned (P3) |
+| 70 | `ASTC_HDR_10x10` | astcenc LDR, 10×10 blocks | RGBA | HDR blocks decoded with the LDR profile, as `ASTC_HDR_4x4` | pad 10×10; sw — | wrong (`:553`, `:371-377`) | `ASTC_RGBA_10x10` (`ASTC_RGB_10x10` from an RGB image) | C | planned (P3) |
+| 71 | `ASTC_HDR_12x12` | astcenc LDR, 12×12 blocks | RGBA | HDR blocks decoded with the LDR profile, as `ASTC_HDR_4x4` | pad 12×12; sw — | wrong (`:554`, `:371-377`) | `ASTC_RGBA_12x12` (`ASTC_RGB_12x12` from an RGB image) | C | planned (P3) |
+| 72 | `RG32` | `rg` (`RGB`, `raw`, `RG;16`) | — | — | no pad; sw — | raises `KeyError` `'raw'` (`:555`, `:461`) | `RGBA32` | B | planned (P3) |
+| 73 | `RGB48` | Pillow raw `RGB;16` into `RGB` | RGB | Pillow reads `RGB;16` as packed 5-6-5 with red in the low five bits, each field widened as `v * 255 / 31` (green `/ 63`) and truncated, two bytes per pixel for six stored | no pad; sw — | wrong (`:556`) | `RGBA32` | C | planned (P3) |
+| 74 | `RGBA64` | Pillow raw `RGBA;16` into `RGBA` | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:557`, `:340`) | `RGBA32` | B | planned (P3) |
+| 75 | `R8_SIGNED` | Pillow raw `R;8s` into `R` | — | — | no pad; sw — | raises `ValueError`, unrecognized image mode (`:558`, `:340`) | `RGBA32` | B | planned (P3) |
+| 76 | `RG16_SIGNED` | `rg` (`RGB`, `raw`, `RG;8s`) | — | — | no pad; sw — | raises `KeyError` `'raw'` (`:559`, `:461`) | `RGBA32` | B | planned (P3) |
+| 77 | `RGB24_SIGNED` | Pillow raw `RGB;8s` into `RGB` | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:560`, `:340`) | `RGBA32` | B | planned (P3) |
+| 78 | `RGBA32_SIGNED` | Pillow raw `RGBA;8s` into `RGBA` | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:561`, `:340`) | `RGBA32` | B | planned (P3) |
+| 79 | `R16_SIGNED` | Pillow raw `R;16s` into `R` | — | — | no pad; sw — | raises `ValueError`, unrecognized image mode (`:562`, `:340`) | `RGBA32` | B | planned (P3) |
+| 80 | `RG32_SIGNED` | `rg` (`RGB`, `raw`, `RG;16s`) | — | — | no pad; sw — | raises `KeyError` `'raw'` (`:563`, `:461`) | `RGBA32` | B | planned (P3) |
+| 81 | `RGB48_SIGNED` | Pillow raw `RGB;16s` into `RGB` | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:564`, `:340`) | `RGBA32` | B | planned (P3) |
+| 82 | `RGBA64_SIGNED` | Pillow raw `RGBA;16s` into `RGBA` | — | — | no pad; sw — | raises `ValueError`, unknown raw mode (`:565`, `:340`) | `RGBA32` | B | planned (P3) |
 
 The Tier B count is 22, as `DESIGN.md` section 3 says: `BC6H`; the half and float formats `RHalf`, `RGHalf`, `RFloat`, `RGFloat`, `RGBAFloat`, `ARGBFloat`, `RGBFloat`; the eight `_SIGNED` raw formats; `RG16`, `RG32`, `R16`, `RGBA64`, `RGB9e5Float` and `YUY2`. `RGBAHalf` and `RGB48` return an image, so they are not Tier B.
 
