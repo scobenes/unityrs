@@ -1667,6 +1667,28 @@ class ExportRows(unittest.TestCase):
         for rest in ("0 }", "0\rX", "0x0", "0b0", "0o0", "0.0", "0e0", "0j", "1_", "_1", "zero"):
             with self.subTest(rest=rest), self.assertRaisesRegex(ValueError, "^invalid literal for int"):
                 got.Export(f"GpuProgramIndex {rest}")
+        # The whitespace int() takes: ASCII space, \t, \v, \f and \r, and every non-ASCII character str.isspace()
+        # takes, but not \x1c to \x1f, which str.isspace() takes too. At most 4300 digits, the `_` not counted
+        # (sys.get_int_max_str_digits()'s default).
+        spaces = [chr(c) for c in range(0x110000) if chr(c).isspace() and chr(c) != "\n"]
+        for space in spaces:
+            with self.subTest(space=hex(ord(space))):
+                if "\x1c" <= space <= "\x1f":
+                    with self.assertRaisesRegex(ValueError, "^invalid literal for int"):
+                        got.Export(f"GpuProgramIndex {space}0{space}\nX")
+                else:
+                    self.assertEqual(got.Export(f"GpuProgramIndex {space}0{space}\nX"), '"code"\nX')
+        self.assertEqual(sys.get_int_max_str_digits(), 4300)
+        for rest in ("0" * 4300, "_".join("0" * 4300), "-" + "0" * 4300, " " + "0" * 4300 + " "):
+            with self.subTest(digits=len(rest)):
+                self.assertEqual(got.Export(f"GpuProgramIndex {rest}"), '"code"')
+        limit = (
+            "^Exceeds the limit \\(4300 digits\\) for integer string conversion: value has 4301 digits; "
+            "use sys.set_int_max_str_digits\\(\\) to increase the limit$"
+        )
+        for rest in ("0" * 4301, "_".join("0" * 4301)):
+            with self.subTest(digits=len(rest)), self.assertRaisesRegex(ValueError, limit):
+                got.Export(f"GpuProgramIndex {rest}")
         self.assertEqual(got.Export("GpuProgramIndex\t0"), "GpuProgramIndex\t0", "the regex wants one space")
         # N indexes the table as a list: outside [-len, len) raises IndexError, a negative N inside counts from the
         # end.
@@ -1704,11 +1726,32 @@ class ExportRows(unittest.TestCase):
             with self.subTest(offset=offset), self.assertRaisesRegex(struct.error, message):
                 entry(offset)
         # A sub-program whose fixed-width fields run past the blob's end raises struct.error, its offset inside the
-        # blob or not: the version at len - 2, a blob cut after the program type or inside the keyword count. One
+        # blob or not: the version at len - 2, a blob cut after the program type or inside the keyword count, and a
+        # keyword's or local keyword's length (a keyword's bytes past the end read "", `read_aligned_string`). One
         # whose program type ShaderGpuProgramType lacks raises ValueError.
-        for offset, rest in ((12 + len(sub) - 2, sub), (12, sub[:8]), (12, sub[:22])):
+        local = subprogram(201806140, 4, b"abcd", ["K"], local=["L"], endian=">")
+        self.assertEqual(len(local), 56)  # 24 of header, count 1 and "K" to 36, count 1 and "L" to 48, code
+        for offset, rest in (
+            (12 + len(sub) - 2, sub),
+            (12, sub[:8]),
+            (12, sub[:22]),
+        ):
             with self.subTest(offset=offset, rest=len(rest)), self.assertRaisesRegex(struct.error, "^unpack_from"):
                 entry(offset, rest)
+        # The length read itself fails, at the length's own offset (the blob starts 12 bytes into the program).
+        for rest, at in (
+            (sub[:24], 24),  # a keyword count of 1, and no length after it
+            (sub[:26], 24),  # half of the keyword's length
+            (local[:40], 40),  # a local keyword count of 1, and no length after it
+            (local[:42], 40),
+        ):
+            size, at = 12 + len(rest), 12 + at
+            message = (
+                f"^unpack_from requires a buffer of at least {at + 4} bytes for unpacking 4 bytes at offset {at} "
+                f"\\(actual buffer size is {size}\\)$"
+            )
+            with self.subTest(rest=len(rest)), self.assertRaisesRegex(struct.error, message):
+                entry(12, rest)
         for kind in (32, 9999, -1):
             with (
                 self.subTest(kind=kind),
