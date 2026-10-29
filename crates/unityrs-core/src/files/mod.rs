@@ -14,15 +14,6 @@
 //!
 //! Owner: package C.
 
-// STUB(C): delete this allow when the module is implemented.
-#![allow(
-    clippy::todo,
-    clippy::needless_pass_by_value,
-    clippy::must_use_candidate,
-    clippy::missing_panics_doc,
-    unused_variables
-)]
-
 pub mod bundle;
 pub mod serialized;
 pub mod web;
@@ -37,8 +28,8 @@ pub use serialized::{
 };
 pub use web::{WebFile, WebPacker};
 
-use crate::detect::FileType;
-use crate::error::Error;
+use crate::detect::{FileType, ParsedAs, parsed_as};
+use crate::error::{Error, LimitError, LimitKind, Unsupported};
 use crate::limits::{Charge, ChargeError, Meter, heap_cost};
 use crate::options::FileContext;
 use crate::raw::RawStr;
@@ -142,5 +133,25 @@ pub fn parse_file(
     meter: &Arc<Meter>,
     ctx: &Arc<FileContext>,
 ) -> Result<File, Error> {
-    todo!()
+    // UnityPy helpers/ImportHelper.py:127-156; a zip input is refused (P3).
+    let kind = parsed_as(ty, name.as_bytes(), parent.is_some());
+    if matches!(kind, ParsedAs::BundleFile | ParsedAs::WebFile)
+        && let Some(p) = &parent
+        && p.depth > ctx.limits.max_container_depth
+    {
+        return Err(Error::Limit(LimitError {
+            kind: LimitKind::ContainerDepth,
+            value: u64::from(p.depth),
+            max: u64::from(ctx.limits.max_container_depth),
+        }));
+    }
+    Ok(match kind {
+        ParsedAs::SerializedFile => {
+            File::Serialized(SerializedFile::parse(name, data, parent, meter, ctx)?)
+        }
+        ParsedAs::BundleFile => File::Bundle(BundleFile::open(name, data, parent, meter, ctx)?),
+        ParsedAs::WebFile => File::Web(WebFile::open(name, data, parent, meter, ctx)?),
+        ParsedAs::Zip => return Err(Error::Unsupported(Unsupported::Zip)),
+        ParsedAs::Raw | ParsedAs::Error => File::Raw(RawFile::new(name, data, meter)?),
+    })
 }
