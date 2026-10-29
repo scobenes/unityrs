@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/streams/EndianBinaryReader.py. See THIRD_PARTY_LICENSES.
 //! A bounded reader over a byte slice with the semantics of UnityPy's
 //! `EndianBinaryReader_Memoryview` (`streams/EndianBinaryReader.py:230-285`).
 //!
@@ -30,17 +31,6 @@
 //!
 //! Owner: package C. The free functions and [`Reader::read_i32_array`] are
 //! the scaffold's (implemented).
-
-// STUB(C): delete this allow when the module is implemented.
-#![allow(
-    clippy::todo,
-    clippy::unused_self,
-    clippy::needless_pass_by_value,
-    clippy::must_use_candidate,
-    clippy::missing_panics_doc,
-    unused_variables,
-    dead_code
-)]
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -176,6 +166,7 @@ pub struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     /// A reader at position 0.
+    #[must_use]
     pub fn new(data: &'a [u8], endian: Endian) -> Self {
         Self {
             data,
@@ -185,11 +176,13 @@ impl<'a> Reader<'a> {
     }
 
     /// The whole slice.
+    #[must_use]
     pub fn data(&self) -> &'a [u8] {
         self.data
     }
 
     /// The position, as Python holds it.
+    #[must_use]
     pub fn position(&self) -> i128 {
         self.pos
     }
@@ -201,6 +194,7 @@ impl<'a> Reader<'a> {
     }
 
     /// The byte order of multi-byte reads.
+    #[must_use]
     pub fn endian(&self) -> Endian {
         self.endian
     }
@@ -212,83 +206,151 @@ impl<'a> Reader<'a> {
 
     /// The bytes `read(-1)` would return from here: what a table's growth may
     /// count on (plan section 3.3).
+    #[must_use]
     pub fn remaining(&self) -> usize {
         py_read(self.data.len(), self.pos, -1).0.len()
     }
 
     /// `align_stream(n)`: [`py_align`], without a bounds check.
     pub fn align(&mut self, n: u32) {
-        todo!()
+        // UnityPy streams/EndianBinaryReader.py:155-156
+        self.pos = py_align(self.pos, n);
+    }
+
+    /// The bytes after the position, as [`Error::OutOfBounds`] reports them.
+    fn have(&self) -> u64 {
+        u64::try_from(self.remaining()).unwrap_or(u64::MAX)
+    }
+
+    fn out_of_bounds(&self, what: &'static str, pos: i128, need: usize) -> Error {
+        Error::OutOfBounds {
+            what,
+            pos,
+            need: u64::try_from(need).unwrap_or(u64::MAX),
+            have: self.have(),
+        }
     }
 
     /// `n` bytes where UnityPy's caller unpacks them whole (`read(n)`, then
     /// `struct.unpack`): the [`py_read`] slice must hold `n` bytes, else
     /// `OutOfBounds`; the position moves by `n` either way.
     pub fn read_bytes(&mut self, n: usize) -> Result<&'a [u8], Error> {
-        todo!()
+        let pos = self.pos;
+        let got = self.read_bytes_short(i64::try_from(n).unwrap_or(i64::MAX));
+        if got.len() == n {
+            Ok(got)
+        } else {
+            Err(self.out_of_bounds("bytes", pos, n))
+        }
     }
 
     /// `read(n)` as it is: the [`py_read`] slice, short or empty at the ends
     /// (`read_bytes` on a truncated block, `File.py:79`), the position moved
     /// by `n`.
     pub fn read_bytes_short(&mut self, n: i64) -> &'a [u8] {
-        todo!()
+        // UnityPy streams/EndianBinaryReader.py:249-256
+        let (range, pos) = py_read(self.data.len(), self.pos, n);
+        self.pos = pos;
+        self.data.get(range).unwrap_or_default()
     }
 
     /// `read_string_to_null` with the 32,767-byte window: [`py_string_to_null`].
     pub fn read_string_to_null(&mut self) -> Result<&'a [u8], Error> {
-        todo!()
+        // UnityPy streams/EndianBinaryReader.py:275-284
+        let pos = self.pos;
+        match py_string_to_null(self.data, pos, STRING_TO_NULL_WINDOW) {
+            Some((range, new)) => {
+                self.pos = new;
+                Ok(self.data.get(range).unwrap_or_default())
+            }
+            None => Err(self.out_of_bounds("string to null", pos, 1)),
+        }
+    }
+
+    /// One byte for `unpack(fmt, read(1))` (`:93-97`): the position moves by
+    /// 1 even when the slice is empty.
+    fn one_byte(&mut self, what: &'static str) -> Result<u8, Error> {
+        let pos = self.pos;
+        match self.read_bytes_short(1) {
+            [b] => Ok(*b),
+            _ => Err(self.out_of_bounds(what, pos, 1)),
+        }
     }
 
     /// One byte as a bool (non-zero is true): `unpack("?", read(1))`.
     pub fn read_bool(&mut self) -> Result<bool, Error> {
-        todo!()
+        // UnityPy streams/EndianBinaryReader.py:126-127
+        self.one_byte("bool").map(|b| b != 0)
     }
 
     /// `u8`: `unpack("B", read(1))`.
     pub fn read_u8(&mut self) -> Result<u8, Error> {
-        todo!()
+        // UnityPy streams/EndianBinaryReader.py:96-97
+        self.one_byte("u8")
     }
 
     /// `i8`: `unpack("b", read(1))`.
     pub fn read_i8(&mut self) -> Result<i8, Error> {
-        todo!()
+        // UnityPy streams/EndianBinaryReader.py:93-94
+        self.one_byte("i8").map(|b| i8::from_le_bytes([b]))
+    }
+
+    /// `N` bytes by `struct.unpack_from(view, Position)` (`:340-343`): the
+    /// position moves by `N` only on success.
+    fn fixed<const N: usize>(&mut self, what: &'static str) -> Result<[u8; N], Error> {
+        let at = py_unpack_from(self.data.len(), self.pos, N)
+            .ok_or_else(|| self.out_of_bounds(what, self.pos, N))?;
+        let mut b = [0u8; N];
+        if let Some(src) = self.data.get(at..at.saturating_add(N)) {
+            b.copy_from_slice(src);
+        }
+        self.pos = self
+            .pos
+            .saturating_add(i128::try_from(N).unwrap_or(i128::MAX));
+        if self.endian == Endian::Big {
+            b.reverse();
+        }
+        // Little-endian from here on.
+        Ok(b)
     }
 
     /// `u16` in the reader's byte order: [`py_unpack_from`].
     pub fn read_u16(&mut self) -> Result<u16, Error> {
-        todo!()
+        self.fixed("u16").map(u16::from_le_bytes)
     }
 
     /// `i16` in the reader's byte order: [`py_unpack_from`].
     pub fn read_i16(&mut self) -> Result<i16, Error> {
-        todo!()
+        self.fixed("i16").map(i16::from_le_bytes)
     }
 
     /// `u32` in the reader's byte order: [`py_unpack_from`].
     pub fn read_u32(&mut self) -> Result<u32, Error> {
-        todo!()
+        self.fixed("u32").map(u32::from_le_bytes)
     }
 
     /// `i32` in the reader's byte order: [`py_unpack_from`].
     pub fn read_i32(&mut self) -> Result<i32, Error> {
-        todo!()
+        self.fixed("i32").map(i32::from_le_bytes)
     }
 
     /// `u64` in the reader's byte order: [`py_unpack_from`].
     pub fn read_u64(&mut self) -> Result<u64, Error> {
-        todo!()
+        self.fixed("u64").map(u64::from_le_bytes)
     }
 
     /// `i64` in the reader's byte order: [`py_unpack_from`].
     pub fn read_i64(&mut self) -> Result<i64, Error> {
-        todo!()
+        self.fixed("i64").map(i64::from_le_bytes)
     }
 
     /// A fixed-size byte array (GUIDs, hashes, reserved bytes): `read(N)`,
     /// which must hold `N` bytes where UnityPy's caller needs them all.
     pub fn read_array<const N: usize>(&mut self) -> Result<[u8; N], Error> {
-        todo!()
+        let got = self.read_bytes(N)?;
+        let mut b = [0u8; N];
+        b.copy_from_slice(got);
+        Ok(b)
     }
 
     /// `read_int_array` (`EndianBinaryReader.py:182`, `read_array_struct` at

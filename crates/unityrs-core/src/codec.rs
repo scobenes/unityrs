@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/CompressionHelper.py. See THIRD_PARTY_LICENSES.
 //! Block codecs with UnityPy's semantics (`helpers/CompressionHelper.py:238-244`).
 //!
 //! - **None** returns the stored bytes as they are, whatever blocks-info says.
@@ -43,17 +44,6 @@
 //! Owner: package C. The registry type and [`decode_block`] are implemented
 //! by the scaffold.
 
-// STUB(C): delete this allow when the module is implemented.
-#![allow(
-    clippy::todo,
-    clippy::unused_self,
-    clippy::needless_pass_by_value,
-    clippy::must_use_candidate,
-    clippy::missing_panics_doc,
-    unused_variables,
-    dead_code
-)]
-
 use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
@@ -62,6 +52,7 @@ use bytes::Bytes;
 
 use crate::budget::DecodeBuf;
 use crate::error::{Error, LimitError, LimitKind};
+use crate::limits::ChargeError;
 
 /// A block's compression, `flags & 0x3F`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -302,13 +293,9 @@ impl fmt::Debug for Codecs {
 pub struct Stored;
 
 impl BlockCodec for Stored {
-    fn decode(
-        &self,
-        input: &Bytes,
-        uncompressed: u32,
-        out: &mut DecodeBuf,
-    ) -> Result<Decoded, Error> {
-        todo!()
+    fn decode(&self, input: &Bytes, _: u32, _: &mut DecodeBuf) -> Result<Decoded, Error> {
+        // UnityPy helpers/CompressionHelper.py:239: `lambda cd, _ucs: cd`.
+        Ok(Decoded::Input(0..input.len()))
     }
 }
 
@@ -316,14 +303,223 @@ impl BlockCodec for Stored {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Lzma;
 
+/// The dictionary the first LZMA attempt allocates at most, when the
+/// declared size is larger (see [`Lzma`]'s `decode`).
+const LZMA_FIRST_DICT_MAX: u64 = 8 << 20;
+
+/// The dictionary the first LZMA attempt allocates at least.
+const LZMA_FIRST_DICT_MIN: u64 = 1 << 20;
+
 impl BlockCodec for Lzma {
+    /// `decompress_lzma` (`CompressionHelper.py:17-44`): the properties byte
+    /// and the little-endian dictionary size, then a raw LZMA1
+    /// `LZMADecompressor`'s `decompress(data[5:])`, whose loop is
+    /// Python's `decompress_buf` (`Modules/_lzmamodule.c`): run until the
+    /// stream ends, the input is used up with room left in the output, or an
+    /// error; the declared size plays no part.
+    ///
+    /// **The dictionary.** liblzma allocates the dictionary the properties
+    /// name (up to 4 GiB) outside every meter. The decoder only uses it to
+    /// refuse a match distance at or beyond `min(output so far, dictionary)`,
+    /// so a dictionary at least as large as the output decodes exactly what
+    /// the named one does. The first attempt uses the declared size, between
+    /// 1 and 8 MiB, capped by the named size; an attempt that fails on data
+    /// after it outgrew its dictionary is decoded again with a larger one
+    /// (at least twice the output so far, capped by the named size), so the
+    /// dictionary stays within a constant plus twice the block's charged
+    /// output. Plan section 3.6 charges the named dictionary instead, which
+    /// needs the block's meter and cap from [`DecodeBuf`] (REQUESTS-c.md 1).
     fn decode(
         &self,
         input: &Bytes,
         uncompressed: u32,
         out: &mut DecodeBuf,
     ) -> Result<Decoded, Error> {
-        todo!()
+        // UnityPy helpers/CompressionHelper.py:27: `struct.unpack("<BI", data[:5])`.
+        let (Some(&props), Some(dict)) = (input.first(), input.get(1..5)) else {
+            return Err(lzma_error(&format!(
+                "struct.error: unpack requires a buffer of 5 bytes (got {})",
+                input.len()
+            )));
+        };
+        let named = u32::from_le_bytes(<[u8; 4]>::try_from(dict).unwrap_or_default());
+        let data = input.get(5..).unwrap_or_default();
+        // UnityPy helpers/CompressionHelper.py:28-31
+        let lc = u32::from(props % 9);
+        let rest = u32::from(props / 9);
+        let (pb, lp) = (rest / 5, rest % 5);
+        let first = u64::from(uncompressed).clamp(LZMA_FIRST_DICT_MIN, LZMA_FIRST_DICT_MAX);
+        let mut dict = u32::try_from(first).unwrap_or(u32::MAX).min(named);
+        let start = out.len();
+        loop {
+            match lzma_attempt([lc, lp, pb], dict, data, uncompressed, out) {
+                Err(LzmaFail::Data(produced))
+                    if dict < named
+                        && u64::try_from(produced).unwrap_or(u64::MAX) >= u64::from(dict) =>
+                {
+                    out.truncate(start);
+                    let wider = u64::try_from(produced)
+                        .unwrap_or(u64::MAX)
+                        .saturating_mul(2)
+                        .max(u64::from(dict).saturating_mul(2));
+                    dict = u32::try_from(wider).unwrap_or(u32::MAX).min(named);
+                }
+                Err(LzmaFail::Data(_)) => return Err(lzma_error("LZMAError: Corrupt input data")),
+                Err(LzmaFail::Other(e)) => return Err(e),
+                Ok(()) => return Ok(Decoded::Written),
+            }
+        }
+    }
+}
+
+fn lzma_error(detail: &str) -> Error {
+    Error::Decompress {
+        codec: Codec::Lzma,
+        detail: detail.into(),
+    }
+}
+
+enum LzmaFail {
+    /// `LZMA_DATA_ERROR` after this many bytes of output.
+    Data(usize),
+    /// Anything else.
+    Other(Error),
+}
+
+impl From<ChargeError> for LzmaFail {
+    fn from(e: ChargeError) -> Self {
+        Self::Other(e.into())
+    }
+}
+
+/// The window an LZMA decode grows its output by at most at once.
+const LZMA_WINDOW_MAX: usize = 1 << 20;
+
+/// One decode of an LZMA1 stream with dictionary `dict`, appended to `out`.
+fn lzma_attempt(
+    [lc, lp, pb]: [u32; 3],
+    dict: u32,
+    data: &[u8],
+    declared: u32,
+    out: &mut DecodeBuf,
+) -> Result<(), LzmaFail> {
+    use liblzma::stream::{Action, Filters, LzmaOptions, Status, Stream};
+
+    let other = |what: &str| LzmaFail::Other(lzma_error(what));
+    let map = |e: liblzma::stream::Error, produced: usize| match e {
+        liblzma::stream::Error::Data => LzmaFail::Data(produced),
+        liblzma::stream::Error::Options => other("LZMAError: Invalid or unsupported options"),
+        liblzma::stream::Error::Mem => other("MemoryError"),
+        _ => other("LZMAError: Internal error"),
+    };
+    // CPython's `parse_filter_spec_lzma` starts from the default preset and
+    // sets what the filter spec names.
+    let mut opts = LzmaOptions::new_preset(6).map_err(|e| map(e, 0))?;
+    opts.dict_size(dict)
+        .literal_context_bits(lc)
+        .literal_position_bits(lp)
+        .position_bits(pb);
+    let mut filters = Filters::new();
+    filters.lzma1(&opts);
+    let mut stream = Stream::new_raw_decoder(&filters).map_err(|e| map(e, 0))?;
+    let seg_start = out.len();
+    // The first window is the declared size, which a well-formed block
+    // fills exactly; a probe then finds the end without growing again.
+    let mut want = match usize::try_from(declared) {
+        Ok(0) | Err(_) => LZMA_WINDOW_MAX,
+        Ok(n) => n.min(LZMA_WINDOW_MAX),
+    };
+    let input_done =
+        |stream: &Stream| usize::try_from(stream.total_in()).unwrap_or(usize::MAX) >= data.len();
+    let rest = |stream: &Stream| {
+        let consumed = usize::try_from(stream.total_in()).unwrap_or(usize::MAX);
+        data.get(consumed..).unwrap_or_default()
+    };
+    // Whether the last call left the output full (Python then grows its
+    // buffer and calls again; here a one-byte probe asks first, so a
+    // well-formed block is never given room it does not fill).
+    let mut full = false;
+    loop {
+        let produced = out.len() - seg_start;
+        if full {
+            let mut probe = [0u8; 1];
+            let before = stream.total_out();
+            let status = stream
+                .process(rest(&stream), &mut probe, Action::Run)
+                .map_err(|e| map(e, produced))?;
+            if stream.total_out() > before {
+                out.extend_from_slice(&probe)?;
+            }
+            match status {
+                Status::StreamEnd => return Ok(()),
+                Status::MemNeeded if !input_done(&stream) => {
+                    return Err(other("LZMAError: Insufficient buffer space"));
+                }
+                _ => {}
+            }
+            // Nothing more and no input left ends it. No progress with input
+            // left: liblzma answers `LZMA_OK` once before `LZMA_BUF_ERROR`,
+            // so ask again with a window.
+            if stream.total_out() == before && input_done(&stream) {
+                return Ok(());
+            }
+            full = false;
+            continue;
+        }
+        // A window the meter or the block's cap refuses is retried smaller,
+        // down to one byte; a refused byte goes to the probe, which fails
+        // only if the stream has another byte to give.
+        let base = out.len();
+        let window = match out.grow_zeroed(want) {
+            Ok(w) => w,
+            Err(e) if want > 1 => {
+                want = refused_window(&e, want, produced);
+                continue;
+            }
+            Err(_) => {
+                full = true;
+                continue;
+            }
+        };
+        let room = window.len();
+        let before = stream.total_out();
+        let status = stream.process(rest(&stream), window, Action::Run);
+        let made = usize::try_from(stream.total_out() - before).unwrap_or(room);
+        out.truncate(base + made);
+        let status = status.map_err(|e| map(e, produced + made))?;
+        match status {
+            Status::StreamEnd => return Ok(()),
+            // `LZMA_BUF_ERROR` with no input left and room in the output is
+            // not an error in Python; with input left, it is.
+            Status::MemNeeded if !input_done(&stream) && made < room => {
+                return Err(other("LZMAError: Insufficient buffer space"));
+            }
+            _ => {}
+        }
+        if made == room {
+            // `avail_out == 0`.
+            full = true;
+            want = want.saturating_mul(2).min(LZMA_WINDOW_MAX);
+        } else if input_done(&stream) {
+            // `avail_in == 0`: a truncated stream yields what decoded.
+            return Ok(());
+        }
+    }
+}
+
+/// The next window after `want` bytes were refused with `e`, after
+/// `produced` bytes of this block: the room left under the block's cap when
+/// that is what refused, else half.
+fn refused_window(e: &ChargeError, want: usize, produced: usize) -> usize {
+    let half = (want / 2).max(1);
+    match e {
+        ChargeError::Limit(l) if l.kind == LimitKind::BlockOutput => {
+            let room = usize::try_from(l.max)
+                .unwrap_or(usize::MAX)
+                .saturating_sub(produced);
+            room.clamp(1, half)
+        }
+        _ => half,
     }
 }
 
@@ -332,16 +528,328 @@ impl BlockCodec for Lzma {
 pub struct Lz4;
 
 impl BlockCodec for Lz4 {
+    /// `lz4.block.decompress(data, uncompressed_size)` (python-lz4 4.4.4
+    /// over liblz4 1.9.4's `LZ4_decompress_safe`): a declared size above
+    /// `i32::MAX` is python-lz4's `OverflowError`; otherwise the block is
+    /// scanned with liblz4's exact control flow ([`lz4_run`]), which gives
+    /// its verdict and the output's length, and only then is the output
+    /// allocated (that length, charged) and decoded.
     fn decode(
         &self,
         input: &Bytes,
         uncompressed: u32,
         out: &mut DecodeBuf,
     ) -> Result<Decoded, Error> {
-        todo!()
+        let fail = |detail: String| Error::Decompress {
+            codec: Codec::Lz4,
+            detail: detail.into(),
+        };
+        let Ok(capacity) = i32::try_from(uncompressed) else {
+            return Err(fail(
+                "OverflowError: signed integer is greater than maximum".to_owned(),
+            ));
+        };
+        let capacity = usize::try_from(capacity).unwrap_or(0);
+        let lz4_error = |at: usize| {
+            fail(format!(
+                "LZ4BlockError: Decompression failed: corrupt input or insufficient space in \
+                 destination buffer. Error code: {}",
+                at.saturating_add(1)
+            ))
+        };
+        let n = lz4_run(input, capacity, None).map_err(lz4_error)?;
+        let dst = out.grow_zeroed(n)?;
+        lz4_run(input, capacity, Some(dst)).map_err(lz4_error)?;
+        Ok(Decoded::Written)
     }
 }
 
+// liblz4 1.9.4 (lz4.c) constants.
+const MINMATCH: usize = 4;
+const LASTLITERALS: usize = 5;
+const MFLIMIT: usize = 12;
+const FASTLOOP_SAFE_DISTANCE: usize = 64;
+const ML_MASK: usize = 15;
+const RUN_MASK: usize = 15;
+
+/// `read_variable_length` (lz4.c 1.9.4): the bytes at `*ip` summed while each
+/// is 255; an error (`rvl_error`) once `*ip` passes `limit`, or, with
+/// `initial_check`, when it starts at or past it. `limit` is signed: a
+/// limit below the input's start fails the first check.
+fn read_variable_length(
+    src: &[u8],
+    ip: &mut usize,
+    limit: isize,
+    initial_check: bool,
+) -> Option<usize> {
+    let past = |ip: usize| isize::try_from(ip).map_or(true, |i| i > limit);
+    if initial_check && isize::try_from(*ip).map_or(true, |i| i >= limit) {
+        return None;
+    }
+    let mut length = 0usize;
+    loop {
+        let s = *src.get(*ip)?;
+        *ip += 1;
+        length = length.saturating_add(usize::from(s));
+        if past(*ip) {
+            return None;
+        }
+        if s != 255 {
+            return Some(length);
+        }
+    }
+}
+
+/// Copies a match of `length` bytes at `offset` behind `op` within `dst`,
+/// byte by byte in LZ77 order; offset 0 writes zeros, as liblz4 does (it
+/// zeroes four bytes, then copies them onto themselves).
+fn copy_match(dst: &mut [u8], op: usize, offset: usize, length: usize) {
+    let end = op.saturating_add(length).min(dst.len());
+    if offset == 0 {
+        if let Some(d) = dst.get_mut(op..end) {
+            d.fill(0);
+        }
+        return;
+    }
+    let Some(src) = op.checked_sub(offset) else {
+        return;
+    };
+    let mut at = op;
+    while at < end {
+        // Each pass copies what is already final: up to `offset` bytes, then
+        // twice that, as the copied run lengthens.
+        let step = (at - src).min(end - at);
+        dst.copy_within(src..src + step, at);
+        at += step;
+    }
+}
+
+/// The LZ4 decoder's state: liblz4's `ip` and `op` as offsets, and the
+/// output when this pass writes one.
+struct Lz4State<'a, 'o> {
+    src: &'a [u8],
+    dst: Option<&'o mut [u8]>,
+    ip: usize,
+    op: usize,
+    /// `iend` and `oend`, signed as liblz4's pointer comparisons are.
+    iend: isize,
+    oend: isize,
+}
+
+/// Where the safe loop is entered.
+enum Lz4Entry {
+    /// The loop's top.
+    Top,
+    /// `safe_literal_copy`, with the token and the literal length.
+    Literals(usize, usize),
+    /// `safe_match_copy`, with the offset and the length (MINMATCH added).
+    Match(usize, usize),
+}
+
+fn signed(n: usize) -> isize {
+    isize::try_from(n).unwrap_or(isize::MAX)
+}
+
+impl Lz4State<'_, '_> {
+    fn token(&mut self) -> Result<usize, usize> {
+        let t = self.src.get(self.ip).copied().ok_or(self.ip)?;
+        self.ip += 1;
+        Ok(usize::from(t))
+    }
+
+    fn le16(&mut self) -> Result<usize, usize> {
+        let b = self
+            .src
+            .get(self.ip..self.ip.saturating_add(2))
+            .and_then(|b| <[u8; 2]>::try_from(b).ok())
+            .ok_or(self.ip)?;
+        self.ip += 2;
+        Ok(usize::from(u16::from_le_bytes(b)))
+    }
+
+    fn varlen(&mut self, limit: isize, initial_check: bool) -> Result<usize, usize> {
+        read_variable_length(self.src, &mut self.ip, limit, initial_check).ok_or(self.ip)
+    }
+
+    /// Copies `n` literals and advances both positions.
+    fn literals(&mut self, n: usize) {
+        if let (Some(d), Some(from)) = (
+            self.dst.as_deref_mut(),
+            self.src.get(self.ip..self.ip.saturating_add(n)),
+        ) && let Some(to) = d.get_mut(self.op..self.op.saturating_add(n))
+        {
+            to.copy_from_slice(from);
+        }
+        self.ip = self.ip.saturating_add(n);
+        self.op = self.op.saturating_add(n);
+    }
+
+    /// Copies a match and advances the output.
+    fn copy(&mut self, offset: usize, n: usize) {
+        if let Some(d) = self.dst.as_deref_mut() {
+            copy_match(d, self.op, offset, n);
+        }
+        self.op = self.op.saturating_add(n);
+    }
+
+    /// The match length at `_copy_match` from the token's `mlen`, MINMATCH
+    /// added.
+    fn match_length(&mut self, mlen: usize) -> Result<usize, usize> {
+        let mut length = mlen;
+        if length == ML_MASK {
+            length += self.varlen(self.iend - signed(LASTLITERALS) + 1, false)?;
+        }
+        Ok(length + MINMATCH)
+    }
+
+    /// From the safe loop's literal copy (`cpy = op + length`, then
+    /// `safe_literal_copy`) through the match's offset and length; `None`
+    /// when this was the last sequence.
+    fn safe_literals(
+        &mut self,
+        token: usize,
+        length: usize,
+    ) -> Result<Option<(usize, usize)>, usize> {
+        let cpy = signed(self.op).saturating_add(signed(length));
+        let lit_end = signed(self.ip).saturating_add(signed(length));
+        if cpy > self.oend - signed(MFLIMIT) || lit_end > self.iend - signed(2 + 1 + LASTLITERALS) {
+            // The last sequence: it must end the input exactly and fit.
+            if lit_end != self.iend || cpy > self.oend {
+                return Err(self.ip);
+            }
+            self.literals(length);
+            return Ok(None);
+        }
+        self.literals(length);
+        let offset = self.le16()?;
+        let length = self.match_length(token & ML_MASK)?;
+        Ok(Some((offset, length)))
+    }
+
+    /// The fast loop, run while 64 bytes of output remain; where the safe
+    /// loop takes over.
+    fn fast_loop(&mut self) -> Result<Lz4Entry, usize> {
+        loop {
+            let token = self.token()?;
+            let mut length = token >> 4;
+            if length == RUN_MASK {
+                length += self.varlen(self.iend - signed(RUN_MASK), true)?;
+                if signed(self.op).saturating_add(signed(length)) > self.oend - 32
+                    || signed(self.ip).saturating_add(signed(length)) > self.iend - 32
+                {
+                    return Ok(Lz4Entry::Literals(token, length));
+                }
+            } else if signed(self.ip) > self.iend - (16 + 1) {
+                return Ok(Lz4Entry::Literals(token, length));
+            }
+            self.literals(length);
+            let offset = self.le16()?;
+            let mut length = token & ML_MASK;
+            if length == ML_MASK {
+                length += self.varlen(self.iend - signed(LASTLITERALS) + 1, false)? + MINMATCH;
+                if offset > self.op {
+                    return Err(self.ip);
+                }
+            } else {
+                length += MINMATCH;
+            }
+            if signed(self.op).saturating_add(signed(length))
+                >= self.oend - signed(FASTLOOP_SAFE_DISTANCE)
+            {
+                return Ok(Lz4Entry::Match(offset, length));
+            }
+            if offset > self.op {
+                return Err(self.ip);
+            }
+            self.copy(offset, length);
+        }
+    }
+
+    /// The safe loop with its two-stage shortcut, from `entry`; the decoded
+    /// length.
+    fn safe_loop(&mut self, mut entry: Lz4Entry) -> Result<usize, usize> {
+        // liblz4's `shortiend` and `shortoend`.
+        let short_in = self.iend - 14 - 2;
+        let short_out = self.oend - 14 - 18;
+        loop {
+            let (offset, length) = match std::mem::replace(&mut entry, Lz4Entry::Top) {
+                Lz4Entry::Match(offset, length) => (offset, length),
+                Lz4Entry::Literals(token, length) => match self.safe_literals(token, length)? {
+                    Some(m) => m,
+                    None => return Ok(self.op),
+                },
+                Lz4Entry::Top => {
+                    let token = self.token()?;
+                    let mut length = token >> 4;
+                    if length != RUN_MASK
+                        && signed(self.ip) < short_in
+                        && signed(self.op) <= short_out
+                    {
+                        self.literals(length);
+                        let mlen = token & ML_MASK;
+                        let offset = self.le16()?;
+                        if mlen != ML_MASK && offset >= 8 && offset <= self.op {
+                            self.copy(offset, mlen + MINMATCH);
+                            continue;
+                        }
+                        (offset, self.match_length(mlen)?)
+                    } else {
+                        if length == RUN_MASK {
+                            length += self.varlen(self.iend - signed(RUN_MASK), true)?;
+                        }
+                        match self.safe_literals(token, length)? {
+                            Some(m) => m,
+                            None => return Ok(self.op),
+                        }
+                    }
+                }
+            };
+            // `safe_match_copy`: the offset within the output, and the last
+            // LASTLITERALS bytes left to literals.
+            if offset > self.op {
+                return Err(self.ip);
+            }
+            if signed(self.op).saturating_add(signed(length)) > self.oend - signed(LASTLITERALS) {
+                return Err(self.ip);
+            }
+            self.copy(offset, length);
+        }
+    }
+}
+
+/// liblz4 1.9.4's `LZ4_decompress_generic` as `LZ4_decompress_safe` calls
+/// it (a full block, no dictionary), on x86-64, where `LZ4_FAST_DEC_LOOP`
+/// is on: the fast loop while 64 bytes of output remain, then the safe loop
+/// with its two-stage shortcut. Every check is liblz4's at liblz4's place, so
+/// the verdict is liblz4's; the copies are exact (liblz4's wild copies write
+/// past a copy's end, but only bytes a later copy overwrites or the result
+/// leaves out).
+///
+/// Returns the decoded length, or the input offset at which liblz4 fails (it
+/// returns `-(offset) - 1`). With `dst` (exactly the decoded length, from an
+/// earlier call without it), the output is written there.
+fn lz4_run(src: &[u8], output_size: usize, dst: Option<&mut [u8]>) -> Result<usize, usize> {
+    if output_size == 0 {
+        return if src == [0] { Ok(0) } else { Err(0) };
+    }
+    if src.is_empty() {
+        return Err(0);
+    }
+    let mut st = Lz4State {
+        src,
+        dst,
+        ip: 0,
+        op: 0,
+        iend: signed(src.len()),
+        oend: signed(output_size),
+    };
+    let entry = if st.oend >= signed(FASTLOOP_SAFE_DISTANCE) {
+        st.fast_loop()?
+    } else {
+        Lz4Entry::Top
+    };
+    st.safe_loop(entry)
+}
 #[cfg(test)]
 mod tests {
     use std::ops::Range;

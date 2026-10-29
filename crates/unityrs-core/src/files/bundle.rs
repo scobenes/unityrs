@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/BundleFile.py, UnityPy/files/File.py. See THIRD_PARTY_LICENSES.
 //! `BundleFile` (`files/BundleFile.py`), read lazily.
 //!
 //! [`BundleFile::open`] reads the header, blocks-info and directory and
@@ -76,29 +77,25 @@
 //!
 //! Owner: package C.
 
-// STUB(C): delete this allow when the module is implemented.
-#![allow(
-    clippy::todo,
-    clippy::unused_self,
-    clippy::needless_pass_by_value,
-    clippy::must_use_candidate,
-    clippy::missing_panics_doc,
-    unused_variables,
-    dead_code
-)]
-
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use bytes::Bytes;
 
-use crate::error::Error;
-use crate::files::{File, Parent};
-use crate::limits::{Charge, Meter, MeteredVec};
-use crate::once::ResultCell;
+use crate::budget::DecodeBuf;
+use crate::codec::{Codec, decode_block};
+use crate::detect::check_file_type;
+use crate::error::{Error, LimitKind, Unsupported};
+use crate::files::{File, Parent, ParentKind, parse_file};
+use crate::limits::{Charge, Meter, MeteredVec, heap_cost};
+use crate::once::{ResultCell, get_or_publish_result};
 use crate::options::FileContext;
 use crate::raw::RawStr;
-use crate::version::{FlagsClass, ResolvedVersion, VersionError};
+use crate::stream::{Endian, Reader, py_read};
+use crate::typetree::parse::string_to_null;
+use crate::version::{
+    FlagsClass, ResolvedVersion, VersionError, flags_class, resolve_bundle, uses_block_alignment,
+};
 
 /// Which of UnityPy's two readers a bundle takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -207,6 +204,10 @@ pub struct BundleFile {
     /// header's own slice, never a copy).
     charge: Charge,
     ctx: Arc<FileContext>,
+    /// Each block's stored bytes in `source`: the Python slice UnityPy read.
+    stored: Box<[Range<usize>]>,
+    /// This bundle, for its entries' [`ParentKind::Bundle`].
+    this: Weak<BundleFile>,
 }
 
 impl std::fmt::Debug for BundleFile {
@@ -230,11 +231,109 @@ impl BundleFile {
         meter: &Arc<Meter>,
         ctx: &Arc<FileContext>,
     ) -> Result<Arc<Self>, Error> {
-        todo!()
+        let mut charge = meter.charge(heap_cost(
+            u64::try_from(std::mem::size_of::<Self>() + 16).unwrap_or(u64::MAX),
+        ))?;
+        let mut r = Reader::new(&data, Endian::Big);
+        let FsHeader {
+            signature,
+            format,
+            version_player,
+            version_engine,
+            info_compressed,
+            info_uncompressed,
+            data_flags,
+            engine,
+            class,
+            encrypted,
+            block_alignment,
+        } = read_fs_header(&mut r, &data, ctx)?;
+        charge.grow(u64::try_from(engine.version.heap_bytes()).unwrap_or(u64::MAX))?;
+        // :133-139
+        let start = r.position();
+        let info_range = if data_flags & 0x80 != 0 {
+            let len = i128::try_from(data.len()).unwrap_or(i128::MAX);
+            py_read(
+                data.len(),
+                len - i128::from(info_compressed),
+                i64::from(info_compressed),
+            )
+            .0
+        } else {
+            let (range, pos) = py_read(data.len(), start, i64::from(info_compressed));
+            r.set_position(pos);
+            range
+        };
+        let info_read = u32::try_from(info_range.len()).unwrap_or(u32::MAX);
+        let blocks_info = BlockInfo {
+            uncompressed: info_uncompressed,
+            compressed: info_compressed,
+            bytes_read: info_read,
+            flags: data_flags,
+        };
+        let info = decode_one(
+            ctx,
+            meter,
+            data.slice(info_range),
+            info_uncompressed,
+            data_flags,
+            0,
+        )?;
+        let (blocks, directory) = read_blocks_info(&info, meter)?;
+        // :165-166
+        if class == FlagsClass::New && data_flags & 0x200 != 0 {
+            r.align(16);
+        }
+        // :168-178: the blocks, read in order from here.
+        let mut blocks = blocks;
+        let (stored, lengths) = stored_blocks(&mut blocks, &mut r, meter)?;
+        let files = files_dict(&directory, meter)?;
+        let mut entries: MeteredVec<ResultCell<File, Error>> = MeteredVec::new(meter);
+        for _ in 0..directory.len() {
+            entries.push(ResultCell::new())?;
+        }
+        let header = BundleHeader {
+            signature,
+            format,
+            version_player,
+            version_engine,
+            layout: LayoutKind::Fs,
+            engine_version: Some(Ok(engine)),
+            data_flags: Some(data_flags),
+            flags_class: Some(class),
+            block_alignment,
+            encrypted,
+            hash: None,
+            crc: None,
+            blocks_info: Some(blocks_info),
+        };
+        let blocks = keep(blocks, &mut charge)?;
+        let directory = keep(directory, &mut charge)?;
+        let files = keep(files, &mut charge)?;
+        let lengths = keep(lengths, &mut charge)?;
+        let entries = keep(entries, &mut charge)?;
+        let stored = keep(stored, &mut charge)?;
+        Ok(Arc::new_cyclic(|this| Self {
+            name,
+            source: data,
+            header,
+            blocks,
+            directory,
+            files,
+            parent,
+            lengths,
+            runs: Mutex::new(MeteredVec::new(meter)),
+            entries,
+            charge,
+            ctx: ctx.clone(),
+            stored,
+            this: this.clone(),
+        }))
     }
 
     /// The meter of the input it belongs to (of this open of it); its
     /// entries, nested bundles included, charge it too.
+    #[must_use]
     pub fn meter(&self) -> &Arc<Meter> {
         self.charge.meter()
     }
@@ -242,49 +341,58 @@ impl BundleFile {
     /// The input bytes it was opened on (for telling two handles on one
     /// input apart from two inputs: a resource read through `from`'s own
     /// handle, plan section 3.13).
+    #[must_use]
     pub fn source(&self) -> &Bytes {
         &self.source
     }
 
     /// The name it was opened under.
+    #[must_use]
     pub fn name(&self) -> &RawStr {
         &self.name
     }
 
     /// The header.
+    #[must_use]
     pub fn header(&self) -> &BundleHeader {
         &self.header
     }
 
     /// The blocks, in file order (`Fs` layout).
+    #[must_use]
     pub fn blocks(&self) -> &[BlockInfo] {
         &self.blocks
     }
 
     /// The directory, in file order, repeated paths kept.
+    #[must_use]
     pub fn directory(&self) -> &[DirEntry] {
         &self.directory
     }
 
     /// UnityPy's `files` dict, in order.
+    #[must_use]
     pub fn files(&self) -> &[FileSlot] {
         &self.files
     }
 
     /// The container this bundle is an entry of.
+    #[must_use]
     pub fn parent(&self) -> Option<&Parent> {
         self.parent.as_ref()
     }
 
     /// The context it was opened with.
+    #[must_use]
     pub fn context(&self) -> &Arc<FileContext> {
         &self.ctx
     }
 
     /// The sum of the blocks' *declared* decoded sizes: what a full decode is
     /// expected to cost. The actual total can differ (module docs).
+    #[must_use]
     pub fn uncompressed_size(&self) -> u64 {
-        todo!()
+        self.blocks.iter().map(|b| u64::from(b.uncompressed)).sum()
     }
 
     /// Directory entry `dir_index`'s bytes: the Python slice
@@ -292,7 +400,8 @@ impl BundleFile {
     /// negative indexes from the end, short at the end). Measures every block
     /// before the slice first (module docs).
     pub fn entry_bytes(&self, dir_index: usize) -> Result<Bytes, Error> {
-        todo!()
+        let span = self.entry_span(dir_index)?;
+        self.read_span(span.start, span.end)
     }
 
     /// A byte range of an entry (a `.resS` read), short at the end of the
@@ -301,7 +410,10 @@ impl BundleFile {
     /// otherwise decodes those blocks into a run it caches, so later ranges
     /// in the same blocks are slices of it.
     pub fn entry_range(&self, dir_index: usize, range: Range<u64>) -> Result<Bytes, Error> {
-        todo!()
+        let span = self.entry_span(dir_index)?;
+        let lo = span.start.saturating_add(range.start).min(span.end);
+        let hi = span.start.saturating_add(range.end).clamp(lo, span.end);
+        self.read_span(lo, hi)
     }
 
     /// Directory entry `dir_index`, detected and parsed (`parse_file`) and
@@ -310,7 +422,11 @@ impl BundleFile {
     /// its charge) is dropped. A parse the meter or the budget refuses is
     /// returned and not kept.
     pub fn entry(&self, dir_index: usize) -> Result<File, Error> {
-        todo!()
+        let cell = self
+            .entries
+            .get(dir_index)
+            .ok_or_else(|| no_entry(dir_index))?;
+        get_or_publish_result(cell, self.meter(), || self.parse_entry(dir_index)).cloned()
     }
 
     /// UnityPy's eager load (`File.read_files`, `File.py:76-90`): every block
@@ -318,6 +434,643 @@ impl BundleFile {
     /// directory included: its earlier entry can fail the bundle though the
     /// `files` dict keeps the later one); the first failure fails the bundle.
     pub fn load_all(&self) -> Result<(), Error> {
-        todo!()
+        // UnityPy files/BundleFile.py:168-178: `b"".join` of every block.
+        self.read_span(0, u64::MAX)?;
+        // UnityPy files/File.py:76-90
+        for i in 0..self.directory.len() {
+            if let File::Bundle(b) = self.entry(i)? {
+                b.load_all().map_err(|e| self.entry_error(i, e))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The entry's slice of the joined data, as joined offsets: `offset` and
+    /// `size` as UnityPy's `reader.Position = offset; reader.read(size)`. A
+    /// non-negative offset with a positive size needs no total (the end is
+    /// clamped as the read goes); anything else measures every block.
+    fn entry_span(&self, dir_index: usize) -> Result<Range<u64>, Error> {
+        let e = self
+            .directory
+            .get(dir_index)
+            .ok_or_else(|| no_entry(dir_index))?;
+        let u = |v: i64| u64::try_from(v).unwrap_or(0);
+        if e.size == 0 {
+            return Ok(0..0);
+        }
+        if e.offset >= 0 && e.size > 0 {
+            return Ok(u(e.offset)..u(e.offset).saturating_add(u(e.size)));
+        }
+        let total = self.measure_all()?;
+        let len = usize::try_from(total).unwrap_or(usize::MAX);
+        let (range, _) = py_read(len, i128::from(e.offset), e.size);
+        Ok(u64::try_from(range.start).unwrap_or(u64::MAX)
+            ..u64::try_from(range.end).unwrap_or(u64::MAX))
+    }
+
+    fn entry_error(&self, dir_index: usize, e: Error) -> Error {
+        match e {
+            Error::Entry { .. } | Error::Limit(_) | Error::Budget(_) => e,
+            e => Error::Entry {
+                name: self
+                    .directory
+                    .get(dir_index)
+                    .map(|d| d.path.clone())
+                    .unwrap_or_default(),
+                source: Box::new(e),
+            },
+        }
+    }
+
+    /// `parse_file` on the entry's bytes, its detection included, as
+    /// `File.read_files` calls it.
+    fn parse_entry(&self, dir_index: usize) -> Result<File, Error> {
+        let e = self
+            .directory
+            .get(dir_index)
+            .ok_or_else(|| no_entry(dir_index))?;
+        let bytes = self.entry_bytes(dir_index)?;
+        let wrap = |e| self.entry_error(dir_index, e);
+        let ty = check_file_type(&bytes, &self.ctx.limits).map_err(|d| wrap(Error::Detect(d)))?;
+        let parent = Parent {
+            name: self.name.clone(),
+            kind: ParentKind::Bundle {
+                version_engine: self.header.version_engine.clone(),
+                bundle: self.this.clone(),
+            },
+            depth: self
+                .parent
+                .as_ref()
+                .map_or(0, |p| p.depth)
+                .saturating_add(1),
+        };
+        parse_file(
+            e.path.clone(),
+            bytes,
+            ty,
+            Some(parent),
+            self.meter(),
+            &self.ctx,
+        )
+        .map_err(wrap)
+    }
+
+    /// Block `i`'s length, if known (an error is the block's kept failure).
+    fn known(&self, i: usize) -> Option<Result<u64, Error>> {
+        Some(
+            self.lengths
+                .get(i)?
+                .get()?
+                .as_ref()
+                .map(|n| *n)
+                .map_err(|k| k.error().clone()),
+        )
+    }
+
+    /// Decodes block `i` onto the end of `out` and records its length (a
+    /// failure the input decides is kept, a refusal is not): the length.
+    fn decode_into(&self, i: usize, out: &mut DecodeBuf) -> Result<u64, Error> {
+        let before = out.len();
+        let (Some(b), Some(range)) = (self.blocks.get(i), self.stored.get(i)) else {
+            return Err(no_entry(i));
+        };
+        let input = self.source.slice(range.clone());
+        let got = decode_block_into(
+            &self.ctx,
+            self.meter(),
+            input,
+            b.uncompressed,
+            u32::from(b.flags_u16()),
+            i,
+            out,
+        )
+        .map(|()| u64::try_from(out.len() - before).unwrap_or(u64::MAX));
+        if got.is_err() {
+            out.truncate(before);
+        }
+        let cell = self.lengths.get(i).ok_or_else(|| no_entry(i))?;
+        let mine = got?;
+        let published = *get_or_publish_result(cell, self.meter(), || Ok(mine))?;
+        if published != mine {
+            return Err(Error::Decompress {
+                codec: Codec::from_flags(u32::from(b.flags_u16())),
+                detail: format!("block {i} decoded to {mine} bytes, before to {published}").into(),
+            });
+        }
+        Ok(mine)
+    }
+
+    /// Decodes block `i` and records the outcome, keeping a failure the
+    /// input decides.
+    fn decode_or_keep(&self, i: usize, out: &mut DecodeBuf) -> Result<u64, Error> {
+        let got = self.decode_into(i, out);
+        if let (Err(e), Some(cell)) = (&got, self.lengths.get(i)) {
+            // A refusal (meter, budget) is not kept; anything else is.
+            let _ = get_or_publish_result(cell, self.meter(), || Err(e.clone()));
+        }
+        got
+    }
+
+    /// A run's buffer with room for `initial` bytes, which count as the
+    /// open's decode work as a block's growth does: the room is one growth
+    /// of a `BlockOutput` segment (uncapped until the first block's
+    /// `begin_block`), so it is charged, then counted, then allocated, and a
+    /// refusal counts nothing.
+    fn new_buf(&self, initial: u64) -> Result<DecodeBuf, Error> {
+        let mut buf = DecodeBuf::new(self.meter(), 0, u64::MAX, LimitKind::BlockOutput)?;
+        buf.reserve(usize::try_from(initial).unwrap_or(usize::MAX))?;
+        Ok(buf)
+    }
+
+    /// Every block's length, measured: unknown blocks are decoded with their
+    /// output discarded. The joined total.
+    fn measure_all(&self) -> Result<u64, Error> {
+        let mut total = 0u64;
+        for i in 0..self.blocks.len() {
+            let n = if let Some(n) = self.known(i) {
+                n?
+            } else {
+                let mut scratch = self.new_buf(0)?;
+                self.decode_or_keep(i, &mut scratch)?
+            };
+            total = total.saturating_add(n);
+        }
+        Ok(total)
+    }
+
+    /// The joined bytes `[lo, min(hi, total))`, as one pass over the blocks:
+    /// every block starting below `hi` gets a known length (decoding the
+    /// unknown ones; one wholly before `lo` is decoded with its output
+    /// discarded), the blocks overlapping the read form its span, and the
+    /// span is a cached run's slice, a slice of the input (consecutive
+    /// stored blocks), or decoded into a new run that is published.
+    fn read_span(&self, lo: u64, hi: u64) -> Result<Bytes, Error> {
+        let n = self.blocks.len();
+        let mut acc = 0u64;
+        let mut first: Option<(usize, u64)> = None;
+        // The run being decoded, from block `first`.
+        let mut buf: Option<DecodeBuf> = None;
+        let mut i = 0;
+        while i < n && acc < hi {
+            let len = if let Some(len) = self.known(i) {
+                let len = len?;
+                if acc.saturating_add(len) > lo && first.is_none() {
+                    first = Some((i, acc));
+                }
+                if let Some(b) = buf.as_mut() {
+                    self.decode_or_keep(i, b)?;
+                }
+                len
+            } else if first.is_none() {
+                // Perhaps wholly before the read: decoded on its own, kept
+                // as the run's start only when it reaches the read.
+                let mut scratch = self.new_buf(0)?;
+                let len = self.decode_or_keep(i, &mut scratch)?;
+                if acc.saturating_add(len) > lo {
+                    first = Some((i, acc));
+                    buf = Some(scratch);
+                }
+                len
+            } else {
+                if buf.is_none() {
+                    // Start the run with the span's known blocks so far.
+                    let mut b = self.new_buf(0)?;
+                    if let Some((f, _)) = first {
+                        for k in f..i {
+                            self.decode_or_keep(k, &mut b)?;
+                        }
+                    }
+                    buf = Some(b);
+                }
+                let b = buf.as_mut().ok_or_else(|| no_entry(i))?;
+                self.decode_or_keep(i, b)?
+            };
+            acc = acc.saturating_add(len);
+            i += 1;
+        }
+        let Some((first, first_at)) = first else {
+            return Ok(Bytes::new());
+        };
+        let end = i;
+        let from = usize::try_from(lo.saturating_sub(first_at)).unwrap_or(usize::MAX);
+        let to = usize::try_from(hi.min(acc) - first_at).unwrap_or(usize::MAX);
+        let run = if let Some(b) = buf {
+            self.publish(first, end, b.into_bytes()?)
+        } else if let Some(bytes) = self.cached(first, end, first_at)? {
+            bytes
+        } else if let Some(bytes) = self.stored_span(first, end) {
+            bytes
+        } else {
+            let mut b = self.new_buf(acc - first_at)?;
+            for k in first..end {
+                self.decode_or_keep(k, &mut b)?;
+            }
+            self.publish(first, end, b.into_bytes()?)
+        };
+        let to = to.min(run.len());
+        Ok(run.slice(from.min(to)..to))
+    }
+
+    /// The joined offset where block `first` starts (every length before it
+    /// is known when a run starting there exists).
+    fn joined_start(&self, first: usize) -> Result<u64, Error> {
+        let mut at = 0u64;
+        for k in 0..first {
+            at = at.saturating_add(self.known(k).unwrap_or(Ok(0))?);
+        }
+        Ok(at)
+    }
+
+    /// A cached run covering blocks `first..end`, sliced to start at block
+    /// `first` (joined offset `first_at`).
+    fn cached(&self, first: usize, end: usize, first_at: u64) -> Result<Option<Bytes>, Error> {
+        let hit = {
+            let runs = self.runs.lock().unwrap_or_else(PoisonError::into_inner);
+            runs.as_slice()
+                .iter()
+                .find(|(f, e, _)| *f <= first && end <= *e)
+                .map(|(f, _, b)| (*f, b.clone()))
+        };
+        let Some((f, bytes)) = hit else {
+            return Ok(None);
+        };
+        let skip = first_at - self.joined_start(f)?;
+        let skip = usize::try_from(skip).unwrap_or(usize::MAX).min(bytes.len());
+        Ok(Some(bytes.slice(skip..)))
+    }
+
+    /// Blocks `first..end` as one slice of the input, when every one is
+    /// stored and each follows the previous in the input.
+    fn stored_span(&self, first: usize, end: usize) -> Option<Bytes> {
+        let mut at: Option<Range<usize>> = None;
+        for k in first..end {
+            let b = self.blocks.get(k)?;
+            if Codec::from_flags(u32::from(b.flags_u16())) != Codec::None {
+                return None;
+            }
+            let r = self.stored.get(k)?;
+            at = match at {
+                None => Some(r.clone()),
+                Some(a) if a.end == r.start || r.is_empty() => Some(a.start..a.end.max(r.end)),
+                Some(_) => return None,
+            };
+        }
+        at.map(|r| self.source.slice(r))
+    }
+
+    /// Publishes the run of blocks `first..end`: an equal run already there
+    /// answers instead, and runs it covers are dropped (after the lock).
+    fn publish(&self, first: usize, end: usize, bytes: Bytes) -> Bytes {
+        let mut dropped: Vec<(usize, usize, Bytes)> = Vec::new();
+        let out = {
+            let mut runs = self.runs.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((_, _, b)) = runs
+                .as_slice()
+                .iter()
+                .find(|(f, e, _)| *f == first && *e == end)
+            {
+                b.clone()
+            } else {
+                let all = runs.as_mut_slice();
+                let mut k = 0;
+                let mut keep_n = all.len();
+                while k < keep_n {
+                    if all.get(k).is_some_and(|(f, e, _)| first <= *f && *e <= end) {
+                        all.swap(k, keep_n - 1);
+                        keep_n -= 1;
+                    } else {
+                        k += 1;
+                    }
+                }
+                let tail: Vec<(usize, usize, Bytes)> = all
+                    .get_mut(keep_n..)
+                    .map(|t| {
+                        t.iter_mut()
+                            .map(|(f, e, b)| (*f, *e, std::mem::take(b)))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                dropped = tail;
+                runs.truncate(keep_n);
+                // A refused growth of the table keeps the run uncached.
+                let _ = runs.push((first, end, bytes.clone()));
+                bytes
+            }
+        };
+        drop(dropped);
+        out
+    }
+}
+
+/// Where each block's stored bytes are (`reader.read_bytes(compressedSize)`
+/// in order from `r`), its `bytes_read` set; and the length cells, a stored
+/// block's filled with what was read (`lambda cd, _ucs: cd`).
+#[allow(clippy::type_complexity)]
+fn stored_blocks(
+    blocks: &mut MeteredVec<BlockInfo>,
+    r: &mut Reader<'_>,
+    meter: &Arc<Meter>,
+) -> Result<(MeteredVec<Range<usize>>, MeteredVec<ResultCell<u64, Error>>), Error> {
+    let len = r.data().len();
+    let mut stored = MeteredVec::new(meter);
+    let mut lengths = MeteredVec::new(meter);
+    for b in blocks.as_mut_slice() {
+        let (range, pos) = py_read(len, r.position(), i64::from(b.compressed));
+        r.set_position(pos);
+        b.bytes_read = u32::try_from(range.len()).unwrap_or(u32::MAX);
+        stored.push(range)?;
+        let cell = ResultCell::new();
+        if Codec::from_flags(u32::from(b.flags_u16())) == Codec::None {
+            let _ = cell.set(Ok(u64::from(b.bytes_read)));
+        }
+        lengths.push(cell)?;
+    }
+    Ok((stored, lengths))
+}
+
+/// The header fields `read_fs` reads before the blocks-info section.
+struct FsHeader {
+    signature: RawStr,
+    format: u32,
+    version_player: RawStr,
+    version_engine: RawStr,
+    info_compressed: u32,
+    info_uncompressed: u32,
+    data_flags: u32,
+    engine: ResolvedVersion,
+    class: FlagsClass,
+    encrypted: bool,
+    block_alignment: bool,
+}
+
+/// `BundleFile.__init__` up to the signature dispatch, then `read_fs` up to
+/// the blocks-info section (`BundleFile.py:36-51`, `:93-131`); leaves `r` where
+/// blocks-info would start.
+fn read_fs_header(r: &mut Reader<'_>, data: &Bytes, ctx: &FileContext) -> Result<FsHeader, Error> {
+    // UnityPy files/BundleFile.py:36-39
+    let signature = string_to_null(r, data)?;
+    let format = r.read_u32()?;
+    let version_player = string_to_null(r, data)?;
+    let version_engine = string_to_null(r, data)?;
+    // :41-51
+    match signature.as_bytes() {
+        b"UnityArchive" => return Err(Error::Unsupported(Unsupported::UnityArchive)),
+        b"UnityWeb" | b"UnityRaw" if format != 6 => {
+            return Err(Error::Unsupported(Unsupported::WebRawLayout));
+        }
+        b"UnityWeb" | b"UnityRaw" | b"UnityFS" => {}
+        _ => {
+            return Err(Error::Malformed {
+                what: "bundle signature",
+                detail: "Unknown Bundle signature".into(),
+            });
+        }
+    }
+    // :94-105
+    let _size = r.read_i64()?;
+    let info_compressed = r.read_u32()?;
+    let info_uncompressed = r.read_u32()?;
+    let data_flags = r.read_u32()?;
+    if signature.as_bytes() != b"UnityFS" {
+        r.read_i8()?;
+    }
+    // :107-121
+    let engine = resolve_bundle(&version_engine, &ctx.version)?;
+    let class = flags_class(&engine.version)?;
+    // :123-124: the encryption flag, before the alignment.
+    let mask = match class {
+        FlagsClass::Old => 0x200,
+        FlagsClass::New => 0x1400,
+    };
+    let encrypted = data_flags & mask != 0;
+    if encrypted {
+        if ctx.decryptor.is_none() {
+            return Err(Error::Unsupported(Unsupported::Encrypted));
+        }
+        // `ArchiveStorageDecryptor(reader)`: a u32, then two vectors of
+        // 16 + 16 bytes and a skipped byte (UnityCN: P3).
+        r.read_u32()?;
+        for _ in 0..2 {
+            r.read_bytes_short(32);
+            r.set_position(r.position() + 1);
+        }
+    }
+    // :129-131
+    let block_alignment = uses_block_alignment(format, &engine.version)?;
+    if block_alignment {
+        r.align(16);
+    }
+    Ok(FsHeader {
+        signature,
+        format,
+        version_player,
+        version_engine,
+        info_compressed,
+        info_uncompressed,
+        data_flags,
+        engine,
+        class,
+        encrypted,
+        block_alignment,
+    })
+}
+
+/// The blocks-info and directory tables (`BundleFile.py:141-162`), read
+/// big-endian from the decoded section; paths are slices of it.
+fn read_blocks_info(
+    info: &Bytes,
+    meter: &Arc<Meter>,
+) -> Result<(MeteredVec<BlockInfo>, MeteredVec<DirEntry>), Error> {
+    let mut r = Reader::new(info, Endian::Big);
+    // The uncompressed-data hash, read and discarded (short at the end).
+    r.read_bytes_short(16);
+    let mut blocks = MeteredVec::new(meter);
+    for _ in 0..r.read_i32()?.max(0) {
+        let uncompressed = r.read_u32()?;
+        let compressed = r.read_u32()?;
+        let flags = u32::from(r.read_u16()?);
+        blocks.push(BlockInfo {
+            uncompressed,
+            compressed,
+            bytes_read: 0,
+            flags,
+        })?;
+    }
+    let mut directory = MeteredVec::new(meter);
+    for _ in 0..r.read_i32()?.max(0) {
+        let offset = r.read_i64()?;
+        let size = r.read_i64()?;
+        let flags = r.read_u32()?;
+        let path = string_to_null(&mut r, info)?;
+        directory.push(DirEntry {
+            offset,
+            size,
+            flags: Some(flags),
+            path,
+        })?;
+    }
+    Ok((blocks, directory))
+}
+
+/// UnityPy's `files` dict over the directory: each path at its first
+/// position, holding its last entry. Computed by sorting.
+fn files_dict(
+    dir: &MeteredVec<DirEntry>,
+    meter: &Arc<Meter>,
+) -> Result<MeteredVec<FileSlot>, Error> {
+    let rows = dir.as_slice();
+    let mut perm: MeteredVec<usize> = MeteredVec::with_capacity(meter, rows.len())?;
+    for i in 0..rows.len() {
+        perm.push(i)?;
+    }
+    let path = |i: &usize| rows.get(*i).map(|d| d.path.as_bytes()).unwrap_or_default();
+    perm.as_mut_slice().sort_by(|a, b| path(a).cmp(path(b)));
+    let mut groups: MeteredVec<(usize, usize)> = MeteredVec::new(meter);
+    let all = perm.as_slice();
+    let mut at = 0;
+    while let Some(first) = all.get(at) {
+        let mut last = *first;
+        let mut end = at + 1;
+        while let Some(next) = all.get(end).filter(|n| path(n) == path(first)) {
+            last = *next;
+            end += 1;
+        }
+        groups.push((*first, last))?;
+        at = end;
+    }
+    groups.as_mut_slice().sort_unstable_by_key(|g| g.0);
+    let mut files = MeteredVec::with_capacity(meter, groups.len())?;
+    for (first, last) in groups.as_slice() {
+        files.push(FileSlot {
+            name: rows.get(*first).map(|d| d.path.clone()).unwrap_or_default(),
+            dir_index: *last,
+        })?;
+    }
+    Ok(files)
+}
+
+/// `decompress_data` (`BundleFile.py:509-521`) on one block or the
+/// blocks-info section, as a whole buffer: a slice of the input for a stored
+/// one, else a charged decode.
+fn decode_one(
+    ctx: &FileContext,
+    meter: &Arc<Meter>,
+    input: Bytes,
+    uncompressed: u32,
+    flags: u32,
+    index: usize,
+) -> Result<Bytes, Error> {
+    let mut out = DecodeBuf::new(meter, 0, u64::MAX, LimitKind::InputMemory)?;
+    let (which, codec) = codec_for(ctx, flags)?;
+    let input = decrypted(ctx, meter, input, flags, which, index)?;
+    match decode_block(
+        which,
+        codec.as_ref(),
+        &input,
+        uncompressed,
+        &mut out,
+        ctx.limits.max_block_output,
+    )
+    .map_err(|e| with_codec(e, which))?
+    {
+        Some(slice) => Ok(slice),
+        None => Ok(out.into_bytes()?),
+    }
+}
+
+/// `decompress_data` on one block, appended to `out`.
+fn decode_block_into(
+    ctx: &FileContext,
+    meter: &Arc<Meter>,
+    input: Bytes,
+    uncompressed: u32,
+    flags: u32,
+    index: usize,
+    out: &mut DecodeBuf,
+) -> Result<(), Error> {
+    let (which, codec) = codec_for(ctx, flags)?;
+    let input = decrypted(ctx, meter, input, flags, which, index)?;
+    if let Some(slice) = decode_block(
+        which,
+        codec.as_ref(),
+        &input,
+        uncompressed,
+        out,
+        ctx.limits.max_block_output,
+    )
+    .map_err(|e| with_codec(e, which))?
+    {
+        out.extend_from_slice(&slice)?;
+    }
+    Ok(())
+}
+
+/// The registered codec for `flags & 0x3F`: LZHAM and an unknown type
+/// raise (`CompressionHelper.py:234-235`, `BundleFile.py:515-521`).
+fn codec_for(
+    ctx: &FileContext,
+    flags: u32,
+) -> Result<(Codec, Arc<dyn crate::codec::BlockCodec>), Error> {
+    let which = Codec::from_flags(flags);
+    match ctx.codecs.get(which) {
+        Some(c) => Ok((which, c.clone())),
+        None if which == Codec::Lzham => Err(Error::Unsupported(Unsupported::Lzham)),
+        None => Err(Error::Unsupported(Unsupported::Codec(which.id()))),
+    }
+}
+
+/// The block decrypted as UnityPy decrypts it (`flags & 0x100`, not
+/// stored), in place in a charged copy; the input as it is otherwise.
+// UnityPy files/BundleFile.py:512-513
+fn decrypted(
+    ctx: &FileContext,
+    meter: &Arc<Meter>,
+    input: Bytes,
+    flags: u32,
+    which: Codec,
+    index: usize,
+) -> Result<Bytes, Error> {
+    let Some(d) = ctx.decryptor.as_ref() else {
+        return Ok(input);
+    };
+    if flags & 0x100 == 0 || which == Codec::None {
+        return Ok(input);
+    }
+    let mut copy = DecodeBuf::new(meter, 0, u64::MAX, LimitKind::InputMemory)?;
+    let block = copy.grow_zeroed(input.len())?;
+    block.copy_from_slice(&input);
+    d.decrypt(block, index)?;
+    Ok(copy.into_bytes()?)
+}
+
+/// A decode error named by the block's codec (one codec may serve two ids).
+fn with_codec(e: Error, which: Codec) -> Error {
+    match e {
+        Error::Decompress { detail, .. } => Error::Decompress {
+            codec: which,
+            detail,
+        },
+        e => e,
+    }
+}
+
+fn no_entry(i: usize) -> Error {
+    Error::Malformed {
+        what: "bundle index",
+        detail: format!("no row {i}").into(),
+    }
+}
+
+/// A table as the bundle keeps it, its charge moved into the bundle's.
+fn keep<T>(table: MeteredVec<T>, charge: &mut Charge) -> Result<Box<[T]>, Error> {
+    let (b, c) = table.into_boxed_slice()?;
+    charge.absorb(c);
+    Ok(b)
+}
+
+impl BlockInfo {
+    /// A block's `u16` flags.
+    fn flags_u16(&self) -> u16 {
+        u16::try_from(self.flags & 0xFFFF).unwrap_or(0)
     }
 }

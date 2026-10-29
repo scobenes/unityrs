@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/WebFile.py. See THIRD_PARTY_LICENSES.
 //! `WebFile` (`files/WebFile.py:15-56`): `UnityWebData`/`TuanjieWebData`,
 //! plain, gzip or brotli. P3: until then [`WebFile::open`] returns
 //! [`crate::Unsupported::WebFile`]. The type exists now so `File` and the
@@ -5,21 +6,11 @@
 //!
 //! Owner: package C (P3 work; nothing to implement in P1 beyond the refusal).
 
-// STUB(C): delete this allow when the module is implemented.
-#![allow(
-    clippy::todo,
-    clippy::needless_pass_by_value,
-    clippy::must_use_candidate,
-    clippy::missing_panics_doc,
-    unused_variables,
-    dead_code
-)]
-
 use std::sync::Arc;
 
 use bytes::Bytes;
 
-use crate::error::Error;
+use crate::error::{Error, Unsupported};
 use crate::files::{DirEntry, Parent};
 use crate::limits::{Charge, Meter};
 use crate::options::FileContext;
@@ -68,25 +59,54 @@ impl WebFile {
         meter: &Arc<Meter>,
         ctx: &Arc<FileContext>,
     ) -> Result<Arc<Self>, Error> {
-        todo!()
+        let _ = (name, data, parent, meter, ctx);
+        Err(Error::Unsupported(Unsupported::WebFile))
     }
 
     /// The meter of the input it belongs to.
+    #[must_use]
     pub fn meter(&self) -> &Arc<Meter> {
         self.charge.meter()
     }
 
+    /// The name it was opened under.
+    #[must_use]
+    pub fn name(&self) -> &RawStr {
+        &self.name
+    }
+
+    /// Its decompressed bytes.
+    #[must_use]
+    pub fn data(&self) -> &Bytes {
+        &self.data
+    }
+
+    /// The container it is an entry of.
+    #[must_use]
+    pub fn parent(&self) -> Option<&Parent> {
+        self.parent.as_ref()
+    }
+
+    /// The context it was opened with.
+    #[must_use]
+    pub fn context(&self) -> &Arc<FileContext> {
+        &self.ctx
+    }
+
     /// The signature.
+    #[must_use]
     pub fn signature(&self) -> &RawStr {
         &self.signature
     }
 
     /// The packer.
+    #[must_use]
     pub fn packer(&self) -> WebPacker {
         self.packer
     }
 
     /// The directory (`flags` always `None`).
+    #[must_use]
     pub fn directory(&self) -> &[DirEntry] {
         &self.directory
     }
