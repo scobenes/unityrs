@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/UnityVersion.py, UnityPy/files/BundleFile.py, UnityPy/files/SerializedFile.py. See THIRD_PARTY_LICENSES.
 //! Unity versions with UnityPy's semantics, and UnityPy's two version chains.
 //!
 //! `UnityVersion.from_str` (`helpers/UnityVersion.py:62-88`) matches

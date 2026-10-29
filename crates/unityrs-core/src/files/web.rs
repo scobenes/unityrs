@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/WebFile.py. See THIRD_PARTY_LICENSES.
 //! `WebFile` (`files/WebFile.py:15-56`): `UnityWebData`/`TuanjieWebData`,
 //! plain, gzip or brotli. P3: until then [`WebFile::open`] returns
 //! [`crate::Unsupported::WebFile`]. The type exists now so `File` and the

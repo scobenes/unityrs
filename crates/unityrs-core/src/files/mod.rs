@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/ImportHelper.py, UnityPy/files/File.py. See THIRD_PARTY_LICENSES.
 //! Files: what `ImportHelper.parse_file` builds (`helpers/ImportHelper.py:127-156`).
 //!
 //! A [`File`] is a handle (`Arc`) on an immutable, parsed file. Containers
