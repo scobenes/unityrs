@@ -4,9 +4,27 @@ description = "Read and write Unity asset bundles, serialized files and typetree
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# The crate ports UnityPy 1.25.2 (MIT), so the MIT notice travels with it.
+# See THIRD_PARTY_LICENSES and docs/plans/core.md section 2.5.
+license = "(MIT OR Apache-2.0) AND MIT"
 repository.workspace = true
 authors.workspace = true
+
+# The dependency list is final for P1 (docs/plans/core.md section 7.1): work
+# packages do not add dependencies, so Cargo.lock never conflicts between them.
+[dependencies]
+# Zero-copy buffers: the input, each decoded block run, every entry, every
+# SerializedFile and every TypelessData value share one allocation.
+bytes = "=1.12.1"
+thiserror = "=2.0.21"
+# Block codecs (docs/spikes/lzma.md: liblzma static, pinned).
+liblzma = { version = "=0.4.9", features = ["static"] }
+lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-decode"] }
+# The full-stream gzip check of ImportHelper.check_file_type (rule 7).
+flate2 = "=1.1.10"
+
+[dev-dependencies]
+unityrs-testkit = { path = "../unityrs-testkit" }
 
 [lints]
 workspace = true

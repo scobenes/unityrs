@@ -1,0 +1,19 @@
+[package]
+name = "unityrs-testkit"
+description = "Synthetic Unity files built in code, for unityrs tests. Never game data."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# The testkit builds bytes only. It never depends on unityrs-core, so core's
+# tests can use it without a dependency cycle (docs/plans/core.md section 7.1).
+[dependencies]
+liblzma = { version = "=0.4.9", features = ["static"] }
+lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
+
+[lints]
+workspace = true

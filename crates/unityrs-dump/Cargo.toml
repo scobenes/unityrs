@@ -1,0 +1,28 @@
+[package]
+name = "unityrs-dump"
+description = "The canonical dump (docs/CANONICAL_DUMP.md): unityrs's L0-L3 records for comparison with UnityPy."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+unityrs-core = { path = "../unityrs-core" }
+# The raw-bytes rule's summaries (CANONICAL_DUMP section 3).
+sha2 = "=0.11.1"
+# Output streams; the oracle writes level 9 with mtime 0.
+flate2 = "=1.1.10"
+# `-j N`: inputs in parallel, written in order.
+rayon = "=1.12.0"
+# Reading a corpus index and the value-case files. Output JSON is written by
+# hand (CANONICAL_DUMP section 2), never through serde.
+serde_json = "=1.0.154"
+
+[dev-dependencies]
+unityrs-testkit = { path = "../unityrs-testkit" }
+
+[lints]
+workspace = true

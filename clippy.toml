@@ -1,0 +1,11 @@
+# Names from UnityPy and the Unity file formats that docs use as words.
+doc-valid-idents = [
+  "UnityPy", "UnityPyBoost", "UnityFS", "UnityWeb", "UnityRaw", "UnityArchive",
+  "UnityCN", "UnityWebData", "TuanjieWebData", "AssetStudio", "AssetRipper",
+  "SerializedFile", "SerializedType", "BundleFile", "WebFile", "AssetsFile",
+  "ResourceFile", "AssetBundle", "AssetInfo", "TypelessData", "MonoBehaviour",
+  "MonoScript", "ReferencedObject", "ReferencedObjectData",
+  "ManagedReferencesRegistry", "ClassIDType", "ObjectReader", "TypeTreeHelper",
+  "EndianBinaryReader", "LZ4HC", "PyO3",
+  "..",
+]

@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 unityrs-core = { path = "../unityrs-core" }
+unityrs-dump = { path = "../unityrs-dump" }
 
 [lints]
 workspace = true

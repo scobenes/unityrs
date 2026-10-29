@@ -39,6 +39,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
+name = "bytes"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+
+[[package]]
 name = "cc"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -532,6 +538,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "thiserror"
+version = "2.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -558,11 +584,32 @@ name = "unityrs-cli"
 version = "0.0.1"
 dependencies = [
  "unityrs-core",
+ "unityrs-dump",
 ]
 
 [[package]]
 name = "unityrs-core"
 version = "0.0.1"
+dependencies = [
+ "bytes",
+ "flate2",
+ "liblzma",
+ "lz4_flex 0.14.0",
+ "thiserror",
+ "unityrs-testkit",
+]
+
+[[package]]
+name = "unityrs-dump"
+version = "0.0.1"
+dependencies = [
+ "flate2",
+ "rayon",
+ "serde_json",
+ "sha2 0.11.1",
+ "unityrs-core",
+ "unityrs-testkit",
+]
 
 [[package]]
 name = "unityrs-spike-rabex"
@@ -579,6 +626,14 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+]
+
+[[package]]
+name = "unityrs-testkit"
+version = "0.0.1"
+dependencies = [
+ "liblzma",
+ "lz4_flex 0.14.0",
 ]
 
 [[package]]
