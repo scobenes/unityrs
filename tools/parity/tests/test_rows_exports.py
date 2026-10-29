@@ -1503,6 +1503,29 @@ class ExportRows(unittest.TestCase):
                     exported(kind, code)
                 self.assertIs(type(caught.exception), error)
             self.assertEqual(exported(kind, b"ABCDmain\0hello"), '"hello"')
+            # The reader looks for the NUL only within 32767 bytes of where the name starts (section 13): with none
+            # there it raises only when the code ends within that window; past it, the 32767 bytes are the name
+            # and the rest is the text.
+            for start in (b"ABCD", cafe + struct.pack("<i", 8)):
+                with self.subTest(kind=kind, start=start[:4]):
+                    with self.assertRaisesRegex(Exception, "^String not terminated$"):
+                        exported(kind, start + b"n" * 32767)
+                    self.assertEqual(exported(kind, start + b"n" * 32767 + b"x"), '"x"')
+                    self.assertEqual(exported(kind, start + b"n" * 32767 + b"x" * 7233), '"' + "x" * 7233 + '"')
+
+            # The header's offset P is never checked: the NUL is looked for in code[max(P, 0):max(P + 32767, 0)],
+            # and with none there the name is code[P:P + 32767] and the text code[P + 32767:], Python slices. With
+            # the NUL at 12: -8 and -32754 search from the code's start and find it; -32755 stops short of it, so
+            # the text starts at it; -32767 searches nothing and leaves the whole code, header included, which is
+            # not UTF-8, as -40000 does; -32768 leaves the last byte.
+            def at(offset, kind=kind):
+                return exported(kind, cafe + struct.pack("<i", offset) + b"main\0body")
+
+            self.assertEqual((at(-1), at(-8), at(-32754)), ('"body"',) * 3)
+            self.assertEqual((at(-32755), at(-32768)), ('"\0body"', '"y"'))
+            for offset in (-32767, -40000):
+                with self.assertRaisesRegex(UnicodeDecodeError, "byte 0xfe in position 0"):
+                    at(offset)
         # Local keywords are read only for versions in [201806140, 202012090); the reserved word from 201608170.
         for version, local in ((201806140, ["L"]), (202012089, ["L"]), (202012090, None), (201802150, None)):
             reader = EndianBinaryReader(subprogram(version, 4, b"c", ["K"], local) + b"\xff" * 4, endian="<")
@@ -1577,6 +1600,23 @@ class ExportRows(unittest.TestCase):
         old = load(tpk_file([(1, 48, data)], unity_version=b"5.4.6f3"))[0].objects[1].parse_as_object()
         with self.assertRaises(struct.error):
             old.export()
+        # A count whose low byte is 0x80 or more reads big-endian as negative (128 as -2147483648): the table is
+        # empty, no entry is read, and export raises the TypeError of a blob that parses. Export has no sub-program
+        # for any `GpuProgramIndex N` line, and raises IndexError.
+        for count in (128, 200, 255):
+            little = program([subprogram(201510240, 4, b"code")] * count, 8)
+            self.assertLess(struct.unpack(">i", little[:4])[0], 0)
+            packed_little = list(lz4.block.compress(little, store_size=False))
+            data = tpk_object(
+                48, "5.4.6f3", m_Name="old", m_Script="x", m_SubProgramBlob=packed_little, decompressedSize=len(little)
+            )
+            old = load(tpk_file([(1, 48, data)], unity_version=b"5.4.6f3"))[0].objects[1].parse_as_object()
+            with self.subTest(count=count), self.assertRaisesRegex(TypeError, "without an encoding"):
+                old.export()
+            got = SC.ShaderProgram(EndianBinaryReader(little), (5, 4, 6, 1))
+            self.assertEqual(got.m_SubPrograms, [])
+            with self.assertRaisesRegex(IndexError, "^list index out of range$"):
+                got.Export("GpuProgramIndex 0")
         # From 5.5 a Shader has no m_Script, so one with an empty compressedBlob takes the plain path and raises on
         # bytes(None): the plain path returns text for no version.
         for version in ("5.5.6f1", "2021.3.2f1"):
@@ -1593,6 +1633,11 @@ class ExportRows(unittest.TestCase):
         self.assertEqual(got.Export("Shader {\nGpuProgramIndex 0\n}"), 'Shader {\n"code"\n}')
         with self.assertRaisesRegex(ValueError, "'0 }'"):
             got.Export("Shader { GpuProgramIndex 0 }")
+        # N is read by Python's int and indexes the table as a list: past its end raises IndexError, a negative N
+        # counts from the end.
+        with self.assertRaisesRegex(IndexError, "^list index out of range$"):
+            got.Export("GpuProgramIndex 1")
+        self.assertEqual(got.Export("GpuProgramIndex -1"), '"code"')
 
     # Section 15.7: the bytes of Pillow's PNG writer with its defaults, rebuilt here from the PNG specification.
     def test_png_bytes(self):
