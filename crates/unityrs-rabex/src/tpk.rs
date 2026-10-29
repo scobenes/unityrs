@@ -298,8 +298,8 @@ pub enum TpkDataType {
 #[derive(Debug, Clone)]
 pub struct TpkTypeTreeBlob {
     pub creation_time: i64,
-    pub versions: Vec<UnityVersion>,
-    pub class_information: FxHashMap<ClassId, Vec<(UnityVersion, Option<UnityClass>)>>,
+    pub versions: Vec<TpkVersion>,
+    pub class_information: FxHashMap<ClassId, Vec<(TpkVersion, Option<UnityClass>)>>,
     pub common_string: TpkCommonString,
     pub node_buffer: Vec<TpkUnityNode>,
     pub string_buffer: Vec<String>,
@@ -308,7 +308,7 @@ pub struct TpkTypeTreeBlob {
 #[derive(Debug, Clone)]
 pub struct TpkClassInformation {
     pub id: i32,
-    pub classes: Vec<(UnityVersion, Option<UnityClass>)>,
+    pub classes: Vec<(TpkVersion, Option<UnityClass>)>,
 }
 impl TpkClassInformation {
     pub fn read<R: Read>(reader: &mut R) -> Result<TpkClassInformation> {
@@ -316,7 +316,7 @@ impl TpkClassInformation {
         let count = range_count(reader.read_i32::<LittleEndian>()?);
         let mut classes = Vec::new();
         for _ in 0..count {
-            let version = UnityVersion::read_tpk_encoding(reader)?;
+            let version = TpkVersion::read(reader)?;
             let has_class_data = reader.read_u8()? != 0;
             let class = has_class_data
                 .then(|| UnityClass::read(reader))
@@ -390,7 +390,7 @@ impl UnityClass {
 
 #[derive(Debug, Clone)]
 pub struct TpkCommonString {
-    pub version_information: Vec<(UnityVersion, u8)>,
+    pub version_information: Vec<(TpkVersion, u8)>,
     pub string_buffer_indices: Vec<u16>,
 }
 impl TpkCommonString {
@@ -398,7 +398,7 @@ impl TpkCommonString {
         let version_count = range_count(reader.read_i32::<LittleEndian>()?);
         let mut version_information = Vec::new();
         for _ in 0..version_count {
-            let version = UnityVersion::read_tpk_encoding(reader)?;
+            let version = TpkVersion::read(reader)?;
             let string_count = reader.read_u8()?;
             version_information.push((version, string_count));
         }
@@ -419,9 +419,10 @@ impl TpkCommonString {
         // above the target, is UnityPy's `get_item_for_version`; an
         // assertion that a backward scan agrees panicked on a list out of
         // order.
+        let target_version = TpkVersion::from(target_version);
         let mut ret = None;
         for (version, item) in &self.version_information {
-            if target_version >= version {
+            if target_version >= *version {
                 ret = Some(*item)
             } else {
                 break;
@@ -467,9 +468,25 @@ impl TpkUnityNode {
     }
 }
 
-impl UnityVersion {
-    fn read_tpk_encoding<R: Read>(reader: &mut R) -> Result<UnityVersion> {
-        let version = reader.read_u64::<LittleEndian>()?;
+/// F7 (unityrs): a version as a TPK stores it, the packed integer UnityPy
+/// keeps (`UnityVersion(UINT64)`, `Tpk.py:463-469`):
+/// `major << 48 | minor << 32 | build << 16 | type << 8 | number`. Every
+/// type byte is kept, so a version whose type rabex's [`UnityVersionType`]
+/// does not know (above 5) never fails the TPK; [`Self::unity_version`]
+/// builds rabex's view on request, and only that conversion can fail.
+/// Versions order as their integers, as UnityPy compares them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TpkVersion(pub u64);
+
+impl TpkVersion {
+    fn read<R: Read>(reader: &mut R) -> Result<TpkVersion> {
+        Ok(TpkVersion(reader.read_u64::<LittleEndian>()?))
+    }
+
+    /// rabex's [`UnityVersion`] for this version; an error for a type byte
+    /// above 5.
+    pub fn unity_version(self) -> Result<UnityVersion> {
+        let version = self.0;
         let major = ((version >> 48) & 0xFFFF) as u16;
         let minor = ((version >> 32) & 0xFFFF) as u16;
         let build = ((version >> 16) & 0xFFFF) as u16;
@@ -486,6 +503,21 @@ impl UnityVersion {
     }
 }
 
+/// A [`UnityVersion`] packed as a TPK packs it. Comparing the packed
+/// integers orders versions as `UnityVersion`'s fields did, a trailing
+/// string aside, which a TPK version never has.
+impl From<&UnityVersion> for TpkVersion {
+    fn from(v: &UnityVersion) -> TpkVersion {
+        TpkVersion(
+            (u64::from(v.major) << 48)
+                | (u64::from(v.minor) << 32)
+                | (u64::from(v.build) << 16)
+                | (u64::from(v.typ as u8) << 8)
+                | u64::from(v.build_number),
+        )
+    }
+}
+
 impl TpkTypeTreeBlob {
     pub fn from_reader<R: Read>(reader: &mut R) -> Result<TpkTypeTreeBlob> {
         let creation_time = reader.read_i64::<LittleEndian>()?;
@@ -494,7 +526,7 @@ impl TpkTypeTreeBlob {
         let version_count = struct_count(reader.read_i32::<LittleEndian>()?)?;
         let mut versions = Vec::new();
         for _ in 0..version_count {
-            versions.push(UnityVersion::read_tpk_encoding(reader)?);
+            versions.push(TpkVersion::read(reader)?);
         }
 
         let class_count = range_count(reader.read_i32::<LittleEndian>()?);
@@ -553,10 +585,11 @@ impl TpkTypeTreeBlob {
             return Ok(None);
         };
 
+        let target_version = TpkVersion::from(target_version);
         let Some(class) = version_classes
             .iter()
             .rev()
-            .find_map(|(version, class)| (target_version >= version).then_some(class))
+            .find_map(|(version, class)| (target_version >= *version).then_some(class))
             .and_then(Option::as_ref)
         else {
             return Ok(None);
@@ -982,6 +1015,10 @@ mod patch_tests {
         UnityVersion::new(major, 0, 0)
     }
 
+    fn tv(major: u16) -> TpkVersion {
+        TpkVersion::from(&v(major))
+    }
+
     /// `blob` with the `i32` at `at` set to `n`.
     fn with_count(blob: &Blob, at: impl Fn(&Offsets) -> usize, n: i32) -> Vec<u8> {
         let (mut bytes, offsets) = blob.write();
@@ -1221,7 +1258,7 @@ mod patch_tests {
     #[test]
     fn f3_the_common_string_count_scans_forward_as_unitypy_does() {
         let common = TpkCommonString {
-            version_information: vec![(v(5), 3), (v(3), 1), (v(7), 9)],
+            version_information: vec![(tv(5), 3), (tv(3), 1), (tv(7), 9)],
             string_buffer_indices: vec![],
         };
         // UnityPy stops at the first version above the target (5 > 4).
@@ -1298,6 +1335,66 @@ mod patch_tests {
         let release_only = tpk.get_typetree_node(ClassId(30), &v(2)).unwrap();
         assert_eq!(release_only.m_Type, "s0");
         assert_eq!(release_only.children[0].m_Name, "s3");
+    }
+
+    /// Versions whose type byte is 0-5, 6 and 255, in the blob's list, a
+    /// class's entries and the common-string table: each loads, and orders
+    /// as its integer, as UnityPy's `UnityVersion(int)` does.
+    #[test]
+    fn f7_a_version_of_any_type_byte_loads_and_orders_as_its_integer() {
+        let at = |typ: u64| (2 << 48) | (typ << 8) | 1;
+        let types = [0, 1, 2, 3, 4, 5, 6, 255];
+        let mut blob = one_class();
+        blob.versions = types.iter().map(|&t| at(t)).collect();
+        blob.classes = vec![(
+            1,
+            types
+                .iter()
+                .map(|&t| (at(t), Some(Class::both(0))))
+                .collect(),
+        )];
+        blob.common = types.iter().map(|&t| (at(t), 0)).collect();
+        let tpk = blob.read().unwrap();
+        assert_eq!(tpk.versions, types.map(|t| TpkVersion(at(t))));
+        let entries = &tpk.class_information[&ClassId(1)];
+        assert_eq!(entries.len(), 8);
+        assert_eq!(tpk.common_string.version_information.len(), 8);
+        // The view rabex's `UnityVersion` gives exists for types 0-5 only.
+        for (t, (version, _)) in types.iter().zip(entries) {
+            assert_eq!(version.unity_version().is_ok(), *t <= 5, "type {t}");
+        }
+        // 2.0.0x1 (type 5) is below 2.0.0 type 6, and 2.0.0p1 (type 4)
+        // below both: the picks a request at each makes.
+        let x1 = TpkVersion(at(5)).unity_version().unwrap();
+        assert!(tpk.get_typetree_node(ClassId(1), &x1).is_some());
+        assert!(TpkVersion(at(6)) > TpkVersion::from(&x1));
+        assert!(TpkVersion(at(255)) > TpkVersion(at(6)));
+        assert_eq!(tpk.common_string.get_count(&x1), Some(0));
+    }
+
+    #[test]
+    fn f7_packing_orders_versions_as_their_fields_did() {
+        let parse = |s: &str| s.parse::<UnityVersion>().unwrap();
+        let versions = [
+            "5.6.7f1",
+            "2018.4.2a3",
+            "2018.4.2b1",
+            "2018.4.2f1",
+            "2018.4.2p2",
+            "2018.4.3f1",
+            "2022.1.0f1",
+            "6000.0.50f1",
+        ];
+        for a in versions {
+            for b in versions {
+                let (va, vb) = (parse(a), parse(b));
+                assert_eq!(
+                    TpkVersion::from(&va).cmp(&TpkVersion::from(&vb)),
+                    va.partial_cmp(&vb).unwrap(),
+                    "{a} {b}"
+                );
+            }
+        }
     }
 
     #[test]
