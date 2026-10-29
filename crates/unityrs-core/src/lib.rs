@@ -150,6 +150,7 @@ const _: () = {
     send_sync::<limits::Meter>();
     send_sync::<limits::MeteredVec<u8>>();
     send_sync::<once::KeptError<Error>>();
+    send_sync::<once::ResultCell<u8, Error>>();
     send_sync::<dyn once::CellError>();
     send_sync::<object::ObjectRef>();
     send_sync::<options::FileContext>();
@@ -208,7 +209,8 @@ const _: () = {
 mod tests {
     use std::path::Path;
 
-    /// Every `pub struct`, `pub enum` and `pub trait` of the crate is named,
+    /// Every `pub struct`, `pub enum`, `pub union`, `pub trait` and `pub type`
+    /// of the crate is named,
     /// by its full module path, by a `send_sync` assertion
     /// (`unityrs_testkit::public_types`), so none can lose `Send + Sync`
     /// unnoticed, and a new type that shares a name with an asserted one

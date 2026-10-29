@@ -1,5 +1,7 @@
 //! The source scan behind plan section 3.16's rule: every public struct,
-//! enum and trait of a crate is asserted `Send + Sync`.
+//! enum, union, trait and type alias of a crate is asserted `Send + Sync`
+//! (an alias too: `pub type Shared = Rc<u8>` is a public type a caller
+//! holds, and round 5 found the scan blind to it).
 //!
 //! A type is named by its full module path (`files::bundle::BundleFile`),
 //! taken from its file's place under `src/` and any `pub mod name { … }` it
@@ -129,7 +131,13 @@ fn scan(file_module: &str, text: &str, declared: &mut Vec<String>, asserted: &mu
             }
         }
         if stack.iter().all(|m| m.public) {
-            for kw in ["pub struct ", "pub enum ", "pub trait "] {
+            for kw in [
+                "pub struct ",
+                "pub enum ",
+                "pub union ",
+                "pub trait ",
+                "pub type ",
+            ] {
                 if let Some(rest) = trimmed.strip_prefix(kw) {
                     declared.push(join(&module, &ident(rest)));
                 }
@@ -174,6 +182,26 @@ mod tests {
         );
         assert_eq!(d, ["env::resource::Permit", "env::resource::inner::E"]);
         assert!(a.contains("env::resource::Ok"));
+    }
+
+    #[test]
+    fn aliases_and_unions_are_public_types_too() {
+        // Round 5: `pub type` and `pub union` were not scanned, so a public
+        // alias of a type that is not `Send` passed.
+        let files = [
+            (
+                String::new(),
+                "const _: () = send_sync::<value::ListIx>();\n".to_owned(),
+            ),
+            (
+                "value".to_owned(),
+                "pub type ListIx = u32;\npub type NotShareable = std::rc::Rc<u8>;\npub union Bits { a: u32, b: f32 }\npub type Cell<T> = std::sync::OnceLock<T>;\n".to_owned(),
+            ),
+        ];
+        assert_eq!(
+            check(&files),
+            ["value::NotShareable", "value::Bits", "value::Cell"]
+        );
     }
 
     #[test]

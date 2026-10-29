@@ -8,14 +8,20 @@
 //! escape the engine's bound on threads. [`waits`] lists every line outside
 //! test code that names one of [`FORBIDDEN`]: a thread function by its path
 //! or bare (as a grouped or aliased import calls it), any use of
-//! `std::thread` but `available_parallelism`, an alias of it, a condition
-//! variable, a barrier, a channel or a thread pool.
+//! `std::thread` but `available_parallelism`, an alias of it, a spin hint
+//! (`std::hint::spin_loop`, the older `spin_loop_hint`), a condition
+//! variable, a barrier, a channel or a thread pool. A call token (one that
+//! ends in `(`) matches with a turbofish and with spaces before its
+//! parenthesis too (`spawn::<F, T>(`, `sleep (`).
 //!
 //! **Cells.** A value computed inside `OnceLock::get_or_init` (or a
 //! `LazyLock`, a `Once`) runs caller code with the cell locked, which a
 //! callback that reaches the same cell, or a thread holding Python's GIL,
 //! deadlocks on (plan 3.16). [`cell_fills`] lists every line outside test
-//! code and outside `once.rs` that fills a cell any other way than through
+//! code and outside the crate's own `src/once.rs` (that one file: a `once.rs`
+//! elsewhere in the tree is scanned) that names a cell-filling method or
+//! type, by any form of call, a turbofish's included, or as a path, so
+//! fills a cell any other way than through
 //! `once::get_or_publish` or `get_or_publish_result`, whose tests pin that
 //! only a move runs inside the cell. So every lazy value of the core, the
 //! stubs' included once they are written, goes through the tested helper.
@@ -42,8 +48,8 @@ use std::path::Path;
 
 /// What the core never names outside tests: thread starts, sleeps, parks,
 /// spins and scopes (by path, or bare as an import calls them), `std::thread`
-/// itself and its aliases (only `available_parallelism` is allowed),
-/// condition variables, barriers, channels, a thread pool.
+/// itself and its aliases (only `available_parallelism` is allowed), spin
+/// hints, condition variables, barriers, channels, a thread pool.
 pub const FORBIDDEN: &[&str] = &[
     "thread::spawn",
     "thread::scope",
@@ -60,6 +66,7 @@ pub const FORBIDDEN: &[&str] = &[
     "park_timeout(",
     "yield_now(",
     "scope(",
+    "spin_loop",
     "Condvar",
     "Barrier",
     "mpsc",
@@ -72,18 +79,20 @@ pub const FORBIDDEN: &[&str] = &[
 /// The one `std::thread` item the core may name: it starts nothing.
 const ALLOWED_THREAD: &str = "thread::available_parallelism";
 
-/// What fills a cell with caller code inside it, outside `once.rs`.
+/// What fills a cell with caller code inside it, outside `once.rs`: each
+/// named at the start of a word, whatever follows (a call, a turbofish, a
+/// path), so `call_once` names `call_once_force` too.
 pub const CELL_FILLS: &[&str] = &[
-    "get_or_init(",
-    "get_or_try_init(",
-    "get_mut_or_init(",
+    "get_or_init",
+    "get_or_try_init",
+    "get_mut_or_init",
     "LazyLock",
     "LazyCell",
     "call_once",
     "OnceCell",
 ];
 
-/// The file that holds the one cell helper.
+/// The file that holds the one cell helper, relative to `src`.
 const ONCE_FILE: &str = "once.rs";
 
 /// Every `file:line: token` under `src` where non-test code names a
@@ -96,23 +105,29 @@ pub fn waits(src: &Path) -> Vec<String> {
     scan_tree(src, |_| true, FORBIDDEN)
 }
 
-/// Every `file:line: token` under `src`, `once.rs` excepted, where non-test
-/// code fills a cell other than through the `once` helper ([`CELL_FILLS`]).
+/// Every `file:line: token` under `src`, `src/once.rs` itself excepted,
+/// where non-test code fills a cell other than through the `once` helper
+/// ([`CELL_FILLS`]).
 ///
 /// # Panics
 /// When `src` cannot be read (a test helper).
 #[must_use]
 pub fn cell_fills(src: &Path) -> Vec<String> {
-    scan_tree(src, |name| !name.ends_with(ONCE_FILE), CELL_FILLS)
+    scan_tree(src, |rel| rel != Path::new(ONCE_FILE), CELL_FILLS)
 }
 
-fn scan_tree(src: &Path, keep: impl Fn(&str) -> bool, tokens: &[&str]) -> Vec<String> {
+/// Scans every `.rs` file under `src` whose path relative to `src` `keep`
+/// accepts.
+fn scan_tree(src: &Path, keep: impl Fn(&Path) -> bool, tokens: &[&str]) -> Vec<String> {
     let mut files = Vec::new();
     collect(src, &mut files);
     files.sort();
     let mut found = Vec::new();
-    for (name, text) in files.iter().filter(|(name, _)| keep(name)) {
-        scan(name, text, tokens, &mut found);
+    for (name, text) in &files {
+        let path = Path::new(name);
+        if keep(path.strip_prefix(src).unwrap_or(path)) {
+            scan(name, text, tokens, &mut found);
+        }
     }
     found
 }
@@ -144,12 +159,53 @@ fn scan(name: &str, text: &str, tokens: &[&str], found: &mut Vec<String>) {
 
 /// Whether `line` names `token`: a token that starts with an identifier
 /// character must start a word there (`registry_scope(` is not `scope(`,
-/// `t::spawn(` is `spawn(`).
+/// `t::spawn(` is `spawn(`), and a call token (one ending in `(`) matches
+/// its name followed by spaces and a turbofish before the parenthesis too
+/// (`spawn::<F, T>(`, `sleep (`), but not a longer name (`spawned(`).
 fn names(line: &str, token: &str) -> bool {
     let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
     let word = token.bytes().next().is_some_and(ident);
-    line.match_indices(token)
-        .any(|(at, _)| !word || at == 0 || !ident(line.as_bytes()[at - 1]))
+    let (stem, call) = match token.strip_suffix('(') {
+        Some(stem) => (stem, true),
+        None => (token, false),
+    };
+    line.match_indices(stem).any(|(at, _)| {
+        let starts = !word || at == 0 || !ident(line.as_bytes()[at - 1]);
+        starts && (!call || opens_call(&line[at + stem.len()..]))
+    })
+}
+
+/// Whether `rest` (what follows a name) opens its call: spaces, an optional
+/// turbofish `::<…>` (nested angle brackets counted), spaces, then `(`.
+fn opens_call(rest: &str) -> bool {
+    let mut rest = rest.trim_start();
+    if let Some(generics) = rest.strip_prefix("::") {
+        let generics = generics.trim_start();
+        if !generics.starts_with('<') {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut end = None;
+        for (i, c) in generics.char_indices() {
+            match c {
+                '<' => depth += 1,
+                '>' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else {
+            // The turbofish runs past the line: a call split over lines.
+            return true;
+        };
+        rest = generics[end..].trim_start();
+    }
+    rest.starts_with('(')
 }
 
 /// What a byte of the source is.
@@ -488,6 +544,86 @@ mod tests {
     }
 
     #[test]
+    fn calls_with_a_turbofish_or_spaces_and_spin_hints_are_flagged() {
+        // Round 5: `spawn::<F, T>(` and `std::hint::spin_loop()` named no
+        // listed token.
+        assert_eq!(
+            run(
+                "use std::hint;\nfn go() {\n    spawn::<F, T>(f);\n    sleep (D);\n    hint::spin_loop();\n    rx.recv::<>();\n    x.wait :: < Vec<u8> > (g);\n}\n"
+            ),
+            [
+                "f.rs:3: spawn(",
+                "f.rs:4: sleep(",
+                "f.rs:5: spin_loop",
+                "f.rs:6: .recv(",
+                "f.rs:7: .wait(",
+            ]
+        );
+        assert_eq!(
+            run("fn go() {\n    core::sync::atomic::spin_loop_hint();\n}\n"),
+            ["f.rs:2: spin_loop"]
+        );
+        let none: [&str; 0] = [];
+        // A longer name, or a path that is not a call, is not a call.
+        assert_eq!(
+            run("fn go() { spawned(x); let s = sleep_ms; my_sleep::<u8>(1); }\n"),
+            none
+        );
+    }
+
+    #[test]
+    fn a_cell_filled_by_turbofish_path_or_force_is_flagged() {
+        // Round 5: `get_or_init::<_>(` and `call_once_force` passed the scan.
+        let mut found = Vec::new();
+        let text = "fn a(&self) -> &u8 {\n    self.cell.get_or_init::<_>(|| 1)\n}\nfn b(&self) -> &u8 {\n    self.cell.get_or_try_init::<_, E>(|| Ok(1)).unwrap()\n}\nfn c(o: &Once) {\n    o.call_once_force(|_| ());\n}\nfn d(c: &OnceLock<u8>) -> &u8 {\n    let f = OnceLock::get_or_init;\n    f(c, || 1)\n}\n";
+        scan("f.rs", text, CELL_FILLS, &mut found);
+        assert_eq!(
+            found,
+            [
+                "f.rs:2: get_or_init",
+                "f.rs:5: get_or_try_init",
+                "f.rs:8: call_once",
+                "f.rs:11: get_or_init",
+            ]
+        );
+    }
+
+    #[test]
+    fn only_the_crates_own_once_rs_is_exempt_from_the_cell_scan() {
+        // Round 5: the scan exempted every file whose path ended in
+        // `once.rs` (`src/files/bonce.rs`, `src/env/once.rs`).
+        let dir = std::env::temp_dir().join(format!(
+            "unityrs-waits-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let fill = "pub fn f(c: &std::sync::OnceLock<u8>) -> &u8 {\n    c.get_or_init(|| 1)\n}\n";
+        std::fs::create_dir_all(dir.join("env")).unwrap();
+        std::fs::create_dir_all(dir.join("files")).unwrap();
+        for f in ["once.rs", "env/once.rs", "files/bonce.rs", "lib.rs"] {
+            std::fs::write(dir.join(f), fill).unwrap();
+        }
+        let found = super::cell_fills(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let rel: Vec<String> = found
+            .iter()
+            .map(|f| {
+                let f = f.strip_prefix(&dir.display().to_string()).unwrap();
+                f.trim_start_matches(std::path::MAIN_SEPARATOR).to_owned()
+            })
+            .collect();
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            rel,
+            [
+                format!("env{sep}once.rs:2: get_or_init"),
+                format!("files{sep}bonce.rs:2: get_or_init"),
+                "lib.rs:2: get_or_init".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
     fn a_cell_filled_with_its_value_inside_is_flagged_and_its_helper_is_not() {
         // Plan 4.1 (round 4): a lazy value computed inside its cell runs
         // caller code with the cell locked; only `once.rs` may call
@@ -495,7 +631,7 @@ mod tests {
         let mut found = Vec::new();
         let text = "fn entry(&self) -> &File {\n    self.cell.get_or_init(|| parse(self))\n}\nstatic T: LazyLock<u8> = LazyLock::new(|| 1);\n#[cfg(test)]\nmod tests { fn t() { c.get_or_init(|| 1); } }\n";
         scan("f.rs", text, CELL_FILLS, &mut found);
-        assert_eq!(found, ["f.rs:2: get_or_init(", "f.rs:4: LazyLock"]);
+        assert_eq!(found, ["f.rs:2: get_or_init", "f.rs:4: LazyLock"]);
     }
 
     #[test]
