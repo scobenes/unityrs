@@ -1659,10 +1659,12 @@ class ExportRows(unittest.TestCase):
         got = SC.ShaderProgram(EndianBinaryReader(blob), (5, 4, 6, 1))
         self.assertEqual(got.Export("Shader {\nGpuProgramIndex 0\n}"), 'Shader {\n"code"\n}')
         self.assertEqual(got.Export("Shader {\r\nGpuProgramIndex 0\r\n}"), 'Shader {\r\n"code"\n}')
-        for rest in ("0 ", "0\t", " 0", "\xa00\xa0", "+0", "0_0", "٠", "-1"):
+        # int() in base 10, not Python's integer-literal grammar: a sign and digits of any script fill, which no
+        # literal is, and a base prefix or a float is refused, which literals are.
+        for rest in ("0 ", "0\t", " 0", "\xa00\xa0", "+0", "0_0", "٠", "-1", "00", " 0 "):
             with self.subTest(rest=rest):
                 self.assertEqual(got.Export(f"GpuProgramIndex {rest}\nX"), '"code"\nX')
-        for rest in ("0 }", "0\rX", "0x0", "zero"):
+        for rest in ("0 }", "0\rX", "0x0", "0b0", "0o0", "0.0", "0e0", "0j", "1_", "_1", "zero"):
             with self.subTest(rest=rest), self.assertRaisesRegex(ValueError, "^invalid literal for int"):
                 got.Export(f"GpuProgramIndex {rest}")
         self.assertEqual(got.Export("GpuProgramIndex\t0"), "GpuProgramIndex\t0", "the regex wants one space")
@@ -1701,6 +1703,18 @@ class ExportRows(unittest.TestCase):
         for offset, message in ((-2, "^not enough data to unpack 4 bytes at offset -2$"), (-1000, "out of range")):
             with self.subTest(offset=offset), self.assertRaisesRegex(struct.error, message):
                 entry(offset)
+        # A sub-program whose fixed-width fields run past the blob's end raises struct.error, its offset inside the
+        # blob or not: the version at len - 2, a blob cut after the program type or inside the keyword count. One
+        # whose program type ShaderGpuProgramType lacks raises ValueError.
+        for offset, rest in ((12 + len(sub) - 2, sub), (12, sub[:8]), (12, sub[:22])):
+            with self.subTest(offset=offset, rest=len(rest)), self.assertRaisesRegex(struct.error, "^unpack_from"):
+                entry(offset, rest)
+        for kind in (32, 9999, -1):
+            with (
+                self.subTest(kind=kind),
+                self.assertRaisesRegex(ValueError, f"^{kind} is not a valid ShaderGpuProgramType$"),
+            ):
+                entry(12, subprogram(201510240, kind, b"abcd", ["K"], endian=">"))
 
         def raw(keywords, code_length):
             return (
@@ -1723,6 +1737,21 @@ class ExportRows(unittest.TestCase):
         old = load(tpk_file([(1, 48, data)], unity_version=b"5.4.6f3"))[0].objects[1].parse_as_object()
         with self.assertRaisesRegex(TypeError, "without an encoding"):
             old.export()
+        # Export raises the sub-program's own error before that TypeError: struct.error for fields past the blob's end,
+        # ValueError for a program type the enum lacks.
+        for subs, error in (([sub[:8]], struct.error), ([subprogram(201510240, 40, b"x", endian=">")], ValueError)):
+            blob_ = program(subs, 8, endian=">")
+            data = tpk_object(
+                48,
+                "5.4.6f3",
+                m_Name="old",
+                m_Script="GpuProgramIndex 0",
+                m_SubProgramBlob=list(lz4.block.compress(blob_, store_size=False)),
+                decompressedSize=len(blob_),
+            )
+            old = load(tpk_file([(1, 48, data)], unity_version=b"5.4.6f3"))[0].objects[1].parse_as_object()
+            with self.subTest(error=error.__name__), self.assertRaises(error):
+                old.export()
 
     # Section 15.7: the bytes of Pillow's PNG writer with its defaults, rebuilt here from the PNG specification.
     def test_png_bytes(self):

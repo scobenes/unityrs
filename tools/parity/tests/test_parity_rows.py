@@ -147,6 +147,7 @@ class TestColumn(unittest.TestCase):
                 "head_dicts_are_a_target_while_their_fixtures_are_planned",
                 "every_resolution_exception_is_listed",
                 "an_empty_path_raises_only_where_no_cab_answers_it",
+                "the_gpu_program_index_rule_is_int_in_base_10",
             }
             named = {name for module, name in cited if module == path.name}
             self.assertEqual(sorted(defined - named), [], f"tests no PARITY.md row names, in {path.name}")
@@ -277,6 +278,24 @@ class TestColumn(unittest.TestCase):
                 with self.subTest(name, line=line[:80]):
                     self.assertIn('CAB `""`', line)
         self.assertGreaterEqual(seen, 6)
+
+    def test_the_gpu_program_index_rule_is_int_in_base_10(self):
+        """`GpuProgramIndex N` fills where `int()` in base 10 takes the rest of the line, which is not Python's
+        integer-literal grammar (`+0` and `٠` fill, `0x0` raises; `test_rows_exports.py` shader_text): no line of
+        PARITY.md or DESIGN.md that speaks of such a line calls the rule a literal, and each that states the refusal
+        of a line the table cannot fill names `int()` in base 10."""
+        root = HERE.parent.parent
+        refusals = 0
+        for name, path in (("PARITY.md", root / "PARITY.md"), ("DESIGN.md", root / "docs" / "DESIGN.md")):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if "GpuProgramIndex" not in line:
+                    continue
+                with self.subTest(name, line=line[:80]):
+                    self.assertNotRegex(line, r"(?i)\bliteral")
+                    if "cannot fill, where" in line:  # the refusal, not a tier cell that names it
+                        refusals += 1
+                        self.assertIn("`int()` in base 10", line)
+        self.assertGreaterEqual(refusals, 2)
 
     def test_head_dicts_are_a_target_while_their_fixtures_are_planned(self):
         """Section 20's reading rows name the Unity 6000.4/6000.5 fixtures as planned, so no comparison with HEAD's
