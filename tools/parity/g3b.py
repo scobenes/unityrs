@@ -1,55 +1,83 @@
 #!/usr/bin/env python3
-"""G3b's verdict (docs/plans/core.md section 6): the mutated inputs the two dumps differ on, each with its reason.
+"""G3b's verdict (docs/plans/core.md section 6): every mutated input the two dumps differ on, and why.
 
-    python tools/parity/g3b.py ORACLE.jsonl.gz UNITYRS.jsonl.gz --inputs DIR \\
-        [--rerun ORACLE2.jsonl.gz] [--memory-cap BYTES] [-j N] [--list OUT.json]
+    python tools/parity/g3b.py ORACLE.jsonl.gz UNITYRS.jsonl.gz --inputs DIR --unityrs BINARY \\
+        [--tpk TPK] [-j N] [--rerun-cap BYTES] [--rerun-rss BYTES] [--list OUT.json]
 
-Runs in the oracle image (the crash check below loads UnityPy). Two inputs agree
-when every record of theirs does, notes stripped (compare.py's rule; compare.py
-itself still has to pass the dumps' format). Every input that differs gets one
-class:
+Runs in the oracle image: the re-runs below load UnityPy and run BINARY, the
+unityrs CLI that wrote UNITYRS (with `--tpk TPK` when it was given one).
 
-- `limit`: a unityrs record of the input carries a limit refusal (`limit <Kind>:`
-  or a memory budget refusal in its note), a `PARITY.md` safety divergence
-  (section 19.3 and the limits table).
-- `crash_non_utf8`: the oracle's record is the crash record of a UnityPyBoost
-  signal, and that input, dumped again with each typetree node's type and name
-  checked as UTF-8 before UnityPyBoost's constructor sees them, stops at a node
-  that is not, with the signal that member gives (`TypeTreeHelper.cpp:1112`, a
-  type: SIGSEGV; `:1218`, a name: SIGABRT): `docs/CANONICAL_DUMP.md` section
-  7's crash divergence. unityrs reads that node, hex-tagged, and records what
-  follows: the whole file, or the error it meets further on.
-- `memory_bound`: the oracle's crash record of a `MemoryError` under
-  `unitypy_dump.py --memory-cap` (the machine's limit, not UnityPy's answer),
-  where that input, dumped again under the same cap, meets the `MemoryError` at
-  one of `ALLOCATION_SITES`: an allocation UnityPy makes from a count or a
-  header before reading what it counts. Given the memory, UnityPy reads on and
-  fails where the bytes run out, as unityrs does without allocating: the
-  `PARITY.md` section 19.3 row "a count UnityPy allocates before it reads".
-- `out_of_memory`: such a crash record at any other site. `--rerun` takes a
-  dump of some inputs made under a larger cap and uses its records instead.
-  With unityrs at a limit the input is `limit`.
-- `other`: anything else, a bug until shown otherwise.
+First both dumps must pass compare.py's checks of their form: a format-1 header
+holding L0-L3, canonical lines in the canonical order, no record twice, an `end`
+record that counts what precedes it. The oracle's header must name the pinned
+stack, and the unityrs dump must not be one made with limits lifted (its
+producer's `unbounded`). Any failure there fails G3b.
 
-`--list` writes every differing input with its class. Exit status: 0 when every
-differing input is `limit`, `crash_non_utf8` or `memory_bound`, 1 otherwise, 2
-for a usage error.
+Two inputs agree when every record of theirs does, notes left out (compare.py's
+rule). An input that differs is admitted only for a reason checked on that
+input. The reference is the oracle's records, or, where the oracle's process
+died, UnityPy's records from a re-run (below). Classes:
+
+- `crash_non_utf8`: the oracle's process died of a UnityPyBoost signal. The
+  re-run gives each typetree node member that is not UTF-8 a stand-in of valid
+  UTF-8 before UnityPyBoost's constructor sees it (the member's valid prefix,
+  then a private-use tag), and maps the stand-ins back to the original bytes
+  wherever the dump writes a name, so UnityPy reads on as it would had the
+  bytes been valid. The first such member must give the signal the oracle died
+  of (`TypeTreeHelper.cpp:1112`, a type: SIGSEGV; `:1218`, a name: SIGABRT),
+  and unityrs's records must equal the re-run's: `docs/CANONICAL_DUMP.md`
+  section 7's crash divergence.
+- `memory_bound`: the oracle's process ran out of memory under its
+  `--memory-cap` (a `MemoryError`, or SIGKILL), and unityrs's records equal a
+  re-run's under `--rerun-cap`, with an old-format tree's children read as they
+  come instead of into a list of `children_count` placeholders (the one
+  allocation UnityPy touches before it reads; an LZMA dictionary and
+  UnityPyBoost's list for an array's count are reserved, not touched, so a
+  larger cap lets them by). Given the memory, UnityPy reads on and fails where
+  the bytes run out, as unityrs does without allocating: `PARITY.md` section
+  19.3, "a count UnityPy allocates before it reads".
+- `limit`: unityrs's records differ from the reference and carry limit
+  refusals (`limit <Kind>: <value> > <max>` in a note, each with value above
+  max). BINARY, run on the input alone, must reproduce the dump's records, and
+  run again with those limits lifted (`unityrs dump --unbounded`, adding each
+  limit that trips once another is lifted) must give the reference's records:
+  so the refusals are the whole difference, and each trips on this input.
+  `PARITY.md` section 19.3's limit rows.
+- `beyond_memory`: UnityPy has no answer within the re-run's bounds either
+  (its re-run ran out of memory, or passed `--rerun-rss`), after the oracle's
+  process ran out of memory (or died of the signal of a member that is not
+  UTF-8, as above). What still checks unityrs on such an input: its dump holds
+  its records, well-formed and canonical (the checks above), and each limit
+  refusal among them trips (value above max) and is reproduced by BINARY. What
+  the records hold is compared with nothing: the plan's G3b row states this
+  gap.
+- `other`: anything else, a bug until shown otherwise; also an input missing
+  from either dump.
+
+Each re-run runs in a process of its own under the address-space limit
+`--rerun-cap` (default 32 GiB), killed when its resident set passes
+`--rerun-rss` (default 1 GiB): a reservation is free, memory touched is not.
+`--list` writes every differing input with its class. Exit status: 0 when both
+dumps are well-formed and every differing input is admitted (`limit`,
+`crash_non_utf8`, `memory_bound`, `beyond_memory`), 1 otherwise, 2 when a dump
+cannot be read or a usage error.
 """
 
 from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import os
 import re
 import resource
 import signal
+import subprocess
 import sys
-import traceback
-from collections import Counter, defaultdict
-from multiprocessing import get_context
-from multiprocessing.connection import wait
+import tempfile
+import time
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -57,225 +85,488 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import canonical as C  # noqa: E402
 import compare  # noqa: E402
 
-LIMIT = re.compile(r"\blimit (\w+):|memory budget refused")
-ADMITTED = ("limit", "crash_non_utf8", "memory_bound")
-# Where UnityPy allocates from a count or a header before reading what it counts
-# (the innermost UnityPy frame of the MemoryError), as `path:line`.
-ALLOCATION_SITES = {
-    # An old-format tree's child count: `node.m_Children = [dummy_node] * children_count`.
-    "helpers/TypeTreeNode.py:107": "an old-format node's children_count",
-    # An LZMA block's dictionary size, from its 5-byte header: `lzma.LZMADecompressor(...)`.
-    "helpers/CompressionHelper.py:31": "an LZMA block's dictionary size",
-    # UnityPyBoost's list for an array's count (`PyList_New`) under `read_typetree_boost`.
-    "helpers/TypeTreeHelper.py:148": "an array's count, in UnityPyBoost",
-}
+ADMITTED = ("limit", "crash_non_utf8", "memory_bound", "beyond_memory")
+# A unityrs limit refusal (unityrs_core::LimitError's text).
+LIMIT = re.compile(r"\blimit (\w+): (\d+) > (\d+)")
+# The limits `unityrs dump --unbounded` lifts (unityrs_dump::LIFTABLE).
+LIFTABLE = (
+    "InputMemory",
+    "InputBytes",
+    "BlockOutput",
+    "DecodeWork",
+    "Inflate",
+    "ContainerDepth",
+    "TreeDepth",
+    "ValueDepth",
+    "ValuesPerObject",
+    "ZeroSizeElements",
+)
 # The signal UnityPyBoost dies of when a node's member is not UTF-8.
 SIGNAL_OF = {"m_Type": "SIGSEGV", "m_Name": "SIGABRT"}
+# The oracle's notes for a process that ran out of memory.
+OUT_OF_MEMORY = ("(MemoryError)", "died of SIGKILL")
 EXAMPLES = 20
+RERUN_CAP = 32 << 30
+RERUN_RSS = 1 << 30
+
+
+# ----------------------------------------------------------------- the dumps
+
+
+def stripped(rec):
+    """compare.strip_notes without recursion, so any depth the JSON parser takes: (rec without notes, the notes)."""
+    notes, root = [], [None]
+    stack = [(rec, root, 0)]
+    while stack:
+        v, parent, at = stack.pop()
+        if isinstance(v, dict):
+            out = {}
+            for k, x in v.items():
+                if k == "note":
+                    if isinstance(x, str):
+                        notes.append(x)
+                    continue
+                out[k] = None
+                stack.append((x, out, k))
+            parent[at] = out
+        elif isinstance(v, list):
+            out = [None] * len(v)
+            stack.extend((x, out, i) for i, x in enumerate(v))
+            parent[at] = out
+        else:
+            parent[at] = v
+    return root[0], notes
+
+
+def digest(rec):
+    """A record's content without its notes, as a digest, and its limit refusals as (kind, value, max)."""
+    body, notes = stripped(rec)
+    text = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+    limits = [(m[1], int(m[2]), int(m[3])) for n in notes for m in LIMIT.finditer(n)]
+    return hashlib.blake2b(text.encode("utf-8", "surrogatepass"), digest_size=16).digest(), limits
+
+
+class Input:
+    """One input's records in a dump: [(record key, digest)] in dump order, their limit refusals, and its crash:
+    "memory" or the signal's name when its record is a crash record (the only record of its input,
+    CANONICAL_DUMP.md section 4.2), else None."""
+
+    def __init__(self):
+        self.records, self.limits, self.crash = [], [], None
+
+    def add(self, rec):
+        d, limits = digest(rec)
+        self.records.append((compare.record_key(rec), d))
+        self.limits.extend(limits)
+        error = rec.get("error") if rec["rec"] == "file" else None
+        if isinstance(error, dict) and error.get("kind") == "crash":
+            note = error.get("note") or ""
+            m = re.search(r"died of (SIG\w+)", note)
+            self.crash = "memory" if any(s in note for s in OUT_OF_MEMORY) else (m[1] if m else note)
+
+
+def lines_of(data: bytes):
+    """A dump's lines: split at "\n" alone, as a JSON line may hold U+2028 or U+0085 unescaped."""
+    return [line for line in data.split(b"\n") if line]
+
+
+def inputs_of(lines, keep=None):
+    """{input: Input} for the file and object records among `lines`, keyed by the input's name as written."""
+    inputs = {}
+    for line in lines:
+        rec = json.loads(line)
+        if rec.get("rec") not in ("file", "object"):
+            continue
+        key = json.dumps(rec["file"][0])
+        if keep is None or key == keep:
+            inputs.setdefault(key, Input()).add(rec)
+    return inputs
 
 
 def load(path):
-    """Each input's file and object records, in dump order, keyed by the input's name as dumped."""
-    by_input = defaultdict(list)
+    """{input: Input} for a dump (its header and end skipped)."""
     opener = gzip.open if str(path).endswith(".gz") else open
     with opener(path, "rb") as f:
-        for line in f:
-            rec = json.loads(line)
-            if rec.get("rec") in ("file", "object"):
-                by_input[json.dumps(rec["file"][0])].append(rec)
-    return by_input
+        next(f, None)
+        return inputs_of(f)
 
 
-def notes(v, out):
-    if isinstance(v, dict):
-        for k, x in v.items():
-            if k == "note" and isinstance(x, str):
-                out.append(x)
-            else:
-                notes(x, out)
-    elif isinstance(v, list):
-        for x in v:
-            notes(x, out)
-    return out
+def form_problems(oracle, unityrs):
+    """compare.py's findings on the dumps' form, as {problem: count}; raises C.FormatError or CompareError."""
+    report, ha, hb, _ = compare.run(oracle, unityrs)
+    problems = Counter()
+    for (level, cls, path, kind), group in report.paths.items():
+        # The two end records' counts differ wherever the records do: a
+        # difference, not a fault of either dump's form (end_count is).
+        if cls == "end" and path.startswith("end.") and " (" not in path:
+            continue
+        if level == "format" or kind == "duplicate":
+            problems[f"{kind}: {path}"] += max(1, len(group["records"]))
+    for side, h in (("oracle", ha), ("unityrs", hb)):
+        if h.get("levels") != list(C.LEVELS):
+            problems[f"the {side} dump holds {h.get('levels')}, not L0-L3"] += 1
+    producer = hb.get("producer") if isinstance(hb.get("producer"), dict) else {}
+    if producer.get("unbounded"):
+        problems[f"the unityrs dump was made with limits lifted: {producer['unbounded']}"] += 1
+    return problems, hb
 
 
-def limit_of(records):
-    """The first limit a unityrs record of the input names, or None."""
-    for r in records:
-        for n in notes(r, []):
-            m = LIMIT.search(n)
-            if m:
-                return m.group(1) or "Budget"
-    return None
+# ------------------------------------------------------------------ re-runs
 
 
-def crash_of(records):
-    """("signal", NAME) or ("memory", None) when the oracle's only record is a crash record, else None."""
-    if len(records) != 1 or (records[0].get("error") or {}).get("kind") != "crash":
-        return None
-    note = records[0]["error"].get("note", "")
-    if "MemoryError" in note:
-        return ("memory", None)
-    m = re.search(r"died of (SIG\w+)", note)
-    return ("signal", m.group(1) if m else note)
-
-
-def input_path(root: Path, name) -> tuple[Path, str]:
-    """The input's file under `root`, and its name as the oracle's dump_input takes it."""
-    import unitypy_dump
-
-    raw = bytes.fromhex(name["hex"]) if isinstance(name, dict) else name.encode("utf-8")
-    return root / os.fsdecode(raw), unitypy_dump.name_of(raw)
-
-
-class NonUtf8Node(BaseException):
-    """Raised where UnityPyBoost's node constructor would crash: not an Exception, so no handler records it."""
-
-
-def memory_site(tb) -> str:
-    """The innermost UnityPy frame of a traceback, as `path:line` below the package, or "no UnityPy frame"."""
-    for frame in reversed(traceback.extract_tb(tb)):
-        path = frame.filename.replace(os.sep, "/")
-        if "/UnityPy/" in path:
-            return f"{path.rsplit('/UnityPy/', 1)[1]}:{frame.lineno}"
-    return "no UnityPy frame"
-
-
-def _probe(conn, path, rel, cap, mode):
-    """Dump one input again in this process, under `cap`, and send what `mode` asks.
-
-    "utf8": with UTF-8-checked typetree nodes, the member that is not UTF-8.
-    "memory": as the oracle ran it, the site of its MemoryError.
-    Else what happened.
-    """
-    import unitypy_dump
-
-    unitypy_dump.pin_none()
-    if cap:
-        resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
-    if mode == "memory":
-        try:
-            unitypy_dump.dump_input((str(path), rel, C.LEVELS))
-            result = "no MemoryError"
-        except MemoryError:
-            result = "site " + memory_site(sys.exc_info()[2])
-        except BaseException as e:  # noqa: BLE001 - reported, not judged
-            result = f"raised {type(e).__name__}"
-        conn.send(result)
-        conn.close()
-        return
-    node = sys.modules["UnityPy.helpers.TypeTreeNode"].TypeTreeNode
-    init = node.__init__
-
-    def checked(self, *args, **kwargs):
-        # TypeTreeNode_init's order: m_Type (get_node_data_type), then m_Name.
-        for i, key in ((1, "m_Type"), (2, "m_Name")):
-            v = args[i] if len(args) > i else kwargs.get(key)
-            if isinstance(v, str):
-                try:
-                    v.encode("utf-8")
-                except UnicodeEncodeError:
-                    raise NonUtf8Node(key) from None
-        init(self, *args, **kwargs)
-
-    node.__init__ = checked
+def resident(pid, page=os.sysconf("SC_PAGE_SIZE")):
     try:
-        unitypy_dump.dump_input((str(path), rel, C.LEVELS))
-        result = "no node that is not UTF-8"
-    except NonUtf8Node as e:
-        result = e.args[0]
-    except BaseException as e:  # noqa: BLE001 - reported, not judged
-        result = f"raised {type(e).__name__}"
-    conn.send(result)
-    conn.close()
+        with open(f"/proc/{pid}/statm") as f:
+            return int(f.read().split()[1]) * page
+    except (OSError, IndexError, ValueError):
+        return 0
 
 
-def probe_all(jobs, workers, cap):
-    """{input: _probe's result, or the signal its process died of}, at most `workers` at a time."""
-    ctx = get_context("fork")
-    results, running, todo = {}, {}, list(jobs)
+def run_all(jobs, workers, cap, rss):
+    """Runs each (key, argv, out) with stdout to `out`, at most `workers` at once, each under RLIMIT_AS `cap`
+    and killed once its resident set passes `rss`: {key: None when it exited 0, else why not}."""
+
+    hard = resource.getrlimit(resource.RLIMIT_AS)[1]
+    soft = cap if hard == resource.RLIM_INFINITY else min(cap, hard)
+
+    def limit():
+        resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
+
+    todo, running, results = list(reversed(jobs)), {}, {}
     while todo or running:
         while todo and len(running) < workers:
-            key, path, rel, mode = todo.pop()
-            recv, send = ctx.Pipe(duplex=False)
-            proc = ctx.Process(target=_probe, args=(send, path, rel, cap, mode), daemon=True)
-            proc.start()
-            send.close()
-            running[key] = (proc, recv)
-        ready = wait([recv for _, recv in running.values()])
-        for key, (proc, recv) in list(running.items()):
-            if recv not in ready:
+            key, argv, out = todo.pop()
+            with open(out, "wb") as fh, open(f"{out}.err", "wb") as err:
+                proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=fh, stderr=err, preexec_fn=limit)
+            running[key] = [proc, False]
+        for key, entry in list(running.items()):
+            proc, killed = entry
+            code = proc.poll()
+            if code is None:
+                if not killed and resident(proc.pid) > rss:
+                    proc.kill()
+                    entry[1] = True
                 continue
-            try:
-                results[key] = recv.recv()
-            except (EOFError, OSError):
-                results[key] = None
-            recv.close()
-            proc.join()
-            if results[key] is None:
-                code = proc.exitcode or 0
-                results[key] = f"died of {signal.Signals(-code).name}" if code < 0 else f"exited {code}"
             del running[key]
+            if killed:
+                results[key] = f"passed the resident bound of {rss} bytes"
+            elif code < 0:
+                try:
+                    results[key] = f"died of {signal.Signals(-code).name}"
+                except ValueError:
+                    results[key] = f"died of signal {-code}"
+            else:
+                results[key] = None if code == 0 else f"exited {code}"
+        if running:
+            time.sleep(0.005)
     return results
 
 
-def classify(oracle, unityrs, root, workers=1, cap=None):
-    """(counts, kinds, rows): each differing input's class and its detail."""
-    inputs = sorted(set(oracle) | set(unityrs))
-    rows, probes = {}, []
-    for key in inputs:
-        a, b = oracle.get(key, []), unityrs.get(key, [])
-        if [compare.strip_notes(r) for r in a] == [compare.strip_notes(r) for r in b]:
-            continue
-        crash, limit = crash_of(a), limit_of(b)
-        if crash and crash[0] == "signal":
-            probes.append((key, *input_path(root, json.loads(key)), "utf8"))
-            rows[key] = ("pending", crash[1])
-        elif limit:
-            rows[key] = ("limit", limit)
-        elif crash:
-            probes.append((key, *input_path(root, json.loads(key)), "memory"))
-            rows[key] = ("pending", "MemoryError")
-        else:
-            rows[key] = ("other", "records differ")
-    for key, result in probe_all(probes, workers, cap).items():
-        sig = rows[key][1]
-        if sig == "MemoryError":
-            site = result.removeprefix("site ")
-            if site in ALLOCATION_SITES:
-                rows[key] = ("memory_bound", ALLOCATION_SITES[site])
+def input_path(root: Path, name) -> tuple[Path, bytes]:
+    """The input's file under `root`, and its name's bytes."""
+    raw = bytes.fromhex(name["hex"]) if isinstance(name, dict) else name.encode("utf-8")
+    return root / os.fsdecode(raw), raw
+
+
+def glob_exact(raw: bytes) -> bytes:
+    """An fnmatch pattern that matches `raw` alone."""
+    special = {ord("["): b"[[]", ord("*"): b"[*]", ord("?"): b"[?]"}
+    return b"".join(special.get(b, bytes([b])) for b in raw)
+
+
+# The re-run of UnityPy, in a process of its own (`g3b.py --probe PATH NAME_HEX`).
+
+
+def probe_main(path, name_hex):
+    """Dumps one input as the oracle does, with UTF-8 stand-ins and an old-format tree read as it comes;
+    prints {"outcome", "first", "text"}: "ok" or why not, the first node member that was not UTF-8, the lines."""
+    import unitypy_dump
+
+    unitypy_dump.pin_none()
+    node = sys.modules["UnityPy.helpers.TypeTreeNode"].TypeTreeNode
+    init, stand_in, original, first = node.__init__, {}, {}, []
+
+    def valid(s):
+        if not isinstance(s, str):
+            return s, False
+        try:
+            s.encode("utf-8")
+            return s, False
+        except UnicodeEncodeError:
+            pass
+        if s not in stand_in:
+            cut = next(i for i, ch in enumerate(s) if "\ud800" <= ch <= "\udfff")
+            stand_in[s] = f"{s[:cut]}\ue000g3b{len(stand_in)}\ue001"
+            original[stand_in[s]] = s
+        return stand_in[s], True
+
+    def checked(self, *args, **kwargs):
+        # TypeTreeNode_init's order: m_Type (get_node_data_type), then m_Name.
+        args = list(args)
+        for i, key in ((1, "m_Type"), (2, "m_Name")):
+            if len(args) > i:
+                args[i], bad = valid(args[i])
+            elif key in kwargs:
+                kwargs[key], bad = valid(kwargs[key])
             else:
-                rows[key] = ("out_of_memory", f"re-run: {result}")
-        elif result in SIGNAL_OF and SIGNAL_OF[result] == sig:
-            rows[key] = ("crash_non_utf8", f"{result}: {sig}")
+                bad = False
+            if bad and not first:
+                first.append(key)
+        init(self, *args, **kwargs)
+
+    def parse(cls, reader, version):
+        # helpers/TypeTreeNode.py parse, but each child appended as it is read
+        # instead of `[dummy_node] * children_count` first: the same nodes,
+        # the same reads and the same error, without the up-front list.
+        dummy_root = cls(-1, "", "", 0, 0, [])
+        stack = [(dummy_root, 1)]
+        while stack:
+            parent, count = stack[-1]
+            if count == 1:
+                stack.pop()
+            else:
+                stack[-1] = (parent, count - 1)
+            child = cls(
+                m_Level=parent.m_Level + 1,
+                m_Type=reader.read_string_to_null(),
+                m_Name=reader.read_string_to_null(),
+                m_ByteSize=reader.read_int(),
+                m_VariableCount=reader.read_int() if version == 2 else None,
+                m_Index=reader.read_int() if version != 3 else None,
+                m_TypeFlags=reader.read_int(),
+                m_Version=reader.read_int(),
+                m_MetaFlag=reader.read_int() if version != 3 else None,
+            )
+            parent.m_Children.append(child)
+            children_count = reader.read_int()
+            if children_count > 0:
+                child.m_Children = []
+                stack.append((child, children_count))
+        return dummy_root.m_Children[0]
+
+    enc_name = C.enc_name
+    node.__init__ = checked
+    node.parse = classmethod(parse)
+    C.enc_name = lambda s: enc_name(original.get(s, s) if isinstance(s, str) else s)
+    raw = bytes.fromhex(name_hex)
+    try:
+        _, text, _, _ = unitypy_dump.dump_input((path, unitypy_dump.name_of(raw), C.LEVELS))
+        result = {"outcome": "ok", "text": text}
+    except MemoryError:
+        result = {"outcome": "out of memory", "text": None}
+    except BaseException as e:  # noqa: BLE001 - reported, not judged
+        result = {"outcome": f"raised {type(e).__name__}", "text": None}
+    result["first"] = first[0] if first else None
+    sys.stdout.write(json.dumps(result))
+    sys.stdout.flush()
+    return 0
+
+
+# --------------------------------------------------------------- the verdict
+
+
+class Verdict:
+    """Classifies each differing input; `rows` maps it to (class, detail)."""
+
+    def __init__(self, oracle, unityrs, args, version, scratch):
+        self.oracle, self.unityrs, self.root = oracle, unityrs, Path(args.inputs)
+        self.args, self.version, self.scratch = args, version, scratch
+        self.workers = max(1, args.jobs)
+        self.rows = {}
+
+    def run(self, jobs):
+        return run_all(jobs, self.workers, self.args.rerun_cap, self.args.rerun_rss)
+
+    def probes(self, keys):
+        """{input: (outcome, first member not UTF-8, Input or None)} from UnityPy's re-runs."""
+        jobs, files = [], {}
+        for i, key in enumerate(keys):
+            path, raw = input_path(self.root, json.loads(key))
+            files[key] = self.scratch / f"p{i}.json"
+            argv = [sys.executable, str(Path(__file__).resolve()), "--probe", str(path), raw.hex()]
+            jobs.append((key, argv, files[key]))
+        out = {}
+        for key, why in self.run(jobs).items():
+            if why is not None:
+                memory = why.startswith("passed the resident bound") or why == "died of SIGKILL"
+                out[key] = (f"out of memory ({why})" if memory else why, None, None)
+                continue
+            r = json.loads(files[key].read_bytes())
+            inp = inputs_of(lines_of(r["text"].encode("utf-8")), key).get(key, Input()) if r["text"] else None
+            out[key] = (r["outcome"], r["first"], inp)
+        return out
+
+    def unityrs_runs(self, wanted):
+        """{input: Input, or why not} from BINARY run on each input alone with the limits `wanted` names lifted."""
+        jobs, files = [], {}
+        for i, (key, kinds) in enumerate(wanted):
+            _, raw = input_path(self.root, json.loads(key))
+            files[key] = self.scratch / f"u{i}.jsonl"
+            argv = [self.args.binary, "dump", str(self.root), "--name", glob_exact(raw), "-o", str(files[key])]
+            argv += ["-q", "-j", "1"] + (["--tpk", self.args.tpk] if self.args.tpk else [])
+            argv += ["--unbounded", ",".join(kinds)] if kinds else []
+            jobs.append((key, argv, self.scratch / f"u{i}.out"))
+        results = {}
+        lifted = dict(wanted)
+        for key, why in self.run(jobs).items():
+            label = f"unityrs with {'+'.join(lifted[key])} lifted" if lifted[key] else "unityrs"
+            if why is not None:
+                results[key] = f"{label} {why}"
+                continue
+            lines = lines_of(files[key].read_bytes())
+            head = json.loads(lines[0]) if lines else {}
+            producer = head.get("producer") if isinstance(head.get("producer"), dict) else {}
+            if producer.get("unityrs") != self.version or tuple(producer.get("unbounded", ())) != lifted[key]:
+                results[key] = f"{label} wrote the producer {producer}, not the dump's unityrs {self.version}"
+            elif json.loads(lines[-1]).get("rec") != "end":
+                results[key] = f"{label} wrote no end record"
+            else:
+                results[key] = inputs_of(lines[1:], key).get(key, Input())
+        return results
+
+    def classify(self):
+        keys = sorted(set(self.oracle) | set(self.unityrs))
+        reference, reason, probe, beyond = {}, {}, [], []
+        for key in keys:
+            a, b = self.oracle.get(key), self.unityrs.get(key)
+            if a is not None and b is not None and a.records == b.records:
+                continue
+            if b is None:
+                self.rows[key] = ("other", "missing from the unityrs dump")
+            elif a is None:
+                self.rows[key] = ("other", "missing from the oracle dump")
+            elif a.crash:
+                probe.append(key)
+            else:
+                reference[key], reason[key] = a.records, None
+        for key, (outcome, first, inp) in self.probes(probe).items():
+            crash = self.oracle[key].crash
+            if crash == "memory":
+                why = ("memory_bound", "re-run under the larger cap")
+            elif first is not None and SIGNAL_OF[first] == crash:
+                why = ("crash_non_utf8", f"{first}: {crash}")
+            else:
+                self.rows[key] = ("other", f"oracle {crash}; the re-run: {outcome}, first member not UTF-8: {first}")
+                continue
+            if inp is None and outcome.startswith("out of memory"):
+                beyond.append((key, why[0]))
+            elif inp is None:
+                self.rows[key] = ("other", f"after {why[0]}: the re-run {outcome}")
+            elif inp.records == self.unityrs[key].records:
+                self.rows[key] = why
+            else:
+                reference[key], reason[key] = inp.records, why[0]
+        self.beyond(beyond)
+        self.limits(reference, reason)
+        return keys
+
+    def beyond(self, inputs):
+        """`beyond_memory`: no reference; a limit refusal of unityrs's must still trip, as BINARY reproduces it."""
+        check = []
+        for key, after in inputs:
+            found = self.unityrs[key].limits
+            bad = [f"{k}: {v} > {m}" for k, v, m in found if v <= m]
+            if bad:
+                self.rows[key] = ("other", f"after {after}, out of memory: a limit note that does not trip, {bad[0]}")
+            elif found:
+                check.append(key)
+            else:
+                self.rows[key] = ("beyond_memory", f"after {after}")
+        for key, got in self.unityrs_runs([(k, ()) for k in check]).items():
+            after = dict(inputs)[key]
+            why = self.not_reproduced(key, got)
+            if why:
+                self.rows[key] = ("other", f"after {after}, out of memory: {why}")
+            else:
+                kinds = "+".join(k for k in LIFTABLE if any(f[0] == k for f in self.unityrs[key].limits))
+                self.rows[key] = ("beyond_memory", f"after {after}; unityrs refuses at {kinds}")
+
+    def not_reproduced(self, key, got):
+        """Why BINARY's bounded re-run `got` is not the dump's records of `key` and their refusals, or None."""
+        if isinstance(got, str):
+            why = got
+        elif got.records != self.unityrs[key].records:
+            why = "other records"
+        elif sorted(got.limits) != sorted(self.unityrs[key].limits):
+            why = f"other limit refusals {sorted(got.limits)}"
         else:
-            rows[key] = ("other", f"oracle {sig}; re-run: {result}")
-    counts = Counter(cls for cls, _ in rows.values())
-    counts["agree"] = len(inputs) - len(rows)
-    kinds = Counter(f"{cls}: {detail}" for cls, detail in rows.values() if cls != "other")
-    return counts, kinds, rows
+            return None
+        return f"the unityrs binary does not reproduce the dump: {why}"
+
+    def limits(self, reference, reason):
+        """The `limit` check for each input whose unityrs records differ from its reference."""
+        kinds = {}
+        for key in reference:
+            ctx = f" (reference: UnityPy's re-run, {reason[key]})" if reason[key] else ""
+            found = self.unityrs[key].limits
+            bad = [f"{k}: {v} > {m}" for k, v, m in found if k not in LIFTABLE or v <= m]
+            if not found:
+                self.rows[key] = ("other", "records differ" + ctx)
+            elif bad:
+                self.rows[key] = ("other", f"a limit note that does not trip or cannot be lifted, {bad[0]}{ctx}")
+            else:
+                kinds[key] = tuple(k for k in LIFTABLE if any(f[0] == k for f in found))
+        # BINARY must reproduce the dump's records before its lifted runs mean anything.
+        for key, got in self.unityrs_runs([(k, ()) for k in kinds]).items():
+            why = self.not_reproduced(key, got)
+            if why:
+                self.rows[key] = ("other", why)
+                del kinds[key]
+        for _ in LIFTABLE:
+            more = {}
+            for key, got in self.unityrs_runs(list(kinds.items())).items():
+                lifted = "+".join(kinds[key])
+                ctx = f" (reference: UnityPy's re-run, {reason[key]})" if reason[key] else ""
+                if isinstance(got, str):
+                    self.rows[key] = ("other", got + ctx)
+                elif got.records == reference[key]:
+                    self.rows[key] = ("limit", lifted + (f", after {reason[key]}" if reason[key] else ""))
+                else:
+                    new = {k for k, v, m in got.limits if k in LIFTABLE and v > m} - set(kinds[key])
+                    if new:
+                        more[key] = tuple(k for k in LIFTABLE if k in new or k in kinds[key])
+                    else:
+                        self.rows[key] = ("other", f"records differ with {lifted} lifted{ctx}")
+            kinds = more
+        for key in kinds:  # unreachable: each round lifts one more of the ten
+            self.rows[key] = ("other", "limits still trip with every limit lifted")
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["--probe"] and len(argv) == 3:
+        return probe_main(argv[1], argv[2])
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("oracle")
     ap.add_argument("unityrs")
     ap.add_argument("--inputs", required=True, help="the folder both dumps read")
-    ap.add_argument("--rerun", help="an oracle dump of some inputs whose records replace the first dump's")
-    ap.add_argument("--memory-cap", type=int, help="the address-space limit of each re-run (as the oracle's)")
+    ap.add_argument("--unityrs", dest="binary", required=True, help="the unityrs CLI that wrote UNITYRS")
+    ap.add_argument("--tpk", help="the --tpk UNITYRS was written with")
+    ap.add_argument("--rerun-cap", type=int, default=RERUN_CAP, help="each re-run's address-space limit")
+    ap.add_argument("--rerun-rss", type=int, default=RERUN_RSS, help="each re-run's resident-set bound")
     ap.add_argument("-j", "--jobs", type=int, default=1)
     ap.add_argument("--list", help="write every differing input and its class to this JSON file")
     args = ap.parse_args(argv)
-    root = Path(args.inputs)
-    if not root.is_dir():
-        ap.error(f"--inputs {root}: not a folder")
-    oracle = load(args.oracle)
-    if args.rerun:
-        oracle.update(load(args.rerun))
-    counts, kinds, rows = classify(oracle, load(args.unityrs), root, max(1, args.jobs), args.memory_cap)
-    unadmitted = {k: v for k, v in rows.items() if v[0] not in ADMITTED}
+    if not Path(args.inputs).is_dir():
+        ap.error(f"--inputs {args.inputs}: not a folder")
+    try:
+        problems, hb = form_problems(args.oracle, args.unityrs)
+        oracle, unityrs = load(args.oracle), load(args.unityrs)
+    except (C.FormatError, compare.CompareError, OSError, ValueError) as e:
+        print(f"g3b: {e}", file=sys.stderr)
+        return 2
+    version = (hb.get("producer") or {}).get("unityrs")
+    with tempfile.TemporaryDirectory(prefix="g3b-") as scratch:
+        v = Verdict(oracle, unityrs, args, version, Path(scratch))
+        keys = v.classify()
+    rows = v.rows
+    counts = Counter(cls for cls, _ in rows.values())
+    counts["agree"] = len(keys) - len(rows)
+    kinds = Counter(f"{cls}: {detail}" for cls, detail in rows.values() if cls != "other")
+    unadmitted = {k: r for k, r in rows.items() if r[0] not in ADMITTED}
     report = {
-        "inputs": sum(counts.values()),
+        "inputs": len(keys),
+        "form": dict(sorted(problems.items())),
         "classes": dict(sorted(counts.items())),
         "kinds": dict(sorted(kinds.items())),
         "unadmitted": [{"input": json.loads(k), "class": c, "detail": d} for k, (c, d) in sorted(unadmitted.items())][
@@ -286,7 +577,7 @@ def main(argv=None):
     if args.list:
         with open(args.list, "w") as f:
             json.dump([{"input": json.loads(k), "class": c, "detail": d} for k, (c, d) in sorted(rows.items())], f)
-    return 1 if unadmitted else 0
+    return 1 if unadmitted or problems else 0
 
 
 if __name__ == "__main__":
