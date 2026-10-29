@@ -28,6 +28,15 @@ use std::sync::Arc;
 
 use unityrs_core::FileContext;
 
+/// The dump's public types are `Send + Sync`, as the core's are (plan
+/// section 3.16): `-j N` shares the options across rayon workers.
+const _: () = {
+    const fn send_sync<T: Send + Sync>() {}
+    send_sync::<Levels>();
+    send_sync::<DumpOptions>();
+    send_sync::<InputDump>();
+};
+
 /// Which levels to write beyond L0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
