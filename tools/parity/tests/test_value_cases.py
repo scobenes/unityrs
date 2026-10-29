@@ -6,8 +6,13 @@ The verdict tests are the spike's (crates/unityrs-spike-rabex/scripts/tests),
 on the copy. Needs UnityPy (the oracle image); skipped elsewhere.
 """
 
+import contextlib
+import io
 import json
+import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -103,6 +108,79 @@ class ValueCasesTests(unittest.TestCase):
                 self.assertIn(meta, I32)
                 self.assertIsInstance(ty, str)
                 self.assertIsInstance(name, str)
+
+
+# A stand-in for `unityrs values`: it answers each case of the cases file with
+# the oracle's own outcome, except as MODE says.
+FAKE = """\
+#!{python}
+import json, sys
+sys.path.insert(0, {parity!r})
+import value_cases
+MODE = {mode!r}
+cases = {{c["name"]: c for c in value_cases.CASES}}
+out = sys.stdout.buffer
+for c in json.load(open(sys.argv[2])):
+    o = value_cases.oracle(cases[c["name"]])
+    line = {{"name": c["name"], "kind": o["kind"], "bytes_read": o["bytes_read"], "value": o["value"],
+             "resave": o["resave"], "resave_hex": o["resave_hex"], "note": "\\u2028 kept \\u2029 \\x85"}}
+    if MODE == "wrong" and c["name"] == value_cases.CASES[0]["name"]:
+        line.update(kind="other", value=None)
+    if MODE == "missing" and c["name"] == value_cases.CASES[-1]["name"]:
+        continue
+    # As serde_json writes it: U+2028, U+2029 and U+0085 unescaped.
+    out.write(json.dumps(line, ensure_ascii=False).encode() + b"\\n")
+"""
+
+
+@unittest.skipIf(value_cases is None, "needs UnityPy (the oracle image)")
+class GateStatusTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-g2-"))
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def run_with(self, mode):
+        fake = self.tmp / f"fake-{mode}"
+        fake.write_text(FAKE.format(python=sys.executable, parity=str(HERE), mode=mode))
+        os.chmod(fake, 0o755)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            status = value_cases.main([str(fake)])
+        return status, out.getvalue(), err.getvalue()
+
+    def test_every_case_matching_passes(self):
+        # Each line carries U+2028, U+2029 and U+0085 inside a string: one line still.
+        status, out, _ = self.run_with("same")
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(out.splitlines()[-1])["l2"], {"match": len(value_cases.CASES)})
+
+    def test_a_case_that_differs_fails(self):
+        status, _, err = self.run_with("wrong")
+        self.assertEqual(status, 1)
+        self.assertIn(value_cases.CASES[0]["name"], err)
+
+    def test_a_case_left_unanswered_fails(self):
+        status, _, err = self.run_with("missing")
+        self.assertEqual(status, 1)
+        self.assertIn("not answered", err)
+
+    def test_the_answer_splits_at_newlines_only(self):
+        names = ["a", "b"]
+        out = '{"name":"a","note":"x\u2028y"}\n{"name":"b","note":"\u0085"}\n'.encode()
+        self.assertEqual(list(value_cases.parse_outcomes(out, names)), names)
+        with self.assertRaises(value_cases.ProtocolError):
+            value_cases.parse_outcomes(out[:-1], names)
+        with self.assertRaises(value_cases.ProtocolError):
+            value_cases.parse_outcomes(out + out, names)
+
+    def test_the_gate_fails_on_l2_and_l3_differences(self):
+        f = value_cases.gate_failures
+        self.assertEqual(f([{"case": "a", "l2": "match", "l3": "match"}]), [])
+        self.assertEqual(f([{"case": "a", "l2": "match", "l3": "not_resaved"}]), [])
+        self.assertEqual(f([{"case": "a", "l2": "match", "l3": "same_bytes"}]), [])
+        self.assertEqual(f([{"case": "a", "l2": "f32_snan_quieted", "l3": "match"}]), ["a"])
+        self.assertEqual(f([{"case": "a", "l2": "match", "l3": "differs"}]), ["a"])
+        self.assertEqual(f([{"case": "a", "l2": "differs", "l3": "one_side"}]), ["a"])
 
 
 if __name__ == "__main__":

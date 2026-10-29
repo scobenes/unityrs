@@ -3,6 +3,10 @@
 
     python tools/parity/value_cases.py UNITYRS_BINARY [--json OUT]
 
+G2 (docs/plans/core.md section 6): exit status 0 when every case's L2 verdict
+is "match" and none's L3 verdict is "differs" or "one_side"; 1 when one is,
+or when the binary's answer is not one well-formed line per case.
+
 A copy of the rabex spike's script (crates/unityrs-spike-rabex/scripts/
 value_cases.py, docs/spikes/rabex.md), pointed at unityrs; the spike keeps
 its own until it is removed. The corpus exercises one engine line, so each
@@ -490,16 +494,54 @@ def protocol_cases():
     ]
 
 
-def main():
+class ProtocolError(Exception):
+    """The binary's answer is not one JSON object line per case."""
+
+
+def parse_outcomes(out: bytes, names):
+    """`unityrs values`' stdout as {name: outcome}, one line per case.
+
+    Lines end at "\n" alone: a JSON string may hold U+2028, U+2029 or U+0085
+    unescaped (serde_json leaves them), where str.splitlines() would split.
+    """
+    if out and not out.endswith(b"\n"):
+        raise ProtocolError("the last line has no newline: the answer was cut short")
+    got = {}
+    for n, line in enumerate(out.split(b"\n")[:-1] if out else [], 1):
+        try:
+            rec = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as e:
+            raise ProtocolError(f"line {n} is not a JSON line: {e}") from e
+        if not isinstance(rec, dict) or not isinstance(rec.get("name"), str):
+            raise ProtocolError(f"line {n} is not an outcome object with a name")
+        if rec["name"] in got:
+            raise ProtocolError(f"case {rec['name']!r} is answered twice")
+        got[rec["name"]] = rec
+    missing, extra = [n for n in names if n not in got], sorted(set(got) - set(names))
+    if missing or extra:
+        raise ProtocolError(f"cases not answered: {missing}; answers to no case: {extra}")
+    return got
+
+
+def gate_failures(table):
+    """The cases G2 fails on: an L2 verdict other than "match", or an L3 verdict "differs" or "one_side"."""
+    return [t["case"] for t in table if t["l2"] != "match" or t["l3"] in ("differs", "one_side")]
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("binary", help="path to the unityrs binary")
     ap.add_argument("--json", help="write the table as JSON here")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "cases.json"
         path.write_text(json.dumps(protocol_cases()))
-        lines = subprocess.run([args.binary, "values", str(path)], check=True, capture_output=True, text=True).stdout
-    unityrs = {r["name"]: r for r in map(json.loads, lines.splitlines())}
+        out = subprocess.run([args.binary, "values", str(path)], check=True, capture_output=True).stdout
+    try:
+        unityrs = parse_outcomes(out, [c["name"] for c in CASES])
+    except ProtocolError as e:
+        print(f"value_cases: {e}", file=sys.stderr)
+        return 1
     table = []
     for c in CASES:
         o, r = oracle(c), unityrs[c["name"]]
@@ -523,7 +565,12 @@ def main():
     print(json.dumps(summary(table)))
     if args.json:
         Path(args.json).write_text(json.dumps(table, indent=1))
+    failed = gate_failures(table)
+    if failed:
+        print(f"value_cases: G2 fails on {len(failed)} case(s): {', '.join(failed)}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
