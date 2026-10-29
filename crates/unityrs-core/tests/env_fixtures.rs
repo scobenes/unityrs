@@ -3,7 +3,7 @@
 //! compared step by step with what UnityPy 1.25.2 recorded under `Eager`
 //! (but the one step `PARITY.md` section 19.2 decides otherwise, pinned
 //! here), and `Lazy` compared with `Eager` (identical on every scene but the
-//! ones the plan's differences (a)-(c) name, which `tests/env.rs` pins); and
+//! ones the plan's differences (a)-(c) name, which `tests/env/modes.rs` pins); and
 //! `str.lower`, `ntpath` and `reSplit` against Python.
 
 // Test code: a failed lookup is a failed test.
@@ -459,7 +459,7 @@ fn the_path_dict_keys_a_row_by_its_assets_file() {
 }
 
 /// The scenes on which `Lazy` differs from `Eager`, each by one of plan
-/// 3.13's differences (`tests/env.rs` pins what each difference is).
+/// 3.13's differences (`tests/env/modes.rs` pins what each difference is).
 const LAZY_DIFFERS: &[&str] = &[
     // (a): the failing entry fails only the reads that parse it.
     "bad_cab",
