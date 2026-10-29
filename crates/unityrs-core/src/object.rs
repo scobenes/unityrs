@@ -13,24 +13,18 @@
 //! Owner: package D. The constructor and getters are implemented by the
 //! scaffold.
 
-// STUB(D): delete this allow when the module is implemented.
-#![allow(
-    clippy::todo,
-    clippy::needless_pass_by_value,
-    clippy::must_use_candidate,
-    clippy::missing_panics_doc,
-    unused_variables
-)]
-
 use std::sync::Arc;
 
 use bytes::Bytes;
 
+use crate::budget::DecodeBuf;
+use crate::error::LimitKind;
 use crate::files::{ObjectInfo, SerializedFile, SerializedType};
-use crate::provider::TreeRef;
+use crate::provider::{TreeRef, TreeRequest, TreeSource};
+use crate::stream::py_read;
 use crate::typetree::Tree;
 use crate::value::Parsed;
-use crate::walk::{ParseError, WriteError, WriteRules};
+use crate::walk::{ParseError, ReadCtx, WriteCtx, WriteError, WriteRules, read_typetree};
 
 /// One object of a `SerializedFile`: the file and the index of its row
 /// (module docs).
@@ -65,16 +59,19 @@ impl ObjectRef {
     }
 
     /// The file it belongs to.
+    #[must_use]
     pub fn file(&self) -> &Arc<SerializedFile> {
         &self.file
     }
 
     /// Its index in [`SerializedFile::object_infos`].
+    #[must_use]
     pub fn index(&self) -> u32 {
         self.index
     }
 
     /// Its table row, read from the file's table (no copy).
+    #[must_use]
     pub fn info(&self) -> &ObjectInfo {
         usize::try_from(self.index)
             .ok()
@@ -83,24 +80,33 @@ impl ObjectRef {
     }
 
     /// `path_id`.
+    #[must_use]
     pub fn path_id(&self) -> i64 {
         self.info().path_id
     }
 
     /// `class_id`.
+    #[must_use]
     pub fn class_id(&self) -> i32 {
         self.info().class_id
     }
 
     /// The type record it resolves to, if any.
+    #[must_use]
     pub fn serialized_type(&self) -> Option<&SerializedType> {
         self.file.types().get(self.info().type_index?)
     }
 
     /// `get_raw_data`: `byte_size` bytes from `byte_start`, cut short at the
     /// end of the file (a slice of the file's buffer, no copy).
+    #[must_use]
     pub fn raw_data(&self) -> Bytes {
-        todo!()
+        // UnityPy files/ObjectReader.py:278-283: `reset()`, then
+        // `read_bytes(byte_size)`, a Python slice of the file.
+        let info = self.info();
+        let data = self.file.data();
+        let (range, _) = py_read(data.len(), info.byte_start, i64::from(info.byte_size));
+        data.slice(range)
     }
 
     /// The tree a read would use: `nodes` when given, else the type record's,
@@ -109,7 +115,34 @@ impl ObjectRef {
     /// `TypeTreeError`. The `MonoBehaviour` script hook needs the Environment
     /// to dereference `m_Script`: [`crate::env::Environment::object_tree`].
     pub fn tree(&self, nodes: Option<&Arc<Tree>>) -> Result<Option<TreeRef>, ParseError> {
-        todo!()
+        // UnityPy files/ObjectReader.py:285-307
+        if let Some(tree) = nodes {
+            return Ok(Some(TreeRef {
+                tree: tree.clone(),
+                source: TreeSource::Explicit,
+            }));
+        }
+        // :296-297: the type record's own tree, when it has one.
+        if let Some(st) = self.serialized_type()
+            && let Some(tree) = st.tree(&self.file.context().limits)
+        {
+            return Ok(Some(TreeRef {
+                tree: tree?,
+                source: TreeSource::Embedded,
+            }));
+        }
+        // :298-299: `get_typetree_node(class_id, version)`. A file below
+        // format 7 has no version (UnityPy's `assets_file.version` is unset,
+        // an `AttributeError`): no tree.
+        let Some(version) = self.file.version() else {
+            return Ok(None);
+        };
+        let req = TreeRequest {
+            class_id: self.class_id(),
+            version: &version.version,
+            script: None,
+        };
+        Ok(self.file.context().providers.lookup(&req)?)
     }
 
     /// `read_typetree(nodes, wrap=False, check_read)`.
@@ -118,7 +151,29 @@ impl ObjectRef {
         nodes: Option<&Arc<Tree>>,
         check_read: bool,
     ) -> Result<Parsed, ParseError> {
-        todo!()
+        // UnityPy files/ObjectReader.py:244-262
+        let Some(tree) = self.tree(nodes)? else {
+            return Err(ParseError::NoTypeTree {
+                class_id: self.class_id(),
+            });
+        };
+        let file = &self.file;
+        let options = file.context().read_options();
+        let ctx = ReadCtx {
+            endian: file.header().endian,
+            ref_types: file.ref_types_view(),
+            options: &options,
+            meter: file.meter(),
+        };
+        let info = self.info();
+        read_typetree(
+            file.data(),
+            info.byte_start,
+            info.byte_size,
+            &tree.tree,
+            &ctx,
+            check_read,
+        )
     }
 
     /// `parse_as_dict(check_read=check_read)`: [`Self::read_typetree`] with
@@ -136,7 +191,28 @@ impl ObjectRef {
         nodes: Option<&Arc<Tree>>,
         rules: WriteRules,
     ) -> Result<Bytes, WriteError> {
-        todo!()
+        // UnityPy files/ObjectReader.py:264-276
+        let tree = match self.tree(nodes) {
+            Ok(Some(t)) => t.tree,
+            // `_get_typetree_node` raised: the writer never ran.
+            Ok(None) | Err(_) => {
+                return Err(WriteError::Malformed(crate::raw::RawStr::from_static(
+                    b"no typetree",
+                )));
+            }
+        };
+        let file = &self.file;
+        let limits = file.context().limits;
+        let ctx = WriteCtx {
+            endian: file.header().endian,
+            ref_types: file.ref_types_view(),
+            rules,
+            limits: &limits,
+        };
+        let mut out = DecodeBuf::new(file.meter(), 0, u64::MAX, LimitKind::InputMemory)
+            .map_err(WriteError::Charge)?;
+        crate::walk::write::write(value, &tree, &ctx, &mut out)?;
+        out.into_bytes().map_err(WriteError::Charge)
     }
 }
 

@@ -105,24 +105,17 @@
 //!
 //! Owner: package D. Option constructors are implemented by the scaffold.
 
-// STUB(D): delete this allow when the module is implemented.
-#![allow(
-    clippy::todo,
-    clippy::needless_pass_by_value,
-    clippy::must_use_candidate,
-    clippy::missing_panics_doc,
-    unused_variables,
-    dead_code
-)]
-
 pub mod pptr;
 pub mod registry;
 pub mod resource;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io::Read;
+use std::mem::size_of;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use bytes::Bytes;
 
@@ -130,14 +123,20 @@ pub use pptr::{DerefError, PPtr};
 pub use registry::{Cab, Keys, RawCab, Registry};
 pub use resource::{Candidate, SUFFIXES, resource_candidates};
 
-use crate::budget::DecodeBuf;
-use crate::container::ContainerRow;
-use crate::error::{Error, LimitError, LimitKind};
-use crate::files::{File, SerializedFile};
-use crate::limits::{Limits, Meter};
+use crate::budget::{DecodeBuf, Reservation};
+use crate::container::{ContainerRow, View};
+use crate::error::{Error, LimitError, LimitKind, NotFound, Unsupported};
+use crate::files::{BundleFile, File, ParentKind, SerializedFile};
+use crate::limits::{Charge, ChargeError, HASH_TABLE_SHARES, Limits, Meter};
 use crate::object::ObjectRef;
 use crate::options::FileContext;
+use crate::provider::{ScriptIdent, TreeRef, TreeRequest, TreeSource};
+use crate::pystr::{clean_external_path, lower_eq, simplify_name};
 use crate::raw::RawStr;
+use crate::stream::py_read;
+use crate::typetree::Tree;
+use crate::walk::{ParseError, ReadDetail, ReadError, ReadErrorKind};
+use registry::{DepCache, Dependency, Slot, SlotKind, WeakFile, open_source};
 
 /// When a container's entries are parsed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -314,13 +313,58 @@ pub struct EnvStats {
 /// level (the file list position, the bundle, the entry, the object index).
 pub struct Objects<'a> {
     env: &'a Environment,
+    next_file: usize,
+    bundles: Vec<(Arc<BundleFile>, usize)>,
+    current: Option<(Arc<SerializedFile>, usize)>,
+}
+
+impl Objects<'_> {
+    /// Steps into `file`: a `SerializedFile`'s objects, a bundle's `files`
+    /// dict; anything else holds no objects (`environment.py:190-204`).
+    fn enter(&mut self, file: File) {
+        match file {
+            File::Serialized(sf) => self.current = Some((sf, 0)),
+            File::Bundle(b) => self.bundles.push((b, 0)),
+            File::Raw(_) | File::Web(_) => {}
+        }
+    }
 }
 
 impl Iterator for Objects<'_> {
     type Item = Result<ObjectRef, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        loop {
+            if let Some((sf, k)) = &mut self.current {
+                if let Some(&idx) = sf.object_order().get(*k) {
+                    *k += 1;
+                    if let Some(o) = ObjectRef::new(sf.clone(), idx) {
+                        return Some(Ok(o));
+                    }
+                    continue;
+                }
+                self.current = None;
+            }
+            if let Some((b, j)) = self.bundles.last_mut() {
+                let Some(dir_index) = b.files().get(*j).map(|s| s.dir_index) else {
+                    self.bundles.pop();
+                    continue;
+                };
+                *j += 1;
+                let b = b.clone();
+                match b.entry(dir_index) {
+                    Ok(f) => self.enter(f),
+                    Err(e) => return Some(Err(e)),
+                }
+                continue;
+            }
+            let entry = self.env.file_at(self.next_file)?;
+            self.next_file += 1;
+            // `search`: a dependency file holds no listed objects.
+            if !entry.is_dependency {
+                self.enter(entry.file);
+            }
+        }
     }
 }
 
@@ -333,13 +377,39 @@ impl fmt::Debug for Objects<'_> {
 /// The iterator [`Environment::container`] returns, CABs in registry order.
 pub struct ContainerItems<'a> {
     env: &'a Environment,
+    next_key: usize,
+    current: Option<(Arc<SerializedFile>, usize)>,
 }
 
 impl Iterator for ContainerItems<'_> {
     type Item = Result<ContainerItem, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        loop {
+            if let Some((sf, k)) = self.current.take() {
+                match sf.container() {
+                    Ok(c) => {
+                        if let Some(row) = c.rows().get(k) {
+                            let row = row.clone();
+                            self.current = Some((sf.clone(), k + 1));
+                            return Some(Ok(ContainerItem { row, file: sf }));
+                        }
+                    }
+                    Err(e) => return Some(Err(e)),
+                }
+            }
+            // UnityPy environment.py:221-224: every non-dependency CAB.
+            let (_, slot) = self.env.registry().slot_at(self.next_key)?;
+            self.next_key += 1;
+            if slot.is_dependency() {
+                continue;
+            }
+            match self.env.registry().resolve(&slot) {
+                Ok(Some(Cab::Serialized(sf))) => self.current = Some((sf, 0)),
+                Ok(_) => {}
+                Err(e) => return Some(Err(e)),
+            }
+        }
     }
 }
 
@@ -373,11 +443,33 @@ pub struct ContainerItem {
     pub file: Arc<SerializedFile>,
 }
 
+/// One `files` entry, with the charge for a resolver load's key and share
+/// of the list and its index.
+struct Listed {
+    entry: FileEntry,
+    _charge: Option<Charge>,
+}
+
+/// `env.files`: a dict, as a list in insertion order and an index by key.
+#[derive(Default)]
+struct Files {
+    list: Vec<Listed>,
+    index: HashMap<RawStr, usize>,
+}
+
+/// What one listed resolver load costs the `files` tables: three elements
+/// of the list and [`HASH_TABLE_SHARES`] buckets of the index (as a registry
+/// slot's share, [`registry`]).
+const LISTED_SHARE: u64 = 3 * size_of::<Listed>() as u64
+    + HASH_TABLE_SHARES * (size_of::<RawStr>() + size_of::<usize>() + 1) as u64;
+
 struct EnvInner {
     options: EnvOptions,
-    files: RwLock<Vec<FileEntry>>,
+    files: RwLock<Files>,
     registry: Registry,
-    stats: RwLock<EnvStats>,
+    cache: Arc<DepCache>,
+    loaded: AtomicU64,
+    eager_parsed: AtomicU64,
 }
 
 /// UnityPy's `Environment`. A cheap handle: clones share one environment.
@@ -394,34 +486,325 @@ impl fmt::Debug for Environment {
     }
 }
 
+/// Whose CABs a registration makes: a caller's file (slots that may hold
+/// it), or a dependency's (slots that reopen it).
+enum Target<'a> {
+    Caller,
+    Dependency(&'a Arc<Dependency>),
+}
+
+/// What `find_file` found: a registered CAB, or a file the resolver loaded.
+enum Found {
+    Cab(Cab),
+    File(File),
+}
+
+/// The name UnityPy keys a source by: the caller's name, or a path's string.
+fn source_name(source: &Source) -> RawStr {
+    match source {
+        Source::Bytes { name, .. } | Source::Fetch { name, .. } => name.clone(),
+        Source::Path(p) => RawStr::from(p.as_os_str().as_encoded_bytes()),
+    }
+}
+
+/// `ResourceReader._get_resource_data(reader, offset, size)`
+/// (`helpers/ResourceReader.py:36-38`): `reader.Position = offset;
+/// reader.read_bytes(size)`, a Python slice of the reader's bytes.
+fn read_cab(cab: &Cab, offset: u64, size: u64) -> Result<Bytes, Error> {
+    match cab {
+        Cab::Raw(RawCab::InBundle { bundle, dir_index }) => {
+            bundle.entry_range(*dir_index, offset..offset.saturating_add(size))
+        }
+        Cab::Raw(RawCab::File(raw)) => {
+            let size = i64::try_from(size).unwrap_or(i64::MAX);
+            let (range, _) = py_read(raw.data.len(), i128::from(offset), size);
+            Ok(raw.data.slice(range))
+        }
+        Cab::Serialized(sf) => Err(not_a_reader(sf.name())),
+    }
+}
+
+/// A `SerializedFile` asked for resource bytes: it has no `read_bytes`
+/// (an `AttributeError` in UnityPy).
+fn not_a_reader(name: &RawStr) -> Error {
+    Error::Malformed {
+        what: "resource",
+        detail: format!("{name} is a SerializedFile, not a reader").into(),
+    }
+}
+
+/// A dereference failure as a file-level error (the container preload's
+/// raise): a load failure as it is, any other as `Malformed` naming
+/// UnityPy's exception (`REQUESTS-d.md` asks for a variant of its own).
+fn deref_error(e: DerefError) -> Error {
+    match e {
+        DerefError::Load(e) => e,
+        other => Error::Malformed {
+            what: "PPtr",
+            detail: other.to_string().into(),
+        },
+    }
+}
+
+/// A dereference failure as an object's error (the `MonoBehaviour` script
+/// hook): the kind UnityPy raises, `other` (`REQUESTS-d.md`).
+fn deref_parse_error(e: DerefError) -> ParseError {
+    let detail = match e {
+        DerefError::Load(Error::Limit(l)) => ReadDetail::Limit(l),
+        DerefError::Load(Error::Budget(b)) => ReadDetail::Charge(ChargeError::Budget(b)),
+        DerefError::FileIdBelowStart { .. } => ReadDetail::Python("IndexError"),
+        DerefError::MissingObject { .. } => ReadDetail::Python("KeyError"),
+        DerefError::RawTarget { .. } => ReadDetail::Python("AttributeError"),
+        _ => ReadDetail::Python("FileNotFoundError"),
+    };
+    ParseError::Read(ReadError {
+        kind: ReadErrorKind::Other,
+        at: 0,
+        detail,
+    })
+}
+
+/// Whether a read failure is a `ValueError` in UnityPy's object mode, the
+/// one exception `generate_monobehaviour_node`'s caller swallows
+/// (`files/ObjectReader.py:301-304`): UnityPyBoost raises `EOFError` for a
+/// read past the end, and a limit, a refused charge, a tree or a provider
+/// failure is the core's own, never swallowed.
+fn is_value_error(e: &ParseError) -> bool {
+    match e {
+        ParseError::CheckRead { .. } => true,
+        ParseError::Read(r) => {
+            r.kind != ReadErrorKind::OutOfBounds
+                && !matches!(
+                    r.detail,
+                    ReadDetail::Limit(_) | ReadDetail::Charge(_) | ReadDetail::Tree(_)
+                )
+        }
+        _ => false,
+    }
+}
+
+/// `objects[m_PathID]` of a target file (rule 6).
+fn object_in(sf: &Arc<SerializedFile>, path_id: i64) -> Result<ObjectRef, DerefError> {
+    sf.object(path_id).ok_or_else(|| DerefError::MissingObject {
+        file: sf.name().clone(),
+        path_id,
+    })
+}
+
 impl Environment {
     /// An empty environment.
     #[must_use]
     pub fn new(options: EnvOptions) -> Self {
+        let cache = Arc::new(DepCache::new(options.dep_cache_bytes));
         Self {
             inner: Arc::new(EnvInner {
                 options,
-                files: RwLock::new(Vec::new()),
+                files: RwLock::new(Files::default()),
                 registry: Registry::default(),
-                stats: RwLock::new(EnvStats::default()),
+                cache,
+                loaded: AtomicU64::new(0),
+                eager_parsed: AtomicU64::new(0),
             }),
         }
     }
 
     /// Its options.
+    #[must_use]
     pub fn options(&self) -> &EnvOptions {
         &self.inner.options
     }
 
     /// The CAB registry.
+    #[must_use]
     pub fn registry(&self) -> &Registry {
         &self.inner.registry
     }
 
+    fn ctx(&self) -> &Arc<FileContext> {
+        &self.inner.options.context
+    }
+
+    fn files_read(&self) -> std::sync::RwLockReadGuard<'_, Files> {
+        self.inner
+            .files
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn files_write(&self) -> std::sync::RwLockWriteGuard<'_, Files> {
+        self.inner
+            .files
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn file_at(&self, i: usize) -> Option<FileEntry> {
+        self.files_read().list.get(i).map(|l| l.entry.clone())
+    }
+
     /// `load_file`: detect, parse, register the CABs, add to `files` under the
     /// source's name (a repeated name replaces the value in place, as a dict).
+    // The source is handed over (the frozen signature); a caller's load
+    // keeps nothing of it but its name.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn load(&self, source: Source) -> Result<File, Error> {
-        todo!()
+        let name = source_name(&source);
+        let file = self.load_listed(&name, &source, false)?;
+        self.inner.loaded.fetch_add(1, Ordering::Relaxed);
+        Ok(file)
+    }
+
+    /// A load UnityPy's `load_file` makes (the caller's, or a resource
+    /// fallback's under `keep_resolver_loads`): its own input meter, its
+    /// CABs registered as a caller's, and a `files` entry under `name`
+    /// (charged to the file's meter when the resolver chose it).
+    fn load_listed(&self, name: &RawStr, source: &Source, resolved: bool) -> Result<File, Error> {
+        let ctx = self.ctx();
+        let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
+        // UnityPy environment.py:139-160
+        let file = open_source(name, source, &meter, ctx)?;
+        self.register_file(name, &file, &Target::Caller)?;
+        let key = if resolved {
+            RawStr::charged(name.as_bytes(), &meter)?
+        } else {
+            name.clone()
+        };
+        self.list(key, file.clone(), false, resolved.then_some(&meter))?;
+        Ok(file)
+    }
+
+    /// Adds `file` to `files` under `name` with dict semantics. A resolver
+    /// load's new key is charged to `meter` (its key's copy rides in the
+    /// key; this charges its share of the list and the index).
+    fn list(
+        &self,
+        name: RawStr,
+        file: File,
+        is_dependency: bool,
+        meter: Option<&Arc<Meter>>,
+    ) -> Result<(), Error> {
+        let charge = meter.map(|m| m.charge(LISTED_SHARE)).transpose()?;
+        let replaced = {
+            let mut files = self.files_write();
+            let at = files.index.get(name.as_bytes()).copied();
+            if let Some(entry) = at.and_then(|i| files.list.get_mut(i)) {
+                entry.entry.is_dependency = is_dependency;
+                Some(std::mem::replace(&mut entry.entry.file, file))
+            } else {
+                let at = files.list.len();
+                files.list.push(Listed {
+                    entry: FileEntry {
+                        name: name.clone(),
+                        file,
+                        is_dependency,
+                    },
+                    _charge: charge,
+                });
+                files.index.insert(name, at);
+                None
+            }
+        };
+        drop(replaced);
+        Ok(())
+    }
+
+    /// Registers the CABs of a top-level `file` loaded under `name`: the
+    /// file itself, or a bundle's entries (`Eager`: as UnityPy parses them;
+    /// `Lazy`: every directory entry's name now, parsed on first use).
+    fn register_file(&self, name: &RawStr, file: &File, target: &Target<'_>) -> Result<(), Error> {
+        match file {
+            File::Serialized(sf) => {
+                self.register_cab(name, Cab::Serialized(sf.clone()), file.meter(), target, &[])
+            }
+            File::Raw(raw) => self.register_cab(
+                name,
+                Cab::Raw(RawCab::File(raw.clone())),
+                file.meter(),
+                target,
+                &[],
+            ),
+            File::Bundle(b) => match self.inner.options.load {
+                LoadMode::Eager => self.register_eager(b, target, &mut Vec::new()),
+                LoadMode::Lazy => {
+                    let reg = &self.inner.registry;
+                    for (i, d) in b.directory().iter().enumerate() {
+                        match target {
+                            Target::Caller => {
+                                reg.register_lazy(&d.path, b.clone(), i, b.meter())?;
+                            }
+                            Target::Dependency(dep) => {
+                                reg.register_dependency(&d.path, dep, &[i], b.meter())?;
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+            },
+            File::Web(_) => Err(Error::Unsupported(Unsupported::WebFile)),
+        }
+    }
+
+    fn register_cab(
+        &self,
+        name: &RawStr,
+        cab: Cab,
+        meter: &Arc<Meter>,
+        target: &Target<'_>,
+        path: &[usize],
+    ) -> Result<(), Error> {
+        let reg = &self.inner.registry;
+        match target {
+            Target::Caller => reg.register(name, cab, meter),
+            Target::Dependency(dep) => reg.register_dependency(name, dep, path, meter),
+        }
+    }
+
+    /// UnityPy's eager bundle: every block decoded, then every entry parsed
+    /// in directory order and each `SerializedFile` and raw entry registered
+    /// as it is parsed (`files/BundleFile.py:168-186`, `files/File.py:76-90`),
+    /// a nested bundle's entries in place. A failing entry fails the bundle
+    /// with the CABs before it registered; a block that fails registers
+    /// nothing (plan section 3.13). [`BundleFile::load_all`] decodes and
+    /// parses first, so this walk only reads its cells: when it failed with
+    /// an entry's error, the blocks all decoded and the entries before the
+    /// failing one are registered; any other failure is the decode's.
+    fn register_eager(
+        &self,
+        b: &Arc<BundleFile>,
+        target: &Target<'_>,
+        path: &mut Vec<usize>,
+    ) -> Result<(), Error> {
+        let all = b.load_all();
+        if let Err(e) = &all
+            && !matches!(e, Error::Entry { .. })
+        {
+            return all;
+        }
+        for (i, d) in b.directory().iter().enumerate() {
+            path.push(i);
+            let step = b.entry(i).and_then(|f| {
+                self.inner.eager_parsed.fetch_add(1, Ordering::Relaxed);
+                match f {
+                    File::Bundle(nested) => self.register_eager(&nested, target, path),
+                    File::Serialized(sf) => {
+                        self.register_cab(&d.path, Cab::Serialized(sf), b.meter(), target, path)
+                    }
+                    File::Raw(_) => {
+                        let cab = Cab::Raw(RawCab::InBundle {
+                            bundle: b.clone(),
+                            dir_index: i,
+                        });
+                        self.register_cab(&d.path, cab, b.meter(), target, path)
+                    }
+                    File::Web(_) => Ok(()),
+                }
+            });
+            path.pop();
+            if let Err(e) = step {
+                return Err(all.err().unwrap_or(e));
+            }
+        }
+        all
     }
 
     /// Loads `source` as a dependency, as `find_file` loads one through the
@@ -432,7 +815,33 @@ impl Environment {
     /// a batch engine registers its inputs this way). The returned handle is
     /// the caller's: the dependency is not evicted while the caller holds it.
     pub fn load_dependency(&self, source: Source) -> Result<File, Error> {
-        todo!()
+        let name = source_name(&source);
+        self.load_dep(name, source)
+    }
+
+    fn load_dep(&self, name: RawStr, source: Source) -> Result<File, Error> {
+        let ctx = self.ctx();
+        let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Dependency);
+        let file = match open_source(&name, &source, &meter, ctx) {
+            // A pool refusal evicts the others and retries once (plan 3.13).
+            Err(Error::Budget(b)) if b.what == Reservation::Dependency => {
+                self.inner.cache.evict_others(None);
+                open_source(&name, &source, &meter, ctx)?
+            }
+            other => other?,
+        };
+        let dep = Arc::new(Dependency {
+            name,
+            source,
+            meter: Mutex::new(meter),
+            open: Mutex::new(WeakFile::of(&file)),
+            ctx: ctx.clone(),
+            cache: self.inner.cache.clone(),
+        });
+        self.register_file(&dep.name, &file, &Target::Dependency(&dep))?;
+        self.inner.cache.loaded.fetch_add(1, Ordering::Relaxed);
+        self.inner.cache.touch(&dep, &file);
+        Ok(file)
     }
 
     /// `files`, in insertion order: one entry per caller load, and with
@@ -441,8 +850,13 @@ impl Environment {
     /// resolver load's entry is charged to that file's meter (its key and its
     /// share of the list, as a registry slot's are, [`registry`]), since the
     /// input chooses how many there are.
+    #[must_use]
     pub fn files(&self) -> Vec<FileEntry> {
-        todo!()
+        self.files_read()
+            .list
+            .iter()
+            .map(|l| l.entry.clone())
+            .collect()
     }
 
     /// `get_cab`: the registry under `simplify_name(name)`, an entry parsed
@@ -452,16 +866,63 @@ impl Environment {
     /// [`Meter::unlimited`]), and a name already in its simplified form is
     /// not copied ([`Registry::get`]).
     pub fn get_cab(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<Cab>, Error> {
-        todo!()
+        self.inner.registry.get(name, meter)
     }
 
     /// `find_file(name, is_dependency=True)`: [`Self::get_cab`], else the
     /// resolver, loading what it returns as a dependency: with
     /// [`EnvOptions::keep_resolver_loads`] also a [`FileEntry`] with
     /// `is_dependency` set, under the resolved source's name, never evicted
-    /// (module docs). `meter` as for [`Self::get_cab`].
+    /// (module docs). `meter` as for [`Self::get_cab`]. A container the
+    /// resolver loaded is no CAB (`None`).
     pub fn find_file(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<Cab>, Error> {
-        todo!()
+        Ok(match self.find(name, meter)? {
+            Some(Found::Cab(cab)) => Some(cab),
+            Some(Found::File(File::Serialized(sf))) => Some(Cab::Serialized(sf)),
+            Some(Found::File(File::Raw(raw))) => Some(Cab::Raw(RawCab::File(raw))),
+            Some(Found::File(File::Bundle(_) | File::Web(_))) | None => None,
+        })
+    }
+
+    fn find(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<Found>, Error> {
+        // UnityPy environment.py:326-329: `get_cab(simplify_name(name))`,
+        // which simplifies again.
+        let simple = simplify_name(name, meter)?;
+        if let Some(cab) = self.inner.registry.get(&simple, meter)? {
+            return Ok(Some(Found::Cab(cab)));
+        }
+        drop(simple);
+        // :330-354: the resolver stands for the walk of `env.path`.
+        let Some(resolver) = self.inner.options.resolver.clone() else {
+            return Ok(None);
+        };
+        let Some(source) = resolver.resolve(name.as_bytes()) else {
+            return Ok(None);
+        };
+        Ok(Some(Found::File(self.load_resolved(source, None)?)))
+    }
+
+    /// A file the resolver returned: `find_file`'s (`asked` is `None`) is a
+    /// dependency, listed in `files` under the source's name with
+    /// `keep_resolver_loads`; a resource fallback's (`asked` is the name it
+    /// asked for) is a caller's load under that name with
+    /// `keep_resolver_loads`, and a dependency without it.
+    fn load_resolved(&self, source: Source, asked: Option<&RawStr>) -> Result<File, Error> {
+        let keep = self.inner.options.keep_resolver_loads;
+        match asked {
+            Some(name) if keep => self.load_listed(name, &source, true),
+            Some(name) => self.load_dep(name.clone(), source),
+            None => {
+                let name = source_name(&source);
+                let file = self.load_dep(name.clone(), source)?;
+                if keep {
+                    let meter = file.meter().clone();
+                    let key = RawStr::charged(name.as_bytes(), &meter)?;
+                    self.list(key, file.clone(), true, Some(&meter))?;
+                }
+                Ok(file)
+            }
+        }
     }
 
     /// `PPtr.deref` from an object in `from` (`classes/PPtr.py:43-90`), by
@@ -477,7 +938,106 @@ impl Environment {
     /// alive, so the bindings and a batch engine keep a strong bundle handle
     /// beside every `SerializedFile` they hand out.
     pub fn deref(&self, from: &Arc<SerializedFile>, pptr: PPtr) -> Result<ObjectRef, DerefError> {
-        todo!()
+        // UnityPy classes/PPtr.py:49-50
+        if pptr.path_id == 0 {
+            return Err(DerefError::Null);
+        }
+        // :53-54
+        if pptr.file_id == 0 {
+            return object_in(from, pptr.path_id);
+        }
+        // :57-60
+        let externals = from.externals();
+        let file_id = pptr.file_id;
+        let external = match pptr::external_index(file_id, externals.len()) {
+            Ok(i) => externals.get(i),
+            Err(pptr::ExternalIndexError::PastEnd) => {
+                return Err(DerefError::FileIdPastEnd { file_id });
+            }
+            Err(pptr::ExternalIndexError::BelowStart) => None,
+        };
+        let Some(external) = external else {
+            return Err(DerefError::FileIdBelowStart { file_id });
+        };
+        let meter = from.meter();
+        // :68-73
+        let clean = clean_external_path(&external.path, meter).map_err(Error::from)?;
+        // :63-78: the container's `files`, each key lower-cased, the first
+        // equal one wins.
+        let sibling = match from.parent() {
+            Some(parent) => match &parent.kind {
+                ParentKind::Bundle { bundle, .. } => {
+                    let Some(bundle) = bundle.upgrade() else {
+                        return Err(DerefError::ContainerDropped {
+                            name: parent.name.clone(),
+                        });
+                    };
+                    let mut hit = None;
+                    for slot in bundle.files() {
+                        if lower_eq(slot.name.as_bytes(), clean.as_bytes(), meter)
+                            .map_err(Error::from)?
+                        {
+                            hit = Some(bundle.entry(slot.dir_index)?);
+                            break;
+                        }
+                    }
+                    hit
+                }
+                ParentKind::Web => None,
+            },
+            None => self.files_match(&clean, meter)?,
+        };
+        let target = match sibling {
+            Some(f) => Found::File(f),
+            // :80-85
+            None => match self.find(&clean, meter)? {
+                Some(t) => t,
+                None => {
+                    return Err(DerefError::NotFound {
+                        path: external.path.clone(),
+                    });
+                }
+            },
+        };
+        // :90: `assetsfile_dst.objects[m_PathID]`.
+        match target {
+            Found::Cab(Cab::Serialized(sf)) | Found::File(File::Serialized(sf)) => {
+                object_in(&sf, pptr.path_id)
+            }
+            Found::Cab(Cab::Raw(RawCab::InBundle { bundle, dir_index })) => {
+                Err(DerefError::RawTarget {
+                    name: bundle
+                        .directory()
+                        .get(dir_index)
+                        .map(|d| d.path.clone())
+                        .unwrap_or_default(),
+                })
+            }
+            Found::Cab(Cab::Raw(RawCab::File(raw))) | Found::File(File::Raw(raw)) => {
+                Err(DerefError::RawTarget {
+                    name: raw.name.clone(),
+                })
+            }
+            Found::File(File::Bundle(b)) => Err(DerefError::RawTarget {
+                name: b.name().clone(),
+            }),
+            Found::File(File::Web(w)) => Err(DerefError::RawTarget {
+                name: w.name().clone(),
+            }),
+        }
+    }
+
+    /// The first `files` entry whose key lower-cases to `clean` (the
+    /// Environment as a top-level file's container, rule 4).
+    fn files_match(&self, clean: &RawStr, meter: &Arc<Meter>) -> Result<Option<File>, Error> {
+        let mut i = 0;
+        while let Some(entry) = self.file_at(i) {
+            if lower_eq(entry.name.as_bytes(), clean.as_bytes(), meter)? {
+                return Ok(Some(entry.file));
+            }
+            i += 1;
+        }
+        Ok(None)
     }
 
     /// The tree an object reads with, as UnityPy resolves it
@@ -500,9 +1060,93 @@ impl Environment {
     pub fn object_tree(
         &self,
         obj: &ObjectRef,
-        nodes: Option<&Arc<crate::typetree::Tree>>,
-    ) -> Result<Option<crate::provider::TreeRef>, crate::walk::ParseError> {
-        todo!()
+        nodes: Option<&Arc<Tree>>,
+    ) -> Result<Option<TreeRef>, ParseError> {
+        let found = obj.tree(nodes)?;
+        let Some(class_tree) = found else {
+            return Ok(None);
+        };
+        let chain = &obj.file().context().providers;
+        if !matches!(class_tree.source, TreeSource::Provider(_))
+            || class_tree.tree.root_type() != b"MonoBehaviour"
+            || !chain.accepts_scripts()
+        {
+            return Ok(Some(class_tree));
+        }
+        // UnityPy files/ObjectReader.py:332-350
+        let Some(ident) = self.script_ident(obj, &class_tree.tree)? else {
+            return Ok(Some(class_tree));
+        };
+        let Some(version) = obj.file().version() else {
+            return Ok(Some(class_tree));
+        };
+        let req = TreeRequest {
+            class_id: obj.class_id(),
+            version: &version.version,
+            script: Some(&ident),
+        };
+        // :346-350: the generator's miss is a `ValueError`: the class tree.
+        Ok(Some(chain.lookup(&req)?.unwrap_or(class_tree)))
+    }
+
+    /// `parse_monobehaviour_head` and `m_Script.deref_parse_as_object()`:
+    /// the script's identity, or `None` where UnityPy raises a `ValueError`
+    /// (the caller falls back to the class tree).
+    fn script_ident(
+        &self,
+        obj: &ObjectRef,
+        class_tree: &Arc<Tree>,
+    ) -> Result<Option<ScriptIdent>, ParseError> {
+        // :325-330: the head, read with the class tree, `check_read` off.
+        let head = match obj.read_typetree(Some(class_tree), false) {
+            Ok(p) => p,
+            Err(e) if is_value_error(&e) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let Some(view) = View::new(&head) else {
+            return Ok(None);
+        };
+        let attr_error = || {
+            ParseError::Read(ReadError {
+                kind: ReadErrorKind::Other,
+                at: 0,
+                detail: ReadDetail::Python("AttributeError"),
+            })
+        };
+        let script = view
+            .attr(view.root(), b"m_Script")
+            .map_err(|_| attr_error())?;
+        let pptr = view.pptr(script).map_err(|_| attr_error())?;
+        // `deref`: a null pointer is a `ValueError`.
+        let target = match self.deref(obj.file(), pptr) {
+            Ok(t) => t,
+            Err(DerefError::Null) => return Ok(None),
+            Err(e) => return Err(deref_parse_error(e)),
+        };
+        // `parse_as_object()`, `check_read` on.
+        let script = match target.read_typetree(None, true) {
+            Ok(p) => p,
+            Err(e) if is_value_error(&e) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let Some(sview) = View::new(&script) else {
+            return Ok(None);
+        };
+        let field = |name: &[u8]| {
+            sview
+                .attr(sview.root(), name)
+                .ok()
+                .and_then(|n| match n.value() {
+                    crate::value::Value::Str(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .ok_or_else(attr_error)
+        };
+        Ok(Some(ScriptIdent {
+            assembly: field(b"m_AssemblyName")?,
+            namespace: field(b"m_Namespace")?,
+            class: field(b"m_ClassName")?,
+        }))
     }
 
     /// `get_resource_data(path, from, offset, size)`
@@ -538,15 +1182,87 @@ impl Environment {
         offset: u64,
         size: u64,
     ) -> Result<Bytes, Error> {
-        todo!()
+        // UnityPy helpers/ResourceReader.py:11-33
+        let candidates = resource_candidates(path);
+        if let Some(bytes) = self.resource_try(from, &candidates, offset, size)? {
+            return Ok(bytes);
+        }
+        // :26: `assets_file.load_dependencies(possible_names)`
+        // (files/SerializedFile.py:330-349): every external, then every
+        // candidate, through `load_file(name, True)`.
+        let meter = from.meter();
+        for external in from.externals() {
+            self.fallback_load(&external.path)?;
+        }
+        for c in &candidates {
+            let name = c.joined(meter)?;
+            self.fallback_load(&name)?;
+        }
+        if let Some(bytes) = self.resource_try(from, &candidates, offset, size)? {
+            return Ok(bytes);
+        }
+        let [basename, ..] = candidates;
+        Err(Error::NotFound(NotFound::Resource(basename.stem)))
+    }
+
+    /// `load_file(name, True)` for a resource fallback: what the resolver
+    /// returns for `name`, if anything.
+    fn fallback_load(&self, name: &RawStr) -> Result<(), Error> {
+        let Some(resolver) = self.inner.options.resolver.clone() else {
+            return Ok(());
+        };
+        let Some(source) = resolver.resolve(name.as_bytes()) else {
+            return Ok(());
+        };
+        self.load_resolved(source, Some(name)).map(drop)
+    }
+
+    /// The first candidate a registered slot answers, read.
+    fn resource_try(
+        &self,
+        from: &Arc<SerializedFile>,
+        candidates: &[Candidate; 4],
+        offset: u64,
+        size: u64,
+    ) -> Result<Option<Bytes>, Error> {
+        let meter = from.meter();
+        for c in candidates {
+            let name = c.joined(meter)?;
+            let Some(slot) = self.inner.registry.slot(&name, meter)? else {
+                continue;
+            };
+            drop(name);
+            if let Some((bundle, i)) = own_entry(from, &slot) {
+                // Read through `from`'s own bundle: the slot is not parsed.
+                match bundle.entry(i)? {
+                    File::Raw(_) => {
+                        return Ok(Some(
+                            bundle.entry_range(i, offset..offset.saturating_add(size))?,
+                        ));
+                    }
+                    File::Serialized(sf) => return Err(not_a_reader(sf.name())),
+                    File::Bundle(_) | File::Web(_) => continue,
+                }
+            }
+            if let Some(cab) = self.inner.registry.resolve(&slot)? {
+                return Ok(Some(read_cab(&cab, offset, size)?));
+            }
+        }
+        Ok(None)
     }
 
     /// `objects`: every object of every non-dependency file of
     /// [`Self::files`], in its order, as an iterator (module docs: no
     /// allocation per object). A file that fails to load or parse on the way
     /// yields its error.
+    #[must_use]
     pub fn objects(&self) -> Objects<'_> {
-        todo!()
+        Objects {
+            env: self,
+            next_file: 0,
+            bundles: Vec::new(),
+            current: None,
+        }
     }
 
     /// `container`: every non-dependency CAB's container rows, CABs in
@@ -554,12 +1270,130 @@ impl Environment {
     /// as an iterator. It walks the registry, as UnityPy walks `env.cabs`, so
     /// a CAB a dependency's replaced under its key is not listed.
     pub fn container(&self) -> Result<ContainerItems<'_>, Error> {
-        todo!()
+        self.build_container_index()?;
+        Ok(ContainerItems {
+            env: self,
+            next_key: 0,
+            current: None,
+        })
+    }
+
+    /// `_build_container_index` (`environment.py:208-216`): once until the
+    /// next registration, every registered `SerializedFile`'s preload table,
+    /// dependencies' included. A failure leaves the index marked built, as
+    /// UnityPy sets its flag before the loop; a file's table is cleared only
+    /// when its pass finished. Under `Eager`, a pass whose dereference
+    /// registers a new CAB fails as UnityPy's loop over `cabs.values()` does
+    /// (`RuntimeError: dictionary changed size during iteration`).
+    fn build_container_index(&self) -> Result<(), Error> {
+        let reg = &self.inner.registry;
+        if !reg.take_index_build() {
+            return Ok(());
+        }
+        let mut i = 0;
+        while let Some((_, slot)) = reg.slot_at(i) {
+            i += 1;
+            let Some(Cab::Serialized(sf)) = reg.resolve(&slot)? else {
+                continue;
+            };
+            if slot.preloaded.load(Ordering::Acquire) {
+                continue;
+            }
+            let before = reg.len();
+            self.preload(&sf)?;
+            slot.preloaded.store(true, Ordering::Release);
+            if self.inner.options.load == LoadMode::Eager && reg.len() != before {
+                return Err(Error::Malformed {
+                    what: "container",
+                    detail: "dictionary changed size during iteration".into(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// `ContainerHelper.parse_preload_table`
+    /// (`helpers/ContainerHelper.py:31-49`): every row's preload pointers
+    /// dereferenced; `FileNotFoundError` and `KeyError` skipped, any other
+    /// failure raised.
+    fn preload(&self, sf: &Arc<SerializedFile>) -> Result<(), Error> {
+        let container = sf.container()?;
+        let Some(table) = container.preload_table() else {
+            return Ok(());
+        };
+        let len = i64::try_from(table.len()).unwrap_or(i64::MAX);
+        for row in container.rows() {
+            let (start, size) = (i64::from(row.preload_index), i64::from(row.preload_size));
+            if start < 0 || size <= 0 || start + size > len {
+                continue;
+            }
+            let (Ok(s), Ok(e)) = (usize::try_from(start), usize::try_from(start + size)) else {
+                continue;
+            };
+            for p in table.get(s..e).unwrap_or_default() {
+                if !p.is_set() {
+                    continue;
+                }
+                match self.deref(sf, *p) {
+                    Ok(_)
+                    | Err(
+                        DerefError::FileIdPastEnd { .. }
+                        | DerefError::NotFound { .. }
+                        | DerefError::MissingObject { .. },
+                    ) => {}
+                    Err(e) => return Err(deref_error(e)),
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Counters.
+    #[must_use]
     pub fn stats(&self) -> EnvStats {
-        todo!()
+        let cache = &self.inner.cache;
+        EnvStats {
+            loaded: self.inner.loaded.load(Ordering::Relaxed),
+            entries_parsed: self
+                .inner
+                .eager_parsed
+                .load(Ordering::Relaxed)
+                .saturating_add(self.inner.registry.parsed()),
+            dependencies_loaded: cache.loaded.load(Ordering::Relaxed),
+            dependencies_evicted: cache.evicted.load(Ordering::Relaxed),
+            dependency_bytes: cache.bytes(),
+        }
+    }
+}
+
+/// When `slot` is an entry of `from`'s own input and the core can tell
+/// without reading anything (plan section 3.13), `from`'s bundle and the
+/// entry's directory index: the slot's bundle is `from`'s, or the slot is a
+/// dependency's top-level entry whose open handle is `from`'s bundle or
+/// whose [`Source::Bytes`] are the bytes `from`'s bundle was opened on.
+fn own_entry(from: &SerializedFile, slot: &Slot) -> Option<(Arc<BundleFile>, usize)> {
+    let ParentKind::Bundle { bundle, .. } = &from.parent()?.kind else {
+        return None;
+    };
+    let fb = bundle.upgrade()?;
+    match &slot.kind {
+        SlotKind::Entry { bundle, dir_index } if Arc::ptr_eq(bundle, &fb) => Some((fb, *dir_index)),
+        SlotKind::Ready(Cab::Raw(RawCab::InBundle { bundle, dir_index }))
+            if Arc::ptr_eq(bundle, &fb) =>
+        {
+            Some((fb, *dir_index))
+        }
+        SlotKind::Dependency { dep, path } => {
+            let [i] = **path else {
+                return None;
+            };
+            let same_handle = matches!(dep.alive(), Some(File::Bundle(b)) if Arc::ptr_eq(&b, &fb));
+            let same_bytes = fb.parent().is_none()
+                && matches!(&dep.source, Source::Bytes { data, .. }
+                    if data.as_ptr() == fb.source().as_ptr() && data.len() == fb.source().len());
+            (same_handle || same_bytes).then_some((fb, i))
+        }
+        SlotKind::Entry { .. } | SlotKind::Ready(_) => None,
     }
 }
 

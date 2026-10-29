@@ -18,17 +18,10 @@
 //!
 //! Owner: package D ([`Candidate`] and its methods: the scaffold).
 
-// STUB(D): delete this allow when the module is implemented.
-#![allow(
-    clippy::todo,
-    clippy::must_use_candidate,
-    clippy::missing_panics_doc,
-    unused_variables
-)]
-
 use std::sync::Arc;
 
 use crate::limits::{ChargeError, Meter};
+use crate::pystr::{ntpath_basename, ntpath_splitext};
 use crate::raw::RawStr;
 
 /// The suffixes of the four candidates, in UnityPy's order.
@@ -47,11 +40,13 @@ pub struct Candidate {
 
 impl Candidate {
     /// The name's length in bytes.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.stem.len() + self.suffix.len()
     }
 
     /// Whether the name is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -72,8 +67,39 @@ const _: () = crate::send_sync::<Candidate>();
 
 /// The four candidates, in UnityPy's order, each a slice of `res_path` and a
 /// suffix (module docs): nothing is copied.
+#[must_use]
 pub fn resource_candidates(res_path: &RawStr) -> [Candidate; 4] {
-    todo!()
+    // UnityPy helpers/ResourceReader.py:11-18
+    let path = res_path.as_bytes();
+    let basename = ntpath_basename(path);
+    let (name, _ext) = ntpath_splitext(basename);
+    let slice = |sub: &[u8]| {
+        if sub.is_empty() {
+            RawStr::default()
+        } else {
+            RawStr::from_shared(res_path.clone().into_bytes().slice_ref(sub))
+        }
+    };
+    let (basename, name) = (slice(basename), slice(name));
+    let [a, b, c, d] = SUFFIXES;
+    [
+        Candidate {
+            stem: basename,
+            suffix: a,
+        },
+        Candidate {
+            stem: name.clone(),
+            suffix: b,
+        },
+        Candidate {
+            stem: name.clone(),
+            suffix: c,
+        },
+        Candidate {
+            stem: name,
+            suffix: d,
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -114,5 +140,57 @@ mod tests {
         let full = Meter::new(OWNER_COST, Arc::new(Unbounded), Reservation::Input);
         assert!(res.joined(&full).is_err());
         assert_eq!(full.used(), 0);
+    }
+
+    #[test]
+    fn the_four_candidates_are_unitypys_names_and_copy_nothing() {
+        let path = RawStr::from_shared(bytes::Bytes::from(b"archive:/CAB-1/CAB-1.resS".to_vec()));
+        let c = resource_candidates(&path);
+        let m = Meter::new(1 << 20, Arc::new(Unbounded), Reservation::Input);
+        let names: Vec<Vec<u8>> = c
+            .iter()
+            .map(|c| c.joined(&m).unwrap().as_bytes().to_vec())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                b"CAB-1.resS".to_vec(),
+                b"CAB-1.resource".to_vec(),
+                b"CAB-1.assets.resS".to_vec(),
+                b"CAB-1.resS".to_vec(),
+            ]
+        );
+        for cand in &c {
+            let at = cand.stem.as_bytes().as_ptr() as usize;
+            let base = path.as_bytes().as_ptr() as usize;
+            assert!(
+                (base..base + path.len()).contains(&at),
+                "a slice of the path"
+            );
+        }
+        // A name of leading dots has no extension; a drive is dropped.
+        let c = resource_candidates(&RawStr::from("c:..x"));
+        assert_eq!(c[0].stem.as_bytes(), b"..x");
+        assert_eq!(c[1].stem.as_bytes(), b"..x");
+        let c = resource_candidates(&RawStr::from("dir/"));
+        assert!(c[0].is_empty());
+        assert_eq!(c[3].len(), 5);
+    }
+
+    #[test]
+    fn a_long_path_costs_no_heap_until_one_candidate_is_joined() {
+        // A 100 MB path with no separator: the candidates are slices of it.
+        let long = RawStr::from_shared(bytes::Bytes::from(vec![b'x'; 100 << 20]));
+        let m = Meter::new(u64::MAX, Arc::new(Unbounded), Reservation::Input);
+        let c = resource_candidates(&long);
+        assert_eq!(m.used(), 0);
+        assert_eq!(c[0].stem.as_bytes().as_ptr(), long.as_bytes().as_ptr());
+        let first = c[0].joined(&m).unwrap();
+        assert_eq!(m.used(), 0, "the basename is the path itself");
+        drop(first);
+        let second = c[1].joined(&m).unwrap();
+        assert_eq!(m.used(), heap_cost((100 << 20) + 9) + OWNER_COST);
+        drop(second);
+        assert_eq!(m.used(), 0);
     }
 }
