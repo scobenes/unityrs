@@ -20,6 +20,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from collections import Counter
@@ -637,6 +638,27 @@ class DumpTests(unittest.TestCase):
             self.assertEqual((recs[0]["error"], recs[3]["error"]), (None, None))
         self.assertEqual(outs[0], outs[1])
         self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["dead1.jsonl", "dead3.jsonl", "in"])
+
+    def test_finished_results_wait_in_bounded_number(self):
+        """While the first input is slow, at most 2 x -j inputs start, so held results cannot grow without limit."""
+        d = self.tmp / "in"
+        d.mkdir()
+        for name in "abcdefgh":
+            (d / name).write_bytes(b"tiny")
+        log, seen = self.tmp / "started", self.tmp / "seen"
+        real = unitypy_dump.dump_input
+
+        def slow_first(job):
+            with open(log, "a") as fh:
+                fh.write(job[1] + "\n")
+            if job[1] == "a":
+                time.sleep(2)
+                seen.write_text(log.read_text())
+            return real(job)
+
+        with mock.patch.object(unitypy_dump, "dump_input", slow_first):
+            self.assertEqual(dump(d, "-o", self.tmp / "o.jsonl", "-j", "2"), 0)
+        self.assertLessEqual(set(seen.read_text().split()), set("abcd"))
 
     def test_the_dumpers_own_failure_stops_the_run(self):
         """A raise in the dumper, or a process that ends without a result and no signal, is no input's outcome."""
