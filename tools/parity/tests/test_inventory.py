@@ -175,6 +175,21 @@ class MatchingRules(unittest.TestCase):
                 )
             with self.subTest(text=text[-60:]), self.assertRaisesRegex(ValueError, "2 tables"):
                 inventory.texture_rows(text)
+        # Two matrix rows for one format name, or for one value, fail the check: a dict keyed by name keeps only
+        # the later row, so a wrong row before the right one would go unseen.
+        same_name = "two matrix rows name the format `RGB24`"
+        for rows, error in (
+            (["| 3 | `RGB24` | raises |", matrix_row], same_name),
+            ([matrix_row, "| 3 | `RGB24` | raises |"], same_name),
+            (["| 4 | `RGB24` | works |", matrix_row], same_name),
+            ([matrix_row, "| 3 | `RGB24x` | works |"], "two matrix rows give the value 3: `RGB24`, `RGB24x`"),
+            (["| 3 | `RGB24x` | works |", matrix_row], "two matrix rows give the value 3: `RGB24x`, `RGB24`"),
+        ):
+            text = COMPLETE.replace(matrix_row, "\n".join(rows))
+            with self.subTest(rows=rows):
+                self.assertEqual(inventory.missing(SYMBOLS, text), {"texture_formats": [error]})
+            with self.subTest(rows=rows), self.assertRaisesRegex(ValueError, re.escape(error)):
+                inventory.texture_rows(text)
 
     def test_an_enum_member_needs_its_value_in_a_values_column(self):
         for old, new in (

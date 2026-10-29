@@ -38,7 +38,8 @@ The groups, and how PARITY.md names a symbol of each, inside a code span (backti
 - `texture_formats`, every `TextureFormat` member: a row of the TextureFormat matrix (the
   table whose header starts `value | format`) whose `format` cell is `` `Name` `` and whose
   `value` cell is its value. A row of any other table names no format, and a second table
-  with the matrix's header fails the check, since either could then be the matrix.
+  with the matrix's header fails the check, since either could then be the matrix. So do two
+  matrix rows with one format name or one value, since either row could then be the format's.
 
 Out of scope: private names (a leading underscore), and an attribute that only code
 outside the class sets (`obj.x = ...` in another module, or `setattr`), because the
@@ -437,16 +438,24 @@ MATRIX_HEADER = ["value", "format"]
 def texture_rows(text: str) -> dict[str, dict[str, str]]:
     """The TextureFormat matrix (the table whose header starts `value | format`): cells by header, per format.
 
-    Raises ValueError when more than one table has that header, since either could then be the matrix.
+    Raises ValueError when more than one table has that header, since either could then be the matrix, and when
+    two rows give one format name or one value, since either row's claims could then be the format's.
     """
     matrices = [(header, body) for header, body in tables(text) if header[:2] == MATRIX_HEADER]
     if len(matrices) > 1:
         raise ValueError(f"{len(matrices)} tables have the matrix's header `value | format`; only the matrix may")
     rows: dict[str, dict[str, str]] = {}
+    values: dict[str, str] = {}
     for header, body in matrices:
         for cells in body:
             row = dict(zip(header, cells, strict=False))
-            rows[row["format"].strip("`")] = row
+            name = row["format"].strip("`")
+            if name in rows:
+                raise ValueError(f"two matrix rows name the format `{name}`")
+            if row["value"] in values:
+                raise ValueError(f"two matrix rows give the value {row['value']}: `{values[row['value']]}`, `{name}`")
+            rows[name] = row
+            values[row["value"]] = name
     return rows
 
 
