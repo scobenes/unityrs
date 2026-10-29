@@ -238,6 +238,11 @@ class TestColumn(unittest.TestCase):
             "a name read through a non-local fsspec filesystem where UnityPy raises",
         ),
         "a `.splitN` path whose part is a folder": ("B", "a path through a `.splitN` folder"),
+        "a local path with a URL-style prefix (": ("B", "a local path with a URL-style prefix where UnityPy raises"),
+        "a local path with a URL-style prefix where": (
+            "C",
+            "a local path with a URL-style prefix where `load_file` returns `None`",
+        ),
         "two bundles holding a CAB of one name": ("C", "two bundles' same-named CABs"),
         "a path holding `.splitN` before its end": ("C", "a path holding `.splitN` before its end"),
         "`find_file`'s suffix match": ("C", "`find_file`'s suffix match with no separator boundary"),
@@ -1996,8 +2001,81 @@ class Rows(unittest.TestCase):
         env = UnityPy.Environment(path="rel")
         self.assertEqual([o.parse_as_dict()["m_Name"] for o in quietly(env.find_file, "b.bin").objects.values()], ["b"])
         self.assertEqual(env.local_files, absolute)
-        # Links are files: a link to a folder is never entered and raises when opened, a broken one raises, a link to
-        # a file loads under its own path and name. find_file reaches a file under a linked folder only as path/name.
+
+        def names(file):
+            return [o.parse_as_dict()["m_Name"] for o in file.objects.values()]
+
+        # A `~name` the home lookup cannot expand stays as it is, relative, and so do the keys under it.
+        self.assertEqual(os.path.expanduser("~no-such-user-r12"), "~no-such-user-r12")
+        (work / "~no-such-user-r12").mkdir()
+        (work / "~no-such-user-r12" / "t.bin").write_bytes(text_asset_file("t"))
+        self.assertEqual(keys("~no-such-user-r12"), ["~no-such-user-r12/t.bin"])
+        # The folder given is followed: `info` stats a link's target, so a link given as the folder walks its target
+        # under the link's own path (find_file's walk of such a `path` too), a broken one yields nothing, and a link
+        # to a file walks as that file, so load_folder opens `link/` and raises. The constructor's isdir and isfile
+        # follow a link the same way: a link to a file loads under its own path, a broken one is ignored.
+        (work / "rellink").symlink_to(work / "rel")
+        (work / "brokenlink").symlink_to(work / "nothing")
+        (work / "filelink").symlink_to(work / "rel" / "a.bin")
+        linked = [f"{cwd}/rellink/a.bin", f"{cwd}/rellink/sub/b.bin"]
+        self.assertEqual(keys("rellink"), linked)
+        env = quietly(UnityPy.Environment, "rellink")
+        self.assertEqual((env.path, list(env.files)), ("rellink", linked))
+        env = UnityPy.Environment(path="rellink")
+        self.assertEqual((names(quietly(env.find_file, "b.bin")), env.local_files), (["b"], linked))
+        self.assertEqual(keys("brokenlink"), [])
+        env = quietly(UnityPy.Environment, "brokenlink")
+        self.assertEqual((env.path, env.files), (cwd, {}))
+        with self.assertRaisesRegex(NotADirectoryError, re.escape(f"'{cwd}/filelink/'")):
+            keys("filelink")
+        env = quietly(UnityPy.Environment, "filelink")
+        self.assertEqual((env.path, list(env.files), list(env.cabs)), (".", ["filelink"], ["filelink"]))
+        # URL-style prefixes: fs strips file://, file:, local:// and local:, and load_file's os.path tests do not. A
+        # folder or a zip so named loads. load_file misses a prefixed name: None where os.listdir lists
+        # Environment.path, FileNotFoundError where Environment.path has a prefix. So a file argument loads nothing
+        # in the cwd and raises elsewhere, and find_file from a prefixed `path` (deref through it) raises where its
+        # path/name step finds the file, while a file only its walk finds loads.
+        zipped = io.BytesIO()
+        with zipfile.ZipFile(zipped, "w") as archive:
+            archive.writestr("in.assets", text_asset_file("in"))
+        (work / "x.zip").write_bytes(zipped.getvalue())
+        (work / "x.bin").write_bytes(text_asset_file("x"))
+
+        def unlistable(listed):
+            return f"^\\[Errno 2\\] No such file or directory: '{re.escape(listed)}'$"
+
+        for prefix in ("file://", "file:", "local://", "local:"):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(keys(prefix + "rel"), absolute)
+                env = quietly(UnityPy.Environment, prefix + "rel")
+                self.assertEqual((env.path, list(env.files)), (prefix + "rel", absolute))
+                env = quietly(UnityPy.Environment, prefix + "x.zip")
+                self.assertEqual((env.path, list(env.files)), (cwd, ["in.assets"]))
+                env = UnityPy.Environment()
+                quietly(env.load_zip_file, prefix + "x.zip")
+                self.assertEqual(list(env.files), ["in.assets"])
+                env = UnityPy.Environment()
+                self.assertEqual((quietly(env.load_file, prefix + "x.bin"), env.files), (None, {}))
+                env = UnityPy.Environment(path=prefix + "rel")
+                self.assertEqual(names(quietly(env.find_file, "b.bin")), ["b"])  # the walk
+                with self.assertRaisesRegex(FileNotFoundError, unlistable(prefix + "rel")):
+                    quietly(env.find_file, "a.bin")  # path/name
+                with self.assertRaisesRegex(FileNotFoundError, unlistable(prefix + "rel")):
+                    quietly(UnityPy.Environment(path=prefix + "rel").load_file, "missing.bin")
+                env = UnityPy.Environment(path=prefix + "rel")
+                main = load(text_asset_file("main"), "main.assets", env)[0]
+                main.externals = [SimpleNamespace(path="archive:/CAB-x/a.bin")]
+                with self.assertRaisesRegex(FileNotFoundError, unlistable(prefix + "rel")):
+                    PPtr(m_FileID=1, m_PathID=1, assetsfile=main).deref()
+        for argument in ("file:x.bin", "local:x.bin"):
+            env = quietly(UnityPy.Environment, argument)
+            self.assertEqual((env.path, env.files), (".", {}))
+        for argument, listed in (("file://x.bin", "file:"), (f"file:{cwd}/x.bin", f"file:{cwd}")):
+            with self.subTest(argument), self.assertRaisesRegex(FileNotFoundError, unlistable(listed)):
+                quietly(UnityPy.Environment, argument)
+        # Links under the folder are files: a link to a folder is never entered and raises when opened, a broken one
+        # raises, a link to a file loads under its own path and name. find_file reaches a file under a linked folder
+        # only as path/name.
         real = self.tmp / "real"
         real.mkdir()
         (real / "r.assets").write_bytes(text_asset_file("r"))
