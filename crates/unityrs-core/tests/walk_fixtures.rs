@@ -482,6 +482,62 @@ fn mirror_reader_round_trips_what_the_reader_reads() {
     assert!(unitypy_differs > 0, "no case needs the mirror");
 }
 
+/// Seeded no-panic runs over the recorded cases with their bytes mutated
+/// (bits flipped, or cut short): 30 per case, through both readers and,
+/// after each successful read, the writer under both rules.
+#[test]
+fn mutated_cases_never_panic() {
+    let cases = load("cases.json");
+    let mut rng = unityrs_testkit::Rng::new(0xb0b5_5eed);
+    let mut ok = 0;
+    for c in cases.as_array().unwrap() {
+        let tree = compile(&c["nodes"]);
+        let refs = Refs::of(c.get("ref_types"));
+        let original = unhex(c["hex"].as_str().unwrap());
+        for _ in 0..30 {
+            let mut data = original.clone();
+            if rng.below(3) == 0 {
+                rng.truncate(&mut data);
+            } else {
+                let flips = 1 + rng.below(4);
+                rng.flip_bits(&mut data, flips);
+            }
+            let data = Bytes::from(data);
+            // Bounds a flipped count's work (each limit has its own test).
+            let mut limits = Limits::default();
+            limits.max_zero_size_elements = 256;
+            limits.max_values_per_object = 1 << 14;
+            let options = ReadOptions {
+                limits,
+                ..ReadOptions::default()
+            };
+            let meter = Meter::unlimited();
+            let ctx = ReadCtx {
+                endian: endian(c),
+                ref_types: refs.get(),
+                options: &options,
+                meter: &meter,
+            };
+            let start = if rng.below(4) == 0 {
+                rng.below(data.len() + 1)
+            } else {
+                0
+            };
+            let reads = [
+                walk::boost::read(&data.slice(start..), &tree, &ctx),
+                walk::python::read(&data, i128::try_from(start).unwrap(), &tree, &ctx),
+            ];
+            for p in reads.iter().flatten() {
+                ok += 1;
+                for rules in [WriteRules::UnityPy, WriteRules::MirrorReader] {
+                    let _ = write_out(p, &tree, endian(c), refs.get(), rules);
+                }
+            }
+        }
+    }
+    assert!(ok > 1000, "only {ok} mutated reads succeeded");
+}
+
 /// G2: the spike's 32 value cases, read as `parse_as_dict` reads them
 /// (`read_typetree` with `check_read`), and re-saved (L2 and L3).
 #[test]

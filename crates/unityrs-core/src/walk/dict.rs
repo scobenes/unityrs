@@ -27,6 +27,22 @@ use super::{Out, ReadDetail, ReadError, ReadErrorKind, charge_error};
 /// No entry yet for a slot.
 const NONE: u32 = u32::MAX;
 
+#[cfg(test)]
+std::thread_local! {
+    /// Map steps this thread took: each slot cleared, each entry set or
+    /// looked up, each entry a lookup by name passes (the linear-dicts test).
+    static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts `n` map steps (tests only).
+#[inline]
+fn steps(n: usize) {
+    #[cfg(test)]
+    STEPS.with(|s| s.set(s.get().saturating_add(n as u64)));
+    #[cfg(not(test))]
+    let _ = n;
+}
+
 /// One dict being read: its entries and its region of the slot scratch.
 #[derive(Debug)]
 pub(crate) struct Dict {
@@ -53,6 +69,7 @@ impl Dict {
         let base = if slots > 0 {
             let base = scratch.len();
             scratch.reserve(slots).map_err(|e| charge_error(at, e))?;
+            steps(slots);
             for _ in 0..slots {
                 scratch.push(NONE).map_err(|e| charge_error(at, e))?;
             }
@@ -85,6 +102,7 @@ impl Dict {
         value: Out,
         at: u64,
     ) -> Result<(), ReadError> {
+        steps(1);
         if let Some(pos) = self.position(scratch, slot) {
             value.set_entry(&mut self.entries, pos);
             return Ok(());
@@ -169,7 +187,10 @@ impl Trees {
     pub(crate) fn field<'v>(&self, map: &'v Map, name: &[u8]) -> Option<&'v Value> {
         map.entries()
             .iter()
-            .find(|(k, _)| self.name(map.list(), *k) == name)
+            .find(|(k, _)| {
+                steps(1);
+                self.name(map.list(), *k) == name
+            })
             .map(|(_, v)| v)
     }
 }
@@ -229,5 +250,74 @@ pub(crate) fn ref_tree(t: &SerializedType, limits: &Limits, at: u64) -> Result<R
             at,
             detail: ReadDetail::Tree(e),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use bytes::Bytes;
+
+    use super::STEPS;
+    use crate::limits::{Limits, Meter};
+    use crate::stream::Endian;
+    use crate::typetree::{NodeList, NodeRow, Tree};
+    use crate::value::Value;
+    use crate::walk::{ReadCtx, ReadOptions, RefTypes, boost, python};
+
+    /// Plan 3.10, linear dicts: a class of 2^16 children whose last 4,096
+    /// repeat the first 4,096 names reads in map steps linear in the
+    /// children (counted, not timed; a dict that looked each name up among
+    /// its entries would take some 2^31), each repeated name keeping its
+    /// first position and taking its last value, from both readers.
+    #[test]
+    fn late_repeats_read_in_linear_map_steps() {
+        const N: u32 = 1 << 16;
+        const REPEATS: u32 = 4096;
+        let distinct = N - REPEATS;
+        let mut rows = vec![NodeRow::new(0, "Base", "Base")];
+        for i in 0..N {
+            let name = format!("n{}", if i < distinct { i } else { i - distinct });
+            rows.push(NodeRow::new(1, "int", name.as_str()));
+        }
+        let tree = Tree::compile(
+            Arc::new(NodeList::trusted(rows).unwrap()),
+            &Limits::default(),
+        )
+        .unwrap();
+        let data: Vec<u8> = (0..N).flat_map(u32::to_le_bytes).collect();
+        let data = Bytes::from(data);
+        let options = ReadOptions::default();
+        let meter = Meter::unlimited();
+        let ctx = ReadCtx {
+            endian: Endian::Little,
+            ref_types: RefTypes::List(&[]),
+            options: &options,
+            meter: &meter,
+        };
+        for reader in ["boost", "python"] {
+            STEPS.with(|s| s.set(0));
+            let p = match reader {
+                "boost" => boost::read(&data, &tree, &ctx),
+                _ => python::read(&data, 0, &tree, &ctx),
+            }
+            .unwrap();
+            let steps = STEPS.with(std::cell::Cell::get);
+            assert!(
+                steps <= 3 * u64::from(N),
+                "{reader}: {steps} map steps for {N} children"
+            );
+            let Value::Dict(m) = p.value() else {
+                panic!("{reader}: not a dict")
+            };
+            assert_eq!(m.len(), distinct as usize, "{reader}");
+            for (i, (name, v)) in p.entries(m).enumerate() {
+                let i = u32::try_from(i).unwrap();
+                assert_eq!(name, format!("n{i}").as_bytes(), "{reader}: position {i}");
+                let last = if i < REPEATS { distinct + i } else { i };
+                assert_eq!(v, &Value::Int(i64::from(last)), "{reader}: n{i}");
+            }
+        }
     }
 }
