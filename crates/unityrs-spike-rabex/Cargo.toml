@@ -1,0 +1,39 @@
+[package]
+name = "unityrs-spike-rabex"
+description = "P0 spike: the canonical dump (L0-L3) written through rabex, to decide whether unityrs builds on it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "rabex-dump"
+path = "src/main.rs"
+
+[dependencies]
+# Pinned exactly: the spike measures this release, and docs/spikes/rabex.md
+# reports against it. Default features off: the default `embed-tpk` compiles
+# rabex's TPK blob into the binary, and DESIGN.md keeps the TPK out of the
+# repository and the binary. A TPK is loaded from a path (`--tpk`) instead.
+rabex = { version = "=0.2.1", default-features = false, features = ["compression-lzma", "compression-lz4"] }
+# The cache keyed by (class, version) that replaces rabex's class-only one
+# (docs/spikes/rabex.md section 5); the same map type rabex uses.
+elsa = "1.11"
+# `rabex-dump lzma`: rabex's own LZMA codec (lzma-rs, at rabex's version)
+# against xz's liblzma, built from source as DESIGN.md pins it.
+lzma-rs = "=0.3.0"
+liblzma = { version = "=0.4.9", features = ["static"] }
+liblzma-sys = "=0.4.9"
+# rabex's readers are generic over byteorder's ByteOrder.
+byteorder = "1"
+serde = "1"
+serde_json = "1"
+sha2 = "0.11"
+flate2 = "1"
+rayon = "1"
+
+[lints]
+workspace = true
