@@ -591,6 +591,32 @@ class Rows(unittest.TestCase):
             object_reader=SimpleNamespace(version=(2021, 3, 2, 0), platform=platform, assets_file=None),
         )
 
+    # Sections 14.2, 19.2: a streamed array's data is never read, and the reference is the same bytes held inline.
+    def test_streamed_texture2darray_never_reads_its_resource(self):
+        data = bytes(range(64)) * 2  # two 4x4 RGBA32 slices, as the .resS would hold them
+        reads = []
+
+        def get_resource_data(path, assets_file, offset, size):
+            reads.append((path, offset, size))
+            return data[offset : offset + size]
+
+        streamed = self.texture_array(GraphicsFormat.R8G8B8A8_UNorm, b"", 4, 2)  # a parsed array's empty data
+        streamed.m_StreamData = StreamingInfo(path="archive:/CAB-x/CAB-x.resS", offset=0, size=len(data))
+        streamed.m_DataSize = len(data)
+        with mock.patch.object(ResourceReader, "get_resource_data", get_resource_data):
+            with self.assertRaisesRegex(ValueError, "^Texture2D has no image data$"):
+                Texture2DArray.images.fget(streamed)
+            self.assertEqual(reads, [], "`image_data` is b'', not None, so the .resS is never read")
+            # The reference: the bytes the .resS holds, decoded as an array holding them inline decodes them.
+            inline = Texture2DArray.images.fget(self.texture_array(GraphicsFormat.R8G8B8A8_UNorm, data, 4, 2))
+            streamed.image_data = None  # what the fallback needs to fire
+            read = Texture2DArray.images.fget(streamed)
+        self.assertEqual(reads, [("archive:/CAB-x/CAB-x.resS", 0, len(data))])
+        self.assertEqual([image.tobytes() for image in read], [image.tobytes() for image in inline])
+        self.assertEqual(
+            [image.tobytes() for image in inline], [self.flipped_rgba(data[:64]), self.flipped_rgba(data[64:])]
+        )
+
     # Sections 14.2, 19.2: the 8-bit integer graphics formats map to 16-bit texture formats.
     def test_texture2darray_8bit_integer_formats(self):
         raises = {
