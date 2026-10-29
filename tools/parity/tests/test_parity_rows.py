@@ -83,6 +83,7 @@ class TestColumn(unittest.TestCase):
     """PARITY.md's test column and the tests it names agree (standard library)."""
 
     CITED = re.compile(r"`(test_[a-z_]+\.py)` ([a-z0-9_]+)")
+    RUST = re.compile(r"`(crates/[a-z0-9_/-]+\.rs)` ([a-z0-9_]+)")
 
     def test_every_cited_test_exists_and_every_row_test_is_cited(self):
         text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
@@ -97,7 +98,8 @@ class TestColumn(unittest.TestCase):
 
     def test_every_status_agrees_with_its_test_column(self):
         """Section 0's status rules: a row that names a test is pinned or verified, one that names none is
-        unverified (source reading), n/a (tier —) or a pointer to another row; `planned` is section 17.1's."""
+        unverified (source reading), n/a (tier —) or a pointer to another row; `planned` is section 17.1's;
+        a verified P1 row names a Rust test, and that test exists."""
         text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
         seen = 0
         for header, rows in inventory.tables(text):
@@ -111,6 +113,12 @@ class TestColumn(unittest.TestCase):
                 with self.subTest(row=cells[0][:60], status=state):
                     if state.startswith(("pinned P0", "verified P0")):
                         self.assertTrue(cites or "corpus dump" in cells[test], "a probed row names what probes it")
+                    elif state.startswith("verified P1"):
+                        rust = self.RUST.findall(cells[test])
+                        self.assertTrue(rust, "a verified P1 row names the Rust test that pins it")
+                        for path, name in rust:
+                            source = (HERE.parent.parent / path).read_text(encoding="utf-8")
+                            self.assertRegex(source, rf"\bfn {name}\(", f"{path} has no test {name}")
                     elif state.startswith("unverified (source reading); impl P"):
                         self.assertFalse(cites, "a row a test runs is not unverified")
                     elif state.startswith("planned ("):
