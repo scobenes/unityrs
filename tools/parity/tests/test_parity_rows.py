@@ -44,7 +44,7 @@ try:
         Texture2DArray,
         UnknownObject,
     )
-    from UnityPy.enums import BuildTarget, ClassIDType, FileType, TextureFormat
+    from UnityPy.enums import ArchiveFlags, ArchiveFlagsOld, BuildTarget, ClassIDType, FileType, TextureFormat
     from UnityPy.enums.GraphicsFormat import GraphicsFormat
     from UnityPy.export import AudioClipConverter, Texture2DConverter
     from UnityPy.files import BundleFile, WebFile
@@ -536,6 +536,44 @@ class Rows(unittest.TestCase):
         self.assertEqual(empty.files, {})
         with self.assertRaisesRegex(AttributeError, "_block_info_flags"):
             empty.save(packer="original")
+
+    # Sections 12, 18, 19.2: save_fs XORs the flag set's whole encryption mask out when any bit of it is set.
+    def test_bundle_save_xors_the_whole_encryption_mask(self):
+        def header_flags(data):
+            end = data.index(b"\0") + 1 + 4  # signature, format
+            end = data.index(b"\0", data.index(b"\0", end) + 1) + 1  # player and engine versions
+            return struct.unpack_from(">I", data, end + 16)[0]  # after the size and the two blocks-info sizes
+
+        def saved(engine, extra):
+            bundle = load(S.fs_bundle([(b"CAB-test", text_asset_file(), 4)], engine=engine))[0]
+            bundle.dataflags = type(bundle.dataflags)(int(bundle.dataflags) | extra)
+            return type(bundle.dataflags), bundle.save(packer="original")
+
+        new, old = b"2021.3.2f1", b"2019.4.1f1"
+        cases = {
+            # ArchiveFlags' mask is 0x1400: one bit of it comes out as the other, which reads back as encrypted.
+            (new, 0x1000): (ArchiveFlags, 0x0443, LookupError),
+            (new, 0x0400): (ArchiveFlags, 0x1043, LookupError),
+            (new, 0x1400): (ArchiveFlags, 0x0043, None),
+            (new, 0x0200): (ArchiveFlags, 0x0243, None),  # BlockInfoNeedPaddingAtStart, kept
+            # ArchiveFlagsOld's mask is 0x200 alone, which is cleared; its other bits are not encryption.
+            (old, 0x0200): (ArchiveFlagsOld, 0x0043, None),
+            (old, 0x1000): (ArchiveFlagsOld, 0x1043, None),
+        }
+        for (engine, extra), (flag_set, flags, error) in cases.items():
+            with self.subTest(engine=engine, extra=hex(extra)):
+                kind, data = saved(engine, extra)
+                self.assertEqual((kind, hex(header_flags(data))), (flag_set, hex(flags)))
+                if error is None:
+                    self.assertEqual(list(load(data)[0].files), ["CAB-test"])
+                else:
+                    with self.assertRaisesRegex(error, "^The BundleFile is encrypted, but no key was provided"):
+                        load(data)
+        # The data blocks' own 0x100 bit is not in the mask, so `original` writes it back.
+        bundle = load(S.fs_bundle([(b"CAB-test", text_asset_file(), 4)]))[0]
+        bundle._block_info_flags |= 0x100
+        again = load(bundle.save(packer="original"))[0]
+        self.assertEqual((again._block_info_flags, list(again.files)), (0x102, ["CAB-test"]))
 
     # Section 19.2: `GameObject.m_Components` raises on an empty list and on the old pair form.
     def test_game_object_components_raise(self):
