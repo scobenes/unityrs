@@ -7,13 +7,22 @@
 //! UnityPyBoost are `docs/CANONICAL_DUMP.md` section 7's list: aligned
 //! primitive arrays become tuples, with 16-bit signedness swapped; aligned
 //! `SInt8` and `TypelessData` arrays raise; a negative or out-of-range string
-//! length reads as `""`; arrays of aligned classes align once and skip the
+//! length reads as `""`, and a string of length 0 or read as `""` that way
+//! is not aligned after (`streams/EndianBinaryReader.py:266-273` returns
+//! before `align_stream`); in an array whose aligned element is a vector, a
+//! negative inner length reads as `[]`, unless the inner element is an
+//! aligned primitive, whose `struct` format rejects it (`struct.error`,
+//! `other`); arrays of aligned classes align once and skip the
 //! registry check; `TypelessData` length -1 reads to the end of the file and
 //! other negative lengths follow Python slice semantics (so `bytes_read` can
-//! be negative); a `pair` with three or more children reads its first two;
+//! be negative); a `pair` with three or more children reads its first two,
+//! and an `Array` with three or more reads its elements through
+//! `m_Children[1]` (`:216`, `:309`), where UnityPyBoost raises both;
 //! an aligned `pair` array reads its children without their own align flags
 //! (`:285-293`); a `ReferencedObject` reads `type` before anything else (a
-//! missing key is `KeyError`, `other`) and raises `SerializedFile has no
+//! missing key is `KeyError`, `other`; a `type` with no `class`, `ns` or
+//! `asm` is `KeyError` and a non-dict `type` `AttributeError`, `:89-97`, both
+//! `other` where UnityPyBoost reports `ref_type`) and raises `SerializedFile has no
 //! ref_types` for an empty or absent list *before* the empty-class skip (no
 //! `ref_types` attribute is an `AttributeError` whose message the dump maps
 //! to `ref_type`); an empty array of malformed `pair`s reads as `[]`; and an

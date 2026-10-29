@@ -11,7 +11,8 @@
 //! (`streams/EndianBinaryReader.py:136-144`), and `Length` seeks the
 //! `GzipFile` to its end (`:303-308`), which inflates every member. The
 //! output is streamed through a scratch buffer and only its first 20 bytes
-//! and its length are kept, so detection reserves no budget. Also: `brotli`
+//! and its length are kept, so detection charges nothing: the scratch (at
+//! most 64 KiB) is part of plan section 3.15's constant. Also: `brotli`
 //! at 0x20; the SerializedFile header read big-endian.
 //!
 //! Owner: package C.

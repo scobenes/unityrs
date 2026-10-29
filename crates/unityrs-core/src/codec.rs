@@ -4,7 +4,7 @@
 //! - **LZMA** (`:17-44`) is a raw LZMA1 decoder over the 5 property bytes and
 //!   the rest, run to the end of the input: the declared size is ignored, a
 //!   truncated stream yields what decoded, an over-long one yields all of it.
-//!   Output is capped at [`Limits::max_block_output`] (a `PARITY.md` safety
+//!   Output is capped at [`crate::limits::Limits::max_block_output`] (a `PARITY.md` safety
 //!   divergence). Fewer than 5 input bytes raise (`struct.unpack("<BI", ...)`).
 //!   liblzma static, as `docs/spikes/lzma.md` decided.
 //! - **LZ4/LZ4HC** (`:83-94`) is `lz4.block.decompress(data, uncompressed_size)`:

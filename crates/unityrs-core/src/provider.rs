@@ -2,12 +2,14 @@
 //!
 //! UnityPy's order (`files/ObjectReader.py:285-307`): an explicit `nodes=`
 //! tree; else the type record's own tree; else the class tree for
-//! `(class_id, version)` from the TPK (`helpers/Tpk.py:42-55`), and for a
-//! `MonoBehaviour` the script generator's tree when it answers. Only a
-//! `ValueError` is swallowed there; the script lookup dereferences `m_Script`
-//! through the Environment, so it lives in
-//! [`crate::env::Environment::object_tree`], and runs only when a provider
-//! [`TypeTreeProvider::accepts_scripts`]. The cache key is the class and the packed version
+//! `(class_id, version)` from the TPK (`helpers/Tpk.py:42-55`), and, only
+//! for that TPK tree (`generate_monobehaviour_node` is called inside
+//! `if not node:`, `ObjectReader.py:296-304`), the script generator's tree
+//! when its root is `MonoBehaviour` and the generator answers. An embedded
+//! or explicit `MonoBehaviour` tree is never replaced. Only a `ValueError` is
+//! swallowed there; the script lookup dereferences `m_Script` through the
+//! Environment, so it lives in [`crate::env::Environment::object_tree`], and
+//! runs only when a provider [`TypeTreeProvider::accepts_scripts`]. The cache key is the class and the packed version
 //! integer, as UnityPy's `CLASSES_CACHE` is (`Tpk.py:16`, `:44`): rabex keys
 //! by class alone, so the first version to ask fixes a class's tree for every
 //! later version (`docs/spikes/rabex.md` section 5).
@@ -27,8 +29,8 @@
 //! provider is caller code: the chain calls it with no lock held, so a
 //! provider may itself call [`ProviderChain::lookup`].
 //!
-//! Owner: package D. Construction and [`ProviderChain::lookup`] are
-//! implemented by the scaffold.
+//! Owner: the scaffold (implemented). Package D adds tests and may add
+//! providers; `unityrs-tpk` (package A) implements the TPK one.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -79,6 +81,10 @@ pub trait TypeTreeProvider: Send + Sync + fmt::Debug {
     fn name(&self) -> &'static str;
     /// The tree for `req`, `Ok(None)` when the provider has none (where UnityPy
     /// raises `KeyError`/`ValueError`, which the caller turns into `no_typetree`).
+    /// Every request that maps to one entry of the provider's data gets the
+    /// same `Arc` (UnityPy's `NODES_CACHE`, one tree per TPK class entry,
+    /// `Tpk.py:58-88`), so the trees a chain caches are bounded by the
+    /// provider's data, not by the versions an input names.
     fn tree(&self, req: &TreeRequest<'_>) -> Result<Option<Arc<Tree>>, ProviderError>;
     /// Whether this provider answers script requests (`TreeRequest::script`):
     /// UnityPy's `env.typetree_generator`. Only then does the Environment
@@ -179,7 +185,8 @@ impl ProviderChain {
     }
 
     /// Providers asked in order, with a cache of at most `entries` answers
-    /// and `bytes` bytes ([`entry_cost`]'s accounting).
+    /// and `bytes` bytes (each entry costs its slot, at the table's worst load,
+    /// plus the heap its key owns).
     #[must_use]
     pub fn with_cache_bound(
         providers: Vec<Arc<dyn TypeTreeProvider>>,

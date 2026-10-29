@@ -22,7 +22,15 @@
 //! of 2 or more characters written through the children's kinds); an array
 //! any sized iterable (`List`, `Tuple`, `Prims`, `Bytes` as integers, `Str`
 //! as one-character strings, a `Dict` as its keys), each element written by
-//! the element node under the same rules; a class only a `Dict`.
+//! the element node under the same rules; a class with no children any value
+//! (its non-dict branch iterates no children and writes nothing); a class
+//! with children a `Dict` (`value[child.m_Name]`) or any other value that has
+//! each child's cleaned name as a Python attribute (`getattr(value,
+//! child._clean_name)`, `:447-455`: an `int` value satisfies a child named
+//! `real`, a `list` one named `count`, whose bound method a `bool` node
+//! writes as true). An `Array` node with three or more children writes its
+//! elements through `m_Children[1]` (`:434`), as the pure-Python reader
+//! reads them.
 //!
 //! Owner: package B.
 

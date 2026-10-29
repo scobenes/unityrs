@@ -386,8 +386,11 @@ impl Environment {
 
     /// The tree an object reads with, as UnityPy resolves it
     /// (`files/ObjectReader.py:285-307`): [`ObjectRef::tree`], plus the
-    /// `MonoBehaviour` script hook. When the resolved tree's root type is
-    /// `MonoBehaviour` and a provider accepts script requests
+    /// `MonoBehaviour` script hook. When the tree came from the provider
+    /// chain (not `nodes`, not the type record's own: UnityPy calls
+    /// `generate_monobehaviour_node` only inside `if not node:`,
+    /// `files/ObjectReader.py:296-304`), its root type is `MonoBehaviour`,
+    /// and a provider accepts script requests
     /// ([`crate::provider::TypeTreeProvider::accepts_scripts`], UnityPy's
     /// `env.typetree_generator`), the head is read with that tree
     /// (`check_read` off), `m_Script` is dereferenced through this
