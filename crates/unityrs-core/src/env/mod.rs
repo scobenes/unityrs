@@ -127,7 +127,7 @@ use crate::budget::{DecodeBuf, Reservation};
 use crate::container::{ContainerRow, View};
 use crate::error::{Error, LimitError, LimitKind, NotFound, Unsupported};
 use crate::files::{BundleFile, File, ParentKind, SerializedFile};
-use crate::limits::{Charge, ChargeError, HASH_TABLE_SHARES, Limits, Meter};
+use crate::limits::{Charge, HASH_TABLE_SHARES, Limits, Meter};
 use crate::object::ObjectRef;
 use crate::options::FileContext;
 use crate::provider::{ScriptIdent, TreeRef, TreeRequest, TreeSource};
@@ -534,34 +534,12 @@ fn not_a_reader(name: &RawStr) -> Error {
 }
 
 /// A dereference failure as a file-level error (the container preload's
-/// raise): a load failure as it is, any other as `Malformed` naming
-/// UnityPy's exception (`REQUESTS-d.md` asks for a variant of its own).
+/// raise): a load failure as it is, any other as [`Error::Deref`].
 fn deref_error(e: DerefError) -> Error {
     match e {
         DerefError::Load(e) => e,
-        other => Error::Malformed {
-            what: "PPtr",
-            detail: other.to_string().into(),
-        },
+        other => Error::Deref(Box::new(other)),
     }
-}
-
-/// A dereference failure as an object's error (the `MonoBehaviour` script
-/// hook): the kind UnityPy raises, `other` (`REQUESTS-d.md`).
-fn deref_parse_error(e: DerefError) -> ParseError {
-    let detail = match e {
-        DerefError::Load(Error::Limit(l)) => ReadDetail::Limit(l),
-        DerefError::Load(Error::Budget(b)) => ReadDetail::Charge(ChargeError::Budget(b)),
-        DerefError::FileIdBelowStart { .. } => ReadDetail::Python("IndexError"),
-        DerefError::MissingObject { .. } => ReadDetail::Python("KeyError"),
-        DerefError::RawTarget { .. } => ReadDetail::Python("AttributeError"),
-        _ => ReadDetail::Python("FileNotFoundError"),
-    };
-    ParseError::Read(ReadError {
-        kind: ReadErrorKind::Other,
-        at: 0,
-        detail,
-    })
 }
 
 /// Whether a read failure is a `ValueError` in UnityPy's object mode, the
@@ -985,9 +963,7 @@ impl Environment {
                     };
                     let mut hit = None;
                     for slot in bundle.files() {
-                        if lower_eq(slot.name.as_bytes(), clean.as_bytes(), meter)
-                            .map_err(Error::from)?
-                        {
+                        if lower_eq(slot.name.as_bytes(), clean.as_bytes()) {
                             hit = Some(bundle.entry(slot.dir_index)?);
                             break;
                         }
@@ -996,7 +972,7 @@ impl Environment {
                 }
                 ParentKind::Web => None,
             },
-            None => self.files_match(&clean, meter)?,
+            None => self.files_match(&clean),
         };
         let target = match sibling {
             Some(f) => Found::File(f),
@@ -1040,15 +1016,15 @@ impl Environment {
 
     /// The first `files` entry whose key lower-cases to `clean` (the
     /// Environment as a top-level file's container, rule 4).
-    fn files_match(&self, clean: &RawStr, meter: &Arc<Meter>) -> Result<Option<File>, Error> {
+    fn files_match(&self, clean: &RawStr) -> Option<File> {
         let mut i = 0;
         while let Some(entry) = self.file_at(i) {
-            if lower_eq(entry.name.as_bytes(), clean.as_bytes(), meter)? {
-                return Ok(Some(entry.file));
+            if lower_eq(entry.name.as_bytes(), clean.as_bytes()) {
+                return Some(entry.file);
             }
             i += 1;
         }
-        Ok(None)
+        None
     }
 
     /// The tree an object reads with, as UnityPy resolves it
@@ -1132,7 +1108,7 @@ impl Environment {
         let target = match self.deref(obj.file(), pptr) {
             Ok(t) => t,
             Err(DerefError::Null) => return Ok(None),
-            Err(e) => return Err(deref_parse_error(e)),
+            Err(e) => return Err(ParseError::Deref(Box::new(e))),
         };
         // `parse_as_object()`, `check_read` on.
         let script = match target.read_typetree(None, true) {

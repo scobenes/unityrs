@@ -233,6 +233,13 @@ SIGMA = [
     "\U00010400Σ",
     "ΣΑ",
     "/ΑΣ/x",
+    # Characters assigned after Unicode 14.0 have no class to Python 3.11, though
+    # Rust's newer tables give them one (D request 5): U+A7CB is cased to Rust,
+    # U+1E030 case-ignorable.
+    "\ua7cbΣ",
+    "Α\U0001e030Σ",
+    "ΑΣ\U0001e030",
+    "ΑΣ\U0001e030Α",
 ]
 
 NTPATH = [

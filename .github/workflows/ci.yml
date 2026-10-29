@@ -190,18 +190,20 @@ jobs:
         run: python tools/fixtures/tpk.py --check
       # Core's other recorded oracle fixtures, replayed by cargo test without
       # Python: each script regenerates its fixtures in memory and fails
-      # naming any that drifted from it (files.py builds its inputs with
-      # unityrs-testkit, so it needs the toolchain too).
-      - name: The scaffold's, package B's and package C's oracle fixtures are current
+      # naming any that drifted from it (files.py and env.py build their
+      # inputs with unityrs-testkit, so they need the toolchain too).
+      - name: The scaffold's and packages B to E's oracle fixtures are current
         run: |
           python tools/fixtures/scaffold.py --check
           python tools/fixtures/pure_python_rules.py --check
           python tools/fixtures/walk.py --check
           python tools/fixtures/files.py --check
+          python tools/fixtures/env.py --check
+          python tools/fixtures/dump.py --check
       - name: Self-tests (parity tools and the spikes' scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=156
+          tools/parity/tests=258
           crates/unityrs-spike-rabex/scripts/tests=19
           crates/unityrs-bench-lzma=8
       # A smoke test that the oracle runs here; the unityrs side is compared later.

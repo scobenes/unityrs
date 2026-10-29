@@ -192,14 +192,15 @@ impl ObjectRef {
         rules: WriteRules,
     ) -> Result<Bytes, WriteError> {
         // UnityPy files/ObjectReader.py:264-276
+        // `_get_typetree_node` raised: the writer never ran.
         let tree = match self.tree(nodes) {
             Ok(Some(t)) => t.tree,
-            // `_get_typetree_node` raised: the writer never ran.
-            Ok(None) | Err(_) => {
-                return Err(WriteError::Malformed(crate::raw::RawStr::from_static(
-                    b"no typetree",
-                )));
+            Ok(None) => {
+                return Err(WriteError::NoTypeTree {
+                    class_id: self.class_id(),
+                });
             }
+            Err(e) => return Err(WriteError::Tree(Box::new(e))),
         };
         let file = &self.file;
         let limits = file.context().limits;

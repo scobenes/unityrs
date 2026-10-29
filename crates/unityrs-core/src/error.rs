@@ -21,7 +21,7 @@ use crate::version::VersionError;
 use crate::walk::ParseError;
 
 /// Why loading a file failed. Never a panic.
-#[derive(Clone, Debug, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
     /// `check_file_type` raised (the dump's `"detect"`).
@@ -96,10 +96,31 @@ pub enum Error {
     /// A CAB, external, object or resource that is not there.
     #[error("not found: {0}")]
     NotFound(NotFound),
+    /// A pointer that could not be followed where the caller raises it (the
+    /// container preload, `helpers/ContainerHelper.py:43-46`, plan 3.13).
+    /// A failure to load the target is that load's own error, never this.
+    #[error(transparent)]
+    Deref(Box<crate::env::DerefError>),
     /// An I/O error from a source.
     #[error("io: {0}")]
-    Io(Arc<std::io::Error>),
+    Io(IoError),
 }
+
+/// An I/O error, shared because [`Error`] is `Clone`. `std::io::Error` has
+/// no equality, so two are equal when their kinds and OS error codes are.
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct IoError(pub Arc<std::io::Error>);
+
+impl PartialEq for IoError {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.kind() == other.0.kind() && self.0.raw_os_error() == other.0.raw_os_error()
+    }
+}
+
+impl Eq for IoError {}
+
+const _: () = crate::send_sync::<IoError>();
 
 impl From<ChargeError> for Error {
     fn from(e: ChargeError) -> Self {
@@ -112,7 +133,7 @@ impl From<ChargeError> for Error {
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
-        Self::Io(Arc::new(e))
+        Self::Io(IoError(Arc::new(e)))
     }
 }
 
@@ -148,6 +169,7 @@ impl CellError for Error {
             Self::Tree(t) => t.is_transient(),
             Self::AssetBundle(p) => p.is_transient(),
             Self::Entry { source, .. } => source.is_transient(),
+            Self::Deref(d) => d.is_transient(),
             _ => false,
         }
     }
@@ -158,6 +180,7 @@ impl CellError for Error {
             Self::Tree(t) => t.is_meter_refusal(),
             Self::AssetBundle(p) => p.is_meter_refusal(),
             Self::Entry { source, .. } => source.is_meter_refusal(),
+            Self::Deref(d) => d.is_meter_refusal(),
             _ => false,
         }
     }
@@ -177,6 +200,8 @@ impl CellError for Error {
             Self::Entry { name, source } => heap_of(name.len())
                 .saturating_add(heap_of(std::mem::size_of::<Self>()))
                 .saturating_add(source.heap_bytes()),
+            Self::Deref(d) => heap_of(std::mem::size_of::<crate::env::DerefError>())
+                .saturating_add(d.heap_bytes()),
             _ => 0,
         }
     }

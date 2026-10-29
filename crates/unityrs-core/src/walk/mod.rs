@@ -248,6 +248,11 @@ pub enum ParseError {
     /// A provider failed.
     #[error(transparent)]
     Provider(#[from] ProviderError),
+    /// The `MonoBehaviour` script hook's dereference of `m_Script` failed
+    /// with anything but a null pointer, which UnityPy raises
+    /// (`files/ObjectReader.py:332-350`; [`crate::env::Environment::object_tree`]).
+    #[error("m_Script: {0}")]
+    Deref(Box<crate::env::DerefError>),
 }
 
 impl crate::once::CellError for ParseError {
@@ -261,6 +266,7 @@ impl crate::once::CellError for ParseError {
             Self::Tree(t) => t.is_transient(),
             // A provider is caller code: its failure is not the input's.
             Self::Provider(_) => true,
+            Self::Deref(d) => d.is_transient(),
             Self::NoTypeTree { .. } | Self::CheckRead { .. } => false,
         }
     }
@@ -273,6 +279,7 @@ impl crate::once::CellError for ParseError {
                 _ => false,
             },
             Self::Tree(t) => t.is_meter_refusal(),
+            Self::Deref(d) => d.is_meter_refusal(),
             Self::Provider(_) | Self::NoTypeTree { .. } | Self::CheckRead { .. } => false,
         }
     }
@@ -282,6 +289,8 @@ impl crate::once::CellError for ParseError {
             // The value's own heap rides in its `Parsed`'s charge.
             Self::CheckRead { .. } => crate::error::heap_of(std::mem::size_of::<Parsed>() + 16),
             Self::Provider(p) => crate::error::heap_of(p.detail.len()),
+            Self::Deref(d) => crate::error::heap_of(std::mem::size_of::<crate::env::DerefError>())
+                .saturating_add(d.heap_bytes()),
             _ => 0,
         }
     }
@@ -297,11 +306,16 @@ impl crate::once::CellError for ParseError {
 }
 
 impl ParseError {
-    /// The canonical dump's kind for this outcome.
+    /// The canonical dump's kind for this outcome. A read that ended before
+    /// its start (a negative `bytes_read`, the pure-Python reader's after a
+    /// negative `TypelessData` length) is `other`: the oracle reads the count
+    /// from the message with `(\d+)`, which takes no sign
+    /// (`tools/parity/unitypy_dump.py` `error_kind`; plan 3.10).
     #[must_use]
     pub fn l2_kind(&self) -> L2Kind {
         match self {
             Self::NoTypeTree { .. } => L2Kind::NoTypetree,
+            Self::CheckRead { parsed, .. } if parsed.bytes_read < 0 => L2Kind::Other,
             Self::CheckRead { .. } => L2Kind::CheckRead,
             Self::Read(e) => match e.kind {
                 ReadErrorKind::OutOfBounds => L2Kind::OutOfBounds,
@@ -309,7 +323,7 @@ impl ParseError {
                 ReadErrorKind::RefType => L2Kind::RefType,
                 ReadErrorKind::Other => L2Kind::Other,
             },
-            Self::Tree(_) | Self::Provider(_) => L2Kind::Other,
+            Self::Tree(_) | Self::Provider(_) | Self::Deref(_) => L2Kind::Other,
         }
     }
 }
@@ -345,6 +359,18 @@ pub enum WriteError {
     /// A malformed node the writer reached (`pair` or `Array` children).
     #[error("malformed node {0:?}")]
     Malformed(RawStr),
+    /// The object has no tree to write with: UnityPy raises the same
+    /// `TypeTreeError` for a write as for a read (`files/ObjectReader.py:296-307`;
+    /// the read side's [`ParseError::NoTypeTree`]).
+    #[error("no typetree for class {class_id}")]
+    NoTypeTree {
+        /// The object's class.
+        class_id: i32,
+    },
+    /// Resolving the object's tree failed (a tree that does not compile, a
+    /// provider's failure): the writer never ran.
+    #[error("typetree: {0}")]
+    Tree(Box<ParseError>),
     /// A bound from [`Limits`].
     #[error(transparent)]
     Limit(LimitError),

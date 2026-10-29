@@ -45,6 +45,7 @@
 //! pins it).
 
 use crate::error::Error;
+use crate::once::CellError;
 use crate::raw::RawStr;
 
 /// A pointer: `m_FileID` and `m_PathID`.
@@ -89,7 +90,7 @@ pub fn external_index(file_id: i32, len: usize) -> Result<usize, ExternalIndexEr
 }
 
 /// Why a dereference failed, with the exception UnityPy raises.
-#[derive(Clone, Debug, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DerefError {
     /// `ValueError`: `m_PathID == 0`.
@@ -139,4 +140,29 @@ pub enum DerefError {
     /// Loading the target failed.
     #[error(transparent)]
     Load(#[from] Error),
+}
+
+impl DerefError {
+    /// Whether it depends on what else is held ([`crate::once::CellError`]):
+    /// only a load's own transient failure does.
+    pub(crate) fn is_transient(&self) -> bool {
+        matches!(self, Self::Load(e) if e.is_transient())
+    }
+
+    /// Whether the input's own meter refused the load.
+    pub(crate) fn is_meter_refusal(&self) -> bool {
+        matches!(self, Self::Load(e) if e.is_meter_refusal())
+    }
+
+    /// The heap its names (or its load's error) hold.
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        match self {
+            Self::NotFound { path: n }
+            | Self::RawTarget { name: n }
+            | Self::MissingObject { file: n, .. }
+            | Self::ContainerDropped { name: n } => crate::error::heap_of(n.len()),
+            Self::Load(e) => e.heap_bytes(),
+            Self::Null | Self::FileIdPastEnd { .. } | Self::FileIdBelowStart { .. } => 0,
+        }
+    }
 }

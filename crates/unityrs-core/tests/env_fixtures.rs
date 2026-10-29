@@ -87,20 +87,8 @@ fn error_kind(e: &Error) -> String {
         Error::Malformed {
             what: "resource", ..
         } => "AttributeError".into(),
-        // The preload's raise (REQUESTS-d.md asks for a variant of its own).
-        Error::Malformed {
-            what: "PPtr",
-            detail,
-        } => {
-            let d = detail.to_string();
-            if d.starts_with("list index out of range") {
-                "IndexError".into()
-            } else if d.starts_with("pointer target") {
-                "AttributeError".into()
-            } else {
-                format!("PPtr: {d}")
-            }
-        }
+        // The preload's raise.
+        Error::Deref(d) => deref_kind(d).into(),
         other => format!("core: {other}"),
     }
 }

@@ -10,14 +10,14 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use unityrs_core::env::{Cab, EnvOptions, Environment, Source};
+use unityrs_core::env::{Cab, DerefError, EnvOptions, Environment, Source};
 use unityrs_core::files::SerializedFile;
 use unityrs_core::limits::{Limits, Meter};
 use unityrs_core::provider::{
     ProviderChain, ProviderError, TreeRequest, TreeSource, TypeTreeProvider,
 };
 use unityrs_core::typetree::{NodeList, NodeRow, Tree};
-use unityrs_core::walk::ParseError;
+use unityrs_core::walk::{ParseError, WriteError, WriteRules};
 use unityrs_core::{Bytes, FileContext, ObjectRef, RawStr, Value};
 use unityrs_testkit::ByteWriter;
 use unityrs_testkit::blob::NodeSpec;
@@ -256,6 +256,11 @@ fn setup(pointers: &[(i32, i64)], embedded: bool, with_scripts: bool) -> Setup {
     Setup { env, file, scripts }
 }
 
+/// A value to hand the writer: object 1 of `s`, read with its tree.
+fn stripped_value(s: &Setup) -> unityrs_core::Parsed {
+    obj(s, 1).read_typetree(None, false).unwrap()
+}
+
 fn obj(s: &Setup, path_id: i64) -> ObjectRef {
     s.file.object(path_id).unwrap()
 }
@@ -303,6 +308,14 @@ fn trees_resolve_in_unitypys_order() {
         o.read_typetree(None, true),
         Err(ParseError::NoTypeTree { .. })
     ));
+    // The write raises the same `TypeTreeError` (`files/ObjectReader.py:296-307`).
+    let value = stripped_value(&stripped);
+    assert_eq!(
+        o.write_typetree(&value, None, WriteRules::UnityPy),
+        Err(WriteError::NoTypeTree {
+            class_id: o.class_id()
+        })
+    );
 }
 
 /// With no provider that accepts scripts, `object_tree` is `ObjectRef::tree`
@@ -335,12 +348,16 @@ fn the_script_hook_dereferences_m_script_for_a_provider_tree_only() {
         let t = s.env.object_tree(&obj(&s, path_id), None).unwrap().unwrap();
         assert_eq!(t.source, TreeSource::Provider("tpk"), "{why}");
     }
+    let deref = |path_id| match s.env.object_tree(&obj(&s, path_id), None) {
+        Err(ParseError::Deref(d)) => *d,
+        other => panic!("{path_id}: {other:?}"),
+    };
     assert!(
-        s.env.object_tree(&obj(&s, 4), None).is_err(),
+        matches!(deref(4), DerefError::NotFound { .. }),
         "a dangling external is FileNotFoundError, raised"
     );
     assert!(
-        s.env.object_tree(&obj(&s, 5), None).is_err(),
+        matches!(deref(5), DerefError::MissingObject { path_id: 77, .. }),
         "a missing object is KeyError, raised"
     );
 }

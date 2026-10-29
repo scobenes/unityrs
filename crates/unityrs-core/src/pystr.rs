@@ -23,13 +23,13 @@
 //! **Final sigma.** `str.lower()` maps U+03A3 to U+03C2 in the
 //! `Final_Sigma` context (`handle_capital_sigma` in Python's
 //! `unicodeobject.c`): a cased character before it and none after it,
-//! skipping case-ignorable ones. Rust's `str::to_lowercase` applies the same
-//! rule with the same definitions, and a lone surrogate (an invalid byte) is
-//! neither cased nor case-ignorable to Python, so the context never crosses
-//! a run's edge and a run lowered on its own gets Python's answer. Rust's
-//! `Cased` and `Case_Ignorable` tables are newer than Python's, which can
-//! only matter for a character Unicode assigned after 14.0 beside a capital
-//! sigma (`REQUESTS-d.md` asks for the 14.0 tables).
+//! skipping case-ignorable ones. The two classes come from Python 3.11's
+//! own `str.lower()` ([`crate::tables::is_sigma_cased`],
+//! [`crate::tables::is_case_ignorable`], Unicode 14.0), not from Rust's newer
+//! tables, which differ for characters Unicode assigned after 14.0. A lone
+//! surrogate (an invalid byte) is neither cased nor case-ignorable to
+//! Python, so the context never crosses a run's edge and a run lowered on
+//! its own gets Python's answer.
 //!
 //! **Memory.** Each function that returns a string computes it from an
 //! input's name (a directory path, an external path, a resource path, up to
@@ -39,9 +39,8 @@
 //! directory) is returned as the input's own bytes, uncopied, and a result
 //! that is a part of its input (a basename already lower-case) as a slice of
 //! them. Comparisons that only need to know whether two names are equal
-//! ([`lower_eq`]) compare without building the lowered string at all. The
-//! one transient buffer is Rust's lowering of a valid run that holds a
-//! capital sigma, read for the sigma's form; it is charged while it lives.
+//! ([`lower_eq`]) compare without building the lowered string at all, and
+//! nothing else is allocated: a capital sigma's context is read in place.
 //!
 //! Owner: package D.
 
@@ -49,9 +48,9 @@ use std::sync::Arc;
 
 use crate::budget::DecodeBuf;
 use crate::error::LimitKind;
-use crate::limits::{Charge, ChargeError, Meter, heap_cost};
+use crate::limits::{ChargeError, Meter};
 use crate::raw::RawStr;
-use crate::tables::lower_exception;
+use crate::tables::{is_case_ignorable, is_sigma_cased, lower_exception};
 
 /// U+03A3 GREEK CAPITAL LETTER SIGMA, the one character `lower()` maps by
 /// context.
@@ -60,87 +59,54 @@ const CAPITAL_SIGMA: char = '\u{3A3}';
 /// Emits `s.lower()` piece by piece, in order, to `emit`, which returns
 /// `false` to stop early. A piece is one lowered character or one run of
 /// invalid bytes. Returns whether every piece was emitted.
-fn lower_pieces(
-    s: &[u8],
-    meter: &Arc<Meter>,
-    mut emit: impl FnMut(&[u8]) -> bool,
-) -> Result<bool, ChargeError> {
+fn lower_pieces(s: &[u8], mut emit: impl FnMut(&[u8]) -> bool) -> bool {
     for chunk in s.utf8_chunks() {
         let run = chunk.valid();
-        if !run.is_empty() && !lower_run(run, meter, &mut emit)? {
-            return Ok(false);
+        if !run.is_empty() && !lower_run(run, &mut emit) {
+            return false;
         }
         let bad = chunk.invalid();
         // Lone surrogates: `lower()` keeps them, the encoder restores the bytes.
         if !bad.is_empty() && !emit(bad) {
-            return Ok(false);
+            return false;
         }
     }
-    Ok(true)
+    true
 }
 
 /// One valid run's lowering, character by character.
-fn lower_run(
-    run: &str,
-    meter: &Arc<Meter>,
-    emit: &mut impl FnMut(&[u8]) -> bool,
-) -> Result<bool, ChargeError> {
-    // Rust's lowering of the whole run, read only for each capital sigma's
-    // context-dependent form (module docs), charged while it lives.
-    let sigmas = if run.contains(CAPITAL_SIGMA) {
-        Some(SigmaForms::of(run, meter)?)
-    } else {
-        None
-    };
-    // Where the current character's lowering starts in Rust's lowering.
-    let mut rust_at = 0usize;
+fn lower_run(run: &str, emit: &mut impl FnMut(&[u8]) -> bool) -> bool {
     let mut buf = [0u8; 12];
-    for c in run.chars() {
+    for (i, c) in run.char_indices() {
         let piece: &[u8] = if c == CAPITAL_SIGMA {
-            let form = sigmas
-                .as_ref()
-                .and_then(|s| s.lowered.get(rust_at..))
-                .and_then(|t| t.chars().next())
-                .unwrap_or('\u{3C3}');
-            rust_at += form.len_utf8();
-            form.encode_utf8(&mut buf).as_bytes()
+            sigma_form(run, i).encode_utf8(&mut buf).as_bytes()
+        } else if let Some(py) = lower_exception(c) {
+            py.as_bytes()
         } else {
-            rust_at += c.to_lowercase().map(char::len_utf8).sum::<usize>();
-            if let Some(py) = lower_exception(c) {
-                py.as_bytes()
-            } else {
-                let mut n = 0;
-                for l in c.to_lowercase() {
-                    n += l.encode_utf8(buf.get_mut(n..).unwrap_or_default()).len();
-                }
-                buf.get(..n).unwrap_or_default()
+            let mut n = 0;
+            for l in c.to_lowercase() {
+                n += l.encode_utf8(buf.get_mut(n..).unwrap_or_default()).len();
             }
+            buf.get(..n).unwrap_or_default()
         };
         if !emit(piece) {
-            return Ok(false);
+            return false;
         }
     }
-    Ok(true)
+    true
 }
 
-/// Rust's lowering of a run that holds a capital sigma, with the charge for
-/// the buffers `str::to_lowercase` allocates: it starts at the run's length
-/// and grows at most once (a lowered run is at most 1.5 times as long), so
-/// the first buffer and its doubling cover it.
-struct SigmaForms {
-    lowered: String,
-    _charge: Charge,
-}
-
-impl SigmaForms {
-    fn of(run: &str, meter: &Arc<Meter>) -> Result<Self, ChargeError> {
-        let n = u64::try_from(run.len()).unwrap_or(u64::MAX);
-        let charge = meter.charge(heap_cost(n).saturating_add(heap_cost(n.saturating_mul(2))))?;
-        Ok(Self {
-            lowered: run.to_lowercase(),
-            _charge: charge,
-        })
-    }
+/// The lower-case form of the capital sigma at byte `at` of `run`: final
+/// (U+03C2) when the nearest character before it that is not
+/// case-ignorable is cased, and the nearest such one after it is not cased
+/// or absent (`handle_capital_sigma` in `CPython`'s `Objects/unicodeobject.c`).
+fn sigma_form(run: &str, at: usize) -> char {
+    let before = run.get(..at).unwrap_or_default();
+    let after = run.get(at + CAPITAL_SIGMA.len_utf8()..).unwrap_or_default();
+    let mut back = before.chars().rev().filter(|&c| !is_case_ignorable(c));
+    let mut ahead = after.chars().filter(|&c| !is_case_ignorable(c));
+    let fin = back.next().is_some_and(is_sigma_cased) && !ahead.next().is_some_and(is_sigma_cased);
+    if fin { '\u{3C2}' } else { '\u{3C3}' }
 }
 
 /// `sub.lower()`, where `sub` lies inside `whole`: `sub`'s own bytes (a
@@ -149,12 +115,12 @@ impl SigmaForms {
 fn lower_within(whole: &RawStr, sub: &[u8], meter: &Arc<Meter>) -> Result<RawStr, ChargeError> {
     let mut len = 0usize;
     let mut same = true;
-    lower_pieces(sub, meter, |piece| {
+    lower_pieces(sub, |piece| {
         let end = len.saturating_add(piece.len());
         same = same && sub.get(len..end) == Some(piece);
         len = end;
         true
-    })?;
+    });
     if same && len == sub.len() {
         return Ok(slice_of(whole, sub));
     }
@@ -165,13 +131,13 @@ fn lower_within(whole: &RawStr, sub: &[u8], meter: &Arc<Meter>) -> Result<RawStr
         LimitKind::InputMemory,
     )?;
     let mut failed = None;
-    lower_pieces(sub, meter, |piece| match out.extend_from_slice(piece) {
+    lower_pieces(sub, |piece| match out.extend_from_slice(piece) {
         Ok(()) => true,
         Err(e) => {
             failed = Some(e);
             false
         }
-    })?;
+    });
     if let Some(e) = failed {
         return Err(e);
     }
@@ -192,18 +158,18 @@ pub fn py_lower(s: &RawStr, meter: &Arc<Meter>) -> Result<RawStr, ChargeError> {
 }
 
 /// Whether `a.lower() == lowered`, compared piece by piece without building
-/// `a.lower()` (`classes/PPtr.py:75-76` compares each `files` key so). Only
-/// a valid run that holds a capital sigma charges `meter`, while it is
-/// compared (module docs).
-pub fn lower_eq(a: &[u8], lowered: &[u8], meter: &Arc<Meter>) -> Result<bool, ChargeError> {
+/// `a.lower()` (`classes/PPtr.py:75-76` compares each `files` key so); it
+/// allocates nothing.
+#[must_use]
+pub fn lower_eq(a: &[u8], lowered: &[u8]) -> bool {
     let mut at = 0usize;
-    let all = lower_pieces(a, meter, |piece| {
+    let all = lower_pieces(a, |piece| {
         let end = at.saturating_add(piece.len());
         let same = lowered.get(at..end) == Some(piece);
         at = end;
         same
-    })?;
-    Ok(all && at == lowered.len())
+    });
+    all && at == lowered.len()
 }
 
 /// The byte length of the first Python character of `p`: a valid UTF-8
@@ -387,7 +353,13 @@ mod tests {
         want.push(0xff);
         want.extend_from_slice("α".as_bytes());
         assert_eq!(lower(&b), want);
-        // The transient lowering a sigma run needs is charged and returned.
+        // The context is Python 3.11's (Unicode 14.0), not Rust's newer one:
+        // U+A7CB (Unicode 16) is not cased there, and U+1E030 (Unicode 15)
+        // is not case-ignorable, so neither makes the sigma final.
+        assert_eq!(lower("\u{A7CB}Σ".as_bytes()), "\u{A7CB}σ".as_bytes());
+        assert_eq!(lower("Α\u{1E030}Σ".as_bytes()), "α\u{1E030}σ".as_bytes());
+        assert_eq!(lower("ΑΣ\u{1E030}".as_bytes()), "ας\u{1E030}".as_bytes());
+        // The result alone is charged, and returned.
         let m = meter();
         let s = py_lower(&RawStr::from("ΑΣ"), &m).unwrap();
         assert_eq!(m.used(), heap_cost(4) + OWNER_COST);
@@ -397,14 +369,12 @@ mod tests {
 
     #[test]
     fn lower_eq_compares_without_building() {
-        let m = meter();
-        assert!(lower_eq(b"CAB-Abc", b"cab-abc", &m).unwrap());
-        assert!(!lower_eq(b"CAB-Abc", b"cab-ab", &m).unwrap());
-        assert!(!lower_eq(b"CAB-Ab", b"cab-abc", &m).unwrap());
-        assert!(lower_eq("ΑΣ".as_bytes(), "ας".as_bytes(), &m).unwrap());
-        assert!(!lower_eq("ΑΣ".as_bytes(), "ασ".as_bytes(), &m).unwrap());
-        assert!(lower_eq(b"", b"", &m).unwrap());
-        assert_eq!(m.used(), 0);
+        assert!(lower_eq(b"CAB-Abc", b"cab-abc"));
+        assert!(!lower_eq(b"CAB-Abc", b"cab-ab"));
+        assert!(!lower_eq(b"CAB-Ab", b"cab-abc"));
+        assert!(lower_eq("ΑΣ".as_bytes(), "ας".as_bytes()));
+        assert!(!lower_eq("ΑΣ".as_bytes(), "ασ".as_bytes()));
+        assert!(lower_eq(b"", b""));
     }
 
     #[test]

@@ -305,9 +305,10 @@ pub fn build_with_signature(spec: &BundleSpec, signature: &[u8]) -> Vec<u8> {
 /// 7.4, "Done when"): `(name, bytes)` inputs covering every `SerializedFile`
 /// format both endians, UnityFS 6-8 with every codec, blocks-info at either
 /// end, both alignment rules, padding, both flag sets, UnityWeb and UnityRaw
-/// at format 6, nested bundles, repeated paths and block overrides. No input
-/// has an AssetBundle object, so none needs the container reader.
-/// `tools/fixtures/files.py` records UnityPy's L0 and L1 records for each.
+/// at format 6, nested bundles, repeated paths, block overrides, and an
+/// AssetBundle (class 142) loose and inside a bundle, whose container rows
+/// the parse reads (C request 9). `tools/fixtures/files.py` records UnityPy's
+/// L0 and L1 records for each.
 #[must_use]
 // A table of cases, one per line.
 #[allow(clippy::too_many_lines)]
@@ -332,6 +333,32 @@ pub fn matrix() -> Vec<(String, Vec<u8>)> {
     let mut blank = matrix_file(22, false);
     blank.unity_version = Vec::new();
     out.push(("CAB-blank-version".into(), file(&blank)));
+    // An AssetBundle (class 142), whose container the parse reads (C9).
+    let assetbundle = || {
+        use crate::env::{Bundle, Obj, row};
+        crate::env::serialized(
+            &["archive:/CAB-x/CAB-x"],
+            &[
+                Obj::named(1, "n", &[(0, 2), (1, 5)]),
+                Obj::asset_bundle(
+                    2,
+                    Bundle {
+                        preload: vec![(0, 1), (1, 5)],
+                        rows: vec![
+                            row("assets/n.prefab", (0, 2), (0, 1)),
+                            row("assets/n.prefab", (1, 1), (0, 2)),
+                        ],
+                        ..Bundle::default()
+                    },
+                ),
+            ],
+        )
+    };
+    out.push(("CAB-assetbundle".into(), assetbundle()));
+    out.push((
+        "assetbundle.bundle".into(),
+        crate::env::bundle(&[("CAB-assetbundle", assetbundle())]),
+    ));
 
     let codecs = [
         ("none", TestCodec::None),

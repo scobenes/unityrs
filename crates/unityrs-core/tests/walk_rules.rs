@@ -14,10 +14,10 @@ use unityrs_core::limits::{Limits, Meter};
 use unityrs_core::stream::Endian;
 use unityrs_core::typetree::{NodeList, NodeRow, Tree, TreeError};
 use unityrs_core::walk::{
-    self, FloatMode, ReadCtx, ReadDetail, ReadError, ReadErrorKind, ReadOptions, RefTypes,
-    WriteCtx, WriteError, WriteRules,
+    self, FloatMode, L2Kind, ParseError, ReadCtx, ReadDetail, ReadError, ReadErrorKind,
+    ReadOptions, RefTypes, WriteCtx, WriteError, WriteRules,
 };
-use unityrs_core::{Bytes, LimitKind, Parsed, RawStr, Value};
+use unityrs_core::{Bytes, LimitKind, Parsed, PrimArray, RawStr, Value};
 use unityrs_testkit::rng::Rng;
 use unityrs_testkit::writer::ByteWriter;
 
@@ -720,4 +720,81 @@ fn random_trees_and_bytes_never_panic() {
     }
     assert!(compiled > 9_000, "{compiled} trees compiled");
     assert!(ok > 3_000, "only {ok} reads succeeded");
+}
+
+/// E request 2: a non-empty `vector<UInt8>` or `vector<char>` reads as one
+/// `Prims(U8)` run on UnityPyBoost's path, its element aligned or not, and
+/// on the pure-Python path when the element is not aligned; an aligned one
+/// there is UnityPy's `read_u_byte_array` tuple (`helpers/TypeTreeHelper.py:56-57`,
+/// `streams/EndianBinaryReader.py:173-174`). Never a `List` of integers,
+/// which the dump would write as a JSON array where `canonical.py` writes
+/// `u8s`.
+#[test]
+fn a_byte_vector_is_one_u8_run_on_both_readers() {
+    for ty in ["UInt8", "char"] {
+        for meta in [0, ALIGN] {
+            let t = tree(&[
+                (0, "Base", "Base", 0),
+                (1, "vector", "v", 0),
+                (2, "Array", "Array", 0),
+                (3, "int", "size", 0),
+                (3, ty, "data", meta),
+            ]);
+            let mut w = ByteWriter::le();
+            w.i32(3).bytes(&[1, 2, 250]).align(4);
+            for (reader, p) in read_both(w.as_slice(), &t, RefTypes::Absent) {
+                let v = p.get(&[b"v"]).unwrap();
+                match (reader, meta, v) {
+                    ("python", ALIGN, Value::Tuple(items)) => {
+                        let ints: Vec<_> = items.iter().map(Value::as_i64).collect();
+                        assert_eq!(ints, [Some(1), Some(2), Some(250)], "{ty} {reader}");
+                    }
+                    (_, _, Value::Prims(PrimArray::U8(b)))
+                        if (reader, meta) != ("python", ALIGN) =>
+                    {
+                        assert_eq!(&b[..], [1, 2, 250], "{ty} {meta} {reader}");
+                    }
+                    other => panic!("{ty} {meta} {reader}: {:?}", other.2),
+                }
+            }
+        }
+    }
+}
+
+/// E request 3: a read that ends before its start (a negative `TypelessData`
+/// length on the pure-Python path moves the position back) is `other`, not
+/// `check_read`: the oracle reads the count from the message with `(\d+)`,
+/// which takes no sign (`tools/parity/unitypy_dump.py` `error_kind`).
+#[test]
+fn a_read_ending_before_its_start_is_other() {
+    let t = tree(&[
+        (0, "Base", "Base", 0),
+        (1, "TypelessData", "x", 0),
+        (2, "int", "size", 0),
+        (2, "UInt8", "data", 0),
+    ]);
+    let mut w = ByteWriter::le();
+    w.bytes(&[0; 8]).i32(-8).bytes(&[0; 4]);
+    let file = Bytes::copy_from_slice(w.as_slice());
+    let options = ReadOptions::default();
+    let meter = Meter::unlimited();
+    let ctx = ReadCtx {
+        endian: Endian::Little,
+        ref_types: RefTypes::Absent,
+        options: &options,
+        meter: &meter,
+    };
+    let e = walk::read_typetree(&file, 8, 0, &t, &ctx, true).unwrap_err();
+    let ParseError::CheckRead { ref parsed, .. } = e else {
+        panic!("{e:?}");
+    };
+    assert!(parsed.bytes_read < 0, "{}", parsed.bytes_read);
+    assert_eq!(e.l2_kind(), L2Kind::Other);
+    // A read that ends short of its size, but after its start, stays `check_read`.
+    let e = walk::read_typetree(&file, 0, 0, &t, &ctx, true).unwrap_err();
+    assert!(
+        matches!(e, ParseError::CheckRead { ref parsed, .. } if parsed.bytes_read >= 0),
+        "{e:?}"
+    );
+    assert_eq!(e.l2_kind(), L2Kind::CheckRead);
 }

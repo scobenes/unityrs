@@ -209,10 +209,21 @@ fn type_record(t: &SerializedType) -> J {
 
 fn serialized_l1(sf: &Arc<SerializedFile>) -> J {
     let h = sf.header();
-    assert!(
-        sf.object_infos().iter().all(|o| o.class_id != 142),
-        "the matrix has no AssetBundle (the container reader is package D's)"
-    );
+    let container: Vec<J> = sf
+        .container()
+        .unwrap()
+        .rows()
+        .iter()
+        .map(|r| {
+            json!([
+                name(r.path.as_bytes()),
+                r.preload_index,
+                r.preload_size,
+                r.file_id,
+                r.path_id
+            ])
+        })
+        .collect();
     json!({
         "kind": "serialized",
         "header": {
@@ -242,7 +253,7 @@ fn serialized_l1(sf: &Arc<SerializedFile>) -> J {
         ])).collect::<Vec<_>>(),
         "ref_types": sf.ref_types().map(|t| t.iter().map(type_record).collect::<Vec<_>>()),
         "user_information": opt_name(sf.user_information()),
-        "container": [],
+        "container": container,
     })
 }
 
