@@ -370,8 +370,12 @@ impl UnityClass {
             .contains(TpkUnityClassFlags::HAS_EDITOR_ROOT_NODE)
             .then(|| reader.read_u16::<LittleEndian>())
             .transpose()?;
+        // F6 (unityrs): the release root is read under its own flag, as
+        // UnityPy reads each root (`Tpk.py:302-305`); testing the editor
+        // flag twice misread every class with one root and shifted every
+        // read after it.
         let release_root_node = flags
-            .contains(TpkUnityClassFlags::HAS_EDITOR_ROOT_NODE)
+            .contains(TpkUnityClassFlags::HAS_RELEASE_ROOT_NODE)
             .then(|| reader.read_u16::<LittleEndian>())
             .transpose()?;
         Ok(UnityClass {
@@ -1258,6 +1262,42 @@ mod patch_tests {
         );
         let tpk = TpkFile::from_reader(&mut short.as_slice()).unwrap();
         assert!(tpk.as_type_tree().is_err());
+    }
+
+    /// Classes 10, 20, 30 and 40 have the root flags 0, 64, 128 and 192;
+    /// each is followed by a class with both roots (11, 21, 31, 41), which
+    /// reads wrong when the one before it is misread.
+    #[test]
+    fn f6_each_root_is_read_under_its_own_flag() {
+        let mut blob = one_class();
+        blob.classes.clear();
+        for (id, flags) in [(10, 0), (20, 64), (30, 128), (40, 192)] {
+            let class = Class {
+                flags,
+                editor_root: (flags & 64 != 0).then_some(1),
+                release_root: (flags & 128 != 0).then_some(0),
+            };
+            blob.classes.push((id, vec![(2 << 48, Some(class))]));
+            blob.classes
+                .push((id + 1, vec![(2 << 48, Some(Class::both(0)))]));
+        }
+        let tpk = blob.read().unwrap();
+        for (id, release) in [(10, false), (20, false), (30, true), (40, true)] {
+            let class = tpk.class_information[&ClassId(id)][0].1.as_ref().unwrap();
+            assert_eq!(class.release_root_node.is_some(), release, "{id}");
+            assert_eq!(
+                class.editor_root_node.is_some(),
+                id == 20 || id == 40,
+                "{id}"
+            );
+            let tree = tpk.try_get_typetree_node(ClassId(id), &v(2)).unwrap();
+            assert_eq!(tree.is_some(), release, "{id}");
+            let next = tpk.try_get_typetree_node(ClassId(id + 1), &v(2)).unwrap();
+            assert_eq!(next.unwrap().children.len(), 1, "{}", id + 1);
+        }
+        let release_only = tpk.get_typetree_node(ClassId(30), &v(2)).unwrap();
+        assert_eq!(release_only.m_Type, "s0");
+        assert_eq!(release_only.children[0].m_Name, "s3");
     }
 
     #[test]
