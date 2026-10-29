@@ -169,8 +169,25 @@ pub const LIFTABLE: [LimitKind; 10] = [
     LimitKind::ZeroSizeElements,
 ];
 
-/// Sets `kind`'s bound in `limits` to its type's maximum, so that it never
-/// trips. `false` for a kind not in [`LIFTABLE`].
+/// The value depth [`lift`] sets: past what UnityPy reads, and a depth whose
+/// stack a worker can be given. The dump sizes each worker's stack from
+/// `Limits::max_value_depth` ([`run::worker_stack`]), so `u32::MAX` would ask
+/// for terabytes and no worker would start
+/// (`tests/deep_values.rs`, `a_dump_with_the_value_depth_lifted_reads_what_unitypyboost_reads`);
+/// at this depth a worker gets 384.5 MiB in a release build, 2,050 MiB in a
+/// debug one, reserved, not touched. UnityPy's pure-Python reader and its
+/// writer raise `RecursionError` at Python's 1,000 frames. UnityPyBoost's
+/// reader recurses on the C stack until the process dies: on an 8 MiB main
+/// thread (the oracle's, in the dev container), past 174 `A`s of
+/// `tools/fixtures/walk.py`'s `class` depth shape, 346 of `vector` and
+/// 21,823 of `ref` (`walk.py --boost-reach`, every shape), and a dump at this
+/// depth reads each shape at that reach (`tests/deep_values.rs`,
+/// `lifted_depth_reads_unitypyboosts_reach`).
+pub const LIFTED_VALUE_DEPTH: u32 = 1 << 16;
+
+/// Sets `kind`'s bound in `limits` so that it never trips where UnityPy
+/// reads: to its type's maximum, or for `ValueDepth` to
+/// [`LIFTED_VALUE_DEPTH`]. `false` for a kind not in [`LIFTABLE`].
 pub fn lift(limits: &mut Limits, kind: LimitKind) -> bool {
     match kind {
         LimitKind::InputMemory => limits.max_input_memory = u64::MAX,
@@ -180,7 +197,7 @@ pub fn lift(limits: &mut Limits, kind: LimitKind) -> bool {
         LimitKind::Inflate => limits.max_inflate = u64::MAX,
         LimitKind::ContainerDepth => limits.max_container_depth = u32::MAX,
         LimitKind::TreeDepth => limits.max_tree_depth = u32::MAX,
-        LimitKind::ValueDepth => limits.max_value_depth = u32::MAX,
+        LimitKind::ValueDepth => limits.max_value_depth = LIFTED_VALUE_DEPTH,
         LimitKind::ValuesPerObject => limits.max_values_per_object = u64::MAX,
         LimitKind::ZeroSizeElements => limits.max_zero_size_elements = u64::MAX,
         _ => return false,

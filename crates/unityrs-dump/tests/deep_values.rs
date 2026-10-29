@@ -112,6 +112,10 @@ fn inputs(dir: &std::path::Path) -> Vec<Case> {
 }
 
 fn dump(tmp: &Tmp, out: &str, jobs: usize) -> Vec<u8> {
+    dump_with(tmp, out, jobs, DumpOptions::default())
+}
+
+fn dump_with(tmp: &Tmp, out: &str, jobs: usize, dump: DumpOptions) -> Vec<u8> {
     let opts = RunOptions {
         selection: Selection {
             inputs: vec![tmp.0.join("in")],
@@ -121,7 +125,7 @@ fn dump(tmp: &Tmp, out: &str, jobs: usize) -> Vec<u8> {
         dump: DumpOptions {
             levels: Levels::ALL,
             jobs,
-            ..DumpOptions::default()
+            ..dump
         },
         stats: None,
         quiet: true,
@@ -129,6 +133,14 @@ fn dump(tmp: &Tmp, out: &str, jobs: usize) -> Vec<u8> {
     };
     run(&opts).unwrap();
     std::fs::read(&opts.output).unwrap()
+}
+
+/// The dump's records, each L2 value replaced by `null` ([`without_value`]).
+fn records(dump: &[u8]) -> Vec<Json> {
+    dump.split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::from_slice(&without_value(l)).unwrap())
+        .collect()
 }
 
 /// The object record of the input named `name`.
@@ -221,16 +233,53 @@ fn deep_values_dump_the_same_at_any_jobs_as_unitypy_or_the_depth_limit() {
     let cases = inputs(&dir);
     let one = dump(&tmp, "j1.jsonl", 1);
     assert!(dump(&tmp, "j8.jsonl", 8) == one, "-j 8 differs from -j 1");
-    let records: Vec<Json> = one
-        .split(|b| *b == b'\n')
-        .filter(|l| !l.is_empty())
-        .map(|l| serde_json::from_slice(&without_value(l)).unwrap())
-        .collect();
+    let records = records(&one);
     let bad: Vec<String> = cases
         .iter()
         .filter_map(|c| check(c, object(&records, &c.name)))
         .collect();
     assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// `--unbounded ValueDepth`, G3b's check that a depth refusal is the whole
+/// difference (`tools/parity/g3b.py`): the dump's workers start on the
+/// stack the lifted depth needs, at `-j 1` and `-j 4` alike, and every
+/// object UnityPyBoost reads, those the default depth refuses included,
+/// reads whole: with no L2 error, or past the encoder's own bound
+/// (`encode::MAX_DEPTH`, 4,096 levels, a value no reader at the default
+/// depth makes) an `encode` one. (The pure-Python reader and the writer,
+/// which UnityPy runs in Python frames, raise at Python's 1,000 where the
+/// lifted depth reads on: `PARITY.md` section 19.3, "value depth".)
+#[test]
+fn a_dump_with_the_value_depth_lifted_reads_what_unitypyboost_reads() {
+    let tmp = Tmp::new("deep-lifted");
+    let dir = tmp.0.join("in");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cases = inputs(&dir);
+    let lifted = DumpOptions::default()
+        .with_unbounded(&[unityrs_core::LimitKind::ValueDepth])
+        .unwrap();
+    let one = dump_with(&tmp, "lifted-j1.jsonl", 1, lifted.clone());
+    assert!(
+        dump_with(&tmp, "lifted-j4.jsonl", 4, lifted) == one,
+        "-j 4 differs from -j 1"
+    );
+    let (default, lifted) = (records(&dump(&tmp, "j1.jsonl", 1)), records(&one));
+    let mut refused_by_default = 0;
+    for c in cases
+        .iter()
+        .filter(|c| c.reader == "boost" && c.unitypy["boost"].get("ok").is_some())
+    {
+        let err = &object(&lifted, &c.name)["l2"]["error"];
+        assert!(
+            err.is_null() || err["kind"] == "encode",
+            "{}: UnityPyBoost reads it; lifted {err}",
+            c.name
+        );
+        let was = &object(&default, &c.name)["l2"]["error"]["note"];
+        refused_by_default += usize::from(was.as_str().is_some_and(|n| n.contains("ValueDepth")));
+    }
+    assert!(refused_by_default > 0, "no case passes the default depth");
 }
 
 const PROBE: &str = "UNITYRS_DUMP_STACK_PROBE";
@@ -291,4 +340,51 @@ fn stack_measured() {
     let have = unityrs_dump::run::worker_stack(&unityrs_core::limits::Limits::default());
     println!("least {hi}, worker_stack {have}");
     assert!(hi <= have);
+}
+
+/// `unityrs_dump::LIFTED_VALUE_DEPTH` against UnityPyBoost's reach: each
+/// `SHAPE:N` of `UNITYRS_BOOST_REACH`, the deepest `N` UnityPyBoost reads
+/// as `tools/fixtures/walk.py --boost-reach` prints it, dumped with the
+/// value depth lifted reads past the reader (an `encode` refusal past the
+/// encoder's own `MAX_DEPTH` is the encoder's, not the read's). A
+/// measurement, since the reach depends on the oracle's stack size:
+///
+///     R=ref:21823,class:174,vector:346,aligned:354,class_array:262,pair:174,pair_array:232
+///     scripts/dev env UNITYRS_BOOST_REACH=$R cargo test --release -p unityrs-dump \
+///         --test deep_values -- --ignored --nocapture lifted_depth_reads
+///
+/// (`R` is the reach `walk.py --boost-reach` printed on an 8 MiB main thread
+/// in the dev container; each reads.)
+#[test]
+#[ignore = "measures; run with --ignored and UNITYRS_BOOST_REACH"]
+fn lifted_depth_reads_unitypyboosts_reach() {
+    let Ok(reach) = std::env::var("UNITYRS_BOOST_REACH") else {
+        return;
+    };
+    let tmp = Tmp::new("deep-reach");
+    let dir = tmp.0.join("in");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cases = depth_cases();
+    let mut names = Vec::new();
+    for item in reach.split(',') {
+        let (shape, n) = item.split_once(':').unwrap();
+        let c = cases.iter().find(|c| c["shape"] == shape).unwrap();
+        let n: usize = n.parse().unwrap();
+        let name = format!("{shape}_{n}_boost.assets");
+        let depth = Depth::new(&wraps(&c["wraps"]));
+        std::fs::write(dir.join(&name), file(&depth, n, false)).unwrap();
+        names.push(name);
+    }
+    let lifted = DumpOptions::default()
+        .with_unbounded(&[unityrs_core::LimitKind::ValueDepth])
+        .unwrap();
+    let records = records(&dump_with(&tmp, "reach.jsonl", 1, lifted));
+    for name in &names {
+        let err = &object(&records, name)["l2"]["error"];
+        println!("{name}: l2 error {err}");
+        assert!(
+            err.is_null() || err["kind"] == "encode",
+            "{name}: the lifted read stopped: {err}"
+        );
+    }
 }

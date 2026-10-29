@@ -7,6 +7,7 @@ input is built here in code; no file is read.
 
     scripts/dev python tools/fixtures/walk.py           # write the fixtures
     scripts/dev python tools/fixtures/walk.py --check   # regenerate and compare
+    scripts/dev python tools/fixtures/walk.py --boost-reach   # a survey, below
 
 Files:
 - `cases.json`: each case a typetree, its bytes and its ref types, read by
@@ -25,6 +26,12 @@ Files:
   the pure-Python reader raises `RecursionError`, one `A` less, and a quarter
   of it; the outcome only (`pos` or the exception), not the value.
 
+`--boost-reach` writes no fixture: for each depth shape it prints the most
+`A`s UnityPyBoost reads before the C stack of the process's main thread
+overflows (each try in a child process), which depends on that stack's size
+(`ulimit -s`). `unityrs dump --unbounded ValueDepth` must read that deep
+(`unityrs_dump::LIFTED_VALUE_DEPTH`).
+
 A value is written with the Python types it has, so a test compares exactly
 what UnityPy returned: a `bool` as JSON `true`/`false`, an `int` as a number,
 a `float` as `{"f": <its double's 16 hex digits>}`, a `str` as `{"s": <hex of
@@ -40,6 +47,7 @@ from __future__ import annotations
 import argparse
 import json
 import struct
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -625,6 +633,34 @@ def depth_cases():
     return out
 
 
+def boost_reach_child(name, n):
+    root, af, data = depth_input(DEPTH_SHAPES[name], int(n))
+    boost_read(data, root, "<", True, af)
+    return 0
+
+
+def boost_reach():
+    """For each depth shape, the last `n` UnityPyBoost reads and the first at
+    which its process dies or raises, each `n` tried in a child process."""
+
+    def reads(name, n):
+        argv = [sys.executable, __file__, "--boost-reach-child", name, str(n)]
+        return subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+    for name in DEPTH_SHAPES:
+        lo, hi = 1, 2
+        while hi <= 1 << 22 and reads(name, hi):
+            lo, hi = hi, hi * 2
+        if hi > 1 << 22:
+            print(f"{name}: reads {lo} A's")
+            continue
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            lo, hi = (mid, hi) if reads(name, mid) else (lo, mid)
+        print(f"{name}: reads {lo} A's, not {hi}", flush=True)
+    return 0
+
+
 def no_type_rows(meta):
     return [[0, "ReferencedObject", "data", meta], [1, "SInt64", "rid", 0], [1, "ReferencedObjectData", "data", 0], [1, "ReferencedManagedType", "type", 0], [2, "string", "class", 0], [2, "string", "ns", 0], [2, "string", "asm", 0]]
 
@@ -797,10 +833,16 @@ def fixtures():
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--check", action="store_true", help="regenerate and compare, write nothing")
+    ap.add_argument("--boost-reach", action="store_true", help="print each depth shape's UnityPyBoost reach")
+    ap.add_argument("--boost-reach-child", nargs=2, metavar=("SHAPE", "N"), help=argparse.SUPPRESS)
     args = ap.parse_args()
     if UnityPy.__version__ != "1.25.2" or TTH.read_typetree_boost is None:
         print(f"needs UnityPy 1.25.2 with UnityPyBoost, found {UnityPy.__version__}", file=sys.stderr)
         return 2
+    if args.boost_reach_child:
+        return boost_reach_child(*args.boost_reach_child)
+    if args.boost_reach:
+        return boost_reach()
     stale = []
     for name, text in fixtures().items():
         path = OUT / name
