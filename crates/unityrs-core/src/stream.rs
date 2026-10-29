@@ -88,8 +88,11 @@ pub fn py_read(len: usize, pos: i128, size: i64) -> (Range<usize>, i128) {
 /// or `None` where it raises `struct.error`. A negative `pos` counts from the
 /// end and must leave the whole read before the end (`pos + n <= 0`) and
 /// inside the buffer (`pos + len >= 0`). Every fixed-width read of 2, 4 or 8
-/// bytes in UnityPy's memoryview reader takes this path, then moves the
-/// position by `n` (only on success). Implemented by the scaffold.
+/// bytes UnityPy's memoryview reader makes through its own methods
+/// (`reader.read_int()`) takes this path, then moves the position by `n`
+/// (only on success). The pure-Python typetree reader's primitive nodes do
+/// not: they read through the base class's `unpack(fmt, read(n))`
+/// (`walk::python`, plan 3.10). Implemented by the scaffold.
 #[must_use]
 pub fn py_unpack_from(len: usize, pos: i128, n: usize) -> Option<usize> {
     let l = i128::try_from(len).ok()?;

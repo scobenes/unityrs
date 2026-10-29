@@ -216,20 +216,39 @@ impl Reader<'_, '_> {
         }
     }
 
-    /// `read(1)` then `unpack` (`EndianBinaryReader.py:93-97`, `:126-127`):
-    /// the position moves even when the slice is short and `unpack` raises.
-    fn read1(&mut self) -> Result<u8, ReadError> {
-        let (range, next) = py_read(self.bytes.len(), self.pos, 1);
+    /// `unpack(fmt, self.read(N))`, the base class's `read_byte`, `read_int`,
+    /// `read_float`... (`EndianBinaryReader.py:93-127`): `FUNCTION_READ_MAP`
+    /// holds these base functions (`TypeTreeHelper.py:29-52`), so every
+    /// primitive node read through it takes this path. `read` is a Python
+    /// slice that moves the position by `N` whatever it returns, and
+    /// `unpack` raises unless it has exactly `N` bytes: so at position `-N`
+    /// (`view[-N:0]`, empty) it raises where `unpack_from` reads the last
+    /// `N` bytes ([`Self::unpack_from`]).
+    fn read_n<const N: usize>(&mut self) -> Result<[u8; N], ReadError> {
+        let (range, next) = py_read(
+            self.bytes.len(),
+            self.pos,
+            i64::try_from(N).unwrap_or(i64::MAX),
+        );
         self.pos = next;
-        match self.bytes.get(range) {
-            Some([b]) => Ok(*b),
-            _ => Err(self.raise(Py::Struct(1))),
-        }
+        self.bytes
+            .get(range)
+            .and_then(|s| <[u8; N]>::try_from(s).ok())
+            .ok_or_else(|| self.raise(Py::Struct(N as u64)))
     }
 
-    /// `struct.unpack_from(view, Position)` of `N` bytes
-    /// (`EndianBinaryReader.py:340-343`): the position moves on success only.
-    fn fixed<const N: usize>(&mut self) -> Result<[u8; N], ReadError> {
+    /// `read(1)` then `unpack` ([`Self::read_n`]).
+    fn read1(&mut self) -> Result<u8, ReadError> {
+        let [b] = self.read_n::<1>()?;
+        Ok(b)
+    }
+
+    /// `struct.unpack_from(view, Position)` of `N` bytes, the memoryview
+    /// reader's own `read_int` (`EndianBinaryReader.py:388-398`, set on the
+    /// instance by the `endian` setter, `:73-80`): the lengths the reader
+    /// reads with `reader.read_int()` (a vector's, a string's, a
+    /// `TypelessData`'s). The position moves on success only.
+    fn unpack_from<const N: usize>(&mut self) -> Result<[u8; N], ReadError> {
         let b = py_unpack_from(self.bytes.len(), self.pos, N)
             .and_then(|at| self.bytes.get(at..at.checked_add(N)?))
             .and_then(|s| <[u8; N]>::try_from(s).ok())
@@ -238,9 +257,28 @@ impl Reader<'_, '_> {
         Ok(b)
     }
 
+    /// `reader.read_int()`: the instance's [`Self::unpack_from`].
     fn read_int(&mut self) -> Result<i32, ReadError> {
         let big = self.big;
-        Ok(num!(big, i32, self.fixed()?))
+        Ok(num!(big, i32, self.unpack_from()?))
+    }
+
+    /// One frame UnityPy's reader pushes on its way down (plan 3.10,
+    /// "Bounds"): a `read_value` or `read_value_array` call, a list or dict
+    /// comprehension, the lambda a `pair` array reads a non-primitive child
+    /// through. Each counts one level against `max_value_depth`, so the count
+    /// is the depth of Python frames UnityPy's reader reaches (less the two
+    /// or fewer of its leaf reads, `read_int` and the like). Python raises
+    /// `RecursionError` past 1,000 frames less its caller's, so every object
+    /// it refuses that way passes `max_value_depth` (512) here first.
+    fn frame<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<R, ReadError>,
+    ) -> Result<R, ReadError> {
+        self.work.enter(self.at())?;
+        let out = f(self);
+        self.work.leave();
+        out
     }
 
     /// `align_stream` (`EndianBinaryReader.py:155-156`): Python's floor modulo
@@ -249,23 +287,24 @@ impl Reader<'_, '_> {
         self.pos = py_align(self.pos, 4);
     }
 
-    /// `FUNCTION_READ_MAP` (`TypeTreeHelper.py:29-52`) for a primitive kind.
+    /// `FUNCTION_READ_MAP` (`TypeTreeHelper.py:29-52`) for a primitive
+    /// kind: the base class's `unpack(fmt, read(n))` ([`Self::read_n`]).
     fn prim(&mut self, kind: Kind) -> Result<Value, ReadError> {
         let big = self.big;
         Ok(match kind {
             Kind::S8 => int(i64::from(self.read1()?.cast_signed())),
             Kind::U8 => int(i64::from(self.read1()?)),
             Kind::Bool => Value::Bool(self.read1()? != 0),
-            Kind::S16 => int(i64::from(num!(big, i16, self.fixed()?))),
-            Kind::U16 => int(i64::from(num!(big, u16, self.fixed()?))),
-            Kind::S32 => int(i64::from(num!(big, i32, self.fixed()?))),
-            Kind::U32 => int(i64::from(num!(big, u32, self.fixed()?))),
-            Kind::S64 => int(num!(big, i64, self.fixed()?)),
-            Kind::U64 => uint(num!(big, u64, self.fixed()?)),
+            Kind::S16 => int(i64::from(num!(big, i16, self.read_n()?))),
+            Kind::U16 => int(i64::from(num!(big, u16, self.read_n()?))),
+            Kind::S32 => int(i64::from(num!(big, i32, self.read_n()?))),
+            Kind::U32 => int(i64::from(num!(big, u32, self.read_n()?))),
+            Kind::S64 => int(num!(big, i64, self.read_n()?)),
+            Kind::U64 => uint(num!(big, u64, self.read_n()?)),
             // `struct.unpack('f')` widens as UnityPyBoost does (probed: a
             // signalling NaN comes back quiet).
-            Kind::F32 => Value::F32(f32_bits(num!(big, u32, self.fixed()?), self.floats)),
-            Kind::F64 => Value::F64(num!(big, u64, self.fixed()?)),
+            Kind::F32 => Value::F32(f32_bits(num!(big, u32, self.read_n()?), self.floats)),
+            Kind::F64 => Value::F64(num!(big, u64, self.read_n()?)),
             _ => return Err(self.raise(Py::Other("not a primitive"))),
         })
     }
@@ -355,7 +394,8 @@ impl Reader<'_, '_> {
             if t.info(elem).is_some_and(|i| i.align) {
                 self.array(t, lx, elem, i64::from(size))?
             } else {
-                self.list(t, lx, elem, count)?
+                // `[read_value(subtype, ...) for _ in range(size)]`: a frame.
+                self.frame(|r| r.list(t, lx, elem, count))?
             }
         } else {
             self.class(t, lx, node)?
@@ -418,6 +458,7 @@ impl Reader<'_, '_> {
 
     /// A list of primitives read one by one (`read_value` of a primitive
     /// element, unflagged, so never aligned).
+    #[inline(never)]
     fn prim_list(&mut self, kind: Kind, count: usize) -> Result<Out, ReadError> {
         let size = kind.prim_size().unwrap_or(1);
         if kind == Kind::U8 {
@@ -471,28 +512,28 @@ impl Reader<'_, '_> {
                 .read1()
                 .map(u8::cast_signed)),
             Kind::U16 => run!(u16, PrimRun::U16, |r: &mut Self| r
-                .fixed()
+                .read_n()
                 .map(|b| num!(big, u16, b))),
             Kind::S16 => run!(i16, PrimRun::I16, |r: &mut Self| r
-                .fixed()
+                .read_n()
                 .map(|b| num!(big, i16, b))),
             Kind::U32 => run!(u32, PrimRun::U32, |r: &mut Self| r
-                .fixed()
+                .read_n()
                 .map(|b| num!(big, u32, b))),
             Kind::S32 => run!(i32, PrimRun::I32, |r: &mut Self| r
-                .fixed()
+                .read_n()
                 .map(|b| num!(big, i32, b))),
             Kind::U64 => run!(u64, PrimRun::U64, |r: &mut Self| r
-                .fixed()
+                .read_n()
                 .map(|b| num!(big, u64, b))),
             Kind::S64 => run!(i64, PrimRun::I64, |r: &mut Self| r
-                .fixed()
+                .read_n()
                 .map(|b| num!(big, i64, b))),
             Kind::F32 => run!(u32, PrimRun::F32, |r: &mut Self| r
-                .fixed()
+                .read_n()
                 .map(|b| f32_bits(num!(big, u32, b), floats))),
             _ => run!(u64, PrimRun::F64, |r: &mut Self| r
-                .fixed()
+                .read_n()
                 .map(|b| num!(big, u64, b))),
         }
     }
@@ -500,6 +541,7 @@ impl Reader<'_, '_> {
     /// `read_array_struct` (`EndianBinaryReader.py:258-264`): a `struct`
     /// format of `size` items, refused for a negative count, unpacked from
     /// the position in one piece; a tuple.
+    #[inline(never)]
     fn struct_tuple(&mut self, fmt: Fmt, size: i64) -> Result<Out, ReadError> {
         let Ok(count) = usize::try_from(size) else {
             return Err(self.raise(Py::Other("struct.error: bad char in struct format")));
@@ -547,8 +589,21 @@ impl Reader<'_, '_> {
 
     /// `read_value_array` (`TypeTreeHelper.py:266-361`) for an aligned
     /// element `node` and a `size` that may be negative (an inner vector's
-    /// length is not checked, `:311-313`).
+    /// length is not checked, `:311-313`): a frame.
     fn array(
+        &mut self,
+        t: &Arc<Tree>,
+        lx: ListIx,
+        node: NodeId,
+        size: i64,
+    ) -> Result<Out, ReadError> {
+        self.frame(|r| r.array_inner(t, lx, node, size))
+    }
+
+    /// The body of [`Self::array`]. Each list comprehension it reads through
+    /// is a frame of its own ([`Self::comprehension`]); its loop over
+    /// `ReferencedObject` elements is not.
+    fn array_inner(
         &mut self,
         t: &Arc<Tree>,
         lx: ListIx,
@@ -567,7 +622,7 @@ impl Reader<'_, '_> {
         } else if let Some(fmt) = Fmt::of_array(kind) {
             self.struct_tuple(fmt, size)?
         } else if kind == Kind::Str {
-            self.each(count, 4, |r| r.string().map(Out::Plain))?
+            self.comprehension(count, 4, |r| r.string().map(Out::Plain))?
         } else if kind == Kind::Bytes {
             // `:280`: `read_bytes()` without its length, once there is an element.
             if count > 0 {
@@ -575,14 +630,14 @@ impl Reader<'_, '_> {
                     "TypeError: read_bytes() missing 1 required positional argument",
                 )));
             }
-            self.each(0, 4, |r| r.typeless().map(Out::Plain))?
+            self.comprehension(0, 4, |r| r.typeless().map(Out::Plain))?
         } else if kind == Kind::Pair {
             // `:282-293`: both children before the loop; each read without
             // its own flag when its type is in `FUNCTION_READ_MAP`.
             let a = Self::child(t, node, 0, ReadDetail::PairChildren).map_err(|e| self.raise(e))?;
             let b = Self::child(t, node, 1, ReadDetail::PairChildren).map_err(|e| self.raise(e))?;
             let min = t.info(node).map_or(0, |i| i.min_size);
-            self.each(count, min, |r| {
+            self.comprehension(count, min, |r| {
                 let first = r.direct(t, lx, a)?;
                 let second = r.direct(t, lx, b)?;
                 r.tuple([first, second])
@@ -596,26 +651,38 @@ impl Reader<'_, '_> {
             let sub =
                 Self::child(t, arr, 1, ReadDetail::ArrayChildren).map_err(|e| self.raise(e))?;
             if t.info(sub).is_some_and(|i| i.align) {
-                self.each(count, 4, |r| {
+                self.comprehension(count, 4, |r| {
                     let inner = r.read_int()?;
                     r.array(t, lx, sub, i64::from(inner))
                 })?
             } else {
-                self.each(count, 4, |r| {
+                // `[[read_value(subtype) for _ in range(reader.read_int())]
+                // for _ in range(size)]`: the inner comprehension too.
+                self.comprehension(count, 4, |r| {
                     let inner = r.read_int()?;
                     let n = usize::try_from(inner).unwrap_or(0);
-                    r.list(t, lx, sub, n)
+                    r.frame(|r| r.list(t, lx, sub, n))
                 })?
             }
         } else {
             // `:314-318`: classes in a dict comprehension, with no registry check.
             let min = t.info(node).map_or(0, |i| i.min_size);
-            self.each(count, min, |r| r.plain_class(t, lx, node))?
+            self.comprehension(count, min, |r| r.plain_class(t, lx, node))?
         };
         if align {
             self.align();
         }
         Ok(out)
+    }
+
+    /// `[item() for _ in range(count)]`: [`Self::each`] in a frame.
+    fn comprehension(
+        &mut self,
+        count: usize,
+        min: u32,
+        item: impl FnMut(&mut Self) -> Result<Out, ReadError>,
+    ) -> Result<Out, ReadError> {
+        self.frame(|r| r.each(count, min, item))
     }
 
     /// A list of `count` items, each read by `item`.
@@ -659,7 +726,8 @@ impl Reader<'_, '_> {
             self.work.values(1, self.at())?;
             Ok(Out::Plain(self.typeless()?))
         } else {
-            self.value(t, lx, node)
+            // `lambda reader: read_value(child, reader, config)`: a frame.
+            self.frame(|r| r.value(t, lx, node))
         }
     }
 
@@ -670,12 +738,9 @@ impl Reader<'_, '_> {
     }
 
     /// An aligned class element's `{child.m_Name: read_value(child) ...}`
-    /// (`:316-318`): no registry check.
+    /// (`:316-318`), a dict comprehension and so a frame: no registry check.
     fn plain_class(&mut self, t: &Arc<Tree>, lx: ListIx, node: NodeId) -> Result<Out, ReadError> {
-        self.work.enter(self.at())?;
-        let out = self.dict(t, lx, node, false);
-        self.work.leave();
-        out
+        self.frame(|r| r.dict(t, lx, node, false))
     }
 
     fn dict(

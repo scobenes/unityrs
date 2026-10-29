@@ -265,11 +265,28 @@ pub fn outcome_line(name: &str, o: &Outcome) -> String {
     .to_string()
 }
 
-/// Runs every case of a cases file, one line each to `out`.
+/// Runs every case of a cases file, one line each to `out`. The cases run
+/// on a thread of their own, of the stack a dump worker has
+/// ([`crate::run::worker_stack`]), so a case as deep as the limits let a
+/// value be fits whatever stack the caller has.
 pub fn run(text: &[u8], out: &mut dyn Write) -> Result<(), String> {
-    for case in parse_cases(text)? {
-        let o = run_case(&case);
-        writeln!(out, "{}", outcome_line(&case.name, &o)).map_err(|e| e.to_string())?;
+    let cases = parse_cases(text)?;
+    let stack = crate::run::worker_stack(&Limits::default());
+    let lines = std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(stack)
+            .spawn_scoped(s, || {
+                cases
+                    .iter()
+                    .map(|c| outcome_line(&c.name, &run_case(c)))
+                    .collect::<Vec<_>>()
+            })
+            .map_err(|e| e.to_string())?
+            .join()
+            .map_err(|_| "a case panicked".to_owned())
+    })?;
+    for line in lines {
+        writeln!(out, "{line}").map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -296,5 +313,29 @@ mod tests {
         );
         assert!(parse_cases(br#"[{"name":"c","nodes":[[0,"x"]],"hex":""}]"#).is_err());
         assert!(parse_cases(br#"[{"name":"c","nodes":[],"hex":"0"}]"#).is_err());
+    }
+
+    /// A case as deep as a tree may nest (`Limits::max_tree_depth`), run
+    /// from a caller's thread far smaller than reading it needs: the cases
+    /// run on a stack of their own, and it reads and re-saves.
+    #[test]
+    fn a_deep_case_runs_whatever_the_callers_stack() {
+        let mut nodes = vec![json!([0, "Base", "Base", 0])];
+        nodes.extend((1..255).map(|level| json!([level, "C", "c", 0])));
+        nodes.push(json!([255, "int", "x", 0]));
+        let text = json!([{"name": "deep", "nodes": nodes, "hex": "07000000"}]).to_string();
+        let line = std::thread::Builder::new()
+            .stack_size(64 << 10)
+            .spawn(move || {
+                let mut out = Vec::new();
+                run(text.as_bytes(), &mut out).map(|()| out)
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+            .unwrap();
+        let rec: Json = serde_json::from_slice(&line).unwrap();
+        assert_eq!(rec["kind"], Json::Null, "{rec}");
+        assert_eq!(rec["resave"], "equal", "{rec}");
     }
 }

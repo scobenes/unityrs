@@ -30,13 +30,14 @@ const NONE: u32 = u32::MAX;
 #[cfg(test)]
 std::thread_local! {
     /// Map steps this thread took: each slot cleared, each entry set or
-    /// looked up, each entry a lookup by name passes (the linear-dicts test).
-    static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// looked up, each entry a lookup by name passes; the writer's lookups
+    /// too (the linear-dicts tests).
+    pub(super) static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Counts `n` map steps (tests only).
 #[inline]
-fn steps(n: usize) {
+pub(super) fn steps(n: usize) {
     #[cfg(test)]
     STEPS.with(|s| s.set(s.get().saturating_add(n as u64)));
     #[cfg(not(test))]

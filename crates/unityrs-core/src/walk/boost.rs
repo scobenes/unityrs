@@ -349,6 +349,7 @@ impl Reader<'_, '_> {
 
     /// `read_num_array` and friends (UnityPy TypeTreeHelper.cpp:88-260):
     /// the whole run's bounds first, then every element.
+    #[inline(never)]
     fn nums<const N: usize, T>(
         &mut self,
         count: usize,

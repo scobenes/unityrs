@@ -38,11 +38,13 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::dict::{names_match, slot_count};
+use std::collections::HashMap;
+
+use super::dict::{names_match, slot_count, steps};
 use super::{RefTypes, WriteCtx, WriteError, WriteRules, py_size_field_is_zero};
 use crate::budget::DecodeBuf;
 use crate::error::{LimitError, LimitKind};
-use crate::limits::MeteredVec;
+use crate::limits::{Charge, HASH_TABLE_SHARES, MeteredVec, heap_cost};
 use crate::raw::RawStr;
 use crate::typetree::{Kind, NodeId, Tree, TreeError};
 use crate::value::{Map, Parsed, PrimArray, Value};
@@ -307,6 +309,133 @@ struct Writer<'a, 'o> {
     has_registry: bool,
 }
 
+/// Where each child of a class or `ReferencedObject` node finds its entry in
+/// a dict, `value[child.m_Name]`, in steps linear in the children, as a
+/// Python dict finds it. A cursor walks the entries in step with the
+/// children (a read sets them in child order). A dict read through this
+/// node also keeps a per-node table from a name's slot to its position, for
+/// a child whose name an earlier child took. Any other miss (a dict keyed by
+/// another list: a `nodes=` override, a dict a repeated name hands a
+/// same-named sibling, a caller's map) finds the name in a table from each
+/// name to its first entry, built on the first miss, once per dict. Both
+/// tables are charged to the value's meter.
+struct Lookup<'a> {
+    map: &'a Map,
+    /// Keyed by this node's children: read through it.
+    native: bool,
+    /// Slot to position, for a node whose children repeat a name.
+    found: MeteredVec<u32>,
+    cursor: usize,
+    by_name: Option<(HashMap<&'a [u8], u32>, Charge)>,
+}
+
+const UNSET: u32 = u32::MAX;
+
+impl<'a> Lookup<'a> {
+    fn new(
+        parsed: &'a Parsed,
+        tree: &Tree,
+        node: NodeId,
+        map: &'a Map,
+    ) -> Result<Self, WriteError> {
+        let kids = tree.list().children(node);
+        // (A dict read through a same-named sibling, which a repeated name
+        // hands this node, is keyed by that sibling's children.)
+        let native = usize::try_from(map.list())
+            .ok()
+            .and_then(|i| parsed.lists().get(i))
+            .is_some_and(|l| Arc::ptr_eq(l, tree.list()))
+            && map
+                .entries()
+                .first()
+                .is_none_or(|(k, _)| kids.binary_search_by_key(&k.0, |c| c.0).is_ok());
+        let slots = if native { slot_count(tree, node) } else { 0 };
+        let mut found: MeteredVec<u32> = MeteredVec::new(parsed.charge().meter());
+        if slots < kids.len() {
+            found.reserve_exact(slots).map_err(WriteError::Charge)?;
+            for _ in 0..slots {
+                found.push(UNSET).map_err(WriteError::Charge)?;
+            }
+        }
+        Ok(Self {
+            map,
+            native,
+            found,
+            cursor: 0,
+            by_name: None,
+        })
+    }
+
+    /// `child`'s entry.
+    fn get(
+        &mut self,
+        parsed: &'a Parsed,
+        tree: &Tree,
+        child: NodeId,
+    ) -> Result<Option<&'a Value>, WriteError> {
+        let entries = self.map.entries();
+        let name = tree.list().name(child);
+        steps(1);
+        let at_cursor = entries.get(self.cursor).is_some_and(|(k, _)| {
+            if self.native {
+                Some(*k) == tree.info(child).map(|i| i.key)
+            } else {
+                parsed.key_name(self.map, *k) == name
+            }
+        });
+        let slot = tree
+            .info(child)
+            .filter(|_| self.native)
+            .map(|i| i.slot as usize);
+        let known = slot
+            .and_then(|s| self.found.as_slice().get(s).copied())
+            .filter(|p| *p != UNSET)
+            .map(|p| p as usize);
+        let pos = match (known, at_cursor) {
+            (Some(p), _) => Some(p),
+            (None, true) => Some(self.cursor),
+            (None, false) => self.by_name(parsed)?.get(name).map(|p| *p as usize),
+        };
+        if let (Some(p), Some(f)) = (pos, slot.and_then(|s| self.found.as_mut_slice().get_mut(s))) {
+            *f = u32::try_from(p).unwrap_or(UNSET);
+        }
+        if let Some(p) = pos
+            && p >= self.cursor
+        {
+            self.cursor = p + 1;
+        }
+        Ok(pos.and_then(|p| entries.get(p)).map(|(_, v)| v))
+    }
+
+    /// Each name's first entry: built once, charged before it allocates
+    /// ([`HASH_TABLE_SHARES`] buckets a name, and a table's fixed part).
+    fn by_name(&mut self, parsed: &'a Parsed) -> Result<&HashMap<&'a [u8], u32>, WriteError> {
+        let built = if let Some(b) = self.by_name.take() {
+            b
+        } else {
+            let n = self.map.entries().len();
+            let bucket = (size_of::<(&[u8], u32)>() + 1) as u64;
+            let bytes = (n.max(2) as u64)
+                .saturating_mul(HASH_TABLE_SHARES * bucket)
+                .saturating_add(16);
+            let charge = parsed
+                .charge()
+                .meter()
+                .charge(heap_cost(bytes))
+                .map_err(WriteError::Charge)?;
+            let mut first = HashMap::with_capacity(n);
+            for (i, (name, _)) in parsed.entries(self.map).enumerate() {
+                steps(1);
+                first
+                    .entry(name)
+                    .or_insert(u32::try_from(i).unwrap_or(UNSET));
+            }
+            (first, charge)
+        };
+        Ok(&self.by_name.insert(built).0)
+    }
+}
+
 /// The characters of a surrogate-escaped `str`: each valid UTF-8 character,
 /// and each byte that is not part of one (one escape character each).
 fn chars(s: &[u8]) -> impl Iterator<Item = &[u8]> {
@@ -550,15 +679,30 @@ impl<'a> Writer<'a, '_> {
     }
 
     fn value(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
+        self.frame(|w| w.value_inner(tree, node, o))
+    }
+
+    /// One frame UnityPy's `write_value` pushes: a `write_value` call, or the
+    /// list comprehension that writes an array's elements (`:435`). Each
+    /// counts one level against `max_value_depth`, as the pure-Python reader
+    /// counts its own (plan 3.10, "Bounds"), so every value whose write
+    /// raises `RecursionError` in UnityPy (past Python's 1,000 frames) is
+    /// refused here first.
+    fn frame(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<(), WriteError>,
+    ) -> Result<(), WriteError> {
         self.depth = self.depth.saturating_add(1);
         if self.depth > self.max_depth {
-            return Err(WriteError::Limit(LimitError {
+            let e = WriteError::Limit(LimitError {
                 kind: LimitKind::ValueDepth,
                 value: u64::from(self.depth),
                 max: u64::from(self.max_depth),
-            }));
+            });
+            self.depth = self.depth.saturating_sub(1);
+            return Err(e);
         }
-        let r = self.value_inner(tree, node, o);
+        let r = f(self);
         self.depth = self.depth.saturating_sub(1);
         r
     }
@@ -611,7 +755,7 @@ impl<'a> Writer<'a, '_> {
                 .get(1)
                 .copied()
                 .ok_or_else(|| WriteError::Malformed(Self::name(tree, node)))?;
-            self.elements(tree, elem, o)?;
+            self.frame(|w| w.elements(tree, elem, o))?;
         } else {
             self.class(tree, node, o)?;
         }
@@ -817,101 +961,41 @@ impl<'a> Writer<'a, '_> {
     }
 
     /// The class branch on a dict (`:438-446`): `value[child.m_Name]` for
-    /// each child, in a number of steps linear in the children for a dict
-    /// read through this tree. A cursor walks the entries in step with the
-    /// children (a read sets them in child order); a child whose name an
-    /// earlier child took finds its entry through a per-class table from the
-    /// name's slot to its position, charged to the value's meter. A dict
-    /// keyed by another list (a `nodes=` override, a caller's map) is
-    /// matched by name, by the cursor first, then by a scan.
+    /// each child, found by a [`Lookup`].
     fn class_dict(&mut self, tree: &Tree, node: NodeId, m: &'a Map) -> Result<(), WriteError> {
-        const UNSET: u32 = u32::MAX;
         let outer = self.has_registry;
-        let kids = tree.list().children(node);
-        let entries = m.entries();
-        // Keyed by this node's children: read through it. (A dict read
-        // through a same-named sibling, which a repeated name hands this
-        // node, is keyed by that sibling's children: matched by name.)
-        let native = usize::try_from(m.list())
-            .ok()
-            .and_then(|i| self.parsed.lists().get(i))
-            .is_some_and(|l| Arc::ptr_eq(l, tree.list()))
-            && entries
-                .first()
-                .is_none_or(|(k, _)| kids.binary_search_by_key(&k.0, |c| c.0).is_ok());
-        let slots = if native { slot_count(tree, node) } else { 0 };
-        let mut found: MeteredVec<u32> = MeteredVec::new(self.parsed.charge().meter());
-        if slots < kids.len() {
-            found.reserve_exact(slots).map_err(WriteError::Charge)?;
-            for _ in 0..slots {
-                found.push(UNSET).map_err(WriteError::Charge)?;
-            }
-        }
-        let mut cursor = 0;
-        for c in kids {
+        let mut find = Lookup::new(self.parsed, tree, node, m)?;
+        for c in tree.list().children(node) {
             if tree.py_kind(*c) == Kind::ManagedReferencesRegistry {
                 if self.has_registry {
                     continue;
                 }
                 self.has_registry = true;
             }
-            let name = tree.list().name(*c);
-            let pos = if native {
-                let (key, slot) = tree.info(*c).map_or((*c, 0), |i| (i.key, i.slot));
-                let slot = slot as usize;
-                let known = found
-                    .as_slice()
-                    .get(slot)
-                    .copied()
-                    .filter(|p| *p != UNSET)
-                    .map(|p| p as usize);
-                let pos = known.or_else(|| {
-                    if entries.get(cursor).is_some_and(|(k, _)| *k == key) {
-                        Some(cursor)
-                    } else {
-                        entries
-                            .iter()
-                            .position(|(k, _)| *k == key)
-                            // A caller's map may key a name by another node.
-                            .or_else(|| self.parsed.entries(m).position(|(n, _)| n == name))
-                    }
-                });
-                if let (Some(p), Some(f)) = (pos, found.as_mut_slice().get_mut(slot)) {
-                    *f = u32::try_from(p).unwrap_or(UNSET);
-                }
-                pos
-            } else if entries
-                .get(cursor)
-                .is_some_and(|(k, _)| self.parsed.key_name(m, *k) == name)
-            {
-                Some(cursor)
-            } else {
-                self.parsed.entries(m).position(|(n, _)| n == name)
-            };
-            let Some((_, v)) = pos.and_then(|p| entries.get(p)) else {
-                return Err(WriteError::MissingKey(Self::name(tree, *c)));
-            };
-            if let Some(p) = pos
-                && p >= cursor
-            {
-                cursor = p + 1;
-            }
+            let v = find
+                .get(self.parsed, tree, *c)?
+                .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
             self.value(tree, *c, Obj::V(v))?;
         }
         self.has_registry = outer;
         Ok(())
     }
 
-    /// `ReferencedObject` (`:422-428`), W7.
+    /// `ReferencedObject` (`:422-428`), W7: each child's entry found by a
+    /// [`Lookup`].
     fn ref_object(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
+        let mut find = None;
         for c in tree.list().children(node) {
-            let name = tree.list().name(*c);
             let Obj::V(Value::Dict(m)) = o else {
                 return Err(Self::mismatch(tree, node, "dict"));
             };
+            let find = match &mut find {
+                Some(f) => f,
+                None => find.insert(Lookup::new(self.parsed, tree, node, m)?),
+            };
             if tree.py_kind(*c) != Kind::ReferencedObjectData {
-                let v = self
-                    .field(m, name)
+                let v = find
+                    .get(self.parsed, tree, *c)?
                     .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
                 self.value(tree, *c, Obj::V(v))?;
                 continue;
@@ -925,8 +1009,8 @@ impl<'a> Writer<'a, '_> {
                 },
             };
             // `value[child.m_Name]`, then `write_value(..., None)` raises.
-            let v = self
-                .field(m, name)
+            let v = find
+                .get(self.parsed, tree, *c)?
                 .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
             let Some(rt) = ref_tree else {
                 return Err(Self::mismatch(tree, *c, "a ref type with a tree"));
@@ -1000,5 +1084,103 @@ impl<'a> Writer<'a, '_> {
             .find(|r| names_match(r, cls, ns, asm))
             .ok_or(WriteError::RefTypeNotFound)?;
         r.tree(&self.limits).transpose().map_err(Self::tree_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use bytes::Bytes;
+
+    use super::super::dict::STEPS;
+    use crate::budget::DecodeBuf;
+    use crate::error::LimitKind;
+    use crate::limits::{Limits, Meter};
+    use crate::stream::Endian;
+    use crate::typetree::{NodeList, NodeRow, Tree};
+    use crate::walk::{ReadCtx, ReadOptions, RefTypes, WriteCtx, WriteRules, boost, python};
+
+    const N: u32 = 1 << 16;
+
+    /// Reads `rows` over `data` with both readers and writes each value
+    /// back, counting the writer's map steps.
+    fn write_steps(rows: Vec<NodeRow>, data: &[u8]) -> [(&'static str, u64); 2] {
+        let tree = Tree::compile(
+            Arc::new(NodeList::trusted(rows).unwrap()),
+            &Limits::default(),
+        )
+        .unwrap();
+        let data = Bytes::copy_from_slice(data);
+        let options = ReadOptions::default();
+        let meter = Meter::unlimited();
+        let ctx = ReadCtx {
+            endian: Endian::Little,
+            ref_types: RefTypes::List(&[]),
+            options: &options,
+            meter: &meter,
+        };
+        let limits = Limits::default();
+        let wctx = WriteCtx {
+            endian: Endian::Little,
+            ref_types: RefTypes::List(&[]),
+            rules: WriteRules::UnityPy,
+            limits: &limits,
+        };
+        ["boost", "python"].map(|reader| {
+            let p = match reader {
+                "boost" => boost::read(&data, &tree, &ctx),
+                _ => python::read(&data, 0, &tree, &ctx),
+            }
+            .unwrap();
+            let mut out = DecodeBuf::new(&meter, 0, u64::MAX, LimitKind::InputMemory).unwrap();
+            STEPS.with(|s| s.set(0));
+            super::write(&p, &tree, &wctx, &mut out).unwrap();
+            (reader, STEPS.with(std::cell::Cell::get))
+        })
+    }
+
+    fn ints(n: u32) -> Vec<u8> {
+        (0..n).flat_map(u32::to_le_bytes).collect()
+    }
+
+    /// Claude B's review: a `ReferencedObject` of 2^16 children, each
+    /// `value[child.m_Name]`, written in steps linear in the children.
+    #[test]
+    fn a_wide_referenced_object_writes_in_linear_map_steps() {
+        let mut rows = vec![
+            NodeRow::new(0, "Base", "Base"),
+            NodeRow::new(1, "ReferencedObject", "o"),
+        ];
+        for i in 0..N {
+            rows.push(NodeRow::new(2, "int", format!("c{i}").as_str()));
+        }
+        for (reader, steps) in write_steps(rows, &ints(N)) {
+            assert!(
+                steps <= 2 * u64::from(N),
+                "{reader}: {steps} map steps for {N} children"
+            );
+        }
+    }
+
+    /// A dict a repeated name hands a same-named sibling is keyed by the
+    /// other's children, here in the reverse order: each child misses the
+    /// cursor, and is found by name in steps linear in the children.
+    #[test]
+    fn a_dict_keyed_by_another_node_writes_in_linear_map_steps() {
+        let mut rows = vec![NodeRow::new(0, "Base", "Base"), NodeRow::new(1, "Foo", "a")];
+        for i in 0..N {
+            rows.push(NodeRow::new(2, "int", format!("c{i}").as_str()));
+        }
+        rows.push(NodeRow::new(1, "Bar", "a"));
+        for i in (0..N).rev() {
+            rows.push(NodeRow::new(2, "int", format!("c{i}").as_str()));
+        }
+        for (reader, steps) in write_steps(rows, &ints(2 * N)) {
+            assert!(
+                steps <= 4 * u64::from(N),
+                "{reader}: {steps} map steps for {N} children"
+            );
+        }
     }
 }

@@ -20,6 +20,10 @@ Files:
 - `write_matrix.json`: W2, every node kind written from every value variant.
 - `py_attrs.json`: the non-dunder attributes of each Python type a value
   becomes, and which are data, for the writer's `getattr` (W2).
+- `depth.json`: deep values (plan 3.10, "Bounds"): each shape of
+  `DEPTH_SHAPES` read by both readers and re-saved, at the least depth where
+  the pure-Python reader raises `RecursionError`, one `A` less, and a quarter
+  of it; the outcome only (`pos` or the exception), not the value.
 
 A value is written with the Python types it has, so a test compares exactly
 what UnityPy returned: a `bool` as JSON `true`/`false`, an `int` as a number,
@@ -442,6 +446,7 @@ def py_cases():
     add("py_aligned_float_tuple_snan", base(vec("v", leaf("float", "data", ALIGN))), i32(1) + struct.pack("<I", 0x7F800001))
     add("py_aligned_prim_array_past_end", base(vec("v", leaf("int", "data", ALIGN))), i32(3, 1))
     add("py_aligned_ref_object_absent_type_key", base(vec("v", no_type_rows(ALIGN))), i32(1) + struct.pack("<q", 1) + s("C") + s("N") + s("A"), ref_types=REF)
+    c.extend(base_read_cases())
     # The empty-array and pair-child cases of pure_python_rules.py.
     import pure_python_rules as P  # noqa: PLC0415
 
@@ -449,6 +454,175 @@ def py_cases():
         nodes = [[lv, ty, nm, fl] for lv, ty, nm, fl in rows]
         add(f"py_rules_{i:02d} " + name, nodes, data)
     return c
+
+
+WIDTHS = {"SInt16": 2, "UInt16": 2, "int": 4, "UInt32": 4, "float": 4, "SInt64": 8, "UInt64": 8, "double": 8}
+
+
+def base_read_cases():
+    """`FUNCTION_READ_MAP`'s readers are the base class's `unpack(fmt,
+    read(n))`, not the memoryview reader's `unpack_from`: they differ at
+    position -n, where `read(n)` is the empty slice `view[-n:0]`. A negative
+    `TypelessData` length puts the position at -n, -n-1 and -1 before a
+    primitive read directly, as a vector's element (after a length the
+    memoryview reader's own `read_int` reads), and as an aligned pair's
+    second child (`read_value_array`'s `key_func`/`value_func`)."""
+    out = []
+    tail = bytes(range(0x11, 0x29))  # 24 distinct bytes
+
+    def add(name, rows, at, body):
+        # `t`'s length moves the position from 4 to `at`.
+        out.append(dict(name=name, nodes=base([[0, "TypelessData", "t", 0]], rows), hex=(i32(at - 4) + body).hex()))
+
+    for t, n in WIDTHS.items():
+        for at, label in ((-n, f"m{n}"), (-n - 1, f"m{n}_1"), (-1, "m1")):
+            add(f"py_base_read_{t}_at_{label}", leaf(t, "c"), at, tail)
+    for t in ("SInt16", "float", "UInt64"):
+        n = WIDTHS[t]
+        for at, label in ((-n, f"m{n}"), (-n - 1, f"m{n}_1"), (-1, "m1")):
+            # The length, one element, then the element at `at`.
+            add(f"py_base_read_{t}_element_at_{label}", vec("v", leaf(t, "data")), at - 4, tail + i32(1) + tail[: -at])
+    for t in ("UInt16", "int", "double"):
+        n = WIDTHS[t]
+        for at, label in ((-n, f"m{n}"), (-n - 1, f"m{n}_1"), (-1, "m1")):
+            # The length, one pair: `first` before `at`, `second` at it.
+            rows = vec("v", pair("data", leaf(t, "first"), leaf(t, "second"), ALIGN))
+            add(f"py_base_read_{t}_pair_second_at_{label}", rows, at - n - 4, tail + i32(1) + tail[: n - at])
+    return out
+
+
+# --- Depth (plan 3.10, "Bounds")
+
+# Each shape nests its levels inside ref type `A` around a `ReferencedObject`
+# whose data is the next `A`; the last holds a `Z`. A level is one of: a class
+# (`Class`), a vector of the next level (`Vector`), an aligned vector of it
+# (`Aligned`, `read_value_array`), an aligned vector of a class holding it
+# (`ClassArray`), a pair whose `first` is it (`Pair`), and an aligned vector of
+# pairs whose `first` is a class holding it (`PairArray`, the `lambda`). The
+# Rust test (`walk_stack.rs`) builds the same rows and bytes from the same
+# names; `pos` checks they agree.
+DEPTH_SHAPES = {
+    "ref": [],
+    "class": [("Class", 248)],
+    "vector": [("Vector", 124)],
+    "aligned": [("Vector", 1), ("Aligned", 120)],
+    "class_array": [("ClassArray", 82)],
+    "pair": [("Pair", 248)],
+    "pair_array": [("PairArray", 62)],
+}
+
+
+def depth_rows(wraps):
+    out = [[0, "A", "Base", 0]]
+    level, name, meta = 1, "x", 0
+    tails = []
+    for w in wraps:
+        if w in ("Vector", "Aligned", "ClassArray", "PairArray"):
+            out += [[level, "vector", name, meta], [level + 1, "Array", "Array", 0], [level + 2, "int", "size", 0]]
+            level, name, meta = level + 2, "data", ALIGN if w != "Vector" else 0
+        if w in ("Class", "ClassArray"):
+            out.append([level, "C", name, meta])
+            level, name, meta = level + 1, "c", 0
+        elif w == "Pair":
+            out.append([level, "pair", name, meta])
+            tails.append([level + 1, "int", "second", 0])
+            level, name, meta = level + 1, "first", 0
+        elif w == "PairArray":
+            out += [[level, "pair", name, meta], [level + 1, "C", "first", 0]]
+            tails.append([level + 1, "int", "second", 0])
+            level, name, meta = level + 2, "c", 0
+    out += [
+        [level, "ReferencedObject", name, meta],
+        [level + 1, "ReferencedManagedType", "type", 0],
+        [level + 2, "string", "class", 0],
+        [level + 2, "string", "ns", 0],
+        [level + 2, "string", "asm", 0],
+        [level + 1, "ReferencedObjectData", "data", 0],
+    ]
+    return out + tails[::-1]
+
+
+def depth_data(wraps, n):
+    prefix = b"".join(i32(1) for w in wraps if w not in ("Class", "Pair"))
+    suffix = b"".join(i32(5) for w in reversed(wraps) if w in ("Pair", "PairArray"))
+    body = b"".join(prefix + s("Z" if i == n else "A") + s("n") + s("a") for i in range(1, n + 1))
+    return body + i32(7) + suffix * n
+
+
+def depth_outcome(read):
+    try:
+        value, pos = read()
+    except Exception as e:  # noqa: BLE001 - the exception class is the outcome
+        return err(e), None
+    return {"ok": True, "pos": pos}, value
+
+
+def depth_write(value, root, af, read_bytes):
+    w = EndianBinaryWriter(endian="<")
+    try:
+        TTH.write_typetree(value, root, w, af)
+    except Exception as e:  # noqa: BLE001
+        return {"err": type(e).__name__}
+    return {"equal": bytes(w.bytes) == read_bytes}
+
+
+def depth_input(spec, n):
+    wraps = [w for w, k in spec for _ in range(k)]
+    rows = depth_rows(wraps)
+    af = assets([
+        {"class": "A", "ns": "n", "asm": "a", "nodes": rows},
+        {"class": "Z", "ns": "n", "asm": "a", "nodes": [[0, "Z", "Base", 0], [1, "int", "z", 0]]},
+    ])
+    return tree(rows), af, depth_data(wraps, n)
+
+
+def depth_python(root, af, data):
+    reader = EndianBinaryReader(data, "<")
+    value = TTH.read_value(root, reader, TTH.TypeTreeConfig(True, af, False))
+    return value, reader.Position
+
+
+def depth_case(name, spec, n, at):
+    root, af, data = depth_input(spec, n)
+    out = {"name": f"{name}_{n}", "shape": name, "wraps": [list(w) for w in spec], "n": n, "at": at}
+    for reader, read in (
+        ("boost", lambda: boost_read(data, root, "<", True, af)),
+        ("python", lambda: depth_python(root, af, data)),
+    ):
+        out[reader], value = depth_outcome(read)
+        if value is not None:
+            out[f"{reader}_write"] = depth_write(value, root, af, data[: out[reader]["pos"]])
+    return out
+
+
+def recursion_error(spec, n):
+    try:
+        depth_python(*depth_input(spec, n))
+    except RecursionError:
+        return True
+    return False
+
+
+def depth_cases():
+    """Each shape read `n` `A`s deep by both readers and re-saved: for the
+    `n` either side of the least at which the pure-Python reader raises
+    `RecursionError` (Python's 1,000 frames, less the frames of this script
+    that call it), and at a quarter of that. UnityPyBoost recurses on the C
+    stack, with no bound of its own at these depths."""
+    out = []
+    for name, spec in DEPTH_SHAPES.items():
+        lo, hi = 1, 2  # lo reads, hi raises
+        while not recursion_error(spec, hi):
+            lo, hi = hi, hi * 2
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            lo, hi = (lo, mid) if recursion_error(spec, mid) else (mid, hi)
+        # A case reads a frame or two deeper in this script than the search:
+        # its `lo` is the last `n` it reads itself.
+        while (case := depth_case(name, spec, lo, "last_read"))["python"].get("err") == "RecursionError":
+            lo, hi = lo - 1, lo
+        out += [depth_case(name, spec, max(1, hi // 4), "quarter"), case, depth_case(name, spec, hi, "first_raise")]
+    return out
 
 
 def no_type_rows(meta):
@@ -616,6 +790,7 @@ def fixtures():
         "value_cases.json": dump_list(value_cases()),
         "write_matrix.json": dump_matrix(write_matrix()),
         "py_attrs.json": compact(py_attrs()) + "\n",
+        "depth.json": dump_list(depth_cases()),
     }
 
 
