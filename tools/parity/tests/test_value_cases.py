@@ -1,0 +1,109 @@
+"""tools/parity/value_cases.py: the verdicts, and the cases file `unityrs values` reads.
+
+    python -m unittest discover -s tools/parity/tests
+
+The verdict tests are the spike's (crates/unityrs-spike-rabex/scripts/tests),
+on the copy. Needs UnityPy (the oracle image); skipped elsewhere.
+"""
+
+import json
+import sys
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(HERE))
+
+try:
+    import value_cases
+except ImportError:  # pragma: no cover - outside the oracle image
+    value_cases = None
+
+I32 = range(-(2**31), 2**31)
+
+
+@unittest.skipIf(value_cases is None, "needs UnityPy (the oracle image)")
+class ValueCasesTests(unittest.TestCase):
+    def test_the_copy_reads_this_folders_canonical_module(self):
+        self.assertEqual(Path(value_cases.PARITY), HERE)
+        self.assertEqual(Path(value_cases.C.__file__).resolve().parent, HERE)
+
+    def test_l2_compares_bytes_read(self):
+        v = value_cases.l2_verdict
+        value = '{"t":"dict","v":[]}'
+
+        def side(kind, n, val=value):
+            return {"kind": kind, "bytes_read": n, "value": val}
+
+        self.assertEqual(v(side("check_read", 4), side("check_read", 4)), "match")
+        # The same value, but the reads ended at different bytes: compare.py calls this an L2 difference.
+        self.assertEqual(v(side("check_read", 4), side("check_read", 1)), "differs")
+        self.assertEqual(v(side(None, None, "7fc00001"), side(None, None, "7f800001")), "f32_snan_quieted")
+        self.assertEqual(v(side(None, None, "7fc00001"), side("check_read", 1, "7f800001")), "differs")
+
+    def test_empty_struct_align_last_reads_four_bytes_in_unitypy(self):
+        case = next(c for c in value_cases.CASES if c["name"] == "empty_struct_align_last")
+        o = value_cases.oracle(case)
+        self.assertEqual((o["kind"], o["bytes_read"]), ("check_read", 4))
+
+    def test_l3_needs_both_resaves(self):
+        v = value_cases.l3_verdict
+        data = b"\x02\0\0\0"
+        self.assertEqual(v(None, None, data), "not_resaved")
+        self.assertEqual(v(data, None, data), "one_side")
+        self.assertEqual(v(None, data, data), "one_side")
+
+    def test_l3_compares_the_resaved_bytes(self):
+        v = value_cases.l3_verdict
+        data = b"\x03\0\0\0a\xffb\x01\x07\0\0\0"
+        clean = b"\x03\0\0\0a\xffb\0\x07\0\0\0"
+        unaligned = b"\x03\0\0\0a\xffb\x07\0\0\0"
+        self.assertEqual(v(data, data, data), "match")
+        # Both re-saves differ from the input, and from each other: not a match.
+        self.assertEqual(v(clean, unaligned, data), "differs")
+        # Both differ from the input the same way: agreement, not a round trip.
+        self.assertEqual(v(clean, clean, data), "same_bytes")
+        self.assertEqual(v(data, clean, data), "differs")
+
+    def test_summary_counts_l3_over_resaved_cases(self):
+        table = [
+            {"case": "a", "l2": "match", "l3": "match"},
+            {"case": "b", "l2": "differs", "l3": "not_resaved"},
+            {"case": "c", "l2": "match", "l3": "differs"},
+            {"case": "d", "l2": "differs", "l3": "one_side"},
+            {"case": "e", "l2": "match", "l3": "same_bytes"},
+        ]
+        s = value_cases.summary(table)
+        self.assertEqual(s["l3_resaved_by_both"], 3)
+        self.assertEqual(s["l3_same_bytes"], ["e"])
+        self.assertEqual(s["l3_differs"], ["c"])
+        self.assertEqual(s["l3_not_resaved"], ["b"])
+        self.assertEqual(s["l3_one_side"], ["d"])
+
+    def test_truncation_cases_are_present(self):
+        names = {c["name"] for c in value_cases.CASES}
+        self.assertLessEqual({"vector_u8_truncated", "vector_float_truncated", "vector_int_truncated"}, names)
+
+    def test_the_cases_file_is_what_unityrs_values_reads(self):
+        # crates/unityrs-dump/src/values.rs `parse_cases`: a list of
+        # {name, endian, nodes, hex}, each node [level, type, name, meta_flag]
+        # with i32 integers, and every name distinct (the outcome lines are
+        # matched to cases by name).
+        cases = json.loads(json.dumps(value_cases.protocol_cases()))
+        self.assertEqual(len(cases), len(value_cases.CASES))
+        self.assertEqual(len({c["name"] for c in cases}), len(cases))
+        for c, src in zip(cases, value_cases.CASES):
+            self.assertEqual(set(c), {"name", "endian", "nodes", "hex"})
+            self.assertIn(c["endian"], ("<", ">"))
+            self.assertEqual(bytes.fromhex(c["hex"]), src["data"])
+            for row in c["nodes"]:
+                self.assertEqual(len(row), 4, (c["name"], row))
+                level, ty, name, meta = row
+                self.assertIn(level, I32)
+                self.assertIn(meta, I32)
+                self.assertIsInstance(ty, str)
+                self.assertIsInstance(name, str)
+
+
+if __name__ == "__main__":
+    unittest.main()
