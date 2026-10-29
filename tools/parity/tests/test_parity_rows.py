@@ -335,6 +335,7 @@ class TestColumn(unittest.TestCase):
         for lead in (
             "| `set_image` from an image whose mode Pillow cannot pack",
             "| `Environment.save` of a file keyed by a stream `name` that is not a `str`",
+            "| `BundleFile.save` of a UnityWeb or UnityRaw bundle of a format above 3 but 6",
         ):
             self.assertIn("\n" + lead, writing)
         rows = 0

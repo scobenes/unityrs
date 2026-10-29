@@ -880,11 +880,45 @@ class FileRows(unittest.TestCase):
             with self.subTest(format=fmt):
                 raw = load(old_raw(fmt, b"CAB-r", payload) if fmt <= 3 else unityraw(fmt, [(b"CAB-r", payload)]))[0]
                 if fmt > 3:
-                    with self.assertRaisesRegex(NotImplementedError, "version > 3 is not supported"):
+                    with self.assertRaisesRegex(
+                        NotImplementedError, "^Saving Unity Web bundles with version > 3 is not supported$"
+                    ):
                         raw.save()
                     continue
                 back = load(raw.save())[0]
                 self.assertEqual([o.parse_as_dict()["m_Name"] for o in back.files["CAB-r"].objects.values()], ["p"])
+        # Above format 3 the raise is the only thing in the way: UnityPy's own save_web_raw run with its version
+        # check removed (the Tier C (writing) reference) writes the file's hash and CRC after the header's strings,
+        # and saves UnityRaw and UnityWeb bundles that reload with the same entries, hash and CRC.
+        import inspect
+        import re
+        import textwrap
+
+        bundle_module = sys.modules["UnityPy.files.BundleFile"]
+        source = textwrap.dedent(inspect.getsource(bundle_module.BundleFile.save_web_raw))
+        check = re.compile(r"\n *if self\.version > 3:\n *raise NotImplementedError\([^)]*\)\n")
+        self.assertEqual(len(check.findall(source)), 1)
+        namespace = {}
+        exec(compile(check.sub("\n", source), "save_web_raw", "exec"), vars(bundle_module), namespace)
+        for signature in ("UnityRaw", "UnityWeb"):
+            for fmt in (4, 5, 7):
+                with self.subTest("past the check", signature=signature, format=fmt):
+                    raw = load(unityraw(fmt, [(b"CAB-r", payload), (b"CAB-r.resS", b"res")]))[0]
+                    raw.signature = signature
+                    with mock.patch.object(bundle_module.BundleFile, "save_web_raw", namespace["save_web_raw"]):
+                        saved = raw.save()
+                    strings = saved.index(b"5.6.7f1\0") + len(b"5.6.7f1\0")
+                    self.assertEqual(saved[strings : strings + 20], bytes(raw._hash) + struct.pack(">I", raw.crc))
+                    back = load(saved)[0]
+                    self.assertEqual((back.signature, back.version), (signature, fmt))
+                    self.assertEqual(
+                        (
+                            [o.parse_as_dict()["m_Name"] for o in back.files["CAB-r"].objects.values()],
+                            back.files["CAB-r.resS"].bytes,
+                        ),
+                        (["p"], b"res"),
+                    )
+                    self.assertEqual((bytes(back._hash), back.crc), (bytes(raw._hash), raw.crc))
 
     # Sections 7.1, 20: what 1.25.2 does with formats it does not know.
     def test_formats_past_22_read_as_22(self):
