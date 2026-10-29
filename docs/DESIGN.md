@@ -108,7 +108,12 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - the Sprite cache key ignores the FileID;
   - MeshRendererExporter fails on Unity 6;
   - ShaderConverter fails on 6000.3;
-  - the extractor's crashes: GameObjects (each reachable object written once, its name ending in its path id where UnityPy's would end in `_None`), MonoBehaviours, sprites without a container, meshes without vertices, and images Pillow cannot save under the container's extension, or saves as an ICO holding no image (a side below 16).
+  - 3.x submeshes are all read as strips;
+  - a Mesh before 3.5 and a sprite's render data before 5 fail `MeshHandler.process`'s assert;
+  - Shader export before 5.5 raises `TypeError` on `bytes(m_Script)`;
+  - the GameObject component accessors raise on an empty component list and on 5.4's pairs;
+  - `export_mesh_renderer` gives each material to a submesh `firstSubMesh` too early, and writes no texture;
+  - the extractor's crashes: GameObjects (each reachable object written once, its name ending in its path id where UnityPy's would end in `_None`), MonoBehaviours, sprites without a container, meshes without vertices, images Pillow cannot save under the container's extension, or saves as an ICO holding no image (a side below 16), and the no-container mode's missing `dst`.
 - **Unsupported until a sample and a reference exist.** unityrs refuses these with a named `Unsupported` error:
   - LZHAM, where UnityPy raises too;
   - a UnityArchive parsed as a bundle, where UnityPy raises too. Loading one is Tier A: UnityPy's detector does not know the signature and loads the file as a raw ResourceFile, and so does unityrs;

@@ -44,14 +44,14 @@ def default_value(node):
     return {child.m_Name: default_value(child) for child in node.m_Children}
 
 
-def tpk_object(class_id, version=VERSION, **fields):
+def tpk_object(class_id, version=VERSION, endian="<", **fields):
     """The bytes of an object of `class_id` as the TPK's node for `version` lays it out, `fields` set."""
     node = Tpk.get_typetree_node(class_id, UnityVersion.from_str(version))
     value = default_value(node)
     unknown = set(fields) - set(value)
     assert not unknown, f"{unknown} are not fields of class {class_id}"
     value.update(fields)
-    writer = EndianBinaryWriter(endian="<")
+    writer = EndianBinaryWriter(endian=endian)
     TypeTreeHelper.write_typetree(value, node, writer)
     return writer.bytes
 
