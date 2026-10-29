@@ -513,6 +513,28 @@ class Rows(unittest.TestCase):
         self.assertEqual(compress(padded.tobytes("raw", "RGBA"), 8, 8, etcpak.BC7CompressBlockParams()), reference)
         decoded = Texture2DConverter.parse_image_data(written, 6, 5, TextureFormat.BC7, (2021, 3, 1, 3), 0)
         self.assertEqual((decoded.mode, decoded.size), ("RGBA", (6, 5)))
+        # On a Switch-swizzled texture the image is padded to the swizzle's size, not to whole 4x4 blocks,
+        # compressed, and the compressed bytes swizzled with BC7's 4x4 block and the blob's GOBs.
+        blob = [0] * 8 + list((4).to_bytes(4, "little"))  # 1 << 4 = 16 GOBs per block
+        with mock.patch.object(etcpak, "compress_bc7", with_defaults):
+            switch, tag = Texture2DConverter.image_to_texture2d(image, TextureFormat.BC7, BuildTarget.Switch, blob)
+        self.assertEqual(tag, TextureFormat.BC7)
+        self.assertEqual(TextureSwizzler.TEXTURE_FORMAT_BLOCK_SIZE_MAP[TextureFormat.BC7], (4, 4))
+        width, height = TextureSwizzler.get_padded_texture_size(6, 5, 4, 4, 16)
+        self.assertEqual((width, height), (16, 512))
+        flipped = image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        linear = compress(
+            Texture2DConverter.pad_image(flipped, width, height).tobytes("raw", "RGBA"),
+            width,
+            height,
+            etcpak.BC7CompressBlockParams(),
+        )
+        self.assertEqual(switch, bytes(TextureSwizzler.swizzle(linear, width, height, 4, 4, 16)))
+        self.assertEqual((len(switch), len(written)), (8192, 64))
+        # The reader deswizzles it back: the same pixels as the linear write (its blocks hold the same texels).
+        version = (2021, 3, 1, 3)
+        back = Texture2DConverter.parse_image_data(switch, 6, 5, TextureFormat.BC7, version, BuildTarget.Switch, blob)
+        self.assertEqual(list(back.getdata()), list(decoded.getdata()))
 
     # Sections 18, 19.2: `set_image` on a swizzled or byte-swapped platform.
     def test_set_image_writes_linear_mips_and_never_swaps_for_xbox(self):

@@ -131,7 +131,7 @@ Writing has tiers of its own. Where UnityPy writes, unityrs follows the rule in 
 |---|---|
 | Pre-v10 and v11 typetree writing (UnityPy raises) | the saved file reloads with the same objects |
 | An object holding a ReferencedObject of empty class (UnityPy raises `KeyError`) | byte-equal to its original bytes |
-| `set_image` to BC7 (UnityPy raises with the pinned etcpak) | byte-equal to what etcpak 0.9.14's `compress_bc7` writes with a default `BC7CompressBlockParams()` on the data UnityPy hands it (flipped, padded to whole 4×4 blocks, RGBA) |
+| `set_image` to BC7 (UnityPy raises with the pinned etcpak) | byte-equal to what etcpak 0.9.14's `compress_bc7` writes with a default `BC7CompressBlockParams()` on the data UnityPy hands it (flipped, padded to whole 4×4 blocks, RGBA); on a Switch-swizzled texture, padded to the swizzle's size instead, and the compressed bytes swizzled |
 | `set_image` to ETC_RGB4Crunched (UnityPy tags plain ETC1 as crunched) | written as ETC_RGB4, equal to `set_image` to ETC_RGB4 |
 | `WebFile.save` of a writer entry (UnityPy raises) | the saved WebFile reloads with the writer's bytes |
 | `BundleFile.save` with `original` and no blocks (UnityPy raises); `save_fs` encryption flags (UnityPy's output reads back as encrypted) | the saved bundle reloads, unencrypted, with the same entries |
