@@ -179,7 +179,7 @@ UnityFS's total-size field and its uncompressed-data hash are left out, because 
 | `types` | type records, in file order |
 | `object_order` | path_ids in UnityPy's `objects` dict order (section 7) |
 | `script_types` | `[[file_index, identifier], ...]` |
-| `externals` | `[[temp_empty, guid, type, path], ...]`. `guid` is hex. Members a format lacks are `null`. |
+| `externals` | `[[temp_empty, guid, type, path], ...]`. `guid` is hex. Members a format lacks are `null`: `temp_empty` below format 6, `guid` and `type` below 5. UnityPy leaves those members unset, so reading one raises `AttributeError`; the oracle records `null` for each (an oracle normalisation, `PARITY.md` section 7.1). |
 | `ref_types` | type records (format ≥ 20), else `null` |
 | `user_information` | string (format ≥ 5), else `null` |
 | `container` | the `m_Container` of the first AssetBundle object in `objects` dict order (section 7), as `[[path, preload_index, preload_size, file_id, path_id], ...]` in order. `[]` without an AssetBundle. |

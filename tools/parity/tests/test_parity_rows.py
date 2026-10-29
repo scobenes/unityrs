@@ -90,14 +90,32 @@ class TestColumn(unittest.TestCase):
         for module, name in sorted(cited):
             source = (HERE / "tests" / module).read_text(encoding="utf-8")
             self.assertIn(f"def test_{name}(", source, f"PARITY.md cites {module} {name}, which does not exist")
-        defined = set(re.findall(r"def test_([a-z0-9_]+)\(", Path(__file__).read_text(encoding="utf-8")))
-        defined.discard("every_cited_test_exists_and_every_row_test_is_cited")
-        named = {name for module, name in cited if module == "test_parity_rows.py"}
-        self.assertEqual(sorted(defined - named), [], "tests no PARITY.md row names")
+        # The row modules hold only tests a row names.
+        modules = [Path(__file__), *sorted((HERE / "tests").glob("test_rows_*.py"))]
+        self.assertGreater(len(modules), 1)
+        for path in modules:
+            defined = set(re.findall(r"def test_([a-z0-9_]+)\(", path.read_text(encoding="utf-8")))
+            defined -= {
+                "every_cited_test_exists_and_every_row_test_is_cited",
+                "every_status_agrees_with_its_test_column",
+            }
+            named = {name for module, name in cited if module == path.name}
+            self.assertEqual(sorted(defined - named), [], f"tests no PARITY.md row names, in {path.name}")
+
+    @classmethod
+    def probed(cls, test_cell):
+        """Whether the test column names a test, or the corpus dump, outside a `planned` clause."""
+        for clause in test_cell.split(";"):
+            if "planned" in clause:
+                continue
+            if cls.CITED.search(clause) or re.search(r"`test_[a-z_]+\.py` \(all\)", clause) or "corpus dump" in clause:
+                return True
+        return False
 
     def test_every_status_agrees_with_its_test_column(self):
         """Section 0's status rules: a row that names a test is pinned or verified, one that names none is
-        unverified (source reading), n/a (tier —) or a pointer to another row; `planned` is section 17.1's."""
+        unverified (source reading), n/a (tier —) or a pointer to another row; `planned` is section 17.1's. A test
+        or the corpus dump named inside a `planned` clause probes nothing, and every row states its own status."""
         text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
         seen = 0
         for header, rows in inventory.tables(text):
@@ -106,19 +124,17 @@ class TestColumn(unittest.TestCase):
             test, status = header.index("test"), header.index("status")
             for cells in rows:
                 seen += 1
-                cites = bool(self.CITED.search(cells[test]) or re.search(r"`test_[a-z_]+\.py` \(all\)", cells[test]))
+                probed = self.probed(cells[test])
                 state = cells[status]
                 with self.subTest(row=cells[0][:60], status=state):
                     if state.startswith(("pinned P0", "verified P0")):
-                        self.assertTrue(cites or "corpus dump" in cells[test], "a probed row names what probes it")
+                        self.assertTrue(probed, "a probed row names what probes it")
                     elif state.startswith("unverified (source reading); impl P"):
-                        self.assertFalse(cites, "a row a test runs is not unverified")
+                        self.assertFalse(probed, "a row a test runs is not unverified")
                     elif state.startswith("planned ("):
                         self.assertIn("reference", header, "only section 17.1's references are planned")
                     elif state == "n/a":
                         self.assertEqual(cells[header.index("tier")], "—")
-                    elif state == "as above":
-                        pass
                     else:
                         self.assertEqual(state, "", "an unknown status")
                         self.assertEqual(set(cells[2:]), {""}, "a row with no status points at another section")
@@ -433,8 +449,9 @@ class Rows(unittest.TestCase):
                 quietly(UnityPy.Environment(fs=fs).load_file, name)
         with self.assertRaises(FileNotFoundError):
             quietly(UnityPy.Environment(fs=fs, path=root).load_file, "x.assets")
-        # Where the local disk can list `path`, the walk finds nothing there and the name is None.
+        # Where the local disk can list `path`, the walk finds nothing there and the name is None, with no error.
         self.assertIsNone(quietly(UnityPy.Environment(fs=fs, path=str(self.tmp)).load_file, "x.assets"))
+        self.assertIsNone(quietly(UnityPy.Environment(fs=fs, path="/").load_file, f"{root[1:]}/x.assets"))
         # The constructor takes a file through load_file, a folder through load_files' builtin open.
         for arg in (f"{root}/x.assets", root):
             with self.subTest(arg), self.assertRaises(FileNotFoundError):
@@ -1004,6 +1021,13 @@ class Rows(unittest.TestCase):
         later = UnityPy.Environment()
         load(text_asset_file(), env=later)
         self.assertFalse(hasattr(later, "file"), "load_file never sets it")
+        # Once set, it is never changed or removed: a later load_file leaves it on the first file.
+        first_file = one.file
+        load(text_asset_file("other"), env=one)
+        self.assertEqual((one.file, len(one.files)), (first_file, 2))
+        # It counts `files` entries, and two equal byte arguments share one key (their hash).
+        twice = quietly(UnityPy.Environment, text_asset_file(), text_asset_file())
+        self.assertEqual((len(twice.files), hasattr(twice, "file")), (1, True))
         # objects and assets: depth-first in `files` order, dependencies left out.
         env = UnityPy.Environment()
         plain = load(text_asset_file("plain"), "plain.assets", env)[0]
@@ -1047,6 +1071,12 @@ class Rows(unittest.TestCase):
         # A name in another case misses the exact matches (the simplified one compares a bare name with full
         # paths) and matches a simplified path by suffix: that path names no file, so load_file gives None.
         self.assertIsNone(found(UnityPy.Environment(path=str(d)), "shared.assets"))
+        # When the basename on disk is all lower case, that simplified path is the file, so any case finds it.
+        (d / "sub" / "lower.assets").write_bytes(text_asset_file("lower"))
+        for name in ("LOWER.assets", "Lower.Assets", "sub/LOWER.ASSETS"):
+            with self.subTest(name):
+                self.assertEqual(found(UnityPy.Environment(path=str(d)), name), ["lower"])
+        (d / "sub" / "lower.assets").unlink()
         with self.assertRaisesRegex(FileNotFoundError, "File missing.assets not found in"):
             found(env, "missing.assets")
         (d / "sub" / "late.assets").write_bytes(text_asset_file("late"))

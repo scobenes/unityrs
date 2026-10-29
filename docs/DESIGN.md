@@ -81,7 +81,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - `Texture2D.image` of an empty 0×0 texture;
   - an empty AudioClip, whose empty resource path UnityPy fetches;
   - a ZIP opened from a path, which UnityPy loads only from bytes or a buffered stream;
-  - a name read through a non-local fsspec filesystem, which `load_file` tests and walks on the local disk instead;
+  - a name read through a non-local fsspec filesystem, which `load_file` tests and walks on the local disk instead, where that raises (the local disk cannot list `Environment.path`, as with the default `''`);
   - `File.get_objects` and `File.get_filtered_objects` of a file holding a bundle or WebFile, which they iterate as `objects`, an attribute neither has;
   - a class node whose type names an attribute of `UnityPy.classes` that is not a class, where UnityPyBoost raises (`List`, `Tuple`): unityrs builds it as a type the module lacks (`PARITY.md` section 19.2);
   - `set_image` from an image whose mode Pillow cannot pack for the target (an indexed or grey PNG, or an RGB image into Alpha8): unityrs converts it with Pillow's `convert("RGBA")` first (`PARITY.md` section 18.1).
@@ -100,6 +100,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - UnityPyBoost crashes the process, or returns some other value (a function, a `str`, an `int`, `None`), on a class node whose type names something `getattr` finds on `UnityPy.classes` that is not one of its classes: an attribute of the module (`math`, `__name__`, `attrs_define`) or of the module's type, which `dir` leaves out (`__class__`, `__repr__`, `__hash__`): unityrs builds it as a type the module lacks;
   - dump_blob's common-string offset 0;
   - two bundles holding a CAB of one name share one registry entry;
+  - a name read through a non-local fsspec filesystem where `load_file` returns `None` with no error, because the local disk can list `Environment.path` but lacks the name (the reference is the same as Tier B's: the file loaded as a stream opened from the filesystem);
   - `File.get_filtered_objects` with no types, or on a SerializedFile, and `File.get_assets` on a SerializedFile yield nothing, where each means to yield the value its generator `return`s or the file's objects (`PARITY.md` section 19.2);
   - `load_dependencies` loads dependencies as main files;
   - `ContainerHelper.path_dict` ignores an entry's file id;
@@ -129,7 +130,7 @@ Writing has tiers of its own. Where UnityPy writes, unityrs follows the rule in 
 | Object re-save | byte-equal |
 | File / bundle save | semantic equality plus idempotence. An optional UnityPy-layout mode is byte-equal to UnityPy's `save(packer='none')` |
 | Compressed packers | equal after decompression; byte-equal LZ4HC only with liblz4 HC level 9 (pinned) |
-| `get_writeable_cab` | UnityPy's naming and GUID rule |
+| `File.get_writeable_cab` | UnityPy's naming rule |
 | `set_image` | equal after re-decode: Pillow 9.5 BICUBIC mips, NEAREST padding, pinned etcpak/astcenc |
 
 | Tier C (writing) | acceptance |
@@ -138,6 +139,7 @@ Writing has tiers of its own. Where UnityPy writes, unityrs follows the rule in 
 | An object holding a ReferencedObject of empty class (UnityPy raises `KeyError`) | byte-equal to its original bytes |
 | `set_image` to BC7 (UnityPy raises with the pinned etcpak) | byte-equal to what etcpak 0.9.14's `compress_bc7` writes with a default `BC7CompressBlockParams()` on the data UnityPy hands it (flipped, padded to whole 4×4 blocks, RGBA); on a Switch-swizzled texture, padded to the swizzle's size instead, and the compressed bytes swizzled |
 | `set_image` to ETC_RGB4Crunched (UnityPy tags plain ETC1 as crunched) | written as ETC_RGB4, equal to `set_image` to ETC_RGB4 |
+| `SerializedFile.get_writeable_cab` from a bundle or WebFile (UnityPy raises `TypeError` after making the parent's writer, and registers no external) | returns the writer, and registers the external once with the fields UnityPy means to write: `temp_empty` empty, a 16-byte GUID of the `uuid1().urn[-16:]` shape, type 0, path `archive:/{name}/{cab}`; the saved file reloads with that external, and the saved parent with the writer's entry |
 | `WebFile.save` of a writer entry (UnityPy raises) | the saved WebFile reloads with the writer's bytes |
 | `BundleFile.save` with `original` and no blocks (UnityPy raises); `save_fs` encryption flags (UnityPy's output reads back as encrypted) | the saved bundle reloads, unencrypted, with the same entries |
 
