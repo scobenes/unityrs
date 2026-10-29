@@ -442,6 +442,27 @@ pub struct TpkUnityNode {
     pub meta_flag: u32,
     pub sub_nodes: Vec<u16>,
 }
+/// F4 (unityrs): one node of a class's tree as UnityPy's `generate_node`
+/// makes it (`Tpk.py:73-83`), with its level; UnityPy's `m_Index` is the
+/// row's position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TpkNodeRow<'a> {
+    /// `m_Level`: the root's 0, each row's its parent's plus one.
+    pub level: i32,
+    /// `m_Type`.
+    pub type_name: &'a str,
+    /// `m_Name`.
+    pub name: &'a str,
+    /// `m_ByteSize`.
+    pub byte_size: i32,
+    /// `m_Version`.
+    pub version: i16,
+    /// The node's type flags, which UnityPy does not copy into the node.
+    pub type_flags: u8,
+    /// `m_MetaFlag`, unsigned as stored.
+    pub meta_flag: u32,
+}
+
 impl TpkUnityNode {
     pub fn read<R: Read>(reader: &mut R) -> Result<TpkUnityNode> {
         let type_name = reader.read_u16::<LittleEndian>()?;
@@ -650,6 +671,60 @@ impl TpkTypeTreeBlob {
         reconstruct_tree(nodes).map(Some)
     }
 
+    /// F4 (unityrs): every class id the blob holds, in no particular order.
+    pub fn class_ids(&self) -> impl Iterator<Item = i32> + '_ {
+        self.class_information.keys().map(|id| id.0)
+    }
+
+    /// F4 (unityrs): a class's entries in their stored order, each with its
+    /// version as the TPK stores it ([`TpkVersion`]'s integer) and its
+    /// class, `None` where the class was removed at that version. `None`
+    /// for a class the blob does not hold.
+    pub fn class_entries(
+        &self,
+        class_id: i32,
+    ) -> Option<impl ExactSizeIterator<Item = (u64, Option<&UnityClass>)> + '_> {
+        let entries = self.class_information.get(&ClassId(class_id))?;
+        Some(
+            entries
+                .iter()
+                .map(|(version, class)| (version.0, class.as_ref())),
+        )
+    }
+
+    /// F4 (unityrs): `class`'s release tree as the rows UnityPy's
+    /// `generate_node` builds (`Tpk.py:58-88`): pre-order, each row's level
+    /// its parent's plus one, the root's 0. `Ok(None)` when the class has no
+    /// release root (UnityPy asserts one, `Tpk.py:64`; an editor root does
+    /// not count). The walk stops with an error at a level of `max_depth` or
+    /// past `max_rows` rows, where UnityPy's never ends on a node that lists
+    /// itself or an ancestor.
+    pub fn release_rows(
+        &self,
+        class: &UnityClass,
+        max_depth: usize,
+        max_rows: usize,
+    ) -> Result<Option<Vec<TpkNodeRow<'_>>>> {
+        let Some(root) = class.release_root_node else {
+            return Ok(None);
+        };
+        let max_depth = max_depth.min(i32::MAX as usize);
+        let mut rows = Vec::new();
+        self.walk_nodes(root, max_depth, max_rows, |level, node, type_name, name| {
+            rows.push(TpkNodeRow {
+                // Below `max_depth`, which is at most `i32::MAX`.
+                level: level as i32,
+                type_name,
+                name,
+                byte_size: node.byte_size,
+                version: node.version,
+                type_flags: node.type_flags,
+                meta_flag: node.meta_flag,
+            })
+        })?;
+        Ok(Some(rows))
+    }
+
     /// F3 (unityrs): UnityPy's node walk (`generate_node`, `Tpk.py:58-88`):
     /// from `root`, every node in pre-order with its level (its parent's
     /// plus one), passed to `row`. Node and string ids are bounds-checked,
@@ -658,12 +733,12 @@ impl TpkTypeTreeBlob {
     /// node that lists itself or an ancestor ends instead of growing
     /// without end. The pending stack counts towards `max_rows`, since each
     /// entry on it becomes a row.
-    fn walk_nodes(
-        &self,
+    fn walk_nodes<'s>(
+        &'s self,
         root: u16,
         max_depth: usize,
         max_rows: usize,
-        mut row: impl FnMut(usize, &TpkUnityNode, &str, &str),
+        mut row: impl FnMut(usize, &'s TpkUnityNode, &'s str, &'s str),
     ) -> Result<()> {
         let string = |id: u16| {
             self.string_buffer
@@ -1395,6 +1470,126 @@ mod patch_tests {
                 );
             }
         }
+    }
+
+    fn rows(blob: &TpkTypeTreeBlob, class_id: i32, max_depth: usize) -> Result<Option<Vec<i32>>> {
+        let (_, class) = blob.class_entries(class_id).unwrap().next().unwrap();
+        let rows = blob.release_rows(class.unwrap(), max_depth, 1 << 20)?;
+        Ok(rows.map(|rows| rows.iter().map(|r| r.level).collect()))
+    }
+
+    #[test]
+    fn f4_a_class_lists_its_entries_and_each_release_tree_as_rows() {
+        let mut blob = one_class();
+        blob.nodes[1].meta_flag = 0x8000_4000;
+        blob.nodes[1].version = -2;
+        blob.classes = vec![
+            (
+                1,
+                vec![
+                    ((2 << 48) | (6 << 8), Some(Class::both(0))),
+                    (3 << 48, None),
+                    (
+                        4 << 48,
+                        Some(Class {
+                            flags: 64,
+                            editor_root: Some(0),
+                            release_root: None,
+                        }),
+                    ),
+                ],
+            ),
+            (-7, vec![]),
+        ];
+        let tpk = blob.read().unwrap();
+        let mut ids: Vec<i32> = tpk.class_ids().collect();
+        ids.sort_unstable();
+        assert_eq!(ids, [-7, 1]);
+        assert!(tpk.class_entries(2).is_none());
+        assert_eq!(tpk.class_entries(-7).unwrap().len(), 0);
+        let entries: Vec<_> = tpk.class_entries(1).unwrap().collect();
+        let versions: Vec<u64> = entries.iter().map(|e| e.0).collect();
+        assert_eq!(versions, [(2 << 48) | (6 << 8), 3 << 48, 4 << 48]);
+        assert!(entries[1].1.is_none());
+        let rows = tpk
+            .release_rows(entries[0].1.unwrap(), 256, 1 << 20)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            rows,
+            [
+                TpkNodeRow {
+                    level: 0,
+                    type_name: "s0",
+                    name: "s1",
+                    byte_size: -1,
+                    version: 1,
+                    type_flags: 0,
+                    meta_flag: 0x4000,
+                },
+                TpkNodeRow {
+                    level: 1,
+                    type_name: "s2",
+                    name: "s3",
+                    byte_size: -1,
+                    version: -2,
+                    type_flags: 0,
+                    meta_flag: 0x8000_4000,
+                },
+            ]
+        );
+        // An editor root alone is no tree.
+        let editor_only = entries[2].1.unwrap();
+        assert_eq!(tpk.release_rows(editor_only, 256, 1 << 20).unwrap(), None);
+    }
+
+    #[test]
+    fn f4_a_300_deep_chain_gives_levels_0_to_299_when_the_depth_allows_and_an_error_when_not() {
+        let tpk = chain(300).read().unwrap();
+        let levels = rows(&tpk, 1, 300).unwrap().unwrap();
+        assert_eq!(levels, (0..300).collect::<Vec<i32>>());
+        for depth in [299, 256, 255, 1] {
+            assert!(rows(&tpk, 1, depth).is_err(), "depth {depth}");
+        }
+        // The root alone fits a depth of 1.
+        let tpk = chain(1).read().unwrap();
+        assert_eq!(rows(&tpk, 1, 1).unwrap().unwrap(), [0]);
+    }
+
+    #[test]
+    fn f4_a_node_that_lists_itself_or_its_grandparent_is_an_error_not_a_hang() {
+        for nodes in [
+            vec![Node::new(0, 1, vec![0])],
+            vec![
+                Node::new(0, 1, vec![1]),
+                Node::new(0, 1, vec![2]),
+                Node::new(0, 1, vec![0]),
+            ],
+        ] {
+            let mut blob = Blob::with_strings(2);
+            blob.nodes = nodes;
+            blob.classes = vec![(1, vec![(2 << 48, Some(Class::both(0)))])];
+            let tpk = blob.read().unwrap();
+            for depth in [256, usize::MAX] {
+                let tpk = tpk.clone();
+                assert!(within_10s(move || rows(&tpk, 1, depth).is_err()));
+            }
+        }
+    }
+
+    #[test]
+    fn f4_the_row_bound_counts_the_rows_still_to_walk() {
+        // A root with 1,000 leaf children: 1,001 rows.
+        let mut blob = Blob::with_strings(2);
+        blob.nodes = vec![Node::new(0, 1, vec![1; 1000]), Node::new(0, 1, vec![])];
+        blob.classes = vec![(1, vec![(2 << 48, Some(Class::both(0)))])];
+        let tpk = blob.read().unwrap();
+        let class = tpk.class_entries(1).unwrap().next().unwrap().1.unwrap();
+        assert_eq!(
+            tpk.release_rows(class, 2, 1001).unwrap().unwrap().len(),
+            1001
+        );
+        assert!(tpk.release_rows(class, 2, 1000).is_err());
     }
 
     #[test]
