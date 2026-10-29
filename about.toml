@@ -1,0 +1,53 @@
+# cargo-about configuration. THIRD_PARTY_LICENSES is generated from this file
+# and about.hbs by scripts/third-party-licenses, and CI runs the same script
+# with --check, which fails when the committed copy is stale.
+#
+# Generation is offline (--frozen), so the file depends only on Cargo.lock and
+# the crates' published sources. A crate that ships no licence file gets the
+# SPDX text, never a file fetched from its repository's current head.
+#
+# Every crate the workspace builds is listed, its own members included: a
+# vendored fork is a workspace member too, and keeps its notice that way.
+
+# The same licences, in the same order, as deny.toml's [licenses] allow list;
+# the script checks that they match. The order is cargo-about's preference:
+# for an expression like "MIT OR Apache-2.0", the first one listed is used.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MIT-CMU",
+    "Unicode-3.0",
+]
+
+# liblzma-sys is "MIT OR Apache-2.0", but with the `static` feature its build
+# script compiles the xz sources it vendors (liblzma and xz's tuklib), and
+# those are 0BSD. The clarification adds that licence and its text. The
+# checksums tie it to the files of the release it was written against: when a
+# release changes one, cargo-about drops the clarification with a warning, and
+# the script fails on any warning, so it cannot lapse unseen. 0BSD is accepted
+# for this crate only.
+[liblzma-sys]
+accepted = ["0BSD"]
+
+[liblzma-sys.clarify]
+license = "(MIT OR Apache-2.0) AND 0BSD"
+
+[[liblzma-sys.clarify.files]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "a90e2da47bdc152cfb89e1fb09972143056c417ddbf86122babc83d0a8ad81d1"
+
+[[liblzma-sys.clarify.files]]
+path = "LICENSE-APACHE"
+license = "Apache-2.0"
+checksum = "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+
+[[liblzma-sys.clarify.files]]
+path = "xz/COPYING.0BSD"
+license = "0BSD"
+checksum = "0b01625d853911cd0e2e088dcfb743261034a091bb379246cb25a14cc4c74bf1"

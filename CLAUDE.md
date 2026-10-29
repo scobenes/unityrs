@@ -29,3 +29,7 @@ Never `docker run` / `docker rm` / `docker stop` anything. The container has a
   GPL/AGPL projects are read for format knowledge only; never copy their code.
 - **Parity is measured, not assumed.** A behaviour claimed as UnityPy-equal needs
   a test against the pinned oracle. See `docs/DESIGN.md` section 3 for the tiers.
+- **Third-party notices.** `THIRD_PARTY_LICENSES` is generated: after a change to
+  `Cargo.lock`, `about.toml` or `about.hbs`, run `scripts/third-party-licenses`
+  (it says how to install the pinned cargo-about), or CI fails. A port's notice
+  goes into `about.hbs`.
