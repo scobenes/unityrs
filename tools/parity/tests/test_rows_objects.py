@@ -322,6 +322,13 @@ class ObjectRows(unittest.TestCase):
         self.assertEqual(writer.bytes[8 + count * 32 :], b"AABB\0a\0a1\0b\0")
         back = TypeTreeNode.parse_blob(EndianBinaryReader(writer.bytes, endian="<"), 22)
         self.assertEqual([n.m_Type for n in back.traverse()], ["AABB", "int", "int", "int"])
+        # From version 19 each node carries m_RefTypeHash (32 bytes a node, 24 before), so it must be set there.
+        no_hash = TypeTreeNode.from_list([r | {"m_RefTypeHash": None} for r in rows])
+        writer = EndianBinaryWriter(endian="<")
+        no_hash.dump_blob(writer, 18)
+        self.assertEqual(writer.bytes[8 + 4 * 24 :], b"AABB\0a\0a1\0b\0")
+        with self.assertRaises(struct.error):
+            no_hash.dump_blob(EndianBinaryWriter(endian="<"), 19)
         # dump (the old format): the root's fields for every node, so four copies of the root's record.
         writer = EndianBinaryWriter(endian="<")
         root.dump(writer, 10)

@@ -361,6 +361,13 @@ class ThroughBoost(unittest.TestCase):
         """check_read keeps the value parse_as_dict(check_read=False) returns, in either direction."""
         aligned_tail = N("Base", "Base", [N("int", "i"), N("bool", "b", meta=ALIGN)])
         self.assertEqual(read(aligned_tail, struct.pack("<i", 7) + b"\1", check_read=False), {"i": 7, "b": True})
+        # With check_read, a read that ends anywhere but at byte_size raises ValueError, on either side of it.
+        for tree, data in (
+            (aligned_tail, struct.pack("<i", 7) + b"\1"),
+            (N("Base", "Base", [N("int", "a")]), bytes(8)),
+        ):
+            with self.subTest(size=len(data)), self.assertRaisesRegex(ValueError, "^Expected to read"):
+                read(tree, data)
         # byte_size 0 reads on from byte_start, into whatever follows the object.
         two = N("Base", "Base", [N("int", "a"), N("int", "b")])
         self.assertEqual(read_python(two, struct.pack("<ii", 11, 22) + b"rest", check_read=False), {"a": 11, "b": 22})

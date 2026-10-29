@@ -651,6 +651,28 @@ class ExportRows(unittest.TestCase):
             late, m_VertexData=vd, m_SubMeshes=sub, m_IndexBuffer=index_buffer([0, 1, 2, 2, 1, 3]), m_Skin=late_skin
         )
         self.assertEqual((h.m_BoneWeights[1], h.m_BoneIndices[2]), ((0.25, 0.75, 0.0, 0.0), (2, 1, 0, 0)))
+        # The index width: 16-bit unless m_IndexFormat says 32 (1), which counts from 2017.4, and at 2017.3 only for
+        # a mesh whose m_MeshCompression is 0; before 2017.3 the Mesh has no m_IndexFormat.
+        triangle = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+        for version, index_format, compression, sixteen in (
+            ("2017.2.5f1", None, 0, True),
+            ("2017.3.0f1", 1, 0, False),
+            ("2017.3.0f1", 1, 1, True),  # its 32-bit buffer read as 16-bit
+            ("2017.4.0f1", 1, 1, False),
+            ("2017.4.0f1", 0, 0, True),
+        ):
+            vd = {**element(43, "m_VertexData", version=version), **vertex_data(3, {0: (0, 0, "f", triangle)})}
+            vd["m_Channels"] = vd["m_Channels"][:8]  # eight channels before 2018
+            fields = dict(m_VertexData=vd, m_SubMeshes=submeshes(3, (0, 3, 0), version=version))
+            fields |= {
+                "m_MeshCompression": compression,
+                "m_IndexBuffer": index_buffer([0, 1, 2], "HI"[index_format == 1]),
+            }
+            fields |= {} if index_format is None else {"m_IndexFormat": index_format}
+            with self.subTest(version=version, compression=compression):
+                h = handled(version, **fields)
+                self.assertEqual(h.m_Use16BitIndices, sixteen)
+                self.assertEqual(h.m_IndexBuffer, (0, 0, 1, 0, 2, 0) if sixteen and index_format == 1 else (0, 1, 2))
         # 3.4: the Mesh holds its own vertex arrays and no m_VertexData, and process stops at its assert first.
         vertex = {"x": 1.0, "y": 2.0, "z": 3.0}
         with self.assertRaises(AssertionError):

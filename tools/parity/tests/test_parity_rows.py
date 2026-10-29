@@ -115,7 +115,8 @@ class TestColumn(unittest.TestCase):
     def test_every_status_agrees_with_its_test_column(self):
         """Section 0's status rules: a row that names a test is pinned or verified, one that names none is
         unverified (source reading), n/a (tier —) or a pointer to another row; `planned` is section 17.1's. A test
-        or the corpus dump named inside a `planned` clause probes nothing, and every row states its own status."""
+        or the corpus dump named inside a `planned` clause probes nothing, every row states its own status, and
+        every test a test column names carries its module."""
         text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
         seen = 0
         for header, rows in inventory.tables(text):
@@ -127,6 +128,8 @@ class TestColumn(unittest.TestCase):
                 probed = self.probed(cells[test])
                 state = cells[status]
                 with self.subTest(row=cells[0][:60], status=state):
+                    # Every test is named with its module, so a renamed test fails the check above.
+                    self.assertIsNone(re.search(r"`test_[a-z_]+\.py` [a-z0-9_]+, [a-z]", cells[test]), "a bare name")
                     if state.startswith(("pinned P0", "verified P0")):
                         self.assertTrue(probed, "a probed row names what probes it")
                     elif state.startswith("unverified (source reading); impl P"):
@@ -185,6 +188,10 @@ class Rows(unittest.TestCase):
         self.assertIs(env.get_cab("archive"), loaded)
         with self.assertRaisesRegex(NotImplementedError, "UnityArchive"):
             BundleFile(EndianBinaryReader(data), env)
+        # A BundleFile of any other unknown signature raises too (detection never builds one).
+        unknown = S.fs_bundle([(b"CAB-test", text_asset_file(), 4)], signature=b"UnityXYZ")
+        with self.assertRaisesRegex(NotImplementedError, "^Unknown Bundle signature: UnityXYZ$"):
+            BundleFile(EndianBinaryReader(unknown), env)
 
     # Sections 8 and 10: an object with no tree anywhere.
     def test_no_tree_raises_the_tpk_error(self):
@@ -327,6 +334,20 @@ class Rows(unittest.TestCase):
             Texture2D.get_image_data(fake)
         with self.assertRaises(IsADirectoryError):
             ResourceReader.get_resource_data("", sf, 0, 0)
+        # The names tried, in order: the basename, then `{name}.resource`, `{name}.assets.resS`, `{name}.resS`; a
+        # miss after load_dependencies raises FileNotFoundError.
+        names = ["x.bin", "x.resource", "x.assets.resS", "x.resS"]
+        for first in range(4):
+            own = UnityPy.Environment(path=str(self.tmp))
+            asking = load(text_asset_file(), env=own)[0]
+            for n, name in enumerate(names[first:]):
+                load(bytes([65 + first + n]) * 10, name=name, env=own)
+            with self.subTest(names[first]):
+                self.assertEqual(
+                    ResourceReader.get_resource_data("archive:/CAB/x.bin", asking, 2, 3), bytes([65 + first]) * 3
+                )
+        with self.assertRaisesRegex(FileNotFoundError, "^Resource file x.bin not found$"):
+            ResourceReader.get_resource_data("archive:/CAB/x.bin", sf, 0, 1)
         # A 0x0 texture fetches its data first too, so it never reaches the empty-image shortcut.
         fake = texture(StreamingInfo(offset=0, size=0, path=""), width=0)
         with self.assertRaises(IsADirectoryError):
@@ -492,6 +513,43 @@ class Rows(unittest.TestCase):
         preload(PPtr(m_FileID=0, m_PathID=99, assetsfile=sf))  # KeyError: skipped
         with self.assertRaises(IndexError):
             preload(PPtr(m_FileID=-1, m_PathID=1, assetsfile=sf))
+        # deref: path id 0 raises ValueError; file id 0 is the pointer's own file; a missing path id is KeyError.
+        with self.assertRaises(ValueError):
+            PPtr(m_FileID=0, m_PathID=0, assetsfile=sf).deref()
+        self.assertIs(PPtr(m_FileID=0, m_PathID=1, assetsfile=sf).deref(), sf.objects[1])
+        with self.assertRaisesRegex(KeyError, "^99$"):
+            PPtr(m_FileID=0, m_PathID=99, assetsfile=sf).deref()
+
+        # parse_preload_table: an entry whose range starts below 0, has a size of 0 or less, or runs past the table
+        # is skipped, and so is a null PPtr; a target's path is set only where its path_dict has none; the table is
+        # read once.
+        def table(entries, pptrs):
+            rows = [
+                (p, SimpleNamespace(asset=SimpleNamespace(path_id=9), preloadIndex=i, preloadSize=n))
+                for p, i, n in entries
+            ]
+            return ContainerHelper(SimpleNamespace(m_Container=rows, m_PreloadTable=pptrs))
+
+        own = PPtr(m_FileID=0, m_PathID=1, assetsfile=sf)
+        paths = sf._container.path_dict
+        paths.pop(1, None)
+        helper = table(
+            [("neg", -1, 1), ("zero", 0, 0), ("past", 1, 2), ("null", 1, 1), ("ok", 0, 1), ("later", 0, 1)],
+            [own, PPtr(m_FileID=0, m_PathID=0, assetsfile=sf)],
+        )
+        helper.parse_preload_table()
+        self.assertEqual((paths.get(1), helper._preload_table), ("ok", None))
+        paths[1] = "kept"
+        table([("x", 0, 1)], [own]).parse_preload_table()
+        self.assertEqual(paths.pop(1), "kept")
+        # Any other failure escapes: a target that is a raw reader (AttributeError), a loader OSError.
+        load(b"\x01" * 30, name="raw.bin", env=sf.environment)
+        (self.tmp / "dir.assets").mkdir()
+        for external, error in (("raw.bin", AttributeError), ("dir.assets", IsADirectoryError)):
+            sf.externals = [SimpleNamespace(path=external)]
+            with self.subTest(external), self.assertRaises(error):
+                table([("x", 0, 1)], [PPtr(m_FileID=1, m_PathID=1, assetsfile=sf)]).parse_preload_table()
+        sf.externals = []
 
     # Section 9: object-mode attribute names.
     def test_object_mode_names_use_the_boost_rule(self):
@@ -876,6 +934,13 @@ class Rows(unittest.TestCase):
             channels = name.count("8")
             with self.subTest(name), self.assertRaises(error):
                 Texture2DArray.images.fget(self.texture_array(GraphicsFormat[name], bytes(16 * channels), 4, 1))
+        # A value GraphicsFormat lacks raises ValueError; a graphics format the map lacks, NotImplementedError.
+        from UnityPy.enums.GraphicsFormat import GRAPHICS_TO_TEXTURE_MAP
+
+        unmapped = next(g for g in GraphicsFormat if g not in GRAPHICS_TO_TEXTURE_MAP)
+        for value, error in ((99999, ValueError), (unmapped, NotImplementedError)):
+            with self.subTest(value=value), self.assertRaises(error):
+                Texture2DArray.images.fget(self.texture_array(value, bytes(64), 4, 1))
         # R8G8B8_UInt decodes as RGB48, Pillow's 5-6-5 `RGB;16`: not the stored bytes.
         data = bytes(range(48))
         image = Texture2DArray.images.fget(self.texture_array(GraphicsFormat.R8G8B8_UInt, data, 4, 1))[0]
@@ -1618,6 +1683,18 @@ class Rows(unittest.TestCase):
             hasattr(container, "x")
         with self.assertRaisesRegex(KeyError, "'x'"):
             getattr(container, "x", None)
+        # The mapping protocol: `[]` and `in` on the last entry of a path, `len` counting repeats, iteration over
+        # each path once; assignment and deletion raise.
+        first, last = (SimpleNamespace(asset=SimpleNamespace(path_id=i)) for i in (2, 3))
+        repeated = ContainerHelper([("a/path", info), ("b", first), ("b", last)])
+        self.assertEqual(
+            (len(repeated), sorted(repeated), "b" in repeated, "c" in repeated), (3, ["a/path", "b"], True, False)
+        )
+        self.assertIs(repeated["b"], last.asset)
+        with self.assertRaisesRegex(NotImplementedError, "^Assigning to container is not allowed!$"):
+            repeated["c"] = info.asset
+        with self.assertRaisesRegex(NotImplementedError, "^Deleting from the container is not allowed!$"):
+            del repeated["b"]
 
 
 if __name__ == "__main__":

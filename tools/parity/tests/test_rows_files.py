@@ -719,6 +719,17 @@ class FileRows(unittest.TestCase):
             quietly(lone.load_dependencies)
 
     # Section 5.1: BlocksInfoAtTheEnd (0x80).
+    # Section 5.1: the flag set a bundle's flags are read with, by engine version, each boundary from both sides.
+    def test_archive_flags_by_engine_version(self):
+        old = ["2019.4.40f1", "2020.1.0f1", "2020.3.33f1", "2021.2.0f1", "2021.3.1f1", "2022.1.0f1"]
+        new = ["2020.3.34f1", "2021.3.2f1", "2022.1.1f1", "2022.2.0f1", "2023.1.0f1", "6000.0.0f1"]
+        for engine in old + new:
+            bundle = load(S.fs_bundle([(b"CAB-a", text_asset_file(), 4)], engine=engine.encode()))[0]
+            with self.subTest(engine):
+                self.assertEqual(
+                    type(bundle.dataflags).__name__, "ArchiveFlagsOld" if engine in old else "ArchiveFlags"
+                )
+
     def test_blocks_info_at_the_end(self):
         import lz4.block
 
