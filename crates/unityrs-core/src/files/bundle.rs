@@ -200,7 +200,9 @@ pub struct BundleFile {
     /// carries the charge for its heap, and a refused charge is not kept.
     entries: Box<[ResultCell<File, Error>]>,
     /// The handle and its tables (header, blocks, directory, `files`, the
-    /// parse cells), charged to the input at open.
+    /// parse cells), charged to the input at open, with the engine version's
+    /// heap ([`crate::version::UnityVersion::heap_bytes`]; its string is the
+    /// header's own slice, never a copy).
     charge: Charge,
     ctx: Arc<FileContext>,
 }

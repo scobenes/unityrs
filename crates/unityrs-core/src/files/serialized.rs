@@ -247,7 +247,9 @@ pub struct SerializedFile {
     /// Published by [`get_or_publish_result`]: a refused charge is not kept.
     container: ResultCell<Container, Error>,
     parent: Option<Parent>,
-    /// The handle and every table above, charged to the input.
+    /// The handle and every table above, charged to the input, with the
+    /// resolved version's heap ([`crate::version::UnityVersion::heap_bytes`];
+    /// its string is the file's own slice, or the parent's, never a copy).
     charge: Charge,
     ctx: Arc<FileContext>,
 }

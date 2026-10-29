@@ -24,6 +24,17 @@
 //! `0.0.0`, the fallback; then `from_str`, which fails on a string that does
 //! not match whatever the fallback holds.
 //!
+//! **No copy.** A version keeps the bytes it was parsed from ([`UnityVersion::raw`]),
+//! and a [`VersionError::NoMatch`] the string that did not match. Both chains
+//! and [`UnityVersion::parse`] take the string as the file's own
+//! [`RawStr`] (a slice of its buffer, or the parent bundle's engine string,
+//! or the policy's fallback) and keep a clone of it, a reference count: a
+//! version string can be up to 32,767 bytes (`read_string_to_null`'s
+//! window) and every parse of an entry keeps its own version, so a copy
+//! would be an uncharged allocation per parse. The one heap a version owns
+//! is a packed integer of 2^128 or more ([`UnityVersion::heap_bytes`]),
+//! which the file that keeps the version charges with its handle.
+//!
 //! Owner: package C. The Unicode `Nd` table ([`crate::tables::nd_digit`]) is
 //! generated from the oracle's Python 3.11 (`tools/gen/`, package A).
 
@@ -170,8 +181,9 @@ impl UnityVersion {
     /// `UnityVersion.from_str` on the raw bytes. The pattern is applied to the
     /// surrogate-escaped string Python sees, so invalid UTF-8 bytes match `.`
     /// and never `\d`; a group of more than [`PY_INT_MAX_STR_DIGITS`] digits
-    /// is [`VersionError::NoMatch`] (module docs).
-    pub fn parse(raw: &[u8]) -> Result<Self, VersionError> {
+    /// is [`VersionError::NoMatch`] (module docs). The version, or the
+    /// `NoMatch`, keeps a clone of `raw` (no copy: module docs).
+    pub fn parse(raw: &RawStr) -> Result<Self, VersionError> {
         todo!()
     }
 
@@ -195,6 +207,14 @@ impl UnityVersion {
     /// The packed integer, exactly.
     pub fn packed(&self) -> &Packed {
         &self.packed
+    }
+
+    /// The heap this version owns: a packed integer of 2^128 or more's
+    /// limbs. The raw string is a shared slice and owns none. Implemented
+    /// by the scaffold; a file charges it with its handle.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        self.packed.heap_bytes()
     }
 
     /// The packed value when it fits `u64` (TPK lookups compare these).
@@ -311,19 +331,22 @@ pub enum VersionError {
     NoFallback,
 }
 
-/// Chain 1: `BundleFile.parse_version`.
+/// Chain 1: `BundleFile.parse_version`. `engine` is the header's
+/// `version_engine`, kept by the result without a copy (module docs).
 pub fn resolve_bundle(
-    engine: &[u8],
+    engine: &RawStr,
     policy: &VersionPolicy,
 ) -> Result<ResolvedVersion, VersionError> {
     todo!()
 }
 
 /// Chain 2: `SerializedFile.set_version`. `own` is the file's string (format
-/// 7 and up); `parent_engine` is `Some` only when the parent is a bundle.
+/// 7 and up); `parent_engine` is `Some` only when the parent is a bundle
+/// (its header's `version_engine`). The string the chain picks is kept by
+/// the result without a copy (module docs).
 pub fn resolve_serialized(
-    own: &[u8],
-    parent_engine: Option<&[u8]>,
+    own: &RawStr,
+    parent_engine: Option<&RawStr>,
     policy: &VersionPolicy,
 ) -> Result<ResolvedVersion, VersionError> {
     todo!()
@@ -343,7 +366,43 @@ pub fn uses_block_alignment(format: u32, engine: &UnityVersion) -> Result<bool, 
 
 #[cfg(test)]
 mod tests {
-    use super::{Packed, UnityVersion};
+    use super::{
+        Packed, ResolvedVersion, UnityVersion, VersionError, VersionPolicy, resolve_bundle,
+        resolve_serialized,
+    };
+    use crate::raw::RawStr;
+
+    #[test]
+    fn the_chains_take_the_files_string_so_a_version_keeps_it_uncopied() {
+        // Round 4: they took `&[u8]`, so the `RawStr` a version (or a
+        // `NoMatch`) keeps could only be a copy, uncharged, of a string up to
+        // 32,767 bytes, made again by every parse of an entry. Package C
+        // implements the bodies; these signatures are what lets them share.
+        let _: fn(&RawStr) -> Result<UnityVersion, VersionError> = UnityVersion::parse;
+        let _: fn(&RawStr, &VersionPolicy) -> Result<ResolvedVersion, VersionError> =
+            resolve_bundle;
+        let _: fn(
+            &RawStr,
+            Option<&RawStr>,
+            &VersionPolicy,
+        ) -> Result<ResolvedVersion, VersionError> = resolve_serialized;
+    }
+
+    #[test]
+    fn a_versions_heap_is_its_big_packed_integer_only() {
+        let file = bytes::Bytes::from(vec![b'7'; 32_767]);
+        let shared = UnityVersion {
+            raw: RawStr::from_shared(file.clone()),
+            packed: Packed::from_u128(1),
+        };
+        assert_eq!(shared.heap_bytes(), 0, "the raw string is the file's");
+        assert_eq!(shared.raw().as_bytes().as_ptr(), file.as_ptr());
+        let big = UnityVersion {
+            raw: RawStr::default(),
+            packed: Packed::from_limbs(&[1, 2, 3]),
+        };
+        assert_eq!(big.heap_bytes(), 24);
+    }
 
     #[test]
     fn a_tpk_version_round_trips_and_orders_as_python_ints() {
