@@ -30,6 +30,7 @@ use flate2::Compression;
 use flate2::GzBuilder;
 use flate2::write::GzEncoder;
 use unityrs_core::Bytes;
+use unityrs_core::limits::Limits;
 
 use crate::json::hex;
 use crate::select::{Input, Selection, collect};
@@ -263,15 +264,37 @@ fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "a panic".to_owned())
 }
 
-/// `f` over `items` on `jobs` workers, each result handed to `sink` in item
-/// order (`run_jobs`): at most `2 * jobs` items are running or waiting at
-/// once. A panic in `f` stops the run with an error naming the item; so
-/// does an error from `sink`. `jobs` 1 runs on the calling thread. No more
-/// workers start than there are items (`run_jobs` forks no more processes
-/// than inputs), so a large `-j` costs nothing.
+/// The stack a worker dumps an input on, under `limits`: what reading and
+/// writing one object needs ([`Limits::stack_needed`]), and as much again
+/// for the dump's own frames around it and the value encoder, which recurses
+/// as deep as the value the reader made (`tests/deep_values.rs` dumps the
+/// deepest inputs at `-j 1` and `-j 8`).
+#[must_use]
+pub fn worker_stack(limits: &Limits) -> usize {
+    limits.stack_needed().saturating_mul(2)
+}
+
+/// [`ordered_on`] workers of [`worker_stack`] at the default limits.
 pub fn ordered<T: Sync, R: Send>(
     items: &[T],
     jobs: usize,
+    f: &(dyn Fn(&T) -> R + Sync),
+    sink: &mut dyn FnMut(usize, R) -> Result<(), RunError>,
+) -> Result<(), RunError> {
+    ordered_on(items, jobs, worker_stack(&Limits::default()), f, sink)
+}
+
+/// `f` over `items` on `jobs` workers of `stack` bytes each, each result
+/// handed to `sink` in item order (`run_jobs`): at most `2 * jobs` items are
+/// running or waiting at once. A panic in `f` stops the run with an error
+/// naming the item; so does an error from `sink`. `jobs` 1 runs on one
+/// worker too, so the stack an input is read on never depends on the
+/// caller's. No more workers start than there are items (`run_jobs` forks no
+/// more processes than inputs), so a large `-j` costs nothing.
+pub fn ordered_on<T: Sync, R: Send>(
+    items: &[T],
+    jobs: usize,
+    stack: usize,
     f: &(dyn Fn(&T) -> R + Sync),
     sink: &mut dyn FnMut(usize, R) -> Result<(), RunError>,
 ) -> Result<(), RunError> {
@@ -284,15 +307,9 @@ pub fn ordered<T: Sync, R: Send>(
             panic_message(p)
         ))
     };
-    if jobs == 1 {
-        for (i, item) in items.iter().enumerate() {
-            let r = catch_unwind(AssertUnwindSafe(|| f(item))).map_err(|p| died(i, &*p))?;
-            sink(i, r)?;
-        }
-        return Ok(());
-    }
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(jobs)
+        .stack_size(stack)
         .thread_name(|i| format!("unityrs-dump-{i}"))
         .build()
         .map_err(|e| RunError::Failed(format!("cannot start {jobs} workers: {e}")))?;
@@ -359,7 +376,8 @@ pub fn write_dump(
             .map_err(|e| format!("{}: {e}", String::from_utf8_lossy(&input.name)))?;
         Ok(dump_one(&input.name, Bytes::from(data)))
     };
-    ordered(inputs, opts.jobs, &work, &mut |i, r: Dumped| {
+    let stack = worker_stack(&opts.context.limits);
+    ordered_on(inputs, opts.jobs, stack, &work, &mut |i, r: Dumped| {
         let d = r.map_err(|e| {
             RunError::Failed(format!("{e}: the dumper itself failed; no dump written"))
         })?;

@@ -107,8 +107,14 @@ pub struct Limits {
     pub max_container_depth: u32,
     /// Depth of a compiled typetree. Default 256.
     pub max_tree_depth: u32,
-    /// Runtime nesting while reading a value, `ReferencedObject` data
-    /// included (UnityPyBoost recurses on the C stack, unbounded). Default 512.
+    /// Runtime nesting while reading or writing a value, `ReferencedObject`
+    /// data included: the frames each reader and the writer recurse through
+    /// (plan section 3.10, "Bounds"). UnityPyBoost's are its C recursion,
+    /// which has no bound of its own; the pure-Python reader's and the
+    /// writer's are the Python frames UnityPy's own pushes (`read_value`,
+    /// `read_value_array`, each comprehension and `lambda`), so every value
+    /// UnityPy refuses with `RecursionError` (Python's 1,000 frames) passes
+    /// this first. What it costs in stack: [`Self::stack_needed`]. Default 512.
     pub max_value_depth: u32,
     /// Values built by one object read, each element of a primitive run
     /// included. This bounds the *work* of one read (the pure-Python reader
@@ -120,6 +126,37 @@ pub struct Limits {
     pub max_zero_size_elements: u64,
     /// Elements reserved before the bytes prove they exist. Default 2^16.
     pub max_prealloc: usize,
+}
+
+impl Limits {
+    /// The stack a thread needs to read or write one object under these
+    /// limits, from the frame that calls the reader or the writer: they
+    /// recurse once per level they count against
+    /// [`Self::max_value_depth`], and nothing else an object's bytes drive
+    /// recurses deeper (a typetree compiles without recursion; a value is
+    /// dropped one level per reader level). It grows with `max_value_depth`,
+    /// and a debug build's frames are several times a release build's.
+    ///
+    /// At the defaults: 1.75 MiB in a release build, 9 MiB in a debug one.
+    /// `tests/walk_stack.rs` reads, writes and drops the deepest object of
+    /// every shape on a thread this size, and its `stack_measured` prints
+    /// the least each needs (at most 0.96 MiB release, 6.7 MiB debug, with
+    /// toolchain 1.99.1). Rust's spawned threads get 2 MiB unless told
+    /// otherwise, and a main thread usually 8 MiB, so a debug build reads
+    /// untrusted input on a thread built with
+    /// `std::thread::Builder::stack_size(limits.stack_needed())`.
+    #[must_use]
+    pub fn stack_needed(&self) -> usize {
+        let (per_level, base): (usize, usize) = if cfg!(debug_assertions) {
+            (16 << 10, 1 << 20)
+        } else {
+            (3 << 10, 256 << 10)
+        };
+        usize::try_from(self.max_value_depth)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(per_level)
+            .saturating_add(base)
+    }
 }
 
 impl Default for Limits {

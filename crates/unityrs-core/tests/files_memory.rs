@@ -6,8 +6,10 @@
 //! string of that length), and a bundle of one large LZMA block, read eagerly
 //! and lazily, the heap the core holds is at most what the input's meter
 //! charged, plus the meter's own constant; everything returns when the
-//! handles drop. Run under both budgets. One test, so nothing else allocates
-//! while it runs.
+//! handles drop; and a failure a bundle keeps for an entry hands out clones
+//! that share its heap. Run under both budgets. The allocator counts only the test's
+//! own thread (`unityrs_testkit::counted`): libtest's main thread allocates
+//! beside it.
 //!
 //!     scripts/dev cargo test -p unityrs-core --test files_memory
 
@@ -27,6 +29,7 @@ use unityrs_core::{Bytes, Error, FileContext, LimitKind, RawStr};
 use unityrs_testkit::Rng;
 use unityrs_testkit::blob::NodeSpec;
 use unityrs_testkit::bundle::{BundleSpec, EntrySpec, TestCodec, build, matrix};
+use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
 use unityrs_testkit::serialized::{SerializedSpec, build as file, one_object};
 
 struct Counting;
@@ -37,23 +40,33 @@ fn chunk(n: usize) -> usize {
     usize::try_from(heap_cost(n as u64)).unwrap_or(usize::MAX)
 }
 
-// SAFETY: every method forwards to `System` and only counts sizes.
+// SAFETY: every method forwards to `System` and only counts sizes, on the
+// thread under test.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        LIVE.fetch_add(chunk(layout.size()), Ordering::Relaxed);
+        if counted() {
+            LIVE.fetch_add(chunk(layout.size()), Ordering::Relaxed);
+        }
         // SAFETY: the caller's contract is `System`'s.
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        if counted() {
+            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        }
         // SAFETY: as above.
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        LIVE.fetch_add(chunk(new_size), Ordering::Relaxed);
+        let on = counted();
+        if on {
+            LIVE.fetch_add(chunk(new_size), Ordering::Relaxed);
+        }
         // SAFETY: as above.
         let p = unsafe { System.realloc(ptr, layout, new_size) };
-        LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        if on {
+            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        }
         p
     }
 }
@@ -267,8 +280,70 @@ fn flagged_bundle() -> Vec<u8> {
     data
 }
 
+/// Codex's review, round 1: a bundle keeps an entry's failure in a cell,
+/// charged once, and hands every later ask a clone of it. Each clone shares
+/// the kept error's heap, so a thousand asks, every answer kept, hold no
+/// more heap than before them: a block that fails to decode
+/// (`Error::Decompress`, its message) and an entry whose AssetBundle object
+/// fails to read (`Error::Entry` around `Error::AssetBundle`, the read's
+/// error).
+fn kept_errors_are_shared(ctx: &Arc<FileContext>) {
+    type Kind = fn(&Error) -> bool;
+    let truncated = file(&one_object(
+        142,
+        vec![
+            NodeSpec::new(0, "AssetBundle", "Base"),
+            NodeSpec::new(1, "int", "m_x"),
+        ],
+        Vec::new(),
+    ));
+    let lz4 = matrix()
+        .into_iter()
+        .find(|(n, _)| n == "lz4-declared-smaller.bundle")
+        .map(|(_, b)| b)
+        .unwrap();
+    let asset_bundle = build(&BundleSpec {
+        entries: vec![EntrySpec {
+            name: b"CAB-ab".to_vec(),
+            data: truncated,
+            flags: 4,
+        }],
+        ..BundleSpec::default()
+    });
+    let is_decompress: Kind = |e| matches!(e, Error::Decompress { .. });
+    let is_asset_bundle: Kind =
+        |e| matches!(e, Error::Entry { source, .. } if matches!(**source, Error::AssetBundle(_)));
+    let cases = [
+        ("lz4-declared-smaller.bundle", lz4, is_decompress),
+        ("asset-bundle.bundle", asset_bundle, is_asset_bundle),
+    ];
+    for (name, data, kind) in cases {
+        let data = Bytes::from(data);
+        let _shared = data.clone();
+        let m = Meter::new(u64::MAX, ctx.budget.clone(), Reservation::Input);
+        let ty = check_file_type(&data, &ctx.limits).unwrap();
+        let Ok(File::Bundle(b)) = parse_file(RawStr::from(name), data, ty, None, &m, ctx) else {
+            panic!("{name}: not a bundle");
+        };
+        let first = b.entry(0).unwrap_err();
+        assert!(kind(&first), "{name}: {first:?}");
+        let mut answers = Vec::with_capacity(1000);
+        let base = live();
+        for _ in 0..1000 {
+            answers.push(b.entry(0).unwrap_err());
+        }
+        let held = live() - base;
+        assert_eq!(
+            held, 0,
+            "{name}: 1000 kept clones of the error hold {held} bytes"
+        );
+    }
+}
+
 #[test]
 fn files_hold_no_more_than_their_meter() {
+    count_this_thread();
+    others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
     let mut inputs: Vec<(String, Bytes)> = matrix()
         .into_iter()
         .map(|(n, b)| (n, Bytes::from(b)))
@@ -327,6 +402,7 @@ fn files_hold_no_more_than_their_meter() {
         decrypting.decryptor = Some(Arc::new(Xor(0x5A)));
         let ctx = Arc::new(ctx);
         let decrypting = Arc::new(decrypting);
+        kept_errors_are_shared(&ctx);
         for eager in [true, false] {
             for (name, data) in &inputs {
                 load(name, data, &ctx, u64::MAX, eager);

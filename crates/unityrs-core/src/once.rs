@@ -21,7 +21,10 @@
 //! handle's life, however empty the pool later is. A transient error is
 //! returned unpublished and the next ask computes again. A published error
 //! is charged to the input's meter for the heap it owns ([`CellError`]), so
-//! a table of failing cells is paid for like any other.
+//! a table of failing cells is paid for like any other, and every later ask
+//! gets a clone that shares that heap (the core's errors hold their strings
+//! and nested errors in `Arc`s), so a caller that keeps many answers holds
+//! no more (`tests/files_memory.rs`).
 //!
 //! **Work.** A computation that ends in an error its cell does not keep runs
 //! again on the next ask, so an input could make its readers repeat it
@@ -76,9 +79,10 @@ pub trait CellError: Send + Sync {
     /// provider: what a computation that ends in it was granted counts as
     /// its open's work (module docs).
     fn is_meter_refusal(&self) -> bool;
-    /// The heap the error owns ([`crate::limits::heap_cost`] of each box and
-    /// string it holds, counted whether or not a string shares a file's
-    /// buffer), charged to the input's meter while a cell keeps it.
+    /// The heap the error owns ([`crate::limits::heap_cost`] of each `Arc`
+    /// and string it holds, counted whether or not a string shares a file's
+    /// buffer), charged to the input's meter while a cell keeps it. A clone
+    /// shares that heap and allocates nothing.
     fn heap_bytes(&self) -> u64;
     /// The error for an ask refused because its open's work allowance is
     /// used up (`limit` is a [`crate::LimitKind::DecodeWork`] refusal): not

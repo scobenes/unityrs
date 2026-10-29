@@ -349,7 +349,7 @@ fn the_script_hook_dereferences_m_script_for_a_provider_tree_only() {
         assert_eq!(t.source, TreeSource::Provider("tpk"), "{why}");
     }
     let deref = |path_id| match s.env.object_tree(&obj(&s, path_id), None) {
-        Err(ParseError::Deref(d)) => *d,
+        Err(ParseError::Deref(d)) => (*d).clone(),
         other => panic!("{path_id}: {other:?}"),
     };
     assert!(

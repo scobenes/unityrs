@@ -5,8 +5,9 @@
 //! mode) and a `Counting` one (a batch's pools, whose permits have a home).
 //!
 //! A counting global allocator watches the heap, in glibc chunks (the unit
-//! the meter charges; `memory_model.rs` explains why). This file holds one
-//! test so nothing else allocates while it runs.
+//! the meter charges; `memory_model.rs` explains why), of the test's own
+//! thread only (`unityrs_testkit::counted`): libtest's main thread allocates
+//! beside it.
 
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]
 
@@ -19,6 +20,7 @@ use unityrs_core::env::{Cab, RawCab, Registry};
 use unityrs_core::files::RawFile;
 use unityrs_core::limits::{Meter, heap_cost};
 use unityrs_core::{Bytes, RawStr};
+use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
 
 struct Counting;
 
@@ -28,23 +30,33 @@ fn chunk(n: usize) -> usize {
     usize::try_from(heap_cost(n as u64)).unwrap_or(usize::MAX)
 }
 
-// SAFETY: every method forwards to `System` and only counts sizes.
+// SAFETY: every method forwards to `System` and only counts sizes, on the
+// thread under test.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        LIVE.fetch_add(chunk(layout.size()), Ordering::Relaxed);
+        if counted() {
+            LIVE.fetch_add(chunk(layout.size()), Ordering::Relaxed);
+        }
         // SAFETY: the caller's contract is `System`'s.
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        if counted() {
+            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        }
         // SAFETY: as above.
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        LIVE.fetch_add(chunk(new_size), Ordering::Relaxed);
+        let on = counted();
+        if on {
+            LIVE.fetch_add(chunk(new_size), Ordering::Relaxed);
+        }
         // SAFETY: as above.
         let p = unsafe { System.realloc(ptr, layout, new_size) };
-        LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        if on {
+            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
+        }
         p
     }
 }
@@ -113,6 +125,8 @@ fn many_names(counting: bool) {
 
 #[test]
 fn many_registered_names_hold_no_more_heap_than_their_charge() {
+    count_this_thread();
+    others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
     many_names(false);
     many_names(true);
 }

@@ -5,11 +5,13 @@
 //! where it started is at most the tail's size, plus what the blob's other
 //! tables hold.
 //!
-//! Its own test binary: the allocator counts every thread, so nothing else
-//! runs beside it.
+//! The allocator counts only the test's own thread
+//! (`unityrs_testkit::counted`): libtest's main thread allocates beside it.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
 
 /// Counts live heap bytes and their peak; refuses any one request over
 /// 1 GiB, so the upstream allocation fails the test rather than the machine.
@@ -31,7 +33,7 @@ unsafe impl GlobalAlloc for Counting {
         }
         // SAFETY: as `System.alloc`.
         let p = unsafe { System.alloc(layout) };
-        if !p.is_null() {
+        if !p.is_null() && counted() {
             grew(layout.size());
         }
         p
@@ -43,7 +45,7 @@ unsafe impl GlobalAlloc for Counting {
         }
         // SAFETY: as `System.alloc_zeroed`.
         let p = unsafe { System.alloc_zeroed(layout) };
-        if !p.is_null() {
+        if !p.is_null() && counted() {
             grew(layout.size());
         }
         p
@@ -52,7 +54,9 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         // SAFETY: as `System.dealloc`.
         unsafe { System.dealloc(ptr, layout) };
-        LIVE.fetch_sub(layout.size(), Ordering::SeqCst);
+        if counted() {
+            LIVE.fetch_sub(layout.size(), Ordering::SeqCst);
+        }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
@@ -61,7 +65,7 @@ unsafe impl GlobalAlloc for Counting {
         }
         // SAFETY: as `System.realloc`.
         let p = unsafe { System.realloc(ptr, layout, new_size) };
-        if !p.is_null() {
+        if !p.is_null() && counted() {
             if new_size >= layout.size() {
                 grew(new_size - layout.size());
             } else {
@@ -98,9 +102,11 @@ fn blob(len: u64, tail: &[u8]) -> Vec<u8> {
     out
 }
 
-/// One test, so no other test's allocations run beside it.
+/// One test; the allocator counts its thread only.
 #[test]
 fn a_string_longer_than_its_tail_costs_at_most_the_tail() {
+    count_this_thread();
+    others_are_not_counted(|| LIVE.load(Ordering::SeqCst));
     for tail_len in [0, 1, 100, 8192, 8193, 100_000] {
         let tail = vec![b'a'; tail_len];
         let bytes = blob((1 << 35) - 1, &tail);

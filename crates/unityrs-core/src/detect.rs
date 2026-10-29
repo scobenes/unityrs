@@ -18,6 +18,8 @@
 //!
 //! Owner: package C.
 
+use std::sync::Arc;
+
 use flate2::{Crc, Decompress, FlushDecompress, Status};
 
 use crate::limits::Limits;
@@ -47,7 +49,7 @@ pub enum DetectError {
     Unterminated,
     /// A `1f 8b` file whose stream does not decompress in full.
     #[error("gzip: {0}")]
-    Gzip(Box<str>),
+    Gzip(Arc<str>),
     /// The gzip stream inflates past [`Limits::max_inflate`].
     #[error("gzip stream larger than the inflate limit")]
     InflateLimit,

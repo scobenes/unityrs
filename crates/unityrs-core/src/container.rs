@@ -187,7 +187,7 @@ pub fn read_container(file: &Arc<SerializedFile>) -> Result<Container, Error> {
     };
     let parsed = obj
         .read_typetree(None, true)
-        .map_err(|e| Error::AssetBundle(Box::new(e)))?;
+        .map_err(|e| Error::AssetBundle(Arc::new(e)))?;
     let Some(view) = View::new(&parsed) else {
         return Err(malformed("no node list"));
     };
