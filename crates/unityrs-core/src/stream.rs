@@ -3,9 +3,32 @@
 //!
 //! Container and metadata parsers read through it; the value walker has its
 //! own cursor (UnityPyBoost's bounds rule differs, plan section 3.10). No
-//! method panics: every read past the end is an [`Error::OutOfBounds`].
+//! method panics: every read UnityPy refuses is an [`Error::OutOfBounds`].
 //!
-//! Owner: package C.
+//! **Positions are signed** (plan section 3.3). A Python `Position` is an
+//! unbounded integer that UnityPy moves with plain arithmetic, so it can go
+//! negative (a negative `node_count` in `parse_blob`, `file_size -
+//! metadata_size` below format 9, `Length - compressedSize` for blocks-info
+//! at the end, a negative `TypelessData` length on the pure-Python path) or
+//! past the end, and the reads after it go on with Python's rules, which this
+//! module's helpers implement once and an oracle fixture pins
+//! (`tests/fixtures/scaffold/reader.json`, from `tools/fixtures/scaffold.py`):
+//! - [`py_read`]: `read(n)`, a Python slice (negative indexes count from the
+//!   end; a reversed range is empty); the position moves by `n` whatever
+//!   the slice held;
+//! - [`py_unpack_from`]: every fixed-width read of 2, 4 or 8 bytes is
+//!   `struct.unpack_from(view, Position)` (`:327-331`): a negative offset
+//!   counts from the end, and the read must fit;
+//! - one-byte reads (`read_u8`, `read_i8`, `read_bool`) are
+//!   `unpack(fmt, read(1))` (`:91-95`): the slice of [`py_read`] must hold
+//!   exactly one byte, and the position has moved by 1 even when it raises
+//!   (at `-1`, `view[-1:0]` is empty);
+//! - [`py_align`]: `align_stream`, Python's floor modulo (`-7` aligns to `-4`);
+//! - [`py_string_to_null`]: `re.search` clamps its start and end into the
+//!   buffer, a hit sets the absolute position after the NUL, and a miss reads
+//!   `max_length` bytes as a slice unless `pos + max_length >= len`.
+//!
+//! Owner: package C. The free functions are the scaffold's (implemented).
 
 // STUB(C): delete this allow when the module is implemented.
 #![allow(
@@ -67,11 +90,80 @@ pub fn py_read(len: usize, pos: i128, size: i64) -> (Range<usize>, i128) {
     (start..end, stop)
 }
 
-/// A cursor over `data`. Positions are absolute within `data`.
+/// `struct.unpack_from(fmt, view, pos)` for a format of `n` bytes over `len`
+/// bytes (`CPython`'s `s_unpack_from`): the start index of the bytes it reads,
+/// or `None` where it raises `struct.error`. A negative `pos` counts from the
+/// end and must leave the whole read before the end (`pos + n <= 0`) and
+/// inside the buffer (`pos + len >= 0`). Every fixed-width read of 2, 4 or 8
+/// bytes in UnityPy's memoryview reader takes this path, then moves the
+/// position by `n` (only on success). Implemented by the scaffold.
+#[must_use]
+pub fn py_unpack_from(len: usize, pos: i128, n: usize) -> Option<usize> {
+    let l = i128::try_from(len).ok()?;
+    let n = i128::try_from(n).ok()?;
+    let mut offset = pos;
+    if offset < 0 {
+        if offset.saturating_add(n) > 0 || offset.saturating_add(l) < 0 {
+            return None;
+        }
+        offset = offset.saturating_add(l);
+    }
+    if l.saturating_sub(offset) < n {
+        return None;
+    }
+    usize::try_from(offset).ok()
+}
+
+/// `align_stream(n)` (`streams/EndianBinaryReader.py:186-187`):
+/// `pos + (n - pos % n) % n` with Python's floor modulo, so a negative
+/// position aligns towards zero (`-7` to `-4` for `n = 4`). `n` 0 leaves the
+/// position (Python would raise; no caller passes 0). Implemented by the scaffold.
+#[must_use]
+pub fn py_align(pos: i128, n: u32) -> i128 {
+    let n = i128::from(n);
+    if n == 0 {
+        return pos;
+    }
+    pos.saturating_add((n - pos.rem_euclid(n)) % n)
+}
+
+/// `read_string_to_null(max_length)` of the memoryview reader
+/// (`streams/EndianBinaryReader.py:275-284`) at `pos` over `data`: the
+/// string's byte range and the new position, or `None` where it raises
+/// ("String not terminated"). `re.search(view, pos, pos + max_length)` clamps
+/// both bounds into `0..=len`, so a negative start searches from 0; a hit
+/// returns the bytes up to the first NUL in the window and sets the position
+/// after that NUL (an absolute index). With no NUL in the window it raises
+/// when `pos + max_length >= len`, and otherwise returns `read(max_length)`,
+/// a slice from `pos` that may hold a NUL or nothing at all. Implemented by
+/// the scaffold.
+#[must_use]
+pub fn py_string_to_null(data: &[u8], pos: i128, max_length: usize) -> Option<(Range<usize>, i128)> {
+    let l = i128::try_from(data.len()).ok()?;
+    let max = i128::try_from(max_length).ok()?;
+    let clamp = |i: i128| usize::try_from(i.clamp(0, l)).unwrap_or(0);
+    let start = clamp(pos);
+    let end = clamp(pos.saturating_add(max)).max(start);
+    if let Some(k) = data
+        .get(start..end)
+        .and_then(|w| w.iter().position(|b| *b == 0))
+    {
+        let nul = start + k;
+        return Some((start..nul, i128::try_from(nul).ok()? + 1));
+    }
+    if pos.saturating_add(max) >= l {
+        return None;
+    }
+    Some(py_read(data.len(), pos, i64::try_from(max_length).ok()?))
+}
+
+/// A cursor over `data`. Positions are absolute within `data` and signed, as
+/// a Python `Position` (module docs): every read follows the helper of its
+/// Python primitive at whatever position it is, negative or past the end.
 #[derive(Clone, Debug)]
 pub struct Reader<'a> {
     data: &'a [u8],
-    pos: usize,
+    pos: i128,
     endian: Endian,
 }
 
@@ -90,14 +182,14 @@ impl<'a> Reader<'a> {
         self.data
     }
 
-    /// The position.
-    pub fn position(&self) -> usize {
+    /// The position, as Python holds it.
+    pub fn position(&self) -> i128 {
         self.pos
     }
 
-    /// Moves the position. A position past the end is allowed, as in Python;
-    /// the next read fails.
-    pub fn set_position(&mut self, pos: usize) {
+    /// Moves the position anywhere, negative or past the end, as an
+    /// assignment to `reader.Position` does.
+    pub fn set_position(&mut self, pos: i128) {
         self.pos = pos;
     }
 
@@ -111,85 +203,91 @@ impl<'a> Reader<'a> {
         self.endian = endian;
     }
 
-    /// Bytes from the position to the end (0 when past the end).
+    /// The bytes `read(-1)` would return from here: what a table's growth may
+    /// count on (plan section 3.3).
     pub fn remaining(&self) -> usize {
-        self.data.len().saturating_sub(self.pos)
+        py_read(self.data.len(), self.pos, -1).0.len()
     }
 
-    /// Rounds the position up to a multiple of `n`, without a bounds check.
-    pub fn align(&mut self, n: usize) {
+    /// `align_stream(n)`: [`py_align`], without a bounds check.
+    pub fn align(&mut self, n: u32) {
         todo!()
     }
 
-    /// `n` bytes, or `OutOfBounds`.
+    /// `n` bytes where UnityPy's caller unpacks them whole (`read(n)`, then
+    /// `struct.unpack`): the [`py_read`] slice must hold `n` bytes, else
+    /// `OutOfBounds`; the position moves by `n` either way.
     pub fn read_bytes(&mut self, n: usize) -> Result<&'a [u8], Error> {
         todo!()
     }
 
-    /// Up to `n` bytes: a memoryview slice, short at the end (`read_bytes` on a
-    /// truncated block, `File.py:79`).
-    pub fn read_bytes_short(&mut self, n: usize) -> &'a [u8] {
+    /// `read(n)` as it is: the [`py_read`] slice, short or empty at the ends
+    /// (`read_bytes` on a truncated block, `File.py:79`), the position moved
+    /// by `n`.
+    pub fn read_bytes_short(&mut self, n: i64) -> &'a [u8] {
         todo!()
     }
 
-    /// `read_string_to_null` with the 32,767-byte window. The NUL is consumed;
-    /// a string cut at the window leaves the position after the cut.
+    /// `read_string_to_null` with the 32,767-byte window: [`py_string_to_null`].
     pub fn read_string_to_null(&mut self) -> Result<&'a [u8], Error> {
         todo!()
     }
 
-    /// One byte as a bool (non-zero is true).
+    /// One byte as a bool (non-zero is true): `unpack("?", read(1))`.
     pub fn read_bool(&mut self) -> Result<bool, Error> {
         todo!()
     }
 
-    /// `u8`.
+    /// `u8`: `unpack("B", read(1))`.
     pub fn read_u8(&mut self) -> Result<u8, Error> {
         todo!()
     }
 
-    /// `i8`.
+    /// `i8`: `unpack("b", read(1))`.
     pub fn read_i8(&mut self) -> Result<i8, Error> {
         todo!()
     }
 
-    /// `u16` in the reader's byte order.
+    /// `u16` in the reader's byte order: [`py_unpack_from`].
     pub fn read_u16(&mut self) -> Result<u16, Error> {
         todo!()
     }
 
-    /// `i16` in the reader's byte order.
+    /// `i16` in the reader's byte order: [`py_unpack_from`].
     pub fn read_i16(&mut self) -> Result<i16, Error> {
         todo!()
     }
 
-    /// `u32` in the reader's byte order.
+    /// `u32` in the reader's byte order: [`py_unpack_from`].
     pub fn read_u32(&mut self) -> Result<u32, Error> {
         todo!()
     }
 
-    /// `i32` in the reader's byte order.
+    /// `i32` in the reader's byte order: [`py_unpack_from`].
     pub fn read_i32(&mut self) -> Result<i32, Error> {
         todo!()
     }
 
-    /// `u64` in the reader's byte order.
+    /// `u64` in the reader's byte order: [`py_unpack_from`].
     pub fn read_u64(&mut self) -> Result<u64, Error> {
         todo!()
     }
 
-    /// `i64` in the reader's byte order.
+    /// `i64` in the reader's byte order: [`py_unpack_from`].
     pub fn read_i64(&mut self) -> Result<i64, Error> {
         todo!()
     }
 
-    /// A fixed-size byte array (GUIDs, hashes, reserved bytes).
+    /// A fixed-size byte array (GUIDs, hashes, reserved bytes): `read(N)`,
+    /// which must hold `N` bytes where UnityPy's caller needs them all.
     pub fn read_array<const N: usize>(&mut self) -> Result<[u8; N], Error> {
         todo!()
     }
 
-    /// `read_int_array`: an `i32` count, then that many `i32`. A negative count
-    /// or a short buffer raises, as `struct.unpack` does.
+    /// `read_int_array`: an `i32` count, then `struct.unpack_from` of that many
+    /// `i32` (`EndianBinaryReader.py:258-264`): a negative count or a short
+    /// buffer raises, and the count is checked against the bytes before
+    /// anything is allocated.
     pub fn read_i32_array(&mut self) -> Result<Vec<i32>, Error> {
         todo!()
     }
@@ -215,6 +313,11 @@ mod tests {
             (2, -5, 2..7, -3),
             (-20, 5, 0..0, -15),
             (-1, -1, 9..10, 10),
+            // Past the end, size -1: `size = Length - Position` is -2, so the
+            // position comes back to the end (UnityPy: `read(-1)` at 12 of 10
+            // leaves Position 10).
+            (12, -1, 10..10, 10),
+            (15, -1, 10..10, 10),
             (i128::from(i64::MIN), i64::MAX, 0..9, -1),
         ];
         for (pos, size, range, new_pos) in cases {

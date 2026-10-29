@@ -3,20 +3,35 @@
 //! The rules, in UnityPy's order:
 //! 1. `m_PathID == 0` raises `ValueError`.
 //! 2. `m_FileID == 0` is the pointer's own file.
-//! 3. Else `externals[m_FileID - 1]`, with Python indexing, computed in `i64`
-//!    so `i32::MIN - 1` does not wrap: the guard is only `external_id >= len`,
-//!    so a negative `m_FileID` counts from the end, and below `-len` is an
-//!    `IndexError`.
-//! 4. A file with no container (`parent is None`) raises `FileNotFoundError`
-//!    ("no container is set") even when the target is loaded: UnityPy does
-//!    not consult the environment first.
-//! 5. The external path is cleaned ([`crate::pystr::clean_external_path`]),
-//!    compared with each sibling entry's name lower-cased (no basename), then
-//!    looked up with `find_file`.
+//! 3. Else `externals[m_FileID - 1]` ([`external_index`]): computed in `i64`
+//!    so `i32::MIN - 1` does not wrap; the guard is only `external_id >= len`
+//!    (`FileNotFoundError`, [`DerefError::FileIdPastEnd`]), then Python
+//!    indexing: a negative `m_FileID` counts from the end, and one below
+//!    `-len` is an `IndexError` ([`DerefError::FileIdBelowStart`]). The two
+//!    are different exceptions: the container preload swallows the first and
+//!    propagates the second (`helpers/ContainerHelper.py:43-46`).
+//! 4. The file's container (`assetsfile.parent`, `PPtr.py:62-66`): a bundle
+//!    entry's is its bundle; a file loaded at top level has the
+//!    `Environment` that loaded it as its parent (`environment.py:154`,
+//!    `files/File.py:36`), so its container is that Environment. UnityPy's
+//!    "no container is set" is raised only for a `SerializedFile` built
+//!    outside any Environment, which [`super::Environment::deref`] never
+//!    sees: the core has no such refusal. (Probe: two loose files `a/CAB-A`
+//!    and `b/CAB-B`, A's external `archive:/CAB-B/CAB-B`, resolve to B's
+//!    object in UnityPy 1.25.2.)
+//! 5. The external path is cleaned ([`crate::pystr::clean_external_path`]) and
+//!    compared with each key of the container's `files` dict lower-cased with
+//!    `str.lower` (no basename): a bundle's directory paths, or the
+//!    Environment's `files` keys, the names given to `load`, dependencies
+//!    included. The first equal key wins. Else `find_file` (the CAB registry,
+//!    then the resolver), whose miss is `FileNotFoundError`.
 //! 6. The target's `objects[m_PathID]`: a missing id is a `KeyError`; a raw
-//!    target has no `objects` (`AttributeError`).
+//!    target or a container (a bundle under an Environment `files` key) has no
+//!    `objects` (`AttributeError`).
 //!
-//! Owner: package D. The types are frozen.
+//! Owner: package D. The types and [`external_index`] are frozen (the
+//! scaffold implements [`external_index`]; `tests/fixtures/scaffold/pptr_external.json`
+//! pins it).
 
 use crate::error::Error;
 use crate::raw::RawStr;
@@ -38,6 +53,30 @@ impl PPtr {
     }
 }
 
+/// Why `externals[m_FileID - 1]` fails (rule 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExternalIndexError {
+    /// `m_FileID - 1 >= len`: `FileNotFoundError` (`"invalid m_FileID"`).
+    PastEnd,
+    /// `m_FileID - 1 < -len`: Python's `IndexError`.
+    BelowStart,
+}
+
+/// Rule 3: the index into `externals` that `m_FileID` names, as UnityPy
+/// computes it (`PPtr.py:56-60`): `external_id = m_FileID - 1` in a wide
+/// integer, refused when `>= len`, then indexed as a Python list (a negative
+/// id counts from the end). Callers handle `m_FileID == 0` (rule 2) first.
+/// Implemented by the scaffold.
+pub fn external_index(file_id: i32, len: usize) -> Result<usize, ExternalIndexError> {
+    let id = i64::from(file_id) - 1;
+    let len = i64::try_from(len).unwrap_or(i64::MAX);
+    if id >= len {
+        return Err(ExternalIndexError::PastEnd);
+    }
+    let i = if id < 0 { id + len } else { id };
+    usize::try_from(i).map_err(|_| ExternalIndexError::BelowStart)
+}
+
 /// Why a dereference failed, with the exception UnityPy raises.
 #[derive(Clone, Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -45,17 +84,17 @@ pub enum DerefError {
     /// `ValueError`: `m_PathID == 0`.
     #[error("PPtr can't deref with m_PathID == 0!")]
     Null,
-    /// `FileNotFoundError` or `IndexError`: no external for `m_FileID`.
+    /// `FileNotFoundError`: `m_FileID - 1 >= len(externals)`.
     #[error("Failed to resolve pointer - invalid m_FileID {file_id}")]
-    InvalidFileId {
+    FileIdPastEnd {
         /// `m_FileID`.
         file_id: i32,
     },
-    /// `FileNotFoundError`: the file is not in a container.
-    #[error("PPtr points to {path} but no container is set!")]
-    NoContainer {
-        /// The external's path, as stored.
-        path: RawStr,
+    /// `IndexError`: `m_FileID - 1 < -len(externals)`.
+    #[error("list index out of range (m_FileID {file_id})")]
+    FileIdBelowStart {
+        /// `m_FileID`.
+        file_id: i32,
     },
     /// `FileNotFoundError`: no sibling, CAB or resolver hit.
     #[error("Failed to resolve pointer - {path} not found!")]
@@ -63,7 +102,8 @@ pub enum DerefError {
         /// The external's path, as stored.
         path: RawStr,
     },
-    /// `AttributeError`: the target is a raw file.
+    /// `AttributeError`: the target is a raw file, or a container under an
+    /// Environment `files` key, neither of which has `objects`.
     #[error("pointer target {name} is not a SerializedFile")]
     RawTarget {
         /// The target's name.
