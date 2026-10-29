@@ -28,14 +28,16 @@ default = ["compression-lzma", "compression-lz4"]
 compression-lz4 = ["dep:lz4_flex"]
 compression-lzma = ["dep:lzma-rs"]
 
-# Upstream's requirements, unchanged, for the code that compiles without the
-# features this manifest leaves out.
+# Upstream's requirements, for the code that compiles without the features
+# this manifest leaves out (one feature change, F3, is marked).
 [dependencies]
 byteorder = "1.5"
 bitflags = "2.9"
 num_enum = { version = "0.7", default-features = false }
 lzma-rs = { version = "0.3.0", optional = true }
-lz4_flex = { version = "0.13", default-features = false, features = ["std"], optional = true }
+# F3: upstream leaves out lz4_flex's safe-decode and checked-decode, so a
+# corrupt LZ4 TPK would run its unchecked decoder; both are on here.
+lz4_flex = { version = "0.13", default-features = false, features = ["std", "safe-decode", "checked-decode"], optional = true }
 serde = "1.0"
 serde_derive = "1.0"
 elsa = "1.11"

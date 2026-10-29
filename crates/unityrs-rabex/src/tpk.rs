@@ -85,6 +85,35 @@ impl<T: TryFromPrimitive> From<TryFromPrimitiveError<T>> for Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// F3 (unityrs): malformed data that used to panic is an error.
+fn invalid(msg: &'static str) -> Error {
+    Error::IO(std::io::Error::new(std::io::ErrorKind::InvalidData, msg))
+}
+
+/// F3 (unityrs): a size read from the file as an `i32`. A negative one is
+/// an error; a size never sizes an allocation before its bytes are read.
+fn size(n: i32, what: &'static str) -> Result<usize> {
+    usize::try_from(n).map_err(|_| invalid(what))
+}
+
+/// F3 (unityrs): a count UnityPy's `Tpk.py` reads with `range(count)`, which
+/// reads nothing for a negative one. It never sizes an allocation: a huge
+/// count fails when the bytes run out.
+fn range_count(n: i32) -> usize {
+    usize::try_from(n).unwrap_or(0)
+}
+
+/// F3 (unityrs): a count UnityPy's `Tpk.py` reads as a struct format
+/// (`f"<{count}Q"`), which raises on a negative one.
+fn struct_count(n: i32) -> Result<usize> {
+    usize::try_from(n).map_err(|_| invalid("negative count"))
+}
+
+/// F3 (unityrs): the bounds of [`TpkTypeTreeBlob::get_typetree_node_for_class`]'s
+/// walk. A node that lists itself or an ancestor reaches the depth.
+const MAX_WALK_DEPTH: usize = 1024;
+const MAX_WALK_ROWS: usize = 1 << 16;
+
 use bitflags::bitflags;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use rustc_hash::FxHashMap;
@@ -127,8 +156,14 @@ impl TpkFile {
         reader.read_u32::<LittleEndian>()?;
         let compressed_size = reader.read_i32::<LittleEndian>()?;
         let decompressed_size = reader.read_i32::<LittleEndian>()?;
-        let mut compressed_bytes = vec![0; compressed_size as usize]; // TODO resilience
-        reader.read_exact(&mut compressed_bytes)?;
+        // F3 (unityrs): the buffer grows with the bytes read, never to a
+        // size the file names before they exist.
+        let len = size(compressed_size, "negative compressed size")?;
+        let mut compressed_bytes = Vec::new();
+        reader.take(len as u64).read_to_end(&mut compressed_bytes)?;
+        if compressed_bytes.len() != len {
+            return Err(Error::IO(std::io::ErrorKind::UnexpectedEof.into()));
+        }
 
         Ok(TpkFile {
             compression_type,
@@ -147,7 +182,22 @@ impl TpkFile {
             TpkCompressionType::Lz4 => return Err(Error::UnsupportedCompression("lz4")),
             #[cfg(feature = "compression-lz4")]
             TpkCompressionType::Lz4 => {
-                lz4_flex::block::decompress(&self.compressed_bytes, self.uncompressed_size as usize)
+                // F3 (unityrs): an LZ4 block expands at most 255 times, so a
+                // larger size cannot be met and is refused before the output
+                // buffer is allocated at it.
+                let len = size(self.uncompressed_size, "negative uncompressed size")?;
+                if len
+                    > self
+                        .compressed_bytes
+                        .len()
+                        .saturating_mul(255)
+                        .saturating_add(255)
+                {
+                    return Err(invalid(
+                        "uncompressed size past what the LZ4 block can hold",
+                    ));
+                }
+                lz4_flex::block::decompress(&self.compressed_bytes, len)
                     .map_err(|e| Error::Decompression(Box::new(e)))?
                     .into()
             }
@@ -155,6 +205,7 @@ impl TpkFile {
             TpkCompressionType::Lzma => return Err(Error::UnsupportedCompression("lzma")),
             #[cfg(feature = "compression-lzma")]
             TpkCompressionType::Lzma => {
+                size(self.uncompressed_size, "negative uncompressed size")?;
                 let mut uncompressed = vec![0; self.uncompressed_size as usize];
                 lzma_rs::lzma_decompress_with_options(
                     &mut self.compressed_bytes.as_slice(),
@@ -174,6 +225,7 @@ impl TpkFile {
             TpkCompressionType::Brotli => return Err(Error::UnsupportedCompression("brotli")),
             #[cfg(feature = "tpk-compression-brotli")]
             TpkCompressionType::Brotli => {
+                size(self.uncompressed_size, "negative uncompressed size")?;
                 let mut uncompressed = vec![0; self.uncompressed_size as usize];
                 brotli::BrotliDecompress(&mut self.compressed_bytes.as_slice(), &mut uncompressed)?;
                 Cow::Owned(uncompressed)
@@ -252,8 +304,8 @@ pub struct TpkClassInformation {
 impl TpkClassInformation {
     pub fn read<R: Read>(reader: &mut R) -> Result<TpkClassInformation> {
         let id = reader.read_i32::<LittleEndian>()?;
-        let count = reader.read_i32::<LittleEndian>()?;
-        let mut classes = Vec::with_capacity(count as usize);
+        let count = range_count(reader.read_i32::<LittleEndian>()?);
+        let mut classes = Vec::new();
         for _ in 0..count {
             let version = UnityVersion::read_tpk_encoding(reader)?;
             let has_class_data = reader.read_u8()? != 0;
@@ -303,7 +355,8 @@ impl UnityClass {
     pub fn read<R: Read>(reader: &mut R) -> Result<UnityClass> {
         let name = reader.read_u16::<LittleEndian>()?;
         let base = reader.read_u16::<LittleEndian>()?;
-        let flags = TpkUnityClassFlags::from_bits(reader.read_u8()?).unwrap();
+        // F3 (unityrs): every byte is a valid set of flags; no unwrap.
+        let flags = TpkUnityClassFlags::from_bits_retain(reader.read_u8()?);
         let editor_root_node = flags
             .contains(TpkUnityClassFlags::HAS_EDITOR_ROOT_NODE)
             .then(|| reader.read_u16::<LittleEndian>())
@@ -329,14 +382,14 @@ pub struct TpkCommonString {
 }
 impl TpkCommonString {
     pub fn read<R: Read>(reader: &mut R) -> Result<TpkCommonString> {
-        let version_count = reader.read_i32::<LittleEndian>()?;
-        let mut version_information = Vec::with_capacity(version_count as usize);
+        let version_count = range_count(reader.read_i32::<LittleEndian>()?);
+        let mut version_information = Vec::new();
         for _ in 0..version_count {
             let version = UnityVersion::read_tpk_encoding(reader)?;
             let string_count = reader.read_u8()?;
             version_information.push((version, string_count));
         }
-        let indices_count = reader.read_i32::<LittleEndian>()?;
+        let indices_count = struct_count(reader.read_i32::<LittleEndian>()?)?;
         let mut string_buffer_indices = Vec::new();
         for _ in 0..indices_count {
             string_buffer_indices.push(reader.read_u16::<LittleEndian>()?);
@@ -349,6 +402,10 @@ impl TpkCommonString {
     }
 
     pub fn get_count(&self, target_version: &UnityVersion) -> Option<u8> {
+        // F3 (unityrs): the forward scan, which stops at the first version
+        // above the target, is UnityPy's `get_item_for_version`; an
+        // assertion that a backward scan agrees panicked on a list out of
+        // order.
         let mut ret = None;
         for (version, item) in &self.version_information {
             if target_version >= version {
@@ -357,14 +414,6 @@ impl TpkCommonString {
                 break;
             }
         }
-
-        let iter = self
-            .version_information
-            .iter()
-            .rev()
-            .find_map(|(version, item)| (target_version >= version).then_some(*item));
-        assert_eq!(iter, ret);
-
         ret
     }
 }
@@ -428,15 +477,15 @@ impl TpkTypeTreeBlob {
     pub fn from_reader<R: Read>(reader: &mut R) -> Result<TpkTypeTreeBlob> {
         let creation_time = reader.read_i64::<LittleEndian>()?;
 
-        let version_count = reader.read_i32::<LittleEndian>()? as usize;
-        let mut versions = Vec::with_capacity(version_count);
+        // F3 (unityrs): counts are checked and never size an allocation.
+        let version_count = struct_count(reader.read_i32::<LittleEndian>()?)?;
+        let mut versions = Vec::new();
         for _ in 0..version_count {
             versions.push(UnityVersion::read_tpk_encoding(reader)?);
         }
 
-        let class_count = reader.read_i32::<LittleEndian>()? as usize;
-        let mut class_information =
-            FxHashMap::with_capacity_and_hasher(class_count, Default::default());
+        let class_count = range_count(reader.read_i32::<LittleEndian>()?);
+        let mut class_information = FxHashMap::default();
         for _ in 0..class_count {
             let class = TpkClassInformation::read(reader)?;
             class_information.insert(ClassId(class.id), class.classes);
@@ -444,12 +493,12 @@ impl TpkTypeTreeBlob {
 
         let common_string = TpkCommonString::read(reader)?;
 
-        let node_count = reader.read_i32::<LittleEndian>()?;
+        let node_count = range_count(reader.read_i32::<LittleEndian>()?);
         let mut node_buffer = Vec::new();
         for _ in 0..node_count {
             node_buffer.push(TpkUnityNode::read(reader)?);
         }
-        let string_count = reader.read_i32::<LittleEndian>()?;
+        let string_count = range_count(reader.read_i32::<LittleEndian>()?);
         let mut string_buffer = Vec::new();
         for _ in 0..string_count {
             string_buffer.push(read_7bit_encoded_string(reader)?);
@@ -472,17 +521,35 @@ impl TpkTypeTreeBlob {
         class_id: ClassId,
         target_version: &UnityVersion,
     ) -> Option<TypeTreeNode> {
+        self.try_get_typetree_node(class_id, target_version)
+            .ok()
+            .flatten()
+    }
+
+    /// [`Self::get_typetree_node`], with a malformed node tree (a node or
+    /// string id past its table, a node that lists itself or an ancestor)
+    /// an error rather than `None`.
+    pub fn try_get_typetree_node(
+        &self,
+        class_id: ClassId,
+        target_version: &UnityVersion,
+    ) -> Result<Option<TypeTreeNode>> {
         // F2 (unityrs): a class the blob does not hold has no tree, where
         // indexing the map panicked.
-        let version_classes = self.class_information.get(&class_id)?;
+        let Some(version_classes) = self.class_information.get(&class_id) else {
+            return Ok(None);
+        };
 
-        let class = version_classes
+        let Some(class) = version_classes
             .iter()
             .rev()
-            .find_map(|(version, class)| (target_version >= version).then_some(class))?
-            .as_ref()?;
+            .find_map(|(version, class)| (target_version >= version).then_some(class))
+            .and_then(Option::as_ref)
+        else {
+            return Ok(None);
+        };
 
-        self.get_typetree_node_for_class(class, false)
+        self.try_get_typetree_node_for_class(class, false)
     }
 
     pub fn get_typetree_node_for_class(
@@ -490,42 +557,101 @@ impl TpkTypeTreeBlob {
         class: &UnityClass,
         editor: bool,
     ) -> Option<TypeTreeNode> {
-        let mut nodes = Vec::new();
+        self.try_get_typetree_node_for_class(class, editor)
+            .ok()
+            .flatten()
+    }
 
-        let mut stack = VecDeque::new();
+    /// [`Self::get_typetree_node_for_class`], with a malformed node tree an
+    /// error rather than `None`.
+    pub fn try_get_typetree_node_for_class(
+        &self,
+        class: &UnityClass,
+        editor: bool,
+    ) -> Result<Option<TypeTreeNode>> {
+        let mut nodes = Vec::new();
 
         let root = match editor {
             false => class.release_root_node,
             true => class.editor_root_node,
-        }?;
+        };
+        let Some(root) = root else {
+            return Ok(None);
+        };
 
-        stack.push_back((root, 0));
+        self.walk_nodes(
+            root,
+            MAX_WALK_DEPTH,
+            MAX_WALK_ROWS,
+            |level, node, type_name, name| {
+                nodes.push((
+                    level,
+                    TypeTreeNode {
+                        m_Version: node.version as i32,
+                        m_TypeFlags: node.type_flags as i32,
+                        m_ByteSize: node.byte_size,
+                        m_MetaFlag: Some(node.meta_flag as i32),
+                        m_Type: type_name.to_owned(),
+                        m_Name: name.to_owned(),
+                        m_RefTypeHash: None,
+                        m_VariableCount: None,
+                        children: Vec::new(),
+                    },
+                ))
+            },
+        )?;
+
+        reconstruct_tree(nodes).map(Some)
+    }
+
+    /// F3 (unityrs): UnityPy's node walk (`generate_node`, `Tpk.py:58-88`):
+    /// from `root`, every node in pre-order with its level (its parent's
+    /// plus one), passed to `row`. Node and string ids are bounds-checked,
+    /// the level is a `usize`, and a walk that would reach a level of
+    /// `max_depth` or more than `max_rows` rows stops with an error, so a
+    /// node that lists itself or an ancestor ends instead of growing
+    /// without end. The pending stack counts towards `max_rows`, since each
+    /// entry on it becomes a row.
+    fn walk_nodes(
+        &self,
+        root: u16,
+        max_depth: usize,
+        max_rows: usize,
+        mut row: impl FnMut(usize, &TpkUnityNode, &str, &str),
+    ) -> Result<()> {
+        let string = |id: u16| {
+            self.string_buffer
+                .get(usize::from(id))
+                .ok_or_else(|| invalid("TPK string id past the string buffer"))
+        };
+        let mut stack = VecDeque::new();
+        stack.push_back((root, 0_usize));
+        let mut rows = 0_usize;
 
         // adapted from https://github.com/K0lb3/UnityPy/blob/62bf31064bb36659661f024a770f6e55f3fbd3d3/UnityPy/helpers/Tpk.py#L55
         while let Some((node_id, level)) = stack.pop_front() {
-            let node = &self.node_buffer[node_id as usize];
-            let type_name = &self.string_buffer[node.type_name as usize];
-            let name = &self.string_buffer[node.name as usize];
-            nodes.push((
-                level,
-                TypeTreeNode {
-                    m_Version: node.version as i32,
-                    m_TypeFlags: node.type_flags as i32,
-                    m_ByteSize: node.byte_size,
-                    m_MetaFlag: Some(node.meta_flag as i32),
-                    m_Type: type_name.clone(),
-                    m_Name: name.clone(),
-                    m_RefTypeHash: None,
-                    m_VariableCount: None,
-                    children: Vec::new(),
-                },
-            ));
+            let node = self
+                .node_buffer
+                .get(usize::from(node_id))
+                .ok_or_else(|| invalid("TPK node id past the node buffer"))?;
+            row(level, node, string(node.type_name)?, string(node.name)?);
+            rows += 1;
+            if node.sub_nodes.is_empty() {
+                continue;
+            }
+            if level + 1 >= max_depth {
+                return Err(invalid(
+                    "TPK node tree deeper than the walk allows (a node lists itself or an ancestor?)",
+                ));
+            }
+            if rows + stack.len() + node.sub_nodes.len() > max_rows {
+                return Err(invalid("TPK node tree has more rows than the walk allows"));
+            }
             for &sub_node_id in node.sub_nodes.iter().rev() {
                 stack.push_front((sub_node_id, level + 1));
             }
         }
-
-        Some(reconstruct_tree(nodes))
+        Ok(())
     }
 }
 
@@ -555,8 +681,26 @@ fn read_7bit_encoded_int<R: Read>(reader: &mut R) -> Result<usize, std::io::Erro
 /// Reads a 7-bit-length-prefixed UTF-8 string from a stream
 fn read_7bit_encoded_string<R: Read>(reader: &mut R) -> Result<String> {
     let len = read_7bit_encoded_int(reader)?;
-    let mut buffer = vec![0u8; len];
-    reader.read_exact(&mut buffer)?;
+    // F3 (unityrs): the length (up to 2^35 - 1) never sizes the buffer. It
+    // is read through `take(len)` a chunk at a time, and the buffer grows
+    // by exactly the bytes each read returns, so a length past the end of
+    // the data costs no more than the bytes that are there.
+    let mut source = reader.take(len as u64);
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = match source.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        };
+        buffer.reserve_exact(n);
+        buffer.extend_from_slice(&chunk[..n]);
+    }
+    if buffer.len() != len {
+        return Err(Error::IO(std::io::ErrorKind::UnexpectedEof.into()));
+    }
     let string = String::from_utf8(buffer).map_err(Error::UTF8)?;
     Ok(string)
 }
@@ -571,24 +715,33 @@ fn read_7bit_encoded_string<R: Read>(reader: &mut R) -> Result<String> {
 ///   level=1 idx=3
 /// level=0 idx=3
 /// level=0 idx=4
-fn reconstruct_tree(mut flat_nodes: Vec<(u8, TypeTreeNode)>) -> TypeTreeNode {
-    fn access(mut node: &mut TypeTreeNode, mut depth: usize) -> &mut TypeTreeNode {
+///
+/// F3 (unityrs): the levels are `usize` (a `u8` wrapped past 255 levels), and
+/// rows whose levels do not nest are an error rather than a panic.
+fn reconstruct_tree(flat_nodes: Vec<(usize, TypeTreeNode)>) -> Result<TypeTreeNode> {
+    fn access(mut node: &mut TypeTreeNode, mut depth: usize) -> Option<&mut TypeTreeNode> {
         while depth > 0 {
-            node = node.children.last_mut().unwrap();
+            node = node.children.last_mut()?;
             depth -= 1;
         }
-        node
+        Some(node)
     }
 
-    let (_, mut root) = flat_nodes.remove(0);
+    let mut flat_nodes = flat_nodes.into_iter();
+    let (_, mut root) = flat_nodes
+        .next()
+        .ok_or_else(|| invalid("TPK node tree has no rows"))?;
 
     for (level, flat_node) in flat_nodes {
-        access(&mut root, level as usize - 1)
+        level
+            .checked_sub(1)
+            .and_then(|depth| access(&mut root, depth))
+            .ok_or_else(|| invalid("TPK node rows do not nest"))?
             .children
             .push(flat_node);
     }
 
-    root
+    Ok(root)
 }
 
 #[cfg(all(test, feature = "embed-tpk"))]
@@ -814,6 +967,253 @@ mod patch_tests {
 
     fn v(major: u16) -> UnityVersion {
         UnityVersion::new(major, 0, 0)
+    }
+
+    /// `blob` with the `i32` at `at` set to `n`.
+    fn with_count(blob: &Blob, at: impl Fn(&Offsets) -> usize, n: i32) -> Vec<u8> {
+        let (mut bytes, offsets) = blob.write();
+        let at = at(&offsets);
+        bytes[at..at + 4].copy_from_slice(&n.to_le_bytes());
+        bytes
+    }
+
+    fn parse(bytes: &[u8]) -> Result<TpkTypeTreeBlob> {
+        TpkTypeTreeBlob::from_reader(&mut &bytes[..])
+    }
+
+    /// Runs `f` on its own thread and fails the test if it takes 10 s (a
+    /// walk that never ends) or panics.
+    fn within_10s<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("no answer in 10 s (a hang), or a panic")
+    }
+
+    /// `n` nodes in a chain, node `i` listing node `i + 1`, as class 1.
+    pub(super) fn chain(n: u16) -> Blob {
+        let mut blob = Blob::with_strings(2);
+        blob.nodes = (0..n)
+            .map(|i| Node::new(0, 1, if i + 1 < n { vec![i + 1] } else { vec![] }))
+            .collect();
+        blob.classes = vec![(1, vec![(2 << 48, Some(Class::both(0)))])];
+        blob
+    }
+
+    fn depth(node: &TypeTreeNode) -> usize {
+        let mut depth = 1;
+        let mut node = node;
+        while let Some(child) = node.children.first() {
+            depth += 1;
+            node = child;
+        }
+        depth
+    }
+
+    #[test]
+    fn f3_negative_header_sizes_are_errors_and_huge_ones_fail_at_the_end() {
+        let payload = one_class().write().0;
+        let len = i32::try_from(payload.len()).unwrap();
+        for compression in [0, 1, 2] {
+            for (compressed, uncompressed) in [(-1, len), (i32::MIN, len), (i32::MAX, len)] {
+                let bytes = file(compression, &payload, compressed, uncompressed);
+                assert!(TpkFile::from_reader(&mut bytes.as_slice()).is_err());
+            }
+        }
+        // A negative uncompressed size: refused by each codec that needs it.
+        for compression in [1, 2] {
+            let bytes = file(compression, &payload, len, -1);
+            let tpk = TpkFile::from_reader(&mut bytes.as_slice()).unwrap();
+            assert!(tpk.as_type_tree().is_err(), "codec {compression}");
+        }
+        // A huge LZ4 size over a valid block cannot be met by it: refused
+        // before the output is allocated at that size (upstream allocated
+        // it and read the block).
+        let block = lz4_flex::block::compress(&payload);
+        let block_len = i32::try_from(block.len()).unwrap();
+        let bytes = file(1, &block, block_len, len);
+        let tpk = TpkFile::from_reader(&mut bytes.as_slice()).unwrap();
+        assert_eq!(
+            tpk.as_type_tree().unwrap().unwrap().class_information.len(),
+            1
+        );
+        let bytes = file(1, &block, block_len, i32::MAX);
+        let tpk = TpkFile::from_reader(&mut bytes.as_slice()).unwrap();
+        assert!(tpk.as_type_tree().is_err());
+        // Stored, the uncompressed size is not used.
+        let bytes = file(0, &payload, len, -1);
+        let tpk = TpkFile::from_reader(&mut bytes.as_slice()).unwrap();
+        assert_eq!(
+            tpk.as_type_tree().unwrap().unwrap().class_information.len(),
+            1
+        );
+    }
+
+    /// Each count is read as UnityPy's `Tpk.py` reads it: the version list's
+    /// and the common-string indices' through a struct format (a negative
+    /// count raises), the others through `range()` (a negative count reads
+    /// nothing). None sizes an allocation, so a huge one fails when the
+    /// bytes run out.
+    #[test]
+    fn f3_negative_and_huge_counts_read_as_unitypy_reads_them_and_never_panic() {
+        let mut blob = one_class();
+        blob.common = vec![(2 << 48, 1)];
+        blob.common_indices = vec![0];
+        type At = fn(&Offsets) -> usize;
+        let at: [(&str, At); 7] = [
+            ("versions", |o| o.version_count),
+            ("classes", |o| o.class_count),
+            ("entries", |o| o.entry_count),
+            ("common versions", |o| o.common_version_count),
+            ("common indices", |o| o.common_indices_count),
+            ("nodes", |o| o.node_count),
+            ("strings", |o| o.string_count),
+        ];
+        for (what, at) in at {
+            for n in [i32::MAX, 1 << 30] {
+                assert!(parse(&with_count(&blob, at, n)).is_err(), "{what} {n}");
+            }
+            for n in [-1, i32::MIN] {
+                let got = parse(&with_count(&blob, at, n));
+                match what {
+                    "versions" | "common indices" => assert!(got.is_err(), "{what} {n}"),
+                    // A negative count reads no item, and the item's bytes
+                    // are read as what follows; whatever that gives, it is
+                    // no panic.
+                    _ => drop(got),
+                }
+            }
+        }
+        // Where nothing follows the count, a negative one is an empty table.
+        let mut empty = Blob::with_strings(0);
+        empty.versions = vec![];
+        for at in [
+            (|o: &Offsets| o.class_count) as At,
+            |o| o.common_version_count,
+            |o| o.node_count,
+            |o| o.string_count,
+        ] {
+            let tpk = parse(&with_count(&empty, at, -1)).unwrap();
+            assert!(tpk.class_information.is_empty() && tpk.node_buffer.is_empty());
+        }
+        // The two counts UnityPy reads as a struct format raise.
+        for at in [(|o: &Offsets| o.version_count) as At, |o| {
+            o.common_indices_count
+        }] {
+            assert!(parse(&with_count(&empty, at, -1)).is_err());
+        }
+        let mut no_entries = one_class();
+        no_entries.classes = vec![(1, vec![])];
+        let tpk = parse(&with_count(&no_entries, |o| o.entry_count, -1)).unwrap();
+        assert!(tpk.class_information[&ClassId(1)].is_empty());
+    }
+
+    #[test]
+    fn f3_every_flag_byte_reads_without_a_panic() {
+        for flags in 0..=u8::MAX {
+            let mut blob = one_class();
+            blob.classes = vec![(
+                1,
+                vec![(
+                    2 << 48,
+                    Some(Class {
+                        flags,
+                        editor_root: Some(0),
+                        release_root: Some(0),
+                    }),
+                )],
+            )];
+            let (mut bytes, _) = blob.write();
+            // Whatever roots the flags name, both are written: a reader
+            // that reads fewer reads the rest as what follows.
+            let tpk = parse(&bytes);
+            if let Ok(tpk) = tpk {
+                let _ = tpk.try_get_typetree_node(ClassId(1), &v(2));
+            }
+            bytes.truncate(bytes.len() / 2);
+            assert!(parse(&bytes).is_err());
+        }
+    }
+
+    #[test]
+    fn f3_a_node_or_string_id_past_its_table_is_an_error() {
+        for (sub, type_name) in [(9, 0), (1, 9)] {
+            let mut blob = one_class();
+            blob.nodes[0].sub_nodes = vec![sub];
+            blob.nodes[1].type_name = type_name;
+            let tpk = blob.read().unwrap();
+            assert!(tpk.try_get_typetree_node(ClassId(1), &v(2)).is_err());
+            assert!(tpk.get_typetree_node(ClassId(1), &v(2)).is_none());
+        }
+        // The root itself past the buffer.
+        let mut blob = one_class();
+        blob.classes = vec![(1, vec![(2 << 48, Some(Class::both(5)))])];
+        assert!(
+            blob.read()
+                .unwrap()
+                .try_get_typetree_node(ClassId(1), &v(2))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn f3_a_node_that_lists_itself_or_its_grandparent_is_an_error_not_a_hang() {
+        // Node 0 lists itself; node 2 lists node 0, its grandparent.
+        for nodes in [
+            vec![Node::new(0, 1, vec![0])],
+            vec![
+                Node::new(0, 1, vec![1]),
+                Node::new(0, 1, vec![2]),
+                Node::new(0, 1, vec![0]),
+            ],
+        ] {
+            let mut blob = Blob::with_strings(2);
+            blob.nodes = nodes;
+            blob.classes = vec![(1, vec![(2 << 48, Some(Class::both(0)))])];
+            let tpk = blob.read().unwrap();
+            let got = within_10s(move || tpk.try_get_typetree_node(ClassId(1), &v(2)).is_err());
+            assert!(got);
+        }
+    }
+
+    #[test]
+    fn f3_a_300_deep_chain_walks_past_the_255_levels_a_u8_held() {
+        let tpk = chain(300).read().unwrap();
+        let tree = within_10s(move || tpk.try_get_typetree_node(ClassId(1), &v(2)).unwrap());
+        assert_eq!(depth(&tree.unwrap()), 300);
+    }
+
+    #[test]
+    fn f3_a_string_longer_than_the_data_is_an_error() {
+        // The varint's largest length, 2^35 - 1, over a 3-byte tail.
+        let mut blob = Blob::with_strings(0);
+        blob.versions = vec![];
+        let (mut bytes, at) = blob.write();
+        bytes.truncate(at.string_count);
+        bytes.extend_from_slice(&1_i32.to_le_bytes());
+        varint(&mut bytes, (1 << 35) - 1);
+        bytes.extend_from_slice(b"abc");
+        assert!(parse(&bytes).is_err());
+        // One byte short, and exact.
+        for (tail, ok) in [(&b"ab"[..], false), (&b"abc"[..], true)] {
+            let mut bytes = bytes[..bytes.len() - 3 - 5].to_vec();
+            varint(&mut bytes, 3);
+            bytes.extend_from_slice(tail);
+            assert_eq!(parse(&bytes).is_ok(), ok);
+        }
+    }
+
+    #[test]
+    fn f3_the_common_string_count_scans_forward_as_unitypy_does() {
+        let common = TpkCommonString {
+            version_information: vec![(v(5), 3), (v(3), 1), (v(7), 9)],
+            string_buffer_indices: vec![],
+        };
+        // UnityPy stops at the first version above the target (5 > 4).
+        assert_eq!(common.get_count(&v(4)), None);
+        assert_eq!(common.get_count(&v(6)), Some(1));
     }
 
     #[test]
