@@ -585,9 +585,7 @@ impl<T> MeteredVec<T> {
     pub fn into_boxed_slice(self) -> Result<(Box<[T]>, Charge), ChargeError> {
         let (mut vec, mut charge) = (self.vec, self.charge);
         if vec.capacity() > vec.len() {
-            let smaller = charge
-                .meter()
-                .charge(heap_cost(bytes_of::<T>(vec.len())))?;
+            let smaller = charge.meter().charge(heap_cost(bytes_of::<T>(vec.len())))?;
             let old = heap_cost(bytes_of::<T>(vec.capacity()));
             vec.shrink_to_fit();
             charge.release(old);

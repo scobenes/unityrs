@@ -28,7 +28,9 @@ use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use unityrs_core::budget::{Counting as CountingBudget, DecodeBuf, MemoryBudget, Reservation, Unbounded};
+use unityrs_core::budget::{
+    Counting as CountingBudget, DecodeBuf, MemoryBudget, Reservation, Unbounded,
+};
 use unityrs_core::limits::{ChargeError, Limits, Meter, MeteredVec, heap_cost};
 use unityrs_core::typetree::{NodeId, NodeList, NodeRow};
 use unityrs_core::{Bytes, LimitKind, Parsed, RawStr, Value, ValueBuilder};
@@ -320,7 +322,9 @@ fn parsed_values(counting: bool) -> u64 {
         for (k, r) in refs.iter().enumerate() {
             let ix = b.list_index(r).unwrap();
             let data = b.map(ix, b.vec());
-            entries.push((NodeId(u32::try_from(k).unwrap()), data)).unwrap();
+            entries
+                .push((NodeId(u32::try_from(k).unwrap()), data))
+                .unwrap();
         }
         let value = b.map(0, entries);
         let p = b.finish(value, 0);
@@ -346,7 +350,19 @@ fn heap_cost_covers_glibc() {
     // Round 3: requests of 4096k - 23 ..= 4096k - 16 bytes, and those whose
     // padded chunk first reaches the mmap threshold, take a page more than
     // the old formula charged.
-    let mut sizes = vec![1_usize, 8, 24, 25, 100, 1000, 4096, 100_000, 131_072, 1 << 20, 5 << 20];
+    let mut sizes = vec![
+        1_usize,
+        8,
+        24,
+        25,
+        100,
+        1000,
+        4096,
+        100_000,
+        131_072,
+        1 << 20,
+        5 << 20,
+    ];
     for k in [32_usize, 33, 49, 1024, 1025] {
         sizes.extend((0..=40).map(|r| 4096 * k - r));
     }

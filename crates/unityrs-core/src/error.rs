@@ -148,7 +148,9 @@ impl CellError for Error {
     fn heap_bytes(&self) -> u64 {
         match self {
             Self::Detect(DetectError::Gzip(d)) => heap_of(d.len()),
-            Self::Malformed { detail, .. } | Self::Decompress { detail, .. } => heap_of(detail.len()),
+            Self::Malformed { detail, .. } | Self::Decompress { detail, .. } => {
+                heap_of(detail.len())
+            }
             Self::Version(VersionError::NoMatch(r))
             | Self::NotFound(NotFound::Cab(r) | NotFound::Resource(r)) => heap_of(r.len()),
             Self::Tree(t) => t.heap_bytes(),

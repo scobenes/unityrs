@@ -171,15 +171,24 @@ mod tests {
         let mut preload = MeteredVec::new(&m);
         for i in 0..100 {
             rows.push(row(i)).unwrap();
-            preload.push(PPtr { file_id: 0, path_id: i }).unwrap();
+            preload
+                .push(PPtr {
+                    file_id: 0,
+                    path_id: i,
+                })
+                .unwrap();
         }
         let c = Container::new(rows, Some(preload)).unwrap();
         let exact = |n: usize| heap_cost(u64::try_from(n).unwrap());
         assert_eq!(
             m.used(),
-            exact(100 * std::mem::size_of::<ContainerRow>()) + exact(100 * std::mem::size_of::<PPtr>())
+            exact(100 * std::mem::size_of::<ContainerRow>())
+                + exact(100 * std::mem::size_of::<PPtr>())
         );
-        assert_eq!((c.rows().len(), c.preload_table().map(<[PPtr]>::len)), (100, Some(100)));
+        assert_eq!(
+            (c.rows().len(), c.preload_table().map(<[PPtr]>::len)),
+            (100, Some(100))
+        );
         assert_eq!(c.charge().records(), 0);
         drop(c);
         assert_eq!((m.used(), budget.used()), (0, 0));

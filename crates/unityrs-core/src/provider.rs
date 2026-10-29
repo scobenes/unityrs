@@ -182,7 +182,9 @@ impl KeyView for CacheKey {
         &self.packed
     }
     fn script(&self) -> Option<[&[u8]; 3]> {
-        self.script.as_ref().map(|[a, n, c]| [&a[..], &n[..], &c[..]])
+        self.script
+            .as_ref()
+            .map(|[a, n, c]| [&a[..], &n[..], &c[..]])
     }
 }
 
@@ -315,11 +317,11 @@ impl ProviderChain {
     /// cache has room; a miss is not cached. Providers are asked with no lock
     /// held.
     pub fn lookup(&self, req: &TreeRequest<'_>) -> Result<Option<TreeRef>, ProviderError> {
-        let hit = self.cache.read().ok().and_then(|c| {
-            c.map
-                .get(&RequestKey(req) as &dyn KeyView)
-                .cloned()
-        });
+        let hit = self
+            .cache
+            .read()
+            .ok()
+            .and_then(|c| c.map.get(&RequestKey(req) as &dyn KeyView).cloned());
         if let Some((tree, name)) = hit {
             return Ok(Some(TreeRef {
                 tree,

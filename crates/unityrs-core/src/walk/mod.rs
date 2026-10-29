@@ -275,9 +275,7 @@ impl crate::once::CellError for ParseError {
     fn heap_bytes(&self) -> u64 {
         match self {
             // The value's own heap rides in its `Parsed`'s charge.
-            Self::CheckRead { .. } => {
-                crate::error::heap_of(std::mem::size_of::<Parsed>() + 16)
-            }
+            Self::CheckRead { .. } => crate::error::heap_of(std::mem::size_of::<Parsed>() + 16),
             Self::Provider(p) => crate::error::heap_of(p.detail.len()),
             _ => 0,
         }

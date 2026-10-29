@@ -457,7 +457,10 @@ mod tests {
             "{refused:?}"
         );
         drop(other);
-        assert!(t.tree_with(compile).unwrap().is_ok(), "compiled again once the pool had room");
+        assert!(
+            t.tree_with(compile).unwrap().is_ok(),
+            "compiled again once the pool had room"
+        );
         // A failure the rows decide is kept.
         let deep = SerializedType::new(2, t.nodes.clone());
         let too_deep = |_: Arc<NodeList>| {
@@ -468,7 +471,10 @@ mod tests {
             }))
         };
         assert!(deep.tree_with(too_deep).unwrap().is_err());
-        assert!(deep.tree_with(compile).unwrap().is_err(), "the kept error answers");
+        assert!(
+            deep.tree_with(compile).unwrap().is_err(),
+            "the kept error answers"
+        );
     }
 
     #[test]
