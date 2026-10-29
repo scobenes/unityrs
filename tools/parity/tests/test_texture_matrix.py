@@ -16,7 +16,8 @@ of it with every cell changed. The cells come:
   unverified;
 - from `RESULT_NOTES` and `RAISE_REASONS`: the words a row adds to its result, each
   shown by a test here;
-- the tier from the result, and the status from `DESIGN.md`'s P1 list.
+- the tier from the result, and the status: pinned by this test, implemented in the phase
+  `DESIGN.md`'s P1 list gives.
 
 The pixel cases are built here from each format's layout, not from UnityPy: raw
 formats from a byte pattern, block formats from solid-colour blocks whose decoded
@@ -212,7 +213,7 @@ class ThisParityFile(unittest.TestCase):
         )
 
     def test_p1_formats_are_the_five_design_names(self):
-        p1 = sorted(name for name, row in self.rows.items() if row["status"] == "planned (P1)")
+        p1 = sorted(name for name, row in self.rows.items() if row["status"] == "pinned P0; impl P1")
         self.assertEqual(p1, P1)
 
     def test_tier_and_status_follow_the_result(self):
@@ -220,7 +221,7 @@ class ThisParityFile(unittest.TestCase):
             with self.subTest(name):
                 kind = RESULT.match(row["UnityPy 1.25.2"]).group(1)
                 self.assertEqual(row["tier"], tier_of(name, kind))
-                self.assertEqual(row["status"], "planned (P1)" if name in P1 else "planned (P3)")
+                self.assertEqual(row["status"], "pinned P0; impl P1" if name in P1 else "pinned P0; impl P3")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -881,7 +882,7 @@ def expected_row(fmt):
         "UnityPy 1.25.2": result_cell(fmt, kind, raised),
         "`set_image` writes": set_image_cell(fmt),
         "tier": tier_of(fmt.name, kind),
-        "status": "planned (P1)" if fmt.name in P1 else "planned (P3)",
+        "status": "pinned P0; impl P1" if fmt.name in P1 else "pinned P0; impl P3",
     }
 
 
@@ -1138,6 +1139,25 @@ class TierBReferences(unittest.TestCase):
         # Every image comes back flipped top to bottom.
         mode, pixels = references.decode("R16", struct.pack("<2H", 0x0100, 0x0200), 1, 2)
         self.assertEqual(pixels, [(2, 0, 0), (1, 0, 0)])
+
+    def test_short_data_raises_for_every_reference(self):
+        # What a texture holds: its pixels, or BC6H's whole 4x4 blocks.
+        self.assertEqual(references.needed_bytes("RGBAFloat", 3, 2), 96)
+        self.assertEqual(references.needed_bytes("YUY2", 4, 2), 16)
+        self.assertEqual(references.needed_bytes("RGB9e5Float", 2, 2), 16)
+        self.assertEqual(references.needed_bytes("BC6H", 5, 4), 32)
+        for name in sorted(references.TIER_B):
+            width, height = (4, 2) if name == "YUY2" else (5, 3)  # an odd width is Tier U for YUY2
+            needed = references.needed_bytes(name, width, height)
+            with self.subTest(name):
+                # Exactly enough decodes, and bytes past that are ignored.
+                full = references.decode(name, bytes(needed), width, height)
+                self.assertEqual(len(full[1]), width * height)
+                self.assertEqual(references.decode(name, bytes(needed + 16), width, height), full)
+                # One byte short, or none: an error, never pixels for bytes that do not exist.
+                for short in (needed - 1, 0):
+                    with self.assertRaisesRegex(ValueError, "^not enough image data"):
+                        references.decode(name, bytes(short), width, height)
 
     def test_bc6h_reference_is_the_specification(self):
         """BC6H's reference decodes as the Khronos Data Format Specification 1.3, section 20.2, says."""
