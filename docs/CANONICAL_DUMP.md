@@ -3,19 +3,20 @@
 **Format:** `unityrs-canonical-dump`, version 1. **Status:** P0, 2026-10-28.
 
 The canonical dump is how unityrs is compared with UnityPy at verification levels L0-L3 (`DESIGN.md` sections 5 and 6) before any Python binding exists. Two producers write it:
-- `tools/parity/unitypy_dump.py`, the oracle, runs UnityPy 1.25.2 with UnityPyBoost in the oracle image;
+- `tools/parity/unitypy_dump.py`, the oracle, runs UnityPy 1.25.2 with UnityPyBoost in the oracle image, and refuses to run on any other stack;
 - the unityrs CLI writes the same records from Rust.
 
 `tools/parity/compare.py` diffs the two. `tools/parity/canonical.py` is the Python reference for every encoding rule below.
 
 The format makes two promises:
 - **Lossless against UnityPy.** Every distinction UnityPy's `parse_as_dict()` makes on the UnityPyBoost path survives: list versus tuple, bytes versus str, a str holding invalid UTF-8, int versus bool versus float, float32 versus float64 down to the bit, dict key order, and ReferencedObject data.
-- **Canonical.** A value has exactly one encoding and a record exactly one serialisation. Two producers that agree write byte-identical lines, so equal lines need no parsing, and a dump's sha256 identifies its content.
+- **Canonical.** A value has exactly one encoding and a record exactly one serialisation. Two producers that agree write byte-identical lines, the header's `producer` aside, so equal lines need no field-by-field comparison.
 
 ## 1. Stream
 
 - JSON Lines: UTF-8, one JSON object per line, each line ended by a single `\n`, with no blank lines and no byte-order mark.
-- A path ending in `.gz` holds the same stream gzip-compressed. Writers set the gzip mtime to 0, so equal dumps compress to equal bytes. The canonical content is always the uncompressed stream.
+- A path ending in `.gz` holds the same stream gzip-compressed.
+- **Equality is defined on the uncompressed stream, header line excluded.** Two dumps hold the same content when their uncompressed lines after the header are byte-identical; the sha256 of those lines identifies the content. The header differs between producers (`producer`), and the compressed bytes depend on the gzip writer, so neither is canonical. For example, the oracle's `GzipFile` compresses at level 9 and writes the header `1f8b0800 00000000 02ff`, whose `02` (XFL) names that level; a writer at another level or with another deflate implementation writes other bytes for the same lines. The oracle sets the gzip mtime to 0 only so that its own runs are reproducible.
 - The first line is the `dump` header record and the last is the `end` record. A stream without its `end` record is truncated.
 
 ## 2. JSON serialisation
@@ -60,7 +61,7 @@ The rules behind the table:
   - Typetree strings are bytes that UnityPy decodes as UTF-8 with `surrogateescape`. The producer re-encodes them with `encode("utf-8", "surrogateescape")`, which recovers the file's exact bytes, and emits a JSON string only when those bytes are valid UTF-8.
   - Validity is strict UTF-8, which Python and Rust's `std::str::from_utf8` agree on: overlong forms and encoded surrogates (`ED A0 80`) are invalid.
   - An empty string is `""`.
-- **Dict keys** (child names) are never summarised. A valid name is a JSON string; anything else is `{"t":"str","hex":H}` at any length.
+- **Dict keys** (child names) follow the metadata-string rule (section 4.2): never summarised. A valid name is a JSON string; anything else is `{"t":"str","hex":H}` at any length.
 - **Float width comes from the typetree, not the value.** Python holds both widths as a float64, so the producer reads the width from the node that typed the value.
   - `f32` is the float32 the file held, exactly: UnityPyBoost widens it losslessly, and narrowing back is exact.
   - NaN payloads, the sign of NaN and `-0.0` all survive, apart from one oracle exception (section 7).
@@ -71,7 +72,8 @@ The rules behind the table:
   - `SInt8`, `bool` and every wider integer stay JSON arrays.
   - A packed `u8s` decodes to the same list of ints, so it never collides with `bytes`.
 - **Pairs** are UnityPy's tuples (a `pair` node). A `map` is therefore a list of `tuple`s.
-- **ReferencedObject** values are dicts like any other. Their `data` entry is typed by the node UnityPy resolves through `SerializedFile.ref_types` by `(class, ns, asm)`. When `type.class` is empty, UnityPy leaves `data` out of the dict, and so does the dump. **ManagedReferencesRegistry** follows UnityPy too: only the first registry in a subtree is read, and later ones are absent.
+- **ReferencedObject** values are dicts like any other. Their `data` entry is typed by the node UnityPy resolves through `SerializedFile.ref_types` by `(class, ns, asm)`. When `type.class` is empty, UnityPy leaves `data` out of the dict, and so does the dump.
+- **ManagedReferencesRegistry** follows UnityPy's scope, which is the class that holds a registry as a direct child. Reading that registry starts the scope. Until that class ends, every other registry is skipped and absent from the dict: the class's later registry children, any registry inside its later children's subtrees, and any registry inside the registry being read. The scope ends with that class, so a registry in a later sibling of the class is read. In `{a:{r1}, b:{r2}, r3, c:{r5}, r4}`, `r1`, `r2` and `r3` are read, while `r5` and `r4` are absent.
 - **Repeated child names.** The dict keeps the first position and the last value (`PyDict_SetItem` overwrites), and the last child of that name types the value.
 
 A worked example. This is the value UnityPyBoost reads from a synthetic tree. The f32 signalling NaN in the file, `7f800001`, appears quieted (section 7). The `d_snan` f64 signalling NaN survives. `s_bad` holds the bytes `61 ff 62`. `m` is a `map<string,SInt64>`. `dup` names an `int` and then a `float`.
@@ -90,7 +92,7 @@ Each record's first member is `rec`.
 |---|---|
 | `format` | `"unityrs-canonical-dump"` |
 | `version` | `1` |
-| `levels` | the levels the dump holds, in order: a subset of `["L0","L1","L2","L3"]` |
+| `levels` | the levels the dump holds, in order: `"L0"`, then any of `"L1"`, `"L2"`, `"L3"`. Every file record carries `l0`, so every dump holds L0. |
 | `producer` | free-form object (tool name, versions). Never compared. |
 
 ### 4.2 `file`: one per file and per container entry
@@ -100,7 +102,7 @@ Each record's first member is `rec`.
 | `file` | the file's identity, a list of names: `[input]` for an input, `[input, entry]` for a bundle or WebFile entry, and so on down. |
 | `l0` | detection (below) |
 | `l1` | container metadata by kind (below), or `null` when the file parsed as raw, zip or error, or when the dump has no L1 |
-| `error` | `null`, or `{"kind":K}` with `K` either `"detect"` (`check_file_type` raised) or `"parse"` (the parser raised). An optional `note` gives the message. |
+| `error` | `null`, or `{"kind":K}` with `K` either `"detect"` (`check_file_type` raised) or `"parse"` (the parser raised). An optional `note` gives the message. Only an input's own record carries an error (see "A failing entry" below). |
 
 **Names.**
 - `input` is the input's path relative to the dump root, with `/` separators:
@@ -108,7 +110,10 @@ Each record's first member is `rec`.
   - the path below the folder for a folder input;
   - the entry's `path` for a corpus index.
 - An entry name is the bundle directory's `path` string.
-- Names are written like dict keys (always inline, hex when not UTF-8).
+
+**The metadata-string rule.** Every string the dump takes from a file or a file name, other than a typetree value, is written as a name. That covers input and entry names, `signature`, `version_player`, `version_engine`, `unity_version`, `user_information`, directory, external and container paths, `temp_empty`, typetree node types and names, the class, namespace and assembly of a type record, and `root_type`. A name is a JSON string when its bytes are valid UTF-8, and otherwise `{"t":"str","hex":H}` at any length. It is never summarised: the raw-bytes rule of section 3 applies only inside values.
+
+**A failing entry fails its input.** UnityPy reads a bundle's or WebFile's entries with no error handling. An entry whose detection or parse raises (a SerializedFile that does not parse, or a broken AssetBundle object inside one) therefore fails the whole top-level input. That input gets one `file` record, with `l0.parsed_as` `"error"`, `l1` `null` and `{"kind":"parse"}`, and no records for any of its entries. So an entry record never carries an `error`, and `l0.type` is `"error"` only on an input's own record.
 
 **`l0`** (member order `type`, `parsed_as`, `size`, `sha256`):
 
@@ -119,7 +124,8 @@ Each record's first member is `rec`.
   4. A signature starting with `UnityWebData` or `TuanjieWebData` is `WebFile`.
   5. A signature equal to `PK\x03\x04` is `ZIP`.
   6. Fewer than 128 bytes is `ResourceFile`.
-  7. A gzip stream (`1f 8b`) whose decompressed signature starts with `UnityWebData`/`TuanjieWebData` is `WebFile`. So is `brotli` at offset 0x20.
+  7. A file that starts with `1f 8b` is read as gzip, and the whole stream must decompress: every member, with its CRC and size checked, where zero bytes may pad the end. If it does not (a bad header, corrupt or truncated data, a bad CRC, a non-zero byte after the last member), detection raises (`"error"`). The file is `WebFile` when the decompressed bytes start with `UnityWebData` or `TuanjieWebData` and go on for at least one more byte: UnityPy's streaming reader stops at the end of the stream without keeping the last byte it read. A stream that holds exactly `UnityWebData` is therefore not a WebFile. Otherwise detection goes on.
+  7b. A file whose 6 bytes at offset 0x20 are `brotli` is `WebFile`.
   8. Otherwise the SerializedFile header is read **big-endian**: `metadata_size`, `file_size`, `version` and `data_offset` as u32. At version ≥ 22, 4 bytes are skipped, then come u32 `metadata_size`, i64 `file_size`, i64 `data_offset` and an i64. The file is `AssetsFile` unless `version` < 0 or > 100, any of the four is < 0 or larger than the file, or `file_size` < `metadata_size` or < `data_offset`. Then it is `ResourceFile`.
 - `parsed_as` is what UnityPy built: `SerializedFile`, `BundleFile`, `WebFile`, `raw` (it kept a reader), `zip`, or `error`. **The name rule:** an `AssetsFile` whose name ends in `.resS`, `.resource`, `.config`, `.xml` or `.dat` stays `raw`.
 - `size` and `sha256` describe the bytes `type` was decided on.
@@ -130,17 +136,27 @@ Each record's first member is `rec`.
 |---|---|
 | `kind` | `"bundle"` |
 | `signature`, `format`, `version_player`, `version_engine` | the header, as read |
-| `engine_version_packed` | `BundleFile.parse_version()` as UnityPy packs it: `major<<48 \| minor<<32 \| build<<16 \| type<<8 \| number`, a plain OR, so a number above 255 spills into the type byte. `type` is the lower-cased type string's value (a 0, b 1, c 2, f 3, p 4, x 5, anything else 255). `null` where it raises. |
-| `flags` | the UnityFS data flags as an integer, or `null` for UnityWeb/UnityRaw below format 6 |
+| `engine_version_packed` | `BundleFile.parse_version()` as UnityPy packs it (the version-packing rule below), or `null` where it raises. |
+| `flags` | the UnityFS data flags as an integer, or `null` for UnityWeb/UnityRaw outside format 6 |
 | `flags_class` | `"ArchiveFlags"` or `"ArchiveFlagsOld"`, UnityPy's choice by engine version, or `null`. It is old below 2020, and within the 2020, 2021 and 2022 lines below 2020.3.34, 2021.3.2 and 2022.1.1. |
 | `block_alignment` | whether the 16-byte alignment after the header applied: format ≥ 7, or a 2019 engine at 2019.4.15 or later |
 | `encrypted` | whether the UnityCN encryption flag made UnityPy build a decryptor |
-| `hash`, `crc` | UnityWeb/UnityRaw format ≥ 4 header fields, else `null` |
+| `hash`, `crc` | the header fields of UnityWeb/UnityRaw at format 4 or above, except format 6; else `null` |
 | `blocks_info` | `[uncompressed, compressed, flags]` of the blocks-info section, or `null` |
-| `blocks` | `[[uncompressed, compressed, flags], ...]`, or `null` for UnityWeb/UnityRaw below format 6 |
-| `directory` | `[[offset, size, flags, path], ...]` in file order (`flags` is `null` for UnityWeb/UnityRaw) |
+| `blocks` | `[[uncompressed, compressed, flags], ...]`, or `null` for UnityWeb/UnityRaw outside format 6 |
+| `directory` | `[[offset, size, flags, path], ...]` in file order (`flags` is `null` for UnityWeb/UnityRaw outside format 6) |
 
 UnityFS's total-size field and its uncompressed-data hash are left out, because UnityPy reads and discards them.
+
+**UnityWeb and UnityRaw format 6** are read with the UnityFS layout (UnityPy's `read_fs`, with one extra byte after the data flags). So they have `flags`, `flags_class`, `blocks_info`, `blocks` and directory flags, and their `hash` and `crc` are `null`. Every other UnityWeb/UnityRaw format takes the web/raw layout, which has a 16-byte hash and a u32 crc from format 4.
+
+**The version-packing rule** (`engine_version_packed`, and `version_packed` below) is UnityPy's `UnityVersion.from_str`:
+- The string must match `^(\d+)\.(\d+)\.(\d+)(.)?(\d+)?(.*)$`, using Python `re` with DOTALL. So `\d` is any Unicode decimal digit (category Nd), and the groups are `major`, `minor`, `build`, the type, `number` and an ignored rest.
+- The type is exactly one character, the first after `build`'s digits. `number` is the digits right after it, or 0 when there are none.
+- The type's value is that character lower-cased: `a` 0, `b` 1, `c` 2, `f` 3, `p` 4, `x` 5, anything else 255. A string with nothing after `build` packs as `f` (3).
+- The packed value is `major<<48 | minor<<32 | build<<16 | type<<8 | number`. It is a plain OR of unbounded integers, so a field wider than its slot spills into the next one: a `number` above 255 lands in the type byte.
+- Examples: `2021.3.2ff1` packs type `f` with number 0. `2019.4.15 f1` packs type 255 with number 0. `5.6.7` packs type `f` with number 0.
+- `parse_version` raises, and the field is `null`, when the string does not match or `major` is 0. In those cases UnityPy wants `config.FALLBACK_UNITY_VERSION`, which the oracle leaves unset.
 
 **`l1` for `kind: "web"`:** `kind`, `signature`, `packer` (`"none"`, `"gzip"` or `"brotli"`), and `directory` with `flags` `null`.
 
@@ -151,7 +167,7 @@ UnityFS's total-size field and its uncompressed-data hash are left out, because 
 | `kind` | `"serialized"` |
 | `header` | `{metadata_size, file_size, version, data_offset, endian, reserved, unknown}`. `endian` is `"<"` or `">"`. `reserved` is the 3 hex bytes from version 9, else `null`. `unknown` is the version-22 trailing i64, else 0. The version-22 header's own fields replace the legacy u32s. |
 | `unity_version` | the version string as read (`"2.5.0f5"` below format 7) |
-| `version_packed` | `SerializedFile.version` packed as above, after UnityPy's fallback: an empty or `0.0.0` string takes the parent bundle's engine version. `null` below format 7, where UnityPy never sets it. |
+| `version_packed` | `SerializedFile.version` packed by the version-packing rule, after UnityPy's fallback: an empty or `0.0.0` string takes the parent bundle's engine version. `null` below format 7, where UnityPy never sets it. |
 | `target_platform` | the raw integer (format ≥ 8), else `null` |
 | `enable_type_tree` | bool |
 | `big_id_enabled` | integer (formats 7-13), else 0 |
@@ -183,17 +199,21 @@ UnityFS's total-size field and its uncompressed-data hash are left out, because 
 **`l2`:**
 - `root_type`: the typetree root's `m_Type` (the class name, for example `Texture2D` or `MonoBehaviour`).
 - `source`: `"embedded"` for the file's own tree, `"tpk"` for UnityPy's bundled class database. Both are `null` when no tree exists.
-- `error`: `null` on success, else `{"kind":K,"bytes_read":N}` (optionally followed by `note`). `bytes_read` is an integer only for `check_read`. The kinds:
+- `error`: `null` on success, else `{"kind":K,"bytes_read":N}` (optionally followed by `note`). `bytes_read` is an integer only for `check_read`. A read that raises gives every kind but `check_read`; `check_read` is decided only after the whole tree was read. The kinds:
 
 | kind | meaning | `value` |
 |---|---|---|
 | `no_typetree` | no node: none embedded, and none in the TPK | `null` |
-| `check_read` | the tree read fewer bytes than `byte_size` | the dict from `parse_as_dict(check_read=False)` |
-| `out_of_bounds` | the tree needs more bytes than the object has | `null` |
-| `negative_length` | a negative array or string length | `null` |
-| `ref_type` | a ReferencedObject type could not be resolved | `null` |
+| `check_read` | the tree's read ended `bytes_read` bytes after `byte_start`, and `bytes_read != byte_size`, in either direction (see the reading paths below) | the dict from `parse_as_dict(check_read=False)` |
+| `out_of_bounds` | on the UnityPyBoost path, a read other than an alignment needs bytes past the object's end | `null` |
+| `negative_length` | a negative array length, or on the UnityPyBoost path a negative string or byte-array length | `null` |
+| `ref_type` | a ReferencedObject's `(class, ns, asm)` is not in `ref_types`, or the file has no `ref_types` | `null` |
 | `encode` | the value does not fit its tree (a producer bug, never expected) | `null` |
-| `other` | anything else | `null` |
+| `other` | anything else: a malformed tree (a `pair` without two children), and on the pure-Python path a read past the SerializedFile's end or an aligned `SInt8` array | `null` |
+
+**The two reading paths** decide `bytes_read` and which failures raise (UnityPy's `TypeTreeHelper.read_typetree`):
+- **`byte_size` > 0: UnityPyBoost** reads the object's `byte_size` bytes and nothing else. `bytes_read` includes the 4-byte alignment after the last field. UnityPyBoost moves the position for an alignment without a bounds check, so a trailing alignment can carry `bytes_read` past `byte_size` without failing. Example: `[int i, bool b (aligned)]` over 5 bytes reads `{i, b}` and gives `check_read` with `bytes_read` 8.
+- **`byte_size` 0: the pure-Python reader** starts at `byte_start` in the whole SerializedFile and reads on into the bytes after the object. Any tree that reads at all is therefore a `check_read`, and its value comes from the bytes that follow. A tree that reads nothing is no error. This reader reads a negative or out-of-range string length as `""`, and its other differences are listed in section 7.
 
 - `value`: the encoded value (section 3).
 
@@ -220,15 +240,22 @@ The dump is deterministic: the same input and producer always give the same byte
 ## 6. Comparison
 
 `compare.py` takes a reference dump (UnityPy) and a candidate (unityrs).
-- **Matching.** It matches records by key: `file` by `file`, `object` by (`file`, `path_id`). It compares the levels both headers list, or the subset `--levels` names.
-- **What it ignores.** `note` members and `producer` are never compared.
+- **Matching.** It matches records by key: `file` by `file`, `object` by (`file`, `path_id`). A second record with a key already read is a `duplicate` finding, and the first one is the one compared.
+- **Levels.** It compares the levels the reference's header lists, or the subset `--levels` names. A compared level that the candidate's header lacks is a `missing_level` difference at that level. A `--levels` name outside L0-L3, a level the reference lacks, and an empty selection are refused (exit 2).
+- **What it ignores.** `note` members and `producer` are never compared. A reference written by `unitypy_dump.py` must record `boost` true and UnityPy 1.25.2, or the comparison is refused.
 - **How it compares.**
   - Values are compared after decoding. Packed lists unpack, and an inline payload and its summary compare by length and sha256.
-  - Types must match exactly: `true` is not `1`, a tuple is not a list, an `f32` is not an `f64`.
-  - A line whose values match but whose bytes differ is reported as a **format** finding: not the canonical serialisation of itself, a different member order, or another encoding of the same value. This holds a producer to section 2.
-  - A missing `end` record, or one whose counts disagree with the records in its own dump, is also a **format** finding.
+  - Types must match exactly, at any depth: `true` is not `1`, a tuple is not a list, an `f32` is not an `f64`, also inside a struct inside an array.
+- **Format findings.** Every line of both dumps is checked on its own, byte-identical pairs and the header and `end` records included. Each of these is a **format** finding:
+  - a line that is not the canonical serialisation of itself, or that holds a JSON float;
+  - members that are not each record's list (section 4) in order;
+  - a non-null section for a level its header does not declare;
+  - a value encoding that breaks a rule a value shows on its own: a JSON array of tagged floats (it should have been packed), inline hex above 64 bytes, a summary of 64 bytes or fewer, uppercase or odd-length hex, an empty packed list, a `str` or hex-tagged name whose bytes are valid UTF-8, or a repeated dict key;
+  - a pair of lines whose compared values agree but whose bytes differ for a reason the rules above do not name;
+  - a record after the `end` record, a missing `end` record, or one whose counts are not the integers its own dump holds.
+- **Unreadable input** exits 2: a line that is not JSON, not UTF-8 or not valid Unicode (a lone surrogate escape), `NaN` or `Infinity`, a truncated or corrupt gzip stream, a header that is not this format and version or whose `levels` are not L0 followed by any of L1-L3 in order, a second header, or a record without a valid key (`file` not a list of names, `path_id` not an integer).
 - **Report.** Differences are counted by level and class (`root_type`), then grouped by field path, with list indices folded to `[]`, and a few concrete examples per group.
-- **Levels.** L0: detection, and missing or extra files. L1: container and object-table metadata, load errors, and missing or extra objects. L2: values and parse outcome. L3: resave.
+- **What each level covers.** L0: detection, and missing or extra files. L1: container and object-table metadata, load errors, and missing or extra objects. L2: values and parse outcome. L3: resave.
 
 ## 7. UnityPy behaviours the oracle records
 
@@ -242,7 +269,7 @@ These are UnityPy 1.25.2 facts that a unityrs producer must reproduce to match, 
 
 **Floats.**
 - UnityPyBoost widens a float32 to a Python float in C (`PyFloat_FromDouble`). On x86-64 that conversion quiets a signalling NaN: the file's `7f800001` reaches the dict as `7fc00001`.
-- The oracle dump therefore shows the quieted bits. A producer that reports the file's bits differs here, and `compare.py` labels such pairs `f32_snan_quieted` so they stand apart from real errors.
+- The oracle dump therefore shows the quieted bits. A producer that reports the file's bits differs here, and `compare.py` labels such pairs `f32_snan_quieted` so they stand apart from real errors. The label requires the candidate to be a signalling NaN: all exponent bits set, the quiet bit (bit 22) clear and a non-zero mantissa, with the reference the same bits plus bit 22. A quiet NaN against an infinity also differs only in bit 22, but it is an ordinary `value` difference.
 - `save_typetree` writes the quieted bits back, so such objects resave as `differs`.
 - float64 values pass through unconverted and keep every bit.
 
@@ -250,7 +277,12 @@ These are UnityPy 1.25.2 facts that a unityrs producer must reproduce to match, 
 
 **Parsing path.**
 - Every object with `byte_size` > 0 is read by UnityPyBoost. Its arrays are lists, and its strings are always followed by a 4-byte alignment.
-- With `byte_size` 0, UnityPy uses its pure-Python reader instead. That reader returns a tuple for an array whose primitive element node carries the align flag (encoded as `tuple`, never packed), and reads an out-of-range string length as `""` instead of failing.
+- With `byte_size` 0, UnityPy uses its pure-Python reader instead (section 4.3 says where it starts and how far it reads). It differs from UnityPyBoost in four ways:
+  - It returns a tuple for an array whose primitive element node carries the align flag. The tuple is encoded as `tuple` and never packed.
+  - In such an array, 16-bit elements swap signedness. `UInt16` and `unsigned short` read as signed, and `SInt16` and `short` read as unsigned, because UnityPy's `read_u_short_array` unpacks `h` and `read_short_array` unpacks `H`. A `UInt16` 65535 reads as -1.
+  - An aligned `SInt8` array raises a `TypeError` (`other`).
+  - It reads a negative or out-of-range string length as `""` instead of failing.
+- Both paths apply the same ManagedReferencesRegistry scope (section 3).
 
 **ReferencedObject.** UnityPyBoost skips the `data` of an empty class name in arrays as well. The pure-Python path does not; that bug is not reachable on the Boost path.
 
@@ -260,7 +292,7 @@ These are UnityPy 1.25.2 facts that a unityrs producer must reproduce to match, 
 - For formats 11-16, loading writes each object's script index back into that shared type. A type's `script_type_index` is therefore the last such object's value.
 
 **Load-time parses.**
-- A SerializedFile parses its AssetBundle object while loading, so a broken AssetBundle fails the whole file (`error.kind` `"parse"`).
+- A SerializedFile parses its AssetBundle object while loading, so a broken AssetBundle fails the whole top-level input (`error.kind` `"parse"`), even when the SerializedFile is a bundle entry (section 4.2).
 - An unparseable engine version with no `UnityPy.config.FALLBACK_UNITY_VERSION` raises.
 
 ## 8. Not covered by format 1

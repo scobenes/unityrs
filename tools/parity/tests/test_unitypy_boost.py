@@ -19,7 +19,10 @@ import canonical as C  # noqa: E402
 try:
     from UnityPy.helpers import TypeTreeHelper as TTH
     from UnityPy.helpers.TypeTreeNode import TypeTreeNode
+    from UnityPy.helpers.UnityVersion import UnityVersion
     from UnityPy.streams import EndianBinaryReader, EndianBinaryWriter
+
+    import unitypy_dump
 except ImportError:  # pragma: no cover - outside the oracle image
     TTH = None
 
@@ -37,11 +40,52 @@ def vec(name, elem, meta=0):
     return N("vector", name, [N("Array", "Array", [N("int", "size"), elem], meta=meta)])
 
 
-def read(root, data, endian="<", assetsfile=None):
+def read(root, data, endian="<", assetsfile=None, check_read=True):
     """parse_as_dict's path: UnityPyBoost whenever byte_size is non-zero."""
     return TTH.read_typetree(
-        root, EndianBinaryReader(data, endian=endian), as_dict=True, byte_size=len(data), assetsfile=assetsfile
+        root,
+        EndianBinaryReader(data, endian=endian),
+        as_dict=True,
+        byte_size=len(data),
+        check_read=check_read,
+        assetsfile=assetsfile,
     )
+
+
+def read_python(root, data, check_read=True, assetsfile=None):
+    """The byte_size 0 path: UnityPy's pure-Python reader, from the reader's position onwards."""
+    return TTH.read_typetree(
+        root,
+        EndianBinaryReader(data, endian="<"),
+        as_dict=True,
+        byte_size=0,
+        check_read=check_read,
+        assetsfile=assetsfile,
+    )
+
+
+def s32(text):
+    """An aligned typetree string."""
+    raw = text.encode()
+    return struct.pack("<i", len(raw)) + raw + b"\0" * (-len(raw) % 4)
+
+
+def ref_tree():
+    """A ReferencedObject field, and an assets file whose ref_types hold only Foo."""
+    foo = N("Foo", "data", [N("float", "x")])
+    assetsfile = SimpleNamespace(
+        ref_types=[SimpleNamespace(m_ClassName="Foo", m_NameSpace="", m_AssemblyName="Asm", node=foo)]
+    )
+    ref_obj = N(
+        "ReferencedObject",
+        "data",
+        [
+            N("SInt64", "rid"),
+            N("ReferencedManagedType", "type", [N("string", "class"), N("string", "ns"), N("string", "asm")]),
+            N("ReferencedObjectData", "data"),
+        ],
+    )
+    return ref_obj, assetsfile
 
 
 def resave(value, root, endian="<", assetsfile=None):
@@ -187,7 +231,7 @@ class ThroughBoost(unittest.TestCase):
             '["ptr",{"t":"dict","v":[["m_FileID",1],["m_PathID",-7]]}]]}',
         )
 
-    def test_referenced_objects_and_the_first_registry_only(self):
+    def test_referenced_objects_and_the_registry_scope(self):
         foo = N("Foo", "data", [N("float", "x")])
         assetsfile = SimpleNamespace(
             ref_types=[SimpleNamespace(m_ClassName="Foo", m_NameSpace="", m_AssemblyName="Asm", node=foo)]
@@ -218,7 +262,7 @@ class ThroughBoost(unittest.TestCase):
             ]
         )
         value = read(root, data, assetsfile=assetsfile)
-        self.assertNotIn("again", value, "a second registry in the subtree is skipped")
+        self.assertNotIn("again", value, "a second registry in the class that read one is skipped")
         self.assertNotIn("data", value["references"]["RefIds"][1], "an empty class has no data")
         resolve = lambda t: TTH.get_ref_type_node({"type": t}, assetsfile)  # noqa: E731
         enc = C.ValueEncoder(resolve).encode(value, root)
@@ -230,6 +274,165 @@ class ThroughBoost(unittest.TestCase):
             '{"t":"dict","v":[["rid",2],["type",{"t":"dict","v":[["class",""],["ns",""],["asm",""]]}]]}]]]}],'
             '["tail",9]]}',
         )
+
+    def test_error_kinds(self):
+        """Each L2 error kind from a real UnityPy failure, mapped by the oracle's error_kind (spec 4.3)."""
+        two = N("Base", "Base", [N("int", "a"), N("int", "b")])
+        aligned_tail = N("Base", "Base", [N("int", "i"), N("bool", "b", meta=ALIGN)])
+        ref_obj, assetsfile = ref_tree()
+        unknown_ref = struct.pack("<q", 1) + s32("Bar") + s32("") + s32("Asm") + struct.pack("<f", 1.0)
+        boost = [
+            ("fewer bytes", N("Base", "Base", [N("int", "a")]), struct.pack("<ii", 1, 2), ("check_read", 4)),
+            ("the last alignment runs past the end", aligned_tail, struct.pack("<i", 7) + b"\1", ("check_read", 8)),
+            ("an int past the end", two, struct.pack("<i", 1) + b"\0\0", ("out_of_bounds", None)),
+            (
+                "a bool past the end",
+                N("Base", "Base", [N("int", "a"), N("bool", "b")]),
+                b"\1\0\0\0",
+                ("out_of_bounds", None),
+            ),
+            (
+                "a string past the end",
+                N("Base", "Base", [N("string", "s")]),
+                struct.pack("<i", 9) + b"ab",
+                ("out_of_bounds", None),
+            ),
+            (
+                "bytes past the end",
+                N("Base", "Base", [N("TypelessData", "s")]),
+                struct.pack("<i", 9) + b"ab",
+                ("out_of_bounds", None),
+            ),
+            ("a length past the end", N("Base", "Base", [N("string", "s")]), b"\1\0", ("out_of_bounds", None)),
+            (
+                "a negative string length",
+                N("Base", "Base", [N("string", "s")]),
+                struct.pack("<i", -1) + b"abcd",
+                ("negative_length", None),
+            ),
+            (
+                "a negative array length",
+                N("Base", "Base", [vec("v", N("int", "data"))]),
+                struct.pack("<i", -1) + b"abcd",
+                ("negative_length", None),
+            ),
+            (
+                "a negative byte-array length",
+                N("Base", "Base", [N("TypelessData", "s")]),
+                struct.pack("<i", -1) + b"abcd",
+                ("negative_length", None),
+            ),
+            ("an unknown ref type", N("Base", "Base", [ref_obj]), unknown_ref, ("ref_type", None)),
+            (
+                "a pair with one child",
+                N("Base", "Base", [N("pair", "p", [N("int", "first")])]),
+                struct.pack("<ii", 1, 2),
+                ("other", None),
+            ),
+        ]
+        python = [
+            ("any read at all", two, struct.pack("<ii", 11, 22) + b"rest", ("check_read", 8)),
+            ("past the file's end", two, struct.pack("<i", 1) + b"\0\0", ("other", None)),
+            (
+                "a negative array length",
+                N("Base", "Base", [vec("v", N("int", "data"))]),
+                struct.pack("<i", -1),
+                ("negative_length", None),
+            ),
+            ("an unknown ref type", N("Base", "Base", [ref_obj]), unknown_ref, ("ref_type", None)),
+            (
+                "an aligned SInt8 array",
+                N("Base", "Base", [vec("v", N("SInt8", "data", meta=ALIGN))]),
+                struct.pack("<i", 1) + b"\1",
+                ("other", None),
+            ),
+        ]
+        for path, cases, reader in (("boost", boost, read), ("python", python, read_python)):
+            for label, root, data, expected in cases:
+                with self.subTest(path=path, case=label), self.assertRaises(Exception) as cm:
+                    reader(root, data, assetsfile=assetsfile)
+                self.assertEqual(unitypy_dump.error_kind(cm.exception), expected, f"{path}: {label}: {cm.exception}")
+            # A file without ref_types cannot resolve any ReferencedObject.
+            with self.subTest(path=path, case="no ref_types"), self.assertRaises(Exception) as cm:
+                reader(N("Base", "Base", [ref_obj]), unknown_ref, assetsfile=SimpleNamespace(ref_types=None))
+            self.assertEqual(unitypy_dump.error_kind(cm.exception), ("ref_type", None), f"{path}: {cm.exception}")
+
+    def test_check_read_values(self):
+        """check_read keeps the value parse_as_dict(check_read=False) returns, in either direction."""
+        aligned_tail = N("Base", "Base", [N("int", "i"), N("bool", "b", meta=ALIGN)])
+        self.assertEqual(read(aligned_tail, struct.pack("<i", 7) + b"\1", check_read=False), {"i": 7, "b": True})
+        # byte_size 0 reads on from byte_start, into whatever follows the object.
+        two = N("Base", "Base", [N("int", "a"), N("int", "b")])
+        self.assertEqual(read_python(two, struct.pack("<ii", 11, 22) + b"rest", check_read=False), {"a": 11, "b": 22})
+        self.assertEqual(read_python(N("Base", "Base", []), b"rest"), {}, "a tree that reads nothing is no error")
+        # The pure-Python reader reads a negative or out-of-range string length as "".
+        string = N("Base", "Base", [N("string", "s")])
+        for length in (-1, 99):
+            self.assertEqual(read_python(string, struct.pack("<i", length) + b"abcd", check_read=False), {"s": ""})
+
+    def test_registry_scope_is_the_class_that_holds_it(self):
+        """A registry read by a class hides the later registries of that class and its later subtrees only."""
+
+        def reg(name):
+            return N("ManagedReferencesRegistry", name, [N("int", "version")])
+
+        root = N(
+            "Base",
+            "Base",
+            [N("A", "a", [reg("r1")]), N("B", "b", [reg("r2")]), reg("r3"), N("C", "c", [reg("r5")]), reg("r4")],
+        )
+        data = struct.pack("<iii", 1, 2, 3)
+        expected = {"a": {"r1": {"version": 1}}, "b": {"r2": {"version": 2}}, "r3": {"version": 3}, "c": {}}
+        self.assertEqual(read(root, data), expected)
+        self.assertEqual(read_python(root, data, check_read=False), expected)
+        # A registry inside the registry being read is skipped too.
+        nested = N("ManagedReferencesRegistry", "r", [N("int", "version"), reg("inner")])
+        root = N("Base", "Base", [nested, N("int", "tail")])
+        expected = {"r": {"version": 1}, "tail": 2}
+        self.assertEqual(read(root, struct.pack("<ii", 1, 2)), expected)
+        self.assertEqual(read_python(root, struct.pack("<ii", 1, 2), check_read=False), expected)
+
+    def test_pure_python_path_swaps_16_bit_signedness(self):
+        """In aligned arrays the pure-Python reader reads UInt16 as signed and SInt16 as unsigned."""
+        root = N(
+            "Base",
+            "Base",
+            [
+                vec("u16", N("UInt16", "data", meta=ALIGN)),
+                vec("s16", N("SInt16", "data", meta=ALIGN)),
+                vec("us", N("unsigned short", "data", meta=ALIGN)),
+                vec("ss", N("short", "data", meta=ALIGN)),
+            ],
+        )
+        data = (struct.pack("<iHH", 2, 0xFFFF, 1) + struct.pack("<ihh", 2, -1, 1)) * 2
+        self.assertEqual(read(root, data), {"u16": [65535, 1], "s16": [-1, 1], "us": [65535, 1], "ss": [-1, 1]})
+        self.assertEqual(
+            read_python(root, data, check_read=False),
+            {"u16": (-1, 1), "s16": (65535, 1), "us": (-1, 1), "ss": (65535, 1)},
+        )
+
+    def test_version_packing(self):
+        """UnityVersion.from_str, which engine_version_packed and version_packed record (spec 4.2)."""
+        cases = {
+            "2021.3.2f1": (2021, 3, 2, 3, 1),
+            "2021.3.2F1": (2021, 3, 2, 3, 1),  # the type letter is lower-cased
+            "2021.3.2ff1": (2021, 3, 2, 3, 0),  # one character is the type; "f1" is a postfix
+            "2019.4.15 f1": (2019, 4, 15, 255, 0),  # a space is an unknown type
+            "2021.3.2u1": (2021, 3, 2, 255, 1),
+            "5.6.7": (5, 6, 7, 3, 0),  # no type letter packs as f
+            "6000.3.17f1c1": (6000, 3, 17, 3, 1),
+            "2020.1.0a12-x": (2020, 1, 0, 0, 12),
+            "2017.1.0f300": (2017, 1, 0, 3, 300),  # a plain OR: 300 spills into the type byte
+            "\u0662\u0660\u0662\u0661.3.2f1": (2021, 3, 2, 3, 1),  # any Unicode decimal digit
+            "2021.3.2\n1": (2021, 3, 2, 255, 1),  # DOTALL: a newline is a type character
+        }
+        for text, (major, minor, build, typ, number) in cases.items():
+            with self.subTest(text):
+                packed = major << 48 | minor << 32 | build << 16 | typ << 8 | number
+                self.assertEqual(int(UnityVersion.from_str(text)), packed)
+        for text in ("2021.3", "x2021.3.2f1", ""):
+            with self.subTest(text), self.assertRaises(ValueError):
+                UnityVersion.from_str(text)
 
     def test_pure_python_path_returns_tuples(self):
         # byte_size 0 (falsy) routes UnityPy to its Python reader, whose

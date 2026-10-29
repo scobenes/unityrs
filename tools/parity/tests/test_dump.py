@@ -190,6 +190,8 @@ class DumpTests(unittest.TestCase):
         d = self.tmp / "d.jsonl.gz"
         dump(*args, "-o", d)
         self.assertEqual(c.read_bytes(), d.read_bytes(), "gzip output is byte-stable (mtime 0)")
+        # The spec's example header: level 9 (XFL 02), mtime 0, OS 255.
+        self.assertEqual(c.read_bytes()[:10].hex(), "1f8b08000000000002ff")
 
     def test_compare_finds_an_injected_difference(self):
         a = self.tmp / "a.jsonl"
@@ -227,6 +229,7 @@ class DumpTests(unittest.TestCase):
             "gz_web": web,
             "gz_web_bad_crc": web[:-8] + bytes(4) + web[-4:],
             "gz_web_junk_tail": web + b"junkjunk",
+            "gz_web_truncated": web[:-20],
             "gz_web_zero_padded": web + bytes(40),
             "gz_12_bytes": gzip.compress(b"UnityWebData", mtime=0).ljust(200, b"\0"),  # last byte never read
             "gz_13_bytes": gzip.compress(b"UnityWebData1", mtime=0).ljust(200, b"\0"),
@@ -254,6 +257,7 @@ class DumpTests(unittest.TestCase):
                 "gz_web": ("WebFile", "error", "parse"),
                 "gz_web_bad_crc": ("error", "error", "detect"),
                 "gz_web_junk_tail": ("error", "error", "detect"),
+                "gz_web_truncated": ("error", "error", "detect"),
                 "gz_web_zero_padded": ("WebFile", "error", "parse"),
                 "gz_12_bytes": ("ResourceFile", "raw", None),
                 "gz_13_bytes": ("WebFile", "error", "parse"),
@@ -297,6 +301,7 @@ class DumpTests(unittest.TestCase):
         raw6 = recs[json.dumps(["raw6"])]["l1"]
         self.assertEqual((raw6["hash"], raw6["crc"]), (None, None), "format 6 takes the UnityFS layout")
         self.assertEqual((raw6["flags"], raw6["flags_class"], raw6["blocks"]), (0x40, "ArchiveFlagsOld", [[7, 7, 0]]))
+        self.assertEqual(raw6["blocks_info"], [82, 82, 0x40])
         self.assertEqual([row[2] for row in raw6["directory"]], [4, 4])
 
         # A child that cannot be detected or parsed fails the whole input.
