@@ -28,7 +28,8 @@
 //!   buffer, a hit sets the absolute position after the NUL, and a miss reads
 //!   `max_length` bytes as a slice unless `pos + max_length >= len`.
 //!
-//! Owner: package C. The free functions are the scaffold's (implemented).
+//! Owner: package C. The free functions and [`Reader::read_i32_array`] are
+//! the scaffold's (implemented).
 
 // STUB(C): delete this allow when the module is implemented.
 #![allow(
@@ -42,8 +43,10 @@
 )]
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::error::Error;
+use crate::limits::{Meter, MeteredVec};
 
 /// Byte order of a reader or a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -288,18 +291,142 @@ impl<'a> Reader<'a> {
         todo!()
     }
 
-    /// `read_int_array`: an `i32` count, then `struct.unpack_from` of that many
-    /// `i32` (`EndianBinaryReader.py:258-264`): a negative count or a short
-    /// buffer raises, and the count is checked against the bytes before
-    /// anything is allocated.
-    pub fn read_i32_array(&mut self) -> Result<Vec<i32>, Error> {
-        todo!()
+    /// `read_int_array` (`EndianBinaryReader.py:182`, `read_array_struct` at
+    /// `:258-264`): an `i32` count read as [`py_unpack_from`] reads it (the
+    /// position moves by 4), then `struct.unpack_from` of that many `i32` at
+    /// the new position (a negative one counts from the end), the position
+    /// moving by `4 * count`. A negative count raises (`Struct("<-1i")` is a
+    /// bad format) with the position after the count, as does an array the
+    /// bytes do not hold. The array is a vector on `meter`, the input's,
+    /// charged after the bytes are checked and before it is allocated, so a
+    /// count allocates nothing the bytes do not back and the array counts
+    /// against its input while it is kept (round 5: this returned a plain
+    /// `Vec`, the one input-sized allocation a parser made uncharged); a
+    /// refused charge is the meter's or the budget's error, with the
+    /// position after the count. Implemented by the scaffold; the cases are
+    /// recorded from UnityPy 1.25.2 (`read_i32_array_reads_as_unitypy_and_charges_the_meter`).
+    pub fn read_i32_array(&mut self, meter: &Arc<Meter>) -> Result<MeteredVec<i32>, Error> {
+        const WHAT: &str = "int array";
+        let len = self.data.len();
+        let at = py_unpack_from(len, self.pos, 4).ok_or(Error::OutOfBounds {
+            what: WHAT,
+            pos: self.pos,
+            need: 4,
+            have: u64::try_from(self.remaining()).unwrap_or(u64::MAX),
+        })?;
+        let count = self.i32_at(at);
+        self.pos = self.pos.saturating_add(4);
+        let Ok(n) = usize::try_from(count) else {
+            return Err(Error::Malformed {
+                what: WHAT,
+                detail: format!("negative count {count}").into(),
+            });
+        };
+        let bytes = n.checked_mul(4);
+        let at =
+            bytes
+                .and_then(|b| py_unpack_from(len, self.pos, b))
+                .ok_or(Error::OutOfBounds {
+                    what: WHAT,
+                    pos: self.pos,
+                    need: u64::try_from(n).unwrap_or(u64::MAX).saturating_mul(4),
+                    have: u64::try_from(self.remaining()).unwrap_or(u64::MAX),
+                })?;
+        let mut out = MeteredVec::with_capacity(meter, n)?;
+        for i in 0..n {
+            out.push(self.i32_at(at + 4 * i))?;
+        }
+        self.pos = self.pos.saturating_add(i128::from(count) * 4);
+        Ok(out)
+    }
+
+    /// The `i32` at `at`, which [`py_unpack_from`] checked, in the reader's
+    /// byte order.
+    fn i32_at(&self, at: usize) -> i32 {
+        let mut b = [0u8; 4];
+        if let Some(src) = self.data.get(at..at + 4) {
+            b.copy_from_slice(src);
+        }
+        match self.endian {
+            Endian::Little => i32::from_le_bytes(b),
+            Endian::Big => i32::from_be_bytes(b),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::py_read;
+    use super::{Endian, Reader, py_read};
+    use crate::budget::{Reservation, Unbounded};
+    use crate::error::Error;
+    use crate::error::LimitKind;
+    use crate::limits::{Meter, heap_cost};
+
+    #[test]
+    fn read_i32_array_reads_as_unitypy_and_charges_the_meter() {
+        // Recorded from UnityPy 1.25.2's memoryview reader (`read_int_array`
+        // at a set `Position`): (bytes, endian, position) -> values and the
+        // new position, or the error and the position after it.
+        let le = |v: &[i32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+        let be = |v: &[i32]| v.iter().flat_map(|x| x.to_be_bytes()).collect::<Vec<u8>>();
+        let m = Meter::unlimited();
+        let ok = |data: &[u8], endian, pos: i128| {
+            let mut r = Reader::new(data, endian);
+            r.set_position(pos);
+            let v = r.read_i32_array(&m).unwrap();
+            (v.as_slice().to_vec(), r.position(), v.charge().bytes())
+        };
+        assert_eq!(
+            ok(&le(&[3, 1, -2, 3]), Endian::Little, 0),
+            (vec![1, -2, 3], 16, heap_cost(12))
+        );
+        assert_eq!(
+            ok(&be(&[3, 1, -2, 3]), Endian::Big, 0),
+            (vec![1, -2, 3], 16, heap_cost(12))
+        );
+        // A negative position counts from the end, for the count and the
+        // array alike.
+        assert_eq!(
+            ok(&le(&[1, 7, 9]), Endian::Little, -12),
+            (vec![7], -4, heap_cost(4))
+        );
+        assert_eq!(ok(&le(&[0]), Endian::Little, 0), (vec![], 4, 0));
+
+        let err = |data: &[u8], limit: u64| {
+            let m = Meter::new(limit, std::sync::Arc::new(Unbounded), Reservation::Input);
+            let mut r = Reader::new(data, Endian::Little);
+            let e = r.read_i32_array(&m).unwrap_err();
+            (e, r.position(), m.used())
+        };
+        // UnityPy: `bad char in struct format`, Position 4.
+        let (e, pos, used) = err(&le(&[-1, 5]), u64::MAX);
+        assert!(matches!(e, Error::Malformed { .. }), "{e:?}");
+        assert_eq!((pos, used), (4, 0));
+        // A huge count over 4 bytes: refused by the bytes, nothing charged.
+        let (e, pos, used) = err(&le(&[i32::MAX, 5]), u64::MAX);
+        assert!(
+            matches!(
+                e,
+                Error::OutOfBounds {
+                    need: 8_589_934_588,
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+        assert_eq!((pos, used), (4, 0));
+        let (e, pos, _) = err(&[1, 0], u64::MAX);
+        assert!(matches!(e, Error::OutOfBounds { need: 4, .. }), "{e:?}");
+        assert_eq!(pos, 0);
+        // An array the bytes hold but the meter does not: refused before it
+        // is allocated.
+        let (e, pos, used) = err(&le(&[64; 65]), 100);
+        assert!(
+            matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputMemory),
+            "{e:?}"
+        );
+        assert_eq!((pos, used), (4, 0));
+    }
 
     #[test]
     fn py_read_is_a_python_slice() {

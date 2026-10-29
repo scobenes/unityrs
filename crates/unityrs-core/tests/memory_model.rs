@@ -37,6 +37,7 @@ use unityrs_core::budget::{
     Counting as CountingBudget, DecodeBuf, MemoryBudget, Reservation, Unbounded,
 };
 use unityrs_core::limits::{ChargeError, Limits, Meter, MeteredVec, heap_cost};
+use unityrs_core::stream::{Endian, Reader};
 use unityrs_core::typetree::{NodeId, NodeList, NodeRow};
 use unityrs_core::{Bytes, LimitKind, Parsed, RawStr, Value, ValueBuilder};
 
@@ -130,32 +131,38 @@ fn assert_limit(e: &ChargeError) {
 }
 
 /// Round 2's overlapping directory entries: K rows over the same bytes,
-/// each parse keeping its own copy of a type's dependency list (a
-/// `read_i32_array` that passed its `4 * count <= remaining` check). Every
-/// parse grows the table on the input's meter, so the copies stop at the
-/// limit, however many rows point at the bytes.
+/// each parse keeping its own copy of a type's dependency list, read by the
+/// scaffold's `Reader::read_i32_array` (which checks `4 * count` against the
+/// bytes, then charges the array to the meter it is given: round 5, it
+/// returned a plain `Vec`). Every parse charges the input's meter, so the
+/// copies stop at the limit, however many rows point at the bytes.
 fn overlapping_entries(counting: bool) -> usize {
     const K: usize = 12;
     const COUNT: usize = 2 << 20; // 8 MiB of i32 per parse
     let m = meter(LIMIT, counting);
+    let mut bytes = Vec::with_capacity(4 * (COUNT + 1));
+    bytes.extend_from_slice(&i32::try_from(COUNT).unwrap().to_le_bytes());
+    for i in 0..COUNT {
+        bytes.extend_from_slice(&i32::try_from(i & 0xff).unwrap().to_le_bytes());
+    }
     let mut parsed: Vec<MeteredVec<i32>> = Vec::with_capacity(K);
     let base = reset_peak();
     let mut refused = None;
     for _ in 0..K {
-        let mut deps = match MeteredVec::with_capacity(&m, COUNT) {
-            Ok(v) => v,
+        let mut r = Reader::new(&bytes, Endian::Little);
+        match r.read_i32_array(&m) {
+            Ok(deps) => parsed.push(deps),
             Err(e) => {
                 refused = Some(e);
                 break;
             }
-        };
-        for i in 0..COUNT {
-            deps.push(i32::try_from(i & 0xff).unwrap()).unwrap();
         }
-        parsed.push(deps);
         held_within_charge(base, &m, "overlapping entries");
     }
-    assert_limit(&refused.expect("the meter refused a copy"));
+    match refused.expect("the meter refused a copy") {
+        unityrs_core::Error::Limit(l) => assert_limit(&ChargeError::Limit(l)),
+        e => panic!("{e:?}"),
+    }
     assert!(
         peak_above(base) <= LIMIT,
         "peak {} above the limit",
