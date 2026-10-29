@@ -140,12 +140,12 @@ fn the_lock_file_links_each_rabex_to_its_one_crate() {
 }
 
 /// This crate's own sources reach rabex only through `rabex::tpk`, and there
-/// only through the reader and the F4 accessor's types; never through the
-/// blob's raw class map, whose keys are rabex's `ClassId`.
+/// only through the blob reader and the F4 accessor's types (not `TpkFile`,
+/// whose codecs are not UnityPy's); never through the blob's raw class map,
+/// whose keys are rabex's `ClassId`.
 #[test]
 fn this_crate_reaches_only_the_tpk_reader() {
-    const ALLOWED: [&str; 6] = [
-        "TpkFile",
+    const ALLOWED: [&str; 5] = [
         "TpkNodeRow",
         "TpkTypeTreeBlob",
         "UnityClass",

@@ -28,6 +28,7 @@ disallowed-types = [
     { path = "rabex::files::serializedfile::builder::SerializedFileBuilder", reason = "P3, not P1" },
     { path = "rabex::serde_typetree::Deserializer", reason = "superseded by unityrs_core::walk" },
     { path = "rabex::serde_typetree::Serializer", reason = "superseded by unityrs_core::walk" },
+    { path = "rabex::tpk::TpkFile", reason = "decodes with lz4_flex and lzma-rs, whose acceptance is not UnityPy's, and unbounded; the header is read and the payload decoded by unityrs-core's codecs here" },
 ]
 disallowed-methods = [
     { path = "rabex::tpk::TpkTypeTreeBlob::get_typetree_node", reason = "hands out rabex's TypeTreeNode and picks backwards; use class_entries and release_rows (F4)" },
@@ -36,6 +37,12 @@ disallowed-methods = [
     { path = "rabex::tpk::TpkTypeTreeBlob::try_get_typetree_node_for_class", reason = "hands out rabex's TypeTreeNode; use release_rows (F4)" },
     { path = "rabex::tpk::TpkVersion::unity_version", reason = "rabex's UnityVersion; use unityrs_core::UnityVersion::from_packed" },
     { path = "rabex::tpk::TpkCommonString::get_count", reason = "takes rabex's UnityVersion; the common strings are unityrs_core::typetree::commonstring" },
+    { path = "rabex::tpk::TpkFile::from_reader", reason = "the header is read here; see the TpkFile type" },
+    { path = "rabex::tpk::TpkFile::decompress", reason = "lz4_flex and lzma-rs, not UnityPy's codecs; decode with unityrs_core::codec" },
+    { path = "rabex::tpk::TpkFile::as_type_tree", reason = "decompresses (see decompress) and reads the blob unbounded" },
+    { path = "rabex::tpk::TpkTypeTreeBlob::from_reader", reason = "unbounded; use from_reader_bounded with TpkProvider::MAX_RECORDS (F8)" },
+    { path = "rabex::tpk::TpkClassInformation::read", reason = "unbounded; the blob reader bounds its entries (F8)" },
+    { path = "rabex::tpk::TpkCommonString::read", reason = "unbounded; the blob reader bounds its tables (F8)" },
     { path = "rabex::serde_typetree::from_slice", reason = "superseded by unityrs_core::walk" },
     { path = "rabex::serde_typetree::from_reader", reason = "superseded by unityrs_core::walk" },
     { path = "rabex::serde_typetree::from_reader_endianed", reason = "superseded by unityrs_core::walk" },

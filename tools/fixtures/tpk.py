@@ -7,11 +7,15 @@ Runs in the oracle image. Two parts:
   (a class for each root-flag combination 0, 64, 128 and 192, each followed by a class
   with both roots; versions whose type byte is 0-6 and 255; a 300-deep chain; entries
   out of order, removed classes, a class listed twice; ids past their tables; counts
-  read as UnityPy reads them; LZ4 and LZMA payloads), run through `Tpk.py`
+  read as UnityPy reads them; LZ4 and LZMA payloads, with the blocks and streams on
+  which liblz4 and liblzma decide differently from other decoders), run through `Tpk.py`
   (`TpkFile(...).GetDataBlob()`, then `get_typetree_node` per class and version with
   the blob in place of the bundled one). The TPKs (hex) and UnityPy's outcomes (JSON)
   are committed under crates/unityrs-tpk/tests/fixtures/tpk/, and
-  `cargo test -p unityrs-tpk --test g7` replays them without Python.
+  `cargo test -p unityrs-tpk --test g7` replays them without Python. A case marked
+  `refused` is one UnityPy loads and unityrs refuses by design (`PARITY.md` section
+  19.3): a TPK past one of `TpkProvider`'s bounds, or a brotli one. Only UnityPy's
+  load and class count are recorded for it.
 - The oracle image's own TPK (`UnityPy/resources/lzma.tpk`). Nothing from it is
   committed (decision 10): its outcomes are written outside the repository and
   compared at test time.
@@ -44,9 +48,11 @@ from collections.abc import Iterator
 from io import BytesIO
 from pathlib import Path
 
+import brotli
 import lz4.block
 import UnityPy
 from UnityPy.helpers import Tpk
+from UnityPy.helpers.CompressionHelper import decompress_lzma
 from UnityPy.helpers.UnityVersion import UnityVersion
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -54,8 +60,12 @@ OUT = ROOT / "crates/unityrs-tpk/tests/fixtures/tpk"
 UNITYPY = "1.25.2"
 
 MAGIC = 0x2A4B5054  # b"TPK*"
-NONE, LZ4, LZMA = 0, 1, 2
+NONE, LZ4, LZMA, BROTLI = 0, 1, 2, 3
 I32_MAX = 2**31 - 1
+
+# TpkProvider's bounds (crates/unityrs-tpk/src/lib.rs), for the `refused` cases.
+MAX_DECODED_BYTES = 16 << 20
+MAX_RECORDS = 1 << 16
 
 
 def image_tpk() -> Path:
@@ -154,21 +164,60 @@ def blob(
     return bytes(out)
 
 
-def tpk_file(payload: bytes, compression: int = NONE, sizes: tuple[int, int] | None = None) -> bytes:
-    """A TPK file around `payload` (`Tpk.py:146-174`), compressed as asked."""
+def compress(payload: bytes, compression: int) -> bytes:
     if compression == LZ4:
-        data = lz4.block.compress(payload, store_size=False)
-    elif compression == LZMA:
+        return lz4.block.compress(payload, store_size=False)
+    if compression == LZMA:
         # `decompress_lzma` (helpers/CompressionHelper.py): 5 bytes of properties, then
         # a raw LZMA1 stream.
         lc, lp, pb, dict_size = 3, 0, 2, 1 << 16
         filters = [{"id": lzma.FILTER_LZMA1, "dict_size": dict_size, "lc": lc, "lp": lp, "pb": pb}]
         data = struct.pack("<BI", (pb * 5 + lp) * 9 + lc, dict_size)
-        data += lzma.compress(payload, format=lzma.FORMAT_RAW, filters=filters)
-    else:
-        data = payload
+        return data + lzma.compress(payload, format=lzma.FORMAT_RAW, filters=filters)
+    if compression == BROTLI:
+        return brotli.compress(payload)
+    return payload
+
+
+def header(compression: int, compressed: int, uncompressed: int) -> bytes:
+    """`TpkFile.Struct` (`<IbbbbIII`); a negative size is written as its u32."""
+    sizes = (compressed & 0xFFFF_FFFF, uncompressed & 0xFFFF_FFFF)
+    return struct.pack("<IBBBBIII", MAGIC, 1, compression, 0, 0, 0, *sizes)
+
+
+def tpk_file(
+    payload: bytes,
+    compression: int = NONE,
+    sizes: tuple[int, int] | None = None,
+    data: bytes | None = None,
+) -> bytes:
+    """A TPK file around `payload` (`Tpk.py:146-174`), compressed as asked (or `data`
+    as the stored bytes); `sizes` replaces the header's compressed and uncompressed
+    sizes."""
+    if data is None:
+        data = compress(payload, compression)
     compressed, uncompressed = sizes or (len(data), len(payload))
-    return struct.pack("<IBBBBIii", MAGIC, 1, compression, 0, 0, 0, compressed, uncompressed) + data
+    return header(compression, compressed, uncompressed) + data
+
+
+def lz4_sequence(literals: bytes, offset: int | None = None, length: int = 0) -> bytes:
+    """One LZ4 sequence: a token, the literals, and a match of `length` bytes at
+    `offset` (none for the block's last sequence)."""
+
+    def extra(n: int) -> bytes:
+        out = bytearray()
+        while n >= 255:
+            out.append(255)
+            n -= 255
+        out.append(n)
+        return bytes(out)
+
+    match = 0 if offset is None else length - 4
+    token = bytes([min(len(literals), 15) << 4 | min(match, 15)])
+    out = token + (extra(len(literals) - 15) if len(literals) >= 15 else b"") + literals
+    if offset is not None:
+        out += struct.pack("<H", offset) + (extra(match - 15) if match >= 15 else b"")
+    return out
 
 
 def chain(n: int) -> list[tuple]:
@@ -248,6 +297,74 @@ def synthetic_cases() -> Iterator[tuple[str, bytes, int]]:
     # Compressed payloads.
     yield "lz4", tpk_file(root_flags_blob(), LZ4), 256
     yield "lzma", tpk_file(root_flags_blob(), LZMA), 256
+    yield from codec_cases()
+
+
+def codec_cases() -> Iterator[tuple[str, bytes, int]]:
+    """Blocks and streams on which python-lz4 (liblz4 1.9.4) and liblzma decide
+    differently from lz4_flex and lzma-rs, and the header sizes each codec reads."""
+    payload = root_flags_blob()
+    n = len(payload)
+
+    # A match at offset 0, four of the payload's zeros: liblz4 writes zeros for it
+    # (the whole payload decodes), lz4_flex refuses the offset.
+    z = payload.index(b"\0\0\0\0")
+    block = lz4_sequence(payload[:z], 0, 4) + lz4_sequence(payload[z + 4 :])
+    assert lz4.block.decompress(block, n) == payload
+    yield "lz4_offset_0_match", tpk_file(payload, LZ4, data=block), 256
+
+    # The last match ends 2 bytes before the end: liblz4 needs the last 5 to be
+    # literals and refuses the block; lz4_flex decodes it.
+    tail = payload + b"\0" * 8 + b"zz"
+    block = lz4_sequence(payload + b"\0", 1, 7) + lz4_sequence(b"zz")
+    try:
+        lz4.block.decompress(block, len(tail))
+        raise AssertionError("liblz4 decoded a match into the last literals")
+    except lz4.block.LZ4BlockError:
+        pass
+    yield "lz4_match_in_the_last_literals", tpk_file(tail, LZ4, data=block), 256
+
+    # The header's size is a maximum to liblz4 (a larger one decodes; at 2^31 and
+    # above python-lz4 refuses it), and LZMA ignores it.
+    block = compress(payload, LZ4)
+    for name, size in [("larger", n + 100), ("smaller", n - 1), ("2_31", 2**31), ("u32_max", 2**32 - 1)]:
+        yield f"lz4_declared_{name}", tpk_file(payload, LZ4, sizes=(len(block), size), data=block), 256
+    stream = compress(payload, LZMA)
+    for name, size in [("zero", 0), ("smaller", n - 1), ("larger", n + 100), ("u32_max", 2**32 - 1)]:
+        yield f"lzma_declared_{name}", tpk_file(payload, LZMA, sizes=(len(stream), size), data=stream), 256
+
+    # LZMA to the end of the stream: a corrupt end marker is liblzma's error (lzma-rs,
+    # stopping at the header's size, never read it); a stream cut short decodes what
+    # it holds; properties liblzma refuses (pb 5).
+    corrupt = bytearray(stream)
+    corrupt[-3] ^= 0xFF
+    yield "lzma_end_marker_corrupt", tpk_file(payload, LZMA, data=bytes(corrupt)), 256
+    yield "lzma_cut_short", tpk_file(payload, LZMA, data=stream[:-8]), 256
+    bad_props = bytes([225]) + stream[1:]
+    yield "lzma_bad_properties", tpk_file(payload, LZMA, data=bad_props), 256
+
+
+def refused_cases() -> Iterator[tuple[str, bytes, str]]:
+    """`(name, TPK bytes, what unityrs refuses it for)`: TPKs UnityPy loads and
+    unityrs refuses by design, each one record past a `TpkProvider` bound (the
+    `TpkError::TooLarge` it names), and a brotli one (`Unsupported`)."""
+    over = MAX_RECORDS + 1
+    at = ver(2020)
+    nodes, names = [node(0, 1, [])], strings(2)
+    big = blob([at], [], nodes, names) + b"\0" * (MAX_DECODED_BYTES + 1)
+    yield "refused_decoded_payload", tpk_file(big[: MAX_DECODED_BYTES + 1], LZMA), "decoded payload"
+    tables = [
+        ("versions", blob([at] * over, [], nodes, names)),
+        ("classes", blob([at], [(i, []) for i in range(over)], nodes, names)),
+        ("class entries", blob([at], [(1, [(at, None)] * over)], nodes, names)),
+        ("common-string versions", blob([at], [], nodes, names, [(at, 0)] * over)),
+        ("common-string indices", blob([at], [], nodes, names, [], [0] * over)),
+        ("nodes", blob([at], [], [node(0, 1, [])] * over, names)),
+        ("strings", blob([at], [], nodes, [""] * over)),
+    ]
+    for table, data in tables:
+        yield f"refused_{table.replace(' ', '_').replace('-', '_')}", tpk_file(data, LZMA), table
+    yield "refused_brotli", tpk_file(root_flags_blob(), BROTLI), "brotli"
 
 
 # --- running Tpk.py -------------------------------------------------------------------
@@ -342,6 +459,18 @@ def synthetic() -> list[dict]:
         records = list(outcomes(data))
         head, classes = records[0], records[1:]
         cases.append({"name": name, "tpk": data.hex(), "depth": depth, **head, "classes": classes})
+    for name, data, what in refused_cases():
+        found = load(data)
+        cases.append(
+            {
+                "name": name,
+                "tpk": data.hex(),
+                "depth": 256,
+                "load": None,
+                "class_count": len(found.ClassInformation),
+                "refused": what,
+            }
+        )
     return cases
 
 
@@ -361,7 +490,29 @@ def write_outcomes(tpk: Path, out: Path) -> None:
 
 
 def survey() -> None:
-    found = load(image_tpk().read_bytes())
+    data = image_tpk().read_bytes()
+    file = Tpk.TpkFile(BytesIO(data))
+    found = load(data)
+    decoded = {
+        NONE: lambda b: b,
+        LZ4: lambda b: lz4.block.decompress(b, file.UncompressedSize),
+        LZMA: decompress_lzma,
+        BROTLI: brotli.decompress,
+    }[int(file.CompressionType)](file.CompressedBytes)
+    tables = {
+        "versions": len(found.Versions),
+        "classes": len(found.ClassInformation),
+        "class entries": sum(len(i) for i in found.ClassInformation.values()),
+        "common-string versions": len(found.CommonString.VersionInformation),
+        "common-string indices": len(found.CommonString.StringBufferIndices),
+        "nodes": len(found.NodeBuffer),
+        "strings": len(found.StringBuffer),
+    }
+    print(
+        f"file {len(data)} bytes, compression {int(file.CompressionType)}, compressed {file.CompressedSize}, "
+        f"header's uncompressed size {file.UncompressedSize}, decoded {len(decoded)}; tables: "
+        + ", ".join(f"{k} {v}" for k, v in tables.items())
+    )
     trees = rows = deepest = largest = 0
     with Installed(found):
         for info in found.ClassInformation.values():

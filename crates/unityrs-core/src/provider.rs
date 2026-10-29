@@ -85,6 +85,10 @@ pub struct ProviderError {
     pub provider: &'static str,
     /// What failed.
     pub detail: Box<str>,
+    /// The bound the failure crossed, when it was one (a TPK tree deeper
+    /// than [`crate::limits::Limits::max_tree_depth`] is
+    /// [`crate::LimitKind::TreeDepth`]); `detail` is then its message.
+    pub limit: Option<crate::LimitError>,
 }
 
 /// A source of class (or script) trees.
