@@ -677,6 +677,17 @@ class ExportRows(unittest.TestCase):
         vertex = {"x": 1.0, "y": 2.0, "z": 3.0}
         with self.assertRaises(AssertionError):
             handled("3.4.0f5", m_Vertices=[vertex])
+        # The TPK keeps that layout, m_Use16BitIndices included, up to 3.5.0f4, and gives the Mesh m_VertexData at
+        # 3.5.0f5. A 3.5.0f4 Mesh reads its m_Use16BitIndices and fails the assert before the field can decide.
+        for version, old in (("3.4.0f5", True), ("3.5.0b1", True), ("3.5.0f4", True), ("3.5.0f5", False)):
+            names = {c.m_Name for c in Tpk.get_typetree_node(43, UnityVersion.from_str(version)).m_Children}
+            with self.subTest(version):
+                self.assertEqual(("m_Use16BitIndices" in names, "m_VertexData" in names), (old, not old))
+        mesh_data = tpk_object(43, "3.5.0f4", m_Vertices=[vertex], m_Use16BitIndices=0)
+        mesh = load(tpk_file([(1, 43, mesh_data)], unity_version=b"3.5.0f4"))[0].objects[1].parse_as_object()
+        self.assertEqual((mesh.m_Use16BitIndices, mesh.m_VertexData), (0, None))
+        with self.assertRaises(AssertionError):
+            handled("3.5.0f4", m_Vertices=[vertex], m_Use16BitIndices=0)
 
     # Sections 15.4, 19.2: the OBJ text, NaN and infinity included; no vertices.
     def test_mesh_obj_export(self):
@@ -1074,6 +1085,16 @@ class ExportRows(unittest.TestCase):
             dst = Image.new("RGBA", (4, 4))
             SpriteHelper.copy_triangle(texture, flat, dst, flat)
             self.assertEqual([(x, y) for y in range(4) for x in range(4) if dst.getpixel((x, y))[3]], covered)
+        # So one zero-area destination gets pixels from a source with its offsets and raises from a mirrored one:
+        # Pillow's mask of it covers pixels, but no transform defines them (section 19.2's convention).
+        big = Image.new("RGBA", (8, 8), (9, 9, 9, 255))
+        dst = Image.new("RGBA", (8, 8))
+        SpriteHelper.copy_triangle(big, ((0, 0), (2, 2), (5, 5)), dst, ((1, 1), (3, 3), (6, 6)))
+        self.assertEqual(sum(1 for y in range(8) for x in range(8) if dst.getpixel((x, y))[3]), 6)
+        with self.assertRaisesRegex(SpriteHelper.np.linalg.LinAlgError, "^Singular matrix$"):
+            SpriteHelper.copy_triangle(
+                big, ((0, 0), (2, 2), (5, 5)), Image.new("RGBA", (8, 8)), ((6, 6), (4, 4), (1, 1))
+            )
 
     # Sections 14.2, 15.7, 19.2: the extractor, from a file and function by function.
     def test_extractor_tree(self):
@@ -1467,6 +1488,21 @@ class ExportRows(unittest.TestCase):
             with self.subTest(kind=kind), self.assertRaises(UnicodeDecodeError):
                 exported(kind, code)
         self.assertEqual({exported(kind, b"") for kind in range(32)}, {'""'})
+        # Metal code raises before that: struct.error when shorter than its tag (or than 8 bytes with the header),
+        # and the memory reader's plain Exception when no NUL follows the tag or the header's offset.
+        cafe = struct.pack("<I", 0xF00DCAFE)
+        for kind in (23, 24):
+            for code, error, message in (
+                (b"\x01\x02\x03", struct.error, "at least 4 bytes"),
+                (cafe + b"\x01", struct.error, "at least 8 bytes"),
+                (b"ABCD", Exception, "^String not terminated$"),
+                (b"ABCDentry-without-nul code", Exception, "^String not terminated$"),
+                (cafe + struct.pack("<i", 100) + b"main\0x", Exception, "^String not terminated$"),
+            ):
+                with self.subTest(kind=kind, code=code), self.assertRaisesRegex(error, message) as caught:
+                    exported(kind, code)
+                self.assertIs(type(caught.exception), error)
+            self.assertEqual(exported(kind, b"ABCDmain\0hello"), '"hello"')
         # Local keywords are read only for versions in [201806140, 202012090); the reserved word from 201608170.
         for version, local in ((201806140, ["L"]), (202012089, ["L"]), (202012090, None), (201802150, None)):
             reader = EndianBinaryReader(subprogram(version, 4, b"c", ["K"], local) + b"\xff" * 4, endian="<")

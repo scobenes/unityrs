@@ -116,15 +116,15 @@ unityrs is the alternative, built around three things:
   - `ContainerHelper.path_dict` ignores an entry's file id;
   - `ObjectReader.peek_name` caches a peek node by the root's name, type and version alone, so a later tree of another layout reads the wrong field;
   - the Sprite cache key ignores the FileID;
-  - a sprite triangle whose destination corners are collinear makes `copy_triangle`'s affine matrix singular, and `LinAlgError` escapes `Sprite.image`: the triangle copies nothing;
+  - a sprite triangle whose destination corners are collinear makes `copy_triangle`'s affine matrix singular, and `LinAlgError` escapes `Sprite.image`: the triangle copies nothing, a chosen convention, since no transform defines its pixels (on the translation path UnityPy copies the pixels Pillow's mask covers, Tier A);
   - MeshRendererExporter fails on Unity 6;
   - ShaderConverter fails from 2021.3.10 and on 6000.3: it reads a pass's programs only from `m_SubPrograms`, while from 2021.3.10, 2022.1.13 and 2022.2 they can be in `m_PlayerSubPrograms`, as all of the corpus game's are (correct output reads those, with `m_ParameterBlobIndices`), and it cannot read 6000.3's sub-program layout;
   - 3.x submeshes are all read as strips;
-  - a Mesh before 3.5 and a sprite's render data before 5.6 fail `MeshHandler.process`'s assert;
+  - a Mesh before 3.5.0f5 (the TPK's layout up to 3.5.0f4, with its own vertex arrays and `m_Use16BitIndices`, which unityrs reads for the index width) and a sprite's render data before 5.6 fail `MeshHandler.process`'s assert;
   - Shader export before 5.5 raises `TypeError` on `bytes(m_Script)`, and from 5.5 on a Shader with an empty `compressedBlob` on `bytes(None)`;
-  - `ShaderSubProgram` decodes GL, GLES, console and Metal code as strict UTF-8, so code that is not UTF-8 raises: unityrs writes the comment UnityPy writes for a program type it cannot disassemble;
+  - `ShaderSubProgram` decodes GL, GLES, console and Metal code as strict UTF-8, so code that is not UTF-8 raises, and Metal code too short for its tag or header, or with no NUL after it, raises before that: unityrs writes the comment UnityPy writes for a program type it cannot disassemble;
   - `export_mesh_renderer` gives each material to a submesh `firstSubMesh` too early, and writes no texture;
-  - the extractor's crashes: GameObjects (each reachable object written once, its name ending in its path id where UnityPy's would end in `_None`), MonoBehaviours, sprites without a container, meshes without vertices, images Pillow cannot save under the container's extension, or saves as an ICO holding no image (a side below 16), and the no-container mode's missing `dst`.
+  - the extractor's crashes: GameObjects (each reachable object written once, its name ending in its path id where UnityPy's would end in `_None`), MonoBehaviours, sprites without a container whose `m_Name` has no extension, meshes without vertices, images Pillow cannot save under the container's extension, or saves as an ICO holding no image (a side below 16), and the no-container mode's missing `dst`.
 - **Unsupported until a sample and a reference exist.** unityrs refuses these with a named `Unsupported` error:
   - LZHAM, where UnityPy raises too;
   - a UnityArchive parsed as a bundle, where UnityPy raises too. Loading one is Tier A: UnityPy's detector does not know the signature and loads the file as a raw ResourceFile, and so does unityrs;
@@ -149,7 +149,7 @@ Writing has tiers of its own. Where UnityPy writes, unityrs follows the rule in 
 | Object re-save | byte-equal |
 | File / bundle save | semantic equality plus idempotence. An optional UnityPy-layout mode is byte-equal to UnityPy's `save(packer='none')` |
 | Compressed packers | equal after decompression; byte-equal LZ4HC only with liblz4 HC level 9 (pinned) |
-| `lz4hc` packer (HEAD tier) | HEAD's `save_fs(195, 3)`: header flags `0xC3`, every block flagged 3, under the compressed-packer rule above; 1.25.2 writes the same for the tuple packer `(195, 3)`, which the rule is pinned against |
+| `lz4hc` packer (HEAD tier) | byte-equal with HEAD's `save_fs(195, 3)`: header flags `0xC3`; the data in 128 KiB chunks of liblz4 HC level 9, each flagged 3 while the compressed output before it is under 0x20000 bytes (even when it grew) and stored, flagged 0, from there on; from format 9 each block padded to 16 bytes, with its offset in the blocks info (`PARITY.md` section 20). 1.25.2's tuple packer `(195, 3)` stores a chunk only when it grows, so it writes other blocks and is no reference |
 | `File.get_writeable_cab` | UnityPy's naming rule |
 | `set_image` | equal after re-decode: Pillow 9.5 BICUBIC mips, NEAREST padding, pinned etcpak/astcenc |
 

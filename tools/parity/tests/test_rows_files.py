@@ -688,15 +688,52 @@ class FileRows(unittest.TestCase):
         saved = bundle.save(packer="lz4")
         self.assertEqual((flags(saved), block_flags(saved)[1:]), (0xC2, (2, ["p"])))
         entry = bundle.files["CAB-a"].save()  # every SerializedFile entry is saved again
-        self.assertIn(lz4.block.compress(entry, mode="high_compression", compression=9, store_size=False), saved)
+
+        def hc(data):
+            return lz4.block.compress(data, mode="high_compression", compression=9, store_size=False)
+
+        self.assertIn(hc(entry), saved)
         self.assertEqual(flags(bundle.save(packer="lzma")), 0x41)
-        # lz4hc, the HEAD packer, is unknown here. HEAD writes it as save_fs(195, 3), which 1.25.2 writes for the
-        # tuple (195, 3): header flags 0xC3, blocks flagged 3, compressed with liblz4 HC level 9 as for lz4.
+        # A block is the output for a 128 KiB chunk of the entries concatenated, not for an entry: with two small
+        # entries, neither one's own output is in the file, and the concatenation's is.
+        two = load(S.fs_bundle([(b"CAB-a", payload, 4), (b"CAB-b", text_asset_file("b", "r" * 300), 4)]))[0]
+        saved = two.save(packer="lz4")
+        entries = [two.files[name].save() for name in ("CAB-a", "CAB-b")]
+        self.assertEqual([hc(e) in saved for e in entries] + [hc(b"".join(entries)) in saved], [False, False, True])
+        # lz4hc, the HEAD packer, is unknown here. The tuple (195, 3) writes header flags 0xC3 and 1.25.2's blocks,
+        # liblz4 HC level 9 as for lz4, which are not HEAD's (section 20).
         with self.assertRaisesRegex(NotImplementedError, "lz4hc"):
             bundle.save(packer="lz4hc")
         saved = bundle.save(packer=(195, 3))
         self.assertEqual((flags(saved), block_flags(saved)[1:]), (0xC3, (3, ["p"])))
-        self.assertIn(lz4.block.compress(entry, mode="high_compression", compression=9, store_size=False), saved)
+        self.assertIn(hc(entry), saved)
+        # On several chunks 1.25.2 stores a chunk only when compressing makes it larger, whatever came before;
+        # HEAD compresses the first chunk always and stores every chunk once 0x20000 compressed bytes are out.
+        from UnityPy.helpers import CompressionHelper as H
+
+        def blocks(resource):
+            raw_bundle = load(S.fs_bundle([(b"CAB-a", payload, 4), (b"CAB-a.resS", resource, 0)]))[0]
+            seen = []
+            real = H.chunk_based_compress
+
+            def spy(data, flag):
+                out = real(data, flag)
+                seen.append(out[1])
+                return out
+
+            with mock.patch.object(H, "chunk_based_compress", spy):
+                saved = raw_bundle.save(packer=(195, 3))
+            self.assertEqual(bytes(load(saved)[0].files["CAB-a.resS"].bytes), resource)
+            return seen[0]
+
+        chunk = 0x20000
+        halves = b"".join(random.Random(i).randbytes(chunk // 2) + bytes(chunk // 2) for i in range(3))
+        got = blocks(halves)
+        # The entries come first, so the three chunks of the resource span four of the data.
+        self.assertEqual([f for _, _, f in got], [3, 3, 3, 3])
+        self.assertGreaterEqual(got[0][1] + got[1][1], chunk, "HEAD would store the last two")
+        got = blocks(random.Random(7).randbytes(chunk + chunk // 2))
+        self.assertEqual([(f, size == stored) for stored, size, f in got], [(0, True), (0, True)])
         # save_web_raw: UnityWeb and UnityRaw other than format 6 save through it, formats 1 to 3 only.
         from test_dump import unityraw
 
@@ -712,6 +749,16 @@ class FileRows(unittest.TestCase):
             )
             return out + block
 
+        # UnityWeb and UnityRaw format 6 save through save_fs(64, 64): header flags 0x40, and they reload.
+        for signature in (b"UnityRaw", b"UnityWeb"):
+            with self.subTest(signature=signature, format=6):
+                six = load(signature + unityraw(6, [(b"CAB-r", payload)])[len(b"UnityRaw") :])[0]
+                self.assertEqual((six.signature, six.version), (signature.decode(), 6))
+                saved = six.save()
+                head = saved.index(b"5.6.7f1\0") + 8
+                self.assertEqual(struct.unpack_from(">I", saved, head + 16)[0], 0x40)
+                back = load(saved)[0]
+                self.assertEqual([o.parse_as_dict()["m_Name"] for o in back.files["CAB-r"].objects.values()], ["p"])
         for fmt in (1, 2, 3, 4, 5, 7):
             with self.subTest(format=fmt):
                 raw = load(old_raw(fmt, b"CAB-r", payload) if fmt <= 3 else unityraw(fmt, [(b"CAB-r", payload)]))[0]
