@@ -64,7 +64,6 @@ fn records(text: &[u8]) -> Vec<Json> {
 }
 
 #[test]
-#[ignore = "STUB(D): ObjectRef's reads and container::read_container"]
 fn the_matrix_dumps_in_path_order_and_the_same_at_any_jobs() {
     let tmp = Tmp::new("testkit-order");
     let cases = matrix_folder(&tmp);
@@ -116,7 +115,6 @@ fn the_matrix_dumps_in_path_order_and_the_same_at_any_jobs() {
 }
 
 #[test]
-#[ignore = "STUB(D): ObjectRef's reads and container::read_container"]
 fn compare_py_finds_no_format_problem_in_a_testkit_dump() {
     let tmp = Tmp::new("testkit-compare");
     matrix_folder(&tmp);
@@ -220,7 +218,6 @@ fn failing_entries() -> Vec<(&'static str, Vec<u8>, bool)> {
 }
 
 #[test]
-#[ignore = "STUB(D): ObjectRef's reads and container::read_container"]
 fn a_failing_entry_fails_its_input() {
     let cases = failing_entries();
     if let Some(dir) = std::env::var_os("UNITYRS_WRITE_DUMP_CASES") {
