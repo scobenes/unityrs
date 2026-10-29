@@ -20,6 +20,7 @@ import argparse
 import contextlib
 import ctypes
 import fnmatch
+import functools
 import gzip
 import hashlib
 import io
@@ -36,7 +37,13 @@ from multiprocessing import get_context
 from multiprocessing.connection import wait
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+# What the interpreter loaded before this script imported anything but the
+# standard library: run as a script, as for a dump, that is its start-up
+# (site, .pth files). Every module loaded after it must be the standard
+# library's, the parity tools', or a pinned wheel's (loaded_problem).
+AT_START = tuple(sys.modules.values())
 
 import UnityPy  # noqa: E402
 from UnityPy.files import BundleFile, File, SerializedFile, WebFile  # noqa: E402
@@ -74,7 +81,8 @@ def oracle_stack_problem() -> str | None:
     pinned wheel holds, and every package requirements-oracle.txt pins
     (numpy included, which changes what UnityPy renders) installed from its
     pinned wheel: at its version, each file hashing as that wheel's RECORD
-    says, and imported from those files (oracle_env.wheel_problems).
+    says, and imported from those files (oracle_env.wheel_problems); and no
+    module loaded from anywhere else (loaded_problem).
     """
     if not HAVE_BOOST:
         return "UnityPyBoost is not loaded, so UnityPy would parse with its pure-Python reader"
@@ -89,7 +97,28 @@ def oracle_stack_problem() -> str | None:
     if problems:
         more = f"; and {len(problems) - 3} more" if len(problems) > 3 else ""
         return f"{'; '.join(problems[:3])}{more} ({C.ORACLE_RECORDS.name})"
-    return pin_problem()
+    return loaded_problem() or pin_problem()
+
+
+@functools.cache
+def _loaded_modules() -> oracle_env.LoadedModules:
+    return oracle_env.LoadedModules(oracle_env.pinned_files(C.oracle_records()), [HERE], AT_START)
+
+
+def loaded_problem() -> str | None:
+    """Which modules this process loaded from neither the standard library, the parity tools nor the pinned wheels.
+
+    A pinned package that imports another one when it is installed (Pillow
+    imports cffi, and defusedxml; fsspec imports zstandard) would otherwise
+    run code that is not the oracle's. Checked once the stack is (oracle_stack_problem),
+    and again in each input's process after its dump (_child), for what a
+    dump loads; the verdicts are kept, so that re-checks only the new modules.
+    """
+    problems = _loaded_modules().problems()
+    if not problems:
+        return None
+    more = f"; and {len(problems) - 3} more" if len(problems) > 3 else ""
+    return f"{'; '.join(problems[:3])}{more}"
 
 
 # ---------------------------------------------------------------------- hooks
@@ -587,6 +616,10 @@ class IndexMismatch(RuntimeError):
     """An input is not the file its index entry pins (another sha256), so the dump would not be of the corpus."""
 
 
+class NotTheOracle(RuntimeError):
+    """An input's process loaded a module from outside the pins (loaded_problem), so its dump is not the oracle's."""
+
+
 def _send(conn, result):
     conn.send(result)
 
@@ -596,6 +629,9 @@ def _child(conn, job):
     pin_none()
     try:
         result = ("ok", dump_input(job))
+        problem = loaded_problem()
+        if problem:
+            result = ("not the oracle", problem)
     except BaseException:  # noqa: BLE001 - every UnityPy outcome is recorded inside; this is the dumper's own failure
         result = ("raised", traceback.format_exc())
     _send(conn, result)
@@ -610,9 +646,11 @@ def _died(code):
 
 
 def _settle(job, msg, exitcode):
-    """An input's result: its records, a crash record for a death by signal, or DumperError."""
+    """An input's result: its records, or a crash record for a death by signal; else NotTheOracle or DumperError."""
     if msg is not None and msg[0] == "ok":
         return msg[1]
+    if msg is not None and msg[0] == "not the oracle":
+        raise NotTheOracle(f"while dumping {job[1]!r}: {msg[1]}")
     if msg is not None:
         raise DumperError(f"{job[1]!r}: the dumper raised\n{msg[1].rstrip()}")
     if exitcode is not None and exitcode < 0:
@@ -796,6 +834,9 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 1
+    except NotTheOracle as e:
+        print(f"unitypy_dump: refusing to dump: this is not the pinned oracle ({e}); no dump written", file=sys.stderr)
+        return 2
     finally:
         if results is not None:
             results.close()

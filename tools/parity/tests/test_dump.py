@@ -10,6 +10,7 @@ Needs the oracle stack; skipped elsewhere.
 import contextlib
 import gzip
 import hashlib
+import importlib
 import io
 import json
 import os
@@ -966,6 +967,49 @@ class DumpTests(unittest.TestCase):
                 if code:
                     self.assertIn(b"not the pinned oracle", proc.stderr)
                     self.assertIn(said.encode(), proc.stderr)
+
+    def test_refuses_a_module_from_outside_the_pins(self):
+        """A module loaded from neither the standard library nor a pinned wheel, at import or in a dump, is refused.
+
+        Pillow imports defusedxml when there is one, as it imports cffi and
+        fsspec zstandard; one on PYTHONPATH would run code that is not the
+        oracle's. test_samples is the check that the real dumps load none.
+        """
+        tiny, out = self.tmp / "tiny", self.tmp / "x.jsonl"
+        tiny.write_bytes(b"tiny")
+        planted = self.tmp / "planted"
+        (planted / "defusedxml").mkdir(parents=True)
+        (planted / "defusedxml" / "__init__.py").write_text("")
+        (planted / "defusedxml" / "ElementTree.py").write_text("")
+        (planted / "unityrs_planted.py").write_text("X = 1\n")
+        # At import.
+        proc = dump_process(tiny, "-o", out, env={"PYTHONPATH": str(planted)})
+        self.assertEqual(proc.returncode, 2, proc.stderr.decode(errors="replace"))
+        self.assertIn(b"not the pinned oracle", proc.stderr)
+        said = (
+            f"module defusedxml is loaded from {(planted / 'defusedxml' / '__init__.py').resolve()}, which is neither"
+        )
+        self.assertIn(said.encode(), proc.stderr)
+        self.assertFalse(out.exists())
+        # While an input is dumped, in its own process: the run stops with no dump.
+        dump_one = unitypy_dump._dump_input
+
+        def importing(job):
+            importlib.import_module("unityrs_planted")
+            return dump_one(job)
+
+        with (
+            mock.patch.object(unitypy_dump, "_dump_input", importing),
+            mock.patch.object(sys, "path", [str(planted), *sys.path]),
+            contextlib.redirect_stderr(io.StringIO()) as err,
+        ):
+            self.assertEqual(unitypy_dump.main(["-q", str(tiny), "-o", str(out)]), 2)
+        self.assertIn("refusing to dump: this is not the pinned oracle (while dumping 'tiny': module", err.getvalue())
+        self.assertIn(f"unityrs_planted is loaded from {(planted / 'unityrs_planted.py').resolve()}", err.getvalue())
+        self.assertNotIn("unityrs_planted", sys.modules)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["planted", "tiny"])
+        # The same input without the import is dumped.
+        self.assertEqual(dump(tiny, "-o", out), 0)
 
     def test_index_mode_and_sha_check(self):
         src = samples_dir()

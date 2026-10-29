@@ -25,6 +25,12 @@
    "files": 6,
    "record_sha256": "5cd4135e275886d8385253c7b048aca09887587a19cb7e6275600b96a22a5e27"
   },
+  "cffi": {
+   "version": "2.1.0",
+   "wheel_sha256": "aa7a1b53a2a4452ada2d1b5dade9960b2522f1e61293a811a077439e39029565",
+   "files": 30,
+   "record_sha256": "096876f1e42ef0e6c1de09917ccea06d1d341321ffb14c685921d7d7e2640b0c"
+  },
   "etcpak": {
    "version": "0.9.14",
    "wheel_sha256": "5147cd6ab993ae766894ede53cb3dd1239cdd9f1d2bf58f5881bd1214eb12904",
@@ -61,6 +67,12 @@
    "files": 123,
    "record_sha256": "27277fb691fb1aa83fa78ecea59cd16da42deb2828f5a38f1de3bdbb6bc3869a"
   },
+  "pycparser": {
+   "version": "2.21",
+   "wheel_sha256": "8ee45429555515e1f6b185e78100aea234072576aa43ab53aefcae078162fca9",
+   "files": 22,
+   "record_sha256": "a6abf1647341297ed6e24ae8a1557be18d570d0cfc79de0e2f819e4912fca3a3"
+  },
   "pyfmodex": {
    "version": "0.7.2",
    "wheel_sha256": "1c42112b788e80ee7b4b57ae25bbbc0a98eb1e32a8e7c9e1246698cdf72efa9d",
@@ -78,6 +90,12 @@
    "wheel_sha256": "03723fdfc83752cae89f59d41599d9a94a551a9d439e7f3a544b0c7feab0b549",
    "files": 95,
    "record_sha256": "5b5afcdd48a976a02e54cafb45cdfebc8bc710f19db17704f63a6520f3368aa8"
+  },
+  "zstandard": {
+   "version": "0.25.0",
+   "wheel_sha256": "9300d02ea7c6506f00e627e287e0492a5eb0371ec1670ae852fefffa6164b072",
+   "files": 10,
+   "record_sha256": "f24c80870956b813c83c86296c75066a28ae7c8f8c45693b9cf0d08a2debef98"
   }
  }
 }

@@ -6,9 +6,10 @@
     python tools/parity/oracle_env.py --pin-records DIR  # re-pin oracle_records.json from the wheels in DIR
 
 The pins are the whole oracle (docs/DESIGN.md section 3): requirements-oracle.txt
-explains why numpy, which UnityPy imports when it can, is among them. A pin
-is satisfied by the files of its pinned wheel, not by a version string, so for
-each pin the check (also what unitypy_dump.py runs before it dumps) requires:
+explains why numpy, cffi and zstandard, which the stack imports when it can,
+are among them. A pin is satisfied by the files of its pinned wheel, not by a
+version string, so for each pin the check (also what unitypy_dump.py runs
+before it dumps) requires:
 - the distribution installed at the pinned version;
 - its RECORD's hashed entries, without those the installer writes (INSTALLER,
   REQUESTED, direct_url.json, and the launchers outside site-packages), to
@@ -26,6 +27,11 @@ each pin the check (also what unitypy_dump.py runs before it dumps) requires:
   installs one. The walk follows none, so a planted link to a folder (which
   Python would import as a package in place of a module of the same name)
   is refused rather than skipped.
+A process that runs the oracle also checks what it loads (LoadedModules):
+every module it imports, at import time or while it dumps, must come from
+the standard library, the parity tools, or a pinned wheel's files. So a
+package a pin imports only when it is installed (requirements-oracle.txt
+names those the image holds) cannot change the dump unseen.
 It guards against drift (an edited file, another build, a stray copy), not
 against someone set on deceiving it: code run at start-up from outside the
 pins (a .pth file, sitecustomize) and a compiled file planted in
@@ -56,6 +62,7 @@ import json
 import os
 import re
 import sys
+import sysconfig
 import zipfile
 from importlib import metadata
 from pathlib import Path
@@ -234,6 +241,62 @@ def wheel_problems(records: dict[str, str], path: list[str] | None = None) -> tu
         problems += import_problems(name, dist, entries)
         problems += stray_problems(name, dist, entries)
     return problems, digests
+
+
+def pinned_files(records: dict[str, str], path: list[str] | None = None) -> set[Path]:
+    """The resolved path of each file the RECORDs of the pinned distributions on `path` list (default sys.path)."""
+    files = set()
+    for name in records:
+        dist = _distribution(name, path)
+        if dist is not None:
+            site = Path(dist.locate_file(""))
+            files.update((site / entry).resolve() for entry in installed_entries(dist))
+    return files
+
+
+class LoadedModules:
+    """Which loaded modules come from anywhere but the standard library, the `own` folders, or the pinned `files`.
+
+    Modules in `before`, loaded before the oracle's script imported
+    anything, are the interpreter's start-up (site, .pth files), which this
+    check does not look at; neither are modules without a file (built in,
+    frozen without a source, namespace packages). A module under the standard
+    library's folder but in a site-packages or dist-packages folder is not
+    the standard library's. Each module's verdict is kept, so a process
+    forked after a check re-checks only what it loads itself.
+    """
+
+    def __init__(self, files, own, before):
+        self.files = frozenset(files)
+        self.own = [Path(p).resolve() for p in own]
+        self.stdlib = sorted({Path(sysconfig.get_paths()[key]).resolve() for key in ("stdlib", "platstdlib")})
+        self.before = {id(module): module for module in before}  # held, so no id is reused
+        self.verdicts = {}
+
+    def allowed(self, path: Path) -> bool:
+        if path in self.files or any(path.is_relative_to(own) for own in self.own):
+            return True
+        for stdlib in self.stdlib:
+            if path.is_relative_to(stdlib):
+                return not {"site-packages", "dist-packages"} & set(path.relative_to(stdlib).parts)
+        return False
+
+    def problems(self, modules: dict | None = None) -> list[str]:
+        """'module NAME is loaded from PATH, ...' for each module of `modules` (default sys.modules) not allowed."""
+        problems = []
+        for name, module in sorted(list((sys.modules if modules is None else modules).items()), key=lambda kv: kv[0]):
+            file = getattr(module, "__file__", None)
+            if id(module) in self.before or not isinstance(file, str):
+                continue
+            if (name, file) not in self.verdicts:
+                path = Path(file).resolve()
+                self.verdicts[name, file] = None if self.allowed(path) else path
+            if self.verdicts[name, file] is not None:
+                problems.append(
+                    f"module {name} is loaded from {self.verdicts[name, file]}, "
+                    "which is neither the standard library nor a pinned wheel's file"
+                )
+        return problems
 
 
 @functools.cache
