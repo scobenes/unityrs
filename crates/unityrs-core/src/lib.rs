@@ -216,4 +216,18 @@ mod tests {
         let missing = unityrs_testkit::public_types::unasserted(&src);
         assert!(missing.is_empty(), "not asserted Send + Sync: {missing:?}");
     }
+
+    /// Plan 4.1: outside its tests the core starts no thread and never
+    /// sleeps, parks, or waits on a condition, a barrier or a channel
+    /// (`unityrs_testkit::waits`), so a batch engine's pool threads cannot
+    /// block inside a core call, and the engine alone decides the threads.
+    #[test]
+    fn the_core_starts_no_thread_and_never_waits() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let found = unityrs_testkit::waits::waits(&src);
+        assert!(
+            found.is_empty(),
+            "the core waits or starts a thread: {found:?}"
+        );
+    }
 }
