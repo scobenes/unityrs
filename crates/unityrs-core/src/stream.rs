@@ -138,7 +138,11 @@ pub fn py_align(pos: i128, n: u32) -> i128 {
 /// a slice from `pos` that may hold a NUL or nothing at all. Implemented by
 /// the scaffold.
 #[must_use]
-pub fn py_string_to_null(data: &[u8], pos: i128, max_length: usize) -> Option<(Range<usize>, i128)> {
+pub fn py_string_to_null(
+    data: &[u8],
+    pos: i128,
+    max_length: usize,
+) -> Option<(Range<usize>, i128)> {
     let l = i128::try_from(data.len()).ok()?;
     let max = i128::try_from(max_length).ok()?;
     let clamp = |i: i128| usize::try_from(i.clamp(0, l)).unwrap_or(0);

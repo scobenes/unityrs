@@ -468,7 +468,12 @@ impl<'a> DecodeBuf<'a> {
 
     /// The output as `Bytes` that carry their booking ([`budgeted_bytes`]).
     pub fn into_bytes(self) -> Result<Bytes, Error> {
-        Ok(budgeted_bytes(self.buf, self.permit, self.budget, self.what)?)
+        Ok(budgeted_bytes(
+            self.buf,
+            self.permit,
+            self.budget,
+            self.what,
+        )?)
     }
 }
 
@@ -522,9 +527,14 @@ mod tests {
     fn a_decode_is_refused_before_it_outgrows_the_budget() {
         // A block declared at 10 bytes that keeps decoding: the budget holds 100.
         let budget = Counting::new(100);
-        let mut out =
-            DecodeBuf::new(&budget, Reservation::BundleData, 10, 1 << 30, LimitKind::BlockOutput)
-                .unwrap();
+        let mut out = DecodeBuf::new(
+            &budget,
+            Reservation::BundleData,
+            10,
+            1 << 30,
+            LimitKind::BlockOutput,
+        )
+        .unwrap();
         assert_eq!(budget.used(), 10);
         out.extend_from_slice(&[1; 10]).unwrap();
         let e = out.grow_zeroed(200).unwrap_err();
@@ -544,9 +554,14 @@ mod tests {
 
     #[test]
     fn a_decode_stops_at_its_cap_and_at_the_inputs_meter() {
-        let mut out =
-            DecodeBuf::new(&Unbounded, Reservation::BundleData, 4, 16, LimitKind::BlockOutput)
-                .unwrap();
+        let mut out = DecodeBuf::new(
+            &Unbounded,
+            Reservation::BundleData,
+            4,
+            16,
+            LimitKind::BlockOutput,
+        )
+        .unwrap();
         out.extend_from_slice(&[0; 16]).unwrap();
         let e = out.extend_from_slice(&[0]).unwrap_err();
         assert!(
@@ -560,14 +575,23 @@ mod tests {
         };
         let meter = Meter::new();
         meter.charge(Metered::DecodedBytes, 40, &limits).unwrap();
-        let mut out =
-            DecodeBuf::new(&Unbounded, Reservation::BundleData, 0, 1 << 20, LimitKind::BlockOutput)
-                .unwrap()
-                .with_meter(&meter, &limits);
+        let mut out = DecodeBuf::new(
+            &Unbounded,
+            Reservation::BundleData,
+            0,
+            1 << 20,
+            LimitKind::BlockOutput,
+        )
+        .unwrap()
+        .with_meter(&meter, &limits);
         let filled = out.grow_zeroed(8).unwrap();
         assert_eq!(filled.len(), 8);
         out.truncate(5);
-        assert_eq!(meter.used(Metered::DecodedBytes), 45, "a cut tail is refunded");
+        assert_eq!(
+            meter.used(Metered::DecodedBytes),
+            45,
+            "a cut tail is refunded"
+        );
         let e = out.grow_zeroed(6).unwrap_err();
         assert!(
             matches!(e, Error::Limit(l) if l.kind == LimitKind::BundleUncompressed),

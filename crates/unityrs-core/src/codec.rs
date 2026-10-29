@@ -289,8 +289,14 @@ mod tests {
     #[test]
     fn an_id_past_the_registry_is_handed_back() {
         let mut c = Codecs::empty();
-        assert_eq!(c.set(Codec::Other(64), Arc::new(Lz4)), Err(Codec::Other(64)));
-        assert_eq!(c.set(Codec::Other(200), Arc::new(Lz4)), Err(Codec::Other(200)));
+        assert_eq!(
+            c.set(Codec::Other(64), Arc::new(Lz4)),
+            Err(Codec::Other(64))
+        );
+        assert_eq!(
+            c.set(Codec::Other(200), Arc::new(Lz4)),
+            Err(Codec::Other(200))
+        );
         assert_eq!(c.set(Codec::Other(5), Arc::new(Lz4)), Ok(()));
         assert!(c.get(Codec::Other(5)).is_some());
     }

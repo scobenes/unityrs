@@ -142,7 +142,9 @@ mod tests {
     fn a_string_read_from_a_buffer_shares_it() {
         // A thousand rows naming one 32 KiB string cost a handle each, not a copy.
         let buf = bytes::Bytes::from(vec![b'x'; 32 * 1024]);
-        let names: Vec<RawStr> = (0..1000).map(|_| RawStr::from_shared(buf.slice(..))).collect();
+        let names: Vec<RawStr> = (0..1000)
+            .map(|_| RawStr::from_shared(buf.slice(..)))
+            .collect();
         assert!(names.iter().all(|n| n.as_bytes().as_ptr() == buf.as_ptr()));
         assert_eq!(names[999].len(), 32 * 1024);
     }

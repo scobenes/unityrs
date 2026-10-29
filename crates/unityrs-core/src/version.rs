@@ -302,6 +302,13 @@ mod tests {
         assert!(small < big_lo);
         assert!(big_lo < big_hi, "compared from the most significant limb");
         assert!(big_hi < bigger);
-        assert_eq!(UnityVersion { raw: "x".into(), packed: big_lo.clone() }.packed_u64(), None);
+        assert_eq!(
+            UnityVersion {
+                raw: "x".into(),
+                packed: big_lo.clone()
+            }
+            .packed_u64(),
+            None
+        );
     }
 }

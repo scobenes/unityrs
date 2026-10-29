@@ -398,7 +398,11 @@ mod tests {
         // UnityPy's pure-Python reader: a TypelessData length of -100 at byte 200
         // ends the read at 104, so bytes_read is -96 (tests/fixtures: walk).
         let list = Arc::new(NodeList::from_rows(vec![NodeRow::new(0, "Base", "Base")]).unwrap());
-        let p = Parsed::new(vec![list].into(), Value::Dict(Map::new(0)), (-96_i64).try_into().unwrap());
+        let p = Parsed::new(
+            vec![list].into(),
+            Value::Dict(Map::new(0)),
+            (-96_i64).try_into().unwrap(),
+        );
         assert_eq!(p.bytes_read, -96);
     }
 
