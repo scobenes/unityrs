@@ -36,6 +36,7 @@ try:
 except ImportError:  # pragma: no cover - outside the oracle image
     unitypy_dump = None
 
+import canonical as C  # noqa: E402
 import compare  # noqa: E402
 import synth as S  # noqa: E402
 
@@ -156,6 +157,10 @@ class DumpTests(unittest.TestCase):
             (head["format"], head["version"], head["levels"]), ("unityrs-canonical-dump", 1, ["L0", "L1", "L2", "L3"])
         )
         self.assertTrue(head["producer"]["boost"])
+        # The header names the stack: the Boost binary's hash and every pinned package's version.
+        self.assertEqual(head["producer"]["boost_sha256"], C.ORACLE_BOOST_SHA256)
+        self.assertEqual(head["producer"]["packages"], C.oracle_pins())
+        self.assertIn("numpy", head["producer"]["packages"])
         self.assertEqual(end, {"rec": "end", "files": 13, "objects": 53})
         self.assert_canonical(out)
 
@@ -860,14 +865,26 @@ class DumpTests(unittest.TestCase):
         tiny = self.tmp / "tiny"
         tiny.write_bytes(b"tiny")
         out = self.tmp / "x.jsonl"
-        for patch in (
-            mock.patch.object(unitypy_dump, "HAVE_BOOST", False),
-            mock.patch.object(unitypy_dump.UnityPy, "__version__", "1.24.0"),
+        installed = C.installed_packages()
+        without_numpy = {k: v for k, v in installed.items() if k != "numpy"}
+        for label, patch, said in (
+            ("no Boost", mock.patch.object(unitypy_dump, "HAVE_BOOST", False), "UnityPyBoost is not loaded"),
+            ("UnityPy", mock.patch.object(unitypy_dump.UnityPy, "__version__", "1.24.0"), "UnityPy is 1.24.0"),
+            # Another build of UnityPyBoost beside UnityPy 1.25.2.
+            ("Boost build", mock.patch.object(unitypy_dump, "BOOST_SHA256", "0" * 64), "UnityPyBoost has sha256 000"),
+            # numpy absent: UnityPy then renders sprites with its pure-Python solver.
+            ("numpy", mock.patch.object(C, "installed_packages", return_value=without_numpy), "numpy is not installed"),
+            (
+                "Pillow",
+                mock.patch.object(C, "installed_packages", return_value={**installed, "pillow": "10.0.0"}),
+                "pillow is 10.0.0, not the pinned 9.5.0",
+            ),
         ):
-            with self.subTest(patch.attribute):
+            with self.subTest(label):
                 with patch, contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
                     unitypy_dump.main([str(tiny), "-o", str(out), "-q"])
                 self.assertIn("not the pinned oracle", err.getvalue())
+                self.assertIn(said, err.getvalue())
                 self.assertFalse(out.exists())
 
     def test_index_mode_and_sha_check(self):

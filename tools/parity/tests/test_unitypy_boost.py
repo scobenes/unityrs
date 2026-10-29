@@ -5,6 +5,9 @@ information (a float32 signalling NaN, a bool byte of 2), the test says so.
 Needs the oracle stack (UnityPy with UnityPyBoost); skipped elsewhere.
 """
 
+import base64
+import hashlib
+import importlib.metadata
 import struct
 import sys
 import unittest
@@ -147,6 +150,20 @@ def example():
 class ThroughBoost(unittest.TestCase):
     def test_oracle_is_boost(self):
         self.assertIsNotNone(TTH.read_typetree_boost, "UnityPyBoost must be loaded for the oracle")
+
+    def test_boost_is_the_pinned_wheels_binary(self):
+        # The loaded binary, and the RECORD of the wheel it came from, both hash as canonical.py pins.
+        module = sys.modules["UnityPy.UnityPyBoost"]
+        with open(module.__file__, "rb") as fh:
+            self.assertEqual(hashlib.sha256(fh.read()).hexdigest(), C.ORACLE_BOOST_SHA256)
+        name = "UnityPy/" + module.__file__.rsplit("/", 1)[1]
+        rows = [r.split(",") for r in importlib.metadata.distribution("unitypy").read_text("RECORD").splitlines()]
+        (digest,) = [h for path, h, _ in rows if path == name]
+        algorithm, b64 = digest.split("=", 1)
+        self.assertEqual(
+            (algorithm, base64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4)).hex()), ("sha256", C.ORACLE_BOOST_SHA256)
+        )
+        self.assertEqual(name, "UnityPy/UnityPyBoost.cpython-311-x86_64-linux-gnu.so")
 
     def test_spec_example_is_what_the_oracle_writes(self):
         root, data = example()

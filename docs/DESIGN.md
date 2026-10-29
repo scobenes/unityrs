@@ -57,9 +57,10 @@ unityrs is the alternative, built around three things:
 | astc-encoder-py | 0.1.12 |
 | etcpak | 0.9.14 |
 | fmod_toolkit | 0.1.3 |
+| numpy | 2.4.6 (not a UnityPy dependency, but UnityPy uses it when present: sprite rendering differs without it) |
 | liblz4 / liblzma | as installed |
 
-A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a documented step.
+`tools/parity/requirements-oracle.txt` pins the whole stack, dependencies included, as hash-checked wheels; the oracle dumper refuses to run when any of them, or the UnityPyBoost binary, differs. A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a documented step.
 
 **Reading**
 - **Tier A: bit-exact** wherever UnityPy is right.

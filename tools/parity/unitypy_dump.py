@@ -45,6 +45,18 @@ import canonical as C  # noqa: E402
 # What routes parse_as_dict through UnityPyBoost; without it the oracle is not the pinned one.
 HAVE_BOOST = TypeTreeHelper.read_typetree_boost is not None
 
+
+def _boost_sha256() -> str | None:
+    """The sha256 of the UnityPyBoost binary this process loaded, or None without one."""
+    module = sys.modules.get("UnityPy.UnityPyBoost")
+    if not HAVE_BOOST or module is None:
+        return None
+    with open(module.__file__, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+BOOST_SHA256 = _boost_sha256()
+
 NOTE_MAX = 300
 INDEX_KINDS = ("bundle", "unitypy-sample")
 # References added to None in each input's process (see pin_none).
@@ -52,11 +64,21 @@ NONE_PIN = 1 << 40
 
 
 def oracle_stack_problem() -> str | None:
-    """Why this interpreter is not the pinned oracle, or None when it is."""
+    """Why this interpreter is not the pinned oracle, or None when it is.
+
+    The oracle is UnityPy with UnityPyBoost, that binary being the one the
+    pinned wheel holds, and every package requirements-oracle.txt pins at its
+    version (numpy included, which changes what UnityPy renders).
+    """
     if not HAVE_BOOST:
         return "UnityPyBoost is not loaded, so UnityPy would parse with its pure-Python reader"
     if UnityPy.__version__ != C.ORACLE_UNITYPY:
         return f"UnityPy is {UnityPy.__version__}, not the pinned {C.ORACLE_UNITYPY}"
+    if BOOST_SHA256 != C.ORACLE_BOOST_SHA256:
+        return f"UnityPyBoost has sha256 {BOOST_SHA256}, not the pinned wheel's {C.ORACLE_BOOST_SHA256}"
+    problems = C.stack_problems(C.installed_packages(), C.oracle_pins())
+    if problems:
+        return f"{'; '.join(problems)} ({C.ORACLE_REQUIREMENTS.name})"
     return pin_problem()
 
 
@@ -662,6 +684,7 @@ def main(argv=None):
     problem = oracle_stack_problem()
     if problem:
         ap.error(f"refusing to dump: this is not the pinned oracle ({problem})")
+    installed = C.installed_packages()
 
     # The dump and the stats both name corpus inputs; neither may land in the repository.
     for label, path in (("the dump", args.output), ("--stats", args.stats)):
@@ -684,6 +707,9 @@ def main(argv=None):
             "name": C.ORACLE_PRODUCER,
             "unitypy": UnityPy.__version__,
             "boost": HAVE_BOOST,
+            "boost_sha256": BOOST_SHA256,
+            # Every pinned package as installed: oracle_stack_problem has checked that they are the pins.
+            "packages": {name: installed[name] for name in sorted(C.oracle_pins())},
             "python": sys.version.split()[0],
         },
     }

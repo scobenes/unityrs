@@ -562,13 +562,36 @@ class CompareTests(unittest.TestCase):
     def test_reference_must_come_from_the_pinned_oracle(self):
         recs = base_records()
         pb = self.write("b.jsonl", recs)
-        oracle = {"name": C.ORACLE_PRODUCER, "unitypy": C.ORACLE_UNITYPY, "boost": True, "python": "3.11"}
+        pins = C.oracle_pins()
+        oracle = {
+            "name": C.ORACLE_PRODUCER,
+            "unitypy": C.ORACLE_UNITYPY,
+            "boost": True,
+            "boost_sha256": C.ORACLE_BOOST_SHA256,
+            "packages": pins,
+            "python": "3.11",
+        }
         self.assertEqual(self.cli(self.write("a.jsonl", recs, head=header(producer=oracle)), pb), 0)
-        for change in ({"boost": False}, {"unitypy": "1.24.0"}, {"boost": 1}):
+        without_numpy = {k: v for k, v in pins.items() if k != "numpy"}
+        changes = [
+            ({"boost": False}, "the oracle is UnityPy"),
+            ({"unitypy": "1.24.0"}, "the oracle is UnityPy"),
+            ({"boost": 1}, "the oracle is UnityPy"),
+            # Another UnityPyBoost build, or none recorded (a dump from before the hash was recorded).
+            ({"boost_sha256": "0" * 64}, "the UnityPyBoost binary " + "0" * 64),
+            ({"boost_sha256": None}, "the UnityPyBoost binary None"),
+            # The stack around UnityPy: numpy missing (UnityPy then renders sprites without it), another
+            # version, an extra package, or no record of the packages.
+            ({"packages": without_numpy}, "numpy is not installed"),
+            ({"packages": {**pins, "pillow": "10.0.0"}}, "pillow is 10.0.0, not the pinned 9.5.0"),
+            ({"packages": {**pins, "scipy": "1.17.1"}}, "scipy 1.17.1 is installed but not pinned"),
+            ({"packages": None}, "packages None"),
+        ]
+        for change, said in changes:
             with self.subTest(change):
                 pa = self.write("a.jsonl", recs, head=header(producer={**oracle, **change}))
                 self.assertEqual(self.cli(pa, pb), 2)
-                self.assertIn("the oracle is UnityPy", self.errors)
+                self.assertIn(said, self.errors)
                 self.assertEqual(self.cli(pb, pa), 0, "a candidate's producer is never checked")
 
     def test_classes_without_l2_fall_back_to_class_id(self):

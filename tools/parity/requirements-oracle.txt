@@ -5,12 +5,25 @@
 #
 # Each package, dependencies included, is pinned to one wheel: the one the
 # oracle image (unityrs-oracle:upy1.25.2-2026-10-28) holds. Installed from
-# these pins, every package file's RECORD hash equals the image's (only the
-# console-script launchers differ, since they name their interpreter). The
-# UnityPy wheel carries UnityPyBoost (UnityPyBoost.cpython-311-x86_64-linux-gnu.so);
-# without it unitypy_dump.py refuses to run. Pillow 9.5.0 has two cp311
+# these pins, every package file's RECORD hash equals the image's, except the
+# console-script launchers (they name their interpreter) and each INSTALLER
+# file (the installer's own name). The UnityPy wheel carries UnityPyBoost
+# (UnityPyBoost.cpython-311-x86_64-linux-gnu.so); without it, or with another
+# build of it, unitypy_dump.py refuses to run. Pillow 9.5.0 has two cp311
 # manylinux wheels, and the pin is the manylinux_2_28 one the image holds. No
 # sdist is allowed, since a local build would not be the image's binary.
+#
+# numpy is no dependency of UnityPy, but UnityPy imports it when it is there
+# (export/SpriteHelper.py solves a sprite's affine transform with numpy, and
+# with a pure-Python solver otherwise, and the two render different pixels),
+# and the image holds it. So it is pinned too: the oracle is the image's stack,
+# numpy included. The image holds other packages too; of those, UnityPy
+# imports only pycryptodome's Crypto (UnityCN decryption), and only once a
+# decryption key is set, which the oracle never does.
+#
+# The pinned set is the whole oracle: tools/parity/oracle_env.py checks that an
+# interpreter holds each pin at its version (--exact: and nothing else, as in
+# CI's venv), and unitypy_dump.py refuses to run when one differs.
 # Re-pinning is in tools/parity/README.md.
 
 --require-hashes
@@ -40,6 +53,9 @@ fsspec==2025.5.1 \
 lz4==4.4.4 \
     --hash=sha256:80dd27d7d680ea02c261c226acf1d41de2fd77af4fb2da62b278a9376e380de0
     # via unitypy
+numpy==2.4.6 \
+    --hash=sha256:89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93
+    # optional for unitypy (export/SpriteHelper.py); the image holds it
 pillow==9.5.0 \
     --hash=sha256:8d935f924bbab8f0a9a28404422da8af4904e36d5c33fc6f677e4c4485515625
     # via unitypy

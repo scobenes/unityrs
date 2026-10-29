@@ -15,9 +15,15 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `canonical.py` | the encoding rules both scripts share (standard library only) |
 | `fetch_unitypy_samples.py` | fetches UnityPy's test samples at the pinned commit, checked against `unitypy_samples.json` |
 | `requirements-oracle.txt` | the oracle stack as exact, hash-pinned wheels, for CI and any machine without the oracle image |
+| `oracle_env.py` | checks an interpreter's packages against `requirements-oracle.txt`: each pin at its version, nothing else (`--exact`), or the same file hashes as another site-packages (`--records`) |
 | `tests/` | unittest self-tests |
 
-`unitypy_dump.py` needs the oracle stack, so run it in the `unityrs-dev` container, or install the stack from `requirements-oracle.txt` (below). It refuses to run without UnityPyBoost or with any UnityPy other than 1.25.2, because a dump from another stack would charge UnityPy's differences to unityrs. `compare.py`, `canonical.py` and `fetch_unitypy_samples.py` need only Python 3.10 or later.
+`unitypy_dump.py` needs the oracle stack, so run it in the `unityrs-dev` container, or install the stack from `requirements-oracle.txt` (below). It refuses to run on any other stack, because a dump from another stack would charge UnityPy's differences to unityrs:
+- without UnityPyBoost, or with any UnityPy other than 1.25.2;
+- with a UnityPyBoost binary other than the pinned wheel's (its sha256 is `ORACLE_BOOST_SHA256` in `canonical.py`);
+- when a package `requirements-oracle.txt` pins is missing or at another version. numpy is one: UnityPy is not built on it, but uses it when it is there, and renders sprites differently without it.
+
+The dump's header records the stack it ran on: UnityPyBoost's sha256 and every pinned package's version. `compare.py`, `canonical.py`, `oracle_env.py` and `fetch_unitypy_samples.py` need only Python 3.10 or later.
 
 ## Dumping with UnityPy
 
@@ -75,7 +81,7 @@ python tools/parity/compare.py /tmp/dumps/unitypy.jsonl.gz /tmp/dumps/unityrs.js
 
 **Levels.** By default the levels the reference holds are compared, and a level the candidate's header lacks is a `missing_level` difference. `--levels L0,L1` narrows the comparison. A name outside L0-L3, a level the reference lacks, or an empty list exits 2.
 
-**The reference.** A reference written by `unitypy_dump.py` must record `boost: true` and UnityPy 1.25.2 in its header's `producer`, or the comparison exits 2.
+**The reference.** A reference written by `unitypy_dump.py` must record the pinned stack in its header's `producer` (`boost: true`, UnityPy 1.25.2, the pinned UnityPyBoost's `boost_sha256` and exactly the pinned `packages`), or the comparison exits 2. The candidate's `producer` is not checked.
 
 **What counts as a difference.**
 - Types must match exactly, at any depth: a tuple is not a list, `true` is not `1`, and an `f32` is not an `f64`, also inside a struct inside an array.
@@ -94,9 +100,10 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | module | covers | needs |
 |---|---|---|
 | `test_canonical.py` | the JSON and value-encoding rules, with a golden line for Rust, and the single-line canonical-form checks | stdlib |
-| `test_compare.py` | every finding kind on hand-built dumps: nested type mismatches at L1 and L2, identical noncanonical lines, level coverage, duplicates, unreadable input | stdlib |
-| `test_unitypy_boost.py` | synthetic typetrees through UnityPyBoost: float bits, NaN quieting, bool bytes, pairs, ReferencedObject and the registry scope, big-endian, every L2 error kind on both reading paths, the pure-Python path's tuples, 16-bit swap, registries in aligned class arrays, negative TypelessData lengths, and arrays of aligned vectors and TypelessData, version packing. It also checks that the spec's worked example is what the oracle writes. | UnityPy |
-| `test_dump.py` | the dumper end to end: UnityPy's samples, determinism across runs, `-j` and gzip, every line canonical, L0 detection quirks including gzip, UnityRaw formats 5 to 7, a failing entry, non-UTF-8 names; synthetic SerializedFiles (`tests/synth.py`) for the object table, check_read, resave and TPK wiring, version strings, type-record defaults by format, negative type indices, node rows and how blob rows become a tree, truncated blocks and zip entries; crash records (a killed input, a death while it returns its records, UnityPyBoost crashes), the dumper's own failures stopping the run, input names across locales and symlinks, load errors that quote bad bytes, the `None` leak, the pinned-stack refusal, index mode, the output and `--stats` guards | UnityPy, samples |
+| `test_compare.py` | every finding kind on hand-built dumps: nested type mismatches at L1 and L2, identical noncanonical lines, level coverage, duplicates, unreadable input, a reference whose producer is not the pinned stack (UnityPy, the Boost binary, the packages) | stdlib |
+| `test_unitypy_boost.py` | synthetic typetrees through UnityPyBoost: float bits, NaN quieting, bool bytes, pairs, ReferencedObject and the registry scope, big-endian, every L2 error kind on both reading paths, the pure-Python path's tuples, 16-bit swap, registries in aligned class arrays, negative TypelessData lengths, and arrays of aligned vectors and TypelessData, version packing. It also checks that the spec's worked example is what the oracle writes, and that the loaded UnityPyBoost binary and its wheel's RECORD hash as `ORACLE_BOOST_SHA256`. | UnityPy |
+| `test_dump.py` | the dumper end to end: UnityPy's samples, determinism across runs, `-j` and gzip, every line canonical, L0 detection quirks including gzip, UnityRaw formats 5 to 7, a failing entry, non-UTF-8 names; synthetic SerializedFiles (`tests/synth.py`) for the object table, check_read, resave and TPK wiring, version strings, type-record defaults by format, negative type indices, node rows and how blob rows become a tree, truncated blocks and zip entries; crash records (a killed input, a death while it returns its records, UnityPyBoost crashes), the dumper's own failures stopping the run, input names across locales and symlinks, load errors that quote bad bytes, the `None` leak, the pinned-stack refusal (UnityPyBoost, its binary, UnityPy, a package such as numpy missing or at another version) and the stack the header records, index mode, the output and `--stats` guards | UnityPy, samples |
+| `test_oracle_env.py` | the oracle's pins as `requirements-oracle.txt` gives them (numpy included), and `oracle_env.py`'s checks on synthetic installs: versions, `--exact`, `--records` | stdlib |
 | `test_fetch_samples.py` | the sample fetcher against a fake server: fetching, keeping and replacing files, LFS pointers, wrong and over-long bodies (read no further than one byte past the pin), retries and the overall deadline, redirects (two loopback servers), the repository guard; pins with names that are not plain file names or URLs off the media host; a folder holding anything but the pinned samples as regular files (extra files, symlinks, folders, stale temporary files); the exclusively created temporary file; and that `unitypy_samples.json` pins the samples `test_dump.py` checks | stdlib |
 
 **Samples.** The samples are UnityPy's `tests/samples` at commit `417d595`. They are read from `$UNITYRS_UNITYPY_SAMPLES` when set, else from the folder the corpus index (`$UNITYRS_CORPUS_INDEX`, default `/corpus/index.json`) gives for its `unitypy-sample` entries, and their sha256 is checked against pinned values. They are game bundles, so they are never copied into this repository. Without them the sample tests skip.
@@ -118,16 +125,17 @@ The pins are in `unitypy_samples.json`: the commit, and each file's size and sha
 ## CI
 
 The `parity-py` job in `.github/workflows/ci.yml` runs on GitHub's Ubuntu runner with Python 3.11:
-1. It installs the oracle stack with `pip install --require-hashes -r tools/parity/requirements-oracle.txt`.
+1. It installs the oracle stack into a fresh venv with `pip install --require-hashes -r tools/parity/requirements-oracle.txt`, and `oracle_env.py --exact` checks that the venv holds the pins and nothing else.
 2. It restores UnityPy's samples from the Actions cache, keyed by the hash of `unitypy_samples.json`, or fetches them. Either way `fetch_unitypy_samples.py` checks them against the pins.
-3. It runs this folder's self-tests and the spikes' script tests (`crates/unityrs-spike-rabex/scripts/tests`, `crates/unityrs-bench-lzma`) with `$UNITYRS_UNITYPY_SAMPLES` set. With the stack and the samples in place, a skipped test fails the job.
+3. It runs this folder's self-tests, the spikes' script tests (`crates/unityrs-spike-rabex/scripts/tests`, `crates/unityrs-bench-lzma`) and `scripts/tests` with `$UNITYRS_UNITYPY_SAMPLES` set, through `scripts/unittest-suites`. With the stack and the samples in place, a skipped test fails the job, and so does a suite that runs fewer tests than the minimum the workflow names for it.
 4. It dumps the samples with `unitypy_dump.py` and compares the dump with itself: a smoke test that the oracle runs there. The unityrs side joins this comparison later.
 
 **Re-pinning the oracle stack** (DESIGN.md section 3). `requirements-oracle.txt` names one wheel per package: the cp311 manylinux x86_64 wheel the oracle image holds. A re-pin changes the image and this file together:
 1. For each package, take the sha256 of that wheel from PyPI (`https://pypi.org/pypi/NAME/VERSION/json`, the `digests` of the file whose name matches the tags in the image's `*.dist-info/WHEEL`).
 2. Install the file into a fresh venv (`python -m pip install --require-hashes -r tools/parity/requirements-oracle.txt`) and run `pip check`.
-3. Check that every installed file's RECORD hash equals the image's.
-4. Update `ORACLE_UNITYPY` in `canonical.py` if UnityPy itself moves.
+3. In that venv, `python tools/parity/oracle_env.py --exact` checks that it holds the pins and nothing else, and `python tools/parity/oracle_env.py --records SITE`, with SITE the image's site-packages folder (`/usr/local/lib/python3.11/site-packages` in the `unityrs-dev` container), that every installed file hashes as the image's does.
+4. In the image, `python tools/parity/oracle_env.py` checks that it holds every pin. The image holds other packages too; check that UnityPy imports none of them (`requirements-oracle.txt` says which it can), and pin any it does.
+5. When UnityPy moves, set `ORACLE_BOOST_SHA256` in `canonical.py` to the sha256 of the new wheel's UnityPyBoost binary (its RECORD entry). `ORACLE_UNITYPY` follows the pins.
 
 ## Reproducing the numbers
 
