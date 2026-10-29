@@ -26,7 +26,7 @@ use unityrs_dump::select::INDEX_KINDS;
 
 pub const USAGE: &str = "usage: unityrs dump [-h] -o OUTPUT [--index] [--kind KIND] [--build BUILD] \
 [--allow-index-mismatch] [--name NAME] [--sample SAMPLE] [--limit LIMIT] [--levels LEVELS] \
-[-j JOBS] [--stats STATS] [-q] [--tpk TPK] input [input ...]";
+[-j JOBS] [--stats STATS] [-q] [--tpk TPK] [--reverse-prepass] input [input ...]";
 
 pub const HELP: &str = "\
 Writes the canonical dump (docs/CANONICAL_DUMP.md, format 1) of files,
@@ -53,7 +53,10 @@ options:
   -j JOBS, --jobs JOBS  inputs dumped at once (default 1)
   --stats STATS         write per-input timings and totals as JSON to this path
   -q, --quiet           no per-input progress on stderr
-  --tpk TPK             the UnityPy TPK for stripped objects' typetrees";
+  --tpk TPK             the UnityPy TPK for stripped objects' typetrees
+  --reverse-prepass     before dumping a bundle, parse its entries in reverse
+                        directory order, nested bundles' too (the gate's G1c:
+                        the output must not change)";
 
 /// What an option stores into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,11 +75,12 @@ enum Dest {
     Stats,
     Quiet,
     Tpk,
+    LazyReverse,
 }
 
 /// `_option_string_actions`, in the order `add_argument` fills it: an
 /// ambiguous prefix lists its matches in this order.
-const STRINGS: [(&str, Dest); 18] = [
+const STRINGS: [(&str, Dest); 19] = [
     ("-h", Dest::Help),
     ("--help", Dest::Help),
     ("-o", Dest::Output),
@@ -95,12 +99,16 @@ const STRINGS: [(&str, Dest); 18] = [
     ("-q", Dest::Quiet),
     ("--quiet", Dest::Quiet),
     ("--tpk", Dest::Tpk),
+    ("--reverse-prepass", Dest::LazyReverse),
 ];
 
 impl Dest {
     /// `nargs` None (one value) against `store_true` / help (none).
     fn takes_value(self) -> bool {
-        !matches!(self, Self::Help | Self::Index | Self::Allow | Self::Quiet)
+        !matches!(
+            self,
+            Self::Help | Self::Index | Self::Allow | Self::Quiet | Self::LazyReverse
+        )
     }
 
     /// The action's name in an error: `-o/--output`.
@@ -140,6 +148,8 @@ pub struct DumpArgs {
     pub stats: Option<PathBuf>,
     pub quiet: bool,
     pub tpk: Option<PathBuf>,
+    /// `--reverse-prepass`, an extension: G1c's pre-pass.
+    pub lazy_reverse: bool,
 }
 
 /// The command line's outcome.
@@ -591,6 +601,7 @@ pub fn parse(args: &[Vec<u8>]) -> Result<Parsed, Usage> {
         stats: ns.last(Dest::Stats).map(path),
         quiet: ns.flag(Dest::Quiet),
         tpk: ns.last(Dest::Tpk).map(path),
+        lazy_reverse: ns.flag(Dest::LazyReverse),
     })))
 }
 
@@ -625,7 +636,8 @@ mod tests {
         assert_eq!(a.build, None);
         assert_eq!(a.levels, Levels::ALL);
         assert_eq!(a.jobs, 1);
-        assert!(!a.index && !a.quiet && !a.allow_index_mismatch);
+        assert!(!a.index && !a.quiet && !a.allow_index_mismatch && !a.lazy_reverse);
+        assert!(dump(&["c", "-o", "o", "--rev"]).lazy_reverse);
         assert_eq!(
             (a.sample, a.limit, a.stats, a.tpk),
             (None, None, None, None)

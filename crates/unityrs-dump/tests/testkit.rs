@@ -276,3 +276,30 @@ fn a_failing_entry_fails_its_input() {
         }
     }
 }
+
+/// G1c on testkit inputs (plan section 6): parsing every bundle's entries
+/// lazily in reverse directory order before the dump's own pass changes no
+/// record, on the format matrix (nested bundles, repeated paths, block
+/// overrides) and on the failing-entry bundles.
+#[test]
+fn the_lazy_reverse_prepass_changes_nothing() {
+    let lazy = DumpOptions {
+        lazy_reverse: true,
+        ..DumpOptions::default()
+    };
+    let eager = DumpOptions::default();
+    let inputs = matrix().into_iter().chain(
+        failing_entries()
+            .into_iter()
+            .map(|(n, b, _)| (n.to_owned(), b)),
+    );
+    let mut bundles = 0;
+    for (name, bytes) in inputs {
+        let data = Bytes::from(bytes);
+        let a = unityrs_dump::dump_input(name.as_bytes(), data.clone(), &eager);
+        let b = unityrs_dump::dump_input(name.as_bytes(), data, &lazy);
+        assert_eq!(a, b, "{name}");
+        bundles += usize::from(a.text().contains("\"BundleFile\""));
+    }
+    assert!(bundles >= 20, "{bundles} bundles");
+}

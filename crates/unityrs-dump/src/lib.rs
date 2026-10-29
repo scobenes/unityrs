@@ -130,6 +130,11 @@ pub struct DumpOptions {
     pub context: Arc<FileContext>,
     /// The TPK the typetree provider loads for stripped objects (`--tpk`).
     pub tpk_path: Option<std::path::PathBuf>,
+    /// The gate's G1c (plan section 6, `--reverse-prepass`): before an input is
+    /// dumped, every entry of every bundle in it is parsed in reverse
+    /// directory order, nested bundles' included, with nothing decoded up
+    /// front ([`input::prepass_reverse`]). The dump must not change.
+    pub lazy_reverse: bool,
 }
 
 impl Default for DumpOptions {
@@ -139,6 +144,7 @@ impl Default for DumpOptions {
             jobs: 1,
             context: Arc::new(FileContext::unitypy()),
             tpk_path: None,
+            lazy_reverse: false,
         }
     }
 }

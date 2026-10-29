@@ -96,6 +96,9 @@ pub fn dump_input(rel: &[u8], data: Bytes, opts: &DumpOptions) -> InputDump {
     let mut lines = Vec::new();
     let (mut files, mut objects) = (0, 0);
     let result = parse_file(name.clone(), data, ty, None, &meter, ctx).and_then(|file| {
+        if opts.lazy_reverse {
+            prepass_reverse(&file);
+        }
         load_deep(&file)?;
         l0.parsed_as = parsed_as_of(&file);
         let mut w = Writer {
@@ -141,6 +144,22 @@ pub fn load_deep(file: &File) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// G1c's pre-pass ([`DumpOptions::lazy_reverse`]): every directory entry of
+/// every bundle parsed lazily, in reverse directory order, a nested bundle's
+/// entries as soon as it is parsed, each read decoding only the blocks its
+/// span needs. Failures are left where they are kept: [`load_deep`] meets
+/// each again, or anew where it is not kept (a meter refusal), so the
+/// dump's own pass decides the records.
+pub fn prepass_reverse(file: &File) {
+    if let File::Bundle(b) = file {
+        for i in (0..b.directory().len()).rev() {
+            if let Ok(entry) = b.entry(i) {
+                prepass_reverse(&entry);
+            }
+        }
+    }
 }
 
 /// What UnityPy built (`unitypy_dump.py` `parsed_as`).

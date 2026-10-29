@@ -3,7 +3,7 @@
 //! ```text
 //! unityrs dump INPUT... -o OUT.jsonl[.gz] [--index] [--kind K] [--build B]
 //!     [--allow-index-mismatch] [--name GLOB]... [--sample N] [--limit N]
-//!     [--levels L0,L1,L2,L3] [-j N] [--stats PATH] [-q] [--tpk PATH]
+//!     [--levels L0,L1,L2,L3] [-j N] [--stats PATH] [-q] [--tpk PATH] [--reverse-prepass]
 //! unityrs values CASES.json
 //! ```
 //!
@@ -43,6 +43,7 @@ fn run_options(a: args::DumpArgs) -> Result<RunOptions, String> {
         levels: a.levels,
         // `run_jobs`: `workers = max(1, workers)`.
         jobs: usize::try_from(a.jobs.max(1)).unwrap_or(usize::MAX),
+        lazy_reverse: a.lazy_reverse,
         ..DumpOptions::default()
     };
     if let Some(path) = &a.tpk {
