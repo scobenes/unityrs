@@ -61,7 +61,7 @@ pub use files::{BundleFile, File, RawFile, SerializedFile, WebFile};
 pub use object::ObjectRef;
 pub use options::FileContext;
 pub use raw::RawStr;
-pub use value::{Map, Parsed, PrimArray, Value};
+pub use value::{Map, Parsed, PrimArray, Value, ValueBuilder};
 pub use version::UnityVersion;
 
 /// The crate version, as built.
@@ -178,6 +178,7 @@ const _: () = {
     send_sync::<value::Value>();
     send_sync::<value::Map>();
     send_sync::<value::Parsed>();
+    send_sync::<value::ValueBuilder>();
     send_sync::<version::FlagsClass>();
     send_sync::<version::Packed>();
     send_sync::<version::VersionError>();

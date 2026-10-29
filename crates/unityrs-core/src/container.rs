@@ -11,7 +11,14 @@
 //! **Memory.** The rows and the preload table grow in
 //! [`crate::limits::MeteredVec`]s on the file's input meter, and the
 //! [`Container`] keeps their charge (the AssetBundle's value, read to get
-//! them, is dropped after).
+//! them, is dropped after). The tables are reached by reference only, so
+//! they cannot outlive the charge:
+//!
+//! ```compile_fail,E0616
+//! fn take(c: unityrs_core::container::Container) -> Box<[unityrs_core::container::ContainerRow]> {
+//!     c.rows
+//! }
+//! ```
 //!
 //! Owner: package D. [`Container`]'s constructors are the scaffold's.
 
@@ -29,7 +36,7 @@ use std::sync::Arc;
 use crate::env::PPtr;
 use crate::error::Error;
 use crate::files::SerializedFile;
-use crate::limits::{Charge, Meter, MeteredVec};
+use crate::limits::{Charge, ChargeError, Meter, MeteredVec};
 use crate::raw::RawStr;
 
 /// One container row.
@@ -60,10 +67,8 @@ impl ContainerRow {
 /// A file's container, with the charge for its tables.
 #[derive(Debug)]
 pub struct Container {
-    /// Rows in file order.
-    pub rows: Box<[ContainerRow]>,
-    /// `m_PreloadTable`, when the AssetBundle has one.
-    pub preload_table: Option<Box<[PPtr]>>,
+    rows: Box<[ContainerRow]>,
+    preload_table: Option<Box<[PPtr]>>,
     charge: Charge,
 }
 
@@ -85,21 +90,37 @@ impl Container {
         }
     }
 
-    /// The rows and preload table a read grew on the input's meter.
-    pub fn new(rows: MeteredVec<ContainerRow>, preload_table: Option<MeteredVec<PPtr>>) -> Self {
-        let (rows, mut charge) = rows.into_parts();
-        let preload_table = preload_table.map(|t| {
-            let (t, c) = t.into_parts();
-            charge.absorb(c);
-            t.into_boxed_slice()
-        });
-        // `into_boxed_slice` reallocates when there is spare capacity, so the
-        // reader reserves exactly (its count is known before it reads rows).
-        Self {
-            rows: rows.into_boxed_slice(),
+    /// The rows and preload table a read grew on the input's meter. A table
+    /// with spare capacity moves into an exact allocation that is charged
+    /// first ([`MeteredVec::into_boxed_slice`]).
+    pub fn new(
+        rows: MeteredVec<ContainerRow>,
+        preload_table: Option<MeteredVec<PPtr>>,
+    ) -> Result<Self, ChargeError> {
+        let (rows, mut charge) = rows.into_boxed_slice()?;
+        let preload_table = match preload_table {
+            Some(t) => {
+                let (t, c) = t.into_boxed_slice()?;
+                charge.absorb(c);
+                Some(t)
+            }
+            None => None,
+        };
+        Ok(Self {
+            rows,
             preload_table,
             charge,
-        }
+        })
+    }
+
+    /// Rows in file order.
+    pub fn rows(&self) -> &[ContainerRow] {
+        &self.rows
+    }
+
+    /// `m_PreloadTable`, when the AssetBundle has one.
+    pub fn preload_table(&self) -> Option<&[PPtr]> {
+        self.preload_table.as_deref()
     }
 
     /// The charge for the tables.
@@ -119,4 +140,48 @@ impl Container {
 /// [`crate::FileContext::eager_asset_bundle`]).
 pub fn read_container(file: &Arc<SerializedFile>) -> Result<Container, Error> {
     todo!()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{Container, ContainerRow};
+    use crate::budget::{Counting, Reservation};
+    use crate::env::PPtr;
+    use crate::limits::{Meter, MeteredVec, heap_cost};
+
+    fn row(i: i64) -> ContainerRow {
+        ContainerRow {
+            path: "a".into(),
+            preload_index: 0,
+            preload_size: 0,
+            file_id: 0,
+            path_id: i,
+        }
+    }
+
+    #[test]
+    fn the_tables_are_charged_at_their_exact_size() {
+        // Round 3: `into_boxed_slice` moved a table with spare capacity into
+        // a new allocation nobody charged.
+        let budget = Arc::new(Counting::new(u64::MAX));
+        let m = Meter::new(u64::MAX, budget.clone(), Reservation::Input);
+        let mut rows = MeteredVec::new(&m);
+        let mut preload = MeteredVec::new(&m);
+        for i in 0..100 {
+            rows.push(row(i)).unwrap();
+            preload.push(PPtr { file_id: 0, path_id: i }).unwrap();
+        }
+        let c = Container::new(rows, Some(preload)).unwrap();
+        let exact = |n: usize| heap_cost(u64::try_from(n).unwrap());
+        assert_eq!(
+            m.used(),
+            exact(100 * std::mem::size_of::<ContainerRow>()) + exact(100 * std::mem::size_of::<PPtr>())
+        );
+        assert_eq!((c.rows().len(), c.preload_table().map(<[PPtr]>::len)), (100, Some(100)));
+        assert_eq!(c.charge().records(), 0);
+        drop(c);
+        assert_eq!((m.used(), budget.used()), (0, 0));
+    }
 }
