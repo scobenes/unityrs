@@ -28,6 +28,10 @@ The rules:
   reference, because each departs from that section (PARITY.md section 19.2):
   texture2ddecoder 1.0.5 unquantizes an endpoint equal to 2^(bits-1) to 0xFFFF, and
   Pillow 9.5.0 interpolates without the `+ 32` of the section's Equation 2.
+
+Data shorter than the texture needs (`needed_bytes`) raises `ValueError`, for every format, as
+Pillow's decoders raise "not enough image data": no reference invents the pixels of bytes that
+do not exist. Bytes past what the texture needs are ignored, as Pillow ignores them.
 """
 
 import math
@@ -272,11 +276,25 @@ def _flip(pixels, width, height):
     return [pixel for y in reversed(range(height)) for pixel in pixels[y * width : (y + 1) * width]]
 
 
+def needed_bytes(name: str, width: int, height: int) -> int:
+    """The bytes a `width` x `height` texture of the Tier B format `name` holds: BC6H in whole 4x4 blocks."""
+    if name in _PIXEL_FORMATS:
+        return struct.calcsize(_PIXEL_FORMATS[name][0]) * width * height
+    if name == "RGB9e5Float":
+        return 4 * width * height
+    if name == "YUY2":
+        return 2 * width * height
+    return 16 * -(-width // 4) * -(-height // 4)  # BC6H
+
+
 def decode(name: str, data: bytes, width: int, height: int) -> tuple[str, list[tuple[int, ...]]]:
     """(mode, pixels) for a `width` x `height` texture of the Tier B format `name`, flipped as UnityPy flips."""
     if name in UNSUPPORTED:
         raise NotImplementedError(f"{name}: {UNSUPPORTED[name]}")
     mode = TIER_B[name]
+    needed = needed_bytes(name, width, height)
+    if len(data) < needed:
+        raise ValueError(f"not enough image data: {name} {width}x{height} needs {needed} bytes, got {len(data)}")
     if name in _PIXEL_FORMATS:
         code, convert, _ = _PIXEL_FORMATS[name]
         size = struct.calcsize(code)

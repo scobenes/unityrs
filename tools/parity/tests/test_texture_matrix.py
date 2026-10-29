@@ -1139,6 +1139,25 @@ class TierBReferences(unittest.TestCase):
         mode, pixels = references.decode("R16", struct.pack("<2H", 0x0100, 0x0200), 1, 2)
         self.assertEqual(pixels, [(2, 0, 0), (1, 0, 0)])
 
+    def test_short_data_raises_for_every_reference(self):
+        # What a texture holds: its pixels, or BC6H's whole 4x4 blocks.
+        self.assertEqual(references.needed_bytes("RGBAFloat", 3, 2), 96)
+        self.assertEqual(references.needed_bytes("YUY2", 4, 2), 16)
+        self.assertEqual(references.needed_bytes("RGB9e5Float", 2, 2), 16)
+        self.assertEqual(references.needed_bytes("BC6H", 5, 4), 32)
+        for name in sorted(references.TIER_B):
+            width, height = (4, 2) if name == "YUY2" else (5, 3)  # an odd width is Tier U for YUY2
+            needed = references.needed_bytes(name, width, height)
+            with self.subTest(name):
+                # Exactly enough decodes, and bytes past that are ignored.
+                full = references.decode(name, bytes(needed), width, height)
+                self.assertEqual(len(full[1]), width * height)
+                self.assertEqual(references.decode(name, bytes(needed + 16), width, height), full)
+                # One byte short, or none: an error, never pixels for bytes that do not exist.
+                for short in (needed - 1, 0):
+                    with self.assertRaisesRegex(ValueError, "^not enough image data"):
+                        references.decode(name, bytes(short), width, height)
+
     def test_bc6h_reference_is_the_specification(self):
         """BC6H's reference decodes as the Khronos Data Format Specification 1.3, section 20.2, says."""
 
