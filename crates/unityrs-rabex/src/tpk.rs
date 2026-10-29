@@ -114,6 +114,10 @@ fn struct_count(n: i32) -> Result<usize> {
 const MAX_WALK_DEPTH: usize = 1024;
 const MAX_WALK_ROWS: usize = 1 << 16;
 
+/// F5 (unityrs): the most a decompression buffer reserves up front from the
+/// size the file names; it grows past that with the decoder's output.
+const MAX_PREALLOCATION: usize = 1 << 24;
+
 use bitflags::bitflags;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use rustc_hash::FxHashMap;
@@ -205,8 +209,12 @@ impl TpkFile {
             TpkCompressionType::Lzma => return Err(Error::UnsupportedCompression("lzma")),
             #[cfg(feature = "compression-lzma")]
             TpkCompressionType::Lzma => {
-                size(self.uncompressed_size, "negative uncompressed size")?;
-                let mut uncompressed = vec![0; self.uncompressed_size as usize];
+                // F5 (unityrs): the decoder appends to its `Write` target, so
+                // the buffer starts empty. A pre-zeroed one put
+                // `uncompressed_size` zeros before the payload, which read as
+                // a blob with no versions and no classes, without an error.
+                let len = size(self.uncompressed_size, "negative uncompressed size")?;
+                let mut uncompressed = Vec::with_capacity(len.min(MAX_PREALLOCATION));
                 lzma_rs::lzma_decompress_with_options(
                     &mut self.compressed_bytes.as_slice(),
                     &mut uncompressed,
@@ -225,8 +233,9 @@ impl TpkFile {
             TpkCompressionType::Brotli => return Err(Error::UnsupportedCompression("brotli")),
             #[cfg(feature = "tpk-compression-brotli")]
             TpkCompressionType::Brotli => {
-                size(self.uncompressed_size, "negative uncompressed size")?;
-                let mut uncompressed = vec![0; self.uncompressed_size as usize];
+                // F5 (unityrs): as for LZMA, an empty buffer.
+                let len = size(self.uncompressed_size, "negative uncompressed size")?;
+                let mut uncompressed = Vec::with_capacity(len.min(MAX_PREALLOCATION));
                 brotli::BrotliDecompress(&mut self.compressed_bytes.as_slice(), &mut uncompressed)?;
                 Cow::Owned(uncompressed)
             }
@@ -1214,6 +1223,41 @@ mod patch_tests {
         // UnityPy stops at the first version above the target (5 > 4).
         assert_eq!(common.get_count(&v(4)), None);
         assert_eq!(common.get_count(&v(6)), Some(1));
+    }
+
+    #[test]
+    fn f5_an_lzma_tpk_reads_as_its_payload_not_behind_zeros() {
+        let payload = one_class().write().0;
+        let mut compressed = Vec::new();
+        lzma_rs::lzma_compress_with_options(
+            &mut payload.as_slice(),
+            &mut compressed,
+            &lzma_rs::compress::Options {
+                unpacked_size: lzma_rs::compress::UnpackedSize::SkipWritingToHeader,
+            },
+        )
+        .unwrap();
+        let bytes = file(
+            2,
+            &compressed,
+            i32::try_from(compressed.len()).unwrap(),
+            i32::try_from(payload.len()).unwrap(),
+        );
+        let tpk = TpkFile::from_reader(&mut bytes.as_slice()).unwrap();
+        assert_eq!(&*tpk.decompress().unwrap(), &payload[..]);
+        let blob = tpk.as_type_tree().unwrap().unwrap();
+        assert_eq!(blob.versions.len(), 1);
+        assert_eq!(blob.class_information.len(), 1);
+        assert!(blob.get_typetree_node(ClassId(1), &v(2)).is_some());
+        // A size the stream does not reach is an error, not a short blob.
+        let short = file(
+            2,
+            &compressed,
+            i32::try_from(compressed.len()).unwrap(),
+            i32::try_from(payload.len() + 1).unwrap(),
+        );
+        let tpk = TpkFile::from_reader(&mut short.as_slice()).unwrap();
+        assert!(tpk.as_type_tree().is_err());
     }
 
     #[test]
