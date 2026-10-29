@@ -158,9 +158,22 @@ mod tests {
     /// `embed-tpk` feature anywhere in the workspace.
     #[test]
     fn rabex_is_built_without_the_embedded_tpk() {
+        // Offline, `cargo metadata` needs every platform's packages unless it
+        // is filtered to one; a fresh CI runner holds only the host's.
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+        let version = std::process::Command::new(rustc)
+            .arg("-vV")
+            .output()
+            .expect("rustc -vV runs");
+        let version = String::from_utf8(version.stdout).unwrap();
+        let host = version
+            .lines()
+            .find_map(|l| l.strip_prefix("host: "))
+            .expect("rustc -vV names the host");
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
         let out = std::process::Command::new(cargo)
             .args(["metadata", "--format-version", "1", "--offline"])
+            .args(["--filter-platform", host])
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .output()
             .expect("cargo metadata runs");
