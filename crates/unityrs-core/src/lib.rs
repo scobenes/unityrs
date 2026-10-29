@@ -101,13 +101,9 @@ const _: () = {
     // env
     send_sync::<env::LoadMode>();
     send_sync::<env::Source>();
-    send_sync::<env::ContainerItem>();
-    send_sync::<env::ContainerItems<'static>>();
     send_sync::<env::EnvOptions>();
     send_sync::<env::EnvStats>();
-    send_sync::<env::FileEntry>();
     send_sync::<env::Environment>();
-    send_sync::<env::Objects<'static>>();
     send_sync::<dyn env::CabResolver>();
     send_sync::<dyn env::Fetch>();
     send_sync::<env::pptr::DerefError>();
