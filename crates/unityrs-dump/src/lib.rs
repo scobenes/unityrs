@@ -22,6 +22,9 @@
     unused_variables
 )]
 
+pub mod encode;
+pub mod json;
+
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
@@ -29,13 +32,13 @@ use std::sync::Arc;
 use unityrs_core::FileContext;
 
 /// The dump's public types are `Send + Sync`, as the core's are (plan
-/// section 3.16): `-j N` shares the options across rayon workers.
-const _: () = {
-    const fn send_sync<T: Send + Sync>() {}
-    send_sync::<Levels>();
-    send_sync::<DumpOptions>();
-    send_sync::<InputDump>();
-};
+/// section 3.16): `-j N` shares the options across rayon workers. Each type
+/// is asserted beside its definition.
+pub(crate) const fn send_sync<T: Send + Sync>() {}
+
+const _: () = send_sync::<Levels>();
+const _: () = send_sync::<DumpOptions>();
+const _: () = send_sync::<InputDump>();
 
 /// Which levels to write beyond L0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
