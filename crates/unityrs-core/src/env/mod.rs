@@ -13,8 +13,9 @@
 //!   UnityPy 1.25.2 with a bundle `[good CAB, its .resS, bad CAB]`, after
 //!   which `env.files` is empty and `env.cabs` holds the first two).
 //! - [`LoadMode::Lazy`] is the batch engine's: a bundle registers its entries'
-//!   names at open and parses an entry the first time it is asked for, once
-//!   (single flight).
+//!   names at open and parses an entry the first time it is asked for
+//!   (computed with no lock held and published once: two threads that ask
+//!   at once may both parse, and the first to publish wins).
 //!
 //! On a scene whose blocks all decode, whose entries all parse and none of
 //! which is a container, the two modes give identical results. Elsewhere they
@@ -467,15 +468,16 @@ mod tests {
 
     #[test]
     fn a_path_is_refused_above_the_bound_before_it_is_read() {
-        let path = temp_file("long", 4097);
+        let path = temp_file("long", 8192);
         let limits = Limits {
             max_input_bytes: 4096,
             ..Limits::default()
         };
         let meter = Meter::new(1 << 20, Arc::new(Unbounded), Reservation::Input);
         let e = read_path(&path, &limits, &meter).unwrap_err();
+        // The stat'd length is refused; a read to the bound would report 4097.
         assert!(
-            matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputBytes && l.value == 4097),
+            matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputBytes && l.value == 8192),
             "{e:?}"
         );
         assert_eq!(meter.used(), 0, "nothing was read or charged");

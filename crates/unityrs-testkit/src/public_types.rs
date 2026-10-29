@@ -25,9 +25,15 @@ pub fn unasserted(src: &Path) -> Vec<String> {
     let mut files = Vec::new();
     collect(src, src, &mut files);
     files.sort();
+    check(&files)
+}
+
+/// The declared public types no assertion names, over `(module, text)`
+/// pairs.
+fn check(files: &[(String, String)]) -> Vec<String> {
     let mut declared = Vec::new();
     let mut asserted = HashSet::new();
-    for (module, text) in &files {
+    for (module, text) in files {
         scan(module, text, &mut declared, &mut asserted);
     }
     declared.retain(|p| !asserted.contains(p));
@@ -148,7 +154,7 @@ fn scan(file_module: &str, text: &str, declared: &mut Vec<String>, asserted: &mu
 
 #[cfg(test)]
 mod tests {
-    use super::{HashSet, scan};
+    use super::{HashSet, check, scan};
 
     fn run(module: &str, text: &str) -> (Vec<String>, HashSet<String>) {
         let mut d = Vec::new();
@@ -168,6 +174,24 @@ mod tests {
         );
         assert_eq!(d, ["env::resource::Permit", "env::resource::inner::E"]);
         assert!(a.contains("env::resource::Ok"));
+    }
+
+    #[test]
+    fn a_type_that_shares_an_asserted_name_is_still_unasserted() {
+        // Round 2's probe: a second, non-Send `Permit` beside the asserted
+        // `budget::Permit` passed a scan that matched bare names.
+        let files = [
+            (
+                String::new(),
+                "const _: () = send_sync::<budget::Permit>();\n".to_owned(),
+            ),
+            ("budget".to_owned(), "pub struct Permit;\n".to_owned()),
+            (
+                "env::resource".to_owned(),
+                "pub struct Permit(pub std::rc::Rc<u8>);\n".to_owned(),
+            ),
+        ];
+        assert_eq!(check(&files), ["env::resource::Permit"]);
     }
 
     #[test]

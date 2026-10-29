@@ -47,8 +47,9 @@
 //!   the start only under `ArchiveFlags` with 0x200 (`:170-171`);
 //! - short reads: a truncated block is read short and decoded as it is; its
 //!   `bytes_read` is what the dump writes as `compressed`;
-//! - LZMA's output can outgrow its declared size: the limits and the budget
-//!   follow the actual bytes ([`crate::limits::Limits::max_bundle_uncompressed`]).
+//! - LZMA's output can outgrow its declared size: the block cap
+//!   ([`crate::limits::Limits::max_block_output`]) and the input's meter
+//!   follow the actual bytes, never the declared ones.
 //!
 //! UnityWeb/UnityRaw: format 6 takes the UnityFS layout (P1); every other
 //! format is [`crate::Unsupported::WebRawLayout`] until P3. `UnityArchive` is
