@@ -472,7 +472,9 @@ impl TpkTypeTreeBlob {
         class_id: ClassId,
         target_version: &UnityVersion,
     ) -> Option<TypeTreeNode> {
-        let version_classes = &self.class_information[&class_id];
+        // F2 (unityrs): a class the blob does not hold has no tree, where
+        // indexing the map panicked.
+        let version_classes = self.class_information.get(&class_id)?;
 
         let class = version_classes
             .iter()
@@ -613,5 +615,212 @@ mod commonstring_tests {
         for (off, s) in COMMONSTRING.iter() {
             assert_eq!(tpk_map.get(off).copied(), Some(*s), "offset {off}");
         }
+    }
+}
+
+/// Regression tests for the unityrs patches (`UPSTREAM.md` of the vendored
+/// crate), on TPKs built in code.
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+
+    /// A class entry as stored: its flags, then each root its flags name.
+    #[derive(Clone)]
+    pub(super) struct Class {
+        pub flags: u8,
+        pub editor_root: Option<u16>,
+        pub release_root: Option<u16>,
+    }
+
+    impl Class {
+        /// A class with a release root only, flagged as both (the flags
+        /// upstream reads both roots under).
+        pub fn both(root: u16) -> Self {
+            Class {
+                flags: 64 | 128,
+                editor_root: Some(root),
+                release_root: Some(root),
+            }
+        }
+    }
+
+    pub(super) struct Node {
+        pub type_name: u16,
+        pub name: u16,
+        pub byte_size: i32,
+        pub version: i16,
+        pub type_flags: u8,
+        pub meta_flag: u32,
+        pub sub_nodes: Vec<u16>,
+    }
+
+    impl Node {
+        pub fn new(type_name: u16, name: u16, sub_nodes: Vec<u16>) -> Self {
+            Node {
+                type_name,
+                name,
+                byte_size: -1,
+                version: 1,
+                type_flags: 0,
+                meta_flag: 0x4000,
+                sub_nodes,
+            }
+        }
+    }
+
+    /// A class id and its entries, each a version and a class or none.
+    pub(super) type ClassEntries = (i32, Vec<(u64, Option<Class>)>);
+
+    /// A type-tree blob, written as UnityPy's `Tpk.py` reads one.
+    #[derive(Default)]
+    pub(super) struct Blob {
+        pub versions: Vec<u64>,
+        pub classes: Vec<ClassEntries>,
+        pub common: Vec<(u64, u8)>,
+        pub common_indices: Vec<u16>,
+        pub nodes: Vec<Node>,
+        pub strings: Vec<Vec<u8>>,
+    }
+
+    /// Where each count of a written blob is, to set it to something else.
+    #[derive(Default, Debug)]
+    pub(super) struct Offsets {
+        pub version_count: usize,
+        pub class_count: usize,
+        pub entry_count: usize,
+        pub common_version_count: usize,
+        pub common_indices_count: usize,
+        pub node_count: usize,
+        pub string_count: usize,
+    }
+
+    fn count(out: &mut Vec<u8>, n: usize) -> usize {
+        let at = out.len();
+        out.extend_from_slice(&i32::try_from(n).unwrap().to_le_bytes());
+        at
+    }
+
+    pub(super) fn varint(out: &mut Vec<u8>, mut n: u64) {
+        loop {
+            let byte = (n & 0x7F) as u8;
+            n >>= 7;
+            if n == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    impl Blob {
+        /// Strings `s0`, `s1`, ... for `n` ids, and a 2.0.0 version list.
+        pub fn with_strings(n: usize) -> Self {
+            Blob {
+                versions: vec![2 << 48],
+                strings: (0..n).map(|i| format!("s{i}").into_bytes()).collect(),
+                ..Blob::default()
+            }
+        }
+
+        pub fn write(&self) -> (Vec<u8>, Offsets) {
+            let mut out = Vec::new();
+            let mut at = Offsets::default();
+            out.extend_from_slice(&1_i64.to_le_bytes());
+            at.version_count = count(&mut out, self.versions.len());
+            for v in &self.versions {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            at.class_count = count(&mut out, self.classes.len());
+            for (i, (id, entries)) in self.classes.iter().enumerate() {
+                out.extend_from_slice(&id.to_le_bytes());
+                let entry_count = count(&mut out, entries.len());
+                if i == 0 {
+                    at.entry_count = entry_count;
+                }
+                for (version, class) in entries {
+                    out.extend_from_slice(&version.to_le_bytes());
+                    match class {
+                        None => out.push(0),
+                        Some(c) => {
+                            out.push(1);
+                            out.extend_from_slice(&7_u16.to_le_bytes()); // name
+                            out.extend_from_slice(&0_u16.to_le_bytes()); // base
+                            out.push(c.flags);
+                            for root in [c.editor_root, c.release_root].into_iter().flatten() {
+                                out.extend_from_slice(&root.to_le_bytes());
+                            }
+                        }
+                    }
+                }
+            }
+            at.common_version_count = count(&mut out, self.common.len());
+            for (v, n) in &self.common {
+                out.extend_from_slice(&v.to_le_bytes());
+                out.push(*n);
+            }
+            at.common_indices_count = count(&mut out, self.common_indices.len());
+            for i in &self.common_indices {
+                out.extend_from_slice(&i.to_le_bytes());
+            }
+            at.node_count = count(&mut out, self.nodes.len());
+            for n in &self.nodes {
+                out.extend_from_slice(&n.type_name.to_le_bytes());
+                out.extend_from_slice(&n.name.to_le_bytes());
+                out.extend_from_slice(&n.byte_size.to_le_bytes());
+                out.extend_from_slice(&n.version.to_le_bytes());
+                out.push(n.type_flags);
+                out.extend_from_slice(&n.meta_flag.to_le_bytes());
+                out.extend_from_slice(&u16::try_from(n.sub_nodes.len()).unwrap().to_le_bytes());
+                for s in &n.sub_nodes {
+                    out.extend_from_slice(&s.to_le_bytes());
+                }
+            }
+            at.string_count = count(&mut out, self.strings.len());
+            for s in &self.strings {
+                varint(&mut out, s.len() as u64);
+                out.extend_from_slice(s);
+            }
+            (out, at)
+        }
+
+        pub fn read(&self) -> Result<TpkTypeTreeBlob> {
+            TpkTypeTreeBlob::from_reader(&mut self.write().0.as_slice())
+        }
+    }
+
+    /// A TPK file around `payload`, as stored.
+    pub(super) fn file(
+        compression: u8,
+        payload: &[u8],
+        compressed: i32,
+        uncompressed: i32,
+    ) -> Vec<u8> {
+        let mut out = b"TPK*".to_vec();
+        out.extend_from_slice(&[1, compression, 0, 0]);
+        out.extend_from_slice(&0_u32.to_le_bytes());
+        out.extend_from_slice(&compressed.to_le_bytes());
+        out.extend_from_slice(&uncompressed.to_le_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// `Base base` with one child, `int x`, as class 1 at 2.0.0.
+    pub(super) fn one_class() -> Blob {
+        let mut blob = Blob::with_strings(4);
+        blob.nodes = vec![Node::new(0, 1, vec![1]), Node::new(2, 3, vec![])];
+        blob.classes = vec![(1, vec![(2 << 48, Some(Class::both(0)))])];
+        blob
+    }
+
+    fn v(major: u16) -> UnityVersion {
+        UnityVersion::new(major, 0, 0)
+    }
+
+    #[test]
+    fn f2_an_unknown_class_has_no_tree() {
+        let tpk = one_class().read().unwrap();
+        assert!(tpk.get_typetree_node(ClassId(1), &v(2)).is_some());
+        assert!(tpk.get_typetree_node(ClassId(2), &v(2)).is_none());
+        assert!(tpk.get_typetree_node(ClassId(-1), &v(2)).is_none());
     }
 }
