@@ -218,7 +218,7 @@ CI runs L0-L5b on checked-in fixtures. The nightly runs the full private corpora
 ## 7. Risks
 
 - **Output drift** (pixels, mode, PNG bytes): the L5/L5b gates and consumer shadow runs.
-- **Small-maintainer dependencies** (rabex, texture2ddecoder, fsbex, lewton, gltf): vendoring at crate boundaries.
+- **Small-maintainer dependencies** (texture2ddecoder, fsbex, lewton, gltf): vendoring at crate boundaries. rabex, once on this list, is no dependency since P1: `unityrs-tpk` ports UnityPy's TPK reader (section 4).
 - **Format drift:** a typetree-driven core, the HEAD tier, and Editor fixtures.
 - **A thin public corpus** (UnityPy ships 4 Android SF v17 bundles): Editor-built fixtures in P0 (minimal) and P4.
 - **TPK provenance:** a separate crate, loaded at runtime.

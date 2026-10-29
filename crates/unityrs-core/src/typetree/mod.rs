@@ -2,7 +2,7 @@
 //! rows from a file, and the compiled [`Tree`] the walker runs on.
 //!
 //! Owners: `rows.rs` the scaffold; `parse.rs` package C; `commonstring.rs`
-//! package A (generated); `tree.rs` package B. This file is frozen.
+//! package A (generated); `tree/` package B. This file is frozen.
 
 pub mod commonstring;
 pub mod parse;

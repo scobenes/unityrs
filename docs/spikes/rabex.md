@@ -2,6 +2,8 @@
 
 **Status:** P0, 2026-10-28. **Subject:** rabex 0.2.1 from crates.io (pinned `=0.2.1`, default features off). **Oracle:** UnityPy 1.25.2 with UnityPyBoost (`tools/parity/unitypy_dump.py`). **Code:** `crates/unityrs-spike-rabex` (`publish = false`).
 
+**Since removed.** The spike crate and its scripts were removed after P1, when `unityrs-tpk` ported UnityPy's `helpers/Tpk.py` and the vendored rabex fork went with them (`docs/plans/core.md` section 2.3's note). This write-up stays as the record of the decision: the paths below name the spike's files, and rabex 0.2.1's, as they stood at commit `6227609`, the last to hold the crate (`git show 6227609:crates/unityrs-spike-rabex/...`).
+
 This spike decides how unityrs builds its base layer (`DESIGN.md` section 4, "Base layer: rabex"). The decision applies that section's three rules to measurements taken on the private corpus (a live mobile-game corpus) and on UnityPy's samples. Section 14 names the command behind every number.
 
 ## Recommendation: vendor a fork now

@@ -8,7 +8,7 @@
 //! sits in; items in a private inline module (`mod tests { … }`) are not
 //! public. An assertion is any `send_sync::<Path>()` in any file of the
 //! crate: a `crate::` path, or a path relative to the file's module (so
-//! `lib.rs` names `files::bundle::BundleFile`, and `files/bundle.rs` may say
+//! `lib.rs` names `files::bundle::BundleFile`, and `files/bundle/mod.rs` may say
 //! `crate::send_sync::<BundleFile>()` next to the type). A re-export does not
 //! count, so a new type that shares a name with an asserted one is still
 //! caught. Comments and string literals are blanked before the scan, so an
