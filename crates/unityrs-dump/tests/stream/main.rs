@@ -5,6 +5,7 @@
 //! canonical checks, at each level set; the output's independence of `-j`;
 //! gzip with mtime 0; the `.partial` file and its rename; the stops.
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use std::sync::Arc;
