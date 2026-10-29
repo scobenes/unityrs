@@ -1057,7 +1057,7 @@ class FileRows(unittest.TestCase):
         # entries with no offset. HEAD's reader takes each for 18 bytes: in a save of one block it seeks the block
         # past the data (the offset it reads is the directory's count and half of the first entry's offset) and reads
         # a directory count of 0, so a stored block gives a bundle with no entries and a compressed one fails to
-        # decompress; a save of more blocks fails while it reads the directory.
+        # decompress; a save of more blocks has an outcome that depends on the bytes, and one with no block it reads.
         laid_out_as_8 = bytearray(source)
         struct.pack_into(">I", laid_out_as_8, 8, 9)
         old_nine = load(bytes(laid_out_as_8))[0]
@@ -1101,6 +1101,33 @@ class FileRows(unittest.TestCase):
                 self.assertEqual(len(old_flags(bundle, "lz4")), 2 if size < 0x40000 else 3)
                 with self.assertRaisesRegex(error, message):
                     head_bundle(bundle.save(packer="lz4"))
+        # The outcome of more blocks depends on the bytes: behind an empty first entry, two blocks of random data,
+        # stored, load with no entries, and two of zeros, compressed, fail to decompress. A save with no block (an
+        # empty payload under a compressing packer) HEAD reads whole.
+
+        def old_nine_entries(listed):
+            laid_out = bytearray(S.fs_bundle([(name, data, 0) for name, data in listed]))
+            struct.pack_into(">I", laid_out, 8, 9)
+            return load(bytes(laid_out))[0]
+
+        for data, flags, error in (
+            (random.Random(2).randbytes(0x29000), [0, 0], None),
+            (bytes(0x29000), [2, 2], lz4.block.LZ4BlockError),
+        ):
+            bundle = old_nine_entries([(b"e.resS", b""), (b"CAB-a.resS", data)])
+            with self.subTest("HEAD reads 1.25.2's, behind an empty entry", flags=flags):
+                self.assertEqual(old_flags(bundle, "lz4"), flags)
+                if error is None:
+                    self.assertEqual(head_bundle(bundle.save(packer="lz4")).files, {})
+                else:
+                    with self.assertRaises(error):
+                        head_bundle(bundle.save(packer="lz4"))
+        empty = old_nine_entries([(b"e.resS", b""), (b"f.resS", b"")])
+        for packer in ("lz4", "lzma"):
+            with self.subTest("HEAD reads 1.25.2's with no block", packer=packer):
+                self.assertEqual(old_flags(empty, packer), [])
+                read = head_bundle(empty.save(packer=packer))
+                self.assertEqual({k: bytes(f.bytes) for k, f in read.files.items()}, {"e.resS": b"", "f.resS": b""})
 
         # 1.25.2 reads each of HEAD's 18-byte entries as 10 bytes. A save of one block it reads as a bundle with no
         # entries (the directory's count is the high half of the block's offset, 0). In a save of two blocks the
