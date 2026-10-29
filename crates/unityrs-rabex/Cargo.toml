@@ -43,5 +43,12 @@ rustc-hash = "2.1"
 md4 = "0.11"
 
 # Upstream's style is kept: the workspace's pedantic lints are not taken.
+# F1: the feature values the pristine source tests (`#[cfg(feature = ...)]`)
+# that this manifest does not declare. With them named, those cfgs compile
+# without a warning and any other unknown cfg still warns. Recompute with
+#   grep -rhoE 'feature = "[^"]+"' crates/unityrs-rabex/src | sort -u
+# when the declared features change.
 [lints.rust]
-unexpected_cfgs = "allow"
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(feature, values("embed-tpk", "compression-lz4hc", "unitycn", "tpk-compression-brotli", "serde_path_to_error"))',
+] }
