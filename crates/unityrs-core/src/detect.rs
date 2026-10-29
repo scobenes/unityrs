@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/ImportHelper.py. See THIRD_PARTY_LICENSES.
 //! `ImportHelper.check_file_type` and `parse_file`'s naming rule
 //! (`helpers/ImportHelper.py:44-156`), quirks included: every rule of
 //! `docs/CANONICAL_DUMP.md` section 4.2 (`l0`) and section 7 (L0 detection).
@@ -17,18 +18,10 @@
 //!
 //! Owner: package C.
 
-// STUB(C): delete this allow when the module is implemented.
-#![allow(
-    clippy::todo,
-    clippy::unused_self,
-    clippy::needless_pass_by_value,
-    clippy::must_use_candidate,
-    clippy::missing_panics_doc,
-    unused_variables,
-    dead_code
-)]
+use flate2::{Crc, Decompress, FlushDecompress, Status};
 
 use crate::limits::Limits;
+use crate::stream::py_string_to_null;
 
 /// UnityPy's `FileType` verdict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -62,7 +55,244 @@ pub enum DetectError {
 
 /// `check_file_type` on the bytes.
 pub fn check_file_type(data: &[u8], limits: &Limits) -> Result<FileType, DetectError> {
-    todo!()
+    // UnityPy helpers/ImportHelper.py:54-55
+    if data.len() < 20 {
+        return Ok(FileType::ResourceFile);
+    }
+    // UnityPy helpers/ImportHelper.py:57: the memoryview reader's
+    // `read_string_to_null(20)` at 0, decoded with `surrogateescape`, which
+    // is injective, so comparing the bytes compares the strings.
+    let (range, _) = py_string_to_null(data, 0, 20).ok_or(DetectError::Unterminated)?;
+    let signature = data.get(range).unwrap_or_default();
+    // UnityPy helpers/ImportHelper.py:60-70
+    if BUNDLE_SIGNATURES.contains(&signature) {
+        return Ok(FileType::BundleFile);
+    }
+    if is_web_data(signature) {
+        return Ok(FileType::WebFile);
+    }
+    if signature == b"PK\x03\x04" {
+        return Ok(FileType::Zip);
+    }
+    // UnityPy helpers/ImportHelper.py:72-73
+    if data.len() < 128 {
+        return Ok(FileType::ResourceFile);
+    }
+    // UnityPy helpers/ImportHelper.py:75-83
+    if data.get(..2) == Some(GZIP_MAGIC.as_slice())
+        && is_web_data(&gzip_signature(data, limits.max_inflate)?)
+    {
+        return Ok(FileType::WebFile);
+    }
+    // UnityPy helpers/ImportHelper.py:84-88
+    if data.get(0x20..0x26) == Some(b"brotli".as_slice()) {
+        return Ok(FileType::WebFile);
+    }
+    // UnityPy helpers/ImportHelper.py:90-124: the header read big-endian
+    // (the reader's default) whatever the byte at 16 says; the file holds at
+    // least 128 bytes here, so every read succeeds.
+    let mut metadata_size = be_u32(data, 0);
+    let mut file_size = be_u32(data, 4);
+    let version = be_u32(data, 8);
+    let mut data_offset = be_u32(data, 12);
+    if version >= 22 {
+        metadata_size = be_u32(data, 20);
+        file_size = be_i64(data, 24);
+        data_offset = be_i64(data, 32);
+    }
+    let len = i64::try_from(data.len()).unwrap_or(i64::MAX);
+    let bad = version > 100
+        || [file_size, metadata_size, version, data_offset]
+            .iter()
+            .any(|x| *x < 0 || *x > len)
+        || file_size < metadata_size
+        || file_size < data_offset;
+    Ok(if bad {
+        FileType::ResourceFile
+    } else {
+        FileType::AssetsFile
+    })
+}
+
+/// The signatures that make a bundle (`ImportHelper.py:60-65`), as the UTF-8
+/// of the strings UnityPy compares.
+const BUNDLE_SIGNATURES: [&[u8]; 4] = [
+    b"UnityWeb",
+    b"UnityRaw",
+    // Eight U+00FA: the byte 0xFA itself decodes to a surrogate escape and
+    // never matches (CANONICAL_DUMP.md section 7).
+    "\u{fa}\u{fa}\u{fa}\u{fa}\u{fa}\u{fa}\u{fa}\u{fa}".as_bytes(),
+    b"UnityFS",
+];
+
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
+/// `signature.startswith(("UnityWebData", "TuanjieWebData"))`.
+fn is_web_data(signature: &[u8]) -> bool {
+    signature.starts_with(b"UnityWebData") || signature.starts_with(b"TuanjieWebData")
+}
+
+fn be_u32(data: &[u8], at: usize) -> i64 {
+    data.get(at..at.saturating_add(4))
+        .and_then(|b| <[u8; 4]>::try_from(b).ok())
+        .map_or(0, |b| i64::from(u32::from_be_bytes(b)))
+}
+
+fn be_i64(data: &[u8], at: usize) -> i64 {
+    data.get(at..at.saturating_add(8))
+        .and_then(|b| <[u8; 8]>::try_from(b).ok())
+        .map_or(0, i64::from_be_bytes)
+}
+
+/// The scratch gzip detection inflates into (part of plan section 3.15's
+/// constant).
+const SCRATCH: usize = 64 << 10;
+
+/// `EndianBinaryReader(GzipFile(fileobj=reader)).read_string_to_null(20)`
+/// (`ImportHelper.py:78-80`). Its first `Length` seeks the `GzipFile` to its
+/// end (`streams/EndianBinaryReader.py:303-308`), which inflates and checks
+/// every member as Python 3.11's `gzip._GzipReader` does. The streaming loop
+/// (`:136-144`) then keeps each byte it read except the last: byte `i` is kept
+/// when it and every byte before it are not NUL, `i < 19`, and `i + 1` is
+/// below the decompressed length.
+fn gzip_signature(data: &[u8], max_inflate: u64) -> Result<Vec<u8>, DetectError> {
+    let mut first = [0u8; 20];
+    let mut first_len = 0usize;
+    let total = gzip_inflate(data, max_inflate, |chunk| {
+        let n = chunk.len().min(first.len().saturating_sub(first_len));
+        if let (Some(dst), Some(src)) = (first.get_mut(first_len..first_len + n), chunk.get(..n)) {
+            dst.copy_from_slice(src);
+        }
+        first_len += n;
+    })?;
+    let limit = usize::try_from(total.saturating_sub(1))
+        .unwrap_or(usize::MAX)
+        .min(19)
+        .min(first_len);
+    let head = first.get(..limit).unwrap_or_default();
+    let keep = head.iter().position(|b| *b == 0).unwrap_or(head.len());
+    Ok(head.get(..keep).unwrap_or_default().to_vec())
+}
+
+fn gzip_error(what: &str) -> DetectError {
+    DetectError::Gzip(what.into())
+}
+
+const EOF_MESSAGE: &str =
+    "EOFError: Compressed file ended before the end-of-stream marker was reached";
+
+/// `_read_exact`: `n` bytes at `*pos`, or `EOFError`.
+fn read_exact<'a>(data: &'a [u8], pos: &mut usize, n: usize) -> Result<&'a [u8], DetectError> {
+    let end = pos.saturating_add(n);
+    let got = data.get(*pos..end).ok_or_else(|| gzip_error(EOF_MESSAGE))?;
+    *pos = end;
+    Ok(got)
+}
+
+/// Inflates every member of a gzip file as Python 3.11's `gzip._GzipReader`
+/// reads it (`_read_gzip_header`, `read`, `_read_eof`), handing each output
+/// chunk to `sink`; returns the decompressed length. The header's FHCRC is
+/// skipped, not checked, as Python skips it.
+fn gzip_inflate(
+    data: &[u8],
+    max_inflate: u64,
+    mut sink: impl FnMut(&[u8]),
+) -> Result<u64, DetectError> {
+    const FHCRC: u8 = 2;
+    const FEXTRA: u8 = 4;
+    const FNAME: u8 = 8;
+    const FCOMMENT: u8 = 16;
+    let mut scratch = vec![0u8; SCRATCH];
+    let mut pos = 0usize;
+    let mut total = 0u64;
+    loop {
+        // `_read_gzip_header`: `fp.read(2)` empty ends the file; anything
+        // else must be the magic.
+        let rest = data.get(pos..).unwrap_or_default();
+        if rest.is_empty() {
+            return Ok(total);
+        }
+        if !rest.starts_with(&GZIP_MAGIC) {
+            return Err(gzip_error("BadGzipFile: Not a gzipped file"));
+        }
+        pos += 2;
+        let head = read_exact(data, &mut pos, 8)?;
+        let (method, flag) = (
+            head.first().copied().unwrap_or(0),
+            head.get(1).copied().unwrap_or(0),
+        );
+        if method != 8 {
+            return Err(gzip_error("BadGzipFile: Unknown compression method"));
+        }
+        if flag & FEXTRA != 0 {
+            let n = read_exact(data, &mut pos, 2)?;
+            let n = u16::from_le_bytes([
+                n.first().copied().unwrap_or(0),
+                n.get(1).copied().unwrap_or(0),
+            ]);
+            read_exact(data, &mut pos, usize::from(n))?;
+        }
+        for bit in [FNAME, FCOMMENT] {
+            if flag & bit != 0 {
+                // Up to and including a NUL, or to the end.
+                let rest = data.get(pos..).unwrap_or_default();
+                pos += rest
+                    .iter()
+                    .position(|b| *b == 0)
+                    .map_or(rest.len(), |i| i + 1);
+            }
+        }
+        if flag & FHCRC != 0 {
+            read_exact(data, &mut pos, 2)?;
+        }
+        // The member's raw deflate stream.
+        let input = data.get(pos..).unwrap_or_default();
+        let mut z = Decompress::new(false);
+        let mut crc = Crc::new();
+        loop {
+            let (in_before, out_before) = (z.total_in(), z.total_out());
+            let at = usize::try_from(in_before).unwrap_or(usize::MAX);
+            let status = z
+                .decompress(
+                    input.get(at..).unwrap_or_default(),
+                    &mut scratch,
+                    FlushDecompress::None,
+                )
+                .map_err(|e| DetectError::Gzip(format!("zlib.error: {e}").into()))?;
+            let made = usize::try_from(z.total_out() - out_before).unwrap_or(0);
+            let out = scratch.get(..made).unwrap_or_default();
+            crc.update(out);
+            total = total.saturating_add(u64::try_from(made).unwrap_or(u64::MAX));
+            if total > max_inflate {
+                return Err(DetectError::InflateLimit);
+            }
+            sink(out);
+            if status == Status::StreamEnd {
+                break;
+            }
+            if z.total_in() == in_before && made == 0 {
+                return Err(gzip_error(EOF_MESSAGE));
+            }
+        }
+        pos = pos.saturating_add(usize::try_from(z.total_in()).unwrap_or(usize::MAX));
+        // `_read_eof`: the CRC-32 and the size modulo 2^32, then zero bytes.
+        let trailer = read_exact(data, &mut pos, 8)?;
+        let word = |i: usize| {
+            trailer
+                .get(i..i + 4)
+                .and_then(|b| <[u8; 4]>::try_from(b).ok())
+                .map_or(0, u32::from_le_bytes)
+        };
+        if word(0) != crc.sum() {
+            return Err(gzip_error("BadGzipFile: CRC check failed"));
+        }
+        if word(4) != crc.amount() {
+            return Err(gzip_error("BadGzipFile: Incorrect length of data produced"));
+        }
+        while data.get(pos) == Some(&0) {
+            pos += 1;
+        }
+    }
 }
 
 /// What UnityPy builds from a detected file (`l0.parsed_as`).
@@ -85,6 +315,17 @@ pub enum ParsedAs {
 /// `parse_file`'s choice. An `AssetsFile` whose name ends in `.resS`,
 /// `.resource`, `.config`, `.xml` or `.dat` (a case-sensitive byte suffix) stays
 /// raw; a zip is `Zip` only for an input (`is_entry` false), else raw.
+#[must_use]
 pub fn parsed_as(ty: FileType, name: &[u8], is_entry: bool) -> ParsedAs {
-    todo!()
+    // UnityPy helpers/ImportHelper.py:138-151; a zip input is refused before
+    // `parse_file` (CANONICAL_DUMP.md section 4.2), an entry stays a reader.
+    const RAW_SUFFIXES: [&[u8]; 5] = [b".resS", b".resource", b".config", b".xml", b".dat"];
+    match ty {
+        FileType::AssetsFile if RAW_SUFFIXES.iter().any(|s| name.ends_with(s)) => ParsedAs::Raw,
+        FileType::AssetsFile => ParsedAs::SerializedFile,
+        FileType::BundleFile => ParsedAs::BundleFile,
+        FileType::WebFile => ParsedAs::WebFile,
+        FileType::Zip if !is_entry => ParsedAs::Zip,
+        FileType::Zip | FileType::ResourceFile => ParsedAs::Raw,
+    }
 }
