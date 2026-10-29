@@ -38,6 +38,7 @@ import json  # noqa: E402
 import os  # noqa: E402
 import pickle  # noqa: E402
 import re  # noqa: E402
+import resource  # noqa: E402
 import signal  # noqa: E402
 import time  # noqa: E402
 import traceback  # noqa: E402
@@ -170,6 +171,8 @@ def detect(data: bytes) -> str:
     """check_file_type's verdict as a FileType name, or "error" when it raises."""
     try:
         return ImportHelper.check_file_type(EndianBinaryReader(data))[0].name
+    except MemoryError:
+        raise  # the machine's (--memory-cap), not the input's: _child's crash record
     except Exception:  # noqa: BLE001 - UnityPy raises bare Exception here
         return "error"
 
@@ -288,6 +291,8 @@ def engine_version(b):
     """BundleFile.parse_version() packed, or None where it raises (only UnityFS needs it to load)."""
     try:
         return int(b.parse_version())
+    except MemoryError:
+        raise
     except Exception:  # noqa: BLE001
         return None
 
@@ -333,11 +338,30 @@ def serialized_l1(sf):
         ],
         "ref_types": None if ref_types is None else [type_record(t) for t in ref_types],
         "user_information": C.enc_name(user_info),
-        "container": [
-            [C.enc_name(path), info.preloadIndex, info.preloadSize, info.asset.m_FileID, info.asset.m_PathID]
-            for path, info in sf._container.container
-        ],
+        "container": [container_row(path, info) for path, info in sf._container.container],
     }
+
+
+def _int(v):
+    """An int as itself; anything else (a bool, a float, a string, a class) as None."""
+    return v if type(v) is int else None
+
+
+def container_row(path, info):
+    """One `m_Container` item as the spec's row (4.2).
+
+    The load needs only `info.asset` and its `path_id` (helpers/ContainerHelper.py:21-29),
+    so on a hostile tree the other members can be missing (an UnknownObject AssetInfo)
+    or of another type: a path that is not a str, and a member that is not an int, are
+    recorded as null.
+    """
+    return [
+        C.enc_name(path) if isinstance(path, str) else None,
+        _int(getattr(info, "preloadIndex", None)),
+        _int(getattr(info, "preloadSize", None)),
+        _int(getattr(info.asset, "m_FileID", None)),
+        _int(getattr(info.asset, "m_PathID", None)),
+    ]
 
 
 # ------------------------------------------------------------ object records
@@ -390,12 +414,16 @@ def object_record(obj, path, encoder, levels, stats):
             root_type = C.enc_name(node.m_Type)
             st = obj.serialized_type
             source = "embedded" if st is not None and st.node is node else "tpk"
+        except MemoryError:
+            raise
         except Exception as e:  # noqa: BLE001 - TypeTreeError, or the TPK's KeyError/ValueError/AssertionError
             error = {"kind": "no_typetree", "bytes_read": None, "note": note(e)}
         if error is None:
             try:
                 value = obj.parse_as_dict()
                 parsed_ok = True
+            except MemoryError:
+                raise  # the machine's (--memory-cap), not an L2 outcome: _child's crash record
             except Exception as e:  # noqa: BLE001 - every failure is a recorded outcome
                 kind, bytes_read = error_kind(e)
                 error = {"kind": kind, "bytes_read": bytes_read, "note": note(e)}
@@ -430,6 +458,8 @@ def object_record(obj, path, encoder, levels, stats):
                 w = EndianBinaryWriter(endian=obj.reader.endian)
                 TypeTreeHelper.write_typetree(value, node, w, obj.assets_file)
                 out = bytes(w.bytes)
+            except MemoryError:
+                raise
             except Exception as e:  # noqa: BLE001
                 l3.update(resave="error", resave_size=None, resave_sha256=None, first_diff=None, note=note(e))
             else:
@@ -525,6 +555,8 @@ def _dump_input(job):
         try:
             # The input's name, for the name rule (spec 4.2).
             f = env.load_file(data, name=rel)
+        except MemoryError:
+            raise
         except Exception as e:  # noqa: BLE001 - a failed load is a recorded outcome
             l0["parsed_as"] = "error"
             out.append(
@@ -640,14 +672,26 @@ def _send(conn, result):
     conn.send(result)
 
 
+# --memory-cap: each input's process's address-space limit (RLIMIT_AS), or None.
+MEMORY_CAP: int | None = None
+
+OUT_OF_MEMORY = "the process dumping this input ran out of memory (MemoryError)"
+
+
 def _child(conn, job):
     """One input in a fresh process; a death here costs only this input."""
     pin_none()
+    if MEMORY_CAP:
+        resource.setrlimit(resource.RLIMIT_AS, (MEMORY_CAP, MEMORY_CAP))
     try:
         result = ("ok", dump_input(job))
         problem = loaded_problem()
         if problem:
             result = ("not the oracle", problem)
+    except MemoryError:
+        # The machine's limit, not an outcome of the input: as for the OOM killer's
+        # SIGKILL, the input gets the crash record (spec 4.2).
+        result = ("out of memory", OUT_OF_MEMORY)
     except BaseException:  # noqa: BLE001 - every UnityPy outcome is recorded inside; this is the dumper's own failure
         result = ("raised", traceback.format_exc())
     _send(conn, result)
@@ -667,6 +711,8 @@ def _settle(job, msg, exitcode):
         return msg[1]
     if msg is not None and msg[0] == "not the oracle":
         raise NotTheOracle(f"while dumping {job[1]!r}: {msg[1]}")
+    if msg is not None and msg[0] == "out of memory":
+        return crash_result(job, msg[1])
     if msg is not None:
         raise DumperError(f"{job[1]!r}: the dumper raised\n{msg[1].rstrip()}")
     if exitcode is not None and exitcode < 0:
@@ -680,8 +726,10 @@ def run_jobs(jobs, workers):
     Each input runs in a process forked for it alone, at most `workers` at a
     time. No input can see what UnityPy cached or leaked for another. One
     whose process dies of a signal (a UnityPyBoost crash, the cgroup OOM
-    killer), before or while it sends its result, becomes a crash record
-    (crash_result) while the dump goes on. The dumper's own failure, a raise
+    killer), before or while it sends its result, or whose dump ends in a
+    MemoryError the dumper's own code meets (under --memory-cap, the same
+    event caught sooner), becomes a crash record (crash_result) while the dump
+    goes on. The dumper's own failure, a raise
     or an exit without a result, raises DumperError: it would hit any input.
     """
     ctx = get_context("fork")
@@ -781,7 +829,15 @@ def main(argv=None):
     ap.add_argument("-j", "--jobs", type=int, default=1, help="worker processes (default 1)")
     ap.add_argument("--stats", help="write per-input timings and totals as JSON to this path")
     ap.add_argument("-q", "--quiet", action="store_true", help="no per-input progress on stderr")
+    ap.add_argument(
+        "--memory-cap",
+        type=int,
+        help="address-space limit (RLIMIT_AS) in bytes for each input's process, for hostile inputs "
+        "(the gate's G3b): an input that runs out gets the crash record",
+    )
     args = ap.parse_args(argv)
+    global MEMORY_CAP
+    MEMORY_CAP = args.memory_cap
     if args.allow_index_mismatch and not args.index:
         ap.error("--allow-index-mismatch needs --index")
     args.kind = args.kind.split(",")

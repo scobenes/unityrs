@@ -16,6 +16,7 @@ import json
 import os
 import pickle
 import re
+import resource
 import shutil
 import signal
 import struct
@@ -727,6 +728,80 @@ class DumpTests(unittest.TestCase):
             self.assertEqual((recs[0]["error"], recs[3]["error"]), (None, None))
         self.assertEqual(outs[0], outs[1])
         self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["dead1.jsonl", "dead3.jsonl", "in"])
+
+    def test_an_input_out_of_memory_is_one_crash_record(self):
+        """A MemoryError the dumper meets (--memory-cap's RLIMIT_AS, G3b) is the machine's: the crash record."""
+        d = self.tmp / "in"
+        d.mkdir()
+        for name in "abc":
+            (d / name).write_bytes(b"tiny")
+        cap = 6 << 30
+        limits = self.tmp / "limits"
+        real = unitypy_dump.dump_input
+
+        def short_of_memory(job):
+            with open(limits, "a") as fh:
+                fh.write(f"{resource.getrlimit(resource.RLIMIT_AS)[0]}\n")
+            if job[1] == "b":
+                raise MemoryError
+            return real(job)
+
+        out = self.tmp / "m.jsonl"
+        with mock.patch.object(unitypy_dump, "dump_input", short_of_memory):
+            self.assertEqual(dump(d, "-o", out, "-j", "2", "--memory-cap", str(cap)), 0)
+        self.assert_canonical(out)
+        recs = [r for r in records(out) if r["rec"] == "file"]
+        self.assertEqual([r["file"] for r in recs], [["a"], ["b"], ["c"]])
+        self.assertEqual((recs[0]["error"], recs[2]["error"]), (None, None))
+        self.assertEqual(recs[1]["error"], {"kind": "crash", "note": unitypy_dump.OUT_OF_MEMORY})
+        self.assertEqual(limits.read_text().split(), [str(cap)] * 3)
+
+    def test_a_memory_error_anywhere_in_an_input_is_its_crash_record(self):
+        """A MemoryError inside an object's parse, its resave or the load is the cap's too, never an outcome."""
+        d = self.tmp / "in"
+        d.mkdir()
+        good = assets(S.Node("MyThing", "Base", [S.Node("int", "i")]), struct.pack("<i", 7))
+        for name in ("a", "b_parse", "c_resave", "d_load"):
+            (d / name).write_bytes(good)
+        reader = sys.modules["UnityPy.files.ObjectReader"].ObjectReader
+        environment = unitypy_dump.UnityPy.Environment
+        real_parse, real_load = reader.parse_as_dict, environment.load_file
+
+        def parse(obj, *args, **kwargs):
+            if obj.assets_file.name == "b_parse":
+                raise MemoryError
+            return real_parse(obj, *args, **kwargs)
+
+        def write(*args, **kwargs):
+            raise MemoryError
+
+        def load(env, data, *args, name=None, **kwargs):
+            if name == "d_load":
+                raise MemoryError
+            return real_load(env, data, *args, name=name, **kwargs)
+
+        out = self.tmp / "m.jsonl"
+        with (
+            mock.patch.object(reader, "parse_as_dict", parse),
+            mock.patch.object(environment, "load_file", load),
+            mock.patch.object(unitypy_dump.TypeTreeHelper, "write_typetree", write),
+        ):
+            self.assertEqual(dump(d, "-o", out, "-j", "2", "--levels", "L0,L1,L2"), 0)
+            d3 = self.tmp / "in3"
+            d3.mkdir()
+            (d3 / "c_resave").write_bytes(good)
+            out3 = self.tmp / "m3.jsonl"
+            # Its only input crashed: the dump is written, the exit status says so.
+            self.assertEqual(dump(d3, "-o", out3), 3)
+        self.assert_canonical(out)
+        recs = records(out)
+        files = [r for r in recs if r["rec"] == "file"]
+        self.assertEqual([r["file"] for r in files], [["a"], ["b_parse"], ["c_resave"], ["d_load"]])
+        crash = {"kind": "crash", "note": unitypy_dump.OUT_OF_MEMORY}
+        self.assertEqual([r["error"] for r in files], [None, crash, None, crash])
+        self.assertEqual([r["file"] for r in recs if r["rec"] == "object"], [["a"], ["c_resave"]])
+        # L3 resaves: there the write's MemoryError fails the input too.
+        self.assertEqual([r["error"] for r in records(out3) if r["rec"] == "file"], [crash])
 
     def test_finished_results_wait_in_bounded_number(self):
         """While the first input is slow, at most 2 x -j inputs start, so held results cannot grow without limit."""
