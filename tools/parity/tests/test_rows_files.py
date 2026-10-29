@@ -906,7 +906,13 @@ class FileRows(unittest.TestCase):
             "half-compressible": halves,
             "a chunk and a half": random.Random(2).randbytes(chunk + chunk // 2),
             "short": b"q" * 300,
+            "empty": b"",  # `none` one block of size 0; a compressing packer none
         }
+        # LZMA in chunks of 0xFFFFFFFF bytes, as 1.25.2 (one block under 4 GiB); LZ4 and LZ4HC in 128 KiB.
+        self.assertEqual(
+            {int(k): v for k, v in helper.COMPRESSION_CHUNK_SIZE_MAP.items()},
+            {0: 0xFFFFFFFF, 1: 0xFFFFFFFF, 2: chunk, 3: chunk},
+        )
         got = {}
         for name, data in inputs.items():
             for version in (8, 9):
@@ -922,6 +928,7 @@ class FileRows(unittest.TestCase):
         self.assertEqual((got["random", 8, 3], old["random"]), ([3, 0], [0, 0]))
         self.assertEqual((got["half-compressible", 9, 3], old["half-compressible"]), ([3, 3, 0], [3, 3, 3]))
         self.assertEqual(got["compressible", 9, 3], [3] * 5)
+        self.assertEqual([got["empty", 9, flag] for flag in (0x40, 1, 2, 3)], [[0x40], [], [], []])
         # HEAD's LZMA is one chunk, compressed although it grows; 1.25.2 stores a chunk that grows.
         self.assertEqual(
             (got["random", 9, 1], [f for _, _, f in H.chunk_based_compress(inputs["random"], 1)[1]]), ([1], [0])
@@ -989,9 +996,25 @@ class FileRows(unittest.TestCase):
                     blocks = [(b.uncompressedSize, b.compressedSize, b.flags, b.offset) for b in infos]
                     self.assertEqual((blocks, len(out)), rule(data, flag, version))
                     self.assertEqual(entries(head_bundle(saved)), entries(bundle))
+        # HEAD fails to write where 1.25.2 does, so these take the Tier C (writing) rows: `original` on a bundle
+        # that had no block raises, and a header holding a bit of the encryption mask is saved with the whole mask
+        # XORed out (0x1000 -> 0x400, 0x400 -> 0x1000), which HEAD's own reader reads back as encrypted.
+        no_blocks = head_bundle(S.fs_bundle([(b"e.resS", b"", 0)]))
+        no_blocks.version = 9
+        self.assertFalse(hasattr(no_blocks, "_block_info_flags"))
+        with self.assertRaisesRegex(AttributeError, "'BundleFile' object has no attribute '_block_info_flags'"):
+            no_blocks.save(packer="original")
+        for bit, written in ((0x1000, 0x440), (0x400, 0x1040)):
+            with self.subTest(encryption_bit=bit):
+                encrypted = head_bundle(nine_bytes)
+                encrypted.dataflags = type(encrypted.dataflags)(int(encrypted.dataflags) | bit)
+                saved = encrypted.save(packer="original")
+                self.assertEqual(header(saved)["flags"], written)
+                with self.assertRaisesRegex(LookupError, "^The BundleFile is encrypted, but no key was provided!"):
+                    head_bundle(saved)
         # 1.25.2 reads a format-9 bundle with format 8's layout and saves it so, under version 9: 10-byte block
         # entries with no offset. HEAD's reader takes each for 18 bytes, so the `none` save holds no entry for it
-        # and the `lz4` one fails; and 1.25.2 reads HEAD's format-9 save as a bundle with no entries.
+        # and the `lz4` one fails.
         laid_out_as_8 = bytearray(source)
         struct.pack_into(">I", laid_out_as_8, 8, 9)
         old_nine = load(bytes(laid_out_as_8))[0]
@@ -1001,7 +1024,33 @@ class FileRows(unittest.TestCase):
         self.assertEqual(head_bundle(saved).files, {})
         with self.assertRaises(lz4.block.LZ4BlockError):
             head_bundle(old_nine.save(packer="lz4"))
-        self.assertEqual(load(nine_bytes)[0].files, {})
+
+        # 1.25.2 reads each of HEAD's 18-byte entries as 10 bytes. A save of one block it reads as a bundle with no
+        # entries (the directory's count is the high half of the block's offset, 0); one of several it fails to
+        # load, by the bytes it lands on; one with no block it reads whole.
+        def blocks_of(bundle, packer):
+            flag = {"none": 0x40, "lz4": 2, "lzma": 1}[packer]
+            return len(helper.chunk_based_compress(payload_of(bundle), flag, 9)[1])
+
+        self.assertEqual((blocks_of(nine, "none"), load(nine_bytes)[0].files), (1, {}))
+        self.assertEqual((blocks_of(nine, "lzma"), load(nine.save(packer="lzma"))[0].files), (1, {}))
+        self.assertEqual(blocks_of(nine, "lz4"), 4)
+        with self.assertRaises(struct.error):
+            load(nine.save(packer="lz4"))
+        for chunks, error in ((1, None), (2, struct.error), (3, lz4.block.LZ4BlockError)):
+            with self.subTest(blocks=chunks):
+                resource_data = random.Random(chunks).randbytes(chunks * chunk - 1000)
+                bundle = head_bundle(S.fs_bundle([(b"CAB-a", payload, 4), (b"CAB-a.resS", resource_data, 0)]))
+                bundle.version = 9
+                self.assertEqual(blocks_of(bundle, "lz4"), chunks)
+                saved = bundle.save(packer="lz4")
+                if error is None:
+                    self.assertEqual(load(saved)[0].files, {})
+                else:
+                    with self.assertRaises(error):
+                        load(saved)
+        self.assertEqual(blocks_of(no_blocks, "lz4"), 0)
+        self.assertEqual(entries(load(no_blocks.save(packer="lz4"))[0]), {"e.resS": b""})
 
     # Sections 7.2, 19.2: SerializedFile.load_dependencies.
     def test_load_dependencies(self):

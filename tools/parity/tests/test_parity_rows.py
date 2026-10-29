@@ -99,6 +99,7 @@ class TestColumn(unittest.TestCase):
                 "every_cited_test_exists_and_every_row_test_is_cited",
                 "every_status_agrees_with_its_test_column",
                 "rows_are_cited_by_item_not_by_line",
+                "head_dicts_are_a_target_while_their_fixtures_are_planned",
             }
             named = {name for module, name in cited if module == path.name}
             self.assertEqual(sorted(defined - named), [], f"tests no PARITY.md row names, in {path.name}")
@@ -149,6 +150,32 @@ class TestColumn(unittest.TestCase):
         line number of this file, which every edit above it moves."""
         text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
         self.assertEqual(re.findall(r"\brows? \d+", text), [])
+
+    def test_head_dicts_are_a_target_while_their_fixtures_are_planned(self):
+        """Section 20's reading rows name the Unity 6000.4/6000.5 fixtures as planned, so no comparison with HEAD's
+        dicts exists: every sentence or table cell of PARITY.md and DESIGN.md that speaks of dicts and HEAD (or those
+        fixtures) calls that equality a target, or says no comparison has been run, and none states it as done."""
+        root = HERE.parent.parent
+        parity = (root / "PARITY.md").read_text(encoding="utf-8")
+        section = parity.split("\n## 20. HEAD tier\n", 1)[1].split("\n## ", 1)[0]
+        planned = [
+            cells[0]
+            for header, rows in inventory.tables(section)
+            for cells in rows
+            if "planned 6000.4/6000.5 fixtures" in cells[header.index("test")]
+        ]
+        if not planned:
+            self.skipTest("section 20 names no planned HEAD fixture: the reading rows are measured")
+        speaking = 0
+        for name, text in (("PARITY.md", parity), ("DESIGN.md", (root / "docs" / "DESIGN.md").read_text("utf-8"))):
+            for sentence in re.split(r"(?<=\.)\s+|\s*\|\s*|\n", text):
+                if "dicts" in sentence and ("HEAD" in sentence or "6000.4/6000.5" in sentence):
+                    speaking += 1
+                    with self.subTest(name, sentence=sentence[:80]):
+                        self.assertTrue(
+                            "target" in sentence or "No comparison" in sentence, "HEAD's dicts stated as measured"
+                        )
+        self.assertGreaterEqual(speaking, 3)
 
 
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
@@ -1512,6 +1539,16 @@ class Rows(unittest.TestCase):
         self.assertEqual(H.chunk_based_compress(data, 0x40), (data, [(len(data), len(data), 0x40)]))
         noise = random.Random(3).randbytes(1000)
         self.assertEqual(H.chunk_based_compress(noise, 0x42), (noise, [(1000, 1000, 0x40)]))
+        # `none` is one block whatever the payload, an empty one included; a compressing codec writes no block for
+        # an empty payload. Only a chunk that grows is stored: one that compresses to exactly its own size stays
+        # compressed, as a whole chunk and as the last part.
+        self.assertEqual(H.chunk_based_compress(b"", 0x40), (b"", [(0, 0, 0x40)]))
+        for flag in (1, 2, 3):
+            self.assertEqual(H.chunk_based_compress(b"", flag), (b"", []))
+        exact = random.Random(5).randbytes(130548) + bytes(0x20000 - 130548)
+        self.assertEqual(len(H.compress_lz4(exact)), 0x20000)
+        self.assertEqual([f for _, _, f in H.chunk_based_compress(exact, 3)[1]], [3])
+        self.assertEqual([f for _, _, f in H.chunk_based_compress(exact + b"x", 3)[1]], [3, 0])
         with self.assertRaisesRegex(NotImplementedError, "No compression function"):
             H.chunk_based_compress(data, 4)
 
