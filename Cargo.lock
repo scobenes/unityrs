@@ -613,6 +613,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "unityrs-rabex"
+version = "0.2.1"
+dependencies = [
+ "bitflags",
+ "byteorder",
+ "elsa",
+ "lz4_flex 0.13.1",
+ "lzma-rs",
+ "md4",
+ "num_enum",
+ "rustc-hash",
+ "serde",
+ "serde_derive",
+]
+
+[[package]]
 name = "unityrs-spike-rabex"
 version = "0.0.1"
 dependencies = [

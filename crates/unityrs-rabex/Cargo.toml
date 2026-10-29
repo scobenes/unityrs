@@ -1,0 +1,47 @@
+# rabex 0.2.1, vendored (docs/plans/core.md sections 2.3-2.4). `src/` and the
+# two licence files are the crates.io release's, unchanged but for the
+# numbered patches in UPSTREAM.md; scripts/fork-check.sh proves it. This
+# manifest is ours: the package is renamed so it can never be mistaken for
+# the crates.io one, the library keeps upstream's name, and the TPK upstream
+# embeds (`embed-tpk`, `resources/`) is left out, so no TPK enters the tree or
+# a binary. Only the TPK reader's codecs are declared.
+[package]
+name = "unityrs-rabex"
+version = "0.2.1"
+edition = "2024"
+description = "rabex 0.2.1 (Unity file and typetree tools), vendored for unityrs with the patches in UPSTREAM.md."
+# rabex is MIT OR Apache-2.0; unityrs takes it under MIT (plan section 2.5).
+license = "MIT"
+authors = ["Rudolf Kolbe", "Jakob Hellermann"]
+repository = "https://github.com/jakobhellermann/RustyAssetBundleEXtractor"
+publish = false
+
+[lib]
+name = "rabex"
+path = "src/lib.rs"
+# The pristine doc examples cannot pass here: three import `anyhow`, which is
+# no dependency, and two call `embedded()`, which needs `embed-tpk`.
+doctest = false
+
+[features]
+default = ["compression-lzma", "compression-lz4"]
+compression-lz4 = ["dep:lz4_flex"]
+compression-lzma = ["dep:lzma-rs"]
+
+# Upstream's requirements, unchanged, for the code that compiles without the
+# features this manifest leaves out.
+[dependencies]
+byteorder = "1.5"
+bitflags = "2.9"
+num_enum = { version = "0.7", default-features = false }
+lzma-rs = { version = "0.3.0", optional = true }
+lz4_flex = { version = "0.13", default-features = false, features = ["std"], optional = true }
+serde = "1.0"
+serde_derive = "1.0"
+elsa = "1.11"
+rustc-hash = "2.1"
+md4 = "0.11"
+
+# Upstream's style is kept: the workspace's pedantic lints are not taken.
+[lints.rust]
+unexpected_cfgs = "allow"
