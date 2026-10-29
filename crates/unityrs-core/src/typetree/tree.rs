@@ -9,8 +9,12 @@
 //!
 //! Malformed shapes compile to [`Shape::BadPair`] and [`Shape::BadVector`],
 //! which fail only when a read reaches them, as UnityPyBoost fails at read
-//! time; an unreached malformed node must not fail an object. Compilation
-//! itself fails only on a limit (depth).
+//! time; an unreached malformed node must not fail an object. A run of
+//! `pair` elements reaches its element when the array is read, before the
+//! first element: UnityPyBoost's `read_pair_array` checks the arity once
+//! after the length, so an *empty* array of a 3-child `pair` fails
+//! (`TypeTreeHelper.cpp:356-360`), where the pure-Python reader returns `[]`.
+//! Compilation itself fails only on a limit (depth).
 //!
 //! Owner: package B.
 
@@ -97,10 +101,17 @@ pub enum Shape {
     BadPair,
     /// `ReferencedObject`.
     RefObject,
-    /// A node whose first child's type is `Array` with two children, whatever
-    /// the node's own type: `elem` is `Array`'s second child; `run` when the
-    /// element kind is an integer, a float, `bool` or `pair` (read as one run,
-    /// `:686-699`); `array_align` when the `Array` child carries the flag.
+    /// A node whose [`Kind`] the reader's switch does not handle itself
+    /// (`Unknown`, `PPtr`, `Array`, `ReferencedObjectData`,
+    /// `ManagedReferencesRegistry`: the `default:` branch,
+    /// `TypeTreeHelper.cpp:812-861`) and whose first child's kind is `Array`
+    /// with two children. Every other kind takes its own shape whatever its
+    /// children: an `int`, `string`, `TypelessData` or `float` node with an
+    /// `Array` first child reads as a scalar, a `pair` as a pair, a
+    /// `ReferencedObject` as one (probed on UnityPy 1.25.2, both readers).
+    /// `elem` is `Array`'s second child; `run` when the element kind is an
+    /// integer, a float, `bool` or `pair` (read as one run, `:686-699`);
+    /// `array_align` when the `Array` child carries the flag.
     Vector {
         /// The element node.
         elem: NodeId,
@@ -109,7 +120,8 @@ pub enum Shape {
         /// The `Array` child's own align flag.
         array_align: bool,
     },
-    /// The first child is `Array` but it does not have two children: fails when read.
+    /// A `Vector`-eligible node whose first child is `Array` without two
+    /// children: fails when read ("Array node must have 2 children").
     BadVector,
     /// Everything else: children in order into a dict (`PPtr<..>`, registries,
     /// `ReferencedObjectData` outside a `ReferencedObject`, unknown types).

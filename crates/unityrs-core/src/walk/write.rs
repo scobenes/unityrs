@@ -7,6 +7,20 @@
 //! extra key ignored; `ReferencedObject` data needs a non-empty `ref_types`
 //! and a `data` entry; integers are range-checked as `struct.pack` checks them.
 //!
+//! **Duck typing (W2).** The writer takes any value Python's operations
+//! accept, not only the variant the reader makes for the node, which a
+//! duplicate-name object exercises (its dict holds one child's value under
+//! the other's node). Probed on UnityPy 1.25.2: a `bool` node takes any value
+//! (its truthiness; an empty `Str`, `Bytes`, `List`, `Tuple` or `Dict` is
+//! false); an integer node takes `Bool` and `Int`/`UInt` in range; a `float`
+//! or `double` node takes `Bool`, integers and floats; a `string` node only
+//! `Str`; `TypelessData` only `Bytes`; a `pair` node anything with items 0
+//! and 1 (`List`, `Tuple`, `Prims` or `Bytes` of length 2 or more, a `Str`
+//! of 2 or more characters written through the children's kinds); an array
+//! any sized iterable (`List`, `Tuple`, `Prims`, `Bytes` as integers, `Str`
+//! as one-character strings, a `Dict` as its keys), each element written by
+//! the element node under the same rules; a class only a `Dict`.
+//!
 //! Owner: package B.
 
 // STUB(B): delete this allow when the module is implemented.

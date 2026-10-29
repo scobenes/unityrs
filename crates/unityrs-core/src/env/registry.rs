@@ -9,7 +9,10 @@
 //! every directory entry's name at open, in directory order. An entry that
 //! turns out to be a container is not a CAB: its slot answers `None` and its
 //! own entries are registered then, at the end of the order (plan section
-//! 3.13, difference (b)).
+//! 3.13, difference (b); an eager load would instead keep an earlier CAB of
+//! the same path under the key). Under eager loading a bundle registers its
+//! CABs as it parses them, so a later entry's failure leaves the earlier
+//! ones registered (difference (a)).
 //!
 //! Owner: package D.
 

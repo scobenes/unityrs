@@ -192,8 +192,12 @@ pub enum ReadDetail {
     /// `ReferencedObject` data whose `(class, ns, asm)` is not in `ref_types`.
     #[error("Failed to get ref type node")]
     RefTypeNotFound,
-    /// A ref type without a tree (type trees disabled; UnityPyBoost dereferences `None`).
-    #[error("ref type has no tree")]
+    /// The pure-Python reader's array path only: an aligned `ReferencedObject`
+    /// element whose class is empty or whose matched ref type has no tree
+    /// (type trees disabled) calls `read_value(None, ...)`, an `AttributeError`
+    /// (kind `other`). UnityPyBoost and the pure-Python scalar path skip
+    /// `data` instead, as for an empty class (plan R14).
+    #[error("'NoneType' object has no attribute 'm_MetaFlag'")]
     RefTypeNoTree,
     /// A pure-Python-path `TypeError` or `struct.error` (aligned `SInt8` or `TypelessData` arrays).
     #[error("python reader: {0}")]

@@ -19,8 +19,11 @@ pub fn cross_bundle_pointer() -> Scene {
     todo!()
 }
 
-/// A loose `SerializedFile` (no container) with an external pointer: the
-/// "no container is set" refusal.
+/// Two loose `SerializedFile`s loaded at top level under names with
+/// directories (`a/CAB-A`, `b/CAB-B`): an object in A points (`m_FileID` 1,
+/// external `archive:/CAB-B/CAB-B`) at an object in B. The pointer resolves,
+/// as in UnityPy, whose Environment is a top-level file's container
+/// (`find_file` finds `cab-b`); without B it is `DerefError::NotFound`.
 pub fn loose_external_pointer() -> Scene {
     todo!()
 }

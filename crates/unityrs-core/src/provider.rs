@@ -3,8 +3,11 @@
 //! UnityPy's order (`files/ObjectReader.py:285-307`): an explicit `nodes=`
 //! tree; else the type record's own tree; else the class tree for
 //! `(class_id, version)` from the TPK (`helpers/Tpk.py:42-55`), and for a
-//! `MonoBehaviour` the script generator's tree when it answers (its
-//! `ValueError` swallowed). The cache key is the class and the packed version
+//! `MonoBehaviour` the script generator's tree when it answers. Only a
+//! `ValueError` is swallowed there; the script lookup dereferences `m_Script`
+//! through the Environment, so it lives in
+//! [`crate::env::Environment::object_tree`], and runs only when a provider
+//! [`TypeTreeProvider::accepts_scripts`]. The cache key is the class and the packed version
 //! integer, as UnityPy's `CLASSES_CACHE` is (`Tpk.py:16`, `:44`): rabex keys
 //! by class alone, so the first version to ask fixes a class's tree for every
 //! later version (`docs/spikes/rabex.md` section 5).
@@ -72,6 +75,12 @@ pub trait TypeTreeProvider: Send + Sync + fmt::Debug {
     /// The tree for `req`, `Ok(None)` when the provider has none (where UnityPy
     /// raises `KeyError`/`ValueError`, which the caller turns into `no_typetree`).
     fn tree(&self, req: &TreeRequest<'_>) -> Result<Option<Arc<Tree>>, ProviderError>;
+    /// Whether this provider answers script requests (`TreeRequest::script`):
+    /// UnityPy's `env.typetree_generator`. Only then does the Environment
+    /// dereference a `MonoBehaviour`'s `m_Script` (P3; the TPK provider does not).
+    fn accepts_scripts(&self) -> bool {
+        false
+    }
 }
 
 /// Where an object's tree came from.

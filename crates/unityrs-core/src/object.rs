@@ -85,8 +85,10 @@ impl ObjectRef {
     }
 
     /// The tree a read would use: `nodes` when given, else the type record's,
-    /// else the provider chain's (`ObjectReader.py:285-307`). `Ok(None)` is
-    /// UnityPy's `TypeTreeError`.
+    /// else the provider chain's class tree (`ObjectReader.py:285-307`), with
+    /// no script (`TreeRequest::script` is `None`). `Ok(None)` is UnityPy's
+    /// `TypeTreeError`. The `MonoBehaviour` script hook needs the Environment
+    /// to dereference `m_Script`: [`crate::env::Environment::object_tree`].
     pub fn tree(&self, nodes: Option<&Arc<Tree>>) -> Result<Option<TreeRef>, ParseError> {
         todo!()
     }
