@@ -9,10 +9,10 @@ corpus index.json and its bundle and sample entries are dumped. An input
 whose sha256 differs from its index entry stops the run (exit 1, no dump)
 unless --allow-index-mismatch is given. The output path must lie outside the
 repository, and the dump, its .partial file and --stats must be different
-files, none of them an input. docs/CANONICAL_DUMP.md specifies the format;
-this script needs only the standard library and UnityPy (the pinned oracle
-stack in the unityrs-dev container), and refuses to run with PYTHONPATH set
-(python -E ignores it).
+files, none of them a symlink, an input or the index. docs/CANONICAL_DUMP.md
+specifies the format; this script needs only the standard library and UnityPy
+(the pinned oracle stack in the unityrs-dev container), and refuses to run
+with PYTHONPATH set (python -E ignores it).
 """
 
 from __future__ import annotations
@@ -714,12 +714,47 @@ def run_jobs(jobs, workers):
             recv.close()
 
 
+def output_path(given: str) -> Path:
+    """`given` with its folder resolved but not its own name, so a symlink there is seen rather than followed."""
+    path = Path(given)
+    return path.parent.resolve() / path.name
+
+
+def file_identity(path, follow: bool = False) -> tuple[int, int] | None:
+    """(st_dev, st_ino) of the file at `path`, which every hard link to it shares, or None when there is none."""
+    try:
+        st = os.stat(path, follow_symlinks=follow)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return st.st_dev, st.st_ino
+
+
+def create_new(path: Path):
+    """A new file at `path`, open for writing: O_EXCL with O_NOFOLLOW, so nothing already there is written through."""
+    return os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o666), "wb")
+
+
+def write_new(path: Path, data: bytes) -> None:
+    """path := data, through a new file beside it renamed over it: no file or symlink at `path` is written through."""
+    tmp = path.with_name(f".{path.name}.{os.urandom(8).hex()}.partial")
+    try:
+        with create_new(tmp) as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def open_output(path: Path, compress: bool):
-    """The output stream; gzip with mtime 0 so this producer's dumps of equal content are equal files."""
+    """The output stream, on a new file at `path` (create_new).
+
+    gzip is written with mtime 0, so this producer's dumps of equal content are equal files.
+    """
+    raw = create_new(path)
     if compress:
-        raw = open(path, "wb")  # noqa: SIM115 - closed with the gzip wrapper
         return gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0), raw
-    return open(path, "wb"), None  # noqa: SIM115
+    return raw, None
 
 
 def main(argv=None):
@@ -765,23 +800,36 @@ def main(argv=None):
         root = path and C.inside_repo(path)
         if root:
             ap.error(f"refusing to write {label} into the repository ({root}); pick a path outside it")
-    out_path = Path(args.output).resolve()
-    stats_path = Path(args.stats).resolve() if args.stats else None
-    # Every file the run writes, by its resolved path, must be its own: the
-    # dump goes to .partial and is renamed when whole, then the stats are written.
-    writes = {out_path: "the dump", out_path.with_name(out_path.name + ".partial"): "the dump's .partial file"}
+    # Every file the run writes must be a file of its own: the dump goes to
+    # .partial and is renamed when whole, then the stats are written. None may
+    # be a symlink, or the same file as another (by its path, or by its
+    # (st_dev, st_ino), which a hard link shares), or an input or the index.
+    out_path = output_path(args.output)
+    tmp = out_path.with_name(out_path.name + ".partial")
+    stats_path = output_path(args.stats) if args.stats else None
+    writes = {out_path: "the dump", tmp: "the dump's .partial file"}
     if stats_path in writes:
         ap.error(f"--stats names {writes[stats_path]} ({stats_path}); pick another path for the stats")
     if stats_path:
         writes[stats_path] = "--stats"
+    written = {}
+    for path, label in writes.items():
+        if path.is_symlink():
+            ap.error(f"{label} ({path}) is a symlink; pick a path that is not one")
+        identity = file_identity(path)
+        if identity in written:
+            ap.error(f"{label} ({path}) is the same file as {written[identity]}; pick another path")
+        if identity:
+            written[identity] = label
 
     inputs = collect_inputs(args)
     if not inputs:
         ap.error("no inputs matched")
-    for path, rel, _ in inputs:
-        clash = writes.get(Path(os.fsdecode(os.path.realpath(path))))
+    read = [(os.fsencode(args.input), f"the index {args.input!r}")] if args.index else []
+    for path, what in read + [(path, f"the input {rel!r}") for path, rel, _ in inputs]:
+        clash = written.get(file_identity(path, follow=True))
         if clash:
-            ap.error(f"{clash} would overwrite the input {rel!r}; pick a path that is not an input")
+            ap.error(f"{clash} would overwrite {what}; pick a path that is not an input")
 
     header = {
         "rec": "dump",
@@ -804,10 +852,14 @@ def main(argv=None):
     per_input = []
     t0 = time.perf_counter()
     # Written under a .partial name and renamed when complete, so a dump at the
-    # requested path is always whole.
+    # requested path is always whole. A .partial left by a run that was killed
+    # is removed first: the checks above found it a file of its own.
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out_path.with_name(out_path.name + ".partial")
-    fh, raw = open_output(tmp, out_path.suffix == ".gz")
+    tmp.unlink(missing_ok=True)
+    try:
+        fh, raw = open_output(tmp, out_path.suffix == ".gz")
+    except FileExistsError:
+        ap.error(f"the dump's .partial file ({tmp}) was made by something else as the run started; try again")
     results = None
     done = False
     try:
@@ -866,7 +918,7 @@ def main(argv=None):
     }
     print(json.dumps(summary, indent=1), file=sys.stderr)
     if stats_path:
-        stats_path.write_text(json.dumps({"summary": summary, "inputs": per_input}, indent=1))
+        write_new(stats_path, json.dumps({"summary": summary, "inputs": per_input}, indent=1).encode())
     if totals["crashes"] == len(inputs):
         # One crash is an input's; every input crashing is the machine's.
         print(

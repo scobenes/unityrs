@@ -1163,36 +1163,144 @@ class DumpTests(unittest.TestCase):
             stats.unlink(missing_ok=True)
 
     def test_refuses_outputs_that_would_overwrite_each_other_or_an_input(self):
-        """The dump, its .partial file and the stats are written in turn; none may be another one, or an input."""
-        src, out = self.tmp / "in", self.tmp / "x.jsonl"
+        """The dump, its .partial file and the stats are written in turn; none may be another, an input or the index.
+
+        Each is compared by its path and by its (st_dev, st_ino), so a hard
+        link is caught, and none may be a symlink: a .partial file linked to
+        the stats or to an input would be written through.
+        """
+        src, out, stats = self.tmp / "in", self.tmp / "x.jsonl", self.tmp / "s.json"
+        corpus = self.tmp / "corpus"
         src.mkdir()
+        corpus.mkdir()
         (src / "tiny").write_bytes(b"tiny")
         (src / "old.jsonl.partial").write_bytes(b"an input")
+        (corpus / "tiny").write_bytes(b"tiny")
+        index = corpus / "index.json"
+        sha = hashlib.sha256(b"tiny").hexdigest()
+        index.write_text(json.dumps({"files": [{"path": "tiny", "kind": "unitypy-sample", "sha256": sha}]}))
         out.write_bytes(b"an earlier dump")
+        stats.write_bytes(b"earlier stats")
         (self.tmp / "link.json").symlink_to(out)
+        (self.tmp / "y.jsonl.partial").symlink_to(stats)
+        (self.tmp / "z.jsonl.partial").symlink_to(src / "tiny")
+        os.link(out, self.tmp / "hard-dump")
+        os.link(src / "tiny", self.tmp / "hard-tiny")
+        os.link(index, self.tmp / "hard-index")
+        on_src = ["-q", str(src)]
+        on_index = ["-q", "--index", str(index)]
         cases = {
-            "--stats is the dump": (["-o", out, "--stats", out], "--stats names the dump"),
-            "--stats is a symlink to the dump": (["-o", out, "--stats", self.tmp / "link.json"], "names the dump"),
-            "--stats is the .partial file": (["-o", out, "--stats", f"{out}.partial"], "names the dump's .partial"),
-            "the dump is an input": (["-o", src / "tiny"], "the dump would overwrite the input 'tiny'"),
-            "the .partial file is an input": (["-o", src / "old.jsonl"], ".partial file would overwrite the input"),
-            "--stats is an input": (["-o", out, "--stats", src / "tiny"], "--stats would overwrite the input 'tiny'"),
+            "--stats is the dump": (on_src, ["-o", out, "--stats", out], "--stats names the dump"),
+            "--stats is a symlink to the dump": (
+                on_src,
+                ["-o", out, "--stats", self.tmp / "link.json"],
+                f"--stats ({self.tmp / 'link.json'}) is a symlink",
+            ),
+            "--stats is a hard link to the dump": (
+                on_src,
+                ["-o", out, "--stats", self.tmp / "hard-dump"],
+                "is the same file as the dump",
+            ),
+            "--stats is the .partial file": (
+                on_src,
+                ["-o", out, "--stats", f"{out}.partial"],
+                "names the dump's .partial",
+            ),
+            "the dump is a symlink": (
+                on_src,
+                ["-o", self.tmp / "link.json"],
+                "the dump (" + str(self.tmp / "link.json"),
+            ),
+            "the .partial file is a symlink to the stats": (
+                on_src,
+                ["-o", self.tmp / "y.jsonl", "--stats", stats],
+                f"the dump's .partial file ({self.tmp / 'y.jsonl.partial'}) is a symlink",
+            ),
+            "the .partial file is a symlink to an input": (
+                on_src,
+                ["-o", self.tmp / "z.jsonl"],
+                f"the dump's .partial file ({self.tmp / 'z.jsonl.partial'}) is a symlink",
+            ),
+            "the dump is an input": (on_src, ["-o", src / "tiny"], "the dump would overwrite the input 'tiny'"),
+            "the dump is a hard link to an input": (
+                on_src,
+                ["-o", self.tmp / "hard-tiny"],
+                "the dump would overwrite the input 'tiny'",
+            ),
+            "the .partial file is an input": (
+                on_src,
+                ["-o", src / "old.jsonl"],
+                ".partial file would overwrite the input",
+            ),
+            "--stats is an input": (
+                on_src,
+                ["-o", out, "--stats", src / "tiny"],
+                "--stats would overwrite the input 'tiny'",
+            ),
+            "--stats is a hard link to an input": (
+                on_src,
+                ["-o", out, "--stats", self.tmp / "hard-tiny"],
+                "--stats would overwrite the input 'tiny'",
+            ),
+            "the dump is the index": (on_index, ["-o", index], f"the dump would overwrite the index {str(index)!r}"),
+            "--stats is the index": (
+                on_index,
+                ["-o", out, "--stats", index],
+                f"--stats would overwrite the index {str(index)!r}",
+            ),
+            "the dump is a hard link to the index": (
+                on_index,
+                ["-o", self.tmp / "hard-index"],
+                "the dump would overwrite the index",
+            ),
         }
-        before = {p: p.read_bytes() for p in (out, src / "tiny", src / "old.jsonl.partial")}
-        for label, (args, said) in cases.items():
+        files = (out, stats, src / "tiny", src / "old.jsonl.partial", corpus / "tiny", index)
+        before = {p: p.read_bytes() for p in files}
+        names = sorted(p.name for p in self.tmp.iterdir())
+        for label, (given, args, said) in cases.items():
             with self.subTest(label):
                 with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as cm:
-                    unitypy_dump.main(["-q", str(src), *map(str, args)])
+                    unitypy_dump.main([*given, *map(str, args)])
                 self.assertEqual(cm.exception.code, 2)
                 self.assertIn(said, err.getvalue())
                 self.assertEqual({p: p.read_bytes() for p in before}, before)
                 self.assertEqual(sorted(p.name for p in src.iterdir()), ["old.jsonl.partial", "tiny"])
-                self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["in", "link.json", "x.jsonl"])
-        # Paths of their own are written.
-        stats = self.tmp / "x.stats.json"
+                self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), names)
+                self.assertTrue((self.tmp / "y.jsonl.partial").is_symlink())
+        # Paths of their own are written: a .partial file a killed run left
+        # is replaced, and the stats are a new file, so a hard link to the
+        # old one keeps its bytes.
+        Path(f"{out}.partial").write_bytes(b"left by a run that was killed")
+        os.link(stats, self.tmp / "keep")
         self.assertEqual(dump(src, "-o", out, "--stats", stats), 0)
         self.assertEqual(records(out)[-1], {"rec": "end", "files": 2, "objects": 0})
+        self.assertFalse(Path(f"{out}.partial").exists())
         self.assertEqual(json.loads(stats.read_text())["summary"]["inputs"], 2)
+        self.assertEqual((self.tmp / "keep").read_bytes(), b"earlier stats")
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), sorted([*names, "keep"]))
+
+    def test_a_partial_file_made_as_the_run_starts_is_not_written_through(self):
+        """The .partial file is made with O_EXCL and O_NOFOLLOW: one that appears after the checks stops the run."""
+        tiny, out, victim = self.tmp / "tiny", self.tmp / "x.jsonl", self.tmp / "victim"
+        tiny.write_bytes(b"tiny")
+        victim.write_bytes(b"not the dump's")
+        real = unitypy_dump.open_output
+
+        def planted_first(path, compress):
+            path.symlink_to(victim)
+            return real(path, compress)
+
+        with (
+            mock.patch.object(unitypy_dump, "open_output", planted_first),
+            contextlib.redirect_stderr(io.StringIO()) as err,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            unitypy_dump.main(["-q", str(tiny), "-o", str(out)])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn(f"the dump's .partial file ({out}.partial) was made by something else", err.getvalue())
+        self.assertEqual(victim.read_bytes(), b"not the dump's")
+        self.assertTrue(Path(f"{out}.partial").is_symlink())
+        self.assertFalse(out.exists())
 
 
 if __name__ == "__main__":

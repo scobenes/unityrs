@@ -45,9 +45,9 @@ scripts/dev python tools/parity/unitypy_dump.py --index /corpus/index.json --kin
 
 **Output.**
 - The output path and the `--stats` path must lie outside the repository; the dumper refuses anything inside it. Both name corpus inputs.
-- The dump, its `.partial` file (below) and the stats must be three different files, and none of them an input (paths compared with symlinks resolved). The dumper refuses before it writes anything, so `--stats` can never overwrite the dump it describes.
+- The dump, its `.partial` file (below) and the stats must be three different files, none of them a symlink, an input or (with `--index`) the index. They are compared by path, with the folders' symlinks resolved, and by `(st_dev, st_ino)`, so a hard link counts as the file it links to. The dumper refuses before it writes anything, so `--stats` can never overwrite the dump it describes.
 - A `.gz` suffix writes gzip. Use it for anything bigger than a handful of bundles: on the 20-bundle sample the dump is 3.0 times the input uncompressed and 0.32 times gzipped (see "Reproducing the numbers").
-- Output is written to `OUT.partial` and renamed when complete.
+- Output is written to `OUT.partial` and renamed when complete. The `.partial` file is created new (`O_EXCL`, `O_NOFOLLOW`): one a killed run left is removed first, and one that appears after the checks stops the run. The stats are written to a new file too, and renamed over the `--stats` path.
 
 **Selecting inputs.**
 - `--name GLOB` (repeatable) filters on the dump-relative path.
