@@ -110,6 +110,15 @@ impl Default for Limits {
     }
 }
 
+/// Buckets a hash table is charged (or counted) per key: a doubling table
+/// (hashbrown's, behind `std`'s `HashMap`) is at least 7/16 full once it has
+/// grown, so it holds up to 16/7 buckets per key, and while it grows the old
+/// table and the doubled one are both live, up to 24/7 buckets per key; four
+/// cover both. A bucket is a key, a value and one control byte; the table's
+/// fixed part (its control bytes' tail of one SIMD group, 16 bytes, and the
+/// allocator's rounding of its one allocation) is a constant per table.
+pub(crate) const HASH_TABLE_SHARES: u64 = 4;
+
 /// glibc's default `M_MMAP_THRESHOLD`: a chunk of at least this many bytes
 /// may be `mmap`ped (the threshold starts here and can only rise, which
 /// serves more chunks from the heap, never fewer).

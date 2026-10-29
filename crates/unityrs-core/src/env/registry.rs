@@ -33,9 +33,15 @@
 //!
 //! **Memory.** Every registration is charged to the meter of the file that
 //! registers it: the key ([`crate::raw::RawStr::charged`]), the slot's
-//! `Arc`, and twice its share of the `order` vector and of the `slots` hash
-//! table at the table's worst load (a doubling table is at least 7/16 full),
-//! so the two tables' spare capacity is paid for too. The slot keeps that
+//! `Arc`, three elements of the `order` vector and four buckets of the
+//! `slots` hash table (a bucket is a key, a slot handle and a control byte).
+//! A doubling vector holds up to two elements per key at rest and three
+//! while it grows (the old buffer and the doubled one both live); a doubling
+//! hash table up to 16/7 buckets per key at rest and 24/7 while it grows
+//! (the crate's `HASH_TABLE_SHARES`), so the two tables' spare capacity and
+//! every growth are paid for, and only each table's fixed part (hashbrown's
+//! 16-byte control tail, the allocator's rounding of each allocation) is
+//! left, a constant per registry. The slot keeps that
 //! charge; a key registered again keeps its first slot's share of the tables
 //! and the new slot pays its own `Arc`. A refused charge registers nothing
 //! and is the registering load's error.

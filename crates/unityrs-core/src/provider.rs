@@ -26,11 +26,17 @@
 //! cache is bounded in entries and bytes ([`ProviderChain::with_cache_bound`]);
 //! when full it stops adding, which changes no answer. A lookup reads the
 //! cache with a key *borrowed* from the request, so a hit (or a miss) copies
-//! nothing, however long the request's script names are; only an answer
-//! being kept copies its key's strings, so a cached key never keeps an
-//! input's buffer alive, and those copies count against the cache's byte
-//! bound. A provider is caller code: the chain calls it with no lock held,
-//! so a provider may itself call [`ProviderChain::lookup`].
+//! nothing, however long the request's script names are. An answer is kept
+//! only when the cache has room for it, and that is decided from the
+//! borrowed request (its key's size, whether it is already cached, whether
+//! the cache is full) before anything is copied: only an answer that is
+//! kept copies its key's strings, so a key over the byte bound, or any key
+//! once the cache is full, costs no copy, a cached key never keeps an
+//! input's buffer alive, and the copies count against the cache's byte
+//! bound. Each entry is counted at four buckets of the table, which covers
+//! the table at rest and while it doubles (`limits::HASH_TABLE_SHARES`).
+//! A provider is caller code: the chain calls it with no lock held, so a
+//! provider may itself call [`ProviderChain::lookup`].
 //!
 //! Owner: the scaffold (implemented). Package D adds tests and may add
 //! providers; `unityrs-tpk` (package A) implements the TPK one.
@@ -44,6 +50,7 @@ use std::sync::{Arc, RwLock};
 
 use bytes::Bytes;
 
+use crate::limits::{HASH_TABLE_SHARES, heap_cost};
 use crate::raw::RawStr;
 use crate::typetree::Tree;
 use crate::version::{Packed, UnityVersion};
@@ -246,18 +253,23 @@ pub struct ProviderChain {
     max_bytes: u64,
 }
 
-/// What one cached answer costs: its key and value in the table, at the
-/// table's worst load (a doubling hash table is at least 7/16 full, so a
-/// slot is charged twice over, with its control byte), plus the heap its
-/// key owns.
-fn entry_cost(key: &CacheKey) -> u64 {
-    let slot = size_of::<CacheKey>() + size_of::<CacheValue>() + 1;
-    let strings = key
-        .script
-        .as_ref()
-        .map_or(0, |s| s.iter().map(Bytes::len).sum());
-    let limbs = key.packed.heap_bytes();
-    u64::try_from(3 * slot + strings + limbs).unwrap_or(u64::MAX)
+/// One bucket of the cache's table: a key, a value and its control byte.
+const BUCKET: u64 = (size_of::<CacheKey>() + size_of::<CacheValue>() + 1) as u64;
+
+/// What keeping the answer to `req` costs, computed from the borrowed
+/// request before anything is copied: [`HASH_TABLE_SHARES`] buckets of the
+/// table (at rest and while it doubles), plus the heap its key would own
+/// (each copied string and a big version's limbs, at [`heap_cost`]).
+fn entry_cost(req: &TreeRequest<'_>) -> u64 {
+    let len = |n: usize| heap_cost(u64::try_from(n).unwrap_or(u64::MAX));
+    let strings = req.script.map_or(0, |s| {
+        len(s.assembly.len())
+            .saturating_add(len(s.namespace.len()))
+            .saturating_add(len(s.class.len()))
+    });
+    (HASH_TABLE_SHARES * BUCKET)
+        .saturating_add(strings)
+        .saturating_add(len(req.version.packed().heap_bytes()))
 }
 
 impl ProviderChain {
@@ -342,20 +354,22 @@ impl ProviderChain {
     }
 
     fn publish(&self, req: &TreeRequest<'_>, value: CacheValue) {
-        // The key is copied with no lock held, and only when it is kept.
-        let key = CacheKey::copy_of(req);
-        let cost = entry_cost(&key);
+        // Whether the answer is kept is decided from the borrowed request;
+        // only then is the key copied (a copy, not caller code, so it may
+        // run under the lock), so a key the cache will not keep is never
+        // copied.
+        let cost = entry_cost(req);
         let Ok(mut cache) = self.cache.write() else {
             return;
         };
-        if cache.map.contains_key(&key as &dyn KeyView)
+        if cache.map.contains_key(&RequestKey(req) as &dyn KeyView)
             || cache.map.len() >= self.max_entries
             || cache.bytes.saturating_add(cost) > self.max_bytes
         {
             return;
         }
         cache.bytes = cache.bytes.saturating_add(cost);
-        cache.map.insert(key, value);
+        cache.map.insert(CacheKey::copy_of(req), value);
     }
 }
 
@@ -507,6 +521,88 @@ mod tests {
         }
         assert_eq!(copies() - before, 1, "hits and misses copy nothing");
         assert_eq!(chain.cached(), 1);
+    }
+
+    #[test]
+    fn a_key_the_cache_will_not_keep_is_never_copied() {
+        // Round 4: `publish` copied the request's strings before it found
+        // the entry too big or the cache full, so such a key was copied on
+        // every lookup.
+        let copies = || super::KEY_COPIES.with(std::cell::Cell::get);
+        let v = UnityVersion::from_packed(1);
+        let long = RawStr::from_shared(bytes::Bytes::from(vec![b'n'; 1 << 20]));
+        let script = ScriptIdent {
+            assembly: long.clone(),
+            namespace: long.clone(),
+            class: long,
+        };
+        let req = TreeRequest {
+            class_id: 1,
+            version: &v,
+            script: Some(&script),
+        };
+        // Too big: three 1 MiB names against a 2 MiB bound.
+        let too_big = ProviderChain::with_cache_bound(
+            vec![Arc::new(Counting::default())],
+            usize::MAX,
+            2 << 20,
+        );
+        let before = copies();
+        for _ in 0..10 {
+            assert!(too_big.lookup(&req).unwrap().is_some());
+        }
+        assert_eq!(copies() - before, 0, "an entry over the byte bound");
+        assert_eq!(too_big.cached(), 0);
+        // Full: a one-entry cache that already holds another answer.
+        let full =
+            ProviderChain::with_cache_bound(vec![Arc::new(Counting::default())], 1, u64::MAX);
+        assert!(full.lookup(&request(1, &v)).unwrap().is_some());
+        let before = copies();
+        for _ in 0..10 {
+            assert!(full.lookup(&req).unwrap().is_some());
+        }
+        assert_eq!(copies() - before, 0, "a full cache");
+        assert_eq!(full.cached(), 1);
+    }
+
+    #[test]
+    fn the_byte_bound_covers_the_table_at_rest_and_while_it_doubles() {
+        // Round 4: an entry was counted at three buckets. A doubling table
+        // holds up to 16/7 buckets per key at rest and 24/7 while the old
+        // and the doubled table are both live, so three fell short at every
+        // growth. Bucket counts are read from the map's capacity (hashbrown:
+        // 7/8 of the buckets from 8 buckets up, one less below).
+        let buckets = |cap: usize| match cap {
+            0 => 0,
+            c if c < 7 => c + 1,
+            c => c / 7 * 8,
+        };
+        let p = Arc::new(Counting::default());
+        let chain = ProviderChain::new(vec![p]);
+        let mut held = 0;
+        let mut grew = 0;
+        for packed in 0..20_000 {
+            let v = UnityVersion::from_packed(packed);
+            assert!(chain.lookup(&request(1, &v)).unwrap().is_some());
+            let cache = chain.cache.read().unwrap();
+            let now = buckets(cache.map.capacity());
+            // While it grew, the old table and the new one were both live.
+            let peak = if now > held {
+                grew += 1;
+                held + now
+            } else {
+                now
+            };
+            assert!(
+                u64::try_from(peak).unwrap() * super::BUCKET <= cache.bytes,
+                "{} keys: {peak} buckets of {} bytes above the {} counted",
+                cache.map.len(),
+                super::BUCKET,
+                cache.bytes
+            );
+            held = now;
+        }
+        assert!(grew >= 10, "the table doubled {grew} times");
     }
 
     #[test]
