@@ -1043,8 +1043,10 @@ class FileRows(unittest.TestCase):
                 with self.assertRaisesRegex(LookupError, "^The BundleFile is encrypted, but no key was provided!"):
                     head_bundle(saved)
         # 1.25.2 reads a format-9 bundle with format 8's layout and saves it so, under version 9: 10-byte block
-        # entries with no offset. HEAD's reader takes each for 18 bytes, so the `none` save holds no entry for it
-        # and the `lz4` one fails.
+        # entries with no offset. HEAD's reader takes each for 18 bytes: in a save of one block it seeks the block
+        # past the data (the offset it reads is the directory's count and half of the first entry's offset) and reads
+        # a directory count of 0, so a stored block gives a bundle with no entries and a compressed one fails to
+        # decompress; a save of more blocks fails while it reads the directory.
         laid_out_as_8 = bytearray(source)
         struct.pack_into(">I", laid_out_as_8, 8, 9)
         old_nine = load(bytes(laid_out_as_8))[0]
@@ -1052,14 +1054,51 @@ class FileRows(unittest.TestCase):
         self.assertEqual(header(saved), {"format": 9, "info": 16 + 4 + 10 + 4 + directory, "flags": 0x40})
         self.assertEqual(entries(load(saved)[0]), entries(nine))
         self.assertEqual(head_bundle(saved).files, {})
-        with self.assertRaises(lz4.block.LZ4BlockError):
-            head_bundle(old_nine.save(packer="lz4"))
+
+        def old_nine_of(data):
+            laid_out = bytearray(S.fs_bundle([(b"CAB-a", payload, 4), (b"CAB-a.resS", data, 0)]))
+            struct.pack_into(">I", laid_out, 8, 9)
+            return load(bytes(laid_out))[0]
+
+        def old_flags(bundle, packer):
+            """The flags of each block 1.25.2's own chunk rule writes for a save of `bundle`."""
+            flag = {"lz4": 2, "lzma": 1}[packer]
+            return [int(b[2]) for b in H.chunk_based_compress(payload_of(bundle), flag)[1]]
+
+        stored = old_nine_of(random.Random(1).randbytes(0x1F000))  # one chunk that grows under compression
+        packed = old_nine_of(bytes(0x9000))
+        for bundle, packer, flags, error in (
+            (stored, "lz4", [0], None),
+            (stored, "lzma", [0], None),
+            (packed, "lz4", [2], lz4.block.LZ4BlockError),
+            (packed, "lzma", [1], struct.error),
+        ):
+            with self.subTest("HEAD reads 1.25.2's", packer=packer, flags=flags):
+                self.assertEqual(old_flags(bundle, packer), flags)
+                saved = bundle.save(packer=packer)
+                if error is None:
+                    self.assertEqual(head_bundle(saved).files, {})
+                else:
+                    with self.assertRaises(error):
+                        head_bundle(saved)
+        for size, error, message in (
+            (0x29000, Exception, "^String not terminated$"),
+            (0x40000, struct.error, "^unpack_from requires"),
+        ):
+            bundle = old_nine_of(bytes(size))
+            with self.subTest("HEAD reads 1.25.2's", blocks=len(old_flags(bundle, "lz4"))):
+                self.assertEqual(len(old_flags(bundle, "lz4")), 2 if size < 0x40000 else 3)
+                with self.assertRaisesRegex(error, message):
+                    head_bundle(bundle.save(packer="lz4"))
 
         # 1.25.2 reads each of HEAD's 18-byte entries as 10 bytes. A save of one block it reads as a bundle with no
-        # entries (the directory's count is the high half of the block's offset, 0); one of several it fails to
-        # load, by the bytes it lands on; one with no block it reads whole.
+        # entries (the directory's count is the high half of the block's offset, 0). In a save of two blocks the
+        # second entry it reads is a block of size 0 whose flags are the high half of the second block's
+        # uncompressed size, and the directory count's high half is that size's low half: it loads, with no entries,
+        # only for a second block of 0x8000 to 0xFFFF bytes. One of three or more blocks it fails to load, by the
+        # bytes it lands on; one with no block it reads whole.
         def blocks_of(bundle, packer):
-            flag = {"none": 0x40, "lz4": 2, "lzma": 1}[packer]
+            flag = {"none": 0x40, "lz4": 2, "lz4hc": 3, "lzma": 1}[packer]
             return len(helper.chunk_based_compress(payload_of(bundle), flag, 9)[1])
 
         self.assertEqual((blocks_of(nine, "none"), load(nine_bytes)[0].files), (1, {}))
@@ -1067,11 +1106,40 @@ class FileRows(unittest.TestCase):
         self.assertEqual(blocks_of(nine, "lz4"), 4)
         with self.assertRaises(struct.error):
             load(nine.save(packer="lz4"))
-        for chunks, error in ((1, None), (2, struct.error), (3, lz4.block.LZ4BlockError)):
+
+        def head_nine_of(data):
+            bundle = head_bundle(S.fs_bundle([(b"CAB-a", payload, 4), (b"CAB-a.resS", data, 0)]))
+            bundle.version = 9
+            return bundle
+
+        base = len(payload_of(head_nine_of(b"")))
+        for second, error, message in (
+            (1, struct.error, "^unpack_from requires"),
+            (0x7FFF, struct.error, "^unpack_from requires"),
+            (0x8000, None, None),
+            (0xC000, None, None),
+            (0xFFFF, None, None),
+            (0x10000, struct.error, "^unpack requires a buffer of 5 bytes$"),
+            (0x17FFF, struct.error, "^unpack_from requires"),
+            (0x18000, struct.error, "^unpack requires a buffer of 5 bytes$"),
+            (0x20000, lz4.block.LZ4BlockError, ""),
+        ):
+            for kind, packer in (("random", "lz4"), ("zeros", "lz4hc")):
+                size = chunk + second - base
+                data = random.Random(second).randbytes(size) if kind == "random" else bytes(size)
+                bundle = head_nine_of(data)
+                with self.subTest("1.25.2 reads HEAD's", second=hex(second), packer=packer):
+                    self.assertEqual((len(payload_of(bundle)), blocks_of(bundle, packer)), (chunk + second, 2))
+                    saved = bundle.save(packer=packer)
+                    if error is None:
+                        self.assertEqual(load(saved)[0].files, {})
+                    else:
+                        with self.assertRaisesRegex(error, message):
+                            load(saved)
+        for chunks, error in ((1, None), (3, lz4.block.LZ4BlockError)):
             with self.subTest(blocks=chunks):
                 resource_data = random.Random(chunks).randbytes(chunks * chunk - 1000)
-                bundle = head_bundle(S.fs_bundle([(b"CAB-a", payload, 4), (b"CAB-a.resS", resource_data, 0)]))
-                bundle.version = 9
+                bundle = head_nine_of(resource_data)
                 self.assertEqual(blocks_of(bundle, "lz4"), chunks)
                 saved = bundle.save(packer="lz4")
                 if error is None:
