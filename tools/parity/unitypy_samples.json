@@ -1,0 +1,33 @@
+{
+ "repo": "https://github.com/K0lb3/UnityPy",
+ "commit": "417d59522a998fdee9a9c2b29fe35f3063222457",
+ "path": "tests/samples",
+ "url": "https://media.githubusercontent.com/media/K0lb3/UnityPy/{commit}/tests/samples/{name}",
+ "files": [
+  {
+   "name": "atlas_test",
+   "bytes": 76771,
+   "sha256": "61ee5afb5f5c64f0a4f65f039d09b2509198363e713423289c895067ac215177"
+  },
+  {
+   "name": "banner_1",
+   "bytes": 34683,
+   "sha256": "6bd0c3bc36c97e5f1cd2de71bb58477b6c32ac2c254a5705884306c56b94417f"
+  },
+  {
+   "name": "char_118_yuki.ab",
+   "bytes": 704951,
+   "sha256": "6198cb71c7a820256208332bbd375d21b18ed1a36a12ad04be1eef2111b014a1"
+  },
+  {
+   "name": "xinzexi_2_n_tex",
+   "bytes": 634283,
+   "sha256": "a9f6e6bba7110cce647ef752d66655d13ce5850b013a60d80d4e8b08953e02ea"
+  },
+  {
+   "name": "xinzexi_2_n_tex_mesh",
+   "bytes": 44643,
+   "sha256": "8bb2082b9586b3f8f3bad2d22d33346ec0492053f2a76323aa8b4b4047368ca8"
+  }
+ ]
+}

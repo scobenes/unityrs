@@ -1,0 +1,11 @@
+# Lint and format settings for the scripts' Python (`uvx ruff check scripts` /
+# `uvx ruff format scripts`); the same rules as tools/parity/ruff.toml.
+# unittest-suites has no .py suffix, so name it: `uvx ruff check scripts/unittest-suites`.
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "B", "UP", "SIM", "I"]
+
+[lint.isort]
+known-first-party = ["third_party_licenses_check"]

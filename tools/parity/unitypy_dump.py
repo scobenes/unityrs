@@ -5,35 +5,49 @@
     python tools/parity/unitypy_dump.py --index /corpus/index.json -o OUT.jsonl --sample 20
 
 INPUT is a file or a folder (walked recursively); with --index it is the
-corpus index.json and its bundle and sample entries are dumped. The output
-path must lie outside the repository. docs/CANONICAL_DUMP.md specifies the
-format; this script needs only the standard library and UnityPy (the pinned
-oracle stack in the unityrs-dev container).
+corpus index.json and its bundle and sample entries are dumped. An input
+whose sha256 differs from its index entry stops the run (exit 1, no dump)
+unless --allow-index-mismatch is given. The output path must lie outside the
+repository, and the dump, its .partial file and --stats must be different
+files, none of them a symlink, an input or the index. docs/CANONICAL_DUMP.md
+specifies the format; this script needs only the standard library and UnityPy
+(the pinned oracle stack in the unityrs-dev container), and refuses to run
+with PYTHONPATH set (python -E ignores it).
 """
 
 from __future__ import annotations
 
-import argparse
-import contextlib
-import ctypes
-import fnmatch
-import gzip
-import hashlib
-import io
-import json
-import os
-import pickle
-import re
-import signal
 import sys
-import time
-import traceback
-from collections import Counter
-from multiprocessing import get_context
-from multiprocessing.connection import wait
-from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# What the interpreter loaded before this script imported anything: run as a
+# script, as for a dump, that is its start-up (site, .pth files). Every module
+# loaded after it must be the standard library's, the parity tools', or a
+# pinned wheel's, and one named as a standard-library module must be the
+# standard library's whenever it was loaded (loaded_problem).
+AT_START = tuple(sys.modules.values())
+
+import argparse  # noqa: E402
+import contextlib  # noqa: E402
+import ctypes  # noqa: E402
+import fnmatch  # noqa: E402
+import functools  # noqa: E402
+import gzip  # noqa: E402
+import hashlib  # noqa: E402
+import io  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import pickle  # noqa: E402
+import re  # noqa: E402
+import signal  # noqa: E402
+import time  # noqa: E402
+import traceback  # noqa: E402
+from collections import Counter  # noqa: E402
+from multiprocessing import get_context  # noqa: E402
+from multiprocessing.connection import wait  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 
 import UnityPy  # noqa: E402
 from UnityPy.files import BundleFile, File, SerializedFile, WebFile  # noqa: E402
@@ -41,9 +55,22 @@ from UnityPy.helpers import ImportHelper, TypeTreeHelper  # noqa: E402
 from UnityPy.streams import EndianBinaryReader, EndianBinaryWriter  # noqa: E402
 
 import canonical as C  # noqa: E402
+import oracle_env  # noqa: E402
 
 # What routes parse_as_dict through UnityPyBoost; without it the oracle is not the pinned one.
 HAVE_BOOST = TypeTreeHelper.read_typetree_boost is not None
+
+
+def _boost_sha256() -> str | None:
+    """The sha256 of the UnityPyBoost binary this process loaded, or None without one."""
+    module = sys.modules.get("UnityPy.UnityPyBoost")
+    if not HAVE_BOOST or module is None:
+        return None
+    with open(module.__file__, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+BOOST_SHA256 = _boost_sha256()
 
 NOTE_MAX = 300
 INDEX_KINDS = ("bundle", "unitypy-sample")
@@ -52,12 +79,57 @@ NONE_PIN = 1 << 40
 
 
 def oracle_stack_problem() -> str | None:
-    """Why this interpreter is not the pinned oracle, or None when it is."""
+    """Why this interpreter is not the pinned oracle, or None when it is.
+
+    The oracle is UnityPy with UnityPyBoost, that binary being the one the
+    pinned wheel holds, and every package requirements-oracle.txt pins
+    (numpy included, which changes what UnityPy renders) installed from its
+    pinned wheel: at its version, each file hashing as that wheel's RECORD
+    says, and imported from those files (oracle_env.wheel_problems); no
+    module loaded from anywhere else (loaded_problem); and nothing that puts
+    other folders before them at start-up: PYTHONPATH, PYTHONHOME,
+    PYTHONPLATLIBDIR or a user site-packages folder (oracle_env.start_up_problems).
+    """
+    problems = oracle_env.start_up_problems()
+    if problems:
+        return "; ".join(problems)
     if not HAVE_BOOST:
         return "UnityPyBoost is not loaded, so UnityPy would parse with its pure-Python reader"
     if UnityPy.__version__ != C.ORACLE_UNITYPY:
         return f"UnityPy is {UnityPy.__version__}, not the pinned {C.ORACLE_UNITYPY}"
-    return pin_problem()
+    if BOOST_SHA256 != C.ORACLE_BOOST_SHA256:
+        return f"UnityPyBoost has sha256 {BOOST_SHA256}, not the pinned wheel's {C.ORACLE_BOOST_SHA256}"
+    problems = C.stack_problems(C.installed_packages(), C.oracle_pins())
+    if problems:
+        return f"{'; '.join(problems)} ({C.ORACLE_REQUIREMENTS.name})"
+    problems = oracle_env.installed_wheel_problems()[0]
+    if problems:
+        more = f"; and {len(problems) - 3} more" if len(problems) > 3 else ""
+        return f"{'; '.join(problems[:3])}{more} ({C.ORACLE_RECORDS.name})"
+    return loaded_problem() or pin_problem()
+
+
+@functools.cache
+def _loaded_modules() -> oracle_env.LoadedModules:
+    return oracle_env.LoadedModules(oracle_env.pinned_files(C.oracle_records()), [HERE], AT_START)
+
+
+def loaded_problem() -> str | None:
+    """Which modules this process loaded from neither the standard library, the parity tools nor the pinned wheels.
+
+    A pinned package that imports another one when it is installed (Pillow
+    imports cffi, and defusedxml; fsspec imports zstandard) would otherwise
+    run code that is not the oracle's, and a copy of a standard-library module
+    earlier on sys.path (json, which writes every line; hashlib; gzip) would
+    stand in for it, at start-up or later. Checked once the stack is (oracle_stack_problem),
+    and again in each input's process after its dump (_child), for what a
+    dump loads; the verdicts are kept, so that re-checks only the new modules.
+    """
+    problems = _loaded_modules().problems()
+    if not problems:
+        return None
+    more = f"; and {len(problems) - 3} more" if len(problems) > 3 else ""
+    return f"{'; '.join(problems[:3])}{more}"
 
 
 # ---------------------------------------------------------------------- hooks
@@ -330,9 +402,13 @@ def object_record(obj, path, encoder, levels, stats):
             try:
                 encoded = encoder.encode(value, node)
             except C.EncodeError as e:
-                parsed_ok = False
-                error = {"kind": "encode", "bytes_read": None, "note": note(e)}
-                stats["encode_errors"] += 1
+                # UnityPy read the value; the oracle's own encoder refusing it is a
+                # bug in the dumper, not an outcome of the input, so the run stops
+                # (spec 4.3: the oracle never writes an `encode` error).
+                raise DumperError(
+                    f"file {C.dumps(path)} path_id {obj.path_id}: the canonical encoder refused the value "
+                    f"UnityPy read ({e})"
+                ) from e
         stats["t_parse"] += t1 - t0
         stats["t_encode"] += time.perf_counter() - t1
         if error is not None:
@@ -547,6 +623,14 @@ class DumperError(RuntimeError):
     """The dumper failed on an input in its own code, which no input explains, so the run stops."""
 
 
+class IndexMismatch(RuntimeError):
+    """An input is not the file its index entry pins (another sha256), so the dump would not be of the corpus."""
+
+
+class NotTheOracle(RuntimeError):
+    """An input's process loaded a module from outside the pins (loaded_problem), so its dump is not the oracle's."""
+
+
 def _send(conn, result):
     conn.send(result)
 
@@ -556,6 +640,9 @@ def _child(conn, job):
     pin_none()
     try:
         result = ("ok", dump_input(job))
+        problem = loaded_problem()
+        if problem:
+            result = ("not the oracle", problem)
     except BaseException:  # noqa: BLE001 - every UnityPy outcome is recorded inside; this is the dumper's own failure
         result = ("raised", traceback.format_exc())
     _send(conn, result)
@@ -570,9 +657,11 @@ def _died(code):
 
 
 def _settle(job, msg, exitcode):
-    """An input's result: its records, a crash record for a death by signal, or DumperError."""
+    """An input's result: its records, or a crash record for a death by signal; else NotTheOracle or DumperError."""
     if msg is not None and msg[0] == "ok":
         return msg[1]
+    if msg is not None and msg[0] == "not the oracle":
+        raise NotTheOracle(f"while dumping {job[1]!r}: {msg[1]}")
     if msg is not None:
         raise DumperError(f"{job[1]!r}: the dumper raised\n{msg[1].rstrip()}")
     if exitcode is not None and exitcode < 0:
@@ -625,12 +714,47 @@ def run_jobs(jobs, workers):
             recv.close()
 
 
+def output_path(given: str) -> Path:
+    """`given` with its folder resolved but not its own name, so a symlink there is seen rather than followed."""
+    path = Path(given)
+    return path.parent.resolve() / path.name
+
+
+def file_identity(path, follow: bool = False) -> tuple[int, int] | None:
+    """(st_dev, st_ino) of the file at `path`, which every hard link to it shares, or None when there is none."""
+    try:
+        st = os.stat(path, follow_symlinks=follow)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return st.st_dev, st.st_ino
+
+
+def create_new(path: Path):
+    """A new file at `path`, open for writing: O_EXCL with O_NOFOLLOW, so nothing already there is written through."""
+    return os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o666), "wb")
+
+
+def write_new(path: Path, data: bytes) -> None:
+    """path := data, through a new file beside it renamed over it: no file or symlink at `path` is written through."""
+    tmp = path.with_name(f".{path.name}.{os.urandom(8).hex()}.partial")
+    try:
+        with create_new(tmp) as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def open_output(path: Path, compress: bool):
-    """The output stream; gzip with mtime 0 so this producer's dumps of equal content are equal files."""
+    """The output stream, on a new file at `path` (create_new).
+
+    gzip is written with mtime 0, so this producer's dumps of equal content are equal files.
+    """
+    raw = create_new(path)
     if compress:
-        raw = open(path, "wb")  # noqa: SIM115 - closed with the gzip wrapper
         return gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0), raw
-    return open(path, "wb"), None  # noqa: SIM115
+    return raw, None
 
 
 def main(argv=None):
@@ -640,6 +764,11 @@ def main(argv=None):
     ap.add_argument("--index", action="store_true", help="INPUT is a corpus index.json")
     ap.add_argument("--kind", default=",".join(INDEX_KINDS), help="index entry kinds to dump (comma list)")
     ap.add_argument("--build", help="index builds to dump (comma list)")
+    ap.add_argument(
+        "--allow-index-mismatch",
+        action="store_true",
+        help="with --index, dump an input whose sha256 differs from its entry (a warning) instead of stopping",
+    )
     ap.add_argument("--name", action="append", help="glob on the dump-relative path (repeatable)")
     ap.add_argument("--sample", type=int, help="keep N inputs spread evenly over the sorted list")
     ap.add_argument("--limit", type=int, help="keep the first N inputs")
@@ -648,6 +777,8 @@ def main(argv=None):
     ap.add_argument("--stats", help="write per-input timings and totals as JSON to this path")
     ap.add_argument("-q", "--quiet", action="store_true", help="no per-input progress on stderr")
     args = ap.parse_args(argv)
+    if args.allow_index_mismatch and not args.index:
+        ap.error("--allow-index-mismatch needs --index")
     args.kind = args.kind.split(",")
     args.build = args.build.split(",") if args.build else None
     asked = args.levels.split(",")
@@ -662,18 +793,43 @@ def main(argv=None):
     problem = oracle_stack_problem()
     if problem:
         ap.error(f"refusing to dump: this is not the pinned oracle ({problem})")
+    installed = C.installed_packages()
 
     # The dump and the stats both name corpus inputs; neither may land in the repository.
     for label, path in (("the dump", args.output), ("--stats", args.stats)):
         root = path and C.inside_repo(path)
         if root:
             ap.error(f"refusing to write {label} into the repository ({root}); pick a path outside it")
-    out_path = Path(args.output).resolve()
-    stats_path = Path(args.stats).resolve() if args.stats else None
+    # Every file the run writes must be a file of its own: the dump goes to
+    # .partial and is renamed when whole, then the stats are written. None may
+    # be a symlink, or the same file as another (by its path, or by its
+    # (st_dev, st_ino), which a hard link shares), or an input or the index.
+    out_path = output_path(args.output)
+    tmp = out_path.with_name(out_path.name + ".partial")
+    stats_path = output_path(args.stats) if args.stats else None
+    writes = {out_path: "the dump", tmp: "the dump's .partial file"}
+    if stats_path in writes:
+        ap.error(f"--stats names {writes[stats_path]} ({stats_path}); pick another path for the stats")
+    if stats_path:
+        writes[stats_path] = "--stats"
+    written = {}
+    for path, label in writes.items():
+        if path.is_symlink():
+            ap.error(f"{label} ({path}) is a symlink; pick a path that is not one")
+        identity = file_identity(path)
+        if identity in written:
+            ap.error(f"{label} ({path}) is the same file as {written[identity]}; pick another path")
+        if identity:
+            written[identity] = label
 
     inputs = collect_inputs(args)
     if not inputs:
         ap.error("no inputs matched")
+    read = [(os.fsencode(args.input), f"the index {args.input!r}")] if args.index else []
+    for path, what in read + [(path, f"the input {rel!r}") for path, rel, _ in inputs]:
+        clash = written.get(file_identity(path, follow=True))
+        if clash:
+            ap.error(f"{clash} would overwrite {what}; pick a path that is not an input")
 
     header = {
         "rec": "dump",
@@ -684,6 +840,11 @@ def main(argv=None):
             "name": C.ORACLE_PRODUCER,
             "unitypy": UnityPy.__version__,
             "boost": HAVE_BOOST,
+            "boost_sha256": BOOST_SHA256,
+            # Every pinned package as installed: oracle_stack_problem has checked that they are the pins.
+            "packages": {name: installed[name] for name in sorted(C.oracle_pins())},
+            # The digest of each one's RECORD, whose every file oracle_stack_problem has hashed.
+            "records": oracle_env.installed_wheel_problems()[1],
             "python": sys.version.split()[0],
         },
     }
@@ -691,10 +852,14 @@ def main(argv=None):
     per_input = []
     t0 = time.perf_counter()
     # Written under a .partial name and renamed when complete, so a dump at the
-    # requested path is always whole.
+    # requested path is always whole. A .partial left by a run that was killed
+    # is removed first: the checks above found it a file of its own.
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out_path.with_name(out_path.name + ".partial")
-    fh, raw = open_output(tmp, out_path.suffix == ".gz")
+    tmp.unlink(missing_ok=True)
+    try:
+        fh, raw = open_output(tmp, out_path.suffix == ".gz")
+    except FileExistsError:
+        ap.error(f"the dump's .partial file ({tmp}) was made by something else as the run started; try again")
     results = None
     done = False
     try:
@@ -709,7 +874,10 @@ def main(argv=None):
                 print(f"warning: {rel}: {json.loads(text)['error']['note']}", file=sys.stderr)
             if expected[rel] and expected[rel] != sha:
                 totals["index_sha256_mismatch"] += 1
-                print(f"warning: {rel}: sha256 {sha} differs from the index", file=sys.stderr)
+                said = f"{rel}: sha256 {sha} differs from the index's {expected[rel]}"
+                if not args.allow_index_mismatch:
+                    raise IndexMismatch(said)
+                print(f"warning: {said}", file=sys.stderr)
             per_input.append({"path": rel, **{k: round(v, 6) if isinstance(v, float) else v for k, v in stats.items()}})
             if not args.quiet:
                 print(
@@ -722,6 +890,16 @@ def main(argv=None):
     except DumperError as e:
         print(f"unitypy_dump: {e}\nunitypy_dump: the dumper itself failed; no dump written", file=sys.stderr)
         return 1
+    except IndexMismatch as e:
+        print(
+            f"unitypy_dump: {e}\nunitypy_dump: the input is not the file the index pins; no dump written "
+            "(--allow-index-mismatch dumps it anyway)",
+            file=sys.stderr,
+        )
+        return 1
+    except NotTheOracle as e:
+        print(f"unitypy_dump: refusing to dump: this is not the pinned oracle ({e}); no dump written", file=sys.stderr)
+        return 2
     finally:
         if results is not None:
             results.close()
@@ -740,7 +918,7 @@ def main(argv=None):
     }
     print(json.dumps(summary, indent=1), file=sys.stderr)
     if stats_path:
-        stats_path.write_text(json.dumps({"summary": summary, "inputs": per_input}, indent=1))
+        write_new(stats_path, json.dumps({"summary": summary, "inputs": per_input}, indent=1).encode())
     if totals["crashes"] == len(inputs):
         # One crash is an input's; every input crashing is the machine's.
         print(
