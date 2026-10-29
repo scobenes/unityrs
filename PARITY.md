@@ -46,7 +46,7 @@ The pins are `DESIGN.md` section 3's. The image also carries these libraries, wh
 |---|---|---|
 | lz4 | 4.4.4 | LZ4/LZ4HC blocks (section 6), `CompressionHelper.compress_lz4` bytes |
 | brotli | 1.2.0 | brotli WebFiles |
-| pycryptodome | 3.23.0 | UnityCN key decryption (`ArchiveStorageManager.decrypt_key`) |
+| pycryptodome | 3.23.0, pinned (`DESIGN.md` section 3) | UnityCN key decryption (`ArchiveStorageManager.decrypt_key`), which without it raises |
 | numpy | 2.4.6 | the Sprite affine solve (`SpriteHelper.copy_triangle`), FMOD float-to-int16 conversion |
 | pyfmodex | 0.7.2 | FMOD bindings under fmod_toolkit 0.1.3, which ships its own `libfmod` |
 | fsspec | 2025.5.1 | `Environment(fs=...)` |
@@ -458,7 +458,7 @@ Lines are in `helpers/ArchiveStorageManager.py`.
 | `ArchiveStorageDecryptor.decrypt_block` | UnityPyBoost's `decrypt_block` when present (`:96-98`), else the Python loop (`:100-107`) | A | L1 | `test_rows_files.py` unitycn_decryption; planned: UnityCN samples | pinned P0; impl P3 |
 | `UnityPyBoost.decrypt_block` | the C version of the loop: the same bytes as the Python loop | A | L1 | `test_rows_files.py` unitycn_decryption; planned: UnityCN samples | pinned P0; impl P3 |
 | `ArchiveStorageDecryptor.decrypt`, `ArchiveStorageDecryptor.decrypt_byte` | the LZ4-token-aware byte decryption (`:109-143`) | A | L1 | `test_rows_files.py` unitycn_decryption (the bytes of a pinned input, and a bundle whose blocks decrypt); planned: UnityCN samples | pinned P0; impl P3 |
-| `ArchiveStorageManager.decrypt_key` | AES-ECB-encrypt the key vector, XOR with data (`:33-37`) | A | L1 | `test_rows_files.py` unitycn_decryption; planned: UnityCN samples | pinned P0; impl P3 |
+| `ArchiveStorageManager.decrypt_key` | AES-ECB-encrypt the key vector, XOR with data (`:33-37`), with pycryptodome's `Crypto.Cipher.AES`, imported there: without pycryptodome, `ArchiveStorageDecryptor` raises `ModuleNotFoundError` once a key is set, so no UnityCN bundle loads (section 1; the oracle pins pycryptodome) | A | L1 | `test_rows_files.py` unitycn_decryption; planned: UnityCN samples | pinned P0; impl P3 |
 | `ArchiveStorageManager.read_vector` | 16 + 16 bytes and one skipped byte (`:25-30`) | A | L1 | `test_rows_files.py` unitycn_decryption; planned: UnityCN samples | pinned P0; impl P3 |
 | `ArchiveStorageManager.brute_force_key` | tries every 16-word-character window of a file as the key (`:40-59`) | — | — | — | n/a |
 | encrypted save | UnityPy never encrypts. `save_fs` XORs the whole `UsesAssetBundleEncryption` mask of the file's flag set out of both flags when any bit of it is set (`files/BundleFile.py:303-307`): with `ArchiveFlagsOld` (`0x200`) that clears it, but with `ArchiveFlags` (`0x1400`) a header holding only `0x1000`, or only `0x400`, is saved holding the other bit, and the saved bundle reads back as encrypted, raising `LookupError` without a key (section 19.2) | A; C (writing) for one bit of `ArchiveFlags`' mask (section 19.2) | L4 | `test_parity_rows.py` bundle_save_xors_the_whole_encryption_mask | pinned P0; impl P3 |

@@ -6,8 +6,8 @@
     python tools/parity/oracle_env.py --pin-records DIR  # re-pin oracle_records.json from the wheels in DIR
 
 The pins are the whole oracle (docs/DESIGN.md section 3): requirements-oracle.txt
-explains why numpy, cffi and zstandard, which the stack imports when it can,
-are among them. A pin is satisfied by the files of its pinned wheel, not by a
+explains why numpy, cffi, pycryptodome and zstandard, which the stack imports
+when it can, are among them. A pin is satisfied by the files of its pinned wheel, not by a
 version string, so for each pin the check (also what unitypy_dump.py runs
 before it dumps) requires:
 - the distribution installed at the pinned version;

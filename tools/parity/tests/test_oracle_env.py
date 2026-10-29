@@ -88,6 +88,9 @@ class PinTests(unittest.TestCase):
         # cffi (with its dependency pycparser), which Pillow imports, and zstandard, which fsspec imports.
         self.assertEqual(pins["numpy"], "2.4.6")
         self.assertEqual((pins["cffi"], pins["pycparser"], pins["zstandard"]), ("2.1.0", "2.21", "0.25.0"))
+        # UnityPy imports pycryptodome's Crypto to decrypt UnityCN (test_rows_files.py unitycn_decryption), and
+        # without it no UnityCN bundle loads, so CI's venv holds it as the image does.
+        self.assertEqual(pins["pycryptodome"], "3.23.0")
         self.assertEqual((pins["pillow"], pins["fmod-toolkit"]), ("9.5.0", "0.1.3"))
 
     def test_names_compare_as_pep_503_does(self):
