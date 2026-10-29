@@ -73,7 +73,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - Every patch to vendored decoders is labelled either Tier A (keeps the reference behaviour) or Tier C.
   - An observable quirk that callers can depend on and that is not wrong data (a file name, a dict key, a `str()` form, a docstring the code contradicts) is Tier A: unityrs keeps UnityPy's behaviour.
 - **Tier B: UnityPy raises on a valid request.** We produce correct output, checked against an independent reference, and `PARITY.md` names a pinned divergence test for each:
-  - 21 TextureFormats: BC6H, the half and float formats but ARGBFloat, the 8 signed formats, RG16/RG32, R16, RGBA64, RGB9e5, YUY2. `PARITY.md` section 17.1 names each one's reference: a closed form (the half and float, integer, shared-exponent and BT.601 rules), or for BC6H texture2ddecoder 1.0.5's decoder, which is in the oracle image;
+  - 21 TextureFormats: BC6H, the half and float formats but ARGBFloat, the 8 signed formats, RG16/RG32, R16, RGBA64, RGB9e5, YUY2. `PARITY.md` section 17.1 names each one's reference: a closed form (the half and float, integer, shared-exponent and BT.601 rules), or for BC6H the decoding of the Khronos Data Format Specification 1.3, section 20.2, then the half and float rule. Neither BC6H decoder in the oracle image follows that section (texture2ddecoder 1.0.5 unquantizes the wrong endpoint value to 0xFFFF; Pillow 9.5.0 interpolates without rounding), so neither is the reference;
   - a gzip-compressed WebFile, which UnityPy detects and then fails to parse;
   - a streamed Texture2DArray, whose slices all raise;
   - a Texture2DArray in one of the seven 8-bit integer formats that UnityPy maps to a 16-bit texture format that raises;

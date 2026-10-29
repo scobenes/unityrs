@@ -1,13 +1,11 @@
 """The independent references for the TextureFormats UnityPy raises on (Tier B, PARITY.md section 17.1).
 
-Each Tier B format gets one reference: a closed form stated in section 17.1 and written here,
-or, for BC6H, a named decoder at a pinned version. `decode(name, data, width, height)` gives
-what unityrs must return for a texture of that format: the Pillow mode and the pixels, top
-row first after the vertical flip UnityPy applies to every image (section 17). The P3
-divergence test for each format compares unityrs's output with it.
-
-The closed forms need the standard library only. BC6H's reference, texture2ddecoder 1.0.5,
-is in the oracle image (a dependency of UnityPy, which does not call it for BC6H).
+Each Tier B format gets one reference, stated in section 17.1 and written here: a closed form,
+or, for BC6H, the decoding the Khronos Data Format Specification 1.3 gives in section 20.2.
+`decode(name, data, width, height)` gives what unityrs must return for a texture of that
+format: the Pillow mode and the pixels, top row first after the vertical flip UnityPy applies
+to every image (section 17). The P3 divergence test for each format compares unityrs's output
+with it. Everything here needs the standard library only.
 
 The rules:
 - a half or float channel (IEEE 754 binary16 or binary32, little-endian) becomes
@@ -23,7 +21,13 @@ The rules:
   bits 0-8, green 9-17, blue 18-26, the exponent in 27-31, each channel
   `mantissa * 2^(exponent - 24)`, then the float rule;
 - YUY2 is the FourCC `YUY2` layout, `Y0 U Y1 V` per pair of pixels, converted with the
-  integer ITU-R BT.601 limited-range ("studio swing") formula below.
+  integer ITU-R BT.601 limited-range ("studio swing") formula below;
+- BC6H is the unsigned form, decoded as the Khronos Data Format Specification 1.3, section
+  20.2, decodes it (the same rules as ARB_texture_compression_bptc) into a half float per
+  channel, then the half and float rule. Two decoders in the oracle image are not the
+  reference, because each departs from that section (PARITY.md section 19.2):
+  texture2ddecoder 1.0.5 unquantizes an endpoint equal to 2^(bits-1) to 0xFFFF, and
+  Pillow 9.5.0 interpolates without the `+ 32` of the section's Equation 2.
 """
 
 import math
@@ -101,7 +105,163 @@ _PIXEL_FORMATS = {
 
 # Every Tier B format, with the mode its reference returns.
 TIER_B = {name: mode for name, (_, _, mode) in _PIXEL_FORMATS.items()}
-TIER_B.update(RGB9e5Float="RGB", YUY2="RGB", BC6H="RGBA")
+TIER_B.update(RGB9e5Float="RGB", YUY2="RGB", BC6H="RGB")
+
+# BC6H, unsigned: the Khronos Data Format Specification 1.3, section 20.2. Table 121, by mode number:
+# (transformed endpoints, partition bits, endpoint bits, delta bits of red, green and blue).
+BC6H_MODES = {
+    0: (True, 5, 10, (5, 5, 5)),
+    1: (True, 5, 7, (6, 6, 6)),
+    2: (True, 5, 11, (5, 4, 4)),
+    6: (True, 5, 11, (4, 5, 4)),
+    10: (True, 5, 11, (4, 4, 5)),
+    14: (True, 5, 9, (5, 5, 5)),
+    18: (True, 5, 8, (6, 5, 5)),
+    22: (True, 5, 8, (5, 6, 5)),
+    26: (True, 5, 8, (5, 5, 6)),
+    30: (False, 5, 6, (6, 6, 6)),
+    3: (False, 0, 10, (10, 10, 10)),
+    7: (True, 0, 11, (9, 9, 9)),
+    11: (True, 0, 12, (8, 8, 8)),
+    15: (True, 0, 16, (4, 4, 4)),
+}
+# Table 122 (Table.F of ARB_texture_compression_bptc): the bits of the block from bit 0 up. `v[a:b]` takes
+# |a - b| + 1 bits into bits b, ..., a of v in that order, so `r0[10:15]` stores bit 15 of r0 first.
+BC6H_LAYOUTS = {
+    0: "m[1:0],g2[4],b2[4],b3[4],r0[9:0],g0[9:0],b0[9:0],r1[4:0],g3[4],g2[3:0],g1[4:0],b3[0],g3[3:0],b1[4:0],"
+    "b3[1],b2[3:0],r2[4:0],b3[2],r3[4:0],b3[3]",
+    1: "m[1:0],g2[5],g3[4],g3[5],r0[6:0],b3[0],b3[1],b2[4],g0[6:0],b2[5],b3[2],g2[4],b0[6:0],b3[3],b3[5],b3[4],"
+    "r1[5:0],g2[3:0],g1[5:0],g3[3:0],b1[5:0],b2[3:0],r2[5:0],r3[5:0]",
+    2: "m[4:0],r0[9:0],g0[9:0],b0[9:0],r1[4:0],r0[10],g2[3:0],g1[3:0],g0[10],b3[0],g3[3:0],b1[3:0],b0[10],b3[1],"
+    "b2[3:0],r2[4:0],b3[2],r3[4:0],b3[3]",
+    6: "m[4:0],r0[9:0],g0[9:0],b0[9:0],r1[3:0],r0[10],g3[4],g2[3:0],g1[4:0],g0[10],g3[3:0],b1[3:0],b0[10],b3[1],"
+    "b2[3:0],r2[3:0],b3[0],b3[2],r3[3:0],g2[4],b3[3]",
+    10: "m[4:0],r0[9:0],g0[9:0],b0[9:0],r1[3:0],r0[10],b2[4],g2[3:0],g1[3:0],g0[10],b3[0],g3[3:0],b1[4:0],b0[10],"
+    "b2[3:0],r2[3:0],b3[1],b3[2],r3[3:0],b3[4],b3[3]",
+    14: "m[4:0],r0[8:0],b2[4],g0[8:0],g2[4],b0[8:0],b3[4],r1[4:0],g3[4],g2[3:0],g1[4:0],b3[0],g3[3:0],b1[4:0],"
+    "b3[1],b2[3:0],r2[4:0],b3[2],r3[4:0],b3[3]",
+    18: "m[4:0],r0[7:0],g3[4],b2[4],g0[7:0],b3[2],g2[4],b0[7:0],b3[3],b3[4],r1[5:0],g2[3:0],g1[4:0],b3[0],g3[3:0],"
+    "b1[4:0],b3[1],b2[3:0],r2[5:0],r3[5:0]",
+    22: "m[4:0],r0[7:0],b3[0],b2[4],g0[7:0],g2[5],g2[4],b0[7:0],g3[5],b3[4],r1[4:0],g3[4],g2[3:0],g1[5:0],g3[3:0],"
+    "b1[4:0],b3[1],b2[3:0],r2[4:0],b3[2],r3[4:0],b3[3]",
+    26: "m[4:0],r0[7:0],b3[1],b2[4],g0[7:0],b2[5],g2[4],b0[7:0],b3[5],b3[4],r1[4:0],g3[4],g2[3:0],g1[4:0],b3[0],"
+    "g3[3:0],b1[5:0],b2[3:0],r2[4:0],b3[2],r3[4:0],b3[3]",
+    30: "m[4:0],r0[5:0],g3[4],b3[0],b3[1],b2[4],g0[5:0],g2[5],b2[5],b3[2],g2[4],b0[5:0],g3[5],b3[3],b3[5],b3[4],"
+    "r1[5:0],g2[3:0],g1[5:0],g3[3:0],b1[5:0],b2[3:0],r2[5:0],r3[5:0]",
+    3: "m[4:0],r0[9:0],g0[9:0],b0[9:0],r1[9:0],g1[9:0],b1[9:0]",
+    7: "m[4:0],r0[9:0],g0[9:0],b0[9:0],r1[8:0],r0[10],g1[8:0],g0[10],b1[8:0],b0[10]",
+    11: "m[4:0],r0[9:0],g0[9:0],b0[9:0],r1[7:0],r0[10:11],g1[7:0],g0[10:11],b1[7:0],b0[10:11]",
+    15: "m[4:0],r0[9:0],g0[9:0],b0[9:0],r1[3:0],r0[10:15],g1[3:0],g0[10:15],b1[3:0],b0[10:15]",
+}
+# Table 114, the first 32 two-subset partitions: the subset of texels 0-15 (texel x + 4y).
+BC6H_PARTITIONS = [
+    "0011001100110011",
+    "0001000100010001",
+    "0111011101110111",
+    "0001001100110111",
+    "0000000100010011",
+    "0011011101111111",
+    "0001001101111111",
+    "0000000100110111",
+    "0000000000010011",
+    "0011011111111111",
+    "0000000101111111",
+    "0000000000010111",
+    "0001011111111111",
+    "0000000011111111",
+    "0000111111111111",
+    "0000000000001111",
+    "0000100011101111",
+    "0111000100000000",
+    "0000000010001110",
+    "0111001100010000",
+    "0011000100000000",
+    "0000100011001110",
+    "0000000010001100",
+    "0111001100110001",
+    "0011000100010000",
+    "0000100010001100",
+    "0110011001100110",
+    "0011011001101100",
+    "0001011111101000",
+    "0000111111110000",
+    "0111000110001110",
+    "0011100110011100",
+]
+# Table 118 (Table.A2), first 32 entries: the anchor texel of subset 1.
+BC6H_ANCHORS = (15,) * 16 + (15, 2, 8, 2, 2, 8, 8, 15, 2, 8, 2, 2, 8, 8, 2, 2)
+# Table 119: the interpolation weights of 3- and 4-bit indices.
+BC6H_WEIGHTS = {
+    3: (0, 9, 18, 27, 37, 46, 55, 64),
+    4: (0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64),
+}
+
+
+def bc6h_unquantize(value: int, bits: int) -> int:
+    """Section 20.2's unquantization of an unsigned endpoint of `bits` bits to 16 bits."""
+    if bits >= 15:
+        return value
+    if value == 0:
+        return 0
+    if value == (1 << bits) - 1:
+        return 0xFFFF
+    return ((value << 15) + 0x4000) >> (bits - 1)
+
+
+def _sign_extend(value: int, bits: int) -> int:
+    return value - (1 << bits) if value >> (bits - 1) & 1 else value
+
+
+def bc6h_block(block: bytes, unquantize=bc6h_unquantize, rounding: int = 32) -> list[tuple[int, int, int]]:
+    """The 16 texels of an unsigned BC6H block (texel x + 4y) as binary16 bit patterns (red, green, blue).
+
+    `unquantize` and `rounding` (the `+ 32` of Equation 2) are section 20.2's; the self-test passes other
+    values to reproduce the decoders that depart from it."""
+    bits = int.from_bytes(block, "little")
+    mode = bits & 3 if bits & 3 < 2 else bits & 0x1F
+    if mode not in BC6H_MODES:  # reserved: (0, 0, 0)
+        return [(0, 0, 0)] * 16
+    transformed, partition_bits, endpoint_bits, delta = BC6H_MODES[mode]
+    fields, position = {}, 0
+    for element in BC6H_LAYOUTS[mode].split(","):
+        name, span = element[:-1].split("[")
+        high, _, low = span.partition(":")
+        a, b = int(high), int(low or high)
+        step = 1 if a >= b else -1
+        for target in range(b, a + step, step):
+            fields[name] = fields.get(name, 0) | (bits >> position & 1) << target
+            position += 1
+    assert fields.pop("m") == mode
+    subsets = 2 if partition_bits else 1
+    assert position == (82 - partition_bits if subsets == 2 else 65)
+    endpoints = [[fields.get(f"{channel}{i}", 0) for channel in "rgb"] for i in range(2 * subsets)]
+    if transformed:  # the other endpoints are deltas from endpoint 0, wrapped at the endpoint bits
+        for endpoint in endpoints[1:]:
+            for c in range(3):
+                endpoint[c] = (endpoints[0][c] + _sign_extend(endpoint[c], delta[c])) & ((1 << endpoint_bits) - 1)
+    endpoints = [[unquantize(value, endpoint_bits) for value in endpoint] for endpoint in endpoints]
+    partition = bits >> position & ((1 << partition_bits) - 1)
+    position += partition_bits
+    index_bits = 3 if subsets == 2 else 4
+    anchor = BC6H_ANCHORS[partition] if subsets == 2 else 0
+    texels = []
+    for texel in range(16):
+        width = index_bits - (texel in (0, anchor))
+        index = bits >> position & ((1 << width) - 1)
+        position += width
+        subset = int(BC6H_PARTITIONS[partition][texel]) if subsets == 2 else 0
+        low_end, high_end = endpoints[2 * subset], endpoints[2 * subset + 1]
+        weight = BC6H_WEIGHTS[index_bits][index]
+        interpolated = [
+            ((64 - weight) * e0 + weight * e1 + rounding) >> 6 for e0, e1 in zip(low_end, high_end, strict=True)
+        ]
+        texels.append(tuple(value * 31 >> 6 for value in interpolated))  # the final unquantization, 31/64
+    assert position == 128
+    return texels
+
+
+def half_bits_to_float(bits: int) -> float:
+    return struct.unpack("<e", struct.pack("<H", bits))[0]
 
 
 def _pad(channels, mode):
@@ -132,13 +292,11 @@ def decode(name: str, data: bytes, width: int, height: int) -> tuple[str, list[t
             y0, u, y1, v = data[4 * i : 4 * i + 4]
             pixels += [yuv_to_rgb(y0, u, v), yuv_to_rgb(y1, u, v)]
     else:  # BC6H: decoded at the size padded to whole 4x4 blocks, then cropped, as UnityPy pads and crops
-        import texture2ddecoder
-
-        padded_w, padded_h = -(-width // 4) * 4, -(-height // 4) * 4
-        bgra = texture2ddecoder.decode_bc6(data, padded_w, padded_h)
+        across, down = -(-width // 4), -(-height // 4)
+        blocks = [bc6h_block(data[16 * i : 16 * i + 16]) for i in range(across * down)]
         pixels = [
-            (bgra[i + 2], bgra[i + 1], bgra[i], bgra[i + 3])
+            tuple(float_to_byte(half_bits_to_float(h)) for h in blocks[y // 4 * across + x // 4][x % 4 + 4 * (y % 4)])
             for y in range(height)
-            for i in range(4 * y * padded_w, 4 * (y * padded_w + width), 4)
+            for x in range(width)
         ]
     return mode, _flip(pixels, width, height)
