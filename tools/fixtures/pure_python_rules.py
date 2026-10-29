@@ -76,6 +76,13 @@ PAIR_OF = {
     3: [(4, "int", "a", 0), (4, "int", "b", 0), (4, "int", "c", 0)],
 }
 
+# The element vector's own `Array`, with 0, 1 or 3 children.
+INNER_ARRAY_OF = {
+    0: [(4, "Array", "Array", 0)],
+    1: [(4, "Array", "Array", 0), (5, "int", "size", 0)],
+    3: [(4, "Array", "Array", 0), (5, "int", "size", 0), (5, "int", "data", 0), (5, "int", "extra", 0)],
+}
+
 # (name, rows, bytes, UnityPyBoost's outcome, the pure-Python outcome)
 CASES = [
     *[
@@ -84,6 +91,20 @@ CASES = [
             vector_of(flag, "pair", PAIR_OF[n]),
             i32(0),
             "err ValueError",
+            "err IndexError" if flag and n < 2 else "ok {'v': []} 4",
+        )
+        for flag in (0, ALIGN)
+        for n in (0, 1, 3)
+    ],
+    # `read_value_array` reads an aligned vector element's
+    # `m_Children[0].m_Children[1]` before its loop (TypeTreeHelper.py:309),
+    # as it reads an aligned pair's children (:282-283).
+    *[
+        (
+            f"empty array of vector whose Array has {n} children, element {'aligned' if flag else 'not aligned'}",
+            vector_of(flag, "vector", INNER_ARRAY_OF[n]),
+            i32(0),
+            "ok {'v': []} 4",
             "err IndexError" if flag and n < 2 else "ok {'v': []} 4",
         )
         for flag in (0, ALIGN)

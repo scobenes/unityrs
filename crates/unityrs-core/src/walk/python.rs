@@ -36,7 +36,13 @@
 //! raises `IndexError` (`other`) at every length, since `m_Children[0]` and
 //! `[1]` are read before the loop (`:282-283`), while an empty array of
 //! non-aligned malformed `pair`s, or of three-child `pair`s, reads as `[]`
-//! (the probes: `CANONICAL_DUMP.md` section 7); and an
+//! (the probes: `CANONICAL_DUMP.md` section 7); likewise an aligned vector
+//! element whose `Array` has fewer than two children raises `IndexError` at
+//! every length, the empty one included, since `m_Children[0].m_Children[1]`
+//! is read before the loop (`:309`), where UnityPyBoost reads an empty one
+//! as `[]` (`read_value_array` reads an aligned element's `pair` children
+//! and its vector's element before its loop, and indexes everywhere else
+//! inside it); and an
 //! aligned `ReferencedObject` array element whose class is empty or whose ref
 //! type has no tree raises ([`super::ReadDetail::RefTypeNoTree`]). Each
 //! difference is an oracle fixture of package B (plan section 7.3).
