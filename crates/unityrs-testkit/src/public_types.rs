@@ -11,7 +11,9 @@
 //! `lib.rs` names `files::bundle::BundleFile`, and `files/bundle.rs` may say
 //! `crate::send_sync::<BundleFile>()` next to the type). A re-export does not
 //! count, so a new type that shares a name with an asserted one is still
-//! caught.
+//! caught. Comments and string literals are blanked before the scan, so an
+//! assertion written in a trailing comment, a block comment or a string
+//! (none of which Rust compiles) asserts nothing (round 6).
 //!
 //! Owner: the scaffold (implemented).
 
@@ -100,8 +102,100 @@ struct Inline {
     public: bool,
 }
 
+/// `text` with every comment (line, doc and nested block) and the contents
+/// of every string, byte-string and raw-string literal blanked, newlines
+/// kept, so what is left is what Rust compiles, line for line. A `'` opens a
+/// character literal only when it closes one (`'x'`, `'\n'`); otherwise it
+/// is a lifetime.
+fn code_only(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let at = |i: usize| chars.get(i).copied();
+    let mut i = 0;
+    while let Some(c) = at(i) {
+        if c == '/' && at(i + 1) == Some('/') {
+            while at(i).is_some_and(|c| c != '\n') {
+                i += 1;
+            }
+        } else if c == '/' && at(i + 1) == Some('*') {
+            let mut depth = 0usize;
+            while let Some(c) = at(i) {
+                if c == '/' && at(i + 1) == Some('*') {
+                    depth += 1;
+                    i += 2;
+                } else if c == '*' && at(i + 1) == Some('/') {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    if c == '\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+            }
+        } else if c == 'r' && matches!(at(i + 1), Some('"' | '#')) && {
+            let mut j = i + 1;
+            while at(j) == Some('#') {
+                j += 1;
+            }
+            at(j) == Some('"')
+        } {
+            let mut hashes = 0;
+            i += 1;
+            while at(i) == Some('#') {
+                hashes += 1;
+                i += 1;
+            }
+            i += 1;
+            out.push_str("\"\"");
+            while let Some(c) = at(i) {
+                if c == '"' && (1..=hashes).all(|k| at(i + k) == Some('#')) {
+                    i += 1 + hashes;
+                    break;
+                }
+                if c == '\n' {
+                    out.push('\n');
+                }
+                i += 1;
+            }
+        } else if c == '"' {
+            i += 1;
+            out.push_str("\"\"");
+            while let Some(c) = at(i) {
+                i += 1;
+                match c {
+                    '\\' => i += 1,
+                    '"' => break,
+                    '\n' => out.push('\n'),
+                    _ => {}
+                }
+            }
+        } else if c == '\'' && (at(i + 2) == Some('\'') || at(i + 1) == Some('\\')) {
+            // A character literal: skip to its closing quote.
+            i += 1;
+            if at(i) == Some('\\') {
+                i += 1;
+            }
+            i += 1;
+            while at(i).is_some_and(|c| c != '\'' && c != '\n') {
+                i += 1;
+            }
+            i += 1;
+            out.push_str("' '");
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
 fn scan(file_module: &str, text: &str, declared: &mut Vec<String>, asserted: &mut HashSet<String>) {
     let mut stack: Vec<Inline> = Vec::new();
+    let text = code_only(text);
     for line in text.lines() {
         let trimmed = line.trim_start();
         let indent = line.len() - trimmed.len();
@@ -220,6 +314,27 @@ mod tests {
             ),
         ];
         assert_eq!(check(&files), ["env::resource::Permit"]);
+    }
+
+    #[test]
+    fn an_assertion_in_a_comment_or_a_string_asserts_nothing() {
+        // Round 6 (Codex L): `send_sync::<Local>()` in a trailing comment was
+        // recorded as asserted, though Rust compiles no assertion there.
+        let (d, a) = run(
+            "",
+            "pub struct Local(std::rc::Rc<u8>); // send_sync::<Local>()
+             /* send_sync::<InBlock>() /* nested */ send_sync::<AfterNested>() */
+             const S: &str = \"send_sync::<InString>()\";
+             const R: &str = r#\"send_sync::<InRaw>() \" still\"#;
+             const C: char = '\"';
+             fn f<'a>(x: &'a u8) -> &'a u8 { x }
+             const _: () = send_sync::<Real>();
+",
+        );
+        assert_eq!(d, ["Local"]);
+        let mut a: Vec<_> = a.into_iter().collect();
+        a.sort();
+        assert_eq!(a, ["Real"]);
     }
 
     #[test]
