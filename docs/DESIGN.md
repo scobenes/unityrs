@@ -68,7 +68,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - `obj.container` and dependency resolution match.
   - Decoded pixels **and output mode** match: BCn per Pillow `BcnDecode.c`; ETC/EAC/ATC/PVRTC/crunch per texture2ddecoder C++; ASTC via ARM astcenc.
   - OBJ/MTL text matches.
-  - An image file the extractor saves under a container's extension is byte-equal with what Pillow 9.5.0's writer for that extension saves at its defaults, for every writer Pillow registers; a PDF's two dates, which hold the time of the save, aside (`PARITY.md` section 15.8).
+  - An image file the extractor saves under a container's extension is byte-equal with what Pillow 9.5.0's writer for that extension saves at its defaults to the same path, for every writer Pillow registers and every mode, size and file name it saves; a PDF's two dates, which hold the time of the save, aside (`PARITY.md` section 15.8).
   - `save_typetree(parse())` returns the raw bytes.
   - Every patch to vendored decoders is labelled either Tier A (keeps the reference behaviour) or Tier C.
   - An observable quirk that callers can depend on and that is not wrong data (a file name, a dict key, a `str()` form, a docstring the code contradicts) is Tier A: unityrs keeps UnityPy's behaviour.

@@ -48,7 +48,18 @@ class PillowTables(unittest.TestCase):
         self.assertEqual(self.heading_before(printed), "### 18.1 Image modes `set_image` packs")
 
     def test_writers_table_is_what_pillow_does(self):
-        """Section 15.8: per writer, what `Image.save` does with RGBA, RGB and L, and what unityrs writes."""
+        """Section 15.8: per writer, what `Image.save` does with RGBA, RGB, L and LA, what the size and the file name
+        change, and what unityrs writes."""
+        # The modes: a decoded texture's, and what `mask_sprite`'s `putalpha` makes of a sprite that is not RGBA.
+        from PIL import Image
+
+        made = {}
+        for mode in ("RGB", "L"):
+            sprite = Image.new(mode, (2, 2))
+            sprite.putalpha(Image.new("1", (2, 2)))
+            made[mode] = sprite.mode
+        self.assertEqual(made, {"RGB": "RGBA", "L": "LA"})
+        self.assertEqual(pillow_tables.SAVED_MODES, ("RGBA", "RGB", "L", "LA"))
         printed = pillow_tables.writers()
         self.assertEqual(block(self.text, "| format | extensions |", printed.splitlines()[-1][:12]), printed)
         self.assertEqual(self.heading_before(printed), "### 15.8 Image files by extension")

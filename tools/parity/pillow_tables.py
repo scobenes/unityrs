@@ -18,8 +18,12 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-# The modes a decoded texture or sprite has (PARITY.md section 17), so the modes the extractor hands `Image.save`.
-SAVED_MODES = ("RGBA", "RGB", "L")
+# The modes the extractor hands `Image.save`: those of a decoded texture (PARITY.md section 17), and `LA`, which
+# `SpriteHelper.mask_sprite` gives a sprite of an `L` texture (its `putalpha`, section 15.2).
+SAVED_MODES = ("RGBA", "RGB", "L", "LA")
+# The sizes probed beside the 40x24 image, and two more names beside `image`: another ASCII one, and a non-ASCII one.
+SIZES = ((1, 1), (15, 15), (16383, 1), (1, 16383), (16384, 1), (1, 16384))
+NAMES = ("other", "\u56fe\u50cf")
 # Two different clocks: a writer whose bytes differ between them embeds the time.
 CLOCKS = (time.struct_time((2001, 2, 3, 4, 5, 6, 5, 34, 0)), time.struct_time((2011, 12, 13, 14, 15, 16, 1, 347, 0)))
 PDF_DATES = re.compile(rb"(/(?:CreationDate|ModDate) )\(D:\d{14}Z\)")
@@ -117,13 +121,25 @@ def save(image, path, clock):
     return Path(path).read_bytes()
 
 
-def writer_cell(fmt, extension, mode, folder):
-    """What `Image.save` does with an image of `mode` under `extension`."""
+def sample(mode):
     from PIL import Image
 
     image = Image.new("RGBA", (40, 24))
     image.putdata([(x * 6, y * 10, (x * y) % 256, 255 - x * 3) for y in range(24) for x in range(40)])
-    image = image.convert(mode)
+    return image.convert(mode)
+
+
+def attempt(image, path):
+    """`Image.save(path)` at the first clock: the bytes, or the exception's name."""
+    try:
+        return save(image, path, CLOCKS[0])
+    except Exception as error:  # noqa: BLE001 - the exception is the result
+        return type(error).__name__
+
+
+def writer_cell(fmt, extension, mode, folder):
+    """What `Image.save` does with an image of `mode` under `extension`."""
+    image = sample(mode)
     path = os.path.join(folder, "image" + extension)
     try:
         first, second = (save(image, path, clock) for clock in CLOCKS)
@@ -141,16 +157,53 @@ def writer_cell(fmt, extension, mode, folder):
     return "saves", "saves"
 
 
-def acceptance(kinds):
-    kinds = set(kinds)
+def conditions(extension, modes, folder):
+    """What the size and the file name change, for the modes a writer saves: (cell text, raises, holds the name).
+
+    The probe is the same for every mode; a writer that answered differently per mode would stop the script."""
+    found = set()
+    for mode in modes:
+        image = sample(mode)
+        base = attempt(image, os.path.join(folder, "image" + extension))
+        assert isinstance(base, bytes), (extension, mode)
+        sizes = tuple((size, attempt(image.resize(size), os.path.join(folder, "image" + extension))) for size in SIZES)
+        sizes = tuple((size, result) for size, result in sizes if not isinstance(result, bytes))
+        other, foreign = (attempt(image, os.path.join(folder, name + extension)) for name in NAMES)
+        assert isinstance(other, bytes), (extension, mode)
+        holds_name = PDF_DATES.sub(b"", other) != PDF_DATES.sub(b"", base)
+        foreign = None if isinstance(foreign, bytes) else foreign
+        # The extension is matched case-insensitively: the upper-case spelling saves the same file.
+        upper = attempt(image, os.path.join(folder, "image" + extension.upper()))
+        assert isinstance(upper, bytes) and (holds_name or upper == base), (extension, mode)
+        found.add((sizes, holds_name, foreign))
+    assert len(found) == 1, (extension, found)
+    sizes, holds_name, foreign = found.pop()
+    parts = []
+    if sizes:
+        saved = [size for size in SIZES if size not in dict(sizes)]
+        errors = {error for _, error in sizes}
+        assert len(errors) == 1, (extension, sizes)
+        parts.append(
+            f"raises `{errors.pop()}` at {', '.join(f'{w}×{h}' for (w, h), _ in sizes)}; "
+            f"{', '.join(f'{w}×{h}' for w, h in saved)} save"
+        )
+    if holds_name:
+        parts.append("the bytes hold the file's basename")
+    if foreign:
+        parts.append(f"a non-ASCII basename raises `{foreign}`")
+    return "; ".join(parts) or "—", bool(sizes or foreign), holds_name
+
+
+def acceptance(kinds, raises_by_condition=False, holds_name=False):
+    kinds = set(kinds) | ({"raises"} if raises_by_condition else set())
     if kinds == {"raises"}:
         return "C", "writes `{fp}{extension}.png` (section 19.2)"
+    same = "byte-equal with Pillow 9.5.0's `Image.save(path)`" + (" to the same path" if holds_name else "")
+    same += ", no options, in the oracle image"
     parts = {
-        "saves": "byte-equal with Pillow 9.5.0's `Image.save(path)`, no options, in the oracle image",
-        "dated": "byte-equal with Pillow 9.5.0's `Image.save(path)`, no options, in the oracle image, "
-        "once the `/CreationDate` and `/ModDate` values are masked: they hold the time of the save",
-        "empty": "byte-equal with Pillow 9.5.0's `Image.save(path)`, no options, in the oracle image, "
-        "when both sides are 16 or more; otherwise `{fp}{extension}.png`, as where Pillow raises",
+        "saves": same,
+        "dated": same + ", once the `/CreationDate` and `/ModDate` values are masked: they hold the time of the save",
+        "empty": same + ", when both sides are 16 or more; otherwise `{fp}{extension}.png`, as where Pillow raises",
     }
     saved = sorted(kinds - {"raises"})
     assert len(saved) == 1, kinds
@@ -174,8 +227,9 @@ def writers():
         if fmt in Image.SAVE:
             by_format.setdefault(fmt, []).append(extension)
     lines = [
-        "| format | extensions | `RGBA` | `RGB` | `L` | tier | unityrs writes, and the acceptance |",
-        "|---|---|---|---|---|---|---|",
+        "| format | extensions | `RGBA` | `RGB` | `L` | `LA` | size and file name | tier "
+        "| unityrs writes, and the acceptance |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     with tempfile.TemporaryDirectory(prefix="unityrs-writers-") as folder:
         for fmt in sorted(by_format):
@@ -183,9 +237,12 @@ def writers():
             cells = [writer_cell(fmt, extensions[0], mode, folder) for mode in SAVED_MODES]
             for extension in extensions[1:]:  # every extension of a format behaves alike per mode
                 assert [writer_cell(fmt, extension, m, folder)[0] for m in SAVED_MODES] == [c[0] for c in cells]
-            tier, text = acceptance(kind for kind, _ in cells)
+            saving = [mode for mode, (kind, _) in zip(SAVED_MODES, cells, strict=True) if kind != "raises"]
+            condition, raises, holds_name = conditions(extensions[0], saving, folder) if saving else ("—", False, False)
+            tier, text = acceptance((kind for kind, _ in cells), raises, holds_name)
             spans = ", ".join(f"`{e}`" for e in extensions)
-            lines.append(f"| {fmt} | {spans} | {' | '.join(cell for _, cell in cells)} | {tier} | {text} |")
+            row = " | ".join(cell for _, cell in cells)
+            lines.append(f"| {fmt} | {spans} | {row} | {condition} | {tier} | {text} |")
     count = sum(len(e) for e in by_format.values())
     versions = ", ".join(
         f"{name} {features.version(key)}"
