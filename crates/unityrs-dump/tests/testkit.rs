@@ -198,6 +198,17 @@ fn failing_entries() -> Vec<(&'static str, Vec<u8>, bool)> {
             ]),
             true,
         ),
+        // The failing entry is shadowed by a later one of the same path, so
+        // `files` never holds it: only the eager parse of every directory
+        // entry (`File.py:76-90`) meets it.
+        (
+            "shadowed-entry-fails.bundle",
+            bundle(vec![
+                (b"CAB-x", from_matrix("CAB-negative-node-count"), 4),
+                (b"CAB-x", good_cab(), 4),
+            ]),
+            true,
+        ),
         (
             "entry-fails-asset-bundle.bundle",
             bundle(vec![
