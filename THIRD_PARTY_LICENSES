@@ -60,18 +60,16 @@ SOFTWARE.
 rabex 0.2.1
 https://github.com/jakobhellermann/RustyAssetBundleEXtractor
 https://crates.io/crates/rabex/0.2.1
-Licence: offered as MIT OR Apache-2.0. unityrs elects the MIT licence for
-all rabex code it vendors.
+Licence: offered as MIT OR Apache-2.0. unityrs takes it under the MIT
+licence.
 
 Authors, as named in rabex's Cargo.toml: Rudolf Kolbe and Jakob Hellermann.
 rabex carries no copyright line: its LICENSE-MIT.md begins at "Permission
 is hereby granted", so none is invented here.
 
-rabex 0.2.1 is vendored as the crate crates/unityrs-rabex (library name
-rabex). Its first commit is the unmodified crates.io source; every later
-change is a numbered patch listed, with its reason, in
-crates/unityrs-rabex/UPSTREAM.md. The crate's own LICENSE-MIT.md and
-LICENSE-APACHE.md travel with it.
+rabex 0.2.1 is not vendored in this tree. It is a crates.io dependency of
+the P0 spike crate crates/unityrs-spike-rabex only, built from the
+unmodified crates.io source, and no other crate uses it.
 
 Its licence text, verbatim, is listed under Crates below.
 
@@ -80,9 +78,10 @@ CNStudio (through rabex)
 https://github.com/Razmoth/CNStudio
 Licence: MIT.
 
-rabex's src/archive_storage_manager.rs (the UnityCN block decryptor)
-credits CNStudio's AssetStudio/CNUnity.cs. CNStudio is a fork of
-AssetStudio and carries AssetStudio's MIT licence and copyright lines:
+rabex's src/archive_storage_manager.rs (the UnityCN block decryptor), which
+is compiled into rabex 0.2.1 wherever rabex is built, credits CNStudio's
+AssetStudio/CNUnity.cs. CNStudio is a fork of AssetStudio and carries
+AssetStudio's MIT licence and copyright lines:
 
 MIT License
 
