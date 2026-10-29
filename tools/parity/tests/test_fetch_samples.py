@@ -1,8 +1,9 @@
 """fetch_unitypy_samples.py on synthetic pins and a fake server: no network, no game data.
 
-The redirect test runs two HTTP servers on the loopback interface. The last
-test checks the real pins against the samples test_dump.py verifies.
-Standard library only.
+The redirect test runs two HTTP servers on the loopback interface, and the
+deadline tests in TrickleTests one whose body trickles in, so that urllib's
+real response object is what is read. The last test checks the real pins
+against the samples test_dump.py verifies. Standard library only.
 """
 
 import contextlib
@@ -15,6 +16,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -47,17 +49,26 @@ URL_A = F.sample_url(PINS, "a")
 URL_B = F.sample_url(PINS, "b")
 
 
+NO_PROXY = {"no_proxy": "*", "NO_PROXY": "*"}
+
+
 class Response(io.BytesIO):
-    """A response body that records how many bytes were read from it, at most `step` bytes a read."""
+    """A response body that records how many bytes were read from it, at most `step` bytes a read.
+
+    The fetcher reads with read1, as it must on a real response (see TrickleTests).
+    """
 
     def __init__(self, data, server):
         super().__init__(data)
         self.server = server
 
     def read(self, n=-1):
+        raise AssertionError("read(n) waits for all n bytes on a real response; the fetcher reads with read1")
+
+    def read1(self, n=-1):
         if self.server.step:
             n = min(n, self.server.step) if n >= 0 else self.server.step
-        out = super().read(n)
+        out = super().read1(n)
         self.server.bytes_read += len(out)
         if self.server.tick:
             self.server.now += self.server.tick
@@ -347,8 +358,7 @@ class FetchTests(unittest.TestCase):
             threading.Thread(target=s.serve_forever, daemon=True).start()
             self.addCleanup(s.server_close)
             self.addCleanup(s.shutdown)
-        no_proxy = {"no_proxy": "*", "NO_PROXY": "*"}
-        with mock.patch.dict(os.environ, no_proxy), self.assertRaises(F.FetchError) as cm:
+        with mock.patch.dict(os.environ, NO_PROXY), self.assertRaises(F.FetchError) as cm:
             F.urlopen(f"http://127.0.0.1:{pinned.server_address[1]}/sample", timeout=10)
         self.assertIn("redirected (302)", str(cm.exception))
         self.assertEqual(hits, [(pinned.server_address[1], "/sample")])
@@ -364,6 +374,73 @@ class FetchTests(unittest.TestCase):
             "https://media.githubusercontent.com/media/K0lb3/UnityPy/"
             "417d59522a998fdee9a9c2b29fe35f3063222457/tests/samples/banner_1",
         )
+
+
+class TrickleTests(unittest.TestCase):
+    """download() against a real HTTP server on the loopback interface, whose body trickles in.
+
+    On http.client's response, read(n) waits until all n bytes are in, and
+    each receive waits up to the socket's timeout; a fake response does
+    neither. These check that the deadline bounds the wall time anyway.
+    """
+
+    def serve(self, pieces):
+        """A loopback URL whose body, of Content-Length the pieces' total, comes as [(wait_s, bytes)] in turn."""
+        stop = threading.Event()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(sum(len(data) for _, data in pieces)))
+                self.end_headers()
+                try:
+                    for wait_s, data in pieces:
+                        if stop.wait(wait_s):
+                            return
+                        self.wfile.write(data)
+                except OSError:
+                    pass  # the client gave up
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.addCleanup(stop.set)  # cleanups run last first: the handler stops before the server
+        return f"http://127.0.0.1:{server.server_address[1]}/sample", sum(len(data) for _, data in pieces)
+
+    def download(self, url, size, **limits):
+        """download()'s FetchError and the seconds it took, with TIMEOUT_S and DEADLINE_S set to `limits`."""
+        with (
+            mock.patch.multiple(F, **limits),
+            mock.patch.dict(os.environ, NO_PROXY),
+            self.assertRaises(F.FetchError) as cm,
+        ):
+            t0 = time.monotonic()
+            try:
+                F.download(url, size, F.urlopen, sleep=lambda s: None)
+            finally:
+                elapsed = time.monotonic() - t0
+        return str(cm.exception), elapsed
+
+    def test_a_trickling_body_is_cut_off_at_the_deadline(self):
+        # A byte every 0.2 s: each read gets data well within TIMEOUT_S, but the body takes 6 s.
+        url, size = self.serve([(0.2, b"x")] * 30)
+        said, elapsed = self.download(url, size, TIMEOUT_S=10, DEADLINE_S=1)
+        self.assertIn("not downloaded within 1 s", said)
+        self.assertLess(elapsed, 2.5, "read(n) would wait for the whole body")
+
+    def test_a_waiting_read_ends_at_the_deadline(self):
+        # The second byte comes at 2 s; the third read then waits with 0.5 s left
+        # before the deadline. A socket timeout of TIMEOUT_S (2 s) would let it
+        # wait until 4 s; set to the time left, it ends at 2.5 s.
+        url, size = self.serve([(0, b"x"), (2, b"y"), (6, b"z")])
+        said, elapsed = self.download(url, size, TIMEOUT_S=2, DEADLINE_S=2.5)
+        self.assertIn("not downloaded within 2.5 s", said)
+        self.assertGreaterEqual(elapsed, 2.4)
+        self.assertLess(elapsed, 3.25, "the read waited past the deadline")
 
 
 if __name__ == "__main__":

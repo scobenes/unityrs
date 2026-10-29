@@ -54,7 +54,8 @@ PINS = HERE / "unitypy_samples.json"
 URL_PREFIX = "https://media.githubusercontent.com/media/K0lb3/UnityPy/"
 LFS_POINTER = b"version https://git-lfs.github.com/spec/"
 ATTEMPTS = 3
-# Each read waits at most TIMEOUT_S; one sample's download, retries included, gets DEADLINE_S in all.
+# One sample's download, retries included, gets DEADLINE_S in all; each read waits at
+# most TIMEOUT_S for data, and never past that deadline.
 TIMEOUT_S = 60
 DEADLINE_S = 300
 CHUNK = 1 << 20
@@ -152,14 +153,30 @@ def present(path: Path, pin: dict) -> bool:
         return False
 
 
+def read_timeout(response, seconds: float) -> None:
+    """Let the next read from `response` wait at most `seconds` for data.
+
+    urlopen's response is an http.client.HTTPResponse; its body comes from
+    `fp`, a buffered file over the connection's socket, whose timeout bounds
+    each receive. The standard library offers no public handle on that
+    socket, hence `fp.raw._sock`. A test's fake response has none.
+    """
+    sock = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+    if sock is not None:
+        sock.settimeout(seconds)
+
+
 def download(url: str, limit: int, opener, sleep, clock=time.monotonic) -> bytes:
     """The body at `url`, read up to `limit` + 1 bytes (enough to tell it is too long).
 
     A network error is retried, up to ATTEMPTS tries in all. The whole
-    download, retries included, must end within DEADLINE_S: each read waits
-    at most TIMEOUT_S, and a body that keeps trickling in is cut off. A body
-    that arrives in time is returned whatever it holds, for the caller to
-    check.
+    download, retries included, must end within DEADLINE_S, even while a
+    body trickles in. The body is read with read1, which returns what one
+    receive brings instead of waiting for all it asks for, so the deadline is
+    checked between the pieces; and before each read the socket's timeout is
+    set to TIMEOUT_S or the time left, whichever is less, so a read that
+    waits ends at the deadline too. A body that arrives in time is returned
+    whatever it holds, for the caller to check.
     """
     deadline = clock() + DEADLINE_S
 
@@ -174,8 +191,8 @@ def download(url: str, limit: int, opener, sleep, clock=time.monotonic) -> bytes
             with opener(url, timeout=min(TIMEOUT_S, left())) as response:
                 chunks, total = [], 0
                 while total <= limit:
-                    left()
-                    chunk = response.read(min(CHUNK, limit + 1 - total))
+                    read_timeout(response, min(TIMEOUT_S, left()))
+                    chunk = response.read1(min(CHUNK, limit + 1 - total))
                     if not chunk:
                         break
                     chunks.append(chunk)
