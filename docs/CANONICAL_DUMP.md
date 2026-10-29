@@ -163,7 +163,7 @@ UnityFS's total-size field and its uncompressed-data hash are left out, because 
 - A major of 65536 or more makes the packed value wider than 64 bits: `133091.1.1f1` packs to 37461786129692951297. The dump writes the exact integer.
 - `parse_version` raises, and `engine_version_packed` is `null`, when the string does not match or its major, cut to 16 bits, is 0 (`0.5.1f1`, `65536.1.1f1`). In those cases UnityPy wants `config.FALLBACK_UNITY_VERSION`, which the oracle leaves unset. A bundle on the UnityFS layout calls `parse_version` while loading, so there the input fails (`parse`) instead.
 
-**`l1` for `kind: "web"`:** `kind`, `signature`, `packer` (`"none"`, `"gzip"` or `"brotli"`), and `directory` with `flags` `null`.
+**`l1` for `kind: "web"`:** `kind`, `signature`, `packer` (`"none"`, `"gzip"` or `"brotli"`), and `directory` with `flags` `null`. The oracle never writes `"gzip"`: UnityPy detects a gzip-compressed WebFile and then fails to parse it, so the oracle's record of one is a `parse` error (`PARITY.md` section 4, gzip WebFile detection, Tier B). unityrs loads it and writes `"gzip"`.
 
 **`l1` for `kind: "serialized"`**:
 
