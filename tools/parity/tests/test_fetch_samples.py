@@ -1,8 +1,9 @@
 """fetch_unitypy_samples.py on synthetic pins and a fake server: no network, no game data.
 
 The redirect test runs two HTTP servers on the loopback interface, and the
-deadline tests in TrickleTests one whose body trickles in, so that urllib's
-real response object is what is read. The last test checks the real pins
+tests in DeadlineTests servers that hold up the status line, a header, a
+chunk's size line or the body, or a connect, so that urllib's real
+connection and response are what is read. The last test checks the real pins
 against the samples test_dump.py verifies. Standard library only.
 """
 
@@ -13,6 +14,7 @@ import io
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import threading
@@ -376,23 +378,26 @@ class FetchTests(unittest.TestCase):
         )
 
 
-class TrickleTests(unittest.TestCase):
-    """download() against a real HTTP server on the loopback interface, whose body trickles in.
+def trickle(data, every):
+    """`data` one byte at a time, `every` seconds apart, as serve() pieces."""
+    return [(every, data[i : i + 1]) for i in range(len(data))]
 
-    On http.client's response, read(n) waits until all n bytes are in, and
-    each receive waits up to the socket's timeout; a fake response does
-    neither. These check that the deadline bounds the wall time anyway.
+
+class DeadlineTests(unittest.TestCase):
+    """download() against real servers on the loopback interface, each holding up one stage of the response.
+
+    urllib waits up to the socket's timeout for each receive, and reads the
+    status line, each header and each chunk's size line with readline, which
+    receives until the line ends; a fake opener does neither. These check
+    that the deadline bounds the wall time wherever the response is held up.
     """
 
     def serve(self, pieces):
-        """A loopback URL whose body, of Content-Length the pieces' total, comes as [(wait_s, bytes)] in turn."""
+        """A loopback URL whose raw response, status line included, comes as [(wait_s, bytes)] in turn."""
         stop = threading.Event()
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
-                self.send_response(200)
-                self.send_header("Content-Length", str(sum(len(data) for _, data in pieces)))
-                self.end_headers()
                 try:
                     for wait_s, data in pieces:
                         if stop.wait(wait_s):
@@ -409,9 +414,9 @@ class TrickleTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         self.addCleanup(stop.set)  # cleanups run last first: the handler stops before the server
-        return f"http://127.0.0.1:{server.server_address[1]}/sample", sum(len(data) for _, data in pieces)
+        return f"http://127.0.0.1:{server.server_address[1]}/sample"
 
-    def download(self, url, size, **limits):
+    def download(self, url, **limits):
         """download()'s FetchError and the seconds it took, with TIMEOUT_S and DEADLINE_S set to `limits`."""
         with (
             mock.patch.multiple(F, **limits),
@@ -420,27 +425,93 @@ class TrickleTests(unittest.TestCase):
         ):
             t0 = time.monotonic()
             try:
-                F.download(url, size, F.urlopen, sleep=lambda s: None)
+                F.download(url, 64, F.urlopen, sleep=lambda s: None)
             finally:
                 elapsed = time.monotonic() - t0
         return str(cm.exception), elapsed
 
-    def test_a_trickling_body_is_cut_off_at_the_deadline(self):
-        # A byte every 0.2 s: each read gets data well within TIMEOUT_S, but the body takes 6 s.
-        url, size = self.serve([(0.2, b"x")] * 30)
-        said, elapsed = self.download(url, size, TIMEOUT_S=10, DEADLINE_S=1)
+    def assert_cut_off(self, pieces):
+        """A response sent as `pieces`, each receive quick but the whole far longer than 1 s, ends at a 1 s deadline."""
+        self.assertGreater(sum(wait_s for wait_s, _ in pieces), 5)
+        said, elapsed = self.download(self.serve(pieces), TIMEOUT_S=10, DEADLINE_S=1)
         self.assertIn("not downloaded within 1 s", said)
-        self.assertLess(elapsed, 2.5, "read(n) would wait for the whole body")
+        self.assertLess(elapsed, 1.75, "the download went on past the deadline")
+
+    def test_a_trickling_status_line_is_cut_off_at_the_deadline(self):
+        self.assert_cut_off([*trickle(b"HTTP/1.1 200 " + b"O" * 17 + b"\r\n", 0.2), (0, b"Content-Length: 1\r\n\r\nx")])
+
+    def test_a_trickling_header_is_cut_off_at_the_deadline(self):
+        self.assert_cut_off(
+            [
+                (0, b"HTTP/1.1 200 OK\r\n"),
+                *trickle(b"X-Slow: " + b"s" * 22 + b"\r\n", 0.2),
+                (0, b"Content-Length: 1\r\n\r\nx"),
+            ]
+        )
+
+    def test_a_trickling_chunk_size_line_is_cut_off_at_the_deadline(self):
+        head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n"
+        self.assert_cut_off([(0, head), *trickle(b"0" * 29 + b"1\r\n", 0.2), (0, b"y\r\n0\r\n\r\n")])
+
+    def test_a_trickling_body_is_cut_off_at_the_deadline(self):
+        self.assert_cut_off([(0, b"HTTP/1.1 200 OK\r\nContent-Length: 30\r\n\r\n"), *trickle(b"x" * 30, 0.2)])
 
     def test_a_waiting_read_ends_at_the_deadline(self):
-        # The second byte comes at 2 s; the third read then waits with 0.5 s left
-        # before the deadline. A socket timeout of TIMEOUT_S (2 s) would let it
-        # wait until 4 s; set to the time left, it ends at 2.5 s.
-        url, size = self.serve([(0, b"x"), (2, b"y"), (6, b"z")])
-        said, elapsed = self.download(url, size, TIMEOUT_S=2, DEADLINE_S=2.5)
+        # The second byte comes at 2 s; the third read then waits with 0.5 s
+        # left before the deadline, and TIMEOUT_S (2 s) would let it wait until 4 s.
+        url = self.serve([(0, b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nx"), (2, b"y"), (6, b"z")])
+        said, elapsed = self.download(url, TIMEOUT_S=2, DEADLINE_S=2.5)
         self.assertIn("not downloaded within 2.5 s", said)
         self.assertGreaterEqual(elapsed, 2.4)
         self.assertLess(elapsed, 3.25, "the read waited past the deadline")
+
+    def black_hole(self):
+        """A loopback address whose connects hang: a listener with a full accept queue drops every new SYN."""
+        listener = socket.socket()
+        self.addCleanup(listener.close)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(0)
+        for _ in range(8):
+            probe = socket.socket()
+            self.addCleanup(probe.close)
+            probe.settimeout(0.5)
+            try:
+                probe.connect(listener.getsockname())
+            except TimeoutError:
+                return listener.getsockname()
+        self.fail("a connect to a listener with a full accept queue does not hang here")
+
+    def test_connects_that_hang_end_at_the_deadline(self):
+        # A name that resolves to four unreachable addresses: urllib gives each
+        # one the whole TIMEOUT_S, so the first attempt alone would take 4 s.
+        address = self.black_hole()
+        infos = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", address)] * 4
+        with mock.patch.object(socket, "getaddrinfo", return_value=infos):
+            said, elapsed = self.download(f"http://127.0.0.1:{address[1]}/sample", TIMEOUT_S=1, DEADLINE_S=2)
+        self.assertIn("not downloaded within 2 s", said)
+        self.assertLess(elapsed, 2.75, "the connects went on past the deadline")
+
+    def test_a_download_cut_off_writes_nothing_even_when_it_ends_later(self):
+        # The sample arrives whole at 2 s, after the 1 s deadline: the run fails,
+        # and the bytes the abandoned download goes on to receive are discarded.
+        url = self.serve(
+            [*trickle(b"HTTP/1.1 200 OK\r\n", 0.125), (0, b"Content-Length: %d\r\n\r\n" % len(BODY_A) + BODY_A)]
+        )
+        tmp = Path(tempfile.mkdtemp(prefix="unityrs-samples-"))
+        self.addCleanup(shutil.rmtree, tmp)
+        err = io.StringIO()
+        with (
+            mock.patch.multiple(F, TIMEOUT_S=10, DEADLINE_S=1),
+            mock.patch.dict(os.environ, NO_PROXY),
+            contextlib.redirect_stderr(err),
+        ):
+            code = F.main([str(tmp)], opener=lambda _, timeout: F.urlopen(url, timeout), pins=PINS)
+        self.assertEqual(code, 1)
+        self.assertIn(f"a: {URL_A}: not downloaded within 1 s", err.getvalue())
+        for worker in [t for t in threading.enumerate() if t.name == f"fetch {URL_A}"]:
+            worker.join(10)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(list(tmp.iterdir()), [])
 
 
 if __name__ == "__main__":
