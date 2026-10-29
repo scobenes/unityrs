@@ -916,10 +916,32 @@ class DumpTests(unittest.TestCase):
         }
         (root / "index.json").write_text(json.dumps(index))
         out, stats = self.tmp / "i.jsonl", self.tmp / "i.stats.json"
-        dump("--index", root / "index.json", "-o", out, "--stats", stats)
+        index_args = ["-q", "--index", str(root / "index.json"), "-o", str(out)]
+        # An input that is not the file its entry pins stops the run: exit 1, no dump, no stats.
+        with contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(unitypy_dump.main(index_args), 1)
+        said = f"s/atlas_test: sha256 {SAMPLES['atlas_test']} differs from the index's {'0' * 64}"
+        self.assertIn(said, err.getvalue())
+        self.assertIn("no dump written", err.getvalue())
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["corpus"])
+        # --allow-index-mismatch dumps it with a warning, and the summary counts it.
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            code = unitypy_dump.main([*index_args, "--stats", str(stats), "--allow-index-mismatch"])
+        self.assertEqual(code, 0)
+        self.assertIn("warning: s/atlas_test: sha256", err.getvalue())
         tops = [r["file"] for r in records(out) if r["rec"] == "file" and len(r["file"]) == 1]
         self.assertEqual(tops, [["s/atlas_test"], ["s/banner_1"]])
         self.assertEqual(json.loads(stats.read_text())["summary"]["index_sha256_mismatch"], 1)
+        # An index whose hashes all match needs no flag.
+        index["files"][1]["sha256"] = SAMPLES["atlas_test"]
+        (root / "index.json").write_text(json.dumps(index))
+        out.unlink()
+        self.assertEqual(dump("--index", root / "index.json", "-o", out, "--stats", stats), 0)
+        self.assertNotIn("index_sha256_mismatch", json.loads(stats.read_text())["summary"])
+        self.assertEqual(len([r for r in records(out) if r["rec"] == "file" and len(r["file"]) == 1]), 2)
+        # The flag means nothing without an index.
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            unitypy_dump.main([str(src), "-o", str(self.tmp / "x.jsonl"), "--allow-index-mismatch"])
 
     def test_levels_leave_the_rest_null(self):
         args = self.sample_args()

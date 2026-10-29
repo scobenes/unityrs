@@ -5,8 +5,10 @@
     python tools/parity/unitypy_dump.py --index /corpus/index.json -o OUT.jsonl --sample 20
 
 INPUT is a file or a folder (walked recursively); with --index it is the
-corpus index.json and its bundle and sample entries are dumped. The output
-path must lie outside the repository. docs/CANONICAL_DUMP.md specifies the
+corpus index.json and its bundle and sample entries are dumped. An input
+whose sha256 differs from its index entry stops the run (exit 1, no dump)
+unless --allow-index-mismatch is given. The output path must lie outside the
+repository. docs/CANONICAL_DUMP.md specifies the
 format; this script needs only the standard library and UnityPy (the pinned
 oracle stack in the unityrs-dev container).
 """
@@ -573,6 +575,10 @@ class DumperError(RuntimeError):
     """The dumper failed on an input in its own code, which no input explains, so the run stops."""
 
 
+class IndexMismatch(RuntimeError):
+    """An input is not the file its index entry pins (another sha256), so the dump would not be of the corpus."""
+
+
 def _send(conn, result):
     conn.send(result)
 
@@ -666,6 +672,11 @@ def main(argv=None):
     ap.add_argument("--index", action="store_true", help="INPUT is a corpus index.json")
     ap.add_argument("--kind", default=",".join(INDEX_KINDS), help="index entry kinds to dump (comma list)")
     ap.add_argument("--build", help="index builds to dump (comma list)")
+    ap.add_argument(
+        "--allow-index-mismatch",
+        action="store_true",
+        help="with --index, dump an input whose sha256 differs from its entry (a warning) instead of stopping",
+    )
     ap.add_argument("--name", action="append", help="glob on the dump-relative path (repeatable)")
     ap.add_argument("--sample", type=int, help="keep N inputs spread evenly over the sorted list")
     ap.add_argument("--limit", type=int, help="keep the first N inputs")
@@ -674,6 +685,8 @@ def main(argv=None):
     ap.add_argument("--stats", help="write per-input timings and totals as JSON to this path")
     ap.add_argument("-q", "--quiet", action="store_true", help="no per-input progress on stderr")
     args = ap.parse_args(argv)
+    if args.allow_index_mismatch and not args.index:
+        ap.error("--allow-index-mismatch needs --index")
     args.kind = args.kind.split(",")
     args.build = args.build.split(",") if args.build else None
     asked = args.levels.split(",")
@@ -739,7 +752,10 @@ def main(argv=None):
                 print(f"warning: {rel}: {json.loads(text)['error']['note']}", file=sys.stderr)
             if expected[rel] and expected[rel] != sha:
                 totals["index_sha256_mismatch"] += 1
-                print(f"warning: {rel}: sha256 {sha} differs from the index", file=sys.stderr)
+                said = f"{rel}: sha256 {sha} differs from the index's {expected[rel]}"
+                if not args.allow_index_mismatch:
+                    raise IndexMismatch(said)
+                print(f"warning: {said}", file=sys.stderr)
             per_input.append({"path": rel, **{k: round(v, 6) if isinstance(v, float) else v for k, v in stats.items()}})
             if not args.quiet:
                 print(
@@ -751,6 +767,13 @@ def main(argv=None):
         done = True
     except DumperError as e:
         print(f"unitypy_dump: {e}\nunitypy_dump: the dumper itself failed; no dump written", file=sys.stderr)
+        return 1
+    except IndexMismatch as e:
+        print(
+            f"unitypy_dump: {e}\nunitypy_dump: the input is not the file the index pins; no dump written "
+            "(--allow-index-mismatch dumps it anyway)",
+            file=sys.stderr,
+        )
         return 1
     finally:
         if results is not None:
