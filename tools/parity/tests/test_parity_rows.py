@@ -244,6 +244,31 @@ class Rows(unittest.TestCase):
         a.files["CAB-same"]._container = ContainerHelper([("a/path", info)])
         b.files["CAB-same"]._container = ContainerHelper([("b/path", info)])
         self.assertEqual(list(env.container.keys()), ["b/path"])
+        # A PPtr looks in its own parent's entries first (PPtr.deref's loop over `files`), so from inside either
+        # bundle it reads that bundle's copy; only one from outside both reaches the registry, and reads B's.
+        env = UnityPy.Environment()
+
+        def holder(tag, cab):
+            pointing = S.serialized_file(
+                [S.Type(49, TEXT_ASSET)],
+                [S.Obj(1, 0, S.s32(f"main {tag}") + S.s32("s"))],
+                externals=[S.External(b"archive:/CAB-same/CAB-same")],
+            )
+            entries = [(cab, pointing, 4)]
+            if tag != "C":
+                entries += [(b"CAB-same", text_asset_file(tag), 4), (b"CAB-same.resS", tag.encode() * 64, 0)]
+            return load(S.fs_bundle(entries), tag, env)[0]
+
+        pointing = {tag: holder(tag, cab).files[cab.decode()] for tag, cab in (("A", b"CAB-main"), ("B", b"CAB-main"))}
+        pointing["C"] = holder("C", b"CAB-c").files["CAB-c"]
+        self.assertEqual(list(env.cabs), ["cab-main", "cab-same", "cab-same.ress", "cab-c"])
+        read = {
+            tag: PPtr(m_FileID=1, m_PathID=1, assetsfile=sf).deref().parse_as_dict()["m_Name"]
+            for tag, sf in pointing.items()
+        }
+        self.assertEqual(read, {"A": "A", "B": "B", "C": "B"})
+        got = ResourceReader.get_resource_data("archive:/CAB-same/CAB-same.resS", pointing["A"], 0, 4)
+        self.assertEqual(got, b"BBBB", "a .resS read from A still reads B's")
 
     # Section 7.1: type dependencies sit inside the tree flag.
     def test_type_dependencies_need_the_tree_flag(self):
@@ -520,9 +545,19 @@ class Rows(unittest.TestCase):
         preload(PPtr(m_FileID=0, m_PathID=99, assetsfile=sf))  # KeyError: skipped
         with self.assertRaises(IndexError):
             preload(PPtr(m_FileID=-1, m_PathID=1, assetsfile=sf))
-        # deref: path id 0 raises ValueError; file id 0 is the pointer's own file; a missing path id is KeyError.
-        with self.assertRaises(ValueError):
+        # deref: no assetsfile raises ValueError before the path id is looked at; path id 0 raises ValueError; file
+        # id 0 is the pointer's own file; a missing path id is KeyError.
+        with self.assertRaisesRegex(ValueError, "^PPtr can't deref without an assetsfile!$"):
+            PPtr(m_FileID=0, m_PathID=0).deref()
+        with self.assertRaisesRegex(ValueError, "^PPtr can't deref with m_PathID == 0!$"):
             PPtr(m_FileID=0, m_PathID=0, assetsfile=sf).deref()
+        # A file with no parent raises for an external pointer, naming the record.
+        orphan = load(text_asset_file(), env=UnityPy.Environment(path=str(self.tmp)))[0]
+        orphan.externals, orphan.parent = [SimpleNamespace(path="archive:/CAB-x/CAB-x")], None
+        with self.assertRaisesRegex(
+            FileNotFoundError, "^PPtr points to archive:/CAB-x/CAB-x but no container is set!$"
+        ):
+            PPtr(m_FileID=1, m_PathID=1, assetsfile=orphan).deref()
         self.assertIs(PPtr(m_FileID=0, m_PathID=1, assetsfile=sf).deref(), sf.objects[1])
         with self.assertRaisesRegex(KeyError, "^99$"):
             PPtr(m_FileID=0, m_PathID=99, assetsfile=sf).deref()
@@ -1204,6 +1239,23 @@ class Rows(unittest.TestCase):
         preloaded.cabs.pop("shared.assets")
         with self.assertRaisesRegex(FileNotFoundError, "Shared.Assets not found!$"):
             deref("Shared.Assets", preloaded)
+        # The loop compares each key lower-cased (`key.lower() ==`), so a key in any case is found by name.
+        keyed = UnityPy.Environment(path=str(self.tmp))
+        load(text_asset_file("keyed"), "Shared.Assets", keyed)
+        keyed.cabs.pop("shared.assets")
+        self.assertEqual(deref("archive:/CAB-x/SHARED.assets", keyed), "keyed")
+        # The suffix steps answer a name even where the file it names exists: beside sub/ab.assets, a root
+        # xab.assets answers ab.assets (the walk lists a folder's files before its subfolders), so a record in any
+        # case reads the wrong file (Tier C, section 19.2). As `path/name`, sub/ab.assets is found.
+        f = self.tmp / "f"
+        (f / "sub").mkdir(parents=True)
+        (f / "xab.assets").write_bytes(text_asset_file("xab"))
+        (f / "sub" / "ab.assets").write_bytes(text_asset_file("ab"))
+        self.assertEqual(found(UnityPy.Environment(path=str(f)), "ab.assets"), ["xab"])
+        self.assertEqual(found(UnityPy.Environment(path=str(f)), "sub/ab.assets"), ["ab"])
+        for record in ("ab.assets", "archive:/CAB-x/ab.assets", "AB.assets"):
+            with self.subTest(record):
+                self.assertEqual(deref(record, UnityPy.Environment(path=str(f))), "xab")
         # The Tier B retry matches the exact basename, not find_file's suffix match: beside sub/Shared.Assets,
         # find_file("Shared.Assets") loads MyShared.Assets, the walk listing a folder's files first.
         e = self.tmp / "e"
