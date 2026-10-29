@@ -179,9 +179,26 @@ class TestColumn(unittest.TestCase):
 
     def test_rows_are_cited_by_item_not_by_line(self):
         """A row points at another by its item and section ("the `.splitN` merging row, section 3"), never by a
-        line number of this file, which every edit above it moves."""
-        text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
-        self.assertEqual(re.findall(r"\brows? \d+", text), [])
+        line number of PARITY.md, which every edit above it moves; nor do the docs and the parity tools and tests.
+        So none says "row N" in any case, "line N of this file", or `PARITY.md:N`, and a "line N" stands only right
+        after the source file it is a line of (`fmod.py` lines 129-137)."""
+        root = HERE.parent.parent
+        paths = [root / "PARITY.md", *sorted((root / "docs").glob("*.md")), *sorted(HERE.glob("*.md"))]
+        paths += [*sorted(HERE.glob("*.py")), *sorted((HERE / "tests").glob("*.py"))]
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path.name):
+                self.assertEqual(re.findall(r"(?i)\brows? \d+(?![\d%])", text), [])
+                self.assertEqual(re.findall(r"(?i)\b(?:PARITY|DESIGN|README|CANONICAL_DUMP)\.md:\d+", text), [])
+                self.assertEqual(
+                    re.findall(r"(?i)\blines? \d+\S* of (?:this|that|the) (?:file|table|section)", text), []
+                )
+                bare = [
+                    m.group(0)
+                    for m in re.finditer(r"(?i)\blines? \d+", text)
+                    if not re.search(r"`[^`\n]+` $", text[: m.start()])
+                ]
+                self.assertEqual(bare, [], "a line number with no source file before it")
 
     # DESIGN.md section 3's resolution clause names the Tier B and C exceptions to "`obj.container` and dependency
     # resolution match". Each bullet of those lists that touches resolution (it names one of RESOLUTION) maps here
