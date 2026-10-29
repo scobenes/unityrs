@@ -429,9 +429,9 @@ class Side:
         if type(version) is not int or version != C.VERSION:
             raise C.FormatError(f"the {self.name} dump is format version {short(version)}, this tool reads {C.VERSION}")
         levels = h.get("levels")
-        if type(levels) is not list or levels != [lv for lv in C.LEVELS if lv in levels]:
+        if type(levels) is not list or "L0" not in levels or levels != [lv for lv in C.LEVELS if lv in levels]:
             raise C.FormatError(
-                f"the {self.name} header's levels {short(levels)} are not an ordered subset of {C.LEVELS}"
+                f"the {self.name} header's levels {short(levels)} are not L0 followed by any of L1, L2, L3 in order"
             )
         self.header, self.levels = h, levels
         return line_problems(h, line, saw_float, levels)
@@ -478,7 +478,7 @@ def select_levels(held_a, held_b, levels):
         if absent:
             raise CompareError(f"the reference holds no {' '.join(absent)}")
     if not wanted:
-        raise CompareError("nothing to compare: the reference holds no levels" if levels is None else "no levels given")
+        raise CompareError("nothing to compare: no levels given")
     return [lv for lv in wanted if lv in held_b], [lv for lv in wanted if lv not in held_b]
 
 

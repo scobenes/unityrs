@@ -428,7 +428,7 @@ class CompareTests(unittest.TestCase):
 
     def test_candidate_missing_levels_is_a_difference(self):
         a = base_records()
-        for levels in (LEVELS[:3], ["L0"], []):
+        for levels in (LEVELS[:3], ["L0"], ["L0", "L2"]):
             with self.subTest(levels=levels):
                 b = base_records()
                 for r in b[1:3]:
@@ -473,9 +473,8 @@ class CompareTests(unittest.TestCase):
         no_l3 = [r if r["rec"] != "object" else dict(r, l3=None) for r in recs]
         self.assertEqual(self.cli(self.write("r.jsonl", no_l3, head=header(LEVELS[:3])), pb, "--levels", "L3"), 2)
         self.assertIn("holds no L3", self.errors)
-        empty = [dict(recs[0], l1=None), *[dict(r, l1=None, l2=None, l3=None) for r in recs[1:3]], recs[3]]
-        self.assertEqual(self.cli(self.write("e.jsonl", empty, head=header([])), pb), 2)
-        self.assertIn("nothing to compare", self.errors)
+        with self.assertRaisesRegex(compare.CompareError, "nothing to compare"):
+            compare.run(pa, pb, levels=[])
 
     def test_reference_must_come_from_the_pinned_oracle(self):
         recs = base_records()
@@ -534,7 +533,14 @@ class CompareTests(unittest.TestCase):
     def test_bad_inputs(self):
         recs = base_records()
         pa = self.write("a.jsonl", recs)
-        for head in (header(version=99), header(version=True), header(["L1", "L0"]), header(["L0", "L0"])):
+        for head in (
+            header(version=99),
+            header(version=True),
+            header(["L1", "L0"]),
+            header(["L0", "L0"]),
+            header(["L1", "L2"]),  # every dump holds L0
+            header([]),
+        ):
             with self.subTest(head=head), self.assertRaises(C.FormatError):
                 compare.run(pa, self.write("b.jsonl", recs, head=head))
         with self.assertRaises(C.FormatError):
