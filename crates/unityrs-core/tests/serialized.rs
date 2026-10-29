@@ -108,6 +108,23 @@ fn a_table_of_one_byte_externals_stops_at_the_meter() {
     assert_eq!(parse(&data).unwrap().externals().len(), 20_000);
 }
 
+/// UnityPy files/ObjectReader.py:82-86: a format-22 row's `byte_start` is a
+/// signed 64-bit read plus `data_offset`, a Python int, so it may pass
+/// `i64::MAX` (the oracle parses this matrix input; its L1 has no rows).
+#[test]
+fn a_byte_start_past_i64_is_kept_whole() {
+    let (_, data) = matrix()
+        .into_iter()
+        .find(|(n, _)| n == "CAB-f22-byte-start-past-i64")
+        .unwrap();
+    let f = parse(&data).unwrap();
+    let offset = i128::from(f.header().data_offset);
+    let first = f.object_infos().first().unwrap();
+    assert_eq!(first.path_id, 1);
+    assert_eq!(first.byte_start, i128::from(i64::MAX) + offset);
+    assert!(first.byte_start > i128::from(i64::MAX));
+}
+
 #[test]
 fn type_ids_index_types_as_python_lists() {
     let types = vec![

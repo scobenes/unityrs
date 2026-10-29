@@ -614,6 +614,70 @@ pub fn matrix() -> Vec<(String, Vec<u8>)> {
         let name = format!("{}-f6.bundle", String::from_utf8_lossy(sig));
         out.push((name, build_with_signature(&spec, sig)));
     }
+    out.extend(negative_position_sites(&base()));
+    out
+}
+
+/// Plan 3.3's negative-position sites, each patched into a well-formed
+/// input: a negative `node_count` and `stringbuffer_size` (UnityPy
+/// helpers/TypeTreeNode.py:113-118 reads `read(24 * node_count)`), a
+/// format-8 header whose `metadata_size` exceeds `file_size`
+/// (files/SerializedFile.py:266; detection, helpers/ImportHelper.py:110-120,
+/// already keeps such a file raw, so the oracle records a raw file),
+/// blocks-info at the end whose stored size
+/// exceeds the file (files/BundleFile.py:134-135), and a format-22 object
+/// whose `byte_start` plus `data_offset` passes `i64::MAX`
+/// (files/ObjectReader.py:82-86).
+fn negative_position_sites(bundle: &BundleSpec) -> Vec<(String, Vec<u8>)> {
+    use crate::blob::{Strings, blob_tree};
+    use crate::serialized::build as file;
+    let mut out = Vec::new();
+    for (name, field, value) in [
+        ("CAB-negative-node-count", 0usize, -1i32),
+        ("CAB-negative-stringbuffer", 4, -5),
+    ] {
+        let spec = matrix_file(22, false);
+        let mut bytes = file(&spec);
+        let nodes = spec.types.first().map_or(&[][..], |t| t.nodes.as_slice());
+        let blob = blob_tree(nodes, 22, false, Strings::Local, &[]);
+        if let Some(at) = bytes.windows(blob.len()).position(|w| w == blob.as_slice()) {
+            bytes[at + field..at + field + 4].copy_from_slice(&value.to_le_bytes());
+            out.push((name.to_owned(), bytes));
+        }
+    }
+    let mut f8 = file(&matrix_file(8, false));
+    let past = u32::try_from(f8.len())
+        .unwrap_or(u32::MAX)
+        .saturating_add(64);
+    f8[0..4].copy_from_slice(&past.to_be_bytes());
+    out.push(("CAB-f8-metadata-past-start".into(), f8));
+    let mut end = build(&BundleSpec {
+        info_at_end: true,
+        ..bundle.clone()
+    });
+    // The header: signature and format (12 bytes), the two version strings,
+    // the total size (8 bytes), then the stored blocks-info size.
+    let nul =
+        |b: &[u8], from: usize| from + b[from..].iter().position(|c| *c == 0).unwrap_or(0) + 1;
+    let at = nul(&end, nul(&end, 12)) + 8;
+    let past = u32::try_from(end.len())
+        .unwrap_or(u32::MAX)
+        .saturating_add(100);
+    end[at..at + 4].copy_from_slice(&past.to_be_bytes());
+    out.push(("info-end-past-start.bundle".into(), end));
+    // The first object's row (path id 1, start 0, size 12) given the start
+    // `i64::MAX`: detection bounds `data_offset` by the file, not a row.
+    let mut big = file(&matrix_file(22, false));
+    let row: Vec<u8> = [
+        &1i64.to_le_bytes()[..],
+        &0i64.to_le_bytes(),
+        &12u32.to_le_bytes(),
+    ]
+    .concat();
+    if let Some(at) = big.windows(row.len()).position(|w| w == row.as_slice()) {
+        big[at + 8..at + 16].copy_from_slice(&i64::MAX.to_le_bytes());
+        out.push(("CAB-f22-byte-start-past-i64".into(), big));
+    }
     out
 }
 
