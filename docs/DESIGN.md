@@ -72,7 +72,7 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
   - Every patch to vendored decoders is labelled either Tier A (keeps the reference behaviour) or Tier C.
   - An observable quirk that callers can depend on and that is not wrong data (a file name, a dict key, a `str()` form, a docstring the code contradicts) is Tier A: unityrs keeps UnityPy's behaviour.
 - **Tier B: UnityPy raises on a valid request.** We produce correct output, checked against an independent reference, and `PARITY.md` names a pinned divergence test for each:
-  - 22 TextureFormats: BC6H, half and float formats, the 8 signed formats, RG16/RG32, R16, RGBA64, RGB9e5, YUY2;
+  - 21 TextureFormats: BC6H, the half and float formats but ARGBFloat, the 8 signed formats, RG16/RG32, R16, RGBA64, RGB9e5, YUY2. `PARITY.md` section 17.1 names each one's reference: a closed form (the half and float, integer, shared-exponent and BT.601 rules), or for BC6H texture2ddecoder 1.0.5's decoder, which is in the oracle image;
   - a gzip-compressed WebFile, which UnityPy detects and then fails to parse;
   - a streamed Texture2DArray, whose slices all raise;
   - a Texture2DArray in one of the seven 8-bit integer formats that UnityPy maps to a 16-bit texture format that raises;
@@ -103,6 +103,8 @@ A second **HEAD oracle** is UnityPy git `417d595`. Re-pinning either one is a do
 - **Unsupported until a sample and a reference exist.** unityrs refuses these with a named `Unsupported` error:
   - LZHAM, where UnityPy raises too;
   - a UnityArchive parsed as a bundle, where UnityPy raises too. Loading one is Tier A: UnityPy's detector does not know the signature and loads the file as a raw ResourceFile, and so does unityrs;
+  - ARGBFloat, where UnityPy raises too: its name says A, R, G, B, UnityPy's table reads it as B, G, R, A, and no sample or document decides;
+  - YUY2 of odd width: no sample shows how the last pixel is stored;
   - ETC_RGB4_3DS and ETC_RGBA8_3DS. UnityPy decodes them as plain ETC1, but no 3DS sample or reference decoder shows what they should decode to, so the refusal is a documented divergence, not parity;
   - a Texture2DArray read from a Switch or XBOX360 file. UnityPy decodes its slices with no platform handling, and the class carries no platform blob to deswizzle with;
   - `set_image` with mips on a Switch-swizzled texture. UnityPy swizzles the top level and writes the mips linearly; no sample shows how a mip chain is laid out;

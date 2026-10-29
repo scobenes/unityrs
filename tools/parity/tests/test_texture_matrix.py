@@ -40,6 +40,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
 import inventory  # noqa: E402
+import references  # noqa: E402
 
 try:
     import texture2ddecoder
@@ -71,6 +72,15 @@ COLUMNS = [
 RESULT = re.compile(r"(works|wrong|unverified|raises|crunch)\b")
 # The tier each result gives (DESIGN.md section 3): a crunched row is Tier A like its base format.
 KIND_TIER = {"works": "A", "crunch": "A", "raises": "B", "wrong": "C", "unverified": "U"}
+
+
+def tier_of(name, kind):
+    """A raise is Tier B where section 17.1 names a reference (`references.TIER_B`), else Tier U."""
+    if kind == "raises" and name not in references.TIER_B:
+        return "U"
+    return KIND_TIER[kind]
+
+
 # DESIGN.md section 5: the formats P1 implements; every other format is P3.
 P1 = ["BC7", "DXT1", "DXT5", "RGB24", "RGBA32"]
 VERSION = (2021, 3, 1, 3)  # the matrix's 2021.3.1f3
@@ -158,14 +168,40 @@ class ThisParityFile(unittest.TestCase):
         self.assertEqual(len(self.rows), 78)
         self.assertEqual(len({row["value"] for row in self.rows.values()}), 78)
 
-    def test_tier_b_has_the_22_formats_design_names(self):
+    def test_tier_b_has_the_21_formats_design_names(self):
         tier_b = sorted(name for name, row in self.rows.items() if row["tier"] == "B")
         signed = [name for name in self.rows if name.endswith("_SIGNED") and not name.startswith("EAC")]
-        expected = ["BC6H", "RHalf", "RGHalf", "RFloat", "RGFloat", "RGBAFloat", "ARGBFloat", "RGBFloat"]
+        expected = ["BC6H", "RHalf", "RGHalf", "RFloat", "RGFloat", "RGBAFloat", "RGBFloat"]
         expected += signed + ["RG16", "RG32", "R16", "RGBA64", "RGB9e5Float", "YUY2"]
         self.assertEqual(len(signed), 8)
         self.assertEqual(tier_b, sorted(expected))
-        self.assertEqual(len(tier_b), 22)
+        self.assertEqual(len(tier_b), 21)
+        self.assertEqual(self.rows["ARGBFloat"]["tier"], "U", "raises, and no reference can be named")
+
+    def test_every_tier_b_row_names_its_reference(self):
+        """Section 17.1 has one row per Tier B format, in the mode `references` returns, and nothing else."""
+        text = PARITY.read_text(encoding="utf-8")
+        header, body = next(
+            (h, b) for h, b in inventory.tables(text) if h[:3] == ["format", "stored per pixel (little-endian)", "mode"]
+        )
+        self.assertEqual(header, ["format", "stored per pixel (little-endian)", "mode", "reference", "test", "status"])
+        listed = {first_span(cells[0]): cells for cells in body}
+        tier_b = {name for name, row in self.rows.items() if row["tier"] == "B"}
+        self.assertEqual(sorted(listed), sorted(tier_b))
+        self.assertEqual(sorted(listed), sorted(references.TIER_B))
+        for name, cells in listed.items():
+            with self.subTest(name):
+                self.assertEqual(cells[2], references.TIER_B[name])
+                self.assertTrue(cells[3].strip() and cells[3] != "—")
+                self.assertEqual(cells[4], "planned: divergence test against `references.decode`")
+        self.assertEqual(
+            sorted(references.UNSUPPORTED),
+            [
+                n
+                for n, r in self.rows.items()
+                if r["tier"] == "U" and RESULT.match(r["UnityPy 1.25.2"]).group(1) == "raises"
+            ],
+        )
 
     def test_p1_formats_are_the_five_design_names(self):
         p1 = sorted(name for name, row in self.rows.items() if row["status"] == "planned (P1)")
@@ -175,7 +211,7 @@ class ThisParityFile(unittest.TestCase):
         for name, row in self.rows.items():
             with self.subTest(name):
                 kind = RESULT.match(row["UnityPy 1.25.2"]).group(1)
-                self.assertEqual(row["tier"], KIND_TIER[kind])
+                self.assertEqual(row["tier"], tier_of(name, kind))
                 self.assertEqual(row["status"], "planned (P1)" if name in P1 else "planned (P3)")
 
 
@@ -358,7 +394,7 @@ def eac_signed_value(base):
 def rgba_half():
     halves = (0.5, 0.25, 0.125, 0.75) * (W * H)
     data = struct.pack(f"<{len(halves)}e", *halves)
-    reference = flipped(lambda x, y: tuple(round(h * 255) for h in halves[4 * (y * W + x) :][:4]))
+    reference = flipped(lambda x, y: tuple(references.float_to_byte(h) for h in halves[4 * (y * W + x) :][:4]))
     # Three halves read per pixel of four stored, each int(h * 256): alpha dropped, pixels misaligned.
     unitypy = flipped(lambda x, y: tuple(int(h * 256) for h in halves[3 * (y * W + x) :][:3]))
     return Case(data, "RGBA", reference, ("RGB", unitypy))
@@ -835,7 +871,7 @@ def expected_row(fmt):
         "gates": gates_cell(fmt),
         "UnityPy 1.25.2": result_cell(fmt, kind, raised),
         "`set_image` writes": set_image_cell(fmt),
-        "tier": KIND_TIER[kind],
+        "tier": tier_of(fmt.name, kind),
         "status": "planned (P1)" if fmt.name in P1 else "planned (P3)",
     }
 
@@ -973,6 +1009,34 @@ class AgainstTheOracle(unittest.TestCase):
         with self.assertRaises(ValueError):
             halves(TextureFormat.RHalf, [1.0])
 
+    def test_array_8bit_targets_have_references(self):
+        """Section 19.2's 8-bit integer arrays decode as the 8-bit format UnityPy maps the UNorm or SNorm graphics
+        format of the same channels to, and each of those is Tier A or has a section 17.1 reference."""
+        from UnityPy.enums.GraphicsFormat import GRAPHICS_TO_TEXTURE_MAP, GraphicsFormat
+
+        targets = {}
+        for graphics in GraphicsFormat:
+            if graphics.name.startswith("R8") and graphics.name.endswith(("_UInt", "_SInt")):
+                norm = graphics.name.replace("_UInt", "_UNorm").replace("_SInt", "_SNorm")
+                targets[graphics.name] = GRAPHICS_TO_TEXTURE_MAP[GraphicsFormat[norm]].name
+        self.assertEqual(
+            targets,
+            {
+                "R8_UInt": "R8",
+                "R8G8_UInt": "RG16",
+                "R8G8B8_UInt": "RGB24",
+                "R8G8B8A8_UInt": "RGBA32",
+                "R8_SInt": "R8_SIGNED",
+                "R8G8_SInt": "RG16_SIGNED",
+                "R8G8B8_SInt": "RGB24_SIGNED",
+                "R8G8B8A8_SInt": "RGBA32_SIGNED",
+            },
+        )
+        for target in targets.values():
+            with self.subTest(target):
+                row = self.rows[target]
+                self.assertTrue(row["tier"] == "A" or target in references.TIER_B, row["tier"])
+
     def test_rgb48_reference_is_the_high_byte(self):
         """Section 19.2's RGB48 reference: each channel's high byte, what Pillow's `RGB;16L` gives."""
         case = rgb48()
@@ -980,6 +1044,78 @@ class AgainstTheOracle(unittest.TestCase):
         self.assertEqual(list(image.getdata()), case.pixels)
         rounded = [tuple(round(v * 255 / 65535) for v in pixel) for pixel in RGB48_PIXELS]
         self.assertNotEqual(rounded, [tuple(v >> 8 for v in pixel) for pixel in RGB48_PIXELS])
+
+
+class TierBReferences(unittest.TestCase):
+    """Section 17.1's references hold the values it states (standard library; BC6H needs texture2ddecoder)."""
+
+    def one(self, name, data, width=1, height=1):
+        mode, pixels = references.decode(name, data, width, height)
+        return mode, pixels[0] if width * height == 1 else pixels
+
+    def test_tier_b_references_hold_their_stated_values(self):
+        # Half and float: clamped to [0, 1], times 255, rounded half up; NaN gives 0.
+        cases = {0.5: 128, 1.0: 255, 2.0: 255, float("inf"): 255, -1.0: 0, -0.0: 0, float("nan"): 0, 1 / 255: 1}
+        for value, byte in cases.items():
+            with self.subTest(value=value):
+                self.assertEqual(self.one("RHalf", struct.pack("<e", value)), ("RGB", (byte, 0, 0)))
+                self.assertEqual(self.one("RFloat", struct.pack("<f", value)), ("RGB", (byte, 0, 0)))
+        self.assertEqual(self.one("RGHalf", struct.pack("<2e", 0.25, 0.75)), ("RGB", (64, 191, 0)))
+        self.assertEqual(self.one("RGBFloat", struct.pack("<3f", 0, 0.5, 1)), ("RGB", (0, 128, 255)))
+        self.assertEqual(self.one("RGBAFloat", struct.pack("<4f", 1, 0, 0.5, 0.25)), ("RGBA", (255, 0, 128, 64)))
+        # Unsigned: the high byte. Signed: offset by 2^(n-1), then the high byte.
+        self.assertEqual(self.one("R16", struct.pack("<H", 0xFF00)), ("RGB", (255, 0, 0)))
+        self.assertEqual(self.one("R16", struct.pack("<H", 0x00FF)), ("RGB", (0, 0, 0)))
+        self.assertEqual(self.one("RG16", bytes([7, 200])), ("RGB", (7, 200, 0)))
+        self.assertEqual(
+            self.one("RGBA64", struct.pack("<4H", 0xFFFF, 0x8000, 0x7FFF, 0)), ("RGBA", (255, 128, 127, 0))
+        )
+        self.assertEqual(self.one("RGB24_SIGNED", struct.pack("<3b", -128, 0, 127)), ("RGB", (0, 128, 255)))
+        self.assertEqual(self.one("RGBA32_SIGNED", struct.pack("<4b", -1, 1, -127, 64)), ("RGBA", (127, 129, 1, 192)))
+        self.assertEqual(self.one("R8_SIGNED", struct.pack("<b", -128)), ("RGB", (0, 0, 0)))
+        self.assertEqual(self.one("RG16_SIGNED", struct.pack("<2b", 0, 127)), ("RGB", (128, 255, 0)))
+        self.assertEqual(self.one("RGB48_SIGNED", struct.pack("<3h", -32768, 0, 32767)), ("RGB", (0, 128, 255)))
+        self.assertEqual(self.one("R16_SIGNED", struct.pack("<h", -1)), ("RGB", (127, 0, 0)))
+        self.assertEqual(self.one("RG32_SIGNED", struct.pack("<2h", 256, -256)), ("RGB", (129, 127, 0)))
+        self.assertEqual(self.one("RG32", struct.pack("<2H", 0x1234, 0xABCD)), ("RGB", (0x12, 0xAB, 0)))
+        self.assertEqual(self.one("RGBA64_SIGNED", struct.pack("<4h", 0, 0, 0, 32767)), ("RGBA", (128, 128, 128, 255)))
+        # RGB9e5Float: exponent 15, red 256: 256 * 2^(15 - 24) = 0.5.
+        self.assertEqual(self.one("RGB9e5Float", struct.pack("<I", 15 << 27 | 256)), ("RGB", (128, 0, 0)))
+        self.assertEqual(references.rgb9e5_to_floats(16 << 27 | 256 << 18 | 128 << 9 | 1), (2**-8, 0.5, 1.0))
+        # YUY2: BT.601 limited range; one pair of pixels shares U and V.
+        pair = self.one("YUY2", bytes([16, 128, 235, 128]), width=2)
+        self.assertEqual(pair, ("RGB", [(0, 0, 0), (255, 255, 255)]))
+        self.assertEqual(references.yuv_to_rgb(81, 90, 240), (255, 0, 0))  # BT.601 red
+        with self.assertRaises(NotImplementedError):
+            references.decode("YUY2", bytes(4), 1, 1)
+        with self.assertRaises(NotImplementedError):
+            references.decode("ARGBFloat", bytes(16), 1, 1)
+        # Every image comes back flipped top to bottom.
+        mode, pixels = references.decode("R16", struct.pack("<2H", 0x0100, 0x0200), 1, 2)
+        self.assertEqual(pixels, [(2, 0, 0), (1, 0, 0)])
+
+    def test_bc6h_reference_is_texture2ddecoder(self):
+        try:
+            import texture2ddecoder  # noqa: F401
+        except ImportError:  # pragma: no cover - outside the oracle image
+            self.skipTest("needs texture2ddecoder 1.0.5 (the oracle image)")
+
+        def block(r, g, b):
+            # Mode 11 (mode bits 00011): one region, 10-bit endpoints; every index 0 picks endpoint 0.
+            bits, shift = 0b00011, 5
+            for channel in (r, g, b, 0, 0, 0):
+                bits |= channel << shift
+                shift += 10
+            return bits.to_bytes(16, "little")
+
+        def half(endpoint):  # the unsigned BC6H unquantize and finish
+            return ((((endpoint << 16) + 0x8000) >> 10) * 31) >> 6
+
+        self.assertEqual([hex(half(e)) for e in (400, 488, 500)], ["0x307f", "0x3b27", "0x3c9b"])
+        mode, pixels = references.decode("BC6H", block(400, 488, 500), 4, 4)
+        self.assertEqual((mode, set(pixels)), ("RGBA", {(36, 228, 255, 255)}))
+        # Cropped from whole 4x4 blocks, as UnityPy pads every BC format.
+        self.assertEqual(references.decode("BC6H", block(400, 488, 500), 3, 2), ("RGBA", [(36, 228, 255, 255)] * 6))
 
 
 def swizzle(data, fmt, block_w, block_h):
