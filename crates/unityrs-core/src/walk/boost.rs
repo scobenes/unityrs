@@ -26,10 +26,13 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::dict::{Dict, RefIndex, RefNode, Trees, ref_tree, slot_count, slot_of, visit};
+use super::dict::{
+    Dict, FindError, RefIndex, RefNode, Trees, flags, ref_object_size, ref_tree, slot_count,
+    slot_of, steps, visit,
+};
 use super::{
     FloatMode, Out, ReadCtx, ReadDetail, ReadError, ReadErrorKind, RefTypes, Work, charge_error,
-    f32_bits, first_reserve, grow_step, int, py_size_field_is_zero, uint,
+    f32_bits, first_reserve, grow_step, int, limit_refused, py_size_field_is_zero, uint,
 };
 use crate::limits::MeteredVec;
 use crate::raw::RawStr;
@@ -62,10 +65,10 @@ pub fn read(data: &Bytes, tree: &Arc<Tree>, ctx: &ReadCtx<'_>) -> Result<Parsed,
         scratch,
     };
     let value = r.value(tree, 0, tree.root());
-    r.work.finish(ctx.meter);
-    ctx.meter.add_work(r.refs.work());
-    let value = value?;
     let at = r.at();
+    let ended = r.work.finish(at);
+    let value = value?;
+    ended?;
     let built = value.into_built(&r.builder, at)?;
     // UnityPy TypeTreeHelper.cpp:1033: `bytes_read = reader.ptr - reader.start`.
     let bytes_read = i64::try_from(r.pos).unwrap_or(i64::MAX);
@@ -87,7 +90,7 @@ struct Reader<'a, 'c> {
     refs: RefIndex<'c>,
     builder: ValueBuilder,
     trees: Trees,
-    work: Work,
+    work: Work<'c>,
     /// `config->has_registry` (R13).
     has_registry: bool,
     /// The slot scratch of the dicts being read ([`Dict`]).
@@ -439,41 +442,20 @@ impl Reader<'_, '_> {
     ) -> Result<Out, ReadError> {
         let at = self.at();
         let kids = t.list().children(node);
-        // The entries the read will set: the distinct names of the
-        // children it will not skip (R13: a registry once one is in scope).
-        let mut reg = self.has_registry;
-        let mut reads = |c: &&NodeId| {
-            let registry = t
-                .info(**c)
-                .is_some_and(|i| i.kind == Kind::ManagedReferencesRegistry);
-            if registry && reg {
-                return false;
-            }
-            reg |= registry;
-            true
-        };
-        let (reserve, slots) = if me.dup_names {
-            let width = slot_count(t, node);
-            let mut seen = self.builder.vec::<bool>();
-            seen.reserve_exact(width).map_err(|e| charge_error(at, e))?;
-            for _ in 0..width {
-                seen.push(false).map_err(|e| charge_error(at, e))?;
-            }
-            let mut n = 0;
-            for c in kids.iter().filter(|c| reads(c)) {
-                let slot = t.info(*c).map_or(0, |i| i.slot as usize);
-                if let Some(s) = seen.as_mut_slice().get_mut(slot)
-                    && !*s
-                {
-                    *s = true;
-                    n += 1;
-                }
-            }
-            (n, width)
+        let (reserve, slots) = if me.dup_names || me.has_registry {
+            self.class_size(t, node, me, at)?
         } else {
-            (kids.iter().filter(|c| reads(c)).count(), 0)
+            // Every child is read, under a name of its own.
+            (kids.len(), 0)
         };
-        let mut dict = Dict::new(&self.builder, &mut self.scratch, reserve, slots, at)?;
+        let mut dict = Dict::new(
+            &self.builder,
+            &mut self.scratch,
+            &mut self.work,
+            reserve,
+            slots,
+            at,
+        )?;
         let mut changed = false;
         for c in kids {
             visit();
@@ -497,33 +479,79 @@ impl Reader<'_, '_> {
         Ok(dict.finish(&self.builder, &mut self.scratch, lx))
     }
 
-    /// R14: a `ReferencedObject` (UnityPy TypeTreeHelper.cpp:751-811).
+    /// The entries a class's read will set, the distinct names of the
+    /// children it will not skip (R13: a registry once one is in scope), and
+    /// the slots of its dict, for a class whose children repeat a name or
+    /// hold a registry: passes over its children, each child (and each slot
+    /// a pass clears) a step of the read's work, counted before the pass
+    /// (review round 6: a read that failed at its first child had passed
+    /// over all of them uncounted, so every object over one class of `k`
+    /// children cost `k` more than it counted).
+    fn class_size(
+        &mut self,
+        t: &Arc<Tree>,
+        node: NodeId,
+        me: NodeInfo,
+        at: u64,
+    ) -> Result<(usize, usize), ReadError> {
+        let kids = t.list().children(node);
+        let mut reg = self.has_registry;
+        let mut reads = |c: &&NodeId| {
+            steps(1);
+            let registry = t
+                .info(**c)
+                .is_some_and(|i| i.kind == Kind::ManagedReferencesRegistry);
+            if registry && reg {
+                return false;
+            }
+            reg |= registry;
+            true
+        };
+        if !me.dup_names {
+            self.work.steps(kids.len(), at)?;
+            return Ok((kids.iter().filter(|c| reads(c)).count(), 0));
+        }
+        self.work.steps(kids.len(), at)?;
+        let width = slot_count(t, node);
+        self.work.steps(width.saturating_add(kids.len()), at)?;
+        let mut seen = flags(&self.builder, width, at)?;
+        let mut n = 0;
+        for c in kids.iter().filter(|c| reads(c)) {
+            let slot = t.info(*c).map_or(0, |i| i.slot as usize);
+            if let Some(s) = seen.as_mut_slice().get_mut(slot)
+                && !*s
+            {
+                *s = true;
+                n += 1;
+            }
+        }
+        Ok((n, width))
+    }
+
+    /// R14: a `ReferencedObject` (UnityPy TypeTreeHelper.cpp:751-811). Its
+    /// dict is sized and its `type` found by passes over its children, each
+    /// child (and each slot a pass clears) a step of the read's work,
+    /// counted before the pass.
     fn ref_object(&mut self, t: &Arc<Tree>, lx: ListIx, node: NodeId) -> Result<Out, ReadError> {
         let at = self.at();
         let kids = t.list().children(node);
         // The data child is read only when it resolves: reserved as it comes.
-        let width = slot_count(t, node);
-        let mut seen = self.builder.vec::<bool>();
-        seen.reserve_exact(width).map_err(|e| charge_error(at, e))?;
-        for _ in 0..width {
-            seen.push(false).map_err(|e| charge_error(at, e))?;
-        }
-        let mut reserve = 0;
-        for c in kids {
-            let Some(ci) = t.info(*c) else { continue };
-            if ci.kind == Kind::ReferencedObjectData {
-                continue;
-            }
-            if let Some(s) = seen.as_mut_slice().get_mut(ci.slot as usize)
-                && !*s
-            {
-                *s = true;
-                reserve += 1;
-            }
-        }
-        drop(seen);
+        let is_data = |c| {
+            t.info(c)
+                .is_some_and(|i| i.kind == Kind::ReferencedObjectData)
+        };
+        let (reserve, width) =
+            ref_object_size(&self.builder, &mut self.work, t, node, is_data, at)?;
+        self.work.steps(kids.len(), at)?;
         let type_slot = slot_of(t, node, b"type");
-        let mut dict = Dict::new(&self.builder, &mut self.scratch, reserve, width, at)?;
+        let mut dict = Dict::new(
+            &self.builder,
+            &mut self.scratch,
+            &mut self.work,
+            reserve,
+            width,
+            at,
+        )?;
         // The current `type`'s resolution, made at the first data child that
         // asks and kept until a child sets `type` again: a node of many data
         // children resolves each `type` value once (claude X, review round 2).
@@ -583,23 +611,28 @@ impl Reader<'_, '_> {
         let Some(Value::Dict(m)) = ty else {
             return Err(ref_type(ReadDetail::RefTypeNotFound));
         };
-        let (Some(cls), Some(ns), Some(asm)) = (
-            self.trees.field(m, b"class"),
-            self.trees.field(m, b"ns"),
-            self.trees.field(m, b"asm"),
-        ) else {
-            return Err(ref_type(ReadDetail::RefTypeNotFound));
+        let at = self.at();
+        let mut field = |name: &[u8]| {
+            self.trees
+                .field(m, name, &mut self.work.open)
+                .map_err(|l| limit_refused(at, l))
+        };
+        let (Some(cls), Some(ns), Some(asm)) = (field(b"class")?, field(b"ns")?, field(b"asm")?)
+        else {
+            return Err(self.fail(ReadErrorKind::RefType, ReadDetail::RefTypeNotFound));
         };
         // `:635-642`: `PyUnicode_GET_LENGTH(cls) == 0` skips the data.
         if py_size_field_is_zero(cls) {
             return Ok(None);
         }
         // `:644-670`: the first ref type whose three names compare equal.
-        let at = self.at();
         let found = self
             .refs
-            .find(self.builder.meter(), cls, ns, asm)
-            .map_err(|e| charge_error(at, e))?;
+            .find(self.builder.meter(), &mut self.work.open, cls, ns, asm)
+            .map_err(|e| match e {
+                FindError::Charge(e) => charge_error(at, e),
+                FindError::Work(l) => limit_refused(at, l),
+            })?;
         match found {
             Some(r) => Ok(Some(ref_tree(r, &self.work.limits, at)?)),
             None => Err(self.fail(ReadErrorKind::RefType, ReadDetail::RefTypeNotFound)),

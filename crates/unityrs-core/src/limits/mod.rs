@@ -90,11 +90,14 @@ pub struct Limits {
     /// keeps (`files::bundle`), all of which K directory rows over one span
     /// repeat K times (round 4); and the work of every read and write of an
     /// object's value, whatever its outcome ([`crate::walk::VALUE_WORK`] a
-    /// value built, written or skipped, a primitive run's bytes, a ref type
-    /// a lookup reads: `walk`'s "Work"), which K objects over one span
-    /// repeat K times, a read refused by its own bound keeping nothing (fix
-    /// pass 4's sweep), as K objects search one list of ref types; past the
-    /// allowance a read or a write is refused before it starts. The meter
+    /// value built, written or skipped, a primitive run's bytes, a string's
+    /// bytes a write copies, a ref type a lookup reads,
+    /// [`crate::walk::STEP_WORK`] a step that builds no value: `walk`'s
+    /// "Work"), which K objects over one span repeat K times, a read refused
+    /// by its own bound keeping nothing (fix pass 4's sweep), as K objects
+    /// search one list of ref types; a read or a write counts as it goes and
+    /// is refused once its work takes the open past the allowance, and past
+    /// the allowance one is refused before it starts. The meter
     /// bounds what is
     /// held; this bounds what is done, so an input cannot make its readers
     /// decode or recompute without end while the meter stays empty

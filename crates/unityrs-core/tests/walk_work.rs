@@ -11,9 +11,11 @@
 //! the time growing with the objects). Every object also searches its
 //! file's one list of ref types again, so K objects over R ref types took
 //! K x R steps no value counted (fix pass 5's sweep). Now each read's and
-//! write's work counts, its lookups' included, and once the open's work has
-//! passed its allowance every further read or write of it is refused
-//! before it starts.
+//! write's work counts, its lookups' included, as it goes (review round 6:
+//! it was added when the read ended, so reads on several threads all ran
+//! past the allowance); a read or a write whose work takes the open past
+//! its allowance is refused, and once the open's work has passed it every
+//! further read or write of it is refused before it starts.
 //!
 //!     scripts/dev cargo test -p unityrs-core --test walk_work
 
@@ -26,7 +28,7 @@ use unityrs_core::stream::Endian;
 use unityrs_core::typetree::{NodeList, NodeRow, Tree};
 use unityrs_core::walk::{
     self, ParseError, ReadCtx, ReadDetail, ReadError, ReadErrorKind, ReadOptions, RefTypes,
-    VALUE_WORK, WriteCtx, WriteError, WriteRules,
+    VALUE_WORK, WORK_CHUNK, WriteCtx, WriteError, WriteRules,
 };
 use unityrs_core::{Bytes, FileContext, LimitError, LimitKind, Parsed, RawStr, SerializedFile};
 use unityrs_testkit::blob::NodeSpec;
@@ -224,59 +226,163 @@ fn a_refused_read_or_write_counts_what_it_did() {
     assert_eq!(meter.decoded() - before, 2 * VALUE_WORK + 4 + 2 * 4);
 }
 
-/// Once the open's work has passed its allowance, a read or a write is
-/// refused before it starts (`limit DecodeWork`, kind `other` for a read),
-/// and counts nothing more.
+/// A read or a write whose own work takes the open past its allowance is
+/// refused (`limit DecodeWork`, kind `other` for a read), its work counted;
+/// once the open's work has passed its allowance, a read or a write is
+/// refused before it starts, and counts nothing more. A read or a write
+/// whose work ends within the allowance succeeds.
 #[test]
-fn past_the_opens_work_a_read_or_a_write_is_refused_before_it_starts() {
+fn past_the_opens_work_a_read_or_a_write_is_refused() {
     let t = mixed();
     let data = mixed_bytes();
+    let end = u64::try_from(data.len()).unwrap();
     let read_work = 7 * VALUE_WORK + 3 * 4 + 5;
+    let write_work = 6 * VALUE_WORK + 4 + 3 * 4 + 5;
     for reader in ["boost", "python"] {
         // Room for one read and part of a second: the second is done, and
-        // passes the allowance; the third is refused.
+        // refused at its end; the third is refused before it starts.
         let max = read_work + read_work / 2;
         let meter = work_meter(max);
         let options = ReadOptions::default();
         read(reader, &data, &t, &options, &meter).unwrap();
-        read(reader, &data, &t, &options, &meter).unwrap();
-        assert_eq!(meter.decoded(), 2 * read_work, "{reader}");
-        let r = read(reader, &data, &t, &options, &meter);
-        let want = LimitError {
+        let passed = LimitError {
             kind: LimitKind::DecodeWork,
             value: 2 * read_work,
             max,
         };
-        assert_eq!(
-            r.unwrap_err(),
-            ReadError {
-                kind: ReadErrorKind::Other,
-                at: 0,
-                detail: ReadDetail::Limit(want),
-            },
-            "{reader}"
-        );
+        let refused = |at| ReadError {
+            kind: ReadErrorKind::Other,
+            at,
+            detail: ReadDetail::Limit(passed),
+        };
+        let r = read(reader, &data, &t, &options, &meter);
+        assert_eq!(r.unwrap_err(), refused(end), "{reader}: the second read");
+        assert_eq!(meter.decoded(), 2 * read_work, "{reader}");
+        let r = read(reader, &data, &t, &options, &meter);
+        assert_eq!(r.unwrap_err(), refused(0), "{reader}: the third read");
         assert_eq!(
             meter.decoded(),
             2 * read_work,
             "{reader}: a refusal counts nothing"
         );
     }
-    let meter = work_meter(read_work);
+    let max = read_work + write_work;
+    let meter = work_meter(max);
     let p = read("boost", &data, &t, &ReadOptions::default(), &meter).unwrap();
     let mut out = DecodeBuf::new(&meter, 0, u64::MAX, LimitKind::InputMemory).unwrap();
-    // The read used the allowance up exactly: within it.
+    // The read and the write use the allowance up exactly: within it.
     write(&p, &t, &Limits::default(), &mut out).unwrap();
-    let after = meter.decoded();
-    assert!(after > read_work);
+    assert_eq!(meter.decoded(), max);
+    let passed = |value| move |w: &Result<(), WriteError>| matches!(w, Err(WriteError::Limit(l)) if decode_work(l) && l.value == value);
     out.truncate(0);
     let w = write(&p, &t, &Limits::default(), &mut out);
-    assert!(
-        matches!(&w, Err(WriteError::Limit(l)) if decode_work(l) && l.value == after),
-        "{w:?}"
-    );
+    assert!(passed(max + write_work)(&w), "the second write: {w:?}");
+    assert_eq!(meter.decoded(), max + write_work);
+    out.truncate(0);
+    let w = write(&p, &t, &Limits::default(), &mut out);
+    assert!(passed(max + write_work)(&w), "the third write: {w:?}");
     assert!(out.as_slice().is_empty(), "a refused write writes nothing");
-    assert_eq!(meter.decoded(), after, "a refusal counts nothing");
+    assert_eq!(
+        meter.decoded(),
+        max + write_work,
+        "a refusal counts nothing"
+    );
+}
+
+/// `Base { vector v { Array { int size; S data { int x } } } }`: each of
+/// `n` elements a class of one `int`, a value each in both readers.
+fn structs() -> Arc<Tree> {
+    tree(&[
+        (0, "Base", "Base"),
+        (1, "vector", "v"),
+        (2, "Array", "Array"),
+        (3, "int", "size"),
+        (3, "S", "data"),
+        (4, "int", "x"),
+    ])
+}
+
+fn structs_bytes(n: usize) -> Vec<u8> {
+    let mut d = i32::try_from(n).unwrap().to_le_bytes().to_vec();
+    for i in 0..n {
+        d.extend(i32::try_from(i).unwrap().to_le_bytes());
+    }
+    d
+}
+
+/// Review round 6 (codex B): two reads of one open, on two threads, each
+/// passed the start's check, since a read added its work to the meter only
+/// when it ended, and both ran to their end past the allowance. Each now
+/// counts its work as it goes, a chunk at a time, and is refused once the
+/// open's work has passed its allowance: of two reads whose work the
+/// allowance holds once but not twice, at most one succeeds and the other
+/// is refused, however the two interleave; and so for two writes. Each
+/// read's work is several chunks ([`WORK_CHUNK`]), so a refusal can come in
+/// its middle.
+#[test]
+fn two_reads_or_writes_on_one_meter_pass_its_allowance_once() {
+    const N: usize = 1 << 13;
+    let t = structs();
+    let data = structs_bytes(N);
+    let options = ReadOptions::default();
+    let one = |meter: &Arc<Meter>| {
+        let p = read("boost", &data, &t, &options, meter).unwrap();
+        let before = meter.decoded();
+        let mut out = DecodeBuf::new(meter, 0, u64::MAX, LimitKind::InputMemory).unwrap();
+        write(&p, &t, &Limits::default(), &mut out).unwrap();
+        (p, before, meter.decoded() - before)
+    };
+    let (p, read_work, write_work) = one(&work_meter(u64::MAX));
+    assert!(read_work > 4 * WORK_CHUNK && write_work > 2 * WORK_CHUNK);
+    let both = |work: u64, go: &(dyn Fn(&Arc<Meter>) -> Result<(), LimitError> + Sync)| {
+        let max = work + work / 2;
+        let meter = work_meter(max);
+        let gate = std::sync::Barrier::new(2);
+        let outcomes = std::thread::scope(|s| {
+            let run = || {
+                gate.wait();
+                go(&meter)
+            };
+            let a = s.spawn(run);
+            let b = s.spawn(run);
+            [a.join().unwrap(), b.join().unwrap()]
+        });
+        let ok = outcomes.iter().filter(|o| o.is_ok()).count();
+        assert!(ok <= 1, "both succeeded: {outcomes:?}");
+        for o in &outcomes {
+            if let Err(l) = o {
+                assert!(decode_work(l) && l.value > l.max, "{l:?}");
+            }
+        }
+        // Each stops within a chunk of the allowance: neither runs on to
+        // its end past it.
+        let most = max + 2 * WORK_CHUNK;
+        assert!(meter.decoded() <= most, "{} > {most}", meter.decoded());
+    };
+    for reader in ["boost", "python"] {
+        let w = if reader == "boost" {
+            read_work
+        } else {
+            let m = work_meter(u64::MAX);
+            read(reader, &data, &t, &options, &m).unwrap();
+            m.decoded()
+        };
+        both(w, &|meter| {
+            read(reader, &data, &t, &options, meter)
+                .map(drop)
+                .map_err(|e| match e.detail {
+                    ReadDetail::Limit(l) => l,
+                    d => panic!("{reader}: {d:?}"),
+                })
+        });
+    }
+    both(write_work, &|meter| {
+        let mut out = DecodeBuf::new(meter, 0, u64::MAX, LimitKind::InputMemory).unwrap();
+        write(&p, &t, &Limits::default(), &mut out).map_err(|e| match e {
+            WriteError::Limit(l) => l,
+            e => panic!("{e:?}"),
+        })
+    });
 }
 
 /// Fix pass 4's sweep, scaled down: `K` objects of a SerializedFile over one
@@ -285,7 +391,8 @@ fn past_the_opens_work_a_read_or_a_write_is_refused_before_it_starts() {
 /// for the pure-Python path). Each read is refused after the same number of
 /// values, and counts them; once the open's work has passed its allowance,
 /// every later object is refused before its read starts, so the input's
-/// reads together stop at its allowance and one read past it, whatever `K`.
+/// reads together stop within a chunk of its allowance (here one read, less
+/// than a chunk, whose own refusal comes first), whatever `K`.
 #[test]
 fn objects_over_one_span_stop_at_the_opens_work() {
     const K: usize = 64;
@@ -477,8 +584,9 @@ fn a_lookup_counts_the_ref_types_it_reads() {
 }
 
 /// Objects that each search one long list of ref types: each read counts
-/// its scan, so the open's reads together stop at its allowance and one
-/// read past it, whatever the number of objects.
+/// its scan as it goes, so the read that takes the open past its allowance
+/// is refused within a chunk ([`WORK_CHUNK`]) of it, and every later read
+/// before it starts, whatever the number of objects.
 #[test]
 fn objects_over_many_ref_types_stop_at_the_opens_work() {
     const K: usize = 64;
@@ -497,20 +605,26 @@ fn objects_over_many_ref_types_stop_at_the_opens_work() {
         let outcomes: Vec<_> = (0..K)
             .map(|_| read_with(reader, &data, &t, &refs, &options, &meter))
             .collect();
-        assert_eq!(meter.decoded(), 5 * per_read, "{reader}: the reads stop");
+        let done = meter.decoded();
+        assert!(
+            done > max && done <= max + WORK_CHUNK,
+            "{reader}: the reads stop: {done}"
+        );
         for (i, o) in outcomes.iter().enumerate() {
-            if i < 5 {
+            if i < 4 {
                 assert!(o.is_ok(), "{reader}: object {i}: {o:?}");
+                continue;
+            }
+            let ReadDetail::Limit(l) = o.as_ref().unwrap_err().detail else {
+                panic!("{reader}: object {i}: {o:?}");
+            };
+            assert_eq!((l.kind, l.max), (LimitKind::DecodeWork, max));
+            if i == 4 {
+                // Refused in its scan, by its chunk that would pass the
+                // allowance: the steps before it are counted.
+                assert!(l.value > done && l.value <= done + WORK_CHUNK, "{l:?}");
             } else {
-                assert_eq!(
-                    o.as_ref().unwrap_err().detail,
-                    ReadDetail::Limit(LimitError {
-                        kind: LimitKind::DecodeWork,
-                        value: 5 * per_read,
-                        max,
-                    }),
-                    "{reader}: object {i}"
-                );
+                assert_eq!(l.value, done, "{reader}: object {i}");
             }
         }
     }

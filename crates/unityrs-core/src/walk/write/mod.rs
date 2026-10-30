@@ -38,9 +38,9 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::dict::{RefIndex, steps, visit};
+use super::dict::{FindError, RefIndex, steps, visit};
 use super::{
-    RefTypes, VALUE_WORK, WriteCtx, WriteError, WriteRules, py_size_field_is_zero, work_left,
+    OpenWork, RefTypes, VALUE_WORK, WriteCtx, WriteError, WriteRules, py_size_field_is_zero,
 };
 use crate::budget::DecodeBuf;
 use crate::error::{LimitError, LimitKind};
@@ -60,18 +60,22 @@ use pyobj::{CLEAN_MAX, Obj, chars, clean_name, narrow};
 /// on the object's input's meter that charges before it grows (a value read
 /// with a negative length can name the same bytes many times, so the output
 /// can be far larger than the value; plan section 3.15). Its work is the
-/// open's of `out`'s meter, counted whatever the outcome: [`VALUE_WORK`] for
-/// each value it writes or child it skips, but a primitive, which counts the
-/// bytes it writes, as a read counts a primitive run's; once the open's work
-/// has passed its allowance, a write is refused before it starts (the module
-/// docs of [`super`], "Work").
+/// open's of `out`'s meter, counted as it goes whatever the outcome
+/// (`OpenWork`): [`VALUE_WORK`] for each value it writes or child it
+/// skips, but a primitive, which counts the bytes it writes, as a read counts
+/// a primitive run's; and each step of finding a child's entry that builds
+/// no value ([`super::STEP_WORK`], and the bytes of a name it compares or
+/// hashes). A write is refused before it starts once the open's work has
+/// passed its allowance, and fails once its own work takes the open past
+/// it (the module docs of [`super`], "Work").
 pub fn write(
     parsed: &Parsed,
     tree: &Tree,
     ctx: &WriteCtx<'_>,
     out: &mut DecodeBuf,
 ) -> Result<(), WriteError> {
-    work_left(out.meter()).map_err(WriteError::Limit)?;
+    let meter = out.meter().clone();
+    let open = OpenWork::start(&meter).map_err(WriteError::Limit)?;
     let base = out.len();
     let mut w = Writer {
         parsed,
@@ -85,17 +89,16 @@ pub fn write(
         limits: *ctx.limits,
         depth: 0,
         values: 0,
-        prims: 0,
-        prim_bytes: 0,
+        open,
         has_registry: false,
         shared: 0,
         kept: KeptTables::new(parsed.charge().meter()),
     };
     let written = w.value(tree, tree.root(), Obj::V(parsed.value()));
-    let done = w.work();
+    let ended = w.open.finish();
     drop(w);
-    out.meter().add_work(done);
-    written
+    written?;
+    ended.map_err(WriteError::Limit)
 }
 
 struct Writer<'a, 'o> {
@@ -115,10 +118,8 @@ struct Writer<'a, 'o> {
     /// Values written and children skipped, against
     /// `max_values_per_object` ([`Self::count`]).
     values: u64,
-    /// Of those, the primitives written ([`Self::prim`]), and their bytes:
-    /// the open's work ([`Self::work`]).
-    prims: u64,
-    prim_bytes: u64,
+    /// The open's work, counted as the write goes.
+    open: OpenWork<'o>,
     has_registry: bool,
     /// How many classes whose children repeat a name (`dup_names`) are
     /// being written: inside one, a dict can be written once a sibling,
@@ -159,6 +160,38 @@ impl<'a> Writer<'a, '_> {
             .map_err(WriteError::Charge)
     }
 
+    /// Counts a `str`'s bytes as the open's work before a pass over them
+    /// finds its characters (UTF-8, each byte of no character one escape),
+    /// to measure or index it by character: a repeated name hands one
+    /// string to any number of `pair` or array siblings, each of which made
+    /// that pass uncounted, in every write (review round 6's sweep).
+    fn str_work(&mut self, o: Obj<'_>) -> Result<(), WriteError> {
+        let n = match o {
+            Obj::V(Value::Str(s)) => s.len(),
+            Obj::Str(s) => s.len(),
+            _ => return Ok(()),
+        };
+        let n = u64::try_from(n).unwrap_or(u64::MAX);
+        self.open.add(n).map_err(WriteError::Limit)
+    }
+
+    /// `o[i]` ([`Self::item`]), a `str`'s pass counted first.
+    fn index(&mut self, o: Obj<'a>, i: usize) -> Result<Option<Obj<'a>>, WriteError> {
+        self.str_work(o)?;
+        Ok(Self::item(o, i))
+    }
+
+    /// Puts a string's or a byte array's bytes, each a byte of the open's
+    /// work, counted first: a read holds them as a slice of its input, in
+    /// one step, and a write copies them, so K writes of objects over one
+    /// long string copied it K times on [`VALUE_WORK`] each (review round
+    /// 6's sweep).
+    fn put_counted(&mut self, bytes: &[u8]) -> Result<(), WriteError> {
+        let n = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        self.open.add(n).map_err(WriteError::Limit)?;
+        self.put(bytes)
+    }
+
     /// `align_stream` (`EndianBinaryWriter.py:94-97`): zeros to a multiple
     /// of 4 from the object's start.
     fn align(&mut self) -> Result<(), WriteError> {
@@ -182,16 +215,23 @@ impl<'a> Writer<'a, '_> {
     /// `d[name]` on a dict value, by key string: inside a class whose
     /// children repeat a name, by the dict's kept table (the dict may be
     /// written once a sibling); else by a scan, which each write of a
-    /// `ReferencedObject` makes once ([`Self::ref_object`]).
+    /// `ReferencedObject` makes once ([`Self::ref_object`]). Each entry the
+    /// scan passes is a step of the open's work, counted first.
     fn field(&mut self, m: &'a Map, name: &[u8]) -> Result<Option<&'a Value>, WriteError> {
         let pos = if self.shared > 0 {
             steps(1);
-            self.kept.position(self.parsed, m, name)?
+            self.kept.position(self.parsed, m, name, &mut self.open)?
         } else {
-            self.parsed.entries(m).position(|(n, _)| {
+            let mut found = None;
+            for (i, (n, _)) in self.parsed.entries(m).enumerate() {
                 steps(1);
-                n == name
-            })
+                self.open.steps(1).map_err(WriteError::Limit)?;
+                if n == name {
+                    found = Some(i);
+                    break;
+                }
+            }
+            found
         };
         Ok(pos.and_then(|p| m.entries().get(p)).map(|(_, v)| v))
     }
@@ -220,37 +260,39 @@ impl<'a> Writer<'a, '_> {
         r
     }
 
-    /// The kept tables, inside a class whose children repeat a name.
-    fn kept(&mut self) -> Option<&mut KeptTables<'a>> {
-        (self.shared > 0).then_some(&mut self.kept)
+    /// `child`'s entry by `find`, with the kept tables inside a class whose
+    /// children repeat a name ([`Lookup::get`]).
+    fn find(
+        &mut self,
+        find: &mut Lookup<'a>,
+        tree: &Tree,
+        child: NodeId,
+    ) -> Result<Option<&'a Value>, WriteError> {
+        let kept = (self.shared > 0).then_some(&mut self.kept);
+        find.get(self.parsed, tree, child, kept, &mut self.open)
     }
 
     fn value(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
-        self.count()?;
+        self.count(Self::cost(tree, node))?;
         self.frame(|w| w.value_inner(tree, node, o))
     }
 
-    /// The open's work this write did ([`write`]): [`VALUE_WORK`] for each
-    /// value counted ([`Self::count`]; a refused count is not one), but a
-    /// primitive written, which counts its bytes; and its ref types'
-    /// lookups ([`RefIndex::work`]).
-    fn work(&self) -> u64 {
-        let counted = self.values.min(self.limits.max_values_per_object);
-        counted
-            .saturating_sub(self.prims)
-            .saturating_mul(VALUE_WORK)
-            .saturating_add(self.prim_bytes)
-            .saturating_add(self.refs.work())
+    /// The open's work of writing `node`'s value ([`write`]): its bytes for
+    /// a primitive, [`VALUE_WORK`] for any other value.
+    fn cost(tree: &Tree, node: NodeId) -> u64 {
+        tree.py_kind(node).prim_size().map_or(VALUE_WORK, u64::from)
     }
 
-    /// Counts one value written, or one child skipped, against
+    /// Counts one value written (its open's work `work`, about to be done),
+    /// or one child skipped ([`VALUE_WORK`]), against
     /// `max_values_per_object`, the bound a read counts its values against
-    /// (plan 3.10, "Bounds"; 3.11). A write of a value through the tree it
-    /// was read with counts no more than its read did, unless the tree
-    /// repeats a name: then one value is written once for each child of the
-    /// name, which no output bound stops when its node writes nothing (claude
-    /// B, review round 3: `K` × `N` values into `4K + 4N` bytes).
-    fn count(&mut self) -> Result<(), WriteError> {
+    /// (plan 3.10, "Bounds"; 3.11), and, unless that refuses it, toward the
+    /// open's work. A write of a value through the tree it was read with
+    /// counts no more than its read did, unless the tree repeats a name:
+    /// then one value is written once for each child of the name, which no
+    /// output bound stops when its node writes nothing (claude B, review
+    /// round 3: `K` × `N` values into `4K + 4N` bytes).
+    fn count(&mut self, work: u64) -> Result<(), WriteError> {
         self.values = self.values.saturating_add(1);
         let max = self.limits.max_values_per_object;
         if self.values > max {
@@ -260,7 +302,7 @@ impl<'a> Writer<'a, '_> {
                 max,
             }));
         }
-        Ok(())
+        self.open.add(work).map_err(WriteError::Limit)
     }
 
     /// One frame UnityPy's `write_value` pushes: a `write_value` call, or the
@@ -305,7 +347,7 @@ impl<'a> Writer<'a, '_> {
             // `write_aligned_string` (`EndianBinaryWriter.py:88-92`), W3.
             let s = Self::as_str(o).ok_or_else(|| Self::mismatch(tree, node, "str"))?;
             self.write_int(s.len(), tree, node)?;
-            self.put(s)?;
+            self.put_counted(s)?;
             self.align()?;
         } else if kind == Kind::Bytes {
             // `write_byte_array` (`:110-112`), W4.
@@ -313,11 +355,12 @@ impl<'a> Writer<'a, '_> {
                 return Err(Self::mismatch(tree, node, "bytes"));
             };
             self.write_int(b.len(), tree, node)?;
-            self.put(b)?;
+            self.put_counted(b)?;
         } else if kind == Kind::Pair {
             // `:419-421`: `value[0]`, `value[1]` through the first two children.
             for i in 0..2 {
-                let item = Self::item(o, i)
+                let item = self
+                    .index(o, i)?
                     .ok_or_else(|| Self::mismatch(tree, node, "a sequence of two"))?;
                 let child = kids
                     .get(i)
@@ -334,6 +377,7 @@ impl<'a> Writer<'a, '_> {
         {
             // `:429-435`, W5.
             align |= tree.info(array).is_some_and(|i| i.align);
+            self.str_work(o)?;
             let n = Self::len(o).ok_or_else(|| Self::mismatch(tree, node, "a sized iterable"))?;
             self.write_int(n, tree, node)?;
             let elem = tree
@@ -367,6 +411,7 @@ impl<'a> Writer<'a, '_> {
                 w.value(tree, elem, item)
             }
         };
+        self.str_work(o)?;
         match o {
             Obj::V(Value::Str(s)) => {
                 for c in chars(s.as_bytes()) {
@@ -416,15 +461,16 @@ impl<'a> Writer<'a, '_> {
     /// An element of a run under [`WriteRules::MirrorReader`]: its value
     /// without its own trailing alignment.
     fn value_unaligned(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
-        self.count()?;
+        self.count(Self::cost(tree, node))?;
         let kind = tree.py_kind(node);
         if kind.prim_size().is_some() {
             return self.prim(tree, node, kind, o);
         }
         let kids = tree.list().children(node);
         for i in 0..2 {
-            let item =
-                Self::item(o, i).ok_or_else(|| Self::mismatch(tree, node, "a sequence of two"))?;
+            let item = self
+                .index(o, i)?
+                .ok_or_else(|| Self::mismatch(tree, node, "a sequence of two"))?;
             let child = kids
                 .get(i)
                 .copied()
@@ -497,11 +543,9 @@ impl<'a> Writer<'a, '_> {
             _ => int!(u64),
         };
         let (bytes, _) = buf.split_at(n.min(8));
-        self.put(bytes)?;
-        // Every caller counted this value first ([`Self::count`]).
-        self.prims = self.prims.saturating_add(1);
-        self.prim_bytes = self.prim_bytes.saturating_add(n as u64);
-        Ok(())
+        // Every caller counted this value first, its bytes as its work
+        // ([`Self::cost`]).
+        self.put(bytes)
     }
 
     /// The class branch (`:437-455`), W6: `value[child.m_Name]` for a dict
@@ -518,7 +562,7 @@ impl<'a> Writer<'a, '_> {
             visit();
             if tree.py_kind(*c) == Kind::ManagedReferencesRegistry {
                 if self.has_registry {
-                    self.count()?;
+                    self.count(VALUE_WORK)?;
                     continue;
                 }
                 self.has_registry = true;
@@ -554,19 +598,19 @@ impl<'a> Writer<'a, '_> {
     #[inline(never)]
     fn class_dict(&mut self, tree: &Tree, node: NodeId, m: &'a Map) -> Result<(), WriteError> {
         let outer = self.has_registry;
-        let mut find = Lookup::new(self.parsed, tree, node, m)?;
+        let mut find = Lookup::new(self.parsed, tree, node, m, &mut self.open)?;
         self.children(tree, node, |w| {
             for c in tree.list().children(node) {
                 visit();
                 if tree.py_kind(*c) == Kind::ManagedReferencesRegistry {
                     if w.has_registry {
-                        w.count()?;
+                        w.count(VALUE_WORK)?;
                         continue;
                     }
                     w.has_registry = true;
                 }
-                let v = find
-                    .get(w.parsed, tree, *c, w.kept())?
+                let v = w
+                    .find(&mut find, tree, *c)?
                     .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
                 w.value(tree, *c, Obj::V(v))?;
             }
@@ -589,14 +633,14 @@ impl<'a> Writer<'a, '_> {
         let Obj::V(Value::Dict(m)) = o else {
             return Err(Self::mismatch(tree, node, "dict"));
         };
-        let mut find = Lookup::new(self.parsed, tree, node, m)?;
+        let mut find = Lookup::new(self.parsed, tree, node, m, &mut self.open)?;
         let mut data: Option<Data> = None;
         self.children(tree, node, |w| {
             for c in kids {
                 visit();
                 if tree.py_kind(*c) != Kind::ReferencedObjectData {
-                    let v = find
-                        .get(w.parsed, tree, *c, w.kept())?
+                    let v = w
+                        .find(&mut find, tree, *c)?
                         .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
                     w.value(tree, *c, Obj::V(v))?;
                     continue;
@@ -615,12 +659,12 @@ impl<'a> Writer<'a, '_> {
                     data.insert(d).clone()
                 };
                 let Data::Through(ref_tree) = through else {
-                    w.count()?;
+                    w.count(VALUE_WORK)?;
                     continue;
                 };
                 // `value[child.m_Name]`, then `write_value(..., None)` raises.
-                let v = find
-                    .get(w.parsed, tree, *c, w.kept())?
+                let v = w
+                    .find(&mut find, tree, *c)?
                     .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
                 let Some(rt) = ref_tree else {
                     return Err(Self::mismatch(tree, *c, "a ref type with a tree"));
@@ -669,8 +713,11 @@ impl<'a> Writer<'a, '_> {
     ) -> Result<Option<Arc<Tree>>, WriteError> {
         let r = self
             .refs
-            .find(self.parsed.charge().meter(), cls, ns, asm)
-            .map_err(WriteError::Charge)?
+            .find(self.parsed.charge().meter(), &mut self.open, cls, ns, asm)
+            .map_err(|e| match e {
+                FindError::Charge(e) => WriteError::Charge(e),
+                FindError::Work(l) => WriteError::Limit(l),
+            })?
             .ok_or(WriteError::RefTypeNotFound)?;
         r.tree(&self.limits).transpose().map_err(Self::tree_error)
     }
@@ -704,3 +751,5 @@ impl<'a> Writer<'a, '_> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod work_tests;

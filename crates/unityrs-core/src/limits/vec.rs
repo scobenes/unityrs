@@ -188,6 +188,18 @@ impl<T> MeteredVec<T> {
         grow_charged(&mut self.vec, &mut self.charge, need, usize::MAX)
     }
 
+    /// Room for `additional` more, growing geometrically but never past
+    /// `most` elements in all (unless `additional` needs more); charged
+    /// first.
+    pub(crate) fn reserve_within(
+        &mut self,
+        additional: usize,
+        most: usize,
+    ) -> Result<(), ChargeError> {
+        let need = self.vec.len().saturating_add(additional);
+        grow_charged(&mut self.vec, &mut self.charge, need, most.max(need))
+    }
+
     /// Room for exactly `additional` more; charged first.
     pub fn reserve_exact(&mut self, additional: usize) -> Result<(), ChargeError> {
         let need = self.vec.len().saturating_add(additional);

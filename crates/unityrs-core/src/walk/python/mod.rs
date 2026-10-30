@@ -60,10 +60,13 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::dict::{Dict, RefIndex, RefNode, Trees, ref_tree, slot_count, slot_of, visit};
+use super::dict::{
+    Dict, FindError, RefIndex, RefNode, Trees, flags, ref_object_size, ref_tree, slot_count,
+    slot_of, steps, visit,
+};
 use super::{
     FloatMode, Out, ReadCtx, ReadDetail, ReadError, ReadErrorKind, RefTypes, Work, charge_error,
-    f32_bits, int, uint,
+    f32_bits, int, limit_refused, uint,
 };
 use crate::limits::MeteredVec;
 use crate::raw::RawStr;
@@ -102,10 +105,10 @@ pub fn read(
         scratch,
     };
     let value = r.value(tree, 0, tree.root());
-    r.work.finish(ctx.meter);
-    ctx.meter.add_work(r.refs.work());
-    let value = value?;
     let at = r.at();
+    let ended = r.work.finish(at);
+    let value = value?;
+    ended?;
     let built = value.into_built(&r.builder, at)?;
     // UnityPy TypeTreeHelper.py:153: `bytes_read = reader.Position - pos`.
     let read = r.pos.saturating_sub(start);
@@ -130,7 +133,7 @@ struct Reader<'a, 'c> {
     refs: RefIndex<'c>,
     builder: ValueBuilder,
     trees: Trees,
-    work: Work,
+    work: Work<'c>,
     /// `config.has_registry`.
     has_registry: bool,
     scratch: MeteredVec<u32>,
@@ -158,6 +161,8 @@ enum Py {
     Index(ReadDetail),
     /// A `TypeError` or `KeyError`/`AttributeError` (kind `other`).
     Other(&'static str),
+    /// No Python exception: the open's work passed its allowance.
+    Limit(crate::error::LimitError),
 }
 
 impl Reader<'_, '_> {
@@ -179,6 +184,7 @@ impl Reader<'_, '_> {
             Py::Struct(need) => self.fail(ReadErrorKind::Other, ReadDetail::Eof { need }),
             Py::Index(d) => self.fail(ReadErrorKind::Other, d),
             Py::Other(m) => self.fail(ReadErrorKind::Other, ReadDetail::Python(m)),
+            Py::Limit(l) => limit_refused(self.at(), l),
         }
     }
 
@@ -410,41 +416,22 @@ impl Reader<'_, '_> {
         let at = self.at();
         let kids = t.list().children(node);
         let is_registry = |c: NodeId| registry && t.py_kind(c) == Kind::ManagedReferencesRegistry;
-        // The entries it will set: the distinct names of the children it reads.
-        let mut reg = self.has_registry;
-        let width = slot_count(t, node);
-        let dup = t.info(node).is_some_and(|i| i.dup_names);
-        let mut seen = self.builder.vec::<bool>();
-        if dup {
-            seen.reserve_exact(width).map_err(|e| charge_error(at, e))?;
-            for _ in 0..width {
-                seen.push(false).map_err(|e| charge_error(at, e))?;
-            }
-        }
-        let mut reserve = 0;
-        for c in kids {
-            if is_registry(*c) {
-                if reg {
-                    continue;
-                }
-                reg = true;
-            }
-            let slot = t.info(*c).map_or(0, |i| i.slot as usize);
-            if !dup {
-                reserve += 1;
-            } else if let Some(s) = seen.as_mut_slice().get_mut(slot)
-                && !*s
-            {
-                *s = true;
-                reserve += 1;
-            }
-        }
-        drop(seen);
+        let info = t.info(node);
+        let dup = info.is_some_and(|i| i.dup_names);
+        // A registry by `py_kind` is one by the compiled kind as well, so a
+        // class with none of the latter has none of the former.
+        let (reserve, width) = if dup || (registry && info.is_none_or(|i| i.has_registry)) {
+            self.dict_size(t, node, registry, dup, at)?
+        } else {
+            // Every child is read, under a name of its own.
+            (kids.len(), 0)
+        };
         let mut d = Dict::new(
             &self.builder,
             &mut self.scratch,
+            &mut self.work,
             reserve,
-            if dup { width } else { 0 },
+            width,
             at,
         )?;
         let outer = self.has_registry;
@@ -469,9 +456,58 @@ impl Reader<'_, '_> {
         Ok(d.finish(&self.builder, &mut self.scratch, lx))
     }
 
+    /// The entries a dict's read will set, the distinct names of the
+    /// children it reads, and its slots (0 when no name repeats), for a
+    /// class whose children repeat a name or hold a registry: passes over
+    /// its children, each child (and each slot a pass clears) a step of the
+    /// read's work, counted before the pass (review round 6, as UnityPyBoost's
+    /// reader's `class_size`).
+    fn dict_size(
+        &mut self,
+        t: &Arc<Tree>,
+        node: NodeId,
+        registry: bool,
+        dup: bool,
+        at: u64,
+    ) -> Result<(usize, usize), ReadError> {
+        let kids = t.list().children(node);
+        let is_registry = |c: NodeId| registry && t.py_kind(c) == Kind::ManagedReferencesRegistry;
+        let mut reg = self.has_registry;
+        let width = if dup {
+            self.work.steps(kids.len(), at)?;
+            slot_count(t, node)
+        } else {
+            0
+        };
+        self.work.steps(width.saturating_add(kids.len()), at)?;
+        let mut seen = flags(&self.builder, width, at)?;
+        let mut reserve = 0;
+        for c in kids {
+            steps(1);
+            if is_registry(*c) {
+                if reg {
+                    continue;
+                }
+                reg = true;
+            }
+            let slot = t.info(*c).map_or(0, |i| i.slot as usize);
+            if !dup {
+                reserve += 1;
+            } else if let Some(s) = seen.as_mut_slice().get_mut(slot)
+                && !*s
+            {
+                *s = true;
+                reserve += 1;
+            }
+        }
+        Ok((reserve, width))
+    }
+
     /// A `ReferencedObject` (`:197-206`), or an aligned array's element
     /// (`:294-304`, `in_array`), where a ref type with no node is read as
-    /// `read_value(None)` and raises.
+    /// `read_value(None)` and raises. Its dict's slots are counted and its
+    /// `type` found by passes over its children, each child (and each slot
+    /// cleared) a step of the read's work, counted before the pass.
     fn ref_object(
         &mut self,
         t: &Arc<Tree>,
@@ -481,9 +517,21 @@ impl Reader<'_, '_> {
     ) -> Result<Out, ReadError> {
         let at = self.at();
         let kids = t.list().children(node);
-        let width = slot_count(t, node);
+        // The data child is read only when it resolves, as in the Boost
+        // reader, so it is reserved as it comes.
+        let is_data = |c| t.py_kind(c) == Kind::ReferencedObjectData;
+        let (reserve, width) =
+            ref_object_size(&self.builder, &mut self.work, t, node, is_data, at)?;
+        self.work.steps(kids.len(), at)?;
         let type_slot = slot_of(t, node, b"type");
-        let mut d = Dict::new(&self.builder, &mut self.scratch, 0, width, at)?;
+        let mut d = Dict::new(
+            &self.builder,
+            &mut self.scratch,
+            &mut self.work,
+            reserve,
+            width,
+            at,
+        )?;
         // The current `type`'s resolution, kept until a child sets `type`
         // again, as the Boost reader keeps it.
         let mut resolved: Option<Option<RefNode>> = None;
@@ -539,25 +587,40 @@ impl Reader<'_, '_> {
         let Value::Dict(m) = ty else {
             return Err(self.raise(Py::Other("AttributeError: no attribute 'class'")));
         };
-        let field = |name: &'static [u8], msg: &'static str| {
-            self.trees
-                .field(m, name)
-                .ok_or_else(|| self.raise(Py::Other(msg)))
+        let at = self.at();
+        let mut field = |name: &'static [u8], msg: &'static str| match self.trees.field(
+            m,
+            name,
+            &mut self.work.open,
+        ) {
+            Ok(Some(v)) => Ok(v),
+            Ok(None) => Err(Py::Other(msg)),
+            Err(l) => Err(Py::Limit(l)),
         };
-        let cls = field(b"class", "KeyError: 'class'")?;
-        let ns = field(b"ns", "KeyError: 'ns'")?;
-        let asm = field(b"asm", "KeyError: 'asm'")?;
+        let fields = (|| {
+            Ok((
+                field(b"class", "KeyError: 'class'")?,
+                field(b"ns", "KeyError: 'ns'")?,
+                field(b"asm", "KeyError: 'asm'")?,
+            ))
+        })();
+        let (cls, ns, asm) = fields.map_err(|e| match e {
+            Py::Limit(l) => limit_refused(at, l),
+            e => self.raise(e),
+        })?;
         if !matches!(self.ref_types, RefTypes::List(l) if !l.is_empty()) {
             return Err(self.fail(ReadErrorKind::RefType, ReadDetail::NoRefTypes));
         }
         if matches!(cls, Value::Str(s) if s.is_empty()) {
             return Ok(None);
         }
-        let at = self.at();
         let found = self
             .refs
-            .find(self.builder.meter(), cls, ns, asm)
-            .map_err(|e| charge_error(at, e))?;
+            .find(self.builder.meter(), &mut self.work.open, cls, ns, asm)
+            .map_err(|e| match e {
+                FindError::Charge(e) => charge_error(at, e),
+                FindError::Work(l) => limit_refused(at, l),
+            })?;
         match found {
             Some(r) => Ok(Some(ref_tree(r, &self.work.limits, at)?)),
             None => Err(self.fail(ReadErrorKind::RefType, ReadDetail::RefTypeNotFound)),

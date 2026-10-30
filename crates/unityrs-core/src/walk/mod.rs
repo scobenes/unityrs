@@ -17,24 +17,44 @@
 //! refused charge is [`ReadDetail::Charge`] (kind `other`). The writer's
 //! output grows the same way.
 //!
-//! **Work.** Every read and every write counts what it did toward its
+//! **Work.** Every read and every write counts what it does toward its
 //! open's work ([`crate::limits::Limits::max_decode_work`], the bound every
 //! other kind of the open's work counts toward), whatever its outcome:
 //! [`VALUE_WORK`] for each value it builds, writes or skips, and for each
 //! element of a primitive run a read holds as a run, or each primitive a
-//! write writes, its bytes (`Work`); and its ref-type lookups, a ref
-//! type a lookup compares or indexes, or a probe, [`VALUE_WORK`] and the
-//! name bytes it reads (`dict::RefIndex::work`). Objects may share their
-//! bytes, and a read refused by a bound of its own
-//! (`max_zero_size_elements`, `max_values_per_object`) keeps nothing, so K
-//! objects over the same bytes repeated it K times with no bound on the
-//! input (fix pass 4's sweep: every object of a small file over one vector
-//! of 2^22 empty elements, each refused after 2^20); and every object
-//! searches its file's one list of ref types again, so K objects over R
-//! ref types took K x R steps (fix pass 5's sweep). A read or a write
-//! starts only while the open's work is within its allowance, and is
-//! otherwise refused with [`LimitKind::DecodeWork`] (kind `other`)
-//! (`tests/walk_work.rs`).
+//! write writes, its bytes (`Work`); each byte of a string a write copies,
+//! or passes over to find its characters; [`STEP_WORK`] for each step that
+//! builds no value: a pass over a class's or a `ReferencedObject`'s children
+//! that sizes its dict, finds a name's slot or clears its slots, an entry a
+//! lookup by name passes, a name a writer's table indexes or probes (and
+//! the bytes of a name it compares or hashes); and its ref-type lookups, a
+//! ref type a lookup compares or indexes, or a probe, [`VALUE_WORK`] and the
+//! name bytes it reads (`dict::RefIndex`). Objects may share their bytes,
+//! and a read refused by a bound of its own (`max_zero_size_elements`,
+//! `max_values_per_object`) keeps nothing, so K objects over the same bytes
+//! repeated it K times with no bound on the input (fix pass 4's sweep: every
+//! object of a small file over one vector of 2^22 empty elements, each
+//! refused after 2^20); every object searches its file's one list of ref
+//! types again, so K objects over R ref types took K x R steps (fix pass 5's
+//! sweep); and a read failing at a class's first child had passed over all
+//! of its children to size its dict (review round 6: K objects over a class
+//! of `k` children, K x `k` steps). A class whose children neither repeat a
+//! name nor hold a registry, the common case, sizes its dict with no pass.
+//!
+//! Each step is counted before it is taken, on the read's or the write's
+//! `OpenWork`, which adds the steps to the open's meter a chunk
+//! ([`WORK_CHUNK`]) at a time, in one atomic check-and-add: a chunk that
+//! would take the open past its allowance is refused, and the read or the
+//! write fails with [`LimitKind::DecodeWork`] (kind `other` for a read); one
+//! whose own work, counted when it ends, took the open past its allowance
+//! fails too (its own failure first, if it has one). So the reads and writes
+//! that succeed never do more work together than the allowance, on any
+//! number of threads, and each one in progress does at most a chunk and one
+//! step past it before it stops (review round 6: a read added its work only
+//! when it ended, so two reads on two threads both passed the start's check
+//! and ran to their end past the allowance). Once the open's work has passed
+//! its allowance, a read or a write is refused before it starts
+//! (`tests/walk_work.rs`, `tests/walk_prepass.rs`).
 //!
 //! Owner: the scaffold for the types in this file (frozen); package B owns
 //! [`read_typetree`]'s body and the three submodules.
@@ -42,12 +62,17 @@
 pub mod boost;
 mod dict;
 pub mod python;
+mod work;
 pub mod write;
 
 pub(crate) use dict::steps;
+pub(crate) use work::{OpenWork, Work, limit_refused};
+pub use work::{STEP_WORK, VALUE_WORK, WORK_CHUNK};
 
 #[cfg(test)]
 mod linear_tests;
+#[cfg(test)]
+mod prepass_tests;
 
 use std::sync::Arc;
 
@@ -605,129 +630,4 @@ pub(crate) fn grow_step<T>(
         .min(max_prealloc.max(1))
         .max(1);
     items.reserve_exact(step)
-}
-
-/// The open's work one value costs a read or a write, in bytes
-/// ([`crate::limits::Limits::max_decode_work`]): the size of the [`Value`]
-/// that holds it, whether the value is kept or not, as a decode counts every
-/// byte it writes whether its output is kept or not. A child a read or a
-/// write skips costs as much, as it costs a value against
-/// `max_values_per_object`. An element of a primitive run that a read holds
-/// as a run costs its width instead (`Work::run`).
-pub const VALUE_WORK: u64 = size_of::<Value>() as u64;
-
-/// The open's work refusal, or `None` while the open's work is within its
-/// allowance: what a read or a write meets before it starts (module docs,
-/// "Work").
-pub(crate) fn work_left(meter: &Meter) -> Result<(), LimitError> {
-    meter.work_used_up().map_or(Ok(()), Err)
-}
-
-/// The reader's limits on work, shared by both readers (plan 3.10, "Bounds").
-#[derive(Debug)]
-pub(crate) struct Work {
-    pub(crate) values: u64,
-    pub(crate) zero_size: u64,
-    pub(crate) depth: u32,
-    /// The open's work this read has done, in bytes ([`VALUE_WORK`] a
-    /// value, a run's elements their width), counted on the open's meter
-    /// when the read ends ([`Self::finish`]).
-    pub(crate) done: u64,
-    pub(crate) limits: Limits,
-}
-
-impl Work {
-    /// The work of a read on `meter`: refused before it starts once the
-    /// open's work has passed its allowance (module docs, "Work").
-    pub(crate) fn start(limits: Limits, meter: &Meter) -> Result<Self, ReadError> {
-        work_left(meter).map_err(|l| ReadError {
-            kind: ReadErrorKind::Other,
-            at: 0,
-            detail: ReadDetail::Limit(l),
-        })?;
-        Ok(Self {
-            values: 0,
-            zero_size: 0,
-            depth: 0,
-            done: 0,
-            limits,
-        })
-    }
-
-    /// Counts the read's work on `meter`, the open's, whatever the read's
-    /// outcome: the work is done. Past the allowance, the next read or
-    /// write of the open is refused ([`Self::start`]).
-    pub(crate) fn finish(&self, meter: &Meter) {
-        meter.add_work(self.done);
-    }
-
-    /// Counts `n` values against `max_values_per_object`, each
-    /// [`VALUE_WORK`] of the open's work.
-    pub(crate) fn values(&mut self, n: u64, at: u64) -> Result<(), ReadError> {
-        self.count(n, n.saturating_mul(VALUE_WORK), at)
-    }
-
-    /// Counts a primitive run of `n` elements of `width` bytes each, held as
-    /// a run (a [`crate::value::PrimRun`] or a slice of the file): `n`
-    /// values against `max_values_per_object`, and their bytes as the
-    /// open's work, as a decode counts the bytes it writes.
-    pub(crate) fn run(&mut self, n: u64, width: u64, at: u64) -> Result<(), ReadError> {
-        self.count(n, n.saturating_mul(width), at)
-    }
-
-    fn count(&mut self, n: u64, work: u64, at: u64) -> Result<(), ReadError> {
-        self.values = self.values.saturating_add(n);
-        if self.values > self.limits.max_values_per_object {
-            return Err(limit_error(
-                at,
-                LimitKind::ValuesPerObject,
-                self.values,
-                self.limits.max_values_per_object,
-            ));
-        }
-        self.done = self.done.saturating_add(work);
-        Ok(())
-    }
-
-    /// Counts one array element whose read ended no further on than it
-    /// began: it read nothing (an empty class, a class whose children were
-    /// all skipped), or, in the pure-Python reader, a negative
-    /// `TypelessData` length took the position back. Such elements cost
-    /// values without bytes, so a count in a few bytes could build any
-    /// number of them; every other element reads bytes, so the input
-    /// bounds them. What an element really read is the test, not its
-    /// tree's [`crate::typetree::NodeInfo::min_size`]: which children a read
-    /// skips depends on the registry in scope, and the pure-Python reader
-    /// reads a malformed `pair` or `Array` UnityPyBoost refuses (review
-    /// round 4: both were refused past the bound where UnityPy read them).
-    pub(crate) fn zero_size(&mut self, at: u64) -> Result<(), ReadError> {
-        self.zero_size = self.zero_size.saturating_add(1);
-        if self.zero_size > self.limits.max_zero_size_elements {
-            return Err(limit_error(
-                at,
-                LimitKind::ZeroSizeElements,
-                self.zero_size,
-                self.limits.max_zero_size_elements,
-            ));
-        }
-        Ok(())
-    }
-
-    /// Enters one level of value nesting.
-    pub(crate) fn enter(&mut self, at: u64) -> Result<(), ReadError> {
-        self.depth = self.depth.saturating_add(1);
-        if self.depth > self.limits.max_value_depth {
-            return Err(limit_error(
-                at,
-                LimitKind::ValueDepth,
-                u64::from(self.depth),
-                u64::from(self.limits.max_value_depth),
-            ));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn leave(&mut self) {
-        self.depth = self.depth.saturating_sub(1);
-    }
 }

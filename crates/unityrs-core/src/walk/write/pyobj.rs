@@ -192,11 +192,21 @@ pub(super) const CLEAN_MAX: usize = 32;
 /// UnityPyBoost's `clean_name` (`UnityPyBoost/TypeTreeHelper.cpp:28-65`;
 /// the C++ node is the one UnityPy builds when the extension loads), into a
 /// fixed buffer: `None` when the name cleans to more than [`CLEAN_MAX`]
-/// bytes, which no modelled attribute is.
+/// bytes, which no modelled attribute is. It reads at most the name's first
+/// `CLEAN_MAX + 8` bytes: a C string longer than that cleans to more than
+/// [`CLEAN_MAX`] whatever follows (review round 6's sweep: a write that
+/// failed at a child of a long name had searched all of it for a NUL).
 pub(super) fn clean_name(name: &[u8], buf: &mut [u8; CLEAN_MAX]) -> Option<usize> {
     // `:1218-1220`: the name is a C string (`PyUnicode_AsUTF8`), so it ends
-    // at its first NUL, and so does the cleaned one.
-    let mut name = name.split(|b| *b == 0).next().unwrap_or_default();
+    // at its first NUL, and so does the cleaned one. The `(int&)` prefix,
+    // a trailing `?` and the NUL are the most a clean drops.
+    let window = name.get(..CLEAN_MAX + 8).unwrap_or(name);
+    crate::walk::steps(window.len());
+    let mut name = match window.iter().position(|b| *b == 0) {
+        Some(end) => window.get(..end).unwrap_or_default(),
+        None if window.len() < name.len() => return None,
+        None => window,
+    };
     // `:38-41`: the `(int&)` prefix.
     if let Some(rest) = name.strip_prefix(b"(int&)") {
         name = rest;

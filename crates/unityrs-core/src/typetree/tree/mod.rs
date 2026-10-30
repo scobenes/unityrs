@@ -132,6 +132,7 @@ pub fn kind_of(type_name: &[u8]) -> Kind {
 /// `node.m_Type == "pair"`, `TypeTreeHelper.py:190-208`, `:416-429`), with no
 /// C string's end at a NUL and no `PPtr<` rule (that is object mode's).
 pub(crate) fn py_kind_of(type_name: &[u8]) -> Kind {
+    crate::walk::steps(type_name.len());
     if type_name.contains(&0) {
         return Kind::Unknown;
     }
@@ -254,6 +255,11 @@ pub struct Tree {
     /// one ([`py_kind_of`]). False for every tree a parser builds (its names
     /// end at a NUL), so they never compare a string.
     nul_types: bool,
+    /// Each node's [`py_kind_of`] when [`Self::nul_types`], found once here
+    /// (a read or a write asks it at every visit of a node, and a type name
+    /// is as long as its input makes it: review round 6's sweep); empty
+    /// otherwise.
+    py: Box<[Kind]>,
     /// `info` and the compile's own allocations, charged to the list's
     /// meter ([`NodeList::meter`]) before they are made.
     charge: Charge,
@@ -295,6 +301,25 @@ fn as_u64(n: usize) -> u64 {
 fn id(i: usize) -> NodeId {
     // The list's length was checked against `u32` before any id is made.
     NodeId(u32::try_from(i).unwrap_or(u32::MAX))
+}
+
+/// Each row's [`py_kind_of`] when `nul_types` (else none), charged to
+/// `charge`'s meter first and kept in `charge`.
+fn py_kinds(
+    list: &NodeList,
+    nul_types: bool,
+    charge: &mut Charge,
+) -> Result<Box<[Kind]>, ChargeError> {
+    let mut py = MeteredVec::new(charge.meter());
+    if nul_types {
+        py.reserve_exact(list.rows().len())?;
+        for row in list.rows() {
+            py.push(py_kind_of(row.ty.as_bytes()))?;
+        }
+    }
+    let (py, c) = py.into_boxed_slice()?;
+    charge.absorb(c);
+    Ok(py)
 }
 
 fn info_at(info: &MeteredVec<NodeInfo>, node: NodeId) -> NodeInfo {
@@ -572,6 +597,7 @@ impl Tree {
             }
         }
 
+        let py = py_kinds(&list, nul_types, &mut charge)?;
         let (info, c) = info.into_boxed_slice()?;
         charge.absorb(c);
         Ok(Arc::new(Self {
@@ -579,6 +605,7 @@ impl Tree {
             info,
             depth,
             nul_types,
+            py,
             charge,
         }))
     }
@@ -593,6 +620,7 @@ impl Tree {
             info: Box::new([]),
             depth: 1,
             nul_types: false,
+            py: Box::new([]),
             charge,
         })
     }
@@ -638,7 +666,7 @@ impl Tree {
     /// [`Kind`] (a `PPtr<` read as any class) unless a type holds a NUL.
     pub(crate) fn py_kind(&self, node: NodeId) -> Kind {
         if self.nul_types {
-            return py_kind_of(self.list.type_name(node));
+            return self.py.get(node.index()).copied().unwrap_or(Kind::Unknown);
         }
         match self.info(node).map_or(Kind::Unknown, |i| i.kind) {
             Kind::PPtr => Kind::Unknown,

@@ -6,6 +6,7 @@
 //! one search of its string buffer per parse, whatever its rows.
 
 use unityrs_core::files::File;
+use unityrs_core::walk::{ParseError, ReadDetail};
 use unityrs_core::{Error, FileContext, LimitKind};
 use unityrs_testkit::blob::NodeSpec;
 use unityrs_testkit::bundle::{BundleSpec, EntrySpec, TestCodec, build};
@@ -221,7 +222,6 @@ fn rows_over_one_asset_bundle(
             Ok(other) => panic!("row {i}: {other:?}"),
             Err(e) => Err(e),
         };
-        let work = |e: &Error| matches!(e, Error::Limit(l) if l.kind == LimitKind::DecodeWork);
         match container {
             Ok(()) if reads_ok => read += 1,
             Err(e) if work(&e) => refused += 1,
@@ -231,6 +231,22 @@ fn rows_over_one_asset_bundle(
         }
     }
     (read, refused)
+}
+
+/// A `DecodeWork` refusal: the open's, before a read starts, or a read's
+/// own, under its entry, once its work took the open past its allowance
+/// (`walk::OpenWork`).
+fn work(e: &Error) -> bool {
+    let read = |p: &ParseError| {
+        matches!(p, ParseError::Read(r)
+            if matches!(r.detail, ReadDetail::Limit(l) if l.kind == LimitKind::DecodeWork))
+    };
+    match e {
+        Error::Limit(l) => l.kind == LimitKind::DecodeWork,
+        Error::Entry { source, .. } => work(source),
+        Error::AssetBundle(p) => read(p),
+        _ => false,
+    }
 }
 
 /// Round 5 (HIGH): K rows over one entry whose parse succeeds were K reads
