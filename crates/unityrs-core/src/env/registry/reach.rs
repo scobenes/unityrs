@@ -43,12 +43,16 @@
 //! The registration tells the stand-in before its write lock, with no lock
 //! held, and applies it in the lock's step only when the key's value is
 //! still the slot it told it against. A standing slot that was already the
-//! key's value may be reaching on another thread: the registration lowers
-//! its position and then reads whether it is marked reached, the reach
-//! reads the position, registers, marks the slot reached and reads the
-//! position again, registering again at a lower one (all sequentially
-//! consistent), so either the reach sees the position or the registration
-//! sees the slot reached, and then lists the dropped slot as any other.
+//! key's value may be reaching on another thread: the reach reads the
+//! position, registers there, and closes the position only if it is still
+//! the one it registered at, registering again at a lower one it finds,
+//! before it marks the slot reached ([`Slot::close_at`]); the registration
+//! lowers the position only while it is not closed ([`Slot::stand_for`]),
+//! one atomic word for both, so either the reach registers at the lowered
+//! position before any reader sees the slot reached, or the registration
+//! finds it closed and lists the dropped slot as any other (review round 7:
+//! the reach marked the slot reached and then moved its entries, so a
+//! container pass in between walked them at the reload's positions).
 //!
 //! **Work** (R5). A reach is a lazy computation of the input whose slot it
 //! is: what its registrations were granted when the input's own meter
@@ -222,8 +226,9 @@ impl Registry {
     /// caller's, dependency slots for a dependency's), a container inside it
     /// with no key of its own, as an eager load registers it, and at the
     /// positions of the least dropped slot it stands in for
-    /// ([`Slot::position`], plan section 9, Q14); then marks the slot
-    /// reached, and reaches the slots its registrations dropped
+    /// ([`Slot::position`], plan section 9, Q14); then closes the position
+    /// there and marks the slot reached, and reaches the slots its
+    /// registrations dropped
     /// ([`Self::settle`]). `nested` is the container when the caller holds
     /// it: the slot's own parse, or the asking file's handle on the very
     /// entry the slot is ([`Through::Own`]), so nothing is read through the
@@ -270,19 +275,17 @@ impl Registry {
         };
         let mut at = slot.position();
         self.register_counted(slot, nested, at)?;
+        // A stand-in learned while the registration ran: the entries move
+        // to its position before the slot is closed there and marked
+        // (module docs, "Stand-ins"). Each turn lowers the position.
+        while let Err(lower) = slot.close_at(at) {
+            at = lower;
+            self.register_counted(slot, nested, at)?;
+        }
         #[cfg(test)]
         self.hook(Hook::Reached);
         slot.mark_reached();
-        // A stand-in learned while the registration ran: the entries move
-        // to its position (module docs, "Stand-ins").
-        loop {
-            let now = slot.position();
-            if now >= at {
-                return Ok(Reached::Done);
-            }
-            at = now;
-            self.register_counted(slot, nested, at)?;
-        }
+        Ok(Reached::Done)
     }
 
     /// The entry a lazy slot is: its first bytes read through the slot's

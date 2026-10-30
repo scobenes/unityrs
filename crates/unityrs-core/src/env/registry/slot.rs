@@ -7,6 +7,12 @@ use super::{Cab, DepSlot, Rank};
 use crate::files::BundleFile;
 use crate::limits::{Charge, Meter};
 
+/// The top bit of [`Slot::stands_for`]: the slot's position is closed.
+pub(super) const CLOSED: u64 = 1 << 63;
+
+/// [`Slot::stands_for`] of a slot that stands in for none: past every load.
+pub(super) const NONE: u64 = CLOSED - 1;
+
 /// One registry slot, with the charge for its registration (module docs).
 #[derive(Debug)]
 pub(crate) struct Slot {
@@ -17,16 +23,20 @@ pub(crate) struct Slot {
     /// it may be a nested container (module docs).
     pub(super) lazy: bool,
     /// For a lazy slot, whether it was reached: known to be no container,
-    /// or every entry of the container it is registered (set after the
-    /// last one is). Read and set sequentially consistent, with
-    /// [`Self::stands_for`] (`Slot::position`).
+    /// or every entry of the container it is registered at the slot's
+    /// position, closed (set after the last one is, [`Self::close_at`]).
     pub(super) reached: AtomicBool,
     /// For a lazy slot that stands in for dropped slots of the same entry
     /// of the same input (plan section 9, Q14), the least load among them:
     /// its container's entries take their positions at that load's ranks,
     /// as an eager load of the dropped one registered them
-    /// ([`Self::position`]); `u64::MAX` for none. Only lowered, and only
-    /// under the registry's write lock, in the step that drops a slot.
+    /// ([`Self::position`]); [`NONE`] for none. Its top bit, [`CLOSED`],
+    /// says the position will not move again: a reach sets it once its
+    /// entries are registered at the position ([`Self::close_at`]), before
+    /// it marks the slot reached. Lowered only under the registry's write
+    /// lock, in the step that drops a slot, and only while not closed
+    /// ([`Self::stand_for`]); one atomic word, so a lowering and a close are
+    /// one before the other.
     pub(super) stands_for: AtomicU64,
     /// Whether a parse through the slot was counted (`EnvStats`).
     pub(super) counted: AtomicBool,
@@ -87,29 +97,57 @@ impl Slot {
         self.lazy && !self.reached.load(Ordering::SeqCst)
     }
 
-    /// Marks it reached.
+    /// Marks it reached, its position closed first ([`Self::close_at`]): a
+    /// slot found to hold no container has no entries to move.
     pub(super) fn mark_reached(&self) {
         if self.lazy {
+            self.stands_for.fetch_or(CLOSED, Ordering::SeqCst);
             self.reached.store(true, Ordering::SeqCst);
         }
     }
 
     /// The load whose ranks its container's entries take as their
     /// positions: its own, or the least of the dropped slots it stands in
-    /// for ([`Self::stands_for`]). A reach reads it before it registers and
-    /// again after it marks the slot reached, and registers again at a
-    /// lower one it then finds; a registration that lowers it reads
-    /// [`Self::unreached`] after (both sequentially consistent), so a
-    /// position learned while a reach runs is never missed by both
-    /// (`reach.rs`'s module docs).
+    /// for ([`Self::stands_for`]).
     pub(super) fn position(&self) -> u64 {
-        self.stands_for.load(Ordering::SeqCst).min(self.rank.load)
+        Self::position_of(self.stands_for.load(Ordering::SeqCst), self.rank.load)
+    }
+
+    fn position_of(stands_for: u64, own: u64) -> u64 {
+        (stands_for & !CLOSED).min(own)
     }
 
     /// Lowers [`Self::stands_for`] to `load`, under the registry's write
-    /// lock.
-    pub(super) fn stand_for(&self, load: u64) {
-        self.stands_for.fetch_min(load, Ordering::SeqCst);
+    /// lock, unless the position is closed: whether it did. A slot whose
+    /// position is closed no longer stands in (`reach.rs`'s module docs,
+    /// "Stand-ins").
+    pub(super) fn stand_for(&self, load: u64) -> bool {
+        let load = load.min(NONE);
+        self.stands_for
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |s| {
+                (s & CLOSED == 0).then_some(s.min(load))
+            })
+            .is_ok()
+    }
+
+    /// Closes the position at `at`, the one a reach registered the
+    /// container's entries at, unless a stand-in lowered it since: then
+    /// the lower one, which the reach registers at and closes again. Of a
+    /// lowering and a close, one comes first in the word's order, so either
+    /// the reach registers at the lowered position before the slot is
+    /// marked reached, or the registration finds the position closed and
+    /// lists the slot it drops (review round 7: the reach marked the slot
+    /// reached and only then read the position again, so a container pass
+    /// in between walked entries that moved after it). A slot closed
+    /// already (another reach's close) is closed at its final position.
+    pub(super) fn close_at(&self, at: u64) -> Result<(), u64> {
+        let own = self.rank.load;
+        self.stands_for
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |s| {
+                (Self::position_of(s, own) >= at).then_some(s | CLOSED)
+            })
+            .map(|_| ())
+            .map_err(|s| Self::position_of(s, own))
     }
 
     /// The meter of the input the slot belongs to (plan section 3.16, R2):

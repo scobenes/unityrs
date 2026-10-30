@@ -51,7 +51,8 @@
 //! (`reach::stands_in`), which a lookup from a file inside the dropped entry
 //! then reaches, and whose reach registers the entries at the dropped
 //! slot's positions (plan 9, Q14, revised after review round 6;
-//! `register.rs`, `Stand`).
+//! `register.rs`, `Stand`), until that reach closes its position, after
+//! which a dropped slot is listed (`reach.rs`, "Stand-ins").
 //! What remains of (b) is a lookup by name alone (a
 //! `get_cab`, a `find_file`, a pointer to a file that is not the asking
 //! file's sibling) of an entry of a container nothing has reached, which

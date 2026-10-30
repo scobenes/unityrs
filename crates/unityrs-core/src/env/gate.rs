@@ -1,12 +1,14 @@
 //! A test's gate on the Environment's hook points ([`Hook`]): it stops
-//! chosen threads, each at a chosen point, until the test lets them go, so
-//! a test runs two or more operations through their steps in an order of
-//! its choosing, never by repetition or timing. Every wait goes through
-//! `unityrs_testkit::guard`, a deadlock guard.
+//! chosen threads, each at one or more chosen points in turn, until the
+//! test lets them go, so a test runs two or more operations through their
+//! steps in an order of its choosing, never by repetition or timing. Every
+//! wait goes through `unityrs_testkit::guard`, a deadlock guard.
 
 // The source scan behind "the core starts no thread and never waits"
 // (`unityrs_testkit::waits`) takes only an item under `#[cfg(test)]` in its
 // own file for test code, so every item here carries one.
+#[cfg(test)]
+use std::collections::VecDeque;
 #[cfg(test)]
 use std::sync::mpsc::{self, Receiver, Sender};
 #[cfg(test)]
@@ -37,12 +39,12 @@ pub(crate) enum Event {
     Done,
 }
 
-/// One armed thread: where it stops, and its channels.
+/// One armed thread: where it stops next (the `nth` time it reaches a
+/// point, counted from its last stop) and after, and its channels.
 #[cfg(test)]
 struct Armed {
     thread: ThreadId,
-    at: Hook,
-    nth: usize,
+    stops: VecDeque<(Hook, usize)>,
     seen: usize,
     events: Sender<Event>,
     go: Arc<Mutex<Receiver<()>>>,
@@ -84,16 +86,26 @@ impl Gate {
         at: Option<(Hook, usize)>,
         f: impl FnOnce() -> T + Send + 'static,
     ) -> Run<T> {
+        self.run_stops(at.into_iter().collect(), f)
+    }
+
+    /// [`Self::run`] with stops in turn: the thread stops the `nth` time it
+    /// reaches the first `(at, nth)`, and once let go, the `nth` time after
+    /// that it reaches the next, and so on.
+    pub(crate) fn run_stops<T: Send + 'static>(
+        &self,
+        stops: Vec<(Hook, usize)>,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> Run<T> {
         let (events_tx, events) = mpsc::channel();
         let (go, go_rx) = mpsc::channel();
         let armed = self.armed.clone();
         let (ready_tx, ready) = mpsc::channel::<()>();
         let join = std::thread::spawn(move || {
-            if let Some((at, nth)) = at {
+            if !stops.is_empty() {
                 lock(&armed).push(Armed {
                     thread: std::thread::current().id(),
-                    at,
-                    nth,
+                    stops: stops.into(),
                     seen: 0,
                     events: events_tx.clone(),
                     go: Arc::new(Mutex::new(go_rx)),
@@ -119,14 +131,22 @@ impl Gate {
         let me = std::thread::current().id();
         let stop = {
             let mut armed = lock(&self.armed);
-            let Some(i) = armed.iter().position(|a| a.thread == me && a.at == h) else {
+            let Some(i) = armed
+                .iter()
+                .position(|a| a.thread == me && a.stops.front().is_some_and(|(at, _)| *at == h))
+            else {
                 return;
             };
             let a = &mut armed[i];
             a.seen += 1;
-            if a.seen == a.nth {
-                let a = armed.swap_remove(i);
-                Some((a.events, a.go))
+            if a.stops.front().is_some_and(|(_, nth)| a.seen == *nth) {
+                a.stops.pop_front();
+                a.seen = 0;
+                let channels = (a.events.clone(), a.go.clone());
+                if a.stops.is_empty() {
+                    armed.swap_remove(i);
+                }
+                Some(channels)
             } else {
                 None
             }

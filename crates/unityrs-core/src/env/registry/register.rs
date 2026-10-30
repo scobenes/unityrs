@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use super::Hook;
 use super::{
     Cab, DepSlot, Dependency, Entry, LOAD_KEYS_HERE, ORDER_LEAF, PENDING_SHARE, Rank, Registry,
-    RegistryInner, SHARE, SLOT_ARC, Slot, SlotKind, pending, reach,
+    RegistryInner, SHARE, SLOT_ARC, Slot, SlotKind, pending, reach, slot,
 };
 use crate::error::Error;
 use crate::files::BundleFile;
@@ -326,12 +326,13 @@ impl Registry {
     /// standing slot takes the dropped one's position
     /// ([`Slot::position`]), and the dropped slot is not listed. A standing
     /// slot that is the new registration's own is not yet published, so no
-    /// reach can have read its position; one that was already the key's
-    /// value may be reaching now, and stands in only while it is not yet
-    /// marked reached, read after its position is lowered (both
-    /// sequentially consistent, `reach.rs`'s module docs): a reach that
-    /// marked it before then may have missed the position, so the dropped
-    /// slot is listed and reached as any other drop.
+    /// reach can have closed its position; one that was already the key's
+    /// value may be reaching now, and stands in only while its position is
+    /// not closed ([`Slot::stand_for`]): a reach closes it only at the
+    /// position it registered at, so a lowering it meets first is
+    /// registered before the slot is marked reached, and a registration
+    /// that meets the close lists the dropped slot, reached as any other
+    /// drop (`reach.rs`'s module docs).
     fn stood_in(stand: Option<&Stand>, standing: &Arc<Slot>, dropped: &Arc<Slot>) -> bool {
         let Some(stand) = stand else {
             return false;
@@ -339,8 +340,7 @@ impl Registry {
         if !(Arc::ptr_eq(&stand.standing, standing) && Arc::ptr_eq(&stand.dropped, dropped)) {
             return false;
         }
-        standing.stand_for(dropped.position());
-        standing.unreached()
+        standing.stand_for(dropped.position())
     }
 
     /// Publishes the lists' lengths (under the write lock).
@@ -370,7 +370,7 @@ impl Registry {
             rank,
             lazy,
             reached: AtomicBool::new(false),
-            stands_for: AtomicU64::new(u64::MAX),
+            stands_for: AtomicU64::new(slot::NONE),
             counted: AtomicBool::new(false),
             walked: AtomicBool::new(false),
             charge,
