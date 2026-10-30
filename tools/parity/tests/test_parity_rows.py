@@ -64,6 +64,7 @@ class TestColumn(unittest.TestCase):
                 "module_level_data_is_tier_a_for_loop_variables",
                 "a_non_local_miss_keeps_the_split_exception",
                 "non_local_rows_state_only_the_tested_cases",
+                "a_local_split0_sends_the_read_to_its_parts",
                 "zero_size_writes_are_stated_off_switch",
             }
             named = {name for module, name in cited if module == path.name}
@@ -133,7 +134,7 @@ class TestColumn(unittest.TestCase):
                 ]
                 self.assertEqual(bare, [], "a line number with no source file before it")
 
-    # DESIGN.md section 3's resolution clause names the Tier B and C exceptions to "`obj.container` and dependency
+    # DESIGN.md section 3's resolution clause names the Tier B, C and U exceptions to "`obj.container` and dependency
     # resolution match". Each bullet of those lists that touches resolution (it names one of RESOLUTION) maps here
     # to the phrase the clause names it by.
     RESOLUTION = (
@@ -170,19 +171,24 @@ class TestColumn(unittest.TestCase):
         ),
         "`load_dependencies` loads dependencies": ("C", "`load_dependencies`"),
         "`ContainerHelper.path_dict` ignores": ("C", "`ContainerHelper.path_dict`'s file id"),
+        "a name read through a non-local fsspec filesystem in a case": (
+            "U",
+            "a name read through a non-local fsspec filesystem outside the cases `PARITY.md` section 3 states",
+        ),
     }
 
-    # Tier B or C bullets that name a RESOLUTION word without being an exception to resolution opt out here, by
+    # Tier B, C or U bullets that name a RESOLUTION word without being an exception to resolution opt out here, by
     # their lead; each lead must still name a bullet.
     NOT_RESOLUTION = ()
 
     def resolution_bullets(self, reading, opt_out):
-        """(tier, bullet) for each Tier B or C bullet of `reading` that names a RESOLUTION word, and the opt-out
+        """(tier, bullet) for each Tier B, C or U bullet of `reading` that names a RESOLUTION word, and the opt-out
         leads that named a bullet."""
+        leads = {"- **Tier B": "B", "- **Tier C": "C", f"- **{UNSUPPORTED_RULE}": "U"}
         tier, found, used = None, [], set()
         for line in reading.splitlines():
             if line.startswith("- **"):
-                tier = "B" if line.startswith("- **Tier B") else "C" if line.startswith("- **Tier C") else None
+                tier = next((name for lead, name in leads.items() if line.startswith(lead)), None)
             elif tier and line.startswith("  - ") and any(word in line for word in self.RESOLUTION):
                 skipped = [lead for lead in opt_out if line[4:].startswith(lead)]
                 used.update(skipped)
@@ -191,7 +197,7 @@ class TestColumn(unittest.TestCase):
         return found, used
 
     def test_every_resolution_exception_is_listed(self):
-        """Every Tier B or C bullet of DESIGN.md section 3 that touches dependency resolution is named, under its
+        """Every Tier B, C or U bullet of DESIGN.md section 3 that touches dependency resolution is named, under its
         tier, in the clause that lists the exceptions to "dependency resolution match"; a bullet that names a
         RESOLUTION word and is no such exception opts out in NOT_RESOLUTION."""
         sample = "- **Tier B: x.**\n  - a lead `load_file` names;\n  - another lead `find_file` names;\n"
@@ -203,6 +209,7 @@ class TestColumn(unittest.TestCase):
         clause = next(line for line in reading.splitlines() if "dependency resolution match" in line)
         listed = clause.split("lists below say:", 1)[1]
         named = {"B": listed.split("(B)", 1)[0], "C": listed.split("(B)", 1)[1].split("(C)", 1)[0]}
+        named["U"] = listed.split("(C)", 1)[1].split("(U)", 1)[0]
         found, used = self.resolution_bullets(reading, self.NOT_RESOLUTION)
         self.assertEqual(used, set(self.NOT_RESOLUTION), "an opt-out lead that names no bullet")
         for tier, bullet in found:
@@ -427,6 +434,43 @@ class TestColumn(unittest.TestCase):
         self.assertRegex(
             unsupported, r"\n  - a name read through a non-local fsspec filesystem in a case [^\n]*not characterised"
         )
+
+    def test_a_local_split0_sends_the_read_to_its_parts(self):
+        """Through a non-local fs, where the local disk lacks the name and holds `{name}.split0`, `load_file` reads
+        the parts through `fs`, whatever `fs` holds under the name, which it never reads
+        (`non_local_load_file_follows_local_split_parts_and_case_variants`). So both rows about a non-local fs state
+        that order, the 19.2 row in its UnityPy, tier and unityrs cells, none reads the name first, and that case is
+        not among those where a name is not found; DESIGN.md's Tier C gloss names only the cases section 3 gives
+        `None` for, a listable `path` that holds the part or a case variant not among them."""
+        root = HERE.parent.parent
+        lines = (root / "PARITY.md").read_text(encoding="utf-8").splitlines()
+        fs_row = next(line for line in lines if line.startswith("| `Environment.fs` |"))
+        non_local = next(line for line in lines if line.startswith("| a name read through a non-local `fs` |"))
+        unitypy, tier, unityrs = non_local.split(" | ")[1:4]
+        held = "whatever `fs` holds under the name"
+        self.assertIn(f"{held}, which it never reads (`fs` holding the name too, in a case tested)", fs_row)
+        self.assertIn(f"{held}, which is never read;", unitypy)
+        self.assertTrue(
+            tier.startswith(f"A where a local `{{name}}.split0` sends the read to its parts through `fs`, {held};")
+        )
+        self.assertTrue(
+            unityrs.startswith(
+                "where the local disk lacks the name, as given and joined to `path`, and holds `{name}.split0`, reads "
+                f"the parts through `fs`, {held}, as UnityPy does;"
+            ),
+            unityrs[:80],
+        )
+        for cell in (fs_row, unitypy, unityrs):
+            self.assertNotIn("where it is missing there", cell)
+        miss = unitypy.split("a name is not found even when `fs` holds it: ", 1)[1].split(". ", 1)[0]
+        self.assertNotIn("split0", miss)
+        design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        lead = "  - a name read through a non-local fsspec filesystem where `load_file` returns `None`"
+        gloss = next(line for line in design.splitlines() if line.startswith(lead))
+        none = "an empty local folder, or `/` given a name under a top-level folder the local disk lacks"
+        self.assertIn(f"returns `None` where `path` is {none}.", fs_row)
+        self.assertIn(f"in the cases stated in `PARITY.md` section 3: `Environment.path` {none}, ", gloss)
+        self.assertNotIn("can list `Environment.path`", gloss)
 
     def test_zero_size_writes_are_stated_off_switch(self):
         """Section 19.1 states a zero-size `set_image` only for a texture that is not Switch-swizzled, the cases

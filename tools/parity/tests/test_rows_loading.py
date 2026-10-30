@@ -161,26 +161,33 @@ class LoadingRows(unittest.TestCase):
 
     # Sections 3 and 19.2, `Environment.fs`: the local-disk tests of `load_file` that send the read to a non-local fs.
     def test_non_local_load_file_follows_local_split_parts_and_case_variants(self):
+        self.chdir(self.tmp)
         local = self.tmp / "d"
         local.mkdir()
         (local / "x.assets.split0").write_bytes(b"local bytes")
-        self.assertFalse((local / "x.assets").exists())
+        self.assertFalse((local / "x.assets").exists() or os.path.exists("x.assets"))
         fs = self.memory_fs(str(local))
         whole = text_asset_file("in memory, split")
         fs.pipe({f"{local}/x.assets.split0": whole[:40], f"{local}/x.assets.split1": whole[40:]})
-        # The local disk holds `{name}.split0`: load_file reads the parts through fs, from a local `path` and from the
-        # default `''` (an absolute name, not joined).
-        for path, name, key in ((str(local), "x.assets", "x.assets"), (None, f"{local}/x.assets", f"{local}/x.assets")):
-            with self.subTest(path=path):
-                env = UnityPy.Environment(fs=fs, path=path)
-                self.assertEqual(env.path, path or "")
-                self.assertEqual(type(quietly(env.load_file, name)).__name__, "SerializedFile")
-                self.assertEqual(
-                    (list(env.files), list(env.cabs), names(env)), ([key], ["x.assets"], ["in memory, split"])
-                )
+        # The local disk lacks the name, as given and joined to `path`, and holds `{name}.split0`: load_file reads the
+        # parts through fs, from a local `path` and from the default `''` (an absolute name, not joined), whatever fs
+        # holds under the name, which it never reads, even where fs holds it.
+        for held in ("the parts", "the parts and the name"):
+            if held != "the parts":
+                fs.pipe(f"{local}/x.assets", text_asset_file("in memory, whole"))
+            for path, name, key in (
+                (str(local), "x.assets", "x.assets"),
+                (None, f"{local}/x.assets", f"{local}/x.assets"),
+            ):
+                with self.subTest(held=held, path=path):
+                    env = UnityPy.Environment(fs=fs, path=path)
+                    self.assertEqual(env.path, path or "")
+                    self.assertEqual(type(quietly(env.load_file, name)).__name__, "SerializedFile")
+                    self.assertEqual(
+                        (list(env.files), list(env.cabs), names(env)), ([key], ["x.assets"], ["in memory, split"])
+                    )
         # `path` holds a case variant find_sensitive_path resolves (`P/p/X.assets` for `P/x.assets`): load_file opens
         # the variant's path through fs, which lacks it, and raises naming it, though fs holds `P/x.assets`.
-        self.chdir(self.tmp)
         folder = "Up-" + self.tmp.name
         (self.tmp / folder / folder.lower()).mkdir(parents=True)
         (self.tmp / folder / folder.lower() / "X.assets").write_bytes(b"local variant")
