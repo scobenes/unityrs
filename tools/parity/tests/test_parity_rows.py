@@ -641,6 +641,15 @@ class Rows(unittest.TestCase):
         for stored in (size - 10, 0):
             with self.subTest(stored=stored), self.assertRaises(lz4.block.LZ4BlockError):
                 load(S.fs_bundle(entries, stored_sizes=[stored]))
+        # A stored size of 0 raises only for output: an empty block, b"\x00" (what lz4 writes for b""), stored as 0
+        # decodes to b"", and the bundle loads, the empty block first or last.
+        self.assertEqual(lz4.block.compress(b"", store_size=False), b"\x00")
+        sf = text_asset_file()
+        for blocks in ([sf, b""], [b"", sf]):
+            with self.subTest(blocks=[len(block) for block in blocks]):
+                loaded = load(S.fs_bundle([(b"CAB-x", sf, 4)], blocks=blocks))[0]
+                names = [o.parse_as_dict()["m_Name"] for o in loaded.files["CAB-x"].objects.values()]
+                self.assertEqual((list(loaded.files), names), (["CAB-x"], ["hello"]))
 
     # Sections 5.2, 13: reads past the end.
     def test_reads_past_the_end_return_short_data(self):
@@ -791,6 +800,41 @@ class Rows(unittest.TestCase):
                         load(bytes(changed), "w.data")
                 with self.assertRaisesRegex(ValueError, "^read length must be non-negative or -1$"):
                     quietly(UnityPy.Environment().load_file, str(web_path))
+        # Those stream-reader rules are a plain WebFile's from a path. A brotli WebFile is read by the memory reader
+        # of its decompressed bytes from any source (WebFile.py:31-34), so from a path too it gives what the same
+        # entries give from bytes: a slice for a negative offset or size; for a name length of -2 the moved reader's
+        # entries; for -13 struct.error; and for -12 the entry again and again.
+        from test_rows_files import unity_brotli
+
+        words = b" ".join(b"word%d" % (i % 37) for i in range(400))  # data brotli compresses (unity_brotli)
+        plain = S.web_file([(b"a.resS", words)])
+        for fields in ({0: -4, 4: 4}, {4: -3}, {8: -2}):
+            changed = bytearray(plain)
+            for at, value in fields.items():
+                struct.pack_into("<i", changed, row + at, value)
+            web_path.write_bytes(unity_brotli(bytes(changed)))
+            with self.subTest("brotli web from a path", fields=fields):
+                web_file = quietly(UnityPy.Environment().load_file, str(web_path))
+                self.assertEqual(web_file.packer, "brotli")
+                from_path = {name: bytes(f.bytes) for name, f in web_file.files.items()}
+                files = load(bytes(changed), "w.data")[0].files
+                self.assertEqual(from_path, {name: bytes(f.bytes) for name, f in files.items()})
+                if 8 not in fields:
+                    self.assertEqual(from_path, {"a.resS": b""})
+                else:
+                    self.assertEqual((len(from_path), next(iter(from_path))), (2, ""))  # read from the moved reader
+        changed = bytearray(plain)
+        struct.pack_into("<i", changed, row + 8, -13)
+        web_path.write_bytes(unity_brotli(bytes(changed)))
+        with self.assertRaisesRegex(struct.error, f"^offset -3297 out of range for {len(changed)}-byte buffer$"):
+            quietly(UnityPy.Environment().load_file, str(web_path))
+        offset, size = struct.unpack_from("<ii", plain, row)
+        struct.pack_into("<i", changed, row + 8, -12)
+        web_path.write_bytes(unity_brotli(bytes(changed)))
+        entries.clear()
+        with mock.patch.object(file_module, "DirectoryInfo", directory_info), self.assertRaises(Again):
+            quietly(UnityPy.Environment().load_file, str(web_path))
+        self.assertEqual(entries, [("", offset, size)] * 3)
         # A UnityWeb/UnityRaw level count is an i32, past which read_web_raw skips 8 * (count - 1) bytes: -100 moves
         # Position to -745, before the file's start. From a path the stream reader raises ValueError. From
         # bytes a negative Position counts from the end: below minus the length (a 105-byte bundle) struct.error;
@@ -904,6 +948,22 @@ class Rows(unittest.TestCase):
             TypeTreeHelper.read_typetree(
                 obj._get_typetree_node(), reader, as_dict=True, byte_size=0, check_read=False, assetsfile=loaded
             )
+        with self.assertRaisesRegex(ValueError, "^SerializedFile has no ref_types$"):
+            TypeTreeHelper.get_ref_type_node({"type": {"class": "X", "ns": "", "asm": ""}}, None)  # no file
+        # Below format 20 a SerializedFile has no `ref_types` at all: the pure-Python path raises AttributeError
+        # reading it, and Boost, which requires a list before it looks at the class, raises for a null reference too.
+        for cls in ("", "X"):
+            data = struct.pack("<iq", 7, 1) + S.s32(cls) + S.s32("") * 2
+            old = load(S.serialized_file([S.Type(114, root)], [S.Obj(1, 0, data)], version=19))[0]
+            with self.subTest(cls=cls):
+                self.assertFalse(hasattr(old, "ref_types"))
+                with self.assertRaisesRegex(ValueError, "^Failed to get ref type node$"):
+                    old.objects[1].parse_as_dict()
+                reader = EndianBinaryReader(data, endian="<")
+                with self.assertRaisesRegex(AttributeError, "^'SerializedFile' object has no attribute 'ref_types'$"):
+                    TypeTreeHelper.read_typetree(
+                        obj._get_typetree_node(), reader, as_dict=True, byte_size=0, check_read=False, assetsfile=old
+                    )
 
     # Sections 5.2, 14.2, 17: a texture with no pixel data.
     def test_an_empty_texture_follows_an_empty_stream_path(self):
