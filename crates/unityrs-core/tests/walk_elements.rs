@@ -268,3 +268,77 @@ fn elements_that_read_nothing_are_refused_past_the_bound() {
     assert_eq!(n, 3, "the cases refused");
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+/// Plan 3.10, at a bound of 10: more zero-size elements than
+/// `max_zero_size_elements` trip to `other`; as many as the bound read.
+/// Each of the four element loops that count them is reached: an empty
+/// class element reads through UnityPyBoost's `list` and the pure-Python
+/// `list`; flagged, through the pure-Python `read_value_array` (`each`); a
+/// `pair` of empty classes through UnityPyBoost's `pairs` (review round 5:
+/// no test reached `each` or `pairs`, so dropping either check passed the
+/// suite).
+#[test]
+fn zero_size_elements_trip_to_other() {
+    let vector = |data: Json| {
+        let mut rows = json!([
+            [0, "Base", "Base", 0],
+            [1, "vector", "v", 0],
+            [2, "Array", "Array", 0],
+            [3, "int", "size", 0]
+        ]);
+        rows.as_array_mut()
+            .unwrap()
+            .extend(data.as_array().unwrap().iter().cloned());
+        compile(&rows)
+    };
+    let mut limits = Limits::default();
+    limits.max_zero_size_elements = 10;
+    for (shape, t) in [
+        ("empty", vector(json!([[3, "Empty", "data", 0]]))),
+        (
+            "aligned empty",
+            vector(json!([[3, "Empty", "data", 0x4000]])),
+        ),
+        (
+            "pair of empties",
+            vector(json!([
+                [3, "pair", "data", 0],
+                [4, "Empty", "first", 0],
+                [4, "Empty", "second", 0]
+            ])),
+        ),
+    ] {
+        for reader in ["boost", "python"] {
+            let what = format!("{shape}, {reader}");
+            let r = read(
+                reader,
+                &Bytes::from(11_i32.to_le_bytes().to_vec()),
+                &t,
+                limits,
+            );
+            assert!(
+                matches!(&r, Err(ReadError {
+                    kind: ReadErrorKind::Other,
+                    detail: ReadDetail::Limit(l),
+                    ..
+                }) if l.kind == LimitKind::ZeroSizeElements),
+                "{what}: {r:?}"
+            );
+            // Ten fit.
+            let r = read(
+                reader,
+                &Bytes::from(10_i32.to_le_bytes().to_vec()),
+                &t,
+                limits,
+            );
+            let p = r.unwrap_or_else(|e| panic!("{what}: {e:?}"));
+            let Value::Dict(m) = p.value() else {
+                panic!("{what}: {:?}", p.value());
+            };
+            let Some((_, Value::List(items))) = m.entries().first() else {
+                panic!("{what}: {m:?}");
+            };
+            assert_eq!(items.len(), 10, "{what}");
+        }
+    }
+}

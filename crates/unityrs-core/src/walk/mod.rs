@@ -22,7 +22,7 @@
 //! other kind of the open's work counts toward), whatever its outcome:
 //! [`VALUE_WORK`] for each value it builds, writes or skips, and for each
 //! element of a primitive run a read holds as a run, or each primitive a
-//! write writes, its bytes ([`Work`]); and its ref-type lookups, a ref
+//! write writes, its bytes (`Work`); and its ref-type lookups, a ref
 //! type a lookup compares or indexes, or a probe, [`VALUE_WORK`] and the
 //! name bytes it reads (`dict::RefIndex::work`). Objects may share their
 //! bytes, and a read refused by a bound of its own
@@ -613,7 +613,7 @@ pub(crate) fn grow_step<T>(
 /// byte it writes whether its output is kept or not. A child a read or a
 /// write skips costs as much, as it costs a value against
 /// `max_values_per_object`. An element of a primitive run that a read holds
-/// as a run costs its width instead ([`Work::run`]).
+/// as a run costs its width instead (`Work::run`).
 pub const VALUE_WORK: u64 = size_of::<Value>() as u64;
 
 /// The open's work refusal, or `None` while the open's work is within its
