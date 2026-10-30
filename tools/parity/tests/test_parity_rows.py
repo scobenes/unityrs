@@ -943,6 +943,13 @@ class Rows(unittest.TestCase):
         env = UnityPy.Environment()
         quietly(env.load, ["asset"])
         self.assertEqual((list(env.files), len(env.objects)), (["asset"], 1))
+        # load tests and opens through fs, which strips a URL-style prefix (section 3), and keys by the path as
+        # given and its basename: `file:asset` is its own basename, `file:/d/asset` is not.
+        for given, keys in (("file:asset", ["file:asset"]), (f"file:{path}", [f"file:{path}", "asset"])):
+            env = UnityPy.Environment()
+            quietly(env.load, [given])
+            with self.subTest(given):
+                self.assertEqual((list(env.files), len(env.objects)), (keys, len(keys)))
 
     def test_load_file_tries_the_cwd_first(self):
         (self.tmp / "cwd").mkdir()
@@ -1658,18 +1665,24 @@ class Rows(unittest.TestCase):
             quietly(UnityPy.load, str(path))
         with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
             quietly(UnityPy.Environment(path=str(self.tmp)).find_file, "z.bin")
-        # The constructor and UnityPy.load hand a path to load_file unless its name ends in .zip or .apk (case-
-        # sensitive): v.bin and Z.ZIP raise. A .zip or .apk path goes to load_zip_file, which opens a path string
-        # itself, and its members load, as load_zip_file of any path does.
+        # The constructor (UnityPy.load is the constructor) hands a path to load_file unless its name ends in .zip or
+        # .apk (case-sensitive): v.bin and Z.ZIP raise. A .zip or .apk path goes to load_zip_file, which opens a path
+        # string itself, and its members load, as load_zip_file of any path does. Environment.load hands load_file
+        # the LocalFileOpener fs.open gives, so it raises for every name, .zip and .apk included.
+        self.assertIs(UnityPy.load, UnityPy.Environment)
         for name, loads in (("v.bin", False), ("Z.ZIP", False), ("y.zip", True), ("w.apk", True)):
             (self.tmp / name).write_bytes(data)
-            for call in (UnityPy.Environment, UnityPy.load):
-                with self.subTest(name, call=call.__name__):
-                    if loads:
-                        self.assertEqual(list(quietly(call, str(self.tmp / name)).files), ["inner.assets"])
-                    else:
-                        with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
-                            quietly(call, str(self.tmp / name))
+            with self.subTest(name, call="constructor"):
+                if loads:
+                    self.assertEqual(list(quietly(UnityPy.Environment, str(self.tmp / name)).files), ["inner.assets"])
+                else:
+                    with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
+                        quietly(UnityPy.Environment, str(self.tmp / name))
+            with (
+                self.subTest(name, call="load"),
+                self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"),
+            ):
+                quietly(UnityPy.Environment().load, [str(self.tmp / name)])
             (self.tmp / name).unlink()
         env = UnityPy.Environment()
         quietly(env.load_zip_file, str(path))
@@ -1892,7 +1905,9 @@ class Rows(unittest.TestCase):
         self.assertEqual(deref("archive:/CAB-x/SHARED.assets", keyed), "keyed")
         # find_file loads what it finds on disk as a dependency (is_dependency=True, its default), by path/name or by
         # the walk, and so through deref: the file joins `files` and the registry, never `objects` or `assets`, and a
-        # bundle's entries inherit the flag. A zip on disk raises load_file's TypeError.
+        # bundle's entries inherit the flag. A file on disk detected as a ZIP (fifth byte NUL, section 4) raises
+        # load_file's TypeError; a zip as zipfile writes it (fifth byte 20) loads as a raw reader, which has no
+        # `objects`.
         (d / "dep.assets").write_bytes(text_asset_file("dep"))
         (d / "b.bundle").write_bytes(S.fs_bundle([(b"CAB-b", text_asset_file("in bundle"), 4)]))
         (d / "z.zip").write_bytes(zip_with_a_directory())
@@ -1914,8 +1929,39 @@ class Rows(unittest.TestCase):
         )
         with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
             deref("archive:/CAB-x/z.zip", dependency)
-        for name in ("dep.assets", "b.bundle", "z.zip"):
+        plain = io.BytesIO()
+        with zipfile.ZipFile(plain, "w") as archive:
+            archive.writestr("in.assets", text_asset_file("in"))
+        self.assertEqual(plain.getvalue()[4], 20)
+        (d / "p.zip").write_bytes(plain.getvalue())
+        with self.assertRaisesRegex(
+            AttributeError, "^'EndianBinaryReader_Streamable' object has no attribute 'objects'$"
+        ):
+            deref("archive:/CAB-x/p.zip", UnityPy.Environment(path=str(d)))
+        for name in ("dep.assets", "b.bundle", "z.zip", "p.zip"):
             (d / name).unlink()
+        # A broken link the walk matches: the path/name step rejects it (fs.exists follows links), load_file's
+        # os.path.exists rejects the walked path, and find_sensitive_path finds nothing for it, so find_file returns
+        # None, loading nothing, and deref raises "Failed to resolve pointer" with the record's whole path.
+        broken = self.tmp / "broken"
+        (broken / "sub").mkdir(parents=True)
+        (broken / "gone.assets").symlink_to(broken / "nothing")
+        (broken / "sub" / "gone2.assets").symlink_to(broken / "nothing")
+        for name in ("gone.assets", "sub/gone2.assets", "gone2.assets"):
+            env = UnityPy.Environment(path=str(broken))
+            with self.subTest(name):
+                self.assertEqual((quietly(env.find_file, name), env.files), (None, {}))
+                self.assertEqual(
+                    sorted(env.local_files), [str(broken / "gone.assets"), str(broken / "sub" / "gone2.assets")]
+                )
+        for record in ("archive:/CAB-x/gone.assets", "archive:/CAB-x/sub/gone2.assets"):
+            with (
+                self.subTest(record),
+                self.assertRaisesRegex(
+                    FileNotFoundError, f"^Failed to resolve pointer - {re.escape(record)} not found!$"
+                ),
+            ):
+                deref(record, UnityPy.Environment(path=str(broken)))
         # The suffix steps answer a name even where the file it names exists: beside sub/ab.assets, a root
         # xab.assets answers ab.assets (the walk lists a folder's files before its subfolders), so a record in any
         # case reads the wrong file (Tier C, section 19.2). As `path/name`, sub/ab.assets is found.
@@ -1955,6 +2001,9 @@ class Rows(unittest.TestCase):
         (d / "sub" / "lower.assets").unlink()
         with self.assertRaisesRegex(FileNotFoundError, "File missing.assets not found in"):
             found(env, "missing.assets")
+        # The miss names the name as given, in its own case.
+        with self.assertRaisesRegex(FileNotFoundError, f"^File Missing.Assets not found in {re.escape(str(d))}$"):
+            found(UnityPy.Environment(path=str(d)), "Missing.Assets")
         (d / "sub" / "late.assets").write_bytes(text_asset_file("late"))
         with self.assertRaises(FileNotFoundError):
             found(env, "late.assets")  # the walk is not built again
@@ -2198,10 +2247,11 @@ class Rows(unittest.TestCase):
         env = quietly(UnityPy.Environment, "filelink")
         self.assertEqual((env.path, list(env.files), list(env.cabs)), (".", ["filelink"], ["filelink"]))
         # URL-style prefixes: fs strips file://, file:, local:// and local:, and load_file's os.path tests do not. A
-        # folder or a zip so named loads. load_file misses a prefixed name: None where os.listdir lists
-        # Environment.path, FileNotFoundError where Environment.path has a prefix. So a file argument loads nothing
-        # in the cwd and raises elsewhere, and find_file from a prefixed `path` (deref through it) raises where its
-        # path/name step finds the file, while a file only its walk finds loads.
+        # folder or a zip so named loads, and so does a .splitN name, whose parts _load_split_file reads through fs.
+        # load_file misses any other prefixed name: None where os.listdir lists Environment.path, FileNotFoundError
+        # where Environment.path has a prefix. So a file argument with no folder part loads nothing, one with a
+        # folder part raises, wherever the file lies, and find_file from a prefixed `path` (deref through it) raises
+        # where its path/name step finds the file, while a file only its walk finds loads.
         zipped = io.BytesIO()
         with zipfile.ZipFile(zipped, "w") as archive:
             archive.writestr("in.assets", text_asset_file("in"))
@@ -2237,9 +2287,39 @@ class Rows(unittest.TestCase):
         for argument in ("file:x.bin", "local:x.bin"):
             env = quietly(UnityPy.Environment, argument)
             self.assertEqual((env.path, env.files), (".", {}))
-        for argument, listed in (("file://x.bin", "file:"), (f"file:{cwd}/x.bin", f"file:{cwd}")):
+        # A folder part decides, not where the file lies: x.bin is in the cwd, out.bin outside it.
+        (self.tmp / "out.bin").write_bytes(text_asset_file("out"))
+        for argument, listed in (
+            ("file://x.bin", "file:"),
+            ("local://x.bin", "local:"),
+            ("file:./x.bin", "file:."),
+            (f"file:{cwd}/x.bin", f"file:{cwd}"),
+            (f"file:{self.tmp}/out.bin", f"file:{self.tmp}"),
+        ):
             with self.subTest(argument), self.assertRaisesRegex(FileNotFoundError, unlistable(listed)):
                 quietly(UnityPy.Environment, argument)
+        # A .splitN name loads through the split branch, keyed by its prefixed base path and registered as a CAB
+        # under that path's simplified name (ntpath.basename does not split at `file:`).
+        (work / "b.assets.split0").write_bytes(text_asset_file("b"))
+        (work / "d").mkdir()
+        whole = text_asset_file("d")
+        (work / "d" / "a.assets.split0").write_bytes(whole[:40])
+        (work / "d" / "a.assets.split1").write_bytes(whole[40:])
+
+        def loaded(env):
+            return env.path, list(env.files), sorted(env.cabs), [o.parse_as_dict()["m_Name"] for o in env.objects]
+
+        self.assertEqual(
+            loaded(quietly(UnityPy.Environment, "file:b.assets.split0")),
+            (".", ["file:b.assets"], ["file:b.assets"], ["b"]),
+        )
+        self.assertEqual(
+            loaded(quietly(UnityPy.Environment, f"file:{cwd}/d/a.assets.split0")),
+            (f"file:{cwd}/d", [f"file:{cwd}/d/a.assets"], ["a.assets"], ["d"]),
+        )
+        env = UnityPy.Environment()
+        self.assertEqual(type(quietly(env.load_file, "local://d/a.assets.split1")).__name__, "SerializedFile")
+        self.assertEqual(loaded(env)[1:], (["local://d/a.assets"], ["a.assets"], ["d"]))
         # Links under the folder are files: a link to a folder is never entered and raises when opened, a broken one
         # raises, a link to a file loads under its own path and name. find_file reaches a file under a linked folder
         # only as path/name.
