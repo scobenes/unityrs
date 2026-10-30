@@ -32,13 +32,29 @@
 //! ([`crate::once::get_or_publish_result`]).
 //!
 //! **Runs.** The blocks one read overlaps are decoded into one buffer, a run,
-//! cached by its block span. A read whose span a cached run covers is a
-//! zero-copy slice of it; any other read decodes its own whole span into a
-//! new run, so a block that two spans share is decoded once per span.
-//! `load_all` decodes every block into one run. [`BundleFile::entry_range`]
-//! is a read like any other: it measures, slices a covering cached run when
-//! there is one, and otherwise decodes its span into a run it caches, so N
-//! ranges in one block decode it once.
+//! cached by its block span (a span of stored blocks that are their own
+//! bytes is one slice of the input, cached as a run too). A read whose span
+//! a cached run covers is a zero-copy slice of it; any other read decodes
+//! its own whole span into a new run, so a block that two spans share is
+//! decoded once per span. `load_all` decodes every block into one run.
+//! [`BundleFile::entry_range`] is a read like any other: it measures, slices
+//! a covering cached run when there is one, and otherwise decodes its span
+//! into a run it caches, so N ranges in one block decode it once.
+//!
+//! **What a read costs** (`index`). The bundle keeps where each block of the
+//! known prefix ends (the prefix sums of the known lengths, in a table
+//! charged at open), and its cached runs in an index by first block (a
+//! B-tree charged a share per run), in which no run contains another. A read
+//! finds its first block and its span's end by binary search of the prefix
+//! and a covering run by one search of the index, extends the prefix only
+//! past its end (so each block is learned once per open), and decodes only
+//! the blocks of a span no run covers: O(log B + log R) steps besides the
+//! blocks it learns or decodes, for B blocks and R runs. Every step counts
+//! as the open's work, 8 bytes a step (a row a search reads, a block a read
+//! learns, decodes again or checks for a stored slice, a run a publish
+//! drops), so K reads over B blocks count O(K log B) steps, where each read
+//! walked the blocks from block 0 and scanned every run, uncounted
+//! (`tests/bundles/runs.rs`).
 //!
 //! **Memory and work.** Every decode (first, measuring, repeated) writes
 //! into a [`crate::budget::DecodeBuf`] on the input's meter, one segment per
@@ -65,10 +81,12 @@
 //! lock held: a run is decoded first and then published into `runs`, and an
 //! entry is parsed first and then published into its cell
 //! ([`crate::once::get_or_publish_result`]). Publishing a run may grow the
-//! run table under its mutex, which charges the meter and so calls the
+//! run index under its mutex, which charges the meter and so calls the
 //! budget; the budget's contract forbids it to block or call the core
 //! ([`crate::budget::MemoryBudget`]), and a run replaced or dropped under
-//! the lock is released after it.
+//! the lock is released after it. The known prefix takes no lock: a reader
+//! loads how many blocks it holds and searches them while another thread
+//! extends it.
 //!
 //! UnityPy rules ported exactly (plan section 3.6):
 //! - the extra byte after the data flags only for non-UnityFS signatures
@@ -99,14 +117,16 @@ use bytes::Bytes;
 use crate::detect::{DetectError, check_entry_type};
 use crate::error::Error;
 use crate::files::{File, Parent, ParentKind, parse_file};
-use crate::limits::{Charge, GrantScope, Meter, MeteredVec};
+use crate::limits::{Charge, GrantScope, Meter};
 use crate::once::{CellError, ResultCell, get_or_publish_result};
 use crate::options::FileContext;
 use crate::raw::RawStr;
 use crate::stream::py_read;
 use crate::version::{FlagsClass, ResolvedVersion, VersionError};
+use index::{Ends, RunIndex};
 
 mod decode;
+mod index;
 mod open;
 mod runs;
 
@@ -207,9 +227,12 @@ pub struct BundleFile {
     /// measured), or the error its decode gave, kept so it is not decoded
     /// again.
     lengths: Box<[ResultCell<u64, Error>]>,
-    /// Decoded block runs: `(first block, end block, bytes)`, each run's
-    /// charge inside its `Bytes`. Locked only to look up or publish.
-    runs: Mutex<MeteredVec<(usize, usize, Bytes)>>,
+    /// Where each block of the known prefix ends in the joined data, found
+    /// by binary search; charged at open, extended with no lock.
+    ends: Ends,
+    /// The cached runs by first block, each run's charge inside its `Bytes`
+    /// and the index's own in it. Locked only to look up or publish.
+    runs: Mutex<RunIndex>,
     /// Parsed entries, by directory index, published once; a kept error
     /// carries the charge for its heap, and a refused charge is not kept.
     entries: Box<[ResultCell<File, Error>]>,

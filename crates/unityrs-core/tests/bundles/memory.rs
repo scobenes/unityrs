@@ -70,7 +70,10 @@ fn decode_work_stops_a_lazy_read_and_a_reopen_on_the_same_meter_shares_it() {
 /// `Meter::count_decode` admits work. A read whose decodes bring the open's
 /// work exactly to `max_decode_work` succeeds, where it was counted and then
 /// refused at publish with `limit DecodeWork: N > N`; one byte less refuses
-/// it with a note whose work is past the bound. A gzip detection that
+/// it with a note whose work is past the bound. A read again is the cached
+/// run's slice: it decodes nothing, and its steps (its searches of the known
+/// prefix and of the run index, plan 3.6 "Runs") are within the allowance
+/// only when they fit it. A gzip detection that
 /// starts with the allowance exactly spent is refused by its first chunk,
 /// and its note counts that chunk: no refusal names work at the bound.
 #[test]
@@ -85,7 +88,8 @@ fn work_that_lands_exactly_on_the_allowance_is_within_it() {
         }],
         ..BundleSpec::default()
     });
-    // The open's work, then the read's, under the default allowance.
+    // The open's work, then the read's, then a read again's, under the
+    // default allowance.
     let c = ctx();
     let m = meter_for(&c);
     let b = open_with(&data, &c, &m).unwrap();
@@ -93,7 +97,11 @@ fn work_that_lands_exactly_on_the_allowance_is_within_it() {
     b.entry_bytes(0).unwrap();
     let work = m.decoded();
     assert!(work > opened, "{opened}, then {work}");
-    for limit in [work - 1, work, work + 1] {
+    assert_eq!(&b.entry_bytes(0).unwrap()[..], &entry[..]);
+    let again = m.decoded() - work;
+    let size = u64::try_from(entry.len()).unwrap();
+    assert!((1..size).contains(&again), "a read again counted {again}");
+    for limit in [work - 1, work, work + again - 1, work + again] {
         let ctx = ctx_with(|c| c.limits.max_decode_work = limit);
         let m = meter_for(&ctx);
         let b = open_with(&data, &ctx, &m).unwrap();
@@ -105,21 +113,38 @@ fn work_that_lands_exactly_on_the_allowance_is_within_it() {
         if limit >= work {
             assert_eq!(m.decoded(), work);
             assert_eq!(m.work_used_up(), None, "limit {limit}");
-            // Kept: read again, it is the run's slice, and no more work.
-            assert_eq!(&b.entry_bytes(0).unwrap()[..], &entry[..]);
-            assert_eq!(m.decoded(), work);
+            // Kept: read again, it is the run's slice, its steps the only
+            // work, and refused only when they pass the allowance.
+            match b.entry_bytes(0) {
+                Ok(got) if limit >= work + again => {
+                    assert_eq!(&got[..], &entry[..]);
+                    assert_eq!(m.decoded(), work + again);
+                }
+                Err(e) if limit < work + again => {
+                    // The steps before the refused one are counted; the
+                    // refused one is not.
+                    assert!(past(&e), "limit {limit}: {e}");
+                    assert!(m.decoded() < work + again, "limit {limit}");
+                    assert_eq!(m.work_used_up(), None, "limit {limit}");
+                }
+                got => panic!("limit {limit} for {work} + {again}: {got:?}"),
+            }
         }
     }
 
     // Two rows over one gzip stream: the open and row 0's detection under
-    // the default allowance, then an allowance of exactly that much.
+    // the default allowance, then row 1's read (its steps: the run is
+    // cached), then an allowance of exactly that much, which row 1's
+    // detection starts with spent.
     let data = rows_over_one_gzip_stream(2);
     let c = ctx();
     let m = meter_for(&c);
     let b = open_with(&data, &c, &m).unwrap();
     assert!(b.entry(0).is_ok());
     let work = m.decoded();
-    let ctx = ctx_with(|c| c.limits.max_decode_work = work);
+    b.entry_bytes(1).unwrap();
+    let read = m.decoded() - work;
+    let ctx = ctx_with(|c| c.limits.max_decode_work = work + read);
     let m = meter_for(&ctx);
     let b = open_with(&data, &ctx, &m).unwrap();
     assert!(matches!(b.entry(0), Ok(File::Raw(_))));
@@ -128,7 +153,7 @@ fn work_that_lands_exactly_on_the_allowance_is_within_it() {
         Err(e) => assert!(past(&e), "{e}"),
         Ok(_) => panic!("row 1 detected past the allowance"),
     }
-    assert!(m.decoded() > work, "the refused chunk is counted");
+    assert!(m.decoded() > work + read, "the refused chunk is counted");
 }
 
 #[test]

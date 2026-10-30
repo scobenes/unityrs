@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use bytes::Bytes;
 
 use super::decode::decode_one;
+use super::index::{Ends, RunIndex};
 use super::{BlockInfo, BundleFile, BundleHeader, DirEntry, FileSlot, LayoutKind};
 use crate::codec::Codec;
 use crate::error::{Error, Unsupported};
@@ -115,6 +116,8 @@ impl BundleFile {
         let lengths = keep(lengths, &mut charge)?;
         let entries = keep(entries, &mut charge)?;
         let stored = keep(stored, &mut charge)?;
+        let (ends, c) = Ends::new(blocks.len(), meter)?;
+        charge.absorb(c);
         Ok(Arc::new_cyclic(|this| Self {
             name,
             source: data,
@@ -124,7 +127,8 @@ impl BundleFile {
             files,
             parent,
             lengths,
-            runs: Mutex::new(MeteredVec::new(meter)),
+            ends,
+            runs: Mutex::new(RunIndex::new(meter)),
             entries,
             charge,
             ctx: ctx.clone(),

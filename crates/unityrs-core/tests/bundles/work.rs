@@ -101,7 +101,10 @@ fn rows_over_one_failing_entry_stop_at_the_opens_work() {
 
 /// The counted work of parsing `rows` directory rows over one complete
 /// entry of `r` blob rows, eagerly: every block decoded first, then each
-/// entry parsed, as `load_all` does.
+/// entry parsed, as `load_all` does. Its reads are not the parses' work:
+/// `load_all`'s read of every block and each row's read are a cached run's
+/// slice here (one stored block, one run), each costing what a read of row
+/// 0 then costs, its steps (plan 3.6 "Runs"), which are taken off.
 fn eager_parse_work(r: usize, rows: usize) -> u64 {
     let entry = no_nul_strings(r, true);
     let data = rows_over_one_entry(&entry, rows);
@@ -114,7 +117,12 @@ fn eager_parse_work(r: usize, rows: usize) -> u64 {
     for i in 0..rows {
         assert!(matches!(b.entry(i), Ok(File::Serialized(_))), "row {i}");
     }
-    meter.decoded() - before
+    let work = meter.decoded() - before;
+    let before = meter.decoded();
+    b.entry_bytes(0).unwrap();
+    let read = meter.decoded() - before;
+    assert!((1..64).contains(&read), "a read counted {read}");
+    work - (1 + u64::try_from(rows).unwrap()) * read
 }
 
 /// Round 4 (MEDIUM): a 700-byte bundle of 3 rows over an entry of 100,000
