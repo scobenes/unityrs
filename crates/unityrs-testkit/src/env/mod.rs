@@ -20,11 +20,12 @@
 mod catalog;
 
 pub use catalog::{
-    asset_bundle_modes, bad_cab, container_other_file, cross_bundle_pointer, deref_rules,
-    deref_sibling_nested, fallback_file_pointer, last_block_fails, loose_external_pointer,
-    nested_after_cab, nested_duplicates, nested_raw_replaced, nested_reloaded,
-    nested_replaced_unread, preload_below_start, preload_loads_new_cab, preload_nested_external,
-    preload_paths, preload_raw_target, preload_skips, resolver_loads, resource_in_nested_cab,
+    asset_bundle_modes, bad_cab, container_other_file, cross_bundle_pointer, dependency_scenes,
+    deref_rules, deref_sibling_nested, fallback_file_pointer, last_block_fails,
+    loose_external_pointer, nested_after_cab, nested_dropped_evicted, nested_duplicates,
+    nested_raw_replaced, nested_reloaded, nested_reloaded_spans, nested_replaced_unread,
+    preload_below_start, preload_loads_new_cab, preload_nested_external, preload_paths,
+    preload_raw_target, preload_skips, resolver_loads, resource_in_nested_cab,
     resource_in_own_nested, scenes,
 };
 
@@ -43,6 +44,17 @@ pub struct Scene {
     /// file (UnityPy's case-insensitive search never matches a name without
     /// a directory, `helpers/ImportHelper.py:159-173`).
     pub resolver: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+/// A scene some of whose loads are dependencies (UnityPy's
+/// `load_file(..., is_dependency=True)`, the core's
+/// `Environment::load_dependency`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DepScene {
+    /// The files, in load order.
+    pub scene: Scene,
+    /// The indexes of `scene.files` loaded as dependencies.
+    pub dependencies: Vec<usize>,
 }
 
 /// One container row: the path, its preload span and the asset pointer.

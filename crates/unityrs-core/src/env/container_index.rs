@@ -324,9 +324,12 @@ impl Environment {
     /// iteration`), at the step after; a key a nested container's entries
     /// make under [`LoadMode::Lazy`] is not one (an eager load made it at
     /// load), nor is one another thread's load makes. Under `Lazy` the pass
-    /// first reaches every registered entry (the registry's module docs),
-    /// so it walks what an eager load registered. Two passes may run at
-    /// once: each walks every table not yet marked, and each `path_dict`
+    /// first reaches every registered entry and every dropped one, an
+    /// evicted dependency's opened again (the registry's module docs; plan
+    /// section 9, Q13), so it walks what an eager load registered; a slot
+    /// dropped after a pass is a later load's, which starts a new
+    /// generation, so a pass finished at the current one leaves none
+    /// unreached but for a kept refusal's. Two passes may run at once: each walks every table not yet marked, and each `path_dict`
     /// entry keeps the least stamp ([`crate::container`]), so both leave
     /// what one after the other would.
     ///
@@ -393,8 +396,9 @@ impl Environment {
                 after = Some(rank);
             }
             // Every slot a registration dropped, those these reaches dropped
-            // included; a refusal there is the pass's.
-            reg.settle()?;
+            // included, and those of an evicted dependency, opened again
+            // (plan section 9, Q13); a refusal there is the pass's.
+            reg.settle_for_pass()?;
         }
         let mut siblings = Siblings::default();
         let mut after: Option<Rank> = None;

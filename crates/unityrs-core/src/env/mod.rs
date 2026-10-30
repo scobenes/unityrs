@@ -31,9 +31,10 @@
 //! registered when it is *reached*, before any lookup that resolves its
 //! slot, starts from a file inside it, names it as the asking file's
 //! sibling or resource candidate, or walks the container, and before a
-//! registration drops its slot, with the position and the value an eager
-//! load gives them, so only a lookup by name alone of one of its entries
-//! can miss before then ([`registry`]'s module docs state the invariant);
+//! registration drops its slot (an evicted dependency's before the next
+//! container pass), with the position and the value an eager load gives
+//! them, so only a lookup by name alone of one of its entries can miss
+//! before then ([`registry`]'s module docs state the invariant);
 //! (c) a block that fails to decode, or trips a limit,
 //! after the last byte any read needs fails the load under `Eager` (UnityPy
 //! decodes every block before any entry, `files/BundleFile.py:173-186`) and

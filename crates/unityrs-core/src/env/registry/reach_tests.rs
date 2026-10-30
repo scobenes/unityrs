@@ -17,6 +17,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
 
+use super::pending::List;
 use super::{Hook, Registry, Slot};
 #[cfg(test)]
 use crate::env::gate::{Event, Gate, Run};
@@ -29,7 +30,7 @@ use unityrs_testkit::rng::Rng;
 
 impl Registry {
     /// The slot under `key` (already simplified), without settling.
-    fn peek(&self, key: &str) -> Option<Arc<Slot>> {
+    pub(super) fn peek(&self, key: &str) -> Option<Arc<Slot>> {
         self.read()
             .slots
             .get(key.as_bytes())
@@ -37,14 +38,14 @@ impl Registry {
     }
 
     /// Whether `key` (already simplified) is registered, without settling.
-    fn has(&self, key: &str) -> bool {
+    pub(super) fn has(&self, key: &str) -> bool {
         self.read().slots.contains_key(key.as_bytes())
     }
 
-    /// The slots listed now.
+    /// The slots listed now, on either list.
     pub(crate) fn listed(&self) -> Vec<Arc<Slot>> {
         let inner = self.read();
-        inner.pending.slots.iter().map(|(_, s)| s.clone()).collect()
+        inner.pending.all().into_iter().map(|(_, s)| s).collect()
     }
 
     /// R1's tables agree (every key of the order is in the table at its
@@ -58,10 +59,20 @@ impl Registry {
             assert_eq!(&e.first, rank, "a key's position");
             assert!(e.slot.rank >= e.first, "a key's value ranks below it");
         }
-        let listed = &inner.pending.slots;
+        let listed = inner.pending.all();
         assert!(listed.windows(2).all(|w| w[0].0 < w[1].0), "list order");
-        let len = self.pending_len.load(std::sync::atomic::Ordering::Acquire);
-        assert_eq!(len, listed.len(), "the list's count");
+        let len = |l| inner.pending.len(l);
+        let ordering = std::sync::atomic::Ordering::Acquire;
+        assert_eq!(
+            self.pending_len.load(ordering),
+            len(List::Listed),
+            "the list's count"
+        );
+        assert_eq!(
+            self.evicted_len.load(ordering),
+            len(List::Evicted),
+            "the evicted list's count"
+        );
     }
 }
 
@@ -166,6 +177,9 @@ enum Op {
     LoadP,
     /// A load whose entry drops `q`'s `X` unreached.
     LoadR,
+    /// A reload of `o` on the same `Bytes`, whose `INNER` stands in for
+    /// the key's value when that is unreached (plan section 9, Q14).
+    LoadO2,
     /// A lookup by name of an entry inside `INNER`.
     GetI,
     /// A lookup of `Y`, a live container, which reaches it.
@@ -176,7 +190,29 @@ enum Op {
     Pass,
 }
 
-const OPS: [Op; 6] = [Op::LoadP, Op::LoadR, Op::GetI, Op::GetY, Op::Keys, Op::Pass];
+const OPS: [Op; 7] = [
+    Op::LoadP,
+    Op::LoadR,
+    Op::LoadO2,
+    Op::GetI,
+    Op::GetY,
+    Op::Keys,
+    Op::Pass,
+];
+
+/// Whether `op` is a load.
+fn is_load(op: Op) -> bool {
+    matches!(op, Op::LoadP | Op::LoadR | Op::LoadO2)
+}
+
+/// The file a load op loads.
+fn loaded(scene: &Scene, op: Op) -> (&'static str, &Bytes) {
+    match op {
+        Op::LoadP => ("p.bundle", &scene.p),
+        Op::LoadR => ("r.bundle", &scene.r),
+        _ => ("o2.bundle", &scene.o),
+    }
+}
 
 /// The points an operation may be stopped at.
 const POINTS: [Hook; 4] = [
@@ -190,8 +226,10 @@ const POINTS: [Hook; 4] = [
 fn apply(env: &Environment, scene: &Scene, op: Op) -> Option<bool> {
     let meter = Meter::unlimited();
     match op {
-        Op::LoadP => drop(env.load(src("p.bundle", &scene.p)).unwrap()),
-        Op::LoadR => drop(env.load(src("r.bundle", &scene.r)).unwrap()),
+        Op::LoadP | Op::LoadR | Op::LoadO2 => {
+            let (name, data) = loaded(scene, op);
+            drop(env.load(src(name, data)).unwrap());
+        }
         Op::GetI => {
             let found = env.get_cab(&RawStr::from("CAB-I"), &meter).unwrap();
             return Some(found.is_some());
@@ -207,46 +245,47 @@ fn apply(env: &Environment, scene: &Scene, op: Op) -> Option<bool> {
 /// started (R4: each is reached) and what it found.
 fn after(rig: &Rig, op: Op, listed: &[Arc<Slot>], found: Option<bool>) {
     rig.check();
-    let reg = rig.env.registry();
     for slot in listed {
-        // A slot is listed with the change that drops it, and taken off
-        // again when the key's value stands in for it (R4's exemption).
-        let covered = || {
-            let inner = reg.read();
-            let standing = inner.slots.values().map(|e| &e.slot);
-            standing.clone().any(|s| super::reach::stands_in(s, slot))
-                && !inner
-                    .pending
-                    .slots
-                    .iter()
-                    .any(|(_, l)| Arc::ptr_eq(l, slot))
-        };
+        // A slot the key's value stands in for is never listed, so every
+        // listed one is reached.
         assert!(
-            !slot.unreached() || covered(),
+            !slot.unreached(),
             "R4: {op:?} returned with a slot listed before it unreached"
         );
     }
     let [inner, x, y] = [0, 1, 2].map(|i| &rig.containers[i].0);
+    let registered = |sub: &[&str], what: &str| {
+        let reg = rig.env.registry();
+        for k in sub {
+            assert!(reg.has(k), "{what}: {k} is not registered");
+        }
+    };
     match op {
-        // A registration that drops a slot returns with it reached.
-        Op::LoadP => assert!(!inner.unreached(), "R4: LoadP's own drop"),
+        // A registration that drops a slot returns with its subtree
+        // registered: the slot reached, or (`INNER`, after the reload) the
+        // reload's slot, which stands in for the first load's, reached.
+        Op::LoadP => registered(SUBTREES[0].1, "R4: LoadP's own drop"),
         Op::LoadR => assert!(!x.unreached(), "R4: LoadR's own drop"),
         // A lookup that resolves a container's slot reaches it.
         Op::GetY => assert!(!y.unreached(), "a lookup of Y"),
         Op::Pass => {
-            for (slot, _) in &rig.containers {
-                assert!(!slot.unreached(), "the pass reaches every container");
+            for (_, sub) in &rig.containers {
+                registered(sub, "the pass reaches every container");
             }
+            assert!(!x.unreached() && !y.unreached(), "the pass");
         }
-        Op::GetI | Op::Keys => {}
+        Op::LoadO2 | Op::GetI | Op::Keys => {}
     }
     if op == Op::GetI && listed.iter().any(|s| Arc::ptr_eq(s, inner)) {
         assert_eq!(found, Some(true), "a lookup after INNER's drop");
     }
 }
 
-/// What each name finds, as a comparable answer.
-fn answers(env: &Environment) -> Vec<String> {
+/// What each name finds, as a comparable answer; `inner` left out when
+/// `own_key` (its own key is (b)'s difference: a reload's container after
+/// the last load of `p`'s CAB of its name holds it under `Lazy`, where
+/// `Eager` keeps the CAB).
+fn answers(env: &Environment, own_key: bool) -> Vec<String> {
     let meter = Meter::unlimited();
     let names = [
         "cab-o",
@@ -260,6 +299,7 @@ fn answers(env: &Environment) -> Vec<String> {
     ];
     names
         .iter()
+        .filter(|n| !(own_key && **n == "inner"))
         .map(|n| match env.get_cab(&RawStr::from(*n), &meter).unwrap() {
             None => format!("{n}: none"),
             Some(Cab::Serialized(sf)) => format!("{n}: {}", sf.name()),
@@ -301,15 +341,18 @@ fn quiet(rig: &Rig, loads: &[Op]) {
         ("s.bundle", &scene.s),
     ];
     for op in loads {
-        order.push(match op {
-            Op::LoadP => ("p.bundle", &scene.p),
-            _ => ("r.bundle", &scene.r),
-        });
+        order.push(loaded(scene, *op));
     }
     for (name, data) in order {
         eager.load(src(name, data)).unwrap();
     }
-    assert_eq!(answers(&rig.env), answers(&eager), "R1: values");
+    let at = |op| loads.iter().rposition(|o| *o == op);
+    let own_key = matches!((at(Op::LoadP), at(Op::LoadO2)), (Some(p), Some(o2)) if p < o2);
+    assert_eq!(
+        answers(&rig.env, own_key),
+        answers(&eager, own_key),
+        "R1: values"
+    );
     assert_eq!(keys(&rig.env), keys(&eager), "R1: positions");
 }
 
@@ -374,17 +417,14 @@ fn reach_and_settle_keep_their_invariants_under_every_interleaving() {
                         }
                         // The loads in the order they took their sequence
                         // numbers: `a` took its own before it stopped.
-                        let loads: Vec<Op> = [a, b]
-                            .into_iter()
-                            .filter(|o| matches!(o, Op::LoadP | Op::LoadR))
-                            .collect();
+                        let loads: Vec<Op> = [a, b].into_iter().filter(|o| is_load(*o)).collect();
                         quiet(&rig, &loads);
                     }
                 }
             }
         }
     }
-    assert_eq!(cases, 6 * 4 * 6 * 9);
+    assert_eq!(cases, 7 * 4 * 7 * 9);
 }
 
 /// Review round 5's interleaving, by name: a load stopped after it listed
@@ -413,6 +453,73 @@ fn a_load_returns_with_its_drop_reached_while_another_settle_holds_it() {
     quiet(&rig, &[Op::LoadP]);
 }
 
+/// A standing slot that is the key's value learns a lower position from a
+/// registration that ranks below it (two loads of `o` with a `CAB-Z` after
+/// `INNER`, on the same `Bytes`, the later one's `INNER` registered first:
+/// `CAB-Z`'s key then sits between the two positions) while a lookup on a third
+/// thread is reaching it, stopped after its registrations: the reach reads
+/// the position again after it marks the slot reached and registers once
+/// more there, so the entries take the first load's positions, as an eager
+/// load gives them (`reach.rs`'s module docs, "Stand-ins"; plan section 9,
+/// Q14, revised after review round 6). Run as well with the reach done
+/// before the registration, which then finds the slot reached and lists
+/// its own slot, which its load reaches before it returns.
+#[test]
+fn a_reach_that_learns_a_lower_position_registers_there() {
+    let inner = bundle(&[("CAB-I", cab("i")), ("CAB-I.resS", res_bytes(8, 1))]);
+    let o = Bytes::from(bundle(&[
+        ("CAB-O", cab("o")),
+        ("INNER", inner),
+        ("CAB-Z", cab("z")),
+    ]));
+    for reach_first in [false, true] {
+        let mut options = EnvOptions::unitypy();
+        options.load = LoadMode::Lazy;
+        let env = Environment::new(options);
+        let gate = Gate::install(&env);
+        let load = |name: &'static str, at: Option<(Hook, usize)>| {
+            let (env, data) = (env.clone(), o.clone());
+            gate.run(at, move || drop(env.load(src(name, &data)).unwrap()))
+        };
+        // The first load stops after its first key, `CAB-O`; the second
+        // registers `INNER` first, at its own position.
+        let first = load("o.bundle", Some((Hook::Published, 1)));
+        first.stopped();
+        load("o2.bundle", None).finish();
+        let standing = env.registry().peek("inner").expect("INNER");
+        assert_eq!(standing.position(), standing.rank.load);
+        let get = {
+            let env = env.clone();
+            let at = (!reach_first).then_some((Hook::Reached, 1));
+            gate.run(at, move || {
+                let meter = Meter::unlimited();
+                drop(env.get_cab(&RawStr::from("INNER"), &meter).unwrap());
+            })
+        };
+        if reach_first {
+            get.finish();
+            first.finish();
+        } else {
+            get.stopped();
+            assert!(env.registry().has("cab-i"), "the reach registered");
+            first.finish();
+            assert!(standing.position() < standing.rank.load);
+            assert!(standing.unreached(), "the reach is stopped");
+            get.finish();
+        }
+        assert!(!standing.unreached(), "reach first: {reach_first}");
+        env.registry().check();
+        assert!(env.registry().listed().is_empty());
+        let eager = Environment::new(EnvOptions::unitypy());
+        for name in ["o.bundle", "o2.bundle"] {
+            eager.load(src(name, &o)).unwrap();
+        }
+        let what = format!("reach first: {reach_first}");
+        assert_eq!(answers(&env, false), answers(&eager, false), "{what}");
+        assert_eq!(keys(&env), keys(&eager), "{what}: the positions");
+    }
+}
+
 /// A listed slot is reached by every load's registration, whether or not
 /// it drops a slot itself, and by the key listing, as by every other
 /// reader (R3; review round 5: only a registration that dropped a slot
@@ -430,9 +537,7 @@ fn every_load_and_the_key_listing_reach_what_is_listed() {
         {
             let mut inner = reg.write();
             inner.pending.push(y.clone());
-            let len = inner.pending.slots.len();
-            reg.pending_len
-                .store(len, std::sync::atomic::Ordering::Release);
+            reg.store_lens(&inner.pending);
         }
         if by_keys {
             let _ = reg.keys().count();
@@ -474,7 +579,7 @@ fn reach_and_settle_keep_their_invariants_under_a_random_stress() {
                     for _ in 0..12 {
                         let op = OPS[rng.below(OPS.len())];
                         let listed = rig.env.registry().listed();
-                        let found = if matches!(op, Op::LoadP | Op::LoadR) {
+                        let found = if is_load(op) {
                             let mut order = plain(&loads);
                             let found = apply(&rig.env, &rig.scene, op);
                             order.push(op);

@@ -4,12 +4,12 @@
 mod nested;
 
 pub use nested::{
-    deref_sibling_nested, nested_duplicates, nested_raw_replaced, nested_reloaded,
-    nested_replaced_unread, preload_nested_external, resource_in_nested_cab,
-    resource_in_own_nested,
+    deref_sibling_nested, nested_dropped_evicted, nested_duplicates, nested_raw_replaced,
+    nested_reloaded, nested_reloaded_spans, nested_replaced_unread, preload_nested_external,
+    resource_in_nested_cab, resource_in_own_nested,
 };
 
-use super::{Bundle, Obj, Scene, bundle, bundle_spec, res_bytes, row, serialized};
+use super::{Bundle, DepScene, Obj, Scene, bundle, bundle_spec, res_bytes, row, serialized};
 use crate::bundle::{BlockOverride, TestCodec};
 
 fn named(name: &str, data: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
@@ -607,16 +607,26 @@ pub fn scenes() -> Vec<(&'static str, Scene)> {
         ("nested_replaced_unread", nested_replaced_unread()),
         ("nested_reloaded", nested_reloaded()),
         ("nested_raw_replaced", nested_raw_replaced()),
+        ("nested_reloaded_spans", nested_reloaded_spans()),
     ]
+}
+
+/// Every scene some of whose loads are dependencies, by name: what
+/// `tools/fixtures/env.py` records with those loads made as UnityPy's
+/// `load_file(..., is_dependency=True)`.
+#[must_use]
+pub fn dependency_scenes() -> Vec<(&'static str, DepScene)> {
+    vec![("nested_dropped_evicted", nested_dropped_evicted())]
 }
 
 #[cfg(test)]
 mod tests {
-    use super::scenes;
+    use super::{dependency_scenes, scenes};
 
     #[test]
     fn every_scene_has_files_with_distinct_names() {
-        for (name, scene) in scenes() {
+        let deps = dependency_scenes().into_iter().map(|(n, d)| (n, d.scene));
+        for (name, scene) in scenes().into_iter().chain(deps) {
             assert!(!scene.files.is_empty(), "{name}");
             let mut names: Vec<_> = scene.files.iter().map(|f| &f.0).collect();
             names.sort();

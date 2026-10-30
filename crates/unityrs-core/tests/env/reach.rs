@@ -252,3 +252,56 @@ fn a_pass_the_meter_refuses_is_counted_until_it_is_kept() {
     assert_eq!(meter.granted(), granted, "a pass walked the table again");
     assert_eq!(meter.decoded(), done, "a pass counted more work");
 }
+
+/// The work counted on `a.bundle`'s meter: `m` raw entries of one 160-byte
+/// block each, all alike, loaded `Lazy`, each reached once in directory
+/// order (a read of its first bytes, the same for each); by `settle`, after
+/// `b.bundle`'s nested `INNER`, which holds entries of the same names, drops
+/// all `m` slots unreached at once, or, with `by_name`, by a lookup of each
+/// name, which lists nothing.
+fn reach_work(m: usize, by_name: bool) -> u64 {
+    let names: Vec<String> = (0..m).map(|i| format!("E{i:05}")).collect();
+    let entries = |data: &dyn Fn() -> Vec<u8>| -> Vec<(&str, Vec<u8>)> {
+        names.iter().map(|n| (n.as_str(), data())).collect()
+    };
+    let a = Bytes::from(bundle(&entries(&|| res_bytes(160, 7))));
+    let b = Bytes::from(bundle(&[("INNER", bundle(&entries(&|| res_bytes(8, 9))))]));
+    let env = lazy_batch(FileContext::unitypy());
+    let meter = env.load(bytes("a.bundle", &a)).unwrap().meter().clone();
+    let asker = Meter::unlimited();
+    let before = meter.decoded();
+    if by_name {
+        for n in &names {
+            assert!(
+                env.get_cab(&RawStr::from(n.as_str()), &asker)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    } else {
+        env.load(bytes("b.bundle", &b)).unwrap();
+        let found = env.get_cab(&RawStr::from("INNER"), &asker);
+        assert!(found.unwrap().is_none(), "INNER is a container");
+    }
+    meter.decoded() - before
+}
+
+/// Settling the slots a registration dropped takes O(m log m) steps for m
+/// slots, each counted as work of the slots' input (plan section 3.16, R5;
+/// review round 6: the list was a `Vec` whose front removal shifted every
+/// later slot, O(m²) steps that nothing counted). The steps are what
+/// settling m slots counts past reaching each by name (`reach_work`): at
+/// least one step for each of a slot's three list operations (listed,
+/// found, taken off), and at most ⌈log2 m⌉ + 1 for each and for the last
+/// search, at 8 bytes a step (`pending.rs`).
+#[test]
+fn settling_dropped_slots_counts_steps_that_grow_as_m_log_m() {
+    for m in [64_u64, 256, 1024] {
+        let n = usize::try_from(m).unwrap();
+        let (settled, by_name) = (reach_work(n, false), reach_work(n, true));
+        let steps = settled.checked_sub(by_name).expect("settling counts less") / 8;
+        let log = u64::from((m - 1).bit_width()) + 1;
+        assert!(steps >= 3 * m, "m = {m}: {steps} steps counted");
+        assert!(steps <= (3 * m + 1) * log, "m = {m}: {steps} steps");
+    }
+}

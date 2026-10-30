@@ -42,10 +42,16 @@
 //! first (a load's registration, a lookup by name, the key listing, the
 //! container pass), and every `settle` reaches every listed slot, so none
 //! returns while a slot listed before it is unreached, but for a refusal
-//! (plan section 3.16, R3; `reach.rs`). A dropped slot is not reached when
-//! the key's value stands in for it: the same entry of the same input, as
-//! every handle on the dropped entry can tell (`reach::stands_in`), which a
-//! lookup from a file inside the dropped entry then reaches (plan 9, Q14).
+//! (plan section 3.16, R3; `reach.rs`). A dropped slot of a dependency the
+//! LRU evicted is not opened again by a `settle`: it waits on a list of its
+//! own for the container pass, which reopens the dependency and reaches it
+//! (plan 9, Q13, revised after review round 6). A dropped slot is not
+//! reached when the key's value stands in for it: the same entry of the
+//! same input, as every handle on the dropped entry can tell
+//! (`reach::stands_in`), which a lookup from a file inside the dropped entry
+//! then reaches, and whose reach registers the entries at the dropped
+//! slot's positions (plan 9, Q14, revised after review round 6;
+//! `register.rs`, `Stand`).
 //! What remains of (b) is a lookup by name alone (a
 //! `get_cab`, a `find_file`, a pointer to a file that is not the asking
 //! file's sibling) of an entry of a container nothing has reached, which
@@ -102,9 +108,10 @@
 //! key at rest and 24/7 while it grows (the crate's `HASH_TABLE_SHARES`), so
 //! the tables' spare capacity and every growth are paid for. The first key
 //! also pays for the B-tree's root leaf. A lazy entry's slot also pays for
-//! its place in the list of dropped slots waiting to be reached
-//! (`Registry::settle`), which keeps at most four elements' room for each
-//! slot it lists. `tests/env_memory.rs` measures the
+//! its share of a node of the lists of dropped slots waiting to be reached
+//! (`pending.rs`); each list's root, one node at most and none once it
+//! empties, is a constant of the registry, as the hash table's control
+//! tail is (plan section 3.13). `tests/env_memory.rs` measures the
 //! heap against the charge. A refused charge registers nothing and is the
 //! registering load's error.
 //!
@@ -113,8 +120,10 @@
 mod cab;
 mod dependency;
 mod lru;
+mod pending;
 mod rank;
 mod reach;
+mod register;
 mod slot;
 
 use std::cell::Cell;
@@ -123,7 +132,7 @@ use std::mem::size_of;
 use std::ops::Bound;
 #[cfg(test)]
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 pub use cab::{Cab, HeldCab, RawCab};
@@ -133,6 +142,7 @@ pub(crate) use lru::DepCache;
 pub(crate) use lru::{Hook, HookFn};
 pub(crate) use rank::Rank;
 pub(crate) use reach::{Through, entry_of};
+use register::{By, Loads};
 pub(crate) use slot::{Slot, SlotKind};
 
 use super::held::{self, Held, lock};
@@ -166,8 +176,12 @@ pub struct Registry {
     /// Bumped by every load's registration that changes the dict: UnityPy's
     /// `register_cab` clears `_container_index_built` (`environment.py:264`).
     generation: AtomicU64,
-    /// How many lazy slots `RegistryInner::pending` lists.
+    /// How many lazy slots `RegistryInner::pending` lists for every
+    /// `settle` ([`pending::List::Listed`]).
     pending_len: AtomicUsize,
+    /// How many it keeps for the container pass
+    /// ([`pending::List::Evicted`]).
+    evicted_len: AtomicUsize,
     /// The generation the last finished container pass started at (0: none).
     built: AtomicU64,
     /// Entries parsed through slots, for `EnvStats`.
@@ -179,15 +193,6 @@ pub struct Registry {
     pub(crate) hook: Mutex<Option<HookFn>>,
 }
 
-/// What a registration dropped (module docs): the slot and its charges,
-/// where it was listed, and the key's value then, which may stand in for it
-/// (`reach::stands_in`).
-struct Dropped {
-    slot: Arc<Slot>,
-    _charge: Charge,
-    listed: Option<(u64, Arc<Slot>)>,
-}
-
 impl Default for Registry {
     fn default() -> Self {
         Self {
@@ -195,6 +200,7 @@ impl Default for Registry {
             loads: AtomicU64::new(0),
             generation: AtomicU64::new(1),
             pending_len: AtomicUsize::new(0),
+            evicted_len: AtomicUsize::new(0),
             built: AtomicU64::new(0),
             parsed: AtomicU64::new(0),
             watches: Watches::default(),
@@ -210,7 +216,7 @@ struct RegistryInner {
     order: BTreeMap<Rank, RawStr>,
     slots: HashMap<RawStr, Entry>,
     /// The lazy slots dropped unreached ([`Registry::settle`]).
-    pending: reach::Pending,
+    pending: pending::Pending,
 }
 
 /// A B-tree node of `order`: its header, 11 keys and 11 values; an internal
@@ -231,10 +237,9 @@ const SHARE: u64 = ORDER_LEAF / 5
 /// A slot's own allocation: the `Slot` in its `Arc`.
 const SLOT_ARC: u64 = heap_cost((size_of::<Slot>() + 2 * size_of::<usize>()) as u64);
 
-/// A lazy slot's share of the list of dropped slots waiting to be reached:
-/// four elements, the most the list keeps per element it holds
-/// (`Registry::settle`).
-const PENDING_SHARE: u64 = 4 * size_of::<(u64, Arc<Slot>)>() as u64;
+/// A lazy slot's share of the lists of dropped slots waiting to be reached
+/// (`pending.rs`).
+const PENDING_SHARE: u64 = pending::SHARE;
 
 thread_local! {
     /// New keys loads made on this thread: the container pass counts the
@@ -248,287 +253,7 @@ pub(crate) fn load_keys_here() -> u64 {
     LOAD_KEYS_HERE.with(Cell::get)
 }
 
-/// Who makes a registration: a load (a new key counts for the container
-/// pass's `RuntimeError`), or the reach of a nested container.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum By {
-    Load,
-    Reach,
-}
-
 impl Registry {
-    /// A new load's sequence number: its registrations come after every
-    /// earlier load's (module docs).
-    pub(crate) fn next_load(&self) -> u64 {
-        self.loads.fetch_add(1, Ordering::Relaxed)
-    }
-
-    /// `register_cab(name, cab)` for a file the caller loaded, as a load of
-    /// its own, charged to `meter` (module docs).
-    pub fn register(&self, name: &RawStr, cab: Cab, meter: &Arc<Meter>) -> Result<(), Error> {
-        let load = self.next_load();
-        self.register_ready(name, cab, load, &[], meter)
-    }
-
-    /// Registers entry `dir_index` of a bundle the caller loaded `Lazy`, as a
-    /// load of its own, to parse on first use; charged to `meter`.
-    pub fn register_lazy(
-        &self,
-        name: &RawStr,
-        bundle: Arc<BundleFile>,
-        dir_index: usize,
-        meter: &Arc<Meter>,
-    ) -> Result<(), Error> {
-        let load = self.next_load();
-        self.register_entry(name, bundle, dir_index, load, &[dir_index], meter)
-    }
-
-    /// Registers a caller's CAB of load `load` at `path`.
-    pub(crate) fn register_ready(
-        &self,
-        name: &RawStr,
-        cab: Cab,
-        load: u64,
-        path: &[usize],
-        meter: &Arc<Meter>,
-    ) -> Result<(), Error> {
-        self.insert(
-            name,
-            SlotKind::Ready(cab),
-            load,
-            path,
-            meter,
-            By::Load,
-            false,
-        )
-    }
-
-    /// Registers entry `dir_index` of a caller's `Lazy` bundle, of load
-    /// `load` at `path`, unread (a lazy slot, module docs).
-    pub(crate) fn register_entry(
-        &self,
-        name: &RawStr,
-        bundle: Arc<BundleFile>,
-        dir_index: usize,
-        load: u64,
-        path: &[usize],
-        meter: &Arc<Meter>,
-    ) -> Result<(), Error> {
-        let kind = SlotKind::Entry { bundle, dir_index };
-        self.insert(name, kind, load, path, meter, By::Load, true)
-    }
-
-    /// Registers a dependency's CAB of load `load` at `path` (module docs),
-    /// charged to `meter`, the dependency's.
-    pub(crate) fn register_dependency(
-        &self,
-        name: &RawStr,
-        dep: &Arc<Dependency>,
-        load: u64,
-        path: &[usize],
-        meter: &Arc<Meter>,
-    ) -> Result<(), Error> {
-        let kind = SlotKind::Dependency {
-            dep: DepSlot::new(dep),
-        };
-        self.insert(name, kind, load, path, meter, By::Load, false)
-    }
-
-    /// Registers entry `path` of a dependency's `Lazy` bundle, of load
-    /// `load`, unread (a lazy slot, module docs), charged to `meter`, the
-    /// dependency's.
-    pub(crate) fn register_lazy_dependency(
-        &self,
-        name: &RawStr,
-        dep: &Arc<Dependency>,
-        load: u64,
-        path: &[usize],
-        meter: &Arc<Meter>,
-    ) -> Result<(), Error> {
-        let kind = SlotKind::Dependency {
-            dep: DepSlot::new(dep),
-        };
-        self.insert(name, kind, load, path, meter, By::Load, true)
-    }
-
-    /// Registers `kind` at rank `(load, path)` under `simplify_name(name)`
-    /// with dict semantics by rank (module docs): a new key takes its place
-    /// in the order and pays its share of the tables and a copy of itself; a
-    /// known key takes the slot only if its rank is greater than its slot's,
-    /// moves to the rank if it is less than its position's, and pays only for
-    /// the slot (and its new position's path when it moves). Charged before
-    /// anything is allocated; a refusal registers nothing. A lazy slot the
-    /// registration drops unreached (the value it replaces, or its own slot
-    /// when that ranks below the value) is reached before it returns
-    /// ([`Self::settle`], module docs), and a change is noted for the
-    /// running container preload walks ([`super::watch`]).
-    // The registration's parts, each one of the module docs' terms.
-    #[allow(clippy::too_many_arguments)]
-    fn insert(
-        &self,
-        name: &RawStr,
-        kind: SlotKind,
-        load: u64,
-        path: &[usize],
-        meter: &Arc<Meter>,
-        by: By,
-        lazy: bool,
-    ) -> Result<(), Error> {
-        // UnityPy environment.py:252-264
-        let lowered = simplify_name(name, meter)?;
-        let rank_heap = Rank::heap(path.len());
-        let rank = Rank {
-            load,
-            path: Arc::from(path),
-        };
-        let slot = Self::new_slot(kind, rank.clone(), lazy, meter)?;
-        let (known, first) = {
-            let inner = self.read();
-            (
-                inner.slots.contains_key(lowered.as_bytes()),
-                inner.order.is_empty(),
-            )
-        };
-        // A new key's own copy and its share of the tables, made before the
-        // lock: the key holds no input's buffer (module docs); the first key
-        // also pays for the B-tree's root. A known key may move to this
-        // rank: its path is charged now and returned if it does not.
-        let fresh = if known {
-            None
-        } else {
-            let share = meter.charge(if first { SHARE + ORDER_LEAF } else { SHARE })?;
-            Some((RawStr::charged(lowered.as_bytes(), meter)?, share))
-        };
-        let first_charge = meter.charge(rank_heap)?;
-        let (dropped, changed, new_key) = {
-            let mut inner = self.write();
-            let RegistryInner {
-                order,
-                slots,
-                pending,
-            } = &mut *inner;
-            if let Some(e) = slots.get_mut(lowered.as_bytes()) {
-                let moves = rank < e.first;
-                let charge = if moves {
-                    if let Some(key) = order.remove(&e.first) {
-                        order.insert(rank.clone(), key);
-                    }
-                    e.first = rank.clone();
-                    std::mem::replace(&mut e.first_charge, first_charge)
-                } else {
-                    first_charge
-                };
-                let replaces = rank > e.slot.rank;
-                // Equal ranks are one entry registered again: nothing of it
-                // is dropped.
-                let distinct = rank != e.slot.rank;
-                let slot = if replaces {
-                    std::mem::replace(&mut e.slot, slot)
-                } else {
-                    slot
-                };
-                // Listed with the change, in one step (R4); whether the
-                // key's value stands in for it is told after the lock.
-                let listed = (distinct && slot.unreached()).then(|| {
-                    let seq = pending.push(slot.clone());
-                    self.pending_len
-                        .store(pending.slots.len(), Ordering::Release);
-                    (seq, e.slot.clone())
-                });
-                let dropped = Dropped {
-                    slot,
-                    _charge: charge,
-                    listed,
-                };
-                (Some(dropped), moves || replaces, false)
-            } else if let Some((key, share)) = fresh {
-                order.insert(rank.clone(), key.clone());
-                slots.reserve(1);
-                slots.insert(
-                    key,
-                    Entry {
-                        slot,
-                        first: rank,
-                        _share: share,
-                        first_charge,
-                    },
-                );
-                (None, true, true)
-            } else {
-                // The key went away between the check and the lock: never,
-                // since nothing removes one; register it on the next call.
-                return Err(Error::Malformed {
-                    what: "registry",
-                    detail: "a key vanished".into(),
-                });
-            }
-        };
-        if changed {
-            #[cfg(test)]
-            self.hook(Hook::Published);
-            self.watches.notify(lowered.as_bytes());
-        }
-        // A reach registers what an eager load registered at load,
-        // before any container pass: only a load's change starts a new one.
-        if changed && by == By::Load {
-            self.generation.fetch_add(1, Ordering::AcqRel);
-        }
-        if new_key && by == By::Load {
-            LOAD_KEYS_HERE.with(|c| c.set(c.get().saturating_add(1)));
-        }
-        self.release(dropped);
-        if by == By::Load {
-            // A refusal leaves it for the next call (`settle`).
-            self.settle().ok();
-        }
-        Ok(())
-    }
-
-    /// A slot of `kind` at `rank`, charged to `meter` (its `Arc`, its
-    /// rank's path, and a lazy slot's share of the list of dropped slots).
-    fn new_slot(
-        kind: SlotKind,
-        rank: Rank,
-        lazy: bool,
-        meter: &Arc<Meter>,
-    ) -> Result<Arc<Slot>, Error> {
-        let mut charge = Charge::zero(meter);
-        charge.grow(SLOT_ARC)?;
-        charge.grow(Rank::heap(rank.path().len()))?;
-        if lazy {
-            charge.grow(PENDING_SHARE)?;
-        }
-        Ok(Arc::new(Slot {
-            kind,
-            rank,
-            lazy,
-            reached: AtomicBool::new(false),
-            counted: AtomicBool::new(false),
-            walked: AtomicBool::new(false),
-            _charge: charge,
-        }))
-    }
-
-    /// Drops what a registration replaced or did not use (and its charges),
-    /// after the lock. A lazy slot not yet reached was listed with the
-    /// change, and stays listed unless the key's value stands in for it
-    /// (module docs); a load's registration then reaches every listed slot
-    /// before it returns, and a reach's registrations leave theirs to the
-    /// `settle` that runs the reach (`reach.rs`).
-    fn release(&self, dropped: Option<Dropped>) {
-        if let Some(d) = &dropped
-            && let Some((seq, standing)) = &d.listed
-        {
-            if reach::stands_in(standing, &d.slot) {
-                self.unlist(*seq);
-            } else {
-                #[cfg(test)]
-                self.hook(Hook::Deferred);
-            }
-        }
-        drop(dropped);
-    }
-
     /// Runs the test's hook at `at`, with no lock held.
     #[cfg(test)]
     pub(crate) fn hook(&self, at: Hook) {
@@ -775,6 +500,8 @@ impl Iterator for Keys<'_> {
     }
 }
 
+#[cfg(test)]
+mod pass_tests;
 #[cfg(test)]
 mod reach_tests;
 #[cfg(test)]

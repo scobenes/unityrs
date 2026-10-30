@@ -1,11 +1,11 @@
 //! A registry slot (module docs, "What a slot holds").
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::{Cab, DepSlot, Rank};
 use crate::files::BundleFile;
-use crate::limits::Charge;
+use crate::limits::{Charge, Meter};
 
 /// One registry slot, with the charge for its registration (module docs).
 #[derive(Debug)]
@@ -18,8 +18,16 @@ pub(crate) struct Slot {
     pub(super) lazy: bool,
     /// For a lazy slot, whether it was reached: known to be no container,
     /// or every entry of the container it is registered (set after the
-    /// last one is).
+    /// last one is). Read and set sequentially consistent, with
+    /// [`Self::stands_for`] (`Slot::position`).
     pub(super) reached: AtomicBool,
+    /// For a lazy slot that stands in for dropped slots of the same entry
+    /// of the same input (plan section 9, Q14), the least load among them:
+    /// its container's entries take their positions at that load's ranks,
+    /// as an eager load of the dropped one registered them
+    /// ([`Self::position`]); `u64::MAX` for none. Only lowered, and only
+    /// under the registry's write lock, in the step that drops a slot.
+    pub(super) stands_for: AtomicU64,
     /// Whether a parse through the slot was counted (`EnvStats`).
     pub(super) counted: AtomicBool,
     /// Whether the container preload walked the table of the file the slot
@@ -30,7 +38,7 @@ pub(crate) struct Slot {
     pub(super) walked: AtomicBool,
     /// The slot's own charge (its `Arc`, its rank's path), returned when
     /// the last handle on the slot drops.
-    pub(super) _charge: Charge,
+    pub(super) charge: Charge,
 }
 
 /// What a slot reaches.
@@ -76,13 +84,43 @@ impl Slot {
 
     /// Whether it is a lazy slot not yet reached (module docs).
     pub(super) fn unreached(&self) -> bool {
-        self.lazy && !self.reached.load(Ordering::Acquire)
+        self.lazy && !self.reached.load(Ordering::SeqCst)
     }
 
     /// Marks it reached.
     pub(super) fn mark_reached(&self) {
         if self.lazy {
-            self.reached.store(true, Ordering::Release);
+            self.reached.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// The load whose ranks its container's entries take as their
+    /// positions: its own, or the least of the dropped slots it stands in
+    /// for ([`Self::stands_for`]). A reach reads it before it registers and
+    /// again after it marks the slot reached, and registers again at a
+    /// lower one it then finds; a registration that lowers it reads
+    /// [`Self::unreached`] after (both sequentially consistent), so a
+    /// position learned while a reach runs is never missed by both
+    /// (`reach.rs`'s module docs).
+    pub(super) fn position(&self) -> u64 {
+        self.stands_for.load(Ordering::SeqCst).min(self.rank.load)
+    }
+
+    /// Lowers [`Self::stands_for`] to `load`, under the registry's write
+    /// lock.
+    pub(super) fn stand_for(&self, load: u64) {
+        self.stands_for.fetch_min(load, Ordering::SeqCst);
+    }
+
+    /// The meter of the input the slot belongs to (plan section 3.16, R2):
+    /// a dependency's current open's, an entry's bundle's, else the one
+    /// its registration was charged to. What the work done for it counts
+    /// on.
+    pub(super) fn input_meter(&self) -> Arc<Meter> {
+        match &self.kind {
+            SlotKind::Dependency { dep } => dep.meter(),
+            SlotKind::Entry { bundle, .. } => bundle.meter().clone(),
+            SlotKind::Ready(_) => self.charge.meter().clone(),
         }
     }
 }
