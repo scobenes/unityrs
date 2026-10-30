@@ -10,8 +10,10 @@
 //! (implemented); [`blob`], [`serialized`] and [`bundle`] are package C's;
 //! [`env`](mod@env) is package D's; [`depth`] (the deep values of plan
 //! section 3.10), [`counted`] (the counting global allocator, and the
-//! thread it counts) and [`guard`] (the deadlock guard of every test that
-//! hands work between threads) are package B's; [`mutate`] (G3b's mutator)
+//! thread it counts), [`guard`] (the deadlock guard of every test that
+//! hands work between threads) and [`stack`] (the child-process probes that
+//! measure a stack, and tell an overflow from every other failure) are
+//! package B's; [`mutate`] (G3b's mutator)
 //! is the integration's.
 
 pub mod blob;
@@ -24,6 +26,7 @@ pub mod mutate;
 pub mod public_types;
 pub mod rng;
 pub mod serialized;
+pub mod stack;
 pub mod waits;
 pub mod writer;
 

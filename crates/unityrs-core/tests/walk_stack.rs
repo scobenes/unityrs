@@ -17,7 +17,9 @@
 //!
 //! `stack_measured` (ignored) finds the least stack each path needs, by
 //! running it in a child process per size (a thread that overflows its
-//! stack aborts its process), and prints each:
+//! stack aborts its process; only an overflow says a size is too small, and
+//! any other failure fails the test: `unityrs_testkit::stack`), and prints
+//! each:
 //!
 //!     scripts/dev cargo test -p unityrs-core --test walk_stack -- --ignored --nocapture
 //!     scripts/dev cargo test -p unityrs-core --test walk_stack --release -- --ignored --nocapture
@@ -339,31 +341,18 @@ fn stack_probe() {
 #[test]
 #[ignore = "measures; run with --ignored --nocapture"]
 fn stack_measured() {
-    let exe = std::env::current_exe().unwrap();
-    let fits = |shape: &str, path: Path, stack: usize| {
-        std::process::Command::new(&exe)
-            .args(["--exact", "stack_probe", "--ignored", "--test-threads=1"])
-            .env(PROBE, format!("{shape} {path:?} {stack}"))
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .unwrap()
-            .success()
-    };
     let needed = Limits::default().stack_needed();
     let mut worst = 0;
     for shape in shapes() {
         for path in PATHS {
-            let (mut lo, mut hi) = (0, 64 << 20);
-            assert!(fits(&shape.name, path, hi), "{} {path:?}", shape.name);
-            while hi - lo > 4 << 10 {
-                let mid = usize::midpoint(lo, hi) / 4096 * 4096;
-                if fits(&shape.name, path, mid) {
-                    hi = mid;
-                } else {
-                    lo = mid;
-                }
-            }
+            let hi =
+                unityrs_testkit::stack::least(64 << 20, &format!("{} {path:?}", shape.name), |s| {
+                    unityrs_testkit::stack::fits(
+                        "stack_probe",
+                        PROBE,
+                        &format!("{} {path:?} {s}", shape.name),
+                    )
+                });
             println!("{:12} {:36} {hi:>9}", shape.name, format!("{path:?}"));
             worst = worst.max(hi);
         }
