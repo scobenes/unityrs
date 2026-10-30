@@ -94,8 +94,10 @@ fn nines_major() -> String {
 
 /// Round 6 (group e's sweep, queued for package C): every 19 digits of a
 /// group stepped through all 226 limbs of a fixed array, 51,302 limb steps
-/// for a 4,300-digit group whatever its value, and 1,800 more a parse, and
-/// nothing counted them, on every parse of an entry. A step now goes over
+/// for a 4,300-digit group whatever its value, and so did each merge of a
+/// group (`2022.3.0f1`: ten steps of 226, 2,260 limbs, which a mutant
+/// restoring the array counts as 10 + 2,260 x 8 = 18,090), and nothing
+/// counted them, on every parse of an entry. A step now goes over
 /// the limbs the value holds, and the chains count each one as the input's
 /// work before it runs: the bytes scanned since the last count, and 8 a
 /// limb (`LIMB_WORK`).
