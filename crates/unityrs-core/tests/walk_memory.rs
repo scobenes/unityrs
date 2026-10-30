@@ -24,7 +24,6 @@
 
 #![allow(unsafe_code)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::ptr;
 use std::sync::Arc;
@@ -40,7 +39,7 @@ use unityrs_core::stream::Endian;
 use unityrs_core::typetree::{NodeId, NodeList, NodeRow, Tree};
 use unityrs_core::walk::{self, ReadCtx, ReadError, ReadOptions, RefTypes, WriteCtx, WriteRules};
 use unityrs_core::{Bytes, LimitKind, Parsed, RawStr, Value};
-use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
+use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 
 struct Counting;
 
@@ -79,44 +78,19 @@ fn check(now: usize, request: usize) {
     MAX_REQUEST.fetch_max(request, Ordering::Relaxed);
 }
 
-// SAFETY: every method forwards to `System` and only counts sizes, on the
-// thread under test.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if counted() {
-            let c = chunk(layout.size());
-            let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
-            check(now, layout.size());
-        }
-        // SAFETY: the caller's contract is `System`'s.
-        unsafe { System.alloc(layout) }
+impl Tally for Counting {
+    fn grew(&self, size: usize, _zeroed: bool) {
+        let c = chunk(size);
+        let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
+        check(now, size);
     }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if counted() {
-            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
-        }
-        // SAFETY: as above.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let on = counted();
-        // Count the worst case of a moving realloc: both blocks live at once.
-        if on {
-            let c = chunk(new_size);
-            let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
-            check(now, new_size);
-        }
-        // SAFETY: as above.
-        let p = unsafe { System.realloc(ptr, layout, new_size) };
-        if on {
-            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
-        }
-        p
+    fn shrank(&self, size: usize) {
+        LIVE.fetch_sub(chunk(size), Ordering::Relaxed);
     }
 }
 
 #[global_allocator]
-static ALLOC: Counting = Counting;
+static ALLOC: Allocator<Counting> = Allocator(Counting);
 
 /// Starts watching `m` (whose caller keeps it alive until [`unwatch`]).
 fn watch(m: &Arc<Meter>) {

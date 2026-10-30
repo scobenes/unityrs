@@ -4,58 +4,31 @@
 //! A counting global allocator watches the heap of the test's own thread
 //! (`unityrs_testkit::counted`): libtest's main thread allocates beside it.
 
-#![allow(unsafe_code)]
-
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use unityrs_core::LimitKind;
 use unityrs_core::budget::{Counting, DecodeBuf, Reservation, Unbounded};
 use unityrs_core::limits::{ChargeError, Meter, heap_cost};
-use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
+use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 
 struct Watching;
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 
-// SAFETY: every method forwards to `System` and only counts sizes, on the
-// thread under test.
-unsafe impl GlobalAlloc for Watching {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if counted() {
-            let now = LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
-            PEAK.fetch_max(now, Ordering::Relaxed);
-        }
-        // SAFETY: the caller's contract is `System`'s.
-        unsafe { System.alloc(layout) }
+impl Tally for Watching {
+    fn grew(&self, size: usize, _zeroed: bool) {
+        let now = LIVE.fetch_add(size, Ordering::Relaxed) + size;
+        PEAK.fetch_max(now, Ordering::Relaxed);
     }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if counted() {
-            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
-        }
-        // SAFETY: as above.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let on = counted();
-        // Count the worst case of a moving realloc: both blocks live at once.
-        if on {
-            let now = LIVE.fetch_add(new_size, Ordering::Relaxed) + new_size;
-            PEAK.fetch_max(now, Ordering::Relaxed);
-        }
-        // SAFETY: as above.
-        let p = unsafe { System.realloc(ptr, layout, new_size) };
-        if on {
-            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
-        }
-        p
+    fn shrank(&self, size: usize) {
+        LIVE.fetch_sub(size, Ordering::Relaxed);
     }
 }
 
 #[global_allocator]
-static ALLOC: Watching = Watching;
+static ALLOC: Allocator<Watching> = Allocator(Watching);
 
 /// Runs `f` and returns how far the heap rose above where it started.
 fn rise(f: impl FnOnce()) -> usize {

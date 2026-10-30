@@ -125,7 +125,8 @@ pub fn unguarded(root: &Path) -> Vec<String> {
     found
 }
 
-fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+/// Every `.rs` file under `dir`, `target` directories left out.
+pub(crate) fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
         let path = entry
             .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))

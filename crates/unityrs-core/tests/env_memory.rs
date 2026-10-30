@@ -9,9 +9,8 @@
 //! thread only (`unityrs_testkit::counted`): libtest's main thread allocates
 //! beside it.
 
-#![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -20,7 +19,7 @@ use unityrs_core::env::{Cab, RawCab, Registry};
 use unityrs_core::files::RawFile;
 use unityrs_core::limits::{Meter, heap_cost};
 use unityrs_core::{Bytes, RawStr};
-use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
+use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 
 struct Counting;
 
@@ -30,39 +29,17 @@ fn chunk(n: usize) -> usize {
     usize::try_from(heap_cost(n as u64)).unwrap_or(usize::MAX)
 }
 
-// SAFETY: every method forwards to `System` and only counts sizes, on the
-// thread under test.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if counted() {
-            LIVE.fetch_add(chunk(layout.size()), Ordering::Relaxed);
-        }
-        // SAFETY: the caller's contract is `System`'s.
-        unsafe { System.alloc(layout) }
+impl Tally for Counting {
+    fn grew(&self, size: usize, _zeroed: bool) {
+        LIVE.fetch_add(chunk(size), Ordering::Relaxed);
     }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if counted() {
-            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
-        }
-        // SAFETY: as above.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let on = counted();
-        if on {
-            LIVE.fetch_add(chunk(new_size), Ordering::Relaxed);
-        }
-        // SAFETY: as above.
-        let p = unsafe { System.realloc(ptr, layout, new_size) };
-        if on {
-            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
-        }
-        p
+    fn shrank(&self, size: usize) {
+        LIVE.fetch_sub(chunk(size), Ordering::Relaxed);
     }
 }
 
 #[global_allocator]
-static ALLOC: Counting = Counting;
+static ALLOC: Allocator<Counting> = Allocator(Counting);
 
 fn live() -> u64 {
     u64::try_from(LIVE.load(Ordering::Relaxed)).unwrap()
