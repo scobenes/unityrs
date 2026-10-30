@@ -516,15 +516,20 @@ fn versioned(version: &[u8]) -> Vec<u8> {
 /// limbs for each 19 decimal digits, quadratic work each record of it
 /// repeats: the dump counts each pass's limbs before it divides them. Two
 /// files whose version strings are as long, one of them packing to a
-/// 4,300-digit major and the other to 1, differ in their work by exactly
-/// that count: at least a limb for each 19 digits, at most every limb for
-/// each.
+/// 4,300-digit major and the other to 1, differ in the work their dumps add
+/// to their loads by exactly that count: at least a limb for each 19
+/// digits, at most every limb for each. Their loads differ as well, since
+/// the core counts a version string's packing, over the limbs it holds, as
+/// the input's work (its plan 3.4), so each dump's own work is taken past
+/// its file's load.
 #[test]
 fn a_packed_version_past_128_bits_counts_its_conversion_as_work() {
     let big = [vec![b'1'; 4300], b".0.0f1".to_vec()].concat();
     let small = [vec![b'0'; 4299], b"1.0.0f1".to_vec()].concat();
-    let (_, text_big, big_work, _) = work_of(&versioned(&big), &DumpOptions::default());
-    let (_, text_small, small_work, _) = work_of(&versioned(&small), &DumpOptions::default());
+    let (big_load, text_big, big_work, _) = work(&versioned(&big), &DumpOptions::default());
+    let (small_load, text_small, small_work, _) = work(&versioned(&small), &DumpOptions::default());
+    // The loads differ too: the core counts the big packing over its limbs.
+    assert!(big_load > small_load, "{big_load} {small_load}");
     assert!(
         text_small.contains(r#""version_packed":281474976711425,"#),
         "{text_small}"
@@ -539,7 +544,7 @@ fn a_packed_version_past_128_bits_counts_its_conversion_as_work() {
         .count();
     assert_eq!(digits, 4314);
     let passes = bytes(digits.div_ceil(19));
-    let conversion = big_work - small_work;
+    let conversion = (big_work - big_load) - (small_work - small_load);
     assert!(
         (passes * 8..=passes * 225 * 8).contains(&conversion),
         "{conversion} counted for {passes} passes"
