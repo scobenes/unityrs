@@ -272,7 +272,7 @@ fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
 /// and the dump's own walks of the nest (load, pre-pass, records): about
 /// twice what a level costs up to the deepest nest
 /// [`crate::LIFTED_CONTAINER_DEPTH`] lets parse, which `tests/limits.rs`'s
-/// `container_stack_measured` finds is 5,472 bytes in a debug build and
+/// `container_stack_measured` finds is 5,488 bytes in a debug build and
 /// 1,520 in a release one (toolchain 1.99.1), eagerly and through the
 /// reverse pre-pass alike.
 pub const CONTAINER_LEVEL_STACK: usize = if cfg!(debug_assertions) {
