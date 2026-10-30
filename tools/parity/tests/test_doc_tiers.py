@@ -1,8 +1,9 @@
 """PARITY.md and DESIGN.md agree on what a tier covers where a zero side, an image mode, a missing characterisation,
-a walk past a UnityCN block or an empty first FSB5 subsound decides it (standard library).
+a walk past a UnityCN block, an empty first FSB5 subsound or a reader handed to a reader decides it (standard library).
 
 Each guard reads both files as text. The behaviour each one keeps the wording to is pinned by the row tests the cells
-name (`test_rows_images.py`, `test_rows_textures.py`, `test_rows_internals.py`, `test_rows_audio.py`).
+name (`test_rows_images.py`, `test_rows_textures.py`, `test_rows_internals.py`, `test_rows_audio.py`,
+`test_rows_loading.py`).
 """
 
 import re
@@ -215,6 +216,45 @@ class DocTiers(unittest.TestCase):
                         self.assertIn("no zero side", sentence)
                         self.assertRegex(sentence, r"\bdecoded sizes?\b")
         self.assertGreaterEqual(seen, 3)
+
+    def test_a_memory_reader_handed_to_the_reader_is_tier_b(self):
+        """`EndianBinaryReader` given its own memory reader raises as it does for an object with `read` alone
+        (`test_rows_loading.py` endian_binary_reader_inputs), and unityrs reads the bytes the reader holds: Tier B,
+        as DESIGN.md's Tier B list says. So every row that states that raise files the memory reader as B."""
+        seen = 0
+        for cells, tier in rows_by_tier(self.parity):
+            if "not 'EndianBinaryReader_Memoryview'" in cells[1]:
+                seen += 1
+                with self.subTest(row=cells[0][:60]):
+                    if tier != "B":
+                        self.assertRegex(tier, r"\bB for [^;]*\bmemory reader handed to `EndianBinaryReader`")
+        self.assertGreaterEqual(seen, 2)
+        tier_b = self.design.split("- **Tier B:", 1)[1].split("\n- **", 1)[0]
+        self.assertIn("a memory reader handed to `EndianBinaryReader`, which fails the same way", tier_b)
+
+    def test_a_zero_size_write_names_its_format_on_xbox360(self):
+        """The zero-size Tier C (writing) rule takes the format unityrs writes for a non-empty image, and on XBOX360
+        unityrs refuses an image with no zero side to a format the reader byte-swaps, so that names none there:
+        DESIGN.md's rule and section 19.1's row name section 17's `set_image` writes column, which does, and its
+        DXT formats there as the matrix states them."""
+        writing = self.design.split("| Tier C (writing) | acceptance |", 1)[1].split("\n\n", 1)[0]
+        design = next(line for line in writing.splitlines() if line.startswith("| `set_image` of a zero-size image"))
+        parity = next(line for line in self.parity.splitlines() if line.startswith("| `set_image` of a zero-size"))
+        writes = {}
+        for line in self.parity.split("\n## 17. TextureFormat matrix\n", 1)[1].split("\n### 17.1", 1)[0].splitlines():
+            cells = line.split(" | ")
+            if (
+                line.startswith("| ")
+                and len(cells) == 10
+                and cells[1] in ("`DXT1`", "`DXT1Crunched`", "`DXT5`", "`DXT5Crunched`")
+            ):
+                writes[cells[1].strip("`")] = cells[7].strip("`")
+        self.assertEqual(writes, {"DXT1": "DXT1", "DXT5": "DXT5", "DXT1Crunched": "DXT1", "DXT5Crunched": "DXT5"})
+        named = "that column still names the format: DXT1 for DXT1 and DXT1Crunched, DXT5 for DXT5 and DXT5Crunched"
+        for name, cell in (("DESIGN.md", design.split(" | ")[1]), ("PARITY.md", parity.split(" | ")[2])):
+            with self.subTest(name):
+                self.assertIn("section 17's `set_image` writes column, BC7 for BC7", cell)
+                self.assertRegex(cell, rf"On XBOX360, where unityrs refuses an image with no zero side [^|]*{named}")
 
 
 if __name__ == "__main__":
