@@ -8,6 +8,7 @@ use flate2::write::GzEncoder;
 
 use super::{ctx, ctx_with, meter_for, open_with};
 use unityrs_core::budget::{Reservation, Unbounded};
+use unityrs_core::detect::DetectError;
 use unityrs_core::files::File;
 use unityrs_core::{Error, FileContext, LimitKind};
 use unityrs_testkit::bundle::{BlockOverride, BundleSpec, EntrySpec, TestCodec, build};
@@ -293,30 +294,7 @@ fn the_unbounded_budget_is_the_default() {
 fn gzip_detection_across_the_rows_of_one_open_draws_on_its_work() {
     const ROWS: usize = 64;
     const MIB: u64 = 1 << 20;
-    let mut gz = GzEncoder::new(Vec::new(), Compression::best());
-    gz.write_all(&vec![0u8; 1 << 20]).unwrap();
-    let stream = gz.finish().unwrap();
-    // Row 0 holds the stream; every other row is empty, then pointed at it.
-    let entries: Vec<EntrySpec> = (0..ROWS)
-        .map(|k| EntrySpec {
-            name: format!("gz-{k:02}").into_bytes(),
-            data: if k == 0 { stream.clone() } else { Vec::new() },
-            flags: 0,
-        })
-        .collect();
-    let mut data = build(&BundleSpec {
-        info_codec: TestCodec::None,
-        data_codec: TestCodec::Lz4,
-        entries,
-        ..BundleSpec::default()
-    });
-    let size = i64::try_from(stream.len()).unwrap();
-    for k in 1..ROWS {
-        let key = format!("gz-{k:02}\0").into_bytes();
-        let at = data.windows(key.len()).position(|w| w == key).unwrap();
-        data[at - 20..at - 12].copy_from_slice(&0_i64.to_be_bytes());
-        data[at - 12..at - 4].copy_from_slice(&size.to_be_bytes());
-    }
+    let data = rows_over_one_gzip_stream(ROWS);
     let ctx = ctx_with(|c| c.limits.max_decode_work = 4 * MIB);
     assert!(ctx.limits.max_inflate >= MIB, "each stream inflates whole");
 
@@ -357,4 +335,73 @@ fn gzip_detection_across_the_rows_of_one_open_draws_on_its_work() {
     let c = super::ctx();
     let b = open_with(&data, &c, &meter_for(&c)).unwrap();
     b.load_all().unwrap();
+}
+
+/// A bundle of `rows` directory rows that all name one gzip stream of 1 MiB
+/// of zeros: row 0 holds it, every other row is empty, then pointed at it.
+fn rows_over_one_gzip_stream(rows: usize) -> Vec<u8> {
+    let mut gz = GzEncoder::new(Vec::new(), Compression::best());
+    gz.write_all(&vec![0u8; 1 << 20]).unwrap();
+    let stream = gz.finish().unwrap();
+    let entries: Vec<EntrySpec> = (0..rows)
+        .map(|k| EntrySpec {
+            name: format!("gz-{k:02}").into_bytes(),
+            data: if k == 0 { stream.clone() } else { Vec::new() },
+            flags: 0,
+        })
+        .collect();
+    let mut data = build(&BundleSpec {
+        info_codec: TestCodec::None,
+        data_codec: TestCodec::Lz4,
+        entries,
+        ..BundleSpec::default()
+    });
+    let size = i64::try_from(stream.len()).unwrap();
+    for k in 1..rows {
+        let key = format!("gz-{k:02}\0").into_bytes();
+        let at = data.windows(key.len()).position(|w| w == key).unwrap();
+        data[at - 20..at - 12].copy_from_slice(&0_i64.to_be_bytes());
+        data[at - 12..at - 4].copy_from_slice(&size.to_be_bytes());
+    }
+    data
+}
+
+/// A detection refused at its own stream's bound (`max_inflate`) still
+/// inflated the chunk that passed it, and that chunk is the open's work as
+/// well: rows whose streams each pass `max_inflate` in their first chunk
+/// draw the open's allowance down until the open's `DecodeWork` limit
+/// refuses the rest, instead of each inflating a chunk the open never
+/// counts.
+#[test]
+fn a_detection_refused_at_its_inflate_bound_still_draws_on_the_opens_work() {
+    const ROWS: usize = 64;
+    const MIB: u64 = 1 << 20;
+    let data = rows_over_one_gzip_stream(ROWS);
+    let ctx = ctx_with(|c| {
+        c.limits.max_inflate = 1;
+        c.limits.max_decode_work = MIB;
+    });
+    let meter = meter_for(&ctx);
+    let b = open_with(&data, &ctx, &meter).unwrap();
+    let got: Vec<Result<File, Error>> = (0..ROWS).map(|i| b.entry(i)).collect();
+    let inflate = |r: &Result<File, Error>| {
+        matches!(r, Err(Error::Entry { source, .. })
+            if matches!(&**source, Error::Detect(DetectError::InflateLimit(l))
+                if l.kind == LimitKind::Inflate && l.max == 1))
+    };
+    let first = got.iter().take_while(|r| inflate(r)).count();
+    // Each refused row inflated one chunk (at most 64 KiB, here all of it)
+    // and every one is counted, beside the block decodes, so the allowance
+    // runs out within the rows; uncounted, every row is refused at Inflate.
+    assert!(
+        (1..ROWS).contains(&first),
+        "{first} rows refused at Inflate"
+    );
+    for r in &got[first..] {
+        assert!(
+            matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork && l.max == MIB),
+            "{r:?}"
+        );
+    }
+    assert!(meter.decoded() <= MIB + (64 << 10), "{}", meter.decoded());
 }

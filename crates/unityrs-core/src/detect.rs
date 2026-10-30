@@ -244,6 +244,15 @@ fn count_work(meter: &Meter, bytes: u64) -> Result<(), DetectError> {
         .map_or(Ok(()), |l| Err(DetectError::Work(l)))
 }
 
+/// The stream inflated to `total`, past `max_inflate`.
+fn inflate_limit(total: u64, max_inflate: u64) -> DetectError {
+    DetectError::InflateLimit(LimitError {
+        kind: LimitKind::Inflate,
+        value: total,
+        max: max_inflate,
+    })
+}
+
 /// Inflates every member of a gzip file as Python 3.11's `gzip._GzipReader`
 /// reads it (`_read_gzip_header`, `read`, `_read_eof`), handing each output
 /// chunk to `sink`; returns the decompressed length. The header's FHCRC is
@@ -324,15 +333,13 @@ fn gzip_inflate(
             crc.update(out);
             let made = u64::try_from(made).unwrap_or(u64::MAX);
             total = total.saturating_add(made);
-            if total > max_inflate {
-                return Err(DetectError::InflateLimit(LimitError {
-                    kind: LimitKind::Inflate,
-                    value: total,
-                    max: max_inflate,
-                }));
-            }
+            // Counted before the stream's own bound is checked, so the
+            // chunk that passes `max_inflate` is the open's work too.
             if let Some(meter) = open {
                 count_work(meter, made)?;
+            }
+            if total > max_inflate {
+                return Err(inflate_limit(total, max_inflate));
             }
             sink(out);
             if status == Status::StreamEnd {
