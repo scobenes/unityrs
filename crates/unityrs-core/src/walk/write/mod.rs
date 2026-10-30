@@ -38,7 +38,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::dict::{RefIndex, steps};
+use super::dict::{RefIndex, steps, visit};
 use super::{RefTypes, WriteCtx, WriteError, WriteRules, py_size_field_is_zero};
 use crate::budget::DecodeBuf;
 use crate::error::{LimitError, LimitKind};
@@ -76,6 +76,7 @@ pub fn write(
         max_depth: ctx.limits.max_value_depth,
         limits: *ctx.limits,
         depth: 0,
+        values: 0,
         has_registry: false,
         shared: 0,
         kept: KeptTables::new(parsed.charge().meter()),
@@ -97,6 +98,9 @@ struct Writer<'a, 'o> {
     limits: crate::limits::Limits,
     max_depth: u32,
     depth: u32,
+    /// Values written and children skipped, against
+    /// `max_values_per_object` ([`Self::count`]).
+    values: u64,
     has_registry: bool,
     /// How many classes whose children repeat a name (`dup_names`) are
     /// being written: inside one, a dict can be written once a sibling,
@@ -204,7 +208,28 @@ impl<'a> Writer<'a, '_> {
     }
 
     fn value(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
+        self.count()?;
         self.frame(|w| w.value_inner(tree, node, o))
+    }
+
+    /// Counts one value written, or one child skipped, against
+    /// `max_values_per_object`, the bound a read counts its values against
+    /// (plan 3.10, "Bounds"; 3.11). A write of a value through the tree it
+    /// was read with counts no more than its read did, unless the tree
+    /// repeats a name: then one value is written once for each child of the
+    /// name, which no output bound stops when its node writes nothing (claude
+    /// B, review round 3: `K` × `N` values into `4K + 4N` bytes).
+    fn count(&mut self) -> Result<(), WriteError> {
+        self.values = self.values.saturating_add(1);
+        let max = self.limits.max_values_per_object;
+        if self.values > max {
+            return Err(WriteError::Limit(LimitError {
+                kind: LimitKind::ValuesPerObject,
+                value: self.values,
+                max,
+            }));
+        }
+        Ok(())
     }
 
     /// One frame UnityPy's `write_value` pushes: a `write_value` call, or the
@@ -304,6 +329,7 @@ impl<'a> Writer<'a, '_> {
             self.rules == WriteRules::MirrorReader && tree.py_kind(elem).reads_as_run();
         let elem_align = tree.info(elem).is_some_and(|i| i.align);
         let one = |w: &mut Self, item: Obj<'a>| -> Result<(), WriteError> {
+            visit();
             if mirror_run {
                 w.value_unaligned(tree, elem, item)
             } else {
@@ -359,6 +385,7 @@ impl<'a> Writer<'a, '_> {
     /// An element of a run under [`WriteRules::MirrorReader`]: its value
     /// without its own trailing alignment.
     fn value_unaligned(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
+        self.count()?;
         let kind = tree.py_kind(node);
         if kind.prim_size().is_some() {
             return self.prim(tree, node, kind, o);
@@ -453,8 +480,10 @@ impl<'a> Writer<'a, '_> {
         let outer = self.has_registry;
         let kids = tree.list().children(node);
         for c in kids {
+            visit();
             if tree.py_kind(*c) == Kind::ManagedReferencesRegistry {
                 if self.has_registry {
+                    self.count()?;
                     continue;
                 }
                 self.has_registry = true;
@@ -493,8 +522,10 @@ impl<'a> Writer<'a, '_> {
         let mut find = Lookup::new(self.parsed, tree, node, m)?;
         self.children(tree, node, |w| {
             for c in tree.list().children(node) {
+                visit();
                 if tree.py_kind(*c) == Kind::ManagedReferencesRegistry {
                     if w.has_registry {
+                        w.count()?;
                         continue;
                     }
                     w.has_registry = true;
@@ -527,6 +558,7 @@ impl<'a> Writer<'a, '_> {
         let mut data: Option<Data> = None;
         self.children(tree, node, |w| {
             for c in kids {
+                visit();
                 if tree.py_kind(*c) != Kind::ReferencedObjectData {
                     let v = find
                         .get(w.parsed, tree, *c, w.kept())?
@@ -548,6 +580,7 @@ impl<'a> Writer<'a, '_> {
                     data.insert(d).clone()
                 };
                 let Data::Through(ref_tree) = through else {
+                    w.count()?;
                     continue;
                 };
                 // `value[child.m_Name]`, then `write_value(..., None)` raises.

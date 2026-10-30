@@ -63,8 +63,12 @@ pub enum WriteRules {
     /// run. The oracle's L3 behaviour, and the default.
     #[default]
     UnityPy,
-    /// Align as the reader reads: once after a flagged primitive or pair run.
-    /// Round-trips every value UnityPy's writer pads (a `PARITY.md` Tier C option).
+    /// Align as the reader reads: once after a flagged primitive or pair run,
+    /// and no data where the reader skipped it. A value UnityPyBoost reads
+    /// through a tree that repeats no name writes back to bytes that read as
+    /// the same value (padding as zeros); a repeated name keeps only its last
+    /// value, so no writer gives back the others' bytes (plan 3.11; a
+    /// `PARITY.md` Tier C option).
     MirrorReader,
 }
 
@@ -113,7 +117,8 @@ pub struct WriteCtx<'a> {
     pub ref_types: RefTypes<'a>,
     /// Alignment rules.
     pub rules: WriteRules,
-    /// Depth bound.
+    /// The depth and values bounds (`max_value_depth`,
+    /// `max_values_per_object`).
     pub limits: &'a Limits,
 }
 

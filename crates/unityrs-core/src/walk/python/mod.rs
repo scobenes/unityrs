@@ -60,7 +60,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::dict::{Dict, RefIndex, RefNode, Trees, ref_tree, slot_count, slot_of};
+use super::dict::{Dict, RefIndex, RefNode, Trees, ref_tree, slot_count, slot_of, visit};
 use super::{
     FloatMode, Out, ReadCtx, ReadDetail, ReadError, ReadErrorKind, RefTypes, Work, charge_error,
     f32_bits, int, uint,
@@ -443,8 +443,11 @@ impl Reader<'_, '_> {
         )?;
         let outer = self.has_registry;
         for c in kids {
+            visit();
             if is_registry(*c) {
                 if self.has_registry {
+                    // A skipped child counts as a value (plan 3.10, "Bounds").
+                    self.work.values(1, self.at())?;
                     continue;
                 }
                 // `config = config.copy(); config.has_registry = True`: for
@@ -479,6 +482,7 @@ impl Reader<'_, '_> {
         // again, as the Boost reader keeps it.
         let mut resolved: Option<Option<RefNode>> = None;
         for c in kids {
+            visit();
             let (key, slot) = t.info(*c).map_or((*c, 0), |i| (i.key, i.slot));
             let v = if t.py_kind(*c) == Kind::ReferencedObjectData {
                 let node = if let Some(r) = &resolved {
@@ -496,7 +500,11 @@ impl Reader<'_, '_> {
                         let rlx = self.trees.index(&mut self.builder, &rt, at)?;
                         self.value(&rt, rlx, rt.root())?
                     }
-                    (None | Some(RefNode::NoTree), false) => continue,
+                    (None | Some(RefNode::NoTree), false) => {
+                        // A skipped child counts as a value (plan 3.10, "Bounds").
+                        self.work.values(1, self.at())?;
+                        continue;
+                    }
                     (None | Some(RefNode::NoTree), true) => {
                         return Err(self.fail(ReadErrorKind::Other, ReadDetail::RefTypeNoTree));
                     }

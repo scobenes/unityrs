@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::dict::{Dict, RefIndex, RefNode, Trees, ref_tree, slot_count, slot_of};
+use super::dict::{Dict, RefIndex, RefNode, Trees, ref_tree, slot_count, slot_of, visit};
 use super::{
     FloatMode, Out, ReadCtx, ReadDetail, ReadError, ReadErrorKind, RefTypes, Work, charge_error,
     f32_bits, first_reserve, grow_step, int, py_size_field_is_zero, uint,
@@ -468,9 +468,12 @@ impl Reader<'_, '_> {
         let mut dict = Dict::new(&self.builder, &mut self.scratch, reserve, slots, at)?;
         let mut changed = false;
         for c in kids {
+            visit();
             let ci = t.info(*c).copied().unwrap_or(me);
             if ci.kind == Kind::ManagedReferencesRegistry {
                 if self.has_registry {
+                    // A skipped child counts as a value (plan 3.10, "Bounds").
+                    self.work.values(1, self.at())?;
                     continue;
                 }
                 changed = true;
@@ -518,6 +521,7 @@ impl Reader<'_, '_> {
         // children resolves each `type` value once (claude X, review round 2).
         let mut resolved: Option<Option<RefNode>> = None;
         for c in kids {
+            visit();
             let Some(ci) = t.info(*c).copied() else {
                 continue;
             };
@@ -532,7 +536,11 @@ impl Reader<'_, '_> {
                     resolved.insert(self.ref_node(ty)?).clone()
                 };
                 match node {
-                    None | Some(RefNode::NoTree) => continue,
+                    None | Some(RefNode::NoTree) => {
+                        // A skipped child counts as a value (plan 3.10, "Bounds").
+                        self.work.values(1, self.at())?;
+                        continue;
+                    }
                     Some(RefNode::Tree(rt)) => {
                         let at = self.at();
                         let rlx = self.trees.index(&mut self.builder, &rt, at)?;

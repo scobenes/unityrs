@@ -2,21 +2,29 @@
 //! readers and the writer do again and again for a `ReferencedObject`,
 //! counted in map steps ([`STEPS`], never a clock) and bounded linearly in
 //! the input (claude X, review round 2: the ref-type scan; claude B, round
-//! 2: a dict a repeated name hands many siblings).
+//! 2: a dict a repeated name hands many siblings); and the loops no value
+//! comes out of, counted in loop turns ([`VISITS`]) and bounded by
+//! `Limits::max_values_per_object` (claude B, review round 3: children a
+//! read skips, and one value a write writes through many same-named
+//! children).
 
 use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::dict::STEPS;
+use super::dict::{STEPS, VISITS};
 use crate::budget::DecodeBuf;
-use crate::error::LimitKind;
+use crate::error::{LimitError, LimitKind};
 use crate::files::SerializedType;
 use crate::limits::{Limits, Meter};
 use crate::raw::RawStr;
 use crate::stream::Endian;
 use crate::typetree::{NodeList, NodeRow, Tree};
-use crate::walk::{ReadCtx, ReadOptions, RefTypes, WriteCtx, WriteRules, boost, python};
+use crate::value::Parsed;
+use crate::walk::{
+    ReadCtx, ReadDetail, ReadError, ReadOptions, RefTypes, WriteCtx, WriteError, WriteRules, boost,
+    python,
+};
 
 /// What one reader's read took, and what writing its value back under one
 /// rule took, in map steps.
@@ -210,4 +218,277 @@ fn siblings_share_one_referenced_object_in_linear_steps() {
     type_data(&mut data, N, "C");
     let steps = measure(rows, &data, &refs);
     check(&steps, 16 * u64::from(K + N), "K siblings sharing one dict");
+}
+
+/// The values bound the work tests cross: small, so a test that the bound
+/// stops a loop is quick.
+const BOUND: u64 = 1 << 14;
+
+/// The default limits with `max_values_per_object` at [`BOUND`].
+fn bounded() -> Limits {
+    Limits {
+        max_values_per_object: BOUND,
+        ..Limits::default()
+    }
+}
+
+/// The refusal one value past [`BOUND`] is.
+const REFUSED: LimitError = LimitError {
+    kind: LimitKind::ValuesPerObject,
+    value: BOUND + 1,
+    max: BOUND,
+};
+
+fn compile(rows: Vec<NodeRow>) -> Arc<Tree> {
+    Tree::compile(
+        Arc::new(NodeList::trusted(rows).unwrap()),
+        &Limits::default(),
+    )
+    .unwrap()
+}
+
+/// Reads `data` through `tree` with `reader` under `limits`: the outcome and
+/// the loop turns it took.
+fn read_visits(
+    reader: &str,
+    tree: &Arc<Tree>,
+    data: &[u8],
+    refs: &[SerializedType],
+    limits: Limits,
+) -> (Result<Parsed, ReadError>, u64) {
+    let data = Bytes::copy_from_slice(data);
+    let options = ReadOptions {
+        limits,
+        ..ReadOptions::default()
+    };
+    let meter = Meter::unlimited();
+    let ctx = ReadCtx {
+        endian: Endian::Little,
+        ref_types: RefTypes::List(refs),
+        options: &options,
+        meter: &meter,
+    };
+    VISITS.with(|s| s.set(0));
+    let got = match reader {
+        "boost" => boost::read(&data, tree, &ctx),
+        _ => python::read(&data, 0, tree, &ctx),
+    };
+    (got, VISITS.with(std::cell::Cell::get))
+}
+
+/// Writes `p` back through `tree` under `rules` and `limits`: the outcome
+/// and the loop turns it took.
+fn write_visits(
+    p: &Parsed,
+    tree: &Tree,
+    refs: &[SerializedType],
+    rules: WriteRules,
+    limits: &Limits,
+) -> (Result<(), WriteError>, u64) {
+    let ctx = WriteCtx {
+        endian: Endian::Little,
+        ref_types: RefTypes::List(refs),
+        rules,
+        limits,
+    };
+    let meter = Meter::unlimited();
+    let mut buf = DecodeBuf::new(&meter, 0, u64::MAX, LimitKind::InputMemory).unwrap();
+    VISITS.with(|s| s.set(0));
+    let got = super::write::write(p, tree, &ctx, &mut buf);
+    (got, VISITS.with(std::cell::Cell::get))
+}
+
+/// A read the values bound stopped, in at most twice its turns.
+fn assert_read_refused(what: &str, got: &Result<Parsed, ReadError>, visits: u64) {
+    match got {
+        Err(ReadError {
+            detail: ReadDetail::Limit(l),
+            ..
+        }) => assert_eq!(*l, REFUSED, "{what}"),
+        Err(e) => panic!("{what}: {e}, not the values bound"),
+        Ok(_) => panic!("{what}: read whole, {visits} loop turns past a bound of {BOUND}"),
+    }
+    assert!(visits <= 2 * BOUND, "{what}: {visits} loop turns");
+}
+
+/// A write the values bound stopped, in at most twice its turns.
+fn assert_write_refused(what: &str, got: &Result<(), WriteError>, visits: u64) {
+    match got {
+        Err(WriteError::Limit(l)) => assert_eq!(*l, REFUSED, "{what}"),
+        Err(e) => panic!("{what}: {e}, not the values bound"),
+        Ok(()) => panic!("{what}: written whole, {visits} loop turns past a bound of {BOUND}"),
+    }
+    assert!(visits <= 2 * BOUND, "{what}: {visits} loop turns");
+}
+
+/// Claude B's review, round 3, scenario A: `N` `ReferencedObject`s of an
+/// empty class, each with `K` data children, all skipped. Each element
+/// builds five values and its loop visits `K` + 2 children, so `N` × `K`
+/// turns ran under a bound of values that `N` × 5 never reached. Every
+/// skipped child now counts one value: both readers stop at the bound, in
+/// turns linear in it; and so does a `MirrorReader` write of the value read
+/// without the bound, which skips the same children (a `UnityPy` write
+/// fails at the first one, W7).
+#[test]
+fn skipped_data_children_count_against_the_values_bound() {
+    const N: u32 = 64;
+    const K: u32 = 1024;
+    let refs = ref_types(std::iter::once("C".to_owned()));
+    let mut rows = vec![
+        NodeRow::new(0, "Base", "Base"),
+        NodeRow::new(1, "vector", "refs"),
+        NodeRow::new(2, "Array", "Array"),
+        NodeRow::new(3, "int", "size"),
+        NodeRow::new(3, "ReferencedObject", "data"),
+    ];
+    type_rows(&mut rows, 4, 0);
+    for i in 0..K {
+        rows.push(NodeRow::new(
+            4,
+            "ReferencedObjectData",
+            format!("d{i}").as_str(),
+        ));
+    }
+    let tree = compile(rows);
+    let mut data = N.to_le_bytes().to_vec();
+    for _ in 0..N {
+        type_data(&mut data, 0, "");
+    }
+    assert!(u64::from(N * K) > 2 * BOUND && u64::from(N * 5) < BOUND);
+    for reader in ["boost", "python"] {
+        let (got, visits) = read_visits(reader, &tree, &data, &refs, bounded());
+        assert_read_refused(reader, &got, visits);
+        let (p, _) = read_visits(reader, &tree, &data, &refs, Limits::default());
+        let p = p.unwrap_or_else(|e| panic!("{reader}, unbounded: {e}"));
+        let (got, visits) = write_visits(&p, &tree, &refs, WriteRules::MirrorReader, &bounded());
+        assert_write_refused(&format!("{reader} read, MirrorReader write"), &got, visits);
+    }
+}
+
+/// Claude B's review, round 3, scenario B: `N` classes of an `int` and `K`
+/// `ManagedReferencesRegistry` children, of which R13 reads the first and
+/// skips the rest. Each skipped one now counts one value, in both readers
+/// and in the writer, which skips them too.
+#[test]
+fn skipped_registries_count_against_the_values_bound() {
+    const N: u32 = 64;
+    const K: u32 = 1024;
+    let mut rows = vec![
+        NodeRow::new(0, "Base", "Base"),
+        NodeRow::new(1, "vector", "v"),
+        NodeRow::new(2, "Array", "Array"),
+        NodeRow::new(3, "int", "size"),
+        NodeRow::new(3, "Foo", "data"),
+        NodeRow::new(4, "int", "x"),
+    ];
+    for i in 0..K {
+        rows.push(NodeRow::new(
+            4,
+            "ManagedReferencesRegistry",
+            format!("r{i}").as_str(),
+        ));
+    }
+    let tree = compile(rows);
+    let mut data = N.to_le_bytes().to_vec();
+    for i in 0..N {
+        data.extend_from_slice(&i.to_le_bytes());
+    }
+    assert!(u64::from(N * (K - 1)) > 2 * BOUND && u64::from(N * 4) < BOUND);
+    for reader in ["boost", "python"] {
+        let (got, visits) = read_visits(reader, &tree, &data, &[], bounded());
+        assert_read_refused(reader, &got, visits);
+        let (p, _) = read_visits(reader, &tree, &data, &[], Limits::default());
+        let p = p.unwrap_or_else(|e| panic!("{reader}, unbounded: {e}"));
+        for rules in [WriteRules::UnityPy, WriteRules::MirrorReader] {
+            let (got, visits) = write_visits(&p, &tree, &[], rules, &bounded());
+            assert_write_refused(&format!("{reader} read, {rules:?} write"), &got, visits);
+        }
+    }
+}
+
+/// Claude B's review, round 3: `Base { a: vector<Empty> × (K - 1), a:
+/// vector<int> }`. The read keeps the last vector's `N` ints, and the write
+/// sends them through every same-named sibling, as UnityPy's does: an
+/// `Empty` element takes any value and writes nothing, so `K` × `N` values
+/// were written into `4K + 4N` bytes, with no bound but the output's
+/// memory. The writer counts every value it writes against the bound the
+/// read counts against; the read, of `K` + `N` values, passes it. So it does
+/// when the siblings are `vector<int>`s, whose elements `MirrorReader`
+/// writes as one run.
+#[test]
+fn one_value_written_through_many_same_named_children_counts_against_the_values_bound() {
+    const K: u32 = 64;
+    const N: u32 = 4096;
+    for first in ["Empty", "int"] {
+        let mut rows = vec![NodeRow::new(0, "Base", "Base")];
+        for elem in std::iter::repeat_n(first, K as usize - 1).chain(std::iter::once("int")) {
+            rows.push(NodeRow::new(1, "vector", "a"));
+            rows.push(NodeRow::new(2, "Array", "Array"));
+            rows.push(NodeRow::new(3, "int", "size"));
+            rows.push(NodeRow::new(3, elem, "data"));
+        }
+        let tree = compile(rows);
+        let mut data = vec![0; 4 * (K as usize - 1)];
+        data.extend_from_slice(&N.to_le_bytes());
+        for i in 0..N {
+            data.extend_from_slice(&i.to_le_bytes());
+        }
+        assert!(u64::from(K * N) > 2 * BOUND && u64::from(2 * (K + N)) < BOUND);
+        for reader in ["boost", "python"] {
+            let (p, _) = read_visits(reader, &tree, &data, &[], bounded());
+            let p = p.unwrap_or_else(|e| panic!("{first}, {reader}: {e}"));
+            for rules in [WriteRules::UnityPy, WriteRules::MirrorReader] {
+                let (got, visits) = write_visits(&p, &tree, &[], rules, &bounded());
+                let what = format!("vector<{first}>s, {reader} read, {rules:?} write");
+                assert_write_refused(&what, &got, visits);
+            }
+        }
+    }
+}
+
+/// The same fan-out through a class that takes a value which is not a dict
+/// (W2: each child's attribute): `Base { a: vector<Foo>, a: vector<int> }`,
+/// `Foo` a registry named `real` (an `int`'s attribute) then `K` more
+/// registries, which R13's scope skips. Each of the `N` ints skipped `K`
+/// children uncounted.
+#[test]
+fn registries_skipped_on_a_value_that_is_not_a_dict_count_too() {
+    const N: u32 = 64;
+    const K: u32 = 1024;
+    let mut rows = vec![
+        NodeRow::new(0, "Base", "Base"),
+        NodeRow::new(1, "vector", "a"),
+        NodeRow::new(2, "Array", "Array"),
+        NodeRow::new(3, "int", "size"),
+        NodeRow::new(3, "Foo", "data"),
+        NodeRow::new(4, "ManagedReferencesRegistry", "real"),
+    ];
+    for i in 0..K {
+        rows.push(NodeRow::new(
+            4,
+            "ManagedReferencesRegistry",
+            format!("r{i}").as_str(),
+        ));
+    }
+    rows.extend([
+        NodeRow::new(1, "vector", "a"),
+        NodeRow::new(2, "Array", "Array"),
+        NodeRow::new(3, "int", "size"),
+        NodeRow::new(3, "int", "data"),
+    ]);
+    let tree = compile(rows);
+    let mut data = vec![0; 4];
+    data.extend_from_slice(&N.to_le_bytes());
+    for i in 0..N {
+        data.extend_from_slice(&i.to_le_bytes());
+    }
+    assert!(u64::from(N * K) > 2 * BOUND && u64::from(2 * N) < BOUND);
+    for reader in ["boost", "python"] {
+        let (p, _) = read_visits(reader, &tree, &data, &[], bounded());
+        let p = p.unwrap_or_else(|e| panic!("{reader}: {e}"));
+        for rules in [WriteRules::UnityPy, WriteRules::MirrorReader] {
+            let (got, visits) = write_visits(&p, &tree, &[], rules, &bounded());
+            assert_write_refused(&format!("{reader} read, {rules:?} write"), &got, visits);
+        }
+    }
 }
