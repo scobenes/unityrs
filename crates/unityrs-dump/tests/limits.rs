@@ -244,6 +244,48 @@ fn every_limit_note_is_in_g3bs_grammar() {
     assert_eq!(limits_in("unlimit A: 2 > 1"), []);
 }
 
+/// A bundle entry's gzip detection draws on its open's decode work
+/// (`unityrs_core::detect::check_entry_type`), and the detection that passes
+/// it is the open's `DecodeWork` limit, in g3b's grammar like every other
+/// refusal: the input's own, not wrapped in the entry's name.
+#[test]
+fn an_entrys_detection_past_the_opens_work_is_in_g3bs_grammar() {
+    let tmp = Tmp::new("detect-work");
+    let dir = tmp.0.join("in");
+    std::fs::create_dir_all(&dir).unwrap();
+    let gz = gzip_of_zeros(5000);
+    let rows = unityrs_testkit::env::bundle(&[("a.gz", gz.clone()), ("b.gz", gz)]);
+    std::fs::write(dir.join("gz-rows"), rows).unwrap();
+    // Alone, each detection fits; the second passes the open's allowance.
+    let records = dump(
+        &tmp,
+        "work.jsonl",
+        1,
+        with_limits(|l| l.max_decode_work = 6000),
+    );
+    let (kind, note) = refusal(&records, "gz-rows");
+    let found = limits_in(&note);
+    assert!(
+        matches!(found.as_slice(), [(k, v, 6000)] if k == "DecodeWork" && *v > 6000),
+        "{note}"
+    );
+    assert_eq!(
+        (kind.as_str(), note.as_str()),
+        (
+            "parse",
+            format!("limit DecodeWork: {} > 6000", found[0].1).as_str()
+        )
+    );
+    // Under the default allowance both entries detect.
+    let records = dump(&tmp, "default.jsonl", 1, DumpOptions::default());
+    assert!(
+        of(&records, "gz-rows")
+            .iter()
+            .all(|r| r.get("error").is_none_or(Json::is_null)),
+        "{records:?}"
+    );
+}
+
 /// An input longer than `max_input_bytes` is refused from its length,
 /// unread, with its own record: `l0` names its length and the sha256 of its
 /// bytes (so an index's pin still matches), and the inputs beside it dump
