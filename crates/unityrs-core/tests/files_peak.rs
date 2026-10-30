@@ -81,6 +81,20 @@ impl Tally for Counting {
 #[global_allocator]
 static ALLOC: Allocator<Counting> = Allocator(Counting);
 
+/// Ends a watch when dropped, a panic's unwind included: the allocator
+/// never reads [`METER`] once [`watch`] has returned, so never after the
+/// meter it points to is freed (review round 6's sweep: a panic inside `f`
+/// left the pointer set, and the test thread's later allocations read a
+/// freed meter).
+struct Unwatch;
+
+impl Drop for Unwatch {
+    fn drop(&mut self) {
+        WATCHED.set(false);
+        METER.set(std::ptr::null());
+    }
+}
+
 /// Runs `f` with this thread watched against `meter`, and returns its value
 /// and the most the heap it allocated rose above what the meter charged
 /// while it ran.
@@ -91,10 +105,26 @@ fn watch<T>(meter: &Arc<Meter>, f: impl FnOnce() -> T) -> (T, i64) {
     PEAK.set(i64::MIN);
     METER.set(Arc::as_ptr(meter));
     WATCHED.set(true);
+    let watching = Unwatch;
     let out = f();
-    WATCHED.set(false);
-    METER.set(std::ptr::null());
+    drop(watching);
     (out, PEAK.get())
+}
+
+/// A panic inside a watch ends it: the meter's pointer is cleared as the
+/// panic leaves [`watch`], before the meter can be freed.
+#[test]
+fn a_panic_inside_a_watch_ends_it() {
+    let m = meter();
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        watch(&m, || panic!("inside the watch, on purpose"))
+    }));
+    assert!(r.is_err());
+    assert!(
+        METER.get().is_null(),
+        "the meter's pointer outlived the watch"
+    );
+    assert!(!WATCHED.get(), "the watch outlived the panic");
 }
 
 /// A fresh input meter, with no budget.
