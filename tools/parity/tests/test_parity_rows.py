@@ -325,16 +325,22 @@ class TestColumn(unittest.TestCase):
     def test_the_gpu_program_index_rule_is_int_in_base_10(self):
         """`GpuProgramIndex N` fills where `int()` in base 10 takes the rest of the line, which is not Python's
         integer-literal grammar (`+0` and `٠` fill, `0x0` raises; `test_rows_exports.py` shader_text): no line of
-        PARITY.md or DESIGN.md that speaks of such a line calls the rule a literal (a contrast with the literal
-        grammar is fine: "need not be" one, or a "not" after a comma or an opening parenthesis), and each that states
-        the refusal of a line the table cannot fill names `int()` in base 10."""
-        # Any int or integer literal, with the words that may qualify it, unless the words before it contrast.
-        qualifier = r"(?:(?:an?|the|python(?:'s)?|valid|decimal)\s+)*"
-        literal = re.compile(r"(?i)(?<!\w)" + qualifier + r"`?int(?:eger)?(?:\(\))?`?[- ]literals?\b")
-        contrast = re.compile(r"(?i)(?:\bneed not be|[,(]\s*(?:which is\s+)?not)\s+$")
+        PARITY.md or DESIGN.md that speaks of such a line uses the word literal or token, whatever qualifies it,
+        unless its clause is a contrast ("need not be" one, or a clause opening with "not" after a comma or an
+        opening parenthesis), and each that states the refusal of a line the table cannot fill names `int()` in base
+        10."""
+        # Any "literal" or "token", unless the clause it sits in (from the last comma, parenthesis, semicolon or
+        # colon) opens with "not" or "which is not", or says "need not be".
+        word = re.compile(r"(?i)\b(?:literal|token)s?\b")
+        contrast = re.compile(r"(?i)^\s*(?:which is\s+)?not\b|\bneed not be\b")
 
         def affirmative(line):
-            return [m.group(0) for m in literal.finditer(line) if not contrast.search(line[: m.start()])]
+            found = []
+            for m in word.finditer(line):
+                clause = re.split(r"[,(;:]", line[: m.start()])[-1]
+                if not contrast.search(clause):
+                    found.append(clause + m.group(0))
+            return found
 
         for wording, calls in (
             ("the rest of the line is no Python `int` literal", True),
@@ -344,6 +350,10 @@ class TestColumn(unittest.TestCase):
             ("filled where the rest is a decimal integer literal", True),
             ("read with the int literal grammar", True),
             ("read as Python's integer-literal grammar", True),
+            ("filled where the rest is a decimal literal", True),
+            ("filled where the rest is a Python numeric literal", True),
+            ("N parses as an integer token", True),
+            ("filled where the rest is a base-10 integer literal", True),
             ("`int()` in base 10, which is not a valid Python integer literal", False),
             ("`int()` in base 10, which is not Python's integer-literal grammar", False),
             ("`int()` in base 10, not an integer literal (`0x0` raises)", False),
@@ -468,7 +478,9 @@ class TestColumn(unittest.TestCase):
 
     def test_tol_metrics_are_stated_or_said_to_be_planned(self):
         """Both Tol definitions say each row states a metric and threshold. Until every Tol row does (a row names a
-        `threshold`), both must say the rows are to state them in P3 and that none does yet, not that each has one."""
+        `threshold`), both must say the rows are to state them in the phase each row's unityrs side lands in (its
+        status's `impl Pn`: P1 for the Sprite affine path, P3 for audio) and that none does yet, not that each has
+        one."""
         root = HERE.parent.parent
         parity = (root / "PARITY.md").read_text(encoding="utf-8")
         design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
@@ -482,10 +494,17 @@ class TestColumn(unittest.TestCase):
             next(line for line in parity.splitlines() if line.startswith("| Tol | ")),
             next(line for line in design.splitlines() if line.startswith("- **Tolerance:**")),
         ]
+        # The phase each Tol row's unityrs side lands in, by path: the Sprite affine path's rows and the audio rows.
+        phases = {}
+        for cells in tol:
+            path = "the Sprite affine path" if "Sprite" in cells[0] else "audio"
+            phases.setdefault(path, set()).update(re.findall(r"\bimpl (P\d)\b", cells[-1]))
+        self.assertEqual(phases, {"the Sprite affine path": {"P1"}, "audio": {"P3"}})
+        when = "(P1 for the Sprite affine path, P3 for audio)"
         if len(stated) < len(tol):
             for text in definitions:
                 with self.subTest(text[:40]):
-                    self.assertIn("(P3)", text)
+                    self.assertIn(f"when unityrs's side lands {when}", text)
                     self.assertRegex(text, r"\b(?:no row states them|none is stated) yet\b")
                     self.assertNotRegex(text, r"(?i)\b(?:has|within) a stated metric\b")
 

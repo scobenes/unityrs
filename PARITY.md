@@ -17,7 +17,7 @@ This is the inventory `DESIGN.md` section 3 asks for. It maps every public Unity
 | A | bit-exact with UnityPy wherever UnityPy is right |
 | B | UnityPy raises on a valid request; unityrs produces correct output, checked against an independent reference, with a pinned divergence test (section 19) |
 | C | UnityPy returns wrong data (checkable against an independent reference), or an exporter or helper of its crashes, or it fails to write; unityrs produces correct output, with a pinned divergence test (section 19). For writing, the row states the acceptance rule |
-| Tol | compared within a metric and threshold (Sprite affine path, audio against FMOD), which each Tol row is to state when unityrs's side lands (P3); no row states them yet |
+| Tol | compared within a metric and threshold (Sprite affine path, audio against FMOD), which each Tol row is to state when unityrs's side lands (P1 for the Sprite affine path, P3 for audio); no row states them yet |
 | HEAD | equal to UnityPy git `417d595`: to its bundle writer, whose rules a test runs now, and to its dicts on Unity 6000.4/6000.5 fixtures, a target until those fixtures exist (section 20) |
 | U | unsupported until a sample and a reference exist: unityrs refuses the input with a named `Unsupported` error. Where UnityPy does not raise (the ETC 3DS formats return pixels nobody has checked), that is a documented divergence, not parity |
 | gap | a deliberate `DESIGN.md` gap, and no parity target: UnityPy produces output (through FMOD) and unityrs reports the input unsupported (section 16; `DESIGN.md` section 3, Gap) |
