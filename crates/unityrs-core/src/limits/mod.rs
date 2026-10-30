@@ -81,7 +81,14 @@ pub struct Limits {
     /// computation's own thread, that the meter itself then refused
     /// ([`LimitKind::InputMemory`]: a parse or compile that alone needs more
     /// than the meter, which the next ask runs again:
-    /// [`crate::once::get_or_publish_result`]). The meter bounds what is
+    /// [`crate::once::get_or_publish_result`]); and the bytes a parse
+    /// searches or indexes (a string's search, a typetree blob's one pass
+    /// over its string buffer, an old-format file's type index:
+    /// `typetree::parse` and `files::serialized`), the bytes a bundle
+    /// entry's gzip detection reads and inflates (`detect`), and every byte
+    /// the meter granted an entry parse that ended in an error its cell
+    /// keeps (`files::bundle`), all of which K directory rows over one span
+    /// repeat K times (round 4). The meter bounds what is
     /// held; this bounds what is done, so an input cannot make its readers
     /// decode or recompute without end while the meter stays empty
     /// (thousands of blocks that each decode to the block cap, measured and
