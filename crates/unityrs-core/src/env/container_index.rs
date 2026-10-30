@@ -182,23 +182,33 @@ const TARGET_SHARE: u64 = HASH_TABLE_SHARES * (size_of::<i32>() + size_of::<Know
 
 /// A preload walk's answers for its file's externals, each kept only while
 /// UnityPy's next dereference would give the same one: a bundle sibling for
-/// the walk, a lookup of `files` or the registry (found or not) until the
-/// walk's next load, and the resolver's load not at all (the next
-/// dereference looks again, and finds it if the load registered the name
-/// asked for, or loads again if not, as UnityPy's `find_file` does when its
-/// walk matched a longer file name by suffix).
+/// the walk, a lookup of `files` or the registry (found or not) until either
+/// changes, and the resolver's load not at all (the next dereference looks
+/// again, and finds it if the load registered the name asked for, or loads
+/// again if not, as UnityPy's `find_file` does when its walk matched a
+/// longer file name by suffix). A change is any registration that changes
+/// the dict and any change to `files` ([`Registry::changes`]): the walk's own
+/// loads, another thread's, and under [`LoadMode::Lazy`] a nested
+/// container's expansion, which registers what an eager load registered at
+/// load (review round 3: only the walk's loads expired a lookup, so a miss
+/// kept from before an element named the nested container outlived its
+/// expansion, where UnityPy's lookup finds the entry).
+///
+/// [`Registry::changes`]: super::registry::Registry::changes
+/// [`LoadMode::Lazy`]: super::LoadMode::Lazy
 struct Targets {
     known: HashMap<i32, Known>,
     charge: Charge,
-    /// The loads the walk's dereferences have made.
-    loads: u64,
 }
 
 /// One external's answer in [`Targets`].
 struct Known {
     found: Option<Found>,
-    /// The walk's load count it was found at, or `None` (a bundle sibling,
-    /// or a file id past the externals' end): kept for the walk.
+    /// [`Registry::changes`] before the lookup that found it, or `None` (a
+    /// bundle sibling, or a file id past the externals' end): kept for the
+    /// walk.
+    ///
+    /// [`Registry::changes`]: super::registry::Registry::changes
     at: Option<u64>,
 }
 
@@ -369,7 +379,6 @@ impl Environment {
         let mut targets = Targets {
             known: HashMap::new(),
             charge: Charge::zero(meter),
-            loads: 0,
         };
         for (r, row) in container.rows().iter().enumerate() {
             // `start = info.preloadIndex`, `size = info.preloadSize`: a
@@ -446,11 +455,13 @@ impl Environment {
         targets: &mut Targets,
         siblings: &mut Siblings,
     ) -> Result<Option<ObjectRef>, Error> {
-        let loads = targets.loads;
+        // Read before the lookup: a change the lookup makes (a load, an
+        // expansion) expires its own answer.
+        let changes = self.inner.registry.changes();
         let kept = targets
             .known
             .get(&p.file_id)
-            .filter(|k| k.at.is_none_or(|at| at == loads));
+            .filter(|k| k.at.is_none_or(|at| at == changes));
         let found = if p.file_id == 0 {
             Some(Found::File(File::Serialized(sf.clone())))
         } else if let Some(k) = kept {
@@ -459,13 +470,10 @@ impl Environment {
             // What to keep: `Some(at)` as `Known::at`, `None` nothing.
             let (found, keep) = match self.external(sf, p.file_id, Some(siblings)) {
                 Ok((t, Reached::Sibling)) => (Some(t), Some(None)),
-                Ok((t, Reached::Lookup)) => (Some(t), Some(Some(loads))),
-                Ok((t, Reached::Load)) => {
-                    targets.loads = loads.saturating_add(1);
-                    (Some(t), None)
-                }
+                Ok((t, Reached::Lookup)) => (Some(t), Some(Some(changes))),
+                Ok((t, Reached::Load)) => (Some(t), None),
                 Err(DerefError::FileIdPastEnd { .. }) => (None, Some(None)),
-                Err(DerefError::NotFound { .. }) => (None, Some(Some(loads))),
+                Err(DerefError::NotFound { .. }) => (None, Some(Some(changes))),
                 Err(e) => return Err(deref_error(e)),
             };
             if let Some(at) = keep {

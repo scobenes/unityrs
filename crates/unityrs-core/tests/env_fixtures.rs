@@ -548,6 +548,10 @@ const LAZY_DIFFERS: &[&str] = &[
     // (b): a nested container's own name is a CAB key.
     "nested_after_cab",
     "nested_duplicates",
+    // (b), in the keys alone ([`LAZY_KEYS_DIFFER`]).
+    "preload_nested_external",
+    "resource_in_own_nested",
+    "deref_sibling_nested",
     // (c): the block after the last entry is never decoded.
     "last_block_fails",
 ];
@@ -563,6 +567,56 @@ fn lazy_is_eager_on_every_well_formed_scene() {
         let eager = Run::new(scene_by_name(&name), LoadMode::Eager).steps(&ops);
         let lazy = Run::new(scene_by_name(&name), LoadMode::Lazy).steps(&ops);
         assert_eq!(eager, lazy, "{name}");
+    }
+}
+
+/// The scenes on which `Lazy` differs from UnityPy in the keys alone, by
+/// difference (b), with the nested container whose own name is a key.
+const LAZY_KEYS_DIFFER: &[(&str, &str)] = &[
+    ("preload_nested_external", "inner"),
+    ("resource_in_own_nested", "inner"),
+    ("deref_sibling_nested", "inner"),
+];
+
+/// Difference (b) and nothing more on [`LAZY_KEYS_DIFFER`]'s scenes, under
+/// `EnvOptions::unitypy()` and `batch()`: every step's result, `files` and
+/// `objects` are UnityPy's; its keys but the nested container's own name
+/// are UnityPy's, in order, the container's entries missing until a step
+/// asks for it, and all of them at the end. A nested container reached
+/// without a `get` of its name registers its entries as that `get` does:
+/// named by a preload element (and a miss the walk kept before then is not
+/// kept), as a resource candidate read through the reader's own bundle, or
+/// as the asking file's sibling (review round 3: the kept miss and the own
+/// bundle's read gave no path and no bytes where UnityPy gives them).
+#[test]
+fn lazy_reaches_what_unitypy_reaches_through_a_nested_container() {
+    let keys = |step: &J| step["cabs"].as_array().unwrap().clone();
+    for (name, nested) in LAZY_KEYS_DIFFER {
+        let (_, steps) = recorded().into_iter().find(|(n, _)| n == name).unwrap();
+        let ops = ops(&steps);
+        let batch = EnvOptions::batch(Arc::new(unityrs_core::FileContext::unitypy()));
+        for options in [EnvOptions::unitypy(), batch] {
+            let ours = Run::with(scene_by_name(name), LoadMode::Lazy, options).steps(&ops);
+            for (want, got) in steps.iter().zip(&ours) {
+                let op = &want["op"];
+                for part in ["result", "files", "objects"] {
+                    assert_eq!(got[part], want[part], "{name} {op} {part}");
+                }
+                // A subsequence of UnityPy's keys, once `nested` is out.
+                let mut theirs = keys(want).into_iter();
+                let ok = keys(got)
+                    .iter()
+                    .filter(|k| k.as_str() != Some(nested))
+                    .all(|k| theirs.any(|t| t == *k));
+                assert!(ok, "{name} {op}: keys {} of {}", got["cabs"], want["cabs"]);
+            }
+            let (want, got) = (keys(steps.last().unwrap()), keys(ours.last().unwrap()));
+            let got: Vec<J> = got
+                .into_iter()
+                .filter(|k| k.as_str() != Some(nested))
+                .collect();
+            assert_eq!(got, want, "{name}: the keys at the end");
+        }
     }
 }
 

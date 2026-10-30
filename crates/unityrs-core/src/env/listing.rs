@@ -205,6 +205,8 @@ impl Environment {
                 None
             }
         };
+        // A lookup a container preload keeps is asked again (`Targets`).
+        self.inner.registry.changed();
         drop(replaced);
         Ok(())
     }
