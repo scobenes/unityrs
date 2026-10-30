@@ -858,7 +858,7 @@ One row per `TextureFormat` value (78; 37-40 are unassigned). Lines are in `expo
 
 The Tier B count is 21, as `DESIGN.md` section 3 says: `BC6H`; the half and float formats `RHalf`, `RGHalf`, `RFloat`, `RGFloat`, `RGBAFloat`, `RGBFloat`; the eight `_SIGNED` raw formats; `RG16`, `RG32`, `R16`, `RGBA64`, `RGB9e5Float` and `YUY2`. `RGBAHalf` and `RGB48` return an image, so they are not Tier B. `ARGBFloat` raises too, but no reference can be named for it, so it is Tier U (section 17.1).
 
-Two more behaviours of `parse_image_data` apply to every format: a zero width or height returns an empty RGBA image, and empty data raises `ValueError` (`:265-269`); a format number outside the enum raises `ValueError` (`:271-272`). Through `Texture2D.image` neither is reached for a texture with no data, which raises while its data is fetched (section 14.2).
+Two more behaviours of `parse_image_data` apply to every format: a zero width or height returns an empty RGBA image, and empty data raises `ValueError` (`:265-269`); a format number outside the enum raises `ValueError` (`:271-272`). Through `Texture2D.image`, a texture with no data reaches the first only where CAB `""` is registered (section 3, `Environment.load_zip_file`): its fetch then gives `b""`, so a 0×0 texture returns the empty image and one of non-zero size raises `ValueError` "Texture2D has no image data"; where none is, it raises while its data is fetched (section 14.2).
 
 ### 17.1 Tier B references
 

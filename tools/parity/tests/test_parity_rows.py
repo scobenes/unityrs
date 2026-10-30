@@ -150,6 +150,7 @@ class TestColumn(unittest.TestCase):
                 "the_gpu_program_index_rule_is_int_in_base_10",
                 "a_failure_to_write_is_tier_c_writing",
                 "every_tier_has_a_design_rule",
+                "module_level_data_is_tier_a_for_loop_variables",
             }
             named = {name for module, name in cited if module == path.name}
             self.assertEqual(sorted(defined - named), [], f"tests no PARITY.md row names, in {path.name}")
@@ -303,13 +304,15 @@ class TestColumn(unittest.TestCase):
         """An empty resource path is joined to `Environment.path` and raises `IsADirectoryError` only where no CAB
         `""` is registered: a zip's directory entry registers one, which answers the path with `b""` first (section
         3). So every PARITY.md row and DESIGN.md line that has an empty path, or a texture with no data, raise there
-        names CAB `""` too."""
+        (or raise while its data is fetched) names CAB `""` too."""
         root = HERE.parent.parent
         lines = [("PARITY.md", line) for line in (root / "PARITY.md").read_text("utf-8").splitlines()]
         lines += [("DESIGN.md", line) for line in (root / "docs" / "DESIGN.md").read_text("utf-8").splitlines()]
         seen = 0
         for name, line in lines:
-            raises = "IsADirectoryError" in line or "raises as `Texture2D.get_image_data` does" in line
+            raises = re.search(
+                r"IsADirectoryError|raises as `Texture2D.get_image_data` does|raises while its data is fetched", line
+            )
             empty = re.search(r"empty (?:stream |resource )?path|empty `m_Source`|empty name|with no data", line)
             if raises and empty:
                 seen += 1
@@ -321,16 +324,24 @@ class TestColumn(unittest.TestCase):
         """`GpuProgramIndex N` fills where `int()` in base 10 takes the rest of the line, which is not Python's
         integer-literal grammar (`+0` and `٠` fill, `0x0` raises; `test_rows_exports.py` shader_text): no line of
         PARITY.md or DESIGN.md that speaks of such a line calls the rule a literal (a contrast with the literal
-        grammar is fine), and each that states the refusal of a line the table cannot fill names `int()` in base 10."""
-        affirmative = re.compile(
-            r"(?i)\b(?:no|an?|is|as)\s+(?:python(?:'s)?\s+)?`?int(?:eger)?(?:\(\))?`?[- ]literals?\b"
-        )
+        grammar is fine: "need not be" one, or a "not" after a comma or an opening parenthesis), and each that states
+        the refusal of a line the table cannot fill names `int()` in base 10."""
+        literal = re.compile(r"(?i)\b(?:no|an?|is|as)\s+(?:python(?:'s)?\s+)?`?int(?:eger)?(?:\(\))?`?[- ]literals?\b")
+        contrast = re.compile(r"(?i)(?:\bneed not be|[,(]\s*not)\s+$")
+
+        def affirmative(line):
+            return [m.group(0) for m in literal.finditer(line) if not contrast.search(line[: m.start()])]
+
         for wording, calls in (
             ("the rest of the line is no Python `int` literal", True),
             ("N parsed as an integer literal", True),
+            ("refused where the rest is not a Python int literal", True),
             ("`int()` in base 10, which is not Python's integer-literal grammar", False),
+            ("`int()` in base 10, not an integer literal (`0x0` raises)", False),
+            ("`int()` in base 10 (not an integer literal)", False),
+            ("N need not be a Python int literal", False),
         ):
-            self.assertEqual(bool(affirmative.search(wording)), calls, wording)
+            self.assertEqual(bool(affirmative(wording)), calls, wording)
         root = HERE.parent.parent
         refusals = 0
         for name, path in (("PARITY.md", root / "PARITY.md"), ("DESIGN.md", root / "docs" / "DESIGN.md")):
@@ -338,7 +349,7 @@ class TestColumn(unittest.TestCase):
                 if "GpuProgramIndex" not in line:
                     continue
                 with self.subTest(name, line=line[:80]):
-                    self.assertNotRegex(line, affirmative)
+                    self.assertEqual(affirmative(line), [])
                     if "cannot fill, where" in line:  # the refusal, not a tier cell that names it
                         refusals += 1
                         self.assertIn("`int()` in base 10", line)
@@ -368,6 +379,12 @@ class TestColumn(unittest.TestCase):
             "| `BundleFile.save` of a UnityWeb or UnityRaw bundle of a format above 3 but 6",
         ):
             self.assertIn("\n" + lead, writing)
+        # A bundle save is byte-equal to UnityPy's only in the UnityPy-layout mode (the File / bundle save rule), so
+        # a Tier C (writing) bundle row that asks for byte-equality names that mode.
+        for row in writing.splitlines():
+            if row.startswith("| `BundleFile.save`") and "byte-equal" in row:
+                with self.subTest("DESIGN.md Tier C (writing)", row=row[:70]):
+                    self.assertIn("UnityPy-layout mode", row)
         rows = 0
         for line in (root / "PARITY.md").read_text(encoding="utf-8").splitlines():
             cells = [cell.strip() for cell in line.strip("|").split(" | ")]
@@ -406,6 +423,33 @@ class TestColumn(unittest.TestCase):
         for tier in tiers[:7]:
             with self.subTest(tier=tier):
                 self.assertIn(rule[tier], bullets)
+
+    def test_module_level_data_is_tier_a_for_loop_variables(self):
+        """DESIGN.md section 3's Tier A rule for module-level data covers the variables a module-level loop leaves
+        bound, which section 23 files as A; the other module-level values take their own rows' tiers (a constant
+        nothing reads as behaviour is `—`). So DESIGN's sentence that cites section 23 is about a loop's variables,
+        each section 23 row of a loop's variables is A and cites the test that pins them, and no `—` row is one."""
+        root = HERE.parent.parent
+        design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        tier_a = design.split("- **Tier A: bit-exact**", 1)[1].split("\n- **", 1)[0]
+        cites = [s for s in re.split(r"(?<=\.) ", tier_a) if "`PARITY.md` section 23" in s]
+        self.assertEqual(len(cites), 1, cites)
+        self.assertRegex(cites[0], r"^So is a variable a module-level loop leaves bound\b")
+        parity = (root / "PARITY.md").read_text(encoding="utf-8")
+        section = parity.split("\n## 23. Module-level data\n", 1)[1].split("\n## ", 1)[0]
+        loops = 0
+        for header, rows in inventory.tables(section):
+            for cells in rows:
+                about, tier = cells[header.index("UnityPy 1.25.2")], cells[header.index("tier")]
+                with self.subTest(item=cells[0][:60]):
+                    if about.startswith("the variables of the module-level loop"):
+                        loops += 1
+                        self.assertEqual(tier, "A")
+                        test = cells[header.index("test")]
+                        self.assertIn("`test_parity_rows.py` module_loop_variables_keep_the_last_pass", test)
+                    elif tier == "—":
+                        self.assertNotIn("module-level loop", about)
+        self.assertEqual(loops, 2)
 
     def test_head_dicts_are_a_target_while_their_fixtures_are_planned(self):
         """Section 20's reading rows name the Unity 6000.4/6000.5 fixtures as planned, so no comparison with HEAD's
