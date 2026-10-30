@@ -153,6 +153,7 @@ class TestColumn(unittest.TestCase):
                 "tol_metrics_are_stated_or_said_to_be_planned",
                 "module_level_data_is_tier_a_for_loop_variables",
                 "a_non_local_miss_keeps_the_split_exception",
+                "non_local_rows_state_only_the_tested_cases",
             }
             named = {name for module, name in cited if module == path.name}
             self.assertEqual(sorted(defined - named), [], f"tests no PARITY.md row names, in {path.name}")
@@ -405,7 +406,66 @@ class TestColumn(unittest.TestCase):
                             seen += 1
                             with self.subTest(name, sentence=sentence[:80]):
                                 self.assertTrue(any(split_loads.search(t) for t in sentences[i:]))
-        self.assertGreaterEqual(seen, 2)
+        # Only `Environment.fs` says it now: the constructor row states its tested cases, none of them "not found".
+        self.assertGreaterEqual(seen, 1)
+
+    def test_non_local_rows_state_only_the_tested_cases(self):
+        """Through a non-local fs, section 3 states the constructor's outcomes and `load_folder`'s builtin `open` only
+        for the cases `a_non_local_fs_loads_only_through_load_and_streams` runs (a `MemoryFileSystem` holding each
+        argument under a top-level folder the local disk lacks, unless said otherwise), and every other case is not
+        characterised (Tier U): a path the local disk also holds loads where an unscoped sentence said it raised or
+        loaded nothing. So each sentence of PARITY.md or DESIGN.md that names a non-local fs with the constructor or
+        an argument, and each sentence of the two rows about a non-local fs that names `load_folder` or the builtin
+        `open`, and states an outcome, names that filesystem or the cases tested or stated, or says the rest is not
+        characterised; the U clauses and DESIGN.md's Tier U bullet are there."""
+        sentence_end = re.compile(r"(?<=\.)\s+(?=[A-Z`])")
+        outcome = re.compile(r"\b(?:loads?|raises?|not found|nothing)\b")
+        scoped = re.compile(
+            r"`MemoryFileSystem`|\bnot characterised\b|\bcases? (?:tested|stated|section 3 tests)\b"
+            r"|\bcases? (?:its|the constructor) row states\b|\bwhere its row says so\b"
+        )
+        rows = ("| `Environment.fs` |", "| a name read through a non-local `fs` |")
+
+        def unscoped(line):
+            found = []
+            for cell in line.split(" | "):
+                for sentence in sentence_end.split(cell):
+                    about_constructor = re.search(r"non-local", sentence) and re.search(
+                        r"\b(?:constructor|argument)\b", sentence
+                    )
+                    about_open = line.startswith(rows) and re.search(r"`load_folder`|builtin `open`", sentence)
+                    if (about_constructor or about_open) and outcome.search(sentence):
+                        found.append((sentence, bool(scoped.search(sentence))))
+            return found
+
+        for line, flagged in (  # the round-14, -15 and -16 wordings, and today's
+            ("| x | with a non-local `fs`, a file argument other than a zip/apk, or a folder, is not found |", True),
+            ("| x | with a non-local `fs`, any other file argument raises naming its folder, or loads nothing |", True),
+            ("| `Environment.fs` | `load_folder` opens it with the builtin `open`, which raises. |", True),
+            ("| x | through a non-local `fs`, a `MemoryFileSystem` holds each argument: `x.assets` raises |", False),
+            ("| x | Every other constructor argument through a non-local `fs` is not characterised (Tier U). |", False),
+        ):
+            self.assertEqual(any(not ok for _, ok in unscoped(line)), flagged, line)
+        root = HERE.parent.parent
+        parity = (root / "PARITY.md").read_text(encoding="utf-8")
+        design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        seen = 0
+        for name, text in (("PARITY.md", parity), ("DESIGN.md", design)):
+            for line in text.splitlines():
+                for sentence, ok in unscoped(line):
+                    seen += 1
+                    with self.subTest(name, sentence=sentence[:80]):
+                        self.assertTrue(ok)
+        self.assertGreaterEqual(seen, 5)
+        constructor = next(line for line in parity.splitlines() if line.startswith("| `Environment` constructor |"))
+        self.assertIn("U for every other constructor argument through a non-local `fs` |", constructor)
+        self.assertIn(
+            "Every other constructor argument through a non-local `fs` is not characterised (Tier U).", constructor
+        )
+        unsupported = design.split("- **Unsupported until a sample and a reference exist.**", 1)[1].split("\n- **")[0]
+        self.assertRegex(
+            unsupported, r"\n  - a name read through a non-local fsspec filesystem in a case [^\n]*not characterised"
+        )
 
     WRITER = re.compile(r"set_image|image_to_texture2d|\bsave\b|save_fs|save_typetree|get_writeable_cab|set_raw_data")
 
@@ -1303,7 +1363,11 @@ class Rows(unittest.TestCase):
         root = f"/{self.tmp.name}"
         fs.pipe(f"{root}/x.assets", text_asset_file("in memory"))
         self.addCleanup(fs.rm, root, recursive=True)
-        self.assertFalse(os.path.exists(root), "nothing of that name on the local disk")
+        # Section 3 states only the cases run here: each argument under a top-level folder the local disk lacks,
+        # unless said otherwise. Every other case through a non-local fs is not characterised.
+        for folder in (root, f"{root}-split", f"{root}-zip"):
+            self.assertEqual(os.path.dirname(folder), "/")
+            self.assertFalse(os.path.exists(folder), "nothing of that name on the local disk")
         self.assertEqual(UnityPy.Environment(fs=fs).path, "")
         # load_file tests a name with os.path and walks `path` with os.listdir, both on the local disk.
         for name in (f"{root}/x.assets", "x.assets", "missing"):
@@ -1319,13 +1383,13 @@ class Rows(unittest.TestCase):
         for arg, named in ((f"{root}/x.assets", root), (root, f"{root}/x.assets")):
             with self.subTest(arg), self.assertRaisesRegex(FileNotFoundError, f"No such file or directory: '{named}'$"):
                 quietly(UnityPy.Environment, arg, fs=fs)
-        # A file whose folder the local disk can list loads nothing, with no error.
-        fs.pipe(f"{self.tmp}/y.assets", text_asset_file("y"))
-        self.addCleanup(fs.rm, f"{self.tmp}/y.assets")
-        self.assertFalse((self.tmp / "y.assets").exists())
-        env = quietly(UnityPy.Environment, f"{self.tmp}/y.assets", fs=fs)
+        # A file whose folder is an empty one the local disk can list loads nothing, with no error.
+        fs.pipe(f"{self.tmp}/x.assets", text_asset_file("y"))
+        self.addCleanup(fs.rm, f"{self.tmp}/x.assets")
+        self.assertEqual(os.listdir(self.tmp), [])
+        env = quietly(UnityPy.Environment, f"{self.tmp}/x.assets", fs=fs)
         self.assertEqual((env.path, env.files, env.cabs), (str(self.tmp), {}, {}))
-        with self.assertRaises(FileNotFoundError):
+        with self.assertRaisesRegex(FileNotFoundError, re.escape(f"No such file or directory: '{root}/x.assets'")):
             quietly(UnityPy.Environment(fs=fs).load_folder, root)
         # load (fs.exists, fs.open) and a stream do read through the filesystem.
         env = UnityPy.Environment(fs=fs)
