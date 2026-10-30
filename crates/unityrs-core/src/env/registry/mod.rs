@@ -26,7 +26,7 @@
 //! read and, when they are a bundle's, it is parsed and its whole subtree
 //! registered in place, at the ranks an eager load gives them (a container
 //! inside it has no key, as under `Eager`). One routine reaches
-//! ([`Registry::reach`], `reach.rs`), and the invariant it keeps is: a
+//! (`Registry::reach`, `reach.rs`), and the invariant it keeps is: a
 //! nested container is reached before any of these returns: a lookup that
 //! resolves its slot (a `get` of its name, a pointer that names it, the
 //! container pass); a lookup from a file inside it (a dereference, a
@@ -35,7 +35,7 @@
 //! bundle; a container pass, which reaches every registered entry before
 //! it walks; and a registration that would drop its slot (replace it, or
 //! lose to a greater rank), which reaches the dropped slot first
-//! ([`Registry::settle`]): nothing could reach it by name afterwards, and
+//! (`Registry::settle`): nothing could reach it by name afterwards, and
 //! an eager load registered its entries at load (review round 4: a later
 //! load's entry of the same path dropped it unread, and its entries were
 //! never registered). What remains of (b) is a lookup by name alone (a
@@ -93,7 +93,7 @@
 //! the tables' spare capacity and every growth are paid for. The first key
 //! also pays for the B-tree's root leaf. A lazy entry's slot also pays for
 //! its place in the list of dropped slots waiting to be reached
-//! ([`Registry::settle`]). `tests/env_memory.rs` measures the
+//! (`Registry::settle`). `tests/env_memory.rs` measures the
 //! heap against the charge. A refused charge registers nothing and is the
 //! registering load's error.
 //!
@@ -246,7 +246,7 @@ const SLOT_ARC: u64 = heap_cost((size_of::<Slot>() + 2 * size_of::<usize>()) as 
 
 /// A lazy slot's share of the list of dropped slots waiting to be reached:
 /// four elements, the most the list keeps per element it holds
-/// ([`Registry::settle`]).
+/// (`Registry::settle`).
 const PENDING_SHARE: u64 = 4 * size_of::<Arc<Slot>>() as u64;
 
 thread_local! {
