@@ -149,6 +149,7 @@ class TestColumn(unittest.TestCase):
                 "an_empty_path_raises_only_where_no_cab_answers_it",
                 "the_gpu_program_index_rule_is_int_in_base_10",
                 "a_failure_to_write_is_tier_c_writing",
+                "every_tier_has_a_design_rule",
             }
             named = {name for module, name in cited if module == path.name}
             self.assertEqual(sorted(defined - named), [], f"tests no PARITY.md row names, in {path.name}")
@@ -382,6 +383,30 @@ class TestColumn(unittest.TestCase):
                         self.assertNotRegex(item, self.WRITER)
         self.assertGreater(rows, 20)
 
+    def test_every_tier_has_a_design_rule(self):
+        """Every tier PARITY.md section 0 defines, but `—`, which marks no behaviour of its own, is decided by a
+        bullet of DESIGN.md section 3's Reading list."""
+        root = HERE.parent.parent
+        parity = (root / "PARITY.md").read_text(encoding="utf-8")
+        table = parity.split("| tier | meaning |", 1)[1].split("\n\n", 1)[0]
+        tiers = [row.split(" | ", 1)[0][2:] for row in table.splitlines()[2:]]
+        self.assertEqual(tiers, ["A", "B", "C", "Tol", "HEAD", "U", "gap", "A, C (or A; C for …)", "—"])
+        design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        reading = design.split("**Reading**", 1)[1].split("**Writing**", 1)[0]
+        bullets = [lead.rstrip(".:") for lead in re.findall(r"^- \*\*(.+?)\*\*", reading, flags=re.M)]
+        rule = {
+            "A": "Tier A: bit-exact",
+            "B": "Tier B: UnityPy raises on a valid request",
+            "C": "Tier C: UnityPy is wrong",
+            "Tol": "Tolerance",
+            "HEAD": "HEAD tier",
+            "U": "Unsupported until a sample and a reference exist",
+            "gap": "Gap",
+        }
+        for tier in tiers[:7]:
+            with self.subTest(tier=tier):
+                self.assertIn(rule[tier], bullets)
+
     def test_head_dicts_are_a_target_while_their_fixtures_are_planned(self):
         """Section 20's reading rows name the Unity 6000.4/6000.5 fixtures as planned, so no comparison with HEAD's
         dicts exists: every sentence or table cell of PARITY.md and DESIGN.md that speaks of dicts and HEAD (or those
@@ -419,6 +444,22 @@ class Rows(unittest.TestCase):
         cwd = os.getcwd()
         os.chdir(path)
         self.addCleanup(os.chdir, cwd)
+
+    # Section 23: a module-level loop leaves its variables bound at the top level, holding the last pass's values.
+    def test_module_loop_variables_keep_the_last_pass(self):
+        reader_module = sys.modules["UnityPy.streams.EndianBinaryReader"]
+        self.assertIs(Texture2DConverter.tf, TextureFormat.RGBA64_SIGNED)
+        self.assertEqual((Texture2DConverter.split, Texture2DConverter.block_size), (["12", "12"], None))
+        self.assertEqual(
+            (
+                reader_module.endian_s,
+                reader_module.reader_type_name,
+                reader_module.struct_type_char,
+                reader_module.func_name,
+                reader_module.struct.format,
+            ),
+            (">", "double", "d", "read_double", ">d"),
+        )
 
     # Sections 4, 5.2, 6: WebFile gzip.
     def test_gzip_webfile_is_detected_and_never_parsed(self):
