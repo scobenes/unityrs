@@ -13,7 +13,7 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `unitypy_dump.py` | the oracle: dumps a file, a folder or a corpus index with UnityPy |
 | `dump_records.py` | the oracle's records of one input (its file and object records, or its crash record), which `unitypy_dump.py` runs in a process per input |
 | `compare.py` | diffs two dumps; summarises by level, class and field path |
-| `g3b.py` | G3b's verdict (`docs/plans/core.md` section 6): each mutated input the dumps differ on, with its reason checked (a limit, the non-UTF-8 crash, a count UnityPy allocates before it reads); needs the oracle stack |
+| `g3b.py` | G3b's verdict (`docs/plans/core.md` section 6): every file under `--inputs` in both dumps, and each mutated input the dumps differ on, with its reason checked (a limit, the non-UTF-8 crash, a count UnityPy allocates before it reads; never a unityrs crash); needs the oracle stack |
 | `canonical.py` | the encoding rules both scripts share (standard library only) |
 | `fetch_unitypy_samples.py` | fetches UnityPy's test samples at the pinned commit, checked against `unitypy_samples.json` |
 | `requirements-oracle.txt` | the oracle stack as exact, hash-pinned wheels, for CI and any machine without the oracle image |
