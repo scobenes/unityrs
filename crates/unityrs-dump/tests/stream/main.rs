@@ -10,7 +10,7 @@ mod common;
 
 mod hand_built;
 
-use common::{Tmp, compare, gunzip, line_problems, repo, s};
+use common::{Tmp, compare, gunzip, line_problems, s};
 use hand_built::{
     corpus, error, file, l0, l1_of, l3_of, raw, records, serialized_l1, stream, values,
 };
@@ -238,12 +238,17 @@ fn an_index_mismatch_stops_the_run_unless_allowed() {
 fn paths_the_oracle_refuses_are_refused() {
     let (tmp, _) = corpus(1);
     let dumper = |_: &[u8], _: Bytes, _: &Arc<Meter>| InputDump::default();
-    // Inside the repository.
+    // Inside a repository: a fixture's (a `.git` folder), not this crate's
+    // checkout, so the test needs no checkout and never writes into the
+    // source tree (review round 7: it named `target/` in the checkout).
+    let fake = tmp.0.join("repo");
+    std::fs::create_dir_all(fake.join(".git")).unwrap();
     let mut opts = options(&tmp, "x.jsonl", 1);
-    opts.output = repo().join("target/never-written.jsonl");
+    opts.output = fake.join("target/never-written.jsonl");
     let err = run_with(&opts, &dumper).unwrap_err();
     assert_eq!(err.status(), 2, "{err}");
-    assert!(!opts.output.exists());
+    assert!(err.to_string().contains("repository"), "{err}");
+    assert!(!fake.join("target").exists());
     // A symlink at the output.
     let opts = options(&tmp, "link.jsonl", 1);
     std::fs::create_dir_all(opts.output.parent().unwrap()).unwrap();
