@@ -176,3 +176,41 @@ pub fn nested_replaced_unread() -> Scene {
         resolver: Vec::new(),
     }
 }
+
+/// `resource_in_nested_cab`'s `o.bundle`, loaded a second time from the same
+/// bytes as `o2.bundle` (a replay hands two files of equal bytes one
+/// allocation, as a caller that loads one input twice does): an eager load
+/// registers `CAB-I` and its `.resS` at each load, so the read from either
+/// load's texture finds the `.resS`. Under `LoadMode::Lazy` the reload's slot
+/// for `INNER` stands in for the first load's, and a reader inside the first
+/// load's `INNER` reaches it through the reload's handle (review round 5: it
+/// reached nothing, and the read missed every candidate).
+#[must_use]
+pub fn nested_reloaded() -> Scene {
+    let mut scene = resource_in_nested_cab();
+    let (_, data) = scene.files[0].clone();
+    scene.files.push(named("o2.bundle", data));
+    scene
+}
+
+/// `o.bundle` holds the nested bundle `INNER` of three raw entries, which
+/// `p.bundle`'s raw entry `INNER` drops: an eager load registered the three
+/// at the first load. Under `LoadMode::Lazy` the second registration drops
+/// the first's unread slot, so it reaches it first (review round 5: a reach
+/// of this shape that the input's meter refused was redone by every lookup
+/// by name, uncounted).
+#[must_use]
+pub fn nested_raw_replaced() -> Scene {
+    let inner = bundle(&[
+        ("R0.resS", res_bytes(4, 10)),
+        ("R1.resS", res_bytes(4, 20)),
+        ("R2.resS", res_bytes(4, 30)),
+    ]);
+    Scene {
+        files: vec![
+            named("o.bundle", bundle(&[("INNER", inner)])),
+            named("p.bundle", bundle(&[("INNER", res_bytes(4, 50))])),
+        ],
+        resolver: Vec::new(),
+    }
+}

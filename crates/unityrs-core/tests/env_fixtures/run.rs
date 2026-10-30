@@ -123,6 +123,9 @@ pub(crate) fn kind(f: &File) -> &'static str {
 pub(crate) struct Run {
     pub(crate) scene: Scene,
     pub(crate) env: Environment,
+    /// Each file's bytes: files of equal bytes share one allocation, as one
+    /// input a caller loads twice does (the scene `nested_reloaded`).
+    bytes: Vec<Bytes>,
 }
 
 impl Run {
@@ -139,9 +142,15 @@ impl Run {
                 .map(|(n, d)| (n.clone(), Bytes::from(d.clone())))
                 .collect(),
         )));
+        let mut bytes: Vec<Bytes> = Vec::new();
+        for (i, (_, data)) in scene.files.iter().enumerate() {
+            let same = scene.files[..i].iter().position(|(_, d)| d == data);
+            bytes.push(same.map_or_else(|| Bytes::from(data.clone()), |j| bytes[j].clone()));
+        }
         Self {
             scene,
             env: Environment::new(options),
+            bytes,
         }
     }
 
@@ -169,10 +178,10 @@ impl Run {
     }
 
     pub(crate) fn load(&self, i: usize) -> J {
-        let (name, data) = &self.scene.files[i];
+        let (name, _) = &self.scene.files[i];
         let source = Source::Bytes {
             name: RawStr::new(name.clone()),
-            data: Bytes::from(data.clone()),
+            data: self.bytes[i].clone(),
         };
         json!(if self.env.load(source).is_ok() {
             "ok"
