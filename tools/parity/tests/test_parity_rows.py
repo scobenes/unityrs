@@ -1360,12 +1360,20 @@ class Rows(unittest.TestCase):
         env = UnityPy.Environment(fs=fs)
         quietly(env.load_folder, split)
         self.assertEqual(loaded(env)[1:], ([f"{split}/a.assets"], ["a.assets"], ["split"]))
-        # Any other file in the folder still meets the builtin open, from load_folder and from the constructor.
+        # Any other file in the folder still meets the builtin open, from load_folder and from the constructor, a zip
+        # too (which the constructor loads through fs when it is the argument itself).
         fs.pipe(f"{split}/sub/x.assets", text_asset_file("x"))
         for call in (UnityPy.Environment(fs=fs).load_folder, lambda folder: UnityPy.Environment(folder, fs=fs)):
             missing = re.escape(f"No such file or directory: '{split}/sub/x.assets'")
             with self.assertRaisesRegex(FileNotFoundError, missing):
                 quietly(call, split)
+        fs.pipe(f"{root}-zip/z.zip", zip_with_a_directory())
+        self.addCleanup(fs.rm, f"{root}-zip", recursive=True)
+        self.assertEqual(
+            list(quietly(UnityPy.Environment, f"{root}-zip/z.zip", fs=fs).files), ["assets/", "assets/a.assets"]
+        )
+        with self.assertRaisesRegex(FileNotFoundError, re.escape(f"No such file or directory: '{root}-zip/z.zip'")):
+            quietly(UnityPy.Environment, f"{root}-zip", fs=fs)
 
     # Sections 14.1, 14.3: file ids and the preload pass.
     def test_negative_file_ids_index_from_the_end(self):
