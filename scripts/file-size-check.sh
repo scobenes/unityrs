@@ -19,6 +19,12 @@
 # longest first, then each failing entry as `ALLOWLIST:LINE: PATH: why`; the
 # check exits 1 if there is any. A missing allowlist is an empty one.
 #
+# A name git C-quotes even with core.quotePath=false (one holding `"`, `\`
+# or a control character: a tab, a newline) cannot be read back from
+# `git ls-files`, so a tracked `.rs` or `.py` file, or a file with no
+# extension, under such a name fails the check too, printed as
+# `QUOTED: git quotes this name; rename it`.
+#
 #     sh scripts/file-size-check.sh [ROOT]   # prints each failure; exits 1 if any
 #
 # It lists the files with `git ls-files`, so in a worktree under `.wt/`
@@ -32,8 +38,19 @@ list=$allowlist
 [ -f "$list" ] || list=/dev/null
 tab=$(printf '\t')
 
-# `LINES<TAB>PATH` for each file the check covers.
+# `LINES<TAB>PATH` for each file the check covers; `Q<TAB>QUOTED` for one
+# under a name git quotes.
 counts=$(git -c core.quotePath=false ls-files | while IFS= read -r f; do
+    case $f in
+    \"*)
+        case $f in
+        *.rs\" | *.py\") ;;
+        *) case ${f##*/} in *.*) continue ;; esac ;;
+        esac
+        printf 'Q\t%s\n' "$f"
+        continue
+        ;;
+    esac
     [ -n "$f" ] && [ -f "$f" ] || continue
     case $f in
     *.rs | *.py) ;;
@@ -50,7 +67,7 @@ done)
 # for a pinned blob to check.
 verdicts=$(printf '%s\n' "$counts" | awk -F '\t' -v limit="$limit" -v list="$list" '
     function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
-    NF == 2 { lines[$2] = $1 + 0 }
+    NF == 2 && $1 != "Q" { lines[$2] = $1 + 0 }
     END {
         at = 0
         while ((getline raw < list) > 0) {
@@ -87,6 +104,8 @@ verdicts=$(printf '%s\n' "$counts" | awk -F '\t' -v limit="$limit" -v list="$lis
     }')
 
 over=$(printf '%s\n' "$verdicts" | awk -F '\t' '$1 == "O" { print $2 " " $3 }' | LC_ALL=C sort -k1,1nr -k2,2)
+quoted=$(printf '%s\n' "$counts" | awk -F '\t' '$1 == "Q" { print $2 ": git quotes this name; rename it" }' |
+    LC_ALL=C sort)
 problems=$(printf '%s\n' "$verdicts" | awk -F '\t' '$1 == "P" { print $2 "\t" $3 }')
 changed=$(printf '%s\n' "$verdicts" | awk -F '\t' '$1 == "B" { print $2 "\t" $3 "\t" $4 }' |
     while IFS=$tab read -r at sha path; do
@@ -100,7 +119,8 @@ problems=$(printf '%s\n%s\n' "$problems" "$changed" | awk -F '\t' -v list="$allo
 
 [ -z "$over" ] || printf '%s\n' "$over"
 [ -z "$problems" ] || printf '%s\n' "$problems"
-if [ -n "$over" ] || [ -n "$problems" ]; then
+[ -z "$quoted" ] || printf '%s\n' "$quoted"
+if [ -n "$over" ] || [ -n "$problems" ] || [ -n "$quoted" ]; then
     if [ -n "$over" ]; then
         count=$(printf '%s\n' "$over" | wc -l | tr -d ' ')
         echo "file-size-check: $count files over $limit lines; split each by responsibility" \
@@ -109,6 +129,11 @@ if [ -n "$over" ] || [ -n "$problems" ]; then
     if [ -n "$problems" ]; then
         count=$(printf '%s\n' "$problems" | wc -l | tr -d ' ')
         echo "file-size-check: $count entries of $allowlist fail; fix or remove each" >&2
+    fi
+    if [ -n "$quoted" ]; then
+        count=$(printf '%s\n' "$quoted" | wc -l | tr -d ' ')
+        echo "file-size-check: git quotes $count tracked names, so the check cannot read them;" \
+            "rename each without '\"', '\\' or control characters" >&2
     fi
     exit 1
 fi
