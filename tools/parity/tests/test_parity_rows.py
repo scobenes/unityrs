@@ -152,6 +152,7 @@ class TestColumn(unittest.TestCase):
                 "every_tier_has_a_design_rule",
                 "tol_metrics_are_stated_or_said_to_be_planned",
                 "module_level_data_is_tier_a_for_loop_variables",
+                "a_non_local_miss_keeps_the_split_exception",
             }
             named = {name for module, name in cited if module == path.name}
             self.assertEqual(sorted(defined - named), [], f"tests no PARITY.md row names, in {path.name}")
@@ -362,6 +363,39 @@ class TestColumn(unittest.TestCase):
                         refusals += 1
                         self.assertIn("`int()` in base 10", line)
         self.assertGreaterEqual(refusals, 2)
+
+    def test_a_non_local_miss_keeps_the_split_exception(self):
+        """Through a non-local fs a `.splitN` name loads, its parts read through `fs` (section 3, `Environment.fs`;
+        `a_non_local_fs_loads_only_through_load_and_streams`). So a sentence of a PARITY.md cell or a DESIGN.md line
+        that says something read through a non-local fs is not found is followed, in that sentence or a later one of
+        the same cell, by one saying a `.splitN` name loads."""
+        sentence_end = re.compile(r"(?<=\.)\s+(?=[A-Z`])")
+        miss = re.compile(r"non-local.*\bnot found\b")
+        split_loads = re.compile(r"`\.splitN`.*\bloads\b")
+        for text, flagged in (
+            ("with a non-local `fs`, a file argument other than a zip/apk, or a folder, is not found. A path.", True),
+            ("with a non-local `fs` a name is not found. A `.splitN` name is the exception: so it loads", False),
+            ("with a non-local `fs`, a `.splitN` file argument loads, while another is not found", False),
+        ):
+            sentences = sentence_end.split(text)
+            unexcused = [
+                i
+                for i, s in enumerate(sentences)
+                if miss.search(s) and not any(split_loads.search(t) for t in sentences[i:])
+            ]
+            self.assertEqual(bool(unexcused), flagged, text)
+        root = HERE.parent.parent
+        seen = 0
+        for name, path in (("PARITY.md", root / "PARITY.md"), ("DESIGN.md", root / "docs" / "DESIGN.md")):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                for cell in line.split(" | "):
+                    sentences = sentence_end.split(cell)
+                    for i, sentence in enumerate(sentences):
+                        if miss.search(sentence):
+                            seen += 1
+                            with self.subTest(name, sentence=sentence[:80]):
+                                self.assertTrue(any(split_loads.search(t) for t in sentences[i:]))
+        self.assertGreaterEqual(seen, 2)
 
     WRITER = re.compile(r"set_image|image_to_texture2d|\bsave\b|save_fs|save_typetree|get_writeable_cab|set_raw_data")
 
@@ -1261,10 +1295,17 @@ class Rows(unittest.TestCase):
         # Where the local disk can list `path`, the walk finds nothing there and the name is None, with no error.
         self.assertIsNone(quietly(UnityPy.Environment(fs=fs, path=str(self.tmp)).load_file, "x.assets"))
         self.assertIsNone(quietly(UnityPy.Environment(fs=fs, path="/").load_file, f"{root[1:]}/x.assets"))
-        # The constructor takes a file through load_file, a folder through load_files' builtin open.
-        for arg in (f"{root}/x.assets", root):
-            with self.subTest(arg), self.assertRaises(FileNotFoundError):
+        # The constructor takes a file through load_file, a folder through load_files' builtin open: a file raises
+        # naming its folder, which the local disk cannot list, and a folder naming its file.
+        for arg, named in ((f"{root}/x.assets", root), (root, f"{root}/x.assets")):
+            with self.subTest(arg), self.assertRaisesRegex(FileNotFoundError, f"No such file or directory: '{named}'$"):
                 quietly(UnityPy.Environment, arg, fs=fs)
+        # A file whose folder the local disk can list loads nothing, with no error.
+        fs.pipe(f"{self.tmp}/y.assets", text_asset_file("y"))
+        self.addCleanup(fs.rm, f"{self.tmp}/y.assets")
+        self.assertFalse((self.tmp / "y.assets").exists())
+        env = quietly(UnityPy.Environment, f"{self.tmp}/y.assets", fs=fs)
+        self.assertEqual((env.path, env.files, env.cabs), (str(self.tmp), {}, {}))
         with self.assertRaises(FileNotFoundError):
             quietly(UnityPy.Environment(fs=fs).load_folder, root)
         # load (fs.exists, fs.open) and a stream do read through the filesystem.
@@ -1300,10 +1341,12 @@ class Rows(unittest.TestCase):
         env = UnityPy.Environment(fs=fs)
         quietly(env.load_folder, split)
         self.assertEqual(loaded(env)[1:], ([f"{split}/a.assets"], ["a.assets"], ["split"]))
-        # Any other file in the folder still meets the builtin open.
+        # Any other file in the folder still meets the builtin open, from load_folder and from the constructor.
         fs.pipe(f"{split}/sub/x.assets", text_asset_file("x"))
-        with self.assertRaisesRegex(FileNotFoundError, re.escape(f"No such file or directory: '{split}/sub/x.assets'")):
-            quietly(UnityPy.Environment(fs=fs).load_folder, split)
+        for call in (UnityPy.Environment(fs=fs).load_folder, lambda folder: UnityPy.Environment(folder, fs=fs)):
+            missing = re.escape(f"No such file or directory: '{split}/sub/x.assets'")
+            with self.assertRaisesRegex(FileNotFoundError, missing):
+                quietly(call, split)
 
     # Sections 14.1, 14.3: file ids and the preload pass.
     def test_negative_file_ids_index_from_the_end(self):
