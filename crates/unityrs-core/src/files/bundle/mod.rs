@@ -52,7 +52,16 @@
 //! writes on several threads never pass the bound together). The header,
 //! blocks, directory, `files` and the per-row
 //! cells are charged at open; each parsed entry charges its own file, and
-//! a kept error charges its heap. Decodes and user codecs run with no
+//! a kept error charges its heap. An entry's cell keeps its parse's
+//! failure, so the row is not parsed again, but every directory row is its
+//! own cell, and rows over one span repeat one parse: what the meter granted
+//! a parse that ends in an error the cell keeps, on its own thread, counts
+//! as the open's work too, so K such rows stop at the open's `DecodeWork`
+//! limit instead of costing K parses no limit sees (round 4;
+//! `tests/bundles/work.rs`). A failure the cell does not keep (the meter's
+//! or the budget's refusal) is [`crate::once`]'s to count.
+//!
+//! Decodes and user codecs run with no
 //! lock held: a run is decoded first and then published into `runs`, and an
 //! entry is parsed first and then published into its cell
 //! ([`crate::once::get_or_publish_result`]). Publishing a run may grow the
@@ -90,8 +99,8 @@ use bytes::Bytes;
 use crate::detect::{DetectError, check_entry_type};
 use crate::error::Error;
 use crate::files::{File, Parent, ParentKind, parse_file};
-use crate::limits::{Charge, Meter, MeteredVec};
-use crate::once::{ResultCell, get_or_publish_result};
+use crate::limits::{Charge, GrantScope, Meter, MeteredVec};
+use crate::once::{CellError, ResultCell, get_or_publish_result};
 use crate::options::FileContext;
 use crate::raw::RawStr;
 use crate::stream::py_read;
@@ -408,15 +417,16 @@ impl BundleFile {
                 .map_or(0, |p| p.depth)
                 .saturating_add(1),
         };
-        parse_file(
-            e.path.clone(),
-            bytes,
-            ty,
-            Some(parent),
-            self.meter(),
-            &self.ctx,
-        )
-        .map_err(wrap)
+        // A failure the cell keeps: its grants are the open's work (module
+        // docs, "Memory and work").
+        let meter = self.meter();
+        let scope = GrantScope::enter(meter);
+        let got = parse_file(e.path.clone(), bytes, ty, Some(parent), meter, &self.ctx);
+        let granted = scope.finish(meter);
+        if got.as_ref().is_err_and(|e| !e.is_transient()) {
+            meter.add_work(granted);
+        }
+        got.map_err(wrap)
     }
 }
 

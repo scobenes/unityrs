@@ -16,7 +16,7 @@
 //!
 //! Owner: package C.
 
-use crate::blob::{NodeSpec, Strings, blob_tree, old_tree};
+use crate::blob::{NodeSpec, Strings, blob_tree, no_nul_blob, old_tree};
 use crate::writer::ByteWriter;
 
 /// One type record.
@@ -362,6 +362,34 @@ fn type_record(
             }
         }
     }
+}
+
+/// Round 4's entry: a little-endian format-22 file (engine 2018.4.0f1) of
+/// one type, class 1, whose blob has `rows` rows naming offset 0 of a
+/// 65,536-byte string buffer with no NUL ([`no_nul_blob`]). `complete` ends
+/// it as a file of no objects ends (no dependencies, objects, scripts,
+/// externals or ref types, an empty user information); otherwise it ends
+/// right after the string buffer, and the type's dependency read raises.
+#[must_use]
+pub fn no_nul_strings(rows: usize, complete: bool) -> Vec<u8> {
+    const HEADER: usize = 48;
+    let mut w = ByteWriter::le();
+    w.bytes(&[0; HEADER]);
+    w.cstr(b"2018.4.0f1").i32(13).bool(true).i32(1);
+    // Class 1, not stripped, no script, the old type hash.
+    w.i32(1).bool(false).i16(-1).bytes(&[0; 16]);
+    w.bytes(&no_nul_blob(rows, 65_536));
+    if complete {
+        w.i32(0).i32(0).i32(0).i32(0).i32(0).cstr(b"");
+    }
+    let mut file = w.into_inner();
+    let metadata = u32::try_from(file.len() - HEADER).unwrap_or(u32::MAX);
+    let end = i64::try_from(file.len()).unwrap_or(i64::MAX);
+    let mut h = ByteWriter::be();
+    h.u32(0).u32(0).u32(22).u32(0).bool(false).bytes(&[0; 3]);
+    h.u32(metadata).i64(end).i64(end).i64(0);
+    file[..HEADER].copy_from_slice(h.as_slice());
+    file
 }
 
 fn len_i32(n: usize) -> i32 {

@@ -67,7 +67,19 @@ fn a_bundle_of_corrupt_blocks_opens_and_decodes_nothing_until_read() {
     let b = open(&data);
     assert_eq!(b.directory().len(), 2);
     assert_eq!(b.files().len(), 2);
-    assert_eq!(b.meter().decoded(), 0, "open decodes no data block");
+    // Open's only work is its strings' searches, each to its NUL: the
+    // signature, the two versions and the paths. No data block is decoded.
+    let strings: usize = [b"UnityFS".len(), spec.version_player.len()]
+        .into_iter()
+        .chain([spec.version_engine.len()])
+        .chain(spec.entries.iter().map(|e| e.name.len()))
+        .map(|n| n + 1)
+        .sum();
+    assert_eq!(
+        b.meter().decoded(),
+        u64::try_from(strings).unwrap(),
+        "open decodes no data block"
+    );
     assert!(b.entry_bytes(1).is_err());
     assert!(b.load_all().is_err());
 }

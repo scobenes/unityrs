@@ -50,7 +50,7 @@ impl SerializedFile {
         let format = header.version;
         // UnityPy files/SerializedFile.py:271-273, :346-360
         let (unity_version, version) = if format >= 7 {
-            let own = string_to_null(&mut p.r, &data)?;
+            let own = string_to_null(&mut p.r, &data, meter)?;
             let parent_engine = match parent.as_ref().map(|p| &p.kind) {
                 Some(ParentKind::Bundle { version_engine, .. }) => Some(version_engine),
                 _ => None,
@@ -92,7 +92,7 @@ impl SerializedFile {
         };
         // :313-314
         let user_information = if format >= 5 {
-            Some(string_to_null(&mut p.r, &data)?)
+            Some(string_to_null(&mut p.r, &data, meter)?)
         } else {
             None
         };
@@ -243,7 +243,7 @@ impl Parser<'_> {
         let mut externals = MeteredVec::new(self.meter);
         for _ in 0..self.r.read_i32()?.max(0) {
             let temp_empty = if self.version >= 6 {
-                Some(string_to_null(&mut self.r, self.data)?)
+                Some(string_to_null(&mut self.r, self.data, self.meter)?)
             } else {
                 None
             };
@@ -254,7 +254,7 @@ impl Parser<'_> {
             } else {
                 (None, None)
             };
-            let path = string_to_null(&mut self.r, self.data)?;
+            let path = string_to_null(&mut self.r, self.data, self.meter)?;
             externals.push(External {
                 temp_empty,
                 guid,
@@ -311,9 +311,9 @@ impl Parser<'_> {
             t.nodes = Some(Arc::new(NodeList::from_rows(rows)?));
             if v >= 21 {
                 if is_ref {
-                    t.class_name = Some(string_to_null(&mut self.r, self.data)?);
-                    t.namespace = Some(string_to_null(&mut self.r, self.data)?);
-                    t.assembly = Some(string_to_null(&mut self.r, self.data)?);
+                    t.class_name = Some(string_to_null(&mut self.r, self.data, self.meter)?);
+                    t.namespace = Some(string_to_null(&mut self.r, self.data, self.meter)?);
+                    t.assembly = Some(string_to_null(&mut self.r, self.data, self.meter)?);
                 } else {
                     let deps = self.r.read_i32_array(self.meter)?;
                     let (deps, c) = deps.into_boxed_slice()?;
