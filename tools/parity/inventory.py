@@ -36,6 +36,12 @@ The groups, and how PARITY.md names a symbol of each, inside a code span (backti
 - `exports`, every public name a package's `__init__.py` holds that it imports from
   another UnityPy module or assigns as an alias: the dotted path from `UnityPy`
   (`UnityPy.files.File`, `UnityPy.load`). A package's own submodules are `modules`.
+- `aliases`, every public name a module other than a package's `__init__.py` binds at its
+  top level to a class or function that another UnityPy module, or UnityPyBoost, defines and
+  does not itself bind under that name: `Module.name` (`TypeTreeHelper.read_typetree_boost`,
+  `Texture2DConverter.TF`). An alias of another library's object (`TypeTreeNode.Lock`) is not
+  UnityPy's, and a name the defining module binds too (`generated.float3`, imported from
+  `classes/math.py`) is that module's.
 - `boost`, every public name UnityPyBoost exports, and every public member its classes
   define: `UnityPyBoost.read_typetree`, `UnityPyBoost.TypeTreeNode.m_Level`. A special method
   a class's C type defines (`UnityPyBoost.TypeTreeNode.__repr__`) counts too, the constructor's
@@ -101,11 +107,12 @@ GROUPS = (
     "fields",
     "attributes",
     "exports",
+    "aliases",
     "boost",
     "enum_members",
     "texture_formats",
 )
-DOTTED_GROUPS = ("classes", "functions", "data", "methods", "fields", "attributes", "exports", "boost")
+DOTTED_GROUPS = ("classes", "functions", "data", "methods", "fields", "attributes", "exports", "aliases", "boost")
 COMPACT_COLUMNS = ("fields", "members", "attributes")
 VALUES_COLUMN = "values"
 ENUM_VALUE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*) = (-?[0-9]+)")
@@ -389,6 +396,26 @@ def collect() -> dict:
             add("attributes", f"{name}.{attribute}", *(f"{p}.{attribute}" for p in class_paths[id(cls)]))
 
     boost = importlib.import_module("UnityPy.UnityPyBoost")
+    boost_objects = {id(getattr(boost, name)) for name in dir(boost) if not name.startswith("_")}
+
+    # Aliases: a module's name for a class or function defined elsewhere in UnityPy or in UnityPyBoost, under a
+    # name its defining module does not bind (`TF = TextureFormat`, `import read_typetree as read_typetree_boost`).
+    for rel, dotted, module, _source in modules:
+        if rel.endswith("__init__.py"):
+            continue  # a package's names are exports
+        for name, value in vars(module).items():
+            if name.startswith("_") or not (inspect.isclass(value) or inspect.isroutine(value)):
+                continue
+            origin = _origin(value) or ""
+            if id(value) in boost_objects:
+                home = boost
+            elif origin.startswith("UnityPy") and origin != module.__name__:
+                home = sys.modules.get(origin)
+            else:
+                continue
+            if getattr(home, name, None) is not value:
+                add("aliases", f"{_module_label(dotted)}.{name}", f"{dotted}.{name}")
+
     for name in sorted(dir(boost)):
         if name.startswith("_"):
             continue
