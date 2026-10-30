@@ -73,10 +73,18 @@ fn a_gzip_stream_past_the_inflate_bound_is_refused_at_detection() {
     assert!(data.len() >= 128, "{}", data.len());
     let mut small = Limits::default();
     small.max_inflate = 1 << 16;
-    assert!(matches!(
-        check_file_type(&data, &small),
-        Err(DetectError::InflateLimit)
-    ));
+    let refused = check_file_type(&data, &small);
+    assert!(
+        matches!(&refused, Err(DetectError::InflateLimit(l))
+            if l.kind == LimitKind::Inflate && l.value > l.max && l.max == 1 << 16),
+        "{refused:?}"
+    );
+    // Its text is every limit refusal's (`PARITY.md` section 19.3).
+    let text = refused.unwrap_err().to_string();
+    assert!(
+        text.starts_with("limit Inflate: ") && text.ends_with(" > 65536"),
+        "{text}"
+    );
     // Under the default bound the stream inflates whole, and zeros are no
     // WebFile signature.
     assert_eq!(

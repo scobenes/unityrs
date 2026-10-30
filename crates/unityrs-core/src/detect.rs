@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use flate2::{Crc, Decompress, FlushDecompress, Status};
 
+use crate::error::{LimitError, LimitKind};
 use crate::limits::Limits;
 use crate::stream::py_string_to_null;
 
@@ -50,9 +51,12 @@ pub enum DetectError {
     /// A `1f 8b` file whose stream does not decompress in full.
     #[error("gzip: {0}")]
     Gzip(Arc<str>),
-    /// The gzip stream inflates past [`Limits::max_inflate`].
-    #[error("gzip stream larger than the inflate limit")]
-    InflateLimit,
+    /// The gzip stream inflates past [`Limits::max_inflate`]: a
+    /// [`LimitKind::Inflate`] refusal, whose value is what the stream had
+    /// inflated to when it was refused, so its text is every limit
+    /// refusal's, `limit Inflate: <value> > <max>`.
+    #[error(transparent)]
+    InflateLimit(LimitError),
 }
 
 /// `check_file_type` on the bytes.
@@ -266,7 +270,11 @@ fn gzip_inflate(
             crc.update(out);
             total = total.saturating_add(u64::try_from(made).unwrap_or(u64::MAX));
             if total > max_inflate {
-                return Err(DetectError::InflateLimit);
+                return Err(DetectError::InflateLimit(LimitError {
+                    kind: LimitKind::Inflate,
+                    value: total,
+                    max: max_inflate,
+                }));
             }
             sink(out);
             if status == Status::StreamEnd {
