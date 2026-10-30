@@ -250,6 +250,16 @@ def r_cases():
     add("r14_empty_class_no_file", base(ref_object(), INT("tail")), ref_bytes("") + i32(9), ref_types=None)
     add("r14_matched_no_tree", base(ref_object(), INT("tail")), ref_bytes("C") + i32(9), ref_types=[dict(REF[0], nodes=None)])
     add("r14_second_ref_type_matches", base(ref_object(), INT("tail")), ref_bytes("C2") + struct.pack("<d", 2.5) + i32(9), ref_types=REF + [{"class": "C2", "ns": "N", "asm": "A", "nodes": [[0, "D2", "Base", 0], [1, "double", "y", 0]]}])
+    # Two ref types of one (class, ns, asm), unequal trees: the first is the
+    # match, in a short list (scanned) and in a list of twelve whose first
+    # lookup scans all of it (past it, unityrs's RefIndex probes a table of
+    # first indices).
+    d_int = {"class": "D", "ns": "N", "asm": "A", "nodes": INT_TREE}
+    d_double = {"class": "D", "ns": "N", "asm": "A", "nodes": [[0, "D2", "Base", 0], [1, "double", "y", 0]]}
+    add("r14_first_of_a_repeated_ref_type", base(ref_object(), INT("tail")), ref_bytes("D") + i32(7) + i32(9), ref_types=[d_int, d_double])
+    twelve = [{"class": f"C{i}", "ns": "N", "asm": "A", "nodes": INT_TREE} for i in range(9)] + [d_int, d_double, {"class": "E", "ns": "N", "asm": "A", "nodes": INT_TREE}]
+    refs3 = ref_bytes("E") + i32(5) + ref_bytes("D", rid=2) + i32(7) + ref_bytes("D", rid=3) + i32(8)
+    add("r14_first_of_a_repeated_ref_type_past_the_scan", base(vec("RefIds", ref_object("data")), INT("tail")), i32(3) + refs3 + i32(9), ref_types=twelve)
     no_type = [[0, "ReferencedObject", "obj", 0], [1, "SInt64", "rid", 0], [1, "ReferencedObjectData", "data", 0], [1, "ReferencedManagedType", "type", 0], [2, "string", "class", 0], [2, "string", "ns", 0], [2, "string", "asm", 0]]
     add("r14_no_type_yet", base(no_type), struct.pack("<q", 1) + s("C") + s("N") + s("A"), ref_types=REF)
     add("r14_no_type_yet_absent", base(no_type), struct.pack("<q", 1) + s("C") + s("N") + s("A"), ref_types="absent")
