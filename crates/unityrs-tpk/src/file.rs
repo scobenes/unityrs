@@ -6,11 +6,12 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use unityrs_core::budget::{DecodeBuf, Reservation, Unbounded};
+use unityrs_core::budget::{DecodeBuf, Reservation, Unbounded, charged_bytes};
 use unityrs_core::codec::{self, BlockCodec, Codec};
-use unityrs_core::limits::Meter;
+use unityrs_core::limits::{Meter, MeteredVec};
 use unityrs_core::{Bytes, LimitKind};
 
+use crate::blob::memory;
 use crate::{TpkError, TpkProvider};
 
 /// `TpkFile.Struct.size`: `<IbbbbIII`.
@@ -48,8 +49,9 @@ impl Deref for Payload<'_> {
 /// `TpkFile(stream)` and `GetDataBlob()` up to the blob (`Tpk.py:155-197`):
 /// the header checked in UnityPy's order, then the payload, decoded; the
 /// data type is checked last, as `init`'s `assert isinstance(blob,
-/// TpkTypeTreeBlob)` is (`:37-38`).
-pub(crate) fn payload(bytes: &[u8]) -> Result<Payload<'_>, TpkError> {
+/// TpkTypeTreeBlob)` is (`:37-38`). What decoding copies is charged to
+/// `meter`, the provider's.
+pub(crate) fn payload<'a>(bytes: &'a [u8], meter: &Arc<Meter>) -> Result<Payload<'a>, TpkError> {
     let bad = |what: &str| TpkError::Malformed(what.into());
     // `TpkFile.Struct.unpack(stream.read(20))`.
     let Some((head, rest)) = bytes.split_first_chunk::<HEADER>() else {
@@ -103,8 +105,14 @@ pub(crate) fn payload(bytes: &[u8]) -> Result<Payload<'_>, TpkError> {
         .ok_or_else(|| bad("Invalid compressed size"))?;
     let decoded = match compression {
         NONE => Payload::Stored(data),
-        LZ4 => Payload::Decoded(decode(Codec::Lz4, &codec::Lz4, data, uncompressed)?),
-        LZMA => Payload::Decoded(decode(Codec::Lzma, &codec::Lzma, data, uncompressed)?),
+        LZ4 => Payload::Decoded(decode(Codec::Lz4, &codec::Lz4, data, uncompressed, meter)?),
+        LZMA => Payload::Decoded(decode(
+            Codec::Lzma,
+            &codec::Lzma,
+            data,
+            uncompressed,
+            meter,
+        )?),
         _ => return Err(TpkError::Unsupported("brotli")),
     };
     // `self.DataType.ToBlob(...)`, then `init`'s assertion: any other blob
@@ -118,11 +126,15 @@ pub(crate) fn payload(bytes: &[u8]) -> Result<Payload<'_>, TpkError> {
 /// `data` decoded by `codec`, as one block of unityrs-core's: the output
 /// capped at [`TpkProvider::MAX_DECODED_BYTES`], and the output and an LZMA
 /// dictionary charged to a meter of [`TpkProvider::MAX_DECODER_MEMORY`].
+/// The codec reads its input as `Bytes`, so `data` is copied once, the copy
+/// charged to `provider` (the provider's meter) before it is made (round 4:
+/// it was not charged).
 fn decode(
     which: Codec,
     codec: &dyn BlockCodec,
     data: &[u8],
     uncompressed: u32,
+    provider: &Arc<Meter>,
 ) -> Result<Bytes, TpkError> {
     let name = if which == Codec::Lz4 { "lz4" } else { "lzma" };
     let fail = |e: unityrs_core::Error| match e {
@@ -152,7 +164,10 @@ fn decode(
     let cap = TpkProvider::MAX_DECODED_BYTES;
     let mut out =
         DecodeBuf::new(&meter, 0, cap, LimitKind::BlockOutput).map_err(|e| fail(e.into()))?;
-    let data = Bytes::copy_from_slice(data);
+    let mut copy = MeteredVec::with_capacity(provider, data.len()).map_err(memory)?;
+    copy.extend_from_slice(data).map_err(memory)?;
+    let (copy, charge) = copy.into_parts();
+    let data = charged_bytes(copy, charge).map_err(memory)?;
     match codec::decode_block(which, codec, &data, uncompressed, &mut out, cap).map_err(fail)? {
         Some(input) => Ok(input),
         None => out.into_bytes().map_err(|e| fail(e.into())),

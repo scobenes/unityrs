@@ -133,41 +133,34 @@ impl TpkProvider {
     /// Loads the TPK at `path`; trees deeper than `limits.max_tree_depth`
     /// are errors. A file past [`Self::MAX_FILE_BYTES`] is refused unread,
     /// and one that is not a regular file (whose length is not known) is
-    /// read only that far.
+    /// read only that far. The file's bytes are read into a buffer charged
+    /// to the provider's meter before it grows, and held only while the
+    /// TPK loads.
     pub fn open_with(path: impl AsRef<Path>, limits: &Limits) -> Result<Self, TpkError> {
         let file = std::fs::File::open(path)?;
         let len = file.metadata()?.len();
-        let too_large = |value: u64| TpkError::TooLarge {
-            what: "file",
-            value,
-            max: Self::MAX_FILE_BYTES,
-        };
         if len > Self::MAX_FILE_BYTES {
-            return Err(too_large(len));
+            return Err(too_large_file(len));
         }
-        let mut bytes = Vec::new();
-        file.take(Self::MAX_FILE_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        let read = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        if read > Self::MAX_FILE_BYTES {
-            return Err(too_large(read));
-        }
-        Self::from_bytes(&bytes, limits)
+        let meter = Meter::unlimited();
+        let bytes = read_charged(file, len, &meter)?;
+        Self::load(bytes.as_slice(), limits, meter)
     }
 
     /// Loads a TPK from its bytes, as UnityPy's `TpkFile(stream).GetDataBlob()`
     /// reads them (`helpers/Tpk.py:36-39`; crate docs).
     pub fn from_bytes(bytes: &[u8], limits: &Limits) -> Result<Self, TpkError> {
+        Self::load(bytes, limits, Meter::unlimited())
+    }
+
+    /// [`Self::from_bytes`] on the provider's `meter`, which the bytes a
+    /// path held are already charged to.
+    fn load(bytes: &[u8], limits: &Limits, meter: Arc<Meter>) -> Result<Self, TpkError> {
         let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if len > Self::MAX_FILE_BYTES {
-            return Err(TpkError::TooLarge {
-                what: "file",
-                value: len,
-                max: Self::MAX_FILE_BYTES,
-            });
+            return Err(too_large_file(len));
         }
-        let meter = Meter::unlimited();
-        let payload = file::payload(bytes)?;
+        let payload = file::payload(bytes, &meter)?;
         let blob = TypeTreeBlob::read(&payload, &meter)?;
         drop(payload);
         let common = common_strings(&blob, &meter)?;
@@ -276,6 +269,48 @@ impl TpkProvider {
             .map(|list| Some(Arc::new(list)))
             .map_err(|e| error(&e))
     }
+}
+
+/// A file past [`TpkProvider::MAX_FILE_BYTES`].
+fn too_large_file(value: u64) -> TpkError {
+    TpkError::TooLarge {
+        what: "file",
+        value,
+        max: TpkProvider::MAX_FILE_BYTES,
+    }
+}
+
+/// The bytes of `file`, whose metadata says `len` (at most
+/// [`TpkProvider::MAX_FILE_BYTES`]), read into a buffer charged to `meter`
+/// before each growth: room for `len` first, then, for a file that grows
+/// while it is read or reports no length, growths up to one byte past the
+/// bound, which is refused (round 4: the buffer grew uncharged, before the
+/// meter existed).
+fn read_charged(
+    file: std::fs::File,
+    len: u64,
+    meter: &Arc<Meter>,
+) -> Result<MeteredVec<u8>, TpkError> {
+    let mut bytes =
+        MeteredVec::with_capacity(meter, usize::try_from(len).unwrap_or(0)).map_err(memory)?;
+    let mut file = file.take(TpkProvider::MAX_FILE_BYTES + 1);
+    let mut chunk = [0_u8; 16 << 10];
+    loop {
+        let n = match file.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        };
+        bytes
+            .extend_from_slice(chunk.get(..n).unwrap_or_default())
+            .map_err(memory)?;
+    }
+    let read = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if read > TpkProvider::MAX_FILE_BYTES {
+        return Err(too_large_file(read));
+    }
+    Ok(bytes)
 }
 
 /// Every release root a kept class entry names, sorted and each once, with
@@ -433,6 +468,7 @@ mod tests {
     use std::mem::size_of;
 
     use unityrs_core::RawStr;
+    use unityrs_core::budget::OWNER_COST;
     use unityrs_core::limits::{Limits, heap_cost};
 
     use super::TpkProvider;
@@ -477,5 +513,66 @@ mod tests {
         let bytes = |b: usize| heap_cost(u64::try_from(b).unwrap());
         let table = bytes(n * size_of::<(u32, RawStr)>());
         assert_eq!(used(n) - used(0), bytes(2 * n) + table);
+    }
+
+    /// The stored TPK `stored` with its payload LZ4-compressed as one run of
+    /// literals (a block liblz4 decodes at any length), and the block's size.
+    fn lz4_of(stored: &[u8]) -> (Vec<u8>, usize) {
+        let blob = &stored[20..];
+        let n = blob.len();
+        let mut block = vec![u8::try_from(n.min(15)).unwrap() << 4];
+        if n >= 15 {
+            let mut rest = n - 15;
+            while rest >= 255 {
+                block.push(255);
+                rest -= 255;
+            }
+            block.push(u8::try_from(rest).unwrap());
+        }
+        block.extend_from_slice(blob);
+        let mut out = stored[..20].to_vec();
+        out[5] = 1;
+        out[12..16].copy_from_slice(&u32::try_from(block.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(&block);
+        (out, block.len())
+    }
+
+    /// What a load reads into memory is charged to the provider's meter
+    /// before it is allocated (round 4: neither was): the bytes of the file
+    /// a path names, exactly its length, returned once the TPK is loaded;
+    /// and the copy of a compressed payload the codec reads, with its
+    /// `Bytes` owner record.
+    #[test]
+    fn the_file_read_and_the_payload_copy_are_charged_to_the_providers_meter() {
+        let bytes = |n: usize| heap_cost(u64::try_from(n).unwrap());
+        let stored = tpk(1000);
+        let from_bytes = TpkProvider::from_bytes(&stored, &Limits::default()).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "unityrs-tpk-charged-read-{}.tpk",
+            std::process::id()
+        ));
+        std::fs::write(&path, &stored).unwrap();
+        let from_path = TpkProvider::open(&path);
+        let _ = std::fs::remove_file(&path);
+        let from_path = from_path.unwrap();
+        assert_eq!(
+            from_path.meter.granted() - from_bytes.meter.granted(),
+            bytes(stored.len()),
+            "the file's buffer"
+        );
+        assert_eq!(
+            from_path.meter.used(),
+            from_bytes.meter.used(),
+            "the buffer is returned once the TPK is loaded"
+        );
+        let (lz4, block) = lz4_of(&stored);
+        let from_lz4 = TpkProvider::from_bytes(&lz4, &Limits::default()).unwrap();
+        assert_eq!(from_lz4.common.len(), 1000);
+        assert_eq!(
+            from_lz4.meter.granted() - from_bytes.meter.granted(),
+            bytes(block) + OWNER_COST,
+            "the compressed payload's copy"
+        );
+        assert_eq!(from_lz4.meter.used(), from_bytes.meter.used());
     }
 }
