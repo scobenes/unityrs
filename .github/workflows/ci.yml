@@ -35,9 +35,10 @@ jobs:
       # G6 (docs/plans/core.md section 6): no stub is left in any crate.
       - name: No stub is left (G6)
         run: sh scripts/stub-check.sh
-      # No unmanageable files: no tracked .rs or .py file over 800 lines
+      # No unmanageable files: no tracked Rust or Python file over 800 lines
       # outside scripts/file-size-allowlist.txt (generated tables, fixture
-      # generators, and parity tools left whole until PR #5 merges).
+      # generators, and parity tools left whole until PR #5 merges), and
+      # every entry there with its reason, within its limit and its pin.
       - name: No file is over 800 lines
         run: sh scripts/file-size-check.sh
 
@@ -109,7 +110,7 @@ jobs:
             -r scripts/requirements-tests.txt
       # A skipped test, or fewer tests than the minimum, fails the job.
       - name: Self-tests (scripts)
-        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=25'
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=33'
 
   # The parity tools' Python side, on the pinned oracle stack (docs/DESIGN.md
   # section 3) and with UnityPy's samples, so the tests that need them run;
@@ -192,7 +193,7 @@ jobs:
       - name: Self-tests (parity tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=273
+          tools/parity/tests=274
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6
       # and 10), each a unityrs dump compared with the oracle's: compare.py

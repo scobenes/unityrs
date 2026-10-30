@@ -38,11 +38,14 @@ died, UnityPy's records from a re-run (below). Classes:
   19.3, "a count UnityPy allocates before it reads".
 - `limit`: unityrs's records differ from the reference and carry limit
   refusals (`limit <Kind>: <value> > <max>` in a note, each with value above
-  max). BINARY, run on the input alone, must reproduce the dump's records, and
-  run again with those limits lifted (`unityrs dump --unbounded`, adding each
-  limit that trips once another is lifted) must give the reference's records:
-  so the refusals are the whole difference, and each trips on this input.
-  `PARITY.md` section 19.3's limit rows.
+  max). Each record no refusal covers must be the reference's, in the same
+  place: a refusal covers its own record and, on a file record, the records of
+  that file and of every file inside it, so only what a refusal stopped may
+  differ. BINARY, run on the input alone, must reproduce the dump's records,
+  and run again with those limits lifted (`unityrs dump --unbounded`, adding
+  each limit that trips once another is lifted) must give the reference's
+  records: so the refusals are the whole difference, and each trips on this
+  input. `PARITY.md` section 19.3's limit rows.
 - `beyond_memory`: UnityPy has no answer within the re-run's bounds either
   (its re-run ran out of memory, or passed `--rerun-rss`), after the oracle's
   process ran out of memory (or died of the signal of a member that is not
@@ -147,22 +150,50 @@ def digest(rec):
 
 
 class Input:
-    """One input's records in a dump: [(record key, digest)] in dump order, their limit refusals, and its crash:
-    "memory" or the signal's name when its record is a crash record (the only record of its input,
-    CANONICAL_DUMP.md section 4.2), else None."""
+    """One input's records in a dump: [(record key, digest)] in dump order, their limit refusals, the keys of
+    the records that carry one, and its crash: "memory" or the signal's name when its record is a crash
+    record (the only record of its input, CANONICAL_DUMP.md section 4.2), else None."""
 
     def __init__(self):
-        self.records, self.limits, self.crash = [], [], None
+        self.records, self.limits, self.refused, self.crash = [], [], set(), None
 
     def add(self, rec):
         d, limits = digest(rec)
-        self.records.append((compare.record_key(rec), d))
+        key = compare.record_key(rec)
+        self.records.append((key, d))
         self.limits.extend(limits)
+        if limits:
+            self.refused.add(key)
         error = rec.get("error") if rec["rec"] == "file" else None
         if isinstance(error, dict) and error.get("kind") == "crash":
             note = error.get("note") or ""
             m = re.search(r"died of (SIG\w+)", note)
             self.crash = "memory" if any(s in note for s in OUT_OF_MEMORY) else (m[1] if m else note)
+
+
+def unrefused_difference(inp, reference):
+    """The first record of `inp`'s or of `reference` (both [(key, digest)]) that no limit refusal of `inp`
+    covers and that the other lacks, holds otherwise, or has in another place among the uncovered records;
+    None when there is none. A refusal covers its own record and, on a file record, every record of that
+    file and of the files inside it (an object's, an entry's): those are what the refusal stopped."""
+    files = [k[1] for k in inp.refused if k[0] == "file"]
+
+    def covered(key):
+        return key in inp.refused or any(key[1][: len(f)] == f for f in files)
+
+    def named(key):
+        names = "/".join(n if isinstance(n, str) else f"<hex {n[1]}>" for n in key[1])
+        return f"object {key[2]} of {names}" if key[0] == "object" else f"the file {names}"
+
+    ours = [r for r in inp.records if not covered(r[0])]
+    theirs = [r for r in reference if not covered(r[0])]
+    for a, b in zip(ours, theirs, strict=False):
+        if a != b:
+            return named(a[0]) if a[0] == b[0] else f"{named(a[0])} where the reference has {named(b[0])}"
+    if len(ours) != len(theirs):
+        extra = ours[len(theirs)] if len(ours) > len(theirs) else theirs[len(ours)]
+        return f"{named(extra[0])}, in {'unityrs' if len(ours) > len(theirs) else 'the reference'} only"
+    return None
 
 
 def lines_of(data: bytes):
@@ -214,10 +245,13 @@ def form_problems(oracle, unityrs):
 # ------------------------------------------------------------------ re-runs
 
 
-def resident(pid, page=os.sysconf("SC_PAGE_SIZE")):
+PAGE = os.sysconf("SC_PAGE_SIZE")
+
+
+def resident(pid):
     try:
         with open(f"/proc/{pid}/statm") as f:
-            return int(f.read().split()[1]) * page
+            return int(f.read().split()[1]) * PAGE
     except (OSError, IndexError, ValueError):
         return 0
 
@@ -500,10 +534,13 @@ class Verdict:
             ctx = f" (reference: UnityPy's re-run, {reason[key]})" if reason[key] else ""
             found = self.unityrs[key].limits
             bad = [f"{k}: {v} > {m}" for k, v, m in found if k not in LIFTABLE or v <= m]
+            differs = unrefused_difference(self.unityrs[key], reference[key])
             if not found:
                 self.rows[key] = ("other", "records differ" + ctx)
             elif bad:
                 self.rows[key] = ("other", f"a limit note that does not trip or cannot be lifted, {bad[0]}{ctx}")
+            elif differs:
+                self.rows[key] = ("other", f"a record no limit refusal covers differs, {differs}{ctx}")
             else:
                 kinds[key] = tuple(k for k in LIFTABLE if any(f[0] == k for f in found))
         # BINARY must reproduce the dump's records before its lifted runs mean anything.

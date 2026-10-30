@@ -27,9 +27,9 @@
 use std::sync::Arc;
 
 use unityrs_core::budget::Reservation;
-use unityrs_core::detect::{DetectError, FileType, ParsedAs, check_file_type};
+use unityrs_core::detect::{FileType, ParsedAs, check_file_type};
 use unityrs_core::files::{File, LayoutKind, WebPacker, parse_file};
-use unityrs_core::limits::{Limits, Meter};
+use unityrs_core::limits::Meter;
 use unityrs_core::provider::TreeSource;
 use unityrs_core::stream::Endian;
 use unityrs_core::walk::{L2Kind, ParseError, WriteRules};
@@ -49,9 +49,19 @@ use crate::{DumpOptions, InputDump, Levels};
 pub const DEFAULT_UNITY_VERSION: &str = "2.5.0f5";
 
 /// One input's records (`dump_records.py` `_dump_input`). `rel` is the
-/// input's dump name, as bytes.
+/// input's dump name, as bytes. It is parsed on a meter of its own.
 #[must_use]
 pub fn dump_input(rel: &[u8], data: Bytes, opts: &DumpOptions) -> InputDump {
+    let ctx = &opts.context;
+    let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
+    dump_on(rel, data, &meter, opts)
+}
+
+/// [`dump_input`] on `meter`, the input's meter, which its bytes may
+/// already be charged to ([`crate::read::read_input`]): everything the parse
+/// keeps counts toward the same `max_input_memory`.
+#[must_use]
+pub fn dump_on(rel: &[u8], data: Bytes, meter: &Arc<Meter>, opts: &DumpOptions) -> InputDump {
     let name = RawStr::from(rel);
     let mut l0 = L0 {
         ty: None,
@@ -76,7 +86,7 @@ pub fn dump_input(rel: &[u8], data: Bytes, opts: &DumpOptions) -> InputDump {
                 l1: None,
                 error: Some(FileError {
                     kind: FileErrorKind::Detect,
-                    note: Some(failure_note(&Error::Detect(e), &ctx.limits)),
+                    note: Some(note(&Error::Detect(e).to_string())),
                 }),
             };
             out.push_file(file_line(&rec));
@@ -95,10 +105,9 @@ pub fn dump_input(rel: &[u8], data: Bytes, opts: &DumpOptions) -> InputDump {
         }));
         return out;
     }
-    let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
     let mut lines = Vec::new();
     let (mut files, mut objects) = (0, 0);
-    let result = parse_file(name.clone(), data, ty, None, &meter, ctx).and_then(|file| {
+    let result = parse_file(name.clone(), data, ty, None, meter, ctx).and_then(|file| {
         if opts.lazy_reverse {
             prepass_reverse(&file);
         }
@@ -127,32 +136,12 @@ pub fn dump_input(rel: &[u8], data: Bytes, opts: &DumpOptions) -> InputDump {
                 l1: None,
                 error: Some(FileError {
                     kind: FileErrorKind::Parse,
-                    note: Some(failure_note(&e, &ctx.limits)),
+                    note: Some(note(&e.to_string())),
                 }),
             }));
         }
     }
     out
-}
-
-/// The note of an input's failure: the error's text, where detection's
-/// limit refusal ([`DetectError::InflateLimit`], the input's or an entry's)
-/// leads with `limit Inflate:` and the bound, as the text of every other
-/// limit refusal ([`unityrs_core::LimitError`]) leads with `limit <Kind>:`.
-/// So a reader of the dump (G3b's `tools/parity/g3b.py`) finds every limit
-/// refusal the same way.
-fn failure_note(e: &Error, limits: &Limits) -> String {
-    let mut inner = e;
-    while let Error::Entry { source, .. } = inner {
-        inner = source;
-    }
-    if matches!(inner, Error::Detect(DetectError::InflateLimit)) {
-        return note(&format!(
-            "limit Inflate: a gzip stream inflates past {} bytes ({e})",
-            limits.max_inflate
-        ));
-    }
-    note(&e.to_string())
 }
 
 /// UnityPy's eager load: every directory entry of every bundle parsed, in
@@ -573,8 +562,11 @@ mod tests {
         };
         let lines = dump_input(b"big.gz", Bytes::from(gzip_of_zeros(5000)), &opts).lines;
         assert_eq!(lines.len(), 1);
+        // Every limit refusal's text (`tests/limits.rs` reads it as
+        // `tools/parity/g3b.py` does).
         assert!(
-            lines[0].contains(r#""error":{"kind":"detect","note":"limit Inflate: "#),
+            lines[0].contains(r#""error":{"kind":"detect","note":"detection: limit Inflate: "#)
+                && lines[0].ends_with(" > 1000\"}}"),
             "{}",
             lines[0]
         );

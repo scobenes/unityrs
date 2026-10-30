@@ -12,11 +12,13 @@
 //!   oracle's `GzipFile` writes it). Like the oracle, it refuses to write
 //!   into the repository (a dump names corpus inputs, and this repository is
 //!   public), through a symlink, or over an input or the index.
-//! - **Failures.** An input whose bytes cannot be read, a panic while
-//!   dumping one (a bug: the core does not panic on input) and an input
-//!   whose sha256 differs from its index entry (unless allowed) stop the run
-//!   with no dump written, as the oracle's `DumperError` and
-//!   `IndexMismatch` do.
+//! - **Failures.** An input that cannot be opened or read (an I/O error), a
+//!   panic while dumping one (a bug: the core does not panic on input) and
+//!   an input whose sha256 differs from its index entry (unless allowed)
+//!   stop the run with no dump written, as the oracle's `DumperError` and
+//!   `IndexMismatch` do. An input refused at a limit, or too large for its
+//!   buffer to be allocated, is its own record and the run goes on
+//!   ([`crate::read`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
@@ -24,15 +26,17 @@ use std::io::{BufWriter, Write};
 use std::os::unix::fs::MetadataExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use flate2::Compression;
 use flate2::GzBuilder;
 use flate2::write::GzEncoder;
 use unityrs_core::Bytes;
-use unityrs_core::limits::Limits;
+use unityrs_core::limits::{Limits, Meter};
 
 use crate::json::hex;
+use crate::read::{ReadInput, read_input};
 use crate::select::{Input, Selection, collect};
 use crate::{DumpOptions, InputDump, end_line, header_line_unbounded};
 
@@ -264,14 +268,36 @@ fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "a panic".to_owned())
 }
 
+/// The stack one level of container nesting takes, in the core's eager load
+/// and the dump's own walks of the nest (load, pre-pass, records): about
+/// twice what a level costs up to the deepest nest
+/// [`crate::LIFTED_CONTAINER_DEPTH`] lets parse, which `tests/limits.rs`'s
+/// `container_stack_measured` finds is 5,472 bytes in a debug build and
+/// 1,520 in a release one (toolchain 1.99.1), eagerly and through the
+/// reverse pre-pass alike.
+pub const CONTAINER_LEVEL_STACK: usize = if cfg!(debug_assertions) {
+    12 << 10
+} else {
+    3 << 10
+};
+
 /// The stack a worker dumps an input on, under `limits`: what reading and
 /// writing one object needs ([`Limits::stack_needed`]), and as much again
 /// for the dump's own frames around it and the value encoder, which recurses
 /// as deep as the value the reader made (`tests/deep_values.rs` dumps the
-/// deepest inputs at `-j 1` and `-j 8`).
+/// deepest inputs at `-j 1` and `-j 8`), on top of
+/// [`CONTAINER_LEVEL_STACK`] for each level of nesting
+/// `limits.max_container_depth` lets an input reach, inside which that
+/// object is read (`tests/limits.rs`).
 #[must_use]
 pub fn worker_stack(limits: &Limits) -> usize {
-    limits.stack_needed().saturating_mul(2)
+    let levels = usize::try_from(limits.max_container_depth)
+        .unwrap_or(usize::MAX)
+        .saturating_add(1);
+    limits
+        .stack_needed()
+        .saturating_mul(2)
+        .saturating_add(levels.saturating_mul(CONTAINER_LEVEL_STACK))
 }
 
 /// [`ordered_on`] workers of [`worker_stack`] at the default limits.
@@ -355,16 +381,22 @@ pub fn ordered_on<T: Sync, R: Send>(
 /// One input's outcome, as a worker hands it back.
 type Dumped = Result<InputDump, String>;
 
+/// What makes one input's records: from its name, its bytes and its meter,
+/// which the bytes are charged to ([`crate::input::dump_on`], or a test's).
+type DumpOne<'a> = dyn Fn(&[u8], Bytes, &Arc<Meter>) -> InputDump + Sync + 'a;
+
 /// Writes the header, every input's records in order, and the `end` record
-/// to `w`. `dump_one` makes one input's records from its name and bytes;
-/// `on_input` sees each input's records after they are written and may stop
-/// the run. Returns the `file` and `object` counts.
+/// to `w`. Each input is read by [`read_input`] (refused at its limits, its
+/// bytes charged to its meter, a refusal its own record), and `dump_one`
+/// makes its records from its name, its bytes and that meter; `on_input`
+/// sees each input's records after they are written and may stop the run.
+/// Returns the `file` and `object` counts.
 pub fn write_dump(
     inputs: &[Input],
     opts: &DumpOptions,
     w: &mut dyn Write,
     on_input: &mut dyn FnMut(&Input, &InputDump) -> Result<(), RunError>,
-    dump_one: &(dyn Fn(&[u8], Bytes) -> InputDump + Sync),
+    dump_one: &DumpOne<'_>,
 ) -> Result<(u64, u64), RunError> {
     let io = |e: std::io::Error| RunError::Failed(format!("writing the dump: {e}"));
     w.write_all(header_line_unbounded(opts.levels, PRODUCER, &opts.unbounded).as_bytes())
@@ -372,9 +404,11 @@ pub fn write_dump(
         .map_err(io)?;
     let (mut files, mut objects) = (0u64, 0u64);
     let work = |input: &Input| -> Dumped {
-        let data = std::fs::read(&input.path)
-            .map_err(|e| format!("{}: {e}", String::from_utf8_lossy(&input.name)))?;
-        Ok(dump_one(&input.name, Bytes::from(data)))
+        match read_input(&input.name, &input.path, &opts.context) {
+            Ok(ReadInput::Bytes { data, meter }) => Ok(dump_one(&input.name, data, &meter)),
+            Ok(ReadInput::Refused(d)) => Ok(d),
+            Err(e) => Err(format!("{}: {e}", String::from_utf8_lossy(&input.name))),
+        }
     };
     let stack = worker_stack(&opts.context.limits);
     ordered_on(inputs, opts.jobs, stack, &work, &mut |i, r: Dumped| {
@@ -399,17 +433,14 @@ pub fn write_dump(
 /// selects the inputs, writes the dump to its `.partial` file and renames
 /// it, then writes the stats.
 pub fn run(opts: &RunOptions) -> Result<Summary, RunError> {
-    run_with(opts, &|rel, data| {
-        crate::input::dump_input(rel, data, &opts.dump)
+    run_with(opts, &|rel, data, meter| {
+        crate::input::dump_on(rel, data, meter, &opts.dump)
     })
 }
 
 /// [`run`] with another per-input dumper (a test's).
 #[allow(clippy::too_many_lines)] // one linear pass, as the oracle's main
-pub fn run_with(
-    opts: &RunOptions,
-    dump_one: &(dyn Fn(&[u8], Bytes) -> InputDump + Sync),
-) -> Result<Summary, RunError> {
+pub fn run_with(opts: &RunOptions, dump_one: &DumpOne<'_>) -> Result<Summary, RunError> {
     let usage = RunError::Usage;
     // The dump and the stats both name corpus inputs; neither may land in a repository.
     for (label, path) in [
@@ -629,117 +660,4 @@ fn write_new(path: &Path, data: &[u8]) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn gzip_header_is_the_oracles() {
-        let mut gz = gzip(Vec::new());
-        gz.write_all(b"{}\n").unwrap();
-        let bytes = gz.finish().unwrap();
-        assert_eq!(hex(bytes.get(..10).unwrap()), "1f8b08000000000002ff");
-    }
-
-    #[test]
-    fn ordered_keeps_order_at_any_worker_count() {
-        let items: Vec<u64> = (0..50).collect();
-        for jobs in [1, 2, 3, 8] {
-            let mut seen = Vec::new();
-            // Later items finish first: each sleeps less.
-            let f = |x: &u64| {
-                std::thread::sleep(std::time::Duration::from_micros(500 * (50 - x)));
-                x * 2
-            };
-            ordered(&items, jobs, &f, &mut |i, r| {
-                seen.push((i, r));
-                Ok(())
-            })
-            .unwrap();
-            let want: Vec<(usize, u64)> = (0..50).map(|i| (i, 2 * i as u64)).collect();
-            assert_eq!(seen, want, "jobs {jobs}");
-        }
-    }
-
-    /// `-j N` runs N inputs at once and no more: each item waits (up to a
-    /// deadline) for `want` items to be running together. With `want`
-    /// workers they all meet; one worker fewer, none ever does. The window
-    /// of `2 * jobs` queued items never adds a worker.
-    #[test]
-    fn ordered_runs_jobs_items_at_once_and_no_more() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::time::{Duration, Instant};
-        let meet = |jobs: usize, want: usize, deadline: Duration| -> bool {
-            let items: Vec<usize> = (0..want).collect();
-            let running = AtomicUsize::new(0);
-            let peak = AtomicUsize::new(0);
-            let f = |_: &usize| {
-                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
-                peak.fetch_max(now, Ordering::SeqCst);
-                let end = Instant::now() + deadline;
-                while peak.load(Ordering::SeqCst) < want && Instant::now() < end {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                running.fetch_sub(1, Ordering::SeqCst);
-            };
-            ordered(&items, jobs, &f, &mut |_, ()| Ok(())).unwrap();
-            peak.load(Ordering::SeqCst) >= want
-        };
-        assert!(
-            meet(4, 4, Duration::from_secs(20)),
-            "4 workers never ran 4 items at once"
-        );
-        assert!(
-            meet(3, 2, Duration::from_secs(20)),
-            "3 workers never ran 2 items at once"
-        );
-        assert!(
-            !meet(3, 4, Duration::from_millis(200)),
-            "3 workers ran 4 items at once"
-        );
-    }
-
-    #[test]
-    fn ordered_stops_on_a_panic_and_names_the_input() {
-        let items: Vec<u32> = (0..10).collect();
-        for jobs in [1, 4] {
-            let f = |x: &u32| {
-                assert!(*x != 6, "boom at six");
-                *x
-            };
-            let mut n = 0;
-            let err = ordered(&items, jobs, &f, &mut |_, _| {
-                n += 1;
-                Ok(())
-            })
-            .unwrap_err();
-            assert!(err.to_string().contains("input 7 of 10"), "{err}");
-            assert!(err.to_string().contains("boom at six"), "{err}");
-            assert!(n <= 6, "jobs {jobs}: {n} written past the panic");
-        }
-    }
-
-    #[test]
-    fn ordered_stops_when_the_sink_refuses() {
-        let items: Vec<u32> = (0..20).collect();
-        let f = |x: &u32| *x;
-        let mut got = Vec::new();
-        let err = ordered(&items, 4, &f, &mut |i, r| {
-            if i == 3 {
-                return Err(RunError::Failed("stop".into()));
-            }
-            got.push(r);
-            Ok(())
-        })
-        .unwrap_err();
-        assert_eq!(err, RunError::Failed("stop".into()));
-        assert_eq!(got, [0, 1, 2]);
-    }
-
-    #[test]
-    fn the_repository_is_refused_and_a_temporary_folder_is_not() {
-        let repo = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).unwrap();
-        assert!(outside_repo(&repo.join("out.jsonl")).is_err());
-        assert!(outside_repo(&repo.join("no/such/dir/out.jsonl")).is_err());
-        assert!(outside_repo(&std::env::temp_dir().join("unityrs-dump-out.jsonl")).is_ok());
-    }
-}
+mod tests;

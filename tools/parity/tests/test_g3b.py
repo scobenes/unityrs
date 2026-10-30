@@ -138,8 +138,10 @@ class G3bTests(unittest.TestCase):
             # 240 levels: 726 levels of JSON, past Python's recursion limit for a recursive walk.
             "deep": assets(deep(240), struct.pack("<i", 7)),
             "good_crashed": GOOD,
+            "limit_and_a_missing_object": TWO,
             "limit_beside_a_wrong_object": TWO,
             "limit_chain": GOOD,
+            "limit_in_an_object": TWO,
             "limit_not_reproduced": GOOD,
             "limit_ok": GOOD,
             "limit_still_differs": GOOD,
@@ -223,10 +225,19 @@ class G3bTests(unittest.TestCase):
         def refused(name):
             return self.limit_rec(name, "limit TreeDepth: 9 > 8")
 
-        two = [json.loads(line) for line in lines(o["limit_beside_a_wrong_object"])]
-        two[1]["l3"]["note"] = "limit ZeroSizeElements: 1048577 > 1048576"
-        two[2]["l2"]["value"]["v"][0][1] = 10
-        two = "".join(rec_text(r) for r in two)
+        def object_refused(name, note, wrong=None):
+            """TWO's records with object 1 refused at a limit (its L2 an `other` error, its L3 skipped), and
+            with `wrong` applied to object 2's value, or object 2 left out when `wrong` is "drop"."""
+            recs = [json.loads(line) for line in lines(o[name])]
+            recs[1]["l2"].update(error={"kind": "other", "bytes_read": None, "note": note}, value=None)
+            recs[1]["l3"].update(resave="skipped")
+            if wrong == "drop":
+                del recs[2]
+            elif wrong is not None:
+                recs[2]["l2"]["value"]["v"][0][1] = wrong
+            return "".join(rec_text(r) for r in recs)
+
+        zero_size = "limit ZeroSizeElements: 1048577 > 1048576"
         return {
             "agree": {"": o["agree"]},
             "bad_name": {"": self.placeholder("bad_name", BAD_NAME, BAD_NAME_OK, b"a\xffb")},
@@ -234,11 +245,25 @@ class G3bTests(unittest.TestCase):
             "bad_type": {"": self.placeholder("bad_type", BAD_TYPE, BAD_TYPE_OK, b"in\xfft")},
             "deep": {"": o["deep"]},
             "good_crashed": {"": o["good_crashed"]},
-            "limit_beside_a_wrong_object": {"": two},
+            # Lifted, each of these two gives UnityPy's records; bounded, a
+            # record no refusal covers is wrong (object 2's value 10, not 9)
+            # or missing, so the refusal is not the whole difference.
+            "limit_and_a_missing_object": {
+                "": object_refused("limit_and_a_missing_object", zero_size, "drop"),
+                "ZeroSizeElements": o["limit_and_a_missing_object"],
+            },
+            "limit_beside_a_wrong_object": {
+                "": object_refused("limit_beside_a_wrong_object", zero_size, 10),
+                "ZeroSizeElements": o["limit_beside_a_wrong_object"],
+            },
             "limit_chain": {
                 "": refused("limit_chain"),
                 "TreeDepth": self.limit_rec("limit_chain", "limit ValueDepth: 600 > 512"),
                 "TreeDepth,ValueDepth": o["limit_chain"],
+            },
+            "limit_in_an_object": {
+                "": object_refused("limit_in_an_object", "limit ValueDepth: 513 > 512"),
+                "ValueDepth": o["limit_in_an_object"],
             },
             "limit_not_reproduced": {"": o["limit_not_reproduced"]},
             "limit_ok": {"": refused("limit_ok"), "TreeDepth": o["limit_ok"]},
@@ -275,7 +300,7 @@ class G3bTests(unittest.TestCase):
         status, report, listed = self.g3b(self.table(), gate=gate, oracle=oracle)
         self.assertEqual(
             report["classes"],
-            {"agree": 2, "crash_non_utf8": 2, "limit": 2, "memory_bound": 1, "other": 9},
+            {"agree": 2, "crash_non_utf8": 2, "limit": 3, "memory_bound": 1, "other": 10},
         )
         self.assertEqual((status, report["form"]), (1, {}))
         admitted = {n: r for n, r in listed.items() if r[0] != "other"}
@@ -285,14 +310,19 @@ class G3bTests(unittest.TestCase):
                 "bad_name": ("crash_non_utf8", "m_Name: SIGABRT"),
                 "bad_type": ("crash_non_utf8", "m_Type: SIGSEGV"),
                 "limit_chain": ("limit", "TreeDepth+ValueDepth"),
+                "limit_in_an_object": ("limit", "ValueDepth"),
                 "limit_ok": ("limit", "TreeDepth"),
                 "lzma": ("memory_bound", "re-run under the larger cap"),
             },
         )
         other = {n: r[1] for n, r in listed.items() if r[0] == "other"}
+        uncovered = "a record no limit refusal covers differs, object 2 of limit_"
         expect = {
-            # One limit note never admits a difference it does not explain.
-            "limit_beside_a_wrong_object": "records differ with ZeroSizeElements lifted",
+            # One limit note never admits a difference it does not explain:
+            # not a record beside it, though the lifted run is UnityPy's ...
+            "limit_beside_a_wrong_object": f"{uncovered}beside_a_wrong_object",
+            "limit_and_a_missing_object": f"{uncovered}and_a_missing_object, in the reference only",
+            # ... nor a lifted run that is not.
             "limit_still_differs": "records differ with TreeDepth lifted",
             "limit_that_does_not_trip": "a limit note that does not trip",
             "limit_not_reproduced": "the unityrs binary does not reproduce the dump",
@@ -363,6 +393,21 @@ class G3bTests(unittest.TestCase):
         with gzip.open(run / "a.jsonl.gz", "wb") as f:
             f.write((run / "a.jsonl").read_bytes())
         self.assertEqual(g3b.load(run / "a.jsonl.gz").keys(), g3b.load(run / "a.jsonl").keys())
+
+    def test_a_limit_refusal_is_read_wherever_the_dump_writes_it(self):
+        """Each form of note the unityrs dump writes for a limit refusal (`crates/unityrs-dump`'s
+        `every_limit_note_is_in_g3bs_grammar` pins the detection and read ones), and the old detection form,
+        which named no value, read as no refusal."""
+        cases = {
+            "limit TreeDepth: 257 > 256": [("TreeDepth", 257, 256)],
+            "detection: limit Inflate: 5120 > 1000": [("Inflate", 5120, 1000)],
+            "entry CAB-x: detection: limit Inflate: 5120 > 1000": [("Inflate", 5120, 1000)],
+            "limit InputBytes: 5000 > 1000": [("InputBytes", 5000, 1000)],
+            "limit Inflate: a gzip stream inflates past 1000 bytes": [],
+        }
+        for note, want in cases.items():
+            rec = {"rec": "file", "file": ["x"], "l0": {}, "l1": None, "error": {"kind": "detect", "note": note}}
+            self.assertEqual(g3b.digest(rec)[1], want, note)
 
     def test_a_name_is_matched_exactly(self):
         import fnmatch

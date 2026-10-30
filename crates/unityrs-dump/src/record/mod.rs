@@ -91,11 +91,14 @@ pub fn parsed_as_name(p: ParsedAs) -> &'static str {
 /// A file record's `error` kind (section 4.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileErrorKind {
-    /// `check_file_type` raised.
+    /// `check_file_type` raised, or the input was refused before it was
+    /// detected (longer than `max_input_bytes`, [`crate::read`]).
     Detect,
     /// The parser raised.
     Parse,
-    /// The process dumping the input died of a signal (the oracle's alone).
+    /// The process dumping the input died of a signal (the oracle's), or
+    /// ran out of memory: the oracle's `MemoryError`, unityrs's buffer for
+    /// an input it could not hold ([`crate::read`]).
     Crash,
 }
 

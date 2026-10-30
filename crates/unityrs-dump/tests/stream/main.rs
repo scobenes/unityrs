@@ -14,8 +14,11 @@ use common::{Tmp, compare, gunzip, line_problems, repo, s};
 use hand_built::{
     corpus, error, file, l0, l1_of, l3_of, raw, records, serialized_l1, stream, values,
 };
+use std::sync::Arc;
+
 use unityrs_core::Bytes;
 use unityrs_core::detect::{FileType, ParsedAs};
+use unityrs_core::limits::Meter;
 use unityrs_core::walk::L2Kind;
 use unityrs_dump::json::sha256;
 use unityrs_dump::record::{FileL1, ObjectRecord, object_line};
@@ -163,7 +166,8 @@ fn options(tmp: &Tmp, output: &str, jobs: usize) -> RunOptions {
 fn a_run_writes_gzip_with_mtime_0_through_a_partial_file_at_any_jobs() {
     let (tmp, inputs) = corpus(20);
     let vals = values();
-    let dumper = |name: &[u8], data: Bytes| records(name, &data, Levels::ALL, &vals);
+    let dumper =
+        |name: &[u8], data: Bytes, _: &Arc<Meter>| records(name, &data, Levels::ALL, &vals);
     let want = stream(&inputs, Levels::ALL, 1);
     for jobs in [1, 4] {
         let opts = options(&tmp, &format!("j{jobs}.jsonl.gz"), jobs);
@@ -189,7 +193,7 @@ fn a_panic_stops_the_run_and_writes_no_dump() {
     let (tmp, _) = corpus(10);
     for jobs in [1, 3] {
         let opts = options(&tmp, "panic.jsonl", jobs);
-        let dumper = |name: &[u8], _: Bytes| {
+        let dumper = |name: &[u8], _: Bytes, _: &Arc<Meter>| {
             assert!(name != b"e/plain-004", "a bug");
             InputDump::default()
         };
@@ -219,7 +223,7 @@ fn an_index_mismatch_stops_the_run_unless_allowed() {
         index: true,
         ..Selection::default()
     };
-    let dumper = |name: &[u8], data: Bytes| records(name, &data, Levels::ALL, &[]);
+    let dumper = |name: &[u8], data: Bytes, _: &Arc<Meter>| records(name, &data, Levels::ALL, &[]);
     let err = run_with(&opts, &dumper).unwrap_err();
     assert!(err.to_string().contains("two.bin: sha256"), "{err}");
     assert_eq!(err.status(), 1);
@@ -233,7 +237,7 @@ fn an_index_mismatch_stops_the_run_unless_allowed() {
 #[test]
 fn paths_the_oracle_refuses_are_refused() {
     let (tmp, _) = corpus(1);
-    let dumper = |_: &[u8], _: Bytes| InputDump::default();
+    let dumper = |_: &[u8], _: Bytes, _: &Arc<Meter>| InputDump::default();
     // Inside the repository.
     let mut opts = options(&tmp, "x.jsonl", 1);
     opts.output = repo().join("target/never-written.jsonl");
@@ -268,7 +272,7 @@ fn stats_are_written_beside_the_dump() {
     let (tmp, _) = corpus(2);
     let mut opts = options(&tmp, "s.jsonl", 2);
     opts.stats = Some(tmp.0.join("out/stats.json"));
-    let dumper = |name: &[u8], data: Bytes| records(name, &data, Levels::ALL, &[]);
+    let dumper = |name: &[u8], data: Bytes, _: &Arc<Meter>| records(name, &data, Levels::ALL, &[]);
     run_with(&opts, &dumper).unwrap();
     let stats: serde_json::Value =
         serde_json::from_slice(&std::fs::read(tmp.0.join("out/stats.json")).unwrap()).unwrap();

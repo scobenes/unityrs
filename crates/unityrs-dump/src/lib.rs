@@ -18,6 +18,8 @@
 //!   values (section 3) from a [`unityrs_core::Parsed`] alone;
 //! - [`record`]: the records (section 4) and their lines;
 //! - [`input`]: one input's records from the core's public API;
+//! - [`read`]: one input's bytes, refused at its limits and charged to its
+//!   meter, a refusal its own record;
 //! - [`select`]: which inputs, named how, in which order (section 4.2
 //!   "Names", section 5), with the oracle's selection flags;
 //! - [`run`]: the whole dump: header, inputs in order at any `-j`, `end`,
@@ -30,6 +32,7 @@
 pub mod encode;
 pub mod input;
 pub mod json;
+pub mod read;
 pub mod record;
 pub mod run;
 pub mod select;
@@ -185,9 +188,29 @@ pub const LIFTABLE: [LimitKind; 10] = [
 /// `lifted_depth_reads_unitypyboosts_reach`).
 pub const LIFTED_VALUE_DEPTH: u32 = 1 << 16;
 
+/// The container depth [`lift`] sets: past what UnityPy reads, and a depth
+/// whose stack a worker can be given ([`run::worker_stack`] adds
+/// [`run::CONTAINER_LEVEL_STACK`] a level). Each level of nesting is a
+/// recursion in UnityPy: `File.read_files` calls `ImportHelper.parse_file`,
+/// which builds the entry's `BundleFile`, whose `__init__` calls
+/// `read_files` again (`files/File.py:76-90`,
+/// `helpers/ImportHelper.py:127-156`, `files/BundleFile.py:53`). That is
+/// three Python frames a level at least, and neither UnityPy nor the oracle
+/// raises Python's recursion limit of 1,000 frames, so UnityPy raises
+/// `RecursionError` (a `parse` error record) before 334 levels. Nesting is
+/// a recursion in the core and the dump too, so a bound lifted to
+/// `u32::MAX` let a nest a few thousand deep overflow the worker's stack and
+/// abort the whole dump. A nest one level deeper than this is the
+/// `ContainerDepth` refusal, a `parse` error record as UnityPy's is
+/// (`tests/limits.rs`,
+/// `a_lifted_container_depth_dumps_to_its_bound_and_refuses_past_it`).
+pub const LIFTED_CONTAINER_DEPTH: u32 = 1 << 10;
+
 /// Sets `kind`'s bound in `limits` so that it never trips where UnityPy
 /// reads: to its type's maximum, or for `ValueDepth` to
-/// [`LIFTED_VALUE_DEPTH`]. `false` for a kind not in [`LIFTABLE`].
+/// [`LIFTED_VALUE_DEPTH`] and for `ContainerDepth` to
+/// [`LIFTED_CONTAINER_DEPTH`], depths a worker's stack holds. `false` for a
+/// kind not in [`LIFTABLE`].
 pub fn lift(limits: &mut Limits, kind: LimitKind) -> bool {
     match kind {
         LimitKind::InputMemory => limits.max_input_memory = u64::MAX,
@@ -195,7 +218,7 @@ pub fn lift(limits: &mut Limits, kind: LimitKind) -> bool {
         LimitKind::BlockOutput => limits.max_block_output = u64::MAX,
         LimitKind::DecodeWork => limits.max_decode_work = u64::MAX,
         LimitKind::Inflate => limits.max_inflate = u64::MAX,
-        LimitKind::ContainerDepth => limits.max_container_depth = u32::MAX,
+        LimitKind::ContainerDepth => limits.max_container_depth = LIFTED_CONTAINER_DEPTH,
         LimitKind::TreeDepth => limits.max_tree_depth = u32::MAX,
         LimitKind::ValueDepth => limits.max_value_depth = LIFTED_VALUE_DEPTH,
         LimitKind::ValuesPerObject => limits.max_values_per_object = u64::MAX,
@@ -330,9 +353,13 @@ pub fn dump_tree(
     };
     let inputs = select::collect(&sel).map_err(std::io::Error::other)?;
     let mut gz = run::gzip(out);
-    let counts = run::write_dump(&inputs, opts, &mut gz, &mut |_, _| Ok(()), &|rel, data| {
-        input::dump_input(rel, data, opts)
-    })
+    let counts = run::write_dump(
+        &inputs,
+        opts,
+        &mut gz,
+        &mut |_, _| Ok(()),
+        &|rel, data, m| input::dump_on(rel, data, m, opts),
+    )
     .map_err(std::io::Error::other)?;
     gz.finish()?;
     Ok(counts)
