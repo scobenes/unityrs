@@ -102,12 +102,8 @@ pub trait Tally: Sync {
 /// answered: a failure counts nothing, and a `realloc` that fails leaves its
 /// old block live and counted. A `realloc` that succeeds counts its new
 /// block before it frees the old one, the worst case of a moving `realloc`:
-/// both blocks live at once.
-///
-/// ```ignore
-/// #[global_allocator]
-/// static ALLOC: Allocator<MyTally> = Allocator(MyTally);
-/// ```
+/// both blocks live at once. A test file installs it with its own tally:
+/// `#[global_allocator] static ALLOC: Allocator<Mine> = Allocator(Mine);`.
 pub struct Allocator<T>(pub T);
 
 // SAFETY: every method forwards to `System` under the caller's contract,
