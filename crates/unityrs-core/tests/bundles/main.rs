@@ -2,8 +2,9 @@
 //! 7.4): one layout in every read order, runs and kept block outcomes,
 //! refusals that are not kept, decode work, no lock across caller code, the
 //! entries' weak parent handle, entry slicing as Python slices, and the
-//! input's meter over several files and hostile directories, and the work
-//! an entry's parse counts.
+//! input's meter over several files and hostile directories, the work an
+//! entry's parse counts, and what a read's search of its blocks and runs
+//! costs.
 
 use std::sync::Arc;
 
@@ -19,6 +20,7 @@ mod format;
 mod layout;
 mod memory;
 mod outcomes;
+mod runs;
 mod work;
 
 fn ctx() -> Arc<FileContext> {

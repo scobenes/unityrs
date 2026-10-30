@@ -36,11 +36,14 @@ fn dependencies_are_evicted_and_reopened_and_every_charge_returns() {
         assert_eq!(env.files().count(), 1, "only the caller's file");
         let first = serialized_cab(&env, "cab-a");
         let old = first.meter().clone();
-        let old_work = old.decoded();
         drop((a, first));
         env.load_dependency(src("b.bundle", &named_bundle("CAB-B", 64)))
             .unwrap();
         assert_eq!(env.stats().dependencies_evicted, 1);
+        // The eviction's settle may read an entry's first bytes through the
+        // old handle, a read whose steps count against the old open (plan
+        // 3.6, "Runs"); the reopen's work is its own.
+        let old_work = old.decoded();
         let again = serialized_cab(&env, "cab-a");
         assert!(!Arc::ptr_eq(again.meter(), &old));
         assert!(again.meter().same_input(&old));

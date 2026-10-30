@@ -10,6 +10,8 @@
 //!   K x S for K rows over S bytes, for K objects over S bytes, and for K
 //!   values (each summarised by its sha256) over S bytes; an object read
 //!   whole and re-saved counts its raw bytes, its value's and its resave's.
+//!   Its reads of each row again add their steps, as any read's (the core's
+//!   plan 3.6, "Runs").
 //! - Past `max_decode_work` the input is its `DecodeWork` refusal, in g3b's
 //!   grammar (`limit DecodeWork: <v> > <max>`), and with the bound lifted
 //!   (`--unbounded DecodeWork`) it dumps whole.
@@ -18,7 +20,7 @@ use std::sync::Arc;
 
 use unityrs_core::budget::Reservation;
 use unityrs_core::detect::check_file_type;
-use unityrs_core::files::parse_file;
+use unityrs_core::files::{File, parse_file};
 use unityrs_core::limits::Meter;
 use unityrs_core::{Bytes, FileContext, LimitKind, RawStr};
 use unityrs_dump::DumpOptions;
@@ -142,9 +144,12 @@ fn with_work(max: u64) -> DumpOptions {
     }
 }
 
-/// The work the core's load of `data` counts, and the dump's records of it
-/// with the work its whole dump counted.
-fn work(data: &[u8], opts: &DumpOptions) -> (u64, String, u64) {
+/// The work the core's load of `data` counts, the dump's records of it with
+/// the work its whole dump counted, and what one more read of a directory
+/// row costs the loaded bundle (the dump reads each row's bytes again to
+/// hash them; a read of a cached run counts its steps, the core's plan 3.6
+/// "Runs"), 0 for a SerializedFile.
+fn work(data: &[u8], opts: &DumpOptions) -> (u64, String, u64, u64) {
     let ctx = &opts.context;
     let meter = || Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
     let load = meter();
@@ -152,9 +157,24 @@ fn work(data: &[u8], opts: &DumpOptions) -> (u64, String, u64) {
     let ty = check_file_type(&bytes, &ctx.limits).unwrap();
     let file = parse_file(RawStr::from("in"), bytes, ty, None, &load, ctx).unwrap();
     load_deep(&file).unwrap();
+    let loaded = load.decoded();
+    let read = match &file {
+        File::Bundle(b) => {
+            let each: Vec<u64> = (0..b.directory().len())
+                .map(|i| {
+                    let before = load.decoded();
+                    b.entry_bytes(i).unwrap();
+                    load.decoded() - before
+                })
+                .collect();
+            assert!(each.windows(2).all(|w| w[0] == w[1]), "{each:?}");
+            each.first().copied().unwrap_or(0)
+        }
+        _ => 0,
+    };
     let dump = meter();
     let text = dump_on(b"in", Bytes::copy_from_slice(data), &dump, opts).text();
-    (load.decoded(), text, dump.decoded())
+    (loaded, text, dump.decoded(), read)
 }
 
 fn bytes(n: usize) -> u64 {
@@ -164,20 +184,20 @@ fn bytes(n: usize) -> u64 {
 #[test]
 fn the_dump_counts_every_byte_it_hashes_as_its_opens_work() {
     for (what, data, each) in inputs() {
-        let (load, text, dumped) = work(&data, &DumpOptions::default());
+        let (load, text, dumped, read) = work(&data, &DumpOptions::default());
         assert_eq!(text.lines().count(), K + 1, "{what}: {text}");
         assert!(!text.contains(r#""kind":"parse""#), "{what}: {text}");
         assert_eq!(text.matches(each.as_str()).count(), K, "{what}: {text}");
         assert_eq!(
             dumped - load,
-            bytes(K * S),
+            bytes(K * S) + bytes(K) * read,
             "{what}: the core's load counted {load}"
         );
     }
     // Each object read whole, and re-saved: its raw bytes, its value's and
     // its resave's, each counted once.
     let data = byte_arrays(K, S, 4 + S);
-    let (load, text, dumped) = work(&data, &DumpOptions::default());
+    let (load, text, dumped, _) = work(&data, &DumpOptions::default());
     assert_eq!(text.matches(r#""resave":"equal""#).count(), K, "{text}");
     assert_eq!(dumped - load, bytes(K * (3 * S + 8)));
 }
@@ -185,11 +205,12 @@ fn the_dump_counts_every_byte_it_hashes_as_its_opens_work() {
 #[test]
 fn hashing_past_the_opens_work_is_its_decode_work_refusal() {
     for (what, data, _) in inputs() {
-        let (load, whole, _) = work(&data, &DumpOptions::default());
+        let (load, whole, _, read) = work(&data, &DumpOptions::default());
         // Room for three and a half hashes after the load: the fourth is
-        // refused, and nothing past it is hashed.
+        // refused, and nothing past it is hashed. Each row is read again
+        // before it is hashed.
         let max = load + bytes(3 * S + S / 2);
-        let (_, text, dumped) = work(&data, &with_work(max));
+        let (_, text, dumped, _) = work(&data, &with_work(max));
         assert_eq!(
             text.lines().count(),
             1,
@@ -197,7 +218,7 @@ fn hashing_past_the_opens_work_is_its_decode_work_refusal() {
         );
         let want = format!(
             r#""error":{{"kind":"parse","note":"limit DecodeWork: {} > {max}"}}"#,
-            load + bytes(4 * S)
+            load + bytes(4 * S) + 4 * read
         );
         assert!(text.contains(&want), "{what}: {text}");
         assert!(dumped <= max, "{what}: {dumped} counted past {max}");

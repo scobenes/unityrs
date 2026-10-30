@@ -1,6 +1,7 @@
 //! Package C's files at their peak (plan section 3.15): while a bundle opens,
-//! a `SerializedFile` parses and a lazy read publishes a run over many
-//! cached ones, the heap the test thread holds never rises above what the
+//! a `SerializedFile` parses, a lazy read publishes a run over many cached
+//! ones and lazy reads publish runs one at a time into the run index, the
+//! heap the test thread holds never rises above what the
 //! input's meter has charged, at any allocation, not only between steps.
 //! A scratch buffer the core allocates without charging it (a stable sort's
 //! scratch, a list of the runs a new one covers) shows here as soon as it
@@ -181,6 +182,11 @@ fn parse_peak(objects: usize) -> i64 {
 /// entry patched to span them all (blocks-info stored, so its row is in the
 /// file as written).
 fn covered_runs(runs: usize) -> Vec<u8> {
+    runs_of(runs, TestCodec::Lz4)
+}
+
+/// [`covered_runs`] with blocks of `codec`.
+fn runs_of(runs: usize, codec: TestCodec) -> Vec<u8> {
     let mut entries: Vec<EntrySpec> = (0..runs)
         .map(|i| EntrySpec {
             name: format!("r{i:06}").into_bytes(),
@@ -195,7 +201,7 @@ fn covered_runs(runs: usize) -> Vec<u8> {
     });
     let mut data = build(&BundleSpec {
         info_codec: TestCodec::None,
-        data_codec: TestCodec::Lz4,
+        data_codec: codec,
         block_size: 16,
         entries,
         ..BundleSpec::default()
@@ -226,6 +232,25 @@ fn cover_peak(runs: usize) -> i64 {
     let cover = cover.unwrap();
     assert_eq!(cover.len(), runs * 16);
     drop(cover);
+    peak
+}
+
+/// The peak of reading every entry of [`runs_of`] but the cover, the last
+/// first: each read publishes its run into the run index, before every run
+/// there. An LZ4 block's run is decoded, its bytes charged with room to
+/// spare (`budget::OWNER_COST`); a stored block's is a slice of the input,
+/// so the index's own share is all that pays for its B-tree.
+fn publish_peak(runs: usize, codec: TestCodec) -> i64 {
+    let (data, ty, ctx) = input(runs_of(runs, codec));
+    let m = meter();
+    let Ok(File::Bundle(b)) = parse_file(RawStr::from("runs"), data, ty, None, &m, &ctx) else {
+        panic!("{runs} runs: not a bundle");
+    };
+    let ((), peak) = watch(&m, || {
+        for i in (0..runs).rev() {
+            assert_eq!(b.entry_bytes(i).map(|r| r.len()).ok(), Some(16));
+        }
+    });
     peak
 }
 
@@ -265,5 +290,21 @@ fn a_run_that_covers_cached_runs_holds_nothing_the_meter_has_not_charged() {
             peak <= 0,
             "{runs} runs: the heap rose {peak} bytes above the meter's charge"
         );
+    }
+}
+
+/// The run index is a B-tree charged a share per run and its root leaf once
+/// (plan section 3.6, "Runs"): runs published one at a time, each before
+/// every run there, never hold more than the meter charged.
+#[test]
+fn publishing_runs_one_at_a_time_holds_nothing_the_meter_has_not_charged() {
+    for codec in [TestCodec::Lz4, TestCodec::None] {
+        for runs in [100, 10_000] {
+            let peak = publish_peak(runs, codec);
+            assert!(
+                peak <= 0,
+                "{runs} {codec:?} runs: the heap rose {peak} bytes above the meter's charge"
+            );
+        }
     }
 }
