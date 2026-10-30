@@ -6,7 +6,12 @@
 //!
 //! Each answer is checked twice: the node list ([`TpkProvider::node_list`])
 //! and the compiled tree ([`TypeTreeProvider::tree`]), which must be the
-//! node list's, compiled, wherever UnityPy builds one.
+//! node list's, compiled, wherever UnityPy builds one. Wherever UnityPy
+//! returns one tree object (its caches), the provider returns one `Arc`.
+//! UnityPy's side counts the records it wrote and the (class, version)
+//! pairs it was asked for, and the comparison must meet exactly those: one
+//! record per class the provider holds and one for a class it does not, and
+//! every version of each.
 //!
 //! Two sets. The synthetic TPKs of `tools/fixtures/tpk.py`, committed with
 //! UnityPy's outcomes under `tests/fixtures/tpk/`, are replayed here without
@@ -20,7 +25,7 @@
 //! Outside the image it is skipped, and with `UNITYRS_ORACLE_TPK` set it never
 //! is: a missing or empty TPK or outcome file fails it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -93,9 +98,15 @@ fn row_json(row: &NodeRow) -> J {
 }
 
 /// Compares the provider's answers for one TPK's classes with UnityPy's
-/// records (a header with the class count and versions, then a record per
-/// class), and returns how many (class, version) pairs it checked.
-fn compare<'r>(provider: &TpkProvider, head: &J, classes: impl Iterator<Item = &'r J>) -> usize {
+/// records (a header with the class count and versions, a record per class,
+/// and a trailer with UnityPy's counts), and returns how many (class,
+/// version) pairs it checked: exactly the trailer's.
+fn compare<'r>(
+    provider: &TpkProvider,
+    head: &J,
+    classes: impl Iterator<Item = &'r J>,
+    tail: &J,
+) -> usize {
     assert_eq!(head["load"], J::Null, "UnityPy loaded this TPK");
     let class_count = usize::try_from(head["class_count"].as_u64().unwrap()).unwrap();
     assert_eq!(provider.class_count(), class_count, "class count");
@@ -107,13 +118,15 @@ fn compare<'r>(provider: &TpkProvider, head: &J, classes: impl Iterator<Item = &
         .collect();
     assert_eq!(provider.versions(), &versions[..], "version list");
     compare_common(provider, &head["common_strings"]);
-    let mut listed = 0;
+    let mut seen = HashSet::new();
     let mut pairs = 0;
     // A node list compared once per outcome it is checked against.
     let mut checked: HashSet<(usize, usize)> = HashSet::new();
+    // UnityPy's tree object (its number) to the provider's list.
+    let mut shared: HashMap<u64, usize> = HashMap::new();
     for record in classes {
         let class_id = i32::try_from(record["class"].as_i64().unwrap()).unwrap();
-        listed += usize::from(provider.class_ids().contains(&class_id));
+        assert!(seen.insert(class_id), "class {class_id}: two records");
         let outcomes = record["outcomes"].as_array().unwrap();
         let picks = record["picks"].as_array().unwrap();
         assert_eq!(picks.len(), versions.len(), "class {class_id}");
@@ -130,8 +143,11 @@ fn compare<'r>(provider: &TpkProvider, head: &J, classes: impl Iterator<Item = &
             match (want.get("rows"), got, tree) {
                 (Some(rows), Ok(Some(list)), Ok(Some(tree))) => {
                     assert!(Arc::ptr_eq(tree.list(), &list), "{}: the tree's list", at());
-                    let key = (Arc::as_ptr(&list) as usize, index);
-                    if checked.insert(key) {
+                    let ptr = Arc::as_ptr(&list) as usize;
+                    let object = want["tree"].as_u64().unwrap();
+                    let first = *shared.entry(object).or_insert(ptr);
+                    assert_eq!(first, ptr, "{}: UnityPy's tree {object} is shared", at());
+                    if checked.insert((ptr, index)) {
                         compare_rows(&list, rows, &at());
                     }
                 }
@@ -146,9 +162,23 @@ fn compare<'r>(provider: &TpkProvider, head: &J, classes: impl Iterator<Item = &
             pairs += 1;
         }
     }
+    // One record per class the provider holds, and one for a class it does
+    // not; exactly the pairs UnityPy was asked for.
+    let ids: HashSet<i32> = provider.class_ids().into_iter().collect();
+    assert_eq!(ids.len(), class_count, "class ids");
+    assert!(ids.is_subset(&seen), "a class without a record");
+    assert_eq!(seen.len(), class_count + 1, "the records");
+    let records = usize::try_from(tail["records"].as_u64().unwrap()).unwrap();
+    assert_eq!(seen.len(), records, "UnityPy's records");
+    let want = usize::try_from(tail["pairs"].as_u64().unwrap()).unwrap();
     assert_eq!(
-        listed, class_count,
-        "every class the TPK holds has a record"
+        pairs, want,
+        "the (class, version) pairs UnityPy was asked for"
+    );
+    assert_eq!(
+        pairs,
+        records * versions.len(),
+        "every version of every record"
     );
     pairs
 }
@@ -209,7 +239,12 @@ fn g7_the_synthetic_tpks_give_unitypys_outcomes() {
         }
         let provider =
             provider.unwrap_or_else(|e| panic!("{name}: UnityPy loaded it, unityrs: {e}"));
-        pairs += compare(&provider, case, case["classes"].as_array().unwrap().iter());
+        pairs += compare(
+            &provider,
+            case,
+            case["classes"].as_array().unwrap().iter(),
+            case,
+        );
     }
     assert!(pairs > 100, "{pairs} pairs");
 }
@@ -243,6 +278,7 @@ fn g7_the_synthetic_set_covers_f6_f7_and_the_deep_chain() {
         "node_fields",
         "string_length_5_bytes",
         "stored_declared_u32_max",
+        "presence_bytes",
     ] {
         assert!(names.iter().any(|n| n == name), "{name}");
     }
@@ -312,6 +348,22 @@ fn g7_the_synthetic_set_covers_f6_f7_and_the_deep_chain() {
     for t in [0, 1, 2, 3, 4, 5, 6, 255] {
         assert!(types.contains(&t), "type byte {t}");
     }
+    // A presence byte of 2, 0x80 or 0xFF is a class, as 1 is (UnityPy's
+    // `if stream.read(1)[0]`): each picks a tree; 0 is the class removed.
+    let presence = case("presence_bytes");
+    let trees = |class: usize| -> Vec<bool> {
+        let record = &presence["classes"][class];
+        record["picks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                record["outcomes"][usize::try_from(p.as_u64().unwrap()).unwrap()]["rows"].is_array()
+            })
+            .collect()
+    };
+    assert_eq!(trees(0), [false, true, false, true, true]);
+    assert_eq!(trees(1), [false, true, true, true, true]);
 }
 
 /// UnityPy builds the 300-deep chain; with the default limits (a depth of
@@ -348,9 +400,10 @@ fn a_tree_deeper_than_the_limit_is_an_error_not_a_wrap() {
     assert_eq!(levels, (0..300).collect::<Vec<i32>>());
 }
 
-/// UnityPy's `NODES_CACHE` holds one tree per entry; the provider answers
-/// every version that picks one entry with the same `Arc`, and another entry
-/// with another.
+/// UnityPy's `NODES_CACHE` holds one tree per class record, and a record's
+/// release root is all its walk reads; the provider answers every version
+/// that picks one entry with the same `Arc`, and an entry of another
+/// release root with another.
 #[test]
 fn two_versions_that_pick_one_entry_share_one_node_list() {
     let provider = open(&case("entries")).unwrap();
@@ -489,13 +542,9 @@ fn image_tpk() {
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     let provider = TpkProvider::open(&tpk).unwrap();
-    let pairs = compare(&provider, &records[0], records[1..].iter());
+    let (tail, classes) = records.split_last().unwrap();
+    let pairs = compare(&provider, &records[0], classes[1..].iter(), tail);
     let class_count = provider.class_count();
-    // UnityPy 1.25.2's TPK: 409 classes, 1,334 versions (`tpk.py --survey`).
-    assert!(
-        class_count > 300 && pairs > 300_000,
-        "{class_count} classes, {pairs} pairs"
-    );
     eprintln!(
         "image_tpk: {class_count} classes, {pairs} (class, version) pairs, every outcome UnityPy's"
     );

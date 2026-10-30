@@ -13,12 +13,15 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use common::{Blob, V2, limit_of, limits, load, stored, v2};
 use serde_json::Value as J;
 use unityrs_core::limits::Limits;
-use unityrs_core::provider::{ProviderError, TreeRequest, TypeTreeProvider};
+use unityrs_core::provider::{TreeRequest, TypeTreeProvider};
 use unityrs_core::typetree::NodeList;
 use unityrs_core::{LimitError, LimitKind, RawStr, UnityVersion};
 use unityrs_tpk::{TpkError, TpkProvider};
+
+mod common;
 
 // --- UnityPy's outcomes ---------------------------------------------------------
 
@@ -43,12 +46,6 @@ fn hex(s: &str) -> Vec<u8> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
         .collect()
-}
-
-fn limits(depth: u32) -> Limits {
-    let mut limits = Limits::default();
-    limits.max_tree_depth = depth;
-    limits
 }
 
 /// The case's TPK, opened with the tree depth it was recorded with.
@@ -154,127 +151,6 @@ fn without_a_hang<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
     });
     rx.recv_timeout(Duration::from_secs(60))
         .expect("no answer in 60 s: the walk does not end (or it panicked)")
-}
-
-// --- TPKs built here --------------------------------------------------------------
-
-/// A type-tree blob, written as `Tpk.py` reads one (`:232-240`): its
-/// versions, classes (an id and its entries, each a version and a release
-/// root, flags 192 with the editor root the same), common strings, nodes
-/// (sub-node ids) and strings (`s0`, `s1`, ...).
-#[derive(Default)]
-struct Blob {
-    versions: Vec<u64>,
-    classes: Vec<(i32, Vec<(u64, u16)>)>,
-    common: Vec<(u64, u8)>,
-    indices: Vec<u16>,
-    nodes: Vec<Vec<u16>>,
-    strings: usize,
-}
-
-/// Where each count of a written blob is.
-#[derive(Default)]
-struct Offsets {
-    versions: usize,
-    classes: usize,
-    common: usize,
-    indices: usize,
-    nodes: usize,
-    strings: usize,
-}
-
-const V2: u64 = 2 << 48;
-
-impl Blob {
-    /// Class 1 at 2.0.0, its release root node 0, over `nodes`.
-    fn class_1(nodes: Vec<Vec<u16>>) -> Self {
-        Blob {
-            versions: vec![V2],
-            classes: vec![(1, vec![(V2, 0)])],
-            nodes,
-            strings: 2,
-            ..Blob::default()
-        }
-    }
-
-    fn write(&self) -> (Vec<u8>, Offsets) {
-        fn count(out: &mut Vec<u8>, n: usize) -> usize {
-            let at = out.len();
-            out.extend_from_slice(&i32::try_from(n).unwrap().to_le_bytes());
-            at
-        }
-        let mut out = 1_i64.to_le_bytes().to_vec();
-        let mut at = Offsets {
-            versions: count(&mut out, self.versions.len()),
-            ..Offsets::default()
-        };
-        for v in &self.versions {
-            out.extend_from_slice(&v.to_le_bytes());
-        }
-        at.classes = count(&mut out, self.classes.len());
-        for (id, entries) in &self.classes {
-            out.extend_from_slice(&id.to_le_bytes());
-            count(&mut out, entries.len());
-            for (v, root) in entries {
-                out.extend_from_slice(&v.to_le_bytes());
-                out.extend_from_slice(&[1, 7, 0, 0, 0, 192]);
-                out.extend_from_slice(&root.to_le_bytes());
-                out.extend_from_slice(&root.to_le_bytes());
-            }
-        }
-        at.common = count(&mut out, self.common.len());
-        for (v, n) in &self.common {
-            out.extend_from_slice(&v.to_le_bytes());
-            out.push(*n);
-        }
-        at.indices = count(&mut out, self.indices.len());
-        for i in &self.indices {
-            out.extend_from_slice(&i.to_le_bytes());
-        }
-        at.nodes = count(&mut out, self.nodes.len());
-        for subs in &self.nodes {
-            // `<HHihbIH`: s0 s1, size -1, version 1, flags 0, meta 0x4000.
-            out.extend_from_slice(&[0, 0, 1, 0]);
-            out.extend_from_slice(&(-1_i32).to_le_bytes());
-            out.extend_from_slice(&[1, 0, 0]);
-            out.extend_from_slice(&0x4000_u32.to_le_bytes());
-            out.extend_from_slice(&u16::try_from(subs.len()).unwrap().to_le_bytes());
-            for s in subs {
-                out.extend_from_slice(&s.to_le_bytes());
-            }
-        }
-        at.strings = count(&mut out, self.strings);
-        for i in 0..self.strings {
-            let s = format!("s{i}");
-            out.push(u8::try_from(s.len()).unwrap());
-            out.extend_from_slice(s.as_bytes());
-        }
-        (out, at)
-    }
-}
-
-/// A stored TPK around `payload` (`Tpk.py:146-174`).
-fn stored(payload: &[u8]) -> Vec<u8> {
-    let size = u32::try_from(payload.len()).unwrap().to_le_bytes();
-    let mut out = b"TPK*".to_vec();
-    out.extend_from_slice(&[1, 0, 0, 0]);
-    out.extend_from_slice(&0_u32.to_le_bytes());
-    out.extend_from_slice(&size);
-    out.extend_from_slice(&size);
-    out.extend_from_slice(payload);
-    out
-}
-
-fn load(blob: &Blob, limits: &Limits) -> Result<TpkProvider, TpkError> {
-    TpkProvider::from_bytes(&stored(&blob.write().0), limits)
-}
-
-fn v2() -> UnityVersion {
-    UnityVersion::from_packed(V2)
-}
-
-fn limit_of(e: &ProviderError) -> LimitError {
-    e.limit.unwrap_or_else(|| panic!("not a limit: {e}"))
 }
 
 // --- F2: an unknown class ---------------------------------------------------------
@@ -598,7 +474,10 @@ fn rows_past_the_bound() -> TpkProvider {
 
 /// The row bound counts the rows still to walk: a root with 65,535 leaf
 /// sub-nodes is 65,536 rows, at the bound, and reads; one more row to walk
-/// is refused before it is walked.
+/// is refused before it is walked. Each part of the count matters: the rows
+/// walked, the rows waiting on the stack, and the sub-nodes of the node
+/// being walked, which alone pass the bound when the root's first sub-node
+/// lists 65,535 leaves and its second waits (65,538 rows).
 #[test]
 fn f4_the_row_bound_counts_the_rows_still_to_walk() {
     let blob = Blob::class_1(vec![vec![1; usize::from(u16::MAX)], vec![]]);
@@ -606,6 +485,15 @@ fn f4_the_row_bound_counts_the_rows_still_to_walk() {
     let list = provider.node_list(1, &v2()).unwrap().unwrap();
     assert_eq!(list.rows().len(), TpkProvider::MAX_TREE_ROWS);
     assert!(rows_past_the_bound().node_list(1, &v2()).is_err());
+    let blob = Blob::class_1(vec![vec![1, 2], vec![2; usize::from(u16::MAX)], vec![]]);
+    let provider = load(&blob, &Limits::default()).unwrap();
+    let max = u64::try_from(TpkProvider::MAX_TREE_ROWS).unwrap();
+    let want = LimitError {
+        kind: LimitKind::Count,
+        value: max + 2,
+        max,
+    };
+    assert_eq!(limit_of(&provider.node_list(1, &v2()).unwrap_err()), want);
 }
 
 // --- F5: LZMA ---------------------------------------------------------------------

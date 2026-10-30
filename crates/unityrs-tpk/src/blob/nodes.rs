@@ -75,6 +75,11 @@ impl NodeBuffer {
         Ok(Self { nodes, sub_nodes })
     }
 
+    /// `len(NodeBuffer)`.
+    pub(crate) fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
     /// `NodeBuffer[node_id]`; `None` where UnityPy raises `IndexError`.
     pub(crate) fn get(&self, id: u16) -> Option<&Node> {
         self.nodes.as_slice().get(usize::from(id))

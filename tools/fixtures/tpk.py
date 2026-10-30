@@ -151,13 +151,15 @@ def blob(
         out += struct.pack("<i", class_id)
         head, write_entries = n("entries", entries)
         out += head
-        for version, c in entries if write_entries else ():
+        for version, c, *presence in entries if write_entries else ():
             out += struct.pack("<Q", version)
             if c is None:
                 out += b"\0"
                 continue
             flags, editor, release = c
-            out += b"\1" + struct.pack("<HHB", 7, 0, flags)
+            # The class's presence byte (`stream.read(1)[0]`, `Tpk.py:342`): 1, or
+            # another nonzero byte given after the class.
+            out += bytes(presence or [1]) + struct.pack("<HHB", 7, 0, flags)
             out += b"".join(struct.pack("<H", r) for r in (editor, release) if r is not None)
     head, write = n("common", common)
     out += head
@@ -273,6 +275,16 @@ def synthetic_cases() -> Iterator[tuple[str, bytes, int]]:
     ]
     versions = [ver(2016), ver(2017), ver(2017, 3), ver(2018), ver(2019), ver(2020), ver(2021), ver(2022)]
     yield "entries", tpk_file(blob(versions, entries, nodes, strings(6))), 256
+
+    # An entry's presence byte: UnityPy reads a class after any nonzero byte (`if
+    # stream.read(1)[0]`), so 2, 0x80 and 0xFF are classes as 1 is, and 0 is none.
+    nodes = [node(0, 1, [1]), node(2, 3, []), node(4, 5, [])]
+    entries = [
+        (55, [(ver(2017), both(0), 2), (ver(2018), None), (ver(2019), both(2), 0x80), (ver(2020), both(1), 0xFF)]),
+        (56, [(ver(2017), both(2), 0xFF)]),
+    ]
+    versions = [ver(2016), ver(2017), ver(2018), ver(2019), ver(2020)]
+    yield "presence_bytes", tpk_file(blob(versions, entries, nodes, strings(6))), 256
 
     # Type bytes 0-5, 6 and 255, in the version list, the entries and the common strings.
     types = [0, 1, 2, 3, 4, 5, 6, 255]
@@ -468,9 +480,12 @@ def node_rows(tree) -> list[list]:
     ]
 
 
-def class_outcomes(class_id: int, versions: list[int]) -> dict:
+def class_outcomes(class_id: int, versions: list[int], trees: dict[int, int]) -> dict:
     """UnityPy's outcome for `class_id` at each version, deduplicated: `picks[i]` is the
-    index in `outcomes` of the outcome at `versions[i]`."""
+    index in `outcomes` of the outcome at `versions[i]`. A node list's `tree` numbers
+    the tree object UnityPy returned, the same number for the same object across every
+    class of the TPK (`trees`: its `id()` to its number), so a test can check that
+    unityrs shares a tree wherever UnityPy's caches do."""
     outcomes: list[dict] = []
     seen: dict[object, int] = {}
     picks = []
@@ -479,7 +494,7 @@ def class_outcomes(class_id: int, versions: list[int]) -> dict:
             tree = Tpk.get_typetree_node(class_id, UnityVersion(v))
             key: object = ("tree", id(tree))
             if key not in seen:
-                outcome = {"rows": node_rows(tree)}
+                outcome = {"rows": node_rows(tree), "tree": trees.setdefault(id(tree), len(trees))}
         except (KeyError, ValueError, AssertionError) as e:
             key = ("none", type(e).__name__)
             outcome = {"none": type(e).__name__}
@@ -523,7 +538,10 @@ def load(data: bytes) -> Tpk.TpkTypeTreeBlob:
 
 
 def outcomes(data: bytes) -> Iterator[dict]:
-    """A header, then one record per class (and one for a class the TPK does not hold)."""
+    """A header, then one record per class (and one for a class the TPK does not hold),
+    then a trailer: how many records were written and how many (class, version) pairs
+    UnityPy was asked for, counted as it ran, so a test can tell a comparison that
+    missed any of them, or an outcome file cut short."""
     try:
         found = load(data)
     except Exception as e:  # noqa: BLE001 - whatever the reader raises
@@ -538,8 +556,14 @@ def outcomes(data: bytes) -> Iterator[dict]:
             "common_strings": common_strings(),
         }
         absent = max(found.ClassInformation, default=0) + 1
+        trees: dict[int, int] = {}
+        records = pairs = 0
         for class_id in [*found.ClassInformation, absent]:
-            yield class_outcomes(class_id, versions)
+            record = class_outcomes(class_id, versions, trees)
+            records += 1
+            pairs += len(record["picks"])
+            yield record
+        yield {"records": records, "pairs": pairs}
 
 
 def common_strings() -> list | dict:
@@ -556,8 +580,8 @@ def synthetic() -> list[dict]:
     cases = []
     for name, data, depth in synthetic_cases():
         records = list(outcomes(data))
-        head, classes = records[0], records[1:]
-        cases.append({"name": name, "tpk": data.hex(), "depth": depth, **head, "classes": classes})
+        head, classes, tail = records[0], records[1:-1], records[-1] if len(records) > 1 else {}
+        cases.append({"name": name, "tpk": data.hex(), "depth": depth, **head, "classes": classes, **tail})
     for name, data, what in refused_cases():
         found = load(data)
         with Installed(found):
@@ -616,6 +640,8 @@ def survey() -> None:
         + ", ".join(f"{k} {v}" for k, v in tables.items())
     )
     trees = rows = deepest = largest = 0
+    records: set = set()
+    roots: dict[int, int] = {}
     with Installed(found):
         for info in found.ClassInformation.values():
             for _, c in info:
@@ -626,11 +652,19 @@ def survey() -> None:
                 rows += len(tree)
                 largest = max(largest, len(tree))
                 deepest = max(deepest, max(r[0] for r in tree))
+                records.add(c)
+                roots[c.ReleaseRootNode] = len(tree)
     print(
         f"classes {len(found.ClassInformation)}, versions {len(found.Versions)}, "
         f"entries {sum(len(i) for i in found.ClassInformation.values())}, trees {trees}, "
         f"rows {rows}, largest tree {largest} rows, deepest level {deepest}, "
         f"largest meta flag {max(n.MetaFlag for n in found.NodeBuffer)}"
+    )
+    # NODES_CACHE keeps one tree per distinct class record; unityrs-tpk keeps one per
+    # release root, the one field generate_node reads.
+    print(
+        f"distinct class records {len(records)}, distinct release roots {len(roots)}, "
+        f"rows over the distinct roots {sum(roots.values())}"
     )
 
 
