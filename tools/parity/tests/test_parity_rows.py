@@ -1628,8 +1628,9 @@ class Rows(unittest.TestCase):
 
     # Sections 18, 19.1: a zero-size image through `image_to_texture2d` and `set_image`.
     def test_zero_size_images_crash_etcpak(self):
-        # Each call that reaches etcpak runs in a forked child, which etcpak 0.9.14 kills with SIGBUS on empty data.
-        # The child is made non-dumpable first (PR_SET_DUMPABLE, 0), so the crash writes no core dump anywhere.
+        # Each call that reaches etcpak runs in a forked child, which etcpak 0.9.14 kills with a fatal signal on empty
+        # data: SIGBUS or SIGSEGV, not the same in every run. The child is made non-dumpable first (PR_SET_DUMPABLE,
+        # 0), so the crash writes no core dump anywhere.
         import ctypes
         import signal
 
@@ -1643,7 +1644,7 @@ class Rows(unittest.TestCase):
                 finally:
                     os._exit(0)
             status = os.waitpid(pid, 0)[1]
-            return os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGBUS
+            return os.WIFSIGNALED(status) and os.WTERMSIG(status) in (signal.SIGBUS, signal.SIGSEGV)
 
         etcpak_targets = ["DXT1", "DXT1Crunched", "DXT5", "DXT5Crunched", "BC4", "BC5", "ETC_RGB4", "ETC_RGB4Crunched"]
         etcpak_targets += ["ETC_RGB4_3DS", "ETC2_RGB", "ETC2_RGBA1", "ETC2_RGBA8", "ETC2_RGBA8Crunched"]
@@ -1661,16 +1662,38 @@ class Rows(unittest.TestCase):
             for size in ((0, 5), (5, 0)):
                 with self.subTest(target=target, size=size), self.assertRaisesRegex(ValueError, padded):
                     Texture2DConverter.image_to_texture2d(Image.new("RGBA", size), TextureFormat[target])
-        # The other targets tested write 0 bytes, under the format image_to_texture2d maps each to.
-        mapped = {"RGBA32": "RGBA32", "ARGB32": "RGBA32", "Alpha8": "Alpha8", "R16": "R8", "RGB565": "RGB24"}
-        mapped["ASTC_HDR_4x4"] = "ASTC_RGBA_4x4"
-        for target, tag in mapped.items():
-            for size in sizes:
+
+        # Every ASTC target pads the same way: Pillow raises where the padding stretches the empty one-row (or
+        # one-column) strip it repeats to more than one (0×4 at blocks of 6 and up, 0×5 at 4 and at 8 and up; a
+        # resize to the same size returns a copy), and the rest write 0 bytes.
+        def write(target, size):
+            data, written = Texture2DConverter.image_to_texture2d(Image.new("RGBA", size), TextureFormat[target])
+            return data, written.name
+
+        astc = [f"ASTC_{kind}_{n}x{n}" for kind in ("RGB", "RGBA", "HDR") for n in (4, 5, 6, 8, 10, 12)]
+        self.assertEqual(sorted(astc), sorted(f.name for f in TextureFormat if f.name.startswith("ASTC")))
+        raising = {(0, 4): (6, 8, 10, 12), (4, 0): (6, 8, 10, 12), (0, 5): (4, 8, 10, 12), (5, 0): (4, 8, 10, 12)}
+        writing = {}
+        for target in astc:
+            block = int(target.rsplit("x", 1)[1])
+            for size in (*sizes, (0, 5), (5, 0)):
                 with self.subTest(target=target, size=size):
-                    data, written = Texture2DConverter.image_to_texture2d(
-                        Image.new("RGBA", size), TextureFormat[target]
-                    )
-                    self.assertEqual((data, written.name), (b"", tag))
+                    if block in raising.get(size, ()):
+                        with self.assertRaisesRegex(ValueError, padded):
+                            write(target, size)
+                    else:
+                        writing[target, size] = write(target, size)
+        self.assertEqual(len(writing), 18 * 5 - 3 * 4 * 4)
+        # The other targets tested write 0 bytes for these three sizes. Each target that writes does so under the
+        # format image_to_texture2d maps it to for a non-empty image.
+        for target in ("RGBA32", "ARGB32", "Alpha8", "R16", "RGB565"):
+            for size in sizes:
+                writing[target, size] = write(target, size)
+        for (target, size), (data, tag) in writing.items():
+            with self.subTest(target=target, size=size):
+                self.assertEqual((data, tag), (b"", write(target, (4, 4))[1]))
+        mapped = {"ARGB32": "RGBA32", "R16": "R8", "RGB565": "RGB24", "ASTC_HDR_4x4": "ASTC_RGBA_4x4"}
+        self.assertEqual({target: writing[target, (0, 0)][1] for target in mapped}, mapped)
         # Texture2D.image of a texture with a zero side is that 0×0 image, and set_image to RGBA32 writes it with
         # the image's size.
         texture = Texture2D.__new__(Texture2D)
@@ -1938,13 +1961,29 @@ class Rows(unittest.TestCase):
                     with self.assertRaises(error):
                         image.convert(mode).save(path)
         # A texture of non-zero width and zero height passes exportTexture2D's `m_Width` test, and its image is the
-        # 0×0 one Texture2D.image gives, which Pillow refuses to save under these extensions.
+        # 0×0 RGBA one Texture2D.image gives. Pillow saves that only under SGI's four extensions, `.icns` and `.ico`
+        # (a 6-byte header holding no image), and raises under every other extension it has a writer for.
+        import pillow_tables
+
         texture = Texture2D.__new__(Texture2D)
         for field in attrs.fields(Texture2D):
             object.__setattr__(texture, field.name, None)
-        texture.object_reader, texture.m_PlatformBlob = None, None
+        texture.object_reader = SimpleNamespace(path_id=1, assets_file=None)  # what exportTexture2D returns reads
+        texture.m_PlatformBlob = None
         texture.m_Width, texture.m_Height, texture.m_TextureFormat = 4, 0, TextureFormat.RGBA32
         texture.image_data = b"\x01" * 16
+        saved, raised = {}, []
+        for extension in [e for extensions in pillow_tables.writer_extensions().values() for e in extensions]:
+            try:
+                self.assertEqual(extractor.exportTexture2D(texture, str(self.tmp / "zero"), extension), [(None, 1)])
+            except (OSError, SystemError, ValueError):
+                raised.append(extension)
+            else:
+                saved[extension] = (self.tmp / f"zero{extension}").read_bytes()
+        self.assertEqual(len(saved) + len(raised), 51)
+        self.assertEqual(sorted(saved), [".bw", ".icns", ".ico", ".rgb", ".rgba", ".sgi"])
+        self.assertEqual({len(saved[e]) for e in (".bw", ".rgb", ".rgba", ".sgi")}, {512})
+        self.assertEqual((len(saved[".icns"]), saved[".ico"]), (7470, bytes.fromhex("000001000000")))
         tile = (SystemError, "tile cannot extend outside image")
         for extension, (error, message) in (
             ("", tile),
