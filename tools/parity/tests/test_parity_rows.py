@@ -154,6 +154,7 @@ class TestColumn(unittest.TestCase):
                 "module_level_data_is_tier_a_for_loop_variables",
                 "a_non_local_miss_keeps_the_split_exception",
                 "non_local_rows_state_only_the_tested_cases",
+                "zero_size_writes_are_stated_off_switch",
             }
             named = {name for module, name in cited if module == path.name}
             self.assertEqual(sorted(defined - named), [], f"tests no PARITY.md row names, in {path.name}")
@@ -465,6 +466,46 @@ class TestColumn(unittest.TestCase):
         unsupported = design.split("- **Unsupported until a sample and a reference exist.**", 1)[1].split("\n- **")[0]
         self.assertRegex(
             unsupported, r"\n  - a name read through a non-local fsspec filesystem in a case [^\n]*not characterised"
+        )
+
+    def test_zero_size_writes_are_stated_off_switch(self):
+        """Section 19.1 states a zero-size `set_image` only for a texture that is not Switch-swizzled, the cases
+        `zero_size_images_crash_etcpak` runs; on a Switch-swizzled texture the padding to whole GOB blocks raises
+        where the row once said 0 bytes were written, and the case is not characterised (Tier U). So every cell of
+        PARITY.md or DESIGN.md that says what a zero-size write does (writes 0 bytes or an empty `image_data`, or
+        sends a zero-size image to Tier C (writing)) names that scope, and the Switch-swizzled case is Tier U in the
+        19.1 row, in `Texture2D.set_image`'s tier and in DESIGN.md's Tier U list."""
+        zero_write = re.compile(
+            r"\bwrites? 0 bytes\b|\bwrites `image_data` empty\b|C \(writing\) for a zero-size image"
+            r"|zero-size image[^;|]*\b(?:fails to write|C \(writing\))"
+        )
+        root = HERE.parent.parent
+        parity = (root / "PARITY.md").read_text(encoding="utf-8")
+        design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        seen = 0
+        for name, text in (("PARITY.md", parity), ("DESIGN.md", design)):
+            for line in text.splitlines():
+                for cell in line.split(" | "):
+                    if zero_write.search(cell):
+                        seen += 1
+                        with self.subTest(name, cell=cell[:80]):
+                            self.assertIn("not Switch-swizzled", cell)
+        self.assertGreaterEqual(seen, 4)
+        row = next(line for line in parity.splitlines() if line.startswith("| `set_image` of a zero-size image ("))
+        unitypy, unityrs = row.split(" | ")[1:3]
+        self.assertTrue(unitypy.startswith("Stated for a texture that is not Switch-swizzled"), unitypy[:80])
+        self.assertIn(
+            "On a Switch-swizzled texture, what `set_image` of a zero-size image does is not characterised", unitypy
+        )
+        self.assertTrue(unityrs.startswith("On a texture that is not Switch-swizzled,"), unityrs[:80])
+        self.assertIn("On a Switch-swizzled texture, Tier U", unityrs)
+        set_image = next(
+            line for line in parity.splitlines() if line.startswith("| `Texture2D.set_image` | the target")
+        )
+        self.assertIn("U for a zero-size image on a Switch-swizzled texture", set_image)
+        unsupported = design.split("- **Unsupported until a sample and a reference exist.**", 1)[1].split("\n- **")[0]
+        self.assertRegex(
+            unsupported, r"\n  - `set_image` of a zero-size image on a Switch-swizzled texture: [^\n]*not characterised"
         )
 
     WRITER = re.compile(r"set_image|image_to_texture2d|\bsave\b|save_fs|save_typetree|get_writeable_cab|set_raw_data")
@@ -1725,66 +1766,79 @@ class Rows(unittest.TestCase):
         import ctypes
         import signal
 
-        def crashes(target, width, height):
+        # Section 19.1 states this for a texture that is not Switch-swizzled: the cases run at platform 0 and at
+        # StandaloneWindows64 with no platform blob, and at Switch with a blob of one GOB per block. A Switch-swizzled
+        # texture is not characterised.
+        configs = ((0, None), (BuildTarget.StandaloneWindows64, None), (BuildTarget.Switch, [0] * 12))
+        self.assertEqual([TextureSwizzler.is_switch_swizzled(*config) for config in configs], [False] * 3)
+
+        def convert(target, size, config):
+            return Texture2DConverter.image_to_texture2d(Image.new("RGBA", size), TextureFormat[target], *config)
+
+        def crashes(target, width, height, config):
             pid = os.fork()
             if pid == 0:  # the child: the one call, then out without running the parent's cleanups
                 try:
                     ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0)
                     os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
-                    Texture2DConverter.image_to_texture2d(Image.new("RGBA", (width, height)), TextureFormat[target])
+                    convert(target, (width, height), config)
                 finally:
                     os._exit(0)
             status = os.waitpid(pid, 0)[1]
             return os.WIFSIGNALED(status) and os.WTERMSIG(status) in (signal.SIGBUS, signal.SIGSEGV)
 
+        def write(target, size, config):
+            data, written = convert(target, size, config)
+            return data, written.name
+
         etcpak_targets = ["DXT1", "DXT1Crunched", "DXT5", "DXT5Crunched", "BC4", "BC5", "ETC_RGB4", "ETC_RGB4Crunched"]
         etcpak_targets += ["ETC_RGB4_3DS", "ETC2_RGB", "ETC2_RGBA1", "ETC2_RGBA8", "ETC2_RGBA8Crunched"]
         sizes = ((0, 0), (0, 4), (4, 0))
-        cases = [(target, *size) for target in etcpak_targets for size in sizes]
-        self.assertEqual([case for case in cases if not crashes(*case)], [])
-        # BC7 raises before etcpak reads the data; where padding to whole blocks resizes an empty strip, Pillow
-        # raises first, for every one of these targets.
-        bc7 = "^params must be an instance of BC7CompressBlockParams$"
-        for size in sizes:
-            with self.subTest("BC7", size=size), self.assertRaisesRegex(ValueError, bc7):
-                Texture2DConverter.image_to_texture2d(Image.new("RGBA", size), TextureFormat.BC7)
-        padded = "^height and width must be > 0$"
-        for target in [*etcpak_targets, "BC7"]:
-            for size in ((0, 5), (5, 0)):
-                with self.subTest(target=target, size=size), self.assertRaisesRegex(ValueError, padded):
-                    Texture2DConverter.image_to_texture2d(Image.new("RGBA", size), TextureFormat[target])
-
-        # Every ASTC target pads the same way: Pillow raises where the padding stretches the empty one-row (or
-        # one-column) strip it repeats to more than one (0×4 at blocks of 6 and up, 0×5 at 4 and at 8 and up; a
-        # resize to the same size returns a copy), and the rest write 0 bytes.
-        def write(target, size):
-            data, written = Texture2DConverter.image_to_texture2d(Image.new("RGBA", size), TextureFormat[target])
-            return data, written.name
-
         astc = [f"ASTC_{kind}_{n}x{n}" for kind in ("RGB", "RGBA", "HDR") for n in (4, 5, 6, 8, 10, 12)]
         self.assertEqual(sorted(astc), sorted(f.name for f in TextureFormat if f.name.startswith("ASTC")))
         raising = {(0, 4): (6, 8, 10, 12), (4, 0): (6, 8, 10, 12), (0, 5): (4, 8, 10, 12), (5, 0): (4, 8, 10, 12)}
-        writing = {}
-        for target in astc:
-            block = int(target.rsplit("x", 1)[1])
-            for size in (*sizes, (0, 5), (5, 0)):
-                with self.subTest(target=target, size=size):
-                    if block in raising.get(size, ()):
-                        with self.assertRaisesRegex(ValueError, padded):
-                            write(target, size)
-                    else:
-                        writing[target, size] = write(target, size)
-        self.assertEqual(len(writing), 18 * 5 - 3 * 4 * 4)
-        # The other targets tested write 0 bytes for these three sizes. Each target that writes does so under the
-        # format image_to_texture2d maps it to for a non-empty image.
-        for target in ("RGBA32", "ARGB32", "Alpha8", "R16", "RGB565"):
+        bc7 = "^params must be an instance of BC7CompressBlockParams$"
+        padded = "^height and width must be > 0$"
+        for config in configs:
+            cases = [(target, *size, config) for target in etcpak_targets for size in sizes]
+            self.assertEqual([case for case in cases if not crashes(*case)], [])
+            # BC7 raises before etcpak reads the data; where padding to whole blocks resizes an empty strip, Pillow
+            # raises first, for every one of these targets.
             for size in sizes:
-                writing[target, size] = write(target, size)
-        for (target, size), (data, tag) in writing.items():
-            with self.subTest(target=target, size=size):
-                self.assertEqual((data, tag), (b"", write(target, (4, 4))[1]))
-        mapped = {"ARGB32": "RGBA32", "R16": "R8", "RGB565": "RGB24", "ASTC_HDR_4x4": "ASTC_RGBA_4x4"}
-        self.assertEqual({target: writing[target, (0, 0)][1] for target in mapped}, mapped)
+                with self.subTest("BC7", size=size, config=config), self.assertRaisesRegex(ValueError, bc7):
+                    convert("BC7", size, config)
+            for target in [*etcpak_targets, "BC7"]:
+                for size in ((0, 5), (5, 0)):
+                    with (
+                        self.subTest(target=target, size=size, config=config),
+                        self.assertRaisesRegex(ValueError, padded),
+                    ):
+                        convert(target, size, config)
+
+            # Every ASTC target pads the same way: Pillow raises where the padding stretches the empty one-row (or
+            # one-column) strip it repeats to more than one (0×4 at blocks of 6 and up, 0×5 at 4 and at 8 and up; a
+            # resize to the same size returns a copy), and the rest write 0 bytes.
+            writing = {}
+            for target in astc:
+                block = int(target.rsplit("x", 1)[1])
+                for size in (*sizes, (0, 5), (5, 0)):
+                    with self.subTest(target=target, size=size, config=config):
+                        if block in raising.get(size, ()):
+                            with self.assertRaisesRegex(ValueError, padded):
+                                write(target, size, config)
+                        else:
+                            writing[target, size] = write(target, size, config)
+            self.assertEqual(len(writing), 18 * 5 - 3 * 4 * 4)
+            # The other targets tested write 0 bytes for these three sizes. Each target that writes does so under the
+            # format image_to_texture2d maps it to for a non-empty image.
+            for target in ("RGBA32", "ARGB32", "Alpha8", "R16", "RGB565"):
+                for size in sizes:
+                    writing[target, size] = write(target, size, config)
+            for (target, size), (data, tag) in writing.items():
+                with self.subTest(target=target, size=size, config=config):
+                    self.assertEqual((data, tag), (b"", write(target, (4, 4), config)[1]))
+            mapped = {"ARGB32": "RGBA32", "R16": "R8", "RGB565": "RGB24", "ASTC_HDR_4x4": "ASTC_RGBA_4x4"}
+            self.assertEqual({target: writing[target, (0, 0)][1] for target in mapped}, mapped)
         # Texture2D.image of a texture with a zero side is that 0×0 image, and set_image to RGBA32 writes it with
         # the image's size.
         texture = Texture2D.__new__(Texture2D)
