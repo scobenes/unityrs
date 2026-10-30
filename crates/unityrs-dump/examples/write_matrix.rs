@@ -9,16 +9,29 @@
 //! cargo run -p unityrs-dump --example write_matrix -- DIR
 //! python tools/parity/unitypy_dump.py DIR -o ORACLE.jsonl.gz
 //! unityrs dump DIR --tpk TPK -o UNITYRS.jsonl.gz
-//! python tools/parity/compare.py ORACLE.jsonl.gz UNITYRS.jsonl.gz
+//! python tools/parity/compare.py --oracle ORACLE.jsonl.gz UNITYRS.jsonl.gz
 //! ```
+//!
+//! (`--oracle` refuses a reference that is not the oracle's dump on the
+//! pinned stack.)
 //!
 //! G3b: `write_matrix --mutants [-j N] DIR` writes instead the mutants of every
 //! builder output `unityrs_testkit::mutate::builder_outputs` lists (the matrix
 //! and every Environment scene's files): two for each field the output's build
 //! writes, then `unityrs_testkit::mutate::RANDOM_PER_INPUT` bit flips and
-//! truncations, named `<input>~<index>~<label>`, dumped and compared the same
-//! way. The mutants are made on `N` threads (default 4); they do not depend on
-//! `N`.
+//! truncations, named `<input>~<index>~<label>`. The mutants are made on `N`
+//! threads (default 4); they do not depend on `N`. Both sides dump them, the
+//! oracle under a memory cap, and `tools/parity/g3b.py` judges the two dumps,
+//! not `compare.py`, which fails every difference g3b.py admits (plan section
+//! 10):
+//!
+//! ```text
+//! cargo run --release -p unityrs-dump --example write_matrix -- --mutants -j 4 DIR
+//! python tools/parity/unitypy_dump.py DIR -j 4 --memory-cap 4294967296 -o ORACLE.jsonl.gz
+//! unityrs dump DIR -j 4 --tpk TPK -o UNITYRS.jsonl.gz
+//! python tools/parity/g3b.py ORACLE.jsonl.gz UNITYRS.jsonl.gz --inputs DIR \
+//!     --unityrs UNITYRS_BINARY --tpk TPK -j 4
+//! ```
 
 use std::path::PathBuf;
 use std::process::ExitCode;
