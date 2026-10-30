@@ -88,8 +88,7 @@ impl BundleFile {
         }
         // :168-178: the blocks, read in order from here.
         let mut blocks = blocks;
-        let (stored, lengths) =
-            stored_blocks(&mut blocks, &mut r, meter, ctx.codecs.stores_as_is())?;
+        let (stored, lengths) = stored_blocks(&mut blocks, &mut r, meter, ctx)?;
         let files = files_dict(&directory, meter)?;
         let mut entries: MeteredVec<ResultCell<File, Error>> = MeteredVec::new(meter);
         for _ in 0..directory.len() {
@@ -138,14 +137,20 @@ impl BundleFile {
 /// Where each block's stored bytes are (`reader.read_bytes(compressedSize)`
 /// in order from `r`), its `bytes_read` set; and the length cells, a stored
 /// block's filled with what was read (`lambda cd, _ucs: cd`) when stored
-/// blocks are their own bytes (`as_is`, [`crate::codec::Codecs::stores_as_is`]).
+/// blocks are their own bytes ([`crate::codec::Codecs::stores_as_is`]) and
+/// what was read is within the block cap
+/// ([`crate::limits::Limits::max_block_output`]). A stored block past the
+/// cap is left to its codec, which refuses it with
+/// [`crate::LimitKind::BlockOutput`] as it does in `load_all`, so a lazy read
+/// fails it as the eager load does.
 #[allow(clippy::type_complexity)]
 fn stored_blocks(
     blocks: &mut MeteredVec<BlockInfo>,
     r: &mut Reader<'_>,
     meter: &Arc<Meter>,
-    as_is: bool,
+    ctx: &FileContext,
 ) -> Result<(MeteredVec<Range<usize>>, MeteredVec<ResultCell<u64, Error>>), Error> {
+    let (as_is, cap) = (ctx.codecs.stores_as_is(), ctx.limits.max_block_output);
     let len = r.data().len();
     let mut stored = MeteredVec::new(meter);
     let mut lengths = MeteredVec::new(meter);
@@ -155,8 +160,9 @@ fn stored_blocks(
         b.bytes_read = u32::try_from(range.len()).unwrap_or(u32::MAX);
         stored.push(range)?;
         let cell = ResultCell::new();
-        if as_is && Codec::from_flags(u32::from(b.flags_u16())) == Codec::None {
-            let _ = cell.set(Ok(u64::from(b.bytes_read)));
+        let read = u64::from(b.bytes_read);
+        if as_is && Codec::from_flags(u32::from(b.flags_u16())) == Codec::None && read <= cap {
+            let _ = cell.set(Ok(read));
         }
         lengths.push(cell)?;
     }

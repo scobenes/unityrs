@@ -11,7 +11,11 @@
 //! an entry's offset depends on the actual length of every block before it.
 //! Before a lazy read returns bytes ending at joined offset `X`, every block
 //! starting below `X` has a known length (`lengths`): a stored block's is
-//! known at open; an unmeasured block wholly before the read is decoded with
+//! known at open when slot 0 holds the built-in stored codec
+//! ([`crate::codec::Codecs::stores_as_is`]) and its bytes are within the
+//! block cap ([`crate::limits::Limits::max_block_output`], which a stored
+//! block meets on every path, as it does in `load_all`); an unmeasured
+//! block wholly before the read is decoded with
 //! its output discarded (a measuring decode: charged while it runs, returned
 //! after). An entry is the Python slice `data[offset : offset + size]` of the
 //! joined data (`File.py:78-81`; [`crate::stream::py_read`]). A lazy read

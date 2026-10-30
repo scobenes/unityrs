@@ -96,6 +96,74 @@ fn each_block_of_a_run_is_capped_on_its_own() {
     );
 }
 
+/// Claude round 3's C MEDIUM: a stored block is held to `max_block_output`
+/// on every path, as `load_all` holds it (its codec's range is checked
+/// against the cap, `codec::decode_block`). Block 0 is a stored block of 100
+/// bytes, past a cap of 95, and entry 0 lies in it alone; entry 1 lies after
+/// it. Lazily the block was taken as a slice of the input, its length as
+/// what was read, with no cap, while `load_all` decoded it through slot 0
+/// and failed; a bundle of stored blocks only never met the cap at all. Now
+/// every read, in any order, before or after `load_all`, fails at block 0 as
+/// `load_all` does, whether the block after it is LZ4 or stored.
+#[test]
+fn a_stored_block_past_the_block_cap_fails_lazily_as_eagerly() {
+    let ctx = ctx_with(|c| c.limits.max_block_output = 95);
+    let entries = vec![
+        EntrySpec {
+            name: b"a".to_vec(),
+            data: (0..100u8).collect(),
+            flags: 0,
+        },
+        EntrySpec {
+            name: b"b".to_vec(),
+            data: vec![7; 30],
+            flags: 0,
+        },
+    ];
+    let mixed = build(&BundleSpec {
+        info_codec: TestCodec::Lz4,
+        data_codec: TestCodec::Lz4,
+        block_size: 100,
+        entries: entries.clone(),
+        block_overrides: vec![BlockOverride {
+            block: 0,
+            codec: Some(TestCodec::None),
+            ..BlockOverride::default()
+        }],
+        ..BundleSpec::default()
+    });
+    let stored = build(&BundleSpec {
+        info_codec: TestCodec::Lz4,
+        data_codec: TestCodec::None,
+        block_size: 100,
+        entries,
+        ..BundleSpec::default()
+    });
+    let want = "limit BlockOutput: 100 > 95";
+    let refused = |r: &Result<(), String>| r.as_ref().is_err_and(|e| e.contains(want));
+    for (name, data) in [("mixed", mixed), ("stored", stored)] {
+        let fresh = || open_with(&data, &ctx, &meter_for(&ctx)).unwrap();
+        let b = fresh();
+        let loaded = b.load_all().map_err(|e| e.to_string());
+        assert!(refused(&loaded), "{name}: load_all {loaded:?}");
+        let after = super::all_entries(&b, &[0, 1]);
+        for r in &after {
+            let r = r.as_ref().map(|_| ()).map_err(Clone::clone);
+            assert!(refused(&r), "{name}: after load_all {r:?}");
+        }
+        for order in [[0, 1], [1, 0]] {
+            let b = fresh();
+            assert_eq!(
+                super::all_entries(&b, &order),
+                after,
+                "{name}: order {order:?}"
+            );
+            let loaded = b.load_all().map_err(|e| e.to_string());
+            assert!(refused(&loaded), "{name}: load_all after {order:?}");
+        }
+    }
+}
+
 #[test]
 fn an_lzma_block_that_outgrows_its_declaration_is_charged_until_the_last_slice_drops() {
     let entry: Vec<u8> = (0..100_000u32).map(|i| (i % 7) as u8).collect();
