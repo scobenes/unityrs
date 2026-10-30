@@ -157,6 +157,58 @@ pub fn py_string_to_null(
     Some(py_read(data.len(), pos, i64::try_from(max_length).ok()?))
 }
 
+/// What `read(N)` returns where UnityPy keeps the bytes as they are (a
+/// GUID, a hash): the [`py_read`] slice, inline. It holds `N` bytes, or
+/// fewer where the slice is short: none at a position in `-N..0` (the
+/// slice `view[p:p+N]` runs from the end back to the start, so it is
+/// empty, though the position moves to `p + N`), the rest at the end.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ShortArray<const N: usize> {
+    bytes: [u8; N],
+    len: usize,
+}
+
+const _: () = crate::send_sync::<ShortArray<16>>();
+
+impl<const N: usize> ShortArray<N> {
+    /// The first `N` bytes of `got` (all of it, when shorter).
+    #[must_use]
+    pub fn from_slice(got: &[u8]) -> Self {
+        let len = got.len().min(N);
+        let mut bytes = [0u8; N];
+        if let (Some(to), Some(from)) = (bytes.get_mut(..len), got.get(..len)) {
+            to.copy_from_slice(from);
+        }
+        Self { bytes, len }
+    }
+
+    /// The bytes read.
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        self.bytes.get(..self.len).unwrap_or_default()
+    }
+}
+
+impl<const N: usize> From<[u8; N]> for ShortArray<N> {
+    fn from(bytes: [u8; N]) -> Self {
+        Self { bytes, len: N }
+    }
+}
+
+impl<const N: usize> std::ops::Deref for ShortArray<N> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl<const N: usize> std::fmt::Debug for ShortArray<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.as_slice().fmt(f)
+    }
+}
+
 /// A cursor over `data`. Positions are absolute within `data` and signed, as
 /// a Python `Position` (module docs): every read follows the helper of its
 /// Python primitive at whatever position it is, negative or past the end.
@@ -347,8 +399,17 @@ impl<'a> Reader<'a> {
         self.fixed("i64").map(i64::from_le_bytes)
     }
 
-    /// A fixed-size byte array (GUIDs, hashes, reserved bytes): `read(N)`,
-    /// which must hold `N` bytes where UnityPy's caller needs them all.
+    /// `read(N)` kept as it is ([`ShortArray`]): a GUID or a hash, which
+    /// UnityPy stores without checking its length, so a short slice (at a
+    /// position in `-N..0`, or at the end) is no error; the position moves
+    /// by `N` either way.
+    pub fn read_short_array<const N: usize>(&mut self) -> ShortArray<N> {
+        ShortArray::from_slice(self.read_bytes_short(i64::try_from(N).unwrap_or(i64::MAX)))
+    }
+
+    /// A fixed-size byte array: `read(N)`, which must hold `N` bytes where
+    /// UnityPy's caller needs them all (it unpacks them); where it keeps
+    /// them as they are, [`Self::read_short_array`].
     pub fn read_array<const N: usize>(&mut self) -> Result<[u8; N], Error> {
         let got = self.read_bytes(N)?;
         let mut b = [0u8; N];

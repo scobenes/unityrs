@@ -248,7 +248,9 @@ impl Parser<'_> {
                 None
             };
             let (guid, kind) = if self.version >= 5 {
-                (Some(self.r.read_array::<16>()?), Some(self.r.read_i32()?))
+                // `read_bytes(16)` kept as it is: short (empty at a position
+                // in -16..0) without an error, as UnityPy keeps it.
+                (Some(self.r.read_short_array()), Some(self.r.read_i32()?))
             } else {
                 (None, None)
             };
@@ -289,9 +291,9 @@ impl Parser<'_> {
                 || (v < 16 && class_id < 0)
                 || (v >= 16 && class_id == 114)
             {
-                t.script_id = Some(self.r.read_array::<16>()?);
+                t.script_id = Some(self.r.read_short_array());
             }
-            t.old_type_hash = Some(self.r.read_array::<16>()?);
+            t.old_type_hash = Some(self.r.read_short_array());
         }
         if self.enable_type_tree {
             let rows = if is_blob_format(v) {

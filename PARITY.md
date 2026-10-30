@@ -239,7 +239,7 @@ Every branch on `header.version`. Lines are in `files/SerializedFile.py` unless 
 | ≥ 13 | `enable_type_tree` | bool (`:279-280`); below 13 every type carries a tree | A | L1 | `test_dump.py` tables_nodes_and_entries_follow_unitypy | verified P0 (L1); impl P1 |
 | ≥ 16 | type `is_stripped_type` | bool (`:122-123`) | A | L1 | `test_dump.py` tables_nodes_and_entries_follow_unitypy | verified P0 (L1); impl P1 |
 | ≥ 17 | type `script_type_index` | i16 (`:125-126`) | A | L1 | `test_dump.py` tables_nodes_and_entries_follow_unitypy | verified P0 (L1); impl P1 |
-| ≥ 13 | `script_id`, `old_type_hash` | 16-byte script id for ref types with a script index, class id < 0 below 16, or class 114 from 16; then the 16-byte type hash (`:128-135`) | A | L1 | `test_dump.py` tables_nodes_and_entries_follow_unitypy | verified P0 (L1); impl P1 |
+| ≥ 13 | `script_id`, `old_type_hash` | 16-byte script id for ref types with a script index, class id < 0 below 16, or class 114 from 16; then the 16-byte type hash (`:128-135`). Each is `read_bytes(16)` kept as it is: a slice, empty at a position in -16..0 and short at the end, with no error (the position moves by 16) | A | L1 | `test_dump.py` tables_nodes_and_entries_follow_unitypy; `crates/unityrs-core/tests/files_fixtures.rs` a_short_guid_or_hash_read_loads_as_unitypy_loads_it | verified P0 (L1); impl P1 |
 | 10, ≥ 12 | blob typetree | `TypeTreeNode.parse_blob` (`:138-139`), only when the file's tree flag is true (`:137`) | A | L1 | `test_dump.py` type_indices_and_blob_trees_follow_python | verified P0 (L1); impl P1 |
 | < 10, 11 | old typetree | `TypeTreeNode.parse`, field by field (`:140-141`), only when the file's tree flag is true (`:137`; below 13 it always is) | A | L1 | planned: Editor fixture | unverified (source reading); impl P4 |
 | 2 | old node `variable_count` | read only at version 2 (`helpers/TypeTreeNode.py:98`) | A | L1 | planned: Editor fixture | unverified (source reading); impl P4 |
@@ -259,7 +259,7 @@ Every branch on `header.version`. Lines are in `files/SerializedFile.py` unless 
 | ≥ 14 | script identifier | align 4, then i64 (`:50-52`) | A | L1 | `test_dump.py` tables_nodes_and_entries_follow_unitypy | verified P0 (L1); impl P1 |
 | < 14 | script identifier | i32 (`:48-49`) | A | L1 | planned: Editor fixture | unverified (source reading); impl P4 |
 | ≥ 6 | external `temp_empty` | string (`:79-80`) | A | L1 | `test_dump.py` tables_nodes_and_entries_follow_unitypy | verified P0 (L1); impl P1 |
-| ≥ 5 | external `guid`, `type` | 16 bytes and i32 (`:81-83`) | A | L1 | `test_dump.py` tables_nodes_and_entries_follow_unitypy | verified P0 (L1); impl P1 |
+| ≥ 5 | external `guid`, `type` | 16 bytes and i32 (`:81-83`); the guid is `read_bytes(16)` kept as it is, empty at a position in -16..0 and short at the end, with no error | A | L1 | `test_dump.py` tables_nodes_and_entries_follow_unitypy; `crates/unityrs-core/tests/files_fixtures.rs` a_short_guid_or_hash_read_loads_as_unitypy_loads_it | verified P0 (L1); impl P1 |
 | ≥ 20 | `ref_types` | count and ref `SerializedType`s (`:306-308`); below 20 the attribute is never set | A | L1 | `test_dump.py` tables_nodes_and_entries_follow_unitypy | verified P0 (L1); impl P1 |
 | ≥ 5 | `userInformation` | string (`:313-314`) | A | L1 | `test_dump.py` tables_nodes_and_entries_follow_unitypy | verified P0 (L1); impl P1 |
 | 23-26 | HEAD only | section 20 | HEAD | L2 | planned: 6000.4/6000.5 fixtures | unverified (source reading); impl P3 |

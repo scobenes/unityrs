@@ -3,10 +3,11 @@
 Runs in the oracle image against UnityPy 1.25.2 and writes small JSON files under
 crates/unityrs-core/tests/fixtures/c/, which `cargo test -p unityrs-core` replays
 without Python (crates/unityrs-core/tests/files_fixtures.rs). Every input is built
-in code: the version strings and the detection inputs here, and the file matrix by
-unityrs-testkit (`bundle::matrix`), whose bytes this script asks cargo for and
-stores beside UnityPy's L0 and L1 records (tools/parity/dump_records.py's own
-functions, so the records are the oracle dump's). No file is read.
+in code: the version strings, the detection inputs and the short-read files here,
+and the file matrix by unityrs-testkit (`bundle::matrix`), whose bytes this script
+asks cargo for and stores beside UnityPy's L0 and L1 records
+(tools/parity/dump_records.py's own functions, so the records are the oracle
+dump's). No file is read.
 
     scripts/dev python tools/fixtures/files.py           # write the fixtures
     scripts/dev python tools/fixtures/files.py --check   # regenerate and compare
@@ -307,6 +308,70 @@ def file_records(name: str, data: bytes) -> list[dict]:
     return [norm(r) for r in out if r["rec"] == "file"]
 
 
+# ------------------------------------------------------------ short reads
+
+
+def short_read_inputs() -> list[tuple[str, bytes]]:
+    """Format-22 SerializedFiles where a 16-byte read UnityPy keeps as it is (an
+    external's guid, a type's script_id or old_type_hash) starts at a position in
+    -16..0: `view[p:p+16]` is empty, the position moves to p+16, and the file loads.
+    The first type's blob string-buffer size is negative, so what follows it is read
+    from the end of the file; the guid at -20 reads sixteen bytes. Header fields the
+    format-22 header reads again hold what the reads from the start need, within
+    detection's checks."""
+
+    def header(size: int) -> bytes:
+        h = struct.pack(">IIII", 0, 0, 22, 0) + bytes(4)  # little-endian
+        h += struct.pack(">IqqQ", 0, size, 0, 0) + b"2020.3.0f1\0"
+        return h + struct.pack("<i", 5) + b"\x01"  # platform, type trees
+
+    def first_type(sbuf: int) -> bytes:
+        t = struct.pack("<ibh", 1, 0, -1) + bytes(range(16, 32))
+        return t + struct.pack("<ii", 1, sbuf) + bytes(32)  # one 32-byte node
+
+    def build(size: int, count: int, at: int, tail: bytes) -> bytearray:
+        """`count` types; the first one's string buffer moves the reader to `at`
+        (negative), where `tail` is."""
+        start = len(header(size)) + 4 + len(first_type(0))
+        data = bytearray(size)
+        head = header(size) + struct.pack("<i", count) + first_type(at - start)
+        data[: len(head)] = head
+        data[size + at : size + at + len(tail)] = tail
+        return data
+
+    out = []
+    for k in (1, 8, 16, 20):
+        # Type deps 0, objects 0, scripts 0, externals 1; temp_empty's 32,767-byte
+        # window holds no NUL, which leaves the guid at -k.
+        tail = struct.pack("<iiii", 0, 0, 0, 1) + b"A" * 32767
+        out.append((f"guid-at-minus-{k}", bytes(build(40000, 1, -k - len(tail), tail))))
+    # Type 2's old_type_hash at -16; its tree is then read from 0.
+    tail = struct.pack("<i", 0) + struct.pack("<ibh", 1, 0, -1)
+    data = build(40000, 2, -16 - len(tail), tail)
+    data[0:8] = struct.pack("<ii", 1, 59)  # node count; string buffer 40..99
+    data[12:16] = bytes([0, 0, 0, 0x80])  # the node's type: common string 0
+    out.append(("old-type-hash-at-minus-16", bytes(data)))
+    # Type 2 is class 114: script_id at -15, old_type_hash at 1, its tree at 17,
+    # where the reserved bytes and the format-22 metadata size give one node and
+    # a 260-byte string buffer; 5 << 16 bytes make the node's type offset 5.
+    tail = struct.pack("<i", 0) + struct.pack("<ibh", 114, 0, -1)
+    data = build(5 << 16, 2, -15 - len(tail), tail)
+    data[17:24] = bytes([1, 0, 0, 0, 4, 1, 0])
+    out.append(("script-id-at-minus-15", bytes(data)))
+    return out
+
+
+def runs(data: bytes) -> list[list[int]]:
+    """`data` as [count, byte] runs."""
+    out: list[list[int]] = []
+    for b in data:
+        if out and out[-1][1] == b:
+            out[-1][0] += 1
+        else:
+            out.append([1, b])
+    return out
+
+
 def fixtures() -> dict[str, dict]:
     meta = {"generator": "tools/fixtures/files.py", "unitypy": UnityPy.__version__}
     return {
@@ -315,6 +380,10 @@ def fixtures() -> dict[str, dict]:
         "files.json": {
             **meta,
             "cases": [{"name": n, "hex": d.hex(), "records": file_records(n, d)} for n, d in matrix_inputs()],
+        },
+        "short_reads.json": {
+            **meta,
+            "cases": [{"name": n, "runs": runs(d), "records": file_records(n, d)} for n, d in short_read_inputs()],
         },
     }
 

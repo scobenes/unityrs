@@ -2,6 +2,7 @@
 //! writers, which [`super`] re-exports.
 
 use unityrs_core::RawStr;
+use unityrs_core::stream::ShortArray;
 use unityrs_core::typetree::NodeList;
 use unityrs_core::version::FlagsClass;
 
@@ -192,10 +193,10 @@ fn type_record(out: &mut String, t: &TypeRecord) {
         None => o.null("is_stripped_type"),
     }
     o.int("script_type_index", t.script_type_index);
-    o.hex("script_id", t.script_id.as_ref().map(<[u8; 16]>::as_slice));
+    o.hex("script_id", t.script_id.as_ref().map(ShortArray::as_slice));
     o.hex(
         "old_type_hash",
-        t.old_type_hash.as_ref().map(<[u8; 16]>::as_slice),
+        t.old_type_hash.as_ref().map(ShortArray::as_slice),
     );
     match &t.nodes {
         Some(list) => node_rows(o.key("nodes"), list),

@@ -53,7 +53,7 @@ use crate::object::ObjectRef;
 use crate::once::{ResultCell, get_or_publish_result};
 use crate::options::FileContext;
 use crate::raw::RawStr;
-use crate::stream::Endian;
+use crate::stream::{Endian, ShortArray};
 use crate::typetree::{NodeList, Tree, TreeError};
 use crate::version::ResolvedVersion;
 use crate::walk::RefTypes;
@@ -91,10 +91,11 @@ pub struct SerializedType {
     pub is_stripped_type: Option<bool>,
     /// Read from format 17, else -1; at 11-16 the last object's write-back.
     pub script_type_index: i16,
-    /// `script_id`, under UnityPy's condition (format 13 and up).
-    pub script_id: Option<[u8; 16]>,
-    /// `old_type_hash` (format 13 and up).
-    pub old_type_hash: Option<[u8; 16]>,
+    /// `script_id`, under UnityPy's condition (format 13 and up): the bytes
+    /// `read_bytes(16)` returned, short at a negative position or the end.
+    pub script_id: Option<ShortArray<16>>,
+    /// `old_type_hash` (format 13 and up), as `script_id`.
+    pub old_type_hash: Option<ShortArray<16>>,
     /// The stored tree, when type trees are enabled.
     pub nodes: Option<Arc<NodeList>>,
     /// Plain types, format 21 and up, type trees enabled.
@@ -201,8 +202,9 @@ pub struct ObjectInfo {
 pub struct External {
     /// `temp_empty` (format 6 and up).
     pub temp_empty: Option<RawStr>,
-    /// `guid` (format 5 and up).
-    pub guid: Option<[u8; 16]>,
+    /// `guid` (format 5 and up): the bytes `read_bytes(16)` returned, short
+    /// at a negative position or the end.
+    pub guid: Option<ShortArray<16>>,
     /// `type` (format 5 and up).
     pub kind: Option<i32>,
     /// `path`.

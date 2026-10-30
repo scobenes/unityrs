@@ -423,6 +423,32 @@ fn the_matrix_has_no_l0_l1_differences() {
     );
 }
 
+/// A 16-byte read UnityPy keeps as it is (an external's guid, a type's
+/// `script_id` or `old_type_hash`) at a position in -16..0 is an empty
+/// slice and no error, and the file loads (claude round 2's C MEDIUM): every
+/// record equal to UnityPy's, the short field written as what was read.
+#[test]
+fn a_short_guid_or_hash_read_loads_as_unitypy_loads_it() {
+    let doc = load("short_reads.json").expect("tests/fixtures/c/short_reads.json");
+    let cases = doc["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 6);
+    for c in cases {
+        let input = c["name"].as_str().unwrap();
+        let data: Vec<u8> = c["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|r| {
+                let byte = u8::try_from(r[1].as_u64().unwrap()).unwrap();
+                std::iter::repeat_n(byte, usize::try_from(r[0].as_u64().unwrap()).unwrap())
+            })
+            .collect();
+        let theirs = c["records"].as_array().unwrap();
+        assert_eq!(theirs[0]["l0"]["parsed_as"], "SerializedFile", "{input}");
+        assert_eq!(dump(input, &data), *theirs, "{input}");
+    }
+}
+
 #[test]
 fn detection_matches_the_oracle() {
     let doc = load("detect.json").expect("tests/fixtures/c/detect.json");
