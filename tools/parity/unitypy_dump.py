@@ -51,6 +51,8 @@ import UnityPy  # noqa: E402
 from UnityPy.helpers import TypeTreeHelper  # noqa: E402
 
 import canonical as C  # noqa: E402
+import oracle_env  # noqa: E402
+
 # One input's records (dump_records.py); the record functions the fixture scripts and
 # tests call through this script stay reachable here.
 from dump_records import (  # noqa: E402, F401
@@ -62,7 +64,6 @@ from dump_records import (  # noqa: E402, F401
     error_kind,
     parsed_as,
 )
-import oracle_env  # noqa: E402
 
 # What routes parse_as_dict through UnityPyBoost; without it the oracle is not the pinned one.
 HAVE_BOOST = TypeTreeHelper.read_typetree_boost is not None

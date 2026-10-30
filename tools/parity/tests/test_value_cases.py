@@ -97,7 +97,7 @@ class ValueCasesTests(unittest.TestCase):
         cases = json.loads(json.dumps(value_cases.protocol_cases()))
         self.assertEqual(len(cases), len(value_cases.CASES))
         self.assertEqual(len({c["name"] for c in cases}), len(cases))
-        for c, src in zip(cases, value_cases.CASES):
+        for c, src in zip(cases, value_cases.CASES, strict=True):
             self.assertEqual(set(c), {"name", "endian", "nodes", "hex"})
             self.assertIn(c["endian"], ("<", ">"))
             self.assertEqual(bytes.fromhex(c["hex"]), src["data"])

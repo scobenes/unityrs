@@ -34,10 +34,11 @@ from types import SimpleNamespace
 PARITY = Path(__file__).resolve().parent
 sys.path.insert(0, str(PARITY))
 
-import canonical as C  # noqa: E402
 from UnityPy.helpers import TypeTreeHelper as TTH  # noqa: E402
 from UnityPy.helpers.TypeTreeNode import TypeTreeNode  # noqa: E402
 from UnityPy.streams import EndianBinaryReader, EndianBinaryWriter  # noqa: E402
+
+import canonical as C  # noqa: E402
 from unitypy_dump import error_kind  # noqa: E402
 
 ALIGN = 0x4000
