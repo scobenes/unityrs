@@ -1,8 +1,8 @@
-"""PARITY.md and DESIGN.md agree on what a tier covers where a zero side, an image mode, a missing characterisation
-or a walk past a UnityCN block decides it (standard library).
+"""PARITY.md and DESIGN.md agree on what a tier covers where a zero side, an image mode, a missing characterisation,
+a walk past a UnityCN block or an empty first FSB5 subsound decides it (standard library).
 
 Each guard reads both files as text. The behaviour each one keeps the wording to is pinned by the row tests the cells
-name (`test_rows_images.py`, `test_rows_textures.py`, `test_rows_internals.py`).
+name (`test_rows_images.py`, `test_rows_textures.py`, `test_rows_internals.py`, `test_rows_audio.py`).
 """
 
 import re
@@ -181,6 +181,24 @@ class DocTiers(unittest.TestCase):
         boost = next(cell for cell in decrypt if cell.startswith("the C version of the loop"))
         self.assertIn("returns with no error the bytes the Python loop holds when it raises", boost)
         self.assertNotIn("returns the block with no error", boost)
+
+    def test_a_bank_whose_first_subsound_is_empty_is_u(self):
+        """FMOD refuses to open an FSB5 bank whose first subsound has no samples, whatever follows in the cases tested,
+        and opens one whose later subsound has none (`test_rows_audio.py` short_pcm_subsounds). So no sentence speaks
+        of a bank of one empty subsound alone, every one that speaks of a bank and a subsound with no samples names
+        the first subsound, and DESIGN.md's Tier C bullet for fmod_toolkit's raise leaves that bank to Tier U."""
+        seen = 0
+        for name, text in (("PARITY.md", self.parity), ("DESIGN.md", self.design)):
+            for _, sentence in sentences(text, skip_items=True):
+                with self.subTest(name, sentence=sentence[:80]):
+                    self.assertNotIn("bank of one subsound", sentence)
+                    if re.search(r"\bbank\b|PLUGIN", sentence) and re.search(r"\bno samples\b", sentence):
+                        seen += 1
+                        self.assertIn("bank whose first subsound has no samples", sentence)
+        self.assertGreaterEqual(seen, 8)
+        tier_c = self.design.split("- **Tier C:", 1)[1].split("\n- **", 1)[0]
+        bullet = next(line for line in tier_c.splitlines() if line.startswith("  - fmod_toolkit raises `struct.error`"))
+        self.assertIn("a bank whose first subsound has no samples FMOD refuses to open, and the Tier U list", bullet)
 
 
 if __name__ == "__main__":

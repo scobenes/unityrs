@@ -12,6 +12,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
@@ -50,11 +51,25 @@ class AudioRows(unittest.TestCase):
         clip = SimpleNamespace(m_AudioData=fsb5(2, one), m_Resource=None, m_Name="c", m_Channels=1, m_Frequency=44100)
         with self.assertRaisesRegex(struct.error, too_short(2)):
             AudioClipConverter.extract_audioclip_samples(clip)
-        # A second subsound of no samples raises the same way; a bank of one such subsound FMOD refuses.
-        with self.assertRaisesRegex(struct.error, too_short(0)):
-            fmod_toolkit.raw_to_wav(fsb5(2, four, (b"", 0)), "c", 1, 44100)
+        # A second subsound of no samples, last or before another, FMOD opens and hands over as 0 bytes, which raise
+        # the same way.
+        empty = (b"", 0)
+        for samples in ((four, empty), (four, empty, four)):
+            counts = [count for _, count in samples]
+            with self.subTest(samples=counts), self.assertRaisesRegex(struct.error, too_short(0)):
+                fmod_toolkit.raw_to_wav(fsb5(2, *samples), "c", 1, 44100)
+        # A bank whose first subsound has no samples FMOD refuses to open, whatever follows: fmod_toolkit's
+        # sound_to_wav is never reached, and UnityPy's export of the clip raises the refusal.
+        for samples in ((empty,), (empty, empty), (empty, one), (empty, four), (empty, four, four)):
+            counts = [count for _, count in samples]
+            spy = mock.patch.object(fmod_toolkit.fmod, "sound_to_wav", wraps=fmod_toolkit.fmod.sound_to_wav)
+            with self.subTest(samples=counts), spy as sound_to_wav:
+                with self.assertRaisesRegex(FmodError, "^PLUGIN$"):
+                    fmod_toolkit.raw_to_wav(fsb5(2, *samples), "c", 1, 44100)
+                self.assertFalse(sound_to_wav.called)
+        clip.m_AudioData = fsb5(2, empty, four)
         with self.assertRaisesRegex(FmodError, "^PLUGIN$"):
-            fmod_toolkit.raw_to_wav(fsb5(2, (b"", 0)), "c", 1, 44100)
+            AudioClipConverter.extract_audioclip_samples(clip)
         # From 4 bytes the samples, put at offset 44, grow the buffer back: two mono samples, or one stereo sample.
         two = fmod_toolkit.raw_to_wav(fsb5(2, (pcm[:4], 2)), "c", 1, 44100)
         self.assertEqual(two, {"c.wav": wav_header(1, 44100, 16, 4) + pcm[:4]})
