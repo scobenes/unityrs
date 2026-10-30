@@ -90,8 +90,10 @@ impl TpkProvider {
     pub const MAX_TREE_ROWS: usize = 1 << 16;
 
     /// The most rows the walks of every release root together may build,
-    /// 2,097,152, which bounds what the provider builds, kept or not, and
-    /// so what it keeps, however many classes are asked for. UnityPy
+    /// 2,097,152, which bounds what the provider builds on any one thread,
+    /// kept or not, and so what it keeps, however many classes are asked
+    /// for (threads that ask for a root at once each walk it, crate docs,
+    /// "Threads"). UnityPy
     /// 1.25.2's own TPK has 414,033 over its 3,000 release roots
     /// (`tools/fixtures/tpk.py --survey`). What each root's walk builds is
     /// known at load, without walking it: its tree's rows, or, for a walk
@@ -574,5 +576,86 @@ mod tests {
             "the compressed payload's copy"
         );
         assert_eq!(from_lz4.meter.used(), from_bytes.meter.used());
+    }
+
+    /// A stored TPK of one class, 0, at version 2.0.0, whose release root,
+    /// node 0, lists node 1 twice, and so on down `levels` nodes: a tree of
+    /// `2^levels - 1` rows.
+    fn doubling_tpk(levels: u16) -> Vec<u8> {
+        let v = (2_u64 << 48).to_le_bytes();
+        let mut blob = 1_i64.to_le_bytes().to_vec();
+        blob.extend_from_slice(&1_i32.to_le_bytes());
+        blob.extend_from_slice(&v);
+        // One class, one entry: release and editor root 0 (flags 192).
+        blob.extend_from_slice(&1_i32.to_le_bytes());
+        blob.extend_from_slice(&0_i32.to_le_bytes());
+        blob.extend_from_slice(&1_i32.to_le_bytes());
+        blob.extend_from_slice(&v);
+        blob.extend_from_slice(&[1, b'C', 0, 0, 0, 192, 0, 0, 0, 0]);
+        // No common strings or indices.
+        blob.extend_from_slice(&[0; 8]);
+        blob.extend_from_slice(&i32::from(levels).to_le_bytes());
+        for i in 0..levels {
+            // `<HHihbIH`: strings 0 and 1, size -1, version 1, flags 0.
+            blob.extend_from_slice(&[0, 0, 1, 0, 0xFF, 0xFF, 0xFF, 0xFF, 1, 0, 0, 0, 0, 0, 0]);
+            let subs: &[u16] = if i + 1 < levels { &[i + 1, i + 1] } else { &[] };
+            blob.extend_from_slice(&u16::try_from(subs.len()).unwrap().to_le_bytes());
+            for s in subs {
+                blob.extend_from_slice(&s.to_le_bytes());
+            }
+        }
+        blob.extend_from_slice(&2_i32.to_le_bytes());
+        blob.extend_from_slice(&[2, b's', b'0', 2, b's', b'1']);
+        let size = u32::try_from(blob.len()).unwrap().to_le_bytes();
+        let mut out = b"TPK*".to_vec();
+        out.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]);
+        out.extend_from_slice(&size);
+        out.extend_from_slice(&size);
+        out.extend_from_slice(&blob);
+        out
+    }
+
+    /// The price of never waiting, as the crate docs state it ("Threads",
+    /// round 4): threads that ask for one release root before its first
+    /// answer is published each walk it, at most once each, and all of them
+    /// get the one list published. Eight threads released together are
+    /// granted at most eight walks' worth of rows, however they interleave.
+    #[test]
+    fn racing_first_requests_walk_a_root_at_most_once_per_thread() {
+        use std::sync::{Arc, Barrier};
+
+        use unityrs_core::UnityVersion;
+
+        const THREADS: u64 = 8;
+        let tpk = doubling_tpk(16);
+        let v = UnityVersion::from_packed(2 << 48);
+        let alone = TpkProvider::from_bytes(&tpk, &Limits::default()).unwrap();
+        let before = alone.meter.granted();
+        let list = alone.node_list(0, &v).unwrap().unwrap();
+        assert_eq!(list.rows().len(), (1 << 16) - 1);
+        let one = alone.meter.granted() - before;
+        assert!(one > 0);
+        let provider = Arc::new(TpkProvider::from_bytes(&tpk, &Limits::default()).unwrap());
+        let before = provider.meter.granted();
+        let start = Arc::new(Barrier::new(usize::try_from(THREADS).unwrap()));
+        let lists: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let (provider, start, v) = (provider.clone(), start.clone(), v.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    provider.node_list(0, &v).unwrap().unwrap()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .collect();
+        let raced = provider.meter.granted() - before;
+        assert!(lists.iter().all(|l| Arc::ptr_eq(l, &lists[0])), "one list");
+        assert!(
+            (one..=THREADS * one).contains(&raced),
+            "{raced} bytes granted, {} walks' worth",
+            raced / one
+        );
     }
 }
