@@ -212,12 +212,12 @@ UnityFS's total-size field and its uncompressed-data hash are left out, because 
 
 **`l2`:**
 - `root_type`: the typetree root's `m_Type` (the class name, for example `Texture2D` or `MonoBehaviour`).
-- `source`: `"embedded"` for the file's own tree, `"tpk"` for UnityPy's bundled class database. Both are `null` when no tree exists.
+- `source`: `"embedded"` for the file's own tree, `"tpk"` for UnityPy's bundled class database. Both are `null` when no tree exists. A tree the type record stores always exists, as UnityPy's `_get_typetree_node()` returns it: when a unityrs producer cannot compile it (deeper than its `max_tree_depth`, `PARITY.md` section 19.3, "typetree depth"), the record still names its root type and `"embedded"`, and the error is `other`, its note the limit refusal.
 - `error`: `null` on success, else `{"kind":K,"bytes_read":N}` (optionally followed by `note`). `bytes_read` is an integer only for `check_read`. A read that raises gives every kind but `check_read`; `check_read` is decided only after the whole tree was read. The kinds:
 
 | kind | meaning | `value` |
 |---|---|---|
-| `no_typetree` | no node: none embedded, and none in the TPK | `null` |
+| `no_typetree` | no node: none embedded, and none in the TPK. A unityrs producer also writes it, with the refusal's note, where its TPK provider refuses the class's node (`PARITY.md` section 19.3's TPK rows: reachable only from a TPK no writer emits) | `null` |
 | `check_read` | the tree's read ended `bytes_read` bytes after `byte_start`, and `bytes_read != byte_size`, in either direction (see the reading paths below) | the dict from `parse_as_dict(check_read=False)` |
 | `out_of_bounds` | on the UnityPyBoost path, a read other than an alignment needs bytes past the object's end | `null` |
 | `negative_length` | a negative array length, or on the UnityPyBoost path a negative string or byte-array length | `null` |

@@ -271,3 +271,41 @@ fn a_resave_that_differs_is_recorded_as_the_oracle_records_it() {
         oracle
     );
 }
+
+/// An object whose own embedded tree does not compile (deeper than
+/// `max_tree_depth`) keeps the root type and the source UnityPy's
+/// `_get_typetree_node()` gives it, the embedded node's: only its read's
+/// outcome is the refusal, `other` with the limit's note (`PARITY.md`
+/// section 19.3, "typetree depth"), so the rest of its record is the
+/// oracle's, and so is every other record of the input.
+#[test]
+fn an_embedded_tree_that_does_not_compile_keeps_its_root_type_and_source() {
+    let (data, oracle) = oracle_input("own_tree");
+    let mut ctx = FileContext::unitypy();
+    ctx.limits.max_tree_depth = 3;
+    let got = records_of("own_tree", &data, ctx);
+    assert_eq!(got.len(), oracle.len());
+    assert_eq!(got[0], oracle[0]);
+    assert_eq!(got[2], oracle[2]);
+    let (ours, theirs) = (&got[1], &oracle[1]);
+    assert_eq!(ours["l1"], theirs["l1"]);
+    assert_eq!(theirs["l2"]["source"], "embedded");
+    assert_eq!(ours["l2"]["root_type"], theirs["l2"]["root_type"]);
+    assert_eq!(ours["l2"]["source"], theirs["l2"]["source"]);
+    let error = &ours["l2"]["error"];
+    assert_eq!(
+        (&error["kind"], &error["bytes_read"]),
+        (&"other".into(), &Json::Null)
+    );
+    let note = s(&error["note"]);
+    let refusal = note.strip_prefix("limit TreeDepth: ");
+    let (value, max) = refusal
+        .and_then(|r| r.split_once(" > "))
+        .unwrap_or_else(|| panic!("{note}"));
+    assert!(value.parse::<u64>().unwrap() > 3 && max == "3", "{note}");
+    assert_eq!(ours["l2"]["value"], Json::Null);
+    for k in ["raw_size", "raw_sha256"] {
+        assert_eq!(ours["l3"][k], theirs["l3"][k]);
+    }
+    assert_eq!(ours["l3"]["resave"], "skipped");
+}
