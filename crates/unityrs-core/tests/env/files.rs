@@ -39,6 +39,29 @@ fn split_files_are_refused_before_they_are_read() {
     }
 }
 
+/// A name ending in `.split` and a numeric character that is no decimal
+/// digit (`²` is `No`, `Ⅰ` is `Nl`) is one file, which UnityPy loads:
+/// `reSplit`'s `\d` is Python's decimal digit (`tests/fixtures/d/pystr.json`).
+/// Review round 2: the core refused it as the part of a split file.
+#[test]
+fn a_split_name_without_a_decimal_digit_is_one_file() {
+    let dir = TempDir::new("split-numeric");
+    let data = named_bundle("CAB-N", 16);
+    for name in ["a.split\u{b2}", "a.split\u{2160}", "a.split\u{bd}0"] {
+        std::fs::write(dir.0.join(name), &data).unwrap();
+        for mode in [LoadMode::Eager, LoadMode::Lazy] {
+            let env = env(mode);
+            let p = dir.0.join(name);
+            assert!(env.load(Source::Path(p.clone())).is_ok(), "{mode:?} {name}");
+            assert!(
+                env.load_dependency(Source::Path(p)).is_ok(),
+                "{mode:?} {name}"
+            );
+            assert_eq!(env.files().count(), 1, "{mode:?} {name}");
+        }
+    }
+}
+
 /// `files()` is an iterator, as the other listings are: it allocates no
 /// copy of the list (review round 1: it returned an uncharged `Vec`).
 #[test]

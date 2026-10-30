@@ -567,6 +567,36 @@ fn split_paths_are_unitypys() {
     }
 }
 
+/// `reSplit`'s `\d` is Python's decimal digit, on every code point: a
+/// numeric character that is no decimal digit (`²`, `Ⅰ`) ends no split
+/// name (review round 2: the core took any numeric character).
+#[test]
+fn split_digits_are_pythons_decimal_digits() {
+    let doc = load("pystr.json").expect("tests/fixtures/d/pystr.json");
+    let ranges: Vec<(u32, u32)> = doc["split_digits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            let at = |i: usize| u32::try_from(r[i].as_u64().unwrap()).unwrap();
+            (at(0), at(1))
+        })
+        .collect();
+    assert!(ranges.len() > 1, "more than ASCII's digits");
+    let mut wrong = Vec::new();
+    let mut name = b"a.split".to_vec();
+    for c in (0..0x11_0000_u32).filter_map(char::from_u32) {
+        let cp = u32::from(c);
+        let want = ranges.iter().any(|&(a, b)| (a..=b).contains(&cp));
+        name.truncate(7);
+        name.extend_from_slice(c.to_string().as_bytes());
+        if is_split_path(&name) != want {
+            wrong.push(format!("U+{cp:04X}: python {want}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 /// `ntpath.basename`, `ntpath.splitext` and `simplify_name` as Python's.
 #[test]
 fn ntpath_is_pythons() {

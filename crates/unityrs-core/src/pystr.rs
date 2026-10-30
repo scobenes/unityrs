@@ -50,7 +50,7 @@ use crate::budget::DecodeBuf;
 use crate::error::LimitKind;
 use crate::limits::{ChargeError, Meter};
 use crate::raw::RawStr;
-use crate::tables::{is_case_ignorable, is_sigma_cased, lower_exception};
+use crate::tables::{is_case_ignorable, is_sigma_cased, lower_exception, nd_digit};
 
 /// U+03A3 GREEK CAPITAL LETTER SIGMA, the one character `lower()` maps by
 /// context.
@@ -279,10 +279,13 @@ pub fn clean_external_path(path: &RawStr, meter: &Arc<Meter>) -> Result<RawStr, 
 /// `(.*?([^\/\\]+?))\.split\d+`, a match at the start that need not reach
 /// the end. So `.split` and a digit must follow at least one character that
 /// is no `/` or `\`, and no `\n` (which `.` does not match) may come before
-/// the last separator ahead of it. Python's `\d` is a decimal digit
-/// (category `Nd`); this takes any numeric character ([`char::is_numeric`]:
-/// `Nd`, `Nl`, `No`), so a name such as `x.split²`, which UnityPy reads as
-/// one file, is refused too: a refusal, never a misread. Linear in the path.
+/// the last separator ahead of it. Python's `\d` on a `str` pattern is
+/// `Py_UNICODE_ISDECIMAL` (`sre`'s `SRE_UNI_IS_DIGIT`): a character with a
+/// decimal digit value, which Unicode gives exactly the category `Nd`, read
+/// from Python 3.11's own table ([`crate::tables::nd_digit`], Unicode 14.0),
+/// so a name such as `x.split²` (`No`) or `x.splitⅠ` (`Nl`) is one file, as
+/// UnityPy reads it (`tests/fixtures/d/pystr.json` records `\d` over every
+/// code point). Linear in the path.
 #[must_use]
 pub fn is_split_path(path: &[u8]) -> bool {
     const SPLIT: &[u8] = b".split";
@@ -297,7 +300,7 @@ pub fn is_split_path(path: &[u8]) -> bool {
                 .get(i + SPLIT.len()..)
                 .and_then(|rest| rest.utf8_chunks().next())
                 .and_then(|c| c.valid().chars().next())
-                .is_some_and(char::is_numeric)
+                .is_some_and(|c| nd_digit(c).is_some())
         {
             return true;
         }
