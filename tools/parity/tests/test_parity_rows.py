@@ -727,21 +727,63 @@ class Rows(unittest.TestCase):
         with mock.patch.object(file_module, "DirectoryInfo", directory_info), self.assertRaises(Again):
             load(bytes(changed), "w.data")
         self.assertEqual(entries, [("", offset, size)] * 3)
+        # Elsewhere what it gives depends on where the reader lands. In a two-entry WebFile, -2 reads the name b""
+        # and moves back 2 bytes, so the next entry is read from there, with a name that runs on into the data; -13
+        # raises struct.error. From a path both raise as -12 does.
+        two = S.web_file([(b"a.resS", b"PAYLOAD!"), (b"b.resS", b"SECOND")])
+        for length in (-2, -13):
+            changed = bytearray(two)
+            struct.pack_into("<i", changed, row + 8, length)
+            web_path.write_bytes(changed)
+            with self.subTest("web name length", length=length):
+                if length == -2:
+                    files = quietly(UnityPy.Environment().load_file, bytes(changed), name="w.data").files
+                    self.assertEqual(
+                        {name: bytes(f.bytes) for name, f in files.items()},
+                        {"": b"PAYLOAD!", "\x06\x00\x00\x00\x06\x00\x00\x00b.resSPAYLOAD!SECOND": b""},
+                    )
+                else:
+                    with self.assertRaisesRegex(struct.error, "^offset -3297 out of range for 70-byte buffer$"):
+                        load(bytes(changed), "w.data")
+                with self.assertRaisesRegex(ValueError, "^read length must be non-negative or -1$"):
+                    quietly(UnityPy.Environment().load_file, str(web_path))
         # A UnityWeb/UnityRaw level count is an i32, past which read_web_raw skips 8 * (count - 1) bytes: -100 moves
-        # the reader before the file's start, struct.error from bytes and the stream reader's ValueError from a path.
+        # Position to -745, before the file's start. From a path the stream reader raises ValueError. From
+        # bytes a negative Position counts from the end: below minus the length (a 105-byte bundle) struct.error;
+        # otherwise the fields after the level table, the compressed size among them, are read there, and what
+        # follows depends on those bytes: in a 4,097-byte bundle an entry of 4,000 b"p" loads, one of 4,000 zero
+        # bytes gives a compressed size of 0, and the empty directory raises.
         from test_dump import unityraw
 
-        raw = unityraw(5, [(b"CAB-x", b"payload!")])
-        level = raw.index(bytes(range(16))) + 16 + 16
-        self.assertEqual(struct.unpack_from(">i", raw, level), (1,))
-        changed = bytearray(raw)
-        struct.pack_into(">i", changed, level, -100)
-        (self.tmp / "level.bundle").write_bytes(changed)
-        moved = level + 4 + 8 * (-100 - 1)
-        with self.assertRaisesRegex(struct.error, f"^offset {moved} out of range for {len(raw)}-byte buffer$"):
-            load(bytes(changed), "level.bundle")
+        def level_count(payload):
+            raw = unityraw(5, [(b"CAB-x", payload)])
+            level = raw.index(bytes(range(16))) + 16 + 16
+            self.assertEqual(struct.unpack_from(">i", raw, level), (1,))
+            changed = bytearray(raw)
+            struct.pack_into(">i", changed, level, -100)
+            (self.tmp / "level.bundle").write_bytes(changed)
+            return bytes(changed), level + 4 + 8 * (-100 - 1)
+
+        changed, moved = level_count(b"payload!")
+        self.assertEqual((len(changed), moved), (105, -745))
+        with self.assertRaisesRegex(struct.error, "^offset -745 out of range for 105-byte buffer$"):
+            load(changed, "level.bundle")
         with self.assertRaisesRegex(ValueError, "^Position cannot be negative$"):
             quietly(UnityPy.Environment().load_file, str(self.tmp / "level.bundle"))
+        changed, moved = level_count(b"p" * 4000)
+        self.assertEqual((len(changed), moved), (4097, -745))
+        files = load(changed, "level.bundle")[0].files
+        self.assertEqual({name: bytes(f.bytes) for name, f in files.items()}, {"CAB-x": b"p" * 4000})
+        with self.assertRaisesRegex(ValueError, "^Position cannot be negative$"):
+            quietly(UnityPy.Environment().load_file, str(self.tmp / "level.bundle"))
+        changed, moved = level_count(bytes(4000))
+        self.assertEqual(struct.unpack_from(">I", changed, moved), (0,), "the compressed size read from the end")
+        with self.assertRaisesRegex(
+            struct.error,
+            r"^unpack_from requires a buffer of at least 4 bytes for unpacking 4 bytes at offset 0 "
+            r"\(actual buffer size is 0\)$",
+        ):
+            load(changed, "level.bundle")
         # A blob typetree's node count and string-buffer size each size a read: a negative count reads a slice that
         # iter_unpack refuses unless its length is a multiple of the node size, a count of 0 leaves no root, and a
         # buffer size of -1 takes the rest of the data.
