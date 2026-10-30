@@ -83,7 +83,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use bytes::Bytes;
 
-use crate::detect::check_file_type;
+use crate::detect::{DetectError, check_entry_type};
 use crate::error::Error;
 use crate::files::{File, Parent, ParentKind, parse_file};
 use crate::limits::{Charge, Meter, MeteredVec};
@@ -382,7 +382,14 @@ impl BundleFile {
             .ok_or_else(|| no_entry(dir_index))?;
         let bytes = self.entry_bytes(dir_index)?;
         let wrap = |e| self.entry_error(dir_index, e);
-        let ty = check_file_type(&bytes, &self.ctx.limits).map_err(|d| wrap(Error::Detect(d)))?;
+        // The inflation of a gzip entry is the open's work (`detect`'s
+        // "Work"); its refusal is the open's limit, as a block decode's is.
+        let ty = check_entry_type(&bytes, &self.ctx.limits, self.meter()).map_err(|d| {
+            wrap(match d {
+                DetectError::Work(l) => Error::Limit(l),
+                d => Error::Detect(d),
+            })
+        })?;
         let parent = Parent {
             name: self.name.clone(),
             kind: ParentKind::Bundle {

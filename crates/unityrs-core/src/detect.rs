@@ -16,13 +16,24 @@
 //! most 64 KiB) is part of plan section 3.15's constant. Also: `brotli`
 //! at 0x20; the SerializedFile header read big-endian.
 //!
+//! **Work.** One stream inflates at most [`Limits::max_inflate`] bytes. A
+//! container detects each of its entries ([`check_entry_type`]), and many
+//! directory rows can name one small stream that inflates to the bound, so
+//! there every inflated byte is also counted as the open's work, the
+//! allowance block decodes draw on ([`Limits::max_decode_work`],
+//! [`Meter::count_decode`]): the open's detections together inflate no more
+//! than that, and the one that passes it is refused
+//! ([`DetectError::Work`], which the container reports as the open's
+//! `LimitKind::DecodeWork` limit), as is every one after it.
+//!
 //! Owner: package C.
 
 use std::sync::Arc;
 
 use flate2::{Crc, Decompress, FlushDecompress, Status};
 
-use crate::limits::Limits;
+use crate::error::LimitError;
+use crate::limits::{Limits, Meter};
 use crate::stream::py_string_to_null;
 
 /// UnityPy's `FileType` verdict.
@@ -53,10 +64,31 @@ pub enum DetectError {
     /// The gzip stream inflates past [`Limits::max_inflate`].
     #[error("gzip stream larger than the inflate limit")]
     InflateLimit,
+    /// [`check_entry_type`]: the open's work allowance
+    /// ([`Limits::max_decode_work`]) ran out while a gzip stream inflated,
+    /// or had run out before it; a `LimitKind::DecodeWork` limit.
+    #[error(transparent)]
+    Work(LimitError),
 }
 
 /// `check_file_type` on the bytes.
 pub fn check_file_type(data: &[u8], limits: &Limits) -> Result<FileType, DetectError> {
+    detect(data, limits, None)
+}
+
+/// [`check_file_type`] on a container's entry, with every byte a gzip
+/// stream inflates counted as work of the open `meter` belongs to (module
+/// docs, "Work"): the verdict is the same until the open's allowance runs
+/// out, and [`DetectError::Work`] from then on.
+pub fn check_entry_type(
+    data: &[u8],
+    limits: &Limits,
+    meter: &Meter,
+) -> Result<FileType, DetectError> {
+    detect(data, limits, Some(meter))
+}
+
+fn detect(data: &[u8], limits: &Limits, work: Option<&Meter>) -> Result<FileType, DetectError> {
     // UnityPy helpers/ImportHelper.py:54-55
     if data.len() < 20 {
         return Ok(FileType::ResourceFile);
@@ -82,7 +114,7 @@ pub fn check_file_type(data: &[u8], limits: &Limits) -> Result<FileType, DetectE
     }
     // UnityPy helpers/ImportHelper.py:75-83
     if data.get(..2) == Some(GZIP_MAGIC.as_slice())
-        && is_web_data(&gzip_signature(data, limits.max_inflate)?)
+        && is_web_data(&gzip_signature(data, limits.max_inflate, work)?)
     {
         return Ok(FileType::WebFile);
     }
@@ -157,10 +189,14 @@ const SCRATCH: usize = 64 << 10;
 /// (`:136-144`) then keeps each byte it read except the last: byte `i` is kept
 /// when it and every byte before it are not NUL, `i < 19`, and `i + 1` is
 /// below the decompressed length.
-fn gzip_signature(data: &[u8], max_inflate: u64) -> Result<Vec<u8>, DetectError> {
+fn gzip_signature(
+    data: &[u8],
+    max_inflate: u64,
+    work: Option<&Meter>,
+) -> Result<Vec<u8>, DetectError> {
     let mut first = [0u8; 20];
     let mut first_len = 0usize;
-    let total = gzip_inflate(data, max_inflate, |chunk| {
+    let total = gzip_inflate(data, max_inflate, work, |chunk| {
         let n = chunk.len().min(first.len().saturating_sub(first_len));
         if let (Some(dst), Some(src)) = (first.get_mut(first_len..first_len + n), chunk.get(..n)) {
             dst.copy_from_slice(src);
@@ -191,19 +227,40 @@ fn read_exact<'a>(data: &'a [u8], pos: &mut usize, n: usize) -> Result<&'a [u8],
     Ok(got)
 }
 
+/// `bytes` inflated, counted as the open's work: when that passes the
+/// allowance, they are counted anyway (they were inflated), so every later
+/// detection of the open is refused before it inflates anything.
+fn count_work(meter: &Meter, bytes: u64) -> Result<(), DetectError> {
+    if meter.count_decode(bytes).is_ok() {
+        return Ok(());
+    }
+    // Refused, and counted anyway: the open's allowance now reads as used
+    // up (its limit names the total), so every later detection is refused
+    // before it inflates anything.
+    meter.add_work(bytes);
+    meter
+        .work_used_up()
+        .map_or(Ok(()), |l| Err(DetectError::Work(l)))
+}
+
 /// Inflates every member of a gzip file as Python 3.11's `gzip._GzipReader`
 /// reads it (`_read_gzip_header`, `read`, `_read_eof`), handing each output
 /// chunk to `sink`; returns the decompressed length. The header's FHCRC is
-/// skipped, not checked, as Python skips it.
+/// skipped, not checked, as Python skips it. Each chunk is counted as
+/// `open`'s work when there is one (module docs, "Work").
 fn gzip_inflate(
     data: &[u8],
     max_inflate: u64,
+    open: Option<&Meter>,
     mut sink: impl FnMut(&[u8]),
 ) -> Result<u64, DetectError> {
     const FHCRC: u8 = 2;
     const FEXTRA: u8 = 4;
     const FNAME: u8 = 8;
     const FCOMMENT: u8 = 16;
+    if let Some(l) = open.and_then(Meter::work_used_up) {
+        return Err(DetectError::Work(l));
+    }
     let mut scratch = vec![0u8; SCRATCH];
     let mut pos = 0usize;
     let mut total = 0u64;
@@ -264,9 +321,13 @@ fn gzip_inflate(
             let made = usize::try_from(z.total_out() - out_before).unwrap_or(0);
             let out = scratch.get(..made).unwrap_or_default();
             crc.update(out);
-            total = total.saturating_add(u64::try_from(made).unwrap_or(u64::MAX));
+            let made = u64::try_from(made).unwrap_or(u64::MAX);
+            total = total.saturating_add(made);
             if total > max_inflate {
                 return Err(DetectError::InflateLimit);
+            }
+            if let Some(meter) = open {
+                count_work(meter, made)?;
             }
             sink(out);
             if status == Status::StreamEnd {
