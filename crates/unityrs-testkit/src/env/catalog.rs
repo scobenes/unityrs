@@ -531,6 +531,45 @@ pub fn preload_suffix_external() -> Scene {
     }
 }
 
+/// Two bundles that each hold a CAB of one name, `CAB-S`, with its own
+/// `.resS`, container row and object 7; the first also holds `CAB-X`, which
+/// points at `CAB-S`'s object 7. UnityPy's one registry keeps the later
+/// copy under each key, so a resource read from either copy's texture
+/// reads the later `.resS`, and the container lists only the later row;
+/// a pointer matches the asking file's own bundle first
+/// (`classes/PPtr.py:75-78`), so `CAB-X` reads its own bundle's object 7
+/// (`PARITY.md` section 19.2, same-named CABs).
+#[must_use]
+pub fn same_named_cabs() -> Scene {
+    let cab_s = |name: &str| {
+        serialized(
+            &[],
+            &[
+                Obj::named(7, &format!("{name}7"), &[]),
+                Obj::streamed(2, &format!("tex-{name}"), "archive:/CAB-S/CAB-S.resS", 0, 4),
+                Obj::asset_bundle(
+                    3,
+                    Bundle {
+                        rows: vec![row(&format!("assets/{name}.prefab"), (0, 0), (0, 7))],
+                        ..Bundle::default()
+                    },
+                ),
+            ],
+        )
+    };
+    let x = serialized(&["archive:/CAB-S/CAB-S"], &[Obj::named(1, "x1", &[(1, 7)])]);
+    let a = bundle(&[
+        ("CAB-X", x),
+        ("CAB-S", cab_s("a")),
+        ("CAB-S.resS", res_bytes(8, 10)),
+    ]);
+    let b = bundle(&[("CAB-S", cab_s("b")), ("CAB-S.resS", res_bytes(8, 200))]);
+    Scene {
+        files: vec![named("a.bundle", a), named("b.bundle", b)],
+        resolver: Vec::new(),
+    }
+}
+
 /// A bundle of two nested bundles that each hold a CAB of one name: an
 /// eager load registers both in directory order, so the second's is the
 /// key's value; under `LoadMode::Lazy` each is registered when its nested
@@ -568,6 +607,7 @@ pub fn scenes() -> Vec<(&'static str, Scene)> {
         ("fallback_file_pointer", fallback_file_pointer()),
         ("nested_duplicates", nested_duplicates()),
         ("preload_suffix_external", preload_suffix_external()),
+        ("same_named_cabs", same_named_cabs()),
     ]
 }
 

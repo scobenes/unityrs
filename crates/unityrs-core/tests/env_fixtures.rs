@@ -136,7 +136,10 @@ struct Run {
 
 impl Run {
     fn new(scene: Scene, mode: LoadMode) -> Self {
-        let mut options = EnvOptions::unitypy();
+        Self::with(scene, mode, EnvOptions::unitypy())
+    }
+
+    fn with(scene: Scene, mode: LoadMode, mut options: EnvOptions) -> Self {
         options.load = mode;
         options.resolver = Some(Arc::new(SceneResolver(
             scene
@@ -499,6 +502,40 @@ fn the_path_dict_keys_a_row_by_its_assets_file() {
     for mode in [LoadMode::Eager, LoadMode::Lazy] {
         let ours = Run::new(scene_by_name("container_other_file"), mode).steps(&ops);
         assert_eq!(ours[at]["result"], json!([null, null, null]), "{mode:?}");
+    }
+}
+
+/// `PARITY.md` section 19.2's same-named CABs: P1 implements UnityPy's one
+/// registry (Tier A) under every option set, `EnvOptions::batch()`'s
+/// included, in both modes; the Tier C rule is not implemented. Scene
+/// `same_named_cabs`, step for step as UnityPy recorded it: a resource read
+/// from either bundle's `CAB-S` reads the later bundle's `.resS`, the
+/// container lists the later bundle's row only, and a pointer from the
+/// first bundle's `CAB-X` reads that bundle's own object 7.
+#[test]
+fn same_named_cabs_resolve_as_unitypys_under_every_option_set() {
+    let (_, steps) = recorded()
+        .into_iter()
+        .find(|(n, _)| n == "same_named_cabs")
+        .unwrap();
+    let ops = ops(&steps);
+    let at = |op: &str| ops.iter().position(|o| o[0] == op).unwrap();
+    assert_eq!(
+        steps[at("derefs")]["result"],
+        json!([["CAB-S", 7, 1, "a7"]])
+    );
+    assert_eq!(
+        steps[at("resources")]["result"],
+        json!(["c8c9cacb", "c8c9cacb"])
+    );
+    assert_eq!(
+        steps[at("container")]["result"],
+        json!([["assets/b.prefab", 0, 0, 0, 7]])
+    );
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let batch = EnvOptions::batch(Arc::new(unityrs_core::FileContext::unitypy()));
+        let ours = Run::with(scene_by_name("same_named_cabs"), mode, batch).steps(&ops);
+        assert_eq!(ours, steps, "{mode:?}");
     }
 }
 
