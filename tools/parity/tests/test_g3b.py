@@ -123,6 +123,66 @@ open(out, "w").write("\\n".join(lines) + "\\n")
 """
 
 
+def oracle_producer():
+    """The `producer` member unitypy_dump.py writes on the pinned stack (canonical.py's pins)."""
+    return {
+        "name": C.ORACLE_PRODUCER,
+        "unitypy": C.ORACLE_UNITYPY,
+        "boost": True,
+        "boost_sha256": C.ORACLE_BOOST_SHA256,
+        "packages": C.oracle_pins(),
+        "records": C.oracle_records(),
+        "python": "3.11",
+    }
+
+
+class OracleReferenceTests(unittest.TestCase):
+    """Every gate's comparison refuses a reference the oracle did not write on the pinned stack: compare.py with
+    `--oracle` (G1, G3) and G3b, which always asks for it. Without the flag, compare.py takes another producer's
+    dump as it is (a comparison of two unityrs dumps). Standard library only: the dumps agree, so G3b re-runs
+    nothing."""
+
+    def setUp(self):
+        self.run = Path(tempfile.mkdtemp(prefix="unityrs-g3b-oracle-"))
+        self.addCleanup(shutil.rmtree, self.run)
+        (self.run / "in").mkdir()
+        self.head = {"rec": "dump", "format": C.FORMAT, "version": 1, "levels": list(C.LEVELS)}
+        l0 = {"type": "ResourceFile", "parsed_as": "raw", "size": 4, "sha256": hashlib.sha256(b"abcd").hexdigest()}
+        self.records = {"x": rec_text({"rec": "file", "file": ["x"], "l0": l0, "l1": None, "error": None})}
+        unityrs = {**self.head, "producer": {"name": "unityrs", "unityrs": VERSION}}
+        write_dump(self.run / "b.jsonl", rec_text(unityrs), self.records)
+
+    def statuses(self, producer):
+        """(compare.py, compare.py --oracle, g3b.py) on a reference whose header holds `producer` (none for None)."""
+        head = dict(self.head) if producer is None else {**self.head, "producer": producer}
+        a, b = self.run / "a.jsonl", self.run / "b.jsonl"
+        write_dump(a, rec_text(head), self.records)
+        pair = [str(a), str(b)]
+        verdict = [*pair, "--inputs", str(self.run / "in"), "--unityrs", "/bin/false"]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+            got = (g3b.compare.main(pair), g3b.compare.main([*pair, "--oracle"]), g3b.main(verdict))
+        return got, err.getvalue()
+
+    def test_the_oracles_dump_on_the_pinned_stack_is_the_only_reference(self):
+        statuses, err = self.statuses(oracle_producer())
+        self.assertEqual(statuses, (0, 0, 0), err)
+        refused = "the reference's producer is"
+        for what, producer in {
+            "another producer": {"name": "not-unitypy", "unitypy": "0.0", "boost": False},
+            "unityrs": {"name": "unityrs", "unityrs": VERSION},
+            "no producer": None,
+            "not an object": C.ORACLE_PRODUCER,
+        }.items():
+            with self.subTest(what):
+                (plain, gate, verdict), err = self.statuses(producer)
+                self.assertEqual((gate, verdict), (2, 2), err)
+                self.assertEqual(err.count(refused), 2, err)
+                self.assertIn(plain, (0, 1), "without --oracle, compare.py compares")
+        # The oracle's name on another stack was refused before, and still is.
+        (plain, gate, verdict), err = self.statuses({**oracle_producer(), "unitypy": "1.24.0"})
+        self.assertEqual((plain, gate, verdict), (2, 2, 2), err)
+
+
 @unittest.skipIf(unitypy_dump is None, "needs UnityPy (the oracle image)")
 class G3bTests(unittest.TestCase):
     @classmethod

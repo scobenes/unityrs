@@ -3,7 +3,9 @@
 
     python tools/parity/compare.py REFERENCE.jsonl[.gz] CANDIDATE.jsonl[.gz] [--levels L0,L1] [--json report.json]
 
-REFERENCE is normally the UnityPy dump and CANDIDATE the unityrs one. Records
+REFERENCE is normally the UnityPy dump and CANDIDATE the unityrs one. A
+reference unitypy_dump.py wrote must name the pinned stack; with --oracle (every
+gate's comparison), any other reference is refused. Records
 are matched by key (file path, then path_id), so a candidate that orders
 records differently still compares field by field, and the order itself is
 checked: each dump against the spec's order, and the two against each other.
@@ -546,13 +548,14 @@ def reference_problems(rec):
     return []
 
 
-def check_reference_producer(header):
-    """A dump from the oracle dumper must come from the pinned stack, or every difference it finds is suspect.
-
-    Only the reference is checked: a candidate's `producer` is its own business.
+def check_reference_producer(header, oracle=False):
+    """A dump from the oracle dumper must come from the pinned stack, or every difference it finds is suspect;
+    with `oracle` (every gate's comparison), so must the reference. A candidate's `producer` is its own business.
     """
     producer = header.get("producer")
     if not isinstance(producer, dict) or producer.get("name") != C.ORACLE_PRODUCER:
+        if oracle:
+            raise CompareError(f"the reference's producer is {producer!r}, not the oracle's ({C.ORACLE_PRODUCER})")
         return
     if producer.get("boost") is not True or producer.get("unitypy") != C.ORACLE_UNITYPY:
         raise CompareError(
@@ -604,12 +607,12 @@ def select_levels(held_a, held_b, levels):
     return [lv for lv in wanted if lv in held_b], [lv for lv in wanted if lv not in held_b]
 
 
-def run(path_a, path_b, levels=None, examples=3):
-    """Compare two dumps; returns (report, header_a, header_b, levels compared)."""
+def run(path_a, path_b, levels=None, examples=3, oracle=False):
+    """Compare two dumps; returns (report, header_a, header_b, levels compared); `oracle`: check_reference_producer."""
     a, b = Side("reference", path_a), Side("candidate", path_b)
     report = Report(examples)
     header_problems = (a.read_header(), b.read_header())
-    check_reference_producer(a.header)
+    check_reference_producer(a.header, oracle)
     compared, missing = select_levels(a.levels, b.levels, levels)
     report.missing_levels = missing
     for side, problems in zip((a, b), header_problems, strict=True):
@@ -765,6 +768,7 @@ def main(argv=None):
     ap.add_argument("--examples", type=int, default=3, help="examples kept per field path (default 3)")
     ap.add_argument("--max-paths", type=int, default=50, help="field paths printed (default 50)")
     ap.add_argument("--json", help="also write the full report as JSON to this path")
+    ap.add_argument("--oracle", action="store_true", help="the reference must be the oracle's dump (every gate's)")
     args = ap.parse_args(argv)
     levels = args.levels.split(",") if args.levels is not None else None
     # The report quotes input names from both dumps, so it stays out of the repository.
@@ -775,7 +779,7 @@ def main(argv=None):
         )
         return 2
     try:
-        report, ha, hb, compared = run(args.reference, args.candidate, levels, args.examples)
+        report, ha, hb, compared = run(args.reference, args.candidate, levels, args.examples, args.oracle)
     except (C.FormatError, CompareError, OSError) as e:
         print(f"compare: {e}", file=sys.stderr)
         return 2
