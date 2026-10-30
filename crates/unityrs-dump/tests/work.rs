@@ -544,10 +544,29 @@ fn a_packed_version_past_128_bits_counts_its_conversion_as_work() {
         (passes * 8..=passes * 225 * 8).contains(&conversion),
         "{conversion} counted for {passes} passes"
     );
-    // An allowance one short of the whole dump refuses it.
-    let (_, text, _, _) = work_of(&versioned(&big), &with_work(big_work - 1));
-    assert!(
-        text.contains(r#""kind":"parse","note":"limit DecodeWork: "#),
-        "{text}"
+    // The file record is made before its objects' records, and a dump at
+    // L1 reads and re-saves nothing: the work an L1 dump counts ends with
+    // the conversion's last pass, so an allowance one short of it refuses
+    // that pass, which fails the input, whatever its objects' reads and
+    // resaves would have counted after it. (An allowance one short of the
+    // whole L0-L3 dump refuses whatever is counted last, here the resave's
+    // end: its object's L3 outcome, since a write counts as it goes and
+    // checks when it ends, the core's `walk::OpenWork`.)
+    let l1 = DumpOptions {
+        levels: Levels {
+            l1: true,
+            l2: false,
+            l3: false,
+        },
+        ..DumpOptions::default()
+    };
+    let (_, _, l1_work, _) = work_of(&versioned(&big), &l1);
+    assert!(l1_work < big_work, "{l1_work} of {big_work}");
+    let (_, text, _, _) = work_of(&versioned(&big), &with_work(l1_work - 1));
+    let refused = format!(
+        r#""kind":"parse","note":"limit DecodeWork: {l1_work} > {}"#,
+        l1_work - 1
     );
+    assert!(text.contains(&refused), "{text}");
+    assert_eq!(text.lines().count(), 1, "{text}");
 }
