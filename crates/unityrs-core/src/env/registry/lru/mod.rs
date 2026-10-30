@@ -61,8 +61,11 @@ pub(crate) struct DepCache {
 }
 
 /// A point at which a test may stop a thread, to run two threads through
-/// the Environment's decisions in an order of its choosing. The LRU's are
-/// between two of its steps (type docs), with no lock held.
+/// the Environment's decisions in an order of its choosing, with no lock
+/// held. The LRU's are between two of its steps (type docs), and run
+/// [`DepCache::hook`]; the registry's, the `files` listing's and a preload
+/// walk's (plan section 3.16's invariants R1-R5 and W1-W2) run the
+/// registry's hook.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Hook {
@@ -84,6 +87,19 @@ pub(crate) enum Hook {
     /// An eviction (a use's, [`DepCache::evict_others`]), before its next
     /// step.
     Evicting,
+    /// A registration published its change, before it notifies the walks.
+    Published,
+    /// A registration listed the lazy slot it dropped, before it settles.
+    Deferred,
+    /// A `settle` picked a listed slot, before it reaches it.
+    SettleTook,
+    /// A reach registered its container's entries, before it marks the
+    /// slot reached.
+    Reached,
+    /// The `files` listing lowered its key, before it publishes.
+    Listing,
+    /// A preload walk's lookup set up its flag, before it reads.
+    Watched,
 }
 
 /// A test's hook ([`Hook`]).

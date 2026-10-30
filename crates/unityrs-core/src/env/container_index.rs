@@ -10,14 +10,15 @@ use std::sync::atomic::Ordering;
 
 use super::deref::Reached;
 use super::registry::{Rank, load_keys_here};
-use super::watch::{FLAG, Flag, WATCH_SHARE, Walk};
+use super::watch::{Flag, Walk};
 use super::{Cab, DerefError, Environment, Found, LoadMode, PPtr, never_evicts, pptr};
 use crate::budget::Reservation;
 use crate::container::{Container, ContainerPath, ContainerRow};
 use crate::error::{Error, Unsupported};
 use crate::files::{BundleFile, File, SerializedFile};
-use crate::limits::{Charge, HASH_TABLE_SHARES, Meter, MeteredVec};
+use crate::limits::{Charge, GrantScope, HASH_TABLE_SHARES, Meter, MeteredVec};
 use crate::object::ObjectRef;
+use crate::once::CellError;
 use crate::pystr::{clean_external_path, py_lower, simplify_name};
 use crate::raw::RawStr;
 
@@ -199,11 +200,18 @@ const TARGET_SHARE: u64 = HASH_TABLE_SHARES * (size_of::<i32>() + size_of::<Know
 /// long names cost the table times the names).
 ///
 /// [`LoadMode::Lazy`]: super::LoadMode::Lazy
+///
+/// Each charge is released after the memory it pays for (plan section 3.15):
+/// fields drop in order, so `known` (with the flags) goes first, then the
+/// walk's watches with their own charge, then `known`'s charge (review
+/// round 5: the watches' charge was released before their entries left the
+/// map).
 struct Targets<'a> {
     known: HashMap<i32, Known>,
-    charge: Charge,
     /// After `known`, so the flags drop before the watches end.
     walk: Walk<'a>,
+    /// `known`'s table, after it.
+    charge: Charge,
 }
 
 /// One external's answer in [`Targets`].
@@ -220,14 +228,6 @@ impl Targets<'_> {
         self.known
             .get(&file_id)
             .filter(|k| k.flag.as_ref().is_none_or(|f| !f.changed()))
-    }
-
-    /// A flag on `keys`, set up before the lookup that reads them, charged
-    /// for the walk (its entries stay until the walk ends).
-    fn watch(&mut self, keys: &[u64]) -> Result<Arc<Flag>, Error> {
-        let grow = WATCH_SHARE.saturating_mul(keys.len() as u64);
-        self.charge.grow(grow.saturating_add(FLAG))?;
-        Ok(self.walk.watch(keys))
     }
 
     /// Keeps `found` for `file_id` while `flag` is unset (`None`: for the
@@ -309,8 +309,15 @@ impl Environment {
     /// flag before the loop and each registration clears it, so a pass that
     /// fails leaves the index built unless the pass itself registered
     /// something; here a pass marks built the registry generation it started
-    /// at, whether it ends or fails, and any load's registration since starts
-    /// a new generation. A slot's table is marked walked only when its
+    /// at when it ends or fails with an error the input decides, and any
+    /// load's registration since starts a new generation. A refusal (a
+    /// budget, meter or I/O failure, [`crate::once::CellError::is_transient`])
+    /// is never kept (plan 4.1): the pass is not marked built, and the next
+    /// ask walks again (review round 5: a pool refused once left the preload
+    /// unwalked for the generation). What a walk the file's own meter refused
+    /// was granted counts as that open's work, so a refusal the next ask
+    /// would repeat stops at [`crate::LimitKind::DecodeWork`], which is kept
+    /// ([`Self::walk_counted`]). A slot's table is marked walked only when its
     /// walk ends (UnityPy clears `_preload_table` then). A pass whose own
     /// dereferences make a new key fails as UnityPy's loop over
     /// `cabs.values()` does (`RuntimeError: dictionary changed size during
@@ -326,13 +333,45 @@ impl Environment {
     /// [`LoadMode::Lazy`]: super::LoadMode::Lazy
     fn build_container_index(&self) -> Result<(), Error> {
         let reg = &self.inner.registry;
+        // Every slot dropped before this call is reached first, as by every
+        // other reader (plan section 3.16, R3); a refusal is the walk's to
+        // meet, or the next call's.
+        reg.settle().ok();
         let generation = reg.generation();
         if reg.built(generation) {
             return Ok(());
         }
         let result = self.container_pass(generation);
-        reg.publish_built(generation);
+        if result.as_ref().err().is_none_or(|e| !e.is_transient()) {
+            reg.publish_built(generation);
+        }
         result
+    }
+
+    /// [`Self::preload`] of `sf`'s table, as a lazy computation of `sf`'s
+    /// open (`crate::once`'s rule on work): when `sf`'s own meter refuses
+    /// it, what the meter granted it on this thread counts as the open's
+    /// work, and once that work has passed the allowance the refusal is
+    /// [`crate::LimitKind::DecodeWork`], which the input decides, so the pass
+    /// keeps it.
+    fn walk_counted(
+        &self,
+        sf: &Arc<SerializedFile>,
+        container: &Container,
+        at: (u64, &Rank),
+        siblings: &mut Siblings,
+    ) -> Result<(), Error> {
+        let meter = sf.meter();
+        let scope = GrantScope::enter(meter);
+        let walked = self.preload(sf, container, at, siblings);
+        let own = scope.finish(meter);
+        match walked {
+            Err(e) if e.is_meter_refusal() => {
+                meter.add_work(own);
+                Err(meter.work_used_up().map_or(e, Error::Limit))
+            }
+            other => other,
+        }
     }
 
     fn container_pass(&self, generation: u64) -> Result<(), Error> {
@@ -348,12 +387,14 @@ impl Environment {
         // 4: a later container's entry replaced the value of a key the walk
         // had passed, and the walk had read the earlier one).
         if self.inner.options.load == LoadMode::Lazy {
-            reg.settle()?;
             let mut after: Option<Rank> = None;
             while let Some((rank, slot)) = reg.slot_after(after.as_ref()) {
                 reg.reach(&slot, None)?;
                 after = Some(rank);
             }
+            // Every slot a registration dropped, those these reaches dropped
+            // included; a refusal there is the pass's.
+            reg.settle()?;
         }
         let mut siblings = Siblings::default();
         let mut after: Option<Rank> = None;
@@ -375,7 +416,7 @@ impl Environment {
             if !slot.walked() {
                 let container = sf.container()?;
                 let before = load_keys_here();
-                self.preload(sf, container, (generation, &rank), &mut siblings)?;
+                self.walk_counted(sf, container, (generation, &rank), &mut siblings)?;
                 slot.set_walked();
                 grew = load_keys_here() != before;
             }
@@ -431,8 +472,8 @@ impl Environment {
         let mut undone: Option<Undone> = None;
         let mut targets = Targets {
             known: HashMap::new(),
+            walk: self.inner.registry.watches().start(meter),
             charge: Charge::zero(meter),
-            walk: self.inner.registry.watches().start(),
         };
         for (r, row) in container.rows().iter().enumerate() {
             // `start = info.preloadIndex`, `size = info.preloadSize`: a
@@ -518,7 +559,9 @@ impl Environment {
             // Watched before the lookup reads, so no change it misses is
             // missed by the flag.
             let keys = Self::lookup_keys(sf, p.file_id, &targets.walk)?;
-            let flag = targets.watch(&keys)?;
+            let flag = targets.walk.watch(&keys)?;
+            #[cfg(test)]
+            self.inner.registry.hook(super::registry::Hook::Watched);
             // What to keep: `Some(until_a_change)`, or `None` nothing.
             let (found, keep) = match self.external(sf, p.file_id, Some(siblings)) {
                 Ok((t, Reached::Sibling)) => (Some(t), Some(false)),

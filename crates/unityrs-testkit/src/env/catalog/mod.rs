@@ -4,8 +4,9 @@
 mod nested;
 
 pub use nested::{
-    deref_sibling_nested, nested_duplicates, nested_replaced_unread, preload_nested_external,
-    resource_in_nested_cab, resource_in_own_nested,
+    deref_sibling_nested, nested_duplicates, nested_raw_replaced, nested_reloaded,
+    nested_replaced_unread, preload_nested_external, resource_in_nested_cab,
+    resource_in_own_nested,
 };
 
 use super::{Bundle, Obj, Scene, bundle, bundle_spec, res_bytes, row, serialized};
@@ -604,6 +605,8 @@ pub fn scenes() -> Vec<(&'static str, Scene)> {
         ("deref_sibling_nested", deref_sibling_nested()),
         ("resource_in_nested_cab", resource_in_nested_cab()),
         ("nested_replaced_unread", nested_replaced_unread()),
+        ("nested_reloaded", nested_reloaded()),
+        ("nested_raw_replaced", nested_raw_replaced()),
     ]
 }
 

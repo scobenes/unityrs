@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::registry::{Slot, SlotKind};
-use super::{Cab, Candidate, Environment, LoadMode, RawCab, Source, resource_candidates};
+use super::registry::{Slot, Through, entry_of};
+use super::{Cab, Candidate, Environment, LoadMode, RawCab, resource_candidates};
 use crate::error::{Error, NotFound};
 use crate::files::{BundleFile, File, Parent, ParentKind, SerializedFile};
 use crate::raw::RawStr;
@@ -48,9 +48,10 @@ impl Environment {
     /// is never parsed, so neither the resolution nor the read decodes
     /// anything through the shared handle or charges its pool (plan section
     /// 3.13): the slot's open handle is `from`'s bundle itself, or the slot
-    /// is a [`Source::Bytes`] whose `Bytes` are `from`'s bundle's source (the
+    /// is a [`Source::Bytes`](super::Source::Bytes) whose `Bytes` are `from`'s bundle's source (the
     /// same allocation and range) at the entry's directory index. A slot whose
-    /// source is a [`Source::Path`] or [`Source::Fetch`] and whose handle is
+    /// source is a [`Source::Path`](super::Source::Path) or
+    /// [`Source::Fetch`](super::Source::Fetch) and whose handle is
     /// not open (evicted) cannot be compared without opening it again, so it
     /// resolves by UnityPy's rule, through the slot. Which of the two a batch
     /// engine's inputs get is its design (`docs/plans/batch.md`).
@@ -152,13 +153,12 @@ impl Environment {
 }
 
 impl Environment {
-    /// Under [`LoadMode::Lazy`], reaches the nested containers on `from`'s
+    /// Under [`LoadMode::Lazy`], reaches the nested container on `from`'s
     /// own chain before a lookup from it answers (the registry's module
     /// docs): the container below `from`'s top-level bundle, whose reach
     /// registers its whole subtree, when the slot under its name is that
-    /// very entry ([`slot_entry`]), from `from`'s own handle on it, so
-    /// nothing is read through the slot's handle (plan section 3.13). When
-    /// the slot is another file's, `from`'s container was dropped by a later
+    /// very entry, or stands in for it ([`reach_entry`]). When the slot is
+    /// another entry's, `from`'s container was dropped by a later
     /// registration, which reached it then. Under `Eager` a nested container
     /// is registered at load. Walks up `from`'s parents only (as deep as
     /// [`crate::limits::Limits::max_container_depth`]), allocating nothing.
@@ -179,13 +179,14 @@ impl Environment {
         let Some(slot) = self.inner.registry.slot(nested.name(), nested.meter())? else {
             return Ok(());
         };
-        self.reach_own(&top, &slot, &nested)
+        self.reach_entry(&top, &slot, &nested)
     }
 
     /// A pointer reached `nested`, `from`'s sibling at `dir_index` of its
     /// bundle `bundle`, by the bundle's names (`classes/PPtr.py:75-78`):
     /// under [`LoadMode::Lazy`] it is reached as a `get` of its name would
-    /// reach it, when the slot under its name is that entry.
+    /// reach it, when the slot under its name is that entry, or stands in
+    /// for it ([`reach_entry`]).
     pub(super) fn reach_sibling(
         &self,
         from: &SerializedFile,
@@ -202,28 +203,32 @@ impl Environment {
         let Some(slot) = self.inner.registry.slot(&d.path, from.meter())? else {
             return Ok(());
         };
-        if slot_entry(bundle, &slot) == Some(dir_index) {
-            self.inner.registry.reach(&slot, Some(nested))?;
-        }
-        Ok(())
+        self.reach_entry(bundle, &slot, nested)
     }
 
-    /// Reaches `slot` from `nested`, the asking file's handle on a nested
-    /// container of its bundle `bundle`, when the slot is that very entry
-    /// ([`slot_entry`]).
-    pub(super) fn reach_own(
+    /// Reaches `slot` when it is `nested`, the asking file's handle on a
+    /// nested container of its bundle `bundle`, as [`entry_of`] tells it:
+    /// from `nested` when the slot reads through `bundle` itself
+    /// ([`Through::Own`]), through the slot's own handle when it stands in
+    /// for that entry ([`Through::Slot`], a reload's slot: review round 5
+    /// found the earlier load's files reached nothing).
+    fn reach_entry(
         &self,
         bundle: &Arc<BundleFile>,
         slot: &Arc<Slot>,
         nested: &Arc<BundleFile>,
     ) -> Result<(), Error> {
-        let Some(i) = slot_entry(bundle, slot) else {
+        let Some((i, through)) = entry_of(bundle, slot) else {
             return Ok(());
         };
-        if matches!(bundle.entry(i), Ok(File::Bundle(b)) if Arc::ptr_eq(&b, nested)) {
-            self.inner.registry.reach(slot, Some(nested))?;
+        if !matches!(bundle.entry(i), Ok(File::Bundle(b)) if Arc::ptr_eq(&b, nested)) {
+            return Ok(());
         }
-        Ok(())
+        let reg = &self.inner.registry;
+        match through {
+            Through::Own => reg.reach(slot, Some(nested)),
+            Through::Slot => reg.reach(slot, None),
+        }
     }
 }
 
@@ -235,37 +240,13 @@ fn parent_bundle(parent: Option<&Parent>) -> Option<Arc<BundleFile>> {
     }
 }
 
-/// When `slot` is an entry of `from`'s own input and the core can tell
-/// without reading anything (plan section 3.13), `from`'s bundle and the
-/// entry's directory index ([`slot_entry`]).
+/// When `slot` is an entry of `from`'s own input read through `from`'s own
+/// bundle ([`Through::Own`]: the core can tell without reading anything,
+/// plan section 3.13), that bundle and the entry's directory index.
 fn own_entry(from: &SerializedFile, slot: &Slot) -> Option<(Arc<BundleFile>, usize)> {
     let fb = parent_bundle(from.parent())?;
-    let i = slot_entry(&fb, slot)?;
-    Some((fb, i))
-}
-
-/// The directory index of the entry of `fb` that `slot` is, when the core
-/// can tell without reading anything: the slot's bundle is `fb`, or the slot
-/// is a dependency's top-level entry whose open handle is `fb` or whose
-/// [`Source::Bytes`] are the bytes `fb` was opened on.
-fn slot_entry(fb: &Arc<BundleFile>, slot: &Slot) -> Option<usize> {
-    match &slot.kind {
-        SlotKind::Entry { bundle, dir_index } if Arc::ptr_eq(bundle, fb) => Some(*dir_index),
-        SlotKind::Ready(Cab::Raw(RawCab::InBundle { bundle, dir_index }))
-            if Arc::ptr_eq(bundle, fb) =>
-        {
-            Some(*dir_index)
-        }
-        SlotKind::Dependency { dep } => {
-            let &[i] = slot.rank.path() else {
-                return None;
-            };
-            let same_handle = matches!(dep.alive(), Some(File::Bundle(b)) if Arc::ptr_eq(&b, fb));
-            let same_bytes = fb.parent().is_none()
-                && matches!(&dep.source, Source::Bytes { data, .. }
-                    if data.as_ptr() == fb.source().as_ptr() && data.len() == fb.source().len());
-            (same_handle || same_bytes).then_some(i)
-        }
-        SlotKind::Entry { .. } | SlotKind::Ready(_) => None,
+    match entry_of(&fb, slot)? {
+        (i, Through::Own) => Some((fb, i)),
+        (_, Through::Slot) => None,
     }
 }

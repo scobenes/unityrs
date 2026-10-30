@@ -11,6 +11,8 @@
 
 #[path = "env_fixtures/lazy.rs"]
 mod lazy;
+#[path = "env_fixtures/refused.rs"]
+mod refused;
 #[path = "env_fixtures/run.rs"]
 mod run;
 
@@ -178,6 +180,8 @@ const LAZY_DIFFERS: &[&str] = &[
     "deref_sibling_nested",
     "resource_in_nested_cab",
     "nested_replaced_unread",
+    "nested_reloaded",
+    "nested_raw_replaced",
     // (c): the block after the last entry is never decoded.
     "last_block_fails",
 ];
@@ -204,6 +208,8 @@ const LAZY_KEYS_DIFFER: &[(&str, &str)] = &[
     ("deref_sibling_nested", "inner"),
     ("resource_in_nested_cab", "inner"),
     ("nested_replaced_unread", "inner"),
+    ("nested_reloaded", "inner"),
+    ("nested_raw_replaced", "inner"),
 ];
 
 /// Difference (b) and nothing more on [`LAZY_KEYS_DIFFER`]'s scenes, under
