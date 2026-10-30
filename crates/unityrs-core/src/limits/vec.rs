@@ -239,20 +239,29 @@ impl<T> MeteredVec<T> {
         (self.vec, self.charge)
     }
 
-    /// The elements as a boxed slice, and its charge. A vector with spare
-    /// capacity is moved into an exact allocation first, which is charged
-    /// before it is made (both blocks exist while the allocator moves it),
-    /// so a refusal leaves nothing allocated beyond what was charged.
-    pub fn into_boxed_slice(self) -> Result<(Box<[T]>, Charge), ChargeError> {
-        let (mut vec, mut charge) = (self.vec, self.charge);
-        if vec.capacity() > vec.len() {
-            let smaller = charge.meter().charge(heap_cost(bytes_of::<T>(vec.len())))?;
-            let old = heap_cost(bytes_of::<T>(vec.capacity()));
-            vec.shrink_to_fit();
-            charge.release(old);
-            charge.absorb(smaller);
+    /// Gives back any spare capacity: a vector with spare capacity is moved
+    /// into an exact allocation, which is charged before it is made (both
+    /// blocks exist while the allocator moves it), so a refusal leaves the
+    /// vector as it was and nothing allocated beyond what was charged.
+    pub fn shrink_to_fit(&mut self) -> Result<(), ChargeError> {
+        if self.vec.capacity() > self.vec.len() {
+            let smaller = self
+                .charge
+                .meter()
+                .charge(heap_cost(bytes_of::<T>(self.vec.len())))?;
+            let old = heap_cost(bytes_of::<T>(self.vec.capacity()));
+            self.vec.shrink_to_fit();
+            self.charge.release(old);
+            self.charge.absorb(smaller);
         }
-        Ok((vec.into_boxed_slice(), charge))
+        Ok(())
+    }
+
+    /// The elements as a boxed slice, and its charge, with no spare
+    /// capacity ([`Self::shrink_to_fit`]).
+    pub fn into_boxed_slice(mut self) -> Result<(Box<[T]>, Charge), ChargeError> {
+        self.shrink_to_fit()?;
+        Ok((self.vec.into_boxed_slice(), self.charge))
     }
 }
 

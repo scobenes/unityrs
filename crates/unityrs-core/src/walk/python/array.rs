@@ -10,9 +10,7 @@ use crate::limits::MeteredVec;
 use crate::stream::{py_read, py_unpack_from};
 use crate::typetree::{Kind, NodeId, Tree};
 use crate::value::{ListIx, PrimArray, PrimRun, Value};
-use crate::walk::{
-    Out, ReadDetail, ReadError, charge_error, f32_bits, first_reserve, grow_step, int, uint,
-};
+use crate::walk::{Out, ReadDetail, ReadError, charge_error, f32_bits, grow_step, int, uint};
 
 /// `struct` formats of `read_array_struct` (`EndianBinaryReader.py:170-198`).
 #[derive(Clone, Copy)]
@@ -78,13 +76,13 @@ impl Reader<'_, '_> {
             return self.prim_list(kind, count);
         }
         let at = self.at();
-        let max = self.work.limits.max_prealloc;
+        let first = self.work.first_room(count, self.remaining(), min);
         let mut items = self.builder.vec();
         items
-            .reserve_exact(first_reserve(count, self.remaining(), min, max))
+            .reserve_exact(first)
             .map_err(|e| charge_error(at, e))?;
-        for _ in 0..count {
-            grow_step(&mut items, count, max).map_err(|e| charge_error(self.at(), e))?;
+        for i in 0..count {
+            grow_step(&mut items, count).map_err(|e| charge_error(self.at(), e))?;
             let before = self.pos;
             let v = self.value(t, lx, elem)?;
             if self.pos <= before {
@@ -92,6 +90,7 @@ impl Reader<'_, '_> {
             }
             v.push_to(&mut items)
                 .map_err(|e| charge_error(self.at(), e))?;
+            self.work.filled(i, first);
         }
         Ok(Out::Built(self.builder.list(items)))
     }
@@ -125,16 +124,17 @@ impl Reader<'_, '_> {
         macro_rules! run {
             ($t:ty, $wrap:expr, $get:expr) => {{
                 let at = self.at();
-                let max = self.work.limits.max_prealloc;
+                let first = self.work.first_room(count, self.remaining(), size);
                 let mut items: MeteredVec<$t> = self.builder.vec();
                 items
-                    .reserve_exact(first_reserve(count, self.remaining(), size, max))
+                    .reserve_exact(first)
                     .map_err(|e| charge_error(at, e))?;
-                for _ in 0..count {
+                for i in 0..count {
                     self.work.run(1, u64::from(size), self.at())?;
-                    grow_step(&mut items, count, max).map_err(|e| charge_error(self.at(), e))?;
+                    grow_step(&mut items, count).map_err(|e| charge_error(self.at(), e))?;
                     let v: $t = $get(self)?;
                     items.push(v).map_err(|e| charge_error(self.at(), e))?;
+                    self.work.filled(i, first);
                 }
                 let built = self
                     .builder
@@ -333,14 +333,14 @@ impl Reader<'_, '_> {
         mut item: impl FnMut(&mut Self) -> Result<Out, ReadError>,
     ) -> Result<Out, ReadError> {
         let at = self.at();
-        let max = self.work.limits.max_prealloc;
+        let first = self.work.first_room(count, self.remaining(), min);
         let mut items = self.builder.vec();
         items
-            .reserve_exact(first_reserve(count, self.remaining(), min, max))
+            .reserve_exact(first)
             .map_err(|e| charge_error(at, e))?;
-        for _ in 0..count {
+        for i in 0..count {
             self.work.values(1, self.at())?;
-            grow_step(&mut items, count, max).map_err(|e| charge_error(self.at(), e))?;
+            grow_step(&mut items, count).map_err(|e| charge_error(self.at(), e))?;
             let before = self.pos;
             let v = item(self)?;
             if self.pos <= before {
@@ -348,6 +348,7 @@ impl Reader<'_, '_> {
             }
             v.push_to(&mut items)
                 .map_err(|e| charge_error(self.at(), e))?;
+            self.work.filled(i, first);
         }
         Ok(Out::Built(self.builder.list(items)))
     }

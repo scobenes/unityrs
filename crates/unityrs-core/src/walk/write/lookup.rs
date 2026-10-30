@@ -2,9 +2,9 @@
 //! in steps linear in the children, as a Python dict finds it ([`Lookup`]),
 //! and the name tables it builds for a miss, built once per dict
 //! ([`NameTable`], [`KeptTables`]). Every step of it is the open's work,
-//! counted on the write's [`OpenWork`] before it is taken: a pass over the
-//! children or a slot cleared, [`STEP_WORK`]; a name compared or hashed,
-//! [`STEP_WORK`] and its bytes.
+//! counted on the write's [`OpenWork`] before it is taken: a slot a table
+//! grows by, [`STEP_WORK`]; a name compared or hashed, [`STEP_WORK`] and its
+//! bytes.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crate::limits::{Charge, Meter, MeteredVec, hash_table_cost};
 use crate::typetree::{NodeId, Tree};
 use crate::value::{Map, Parsed, Value};
-use crate::walk::dict::{slot_count, steps};
+use crate::walk::dict::steps;
 use crate::walk::{OpenWork, STEP_WORK, WriteError};
 
 /// The open's work of a step that reads `name`'s bytes.
@@ -36,7 +36,12 @@ pub(super) struct Lookup<'a> {
     map: &'a Map,
     /// Keyed by this node's children: read through it.
     native: bool,
-    /// Slot to position, for a node whose children repeat a name.
+    /// Keeps each slot's position: native, for a node whose children repeat
+    /// a name.
+    keyed: bool,
+    /// Slot to position, for a keyed lookup, grown as the children find
+    /// their entries: a child's slot is at most the number of children
+    /// before it, so it holds no more than one slot a child written.
     found: MeteredVec<u32>,
     cursor: usize,
     by_name: Option<NameTable<'a>>,
@@ -45,13 +50,7 @@ pub(super) struct Lookup<'a> {
 const UNSET: u32 = u32::MAX;
 
 impl<'a> Lookup<'a> {
-    pub(super) fn new(
-        parsed: &'a Parsed,
-        tree: &Tree,
-        node: NodeId,
-        map: &'a Map,
-        work: &mut OpenWork<'_>,
-    ) -> Result<Self, WriteError> {
+    pub(super) fn new(parsed: &'a Parsed, tree: &Tree, node: NodeId, map: &'a Map) -> Self {
         let kids = tree.list().children(node);
         // (A dict read through a same-named sibling, which a repeated name
         // hands this node, is keyed by that sibling's children.)
@@ -63,28 +62,21 @@ impl<'a> Lookup<'a> {
                 .entries()
                 .first()
                 .is_none_or(|(k, _)| kids.binary_search_by_key(&k.0, |c| c.0).is_ok());
-        let mut found: MeteredVec<u32> = MeteredVec::new(parsed.charge().meter());
         // Only a node whose children repeat a name keeps its slots' positions
         // (each child of any other has a slot of its own, found at the
-        // cursor): a pass to count them and a pass to clear them, steps of
-        // the open's work, counted first.
-        if native && tree.info(node).is_some_and(|i| i.dup_names) {
-            work.steps(kids.len()).map_err(WriteError::Limit)?;
-            let slots = slot_count(tree, node);
-            work.steps(slots).map_err(WriteError::Limit)?;
-            found.reserve_exact(slots).map_err(WriteError::Charge)?;
-            steps(slots);
-            for _ in 0..slots {
-                found.push(UNSET).map_err(WriteError::Charge)?;
-            }
-        }
-        Ok(Self {
+        // cursor), in a table grown as its children find their entries
+        // ([`Self::get`]): no pass over the children first (review round 7's
+        // sweep: a pass to count the slots and a pass to clear them, before
+        // the first child was written).
+        let keyed = native && tree.info(node).is_some_and(|i| i.dup_names);
+        Self {
             map,
             native,
-            found,
+            keyed,
+            found: MeteredVec::new(parsed.charge().meter()),
             cursor: 0,
             by_name: None,
-        })
+        }
     }
 
     /// `child`'s entry; a miss uses `kept`'s table for the dict when given.
@@ -134,8 +126,20 @@ impl<'a> Lookup<'a> {
                 }
             }
         };
-        if let (Some(p), Some(f)) = (pos, slot.and_then(|s| self.found.as_mut_slice().get_mut(s))) {
-            *f = u32::try_from(p).unwrap_or(UNSET);
+        if let (Some(p), Some(s), true) = (pos, slot, self.keyed) {
+            // The table grows to the slot, each slot a step, counted first.
+            let more = (s + 1).saturating_sub(self.found.len());
+            if more > 0 {
+                work.steps(more).map_err(WriteError::Limit)?;
+                steps(more);
+                self.found.reserve(more).map_err(WriteError::Charge)?;
+                for _ in 0..more {
+                    self.found.push(UNSET).map_err(WriteError::Charge)?;
+                }
+            }
+            if let Some(f) = self.found.as_mut_slice().get_mut(s) {
+                *f = u32::try_from(p).unwrap_or(UNSET);
+            }
         }
         if let Some(p) = pos
             && p >= self.cursor

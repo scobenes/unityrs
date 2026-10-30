@@ -598,7 +598,7 @@ impl<'a> Writer<'a, '_> {
     #[inline(never)]
     fn class_dict(&mut self, tree: &Tree, node: NodeId, m: &'a Map) -> Result<(), WriteError> {
         let outer = self.has_registry;
-        let mut find = Lookup::new(self.parsed, tree, node, m, &mut self.open)?;
+        let mut find = Lookup::new(self.parsed, tree, node, m);
         self.children(tree, node, |w| {
             for c in tree.list().children(node) {
                 visit();
@@ -633,7 +633,7 @@ impl<'a> Writer<'a, '_> {
         let Obj::V(Value::Dict(m)) = o else {
             return Err(Self::mismatch(tree, node, "dict"));
         };
-        let mut find = Lookup::new(self.parsed, tree, node, m, &mut self.open)?;
+        let mut find = Lookup::new(self.parsed, tree, node, m);
         let mut data: Option<Data> = None;
         self.children(tree, node, |w| {
             for c in kids {

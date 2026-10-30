@@ -29,6 +29,8 @@ Files:
   of it; the outcome only (`pos` or the exception), not the value.
 - `elements.json`: arrays at and past the zero-size element bound, from
   `walk_elements.py` (its module docs give the recipe and the encoding).
+- `reentry.json`: reads that hold many values open at once to the end of
+  the bytes, from `walk_reentry.py` (likewise).
 
 `--boost-reach` writes no fixture: for each depth shape it prints the most
 `A`s UnityPyBoost reads before the C stack of the process's main thread
@@ -84,6 +86,7 @@ from walk_build import (  # noqa: E402
     write,
 )
 from walk_elements import element_cases  # noqa: E402
+from walk_reentry import reentry_cases, reentry_ok_cases  # noqa: E402
 
 
 # --- R cases
@@ -750,7 +753,7 @@ def dump_matrix(m):
 
 
 def fixtures():
-    cases = [run_case(c) for c in r_cases() + py_cases() + w_cases()]
+    cases = [run_case(c) for c in r_cases() + reentry_ok_cases() + py_cases() + w_cases()]
     names = [c["name"] for c in cases]
     assert len(names) == len(set(names)), "case names repeat"
     return {
@@ -760,6 +763,7 @@ def fixtures():
         "py_attrs.json": compact(py_attrs()) + "\n",
         "depth.json": dump_list(depth_cases()),
         "elements.json": dump_list(element_cases()),
+        "reentry.json": dump_list(reentry_cases()),
     }
 
 

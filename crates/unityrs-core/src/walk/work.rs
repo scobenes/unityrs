@@ -3,7 +3,7 @@
 //! module docs of [`super`], "Work"; plan 3.10, "Bounds" and "Work per
 //! open".
 
-use super::{ReadDetail, ReadError, ReadErrorKind, limit_error};
+use super::{ReadDetail, ReadError, ReadErrorKind, first_reserve, limit_error};
 use crate::error::{LimitError, LimitKind};
 use crate::limits::{Limits, Meter};
 use crate::value::Value;
@@ -19,10 +19,10 @@ use crate::value::Value;
 pub const VALUE_WORK: u64 = size_of::<Value>() as u64;
 
 /// The open's work one step costs a read or a write that builds no value,
-/// in bytes: a step of a pass over a node's children or a dict's entries
-/// that sizes a dict, clears its slots or finds a name, and an entry a name
-/// table indexes. 8, as a step of a bundle read (plan 3.6, "What a read
-/// costs"). A name a step compares or hashes counts its bytes besides.
+/// in bytes: a slot a dict's table of positions grows by, an entry a lookup
+/// by name passes, and an entry a name table indexes. 8, as a step of a
+/// bundle read (plan 3.6, "What a read costs"). A name a step compares or
+/// hashes counts its bytes besides.
 pub const STEP_WORK: u64 = 8;
 
 /// The most work a read or a write counts on its own before it adds it to
@@ -124,6 +124,9 @@ pub(crate) struct Work<'m> {
     pub(crate) values: u64,
     pub(crate) zero_size: u64,
     pub(crate) depth: u32,
+    /// Elements the read's open lists reserved before their bytes were read
+    /// and have not filled yet ([`Self::first_room`]).
+    unfilled: usize,
     /// The open's work, counted as the read goes.
     pub(crate) open: OpenWork<'m>,
     pub(crate) limits: Limits,
@@ -138,9 +141,32 @@ impl<'m> Work<'m> {
             values: 0,
             zero_size: 0,
             depth: 0,
+            unfilled: 0,
             open,
             limits,
         })
+    }
+
+    /// The first reservation of a list of `len` elements of at least
+    /// `min_size` bytes each, `remaining` bytes left ([`first_reserve`]): at
+    /// most what the read's open lists leave of `max_prealloc`, so every
+    /// list a read holds open at once (vectors nested in vectors, a ref type
+    /// re-entered level after level) reserves no more together than one may
+    /// (review round 7's sweep: each reserved `max_prealloc` of its own, so
+    /// a read nested `d` deep held `d` times it before the bytes were read).
+    /// It is unfilled until [`Self::filled`] counts its elements.
+    pub(crate) fn first_room(&mut self, len: usize, remaining: usize, min_size: u32) -> usize {
+        let room = self.limits.max_prealloc.saturating_sub(self.unfilled);
+        let first = first_reserve(len, remaining, min_size, room);
+        self.unfilled = self.unfilled.saturating_add(first);
+        first
+    }
+
+    /// Element `i` of a list whose first reservation was `first` is read.
+    pub(crate) fn filled(&mut self, i: usize, first: usize) {
+        if i < first {
+            self.unfilled = self.unfilled.saturating_sub(1);
+        }
     }
 
     /// Counts what is left of the read's work on its open's meter, whatever

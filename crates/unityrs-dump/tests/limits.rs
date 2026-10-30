@@ -663,7 +663,8 @@ fn container_stack_probe() {
 /// Whether a nest of `levels` dumps (`mode` "eager" or "reverse") on a
 /// worker of `stack` bytes, in a child process: false for a stack overflow
 /// only, and any other failure of the child (a panic, an allocation that
-/// failed, a kill under memory pressure) fails the test with what it was
+/// failed, a kill under memory pressure on every one of its runs: a killed
+/// child is run again) fails the test with what it was
 /// (`unityrs_testkit::stack::run`; review round 5: every unsuccessful
 /// child read as an overflow).
 fn fits(levels: u32, stack: usize, mode: &str) -> bool {

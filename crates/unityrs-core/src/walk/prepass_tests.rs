@@ -2,19 +2,22 @@
 //! child had already passed over all of its children to size its dict, so
 //! K objects over one class of `k` children, each failing at its first
 //! child, cost K x `k` steps that nothing counted (the reviewer's input:
-//! 65,536 objects of one byte over a class of 2^20 children). A
-//! class whose children neither repeat a name nor hold a registry now sizes
-//! its dict without a pass, in [`STEPS`] that do not grow with its
-//! children; any other class, and a `ReferencedObject`, counts its passes as
-//! the open's work before it makes them (`tests/walk_prepass.rs` stops K
-//! of them at the open's allowance).
+//! 65,536 objects of one byte over a class of 2^20 children). Fix pass 6
+//! dropped the pass for a class whose children neither repeat a name nor
+//! hold a registry, and counted the others' passes as the open's work, so
+//! K reads over a class that repeats a name stopped at the open's allowance
+//! where UnityPy read them all (review round 7, LOW). Now no read passes
+//! over a node's children before it reads them: a dict grows as they are
+//! read, and so does its table of each name's position (`dict::Dict`), so a
+//! read failing at the first child takes [`STEPS`], loop turns and work that
+//! do not grow with the children, whatever the node.
 
 use std::sync::Arc;
 
 use bytes::Bytes;
 
 use super::dict::{STEPS, VISITS};
-use super::{ReadCtx, ReadDetail, ReadOptions, RefTypes, STEP_WORK, boost, python};
+use super::{ReadCtx, ReadDetail, ReadOptions, RefTypes, boost, python};
 use crate::limits::{Limits, Meter};
 use crate::stream::Endian;
 use crate::typetree::{NodeList, NodeRow, Tree};
@@ -94,33 +97,23 @@ fn failing_read(reader: &str, tree: &Arc<Tree>) -> (u64, u64, u64) {
 const WIDE: usize = 1 << 16;
 
 /// The reviewer's input, one object of it: a read failing at the first of
-/// a plain class's children takes the same steps, turns and work for 4
-/// children as for 2^16, in both readers.
+/// a node's children takes the same steps, turns and work for 4 children as
+/// for 2^16, in both readers, for a plain class (review round 6), and for a
+/// class whose children repeat a name or hold a registry and a
+/// `ReferencedObject`, which passed over all of them first (review round 7).
 #[test]
-fn a_read_failing_at_a_plain_class_first_child_takes_no_pass_over_the_rest() {
-    for reader in ["boost", "python"] {
-        let few = failing_read(reader, &wide(4, Shape::Plain));
-        let many = failing_read(reader, &wide(WIDE, Shape::Plain));
-        assert_eq!(many, few, "{reader}: 2^16 children against 4");
-        assert!(few.0 <= 4 && few.1 == 1, "{reader}: {few:?}");
-    }
-}
-
-/// A class whose children repeat a name or hold a registry, and a
-/// `ReferencedObject`, still pass over their children before the first is
-/// read: every step of those passes is counted as the open's work first,
-/// in both readers.
-#[test]
-fn a_pass_over_a_class_children_is_counted_before_it_is_made() {
-    let n = u64::try_from(WIDE).unwrap();
-    for shape in [Shape::Dup, Shape::Registry, Shape::Referenced] {
+fn a_read_failing_at_a_node_first_child_takes_no_pass_over_the_rest() {
+    for shape in [Shape::Plain, Shape::Dup, Shape::Registry, Shape::Referenced] {
         for reader in ["boost", "python"] {
-            let (steps, visits, work) = failing_read(reader, &wide(WIDE, shape));
-            assert!(steps >= n, "{reader} {shape:?}: {steps} steps");
-            assert!(visits <= 2, "{reader} {shape:?}: {visits} turns");
+            let few = failing_read(reader, &wide(4, shape));
+            let many = failing_read(reader, &wide(WIDE, shape));
+            assert_eq!(many, few, "{reader} {shape:?}: 2^16 children against 4");
+            assert!(few.0 <= 4 && few.1 <= 2, "{reader} {shape:?}: {few:?}");
+            // The value read and the ones around it, at most.
             assert!(
-                work >= steps * STEP_WORK,
-                "{reader} {shape:?}: {work} work for {steps} steps"
+                few.2 <= 8 * super::VALUE_WORK,
+                "{reader} {shape:?}: {} work",
+                few.2
             );
         }
     }
