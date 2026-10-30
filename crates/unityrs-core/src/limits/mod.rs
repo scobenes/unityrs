@@ -164,7 +164,11 @@ pub struct Limits {
     /// length takes the reader back to its start. An element that reads a
     /// byte is never counted, whatever its tree. Default 2^20.
     pub max_zero_size_elements: u64,
-    /// Elements reserved before the bytes prove they exist. Default 2^16.
+    /// Elements a read reserves before the bytes prove they exist, in all
+    /// the lists it holds open at once (a list nested in another, or in a
+    /// `ReferencedObject` re-entering its ref type, has what its outer
+    /// lists left); each list grows past its first reservation as it is
+    /// filled. Default 2^16.
     pub max_prealloc: usize,
 }
 

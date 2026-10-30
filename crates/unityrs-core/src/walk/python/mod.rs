@@ -60,15 +60,11 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::dict::{
-    Dict, FindError, RefIndex, RefNode, Trees, flags, ref_object_size, ref_tree, slot_count,
-    slot_of, steps, visit,
-};
+use super::dict::{Dict, FindError, RefIndex, RefNode, Trees, ref_tree, visit};
 use super::{
     FloatMode, Out, ReadCtx, ReadDetail, ReadError, ReadErrorKind, RefTypes, Work, charge_error,
     f32_bits, int, limit_refused, uint,
 };
-use crate::limits::MeteredVec;
 use crate::raw::RawStr;
 use crate::stream::{Endian, py_align, py_read, py_unpack_from};
 use crate::typetree::{Kind, NodeId, Tree};
@@ -88,7 +84,6 @@ pub fn read(
     let builder =
         ValueBuilder::new(ctx.meter, tree.list().clone()).map_err(|e| charge_error(0, e))?;
     let trees = Trees::new(&builder, tree)?;
-    let scratch = builder.vec();
     let mut r = Reader {
         data: file,
         bytes: file.as_ref(),
@@ -102,7 +97,6 @@ pub fn read(
         trees,
         work,
         has_registry: false,
-        scratch,
     };
     let value = r.value(tree, 0, tree.root());
     let at = r.at();
@@ -136,7 +130,6 @@ struct Reader<'a, 'c> {
     work: Work<'c>,
     /// `config.has_registry`.
     has_registry: bool,
-    scratch: MeteredVec<u32>,
 }
 
 /// A fixed-width number from its bytes in the file's order.
@@ -406,6 +399,8 @@ impl Reader<'_, '_> {
         self.frame(|r| r.dict(t, lx, node, false))
     }
 
+    /// A class's dict, grown as its children are read ([`Dict`]): no pass
+    /// over them first (review round 7, as in UnityPyBoost's reader).
     fn dict(
         &mut self,
         t: &Arc<Tree>,
@@ -416,24 +411,8 @@ impl Reader<'_, '_> {
         let at = self.at();
         let kids = t.list().children(node);
         let is_registry = |c: NodeId| registry && t.py_kind(c) == Kind::ManagedReferencesRegistry;
-        let info = t.info(node);
-        let dup = info.is_some_and(|i| i.dup_names);
-        // A registry by `py_kind` is one by the compiled kind as well, so a
-        // class with none of the latter has none of the former.
-        let (reserve, width) = if dup || (registry && info.is_none_or(|i| i.has_registry)) {
-            self.dict_size(t, node, registry, dup, at)?
-        } else {
-            // Every child is read, under a name of its own.
-            (kids.len(), 0)
-        };
-        let mut d = Dict::new(
-            &self.builder,
-            &mut self.scratch,
-            &mut self.work,
-            reserve,
-            width,
-            at,
-        )?;
+        let dup = t.info(node).is_some_and(|i| i.dup_names);
+        let mut d = Dict::new(&self.builder, kids.len(), dup, at)?;
         let outer = self.has_registry;
         for c in kids {
             visit();
@@ -450,64 +429,18 @@ impl Reader<'_, '_> {
             let v = self.value(t, lx, *c)?;
             let (key, slot) = t.info(*c).map_or((*c, 0), |i| (i.key, i.slot));
             let at = self.at();
-            d.set(&mut self.scratch, key, slot, v, at)?;
+            d.set(&mut self.work, key, slot, v, at)?;
         }
         self.has_registry = outer;
-        Ok(d.finish(&self.builder, &mut self.scratch, lx))
-    }
-
-    /// The entries a dict's read will set, the distinct names of the
-    /// children it reads, and its slots (0 when no name repeats), for a
-    /// class whose children repeat a name or hold a registry: passes over
-    /// its children, each child (and each slot a pass clears) a step of the
-    /// read's work, counted before the pass (review round 6, as UnityPyBoost's
-    /// reader's `class_size`).
-    fn dict_size(
-        &mut self,
-        t: &Arc<Tree>,
-        node: NodeId,
-        registry: bool,
-        dup: bool,
-        at: u64,
-    ) -> Result<(usize, usize), ReadError> {
-        let kids = t.list().children(node);
-        let is_registry = |c: NodeId| registry && t.py_kind(c) == Kind::ManagedReferencesRegistry;
-        let mut reg = self.has_registry;
-        let width = if dup {
-            self.work.steps(kids.len(), at)?;
-            slot_count(t, node)
-        } else {
-            0
-        };
-        self.work.steps(width.saturating_add(kids.len()), at)?;
-        let mut seen = flags(&self.builder, width, at)?;
-        let mut reserve = 0;
-        for c in kids {
-            steps(1);
-            if is_registry(*c) {
-                if reg {
-                    continue;
-                }
-                reg = true;
-            }
-            let slot = t.info(*c).map_or(0, |i| i.slot as usize);
-            if !dup {
-                reserve += 1;
-            } else if let Some(s) = seen.as_mut_slice().get_mut(slot)
-                && !*s
-            {
-                *s = true;
-                reserve += 1;
-            }
-        }
-        Ok((reserve, width))
+        d.finish(&self.builder, lx, self.at())
     }
 
     /// A `ReferencedObject` (`:197-206`), or an aligned array's element
     /// (`:294-304`, `in_array`), where a ref type with no node is read as
-    /// `read_value(None)` and raises. Its dict's slots are counted and its
-    /// `type` found by passes over its children, each child (and each slot
-    /// cleared) a step of the read's work, counted before the pass.
+    /// `read_value(None)` and raises. Its dict grows as its children are
+    /// read and keeps each name's position ([`Dict`]), and its `type` is the
+    /// entry of the first child named `type` read so far, as in the Boost
+    /// reader: no pass over its children first (review round 7).
     fn ref_object(
         &mut self,
         t: &Arc<Tree>,
@@ -517,33 +450,24 @@ impl Reader<'_, '_> {
     ) -> Result<Out, ReadError> {
         let at = self.at();
         let kids = t.list().children(node);
-        // The data child is read only when it resolves, as in the Boost
-        // reader, so it is reserved as it comes.
-        let is_data = |c| t.py_kind(c) == Kind::ReferencedObjectData;
-        let (reserve, width) =
-            ref_object_size(&self.builder, &mut self.work, t, node, is_data, at)?;
-        self.work.steps(kids.len(), at)?;
-        let type_slot = slot_of(t, node, b"type");
-        let mut d = Dict::new(
-            &self.builder,
-            &mut self.scratch,
-            &mut self.work,
-            reserve,
-            width,
-            at,
-        )?;
+        let mut d = Dict::new(&self.builder, kids.len(), true, at)?;
+        // The slot of the children named `type`, once one is visited.
+        let mut type_slot = None;
         // The current `type`'s resolution, kept until a child sets `type`
         // again, as the Boost reader keeps it.
         let mut resolved: Option<Option<RefNode>> = None;
         for c in kids {
             visit();
             let (key, slot) = t.info(*c).map_or((*c, 0), |i| (i.key, i.slot));
+            if type_slot.is_none() && t.info(*c).is_some() && t.list().name(*c) == b"type" {
+                type_slot = Some(slot);
+            }
             let v = if t.py_kind(*c) == Kind::ReferencedObjectData {
                 let node = if let Some(r) = &resolved {
                     r.clone()
                 } else {
                     let ty = type_slot
-                        .and_then(|s| d.position(&self.scratch, s))
+                        .and_then(|s| d.position(s))
                         .and_then(|p| d.entries.as_slice().get(p))
                         .map(|(_, v)| v);
                     resolved.insert(self.ref_node(ty)?).clone()
@@ -567,12 +491,12 @@ impl Reader<'_, '_> {
                 self.value(t, lx, *c)?
             };
             let at = self.at();
-            d.set(&mut self.scratch, key, slot, v, at)?;
+            d.set(&mut self.work, key, slot, v, at)?;
             if Some(slot) == type_slot {
                 resolved = None;
             }
         }
-        Ok(d.finish(&self.builder, &mut self.scratch, lx))
+        d.finish(&self.builder, lx, self.at())
     }
 
     /// `get_ref_type_node` (`TypeTreeHelper.py:88-109`) on the dict read so

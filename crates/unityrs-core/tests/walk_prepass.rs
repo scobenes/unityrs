@@ -6,20 +6,22 @@
 //! nothing counted them, so the open's work never stopped the reads (the
 //! reviewer's input: 65,536 objects over 2^20 children).
 //!
-//! A class whose children neither repeat a name nor hold a registry now
-//! takes no pass (`walk::prepass_tests` counts its steps); its reads cost
-//! what a read of one value costs, whatever `N`. A class whose children
-//! repeat a name still passes over them, and counts each step as the open's
-//! work before it is taken, so the reads that pass over them stop at the
-//! open's allowance: the read whose pass would take the open past it is
-//! refused, and every later one, with `DecodeWork`.
+//! No read passes over a class's children before it reads them
+//! (`walk::prepass_tests` counts its steps): its reads cost what a read of
+//! one value costs, whatever `N`, so K of them are each read to their own
+//! failure, as UnityPy reads them, under an allowance that holds a few
+//! passes over `N` children. Fix pass 6 still passed over the children of a
+//! class that repeats a name, counted as the open's work, so its reads
+//! stopped at the allowance: review round 7 (claude B, LOW) found most of
+//! K such reads refused with `DecodeWork` where UnityPy gave
+//! `out_of_bounds` for every one.
 //!
 //!     scripts/dev cargo test -p unityrs-core --test walk_prepass
 
 use std::sync::Arc;
 
 use unityrs_core::limits::Meter;
-use unityrs_core::walk::{ParseError, ReadDetail, ReadError, STEP_WORK, WORK_CHUNK};
+use unityrs_core::walk::{ParseError, ReadDetail, ReadError, STEP_WORK};
 use unityrs_core::{Bytes, FileContext, LimitError, LimitKind, Parsed, RawStr, SerializedFile};
 use unityrs_testkit::blob::NodeSpec;
 use unityrs_testkit::serialized::{ObjectSpec, build, one_object};
@@ -76,7 +78,8 @@ fn read_all(data: &[u8], max_decode_work: u64) -> (u64, u64, Vec<Result<Parsed, 
     (load, m.decoded() - load, outcomes)
 }
 
-/// The read's own failure, or its `DecodeWork` refusal.
+/// `None` for the read's own failure, where its bytes end (UnityPy's
+/// `EOFError` or `struct.error`), or its `DecodeWork` refusal.
 fn refusal(o: &Result<Parsed, ParseError>) -> Option<LimitError> {
     match o {
         Err(ParseError::Read(ReadError {
@@ -86,63 +89,34 @@ fn refusal(o: &Result<Parsed, ParseError>) -> Option<LimitError> {
             assert_eq!(l.kind, LimitKind::DecodeWork, "{o:?}");
             Some(*l)
         }
-        Err(ParseError::Read(_)) => None,
-        o => panic!("not a read's failure: {o:?}"),
+        Err(ParseError::Read(ReadError {
+            detail: ReadDetail::Eof { .. },
+            ..
+        })) => None,
+        o => panic!("not a read failing where its bytes end: {o:?}"),
     }
 }
 
-/// A read failing at a plain class's first child counts as much work for 4
-/// children as for 2^16, and every one of K such reads fails on its own,
-/// under an allowance that holds a few reads' passes over 2^16 children.
+/// A read failing at a class's first child counts as much work for 4
+/// children as for 2^16, whether the class's names are all distinct or one
+/// repeats, and every one of K such reads fails where its bytes end, as
+/// UnityPy's does, under an allowance that holds a few reads' passes over
+/// 2^16 children.
 #[test]
-fn reads_failing_at_a_plain_class_first_child_cost_one_value() {
+fn reads_failing_at_a_class_first_child_cost_one_value() {
     let allowance = 8 * u64::try_from(N).unwrap() * STEP_WORK;
-    for byte_size in [1, 0] {
-        let (_, few, _) = read_all(&objects(K, 4, false, byte_size), u64::MAX);
-        let (load, many, outcomes) = read_all(&objects(K, N, false, byte_size), u64::MAX);
-        assert_eq!(many, few, "byte_size {byte_size}: 2^16 children against 4");
-        let (_, bounded, outcomes_bounded) =
-            read_all(&objects(K, N, false, byte_size), load + allowance);
-        assert_eq!(bounded, many, "byte_size {byte_size}");
-        for o in outcomes.iter().chain(&outcomes_bounded) {
-            assert_eq!(refusal(o), None, "byte_size {byte_size}: {o:?}");
+    for dup in [false, true] {
+        for byte_size in [1, 0] {
+            let what = format!("dup {dup}, byte_size {byte_size}");
+            let (_, few, _) = read_all(&objects(K, 4, dup, byte_size), u64::MAX);
+            let (load, many, outcomes) = read_all(&objects(K, N, dup, byte_size), u64::MAX);
+            assert_eq!(many, few, "{what}: 2^16 children against 4");
+            let (_, bounded, outcomes_bounded) =
+                read_all(&objects(K, N, dup, byte_size), load + allowance);
+            assert_eq!(bounded, many, "{what}");
+            for o in outcomes.iter().chain(&outcomes_bounded) {
+                assert_eq!(refusal(o), None, "{what}: {o:?}");
+            }
         }
-    }
-}
-
-/// A read failing at the first child of a class whose children repeat a
-/// name passes over them first, and counts the pass: K such reads stop at
-/// the open's allowance, the read whose pass would pass it refused with
-/// `DecodeWork` and every later one too, the reads' work within a chunk of
-/// the allowance. Before the fix every read made its passes, uncounted.
-#[test]
-fn reads_passing_over_a_class_children_stop_at_the_opens_work() {
-    let n = u64::try_from(N).unwrap();
-    for byte_size in [1, 0] {
-        let data = objects(K, N, true, byte_size);
-        let (load, all, outcomes) = read_all(&data, u64::MAX);
-        let per_read = all / u64::try_from(K).unwrap();
-        // The two passes and the slots of its dict, at the least.
-        assert!(
-            per_read >= 2 * n * STEP_WORK,
-            "byte_size {byte_size}: {per_read}"
-        );
-        for o in &outcomes {
-            assert_eq!(refusal(o), None, "byte_size {byte_size}: {o:?}");
-        }
-        let max = load + 4 * per_read + per_read / 2;
-        let (_, reads, outcomes) = read_all(&data, max);
-        assert!(
-            load + reads <= max + WORK_CHUNK,
-            "byte_size {byte_size}: the reads stop: {reads}"
-        );
-        let own = outcomes.iter().filter(|o| refusal(o).is_none()).count();
-        assert!(
-            (4..=5).contains(&own),
-            "byte_size {byte_size}: {own} reads made their passes"
-        );
-        let refused: Vec<_> = outcomes.iter().filter_map(refusal).collect();
-        assert_eq!(own + refused.len(), K);
-        assert!(refused.iter().all(|l| l.value > max), "{refused:?}");
     }
 }

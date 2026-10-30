@@ -6,14 +6,21 @@
 //! ("Linear dicts") and the ref-type search ([`RefIndex`], which the writer
 //! shares too).
 //!
-//! **Linear dicts.** A class's entries grow in a metered vector sized from
-//! the compiled tree (its distinct child names that the read will set). A
-//! class whose children repeat a name keeps a per-read scratch from each
-//! name's `slot` to its entry's position, so a repeated name overwrites its
-//! first entry in place (`PyDict_SetItem`: first position, last value) in
-//! O(1), and a name a skipped child would have set first lands where the
-//! first child actually read puts it. The scratch is a region of one
-//! metered stack, cleared per class read.
+//! **Linear dicts.** A class's entries grow in a metered vector as its
+//! children are read, as a Python dict grows as `PyDict_SetItem` fills it:
+//! a first reservation of at most [`DICT_FIRST`] entries, then
+//! geometrically, never past its children ([`Dict`]). A class whose
+//! children repeat a name, and a `ReferencedObject` (whose `type` is looked
+//! up by name), keep a table from each name's `slot` to its entry's
+//! position, so a repeated name overwrites its first entry in place
+//! (`PyDict_SetItem`: first position, last value) in O(1), and a name a
+//! skipped child would have set first lands where the first child actually
+//! read puts it. The table too grows as the children are set: a child's
+//! slot is at most the number of children before it. So a read makes no
+//! pass over a class's children before it reads them, and holds no entry or
+//! slot the tree sizes before its bytes are read (review round 7: a class
+//! reserved one entry a child before reading any, and every level of a
+//! `ReferencedObject` nested in its ref type held its own).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,10 +41,10 @@ const NONE: u32 = u32::MAX;
 
 #[cfg(test)]
 std::thread_local! {
-    /// Map steps this thread took: each slot cleared, each entry set or
-    /// looked up, each entry a lookup by name passes, each ref type or node
-    /// list a search passes; the writer's lookups too (the linear-work
-    /// tests).
+    /// Map steps this thread took: each slot a table of positions grows
+    /// by, each entry set or looked up, each entry a growth may copy, each
+    /// entry a lookup by name passes, each ref type or node list a search
+    /// passes; the writer's lookups too (the linear-work tests).
     pub(super) static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -67,80 +74,81 @@ pub(crate) fn visit() {
     VISITS.with(|s| s.set(s.get().saturating_add(1)));
 }
 
-/// One dict being read: its entries and its region of the slot scratch.
+/// The most entries a dict reserves before its first child is read: one
+/// for each child up to this many. A dict grows past it geometrically as its
+/// children are set, so a read holds no more than this many entries a dict
+/// that it has not filled, beyond as many again as it has filled (review
+/// round 7: every `ReferencedObject` level re-entering a ref type of `k`
+/// children held `k` entries reserved while the next level was read,
+/// gigabytes for a few kilobytes of data).
+pub const DICT_FIRST: usize = 16;
+
+/// One dict being read: its entries, and the position of each name's entry
+/// when its keys may repeat.
 #[derive(Debug)]
 pub(crate) struct Dict {
     pub(crate) entries: MeteredVec<(NodeId, Value)>,
-    /// Start of this dict's region in the scratch; `None` when the class
-    /// repeats no name and entries are only pushed.
-    base: Option<usize>,
-    /// The most entries it can come to: its slots, one a distinct name, or
-    /// what it reserved when it has none.
+    /// Each slot's entry position ([`NONE`]: not set yet), for a dict whose
+    /// keys may repeat or which is looked up by name; `None` when its
+    /// children's names are all distinct and its entries are only pushed.
+    /// It covers the slots set so far, and a child's slot is at most the
+    /// number of children before it, so it holds no more than one slot a
+    /// child read.
+    slots: Option<MeteredVec<u32>>,
+    /// The most entries it can come to: one a child.
     most: usize,
 }
 
 impl Dict {
-    /// Starts a dict of `reserve` entries. A dict whose keys may repeat
-    /// (`slots > 0`) takes a region of `slots` positions in `scratch`,
-    /// each cleared a step of the read's work ([`Work::steps`]).
+    /// Starts the dict of a node of `children` children, reserving at most
+    /// [`DICT_FIRST`] entries; `keyed` keeps each name's position (a class
+    /// whose children repeat a name, a `ReferencedObject`).
     pub(crate) fn new(
         builder: &ValueBuilder,
-        scratch: &mut MeteredVec<u32>,
-        work: &mut Work<'_>,
-        reserve: usize,
-        slots: usize,
+        children: usize,
+        keyed: bool,
         at: u64,
     ) -> Result<Self, ReadError> {
         let mut entries = builder.vec();
         entries
-            .reserve_exact(reserve)
+            .reserve_exact(children.min(DICT_FIRST))
             .map_err(|e| charge_error(at, e))?;
-        let base = if slots > 0 {
-            work.steps(slots, at)?;
-            let base = scratch.len();
-            scratch.reserve(slots).map_err(|e| charge_error(at, e))?;
-            steps(slots);
-            for _ in 0..slots {
-                scratch.push(NONE).map_err(|e| charge_error(at, e))?;
-            }
-            Some(base)
-        } else {
-            None
-        };
         Ok(Self {
             entries,
-            base,
-            most: reserve.max(slots),
+            slots: keyed.then(|| builder.vec()),
+            most: children,
         })
     }
 
     /// The entry position of `slot`, if set.
-    pub(crate) fn position(&self, scratch: &MeteredVec<u32>, slot: u32) -> Option<usize> {
-        let base = self.base?;
-        let at = scratch
+    pub(crate) fn position(&self, slot: u32) -> Option<usize> {
+        let at = self
+            .slots
+            .as_ref()?
             .as_slice()
-            .get(base.saturating_add(slot as usize))
+            .get(slot as usize)
             .copied()?;
         (at != NONE).then_some(at as usize)
     }
 
     /// `PyDict_SetItem(dict, name, value)`: a key already set keeps its
     /// position and takes the value; a new one is appended. Entries that are
-    /// full (a `ReferencedObject`'s data, which the read may skip, is not
-    /// reserved ahead) grow geometrically, never past the dict's slots, so
-    /// growths that move the entries copy them a bounded number of times
-    /// (review round 6's sweep: growing by exactly one, a dict reserved
-    /// short relied on the allocator's growing it in place).
+    /// full grow geometrically, never past the dict's children, so growths
+    /// that move the entries copy them a bounded number of times (review
+    /// round 6's sweep: growing by exactly one, a dict reserved short relied
+    /// on the allocator's growing it in place). A slot past the table's end
+    /// grows the table to it, each slot a step of the read's work
+    /// ([`Work::steps`]), counted first.
     pub(crate) fn set(
         &mut self,
-        scratch: &mut MeteredVec<u32>,
+        work: &mut Work<'_>,
         key: NodeId,
         slot: u32,
         value: Out,
         at: u64,
     ) -> Result<(), ReadError> {
         steps(1);
-        if let Some(pos) = self.position(scratch, slot) {
+        if let Some(pos) = self.position(slot) {
             value.set_entry(&mut self.entries, pos);
             return Ok(());
         }
@@ -155,27 +163,38 @@ impl Dict {
         value
             .push_entry(&mut self.entries, key)
             .map_err(|e| charge_error(at, e))?;
-        if let Some(base) = self.base
-            && let Some(s) = scratch
-                .as_mut_slice()
-                .get_mut(base.saturating_add(slot as usize))
-        {
-            *s = u32::try_from(pos).unwrap_or(NONE);
+        if let Some(slots) = &mut self.slots {
+            let slot = slot as usize;
+            let more = (slot + 1).saturating_sub(slots.len());
+            if more > 0 {
+                work.steps(more, at)?;
+                steps(more);
+                slots.reserve(more).map_err(|e| charge_error(at, e))?;
+                for _ in 0..more {
+                    slots.push(NONE).map_err(|e| charge_error(at, e))?;
+                }
+            }
+            if let Some(s) = slots.as_mut_slice().get_mut(slot) {
+                *s = u32::try_from(pos).unwrap_or(NONE);
+            }
         }
         Ok(())
     }
 
-    /// The finished dict; its scratch region is released.
+    /// The finished dict, with no spare capacity: a dict whose children set
+    /// fewer entries than it grew to (a repeated name, a skipped child) gives
+    /// the rest back, charged before it moves
+    /// ([`MeteredVec::shrink_to_fit`]).
     pub(crate) fn finish(
-        self,
+        mut self,
         builder: &ValueBuilder,
-        scratch: &mut MeteredVec<u32>,
         list: ListIx,
-    ) -> Out {
-        if let Some(base) = self.base {
-            scratch.truncate(base);
-        }
-        Out::Built(builder.map(list, self.entries))
+        at: u64,
+    ) -> Result<Out, ReadError> {
+        self.entries
+            .shrink_to_fit()
+            .map_err(|e| charge_error(at, e))?;
+        Ok(Out::Built(builder.map(list, self.entries)))
     }
 }
 
@@ -241,80 +260,6 @@ impl Trees {
         }
         Ok(None)
     }
-}
-
-/// How the first child named `name` of `node` is keyed in its dict: its
-/// key's slot. A pass over the children: its caller counts them first.
-pub(crate) fn slot_of(tree: &Tree, node: NodeId, name: &[u8]) -> Option<u32> {
-    let kids = tree.list().children(node);
-    steps(kids.len());
-    kids.iter()
-        .find(|c| tree.list().name(**c) == name)
-        .and_then(|c| tree.info(*c))
-        .map(|i| i.slot)
-}
-
-/// The number of slots a dict of `node`'s children uses (its distinct
-/// names). A pass over the children: its caller counts them first.
-pub(crate) fn slot_count(tree: &Tree, node: NodeId) -> usize {
-    let kids = tree.list().children(node);
-    steps(kids.len());
-    kids.iter()
-        .filter_map(|c| tree.info(*c))
-        .map(|i| i.slot as usize + 1)
-        .max()
-        .unwrap_or(0)
-}
-
-/// `width` flags, all clear, for a pass that finds a dict's distinct names
-/// (each flag a map step; its caller counts them as the open's work first).
-pub(crate) fn flags(
-    builder: &ValueBuilder,
-    width: usize,
-    at: u64,
-) -> Result<MeteredVec<bool>, ReadError> {
-    let mut seen = builder.vec::<bool>();
-    seen.reserve_exact(width).map_err(|e| charge_error(at, e))?;
-    steps(width);
-    for _ in 0..width {
-        seen.push(false).map_err(|e| charge_error(at, e))?;
-    }
-    Ok(seen)
-}
-
-/// The entries a `ReferencedObject`'s dict reserves, its distinct names
-/// but its data's (which a read may skip, and then sets nothing), and its
-/// slots: two passes over its children and one over its slots, each step
-/// counted on `work` first (review round 6: a read that failed at the first
-/// child had made them uncounted).
-pub(crate) fn ref_object_size(
-    builder: &ValueBuilder,
-    work: &mut Work<'_>,
-    tree: &Tree,
-    node: NodeId,
-    is_data: impl Fn(NodeId) -> bool,
-    at: u64,
-) -> Result<(usize, usize), ReadError> {
-    let kids = tree.list().children(node);
-    work.steps(kids.len(), at)?;
-    let width = slot_count(tree, node);
-    work.steps(width.saturating_add(kids.len()), at)?;
-    let mut seen = flags(builder, width, at)?;
-    let mut reserve = 0;
-    for c in kids {
-        steps(1);
-        let Some(ci) = tree.info(*c) else { continue };
-        if is_data(*c) {
-            continue;
-        }
-        if let Some(s) = seen.as_mut_slice().get_mut(ci.slot as usize)
-            && !*s
-        {
-            *s = true;
-            reserve += 1;
-        }
-    }
-    Ok((reserve, width))
 }
 
 /// A ref-type search's refusal: the table's memory, or the open's work.
@@ -530,8 +475,9 @@ mod tests {
 
     /// Plan 3.10, linear dicts: a class of 2^16 children whose last 4,096
     /// repeat the first 4,096 names reads in map steps linear in the
-    /// children (counted, not timed, the passes that size its dict
-    /// included; a dict that looked each name up among its entries would
+    /// children (counted, not timed, the growth of its entries and of its
+    /// table of positions included; a dict that looked each name up among
+    /// its entries would
     /// take some 2^31), each repeated name keeping its
     /// first position and taking its last value, from both readers.
     #[test]

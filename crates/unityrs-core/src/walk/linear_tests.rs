@@ -16,7 +16,7 @@ use super::dict::{STEPS, VISITS};
 use crate::budget::DecodeBuf;
 use crate::error::{LimitError, LimitKind};
 use crate::files::SerializedType;
-use crate::limits::{Limits, Meter};
+use crate::limits::{Limits, Meter, MeteredVec};
 use crate::raw::RawStr;
 use crate::stream::Endian;
 use crate::typetree::{NodeList, NodeRow, Tree};
@@ -491,4 +491,29 @@ fn registries_skipped_on_a_value_that_is_not_a_dict_count_too() {
             assert_write_refused(&format!("{reader} read, {rules:?} write"), &got, visits);
         }
     }
+}
+
+/// Review round 7's sweep: a list read past its first reservation grew by
+/// exact steps of `max_prealloc` elements, so one of `n` moved `n` /
+/// `max_prealloc` times, each move copying every element read so far: `n`²
+/// / `max_prealloc` copies, none of them counted. It now grows
+/// geometrically, never past its length: 2^20 elements past a first
+/// reservation of 2^16 move 4 times (2^17, 2^18, 2^19, 2^20), and end with
+/// no spare capacity.
+#[test]
+fn a_list_past_its_first_reservation_grows_in_logarithmic_moves() {
+    const LEN: usize = 1 << 20;
+    let meter = Meter::unlimited();
+    let mut items: MeteredVec<u8> = MeteredVec::new(&meter);
+    let first = super::first_reserve(LEN, usize::MAX, 1, Limits::default().max_prealloc);
+    items.reserve_exact(first).unwrap();
+    let mut moves = 0;
+    for _ in 0..LEN {
+        let capacity = items.capacity();
+        super::grow_step(&mut items, LEN).unwrap();
+        moves += u32::from(items.capacity() != capacity);
+        items.push(0).unwrap();
+    }
+    assert_eq!(items.capacity(), LEN);
+    assert_eq!(moves, 4);
 }

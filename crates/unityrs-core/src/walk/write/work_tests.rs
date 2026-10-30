@@ -5,6 +5,8 @@
 //! over to find its characters; both now count each byte as the open's work
 //! first. A child's name is cleaned for `getattr` from at most its first
 //! `CLEAN_MAX + 8` bytes, in [`STEPS`] that do not grow with the name.
+//! Review round 7's sweep: a write of a class whose children repeat a name
+//! no longer passes over them before it writes the first.
 
 use std::sync::Arc;
 
@@ -43,7 +45,11 @@ fn read(tree: &Arc<Tree>, data: Vec<u8>) -> Parsed {
 
 /// A write of `p` through `tree`: its outcome, and its open's work.
 fn write(p: &Parsed, tree: &Tree) -> (Result<(), WriteError>, u64) {
-    let limits = Limits::default();
+    write_under(p, tree, Limits::default())
+}
+
+/// [`write`] under `limits`.
+fn write_under(p: &Parsed, tree: &Tree, limits: Limits) -> (Result<(), WriteError>, u64) {
     let wctx = WriteCtx {
         endian: Endian::Little,
         ref_types: RefTypes::List(&[]),
@@ -152,4 +158,44 @@ fn a_long_child_name_is_cleaned_from_its_first_bytes() {
         steps.push(STEPS.with(std::cell::Cell::get));
     }
     assert!(steps[1] <= steps[0] + 64, "{steps:?}");
+}
+
+/// Review round 7's sweep: a write of a dict read through a class whose
+/// children repeat a name kept each name's position in a table it counted
+/// and cleared by two passes over the children before it wrote the first.
+/// The table now grows as the children find their entries, so a write
+/// refused at the first child (past `max_values_per_object`, 1 here: the
+/// root's value) takes the same steps and work for 4 children as for 2^16.
+#[test]
+fn a_write_refused_at_a_class_first_child_takes_no_pass_over_the_rest() {
+    let run = |n: usize| {
+        let mut rows = vec![NodeRow::new(0, "Base", "Base")];
+        for i in 0..n {
+            let name = if i + 1 == n {
+                "c0".to_owned()
+            } else {
+                format!("c{i}")
+            };
+            rows.push(NodeRow::new(1, "int", name.as_str()));
+        }
+        let t = tree(rows);
+        let p = read(
+            &t,
+            (0..n)
+                .flat_map(|i| u32::try_from(i).unwrap().to_le_bytes())
+                .collect(),
+        );
+        let limits = Limits {
+            max_values_per_object: 1,
+            ..Limits::default()
+        };
+        STEPS.with(|s| s.set(0));
+        let (r, work) = write_under(&p, &t, limits);
+        assert!(
+            matches!(&r, Err(WriteError::Limit(l)) if l.kind == LimitKind::ValuesPerObject),
+            "{n}: {r:?}"
+        );
+        (STEPS.with(std::cell::Cell::get), work)
+    };
+    assert_eq!(run(LONG), run(4), "2^16 children against 4");
 }

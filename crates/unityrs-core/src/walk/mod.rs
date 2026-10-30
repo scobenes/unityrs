@@ -15,7 +15,15 @@
 //! the charges ride in the [`Parsed`] (grow through
 //! [`crate::limits::MeteredVec`], then hand its charge to the `Parsed`). A
 //! refused charge is [`ReadDetail::Charge`] (kind `other`). The writer's
-//! output grows the same way.
+//! output grows the same way. What a read reserves before the bytes it holds
+//! are read is bounded apart from the tree's width and the read's depth: a
+//! dict at most [`DICT_FIRST`] entries, growing as its children are set;
+//! the lists a read holds open at once, `max_prealloc` elements in all
+//! (`Work::first_room`), each growing geometrically as it is filled (review
+//! round 7 and its sweep: a dict reserved one entry a child, and each list
+//! open `max_prealloc` of its own, so a `ReferencedObject` re-entering a
+//! wide ref type, or vectors nested in vectors, held that many times over
+//! for a few bytes of data; `tests/walk_reentry.rs`).
 //!
 //! **Work.** Every read and every write counts what it does toward its
 //! open's work ([`crate::limits::Limits::max_decode_work`], the bound every
@@ -24,8 +32,7 @@
 //! element of a primitive run a read holds as a run, or each primitive a
 //! write writes, its bytes (`Work`); each byte of a string a write copies,
 //! or passes over to find its characters; [`STEP_WORK`] for each step that
-//! builds no value: a pass over a class's or a `ReferencedObject`'s children
-//! that sizes its dict, finds a name's slot or clears its slots, an entry a
+//! builds no value: a slot a dict's table of positions grows by, an entry a
 //! lookup by name passes, a name a writer's table indexes or probes (and
 //! the bytes of a name it compares or hashes); and its ref-type lookups, a
 //! ref type a lookup compares or indexes, or a probe, [`VALUE_WORK`] and the
@@ -38,8 +45,10 @@
 //! types again, so K objects over R ref types took K x R steps (fix pass 5's
 //! sweep); and a read failing at a class's first child had passed over all
 //! of its children to size its dict (review round 6: K objects over a class
-//! of `k` children, K x `k` steps). A class whose children neither repeat a
-//! name nor hold a registry, the common case, sizes its dict with no pass.
+//! of `k` children, K x `k` steps; review round 7: the pass that stayed for
+//! a class whose children repeat a name refused such reads with
+//! `DecodeWork` where UnityPy read each to its own failure). No read or
+//! write passes over a class's children before it reads or writes them.
 //!
 //! Each step is counted before it is taken, on the read's or the write's
 //! `OpenWork`, which adds the steps to the open's meter a chunk
@@ -65,6 +74,7 @@ pub mod python;
 mod work;
 pub mod write;
 
+pub use dict::DICT_FIRST;
 pub(crate) use dict::steps;
 pub(crate) use work::{OpenWork, Work, limit_refused};
 pub use work::{STEP_WORK, VALUE_WORK, WORK_CHUNK};
@@ -597,37 +607,30 @@ pub(crate) fn charge_error(at: u64, e: ChargeError) -> ReadError {
     }
 }
 
-/// The capacity a list of `len` elements reserves before its elements are
-/// read: `min(len, remaining / min_size, max_prealloc)` (plan 3.10,
-/// "Bounds"); it then grows by [`grow_step`].
-pub(crate) fn first_reserve(
-    len: usize,
-    remaining: usize,
-    min_size: u32,
-    max_prealloc: usize,
-) -> usize {
+/// The capacity a list of `len` elements may reserve before its elements
+/// are read: `min(len, remaining / min_size, room)`, `room` what the read's
+/// open lists leave of `max_prealloc` (plan 3.10, "Bounds";
+/// `Work::first_room`); it then grows by [`grow_step`].
+pub(crate) fn first_reserve(len: usize, remaining: usize, min_size: u32, room: usize) -> usize {
     let backed = if min_size == 0 {
         usize::MAX
     } else {
         remaining / (min_size as usize)
     };
-    len.min(backed).min(max_prealloc)
+    len.min(backed).min(room)
 }
 
-/// Before pushing element `items.len()` of `len`: grows a full vector by
-/// at most `max_prealloc`, exactly, never past `len`, so the list holds no
-/// spare capacity once it is complete.
-pub(crate) fn grow_step<T>(
-    items: &mut MeteredVec<T>,
-    len: usize,
-    max_prealloc: usize,
-) -> Result<(), ChargeError> {
+/// Before pushing element `items.len()` of `len`: grows a full vector
+/// geometrically, never past `len`, so the list holds no spare capacity once
+/// it is complete, and, past its first reservation, no more than twice what
+/// it has filled; growths that move it copy each element a bounded number
+/// of times (review round 7's sweep: growing by exact steps of
+/// `max_prealloc`, a list of `n` elements made `n` / `max_prealloc` moves,
+/// some `n`² / `max_prealloc` copies in all, unless the allocator grew it
+/// in place).
+pub(crate) fn grow_step<T>(items: &mut MeteredVec<T>, len: usize) -> Result<(), ChargeError> {
     if items.len() < items.capacity() {
         return Ok(());
     }
-    let step = len
-        .saturating_sub(items.len())
-        .min(max_prealloc.max(1))
-        .max(1);
-    items.reserve_exact(step)
+    items.reserve_within(1, len)
 }
