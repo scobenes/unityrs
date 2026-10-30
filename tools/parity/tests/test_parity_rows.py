@@ -436,28 +436,44 @@ class TestColumn(unittest.TestCase):
         )
 
     def test_a_local_split0_sends_the_read_to_its_parts(self):
-        """Through a non-local fs, where the local disk lacks the name and holds `{name}.split0`, `load_file` reads
-        the parts through `fs`, whatever `fs` holds under the name, which it never reads
+        """Through a non-local fs, where the local disk lacks the name and holds `{name}.split0`, and `fs` holds the
+        parts, `load_file` reads the parts through `fs`, whatever `fs` holds under the name, which it never reads
         (`non_local_load_file_follows_local_split_parts_and_case_variants`). So both rows about a non-local fs state
         that order, the 19.2 row in its UnityPy, tier and unityrs cells, none reads the name first, and that case is
-        not among those where a name is not found; DESIGN.md's Tier C gloss names only the cases section 3 gives
-        `None` for, a listable `path` that holds the part or a case variant not among them."""
+        not among those where a name is not found. Every one of them takes the case as Tier A only where `fs` holds
+        the parts, the case the test runs, so the 19.2 row, like section 3, leaves a local `{name}.split0` whose parts
+        `fs` does not hold to Tier U. DESIGN.md's Tier C gloss names only the cases section 3 gives `None` for, a
+        listable `path` that holds the part or a case variant not among them."""
         root = HERE.parent.parent
         lines = (root / "PARITY.md").read_text(encoding="utf-8").splitlines()
         fs_row = next(line for line in lines if line.startswith("| `Environment.fs` |"))
         non_local = next(line for line in lines if line.startswith("| a name read through a non-local `fs` |"))
         unitypy, tier, unityrs = non_local.split(" | ")[1:4]
         held = "whatever `fs` holds under the name"
+        split0 = "where the local disk lacks the name, as given and joined to `path`, and holds `{name}.split0`, and "
+        self.assertIn(f"{split0}`fs` holds the parts, `load_file` reads the parts through `fs` and loads them", fs_row)
         self.assertIn(f"{held}, which it never reads (`fs` holding the name too, in a case tested)", fs_row)
-        self.assertIn(f"{held}, which is never read;", unitypy)
-        self.assertTrue(
-            tier.startswith(f"A where a local `{{name}}.split0` sends the read to its parts through `fs`, {held};")
+        self.assertIn(
+            f"{split0}`fs` holds the parts, the parts are read through `fs` and load (Tier A), {held}, which is never "
+            "read;",
+            unitypy,
         )
         self.assertTrue(
-            unityrs.startswith(
-                "where the local disk lacks the name, as given and joined to `path`, and holds `{name}.split0`, reads "
-                f"the parts through `fs`, {held}, as UnityPy does;"
+            tier.startswith(
+                f"A where a local `{{name}}.split0` sends the read to its parts through `fs` and `fs` holds the parts, "
+                f"{held};"
             ),
+            tier[:80],
+        )
+        self.assertTrue(
+            tier.endswith(
+                "U for the `load_file`, `load_folder` and constructor cases section 3 leaves not characterised, a "
+                "local `{name}.split0` whose parts `fs` does not hold among them"
+            ),
+            tier[-80:],
+        )
+        self.assertTrue(
+            unityrs.startswith(f"{split0}`fs` holds the parts, reads the parts through `fs`, {held}, as UnityPy does;"),
             unityrs[:80],
         )
         for cell in (fs_row, unitypy, unityrs):
@@ -469,7 +485,15 @@ class TestColumn(unittest.TestCase):
         gloss = next(line for line in design.splitlines() if line.startswith(lead))
         none = "an empty local folder, or `/` given a name under a top-level folder the local disk lacks"
         self.assertIn(f"returns `None` where `path` is {none}.", fs_row)
-        self.assertIn(f"in the cases stated in `PARITY.md` section 3: `Environment.path` {none}, ", gloss)
+        # The whole gloss, so a clause that no longer parses (round 2's "…lacks, local tests a `.splitN` name skips")
+        # fails it.
+        self.assertEqual(
+            gloss,
+            f"{lead} with no error, in the cases stated in `PARITY.md` section 3: `Environment.path` {none} (the "
+            "reference is the same as Tier B's: the file loaded as a stream opened from the filesystem). A `.splitN` "
+            "name is not among them: `load_file` hands it to `_load_split_file`, which reads its parts through the "
+            "filesystem, so it loads (Tier A, `PARITY.md` section 3);",
+        )
         self.assertNotIn("can list `Environment.path`", gloss)
 
     def test_zero_size_writes_are_stated_off_switch(self):
