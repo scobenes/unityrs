@@ -49,6 +49,10 @@
 //! a row costs the same whatever its strings' lengths (round 4: each row
 //! searched up to 32,767 bytes for each of its strings, and nothing counted
 //! it; `tests::a_blobs_rows_search_its_string_buffer_once_whatever_their_strings`).
+//! A search is counted after it is made, so one the allowance refuses is
+//! counted too and every later piece of the open's work is refused (round 5:
+//! a refused search counted nothing, so each later one searched again), and
+//! a search that finds no NUL fails without searching again.
 //!
 //! Owner: package C.
 
@@ -97,16 +101,27 @@ pub(crate) fn string_to_null(
         .get(window.clone())
         .and_then(|w| w.iter().position(|b| *b == 0));
     let searched = found.map_or(window.len(), |k| k + 1);
-    meter.count_decode(u64::try_from(searched).unwrap_or(u64::MAX))?;
+    count_done(meter, u64::try_from(searched).unwrap_or(u64::MAX))?;
     let nul = found.map(|k| window.start + k);
     match py_string_to_null_found(len, pos, STRING_TO_NULL_WINDOW, nul) {
         Some((range, new)) => {
             r.set_position(new);
             Ok(shared(data, range))
         }
-        // The reader's own read raises the same way.
-        None => r.read_string_to_null().map(|_| RawStr::default()),
+        // As the reader's own read raises.
+        None => Err(r.string_to_null_error()),
     }
+}
+
+/// Counts `bytes` of work already done as `meter`'s: refused, as
+/// [`Meter::count_decode`] refuses, when it passes the open's allowance, and
+/// counted then too (the bytes were read), so every later piece of the
+/// open's work is refused ([`Meter::work_used_up`]).
+fn count_done(meter: &Meter, bytes: u64) -> Result<(), Error> {
+    meter.count_decode(bytes).map_err(|e| {
+        meter.add_work(bytes);
+        Error::from(e)
+    })
 }
 
 /// The NULs of a blob's string buffer, by position, found in one pass that
@@ -534,5 +549,28 @@ mod tests {
         // having searched the rest.
         assert!(string_to_null(&mut r, &data, &meter).is_err());
         assert_eq!(meter.decoded(), 40_000);
+    }
+
+    /// Round 5's sweep: a search the open's allowance refuses was made
+    /// before it was counted, so it counts too, and the open's work is used
+    /// up: each later search, which would have searched its window again
+    /// and been refused counting nothing, is refused before any work.
+    #[test]
+    fn a_search_the_allowance_refuses_is_counted_and_uses_the_work_up() {
+        let data = Bytes::from(vec![b'a'; 40_000]);
+        let limits = Limits {
+            max_decode_work: 1_000,
+            ..Limits::default()
+        };
+        let meter = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Input);
+        let mut r = Reader::new(&data, Endian::Little);
+        let got = string_to_null(&mut r, &data, &meter);
+        assert!(
+            matches!(got, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork
+                && l.value == 32_767 && l.max == 1_000),
+            "{got:?}"
+        );
+        assert_eq!(meter.decoded(), 32_767);
+        assert!(meter.work_used_up().is_some());
     }
 }
