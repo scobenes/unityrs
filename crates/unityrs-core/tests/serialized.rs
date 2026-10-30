@@ -306,7 +306,8 @@ fn blob_rows_are_unpacked_as_unitypy_does() {
 /// read without a TPK, has a string.
 #[test]
 fn a_blob_reads_the_callers_common_strings_in_place_of_the_mit_table() {
-    let table = CommonStrings::new(["Thing", "é", "m_X"].map(RawStr::from));
+    let table =
+        CommonStrings::new(["Thing", "é", "m_X"].map(RawStr::from), &Meter::unlimited()).unwrap();
     // Thing at 0, é at 6, m_X at 8 (code points, not bytes).
     let nodes = vec![
         NodeSpec::new(0, "Thing", "Base"),
@@ -391,15 +392,12 @@ fn a_files_blob_trees_read_the_chains_common_strings() {
         nodes.rows()[0].ty.as_bytes().to_vec()
     };
     assert_eq!(parse_with(Vec::new()), b"AABB");
-    let table = CommonStrings::new([RawStr::from("FromTheTpk")]);
+    let table = || CommonStrings::new([RawStr::from("FromTheTpk")], &Meter::unlimited()).unwrap();
     let empty = CommonStrings::default();
-    assert_eq!(
-        parse_with(vec![Arc::new(Common(table.clone()))]),
-        b"FromTheTpk"
-    );
+    assert_eq!(parse_with(vec![Arc::new(Common(table()))]), b"FromTheTpk");
     // The first provider with a table decides, even an empty one.
     assert_eq!(
-        parse_with(vec![Arc::new(Common(empty)), Arc::new(Common(table))]),
+        parse_with(vec![Arc::new(Common(empty)), Arc::new(Common(table()))]),
         b"0"
     );
 }

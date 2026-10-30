@@ -45,8 +45,20 @@ pub(crate) enum Build {
     /// A tree of this many rows.
     Rows(usize),
     /// An error: a level past the depth bound, rows past the row bound, or
-    /// an id past its table.
-    Fails,
+    /// an id past its table, after the walk builds at most this many rows
+    /// (the tree's rows, counting an id past its table as one, held at one
+    /// past the row bound; the walk stops at or before each of them).
+    Fails(usize),
+}
+
+impl Build {
+    /// The most rows [`generate_node`] builds from the root, whether it
+    /// ends with its tree or with an error.
+    pub(crate) fn work(self) -> usize {
+        match self {
+            Self::Rows(rows) | Self::Fails(rows) => rows,
+        }
+    }
 }
 
 /// One node's tree as [`builds`] finds it: its rows (each node counted once
@@ -84,7 +96,8 @@ struct Frame {
 /// it endless. The walk ends with an error exactly where the tree's height
 /// passes `max_depth`, its rows pass `max_rows` (the walk counts the rows
 /// still to walk, never more than the tree has) or it reaches an id past
-/// its table; anywhere else it builds the rows counted here. The search
+/// its table, having built at most the rows counted here; anywhere else it
+/// builds the rows counted here. The search
 /// keeps a stack, never recursing, of at most one frame per node, and
 /// charges its tables to `meter`.
 pub(crate) fn builds(
@@ -184,7 +197,7 @@ pub(crate) fn builds(
         };
         out.push(
             if size.bad || size.rows > max_rows || size.height > max_depth {
-                Build::Fails
+                Build::Fails(size.rows)
             } else {
                 Build::Rows(size.rows)
             },
@@ -203,14 +216,29 @@ pub(crate) fn builds(
 /// UnityPy's walk has no bound; this one stops at a level of `max_depth` or
 /// past `max_rows` rows, counting those still to walk, since each becomes a
 /// row (crate docs, "Limits"). So a node that lists itself or an ancestor,
-/// on which UnityPy's walk never ends, is an error. Every row and the
-/// pending stack are charged to `meter`.
+/// on which UnityPy's walk never ends, is an error. The root itself is a
+/// depth of 1 and a row, so with `max_depth` or `max_rows` at 0 every walk
+/// is an error before it builds anything, as [`builds`] finds. Every row and
+/// the pending stack are charged to `meter`.
 pub(crate) fn generate_node(
     blob: &TypeTreeBlob,
     root: u16,
     max_depth: usize,
     max_rows: usize,
     meter: &Arc<Meter>,
+) -> Result<MeteredVec<NodeRow>, WalkError> {
+    walk(blob, root, max_depth, max_rows, meter, &mut 0)
+}
+
+/// [`generate_node`], counting in `made` the rows it builds, whether it
+/// ends with its tree or with an error.
+fn walk(
+    blob: &TypeTreeBlob,
+    root: u16,
+    max_depth: usize,
+    max_rows: usize,
+    meter: &Arc<Meter>,
+    made: &mut usize,
 ) -> Result<MeteredVec<NodeRow>, WalkError> {
     // A level is an `i32` (`NodeRow::level`); every one is below this.
     let max_depth = level_bound(max_depth);
@@ -223,6 +251,13 @@ pub(crate) fn generate_node(
                 "IndexError: a string id past the string buffer",
             ))
     };
+    // The root's own depth and row, which every later check counts from.
+    if max_depth == 0 {
+        return Err(WalkError::Depth { depth: 1, max: 0 });
+    }
+    if max_rows == 0 {
+        return Err(WalkError::Rows { rows: 1, max: 0 });
+    }
     let mut nodes = MeteredVec::new(meter);
     // `stack = [(class_info.ReleaseRootNode, 0)]`, its front at the end.
     let mut stack = MeteredVec::new(meter);
@@ -250,6 +285,7 @@ pub(crate) fn generate_node(
             ref_type_hash: None,
         };
         nodes.push(row)?;
+        *made = nodes.len();
         let subs = blob.nodes.sub_nodes(node);
         if subs.is_empty() {
             continue;
@@ -283,7 +319,7 @@ mod tests {
 
     use unityrs_core::limits::Meter;
 
-    use super::{Build, builds, generate_node};
+    use super::{Build, builds, walk};
     use crate::blob::TypeTreeBlob;
 
     /// A blob of no versions, classes or common strings, over `nodes` (each
@@ -314,10 +350,12 @@ mod tests {
 
     /// [`builds`] gives, for every root of thousands of random node graphs
     /// (shared sub-nodes, cycles, ids past the node and string tables), and
-    /// under tight and loose bounds, exactly what [`generate_node`] does:
-    /// the walk's row count where it builds, and a failure where it fails;
-    /// asked for every root at once (each node sized once across them) or
-    /// for one root alone.
+    /// under tight and loose bounds (a depth or a row bound of 0 and 1
+    /// among them), exactly what [`generate_node`] does: the walk's row
+    /// count where it builds, and a failure where it fails, never past the
+    /// rows the walk built before it failed, nor more than one past the row
+    /// bound; asked for every root at once (each node sized once across
+    /// them) or for one root alone.
     #[test]
     fn builds_finds_what_the_walk_makes() {
         let meter = Meter::unlimited();
@@ -347,19 +385,35 @@ mod tests {
                 .collect();
             let blob = blob(&nodes, usize::try_from(strings).unwrap(), &meter);
             let roots: Vec<u16> = (0..=u16::try_from(n).unwrap()).collect();
-            for (depth, rows) in [(3, 6), (5, 40), (256, 1 << 16)] {
+            for (depth, rows) in [
+                (0, 6),
+                (1, 6),
+                (2, 0),
+                (2, 1),
+                (3, 6),
+                (5, 40),
+                (256, 1 << 16),
+            ] {
                 let all = builds(&blob, &roots, depth, rows, &meter).unwrap();
                 for (&root, &got) in roots.iter().zip(all.as_slice()) {
-                    let want = if let Ok(walked) = generate_node(&blob, root, depth, rows, &meter) {
+                    let mut made = 0;
+                    let walked = walk(&blob, root, depth, rows, &meter, &mut made);
+                    let want = if let Ok(walked) = &walked {
                         built += 1;
                         Build::Rows(walked.len())
                     } else {
                         failed += 1;
-                        Build::Fails
+                        Build::Fails(got.work())
                     };
                     assert_eq!(
                         got, want,
                         "{nodes:?} root {root}, depth {depth}, rows {rows}"
+                    );
+                    // A walk, failing or not, builds no more than `builds`
+                    // counts for it.
+                    assert!(
+                        made <= got.work() && got.work() <= rows + 1,
+                        "{nodes:?} root {root}, depth {depth}, rows {rows}: {made} rows made, {got:?}"
                     );
                     let alone = builds(&blob, &[root], depth, rows, &meter).unwrap();
                     assert_eq!(alone.as_slice(), [want], "{nodes:?} root {root} alone");

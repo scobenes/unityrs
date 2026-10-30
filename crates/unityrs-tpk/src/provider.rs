@@ -17,7 +17,7 @@ use unityrs_core::typetree::{NodeList, Tree, TreeError};
 use unityrs_core::{LimitError, LimitKind, UnityVersion};
 
 use crate::blob::{ClassEntry, TypeTreeBlob, memory};
-use crate::tree::{Build, WalkError, builds, generate_node};
+use crate::tree::{WalkError, builds, generate_node};
 use crate::{TpkError, file};
 
 /// What a release root's walk resolved to.
@@ -30,7 +30,7 @@ struct Kept<T> {
     _charge: Option<Charge>,
 }
 
-/// One release root that some class entry names: whether its tree is past
+/// One release root that some class entry names: whether its walk is past
 /// the provider's total ([`TpkProvider::MAX_TOTAL_ROWS`]), decided at load,
 /// and its node list and tree, each computed once. UnityPy's `NODES_CACHE`
 /// (`Tpk.py:17`, `:58-62`, `:86-87`) keys a tree by the entry's class
@@ -89,13 +89,16 @@ impl TpkProvider {
     /// error, which bounds the walk of a node that lists an ancestor.
     pub const MAX_TREE_ROWS: usize = 1 << 16;
 
-    /// The most rows the trees of every release root together may have,
-    /// 2,097,152, which bounds what the provider builds and keeps however
-    /// many classes are asked for. UnityPy 1.25.2's own TPK has 414,033
-    /// over its 3,000 release roots (`tools/fixtures/tpk.py --survey`).
-    /// Each root's rows are known at load, without walking it; in the order
-    /// of their ids, a root whose tree would take the trees kept so far past
-    /// this is refused with a [`LimitKind::Count`] limit (crate docs,
+    /// The most rows the walks of every release root together may build,
+    /// 2,097,152, which bounds what the provider builds, kept or not, and
+    /// so what it keeps, however many classes are asked for. UnityPy
+    /// 1.25.2's own TPK has 414,033 over its 3,000 release roots
+    /// (`tools/fixtures/tpk.py --survey`). What each root's walk builds is
+    /// known at load, without walking it: its tree's rows, or, for a walk
+    /// that fails, the most it builds before it fails (its tree's rows, at
+    /// most one past [`Self::MAX_TREE_ROWS`]). In the order of their ids, a
+    /// root whose walk would take the rows of the walks before it past this
+    /// is refused, unwalked, with a [`LimitKind::Count`] limit (crate docs,
     /// "Limits"), whatever was asked before it.
     pub const MAX_TOTAL_ROWS: usize = 1 << 21;
 
@@ -167,7 +170,7 @@ impl TpkProvider {
         let payload = file::payload(bytes)?;
         let blob = TypeTreeBlob::read(&payload, &meter)?;
         drop(payload);
-        let common = common_strings(&blob)?;
+        let common = common_strings(&blob, &meter)?;
         let roots = roots(&blob, limits, &meter).map_err(memory)?;
         Ok(Self {
             blob,
@@ -249,7 +252,7 @@ impl TpkProvider {
     }
 
     /// `generate_node(class_info)` (`Tpk.py:58-88`) from one release root,
-    /// unless its tree is past the provider's total.
+    /// unless its walk is past the provider's total.
     fn walk(&self, root: &Root) -> Outcome<NodeList> {
         if let Some(over) = root.over {
             return Err(limit_error(over));
@@ -277,9 +280,11 @@ impl TpkProvider {
 
 /// Every release root a kept class entry names, sorted and each once, with
 /// what [`builds`] finds its walk makes and the total's verdict: in the
-/// order of their ids, a root whose tree would take the rows of the trees
-/// before it past [`TpkProvider::MAX_TOTAL_ROWS`] is over, and the trees
-/// after it are counted without it.
+/// order of their ids, a root whose walk would take the rows the walks
+/// before it build past [`TpkProvider::MAX_TOTAL_ROWS`] is over, and the
+/// walks after it are counted without it. A walk that fails counts the most
+/// rows it builds before it fails ([`crate::tree::Build::work`]), so the
+/// work of every walk, kept or not, is within the total.
 fn roots(
     blob: &TypeTreeBlob,
     limits: &Limits,
@@ -311,17 +316,15 @@ fn roots(
     let mut total = 0_usize;
     for (&id, build) in distinct.as_slice().iter().zip(found.as_slice()) {
         let mut over = None;
-        if let Build::Rows(rows) = *build {
-            let with = total.saturating_add(rows);
-            if with > TpkProvider::MAX_TOTAL_ROWS {
-                over = Some(LimitError {
-                    kind: LimitKind::Count,
-                    value: u64::try_from(with).unwrap_or(u64::MAX),
-                    max: u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap_or(u64::MAX),
-                });
-            } else {
-                total = with;
-            }
+        let with = total.saturating_add(build.work());
+        if with > TpkProvider::MAX_TOTAL_ROWS {
+            over = Some(LimitError {
+                kind: LimitKind::Count,
+                value: u64::try_from(with).unwrap_or(u64::MAX),
+                max: u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap_or(u64::MAX),
+            });
+        } else {
+            total = with;
         }
         roots.push(Root {
             id,
@@ -361,9 +364,12 @@ fn limit_error(limit: LimitError) -> ProviderError {
 /// UnityPy's `get_common_strings()` (`helpers/TypeTreeNode.py:308-328`)
 /// over `blob`: `GetStrings`, the string of every index in order
 /// (`Tpk.py:425-426`), numbered as [`CommonStrings::new`] numbers them; each
-/// string shared with the rows that name it. An index past the string
-/// buffer, an `IndexError` in every blob parse in UnityPy, is refused here.
-fn common_strings(blob: &TypeTreeBlob) -> Result<CommonStrings, TpkError> {
+/// string shared with the rows that name it. The table, one entry per index
+/// (as many as [`TpkProvider::MAX_RECORDS`]), is charged to the provider's
+/// `meter`, a growth the allocator refuses an error. An index past the
+/// string buffer, an `IndexError` in every blob parse in UnityPy, is
+/// refused here.
+fn common_strings(blob: &TypeTreeBlob, meter: &Arc<Meter>) -> Result<CommonStrings, TpkError> {
     let strings = blob.strings.as_slice();
     let indices = blob.common_indices.as_slice();
     if let Some((at, &index)) = indices
@@ -377,11 +383,13 @@ fn common_strings(blob: &TypeTreeBlob) -> Result<CommonStrings, TpkError> {
             strings: strings.len(),
         });
     }
-    Ok(CommonStrings::new(
+    CommonStrings::new(
         indices
             .iter()
             .filter_map(|&i| strings.get(usize::from(i)).cloned()),
-    ))
+        meter,
+    )
+    .map_err(memory)
 }
 
 impl TypeTreeProvider for TpkProvider {
@@ -417,5 +425,57 @@ impl TypeTreeProvider for TpkProvider {
         get_or_publish(&root.tree, || self.kept(compile()))
             .outcome
             .clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::mem::size_of;
+
+    use unityrs_core::RawStr;
+    use unityrs_core::limits::{Limits, heap_cost};
+
+    use super::TpkProvider;
+
+    /// A stored TPK whose blob has no versions, classes or nodes, one
+    /// string, and `n` common-string indices, each naming it.
+    fn tpk(n: usize) -> Vec<u8> {
+        let mut blob = 1_i64.to_le_bytes().to_vec();
+        for _ in 0..3 {
+            // Versions, classes, common-string versions.
+            blob.extend_from_slice(&0_i32.to_le_bytes());
+        }
+        blob.extend_from_slice(&i32::try_from(n).unwrap().to_le_bytes());
+        for _ in 0..n {
+            blob.extend_from_slice(&0_u16.to_le_bytes());
+        }
+        blob.extend_from_slice(&0_i32.to_le_bytes());
+        blob.extend_from_slice(&1_i32.to_le_bytes());
+        blob.extend_from_slice(&[1, b's']);
+        let size = u32::try_from(blob.len()).unwrap().to_le_bytes();
+        let mut out = b"TPK*".to_vec();
+        out.extend_from_slice(&[1, 0, 0, 0]);
+        out.extend_from_slice(&0_u32.to_le_bytes());
+        out.extend_from_slice(&size);
+        out.extend_from_slice(&size);
+        out.extend_from_slice(&blob);
+        out
+    }
+
+    /// The common-string table has one entry per index the TPK lists, up to
+    /// [`TpkProvider::MAX_RECORDS`], and is charged to the provider's meter
+    /// with the rest of what the provider holds: every index costs its own
+    /// 2 bytes in the blob's table and its entry in the common strings'.
+    #[test]
+    fn the_common_string_table_is_charged_to_the_providers_meter() {
+        let used = |n: usize| {
+            let provider = TpkProvider::from_bytes(&tpk(n), &Limits::default()).unwrap();
+            assert_eq!(provider.common.len(), n);
+            provider.meter.used()
+        };
+        let n = TpkProvider::MAX_RECORDS;
+        let bytes = |b: usize| heap_cost(u64::try_from(b).unwrap());
+        let table = bytes(n * size_of::<(u32, RawStr)>());
+        assert_eq!(used(n) - used(0), bytes(2 * n) + table);
     }
 }

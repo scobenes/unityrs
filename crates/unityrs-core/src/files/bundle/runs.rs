@@ -204,7 +204,11 @@ impl BundleFile {
 
     /// Blocks `first..end` as one slice of the input, when every one is
     /// stored, stored blocks are their own bytes ([`crate::codec::Codecs::stores_as_is`]),
-    /// and each follows the previous in the input.
+    /// and each follows the previous in the input. Every block of the span
+    /// has a known length, and a stored block's is known only within the
+    /// block cap ([`crate::limits::Limits::max_block_output`]: preset at open
+    /// only within it, and otherwise from its codec, which refuses a range
+    /// past it), so no block of a slice is past the cap.
     fn stored_span(&self, first: usize, end: usize) -> Option<Bytes> {
         if !self.ctx.codecs.stores_as_is() {
             return None;

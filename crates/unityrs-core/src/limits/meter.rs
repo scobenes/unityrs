@@ -138,8 +138,10 @@ impl Meter {
     /// Counts `bytes` of this open's work, refused when it would pass the
     /// bound ([`LimitKind::DecodeWork`]): one atomic check-and-add, so work
     /// counted at once from several threads never passes the bound. Work is
-    /// never returned while the open lives: once refused, every later
-    /// decode on this meter is refused too, whatever its charges do. A
+    /// never returned while the open lives, whatever its charges do. A
+    /// refused decode counts nothing, so a smaller one may still fit; once
+    /// work has passed the bound (`add_work`, unchecked), every later decode on
+    /// this meter is refused. A
     /// [`crate::budget::DecodeBuf`] counts every write of a block's segment:
     /// one that needs a growth after the meter and the budget granted its
     /// memory and before it allocates, so a refused growth counts nothing,
@@ -177,12 +179,18 @@ impl Meter {
             });
     }
 
-    /// The refusal a new piece of work gets once this open's allowance is
-    /// used up (no byte of it left), or `None` while some is left.
+    /// The refusal a new piece of work gets once this open's work has passed
+    /// its allowance, or `None` while it has not. The allowance is inclusive,
+    /// as [`Self::count_decode`] admits work: work that lands exactly on it
+    /// is within it, and what follows is refused by `count_decode` itself,
+    /// its note naming the work it would reach. Only work counted past the
+    /// bound (`add_work`, unchecked: a detection's refused chunk, what a
+    /// refused computation was granted) passes it, so the note's work is
+    /// always past the bound (`limit DecodeWork: <work> > <bound>`).
     #[must_use]
     pub fn work_used_up(&self) -> Option<LimitError> {
         let done = self.decoded();
-        (done >= self.work_limit).then_some(LimitError {
+        (done > self.work_limit).then_some(LimitError {
             kind: LimitKind::DecodeWork,
             value: done,
             max: self.work_limit,
