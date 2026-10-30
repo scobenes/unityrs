@@ -184,14 +184,16 @@ impl<'a> Writer<'a, '_> {
         f: impl FnOnce(&mut Self) -> Result<(), WriteError>,
     ) -> Result<(), WriteError> {
         let dup = tree.info(node).is_some_and(|i| i.dup_names);
-        if !dup {
-            return f(self);
+        if dup {
+            self.shared = self.shared.saturating_add(1);
         }
-        self.shared = self.shared.saturating_add(1);
+        // One call of `f`, so it inlines here: a frame less a level.
         let r = f(self);
-        self.shared = self.shared.saturating_sub(1);
-        if self.shared == 0 {
-            self.kept = KeptTables::new(self.parsed.charge().meter());
+        if dup {
+            self.shared = self.shared.saturating_sub(1);
+            if self.shared == 0 {
+                self.kept = KeptTables::new(self.parsed.charge().meter());
+            }
         }
         r
     }
@@ -230,7 +232,13 @@ impl<'a> Writer<'a, '_> {
         r
     }
 
-    /// `write_value` (`TypeTreeHelper.py:407-458`).
+    /// `write_value` (`TypeTreeHelper.py:407-458`). The branches that
+    /// recurse ([`Self::class`], [`Self::class_dict`], [`Self::ref_object`])
+    /// are never inlined here, so a level's frame holds only its own
+    /// branch's locals: inlined, every class level carried a
+    /// `ReferencedObject`'s too (`tests/walk_stack.rs`'s `stack_measured`,
+    /// release: 1,212,416 bytes for the deepest class write, 901,120 out of
+    /// line).
     fn value_inner(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         let mut align = tree.info(node).is_some_and(|i| i.align);
         let kind = tree.py_kind(node);
@@ -437,6 +445,7 @@ impl<'a> Writer<'a, '_> {
     /// The class branch (`:437-455`), W6: `value[child.m_Name]` for a dict
     /// ([`Self::class_dict`]), `getattr(value, child._clean_name)` otherwise;
     /// the registry scope as on read.
+    #[inline(never)]
     fn class(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         if let Obj::V(Value::Dict(m)) = o {
             return self.class_dict(tree, node, m);
@@ -478,6 +487,7 @@ impl<'a> Writer<'a, '_> {
 
     /// The class branch on a dict (`:438-446`): `value[child.m_Name]` for
     /// each child, found by a [`Lookup`].
+    #[inline(never)]
     fn class_dict(&mut self, tree: &Tree, node: NodeId, m: &'a Map) -> Result<(), WriteError> {
         let outer = self.has_registry;
         let mut find = Lookup::new(self.parsed, tree, node, m)?;
@@ -504,6 +514,7 @@ impl<'a> Writer<'a, '_> {
     /// [`Lookup`]; the data's ref type resolved once a write of the dict,
     /// which does not change while it is written (claude X, review round 2:
     /// a node of many data children resolved it for each).
+    #[inline(never)]
     fn ref_object(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         let kids = tree.list().children(node);
         if kids.is_empty() {
