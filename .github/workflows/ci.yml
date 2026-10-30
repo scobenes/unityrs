@@ -158,7 +158,7 @@ jobs:
       - name: Self-tests (parity tools and the spikes' scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=296
+          tools/parity/tests=297
           crates/unityrs-spike-rabex/scripts/tests=19
           crates/unityrs-bench-lzma=8
       # A smoke test that the oracle runs here; the unityrs side is compared later.
