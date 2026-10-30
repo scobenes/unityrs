@@ -159,6 +159,30 @@ class InternalRows(unittest.TestCase):
         self.assertIs(TypeTreeHelper.read_typetree_boost, UnityPyBoost.read_typetree)
         self.assertIs(importlib.import_module("UnityPy.helpers.TypeTreeNode").TypeTreeNodeC, UnityPyBoost.TypeTreeNode)
         self.assertEqual(TypeTreeNode.__bases__, (UnityPyBoost.TypeTreeNode,))
+        # The row cites the lines that bind each name: the import, or the `try` through the fallback.
+        parity = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8").splitlines()
+        row = next(line for line in parity if line.startswith("| `ClassIDTypeToClassMap.CIT`, "))
+        source = Path(UnityPy.__file__).parent
+
+        def line(path, text):
+            found = [i for i, held in enumerate((source / path).read_text().splitlines(), 1) if held == text]
+            self.assertEqual(len(found), 1, (path, text))
+            return found[0]
+
+        cit, tf = "classes/ClassIDTypeToClassMap.py", "export/Texture2DConverter.py"
+        boost, node = "helpers/TypeTreeHelper.py", "helpers/TypeTreeNode.py"
+        imported = "    from ..UnityPyBoost import read_typetree as read_typetree_boost"
+        self.assertEqual(line(boost, imported), line(boost, "try:") + 1)
+        cited = {
+            cit: f"{line(cit, 'from ..enums.ClassIDType import ClassIDType as CIT')}",
+            tf: f"{line(tf, 'TF = TextureFormat')}",
+            boost: f"{line(boost, 'try:')}-{line(boost, '    read_typetree_boost = None')}",
+            node: f"{line(node, 'try:')}-{line(node, '    class TypeTreeNodeC:')}",
+        }
+        self.assertEqual(cited[boost], "22-25")
+        for path, lines in cited.items():
+            self.assertIn(f"(`{path}:{lines}`", row)
+        self.assertIn(f"`, `:{line(node, 'class TypeTreeNode(TypeTreeNodeC):')}`)", row)
 
     # Sections 9.3, 10 and 11: `UnityVersion`'s comparisons, `TypeTreeNode.__eq__`, `TpkUnityNode.__eq__` and
     # `TpkUnityNode.__hash__`, given operands they do not expect.
