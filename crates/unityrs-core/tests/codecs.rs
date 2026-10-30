@@ -6,10 +6,11 @@ use std::sync::Arc;
 
 use serde_json::Value as J;
 use unityrs_core::Bytes;
-use unityrs_core::budget::{DecodeBuf, Reservation, Unbounded};
+use unityrs_core::budget::{BudgetExceeded, DecodeBuf, Reservation, Unbounded};
 use unityrs_core::codec::{BlockCodec, Codec, Codecs, Decoded, Lz4, Lzma, Stored, decode_block};
 use unityrs_core::error::{Error, LimitKind};
 use unityrs_core::limits::Meter;
+use unityrs_testkit::address_space;
 use unityrs_testkit::bundle::{LZMA_DICT, TestCodec, compress};
 
 fn load(dir: &str, name: &str) -> J {
@@ -259,6 +260,69 @@ fn lzma_output_is_capped_per_block_and_charged() {
         0,
         "the dictionary's charge ends with the decode"
     );
+}
+
+const DICTIONARY_PROBE: &str = "UNITYRS_CORE_LZMA_DICTIONARY_PROBE";
+
+/// Run by `liblzmas_refused_dictionary_is_the_meters_reservation_refused`,
+/// in a child: a block naming an 8 MiB dictionary, declared 8 MiB (so the
+/// first attempt's dictionary is 8 MiB, `Lzma`'s docs), decoded on a meter
+/// of each reservation under an address-space cap 4 MiB above what the
+/// child maps; then, the cap lifted, decoded.
+#[test]
+#[ignore = "run by liblzmas_refused_dictionary_is_the_meters_reservation_refused"]
+fn lzma_dictionary_probe() {
+    if std::env::var(DICTIONARY_PROBE).is_err() {
+        return;
+    }
+    let mut block = lzma_stream(b"hello hello hello hello");
+    block[1..5].copy_from_slice(&(8_u32 << 20).to_le_bytes());
+    let input = Bytes::from(block);
+    let decode = |meter: &Arc<Meter>| {
+        let mut out = DecodeBuf::new(meter, 0, u64::MAX, LimitKind::BlockOutput).unwrap();
+        Lzma.decode(&input, 8 << 20, &mut out).map(|_| out.len())
+    };
+    for what in [
+        Reservation::Input,
+        Reservation::Dependency,
+        Reservation::Provider,
+    ] {
+        let meter = Meter::new(u64::MAX, Arc::new(Unbounded), what);
+        let got = {
+            let _cap = address_space::cap_above_current(4 << 20).unwrap();
+            decode(&meter)
+        };
+        match got {
+            Err(Error::Budget(b)) => {
+                // 8 MiB in one piece, glibc's `mmap`ped chunk: the request
+                // and its 8-byte header rounded up to a 4 KiB page.
+                let want = BudgetExceeded {
+                    requested: (8 << 20) + 4096,
+                    what,
+                };
+                assert_eq!(b, want, "{what:?}");
+            }
+            got => panic!("{what:?}: not the reservation's refusal: {got:?}"),
+        }
+        assert_eq!(meter.used(), 0, "{what:?}: the dictionary's charge ends");
+    }
+    let meter = Meter::new(u64::MAX, Arc::new(Unbounded), Reservation::Provider);
+    assert_eq!(decode(&meter).unwrap(), 23, "the same block decodes");
+}
+
+/// Round 7 (claude7-a L1): liblzma's `LZMA_MEM_ERROR`, the C allocator
+/// refusing the dictionary the meter granted, is that meter's reservation
+/// refused (`Error::Budget`), for every reservation; only a test of the
+/// mapping, with a reservation it chose, covered it, so a codec that named
+/// another reservation passed every test. Here the C allocator itself
+/// refuses, in a child under an address-space cap.
+#[test]
+fn liblzmas_refused_dictionary_is_the_meters_reservation_refused() {
+    if !address_space::SUPPORTED {
+        eprintln!("skipped: no address-space cap on this target");
+        return;
+    }
+    address_space::run("lzma_dictionary_probe", DICTIONARY_PROBE, "1");
 }
 
 #[test]

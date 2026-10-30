@@ -118,7 +118,11 @@ impl From<ChargeError> for LzmaFail {
 /// [`Error::Budget`] (transient: nothing keeps it, and the same block decodes
 /// once the memory is there), never a decode failure (review round 6: it
 /// was `Decompress`, `"MemoryError"`, so a TPK loaded while the process was
-/// short of memory read as a corrupt one).
+/// short of memory read as a corrupt one). `tests/codecs.rs`
+/// `liblzmas_refused_dictionary_is_the_meters_reservation_refused` makes the
+/// C allocator refuse it, in a child process under an address-space cap
+/// (`unityrs_testkit::address_space`), on a meter of each reservation
+/// (review round 7: only this function's own test covered it).
 fn failure(e: liblzma::stream::Error, produced: usize, held: u64, what: Reservation) -> LzmaFail {
     let other = |detail: &str| LzmaFail::Other(lzma_error(detail));
     match e {
