@@ -10,6 +10,8 @@
 //!   K x S for K rows over S bytes, for K objects over S bytes, and for K
 //!   values (each summarised by its sha256) over S bytes; an object read
 //!   whole and re-saved counts its raw bytes, its value's and its resave's.
+//!   Besides, each object's read and resave count their own work, the
+//!   core's (`unityrs_core::walk`, "Work").
 //! - Past `max_decode_work` the input is its `DecodeWork` refusal, in g3b's
 //!   grammar (`limit DecodeWork: <v> > <max>`), and with the bound lifted
 //!   (`--unbounded DecodeWork`) it dumps whole.
@@ -20,6 +22,7 @@ use unityrs_core::budget::Reservation;
 use unityrs_core::detect::check_file_type;
 use unityrs_core::files::parse_file;
 use unityrs_core::limits::Meter;
+use unityrs_core::walk::VALUE_WORK;
 use unityrs_core::{Bytes, FileContext, LimitKind, RawStr};
 use unityrs_dump::DumpOptions;
 use unityrs_dump::input::{dump_on, load_deep};
@@ -116,19 +119,25 @@ fn overlapping_values(k: usize, s: usize) -> Vec<u8> {
     byte_arrays(k, s, 0)
 }
 
-/// The three inputs, and what each of their `K` records holds once.
-fn inputs() -> [(&'static str, Vec<u8>, String); 3] {
+/// The three inputs, what each of their `K` records holds once, and the
+/// work each record's read counts before its hash (the core's,
+/// `unityrs_core::walk`, "Work"): none for a row; the root of an object
+/// that reads nothing; the root, the vector and its `S` bytes read one by
+/// one by the pure-Python reader.
+fn inputs() -> [(&'static str, Vec<u8>, String, u64); 3] {
     [
-        ("rows", overlapping_rows(K, S), format!("\"size\":{S},")),
+        ("rows", overlapping_rows(K, S), format!("\"size\":{S},"), 0),
         (
             "objects",
             overlapping_objects(K, S),
             format!("\"raw_size\":{S},"),
+            VALUE_WORK,
         ),
         (
             "values",
             overlapping_values(K, S),
             format!("{{\"t\":\"u8s\",\"len\":{S},"),
+            2 * VALUE_WORK + bytes(S),
         ),
     ]
 }
@@ -163,31 +172,48 @@ fn bytes(n: usize) -> u64 {
 
 #[test]
 fn the_dump_counts_every_byte_it_hashes_as_its_opens_work() {
-    for (what, data, each) in inputs() {
+    for (what, data, each, read) in inputs() {
         let (load, text, dumped) = work(&data, &DumpOptions::default());
         assert_eq!(text.lines().count(), K + 1, "{what}: {text}");
         assert!(!text.contains(r#""kind":"parse""#), "{what}: {text}");
         assert_eq!(text.matches(each.as_str()).count(), K, "{what}: {text}");
         assert_eq!(
             dumped - load,
-            bytes(K * S),
+            bytes(K * S) + bytes(K) * read,
             "{what}: the core's load counted {load}"
         );
     }
     // Each object read whole, and re-saved: its raw bytes, its value's and
-    // its resave's, each counted once.
+    // its resave's, each counted once; and the read's and the resave's own
+    // work, each the root, the vector and its `S` bytes.
     let data = byte_arrays(K, S, 4 + S);
     let (load, text, dumped) = work(&data, &DumpOptions::default());
     assert_eq!(text.matches(r#""resave":"equal""#).count(), K, "{text}");
-    assert_eq!(dumped - load, bytes(K * (3 * S + 8)));
+    let walk = 2 * (2 * VALUE_WORK + bytes(S));
+    assert_eq!(dumped - load, bytes(K * (3 * S + 8)) + bytes(K) * walk);
+}
+
+/// The work at which the dump's first refused count lands, `load` counted
+/// and `max` the allowance, for records that each read (`read`, counted
+/// whole once done) and then hash `S` bytes (counted only while it fits).
+fn refused_at(load: u64, read: u64, max: u64) -> u64 {
+    let mut done = load;
+    loop {
+        assert!(done <= max, "every read starts within the allowance");
+        done += read;
+        if done + bytes(S) > max {
+            return done + bytes(S);
+        }
+        done += bytes(S);
+    }
 }
 
 #[test]
 fn hashing_past_the_opens_work_is_its_decode_work_refusal() {
-    for (what, data, _) in inputs() {
+    for (what, data, _, read) in inputs() {
         let (load, whole, _) = work(&data, &DumpOptions::default());
-        // Room for three and a half hashes after the load: the fourth is
-        // refused, and nothing past it is hashed.
+        // Room for three and a half hashes after the load, with the reads
+        // before them: a hash is refused, and nothing past it is hashed.
         let max = load + bytes(3 * S + S / 2);
         let (_, text, dumped) = work(&data, &with_work(max));
         assert_eq!(
@@ -197,7 +223,7 @@ fn hashing_past_the_opens_work_is_its_decode_work_refusal() {
         );
         let want = format!(
             r#""error":{{"kind":"parse","note":"limit DecodeWork: {} > {max}"}}"#,
-            load + bytes(4 * S)
+            refused_at(load, read, max)
         );
         assert!(text.contains(&want), "{what}: {text}");
         assert!(dumped <= max, "{what}: {dumped} counted past {max}");

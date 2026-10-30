@@ -39,7 +39,10 @@ use crate::value::{ListIx, Parsed, PrimArray, PrimRun, Value, ValueBuilder};
 
 /// Reads one value from exactly `data` (the object's bytes). `TypelessData`
 /// and `vector<UInt8>` values are zero-copy slices of `data`.
+/// Its work is the open's, counted on `ctx.meter` whatever the outcome
+/// (the module docs of [`super`], "Work").
 pub fn read(data: &Bytes, tree: &Arc<Tree>, ctx: &ReadCtx<'_>) -> Result<Parsed, ReadError> {
+    let work = Work::start(ctx.options.limits, ctx.meter)?;
     let builder =
         ValueBuilder::new(ctx.meter, tree.list().clone()).map_err(|e| charge_error(0, e))?;
     let trees = Trees::new(&builder, tree)?;
@@ -54,11 +57,13 @@ pub fn read(data: &Bytes, tree: &Arc<Tree>, ctx: &ReadCtx<'_>) -> Result<Parsed,
         refs: RefIndex::new(ctx.ref_types),
         builder,
         trees,
-        work: Work::new(ctx.options.limits),
+        work,
         has_registry: false,
         scratch,
     };
-    let value = r.value(tree, 0, tree.root())?;
+    let value = r.value(tree, 0, tree.root());
+    r.work.finish(ctx.meter);
+    let value = value?;
     let at = r.at();
     let built = value.into_built(&r.builder, at)?;
     // UnityPy TypeTreeHelper.cpp:1033: `bytes_read = reader.ptr - reader.start`.
@@ -326,7 +331,7 @@ impl Reader<'_, '_> {
         let out = match ei.kind {
             Kind::U8 => {
                 let end = self.bound(count)?;
-                self.work.values(as_u64(count), self.at())?;
+                self.work.run(as_u64(count), 1, self.at())?;
                 let b = self.data.slice(self.pos..end);
                 self.pos = end;
                 Out::Plain(Value::Prims(PrimArray::U8(b)))
@@ -363,7 +368,7 @@ impl Reader<'_, '_> {
         let total = count.checked_mul(N).ok_or_else(|| self.eof(usize::MAX))?;
         let end = self.bound(total)?;
         let at = self.at();
-        self.work.values(as_u64(count), at)?;
+        self.work.run(as_u64(count), N as u64, at)?;
         let mut items: MeteredVec<T> = self.builder.vec();
         // The bytes are there: the run's memory is that of its bytes.
         items

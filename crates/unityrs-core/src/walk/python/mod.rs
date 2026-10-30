@@ -72,13 +72,16 @@ use crate::typetree::{Kind, NodeId, Tree};
 use crate::value::{ListIx, Parsed, Value, ValueBuilder};
 
 /// Reads one value from `file`, starting at `start` (any Python position).
-/// `bytes_read` counts from `start` and may be negative.
+/// `bytes_read` counts from `start` and may be negative. Its work is the
+/// open's, counted on `ctx.meter` whatever the outcome (the module docs of
+/// [`super`], "Work").
 pub fn read(
     file: &Bytes,
     start: i128,
     tree: &Arc<Tree>,
     ctx: &ReadCtx<'_>,
 ) -> Result<Parsed, ReadError> {
+    let work = Work::start(ctx.options.limits, ctx.meter)?;
     let builder =
         ValueBuilder::new(ctx.meter, tree.list().clone()).map_err(|e| charge_error(0, e))?;
     let trees = Trees::new(&builder, tree)?;
@@ -94,11 +97,13 @@ pub fn read(
         refs: RefIndex::new(ctx.ref_types),
         builder,
         trees,
-        work: Work::new(ctx.options.limits),
+        work,
         has_registry: false,
         scratch,
     };
-    let value = r.value(tree, 0, tree.root())?;
+    let value = r.value(tree, 0, tree.root());
+    r.work.finish(ctx.meter);
+    let value = value?;
     let at = r.at();
     let built = value.into_built(&r.builder, at)?;
     // UnityPy TypeTreeHelper.py:153: `bytes_read = reader.Position - pos`.
