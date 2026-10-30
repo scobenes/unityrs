@@ -170,7 +170,7 @@ impl TpkProvider {
         let payload = file::payload(bytes)?;
         let blob = TypeTreeBlob::read(&payload, &meter)?;
         drop(payload);
-        let common = common_strings(&blob)?;
+        let common = common_strings(&blob, &meter)?;
         let roots = roots(&blob, limits, &meter).map_err(memory)?;
         Ok(Self {
             blob,
@@ -364,9 +364,12 @@ fn limit_error(limit: LimitError) -> ProviderError {
 /// UnityPy's `get_common_strings()` (`helpers/TypeTreeNode.py:308-328`)
 /// over `blob`: `GetStrings`, the string of every index in order
 /// (`Tpk.py:425-426`), numbered as [`CommonStrings::new`] numbers them; each
-/// string shared with the rows that name it. An index past the string
-/// buffer, an `IndexError` in every blob parse in UnityPy, is refused here.
-fn common_strings(blob: &TypeTreeBlob) -> Result<CommonStrings, TpkError> {
+/// string shared with the rows that name it. The table, one entry per index
+/// (as many as [`TpkProvider::MAX_RECORDS`]), is charged to the provider's
+/// `meter`, a growth the allocator refuses an error. An index past the
+/// string buffer, an `IndexError` in every blob parse in UnityPy, is
+/// refused here.
+fn common_strings(blob: &TypeTreeBlob, meter: &Arc<Meter>) -> Result<CommonStrings, TpkError> {
     let strings = blob.strings.as_slice();
     let indices = blob.common_indices.as_slice();
     if let Some((at, &index)) = indices
@@ -380,11 +383,13 @@ fn common_strings(blob: &TypeTreeBlob) -> Result<CommonStrings, TpkError> {
             strings: strings.len(),
         });
     }
-    Ok(CommonStrings::new(
+    CommonStrings::new(
         indices
             .iter()
             .filter_map(|&i| strings.get(usize::from(i)).cloned()),
-    ))
+        meter,
+    )
+    .map_err(memory)
 }
 
 impl TypeTreeProvider for TpkProvider {
@@ -420,5 +425,57 @@ impl TypeTreeProvider for TpkProvider {
         get_or_publish(&root.tree, || self.kept(compile()))
             .outcome
             .clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::mem::size_of;
+
+    use unityrs_core::RawStr;
+    use unityrs_core::limits::{Limits, heap_cost};
+
+    use super::TpkProvider;
+
+    /// A stored TPK whose blob has no versions, classes or nodes, one
+    /// string, and `n` common-string indices, each naming it.
+    fn tpk(n: usize) -> Vec<u8> {
+        let mut blob = 1_i64.to_le_bytes().to_vec();
+        for _ in 0..3 {
+            // Versions, classes, common-string versions.
+            blob.extend_from_slice(&0_i32.to_le_bytes());
+        }
+        blob.extend_from_slice(&i32::try_from(n).unwrap().to_le_bytes());
+        for _ in 0..n {
+            blob.extend_from_slice(&0_u16.to_le_bytes());
+        }
+        blob.extend_from_slice(&0_i32.to_le_bytes());
+        blob.extend_from_slice(&1_i32.to_le_bytes());
+        blob.extend_from_slice(&[1, b's']);
+        let size = u32::try_from(blob.len()).unwrap().to_le_bytes();
+        let mut out = b"TPK*".to_vec();
+        out.extend_from_slice(&[1, 0, 0, 0]);
+        out.extend_from_slice(&0_u32.to_le_bytes());
+        out.extend_from_slice(&size);
+        out.extend_from_slice(&size);
+        out.extend_from_slice(&blob);
+        out
+    }
+
+    /// The common-string table has one entry per index the TPK lists, up to
+    /// [`TpkProvider::MAX_RECORDS`], and is charged to the provider's meter
+    /// with the rest of what the provider holds: every index costs its own
+    /// 2 bytes in the blob's table and its entry in the common strings'.
+    #[test]
+    fn the_common_string_table_is_charged_to_the_providers_meter() {
+        let used = |n: usize| {
+            let provider = TpkProvider::from_bytes(&tpk(n), &Limits::default()).unwrap();
+            assert_eq!(provider.common.len(), n);
+            provider.meter.used()
+        };
+        let n = TpkProvider::MAX_RECORDS;
+        let bytes = |b: usize| heap_cost(u64::try_from(b).unwrap());
+        let table = bytes(n * size_of::<(u32, RawStr)>());
+        assert_eq!(used(n) - used(0), bytes(2 * n) + table);
     }
 }
