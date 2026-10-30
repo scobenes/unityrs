@@ -33,7 +33,7 @@
 //! refused it ([`CellError::is_meter_refusal`]), every byte the meter
 //! granted to the computation on its own thread is therefore counted as the
 //! open's work ([`crate::limits::Limits::max_decode_work`], shared with
-//! block decodes), and once that allowance is used up an ask that would
+//! block decodes), and once work has passed that allowance an ask that would
 //! compute keeps a [`crate::LimitKind::DecodeWork`] refusal instead, which
 //! is not transient. Nothing else counts (round 6): grants another thread
 //! made on the same meter meanwhile are that thread's work, and a refusal
@@ -84,8 +84,8 @@ pub trait CellError: Send + Sync {
     /// buffer), charged to the input's meter while a cell keeps it. A clone
     /// shares that heap and allocates nothing.
     fn heap_bytes(&self) -> u64;
-    /// The error for an ask refused because its open's work allowance is
-    /// used up (`limit` is a [`crate::LimitKind::DecodeWork`] refusal): not
+    /// The error for an ask refused because its open's work has passed its
+    /// allowance (`limit` is a [`crate::LimitKind::DecodeWork`] refusal): not
     /// transient, so the cell keeps it (module docs).
     fn work_refused(limit: LimitError) -> Self
     where
@@ -123,7 +123,7 @@ pub type ResultCell<T, E> = OnceLock<Result<T, KeptError<E>>>;
 /// computes again. `meter` is the meter of the open the computation charges:
 /// what it granted the computation, on this thread, counts as that open's
 /// work when the computation ends in the meter's own refusal, and once the
-/// work allowance is used up an ask keeps a refusal instead of computing
+/// work has passed its allowance an ask keeps a refusal instead of computing
 /// (module docs).
 pub fn get_or_publish_result<'a, T, E: CellError + Clone>(
     cell: &'a ResultCell<T, E>,

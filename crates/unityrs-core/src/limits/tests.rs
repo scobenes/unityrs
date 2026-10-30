@@ -142,7 +142,10 @@ fn a_reopen_has_its_own_work_and_shares_the_inputs_memory() {
     let old = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Dependency);
     let held = old.charge(600).unwrap();
     old.count_decode(100).unwrap();
-    assert!(old.work_used_up().is_some());
+    // Work at the bound is within it (round 3: it was refused as `100 > 100`);
+    // the next byte is not.
+    assert!(old.work_used_up().is_none());
+    assert!(old.count_decode(1).is_err());
     let new = old.reopen();
     assert!(new.same_input(&old));
     assert_eq!(new.reservation(), Reservation::Dependency);

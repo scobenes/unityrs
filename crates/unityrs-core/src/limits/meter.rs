@@ -177,12 +177,18 @@ impl Meter {
             });
     }
 
-    /// The refusal a new piece of work gets once this open's allowance is
-    /// used up (no byte of it left), or `None` while some is left.
+    /// The refusal a new piece of work gets once this open's work has passed
+    /// its allowance, or `None` while it has not. The allowance is inclusive,
+    /// as [`Self::count_decode`] admits work: work that lands exactly on it
+    /// is within it, and what follows is refused by `count_decode` itself,
+    /// its note naming the work it would reach. Only work counted past the
+    /// bound ([`Self::add_work`]: a detection's refused chunk, what a
+    /// refused computation was granted) passes it, so the note's work is
+    /// always past the bound (`limit DecodeWork: <work> > <bound>`).
     #[must_use]
     pub fn work_used_up(&self) -> Option<LimitError> {
         let done = self.decoded();
-        (done >= self.work_limit).then_some(LimitError {
+        (done > self.work_limit).then_some(LimitError {
             kind: LimitKind::DecodeWork,
             value: done,
             max: self.work_limit,

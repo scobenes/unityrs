@@ -66,6 +66,71 @@ fn decode_work_stops_a_lazy_read_and_a_reopen_on_the_same_meter_shares_it() {
     assert_eq!(fresh.entry_range(0, ten).unwrap().len(), 4096 * 10);
 }
 
+/// Claude round 3's C LOW: the open's work allowance is inclusive, as
+/// `Meter::count_decode` admits work. A read whose decodes bring the open's
+/// work exactly to `max_decode_work` succeeds, where it was counted and then
+/// refused at publish with `limit DecodeWork: N > N`; one byte less refuses
+/// it with a note whose work is past the bound. A gzip detection that
+/// starts with the allowance exactly spent is refused by its first chunk,
+/// and its note counts that chunk: no refusal names work at the bound.
+#[test]
+fn work_that_lands_exactly_on_the_allowance_is_within_it() {
+    let past = |r: &Error| matches!(r, Error::Limit(l) if l.kind == LimitKind::DecodeWork && l.value > l.max);
+    let entry: Vec<u8> = (0..100u8).collect();
+    let data = build(&BundleSpec {
+        entries: vec![EntrySpec {
+            name: b"a".to_vec(),
+            data: entry.clone(),
+            flags: 0,
+        }],
+        ..BundleSpec::default()
+    });
+    // The open's work, then the read's, under the default allowance.
+    let c = ctx();
+    let m = meter_for(&c);
+    let b = open_with(&data, &c, &m).unwrap();
+    let opened = m.decoded();
+    b.entry_bytes(0).unwrap();
+    let work = m.decoded();
+    assert!(work > opened, "{opened}, then {work}");
+    for limit in [work - 1, work, work + 1] {
+        let ctx = ctx_with(|c| c.limits.max_decode_work = limit);
+        let m = meter_for(&ctx);
+        let b = open_with(&data, &ctx, &m).unwrap();
+        match b.entry_bytes(0) {
+            Ok(got) if limit >= work => assert_eq!(&got[..], &entry[..]),
+            Err(e) if limit < work => assert!(past(&e), "limit {limit}: {e}"),
+            got => panic!("limit {limit} for work {work}: {got:?}"),
+        }
+        if limit >= work {
+            assert_eq!(m.decoded(), work);
+            assert_eq!(m.work_used_up(), None, "limit {limit}");
+            // Kept: read again, it is the run's slice, and no more work.
+            assert_eq!(&b.entry_bytes(0).unwrap()[..], &entry[..]);
+            assert_eq!(m.decoded(), work);
+        }
+    }
+
+    // Two rows over one gzip stream: the open and row 0's detection under
+    // the default allowance, then an allowance of exactly that much.
+    let data = rows_over_one_gzip_stream(2);
+    let c = ctx();
+    let m = meter_for(&c);
+    let b = open_with(&data, &c, &m).unwrap();
+    assert!(b.entry(0).is_ok());
+    let work = m.decoded();
+    let ctx = ctx_with(|c| c.limits.max_decode_work = work);
+    let m = meter_for(&ctx);
+    let b = open_with(&data, &ctx, &m).unwrap();
+    assert!(matches!(b.entry(0), Ok(File::Raw(_))));
+    assert_eq!(m.decoded(), work);
+    match b.entry(1) {
+        Err(e) => assert!(past(&e), "{e}"),
+        Ok(_) => panic!("row 1 detected past the allowance"),
+    }
+    assert!(m.decoded() > work, "the refused chunk is counted");
+}
+
 #[test]
 fn each_block_of_a_run_is_capped_on_its_own() {
     let ctx = ctx_with(|c| c.limits.max_block_output = 4096);
