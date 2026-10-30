@@ -45,15 +45,26 @@
 //! (`CANONICAL_DUMP.md` section 4.2); either way the records made so far are
 //! dropped first, and the run goes on.
 //!
-//! **Work.** Every byte the dump hashes or compares (each bundle entry's
-//! bytes, each object's raw bytes and its resave's, each value it writes as
-//! a length and a sha256: [`crate::text::Sink::count_work`]) is counted as
-//! the open's work on the input's meter first ([`Meter::count_decode`], the
-//! `max_decode_work` the core's block decodes count against), because
-//! directory rows, objects and values may overlap: K rows over the same S
-//! decoded bytes cost the core a slice each, and would cost the dump K x S
-//! of hashing. Past the allowance the input is its `limit DecodeWork: <v> >
-//! <max>` refusal (`PARITY.md` section 19.3, "the dump's hashing").
+//! **Work.** Every byte the dump hashes or compares (the input's own bytes,
+//! each bundle entry's bytes, each object's raw bytes and its resave's,
+//! each value it writes as a length and a sha256:
+//! [`crate::text::Sink::count_work`]) is counted as the open's work on the
+//! input's meter first ([`Meter::count_decode`], the `max_decode_work` the
+//! core's block decodes count against), because directory rows, objects
+//! and values may overlap: K rows over the same S decoded bytes cost the
+//! core a slice each, and would cost the dump K x S of hashing. Past the
+//! allowance the input is its `limit DecodeWork: <v> > <max>` refusal
+//! (`PARITY.md` section 19.3, "the dump's hashing"). The input's own bytes
+//! are hashed first, before its detection: an input they alone take past
+//! the allowance is refused before it is detected, a `detect` record whose
+//! digest was not taken, as [`crate::read`] writes for a refused input
+//! whose hashing passes it. The input's detection counts on the same meter
+//! every byte a gzip stream's inflation reads or writes
+//! ([`check_entry_type`], as the core detects an entry), and so does the
+//! conversion of a packed version past 128 bits to decimal
+//! ([`crate::json::write_packed`]): an input that passes the allowance
+//! there is its `detect` record (`detection: limit DecodeWork: <v> >
+//! <max>`), or its `parse` record.
 //!
 //! **Context**: the dump reads with the [`DumpOptions::context`] it is
 //! given, `FileContext::unitypy()` by default, and nothing else.
@@ -61,12 +72,11 @@
 use std::sync::Arc;
 
 use unityrs_core::budget::Reservation;
-use unityrs_core::detect::{FileType, ParsedAs, check_file_type};
+use unityrs_core::detect::{FileType, ParsedAs, check_entry_type};
 use unityrs_core::files::{File, parse_file};
 use unityrs_core::limits::{Charge, ChargeError, Meter, MeteredVec};
 use unityrs_core::{BundleFile, Bytes, Error, RawStr, SerializedFile};
 
-use crate::json::sha256;
 use crate::record::{
     FileError, FileErrorKind, FileL1, FileRecord, L0, file_line, file_line_into, note,
     object_line_into,
@@ -98,47 +108,41 @@ pub fn dump_input(rel: &[u8], data: Bytes, opts: &DumpOptions) -> InputDump {
 #[must_use]
 pub fn dump_on(rel: &[u8], data: Bytes, meter: &Arc<Meter>, opts: &DumpOptions) -> InputDump {
     let name = RawStr::from(rel);
+    let size = u64::try_from(data.len()).unwrap_or(u64::MAX);
+    let sha256 = match hashed(meter, &data) {
+        Ok(sha) => sha,
+        Err(e) => return not_taken(rel, size, &e),
+    };
     let mut l0 = L0 {
         ty: None,
         parsed_as: ParsedAs::Error,
-        size: u64::try_from(data.len()).unwrap_or(u64::MAX),
-        sha256: sha256(&data),
+        size,
+        sha256,
     };
     let mut out = InputDump {
-        sha256: l0.sha256,
-        bytes_in: l0.size,
+        sha256: Some(sha256),
+        bytes_in: size,
         ..InputDump::default()
     };
     let ctx = &opts.context;
-    let ty = match check_file_type(&data, &ctx.limits) {
+    // A gzip stream's detection counts as an entry's does (module docs).
+    let ty = match check_entry_type(&data, &ctx.limits, meter) {
         Ok(ty) => ty,
         Err(e) => {
             // A file whose detection raises would raise again inside
             // `Environment.load_file` (dump_records.py `_dump_input`).
-            let rec = FileRecord {
-                file: vec![name],
-                l0,
-                l1: None,
-                error: Some(FileError {
-                    kind: FileErrorKind::Detect,
-                    note: Some(refused::note(&Error::Detect(e))),
-                }),
+            let error = FileError {
+                kind: FileErrorKind::Detect,
+                note: Some(refused::note(&Error::Detect(e))),
             };
-            out.push_file(file_line(&rec));
-            return out;
+            return with_record(out, name, l0, Some(error));
         }
     };
     l0.ty = Some(ty);
     if ty == FileType::Zip {
         // Format 1 does not expand zip/apk members (section 8).
         l0.parsed_as = ParsedAs::Zip;
-        out.push_file(file_line(&FileRecord {
-            file: vec![name],
-            l0,
-            l1: None,
-            error: None,
-        }));
-        return out;
+        return with_record(out, name, l0, None);
     }
     let mut records = Records::on(meter);
     let result = parse_file(name.clone(), data, ty, None, meter, ctx).and_then(|file| {
@@ -197,6 +201,25 @@ pub fn dump_on(rel: &[u8], data: Bytes, meter: &Arc<Meter>, opts: &DumpOptions) 
         }
     }
     out
+}
+
+/// `out` with its input's one `file` record: `l0`, no `l1`, and `error`.
+fn with_record(mut out: InputDump, name: RawStr, l0: L0, error: Option<FileError>) -> InputDump {
+    out.push_file(file_line(&FileRecord {
+        file: vec![name],
+        l0,
+        l1: None,
+        error,
+    }));
+    out
+}
+
+/// The one record of an input whose own bytes the allowance refused
+/// (`refusal`): refused before its detection, its sha256 not taken
+/// ([`crate::read::refused_before_detection`]).
+fn not_taken(rel: &[u8], size: u64, refusal: &ChargeError) -> InputDump {
+    let text = crate::read::not_taken(refusal);
+    crate::read::refused_before_detection(rel, size, None, FileErrorKind::Detect, note(&text))
 }
 
 /// One input's records as they are made: the lines, in a list charged to
@@ -277,7 +300,7 @@ fn count_hashed(meter: &Meter, bytes: &[u8]) -> Result<(), ChargeError> {
 /// The sha256 of `bytes`, counted first ([`count_hashed`]).
 fn hashed(meter: &Meter, bytes: &[u8]) -> Result<[u8; 32], ChargeError> {
     count_hashed(meter, bytes)?;
-    Ok(sha256(bytes))
+    Ok(crate::json::sha256(bytes))
 }
 
 struct Writer<'a> {

@@ -560,6 +560,12 @@ class G3bTests(unittest.TestCase):
             "detection: limit Inflate: 5120 > 1000": [("Inflate", 5120, 1000)],
             "entry CAB-x: detection: limit Inflate: 5120 > 1000": [("Inflate", 5120, 1000)],
             "limit InputBytes: 5000 > 1000": [("InputBytes", 5000, 1000)],
+            "detection: limit DecodeWork: 5120 > 1000": [("DecodeWork", 5120, 1000)],
+            "its sha256 was not taken: limit DecodeWork: 5000 > 4999": [("DecodeWork", 5000, 4999)],
+            "limit InputBytes: 200000 > 1000; its sha256 was not taken: limit DecodeWork: 196608 > 163840": [
+                ("InputBytes", 200000, 1000),
+                ("DecodeWork", 196608, 163840),
+            ],
             "limit Inflate: a gzip stream inflates past 1000 bytes": [],
         }
         for note, want in cases.items():

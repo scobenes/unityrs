@@ -137,32 +137,54 @@ pub fn write_value_str<S: Sink>(out: &mut S, raw: &[u8]) {
 }
 
 /// A packed engine version, exactly (section 4.2: it can pass 64 bits, and a
-/// 4,300-digit group packs to more than 4,300 digits).
+/// 4,300-digit group packs to more than 4,300 digits). Past 128 bits its
+/// decimal digits cost a pass over the limbs for each 19 of them, quadratic
+/// work that every file record of a version repeats, so each pass is
+/// counted first ([`Sink::count_work`], [`LIMB_WORK`] a limb it divides):
+/// when the sink refuses one, nothing is written.
 pub fn write_packed<S: Sink>(out: &mut S, packed: &Packed) {
     match packed.as_u128() {
         Some(v) => {
             let _ = write!(out, "{v}");
         }
-        None => out.push_str(&limbs_to_decimal(&packed.to_limbs())),
+        None => {
+            if let Some(digits) = decimal_counted(&packed.to_limbs(), &mut |n| out.count_work(n)) {
+                out.push_str(&digits);
+            }
+        }
     }
 }
+
+/// The work [`write_packed`] counts for each limb a pass divides: a limb's
+/// bytes, as the core counts 8 bytes a step of a bundle read.
+pub const LIMB_WORK: usize = 8;
 
 /// The decimal digits of a little-endian `u64` limb number, by repeated
 /// division by 10^19 (quadratic in the limbs, which a 4,300-digit group
 /// keeps to a few hundred).
 #[must_use]
 pub fn limbs_to_decimal(limbs: &[u64]) -> String {
+    decimal_counted(limbs, &mut |_| true).unwrap_or_default()
+}
+
+/// [`limbs_to_decimal`], each pass's limbs counted by `count` before the
+/// pass divides them ([`LIMB_WORK`] a limb): `None`, with nothing more
+/// done, when it refuses one.
+fn decimal_counted(limbs: &[u64], count: &mut dyn FnMut(usize) -> bool) -> Option<String> {
     const CHUNK: u64 = 10_000_000_000_000_000_000;
     let mut n: Vec<u64> = limbs.to_vec();
     while n.last() == Some(&0) {
         n.pop();
     }
     if n.is_empty() {
-        return "0".to_owned();
+        return Some("0".to_owned());
     }
     // Base-10^19 digits, least significant first.
     let mut chunks = Vec::new();
     while !n.is_empty() {
+        if !count(n.len().saturating_mul(LIMB_WORK)) {
+            return None;
+        }
         let mut rem: u128 = 0;
         for limb in n.iter_mut().rev() {
             let cur = (rem << 64) | u128::from(*limb);
@@ -183,7 +205,7 @@ pub fn limbs_to_decimal(limbs: &[u64]) -> String {
     for c in it {
         let _ = write!(s, "{c:019}");
     }
-    s
+    Some(s)
 }
 
 /// A JSON object being written: members in the order they are added.
@@ -352,6 +374,70 @@ mod tests {
             u64::try_from(v >> 64).unwrap(),
         ];
         assert_eq!(limbs_to_decimal(&limbs), v.to_string());
+    }
+
+    /// A sink that counts the work it is told of, and refuses past `max`.
+    struct Counting {
+        text: String,
+        work: usize,
+        max: usize,
+    }
+
+    impl std::fmt::Write for Counting {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.text.push_str(s);
+            Ok(())
+        }
+    }
+
+    impl Sink for Counting {
+        fn push_str(&mut self, s: &str) {
+            self.text.push_str(s);
+        }
+        fn push(&mut self, c: char) {
+            self.text.push(c);
+        }
+        fn count_work(&mut self, bytes: usize) -> bool {
+            if self.work + bytes > self.max {
+                return false;
+            }
+            self.work += bytes;
+            true
+        }
+    }
+
+    /// 2^128 (three limbs) takes three passes: 2^128 / 10^19 is still past
+    /// 2^64 (two limbs), then 34 (one): 3 + 2 + 1 limbs divided, 8 bytes
+    /// each, counted before each pass; refused at the second pass, nothing
+    /// is written. Below 2^128 nothing is counted.
+    #[test]
+    fn a_packed_version_counts_each_pass_before_it_divides() {
+        let big = Packed::from_limbs(&[0, 0, 1]);
+        let mut out = Counting {
+            text: String::new(),
+            work: 0,
+            max: usize::MAX,
+        };
+        write_packed(&mut out, &big);
+        assert_eq!(out.text, "340282366920938463463374607431768211456");
+        assert_eq!(out.work, 6 * LIMB_WORK);
+        let mut out = Counting {
+            text: String::new(),
+            work: 0,
+            max: 4 * LIMB_WORK,
+        };
+        write_packed(&mut out, &big);
+        assert_eq!((out.text.as_str(), out.work), ("", 3 * LIMB_WORK));
+        let mut out = Counting {
+            text: String::new(),
+            work: 0,
+            max: 0,
+        };
+        write_packed(&mut out, &Packed::from_limbs(&[u64::MAX, u64::MAX]));
+        assert_eq!(
+            (out.text.as_str(), out.work),
+            (u128::MAX.to_string().as_str(), 0)
+        );
     }
 
     #[test]

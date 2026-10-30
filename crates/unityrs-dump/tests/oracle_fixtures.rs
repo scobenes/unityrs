@@ -157,7 +157,9 @@ fn inputs_are_selected_named_and_ordered_as_the_oracle_selects_them() {
                 (
                     unityrs_dump::json::hex(&i.name),
                     unityrs_dump::json::hex(rel.as_os_str().as_bytes()),
-                    i.sha256,
+                    // The index pins only with strings: the run's reading
+                    // of every other value is `pins_are_tested_as_the_oracle_tests_them`.
+                    i.sha256.map(|p| p.to_string()),
                 )
             })
             .collect();
