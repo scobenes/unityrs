@@ -1769,11 +1769,12 @@ class Rows(unittest.TestCase):
         import ctypes
         import signal
 
-        # Section 19.1 states this for a texture that is not Switch-swizzled: the cases run at platform 0 and at
-        # StandaloneWindows64 with no platform blob, and at Switch with a blob of one GOB per block. A Switch-swizzled
-        # texture is not characterised.
-        configs = ((0, None), (BuildTarget.StandaloneWindows64, None), (BuildTarget.Switch, [0] * 12))
-        self.assertEqual([TextureSwizzler.is_switch_swizzled(*config) for config in configs], [False] * 3)
+        # Section 19.1 states this for a texture that is not Switch-swizzled: the cases run at platform 0, at
+        # StandaloneWindows64 and XBOX360 with no platform blob, and at Switch with a blob of one GOB per block. A
+        # Switch-swizzled texture is not characterised.
+        configs = ((0, None), (BuildTarget.StandaloneWindows64, None), (BuildTarget.XBOX360, None))
+        configs += ((BuildTarget.Switch, [0] * 12),)
+        self.assertEqual([TextureSwizzler.is_switch_swizzled(*config) for config in configs], [False] * 4)
 
         def convert(target, size, config):
             return Texture2DConverter.image_to_texture2d(Image.new("RGBA", size), TextureFormat[target], *config)
