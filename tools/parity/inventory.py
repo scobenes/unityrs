@@ -22,6 +22,9 @@ The groups, and how PARITY.md names a symbol of each, inside a code span (backti
   (`Environment.load_file`), for every class UnityPy defines; for the classes of
   `classes/generated.py`, the members a `classes/legacy_patch` module adds
   (`Texture2D.set_image`). Inherited members are named under the class that defines them.
+  A special method (`PPtr.__bool__`, `PPtr.__eq__`) is public too, where a UnityPy module's
+  own code defines it: not one attrs, `dataclasses`, `namedtuple` or `enum` generates, nor
+  the constructor's `__init__` and `__new__`, which calling the class runs.
 - `fields`, every public attrs field a class declares itself, for every attrs class
   UnityPy defines, the generated classes included: `Class.field` (`GameObject.m_Name`).
 - `attributes`, every other public attribute of a class UnityPy defines outside
@@ -44,7 +47,7 @@ The groups, and how PARITY.md names a symbol of each, inside a code span (backti
   with the matrix's header fails the check, since either could then be the matrix. So do two
   matrix rows with one format name or one value, since either row could then be the format's.
 
-Out of scope: private names (a leading underscore), and an attribute that only code
+Out of scope: private names (a leading underscore, special methods aside), and an attribute that only code
 outside the class sets (`obj.x = ...` in another module, or `setattr`), because the
 collector reads a class's own body and methods. The generated classes' attributes are
 their attrs fields: the one `legacy_patch` function that assigns through `self`
@@ -126,6 +129,20 @@ def _is_member(value) -> bool:
 def _defined_in(value, prefix: str) -> bool:
     func = value.fget if isinstance(value, property) else getattr(value, "__func__", value)
     return (getattr(func, "__module__", None) or "").startswith(prefix)
+
+
+# Calling the class runs these: the class's own name stands for them.
+CONSTRUCTORS = ("__init__", "__new__")
+
+
+def _special_method(member: str, value, root: Path) -> bool:
+    """A special method (`__eq__`) whose code a UnityPy module holds: not one that attrs, `dataclasses`,
+    `namedtuple` or `enum` generates (their code lives in a string or in the standard library), nor a constructor."""
+    if not (member.startswith("__") and member.endswith("__") and len(member) > 4) or member in CONSTRUCTORS:
+        return False
+    func = value.fget if isinstance(value, property) else getattr(value, "__func__", value)
+    code = getattr(func, "__code__", None)
+    return code is not None and Path(code.co_filename).resolve().is_relative_to(root)
 
 
 def _unpacked(targets) -> list:
@@ -318,7 +335,7 @@ def collect() -> dict:
     for cls, name in classes:
         generated = cls.__module__ == GENERATED
         for member, attr in vars(cls).items():
-            if member.startswith("_") or not _is_member(attr):
+            if not _is_member(attr) or (member.startswith("_") and not _special_method(member, attr, root)):
                 continue
             if generated and not _defined_in(attr, LEGACY_PATCH):
                 continue

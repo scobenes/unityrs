@@ -2792,6 +2792,7 @@ class Rows(unittest.TestCase):
             ColorRGBA,
             Matrix3x4f,
             Matrix4x4f,
+            Object,
             Quaternionf,
             TextAsset,
             Vector2f,
@@ -2833,6 +2834,52 @@ class Rows(unittest.TestCase):
         self.assertIsNone(UnknownObject(a=1).get_type())
         node = TypeTreeNode(m_Level=0, m_Type="Thing", m_Name="Base", m_ByteSize=0, m_Version=0)
         self.assertEqual(UnknownObject(node, a=1).get_type(), "Thing")
+        # repr and str: Object's `<{class name}>`, which a generated class's attrs repr replaces.
+        fresh = TextAsset(m_Name="n", m_Script="s")
+        self.assertEqual(
+            (Object.__repr__(fresh), repr(fresh)),
+            ("<TextAsset>", "TextAsset(m_Name='n', m_Script='s', m_PathName=None)"),
+        )
+        # UnknownObject: its attributes but `__node__`, each repr longer than 100 cut to 97 characters and `...`.
+        self.assertEqual(repr(UnknownObject(a=1)), "<UnknownObject<None> a=1>")
+        long, edge = "x" * 120, "y" * 98
+        self.assertEqual(
+            repr(UnknownObject(node, a=1, b=long, c=edge)),
+            f"<UnknownObject<Thing> a=1, b={repr(long)[:97]}..., c={edge!r}>",
+        )
+        self.assertEqual(
+            [
+                repr(Vector2f(1, 2.5)),
+                repr(Vector3f(1, 2, 3)),
+                repr(Vector4f(1, 2, 3, 4)),
+                repr(Quaternionf(1, 2, 3, 4)),
+            ],
+            ["Vector2f(1, 2.5)", "Vector3f(1, 2, 3)", "Vector4f(1, 2, 3, 4)", "Quaternion(1, 2, 3, 4)"],
+        )
+        sf_bytes = S.serialized_file(
+            [S.Type(49, TEXT_ASSET)], [S.Obj(1, 0, S.s32("n") + S.s32("s"))], externals=[S.External("archive:/C/d")]
+        )
+        sf, bundle = load(sf_bytes)[0], load(S.fs_bundle([(b"CAB-a", sf_bytes, 4)]), "b")[0]
+        self.assertEqual(
+            (repr(sf), repr(bundle), repr(bundle.files["CAB-a"])),
+            ("<SerializedFile>", "<BundleFile>", "<SerializedFile>"),
+        )
+        self.assertEqual(
+            (repr(sf.externals[0]), repr(sf.objects[1])), ("<FileIdentifier(archive:/C/d)>", "<ObjectReader TextAsset>")
+        )
+        self.assertEqual(
+            (repr(UnityVersion.from_str("2019.4.15f1")), repr(UnityVersion.from_str("5.6.7f1"))),
+            ("UnityVersion 2019.4f1", "UnityVersion 5.6.7"),
+        )
+        # ContainerHelper's str: `{path: pointer, …}` over items(), the path bare and the pointer as its str.
+        pointers = [PPtr(m_FileID=0, m_PathID=7), PPtr(m_FileID=1, m_PathID=2)]
+        container = ContainerHelper(
+            [(p, SimpleNamespace(asset=a)) for p, a in zip(("a/path", "b"), pointers, strict=True)]
+        )
+        self.assertEqual(
+            str(container),
+            "{a/path: PPtr(m_FileID=0, m_PathID=7, assetsfile=None), b: PPtr(m_FileID=1, m_PathID=2, assetsfile=None)}",
+        )
 
     # Section 11: the type character.
     def test_version_type_str_is_lower_case_for_known_types(self):

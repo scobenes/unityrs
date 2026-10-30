@@ -38,7 +38,7 @@ GROUP_SIZES = {
     "classes": 955,
     "functions": 126,
     "data": 73,
-    "methods": 228,
+    "methods": 267,
     "fields": 8456,
     "attributes": 145,
     "exports": 924,
@@ -46,6 +46,18 @@ GROUP_SIZES = {
     "enum_members": 741,
     "texture_formats": 78,
 }
+
+# The special methods UnityPy's own code defines, constructors aside: 39 of `methods`' 267.
+SPECIAL_METHODS = [
+    *(f"ContainerHelper.__{name}__" for name in ("contains", "delitem", "getattr", "getitem", "iter", "len")),
+    *("ContainerHelper.__setitem__", "ContainerHelper.__str__", "EndianBinaryReader_Streamable_LocalFile.__del__"),
+    *("File.__getitem__", "File.__repr__", "FileIdentifier.__repr__", "Object.__copy__", "Object.__repr__"),
+    *("ObjectReader.__getattr__", "ObjectReader.__repr__", "PPtr.__bool__", "PPtr.__eq__", "PPtr.__hash__"),
+    *("Quaternionf.__repr__", "Vector2f.__repr__", "Vector3f.__repr__", "Vector4f.__repr__", "UnknownObject.__repr__"),
+    *("TpkUnityClass.__eq__", "TpkUnityClass.__hash__", "TpkUnityNode.__eq__", "TpkUnityNode.__hash__"),
+    "TypeTreeNode.__eq__",
+    *(f"UnityVersion.__{name}__" for name in ("eq", "ne", "lt", "le", "gt", "ge", "hash", "getitem", "repr", "str")),
+]
 
 
 SYMBOLS = {
@@ -432,6 +444,12 @@ class AgainstTheOracle(unittest.TestCase):
         self.assertIn("Environment.load_file", groups["methods"])
         self.assertIn("Texture2D.set_image", groups["methods"])
         self.assertIn("EndianBinaryReader.read_string_to_null", groups["methods"], "a class outside any fixed list")
+        # A special method UnityPy's own code defines is a member. One that attrs (`AimConstraint.__eq__`,
+        # `ColorRGBA.__attrs_init__`), `dataclasses` (`NodeClass.__eq__`), `namedtuple` (`BlockInfo.__getnewargs__`)
+        # or `enum` (`CompressionFlags.__or__`) generates is not, nor is a constructor (`Environment.__init__`).
+        self.assertEqual(sorted(n for n in groups["methods"] if n.split(".")[-1][:2] == "__"), sorted(SPECIAL_METHODS))
+        self.assertEqual(len(SPECIAL_METHODS), 39)
+        self.assertIn("PPtr.__bool__", groups["methods"])
         self.assertIn("UnityPyBoost.read_typetree", groups["boost"])
         self.assertIn("CompressionHelper.DECOMPRESSION_MAP", groups["data"])
         self.assertIn("config.FALLBACK_UNITY_VERSION", groups["data"])
@@ -499,6 +517,14 @@ class AgainstTheOracle(unittest.TestCase):
             with self.subTest(group):
                 absent = inventory.missing(self.symbols, mutate(self, self.text, pattern, repl))
                 self.assertIn(name, absent.get(group, []))
+        # A special method, named in a row's prose or in an Appendix B `members` cell.
+        for pattern, repl, name in (
+            (r"`PPtr\.__bool__`", "`PPtr.__boolX__`", "PPtr.__bool__"),
+            (r"^(\| `TpkUnityNode` \|.*)`__eq__`, ", r"\1", "TpkUnityNode.__eq__"),
+        ):
+            with self.subTest(name):
+                absent = inventory.missing(self.symbols, mutate(self, self.text, pattern, repl))
+                self.assertEqual(absent, {"methods": [name]})
 
     def test_a_name_under_a_wrong_parent_fails_the_check(self):
         cases = [

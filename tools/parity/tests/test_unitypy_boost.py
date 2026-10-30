@@ -516,6 +516,23 @@ class ThroughBoost(unittest.TestCase):
         for text in ("2021.3", "x2021.3.2f1", ""):
             with self.subTest(text), self.assertRaises(ValueError):
                 UnityVersion.from_str(text)
+        # `[]` indexes or slices the five fields; comparisons take an int or the tuple as_tuple gives; the hash is
+        # the int's.
+        v = UnityVersion.from_str("2019.4.15f1")
+        fields = (v.major, v.minor, v.build, v.type.value, v.type_number)
+        self.assertEqual((fields, v.as_tuple()), ((2019, 4, 15, 3, 1), (2019, 4, 15, 3, 1)))
+        self.assertEqual((v[0], v[1:3], v[-1], v[3]), (2019, (4, 15), 1, 3))
+        n, t = int(v), v.as_tuple()
+        self.assertEqual(
+            (v == n, v != n, v < n, v <= n, v > n, v >= n, v < n + 1, v > n - 1, v != n + 1),
+            (True, False, False, True, False, True, True, True, True),
+        )
+        later, earlier = (2019, 4, 15, 3, 2), (2019, 4, 15, 3, 0)
+        self.assertEqual(
+            (v == t, v != t, v < t, v <= t, v > t, v >= t, v < later, v > earlier, v == later, v <= earlier),
+            (True, False, False, True, False, True, True, True, False, False),
+        )
+        self.assertEqual(hash(v), hash(n))
 
     def test_pure_python_path_returns_tuples(self):
         # byte_size 0 (falsy) routes UnityPy to its Python reader, whose
