@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use super::{ctx_with, meter_for, open_with, small_entries};
 use unityrs_core::budget::DecodeBuf;
-use unityrs_core::codec::{BlockCodec, Codec, Codecs, Decoded, Lz4};
+use unityrs_core::codec::{BlockCodec, Codec, Codecs, Decoded, Lz4, Stored};
 use unityrs_core::files::BundleFile;
 use unityrs_core::{Bytes, Error};
 use unityrs_testkit::bundle::{BlockOverride, BundleSpec, TestCodec, build};
@@ -40,9 +40,12 @@ impl BlockCodec for Reentrant {
     }
 }
 
-/// A codec that takes a lock another thread holds while it reads the same
-/// bundle.
-struct Locking(Arc<Mutex<()>>);
+/// A stored codec that says it has been entered, then takes a lock another
+/// thread holds while that thread reads the same bundle.
+struct Locking {
+    lock: Arc<Mutex<()>>,
+    entered: Mutex<mpsc::Sender<()>>,
+}
 
 impl BlockCodec for Locking {
     fn decode(
@@ -51,9 +54,30 @@ impl BlockCodec for Locking {
         uncompressed: u32,
         out: &mut DecodeBuf,
     ) -> Result<Decoded, Error> {
-        let _g = self.0.lock().unwrap();
-        Lz4.decode(input, uncompressed, out)
+        let _ = self.entered.lock().unwrap().send(());
+        let _g = self.lock.lock().unwrap();
+        Stored.decode(input, uncompressed, out)
     }
+}
+
+/// [`small_entries`] in blocks of 100 bytes: entry 0 is block 0, entry 1
+/// blocks 1 to 3; each LZ4 but the last, which is stored under the custom
+/// id 5.
+fn split_bundle() -> Vec<u8> {
+    build(&BundleSpec {
+        info_codec: TestCodec::Lz4,
+        data_codec: TestCodec::Lz4,
+        block_size: 100,
+        entries: small_entries(),
+        block_overrides: vec![BlockOverride {
+            block: 3,
+            codec: Some(TestCodec::Raw(5)),
+            ..BlockOverride::default()
+        }],
+        ..BundleSpec::default()
+    })
+    .into_iter()
+    .collect::<Vec<u8>>()
 }
 
 fn custom_bundle() -> Vec<u8> {
@@ -108,14 +132,17 @@ fn replace_block(raw: &[u8], plain: &[u8], packed: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Runs `f` and fails the test if it has not finished in 60 s: a deadlock,
+/// where a lock is held across caller code. Only a hang trips it; the
+/// tests order their threads with handshakes, never with time.
 fn guarded(f: impl FnOnce() + Send + 'static) {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         f();
         let _ = tx.send(());
     });
-    rx.recv_timeout(Duration::from_secs(10))
-        .expect("no lock is held across caller code (10 s guard)");
+    rx.recv_timeout(Duration::from_secs(60))
+        .expect("a deadlock: a lock is held across caller code (60 s guard)");
 }
 
 #[test]
@@ -140,17 +167,24 @@ fn a_codec_may_read_its_own_bundle_while_decoding() {
     }
 }
 
+/// A codec that waits for a thread that reads the same bundle meanwhile:
+/// the reader is inside the codec (it said so) before this thread reads
+/// entry 0, whose block it decodes and publishes through the bundle's own
+/// locks, so a bundle lock held across the codec deadlocks the two.
 #[test]
 fn a_codec_may_wait_for_a_thread_that_reads_the_same_bundle() {
     for eager in [false, true] {
         guarded(move || {
             let lock = Arc::new(Mutex::new(()));
+            let (tx, entered) = mpsc::channel();
+            let codec = Locking {
+                lock: lock.clone(),
+                entered: Mutex::new(tx),
+            };
             let mut codecs = Codecs::unitypy();
-            codecs
-                .set(Codec::Other(5), Arc::new(Locking(lock.clone())))
-                .unwrap();
+            codecs.set(Codec::Other(5), Arc::new(codec)).unwrap();
             let ctx = ctx_with(|c| c.codecs = Arc::new(codecs));
-            let b = open_with(&custom_lz4_bundle(), &ctx, &meter_for(&ctx)).unwrap();
+            let b = open_with(&split_bundle(), &ctx, &meter_for(&ctx)).unwrap();
             let held = lock.lock().unwrap();
             let reader = {
                 let b = b.clone();
@@ -158,16 +192,17 @@ fn a_codec_may_wait_for_a_thread_that_reads_the_same_bundle() {
                     if eager {
                         b.load_all().unwrap();
                     }
-                    b.entry_bytes(0).unwrap()
+                    b.entry_bytes(1).unwrap()
                 })
             };
-            // While the reader's codec waits for the lock, this thread reads
-            // the same bundle's directory and files.
-            std::thread::sleep(Duration::from_millis(50));
+            // The reader's codec has been entered (block 3) and waits for
+            // the lock this thread holds.
+            entered.recv().unwrap();
+            assert_eq!(&b.entry_bytes(0).unwrap()[..], &small_entries()[0].data[..]);
             assert_eq!(b.files().len(), 2);
             let _ = b.uncompressed_size();
             drop(held);
-            assert_eq!(reader.join().unwrap().len(), 100);
+            assert_eq!(&reader.join().unwrap()[..], &small_entries()[1].data[..]);
         });
     }
 }
