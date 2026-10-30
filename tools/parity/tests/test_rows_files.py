@@ -783,6 +783,8 @@ class FileRows(unittest.TestCase):
 
     # Section 18: BundleFile.save's packer tuple, its compressed packers, and save_web_raw.
     def test_bundle_save_packers(self):
+        import lzma
+
         import lz4.block
 
         payload = text_asset_file("p", "q" * 300)
@@ -897,6 +899,33 @@ class FileRows(unittest.TestCase):
                     continue
                 back = load(raw.save())[0]
                 self.assertEqual([o.parse_as_dict()["m_Name"] for o in back.files["CAB-r"].objects.values()], ["p"])
+                # save never reads the packer here, so every one, an unknown one included, writes the same bytes.
+                # UnityRaw stores the directory and the data as they are; UnityWeb stores what compress_lzma(..., True)
+                # makes of them: 0x5D, the dictionary size 0x800000, the size as 8 bytes, then raw LZMA1.
+                contents = {}
+                for signature in ("UnityRaw", "UnityWeb"):
+                    raw.signature = signature
+                    packers = (None, "none", "lz4", "lzma", "original", "bogus", (194, 2))
+                    saves = [raw.save(packer=packer) for packer in packers]
+                    self.assertEqual(saves, [saves[0]] * len(packers), signature)
+                    strings = saves[0].index(b"2.6.1f1\0") + len(b"2.6.1f1\0")
+                    _, header_size, _, _, packed, size = struct.unpack_from(">IIIiII", saves[0], strings)
+                    contents[signature] = saves[0][header_size:]
+                    self.assertEqual(len(contents[signature]), packed)
+                    back = load(saves[0])[0]
+                    self.assertEqual(
+                        (back.signature, [o.parse_as_dict()["m_Name"] for o in back.files["CAB-r"].objects.values()]),
+                        (signature, ["p"]),
+                    )
+                plain, web = contents["UnityRaw"], contents["UnityWeb"]
+                self.assertEqual((plain[:10], len(plain), size), (struct.pack(">i", 1) + b"CAB-r\0", size, size))
+                self.assertEqual(web, H.compress_lzma(plain, True))
+                self.assertEqual(web[:13], bytes.fromhex("5d00008000") + struct.pack("<Q", len(plain)))
+                settings = {"id": lzma.FILTER_LZMA1, "dict_size": 0x800000, "lc": 3, "lp": 0, "pb": 2}
+                settings.update(mode=lzma.MODE_NORMAL, mf=lzma.MF_BT4, nice_len=123)
+                encoder = lzma.LZMACompressor(format=lzma.FORMAT_RAW, filters=[settings])
+                self.assertEqual(web[13:], encoder.compress(plain) + encoder.flush())
+                raw.signature = "UnityRaw"
         # Above format 3 the raise is the only thing in the way: UnityPy's own save_web_raw run with its version
         # check removed (the Tier C (writing) reference) writes the file's hash and CRC after the header's strings,
         # and saves UnityRaw and UnityWeb bundles that reload with the same entries, hash and CRC.

@@ -194,6 +194,15 @@ class ThroughBoost(unittest.TestCase):
         self.assertNotEqual(resave(read(clean, bool2), clean), bool2, "a bool byte of 2 resaves as 1")
         snan = struct.pack("<I", 0x7F800001) + raw[4:]
         self.assertNotEqual(resave(read(clean, snan), clean), snan, "a float32 sNaN resaves quieted")
+        # A string read from bytes that are not UTF-8 holds surrogate escapes, and write_aligned_string encodes with
+        # surrogateescape too, so it resaves the bytes it was read from.
+        text = N("Base", "Base", [N("string", "s")])
+        raw = struct.pack("<i", 3) + b"a\xffb\0"
+        self.assertEqual(read(text, raw), {"s": "a\udcffb"})
+        self.assertEqual(resave(read(text, raw), text), raw)
+        writer = EndianBinaryWriter(endian="<")
+        writer.write_aligned_string("a\udcffb")
+        self.assertEqual(bytes(writer.bytes), raw)
 
     def test_big_endian_reads_the_same_values(self):
         root = N(
