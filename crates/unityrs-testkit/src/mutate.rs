@@ -295,11 +295,16 @@ fn random_mutants(data: &[u8], rng: &mut Rng) -> Vec<Mutant> {
 
 /// G3b's inputs: every builder output the gate mutates, `(name, bytes)`:
 /// the format matrix ([`crate::bundle::matrix`]) and every file of every
-/// Environment scene ([`crate::env::scenes`], named `scene-<scene>-<file>`).
+/// Environment scene, those some of whose loads are dependencies included
+/// ([`crate::env::scenes`], [`crate::env::dependency_scenes`]; named
+/// `scene-<scene>-<file>`).
 #[must_use]
 pub fn builder_outputs() -> Outputs {
     let mut out = crate::bundle::matrix();
-    for (scene, s) in crate::env::scenes() {
+    let dependency = crate::env::dependency_scenes()
+        .into_iter()
+        .map(|(scene, d)| (scene, d.scene));
+    for (scene, s) in crate::env::scenes().into_iter().chain(dependency) {
         for (name, bytes) in s.files.into_iter().chain(s.resolver) {
             let name = String::from_utf8_lossy(&name).replace('/', "_");
             out.push((format!("scene-{scene}-{name}"), bytes));
@@ -478,5 +483,29 @@ mod tests {
         }
         // Only a resource file of raw bytes holds no field.
         assert_eq!(no_field, ["scene-resolver_loads-CAB-H2.resS"]);
+    }
+
+    /// Every file of every Environment scene is an output, a dependency
+    /// scene's included (fix pass 6 added the first dependency scene, in a
+    /// list of its own that G3b's outputs left out).
+    #[test]
+    fn every_file_of_every_scene_is_an_output() {
+        let inputs = builder_outputs();
+        let dependency = crate::env::dependency_scenes()
+            .into_iter()
+            .map(|(scene, d)| (scene, d.scene));
+        let mut files = 0;
+        for (scene, s) in crate::env::scenes().into_iter().chain(dependency) {
+            for (name, bytes) in s.files.iter().chain(&s.resolver) {
+                let name = String::from_utf8_lossy(name).replace('/', "_");
+                let name = format!("scene-{scene}-{name}");
+                assert!(
+                    inputs.iter().any(|(n, b)| *n == name && b == bytes),
+                    "{name} is no output"
+                );
+                files += 1;
+            }
+        }
+        assert_eq!(inputs.len(), crate::bundle::matrix().len() + files);
     }
 }
