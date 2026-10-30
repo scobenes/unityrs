@@ -9,6 +9,7 @@ import ctypes
 import re
 import struct
 import sys
+import traceback
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,15 +59,26 @@ class AudioRows(unittest.TestCase):
             counts = [count for _, count in samples]
             with self.subTest(samples=counts), self.assertRaisesRegex(struct.error, too_short(0)):
                 fmod_toolkit.raw_to_wav(fsb5(2, *samples), "c", 1, 44100)
-        # A bank whose first subsound has no samples FMOD refuses to open, whatever follows: fmod_toolkit's
-        # sound_to_wav is never reached, and UnityPy's export of the clip raises the refusal.
+        # A bank whose first subsound has no samples FMOD refuses to open, whatever follows: the refusal comes from
+        # `System.create_sound`, called at `fmod.py` line 61, so fmod_toolkit's sound_to_wav is never reached, and
+        # UnityPy's export of the clip raises it.
         for samples in ((empty,), (empty, empty), (empty, one), (empty, four), (empty, four, four)):
             counts = [count for _, count in samples]
             spy = mock.patch.object(fmod_toolkit.fmod, "sound_to_wav", wraps=fmod_toolkit.fmod.sound_to_wav)
             with self.subTest(samples=counts), spy as sound_to_wav:
-                with self.assertRaisesRegex(FmodError, "^PLUGIN$"):
+                try:
                     fmod_toolkit.raw_to_wav(fsb5(2, *samples), "c", 1, 44100)
+                except Exception as error:  # noqa: BLE001 - its type is the assertion
+                    refused = (type(error), str(error))
+                    frames = [
+                        (Path(f.filename).name, f.lineno, f.name) for f in traceback.extract_tb(error.__traceback__)
+                    ]
+                else:
+                    self.fail("FMOD opened the bank")
+                self.assertEqual(refused, (FmodError, "PLUGIN"))
                 self.assertFalse(sound_to_wav.called)
+                opened = frames.index(("fmod.py", 61, "raw_to_wav"))
+                self.assertEqual(frames[opened + 1][2], "create_sound")
         clip.m_AudioData = fsb5(2, empty, four)
         with self.assertRaisesRegex(FmodError, "^PLUGIN$"):
             AudioClipConverter.extract_audioclip_samples(clip)
