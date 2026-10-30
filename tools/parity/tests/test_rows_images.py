@@ -6,6 +6,7 @@ needs the corpus, and each test names the rows it pins; a row's test column name
 1.25.2 (the oracle image); skipped elsewhere.
 """
 
+import inspect
 import shutil
 import sys
 import tempfile
@@ -28,7 +29,7 @@ if ORACLE:
     from PIL import Image
     from UnityPy.classes import Texture2D
     from UnityPy.enums import BuildTarget, TextureFormat
-    from UnityPy.export import Texture2DConverter
+    from UnityPy.export import SpriteHelper, Texture2DConverter
     from UnityPy.helpers import TextureSwizzler
     from UnityPy.tools import extractor
 
@@ -203,21 +204,44 @@ class ImageRows(unittest.TestCase):
             (3, 28, texture_object(bytes(4), (2, 2), TextureFormat.Alpha8)),
             (4, 28, texture_object(bytes([200, 10]) + bytes(6), (4, 4), TextureFormat.BC4)),
             (5, 28, texture_object(bytes(range(48)), (4, 4), TextureFormat.RGB24)),
+            (6, 28, texture_object(bytes(8), (4, 0), TextureFormat.BC4)),
+            (7, 28, texture_object(bytes(8), (0, 4), TextureFormat.Alpha8)),
+            (8, 28, texture_object(bytes(16), (4, 0), TextureFormat.RGBA32)),
             (20, 213, sprite_object((0, 0, 4, 4), texture=4, alpha=2)),
             (21, 213, sprite_object((0, 0, 4, 4), texture=1, alpha=3)),
             (22, 213, sprite_object((0, 0, 4, 4), texture=4, alpha=3)),
             (23, 213, sprite_object((0, 0, 4, 4), texture=5, alpha=2)),
             (24, 213, sprite_object((0, 0, 4, 4), texture=1, alpha=4)),
+            (25, 213, sprite_object((0, 0, 4, 4), texture=6, alpha=7)),
+            (26, 213, sprite_object((0, 0, 4, 4), texture=6, alpha=2)),
+            (27, 213, sprite_object((0, 0, 4, 4), texture=8, alpha=7)),
+            (28, 213, sprite_object((0, 0, 4, 4), texture=1, alpha=7)),
+            (29, 213, sprite_object((0, 0, 4, 4), texture=4, alpha=7)),
         ]
         sf = load(tpk_file(objects))[0]
         self.assertEqual(sf.objects[4].parse_as_object().image.mode, "L", "BC4 decodes to one band")
-        for path_id, message in ((20, "wrong number of bands"), (21, "size mismatch"), (22, "wrong number of bands")):
+        lines, start = inspect.getsourcelines(SpriteHelper.get_image)
+        self.assertIn('Image.merge("RGBA"', lines[52 - start])
+        # A texture with a zero side decodes to a 0×0 RGBA image, BC4 included, so the merge compares that size and
+        # those four bands: the texture's bands decide only where it has no zero side.
+        for path_id in (6, 7, 8):
+            image = sf.objects[path_id].parse_as_object().image
+            self.assertEqual((image.mode, image.size), ("RGBA", (0, 0)))
+        raises = ((20, "wrong number of bands"), (21, "size mismatch"), (22, "wrong number of bands"))
+        raises += ((26, "size mismatch"), (28, "size mismatch"), (29, "wrong number of bands"))
+        for path_id, message in raises:
             with self.subTest(path_id=path_id), self.assertRaisesRegex(ValueError, f"^{message}$"):
                 _ = sf.objects[path_id].parse_as_object().image
         # An RGB texture has its three bands, and an alpha texture of one band merges.
         for path_id in (23, 24):
             image = sf.objects[path_id].parse_as_object().image
             self.assertEqual((image.mode, image.size), ("RGBA", (4, 4)))
+        # Two textures with a zero side merge to a 0×0 RGBA image, whatever their stored sizes, cached by the pair.
+        for path_id, pair in ((25, (6, 7)), (27, (8, 7))):
+            sprite = sf.objects[path_id].parse_as_object()
+            merged = SpriteHelper.get_image(sprite, sprite.m_RD.texture, sprite.m_RD.alphaTexture)
+            self.assertEqual((merged.mode, merged.size), ("RGBA", (0, 0)))
+            self.assertIs(sf._cache[pair], merged)
 
 
 if __name__ == "__main__":

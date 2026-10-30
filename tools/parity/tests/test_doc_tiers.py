@@ -200,6 +200,22 @@ class DocTiers(unittest.TestCase):
         bullet = next(line for line in tier_c.splitlines() if line.startswith("  - fmod_toolkit raises `struct.error`"))
         self.assertIn("a bank whose first subsound has no samples FMOD refuses to open, and the Tier U list", bullet)
 
+    def test_a_sprite_merge_compares_decoded_images(self):
+        """A texture with a zero side decodes to a 0×0 RGBA image whatever its format, so a sprite's alpha merge
+        raises "wrong number of bands" only for a `BC4` texture with no zero side, and compares decoded sizes
+        (`test_rows_images.py` sprite_alpha_merge_needs_like_sizes_and_three_bands). So every sentence that says the
+        merge raises for a `BC4` texture names one with no zero side, and the sizes it compares are the decoded ones."""
+        seen = 0
+        for name, text in (("PARITY.md", self.parity), ("DESIGN.md", self.design)):
+            for _, sentence in sentences(text, skip_items=True):
+                merge = re.search(r"\bmerge|`SpriteHelper\.get_image` raises", sentence)
+                if merge and "`BC4`" in sentence and re.search(r"wrong number of bands|one band", sentence):
+                    seen += 1
+                    with self.subTest(name, sentence=sentence[:80]):
+                        self.assertIn("no zero side", sentence)
+                        self.assertRegex(sentence, r"\bdecoded sizes?\b")
+        self.assertGreaterEqual(seen, 3)
+
 
 if __name__ == "__main__":
     unittest.main()
