@@ -1,7 +1,8 @@
 //! Deep values (plan section 3.10, "Bounds"): the shapes of
 //! `tools/fixtures/walk.py`'s `depth.json`, built the same way.
 //!
-//! Ref type `A` nests one kind of level as deep as one tree may go around a
+//! Ref type `A` nests its levels (one kind, or every kind after every
+//! other) as deep as one tree may go around a
 //! `ReferencedObject` whose data is the next `A`; the chain ends at ref type
 //! `Z` (`Z { int z }`). Every ref type's namespace is `n` and its assembly
 //! `a`. Rows and bytes are built without recursion.
