@@ -19,7 +19,7 @@ use unityrs_dump::input::check_read_kind;
 use unityrs_dump::json::{limbs_to_decimal, write_name};
 use unityrs_dump::record::first_difference;
 use unityrs_dump::run::{RunError, RunOptions, Summary, run};
-use unityrs_dump::select::{Selection, collect, fnmatchcase};
+use unityrs_dump::select::{PyStr, Selection, collect, fnmatchcase};
 use unityrs_dump::{DumpOptions, dump_input};
 
 #[test]
@@ -127,12 +127,12 @@ fn inputs_are_selected_named_and_ordered_as_the_oracle_selects_them() {
     let mut failed = Vec::new();
     for c in f["selections"].as_array().unwrap() {
         let args = &c["args"];
-        let strings = |k: &str| -> Option<Vec<String>> {
+        let strings = |k: &str| -> Option<Vec<PyStr>> {
             args.get(k).map(|v| {
                 v.as_array()
                     .unwrap()
                     .iter()
-                    .map(|x| s(x).to_owned())
+                    .map(|x| PyStr::from(s(x)))
                     .collect()
             })
         };
