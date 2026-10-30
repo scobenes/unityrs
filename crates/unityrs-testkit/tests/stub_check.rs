@@ -139,6 +139,79 @@ fn every_sign_of_a_stub_fails() {
     }
 }
 
+/// Round 6: the script read only `todo!(` and `unimplemented!(`, so a
+/// stub body with brackets or braces, or a space before its delimiter,
+/// passed G6. Every delimiter fails, with spaces or line breaks (comment
+/// lines too) between the macro's tokens, and the hit is the line that
+/// names the macro.
+#[test]
+fn every_form_of_the_macros_fails() {
+    let mut forms = Vec::new();
+    for name in ["todo", "unimplemented"] {
+        for (open, close) in [("(", ")"), ("[", "]"), ("{", "}")] {
+            forms.push(format!("{name}!{open}{close}"));
+            forms.push(format!("{name} ! {open} {close}"));
+            forms.push(format!("core::{name}!{open}{close}"));
+            forms.push(format!("{name}!\n    {open}{close}"));
+            forms.push(format!("{name}\n\n    // why\n    !\n    {open}{close}"));
+        }
+    }
+    for form in forms {
+        let text = format!("pub fn f() -> u8 {{\n    {form}\n}}\n");
+        let (code, out) = Tree::new(&with(("crates/b/src/m.rs", text))).check();
+        assert_eq!(code, 1, "{form:?} passed:\n{out}");
+        assert!(out.contains("crates/b/src/m.rs:2: "), "{form:?}: {out}");
+    }
+}
+
+/// What only looks like the macros passes: another macro whose name ends
+/// in one, a variable compared or assigned on the next line, a name with no
+/// delimiter after it, a comment.
+#[test]
+fn what_only_looks_like_the_macros_passes() {
+    let todo = "todo";
+    let text = format!(
+        "pub fn f() -> bool {{\n    my_{todo}!();\n    let {todo} = 1;\n    let x = {todo}\n        != 2;\n             let y = {todo}\n        + 1;\n    // {todo}![]\n    x\n}}\n"
+    );
+    let (code, out) = Tree::new(&with(("crates/b/src/m.rs", text))).check();
+    assert_eq!(code, 0, "{out}");
+}
+
+/// Round 6: clippy denied the macros only in the core and the tpk crate.
+/// The workspace's lints deny both, and every crate inherits them, so a
+/// form the script cannot see fails `cargo clippy` in any crate.
+#[test]
+fn every_crate_denies_the_macros_through_the_workspace_lints() {
+    let root = std::fs::read_to_string(workspace().join("Cargo.toml")).unwrap();
+    let clippy = root
+        .split("[workspace.lints.clippy]")
+        .nth(1)
+        .and_then(|rest| rest.split("\n[").next())
+        .unwrap();
+    for name in ["todo", "unimplemented"] {
+        assert!(
+            clippy
+                .lines()
+                .any(|l| l.trim() == format!("{name} = \"deny\"")),
+            "{name} is not denied:\n{clippy}"
+        );
+    }
+    let mut crates = 0;
+    for entry in std::fs::read_dir(workspace().join("crates")).unwrap() {
+        let manifest = entry.unwrap().path().join("Cargo.toml");
+        let Ok(text) = std::fs::read_to_string(&manifest) else {
+            continue;
+        };
+        crates += 1;
+        assert!(
+            text.contains("[lints]\nworkspace = true\n"),
+            "{} does not inherit the workspace's lints",
+            manifest.display()
+        );
+    }
+    assert!(crates >= 6, "{crates} crates");
+}
+
 #[test]
 fn every_hit_names_its_owning_package() {
     // Round 5: the script listed stubs with no owner, and the empty tables
