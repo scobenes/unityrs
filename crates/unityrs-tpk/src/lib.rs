@@ -106,7 +106,11 @@
 //! (plan section 3.15's constant per context; the bounds above are what
 //! bound it), the rows and tree of a release root built once, when first
 //! asked for, and kept. Each is computed with no lock held and published
-//! through [`unityrs_core::once::get_or_publish`]. A kept error's text is
+//! through [`unityrs_core::once::get_or_publish`]. A walk or compile the
+//! allocator refuses is the exception: that depends on what else the process
+//! held at that moment, not on the TPK or the request, so it is returned
+//! unkept, `ProviderError::memory` set (the meter's refusals are labelled
+//! `Reservation::Provider`), and the next request walks again. A kept error's text is
 //! shared (`ProviderError::detail` is an `Arc<str>`), so the clone each
 //! later request gets allocates nothing.
 //!

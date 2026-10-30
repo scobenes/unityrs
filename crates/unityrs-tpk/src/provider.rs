@@ -9,6 +9,7 @@ use std::mem::size_of;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+use unityrs_core::budget::{Reservation, Unbounded};
 use unityrs_core::limits::{Charge, ChargeError, Limits, Meter, MeteredVec, heap_cost};
 use unityrs_core::once::get_or_publish;
 use unityrs_core::provider::{ProviderError, TreeRequest, TypeTreeProvider};
@@ -52,7 +53,8 @@ pub struct TpkProvider {
     /// UnityPy's `get_common_strings()` over this TPK.
     common: CommonStrings,
     limits: Limits,
-    /// The provider's own meter, unlimited (crate docs, "Memory").
+    /// The provider's own meter, unlimited, its refusals labelled
+    /// [`Reservation::Provider`] (crate docs, "Memory").
     meter: Arc<Meter>,
 }
 
@@ -166,7 +168,7 @@ impl TpkProvider {
                 max: Self::MAX_FILE_BYTES,
             });
         }
-        let meter = Meter::unlimited();
+        let meter = Meter::new(u64::MAX, Arc::new(Unbounded), Reservation::Provider);
         let payload = file::payload(bytes)?;
         let blob = TypeTreeBlob::read(&payload, &meter)?;
         drop(payload);
@@ -204,14 +206,15 @@ impl TpkProvider {
     /// The node list UnityPy builds for `class_id` at `version`, before it
     /// is compiled: `Ok(None)` wherever UnityPy raises `KeyError`,
     /// `ValueError` or `AssertionError` (crate docs). Every request whose
-    /// picked entry names one release root gets the same `Arc`.
+    /// picked entry names one release root gets the same `Arc`; a walk the
+    /// allocator refuses is not kept ([`TypeTreeProvider::tree`]).
     pub fn node_list(
         &self,
         class_id: i32,
         version: &UnityVersion,
     ) -> Result<Option<Arc<NodeList>>, ProviderError> {
         match self.entry(class_id, version) {
-            Some(root) => self.rows_of(root).clone(),
+            Some(root) => self.rows_of(root),
             None => Ok(None),
         }
     }
@@ -232,8 +235,23 @@ impl TpkProvider {
             .and_then(|at| roots.get(at))
     }
 
-    fn rows_of<'r>(&self, root: &'r Root) -> &'r Outcome<NodeList> {
-        &get_or_publish(&root.rows, || self.kept(self.walk(root))).outcome
+    fn rows_of(&self, root: &Root) -> Outcome<NodeList> {
+        match root.rows.get() {
+            Some(kept) => kept.outcome.clone(),
+            None => self.publish(&root.rows, self.walk(root)),
+        }
+    }
+
+    /// `outcome`, published into `cell` unless it is a refusal of memory
+    /// ([`ProviderError::memory`]): that depends on what else was held at
+    /// that moment, not on the request, so it is returned unkept and the
+    /// next ask computes again, as `unityrs_core::once` treats a transient
+    /// error. Otherwise the first outcome published wins.
+    fn publish<T>(&self, cell: &OnceLock<Kept<T>>, outcome: Outcome<T>) -> Outcome<T> {
+        if matches!(&outcome, Err(e) if e.memory.is_some()) {
+            return outcome;
+        }
+        get_or_publish(cell, || self.kept(outcome)).outcome.clone()
     }
 
     /// An outcome to keep, a failure's heap charged first. The meter is
@@ -269,12 +287,15 @@ impl TpkProvider {
             WalkError::Depth { depth, max } => limit(LimitKind::TreeDepth, depth, max),
             WalkError::Rows { rows, max } => limit(LimitKind::Count, rows, max),
             WalkError::PastTable(what) => error(&what),
-            WalkError::Memory(e) => error(&e),
+            WalkError::Memory(e) => charge_error(&e),
         })?;
         // `TypeTreeNode.from_list(nodes)` (`Tpk.py:86`).
         NodeList::from_rows(rows)
             .map(|list| Some(Arc::new(list)))
-            .map_err(|e| error(&e))
+            .map_err(|e| match &e {
+                TreeError::Charge(c) => charge_error(c),
+                e => error(e),
+            })
     }
 }
 
@@ -341,6 +362,19 @@ fn error(e: &dyn fmt::Display) -> ProviderError {
         provider: TpkProvider::NAME,
         detail: e.to_string().into(),
         limit: None,
+        memory: None,
+    }
+}
+
+/// A charge refused: by the allocator (the meter is unlimited), a refusal
+/// of memory ([`ProviderError::memory`]), which the provider never keeps.
+fn charge_error(e: &ChargeError) -> ProviderError {
+    match e {
+        ChargeError::Budget(b) => ProviderError {
+            memory: Some(b.clone()),
+            ..error(e)
+        },
+        ChargeError::Limit(_) => error(e),
     }
 }
 
@@ -406,25 +440,29 @@ impl TypeTreeProvider for TpkProvider {
     /// [`TpkProvider::node_list`], compiled once per release root with
     /// [`Tree::compile`] on the provider's meter and kept: every request
     /// whose picked entry names one root gets the same `Arc` (UnityPy's
-    /// `NODES_CACHE`, crate docs).
+    /// `NODES_CACHE`, crate docs). A walk or compile the allocator refuses is
+    /// that request's error, its [`ProviderError::memory`] set, and is not
+    /// kept: the next request walks and compiles again.
     fn tree(&self, req: &TreeRequest<'_>) -> Result<Option<Arc<Tree>>, ProviderError> {
         let Some(root) = self.entry(req.class_id, req.version) else {
             return Ok(None);
         };
+        if let Some(kept) = root.tree.get() {
+            return kept.outcome.clone();
+        }
         let compile = || {
-            let Some(list) = self.rows_of(root).clone()? else {
+            let Some(list) = self.rows_of(root)? else {
                 return Ok(None);
             };
             Tree::compile(list, &self.limits)
                 .map(Some)
                 .map_err(|e| match e {
                     TreeError::Limit(l) => limit_error(l),
+                    TreeError::Charge(c) => charge_error(&c),
                     e => error(&e),
                 })
         };
-        get_or_publish(&root.tree, || self.kept(compile()))
-            .outcome
-            .clone()
+        self.publish(&root.tree, compile())
     }
 }
 

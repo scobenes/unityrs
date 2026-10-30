@@ -34,6 +34,9 @@ pub enum Reservation {
     /// A file the environment loaded as a dependency (its LRU), and
     /// everything that file's meter charges.
     Dependency,
+    /// A typetree provider's own data (a TPK's trees), which no input owns:
+    /// a refusal of it is the allocator's, on whichever input's read asked.
+    Provider,
 }
 
 /// A refused reservation.
