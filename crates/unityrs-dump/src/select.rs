@@ -3,8 +3,10 @@
 //! globs (`fnmatch.fnmatchcase`), so both producers dump the same inputs
 //! under the same names in the same order (`docs/CANONICAL_DUMP.md` section
 //! 4.2 "Names", section 5). `tests/fixtures/dump/select.json` records the
-//! oracle's selections over a synthetic tree and index, and Python's
-//! `fnmatchcase` over names and patterns, invalid UTF-8 included.
+//! oracle's selections over a synthetic tree and index, Python's
+//! `fnmatchcase` over names and patterns, invalid UTF-8 included, and what
+//! the oracle's run makes of an index entry's `sha256` of every JSON kind
+//! ([`Pin`]) and of an index whose `files` is no list of objects.
 //!
 //! Names are bytes throughout: a path's name is its bytes as given (Python's
 //! `os.fsencode` of the surrogate-escaped `str`), never resolved, so a
@@ -196,11 +198,23 @@ fn collect_one(sel: &Selection, given: &Path, items: &mut Vec<Input>) -> Result<
         let resolved =
             std::fs::canonicalize(given).map_err(|e| format!("{}: {e}", given.display()))?;
         let root = resolved.parent().unwrap_or(Path::new("/"));
-        let files = index
-            .get("files")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| format!("{}: the index has no files list", given.display()))?;
+        // `for e in index["files"]`: a list's items; an empty object or
+        // string is iterable and gives none, and anything else fails, as
+        // Python's iteration and then `e.get` do on it.
+        let files: &[serde_json::Value] = match index.get("files") {
+            Some(serde_json::Value::Array(a)) => a,
+            Some(serde_json::Value::Object(o)) if o.is_empty() => &[],
+            Some(serde_json::Value::String(s)) if s.is_empty() => &[],
+            _ => return Err(format!("{}: the index has no files list", given.display())),
+        };
         for e in files {
+            // `e.get(...)`: an entry that is no object fails the run.
+            if !e.is_object() {
+                return Err(format!(
+                    "{}: an index entry is not an object",
+                    given.display()
+                ));
+            }
             let kind = e.get("kind");
             if !kind
                 .and_then(serde_json::Value::as_str)

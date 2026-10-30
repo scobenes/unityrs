@@ -1,7 +1,8 @@
 //! Replays `tools/fixtures/dump.py`'s oracle fixtures without Python (plan
 //! section 6, G4): `canonical.py`'s encodings of synthetic values and names,
 //! Python's decimal form of packed integers, `unitypy_dump.py`'s input
-//! selection and `fnmatch.fnmatchcase`, `dump_records.py`'s `error_kind` on
+//! selection, what its run makes of an index's pins and shapes, and
+//! `fnmatch.fnmatchcase`, `dump_records.py`'s `error_kind` on
 //! `check_read` messages and its `first_difference`, and the oracle's records
 //! of `SerializedFile`s the fixture script built (`records.json`).
 
@@ -17,6 +18,7 @@ use unityrs_dump::encode::encode;
 use unityrs_dump::input::check_read_kind;
 use unityrs_dump::json::{limbs_to_decimal, write_name};
 use unityrs_dump::record::first_difference;
+use unityrs_dump::run::{RunError, RunOptions, Summary, run};
 use unityrs_dump::select::{Selection, collect, fnmatchcase};
 use unityrs_dump::{DumpOptions, dump_input};
 
@@ -180,6 +182,80 @@ fn inputs_are_selected_named_and_ordered_as_the_oracle_selects_them() {
                 "{}:\n  got  {got:?}\n  want {want:?}",
                 s(&c["name"])
             ));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+// ------------------------------------------------------------- index pins
+
+/// Runs the dump on the index at `index`, a file per entry beside it, as
+/// `unitypy_dump.py --index` would be run.
+fn run_index(index: &std::path::Path, allow: bool) -> Result<Summary, RunError> {
+    run(&RunOptions {
+        selection: Selection {
+            inputs: vec![index.to_path_buf()],
+            index: true,
+            ..Selection::default()
+        },
+        output: index.with_file_name("out.jsonl"),
+        dump: DumpOptions::default(),
+        stats: None,
+        quiet: true,
+        allow_index_mismatch: allow,
+    })
+}
+
+/// What an index entry's `sha256` pins, a value of every JSON kind and a
+/// repeated name's several values, as the oracle's run read it
+/// (`select.json` "pins": its own count of index mismatches, from its
+/// warnings): with `--allow-index-mismatch` the run counts as many, and
+/// without it a case the oracle counted any for fails the run.
+#[test]
+fn pins_are_tested_as_the_oracle_tests_them() {
+    let f = fixture("select.json");
+    let cases = f["pins"].as_array().unwrap();
+    assert!(cases.len() >= 20, "{} pin cases", cases.len());
+    let tmp = Tmp::new("pins");
+    let mut failed = Vec::new();
+    for c in cases {
+        let name = s(&c["name"]);
+        std::fs::create_dir_all(tmp.0.join(name)).unwrap();
+        std::fs::write(tmp.0.join(name).join("f"), unhex(s(&c["data"]))).unwrap();
+        let entries: Vec<&str> = c["entries"].as_array().unwrap().iter().map(s).collect();
+        let index = tmp.0.join(format!("{name}.json"));
+        std::fs::write(&index, format!(r#"{{"files":[{}]}}"#, entries.join(","))).unwrap();
+        let want = c["mismatches"].as_u64().unwrap();
+        let allowed = run_index(&index, true).map(|r| r.index_sha256_mismatch);
+        let refused = run_index(&index, false).is_err();
+        if allowed.as_ref().ok() != Some(&want) || refused != (want > 0) {
+            failed.push(format!(
+                "{name}: got {allowed:?} (refused without --allow-index-mismatch: {refused}), want {want}"
+            ));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+/// An index whose `files` is no list of objects (`select.json` "shapes"):
+/// the run's exit status is the oracle's, whether `for e in
+/// index["files"]` iterates nothing (no inputs matched: 2) or what it
+/// iterates has no `get` (1).
+#[test]
+fn an_index_of_every_shape_exits_as_the_oracle_does() {
+    let f = fixture("select.json");
+    let cases = f["shapes"].as_array().unwrap();
+    let tmp = Tmp::new("index-shapes");
+    std::fs::write(tmp.0.join("f"), b"f").unwrap();
+    let mut failed = Vec::new();
+    for c in cases {
+        let name = s(&c["name"]);
+        let index = tmp.0.join(format!("{name}.json"));
+        std::fs::write(&index, s(&c["index"])).unwrap();
+        let got = run_index(&index, true).map_or_else(|e| e.status(), |_| 0);
+        let want = c["status"].as_i64().unwrap();
+        if i64::from(got) != want {
+            failed.push(format!("{name}: exit {got}, want {want}"));
         }
     }
     assert!(failed.is_empty(), "{}", failed.join("\n"));
