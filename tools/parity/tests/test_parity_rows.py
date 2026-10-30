@@ -150,6 +150,7 @@ class TestColumn(unittest.TestCase):
                 "the_gpu_program_index_rule_is_int_in_base_10",
                 "a_failure_to_write_is_tier_c_writing",
                 "every_tier_has_a_design_rule",
+                "tol_metrics_are_stated_or_said_to_be_planned",
                 "module_level_data_is_tier_a_for_loop_variables",
             }
             named = {name for module, name in cited if module == path.name}
@@ -326,8 +327,10 @@ class TestColumn(unittest.TestCase):
         PARITY.md or DESIGN.md that speaks of such a line calls the rule a literal (a contrast with the literal
         grammar is fine: "need not be" one, or a "not" after a comma or an opening parenthesis), and each that states
         the refusal of a line the table cannot fill names `int()` in base 10."""
-        literal = re.compile(r"(?i)\b(?:no|an?|is|as)\s+(?:python(?:'s)?\s+)?`?int(?:eger)?(?:\(\))?`?[- ]literals?\b")
-        contrast = re.compile(r"(?i)(?:\bneed not be|[,(]\s*not)\s+$")
+        # Any int or integer literal, with the words that may qualify it, unless the words before it contrast.
+        qualifier = r"(?:(?:an?|the|python(?:'s)?|valid|decimal)\s+)*"
+        literal = re.compile(r"(?i)(?<!\w)" + qualifier + r"`?int(?:eger)?(?:\(\))?`?[- ]literals?\b")
+        contrast = re.compile(r"(?i)(?:\bneed not be|[,(]\s*(?:which is\s+)?not)\s+$")
 
         def affirmative(line):
             return [m.group(0) for m in literal.finditer(line) if not contrast.search(line[: m.start()])]
@@ -336,6 +339,11 @@ class TestColumn(unittest.TestCase):
             ("the rest of the line is no Python `int` literal", True),
             ("N parsed as an integer literal", True),
             ("refused where the rest is not a Python int literal", True),
+            ("filled where the rest is a valid Python integer literal", True),
+            ("filled where the rest is a decimal integer literal", True),
+            ("read with the int literal grammar", True),
+            ("read as Python's integer-literal grammar", True),
+            ("`int()` in base 10, which is not a valid Python integer literal", False),
             ("`int()` in base 10, which is not Python's integer-literal grammar", False),
             ("`int()` in base 10, not an integer literal (`0x0` raises)", False),
             ("`int()` in base 10 (not an integer literal)", False),
@@ -424,6 +432,29 @@ class TestColumn(unittest.TestCase):
             with self.subTest(tier=tier):
                 self.assertIn(rule[tier], bullets)
 
+    def test_tol_metrics_are_stated_or_said_to_be_planned(self):
+        """Both Tol definitions say each row states a metric and threshold. Until every Tol row does (a row names a
+        `threshold`), both must say the rows are to state them in P3 and that none does yet, not that each has one."""
+        root = HERE.parent.parent
+        parity = (root / "PARITY.md").read_text(encoding="utf-8")
+        design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        tol = []
+        for header, rows in inventory.tables(parity):
+            if "tier" in header and header[0] != "tier":
+                tol += [cells for cells in rows if re.search(r"\bTol\b", cells[header.index("tier")])]
+        self.assertGreaterEqual(len(tol), 8)
+        stated = [cells for cells in tol if "threshold" in " ".join(cells)]
+        definitions = [
+            next(line for line in parity.splitlines() if line.startswith("| Tol | ")),
+            next(line for line in design.splitlines() if line.startswith("- **Tolerance:**")),
+        ]
+        if len(stated) < len(tol):
+            for text in definitions:
+                with self.subTest(text[:40]):
+                    self.assertIn("(P3)", text)
+                    self.assertRegex(text, r"\b(?:no row states them|none is stated) yet\b")
+                    self.assertNotRegex(text, r"(?i)\b(?:has|within) a stated metric\b")
+
     def test_module_level_data_is_tier_a_for_loop_variables(self):
         """DESIGN.md section 3's Tier A rule for module-level data covers the variables a module-level loop leaves
         bound, which section 23 files as A; the other module-level values take their own rows' tiers (a constant
@@ -504,6 +535,51 @@ class Rows(unittest.TestCase):
             ),
             (">", "double", "d", "read_double", ">d"),
         )
+        # The two reader functions each pass defines: the last pass's, the `>` read_double ones themselves.
+        self.assertIs(reader_module.memory_read_func, reader_module.MEMORY_FUNCTIONS[">"]["read_double"])
+        self.assertIs(reader_module.stream_read_func, reader_module.STREAM_FUNCTIONS[">"]["read_double"])
+        one = bytes.fromhex("3ff0000000000000")
+        self.assertEqual(reader_module.memory_read_func(EndianBinaryReader(one, endian="<")), 1.0)
+        self.assertEqual(reader_module.stream_read_func(EndianBinaryReader(io.BytesIO(one), endian="<")), 1.0)
+        # Every public name a module-level loop of UnityPy leaves bound (an AST scan: targets, assignments and
+        # definitions in a top-level `for` or `while`, outside a function or class body) sits on a section 23 row
+        # of a loop's variables, and only those.
+        import ast
+
+        def bound(node):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                return {node.name}
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                return {node.id}
+            return set().union(*(bound(child) for child in ast.iter_child_nodes(node)))
+
+        def loops(body):
+            for node in body:
+                if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+                    yield node
+                elif not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    for field in ("body", "orelse", "finalbody", "handlers", "cases"):
+                        yield from loops(getattr(node, field, []))
+
+        package = Path(UnityPy.__file__).resolve().parent
+        scanned = set()
+        for path in sorted(package.rglob("*.py")):
+            for loop in loops(ast.parse(path.read_text(encoding="utf-8")).body):
+                scanned |= {f"{path.stem}.{name}" for name in bound(loop) if not name.startswith("_")}
+        parity = inventory.DEFAULT_PARITY.read_text(encoding="utf-8")
+        section = parity.split("\n## 23. Module-level data\n", 1)[1].split("\n## ", 1)[0]
+        listed = set()
+        for header, rows in inventory.tables(section):
+            for cells in rows:
+                if cells[header.index("UnityPy 1.25.2")].startswith("the variables of the module-level loop"):
+                    listed |= set(re.findall(r"`([\w.]+)`", cells[0]))
+        self.assertEqual(listed, scanned)
+        self.assertEqual(len(scanned), 10)
+        # No row elsewhere files one of them as `—`.
+        for header, rows in inventory.tables(parity.replace(section, "")):
+            for cells in rows if "tier" in header else ():
+                if cells[header.index("tier")] == "—":
+                    self.assertFalse(scanned & set(re.findall(r"`([\w.]+)`", cells[0])), cells[0][:60])
 
     # Sections 4, 5.2, 6: WebFile gzip.
     def test_gzip_webfile_is_detected_and_never_parsed(self):
