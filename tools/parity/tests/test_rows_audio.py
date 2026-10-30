@@ -165,10 +165,12 @@ class AudioRows(unittest.TestCase):
                 counts = [count for _, count in samples]
                 with self.subTest(mode=mode, samples=counts), self.assertRaisesRegex(struct.error, too_short(2)):
                     fmod_toolkit.raw_to_wav(fsb5(mode, *samples), "c", 1, 44100)
-        clip = SimpleNamespace(m_Resource=None, m_Name="c", m_Channels=1, m_Frequency=44100)
-        clip.m_AudioData = fsb5(7, empty, codecs[7][0])
-        with self.assertRaisesRegex(FmodError, "^PLUGIN$"):
-            AudioClipConverter.extract_audioclip_samples(clip)
+        # So UnityPy's export of a clip whose bank's first subsound has no samples raises FMOD's PLUGIN.
+        for mode, (full, _) in codecs.items():
+            clip = SimpleNamespace(m_Resource=None, m_Name="c", m_Channels=1, m_Frequency=44100)
+            clip.m_AudioData = fsb5(mode, empty, full)
+            with self.subTest(mode=mode, clip=True), self.assertRaisesRegex(FmodError, "^PLUGIN$"):
+                AudioClipConverter.extract_audioclip_samples(clip)
         # The bundled libfmod refuses every bank built here of PCM8, PCM24, PCM32, PCM float and Vorbis (VERSION) and
         # of Opus (UNSUPPORTED), one whose first subsound has no samples included, alone or before another.
         other = (bytes(64), 32)
