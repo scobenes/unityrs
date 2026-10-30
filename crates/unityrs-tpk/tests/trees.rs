@@ -73,8 +73,8 @@ fn every_class_that_names_one_release_root_shares_its_tree() {
     }
 }
 
-/// 65,520 classes, each with its own release root whose tree is 65,535 rows
-/// (it lists a 15-level doubling node twice): 4,293,853,200 rows in
+/// 65,521 classes, each with its own release root whose tree is 65,535 rows
+/// (it lists a 15-level doubling node twice): 4,293,918,735 rows in
 /// all, which UnityPy would build for an input that asks for every class.
 /// The provider keeps the trees of the roots in the order of their ids
 /// while their rows stay within [`TpkProvider::MAX_TOTAL_ROWS`], and refuses
@@ -101,6 +101,11 @@ fn the_trees_of_every_release_root_together_stop_at_the_total() {
         ..Blob::default()
     };
     let per_tree = (1_usize << 16) - 1;
+    assert_eq!(
+        (roots, roots * per_tree),
+        (65_521, 4_293_918_735),
+        "the docs"
+    );
     let fit = TpkProvider::MAX_TOTAL_ROWS / per_tree;
     let max = u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap();
     let refused = |kept: usize| LimitError {

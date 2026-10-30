@@ -234,9 +234,6 @@ fn count_work(meter: &Meter, bytes: u64) -> Result<(), DetectError> {
     if meter.count_decode(bytes).is_ok() {
         return Ok(());
     }
-    // Refused, and counted anyway: the open's allowance now reads as used
-    // up (its limit names the total), so every later detection is refused
-    // before it inflates anything.
     meter.add_work(bytes);
     meter
         .work_used_up()
