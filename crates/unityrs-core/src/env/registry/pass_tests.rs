@@ -1,7 +1,9 @@
 //! The container pass reaches a dropped slot of an evicted dependency,
 //! opening the dependency again (plan section 9, Q13, revised after review
-//! round 6), whatever the order in which another pass, an eviction, a
-//! lookup by name and the key listing take their steps around it. Every
+//! round 6), whatever the order in which another pass, a pass whose reopen
+//! the pool refuses once (which then evicts the others and retries, review
+//! round 7), an eviction, a lookup by name and the key listing take their
+//! steps around it. Every
 //! interleaving is forced with the Environment's hooks
 //! ([`crate::env::gate`]), as in `reach_tests.rs`: each operation stopped at
 //! each point between its steps while each other operation runs whole, or
@@ -12,9 +14,10 @@
 // own file for test code, so every item here that names a thread carries
 // one.
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::{Hook, Slot};
+use crate::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
 use crate::container::ContainerPath;
 #[cfg(test)]
 use crate::env::gate::{Event, Gate, Run};
@@ -24,6 +27,24 @@ use crate::options::FileContext;
 use crate::raw::RawStr;
 use bytes::Bytes;
 use unityrs_testkit::env::{Obj, bundle, nested_dropped_evicted, serialized};
+
+/// A budget that grants every reservation but, once armed, the next
+/// dependency reservation, which it refuses: a pool with no room left until
+/// something is evicted.
+#[derive(Debug, Default)]
+struct RefuseNext(AtomicBool);
+
+impl MemoryBudget for RefuseNext {
+    fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
+        if what == Reservation::Dependency && self.0.swap(false, Ordering::AcqRel) {
+            return Err(BudgetExceeded {
+                requested: bytes,
+                what,
+            });
+        }
+        Ok(Permit::detached(bytes))
+    }
+}
 
 /// The scene `nested_dropped_evicted` loaded under `batch()` with a one-byte
 /// pool: `f`, the dependency `a` (whose `INNER` holds `CAB-D`), the
@@ -37,12 +58,17 @@ struct Rig {
     /// The bytes an eviction's load reads, and how many it made.
     other: Bytes,
     loads: Arc<AtomicUsize>,
+    /// The pool, which a refused pass arms.
+    pool: Arc<RefuseNext>,
 }
 
 impl Rig {
     fn new() -> Self {
         let scene = nested_dropped_evicted();
-        let mut options = EnvOptions::batch(Arc::new(FileContext::unitypy()));
+        let pool = Arc::new(RefuseNext::default());
+        let mut ctx = FileContext::unitypy();
+        ctx.budget = pool.clone();
+        let mut options = EnvOptions::batch(Arc::new(ctx));
         options.dep_cache_bytes = 1;
         assert_eq!(options.load, LoadMode::Lazy);
         let env = Environment::new(options);
@@ -79,6 +105,7 @@ impl Rig {
             dropped,
             other,
             loads: Arc::new(AtomicUsize::new(0)),
+            pool,
         }
     }
 
@@ -113,6 +140,9 @@ impl Rig {
 enum Op {
     /// The container pass.
     Pass,
+    /// The container pass, the pool armed to refuse the next dependency
+    /// reservation (its reopen's, when no other operation's comes first).
+    RefusedPass,
     /// A dependency load, which evicts whatever the pool holds.
     Evict,
     /// A lookup by name of the dropped container's entry (no reopen, Q13).
@@ -121,7 +151,7 @@ enum Op {
     Keys,
 }
 
-const OPS: [Op; 4] = [Op::Pass, Op::Evict, Op::GetD, Op::Keys];
+const OPS: [Op; 5] = [Op::Pass, Op::RefusedPass, Op::Evict, Op::GetD, Op::Keys];
 
 /// The points an operation may be stopped at: a `settle` that took a slot,
 /// a reach that registered, and the LRU's steps a reopen and an eviction
@@ -138,6 +168,10 @@ fn apply(rig: &Rig, op: Op) {
     let env = &rig.env;
     match op {
         Op::Pass => drop(env.container().unwrap().count()),
+        Op::RefusedPass => {
+            rig.pool.0.store(true, Ordering::Release);
+            env.container().unwrap().count();
+        }
         Op::Evict => {
             let n = rig.loads.fetch_add(1, Ordering::Relaxed);
             let name = format!("c{n}.bundle");
@@ -162,7 +196,7 @@ fn apply(rig: &Rig, op: Op) {
 /// them.
 fn after(rig: &Rig, op: Op, listed: &[Arc<Slot>]) {
     rig.check();
-    if op == Op::Pass {
+    if matches!(op, Op::Pass | Op::RefusedPass) {
         for slot in listed {
             assert!(!slot.unreached(), "R4: the pass left a listed slot");
         }
@@ -242,7 +276,26 @@ fn the_pass_reaches_an_evicted_drop_under_every_interleaving() {
             }
         }
     }
-    assert_eq!(cases, 4 * 5 * 4 * 11);
+    assert_eq!(cases, 5 * 5 * 5 * 11);
+}
+
+/// A pass whose reopen of the evicted dependency the pool refuses evicts
+/// the other dependencies and opens it again, so it reaches the drop and
+/// gives UnityPy's path, where it failed (plan section 3.13; review round
+/// 7: the reopen had no retry, so every pass failed while the pool had no
+/// room).
+#[test]
+fn a_pass_whose_reopen_the_pool_refuses_makes_room_and_reaches_the_drop() {
+    let rig = Rig::new();
+    let evicted = rig.env.stats().dependencies_evicted;
+    apply(&rig, Op::RefusedPass);
+    assert!(!rig.pool.0.load(Ordering::Acquire), "nothing was refused");
+    assert!(!rig.dropped.unreached(), "the pass left the drop");
+    assert!(
+        rig.env.stats().dependencies_evicted > evicted,
+        "the retry evicted nothing"
+    );
+    quiet(&rig);
 }
 
 /// Without a pass, nothing reopens the evicted dependency for its drop: a
