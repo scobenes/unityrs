@@ -6,17 +6,21 @@
 //!
 //! Objects may share their bytes, and a read refused by a bound of its own
 //! keeps nothing, so K objects over one span repeated it K times with no
-//! bound on the input: fix pass 4's sweep timed 64 objects of a 1,908-byte
-//! file, each a vector of 2^22 empty structs refused after 2^20 of them, at
-//! 5.3 s, and the time grows with the objects. Now each read's work counts,
-//! and once the open's work has passed its allowance every further read or
-//! write of it is refused before it starts.
+//! bound on the input (fix pass 4's sweep: every object of a small file
+//! over one vector of 2^22 empty structs, each refused after 2^20 of them,
+//! the time growing with the objects). Every object also searches its
+//! file's one list of ref types again, so K objects over R ref types took
+//! K x R steps no value counted (fix pass 5's sweep). Now each read's and
+//! write's work counts, its lookups' included, and once the open's work has
+//! passed its allowance every further read or write of it is refused
+//! before it starts.
 //!
 //!     scripts/dev cargo test -p unityrs-core --test walk_work
 
 use std::sync::Arc;
 
 use unityrs_core::budget::{DecodeBuf, Reservation};
+use unityrs_core::files::SerializedType;
 use unityrs_core::limits::{Limits, Meter};
 use unityrs_core::stream::Endian;
 use unityrs_core::typetree::{NodeList, NodeRow, Tree};
@@ -90,10 +94,21 @@ fn read(
     options: &ReadOptions,
     meter: &Arc<Meter>,
 ) -> Result<Parsed, ReadError> {
+    read_with(reader, data, t, &[], options, meter)
+}
+
+fn read_with(
+    reader: &str,
+    data: &[u8],
+    t: &Arc<Tree>,
+    refs: &[SerializedType],
+    options: &ReadOptions,
+    meter: &Arc<Meter>,
+) -> Result<Parsed, ReadError> {
     let data = Bytes::copy_from_slice(data);
     let ctx = ReadCtx {
         endian: Endian::Little,
-        ref_types: RefTypes::List(&[]),
+        ref_types: RefTypes::List(refs),
         options,
         meter,
     };
@@ -104,9 +119,19 @@ fn read(
 }
 
 fn write(p: &Parsed, t: &Tree, limits: &Limits, out: &mut DecodeBuf) -> Result<(), WriteError> {
+    write_with(p, t, &[], limits, out)
+}
+
+fn write_with(
+    p: &Parsed,
+    t: &Tree,
+    refs: &[SerializedType],
+    limits: &Limits,
+    out: &mut DecodeBuf,
+) -> Result<(), WriteError> {
     let ctx = WriteCtx {
         endian: Endian::Little,
-        ref_types: RefTypes::List(&[]),
+        ref_types: RefTypes::List(refs),
         rules: WriteRules::UnityPy,
         limits,
     };
@@ -355,5 +380,138 @@ fn limit_of(o: &Result<Parsed, ParseError>) -> Option<LimitError> {
             ..
         })) => Some(*l),
         _ => None,
+    }
+}
+
+/// `Base { ReferencedObject r; ReferencedObject s }`, each a `type` of three
+/// names and its `data`.
+fn two_refs() -> Arc<Tree> {
+    let mut rows = vec![(0, "Base", "Base")];
+    for name in ["r", "s"] {
+        rows.extend([
+            (1, "ReferencedObject", name),
+            (2, "ReferencedManagedType", "type"),
+            (3, "string", "class"),
+            (3, "string", "ns"),
+            (3, "string", "asm"),
+            (2, "ReferencedObjectData", "data"),
+        ]);
+    }
+    tree(&rows)
+}
+
+/// Both references name `("X", "n", "a")`, whose data is one `int`.
+fn two_refs_bytes() -> Vec<u8> {
+    let mut d = Vec::new();
+    for _ in 0..2 {
+        for s in ["X", "n", "a"] {
+            d.extend(1_i32.to_le_bytes());
+            d.extend(s.as_bytes());
+            d.extend([0, 0, 0]);
+        }
+        d.extend(9_i32.to_le_bytes());
+    }
+    d
+}
+
+/// `fillers` ref types `("C0000", "n", "a")`, `("C0001", "n", "a")` and so
+/// on, which no reference names, then `("X", "n", "a")`.
+fn ref_list(fillers: usize) -> Vec<SerializedType> {
+    let z = Arc::new(
+        NodeList::trusted(vec![
+            NodeRow::new(0, "X", "Base"),
+            NodeRow::new(1, "int", "z"),
+        ])
+        .unwrap(),
+    );
+    let one = |class: String| {
+        SerializedType::ref_type(
+            114,
+            RawStr::from(class.as_str()),
+            RawStr::from("n"),
+            RawStr::from("a"),
+            Some(z.clone()),
+        )
+    };
+    (0..fillers)
+        .map(|i| one(format!("C{i:04}")))
+        .chain([one("X".into())])
+        .collect()
+}
+
+/// A ref type a lookup compares, a ref type its table indexes and a probe
+/// of the table count [`VALUE_WORK`] and the name bytes they read, in both
+/// readers and in a write. Of two references to the last of `R + 1` ref
+/// types, the first scans the list; for the second, the scans have passed
+/// the list's length, which is longer than 8, so the list's table is built
+/// and probed once. A list of `X` alone is scanned twice.
+#[test]
+fn a_lookup_counts_the_ref_types_it_reads() {
+    const R: u64 = 100;
+    let t = two_refs();
+    let data = two_refs_bytes();
+    let (small, big) = (ref_list(0), ref_list(usize::try_from(R).unwrap()));
+    // A filler's names are 7 bytes, `X`'s 3.
+    let (filler, x) = (VALUE_WORK + 7, VALUE_WORK + 3);
+    let big_refs = R * filler + x + R * filler + x + x;
+    let small_refs = x + x;
+    for reader in ["boost", "python"] {
+        let mut work = Vec::new();
+        for refs in [&small, &big] {
+            let meter = work_meter(u64::MAX);
+            let p = read_with(reader, &data, &t, refs, &ReadOptions::default(), &meter).unwrap();
+            let read = meter.decoded();
+            let mut out = DecodeBuf::new(&meter, 0, u64::MAX, LimitKind::InputMemory).unwrap();
+            write_with(&p, &t, refs, &Limits::default(), &mut out).unwrap();
+            assert_eq!(
+                out.as_slice(),
+                data.as_slice(),
+                "{reader}: the write's bytes"
+            );
+            work.push((read, meter.decoded() - read));
+        }
+        let more = big_refs - small_refs;
+        assert_eq!(work[1].0 - work[0].0, more, "{reader}: the read");
+        assert_eq!(work[1].1 - work[0].1, more, "{reader}: the write");
+    }
+}
+
+/// Objects that each search one long list of ref types: each read counts
+/// its scan, so the open's reads together stop at its allowance and one
+/// read past it, whatever the number of objects.
+#[test]
+fn objects_over_many_ref_types_stop_at_the_opens_work() {
+    const K: usize = 64;
+    const R: u64 = 4096;
+    let t = two_refs();
+    let data = two_refs_bytes();
+    let refs = ref_list(usize::try_from(R).unwrap());
+    for reader in ["boost", "python"] {
+        let options = ReadOptions::default();
+        let one = work_meter(u64::MAX);
+        read_with(reader, &data, &t, &refs, &options, &one).unwrap();
+        let per_read = one.decoded();
+        assert!(per_read > 2 * R * VALUE_WORK, "{reader}: {per_read}");
+        let max = 4 * per_read + per_read / 2;
+        let meter = work_meter(max);
+        let outcomes: Vec<_> = (0..K)
+            .map(|_| read_with(reader, &data, &t, &refs, &options, &meter))
+            .collect();
+        assert_eq!(meter.decoded(), 5 * per_read, "{reader}: the reads stop");
+        for (i, o) in outcomes.iter().enumerate() {
+            if i < 5 {
+                assert!(o.is_ok(), "{reader}: object {i}: {o:?}");
+            } else {
+                assert_eq!(
+                    o.as_ref().unwrap_err().detail,
+                    ReadDetail::Limit(LimitError {
+                        kind: LimitKind::DecodeWork,
+                        value: 5 * per_read,
+                        max,
+                    }),
+                    "{reader}: object {i}"
+                );
+            }
+        }
     }
 }

@@ -63,6 +63,7 @@ pub fn read(data: &Bytes, tree: &Arc<Tree>, ctx: &ReadCtx<'_>) -> Result<Parsed,
     };
     let value = r.value(tree, 0, tree.root());
     r.work.finish(ctx.meter);
+    ctx.meter.add_work(r.refs.work());
     let value = value?;
     let at = r.at();
     let built = value.into_built(&r.builder, at)?;

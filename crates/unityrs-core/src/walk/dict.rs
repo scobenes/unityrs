@@ -24,7 +24,7 @@ use crate::raw::RawStr;
 use crate::typetree::{NodeId, Tree};
 use crate::value::{ListIx, Map, Value, ValueBuilder};
 
-use super::{Out, ReadDetail, ReadError, ReadErrorKind, RefTypes, charge_error};
+use super::{Out, ReadDetail, ReadError, ReadErrorKind, RefTypes, VALUE_WORK, charge_error};
 
 /// No entry yet for a slot.
 const NONE: u32 = u32::MAX;
@@ -238,6 +238,14 @@ pub(crate) fn slot_count(tree: &Tree, node: NodeId) -> usize {
         .unwrap_or(0)
 }
 
+/// The bytes of a ref type's three names.
+fn names_len(t: &SerializedType) -> usize {
+    [&t.class_name, &t.namespace, &t.assembly]
+        .into_iter()
+        .map(|n| n.as_ref().map_or(0, |n| n.as_bytes().len()))
+        .sum()
+}
+
 /// A ref type's `(class, ns, asm)` equal to the three values: each must be
 /// a Python `str` (a surrogate-escaped string compares equal exactly when
 /// its bytes do), as `PyUnicode_Compare` (UnityPy TypeTreeHelper.cpp:663)
@@ -264,11 +272,19 @@ fn names_match(t: &SerializedType, cls: &Value, ns: &Value, asm: &Value) -> bool
 /// every later lookup is one probe. A read or a write so costs at most
 /// twice what UnityPy's own scans cost it, and at most three steps a ref
 /// type plus one a lookup (or [`SCANNED_REFS`] a lookup).
+///
+/// That bounds one read or write; the open's work bounds them all
+/// ([`Self::work`]): the index is one read's or write's, and every object
+/// of a file searches the file's one list again, so K objects over R ref
+/// types cost K x R steps that their values do not count (the sweep of
+/// fix pass 5).
 pub(crate) struct RefIndex<'a> {
     list: &'a [SerializedType],
     /// The ref types the scans so far compared.
     scanned: usize,
     table: Option<RefTable<'a>>,
+    /// The work of the steps so far ([`Self::work`]).
+    work: u64,
 }
 
 /// A list this long or shorter is only ever scanned: a lookup costs at most
@@ -295,7 +311,24 @@ impl<'a> RefIndex<'a> {
             list,
             scanned: 0,
             table: None,
+            work: 0,
         }
+    }
+
+    /// The open's work of this read's or write's lookups (the module docs
+    /// of [`super`], "Work"): for each ref type a scan compares or the table
+    /// indexes, [`VALUE_WORK`] and the bytes of its three names, what a
+    /// comparison or a hash reads of it at most; for each probe,
+    /// [`VALUE_WORK`] and the bytes of the key it hashes.
+    pub(crate) fn work(&self) -> u64 {
+        self.work
+    }
+
+    fn count(&mut self, bytes: usize) {
+        self.work = self
+            .work
+            .saturating_add(VALUE_WORK)
+            .saturating_add(bytes as u64);
     }
 
     /// The first ref type whose names equal `(cls, ns, asm)`, the table
@@ -314,18 +347,25 @@ impl<'a> RefIndex<'a> {
         if self.table.is_none() && self.scanned >= self.list.len() && self.list.len() > SCANNED_REFS
         {
             self.table = Some(RefTable::build(self.list, meter)?);
+            for r in self.list {
+                self.count(names_len(r));
+            }
         }
         if let Some(t) = &self.table {
             steps(1);
             let key = [c.as_bytes(), n.as_bytes(), a.as_bytes()];
             if key.iter().zip(t.longest).any(|(k, l)| k.len() > l) {
+                self.count(0);
                 return Ok(None);
             }
             let first: &HashMap<[&[u8]; 3], usize> = &t.first;
-            return Ok(first.get(&key).and_then(|i| self.list.get(*i)));
+            let found = first.get(&key).and_then(|i| self.list.get(*i));
+            self.count(key.iter().map(|k| k.len()).sum());
+            return Ok(found);
         }
         for (i, r) in self.list.iter().enumerate() {
             steps(1);
+            self.count(names_len(r));
             if names_match(r, cls, ns, asm) {
                 self.scanned = self.scanned.saturating_add(i + 1);
                 return Ok(Some(r));

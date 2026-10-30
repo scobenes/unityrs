@@ -21,14 +21,20 @@
 //! open's work ([`crate::limits::Limits::max_decode_work`], the bound every
 //! other kind of the open's work counts toward), whatever its outcome:
 //! [`VALUE_WORK`] for each value it builds, writes or skips, and for each
-//! element of a primitive run a read holds as a run, the element's width
-//! ([`Work`]). Objects may share their bytes, and a read refused by a bound
-//! of its own (`max_zero_size_elements`, `max_values_per_object`) keeps
-//! nothing, so K objects over the same bytes repeated it K times with no
-//! bound on the input (fix pass 4's sweep: 64 objects of a 1,908-byte file,
-//! each refused after 2^20 empty elements, took 5.3 s). A read or a write
+//! element of a primitive run a read holds as a run, or each primitive a
+//! write writes, its bytes ([`Work`]); and its ref-type lookups, a ref
+//! type a lookup compares or indexes, or a probe, [`VALUE_WORK`] and the
+//! name bytes it reads (`dict::RefIndex::work`). Objects may share their
+//! bytes, and a read refused by a bound of its own
+//! (`max_zero_size_elements`, `max_values_per_object`) keeps nothing, so K
+//! objects over the same bytes repeated it K times with no bound on the
+//! input (fix pass 4's sweep: every object of a small file over one vector
+//! of 2^22 empty elements, each refused after 2^20); and every object
+//! searches its file's one list of ref types again, so K objects over R
+//! ref types took K x R steps (fix pass 5's sweep). A read or a write
 //! starts only while the open's work is within its allowance, and is
-//! otherwise refused with [`LimitKind::DecodeWork`] (kind `other`).
+//! otherwise refused with [`LimitKind::DecodeWork`] (kind `other`)
+//! (`tests/walk_work.rs`).
 //!
 //! Owner: the scaffold for the types in this file (frozen); package B owns
 //! [`read_typetree`]'s body and the three submodules.

@@ -232,13 +232,15 @@ impl<'a> Writer<'a, '_> {
 
     /// The open's work this write did ([`write`]): [`VALUE_WORK`] for each
     /// value counted ([`Self::count`]; a refused count is not one), but a
-    /// primitive written, which counts its bytes.
+    /// primitive written, which counts its bytes; and its ref types'
+    /// lookups ([`RefIndex::work`]).
     fn work(&self) -> u64 {
         let counted = self.values.min(self.limits.max_values_per_object);
         counted
             .saturating_sub(self.prims)
             .saturating_mul(VALUE_WORK)
             .saturating_add(self.prim_bytes)
+            .saturating_add(self.refs.work())
     }
 
     /// Counts one value written, or one child skipped, against
