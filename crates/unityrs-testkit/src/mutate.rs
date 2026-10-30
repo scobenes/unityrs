@@ -181,8 +181,8 @@ pub fn mutants_of(
         planned.push(row);
     }
     // A field one output alone holds is replaced together with one such
-    // field of each other output (no output sees another's); a field that
-    // several outputs hold is replaced on its own.
+    // field of each other output (no output sees another's: [`make`]); a
+    // field that several outputs hold is replaced on its own.
     let rounds = planned.iter().map(Vec::len).max().unwrap_or(0);
     let mut batches: Vec<Vec<&Planned>> = (0..rounds)
         .map(|r| {
@@ -201,25 +201,7 @@ pub fn mutants_of(
             .map(|p| vec![p]),
     );
     let made: Vec<Vec<(usize, usize, Mutant)>> = parallel(&batches, threads, &|batch| {
-        let overrides: Vec<(usize, u64)> = batch.iter().map(|p| (p.field, p.value)).collect();
-        let again = rebuild(build, &overrides);
-        batch
-            .iter()
-            .filter_map(|p| {
-                let (name, bytes) = &base[p.output];
-                // A replacement that leaves the output as it was is no mutant.
-                let got = again.get(name).filter(|b| *b != bytes)?;
-                let order = planned[p.output].iter().position(|q| q.label == p.label)?;
-                Some((
-                    p.output,
-                    order,
-                    Mutant {
-                        label: p.label.clone(),
-                        bytes: got.clone(),
-                    },
-                ))
-            })
-            .collect()
+        make(build, &base, &fields, &planned, batch)
     });
     let mut by_output: Vec<Vec<(usize, Mutant)>> = vec![Vec::new(); base.len()];
     for (o, order, m) in made.into_iter().flatten() {
@@ -233,6 +215,55 @@ pub fn mutants_of(
             let mut out: Vec<Mutant> = fm.into_iter().map(|(_, m)| m).collect();
             out.extend(random_mutants(&data, rng));
             (name, out)
+        })
+        .collect()
+}
+
+/// The mutants `batch` makes, `(output, order, mutant)`, its fields replaced
+/// in one build. A replaced field whose value changes how many fields its
+/// build writes after it (the LZ4-compressed length of a nested bundle sets
+/// how many blocks the bundle holding it has) numbers every later field
+/// otherwise, so the batch's later replacements would land on other fields
+/// than planned, of other outputs or of none: a batch whose build writes
+/// fields of other widths, or another count of them, than the plain build,
+/// or gives a replaced field another value, is made one field at a time.
+fn make(
+    build: &(dyn Fn() -> Outputs + Sync),
+    base: &Outputs,
+    fields: &[Field],
+    planned: &[Vec<Planned>],
+    batch: &[&Planned],
+) -> Vec<(usize, usize, Mutant)> {
+    let overrides: Vec<(usize, u64)> = batch.iter().map(|p| (p.field, p.value)).collect();
+    let (outputs, written) = with_fields(&overrides, build);
+    let shape = |f: &Field| (f.width, f.big_endian);
+    let numbered = written.len() == fields.len()
+        && written.iter().map(shape).eq(fields.iter().map(shape))
+        && batch
+            .iter()
+            .all(|p| written.get(p.field) == fields.get(p.field));
+    if batch.len() > 1 && !numbered {
+        return batch
+            .iter()
+            .flat_map(|p| make(build, base, fields, planned, &[*p]))
+            .collect();
+    }
+    let again: HashMap<String, Vec<u8>> = outputs.into_iter().collect();
+    batch
+        .iter()
+        .filter_map(|p| {
+            let (name, bytes) = &base[p.output];
+            // A replacement that leaves the output as it was is no mutant.
+            let got = again.get(name).filter(|b| *b != bytes)?;
+            let order = planned[p.output].iter().position(|q| q.label == p.label)?;
+            Some((
+                p.output,
+                order,
+                Mutant {
+                    label: p.label.clone(),
+                    bytes: got.clone(),
+                },
+            ))
         })
         .collect()
 }
@@ -359,6 +390,55 @@ mod tests {
             let random = ms.iter().filter(|m| !m.label.starts_with('f')).count();
             assert_eq!(random, RANDOM_PER_INPUT);
         }
+    }
+
+    /// Two outputs: the first holds sixteen zero counts LZ4-packed, then a
+    /// field per byte of the packing, so replacing a count changes how many
+    /// fields it writes, as a nested bundle's packed length sets how many
+    /// blocks the bundle holding it has.
+    fn renumbering() -> Outputs {
+        let mut counts = ByteWriter::le();
+        for _ in 0..16 {
+            counts.u32(0);
+        }
+        let packed = compress(TestCodec::Lz4, &counts.into_inner());
+        let mut per_byte = ByteWriter::le();
+        for _ in 0..packed.len() {
+            per_byte.u32(1);
+        }
+        let mut second = ByteWriter::le();
+        second.u32(2).u32(3);
+        vec![
+            ("first".into(), [packed, per_byte.into_inner()].concat()),
+            ("second".into(), second.into_inner()),
+        ]
+    }
+
+    /// A field whose replacement renumbers the fields after it is not
+    /// replaced together with another output's field (review round 4: the
+    /// batch replaced whatever field took the other's number, so the second
+    /// output's mutants were lost or replaced another field than labelled).
+    #[test]
+    fn a_field_that_renumbers_later_fields_is_replaced_alone() {
+        let base = renumbering();
+        let all = mutants_of(&renumbering, 1);
+        let fields = |o: usize| all[o].1.iter().filter(|m| m.label.starts_with('f'));
+        let second: Vec<&str> = fields(1).map(|m| m.label.as_str()).collect();
+        assert_eq!(second, ["f0.le4n", "f0.le4h", "f1.le4n", "f1.le4h"]);
+        for m in fields(1) {
+            // The one field its label names replaced, the other as built.
+            let at = if m.label.starts_with("f0") { 0 } else { 4 };
+            let keep = 4 - at;
+            assert_eq!(
+                m.bytes[keep..keep + 4],
+                base[1].1[keep..keep + 4],
+                "{}",
+                m.label
+            );
+            assert_ne!(m.bytes[at..at + 4], base[1].1[at..at + 4], "{}", m.label);
+        }
+        let (_, written) = with_fields(&[], renumbering);
+        assert_eq!(fields(0).count(), 2 * (written.len() - 2));
     }
 
     #[test]

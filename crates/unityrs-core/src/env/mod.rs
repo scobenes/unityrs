@@ -28,10 +28,13 @@
 //! `Eager`'s error); (b) a nested container's own name is a key under
 //! `Lazy`, whose slot answers `None`, where `Eager` registers no such key
 //! (and keeps an earlier CAB of that path under it); its entries are
-//! registered when it is first asked for, so a lookup of one before then
-//! misses, and once registered they have the position and the value an
-//! eager load gives them, whichever nested container was asked for first
-//! ([`registry`]); (c) a block that fails to decode, or trips a limit,
+//! registered when it is *reached*, before any lookup that resolves its
+//! slot, starts from a file inside it, names it as the asking file's
+//! sibling or resource candidate, or walks the container, and before a
+//! registration drops its slot, with the position and the value an eager
+//! load gives them, so only a lookup by name alone of one of its entries
+//! can miss before then ([`registry`]'s module docs state the invariant);
+//! (c) a block that fails to decode, or trips a limit,
 //! after the last byte any read needs fails the load under `Eager` (UnityPy
 //! decodes every block before any entry, `files/BundleFile.py:173-186`) and
 //! nothing under `Lazy`; (d) a directory whose spans nest or overlap makes
@@ -42,10 +45,10 @@
 //! **Threads.** Concurrent calls act as if made one after another in some
 //! order: each change to the registry, the `files` list or a file's
 //! `path_dict` is published whole, so no call sees a change half made (a
-//! nested container's entries are all registered before its `get`
-//! returns). A call's result depends on what was done before it, by its
-//! thread or another, as a Python dict's does: a load, a resolver load, and
-//! under `Lazy` a nested container's first `get`. What a set of calls leaves
+//! nested container's entries are all registered before the call that
+//! reaches it returns). A call's result depends on what was done before it,
+//! by its thread or another, as a Python dict's does: a load, a resolver
+//! load, and under `Lazy` the first call that reaches a nested container. What a set of calls leaves
 //! does not depend on the order of the ones that are not loads: the
 //! registry orders entries by rank ([`registry`]), and each `path_dict`
 //! entry keeps the least stamp ([`crate::container`]).
@@ -133,6 +136,7 @@ mod listing;
 mod load;
 mod object_tree;
 mod resource_data;
+mod watch;
 
 use std::fmt;
 use std::io::Read;
@@ -335,6 +339,10 @@ pub struct EnvStats {
     /// of a file's table at most once per walk, however many rows' spans
     /// cover it ([`Environment::container`]).
     pub preload_dereferences: u64,
+    /// Of those, the ones that looked their external up: a walk keeps an
+    /// answer until a key its lookup read changes, by any thread
+    /// ([`Environment::container`]).
+    pub preload_lookups: u64,
 }
 
 struct EnvInner {
@@ -345,6 +353,7 @@ struct EnvInner {
     loaded: AtomicU64,
     eager_parsed: AtomicU64,
     preload_derefs: AtomicU64,
+    preload_lookups: AtomicU64,
 }
 
 /// UnityPy's `Environment`. A cheap handle: clones share one environment.
@@ -394,6 +403,7 @@ impl Environment {
                 loaded: AtomicU64::new(0),
                 eager_parsed: AtomicU64::new(0),
                 preload_derefs: AtomicU64::new(0),
+                preload_lookups: AtomicU64::new(0),
             }),
         }
     }
@@ -429,6 +439,7 @@ impl Environment {
             dependencies_evicted: cache.evicted.load(Ordering::Relaxed),
             dependency_bytes: cache.bytes(),
             preload_dereferences: self.inner.preload_derefs.load(Ordering::Relaxed),
+            preload_lookups: self.inner.preload_lookups.load(Ordering::Relaxed),
         }
     }
 }

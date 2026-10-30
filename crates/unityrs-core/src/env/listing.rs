@@ -182,6 +182,17 @@ impl Environment {
         } else {
             Some(py_lower(&name, meter)?)
         };
+        // A running container preload walk asks again a lookup this key
+        // answered (`super::watch`).
+        let watches = self.inner.registry.watches();
+        let noted = if watches.active() {
+            Some(match &lowered {
+                Some(l) => l.clone(),
+                None => py_lower(&name, meter)?,
+            })
+        } else {
+            None
+        };
         let replaced = {
             let mut files = self.files_write();
             let at = files.index.get(name.as_bytes()).copied();
@@ -205,8 +216,9 @@ impl Environment {
                 None
             }
         };
-        // A lookup a container preload keeps is asked again (`Targets`).
-        self.inner.registry.changed();
+        if let Some(key) = noted {
+            watches.notify(key.as_bytes());
+        }
         drop(replaced);
         Ok(())
     }

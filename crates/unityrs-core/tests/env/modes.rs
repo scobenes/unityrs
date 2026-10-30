@@ -63,8 +63,8 @@ fn difference_a_a_shadowed_entry_is_never_parsed_under_lazy() {
 
 /// (b): a nested bundle under a CAB's path: `Eager` keeps the CAB under the
 /// key and registers the nested entries in place; `Lazy` registers the key
-/// for the nested entry, whose first `get` answers `None` and registers its
-/// entries then, at the end of the order.
+/// for the nested entry, whose first `get` answers `None` and reaches it:
+/// its entries are registered then, at the ranks an eager load gives them.
 #[test]
 fn difference_b_a_nested_entry_is_a_key_until_its_first_get() {
     let scene = nested_after_cab();
@@ -84,7 +84,7 @@ fn difference_b_a_nested_entry_is_a_key_until_its_first_get() {
     );
 }
 
-/// (b), and the order of expansion: a nested container's entries take the
+/// (b), and the order of reaching: a nested container's entries take the
 /// place and the value an eager load gives them, whichever nested container
 /// is asked for first, so two that hold a CAB of one name leave the second's
 /// under the key either way, as `Eager` does (review round 1: under `Lazy`

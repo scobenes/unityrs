@@ -1,6 +1,13 @@
 //! The scenes, one function each, and [`scenes`], which lists them by
 //! name for `tools/fixtures/env.py`.
 
+mod nested;
+
+pub use nested::{
+    deref_sibling_nested, nested_duplicates, nested_replaced_unread, preload_nested_external,
+    resource_in_nested_cab, resource_in_own_nested,
+};
+
 use super::{Bundle, Obj, Scene, bundle, bundle_spec, res_bytes, row, serialized};
 use crate::bundle::{BlockOverride, TestCodec};
 
@@ -570,104 +577,6 @@ pub fn same_named_cabs() -> Scene {
     }
 }
 
-/// A bundle of two nested bundles that each hold a CAB of one name: an
-/// eager load registers both in directory order, so the second's is the
-/// key's value; under `LoadMode::Lazy` each is registered when its nested
-/// bundle is first asked for, in either order with the same result.
-#[must_use]
-pub fn nested_duplicates() -> Scene {
-    let inner = |name: &str| bundle(&[("CAB-DUP", serialized(&[], &[Obj::named(1, name, &[])]))]);
-    Scene {
-        files: vec![named(
-            "dup.bundle",
-            bundle(&[("N1", inner("from-n1")), ("N2", inner("from-n2"))]),
-        )],
-        resolver: Vec::new(),
-    }
-}
-
-/// `o.bundle`: `CAB-O` and a nested bundle `INNER` of `inner`'s entries.
-fn outer_with_inner(cab_o: Vec<u8>, inner: &[(&str, Vec<u8>)]) -> (Vec<u8>, Vec<u8>) {
-    named(
-        "o.bundle",
-        bundle(&[("CAB-O", cab_o), ("INNER", bundle(inner))]),
-    )
-}
-
-/// A preload whose first and third elements name `CAB-I` in the nested
-/// bundle `INNER` of another bundle, and whose second names `INNER` itself.
-/// An eager load registered `CAB-I` at load, so the first element finds it
-/// and `CAB-I`'s object 5 gets the row's path. Under `LoadMode::Lazy` the
-/// first misses (plan 3.13 (b)) and the second registers `CAB-I`, so the
-/// third finds it and gives it the same path (review round 3: the walk kept
-/// the first element's miss).
-#[must_use]
-pub fn preload_nested_external() -> Scene {
-    let f = serialized(
-        &["archive:/CAB-I/CAB-I", "archive:/O/INNER"],
-        &[
-            Obj::named(1, "f1", &[]),
-            Obj::asset_bundle(
-                2,
-                Bundle {
-                    preload: vec![(1, 5), (2, 9), (1, 5)],
-                    rows: vec![row("assets/x.prefab", (0, 3), (0, 1))],
-                    ..Bundle::default()
-                },
-            ),
-        ],
-    );
-    let o = serialized(&[], &[Obj::named(7, "o7", &[])]);
-    let i = serialized(&[], &[Obj::named(5, "i5", &[])]);
-    Scene {
-        files: vec![
-            named("f.bundle", bundle(&[("CAB-F", f)])),
-            outer_with_inner(o, &[("CAB-I", i)]),
-        ],
-        resolver: Vec::new(),
-    }
-}
-
-/// A texture whose stream names `inner`, a nested bundle of its own bundle
-/// that holds `inner.resS`: UnityPy's candidates miss `inner` (an eager load
-/// gives a nested bundle no key) and read `inner.resS`. Under
-/// `LoadMode::Lazy` `inner` is a key, and asking for it as the first
-/// candidate registers `inner.resS` for the last (review round 3: the read
-/// through the texture's own bundle skipped that registration and failed).
-#[must_use]
-pub fn resource_in_own_nested() -> Scene {
-    let o = serialized(&[], &[Obj::streamed(1, "tex", "archive:/O/inner", 0, 4)]);
-    Scene {
-        files: vec![named(
-            "o.bundle",
-            bundle(&[
-                ("CAB-O", o),
-                ("inner", bundle(&[("inner.resS", res_bytes(8, 40))])),
-            ]),
-        )],
-        resolver: Vec::new(),
-    }
-}
-
-/// A pointer to `INNER`, a nested bundle beside the asking CAB, then one to
-/// `CAB-I` inside it: the first matches the sibling (a bundle, which holds
-/// no objects), the second is `find_file`'s, which finds `CAB-I` (an eager
-/// load registered it). Under `LoadMode::Lazy` the first dereference names
-/// the nested bundle, which registers its entries as a `get` of its name
-/// does, so the second finds `CAB-I` too (plan 3.13 (b)).
-#[must_use]
-pub fn deref_sibling_nested() -> Scene {
-    let o = serialized(
-        &["archive:/O/INNER", "archive:/CAB-I/CAB-I"],
-        &[Obj::named(7, "o7", &[(1, 5), (2, 5)])],
-    );
-    let i = serialized(&[], &[Obj::named(5, "i5", &[])]);
-    Scene {
-        files: vec![outer_with_inner(o, &[("CAB-I", i)])],
-        resolver: Vec::new(),
-    }
-}
-
 /// Every scene, by name: what `tools/fixtures/env.py` records.
 #[must_use]
 pub fn scenes() -> Vec<(&'static str, Scene)> {
@@ -693,6 +602,8 @@ pub fn scenes() -> Vec<(&'static str, Scene)> {
         ("preload_nested_external", preload_nested_external()),
         ("resource_in_own_nested", resource_in_own_nested()),
         ("deref_sibling_nested", deref_sibling_nested()),
+        ("resource_in_nested_cab", resource_in_nested_cab()),
+        ("nested_replaced_unread", nested_replaced_unread()),
     ]
 }
 
