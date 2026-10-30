@@ -10,8 +10,6 @@
 //! documented bound.
 
 use std::sync::Arc;
-use std::sync::mpsc;
-use std::time::Duration;
 
 use common::{Blob, V2, limit_of, limits, load, stored, v2};
 use serde_json::Value as J;
@@ -142,15 +140,11 @@ fn replay(name: &str) -> usize {
     pairs
 }
 
-/// Runs `f` on its own thread and fails the test, clearly, if it has not
-/// answered in 60 s: a walk that never ends.
+/// Runs `f` on its own thread and fails the test, clearly, past the
+/// deadlock guard (`unityrs_testkit::guard`) if it has not answered: a walk
+/// that never ends.
 fn without_a_hang<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(f());
-    });
-    rx.recv_timeout(Duration::from_secs(60))
-        .expect("no answer in 60 s: the walk does not end (or it panicked)")
+    unityrs_testkit::guard::finishes("the walk to end", f)
 }
 
 // --- F2: an unknown class ---------------------------------------------------------

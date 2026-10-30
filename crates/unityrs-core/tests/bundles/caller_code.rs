@@ -3,7 +3,6 @@
 
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::time::Duration;
 
 use super::{ctx_with, meter_for, open_with, small_entries};
 use unityrs_core::budget::DecodeBuf;
@@ -132,17 +131,15 @@ fn replace_block(raw: &[u8], plain: &[u8], packed: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Runs `f` and fails the test if it has not finished in 60 s: a deadlock,
-/// where a lock is held across caller code. Only a hang trips it; the
-/// tests order their threads with handshakes, never with time.
+/// Runs `f` and fails the test, past the deadlock guard
+/// (`unityrs_testkit::guard`), if it has not finished: a deadlock, where a
+/// lock is held across caller code. Only a hang trips it; the tests order
+/// their threads with handshakes, never with time.
 fn guarded(f: impl FnOnce() + Send + 'static) {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        f();
-        let _ = tx.send(());
-    });
-    rx.recv_timeout(Duration::from_secs(60))
-        .expect("a deadlock: a lock is held across caller code (60 s guard)");
+    let () = unityrs_testkit::guard::finishes(
+        "a codec's bundle reads (a lock held across caller code deadlocks them)",
+        f,
+    );
 }
 
 #[test]

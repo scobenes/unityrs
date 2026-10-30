@@ -437,7 +437,6 @@ impl fmt::Debug for ProviderChain {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, OnceLock, Weak, mpsc};
-    use std::time::Duration;
 
     use super::{ProviderChain, ProviderError, ScriptIdent, TreeRequest, TypeTreeProvider};
     use crate::raw::RawStr;
@@ -701,9 +700,11 @@ mod tests {
             drop(held);
             let _ = tx.send((a.join().unwrap(), b));
         });
-        let got = rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("deadlocked: the chain held a lock across a provider");
+        let got = unityrs_testkit::guard::recv(
+            &rx,
+            "two lookups, one needing a lock the other holds (a chain lock held across a \
+             provider deadlocks them)",
+        );
         assert_eq!(got, (Ok(true), Ok(true)));
     }
 
@@ -718,9 +719,11 @@ mod tests {
             let got = chain.lookup(&request(1, &v)).map(|t| t.is_some());
             let _ = tx.send(got);
         });
-        let got = rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("deadlocked: the chain held a lock across the provider");
+        let got = unityrs_testkit::guard::recv(
+            &rx,
+            "a lookup whose provider calls the chain (a chain lock held across the provider \
+             deadlocks it)",
+        );
         assert_eq!(got, Ok(true));
     }
 }

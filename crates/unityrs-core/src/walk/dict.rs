@@ -47,6 +47,23 @@ pub(crate) fn steps(n: usize) {
     let _ = n;
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// Loop turns this thread's walks took: each child a class's or a
+    /// `ReferencedObject`'s loop visits (read, written or skipped), in both
+    /// readers and the writer, and each element the writer's array loop
+    /// visits (the work tests: an instrument apart from the count that
+    /// bounds them, [`crate::limits::Limits::max_values_per_object`]).
+    pub(super) static VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts one loop turn (tests only).
+#[inline]
+pub(crate) fn visit() {
+    #[cfg(test)]
+    VISITS.with(|s| s.set(s.get().saturating_add(1)));
+}
+
 /// One dict being read: its entries and its region of the slot scratch.
 #[derive(Debug)]
 pub(crate) struct Dict {

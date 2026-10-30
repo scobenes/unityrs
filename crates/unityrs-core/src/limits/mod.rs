@@ -125,9 +125,18 @@ pub struct Limits {
     /// this first. What it costs in stack: [`Self::stack_needed`]. Default 512.
     pub max_value_depth: u32,
     /// Values built by one object read, each element of a primitive run
-    /// included. This bounds the *work* of one read (the pure-Python reader
-    /// can read the same bytes again after a negative length); their memory
-    /// is the meter's. Default 2^26.
+    /// included, and each child the read skips (a `ReferencedObject`'s data
+    /// that does not resolve to a tree, a `ManagedReferencesRegistry` once
+    /// one is in scope); likewise the values one write of an object writes
+    /// and the children it skips. This bounds the *work* of one read or
+    /// write, which their bytes do not: the pure-Python reader can read the
+    /// same bytes again after a negative length, a class can skip many
+    /// children for each element of an array, and a tree that repeats a name
+    /// hands one value to each child of the name, which writes it whole. A
+    /// write through the tree its value was read with counts no more than
+    /// its read did unless the tree repeats a name
+    /// (`tests/walk_bounds.rs`). The values' memory is the meter's.
+    /// Default 2^26.
     pub max_values_per_object: u64,
     /// Array elements whose minimum size is 0 (a vector of empty structs with
     /// a huge count does no I/O per element). Default 2^20 per object.
@@ -148,7 +157,7 @@ impl Limits {
     /// At the defaults: 1.75 MiB in a release build, 9 MiB in a debug one.
     /// `tests/walk_stack.rs` reads, writes and drops the deepest object of
     /// every shape on a thread this size, and its `stack_measured` prints
-    /// the least each needs (at most 0.96 MiB release, 6.7 MiB debug, with
+    /// the least each needs (at most 0.96 MiB release, 6.8 MiB debug, with
     /// toolchain 1.99.1). Rust's spawned threads get 2 MiB unless told
     /// otherwise, and a main thread usually 8 MiB, so a debug build reads
     /// untrusted input on a thread built with

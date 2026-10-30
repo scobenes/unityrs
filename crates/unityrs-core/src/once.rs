@@ -177,20 +177,15 @@ fn keep<'a, T, E: CellError + Clone>(
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, OnceLock, mpsc};
-    use std::time::Duration;
+    use std::sync::{Arc, OnceLock};
 
     use super::get_or_publish;
 
-    /// Runs `f` on a thread and fails if it has not returned in 10 s (a
-    /// deadlock), rather than hanging the test run.
+    /// Runs `f` on a thread and fails, past the deadlock guard
+    /// (`unityrs_testkit::guard`), if it has not returned, rather than
+    /// hanging the test run.
     fn finishes<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(f());
-        });
-        rx.recv_timeout(Duration::from_secs(10))
-            .expect("deadlocked: the compute ran inside the cell")
+        unityrs_testkit::guard::finishes("the compute (running it inside the cell deadlocks it)", f)
     }
 
     #[test]

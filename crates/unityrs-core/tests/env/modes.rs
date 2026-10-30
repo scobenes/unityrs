@@ -1,7 +1,6 @@
 //! The load modes' differences, (a) to (d) (plan section 3.13).
 
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
 
 use unityrs_core::FileContext;
 use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
@@ -142,7 +141,7 @@ impl MemoryBudget for Gate {
             }
             let go = self.go.lock().unwrap().take();
             if let Some(rx) = go {
-                let _ = rx.recv_timeout(Duration::from_secs(60));
+                unityrs_testkit::guard::hold(&rx, "the test to let the gated thread go");
             }
         }
         Ok(Permit::detached(bytes))
@@ -188,9 +187,10 @@ fn a_get_while_another_thread_expands_a_nested_container_sees_its_entries() {
                 .is_none()
         })
     };
-    stopped_rx
-        .recv_timeout(Duration::from_secs(60))
-        .expect("the first thread stops at its first registration");
+    unityrs_testkit::guard::wait(
+        &stopped_rx,
+        "the first thread to stop at its first registration",
+    );
     assert!(
         env.get_cab(&key("cab-nest"), &unlimited())
             .unwrap()

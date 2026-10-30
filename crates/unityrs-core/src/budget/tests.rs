@@ -304,9 +304,8 @@ fn decodes_on_several_threads_never_pass_the_work_bound_together() {
         drop(outcomes);
         let _ = tx.send((granted, refused, decoded, held, m.used()));
     });
-    let (granted, refused, decoded, held, after) = rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("the growths did not finish");
+    let (granted, refused, decoded, held, after) =
+        unityrs_testkit::guard::recv(&rx, "the growths to finish");
     assert_eq!(decoded, 4 << 20, "the work bound held");
     assert_eq!((granted, refused), (4, 4));
     assert_eq!(
