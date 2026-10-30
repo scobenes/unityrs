@@ -256,6 +256,10 @@ class InternalRows(unittest.TestCase):
         )
         with self.assertRaisesRegex(IndexError, "^past the 0 byte$"):
             padded_walk(further, b"\x80")
+        held, furthest = bytearray(b"\x80\0"), [-1]
+        with self.assertRaisesRegex(IndexError, "^past the 0 byte$"):
+            further.decrypt(Padded(held, 0, furthest), 0, 1)
+        self.assertEqual((held.hex(), furthest[0]), ("fdff", 1))
         with no_boost, self.assertRaisesRegex(IndexError, "^index out of bounds on dimension 1$"):
             further.decrypt_block(b"\x80", 0)
         # Through loading: an LZMA block flagged 0x101 whose walk does the same loads with UnityPyBoost and raises
