@@ -258,6 +258,24 @@ impl Registry {
         nested: Option<&Arc<BundleFile>>,
         reopen: bool,
     ) -> Result<Reached, Error> {
+        // A dependency's reach (its reopen, its reads and its registrations,
+        // all charged to the dependency's meter) the pool refuses evicts the
+        // others and is tried once more, as every dependency read is
+        // (`with_room`); a reach tried again registers what it registered
+        // already at the same ranks, which changes nothing.
+        match &slot.kind {
+            SlotKind::Dependency { dep } => dep.with_room(|| self.reach_once(slot, nested, reopen)),
+            SlotKind::Entry { .. } | SlotKind::Ready(_) => self.reach_once(slot, nested, reopen),
+        }
+    }
+
+    /// One try of [`Self::reach_one`].
+    fn reach_once(
+        &self,
+        slot: &Arc<Slot>,
+        nested: Option<&Arc<BundleFile>>,
+        reopen: bool,
+    ) -> Result<Reached, Error> {
         if !slot.unreached() {
             return Ok(Reached::Done);
         }

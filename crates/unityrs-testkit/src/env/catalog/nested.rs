@@ -360,3 +360,20 @@ pub fn nested_dropped_evicted() -> DepScene {
         dependencies: vec![1, 2],
     }
 }
+
+/// [`nested_dropped_evicted`] without `p.bundle`: the dependency
+/// `a.bundle`'s `INNER` stays the key's value. An eager load registered
+/// `CAB-D` at `a.bundle`'s load, so the container pass walks its table and
+/// `CAB-F`'s object 1 gets the path `assets/d.prefab`. Under
+/// `LoadMode::Lazy`, with options that evict `a.bundle` when `b.bundle`
+/// loads, the container pass reaches `INNER` through its own slot, opening
+/// `a.bundle` again; a pool that refuses that open, or any later read or
+/// registration of the reach, makes room by evicting the other
+/// dependencies and tries once more, as every other dependency read does
+/// (plan section 3.13; review round 7: the reach's open failed every pass).
+#[must_use]
+pub fn nested_evicted() -> DepScene {
+    let mut scene = nested_dropped_evicted();
+    scene.scene.files.truncate(3);
+    scene
+}

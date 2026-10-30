@@ -12,6 +12,7 @@ mod files;
 mod locks;
 mod lru;
 mod modes;
+mod pool;
 mod preload;
 mod reach;
 mod resources;

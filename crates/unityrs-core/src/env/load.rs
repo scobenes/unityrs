@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 use super::registry::Hook;
-use super::registry::{Dependency, Open, open_source};
+use super::registry::{Dependency, Open, open_source, with_room};
 use super::{Cab, Environment, LoadMode, RawCab, Source, source_name};
 use crate::budget::Reservation;
 use crate::error::{Error, Unsupported};
@@ -187,17 +187,13 @@ impl Environment {
     }
 
     fn load_dep(&self, name: &RawStr, source: &Source) -> Result<File, Error> {
-        match self.try_load_dep(name, source) {
-            // A pool refusal evicts the others and retries once (plan 3.13);
-            // a second refusal fails naming the pool, and nothing of the
-            // dependency is kept (its first attempt's charges returned
-            // with its handle).
-            Err(Error::Budget(b)) if b.what == Reservation::Dependency => {
-                self.inner.cache.evict_others(None);
-                self.try_load_dep(name, source)
-            }
-            other => other,
-        }
+        // A pool refusal evicts the others and retries once (plan 3.13); a
+        // second refusal fails naming the pool, and nothing of the
+        // dependency is kept (its first attempt's charges returned with its
+        // handle).
+        with_room(Some(&self.inner.cache), None, || {
+            self.try_load_dep(name, source)
+        })
     }
 
     /// One attempt of [`Self::load_dep`], on a meter of its own.
