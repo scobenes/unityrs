@@ -1,7 +1,10 @@
 //! How the writer finds each child's entry in a dict, `value[child.m_Name]`,
 //! in steps linear in the children, as a Python dict finds it ([`Lookup`]),
 //! and the name tables it builds for a miss, built once per dict
-//! ([`NameTable`], [`KeptTables`]).
+//! ([`NameTable`], [`KeptTables`]). Every step of it is the open's work,
+//! counted on the write's [`OpenWork`] before it is taken: a pass over the
+//! children or a slot cleared, [`STEP_WORK`]; a name compared or hashed,
+//! [`STEP_WORK`] and its bytes.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -9,8 +12,13 @@ use std::sync::Arc;
 use crate::limits::{Charge, Meter, MeteredVec, hash_table_cost};
 use crate::typetree::{NodeId, Tree};
 use crate::value::{Map, Parsed, Value};
-use crate::walk::WriteError;
 use crate::walk::dict::{slot_count, steps};
+use crate::walk::{OpenWork, STEP_WORK, WriteError};
+
+/// The open's work of a step that reads `name`'s bytes.
+fn name_work(name: &[u8]) -> u64 {
+    STEP_WORK.saturating_add(u64::try_from(name.len()).unwrap_or(u64::MAX))
+}
 
 /// Where each child of a class or `ReferencedObject` node finds its entry in
 /// a dict, `value[child.m_Name]`, in steps linear in the children, as a
@@ -42,6 +50,7 @@ impl<'a> Lookup<'a> {
         tree: &Tree,
         node: NodeId,
         map: &'a Map,
+        work: &mut OpenWork<'_>,
     ) -> Result<Self, WriteError> {
         let kids = tree.list().children(node);
         // (A dict read through a same-named sibling, which a repeated name
@@ -54,10 +63,17 @@ impl<'a> Lookup<'a> {
                 .entries()
                 .first()
                 .is_none_or(|(k, _)| kids.binary_search_by_key(&k.0, |c| c.0).is_ok());
-        let slots = if native { slot_count(tree, node) } else { 0 };
         let mut found: MeteredVec<u32> = MeteredVec::new(parsed.charge().meter());
-        if slots < kids.len() {
+        // Only a node whose children repeat a name keeps its slots' positions
+        // (each child of any other has a slot of its own, found at the
+        // cursor): a pass to count them and a pass to clear them, steps of
+        // the open's work, counted first.
+        if native && tree.info(node).is_some_and(|i| i.dup_names) {
+            work.steps(kids.len()).map_err(WriteError::Limit)?;
+            let slots = slot_count(tree, node);
+            work.steps(slots).map_err(WriteError::Limit)?;
             found.reserve_exact(slots).map_err(WriteError::Charge)?;
+            steps(slots);
             for _ in 0..slots {
                 found.push(UNSET).map_err(WriteError::Charge)?;
             }
@@ -78,10 +94,16 @@ impl<'a> Lookup<'a> {
         tree: &Tree,
         child: NodeId,
         kept: Option<&mut KeptTables<'a>>,
+        work: &mut OpenWork<'_>,
     ) -> Result<Option<&'a Value>, WriteError> {
         let entries = self.map.entries();
         let name = tree.list().name(child);
         steps(1);
+        // Off this node's children a name is compared, its bytes read; on
+        // them a get is a step of the child's own write, which counts it.
+        if !self.native {
+            work.add(name_work(name)).map_err(WriteError::Limit)?;
+        }
         let at_cursor = entries.get(self.cursor).is_some_and(|(k, _)| {
             if self.native {
                 Some(*k) == tree.info(child).map(|i| i.key)
@@ -102,11 +124,12 @@ impl<'a> Lookup<'a> {
             (None, true) => Some(self.cursor),
             (None, false) => {
                 if let Some(k) = kept {
-                    k.position(parsed, self.map, name)?
+                    k.position(parsed, self.map, name, work)?
                 } else {
                     if self.by_name.is_none() {
-                        self.by_name = Some(NameTable::build(parsed, self.map)?);
+                        self.by_name = Some(NameTable::build(parsed, self.map, work)?);
                     }
+                    work.add(name_work(name)).map_err(WriteError::Limit)?;
                     self.by_name.as_ref().and_then(|t| t.position(name))
                 }
             }
@@ -132,8 +155,13 @@ pub(super) struct NameTable<'a> {
 
 impl<'a> NameTable<'a> {
     /// Built over `map`'s entries, charged to the value's meter before it
-    /// allocates ([`hash_table_cost`]).
-    pub(super) fn build(parsed: &'a Parsed, map: &'a Map) -> Result<Self, WriteError> {
+    /// allocates ([`hash_table_cost`]), each entry's name hashed a step of
+    /// the open's work, counted first.
+    pub(super) fn build(
+        parsed: &'a Parsed,
+        map: &'a Map,
+        work: &mut OpenWork<'_>,
+    ) -> Result<Self, WriteError> {
         let n = map.entries().len();
         let charge = parsed
             .charge()
@@ -143,6 +171,7 @@ impl<'a> NameTable<'a> {
         let mut first = HashMap::with_capacity(n);
         for (i, (name, _)) in parsed.entries(map).enumerate() {
             steps(1);
+            work.add(name_work(name)).map_err(WriteError::Limit)?;
             first
                 .entry(name)
                 .or_insert(u32::try_from(i).unwrap_or(UNSET));
@@ -153,7 +182,7 @@ impl<'a> NameTable<'a> {
         })
     }
 
-    /// The first entry named `name` (a [`Lookup`] counts the step).
+    /// The first entry named `name` (its caller counts the step).
     pub(super) fn position(&self, name: &[u8]) -> Option<usize> {
         self.first
             .get(name)
@@ -202,7 +231,9 @@ impl<'a> KeptTables<'a> {
         parsed: &'a Parsed,
         map: &'a Map,
         name: &[u8],
+        work: &mut OpenWork<'_>,
     ) -> Result<Option<usize>, WriteError> {
+        work.add(name_work(name)).map_err(WriteError::Limit)?;
         let key = std::ptr::from_ref(map).addr();
         if let Some(t) = self.tables.get(&key) {
             return Ok(t.position(name));
@@ -210,7 +241,7 @@ impl<'a> KeptTables<'a> {
         let n = self.tables.len();
         let more = Self::cost(n + 1).saturating_sub(Self::cost(n));
         self.charge.grow(more).map_err(WriteError::Charge)?;
-        let table = NameTable::build(parsed, map)?;
+        let table = NameTable::build(parsed, map, work)?;
         let pos = table.position(name);
         self.tables.insert(key, table);
         Ok(pos)

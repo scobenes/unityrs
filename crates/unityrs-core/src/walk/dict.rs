@@ -24,7 +24,10 @@ use crate::raw::RawStr;
 use crate::typetree::{NodeId, Tree};
 use crate::value::{ListIx, Map, Value, ValueBuilder};
 
-use super::{Out, ReadDetail, ReadError, ReadErrorKind, RefTypes, VALUE_WORK, charge_error};
+use super::{
+    OpenWork, Out, ReadDetail, ReadError, ReadErrorKind, RefTypes, VALUE_WORK, Work, charge_error,
+};
+use crate::error::LimitError;
 
 /// No entry yet for a slot.
 const NONE: u32 = u32::MAX;
@@ -71,14 +74,19 @@ pub(crate) struct Dict {
     /// Start of this dict's region in the scratch; `None` when the class
     /// repeats no name and entries are only pushed.
     base: Option<usize>,
+    /// The most entries it can come to: its slots, one a distinct name, or
+    /// what it reserved when it has none.
+    most: usize,
 }
 
 impl Dict {
     /// Starts a dict of `reserve` entries. A dict whose keys may repeat
-    /// (`slots > 0`) takes a region of `slots` positions in `scratch`.
+    /// (`slots > 0`) takes a region of `slots` positions in `scratch`,
+    /// each cleared a step of the read's work ([`Work::steps`]).
     pub(crate) fn new(
         builder: &ValueBuilder,
         scratch: &mut MeteredVec<u32>,
+        work: &mut Work<'_>,
         reserve: usize,
         slots: usize,
         at: u64,
@@ -88,6 +96,7 @@ impl Dict {
             .reserve_exact(reserve)
             .map_err(|e| charge_error(at, e))?;
         let base = if slots > 0 {
+            work.steps(slots, at)?;
             let base = scratch.len();
             scratch.reserve(slots).map_err(|e| charge_error(at, e))?;
             steps(slots);
@@ -98,7 +107,11 @@ impl Dict {
         } else {
             None
         };
-        Ok(Self { entries, base })
+        Ok(Self {
+            entries,
+            base,
+            most: reserve.max(slots),
+        })
     }
 
     /// The entry position of `slot`, if set.
@@ -112,9 +125,12 @@ impl Dict {
     }
 
     /// `PyDict_SetItem(dict, name, value)`: a key already set keeps its
-    /// position and takes the value; a new one is appended, growing the
-    /// entries by exactly one when they are full (a `ReferencedObject`'s
-    /// data, which the read may skip, is not reserved ahead).
+    /// position and takes the value; a new one is appended. Entries that are
+    /// full (a `ReferencedObject`'s data, which the read may skip, is not
+    /// reserved ahead) grow geometrically, never past the dict's slots, so
+    /// growths that move the entries copy them a bounded number of times
+    /// (review round 6's sweep: growing by exactly one, a dict reserved
+    /// short relied on the allocator's growing it in place).
     pub(crate) fn set(
         &mut self,
         scratch: &mut MeteredVec<u32>,
@@ -130,8 +146,10 @@ impl Dict {
         }
         let pos = self.entries.len();
         if pos == self.entries.capacity() {
+            // What the growth may copy (the linear-work tests).
+            steps(pos);
             self.entries
-                .reserve_exact(1)
+                .reserve_within(1, self.most)
                 .map_err(|e| charge_error(at, e))?;
         }
         value
@@ -204,38 +222,114 @@ impl Trees {
             .map_or(&[], |t| t.list().name(key))
     }
 
-    /// `map[name]`, a Python dict lookup by key string.
-    pub(crate) fn field<'v>(&self, map: &'v Map, name: &[u8]) -> Option<&'v Value> {
-        map.entries()
-            .iter()
-            .find(|(k, _)| {
-                steps(1);
-                self.name(map.list(), *k) == name
-            })
-            .map(|(_, v)| v)
+    /// `map[name]`, a Python dict lookup by key string: each entry it
+    /// passes is a step of the open's work, counted before it is compared
+    /// (a key whose length differs from `name`'s is passed without reading
+    /// its bytes).
+    pub(crate) fn field<'v>(
+        &self,
+        map: &'v Map,
+        name: &[u8],
+        work: &mut OpenWork<'_>,
+    ) -> Result<Option<&'v Value>, LimitError> {
+        for (k, v) in map.entries() {
+            steps(1);
+            work.steps(1)?;
+            if self.name(map.list(), *k) == name {
+                return Ok(Some(v));
+            }
+        }
+        Ok(None)
     }
 }
 
 /// How the first child named `name` of `node` is keyed in its dict: its
-/// key's slot.
+/// key's slot. A pass over the children: its caller counts them first.
 pub(crate) fn slot_of(tree: &Tree, node: NodeId, name: &[u8]) -> Option<u32> {
-    tree.list()
-        .children(node)
-        .iter()
+    let kids = tree.list().children(node);
+    steps(kids.len());
+    kids.iter()
         .find(|c| tree.list().name(**c) == name)
         .and_then(|c| tree.info(*c))
         .map(|i| i.slot)
 }
 
-/// The number of slots a dict of `node`'s children uses (its distinct names).
+/// The number of slots a dict of `node`'s children uses (its distinct
+/// names). A pass over the children: its caller counts them first.
 pub(crate) fn slot_count(tree: &Tree, node: NodeId) -> usize {
-    tree.list()
-        .children(node)
-        .iter()
+    let kids = tree.list().children(node);
+    steps(kids.len());
+    kids.iter()
         .filter_map(|c| tree.info(*c))
         .map(|i| i.slot as usize + 1)
         .max()
         .unwrap_or(0)
+}
+
+/// `width` flags, all clear, for a pass that finds a dict's distinct names
+/// (each flag a map step; its caller counts them as the open's work first).
+pub(crate) fn flags(
+    builder: &ValueBuilder,
+    width: usize,
+    at: u64,
+) -> Result<MeteredVec<bool>, ReadError> {
+    let mut seen = builder.vec::<bool>();
+    seen.reserve_exact(width).map_err(|e| charge_error(at, e))?;
+    steps(width);
+    for _ in 0..width {
+        seen.push(false).map_err(|e| charge_error(at, e))?;
+    }
+    Ok(seen)
+}
+
+/// The entries a `ReferencedObject`'s dict reserves, its distinct names
+/// but its data's (which a read may skip, and then sets nothing), and its
+/// slots: two passes over its children and one over its slots, each step
+/// counted on `work` first (review round 6: a read that failed at the first
+/// child had made them uncounted).
+pub(crate) fn ref_object_size(
+    builder: &ValueBuilder,
+    work: &mut Work<'_>,
+    tree: &Tree,
+    node: NodeId,
+    is_data: impl Fn(NodeId) -> bool,
+    at: u64,
+) -> Result<(usize, usize), ReadError> {
+    let kids = tree.list().children(node);
+    work.steps(kids.len(), at)?;
+    let width = slot_count(tree, node);
+    work.steps(width.saturating_add(kids.len()), at)?;
+    let mut seen = flags(builder, width, at)?;
+    let mut reserve = 0;
+    for c in kids {
+        steps(1);
+        let Some(ci) = tree.info(*c) else { continue };
+        if is_data(*c) {
+            continue;
+        }
+        if let Some(s) = seen.as_mut_slice().get_mut(ci.slot as usize)
+            && !*s
+        {
+            *s = true;
+            reserve += 1;
+        }
+    }
+    Ok((reserve, width))
+}
+
+/// A ref-type search's refusal: the table's memory, or the open's work.
+#[derive(Debug)]
+pub(crate) enum FindError {
+    /// The meter or the budget refused the table.
+    Charge(ChargeError),
+    /// The open's work passed its allowance ([`OpenWork`]).
+    Work(LimitError),
+}
+
+impl From<LimitError> for FindError {
+    fn from(l: LimitError) -> Self {
+        Self::Work(l)
+    }
 }
 
 /// The bytes of a ref type's three names.
@@ -273,18 +367,19 @@ fn names_match(t: &SerializedType, cls: &Value, ns: &Value, asm: &Value) -> bool
 /// twice what UnityPy's own scans cost it, and at most three steps a ref
 /// type plus one a lookup (or [`SCANNED_REFS`] a lookup).
 ///
-/// That bounds one read or write; the open's work bounds them all
-/// ([`Self::work`]): the index is one read's or write's, and every object
-/// of a file searches the file's one list again, so K objects over R ref
-/// types cost K x R steps that their values do not count (the sweep of
-/// fix pass 5).
+/// That bounds one read or write; the open's work bounds them all: the
+/// index is one read's or write's, and every object of a file searches the
+/// file's one list again, so K objects over R ref types cost K x R steps
+/// that their values do not count (the sweep of fix pass 5). Each ref type
+/// a scan compares or the table indexes counts [`VALUE_WORK`] and the bytes
+/// of its three names, what a comparison or a hash reads of it at most, and
+/// each probe [`VALUE_WORK`] and the bytes of the key it hashes, on the
+/// read's or the write's [`OpenWork`], before the step is taken.
 pub(crate) struct RefIndex<'a> {
     list: &'a [SerializedType],
     /// The ref types the scans so far compared.
     scanned: usize,
     table: Option<RefTable<'a>>,
-    /// The work of the steps so far ([`Self::work`]).
-    work: u64,
 }
 
 /// A list this long or shorter is only ever scanned: a lookup costs at most
@@ -311,61 +406,42 @@ impl<'a> RefIndex<'a> {
             list,
             scanned: 0,
             table: None,
-            work: 0,
         }
     }
 
-    /// The open's work of this read's or write's lookups (the module docs
-    /// of [`super`], "Work"): for each ref type a scan compares or the table
-    /// indexes, [`VALUE_WORK`] and the bytes of its three names, what a
-    /// comparison or a hash reads of it at most; for each probe,
-    /// [`VALUE_WORK`] and the bytes of the key it hashes.
-    pub(crate) fn work(&self) -> u64 {
-        self.work
-    }
-
-    fn count(&mut self, bytes: usize) {
-        self.work = self
-            .work
-            .saturating_add(VALUE_WORK)
-            .saturating_add(bytes as u64);
-    }
-
     /// The first ref type whose names equal `(cls, ns, asm)`, the table
-    /// charged to `meter` when this lookup builds it.
+    /// charged to `meter` when this lookup builds it, each step counted on
+    /// `work` before it is taken.
     pub(crate) fn find(
         &mut self,
         meter: &Arc<Meter>,
+        work: &mut OpenWork<'_>,
         cls: &Value,
         ns: &Value,
         asm: &Value,
-    ) -> Result<Option<&'a SerializedType>, ChargeError> {
+    ) -> Result<Option<&'a SerializedType>, FindError> {
         let (Value::Str(c), Value::Str(n), Value::Str(a)) = (cls, ns, asm) else {
             // A value that is not a `str` matches no ref type.
             return Ok(None);
         };
         if self.table.is_none() && self.scanned >= self.list.len() && self.list.len() > SCANNED_REFS
         {
-            self.table = Some(RefTable::build(self.list, meter)?);
-            for r in self.list {
-                self.count(names_len(r));
-            }
+            self.table = Some(RefTable::build(self.list, meter, work)?);
         }
         if let Some(t) = &self.table {
             steps(1);
             let key = [c.as_bytes(), n.as_bytes(), a.as_bytes()];
             if key.iter().zip(t.longest).any(|(k, l)| k.len() > l) {
-                self.count(0);
+                work.add(VALUE_WORK)?;
                 return Ok(None);
             }
+            work.add(VALUE_WORK.saturating_add(as_u64(key.iter().map(|k| k.len()).sum())))?;
             let first: &HashMap<[&[u8]; 3], usize> = &t.first;
-            let found = first.get(&key).and_then(|i| self.list.get(*i));
-            self.count(key.iter().map(|k| k.len()).sum());
-            return Ok(found);
+            return Ok(first.get(&key).and_then(|i| self.list.get(*i)));
         }
         for (i, r) in self.list.iter().enumerate() {
             steps(1);
-            self.count(names_len(r));
+            work.add(VALUE_WORK.saturating_add(as_u64(names_len(r))))?;
             if names_match(r, cls, ns, asm) {
                 self.scanned = self.scanned.saturating_add(i + 1);
                 return Ok(Some(r));
@@ -376,16 +452,28 @@ impl<'a> RefIndex<'a> {
     }
 }
 
+fn as_u64(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
+}
+
 impl<'a> RefTable<'a> {
     /// Every ref type with all three names, first index kept, charged
-    /// before it allocates ([`hash_table_cost`]).
-    fn build(list: &'a [SerializedType], meter: &Arc<Meter>) -> Result<Self, ChargeError> {
+    /// before it allocates ([`hash_table_cost`]), each ref type counted on
+    /// `work` before it is indexed.
+    fn build(
+        list: &'a [SerializedType],
+        meter: &Arc<Meter>,
+        work: &mut OpenWork<'_>,
+    ) -> Result<Self, FindError> {
         let n = list.len();
-        let charge = meter.charge(hash_table_cost(n, size_of::<([&[u8]; 3], usize)>()))?;
+        let charge = meter
+            .charge(hash_table_cost(n, size_of::<([&[u8]; 3], usize)>()))
+            .map_err(FindError::Charge)?;
         let mut first = HashMap::with_capacity(n);
         let mut longest = [0; 3];
         for (i, r) in list.iter().enumerate() {
             steps(1);
+            work.add(VALUE_WORK.saturating_add(as_u64(names_len(r))))?;
             let (Some(c), Some(ns), Some(a)) = (&r.class_name, &r.namespace, &r.assembly) else {
                 continue;
             };
@@ -442,8 +530,9 @@ mod tests {
 
     /// Plan 3.10, linear dicts: a class of 2^16 children whose last 4,096
     /// repeat the first 4,096 names reads in map steps linear in the
-    /// children (counted, not timed; a dict that looked each name up among
-    /// its entries would take some 2^31), each repeated name keeping its
+    /// children (counted, not timed, the passes that size its dict
+    /// included; a dict that looked each name up among its entries would
+    /// take some 2^31), each repeated name keeping its
     /// first position and taking its last value, from both readers.
     #[test]
     fn late_repeats_read_in_linear_map_steps() {
@@ -479,7 +568,7 @@ mod tests {
             .unwrap();
             let steps = STEPS.with(std::cell::Cell::get);
             assert!(
-                steps <= 3 * u64::from(N),
+                steps <= 6 * u64::from(N),
                 "{reader}: {steps} map steps for {N} children"
             );
             let Value::Dict(m) = p.value() else {

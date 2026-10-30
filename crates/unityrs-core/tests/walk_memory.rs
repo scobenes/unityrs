@@ -67,9 +67,10 @@ fn check(now: usize, request: usize) {
     if m.is_null() {
         return;
     }
-    // SAFETY: `watch` stores, on this thread, a pointer to a meter its caller
-    // keeps alive until `unwatch` clears it on this thread; `used` reads an
-    // atomic and allocates nothing.
+    // SAFETY: `watch` stores, on this thread, a pointer to a meter that the
+    // `Watch` it returns borrows, and the `Watch` clears it on this thread
+    // when it drops, a panic's unwind included; `used` reads an atomic and
+    // allocates nothing.
     let used = usize::try_from(unsafe { &*m }.used()).unwrap_or(usize::MAX);
     let over = now
         .saturating_sub(BASE.load(Ordering::Relaxed))
@@ -92,18 +93,32 @@ impl Tally for Counting {
 #[global_allocator]
 static ALLOC: Allocator<Counting> = Allocator(Counting);
 
-/// Starts watching `m` (whose caller keeps it alive until [`unwatch`]).
-fn watch(m: &Arc<Meter>) {
+/// A watch of a meter on this thread, which ends when it drops, a panic's
+/// unwind included; it borrows the meter, so the meter outlives it and the
+/// allocator never reads a freed one (review round 6's sweep: a failing
+/// check between `watch` and `unwatch` left the pointer set, and the test
+/// thread's later allocations read the meter its unwind had freed).
+struct Watch<'m>(std::marker::PhantomData<&'m Meter>);
+
+impl Drop for Watch<'_> {
+    fn drop(&mut self) {
+        let _ = WATCHED.try_with(|w| w.set(ptr::null()));
+    }
+}
+
+/// Starts watching `m` until the watch drops ([`unwatch`]).
+fn watch(m: &Arc<Meter>) -> Watch<'_> {
     assert_eq!(m.used(), 0);
     BASE.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
     EXCESS.store(0, Ordering::Relaxed);
     MAX_REQUEST.store(0, Ordering::Relaxed);
     WATCHED.with(|w| w.set(Arc::as_ptr(m)));
+    Watch(std::marker::PhantomData)
 }
 
 /// Stops watching; the excess seen, which must be zero.
-fn unwatch(what: &str) {
-    WATCHED.with(|w| w.set(ptr::null()));
+fn unwatch(watching: Watch<'_>, what: &str) {
+    drop(watching);
     let excess = EXCESS.load(Ordering::Relaxed);
     assert_eq!(
         excess, 0,
@@ -220,7 +235,7 @@ fn measure(
         options: &options,
         meter: &m,
     };
-    watch(&m);
+    let watching = watch(&m);
     let got: Result<Parsed, ReadError> = if python {
         walk::python::read(file, 0, tree, &ctx)
     } else {
@@ -254,7 +269,7 @@ fn measure(
         }
     }
     drop(got);
-    unwatch(what);
+    unwatch(watching, what);
     assert_eq!(m.used(), 0, "{what}: everything returned");
     (ok.then_some(largest), ok)
 }
@@ -562,6 +577,18 @@ fn shared(n: u32, counting: bool) {
 fn every_allocation_of_a_read_and_a_write_is_charged() {
     count_this_thread();
     others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
+    // A panic inside a watch ends it ([`Watch`]): the pointer is cleared
+    // before the unwind frees the meter.
+    let unwound = std::panic::catch_unwind(|| {
+        let m = meter(false);
+        let _watching = watch(&m);
+        panic!("inside a watch, on purpose");
+    });
+    assert!(unwound.is_err());
+    assert!(
+        WATCHED.with(Cell::get).is_null(),
+        "the meter's pointer outlived the watch"
+    );
     for counting in [false, true] {
         let ok = cases(counting);
         assert!(ok > 200, "only {ok} reads succeeded");

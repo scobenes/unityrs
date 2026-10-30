@@ -148,6 +148,13 @@ impl Meter {
     /// and a growth the count refuses returns its charge and allocates
     /// nothing.
     pub fn count_decode(&self, bytes: u64) -> Result<(), ChargeError> {
+        self.count_work(bytes).map_err(ChargeError::Limit)
+    }
+
+    /// [`Self::count_decode`]'s check-and-add, its refusal the bound's
+    /// [`LimitKind::DecodeWork`] error itself: what a walk's read or write
+    /// counts its work with as it goes (`walk::OpenWork`).
+    pub(crate) fn count_work(&self, bytes: u64) -> Result<(), LimitError> {
         let limit = self.work_limit;
         self.work
             .try_update(Ordering::AcqRel, Ordering::Acquire, |done| {
@@ -198,12 +205,12 @@ impl Meter {
         })
     }
 
-    fn decode_refused(&self, done: u64, bytes: u64) -> ChargeError {
-        ChargeError::Limit(LimitError {
+    fn decode_refused(&self, done: u64, bytes: u64) -> LimitError {
+        LimitError {
             kind: LimitKind::DecodeWork,
             value: done.saturating_add(bytes),
             max: self.work_limit,
-        })
+        }
     }
 
     /// Work counted so far by this open.
