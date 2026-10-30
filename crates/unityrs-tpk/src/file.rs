@@ -11,6 +11,8 @@ use unityrs_core::codec::{self, BlockCodec, Codec};
 use unityrs_core::limits::{Meter, MeteredVec};
 use unityrs_core::{Bytes, LimitKind};
 
+use unityrs_core::limits::ChargeError;
+
 use crate::blob::memory;
 use crate::{TpkError, TpkProvider};
 
@@ -128,7 +130,10 @@ pub(crate) fn payload<'a>(bytes: &'a [u8], meter: &Arc<Meter>) -> Result<Payload
 /// dictionary charged to a meter of [`TpkProvider::MAX_DECODER_MEMORY`].
 /// The codec reads its input as `Bytes`, so `data` is copied once, the copy
 /// charged to `provider` (the provider's meter) before it is made (round 4:
-/// it was not charged).
+/// it was not charged). The decoder's meter is the provider's reservation,
+/// and a growth the allocator refuses is the load's `OutOfMemory`, as every
+/// other growth of the provider's is ([`memory`]), not a decode failure
+/// (round 5: it was `Decompress`, "refused ... for Input").
 fn decode(
     which: Codec,
     codec: &dyn BlockCodec,
@@ -147,6 +152,7 @@ fn decode(
             value: l.value,
             max: l.max,
         },
+        unityrs_core::Error::Budget(b) => memory(ChargeError::Budget(b)),
         unityrs_core::Error::Decompress { detail, .. } => TpkError::Decompress {
             codec: name,
             detail: Box::from(&*detail),
@@ -159,7 +165,7 @@ fn decode(
     let meter = Meter::new(
         TpkProvider::MAX_DECODER_MEMORY,
         Arc::new(Unbounded),
-        Reservation::Input,
+        Reservation::Provider,
     );
     let cap = TpkProvider::MAX_DECODED_BYTES;
     let mut out =
