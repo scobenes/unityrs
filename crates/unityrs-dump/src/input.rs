@@ -49,9 +49,19 @@ use crate::{DumpOptions, InputDump, Levels};
 pub const DEFAULT_UNITY_VERSION: &str = "2.5.0f5";
 
 /// One input's records (`dump_records.py` `_dump_input`). `rel` is the
-/// input's dump name, as bytes.
+/// input's dump name, as bytes. It is parsed on a meter of its own.
 #[must_use]
 pub fn dump_input(rel: &[u8], data: Bytes, opts: &DumpOptions) -> InputDump {
+    let ctx = &opts.context;
+    let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
+    dump_on(rel, data, &meter, opts)
+}
+
+/// [`dump_input`] on `meter`, the input's meter, which its bytes may
+/// already be charged to ([`crate::read::read_input`]): everything the parse
+/// keeps counts toward the same `max_input_memory`.
+#[must_use]
+pub fn dump_on(rel: &[u8], data: Bytes, meter: &Arc<Meter>, opts: &DumpOptions) -> InputDump {
     let name = RawStr::from(rel);
     let mut l0 = L0 {
         ty: None,
@@ -95,10 +105,9 @@ pub fn dump_input(rel: &[u8], data: Bytes, opts: &DumpOptions) -> InputDump {
         }));
         return out;
     }
-    let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
     let mut lines = Vec::new();
     let (mut files, mut objects) = (0, 0);
-    let result = parse_file(name.clone(), data, ty, None, &meter, ctx).and_then(|file| {
+    let result = parse_file(name.clone(), data, ty, None, meter, ctx).and_then(|file| {
         if opts.lazy_reverse {
             prepass_reverse(&file);
         }

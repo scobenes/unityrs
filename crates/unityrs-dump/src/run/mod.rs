@@ -12,11 +12,13 @@
 //!   oracle's `GzipFile` writes it). Like the oracle, it refuses to write
 //!   into the repository (a dump names corpus inputs, and this repository is
 //!   public), through a symlink, or over an input or the index.
-//! - **Failures.** An input whose bytes cannot be read, a panic while
-//!   dumping one (a bug: the core does not panic on input) and an input
-//!   whose sha256 differs from its index entry (unless allowed) stop the run
-//!   with no dump written, as the oracle's `DumperError` and
-//!   `IndexMismatch` do.
+//! - **Failures.** An input that cannot be opened or read (an I/O error), a
+//!   panic while dumping one (a bug: the core does not panic on input) and
+//!   an input whose sha256 differs from its index entry (unless allowed)
+//!   stop the run with no dump written, as the oracle's `DumperError` and
+//!   `IndexMismatch` do. An input refused at a limit, or too large for its
+//!   buffer to be allocated, is its own record and the run goes on
+//!   ([`crate::read`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
@@ -24,15 +26,17 @@ use std::io::{BufWriter, Write};
 use std::os::unix::fs::MetadataExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use flate2::Compression;
 use flate2::GzBuilder;
 use flate2::write::GzEncoder;
 use unityrs_core::Bytes;
-use unityrs_core::limits::Limits;
+use unityrs_core::limits::{Limits, Meter};
 
 use crate::json::hex;
+use crate::read::{ReadInput, read_input};
 use crate::select::{Input, Selection, collect};
 use crate::{DumpOptions, InputDump, end_line, header_line_unbounded};
 
@@ -355,16 +359,22 @@ pub fn ordered_on<T: Sync, R: Send>(
 /// One input's outcome, as a worker hands it back.
 type Dumped = Result<InputDump, String>;
 
+/// What makes one input's records: from its name, its bytes and its meter,
+/// which the bytes are charged to ([`crate::input::dump_on`], or a test's).
+type DumpOne<'a> = dyn Fn(&[u8], Bytes, &Arc<Meter>) -> InputDump + Sync + 'a;
+
 /// Writes the header, every input's records in order, and the `end` record
-/// to `w`. `dump_one` makes one input's records from its name and bytes;
-/// `on_input` sees each input's records after they are written and may stop
-/// the run. Returns the `file` and `object` counts.
+/// to `w`. Each input is read by [`read_input`] (refused at its limits, its
+/// bytes charged to its meter, a refusal its own record), and `dump_one`
+/// makes its records from its name, its bytes and that meter; `on_input`
+/// sees each input's records after they are written and may stop the run.
+/// Returns the `file` and `object` counts.
 pub fn write_dump(
     inputs: &[Input],
     opts: &DumpOptions,
     w: &mut dyn Write,
     on_input: &mut dyn FnMut(&Input, &InputDump) -> Result<(), RunError>,
-    dump_one: &(dyn Fn(&[u8], Bytes) -> InputDump + Sync),
+    dump_one: &DumpOne<'_>,
 ) -> Result<(u64, u64), RunError> {
     let io = |e: std::io::Error| RunError::Failed(format!("writing the dump: {e}"));
     w.write_all(header_line_unbounded(opts.levels, PRODUCER, &opts.unbounded).as_bytes())
@@ -372,9 +382,11 @@ pub fn write_dump(
         .map_err(io)?;
     let (mut files, mut objects) = (0u64, 0u64);
     let work = |input: &Input| -> Dumped {
-        let data = std::fs::read(&input.path)
-            .map_err(|e| format!("{}: {e}", String::from_utf8_lossy(&input.name)))?;
-        Ok(dump_one(&input.name, Bytes::from(data)))
+        match read_input(&input.name, &input.path, &opts.context) {
+            Ok(ReadInput::Bytes { data, meter }) => Ok(dump_one(&input.name, data, &meter)),
+            Ok(ReadInput::Refused(d)) => Ok(d),
+            Err(e) => Err(format!("{}: {e}", String::from_utf8_lossy(&input.name))),
+        }
     };
     let stack = worker_stack(&opts.context.limits);
     ordered_on(inputs, opts.jobs, stack, &work, &mut |i, r: Dumped| {
@@ -399,17 +411,14 @@ pub fn write_dump(
 /// selects the inputs, writes the dump to its `.partial` file and renames
 /// it, then writes the stats.
 pub fn run(opts: &RunOptions) -> Result<Summary, RunError> {
-    run_with(opts, &|rel, data| {
-        crate::input::dump_input(rel, data, &opts.dump)
+    run_with(opts, &|rel, data, meter| {
+        crate::input::dump_on(rel, data, meter, &opts.dump)
     })
 }
 
 /// [`run`] with another per-input dumper (a test's).
 #[allow(clippy::too_many_lines)] // one linear pass, as the oracle's main
-pub fn run_with(
-    opts: &RunOptions,
-    dump_one: &(dyn Fn(&[u8], Bytes) -> InputDump + Sync),
-) -> Result<Summary, RunError> {
+pub fn run_with(opts: &RunOptions, dump_one: &DumpOne<'_>) -> Result<Summary, RunError> {
     let usage = RunError::Usage;
     // The dump and the stats both name corpus inputs; neither may land in a repository.
     for (label, path) in [

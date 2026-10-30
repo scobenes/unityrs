@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::common::{Tmp, fixture, parsed};
 use unityrs_core::detect::{FileType, ParsedAs};
+use unityrs_core::limits::Meter;
 use unityrs_core::typetree::{NodeList, NodeRow};
 use unityrs_core::version::{FlagsClass, Packed};
 use unityrs_core::walk::L2Kind;
@@ -567,7 +568,7 @@ pub(crate) fn stream(inputs: &[Input], levels: Levels, jobs: usize) -> Vec<u8> {
         &opts,
         &mut out,
         &mut |_, _| Ok(()),
-        &|name, data: Bytes| records(name, &data, levels, &vals),
+        &|name, data: Bytes, _: &Arc<Meter>| records(name, &data, levels, &vals),
     )
     .unwrap();
     out

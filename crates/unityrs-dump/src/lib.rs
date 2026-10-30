@@ -18,6 +18,8 @@
 //!   values (section 3) from a [`unityrs_core::Parsed`] alone;
 //! - [`record`]: the records (section 4) and their lines;
 //! - [`input`]: one input's records from the core's public API;
+//! - [`read`]: one input's bytes, refused at its limits and charged to its
+//!   meter, a refusal its own record;
 //! - [`select`]: which inputs, named how, in which order (section 4.2
 //!   "Names", section 5), with the oracle's selection flags;
 //! - [`run`]: the whole dump: header, inputs in order at any `-j`, `end`,
@@ -30,6 +32,7 @@
 pub mod encode;
 pub mod input;
 pub mod json;
+pub mod read;
 pub mod record;
 pub mod run;
 pub mod select;
@@ -330,9 +333,13 @@ pub fn dump_tree(
     };
     let inputs = select::collect(&sel).map_err(std::io::Error::other)?;
     let mut gz = run::gzip(out);
-    let counts = run::write_dump(&inputs, opts, &mut gz, &mut |_, _| Ok(()), &|rel, data| {
-        input::dump_input(rel, data, opts)
-    })
+    let counts = run::write_dump(
+        &inputs,
+        opts,
+        &mut gz,
+        &mut |_, _| Ok(()),
+        &|rel, data, m| input::dump_on(rel, data, m, opts),
+    )
     .map_err(std::io::Error::other)?;
     gz.finish()?;
     Ok(counts)
