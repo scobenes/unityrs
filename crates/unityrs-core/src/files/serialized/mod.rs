@@ -37,6 +37,16 @@
 //! charges: two directory rows over the same bytes parse twice and pay twice.
 //! Strings are zero-copy slices of the file.
 //!
+//! **Work.** The container read ([`SerializedFile::container`]) builds the
+//! whole AssetBundle value and keeps only its rows and preload table, so
+//! two directory rows over the same bytes would repeat a read whose memory
+//! is returned: what the meter granted the read on its own thread, beyond
+//! what its [`Container`] keeps, counts as the open's work
+//! ([`crate::limits::LimitKind::DecodeWork`]), and so does all it was
+//! granted when it fails with an error its cell keeps. At load, a failure
+//! fails the parse, whose grants its bundle counts instead
+//! (`files::bundle`, "Memory and work"), so they count once (round 5).
+//!
 //! Owner: package C. The accessors and [`SerializedType`]'s constructors and
 //! [`SerializedType::tree`] are implemented by the scaffold, so package B can
 //! build ref types for its tests before C lands.
@@ -48,9 +58,9 @@ use bytes::Bytes;
 use crate::container::{Container, read_container};
 use crate::error::Error;
 use crate::files::Parent;
-use crate::limits::{Charge, Limits, Meter};
+use crate::limits::{Charge, GrantScope, Limits, Meter};
 use crate::object::ObjectRef;
-use crate::once::{ResultCell, get_or_publish_result};
+use crate::once::{CellError, ResultCell, get_or_publish_result};
 use crate::options::FileContext;
 use crate::raw::RawStr;
 use crate::stream::{Endian, ShortArray};
@@ -389,9 +399,35 @@ impl SerializedFile {
     /// The container rows of the first AssetBundle in dict order, read once
     /// ([`crate::container::read_container`]) and published
     /// ([`get_or_publish_result`]: the read runs outside the cell, and a
-    /// refused charge is returned, not kept).
+    /// refused charge is returned, not kept). What the read was granted and
+    /// its container does not keep is the open's work (module docs, "Work").
     pub fn container(self: &Arc<Self>) -> Result<&Container, Error> {
-        get_or_publish_result(&self.container, self.meter(), || read_container(self))
+        self.container_counted(true)
+    }
+
+    /// [`Self::container`] as the load reads it (`SerializedFile.py:316-324`):
+    /// a failure fails the parse, whose caller counts its grants.
+    fn container_at_load(self: &Arc<Self>) -> Result<&Container, Error> {
+        self.container_counted(false)
+    }
+
+    /// The container, its read's grants counted as work: on success what its
+    /// container does not keep, on a failure its cell keeps all of it when
+    /// `failure_counts`. A refusal the cell does not keep is
+    /// [`get_or_publish_result`]'s to count.
+    fn container_counted(self: &Arc<Self>, failure_counts: bool) -> Result<&Container, Error> {
+        let meter = self.meter();
+        get_or_publish_result(&self.container, meter, || {
+            let scope = GrantScope::enter(meter);
+            let got = read_container(self);
+            let granted = scope.finish(meter);
+            match &got {
+                Ok(c) => meter.add_work(granted.saturating_sub(c.charge().bytes())),
+                Err(e) if failure_counts && !e.is_transient() => meter.add_work(granted),
+                Err(_) => {}
+            }
+            got
+        })
     }
 
     /// The container this file is an entry of.

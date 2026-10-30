@@ -58,8 +58,11 @@
 //! a parse that ends in an error the cell keeps, on its own thread, counts
 //! as the open's work too, so K such rows stop at the open's `DecodeWork`
 //! limit instead of costing K parses no limit sees (round 4;
-//! `tests/bundles/work.rs`). A failure the cell does not keep (the meter's
-//! or the budget's refusal) is [`crate::once`]'s to count.
+//! `tests/bundles/work.rs`). A parse that succeeds keeps its tables (each
+//! row pays for them), and what its AssetBundle read builds and drops is
+//! counted by the read (`files::serialized`, "Work"; round 5). A failure the
+//! cell does not keep (the meter's or the budget's refusal) is
+//! [`crate::once`]'s to count.
 //!
 //! Decodes and user codecs run with no
 //! lock held: a run is decoded first and then published into `runs`, and an
