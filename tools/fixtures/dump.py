@@ -12,7 +12,12 @@ replays without Python (crates/unityrs-dump/tests/oracle_fixtures.rs):
   tree and corpus index built here in a temporary folder, and fnmatch.fnmatchcase
   (what --name means) over names and patterns, invalid UTF-8 included;
 - l2_kinds.json: dump_records.py's error_kind on read_typetree's check_read message,
-  for a real pure-Python read whose bytes_read is negative, and on positive ones.
+  for a real pure-Python read whose bytes_read is negative, and on positive ones;
+- records.json: dump_records.py's first_difference (an L3 record's first_diff) on
+  pairs of byte strings, and the oracle's records (unitypy_dump.py dump_input) of
+  SerializedFiles built here with tools/parity/tests/synth.py, the input's bytes
+  beside them: an object whose resave differs from its raw bytes, and one whose
+  embedded tree is deeper than the dump's test lowers max_tree_depth to.
 
 Every input is built here in code; no file outside the temporary folder is read.
 
@@ -35,8 +40,11 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "crates/unityrs-dump/tests/fixtures/dump"
 sys.path.insert(0, str(ROOT / "tools" / "parity"))
+sys.path.insert(0, str(ROOT / "tools" / "parity" / "tests"))
 
 import canonical as C  # noqa: E402
+import dump_records  # noqa: E402
+import synth as S  # noqa: E402
 import unitypy_dump  # noqa: E402
 import UnityPy  # noqa: E402
 from UnityPy.helpers import TypeTreeHelper as TTH  # noqa: E402
@@ -471,6 +479,39 @@ def l2_kind_cases() -> list[dict]:
     return out
 
 
+# -------------------------------------------------------------------- records
+
+
+FIRST_DIFF = [("616263", "616264"), ("786263", "616263"), ("6162", "616263"), ("61626364", "6162"),
+              ("", "61"), ("", ""), ("00" * 9 + "01", "00" * 10)]
+
+
+def own_tree_input() -> bytes:
+    """A SerializedFile of two objects. Object 1's embedded tree is 5 levels deep (`MyThing`, three `C` levels,
+    an `int`): it reads, and a dump whose max_tree_depth is 3 cannot compile it. Object 2's tree is
+    [int i, bool b] over the bytes 9 and 2: the bool reads as True and is written back as 1, so its resave
+    differs at offset 4."""
+    deep = S.Node("int", "x")
+    for i in range(3):
+        deep = S.Node(f"C{i}", "c", [deep])
+    deep = S.Node("MyThing", "Base", [deep])
+    flat = S.Node("Thing", "Base", [S.Node("int", "i"), S.Node("bool", "b")])
+    objects = [S.Obj(1, 0, struct.pack("<i", 7)), S.Obj(2, 1, struct.pack("<i", 9) + b"\x02")]
+    return S.serialized_file([S.Type(114, deep), S.Type(114, flat)], objects)
+
+
+def record_cases(root: Path) -> dict:
+    inputs = []
+    for name, data in (("own_tree", own_tree_input()),):
+        path = root / name
+        path.write_bytes(data)
+        _, text, _, _ = unitypy_dump.dump_input((str(path), name, C.LEVELS))
+        inputs.append({"name": name, "input": data.hex(), "records": [line for line in text.split("\n") if line]})
+    first = [{"a": a, "b": b, "first_diff": dump_records.first_difference(bytes.fromhex(a), bytes.fromhex(b))}
+             for a, b in FIRST_DIFF]
+    return {"first_diff": first, "inputs": inputs}
+
+
 # ----------------------------------------------------------------------- main
 
 
@@ -479,6 +520,8 @@ def fixtures() -> dict[str, dict]:
     with tempfile.TemporaryDirectory(prefix="unityrs-fixtures-") as tmp:
         make_tree(Path(tmp))
         selection = selection_cases(Path(tmp))
+    with tempfile.TemporaryDirectory(prefix="unityrs-fixtures-") as tmp:
+        records = record_cases(Path(tmp))
     return {
         "encode.json": {**meta, "values": value_cases(), "names": name_cases(), "ints": int_cases()},
         "select.json": {
@@ -489,6 +532,7 @@ def fixtures() -> dict[str, dict]:
             "fnmatch": fnmatch_cases(),
         },
         "l2_kinds.json": {**meta, "cases": l2_kind_cases()},
+        "records.json": {**meta, **records},
     }
 
 

@@ -86,6 +86,20 @@ fn notes_are_cut_as_the_oracle_cuts_them() {
     assert!(n.ends_with("..."));
 }
 
+/// `first_diff` (`docs/CANONICAL_DUMP.md` section 4.3): the first offset at
+/// which the resave and the raw bytes differ, or the shorter length when
+/// one is a prefix of the other, in either order. The oracle's own answers
+/// are replayed by `tests/oracle_fixtures.rs`.
+#[test]
+fn first_difference_is_the_offset_or_the_shorter_length() {
+    assert_eq!(first_difference(b"abc", b"abd"), 2);
+    assert_eq!(first_difference(b"xbc", b"abc"), 0);
+    assert_eq!(first_difference(b"ab", b"abc"), 2);
+    assert_eq!(first_difference(b"abcd", b"ab"), 2);
+    assert_eq!(first_difference(b"", b"a"), 0);
+    assert_eq!(first_difference(b"", b""), 0);
+}
+
 /// `note_of` formats only the prefix the note keeps, and keeps what `note`
 /// of the whole text keeps, at every length around the cut.
 #[test]
