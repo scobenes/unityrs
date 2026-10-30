@@ -4,7 +4,7 @@
 use bytes::Bytes;
 
 use super::{BlockCodec, Codec, Decoded};
-use crate::budget::DecodeBuf;
+use crate::budget::{BudgetExceeded, DecodeBuf, Reservation};
 use crate::error::{Error, LimitKind};
 use crate::limits::{ChargeError, heap_cost};
 
@@ -109,6 +109,29 @@ impl From<ChargeError> for LzmaFail {
     }
 }
 
+/// A liblzma failure after `produced` bytes of the block's output, in an
+/// attempt that holds `held` bytes of dictionary on a meter booked as
+/// `what`. `LZMA_MEM_ERROR` is the allocator refusing what liblzma
+/// allocates itself, the dictionary above all, which the meter had granted:
+/// a refusal of memory, as a growth the Rust allocator refuses is
+/// ([`crate::limits::MeteredVec`]), so it is the meter's reservation's
+/// [`Error::Budget`] (transient: nothing keeps it, and the same block decodes
+/// once the memory is there), never a decode failure (review round 6: it
+/// was `Decompress`, `"MemoryError"`, so a TPK loaded while the process was
+/// short of memory read as a corrupt one).
+fn failure(e: liblzma::stream::Error, produced: usize, held: u64, what: Reservation) -> LzmaFail {
+    let other = |detail: &str| LzmaFail::Other(lzma_error(detail));
+    match e {
+        liblzma::stream::Error::Data => LzmaFail::Data(produced),
+        liblzma::stream::Error::Options => other("LZMAError: Invalid or unsupported options"),
+        liblzma::stream::Error::Mem => LzmaFail::Other(Error::Budget(BudgetExceeded {
+            requested: held,
+            what,
+        })),
+        _ => other("LZMAError: Internal error"),
+    }
+}
+
 /// The window an LZMA decode grows its output by at most at once.
 const LZMA_WINDOW_MAX: usize = 1 << 20;
 
@@ -123,12 +146,9 @@ fn lzma_attempt(
     use liblzma::stream::{Action, Filters, LzmaOptions, Status, Stream};
 
     let other = |what: &str| LzmaFail::Other(lzma_error(what));
-    let map = |e: liblzma::stream::Error, produced: usize| match e {
-        liblzma::stream::Error::Data => LzmaFail::Data(produced),
-        liblzma::stream::Error::Options => other("LZMAError: Invalid or unsupported options"),
-        liblzma::stream::Error::Mem => other("MemoryError"),
-        _ => other("LZMAError: Internal error"),
-    };
+    let held = heap_cost(u64::from(dict.max(LZMA_DICT_SIZE_MIN)));
+    let what = out.meter().reservation();
+    let map = |e: liblzma::stream::Error, produced: usize| failure(e, produced, held, what);
     // CPython's `parse_filter_spec_lzma` starts from the default preset and
     // sets what the filter spec names.
     let mut opts = LzmaOptions::new_preset(6).map_err(|e| map(e, 0))?;
@@ -140,9 +160,7 @@ fn lzma_attempt(
     filters.lzma1(&opts);
     // liblzma allocates the whole dictionary (at least its 4 KiB minimum)
     // when the decoder starts: charged first, held for the attempt.
-    let _dictionary = out
-        .meter()
-        .charge(heap_cost(u64::from(dict.max(LZMA_DICT_SIZE_MIN))))?;
+    let _dictionary = out.meter().charge(held)?;
     let mut stream = Stream::new_raw_decoder(&filters).map_err(|e| map(e, 0))?;
     let seg_start = out.len();
     // The first window is the declared size, which a well-formed block
@@ -242,5 +260,44 @@ fn refused_window(e: &ChargeError, want: usize, produced: usize) -> usize {
             room.clamp(1, half)
         }
         _ => half,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LzmaFail, failure};
+    use crate::budget::{BudgetExceeded, Reservation};
+    use crate::error::Error;
+    use crate::once::CellError;
+
+    /// Round 6: liblzma's `LZMA_MEM_ERROR` (the allocator refusing the
+    /// dictionary liblzma allocates itself) was `Decompress`, `"MemoryError"`,
+    /// a decode failure. It is the meter's reservation refused the memory it
+    /// had granted, as a growth the Rust allocator refuses is: a caller tells
+    /// it from a corrupt block, and nothing keeps it.
+    #[test]
+    fn liblzmas_memory_error_is_a_refusal_of_memory_not_a_decode_failure() {
+        for what in [Reservation::Input, Reservation::Provider] {
+            match failure(liblzma::stream::Error::Mem, 3, 8 << 20, what) {
+                LzmaFail::Other(e @ Error::Budget(_)) => {
+                    assert!(e.is_transient());
+                    let Error::Budget(b) = e else { unreachable!() };
+                    assert_eq!(
+                        b,
+                        BudgetExceeded {
+                            requested: 8 << 20,
+                            what
+                        }
+                    );
+                }
+                LzmaFail::Other(e) => panic!("{what:?}: {e:?}"),
+                LzmaFail::Data(n) => panic!("{what:?}: a data error after {n} bytes"),
+            }
+        }
+        // A data error is still the stream's, after the bytes it made.
+        assert!(matches!(
+            failure(liblzma::stream::Error::Data, 3, 4096, Reservation::Input),
+            LzmaFail::Data(3)
+        ));
     }
 }

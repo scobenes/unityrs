@@ -133,7 +133,10 @@ pub(crate) fn payload<'a>(bytes: &'a [u8], meter: &Arc<Meter>) -> Result<Payload
 /// it was not charged). The decoder's meter is the provider's reservation,
 /// and a growth the allocator refuses is the load's `OutOfMemory`, as every
 /// other growth of the provider's is ([`memory`]), not a decode failure
-/// (round 5: it was `Decompress`, "refused ... for Input").
+/// (round 5: it was `Decompress`, "refused ... for Input"). So is liblzma's
+/// own allocation of the dictionary the decoder's meter granted, which the
+/// codec reports as the meter's [`unityrs_core::Error::Budget`] (round 6:
+/// it was `Decompress`, `"MemoryError"`).
 fn decode(
     which: Codec,
     codec: &dyn BlockCodec,

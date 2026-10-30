@@ -188,10 +188,11 @@ impl TpkProvider {
         self.blob.classes.len()
     }
 
-    /// The classes the TPK holds, sorted.
-    #[must_use]
-    pub fn class_ids(&self) -> Vec<i32> {
-        self.blob.classes.ids().collect()
+    /// The classes the TPK holds, sorted, read from the provider's own table:
+    /// nothing is allocated for them (review round 6: a `Vec` of up to
+    /// [`Self::MAX_RECORDS`] ids was, outside the provider's meter).
+    pub fn class_ids(&self) -> impl DoubleEndedIterator<Item = i32> + ExactSizeIterator + '_ {
+        self.blob.classes.ids()
     }
 
     /// The TPK's version list, as stored (UnityPy's `Versions`).
@@ -488,7 +489,9 @@ impl TypeTreeProvider for TpkProvider {
     /// whose picked entry names one root gets the same `Arc` (UnityPy's
     /// `NODES_CACHE`, crate docs). A walk or compile the allocator refuses is
     /// that request's error, its [`ProviderError::memory`] set, and is not
-    /// kept: the next request walks and compiles again.
+    /// kept: after a refused walk the next request walks and compiles again,
+    /// after a refused compile it compiles the rows the walk kept (review
+    /// round 6: this said it walked again either way).
     fn tree(&self, req: &TreeRequest<'_>) -> Result<Option<Arc<Tree>>, ProviderError> {
         let Some(root) = self.entry(req.class_id, req.version) else {
             return Ok(None);
