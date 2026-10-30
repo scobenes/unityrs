@@ -161,6 +161,7 @@ pub fn refused_before_detection(
     let mut out = InputDump {
         sha256,
         bytes_in: size,
+        crashes: u64::from(kind == FileErrorKind::Crash),
         ..InputDump::default()
     };
     out.push_file(file_line(&rec));

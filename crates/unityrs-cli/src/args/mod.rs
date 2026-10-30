@@ -12,13 +12,18 @@
 //! bytes, as Python's surrogate-escaped `argv` is, so a path or a `--name`
 //! glob that is not UTF-8 reaches the run unchanged.
 //!
-//! Three extensions: the oracle takes one INPUT, `unityrs dump` takes one or
+//! Four extensions: the oracle takes one INPUT, `unityrs dump` takes one or
 //! more (every positional, wherever it stands; their dump names must not
-//! repeat, and `--index` takes one); `--reverse-prepass` (G1c); and
+//! repeat, and `--index` takes one); `--tpk` (the TPK UnityPy ships, which
+//! the oracle loads from its own package); `--reverse-prepass` (G1c); and
 //! `--unbounded` (G3b's limit check, never a gate dump). No option the
-//! oracle has is a prefix of either flag's name, nor either of one of its
-//! own, so every abbreviation the oracle takes still means what it does
-//! there.
+//! oracle has is a prefix of any of their names, nor any of them of one of
+//! its own, so every abbreviation the oracle takes still means what it
+//! does there; the oracle's ambiguous prefixes list them among their
+//! matches. `--kind` and `--build` are kept as bytes, as Python's
+//! surrogate-escaped `str`s are, so a value that is not UTF-8 is taken as
+//! the oracle takes it, never refused: it names the entries whose `str`
+//! holds the same lone surrogates ([`unityrs_dump::select::PyStr`]).
 
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -153,8 +158,11 @@ pub struct DumpArgs {
     pub inputs: Vec<PathBuf>,
     pub output: PathBuf,
     pub index: bool,
-    pub kind: Vec<String>,
-    pub build: Option<Vec<String>>,
+    /// `--kind`'s comma list, each item's bytes.
+    pub kind: Vec<Vec<u8>>,
+    /// `--build`'s comma list, each item's bytes; `None` without one, or
+    /// for an empty one.
+    pub build: Option<Vec<Vec<u8>>>,
     pub allow_index_mismatch: bool,
     pub name: Vec<Vec<u8>>,
     pub sample: Option<i64>,
@@ -512,16 +520,6 @@ fn consume_optional(
     Ok(Some(stop))
 }
 
-fn utf8(dest: Dest, v: &[u8]) -> Result<String, Usage> {
-    String::from_utf8(v.to_vec()).map_err(|_| {
-        Usage(format!(
-            "argument {}: {} is not UTF-8, so it names no index entry",
-            dest.display(),
-            py_repr(v)
-        ))
-    })
-}
-
 fn path(v: &[u8]) -> PathBuf {
     PathBuf::from(OsString::from_vec(v.to_vec()))
 }
@@ -586,13 +584,17 @@ pub fn parse(args: &[Vec<u8>]) -> Result<Parsed, Usage> {
             "--index takes one INPUT, the corpus index.json".into(),
         ));
     }
+    // `args.kind.split(",")`: a comma is never part of a character or of
+    // a byte that is not UTF-8, so the bytes split where the `str` does.
+    let split =
+        |v: &[u8]| -> Vec<Vec<u8>> { v.split(|b| *b == b',').map(<[u8]>::to_vec).collect() };
     let kind = match ns.last(Dest::Kind) {
-        Some(k) => utf8(Dest::Kind, k)?,
-        None => INDEX_KINDS.join(","),
+        Some(k) => split(k),
+        None => INDEX_KINDS.iter().map(|k| k.as_bytes().to_vec()).collect(),
     };
     // `args.build.split(",") if args.build else None`: an empty one is none.
     let build = match ns.last(Dest::Build) {
-        Some(b) if !b.is_empty() => Some(utf8(Dest::Build, b)?),
+        Some(b) if !b.is_empty() => Some(split(b)),
         _ => None,
     };
     let levels = match ns.last(Dest::Levels) {
@@ -608,8 +610,8 @@ pub fn parse(args: &[Vec<u8>]) -> Result<Parsed, Usage> {
         inputs: ns.inputs.iter().map(|a| path(a)).collect(),
         output: output.unwrap_or_default(),
         index,
-        kind: kind.split(',').map(str::to_owned).collect(),
-        build: build.map(|b| b.split(',').map(str::to_owned).collect()),
+        kind,
+        build,
         allow_index_mismatch,
         name: ns
             .values

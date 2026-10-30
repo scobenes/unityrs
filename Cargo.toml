@@ -18,6 +18,7 @@ pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 # Gate G6 (scripts/stub-check.sh): no stub body in any crate, whatever its
-# delimiter or spacing.
-todo = "deny"
-unimplemented = "deny"
+# delimiter, spacing or name. Forbidden, not denied, so no attribute (an
+# allow of either lint or of `clippy::restriction`) can lower them again.
+todo = "forbid"
+unimplemented = "forbid"

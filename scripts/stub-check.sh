@@ -1,22 +1,29 @@
 #!/bin/sh
 # Gate G6 (docs/plans/core.md section 6): no stub is left in any crate.
 #
-# A stub module's todo!() bodies are allowed only by its `STUB(X)` line and
-# the `#![allow(clippy::todo, ...)]` under it. Deleting the comment but not
-# the allow would hide a reachable todo!() from clippy, so this checks every
-# Rust file of every crate for each sign:
+# A stub module's todo!() bodies were allowed only by its `STUB(X)` line and
+# the `#![allow(clippy::todo, ...)]` under it. This checks every Rust file of
+# every crate for each sign of one:
 #   - the marker `STUB(`, in code or a comment (`#[ignore = "STUB(B): ..."]`
 #     marks a test that waits on another package's stub, plan section 7.1);
-#   - `clippy::todo` or `clippy::unimplemented` under `allow(` or `expect(`
-#     in an attribute, on one line or several (under `deny(`, as in
+#   - `clippy::todo`, `clippy::unimplemented` or the group that holds them,
+#     `clippy::restriction`, directly under `allow(`, `expect(` or `warn(` in
+#     an attribute, `cfg_attr` included, whatever whitespace or comments lie
+#     between the path's tokens (under `deny(` or `forbid(`, as in
 #     unityrs-core's own lib.rs, it is the opposite of a stub);
-#   - `todo!` or `unimplemented!` invoked in code with any delimiter, `()`,
-#     `[]` or `{}`, spaces or line breaks between its tokens (`todo !`,
-#     `todo!` then `{` on a later line, comment lines between); a comment
-#     may name them. The workspace's own lints (Cargo.toml
-#     `[workspace.lints.clippy]`, which every crate inherits) deny both
-#     macros as well, so a form no line scan sees, a comment between the
-#     tokens, still fails `cargo clippy`.
+#   - `todo!` or `unimplemented!` invoked with any delimiter, `()`, `[]` or
+#     `{}`, by any path (`core::todo!`), whatever whitespace or comments lie
+#     between its tokens, on one line or several;
+#   - either macro imported under another name (`use core::todo as later;`,
+#     on one line or several), whose calls no name scan would see.
+# Each file is lexed as Rust is first: comments (nested block comments
+# included), strings (raw, byte and C strings included) and character
+# literals are blanked, so they may name the macros and the lints freely,
+# and a comment between two tokens is whitespace. The workspace's lints
+# (Cargo.toml `[workspace.lints.clippy]`, which every crate inherits) forbid
+# both macros as well, so no attribute can allow them again: `cargo clippy`
+# fails on any reachable call outside a macro_rules! body, an aliased one
+# included, and this scan sees a call inside one.
 #
 # Each hit is printed with its owning package, `[X] FILE:LINE: text`: the
 # package a `STUB(X)` on the line names (for a blocked test, the package it
@@ -32,63 +39,167 @@ root=${1:-"$(dirname "$0")/.."}
 cd "$root"
 hits=$(find crates -type f -name '*.rs' \
     | LC_ALL=C sort \
-    | xargs -r awk '
+    | LC_ALL=C xargs -r awk '
+        BEGIN {
+            q = sprintf("%c", 39)
+            # The first token in code that starts a comment, a string, a raw
+            # string or a character literal.
+            tok = "//|/\\*|[bc]?r#*\"|[bc]?\"|" q
+            ws = "[ \t\r\n]"
+        }
         function owner_of(s) {
             if (match(s, /STUB\([A-Za-z]+\)/)) return substr(s, RSTART + 5, RLENGTH - 6)
             return ""
         }
-        function report(n, text,    who) {
-            who = owner_of(text)
+        function blank(n,    b) {
+            b = ""
+            while (n-- > 0) b = b " "
+            return b
+        }
+        # The line with its comments, strings and character literals blanked
+        # to spaces, columns kept. The state carries over lines: st is "" in
+        # code, "block" in a comment bdepth deep, "str" in a string and "raw"
+        # in a raw string, which rawend closes.
+        function lex(s,    out, t, n, p, c, w) {
+            out = ""
+            while (s != "") {
+                if (st == "block") {
+                    if (!match(s, /\/\*|\*\//)) { out = out blank(length(s)); break }
+                    bdepth += substr(s, RSTART, 2) == "/*" ? 1 : -1
+                    out = out blank(RSTART + 1)
+                    s = substr(s, RSTART + 2)
+                    if (bdepth == 0) st = ""
+                } else if (st == "str") {
+                    if (!match(s, /[\\"]/)) { out = out blank(length(s)); break }
+                    # An escape is the backslash and the character after it.
+                    n = substr(s, RSTART, 1) == "\\" ? RSTART + 1 : RSTART
+                    if (n == RSTART) st = ""
+                    if (n > length(s)) n = length(s)
+                    out = out blank(n)
+                    s = substr(s, n + 1)
+                } else if (st == "raw") {
+                    p = index(s, rawend)
+                    if (p == 0) { out = out blank(length(s)); break }
+                    n = p + length(rawend) - 1
+                    out = out blank(n)
+                    s = substr(s, n + 1)
+                    st = ""
+                } else {
+                    if (!match(s, tok)) { out = out s; break }
+                    out = out substr(s, 1, RSTART - 1)
+                    t = substr(s, RSTART, RLENGTH)
+                    s = substr(s, RSTART + RLENGTH)
+                    if (t == "//") { out = out blank(2 + length(s)); break }
+                    if (t == "/*") { out = out "  "; st = "block"; bdepth = 1; continue }
+                    if (t == q) {
+                        # A character literal, else a lifetime or a label.
+                        c = substr(s, 1, 1)
+                        if (c == "\\") {
+                            p = index(substr(s, 3), q)
+                            if (p) { out = out blank(p + 3); s = substr(s, p + 3); continue }
+                        } else if (c != "") {
+                            # The UTF-8 length of the character, by its lead byte.
+                            w = c < "\300" ? 1 : c < "\340" ? 2 : c < "\360" ? 3 : 4
+                            if (substr(s, w + 1, 1) == q) { out = out blank(w + 2); s = substr(s, w + 2); continue }
+                        }
+                        out = out q
+                        continue
+                    }
+                    out = out blank(length(t))
+                    if (t ~ /r/) {
+                        rawend = t
+                        gsub(/[^#]/, "", rawend)
+                        rawend = "\"" rawend
+                        st = "raw"
+                    } else {
+                        st = "str"
+                    }
+                }
+            }
+            return out
+        }
+        function line_of(pos,    t) {
+            t = substr(J, 1, pos - 1)
+            return gsub(/\n/, "", t) + 1
+        }
+        # Marks the line of each match of re in the code; a match starts
+        # with the character before the name unless the name begins the file.
+        function scan(re,    rest, off, pos) {
+            rest = J
+            off = 0
+            while (match(rest, re)) {
+                pos = off + RSTART
+                if (substr(rest, RSTART, 1) !~ /[tu]/) pos++
+                H[line_of(pos)] = 1
+                off += RSTART + RLENGTH - 1
+                rest = substr(rest, RSTART + RLENGTH)
+            }
+        }
+        # The name before position i, whitespace skipped.
+        function word_before(i,    j, k) {
+            j = i - 1
+            while (j >= 1 && substr(J, j, 1) ~ ws) j--
+            k = j
+            while (k >= 1 && substr(J, k, 1) ~ /[A-Za-z0-9_]/) k--
+            return substr(J, k + 1, j - k)
+        }
+        # Whether the lint path at pos is directly under allow, expect or
+        # warn inside an attribute, #[...] or #![...].
+        function lowered(pos,    i, c, pd, bd, found, kw, j) {
+            pd = 0; bd = 0; found = 0; kw = ""
+            for (i = pos - 1; i >= 1; i--) {
+                c = substr(J, i, 1)
+                if (c == ")") pd++
+                else if (c == "(") {
+                    if (pd > 0) pd--
+                    else if (!found) { found = 1; kw = word_before(i) }
+                } else if (c == "]") bd++
+                else if (c == "[") {
+                    if (bd > 0) { bd--; continue }
+                    j = i - 1
+                    while (j >= 1 && substr(J, j, 1) ~ ws) j--
+                    if (j >= 1 && substr(J, j, 1) == "!") j--
+                    while (j >= 1 && substr(J, j, 1) ~ ws) j--
+                    return j >= 1 && substr(J, j, 1) == "#" && kw ~ /^(allow|expect|warn)$/
+                } else if (c == ";" || c == "{" || c == "}") return 0
+            }
+            return 0
+        }
+        function report(k,    who) {
+            who = owner_of(L[k])
             if (who == "") who = first
-            print "[" who "] " FILENAME ":" n ": " text
+            print "[" who "] " fname ":" k ": " L[k]
+        }
+        function flush(    k, re, rest, off, pos, end) {
+            first = ""
+            for (k = 1; k <= n && first == ""; k++) first = owner_of(L[k])
+            if (first == "") first = "?"
+            split("", H)
+            J = C[1]
+            for (k = 2; k <= n; k++) J = J "\n" C[k]
+            for (k = 1; k <= n; k++) if (L[k] ~ /STUB\(/) H[k] = 1
+            scan("(^|[^A-Za-z0-9_])(todo|unimplemented)" ws "*!" ws "*[[({]")
+            scan("(^|[^A-Za-z0-9_])(todo|unimplemented)" ws "+as" ws "+[A-Za-z_]")
+            re = "clippy" ws "*::" ws "*(todo|unimplemented|restriction)"
+            rest = J
+            off = 0
+            while (match(rest, re)) {
+                pos = off + RSTART
+                end = RSTART + RLENGTH
+                if (substr(rest, end, 1) !~ /[A-Za-z0-9_]/ && (pos == 1 || substr(J, pos - 1, 1) !~ /[A-Za-z0-9_]/) && lowered(pos))
+                    H[line_of(pos)] = 1
+                off += end - 1
+                rest = substr(rest, end)
+            }
+            for (k = 1; k <= n; k++) if (k in H) report(k)
         }
         FNR == 1 {
-            depth = 0; level = ""; first = ""; pend = ""
-            while ((getline l < FILENAME) > 0) if (first == "") first = owner_of(l)
-            close(FILENAME)
-            if (first == "") first = "?"
+            if (fname != "") flush()
+            fname = FILENAME; n = 0; st = ""; bdepth = 0
+            split("", L); split("", C)
         }
-        {
-            line = $0
-            code = line
-            sub(/^[ \t]+/, "", code)
-            hit = (line ~ /STUB\(/)
-            if (substr(code, 1, 2) != "//") {
-                if (depth == 0 && code ~ /^#!?\[/) level = ""
-                if (depth > 0 || code ~ /^#!?\[/) {
-                    # Inside an attribute: walk its lint levels in order.
-                    s = line
-                    while (match(s, /(allow|expect|warn|deny|forbid)\(|clippy::(todo|unimplemented)/)) {
-                        tok = substr(s, RSTART, RLENGTH)
-                        if (tok ~ /^clippy::/) {
-                            if (level == "allow" || level == "expect") hit = 1
-                        } else {
-                            level = substr(tok, 1, length(tok) - 1)
-                        }
-                        s = substr(s, RSTART + RLENGTH)
-                    }
-                    o = line; c = line
-                    depth += gsub(/\[/, "", o) - gsub(/\]/, "", c)
-                    if (depth < 0) depth = 0
-                }
-                if (line ~ /(^|[^A-Za-z0-9_])(todo|unimplemented)[ \t]*![ \t]*[[({]/) hit = 1
-            }
-            if (code != "" && substr(code, 1, 2) != "//") {
-                # A macro an earlier code line began (`pend`: its name, or
-                # its name and `!`) and this one completes; blank and
-                # comment lines between keep it pending.
-                if ((pend == "name" && code ~ /^![ \t]*[[({]/) || (pend == "bang" && code ~ /^[[({]/))
-                    report(pline, ptext)
-                if (pend == "name" && code ~ /^![ \t]*$/) pend = "bang"
-                else pend = ""
-                if (line ~ /(^|[^A-Za-z0-9_])(todo|unimplemented)[ \t]*$/) {
-                    pend = "name"; pline = FNR; ptext = line
-                } else if (line ~ /(^|[^A-Za-z0-9_])(todo|unimplemented)[ \t]*![ \t]*$/) {
-                    pend = "bang"; pline = FNR; ptext = line
-                }
-            }
-            if (hit) report(FNR, line)
-        }')
+        { n++; L[n] = $0; C[n] = lex($0) }
+        END { if (fname != "") flush() }')
 if [ -n "$hits" ]; then
     printf '%s\n' "$hits"
     summary=$(printf '%s\n' "$hits" | sed -n 's/^\[\([^]]*\)\].*/\1/p' | LC_ALL=C sort | uniq -c \

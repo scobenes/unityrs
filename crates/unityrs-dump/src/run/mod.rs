@@ -117,9 +117,22 @@ pub struct Summary {
     pub objects: u64,
     /// Inputs whose sha256 differed from their index entry (allowed).
     pub index_sha256_mismatch: u64,
+    /// Inputs whose one record is a `crash`: they ran their dumper out of
+    /// memory ([`InputDump::crashes`]).
+    pub crashes: u64,
 }
 
 const _: () = crate::send_sync::<Summary>();
+
+impl Summary {
+    /// Every input crashed: the dump is written, but the oracle exits 3
+    /// after it (`unitypy_dump.py` `main`: "One crash is an input's; every
+    /// input crashing is the machine's"), and `unityrs dump` does too.
+    #[must_use]
+    pub fn every_input_crashed(&self) -> bool {
+        self.inputs > 0 && self.crashes == self.inputs
+    }
+}
 
 // --------------------------------------------------------------- the paths
 
@@ -569,6 +582,7 @@ pub fn run_with(opts: &RunOptions, dump_one: &DumpOne<'_>) -> Result<Summary, Ru
     let mut done = 0usize;
     let mut on_input = |input: &Input, d: &InputDump| -> Result<(), RunError> {
         done += 1;
+        summary.crashes += d.crashes;
         let name = String::from_utf8_lossy(&input.name).into_owned();
         let differs = |want: &Pin| match d.sha256.map(|s| hex(&s)) {
             Some(sha) if want.matches(&sha) => None,
@@ -638,6 +652,7 @@ pub fn run_with(opts: &RunOptions, dump_one: &DumpOne<'_>) -> Result<Summary, Ru
         "files": files,
         "objects": objects,
         "index_sha256_mismatch": summary.index_sha256_mismatch,
+        "crashes": summary.crashes,
         "wall_s": (t0.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
         "output_bytes": std::fs::metadata(&out_path).map_or(0, |m| m.len()),
     });

@@ -154,6 +154,13 @@ fn every_form_of_the_macros_fails() {
             forms.push(format!("core::{name}!{open}{close}"));
             forms.push(format!("{name}!\n    {open}{close}"));
             forms.push(format!("{name}\n\n    // why\n    !\n    {open}{close}"));
+            // Round 7: a comment between the tokens on one line, a trailing
+            // one, a block comment over lines and a nested one.
+            forms.push(format!("{name} /* why */ !{open}{close}"));
+            forms.push(format!("{name}!/* why */{open}{close}"));
+            forms.push(format!("{name} // why\n    !{open}{close}"));
+            forms.push(format!("{name} /* why\n    and why */ ! {open}{close}"));
+            forms.push(format!("{name} /* a /* b */ c */ !{open}{close}"));
         }
     }
     for form in forms {
@@ -177,11 +184,109 @@ fn what_only_looks_like_the_macros_passes() {
     assert_eq!(code, 0, "{out}");
 }
 
-/// Round 6: clippy denied the macros only in the core and the tpk crate.
-/// The workspace's lints deny both, and every crate inherits them, so a
-/// form the script cannot see fails `cargo clippy` in any crate.
+/// Round 7: a lint allowed under a form the line scan did not read (spaces
+/// or a comment inside the path, the `restriction` group, `warn`, `#` and
+/// `[` apart) passed G6. Each fails, at the line of the lint's path.
 #[test]
-fn every_crate_denies_the_macros_through_the_workspace_lints() {
+fn every_form_of_an_allowed_lint_fails() {
+    let path = |name: &str| lint(name);
+    let cases = [
+        ("#[allow(clippy :: todo)]".to_owned(), 1),
+        (format!("#[allow({})]", path("restriction")), 1),
+        ("#![allow(clippy /* why */ :: unimplemented)]".to_owned(), 1),
+        (
+            "#[allow(\n    unused,\n    clippy // why\n    ::todo\n)]".to_owned(),
+            3,
+        ),
+        (format!("#[warn({})]", path("todo")), 1),
+        (
+            format!(
+                "#![cfg_attr(\n    all(),\n    expect({}, reason = \"later\")\n)]",
+                path("restriction")
+            ),
+            3,
+        ),
+        (format!("# ! [ allow ( {} ) ]", path("unimplemented")), 1),
+    ];
+    for (attr, line) in cases {
+        let text = format!("{attr}\npub fn f() -> u8 {{\n    1\n}}\n");
+        let (code, out) = Tree::new(&with(("crates/b/src/m.rs", text))).check();
+        assert_eq!(code, 1, "{attr:?} passed:\n{out}");
+        assert!(
+            out.contains(&format!("crates/b/src/m.rs:{line}: ")),
+            "{attr:?}: {out}"
+        );
+    }
+}
+
+/// Round 7: either macro imported under another name was called by a name
+/// no scan read. The import fails, on one line or several.
+#[test]
+fn a_macro_imported_under_another_name_fails() {
+    let todo = "todo";
+    let cases = [
+        (format!("use core::{todo} as later;"), 1),
+        (format!("pub use std::{todo} /* why */ as _;"), 1),
+        ("use core::{\n    unimplemented as later,\n};".to_owned(), 2),
+    ];
+    for (import, line) in cases {
+        let text = format!("{import}\npub fn f() -> u8 {{\n    later!()\n}}\n");
+        let (code, out) = Tree::new(&with(("crates/b/src/m.rs", text))).check();
+        assert_eq!(code, 1, "{import:?} passed:\n{out}");
+        assert!(
+            out.contains(&format!("crates/b/src/m.rs:{line}: ")),
+            "{import:?}: {out}"
+        );
+    }
+}
+
+/// The script reads Rust's comments, strings and character literals as
+/// such: what they hold passes, and the code after them is still read
+/// (a lifetime is no character literal, an escaped quote ends no string).
+#[test]
+fn comments_strings_and_characters_are_read_as_rust_reads_them() {
+    let (todo, call, allow) = ("todo", todo_call(), lint("todo"));
+    let clean = format!(
+        "/* {call} /* nested {call} */ still a comment {call} */\n\
+         /// use core::{todo} as later;\n\
+         #[doc = \"#[allow({allow})] {call}\"]\n\
+         #[cfg_attr(not(test), deny({allow}, {}))]\n\
+         #[forbid({})]\n\
+         pub fn f<'a>(x: &'a u8) -> (&'a u8, [&'static str; 6], char, u8) {{\n\
+             let quotes = ['\"', '\\'', '\\\\'];\n\
+             let s = [\"{call}\", \"\\\"{call}\\\"\", r#\"{call} \" \"#, \"a\n    {call}\n\", \"\\\\\", \"\"];\n\
+             let b = b\"{call}\";\n\
+             (x, s, quotes[0], b[0] + b'\\'')\n\
+         }}\n",
+        lint("unimplemented"),
+        lint("restriction"),
+    );
+    let (code, out) = Tree::new(&with(("crates/b/src/m.rs", clean.clone()))).check();
+    assert_eq!(code, 0, "{clean}\n{out}");
+    // A stub body after each literal is still read.
+    for after in [
+        "let _: &'static str = \"\"; ",
+        "let _ = '\"'; ",
+        "let _ = b'\\''; ",
+        "let _ = \"\\\\\"; ",
+        "let _ = r#\"a\"#; ",
+        "/* a */ ",
+        "let _ = 'a'; ",
+    ] {
+        let text = format!("pub fn f<'a>(x: &'a u8) -> u8 {{\n    {after}{call}\n}}\n");
+        let (code, out) = Tree::new(&with(("crates/b/src/m.rs", text.clone()))).check();
+        assert_eq!(code, 1, "{text} passed:\n{out}");
+        assert!(out.contains("crates/b/src/m.rs:2: "), "{text}: {out}");
+    }
+}
+
+/// Rounds 6 and 7: clippy denied the macros only in the core and the tpk
+/// crate, and then `deny` let an attribute allow them again. The
+/// workspace's lints forbid both, and every crate inherits them, so no
+/// attribute allows them (`allow(clippy::restriction)` included: E0453)
+/// and a reachable call fails `cargo clippy` in any crate.
+#[test]
+fn every_crate_forbids_the_macros_through_the_workspace_lints() {
     let root = std::fs::read_to_string(workspace().join("Cargo.toml")).unwrap();
     let clippy = root
         .split("[workspace.lints.clippy]")
@@ -192,8 +297,8 @@ fn every_crate_denies_the_macros_through_the_workspace_lints() {
         assert!(
             clippy
                 .lines()
-                .any(|l| l.trim() == format!("{name} = \"deny\"")),
-            "{name} is not denied:\n{clippy}"
+                .any(|l| l.trim() == format!("{name} = \"forbid\"")),
+            "{name} is not forbidden:\n{clippy}"
         );
     }
     let mut crates = 0;

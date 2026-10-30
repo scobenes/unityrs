@@ -16,5 +16,8 @@ path = "src/main.rs"
 unityrs-core = { path = "../unityrs-core" }
 unityrs-dump = { path = "../unityrs-dump" }
 
+[dev-dependencies]
+serde_json = "=1.0.154"
+
 [lints]
 workspace = true

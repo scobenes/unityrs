@@ -293,6 +293,11 @@ pub struct InputDump {
     pub sha256: Option<[u8; 32]>,
     /// The input's size.
     pub bytes_in: u64,
+    /// 1 when the input's one record is a `crash` (it ran its dumper out of
+    /// memory, [`read`], [`input`]), else 0: the oracle's `crashes` count,
+    /// which `unitypy_dump.py` exits 3 on when every input has one
+    /// ([`run::Summary::every_input_crashed`]).
+    pub crashes: u64,
 }
 
 /// Two dumps of an input are equal when their records are: the charges
@@ -305,12 +310,14 @@ impl PartialEq for InputDump {
             self.objects,
             self.sha256,
             self.bytes_in,
+            self.crashes,
         ) == (
             &other.lines,
             other.files,
             other.objects,
             other.sha256,
             other.bytes_in,
+            other.crashes,
         )
     }
 }

@@ -9,10 +9,13 @@
 //! ```
 //!
 //! `dump` takes `tools/parity/unitypy_dump.py`'s options, parsed as its
-//! parser parses them ([`args`]), and runs [`unityrs_dump::run::run`]: status
-//! 0 when the dump is written, 1 when it fails (an index mismatch, an input
-//! that cannot be read, a dumper panic), 2 on a bad argument or path, as the
-//! oracle exits. `values` runs the spike's value-case protocol
+//! parser parses them ([`args`]), and runs [`unityrs_dump::run::run`],
+//! exiting as the oracle exits: status 0 when the dump is written, 1 when it
+//! fails (an index Python cannot read, an index mismatch, an input that
+//! cannot be read, a dumper panic), 2 on a bad argument or path, and 3 when
+//! the dump is written but every input in it crashed (ran its dumper out of
+//! memory), which says more about the machine than the inputs.
+//! `values` runs the spike's value-case protocol
 //! ([`unityrs_dump::values`]), which `tools/parity/value_cases.py` drives.
 
 mod args;
@@ -24,8 +27,8 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use unityrs_dump::DumpOptions;
-use unityrs_dump::run::{RunError, RunOptions};
-use unityrs_dump::select::Selection;
+use unityrs_dump::run::{RunError, RunOptions, Summary};
+use unityrs_dump::select::{PyStr, Selection};
 
 const USAGE: &str = "usage: unityrs {dump,values} ...\n\n\
   unityrs dump INPUT... -o OUT.jsonl[.gz] [options]   the canonical dump (dump -h)\n\
@@ -61,8 +64,10 @@ fn run_options(a: args::DumpArgs) -> Result<RunOptions, String> {
         selection: Selection {
             inputs: a.inputs,
             index: a.index,
-            kinds: a.kind,
-            builds: a.build,
+            kinds: a.kind.iter().map(|k| PyStr::from_os_bytes(k)).collect(),
+            builds: a
+                .build
+                .map(|b| b.iter().map(|v| PyStr::from_os_bytes(v)).collect()),
             names: a.name,
             sample: a.sample,
             limit: a.limit,
@@ -90,13 +95,26 @@ fn dump(rest: &[Vec<u8>]) -> ExitCode {
         Err(msg) => return err(&msg),
     };
     match unityrs_dump::run::run(&opts) {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(summary) => written(&summary),
         Err(RunError::Usage(msg)) => err(&msg),
         Err(e) => {
             eprintln!("unityrs dump: error: {e}");
             ExitCode::from(u8::try_from(e.status()).unwrap_or(1))
         }
     }
+}
+
+/// A written dump's status: 3 when every input crashed, after the
+/// oracle's message (`unitypy_dump.py` `main`), else 0.
+fn written(summary: &Summary) -> ExitCode {
+    if summary.every_input_crashed() {
+        eprintln!(
+            "unityrs dump: every input ({}) crashed; the dump is written, but check the machine",
+            summary.inputs
+        );
+        return ExitCode::from(3);
+    }
+    ExitCode::SUCCESS
 }
 
 fn values(path: &Path) -> ExitCode {
@@ -205,13 +223,28 @@ mod tests {
         .unwrap();
         assert_eq!(o.selection.inputs, [std::path::PathBuf::from("idx.json")]);
         assert!(o.selection.index && o.quiet && o.allow_index_mismatch);
-        assert_eq!(o.selection.kinds, ["bundle"]);
-        assert_eq!(o.selection.builds, Some(vec!["4100".to_owned()]));
+        assert_eq!(o.selection.kinds, [PyStr::from("bundle")]);
+        assert_eq!(o.selection.builds, Some(vec![PyStr::from("4100")]));
         assert_eq!(o.selection.names, [b"a*".to_vec()]);
         assert_eq!((o.selection.sample, o.selection.limit), (Some(5), Some(3)));
         assert_eq!(o.dump.levels.names(), ["L0", "L1"]);
         assert_eq!(o.output, std::path::PathBuf::from("out.jsonl.gz"));
         assert_eq!(o.stats, Some(std::path::PathBuf::from("s.json")));
+    }
+
+    /// Review round 7: when every input crashed the oracle exits 3, and
+    /// `unityrs dump` exited 0.
+    #[test]
+    fn a_dump_in_which_every_input_crashed_exits_3() {
+        let summary = |inputs, crashes| Summary {
+            inputs,
+            crashes,
+            ..Summary::default()
+        };
+        assert_eq!(written(&summary(2, 2)), ExitCode::from(3));
+        assert_eq!(written(&summary(1, 1)), ExitCode::from(3));
+        assert_eq!(written(&summary(2, 1)), ExitCode::SUCCESS);
+        assert_eq!(written(&summary(3, 0)), ExitCode::SUCCESS);
     }
 
     #[test]

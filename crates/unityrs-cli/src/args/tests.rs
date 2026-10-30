@@ -23,7 +23,7 @@ fn defaults_are_the_oracles() {
     let a = dump(&["corpus", "-o", "out.jsonl.gz"]);
     assert_eq!(a.inputs, [PathBuf::from("corpus")]);
     assert_eq!(a.output, PathBuf::from("out.jsonl.gz"));
-    assert_eq!(a.kind, INDEX_KINDS);
+    assert_eq!(a.kind, INDEX_KINDS.map(|k| k.as_bytes().to_vec()));
     assert_eq!(a.build, None);
     assert_eq!(a.levels, Levels::ALL);
     assert_eq!(a.jobs, 1);
@@ -83,8 +83,8 @@ fn values_are_taken_as_argparse_takes_them() {
     ]);
     assert!(a.index && a.quiet && a.allow_index_mismatch);
     assert_eq!(a.output, PathBuf::from("o"));
-    assert_eq!(a.kind, ["bundle"]);
-    assert_eq!(a.build, Some(vec!["4100".into(), "100056".into()]));
+    assert_eq!(a.kind, [b"bundle".to_vec()]);
+    assert_eq!(a.build, Some(vec![b"4100".to_vec(), b"100056".to_vec()]));
     assert_eq!(a.name, [b"a*".to_vec(), b"-b*".to_vec()]);
     assert_eq!((a.sample, a.limit), (Some(-1), Some(-2)));
     assert_eq!(a.levels.names(), ["L0", "L1"]);
@@ -128,6 +128,36 @@ fn values_are_taken_as_argparse_takes_them() {
     };
     assert_eq!(a.name, [b"*\xfe".to_vec()]);
     assert_eq!(a.inputs, [path(b"in\xff")]);
+}
+
+/// Review round 7: a `--kind` or `--build` that is not UTF-8 was a usage
+/// error (status 2), with or without `--index`, where the oracle keeps the
+/// surrogate-escaped `str`, splits it and dumps. The bytes reach the run.
+#[test]
+fn kinds_and_builds_that_are_not_utf8_reach_the_run() {
+    for index in [false, true] {
+        let mut argv = vec![
+            b"in".to_vec(),
+            b"-o".to_vec(),
+            b"y".to_vec(),
+            b"--kind".to_vec(),
+            b"bundle,\xff".to_vec(),
+            b"--build".to_vec(),
+            b"4100,\xfe\xff,".to_vec(),
+        ];
+        if index {
+            argv.push(b"--index".to_vec());
+        }
+        let parsed = parse(&argv);
+        let Ok(Parsed::Dump(a)) = parsed else {
+            panic!("{parsed:?}")
+        };
+        assert_eq!(a.kind, [b"bundle".to_vec(), b"\xff".to_vec()]);
+        assert_eq!(
+            a.build,
+            Some(vec![b"4100".to_vec(), b"\xfe\xff".to_vec(), Vec::new()])
+        );
+    }
 }
 
 #[test]

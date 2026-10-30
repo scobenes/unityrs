@@ -239,3 +239,54 @@ fn the_crates_own_checkout_is_refused_when_it_is_one() {
     assert!(outside_repo(&here.join("out.jsonl")).is_err());
     assert!(outside_repo(&here.join("no/such/dir/out.jsonl")).is_err());
 }
+
+/// Review round 7: when every input crashed (ran its dumper out of memory)
+/// the oracle exits 3, and `unityrs dump` exited 0. The run counts the
+/// inputs whose one record is a `crash`, for the CLI to exit as the oracle
+/// does; an input that did not crash, or was refused at a limit, is not
+/// counted.
+#[test]
+fn the_run_counts_the_inputs_that_crashed() {
+    use unityrs_core::budget::Counting;
+    let base =
+        Scratch(std::env::temp_dir().join(format!("unityrs-dump-crashes-{}", std::process::id())));
+    let input = base.0.join("in");
+    std::fs::create_dir_all(&input).unwrap();
+    std::fs::write(input.join("a.bin"), [7u8; 4096]).unwrap();
+    std::fs::write(input.join("b.bin"), [7u8; 4096]).unwrap();
+    let run_on = |out: &str| {
+        let mut dump = DumpOptions::default();
+        // A pool smaller than either input: reading one is refused, a crash.
+        let mut ctx = (*dump.context).clone();
+        ctx.budget = Arc::new(Counting::new(1024));
+        ctx.limits.max_input_bytes = 8192;
+        dump.context = Arc::new(ctx);
+        run(&RunOptions {
+            selection: Selection {
+                inputs: vec![input.clone()],
+                ..Selection::default()
+            },
+            output: base.0.join(out),
+            dump,
+            stats: None,
+            quiet: true,
+            allow_index_mismatch: false,
+        })
+        .unwrap()
+    };
+    let all = run_on("all.jsonl");
+    assert_eq!((all.inputs, all.crashes), (2, 2));
+    assert!(all.every_input_crashed());
+    let text = std::fs::read_to_string(base.0.join("all.jsonl")).unwrap();
+    assert_eq!(text.matches(r#""kind":"crash""#).count(), 2, "{text}");
+    // One input small enough to read is dumped, and one past
+    // `max_input_bytes` is refused unread at that limit: neither crashed.
+    std::fs::write(input.join("c.bin"), b"small").unwrap();
+    std::fs::write(input.join("d.bin"), [7u8; 9000]).unwrap();
+    let some = run_on("some.jsonl");
+    assert_eq!((some.inputs, some.crashes), (4, 2));
+    assert!(!some.every_input_crashed());
+    let text = std::fs::read_to_string(base.0.join("some.jsonl")).unwrap();
+    assert_eq!(text.matches(r#""kind":"crash""#).count(), 2, "{text}");
+    assert_eq!(text.matches(r#""kind":"detect""#).count(), 1, "{text}");
+}
