@@ -43,6 +43,16 @@
 //! (`CANONICAL_DUMP.md` section 4.2); either way the records made so far are
 //! dropped first, and the run goes on.
 //!
+//! **Work.** Every byte the dump hashes or compares (each bundle entry's
+//! bytes, each object's raw bytes and its resave's, each value it writes as
+//! a length and a sha256: [`crate::text::Sink::count_work`]) is counted as
+//! the open's work on the input's meter first ([`Meter::count_decode`], the
+//! `max_decode_work` the core's block decodes count against), because
+//! directory rows, objects and values may overlap: K rows over the same S
+//! decoded bytes cost the core a slice each, and would cost the dump K x S
+//! of hashing. Past the allowance the input is its `limit DecodeWork: <v> >
+//! <max>` refusal (`PARITY.md` section 19.3, "the dump's hashing").
+//!
 //! **Context**: the dump reads with the [`DumpOptions::context`] it is
 //! given, `FileContext::unitypy()` by default, and nothing else.
 
@@ -255,6 +265,19 @@ pub fn parsed_as_of(file: &File) -> ParsedAs {
     }
 }
 
+/// Counts `bytes` as the open's work before the dump hashes or compares
+/// them (module docs, "Work"): refused past `max_decode_work`, with nothing
+/// done.
+fn count_hashed(meter: &Meter, bytes: &[u8]) -> Result<(), ChargeError> {
+    meter.count_decode(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+}
+
+/// The sha256 of `bytes`, counted first ([`count_hashed`]).
+fn hashed(meter: &Meter, bytes: &[u8]) -> Result<[u8; 32], ChargeError> {
+    count_hashed(meter, bytes)?;
+    Ok(sha256(bytes))
+}
+
 struct Writer<'a> {
     levels: Levels,
     /// The input's meter: every line is charged to it.
@@ -277,7 +300,7 @@ impl Writer<'_> {
             File::Serialized(sf) => self.object_records(sf),
             File::Bundle(b) => {
                 for slot in b.files() {
-                    let (child, l0) = entry_l0(b, slot.dir_index)?;
+                    let (child, l0) = entry_l0(b, slot.dir_index, self.meter)?;
                     let depth = self.path.len();
                     self.path.push(slot.name.clone())?;
                     self.emit(&child, l0)?;
@@ -344,16 +367,18 @@ impl Writer<'_> {
 
 /// A bundle entry, and its `l0`: its type is what the core's detection of
 /// it gave (`BundleFile::entry`), counted as the open's work then; detecting
-/// the bytes again would inflate a gzip entry a second time, uncounted.
+/// the bytes again would inflate a gzip entry a second time, uncounted. Its
+/// bytes are counted as the open's work before they are hashed
+/// ([`hashed`]): directory rows may overlap.
 #[inline(never)]
-fn entry_l0(b: &BundleFile, dir_index: usize) -> Result<(File, L0), Error> {
+fn entry_l0(b: &BundleFile, dir_index: usize, meter: &Meter) -> Result<(File, L0), Error> {
     let bytes = b.entry_bytes(dir_index)?;
     let child = b.entry(dir_index)?;
     let l0 = L0 {
         ty: Some(child.file_type()),
         parsed_as: parsed_as_of(&child),
         size: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-        sha256: sha256(&bytes),
+        sha256: hashed(meter, &bytes)?,
     };
     Ok((child, l0))
 }

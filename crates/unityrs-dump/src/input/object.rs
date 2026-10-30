@@ -9,6 +9,7 @@ use unityrs_core::walk::{L2Kind, ParseError, WriteRules};
 use unityrs_core::{Error, ObjectRef, Parsed, RawStr};
 
 use super::refused::{out_of_memory, write_out_of_memory};
+use super::{count_hashed, hashed};
 use crate::Levels;
 use crate::encode::encode_into;
 use crate::record::{L2, L2Error, L3, ObjectL1, ObjectRecord, Resave, first_difference, note_of};
@@ -164,7 +165,7 @@ pub(super) fn object_record(
         l2 = Some(out);
     }
     if levels.l3 {
-        l3 = Some(l3_of(obj, resavable.as_ref())?);
+        l3 = Some(l3_of(obj, resavable.as_ref(), meter)?);
     }
     Ok((
         ObjectRecord {
@@ -179,14 +180,18 @@ pub(super) fn object_record(
 
 /// The object's `l3`: its raw bytes, and the resave of `resavable`, the
 /// value a full parse gave. A resave the budget or the allocator refuses
-/// fails the input ([`write_out_of_memory`]).
-fn l3_of(obj: &ObjectRef, resavable: Option<&Parsed>) -> Result<L3, Error> {
+/// fails the input ([`write_out_of_memory`]). The raw bytes and the resave's
+/// are counted as the open's work before they are hashed or compared
+/// ([`count_hashed`]): objects may overlap, so their raw bytes together are
+/// not bounded by the file's.
+fn l3_of(obj: &ObjectRef, resavable: Option<&Parsed>, meter: &Meter) -> Result<L3, Error> {
     let raw = obj.raw_data();
-    let raw_sha256 = crate::json::sha256(&raw);
+    let raw_sha256 = hashed(meter, &raw)?;
     let resave = match resavable {
         None => Resave::Skipped,
         Some(p) => match obj.write_typetree(p, None, WriteRules::UnityPy) {
             Ok(bytes) => {
+                count_hashed(meter, &bytes)?;
                 if bytes == raw {
                     Resave::Equal
                 } else {

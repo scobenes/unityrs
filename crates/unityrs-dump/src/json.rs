@@ -91,8 +91,13 @@ pub fn write_hex_str<S: Sink>(out: &mut S, bytes: &[u8]) {
 }
 
 /// The raw-bytes rule (section 3, `canonical.py` `enc_raw`): inline hex up to
-/// [`INLINE_MAX`] bytes, else the length and the sha256.
+/// [`INLINE_MAX`] bytes, else the length and the sha256. The bytes a sha256
+/// reads are counted first ([`Sink::count_work`]), and refused, nothing is
+/// hashed or written.
 pub fn write_raw<S: Sink>(out: &mut S, kind: &str, bytes: &[u8]) {
+    if bytes.len() > INLINE_MAX && !out.count_work(bytes.len()) {
+        return;
+    }
     out.push_str("{\"t\":\"");
     out.push_str(kind);
     if bytes.len() <= INLINE_MAX {
