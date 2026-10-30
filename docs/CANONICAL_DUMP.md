@@ -165,7 +165,7 @@ UnityFS's total-size field and its uncompressed-data hash are left out, because 
 - A major of 65536 or more makes the packed value wider than 64 bits: `133091.1.1f1` packs to 37461786129692951297. The dump writes the exact integer.
 - `parse_version` raises, and `engine_version_packed` is `null`, when the string does not match or its major, cut to 16 bits, is 0 (`0.5.1f1`, `65536.1.1f1`). In those cases UnityPy wants `config.FALLBACK_UNITY_VERSION`, which the oracle leaves unset. A bundle on the UnityFS layout calls `parse_version` while loading, so there the input fails (`parse`) instead.
 
-**`l1` for `kind: "web"`:** `kind`, `signature`, `packer` (`"none"`, `"gzip"` or `"brotli"`), and `directory` with `flags` `null`.
+**`l1` for `kind: "web"`:** `kind`, `signature`, `packer` (`"none"`, `"gzip"` or `"brotli"`), and `directory` with `flags` `null`. The oracle never writes `"gzip"`: UnityPy detects a gzip-compressed WebFile and then fails to parse it, so the oracle's record of one is a `parse` error (`PARITY.md` section 4, gzip WebFile detection, Tier B). unityrs loads it and writes `"gzip"`.
 
 **`l1` for `kind: "serialized"`**:
 
@@ -181,7 +181,7 @@ UnityFS's total-size field and its uncompressed-data hash are left out, because 
 | `types` | type records, in file order |
 | `object_order` | path_ids in UnityPy's `objects` dict order (section 7) |
 | `script_types` | `[[file_index, identifier], ...]` |
-| `externals` | `[[temp_empty, guid, type, path], ...]`. `guid` is hex. Members a format lacks are `null`. |
+| `externals` | `[[temp_empty, guid, type, path], ...]`. `guid` is hex. Members a format lacks are `null`: `temp_empty` below format 6, `guid` and `type` below 5. UnityPy leaves those members unset, so reading one raises `AttributeError`; the oracle records `null` for each (an oracle normalisation, `PARITY.md` section 7.1). |
 | `ref_types` | type records (format ≥ 20), else `null` |
 | `user_information` | string (format ≥ 5), else `null` |
 | `container` | the `m_Container` of the first AssetBundle object in `objects` dict order (section 7), as `[[path, preload_index, preload_size, file_id, path_id], ...]` in order. `[]` without an AssetBundle. |

@@ -635,6 +635,42 @@ class DumpTests(unittest.TestCase):
         self.assertEqual([row[0] for row in files["jump.assets"]["l1"]["types"][0]["nodes"]], [0, 2, 1])
         self.assertEqual(objects["jump.assets"]["l2"]["value"], ints_value(deep=1, mid=2))
 
+    def test_old_formats_record_what_they_lack_as_null(self):
+        """Spec 4.2: below formats 8, 7, 6 and 5 the members a format lacks are null, externals' unset slots too."""
+        d = self.tmp / "in"
+        d.mkdir()
+        tree = S.Node("TextAsset", "Base", [S.Node("int", "a", byte_size=4)], byte_size=4)
+        for version in (4, 5, 6, 7, 8):
+            data = S.serialized_file(
+                [S.Type(49, tree)],
+                [S.Obj(7, 49, struct.pack("<i", 5))],
+                version=version,
+                unity_version=b"4.7.2f1",
+                externals=[S.External(b"library/x", b"tmp", bytes(range(16)), 2)],
+                user_information=b"user",
+            )
+            (d / f"v{version}.assets").write_bytes(data)
+        out = self.tmp / "old.jsonl"
+        self.assertEqual(dump(d, "-o", out), 0, "the dumper reads every old format")
+        self.assert_canonical(out)
+        files = {r["file"][0]: r["l1"] for r in records(out) if r["rec"] == "file"}
+        guid = bytes(range(16)).hex()
+        self.assertEqual(
+            {
+                name: (l1["externals"], l1["user_information"], l1["version_packed"] is None)
+                for name, l1 in files.items()
+            },
+            {
+                "v4.assets": ([[None, None, None, "library/x"]], None, True),
+                "v5.assets": ([[None, guid, 2, "library/x"]], "user", True),
+                "v6.assets": ([["tmp", guid, 2, "library/x"]], "user", True),
+                "v7.assets": ([["tmp", guid, 2, "library/x"]], "user", False),
+                "v8.assets": ([["tmp", guid, 2, "library/x"]], "user", False),
+            },
+        )
+        self.assertEqual([files[f"v{v}.assets"]["target_platform"] for v in (7, 8)], [None, 19])
+        self.assertEqual({files[f"v{v}.assets"]["unity_version"] for v in (4, 5, 6)}, {"2.5.0f5"})
+
     def test_input_names_come_from_the_bytes_as_given(self):
         """Names do not depend on the locale, and a symlink is named after itself, in either input mode."""
         d = self.tmp / "in"

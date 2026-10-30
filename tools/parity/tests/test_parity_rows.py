@@ -1,0 +1,3469 @@
+"""PARITY.md rows a review disputed, run against the oracle on the smallest input that shows each.
+
+Every input is built here (`synth.py`), so nothing needs the corpus. Each test names the
+PARITY.md rows it keeps honest; a row's test column names the test back. Needs UnityPy
+1.25.2 (the oracle image); skipped elsewhere.
+"""
+
+import contextlib
+import gzip
+import io
+import os
+import random
+import re
+import struct
+import sys
+import tempfile
+import unittest
+import zipfile
+from abc import ABC
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+HERE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE / "tests"))
+
+import inventory  # noqa: E402
+import synth as S  # noqa: E402
+
+try:
+    import attrs
+    import etcpak
+    import lz4.block
+    import UnityPy
+    from PIL import Image
+    from UnityPy import classes
+    from UnityPy.classes import (
+        GameObject,
+        PPtr,
+        StreamedResource,
+        StreamingInfo,
+        Texture2D,
+        Texture2DArray,
+        UnknownObject,
+    )
+    from UnityPy.enums import ArchiveFlags, ArchiveFlagsOld, BuildTarget, ClassIDType, FileType, TextureFormat
+    from UnityPy.enums.GraphicsFormat import GraphicsFormat
+    from UnityPy.export import AudioClipConverter, Texture2DConverter
+    from UnityPy.files import BundleFile, WebFile
+    from UnityPy.helpers import ImportHelper, PackedBitVector, ResourceReader, TextureSwizzler, Tpk, TypeTreeHelper
+    from UnityPy.helpers.ContainerHelper import ContainerHelper
+    from UnityPy.helpers.TypeTreeNode import TypeTreeNode
+    from UnityPy.helpers.TypeTreeNode import clean_name as node_clean_name
+    from UnityPy.helpers.UnityVersion import UnityVersion
+    from UnityPy.streams import EndianBinaryReader
+    from UnityPy.tools import extractor
+
+    ORACLE = UnityPy.__version__ == inventory.PINNED_VERSION
+except ImportError:  # pragma: no cover - outside the oracle image
+    ORACLE = False
+
+TEXT_ASSET = S.Node("TextAsset", "Base", [S.Node("string", "m_Name"), S.Node("string", "m_Script")])
+
+
+def text_asset_file(name="hello", script="world", **kw):
+    """A format-22 SerializedFile holding one TextAsset (path id 1)."""
+    return S.serialized_file([S.Type(49, TEXT_ASSET)], [S.Obj(1, 0, S.s32(name) + S.s32(script))], **kw)
+
+
+def quietly(call, *args, **kw):
+    """UnityPy prints a failing parse to stdout before re-raising it."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        return call(*args, **kw)
+
+
+def load(data, name="f.assets", env=None):
+    env = env or UnityPy.Environment()
+    return quietly(env.load_file, data, name=name), env
+
+
+def scandir_walk(root):
+    """PARITY.md section 3's walk, built from `os.scandir` and not from fsspec: a folder's files in the order
+    `os.scandir` lists them, then each subfolder in that same order, depth-first."""
+    entries = list(os.scandir(root))
+    files = [entry.path for entry in entries if not entry.is_dir(follow_symlinks=False)]
+    for entry in entries:
+        if entry.is_dir(follow_symlinks=False):
+            files += scandir_walk(entry.path)
+    return files
+
+
+def walk_tree(root):
+    """A folder, under `root`, whose `os.scandir` listing tells section 3's walk from a sorted one and from one that
+    enters a subfolder where the listing meets it: two subfolders holding the same name, one of them nested, made
+    between the files, so that a file system listing in creation order or in its reverse (tmpfs lists the newest
+    first) interleaves them. The listing has to be unsorted, with a subfolder before a file; a file system that
+    lists the folders last, or in sorted order, gets a new folder, up to 32 times, before the precondition fails."""
+    for attempt in range(32):
+        tree = root / f"tree{attempt}"
+        tree.mkdir(parents=True)
+        for name in ("m", "s2/", "c", "s1/inner/", "x", "a", "s0/", "q", "f"):
+            if name.endswith("/"):
+                (tree / name).mkdir(parents=True)
+            else:
+                (tree / f"{name}.assets").write_bytes(text_asset_file(name))
+        for name in ("s2/ab", "s1/ab", "s1/inner/z", "s0/k"):
+            (tree / f"{name}.assets").write_bytes(text_asset_file(name.replace("/", "-")))
+        listing = [entry.name for entry in os.scandir(tree)]
+        kinds = [(tree / name).is_dir() for name in listing]
+        if listing != sorted(listing) and kinds.index(True) < len(kinds) - 1 - kinds[::-1].index(False):
+            return tree
+    raise AssertionError(f"{root}: every listing sorted, or its folders last")
+
+
+def zip_with_a_directory():
+    """A zip listing a directory entry, `assets/`, as `zip -r` writes, with byte 4 zeroed so the detector sees a ZIP."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("assets/", b"")
+        archive.writestr("assets/a.assets", text_asset_file("a"))
+    data = bytearray(buffer.getvalue())
+    data[4] = 0
+    return bytes(data)
+
+
+class TestColumn(unittest.TestCase):
+    """PARITY.md's test column and the tests it names agree (standard library)."""
+
+    CITED = re.compile(r"`(test_[a-z_]+\.py)` ([a-z0-9_]+)")
+
+    def test_every_cited_test_exists_and_every_row_test_is_cited(self):
+        text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
+        cited = set(self.CITED.findall(text))
+        for module, name in sorted(cited):
+            source = (HERE / "tests" / module).read_text(encoding="utf-8")
+            self.assertIn(f"def test_{name}(", source, f"PARITY.md cites {module} {name}, which does not exist")
+        # The row modules hold only tests a row names.
+        modules = [Path(__file__), *sorted((HERE / "tests").glob("test_rows_*.py"))]
+        self.assertGreater(len(modules), 1)
+        for path in modules:
+            defined = set(re.findall(r"def test_([a-z0-9_]+)\(", path.read_text(encoding="utf-8")))
+            defined -= {
+                "every_cited_test_exists_and_every_row_test_is_cited",
+                "every_status_agrees_with_its_test_column",
+                "rows_are_cited_by_item_not_by_line",
+                "head_dicts_are_a_target_while_their_fixtures_are_planned",
+                "every_resolution_exception_is_listed",
+                "an_empty_path_raises_only_where_no_cab_answers_it",
+                "the_gpu_program_index_rule_is_int_in_base_10",
+                "a_failure_to_write_is_tier_c_writing",
+                "every_tier_has_a_design_rule",
+                "tol_metrics_are_stated_or_said_to_be_planned",
+                "module_level_data_is_tier_a_for_loop_variables",
+                "a_non_local_miss_keeps_the_split_exception",
+                "non_local_rows_state_only_the_tested_cases",
+                "zero_size_writes_are_stated_off_switch",
+            }
+            named = {name for module, name in cited if module == path.name}
+            self.assertEqual(sorted(defined - named), [], f"tests no PARITY.md row names, in {path.name}")
+
+    @classmethod
+    def probed(cls, test_cell):
+        """Whether the test column names a test, or the corpus dump, outside a `planned` clause."""
+        for clause in test_cell.split(";"):
+            if "planned" in clause:
+                continue
+            if cls.CITED.search(clause) or re.search(r"`test_[a-z_]+\.py` \(all\)", clause) or "corpus dump" in clause:
+                return True
+        return False
+
+    def test_every_status_agrees_with_its_test_column(self):
+        """Section 0's status rules: a row that names a test is pinned or verified, one that names none is
+        unverified (source reading), n/a (tier —) or a pointer to another row; `planned` is section 17.1's. A test
+        or the corpus dump named inside a `planned` clause probes nothing, every row states its own status, and
+        every test a test column names carries its module."""
+        text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
+        seen = 0
+        for header, rows in inventory.tables(text):
+            if "status" not in header or "test" not in header:
+                continue
+            test, status = header.index("test"), header.index("status")
+            for cells in rows:
+                seen += 1
+                probed = self.probed(cells[test])
+                state = cells[status]
+                with self.subTest(row=cells[0][:60], status=state):
+                    # Every test is named with its module, so a renamed test fails the check above.
+                    self.assertIsNone(re.search(r"`test_[a-z_]+\.py` [a-z0-9_]+, [a-z]", cells[test]), "a bare name")
+                    if state.startswith(("pinned P0", "verified P0")):
+                        self.assertTrue(probed, "a probed row names what probes it")
+                    elif state.startswith("unverified (source reading); impl P"):
+                        self.assertFalse(probed, "a row a test runs is not unverified")
+                    elif state.startswith("planned ("):
+                        self.assertIn("reference", header, "only section 17.1's references are planned")
+                    elif state == "n/a":
+                        self.assertEqual(cells[header.index("tier")], "—")
+                    else:
+                        self.assertEqual(state, "", "an unknown status")
+                        self.assertEqual(set(cells[2:]), {""}, "a row with no status points at another section")
+        self.assertGreater(seen, 500)
+
+    def test_rows_are_cited_by_item_not_by_line(self):
+        """A row points at another by its item and section ("the `.splitN` merging row, section 3"), never by a
+        line number of PARITY.md, which every edit above it moves; nor do the docs and the parity tools and tests.
+        So none says "row N" in any case, "line N of this file", or `PARITY.md:N`, and a "line N" stands only right
+        after the source file it is a line of (`fmod.py` lines 129-137)."""
+        root = HERE.parent.parent
+        paths = [root / "PARITY.md", *sorted((root / "docs").glob("*.md")), *sorted(HERE.glob("*.md"))]
+        paths += [*sorted(HERE.glob("*.py")), *sorted((HERE / "tests").glob("*.py"))]
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path.name):
+                self.assertEqual(re.findall(r"(?i)\brows? \d+(?![\d%])", text), [])
+                self.assertEqual(re.findall(r"(?i)\b(?:PARITY|DESIGN|README|CANONICAL_DUMP)\.md:\d+", text), [])
+                self.assertEqual(
+                    re.findall(r"(?i)\blines? \d+\S* of (?:this|that|the) (?:file|table|section)", text), []
+                )
+                bare = [
+                    m.group(0)
+                    for m in re.finditer(r"(?i)\blines? \d+", text)
+                    if not re.search(r"`[^`\n]+` $", text[: m.start()])
+                ]
+                self.assertEqual(bare, [], "a line number with no source file before it")
+
+    # DESIGN.md section 3's resolution clause names the Tier B and C exceptions to "`obj.container` and dependency
+    # resolution match". Each bullet of those lists that touches resolution (it names one of RESOLUTION) maps here
+    # to the phrase the clause names it by.
+    RESOLUTION = (
+        "find_file",
+        "PPtr.deref",
+        "load_file",
+        "load_dependencies",
+        "load_assets",
+        "path_dict",
+        "registry",
+        "`.splitN`",
+    )
+    NAMED_BY = {
+        "a stream whose `name` is not a `str`": ("B", "`PPtr.deref` reaching an `int` or `None` `files` key"),
+        "a record that `PPtr.deref` resolves": ("B", "a record whose file's basename holds an upper-case letter"),
+        "a name read through a non-local fsspec filesystem, which": (
+            "B",
+            "a name read through a non-local fsspec filesystem where UnityPy raises",
+        ),
+        "a `.splitN` path whose part is a folder": ("B", "a path through a `.splitN` folder"),
+        "a ZIP that `load_file` opens from a path": ("B", "a ZIP on disk that `find_file` loads"),
+        "a local path with a URL-style prefix (": ("B", "a local path with a URL-style prefix where UnityPy raises"),
+        "a local path with a URL-style prefix where": (
+            "C",
+            "a local path with a URL-style prefix where `load_file` returns `None`",
+        ),
+        "two bundles holding a CAB of one name": ("C", "two bundles' same-named CABs"),
+        "a path holding `.splitN` before its end": ("C", "a path holding `.splitN` before its end"),
+        "`find_file`'s suffix match": ("C", "`find_file`'s suffix match with no separator boundary"),
+        "split members of a zip": ("C", "split members of a zip"),
+        "a name read through a non-local fsspec filesystem where": (
+            "C",
+            "a name read through a non-local fsspec filesystem where `load_file` returns `None`",
+        ),
+        "`load_dependencies` loads dependencies": ("C", "`load_dependencies`"),
+        "`ContainerHelper.path_dict` ignores": ("C", "`ContainerHelper.path_dict`'s file id"),
+    }
+
+    # Tier B or C bullets that name a RESOLUTION word without being an exception to resolution opt out here, by
+    # their lead; each lead must still name a bullet.
+    NOT_RESOLUTION = ()
+
+    def resolution_bullets(self, reading, opt_out):
+        """(tier, bullet) for each Tier B or C bullet of `reading` that names a RESOLUTION word, and the opt-out
+        leads that named a bullet."""
+        tier, found, used = None, [], set()
+        for line in reading.splitlines():
+            if line.startswith("- **"):
+                tier = "B" if line.startswith("- **Tier B") else "C" if line.startswith("- **Tier C") else None
+            elif tier and line.startswith("  - ") and any(word in line for word in self.RESOLUTION):
+                skipped = [lead for lead in opt_out if line[4:].startswith(lead)]
+                used.update(skipped)
+                if not skipped:
+                    found.append((tier, line[4:]))
+        return found, used
+
+    def test_every_resolution_exception_is_listed(self):
+        """Every Tier B or C bullet of DESIGN.md section 3 that touches dependency resolution is named, under its
+        tier, in the clause that lists the exceptions to "dependency resolution match"; a bullet that names a
+        RESOLUTION word and is no such exception opts out in NOT_RESOLUTION."""
+        sample = "- **Tier B: x.**\n  - a lead `load_file` names;\n  - another lead `find_file` names;\n"
+        self.assertEqual(
+            self.resolution_bullets(sample, ("a lead",)), ([("B", "another lead `find_file` names;")], {"a lead"})
+        )
+        design = (HERE.parent.parent / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        reading = design.split("**Reading**", 1)[1].split("**Writing**", 1)[0]
+        clause = next(line for line in reading.splitlines() if "dependency resolution match" in line)
+        listed = clause.split("lists below say:", 1)[1]
+        named = {"B": listed.split("(B)", 1)[0], "C": listed.split("(B)", 1)[1].split("(C)", 1)[0]}
+        found, used = self.resolution_bullets(reading, self.NOT_RESOLUTION)
+        self.assertEqual(used, set(self.NOT_RESOLUTION), "an opt-out lead that names no bullet")
+        for tier, bullet in found:
+            with self.subTest(tier=tier, bullet=bullet[:70]):
+                lead = [key for key in self.NAMED_BY if bullet.startswith(key)]
+                self.assertEqual(len(lead), 1, "a resolution exception no clause names: list it, and map it here")
+                in_tier, phrase = self.NAMED_BY[lead[0]]
+                self.assertEqual(in_tier, tier)
+                self.assertIn(phrase, named[tier], "missing from the resolution clause")
+        self.assertEqual(len(found), len(self.NAMED_BY))
+
+    def test_an_empty_path_raises_only_where_no_cab_answers_it(self):
+        """An empty resource path is joined to `Environment.path` and raises `IsADirectoryError` only where no CAB
+        `""` is registered: a zip's directory entry registers one, which answers the path with `b""` first (section
+        3). So every PARITY.md row and DESIGN.md line that has an empty path, or a texture with no data, raise there
+        (or raise while its data is fetched) names CAB `""` too."""
+        root = HERE.parent.parent
+        lines = [("PARITY.md", line) for line in (root / "PARITY.md").read_text("utf-8").splitlines()]
+        lines += [("DESIGN.md", line) for line in (root / "docs" / "DESIGN.md").read_text("utf-8").splitlines()]
+        seen = 0
+        for name, line in lines:
+            raises = re.search(
+                r"IsADirectoryError|raises as `Texture2D.get_image_data` does|raises while its data is fetched", line
+            )
+            empty = re.search(r"empty (?:stream |resource )?path|empty `m_Source`|empty name|with no data", line)
+            if raises and empty:
+                seen += 1
+                with self.subTest(name, line=line[:80]):
+                    self.assertIn('CAB `""`', line)
+        self.assertGreaterEqual(seen, 6)
+
+    def test_the_gpu_program_index_rule_is_int_in_base_10(self):
+        """`GpuProgramIndex N` fills where `int()` in base 10 takes the rest of the line, which is not Python's
+        integer-literal grammar (`+0` and `٠` fill, `0x0` raises; `test_rows_exports.py` shader_text): no line of
+        PARITY.md or DESIGN.md that speaks of such a line uses the word literal or token, whatever qualifies it,
+        unless its clause is a contrast ("need not be" one, or a clause opening with "not" after a comma or an
+        opening parenthesis), and each that states the refusal of a line the table cannot fill names `int()` in base
+        10."""
+        # Any "literal" or "token", unless the clause it sits in (from the last comma, parenthesis, semicolon or
+        # colon) opens with "not" or "which is not", or says "need not be".
+        word = re.compile(r"(?i)\b(?:literal|token)s?\b")
+        contrast = re.compile(r"(?i)^\s*(?:which is\s+)?not\b|\bneed not be\b")
+
+        def affirmative(line):
+            found = []
+            for m in word.finditer(line):
+                clause = re.split(r"[,(;:]", line[: m.start()])[-1]
+                if not contrast.search(clause):
+                    found.append(clause + m.group(0))
+            return found
+
+        for wording, calls in (
+            ("the rest of the line is no Python `int` literal", True),
+            ("N parsed as an integer literal", True),
+            ("refused where the rest is not a Python int literal", True),
+            ("filled where the rest is a valid Python integer literal", True),
+            ("filled where the rest is a decimal integer literal", True),
+            ("read with the int literal grammar", True),
+            ("read as Python's integer-literal grammar", True),
+            ("filled where the rest is a decimal literal", True),
+            ("filled where the rest is a Python numeric literal", True),
+            ("N parses as an integer token", True),
+            ("filled where the rest is a base-10 integer literal", True),
+            ("`int()` in base 10, which is not a valid Python integer literal", False),
+            ("`int()` in base 10, which is not Python's integer-literal grammar", False),
+            ("`int()` in base 10, not an integer literal (`0x0` raises)", False),
+            ("`int()` in base 10 (not an integer literal)", False),
+            ("N need not be a Python int literal", False),
+        ):
+            self.assertEqual(bool(affirmative(wording)), calls, wording)
+        root = HERE.parent.parent
+        refusals = 0
+        for name, path in (("PARITY.md", root / "PARITY.md"), ("DESIGN.md", root / "docs" / "DESIGN.md")):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if "GpuProgramIndex" not in line:
+                    continue
+                with self.subTest(name, line=line[:80]):
+                    self.assertEqual(affirmative(line), [])
+                    if "cannot fill, where" in line:  # the refusal, not a tier cell that names it
+                        refusals += 1
+                        self.assertIn("`int()` in base 10", line)
+        self.assertGreaterEqual(refusals, 2)
+
+    def test_a_non_local_miss_keeps_the_split_exception(self):
+        """Through a non-local fs a `.splitN` name loads, its parts read through `fs` (section 3, `Environment.fs`;
+        `a_non_local_fs_loads_only_through_load_and_streams`). So a sentence of a PARITY.md cell or a DESIGN.md line
+        that says something read through a non-local fs is not found is followed, in that sentence or a later one of
+        the same cell, by one saying a `.splitN` name loads."""
+        sentence_end = re.compile(r"(?<=\.)\s+(?=[A-Z`])")
+        miss = re.compile(r"non-local.*\bnot found\b")
+        split_loads = re.compile(r"`\.splitN`.*\bloads\b")
+        for text, flagged in (
+            ("with a non-local `fs`, a file argument other than a zip/apk, or a folder, is not found. A path.", True),
+            ("with a non-local `fs` a name is not found. A `.splitN` name is the exception: so it loads", False),
+            ("with a non-local `fs`, a `.splitN` file argument loads, while another is not found", False),
+        ):
+            sentences = sentence_end.split(text)
+            unexcused = [
+                i
+                for i, s in enumerate(sentences)
+                if miss.search(s) and not any(split_loads.search(t) for t in sentences[i:])
+            ]
+            self.assertEqual(bool(unexcused), flagged, text)
+        root = HERE.parent.parent
+        seen = 0
+        for name, path in (("PARITY.md", root / "PARITY.md"), ("DESIGN.md", root / "docs" / "DESIGN.md")):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                for cell in line.split(" | "):
+                    sentences = sentence_end.split(cell)
+                    for i, sentence in enumerate(sentences):
+                        if miss.search(sentence):
+                            seen += 1
+                            with self.subTest(name, sentence=sentence[:80]):
+                                self.assertTrue(any(split_loads.search(t) for t in sentences[i:]))
+        # Only `Environment.fs` says it now: the constructor row states its tested cases, none of them "not found".
+        self.assertGreaterEqual(seen, 1)
+
+    def test_non_local_rows_state_only_the_tested_cases(self):
+        """Through a non-local fs, section 3 states the constructor's outcomes and `load_folder`'s builtin `open` only
+        for the cases `a_non_local_fs_loads_only_through_load_and_streams` runs (a `MemoryFileSystem` holding each
+        argument under a top-level folder the local disk lacks, unless said otherwise), and every other case is not
+        characterised (Tier U): a path the local disk also holds loads where an unscoped sentence said it raised or
+        loaded nothing. So each sentence of PARITY.md or DESIGN.md that names a non-local fs with the constructor or
+        an argument, and each sentence of the two rows about a non-local fs that names `load_folder` or the builtin
+        `open`, and states an outcome, names that filesystem or the cases tested or stated, or says the rest is not
+        characterised; the U clauses and DESIGN.md's Tier U bullet are there."""
+        sentence_end = re.compile(r"(?<=\.)\s+(?=[A-Z`])")
+        outcome = re.compile(r"\b(?:loads?|raises?|not found|nothing)\b")
+        scoped = re.compile(
+            r"`MemoryFileSystem`|\bnot characterised\b|\bcases? (?:tested|stated|section 3 tests)\b"
+            r"|\bcases? (?:its|the constructor) row states\b|\bwhere its row says so\b"
+        )
+        rows = ("| `Environment.fs` |", "| a name read through a non-local `fs` |")
+
+        def unscoped(line):
+            found = []
+            for cell in line.split(" | "):
+                for sentence in sentence_end.split(cell):
+                    about_constructor = re.search(r"non-local", sentence) and re.search(
+                        r"\b(?:constructor|argument)\b", sentence
+                    )
+                    about_open = line.startswith(rows) and re.search(r"`load_folder`|builtin `open`", sentence)
+                    if (about_constructor or about_open) and outcome.search(sentence):
+                        found.append((sentence, bool(scoped.search(sentence))))
+            return found
+
+        for line, flagged in (  # the round-14, -15 and -16 wordings, and today's
+            ("| x | with a non-local `fs`, a file argument other than a zip/apk, or a folder, is not found |", True),
+            ("| x | with a non-local `fs`, any other file argument raises naming its folder, or loads nothing |", True),
+            ("| `Environment.fs` | `load_folder` opens it with the builtin `open`, which raises. |", True),
+            ("| x | through a non-local `fs`, a `MemoryFileSystem` holds each argument: `x.assets` raises |", False),
+            ("| x | Every other constructor argument through a non-local `fs` is not characterised (Tier U). |", False),
+        ):
+            self.assertEqual(any(not ok for _, ok in unscoped(line)), flagged, line)
+        root = HERE.parent.parent
+        parity = (root / "PARITY.md").read_text(encoding="utf-8")
+        design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        seen = 0
+        for name, text in (("PARITY.md", parity), ("DESIGN.md", design)):
+            for line in text.splitlines():
+                for sentence, ok in unscoped(line):
+                    seen += 1
+                    with self.subTest(name, sentence=sentence[:80]):
+                        self.assertTrue(ok)
+        self.assertGreaterEqual(seen, 5)
+        constructor = next(line for line in parity.splitlines() if line.startswith("| `Environment` constructor |"))
+        self.assertIn("U for every other constructor argument through a non-local `fs` |", constructor)
+        self.assertIn(
+            "Every other constructor argument through a non-local `fs` is not characterised (Tier U).", constructor
+        )
+        unsupported = design.split("- **Unsupported until a sample and a reference exist.**", 1)[1].split("\n- **")[0]
+        self.assertRegex(
+            unsupported, r"\n  - a name read through a non-local fsspec filesystem in a case [^\n]*not characterised"
+        )
+
+    def test_zero_size_writes_are_stated_off_switch(self):
+        """Section 19.1 states a zero-size `set_image` only for a texture that is not Switch-swizzled, the cases
+        `zero_size_images_crash_etcpak` runs; on a Switch-swizzled texture the padding to whole GOB blocks raises
+        where the row once said 0 bytes were written, and the case is not characterised (Tier U). So every cell of
+        PARITY.md or DESIGN.md that says what a zero-size write does (writes 0 bytes or an empty `image_data`, or
+        sends a zero-size image to Tier C (writing)) names that scope, and the Switch-swizzled case is Tier U in the
+        19.1 row, in `Texture2D.set_image`'s tier and in DESIGN.md's Tier U list."""
+        zero_write = re.compile(
+            r"\bwrites? 0 bytes\b|\bwrites `image_data` empty\b|C \(writing\) for a zero-size image"
+            r"|zero-size image[^;|]*\b(?:fails to write|C \(writing\))"
+        )
+        root = HERE.parent.parent
+        parity = (root / "PARITY.md").read_text(encoding="utf-8")
+        design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        seen = 0
+        for name, text in (("PARITY.md", parity), ("DESIGN.md", design)):
+            for line in text.splitlines():
+                for cell in line.split(" | "):
+                    if zero_write.search(cell):
+                        seen += 1
+                        with self.subTest(name, cell=cell[:80]):
+                            self.assertIn("not Switch-swizzled", cell)
+        self.assertGreaterEqual(seen, 4)
+        row = next(line for line in parity.splitlines() if line.startswith("| `set_image` of a zero-size image ("))
+        unitypy, unityrs = row.split(" | ")[1:3]
+        self.assertTrue(unitypy.startswith("Stated for a texture that is not Switch-swizzled"), unitypy[:80])
+        self.assertIn(
+            "On a Switch-swizzled texture, what `set_image` of a zero-size image does is not characterised", unitypy
+        )
+        self.assertTrue(unityrs.startswith("On a texture that is not Switch-swizzled,"), unityrs[:80])
+        self.assertIn("On a Switch-swizzled texture, Tier U", unityrs)
+        set_image = next(
+            line for line in parity.splitlines() if line.startswith("| `Texture2D.set_image` | the target")
+        )
+        self.assertIn("U for a zero-size image on a Switch-swizzled texture", set_image)
+        unsupported = design.split("- **Unsupported until a sample and a reference exist.**", 1)[1].split("\n- **")[0]
+        self.assertRegex(
+            unsupported, r"\n  - `set_image` of a zero-size image on a Switch-swizzled texture: [^\n]*not characterised"
+        )
+
+    WRITER = re.compile(r"set_image|image_to_texture2d|\bsave\b|save_fs|save_typetree|get_writeable_cab|set_raw_data")
+
+    def test_a_failure_to_write_is_tier_c_writing(self):
+        """DESIGN.md section 3, Writing: where UnityPy raises on a valid write, the case is Tier C (writing), never
+        Tier B. So no Tier B bullet of DESIGN.md names a writer unless it sends that writer to Tier C (writing), no
+        PARITY.md tier clause that starts with B names one or sits in a writer's row, and the two cases that once
+        stood in Tier B have their Tier C (writing) rows."""
+        root = HERE.parent.parent
+        design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        reading = design.split("**Reading**", 1)[1].split("**Writing**", 1)[0]
+        tier = None
+        for line in reading.splitlines():
+            if line.startswith("- **"):
+                tier = line[4:10]
+            elif tier == "Tier B" and line.startswith("  - ") and self.WRITER.search(line):
+                with self.subTest("DESIGN.md Tier B", bullet=line[4:70]):
+                    self.assertIn("is Tier C (writing)", line)
+        writing = design.split("| Tier C (writing) | acceptance |", 1)[1].split("\n\n", 1)[0]
+        for lead in (
+            "| `set_image` from an image whose mode Pillow cannot pack",
+            "| `Environment.save` of a file keyed by a stream `name` that is not a `str`",
+            "| `BundleFile.save` of a UnityWeb or UnityRaw bundle of a format above 3 but 6",
+        ):
+            self.assertIn("\n" + lead, writing)
+        # A bundle save is byte-equal to UnityPy's only in the UnityPy-layout mode (the File / bundle save rule), so
+        # a Tier C (writing) bundle row that asks for byte-equality names that mode.
+        for row in writing.splitlines():
+            if row.startswith("| `BundleFile.save`") and "byte-equal" in row:
+                with self.subTest("DESIGN.md Tier C (writing)", row=row[:70]):
+                    self.assertIn("UnityPy-layout mode", row)
+        rows = 0
+        for line in (root / "PARITY.md").read_text(encoding="utf-8").splitlines():
+            cells = [cell.strip() for cell in line.strip("|").split(" | ")]
+            if not line.startswith("| ") or line.startswith("|---") or len(cells) < 6:
+                continue
+            item, clauses = cells[0], [clause.strip() for clause in cells[2].split(";")]
+            for clause in clauses:
+                if re.match(r"B\b", clause):
+                    rows += 1
+                    with self.subTest("PARITY.md", item=item[:60], clause=clause[:60]):
+                        self.assertNotRegex(clause, self.WRITER)
+                        self.assertNotIn("cannot pack", clause)
+                        self.assertNotRegex(item, self.WRITER)
+        self.assertGreater(rows, 20)
+
+    def test_every_tier_has_a_design_rule(self):
+        """Every tier PARITY.md section 0 defines, but `—`, which marks no behaviour of its own, is decided by a
+        bullet of DESIGN.md section 3's Reading list."""
+        root = HERE.parent.parent
+        parity = (root / "PARITY.md").read_text(encoding="utf-8")
+        table = parity.split("| tier | meaning |", 1)[1].split("\n\n", 1)[0]
+        tiers = [row.split(" | ", 1)[0][2:] for row in table.splitlines()[2:]]
+        self.assertEqual(tiers, ["A", "B", "C", "Tol", "HEAD", "U", "gap", "A, C (or A; C for …)", "—"])
+        design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        reading = design.split("**Reading**", 1)[1].split("**Writing**", 1)[0]
+        bullets = [lead.rstrip(".:") for lead in re.findall(r"^- \*\*(.+?)\*\*", reading, flags=re.M)]
+        rule = {
+            "A": "Tier A: bit-exact",
+            "B": "Tier B: UnityPy raises on a valid request",
+            "C": "Tier C: UnityPy is wrong",
+            "Tol": "Tolerance",
+            "HEAD": "HEAD tier",
+            "U": "Unsupported until a sample and a reference exist",
+            "gap": "Gap",
+        }
+        for tier in tiers[:7]:
+            with self.subTest(tier=tier):
+                self.assertIn(rule[tier], bullets)
+
+    def test_tol_metrics_are_stated_or_said_to_be_planned(self):
+        """Both Tol definitions say each row states a metric and threshold. Until every Tol row does (a row names a
+        `threshold`), both must say the rows are to state them in the phase each row's unityrs side lands in (its
+        status's `impl Pn`: P1 for the Sprite affine path, P3 for audio) and that none does yet, not that each has
+        one."""
+        root = HERE.parent.parent
+        parity = (root / "PARITY.md").read_text(encoding="utf-8")
+        design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        tol = []
+        for header, rows in inventory.tables(parity):
+            if "tier" in header and header[0] != "tier":
+                tol += [cells for cells in rows if re.search(r"\bTol\b", cells[header.index("tier")])]
+        self.assertGreaterEqual(len(tol), 8)
+        stated = [cells for cells in tol if "threshold" in " ".join(cells)]
+        definitions = [
+            next(line for line in parity.splitlines() if line.startswith("| Tol | ")),
+            next(line for line in design.splitlines() if line.startswith("- **Tolerance:**")),
+        ]
+        # The phase each Tol row's unityrs side lands in, by path: the Sprite affine path's rows and the audio rows.
+        phases = {}
+        for cells in tol:
+            path = "the Sprite affine path" if "Sprite" in cells[0] else "audio"
+            phases.setdefault(path, set()).update(re.findall(r"\bimpl (P\d)\b", cells[-1]))
+        self.assertEqual(phases, {"the Sprite affine path": {"P1"}, "audio": {"P3"}})
+        when = "(P1 for the Sprite affine path, P3 for audio)"
+        if len(stated) < len(tol):
+            for text in definitions:
+                with self.subTest(text[:40]):
+                    self.assertIn(f"when unityrs's side lands {when}", text)
+                    self.assertRegex(text, r"\b(?:no row states them|none is stated) yet\b")
+                    self.assertNotRegex(text, r"(?i)\b(?:has|within) a stated metric\b")
+
+    def test_module_level_data_is_tier_a_for_loop_variables(self):
+        """DESIGN.md section 3's Tier A rule for module-level data covers the variables a module-level loop leaves
+        bound, which section 23 files as A; the other module-level values take their own rows' tiers (a constant
+        nothing reads as behaviour is `—`). So DESIGN's sentence that cites section 23 is about a loop's variables,
+        each section 23 row of a loop's variables is A and cites the test that pins them, and no `—` row is one."""
+        root = HERE.parent.parent
+        design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+        tier_a = design.split("- **Tier A: bit-exact**", 1)[1].split("\n- **", 1)[0]
+        cites = [s for s in re.split(r"(?<=\.) ", tier_a) if "`PARITY.md` section 23" in s]
+        self.assertEqual(len(cites), 1, cites)
+        self.assertRegex(cites[0], r"^So is a variable a module-level loop leaves bound\b")
+        parity = (root / "PARITY.md").read_text(encoding="utf-8")
+        section = parity.split("\n## 23. Module-level data\n", 1)[1].split("\n## ", 1)[0]
+        loops = 0
+        for header, rows in inventory.tables(section):
+            for cells in rows:
+                about, tier = cells[header.index("UnityPy 1.25.2")], cells[header.index("tier")]
+                with self.subTest(item=cells[0][:60]):
+                    if about.startswith("the variables of the module-level loop"):
+                        loops += 1
+                        self.assertEqual(tier, "A")
+                        test = cells[header.index("test")]
+                        self.assertIn("`test_parity_rows.py` module_loop_variables_keep_the_last_pass", test)
+                    elif tier == "—":
+                        self.assertNotIn("module-level loop", about)
+        self.assertEqual(loops, 2)
+
+    def test_head_dicts_are_a_target_while_their_fixtures_are_planned(self):
+        """Section 20's reading rows name the Unity 6000.4/6000.5 fixtures as planned, so no comparison with HEAD's
+        dicts exists: every sentence or table cell of PARITY.md and DESIGN.md that speaks of dicts and HEAD (or those
+        fixtures) calls that equality a target, or says no comparison has been run, and none states it as done."""
+        root = HERE.parent.parent
+        parity = (root / "PARITY.md").read_text(encoding="utf-8")
+        section = parity.split("\n## 20. HEAD tier\n", 1)[1].split("\n## ", 1)[0]
+        planned = [
+            cells[0]
+            for header, rows in inventory.tables(section)
+            for cells in rows
+            if "planned 6000.4/6000.5 fixtures" in cells[header.index("test")]
+        ]
+        if not planned:
+            self.skipTest("section 20 names no planned HEAD fixture: the reading rows are measured")
+        speaking = 0
+        for name, text in (("PARITY.md", parity), ("DESIGN.md", (root / "docs" / "DESIGN.md").read_text("utf-8"))):
+            for sentence in re.split(r"(?<=\.)\s+|\s*\|\s*|\n", text):
+                if "dicts" in sentence and ("HEAD" in sentence or "6000.4/6000.5" in sentence):
+                    speaking += 1
+                    with self.subTest(name, sentence=sentence[:80]):
+                        self.assertTrue(
+                            "target" in sentence or "No comparison" in sentence, "HEAD's dicts stated as measured"
+                        )
+        self.assertGreaterEqual(speaking, 3)
+
+
+@unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
+class Rows(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-rows-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp))
+
+    def chdir(self, path):
+        cwd = os.getcwd()
+        os.chdir(path)
+        self.addCleanup(os.chdir, cwd)
+
+    # Section 23: a module-level loop leaves its variables bound at the top level, holding the last pass's values.
+    def test_module_loop_variables_keep_the_last_pass(self):
+        reader_module = sys.modules["UnityPy.streams.EndianBinaryReader"]
+        self.assertIs(Texture2DConverter.tf, TextureFormat.RGBA64_SIGNED)
+        self.assertEqual((Texture2DConverter.split, Texture2DConverter.block_size), (["12", "12"], None))
+        self.assertEqual(
+            (
+                reader_module.endian_s,
+                reader_module.reader_type_name,
+                reader_module.struct_type_char,
+                reader_module.func_name,
+                reader_module.struct.format,
+            ),
+            (">", "double", "d", "read_double", ">d"),
+        )
+        # The two reader functions each pass defines: the last pass's, the `>` read_double ones themselves.
+        self.assertIs(reader_module.memory_read_func, reader_module.MEMORY_FUNCTIONS[">"]["read_double"])
+        self.assertIs(reader_module.stream_read_func, reader_module.STREAM_FUNCTIONS[">"]["read_double"])
+        one = bytes.fromhex("3ff0000000000000")
+        self.assertEqual(reader_module.memory_read_func(EndianBinaryReader(one, endian="<")), 1.0)
+        self.assertEqual(reader_module.stream_read_func(EndianBinaryReader(io.BytesIO(one), endian="<")), 1.0)
+        # Every public name a module-level loop of UnityPy leaves bound (an AST scan: targets, assignments and
+        # definitions in a top-level `for` or `while`, outside a function or class body) sits on a section 23 row
+        # of a loop's variables, and only those.
+        import ast
+
+        def bound(node):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                return {node.name}
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                return {node.id}
+            return set().union(*(bound(child) for child in ast.iter_child_nodes(node)))
+
+        def loops(body):
+            for node in body:
+                if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+                    yield node
+                elif not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    for field in ("body", "orelse", "finalbody", "handlers", "cases"):
+                        yield from loops(getattr(node, field, []))
+
+        package = Path(UnityPy.__file__).resolve().parent
+        scanned = set()
+        for path in sorted(package.rglob("*.py")):
+            for loop in loops(ast.parse(path.read_text(encoding="utf-8")).body):
+                scanned |= {f"{path.stem}.{name}" for name in bound(loop) if not name.startswith("_")}
+        parity = inventory.DEFAULT_PARITY.read_text(encoding="utf-8")
+        section = parity.split("\n## 23. Module-level data\n", 1)[1].split("\n## ", 1)[0]
+        listed = set()
+        for header, rows in inventory.tables(section):
+            for cells in rows:
+                if cells[header.index("UnityPy 1.25.2")].startswith("the variables of the module-level loop"):
+                    listed |= set(re.findall(r"`([\w.]+)`", cells[0]))
+        self.assertEqual(listed, scanned)
+        self.assertEqual(len(scanned), 10)
+        # No row elsewhere files one of them as `—`.
+        for header, rows in inventory.tables(parity.replace(section, "")):
+            for cells in rows if "tier" in header else ():
+                if cells[header.index("tier")] == "—":
+                    self.assertFalse(scanned & set(re.findall(r"`([\w.]+)`", cells[0])), cells[0][:60])
+
+    # Sections 4, 5.2, 6: WebFile gzip.
+    def test_gzip_webfile_is_detected_and_never_parsed(self):
+        plain = S.web_file([(b"a.txt", bytes(range(256)) * 2), (b"b.txt", b"world" * 40)])
+        packed = gzip.compress(plain, mtime=0)
+        self.assertEqual(list(load(plain)[0].files), ["a.txt", "b.txt"], "a plain WebFile loads")
+
+        # Detection reads the gzip stream through the shared reader and leaves it where it stopped.
+        kind, reader = ImportHelper.check_file_type(packed)
+        self.assertEqual(kind, FileType.WebFile)
+        self.assertNotEqual(reader.Position, 0)
+        # So WebFile reads its magic past the start, takes the file for plain, and the signature fails.
+        with self.assertRaisesRegex(ValueError, r"^Invalid WebFile signature: '\\x1f\\udc8b\\x08'"):
+            load(packed)
+        path = self.tmp / "web.data.gz"
+        path.write_bytes(packed)
+        with self.assertRaisesRegex(ValueError, "Invalid WebFile signature"):
+            quietly(UnityPy.load, str(path))
+        # Inside a bundle too.
+        with self.assertRaisesRegex(ValueError, "Invalid WebFile signature"):
+            load(S.fs_bundle([(b"inner.data.gz", packed, 0)]))
+        # The decoder itself works on a fresh reader, and agrees with gzip.decompress plus the plain layout.
+        self.assertEqual(list(WebFile(EndianBinaryReader(packed), None).files), ["a.txt", "b.txt"])
+        self.assertEqual(gzip.decompress(packed), plain)
+
+    # Sections 5.1, 18: UnityArchive.
+    def test_unityarchive_loads_as_a_raw_file(self):
+        data = S.fs_bundle([(b"CAB-test", text_asset_file(), 4)], signature=b"UnityArchive")
+        self.assertEqual(ImportHelper.check_file_type(data)[0], FileType.ResourceFile)
+        loaded, env = load(data, name="archive")
+        self.assertIsInstance(loaded, EndianBinaryReader)
+        self.assertIs(env.get_cab("archive"), loaded)
+        with self.assertRaisesRegex(NotImplementedError, "UnityArchive"):
+            BundleFile(EndianBinaryReader(data), env)
+        # A BundleFile of any other unknown signature raises too (detection never builds one).
+        unknown = S.fs_bundle([(b"CAB-test", text_asset_file(), 4)], signature=b"UnityXYZ")
+        with self.assertRaisesRegex(NotImplementedError, "^Unknown Bundle signature: UnityXYZ$"):
+            BundleFile(EndianBinaryReader(unknown), env)
+
+    # Sections 8 and 10: an object with no tree anywhere.
+    def test_no_tree_raises_the_tpk_error(self):
+        def parse(class_id, **kw):
+            sf = S.serialized_file(
+                [S.Type(class_id, TEXT_ASSET)],
+                [S.Obj(1, 0, S.s32("a") + S.s32("b"), class_id=class_id)],
+                enable_type_tree=False,
+                **kw,
+            )
+            return next(iter(load(sf)[0].objects.values())).parse_as_dict()
+
+        self.assertEqual(parse(49), {"m_Name": "a", "m_Script": "b"}, "the TPK's TextAsset")
+        with self.assertRaises(KeyError):
+            parse(987654)  # not in the TPK
+        with self.assertRaisesRegex(ValueError, "^Could not find exact version$"):
+            parse(49, unity_version=b"2.0.0f1")  # before the TPK's first TextAsset
+        self.assertIsNone(Tpk.TPKTYPETREE.ClassInformation[12][-1][1], "class 12 is gone from 2018.3")
+        with self.assertRaisesRegex(ValueError, "^Could not find exact version$"):
+            parse(12)
+        with self.assertRaisesRegex(AssertionError, "has no ReleaseRootNode"):
+            parse(18)  # EditorExtension, abstract: no release tree
+        # TypeTreeError is unreachable: a node is always truthy, and the TPK returns one or raises.
+        self.assertTrue(TypeTreeNode(m_Level=0, m_Type="X", m_Name="Base", m_ByteSize=0, m_Version=0))
+
+    # Sections 3, 5.2, 14.1: one CAB registry for the whole Environment.
+    def test_same_named_cabs_share_one_registry_entry(self):
+        env = UnityPy.Environment()
+
+        def bundle(name, fill):
+            return S.fs_bundle([(b"CAB-same", text_asset_file(name), 4), (b"CAB-same.resS", fill * 64, 0)])
+
+        a, _ = load(bundle("A", b"\x11"), "a", env)
+        b, _ = load(bundle("B", b"\x22"), "b", env)
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in env.objects], ["A", "B"])
+        self.assertEqual(list(env.cabs), ["cab-same", "cab-same.ress"])
+        self.assertIs(env.cabs["cab-same"], b.files["CAB-same"], "the last one loaded wins")
+        # A's texture data is read from B's .resS.
+        got = ResourceReader.get_resource_data("archive:/CAB-same/CAB-same.resS", a.files["CAB-same"], 0, 4)
+        self.assertEqual(got, b"\x22" * 4)
+        # Environment.container joins only the registered copy's container.
+        info = SimpleNamespace(asset=SimpleNamespace(path_id=1), preloadIndex=0, preloadSize=0)
+        a.files["CAB-same"]._container = ContainerHelper([("a/path", info)])
+        b.files["CAB-same"]._container = ContainerHelper([("b/path", info)])
+        self.assertEqual(list(env.container.keys()), ["b/path"])
+        # A PPtr looks in its own parent's entries first (PPtr.deref's loop over `files`), so from inside either
+        # bundle it reads that bundle's copy; only one from outside both reaches the registry, and reads B's.
+        env = UnityPy.Environment()
+
+        def holder(tag, cab):
+            pointing = S.serialized_file(
+                [S.Type(49, TEXT_ASSET)],
+                [S.Obj(1, 0, S.s32(f"main {tag}") + S.s32("s"))],
+                externals=[S.External(b"archive:/CAB-same/CAB-same")],
+            )
+            entries = [(cab, pointing, 4)]
+            if tag != "C":
+                entries += [(b"CAB-same", text_asset_file(tag), 4), (b"CAB-same.resS", tag.encode() * 64, 0)]
+            return load(S.fs_bundle(entries), tag, env)[0]
+
+        pointing = {tag: holder(tag, cab).files[cab.decode()] for tag, cab in (("A", b"CAB-main"), ("B", b"CAB-main"))}
+        pointing["C"] = holder("C", b"CAB-c").files["CAB-c"]
+        self.assertEqual(list(env.cabs), ["cab-main", "cab-same", "cab-same.ress", "cab-c"])
+        read = {
+            tag: PPtr(m_FileID=1, m_PathID=1, assetsfile=sf).deref().parse_as_dict()["m_Name"]
+            for tag, sf in pointing.items()
+        }
+        self.assertEqual(read, {"A": "A", "B": "B", "C": "B"})
+        got = ResourceReader.get_resource_data("archive:/CAB-same/CAB-same.resS", pointing["A"], 0, 4)
+        self.assertEqual(got, b"BBBB", "a .resS read from A still reads B's")
+
+    # Section 7.1: type dependencies sit inside the tree flag.
+    def test_type_dependencies_need_the_tree_flag(self):
+        with_tree = S.serialized_file([S.Type(49, TEXT_ASSET, deps=[7, 8])], [S.Obj(1, 0, S.s32("a") + S.s32("b"))])
+        self.assertEqual(load(with_tree)[0].types[0].type_dependencies, (7, 8))
+        stripped = text_asset_file(enable_type_tree=False)
+        loaded = load(stripped)[0]
+        self.assertIsNone(loaded.types[0].type_dependencies)
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in loaded.objects.values()], ["hello"])
+
+        class WithDependencies(S.Type):
+            def encode(self, version, enable_type_tree, is_ref, E):
+                return super().encode(version, enable_type_tree, is_ref, E) + struct.pack(E + "i", 0)
+
+        misread = S.serialized_file(
+            [WithDependencies(49, TEXT_ASSET)], [S.Obj(1, 0, S.s32("a") + S.s32("b"))], enable_type_tree=False
+        )
+        with self.assertRaises(struct.error):
+            load(misread)
+
+    # Section 6: LZ4 blocks.
+    def test_lz4_stored_size_is_a_capacity(self):
+        entries = [(b"CAB-test", text_asset_file(), 4), (b"CAB-test.resS", b"\x11" * 64, 0)]
+        size = sum(len(data) for _, data, _ in entries)
+        loaded = load(S.fs_bundle(entries, stored_sizes=[size + 100]))[0]
+        self.assertEqual(list(loaded.files), ["CAB-test", "CAB-test.resS"], "a block that decodes short loads")
+        for stored in (size - 10, 0):
+            with self.subTest(stored=stored), self.assertRaises(lz4.block.LZ4BlockError):
+                load(S.fs_bundle(entries, stored_sizes=[stored]))
+        # A stored size of 0 raises only for output: an empty block, b"\x00" (what lz4 writes for b""), stored as 0
+        # decodes to b"", and the bundle loads, the empty block first or last.
+        self.assertEqual(lz4.block.compress(b"", store_size=False), b"\x00")
+        sf = text_asset_file()
+        for blocks in ([sf, b""], [b"", sf]):
+            with self.subTest(blocks=[len(block) for block in blocks]):
+                loaded = load(S.fs_bundle([(b"CAB-x", sf, 4)], blocks=blocks))[0]
+                names = [o.parse_as_dict()["m_Name"] for o in loaded.files["CAB-x"].objects.values()]
+                self.assertEqual((list(loaded.files), names), (["CAB-x"], ["hello"]))
+
+    # Sections 5.2, 13: reads past the end.
+    def test_reads_past_the_end_return_short_data(self):
+        sf = text_asset_file()
+        data = sf + b"\x11" * 64
+        rows = [(b"CAB-test", 0, len(sf), 4), (b"CAB-test.resS", len(sf), 64 + 1000, 0)]
+        loaded = load(S.fs_bundle(rows, blocks=[data], codec=0))[0]
+        self.assertEqual(loaded.files["CAB-test.resS"].Length, 64, "the entry is cut to the bytes that exist")
+        got = ResourceReader.get_resource_data("CAB-test.resS", loaded.files["CAB-test"], 60, 500)
+        self.assertEqual(got, b"\x11" * 4)
+        reader = EndianBinaryReader(b"abcd")
+        self.assertEqual((reader.read_bytes(10), reader.Position), (b"abcd", 10))
+        with self.assertRaises(struct.error):
+            reader.read_int()
+        # Section 13, negative sizes and positions. The memory reader's Position takes any value, and its reads
+        # index the view with it: read(-1) reads to the end, any other size is the slice view[P:P + n].
+        data = bytes(range(20))
+        reader = EndianBinaryReader(data)
+
+        def read_at(position, size):
+            reader.Position = position
+            return reader.read(size), reader.Position
+
+        self.assertEqual(read_at(5, 0), (b"", 5))
+        self.assertEqual(read_at(5, -1), (data[5:], 20))
+        self.assertEqual(read_at(-3, -1), (data[-3:], 20))
+        self.assertEqual(read_at(5, -2), (b"", 3))
+        self.assertEqual(read_at(2, -5), (data[2:17], -3))
+        self.assertEqual(read_at(-3, 2), (data[17:19], -1))
+        self.assertEqual(read_at(-2, 4), (b"", 2))
+        minus_one = EndianBinaryReader(struct.pack(">i", -1) + data)
+        self.assertEqual(minus_one.read_byte_array(), data)
+        # A fixed-width primitive at a negative Position counts from the end, and raises when fewer bytes than its
+        # size lie from there to the end, or the Position is before the start.
+        reader.Position = -4
+        self.assertEqual((reader.read_int(), reader.Position), (struct.unpack(">i", data[-4:])[0], 0))
+        for position, message in ((-2, "^not enough data to unpack 4 bytes at offset -2$"), (-24, "out of range")):
+            reader.Position = position
+            with self.subTest(position=position), self.assertRaisesRegex(struct.error, message):
+                reader.read_int()
+        # The stream reader refuses a negative Position, and its read is the stream's own: -1 reads to the end;
+        # below -1 a buffered file raises, while a BytesIO reads to the end.
+        stream = EndianBinaryReader(io.BytesIO(data))
+        stream.Position = 5
+        self.assertEqual((stream.read(-2), stream.Position), (data[5:], 20))
+        with self.assertRaisesRegex(ValueError, "^Position cannot be negative$"):
+            stream.Position = -1
+        path = self.tmp / "data.bin"
+        path.write_bytes(data)
+        from fsspec.implementations.local import LocalFileSystem
+
+        for opener in (open, LocalFileSystem().open):
+            with opener(str(path), "rb") as opened:
+                stream = EndianBinaryReader(opened)
+                stream.Position = 18
+                self.assertEqual(stream.read(-1), data[18:])
+                stream.Position = 18
+                with self.assertRaisesRegex(ValueError, "^read length must be non-negative or -1$"):
+                    stream.read(-7)
+        # A file's own signed offsets and sizes reach these rules, at the sites section 13 lists. A bundle's i64
+        # directory entries are applied to the blocks' data by the memory reader, from bytes and from a path alike.
+        payload = b"0123456789ABCDEF0123456789"
+        bundle_path = self.tmp / "negative.bundle"
+        for offset, size, expected in (
+            (-10, 4, payload[16:20]),
+            (2, -1, payload[2:]),
+            (2, -5, payload[2:-3]),
+            (-30, 4, b""),
+            (20, 10, payload[20:]),
+        ):
+            bundle = S.fs_bundle([(b"x.resS", offset, size, 0)], blocks=[payload])
+            bundle_path.write_bytes(bundle)
+            for source in (bundle, str(bundle_path)):
+                with self.subTest(offset=offset, size=size, path=isinstance(source, str)):
+                    entry = quietly(UnityPy.Environment().load_file, source).files["x.resS"]
+                    self.assertEqual(bytes(entry.bytes), expected)
+        # A WebFile's i32 entries are applied by the file's own reader: slices from bytes, while the stream reader of
+        # a path refuses a negative offset and, a buffered file, a size below -1.
+        web = S.web_file([(b"a.resS", b"PAYLOAD!")])
+        row = len(b"UnityWebData1.0\0") + 4
+        web_path = self.tmp / "negative.data"
+        for offset, size, from_bytes, from_path in (
+            (-4, 4, b"", "^Position cannot be negative$"),
+            (None, -1, b"PAYLOAD!", b"PAYLOAD!"),
+            (None, -3, b"", "^read length must be non-negative or -1$"),
+        ):
+            changed = bytearray(web)
+            struct.pack_into(
+                "<ii", changed, row, struct.unpack_from("<i", web, row)[0] if offset is None else offset, size
+            )
+            web_path.write_bytes(changed)
+            with self.subTest("web", offset=offset, size=size):
+                self.assertEqual(bytes(load(bytes(changed))[0].files["a.resS"].bytes), from_bytes)
+                if isinstance(from_path, bytes):
+                    entry = quietly(UnityPy.Environment().load_file, str(web_path)).files["a.resS"]
+                    self.assertEqual(bytes(entry.bytes), from_path)
+                else:
+                    with self.assertRaisesRegex(ValueError, from_path):
+                        quietly(UnityPy.Environment().load_file, str(web_path))
+        # An entry's i32 name length is read with the same reader: -1 reads the rest of the data as the name, from
+        # bytes and from a path; -12 from a path raises, and from bytes reads b"" and moves the reader back to the
+        # entry's start, so the loop adds that entry again and again (stopped here after three).
+        offset, size = struct.unpack_from("<ii", web, row)
+        changed = bytearray(web)
+        struct.pack_into("<i", changed, row + 8, -1)
+        web_path.write_bytes(changed)
+        for source in (bytes(changed), str(web_path)):
+            with self.subTest("web name length -1", path=isinstance(source, str)):
+                files = quietly(UnityPy.Environment().load_file, source, name="w.data").files
+                self.assertEqual({name: bytes(f.bytes) for name, f in files.items()}, {"a.resSPAYLOAD!": b"PAYLOAD!"})
+        struct.pack_into("<i", changed, row + 8, -12)
+        web_path.write_bytes(changed)
+        with self.assertRaisesRegex(ValueError, "^read length must be non-negative or -1$"):
+            quietly(UnityPy.Environment().load_file, str(web_path))
+        file_module = sys.modules["UnityPy.files.File"]
+        entries = []
+
+        class Again(Exception):
+            pass
+
+        def directory_info(*fields):
+            entries.append(fields)
+            if len(entries) == 3:
+                raise Again
+            return file_module.DirectoryInfo.__wrapped__(*fields)
+
+        directory_info.__wrapped__ = file_module.DirectoryInfo
+        with mock.patch.object(file_module, "DirectoryInfo", directory_info), self.assertRaises(Again):
+            load(bytes(changed), "w.data")
+        self.assertEqual(entries, [("", offset, size)] * 3)
+        # Elsewhere what it gives depends on where the reader lands. In a two-entry WebFile, -2 reads the name b""
+        # and moves back 2 bytes, so the next entry is read from there, with a name that runs on into the data; -13
+        # raises struct.error. From a path both raise as -12 does.
+        two = S.web_file([(b"a.resS", b"PAYLOAD!"), (b"b.resS", b"SECOND")])
+        for length in (-2, -13):
+            changed = bytearray(two)
+            struct.pack_into("<i", changed, row + 8, length)
+            web_path.write_bytes(changed)
+            with self.subTest("web name length", length=length):
+                if length == -2:
+                    files = quietly(UnityPy.Environment().load_file, bytes(changed), name="w.data").files
+                    self.assertEqual(
+                        {name: bytes(f.bytes) for name, f in files.items()},
+                        {"": b"PAYLOAD!", "\x06\x00\x00\x00\x06\x00\x00\x00b.resSPAYLOAD!SECOND": b""},
+                    )
+                else:
+                    with self.assertRaisesRegex(struct.error, "^offset -3297 out of range for 70-byte buffer$"):
+                        load(bytes(changed), "w.data")
+                with self.assertRaisesRegex(ValueError, "^read length must be non-negative or -1$"):
+                    quietly(UnityPy.Environment().load_file, str(web_path))
+        # Those stream-reader rules are a plain WebFile's from a path. A brotli WebFile is read by the memory reader
+        # of its decompressed bytes from any source (WebFile.py:31-34), so from a path too it gives what the same
+        # entries give from bytes: a slice for a negative offset or size; for a name length of -2 the moved reader's
+        # entries; for -13 struct.error; and for -12 the entry again and again.
+        from test_rows_files import unity_brotli
+
+        words = b" ".join(b"word%d" % (i % 37) for i in range(400))  # data brotli compresses (unity_brotli)
+        plain = S.web_file([(b"a.resS", words)])
+        for fields in ({0: -4, 4: 4}, {4: -3}, {8: -2}):
+            changed = bytearray(plain)
+            for at, value in fields.items():
+                struct.pack_into("<i", changed, row + at, value)
+            web_path.write_bytes(unity_brotli(bytes(changed)))
+            with self.subTest("brotli web from a path", fields=fields):
+                web_file = quietly(UnityPy.Environment().load_file, str(web_path))
+                self.assertEqual(web_file.packer, "brotli")
+                from_path = {name: bytes(f.bytes) for name, f in web_file.files.items()}
+                files = load(bytes(changed), "w.data")[0].files
+                self.assertEqual(from_path, {name: bytes(f.bytes) for name, f in files.items()})
+                if 8 not in fields:
+                    self.assertEqual(from_path, {"a.resS": b""})
+                else:
+                    self.assertEqual((len(from_path), next(iter(from_path))), (2, ""))  # read from the moved reader
+        changed = bytearray(plain)
+        struct.pack_into("<i", changed, row + 8, -13)
+        web_path.write_bytes(unity_brotli(bytes(changed)))
+        with self.assertRaisesRegex(struct.error, f"^offset -3297 out of range for {len(changed)}-byte buffer$"):
+            quietly(UnityPy.Environment().load_file, str(web_path))
+        offset, size = struct.unpack_from("<ii", plain, row)
+        struct.pack_into("<i", changed, row + 8, -12)
+        web_path.write_bytes(unity_brotli(bytes(changed)))
+        entries.clear()
+        with mock.patch.object(file_module, "DirectoryInfo", directory_info), self.assertRaises(Again):
+            quietly(UnityPy.Environment().load_file, str(web_path))
+        self.assertEqual(entries, [("", offset, size)] * 3)
+        # A UnityWeb/UnityRaw level count is an i32, past which read_web_raw skips 8 * (count - 1) bytes: -100 moves
+        # Position to -745, before the file's start. From a path the stream reader raises ValueError. From
+        # bytes a negative Position counts from the end: below minus the length (a 105-byte bundle) struct.error;
+        # otherwise the fields after the level table, the compressed size among them, are read there, and what
+        # follows depends on those bytes: in a 4,097-byte bundle an entry of 4,000 b"p" loads, one of 4,000 zero
+        # bytes gives a compressed size of 0, and the empty directory raises.
+        from test_dump import unityraw
+
+        def level_count(payload):
+            raw = unityraw(5, [(b"CAB-x", payload)])
+            level = raw.index(bytes(range(16))) + 16 + 16
+            self.assertEqual(struct.unpack_from(">i", raw, level), (1,))
+            changed = bytearray(raw)
+            struct.pack_into(">i", changed, level, -100)
+            (self.tmp / "level.bundle").write_bytes(changed)
+            return bytes(changed), level + 4 + 8 * (-100 - 1)
+
+        changed, moved = level_count(b"payload!")
+        self.assertEqual((len(changed), moved), (105, -745))
+        with self.assertRaisesRegex(struct.error, "^offset -745 out of range for 105-byte buffer$"):
+            load(changed, "level.bundle")
+        with self.assertRaisesRegex(ValueError, "^Position cannot be negative$"):
+            quietly(UnityPy.Environment().load_file, str(self.tmp / "level.bundle"))
+        changed, moved = level_count(b"p" * 4000)
+        self.assertEqual((len(changed), moved), (4097, -745))
+        files = load(changed, "level.bundle")[0].files
+        self.assertEqual({name: bytes(f.bytes) for name, f in files.items()}, {"CAB-x": b"p" * 4000})
+        with self.assertRaisesRegex(ValueError, "^Position cannot be negative$"):
+            quietly(UnityPy.Environment().load_file, str(self.tmp / "level.bundle"))
+        changed, moved = level_count(bytes(4000))
+        self.assertEqual(struct.unpack_from(">I", changed, moved), (0,), "the compressed size read from the end")
+        with self.assertRaisesRegex(
+            struct.error,
+            r"^unpack_from requires a buffer of at least 4 bytes for unpacking 4 bytes at offset 0 "
+            r"\(actual buffer size is 0\)$",
+        ):
+            load(changed, "level.bundle")
+        # A blob typetree's node count and string-buffer size each size a read: a negative count reads a slice that
+        # iter_unpack refuses unless its length is a multiple of the node size, a count of 0 leaves no root, and a
+        # buffer size of -1 takes the rest of the data.
+        blob = S.blob(TEXT_ASSET, 22) + b"TAIL"
+        count, strings = struct.unpack_from("<ii", blob)
+
+        def parse_blob(count, strings):
+            reader = EndianBinaryReader(struct.pack("<ii", count, strings) + blob[8:], endian="<")
+            return TypeTreeNode.parse_blob(reader, 22), reader.Position
+
+        self.assertNotEqual((len(blob) - 8 - 24) % 32, 0, "read(-32) at 8 gives view[8:-24], not whole nodes")
+        with self.assertRaisesRegex(struct.error, "multiple of 32 bytes"):
+            parse_blob(-1, strings)
+        with self.assertRaisesRegex(IndexError, "^list index out of range$"):
+            parse_blob(0, strings)
+        node, end = parse_blob(count, -1)
+        self.assertEqual(
+            (node.m_Type, [c.m_Name for c in node.m_Children], end), ("TextAsset", ["m_Name", "m_Script"], len(blob))
+        )
+        # From format 22 an object's data offset is a signed i64: one that lands before the file's start is a
+        # negative byte_start, which the memory reader counts from the file's end and a path's stream reader refuses
+        # when the object is read (loading reads no object but the first AssetBundle, `test_rows_objects.py`
+        # object_container).
+        named = text_asset_file("negative")
+        obj = load(named)[0].objects[1]
+        data_offset = obj.assets_file.header.data_offset
+        row_at = named.index(struct.pack("<qIi", obj.byte_start - data_offset, obj.byte_size, 0))
+        moved = bytearray(named)
+        struct.pack_into("<q", moved, row_at, obj.byte_start - data_offset - len(named))
+        (self.tmp / "negative.assets").write_bytes(moved)
+        from_bytes = load(bytes(moved))[0].objects[1]
+        self.assertEqual(from_bytes.byte_start, obj.byte_start - len(named))
+        self.assertEqual(from_bytes.parse_as_dict()["m_Name"], "negative")
+        from_path = quietly(UnityPy.Environment().load_file, str(self.tmp / "negative.assets")).objects[1]
+        self.assertEqual(from_path.byte_start, obj.byte_start - len(named))
+        with self.assertRaisesRegex(ValueError, "^Position cannot be negative$"):
+            from_path.parse_as_dict()
+        # The memory reader reads the slice view[start:start + size]: for an object that ends at the file's end
+        # (no padding after it) that slice ends at index 0 and is empty, which UnityPyBoost refuses.
+        flush = text_asset_file("negative", "x" * 100)
+        obj = load(flush)[0].objects[1]
+        self.assertEqual(obj.byte_start + obj.byte_size, len(flush))
+        row_at = flush.index(struct.pack("<qIi", obj.byte_start - data_offset, obj.byte_size, 0))
+        moved = bytearray(flush)
+        struct.pack_into("<q", moved, row_at, obj.byte_start - data_offset - len(flush))
+        with self.assertRaises(EOFError):
+            load(bytes(moved))[0].objects[1].parse_as_dict()
+
+    # Sections 9.1, 18: a null managed reference.
+    def test_an_empty_managed_reference_does_not_resave(self):
+        root = S.Node("MonoBehaviour", "Base", [S.Node("int", "x"), S.ref_object("ref")])
+        foo = S.Node("Foo", "Base", [S.Node("float", "v")])
+        empty = struct.pack("<iq", 7, 1) + S.s32("") * 3
+        typed = struct.pack("<iq", 7, 2) + S.s32("Foo") + S.s32("") + S.s32("Asm") + struct.pack("<f", 1.5)
+        refs = [S.Type(-1, foo, ref_names=["Foo", "", "Asm"])]
+        sf = S.serialized_file([S.Type(114, root)], [S.Obj(1, 0, empty), S.Obj(2, 0, typed)], ref_types=refs)
+        objects = load(sf)[0].objects
+        value = objects[1].parse_as_dict()
+        self.assertEqual(value["ref"], {"rid": 1, "type": {"class": "", "ns": "", "asm": ""}})
+        with self.assertRaisesRegex(KeyError, "'data'"):
+            objects[1].save_typetree(value)
+        self.assertEqual(objects[2].save_typetree(objects[2].parse_as_dict()), objects[2].get_raw_data())
+
+    # Sections 9.1: get_ref_type_node on an empty ref_types list.
+    def test_ref_type_lookup_differs_on_an_empty_list(self):
+        root = S.Node("MonoBehaviour", "Base", [S.Node("int", "x"), S.ref_object("ref")])
+        empty = struct.pack("<iq", 7, 1) + S.s32("") * 3
+        loaded = load(S.serialized_file([S.Type(114, root)], [S.Obj(1, 0, empty)], ref_types=[]))[0]
+        self.assertEqual(loaded.ref_types, [])
+        obj = loaded.objects[1]
+        self.assertEqual(obj.parse_as_dict()["ref"], {"rid": 1, "type": {"class": "", "ns": "", "asm": ""}})
+        reader = EndianBinaryReader(empty, endian="<")
+        with self.assertRaisesRegex(ValueError, "^SerializedFile has no ref_types$"):
+            TypeTreeHelper.read_typetree(
+                obj._get_typetree_node(), reader, as_dict=True, byte_size=0, check_read=False, assetsfile=loaded
+            )
+        with self.assertRaisesRegex(ValueError, "^SerializedFile has no ref_types$"):
+            TypeTreeHelper.get_ref_type_node({"type": {"class": "X", "ns": "", "asm": ""}}, None)  # no file
+        # Below format 20 a SerializedFile has no `ref_types` at all: the pure-Python path raises AttributeError
+        # reading it, and Boost, which requires a list before it looks at the class, raises for a null reference too.
+        for cls in ("", "X"):
+            data = struct.pack("<iq", 7, 1) + S.s32(cls) + S.s32("") * 2
+            old = load(S.serialized_file([S.Type(114, root)], [S.Obj(1, 0, data)], version=19))[0]
+            with self.subTest(cls=cls):
+                self.assertFalse(hasattr(old, "ref_types"))
+                with self.assertRaisesRegex(ValueError, "^Failed to get ref type node$"):
+                    old.objects[1].parse_as_dict()
+                reader = EndianBinaryReader(data, endian="<")
+                with self.assertRaisesRegex(AttributeError, "^'SerializedFile' object has no attribute 'ref_types'$"):
+                    TypeTreeHelper.read_typetree(
+                        obj._get_typetree_node(), reader, as_dict=True, byte_size=0, check_read=False, assetsfile=old
+                    )
+
+    # Sections 5.2, 14.2, 17: a texture with no pixel data.
+    def test_an_empty_texture_follows_an_empty_stream_path(self):
+        env = UnityPy.Environment(path=str(self.tmp))
+        sf = load(text_asset_file(), env=env)[0]
+
+        def texture(stream, width=4):
+            return SimpleNamespace(
+                image_data=b"",
+                m_StreamData=stream,
+                object_reader=SimpleNamespace(assets_file=sf, version=(2021, 3, 2, 0), platform=0),
+                m_Width=width,
+                m_Height=width,
+                m_TextureFormat=4,
+                m_PlatformBlob=None,
+                get_image_data=lambda: Texture2D.get_image_data(fake),
+            )
+
+        fake = texture(StreamingInfo(offset=0, size=0, path=""))
+        self.assertTrue(fake.m_StreamData, "a StreamingInfo is truthy, even empty")
+        # The empty path is looked up, misses, is loaded relative to env.path, and opens the directory.
+        with self.assertRaises(IsADirectoryError):
+            Texture2D.get_image_data(fake)
+        with self.assertRaises(IsADirectoryError):
+            ResourceReader.get_resource_data("", sf, 0, 0)
+        # The names tried, in order: the basename, then `{name}.resource`, `{name}.assets.resS`, `{name}.resS`; a
+        # miss after load_dependencies raises FileNotFoundError.
+        names = ["x.bin", "x.resource", "x.assets.resS", "x.resS"]
+        for first in range(4):
+            own = UnityPy.Environment(path=str(self.tmp))
+            asking = load(text_asset_file(), env=own)[0]
+            for n, name in enumerate(names[first:]):
+                load(bytes([65 + first + n]) * 10, name=name, env=own)
+            with self.subTest(names[first]):
+                self.assertEqual(
+                    ResourceReader.get_resource_data("archive:/CAB/x.bin", asking, 2, 3), bytes([65 + first]) * 3
+                )
+        with self.assertRaisesRegex(FileNotFoundError, "^Resource file x.bin not found$"):
+            ResourceReader.get_resource_data("archive:/CAB/x.bin", sf, 0, 1)
+        # A 0x0 texture fetches its data first too, so where that fetch raises it never reaches the empty-image
+        # shortcut. Where the fetch succeeds it does, before the data is looked at: a 0x4 or a 4x0 texture with
+        # image_data gives the (0, 0) image.
+        fake = texture(StreamingInfo(offset=0, size=0, path=""), width=0)
+        with self.assertRaises(IsADirectoryError):
+            Texture2DConverter.get_image_from_texture2d(fake)
+        for width, height in ((0, 4), (4, 0)):
+            fake = texture(None)
+            fake.image_data, fake.m_Width, fake.m_Height = b"\xff" * 64, width, height
+            with self.subTest(width=width, height=height):
+                image = Texture2DConverter.get_image_from_texture2d(fake)
+                self.assertEqual((image.mode, image.size), ("RGBA", (0, 0)))
+        # Only a texture with no m_StreamData at all (pre-5.3 trees) gets the ValueError.
+        fake = texture(None)
+        with self.assertRaisesRegex(ValueError, "^No image data found$"):
+            Texture2D.get_image_data(fake)
+        image = Texture2DConverter.parse_image_data(b"", 0, 0, 4, (2021, 3, 2, 0), 0)
+        self.assertEqual((image.mode, image.size), ("RGBA", (0, 0)), "parse_image_data's own shortcut")
+        # A zip's directory entry registers CAB "" (section 3), which answers the empty path first: it reads b"", so
+        # a 0x0 texture returns the empty image and one of non-zero size raises ValueError.
+        quietly(env.load_file, zip_with_a_directory(), name="z.bin")
+        self.assertEqual(ResourceReader.get_resource_data("", sf, 0, 8), b"")
+        fake = texture(StreamingInfo(offset=0, size=0, path=""), width=0)  # `texture` reads `fake` when called
+        image = Texture2DConverter.get_image_from_texture2d(fake)
+        self.assertEqual((image.mode, image.size), ("RGBA", (0, 0)))
+        fake = texture(StreamingInfo(offset=0, size=0, path=""))
+        with self.assertRaisesRegex(ValueError, "^Texture2D has no image data$"):
+            Texture2DConverter.get_image_from_texture2d(fake)
+
+    # Sections 3, 4, 13: what reader a path gets.
+    def test_a_path_reads_strings_with_the_stream_rule(self):
+        path = self.tmp / "twenty"
+        path.write_bytes(b"A" * 20)
+        kind, reader = ImportHelper.check_file_type(str(path))  # opens the file and leaves it open
+        reader.dispose()
+        self.assertEqual(kind, FileType.ResourceFile)
+        with open(path, "rb") as stream:
+            self.assertEqual(ImportHelper.check_file_type(stream)[0], FileType.ResourceFile)
+        with self.assertRaisesRegex(Exception, "^String not terminated$"):
+            ImportHelper.check_file_type(b"A" * 20)
+        # Only an input of exactly 20 bytes reaches the memory reader's end: a longer one takes its first 20
+        # bytes as the signature, and detection goes on.
+        for size in (21, 127, 200):
+            with self.subTest(size=size):
+                self.assertEqual(ImportHelper.check_file_type(b"A" * size)[0], FileType.ResourceFile)
+        env = quietly(UnityPy.load, str(path))
+        reader = env.files[str(path)]
+        self.addCleanup(reader.dispose)
+        self.assertEqual(type(reader).__name__, "EndianBinaryReader_Streamable")
+        # With no NUL in reach the stream reader drops the last byte it read. It raises only from a Position past
+        # the end, where its loop, which stops at Position == Length alone, reads nothing; at the end it returns "".
+        stream = EndianBinaryReader(io.BytesIO(b"C" * 10))
+        self.assertEqual((stream.read_string_to_null(), stream.Position), ("C" * 9, 10))
+        self.assertEqual((stream.read_string_to_null(), stream.Position), ("", 10))
+        stream.Position = 9
+        stream.align_stream()
+        self.assertEqual(stream.Position, 12)
+        past = r"^Unterminated string: \[b''\]$"
+        with self.assertRaisesRegex(ValueError, past):
+            stream.read_string_to_null()
+        reader.Position = 21  # the 20-byte file opened by path
+        with self.assertRaisesRegex(ValueError, past):
+            reader.read_string_to_null()
+        reader.Position = 20
+        self.assertEqual(reader.read_string_to_null(), "")
+        stream = EndianBinaryReader(io.BytesIO(b"B" * 40000))
+        self.assertEqual((len(stream.read_string_to_null()), stream.Position), (32766, 32767))
+        memory = EndianBinaryReader(b"B" * 40000)
+        self.assertEqual((len(memory.read_string_to_null()), memory.Position), (32767, 32767))
+        # A string with its NUL in reach reads the same from both.
+        for reader in (EndianBinaryReader(io.BytesIO(b"2021.3.2f1\0rest")), EndianBinaryReader(b"2021.3.2f1\0rest")):
+            self.assertEqual((reader.read_string_to_null(), reader.Position), ("2021.3.2f1", 11))
+
+    # Section 3: Environment.load and load_file.
+    def test_load_keys_each_file_by_path_and_basename(self):
+        (self.tmp / "sub").mkdir()
+        path = self.tmp / "sub" / "asset"
+        path.write_bytes(text_asset_file())
+        env = UnityPy.Environment()
+        quietly(env.load, [str(path)])
+        self.assertEqual(list(env.files), [str(path), "asset"])
+        self.assertEqual(len(env.objects), 2)
+        self.chdir(self.tmp / "sub")
+        env = UnityPy.Environment()
+        quietly(env.load, ["asset"])
+        self.assertEqual((list(env.files), len(env.objects)), (["asset"], 1))
+        # load tests and opens through fs, which strips a URL-style prefix (section 3), and keys by the path as
+        # given and its basename: `file:asset` is its own basename, `file:/d/asset` is not.
+        for given, keys in (("file:asset", ["file:asset"]), (f"file:{path}", [f"file:{path}", "asset"])):
+            env = UnityPy.Environment()
+            quietly(env.load, [given])
+            with self.subTest(given):
+                self.assertEqual((list(env.files), len(env.objects)), (keys, len(keys)))
+        # The basename is ntpath's, and so is the constructor's dirname: a backslash and a drive colon split a name,
+        # so a file so named in the cwd is keyed twice, and `path` is the part before it (`.` for a bare name).
+        for name, base, folder in (
+            ("a\\b.assets", "b.assets", "a"),
+            ("C:c.assets", "c.assets", "C:"),
+            ("p.assets", None, "."),
+        ):
+            (self.tmp / "sub" / name).write_bytes(text_asset_file())
+            env = UnityPy.Environment()
+            quietly(env.load, [name])
+            with self.subTest(name):
+                keys = [name] if base is None else [name, base]
+                self.assertEqual((list(env.files), len(env.objects)), (keys, len(keys)))
+                self.assertEqual(quietly(UnityPy.Environment, name).path, folder)
+
+    def test_load_file_tries_the_cwd_first(self):
+        (self.tmp / "cwd").mkdir()
+        (self.tmp / "env").mkdir()
+        (self.tmp / "cwd" / "x").write_bytes(text_asset_file("from the cwd"))
+        (self.tmp / "env" / "x").write_bytes(text_asset_file("from env.path"))
+        self.chdir(self.tmp / "cwd")
+        env = UnityPy.Environment(path=str(self.tmp / "env"))
+        loaded = quietly(env.load_file, "x")
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in loaded.objects.values()], ["from the cwd"])
+        (self.tmp / "cwd" / "x").unlink()
+        loaded = quietly(env.load_file, "x")
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in loaded.objects.values()], ["from env.path"])
+
+    # Sections 3, 4, 19.2: the case-insensitive walk takes `os.path.split`'s head and tail.
+    def test_the_case_insensitive_walk_takes_head_and_tail(self):
+        d = self.tmp / "d"
+        (d / "Resources" / "Sub").mkdir(parents=True)
+        for name in ("Resources/Foo.asset", "Resources/Sub/Bar.asset", "Top.asset"):
+            (d / name).write_bytes(text_asset_file(name))
+        walk = ImportHelper.find_sensitive_path
+        found = str(d / "Resources" / "Foo.asset")
+        # Exactly two components resolve; leading and trailing separators are stripped first.
+        for path in ("resources/foo.asset", "RESOURCES/FOO.ASSET", "/resources/foo.asset", "resources/foo.asset/"):
+            self.assertEqual(walk(str(d), path), found, path)
+        # A single name (an empty head) or a deeper path does not, even in exact case; nor a full path.
+        for path in ("Top.asset", "top.asset", "Resources/Sub/Bar.asset", f"{d}/resources/foo.asset"):
+            self.assertIsNone(walk(str(d), path), path)
+        # A directory the local disk does not have raises, `''` included.
+        for missing in ("", str(d / "nowhere")):
+            with self.assertRaises(FileNotFoundError):
+                walk(missing, "resources/foo.asset")
+
+        def names(path, name):
+            env = UnityPy.Environment(path=path)
+            loaded = quietly(env.load_file, name)
+            return None if loaded is None else [o.parse_as_dict()["m_Name"] for o in loaded.objects.values()]
+
+        self.chdir(self.tmp)
+        # load_file hands the walk the name joined to `path`, so a record in another case is not found.
+        self.assertIsNone(names(str(d), "resources/foo.asset"))
+        self.assertIsNone(names(str(d), "top.asset"))
+        self.assertEqual(names(str(d), "Resources/Foo.asset"), ["Resources/Foo.asset"])
+        # An absolute name is handed over as given: `/a/b` is looked up as `path/A/B`.
+        self.assertEqual(names(str(d), "/resources/foo.asset"), ["Resources/Foo.asset"])
+        # A relative one-component `path` P and a bare name n are looked up as P/P/n.
+        self.chdir(d)
+        self.assertIsNone(names("Resources", "foo.asset"))
+        (d / "Resources" / "resources").mkdir()
+        (d / "Resources" / "resources" / "FOO.asset").write_bytes(text_asset_file("doubled"))
+        self.assertEqual(names("Resources", "foo.Asset"), ["doubled"])
+        # A `path` the walk cannot list raises instead of returning None.
+        for path in ("", "nowhere"):
+            with self.subTest(path=path), self.assertRaises(FileNotFoundError):
+                names(path, "x.asset")
+
+    # Sections 3, 19.2: a filesystem other than the local one.
+    def test_a_non_local_fs_loads_only_through_load_and_streams(self):
+        from fsspec.implementations.memory import MemoryFileSystem
+
+        fs = MemoryFileSystem()  # one store per process: a folder of this test's own, removed after
+        root = f"/{self.tmp.name}"
+        fs.pipe(f"{root}/x.assets", text_asset_file("in memory"))
+        self.addCleanup(fs.rm, root, recursive=True)
+        # Section 3 states only the cases run here: each argument under a top-level folder the local disk lacks,
+        # unless said otherwise. Every other case through a non-local fs is not characterised.
+        for folder in (root, f"{root}-split", f"{root}-zip"):
+            self.assertEqual(os.path.dirname(folder), "/")
+            self.assertFalse(os.path.exists(folder), "nothing of that name on the local disk")
+        self.assertEqual(UnityPy.Environment(fs=fs).path, "")
+        # load_file tests a name with os.path and walks `path` with os.listdir, both on the local disk.
+        for name in (f"{root}/x.assets", "x.assets", "missing"):
+            with self.subTest(name), self.assertRaises(FileNotFoundError):
+                quietly(UnityPy.Environment(fs=fs).load_file, name)
+        with self.assertRaises(FileNotFoundError):
+            quietly(UnityPy.Environment(fs=fs, path=root).load_file, "x.assets")
+        # Where the local disk can list `path`, the walk finds nothing there and the name is None, with no error.
+        self.assertIsNone(quietly(UnityPy.Environment(fs=fs, path=str(self.tmp)).load_file, "x.assets"))
+        self.assertIsNone(quietly(UnityPy.Environment(fs=fs, path="/").load_file, f"{root[1:]}/x.assets"))
+        # The constructor takes a file through load_file, a folder through load_files' builtin open: a file raises
+        # naming its folder, which the local disk cannot list, and a folder naming its file.
+        for arg, named in ((f"{root}/x.assets", root), (root, f"{root}/x.assets")):
+            with self.subTest(arg), self.assertRaisesRegex(FileNotFoundError, f"No such file or directory: '{named}'$"):
+                quietly(UnityPy.Environment, arg, fs=fs)
+        # A file whose folder is an empty one the local disk can list loads nothing, with no error.
+        fs.pipe(f"{self.tmp}/x.assets", text_asset_file("y"))
+        self.addCleanup(fs.rm, f"{self.tmp}/x.assets")
+        self.assertEqual(os.listdir(self.tmp), [])
+        env = quietly(UnityPy.Environment, f"{self.tmp}/x.assets", fs=fs)
+        self.assertEqual((env.path, env.files, env.cabs), (str(self.tmp), {}, {}))
+        with self.assertRaisesRegex(FileNotFoundError, re.escape(f"No such file or directory: '{root}/x.assets'")):
+            quietly(UnityPy.Environment(fs=fs).load_folder, root)
+        # load (fs.exists, fs.open) and a stream do read through the filesystem.
+        env = UnityPy.Environment(fs=fs)
+        quietly(env.load, [f"{root}/x.assets"])
+        self.assertEqual(list(env.files), [f"{root}/x.assets", "x.assets"])
+        with fs.open(f"{root}/x.assets", "rb") as stream:
+            loaded = quietly(UnityPy.Environment(fs=fs).load_file, stream, name="x.assets")
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in loaded.objects.values()], ["in memory"])
+        # A .splitN name skips os.path and the builtin open: _load_split_file tests and reads its parts through fs,
+        # so it loads, keyed by its base path, from load_file, the constructor, load_folder and find_file.
+        split = f"{root}-split"
+        whole = text_asset_file("split")
+        fs.pipe({f"{split}/a.assets.split0": whole[:40], f"{split}/a.assets.split1": whole[40:]})
+        self.addCleanup(fs.rm, split, recursive=True)
+
+        def loaded(env):
+            return env.path, list(env.files), list(env.cabs), [o.parse_as_dict()["m_Name"] for o in env.objects]
+
+        for part in ("split0", "split1"):
+            with self.subTest(part):
+                env = quietly(UnityPy.Environment, f"{split}/a.assets.{part}", fs=fs)
+                self.assertEqual(loaded(env), (split, [f"{split}/a.assets"], ["a.assets"], ["split"]))
+                env = UnityPy.Environment(fs=fs)
+                self.assertEqual(type(quietly(env.load_file, f"{split}/a.assets.{part}")).__name__, "SerializedFile")
+                self.assertEqual(loaded(env), ("", [f"{split}/a.assets"], ["a.assets"], ["split"]))
+                env = UnityPy.Environment(fs=fs, path=split)
+                self.assertEqual(type(quietly(env.find_file, f"a.assets.{part}")).__name__, "SerializedFile")
+                self.assertEqual(loaded(env), (split, [f"{split}/a.assets"], ["a.assets"], []))  # a dependency
+        self.assertEqual(
+            loaded(quietly(UnityPy.Environment, split, fs=fs))[1:], ([f"{split}/a.assets"], ["a.assets"], ["split"])
+        )
+        env = UnityPy.Environment(fs=fs)
+        quietly(env.load_folder, split)
+        self.assertEqual(loaded(env)[1:], ([f"{split}/a.assets"], ["a.assets"], ["split"]))
+        # Any other file in the folder still meets the builtin open, from load_folder and from the constructor, a zip
+        # too (which the constructor loads through fs when it is the argument itself).
+        fs.pipe(f"{split}/sub/x.assets", text_asset_file("x"))
+        for call in (UnityPy.Environment(fs=fs).load_folder, lambda folder: UnityPy.Environment(folder, fs=fs)):
+            missing = re.escape(f"No such file or directory: '{split}/sub/x.assets'")
+            with self.assertRaisesRegex(FileNotFoundError, missing):
+                quietly(call, split)
+        fs.pipe(f"{root}-zip/z.zip", zip_with_a_directory())
+        self.addCleanup(fs.rm, f"{root}-zip", recursive=True)
+        self.assertEqual(
+            list(quietly(UnityPy.Environment, f"{root}-zip/z.zip", fs=fs).files), ["assets/", "assets/a.assets"]
+        )
+        with self.assertRaisesRegex(FileNotFoundError, re.escape(f"No such file or directory: '{root}-zip/z.zip'")):
+            quietly(UnityPy.Environment, f"{root}-zip", fs=fs)
+
+    # Sections 14.1, 14.3: file ids and the preload pass.
+    def test_negative_file_ids_index_from_the_end(self):
+        sf = load(text_asset_file(), env=UnityPy.Environment(path=str(self.tmp)))[0]
+        self.assertEqual(sf.externals, [])
+        with self.assertRaises(IndexError):
+            PPtr(m_FileID=-1, m_PathID=1, assetsfile=sf).deref()
+        sf.externals = [SimpleNamespace(path="archive:/CAB-first/CAB-first"), SimpleNamespace(path="archive:/x/y")]
+        missed = f" not found in {re.escape(str(self.tmp))}$"
+        with self.assertRaisesRegex(FileNotFoundError, "^File cab-first" + missed):
+            PPtr(m_FileID=-1, m_PathID=1, assetsfile=sf).deref()  # externals[-2]
+        # A record nothing answers: find_file raises its own error, naming the last component lower-cased and
+        # Environment.path, never deref's "Failed to resolve pointer" (which needs find_file to return None).
+        for record in ("archive:/CAB-Miss/CAB-Miss", "assets/Missing.Assets", "Sub/Missing.assets"):
+            sf.externals = [SimpleNamespace(path=record)]
+            component = re.escape(record.rsplit("/")[-1].lower())
+            with self.subTest(record), self.assertRaisesRegex(FileNotFoundError, f"^File {component}{missed}"):
+                PPtr(m_FileID=1, m_PathID=1, assetsfile=sf).deref()
+        sf.externals = []
+
+        def preload(pptr):
+            info = SimpleNamespace(asset=SimpleNamespace(path_id=1), preloadIndex=0, preloadSize=1)
+            helper = ContainerHelper(SimpleNamespace(m_Container=[("p", info)], m_PreloadTable=[pptr]))
+            helper.parse_preload_table()
+            return helper
+
+        preload(PPtr(m_FileID=5, m_PathID=1, assetsfile=sf))  # FileNotFoundError: skipped
+        preload(PPtr(m_FileID=0, m_PathID=99, assetsfile=sf))  # KeyError: skipped
+        with self.assertRaises(IndexError):
+            preload(PPtr(m_FileID=-1, m_PathID=1, assetsfile=sf))
+        # deref: no assetsfile raises ValueError before the path id is looked at; path id 0 raises ValueError; file
+        # id 0 is the pointer's own file; a missing path id is KeyError.
+        with self.assertRaisesRegex(ValueError, "^PPtr can't deref without an assetsfile!$"):
+            PPtr(m_FileID=0, m_PathID=0).deref()
+        with self.assertRaisesRegex(ValueError, "^PPtr can't deref with m_PathID == 0!$"):
+            PPtr(m_FileID=0, m_PathID=0, assetsfile=sf).deref()
+        # A file with no parent raises for an external pointer, naming the record.
+        orphan = load(text_asset_file(), env=UnityPy.Environment(path=str(self.tmp)))[0]
+        orphan.externals, orphan.parent = [SimpleNamespace(path="archive:/CAB-x/CAB-x")], None
+        with self.assertRaisesRegex(
+            FileNotFoundError, "^PPtr points to archive:/CAB-x/CAB-x but no container is set!$"
+        ):
+            PPtr(m_FileID=1, m_PathID=1, assetsfile=orphan).deref()
+        self.assertIs(PPtr(m_FileID=0, m_PathID=1, assetsfile=sf).deref(), sf.objects[1])
+        with self.assertRaisesRegex(KeyError, "^99$"):
+            PPtr(m_FileID=0, m_PathID=99, assetsfile=sf).deref()
+
+        # parse_preload_table: an entry whose range starts below 0, has a size of 0 or less, or runs past the table
+        # is skipped, and so is a null PPtr; a target's path is set only where its path_dict has none; the table is
+        # read once.
+        def table(entries, pptrs):
+            rows = [
+                (p, SimpleNamespace(asset=SimpleNamespace(path_id=9), preloadIndex=i, preloadSize=n))
+                for p, i, n in entries
+            ]
+            return ContainerHelper(SimpleNamespace(m_Container=rows, m_PreloadTable=pptrs))
+
+        own = PPtr(m_FileID=0, m_PathID=1, assetsfile=sf)
+        paths = sf._container.path_dict
+        paths.pop(1, None)
+        helper = table(
+            [("neg", -1, 1), ("zero", 0, 0), ("past", 1, 2), ("null", 1, 1), ("ok", 0, 1), ("later", 0, 1)],
+            [own, PPtr(m_FileID=0, m_PathID=0, assetsfile=sf)],
+        )
+        helper.parse_preload_table()
+        self.assertEqual((paths.get(1), helper._preload_table), ("ok", None))
+        paths[1] = "kept"
+        table([("x", 0, 1)], [own]).parse_preload_table()
+        self.assertEqual(paths.pop(1), "kept")
+        # Any other failure escapes: a target that is a raw reader (AttributeError), a loader OSError.
+        load(b"\x01" * 30, name="raw.bin", env=sf.environment)
+        (self.tmp / "dir.assets").mkdir()
+        for external, error in (("raw.bin", AttributeError), ("dir.assets", IsADirectoryError)):
+            sf.externals = [SimpleNamespace(path=external)]
+            with self.subTest(external), self.assertRaises(error):
+                table([("x", 0, 1)], [PPtr(m_FileID=1, m_PathID=1, assetsfile=sf)]).parse_preload_table()
+        sf.externals = []
+        # deref's upper guard: a file id past the externals raises FileNotFoundError, before the parent is looked at.
+        sf.externals = [SimpleNamespace(path="a"), SimpleNamespace(path="b")]
+        for file_id, file in ((3, sf), (2, orphan)):
+            with (
+                self.subTest(file_id=file_id),
+                self.assertRaisesRegex(FileNotFoundError, "^Failed to resolve pointer - invalid m_FileID!$"),
+            ):
+                PPtr(m_FileID=file_id, m_PathID=1, assetsfile=file).deref()
+        # What the loop or find_file finds is used whatever it holds: a None (a zip's own key) raises
+        # FileNotFoundError naming the file id; a raw reader (by key, or a registry hit on a .resS or on CAB ""), a
+        # BundleFile or a WebFile has no `objects` and raises AttributeError.
+        env = sf.environment
+        load(b"\x02" * 30, name="dir/CAB-r.resS", env=env)
+        load(S.fs_bundle([(b"CAB-b", text_asset_file(), 4)]), name="b.bundle", env=env)
+        load(S.web_file([(b"w.txt", b"web")]), name="w.data", env=env)
+        quietly(env.load_file, zip_with_a_directory(), name="z.zip")
+        self.assertEqual(env.files["z.zip"], None)
+        for record, error, message in (
+            ("archive:/CAB-x/RAW.bin", AttributeError, "'EndianBinaryReader_Memoryview' object has no attribute"),
+            ("archive:/CAB-r/CAB-r.resS", AttributeError, "'EndianBinaryReader_Memoryview' object has no attribute"),
+            ("assets/", AttributeError, "'EndianBinaryReader_Streamable' object has no attribute 'objects'$"),
+            ("b.bundle", AttributeError, "^'BundleFile' object has no attribute 'objects'$"),
+            ("w.data", AttributeError, "^'WebFile' object has no attribute 'objects'$"),
+            ("z.zip", FileNotFoundError, "^Failed to resolve pointer - 1 not found!$"),
+        ):
+            sf.externals = [SimpleNamespace(path=record)]
+            with self.subTest(record), self.assertRaisesRegex(error, message):
+                quietly(PPtr(m_FileID=1, m_PathID=1, assetsfile=sf).deref)
+        sf.externals = []
+
+    # Section 9: object-mode attribute names.
+    def test_object_mode_names_use_the_boost_rule(self):
+        root = S.Node("Base", "Base", [S.Node("int", "²ab"), S.Node("int", "2cd")])
+        sf = load(S.serialized_file([S.Type(114, root)], [S.Obj(1, 0, struct.pack("<ii", 1, 2))]))[0]
+        value = sf.objects[1].parse_as_object()
+        self.assertEqual((getattr(value, "²ab"), value.x2cd), (1, 2))
+        node = TypeTreeNode(m_Level=0, m_Type="int", m_Name="²ab", m_ByteSize=4, m_Version=1)
+        self.assertEqual(node._clean_name, "²ab", "UnityPyBoost: ASCII digits only")
+        self.assertEqual((node_clean_name("²ab"), TypeTreeHelper.clean_name("²ab")), ("x²ab", "x²ab"))
+
+    # Sections 9.2, 14.1, 19.2: how a class node becomes an object, on UnityPyBoost and on the pure-Python path.
+    def test_object_mode_builds_classes_as_parse_class_does(self):
+        def tree(root_type, fields):
+            nodes = [{"m_Level": 0, "m_Type": root_type, "m_Name": "Base", "m_ByteSize": -1, "m_Version": 1}]
+            nodes += [
+                {"m_Level": 1, "m_Type": "int", "m_Name": name, "m_ByteSize": 4, "m_Version": 1} for name in fields
+            ]
+            return TypeTreeNode.from_list(nodes)
+
+        def parse(root_type, fields, boost):
+            data = struct.pack(f"<{len(fields)}i", *range(1, len(fields) + 1))
+            size = len(data) if boost else None  # no byte_size: the pure-Python path
+            reader = EndianBinaryReader(data, "<")
+            return TypeTreeHelper.read_typetree(tree(root_type, fields), reader, False, size, check_read=boost)
+
+        # One class of each kind section 9.2.1 lists: a non-empty `__slots__` and no __dict__; a non-empty
+        # `__slots__` and the __dict__ Object gives; and `()` (found through the MRO) with a __dict__, which holds
+        # both the classes attrs builds with slots=False and those it builds with slots=True and no fields on
+        # Object (`GameManager`). test_object_mode.py checks the rule over every class.
+        self.assertEqual(classes.AssetDatabaseMetrics.__bases__, (object,))
+        self.assertTrue(classes.AssetDatabaseMetrics.__slots__)
+        self.assertEqual(classes.MarshallingTestObject.__mro__[1:3], (classes.Object, ABC))
+        self.assertTrue(classes.MarshallingTestObject.__slots__)
+        for slotted in (classes.EditorSettings, classes.StreamingInfo, classes.Vector3f):
+            self.assertTrue(slotted.__slots__, slotted)
+        for unslotted in (classes.MultiplayerManager, classes.TextAsset, classes.Texture2D, classes.GameManager):
+            self.assertEqual(unslotted.__slots__, (), unslotted)
+        self.assertEqual((classes.GameManager.__bases__[0], attrs.fields(classes.GameManager)), (classes.Object, ()))
+
+        metrics = ["totalAssetCount", "nonProAssetCount", "nonProAssetsCreatedAfterProLicense"]  # 1 required
+        roles = ["m_ActiveMultiplayerRole", "m_ActiveMultiplayerRoles"]  # both optional
+        self.assertEqual([f.default is attrs.NOTHING for f in attrs.fields(classes.AssetDatabaseMetrics)], [1, 0, 0])
+        cases = {
+            # (class, fields): (UnityPyBoost's result, the pure-Python path's)
+            ("AssetDatabaseMetrics", (*metrics,)): ("AssetDatabaseMetrics", "AssetDatabaseMetrics"),
+            # A missing optional field takes its default on both paths, a missing required one gives UnknownObject.
+            ("AssetDatabaseMetrics", (metrics[0],)): ("AssetDatabaseMetrics", "AssetDatabaseMetrics"),
+            ("AssetDatabaseMetrics", (*metrics[1:],)): ("UnknownObject", "UnknownObject"),
+            # An extra field: Boost gives up where `__slots__` is a non-empty tuple; Python's setattr fails without a
+            # __dict__.
+            ("AssetDatabaseMetrics", (*metrics, "m_Extra")): ("UnknownObject", AttributeError),
+            ("MarshallingTestObject", ("m_Prop", "m_Extra")): ("UnknownObject", "MarshallingTestObject"),
+            # Where `__slots__` is `()`, Boost keeps the extra as an attribute; Python wants every annotation present.
+            ("MultiplayerManager", (*roles, "m_Extra")): ("MultiplayerManager", "MultiplayerManager"),
+            ("MultiplayerManager", ("m_Extra",)): ("MultiplayerManager", "UnknownObject"),
+            # A field-less class attrs built with slots=True on Object has `()` too, so it keeps the extra.
+            ("GameManager", ("m_Extra",)): ("GameManager", "GameManager"),
+            ("AssetDatabaseMetrics", (metrics[0], "m_Extra")): ("UnknownObject", "UnknownObject"),
+            # A type the module lacks.
+            ("NoSuchClass", ("a",)): ("UnknownObject", "UnknownObject"),
+        }
+        for (root, fields), results in cases.items():
+            for boost, expected in zip((True, False), results, strict=True):
+                with self.subTest(root, fields=fields, boost=boost):
+                    if expected is AttributeError:
+                        with self.assertRaisesRegex(AttributeError, "object has no attribute 'm_Extra'"):
+                            parse(root, fields, boost)
+                        continue
+                    value = parse(root, fields, boost)
+                    self.assertEqual(type(value).__name__, expected)
+                    self.assertEqual(
+                        {name: getattr(value, name) for name in fields},
+                        dict(zip(fields, range(1, len(fields) + 1), strict=True)),
+                    )
+                    if expected == "UnknownObject":
+                        # Boost always keeps the node; the pure-Python path drops it for a type the module lacks.
+                        kept = boost or root != "NoSuchClass"
+                        self.assertEqual(value.get_type(), root if kept else None)
+        # ObjectReader passes byte_size, so every object-mode parse of a loaded file goes through Boost.
+        root = S.Node("AssetDatabaseMetrics", "Base", [S.Node("int", name) for name in [*metrics, "m_Extra"]])
+        sf = load(S.serialized_file([S.Type(114, root)], [S.Obj(1, 0, struct.pack("<4i", 1, 2, 3, 4))]))[0]
+        parsed = sf.objects[1].parse_as_object()
+        self.assertEqual((type(parsed), parsed.get_type(), parsed.m_Extra), (UnknownObject, "AssetDatabaseMetrics", 4))
+
+    # Section 18: BundleFile.save flags.
+    def test_bundle_save_flags(self):
+        bundle = load(S.fs_bundle([(b"CAB-test", text_asset_file(), 4)]))[0]
+        saved = bundle.save()
+        again = load(saved)[0]
+        self.assertEqual((int(again.dataflags), again._block_info_flags), (0x40, 0x40))
+        empty = load(S.fs_bundle([]))[0]
+        self.assertEqual(empty.files, {})
+        with self.assertRaisesRegex(AttributeError, "_block_info_flags"):
+            empty.save(packer="original")
+        # A bundle with no blocks can still list entries: it holds no data, so each reads b"", whatever size the
+        # directory states (an entry past the data reads short, section 13), and `original` raises for it too.
+        listed = load(S.fs_bundle([(b"e.resS", b"", 0), (b"f.resS", 0, 16, 0)]))[0]
+        self.assertEqual({name: bytes(f.bytes) for name, f in listed.files.items()}, {"e.resS": b"", "f.resS": b""})
+        with self.assertRaisesRegex(AttributeError, "_block_info_flags"):
+            listed.save(packer="original")
+
+    # Sections 12, 18, 19.2: save_fs XORs the flag set's whole encryption mask out when any bit of it is set.
+    def test_bundle_save_xors_the_whole_encryption_mask(self):
+        def header_flags(data):
+            end = data.index(b"\0") + 1 + 4  # signature, format
+            end = data.index(b"\0", data.index(b"\0", end) + 1) + 1  # player and engine versions
+            return struct.unpack_from(">I", data, end + 16)[0]  # after the size and the two blocks-info sizes
+
+        def saved(engine, extra):
+            bundle = load(S.fs_bundle([(b"CAB-test", text_asset_file(), 4)], engine=engine))[0]
+            bundle.dataflags = type(bundle.dataflags)(int(bundle.dataflags) | extra)
+            return type(bundle.dataflags), bundle.save(packer="original")
+
+        new, old = b"2021.3.2f1", b"2019.4.1f1"
+        cases = {
+            # ArchiveFlags' mask is 0x1400: one bit of it comes out as the other, which reads back as encrypted.
+            (new, 0x1000): (ArchiveFlags, 0x0443, LookupError),
+            (new, 0x0400): (ArchiveFlags, 0x1043, LookupError),
+            (new, 0x1400): (ArchiveFlags, 0x0043, None),
+            (new, 0x0200): (ArchiveFlags, 0x0243, None),  # BlockInfoNeedPaddingAtStart, kept
+            # ArchiveFlagsOld's mask is 0x200 alone, which is cleared; its other bits are not encryption.
+            (old, 0x0200): (ArchiveFlagsOld, 0x0043, None),
+            (old, 0x1000): (ArchiveFlagsOld, 0x1043, None),
+        }
+        for (engine, extra), (flag_set, flags, error) in cases.items():
+            with self.subTest(engine=engine, extra=hex(extra)):
+                kind, data = saved(engine, extra)
+                self.assertEqual((kind, hex(header_flags(data))), (flag_set, hex(flags)))
+                if error is None:
+                    self.assertEqual(list(load(data)[0].files), ["CAB-test"])
+                else:
+                    with self.assertRaisesRegex(error, "^The BundleFile is encrypted, but no key was provided"):
+                        load(data)
+        # The data blocks' own 0x100 bit is not in the mask, so `original` writes it back.
+        bundle = load(S.fs_bundle([(b"CAB-test", text_asset_file(), 4)]))[0]
+        bundle._block_info_flags |= 0x100
+        again = load(bundle.save(packer="original"))[0]
+        self.assertEqual((again._block_info_flags, list(again.files)), (0x102, ["CAB-test"]))
+
+    # Section 19.2: `GameObject.m_Components` raises on an empty list and on the old pair form.
+    def test_game_object_components_raise(self):
+        game_object = GameObject.__new__(GameObject)
+        pointer = PPtr(m_FileID=0, m_PathID=5)
+        object.__setattr__(game_object, "m_Component", [])
+        with self.assertRaises(IndexError):
+            _ = game_object.m_Components
+        object.__setattr__(game_object, "m_Component", [(4, pointer)])
+        with self.assertRaisesRegex(AttributeError, "m_GameObject"):
+            _ = game_object.m_Components
+        object.__setattr__(game_object, "m_Component", None)
+        self.assertEqual(game_object.m_Components, [])
+
+    # Sections 9.3, 10: the TPK's version lookup and TypeTreeNode.from_list.
+    def test_tpk_version_lookup_and_from_list(self):
+        items = [(UnityVersion.from_str("5.0.0f1"), "a"), (UnityVersion.from_str("2020.1.0f1"), "b")]
+        self.assertEqual(Tpk.get_item_for_version(UnityVersion.from_str("2021.3.2f1"), items), "b")
+        with self.assertRaisesRegex(ValueError, "^Could not find exact version$"):
+            Tpk.get_item_for_version(UnityVersion.from_str("4.0.0f1"), items)
+        with self.assertRaisesRegex(ValueError, "^Could not find exact version$"):
+            removed = [*items, (UnityVersion.from_str("2021.1.0f1"), None)]
+            Tpk.get_item_for_version(UnityVersion.from_str("2021.3.2f1"), removed)
+        rows = [{"m_Level": 0, "m_Type": "Base", "m_Name": "Base"}, {"m_Level": 1, "m_Type": "int", "m_Name": "a"}]
+        node = TypeTreeNode.from_list(rows)
+        self.assertEqual((node.m_ByteSize, node.m_Children[0].m_ByteSize), (0, 0))
+        with self.assertRaises(TypeError):
+            TypeTreeNode.from_list(
+                [
+                    {"m_Level": 0, "m_Type": "Base", "m_Name": "Base", "m_ByteSize": -1, "m_Version": 1},
+                    {"m_Level": 1, "m_Type": "int", "m_Name": "a"},
+                ]
+            )
+
+    # Sections 18, 19.1: a zero-size image through `image_to_texture2d` and `set_image`.
+    def test_zero_size_images_crash_etcpak(self):
+        # Each call that reaches etcpak runs in a forked child, which etcpak 0.9.14 kills with a fatal signal on empty
+        # data: SIGBUS or SIGSEGV, not the same in every run. The child is made non-dumpable first (PR_SET_DUMPABLE,
+        # 0), so the crash writes no core dump anywhere.
+        import ctypes
+        import signal
+
+        # Section 19.1 states this for a texture that is not Switch-swizzled: the cases run at platform 0 and at
+        # StandaloneWindows64 with no platform blob, and at Switch with a blob of one GOB per block. A Switch-swizzled
+        # texture is not characterised.
+        configs = ((0, None), (BuildTarget.StandaloneWindows64, None), (BuildTarget.Switch, [0] * 12))
+        self.assertEqual([TextureSwizzler.is_switch_swizzled(*config) for config in configs], [False] * 3)
+
+        def convert(target, size, config):
+            return Texture2DConverter.image_to_texture2d(Image.new("RGBA", size), TextureFormat[target], *config)
+
+        def crashes(target, width, height, config):
+            pid = os.fork()
+            if pid == 0:  # the child: the one call, then out without running the parent's cleanups
+                try:
+                    ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0)
+                    os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+                    convert(target, (width, height), config)
+                finally:
+                    os._exit(0)
+            status = os.waitpid(pid, 0)[1]
+            return os.WIFSIGNALED(status) and os.WTERMSIG(status) in (signal.SIGBUS, signal.SIGSEGV)
+
+        def write(target, size, config):
+            data, written = convert(target, size, config)
+            return data, written.name
+
+        etcpak_targets = ["DXT1", "DXT1Crunched", "DXT5", "DXT5Crunched", "BC4", "BC5", "ETC_RGB4", "ETC_RGB4Crunched"]
+        etcpak_targets += ["ETC_RGB4_3DS", "ETC2_RGB", "ETC2_RGBA1", "ETC2_RGBA8", "ETC2_RGBA8Crunched"]
+        sizes = ((0, 0), (0, 4), (4, 0))
+        astc = [f"ASTC_{kind}_{n}x{n}" for kind in ("RGB", "RGBA", "HDR") for n in (4, 5, 6, 8, 10, 12)]
+        self.assertEqual(sorted(astc), sorted(f.name for f in TextureFormat if f.name.startswith("ASTC")))
+        raising = {(0, 4): (6, 8, 10, 12), (4, 0): (6, 8, 10, 12), (0, 5): (4, 8, 10, 12), (5, 0): (4, 8, 10, 12)}
+        bc7 = "^params must be an instance of BC7CompressBlockParams$"
+        padded = "^height and width must be > 0$"
+        for config in configs:
+            cases = [(target, *size, config) for target in etcpak_targets for size in sizes]
+            self.assertEqual([case for case in cases if not crashes(*case)], [])
+            # BC7 raises before etcpak reads the data; where padding to whole blocks resizes an empty strip, Pillow
+            # raises first, for every one of these targets.
+            for size in sizes:
+                with self.subTest("BC7", size=size, config=config), self.assertRaisesRegex(ValueError, bc7):
+                    convert("BC7", size, config)
+            for target in [*etcpak_targets, "BC7"]:
+                for size in ((0, 5), (5, 0)):
+                    with (
+                        self.subTest(target=target, size=size, config=config),
+                        self.assertRaisesRegex(ValueError, padded),
+                    ):
+                        convert(target, size, config)
+
+            # Every ASTC target pads the same way: Pillow raises where the padding stretches the empty one-row (or
+            # one-column) strip it repeats to more than one (0×4 at blocks of 6 and up, 0×5 at 4 and at 8 and up; a
+            # resize to the same size returns a copy), and the rest write 0 bytes.
+            writing = {}
+            for target in astc:
+                block = int(target.rsplit("x", 1)[1])
+                for size in (*sizes, (0, 5), (5, 0)):
+                    with self.subTest(target=target, size=size, config=config):
+                        if block in raising.get(size, ()):
+                            with self.assertRaisesRegex(ValueError, padded):
+                                write(target, size, config)
+                        else:
+                            writing[target, size] = write(target, size, config)
+            self.assertEqual(len(writing), 18 * 5 - 3 * 4 * 4)
+            # The other targets tested write 0 bytes for these three sizes. Each target that writes does so under the
+            # format image_to_texture2d maps it to for a non-empty image.
+            for target in ("RGBA32", "ARGB32", "Alpha8", "R16", "RGB565"):
+                for size in sizes:
+                    writing[target, size] = write(target, size, config)
+            for (target, size), (data, tag) in writing.items():
+                with self.subTest(target=target, size=size, config=config):
+                    self.assertEqual((data, tag), (b"", write(target, (4, 4), config)[1]))
+            mapped = {"ARGB32": "RGBA32", "R16": "R8", "RGB565": "RGB24", "ASTC_HDR_4x4": "ASTC_RGBA_4x4"}
+            self.assertEqual({target: writing[target, (0, 0)][1] for target in mapped}, mapped)
+        # Texture2D.image of a texture with a zero side is that 0×0 image, and set_image to RGBA32 writes it with
+        # the image's size.
+        texture = Texture2D.__new__(Texture2D)
+        for field in attrs.fields(Texture2D):
+            object.__setattr__(texture, field.name, None)
+        texture.object_reader, texture.m_PlatformBlob = None, None
+        texture.m_Width, texture.m_Height, texture.m_TextureFormat = 4, 0, TextureFormat.RGBA32
+        texture.image_data = b"\x01" * 16
+        self.assertEqual((texture.image.mode, texture.image.size), ("RGBA", (0, 0)))
+        texture.set_image(Image.new("RGBA", (4, 0)), TextureFormat.RGBA32)
+        self.assertEqual((texture.image_data, texture.m_Width, texture.m_Height), (b"", 4, 0))
+
+    # Sections 15.1, 18, 19.2: the BC7 bytes `set_image` should write.
+    def test_bc7_set_image_reference_is_etcpak_default(self):
+        image = Image.new("RGBA", (6, 5))
+        image.putdata([(x * 40, y * 50, (x * y * 13) % 256, 255 - x * 30) for y in range(5) for x in range(6)])
+        with self.assertRaisesRegex(ValueError, "^params must be an instance of BC7CompressBlockParams$"):
+            Texture2DConverter.image_to_texture2d(image, TextureFormat.BC7)
+        # The call UnityPy means to make: default parameters for its None.
+        compress = etcpak.compress_bc7
+
+        def with_defaults(data, width, height, params):
+            self.assertIsNone(params)
+            return compress(data, width, height, etcpak.BC7CompressBlockParams())
+
+        with mock.patch.object(etcpak, "compress_bc7", with_defaults):
+            written, tag = Texture2DConverter.image_to_texture2d(image, TextureFormat.BC7)
+        self.assertEqual(tag, TextureFormat.BC7)
+        # The data it hands etcpak: the image flipped, padded to whole 4x4 blocks, as RGBA.
+        padded = Texture2DConverter.pad_image(image.transpose(Image.Transpose.FLIP_TOP_BOTTOM), 8, 8)
+        reference = compress(padded.tobytes("raw", "RGBA"), 8, 8, etcpak.BC7CompressBlockParams())
+        self.assertEqual(written, reference)
+        self.assertEqual(compress(padded.tobytes("raw", "RGBA"), 8, 8, etcpak.BC7CompressBlockParams()), reference)
+        decoded = Texture2DConverter.parse_image_data(written, 6, 5, TextureFormat.BC7, (2021, 3, 1, 3), 0)
+        self.assertEqual((decoded.mode, decoded.size), ("RGBA", (6, 5)))
+        # On a Switch-swizzled texture the image is padded to the swizzle's size, not to whole 4x4 blocks,
+        # compressed, and the compressed bytes swizzled with BC7's 4x4 block and the blob's GOBs.
+        blob = [0] * 8 + list((4).to_bytes(4, "little"))  # 1 << 4 = 16 GOBs per block
+        with mock.patch.object(etcpak, "compress_bc7", with_defaults):
+            switch, tag = Texture2DConverter.image_to_texture2d(image, TextureFormat.BC7, BuildTarget.Switch, blob)
+        self.assertEqual(tag, TextureFormat.BC7)
+        self.assertEqual(TextureSwizzler.TEXTURE_FORMAT_BLOCK_SIZE_MAP[TextureFormat.BC7], (4, 4))
+        width, height = TextureSwizzler.get_padded_texture_size(6, 5, 4, 4, 16)
+        self.assertEqual((width, height), (16, 512))
+        flipped = image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        linear = compress(
+            Texture2DConverter.pad_image(flipped, width, height).tobytes("raw", "RGBA"),
+            width,
+            height,
+            etcpak.BC7CompressBlockParams(),
+        )
+        self.assertEqual(switch, bytes(TextureSwizzler.swizzle(linear, width, height, 4, 4, 16)))
+        self.assertEqual((len(switch), len(written)), (8192, 64))
+        # The reader deswizzles it back: the same pixels as the linear write (its blocks hold the same texels).
+        version = (2021, 3, 1, 3)
+        back = Texture2DConverter.parse_image_data(switch, 6, 5, TextureFormat.BC7, version, BuildTarget.Switch, blob)
+        self.assertEqual(list(back.getdata()), list(decoded.getdata()))
+
+    # Sections 18, 19.2: `set_image` on a swizzled or byte-swapped platform.
+    def test_set_image_writes_linear_mips_and_never_swaps_for_xbox(self):
+        image = Image.new("RGBA", (64, 64))
+        image.putdata([(x * 4, y * 4, 128, 255) for y in range(64) for x in range(64)])
+        blob = [0] * 8 + list((4).to_bytes(4, "little"))  # 16 GOBs per block
+
+        def texture(platform, blob=None):
+            return SimpleNamespace(
+                m_TextureFormat=TextureFormat.RGBA32,
+                object_reader=SimpleNamespace(platform=platform),
+                m_PlatformBlob=blob,
+                m_MipMap=False,
+                m_MipCount=1,
+                m_StreamData=None,
+            )
+
+        switch = texture(BuildTarget.Switch, blob)
+        Texture2D.set_image(switch, image, TextureFormat.RGBA32, 2)
+        top, _ = Texture2DConverter.image_to_texture2d(image, TextureFormat.RGBA32, BuildTarget.Switch, blob)
+        mip, _ = Texture2DConverter.image_to_texture2d(
+            image.resize((32, 32), Image.Resampling.BICUBIC), TextureFormat.RGBA32
+        )
+        self.assertNotEqual(top, Texture2DConverter.image_to_texture2d(image, TextureFormat.RGBA32)[0], "swizzled")
+        self.assertEqual(switch.image_data, top + mip, "a swizzled top level, then a linear mip")
+        self.assertEqual((switch.m_MipCount, switch.m_MipMap), (2, True))
+        # A swizzled mip would be padded to whole GOB blocks: four times the linear one here.
+        swizzled_mip, _ = Texture2DConverter.image_to_texture2d(
+            image.resize((32, 32), Image.Resampling.BICUBIC), TextureFormat.RGBA32, BuildTarget.Switch, blob
+        )
+        self.assertEqual((len(mip), len(swizzled_mip)), (4096, 16384))
+        self.assertTrue(TextureSwizzler.is_switch_swizzled(BuildTarget.Switch, blob))
+        # XBOX360: the reader swaps DXT1's byte pairs, the writer never does, so a written texture reads back wrong.
+        xbox = texture(BuildTarget.XBOX360)
+        Texture2D.set_image(xbox, image, TextureFormat.DXT1)
+        self.assertEqual(xbox.image_data, Texture2DConverter.image_to_texture2d(image, TextureFormat.DXT1)[0])
+        args = (xbox.image_data, 64, 64, TextureFormat.DXT1, (2021, 3, 1, 3))
+        plain = Texture2DConverter.parse_image_data(*args, BuildTarget.StandaloneWindows64)
+        swapped = Texture2DConverter.parse_image_data(*args, BuildTarget.XBOX360)
+        self.assertNotEqual(list(swapped.getdata()), list(plain.getdata()))
+
+    # Sections 15.1, 18, 18.1, 19.2: `set_image` packs the image in the mode it opened in.
+    def test_set_image_packs_only_what_pillow_packs(self):
+        image = Image.new("RGBA", (8, 8))
+        image.putdata([(x * 30, y * 30, 7, 255 - x) for y in range(8) for x in range(8)])
+
+        def texture():
+            return SimpleNamespace(
+                m_TextureFormat=TextureFormat.DXT1,
+                object_reader=None,
+                m_PlatformBlob=None,
+                m_MipMap=False,
+                m_MipCount=1,
+                m_StreamData=None,
+            )
+
+        targets = {
+            TextureFormat.DXT1: "RGBA",
+            TextureFormat.RGB24: "RGB",
+            TextureFormat.R8: "R",
+            TextureFormat.Alpha8: "A",
+        }
+        # An indexed and a grey PNG, set from a path, keep the mode Image.open gives and raise for every target.
+        for mode in ("P", "L"):
+            path = self.tmp / f"{mode}.png"
+            image.convert(mode).save(path)
+            with Image.open(path) as opened:
+                self.assertEqual(opened.mode, mode)
+            for fmt, raw in targets.items():
+                with self.subTest(mode, target=fmt.name):
+                    with self.assertRaisesRegex(ValueError, f"^No packer found from {mode} to {raw}$"):
+                        Texture2D.set_image(texture(), str(path), fmt)
+                    # The reference: UnityPy's set_image of the image converted to RGBA, which packs.
+                    converted = texture()
+                    Texture2D.set_image(converted, Image.open(path).convert("RGBA"), fmt)
+                    reference = Texture2DConverter.image_to_texture2d(Image.open(path).convert("RGBA"), fmt)[0]
+                    self.assertEqual(converted.image_data, reference)
+        # RGB raises for Alpha8 alone; converted, its alpha is 255.
+        rgb = image.convert("RGB")
+        with self.assertRaisesRegex(ValueError, "^No packer found from RGB to A$"):
+            Texture2DConverter.image_to_texture2d(rgb, TextureFormat.Alpha8)
+        for fmt in set(targets) - {TextureFormat.Alpha8}:
+            Texture2DConverter.image_to_texture2d(rgb, fmt)
+        self.assertEqual(
+            Texture2DConverter.image_to_texture2d(rgb.convert("RGBA"), TextureFormat.Alpha8)[0], b"\xff" * 64
+        )
+        # LAB packs into Alpha8: Pillow's `A` band of LAB is its a* channel.
+        lab = Image.new("LAB", (8, 8), (10, 20, 30))
+        self.assertEqual(Texture2DConverter.image_to_texture2d(lab, TextureFormat.Alpha8)[0], bytes([20]) * 64)
+        # Modes Pillow cannot convert to RGBA either: Tier U.
+        for mode in ("BGR;15", "BGR;16", "BGR;24", "La"):
+            with self.subTest(mode), self.assertRaisesRegex(ValueError, "^conversion from .* not supported$"):
+                Image.new(mode, (2, 2)).convert("RGBA")
+
+    # Sections 14.2, 19.2: Texture2DArray decodes every slice with platform 0 and no blob.
+    def test_texture2darray_ignores_the_platform(self):
+        self.assertIn("m_PlatformBlob", attrs.fields_dict(Texture2D))
+        self.assertNotIn("m_PlatformBlob", attrs.fields_dict(Texture2DArray))
+        data = bytes(range(64)) * 2  # two 4x4 RGBA32 slices
+        seen = []
+        parse = Texture2DConverter.parse_image_data
+
+        def record(image_data, width, height, fmt, version, platform, blob=None, flip=True):
+            seen.append((platform, blob))
+            return parse(image_data, width, height, fmt, version, platform, blob, flip)
+
+        for platform in (BuildTarget.Switch, BuildTarget.XBOX360):
+            array = self.texture_array(GraphicsFormat.R8G8B8A8_UNorm, data, 4, 2, platform)
+            with mock.patch.object(Texture2DConverter, "parse_image_data", record):
+                images = Texture2DArray.images.fget(array)
+            self.assertEqual(
+                [image.tobytes() for image in images], [self.flipped_rgba(data[:64]), self.flipped_rgba(data[64:])]
+            )
+        self.assertEqual(seen, [(0, None)] * 4)
+
+    @staticmethod
+    def flipped_rgba(data):
+        return Image.frombytes("RGBA", (4, 4), data).transpose(Image.Transpose.FLIP_TOP_BOTTOM).tobytes()
+
+    def texture_array(self, graphics_format, data, width, depth, platform=0):
+        return SimpleNamespace(
+            m_Format=int(graphics_format),
+            image_data=data,
+            m_StreamData=None,
+            m_DataSize=len(data),
+            m_Depth=depth,
+            m_Width=width,
+            m_Height=width,
+            object_reader=SimpleNamespace(version=(2021, 3, 2, 0), platform=platform, assets_file=None),
+        )
+
+    # Sections 14.2, 19.2: a streamed array's data is never read, and the reference is the same bytes held inline.
+    def test_streamed_texture2darray_never_reads_its_resource(self):
+        data = bytes(range(64)) * 2  # two 4x4 RGBA32 slices, as the .resS would hold them
+        reads = []
+
+        def get_resource_data(path, assets_file, offset, size):
+            reads.append((path, offset, size))
+            return data[offset : offset + size]
+
+        streamed = self.texture_array(GraphicsFormat.R8G8B8A8_UNorm, b"", 4, 2)  # a parsed array's empty data
+        streamed.m_StreamData = StreamingInfo(path="archive:/CAB-x/CAB-x.resS", offset=0, size=len(data))
+        streamed.m_DataSize = len(data)
+        with mock.patch.object(ResourceReader, "get_resource_data", get_resource_data):
+            with self.assertRaisesRegex(ValueError, "^Texture2D has no image data$"):
+                Texture2DArray.images.fget(streamed)
+            self.assertEqual(reads, [], "`image_data` is b'', not None, so the .resS is never read")
+            # The reference: the bytes the .resS holds, decoded as an array holding them inline decodes them.
+            inline = Texture2DArray.images.fget(self.texture_array(GraphicsFormat.R8G8B8A8_UNorm, data, 4, 2))
+            streamed.image_data = None  # what the fallback needs to fire
+            read = Texture2DArray.images.fget(streamed)
+        self.assertEqual(reads, [("archive:/CAB-x/CAB-x.resS", 0, len(data))])
+        self.assertEqual([image.tobytes() for image in read], [image.tobytes() for image in inline])
+        self.assertEqual(
+            [image.tobytes() for image in inline], [self.flipped_rgba(data[:64]), self.flipped_rgba(data[64:])]
+        )
+
+    # Sections 14.2, 19.2: the 8-bit integer graphics formats map to 16-bit texture formats.
+    def test_texture2darray_8bit_integer_formats(self):
+        raises = {
+            "R8_UInt": ValueError,  # R16
+            "R8G8_UInt": KeyError,  # RG32
+            "R8G8B8A8_UInt": ValueError,  # RGBA64
+            "R8_SInt": ValueError,  # R16_SIGNED
+            "R8G8_SInt": KeyError,  # RG32_SIGNED
+            "R8G8B8_SInt": ValueError,  # RGB48_SIGNED
+            "R8G8B8A8_SInt": ValueError,  # RGBA64_SIGNED
+        }
+        for name, error in raises.items():
+            channels = name.count("8")
+            with self.subTest(name), self.assertRaises(error):
+                Texture2DArray.images.fget(self.texture_array(GraphicsFormat[name], bytes(16 * channels), 4, 1))
+        # A value GraphicsFormat lacks raises ValueError; a graphics format the map lacks, NotImplementedError.
+        from UnityPy.enums.GraphicsFormat import GRAPHICS_TO_TEXTURE_MAP
+
+        unmapped = next(g for g in GraphicsFormat if g not in GRAPHICS_TO_TEXTURE_MAP)
+        for value, error in ((99999, ValueError), (unmapped, NotImplementedError)):
+            with self.subTest(value=value), self.assertRaises(error):
+                Texture2DArray.images.fget(self.texture_array(value, bytes(64), 4, 1))
+        # R8G8B8_UInt decodes as RGB48, Pillow's 5-6-5 `RGB;16`: not the stored bytes.
+        data = bytes(range(48))
+        image = Texture2DArray.images.fget(self.texture_array(GraphicsFormat.R8G8B8_UInt, data, 4, 1))[0]
+        self.assertEqual(image.mode, "RGB")
+        self.assertNotEqual(
+            image.tobytes(), Image.frombytes("RGB", (4, 4), data).transpose(Image.Transpose.FLIP_TOP_BOTTOM).tobytes()
+        )
+
+    # Sections 15.7, 19.2: what Pillow saves under the container's extension.
+    def test_pillow_saves_by_extension_and_mode(self):
+        image = Image.new("RGBA", (4, 4), (1, 2, 3, 4))
+        cases = [
+            (".png", "RGBA", None),
+            (".tga", "RGBA", None),
+            (".jpg", "RGB", None),
+            (".jpg", "RGBA", OSError),
+            (".jpeg", "LA", OSError),
+            (".psd", "RGBA", KeyError),
+            (".xyz", "RGBA", ValueError),
+            ("", "RGBA", ValueError),
+        ]
+        for extension, mode, error in cases:
+            with self.subTest(extension=extension, mode=mode):
+                path = self.tmp / f"image{extension}"
+                if error is None:
+                    image.convert(mode).save(path)
+                    self.assertTrue(path.exists())
+                else:
+                    with self.assertRaises(error):
+                        image.convert(mode).save(path)
+        # A texture of non-zero width and zero height passes exportTexture2D's `m_Width` test, and its image is the
+        # 0×0 RGBA one Texture2D.image gives. Pillow saves that only under SGI's four extensions, `.icns` and `.ico`
+        # (a 6-byte header holding no image), and raises under every other extension it has a writer for.
+        import pillow_tables
+
+        texture = Texture2D.__new__(Texture2D)
+        for field in attrs.fields(Texture2D):
+            object.__setattr__(texture, field.name, None)
+        texture.object_reader = SimpleNamespace(path_id=1, assets_file=None)  # what exportTexture2D returns reads
+        texture.m_PlatformBlob = None
+        texture.m_Width, texture.m_Height, texture.m_TextureFormat = 4, 0, TextureFormat.RGBA32
+        texture.image_data = b"\x01" * 16
+        saved, raised = {}, []
+        for extension in [e for extensions in pillow_tables.writer_extensions().values() for e in extensions]:
+            try:
+                self.assertEqual(extractor.exportTexture2D(texture, str(self.tmp / "zero"), extension), [(None, 1)])
+            except (OSError, SystemError, ValueError):
+                raised.append(extension)
+            else:
+                saved[extension] = (self.tmp / f"zero{extension}").read_bytes()
+        self.assertEqual(len(saved) + len(raised), 51)
+        self.assertEqual(sorted(saved), [".bw", ".icns", ".ico", ".rgb", ".rgba", ".sgi"])
+        self.assertEqual({len(saved[e]) for e in (".bw", ".rgb", ".rgba", ".sgi")}, {512})
+        self.assertEqual((len(saved[".icns"]), saved[".ico"]), (7470, bytes.fromhex("000001000000")))
+        tile = (SystemError, "tile cannot extend outside image")
+        for extension, (error, message) in (
+            ("", tile),
+            (".png", tile),
+            (".tga", tile),
+            (".bmp", tile),
+            (".jpg", (ValueError, "cannot write empty image as JPEG")),
+        ):
+            with self.subTest("zero height", extension=extension), self.assertRaisesRegex(error, f"^{message}$"):
+                extractor.exportTexture2D(texture, str(self.tmp / "zero"), extension)
+
+    # Sections 15.7, 19.2: the names `export_obj(ref, fp, True, True)` gives, as exportGameObject means to call it.
+    def test_export_obj_appends_none_for_the_path_id(self):
+        sf = load(text_asset_file("hello", "world"), env=UnityPy.Environment(path=str(self.tmp)))[0]
+        (self.tmp / "go").mkdir()  # exportGameObject makes its folder first
+        exported = extractor.export_obj(PPtr(m_FileID=0, m_PathID=1, assetsfile=sf), str(self.tmp / "go"), True, True)
+        self.assertEqual(exported, [(sf, 1)])
+        self.assertEqual((self.tmp / "go" / "hello_None.txt").read_bytes(), b"world")
+
+    # Section 19.2: with `_None` in place of the path id, objects of one name share one file in the crawl's folder.
+    def test_export_obj_names_collide_without_the_path_id(self):
+        objects = [S.Obj(1, 0, S.s32("") + S.s32("first")), S.Obj(2, 0, S.s32("") + S.s32("second"))]
+        data = S.serialized_file([S.Type(49, TEXT_ASSET)], objects)
+        sf = load(data, env=UnityPy.Environment(path=str(self.tmp)))[0]
+        folder = self.tmp / "go"
+        folder.mkdir()
+        for path_id in (1, 2):  # two components with an empty m_Name, as most MonoBehaviours have
+            pointer = PPtr(m_FileID=0, m_PathID=path_id, assetsfile=sf)
+            self.assertEqual(extractor.export_obj(pointer, str(folder), True, True), [(sf, path_id)])
+        # Both land on `{fp}/_None.txt`; the later overwrites the earlier.
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["_None.txt"])
+        self.assertEqual((folder / "_None.txt").read_bytes(), b"second")
+        # The names exportGameObject means to give them, with the path id appended, are distinct.
+        self.assertEqual(len({f"_{reader.path_id}.txt" for reader in sf.objects.values()}), 2)
+
+    # Sections 16, 19.2: an AudioClip with no data.
+    def test_an_empty_audio_clip_follows_an_empty_resource_path(self):
+        env = UnityPy.Environment(path=str(self.tmp))
+        bundle = load(S.fs_bundle([(b"CAB-a", text_asset_file(), 4), (b"CAB-a.resS", b"\x11" * 16, 0)]), env=env)[0]
+        sf = bundle.files["CAB-a"]
+
+        def clip(resource, audio_data=b""):
+            return SimpleNamespace(
+                m_AudioData=audio_data,
+                m_Resource=resource,
+                object_reader=SimpleNamespace(assets_file=sf),
+                m_Name="clip",
+                m_Channels=1,
+                m_Frequency=44100,
+            )
+
+        empty = StreamedResource(m_Source="", m_Offset=0, m_Size=0)
+        self.assertTrue(empty, "a StreamedResource is truthy, even empty")
+        # The empty path is looked up, misses, is loaded relative to env.path, and opens the directory.
+        for size in (0, 16):
+            with self.subTest(size=size), self.assertRaises(IsADirectoryError):
+                AudioClipConverter.extract_audioclip_samples(
+                    clip(StreamedResource(m_Source="", m_Offset=0, m_Size=size))
+                )
+        # A real resource with no bytes reaches FMOD, which refuses it.
+        source = StreamedResource(m_Source="archive:/CAB-a/CAB-a.resS", m_Offset=0, m_Size=0)
+        with self.assertRaises(Exception) as raised:
+            AudioClipConverter.extract_audioclip_samples(clip(source))
+        self.assertEqual(type(raised.exception).__name__, "FmodError")
+        # A zip's directory entry registers CAB "" (section 3): the empty path reads b"" from it, which FMOD refuses.
+        quietly(env.load_file, zip_with_a_directory(), name="z.bin")
+        for size in (0, 16):
+            with self.subTest(cab="", size=size), self.assertRaises(Exception) as raised:
+                AudioClipConverter.extract_audioclip_samples(
+                    clip(StreamedResource(m_Source="", m_Offset=0, m_Size=size))
+                )
+            self.assertEqual(type(raised.exception).__name__, "FmodError")
+        # Only a clip with no m_Resource at all gets the ValueError.
+        with self.assertRaisesRegex(ValueError, "^AudioClip with neither m_AudioData nor m_Resource$"):
+            AudioClipConverter.extract_audioclip_samples(clip(None))
+        ogg = b"OggS" + bytes(12)
+        self.assertEqual(AudioClipConverter.extract_audioclip_samples(clip(None, ogg)), {"clip.ogg": ogg})
+
+    # Sections 3, 4, 19.2: a ZIP is found by content, and only bytes and buffered streams load.
+    def test_a_zip_loads_from_bytes_and_raises_from_a_path(self):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("inner.assets", text_asset_file())
+        data = bytearray(buffer.getvalue())
+        self.assertEqual(
+            ImportHelper.check_file_type(bytes(data))[0], FileType.ResourceFile, "zipfile's fifth byte is 20"
+        )
+        data[4] = 0  # "version needed to extract" 0: the NUL ends the signature at four bytes
+        data = bytes(data)
+        self.assertEqual(ImportHelper.check_file_type(data)[0], FileType.ZIP)
+        env = UnityPy.Environment()
+        self.assertIsNone(quietly(env.load_file, data, name="z.bin"))
+        self.assertEqual(
+            {name: type(f).__name__ for name, f in env.files.items()},
+            {"inner.assets": "SerializedFile", "z.bin": "NoneType"},
+        )
+        path = self.tmp / "z.bin"
+        path.write_bytes(data)
+        with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
+            quietly(UnityPy.Environment().load_file, str(path))
+        with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
+            quietly(UnityPy.load, str(path))
+        with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
+            quietly(UnityPy.Environment(path=str(self.tmp)).find_file, "z.bin")
+        # The constructor (UnityPy.load is the constructor) hands a path to load_file unless its name ends in .zip or
+        # .apk (case-sensitive): v.bin and Z.ZIP raise. A .zip or .apk path goes to load_zip_file, which opens a path
+        # string itself, and its members load, as load_zip_file of any path does. Environment.load hands load_file
+        # the LocalFileOpener fs.open gives, so it raises for every name, .zip and .apk included.
+        self.assertIs(UnityPy.load, UnityPy.Environment)
+        for name, loads in (("v.bin", False), ("Z.ZIP", False), ("y.zip", True), ("w.apk", True)):
+            (self.tmp / name).write_bytes(data)
+            with self.subTest(name, call="constructor"):
+                if loads:
+                    self.assertEqual(list(quietly(UnityPy.Environment, str(self.tmp / name)).files), ["inner.assets"])
+                else:
+                    with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
+                        quietly(UnityPy.Environment, str(self.tmp / name))
+            with (
+                self.subTest(name, call="load"),
+                self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"),
+            ):
+                quietly(UnityPy.Environment().load, [str(self.tmp / name)])
+            (self.tmp / name).unlink()
+        env = UnityPy.Environment()
+        quietly(env.load_zip_file, str(path))
+        self.assertEqual(list(env.files), ["inner.assets"])
+        with open(path, "rb") as stream:
+            env = quietly(UnityPy.load, stream)
+        self.assertEqual(sorted(type(f).__name__ for f in env.files.values()), ["NoneType", "SerializedFile"])
+        # Every name namelist() gives loads, directory entries included (zip -r and shutil.make_archive write them):
+        # each is an empty raw reader keyed by its name and registered as CAB "", the basename of a name ending in
+        # "/", so the last one registered holds it.
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("assets/", b"")
+            archive.writestr("assets/bin/", b"")
+            archive.writestr("assets/bin/a.assets", text_asset_file("a"))
+        data = bytearray(buffer.getvalue())
+        data[4] = 0
+        env = UnityPy.Environment()
+        quietly(env.load_file, bytes(data), name="dirs.bin")
+        self.assertEqual(
+            zipfile.ZipFile(io.BytesIO(bytes(data))).namelist(), ["assets/", "assets/bin/", "assets/bin/a.assets"]
+        )
+        self.assertEqual(
+            {name: type(f).__name__ for name, f in env.files.items()},
+            {
+                "assets/": "EndianBinaryReader_Streamable",
+                "assets/bin/": "EndianBinaryReader_Streamable",
+                "assets/bin/a.assets": "SerializedFile",
+                "dirs.bin": "NoneType",
+            },
+        )
+        self.assertEqual((len(env.files["assets/"].bytes), len(env.files["assets/bin/"].bytes)), (0, 0))
+        self.assertEqual(list(env.cabs), ["", "a.assets"])
+        self.assertIs(env.cabs[""], env.files["assets/bin/"])
+        # load_zip_file takes bytes, a bytearray or a memoryview, read-only or writable (each in an io.BytesIO), an
+        # io.BufferedIOBase (an io.BytesIO, the builtin open's io.BufferedReader) or a path string fs finds; anything
+        # else raises TypeError: a path fs does not find, fsspec's LocalFileOpener, an int. Through load_file each of
+        # the first five loads, with name= (a bytearray and a writable memoryview need it, the load_file row).
+        zipped = zip_with_a_directory()
+        (self.tmp / "dirs.zip").write_bytes(zipped)
+        members = ["assets/", "assets/a.assets"]
+
+        def given():
+            yield from (zipped, bytearray(zipped), memoryview(zipped), memoryview(bytearray(zipped)))
+            yield io.BytesIO(zipped)
+
+        with open(self.tmp / "dirs.zip", "rb") as opened:
+            for value in (*given(), opened, str(self.tmp / "dirs.zip")):
+                with self.subTest(type(value).__name__):
+                    env = UnityPy.Environment()
+                    quietly(env.load_zip_file, value)
+                    self.assertEqual(list(env.files), members)
+        for value in given():
+            with self.subTest(type(value).__name__, through="load_file"):
+                env = UnityPy.Environment()
+                self.assertIsNone(quietly(env.load_file, value, name="z.bin"))
+                self.assertEqual(list(env.files), [*members, "z.bin"])
+        with UnityPy.Environment().fs.open(str(self.tmp / "dirs.zip"), "rb") as local_opener:
+            for value in (str(self.tmp / "missing.zip"), local_opener, 3):
+                with self.subTest(type(value).__name__), self.assertRaisesRegex(TypeError, "^Unsupported type"):
+                    UnityPy.Environment().load_zip_file(value)
+        # A zip in a folder goes through detection from the stream the builtin open gives (load_files), which
+        # load_zip_file accepts: one whose fifth byte is NUL loads its members, registers CAB "" and holds None under
+        # its own path, where load_file of that path raises; Python's own zip (fifth byte 20) is a raw file.
+        folder = self.tmp / "zips"
+        folder.mkdir()
+        (folder / "z.bin").write_bytes(zipped)
+        (folder / "plain.zip").write_bytes(buffer.getvalue())
+        self.assertEqual(buffer.getvalue()[4], 20)
+        opened, real_open = [], open  # load_files never closes what it opens
+
+        def tracked(path, mode="r", *args, **kw):
+            stream = real_open(path, mode, *args, **kw)  # noqa: SIM115 - UnityPy reads it after the call
+            opened.append(stream)
+            return stream
+
+        loaded = {
+            "assets/": "EndianBinaryReader_Streamable",
+            "assets/a.assets": "SerializedFile",
+            str(folder / "z.bin"): "NoneType",
+            str(folder / "plain.zip"): "EndianBinaryReader_Streamable",
+        }
+        for how in ("constructor", "load_folder", "load_files"):
+            with self.subTest(how), mock.patch("builtins.open", tracked):
+                if how == "constructor":
+                    env = quietly(UnityPy.Environment, str(folder))
+                else:
+                    env = UnityPy.Environment()
+                    if how == "load_folder":
+                        quietly(env.load_folder, str(folder))
+                    else:
+                        quietly(env.load_files, [str(folder / "z.bin"), str(folder / "plain.zip")])
+                self.assertEqual({name: type(f).__name__ for name, f in env.files.items()}, loaded)
+                self.assertEqual(sorted(env.cabs), ["", "a.assets", "plain.zip"])
+        for stream in opened:
+            stream.close()
+        with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
+            quietly(UnityPy.Environment().load_file, str(folder / "z.bin"))
+
+    # Sections 2, 2.1: the package's aliases and every re-export section 2.1 lists.
+    def test_package_aliases_and_reexports(self):
+        from UnityPy.helpers import ArchiveStorageManager
+
+        self.assertIs(UnityPy.load, UnityPy.Environment)
+        self.assertIs(UnityPy.AssetsManager, UnityPy.Environment)
+        self.assertIs(UnityPy.set_assetbundle_decrypt_key, ArchiveStorageManager.set_assetbundle_decrypt_key)
+        text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
+        rows = next(body for header, body in inventory.tables(text) if header == ["package", "source", "members"])
+        self.assertEqual(len(rows), 31)
+        for package, _, members in rows:
+            module = __import__(package.strip("`"), fromlist=["_"])
+            for member in re.findall(r"`([A-Za-z_0-9]+)`", members):
+                with self.subTest(package, member=member):
+                    value = getattr(module, member)
+                    self.assertFalse(isinstance(value, type(module)), "a re-export, not a submodule")
+        self.assertIsInstance(UnityPy.files.BundleFile, type)
+        self.assertTrue(callable(UnityPy.cli.update_tpk))
+        # helpers and export re-export only their own submodules; export leaves ShaderConverter out.
+        self.assertNotIn("ShaderConverter", UnityPy.export.__all__)
+        self.assertEqual(len(UnityPy.helpers.__all__), 6)
+
+    # Section 3: Environment.file, objects, assets, the CAB registry and find_file.
+    def test_environment_registry_and_find_file(self):
+        self.assertIsNone(UnityPy.Environment().typetree_generator)
+        one = quietly(UnityPy.Environment, text_asset_file())
+        self.assertIs(one.file, next(iter(one.files.values())), "set by the constructor for exactly one file")
+        for env in (quietly(UnityPy.Environment, text_asset_file(), text_asset_file("b")), UnityPy.Environment()):
+            self.assertFalse(hasattr(env, "file"))
+        later = UnityPy.Environment()
+        load(text_asset_file(), env=later)
+        self.assertFalse(hasattr(later, "file"), "load_file never sets it")
+        # Once set, it is never changed or removed: a later load_file leaves it on the first file.
+        first_file = one.file
+        load(text_asset_file("other"), env=one)
+        self.assertEqual((one.file, len(one.files)), (first_file, 2))
+        # It counts `files` entries, and two equal byte arguments share one key (their hash).
+        twice = quietly(UnityPy.Environment, text_asset_file(), text_asset_file())
+        self.assertEqual((len(twice.files), hasattr(twice, "file")), (1, True))
+        # objects and assets: depth-first in `files` order, dependencies left out.
+        env = UnityPy.Environment()
+        plain = load(text_asset_file("plain"), "plain.assets", env)[0]
+        quietly(env.load_file, text_asset_file("dependency"), name="dep.assets", is_dependency=True)
+        bundle = load(S.fs_bundle([(b"CAB-a", text_asset_file("in bundle"), 4), (b"CAB-a.resS", b"\x11" * 8, 0)]))[0]
+        quietly(env.load_file, S.fs_bundle([(b"CAB-a", text_asset_file("in bundle"), 4)]), name="b")
+        inner = env.files["b"].files["CAB-a"]
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in env.objects], ["plain", "in bundle"])
+        self.assertEqual(env.assets, [plain, inner])
+        self.assertEqual(len(bundle.files), 2)
+        # simplify_name is the lower-cased basename, extension kept; the registry is keyed by it.
+        from UnityPy.environment import simplify_name
+
+        self.assertEqual(simplify_name("dir\\Sub/CAB-AbC.resS"), "cab-abc.ress")
+        env = UnityPy.Environment()
+        first, second = object(), object()
+        env._container_index_built = True
+        env.register_cab("dir/Sub/CAB-AbC.resS", first)
+        self.assertFalse(env._container_index_built, "registering invalidates the container index")
+        self.assertIs(env.get_cab("other\\cab-abc.RESS"), first)
+        env.register_cab("elsewhere/cab-abc.ress", second)
+        self.assertEqual((list(env.cabs), env.get_cab("CAB-ABC.RESS")), (["cab-abc.ress"], second))
+        self.assertIsNone(env.get_cab("missing"))
+        # find_file: the registry, then path/name, then a walk of `path` built once.
+        d = self.tmp / "d"
+        (d / "sub").mkdir(parents=True)
+        (d / "Shared.Assets").write_bytes(text_asset_file("shared"))
+        (d / "sub" / "other.assets").write_bytes(text_asset_file("other"))
+        (d / "sub" / "xab.assets").write_bytes(text_asset_file("xab"))
+
+        def found(env, name):
+            got = quietly(env.find_file, name)
+            return got if got is None or got is first else [o.parse_as_dict()["m_Name"] for o in got.objects.values()]
+
+        env = UnityPy.Environment(path=str(d))
+        env.register_cab("CAB-registered", first)
+        self.assertIs(found(env, "cab-REGISTERED"), first)
+        self.assertEqual(found(env, "Shared.Assets"), ["shared"], "path/name")
+        self.assertEqual(found(env, "other.assets"), ["other"], "a suffix of a walked path")
+        self.assertEqual(found(env, "ab.assets"), ["xab"], "a suffix with no separator boundary")
+        # A name in another case misses the exact matches (the simplified one compares a bare name with full
+        # paths) and matches a simplified path by suffix: that path names no file, so load_file gives None.
+        self.assertIsNone(found(UnityPy.Environment(path=str(d)), "shared.assets"))
+        # When the basename on disk is all lower case, that simplified path is the file, so any case finds it.
+        (d / "sub" / "lower.assets").write_bytes(text_asset_file("lower"))
+        for name in ("LOWER.assets", "Lower.Assets", "sub/LOWER.ASSETS"):
+            with self.subTest(name):
+                self.assertEqual(found(UnityPy.Environment(path=str(d)), name), ["lower"])
+
+        # PPtr.deref hands find_file the record's basename lower-cased, so a file whose basename on disk has an
+        # upper-case letter is never found from disk, even by a record in its own case (section 19.2), while one
+        # in lower case is found by a record in any case. A file already loaded is found through the registry.
+        def deref(record, env):
+            main = load(text_asset_file("main"), "main.assets", env)[0]
+            main.externals = [SimpleNamespace(path=record)]
+            return PPtr(m_FileID=1, m_PathID=1, assetsfile=main).deref().parse_as_dict()["m_Name"]
+
+        for record in ("Shared.Assets", "archive:/x/Shared.Assets"):
+            with (
+                self.subTest(record),
+                self.assertRaisesRegex(
+                    FileNotFoundError, f"^Failed to resolve pointer - {re.escape(record)} not found!$"
+                ),
+            ):
+                deref(record, UnityPy.Environment(path=str(d)))
+        for record in ("lower.assets", "assets/sub/LOWER.Assets", "archive:/CAB-x/Lower.ASSETS"):
+            with self.subTest(record):
+                self.assertEqual(deref(record, UnityPy.Environment(path=str(d))), "lower")
+        # A file loaded by path is keyed by its full path, so deref's loop over `files` misses it and the registry
+        # (find_file's first step, by CAB name) finds it; with its registry entry removed, deref raises.
+        preloaded = UnityPy.Environment(path=str(d))
+        quietly(preloaded.load_file, str(d / "Shared.Assets"))
+        self.assertEqual((list(preloaded.files), list(preloaded.cabs)), ([str(d / "Shared.Assets")], ["shared.assets"]))
+        self.assertEqual(deref("Shared.Assets", preloaded), "shared")
+        preloaded.cabs.pop("shared.assets")
+        with self.assertRaisesRegex(FileNotFoundError, "^Failed to resolve pointer - Shared.Assets not found!$"):
+            deref("Shared.Assets", preloaded)
+        # The loop compares each key lower-cased (`key.lower() ==`), so a key in any case is found by name.
+        keyed = UnityPy.Environment(path=str(self.tmp))
+        load(text_asset_file("keyed"), "Shared.Assets", keyed)
+        keyed.cabs.pop("shared.assets")
+        self.assertEqual(deref("archive:/CAB-x/SHARED.assets", keyed), "keyed")
+        # find_file loads what it finds on disk as a dependency (is_dependency=True, its default), by path/name or by
+        # the walk, and so through deref: the file joins `files` and the registry, never `objects` or `assets`, and a
+        # bundle's entries inherit the flag. A file on disk detected as a ZIP (fifth byte NUL, section 4) raises
+        # load_file's TypeError; a zip as zipfile writes it (fifth byte 20) loads as a raw reader, which has no
+        # `objects`.
+        (d / "dep.assets").write_bytes(text_asset_file("dep"))
+        (d / "b.bundle").write_bytes(S.fs_bundle([(b"CAB-b", text_asset_file("in bundle"), 4)]))
+        (d / "z.zip").write_bytes(zip_with_a_directory())
+        dependency = UnityPy.Environment(path=str(d))
+        self.assertEqual(deref("archive:/CAB-x/dep.assets", dependency), "dep")  # path/name
+        self.assertEqual(deref("Other.Assets", dependency), "other")  # the walk
+        bundle = quietly(dependency.find_file, "b.bundle")
+        own = dependency.files["main.assets"]
+        disk = [str(d / "dep.assets"), str(d / "sub" / "other.assets"), str(d / "b.bundle")]
+        self.assertEqual(list(dependency.files), ["main.assets", *disk])
+        self.assertEqual([dependency.files[k].is_dependency for k in disk], [True, True, True])
+        self.assertEqual(
+            (bundle.files["CAB-b"].is_dependency, bundle.files["CAB-b"].objects[1].parse_as_dict()["m_Name"]),
+            (True, "in bundle"),
+        )
+        self.assertEqual(sorted(dependency.cabs), ["cab-b", "dep.assets", "main.assets", "other.assets"])
+        self.assertEqual(
+            ([o.parse_as_dict()["m_Name"] for o in dependency.objects], dependency.assets), (["main"], [own])
+        )
+        with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
+            deref("archive:/CAB-x/z.zip", dependency)
+        plain = io.BytesIO()
+        with zipfile.ZipFile(plain, "w") as archive:
+            archive.writestr("in.assets", text_asset_file("in"))
+        self.assertEqual(plain.getvalue()[4], 20)
+        (d / "p.zip").write_bytes(plain.getvalue())
+        with self.assertRaisesRegex(
+            AttributeError, "^'EndianBinaryReader_Streamable' object has no attribute 'objects'$"
+        ):
+            deref("archive:/CAB-x/p.zip", UnityPy.Environment(path=str(d)))
+        for name in ("dep.assets", "b.bundle", "z.zip", "p.zip"):
+            (d / name).unlink()
+        # A broken link the walk matches: the path/name step rejects it (fs.exists follows links), load_file's
+        # os.path.exists rejects the walked path, and find_sensitive_path finds nothing for it, so find_file returns
+        # None, loading nothing, and deref raises "Failed to resolve pointer" with the record's whole path.
+        broken = self.tmp / "broken"
+        (broken / "sub").mkdir(parents=True)
+        (broken / "gone.assets").symlink_to(broken / "nothing")
+        (broken / "sub" / "gone2.assets").symlink_to(broken / "nothing")
+        for name in ("gone.assets", "sub/gone2.assets", "gone2.assets"):
+            env = UnityPy.Environment(path=str(broken))
+            with self.subTest(name):
+                self.assertEqual((quietly(env.find_file, name), env.files), (None, {}))
+                self.assertEqual(
+                    sorted(env.local_files), [str(broken / "gone.assets"), str(broken / "sub" / "gone2.assets")]
+                )
+        for record in ("archive:/CAB-x/gone.assets", "archive:/CAB-x/sub/gone2.assets"):
+            with (
+                self.subTest(record),
+                self.assertRaisesRegex(
+                    FileNotFoundError, f"^Failed to resolve pointer - {re.escape(record)} not found!$"
+                ),
+            ):
+                deref(record, UnityPy.Environment(path=str(broken)))
+        # The suffix steps answer a name even where the file it names exists: beside sub/ab.assets, a root
+        # xab.assets answers ab.assets (the walk lists a folder's files before its subfolders), so a record in any
+        # case reads the wrong file (Tier C, section 19.2). As `path/name`, sub/ab.assets is found.
+        f = self.tmp / "f"
+        (f / "sub").mkdir(parents=True)
+        (f / "xab.assets").write_bytes(text_asset_file("xab"))
+        (f / "sub" / "ab.assets").write_bytes(text_asset_file("ab"))
+        self.assertEqual(found(UnityPy.Environment(path=str(f)), "ab.assets"), ["xab"])
+        self.assertEqual(found(UnityPy.Environment(path=str(f)), "sub/ab.assets"), ["ab"])
+        for record in ("ab.assets", "archive:/CAB-x/ab.assets", "AB.assets"):
+            with self.subTest(record):
+                self.assertEqual(deref(record, UnityPy.Environment(path=str(f))), "xab")
+        # Without xab.assets these records read sub/ab.assets: deref hands find_file the last component lower-cased,
+        # the name the Tier C reference matches at a separator, so `AB.assets`'s reference is sub/ab.assets.
+        (f / "xab.assets").unlink()
+        for record in ("ab.assets", "archive:/CAB-x/ab.assets", "AB.assets"):
+            with self.subTest(record, without="xab.assets"):
+                self.assertEqual(deref(record, UnityPy.Environment(path=str(f))), "ab")
+        # The Tier B retry matches the exact basename, not find_file's suffix match: beside sub/Shared.Assets,
+        # find_file("Shared.Assets") loads MyShared.Assets, the walk listing a folder's files first.
+        e = self.tmp / "e"
+        (e / "sub").mkdir(parents=True)
+        (e / "MyShared.Assets").write_bytes(text_asset_file("my-shared"))
+        (e / "sub" / "Shared.Assets").write_bytes(text_asset_file("sub-shared"))
+        self.assertEqual(found(UnityPy.Environment(path=str(e)), "Shared.Assets"), ["my-shared"])
+        with self.assertRaisesRegex(FileNotFoundError, "Shared.Assets not found!$"):
+            deref("Shared.Assets", UnityPy.Environment(path=str(e)))
+        # find_file's walk is section 3's (os.scandir order, each folder's files first): its list of paths, and the
+        # first of two same-named files in it answers the name.
+        tree = walk_tree(self.tmp)
+        walking = UnityPy.Environment(path=str(tree))
+        self.assertEqual(found(walking, "z.assets"), ["s1-inner-z"])
+        order = scandir_walk(tree)
+        self.assertEqual(walking.local_files, order)
+        first_walked = min(("s1", "s2"), key=lambda s: order.index(str(tree / s / "ab.assets")))
+        self.assertEqual(found(UnityPy.Environment(path=str(tree)), "ab.assets"), [f"{first_walked}-ab"])
+        (d / "sub" / "lower.assets").unlink()
+        with self.assertRaisesRegex(FileNotFoundError, "File missing.assets not found in"):
+            found(env, "missing.assets")
+        # The miss names the name as given, in its own case.
+        with self.assertRaisesRegex(FileNotFoundError, f"^File Missing.Assets not found in {re.escape(str(d))}$"):
+            found(UnityPy.Environment(path=str(d)), "Missing.Assets")
+        (d / "sub" / "late.assets").write_bytes(text_asset_file("late"))
+        with self.assertRaises(FileNotFoundError):
+            found(env, "late.assets")  # the walk is not built again
+        self.assertEqual(found(UnityPy.Environment(path=str(d)), "late.assets"), ["late"])
+
+    # Sections 3, 5.2: split files, folders, Environment.save and File's own attributes.
+    def test_split_files_folders_and_save(self):
+        from fsspec.implementations.memory import MemoryFileSystem
+        from UnityPy.environment import reSplit
+        from UnityPy.files import File
+
+        self.assertEqual(reSplit.pattern, r"(.*?([^\/\\]+?))\.split\d+")
+        self.assertEqual(reSplit.match("a/b.c.split12").groups(), ("a/b.c", "b.c"))
+        # re.match anchors only the start: `.split` and digits anywhere make the path a split part.
+        self.assertEqual(reSplit.match("d/a.assets.split0.bak").groups(), ("d/a.assets", "a.assets"))
+        self.assertEqual(reSplit.match("d/dir.split1/inner.assets").groups(), ("d/dir", "dir"))
+        d = self.tmp / "d"
+        (d / "sub").mkdir(parents=True)
+        data = text_asset_file("split")
+        half = len(data) // 2
+        (d / "big.split0").write_bytes(data[:half])
+        (d / "big.split1").write_bytes(data[half:])
+        (d / "big.split3").write_bytes(b"after a gap")
+        (d / "nozero.split1").write_bytes(b"one")
+        (d / "nozero.split2").write_bytes(b"two")
+        env = UnityPy.Environment(path=str(d))
+        # Up to the first missing part after split0; a missing split0 is skipped.
+        self.assertEqual(env._load_split_file(str(d / "big")), data)
+        self.assertEqual(env._load_split_file(str(d / "nozero")), b"onetwo")
+        loaded = quietly(env.load_file, str(d / "big.split1"))
+        self.assertEqual(
+            (list(env.files), [o.parse_as_dict()["m_Name"] for o in loaded.objects.values()]),
+            ([str(d / "big")], ["split"]),
+        )
+        # At most 999 parts, split0 to split998.
+        fs = MemoryFileSystem()
+        root = f"/{self.tmp.name}-parts"
+        self.addCleanup(fs.rm, root, recursive=True)
+        for i in range(1001):
+            fs.pipe(f"{root}/p.split{i}", b"x")
+        self.assertEqual(len(UnityPy.Environment(fs=fs)._load_split_file(f"{root}/p")), 999)
+        # load_files (load_assets with the builtin open) merges split members once per base path. UnityPy never
+        # closes what it opens there, so the files are closed here.
+        (d / "sub" / "plain.assets").write_bytes(text_asset_file("plain"))
+        opened, real_open = [], open  # the real one, taken before builtins.open is patched to `tracked`
+
+        def tracked(path, mode="r", *args, **kw):
+            stream = real_open(path, mode, *args, **kw)  # noqa: SIM115 - UnityPy reads it after the call
+            opened.append(stream)
+            return stream
+
+        env = UnityPy.Environment()
+        with mock.patch("builtins.open", tracked):
+            quietly(env.load_files, [str(d / "big.split0"), str(d / "big.split1"), str(d / "sub" / "plain.assets")])
+        self.assertEqual(list(env.files), [str(d / "big"), str(d / "sub" / "plain.assets")])
+        # A path holding `.splitN` before its end: `a.assets.split0.bak` loads the merged parts and never reads
+        # itself, and `dir.split1/inner.assets` opens the folder `dir.split1` as a part (section 19.2).
+        whole = text_asset_file("merged")
+        (d / "a.assets.split0").write_bytes(whole[:40])
+        (d / "a.assets.split1").write_bytes(whole[40:])
+        (d / "a.assets.split0.bak").write_bytes(text_asset_file("bak"))
+        (d / "dir.split1").mkdir()
+        (d / "dir.split1" / "inner.assets").write_bytes(text_asset_file("inner"))
+        env = UnityPy.Environment()
+        loaded = quietly(env.load_file, str(d / "a.assets.split0.bak"))
+        self.assertEqual(
+            (list(env.files), [o.parse_as_dict()["m_Name"] for o in loaded.objects.values()]),
+            ([str(d / "a.assets")], ["merged"]),
+        )
+        with self.assertRaisesRegex(IsADirectoryError, re.escape(str(d / "dir.split1"))):
+            quietly(UnityPy.Environment().load_file, str(d / "dir.split1" / "inner.assets"))
+        # Resolution goes the same way, find_file handing the walked path to load_file: a record of the name
+        # `a.assets.split0.bak` resolves to the merged file, and one whose file sits in `dir.split1/` raises.
+        main = load(text_asset_file("main"), "main.assets", UnityPy.Environment(path=str(d)))[0]
+        for record, expected in (
+            ("a.assets.split0.bak", "merged"),
+            ("inner.assets", IsADirectoryError),
+            ("archive:/CAB-q/inner.assets", IsADirectoryError),
+            ("plain.assets", "plain"),
+        ):
+            main.externals = [SimpleNamespace(path=record)]
+            pointer = PPtr(m_FileID=1, m_PathID=1, assetsfile=main)
+            with self.subTest(record=record):
+                if isinstance(expected, str):
+                    self.assertEqual(quietly(pointer.deref).parse_as_dict()["m_Name"], expected)
+                else:
+                    with self.assertRaisesRegex(expected, re.escape(str(d / "dir.split1"))):
+                        quietly(pointer.deref)
+        # Split members of a zip: load_assets reads the parts through Environment.fs, relative to the cwd, never
+        # from the zip. With no such files the member loads as an empty raw reader, a CAB, and its objects are
+        # lost; with files at those paths, their bytes load in its place (section 19.2).
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("assets/bin/Data/s.assets.split0", whole[:40])
+            archive.writestr("assets/bin/Data/s.assets.split1", whole[40:])
+            archive.writestr("assets/bin/Data/plain.assets", text_asset_file("plain"))
+        apk = self.tmp / "app.apk"
+        apk.write_bytes(buffer.getvalue())
+        cwd = self.tmp / "cwd"
+        cwd.mkdir()
+        self.chdir(cwd)
+
+        def from_zip():
+            from_bytes = UnityPy.Environment()
+            quietly(from_bytes.load_zip_file, buffer.getvalue())
+            for env in (from_bytes, quietly(UnityPy.Environment, str(apk))):
+                member = env.files["assets/bin/Data/s.assets"]
+                yield (
+                    list(env.files),
+                    sorted(env.cabs),
+                    type(member).__name__,
+                    sorted(o.parse_as_dict()["m_Name"] for o in env.objects),
+                )
+
+        keys = ["assets/bin/Data/s.assets", "assets/bin/Data/plain.assets"]
+        for got in from_zip():
+            self.assertEqual(got[:2], (keys, ["plain.assets", "s.assets"]))
+            self.assertEqual(got[2:], ("EndianBinaryReader_Memoryview", ["plain"]))
+        self.assertEqual(len(UnityPy.Environment()._load_split_file("assets/bin/Data/s.assets")), 0)
+        (cwd / "assets" / "bin" / "Data").mkdir(parents=True)
+        other = text_asset_file("from the disk")
+        (cwd / "assets" / "bin" / "Data" / "s.assets.split0").write_bytes(other[:30])
+        (cwd / "assets" / "bin" / "Data" / "s.assets.split1").write_bytes(other[30:])
+        for got in from_zip():
+            self.assertEqual(got[2:], ("SerializedFile", ["from the disk", "plain"]))
+        # load_folder: every file fs.walk finds, in its order, through load_files.
+        folder = self.tmp / "folder"
+        (folder / "b").mkdir(parents=True)
+        for name in ("z.assets", "a.assets", "b/m.assets"):
+            (folder / name).write_bytes(text_asset_file(name))
+        env = UnityPy.Environment()
+        with mock.patch("builtins.open", tracked):
+            quietly(env.load_folder, str(folder))
+        for stream in opened:
+            stream.close()
+        walked = ["/".join([root, f]) for root, _, files in env.fs.walk(str(folder)) for f in files]
+        self.assertEqual(list(env.files), walked)
+        self.assertEqual(sorted(walked), sorted(str(folder / n) for n in ("z.assets", "a.assets", "b/m.assets")))
+        # The walk's order is os.scandir's, unsorted, each folder's files before its subfolders, depth-first
+        # (section 3, the walk): `files` follows it, and of two same-named files the later one holds the CAB.
+        tree = walk_tree(self.tmp)
+        env = UnityPy.Environment()
+        with mock.patch("builtins.open", tracked):
+            quietly(env.load_folder, str(tree))
+        for stream in opened:
+            stream.close()
+        order = scandir_walk(tree)
+        self.assertEqual(list(env.files), order)
+        later = max(str(tree / "s1" / "ab.assets"), str(tree / "s2" / "ab.assets"), key=order.index)
+        self.assertIs(env.cabs["ab.assets"], env.files[later])
+        # File: its attributes; mark_changed marks every File above; save writes the changed ones by basename.
+        env = UnityPy.Environment()
+        bundle = load(S.fs_bundle([(b"CAB-a", text_asset_file(), 4)]), "dir/b.bundle", env)[0]
+        sf = bundle.files["CAB-a"]
+        self.assertEqual(
+            (bundle.name, bundle.cab_file, bundle.is_changed, bundle.parent, bundle.environment),
+            ("b.bundle", "CAB-UnityPy_Mod.resS", False, env, env),
+        )
+        self.assertEqual((sf.name, sf.parent, sf.environment), ("CAB-a", bundle, env))
+        self.assertTrue(isinstance(bundle, File) and isinstance(sf, File))
+        sf.mark_changed()
+        self.assertEqual((sf.is_changed, bundle.is_changed), (True, True))
+        out = self.tmp / "out"
+        out.mkdir()
+        load(text_asset_file("unchanged"), "u.assets", env)
+        quietly(env.save, out_path=str(out))
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ["b.bundle"])
+        self.assertEqual((out / "b.bundle").read_bytes(), bundle.save(packer="none"))
+        # File.container: the union of its File children's containers.
+        info = SimpleNamespace(asset=PPtr(m_FileID=0, m_PathID=7), preloadIndex=0, preloadSize=0)
+        sf._container = ContainerHelper([("a/path", info), ("b/path", info), ("a/path", info)])
+        self.assertEqual(bundle.container, {"a/path": info.asset, "b/path": info.asset})
+        self.assertEqual((sorted(sf.container.keys()), sf.container.values()), (["a/path", "b/path"], [info.asset]))
+
+    # Section 3, the walk: the paths it yields, links, and folders it cannot list.
+    def test_the_walk_yields_absolute_paths_and_takes_links_for_files(self):
+        opened, real_open = [], open  # load_files never closes what it opens
+
+        def tracked(path, mode="r", *args, **kw):
+            stream = real_open(path, mode, *args, **kw)  # noqa: SIM115 - UnityPy reads it after the call
+            opened.append(stream)
+            return stream
+
+        self.addCleanup(lambda: [stream.close() for stream in opened])
+        patched = mock.patch("builtins.open", tracked)
+        patched.start()
+        self.addCleanup(patched.stop)
+
+        def keys(folder):
+            env = UnityPy.Environment()
+            quietly(env.load_folder, folder)
+            return list(env.files)
+
+        # Absolute posix paths, whatever form the folder takes: joined to the cwd, `./` and a trailing `/` dropped,
+        # `~` expanded, `..` kept. `files` holds them, find_file's walk lists them, and `path` stays as given.
+        work = self.tmp / "work"
+        (work / "rel" / "sub").mkdir(parents=True)
+        (work / "rel" / "a.bin").write_bytes(text_asset_file("a"))
+        (work / "rel" / "sub" / "b.bin").write_bytes(text_asset_file("b"))
+        self.chdir(work)
+        cwd = os.getcwd()
+        absolute = [f"{cwd}/rel/a.bin", f"{cwd}/rel/sub/b.bin"]
+        for folder in ("rel", "./rel", "rel/", f"{cwd}/rel"):
+            with self.subTest(folder):
+                self.assertEqual(keys(folder), absolute)
+        self.assertEqual(keys("rel/../rel"), [f"{cwd}/rel/../rel/a.bin", f"{cwd}/rel/../rel/sub/b.bin"])
+        with mock.patch.dict(os.environ, {"HOME": cwd}):
+            self.assertEqual(keys("~/rel"), absolute)
+        env = quietly(UnityPy.Environment, "rel")
+        self.assertEqual((env.path, list(env.files), sorted(env.cabs)), ("rel", absolute, ["a.bin", "b.bin"]))
+        env = UnityPy.Environment(path="rel")
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in quietly(env.find_file, "b.bin").objects.values()], ["b"])
+        self.assertEqual(env.local_files, absolute)
+
+        def names(file):
+            return [o.parse_as_dict()["m_Name"] for o in file.objects.values()]
+
+        # A `~name` the home lookup cannot expand stays as it is, relative, and so do the keys under it.
+        self.assertEqual(os.path.expanduser("~no-such-user-r12"), "~no-such-user-r12")
+        (work / "~no-such-user-r12").mkdir()
+        (work / "~no-such-user-r12" / "t.bin").write_bytes(text_asset_file("t"))
+        self.assertEqual(keys("~no-such-user-r12"), ["~no-such-user-r12/t.bin"])
+        # The folder given is followed: `info` stats a link's target, so a link given as the folder walks its target
+        # under the link's own path (find_file's walk of such a `path` too), a broken one yields nothing, and a link
+        # to a file walks as that file, so load_folder opens `link/` and raises. The constructor's isdir and isfile
+        # follow a link the same way: a link to a file loads under its own path, a broken one is ignored.
+        (work / "rellink").symlink_to(work / "rel")
+        (work / "brokenlink").symlink_to(work / "nothing")
+        (work / "filelink").symlink_to(work / "rel" / "a.bin")
+        linked = [f"{cwd}/rellink/a.bin", f"{cwd}/rellink/sub/b.bin"]
+        self.assertEqual(keys("rellink"), linked)
+        env = quietly(UnityPy.Environment, "rellink")
+        self.assertEqual((env.path, list(env.files)), ("rellink", linked))
+        env = UnityPy.Environment(path="rellink")
+        self.assertEqual((names(quietly(env.find_file, "b.bin")), env.local_files), (["b"], linked))
+        self.assertEqual(keys("brokenlink"), [])
+        env = quietly(UnityPy.Environment, "brokenlink")
+        self.assertEqual((env.path, env.files), (cwd, {}))
+        with self.assertRaisesRegex(NotADirectoryError, re.escape(f"'{cwd}/filelink/'")):
+            keys("filelink")
+        env = quietly(UnityPy.Environment, "filelink")
+        self.assertEqual((env.path, list(env.files), list(env.cabs)), (".", ["filelink"], ["filelink"]))
+        # URL-style prefixes: fs strips file://, file:, local:// and local:, and load_file's os.path tests do not. A
+        # folder or a zip so named loads, and so does a .splitN name, whose parts _load_split_file reads through fs.
+        # load_file misses any other prefixed name: None where os.listdir lists Environment.path, FileNotFoundError
+        # where Environment.path has a prefix. So a file argument with no folder part loads nothing, one with a
+        # folder part raises, wherever the file lies, and find_file from a prefixed `path` (deref through it) raises
+        # where its path/name step finds the file, a .splitN name aside, while a file only its walk finds loads.
+        zipped = io.BytesIO()
+        with zipfile.ZipFile(zipped, "w") as archive:
+            archive.writestr("in.assets", text_asset_file("in"))
+        (work / "x.zip").write_bytes(zipped.getvalue())
+        (work / "x.bin").write_bytes(text_asset_file("x"))
+
+        def unlistable(listed):
+            return f"^\\[Errno 2\\] No such file or directory: '{re.escape(listed)}'$"
+
+        for prefix in ("file://", "file:", "local://", "local:"):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(keys(prefix + "rel"), absolute)
+                env = quietly(UnityPy.Environment, prefix + "rel")
+                self.assertEqual((env.path, list(env.files)), (prefix + "rel", absolute))
+                env = quietly(UnityPy.Environment, prefix + "x.zip")
+                self.assertEqual((env.path, list(env.files)), (cwd, ["in.assets"]))
+                env = UnityPy.Environment()
+                quietly(env.load_zip_file, prefix + "x.zip")
+                self.assertEqual(list(env.files), ["in.assets"])
+                env = UnityPy.Environment()
+                self.assertEqual((quietly(env.load_file, prefix + "x.bin"), env.files), (None, {}))
+                env = UnityPy.Environment(path=prefix + "rel")
+                self.assertEqual(names(quietly(env.find_file, "b.bin")), ["b"])  # the walk
+                with self.assertRaisesRegex(FileNotFoundError, unlistable(prefix + "rel")):
+                    quietly(env.find_file, "a.bin")  # path/name
+                with self.assertRaisesRegex(FileNotFoundError, unlistable(prefix + "rel")):
+                    quietly(UnityPy.Environment(path=prefix + "rel").load_file, "missing.bin")
+                env = UnityPy.Environment(path=prefix + "rel")
+                main = load(text_asset_file("main"), "main.assets", env)[0]
+                main.externals = [SimpleNamespace(path="archive:/CAB-x/a.bin")]
+                with self.assertRaisesRegex(FileNotFoundError, unlistable(prefix + "rel")):
+                    PPtr(m_FileID=1, m_PathID=1, assetsfile=main).deref()
+        for argument in ("file:x.bin", "local:x.bin"):
+            env = quietly(UnityPy.Environment, argument)
+            self.assertEqual((env.path, env.files), (".", {}))
+        # A folder part decides, not where the file lies: x.bin is in the cwd, out.bin outside it.
+        (self.tmp / "out.bin").write_bytes(text_asset_file("out"))
+        for argument, listed in (
+            ("file://x.bin", "file:"),
+            ("local://x.bin", "local:"),
+            ("file:./x.bin", "file:."),
+            (f"file:{cwd}/x.bin", f"file:{cwd}"),
+            (f"file:{self.tmp}/out.bin", f"file:{self.tmp}"),
+        ):
+            with self.subTest(argument), self.assertRaisesRegex(FileNotFoundError, unlistable(listed)):
+                quietly(UnityPy.Environment, argument)
+        # A .splitN name loads through the split branch, keyed by its prefixed base path and registered as a CAB
+        # under that path's simplified name (ntpath.basename does not split at `file:`).
+        (work / "b.assets.split0").write_bytes(text_asset_file("b"))
+        (work / "d").mkdir()
+        whole = text_asset_file("d")
+        (work / "d" / "a.assets.split0").write_bytes(whole[:40])
+        (work / "d" / "a.assets.split1").write_bytes(whole[40:])
+
+        def loaded(env):
+            return env.path, list(env.files), sorted(env.cabs), [o.parse_as_dict()["m_Name"] for o in env.objects]
+
+        self.assertEqual(
+            loaded(quietly(UnityPy.Environment, "file:b.assets.split0")),
+            (".", ["file:b.assets"], ["file:b.assets"], ["b"]),
+        )
+        self.assertEqual(
+            loaded(quietly(UnityPy.Environment, f"file:{cwd}/d/a.assets.split0")),
+            (f"file:{cwd}/d", [f"file:{cwd}/d/a.assets"], ["a.assets"], ["d"]),
+        )
+        env = UnityPy.Environment()
+        self.assertEqual(type(quietly(env.load_file, "local://d/a.assets.split1")).__name__, "SerializedFile")
+        self.assertEqual(loaded(env)[1:], (["local://d/a.assets"], ["a.assets"], ["d"]))
+        # So find_file's path/name step from a prefixed `path` loads a .splitN name, and deref through it, where any
+        # other name raises.
+        (work / "d" / "b.bin").write_bytes(text_asset_file("b"))
+        for prefix in ("file://", "file:", "local://", "local:"):
+            folder = f"{prefix}{cwd}/d"
+            for part in ("a.assets.split0", "a.assets.split1"):
+                with self.subTest(prefix=prefix, part=part):
+                    env = UnityPy.Environment(path=folder)
+                    self.assertEqual(names(quietly(env.find_file, part)), ["d"])
+                    self.assertEqual((list(env.files), list(env.cabs)), ([f"{folder}/a.assets"], ["a.assets"]))
+            env = UnityPy.Environment(path=folder)
+            main = load(text_asset_file("main"), "main.assets", env)[0]
+            main.externals = [SimpleNamespace(path="archive:/CAB-x/a.assets.split0")]
+            pointed = quietly(PPtr(m_FileID=1, m_PathID=1, assetsfile=main).deref)
+            self.assertEqual(
+                (pointed.parse_as_dict()["m_Name"], list(env.files)), ("d", ["main.assets", f"{folder}/a.assets"])
+            )
+            with self.subTest(prefix=prefix), self.assertRaisesRegex(FileNotFoundError, unlistable(folder)):
+                quietly(UnityPy.Environment(path=folder).find_file, "b.bin")
+        # Links under the folder are files: a link to a folder is never entered and raises when opened, a broken one
+        # raises, a link to a file loads under its own path and name. find_file reaches a file under a linked folder
+        # only as path/name.
+        real = self.tmp / "real"
+        real.mkdir()
+        (real / "r.assets").write_bytes(text_asset_file("r"))
+        (self.tmp / "target.assets").write_bytes(text_asset_file("t"))
+        linked = {}
+        for case, target in (("folder", real), ("broken", self.tmp / "nothing"), ("file", self.tmp / "target.assets")):
+            linked[case] = self.tmp / f"{case}-link"
+            linked[case].mkdir()
+            (linked[case] / "Link.assets").symlink_to(target)
+            walk = list(UnityPy.Environment().fs.walk(str(linked[case])))
+            self.assertEqual(walk, [(str(linked[case]), [], ["Link.assets"])], case)
+        with self.assertRaisesRegex(IsADirectoryError, re.escape(str(linked["folder"] / "Link.assets"))):
+            keys(str(linked["folder"]))
+        with self.assertRaisesRegex(FileNotFoundError, re.escape(str(linked["broken"] / "Link.assets"))):
+            keys(str(linked["broken"]))
+        env = UnityPy.Environment()
+        quietly(env.load_folder, str(linked["file"]))
+        self.assertEqual((list(env.files), list(env.cabs)), ([str(linked["file"] / "Link.assets")], ["link.assets"]))
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in env.objects], ["t"])
+        with self.assertRaisesRegex(FileNotFoundError, "^File r.assets not found in "):
+            quietly(UnityPy.Environment(path=str(linked["folder"])).find_file, "r.assets")
+        found = quietly(UnityPy.Environment(path=str(linked["folder"])).find_file, "Link.assets/r.assets")
+        self.assertEqual([o.parse_as_dict()["m_Name"] for o in found.objects.values()], ["r"])
+        # A folder the walk cannot list yields nothing, with no error: a missing one, an unreadable subfolder (which
+        # only a user other than root cannot read). A file walks as itself under "", and opening path/ raises.
+        self.assertEqual(keys(str(self.tmp / "missing")), [])
+        perm = self.tmp / "perm"
+        (perm / "locked").mkdir(parents=True)
+        (perm / "ok.bin").write_bytes(text_asset_file("ok"))
+        (perm / "locked" / "x.bin").write_bytes(text_asset_file("x"))
+        os.chmod(perm / "locked", 0)
+        self.addCleanup(os.chmod, perm / "locked", 0o755)
+        readable = os.access(perm / "locked", os.R_OK)
+        self.assertEqual(keys(str(perm)), [str(perm / "ok.bin"), *([str(perm / "locked" / "x.bin")] * readable)])
+        with self.assertRaisesRegex(NotADirectoryError, re.escape(str(perm / "ok.bin") + "/")):
+            keys(str(perm / "ok.bin"))
+
+    # Sections 5.2, 19.2: File's iteration and dict-style methods.
+    def test_file_iteration_and_dict_access(self):
+        def two(name):
+            objects = [S.Obj(1, 0, S.s32(name) + S.s32("s")), S.Obj(2, 0, S.s32(f"{name}2") + S.s32("s"))]
+            return S.serialized_file([S.Type(49, TEXT_ASSET)], objects)
+
+        bundle = load(S.fs_bundle([(b"CAB-a", two("a"), 4), (b"CAB-a.resS", b"\x11" * 16, 0)]), "b")[0]
+        sf, raw = bundle.files["CAB-a"], bundle.files["CAB-a.resS"]
+        self.assertIsInstance(raw, EndianBinaryReader)
+        text_asset = [ClassIDType.TextAsset]
+        # A raw reader is skipped: the bundle's objects are the SerializedFile's two.
+        self.assertEqual(list(bundle.get_objects()), list(sf.objects.values()))
+        self.assertEqual(list(bundle.get_assets()), [sf])
+        self.assertEqual([o.path_id for o in bundle.get_filtered_objects(text_asset)], [1, 2])
+        self.assertEqual(list(bundle.get_filtered_objects([ClassIDType.Texture2D])), [])
+        # With no types, `return self.get_objects()` ends the generator: nothing.
+        self.assertEqual((list(bundle.get_filtered_objects()), list(bundle.get_filtered_objects([]))), ([], []))
+        # A SerializedFile's `files` is its objects: get_objects yields them through the ObjectReader branch,
+        # get_filtered_objects takes neither branch, and get_assets' `return self` ends its generator.
+        self.assertIs(sf.files, sf.objects)
+        self.assertEqual(list(sf.get_objects()), list(sf.objects.values()))
+        self.assertEqual((list(sf.get_filtered_objects(text_asset)), list(sf.get_assets())), ([], []))
+        # A nested container is iterated as `f.objects`, which BundleFile and WebFile lack.
+        inner = S.fs_bundle([(b"CAB-i", two("i"), 4)])
+        nested = load(S.fs_bundle([(b"inner", inner, 4), (b"CAB-o", two("o"), 4)]), "n")[0]
+        web = load(S.web_file([(b"inner", inner)]), "w")[0]
+        self.assertIsInstance(web.files["inner"], BundleFile)
+        for container in (nested, web):
+            for call in (container.get_objects, lambda c=container: c.get_filtered_objects(text_asset)):
+                with self.assertRaisesRegex(AttributeError, "'BundleFile' object has no attribute 'objects'"):
+                    list(call())
+        # get_assets recurses: the reference those raises are checked against.
+        self.assertEqual([f.name for f in nested.get_assets()], ["CAB-i", "CAB-o"])
+        # `get` is an attribute lookup; keys, items, values and [] are those of `files`.
+        self.assertEqual((bundle.get("CAB-a"), bundle.get("nope", 5)), (None, 5))
+        self.assertIs(bundle.get("files"), bundle.files)
+        self.assertEqual(list(bundle.keys()), ["CAB-a", "CAB-a.resS"])
+        self.assertEqual(list(bundle.values()), [sf, raw])
+        self.assertEqual(list(bundle.items()), [("CAB-a", sf), ("CAB-a.resS", raw)])
+        self.assertIs(bundle["CAB-a"], sf)
+        self.assertEqual((list(sf.keys()), sf[2]), ([1, 2], sf.objects[2]))
+
+    # Section 6: the codec helpers and tables.
+    def test_compression_helpers(self):
+        import lzma
+
+        import brotli
+        from UnityPy.enums import CompressionFlags as C
+        from UnityPy.helpers import CompressionHelper as H
+
+        data = bytes(range(256)) * 700  # 175 KiB, compressible
+        self.assertEqual(sorted(H.DECOMPRESSION_MAP), [C.NONE, C.LZMA, C.LZ4, C.LZ4HC, C.LZHAM])
+        self.assertEqual(sorted(H.COMPRESSION_MAP), [C.NONE, C.LZMA, C.LZ4, C.LZ4HC])
+        self.assertEqual(H.COMPRESSION_MAP[C.LZ4HC], H.compress_lz4)
+        self.assertEqual(H.DECOMPRESSION_MAP[C.LZ4HC], H.decompress_lz4)
+        self.assertEqual(
+            H.COMPRESSION_CHUNK_SIZE_MAP, {C.NONE: 0xFFFFFFFF, C.LZMA: 0xFFFFFFFF, C.LZ4: 0x20000, C.LZ4HC: 0x20000}
+        )
+        self.assertEqual((H.GZIP_MAGIC, H.BROTLI_MAGIC), (b"\x1f\x8b", b"brotli"))
+        # LZHAM and any other codec value.
+        with self.assertRaisesRegex(NotImplementedError, "LZHAM"):
+            H.decompress_lzham(b"x", 1)
+        bundle = load(S.fs_bundle([(b"CAB-test", text_asset_file(), 4)]))[0]
+        with self.assertRaisesRegex(NotImplementedError, "LZHAM"):
+            bundle.decompress_data(b"x", 1, 4)
+        for codec in (5, 6, 7, 8, 63, 0x40 | 9):
+            with self.subTest(codec=codec), self.assertRaisesRegex(ValueError, "^Unknown compression"):
+                bundle.decompress_data(b"x", 1, codec)
+        # LZMA: props 0x5D, an 8 MiB dictionary, lc 3 lp 0 pb 2, BT4, nice_len 123, an optional u64 size.
+        filters = [
+            {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 23, "lc": 3, "lp": 0, "pb": 2, "mf": lzma.MF_BT4}
+            | {"mode": lzma.MODE_NORMAL, "nice_len": 123}
+        ]
+        raw = lzma.compress(data, format=lzma.FORMAT_RAW, filters=filters)
+        self.assertEqual(H.compress_lzma(data), b"\x5d" + (1 << 23).to_bytes(4, "little") + raw)
+        self.assertEqual(H.compress_lzma(data, True), H.compress_lzma(data)[:5] + struct.pack("<Q", len(data)) + raw)
+        self.assertEqual(H.decompress_lzma(H.compress_lzma(data)), data)
+        self.assertEqual(H.decompress_lzma(H.compress_lzma(data, True), True), data)
+        # LZ4: high compression at level 9, no size prefix.
+        self.assertEqual(
+            H.compress_lz4(data), lz4.block.compress(data, mode="high_compression", compression=9, store_size=False)
+        )
+        # brotli at the library's default quality, 11; gzip at level 9 with the time as the header's mtime.
+        self.assertEqual(H.compress_brotli(data), brotli.compress(data, quality=11))
+        with mock.patch("time.time", return_value=1000.0):
+            first = H.compress_gzip(data)
+        with mock.patch("time.time", return_value=2000.0):
+            second = H.compress_gzip(data)
+        self.assertEqual((first[4:8], second[4:8]), (struct.pack("<I", 1000), struct.pack("<I", 2000)))
+        self.assertEqual((first[8], first[10:], H.decompress_gzip(first)), (2, second[10:], data))  # XFL 2: level 9
+        # chunk_based_compress: LZ4 in 128 KiB chunks, LZMA and none in one; a chunk that grows keeps its bytes
+        # with the codec bits cleared.
+        packed, blocks = H.chunk_based_compress(data, 0x42)
+        self.assertEqual([(size, flag) for size, _, flag in blocks], [(0x20000, 0x42), (len(data) - 0x20000, 0x42)])
+        self.assertEqual(lz4.block.decompress(packed[: blocks[0][1]], 0x20000), data[:0x20000])
+        self.assertEqual([(u, f) for u, _, f in H.chunk_based_compress(data, 1)[1]], [(len(data), 1)])
+        self.assertEqual(H.chunk_based_compress(data, 0x40), (data, [(len(data), len(data), 0x40)]))
+        noise = random.Random(3).randbytes(1000)
+        self.assertEqual(H.chunk_based_compress(noise, 0x42), (noise, [(1000, 1000, 0x40)]))
+        # `none` is one block whatever the payload, an empty one included; a compressing codec writes no block for
+        # an empty payload. Only a chunk that grows is stored: one that compresses to exactly its own size stays
+        # compressed, as a whole chunk and as the last part.
+        self.assertEqual(H.chunk_based_compress(b"", 0x40), (b"", [(0, 0, 0x40)]))
+        for flag in (1, 2, 3):
+            self.assertEqual(H.chunk_based_compress(b"", flag), (b"", []))
+        exact = random.Random(5).randbytes(130548) + bytes(0x20000 - 130548)
+        self.assertEqual(len(H.compress_lz4(exact)), 0x20000)
+        self.assertEqual([f for _, _, f in H.chunk_based_compress(exact, 3)[1]], [3])
+        self.assertEqual([f for _, _, f in H.chunk_based_compress(exact + b"x", 3)[1]], [3, 0])
+        with self.assertRaisesRegex(NotImplementedError, "No compression function"):
+            H.chunk_based_compress(data, 4)
+
+    # Sections 5.2, 6: WebFile sniffs gzip at offset 0 and brotli at 0x20, given a reader at its start.
+    def test_webfile_sniffs_its_codec(self):
+        from UnityPy.helpers import CompressionHelper as H
+
+        plain = S.web_file([(b"a.txt", b"hello")])
+        gz = WebFile(EndianBinaryReader(gzip.compress(plain)), None)
+        self.assertEqual((gz.packer, list(gz.files)), ("gzip", ["a.txt"]))
+        marked = bytes(0x20) + b"brotli" + bytes(10)
+        with mock.patch.object(H, "decompress_brotli", lambda data: plain) as stub:
+            br = WebFile(EndianBinaryReader(marked), None)
+        self.assertEqual((br.packer, list(br.files), stub(b"")), ("brotli", ["a.txt"], plain))
+        self.assertEqual(WebFile(EndianBinaryReader(plain), None).packer, "none")
+
+    # Sections 10, 11: the fallback version, the version exceptions and UnityVersion's string form.
+    def test_fallback_version_and_version_strings(self):
+        from UnityPy import config
+        from UnityPy.exceptions import UnityVersionFallbackError, UnityVersionFallbackWarning
+
+        self.assertTrue(issubclass(UnityVersionFallbackError, Exception))
+        self.assertTrue(issubclass(UnityVersionFallbackWarning, UserWarning))
+        for value in (None, 2019):
+            with (
+                self.subTest(value=value),
+                mock.patch.object(config, "FALLBACK_UNITY_VERSION", value),
+                self.assertRaises(UnityVersionFallbackError),
+            ):
+                config.get_fallback_version()
+        # The `once` filter UnityPy installs at import: one warning for three calls from three places, in a process
+        # of its own because a test runner replaces the warning filters.
+        code = (
+            "import UnityPy.config as c\n"
+            "c.FALLBACK_UNITY_VERSION = '2019.4.1f1'\n"
+            "a = c.get_fallback_version()\n"
+            "b = c.get_fallback_version()\n"
+            "d = c.get_fallback_version()\n"
+            "print(a, b, d)\n"
+        )
+        run = __import__("subprocess").run([sys.executable, "-B", "-c", code], capture_output=True, text=True)
+        self.assertEqual(run.stdout, "2019.4.1f1 2019.4.1f1 2019.4.1f1\n")
+        self.assertEqual(run.stderr.count("UnityVersionFallbackWarning"), 1, run.stderr)
+        # str(): above 5.x the build and its dot go; 5.x and below the type and its number; the postfix stays.
+        cases = {
+            "2019.4.15f1": ("2019.4f1", ""),
+            "2018.4.36": ("2018.4f0", ""),
+            "5.6.7f1": ("5.6.7", ""),
+            "2019.4.15f1-custom": ("2019.4f1-custom", "-custom"),
+            "2022.3.1f1c1": ("2022.3f1c1", "c1"),
+        }
+        for text, (printed, postfix) in cases.items():
+            with self.subTest(text):
+                version = UnityVersion.from_str(text)
+                self.assertEqual((str(version), version.postfix), (printed, postfix))
+
+    # Sections 15.1, 15.6, 23: texture helpers of Texture2DConverter and TextureSwizzler.
+    def test_texture_helpers(self):
+        import threading
+
+        size = Texture2DConverter.get_compressed_image_size
+        for fmt, padded in (
+            (TextureFormat.DXT1, (8, 4)),
+            (TextureFormat.BC7, (8, 4)),
+            (TextureFormat.ETC2_RGBA8, (8, 4)),
+            (TextureFormat.EAC_R, (8, 4)),
+            (TextureFormat.PVRTC_RGB2, (8, 4)),
+            (TextureFormat.PVRTC_RGBA4, (8, 4)),
+            (TextureFormat.ASTC_RGB_6x6, (6, 6)),
+            (TextureFormat.ASTC_RGBA_10x10, (10, 10)),
+            (TextureFormat.ATC_RGBA8, (5, 3)),
+            (TextureFormat.RGBA32, (5, 3)),
+        ):
+            with self.subTest(fmt.name):
+                self.assertEqual(size(5, 3, fmt), padded)
+        self.assertEqual(size(9, 3, TextureFormat.PVRTC_RGB2), (16, 4), "PVRTC 2 bpp: 8x4 blocks")
+        # parse_image_data's checks before any format: a zero side, no data, a number outside the enum.
+        parse, version = Texture2DConverter.parse_image_data, (2021, 3, 2, 0)
+        for width, height in ((0, 4), (4, 0)):
+            empty = parse(b"\x01" * 64, width, height, TextureFormat.RGBA32, version, 0)
+            self.assertEqual((empty.mode, empty.size), ("RGBA", (0, 0)))
+        with self.assertRaisesRegex(ValueError, "^Texture2D has no image data$"):
+            parse(b"", 4, 4, TextureFormat.RGBA32, version, 0)
+        with self.assertRaisesRegex(ValueError, "is not a valid TextureFormat"):
+            parse(b"\x01" * 64, 4, 4, 999, version, 0)
+        # pad_image: the last column and row, then the corner pixel.
+        image = Image.new("L", (2, 2))
+        image.putdata([1, 2, 3, 4])
+        self.assertEqual(
+            list(Texture2DConverter.pad_image(image, 4, 3).getdata()), [1, 2, 2, 2, 3, 4, 4, 4, 3, 4, 4, 4]
+        )
+        self.assertIs(Texture2DConverter.pad_image(image, 2, 2), image)
+        # The Xbox swap: byte pairs, a last odd byte kept.
+        self.assertEqual(
+            Texture2DConverter.swap_bytes_for_xbox(b"\x01\x02\x03\x04\x05"), bytearray(b"\x02\x01\x04\x03\x05")
+        )
+        self.assertEqual(
+            Texture2DConverter.XBOX_SWAP_FORMATS,
+            [
+                TextureFormat.RGB565,
+                TextureFormat.DXT1,
+                TextureFormat.DXT1Crunched,
+                TextureFormat.DXT5,
+                TextureFormat.DXT5Crunched,
+            ],
+        )
+        # ASTC: 16 bytes a block; data short of the blocks raises; one LDR context per thread and block size.
+        self.assertEqual(Texture2DConverter.calculate_astc_compressed_size(9, 5, (4, 4)), 3 * 2 * 16)
+        with self.assertRaisesRegex(ValueError, "Invalid ASTC data size"):
+            Texture2DConverter.astc(bytes(15), 4, 4, (4, 4))
+        context = Texture2DConverter.get_astc_context((4, 4))
+        self.assertIs(Texture2DConverter.get_astc_context((4, 4)), context)
+        self.assertIsNot(Texture2DConverter.get_astc_context((6, 6)), context)
+        other = []
+        thread = threading.Thread(target=lambda: other.append(Texture2DConverter.get_astc_context((4, 4))))
+        thread.start()
+        thread.join()
+        self.assertIsNot(other[0], context)
+        import astc_encoder
+
+        self.assertEqual((context.config.block_x, context.config.block_y), (4, 4))
+        self.assertEqual(context.config.profile, astc_encoder.ASTCProfile.LDR)
+        self.assertEqual(context.config.flags, astc_encoder.ASTCConfigFlags.USE_DECODE_UNORM8)
+        made = []
+        with (
+            mock.patch.object(astc_encoder, "ASTCConfig", lambda *a, **kw: made.append((a, kw)) or a[0]),
+            mock.patch.object(astc_encoder, "ASTCContext", lambda config: config),
+        ):
+            Texture2DConverter._get_astc_context.__wrapped__(0, (5, 5))
+        self.assertEqual(made[0][1]["quality"], 100)
+        # TextureSwizzler: the GOB, the blob, the padded size and the walk.
+        self.assertEqual(
+            (TextureSwizzler.GOB_X_TEXEL_COUNT, TextureSwizzler.GOB_Y_TEXEL_COUNT, TextureSwizzler.TEXEL_BYTE_SIZE),
+            (4, 8, 16),
+        )
+        self.assertEqual(
+            (TextureSwizzler.TEXELS_IN_GOB, sorted(TextureSwizzler.GOB_MAP)),
+            (32, [(x, y) for x in range(4) for y in range(8)]),
+        )
+        blob = [0] * 8 + list((3).to_bytes(4, "little"))
+        self.assertEqual(TextureSwizzler.get_switch_gobs_per_block(blob), 8)
+        self.assertTrue(TextureSwizzler.is_switch_swizzled(BuildTarget.Switch, blob))
+        self.assertFalse(TextureSwizzler.is_switch_swizzled(BuildTarget.Switch, [0] * 12), "one GOB per block")
+        self.assertFalse(TextureSwizzler.is_switch_swizzled(BuildTarget.Switch, blob[:11]), "under 12 bytes")
+        self.assertFalse(TextureSwizzler.is_switch_swizzled(BuildTarget.Android, blob))
+        self.assertEqual(TextureSwizzler.get_padded_texture_size(5, 9, 4, 4, 2), (16, 64))
+        self.assertEqual(len(TextureSwizzler.TEXTURE_FORMAT_BLOCK_SIZE_MAP), 29)
+        # set_image on a Switch-swizzled texture pads and swizzles through that table too, so a target whose written
+        # format the table lacks raises KeyError: the seven ETC targets (section 19.2). BC7 raises its own error.
+        raised = {}
+        for fmt in TextureFormat:
+            try:
+                Texture2DConverter.image_to_texture2d(Image.new("RGBA", (8, 8)), fmt, BuildTarget.Switch, blob)
+            except KeyError as e:
+                raised[fmt.name] = e.args[0].name
+            except Exception as e:  # noqa: BLE001 - every other raise is named below
+                raised[fmt.name] = type(e).__name__
+        written = {
+            "ETC_RGB4": "ETC_RGB4",
+            "ETC2_RGB": "ETC2_RGB",
+            "ETC2_RGBA1": "ETC2_RGBA8",
+            "ETC2_RGBA8": "ETC2_RGBA8",
+        }
+        written |= {"ETC_RGB4_3DS": "ETC_RGB4_3DS", "ETC_RGB4Crunched": "ETC_RGB4Crunched"}
+        self.assertEqual(raised, written | {"ETC2_RGBA8Crunched": "ETC2_RGBA8", "BC7": "ValueError"})
+        data = bytes(range(256)) * 4  # one block of 2 GOBs of RGBA32: 16 x 16 pixels, 1024 bytes
+        swizzled = TextureSwizzler.swizzle(data, 16, 16, 4, 1, 2)
+        self.assertNotEqual(swizzled, data)
+        self.assertEqual(TextureSwizzler.deswizzle(swizzled, 16, 16, 4, 1, 2), data)
+        # Only whole blocks of GOBs are walked: the rest of the output stays zero.
+        self.assertEqual(TextureSwizzler.deswizzle(data, 16, 8, 4, 1, 2), bytearray(len(data)))
+
+    # Section 16: what the dispatcher does before FMOD.
+    def test_audio_dispatch(self):
+        def clip(data, channels=0, frequency=0):
+            return SimpleNamespace(
+                m_AudioData=data,
+                m_Resource=None,
+                m_Name="c",
+                m_Channels=channels,
+                m_Frequency=frequency,
+                object_reader=None,
+            )
+
+        for data, name in (
+            (b"OggS" + bytes(8), "c.ogg"),
+            (b"RIFF" + bytes(8), "c.wav"),
+            (b"\0\0\0\x20ftypM4A ", "c.m4a"),
+        ):
+            with self.subTest(name):
+                self.assertEqual(AudioClipConverter.extract_audioclip_samples(clip(data)), {name: data})
+        calls = []
+        with mock.patch.object(
+            AudioClipConverter.fmod_toolkit, "raw_to_wav", lambda *a, **kw: calls.append((a, kw)) or {"done": b""}
+        ):
+            self.assertEqual(AudioClipConverter.extract_audioclip_samples(clip(b"FSB5" + bytes(8))), {"done": b""})
+            AudioClipConverter.extract_audioclip_samples(clip(b"FSB5", 1, 22050), convert_pcm_float=False)
+        self.assertEqual(calls[0], ((b"FSB5" + bytes(8), "c", 2, 44100), {"convert_pcm_float": True}))
+        self.assertEqual(calls[1], ((b"FSB5", "c", 1, 22050), {"convert_pcm_float": False}))
+        from UnityPy.enums.Audio import AUDIO_TYPE_EXTEMSION, AudioCompressionFormat, AudioType
+
+        # 22 entries written, 20 kept: the two IntEnums share values 1 and 2, and the later entry wins.
+        self.assertEqual(len(AUDIO_TYPE_EXTEMSION), 20)
+        self.assertEqual(
+            (AUDIO_TYPE_EXTEMSION[AudioType.MPEG], AUDIO_TYPE_EXTEMSION[AudioCompressionFormat.MP3]), (".mp3", ".fsb")
+        )
+        from UnityPy.classes import AudioClip
+
+        extension = {
+            fmt.name: AudioClip.extension.fget(SimpleNamespace(m_CompressionFormat=fmt))
+            for fmt in AudioCompressionFormat
+        }
+        self.assertEqual(
+            extension,
+            {
+                "PCM": ".fsb",
+                "Vorbis": ".fsb",
+                "ADPCM": ".fsb",
+                "MP3": ".fsb",
+                "VAG": ".vag",
+                "HEVAG": ".vag",
+                "XMA": ".wav",
+                "AAC": ".m4a",
+                "GCADPCM": ".fsb",
+                "ATRAC9": ".at9",
+            },
+        )
+        self.assertEqual(AudioClip.extension.fget(SimpleNamespace(m_CompressionFormat=11)), ".audioclip")
+
+    # Sections 14.1, 14.3: the base classes, the math records and PPtr.
+    def test_base_classes_and_records(self):
+        import copy
+
+        from UnityPy.classes import (
+            ColorRGBA,
+            Matrix3x4f,
+            Matrix4x4f,
+            Object,
+            Quaternionf,
+            TextAsset,
+            Vector2f,
+            Vector3f,
+            Vector4f,
+            float3,
+            float4,
+        )
+
+        self.assertEqual(
+            (Vector2f(), Vector3f(), Vector4f()), (Vector2f(0, 0), Vector3f(0, 0, 0), Vector4f(0, 0, 0, 0))
+        )
+        self.assertEqual((float3, float4), (Vector3f, Vector4f))
+        self.assertTrue(issubclass(Quaternionf, Vector4f))
+        self.assertEqual([f.name for f in attrs.fields(Matrix3x4f)], [f"e{r}{c}" for r in range(3) for c in range(4)])
+        self.assertEqual([f.name for f in attrs.fields(Matrix4x4f)], [f"e{r}{c}" for r in range(4) for c in range(4)])
+        self.assertEqual(ColorRGBA(), ColorRGBA(0, 0, 0, 1))
+        self.assertEqual(ColorRGBA(rgba=0x80FF0040), ColorRGBA(128 / 255, 1.0, 0.0, 64 / 255))
+        self.assertEqual(ColorRGBA(rgba=0x80FF0040).rgba, 0x80FF0040)
+        # PPtr: truthy when the path id is not 0; equality and hash on the two ids alone, the hash that of the pair.
+        a, b = PPtr(m_FileID=1, m_PathID=5), PPtr(m_FileID=1, m_PathID=5, assetsfile=object())
+        self.assertEqual(
+            (bool(a), bool(PPtr(m_FileID=1, m_PathID=0)), a == b, hash(a) == hash(b)), (True, False, True, True)
+        )
+        self.assertEqual(hash(a), hash((1, 5)))
+        self.assertNotEqual(a, PPtr(m_FileID=2, m_PathID=5))
+        self.assertEqual((a.file_id, a.path_id), (1, 5))
+        # Object: keyword fields, no reader, save raises, copy.copy rebuilds; UnknownObject.get_type.
+        text = TextAsset(m_Name="n", m_Script="s")
+        self.assertIsNone((text.object_reader, text.assets_file)[1])
+        with self.assertRaisesRegex(ValueError, "^ObjectReader not set$"):
+            text.save()
+        text.set_object_reader("reader")
+        self.assertEqual(text.object_reader, "reader")
+        extra = TextAsset(m_Name="n", m_Script="s")
+        extra.m_Extra = 3
+        copied = copy.copy(extra)
+        self.assertEqual((type(copied), copied.m_Name, copied.m_Extra), (TextAsset, "n", 3))
+        self.assertIsNone(UnknownObject(a=1).get_type())
+        node = TypeTreeNode(m_Level=0, m_Type="Thing", m_Name="Base", m_ByteSize=0, m_Version=0)
+        self.assertEqual(UnknownObject(node, a=1).get_type(), "Thing")
+        # repr and str: Object's `<{class name}>`, which a generated class's attrs repr replaces.
+        fresh = TextAsset(m_Name="n", m_Script="s")
+        self.assertEqual(
+            (Object.__repr__(fresh), repr(fresh)),
+            ("<TextAsset>", "TextAsset(m_Name='n', m_Script='s', m_PathName=None)"),
+        )
+        # UnknownObject: its attributes but `__node__`, each repr longer than 100 cut to 97 characters and `...`.
+        self.assertEqual(repr(UnknownObject(a=1)), "<UnknownObject<None> a=1>")
+        long, edge = "x" * 120, "y" * 98
+        self.assertEqual(
+            repr(UnknownObject(node, a=1, b=long, c=edge)),
+            f"<UnknownObject<Thing> a=1, b={repr(long)[:97]}..., c={edge!r}>",
+        )
+        self.assertEqual(
+            [
+                repr(Vector2f(1, 2.5)),
+                repr(Vector3f(1, 2, 3)),
+                repr(Vector4f(1, 2, 3, 4)),
+                repr(Quaternionf(1, 2, 3, 4)),
+            ],
+            ["Vector2f(1, 2.5)", "Vector3f(1, 2, 3)", "Vector4f(1, 2, 3, 4)", "Quaternion(1, 2, 3, 4)"],
+        )
+        sf_bytes = S.serialized_file(
+            [S.Type(49, TEXT_ASSET)], [S.Obj(1, 0, S.s32("n") + S.s32("s"))], externals=[S.External("archive:/C/d")]
+        )
+        sf, bundle = load(sf_bytes)[0], load(S.fs_bundle([(b"CAB-a", sf_bytes, 4)]), "b")[0]
+        self.assertEqual(
+            (repr(sf), repr(bundle), repr(bundle.files["CAB-a"])),
+            ("<SerializedFile>", "<BundleFile>", "<SerializedFile>"),
+        )
+        self.assertEqual(
+            (repr(sf.externals[0]), repr(sf.objects[1])), ("<FileIdentifier(archive:/C/d)>", "<ObjectReader TextAsset>")
+        )
+        self.assertEqual(
+            (repr(UnityVersion.from_str("2019.4.15f1")), repr(UnityVersion.from_str("5.6.7f1"))),
+            ("UnityVersion 2019.4f1", "UnityVersion 5.6.7"),
+        )
+        # TypeTreeNode, with UnityPyBoost: the C type's repr, which the subclass does not override; four fields, each
+        # value's repr; its str the same.
+        from UnityPy import UnityPyBoost
+
+        self.assertTrue(issubclass(TypeTreeNode, UnityPyBoost.TypeTreeNode))
+        self.assertNotIn("__repr__", vars(TypeTreeNode))
+        flagged = TypeTreeNode(
+            m_Level=1, m_Type="string", m_Name='it\'s "q"', m_ByteSize=-1, m_Version=1, m_MetaFlag=16384
+        )
+        self.assertEqual(
+            [repr(node), str(node), repr(flagged)],
+            [
+                "TypeTreeNode(m_Level=0, m_Type='Thing', m_Name='Base', m_MetaFlag=None)",
+                "TypeTreeNode(m_Level=0, m_Type='Thing', m_Name='Base', m_MetaFlag=None)",
+                "TypeTreeNode(m_Level=1, m_Type='string', m_Name='it\\'s \"q\"', m_MetaFlag=16384)",
+            ],
+        )
+        # ContainerHelper's str: `{path: pointer, …}` over items(), the path bare and the pointer as its str.
+        pointers = [PPtr(m_FileID=0, m_PathID=7), PPtr(m_FileID=1, m_PathID=2)]
+        container = ContainerHelper(
+            [(p, SimpleNamespace(asset=a)) for p, a in zip(("a/path", "b"), pointers, strict=True)]
+        )
+        self.assertEqual(
+            str(container),
+            "{a/path: PPtr(m_FileID=0, m_PathID=7, assetsfile=None), b: PPtr(m_FileID=1, m_PathID=2, assetsfile=None)}",
+        )
+
+    # Section 11: the type character.
+    def test_version_type_str_is_lower_case_for_known_types(self):
+        upper = UnityVersion.from_str("2019.4.15F1")
+        self.assertEqual((upper.type_str, str(upper)), ("f", "2019.4f1"))
+        unknown = UnityVersion.from_str("2019.4.15q1")
+        self.assertEqual((int(unknown.type), unknown.type_str, str(unknown)), (255, "q", "2019.4q1"))
+
+    # Section 15.3: PackedBitVector.unpack_floats divides before it multiplies.
+    def test_unpack_floats_divides_first(self):
+        def f32(value):
+            return struct.unpack("<f", struct.pack("<f", value))[0]
+
+        divided = multiplied = 0
+        rng = random.Random(7)
+        for _ in range(50):
+            bits = rng.choice([8, 10, 11, 12, 16, 20, 24])
+            values = [rng.randrange(1 << bits) for _ in range(32)]
+            packed = sum(v << (bits * i) for i, v in enumerate(values)).to_bytes((bits * 32 + 7) // 8, "little")
+            vector = SimpleNamespace(
+                m_NumItems=32,
+                m_BitSize=bits,
+                m_Range=f32(rng.uniform(0.01, 50)),
+                m_Start=f32(rng.uniform(-20, 20)),
+                m_Data=list(packed),
+            )
+            got = PackedBitVector.unpack_floats(vector)
+            scale = vector.m_Range / ((1 << bits) - 1)
+            self.assertEqual(got, [x * scale + vector.m_Start for x in values])
+            left_to_right = [x * vector.m_Range / ((1 << bits) - 1) + vector.m_Start for x in values]
+            divided += len(values)
+            multiplied += sum(a != b for a, b in zip(got, left_to_right, strict=True))
+        # Multiplying first rounds differently for a fair share of values.
+        self.assertGreater(multiplied, divided // 20)
+        # Bit size 0 repeats the start.
+        empty = SimpleNamespace(m_NumItems=3, m_BitSize=0, m_Range=1.0, m_Start=2.5, m_Data=[])
+        self.assertEqual(PackedBitVector.unpack_floats(empty), [2.5, 2.5, 2.5])
+
+    # Sections 8, 14.3: defaults that are never used.
+    def test_object_reader_get_and_container_attributes(self):
+        sf = load(text_asset_file())[0]
+        reader = sf.objects[1]
+        self.assertIsNone(reader.get("nope", 5))
+        self.assertIsNone(reader.nope)
+        info = SimpleNamespace(asset=SimpleNamespace(path_id=1))
+        container = ContainerHelper([("a/path", info)])
+        self.assertIs(container.__getattr__("a/path"), info.asset)
+        with self.assertRaisesRegex(KeyError, "'x'"):
+            hasattr(container, "x")
+        with self.assertRaisesRegex(KeyError, "'x'"):
+            getattr(container, "x", None)
+        # The mapping protocol: `[]` and `in` on the last entry of a path, `len` counting repeats, iteration over
+        # each path once; assignment and deletion raise.
+        first, last = (SimpleNamespace(asset=SimpleNamespace(path_id=i)) for i in (2, 3))
+        repeated = ContainerHelper([("a/path", info), ("b", first), ("b", last)])
+        self.assertEqual(
+            (len(repeated), sorted(repeated), "b" in repeated, "c" in repeated), (3, ["a/path", "b"], True, False)
+        )
+        self.assertIs(repeated["b"], last.asset)
+        # items(): every (path, PPtr) in container order, repeats kept.
+        self.assertEqual(list(repeated.items()), [("a/path", info.asset), ("b", first.asset), ("b", last.asset)])
+        with self.assertRaisesRegex(NotImplementedError, "^Assigning to container is not allowed!$"):
+            repeated["c"] = info.asset
+        with self.assertRaisesRegex(NotImplementedError, "^Deleting from the container is not allowed!$"):
+            del repeated["b"]
+
+
+if __name__ == "__main__":
+    unittest.main()

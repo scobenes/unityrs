@@ -73,6 +73,12 @@
    "files": 22,
    "record_sha256": "a6abf1647341297ed6e24ae8a1557be18d570d0cfc79de0e2f819e4912fca3a3"
   },
+  "pycryptodome": {
+   "version": "3.23.0",
+   "wheel_sha256": "c8987bd3307a39bc03df5c8e0e3d8be0c4c3518b7f044b0f4c15d1aa78f52575",
+   "files": 351,
+   "record_sha256": "bb5987fd930e8fe5066cd06b63c36c6c161c2ad78619ee4c05f72be0ded64425"
+  },
   "pyfmodex": {
    "version": "0.7.2",
    "wheel_sha256": "1c42112b788e80ee7b4b57ae25bbbc0a98eb1e32a8e7c9e1246698cdf72efa9d",

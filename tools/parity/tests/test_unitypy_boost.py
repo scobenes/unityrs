@@ -194,6 +194,15 @@ class ThroughBoost(unittest.TestCase):
         self.assertNotEqual(resave(read(clean, bool2), clean), bool2, "a bool byte of 2 resaves as 1")
         snan = struct.pack("<I", 0x7F800001) + raw[4:]
         self.assertNotEqual(resave(read(clean, snan), clean), snan, "a float32 sNaN resaves quieted")
+        # A string read from bytes that are not UTF-8 holds surrogate escapes, and write_aligned_string encodes with
+        # surrogateescape too, so it resaves the bytes it was read from.
+        text = N("Base", "Base", [N("string", "s")])
+        raw = struct.pack("<i", 3) + b"a\xffb\0"
+        self.assertEqual(read(text, raw), {"s": "a\udcffb"})
+        self.assertEqual(resave(read(text, raw), text), raw)
+        writer = EndianBinaryWriter(endian="<")
+        writer.write_aligned_string("a\udcffb")
+        self.assertEqual(bytes(writer.bytes), raw)
 
     def test_big_endian_reads_the_same_values(self):
         root = N(
@@ -378,6 +387,13 @@ class ThroughBoost(unittest.TestCase):
         """check_read keeps the value parse_as_dict(check_read=False) returns, in either direction."""
         aligned_tail = N("Base", "Base", [N("int", "i"), N("bool", "b", meta=ALIGN)])
         self.assertEqual(read(aligned_tail, struct.pack("<i", 7) + b"\1", check_read=False), {"i": 7, "b": True})
+        # With check_read, a read that ends anywhere but at byte_size raises ValueError, on either side of it.
+        for tree, data in (
+            (aligned_tail, struct.pack("<i", 7) + b"\1"),
+            (N("Base", "Base", [N("int", "a")]), bytes(8)),
+        ):
+            with self.subTest(size=len(data)), self.assertRaisesRegex(ValueError, "^Expected to read"):
+                read(tree, data)
         # byte_size 0 reads on from byte_start, into whatever follows the object.
         two = N("Base", "Base", [N("int", "a"), N("int", "b")])
         self.assertEqual(read_python(two, struct.pack("<ii", 11, 22) + b"rest", check_read=False), {"a": 11, "b": 22})
@@ -509,6 +525,23 @@ class ThroughBoost(unittest.TestCase):
         for text in ("2021.3", "x2021.3.2f1", ""):
             with self.subTest(text), self.assertRaises(ValueError):
                 UnityVersion.from_str(text)
+        # `[]` indexes or slices the five fields; comparisons take an int or the tuple as_tuple gives; the hash is
+        # the int's.
+        v = UnityVersion.from_str("2019.4.15f1")
+        fields = (v.major, v.minor, v.build, v.type.value, v.type_number)
+        self.assertEqual((fields, v.as_tuple()), ((2019, 4, 15, 3, 1), (2019, 4, 15, 3, 1)))
+        self.assertEqual((v[0], v[1:3], v[-1], v[3]), (2019, (4, 15), 1, 3))
+        n, t = int(v), v.as_tuple()
+        self.assertEqual(
+            (v == n, v != n, v < n, v <= n, v > n, v >= n, v < n + 1, v > n - 1, v != n + 1),
+            (True, False, False, True, False, True, True, True, True),
+        )
+        later, earlier = (2019, 4, 15, 3, 2), (2019, 4, 15, 3, 0)
+        self.assertEqual(
+            (v == t, v != t, v < t, v <= t, v > t, v >= t, v < later, v > earlier, v == later, v <= earlier),
+            (True, False, False, True, False, True, True, True, False, False),
+        )
+        self.assertEqual(hash(v), hash(n))
 
     def test_pure_python_path_returns_tuples(self):
         # byte_size 0 (falsy) routes UnityPy to its Python reader, whose
