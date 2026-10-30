@@ -1,18 +1,24 @@
 //! Replays `tools/fixtures/dump.py`'s oracle fixtures without Python (plan
 //! section 6, G4): `canonical.py`'s encodings of synthetic values and names,
 //! Python's decimal form of packed integers, `unitypy_dump.py`'s input
-//! selection and `fnmatch.fnmatchcase`, and `dump_records.py`'s `error_kind` on
-//! `check_read` messages.
+//! selection and `fnmatch.fnmatchcase`, `dump_records.py`'s `error_kind` on
+//! `check_read` messages and its `first_difference`, and the oracle's records
+//! of `SerializedFile`s the fixture script built (`records.json`).
 
 mod common;
 
+use std::sync::Arc;
+
 use common::{Tmp, fixture, parsed, s, unhex};
 use serde_json::Value as Json;
+use unityrs_core::FileContext;
 use unityrs_core::walk::L2Kind;
 use unityrs_dump::encode::encode;
 use unityrs_dump::input::check_read_kind;
 use unityrs_dump::json::{limbs_to_decimal, write_name};
+use unityrs_dump::record::first_difference;
 use unityrs_dump::select::{Selection, collect, fnmatchcase};
+use unityrs_dump::{DumpOptions, dump_input};
 
 #[test]
 fn values_encode_as_canonical_py_encodes_them() {
@@ -204,4 +210,102 @@ fn check_read_kinds_are_the_oracles() {
         assert_eq!(bytes_read, c["bytes_read"].as_i64(), "{c}");
     }
     assert!(negative_probe, "the fixture holds a real negative read");
+}
+
+// ----------------------------------------------------------------- records
+
+#[test]
+fn first_differences_are_the_oracles() {
+    let f = fixture("records.json");
+    let cases = f["first_diff"].as_array().unwrap();
+    assert!(cases.len() >= 6, "{} cases", cases.len());
+    for c in cases {
+        let (a, b) = (unhex(s(&c["a"])), unhex(s(&c["b"])));
+        assert_eq!(
+            first_difference(&a, &b),
+            c["first_diff"].as_u64().unwrap(),
+            "{c}"
+        );
+    }
+}
+
+/// The oracle's records of a fixture input, by name, and its bytes.
+fn oracle_input(name: &str) -> (Vec<u8>, Vec<Json>) {
+    let f = fixture("records.json");
+    let c = f["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| s(&c["name"]) == name)
+        .unwrap_or_else(|| panic!("no input {name}"));
+    let records = c["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| serde_json::from_str(s(l)).unwrap())
+        .collect();
+    (unhex(s(&c["input"])), records)
+}
+
+/// The dump's records of `data` named `name` under `ctx`.
+fn records_of(name: &str, data: &[u8], ctx: FileContext) -> Vec<Json> {
+    let opts = DumpOptions {
+        context: Arc::new(ctx),
+        ..DumpOptions::default()
+    };
+    dump_input(name.as_bytes(), data.to_vec().into(), &opts)
+        .lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// The oracle's records of a file whose second object's resave differs
+/// from its raw bytes (`first_diff` 4) are the dump's, line for line.
+#[test]
+fn a_resave_that_differs_is_recorded_as_the_oracle_records_it() {
+    let (data, oracle) = oracle_input("own_tree");
+    assert_eq!(oracle[2]["l3"]["resave"], "differs");
+    assert_eq!(
+        records_of("own_tree", &data, FileContext::unitypy()),
+        oracle
+    );
+}
+
+/// An object whose own embedded tree does not compile (deeper than
+/// `max_tree_depth`) keeps the root type and the source UnityPy's
+/// `_get_typetree_node()` gives it, the embedded node's: only its read's
+/// outcome is the refusal, `other` with the limit's note (`PARITY.md`
+/// section 19.3, "typetree depth"), so the rest of its record is the
+/// oracle's, and so is every other record of the input.
+#[test]
+fn an_embedded_tree_that_does_not_compile_keeps_its_root_type_and_source() {
+    let (data, oracle) = oracle_input("own_tree");
+    let mut ctx = FileContext::unitypy();
+    ctx.limits.max_tree_depth = 3;
+    let got = records_of("own_tree", &data, ctx);
+    assert_eq!(got.len(), oracle.len());
+    assert_eq!(got[0], oracle[0]);
+    assert_eq!(got[2], oracle[2]);
+    let (ours, theirs) = (&got[1], &oracle[1]);
+    assert_eq!(ours["l1"], theirs["l1"]);
+    assert_eq!(theirs["l2"]["source"], "embedded");
+    assert_eq!(ours["l2"]["root_type"], theirs["l2"]["root_type"]);
+    assert_eq!(ours["l2"]["source"], theirs["l2"]["source"]);
+    let error = &ours["l2"]["error"];
+    assert_eq!(
+        (&error["kind"], &error["bytes_read"]),
+        (&"other".into(), &Json::Null)
+    );
+    let note = s(&error["note"]);
+    let refusal = note.strip_prefix("limit TreeDepth: ");
+    let (value, max) = refusal
+        .and_then(|r| r.split_once(" > "))
+        .unwrap_or_else(|| panic!("{note}"));
+    assert!(value.parse::<u64>().unwrap() > 3 && max == "3", "{note}");
+    assert_eq!(ours["l2"]["value"], Json::Null);
+    for k in ["raw_size", "raw_sha256"] {
+        assert_eq!(ours["l3"][k], theirs["l3"][k]);
+    }
+    assert_eq!(ours["l3"]["resave"], "skipped");
 }

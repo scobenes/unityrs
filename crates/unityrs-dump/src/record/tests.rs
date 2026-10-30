@@ -86,6 +86,63 @@ fn notes_are_cut_as_the_oracle_cuts_them() {
     assert!(n.ends_with("..."));
 }
 
+/// `first_diff` (`docs/CANONICAL_DUMP.md` section 4.3): the first offset at
+/// which the resave and the raw bytes differ, or the shorter length when
+/// one is a prefix of the other, in either order. The oracle's own answers
+/// are replayed by `tests/oracle_fixtures.rs`.
+#[test]
+fn first_difference_is_the_offset_or_the_shorter_length() {
+    assert_eq!(first_difference(b"abc", b"abd"), 2);
+    assert_eq!(first_difference(b"xbc", b"abc"), 0);
+    assert_eq!(first_difference(b"ab", b"abc"), 2);
+    assert_eq!(first_difference(b"abcd", b"ab"), 2);
+    assert_eq!(first_difference(b"", b"a"), 0);
+    assert_eq!(first_difference(b"", b""), 0);
+}
+
+/// A limit refusal at the end of a text longer than the note is kept
+/// whole after the text's first characters; one the note already holds,
+/// or none, leaves `note_of`'s note as it is.
+#[test]
+fn a_note_keeps_its_limit_refusal_whole() {
+    /// `prefix`, then the refusal's text.
+    struct Wrapped<'a>(&'a str, LimitError);
+    impl std::fmt::Display for Wrapped<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}{}", self.0, self.1)
+        }
+    }
+    let l = LimitError {
+        kind: unityrs_core::LimitKind::Inflate,
+        value: 5000,
+        max: 1000,
+    };
+    let tail = "limit Inflate: 5000 > 1000";
+    for n in [
+        0,
+        200,
+        NOTE_MAX - tail.len(),
+        NOTE_MAX - tail.len() + 1,
+        5000,
+    ] {
+        let prefix: String = "\u{e9}x".chars().cycle().take(n).collect();
+        let e = Wrapped(&prefix, l);
+        let kept = note_keeping(&e, Some(&l));
+        assert!(kept.chars().count() <= NOTE_MAX, "{n}");
+        if n + tail.len() <= NOTE_MAX {
+            assert_eq!(kept, format!("{prefix}{tail}"), "{n}");
+        } else {
+            let head: String = prefix.chars().take(NOTE_MAX - 3 - tail.len()).collect();
+            assert_eq!(kept, format!("{head}...{tail}"), "{n}");
+            assert_eq!(kept.chars().count(), NOTE_MAX);
+        }
+        assert_eq!(note_keeping(&e, None), note_of(&e), "{n}");
+    }
+    // A refusal the cut leaves whole stays where it is.
+    let e = format!("{tail}: {}", "y".repeat(400));
+    assert_eq!(note_keeping(&e, Some(&l)), note(&e));
+}
+
 /// `note_of` formats only the prefix the note keeps, and keeps what `note`
 /// of the whole text keeps, at every length around the cut.
 #[test]

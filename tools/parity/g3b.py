@@ -56,16 +56,27 @@ died, UnityPy's records from a re-run (below). Classes:
   refusal among them trips (value above max) and is reproduced by BINARY. What
   the records hold is compared with nothing: the plan's G3b row states this
   gap.
-- `other`: anything else, a bug until shown otherwise; also an input missing
-  from either dump.
+- `unityrs_crash`: unityrs wrote a crash record for the input (its process
+  ran out of memory: the allocator or its memory budget refused). No admit
+  covers it, whatever the oracle wrote: unityrs's memory is bounded by its
+  limits, and records that equal an oracle crash record, notes left out,
+  say nothing about why either side died.
+- `other`: anything else, a bug until shown otherwise; also an input under
+  `--inputs` that either dump lacks (each must hold the input's own file
+  record), and an input either dump holds that is no file under `--inputs`.
+
+The inputs are the files under `--inputs`, found as `unitypy_dump.py` finds
+them in a folder (every file below it, subfolders in name order, named by its
+path relative to the folder), so an input both dumps left out fails G3b.
 
 Each re-run runs in a process of its own under the address-space limit
 `--rerun-cap` (default 32 GiB), killed when its resident set passes
 `--rerun-rss` (default 1 GiB): a reservation is free, memory touched is not.
 `--list` writes every differing input with its class. Exit status: 0 when both
-dumps are well-formed and every differing input is admitted (`limit`,
-`crash_non_utf8`, `memory_bound`, `beyond_memory`), 1 otherwise, 2 when a dump
-cannot be read, the oracle's is not the pinned stack's, or a usage error.
+dumps are well-formed, each holds every input under `--inputs` and nothing
+else, and every differing input is admitted (`limit`, `crash_non_utf8`,
+`memory_bound`, `beyond_memory`), 1 otherwise, 2 when a dump cannot be read,
+the oracle's is not the pinned stack's, or a usage error.
 """
 
 from __future__ import annotations
@@ -110,6 +121,8 @@ LIFTABLE = (
 SIGNAL_OF = {"m_Type": "SIGSEGV", "m_Name": "SIGABRT"}
 # The oracle's notes for a process that ran out of memory.
 OUT_OF_MEMORY = ("(MemoryError)", "died of SIGKILL")
+# The crash of a crash record with no note.
+CRASH = "a crash record with no note"
 EXAMPLES = 20
 RERUN_CAP = 32 << 30
 RERUN_RSS = 1 << 30
@@ -153,11 +166,12 @@ def digest(rec):
 
 class Input:
     """One input's records in a dump: [(record key, digest)] in dump order, their limit refusals, the keys of
-    the records that carry one, and its crash: "memory" or the signal's name when its record is a crash
-    record (the only record of its input, CANONICAL_DUMP.md section 4.2), else None."""
+    the records that carry one, whether its own file record is among them, and its crash: "memory", the
+    signal's name, or else the note (`CRASH` when it has none) when its record is a crash record (the only
+    record of its input, CANONICAL_DUMP.md section 4.2), else None."""
 
     def __init__(self):
-        self.records, self.limits, self.refused, self.crash = [], [], set(), None
+        self.records, self.limits, self.refused, self.crash, self.own = [], [], set(), None, False
 
     def add(self, rec):
         d, limits = digest(rec)
@@ -166,11 +180,13 @@ class Input:
         self.limits.extend(limits)
         if limits:
             self.refused.add(key)
+        if rec["rec"] == "file" and len(rec["file"]) == 1:
+            self.own = True
         error = rec.get("error") if rec["rec"] == "file" else None
         if isinstance(error, dict) and error.get("kind") == "crash":
             note = error.get("note") or ""
             m = re.search(r"died of (SIG\w+)", note)
-            self.crash = "memory" if any(s in note for s in OUT_OF_MEMORY) else (m[1] if m else note)
+            self.crash = "memory" if any(s in note for s in OUT_OF_MEMORY) else (m[1] if m else note or CRASH)
 
 
 def unrefused_difference(inp, reference):
@@ -222,6 +238,23 @@ def load(path):
     with opener(path, "rb") as f:
         next(f, None)
         return inputs_of(f)
+
+
+def inputs_under(root) -> list[str]:
+    """The input keys (`inputs_of`'s: the dump's name, as JSON) of the files under the folder `root`, as
+    `unitypy_dump.py` `collect_inputs` finds them, and a unityrs dump of the folder with it
+    (`crates/unityrs-dump/tests/fixtures/dump/select.json`): every file below it that is one or links to one
+    (a linked folder is not entered), named by its path relative to `root` as bytes."""
+    given = os.fsencode(root)
+    keys = []
+    for dirpath, dirnames, filenames in os.walk(given):
+        dirnames.sort()
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            if os.path.isfile(path):
+                rel = os.path.relpath(path, given).decode("utf-8", "surrogateescape")
+                keys.append(json.dumps(C.enc_name(rel)))
+    return sorted(keys)
 
 
 def form_problems(oracle, unityrs):
@@ -405,9 +438,10 @@ def probe_main(path, name_hex):
 class Verdict:
     """Classifies each differing input; `rows` maps it to (class, detail)."""
 
-    def __init__(self, oracle, unityrs, args, version, scratch):
+    def __init__(self, oracle, unityrs, args, version, scratch, expected):
         self.oracle, self.unityrs, self.root = oracle, unityrs, Path(args.inputs)
         self.args, self.version, self.scratch = args, version, scratch
+        self.expected = set(expected)
         self.workers = max(1, args.jobs)
         self.rows = {}
 
@@ -462,17 +496,23 @@ class Verdict:
         return results
 
     def classify(self):
-        keys = sorted(set(self.oracle) | set(self.unityrs))
+        keys = sorted(self.expected | set(self.oracle) | set(self.unityrs))
         reference, reason, probe, beyond = {}, {}, [], []
         for key in keys:
             a, b = self.oracle.get(key), self.unityrs.get(key)
-            if a is not None and b is not None and a.records == b.records:
+            sides = (("unityrs", b), ("oracle", a))
+            missing = [side for side, x in sides if x is None or not x.own]
+            if key not in self.expected:
+                found = " and the ".join(side for side, x in sides if x is not None)
+                self.rows[key] = ("other", f"in the {found} dump, but no file under --inputs")
+            elif missing:
+                self.rows[key] = ("other", f"missing from the {' and the '.join(missing)} dump")
+            elif b.crash is not None:
+                # Before the records are compared: notes left out, any two crash records of an input are equal.
+                self.rows[key] = ("unityrs_crash", f"unityrs: {b.crash}; the oracle: {a.crash or 'no crash'}")
+            elif a.crash is None and a.records == b.records:
                 continue
-            if b is None:
-                self.rows[key] = ("other", "missing from the unityrs dump")
-            elif a is None:
-                self.rows[key] = ("other", "missing from the oracle dump")
-            elif a.crash:
+            elif a.crash is not None:
                 probe.append(key)
             else:
                 reference[key], reason[key] = a.records, None
@@ -596,13 +636,14 @@ def main(argv=None):
         print(f"g3b: {e}", file=sys.stderr)
         return 2
     version = (hb.get("producer") or {}).get("unityrs")
+    expected = inputs_under(args.inputs)
     with tempfile.TemporaryDirectory(prefix="g3b-") as scratch:
-        v = Verdict(oracle, unityrs, args, version, Path(scratch))
+        v = Verdict(oracle, unityrs, args, version, Path(scratch), expected)
         keys = v.classify()
     rows = v.rows
     counts = Counter(cls for cls, _ in rows.values())
     counts["agree"] = len(keys) - len(rows)
-    kinds = Counter(f"{cls}: {detail}" for cls, detail in rows.values() if cls != "other")
+    kinds = Counter(f"{cls}: {detail}" for cls, detail in rows.values() if cls in ADMITTED)
     unadmitted = {k: r for k, r in rows.items() if r[0] not in ADMITTED}
     report = {
         "inputs": len(keys),

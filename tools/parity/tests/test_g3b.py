@@ -10,6 +10,7 @@ of the same file with a valid placeholder in place of the bytes that are not UTF
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import gzip
 import hashlib
@@ -147,6 +148,7 @@ class OracleReferenceTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.run)
         (self.run / "in").mkdir()
         self.head = {"rec": "dump", "format": C.FORMAT, "version": 1, "levels": list(C.LEVELS)}
+        (self.run / "in" / "x").write_bytes(b"abcd")
         l0 = {"type": "ResourceFile", "parsed_as": "raw", "size": 4, "sha256": hashlib.sha256(b"abcd").hexdigest()}
         self.records = {"x": rec_text({"rec": "file", "file": ["x"], "l0": l0, "l1": None, "error": None})}
         unityrs = {**self.head, "producer": {"name": "unityrs", "unityrs": VERSION}}
@@ -181,6 +183,66 @@ class OracleReferenceTests(unittest.TestCase):
         # The oracle's name on another stack was refused before, and still is.
         (plain, gate, verdict), err = self.statuses({**oracle_producer(), "unitypy": "1.24.0"})
         self.assertEqual((plain, gate, verdict), (2, 2, 2), err)
+
+
+class InputCoverageTests(unittest.TestCase):
+    """Both dumps hold every file under `--inputs` and nothing else: an input both left out fails G3b, as does
+    one only one of them holds, one whose own file record is missing, and one that is no file there. Standard
+    library only: no input differs, so G3b re-runs nothing."""
+
+    def setUp(self):
+        self.run = Path(tempfile.mkdtemp(prefix="unityrs-g3b-inputs-"))
+        self.addCleanup(shutil.rmtree, self.run)
+        (self.run / "in").mkdir()
+        self.head = {"rec": "dump", "format": C.FORMAT, "version": 1, "levels": list(C.LEVELS)}
+
+    def record(self, name, data):
+        l0 = {"type": "ResourceFile", "parsed_as": "raw", "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        return rec_text({"rec": "file", "file": [name], "l0": l0, "l1": None, "error": None})
+
+    def verdict(self, oracle, unityrs):
+        """(exit status, report, listed rows) of g3b.py on dumps of `oracle` and `unityrs` ({input: lines})."""
+        a, b, listed = self.run / "a.jsonl", self.run / "b.jsonl", self.run / "list.json"
+        write_dump(a, rec_text({**self.head, "producer": oracle_producer()}), oracle)
+        write_dump(b, rec_text({**self.head, "producer": {"name": "unityrs", "unityrs": VERSION}}), unityrs)
+        argv = [str(a), str(b), "--inputs", str(self.run / "in"), "--unityrs", "/bin/false", "--list", str(listed)]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            status = g3b.main(argv)
+        rows = {r["input"]: (r["class"], r["detail"]) for r in json.loads(listed.read_text())}
+        return status, json.loads(out.getvalue()), rows
+
+    def test_an_input_both_dumps_omit_fails(self):
+        (self.run / "in" / "omitted").write_bytes(b"abcd")
+        status, report, rows = self.verdict({}, {})
+        self.assertEqual((status, report["inputs"]), (1, 1))
+        self.assertEqual(rows, {"omitted": ("other", "missing from the unityrs and the oracle dump")})
+
+    def test_every_input_under_the_folder_must_be_in_both_dumps_and_nothing_else(self):
+        names = {"a": b"abcd", "b": b"efgh", "c": b"ijkl"}
+        for name, data in names.items():
+            (self.run / "in" / name).write_bytes(data)
+        # A subfolder's files are inputs too, named by their path below the folder.
+        (self.run / "in" / "sub").mkdir()
+        (self.run / "in" / "sub" / "d").write_bytes(b"mnop")
+        names["sub/d"] = b"mnop"
+        full = {n: self.record(n, d) for n, d in names.items()}
+        status, report, rows = self.verdict(full, full)
+        self.assertEqual((status, report["classes"], rows), (0, {"agree": 4}, {}))
+        status, _, rows = self.verdict(full, {n: t for n, t in full.items() if n != "b"})
+        self.assertEqual((status, rows), (1, {"b": ("other", "missing from the unityrs dump")}))
+        status, _, rows = self.verdict({n: t for n, t in full.items() if n != "sub/d"}, full)
+        self.assertEqual((status, rows), (1, {"sub/d": ("other", "missing from the oracle dump")}))
+        stray = {**full, "stray": self.record("stray", b"qrst")}
+        status, _, rows = self.verdict(stray, stray)
+        self.assertEqual(
+            (status, rows), (1, {"stray": ("other", "in the unityrs and the oracle dump, but no file under --inputs")})
+        )
+        # An input whose own file record is missing, though a record of a file inside it is there.
+        inner = rec_text({**json.loads(full["c"]), "file": ["c", "CAB-x"]})
+        status, _, rows = self.verdict(full, {**full, "c": inner})
+        self.assertEqual(rows["c"], ("other", "missing from the unityrs dump"))
+        self.assertEqual(status, 1)
 
 
 @unittest.skipIf(unitypy_dump is None, "needs UnityPy (the oracle image)")
@@ -259,6 +321,10 @@ class G3bTests(unittest.TestCase):
         (else each table entry's bounded answer), over `names` (default: the table's and the oracle's)."""
         run = Path(tempfile.mkdtemp(dir=self.tmp))
         names = set(names or set(table) | set(self.oracle))
+        # The inputs folder holds the inputs the dumps are of, and no other: G3b requires each in both.
+        (run / "in").mkdir()
+        for name in names:
+            shutil.copyfile(self.inputs / name, run / "in" / name)
         texts = {n: t for n, t in {**self.oracle, **(oracle or {})}.items() if n in names}
         write_dump(run / "a.jsonl", self.oracle_head, texts)
         gate = {n: t for n, t in {**{n: e[""] for n, e in table.items()}, **(gate or {})}.items() if n in names}
@@ -269,7 +335,7 @@ class G3bTests(unittest.TestCase):
         fake.write_text(FAKE.format(python=sys.executable, table=str(run / "table.json"), version=VERSION))
         fake.chmod(0o755)
         out = io.StringIO()
-        argv = [run / "a.jsonl", run / "b.jsonl", "--inputs", self.inputs, "--unityrs", fake, "-j", "4"]
+        argv = [run / "a.jsonl", run / "b.jsonl", "--inputs", run / "in", "--unityrs", fake, "-j", "4"]
         argv += ["--rerun-cap", str(16 << 30), "--list", run / "list.json", *extra]
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             status = g3b.main([str(a) for a in argv])
@@ -416,12 +482,43 @@ class G3bTests(unittest.TestCase):
         refuses = ("beyond_memory", "after memory_bound; unityrs refuses at BlockOutput")
         self.assertEqual((status, listed), (0, {"lzma_wrong": refuses}))
 
+    def test_a_unityrs_crash_is_never_admitted(self):
+        """A unityrs crash record agrees with no oracle crash, though the two records are equal with their notes
+        left out (UnityPyBoost's signal, the oracle's MemoryError), and is no admitted difference either."""
+
+        def unityrs_crash(name, note):
+            l0 = json.loads(lines(self.oracle[name])[0])["l0"]
+            error = {"kind": "crash"} if note is None else {"kind": "crash", "note": note}
+            return rec_text({"rec": "file", "file": [name], "l0": l0, "l1": None, "error": error})
+
+        memory = "unityrs ran out of memory dumping this input (memory budget refused 64 bytes for Input)"
+        table = {
+            "bad_type": {"": unityrs_crash("bad_type", memory)},
+            "lzma": {"": unityrs_crash("lzma", memory)},
+            "agree": {"": unityrs_crash("agree", None)},
+        }
+        # The first two are records equal to the oracle's, notes left out.
+        for name in ("bad_type", "lzma"):
+            self.assertEqual(g3b.digest(json.loads(table[name][""]))[0], g3b.digest(json.loads(self.oracle[name]))[0])
+        status, report, listed = self.g3b(table, names=list(table))
+        self.assertEqual((status, report["classes"]), (1, {"agree": 0, "unityrs_crash": 3}))
+        self.assertEqual(
+            listed,
+            {
+                "agree": ("unityrs_crash", f"unityrs: {g3b.CRASH}; the oracle: no crash"),
+                "bad_type": ("unityrs_crash", f"unityrs: {memory}; the oracle: SIGSEGV"),
+                "lzma": ("unityrs_crash", f"unityrs: {memory}; the oracle: memory"),
+            },
+        )
+
     def test_a_deep_value_is_compared_without_recursion(self):
         status, report, _ = self.g3b({"deep": {"": self.oracle["deep"]}}, names=["deep"])
         self.assertEqual((status, report["classes"]), (0, {"agree": 1}))
 
     def test_a_malformed_or_incomplete_unityrs_dump_fails(self):
         run = Path(tempfile.mkdtemp(dir=self.tmp))
+        (run / "in").mkdir()
+        shutil.copyfile(self.inputs / "agree", run / "in" / "agree")
         write_dump(run / "a.jsonl", self.oracle_head, {"agree": self.oracle["agree"]})
         head = {"rec": "dump", "format": C.FORMAT, "version": 1, "levels": list(C.LEVELS)}
         recs = [line + "\n" for line in lines(self.oracle["agree"])]
@@ -438,12 +535,12 @@ class G3bTests(unittest.TestCase):
         for what, (expect, parts) in cases.items():
             with self.subTest(what):
                 (run / "b.jsonl").write_text("".join(parts))
-                argv = [run / "a.jsonl", run / "b.jsonl", "--inputs", self.inputs, "--unityrs", "/bin/false"]
+                argv = [run / "a.jsonl", run / "b.jsonl", "--inputs", run / "in", "--unityrs", "/bin/false"]
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(g3b.main([str(a) for a in argv]), expect)
         # Well-formed, it passes.
         (run / "b.jsonl").write_text("".join(good))
-        argv = [run / "a.jsonl", run / "b.jsonl", "--inputs", self.inputs, "--unityrs", "/bin/false"]
+        argv = [run / "a.jsonl", run / "b.jsonl", "--inputs", run / "in", "--unityrs", "/bin/false"]
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(g3b.main([str(a) for a in argv]), 0)
 
@@ -468,6 +565,24 @@ class G3bTests(unittest.TestCase):
         for note, want in cases.items():
             rec = {"rec": "file", "file": ["x"], "l0": {}, "l1": None, "error": {"kind": "detect", "note": note}}
             self.assertEqual(g3b.digest(rec)[1], want, note)
+
+    def test_the_inputs_are_the_files_the_oracle_dumps_from_the_folder(self):
+        """g3b.py's inputs are the names unitypy_dump.py's collect_inputs gives a folder: subfolders, a link to a
+        file (named after itself), a link to a folder (not entered), names that are not UTF-8, glob characters."""
+        root = Path(tempfile.mkdtemp(dir=self.tmp))
+        for rel in (b"a/b", b"a/c/d", b"\xff\xfe", b"x[1]*?", b"z"):
+            path = root / os.fsdecode(rel)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(rel)
+        (root / "empty").mkdir()
+        os.symlink("a/b", root / "link_file")
+        os.symlink("a", root / "link_dir")
+        args = argparse.Namespace(
+            input=str(root), index=False, kind=None, build=None, name=None, sample=None, limit=None
+        )
+        names = [json.dumps(C.enc_name(rel)) for _, rel, _ in unitypy_dump.collect_inputs(args)]
+        self.assertEqual(g3b.inputs_under(root), sorted(names))
+        self.assertEqual(len(names), 6)
 
     def test_a_name_is_matched_exactly(self):
         import fnmatch

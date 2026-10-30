@@ -105,7 +105,7 @@ The oracle's `producer` holds, in this order: `name` (`"unitypy_dump.py"`), `uni
 | `file` | the file's identity, a list of names: `[input]` for an input, `[input, entry]` for a bundle or WebFile entry, and so on down. |
 | `l0` | detection (below) |
 | `l1` | container metadata by kind (below), or `null` when the file parsed as raw, zip or error, or when the dump has no L1 |
-| `error` | `null`, or `{"kind":K}` with `K` one of `"detect"` (`check_file_type` raised, or a unityrs producer refused the input before detecting it: one longer than its `max_input_bytes`), `"parse"` (the parser raised) and `"crash"` (the process dumping the input died of a signal, or ran out of memory). An optional `note` gives the message; a unityrs note for a limit refusal holds `limit <Kind>: <value> > <max>` (an input's inflate refusal at detection reads `detection: limit Inflate: <value> > <max>`, an entry's `entry <name>: detection: limit Inflate: <value> > <max>`), which `tools/parity/g3b.py` reads (notes are never compared). Only an input's own record carries an error (see "A failing entry" below). |
+| `error` | `null`, or `{"kind":K}` with `K` one of `"detect"` (`check_file_type` raised, or a unityrs producer refused the input before detecting it: one longer than its `max_input_bytes`), `"parse"` (the parser raised) and `"crash"` (the process dumping the input died of a signal, or ran out of memory). An optional `note` gives the message; a unityrs note for a limit refusal holds `limit <Kind>: <value> > <max>` (an input's inflate refusal at detection reads `detection: limit Inflate: <value> > <max>`, an entry's `entry <name>: detection: limit Inflate: <value> > <max>`), which `tools/parity/g3b.py` reads (notes are never compared). A note is at most 300 characters (`dump_records.py` `NOTE_MAX`): a longer message is cut to its first 297 and `...`, except that a unityrs note keeps a limit refusal whole, so g3b can read it behind a name of any length: its message's first characters, `...`, then `limit <Kind>: <value> > <max>`, 300 characters in all. The same holds for every note below (an object's `l2.error` and resave). Only an input's own record carries an error (see "A failing entry" below). |
 
 **Names.**
 - `input` is the input's path relative to the dump root, with `/` separators:
@@ -212,12 +212,12 @@ UnityFS's total-size field and its uncompressed-data hash are left out, because 
 
 **`l2`:**
 - `root_type`: the typetree root's `m_Type` (the class name, for example `Texture2D` or `MonoBehaviour`).
-- `source`: `"embedded"` for the file's own tree, `"tpk"` for UnityPy's bundled class database. Both are `null` when no tree exists.
+- `source`: `"embedded"` for the file's own tree, `"tpk"` for UnityPy's bundled class database. Both are `null` when no tree exists. A tree the type record stores always exists, as UnityPy's `_get_typetree_node()` returns it: when a unityrs producer cannot compile it (deeper than its `max_tree_depth`, `PARITY.md` section 19.3, "typetree depth"), the record still names its root type and `"embedded"`, and the error is `other`, its note the limit refusal.
 - `error`: `null` on success, else `{"kind":K,"bytes_read":N}` (optionally followed by `note`). `bytes_read` is an integer only for `check_read`. A read that raises gives every kind but `check_read`; `check_read` is decided only after the whole tree was read. The kinds:
 
 | kind | meaning | `value` |
 |---|---|---|
-| `no_typetree` | no node: none embedded, and none in the TPK | `null` |
+| `no_typetree` | no node: none embedded, and none in the TPK. A unityrs producer also writes it, with the refusal's note, where its TPK provider refuses the class's node (`PARITY.md` section 19.3's TPK rows: reachable only from a TPK no writer emits) | `null` |
 | `check_read` | the tree's read ended `bytes_read` bytes after `byte_start`, and `bytes_read != byte_size`, in either direction (see the reading paths below) | the dict from `parse_as_dict(check_read=False)` |
 | `out_of_bounds` | on the UnityPyBoost path, a read other than an alignment needs bytes past the object's end | `null` |
 | `negative_length` | a negative array length, or on the UnityPyBoost path a negative string or byte-array length | `null` |

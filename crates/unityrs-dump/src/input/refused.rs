@@ -1,85 +1,155 @@
-//! Which errors are a refusal of memory by the caller's budget or the
-//! allocator: the oracle's `MemoryError`, which is never an L2 or L3 outcome
-//! but the input's `crash` record (`docs/CANONICAL_DUMP.md` section 4.2). It
-//! depends on the machine and on what the other inputs hold, not on the
-//! input. The input's own bound, `InputMemory`, is a limit refusal instead.
+//! Which errors are a refusal, found through every error that wraps one
+//! (an entry's, the load-time AssetBundle read's, a dereference's load, a
+//! resave's tree), as [`Refusal`]:
+//!
+//! - of memory by the caller's budget or the allocator: the oracle's
+//!   `MemoryError`, which is never an L2 or L3 outcome but the input's
+//!   `crash` record (`docs/CANONICAL_DUMP.md` section 4.2). It depends on
+//!   the machine and on what the other inputs hold, not on the input.
+//! - by a bound of the open's limits (the input's own memory bound,
+//!   `InputMemory`, among them): its text, `limit <Kind>: <value> > <max>`,
+//!   is what `tools/parity/g3b.py` reads from the note, so the note keeps it
+//!   whole ([`crate::record::note_keeping`]) however long the names before
+//!   it.
 
-use unityrs_core::Error;
 use unityrs_core::budget::BudgetExceeded;
+use unityrs_core::detect::DetectError;
 use unityrs_core::env::DerefError;
 use unityrs_core::limits::ChargeError;
 use unityrs_core::typetree::TreeError;
 use unityrs_core::walk::{ParseError, ReadDetail, WriteError};
+use unityrs_core::{Error, LimitError};
+
+use crate::record::note_keeping;
+
+/// What refused the work an error stopped.
+#[derive(Clone, Copy, Debug)]
+enum Refusal<'a> {
+    /// The caller's budget or the allocator.
+    Memory(&'a BudgetExceeded),
+    /// A bound of the open's limits.
+    Limit(&'a LimitError),
+}
+
+impl<'a> Refusal<'a> {
+    fn memory(self) -> Option<&'a BudgetExceeded> {
+        match self {
+            Self::Memory(b) => Some(b),
+            Self::Limit(_) => None,
+        }
+    }
+
+    fn limit(self) -> Option<&'a LimitError> {
+        match self {
+            Self::Limit(l) => Some(l),
+            Self::Memory(_) => None,
+        }
+    }
+}
 
 /// `Err(Error::Budget)` when `e` is the caller's budget or the allocator
 /// refusing memory to an object's read: its value, its tree (an embedded
 /// tree's compile, or a provider's walk: [`unityrs_core::provider::ProviderError::memory`]),
 /// or the load `m_Script` names.
 pub(super) fn out_of_memory(e: &ParseError) -> Result<(), Error> {
-    read_refused(e).map_or(Ok(()), |b| Err(Error::Budget(b.clone())))
+    read_refusal(e)
+        .and_then(Refusal::memory)
+        .map_or(Ok(()), |b| Err(Error::Budget(b.clone())))
 }
 
 /// `Err(Error::Budget)` when `e` is the caller's budget or the allocator
 /// refusing memory to an object's resave: its output, or the tree it looks
 /// up again (a provider asked anew: a refusal is never kept).
 pub(super) fn write_out_of_memory(e: &WriteError) -> Result<(), Error> {
-    write_refused(e).map_or(Ok(()), |b| Err(Error::Budget(b.clone())))
+    write_refusal(e)
+        .and_then(Refusal::memory)
+        .map_or(Ok(()), |b| Err(Error::Budget(b.clone())))
 }
 
-/// The budget's or the allocator's refusal under `e`, through every error
-/// that wraps one (an entry's, the load-time AssetBundle read's, a
-/// dereference's load), or `None`: what [`super::dump_on`] makes a `crash`
-/// record.
+/// The budget's or the allocator's refusal under `e`, or `None`: what
+/// [`super::dump_on`] makes a `crash` record.
 pub(super) fn memory_refused(e: &Error) -> Option<&BudgetExceeded> {
+    refusal(e).and_then(Refusal::memory)
+}
+
+/// A file record's note for `e`, its limit refusal kept whole.
+pub(super) fn note(e: &Error) -> String {
+    note_keeping(e, refusal(e).and_then(Refusal::limit))
+}
+
+/// An object's L2 note for `e`, its limit refusal kept whole.
+pub(super) fn read_note(e: &ParseError) -> String {
+    note_keeping(e, read_refusal(e).and_then(Refusal::limit))
+}
+
+/// An object's resave note for `e`, its limit refusal kept whole.
+pub(super) fn write_note(e: &WriteError) -> String {
+    note_keeping(e, write_refusal(e).and_then(Refusal::limit))
+}
+
+fn refusal(e: &Error) -> Option<Refusal<'_>> {
     match e {
-        Error::Budget(b) => Some(b),
-        Error::Tree(t) => tree_refused(t),
-        Error::Entry { source, .. } => memory_refused(source),
-        Error::AssetBundle(p) => read_refused(p),
-        Error::Deref(d) => deref_refused(d),
+        Error::Budget(b) => Some(Refusal::Memory(b)),
+        Error::Limit(l) | Error::Detect(DetectError::InflateLimit(l) | DetectError::Work(l)) => {
+            Some(Refusal::Limit(l))
+        }
+        Error::Tree(t) => tree_refusal(t),
+        Error::Entry { source, .. } => refusal(source),
+        Error::AssetBundle(p) => read_refusal(p),
+        Error::Deref(d) => deref_refusal(d),
         _ => None,
     }
 }
 
-fn read_refused(e: &ParseError) -> Option<&BudgetExceeded> {
+fn read_refusal(e: &ParseError) -> Option<Refusal<'_>> {
     match e {
         ParseError::Read(r) => match &r.detail {
-            ReadDetail::Charge(c) => charge_refused(c),
-            ReadDetail::Tree(t) => tree_refused(t),
+            ReadDetail::Limit(l) => Some(Refusal::Limit(l)),
+            ReadDetail::Charge(c) => Some(charge_refusal(c)),
+            ReadDetail::Tree(t) => tree_refusal(t),
             _ => None,
         },
-        ParseError::Tree(t) => tree_refused(t),
-        ParseError::Provider(p) => p.memory.as_ref(),
-        ParseError::Deref(d) => deref_refused(d),
+        ParseError::Tree(t) => tree_refusal(t),
+        ParseError::Provider(p) => p
+            .memory
+            .as_ref()
+            .map(Refusal::Memory)
+            .or_else(|| p.limit.as_ref().map(Refusal::Limit)),
+        ParseError::Deref(d) => deref_refusal(d),
         _ => None,
     }
 }
 
-fn write_refused(e: &WriteError) -> Option<&BudgetExceeded> {
+fn write_refusal(e: &WriteError) -> Option<Refusal<'_>> {
     match e {
-        WriteError::Charge(c) => charge_refused(c),
-        WriteError::Tree(p) => read_refused(p),
+        WriteError::Limit(l) => Some(Refusal::Limit(l)),
+        WriteError::Charge(c) => Some(charge_refusal(c)),
+        WriteError::Tree(p) => read_refusal(p),
         _ => None,
     }
 }
 
-fn deref_refused(e: &DerefError) -> Option<&BudgetExceeded> {
+fn deref_refusal(e: &DerefError) -> Option<Refusal<'_>> {
     match e {
-        DerefError::Load(e) => memory_refused(e),
+        DerefError::Load(e) => refusal(e),
         _ => None,
     }
 }
 
-fn tree_refused(e: &TreeError) -> Option<&BudgetExceeded> {
+fn tree_refusal(e: &TreeError) -> Option<Refusal<'_>> {
     match e {
-        TreeError::Charge(c) => charge_refused(c),
+        TreeError::Limit(l) => Some(Refusal::Limit(l)),
+        TreeError::Charge(c) => Some(charge_refusal(c)),
         _ => None,
     }
 }
 
-fn charge_refused(e: &ChargeError) -> Option<&BudgetExceeded> {
+fn charge_refusal(e: &ChargeError) -> Refusal<'_> {
     match e {
-        ChargeError::Budget(b) => Some(b),
-        ChargeError::Limit(_) => None,
+        ChargeError::Budget(b) => Refusal::Memory(b),
+        ChargeError::Limit(l) => Refusal::Limit(l),
     }
 }
+
+#[cfg(test)]
+mod tests;

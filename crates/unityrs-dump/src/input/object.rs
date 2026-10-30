@@ -8,7 +8,7 @@ use unityrs_core::provider::TreeSource;
 use unityrs_core::walk::{L2Kind, ParseError, WriteRules};
 use unityrs_core::{Error, ObjectRef, Parsed, RawStr};
 
-use super::refused::{out_of_memory, write_out_of_memory};
+use super::refused::{out_of_memory, read_note, write_note, write_out_of_memory};
 use super::{count_hashed, hashed};
 use crate::Levels;
 use crate::encode::encode_into;
@@ -35,7 +35,7 @@ fn l2_outcome(result: Result<Parsed, ParseError>) -> (Option<L2Error>, Option<Pa
     match result {
         Ok(p) => (None, Some(ParsedValue::Owned(p))),
         Err(e) => {
-            let text = note_of(&e);
+            let text = read_note(&e);
             if let ParseError::CheckRead { parsed, .. } = e {
                 let (kind, bytes_read) = check_read_kind(parsed.bytes_read);
                 let error = L2Error {
@@ -103,7 +103,8 @@ pub(super) fn object_record(
             error: None,
             value: None,
         };
-        // `_get_typetree_node()`: every failure to find a tree is
+        // `_get_typetree_node()`: the type record's own tree when it stores
+        // one, else the provider's; every failure to find a tree is
         // `no_typetree`, but a refusal of memory, which is not the input's.
         match obj.tree(None) {
             Ok(Some(t)) => {
@@ -155,10 +156,25 @@ pub(super) fn object_record(
             }
             Err(e) => {
                 out_of_memory(&e)?;
+                // A tree the type record stores is the one asked for, and
+                // its compile failed (deeper than `max_tree_depth`, the
+                // meter's bound): UnityPy holds the node all the same, so
+                // the record names its root type and its source, and the
+                // read's outcome is the compile's error, `other`
+                // (`PARITY.md` section 19.3, "typetree depth").
+                let embedded = obj.serialized_type().and_then(|st| st.nodes.as_deref());
+                if let Some(nodes) = embedded {
+                    out.root_type = Some(RawStr::from(nodes.type_name(nodes.root())));
+                    out.source = Some("embedded");
+                }
                 out.error = Some(L2Error {
-                    kind: L2Kind::NoTypetree,
+                    kind: if embedded.is_some() {
+                        e.l2_kind()
+                    } else {
+                        L2Kind::NoTypetree
+                    },
                     bytes_read: None,
-                    note: Some(note_of(&e)),
+                    note: Some(read_note(&e)),
                 });
             }
         }
@@ -205,7 +221,7 @@ fn l3_of(obj: &ObjectRef, resavable: Option<&Parsed>, meter: &Meter) -> Result<L
             Err(e) => {
                 write_out_of_memory(&e)?;
                 Resave::Error {
-                    note: Some(note_of(&e)),
+                    note: Some(write_note(&e)),
                 }
             }
         },

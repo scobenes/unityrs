@@ -15,12 +15,12 @@
 use std::fmt;
 use std::sync::Arc;
 
-use unityrs_core::RawStr;
 use unityrs_core::detect::{FileType, ParsedAs};
 use unityrs_core::stream::ShortArray;
 use unityrs_core::typetree::NodeList;
 use unityrs_core::version::{FlagsClass, Packed};
 use unityrs_core::walk::L2Kind;
+use unityrs_core::{LimitError, RawStr};
 
 mod line;
 #[cfg(test)]
@@ -80,6 +80,31 @@ pub fn note_of(e: &(impl fmt::Display + ?Sized)) -> String {
     // An `Err` is the prefix filling up: what it holds is the note's.
     let _ = fmt::Write::write_fmt(&mut p, format_args!("{e}"));
     note(&p.text)
+}
+
+/// [`note_of`] of `e`, keeping whole `limit`, the limit refusal `e`
+/// carries: its text, `limit <Kind>: <value> > <max>`, is what
+/// `tools/parity/g3b.py` reads from the note, and it ends `e`'s text after
+/// whatever wraps it (`entry <name>: ` for each bundle entry it failed in),
+/// so a cut at [`NOTE_MAX`] would take it. When the cut leaves it out, the
+/// note is the text's first characters, `...`, then the refusal's text:
+/// still [`NOTE_MAX`] characters, and the text past the first ones is never
+/// formatted.
+#[must_use]
+pub fn note_keeping(e: &(impl fmt::Display + ?Sized), limit: Option<&LimitError>) -> String {
+    let kept = note_of(e);
+    let Some(limit) = limit else {
+        return kept;
+    };
+    let tail = limit.to_string();
+    if kept.contains(&tail) {
+        return kept;
+    }
+    let head = NOTE_MAX.saturating_sub(3 + tail.chars().count());
+    let mut s: String = kept.chars().take(head).collect();
+    s.push_str("...");
+    s.push_str(&tail);
+    s
 }
 
 /// `l0` (section 4.2).

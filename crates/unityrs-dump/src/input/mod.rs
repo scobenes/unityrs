@@ -33,7 +33,9 @@
 //! (`l1`), its path, and the stack of names the recursion walks
 //! (`Writer::path`); a SerializedFile's objects are taken in the order the
 //! core keeps by path id, so ordering them costs nothing. Notes are formatted
-//! no further than they are kept ([`crate::record::note_of`]). A refusal fails
+//! no further than they are kept ([`crate::record::note_of`]), and a limit
+//! refusal's text is kept whole however long the names before it
+//! ([`crate::record::note_keeping`]: `tools/parity/g3b.py` reads it). A refusal fails
 //! the input as any core error does: the meter's own bound is a `parse`
 //! record whose note is the limit (`limit InputMemory: <v> > <max>`), and a
 //! refusal of the caller's budget or of the allocator (an out-of-memory,
@@ -66,7 +68,7 @@ use unityrs_core::{BundleFile, Bytes, Error, RawStr, SerializedFile};
 
 use crate::json::sha256;
 use crate::record::{
-    FileError, FileErrorKind, FileL1, FileRecord, L0, file_line, file_line_into, note, note_of,
+    FileError, FileErrorKind, FileL1, FileRecord, L0, file_line, file_line_into, note,
     object_line_into,
 };
 use crate::text::Text;
@@ -119,7 +121,7 @@ pub fn dump_on(rel: &[u8], data: Bytes, meter: &Arc<Meter>, opts: &DumpOptions) 
                 l1: None,
                 error: Some(FileError {
                     kind: FileErrorKind::Detect,
-                    note: Some(note_of(&Error::Detect(e))),
+                    note: Some(refused::note(&Error::Detect(e))),
                 }),
             };
             out.push_file(file_line(&rec));
@@ -181,7 +183,7 @@ pub fn dump_on(rel: &[u8], data: Bytes, meter: &Arc<Meter>, opts: &DumpOptions) 
                         "unityrs ran out of memory dumping this input ({b})"
                     )),
                 ),
-                None => (FileErrorKind::Parse, note_of(&e)),
+                None => (FileErrorKind::Parse, refused::note(&e)),
             };
             out.push_file(file_line(&FileRecord {
                 file: vec![name],
