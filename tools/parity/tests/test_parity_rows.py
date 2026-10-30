@@ -60,6 +60,9 @@ try:
 except ImportError:  # pragma: no cover - outside the oracle image
     ORACLE = False
 
+# DESIGN.md section 3's rule for Tier U, the lead of its bullet; PARITY.md section 0's U row repeats it.
+UNSUPPORTED_RULE = "Unsupported until a sample and a reference exist, or until UnityPy's behaviour is characterised"
+
 TEXT_ASSET = S.Node("TextAsset", "Base", [S.Node("string", "m_Name"), S.Node("string", "m_Script")])
 
 
@@ -463,7 +466,7 @@ class TestColumn(unittest.TestCase):
         self.assertIn(
             "Every other constructor argument through a non-local `fs` is not characterised (Tier U).", constructor
         )
-        unsupported = design.split("- **Unsupported until a sample and a reference exist.**", 1)[1].split("\n- **")[0]
+        unsupported = design.split(f"- **{UNSUPPORTED_RULE}.**", 1)[1].split("\n- **")[0]
         self.assertRegex(
             unsupported, r"\n  - a name read through a non-local fsspec filesystem in a case [^\n]*not characterised"
         )
@@ -503,7 +506,7 @@ class TestColumn(unittest.TestCase):
             line for line in parity.splitlines() if line.startswith("| `Texture2D.set_image` | the target")
         )
         self.assertIn("U for a zero-size image on a Switch-swizzled texture", set_image)
-        unsupported = design.split("- **Unsupported until a sample and a reference exist.**", 1)[1].split("\n- **")[0]
+        unsupported = design.split(f"- **{UNSUPPORTED_RULE}.**", 1)[1].split("\n- **")[0]
         self.assertRegex(
             unsupported, r"\n  - `set_image` of a zero-size image on a Switch-swizzled texture: [^\n]*not characterised"
         )
@@ -570,7 +573,7 @@ class TestColumn(unittest.TestCase):
             "C": "Tier C: UnityPy is wrong",
             "Tol": "Tolerance",
             "HEAD": "HEAD tier",
-            "U": "Unsupported until a sample and a reference exist",
+            "U": UNSUPPORTED_RULE,
             "gap": "Gap",
         }
         for tier in tiers[:7]:

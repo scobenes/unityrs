@@ -128,7 +128,7 @@ unityrs is the alternative, built around three things:
   - `export_mesh_renderer` gives each material to a submesh `firstSubMesh` too early, and writes no texture;
   - fmod_toolkit raises `struct.error` on an FSB5 subsound whose WAV data is under 4 bytes, and with it the whole bank: unityrs writes such a subsound as fmod_toolkit does from 4 bytes, its 44-byte header and then its data (`PARITY.md` section 19.2);
   - the extractor's crashes: GameObjects (each reachable object written once, its name ending in its path id where UnityPy's would end in `_None`), MonoBehaviours, sprites without a container whose `m_Name` has no extension, meshes without vertices, images Pillow cannot save under the container's extension, or saves as an ICO holding no image (a side below 16), and the no-container mode's missing `dst`.
-- **Unsupported until a sample and a reference exist.** unityrs refuses these with a named `Unsupported` error:
+- **Unsupported until a sample and a reference exist, or until UnityPy's behaviour is characterised.** unityrs refuses these with a named `Unsupported` error. A case `PARITY.md` calls not characterised is one no test has run UnityPy on: it stays here until a test does, and then takes the tier that run decides:
   - LZHAM, where UnityPy raises too;
   - tracker and legacy audio (IT, MOD, S3M, XM, AIFF, pre-5 MP3). FMOD opens such a clip as one sound with no subsounds, and fmod_toolkit exports subsounds only, so UnityPy returns `{}` and writes nothing, silently: the refusal is a documented divergence;
   - a UnityArchive parsed as a bundle, where UnityPy raises too. Loading one is Tier A: UnityPy's detector does not know the signature and loads the file as a raw ResourceFile, and so does unityrs;
