@@ -11,11 +11,14 @@
 
 mod common;
 
+use std::sync::Arc;
+
 use common::Tmp;
 use serde_json::Value as Json;
+use unityrs_core::FileContext;
 use unityrs_dump::run::{RunOptions, run};
 use unityrs_dump::select::Selection;
-use unityrs_dump::{DumpOptions, Levels};
+use unityrs_dump::{DumpOptions, LIFTED_VALUE_DEPTH, Levels};
 use unityrs_testkit::blob::NodeSpec;
 use unityrs_testkit::depth::{Depth, Row, Wrap, Z_ROWS};
 use unityrs_testkit::serialized::{TypeSpec, build, one_object};
@@ -81,6 +84,21 @@ struct Case {
     name: String,
     unitypy: Json,
     reader: &'static str,
+    /// No value of the input is deeper ([`deepest`]).
+    deepest: u32,
+}
+
+/// A depth no read or write of `n` `A`s of `depth` passes, from the rows
+/// alone. An `A` nests a level for each level of its rows (the deepest
+/// row's, and one for the root), and the data of its `ReferencedObject`,
+/// one level below its row at most, is the next `A`; the last holds a `Z`.
+/// The pure-Python reader counts UnityPy's frames, a list comprehension
+/// more for each array (`read_value_array`), so each `Array` row adds one.
+fn deepest(depth: &Depth, n: usize) -> u32 {
+    let levels = |rows: &[Row]| rows.iter().map(|r| u32::from(r.0)).max().unwrap() + 1;
+    let arrays = depth.rows.iter().filter(|r| r.1 == "Array").count();
+    let per_a = levels(&depth.rows) + 1 + u32::try_from(arrays).unwrap();
+    u32::try_from(n).unwrap() * per_a + levels(&Z_ROWS)
 }
 
 /// Every case at its own depth, and each shape that UnityPy refuses at fewer
@@ -104,6 +122,7 @@ fn inputs(dir: &std::path::Path) -> Vec<Case> {
                     name,
                     unitypy: c.clone(),
                     reader,
+                    deepest: deepest(&depth, n_us),
                 });
             }
         }
@@ -242,14 +261,25 @@ fn deep_values_dump_the_same_at_any_jobs_as_unitypy_or_the_depth_limit() {
 }
 
 /// `--unbounded ValueDepth`, G3b's check that a depth refusal is the whole
-/// difference (`tools/parity/g3b.py`): the dump's workers start on the
-/// stack the lifted depth needs, at `-j 1` and `-j 4` alike, and every
-/// object UnityPyBoost reads, those the default depth refuses included,
-/// reads whole: with no L2 error, or past the encoder's own bound
+/// difference (`tools/parity/g3b.py`): every object UnityPyBoost reads,
+/// those the default depth refuses included, reads whole with the depth
+/// lifted, with no L2 error, or past the encoder's own bound
 /// (`encode::MAX_DEPTH`, 4,096 levels, a value no reader at the default
 /// depth makes) an `encode` one. (The pure-Python reader and the writer,
 /// which UnityPy runs in Python frames, raise at Python's 1,000 where the
 /// lifted depth reads on: `PARITY.md` section 19.3, "value depth".)
+///
+/// The lifted dump reads as the dump does at any depth past every input's
+/// deepest value ([`deepest`]): a bound no value reaches refuses nothing,
+/// and the depth sets nothing else but the stack a worker starts on
+/// (`run::worker_stack`, from the options' limits). So the dump runs at that
+/// depth, at `-j 1` and `-j 4` alike, and refuses no value for its depth:
+/// its workers reserve the stack these inputs need, where the lifted
+/// depth's are several times that ([`LIFTED_VALUE_DEPTH`]), so many that a
+/// machine that bounds what a process may reserve refused them at `-j 4`
+/// (review round 5: in a debug build, after `ulimit -v 6291456`, `cannot
+/// start 4 workers`). A lifted dump on its own workers is
+/// `lifted_depth_reads_unitypyboosts_reach` (ignored).
 #[test]
 fn a_dump_with_the_value_depth_lifted_reads_what_unitypyboost_reads() {
     let tmp = Tmp::new("deep-lifted");
@@ -259,10 +289,24 @@ fn a_dump_with_the_value_depth_lifted_reads_what_unitypyboost_reads() {
     let lifted = DumpOptions::default()
         .with_unbounded(&[unityrs_core::LimitKind::ValueDepth])
         .unwrap();
-    let one = dump_with(&tmp, "lifted-j1.jsonl", 1, lifted.clone());
+    let past = cases.iter().map(|c| c.deepest).max().unwrap() + 1;
+    assert_eq!(lifted.context.limits.max_value_depth, LIFTED_VALUE_DEPTH);
+    assert!(past <= LIFTED_VALUE_DEPTH, "{past} levels");
+    let mut context = FileContext::clone(&DumpOptions::default().context);
+    context.limits.max_value_depth = past;
+    let at_past = DumpOptions {
+        context: Arc::new(context),
+        ..DumpOptions::default()
+    };
+    let one = dump_with(&tmp, "past-j1.jsonl", 1, at_past.clone());
     assert!(
-        dump_with(&tmp, "lifted-j4.jsonl", 4, lifted) == one,
+        dump_with(&tmp, "past-j4.jsonl", 4, at_past) == one,
         "-j 4 differs from -j 1"
+    );
+    assert!(
+        !one.windows(b"limit ValueDepth".len())
+            .any(|w| w == b"limit ValueDepth"),
+        "a value reaches {past} levels: `deepest` is no bound"
     );
     let (default, lifted) = (records(&dump(&tmp, "j1.jsonl", 1)), records(&one));
     let mut refused_by_default = 0;
@@ -308,35 +352,18 @@ fn stack_probe() {
 }
 
 /// The least worker stack that dumps every input, to 4 KiB, found by
-/// bisection over child processes, against [`worker_stack`] at the default
-/// limits:
+/// bisection over child processes (`unityrs_testkit::stack`: only a stack
+/// overflow says a size is too small, and any other failure fails the
+/// test), against [`worker_stack`] at the default limits:
 ///
 ///     scripts/dev cargo test -p unityrs-dump --test deep_values -- --ignored --nocapture
 ///     scripts/dev cargo test -p unityrs-dump --test deep_values --release -- --ignored --nocapture
 #[test]
 #[ignore = "measures; run with --ignored --nocapture"]
 fn stack_measured() {
-    let exe = std::env::current_exe().unwrap();
-    let fits = |stack: usize| {
-        std::process::Command::new(&exe)
-            .args(["--exact", "stack_probe", "--ignored", "--test-threads=1"])
-            .env(PROBE, stack.to_string())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .unwrap()
-            .success()
-    };
-    let (mut lo, mut hi) = (0, 64 << 20);
-    assert!(fits(hi));
-    while hi - lo > 4 << 10 {
-        let mid = usize::midpoint(lo, hi) / 4096 * 4096;
-        if fits(mid) {
-            hi = mid;
-        } else {
-            lo = mid;
-        }
-    }
+    let hi = unityrs_testkit::stack::least(64 << 20, "the deepest inputs", |s| {
+        unityrs_testkit::stack::fits("stack_probe", PROBE, &s.to_string())
+    });
     let have = unityrs_dump::run::worker_stack(&unityrs_core::limits::Limits::default());
     println!("least {hi}, worker_stack {have}");
     assert!(hi <= have);

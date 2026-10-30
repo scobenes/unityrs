@@ -39,7 +39,9 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use super::dict::{RefIndex, steps, visit};
-use super::{RefTypes, WriteCtx, WriteError, WriteRules, py_size_field_is_zero};
+use super::{
+    RefTypes, VALUE_WORK, WriteCtx, WriteError, WriteRules, py_size_field_is_zero, work_left,
+};
 use crate::budget::DecodeBuf;
 use crate::error::{LimitError, LimitKind};
 use crate::raw::RawStr;
@@ -57,13 +59,19 @@ use pyobj::{CLEAN_MAX, Obj, chars, clean_name, narrow};
 /// override: keys are then matched by name), appending to `out`, a buffer
 /// on the object's input's meter that charges before it grows (a value read
 /// with a negative length can name the same bytes many times, so the output
-/// can be far larger than the value; plan section 3.15).
+/// can be far larger than the value; plan section 3.15). Its work is the
+/// open's of `out`'s meter, counted whatever the outcome: [`VALUE_WORK`] for
+/// each value it writes or child it skips, but a primitive, which counts the
+/// bytes it writes, as a read counts a primitive run's; once the open's work
+/// has passed its allowance, a write is refused before it starts (the module
+/// docs of [`super`], "Work").
 pub fn write(
     parsed: &Parsed,
     tree: &Tree,
     ctx: &WriteCtx<'_>,
     out: &mut DecodeBuf,
 ) -> Result<(), WriteError> {
+    work_left(out.meter()).map_err(WriteError::Limit)?;
     let base = out.len();
     let mut w = Writer {
         parsed,
@@ -77,11 +85,17 @@ pub fn write(
         limits: *ctx.limits,
         depth: 0,
         values: 0,
+        prims: 0,
+        prim_bytes: 0,
         has_registry: false,
         shared: 0,
         kept: KeptTables::new(parsed.charge().meter()),
     };
-    w.value(tree, tree.root(), Obj::V(parsed.value()))
+    let written = w.value(tree, tree.root(), Obj::V(parsed.value()));
+    let done = w.work();
+    drop(w);
+    out.meter().add_work(done);
+    written
 }
 
 struct Writer<'a, 'o> {
@@ -101,6 +115,10 @@ struct Writer<'a, 'o> {
     /// Values written and children skipped, against
     /// `max_values_per_object` ([`Self::count`]).
     values: u64,
+    /// Of those, the primitives written ([`Self::prim`]), and their bytes:
+    /// the open's work ([`Self::work`]).
+    prims: u64,
+    prim_bytes: u64,
     has_registry: bool,
     /// How many classes whose children repeat a name (`dup_names`) are
     /// being written: inside one, a dict can be written once a sibling,
@@ -210,6 +228,19 @@ impl<'a> Writer<'a, '_> {
     fn value(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         self.count()?;
         self.frame(|w| w.value_inner(tree, node, o))
+    }
+
+    /// The open's work this write did ([`write`]): [`VALUE_WORK`] for each
+    /// value counted ([`Self::count`]; a refused count is not one), but a
+    /// primitive written, which counts its bytes; and its ref types'
+    /// lookups ([`RefIndex::work`]).
+    fn work(&self) -> u64 {
+        let counted = self.values.min(self.limits.max_values_per_object);
+        counted
+            .saturating_sub(self.prims)
+            .saturating_mul(VALUE_WORK)
+            .saturating_add(self.prim_bytes)
+            .saturating_add(self.refs.work())
     }
 
     /// Counts one value written, or one child skipped, against
@@ -466,7 +497,11 @@ impl<'a> Writer<'a, '_> {
             _ => int!(u64),
         };
         let (bytes, _) = buf.split_at(n.min(8));
-        self.put(bytes)
+        self.put(bytes)?;
+        // Every caller counted this value first ([`Self::count`]).
+        self.prims = self.prims.saturating_add(1);
+        self.prim_bytes = self.prim_bytes.saturating_add(n as u64);
+        Ok(())
     }
 
     /// The class branch (`:437-455`), W6: `value[child.m_Name]` for a dict

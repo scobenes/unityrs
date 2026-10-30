@@ -88,7 +88,14 @@ pub struct Limits {
     /// entry's gzip detection reads and inflates (`detect`), and every byte
     /// the meter granted an entry parse that ended in an error its cell
     /// keeps (`files::bundle`), all of which K directory rows over one span
-    /// repeat K times (round 4). The meter bounds what is
+    /// repeat K times (round 4); and the work of every read and write of an
+    /// object's value, whatever its outcome ([`crate::walk::VALUE_WORK`] a
+    /// value built, written or skipped, a primitive run's bytes, a ref type
+    /// a lookup reads: `walk`'s "Work"), which K objects over one span
+    /// repeat K times, a read refused by its own bound keeping nothing (fix
+    /// pass 4's sweep), as K objects search one list of ref types; past the
+    /// allowance a read or a write is refused before it starts. The meter
+    /// bounds what is
     /// held; this bounds what is done, so an input cannot make its readers
     /// decode or recompute without end while the meter stays empty
     /// (thousands of blocks that each decode to the block cap, measured and
@@ -142,8 +149,9 @@ pub struct Limits {
     /// hands one value to each child of the name, which writes it whole. A
     /// write through the tree its value was read with counts no more than
     /// its read did unless the tree repeats a name
-    /// (`tests/walk_bounds.rs`). The values' memory is the meter's.
-    /// Default 2^26.
+    /// (`tests/walk_bounds.rs`). The values' memory is the meter's, and the
+    /// work of every read and write together the open's
+    /// ([`Self::max_decode_work`]). Default 2^26.
     pub max_values_per_object: u64,
     /// Array elements whose read ended no further on than it began, per
     /// object: a vector of empty structs with a huge count reads no byte per

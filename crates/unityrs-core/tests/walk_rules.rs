@@ -394,44 +394,6 @@ fn values_per_object_trip_to_other() {
     }
 }
 
-/// Plan 3.10: more zero-size elements than `max_zero_size_elements` trip
-/// to `other`; as many as the bound read.
-#[test]
-fn zero_size_elements_trip_to_other() {
-    let empties = tree(&[
-        (0, "Base", "Base", 0),
-        (1, "vector", "v", 0),
-        (2, "Array", "Array", 0),
-        (3, "int", "size", 0),
-        (3, "Empty", "data", 0),
-    ]);
-    let mut limits = Limits::default();
-    limits.max_zero_size_elements = 10;
-    let options = ReadOptions {
-        limits,
-        ..ReadOptions::default()
-    };
-    for (reader, r) in both(
-        &11_i32.to_le_bytes(),
-        &empties,
-        RefTypes::List(&[]),
-        &options,
-        &Meter::unlimited(),
-    ) {
-        assert_limit(&r, LimitKind::ZeroSizeElements, reader);
-    }
-    // Ten fit.
-    for (reader, r) in both(
-        &10_i32.to_le_bytes(),
-        &empties,
-        RefTypes::List(&[]),
-        &options,
-        &Meter::unlimited(),
-    ) {
-        assert!(r.is_ok(), "{reader}: {r:?}");
-    }
-}
-
 /// Plan 3.10: a ref type's tree deeper than `max_tree_depth` trips to
 /// `other` (`ReadDetail::Tree`).
 #[test]

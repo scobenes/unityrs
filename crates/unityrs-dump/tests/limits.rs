@@ -17,9 +17,10 @@
 //!   [`CONTAINER_LEVEL_STACK`] a level.
 //!
 //! `least` finds the least stack a nest needs, by bisection over child
-//! processes (a thread that overflows its stack aborts its process);
-//! `container_stack_measured` (ignored) prints it at several depths, and
-//! what a level costs:
+//! processes (a thread that overflows its stack aborts its process), where
+//! only a stack overflow says a size is too small and any other failure
+//! fails the test (`unityrs_testkit::stack`); `container_stack_measured`
+//! (ignored) prints it at several depths, and what a level costs:
 //!
 //!     scripts/dev cargo test -p unityrs-dump --test limits
 //!     scripts/dev cargo test -p unityrs-dump --test limits -- --ignored --nocapture
@@ -604,38 +605,25 @@ fn container_stack_probe() {
 }
 
 /// Whether a nest of `levels` dumps (`mode` "eager" or "reverse") on a
-/// worker of `stack` bytes, in a child process: a thread that overflows its
-/// stack aborts its process.
+/// worker of `stack` bytes, in a child process: false for a stack overflow
+/// only, and any other failure of the child (a panic, an allocation that
+/// failed, a kill under memory pressure) fails the test with what it was
+/// (`unityrs_testkit::stack::run`; review round 5: every unsuccessful
+/// child read as an overflow).
 fn fits(levels: u32, stack: usize, mode: &str) -> bool {
-    std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "container_stack_probe",
-            "--ignored",
-            "--test-threads=1",
-        ])
-        .env(PROBE, format!("{levels} {stack} {mode}"))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .unwrap()
-        .success()
+    unityrs_testkit::stack::fits(
+        "container_stack_probe",
+        PROBE,
+        &format!("{levels} {stack} {mode}"),
+    )
 }
 
 /// The least worker stack a nest of `levels` dumps on, to 4 KiB, by
 /// bisection over [`fits`].
 fn least(levels: u32, mode: &str) -> usize {
-    let (mut lo, mut hi) = (0, 256 << 20);
-    assert!(fits(levels, hi, mode), "{levels} levels at {hi}");
-    while hi - lo > 4 << 10 {
-        let mid = usize::midpoint(lo, hi) / 4096 * 4096;
-        if fits(levels, mid, mode) {
-            hi = mid;
-        } else {
-            lo = mid;
-        }
-    }
-    hi
+    unityrs_testkit::stack::least(256 << 20, &format!("{levels} levels ({mode})"), |s| {
+        fits(levels, s, mode)
+    })
 }
 
 /// [`worker_stack`]'s container term pays for the nesting by itself: the
