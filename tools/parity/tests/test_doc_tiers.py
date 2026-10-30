@@ -16,6 +16,8 @@ sys.path.insert(0, str(HERE / "tests"))
 
 from test_parity_rows import UNSUPPORTED_RULE  # noqa: E402
 
+import inventory  # noqa: E402
+
 ROOT = HERE.parent.parent
 SENTENCE_END = re.compile(r"(?<=\.)\s+(?=[A-Z`])")
 
@@ -32,6 +34,14 @@ def sentences(text, skip_items=False):
                 yield line, sentence
 
 
+def rows_by_tier(text):
+    """(cells, tier) for every row of a table of `text` with a tier and a status column."""
+    for header, rows in inventory.tables(text):
+        if {"tier", "status"} <= set(header):
+            for cells in rows:
+                yield cells, cells[header.index("tier")]
+
+
 class DocTiers(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -46,20 +56,38 @@ class DocTiers(unittest.TestCase):
         """Tier U covers a case no test has run UnityPy on as well as one that waits for a sample and a reference:
         both definitions say so, every PARITY.md sentence that calls a case not characterised files it as Tier U,
         every such DESIGN.md line sits in the Tier U list, and section 18's U list names the zero-size image on a
-        Switch-swizzled texture."""
+        Switch-swizzled texture. A row of tier — has no unityrs side, so no input to refuse: a case it calls not
+        characterised is not Tier U, both definitions say so, and its sentence names no U."""
         definition = next(line for line in self.parity.splitlines() if line.startswith("| U | "))
         self.assertIn("for a case its row calls not characterised (no test has run UnityPy on it)", definition)
+        self.assertIn("where the row has a unityrs side (any tier but —)", definition)
         self.assertIn("until a test does and the row takes the tier that run decides", definition)
+        dash = next(line for line in self.parity.splitlines() if line.startswith("| — | "))
+        self.assertIn("A case such a row calls not characterised is not Tier U", dash)
         self.assertRegex(self.design, rf"\n- \*\*{re.escape(UNSUPPORTED_RULE)}\.\*\* ")
         ground = "A case `PARITY.md` calls not characterised is one no test has run UnityPy on"
         self.assertIn(ground, self.unsupported())
-        seen = 0
+        self.assertIn("A row `PARITY.md` files under tier —, Python-only with no unityrs side", self.unsupported())
+        python_only = {tuple(cells) for cells, tier in rows_by_tier(self.parity) if tier == "—"}
+        seen = exempt = 0
         for line, sentence in sentences(self.parity):
-            if "not characterised" in sentence and line != definition:
-                seen += 1
+            if "not characterised" in sentence and line not in (definition, dash):
                 with self.subTest("PARITY.md", sentence=sentence[:80]):
-                    self.assertRegex(sentence, r"\bU\b")
+                    if tuple(inventory.table_cells(line) or ()) in python_only:
+                        exempt += 1
+                        self.assertNotRegex(sentence, r"\bU\b", "a tier — row files no case as U")
+                    else:
+                        seen += 1
+                        self.assertRegex(sentence, r"\bU\b")
         self.assertGreaterEqual(seen, 5)
+        self.assertGreaterEqual(exempt, 1)
+        # Section 12's two decrypt rows file the walk that runs further past the block as U: each calls it so.
+        walk = "A; U for a walk that runs more than one byte past the block"
+        decrypt = [cells[1] for cells, tier in rows_by_tier(self.parity) if tier == walk]
+        self.assertEqual(len(decrypt), 2)
+        for cell in decrypt:
+            with self.subTest("section 12", row=cell[:60]):
+                self.assertRegex(cell, r"not characterised \(Tier U\b")
         reading = self.design.split("**Reading**", 1)[1].split("**Writing**", 1)[0].splitlines()
         lead = reading.index(next(line for line in reading if line.startswith(f"- **{UNSUPPORTED_RULE}.**")))
         end = next(i for i in range(lead + 1, len(reading)) if reading[i].startswith("- **"))
