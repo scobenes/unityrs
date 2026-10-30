@@ -101,6 +101,13 @@ pub struct BundleSpec {
     pub block_overrides: Vec<BlockOverride>,
     /// Cut the finished file to this length (a truncated last block).
     pub truncate_to: Option<usize>,
+    /// Sets the encryption flag of the engine's flag set (`0x200` under
+    /// `ArchiveFlagsOld`, `0x1000` under `ArchiveFlags`) and writes what
+    /// `ArchiveStorageDecryptor(reader)` reads after the data flags
+    /// (`helpers/ArchiveStorageManager.py`): a `u32`, then two vectors of 16
+    /// and 16 bytes and a skipped byte, all zeros. A UnityCN key cannot open
+    /// it (its signature check fails); a test's own decryptor can.
+    pub encrypted: bool,
 }
 
 impl Default for BundleSpec {
@@ -117,6 +124,7 @@ impl Default for BundleSpec {
             extra_flags: 0,
             block_overrides: Vec::new(),
             truncate_to: None,
+            encrypted: false,
         }
     }
 }
@@ -297,6 +305,13 @@ pub fn build_with_signature(spec: &BundleSpec, signature: &[u8]) -> Vec<u8> {
     if spec.info_at_end {
         flags |= 0x80;
     }
+    if spec.encrypted {
+        flags |= if new_flags(&spec.version_engine) {
+            0x1000
+        } else {
+            0x200
+        };
+    }
 
     let mut w = ByteWriter::be();
     w.cstr(signature)
@@ -310,6 +325,9 @@ pub fn build_with_signature(spec: &BundleSpec, signature: &[u8]) -> Vec<u8> {
         .u32(flags);
     if signature != b"UnityFS" {
         w.u8(0);
+    }
+    if spec.encrypted {
+        w.u32(0).bytes(&[0; 2 * (16 + 16 + 1)]);
     }
     if aligned(spec.format, &spec.version_engine) {
         w.align(16);

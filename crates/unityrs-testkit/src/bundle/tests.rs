@@ -36,6 +36,30 @@ fn the_header_is_big_endian_and_aligned_at_format_7() {
     assert_eq!(b.len(), 64 + info + 150);
 }
 
+/// `encrypted` sets the flag set's encryption bit and writes the
+/// decryptor's 70 bytes (a `u32`, two vectors of 16 + 16 bytes and a skipped
+/// byte) after the data flags, before the alignment.
+#[test]
+fn an_encrypted_header_holds_the_decryptors_bytes() {
+    let at = 8 + 4 + 6 + 11;
+    let flags = |b: &[u8]| u32::from_be_bytes(b[at + 16..at + 20].try_into().unwrap());
+    for (engine, bit) in [(&b"2022.3.0f1"[..], 0x1000), (&b"2019.4.0f1"[..], 0x200)] {
+        let plain = BundleSpec {
+            version_engine: engine.to_vec(),
+            ..spec(TestCodec::None)
+        };
+        let encrypted = build(&BundleSpec {
+            encrypted: true,
+            ..plain.clone()
+        });
+        let plain = build(&plain);
+        assert_eq!(flags(&encrypted), flags(&plain) | bit);
+        assert_eq!(&encrypted[at + 20..at + 90], &[0; 70]);
+        // 49 + 70 bytes of header align to 128, where 49 aligned to 64.
+        assert_eq!(encrypted.len(), plain.len() + 64);
+    }
+}
+
 #[test]
 fn every_codec_round_trips() {
     let data: Vec<u8> = (0..5000u32).map(|i| u8::try_from(i % 7).unwrap()).collect();

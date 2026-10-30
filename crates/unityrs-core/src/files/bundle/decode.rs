@@ -3,6 +3,7 @@
 //! blocks-info section, through its registered codec, decrypted first
 //! where UnityPy decrypts it.
 
+use std::ops::Deref;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -13,11 +14,46 @@ use crate::error::{Error, LimitKind, Unsupported};
 use crate::limits::Meter;
 use crate::options::FileContext;
 
+/// What a bundle's blocks decode with: the caller's context, and whether
+/// the bundle has a decryptor. UnityPy's `BundleFile.decryptor` is `None`
+/// unless the header's encryption flag built one (`BundleFile.py:25`,
+/// `:123-124`), and `decompress_data` decrypts only with one (`:512`), so a
+/// decryptor the caller set reaches only the blocks of a bundle whose flag
+/// is set (round 5: it decrypted a flagged block of any bundle). It
+/// dereferences to the caller's context.
+pub(super) struct BlockContext {
+    ctx: Arc<FileContext>,
+    encrypted: bool,
+}
+
+impl BlockContext {
+    /// The context of a bundle whose header's encryption flag is `encrypted`.
+    pub(super) fn new(ctx: &Arc<FileContext>, encrypted: bool) -> Self {
+        Self {
+            ctx: ctx.clone(),
+            encrypted,
+        }
+    }
+
+    /// The caller's context, which the bundle's entries parse with.
+    pub(super) fn file(&self) -> &Arc<FileContext> {
+        &self.ctx
+    }
+}
+
+impl Deref for BlockContext {
+    type Target = FileContext;
+
+    fn deref(&self) -> &FileContext {
+        &self.ctx
+    }
+}
+
 /// `decompress_data` (`BundleFile.py:509-521`) on one block or the
 /// blocks-info section, as a whole buffer: a slice of the input for a stored
 /// one, else a charged decode.
 pub(super) fn decode_one(
-    ctx: &FileContext,
+    ctx: &BlockContext,
     meter: &Arc<Meter>,
     input: Bytes,
     uncompressed: u32,
@@ -44,7 +80,7 @@ pub(super) fn decode_one(
 
 /// `decompress_data` on one block, appended to `out`.
 pub(super) fn decode_block_into(
-    ctx: &FileContext,
+    ctx: &BlockContext,
     meter: &Arc<Meter>,
     input: Bytes,
     uncompressed: u32,
@@ -83,18 +119,19 @@ fn codec_for(
     }
 }
 
-/// The block decrypted as UnityPy decrypts it (`flags & 0x100`, not
-/// stored), in place in a charged copy; the input as it is otherwise.
+/// The block decrypted as UnityPy decrypts it (a bundle whose header built
+/// a decryptor, `flags & 0x100`, not stored), in place in a charged copy;
+/// the input as it is otherwise.
 // UnityPy files/BundleFile.py:512-513
 fn decrypted(
-    ctx: &FileContext,
+    ctx: &BlockContext,
     meter: &Arc<Meter>,
     input: Bytes,
     flags: u32,
     which: Codec,
     index: usize,
 ) -> Result<Bytes, Error> {
-    let Some(d) = ctx.decryptor.as_ref() else {
+    let Some(d) = ctx.decryptor.as_ref().filter(|_| ctx.encrypted) else {
         return Ok(input);
     };
     if flags & 0x100 == 0 || which == Codec::None {

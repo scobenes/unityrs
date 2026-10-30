@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 
-use super::decode::decode_one;
+use super::decode::{BlockContext, decode_one};
 use super::{BlockInfo, BundleFile, BundleHeader, DirEntry, FileSlot, LayoutKind};
 use crate::codec::Codec;
 use crate::error::{Error, Unsupported};
@@ -51,6 +51,7 @@ impl BundleFile {
             block_alignment,
         } = read_fs_header(&mut r, &data, meter, ctx)?;
         charge.grow(u64::try_from(engine.version.heap_bytes()).unwrap_or(u64::MAX))?;
+        let blocks_ctx = BlockContext::new(ctx, encrypted);
         // :133-139
         let start = r.position();
         let info_range = if data_flags & 0x80 != 0 {
@@ -74,7 +75,7 @@ impl BundleFile {
             flags: data_flags,
         };
         let info = decode_one(
-            ctx,
+            &blocks_ctx,
             meter,
             data.slice(info_range),
             info_uncompressed,
@@ -127,7 +128,7 @@ impl BundleFile {
             runs: Mutex::new(MeteredVec::new(meter)),
             entries,
             charge,
-            ctx: ctx.clone(),
+            ctx: blocks_ctx,
             stored,
             this: this.clone(),
         }))

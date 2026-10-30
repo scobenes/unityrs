@@ -224,8 +224,10 @@ pub fn decode_block(
 }
 
 /// Decrypts one block in place before it is decoded (UnityCN: P3). UnityPy
-/// decrypts a block whose flags carry 0x100 and whose codec is not `None`
-/// (`files/BundleFile.py:512-513`).
+/// decrypts a block whose flags carry 0x100 and whose codec is not `None`,
+/// of a bundle whose header's encryption flag built a decryptor
+/// (`files/BundleFile.py:123-124`, `:512-513`); a bundle whose flag is clear
+/// is never decrypted, whatever the context holds.
 pub trait BlockDecryptor: Send + Sync {
     /// Decrypts block `index` in place.
     fn decrypt(&self, block: &mut [u8], index: usize) -> Result<(), Error>;

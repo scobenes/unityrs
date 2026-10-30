@@ -54,12 +54,12 @@ impl BlockDecryptor for Xor {
     }
 }
 
-/// UnityPy files/BundleFile.py:512-513: a block flagged 0x100 and not
-/// stored goes through the decryptor before its codec, in a charged copy
-/// that is returned once the block is decoded.
-#[test]
-fn a_flagged_block_is_decrypted_in_a_charged_copy() {
-    // Noise, so the stored block is as large as its output.
+/// A bundle of one LZ4 block of 20,000 bytes of noise (so the stored block
+/// is as large as its output), the block's flags carrying `0x100`, and the
+/// header's encryption flag set or not: under it the stored bytes are the
+/// LZ4 block exclusive-or `0x5A`, for [`Xor`]; without it they are the
+/// plain block. `(the bundle, the entry, the stored block's length)`.
+fn flagged_block(encrypted: bool) -> (Vec<u8>, Vec<u8>, usize) {
     let mut rng = Rng::new(7);
     let entry: Vec<u8> = (0..20_000)
         .map(|_| rng.next_u64().to_le_bytes()[0])
@@ -73,28 +73,43 @@ fn a_flagged_block_is_decrypted_in_a_charged_copy() {
             data: entry.clone(),
             flags: 0,
         }],
+        encrypted,
         ..BundleSpec::default()
     });
     let nul = |from: usize| from + data[from..].iter().position(|c| *c == 0).unwrap() + 1;
-    // The one block's row: after the aligned header, the hash and the count.
-    let row = (nul(nul(12)) + 20).next_multiple_of(16) + 20;
+    // The one block's row: after the header (and the decryptor's 70 bytes),
+    // aligned, the hash and the count.
+    let header = nul(nul(12)) + 20 + if encrypted { 70 } else { 0 };
+    let row = header.next_multiple_of(16) + 20;
     let stored = u32::from_be_bytes(data[row + 4..row + 8].try_into().unwrap()) as usize;
     let flags = u16::from_be_bytes([data[row + 8], data[row + 9]]) | 0x100;
     data[row + 8..row + 10].copy_from_slice(&flags.to_be_bytes());
-    let len = data.len();
-    for b in &mut data[len - stored..] {
-        *b ^= 0x5A;
+    if encrypted {
+        let len = data.len();
+        for b in &mut data[len - stored..] {
+            *b ^= 0x5A;
+        }
     }
+    (data, entry, stored)
+}
+
+/// UnityPy files/BundleFile.py:512-513: a block flagged 0x100 and not
+/// stored, of a bundle whose header's encryption flag built a decryptor,
+/// goes through the decryptor before its codec, in a charged copy that is
+/// returned once the block is decoded. Without a decryptor such a bundle is
+/// refused at open (UnityCN: P3).
+#[test]
+fn a_flagged_block_is_decrypted_in_a_charged_copy() {
+    let (data, entry, stored) = flagged_block(true);
     let plain = ctx();
-    assert!(
-        open_with(&data, &plain, &meter_for(&plain))
-            .unwrap()
-            .entry_bytes(0)
-            .is_err()
-    );
+    assert!(matches!(
+        open_with(&data, &plain, &meter_for(&plain)),
+        Err(Error::Unsupported(Unsupported::Encrypted))
+    ));
     let c = ctx_with(|c| c.decryptor = Some(Arc::new(Xor(0x5A))));
     let m = meter_for(&c);
     let b = open_with(&data, &c, &m).unwrap();
+    assert!(b.header().encrypted);
     let held = m.used();
     let got = b.entry_bytes(0).unwrap();
     assert_eq!(got, entry);
@@ -106,6 +121,27 @@ fn a_flagged_block_is_decrypted_in_a_charged_copy() {
         "{} over {held}, stored {stored}",
         m.used()
     );
+}
+
+/// Round 5 (MEDIUM): UnityPy's bundle has a decryptor only when its header's
+/// encryption flag built one (`BundleFile.py:25`, `:123-124`), and
+/// `decompress_data` decrypts only with one (`:512`), so the key a caller
+/// set (`set_assetbundle_decrypt_key`, global) never touches a bundle whose
+/// flag is clear: its block flagged `0x100` is decoded as stored, and the
+/// entry is the plain bytes (UnityPy 1.25.2 on this input, with a key set:
+/// `decryptor None`, the 20,000 bytes of the entry). The decryptor ran on it
+/// before, and the LZ4 decode of the scrambled block failed, lazily and
+/// eagerly.
+#[test]
+fn a_decryptor_reaches_only_a_bundle_whose_header_built_one() {
+    let (data, entry, _) = flagged_block(false);
+    let c = ctx_with(|c| c.decryptor = Some(Arc::new(Xor(0x5A))));
+    let b = open_with(&data, &c, &meter_for(&c)).unwrap();
+    assert!(!b.header().encrypted);
+    assert_eq!(b.entry_bytes(0).unwrap(), entry);
+    let b = open_with(&data, &c, &meter_for(&c)).unwrap();
+    b.load_all().unwrap();
+    assert_eq!(b.entry_bytes(0).unwrap(), entry);
 }
 
 #[test]
