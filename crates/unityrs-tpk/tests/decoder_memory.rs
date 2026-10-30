@@ -3,15 +3,18 @@
 //! `OutOfMemory` on the provider's reservation, as every other growth of the
 //! provider's is, not a decode failure: the refusal depends on what the
 //! process held, not on the TPK, and the same bytes load once the allocator
-//! gives the memory. (liblzma's own dictionary, which the C allocator makes,
-//! is the codec's `Error::Budget` too: `unityrs_core::codec`'s LZMA test.)
-//! Round 6: what the provider answers allocates nothing the TPK sizes.
+//! gives the memory. Round 6 (L1): so is liblzma's own dictionary, which the
+//! C allocator refuses (round 7, L1: a test reaches that refusal through a
+//! load, in a child process whose address space is capped). Round 6 (M): what
+//! the provider answers allocates nothing the TPK sizes.
 
 use std::cell::Cell;
 
 use unityrs_core::UnityVersion;
-use unityrs_core::limits::Limits;
+use unityrs_core::budget::{BudgetExceeded, Reservation};
+use unityrs_core::limits::{ChargeError, Limits};
 use unityrs_core::provider::{TreeRequest, TypeTreeProvider};
+use unityrs_testkit::address_space;
 use unityrs_testkit::bundle::{TestCodec, compress};
 use unityrs_testkit::counted::{Allocator, Tally, count_this_thread};
 use unityrs_tpk::{TpkError, TpkProvider};
@@ -43,10 +46,10 @@ impl Tally for LargeRefusing {
 #[global_allocator]
 static ALLOC: Allocator<LargeRefusing> = Allocator(LargeRefusing);
 
-/// An LZ4 TPK whose payload decodes to 4 MiB: a blob of one version and one
-/// class whose one entry removes it, and zeros after its tables, which the
-/// blob ignores, as UnityPy does.
-fn lz4_tpk() -> Vec<u8> {
+/// A payload of `len` bytes: a blob of one version and one class whose one
+/// entry removes it, and zeros after its tables, which the blob ignores, as
+/// UnityPy does.
+fn payload(len: usize) -> Vec<u8> {
     let at = 2020_u64 << 48;
     let mut payload = 1_i64.to_le_bytes().to_vec();
     payload.extend_from_slice(&1_i32.to_le_bytes());
@@ -57,16 +60,28 @@ fn lz4_tpk() -> Vec<u8> {
     }
     payload.extend_from_slice(&at.to_le_bytes());
     payload.push(0);
-    payload.resize(4 << 20, 0);
-    let data = compress(TestCodec::Lz4, &payload);
-    assert!(data.len() < 1 << 20, "{} bytes", data.len());
+    payload.resize(len, 0);
+    payload
+}
+
+/// A TPK of compression type `compression` whose payload of `len` bytes is
+/// stored as `data`.
+fn tpk(compression: u8, data: &[u8], len: usize) -> Vec<u8> {
     let mut out = b"TPK*".to_vec();
-    out.extend_from_slice(&[1, 1, 0, 0]);
+    out.extend_from_slice(&[1, compression, 0, 0]);
     out.extend_from_slice(&0_u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(data.len()).unwrap().to_le_bytes());
-    out.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
-    out.extend_from_slice(&data);
+    out.extend_from_slice(&u32::try_from(len).unwrap().to_le_bytes());
+    out.extend_from_slice(data);
     out
+}
+
+/// An LZ4 TPK whose payload decodes to 4 MiB.
+fn lz4_tpk() -> Vec<u8> {
+    let payload = payload(4 << 20);
+    let data = compress(TestCodec::Lz4, &payload);
+    assert!(data.len() < 1 << 20, "{} bytes", data.len());
+    tpk(1, &data, payload.len())
 }
 
 #[test]
@@ -84,6 +99,86 @@ fn a_refused_decode_is_the_loads_out_of_memory_not_a_decode_failure() {
     }
     let loaded = TpkProvider::from_bytes(&tpk, &Limits::default());
     assert_eq!(loaded.unwrap().class_count(), 1);
+}
+
+/// An LZMA TPK whose payload decodes to 8 MiB, its block naming an 8 MiB
+/// dictionary: the first attempt's dictionary is the declared size, capped
+/// at 8 MiB and by the named one (`unityrs_core::codec::Lzma`), so liblzma
+/// allocates 8 MiB as its decoder starts, before any output.
+fn lzma_tpk() -> Vec<u8> {
+    let payload = payload(8 << 20);
+    let mut data = compress(TestCodec::Lzma, &payload);
+    data[1..5].copy_from_slice(&(8_u32 << 20).to_le_bytes());
+    tpk(2, &data, payload.len())
+}
+
+/// The dictionary's charge: 8 MiB in one piece is `mmap`ped by glibc, its
+/// request and the 8-byte chunk header rounded up to a 4 KiB page.
+const DICTIONARY_CHARGE: u64 = (8 << 20) + 4096;
+
+const LZMA_PROBE: &str = "UNITYRS_TPK_LZMA_DICTIONARY_PROBE";
+
+/// Run by `liblzmas_refused_dictionary_is_the_loads_out_of_memory`, in a
+/// child process, on the TPK the variable holds in hex: the load under an
+/// address-space cap 4 MiB above what the child maps, which the 8 MiB
+/// dictionary passes and nothing the load allocates before it does, then
+/// the same bytes with the cap lifted. The parent builds the TPK: building
+/// it here would allocate and free blocks of megabytes, after which glibc
+/// serves a block of 8 MiB from memory the process already maps (a freed
+/// `mmap`ped chunk raises its threshold for `mmap`), which no cap refuses.
+#[test]
+#[ignore = "run by liblzmas_refused_dictionary_is_the_loads_out_of_memory"]
+fn lzma_dictionary_probe() {
+    let Ok(hex) = std::env::var(LZMA_PROBE) else {
+        return;
+    };
+    let tpk: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .collect();
+    let limits = Limits::default();
+    let got = {
+        let _cap = address_space::cap_above_current(4 << 20).unwrap();
+        TpkProvider::from_bytes(&tpk, &limits)
+    };
+    let e = match got {
+        Err(TpkError::Io(e)) => e,
+        got => panic!("not the load's OutOfMemory: {got:?}"),
+    };
+    assert_eq!(e.kind(), std::io::ErrorKind::OutOfMemory, "{e}");
+    let refusal = e.get_ref().and_then(|e| e.downcast_ref::<ChargeError>());
+    assert_eq!(
+        refusal,
+        Some(&ChargeError::Budget(BudgetExceeded {
+            requested: DICTIONARY_CHARGE,
+            what: Reservation::Provider,
+        })),
+        "{e}"
+    );
+    let loaded = TpkProvider::from_bytes(&tpk, &limits);
+    assert_eq!(loaded.unwrap().class_count(), 1, "the same bytes load");
+}
+
+/// Round 7 (L1): round 6's fix reported liblzma's `LZMA_MEM_ERROR` as the
+/// decoder meter's reservation refused, but only a test calling the
+/// mapping with the reservation it chose covered it; a codec that named
+/// another reservation passed every test. Here the C allocator itself
+/// refuses the dictionary of a real load (in a child, under an
+/// address-space cap), and the load's error names the provider's
+/// reservation and the dictionary's bytes.
+#[test]
+fn liblzmas_refused_dictionary_is_the_loads_out_of_memory() {
+    if !address_space::SUPPORTED {
+        eprintln!("skipped: no address-space cap on this target");
+        return;
+    }
+    let hex: String = lzma_tpk()
+        .iter()
+        .flat_map(|b| [b >> 4, b & 15])
+        .map(|d| char::from_digit(u32::from(d), 16).unwrap())
+        .collect();
+    assert!(hex.len() < 64 << 10, "{} hex digits", hex.len());
+    address_space::run("lzma_dictionary_probe", LZMA_PROBE, &hex);
 }
 
 /// A stored TPK of [`TpkProvider::MAX_RECORDS`] classes, each with one entry

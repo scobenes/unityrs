@@ -55,8 +55,7 @@ impl SerializedFile {
                 Some(ParentKind::Bundle { version_engine, .. }) => Some(version_engine),
                 _ => None,
             };
-            let resolved = resolve_serialized(&own, parent_engine, &ctx.version)?;
-            charge.grow(u64::try_from(resolved.version.heap_bytes()).unwrap_or(u64::MAX))?;
+            let resolved = resolve_serialized(&own, parent_engine, &ctx.version, &mut charge)?;
             (Some(own), Some(resolved))
         } else {
             (None, None)

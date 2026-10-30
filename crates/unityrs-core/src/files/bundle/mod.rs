@@ -263,7 +263,8 @@ pub struct BundleFile {
     twins: Box<[u32]>,
     /// The handle and its tables (header, blocks, directory, `files`, the
     /// parse cells), charged to the input at open, with the engine version's
-    /// heap ([`crate::version::UnityVersion::heap_bytes`]; its string is the
+    /// heap ([`crate::version::UnityVersion::heap_bytes`], charged by the chain
+    /// before it was allocated; its string is the
     /// header's own slice, never a copy).
     charge: Charge,
     /// The caller's context, and whether the header built a decryptor

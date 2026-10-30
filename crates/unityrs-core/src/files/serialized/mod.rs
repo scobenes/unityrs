@@ -256,7 +256,8 @@ pub struct SerializedFile {
     container: ResultCell<Container, Error>,
     parent: Option<Parent>,
     /// The handle and every table above, charged to the input, with the
-    /// resolved version's heap ([`crate::version::UnityVersion::heap_bytes`];
+    /// resolved version's heap ([`crate::version::UnityVersion::heap_bytes`], charged
+    /// by the chain before it was allocated;
     /// its string is the file's own slice, or the parent's, never a copy).
     charge: Charge,
     ctx: Arc<FileContext>,

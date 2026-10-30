@@ -10,7 +10,7 @@ use unityrs_core::walk::{ParseError, ReadDetail};
 use unityrs_core::{Error, FileContext, LimitKind};
 use unityrs_testkit::blob::NodeSpec;
 use unityrs_testkit::bundle::{BundleSpec, EntrySpec, TestCodec, build};
-use unityrs_testkit::serialized::{self, no_nul_strings, one_object};
+use unityrs_testkit::serialized::{self, SerializedSpec, no_nul_strings, one_object};
 
 use super::{ctx, ctx_with, meter_for, open_with};
 
@@ -28,6 +28,16 @@ pub(super) fn rows_over_one_entry(entry: &[u8], rows: usize) -> Vec<u8> {
 /// [`rows_over_one_entry`], row `k` sized `size(k)` (row 0 keeps the
 /// entry's size).
 pub(super) fn rows_over(entry: &[u8], rows: usize, size: impl Fn(usize) -> usize) -> Vec<u8> {
+    rows_over_engine(b"2018.4.0f1", entry, rows, size)
+}
+
+/// [`rows_over`] in a bundle of engine string `engine`.
+fn rows_over_engine(
+    engine: &[u8],
+    entry: &[u8],
+    rows: usize,
+    size: impl Fn(usize) -> usize,
+) -> Vec<u8> {
     let entries: Vec<EntrySpec> = (0..rows)
         .map(|k| EntrySpec {
             name: format!("CAB-{k:08}").into_bytes(),
@@ -37,7 +47,7 @@ pub(super) fn rows_over(entry: &[u8], rows: usize, size: impl Fn(usize) -> usize
         .collect();
     let mut data = build(&BundleSpec {
         format: 6,
-        version_engine: b"2018.4.0f1".to_vec(),
+        version_engine: engine.to_vec(),
         info_codec: TestCodec::None,
         data_codec: TestCodec::None,
         block_size: entry.len(),
@@ -163,10 +173,11 @@ fn eager_parse_work(r: usize, rows: usize) -> u64 {
 /// blob row, none of it counted. Each parse now searches its string buffer
 /// once and counts it: the buffer, plus the two metadata strings it reads
 /// to their NUL (`2018.4.0f1` and the empty user information, 12 bytes),
-/// the same for 1,000 rows as for 20,000.
+/// and its version's packing (round 7: `2018.4.0f1`'s 10 bytes and 9 limbs,
+/// `version` module docs, "Work"), the same for 1,000 rows as for 20,000.
 #[test]
 fn an_entrys_blob_strings_cost_one_search_of_its_buffer_whatever_its_rows() {
-    const PER_PARSE: u64 = 65_536 + 12;
+    const PER_PARSE: u64 = 65_536 + 12 + (10 + 9 * 8);
     for r in [1_000, 20_000] {
         assert_eq!(eager_parse_work(r, 3), 3 * PER_PARSE, "{r} blob rows");
     }
@@ -350,4 +361,60 @@ fn a_container_read_counts_what_it_was_granted_beyond_its_container() {
             "cut {cut}, eager {eager}: the read counted {work}, granted {granted}, kept {kept}"
         );
     }
+}
+
+/// Round 6 (group e's sweep, queued for package C): a `SerializedFile` with
+/// no version string of its own takes its parent bundle's engine string
+/// (chain 2), and every parse of an entry packed that string again,
+/// uncounted, stepping through all 226 limbs of a fixed array for each 19
+/// digits. Here the engine string is a 4,300-digit major of nines (4,306
+/// bytes), whose packing counts 211,210 (`version::tests`, by a model of
+/// the rule in Python ints), and its entries have no string of their own:
+/// each parse of a row (rows over spans that differ, so no twins) counts
+/// at least that packing as the open's work, so the allowance admits at
+/// most `allowance / 211,210 + 1` parses and refuses every later row with
+/// `DecodeWork`. Before round 7 each parse counted only its own few
+/// strings, and every row parsed.
+#[test]
+fn each_entry_parse_counts_the_packing_of_its_parents_engine_string() {
+    const PACKING: u64 = 211_210;
+    const K: usize = 40;
+    const ALLOWANCE: u64 = 10 * PACKING;
+    let engine = format!("{}.0.0f1", "9".repeat(4300)).into_bytes();
+    let mut entry = serialized::build(&SerializedSpec {
+        unity_version: Vec::new(),
+        ..SerializedSpec::default()
+    });
+    // Detection reads 128 bytes or more as a `SerializedFile` header.
+    let len = entry.len().max(128);
+    entry.resize(len + K, 0);
+    let data = rows_over_engine(&engine, &entry, K, |k| len + k);
+    let ctx = ctx_with(|c| c.limits.max_decode_work = ALLOWANCE);
+    let meter = meter_for(&ctx);
+    let b = open_with(&data, &ctx, &meter).unwrap();
+    assert!(meter.decoded() >= PACKING, "the open packs it once");
+    let mut parsed = 0_u64;
+    for i in 0..K {
+        let before = meter.decoded();
+        match b.entry(i) {
+            Ok(File::Serialized(sf)) => {
+                let v = sf.version().unwrap();
+                assert_eq!(v.version.raw().as_bytes(), &engine[..]);
+                let counted = meter.decoded() - before;
+                assert!(
+                    counted >= PACKING,
+                    "row {i}: its parse counted {counted}, its version's packing {PACKING}"
+                );
+                parsed += 1;
+            }
+            Err(e) if work(&e) => {}
+            got => panic!("row {i}: {got:?}"),
+        }
+    }
+    let most = ALLOWANCE / PACKING + 1;
+    assert!(
+        (1..=most).contains(&parsed),
+        "{parsed} parses, at most {most} allowed"
+    );
+    assert!(meter.work_used_up().is_some() || parsed < K as u64);
 }

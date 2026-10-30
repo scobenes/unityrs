@@ -13,9 +13,11 @@
 //! thread it counts), [`guard`] (the deadlock guard of every test that
 //! hands work between threads) and [`stack`] (the child-process probes that
 //! measure a stack, and tell an overflow from every other failure) are
-//! package B's; [`mutate`] (G3b's mutator)
-//! is the integration's.
+//! package B's; [`address_space`] (the cap that makes the C allocator
+//! refuse, for the tests of liblzma's own allocations) is package C's;
+//! [`mutate`] (G3b's mutator) is the integration's.
 
+pub mod address_space;
 pub mod blob;
 pub mod bundle;
 pub mod counted;
