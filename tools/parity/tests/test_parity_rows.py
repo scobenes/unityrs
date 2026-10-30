@@ -100,14 +100,17 @@ class TestColumn(unittest.TestCase):
                 with self.subTest(row=cells[0][:60], status=state):
                     # Every test is named with its module, so a renamed test fails the check above.
                     self.assertIsNone(re.search(r"`test_[a-z_]+\.py` [a-z0-9_]+, [a-z]", cells[test]), "a bare name")
-                    if state.startswith(("pinned P0", "verified P0")):
-                        self.assertTrue(probed, "a probed row names what probes it")
-                    elif state.startswith("verified P1"):
+                    # A row P0 probed and P1 verified ("pinned P0; verified P1") takes both checks.
+                    if "verified P1" in state:
                         rust = self.RUST.findall(cells[test])
                         self.assertTrue(rust, "a verified P1 row names the Rust test that pins it")
                         for path, name in rust:
                             source = (HERE.parent.parent / path).read_text(encoding="utf-8")
                             self.assertRegex(source, rf"\bfn {name}\(", f"{path} has no test {name}")
+                    if state.startswith(("pinned P0", "verified P0")):
+                        self.assertTrue(probed, "a probed row names what probes it")
+                    elif state.startswith("verified P1"):
+                        pass
                     elif state.startswith("unverified (source reading); impl P"):
                         self.assertFalse(probed, "a row a test runs is not unverified")
                     elif state.startswith("planned ("):
