@@ -238,6 +238,7 @@ class TestColumn(unittest.TestCase):
             "a name read through a non-local fsspec filesystem where UnityPy raises",
         ),
         "a `.splitN` path whose part is a folder": ("B", "a path through a `.splitN` folder"),
+        "a ZIP that `load_file` opens from a path": ("B", "a ZIP on disk that `find_file` loads"),
         "a local path with a URL-style prefix (": ("B", "a local path with a URL-style prefix where UnityPy raises"),
         "a local path with a URL-style prefix where": (
             "C",
@@ -255,28 +256,47 @@ class TestColumn(unittest.TestCase):
         "`ContainerHelper.path_dict` ignores": ("C", "`ContainerHelper.path_dict`'s file id"),
     }
 
+    # Tier B or C bullets that name a RESOLUTION word without being an exception to resolution opt out here, by
+    # their lead; each lead must still name a bullet.
+    NOT_RESOLUTION = ()
+
+    def resolution_bullets(self, reading, opt_out):
+        """(tier, bullet) for each Tier B or C bullet of `reading` that names a RESOLUTION word, and the opt-out
+        leads that named a bullet."""
+        tier, found, used = None, [], set()
+        for line in reading.splitlines():
+            if line.startswith("- **"):
+                tier = "B" if line.startswith("- **Tier B") else "C" if line.startswith("- **Tier C") else None
+            elif tier and line.startswith("  - ") and any(word in line for word in self.RESOLUTION):
+                skipped = [lead for lead in opt_out if line[4:].startswith(lead)]
+                used.update(skipped)
+                if not skipped:
+                    found.append((tier, line[4:]))
+        return found, used
+
     def test_every_resolution_exception_is_listed(self):
         """Every Tier B or C bullet of DESIGN.md section 3 that touches dependency resolution is named, under its
-        tier, in the clause that lists the exceptions to "dependency resolution match"."""
+        tier, in the clause that lists the exceptions to "dependency resolution match"; a bullet that names a
+        RESOLUTION word and is no such exception opts out in NOT_RESOLUTION."""
+        sample = "- **Tier B: x.**\n  - a lead `load_file` names;\n  - another lead `find_file` names;\n"
+        self.assertEqual(
+            self.resolution_bullets(sample, ("a lead",)), ([("B", "another lead `find_file` names;")], {"a lead"})
+        )
         design = (HERE.parent.parent / "docs" / "DESIGN.md").read_text(encoding="utf-8")
         reading = design.split("**Reading**", 1)[1].split("**Writing**", 1)[0]
         clause = next(line for line in reading.splitlines() if "dependency resolution match" in line)
         listed = clause.split("lists below say:", 1)[1]
         named = {"B": listed.split("(B)", 1)[0], "C": listed.split("(B)", 1)[1].split("(C)", 1)[0]}
-        tier, seen = None, 0
-        for line in reading.splitlines():
-            if line.startswith("- **"):
-                tier = "B" if line.startswith("- **Tier B") else "C" if line.startswith("- **Tier C") else None
-            elif tier and line.startswith("  - ") and any(word in line for word in self.RESOLUTION):
-                bullet = line[4:]
-                with self.subTest(tier=tier, bullet=bullet[:70]):
-                    lead = [key for key in self.NAMED_BY if bullet.startswith(key)]
-                    self.assertEqual(len(lead), 1, "a resolution exception no clause names: list it, and map it here")
-                    in_tier, phrase = self.NAMED_BY[lead[0]]
-                    self.assertEqual(in_tier, tier)
-                    self.assertIn(phrase, named[tier], "missing from the resolution clause")
-                    seen += 1
-        self.assertEqual(seen, len(self.NAMED_BY))
+        found, used = self.resolution_bullets(reading, self.NOT_RESOLUTION)
+        self.assertEqual(used, set(self.NOT_RESOLUTION), "an opt-out lead that names no bullet")
+        for tier, bullet in found:
+            with self.subTest(tier=tier, bullet=bullet[:70]):
+                lead = [key for key in self.NAMED_BY if bullet.startswith(key)]
+                self.assertEqual(len(lead), 1, "a resolution exception no clause names: list it, and map it here")
+                in_tier, phrase = self.NAMED_BY[lead[0]]
+                self.assertEqual(in_tier, tier)
+                self.assertIn(phrase, named[tier], "missing from the resolution clause")
+        self.assertEqual(len(found), len(self.NAMED_BY))
 
     def test_an_empty_path_raises_only_where_no_cab_answers_it(self):
         """An empty resource path is joined to `Environment.path` and raises `IsADirectoryError` only where no CAB
@@ -299,8 +319,17 @@ class TestColumn(unittest.TestCase):
     def test_the_gpu_program_index_rule_is_int_in_base_10(self):
         """`GpuProgramIndex N` fills where `int()` in base 10 takes the rest of the line, which is not Python's
         integer-literal grammar (`+0` and `٠` fill, `0x0` raises; `test_rows_exports.py` shader_text): no line of
-        PARITY.md or DESIGN.md that speaks of such a line calls the rule a literal, and each that states the refusal
-        of a line the table cannot fill names `int()` in base 10."""
+        PARITY.md or DESIGN.md that speaks of such a line calls the rule a literal (a contrast with the literal
+        grammar is fine), and each that states the refusal of a line the table cannot fill names `int()` in base 10."""
+        affirmative = re.compile(
+            r"(?i)\b(?:no|an?|is|as)\s+(?:python(?:'s)?\s+)?`?int(?:eger)?(?:\(\))?`?[- ]literals?\b"
+        )
+        for wording, calls in (
+            ("the rest of the line is no Python `int` literal", True),
+            ("N parsed as an integer literal", True),
+            ("`int()` in base 10, which is not Python's integer-literal grammar", False),
+        ):
+            self.assertEqual(bool(affirmative.search(wording)), calls, wording)
         root = HERE.parent.parent
         refusals = 0
         for name, path in (("PARITY.md", root / "PARITY.md"), ("DESIGN.md", root / "docs" / "DESIGN.md")):
@@ -308,7 +337,7 @@ class TestColumn(unittest.TestCase):
                 if "GpuProgramIndex" not in line:
                     continue
                 with self.subTest(name, line=line[:80]):
-                    self.assertNotRegex(line, r"(?i)\bliteral")
+                    self.assertNotRegex(line, affirmative)
                     if "cannot fill, where" in line:  # the refusal, not a tier cell that names it
                         refusals += 1
                         self.assertIn("`int()` in base 10", line)
@@ -787,10 +816,18 @@ class Rows(unittest.TestCase):
                 )
         with self.assertRaisesRegex(FileNotFoundError, "^Resource file x.bin not found$"):
             ResourceReader.get_resource_data("archive:/CAB/x.bin", sf, 0, 1)
-        # A 0x0 texture fetches its data first too, so it never reaches the empty-image shortcut.
+        # A 0x0 texture fetches its data first too, so where that fetch raises it never reaches the empty-image
+        # shortcut. Where the fetch succeeds it does, before the data is looked at: a 0x4 or a 4x0 texture with
+        # image_data gives the (0, 0) image.
         fake = texture(StreamingInfo(offset=0, size=0, path=""), width=0)
         with self.assertRaises(IsADirectoryError):
             Texture2DConverter.get_image_from_texture2d(fake)
+        for width, height in ((0, 4), (4, 0)):
+            fake = texture(None)
+            fake.image_data, fake.m_Width, fake.m_Height = b"\xff" * 64, width, height
+            with self.subTest(width=width, height=height):
+                image = Texture2DConverter.get_image_from_texture2d(fake)
+                self.assertEqual((image.mode, image.size), ("RGBA", (0, 0)))
         # Only a texture with no m_StreamData at all (pre-5.3 trees) gets the ValueError.
         fake = texture(None)
         with self.assertRaisesRegex(ValueError, "^No image data found$"):
@@ -828,9 +865,22 @@ class Rows(unittest.TestCase):
         reader = env.files[str(path)]
         self.addCleanup(reader.dispose)
         self.assertEqual(type(reader).__name__, "EndianBinaryReader_Streamable")
-        # With no NUL in reach the stream reader never raises and drops the last byte it read.
+        # With no NUL in reach the stream reader drops the last byte it read. It raises only from a Position past
+        # the end, where its loop, which stops at Position == Length alone, reads nothing; at the end it returns "".
         stream = EndianBinaryReader(io.BytesIO(b"C" * 10))
         self.assertEqual((stream.read_string_to_null(), stream.Position), ("C" * 9, 10))
+        self.assertEqual((stream.read_string_to_null(), stream.Position), ("", 10))
+        stream.Position = 9
+        stream.align_stream()
+        self.assertEqual(stream.Position, 12)
+        past = r"^Unterminated string: \[b''\]$"
+        with self.assertRaisesRegex(ValueError, past):
+            stream.read_string_to_null()
+        reader.Position = 21  # the 20-byte file opened by path
+        with self.assertRaisesRegex(ValueError, past):
+            reader.read_string_to_null()
+        reader.Position = 20
+        self.assertEqual(reader.read_string_to_null(), "")
         stream = EndianBinaryReader(io.BytesIO(b"B" * 40000))
         self.assertEqual((len(stream.read_string_to_null()), stream.Position), (32766, 32767))
         memory = EndianBinaryReader(b"B" * 40000)
@@ -1565,6 +1615,24 @@ class Rows(unittest.TestCase):
             quietly(UnityPy.Environment().load_file, str(path))
         with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
             quietly(UnityPy.load, str(path))
+        with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
+            quietly(UnityPy.Environment(path=str(self.tmp)).find_file, "z.bin")
+        # The constructor and UnityPy.load hand a path to load_file unless its name ends in .zip or .apk (case-
+        # sensitive): v.bin and Z.ZIP raise. A .zip or .apk path goes to load_zip_file, which opens a path string
+        # itself, and its members load, as load_zip_file of any path does.
+        for name, loads in (("v.bin", False), ("Z.ZIP", False), ("y.zip", True), ("w.apk", True)):
+            (self.tmp / name).write_bytes(data)
+            for call in (UnityPy.Environment, UnityPy.load):
+                with self.subTest(name, call=call.__name__):
+                    if loads:
+                        self.assertEqual(list(quietly(call, str(self.tmp / name)).files), ["inner.assets"])
+                    else:
+                        with self.assertRaisesRegex(TypeError, "^Unsupported type for loading zip file$"):
+                            quietly(call, str(self.tmp / name))
+            (self.tmp / name).unlink()
+        env = UnityPy.Environment()
+        quietly(env.load_zip_file, str(path))
+        self.assertEqual(list(env.files), ["inner.assets"])
         with open(path, "rb") as stream:
             env = quietly(UnityPy.load, stream)
         self.assertEqual(sorted(type(f).__name__ for f in env.files.values()), ["NoneType", "SerializedFile"])
