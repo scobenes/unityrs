@@ -12,6 +12,7 @@ use super::{
 };
 use crate::Levels;
 use crate::json::{Obj, write_array, write_hex_str, write_name, write_packed, write_str};
+use crate::text::Sink;
 
 /// The `dump` header (section 4.1). `producer` is the producer object's
 /// members, already canonical JSON text, in order (`"name":...` first).
@@ -44,7 +45,7 @@ pub fn end(files: u64, objects: u64) -> String {
     out
 }
 
-fn write_identity(out: &mut String, file: &[RawStr]) {
+fn write_identity<S: Sink>(out: &mut S, file: &[RawStr]) {
     write_array(out, file, |out, n| write_name(out, n.as_bytes()));
 }
 
@@ -52,7 +53,13 @@ fn write_identity(out: &mut String, file: &[RawStr]) {
 #[must_use]
 pub fn file_line(rec: &FileRecord) -> String {
     let mut out = String::new();
-    let mut o = Obj::new(&mut out);
+    file_line_into(&mut out, rec);
+    out
+}
+
+/// Writes a `file` record's line to `out`.
+pub fn file_line_into<S: Sink>(out: &mut S, rec: &FileRecord) {
+    let mut o = Obj::new(out);
     o.str("rec", "file");
     write_identity(o.key("file"), &rec.file);
     {
@@ -89,16 +96,13 @@ pub fn file_line(rec: &FileRecord) -> String {
         }
     }
     o.end();
-    out
 }
 
-fn block_row(out: &mut String, b: &BlockRow) {
-    use std::fmt::Write as _;
+fn block_row<S: Sink>(out: &mut S, b: &BlockRow) {
     let _ = write!(out, "[{},{},{}]", b.uncompressed, b.compressed, b.flags);
 }
 
-fn dir_rows(out: &mut String, rows: &[DirRow]) {
-    use std::fmt::Write as _;
+fn dir_rows<S: Sink>(out: &mut S, rows: &[DirRow]) {
     write_array(out, rows, |out, r| {
         let _ = write!(out, "[{},{},", r.offset, r.size);
         match r.flags {
@@ -113,7 +117,7 @@ fn dir_rows(out: &mut String, rows: &[DirRow]) {
     });
 }
 
-fn bundle_l1(out: &mut String, b: &BundleL1) {
+fn bundle_l1<S: Sink>(out: &mut S, b: &BundleL1) {
     let mut o = Obj::new(out);
     o.str("kind", "bundle");
     o.name("signature", Some(b.signature.as_bytes()));
@@ -146,7 +150,7 @@ fn bundle_l1(out: &mut String, b: &BundleL1) {
     o.end();
 }
 
-fn web_l1(out: &mut String, w: &WebL1) {
+fn web_l1<S: Sink>(out: &mut S, w: &WebL1) {
     let mut o = Obj::new(out);
     o.str("kind", "web");
     o.name("signature", Some(w.signature.as_bytes()));
@@ -155,9 +159,8 @@ fn web_l1(out: &mut String, w: &WebL1) {
     o.end();
 }
 
-fn node_rows(out: &mut String, list: &NodeList) {
-    use std::fmt::Write as _;
-    fn opt<T: std::fmt::Display>(out: &mut String, v: Option<T>) {
+fn node_rows<S: Sink>(out: &mut S, list: &NodeList) {
+    fn opt<S: Sink, T: std::fmt::Display>(out: &mut S, v: Option<T>) {
         match v {
             Some(v) => {
                 let _ = write!(out, "{v}");
@@ -184,8 +187,7 @@ fn node_rows(out: &mut String, list: &NodeList) {
     });
 }
 
-fn type_record(out: &mut String, t: &TypeRecord) {
-    use std::fmt::Write as _;
+fn type_record<S: Sink>(out: &mut S, t: &TypeRecord) {
     let mut o = Obj::new(out);
     o.int("class_id", t.class_id);
     match t.is_stripped_type {
@@ -214,8 +216,7 @@ fn type_record(out: &mut String, t: &TypeRecord) {
     o.end();
 }
 
-fn serialized_l1(out: &mut String, s: &SerializedL1) {
-    use std::fmt::Write as _;
+fn serialized_l1<S: Sink>(out: &mut S, s: &SerializedL1) {
     let mut o = Obj::new(out);
     o.str("kind", "serialized");
     {
@@ -298,7 +299,13 @@ fn serialized_l1(out: &mut String, s: &SerializedL1) {
 #[must_use]
 pub fn object_line(file: &[RawStr], rec: &ObjectRecord) -> String {
     let mut out = String::new();
-    let mut o = Obj::new(&mut out);
+    object_line_into(&mut out, file, rec);
+    out
+}
+
+/// Writes an `object` record's line to `out`.
+pub fn object_line_into<S: Sink>(out: &mut S, file: &[RawStr], rec: &ObjectRecord) {
+    let mut o = Obj::new(out);
     o.str("rec", "object");
     write_identity(o.key("file"), file);
     o.int("path_id", rec.path_id);
@@ -381,5 +388,4 @@ pub fn object_line(file: &[RawStr], rec: &ObjectRecord) -> String {
         None => o.null("l3"),
     }
     o.end();
-    out
 }

@@ -15,7 +15,10 @@
 //! `tools/parity/dump_records.py`, `tools/parity/canonical.py`) and checked
 //! against it by the fixtures `tools/fixtures/dump.py` records:
 //! - [`json`]: the canonical JSON layer (section 2), and [`mod@encode`]:
-//!   values (section 3) from a [`unityrs_core::Parsed`] alone;
+//!   values (section 3) from a [`unityrs_core::Parsed`] alone, each written
+//!   into a [`text::Sink`]: the records into a [`text::Text`], charged to
+//!   the input's meter and fallible, so one input's records count toward
+//!   its `max_input_memory` and their refusal is its own record;
 //! - [`record`]: the records (section 4) and their lines;
 //! - [`input`]: one input's records from the core's public API;
 //! - [`read`]: one input's bytes, refused at its limits and charged to its
@@ -36,13 +39,14 @@ pub mod read;
 pub mod record;
 pub mod run;
 pub mod select;
+pub mod text;
 pub mod values;
 
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-use unityrs_core::limits::Limits;
+use unityrs_core::limits::{Charge, Limits};
 use unityrs_core::provider::ProviderChain;
 use unityrs_core::{FileContext, LimitKind};
 use unityrs_tpk::{TpkError, TpkProvider};
@@ -50,7 +54,7 @@ use unityrs_tpk::{TpkError, TpkProvider};
 /// Every public type of this crate is `Send + Sync`, as the core's are (plan
 /// section 3.16): `-j N` shares the options and the records across rayon
 /// workers. Each type is asserted beside its definition.
-pub(crate) const fn send_sync<T: Send + Sync>() {}
+pub(crate) const fn send_sync<T: Send + Sync + ?Sized>() {}
 
 const _: () = send_sync::<Levels>();
 const _: () = send_sync::<DumpOptions>();
@@ -269,10 +273,15 @@ impl DumpOptions {
 }
 
 /// One input's records, serialised, in order.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct InputDump {
     /// JSON lines, each without its newline.
     pub lines: Vec<String>,
+    /// The charge for `lines` ([`input::dump_on`]'s records: each line and
+    /// the list, charged to the input's meter as they were made), returned
+    /// when they drop, once the run has written them. `None` for a record
+    /// made outside a meter (a refusal's one record).
+    pub charge: Option<Charge>,
     /// `file` records among them.
     pub files: u64,
     /// `object` records among them.
@@ -283,6 +292,28 @@ pub struct InputDump {
     pub bytes_in: u64,
 }
 
+/// Two dumps of an input are equal when their records are: the charges
+/// they hold are not compared.
+impl PartialEq for InputDump {
+    fn eq(&self, other: &Self) -> bool {
+        (
+            &self.lines,
+            self.files,
+            self.objects,
+            self.sha256,
+            self.bytes_in,
+        ) == (
+            &other.lines,
+            other.files,
+            other.objects,
+            other.sha256,
+            other.bytes_in,
+        )
+    }
+}
+
+impl Eq for InputDump {}
+
 impl InputDump {
     /// Appends a `file` record's line.
     pub fn push_file(&mut self, line: String) {
@@ -290,7 +321,8 @@ impl InputDump {
         self.files += 1;
     }
 
-    /// The records as text, each line ended by `\n`.
+    /// The records as text, each line ended by `\n` (a test's view: the run
+    /// writes each line as it is, never a copy of them all).
     #[must_use]
     pub fn text(&self) -> String {
         let mut s = String::with_capacity(self.lines.iter().map(|l| l.len() + 1).sum());

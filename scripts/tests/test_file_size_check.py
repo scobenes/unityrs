@@ -217,6 +217,39 @@ class FileSizeCheckTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out.splitlines(), ["801 tools/a b.py"])
 
+    def test_a_name_git_quotes_fails_whatever_its_length(self):
+        # git C-quotes a name with `"`, `\\` or a control character even with
+        # core.quotePath=false; the check could not open it under that name.
+        self.write(
+            {
+                'tools/big"q.py': lines(900),
+                "crates/a/src/back\\s.rs": lines(3),
+                "crates/a/src/tab\tt.rs": lines(3),
+                "crates/a/src/nl\nn.rs": lines(3),
+                'scripts/quo"te': "#!/usr/bin/env python3\n",
+                'notes/a"b.md': lines(900),
+                "tools/fine.py": lines(3),
+            }
+        )
+        code, out, err = self.check()
+        self.assertEqual(code, 1, out + err)
+        self.assertEqual(
+            out.splitlines(),
+            [
+                f"{name}: git quotes this name; rename it"
+                for name in sorted(
+                    [
+                        '"crates/a/src/back\\\\s.rs"',
+                        '"crates/a/src/nl\\nn.rs"',
+                        '"crates/a/src/tab\\tt.rs"',
+                        '"scripts/quo\\"te"',
+                        '"tools/big\\"q.py"',
+                    ]
+                )
+            ],
+        )
+        self.assertIn("git quotes 5 tracked names", err)
+
 
 if __name__ == "__main__":
     unittest.main()

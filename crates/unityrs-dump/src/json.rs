@@ -6,12 +6,15 @@
 //! separators=(",", ":"))` writes (`canonical.py` `dumps`). Records are
 //! written by hand, member by member, never through serde: [`Obj`] writes
 //! an object's members in the order they are added, and the helpers below
-//! write each kind of member.
+//! write each kind of member, into any [`Sink`]: the dump's records go into
+//! a charged [`crate::text::Text`].
 
 use std::fmt::Write as _;
 
 use sha2::{Digest, Sha256};
 use unityrs_core::version::Packed;
+
+use crate::text::Sink;
 
 /// Raw-byte payloads above this many bytes are summarised as length plus
 /// sha256 (`canonical.py` `INLINE_MAX`).
@@ -22,7 +25,7 @@ const HEX: &[u8; 16] = b"0123456789abcdef";
 /// A JSON string exactly as `json.dumps(ensure_ascii=False)` writes it:
 /// `"` and `\` escaped, the five short escapes, every other code point
 /// below U+0020 as `\u00xx` in lower case, everything else literal.
-pub fn write_str(out: &mut String, s: &str) {
+pub fn write_str<S: Sink>(out: &mut S, s: &str) {
     out.push('"');
     let mut start = 0;
     for (i, b) in s.bytes().enumerate() {
@@ -53,8 +56,7 @@ pub fn write_str(out: &mut String, s: &str) {
 }
 
 /// Appends `bytes` as lowercase hex, two digits per byte.
-pub fn push_hex(out: &mut String, bytes: &[u8]) {
-    out.reserve(bytes.len().saturating_mul(2));
+pub fn push_hex<S: Sink>(out: &mut S, bytes: &[u8]) {
     for b in bytes {
         out.push(char::from(HEX[usize::from(b >> 4)]));
         out.push(char::from(HEX[usize::from(b & 15)]));
@@ -82,7 +84,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// A quoted hex string (`canonical.py` `enc_hex`: hashes, GUIDs, reserved bytes).
-pub fn write_hex_str(out: &mut String, bytes: &[u8]) {
+pub fn write_hex_str<S: Sink>(out: &mut S, bytes: &[u8]) {
     out.push('"');
     push_hex(out, bytes);
     out.push('"');
@@ -90,7 +92,7 @@ pub fn write_hex_str(out: &mut String, bytes: &[u8]) {
 
 /// The raw-bytes rule (section 3, `canonical.py` `enc_raw`): inline hex up to
 /// [`INLINE_MAX`] bytes, else the length and the sha256.
-pub fn write_raw(out: &mut String, kind: &str, bytes: &[u8]) {
+pub fn write_raw<S: Sink>(out: &mut S, kind: &str, bytes: &[u8]) {
     out.push_str("{\"t\":\"");
     out.push_str(kind);
     if bytes.len() <= INLINE_MAX {
@@ -110,7 +112,7 @@ pub fn write_raw(out: &mut String, kind: &str, bytes: &[u8]) {
 /// string when the bytes are valid UTF-8 (strict, as Python's codec and
 /// `std::str::from_utf8` agree), else `{"t":"str","hex":H}` at any length,
 /// never summarised.
-pub fn write_name(out: &mut String, raw: &[u8]) {
+pub fn write_name<S: Sink>(out: &mut S, raw: &[u8]) {
     if let Ok(s) = std::str::from_utf8(raw) {
         write_str(out, s);
     } else {
@@ -122,7 +124,7 @@ pub fn write_name(out: &mut String, raw: &[u8]) {
 
 /// A typetree string value (section 3, `canonical.py` `enc_str`): a JSON
 /// string when valid UTF-8, else the raw-bytes rule with kind `str`.
-pub fn write_value_str(out: &mut String, raw: &[u8]) {
+pub fn write_value_str<S: Sink>(out: &mut S, raw: &[u8]) {
     match std::str::from_utf8(raw) {
         Ok(s) => write_str(out, s),
         Err(_) => write_raw(out, "str", raw),
@@ -131,7 +133,7 @@ pub fn write_value_str(out: &mut String, raw: &[u8]) {
 
 /// A packed engine version, exactly (section 4.2: it can pass 64 bits, and a
 /// 4,300-digit group packs to more than 4,300 digits).
-pub fn write_packed(out: &mut String, packed: &Packed) {
+pub fn write_packed<S: Sink>(out: &mut S, packed: &Packed) {
     match packed.as_u128() {
         Some(v) => {
             let _ = write!(out, "{v}");
@@ -180,22 +182,22 @@ pub fn limbs_to_decimal(limbs: &[u64]) -> String {
 }
 
 /// A JSON object being written: members in the order they are added.
-pub struct Obj<'a> {
-    out: &'a mut String,
+pub struct Obj<'a, S: Sink> {
+    out: &'a mut S,
     first: bool,
 }
 
-const _: () = crate::send_sync::<Obj<'static>>();
+const _: () = crate::send_sync::<Obj<'static, String>>();
 
-impl<'a> Obj<'a> {
+impl<'a, S: Sink> Obj<'a, S> {
     /// Opens an object on `out`.
-    pub fn new(out: &'a mut String) -> Self {
+    pub fn new(out: &'a mut S) -> Self {
         out.push('{');
         Self { out, first: true }
     }
 
     /// Writes a member's key and returns the buffer for its value.
-    pub fn key(&mut self, key: &str) -> &mut String {
+    pub fn key(&mut self, key: &str) -> &mut S {
         if !self.first {
             self.out.push(',');
         }
@@ -269,7 +271,7 @@ impl<'a> Obj<'a> {
 }
 
 /// Writes `items` as a JSON array, each with `f`.
-pub fn write_array<T>(out: &mut String, items: &[T], mut f: impl FnMut(&mut String, &T)) {
+pub fn write_array<S: Sink, T>(out: &mut S, items: &[T], mut f: impl FnMut(&mut S, &T)) {
     out.push('[');
     for (i, item) in items.iter().enumerate() {
         if i > 0 {

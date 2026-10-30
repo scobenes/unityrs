@@ -10,8 +10,10 @@ unityrs CLI that wrote UNITYRS (with `--tpk TPK` when it was given one).
 First both dumps must pass compare.py's checks of their form: a format-1 header
 holding L0-L3, canonical lines in the canonical order, no record twice, an `end`
 record that counts what precedes it. The oracle's header must name the pinned
-stack, and the unityrs dump must not be one made with limits lifted (its
-producer's `unbounded`). Any failure there fails G3b.
+stack (compare.py's `--oracle`: a dump any other producer wrote, or one with
+no producer, is refused as the reference), and the unityrs dump must not be one
+made with limits lifted (its producer's `unbounded`). Any failure there fails
+G3b.
 
 Two inputs agree when every record of theirs does, notes left out (compare.py's
 rule). An input that differs is admitted only for a reason checked on that
@@ -63,7 +65,7 @@ Each re-run runs in a process of its own under the address-space limit
 `--list` writes every differing input with its class. Exit status: 0 when both
 dumps are well-formed and every differing input is admitted (`limit`,
 `crash_non_utf8`, `memory_bound`, `beyond_memory`), 1 otherwise, 2 when a dump
-cannot be read or a usage error.
+cannot be read, the oracle's is not the pinned stack's, or a usage error.
 """
 
 from __future__ import annotations
@@ -223,8 +225,9 @@ def load(path):
 
 
 def form_problems(oracle, unityrs):
-    """compare.py's findings on the dumps' form, as {problem: count}; raises C.FormatError or CompareError."""
-    report, ha, hb, _ = compare.run(oracle, unityrs)
+    """compare.py's findings on the dumps' form, as {problem: count}; raises C.FormatError or CompareError, the
+    latter when `oracle` is not the oracle's dump on the pinned stack."""
+    report, ha, hb, _ = compare.run(oracle, unityrs, oracle=True)
     problems = Counter()
     for (level, cls, path, kind), group in report.paths.items():
         # The two end records' counts differ wherever the records do: a

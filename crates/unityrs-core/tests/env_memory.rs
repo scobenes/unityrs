@@ -86,6 +86,7 @@ fn many_names(counting: bool) {
     let raw = RawFile::new(
         RawStr::from("CAB-RAW.resS"),
         Bytes::from_static(b"raw"),
+        unityrs_core::detect::FileType::ResourceFile,
         &Meter::unlimited(),
     )
     .unwrap();
