@@ -203,7 +203,12 @@ class DocTiers(unittest.TestCase):
         """FMOD refuses to open an FSB5 bank whose first subsound has no samples, whatever follows in the cases tested,
         and opens one whose later subsound has none (`test_rows_audio.py` short_pcm_subsounds). So no sentence speaks
         of a bank of one empty subsound alone, every one that speaks of a bank and a subsound with no samples names
-        the first subsound, and DESIGN.md's Tier C bullet for fmod_toolkit's raise leaves that bank to Tier U."""
+        the first subsound, and DESIGN.md's Tier C bullet for fmod_toolkit's raise leaves that bank to Tier U. The
+        same holds in IMA ADPCM, FADPCM and MPEG, while the bundled libfmod refuses every bank built here of the
+        other codecs, and an MPEG subsound of one sample is not run
+        (`test_rows_audio.py` short_subsounds_of_the_other_codecs): so every FSB5 row of section 16 files that bank
+        as U, the PCM, ADPCM and FADPCM rows file a short subsound as C, MPEG only a later one of no samples, and the
+        Vorbis and Opus rows none."""
         seen = 0
         for name, text in (("PARITY.md", self.parity), ("DESIGN.md", self.design)):
             for _, sentence in sentences(text, skip_items=True):
@@ -215,7 +220,63 @@ class DocTiers(unittest.TestCase):
         self.assertGreaterEqual(seen, 8)
         tier_c = self.design.split("- **Tier C:", 1)[1].split("\n- **", 1)[0]
         bullet = next(line for line in tier_c.splitlines() if line.startswith("  - fmod_toolkit raises `struct.error`"))
-        self.assertIn("a bank whose first subsound has no samples FMOD refuses to open, and the Tier U list", bullet)
+        self.assertIn(
+            "a bank whose first subsound has no samples FMOD refuses to open in the codecs `PARITY.md` section 16 "
+            "tests, and the Tier U list takes it, with the short Vorbis, Opus and MPEG subsounds it names",
+            bullet,
+        )
+        bank, short = "U for a bank whose first subsound has no samples", "C where fmod_toolkit raises on fewer than 4"
+        tiers = {cells[0]: (tier, cells[2]) for cells, tier in rows_by_tier(self.parity) if cells[0].startswith("FSB5")}
+        self.assertEqual(
+            {row: tier for row, (tier, _) in tiers.items()},
+            {
+                "FSB5 PCM8, PCM16, PCM24, PCM32": f"Tol; {short} data bytes; {bank}",
+                "FSB5 PCM float": f"Tol; {short} WAV data bytes; {bank}",
+                "FSB5 Vorbis": f"Tol; {bank} and for a subsound of fewer than 4 WAV data bytes",
+                "FSB5 IMA ADPCM": f"Tol; {short} WAV data bytes; {bank}",
+                "FSB5 FADPCM": f"Tol; {short} WAV data bytes; {bank}",
+                "FSB5 MPEG": f"Tol; C for a later subsound of no samples, where fmod_toolkit raises; {bank} and for a "
+                "subsound of one sample",
+                "FSB5 Opus": f"Tol; {bank} and for a subsound of fewer than 4 WAV data bytes",
+            },
+        )
+        for row, (_, unityrs) in tiers.items():
+            with self.subTest(row):
+                self.assertRegex(unityrs, r"a bank whose first subsound has no samples(?:, and [^;|]+,)? refused")
+        # Each row says what its own probe found: FMOD's refusal where a bank of its codec opens, else that the
+        # bundled libfmod refuses every bank built here, so what FMOD does with that one is not characterised.
+        unitypy = {
+            line.split(" | ")[0][2:]: line.split(" | ")[1]
+            for line in self.parity.splitlines()
+            if line.startswith("| FSB5 ")
+        }
+        refused = r"what FMOD does with an? [^.|]*bank whose first subsound has no samples[^.|]* is not characterised"
+        for row in ("FSB5 PCM8, PCM16, PCM24, PCM32", "FSB5 PCM float", "FSB5 Vorbis", "FSB5 Opus"):
+            with self.subTest(row):
+                self.assertRegex(unitypy[row], rf"{refused} \(Tier U\)")
+        for row in ("FSB5 IMA ADPCM", "FSB5 FADPCM", "FSB5 MPEG"):
+            with self.subTest(row):
+                self.assertIn(
+                    "FMOD refuses to open a bank whose first subsound has no samples (`FmodError` PLUGIN, from "
+                    "`System.create_sound`)",
+                    unitypy[row],
+                )
+                self.assertIn("a later subsound of no samples it opens and hands fmod_toolkit as 0 bytes", unitypy[row])
+        self.assertIn("An MPEG subsound of one sample is not characterised (Tier U)", unitypy["FSB5 MPEG"])
+        bullet = next(line for line in self.unsupported().splitlines() if line.startswith("  - an FSB5 bank"))
+        for text in (
+            "in the cases tested (PCM16, IMA ADPCM, FADPCM and MPEG)",
+            "The bundled libfmod refuses a PCM8, PCM24, PCM32, PCM float, Vorbis or Opus bank built here",
+            "Also refused, as not characterised: a Vorbis or Opus subsound of fewer than 4 WAV data bytes, and an MPEG "
+            "subsound of one sample",
+        ):
+            self.assertIn(text, bullet)
+        nineteen = next(line for line in self.parity.splitlines() if line.startswith("| an FSB5 subsound of fewer"))
+        self.assertEqual(
+            nineteen.split(" | ")[2],
+            "C; U for a bank whose first subsound has no samples, for a Vorbis or Opus subsound of fewer than 4 WAV "
+            "data bytes and for an MPEG subsound of one sample (section 16)",
+        )
 
     def test_a_sprite_merge_compares_decoded_images(self):
         """A texture with a zero side decodes to a 0×0 RGBA image whatever its format, so a sprite's alpha merge
