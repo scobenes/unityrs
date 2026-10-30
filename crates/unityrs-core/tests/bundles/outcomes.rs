@@ -6,7 +6,7 @@ use super::{by_name, ctx_with, meter_for, open, open_with, small_entries};
 use unityrs_core::budget::{Counting, MemoryBudget, Reservation};
 use unityrs_core::codec::Codec;
 use unityrs_core::{Error, LimitKind, Unsupported};
-use unityrs_testkit::bundle::{BlockOverride, BundleSpec, EntrySpec, TestCodec, build};
+use unityrs_testkit::bundle::{BlockOverride, BundleSpec, EntrySpec, TestCodec, build, compress};
 
 #[test]
 fn a_failing_block_is_decoded_once_and_a_late_one_fails_only_load_all() {
@@ -140,4 +140,59 @@ fn a_refused_block_is_not_kept() {
     );
     drop((held, first));
     assert_eq!(second.entry_bytes(0).unwrap().len(), 300_000);
+}
+
+/// Review round 7 (claude7-c): a decode the input's own meter refuses
+/// (`InputMemory`, transient, so not kept) keeps the work it prepaid for
+/// its stored bytes; only a refusal of the budget or the allocator gives it
+/// back (`files::bundle::decode`'s `reading`). So reads of a block whose
+/// output the meter refuses each count at least the block's stored bytes,
+/// and the open's allowance stops them; given back, every read would scan
+/// the block again, uncounted, without end (round 6's HIGH, through
+/// another refusal).
+#[test]
+fn a_decode_the_inputs_meter_refuses_keeps_its_prepaid_work() {
+    // One LZ4 block of 2 MiB of zeros, its output refused by a 512 KiB meter.
+    let zeros = vec![0_u8; 2 << 20];
+    let stored = u64::try_from(compress(TestCodec::Lz4, &zeros).len()).unwrap();
+    let data = build(&BundleSpec {
+        data_codec: TestCodec::Lz4,
+        info_codec: TestCodec::None,
+        block_size: zeros.len(),
+        entries: vec![EntrySpec {
+            name: b"z".to_vec(),
+            data: zeros,
+            flags: 0,
+        }],
+        ..BundleSpec::default()
+    });
+    let allowance = 40 * stored;
+    let ctx = ctx_with(|c| {
+        c.limits.max_input_memory = 512 << 10;
+        c.limits.max_decode_work = allowance;
+    });
+    let meter = meter_for(&ctx);
+    let b = open_with(&data, &ctx, &meter).unwrap();
+    let mut refused = 0_u64;
+    loop {
+        let before = meter.decoded();
+        match b.entry_bytes(0) {
+            Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory => {
+                let counted = meter.decoded() - before;
+                assert!(
+                    counted >= stored,
+                    "read {refused}: the meter's refusal counted {counted} of the \
+                     {stored} stored bytes it scanned"
+                );
+                refused += 1;
+            }
+            Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork => break,
+            got => panic!("read {refused}: {:?}", got.map(|b| b.len())),
+        }
+        assert!(
+            refused <= allowance / stored + 1,
+            "{refused} refused reads and the allowance has not stopped them"
+        );
+    }
+    assert!(refused >= 1, "no read reached the meter's refusal");
 }
