@@ -85,18 +85,21 @@
 //! past [`TpkProvider::MAX_TREE_ROWS`] rows, the rows still to walk counted
 //! ([`unityrs_core::LimitKind::Count`]), so a node that lists itself or an
 //! ancestor, on which UnityPy's walk never ends, is an error; a tree deeper
-//! than the limit, which UnityPy builds, is one too. The trees of every
-//! release root together are bounded at [`TpkProvider::MAX_TOTAL_ROWS`]
-//! rows: at load, one pass over the node buffer finds what each root's walk
-//! would make (its rows, or a failure) without walking it, and in the order
-//! of the roots' ids a root whose tree would take the rows kept before it
-//! past the bound is refused, before it is walked, with a
+//! than the limit, which UnityPy builds, is one too. The walks of every
+//! release root together build at most [`TpkProvider::MAX_TOTAL_ROWS`]
+//! rows, kept or not: at load, one pass over the node buffer finds what
+//! each root's walk would make without walking it (its tree's rows, or a
+//! failure after at most its tree's rows, one past
+//! [`TpkProvider::MAX_TREE_ROWS`] at most), and in the order of the roots'
+//! ids a root whose walk would take the rows the walks before it build past
+//! the bound is refused, before it is walked, with a
 //! [`unityrs_core::LimitKind::Count`] limit naming the total it would reach
-//! (a root whose walk fails takes nothing from the total). So the provider
-//! never holds more than that bound of rows, however many classes an input
-//! asks for, and which roots it refuses depends on the TPK alone, never on
-//! the order of the requests. Each is a [`ProviderError`] whose `limit`
-//! names the bound. `PARITY.md` section 19.3 lists every one.
+//! (a root whose walk fails counts the rows it may build before it fails).
+//! So the provider never builds, and never holds, more than that bound of
+//! rows, however many classes an input asks for, and which roots it refuses
+//! depends on the TPK alone, never on the order of the requests. Each is a
+//! [`ProviderError`] whose `limit` names the bound. `PARITY.md` section 19.3
+//! lists every one.
 //!
 //! **Memory.** The TPK is the provider's, not an input's: its tables, rows,
 //! trees and kept errors are charged to the provider's own unlimited meter

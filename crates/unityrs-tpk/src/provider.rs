@@ -17,7 +17,7 @@ use unityrs_core::typetree::{NodeList, Tree, TreeError};
 use unityrs_core::{LimitError, LimitKind, UnityVersion};
 
 use crate::blob::{ClassEntry, TypeTreeBlob, memory};
-use crate::tree::{Build, WalkError, builds, generate_node};
+use crate::tree::{WalkError, builds, generate_node};
 use crate::{TpkError, file};
 
 /// What a release root's walk resolved to.
@@ -30,7 +30,7 @@ struct Kept<T> {
     _charge: Option<Charge>,
 }
 
-/// One release root that some class entry names: whether its tree is past
+/// One release root that some class entry names: whether its walk is past
 /// the provider's total ([`TpkProvider::MAX_TOTAL_ROWS`]), decided at load,
 /// and its node list and tree, each computed once. UnityPy's `NODES_CACHE`
 /// (`Tpk.py:17`, `:58-62`, `:86-87`) keys a tree by the entry's class
@@ -89,13 +89,16 @@ impl TpkProvider {
     /// error, which bounds the walk of a node that lists an ancestor.
     pub const MAX_TREE_ROWS: usize = 1 << 16;
 
-    /// The most rows the trees of every release root together may have,
-    /// 2,097,152, which bounds what the provider builds and keeps however
-    /// many classes are asked for. UnityPy 1.25.2's own TPK has 414,033
-    /// over its 3,000 release roots (`tools/fixtures/tpk.py --survey`).
-    /// Each root's rows are known at load, without walking it; in the order
-    /// of their ids, a root whose tree would take the trees kept so far past
-    /// this is refused with a [`LimitKind::Count`] limit (crate docs,
+    /// The most rows the walks of every release root together may build,
+    /// 2,097,152, which bounds what the provider builds, kept or not, and
+    /// so what it keeps, however many classes are asked for. UnityPy
+    /// 1.25.2's own TPK has 414,033 over its 3,000 release roots
+    /// (`tools/fixtures/tpk.py --survey`). What each root's walk builds is
+    /// known at load, without walking it: its tree's rows, or, for a walk
+    /// that fails, the most it builds before it fails (its tree's rows, at
+    /// most one past [`Self::MAX_TREE_ROWS`]). In the order of their ids, a
+    /// root whose walk would take the rows of the walks before it past this
+    /// is refused, unwalked, with a [`LimitKind::Count`] limit (crate docs,
     /// "Limits"), whatever was asked before it.
     pub const MAX_TOTAL_ROWS: usize = 1 << 21;
 
@@ -249,7 +252,7 @@ impl TpkProvider {
     }
 
     /// `generate_node(class_info)` (`Tpk.py:58-88`) from one release root,
-    /// unless its tree is past the provider's total.
+    /// unless its walk is past the provider's total.
     fn walk(&self, root: &Root) -> Outcome<NodeList> {
         if let Some(over) = root.over {
             return Err(limit_error(over));
@@ -277,9 +280,11 @@ impl TpkProvider {
 
 /// Every release root a kept class entry names, sorted and each once, with
 /// what [`builds`] finds its walk makes and the total's verdict: in the
-/// order of their ids, a root whose tree would take the rows of the trees
-/// before it past [`TpkProvider::MAX_TOTAL_ROWS`] is over, and the trees
-/// after it are counted without it.
+/// order of their ids, a root whose walk would take the rows the walks
+/// before it build past [`TpkProvider::MAX_TOTAL_ROWS`] is over, and the
+/// walks after it are counted without it. A walk that fails counts the most
+/// rows it builds before it fails ([`crate::tree::Build::work`]), so the
+/// work of every walk, kept or not, is within the total.
 fn roots(
     blob: &TypeTreeBlob,
     limits: &Limits,
@@ -311,17 +316,15 @@ fn roots(
     let mut total = 0_usize;
     for (&id, build) in distinct.as_slice().iter().zip(found.as_slice()) {
         let mut over = None;
-        if let Build::Rows(rows) = *build {
-            let with = total.saturating_add(rows);
-            if with > TpkProvider::MAX_TOTAL_ROWS {
-                over = Some(LimitError {
-                    kind: LimitKind::Count,
-                    value: u64::try_from(with).unwrap_or(u64::MAX),
-                    max: u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap_or(u64::MAX),
-                });
-            } else {
-                total = with;
-            }
+        let with = total.saturating_add(build.work());
+        if with > TpkProvider::MAX_TOTAL_ROWS {
+            over = Some(LimitError {
+                kind: LimitKind::Count,
+                value: u64::try_from(with).unwrap_or(u64::MAX),
+                max: u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap_or(u64::MAX),
+            });
+        } else {
+            total = with;
         }
         roots.push(Root {
             id,
