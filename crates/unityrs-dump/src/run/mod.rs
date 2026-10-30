@@ -163,22 +163,15 @@ fn resolve_at(path: &Path, depth: u32) -> Result<PathBuf, String> {
     Ok(p)
 }
 
-/// Every git repository root the dump must not write into: this crate's
-/// own repository (every ancestor of its manifest holding a `.git`, as
-/// `canonical.py`'s `repo_roots` lists the parity tools' ancestors; a
-/// worktree nests in its repository), and any repository the output itself
-/// lies in.
+/// The git repository the resolved path `resolved` lies in, if any: its
+/// nearest ancestor holding a `.git`, a clone's folder or a worktree's file
+/// (`canonical.py`'s `repo_roots` lists the parity tools' own; this is
+/// stricter, any repository). This crate's own checkout is one of them
+/// wherever it is, and nothing about where the dump was built is kept.
 fn repo_root_of(resolved: &Path) -> Option<PathBuf> {
-    let manifest = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).ok();
-    let ours: Vec<PathBuf> = manifest
-        .iter()
-        .flat_map(|m| m.ancestors())
-        .filter(|a| a.join(".git").exists())
-        .map(Path::to_path_buf)
-        .collect();
     resolved
         .ancestors()
-        .find(|a| a.join(".git").exists() || ours.iter().any(|r| r == a))
+        .find(|a| a.join(".git").exists())
         .map(Path::to_path_buf)
 }
 

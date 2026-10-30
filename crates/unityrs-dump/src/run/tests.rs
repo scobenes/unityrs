@@ -175,10 +175,67 @@ fn ordered_stops_when_the_sink_refuses() {
     assert_eq!(got, [0, 1, 2]);
 }
 
+/// A folder under the system temp directory, removed on drop.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Round 6: this test refused the crate's own checkout, so it passed only
+/// inside a git checkout. It builds its repositories: a clone's (a `.git`
+/// folder) and a worktree's (a `.git` file) refuse a path in them, one
+/// not made yet and one reached through a symlink included, and a folder
+/// beside them does not.
 #[test]
-fn the_repository_is_refused_and_a_temporary_folder_is_not() {
-    let repo = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).unwrap();
-    assert!(outside_repo(&repo.join("out.jsonl")).is_err());
-    assert!(outside_repo(&repo.join("no/such/dir/out.jsonl")).is_err());
-    assert!(outside_repo(&std::env::temp_dir().join("unityrs-dump-out.jsonl")).is_ok());
+fn a_repository_is_refused_and_a_folder_beside_it_is_not() {
+    let base = Scratch(
+        std::env::temp_dir().join(format!("unityrs-dump-repo-guard-{}", std::process::id())),
+    );
+    let (clone, worktree, plain) = (
+        base.0.join("clone"),
+        base.0.join("worktree"),
+        base.0.join("plain"),
+    );
+    std::fs::create_dir_all(clone.join(".git")).unwrap();
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(worktree.join(".git"), "gitdir: elsewhere\n").unwrap();
+    std::fs::create_dir_all(plain.join("deep")).unwrap();
+    std::os::unix::fs::symlink(&clone, plain.join("into-clone")).unwrap();
+    for repo in [&clone, &worktree] {
+        std::fs::create_dir_all(repo.join("deep")).unwrap();
+        for out in ["out.jsonl", "deep/out.jsonl", "no/such/dir/out.jsonl"] {
+            assert!(
+                outside_repo(&repo.join(out)).is_err(),
+                "{}",
+                repo.join(out).display()
+            );
+        }
+    }
+    assert!(outside_repo(&plain.join("into-clone/out.jsonl")).is_err());
+    let real = std::fs::canonicalize(&base.0).unwrap();
+    if let Some(outer) = repo_root_of(&real) {
+        // The system temp directory is itself in a repository: nothing
+        // under it is a folder outside one.
+        eprintln!("skipped: the temp directory is in {}", outer.display());
+        return;
+    }
+    for out in ["out.jsonl", "deep/out.jsonl", "no/such/dir/out.jsonl"] {
+        assert!(outside_repo(&plain.join(out)).is_ok(), "{out}");
+    }
+}
+
+/// This crate's own checkout is refused as any repository is, when the
+/// tree is one (a source archive is not: then there is nothing to refuse).
+#[test]
+fn the_crates_own_checkout_is_refused_when_it_is_one() {
+    let here = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).unwrap();
+    if repo_root_of(&here).is_none() {
+        eprintln!("skipped: {} is in no repository", here.display());
+        return;
+    }
+    assert!(outside_repo(&here.join("out.jsonl")).is_err());
+    assert!(outside_repo(&here.join("no/such/dir/out.jsonl")).is_err());
 }

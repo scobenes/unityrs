@@ -3,7 +3,7 @@
 //! with argparse's usage and error lines for a bad argument or path, 0 for
 //! `-h`, 1 for a cases file that cannot be read.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Output};
 
 fn unityrs(args: &[&str]) -> Output {
@@ -73,8 +73,11 @@ fn paths_the_oracle_refuses_exit_2_and_write_nothing() {
     std::fs::create_dir_all(&input).unwrap();
     std::fs::write(input.join("a.bin"), b"a").unwrap();
     let input = input.to_str().unwrap();
-    // Inside the repository.
-    let inside = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/cli-never-written.jsonl");
+    // Inside a repository: one the test makes (a folder holding `.git`, as
+    // a clone is), so this holds wherever the tree is, a checkout or not.
+    let repo = tmp.0.join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let inside = repo.join("never-written.jsonl");
     let o = unityrs(&["dump", input, "-o", inside.to_str().unwrap()]);
     assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
     assert!(stderr(&o).contains("repository"), "{}", stderr(&o));
