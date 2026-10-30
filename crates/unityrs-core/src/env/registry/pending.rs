@@ -14,7 +14,11 @@
 //! search (the unit a bundle read's searches count in, plan section 3.6),
 //! so the steps are bounded by `Limits::max_decode_work` as every other
 //! input-driven step is, and a test sees them through the input's meter
-//! (plan section 9, "How a test sees bounded work").
+//! (plan section 9, "How a test sees bounded work"). A step count worked
+//! out from a list's length is what a B-tree takes, and not what a list
+//! that shifts its slots on a removal takes, which would count the same:
+//! so the lists' type is pinned by this module's test, beside the count
+//! (review round 7: with `Vec` lists back, every test still passed).
 //!
 //! **Memory.** A lazy slot pays for its place in a list when it is made
 //! (`super::PENDING_SHARE`): its share of a B-tree node, as a key pays for
@@ -160,5 +164,34 @@ impl Pending {
             .collect();
         all.sort_by_key(|(s, _)| *s);
         all
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use super::{List, Pending, search_steps};
+    use crate::env::registry::Slot;
+
+    /// The lists are the B-trees their steps are counted for (module docs,
+    /// "Cost"): a list of another structure must change this test, and
+    /// [`search_steps`] with it. And each operation counts the steps of a
+    /// search of the list's length at its start, the cursor's included.
+    #[test]
+    fn the_lists_are_the_b_trees_their_steps_are_counted_for() {
+        let mut p = Pending::default();
+        let lists: [&BTreeMap<u64, Arc<Slot>>; 2] = [&p.listed, &p.evicted];
+        assert!(lists.iter().all(|l| l.is_empty()));
+        assert_eq!(p.after(List::Listed, None).1, search_steps(0));
+        assert_eq!(p.take(List::Listed, 0).1, search_steps(0));
+        assert_eq!(p.defer(0), search_steps(0));
+        // ⌈log2 n⌉ + 1 for n > 0, as a search down a B-tree of n keys.
+        let steps: Vec<u64> = [1, 2, 3, 4, 5, 8, 9, 1024, 1025]
+            .into_iter()
+            .map(search_steps)
+            .collect();
+        assert_eq!(steps, [1, 2, 3, 3, 4, 4, 5, 11, 12]);
     }
 }

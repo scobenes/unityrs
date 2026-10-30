@@ -286,14 +286,33 @@ fn reach_work(m: usize, by_name: bool) -> u64 {
     meter.decoded() - before
 }
 
+/// The steps `pending.rs` counts for listing `m` slots one after another
+/// and then settling them: each slot is listed on a list of `k` (`k` from 0
+/// to `m - 1`), found by a search of a list of `n` and taken off it (`n`
+/// from `m` down to 1), and the settle's last search finds an empty list;
+/// a search of `n` counts ⌈log2 n⌉ + 1 steps, of none one. Worked out here
+/// from that rule, not from the code's own `search_steps`.
+fn design_steps(m: u64) -> u64 {
+    let search = |n: u64| match n {
+        0 => 1,
+        n => u64::from(n.next_power_of_two().trailing_zeros()) + 1,
+    };
+    let listed: u64 = (0..m).map(search).sum();
+    let settled: u64 = (1..=m).map(search).sum();
+    listed + 2 * settled + 1
+}
+
 /// Settling the slots a registration dropped takes O(m log m) steps for m
 /// slots, each counted as work of the slots' input (plan section 3.16, R5;
 /// review round 6: the list was a `Vec` whose front removal shifted every
 /// later slot, O(m²) steps that nothing counted). The steps are what
 /// settling m slots counts past reaching each by name (`reach_work`): at
-/// least one step for each of a slot's three list operations (listed,
-/// found, taken off), and at most ⌈log2 m⌉ + 1 for each and for the last
-/// search, at 8 bytes a step (`pending.rs`).
+/// least every step of the design ([`design_steps`]: each slot's listing,
+/// its search and its removal, review round 7: a floor of one step per
+/// operation let the settle's own searches and removals go uncounted), and
+/// at most ⌈log2 m⌉ + 1 for each of the three and for the last search, at
+/// 8 bytes a step (`pending.rs`). That the steps are what the lists take,
+/// a B-tree's, is `pending.rs`'s own test.
 #[test]
 fn settling_dropped_slots_counts_steps_that_grow_as_m_log_m() {
     for m in [64_u64, 256, 1024] {
@@ -301,7 +320,11 @@ fn settling_dropped_slots_counts_steps_that_grow_as_m_log_m() {
         let (settled, by_name) = (reach_work(n, false), reach_work(n, true));
         let steps = settled.checked_sub(by_name).expect("settling counts less") / 8;
         let log = u64::from((m - 1).bit_width()) + 1;
-        assert!(steps >= 3 * m, "m = {m}: {steps} steps counted");
+        let design = design_steps(m);
+        assert!(
+            steps >= design,
+            "m = {m}: {steps} steps counted of {design}"
+        );
         assert!(steps <= (3 * m + 1) * log, "m = {m}: {steps} steps");
     }
 }
