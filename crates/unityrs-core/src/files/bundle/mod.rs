@@ -189,8 +189,10 @@ pub struct BundleFile {
     files: Box<[FileSlot]>,
     parent: Option<Parent>,
     /// Each block's outcome, once known: its actual decoded length (a stored
-    /// block's at open, any other's when it is first decoded or measured),
-    /// or the error its decode gave, kept so it is not decoded again.
+    /// block's at open while stored blocks are their own bytes,
+    /// `Codecs::stores_as_is`; any other's when it is first decoded or
+    /// measured), or the error its decode gave, kept so it is not decoded
+    /// again.
     lengths: Box<[ResultCell<u64, Error>]>,
     /// Decoded block runs: `(first block, end block, bytes)`, each run's
     /// charge inside its `Bytes`. Locked only to look up or publish.

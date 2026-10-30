@@ -88,7 +88,8 @@ impl BundleFile {
         }
         // :168-178: the blocks, read in order from here.
         let mut blocks = blocks;
-        let (stored, lengths) = stored_blocks(&mut blocks, &mut r, meter)?;
+        let (stored, lengths) =
+            stored_blocks(&mut blocks, &mut r, meter, ctx.codecs.stores_as_is())?;
         let files = files_dict(&directory, meter)?;
         let mut entries: MeteredVec<ResultCell<File, Error>> = MeteredVec::new(meter);
         for _ in 0..directory.len() {
@@ -136,12 +137,14 @@ impl BundleFile {
 
 /// Where each block's stored bytes are (`reader.read_bytes(compressedSize)`
 /// in order from `r`), its `bytes_read` set; and the length cells, a stored
-/// block's filled with what was read (`lambda cd, _ucs: cd`).
+/// block's filled with what was read (`lambda cd, _ucs: cd`) when stored
+/// blocks are their own bytes (`as_is`, [`crate::codec::Codecs::stores_as_is`]).
 #[allow(clippy::type_complexity)]
 fn stored_blocks(
     blocks: &mut MeteredVec<BlockInfo>,
     r: &mut Reader<'_>,
     meter: &Arc<Meter>,
+    as_is: bool,
 ) -> Result<(MeteredVec<Range<usize>>, MeteredVec<ResultCell<u64, Error>>), Error> {
     let len = r.data().len();
     let mut stored = MeteredVec::new(meter);
@@ -152,7 +155,7 @@ fn stored_blocks(
         b.bytes_read = u32::try_from(range.len()).unwrap_or(u32::MAX);
         stored.push(range)?;
         let cell = ResultCell::new();
-        if Codec::from_flags(u32::from(b.flags_u16())) == Codec::None {
+        if as_is && Codec::from_flags(u32::from(b.flags_u16())) == Codec::None {
             let _ = cell.set(Ok(u64::from(b.bytes_read)));
         }
         lengths.push(cell)?;

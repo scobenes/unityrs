@@ -235,7 +235,10 @@ fn an_alias_neither_replaces_nor_finds_a_codec() {
     let _ = c.set(Codec::Other(1), Arc::new(Lz4));
     assert!(Arc::ptr_eq(c.get(Codec::Lzma).unwrap(), &lzma));
     assert!(c.get(Codec::Other(1)).is_none());
-    assert_eq!(format!("{c:?}"), "Codecs { registered: [0, 1, 2, 3] }");
+    assert_eq!(
+        format!("{c:?}"),
+        "Codecs { registered: [0, 1, 2, 3], stored_builtin: true }"
+    );
 }
 
 #[test]
