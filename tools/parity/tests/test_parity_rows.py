@@ -3188,6 +3188,23 @@ class Rows(unittest.TestCase):
             (repr(UnityVersion.from_str("2019.4.15f1")), repr(UnityVersion.from_str("5.6.7f1"))),
             ("UnityVersion 2019.4f1", "UnityVersion 5.6.7"),
         )
+        # TypeTreeNode, with UnityPyBoost: the C type's repr, which the subclass does not override; four fields, each
+        # value's repr; its str the same.
+        from UnityPy import UnityPyBoost
+
+        self.assertTrue(issubclass(TypeTreeNode, UnityPyBoost.TypeTreeNode))
+        self.assertNotIn("__repr__", vars(TypeTreeNode))
+        flagged = TypeTreeNode(
+            m_Level=1, m_Type="string", m_Name='it\'s "q"', m_ByteSize=-1, m_Version=1, m_MetaFlag=16384
+        )
+        self.assertEqual(
+            [repr(node), str(node), repr(flagged)],
+            [
+                "TypeTreeNode(m_Level=0, m_Type='Thing', m_Name='Base', m_MetaFlag=None)",
+                "TypeTreeNode(m_Level=0, m_Type='Thing', m_Name='Base', m_MetaFlag=None)",
+                "TypeTreeNode(m_Level=1, m_Type='string', m_Name='it\\'s \"q\"', m_MetaFlag=16384)",
+            ],
+        )
         # ContainerHelper's str: `{path: pointer, …}` over items(), the path bare and the pointer as its str.
         pointers = [PPtr(m_FileID=0, m_PathID=7), PPtr(m_FileID=1, m_PathID=2)]
         container = ContainerHelper(

@@ -37,7 +37,9 @@ The groups, and how PARITY.md names a symbol of each, inside a code span (backti
   another UnityPy module or assigns as an alias: the dotted path from `UnityPy`
   (`UnityPy.files.File`, `UnityPy.load`). A package's own submodules are `modules`.
 - `boost`, every public name UnityPyBoost exports, and every public member its classes
-  define: `UnityPyBoost.read_typetree`, `UnityPyBoost.TypeTreeNode.m_Level`.
+  define: `UnityPyBoost.read_typetree`, `UnityPyBoost.TypeTreeNode.m_Level`. A special method
+  a class's C type defines (`UnityPyBoost.TypeTreeNode.__repr__`) counts too, the constructor's
+  `__init__` and `__new__` aside.
 - `enum_members`, every member of every enum UnityPy defines except `TextureFormat`:
   its name and value, as a code span `` `NAME = value` `` in a table column headed
   `values`, on the row whose first code span is the enum (`` `BuildTarget` ``).
@@ -257,6 +259,14 @@ def _origin(value) -> str | None:
     return None
 
 
+def _boost_special_method(member: str, value) -> bool:
+    """A special method a UnityPyBoost class's C type defines in its own slots (`__repr__`, `__del__`): its type's
+    `__dict__` holds a callable for it. The constructor's `__init__` and `__new__` are left out, as for UnityPy's own
+    classes."""
+    special = member.startswith("__") and member.endswith("__") and len(member) > 4
+    return special and member not in CONSTRUCTORS and callable(value)
+
+
 def _modules(root: Path):
     """(relative path, dotted name, module, source) for every module under UnityPy/, sorted by path."""
     for path in sorted(root.rglob("*.py")):
@@ -385,8 +395,8 @@ def collect() -> dict:
         add("boost", f"UnityPyBoost.{name}", f"UnityPy.UnityPyBoost.{name}")
         value = getattr(boost, name)
         if inspect.isclass(value):
-            for member in vars(value):
-                if not member.startswith("_"):
+            for member, attr in vars(value).items():
+                if not member.startswith("_") or _boost_special_method(member, attr):
                     add("boost", f"UnityPyBoost.{name}.{member}", f"UnityPy.UnityPyBoost.{name}.{member}")
 
     groups["texture_formats"] = [[member.name, member.value] for member in TextureFormat]

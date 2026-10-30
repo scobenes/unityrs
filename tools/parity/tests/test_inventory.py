@@ -42,7 +42,7 @@ GROUP_SIZES = {
     "fields": 8456,
     "attributes": 145,
     "exports": 924,
-    "boost": 15,
+    "boost": 17,
     "enum_members": 741,
     "texture_formats": 78,
 }
@@ -425,7 +425,11 @@ class AgainstTheOracle(unittest.TestCase):
                 "DirectoryInfo.path",  # a namedtuple field
                 "TypeTreeError.nodes",  # set by an exception's __init__
             ],
-            "boost": ["UnityPyBoost.read_typetree", "UnityPyBoost.TypeTreeNode.m_Level"],  # a C type's member
+            "boost": [
+                "UnityPyBoost.read_typetree",
+                "UnityPyBoost.TypeTreeNode.m_Level",  # a C type's member
+                "UnityPyBoost.TypeTreeNode.__repr__",  # a special method its C type defines (tp_repr)
+            ],
         }
         for group, names in kinds.items():
             for name in names:
@@ -451,6 +455,13 @@ class AgainstTheOracle(unittest.TestCase):
         self.assertEqual(len(SPECIAL_METHODS), 39)
         self.assertIn("PPtr.__bool__", groups["methods"])
         self.assertIn("UnityPyBoost.read_typetree", groups["boost"])
+        # Of UnityPyBoost's own special members, its TypeTreeNode's `__repr__` and `__del__` (the C type's tp_repr and
+        # tp_finalize) are members; its `__init__` and `__new__` are the constructor, and `__doc__` is no method.
+        boost_special = sorted(n for n in groups["boost"] if n.split(".")[-1][:2] == "__")
+        self.assertEqual(boost_special, ["UnityPyBoost.TypeTreeNode.__del__", "UnityPyBoost.TypeTreeNode.__repr__"])
+        from UnityPy import UnityPyBoost
+
+        self.assertTrue({"__init__", "__new__", "__doc__"} <= set(vars(UnityPyBoost.TypeTreeNode)))
         self.assertIn("CompressionHelper.DECOMPRESSION_MAP", groups["data"])
         self.assertIn("config.FALLBACK_UNITY_VERSION", groups["data"])
         # Globals a module-level loop binds: its targets and what its body assigns, nested loops included.
@@ -525,6 +536,14 @@ class AgainstTheOracle(unittest.TestCase):
             with self.subTest(name):
                 absent = inventory.missing(self.symbols, mutate(self, self.text, pattern, repl))
                 self.assertEqual(absent, {"methods": [name]})
+        # A special method of UnityPyBoost's C type, named in prose or in its Appendix B `members` cell.
+        for pattern, repl, name in (
+            (r"`UnityPyBoost\.TypeTreeNode\.__repr__`", "`UnityPyBoost.TypeTreeNode.__reprX__`", "__repr__"),
+            (r"^(\| `UnityPyBoost\.TypeTreeNode` \|.*)`__del__`, ", r"\1", "__del__"),
+        ):
+            with self.subTest(name):
+                absent = inventory.missing(self.symbols, mutate(self, self.text, pattern, repl))
+                self.assertEqual(absent, {"boost": [f"UnityPyBoost.TypeTreeNode.{name}"]})
 
     def test_a_name_under_a_wrong_parent_fails_the_check(self):
         cases = [
