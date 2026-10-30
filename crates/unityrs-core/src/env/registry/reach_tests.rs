@@ -456,14 +456,16 @@ fn a_load_returns_with_its_drop_reached_while_another_settle_holds_it() {
 /// A standing slot that is the key's value learns a lower position from a
 /// registration that ranks below it (two loads of `o` with a `CAB-Z` after
 /// `INNER`, on the same `Bytes`, the later one's `INNER` registered first:
-/// `CAB-Z`'s key then sits between the two positions) while a lookup on a third
-/// thread is reaching it, stopped after its registrations: the reach reads
-/// the position again after it marks the slot reached and registers once
-/// more there, so the entries take the first load's positions, as an eager
-/// load gives them (`reach.rs`'s module docs, "Stand-ins"; plan section 9,
-/// Q14, revised after review round 6). Run as well with the reach done
-/// before the registration, which then finds the slot reached and lists
-/// its own slot, which its load reaches before it returns.
+/// `CAB-Z`'s key then sits between the two positions) while a lookup on a
+/// third thread is reaching it, stopped after its registrations and before
+/// it closes the position: the close finds the position lower and the
+/// reach registers once more there before it marks the slot reached, so
+/// the entries take the first load's positions, as an eager load gives
+/// them (`reach.rs`'s module docs, "Stand-ins"; plan section 9, Q14,
+/// revised after review rounds 6 and 7). Run as well with the reach stopped
+/// after its close, and with the reach done before the registration: the
+/// registration then finds the position closed and lists the slot it
+/// drops, which its load reaches before it returns.
 #[test]
 fn a_reach_that_learns_a_lower_position_registers_there() {
     let inner = bundle(&[("CAB-I", cab("i")), ("CAB-I.resS", res_bytes(8, 1))]);
@@ -472,7 +474,10 @@ fn a_reach_that_learns_a_lower_position_registers_there() {
         ("INNER", inner),
         ("CAB-Z", cab("z")),
     ]));
-    for reach_first in [false, true] {
+    // Where the reach stops while the first load registers its `INNER`:
+    // after its last registration (`cab-i.ress`), after its close, or not
+    // at all (it returns first).
+    for at in [Some((Hook::Published, 2)), Some((Hook::Reached, 1)), None] {
         let mut options = EnvOptions::unitypy();
         options.load = LoadMode::Lazy;
         let env = Environment::new(options);
@@ -490,34 +495,204 @@ fn a_reach_that_learns_a_lower_position_registers_there() {
         assert_eq!(standing.position(), standing.rank.load);
         let get = {
             let env = env.clone();
-            let at = (!reach_first).then_some((Hook::Reached, 1));
             gate.run(at, move || {
                 let meter = Meter::unlimited();
                 drop(env.get_cab(&RawStr::from("INNER"), &meter).unwrap());
             })
         };
-        if reach_first {
+        let what = format!("the reach stopped at {at:?}");
+        if at.is_none() {
             get.finish();
             first.finish();
         } else {
             get.stopped();
-            assert!(env.registry().has("cab-i"), "the reach registered");
+            assert!(env.registry().has("cab-i.ress"), "{what}: it registered");
             first.finish();
-            assert!(standing.position() < standing.rank.load);
-            assert!(standing.unreached(), "the reach is stopped");
+            let lowered = standing.position() < standing.rank.load;
+            // Before the close the stand-in lowers the position; after it
+            // the first load lists its own `INNER` and reaches it.
+            assert_eq!(lowered, at == Some((Hook::Published, 2)), "{what}");
+            assert!(env.registry().listed().is_empty(), "{what}");
+            assert!(standing.unreached(), "{what}: the reach is stopped");
             get.finish();
         }
-        assert!(!standing.unreached(), "reach first: {reach_first}");
+        assert!(!standing.unreached(), "{what}");
         env.registry().check();
         assert!(env.registry().listed().is_empty());
         let eager = Environment::new(EnvOptions::unitypy());
         for name in ["o.bundle", "o2.bundle"] {
             eager.load(src(name, &o)).unwrap();
         }
-        let what = format!("reach first: {reach_first}");
         assert_eq!(answers(&env, false), answers(&eager, false), "{what}");
         assert_eq!(keys(&env), keys(&eager), "{what}: the positions");
     }
+}
+
+/// What UnityPy 1.25.2 recorded for the scene `nested_reloaded_spans_raced`
+/// (`tests/fixtures/d/env.json`, `tools/fixtures/env.py`): the container's
+/// row paths, and the path of each object of the reload's files, the last
+/// of each `(CAB, path id)` in `env.objects` (the files the keys' values
+/// are), by `(CAB, path id)`.
+#[allow(clippy::type_complexity)]
+fn raced_spans_oracle() -> (Vec<Option<String>>, Vec<((String, i64), Option<String>)>) {
+    // Read at run time: no file is compiled into the core
+    // (`crates/unityrs-tpk/tests/no_tpk.rs`).
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/d/env.json");
+    let text = std::fs::read_to_string(path).expect("env.json");
+    let doc: serde_json::Value = serde_json::from_str(&text).expect("env.json");
+    let scene = doc["scenes"]
+        .as_array()
+        .expect("scenes")
+        .iter()
+        .find(|s| s["name"] == "nested_reloaded_spans_raced")
+        .expect("the scene is recorded");
+    let step = |op: &str| {
+        scene["steps"]
+            .as_array()
+            .expect("steps")
+            .iter()
+            .find(|s| s["op"][0] == op)
+            .expect("a recorded step")
+    };
+    let text = |v: &serde_json::Value| v.as_str().map(str::to_owned);
+    let rows = step("container")["result"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|r| text(&r[0]))
+        .collect();
+    let paths = step("paths");
+    let objects = paths["objects"].as_array().expect("objects");
+    let mut last: Vec<((String, i64), Option<String>)> = Vec::new();
+    for (o, p) in objects
+        .iter()
+        .zip(paths["result"].as_array().expect("paths"))
+    {
+        let at = (
+            o[0].as_str().expect("a CAB").to_owned(),
+            o[1].as_i64().expect("a path id"),
+        );
+        last.retain(|(k, _)| *k != at);
+        last.push((at, text(p)));
+    }
+    (rows, last)
+}
+
+/// The container's row paths and, for each `(CAB, path id)` the oracle
+/// names, `obj.container` of that object of the key's value.
+#[allow(clippy::type_complexity)]
+fn raced_spans_answers(
+    env: &Environment,
+    objects: &[((String, i64), Option<String>)],
+) -> (Vec<Option<String>>, Vec<((String, i64), Option<String>)>) {
+    use crate::container::ContainerPath;
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let rows = env
+        .container()
+        .expect("the container")
+        .map(|i| i.expect("a row").row.path.map(|p| text(p.as_bytes())))
+        .collect();
+    let meter = Meter::unlimited();
+    let paths = objects
+        .iter()
+        .map(|((cab, id), _)| {
+            let Some(Cab::Serialized(sf)) =
+                env.get_cab(&RawStr::from(cab.as_str()), &meter).unwrap()
+            else {
+                panic!("{cab} is a SerializedFile");
+            };
+            let obj = sf
+                .objects()
+                .find(|o| o.path_id() == *id)
+                .expect("the object");
+            let path = match env.container_path(&obj).expect("a path") {
+                None => None,
+                Some(ContainerPath::Str(s)) => Some(text(s.as_bytes())),
+                Some(ContainerPath::NotAString) => Some("<not a str>".into()),
+            };
+            ((cab.clone(), *id), path)
+        })
+        .collect();
+    (rows, paths)
+}
+
+/// What can stop a reach of the reload's `INNER`, or the pass that reaches
+/// it, between its steps.
+const RACE_POINTS: [(Hook, usize); 4] = [
+    (Hook::Published, 1),
+    (Hook::Published, 2),
+    (Hook::Reached, 1),
+    (Hook::SettleTook, 1),
+];
+
+/// Review round 7's race (scene `nested_reloaded_spans_raced`, `Lazy`): the
+/// first load `o.bundle` is stopped after its first key; the reload
+/// `o2.bundle` loads whole; a reach of the reload's `INNER` (a lookup of
+/// its name, or a container pass) is stopped at a point; the first load is
+/// let go and registers its `INNER`, which lowers the reach's position, and
+/// returns; the reach is let go to a second point, where a container pass
+/// runs, every load having returned; then the reach returns. Whatever the
+/// two points, the container lists UnityPy's rows and every object of the
+/// keys' files has UnityPy's path: no pass walks a reached slot whose
+/// entries can still move to a lower position (`reach.rs`'s module docs,
+/// "Stand-ins"; plan section 3.16, R4). The reach marked the slot reached
+/// and then moved its entries, so a pass in between walked `CAB-Z` before
+/// `CAB-I`, published the generation built, and `CAB-Z`'s object 2 kept the
+/// path `assets/z.prefab` for good.
+#[test]
+fn no_pass_walks_a_reached_slot_whose_entries_can_still_move() {
+    let scene = unityrs_testkit::env::nested_reloaded_spans_raced();
+    let data = Bytes::from(scene.files[0].1.clone());
+    let (rows, paths) = raced_spans_oracle();
+    let mut cases = 0;
+    for pass_reaches in [false, true] {
+        for first in RACE_POINTS {
+            for second in std::iter::once(None).chain(RACE_POINTS.map(Some)) {
+                cases += 1;
+                let mut options = EnvOptions::unitypy();
+                options.load = LoadMode::Lazy;
+                let env = Environment::new(options);
+                let gate = Gate::install(&env);
+                let load = {
+                    let (env, data) = (env.clone(), data.clone());
+                    gate.run(Some((Hook::Published, 1)), move || {
+                        drop(env.load(src("o.bundle", &data)).unwrap());
+                    })
+                };
+                load.stopped();
+                drop(env.load(src("o2.bundle", &data)).unwrap());
+                let reach = {
+                    let env = env.clone();
+                    let stops = std::iter::once(first).chain(second).collect();
+                    gate.run_stops(stops, move || {
+                        if pass_reaches {
+                            env.container().unwrap().count();
+                        } else {
+                            let meter = Meter::unlimited();
+                            drop(env.get_cab(&RawStr::from("INNER"), &meter).unwrap());
+                        }
+                    })
+                };
+                let what = format!("pass {pass_reaches}, {first:?} then {second:?}");
+                if reach.next() == Event::Stopped {
+                    load.finish();
+                    reach.release();
+                    if reach.next() == Event::Stopped {
+                        env.container().unwrap().count();
+                    }
+                } else {
+                    load.finish();
+                }
+                reach.finish();
+                let got = raced_spans_answers(&env, &paths);
+                assert_eq!(got.0, rows, "{what}: the rows");
+                assert_eq!(got.1, paths, "{what}: the paths");
+                env.registry().check();
+                assert!(env.registry().listed().is_empty(), "{what}");
+            }
+        }
+    }
+    assert_eq!(cases, 2 * 4 * 5);
 }
 
 /// A listed slot is reached by every load's registration, whether or not

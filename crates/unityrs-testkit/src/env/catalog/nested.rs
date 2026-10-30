@@ -264,6 +264,61 @@ pub fn nested_reloaded_spans() -> Scene {
     }
 }
 
+/// [`nested_reloaded_spans`] with `CAB-O` before `INNER` and `CAB-J` before
+/// `CAB-I` inside it, so a test can stop the first load after its first
+/// key, before it registers `INNER`, and stop a reach of the reload's
+/// `INNER` between two of its keys. An eager load gives the container and
+/// the paths of [`nested_reloaded_spans`]. Under `LoadMode::Lazy`, when the
+/// first load registers its `INNER` while the reload's slot is being
+/// reached, a container pass that runs once both loads have returned must
+/// walk `CAB-I` before `CAB-Z` (review round 7: the reach marked the slot
+/// reached and only then moved its entries to the first load's positions,
+/// so a pass in between walked `CAB-Z` first and gave its object 2 the path
+/// `assets/z.prefab` for good).
+#[must_use]
+pub fn nested_reloaded_spans_raced() -> Scene {
+    let i = serialized(
+        &["archive:/CAB-Z/CAB-Z"],
+        &[
+            Obj::named(1, "i1", &[]),
+            Obj::asset_bundle(
+                3,
+                Bundle {
+                    preload: vec![(1, 2)],
+                    rows: vec![row("assets/i.prefab", (0, 1), (0, 1))],
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    );
+    let z = serialized(
+        &[],
+        &[
+            Obj::named(2, "z2", &[]),
+            Obj::named(4, "z4", &[]),
+            Obj::asset_bundle(
+                3,
+                Bundle {
+                    preload: vec![(0, 2)],
+                    rows: vec![row("assets/z.prefab", (0, 1), (0, 4))],
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    );
+    let o_cab = serialized(&[], &[Obj::named(1, "o1", &[])]);
+    let j = serialized(&[], &[Obj::named(1, "j1", &[])]);
+    let o = bundle(&[
+        ("CAB-O", o_cab),
+        ("INNER", bundle(&[("CAB-J", j), ("CAB-I", i)])),
+        ("CAB-Z", z),
+    ]);
+    Scene {
+        files: vec![named("o.bundle", o.clone()), named("o2.bundle", o)],
+        resolver: Vec::new(),
+    }
+}
+
 /// `f.bundle` holds `CAB-F`; the dependency `a.bundle` holds the nested
 /// bundle `INNER` of `CAB-D`, whose row `assets/d.prefab` has a preload span
 /// reaching `CAB-F`'s object 1; the dependency `b.bundle` holds `CAB-B`; and
@@ -304,4 +359,21 @@ pub fn nested_dropped_evicted() -> DepScene {
         },
         dependencies: vec![1, 2],
     }
+}
+
+/// [`nested_dropped_evicted`] without `p.bundle`: the dependency
+/// `a.bundle`'s `INNER` stays the key's value. An eager load registered
+/// `CAB-D` at `a.bundle`'s load, so the container pass walks its table and
+/// `CAB-F`'s object 1 gets the path `assets/d.prefab`. Under
+/// `LoadMode::Lazy`, with options that evict `a.bundle` when `b.bundle`
+/// loads, the container pass reaches `INNER` through its own slot, opening
+/// `a.bundle` again; a pool that refuses that open, or any later read or
+/// registration of the reach, makes room by evicting the other
+/// dependencies and tries once more, as every other dependency read does
+/// (plan section 3.13; review round 7: the reach's open failed every pass).
+#[must_use]
+pub fn nested_evicted() -> DepScene {
+    let mut scene = nested_dropped_evicted();
+    scene.scene.files.truncate(3);
+    scene
 }

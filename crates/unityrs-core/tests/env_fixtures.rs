@@ -209,6 +209,7 @@ const LAZY_DIFFERS: &[&str] = &[
     "nested_reloaded",
     "nested_raw_replaced",
     "nested_reloaded_spans",
+    "nested_reloaded_spans_raced",
     // (c): the block after the last entry is never decoded.
     "last_block_fails",
 ];
@@ -238,6 +239,7 @@ const LAZY_KEYS_DIFFER: &[(&str, &str)] = &[
     ("nested_reloaded", "inner"),
     ("nested_raw_replaced", "inner"),
     ("nested_reloaded_spans", "inner"),
+    ("nested_reloaded_spans_raced", "inner"),
 ];
 
 /// Difference (b) and nothing more on [`LAZY_KEYS_DIFFER`]'s scenes, under

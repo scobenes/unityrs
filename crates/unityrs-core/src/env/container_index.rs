@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::deref::Reached;
-use super::registry::{Rank, load_keys_here};
+use super::registry::{Rank, SlotKind, load_keys_here};
 use super::watch::{Flag, Walk};
 use super::{Cab, DerefError, Environment, Found, LoadMode, PPtr, never_evicts, pptr};
 use crate::budget::Reservation;
@@ -418,9 +418,21 @@ impl Environment {
                 continue;
             };
             if !slot.walked() {
-                let container = sf.container()?;
                 let before = load_keys_here();
-                self.walk_counted(sf, container, (generation, &rank), &mut siblings)?;
+                let mut walk = || {
+                    let container = sf.container()?;
+                    self.walk_counted(sf, container, (generation, &rank), &mut siblings)
+                };
+                // A dependency's table is walked on its meter: a walk the
+                // pool refuses evicts the others and walks again
+                // (`registry::with_room`; review round 7: under either mode
+                // a pool with no room for the walk failed every pass). A
+                // walk is idempotent: each `path_dict` entry keeps the
+                // least stamp.
+                match &slot.kind {
+                    SlotKind::Dependency { dep } => dep.with_room(walk)?,
+                    SlotKind::Entry { .. } | SlotKind::Ready(_) => walk()?,
+                }
                 slot.set_walked();
                 grew = load_keys_here() != before;
             }

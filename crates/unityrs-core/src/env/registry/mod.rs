@@ -51,7 +51,8 @@
 //! (`reach::stands_in`), which a lookup from a file inside the dropped entry
 //! then reaches, and whose reach registers the entries at the dropped
 //! slot's positions (plan 9, Q14, revised after review round 6;
-//! `register.rs`, `Stand`).
+//! `register.rs`, `Stand`), until that reach closes its position, after
+//! which a dropped slot is listed (`reach.rs`, "Stand-ins").
 //! What remains of (b) is a lookup by name alone (a
 //! `get_cab`, a `find_file`, a pointer to a file that is not the asking
 //! file's sibling) of an entry of a container nothing has reached, which
@@ -136,7 +137,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 pub use cab::{Cab, HeldCab, RawCab};
-pub(crate) use dependency::{DepSlot, Dependency, Open, open_source};
+pub(crate) use dependency::{DepSlot, Dependency, Open, open_source, with_room};
 pub(crate) use lru::DepCache;
 #[cfg(test)]
 pub(crate) use lru::{Hook, HookFn};
@@ -148,7 +149,6 @@ pub(crate) use slot::{Slot, SlotKind};
 use super::held::{self, Held, lock};
 use super::watch::Watches;
 
-use crate::budget::Reservation;
 use crate::error::Error;
 use crate::files::{BundleFile, File};
 use crate::limits::{Charge, HASH_TABLE_SHARES, Meter, heap_cost};
@@ -367,7 +367,7 @@ impl Registry {
     /// (`Lazy`) or reached from its dependency's open handle (reopened from
     /// its source after an eviction); `None` for a nested container, which
     /// is reached then (module docs). A dependency read the pool refuses
-    /// evicts the others and retries once.
+    /// evicts the others and retries once ([`with_room`]).
     pub(crate) fn resolve(&self, slot: &Arc<Slot>) -> Result<Option<Cab>, Error> {
         Ok(self.resolve_held(slot)?.map(|h| h.cab))
     }
@@ -383,18 +383,7 @@ impl Registry {
                 self.answer(slot, file, Some((bundle, *dir_index)))
                     .map(held)
             }
-            SlotKind::Dependency { dep } => {
-                let first = self.resolve_dependency(slot, dep);
-                match first {
-                    Err(Error::Budget(b)) if b.what == Reservation::Dependency => {
-                        if let Some(cache) = dep.cache.upgrade() {
-                            cache.evict_others(Some(dep));
-                        }
-                        self.resolve_dependency(slot, dep)
-                    }
-                    other => other,
-                }
-            }
+            SlotKind::Dependency { dep } => dep.with_room(|| self.resolve_dependency(slot, dep)),
         }
     }
 
