@@ -194,6 +194,23 @@ impl Default for Limits {
 /// allocator's rounding of its one allocation) is a constant per table.
 pub(crate) const HASH_TABLE_SHARES: u64 = 4;
 
+/// The charge for a hash table of `len` keys (at least two keys' worth)
+/// whose key and value take `entry` bytes together: [`HASH_TABLE_SHARES`]
+/// buckets a key, each the entry and one control byte, plus the table's
+/// fixed part, as one [`heap_cost`]. A table that grows one key at a time
+/// charges `hash_table_cost(n + 1, _) - hash_table_cost(n, _)` before each
+/// insert; the 4/7 of a bucket a key between the four charged and the 24/7
+/// a doubling holds covers the rounding of the second allocation while
+/// both are live.
+pub(crate) fn hash_table_cost(len: usize, entry: usize) -> u64 {
+    let bucket = (entry as u64).saturating_add(1);
+    heap_cost(
+        (len.max(2) as u64)
+            .saturating_mul(HASH_TABLE_SHARES.saturating_mul(bucket))
+            .saturating_add(16),
+    )
+}
+
 /// glibc's default `M_MMAP_THRESHOLD`: a chunk of at least this many bytes
 /// may be `mmap`ped (the threshold starts here and can only rise, which
 /// serves more chunks from the heap, never fewer).

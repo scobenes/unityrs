@@ -3,7 +3,8 @@
 
 //! What both readers share to build a dict and to resolve a
 //! `ReferencedObject`'s data: the linear `PyDict_SetItem` of plan 3.10
-//! ("Linear dicts") and the ref-type scan's pieces.
+//! ("Linear dicts") and the ref-type search ([`RefIndex`], which the writer
+//! shares too).
 //!
 //! **Linear dicts.** A class's entries grow in a metered vector sized from
 //! the compiled tree (its distinct child names that the read will set). A
@@ -14,15 +15,16 @@
 //! first child actually read puts it. The scratch is a region of one
 //! metered stack, cleared per class read.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::files::SerializedType;
-use crate::limits::{Limits, MeteredVec};
+use crate::limits::{Charge, ChargeError, Limits, Meter, MeteredVec, hash_table_cost};
 use crate::raw::RawStr;
 use crate::typetree::{NodeId, Tree};
 use crate::value::{ListIx, Map, Value, ValueBuilder};
 
-use super::{Out, ReadDetail, ReadError, ReadErrorKind, charge_error};
+use super::{Out, ReadDetail, ReadError, ReadErrorKind, RefTypes, charge_error};
 
 /// No entry yet for a slot.
 const NONE: u32 = u32::MAX;
@@ -30,14 +32,15 @@ const NONE: u32 = u32::MAX;
 #[cfg(test)]
 std::thread_local! {
     /// Map steps this thread took: each slot cleared, each entry set or
-    /// looked up, each entry a lookup by name passes; the writer's lookups
-    /// too (the linear-dicts tests).
+    /// looked up, each entry a lookup by name passes, each ref type or node
+    /// list a search passes; the writer's lookups too (the linear-work
+    /// tests).
     pub(super) static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Counts `n` map steps (tests only).
 #[inline]
-pub(super) fn steps(n: usize) {
+pub(crate) fn steps(n: usize) {
     #[cfg(test)]
     STEPS.with(|s| s.set(s.get().saturating_add(n as u64)));
     #[cfg(not(test))]
@@ -223,7 +226,7 @@ pub(crate) fn slot_count(tree: &Tree, node: NodeId) -> usize {
 /// its bytes do), as `PyUnicode_Compare` (UnityPy TypeTreeHelper.cpp:663)
 /// and the pure-Python `==` (UnityPy TypeTreeHelper.py:106) compare them;
 /// any other object never matches.
-pub(crate) fn names_match(t: &SerializedType, cls: &Value, ns: &Value, asm: &Value) -> bool {
+fn names_match(t: &SerializedType, cls: &Value, ns: &Value, asm: &Value) -> bool {
     let eq = |v: &Value, s: &Option<RawStr>| match (v, s) {
         (Value::Str(a), Some(b)) => a.as_bytes() == b.as_bytes(),
         _ => false,
@@ -231,8 +234,121 @@ pub(crate) fn names_match(t: &SerializedType, cls: &Value, ns: &Value, asm: &Val
     eq(cls, &t.class_name) && eq(ns, &t.namespace) && eq(asm, &t.assembly)
 }
 
+/// `get_ref_type_node`'s search: the *first* ref type whose class,
+/// namespace and assembly equal the three values ([`names_match`]; UnityPy
+/// TypeTreeHelper.cpp:644-670, TypeTreeHelper.py:105-107), found in steps
+/// linear in the list plus the lookups of one read or one write. UnityPy
+/// scans the list for every lookup, so an object of `n` references into
+/// `n` ref types costs it `n`² comparisons (claude X, review round 2).
+/// Here each lookup scans as UnityPy does until this read's or write's
+/// scans have passed the list's length; then, for a list longer than
+/// [`SCANNED_REFS`], a table from each `(class, ns, asm)` to its first
+/// index is built, once, charged to the meter before it allocates, and
+/// every later lookup is one probe. A read or a write so costs at most
+/// twice what UnityPy's own scans cost it, and at most three steps a ref
+/// type plus one a lookup (or [`SCANNED_REFS`] a lookup).
+pub(crate) struct RefIndex<'a> {
+    list: &'a [SerializedType],
+    /// The ref types the scans so far compared.
+    scanned: usize,
+    table: Option<RefTable<'a>>,
+}
+
+/// A list this long or shorter is only ever scanned: a lookup costs at most
+/// as many steps as a probe's hashing.
+const SCANNED_REFS: usize = 8;
+
+/// [`RefIndex`]'s table.
+struct RefTable<'a> {
+    first: HashMap<[&'a [u8]; 3], usize>,
+    /// The longest class, namespace and assembly: a longer value matches
+    /// nothing and is not hashed (a scan's comparison checks lengths first).
+    longest: [usize; 3],
+    _charge: Charge,
+}
+
+impl<'a> RefIndex<'a> {
+    /// Over `refs`' list (empty for no list: the callers check that first).
+    pub(crate) fn new(refs: RefTypes<'a>) -> Self {
+        let list = match refs {
+            RefTypes::List(l) => l,
+            RefTypes::NoFile | RefTypes::Absent => &[],
+        };
+        Self {
+            list,
+            scanned: 0,
+            table: None,
+        }
+    }
+
+    /// The first ref type whose names equal `(cls, ns, asm)`, the table
+    /// charged to `meter` when this lookup builds it.
+    pub(crate) fn find(
+        &mut self,
+        meter: &Arc<Meter>,
+        cls: &Value,
+        ns: &Value,
+        asm: &Value,
+    ) -> Result<Option<&'a SerializedType>, ChargeError> {
+        let (Value::Str(c), Value::Str(n), Value::Str(a)) = (cls, ns, asm) else {
+            // A value that is not a `str` matches no ref type.
+            return Ok(None);
+        };
+        if self.table.is_none() && self.scanned >= self.list.len() && self.list.len() > SCANNED_REFS
+        {
+            self.table = Some(RefTable::build(self.list, meter)?);
+        }
+        if let Some(t) = &self.table {
+            steps(1);
+            let key = [c.as_bytes(), n.as_bytes(), a.as_bytes()];
+            if key.iter().zip(t.longest).any(|(k, l)| k.len() > l) {
+                return Ok(None);
+            }
+            let first: &HashMap<[&[u8]; 3], usize> = &t.first;
+            return Ok(first.get(&key).and_then(|i| self.list.get(*i)));
+        }
+        for (i, r) in self.list.iter().enumerate() {
+            steps(1);
+            if names_match(r, cls, ns, asm) {
+                self.scanned = self.scanned.saturating_add(i + 1);
+                return Ok(Some(r));
+            }
+        }
+        self.scanned = self.scanned.saturating_add(self.list.len());
+        Ok(None)
+    }
+}
+
+impl<'a> RefTable<'a> {
+    /// Every ref type with all three names, first index kept, charged
+    /// before it allocates ([`hash_table_cost`]).
+    fn build(list: &'a [SerializedType], meter: &Arc<Meter>) -> Result<Self, ChargeError> {
+        let n = list.len();
+        let charge = meter.charge(hash_table_cost(n, size_of::<([&[u8]; 3], usize)>()))?;
+        let mut first = HashMap::with_capacity(n);
+        let mut longest = [0; 3];
+        for (i, r) in list.iter().enumerate() {
+            steps(1);
+            let (Some(c), Some(ns), Some(a)) = (&r.class_name, &r.namespace, &r.assembly) else {
+                continue;
+            };
+            let key = [c.as_bytes(), ns.as_bytes(), a.as_bytes()];
+            for (l, k) in longest.iter_mut().zip(key) {
+                *l = (*l).max(k.len());
+            }
+            first.entry(key).or_insert(i);
+        }
+        Ok(Self {
+            first,
+            longest,
+            _charge: charge,
+        })
+    }
+}
+
 /// What a matched ref type gives the data child: its compiled tree, or no
 /// tree (type trees disabled; UnityPy's `node is None`).
+#[derive(Clone)]
 pub(crate) enum RefNode {
     /// Read the data with this tree.
     Tree(Arc<Tree>),

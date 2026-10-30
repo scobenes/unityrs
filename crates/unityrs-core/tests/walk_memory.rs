@@ -11,9 +11,11 @@
 //! at most what the meter has charged at that moment: no slack. It runs
 //! every recorded case through both readers and, after each successful
 //! read, through the writer under both rules, then a class of 2^16 + 1
-//! distinct children, a list of 2^16 + 1 strings and two classes of one name
-//! over 2^16 + 1 children (the writer's name table), each with the meter
-//! booking an `Unbounded` budget and a `Counting` one. The largest request
+//! distinct children, a list of 2^16 + 1 strings, two classes of one name
+//! over 2^16 + 1 children (the writer's name table), 4,096 references into
+//! as many ref types (the ref-type and node-list tables) and two classes of
+//! one name over 4,096 dicts (the writer's kept name tables), each with the
+//! meter booking an `Unbounded` budget and a `Counting` one. The largest request
 //! of each big read is the exact size of its 2^16 + 1 elements: the dict's
 //! entries and the list's items end with their capacity equal to their
 //! length (plan 3.10, "list growth"). The allocator counts only the test's
@@ -445,6 +447,143 @@ fn renamed(n: usize, counting: bool) {
     }
 }
 
+/// An aligned string: its length, its bytes, zeros to a multiple of 4.
+fn string(out: &mut Vec<u8>, s: &str) {
+    out.extend_from_slice(&i32::try_from(s.len()).unwrap().to_le_bytes());
+    out.extend_from_slice(s.as_bytes());
+    out.resize(out.len().next_multiple_of(4), 0);
+}
+
+/// `n` references into `n` ref types, each with a tree of its own: the
+/// read's and the write's ref-type table (built once their scans pass the
+/// list) and the value's table of node lists (past eight lists).
+fn references(n: u32, counting: bool) {
+    let refs: Vec<SerializedType> = (0..n)
+        .map(|i| {
+            SerializedType::ref_type(
+                114,
+                RawStr::from(format!("C{i}").as_str()),
+                RawStr::from(""),
+                RawStr::from(""),
+                Some(Arc::new(
+                    NodeList::trusted(vec![NodeRow::new(0, "Empty", "Base")]).unwrap(),
+                )),
+            )
+        })
+        .collect();
+    for t in &refs {
+        let _ = t.tree(&Limits::default());
+    }
+    let rows = [
+        (0, "Base", "Base"),
+        (1, "vector", "refs"),
+        (2, "Array", "Array"),
+        (3, "int", "size"),
+        (3, "ReferencedObject", "data"),
+        (4, "ReferencedType", "type"),
+        (5, "string", "class"),
+        (5, "string", "ns"),
+        (5, "string", "asm"),
+        (4, "ReferencedObjectData", "data"),
+    ];
+    let tree = Tree::compile(
+        Arc::new(
+            NodeList::trusted(
+                rows.iter()
+                    .map(|(l, t, n)| NodeRow::new(*l, *t, *n))
+                    .collect(),
+            )
+            .unwrap(),
+        ),
+        &Limits::default(),
+    )
+    .unwrap();
+    let mut data = n.to_le_bytes().to_vec();
+    for i in 0..n {
+        string(&mut data, &format!("C{i}"));
+        string(&mut data, "");
+        string(&mut data, "");
+    }
+    let data = Bytes::from(data);
+    let _shared = data.clone();
+    for python in [false, true] {
+        let what = if python {
+            "references [python]"
+        } else {
+            "references [boost]"
+        };
+        let (_, read) = measure(
+            what,
+            python,
+            &data,
+            &data,
+            &tree,
+            RefTypes::List(&refs),
+            Endian::Little,
+            counting,
+        );
+        assert!(read, "{what}: read");
+    }
+}
+
+/// Two classes of one name, each over a list of `n` dicts, the second's
+/// with a field first that the first's lacks: the dict both are written
+/// from is the second's, whose `n` dicts each miss the first's cursor, so
+/// the writer keeps `n` name tables in its map of them.
+fn shared(n: u32, counting: bool) {
+    let rows = [
+        (0, "Base", "Base"),
+        (1, "Foo", "a"),
+        (2, "vector", "v"),
+        (3, "Array", "Array"),
+        (4, "int", "size"),
+        (4, "X", "data"),
+        (5, "int", "zz"),
+        (1, "Bar", "a"),
+        (2, "vector", "v"),
+        (3, "Array", "Array"),
+        (4, "int", "size"),
+        (4, "Y", "data"),
+        (5, "int", "c0"),
+        (5, "int", "zz"),
+    ];
+    let tree = Tree::compile(
+        Arc::new(
+            NodeList::trusted(
+                rows.iter()
+                    .map(|(l, t, n)| NodeRow::new(*l, *t, *n))
+                    .collect(),
+            )
+            .unwrap(),
+        ),
+        &Limits::default(),
+    )
+    .unwrap();
+    let mut data = 0_u32.to_le_bytes().to_vec();
+    data.extend_from_slice(&n.to_le_bytes());
+    data.extend((0..2 * n).flat_map(u32::to_le_bytes));
+    let data = Bytes::from(data);
+    let _shared = data.clone();
+    for python in [false, true] {
+        let what = if python {
+            "shared dicts [python]"
+        } else {
+            "shared dicts [boost]"
+        };
+        let (_, read) = measure(
+            what,
+            python,
+            &data,
+            &data,
+            &tree,
+            RefTypes::List(&[]),
+            Endian::Little,
+            counting,
+        );
+        assert!(read, "{what}: read");
+    }
+}
+
 #[test]
 fn every_allocation_of_a_read_and_a_write_is_charged() {
     count_this_thread();
@@ -454,5 +593,7 @@ fn every_allocation_of_a_read_and_a_write_is_charged() {
         assert!(ok > 200, "only {ok} reads succeeded");
         big((1 << 16) + 1, counting);
         renamed((1 << 16) + 1, counting);
+        references(1 << 12, counting);
+        shared(1 << 12, counting);
     }
 }

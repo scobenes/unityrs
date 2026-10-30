@@ -252,3 +252,54 @@ fn the_compile_is_charged_to_the_lists_meter() {
     drop(list);
     assert_eq!(meter.used(), 0);
 }
+
+/// Review round 2: a run of names that share a length and a hash, which a
+/// hostile tree can make of any number of names (FNV-1a multicollisions are
+/// cheap to build), was grouped by scanning the run's earlier keys for each
+/// member: `k`²/4 name comparisons for `k`/2 names seen twice. Under a hash
+/// that makes every name collide, 4,096 names seen twice (the second time
+/// in reverse) group in `O(k log k)` comparisons, keyed and slotted as a
+/// dict would key them and as the compile's own hash does.
+#[test]
+fn colliding_names_group_in_k_log_k_comparisons() {
+    use std::collections::HashMap;
+
+    use super::{BLANK, COMPARED, NodeInfo, group_by_name, id};
+
+    const N: usize = 1 << 12;
+    let names: Vec<String> = (0..N).map(|i| format!("n{i:05}")).collect();
+    let mut rows = vec![NodeRow::new(0, "Base", "Base")];
+    for n in names.iter().chain(names.iter().rev()) {
+        rows.push(NodeRow::new(1, "int", n.as_str()));
+    }
+    let list = Arc::new(NodeList::trusted(rows).unwrap());
+    let kids = list.children(NodeId(0));
+    let mut info: Vec<NodeInfo> = (0..list.len())
+        .map(|i| NodeInfo {
+            key: id(i),
+            ..BLANK
+        })
+        .collect();
+    let mut order = MeteredVec::new(list.meter());
+    let mut hashes = MeteredVec::new(list.meter());
+    COMPARED.with(|c| c.set(0));
+    group_by_name(&list, kids, &mut order, &mut hashes, &mut info, |_| 0).unwrap();
+    let compared = COMPARED.with(std::cell::Cell::get);
+    let k = 2 * N as u64;
+    let bound = 4 * k * u64::from(k.ilog2());
+    assert!(
+        compared <= bound,
+        "{compared} name comparisons for {k} colliding children (bound {bound})"
+    );
+    // A dict's keys: each name's first sibling, slotted in first-sighting order.
+    let mut first: HashMap<&[u8], (NodeId, u32)> = HashMap::new();
+    let compiled = Tree::compile(list.clone(), &Limits::default()).unwrap();
+    for c in kids {
+        let next = u32::try_from(first.len()).unwrap();
+        let (key, slot) = *first.entry(list.name(*c)).or_insert((*c, next));
+        let got = info[c.index()];
+        assert_eq!((got.key, got.slot), (key, slot), "child {c:?}");
+        let real = compiled.info(*c).unwrap();
+        assert_eq!((real.key, real.slot), (key, slot), "child {c:?}, compiled");
+    }
+}

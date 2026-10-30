@@ -38,7 +38,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::dict::names_match;
+use super::dict::{RefIndex, steps};
 use super::{RefTypes, WriteCtx, WriteError, WriteRules, py_size_field_is_zero};
 use crate::budget::DecodeBuf;
 use crate::error::{LimitError, LimitKind};
@@ -49,7 +49,7 @@ use crate::value::{Map, Parsed, Value};
 mod lookup;
 mod pyobj;
 
-use lookup::Lookup;
+use lookup::{KeptTables, Lookup};
 pub use pyobj::python_attributes;
 use pyobj::{CLEAN_MAX, Obj, chars, clean_name, narrow};
 
@@ -72,10 +72,13 @@ pub fn write(
         big: ctx.endian == crate::stream::Endian::Big,
         rules: ctx.rules,
         ref_types: ctx.ref_types,
+        refs: RefIndex::new(ctx.ref_types),
         max_depth: ctx.limits.max_value_depth,
         limits: *ctx.limits,
         depth: 0,
         has_registry: false,
+        shared: 0,
+        kept: KeptTables::new(parsed.charge().meter()),
     };
     w.value(tree, tree.root(), Obj::V(parsed.value()))
 }
@@ -89,10 +92,28 @@ struct Writer<'a, 'o> {
     big: bool,
     rules: WriteRules,
     ref_types: RefTypes<'a>,
+    /// The ref types' search, one per write ([`RefIndex`]).
+    refs: RefIndex<'a>,
     limits: crate::limits::Limits,
     max_depth: u32,
     depth: u32,
     has_registry: bool,
+    /// How many classes whose children repeat a name (`dup_names`) are
+    /// being written: inside one, a dict can be written once a sibling,
+    /// and its name table is kept ([`KeptTables`]).
+    shared: u32,
+    kept: KeptTables<'a>,
+}
+
+/// What a `ReferencedObject`'s data child writes through, resolved once a
+/// write of the dict.
+#[derive(Clone)]
+enum Data {
+    /// Nothing: [`WriteRules::MirrorReader`] writes no data the reader
+    /// skipped.
+    Skip,
+    /// The matched ref type's tree, or none (the write then fails).
+    Through(Option<Arc<Tree>>),
 }
 
 impl<'a> Writer<'a, '_> {
@@ -136,9 +157,50 @@ impl<'a> Writer<'a, '_> {
         self.put(&b)
     }
 
-    /// `d[name]` on a dict value, by key string.
-    fn field(&self, m: &'a Map, name: &[u8]) -> Option<&'a Value> {
-        self.parsed.field(m, name)
+    /// `d[name]` on a dict value, by key string: inside a class whose
+    /// children repeat a name, by the dict's kept table (the dict may be
+    /// written once a sibling); else by a scan, which each write of a
+    /// `ReferencedObject` makes once ([`Self::ref_object`]).
+    fn field(&mut self, m: &'a Map, name: &[u8]) -> Result<Option<&'a Value>, WriteError> {
+        let pos = if self.shared > 0 {
+            steps(1);
+            self.kept.position(self.parsed, m, name)?
+        } else {
+            self.parsed.entries(m).position(|(n, _)| {
+                steps(1);
+                n == name
+            })
+        };
+        Ok(pos.and_then(|p| m.entries().get(p)).map(|(_, v)| v))
+    }
+
+    /// The children of a class or `ReferencedObject` `node`, written by `f`;
+    /// a node whose children repeat a name keeps the name tables built
+    /// inside it until the outermost such node is written ([`KeptTables`]).
+    fn children(
+        &mut self,
+        tree: &Tree,
+        node: NodeId,
+        f: impl FnOnce(&mut Self) -> Result<(), WriteError>,
+    ) -> Result<(), WriteError> {
+        let dup = tree.info(node).is_some_and(|i| i.dup_names);
+        if dup {
+            self.shared = self.shared.saturating_add(1);
+        }
+        // One call of `f`, so it inlines here: a frame less a level.
+        let r = f(self);
+        if dup {
+            self.shared = self.shared.saturating_sub(1);
+            if self.shared == 0 {
+                self.kept = KeptTables::new(self.parsed.charge().meter());
+            }
+        }
+        r
+    }
+
+    /// The kept tables, inside a class whose children repeat a name.
+    fn kept(&mut self) -> Option<&mut KeptTables<'a>> {
+        (self.shared > 0).then_some(&mut self.kept)
     }
 
     fn value(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
@@ -170,7 +232,13 @@ impl<'a> Writer<'a, '_> {
         r
     }
 
-    /// `write_value` (`TypeTreeHelper.py:407-458`).
+    /// `write_value` (`TypeTreeHelper.py:407-458`). The branches that
+    /// recurse ([`Self::class`], [`Self::class_dict`], [`Self::ref_object`])
+    /// are never inlined here, so a level's frame holds only its own
+    /// branch's locals: inlined, every class level carried a
+    /// `ReferencedObject`'s too (`tests/walk_stack.rs`'s `stack_measured`,
+    /// release: 1,212,416 bytes for the deepest class write, 901,120 out of
+    /// line).
     fn value_inner(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         let mut align = tree.info(node).is_some_and(|i| i.align);
         let kind = tree.py_kind(node);
@@ -374,9 +442,10 @@ impl<'a> Writer<'a, '_> {
         self.put(bytes)
     }
 
-    /// The class branch (`:437-455`), W6: `value[child.m_Name]` for a dict,
-    /// `getattr(value, child._clean_name)` otherwise; the registry scope as
-    /// on read.
+    /// The class branch (`:437-455`), W6: `value[child.m_Name]` for a dict
+    /// ([`Self::class_dict`]), `getattr(value, child._clean_name)` otherwise;
+    /// the registry scope as on read.
+    #[inline(never)]
     fn class(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         if let Obj::V(Value::Dict(m)) = o {
             return self.class_dict(tree, node, m);
@@ -391,30 +460,23 @@ impl<'a> Writer<'a, '_> {
                 self.has_registry = true;
             }
             let name = tree.list().name(*c);
-            let item = if let Obj::V(Value::Dict(m)) = o {
-                Obj::V(
-                    self.field(m, name)
-                        .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?,
-                )
-            } else {
-                let mut buf = [0_u8; CLEAN_MAX];
-                let clean = clean_name(name, &mut buf).and_then(|n| buf.get(..n));
-                let attr = match clean {
-                    Some(clean) => Self::getattr(o, clean),
-                    None => Ok(None),
-                };
-                match attr {
-                    Ok(Some(a)) => a,
-                    Ok(None) => {
-                        return Err(Self::mismatch(tree, *c, "an object with this attribute"));
-                    }
-                    Err(()) => {
-                        return Err(Self::mismatch(
-                            tree,
-                            *c,
-                            "a modelled (non-dunder) attribute",
-                        ));
-                    }
+            let mut buf = [0_u8; CLEAN_MAX];
+            let clean = clean_name(name, &mut buf).and_then(|n| buf.get(..n));
+            let attr = match clean {
+                Some(clean) => Self::getattr(o, clean),
+                None => Ok(None),
+            };
+            let item = match attr {
+                Ok(Some(a)) => a,
+                Ok(None) => {
+                    return Err(Self::mismatch(tree, *c, "an object with this attribute"));
+                }
+                Err(()) => {
+                    return Err(Self::mismatch(
+                        tree,
+                        *c,
+                        "a modelled (non-dunder) attribute",
+                    ));
                 }
             };
             self.value(tree, *c, item)?;
@@ -425,62 +487,80 @@ impl<'a> Writer<'a, '_> {
 
     /// The class branch on a dict (`:438-446`): `value[child.m_Name]` for
     /// each child, found by a [`Lookup`].
+    #[inline(never)]
     fn class_dict(&mut self, tree: &Tree, node: NodeId, m: &'a Map) -> Result<(), WriteError> {
         let outer = self.has_registry;
         let mut find = Lookup::new(self.parsed, tree, node, m)?;
-        for c in tree.list().children(node) {
-            if tree.py_kind(*c) == Kind::ManagedReferencesRegistry {
-                if self.has_registry {
-                    continue;
+        self.children(tree, node, |w| {
+            for c in tree.list().children(node) {
+                if tree.py_kind(*c) == Kind::ManagedReferencesRegistry {
+                    if w.has_registry {
+                        continue;
+                    }
+                    w.has_registry = true;
                 }
-                self.has_registry = true;
+                let v = find
+                    .get(w.parsed, tree, *c, w.kept())?
+                    .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
+                w.value(tree, *c, Obj::V(v))?;
             }
-            let v = find
-                .get(self.parsed, tree, *c)?
-                .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
-            self.value(tree, *c, Obj::V(v))?;
-        }
+            Ok(())
+        })?;
         self.has_registry = outer;
         Ok(())
     }
 
     /// `ReferencedObject` (`:422-428`), W7: each child's entry found by a
-    /// [`Lookup`].
+    /// [`Lookup`]; the data's ref type resolved once a write of the dict,
+    /// which does not change while it is written (claude X, review round 2:
+    /// a node of many data children resolved it for each).
+    #[inline(never)]
     fn ref_object(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
-        let mut find = None;
-        for c in tree.list().children(node) {
-            let Obj::V(Value::Dict(m)) = o else {
-                return Err(Self::mismatch(tree, node, "dict"));
-            };
-            let find = match &mut find {
-                Some(f) => f,
-                None => find.insert(Lookup::new(self.parsed, tree, node, m)?),
-            };
-            if tree.py_kind(*c) != Kind::ReferencedObjectData {
-                let v = find
-                    .get(self.parsed, tree, *c)?
-                    .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
-                self.value(tree, *c, Obj::V(v))?;
-                continue;
-            }
-            let ref_tree = match self.rules {
-                WriteRules::UnityPy => self.ref_node_py(m)?,
-                WriteRules::MirrorReader => match self.ref_node_boost(m)? {
-                    // The reader skipped the data: so does the mirror.
-                    None => continue,
-                    Some(t) => Some(t),
-                },
-            };
-            // `value[child.m_Name]`, then `write_value(..., None)` raises.
-            let v = find
-                .get(self.parsed, tree, *c)?
-                .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
-            let Some(rt) = ref_tree else {
-                return Err(Self::mismatch(tree, *c, "a ref type with a tree"));
-            };
-            self.value(&rt, rt.root(), Obj::V(v))?;
+        let kids = tree.list().children(node);
+        if kids.is_empty() {
+            return Ok(());
         }
-        Ok(())
+        let Obj::V(Value::Dict(m)) = o else {
+            return Err(Self::mismatch(tree, node, "dict"));
+        };
+        let mut find = Lookup::new(self.parsed, tree, node, m)?;
+        let mut data: Option<Data> = None;
+        self.children(tree, node, |w| {
+            for c in kids {
+                if tree.py_kind(*c) != Kind::ReferencedObjectData {
+                    let v = find
+                        .get(w.parsed, tree, *c, w.kept())?
+                        .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
+                    w.value(tree, *c, Obj::V(v))?;
+                    continue;
+                }
+                let through = if let Some(d) = &data {
+                    d.clone()
+                } else {
+                    let d = match w.rules {
+                        WriteRules::UnityPy => Data::Through(w.ref_node_py(m)?),
+                        WriteRules::MirrorReader => match w.ref_node_boost(m)? {
+                            // The reader skipped the data: so does the mirror.
+                            None => Data::Skip,
+                            Some(t) => Data::Through(Some(t)),
+                        },
+                    };
+                    data.insert(d).clone()
+                };
+                let Data::Through(ref_tree) = through else {
+                    continue;
+                };
+                // `value[child.m_Name]`, then `write_value(..., None)` raises.
+                let v = find
+                    .get(w.parsed, tree, *c, w.kept())?
+                    .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
+                let Some(rt) = ref_tree else {
+                    return Err(Self::mismatch(tree, *c, "a ref type with a tree"));
+                };
+                w.value(&rt, rt.root(), Obj::V(v))?;
+            }
+            Ok(())
+        })
     }
 
     /// A matched ref type whose tree does not compile.
@@ -495,9 +575,9 @@ impl<'a> Writer<'a, '_> {
     /// The type dict's `class`, `ns` and `asm` (`ref_object["type"]`, then
     /// `typ["class"]`...; a type that is not a dict has no `class`
     /// attribute).
-    fn names(&self, m: &'a Map) -> Result<(&'a Value, &'a Value, &'a Value), WriteError> {
+    fn names(&mut self, m: &'a Map) -> Result<(&'a Value, &'a Value, &'a Value), WriteError> {
         let key = |k: &'static [u8]| RawStr::new(Bytes::from_static(k));
-        let t = match self.field(m, b"type") {
+        let t = match self.field(m, b"type")? {
             None => return Err(WriteError::MissingKey(key(b"type"))),
             Some(Value::Dict(t)) => t,
             Some(_) => {
@@ -507,46 +587,50 @@ impl<'a> Writer<'a, '_> {
                 });
             }
         };
-        let get = |k: &'static [u8]| {
-            self.field(t, k)
+        let mut get = |k: &'static [u8]| {
+            self.field(t, k)?
                 .ok_or_else(|| WriteError::MissingKey(key(k)))
         };
         Ok((get(b"class")?, get(b"ns")?, get(b"asm")?))
     }
 
-    /// The pure-Python `get_ref_type_node` (`TypeTreeHelper.py:88-109`):
-    /// `None` for an empty class; the writer then fails on it.
-    fn ref_node_py(&self, m: &'a Map) -> Result<Option<Arc<Tree>>, WriteError> {
-        let (cls, ns, asm) = self.names(m)?;
-        let list = match self.ref_types {
-            RefTypes::List(l) if !l.is_empty() => l,
-            _ => return Err(WriteError::NoRefTypes),
-        };
-        if matches!(cls, Value::Str(s) if s.as_bytes().is_empty()) {
-            return Ok(None);
-        }
-        let r = list
-            .iter()
-            .find(|r| names_match(r, cls, ns, asm))
+    /// The first ref type whose names equal the three ([`RefIndex`]).
+    fn find_ref(
+        &mut self,
+        (cls, ns, asm): (&Value, &Value, &Value),
+    ) -> Result<Option<Arc<Tree>>, WriteError> {
+        let r = self
+            .refs
+            .find(self.parsed.charge().meter(), cls, ns, asm)
+            .map_err(WriteError::Charge)?
             .ok_or(WriteError::RefTypeNotFound)?;
         r.tree(&self.limits).transpose().map_err(Self::tree_error)
     }
 
+    /// The pure-Python `get_ref_type_node` (`TypeTreeHelper.py:88-109`):
+    /// `None` for an empty class; the writer then fails on it.
+    fn ref_node_py(&mut self, m: &'a Map) -> Result<Option<Arc<Tree>>, WriteError> {
+        let (cls, ns, asm) = self.names(m)?;
+        if !matches!(self.ref_types, RefTypes::List(l) if !l.is_empty()) {
+            return Err(WriteError::NoRefTypes);
+        }
+        if matches!(cls, Value::Str(s) if s.as_bytes().is_empty()) {
+            return Ok(None);
+        }
+        self.find_ref((cls, ns, asm))
+    }
+
     /// UnityPyBoost's resolution (R14), for [`WriteRules::MirrorReader`]:
     /// `None` where the reader skipped the data.
-    fn ref_node_boost(&self, m: &'a Map) -> Result<Option<Arc<Tree>>, WriteError> {
-        let RefTypes::List(list) = self.ref_types else {
+    fn ref_node_boost(&mut self, m: &'a Map) -> Result<Option<Arc<Tree>>, WriteError> {
+        let RefTypes::List(_) = self.ref_types else {
             return Err(WriteError::NoRefTypes);
         };
         let (cls, ns, asm) = self.names(m)?;
         if py_size_field_is_zero(cls) {
             return Ok(None);
         }
-        let r = list
-            .iter()
-            .find(|r| names_match(r, cls, ns, asm))
-            .ok_or(WriteError::RefTypeNotFound)?;
-        r.tree(&self.limits).transpose().map_err(Self::tree_error)
+        self.find_ref((cls, ns, asm))
     }
 }
 

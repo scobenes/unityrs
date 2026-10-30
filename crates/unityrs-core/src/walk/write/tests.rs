@@ -92,3 +92,53 @@ fn a_dict_keyed_by_another_node_writes_in_linear_map_steps() {
         );
     }
 }
+
+/// Claude B's review, round 2: `K` same-named siblings over one dict of `N`
+/// entries, which the read keyed by the last sibling's children, so each
+/// earlier sibling misses the cursor on its only child. Each miss once
+/// built the dict's name table again.
+#[test]
+fn many_siblings_share_one_foreign_dict_in_linear_map_steps() {
+    const K: u32 = 1 << 12;
+    let mut rows = vec![NodeRow::new(0, "Base", "Base")];
+    for _ in 0..K {
+        rows.push(NodeRow::new(1, "Foo", "a"));
+        rows.push(NodeRow::new(2, "int", "zz"));
+    }
+    rows.push(NodeRow::new(1, "Bar", "a"));
+    for i in 0..K - 1 {
+        rows.push(NodeRow::new(2, "int", format!("c{i}").as_str()));
+    }
+    rows.push(NodeRow::new(2, "int", "zz"));
+    for (reader, steps) in write_steps(rows, &ints(2 * K)) {
+        assert!(
+            steps <= 4 * u64::from(2 * K),
+            "{reader}: {steps} map steps for {K} siblings and {K} entries"
+        );
+    }
+}
+
+/// The same, a level down: each sibling's own child finds its fields in a
+/// dict inside the shared one, which every earlier sibling indexed again.
+#[test]
+fn a_dict_inside_a_shared_dict_is_indexed_once() {
+    const K: u32 = 1 << 12;
+    let mut rows = vec![NodeRow::new(0, "Base", "Base")];
+    for _ in 0..K {
+        rows.push(NodeRow::new(1, "Foo", "a"));
+        rows.push(NodeRow::new(2, "X", "x"));
+        rows.push(NodeRow::new(3, "int", "zz"));
+    }
+    rows.push(NodeRow::new(1, "Bar", "a"));
+    rows.push(NodeRow::new(2, "Y", "x"));
+    for i in 0..K - 1 {
+        rows.push(NodeRow::new(3, "int", format!("c{i}").as_str()));
+    }
+    rows.push(NodeRow::new(3, "int", "zz"));
+    for (reader, steps) in write_steps(rows, &ints(2 * K)) {
+        assert!(
+            steps <= 4 * u64::from(2 * K),
+            "{reader}: {steps} map steps for {K} siblings and {K} entries"
+        );
+    }
+}

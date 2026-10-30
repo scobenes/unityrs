@@ -22,7 +22,8 @@ Files:
 - `py_attrs.json`: the non-dunder attributes of each Python type a value
   becomes, and which are data, for the writer's `getattr` (W2).
 - `depth.json`: deep values (plan 3.10, "Bounds"): each shape of
-  `DEPTH_SHAPES` read by both readers and re-saved, at the least depth where
+  `DEPTH_SHAPES` (one kind of level nested, or every kind after every other)
+  read by both readers and re-saved, at the least depth where
   the pure-Python reader raises `RecursionError`, one `A` less, and a quarter
   of it; the outcome only (`pos` or the exception), not the value.
 
@@ -508,6 +509,37 @@ def base_read_cases():
 # pairs whose `first` is a class holding it (`PairArray`, the `lambda`). The
 # Rust test (`walk_stack.rs`) builds the same rows and bytes from the same
 # names; `pos` checks they agree.
+
+# The tree levels each kind of level takes.
+LEVELS = {"Class": 1, "Vector": 2, "Aligned": 2, "ClassArray": 3, "Pair": 1, "PairArray": 4}
+
+
+def every_transition():
+    """The six kinds of level in an order in which each follows each other
+    kind once: an Euler circuit of the complete directed graph on them
+    (Hierholzer's algorithm), 30 levels, closing on its first."""
+    kinds = list(LEVELS)
+    left = {k: [o for o in kinds if o != k] for k in kinds}
+    stack, circuit = [kinds[0]], []
+    while stack:
+        if left[stack[-1]]:
+            stack.append(left[stack[-1]].pop(0))
+        else:
+            circuit.append(stack.pop())
+    return circuit[::-1][:-1]
+
+
+def mixed(order, levels=248):
+    """`order` repeated, a level each, as deep as `class` and `pair` go."""
+    out, used = [], 0
+    while True:
+        for w in order:
+            if used + LEVELS[w] > levels:
+                return out
+            out.append((w, 1))
+            used += LEVELS[w]
+
+
 DEPTH_SHAPES = {
     "ref": [],
     "class": [("Class", 248)],
@@ -516,6 +548,8 @@ DEPTH_SHAPES = {
     "class_array": [("ClassArray", 82)],
     "pair": [("Pair", 248)],
     "pair_array": [("PairArray", 62)],
+    # Every kind after every other, as a hostile tree can nest them.
+    "mixed": mixed(every_transition()),
 }
 
 

@@ -25,6 +25,11 @@ mod dict;
 pub mod python;
 pub mod write;
 
+pub(crate) use dict::steps;
+
+#[cfg(test)]
+mod linear_tests;
+
 use std::sync::Arc;
 
 use bytes::Bytes;

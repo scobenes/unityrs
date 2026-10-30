@@ -5,10 +5,13 @@
 //! thread of exactly that size.
 //!
 //! The shapes and UnityPy's outcomes are `tools/fixtures/walk.py`'s
-//! `depth.json`: ref type `A` nests one kind of level as deep as one tree
-//! may go (`max_tree_depth`) around a `ReferencedObject` whose data is the
-//! next `A`, and the chain ends at a `Z`. `unityrs_testkit::depth` builds
-//! the same rows and bytes from each case's `wraps` and `n`.
+//! `depth.json`: ref type `A` nests one kind of level, or every kind after
+//! every other (`mixed`), as deep as one tree may go (`max_tree_depth`)
+//! around a `ReferencedObject` whose data is the next `A`, and the chain
+//! ends at a `Z`. `unityrs_testkit::depth` builds the same rows and bytes
+//! from each case's `wraps` and `n`. Every value read is written back under
+//! both [`WriteRules`]: `UnityPy`'s outcome is the fixture's, and
+//! `MirrorReader`'s the bytes read, or the depth limit.
 //!
 //!     scripts/dev cargo test -p unityrs-core --test walk_stack
 //!
@@ -147,12 +150,12 @@ fn read(shape: &Shape, reader: Reader, data: &Bytes) -> Result<Parsed, ReadError
     }
 }
 
-fn write(shape: &Shape, p: &Parsed) -> Result<Vec<u8>, WriteError> {
+fn write(shape: &Shape, p: &Parsed, rules: WriteRules) -> Result<Vec<u8>, WriteError> {
     let limits = Limits::default();
     let ctx = WriteCtx {
         endian: Endian::Little,
         ref_types: RefTypes::List(&shape.refs),
-        rules: WriteRules::UnityPy,
+        rules,
         limits: &limits,
     };
     let mut out = DecodeBuf::new(&Meter::unlimited(), 0, u64::MAX, LimitKind::InputMemory).unwrap();
@@ -201,14 +204,21 @@ fn check(c: &Json, shape: &Shape, data: &Bytes, reader: Reader) -> Option<String
     };
     let want = &c[format!("{}_write", reader.key())];
     let pos = usize::try_from(p.bytes_read).unwrap();
-    let w = write(shape, p);
+    let w = write(shape, p, WriteRules::UnityPy);
     let ok = match want.get("equal").and_then(Json::as_bool) {
         None => write_too_deep(&w),
         Some(eq) => {
             w.as_ref().is_ok_and(|b| (b[..] == data[..pos]) == eq) || (!exact && write_too_deep(&w))
         }
     };
-    (!ok).then(|| format!("{what} write: UnityPy {want}, have {w:?}"))
+    if !ok {
+        return Some(format!("{what} write: UnityPy {want}, have {w:?}"));
+    }
+    // The mirror writes back the bytes the reader read: at a quarter of
+    // the depth always, deeper unless the depth limit refuses it.
+    let m = write(shape, p, WriteRules::MirrorReader);
+    let ok = m.as_ref().is_ok_and(|b| b[..] == data[..pos]) || (!exact && write_too_deep(&m));
+    (!ok).then(|| format!("{what} MirrorReader write: the bytes read, have {m:?}"))
 }
 
 /// UnityPy's outcome at each depth, from both readers and its writer.
@@ -252,15 +262,18 @@ fn deepest(shape: &Shape, reader: Reader) -> usize {
 enum Path {
     /// A read one `A` past the deepest, which `max_value_depth` refuses.
     Refused(Reader),
-    /// The deepest read, then that value's write (refused or not) and drop.
-    Written(Reader),
+    /// The deepest read, then that value's write under the rules (refused
+    /// or not) and drop.
+    Written(Reader, WriteRules),
 }
 
-const PATHS: [Path; 4] = [
+const PATHS: [Path; 6] = [
     Path::Refused(Reader::Boost),
     Path::Refused(Reader::Python),
-    Path::Written(Reader::Boost),
-    Path::Written(Reader::Python),
+    Path::Written(Reader::Boost, WriteRules::UnityPy),
+    Path::Written(Reader::Python, WriteRules::UnityPy),
+    Path::Written(Reader::Boost, WriteRules::MirrorReader),
+    Path::Written(Reader::Python, WriteRules::MirrorReader),
 ];
 
 fn run(shape: &Shape, path: Path) {
@@ -270,11 +283,11 @@ fn run(shape: &Shape, path: Path) {
             let r = read(shape, reader, &shape.data(n + 1));
             assert!(read_too_deep(&r), "{} {path:?}: {r:?}", shape.name);
         }
-        Path::Written(reader) => {
+        Path::Written(reader, rules) => {
             let n = deepest(shape, reader);
             let data = shape.data(n);
             let p = read(shape, reader, &data).unwrap();
-            let w = write(shape, &p);
+            let w = write(shape, &p, rules);
             assert!(
                 w.as_ref().is_ok_and(|b| b[..] == data[..]) || write_too_deep(&w),
                 "{} {path:?}: {w:?}",
@@ -287,7 +300,8 @@ fn run(shape: &Shape, path: Path) {
 
 /// Every path of every shape at the default limits, on a thread of
 /// [`Limits::stack_needed`] bytes: both readers to `max_value_depth` and
-/// past it, the deepest value each reads written and dropped.
+/// past it, the deepest value each reads written under both rules and
+/// dropped.
 #[test]
 fn every_path_fits_the_stack_the_limits_name() {
     on_thread(Limits::default().stack_needed(), || {
@@ -309,7 +323,9 @@ fn stack_probe() {
     let Ok(spec) = std::env::var(PROBE) else {
         return;
     };
-    let [shape, path, stack]: [&str; 3] = spec.split(' ').collect::<Vec<_>>().try_into().unwrap();
+    // A path's name has spaces of its own: `Written(Boost, UnityPy)`.
+    let (shape, rest) = spec.split_once(' ').unwrap();
+    let (path, stack) = rest.rsplit_once(' ').unwrap();
     let shape = shapes().into_iter().find(|s| s.name == shape).unwrap();
     let path = PATHS
         .into_iter()
@@ -348,7 +364,7 @@ fn stack_measured() {
                     lo = mid;
                 }
             }
-            println!("{:12} {:24} {hi:>9}", shape.name, format!("{path:?}"));
+            println!("{:12} {:36} {hi:>9}", shape.name, format!("{path:?}"));
             worst = worst.max(hi);
         }
     }

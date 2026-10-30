@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::dict::{Dict, RefNode, Trees, names_match, ref_tree, slot_count, slot_of};
+use super::dict::{Dict, RefIndex, RefNode, Trees, ref_tree, slot_count, slot_of};
 use super::{
     FloatMode, Out, ReadCtx, ReadDetail, ReadError, ReadErrorKind, RefTypes, Work, charge_error,
     f32_bits, first_reserve, grow_step, int, py_size_field_is_zero, uint,
@@ -51,6 +51,7 @@ pub fn read(data: &Bytes, tree: &Arc<Tree>, ctx: &ReadCtx<'_>) -> Result<Parsed,
         big: ctx.endian == Endian::Big,
         floats: ctx.options.floats,
         ref_types: ctx.ref_types,
+        refs: RefIndex::new(ctx.ref_types),
         builder,
         trees,
         work: Work::new(ctx.options.limits),
@@ -76,6 +77,8 @@ struct Reader<'a, 'c> {
     big: bool,
     floats: FloatMode,
     ref_types: RefTypes<'c>,
+    /// The ref types' search, one per read ([`RefIndex`]).
+    refs: RefIndex<'c>,
     builder: ValueBuilder,
     trees: Trees,
     work: Work,
@@ -510,16 +513,25 @@ impl Reader<'_, '_> {
         drop(seen);
         let type_slot = slot_of(t, node, b"type");
         let mut dict = Dict::new(&self.builder, &mut self.scratch, reserve, width, at)?;
+        // The current `type`'s resolution, made at the first data child that
+        // asks and kept until a child sets `type` again: a node of many data
+        // children resolves each `type` value once (claude X, review round 2).
+        let mut resolved: Option<Option<RefNode>> = None;
         for c in kids {
             let Some(ci) = t.info(*c).copied() else {
                 continue;
             };
             let v = if ci.kind == Kind::ReferencedObjectData {
-                let ty = type_slot
-                    .and_then(|s| dict.position(&self.scratch, s))
-                    .and_then(|p| dict.entries.as_slice().get(p))
-                    .map(|(_, v)| v);
-                match self.ref_node(ty)? {
+                let node = if let Some(r) = &resolved {
+                    r.clone()
+                } else {
+                    let ty = type_slot
+                        .and_then(|s| dict.position(&self.scratch, s))
+                        .and_then(|p| dict.entries.as_slice().get(p))
+                        .map(|(_, v)| v);
+                    resolved.insert(self.ref_node(ty)?).clone()
+                };
+                match node {
                     None | Some(RefNode::NoTree) => continue,
                     Some(RefNode::Tree(rt)) => {
                         let at = self.at();
@@ -532,6 +544,9 @@ impl Reader<'_, '_> {
             };
             let at = self.at();
             dict.set(&mut self.scratch, ci.key, ci.slot, v, at)?;
+            if Some(ci.slot) == type_slot {
+                resolved = None;
+            }
         }
         Ok(dict.finish(&self.builder, &mut self.scratch, lx))
     }
@@ -541,15 +556,12 @@ impl Reader<'_, '_> {
     /// (the data is skipped), else the matched ref type's node. Every
     /// failure is `ref_type`: the caller replaces the message with "Failed
     /// to get ref type node" (`:763`).
-    fn ref_node(&self, ty: Option<&Value>) -> Result<Option<RefNode>, ReadError> {
+    fn ref_node(&mut self, ty: Option<&Value>) -> Result<Option<RefNode>, ReadError> {
         let ref_type = |d: ReadDetail| self.fail(ReadErrorKind::RefType, d);
-        let list = match self.ref_types {
+        if let RefTypes::NoFile | RefTypes::Absent = self.ref_types {
             // `:587-591`, `:592-598`.
-            RefTypes::NoFile | RefTypes::Absent => {
-                return Err(ref_type(ReadDetail::NoRefTypes));
-            }
-            RefTypes::List(l) => l,
-        };
+            return Err(ref_type(ReadDetail::NoRefTypes));
+        }
         // `:600-606`: `type` read yet; `:611-633`: a dict with all three
         // keys (any other object the reader makes has no such attributes).
         let Some(Value::Dict(m)) = ty else {
@@ -567,9 +579,14 @@ impl Reader<'_, '_> {
             return Ok(None);
         }
         // `:644-670`: the first ref type whose three names compare equal.
-        match list.iter().find(|r| names_match(r, cls, ns, asm)) {
-            Some(r) => Ok(Some(ref_tree(r, &self.work.limits, self.at())?)),
-            None => Err(ref_type(ReadDetail::RefTypeNotFound)),
+        let at = self.at();
+        let found = self
+            .refs
+            .find(self.builder.meter(), cls, ns, asm)
+            .map_err(|e| charge_error(at, e))?;
+        match found {
+            Some(r) => Ok(Some(ref_tree(r, &self.work.limits, at)?)),
+            None => Err(self.fail(ReadErrorKind::RefType, ReadDetail::RefTypeNotFound)),
         }
     }
 }
