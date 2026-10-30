@@ -13,7 +13,7 @@ use unityrs_core::limits::Meter;
 use unityrs_core::{Bytes, FileContext, RawStr};
 use unityrs_testkit::env::{bundle, res_bytes};
 
-use super::{TempFile, key, object, stream, unlimited};
+use super::{TempFile, key, object, serialized_cab, stream, unlimited};
 
 /// `CAB-I` of a bundle laid out as the scene `resource_in_nested_cab`:
 /// the first entry of the nested bundle `INNER`.
@@ -179,4 +179,76 @@ fn a_jobs_read_leaves_no_charge_on_its_meter() {
             "{mode:?}"
         );
     }
+}
+
+/// A container pass whose walk of a preload table its file's own meter
+/// refuses is counted as that open's work (plan section 3.16, P1: what the
+/// walk was granted), so once the open's allowance is used up the refusal
+/// is `DecodeWork`, which the input decides, and the pass is kept as
+/// UnityPy keeps a failed pass (the index built): no later `container()`
+/// walks the table again (review round 6: nothing tested it, and without
+/// the count every `container()` redid the refused walk in full). The
+/// limits are measured on runs of the scene `preload_paths`: memory for the
+/// load and the containers' reads but not for the walk's `path_dict`
+/// entries, and, on a run with that memory and no work bound, the work one
+/// refused walk adds, half of which past the reads is allowed.
+#[test]
+fn a_pass_the_meter_refuses_is_counted_until_it_is_kept() {
+    let scene = unityrs_testkit::env::preload_paths();
+    let data = Bytes::from(scene.files[0].1.clone());
+    let eager = |ctx: FileContext| {
+        let mut o = EnvOptions::unitypy();
+        o.context = Arc::new(ctx);
+        Environment::new(o)
+    };
+    // The memory the reads take, and what the walk keeps.
+    let env = eager(FileContext::unitypy());
+    let meter = env.load(bytes("pp.bundle", &data)).unwrap().meter().clone();
+    for cab in ["CAB-PP", "CAB-PQ"] {
+        serialized_cab(&env, cab).container().unwrap();
+    }
+    let read = meter.used();
+    let _ = env.container().unwrap().count();
+    let walked = meter.used();
+    assert!(
+        walked > read + 64,
+        "the walk keeps paths: {read} -> {walked}"
+    );
+
+    // The work a refused walk adds, on a run with no work bound.
+    let mut ctx = FileContext::unitypy();
+    ctx.limits.max_input_memory = read + (walked - read) / 2;
+    let env = eager(ctx.clone());
+    let meter = env.load(bytes("pp.bundle", &data)).unwrap().meter().clone();
+    let refused = |env: &Environment| env.container().map(|_| ()).map_err(|e| e.to_string());
+    let first = refused(&env);
+    assert!(
+        first
+            .as_ref()
+            .is_err_and(|e| e.starts_with("limit InputMemory")),
+        "the walk is refused by the meter: {first:?}"
+    );
+    let after_first = meter.decoded();
+    assert_eq!(refused(&env), first);
+    let per_walk = meter.decoded() - after_first;
+    assert!(per_walk > 0, "a refused walk counted no work");
+
+    // With half a walk's work allowed past the reads, the first refusal
+    // uses the allowance up and is kept.
+    ctx.limits.max_decode_work = after_first - per_walk / 2;
+    let env = eager(ctx);
+    let meter = env.load(bytes("pp.bundle", &data)).unwrap().meter().clone();
+    let pass = refused(&env);
+    assert!(
+        pass.as_ref()
+            .is_err_and(|e| e.starts_with("limit DecodeWork")),
+        "the refused walk's work was not counted: {pass:?}"
+    );
+    let (granted, done) = (meter.granted(), meter.decoded());
+    let kept = refused(&env);
+    for _ in 0..50 {
+        assert_eq!(refused(&env), kept);
+    }
+    assert_eq!(meter.granted(), granted, "a pass walked the table again");
+    assert_eq!(meter.decoded(), done, "a pass counted more work");
 }
