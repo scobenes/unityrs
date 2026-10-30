@@ -9,6 +9,8 @@
 // Test code: a failed lookup is a failed test.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "env_fixtures/evicted.rs"]
+mod evicted;
 #[path = "env_fixtures/lazy.rs"]
 mod lazy;
 #[path = "env_fixtures/refused.rs"]
@@ -25,16 +27,18 @@ use unityrs_core::limits::Meter;
 use unityrs_core::pystr::{
     is_split_path, ntpath_basename, ntpath_splitext, py_lower, simplify_name,
 };
-use unityrs_testkit::env::scenes;
+use unityrs_testkit::env::{dependency_scenes, scenes};
 
 use run::{Run, hex, load, ops, recorded, scene_by_name, text, unhex};
 
-/// The fixture's scenes are the testkit's, byte for byte. With
-/// `UNITYRS_WRITE_SCENES=<path>` it writes them there instead, as JSON lines
+/// The fixture's scenes are the testkit's, byte for byte, its dependency
+/// scenes too. With `UNITYRS_WRITE_SCENES=<path>` it writes them there
+/// instead, as JSON lines, a dependency scene's with its `dependencies`
 /// (`tools/fixtures/env.py` reads them).
 #[test]
 fn scenes_are_the_testkit_scenes() {
     let all = scenes();
+    let deps = dependency_scenes();
     let pairs = |v: &[(Vec<u8>, Vec<u8>)]| -> Vec<J> {
         v.iter().map(|(n, d)| json!([text(n), hex(d)])).collect()
     };
@@ -45,24 +49,46 @@ fn scenes_are_the_testkit_scenes() {
             lines.push_str(&row.to_string());
             lines.push('\n');
         }
+        for (n, d) in &deps {
+            let s = &d.scene;
+            let row = json!({"name": n, "files": pairs(&s.files), "resolver": pairs(&s.resolver),
+                "dependencies": d.dependencies});
+            lines.push_str(&row.to_string());
+            lines.push('\n');
+        }
         std::fs::write(out, lines).unwrap();
         return;
     }
     let doc = load("env.json").expect("tests/fixtures/d/env.json");
-    let cases = doc["scenes"].as_array().unwrap();
-    assert_eq!(cases.len(), all.len());
-    for (c, (n, s)) in cases.iter().zip(&all) {
-        assert_eq!(c["name"].as_str().unwrap(), *n);
-        assert_eq!(
-            c["files"],
-            json!(pairs(&s.files)),
-            "{n}: the builder changed"
-        );
-        assert_eq!(
-            c["resolver"],
-            json!(pairs(&s.resolver)),
-            "{n}: the builder changed"
-        );
+    let check = |cases: &J, all: Vec<(&str, &unityrs_testkit::env::Scene)>| {
+        let cases = cases.as_array().unwrap();
+        assert_eq!(cases.len(), all.len());
+        for (c, (n, s)) in cases.iter().zip(all) {
+            assert_eq!(c["name"].as_str().unwrap(), n);
+            assert_eq!(
+                c["files"],
+                json!(pairs(&s.files)),
+                "{n}: the builder changed"
+            );
+            assert_eq!(
+                c["resolver"],
+                json!(pairs(&s.resolver)),
+                "{n}: the builder changed"
+            );
+        }
+    };
+    check(&doc["scenes"], all.iter().map(|(n, s)| (*n, s)).collect());
+    check(
+        &doc["dependency_scenes"],
+        deps.iter().map(|(n, d)| (*n, &d.scene)).collect(),
+    );
+    for (c, (n, d)) in doc["dependency_scenes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(&deps)
+    {
+        assert_eq!(c["dependencies"], json!(d.dependencies), "{n}");
     }
 }
 
@@ -182,6 +208,7 @@ const LAZY_DIFFERS: &[&str] = &[
     "nested_replaced_unread",
     "nested_reloaded",
     "nested_raw_replaced",
+    "nested_reloaded_spans",
     // (c): the block after the last entry is never decoded.
     "last_block_fails",
 ];
@@ -210,6 +237,7 @@ const LAZY_KEYS_DIFFER: &[(&str, &str)] = &[
     ("nested_replaced_unread", "inner"),
     ("nested_reloaded", "inner"),
     ("nested_raw_replaced", "inner"),
+    ("nested_reloaded_spans", "inner"),
 ];
 
 /// Difference (b) and nothing more on [`LAZY_KEYS_DIFFER`]'s scenes, under
@@ -222,7 +250,11 @@ const LAZY_KEYS_DIFFER: &[(&str, &str)] = &[
 /// candidate read through the reader's own bundle, as the asking file's
 /// sibling, from a file inside it, or by the registration that drops it
 /// (review rounds 3 and 4: none of these registered its entries, so a path,
-/// a read's bytes and a container row UnityPy gives were missing).
+/// a read's bytes and a container row UnityPy gives were missing); a
+/// reload's slot that stands in for the dropped one registers them at the
+/// dropped one's positions (scene `nested_reloaded_spans`; review round 6:
+/// at the reload's, so the container listed the rows in another order and
+/// an object's path was another row's).
 #[test]
 fn lazy_reaches_what_unitypy_reaches_through_a_nested_container() {
     let keys = |step: &J| step["cabs"].as_array().unwrap().clone();

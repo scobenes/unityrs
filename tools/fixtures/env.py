@@ -17,7 +17,10 @@ again, ask every object of a file loaded as a dependency its `container`
 path), and after each step the Environment's state is recorded:
 `env.files` (key, `is_dependency`, kind), `env.cabs` keys in order, and
 `env.objects` (file, path id, class id). The resolver's files sit in a
-temporary `env.path`; a key under it is written `@/<name>`.
+temporary `env.path`; a key under it is written `@/<name>`. Each scene of
+`dependency_scenes` loads the files it names as dependencies
+(`load_file(..., is_dependency=True)`), then lists the container and asks
+every object its `container` path, the state recorded after each step.
 
 `pystr.json`: `str.lower` over every BMP code point (as the list of those it
 changes), astral samples and final-sigma contexts, `ntpath` cases, which
@@ -59,7 +62,8 @@ from scaffold import dump  # noqa: E402
 
 
 def scene_inputs() -> list[dict]:
-    """unityrs-testkit's env::scenes(), as the replay test writes them."""
+    """unityrs-testkit's env::scenes() and env::dependency_scenes() (a line
+    with a `dependencies` key), as the replay test writes them."""
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "scenes.jsonl"
         env = dict(os.environ, UNITYRS_WRITE_SCENES=str(out))
@@ -114,10 +118,10 @@ class Run:
             "objects": [[self.key(o.assets_file.name), o.path_id, o.class_id] for o in env.objects],
         }
 
-    def load(self, i: int):
+    def load(self, i: int, is_dependency: bool = False):
         name, data = self.scene["files"][i]
         try:
-            self.env.load_file(bytes.fromhex(data), name=name)
+            self.env.load_file(bytes.fromhex(data), name=name, is_dependency=is_dependency)
         except Exception:  # noqa: BLE001 - a failed load is a recorded outcome
             return "error"
         return "ok"
@@ -227,14 +231,36 @@ class Run:
         step(["dep_paths"], self.dep_paths())
         return out
 
+    def dependency_steps(self) -> list[dict]:
+        """The loads, each file `dependencies` names as a dependency, then the
+        container and every object's `container` path."""
+        out = []
+
+        def step(op, result):
+            out.append({"op": op, "result": result, **self.state()})
+
+        deps = set(self.scene["dependencies"])
+        for i in range(len(self.scene["files"])):
+            if i in deps:
+                step(["load_dependency", i], self.load(i, is_dependency=True))
+            else:
+                step(["load", i], self.load(i))
+        step(["container"], self.container())
+        step(["paths"], self.paths())
+        return out
+
 
 def scene_case(scene: dict) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         for name, data in scene["resolver"]:
             (Path(tmp) / name).write_bytes(bytes.fromhex(data))
         with contextlib.redirect_stdout(io.StringIO()):
-            steps = Run(scene, tmp).steps()
-    return {"name": scene["name"], "files": scene["files"], "resolver": scene["resolver"], "steps": steps}
+            run = Run(scene, tmp)
+            steps = run.dependency_steps() if "dependencies" in scene else run.steps()
+    case = {"name": scene["name"], "files": scene["files"], "resolver": scene["resolver"]}
+    if "dependencies" in scene:
+        case["dependencies"] = scene["dependencies"]
+    return {**case, "steps": steps}
 
 
 # ------------------------------------------------------------------ strings
@@ -464,8 +490,11 @@ def check_g5_in(report: dict, rels: list[str], corpus: Path, empty: str) -> int:
 
 def fixtures() -> dict[str, dict]:
     meta = {"generator": "tools/fixtures/env.py", "unitypy": UnityPy.__version__}
+    inputs = scene_inputs()
+    plain = [scene_case(s) for s in inputs if "dependencies" not in s]
+    deps = [scene_case(s) for s in inputs if "dependencies" in s]
     return {
-        "env.json": {**meta, "scenes": [scene_case(s) for s in scene_inputs()]},
+        "env.json": {**meta, "scenes": plain, "dependency_scenes": deps},
         "pystr.json": {**meta, **pystr_fixture()},
     }
 

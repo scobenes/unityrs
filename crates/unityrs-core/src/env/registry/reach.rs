@@ -4,21 +4,51 @@
 //! lazy slots registrations dropped; and [`entry_of`], the one rule that
 //! tells, without reading, which entry of which input a slot is.
 //!
-//! **The list of dropped slots** (plan section 3.16, invariants R3 and R4).
-//! A dropped lazy slot stays on the list until it is reached (or found to
-//! hold nothing to register), and every `settle` reaches every slot on it,
-//! one after another, those another thread is reaching too: a reach is safe
-//! for concurrent callers, so `settle` never waits for another thread and
-//! never returns while a slot listed before it started is unreached, but for
-//! a refusal (review round 5: a `settle` popped a slot, and a concurrent
-//! one found the list empty and returned while the first was still reaching
-//! it, so a load returned with the dropped container's entries
-//! unregistered). The list is ordered by when each slot was listed, and a
-//! `settle` walks it by that order, so a slot it leaves (a refusal) is not
-//! asked again by the same call. A reach's own registrations never settle:
-//! the slots they drop are listed, and the `settle` that runs the reach, or
-//! the one [`Registry::reach`] ends with, takes them in the same loop, so a
-//! chain of drops is reached one after another, never nested on the stack.
+//! **The lists of dropped slots** (plan section 3.16, invariants R3 and R4;
+//! `pending.rs`). A dropped lazy slot stays listed until it is reached (or
+//! found to hold nothing to register), and every `settle` reaches every
+//! slot on the list, one after another, those another thread is reaching
+//! too: a reach is safe for concurrent callers, so `settle` never waits for
+//! another thread and never returns while a slot listed before it started
+//! is unreached, but for a refusal (review round 5: a `settle` popped a
+//! slot, and a concurrent one found the list empty and returned while the
+//! first was still reaching it, so a load returned with the dropped
+//! container's entries unregistered). The list is ordered by when each slot
+//! was listed, and a `settle` walks it by that order, so a slot it leaves (a
+//! refusal) is not asked again by the same call. A reach's own
+//! registrations never settle: the slots they drop are listed, and the
+//! `settle` that runs the reach, or the one [`Registry::reach`] ends with,
+//! takes them in the same loop, so a chain of drops is reached one after
+//! another, never nested on the stack. A slot of a dependency the LRU has
+//! evicted is not opened again by a `settle` (plan section 9, Q13): it moves
+//! to a second list, which only the container pass reaches, opening the
+//! dependency again ([`Registry::settle_for_pass`]; Q13 revised after
+//! review round 6, whose pass missed the paths that container's tables set
+//! in other files). Each step a list takes counts as work of its slot's
+//! input (`pending.rs`; review round 6: removing a slot from the front of
+//! a `Vec` made settling M slots O(M²), uncounted).
+//!
+//! **Stand-ins** (plan section 9, Q14). A registration that drops a lazy
+//! slot of the same entry of the same input as the slot that stays (a
+//! reload on the same `Bytes`, which every handle on the dropped entry can
+//! tell without reading: [`stands_in`]) does not list it: the slot that
+//! stays stands in for it, and learns the least load among the slots it
+//! stands in for ([`Slot::position`]), whose ranks its container's entries
+//! take as their positions when it is reached, with its own as their values
+//! (review round 6: they took the reload's positions, so the container
+//! pass walked them later and `container_path` gave another row's path). So
+//! one reach, of the standing slot, registers what an eager load of both
+//! registers, the dropped entry is never read, and a lookup from inside the
+//! dropped entry reaches the standing slot (`super::super::resource_data`).
+//! The registration tells the stand-in before its write lock, with no lock
+//! held, and applies it in the lock's step only when the key's value is
+//! still the slot it told it against. A standing slot that was already the
+//! key's value may be reaching on another thread: the registration lowers
+//! its position and then reads whether it is marked reached, the reach
+//! reads the position, registers, marks the slot reached and reads the
+//! position again, registering again at a lower one (all sequentially
+//! consistent), so either the reach sees the position or the registration
+//! sees the slot reached, and then lists the dropped slot as any other.
 //!
 //! **Work** (R5). A reach is a lazy computation of the input whose slot it
 //! is: what its registrations were granted when the input's own meter
@@ -35,7 +65,8 @@ use std::sync::atomic::Ordering;
 use super::super::Source;
 #[cfg(test)]
 use super::Hook;
-use super::{By, Cab, DepSlot, Dependency, RawCab, Registry, Slot, SlotKind, lock};
+use super::pending::{List, STEP};
+use super::{By, Cab, DepSlot, Dependency, Loads, RawCab, Registry, Slot, SlotKind};
 use crate::detect::{FileType, check_file_type};
 use crate::error::Error;
 use crate::files::{BundleFile, File};
@@ -121,9 +152,9 @@ pub(crate) fn entry_of(fb: &Arc<BundleFile>, slot: &Slot) -> Option<(usize, Thro
 /// replaced or beat: the same entry of the same input, as every handle on
 /// `dropped`'s entry tells it ([`entry_of`] from `dropped`'s own handle), so
 /// a lookup from inside `dropped`'s container reaches `standing` instead
-/// (`super::super::resource_data`'s `reach_chain`), and dropping `dropped`
-/// unreached loses nothing an eager load keeps but the positions of its
-/// entries' keys (plan section 9, Q14). Any other drop is reached
+/// (`super::super::resource_data`'s `reach_chain`), and `standing`'s reach
+/// registers its entries at `dropped`'s positions (module docs,
+/// "Stand-ins"; plan section 9, Q14). Any other drop is reached
 /// ([`Registry::settle`]): a reload a lookup could not tell, two
 /// [`Source::Path`] dependencies of one path among them (review round 5:
 /// the reload's slot stood in for the earlier one's, but nothing reached it
@@ -162,24 +193,25 @@ enum Failed {
     Register(Error),
 }
 
-/// The lazy slots registrations dropped unreached, each with its place in
-/// the order they were listed (`reach.rs`'s module docs). Kept under the
-/// registry's lock, so a slot leaves the table and joins the list in one
-/// step: no `settle` can find it in neither (plan section 3.16, R4).
-#[derive(Debug, Default)]
-pub(super) struct Pending {
-    pub(super) slots: Vec<(u64, Arc<Slot>)>,
-    next: u64,
+/// What a reach did with a slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reached {
+    /// The slot is reached: its container's subtree registered, or it holds
+    /// none.
+    Done,
+    /// The slot is an evicted dependency's, which a reach that does not
+    /// reopen left unread (plan section 9, Q13).
+    Evicted,
 }
 
-impl Pending {
-    /// Lists `slot`; its place in the list's order.
-    pub(super) fn push(&mut self, slot: Arc<Slot>) -> u64 {
-        let seq = self.next;
-        self.next = seq.saturating_add(1);
-        self.slots.push((seq, slot));
-        seq
-    }
+/// What a lazy slot's entry is ([`Registry::lazy_container`]).
+enum Entry {
+    /// A nested container, parsed.
+    Container(Arc<BundleFile>),
+    /// No container: nothing to register.
+    Nothing,
+    /// An evicted dependency's entry, not opened again.
+    Evicted,
 }
 
 impl Registry {
@@ -188,8 +220,10 @@ impl Registry {
     /// registers its whole subtree at the ranks below the slot's, as the
     /// slot's own kind registers (entries of the parsed bundle for a
     /// caller's, dependency slots for a dependency's), a container inside it
-    /// with no key of its own, as an eager load registers it; then marks the
-    /// slot reached, and reaches the slots its registrations dropped
+    /// with no key of its own, as an eager load registers it, and at the
+    /// positions of the least dropped slot it stands in for
+    /// ([`Slot::position`], plan section 9, Q14); then marks the slot
+    /// reached, and reaches the slots its registrations dropped
     /// ([`Self::settle`]). `nested` is the container when the caller holds
     /// it: the slot's own parse, or the asking file's handle on the very
     /// entry the slot is ([`Through::Own`]), so nothing is read through the
@@ -204,97 +238,124 @@ impl Registry {
         slot: &Arc<Slot>,
         nested: Option<&Arc<BundleFile>>,
     ) -> Result<(), Error> {
-        let reached = self.reach_one(slot, nested, true);
+        let reached = self.reach_one(slot, nested, true).map(|_| ());
         // A refusal there is left for the next call, as a lookup leaves it.
         self.settle().ok();
         reached
     }
 
     /// [`Self::reach`] without the settle; with `reopen` false, a dependency
-    /// the LRU evicted is not opened again to read the entry, and its slot
-    /// counts as reached (plan section 9, Q13).
+    /// the LRU evicted is not opened again to read the entry, and the slot
+    /// is left unreached ([`Reached::Evicted`], plan section 9, Q13).
     fn reach_one(
         &self,
         slot: &Arc<Slot>,
         nested: Option<&Arc<BundleFile>>,
         reopen: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<Reached, Error> {
         if !slot.unreached() {
-            return Ok(());
+            return Ok(Reached::Done);
         }
-        let parsed = if nested.is_none() {
-            self.lazy_container(slot, reopen)?
-        } else {
-            None
+        let parsed = match nested {
+            Some(_) => None,
+            None => match self.lazy_container(slot, reopen)? {
+                Entry::Container(b) => Some(b),
+                Entry::Nothing => None,
+                Entry::Evicted => return Ok(Reached::Evicted),
+            },
         };
-        if let Some(nested) = nested.or(parsed.as_ref()) {
-            self.register_counted(slot, nested)?;
-            #[cfg(test)]
-            self.hook(Hook::Reached);
-        }
+        let Some(nested) = nested.or(parsed.as_ref()) else {
+            slot.mark_reached();
+            return Ok(Reached::Done);
+        };
+        let mut at = slot.position();
+        self.register_counted(slot, nested, at)?;
+        #[cfg(test)]
+        self.hook(Hook::Reached);
         slot.mark_reached();
-        Ok(())
+        // A stand-in learned while the registration ran: the entries move
+        // to its position (module docs, "Stand-ins").
+        loop {
+            let now = slot.position();
+            if now >= at {
+                return Ok(Reached::Done);
+            }
+            at = now;
+            self.register_counted(slot, nested, at)?;
+        }
     }
 
-    /// The nested container a lazy slot is, if it is one: the entry's first
-    /// bytes read through the slot's own handle (an evicted dependency's
-    /// opened again only with `reopen`), and the entry parsed only when they
-    /// are a bundle's.
-    fn lazy_container(&self, slot: &Slot, reopen: bool) -> Result<Option<Arc<BundleFile>>, Error> {
+    /// The entry a lazy slot is: its first bytes read through the slot's
+    /// own handle (an evicted dependency's opened again only with
+    /// `reopen`), and the entry parsed only when they are a bundle's.
+    fn lazy_container(&self, slot: &Slot, reopen: bool) -> Result<Entry, Error> {
         let (bundle, i) = match &slot.kind {
             SlotKind::Entry { bundle, dir_index } => (bundle.clone(), *dir_index),
             SlotKind::Dependency { dep } => {
                 let &[i] = slot.rank.path() else {
-                    return Ok(None);
+                    return Ok(Entry::Nothing);
                 };
                 let top = if reopen {
-                    Some(dep.handle()?)
+                    dep.handle()?
                 } else {
-                    dep.alive()
+                    let Some(top) = dep.alive() else {
+                        return Ok(Entry::Evicted);
+                    };
+                    top
                 };
-                let Some(File::Bundle(b)) = top else {
-                    return Ok(None);
+                let File::Bundle(b) = top else {
+                    return Ok(Entry::Nothing);
                 };
                 (b, i)
             }
-            SlotKind::Ready(_) => return Ok(None),
+            SlotKind::Ready(_) => return Ok(Entry::Nothing),
         };
         if !is_bundle_entry(&bundle, i)? {
-            return Ok(None);
+            return Ok(Entry::Nothing);
         }
         match bundle.entry(i) {
             Ok(File::Bundle(nested)) => {
                 self.count(slot);
-                Ok(Some(nested))
+                Ok(Entry::Container(nested))
             }
             Err(e) if e.is_transient() => Err(e),
-            Ok(_) | Err(_) => Ok(None),
+            Ok(_) | Err(_) => Ok(Entry::Nothing),
         }
     }
 
-    /// Registers `nested`'s subtree for `slot`, charged to the slot's own
-    /// input (plan section 3.16, R2): a dependency's slots to the
-    /// dependency's meter, whatever handle read the entry (review round 5: a
-    /// batch job's read through its own handle charged the shared registry's
-    /// entries to the job's meter, which they outlived), an entry slot's to
-    /// its bundle's. As a lazy computation of that input (module docs,
-    /// "Work"): past its work allowance nothing is registered, and what a
+    /// Registers `nested`'s subtree for `slot`, its positions at load
+    /// `position` ([`Slot::position`]), charged to the slot's own input
+    /// (plan section 3.16, R2): a dependency's slots to the dependency's
+    /// meter, whatever handle read the entry (review round 5: a batch job's
+    /// read through its own handle charged the shared registry's entries to
+    /// the job's meter, which they outlived), an entry slot's to its
+    /// bundle's. As a lazy computation of that input (module docs, "Work"):
+    /// past its work allowance nothing is registered, and what a
     /// registration the meter refused was granted counts as work.
-    fn register_counted(&self, slot: &Slot, nested: &Arc<BundleFile>) -> Result<(), Error> {
+    fn register_counted(
+        &self,
+        slot: &Slot,
+        nested: &Arc<BundleFile>,
+        position: u64,
+    ) -> Result<(), Error> {
         let dep = match &slot.kind {
             SlotKind::Dependency { dep } => Some(&**dep),
             SlotKind::Entry { .. } | SlotKind::Ready(_) => None,
         };
         let meter = match dep {
-            Some(dep) => lock(&dep.meter).clone(),
+            Some(dep) => dep.meter(),
             None => nested.meter().clone(),
         };
         if let Some(limit) = meter.work_used_up() {
             return Err(Error::Limit(limit));
         }
         let mut path = slot.rank.path().to_vec();
+        let loads = Loads {
+            value: slot.rank.load,
+            position,
+        };
         let scope = GrantScope::enter(&meter);
-        let registered = self.register_tree(nested, dep, slot.rank.load, &mut path, &meter);
+        let registered = self.register_tree(nested, dep, loads, &mut path, &meter);
         let own = scope.finish(&meter);
         // The dependency's meter grew: the LRU's sum follows it.
         if let Some(dep) = dep
@@ -323,13 +384,13 @@ impl Registry {
         &self,
         nested: &Arc<BundleFile>,
         dep: Option<&Arc<Dependency>>,
-        load: u64,
+        loads: Loads,
         path: &mut Vec<usize>,
         meter: &Arc<Meter>,
     ) -> Result<(), Failed> {
         for (j, d) in nested.directory().iter().enumerate() {
             path.push(j);
-            let r = self.register_tree_entry(nested, j, &d.path, dep, load, path, meter);
+            let r = self.register_tree_entry(nested, j, &d.path, dep, loads, path, meter);
             path.pop();
             r?;
         }
@@ -344,7 +405,7 @@ impl Registry {
         j: usize,
         name: &crate::raw::RawStr,
         dep: Option<&Arc<Dependency>>,
-        load: u64,
+        loads: Loads,
         path: &mut Vec<usize>,
         meter: &Arc<Meter>,
     ) -> Result<(), Failed> {
@@ -352,7 +413,7 @@ impl Registry {
             match nested.entry(j) {
                 Ok(File::Bundle(inner)) => {
                     self.parsed.fetch_add(1, Ordering::Relaxed);
-                    return self.register_tree(&inner, dep, load, path, meter);
+                    return self.register_tree(&inner, dep, loads, path, meter);
                 }
                 Err(e) if e.is_transient() => return Err(Failed::Read(e)),
                 Ok(_) | Err(_) => {}
@@ -367,41 +428,61 @@ impl Registry {
                 dir_index: j,
             },
         };
-        self.insert(name, kind, load, path, meter, By::Reach, false)
+        self.insert(name, kind, loads, path, meter, By::Reach, false)
             .map_err(Failed::Register)
     }
 
-    /// The first listed slot after `after` in the list's order, and its
-    /// place: a cursor that slots listed or taken off meanwhile do not
-    /// disturb.
-    fn listed_after(&self, after: Option<u64>) -> Option<(u64, Arc<Slot>)> {
-        let inner = self.read();
-        let slots = &inner.pending.slots;
-        let from = after.map_or(0, |a| slots.partition_point(|(s, _)| *s <= a));
-        slots.get(from).map(|(s, slot)| (*s, slot.clone()))
+    /// The first slot of `list` after `after` in the order, and its place:
+    /// a cursor that slots listed or taken off meanwhile do not disturb.
+    /// The search's steps count as `charge_to`'s input's work, or as the
+    /// slot's it finds.
+    fn listed_after(
+        &self,
+        list: List,
+        after: Option<u64>,
+        charge_to: Option<&Slot>,
+    ) -> Option<(u64, Arc<Slot>)> {
+        let (found, steps) = self.read().pending.after(list, after);
+        let payer = charge_to.or(found.as_ref().map(|(_, s)| &**s));
+        if let Some(payer) = payer {
+            payer.input_meter().add_work(steps.saturating_mul(STEP));
+        }
+        found
     }
 
-    /// Takes the slot listed at `seq` off the list (another thread may have
-    /// already), which keeps at most four elements' room per element it
-    /// holds (and four more): what [`super::PENDING_SHARE`] pays for. The
-    /// slot is dropped after the lock, since its last handle may tell the
-    /// LRU (plan section 3.16: no lock is taken while another is held).
-    pub(super) fn unlist(&self, seq: u64) {
-        let taken = {
+    /// Takes `slot`, listed at `seq` on `list`, off it (another thread may
+    /// have already), its steps counted as its input's work (`pending.rs`).
+    /// The handle is dropped after the lock, since it may be the slot's
+    /// last, which may tell the LRU (plan section 3.16: no lock is taken
+    /// while another is held).
+    pub(super) fn unlist(&self, list: List, seq: u64, slot: &Slot) {
+        let (taken, steps) = {
             let mut inner = self.write();
-            let slots = &mut inner.pending.slots;
-            let taken = slots
-                .binary_search_by_key(&seq, |(s, _)| *s)
-                .ok()
-                .map(|i| slots.remove(i));
-            let len = slots.len();
-            if slots.capacity() > 4 * len + 4 {
-                slots.shrink_to(2 * len);
-            }
-            self.pending_len.store(len, Ordering::Release);
-            taken
+            let out = inner.pending.take(list, seq);
+            self.store_lens(&inner.pending);
+            out
         };
         drop(taken);
+        slot.input_meter().add_work(steps.saturating_mul(STEP));
+    }
+
+    /// Moves `slot`, listed at `seq`, to the list only the container pass
+    /// reaches (plan section 9, Q13), its steps counted as its input's
+    /// work.
+    fn defer(&self, seq: u64, slot: &Slot) {
+        let steps = {
+            let mut inner = self.write();
+            let steps = inner.pending.defer(seq);
+            self.store_lens(&inner.pending);
+            steps
+        };
+        slot.input_meter().add_work(steps.saturating_mul(STEP));
+    }
+
+    /// Whether a dropped slot of an evicted dependency waits for the
+    /// container pass (plan section 9, Q13).
+    pub(super) fn evicted_waiting(&self) -> bool {
+        self.evicted_len.load(Ordering::Acquire) > 0
     }
 
     /// Reaches every lazy slot a registration dropped unreached (module
@@ -409,8 +490,9 @@ impl Registry {
     /// listed, the slots those reaches drop included. A dropped slot is no
     /// key's value, so nothing could reach it by name afterwards; an eager
     /// load registered its entries at load. A dependency the LRU has evicted
-    /// is not opened again for it (its slot counts as reached: plan section
-    /// 9, Q13). A slot stays listed until it is reached; a refusal leaves it
+    /// is not opened again for it: its slot moves to the list only the
+    /// container pass reaches ([`Self::settle_for_pass`], plan section 9,
+    /// Q13). A slot stays listed until it is reached; a refusal leaves it
     /// for the next call (every load's registration, every lookup by name,
     /// [`Registry::keys`] and every container pass calls this), and the
     /// first one is returned once every other listed slot was tried: a
@@ -419,25 +501,52 @@ impl Registry {
     /// failure means the dropped entry cannot be parsed, or its input's work
     /// is used up (module docs, "Work"): nothing more is registered.
     pub(crate) fn settle(&self) -> Result<(), Error> {
-        if self.pending_len.load(Ordering::Acquire) == 0 {
-            return Ok(());
-        }
-        let mut after = None;
         let mut refused = None;
-        while let Some((seq, slot)) = self.listed_after(after) {
+        if self.pending_len.load(Ordering::Acquire) > 0 {
+            self.settle_list(List::Listed, false, &mut refused);
+        }
+        refused.map_or(Ok(()), Err)
+    }
+
+    /// [`Self::settle`] for the container pass: every listed slot, and every
+    /// dropped slot of an evicted dependency, the dependency opened again to
+    /// reach it (plan section 9, Q13, revised after review round 6: an
+    /// eager load registered the dropped container's entries at load, and
+    /// their tables set paths in other files, as an eager pass reopens an
+    /// evicted dependency to walk its table).
+    pub(crate) fn settle_for_pass(&self) -> Result<(), Error> {
+        let mut refused = None;
+        if self.pending_len.load(Ordering::Acquire) > 0 {
+            self.settle_list(List::Listed, true, &mut refused);
+        }
+        if self.evicted_waiting() {
+            self.settle_list(List::Evicted, true, &mut refused);
+        }
+        refused.map_or(Ok(()), Err)
+    }
+
+    /// Reaches every slot of `list`, as [`Self::settle`] says, an evicted
+    /// dependency's opened again with `reopen`; the first refusal into
+    /// `refused`.
+    fn settle_list(&self, list: List, reopen: bool, refused: &mut Option<Error>) {
+        let mut after = None;
+        let mut prev: Option<Arc<Slot>> = None;
+        while let Some((seq, slot)) = self.listed_after(list, after, prev.as_deref()) {
             after = Some(seq);
             #[cfg(test)]
             self.hook(Hook::SettleTook);
-            match self.reach_one(&slot, None, false) {
-                Ok(()) => {}
+            match self.reach_one(&slot, None, reopen) {
+                Ok(Reached::Done) => self.unlist(list, seq, &slot),
+                Ok(Reached::Evicted) => self.defer(seq, &slot),
                 Err(e) if e.is_transient() => {
                     refused.get_or_insert(e);
-                    continue;
                 }
-                Err(_) => slot.mark_reached(),
+                Err(_) => {
+                    slot.mark_reached();
+                    self.unlist(list, seq, &slot);
+                }
             }
-            self.unlist(seq);
+            prev = Some(slot);
         }
-        refused.map_or(Ok(()), Err)
     }
 }

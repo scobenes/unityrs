@@ -31,9 +31,10 @@
 //! registered when it is *reached*, before any lookup that resolves its
 //! slot, starts from a file inside it, names it as the asking file's
 //! sibling or resource candidate, or walks the container, and before a
-//! registration drops its slot, with the position and the value an eager
-//! load gives them, so only a lookup by name alone of one of its entries
-//! can miss before then ([`registry`]'s module docs state the invariant);
+//! registration drops its slot (an evicted dependency's before the next
+//! container pass), with the position and the value an eager load gives
+//! them, so only a lookup by name alone of one of its entries can miss
+//! before then ([`registry`]'s module docs state the invariant);
 //! (c) a block that fails to decode, or trips a limit,
 //! after the last byte any read needs fails the load under `Eager` (UnityPy
 //! decodes every block before any entry, `files/BundleFile.py:173-186`) and
@@ -42,16 +43,20 @@
 //! at the input's meter ([`crate::LimitKind::InputMemory`]) or decode-work
 //! bound ([`crate::LimitKind::DecodeWork`]) where `Eager`'s one run fits.
 //!
-//! **Threads.** Concurrent calls act as if made one after another in some
-//! order: each change to the registry, the `files` list or a file's
-//! `path_dict` is published whole, so no call sees a change half made (a
-//! nested container's entries are all registered before the call that
-//! reaches it returns). A call's result depends on what was done before it,
+//! **Threads** (plan section 3.16, item 6). Each key's registration, each
+//! `files` entry and each `path_dict` entry is published whole, so no call
+//! sees one half made. A load's or a reach's set of keys is not published at
+//! once: another thread may find one key of a load, or of a nested
+//! container being reached, and miss a later one (review round 6: these
+//! docs said concurrent calls act as if made one after another, which that
+//! does not). A call that reaches a nested container returns only after its
+//! whole subtree is registered, and a load only after all its keys and its
+//! `files` entry are. A call's result depends on what was done before it,
 //! by its thread or another, as a Python dict's does: a load, a resolver
-//! load, and under `Lazy` the first call that reaches a nested container. What a set of calls leaves
-//! does not depend on the order of the ones that are not loads: the
-//! registry orders entries by rank ([`registry`]), and each `path_dict`
-//! entry keeps the least stamp ([`crate::container`]).
+//! load, and under `Lazy` the first call that reaches a nested container.
+//! What a set of calls leaves does not depend on the order of the ones that
+//! are not loads: the registry orders entries by rank ([`registry`]), and
+//! each `path_dict` entry keeps the least stamp ([`crate::container`]).
 //!
 //! **Memory.** Each load makes its input's meter
 //! ([`crate::limits::Meter::for_input`]): [`crate::budget::Reservation::Input`]
@@ -134,12 +139,15 @@ mod container_index;
 mod deref;
 #[cfg(test)]
 mod gate;
+mod held;
 mod listing;
 mod load;
 mod object_tree;
 #[cfg(test)]
 mod preload_tests;
 mod resource_data;
+#[cfg(test)]
+mod threads_tests;
 mod watch;
 
 use std::fmt;

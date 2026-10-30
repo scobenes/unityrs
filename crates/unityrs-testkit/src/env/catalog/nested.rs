@@ -1,6 +1,6 @@
 //! The scenes of nested containers (plan 3.13, difference (b)).
 
-use super::{Bundle, Obj, Scene, bundle, named, res_bytes, row, serialized};
+use super::{Bundle, DepScene, Obj, Scene, bundle, named, res_bytes, row, serialized};
 
 /// A bundle of two nested bundles that each hold a CAB of one name, with a
 /// container row whose preload span reaches object 3: an eager load
@@ -212,5 +212,96 @@ pub fn nested_raw_replaced() -> Scene {
             named("p.bundle", bundle(&[("INNER", res_bytes(4, 50))])),
         ],
         resolver: Vec::new(),
+    }
+}
+
+/// `o.bundle` holds the nested bundle `INNER` of `CAB-I`, whose row
+/// `assets/i.prefab` has a preload span reaching object 2 of `CAB-Z`, and
+/// then `CAB-Z`, whose own row's span reaches its object 2 too; it is
+/// loaded a second time from the same bytes as `o2.bundle`. An eager load
+/// registers `CAB-I` before `CAB-Z` at each load, so the container lists
+/// `CAB-I`'s row first and its walk gives `CAB-Z`'s object 2 the path
+/// `assets/i.prefab`. Under `LoadMode::Lazy` the reload's slot for `INNER`
+/// stands in for the first load's, and its entries take the first load's
+/// positions (review round 6: they took the reload's, after `CAB-Z`, so the
+/// container listed `CAB-Z`'s row first and its walk gave object 2 the path
+/// `assets/z.prefab`).
+#[must_use]
+pub fn nested_reloaded_spans() -> Scene {
+    let i = serialized(
+        &["archive:/CAB-Z/CAB-Z"],
+        &[
+            Obj::named(1, "i1", &[]),
+            Obj::asset_bundle(
+                3,
+                Bundle {
+                    preload: vec![(1, 2)],
+                    rows: vec![row("assets/i.prefab", (0, 1), (0, 1))],
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    );
+    let z = serialized(
+        &[],
+        &[
+            Obj::named(2, "z2", &[]),
+            Obj::named(4, "z4", &[]),
+            Obj::asset_bundle(
+                3,
+                Bundle {
+                    preload: vec![(0, 2)],
+                    rows: vec![row("assets/z.prefab", (0, 1), (0, 4))],
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    );
+    let o = bundle(&[("INNER", bundle(&[("CAB-I", i)])), ("CAB-Z", z)]);
+    Scene {
+        files: vec![named("o.bundle", o.clone()), named("o2.bundle", o)],
+        resolver: Vec::new(),
+    }
+}
+
+/// `f.bundle` holds `CAB-F`; the dependency `a.bundle` holds the nested
+/// bundle `INNER` of `CAB-D`, whose row `assets/d.prefab` has a preload span
+/// reaching `CAB-F`'s object 1; the dependency `b.bundle` holds `CAB-B`; and
+/// `p.bundle` holds a raw entry `INNER`, which drops `a.bundle`'s. An eager
+/// load registered `CAB-D` at `a.bundle`'s load, so the container pass walks
+/// its table and `CAB-F`'s object 1 gets the path `assets/d.prefab`. Under
+/// `LoadMode::Lazy`, with options that evict `a.bundle` when `b.bundle`
+/// loads, the dropped `INNER` is an evicted dependency's, which the
+/// container pass opens again to reach (plan section 9, Q13, revised after
+/// review round 6: nothing reached it, and the path was missing).
+#[must_use]
+pub fn nested_dropped_evicted() -> DepScene {
+    let f = serialized(&[], &[Obj::named(1, "f1", &[])]);
+    let d = serialized(
+        &["archive:/CAB-F/CAB-F"],
+        &[
+            Obj::named(1, "d1", &[]),
+            Obj::asset_bundle(
+                2,
+                Bundle {
+                    preload: vec![(1, 1)],
+                    rows: vec![row("assets/d.prefab", (0, 1), (0, 1))],
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    );
+    let b = serialized(&[], &[Obj::named(1, "b1", &[])]);
+    DepScene {
+        scene: Scene {
+            files: vec![
+                named("f.bundle", bundle(&[("CAB-F", f)])),
+                named("a.bundle", bundle(&[("INNER", bundle(&[("CAB-D", d)]))])),
+                named("b.bundle", bundle(&[("CAB-B", b)])),
+                named("p.bundle", bundle(&[("INNER", res_bytes(4, 50))])),
+            ],
+            resolver: Vec::new(),
+        },
+        dependencies: vec![1, 2],
     }
 }

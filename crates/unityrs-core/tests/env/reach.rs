@@ -13,7 +13,7 @@ use unityrs_core::limits::Meter;
 use unityrs_core::{Bytes, FileContext, RawStr};
 use unityrs_testkit::env::{bundle, res_bytes};
 
-use super::{TempFile, key, object, stream, unlimited};
+use super::{TempFile, key, object, serialized_cab, stream, unlimited};
 
 /// `CAB-I` of a bundle laid out as the scene `resource_in_nested_cab`:
 /// the first entry of the nested bundle `INNER`.
@@ -178,5 +178,130 @@ fn a_jobs_read_leaves_no_charge_on_its_meter() {
                 .is_some(),
             "{mode:?}"
         );
+    }
+}
+
+/// A container pass whose walk of a preload table its file's own meter
+/// refuses is counted as that open's work (plan section 3.16, P1: what the
+/// walk was granted), so once the open's allowance is used up the refusal
+/// is `DecodeWork`, which the input decides, and the pass is kept as
+/// UnityPy keeps a failed pass (the index built): no later `container()`
+/// walks the table again (review round 6: nothing tested it, and without
+/// the count every `container()` redid the refused walk in full). The
+/// limits are measured on runs of the scene `preload_paths`: memory for the
+/// load and the containers' reads but not for the walk's `path_dict`
+/// entries, and, on a run with that memory and no work bound, the work one
+/// refused walk adds, half of which past the reads is allowed.
+#[test]
+fn a_pass_the_meter_refuses_is_counted_until_it_is_kept() {
+    let scene = unityrs_testkit::env::preload_paths();
+    let data = Bytes::from(scene.files[0].1.clone());
+    let eager = |ctx: FileContext| {
+        let mut o = EnvOptions::unitypy();
+        o.context = Arc::new(ctx);
+        Environment::new(o)
+    };
+    // The memory the reads take, and what the walk keeps.
+    let env = eager(FileContext::unitypy());
+    let meter = env.load(bytes("pp.bundle", &data)).unwrap().meter().clone();
+    for cab in ["CAB-PP", "CAB-PQ"] {
+        serialized_cab(&env, cab).container().unwrap();
+    }
+    let read = meter.used();
+    let _ = env.container().unwrap().count();
+    let walked = meter.used();
+    assert!(
+        walked > read + 64,
+        "the walk keeps paths: {read} -> {walked}"
+    );
+
+    // The work a refused walk adds, on a run with no work bound.
+    let mut ctx = FileContext::unitypy();
+    ctx.limits.max_input_memory = read + (walked - read) / 2;
+    let env = eager(ctx.clone());
+    let meter = env.load(bytes("pp.bundle", &data)).unwrap().meter().clone();
+    let refused = |env: &Environment| env.container().map(|_| ()).map_err(|e| e.to_string());
+    let first = refused(&env);
+    assert!(
+        first
+            .as_ref()
+            .is_err_and(|e| e.starts_with("limit InputMemory")),
+        "the walk is refused by the meter: {first:?}"
+    );
+    let after_first = meter.decoded();
+    assert_eq!(refused(&env), first);
+    let per_walk = meter.decoded() - after_first;
+    assert!(per_walk > 0, "a refused walk counted no work");
+
+    // With half a walk's work allowed past the reads, the first refusal
+    // uses the allowance up and is kept.
+    ctx.limits.max_decode_work = after_first - per_walk / 2;
+    let env = eager(ctx);
+    let meter = env.load(bytes("pp.bundle", &data)).unwrap().meter().clone();
+    let pass = refused(&env);
+    assert!(
+        pass.as_ref()
+            .is_err_and(|e| e.starts_with("limit DecodeWork")),
+        "the refused walk's work was not counted: {pass:?}"
+    );
+    let (granted, done) = (meter.granted(), meter.decoded());
+    let kept = refused(&env);
+    for _ in 0..50 {
+        assert_eq!(refused(&env), kept);
+    }
+    assert_eq!(meter.granted(), granted, "a pass walked the table again");
+    assert_eq!(meter.decoded(), done, "a pass counted more work");
+}
+
+/// The work counted on `a.bundle`'s meter: `m` raw entries of one 160-byte
+/// block each, all alike, loaded `Lazy`, each reached once in directory
+/// order (a read of its first bytes, the same for each); by `settle`, after
+/// `b.bundle`'s nested `INNER`, which holds entries of the same names, drops
+/// all `m` slots unreached at once, or, with `by_name`, by a lookup of each
+/// name, which lists nothing.
+fn reach_work(m: usize, by_name: bool) -> u64 {
+    let names: Vec<String> = (0..m).map(|i| format!("E{i:05}")).collect();
+    let entries = |data: &dyn Fn() -> Vec<u8>| -> Vec<(&str, Vec<u8>)> {
+        names.iter().map(|n| (n.as_str(), data())).collect()
+    };
+    let a = Bytes::from(bundle(&entries(&|| res_bytes(160, 7))));
+    let b = Bytes::from(bundle(&[("INNER", bundle(&entries(&|| res_bytes(8, 9))))]));
+    let env = lazy_batch(FileContext::unitypy());
+    let meter = env.load(bytes("a.bundle", &a)).unwrap().meter().clone();
+    let asker = Meter::unlimited();
+    let before = meter.decoded();
+    if by_name {
+        for n in &names {
+            assert!(
+                env.get_cab(&RawStr::from(n.as_str()), &asker)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    } else {
+        env.load(bytes("b.bundle", &b)).unwrap();
+        let found = env.get_cab(&RawStr::from("INNER"), &asker);
+        assert!(found.unwrap().is_none(), "INNER is a container");
+    }
+    meter.decoded() - before
+}
+
+/// Settling the slots a registration dropped takes O(m log m) steps for m
+/// slots, each counted as work of the slots' input (plan section 3.16, R5;
+/// review round 6: the list was a `Vec` whose front removal shifted every
+/// later slot, O(m²) steps that nothing counted). The steps are what
+/// settling m slots counts past reaching each by name (`reach_work`): at
+/// least one step for each of a slot's three list operations (listed,
+/// found, taken off), and at most ⌈log2 m⌉ + 1 for each and for the last
+/// search, at 8 bytes a step (`pending.rs`).
+#[test]
+fn settling_dropped_slots_counts_steps_that_grow_as_m_log_m() {
+    for m in [64_u64, 256, 1024] {
+        let n = usize::try_from(m).unwrap();
+        let (settled, by_name) = (reach_work(n, false), reach_work(n, true));
+        let steps = settled.checked_sub(by_name).expect("settling counts less") / 8;
+        let log = u64::from((m - 1).bit_width()) + 1;
+        assert!(steps >= 3 * m, "m = {m}: {steps} steps counted");
+        assert!(steps <= (3 * m + 1) * log, "m = {m}: {steps} steps");
     }
 }

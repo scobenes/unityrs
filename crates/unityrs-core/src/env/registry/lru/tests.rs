@@ -24,7 +24,7 @@ use std::thread::ThreadId;
 
 use super::{DepCache, Hook, HookFn, LRU_SHARE, Lru, LruNode, lock, lru_key};
 use crate::budget::Reservation;
-use crate::env::registry::{Dependency, WeakFile, open_source};
+use crate::env::registry::{Dependency, Open, open_source};
 use crate::env::{EnvOptions, Environment, Source};
 use crate::files::File;
 use crate::limits::Meter;
@@ -101,8 +101,7 @@ impl Rig {
                 let dep = Arc::new(Dependency {
                     name,
                     source,
-                    meter: Mutex::new(meter),
-                    open: Mutex::new(WeakFile::of(&file)),
+                    open: Mutex::new(Open::of(&file, meter)),
                     ctx: ctx.clone(),
                     cache: Arc::downgrade(&cache),
                     slots: std::sync::atomic::AtomicUsize::new(0),

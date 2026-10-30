@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 use super::registry::Hook;
-use super::registry::{Dependency, WeakFile, open_source};
+use super::registry::{Dependency, Open, open_source};
 use super::{Cab, Environment, LoadMode, RawCab, Source, source_name};
 use crate::budget::Reservation;
 use crate::error::{Error, Unsupported};
@@ -208,8 +208,7 @@ impl Environment {
         let dep = Arc::new(Dependency {
             name: name.clone(),
             source: source.clone(),
-            meter: Mutex::new(meter),
-            open: Mutex::new(WeakFile::of(&file)),
+            open: Mutex::new(Open::of(&file, meter)),
             ctx: ctx.clone(),
             cache: Arc::downgrade(&self.inner.cache),
             slots: AtomicUsize::new(0),
