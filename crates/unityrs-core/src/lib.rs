@@ -176,7 +176,6 @@ const _: () = {
     send_sync::<value::PrimRun>();
     send_sync::<value::ListIx>();
     send_sync::<version::FlagsClass>();
-    send_sync::<version::Packed>();
     send_sync::<version::VersionError>();
     send_sync::<version::VersionSource>();
     send_sync::<version::ResolvedVersion>();

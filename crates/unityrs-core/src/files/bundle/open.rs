@@ -51,8 +51,7 @@ impl BundleFile {
             class,
             encrypted,
             block_alignment,
-        } = read_fs_header(&mut r, &data, meter, ctx)?;
-        charge.grow(u64::try_from(engine.version.heap_bytes()).unwrap_or(u64::MAX))?;
+        } = read_fs_header(&mut r, &data, &mut charge, ctx)?;
         let blocks_ctx = BlockContext::new(ctx, encrypted);
         // :133-139
         let start = r.position();
@@ -193,13 +192,17 @@ struct FsHeader {
 
 /// `BundleFile.__init__` up to the signature dispatch, then `read_fs` up to
 /// the blocks-info section (`BundleFile.py:36-51`, `:93-131`); leaves `r` where
-/// blocks-info would start. Its strings' searches are `meter`'s work.
+/// blocks-info would start. Its strings' searches and its engine version's
+/// parse are the work of `charge`'s meter, the input's, and the version's
+/// heap is charged to `charge`, the bundle's handle.
 fn read_fs_header(
     r: &mut Reader<'_>,
     data: &Bytes,
-    meter: &Meter,
+    charge: &mut Charge,
     ctx: &FileContext,
 ) -> Result<FsHeader, Error> {
+    let meter = charge.meter().clone();
+    let meter = &*meter;
     // UnityPy files/BundleFile.py:36-39
     let signature = string_to_null(r, data, meter)?;
     let format = r.read_u32()?;
@@ -228,7 +231,7 @@ fn read_fs_header(
         r.read_i8()?;
     }
     // :107-121
-    let engine = resolve_bundle(&version_engine, &ctx.version)?;
+    let engine = resolve_bundle(&version_engine, &ctx.version, charge)?;
     let class = flags_class(&engine.version)?;
     // :123-124: the encryption flag, before the alignment.
     let mask = match class {
