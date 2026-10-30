@@ -83,7 +83,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use bytes::Bytes;
 
-use crate::detect::check_file_type;
+use crate::detect::{DetectError, check_entry_type};
 use crate::error::Error;
 use crate::files::{File, Parent, ParentKind, parse_file};
 use crate::limits::{Charge, Meter, MeteredVec};
@@ -189,8 +189,10 @@ pub struct BundleFile {
     files: Box<[FileSlot]>,
     parent: Option<Parent>,
     /// Each block's outcome, once known: its actual decoded length (a stored
-    /// block's at open, any other's when it is first decoded or measured),
-    /// or the error its decode gave, kept so it is not decoded again.
+    /// block's at open while stored blocks are their own bytes,
+    /// `Codecs::stores_as_is`; any other's when it is first decoded or
+    /// measured), or the error its decode gave, kept so it is not decoded
+    /// again.
     lengths: Box<[ResultCell<u64, Error>]>,
     /// Decoded block runs: `(first block, end block, bytes)`, each run's
     /// charge inside its `Bytes`. Locked only to look up or publish.
@@ -382,7 +384,14 @@ impl BundleFile {
             .ok_or_else(|| no_entry(dir_index))?;
         let bytes = self.entry_bytes(dir_index)?;
         let wrap = |e| self.entry_error(dir_index, e);
-        let ty = check_file_type(&bytes, &self.ctx.limits).map_err(|d| wrap(Error::Detect(d)))?;
+        // The inflation of a gzip entry is the open's work (`detect`'s
+        // "Work"); its refusal is the open's limit, as a block decode's is.
+        let ty = check_entry_type(&bytes, &self.ctx.limits, self.meter()).map_err(|d| {
+            wrap(match d {
+                DetectError::Work(l) => Error::Limit(l),
+                d => Error::Detect(d),
+            })
+        })?;
         let parent = Parent {
             name: self.name.clone(),
             kind: ParentKind::Bundle {

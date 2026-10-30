@@ -15,7 +15,7 @@ use std::sync::Arc;
 use unityrs_core::limits::{ChargeError, Meter, MeteredVec};
 use unityrs_core::{RawStr, UnityVersion};
 
-pub(crate) use classes::{ClassEntry, ClassInformation, UnityClass};
+pub(crate) use classes::{ClassEntry, ClassInformation};
 pub(crate) use nodes::NodeBuffer;
 
 use crate::{TpkError, TpkProvider};

@@ -135,15 +135,15 @@ impl ClassInformation {
         self.classes.as_slice().iter().map(|c| c.id)
     }
 
-    /// Every entry of every listing, in the order they were read.
-    pub(crate) fn entry_count(&self) -> usize {
-        self.entries.len()
+    /// The entries of every class the dict keeps, each class's in their
+    /// stored order (a class listed twice: its last listing's).
+    pub(crate) fn kept_entries(&self) -> impl Iterator<Item = &ClassEntry> + '_ {
+        self.ids().filter_map(|id| self.get(id)).flatten()
     }
 
     /// `ClassInformation[class_id]`: the class's entries in their stored
-    /// order, and the first one's place among [`Self::entry_count`]'s;
-    /// `None` where UnityPy raises `KeyError`.
-    pub(crate) fn get(&self, id: i32) -> Option<(usize, &[ClassEntry])> {
+    /// order; `None` where UnityPy raises `KeyError`.
+    pub(crate) fn get(&self, id: i32) -> Option<&[ClassEntry]> {
         let classes = self.classes.as_slice();
         let class = classes
             .binary_search_by_key(&id, |c| c.id)
@@ -153,6 +153,6 @@ impl ClassInformation {
             .entries
             .as_slice()
             .get(class.first..class.first.checked_add(class.len)?)?;
-        Some((class.first, entries))
+        Some(entries)
     }
 }

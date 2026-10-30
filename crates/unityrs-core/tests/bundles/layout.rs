@@ -159,3 +159,75 @@ fn ranges_in_one_block_decode_it_once_and_a_straddling_read_decodes_again() {
     b.entry_range(1, 5..6).unwrap();
     assert_eq!((0..starts.len()).map(calls).collect::<Vec<_>>(), after);
 }
+
+/// A stored-block codec of the caller's: every byte inverted.
+struct Inverting;
+
+impl BlockCodec for Inverting {
+    fn decode(&self, input: &Bytes, _: u32, out: &mut DecodeBuf) -> Result<Decoded, Error> {
+        let inverted: Vec<u8> = input.iter().map(|b| !b).collect();
+        out.extend_from_slice(&inverted)?;
+        Ok(Decoded::Written)
+    }
+}
+
+/// Claude round 2's C LOW: a stored block goes through codec slot 0 lazily
+/// as it does eagerly (UnityPy's eager load sends every block through
+/// `DECOMPRESSION_MAP`, `NONE` included), so a registry whose slot 0 is the
+/// caller's codec, or empty, reads every entry, in any order, as `load_all`
+/// does. Entry 0 is stored block 0; entry 1 is blocks 1 to 3, LZ4.
+#[test]
+fn a_stored_block_goes_through_slot_0_lazily_as_eagerly() {
+    let data = build(&BundleSpec {
+        info_codec: TestCodec::Lz4,
+        data_codec: TestCodec::Lz4,
+        block_size: 100,
+        entries: small_entries(),
+        block_overrides: vec![BlockOverride {
+            block: 0,
+            codec: Some(TestCodec::None),
+            ..BlockOverride::default()
+        }],
+        ..BundleSpec::default()
+    });
+    let plain = small_entries();
+    let inverted: Vec<u8> = plain[0].data.iter().map(|b| !b).collect();
+    let mut custom = Codecs::unitypy();
+    custom.set(Codec::None, Arc::new(Inverting)).unwrap();
+    let mut no_slot_0 = Codecs::empty();
+    no_slot_0.set(Codec::Lz4, Arc::new(Lz4)).unwrap();
+    let cases: [(Codecs, Result<Vec<u8>, String>); 3] = [
+        (Codecs::unitypy(), Ok(plain[0].data.clone())),
+        (custom, Ok(inverted)),
+        (no_slot_0, Err("unsupported".to_owned())),
+    ];
+    assert!(Codecs::unitypy().stores_as_is());
+    for (codecs, want) in cases {
+        let as_is = codecs.stores_as_is();
+        let ctx = ctx_with(|c| c.codecs = Arc::new(codecs));
+        let read = |order: &[usize], eager: bool| {
+            let b = open_with(&data, &ctx, &meter_for(&ctx)).unwrap();
+            let loaded = eager.then(|| b.load_all().map_err(|e| e.to_string()));
+            (all_entries(&b, order), loaded)
+        };
+        let (eager, loaded) = read(&[0, 1], true);
+        for order in [[0, 1], [1, 0]] {
+            assert_eq!(read(&order, false).0, eager, "{as_is}: order {order:?}");
+        }
+        match &want {
+            Ok(bytes) => {
+                assert_eq!(loaded, Some(Ok(())));
+                assert_eq!(eager[0].as_deref(), Ok(&bytes[..]));
+                assert_eq!(eager[1].as_deref(), Ok(&plain[1].data[..]));
+            }
+            Err(what) => {
+                let loaded = loaded.unwrap().unwrap_err();
+                assert!(loaded.contains(what), "{loaded}");
+                assert!(
+                    eager[0].as_ref().is_err_and(|e| e.contains(what)),
+                    "{eager:?}"
+                );
+            }
+        }
+    }
+}

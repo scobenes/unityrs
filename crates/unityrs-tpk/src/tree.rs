@@ -32,6 +32,167 @@ impl From<ChargeError> for WalkError {
     }
 }
 
+/// The walk's level bound as [`generate_node`] applies it: a level is an
+/// `i32` (`NodeRow::level`), so no bound is above `i32::MAX`.
+fn level_bound(max_depth: usize) -> usize {
+    max_depth.min(usize::try_from(i32::MAX).unwrap_or(usize::MAX))
+}
+
+/// What [`generate_node`] makes of a release root under its bounds, found
+/// by [`builds`] without walking it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Build {
+    /// A tree of this many rows.
+    Rows(usize),
+    /// An error: a level past the depth bound, rows past the row bound, or
+    /// an id past its table.
+    Fails,
+}
+
+/// One node's tree as [`builds`] finds it: its rows (each node counted once
+/// per time the walk reaches it) and its height (a leaf's is 1), each held
+/// at one past its bound, and whether the walk meets an id past its table.
+#[derive(Clone, Copy)]
+struct Size {
+    rows: usize,
+    height: usize,
+    bad: bool,
+}
+
+/// A node during [`builds`]'s search.
+#[derive(Clone, Copy)]
+enum Seen {
+    New,
+    /// On the search's stack: reaching it again is a cycle.
+    Open,
+    Done(Size),
+}
+
+/// A node on [`builds`]'s stack: its id, its next sub-node, and its
+/// sub-nodes' sizes so far, summed (rows), maxed (height) and or-ed (bad).
+struct Frame {
+    node: u16,
+    next: usize,
+    sum: Size,
+}
+
+/// For each of `roots`, what [`generate_node`] with these bounds makes of
+/// it, in one pass over the node buffer, every node sized once: a tree's
+/// rows are its root's plus its sub-nodes' (each counted as often as it is
+/// listed), its height its tallest sub-node's plus one, and a node that is
+/// reached again while it is being sized (a cycle) makes every node above
+/// it endless. The walk ends with an error exactly where the tree's height
+/// passes `max_depth`, its rows pass `max_rows` (the walk counts the rows
+/// still to walk, never more than the tree has) or it reaches an id past
+/// its table; anywhere else it builds the rows counted here. The search
+/// keeps a stack, never recursing, of at most one frame per node, and
+/// charges its tables to `meter`.
+pub(crate) fn builds(
+    blob: &TypeTreeBlob,
+    roots: &[u16],
+    max_depth: usize,
+    max_rows: usize,
+    meter: &Arc<Meter>,
+) -> Result<MeteredVec<Build>, ChargeError> {
+    let max_depth = level_bound(max_depth);
+    let (row_cap, height_cap) = (max_rows.saturating_add(1), max_depth.saturating_add(1));
+    let endless = Size {
+        rows: row_cap,
+        height: height_cap,
+        bad: false,
+    };
+    let past_table = Size {
+        rows: 1,
+        height: 1,
+        bad: true,
+    };
+    let fold = |into: &mut Size, s: Size| {
+        into.rows = into.rows.saturating_add(s.rows).min(row_cap);
+        into.height = into.height.max(s.height);
+        into.bad |= s.bad;
+    };
+    let strings = blob.strings.len();
+    let mut seen = MeteredVec::with_capacity(meter, blob.nodes.len())?;
+    for _ in 0..blob.nodes.len() {
+        seen.push(Seen::New)?;
+    }
+    let mut stack: MeteredVec<Frame> = MeteredVec::new(meter);
+    let mut out = MeteredVec::with_capacity(meter, roots.len())?;
+    for &root in roots {
+        let size = match seen.as_slice().get(usize::from(root)) {
+            None => past_table,
+            Some(Seen::Done(size)) => *size,
+            Some(Seen::New | Seen::Open) => {
+                let empty = Size {
+                    rows: 0,
+                    height: 0,
+                    bad: false,
+                };
+                if let Some(s) = seen.as_mut_slice().get_mut(usize::from(root)) {
+                    *s = Seen::Open;
+                }
+                stack.push(Frame {
+                    node: root,
+                    next: 0,
+                    sum: empty,
+                })?;
+                let mut found = past_table;
+                while let Some(top) = stack.as_mut_slice().last_mut() {
+                    let node = blob.nodes.get(top.node);
+                    let subs = node.map_or(&[][..], |n| blob.nodes.sub_nodes(n));
+                    if let Some(&sub) = subs.get(top.next) {
+                        top.next += 1;
+                        match seen.as_slice().get(usize::from(sub)) {
+                            None => fold(&mut top.sum, past_table),
+                            Some(Seen::Done(size)) => fold(&mut top.sum, *size),
+                            Some(Seen::Open) => fold(&mut top.sum, endless),
+                            Some(Seen::New) => {
+                                if let Some(s) = seen.as_mut_slice().get_mut(usize::from(sub)) {
+                                    *s = Seen::Open;
+                                }
+                                stack.push(Frame {
+                                    node: sub,
+                                    next: 0,
+                                    sum: empty,
+                                })?;
+                            }
+                        }
+                        continue;
+                    }
+                    // Every sub-node sized: this node's own row, level and
+                    // strings.
+                    let named = node.is_some_and(|n| {
+                        usize::from(n.type_name) < strings && usize::from(n.name) < strings
+                    });
+                    let size = Size {
+                        rows: top.sum.rows.saturating_add(1).min(row_cap),
+                        height: top.sum.height.saturating_add(1).min(height_cap),
+                        bad: top.sum.bad || !named,
+                    };
+                    let id = top.node;
+                    stack.truncate(stack.len().saturating_sub(1));
+                    if let Some(s) = seen.as_mut_slice().get_mut(usize::from(id)) {
+                        *s = Seen::Done(size);
+                    }
+                    match stack.as_mut_slice().last_mut() {
+                        Some(parent) => fold(&mut parent.sum, size),
+                        None => found = size,
+                    }
+                }
+                found
+            }
+        };
+        out.push(
+            if size.bad || size.rows > max_rows || size.height > max_depth {
+                Build::Fails
+            } else {
+                Build::Rows(size.rows)
+            },
+        )?;
+    }
+    Ok(out)
+}
+
 /// `generate_node(class_info)` from `root`, its release root (`Tpk.py:66-85`):
 /// every node in pre-order (`stack.pop(0)`, its sub-nodes put in front, in
 /// their order), each row with its level (its parent's plus one), its
@@ -52,7 +213,7 @@ pub(crate) fn generate_node(
     meter: &Arc<Meter>,
 ) -> Result<MeteredVec<NodeRow>, WalkError> {
     // A level is an `i32` (`NodeRow::level`); every one is below this.
-    let max_depth = max_depth.min(usize::try_from(i32::MAX).unwrap_or(usize::MAX));
+    let max_depth = level_bound(max_depth);
     let string = |id: u16| {
         blob.strings
             .as_slice()
@@ -114,4 +275,100 @@ pub(crate) fn generate_node(
         }
     }
     Ok(nodes)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use unityrs_core::limits::Meter;
+
+    use super::{Build, builds, generate_node};
+    use crate::blob::TypeTreeBlob;
+
+    /// A blob of no versions, classes or common strings, over `nodes` (each
+    /// its type and name string ids and its sub-node ids) and `strings`
+    /// strings.
+    fn blob(nodes: &[(u16, u16, Vec<u16>)], strings: usize, meter: &Arc<Meter>) -> TypeTreeBlob {
+        let mut out = 1_i64.to_le_bytes().to_vec();
+        for _ in 0..4 {
+            out.extend_from_slice(&0_i32.to_le_bytes());
+        }
+        out.extend_from_slice(&i32::try_from(nodes.len()).unwrap().to_le_bytes());
+        for (ty, name, subs) in nodes {
+            out.extend_from_slice(&ty.to_le_bytes());
+            out.extend_from_slice(&name.to_le_bytes());
+            out.extend_from_slice(&[0; 7]);
+            out.extend_from_slice(&[0; 4]);
+            out.extend_from_slice(&u16::try_from(subs.len()).unwrap().to_le_bytes());
+            for s in subs {
+                out.extend_from_slice(&s.to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&i32::try_from(strings).unwrap().to_le_bytes());
+        for _ in 0..strings {
+            out.extend_from_slice(&[1, b's']);
+        }
+        TypeTreeBlob::read(&out, meter).unwrap()
+    }
+
+    /// [`builds`] gives, for every root of thousands of random node graphs
+    /// (shared sub-nodes, cycles, ids past the node and string tables), and
+    /// under tight and loose bounds, exactly what [`generate_node`] does:
+    /// the walk's row count where it builds, and a failure where it fails;
+    /// asked for every root at once (each node sized once across them) or
+    /// for one root alone.
+    #[test]
+    fn builds_finds_what_the_walk_makes() {
+        let meter = Meter::unlimited();
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let (mut built, mut failed) = (0, 0);
+        for _ in 0..3_000 {
+            let n = 1 + next(9);
+            let strings = 1 + next(3);
+            let nodes: Vec<(u16, u16, Vec<u16>)> = (0..n)
+                .map(|_| {
+                    // Mostly in the string table, sometimes one past it.
+                    let past = u64::from(next(8) == 0);
+                    let ty = u16::try_from(next(strings + past)).unwrap();
+                    let past = u64::from(next(8) == 0);
+                    let name = u16::try_from(next(strings + past)).unwrap();
+                    let subs = (0..next(4))
+                        .map(|_| u16::try_from(next(n + 1)).unwrap())
+                        .collect();
+                    (ty, name, subs)
+                })
+                .collect();
+            let blob = blob(&nodes, usize::try_from(strings).unwrap(), &meter);
+            let roots: Vec<u16> = (0..=u16::try_from(n).unwrap()).collect();
+            for (depth, rows) in [(3, 6), (5, 40), (256, 1 << 16)] {
+                let all = builds(&blob, &roots, depth, rows, &meter).unwrap();
+                for (&root, &got) in roots.iter().zip(all.as_slice()) {
+                    let want = if let Ok(walked) = generate_node(&blob, root, depth, rows, &meter) {
+                        built += 1;
+                        Build::Rows(walked.len())
+                    } else {
+                        failed += 1;
+                        Build::Fails
+                    };
+                    assert_eq!(
+                        got, want,
+                        "{nodes:?} root {root}, depth {depth}, rows {rows}"
+                    );
+                    let alone = builds(&blob, &[root], depth, rows, &meter).unwrap();
+                    assert_eq!(alone.as_slice(), [want], "{nodes:?} root {root} alone");
+                }
+            }
+        }
+        assert!(
+            built > 10_000 && failed > 10_000,
+            "{built} built, {failed} failed"
+        );
+    }
 }

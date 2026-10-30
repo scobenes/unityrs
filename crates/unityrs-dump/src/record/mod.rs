@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use unityrs_core::RawStr;
 use unityrs_core::detect::{FileType, ParsedAs};
+use unityrs_core::stream::ShortArray;
 use unityrs_core::typetree::NodeList;
 use unityrs_core::version::{FlagsClass, Packed};
 use unityrs_core::walk::L2Kind;
@@ -208,10 +209,10 @@ pub struct TypeRecord {
     pub is_stripped_type: Option<bool>,
     /// `script_type_index`.
     pub script_type_index: i16,
-    /// `script_id`.
-    pub script_id: Option<[u8; 16]>,
-    /// `old_type_hash`.
-    pub old_type_hash: Option<[u8; 16]>,
+    /// `script_id`, as read (short at a negative position or the end).
+    pub script_id: Option<ShortArray<16>>,
+    /// `old_type_hash`, as read.
+    pub old_type_hash: Option<ShortArray<16>>,
     /// The stored tree, written as its rows.
     pub nodes: Option<Arc<NodeList>>,
     /// `type_dependencies`.
@@ -229,8 +230,8 @@ pub struct TypeRecord {
 pub struct ExternalRow {
     /// `temp_empty`.
     pub temp_empty: Option<RawStr>,
-    /// `guid`.
-    pub guid: Option<[u8; 16]>,
+    /// `guid`, as read (short at a negative position or the end).
+    pub guid: Option<ShortArray<16>>,
     /// `type`.
     pub kind: Option<i32>,
     /// `path`.

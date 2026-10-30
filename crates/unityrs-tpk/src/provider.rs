@@ -5,37 +5,50 @@
 
 use std::fmt;
 use std::io::Read;
+use std::mem::size_of;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
-use unityrs_core::limits::{Limits, Meter, MeteredVec};
+use unityrs_core::limits::{Charge, ChargeError, Limits, Meter, MeteredVec, heap_cost};
 use unityrs_core::once::get_or_publish;
 use unityrs_core::provider::{ProviderError, TreeRequest, TypeTreeProvider};
 use unityrs_core::typetree::commonstring::CommonStrings;
 use unityrs_core::typetree::{NodeList, Tree, TreeError};
 use unityrs_core::{LimitError, LimitKind, UnityVersion};
 
-use crate::blob::{ClassEntry, TypeTreeBlob, UnityClass, memory};
-use crate::tree::{WalkError, generate_node};
+use crate::blob::{ClassEntry, TypeTreeBlob, memory};
+use crate::tree::{Build, WalkError, builds, generate_node};
 use crate::{TpkError, file};
 
-/// What a picked entry resolved to, kept once per entry.
+/// What a release root's walk resolved to.
 type Outcome<T> = Result<Option<Arc<T>>, ProviderError>;
 
-/// One class entry's node list and tree, each computed once (UnityPy's
-/// `NODES_CACHE`, `Tpk.py:17`, `:58-62`, `:86-87`).
-#[derive(Default)]
-struct Cells {
-    rows: OnceLock<Outcome<NodeList>>,
-    tree: OnceLock<Outcome<Tree>>,
+/// An outcome as a root keeps it: a kept error's heap is charged to the
+/// provider's meter for as long as it is kept (crate docs, "Memory").
+struct Kept<T> {
+    outcome: Outcome<T>,
+    _charge: Option<Charge>,
+}
+
+/// One release root that some class entry names: whether its tree is past
+/// the provider's total ([`TpkProvider::MAX_TOTAL_ROWS`]), decided at load,
+/// and its node list and tree, each computed once. UnityPy's `NODES_CACHE`
+/// (`Tpk.py:17`, `:58-62`, `:86-87`) keys a tree by the entry's class
+/// record, whose release root is all `generate_node` reads; so every entry
+/// whose record UnityPy shares a tree for shares this root's too.
+struct Root {
+    id: u16,
+    over: Option<LimitError>,
+    rows: OnceLock<Kept<NodeList>>,
+    tree: OnceLock<Kept<Tree>>,
 }
 
 /// A TPK's class trees, as UnityPy's `helpers/Tpk.py` builds them (crate
 /// docs).
 pub struct TpkProvider {
     blob: TypeTreeBlob,
-    /// One pair of cells per class entry, in the blob's entry order.
-    cells: MeteredVec<Cells>,
+    /// Every release root a class entry names, sorted by id, each once.
+    roots: MeteredVec<Root>,
     /// UnityPy's `get_common_strings()` over this TPK.
     common: CommonStrings,
     limits: Limits,
@@ -75,6 +88,16 @@ impl TpkProvider {
     /// has 3,849 (`tools/fixtures/tpk.py --survey`); a tree past this is an
     /// error, which bounds the walk of a node that lists an ancestor.
     pub const MAX_TREE_ROWS: usize = 1 << 16;
+
+    /// The most rows the trees of every release root together may have,
+    /// 2,097,152, which bounds what the provider builds and keeps however
+    /// many classes are asked for. UnityPy 1.25.2's own TPK has 414,033
+    /// over its 3,000 release roots (`tools/fixtures/tpk.py --survey`).
+    /// Each root's rows are known at load, without walking it; in the order
+    /// of their ids, a root whose tree would take the trees kept so far past
+    /// this is refused with a [`LimitKind::Count`] limit (crate docs,
+    /// "Limits"), whatever was asked before it.
+    pub const MAX_TOTAL_ROWS: usize = 1 << 21;
 
     /// The largest TPK file the provider reads, 16 MiB. UnityPy 1.25.2's
     /// own is 187,318 bytes (`tools/fixtures/tpk.py --survey`).
@@ -145,14 +168,10 @@ impl TpkProvider {
         let blob = TypeTreeBlob::read(&payload, &meter)?;
         drop(payload);
         let common = common_strings(&blob)?;
-        let entries = blob.classes.entry_count();
-        let mut cells = MeteredVec::with_capacity(&meter, entries).map_err(memory)?;
-        for _ in 0..entries {
-            cells.push(Cells::default()).map_err(memory)?;
-        }
+        let roots = roots(&blob, limits, &meter).map_err(memory)?;
         Ok(Self {
             blob,
-            cells,
+            roots,
             common,
             limits: *limits,
             meter,
@@ -181,45 +200,64 @@ impl TpkProvider {
 
     /// The node list UnityPy builds for `class_id` at `version`, before it
     /// is compiled: `Ok(None)` wherever UnityPy raises `KeyError`,
-    /// `ValueError` or `AssertionError` (crate docs). Every version that
-    /// picks one entry gets the same `Arc`.
+    /// `ValueError` or `AssertionError` (crate docs). Every request whose
+    /// picked entry names one release root gets the same `Arc`.
     pub fn node_list(
         &self,
         class_id: i32,
         version: &UnityVersion,
     ) -> Result<Option<Arc<NodeList>>, ProviderError> {
-        let Some((class, cells)) = self.entry(class_id, version) else {
-            return Ok(None);
-        };
-        self.rows_of(class, cells).clone()
+        match self.entry(class_id, version) {
+            Some(root) => self.rows_of(root).clone(),
+            None => Ok(None),
+        }
     }
 
     /// `TPKTYPETREE.ClassInformation[class_id].getVersionedClass(version)`
-    /// (`Tpk.py:49-51`): the picked entry's class and its cells; `None`
-    /// where UnityPy raises `KeyError` (no such class) or `ValueError` (no
-    /// entry at or below the version, or the class removed there).
-    fn entry(&self, class_id: i32, version: &UnityVersion) -> Option<(UnityClass, &Cells)> {
-        let (first, entries) = self.blob.classes.get(class_id)?;
+    /// (`Tpk.py:49-51`), then `generate_node`'s assertion (`:64`): the
+    /// picked entry's release root; `None` where UnityPy raises `KeyError`
+    /// (no such class), `ValueError` (no entry at or below the version, or
+    /// the class removed there) or `AssertionError` (no release root).
+    fn entry(&self, class_id: i32, version: &UnityVersion) -> Option<&Root> {
+        let entries = self.blob.classes.get(class_id)?;
         let at = get_item_for_version(version, entries)?;
-        let class = entries.get(at)?.class?;
-        let cells = self.cells.as_slice().get(first.checked_add(at)?)?;
-        Some((class, cells))
+        let id = entries.get(at)?.class?.release_root?;
+        let roots = self.roots.as_slice();
+        roots
+            .binary_search_by_key(&id, |r| r.id)
+            .ok()
+            .and_then(|at| roots.get(at))
     }
 
-    fn rows_of<'c>(&self, class: UnityClass, cells: &'c Cells) -> &'c Outcome<NodeList> {
-        get_or_publish(&cells.rows, || self.walk(class))
+    fn rows_of<'r>(&self, root: &'r Root) -> &'r Outcome<NodeList> {
+        &get_or_publish(&root.rows, || self.kept(self.walk(root))).outcome
     }
 
-    /// `generate_node(class_info)` (`Tpk.py:58-88`) for one entry's class.
-    fn walk(&self, class: UnityClass) -> Outcome<NodeList> {
-        // `assert class_info.ReleaseRootNode is not None` (`Tpk.py:64`).
-        let Some(root) = class.release_root else {
-            return Ok(None);
-        };
+    /// An outcome to keep, a failure's heap charged first. The meter is
+    /// unlimited, so it refuses only where the allocator does, and the
+    /// error is kept uncharged then.
+    fn kept<T>(&self, outcome: Outcome<T>) -> Kept<T> {
+        let charge = outcome.as_ref().err().and_then(|e| {
+            let bytes = e.detail.len().saturating_add(2 * size_of::<usize>());
+            let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+            self.meter.charge(heap_cost(bytes)).ok()
+        });
+        Kept {
+            outcome,
+            _charge: charge,
+        }
+    }
+
+    /// `generate_node(class_info)` (`Tpk.py:58-88`) from one release root,
+    /// unless its tree is past the provider's total.
+    fn walk(&self, root: &Root) -> Outcome<NodeList> {
+        if let Some(over) = root.over {
+            return Err(limit_error(over));
+        }
         let max_depth = usize::try_from(self.limits.max_tree_depth).unwrap_or(usize::MAX);
         let rows = generate_node(
             &self.blob,
-            root,
+            root.id,
             max_depth,
             Self::MAX_TREE_ROWS,
             &self.meter,
@@ -237,21 +275,83 @@ impl TpkProvider {
     }
 }
 
+/// Every release root a kept class entry names, sorted and each once, with
+/// what [`builds`] finds its walk makes and the total's verdict: in the
+/// order of their ids, a root whose tree would take the rows of the trees
+/// before it past [`TpkProvider::MAX_TOTAL_ROWS`] is over, and the trees
+/// after it are counted without it.
+fn roots(
+    blob: &TypeTreeBlob,
+    limits: &Limits,
+    meter: &Arc<Meter>,
+) -> Result<MeteredVec<Root>, ChargeError> {
+    let mut ids = MeteredVec::new(meter);
+    for entry in blob.classes.kept_entries() {
+        if let Some(id) = entry.class.and_then(|c| c.release_root) {
+            ids.push(id)?;
+        }
+    }
+    let ids = ids.as_mut_slice();
+    ids.sort_unstable();
+    let mut distinct = MeteredVec::new(meter);
+    for (at, &id) in ids.iter().enumerate() {
+        if at == 0 || ids.get(at - 1) != Some(&id) {
+            distinct.push(id)?;
+        }
+    }
+    let max_depth = usize::try_from(limits.max_tree_depth).unwrap_or(usize::MAX);
+    let found = builds(
+        blob,
+        distinct.as_slice(),
+        max_depth,
+        TpkProvider::MAX_TREE_ROWS,
+        meter,
+    )?;
+    let mut roots = MeteredVec::with_capacity(meter, distinct.len())?;
+    let mut total = 0_usize;
+    for (&id, build) in distinct.as_slice().iter().zip(found.as_slice()) {
+        let mut over = None;
+        if let Build::Rows(rows) = *build {
+            let with = total.saturating_add(rows);
+            if with > TpkProvider::MAX_TOTAL_ROWS {
+                over = Some(LimitError {
+                    kind: LimitKind::Count,
+                    value: u64::try_from(with).unwrap_or(u64::MAX),
+                    max: u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap_or(u64::MAX),
+                });
+            } else {
+                total = with;
+            }
+        }
+        roots.push(Root {
+            id,
+            over,
+            rows: OnceLock::new(),
+            tree: OnceLock::new(),
+        })?;
+    }
+    Ok(roots)
+}
+
 fn error(e: &dyn fmt::Display) -> ProviderError {
     ProviderError {
         provider: TpkProvider::NAME,
-        detail: e.to_string().into_boxed_str(),
+        detail: e.to_string().into(),
         limit: None,
     }
 }
 
 /// A walk that crossed a bound, as a limit error.
 fn limit(kind: LimitKind, value: usize, max: usize) -> ProviderError {
-    let limit = LimitError {
+    limit_error(LimitError {
         kind,
         value: u64::try_from(value).unwrap_or(u64::MAX),
         max: u64::try_from(max).unwrap_or(u64::MAX),
-    };
+    })
+}
+
+/// A bound, as the error that names it.
+fn limit_error(limit: LimitError) -> ProviderError {
     ProviderError {
         limit: Some(limit),
         ..error(&limit)
@@ -295,27 +395,27 @@ impl TypeTreeProvider for TpkProvider {
         Some(&self.common)
     }
 
-    /// [`TpkProvider::node_list`], compiled once per entry with
+    /// [`TpkProvider::node_list`], compiled once per release root with
     /// [`Tree::compile`] on the provider's meter and kept: every request
-    /// that picks one entry gets the same `Arc` (UnityPy's `NODES_CACHE`).
+    /// whose picked entry names one root gets the same `Arc` (UnityPy's
+    /// `NODES_CACHE`, crate docs).
     fn tree(&self, req: &TreeRequest<'_>) -> Result<Option<Arc<Tree>>, ProviderError> {
-        let Some((class, cells)) = self.entry(req.class_id, req.version) else {
+        let Some(root) = self.entry(req.class_id, req.version) else {
             return Ok(None);
         };
-        get_or_publish(&cells.tree, || {
-            let Some(list) = self.rows_of(class, cells).clone()? else {
+        let compile = || {
+            let Some(list) = self.rows_of(root).clone()? else {
                 return Ok(None);
             };
             Tree::compile(list, &self.limits)
                 .map(Some)
                 .map_err(|e| match e {
-                    TreeError::Limit(l) => ProviderError {
-                        limit: Some(l),
-                        ..error(&l)
-                    },
+                    TreeError::Limit(l) => limit_error(l),
                     e => error(&e),
                 })
-        })
-        .clone()
+        };
+        get_or_publish(&root.tree, || self.kept(compile()))
+            .outcome
+            .clone()
     }
 }

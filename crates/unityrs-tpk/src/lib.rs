@@ -29,8 +29,14 @@
 //! - `generate_node` (`:58-88`) asserts the entry has a release root
 //!   (`AssertionError` otherwise; an editor root does not count) and walks
 //!   the node buffer from it, pre-order, each node's level its parent's plus
-//!   one, each row's `m_Index` its position, `m_TypeFlags` left unset; one
-//!   tree per entry (`NODES_CACHE`), shared by every version that picks it.
+//!   one, each row's `m_Index` its position, `m_TypeFlags` left unset. Its
+//!   `NODES_CACHE` keeps one tree per class record (`TpkUnityClass` hashes
+//!   and compares by its name, base, flags and two roots, `:316-330`), so
+//!   every entry of every class whose record is equal shares one tree. The
+//!   walk reads only the release root, so the provider keeps one tree per
+//!   release root: every entry UnityPy shares a tree among shares it here
+//!   too, and so do entries of equal roots and unequal records, whose trees
+//!   UnityPy builds twice, equal.
 //!
 //! - `get_common_strings()` (`helpers/TypeTreeNode.py:308-328`), which every
 //!   blob typetree reads, is the TPK's common strings, every index of
@@ -79,16 +85,27 @@
 //! past [`TpkProvider::MAX_TREE_ROWS`] rows, the rows still to walk counted
 //! ([`unityrs_core::LimitKind::Count`]), so a node that lists itself or an
 //! ancestor, on which UnityPy's walk never ends, is an error; a tree deeper
-//! than the limit, which UnityPy builds, is one too. Each is a
-//! [`ProviderError`] whose `limit` names the bound. `PARITY.md` section 19.3
-//! lists every one.
+//! than the limit, which UnityPy builds, is one too. The trees of every
+//! release root together are bounded at [`TpkProvider::MAX_TOTAL_ROWS`]
+//! rows: at load, one pass over the node buffer finds what each root's walk
+//! would make (its rows, or a failure) without walking it, and in the order
+//! of the roots' ids a root whose tree would take the rows kept before it
+//! past the bound is refused, before it is walked, with a
+//! [`unityrs_core::LimitKind::Count`] limit naming the total it would reach
+//! (a root whose walk fails takes nothing from the total). So the provider
+//! never holds more than that bound of rows, however many classes an input
+//! asks for, and which roots it refuses depends on the TPK alone, never on
+//! the order of the requests. Each is a [`ProviderError`] whose `limit`
+//! names the bound. `PARITY.md` section 19.3 lists every one.
 //!
-//! **Memory.** The TPK is the provider's, not an input's: its tables, rows
-//! and trees are charged to the provider's own unlimited meter (plan section
-//! 3.15's constant per context; the bounds above are what bound it), the
-//! rows and trees built once per entry, when first asked for, and kept. Each
-//! is computed with no lock held and published through
-//! [`unityrs_core::once::get_or_publish`].
+//! **Memory.** The TPK is the provider's, not an input's: its tables, rows,
+//! trees and kept errors are charged to the provider's own unlimited meter
+//! (plan section 3.15's constant per context; the bounds above are what
+//! bound it), the rows and tree of a release root built once, when first
+//! asked for, and kept. Each is computed with no lock held and published
+//! through [`unityrs_core::once::get_or_publish`]. A kept error's text is
+//! shared (`ProviderError::detail` is an `Arc<str>`), so the clone each
+//! later request gets allocates nothing.
 //!
 //! [`TypeTreeProvider`]: unityrs_core::provider::TypeTreeProvider
 //! [`TypeTreeProvider::common_strings`]: unityrs_core::provider::TypeTreeProvider::common_strings

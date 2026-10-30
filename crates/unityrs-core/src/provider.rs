@@ -84,8 +84,9 @@ pub struct TreeRequest<'a> {
 pub struct ProviderError {
     /// The provider's name.
     pub provider: &'static str,
-    /// What failed.
-    pub detail: Box<str>,
+    /// What failed. Shared, so a clone allocates nothing: a provider keeps
+    /// each entry's failure and hands every later request a clone of it.
+    pub detail: Arc<str>,
     /// The bound the failure crossed, when it was one (a TPK tree deeper
     /// than [`crate::limits::Limits::max_tree_depth`] is
     /// [`crate::LimitKind::TreeDepth`]); `detail` is then its message.
@@ -106,10 +107,12 @@ pub trait TypeTreeProvider: Send + Sync + fmt::Debug {
     /// **every** entry in its stored order, `None` and release-less entries
     /// included: a provider never steps back past one of them to an earlier
     /// entry that has a tree.
-    /// Every request that maps to one entry of the provider's data gets the
-    /// same `Arc` (UnityPy's `NODES_CACHE`, one tree per TPK class entry,
-    /// `Tpk.py:58-88`), so the trees a chain caches are bounded by the
-    /// provider's data, not by the versions an input names.
+    /// Every request that maps to one tree of the provider's data gets the
+    /// same `Arc` (UnityPy's `NODES_CACHE`, `Tpk.py:58-88`, which shares one
+    /// tree among the TPK class entries of one class record; the TPK
+    /// provider shares one among the entries of one release root), so the
+    /// trees a chain caches are bounded by the provider's data, not by the
+    /// versions an input names.
     fn tree(&self, req: &TreeRequest<'_>) -> Result<Option<Arc<Tree>>, ProviderError>;
     /// Whether this provider answers script requests (`TreeRequest::script`):
     /// UnityPy's `env.typetree_generator`. Only then does the Environment

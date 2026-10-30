@@ -77,8 +77,8 @@ pub(crate) fn serialized_l1(
         class_id: 114,
         is_stripped_type: Some(false),
         script_type_index: -1,
-        script_id: Some([0xab; 16]),
-        old_type_hash: Some([0x01; 16]),
+        script_id: Some([0xab; 16].into()),
+        old_type_hash: Some([0x01; 16].into()),
         nodes: Some(tree(&[
             (0, b"MonoBehaviour", b"Base"),
             (1, b"int", b"m_X"),
@@ -106,7 +106,7 @@ pub(crate) fn serialized_l1(
         is_stripped_type: Some(true),
         script_type_index: -1,
         script_id: None,
-        old_type_hash: Some([0; 16]),
+        old_type_hash: Some([0; 16].into()),
         nodes: Some(tree(&[(0, b"Foo", b"Base")])),
         type_dependencies: None,
         class_name: Some(raw(b"Foo")),
@@ -134,7 +134,7 @@ pub(crate) fn serialized_l1(
         externals: vec![
             ExternalRow {
                 temp_empty: Some(raw(b"")),
-                guid: Some([0x0f; 16]),
+                guid: Some([0x0f; 16].into()),
                 kind: Some(0),
                 path: raw(b"archive:/CAB-other/CAB-other"),
             },

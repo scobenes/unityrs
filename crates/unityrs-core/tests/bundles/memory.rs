@@ -1,8 +1,14 @@
 //! Decode work and the input's meter, over several files and hostile
 //! directories.
 
+use std::io::Write as _;
+
+use flate2::Compression;
+use flate2::write::GzEncoder;
+
 use super::{ctx, ctx_with, meter_for, open_with};
 use unityrs_core::budget::{Reservation, Unbounded};
+use unityrs_core::files::File;
 use unityrs_core::{Error, FileContext, LimitKind};
 use unityrs_testkit::bundle::{BlockOverride, BundleSpec, EntrySpec, TestCodec, build};
 use unityrs_testkit::serialized::build as file;
@@ -275,4 +281,80 @@ fn the_unbounded_budget_is_the_default() {
             .is_ok()
     );
     let _ = Unbounded;
+}
+
+/// Claude round 2's C HIGH: every directory row names one small gzip
+/// stream that inflates to 1 MiB. Detection inflates each stream within
+/// `max_inflate`, and every row's inflation is the open's work, so the rows
+/// together inflate no more than `max_decode_work` (plus the one chunk that
+/// passed it): the row that would pass it is refused with the open's
+/// `DecodeWork` limit, and so is every row after it, lazily and eagerly.
+#[test]
+fn gzip_detection_across_the_rows_of_one_open_draws_on_its_work() {
+    const ROWS: usize = 64;
+    const MIB: u64 = 1 << 20;
+    let mut gz = GzEncoder::new(Vec::new(), Compression::best());
+    gz.write_all(&vec![0u8; 1 << 20]).unwrap();
+    let stream = gz.finish().unwrap();
+    // Row 0 holds the stream; every other row is empty, then pointed at it.
+    let entries: Vec<EntrySpec> = (0..ROWS)
+        .map(|k| EntrySpec {
+            name: format!("gz-{k:02}").into_bytes(),
+            data: if k == 0 { stream.clone() } else { Vec::new() },
+            flags: 0,
+        })
+        .collect();
+    let mut data = build(&BundleSpec {
+        info_codec: TestCodec::None,
+        data_codec: TestCodec::Lz4,
+        entries,
+        ..BundleSpec::default()
+    });
+    let size = i64::try_from(stream.len()).unwrap();
+    for k in 1..ROWS {
+        let key = format!("gz-{k:02}\0").into_bytes();
+        let at = data.windows(key.len()).position(|w| w == key).unwrap();
+        data[at - 20..at - 12].copy_from_slice(&0_i64.to_be_bytes());
+        data[at - 12..at - 4].copy_from_slice(&size.to_be_bytes());
+    }
+    let ctx = ctx_with(|c| c.limits.max_decode_work = 4 * MIB);
+    assert!(ctx.limits.max_inflate >= MIB, "each stream inflates whole");
+
+    // Lazily, in directory order: the rows that fit, then refusals.
+    let meter = meter_for(&ctx);
+    let b = open_with(&data, &ctx, &meter).unwrap();
+    let got: Vec<Result<File, Error>> = (0..ROWS).map(|i| b.entry(i)).collect();
+    let fit = got.iter().take_while(|r| r.is_ok()).count();
+    assert!((1..=4).contains(&fit), "{fit} rows detected");
+    assert!(got[..fit].iter().all(|r| matches!(r, Ok(File::Raw(_)))));
+    for r in &got[fit..] {
+        assert!(
+            matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork && l.max == 4 * MIB),
+            "{r:?}"
+        );
+    }
+    assert!(
+        meter.decoded() <= 4 * MIB + (64 << 10),
+        "{}",
+        meter.decoded()
+    );
+
+    // Eagerly: the load fails with the same limit.
+    let meter = meter_for(&ctx);
+    let b = open_with(&data, &ctx, &meter).unwrap();
+    let got = b.load_all();
+    assert!(
+        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork),
+        "{got:?}"
+    );
+    assert!(
+        meter.decoded() <= 4 * MIB + (64 << 10),
+        "{}",
+        meter.decoded()
+    );
+
+    // Under the default allowance every row detects, as UnityPy's does.
+    let c = super::ctx();
+    let b = open_with(&data, &c, &meter_for(&c)).unwrap();
+    b.load_all().unwrap();
 }

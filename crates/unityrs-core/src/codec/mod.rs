@@ -235,14 +235,18 @@ pub trait BlockDecryptor: Send + Sync {
 #[derive(Clone)]
 pub struct Codecs {
     slots: [Option<Arc<dyn BlockCodec>>; 64],
+    /// Slot 0 holds the built-in [`Stored`] that [`Self::unitypy`] puts
+    /// there ([`Self::stores_as_is`]).
+    stored_builtin: bool,
 }
 
 impl Codecs {
-    /// No codec at all.
+    /// No codec at all, type 0 included.
     #[must_use]
     pub fn empty() -> Self {
         Self {
             slots: std::array::from_fn(|_| None),
+            stored_builtin: false,
         }
     }
 
@@ -261,11 +265,14 @@ impl Codecs {
                 *slot = Some(codec);
             }
         }
+        c.stored_builtin = true;
         c
     }
 
-    /// Registers `codec` for `which` (a custom codec is `Codec::Other(5..=63)`).
-    /// A non-canonical value (`Other(n)` with `n` below 5 or above 63) names no
+    /// Registers `codec` for `which` (a custom codec is `Codec::Other(5..=63)`;
+    /// a codec for `Codec::None` replaces how stored blocks decode, as a
+    /// caller may replace UnityPy's `DECOMPRESSION_MAP[NONE]`). A
+    /// non-canonical value (`Other(n)` with `n` below 5 or above 63) names no
     /// slot and is handed back.
     pub fn set(&mut self, which: Codec, codec: Arc<dyn BlockCodec>) -> Result<(), Codec> {
         if !which.is_canonical() {
@@ -274,10 +281,25 @@ impl Codecs {
         match self.slots.get_mut(usize::from(which.id())) {
             Some(slot) => {
                 *slot = Some(codec);
+                if which == Codec::None {
+                    self.stored_builtin = false;
+                }
                 Ok(())
             }
             None => Err(which),
         }
+    }
+
+    /// Whether a stored block (type 0) is its own bytes: slot 0 holds the
+    /// built-in [`Stored`] of [`Self::unitypy`], so a bundle may take such a
+    /// block as a slice of its input, and its length as what was read,
+    /// without calling the codec. Otherwise (a codec registered over it, or
+    /// none) every stored block goes through slot 0 as any block goes
+    /// through its codec, lazily as eagerly, as UnityPy's eager load sends
+    /// every block through `DECOMPRESSION_MAP`.
+    #[must_use]
+    pub fn stores_as_is(&self) -> bool {
+        self.stored_builtin
     }
 
     /// The codec for `which`, if registered (never for a non-canonical value).
@@ -301,7 +323,10 @@ impl fmt::Debug for Codecs {
         let ids: Vec<usize> = (0..self.slots.len())
             .filter(|i| self.slots.get(*i).is_some_and(Option::is_some))
             .collect();
-        f.debug_struct("Codecs").field("registered", &ids).finish()
+        f.debug_struct("Codecs")
+            .field("registered", &ids)
+            .field("stored_builtin", &self.stored_builtin)
+            .finish()
     }
 }
 

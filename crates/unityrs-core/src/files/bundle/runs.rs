@@ -203,8 +203,12 @@ impl BundleFile {
     }
 
     /// Blocks `first..end` as one slice of the input, when every one is
-    /// stored and each follows the previous in the input.
+    /// stored, stored blocks are their own bytes ([`crate::codec::Codecs::stores_as_is`]),
+    /// and each follows the previous in the input.
     fn stored_span(&self, first: usize, end: usize) -> Option<Bytes> {
+        if !self.ctx.codecs.stores_as_is() {
+            return None;
+        }
         let mut at: Option<Range<usize>> = None;
         for k in first..end {
             let b = self.blocks.get(k)?;
