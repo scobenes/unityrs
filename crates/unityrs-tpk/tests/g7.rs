@@ -8,6 +8,8 @@
 //! and the compiled tree ([`TypeTreeProvider::tree`]), which must be the
 //! node list's, compiled, wherever UnityPy builds one. Wherever UnityPy
 //! returns one tree object (its caches), the provider returns one `Arc`.
+//! Every node list UnityPy recorded for every class is compared row by row,
+//! including those of trees an earlier class shares.
 //! UnityPy's side counts the records it wrote and the (class, version)
 //! pairs it was asked for, and the comparison must meet exactly those: one
 //! record per class the provider holds and one for a class it does not, and
@@ -120,16 +122,25 @@ fn compare<'r>(
     compare_common(provider, &head["common_strings"]);
     let mut seen = HashSet::new();
     let mut pairs = 0;
-    // A node list compared once per outcome it is checked against.
-    let mut checked: HashSet<(usize, usize)> = HashSet::new();
-    // UnityPy's tree object (its number) to the provider's list.
-    let mut shared: HashMap<u64, usize> = HashMap::new();
+    // UnityPy's tree object (its number) to the provider's list for it, held
+    // while the comparison runs so that no list's address is reused.
+    let mut shared: HashMap<u64, Arc<NodeList>> = HashMap::new();
     for record in classes {
         let class_id = i32::try_from(record["class"].as_i64().unwrap()).unwrap();
         assert!(seen.insert(class_id), "class {class_id}: two records");
         let outcomes = record["outcomes"].as_array().unwrap();
         let picks = record["picks"].as_array().unwrap();
         assert_eq!(picks.len(), versions.len(), "class {class_id}");
+        // Every node list UnityPy recorded for this class is compared, row
+        // by row, with the provider's answer at the first version that picks
+        // it, whatever an earlier class was answered with: so every (class,
+        // version) pair UnityPy builds a tree for is checked, each pair
+        // that picks the outcome later answered by that same list (`shared`
+        // pins one list per UnityPy tree, and a class's outcomes are one per
+        // tree). Keyed by the provider's list instead, a class answered with
+        // a list an earlier class was compared with, at the same position in
+        // its outcomes, would be checked against nothing (round 3).
+        let mut compared = vec![false; outcomes.len()];
         for (v, pick) in versions.iter().zip(picks) {
             let index = usize::try_from(pick.as_u64().unwrap()).unwrap();
             let want = &outcomes[index];
@@ -143,11 +154,14 @@ fn compare<'r>(
             match (want.get("rows"), got, tree) {
                 (Some(rows), Ok(Some(list)), Ok(Some(tree))) => {
                     assert!(Arc::ptr_eq(tree.list(), &list), "{}: the tree's list", at());
-                    let ptr = Arc::as_ptr(&list) as usize;
                     let object = want["tree"].as_u64().unwrap();
-                    let first = *shared.entry(object).or_insert(ptr);
-                    assert_eq!(first, ptr, "{}: UnityPy's tree {object} is shared", at());
-                    if checked.insert((ptr, index)) {
+                    let first = shared.entry(object).or_insert_with(|| list.clone());
+                    assert!(
+                        Arc::ptr_eq(first, &list),
+                        "{}: UnityPy's tree {object} is shared",
+                        at()
+                    );
+                    if !std::mem::replace(&mut compared[index], true) {
                         compare_rows(&list, rows, &at());
                     }
                 }
@@ -247,6 +261,45 @@ fn g7_the_synthetic_tpks_give_unitypys_outcomes() {
         );
     }
     assert!(pairs > 100, "{pairs} pairs");
+}
+
+/// The comparison checks every node list UnityPy recorded, those of a class
+/// the provider answers with a list an earlier class was already compared
+/// with included. In `root_flags`, classes 11, 21, 31 and 41 share one of
+/// UnityPy's trees, and 30 and 40 have two equal trees of one release root,
+/// which the provider answers with one list; round 3's G7 compared only the
+/// first class of each, so a provider that answered a later one with another
+/// class's tree passed it. One wrong row in any outcome must fail it.
+#[test]
+fn g7_compares_every_node_list_unitypy_recorded() {
+    let case = case("root_flags");
+    let provider = open(&case).unwrap();
+    let classes = case["classes"].as_array().unwrap();
+    let mut corrupted = 0;
+    for (c, record) in classes.iter().enumerate() {
+        let outcomes = record["outcomes"].as_array().unwrap();
+        for (o, outcome) in outcomes.iter().enumerate() {
+            if outcome.get("rows").is_none() {
+                continue;
+            }
+            let mut bad = classes.clone();
+            bad[c]["outcomes"][o]["rows"][0][2] = J::from("not UnityPy's name");
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                compare(&provider, &case, bad.iter(), &case)
+            }));
+            assert!(
+                run.is_err(),
+                "class {}: a wrong row in outcome {o} passed the comparison",
+                record["class"]
+            );
+            corrupted += 1;
+        }
+    }
+    assert_eq!(
+        corrupted, 7,
+        "the node lists of classes 11, 21, 30, 31, 40, 41, 45"
+    );
+    compare(&provider, &case, classes.iter(), &case);
 }
 
 /// The cases G7's synthetic set exists for are in it: each root flag
