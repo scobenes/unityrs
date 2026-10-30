@@ -36,9 +36,9 @@ jobs:
       - name: No stub is left (G6)
         run: sh scripts/stub-check.sh
       # No unmanageable files: no tracked Rust or Python file over 800 lines
-      # outside scripts/file-size-allowlist.txt (generated tables, fixture
-      # generators, and parity tools left whole until PR #5 merges), and
-      # every entry there with its reason, within its limit and its pin.
+      # outside scripts/file-size-allowlist.txt (generated tables and fixture
+      # generators), and every entry there with its reason, within its limit
+      # and its pin.
       - name: No file is over 800 lines
         run: sh scripts/file-size-check.sh
 

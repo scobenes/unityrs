@@ -125,7 +125,7 @@ open(out, "w").write("\\n".join(lines) + "\\n")
 
 
 def oracle_producer():
-    """The `producer` member unitypy_dump.py writes on the pinned stack (canonical.py's pins)."""
+    """The `producer` member unitypy_dump.py writes on the pinned stack (oracle_stack.py's pins)."""
     return {
         "name": C.ORACLE_PRODUCER,
         "unitypy": C.ORACLE_UNITYPY,

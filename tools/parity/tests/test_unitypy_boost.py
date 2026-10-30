@@ -152,7 +152,7 @@ class ThroughBoost(unittest.TestCase):
         self.assertIsNotNone(TTH.read_typetree_boost, "UnityPyBoost must be loaded for the oracle")
 
     def test_boost_is_the_pinned_wheels_binary(self):
-        # The loaded binary, and the RECORD of the wheel it came from, both hash as canonical.py pins.
+        # The loaded binary, and the RECORD of the wheel it came from, both hash as oracle_stack.py pins.
         module = sys.modules["UnityPy.UnityPyBoost"]
         with open(module.__file__, "rb") as fh:
             self.assertEqual(hashlib.sha256(fh.read()).hexdigest(), C.ORACLE_BOOST_SHA256)

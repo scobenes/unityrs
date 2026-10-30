@@ -4,6 +4,10 @@ docs/CANONICAL_DUMP.md is the specification; this module is its Python
 reference. It needs only the standard library, so compare.py runs anywhere.
 Typetree nodes are duck-typed (``m_Type``, ``m_Name``, ``m_Children``), so the
 value encoder works on UnityPyBoost nodes and on plain test doubles alike.
+
+The oracle stack a reference must come from is pinned in oracle_stack.py, and
+the decoder the comparer reads values with is canonical_decode.py; this module
+names their public items too, so the tools reach all of it as canonical's.
 """
 
 from __future__ import annotations
@@ -14,79 +18,33 @@ import re
 import struct
 from pathlib import Path
 
+from canonical_decode import (  # noqa: F401
+    F32,
+    F64,
+    Blob,
+    Dict,
+    FormatError,
+    Tuple,
+    decode,
+    decode_key,
+)
+from oracle_stack import (  # noqa: F401
+    INSTALLERS,
+    ORACLE_BOOST_SHA256,
+    ORACLE_PRODUCER,
+    ORACLE_RECORDS,
+    ORACLE_REQUIREMENTS,
+    ORACLE_UNITYPY,
+    installed_packages,
+    normalise_package,
+    oracle_pins,
+    oracle_records,
+    stack_problems,
+)
+
 FORMAT = "unityrs-canonical-dump"
 VERSION = 1
 LEVELS = ("L0", "L1", "L2", "L3")
-
-# The oracle stack a reference dump must come from (docs/CANONICAL_DUMP.md):
-# every package requirements-oracle.txt pins, installed from its pinned wheel
-# (its version, and its files as oracle_records.json pins them), and the
-# UnityPyBoost binary the pinned UnityPy wheel holds.
-ORACLE_REQUIREMENTS = Path(__file__).resolve().with_name("requirements-oracle.txt")
-ORACLE_PRODUCER = "unitypy_dump.py"
-# The sha256 of UnityPy/UnityPyBoost.cpython-311-x86_64-linux-gnu.so in the
-# pinned unitypy wheel, as its RECORD lists it (in RECORD's urlsafe base64,
-# QO5PYLPXAPOONPCtIF72pivuoxH0TmH0_Lwv7s6W4SQ). test_unitypy_boost.py checks it
-# against the installed RECORD and the loaded module; re-pin it with UnityPy.
-ORACLE_BOOST_SHA256 = "40ee4f60b3d700f38e34f0ad205ef6a62beea311f44e61f4fcbc2feece96e124"
-# Each pinned wheel's files, as the digest of its RECORD (oracle_env.py writes and checks it).
-ORACLE_RECORDS = ORACLE_REQUIREMENTS.with_name("oracle_records.json")
-# pip leaves these out of `pip freeze` on Python 3.11: they install the stack and are no part of it.
-INSTALLERS = frozenset(("pip", "setuptools", "wheel", "distribute"))
-
-_PIN = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\;]+)")
-
-
-def normalise_package(name: str) -> str:
-    """A distribution name as PEP 503 compares it: lower case, each run of -_. one hyphen."""
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
-def oracle_pins(path: Path = ORACLE_REQUIREMENTS) -> dict[str, str]:
-    """{normalised name: version} for every `name==version` line of requirements-oracle.txt."""
-    pins = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        m = _PIN.match(line)
-        if m:
-            pins[normalise_package(m.group(1))] = m.group(2)
-    return pins
-
-
-def oracle_records(path: Path = ORACLE_RECORDS) -> dict[str, str]:
-    """{normalised name: record digest} of every pinned wheel, from oracle_records.json."""
-    records = json.loads(path.read_text(encoding="utf-8"))["records"]
-    return {name: records[name]["record_sha256"] for name in sorted(records)}
-
-
-def installed_packages(path: list[str] | None = None) -> dict[str, str]:
-    """{normalised name: version} of the distributions on `path` (default sys.path), the first of each name."""
-    from importlib import metadata
-
-    out = {}
-    for dist in metadata.distributions(**({} if path is None else {"path": path})):
-        name = dist.metadata["Name"]
-        if name:
-            out.setdefault(normalise_package(name), dist.version)
-    return out
-
-
-def stack_problems(installed: dict[str, str], pins: dict[str, str], exact: bool = False) -> list[str]:
-    """How `installed` differs from the pins: a pin missing or at another version; with `exact`, any extra too."""
-    problems = [
-        f"{name} is {installed[name]}, not the pinned {version}" if name in installed else f"{name} is not installed"
-        for name, version in sorted(pins.items())
-        if installed.get(name) != version
-    ]
-    if exact:
-        problems += [
-            f"{name} {version} is installed but not pinned"
-            for name, version in sorted(installed.items())
-            if name not in pins and name not in INSTALLERS
-        ]
-    return problems
-
-
-ORACLE_UNITYPY = oracle_pins()["unitypy"]
 
 # Raw-byte payloads longer than this are summarised as length + sha256. Inline
 # hex keeps small diffs readable; the summary keeps texture and vertex blobs
@@ -330,125 +288,6 @@ class ValueEncoder:
                     raise EncodeError(f"no ref type for {value['type']!r}")
             out.append([enc_name(key), self.encode(item, child)])
         return {"t": "dict", "v": out}
-
-
-# ------------------------------------------------------------- value decoder
-#
-# The comparer works on a decoded tree in which every canonical-form choice is
-# undone: packed float lists become lists of F32/F64, and inline and summarised
-# raw bytes both become Blob(len, sha256). Two encodings that decode equal hold
-# the same value; a byte difference between them is a format violation only.
-
-
-class F32(int):
-    """A float32 by bit pattern."""
-
-    __slots__ = ()
-
-    def __repr__(self):
-        return f"f32:{self:08x}"
-
-
-class F64(int):
-    """A float64 by bit pattern."""
-
-    __slots__ = ()
-
-    def __repr__(self):
-        return f"f64:{self:016x}"
-
-
-class Blob(tuple):
-    """Raw bytes: kind 'bytes', 'u8s' (a UInt8 vector) or 'str' (not UTF-8): (kind, len, sha256, hex|None)."""
-
-    __slots__ = ()
-
-    def __new__(cls, kind, length, sha, hexdata=None):
-        return tuple.__new__(cls, (kind, length, sha, hexdata))
-
-    @property
-    def kind(self):
-        return self[0]
-
-    def __eq__(self, other):
-        return isinstance(other, Blob) and self[:3] == other[:3]
-
-    def __ne__(self, other):
-        return not self == other
-
-    def __hash__(self):
-        return hash(self[:3])
-
-    def __repr__(self):
-        if self[3] is not None:
-            return f"{self[0]}:{self[3]}"
-        return f"{self[0]}:len={self[1]},sha256={self[2][:16]}..."
-
-
-class Tuple(list):
-    """A Python tuple (a typetree pair)."""
-
-    __slots__ = ()
-
-
-class Dict(list):
-    """An ordered dict as a list of (key, value) pairs."""
-
-    __slots__ = ()
-
-
-class FormatError(ValueError):
-    """A dump line that does not follow the spec."""
-
-
-def _blob(o, kind):
-    if "hex" in o:
-        raw = bytes.fromhex(o["hex"])
-        return Blob(kind, len(raw), hashlib.sha256(raw).hexdigest(), o["hex"])
-    return Blob(kind, o["len"], o["sha256"])
-
-
-def _unpack(o, fmt, size, cls):
-    raw = bytes.fromhex(o["v"])
-    if not raw or len(raw) % size:
-        raise FormatError(f"bad packed {o['t']} length {len(raw)}")
-    return [cls(x) for x in struct.unpack(f">{len(raw) // size}{fmt}", raw)]
-
-
-def decode(tv):
-    """Decode one tagged value into the comparison model."""
-    t = type(tv)
-    if t is list:
-        return [decode(v) for v in tv]
-    if t is not dict:
-        if t is float:
-            raise FormatError("untagged JSON float in a value")
-        return tv
-    tag = tv.get("t")
-    try:
-        if tag == "dict":
-            return Dict((decode_key(k), decode(v)) for k, v in tv["v"])
-        if tag == "f32":
-            return F32(int(tv["v"], 16))
-        if tag == "f64":
-            return F64(int(tv["v"], 16))
-        if tag == "f32s":
-            return _unpack(tv, "I", 4, F32)
-        if tag == "f64s":
-            return _unpack(tv, "Q", 8, F64)
-        if tag == "tuple":
-            return Tuple(decode(v) for v in tv["v"])
-        if tag in ("bytes", "str", "u8s"):
-            return _blob(tv, tag)
-    except (KeyError, TypeError, ValueError) as e:
-        raise FormatError(f"malformed {tag!r} value: {e}") from e
-    raise FormatError(f"unknown value tag {tag!r}")
-
-
-def decode_key(k):
-    if type(k) is str:
-        return k
-    return decode(k)
 
 
 # ------------------------------------------------------------ canonical form

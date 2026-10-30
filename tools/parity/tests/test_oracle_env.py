@@ -501,7 +501,7 @@ class RecordsFileTests(unittest.TestCase):
         self.assertEqual(list(content["records"]), sorted(content["records"]))
         for name, digest in C.oracle_records().items():
             self.assertRegex(digest, r"^[0-9a-f]{64}$", name)
-        # UnityPy's record includes UnityPyBoost, whose hash canonical.py also pins.
+        # UnityPy's record includes UnityPyBoost, whose hash oracle_stack.py also pins.
         self.assertEqual(content["records"]["unitypy"]["files"], 95)
 
 
