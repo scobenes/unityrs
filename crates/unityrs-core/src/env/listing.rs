@@ -118,11 +118,11 @@ impl Iterator for FileEntries<'_> {
     }
 }
 
-/// One `files` entry, with the charge for a resolver load's key and share
-/// of the list and its index.
+/// One `files` entry, with the charge for its share of the list and the
+/// indexes.
 struct Listed {
     entry: FileEntry,
-    _charge: Option<Charge>,
+    _charge: Charge,
 }
 
 /// `env.files`: a dict, as a list in insertion order and an index by key,
@@ -136,9 +136,9 @@ pub(super) struct Files {
     lowered: HashMap<RawStr, usize>,
 }
 
-/// What one listed resolver load costs the `files` tables: three elements
-/// of the list and [`HASH_TABLE_SHARES`] buckets of each index (as a
-/// registry slot's share, [`registry`]).
+/// What one listed load costs the `files` tables: three elements of the
+/// list and [`HASH_TABLE_SHARES`] buckets of each index (as a registry
+/// slot's share, [`registry`]).
 ///
 /// [`registry`]: super::registry
 const LISTED_SHARE: u64 = 3 * size_of::<Listed>() as u64
@@ -163,26 +163,24 @@ impl Environment {
         self.files_read().list.get(i).map(|l| l.entry.clone())
     }
 
-    /// Adds `file` to `files` under `name` with dict semantics. A resolver
-    /// load's new key is charged to `meter` (its key's copy rides in the
-    /// key; this charges its share of the list and the index).
+    /// Adds `file` to `files` under `name` with dict semantics, charged to
+    /// `meter`, the loaded file's: a new key's share of the list and the
+    /// indexes, and its lowered copy for rule 4's lookup (a key copied from
+    /// a resolver's name carries its own charge). Every load is charged so,
+    /// a caller's included (review round 2: a caller's load charged
+    /// nothing, and its lowered key was built on an unlimited meter).
     pub(super) fn list(
         &self,
         name: RawStr,
         file: File,
         is_dependency: bool,
-        meter: Option<&Arc<Meter>>,
+        meter: &Arc<Meter>,
     ) -> Result<(), Error> {
-        let charge = meter.map(|m| m.charge(LISTED_SHARE)).transpose()?;
-        // A new key's lowered form, for rule 4's lookup: charged to the
-        // resolver load's meter, a caller's own name as the caller's.
+        let charge = meter.charge(LISTED_SHARE)?;
         let lowered = if self.files_read().index.contains_key(name.as_bytes()) {
             None
         } else {
-            Some(match meter {
-                Some(m) => py_lower(&name, m)?,
-                None => py_lower(&name, &Meter::unlimited())?,
-            })
+            Some(py_lower(&name, meter)?)
         };
         let replaced = {
             let mut files = self.files_write();
@@ -213,12 +211,12 @@ impl Environment {
 
     /// `files`, in insertion order: one entry per caller load, and with
     /// [`EnvOptions::keep_resolver_loads`] one per file the resolver loaded
-    /// (module docs), a repeated key replacing the value in place. A
-    /// resolver load's entry is charged to that file's meter (its key and its
-    /// share of the list, as a registry slot's are, [`registry`]), since the
-    /// input chooses how many there are. An iterator, as the other listings
-    /// are (module docs): it takes the lock briefly per entry and allocates
-    /// nothing but the entry it yields.
+    /// (module docs), a repeated key replacing the value in place. Each
+    /// entry is charged to its file's meter (its share of the list and the
+    /// indexes, its lowered key, and a resolver load's key copy, as a
+    /// registry slot's are, [`registry`]). An iterator, as the other
+    /// listings are (module docs): it takes the lock briefly per entry and
+    /// allocates nothing but the entry it yields.
     ///
     /// [`EnvOptions::keep_resolver_loads`]: super::EnvOptions::keep_resolver_loads
     /// [`registry`]: super::registry

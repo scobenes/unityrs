@@ -26,6 +26,11 @@ use crate::limits::{Charge, HASH_TABLE_SHARES};
 /// re-read until then, so the sum can lag a use behind; the pool's own
 /// refusal (an eviction and one retry, plan section 3.13) is what bounds the
 /// memory, and the LRU only orders what goes first.
+///
+/// An eviction allocates nothing: it takes one entry out per lock and drops
+/// it after the lock, so no list of the entries it evicts is built, however
+/// many there are (review round 2: an eviction collected them, and a pool
+/// refusal every key, in vectors no meter paid for).
 #[derive(Debug)]
 pub(crate) struct DepCache {
     bound: u64,
@@ -38,6 +43,36 @@ pub(crate) struct DepCache {
     /// Entries visited, for the tests that count the LRU's work.
     #[cfg(test)]
     steps: AtomicU64,
+    /// Where a test stops a thread ([`Hook`]).
+    #[cfg(test)]
+    pub(crate) hook: Mutex<Option<HookFn>>,
+}
+
+/// A point at which a test may stop a thread, to run two threads through
+/// the LRU's decisions in an order of its choosing.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Hook {
+    /// A slot's handle on its dependency was counted out, before the LRU
+    /// is told whether it was the last.
+    SlotReleased,
+    /// A dependency load registered its CABs, before it touches the LRU.
+    LoadRegistered,
+    /// A dependency load touched the LRU and asked whether a slot reaches
+    /// the dependency, before it returns.
+    LoadChecked,
+}
+
+/// A test's hook ([`Hook`]).
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct HookFn(pub(crate) Arc<dyn Fn(Hook) + Send + Sync>);
+
+#[cfg(test)]
+impl std::fmt::Debug for HookFn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HookFn")
+    }
 }
 
 /// One cached dependency.
@@ -135,13 +170,30 @@ impl DepCache {
             evicted: AtomicU64::new(0),
             #[cfg(test)]
             steps: AtomicU64::new(0),
+            #[cfg(test)]
+            hook: Mutex::new(None),
         }
+    }
+
+    /// How many dependencies the LRU holds.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        lock(&self.lru).nodes.len()
     }
 
     #[cfg_attr(not(test), allow(clippy::unused_self))]
     fn step(&self) {
         #[cfg(test)]
         self.steps.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Runs the test's hook at `at`, with no lock held.
+    #[cfg(test)]
+    pub(crate) fn hook(&self, at: Hook) {
+        let hook = lock(&self.hook).clone();
+        if let Some(HookFn(f)) = hook {
+            f(at);
+        }
     }
 
     /// Marks `dep` (open as `file`) the most recently used, then evicts the
@@ -157,7 +209,7 @@ impl DepCache {
         } else {
             Some(file.meter().charge(LRU_SHARE)?)
         };
-        let dropped = {
+        {
             let mut lru = lock(&self.lru);
             self.step();
             // Out of the list if it is in it; in the map if it is new (a
@@ -176,9 +228,8 @@ impl DepCache {
             }
             lru.push_back(k);
             lru.reread(k);
-            self.evict_over(&mut lru, k)
-        };
-        self.count_evictions(dropped);
+        }
+        self.evict_over(k);
         Ok(())
     }
 
@@ -187,56 +238,65 @@ impl DepCache {
     /// nothing for a dependency the LRU does not hold.
     pub(crate) fn refresh(&self, dep: &Arc<Dependency>) {
         let k = lru_key(dep);
-        let dropped = {
+        {
             let mut lru = lock(&self.lru);
             if !lru.nodes.contains_key(&k) {
                 return;
             }
             self.step();
             lru.reread(k);
-            self.evict_over(&mut lru, k)
-        };
-        self.count_evictions(dropped);
+        }
+        self.evict_over(k);
     }
 
     /// Evicts from the least recently used end, never `keep`, while the sum
-    /// passes the bound; each candidate's meter is re-read first.
-    fn evict_over(&self, lru: &mut Lru, keep: usize) -> Vec<LruNode> {
-        let mut dropped = Vec::new();
-        while lru.total > self.bound && lru.nodes.len() > 1 {
-            let Some(h) = lru.head.filter(|&h| h != keep) else {
-                break;
+    /// passes the bound; each candidate's meter is re-read first. One entry
+    /// per lock, dropped after it (type docs).
+    fn evict_over(&self, keep: usize) {
+        loop {
+            let node = {
+                let mut lru = lock(&self.lru);
+                if lru.total <= self.bound || lru.nodes.len() <= 1 {
+                    return;
+                }
+                let Some(h) = lru.head.filter(|&h| h != keep) else {
+                    return;
+                };
+                self.step();
+                lru.reread(h);
+                if lru.total <= self.bound {
+                    return;
+                }
+                lru.remove(h)
             };
-            self.step();
-            lru.reread(h);
-            if lru.total <= self.bound {
-                break;
-            }
-            dropped.extend(lru.remove(h));
+            self.evicted(node);
         }
-        dropped
     }
 
     /// Drops the LRU's handle on every dependency but `keep` (a pool
-    /// refusal's one retry, plan section 3.13).
+    /// refusal's one retry, plan section 3.13): at most as many as it held
+    /// when called, least recently used first, one per lock (type docs).
     pub(crate) fn evict_others(&self, keep: Option<&Arc<Dependency>>) {
         if !self.evicts {
             return;
         }
-        let dropped = {
-            let mut lru = lock(&self.lru);
-            let keep = keep.map(lru_key);
-            let all: Vec<usize> = lru.nodes.keys().copied().collect();
-            let mut dropped = Vec::new();
-            for k in all {
-                if Some(k) != keep {
-                    self.step();
-                    dropped.extend(lru.remove(k));
-                }
-            }
-            dropped
-        };
-        self.count_evictions(dropped);
+        let keep = keep.map(lru_key);
+        let held = lock(&self.lru).nodes.len();
+        for _ in 0..held {
+            let node = {
+                let mut lru = lock(&self.lru);
+                let Some(k) = lru.head.filter(|&h| Some(h) != keep).or_else(|| {
+                    lru.head
+                        .and_then(|h| lru.nodes.get(&h))
+                        .and_then(|n| n.next)
+                }) else {
+                    return;
+                };
+                self.step();
+                lru.remove(k)
+            };
+            self.evicted(node);
+        }
     }
 
     /// Drops the LRU's handle on `dep`, which nothing can reach any more
@@ -246,10 +306,12 @@ impl DepCache {
         drop(gone);
     }
 
-    fn count_evictions(&self, dropped: Vec<LruNode>) {
-        let n = u64::try_from(dropped.len()).unwrap_or(u64::MAX);
-        self.evicted.fetch_add(n, Ordering::Relaxed);
-        drop(dropped);
+    /// Counts an entry an eviction took out, and drops it (with no lock held).
+    fn evicted(&self, node: Option<LruNode>) {
+        if node.is_some() {
+            self.evicted.fetch_add(1, Ordering::Relaxed);
+        }
+        drop(node);
     }
 
     /// The bytes the cached dependencies' meters hold now (a report: every

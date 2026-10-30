@@ -15,9 +15,9 @@
 //! decoded with `surrogateescape`: every valid UTF-8 sequence is one
 //! character, and every byte of an invalid sequence is a lone surrogate
 //! (U+DC80-U+DCFF), which `lower()` keeps and the encoder turns back into
-//! the byte. Python's decoder and [`str::Utf8Chunks`] split a byte string
+//! the byte. Python's decoder and [`std::str::Utf8Chunks`] split a byte string
 //! into the same valid runs (both reject surrogates, overlong forms and code
-//! points past U+10FFFF), so a run of [`str::Utf8Chunks`] is lowered as a
+//! points past U+10FFFF), so a run of [`std::str::Utf8Chunks`] is lowered as a
 //! `str` and its invalid bytes are copied.
 //!
 //! **Final sigma.** `str.lower()` maps U+03A3 to U+03C2 in the

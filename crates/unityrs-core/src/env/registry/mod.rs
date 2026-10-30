@@ -45,7 +45,11 @@
 //! and the slice of the outer's decoded run it is made from, alive past the
 //! eviction. When the last slot of a dependency goes (every key it
 //! registered was registered again by another file), nothing can reach it
-//! any more and the LRU drops it.
+//! any more and the LRU drops it. Its slots are counted on it
+//! (`DepSlot`), so of two dropped at once exactly one is the last, and a
+//! load whose every key was replaced before it reached the LRU lets go of
+//! it itself (review round 2: a test of the `Arc` count saw both slots'
+//! handles, and neither let go).
 //!
 //! **Cells.** A slot's parse is published with
 //! [`crate::once::get_or_publish_result`]: a budget or meter refusal is
@@ -83,8 +87,10 @@ use std::ops::Bound;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
-pub(crate) use dependency::{Dependency, WeakFile, open_source};
+pub(crate) use dependency::{DepSlot, Dependency, WeakFile, open_source};
 pub(crate) use lru::DepCache;
+#[cfg(test)]
+pub(crate) use lru::{Hook, HookFn};
 
 use crate::budget::Reservation;
 use crate::error::Error;
@@ -180,19 +186,6 @@ pub(crate) struct Slot {
     _charge: Charge,
 }
 
-impl Drop for Slot {
-    /// A dependency whose last slot this was can no longer be reached: the
-    /// LRU's entry is then its only other holder (module docs).
-    fn drop(&mut self) {
-        if let SlotKind::Dependency { dep } = &self.kind
-            && Arc::strong_count(dep) == 2
-            && let Some(cache) = dep.cache.upgrade()
-        {
-            cache.forget(dep);
-        }
-    }
-}
-
 /// What a slot reaches.
 #[derive(Debug)]
 pub(crate) enum SlotKind {
@@ -209,10 +202,12 @@ pub(crate) enum SlotKind {
     },
     /// A dependency's CAB, reached from the LRU's handle on its top-level
     /// file along the slot's rank's path, and reopened from its source after
-    /// an eviction. Holds no strong handle.
+    /// an eviction. Holds no strong handle on the file; its handle on the
+    /// dependency is counted, so the LRU lets go of a dependency no slot
+    /// reaches ([`DepSlot`]).
     Dependency {
         /// The dependency.
-        dep: Arc<Dependency>,
+        dep: DepSlot,
     },
 }
 
@@ -381,7 +376,9 @@ impl Registry {
         path: &[usize],
         meter: &Arc<Meter>,
     ) -> Result<(), Error> {
-        let kind = SlotKind::Dependency { dep: dep.clone() };
+        let kind = SlotKind::Dependency {
+            dep: DepSlot::new(dep),
+        };
         self.insert(name, kind, load, path, meter, By::Load)
     }
 
@@ -700,7 +697,9 @@ impl Registry {
         for (j, d) in nested.directory().iter().enumerate() {
             path.push(j);
             let kind = match dep {
-                Some(dep) => SlotKind::Dependency { dep: dep.clone() },
+                Some(dep) => SlotKind::Dependency {
+                    dep: DepSlot::new(dep),
+                },
                 None => SlotKind::Entry {
                     bundle: nested.clone(),
                     dir_index: j,
@@ -754,3 +753,6 @@ impl Iterator for Keys<'_> {
         Some(key)
     }
 }
+
+#[cfg(test)]
+mod tests;
