@@ -261,6 +261,15 @@ fn g7_the_synthetic_tpks_give_unitypys_outcomes() {
         }
         if let Some(python) = case["load"].as_str() {
             common::assert_load_is_unitypys(name, Some(python), &provider);
+            // `NotTypeTrees` stands for UnityPy's raise on a blob of data
+            // type 1-5 only (the header's byte 6).
+            if matches!(provider, Err(TpkError::NotTypeTrees)) {
+                let data_type = hex(case["tpk"].as_str().unwrap())[6];
+                assert!(
+                    (1..=5).contains(&data_type),
+                    "{name}: data type {data_type}"
+                );
+            }
             continue;
         }
         let provider =
@@ -312,6 +321,45 @@ fn g7_compares_every_node_list_unitypy_recorded() {
         "the node lists of classes 11, 21, 30, 31, 40, 41, 45"
     );
     compare(&provider, &case, classes.iter(), &case);
+}
+
+/// Round 5: the header's checks, each a case UnityPy refuses (every data
+/// type, compression and version byte it refuses, the data types it builds
+/// another blob for, one of those over a block liblz4 refuses, a bad magic,
+/// a file or a properties header cut short), and the reads that run out at
+/// a byte or past a table's bound. None had a case before, and a port that
+/// skipped the magic, version or data-type check passed G7.
+#[test]
+fn g7_the_synthetic_set_covers_the_headers_checks() {
+    for name in [
+        "data_type_1",
+        "data_type_2",
+        "data_type_3",
+        "data_type_4",
+        "data_type_5",
+        "data_type_6",
+        "data_type_127",
+        "data_type_128",
+        "data_type_255",
+        "data_type_4_lz4_refused",
+        "compression_4",
+        "compression_127",
+        "compression_128",
+        "compression_255",
+        "version_0",
+        "version_2",
+        "version_255",
+        "bad_magic",
+        "header_19_bytes",
+        "empty_file",
+        "lzma_properties_4_bytes",
+        "cut_at_presence_byte",
+        "cut_at_common_count_byte",
+        "class_entries_past_the_bound_cut_at_presence_byte",
+        "strings_past_the_bound_not_utf8",
+    ] {
+        assert!(case(name)["load"].is_string(), "{name}: UnityPy loaded it");
+    }
 }
 
 /// The cases G7's synthetic set exists for are in it: each root flag
