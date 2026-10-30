@@ -32,7 +32,7 @@ pub enum RawCab {
 /// eviction drops only the LRU's handle, so while this one is held the CAB's
 /// bundle, and with it the pointers that need its siblings, stay
 /// reachable); `None` for a CAB of a file the caller loaded, which is never
-/// evicted. What [`super::Environment::get_cab_held`] returns.
+/// evicted. What [`crate::env::Environment::get_cab_held`] returns.
 #[derive(Clone, Debug)]
 pub struct HeldCab {
     /// The CAB.

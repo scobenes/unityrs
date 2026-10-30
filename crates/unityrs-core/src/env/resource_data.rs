@@ -48,9 +48,10 @@ impl Environment {
     /// is never parsed, so neither the resolution nor the read decodes
     /// anything through the shared handle or charges its pool (plan section
     /// 3.13): the slot's open handle is `from`'s bundle itself, or the slot
-    /// is a [`Source::Bytes`] whose `Bytes` are `from`'s bundle's source (the
+    /// is a [`Source::Bytes`](super::Source::Bytes) whose `Bytes` are `from`'s bundle's source (the
     /// same allocation and range) at the entry's directory index. A slot whose
-    /// source is a [`Source::Path`] or [`Source::Fetch`] and whose handle is
+    /// source is a [`Source::Path`](super::Source::Path) or
+    /// [`Source::Fetch`](super::Source::Fetch) and whose handle is
     /// not open (evicted) cannot be compared without opening it again, so it
     /// resolves by UnityPy's rule, through the slot. Which of the two a batch
     /// engine's inputs get is its design (`docs/plans/batch.md`).

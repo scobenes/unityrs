@@ -735,7 +735,7 @@ impl Registry {
 
     /// Keys in dict order, as an iterator that takes the read lock briefly
     /// per key (no snapshot of the registry), after the dropped lazy slots
-    /// are reached ([`Self::settle`]).
+    /// are reached (`settle`, module docs).
     #[must_use]
     pub fn keys(&self) -> Keys<'_> {
         // A refusal leaves it for the next call (`settle`).
