@@ -189,6 +189,27 @@ fn min_sizes_bound_a_successful_read() {
         (2, "int", "x", 0),
     ]);
     assert_eq!(r.info(NodeId(0)).unwrap().min_size, 8);
+    // A malformed `pair` or `Array` takes what the pure-Python reader reads
+    // of it, which UnityPyBoost never reads (review round 4: both had 0).
+    let bad = compile(&[
+        (0, "Base", "Base", 0),
+        (1, "pair", "p", 0), // its first two children: 1 + 2
+        (2, "UInt8", "a", 0),
+        (2, "SInt16", "b", 0),
+        (2, "SInt64", "c", 0),
+        (1, "vector", "v", 0), // a length
+        (2, "Array", "Array", 0),
+        (3, "int", "size", 0),
+        (3, "double", "data", 0),
+        (3, "double", "extra", 0),
+        (1, "Foo", "f", 0), // its registry may be skipped
+        (2, "ManagedReferencesRegistry", "r", 0),
+        (3, "int", "x", 0),
+    ]);
+    let min = |i: u32| bad.info(NodeId(i)).unwrap().min_size;
+    assert_eq!(bad.info(NodeId(1)).unwrap().shape, Shape::BadPair);
+    assert_eq!(bad.info(NodeId(5)).unwrap().shape, Shape::BadVector);
+    assert_eq!((min(1), min(5), min(10), min(0)), (3, 4, 0, 7));
 }
 
 #[test]
