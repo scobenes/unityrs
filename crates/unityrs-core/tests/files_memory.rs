@@ -222,8 +222,9 @@ impl BlockDecryptor for Xor {
     }
 }
 
-/// A bundle of one LZ4 block of noise flagged `0x100` (encrypted), each
-/// stored byte exclusive-or `0x5A`, for a context with [`Xor`].
+/// An encrypted bundle (its header's flag set) of one LZ4 block of noise
+/// flagged `0x100`, each stored byte exclusive-or `0x5A`, for a context with
+/// [`Xor`].
 fn flagged_bundle() -> Vec<u8> {
     let mut rng = Rng::new(11);
     let entry: Vec<u8> = (0..200_000)
@@ -238,10 +239,13 @@ fn flagged_bundle() -> Vec<u8> {
             data: entry,
             flags: 0,
         }],
+        encrypted: true,
         ..BundleSpec::default()
     });
     let nul = |from: usize| from + data[from..].iter().position(|c| *c == 0).unwrap() + 1;
-    let row = (nul(nul(12)) + 20).next_multiple_of(16) + 20;
+    // After the header and the decryptor's 70 bytes, aligned: the hash and
+    // the count.
+    let row = (nul(nul(12)) + 20 + 70).next_multiple_of(16) + 20;
     let stored = usize::try_from(u32::from_be_bytes(
         data[row + 4..row + 8].try_into().unwrap(),
     ))

@@ -8,7 +8,9 @@ Runs in the oracle image. Two parts:
   with both roots; a class for every flag byte; versions whose type byte is 0-6 and 255;
   a node's fields at their extremes; a 300-deep chain; entries out of order, removed
   classes, a class listed twice; ids past their tables; counts read as UnityPy reads
-  them; string lengths; header sizes; common strings numbered by code points; LZ4 and LZMA
+  them; string lengths; header sizes and checks (magic, version, compression and data
+  type, a file or a properties header cut short, reads that run out at a byte); common
+  strings numbered by code points; LZ4 and LZMA
   payloads, with the blocks and streams on which liblz4 and liblzma decide differently
   from other decoders), run through `Tpk.py` (`TpkFile(...).GetDataBlob()`, then
   `get_typetree_node` per class and version, and `get_common_strings()`, with the blob
@@ -379,6 +381,7 @@ def synthetic_cases() -> Iterator[tuple[str, bytes, int]]:
     yield "lz4", tpk_file(root_flags_blob(), LZ4), 256
     yield "lzma", tpk_file(root_flags_blob(), LZMA), 256
     yield from codec_cases()
+    yield from header_cases()
 
 
 def codec_cases() -> Iterator[tuple[str, bytes, int]]:
@@ -423,6 +426,58 @@ def codec_cases() -> Iterator[tuple[str, bytes, int]]:
     yield "lzma_cut_short", tpk_file(payload, LZMA, data=stream[:-8]), 256
     bad_props = bytes([225]) + stream[1:]
     yield "lzma_bad_properties", tpk_file(payload, LZMA, data=bad_props), 256
+
+
+def header_cases() -> Iterator[tuple[str, bytes, int]]:
+    """The header's checks (`Tpk.py:155-171`) and the reads that run out where a
+    struct read does not raise `error`: each case one UnityPy refuses."""
+    payload = root_flags_blob()
+    stored = tpk_file(payload)
+
+    def with_byte(at: int, value: int, data: bytes = stored) -> bytes:
+        return data[:at] + bytes([value]) + data[at + 1 :]
+
+    # The data type (byte 6): 1-5 are members whose blob is not a type-tree blob
+    # (`ToBlob`, then `init`'s assertion), the rest are not members (signed: 128 is
+    # -128, 255 is -1). The payload is decoded before the blob is chosen.
+    for data_type in (1, 2, 3, 4, 5, 6, 127, 128, 255):
+        yield f"data_type_{data_type}", with_byte(6, data_type), 256
+    # A block liblz4 refuses (codec_cases' last-literals match) under data type 4:
+    # the decode's error, not the data type's.
+    tail = payload + b"\0" * 8 + b"zz"
+    block = lz4_sequence(payload + b"\0", 1, 7) + lz4_sequence(b"zz")
+    yield "data_type_4_lz4_refused", with_byte(6, 4, tpk_file(tail, LZ4, data=block)), 256
+    # The compression type (byte 5), the version (byte 4) and the magic.
+    for compression in (4, 127, 128, 255):
+        yield f"compression_{compression}", with_byte(5, compression), 256
+    for version in (0, 2, 255):
+        yield f"version_{version}", with_byte(4, version), 256
+    yield "bad_magic", with_byte(0, ord("U")), 256
+    yield "header_19_bytes", stored[:19], 256
+    yield "empty_file", b"", 256
+    # An LZMA payload of 4 bytes: `decompress_lzma` unpacks 5 bytes of properties.
+    yield "lzma_properties_4_bytes", tpk_file(payload, LZMA, data=compress(payload, LZMA)[:4]), 256
+
+    # A payload that ends where `stream.read(1)[0]` reads: an entry's presence byte,
+    # a common-string version's count byte (`IndexError`).
+    at = ver(2020)
+    one = blob([at], [(1, [(at, both(0))])], [node(0, 1, [1]), node(2, 3, [])], strings(4))
+    presence = 8 + 4 + 8 + 4 + 4 + 4 + 8
+    assert one[presence] == 1
+    yield "cut_at_presence_byte", tpk_file(one[:presence]), 256
+    common = blob([at], [], [node(0, 1, [])], strings(2), [(at, 1)], [0])
+    count = 8 + 4 + 8 + 4 + 4 + 8
+    assert common[count] == 1
+    yield "cut_at_common_count_byte", tpk_file(common[:count]), 256
+    # Past a table's bound, where UnityPy runs out on another exception than `error`
+    # or `ValueError`: entries that end at a presence byte (`IndexError`), strings
+    # whose first is not UTF-8 (`UnicodeDecodeError`).
+    head = blob([at], [], [], [])[:20]
+    entries = struct.pack("<iiI", 1, 1, MAX_RECORDS + 1) + struct.pack("<QB", at, 0)
+    data = head + entries + struct.pack("<Q", at)
+    yield "class_entries_past_the_bound_cut_at_presence_byte", tpk_file(data), 256
+    data = blob([at], [], [node(0, 1, [])], ["x"], counts={"strings": MAX_RECORDS + 1})
+    yield "strings_past_the_bound_not_utf8", tpk_file(data[:-1] + b"\xff"), 256
 
 
 def refused_cases() -> Iterator[tuple[str, bytes, str]]:

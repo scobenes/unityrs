@@ -174,27 +174,44 @@ pub fn walk_error_is_unitypys(python: &str, e: &ProviderError) -> bool {
 /// exception maps to the errors the port gives where `Tpk.py` raises it; a
 /// table's bound ([`TpkError::TooLarge`]) refuses a count before the reads
 /// UnityPy runs out on, so it stands for the exception those reads raise.
-/// Every other pair is no match.
+/// Every other pair is no match. [`TpkError::NotTypeTrees`] stands for
+/// whatever a blob of data type 1-5 raises; G7 checks the data type itself
+/// (`tests/g7.rs`).
 #[must_use]
 pub fn load_error_is_unitypys(python: &str, e: &TpkError) -> bool {
     let table = matches!(e, TpkError::TooLarge { what, .. } if TABLES.contains(what));
     match (python, e) {
         // `struct.error`: a read past the payload, or a negative count read
         // as a struct format; `ValueError`: a string or a length read past
-        // the payload (a short LZMA payload among them);
-        // `UnicodeDecodeError`: a string's bytes run past the payload and
-        // decode short; `Exception`: `Tpk.py`'s own raise on the header (the
-        // magic, the version, the compressed size).
-        ("error" | "ValueError" | "UnicodeDecodeError" | "Exception", TpkError::Malformed(_)) => {
-            true
-        }
-        ("error" | "ValueError", TpkError::TooLarge { .. }) => table,
-        // python-lz4 and liblzma, by the class the port's message names.
+        // the payload (a short LZMA payload among them), or a compression or
+        // data type that is not a member; `UnicodeDecodeError`: a string's
+        // bytes run past the payload and decode short; `IndexError`: a byte
+        // read past the payload (`stream.read(1)[0]`: an entry's presence, a
+        // common-string version's count); `Exception`: `Tpk.py`'s own raise
+        // on the header (the magic, the version, the compressed size).
+        // And a data type of 1-5 (`TpkDataType.ToBlob`, `:113-124`): a
+        // collection blob's reads (`error`), a file system or JSON blob that
+        // `init`'s assertion refuses (`AssertionError`), and `ToBlob`'s own
+        // raise for the other two (`Exception`).
+        (
+            "error" | "ValueError" | "UnicodeDecodeError" | "IndexError" | "Exception",
+            TpkError::Malformed(_),
+        )
+        | ("error" | "AssertionError" | "Exception", TpkError::NotTypeTrees) => true,
+        (
+            "error" | "ValueError" | "UnicodeDecodeError" | "IndexError",
+            TpkError::TooLarge { .. },
+        ) => table,
+        // python-lz4 and liblzma, by the class the port's message names;
+        // `decompress_lzma`'s unpack of the properties (`struct.error`).
         ("LZ4BlockError" | "OverflowError", TpkError::Decompress { codec, detail }) => {
             *codec == "lz4" && detail.split(':').next() == Some(python)
         }
         ("LZMAError", TpkError::Decompress { codec, detail }) => {
             *codec == "lzma" && detail.split(':').next() == Some(python)
+        }
+        ("error", TpkError::Decompress { codec, detail }) => {
+            *codec == "lzma" && detail.starts_with("struct.error: ")
         }
         _ => false,
     }

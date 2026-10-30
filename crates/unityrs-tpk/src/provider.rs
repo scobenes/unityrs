@@ -95,7 +95,9 @@ impl TpkProvider {
     /// 2,097,152, which bounds what the provider builds on any one thread,
     /// kept or not, and so what it keeps, however many classes are asked
     /// for (threads that ask for a root at once each walk it, crate docs,
-    /// "Threads"). UnityPy
+    /// "Threads"); a walk the allocator refused is not kept, so each later
+    /// request for its root walks it again, each walk at most one row past
+    /// [`Self::MAX_TREE_ROWS`] (crate docs, "Memory"). UnityPy
     /// 1.25.2's own TPK has 414,033 over its 3,000 release roots
     /// (`tools/fixtures/tpk.py --survey`). What each root's walk builds is
     /// known at load, without walking it: its tree's rows, or, for a walk

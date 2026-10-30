@@ -30,7 +30,10 @@
 //! nothing (empty blocks), each member's header and trailer, and the zero
 //! padding after it, all of which each row naming the stream reads again
 //! (round 4's sweep: a stream of one tiny member and a gigabyte of padding
-//! counted a few bytes per row).
+//! counted a few bytes per row). A detection that fails counts what it read
+//! and inflated before the failure, and returns the stream's own error
+//! (round 5: a malformed deflate stream returned before its consumed input
+//! was counted, so every row read it again uncounted).
 //!
 //! Owner: package C.
 
@@ -250,6 +253,27 @@ fn count_work(meter: &Meter, bytes: u64) -> Result<(), DetectError> {
         .map_or(Ok(()), |l| Err(DetectError::Work(l)))
 }
 
+/// `got`, after the `bytes` read or inflated for it are counted as `open`'s
+/// work: a success as [`count_work`] counts it (refused once the allowance
+/// is passed), a failure unchecked, so it returns the stream's own error and
+/// the work after it is refused.
+fn counted<T>(
+    open: Option<&Meter>,
+    bytes: u64,
+    got: Result<T, DetectError>,
+) -> Result<T, DetectError> {
+    let Some(meter) = open else {
+        return got;
+    };
+    match got {
+        Ok(v) => count_work(meter, bytes).map(|()| v),
+        Err(e) => {
+            meter.add_work(bytes);
+            Err(e)
+        }
+    }
+}
+
 /// The stream inflated to `total`, past `max_inflate`.
 fn inflate_limit(total: u64, max_inflate: u64) -> DetectError {
     DetectError::InflateLimit(LimitError {
@@ -266,13 +290,21 @@ fn read_from(from: usize, to: usize) -> u64 {
 
 /// `_read_gzip_header` from the magic at `*pos`, which it moves past the
 /// header, every byte of which, the file name's and comment's searches
-/// included, is counted as `open`'s work when there is one.
+/// included, is counted as `open`'s work when there is one, whether the
+/// header reads or fails.
 fn member_header(data: &[u8], pos: &mut usize, open: Option<&Meter>) -> Result<(), DetectError> {
+    let member = *pos;
+    let got = read_member_header(data, pos);
+    counted(open, read_from(member, *pos), got)
+}
+
+/// [`member_header`]'s reads: `*pos` moves past each byte read, a failing
+/// read's excepted.
+fn read_member_header(data: &[u8], pos: &mut usize) -> Result<(), DetectError> {
     const FHCRC: u8 = 2;
     const FEXTRA: u8 = 4;
     const FNAME: u8 = 8;
     const FCOMMENT: u8 = 16;
-    let member = *pos;
     *pos += 2;
     let head = read_exact(data, pos, 8)?;
     let (method, flag) = (
@@ -300,14 +332,8 @@ fn member_header(data: &[u8], pos: &mut usize, open: Option<&Meter>) -> Result<(
                 .map_or(rest.len(), |i| i + 1);
         }
     }
-    if let Some(meter) = open {
-        count_work(meter, read_from(member, *pos))?;
-    }
     if flag & FHCRC != 0 {
         read_exact(data, pos, 2)?;
-        if let Some(meter) = open {
-            count_work(meter, 2)?;
-        }
     }
     Ok(())
 }
@@ -354,18 +380,18 @@ fn gzip_inflate(
                     &mut scratch,
                     FlushDecompress::None,
                 )
-                .map_err(|e| DetectError::Gzip(format!("zlib.error: {e}").into()))?;
+                .map_err(|e| DetectError::Gzip(format!("zlib.error: {e}").into()));
+            // What the call consumed and made counts whether it failed or
+            // not (both backends advance their totals before they fail),
+            // and before the stream's own bound is checked, so the chunk
+            // that passes `max_inflate` is the open's work too.
             let made = usize::try_from(z.total_out() - out_before).unwrap_or(0);
+            let consumed = z.total_in() - in_before;
+            let made_bytes = u64::try_from(made).unwrap_or(u64::MAX);
+            let status = counted(open, made_bytes.saturating_add(consumed), status)?;
             let out = scratch.get(..made).unwrap_or_default();
             crc.update(out);
-            let made = u64::try_from(made).unwrap_or(u64::MAX);
-            total = total.saturating_add(made);
-            // Counted before the stream's own bound is checked, so the
-            // chunk that passes `max_inflate` is the open's work too, with
-            // the input it consumed.
-            if let Some(meter) = open {
-                count_work(meter, made.saturating_add(z.total_in() - in_before))?;
-            }
+            total = total.saturating_add(made_bytes);
             if total > max_inflate {
                 return Err(inflate_limit(total, max_inflate));
             }
@@ -379,27 +405,31 @@ fn gzip_inflate(
         }
         pos = pos.saturating_add(usize::try_from(z.total_in()).unwrap_or(usize::MAX));
         let eof = pos;
-        // `_read_eof`: the CRC-32 and the size modulo 2^32, then zero bytes.
-        let trailer = read_exact(data, &mut pos, 8)?;
-        let word = |i: usize| {
-            trailer
-                .get(i..i + 4)
-                .and_then(|b| <[u8; 4]>::try_from(b).ok())
-                .map_or(0, u32::from_le_bytes)
-        };
-        if word(0) != crc.sum() {
-            return Err(gzip_error("BadGzipFile: CRC check failed"));
-        }
-        if word(4) != crc.amount() {
-            return Err(gzip_error("BadGzipFile: Incorrect length of data produced"));
-        }
-        while data.get(pos) == Some(&0) {
-            pos += 1;
-        }
-        if let Some(meter) = open {
-            count_work(meter, read_from(eof, pos))?;
-        }
+        let got = member_trailer(data, &mut pos, &crc);
+        counted(open, read_from(eof, pos), got)?;
     }
+}
+
+/// `_read_eof` from `*pos`: the CRC-32 and the size modulo 2^32, checked,
+/// then the zero bytes after them; `*pos` moves past each byte read.
+fn member_trailer(data: &[u8], pos: &mut usize, crc: &Crc) -> Result<(), DetectError> {
+    let trailer = read_exact(data, pos, 8)?;
+    let word = |i: usize| {
+        trailer
+            .get(i..i + 4)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map_or(0, u32::from_le_bytes)
+    };
+    if word(0) != crc.sum() {
+        return Err(gzip_error("BadGzipFile: CRC check failed"));
+    }
+    if word(4) != crc.amount() {
+        return Err(gzip_error("BadGzipFile: Incorrect length of data produced"));
+    }
+    while data.get(*pos) == Some(&0) {
+        *pos += 1;
+    }
+    Ok(())
 }
 
 /// What UnityPy builds from a detected file (`l0.parsed_as`).

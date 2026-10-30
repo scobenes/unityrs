@@ -74,8 +74,11 @@
 //! a parse that ends in an error the cell keeps, on its own thread, counts
 //! as the open's work too, so K such rows stop at the open's `DecodeWork`
 //! limit instead of costing K parses no limit sees (round 4;
-//! `tests/bundles/work.rs`). A failure the cell does not keep (the meter's
-//! or the budget's refusal) is [`crate::once`]'s to count.
+//! `tests/bundles/work.rs`). A parse that succeeds keeps its tables (each
+//! row pays for them), and what its AssetBundle read builds and drops is
+//! counted by the read (`files::serialized`, "Work"; round 5). A failure the
+//! cell does not keep (the meter's or the budget's refusal) is
+//! [`crate::once`]'s to count.
 //!
 //! Decodes and user codecs run with no
 //! lock held: a run is decoded first and then published into `runs`, and an
@@ -129,6 +132,8 @@ mod decode;
 mod index;
 mod open;
 mod runs;
+
+use decode::BlockContext;
 
 /// Which of UnityPy's two readers a bundle takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -241,7 +246,9 @@ pub struct BundleFile {
     /// heap ([`crate::version::UnityVersion::heap_bytes`]; its string is the
     /// header's own slice, never a copy).
     charge: Charge,
-    ctx: Arc<FileContext>,
+    /// The caller's context, and whether the header built a decryptor
+    /// (UnityPy's `self.decryptor`): what the blocks decode with.
+    ctx: BlockContext,
     /// Each block's stored bytes in `source`: the Python slice UnityPy read.
     stored: Box<[Range<usize>]>,
     /// This bundle, for its entries' [`ParentKind::Bundle`].
@@ -314,7 +321,7 @@ impl BundleFile {
     /// The context it was opened with.
     #[must_use]
     pub fn context(&self) -> &Arc<FileContext> {
-        &self.ctx
+        self.ctx.file()
     }
 
     /// The sum of the blocks' *declared* decoded sizes: what a full decode is
@@ -444,7 +451,14 @@ impl BundleFile {
         // docs, "Memory and work").
         let meter = self.meter();
         let scope = GrantScope::enter(meter);
-        let got = parse_file(e.path.clone(), bytes, ty, Some(parent), meter, &self.ctx);
+        let got = parse_file(
+            e.path.clone(),
+            bytes,
+            ty,
+            Some(parent),
+            meter,
+            self.ctx.file(),
+        );
         let granted = scope.finish(meter);
         if got.as_ref().is_err_and(|e| !e.is_transient()) {
             meter.add_work(granted);

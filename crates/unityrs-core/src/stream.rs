@@ -349,6 +349,13 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// The error [`Self::read_string_to_null`] raises at the position, for
+    /// a caller that searched the window itself and found no NUL with no
+    /// room left (`typetree::parse::string_to_null`).
+    pub(crate) fn string_to_null_error(&self) -> Error {
+        self.out_of_bounds("string to null", self.pos, 1)
+    }
+
     /// One byte for `unpack(fmt, read(1))` (`:93-97`): the position moves by
     /// 1 even when the slice is empty.
     fn one_byte(&mut self, what: &'static str) -> Result<u8, Error> {

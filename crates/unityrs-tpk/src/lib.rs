@@ -96,17 +96,23 @@
 //! [`unityrs_core::LimitKind::Count`] limit naming the total it would reach
 //! (a root whose walk fails counts the rows it may build before it fails).
 //! So the provider keeps no more than that bound of rows, however many
-//! classes an input asks for, and builds no more on any one thread; which
-//! roots it refuses depends on the TPK alone, never on the order of the
-//! requests. Each is a [`ProviderError`] whose `limit` names the bound.
+//! classes an input asks for, and builds no more on any one thread, save
+//! for walks the allocator refused ("Memory" below: such a walk is not kept,
+//! and each later request for its root walks it again, each walk at most
+//! one row past [`TpkProvider::MAX_TREE_ROWS`]); which roots it refuses
+//! depends on the TPK alone, never on the order of the requests. Each is a [`ProviderError`] whose `limit` names the bound.
 //! `PARITY.md` section 19.3 lists every one.
 //!
 //! **Threads.** The provider never waits (plan sections 3.16 and 4.1), so
 //! threads that ask for one release root before its first answer is
 //! published each walk it (and compile it, for a tree), and every one of
 //! them then gets the first answer published; the others are dropped with
-//! their charges. A thread walks a root at most once. So with T threads
-//! asking at once, the walks build at most T times
+//! their charges. A thread walks a root at most once, unless the allocator
+//! refused that walk or its compile: a refusal is not kept
+//! ([`unityrs_core::once`]'s transient rule), so each later request for the
+//! root walks it again, on any thread, each walk bounded at one row past
+//! [`TpkProvider::MAX_TREE_ROWS`] (round 5). So with T threads asking at
+//! once and no walk refused, the walks build at most T times
 //! [`TpkProvider::MAX_TOTAL_ROWS`] rows in all, and besides what is kept
 //! the provider holds at most one unpublished tree per asking thread, each
 //! at most one row past [`TpkProvider::MAX_TREE_ROWS`]

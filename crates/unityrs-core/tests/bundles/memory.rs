@@ -570,10 +570,14 @@ fn a_detection_refused_at_its_inflate_bound_still_draws_on_the_opens_work() {
 
 /// Round 4's sweep: a detection also reads what it does not inflate, and
 /// every row naming the stream reads it again: here one member of one byte
-/// followed by 1 MiB of zero padding, and a header whose file name runs to
-/// the end with no NUL. Every byte a detection reads counts as the open's
-/// work, so 64 rows stop at a 4 MiB allowance after a few; counted by what
-/// it inflated alone, every row read the stream.
+/// followed by 1 MiB of zero padding, a header whose file name runs to the
+/// end with no NUL, and (round 5) 1 MiB of empty stored deflate blocks,
+/// which inflate to nothing, ending the member or followed by a block of
+/// the reserved type, on which zlib fails after consuming them all. Every
+/// byte a detection reads counts as the open's work, a failing detection's
+/// too, so 64 rows stop at a 4 MiB allowance after a few; counted by what
+/// it inflated alone, or not counted when the stream fails, every row read
+/// the stream.
 #[test]
 fn a_detection_counts_the_stream_it_reads_not_only_what_it_inflates() {
     const ROWS: usize = 64;
@@ -584,7 +588,24 @@ fn a_detection_counts_the_stream_it_reads_not_only_what_it_inflates() {
     padded.resize(padded.len() + MIB, 0);
     let mut named = vec![0x1f, 0x8b, 8, 8, 0, 0, 0, 0, 0, 0xff];
     named.resize(named.len() + MIB, b'A');
-    for (stream, what) in [(padded, "padding"), (named, "file name")] {
+    // A member header with no flags, then stored blocks of no bytes
+    // (BFINAL 0, BTYPE 00, LEN 0, NLEN 0xFFFF).
+    let mut empty = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+    for _ in 0..MIB / 5 {
+        empty.extend_from_slice(&[0, 0, 0, 0xff, 0xff]);
+    }
+    let mut malformed = empty.clone();
+    // A final empty stored block and the trailer of no bytes (CRC-32 0,
+    // size 0); or BFINAL 1 with BTYPE 11, which zlib refuses.
+    empty.extend_from_slice(&[1, 0, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0]);
+    malformed.push(0x07);
+    let cases = [
+        (padded, "padding"),
+        (named, "file name"),
+        (empty, "empty stored blocks"),
+        (malformed, "a block of the reserved type"),
+    ];
+    for (stream, what) in cases {
         let data = rows_over_one_stream(&stream, ROWS);
         let ctx = ctx_with(|c| c.limits.max_decode_work = 4 << 20);
         let meter = meter_for(&ctx);
@@ -595,6 +616,18 @@ fn a_detection_counts_the_stream_it_reads_not_only_what_it_inflates() {
             .take_while(|r| !matches!(r, Err(Error::Limit(_))))
             .count();
         assert!((1..=5).contains(&read), "{what}: {read} rows read it");
+        if what == "a block of the reserved type" {
+            // Each row read the stream to zlib's own failure, which is the
+            // row's outcome, as UnityPy's.
+            for r in &got[..read] {
+                assert!(
+                    matches!(r, Err(Error::Entry { source, .. })
+                        if matches!(&**source, Error::Detect(DetectError::Gzip(m))
+                            if m.starts_with("zlib.error"))),
+                    "{what}: {r:?}"
+                );
+            }
+        }
         for r in &got[read..] {
             assert!(
                 matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork),

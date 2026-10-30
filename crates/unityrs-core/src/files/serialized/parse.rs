@@ -127,7 +127,8 @@ impl SerializedFile {
             charge,
             ctx: ctx.clone(),
         });
-        // :316-324: the first AssetBundle in dict order is read at load.
+        // :316-324: the first AssetBundle in dict order is read at load; a
+        // failure fails the parse, whose grants the bundle counts.
         if ctx.eager_asset_bundle
             && file
                 .object_order
@@ -135,7 +136,7 @@ impl SerializedFile {
                 .filter_map(|i| file.object_infos.get(usize::try_from(*i).ok()?))
                 .any(|o| o.class_id == ASSET_BUNDLE)
         {
-            file.container()?;
+            file.container_at_load()?;
         }
         Ok(file)
     }
