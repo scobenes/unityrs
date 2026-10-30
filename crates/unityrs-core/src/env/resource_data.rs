@@ -6,7 +6,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use super::registry::{Slot, SlotKind};
-use super::{Cab, Candidate, Environment, RawCab, Source, resource_candidates};
+use super::{Cab, Candidate, Environment, LoadMode, RawCab, Source, resource_candidates};
 use crate::error::{Error, NotFound};
 use crate::files::{BundleFile, File, ParentKind, SerializedFile};
 use crate::raw::RawStr;
@@ -135,7 +135,11 @@ impl Environment {
                         ));
                     }
                     File::Serialized(sf) => return Err(not_a_reader(sf.name())),
-                    File::Bundle(_) | File::Web(_) => continue,
+                    File::Bundle(nested) => {
+                        self.expand_own(&slot, &nested)?;
+                        continue;
+                    }
+                    File::Web(_) => continue,
                 }
             }
             if let Some(cab) = self.inner.registry.resolve(&slot)? {
@@ -143,6 +147,59 @@ impl Environment {
             }
         }
         Ok(None)
+    }
+}
+
+impl Environment {
+    /// What a `get` of a nested container's name does, for a container
+    /// reached through the asking file's own bundle instead (a resource
+    /// candidate, read so; a pointer to the file's sibling): under
+    /// [`LoadMode::Lazy`] the container's name is a key, and when `slot`,
+    /// the slot under it, is that very entry ([`own_entry`]), its entries
+    /// are registered as resolving the slot registers them (`PARITY.md`
+    /// section 19.3, difference (b)), from `nested`, the reader's handle on
+    /// the container, so nothing is reached through the slot's own handle
+    /// (plan section 3.13). Under `Eager` a nested container has no key,
+    /// its entries registered at load, and no slot is one.
+    ///
+    /// [`LoadMode::Lazy`]: super::LoadMode::Lazy
+    pub(super) fn expand_own(
+        &self,
+        slot: &Arc<Slot>,
+        nested: &Arc<BundleFile>,
+    ) -> Result<(), Error> {
+        let dep = match &slot.kind {
+            SlotKind::Entry { .. } => None,
+            SlotKind::Dependency { dep } => Some(&**dep),
+            SlotKind::Ready(_) => return Ok(()),
+        };
+        self.inner.registry.expand(slot, nested, dep)
+    }
+
+    /// [`Self::expand_own`] for `from`'s sibling at `dir_index` of its
+    /// bundle `bundle`, which a pointer reached by the bundle's names
+    /// (`classes/PPtr.py:75-78`): when the slot under its name is that
+    /// entry.
+    pub(super) fn expand_sibling(
+        &self,
+        from: &SerializedFile,
+        bundle: &BundleFile,
+        dir_index: usize,
+        nested: &Arc<BundleFile>,
+    ) -> Result<(), Error> {
+        if self.inner.options.load != LoadMode::Lazy {
+            return Ok(());
+        }
+        let Some(d) = bundle.directory().get(dir_index) else {
+            return Ok(());
+        };
+        let Some(slot) = self.inner.registry.slot(&d.path, from.meter())? else {
+            return Ok(());
+        };
+        if own_entry(from, &slot).is_some_and(|(_, i)| i == dir_index) {
+            self.expand_own(&slot, nested)?;
+        }
+        Ok(())
     }
 }
 

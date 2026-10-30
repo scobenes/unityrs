@@ -21,9 +21,10 @@ mod catalog;
 
 pub use catalog::{
     asset_bundle_modes, bad_cab, container_other_file, cross_bundle_pointer, deref_rules,
-    fallback_file_pointer, last_block_fails, loose_external_pointer, nested_after_cab,
-    nested_duplicates, preload_below_start, preload_loads_new_cab, preload_paths,
-    preload_raw_target, preload_skips, resolver_loads, scenes,
+    deref_sibling_nested, fallback_file_pointer, last_block_fails, loose_external_pointer,
+    nested_after_cab, nested_duplicates, preload_below_start, preload_loads_new_cab,
+    preload_nested_external, preload_paths, preload_raw_target, preload_skips, resolver_loads,
+    resource_in_own_nested, scenes,
 };
 
 use crate::blob::NodeSpec;

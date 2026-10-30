@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use unityrs_core::budget::Reservation;
-use unityrs_core::env::{DerefError, LoadMode, PPtr};
+use unityrs_core::env::{DerefError, LoadMode, PPtr, Source};
 use unityrs_core::files::{BundleFile, File};
 use unityrs_core::limits::Meter;
 use unityrs_core::{Bytes, FileContext, RawStr};
@@ -102,4 +102,63 @@ fn negative_file_ids_index_from_the_end() {
     ));
     assert_eq!(name_of(&deref(-1).unwrap()), "t1");
     assert!(matches!(deref(3), Err(DerefError::FileIdPastEnd { .. })));
+}
+
+/// A pointer to a nested bundle beside the asking CAB, then one to a CAB
+/// inside it (scene `deref_sibling_nested`, which `env_fixtures.rs` replays
+/// as UnityPy recorded it): the first reaches the nested bundle, which
+/// holds no object (`RawTarget`, UnityPy's `AttributeError`); the second
+/// finds `CAB-I`'s object 5, under both modes, whether the bundle is a
+/// caller's or a `Source::Bytes` dependency, read from the handle
+/// `load_dependency` returned or from a second handle over its bytes. Under
+/// `Lazy` the first dereference registers the nested bundle's entries, as
+/// a `get` of its name does (`PARITY.md` section 19.3, difference (b)), a
+/// dependency's as dependency slots.
+#[test]
+fn a_pointer_to_a_nested_sibling_registers_its_entries() {
+    let scene = unityrs_testkit::env::deref_sibling_nested();
+    let data = Bytes::from(scene.files[0].1.clone());
+    let to_inner = PPtr {
+        file_id: 1,
+        path_id: 5,
+    };
+    let to_cab_i = PPtr {
+        file_id: 2,
+        path_id: 5,
+    };
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let caller = env(mode);
+        let File::Bundle(own) = caller.load(file_of(&scene, 0)).unwrap() else {
+            panic!()
+        };
+        let dependency = env(mode);
+        let File::Bundle(returned) = dependency.load_dependency(file_of(&scene, 0)).unwrap() else {
+            panic!()
+        };
+        let second_env = env(mode);
+        let source = Source::Bytes {
+            name: RawStr::from("o.bundle"),
+            data: data.clone(),
+        };
+        second_env.load_dependency(source).unwrap();
+        let ctx = Arc::new(FileContext::unitypy());
+        let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
+        let second = BundleFile::open(RawStr::from("o.bundle"), data.clone(), None, &meter, &ctx);
+        let second = second.unwrap();
+        for (env, bundle) in [
+            (&caller, &own),
+            (&dependency, &returned),
+            (&second_env, &second),
+        ] {
+            let File::Serialized(cab_o) = bundle.entry(0).unwrap() else {
+                panic!()
+            };
+            assert!(matches!(
+                env.deref(&cab_o, to_inner),
+                Err(DerefError::RawTarget { .. })
+            ));
+            let found = env.deref(&cab_o, to_cab_i).unwrap();
+            assert_eq!(name_of(&found), "i5", "{mode:?}");
+        }
+    }
 }

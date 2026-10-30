@@ -169,9 +169,18 @@ impl Environment {
                             .find(|s| lower_eq(s.name.as_bytes(), clean.as_bytes()))
                             .map(|s| s.dir_index),
                     };
-                    hit.map(|i| bundle.entry(i))
-                        .transpose()?
-                        .map(|f| (f, Reached::Sibling))
+                    match hit {
+                        Some(i) => {
+                            let f = bundle.entry(i)?;
+                            // Named as a sibling, a nested container is
+                            // expanded as a `get` of its name would.
+                            if let File::Bundle(nested) = &f {
+                                self.expand_sibling(from, &bundle, i, nested)?;
+                            }
+                            Some((f, Reached::Sibling))
+                        }
+                        None => None,
+                    }
                 }
                 ParentKind::Web => None,
             },

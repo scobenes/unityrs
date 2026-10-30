@@ -105,6 +105,47 @@ fn a_resource_through_the_dependency_handle_parses_no_slot_for_every_source() {
     }
 }
 
+/// A resource in a nested bundle of the reader's own bundle, its name a
+/// candidate, under both modes, whether the bundle is the caller's (the
+/// `File::Bundle` `load` returned) or a `Source::Bytes` dependency read on
+/// a second handle over its bytes: the `.resS` the nested bundle holds is
+/// read, as UnityPy reads it (scene `resource_in_own_nested`, replayed in
+/// `env_fixtures.rs`). Under `Lazy` the own bundle's read of the candidate
+/// that names the nested bundle registers its entries, a dependency's as
+/// dependency slots (review round 3: it skipped them, and the read failed
+/// with `NotFound`).
+#[test]
+fn a_resource_in_a_nested_bundle_of_the_readers_own_bundle_is_read() {
+    let scene = unityrs_testkit::env::resource_in_own_nested();
+    let data = Bytes::from(scene.files[0].1.clone());
+    let want = &res_bytes(8, 40)[..4];
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let caller = env(mode);
+        let File::Bundle(own) = caller.load(file_of(&scene, 0)).unwrap() else {
+            panic!()
+        };
+        let mut options = EnvOptions::batch(Arc::new(FileContext::unitypy()));
+        options.load = mode;
+        let dependency = Environment::new(options);
+        let source = Source::Bytes {
+            name: RawStr::from("o.bundle"),
+            data: data.clone(),
+        };
+        dependency.load_dependency(source).unwrap();
+        let ctx = Arc::new(FileContext::unitypy());
+        let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
+        let second = BundleFile::open(RawStr::from("o.bundle"), data.clone(), None, &meter, &ctx);
+        for (env, bundle) in [(&caller, own), (&dependency, second.unwrap())] {
+            let File::Serialized(cab) = bundle.entry(0).unwrap() else {
+                panic!()
+            };
+            let (path, offset, size) = stream(&object(&cab, 1));
+            let got = env.resource(&cab, &path, offset, size).unwrap();
+            assert_eq!(got.as_ref(), want, "{mode:?}");
+        }
+    }
+}
+
 /// An evicted `Source::Path` dependency's resource resolves through its
 /// slot, which opens the path again: the same bytes.
 #[test]

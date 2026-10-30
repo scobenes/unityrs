@@ -249,6 +249,11 @@ pub struct Registry {
     /// Bumped by every load's registration that changes the dict: UnityPy's
     /// `register_cab` clears `_container_index_built` (`environment.py:264`).
     generation: AtomicU64,
+    /// Bumped by every registration that changes the dict, a nested
+    /// container's expansion included, and by every change to the
+    /// Environment's `files` ([`Self::changed`]): an answer a lookup gave
+    /// stands while this does not move.
+    changes: AtomicU64,
     /// The generation the last finished container pass started at (0: none).
     built: AtomicU64,
     /// Entries parsed through slots, for `EnvStats`.
@@ -261,6 +266,7 @@ impl Default for Registry {
             inner: RwLock::default(),
             loads: AtomicU64::new(0),
             generation: AtomicU64::new(1),
+            changes: AtomicU64::new(0),
             built: AtomicU64::new(0),
             parsed: AtomicU64::new(0),
         }
@@ -477,6 +483,9 @@ impl Registry {
                 });
             }
         };
+        if changed {
+            self.changed();
+        }
         // An expansion registers what an eager load registered at load,
         // before any container pass: only a load's change starts a new one.
         if changed && by == By::Load {
@@ -536,6 +545,16 @@ impl Registry {
     /// The generation now (bumped by every change to the dict).
     pub(crate) fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
+    }
+
+    /// How many times the dict or `files` changed so far ([`Self::changed`]).
+    pub(crate) fn changes(&self) -> u64 {
+        self.changes.load(Ordering::Acquire)
+    }
+
+    /// Counts a change to the dict or to the Environment's `files`.
+    pub(crate) fn changed(&self) {
+        self.changes.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Whether a container pass that started at `generation` has finished.
@@ -681,8 +700,10 @@ impl Registry {
     /// Registers a nested container's entries from its slot, at the ranks
     /// below the slot's, unless they all already are (module docs: every
     /// caller that finds them not yet all registered registers them, and the
-    /// second registration of an entry changes nothing).
-    fn expand(
+    /// second registration of an entry changes nothing). `nested` is the
+    /// slot's file, or a reader's handle on the same entry of its own bundle
+    /// (`super::resource_data`'s `expand_own`).
+    pub(crate) fn expand(
         &self,
         slot: &Arc<Slot>,
         nested: &Arc<BundleFile>,
