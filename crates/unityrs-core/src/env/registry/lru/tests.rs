@@ -21,7 +21,6 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use std::thread::ThreadId;
-use std::time::Duration;
 
 use super::{DepCache, Hook, HookFn, LRU_SHARE, Lru, LruNode, lock, lru_key};
 use crate::budget::Reservation;
@@ -33,11 +32,12 @@ use crate::options::FileContext;
 use crate::raw::RawStr;
 use bytes::Bytes;
 use unityrs_testkit::env::{Obj, bundle, res_bytes, serialized};
+use unityrs_testkit::guard;
 use unityrs_testkit::rng::Rng;
 
-/// How long a test waits for a thread it stopped or let go: a deadlock
-/// guard, never a timing (every wait ends as soon as the thread gets there).
-const GUARD: Duration = Duration::from_secs(60);
+// Every wait for a thread the test stopped or let go goes through
+// `unityrs_testkit::guard`: a deadlock guard, never a timing (every wait
+// ends as soon as the thread gets there).
 
 /// A dependency bundle: `cab`, holding one object, and with `pad` bytes
 /// `cab.resS`.
@@ -213,9 +213,7 @@ impl Held {
 
     /// What the armed thread did first: stopped, or finished.
     fn next(&self) -> Event {
-        self.events
-            .recv_timeout(GUARD)
-            .expect("the armed thread stops or finishes (a deadlock guard, not a timing)")
+        guard::recv(&self.events, "the armed thread to stop or finish")
     }
 
     fn release(&self) {
@@ -246,7 +244,7 @@ impl Gate {
         };
         if stop {
             let _ = lock(&self.events).send(Event::Stopped);
-            let _ = lock(&self.go).recv_timeout(GUARD);
+            guard::hold(&lock(&self.go), "the test to let the stopped thread go");
         }
     }
 }
@@ -376,9 +374,7 @@ fn a_use_stopped_while_its_key_is_evicted_lists_no_key_without_an_entry() {
             let _ = tx.send(found);
         })
     };
-    let found = rx
-        .recv_timeout(GUARD)
-        .expect("a get of B returns (a deadlock guard: round 3's eviction spun here)");
+    let found = guard::recv(&rx, "a get of B to return (round 3's eviction spun here)");
     assert!(found);
     get.join().unwrap();
     env.inner.cache.check();
@@ -444,8 +440,7 @@ fn an_eviction_ends_on_a_corrupt_state() {
             cache.evict_others(None);
             let _ = tx.send(());
         });
-        rx.recv_timeout(GUARD)
-            .expect("an eviction ends (a deadlock guard: round 3's eviction spun here)");
+        guard::wait(&rx, "an eviction to end (round 3's eviction spun here)");
         evict.join().unwrap();
         *lock(&rig.cache.lru) = Lru::default();
     }
@@ -486,14 +481,10 @@ fn random_operations_on_many_threads_keep_the_lru_one() {
     // finished or panicked the channel ends, and the joins report it.
     drop(tx);
     for _ in 0..THREADS {
-        match rx.recv_timeout(GUARD) {
-            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                panic!(
-                    "a thread did not finish (a deadlock guard: an eviction that spins never does)"
-                )
-            }
-        }
+        guard::hold(
+            &rx,
+            "every thread to finish (an eviction that spins never does)",
+        );
     }
     for t in threads {
         t.join().unwrap();
