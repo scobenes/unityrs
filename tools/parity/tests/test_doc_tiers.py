@@ -162,11 +162,12 @@ class DocTiers(unittest.TestCase):
     def test_a_walk_past_the_terminator_is_u_for_want_of_a_sample(self):
         """UnityPyBoost reads the byte just past a UnityCN block as 0, the terminator of the bytes object it returns,
         and decrypts it there: a walk that reads that byte and stops there returns the bytes the Python loop holds when
-        it raises, the block decrypted, and a walk that goes on reads and writes past the bytes object, which no run
+        it raises, the block decrypted, and a walk that reads on reads and writes past the bytes object, which no run
         can pin (`test_rows_internals.py` decrypt_block_past_the_block_end). So section 12's two rows and DESIGN.md's
-        Tier U bullet read that byte as 0 and file the walk past it as U for want of a sample, never as a case a test
-        could characterise, and the Boost row says what it returns."""
-        walk = "A; U for a walk that runs more than one byte past the block"
+        Tier U bullet read that byte as 0 and file the walk that reads past it as U for want of a sample, never as a
+        case a test could characterise, and the Boost row says what it returns. A literal count carries a walk past
+        the block's end without reading there, so where a walk ends is no ground: the U boundary is what it reads."""
+        walk = "A; U for a walk that reads past the byte just past the block"
         decrypt = [cells[1] for cells, tier in rows_by_tier(self.parity) if tier == walk]
         self.assertEqual(len(decrypt), 2)
         bullets = [line for line in self.unsupported().splitlines() if line.startswith("  - a UnityCN block")]
@@ -174,6 +175,10 @@ class DocTiers(unittest.TestCase):
         for text in (*decrypt, *bullets):
             with self.subTest(text=text[:60]):
                 self.assertRegex(text, r"byte just past (?:the block|it)(?: read)? as 0\b")
+                self.assertIn("reads on past that byte", text)
+                self.assertNotRegex(text, r"\bruns (?:on|more than)|goes on past|stays in the block|ends the walk")
+                self.assertRegex(text, r"literal count that carries (?:the walk|it) past the (?:block's )?end,? reads?")
+                self.assertRegex(text, r"past the (?:block's )?end,? read(?:s|ing) nothing there")
                 self.assertIn("reads and writes memory past the bytes object", text)
                 self.assertIn("no sample shows such a block", text)
                 self.assertNotIn("not characterised", text)

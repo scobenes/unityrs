@@ -213,7 +213,8 @@ class InternalRows(unittest.TestCase):
                 call()
         self.assertEqual((a == 5, a != 5, a in [a]), (False, True, True))
 
-    # Section 12: `UnityPyBoost.decrypt_block` and the Python loop where the LZ4-token walk runs past the block.
+    # Section 12: `UnityPyBoost.decrypt_block` and the Python loop where the LZ4-token walk ends or reads past the
+    # block.
     def test_decrypt_block_past_the_block_end(self):
         manager = ArchiveStorageManager
         previous = manager.DECRYPT_KEY
@@ -240,7 +241,8 @@ class InternalRows(unittest.TestCase):
         # With tables that change bytes (`index` (7i+3) mod 16, `substitute` 1 to 15 then 0), the walk of `80`, `81`
         # and `82` decrypts the token to a literal count of 15 and reads its length byte past the block: UnityPyBoost
         # reads it as 0, the terminator of the bytes object it returns, decrypts it there (to 0x66, which ends the
-        # walk), and returns the bytes the Python loop holds when it raises, the token decrypted.
+        # run, so the walk reads no further), and returns the bytes the Python loop holds when it raises, the token
+        # decrypted.
         changing = with_tables([(7 * i + 3) % 16 for i in range(16)], [*range(1, 16), 0])
         for block, decrypted in ((b"\x80", b"\xf7"), (b"\x81", b"\xfe"), (b"\x82", b"\xf5")):
             with self.subTest(block=block.hex()):
@@ -249,6 +251,18 @@ class InternalRows(unittest.TestCase):
                 returned = UnityPyBoost.decrypt_block(changing.index, changing.substitute, block, 0)
                 self.assertEqual((returned, terminator(returned)), (decrypted, b"\x66"))
                 self.assertEqual(bytes(changing.decrypt_block(block, 0)), decrypted)
+        # A literal count that carries the walk past the end reads nothing there: `10` and `30` decrypt to literal
+        # counts of 14 and 12, so their walks end at offsets 15 and 13 having read only the token, and both loops
+        # return the same bytes with no error.
+        for block, decrypted, end in ((b"\x10", b"\xe7", 15), (b"\x30", b"\xc7", 13)):
+            with self.subTest(block=block.hex()):
+                data, furthest = bytearray(block + b"\0"), [-1]
+                self.assertEqual(changing.decrypt(Padded(data, 0, furthest), 0, len(block)), end)
+                self.assertEqual((bytes(data), furthest[0]), (decrypted + b"\0", 0))
+                with no_boost:
+                    self.assertEqual(bytes(changing.decrypt_block(block, 0)), decrypted)
+                returned = UnityPyBoost.decrypt_block(changing.index, changing.substitute, block, 0)
+                self.assertEqual((returned, terminator(returned)), (decrypted, b"\0"))
         # With other tables the decrypted 0 is a length byte of 0xFF, so the walk of `80` reads on past it: the Python
         # loop raises, and UnityPyBoost, which would read and write past its bytes object there, is not run.
         further = with_tables(
