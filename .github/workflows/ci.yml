@@ -190,6 +190,7 @@ jobs:
           python tools/fixtures/files.py --check
           python tools/fixtures/env.py --check
           python tools/fixtures/dump.py --check
+          python tools/fixtures/index.py --check
       - name: Self-tests (parity tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
