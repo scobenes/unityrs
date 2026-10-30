@@ -30,6 +30,44 @@ fn ordered_keeps_order_at_any_worker_count() {
     }
 }
 
+/// The sleeps above only make a reordering likely; here it is certain. On
+/// `jobs` workers, `jobs` items run at once, and each waits for the next to
+/// finish, so they finish last to first, and the sink still sees them first
+/// to last. The wait only turns a hang into a failure.
+#[test]
+fn ordered_hands_back_in_item_order_items_that_finish_last_to_first() {
+    use std::sync::{Condvar, Mutex};
+    use std::time::{Duration, Instant};
+    for jobs in [2, 4] {
+        let done = (Mutex::new(Vec::new()), Condvar::new());
+        let f = |k: &usize| -> Option<usize> {
+            let (finished, cv) = &done;
+            let mut finished = finished.lock().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(600);
+            while *k + 1 < jobs && !finished.contains(&(*k + 1)) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return None;
+                }
+                finished = cv.wait_timeout(finished, left).unwrap().0;
+            }
+            finished.push(*k);
+            cv.notify_all();
+            Some(*k)
+        };
+        let mut seen = Vec::new();
+        ordered(&(0..jobs).collect::<Vec<_>>(), jobs, &f, &mut |i, r| {
+            seen.push((i, r));
+            Ok(())
+        })
+        .unwrap();
+        let finished = done.0.into_inner().unwrap();
+        assert_eq!(finished, (0..jobs).rev().collect::<Vec<_>>(), "-j {jobs}");
+        let want: Vec<_> = (0..jobs).map(|i| (i, Some(i))).collect();
+        assert_eq!(seen, want, "-j {jobs}");
+    }
+}
+
 /// `-j N` runs N inputs at once and no more, whatever the scheduling:
 /// every item runs on one of the pool's workers (its index is below the
 /// pool's size), and the pool holds `jobs` workers, or one per item when
