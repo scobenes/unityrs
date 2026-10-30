@@ -91,6 +91,14 @@ pub struct ProviderError {
     /// than [`crate::limits::Limits::max_tree_depth`] is
     /// [`crate::LimitKind::TreeDepth`]); `detail` is then its message.
     pub limit: Option<crate::LimitError>,
+    /// The refusal, when the failure was memory the provider was refused (by
+    /// the allocator, or a budget); `detail` is then its message. It depends
+    /// on what else was held at that moment, not on the request, so a
+    /// provider never keeps it as the request's answer (the next ask tries
+    /// again), and a reader treats it as the caller's out-of-memory, never
+    /// as a missing tree (the canonical dump's `crash` record, the oracle's
+    /// `MemoryError`).
+    pub memory: Option<crate::budget::BudgetExceeded>,
 }
 
 /// A source of class (or script) trees.

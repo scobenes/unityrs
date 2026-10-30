@@ -28,6 +28,14 @@ pub trait Sink: fmt::Write + Send + Sync {
     fn push_str(&mut self, s: &str);
     /// Appends `c`.
     fn push(&mut self, c: char);
+    /// Counts `bytes` of work the writer is about to do that writes nothing
+    /// of their size (a summary's sha256), before it does it: `false` when
+    /// the sink refuses it, and the work must not be done. A `String`
+    /// counts nothing; a [`Text`] counts it as its meter's work.
+    fn count_work(&mut self, bytes: usize) -> bool {
+        let _ = bytes;
+        true
+    }
 }
 
 const _: () = crate::send_sync::<dyn Sink>();
@@ -171,6 +179,23 @@ impl Sink for Text {
             self.buf.push(c);
         }
     }
+
+    /// Counted toward the meter's `max_decode_work` ([`Meter::count_decode`]):
+    /// a value's bytes are a zero-copy slice of its file, which objects may
+    /// share, so summarising them is work no memory bound stops. A refusal
+    /// stops the text, as a refused growth does.
+    fn count_work(&mut self, bytes: usize) -> bool {
+        if self.refused.is_some() {
+            return false;
+        }
+        match self.charge.meter().count_decode(self::bytes(bytes)) {
+            Ok(()) => true,
+            Err(e) => {
+                self.refused = Some(e);
+                false
+            }
+        }
+    }
 }
 
 impl fmt::Write for Text {
@@ -227,6 +252,31 @@ mod tests {
         t.push_str(&"x".repeat(2000));
         assert!(matches!(t.finish(), Err(ChargeError::Budget(_))));
         assert_eq!(budget.used(), 0);
+    }
+
+    /// A summary's work is counted as the meter's, before it is done, and
+    /// past the bound it stops the text with the meter's `DecodeWork`
+    /// refusal.
+    #[test]
+    fn a_texts_work_is_its_meters() {
+        let mut limits = unityrs_core::limits::Limits::default();
+        limits.max_decode_work = 100;
+        let meter = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Input);
+        let mut t = Text::on(&meter);
+        assert!(t.count_work(60));
+        t.push('a');
+        assert!(t.count_work(40));
+        assert_eq!(meter.decoded(), 100);
+        assert!(!t.count_work(1));
+        t.push('b');
+        assert_eq!(t.as_str(), "a");
+        assert!(!t.count_work(0), "a stopped text counts nothing more");
+        assert!(matches!(
+            t.finish(),
+            Err(ChargeError::Limit(l)) if l.kind == LimitKind::DecodeWork
+        ));
+        let mut s = String::new();
+        assert!(s.count_work(usize::MAX), "a String counts nothing");
     }
 
     /// A doubling the meter refuses is asked again at exactly what is

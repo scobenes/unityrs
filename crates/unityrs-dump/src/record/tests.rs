@@ -86,9 +86,45 @@ fn notes_are_cut_as_the_oracle_cuts_them() {
     assert!(n.ends_with("..."));
 }
 
+/// `note_of` formats only the prefix the note keeps, and keeps what `note`
+/// of the whole text keeps, at every length around the cut.
 #[test]
-fn first_difference_is_the_offset_or_the_shorter_length() {
-    assert_eq!(first_difference(b"abc", b"abd"), 2);
-    assert_eq!(first_difference(b"ab", b"abc"), 2);
-    assert_eq!(first_difference(b"", b""), 0);
+fn a_note_of_an_error_is_the_note_of_its_whole_text() {
+    /// A text written in pieces.
+    struct Pieces<'a>(&'a [&'a str]);
+    impl std::fmt::Display for Pieces<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.0.iter().try_for_each(|p| f.write_str(p))
+        }
+    }
+    /// A text without end: only what the note keeps is ever written.
+    struct Endless;
+    impl std::fmt::Display for Endless {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            loop {
+                f.write_str("long")?;
+            }
+        }
+    }
+    for n in [
+        0,
+        1,
+        NOTE_MAX - 1,
+        NOTE_MAX,
+        NOTE_MAX + 1,
+        NOTE_MAX + 2,
+        5000,
+    ] {
+        let text: String = "\u{e9}x".chars().cycle().take(n).collect();
+        assert_eq!(note_of(&text), note(&text), "{n}");
+        let mid = text
+            .char_indices()
+            .nth(n / 2)
+            .map_or(text.len(), |(i, _)| i);
+        let (a, b) = text.split_at(mid);
+        assert_eq!(note_of(&Pieces(&[a, b])), note(&text), "{n}");
+    }
+    let n = note_of(&Endless);
+    assert_eq!(n.chars().count(), NOTE_MAX);
+    assert!(n.starts_with("longlong") && n.ends_with("..."));
 }

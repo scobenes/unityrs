@@ -362,6 +362,16 @@ impl SerializedFile {
             .filter_map(|i| ObjectRef::new(self.clone(), *i))
     }
 
+    /// The objects in ascending signed path id (UnityPy's
+    /// `sorted(objects.values(), key=lambda o: o.path_id)`): the table
+    /// [`Self::object`] searches, kept and charged with the file, so a
+    /// caller orders them without a copy or a sort.
+    pub fn objects_by_path(self: &Arc<Self>) -> impl Iterator<Item = ObjectRef> + '_ {
+        self.by_path
+            .iter()
+            .filter_map(|i| ObjectRef::new(self.clone(), *i))
+    }
+
     /// The object `objects[path_id]` holds.
     pub fn object(self: &Arc<Self>, path_id: i64) -> Option<ObjectRef> {
         let at = self
