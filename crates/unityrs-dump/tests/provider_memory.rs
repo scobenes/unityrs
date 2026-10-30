@@ -114,14 +114,18 @@ fn stripped() -> Vec<u8> {
 }
 
 /// The dump of [`stripped`] with `providers` as the context's.
-fn dump(providers: ProviderChain) -> String {
+fn dumped(providers: ProviderChain) -> unityrs_dump::InputDump {
     let mut ctx = FileContext::unitypy();
     ctx.providers = Arc::new(providers);
     let opts = DumpOptions {
         context: Arc::new(ctx),
         ..DumpOptions::default()
     };
-    unityrs_dump::dump_input(b"stripped", Bytes::from(stripped()), &opts).text()
+    unityrs_dump::dump_input(b"stripped", Bytes::from(stripped()), &opts)
+}
+
+fn dump(providers: ProviderChain) -> String {
+    dumped(providers).text()
 }
 
 /// The note of an input's one `crash` record, or a panic naming what the
@@ -275,7 +279,11 @@ fn a_tree_refused_at_any_of_the_dumps_asks_is_the_inputs_crash() {
     // No cache: every ask reaches the provider.
     let uncached = |p: Arc<RefusingAt>| ProviderChain::with_cache_bound(vec![p], 0, 0);
     let never = refusing_at(usize::MAX);
-    let whole = dump(uncached(never.clone()));
+    let whole = dumped(uncached(never.clone()));
+    // Review round 7: the run counts each input whose record is a crash
+    // (`crashes`, which the oracle exits 3 on when every input has one).
+    assert_eq!(whole.crashes, 0);
+    let whole = whole.text();
     assert_eq!(
         never.asks.load(Ordering::SeqCst),
         3,
@@ -286,7 +294,9 @@ fn a_tree_refused_at_any_of_the_dumps_asks_is_the_inputs_crash() {
         "{whole}"
     );
     for on in 1..=3 {
-        let text = dump(uncached(refusing_at(on)));
+        let d = dumped(uncached(refusing_at(on)));
+        assert_eq!(d.crashes, 1, "ask {on}");
+        let text = d.text();
         assert_eq!(
             crash_note(&text),
             "unityrs ran out of memory dumping this input (memory budget refused 64 bytes for Provider)",

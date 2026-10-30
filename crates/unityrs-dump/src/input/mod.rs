@@ -189,6 +189,7 @@ pub fn dump_on(rel: &[u8], data: Bytes, meter: &Arc<Meter>, opts: &DumpOptions) 
                 ),
                 None => (FileErrorKind::Parse, refused::note(&e)),
             };
+            out.crashes = u64::from(kind == FileErrorKind::Crash);
             out.push_file(file_line(&FileRecord {
                 file: vec![name],
                 l0,
