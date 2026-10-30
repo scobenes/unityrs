@@ -856,7 +856,7 @@ def set_image_cell(fmt):
     try:
         from_rgb = Texture2DConverter.image_to_texture2d(source.convert("RGB"), fmt)[1]
     except Exception as error:  # noqa: BLE001 - the exception is the result
-        cell += f" (an RGB image raises `{exception_name(error)}`, section 18.1)"
+        cell += f" (an RGB image with no zero side raises `{exception_name(error)}`, section 18.1)"
     else:
         if from_rgb != written:
             cell += f" (`{from_rgb.name}` from an RGB image)"

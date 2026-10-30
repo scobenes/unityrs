@@ -60,6 +60,9 @@ try:
 except ImportError:  # pragma: no cover - outside the oracle image
     ORACLE = False
 
+# DESIGN.md section 3's rule for Tier U, the lead of its bullet; PARITY.md section 0's U row repeats it.
+UNSUPPORTED_RULE = "Unsupported until a sample and a reference exist, or until UnityPy's behaviour is characterised"
+
 TEXT_ASSET = S.Node("TextAsset", "Base", [S.Node("string", "m_Name"), S.Node("string", "m_Script")])
 
 
@@ -513,7 +516,7 @@ class TestColumn(unittest.TestCase):
         self.assertIn(
             "section 3 leaves the other cases of `load_file`, `load_folder` and the constructor not", non_local
         )
-        unsupported = design.split("- **Unsupported until a sample and a reference exist.**", 1)[1].split("\n- **")[0]
+        unsupported = design.split(f"- **{UNSUPPORTED_RULE}.**", 1)[1].split("\n- **")[0]
         self.assertRegex(
             unsupported, r"\n  - a name read through a non-local fsspec filesystem in a case [^\n]*not characterised"
         )
@@ -553,7 +556,7 @@ class TestColumn(unittest.TestCase):
             line for line in parity.splitlines() if line.startswith("| `Texture2D.set_image` | the target")
         )
         self.assertIn("U for a zero-size image on a Switch-swizzled texture", set_image)
-        unsupported = design.split("- **Unsupported until a sample and a reference exist.**", 1)[1].split("\n- **")[0]
+        unsupported = design.split(f"- **{UNSUPPORTED_RULE}.**", 1)[1].split("\n- **")[0]
         self.assertRegex(
             unsupported, r"\n  - `set_image` of a zero-size image on a Switch-swizzled texture: [^\n]*not characterised"
         )
@@ -620,7 +623,7 @@ class TestColumn(unittest.TestCase):
             "C": "Tier C: UnityPy is wrong",
             "Tol": "Tolerance",
             "HEAD": "HEAD tier",
-            "U": "Unsupported until a sample and a reference exist",
+            "U": UNSUPPORTED_RULE,
             "gap": "Gap",
         }
         for tier in tiers[:7]:
@@ -1816,11 +1819,12 @@ class Rows(unittest.TestCase):
         import ctypes
         import signal
 
-        # Section 19.1 states this for a texture that is not Switch-swizzled: the cases run at platform 0 and at
-        # StandaloneWindows64 with no platform blob, and at Switch with a blob of one GOB per block. A Switch-swizzled
-        # texture is not characterised.
-        configs = ((0, None), (BuildTarget.StandaloneWindows64, None), (BuildTarget.Switch, [0] * 12))
-        self.assertEqual([TextureSwizzler.is_switch_swizzled(*config) for config in configs], [False] * 3)
+        # Section 19.1 states this for a texture that is not Switch-swizzled: the cases run at platform 0, at
+        # StandaloneWindows64 and XBOX360 with no platform blob, and at Switch with a blob of one GOB per block. A
+        # Switch-swizzled texture is not characterised.
+        configs = ((0, None), (BuildTarget.StandaloneWindows64, None), (BuildTarget.XBOX360, None))
+        configs += ((BuildTarget.Switch, [0] * 12),)
+        self.assertEqual([TextureSwizzler.is_switch_swizzled(*config) for config in configs], [False] * 4)
 
         def convert(target, size, config):
             return Texture2DConverter.image_to_texture2d(Image.new("RGBA", size), TextureFormat[target], *config)
