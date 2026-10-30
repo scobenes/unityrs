@@ -145,8 +145,11 @@ pub struct Limits {
     /// (`tests/walk_bounds.rs`). The values' memory is the meter's.
     /// Default 2^26.
     pub max_values_per_object: u64,
-    /// Array elements whose minimum size is 0 (a vector of empty structs with
-    /// a huge count does no I/O per element). Default 2^20 per object.
+    /// Array elements whose read ended no further on than it began, per
+    /// object: a vector of empty structs with a huge count reads no byte per
+    /// element, nor does a pure-Python element whose negative `TypelessData`
+    /// length takes the reader back to its start. An element that reads a
+    /// byte is never counted, whatever its tree. Default 2^20.
     pub max_zero_size_elements: u64,
     /// Elements reserved before the bytes prove they exist. Default 2^16.
     pub max_prealloc: usize,

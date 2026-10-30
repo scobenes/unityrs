@@ -29,7 +29,6 @@
 
 #![allow(unsafe_code, clippy::cast_precision_loss)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -40,7 +39,7 @@ use unityrs_core::limits::{ChargeError, Limits, Meter, MeteredVec, heap_cost};
 use unityrs_core::stream::{Endian, Reader};
 use unityrs_core::typetree::{NodeId, NodeList, NodeRow};
 use unityrs_core::{Bytes, LimitKind, Parsed, RawStr, Value, ValueBuilder};
-use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
+use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 
 struct Counting;
 
@@ -52,44 +51,19 @@ fn chunk(n: usize) -> usize {
     usize::try_from(heap_cost(n as u64)).unwrap_or(usize::MAX)
 }
 
-// SAFETY: every method forwards to `System` and only counts sizes, on the
-// thread under test.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if counted() {
-            let c = chunk(layout.size());
-            let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
-            PEAK.fetch_max(now, Ordering::Relaxed);
-        }
-        // SAFETY: the caller's contract is `System`'s.
-        unsafe { System.alloc(layout) }
+impl Tally for Counting {
+    fn grew(&self, size: usize, _zeroed: bool) {
+        let c = chunk(size);
+        let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
+        PEAK.fetch_max(now, Ordering::Relaxed);
     }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if counted() {
-            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
-        }
-        // SAFETY: as above.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let on = counted();
-        // Count the worst case of a moving realloc: both blocks live at once.
-        if on {
-            let c = chunk(new_size);
-            let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
-            PEAK.fetch_max(now, Ordering::Relaxed);
-        }
-        // SAFETY: as above.
-        let p = unsafe { System.realloc(ptr, layout, new_size) };
-        if on {
-            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
-        }
-        p
+    fn shrank(&self, size: usize) {
+        LIVE.fetch_sub(chunk(size), Ordering::Relaxed);
     }
 }
 
 #[global_allocator]
-static ALLOC: Counting = Counting;
+static ALLOC: Allocator<Counting> = Allocator(Counting);
 
 const MIB: u64 = 1 << 20;
 /// The scaled-down meter limit of the two hostile inputs.
@@ -371,6 +345,8 @@ fn parsed_values(counting: bool) -> u64 {
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn heap_cost_covers_glibc() {
+    use std::alloc::{GlobalAlloc, Layout, System};
+
     unsafe extern "C" {
         fn malloc_usable_size(ptr: *mut std::ffi::c_void) -> usize;
     }

@@ -27,6 +27,8 @@ Files:
   read by both readers and re-saved, at the least depth where
   the pure-Python reader raises `RecursionError`, one `A` less, and a quarter
   of it; the outcome only (`pos` or the exception), not the value.
+- `elements.json`: arrays at and past the zero-size element bound, from
+  `walk_elements.py` (its module docs give the recipe and the encoding).
 
 `--boost-reach` writes no fixture: for each depth shape it prints the most
 `A`s UnityPyBoost reads before the C stack of the process's main thread
@@ -81,6 +83,7 @@ from walk_build import (  # noqa: E402
     vec,
     write,
 )
+from walk_elements import element_cases  # noqa: E402
 
 
 # --- R cases
@@ -756,6 +759,7 @@ def fixtures():
         "write_matrix.json": dump_matrix(write_matrix()),
         "py_attrs.json": compact(py_attrs()) + "\n",
         "depth.json": dump_list(depth_cases()),
+        "elements.json": dump_list(element_cases()),
     }
 
 

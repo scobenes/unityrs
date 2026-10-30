@@ -16,9 +16,8 @@
 //!   2: both collected what they evicted, and the refusal every key, in
 //!   vectors no meter paid for).
 
-#![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -28,7 +27,7 @@ use unityrs_core::budget::{BudgetExceeded, Counting as CountingBudget, MemoryBud
 use unityrs_core::env::{EnvOptions, Environment, Source};
 use unityrs_core::limits::heap_cost;
 use unityrs_core::{Bytes, FileContext, RawStr};
-use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
+use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 use unityrs_testkit::env::{Obj, res_bytes, serialized};
 
 struct Counting;
@@ -45,39 +44,17 @@ fn grew(c: usize) {
     PEAK.fetch_max(now, Ordering::Relaxed);
 }
 
-// SAFETY: every method forwards to `System` and only counts sizes, on the
-// thread under test.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if counted() {
-            grew(chunk(layout.size()));
-        }
-        // SAFETY: the caller's contract is `System`'s.
-        unsafe { System.alloc(layout) }
+impl Tally for Counting {
+    fn grew(&self, size: usize, _zeroed: bool) {
+        grew(chunk(size));
     }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if counted() {
-            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
-        }
-        // SAFETY: as above.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let on = counted();
-        if on {
-            grew(chunk(new_size));
-        }
-        // SAFETY: as above.
-        let p = unsafe { System.realloc(ptr, layout, new_size) };
-        if on {
-            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
-        }
-        p
+    fn shrank(&self, size: usize) {
+        LIVE.fetch_sub(chunk(size), Ordering::Relaxed);
     }
 }
 
 #[global_allocator]
-static ALLOC: Counting = Counting;
+static ALLOC: Allocator<Counting> = Allocator(Counting);
 
 /// A batch's pool whose limit the test sets after it loaded the
 /// dependencies an eviction is to drop.

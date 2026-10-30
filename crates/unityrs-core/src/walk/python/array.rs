@@ -84,11 +84,12 @@ impl Reader<'_, '_> {
             .reserve_exact(first_reserve(count, self.remaining(), min, max))
             .map_err(|e| charge_error(at, e))?;
         for _ in 0..count {
-            if min == 0 {
+            grow_step(&mut items, count, max).map_err(|e| charge_error(self.at(), e))?;
+            let before = self.pos;
+            let v = self.value(t, lx, elem)?;
+            if self.pos <= before {
                 self.work.zero_size(self.at())?;
             }
-            grow_step(&mut items, count, max).map_err(|e| charge_error(self.at(), e))?;
-            let v = self.value(t, lx, elem)?;
             v.push_to(&mut items)
                 .map_err(|e| charge_error(self.at(), e))?;
         }
@@ -338,12 +339,13 @@ impl Reader<'_, '_> {
             .reserve_exact(first_reserve(count, self.remaining(), min, max))
             .map_err(|e| charge_error(at, e))?;
         for _ in 0..count {
-            if min == 0 {
-                self.work.zero_size(self.at())?;
-            }
             self.work.values(1, self.at())?;
             grow_step(&mut items, count, max).map_err(|e| charge_error(self.at(), e))?;
+            let before = self.pos;
             let v = item(self)?;
+            if self.pos <= before {
+                self.work.zero_size(self.at())?;
+            }
             v.push_to(&mut items)
                 .map_err(|e| charge_error(self.at(), e))?;
         }

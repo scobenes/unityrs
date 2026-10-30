@@ -224,8 +224,17 @@ pub struct NodeInfo {
     /// name costs O(1) ([`crate::value::Map::replace_at`]) and a registry
     /// child skipped at run time cannot misplace a later key (plan section 3.10).
     pub slot: u32,
-    /// A lower bound on the bytes a successful read consumes (0 for a class
-    /// that can read nothing). Bounds pre-allocation and zero-size elements.
+    /// A lower bound on the bytes a successful read of the node consumes,
+    /// in either reader and whatever registry is in scope (0 for a class
+    /// that can read nothing): a `ReferencedObjectData` or
+    /// `ManagedReferencesRegistry` child a read may skip adds nothing, and a
+    /// malformed `pair` or `Array`, which UnityPyBoost never reads, takes
+    /// what the pure-Python reader reads of it (`tests/walk_min_size.rs`).
+    /// It sizes a list's first reservation (plan 3.10, "Bounds"). It is no
+    /// bound where the pure-Python reader goes back (a negative
+    /// `TypelessData` length) or reads a type name holding a NUL as a class,
+    /// and the zero-size bound counts what each element really read instead
+    /// ([`crate::limits::Limits::max_zero_size_elements`]).
     pub min_size: u32,
     /// A class whose children repeat a name, so inserts must check for an
     /// existing key; otherwise the walker pushes.
@@ -427,30 +436,31 @@ fn shape_of(list: &NodeList, info: &MeteredVec<NodeInfo>, node: NodeId) -> Shape
     }
 }
 
-/// The fewest bytes a successful UnityPyBoost read of `node` consumes; its
+/// [`NodeInfo::min_size`] of `node`: the fewest bytes a successful read of
+/// it consumes in either reader, whatever registry is in scope; its
 /// children's are already known (they follow it in pre-order).
 fn min_size_of(list: &NodeList, info: &MeteredVec<NodeInfo>, node: NodeId) -> u32 {
     let me = info_at(info, node);
-    let sum_except = |skip: Kind| {
-        list.children(node)
-            .iter()
+    let kids = list.children(node);
+    let sum = |kids: &[NodeId], skip: Option<Kind>| {
+        kids.iter()
             .map(|c| info_at(info, *c))
-            .filter(|c| c.kind != skip)
+            .filter(|c| Some(c.kind) != skip)
             .fold(0_u32, |a, c| a.saturating_add(c.min_size))
     };
     match me.shape {
         Shape::Prim => me.kind.prim_size().unwrap_or(0),
-        // A length.
-        Shape::Str | Shape::Bytes | Shape::Vector { .. } => 4,
-        // Never read successfully.
-        Shape::BadPair | Shape::BadVector => 0,
-        Shape::Pair => list
-            .children(node)
-            .iter()
-            .fold(0_u32, |a, c| a.saturating_add(info_at(info, *c).min_size)),
-        // `ReferencedObjectData` may be skipped (R14), a nested registry too (R13).
-        Shape::RefObject => sum_except(Kind::ReferencedObjectData),
-        Shape::Class => sum_except(Kind::ManagedReferencesRegistry),
+        // A length; the pure-Python reader reads a malformed `Array`'s too,
+        // then its elements through `m_Children[1]` (`TypeTreeHelper.py:211-216`).
+        Shape::Str | Shape::Bytes | Shape::Vector { .. } | Shape::BadVector => 4,
+        Shape::Pair => sum(kids, None),
+        // The pure-Python reader reads a malformed `pair`'s first two
+        // children (`TypeTreeHelper.py:193-195`); UnityPyBoost never reads it.
+        Shape::BadPair => sum(kids.get(..2).unwrap_or(kids), None),
+        // `ReferencedObjectData` may be skipped (R14), a registry too once
+        // one is in scope (R13).
+        Shape::RefObject => sum(kids, Some(Kind::ReferencedObjectData)),
+        Shape::Class => sum(kids, Some(Kind::ManagedReferencesRegistry)),
     }
 }
 

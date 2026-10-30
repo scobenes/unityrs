@@ -621,7 +621,17 @@ impl Work {
         Ok(())
     }
 
-    /// Counts one element whose minimum size is 0.
+    /// Counts one array element whose read ended no further on than it
+    /// began: it read nothing (an empty class, a class whose children were
+    /// all skipped), or, in the pure-Python reader, a negative
+    /// `TypelessData` length took the position back. Such elements cost
+    /// values without bytes, so a count in a few bytes could build any
+    /// number of them; every other element reads bytes, so the input
+    /// bounds them. What an element really read is the test, not its
+    /// tree's [`crate::typetree::NodeInfo::min_size`]: which children a read
+    /// skips depends on the registry in scope, and the pure-Python reader
+    /// reads a malformed `pair` or `Array` UnityPyBoost refuses (review
+    /// round 4: both were refused past the bound where UnityPy read them).
     pub(crate) fn zero_size(&mut self, at: u64) -> Result<(), ReadError> {
         self.zero_size = self.zero_size.saturating_add(1);
         if self.zero_size > self.limits.max_zero_size_elements {

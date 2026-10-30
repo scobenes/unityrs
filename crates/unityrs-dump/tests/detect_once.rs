@@ -6,14 +6,11 @@
 //! zeroed scratch gzip detection inflates into, on the test's own thread
 //! (`unityrs_testkit::counted`).
 
-#![allow(unsafe_code)]
-
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::Write as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use unityrs_dump::{DumpOptions, Levels};
-use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
+use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 
 /// The size of gzip detection's scratch (`detect.rs`'s `SCRATCH`).
 const SCRATCH: usize = 64 << 10;
@@ -23,37 +20,20 @@ struct Watching;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static INFLATIONS: AtomicUsize = AtomicUsize::new(0);
 
-// SAFETY: every method forwards to `System` and only counts, on the thread
-// under test.
-unsafe impl GlobalAlloc for Watching {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if counted() {
-            LIVE.fetch_add(layout.size(), Ordering::Relaxed);
+impl Tally for Watching {
+    fn grew(&self, size: usize, zeroed: bool) {
+        LIVE.fetch_add(size, Ordering::Relaxed);
+        if zeroed && size == SCRATCH {
+            INFLATIONS.fetch_add(1, Ordering::Relaxed);
         }
-        // SAFETY: the caller's contract is `System`'s.
-        unsafe { System.alloc(layout) }
     }
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if counted() {
-            LIVE.fetch_add(layout.size(), Ordering::Relaxed);
-            if layout.size() == SCRATCH {
-                INFLATIONS.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        // SAFETY: as above.
-        unsafe { System.alloc_zeroed(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if counted() {
-            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
-        }
-        // SAFETY: as above.
-        unsafe { System.dealloc(ptr, layout) }
+    fn shrank(&self, size: usize) {
+        LIVE.fetch_sub(size, Ordering::Relaxed);
     }
 }
 
 #[global_allocator]
-static ALLOC: Watching = Watching;
+static ALLOC: Allocator<Watching> = Allocator(Watching);
 
 /// A gzip stream of `n` zero bytes, at least 128 bytes long (detection's
 /// least length for a gzip entry).

@@ -16,7 +16,6 @@
 
 #![allow(unsafe_code)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::Arc;
 
@@ -27,6 +26,7 @@ use unityrs_core::limits::{Meter, heap_cost};
 use unityrs_core::{Bytes, FileContext, RawStr};
 use unityrs_testkit::blob::NodeSpec;
 use unityrs_testkit::bundle::{BundleSpec, EntrySpec, TestCodec, build};
+use unityrs_testkit::counted::{Allocator, Tally, count_this_thread};
 use unityrs_testkit::serialized::{ObjectSpec, SerializedSpec, TypeSpec, build as file};
 
 struct Counting;
@@ -68,35 +68,23 @@ fn note(delta: i64) {
     });
 }
 
-// SAFETY: every method forwards to `System` and only counts sizes.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        note(chunk(layout.size()));
-        // SAFETY: the caller's contract is `System`'s.
-        unsafe { System.alloc(layout) }
+impl Tally for Counting {
+    fn grew(&self, size: usize, _zeroed: bool) {
+        note(chunk(size));
     }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        note(-chunk(layout.size()));
-        // SAFETY: as above.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        // The new block exists before the old one is freed.
-        note(chunk(new_size));
-        // SAFETY: as above.
-        let p = unsafe { System.realloc(ptr, layout, new_size) };
-        note(-chunk(layout.size()));
-        p
+    fn shrank(&self, size: usize) {
+        note(-chunk(size));
     }
 }
 
 #[global_allocator]
-static ALLOC: Counting = Counting;
+static ALLOC: Allocator<Counting> = Allocator(Counting);
 
 /// Runs `f` with this thread watched against `meter`, and returns its value
 /// and the most the heap it allocated rose above what the meter charged
 /// while it ran.
 fn watch<T>(meter: &Arc<Meter>, f: impl FnOnce() -> T) -> (T, i64) {
+    count_this_thread();
     USED0.set(i64::try_from(meter.used()).unwrap_or(i64::MAX));
     LIVE.set(0);
     PEAK.set(i64::MIN);

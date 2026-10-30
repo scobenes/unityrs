@@ -9,12 +9,11 @@
 //! The allocator counts only the test's own thread
 //! (`unityrs_testkit::counted`): libtest's main thread allocates beside it.
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use unityrs_core::limits::Limits;
 use unityrs_core::provider::TypeTreeProvider;
-use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
+use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 use unityrs_tpk::{TpkError, TpkProvider};
 
 /// Counts live heap bytes and their peak; refuses any one request over
@@ -31,58 +30,20 @@ fn grew(n: usize) {
     PEAK.fetch_max(now, Ordering::SeqCst);
 }
 
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if layout.size() > REFUSE {
-            return std::ptr::null_mut();
-        }
-        // SAFETY: as `System.alloc`.
-        let p = unsafe { System.alloc(layout) };
-        if !p.is_null() && counted() {
-            grew(layout.size());
-        }
-        p
+impl Tally for Counting {
+    fn refuses(&self, size: usize) -> bool {
+        size > REFUSE
     }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if layout.size() > REFUSE {
-            return std::ptr::null_mut();
-        }
-        // SAFETY: as `System.alloc_zeroed`.
-        let p = unsafe { System.alloc_zeroed(layout) };
-        if !p.is_null() && counted() {
-            grew(layout.size());
-        }
-        p
+    fn grew(&self, size: usize, _zeroed: bool) {
+        grew(size);
     }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: as `System.dealloc`.
-        unsafe { System.dealloc(ptr, layout) };
-        if counted() {
-            LIVE.fetch_sub(layout.size(), Ordering::SeqCst);
-        }
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if new_size > REFUSE {
-            return std::ptr::null_mut();
-        }
-        // SAFETY: as `System.realloc`.
-        let p = unsafe { System.realloc(ptr, layout, new_size) };
-        if !p.is_null() && counted() {
-            if new_size >= layout.size() {
-                grew(new_size - layout.size());
-            } else {
-                LIVE.fetch_sub(layout.size() - new_size, Ordering::SeqCst);
-            }
-        }
-        p
+    fn shrank(&self, size: usize) {
+        LIVE.fetch_sub(size, Ordering::SeqCst);
     }
 }
 
 #[global_allocator]
-static ALLOC: Counting = Counting;
+static ALLOC: Allocator<Counting> = Allocator(Counting);
 
 /// A stored TPK whose blob has no versions, classes or nodes, one common
 /// string (string 0), and one string whose length prefix is `len` over
