@@ -17,8 +17,8 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
-from test_parity_rows import ORACLE, load  # noqa: E402
-from test_rows_exports import element  # noqa: E402
+from export_support import element  # noqa: E402
+from rows_support import ORACLE, load  # noqa: E402
 from test_rows_objects import VERSION, pptr, tpk_file, tpk_object  # noqa: E402
 
 import pillow_tables  # noqa: E402

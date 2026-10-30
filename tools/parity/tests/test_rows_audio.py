@@ -1,6 +1,6 @@
 """PARITY.md's FSB5 rows on subsounds too short for fmod_toolkit's WAV writer, run against the oracle.
 
-Sections 16 and 19.2. The banks are built by `test_rows_exports.fsb5` from the format's own rules, not by UnityPy, so
+Sections 16 and 19.2. The banks are built by `export_support.fsb5` from the format's own rules, not by UnityPy, so
 nothing needs the corpus; each test names the rows it pins, and a row's test column names the test back. Needs
 UnityPy 1.25.2 (the oracle image); skipped elsewhere.
 """
@@ -17,8 +17,8 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
-from test_parity_rows import ORACLE  # noqa: E402
-from test_rows_exports import fsb5, wav_header  # noqa: E402
+from export_support import fsb5, wav_header  # noqa: E402
+from rows_support import ORACLE  # noqa: E402
 
 if ORACLE:
     import fmod_toolkit  # loads the bundled libfmod, which pyfmodex needs first

@@ -20,7 +20,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
-from test_parity_rows import ORACLE, load, quietly, text_asset_file, zip_with_a_directory  # noqa: E402
+from rows_support import ORACLE, load, quietly, text_asset_file, zip_with_a_directory  # noqa: E402
 
 import synth as S  # noqa: E402
 

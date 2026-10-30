@@ -2,7 +2,7 @@
 decides it (standard library).
 
 Each guard reads both files as text. The behaviour each one keeps the wording to is pinned by the row tests the cells
-name (`test_rows_images.py`, `test_parity_rows.py`).
+name (`test_rows_images.py`, `test_rows_textures.py`).
 """
 
 import re
