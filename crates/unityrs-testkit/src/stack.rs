@@ -10,12 +10,20 @@
 //! stack` and aborts the process (`SIGABRT`). Anything else a child does is
 //! no measurement, and fails the test with what happened: a panic (exit
 //! code 101), an abort with no overflow report (an allocation that failed),
-//! another signal (`SIGKILL`, the OOM killer under memory pressure; a
-//! `SIGSEGV` the runtime did not report, so not on a guard page), or a
-//! probe that did not run (libtest passes a filter that matches nothing).
-//! (Review round 5: three tests read every unsuccessful child as an
-//! overflow, so a child killed under memory pressure moved a measurement,
-//! and a check made from one could fail, or pass, on a wrong figure.)
+//! another signal (a `SIGSEGV` the runtime did not report, so not on a
+//! guard page), or a probe that did not run (libtest passes a filter that
+//! matches nothing). (Review round 5: three tests read every unsuccessful
+//! child as an overflow, so a child killed under memory pressure moved a
+//! measurement, and a check made from one could fail, or pass, on a wrong
+//! figure.)
+//!
+//! A child killed by `SIGKILL` did not end the probe itself: the OOM killer
+//! (or a person) ended it from outside, whatever the probe would have come
+//! to. Its run is no measurement, but the probe is the same on the next
+//! run, so [`run`] runs it again, up to [`KILLED_RUNS`] runs in all, and a
+//! probe killed on every one of them fails the test, saying so. A test
+//! then measures what it measures whatever memory the machine has free
+//! (review round 7: one kill under memory pressure failed the test).
 //!
 //! Owner: package B.
 
@@ -90,28 +98,47 @@ fn last(text: &str) -> String {
     lines[lines.len().saturating_sub(20)..].join("\n")
 }
 
+/// The most runs [`run`] makes of a probe whose child is killed by
+/// `SIGKILL` (module docs) before it fails the test.
+pub const KILLED_RUNS: u32 = 4;
+
 /// Runs this test binary's ignored test `probe` (its whole path, as
-/// `--exact` matches it) in a child process with `var` set to `value`.
+/// `--exact` matches it) in a child process with `var` set to `value`. A
+/// child killed by `SIGKILL` is no measurement, and the probe is run again,
+/// up to [`KILLED_RUNS`] runs in all (module docs).
 ///
 /// # Panics
-/// When the child can not start, or comes to anything but [`Probe`]
-/// ([`classify`]): the message says what, and ends with the child's last
-/// lines of output.
+/// When the child can not start, comes to anything but [`Probe`]
+/// ([`classify`]), or is killed by `SIGKILL` on every run: the message says
+/// what, and ends with the last child's last lines of output.
 #[track_caller]
 #[must_use]
 pub fn run(probe: &str, var: &str, value: &str) -> Probe {
     let exe = std::env::current_exe().expect("the test binary's path");
-    let Output {
-        status,
-        stdout,
-        stderr,
-    } = Command::new(exe)
-        .args(["--exact", probe, "--ignored", "--test-threads=1"])
-        .env(var, value)
-        .output()
-        .unwrap_or_else(|e| panic!("cannot start probe {probe}: {e}"));
-    classify(status, &stdout, &stderr)
-        .unwrap_or_else(|e| panic!("probe {probe} with {var}={value:?}: {e}"))
+    let mut killed = 0;
+    loop {
+        let Output {
+            status,
+            stdout,
+            stderr,
+        } = Command::new(&exe)
+            .args(["--exact", probe, "--ignored", "--test-threads=1"])
+            .env(var, value)
+            .output()
+            .unwrap_or_else(|e| panic!("cannot start probe {probe}: {e}"));
+        match classify(status, &stdout, &stderr) {
+            Ok(p) => return p,
+            Err(e) if signal(status) == Some(KILL) => {
+                killed += 1;
+                assert!(
+                    killed < KILLED_RUNS,
+                    "probe {probe} with {var}={value:?}: killed by SIGKILL on each of its \
+                     {killed} runs, so no measurement: {e}"
+                );
+            }
+            Err(e) => panic!("probe {probe} with {var}={value:?}: {e}"),
+        }
+    }
 }
 
 /// Whether `probe` passes with `var` set to `value`, and not whether it
@@ -153,13 +180,18 @@ mod tests {
 
     /// Run by the tests below: on a thread of 256 KiB, `recurse` recurses
     /// without end, `panic` panics, `alloc` fails an allocation, and `pass`
-    /// returns.
+    /// returns; `killed:N:DIR` is killed by `SIGKILL` (as the OOM killer
+    /// kills a child) on each of its first `N` runs, counted in `DIR`, then
+    /// passes.
     #[test]
     #[ignore = "run by the stack probe tests"]
     fn probe() {
         let Ok(what) = std::env::var(VAR) else {
             return;
         };
+        if let Some(spec) = what.strip_prefix("killed:") {
+            kill_self_while(spec);
+        }
         let t = std::thread::Builder::new().stack_size(256 << 10);
         t.spawn(move || match what.as_str() {
             "recurse" => {
@@ -176,6 +208,27 @@ mod tests {
         .unwrap()
         .join()
         .unwrap();
+    }
+
+    /// `N:DIR`: the run that finds fewer than `N` marks in `DIR` adds one
+    /// and has this process killed by `SIGKILL`, from outside.
+    fn kill_self_while(spec: &str) {
+        let (n, dir) = spec.split_once(':').unwrap();
+        let n: usize = n.parse().unwrap();
+        let dir = std::path::Path::new(dir);
+        let runs = std::fs::read_dir(dir).unwrap().count();
+        if runs < n {
+            std::fs::write(dir.join(runs.to_string()), b"").unwrap();
+            let me = std::process::id();
+            std::process::Command::new("sh")
+                .args(["-c", &format!("kill -KILL {me}")])
+                .status()
+                .expect("sh, to kill the probe");
+            // The kill is pending before the shell exits, so this process
+            // never returns from waiting for it; the sleep is a guard only.
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            panic!("the probe's kill -KILL did not reach it");
+        }
     }
 
     fn recurse(n: u64) -> u64 {
@@ -243,6 +296,62 @@ mod tests {
             classify(ExitStatusExt::from_raw(0), passed, b""),
             Ok(Probe::Fits)
         );
+    }
+
+    /// A fresh directory for one test's marks, removed when dropped.
+    struct Marks(std::path::PathBuf);
+
+    impl Marks {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "unityrs-testkit-stack-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn runs(&self) -> usize {
+            std::fs::read_dir(&self.0).unwrap().count()
+        }
+    }
+
+    impl Drop for Marks {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A child the OOM killer ends (`SIGKILL`) is no measurement and is run
+    /// again: killed on each of its first `KILLED_RUNS - 1` runs, the probe
+    /// still measures (review round 7: one kill failed the test).
+    #[cfg(unix)]
+    #[test]
+    fn a_child_killed_from_outside_is_run_again() {
+        let marks = Marks::new("again");
+        let spec = format!("killed:{}:{}", super::KILLED_RUNS - 1, marks.0.display());
+        assert_eq!(run(PROBE, VAR, &spec), Probe::Fits);
+        assert_eq!(
+            marks.runs(),
+            usize::try_from(super::KILLED_RUNS - 1).unwrap()
+        );
+    }
+
+    /// A child killed on every run fails the test, saying so and how often.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_killed_on_every_run_fails_saying_so() {
+        let marks = Marks::new("always");
+        let spec = format!("killed:{}:{}", super::KILLED_RUNS, marks.0.display());
+        let m = refused(&spec);
+        assert_eq!(marks.runs(), usize::try_from(super::KILLED_RUNS).unwrap());
+        let want = format!(
+            "killed by SIGKILL on each of its {} runs",
+            super::KILLED_RUNS
+        );
+        assert!(m.contains(&want), "{m}");
+        assert!(m.contains("the OOM killer"), "{m}");
     }
 
     /// [`least`] finds the least size that fits, to 4 KiB.
