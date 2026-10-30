@@ -485,6 +485,91 @@ pub fn fallback_file_pointer() -> Scene {
     }
 }
 
+/// A preload whose externals UnityPy's `find_file` reaches two ways: `H`
+/// (`xab.assets`) by the registry, where a caller's copy holds the key, and
+/// `A` (`ab.assets`) by its walk's suffix match (`environment.py:345-354`),
+/// which loads the resolver's `xab.assets` under that name, so the name
+/// asked misses again: every dereference of `A` loads a new copy, which
+/// takes the key, and the next dereference of `H` finds that copy. One row
+/// spans `H`, `A`, `H`, `A` (path ids 5, 5, 6, 7): the caller's copy gets 5
+/// alone, the last copy 7 alone (review round 2: the walk kept its first
+/// answer for each external).
+#[must_use]
+pub fn preload_suffix_external() -> Scene {
+    let x = |prefix: &str| {
+        serialized(
+            &[],
+            &[
+                Obj::named(5, &format!("{prefix}5"), &[]),
+                Obj::named(6, &format!("{prefix}6"), &[]),
+                Obj::named(7, &format!("{prefix}7"), &[]),
+            ],
+        )
+    };
+    let r = serialized(
+        &["archive:/CAB-B/xab.assets", "archive:/CAB-B/ab.assets"],
+        &[
+            Obj::named(1, "r1", &[]),
+            Obj::asset_bundle(
+                2,
+                Bundle {
+                    preload: vec![(1, 5), (2, 5), (1, 6), (2, 7)],
+                    rows: vec![row("assets/r.prefab", (0, 4), (0, 1))],
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    );
+    Scene {
+        files: vec![
+            // Under the key `xab.assets`, as the resolver's file.
+            named("caller/xab.assets", x("caller")),
+            named("r.bundle", bundle(&[("CAB-R", r)])),
+        ],
+        // Only `xab.assets`: the walk's `ab.assets` matches it by suffix.
+        resolver: vec![named("xab.assets", x("found"))],
+    }
+}
+
+/// Two bundles that each hold a CAB of one name, `CAB-S`, with its own
+/// `.resS`, container row and object 7; the first also holds `CAB-X`, which
+/// points at `CAB-S`'s object 7. UnityPy's one registry keeps the later
+/// copy under each key, so a resource read from either copy's texture
+/// reads the later `.resS`, and the container lists only the later row;
+/// a pointer matches the asking file's own bundle first
+/// (`classes/PPtr.py:75-78`), so `CAB-X` reads its own bundle's object 7
+/// (`PARITY.md` section 19.2, same-named CABs).
+#[must_use]
+pub fn same_named_cabs() -> Scene {
+    let cab_s = |name: &str| {
+        serialized(
+            &[],
+            &[
+                Obj::named(7, &format!("{name}7"), &[]),
+                Obj::streamed(2, &format!("tex-{name}"), "archive:/CAB-S/CAB-S.resS", 0, 4),
+                Obj::asset_bundle(
+                    3,
+                    Bundle {
+                        rows: vec![row(&format!("assets/{name}.prefab"), (0, 0), (0, 7))],
+                        ..Bundle::default()
+                    },
+                ),
+            ],
+        )
+    };
+    let x = serialized(&["archive:/CAB-S/CAB-S"], &[Obj::named(1, "x1", &[(1, 7)])]);
+    let a = bundle(&[
+        ("CAB-X", x),
+        ("CAB-S", cab_s("a")),
+        ("CAB-S.resS", res_bytes(8, 10)),
+    ]);
+    let b = bundle(&[("CAB-S", cab_s("b")), ("CAB-S.resS", res_bytes(8, 200))]);
+    Scene {
+        files: vec![named("a.bundle", a), named("b.bundle", b)],
+        resolver: Vec::new(),
+    }
+}
+
 /// A bundle of two nested bundles that each hold a CAB of one name: an
 /// eager load registers both in directory order, so the second's is the
 /// key's value; under `LoadMode::Lazy` each is registered when its nested
@@ -521,6 +606,8 @@ pub fn scenes() -> Vec<(&'static str, Scene)> {
         ("container_other_file", container_other_file()),
         ("fallback_file_pointer", fallback_file_pointer()),
         ("nested_duplicates", nested_duplicates()),
+        ("preload_suffix_external", preload_suffix_external()),
+        ("same_named_cabs", same_named_cabs()),
     ]
 }
 

@@ -1,9 +1,11 @@
 //! Loads: [`Environment::load`], [`Environment::load_dependency`] and the
 //! files the resolver returns, and the registration of their CABs.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+use super::registry::Hook;
 use super::registry::{Dependency, WeakFile, open_source};
 use super::{Cab, Environment, LoadMode, RawCab, Source, source_name};
 use crate::budget::Reservation;
@@ -34,8 +36,9 @@ impl Environment {
 
     /// A load UnityPy's `load_file` makes (the caller's, or a resource
     /// fallback's under `keep_resolver_loads`): its own input meter, its
-    /// CABs registered as a caller's, and a `files` entry under `name`
-    /// (charged to the file's meter when the resolver chose it).
+    /// CABs registered as a caller's, and a `files` entry under `name`,
+    /// charged to the file's meter (a resolver's name copied into its key
+    /// first; a caller's own name is shared, not copied).
     fn load_listed(&self, name: &RawStr, source: &Source, resolved: bool) -> Result<File, Error> {
         let ctx = self.ctx();
         let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
@@ -47,7 +50,7 @@ impl Environment {
         } else {
             name.clone()
         };
-        self.list(key, file.clone(), false, resolved.then_some(&meter))?;
+        self.list(key, file.clone(), false, &meter)?;
         Ok(file)
     }
 
@@ -209,15 +212,22 @@ impl Environment {
             open: Mutex::new(WeakFile::of(&file)),
             ctx: ctx.clone(),
             cache: Arc::downgrade(&self.inner.cache),
+            slots: AtomicUsize::new(0),
         });
         self.register_file(&dep.name, &file, &Target::Dependency(&dep))?;
+        #[cfg(test)]
+        self.inner.cache.hook(Hook::LoadRegistered);
         self.inner.cache.loaded.fetch_add(1, Ordering::Relaxed);
         self.inner.cache.touch(&dep, &file)?;
         // Another load registered every key this one did meanwhile: no slot
-        // reaches it, and the LRU lets go of it ([`registry`]).
-        if Arc::strong_count(&dep) == 2 {
+        // reaches it, and the LRU lets go of it ([`registry`]). The last
+        // slot to go before the touch told an LRU that did not hold it yet;
+        // one that goes after it tells the LRU itself (`DepSlot`).
+        if dep.unreachable() {
             self.inner.cache.forget(&dep);
         }
+        #[cfg(test)]
+        self.inner.cache.hook(Hook::LoadChecked);
         Ok(file)
     }
 
@@ -241,7 +251,7 @@ impl Environment {
                 if keep {
                     let meter = file.meter().clone();
                     let key = RawStr::charged(name.as_bytes(), &meter)?;
-                    self.list(key, file.clone(), true, Some(&meter))?;
+                    self.list(key, file.clone(), true, &meter)?;
                 }
                 Ok(file)
             }

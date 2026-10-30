@@ -239,53 +239,75 @@ fn the_preload_dereferences_each_table_index_once() {
     }
 }
 
-/// A preload external the resolver answers with a file it names otherwise
-/// (so the next lookup of the name misses again) is loaded once per walk,
-/// not once per element and row. UnityPy cannot reach this: its `find_file`
-/// keys the file it loads by its path, whose basename is the name asked, so
-/// only a container misses again, and its first element raises. The walk's
-/// load registers a new key, so the pass then fails as UnityPy's does.
+/// A preload external the resolver answers with a file it names otherwise,
+/// as UnityPy's `find_file` does when its walk matches a longer file name
+/// by suffix (`ab.assets` finds `xab.assets`, `environment.py:345-354`,
+/// registered under the name it found): the next lookup of the name misses
+/// again, so each dereference loads the file again, as UnityPy's does, and
+/// the last copy keeps the key and only the path its own dereference set
+/// (review round 2: the walk kept the first load's answer, so both objects
+/// of one copy got the row's path; UnityPy's registered copy has none for
+/// object 5, `tests/fixtures/d/env.json` scene `preload_suffix_external`).
+/// Where rows' spans overlap, an index is still dereferenced once
+/// (`PARITY.md` section 19.3), where UnityPy loads once per row and index.
+/// The walk's loads register a new key, so the pass fails as UnityPy's does.
 #[test]
-fn a_preload_external_the_resolver_names_otherwise_loads_once_per_walk() {
+fn a_preload_external_found_by_suffix_loads_at_each_dereference() {
     #[derive(Debug)]
-    struct Other(AtomicUsize, Bytes);
-    impl CabResolver for Other {
+    struct Suffix(AtomicUsize, Bytes);
+    impl CabResolver for Suffix {
         fn resolve(&self, name: &[u8]) -> Option<Source> {
             self.0.fetch_add(1, Ordering::SeqCst);
-            (name == b"cab-c").then(|| Source::Bytes {
-                name: RawStr::from("@/elsewhere"),
+            b"xab.assets".ends_with(name).then(|| Source::Bytes {
+                name: RawStr::from("@/xab.assets"),
                 data: self.1.clone(),
             })
         }
     }
-    let other = serialized(&[], &[Obj::named(5, "o5", &[])]);
-    let file = serialized(
-        &["archive:/CAB-C/CAB-C"],
-        &[
-            Obj::named(1, "s1", &[]),
-            Obj::asset_bundle(
+    let other = serialized(&[], &[Obj::named(5, "x5", &[]), Obj::named(6, "x6", &[])]);
+    let file = |rows: usize| {
+        serialized(
+            &["archive:/CAB-B/ab.assets"],
+            &[
+                Obj::named(1, "r1", &[]),
+                Obj::asset_bundle(
+                    2,
+                    Bundle {
+                        preload: vec![(1, 5), (1, 6)],
+                        rows: (0..rows)
+                            .map(|i| row(&format!("assets/{i}.prefab"), (0, 2), (0, 1)))
+                            .collect(),
+                        ..Bundle::default()
+                    },
+                ),
+            ],
+        )
+    };
+    for rows in [1, 3] {
+        for mode in [LoadMode::Eager, LoadMode::Lazy] {
+            let resolver = Arc::new(Suffix(AtomicUsize::new(0), Bytes::from(other.clone())));
+            let mut o = EnvOptions::unitypy();
+            o.load = mode;
+            o.resolver = Some(resolver.clone());
+            let env = Environment::new(o);
+            env.load(src("CAB-R", &file(rows))).unwrap();
+            let e = env.container().expect_err("the dict grew");
+            assert!(e.to_string().contains("changed size"), "{e}");
+            assert_eq!(
+                resolver.0.load(Ordering::SeqCst),
                 2,
-                Bundle {
-                    preload: vec![(1, 5), (1, 6)],
-                    rows: (0..3)
-                        .map(|i| row(&format!("assets/{i}.prefab"), (0, 2), (0, 1)))
-                        .collect(),
-                    ..Bundle::default()
-                },
-            ),
-        ],
-    );
-    for mode in [LoadMode::Eager, LoadMode::Lazy] {
-        let resolver = Arc::new(Other(AtomicUsize::new(0), Bytes::from(other.clone())));
-        let mut o = EnvOptions::unitypy();
-        o.load = mode;
-        o.resolver = Some(resolver.clone());
-        let env = Environment::new(o);
-        env.load(src("CAB-S", &file)).unwrap();
-        let e = env.container().expect_err("the dict grew");
-        assert!(e.to_string().contains("changed size"), "{e}");
-        assert_eq!(resolver.0.load(Ordering::SeqCst), 1, "{mode:?}");
-        assert_eq!(env.container().unwrap().count(), 3, "{mode:?}");
+                "{mode:?} {rows} rows: a load per index"
+            );
+            assert_eq!(env.container().unwrap().count(), rows, "{mode:?}");
+            let registered = serialized_cab(&env, "xab.assets");
+            let path = |id: i64| env.container_path(&object(&registered, id)).unwrap();
+            assert_eq!(path(5), None, "{mode:?} {rows} rows: an earlier copy's");
+            assert_eq!(
+                path(6),
+                Some(ContainerPath::Str(RawStr::from("assets/0.prefab"))),
+                "{mode:?} {rows} rows"
+            );
+        }
     }
 }
 

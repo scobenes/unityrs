@@ -57,7 +57,9 @@
 //! [`crate::limits::Limits::max_input_bytes`] and charged to that meter
 //! before its bytes exist. Each registry slot, its key and its share of the
 //! registry's tables are charged to the meter of the file that registered
-//! it ([`registry`]). Listings ([`Environment::objects`],
+//! it ([`registry`]), and each `files` entry, its share of the list and its
+//! lowered key to the loaded file's ([`Environment::files`]); the LRU's
+//! evictions allocate nothing ([`registry`]). Listings ([`Environment::objects`],
 //! [`Environment::container`], [`Registry::keys`]) are iterators: they hold
 //! a handle per nesting level and allocate nothing per record.
 //!

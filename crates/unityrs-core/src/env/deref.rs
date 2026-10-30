@@ -20,6 +20,20 @@ fn object_in(sf: &Arc<SerializedFile>, path_id: i64) -> Result<ObjectRef, DerefE
     })
 }
 
+/// How [`Environment::external`] reached the file it found, which says how
+/// long a container preload walk may keep the answer (UnityPy keeps none:
+/// each dereference looks again, `classes/PPtr.py:57-85`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Reached {
+    /// A sibling in the asking file's bundle, whose names never change.
+    Sibling,
+    /// This Environment's `files` or registry, which a load may change.
+    Lookup,
+    /// The resolver's file, loaded now: under the name it was asked for or
+    /// another, which only the next lookup tells.
+    Load,
+}
+
 impl Environment {
     /// `get_cab`: the registry under `simplify_name(name)`, an entry parsed
     /// now if it was registered lazily. The lowered key a lookup builds is
@@ -58,7 +72,7 @@ impl Environment {
     /// [`EnvOptions::keep_resolver_loads`]: super::EnvOptions::keep_resolver_loads
     /// [`FileEntry`]: super::FileEntry
     pub fn find_file(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<Cab>, Error> {
-        Ok(match self.find(name, meter)? {
+        Ok(match self.find(name, meter)?.map(|(found, _)| found) {
             Some(Found::Cab(cab)) => Some(cab),
             Some(Found::File(File::Serialized(sf))) => Some(Cab::Serialized(sf)),
             Some(Found::File(File::Raw(raw))) => Some(Cab::Raw(RawCab::File(raw))),
@@ -66,12 +80,13 @@ impl Environment {
         })
     }
 
-    fn find(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<Found>, Error> {
+    /// [`Self::find_file`]'s lookup, and how it reached what it found.
+    fn find(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<(Found, Reached)>, Error> {
         // UnityPy environment.py:326-329: `get_cab(simplify_name(name))`,
         // which simplifies again.
         let simple = simplify_name(name, meter)?;
         if let Some(cab) = self.inner.registry.get(&simple, meter)? {
-            return Ok(Some(Found::Cab(cab)));
+            return Ok(Some((Found::Cab(cab), Reached::Lookup)));
         }
         drop(simple);
         // :330-354: the resolver stands for the walk of `env.path`.
@@ -81,7 +96,8 @@ impl Environment {
         let Some(source) = resolver.resolve(name.as_bytes()) else {
             return Ok(None);
         };
-        Ok(Some(Found::File(self.load_resolved(&source, None)?)))
+        let file = self.load_resolved(&source, None)?;
+        Ok(Some((Found::File(file), Reached::Load)))
     }
 
     /// `PPtr.deref` from an object in `from` (`classes/PPtr.py:43-90`), by
@@ -105,21 +121,21 @@ impl Environment {
         if pptr.file_id == 0 {
             return object_in(from, pptr.path_id);
         }
-        let target = self.external(from, pptr.file_id, None)?;
+        let (target, _) = self.external(from, pptr.file_id, None)?;
         Self::object_of(&target, pptr.path_id)
     }
 
     /// The file `from`'s external `file_id` names (`classes/PPtr.py:57-85`):
     /// a sibling in `from`'s container (the bundle's `files`, or for a
-    /// top-level file this Environment's), else `find_file`. `siblings` is a
-    /// container pass's index of bundle names; without it the bundle's
-    /// names are scanned.
+    /// top-level file this Environment's), else `find_file`; and how it was
+    /// reached ([`Reached`]). `siblings` is a container pass's index of
+    /// bundle names; without it the bundle's names are scanned.
     pub(super) fn external(
         &self,
         from: &Arc<SerializedFile>,
         file_id: i32,
         siblings: Option<&mut Siblings>,
-    ) -> Result<Found, DerefError> {
+    ) -> Result<(Found, Reached), DerefError> {
         // :57-60
         let externals = from.externals();
         let external = match pptr::external_index(file_id, externals.len()) {
@@ -153,14 +169,16 @@ impl Environment {
                             .find(|s| lower_eq(s.name.as_bytes(), clean.as_bytes()))
                             .map(|s| s.dir_index),
                     };
-                    hit.map(|i| bundle.entry(i)).transpose()?
+                    hit.map(|i| bundle.entry(i))
+                        .transpose()?
+                        .map(|f| (f, Reached::Sibling))
                 }
                 ParentKind::Web => None,
             },
-            None => self.files_match(&clean),
+            None => self.files_match(&clean).map(|f| (f, Reached::Lookup)),
         };
         match sibling {
-            Some(f) => Ok(Found::File(f)),
+            Some((f, reached)) => Ok((Found::File(f), reached)),
             // :80-85
             None => match self.find(&clean, meter)? {
                 Some(t) => Ok(t),

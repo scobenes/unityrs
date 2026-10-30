@@ -2,6 +2,8 @@
 //! eviction, and the weak handle on the file the LRU keeps open; and
 //! [`open_source`], which reads a source, detects it and parses it.
 
+use std::ops::Deref;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use super::{DepCache, lock};
@@ -36,6 +38,55 @@ pub(crate) struct Dependency {
     /// dependency, so a strong handle back would keep both alive after the
     /// Environment drops.
     pub(crate) cache: Weak<DepCache>,
+    /// How many registry slots reach it ([`DepSlot`]): when the last goes,
+    /// nothing can reach it any more and the LRU lets go of it.
+    pub(crate) slots: AtomicUsize,
+}
+
+/// A registry slot's handle on its dependency, counted in
+/// [`Dependency::slots`]: made with the slot's kind (before the slot, so
+/// a registration refused on the way counts it out again) and dropped with
+/// it. The count is decided in one atomic step, so of two slots that drop
+/// at once exactly one sees itself the last and makes the LRU let go
+/// (review round 2: each tested the dependency's `Arc` count, saw the
+/// other's handle, and neither did, which left the dependency in an LRU
+/// that never evicts).
+#[derive(Debug)]
+pub(crate) struct DepSlot(Arc<Dependency>);
+
+impl DepSlot {
+    pub(crate) fn new(dep: &Arc<Dependency>) -> Self {
+        dep.slots.fetch_add(1, Ordering::AcqRel);
+        Self(dep.clone())
+    }
+}
+
+impl Deref for DepSlot {
+    type Target = Arc<Dependency>;
+
+    fn deref(&self) -> &Arc<Dependency> {
+        &self.0
+    }
+}
+
+impl Drop for DepSlot {
+    fn drop(&mut self) {
+        let last = self.0.slots.fetch_sub(1, Ordering::AcqRel) == 1;
+        if let Some(cache) = self.0.cache.upgrade() {
+            #[cfg(test)]
+            cache.hook(super::Hook::SlotReleased);
+            if last {
+                cache.forget(&self.0);
+            }
+        }
+    }
+}
+
+impl Dependency {
+    /// Whether no registry slot reaches it ([`DepSlot`]).
+    pub(crate) fn unreachable(&self) -> bool {
+        self.slots.load(Ordering::Acquire) == 0
+    }
 }
 
 /// A weak handle on a dependency's top-level file.

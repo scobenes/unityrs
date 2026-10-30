@@ -8,6 +8,7 @@ use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use super::deref::Reached;
 use super::registry::{Rank, load_keys_here};
 use super::{Cab, DerefError, Environment, Found, PPtr, never_evicts};
 use crate::budget::Reservation;
@@ -177,8 +178,29 @@ impl Undone {
 
 /// What one table entry of a preload walk costs the walk's map of the
 /// file's externals: [`HASH_TABLE_SHARES`] buckets.
-const TARGET_SHARE: u64 =
-    HASH_TABLE_SHARES * (size_of::<i32>() + size_of::<Option<Found>>() + 1) as u64;
+const TARGET_SHARE: u64 = HASH_TABLE_SHARES * (size_of::<i32>() + size_of::<Known>() + 1) as u64;
+
+/// A preload walk's answers for its file's externals, each kept only while
+/// UnityPy's next dereference would give the same one: a bundle sibling for
+/// the walk, a lookup of `files` or the registry (found or not) until the
+/// walk's next load, and the resolver's load not at all (the next
+/// dereference looks again, and finds it if the load registered the name
+/// asked for, or loads again if not, as UnityPy's `find_file` does when its
+/// walk matched a longer file name by suffix).
+struct Targets {
+    known: HashMap<i32, Known>,
+    charge: Charge,
+    /// The loads the walk's dereferences have made.
+    loads: u64,
+}
+
+/// One external's answer in [`Targets`].
+struct Known {
+    found: Option<Found>,
+    /// The walk's load count it was found at, or `None` (a bundle sibling,
+    /// or a file id past the externals' end): kept for the walk.
+    at: Option<u64>,
+}
 
 /// A dereference failure as a file-level error (the container preload's
 /// raise): a load failure as it is, any other as [`Error::Deref`].
@@ -316,15 +338,18 @@ impl Environment {
     /// where UnityPy's loop is quadratic (every row walks its whole span):
     /// each table index is dereferenced once ([`Undone`]), at the first row
     /// whose span reaches it, which is the row whose `setdefault` UnityPy
-    /// keeps; each external is resolved once ([`Self::external`]), each
-    /// bundle's names indexed once per pass ([`Siblings`]), and each row's
-    /// path copied once, charged to this file's meter. A repeated
-    /// dereference answers as the first did: the one load it can make is
-    /// `find_file`'s, which UnityPy registers under the path it found, whose
-    /// simplified basename is the name asked, so the next lookup finds it (a
-    /// container it loads, which registers other names, raises at its first
-    /// element). A resolver that names its source otherwise, which UnityPy's
-    /// walk cannot, is loaded once per walk.
+    /// keeps; each external's answer is kept while it holds ([`Targets`]),
+    /// each bundle's names indexed once per pass ([`Siblings`]), and each
+    /// row's path copied once, charged to this file's meter. A dereference
+    /// of an external answered before answers as UnityPy's would:
+    /// `find_file` registers what it loads under the path it found, whose
+    /// basename is the name asked when the walk found that name, and a
+    /// longer one when it matched a file name by suffix (`ab.assets` finds
+    /// `xab.assets`, `environment.py:345-354`), so every dereference of that
+    /// external loads it again and the last copy keeps its key. Where rows'
+    /// spans overlap, an index is still dereferenced once, so such an
+    /// external is loaded once per index, not once per row and index
+    /// (`PARITY.md` section 19.3).
     fn preload(
         &self,
         sf: &Arc<SerializedFile>,
@@ -341,8 +366,11 @@ impl Environment {
         };
         let meter = sf.meter();
         let mut undone: Option<Undone> = None;
-        let mut targets: HashMap<i32, Option<Found>> = HashMap::new();
-        let mut targets_charge = Charge::zero(meter);
+        let mut targets = Targets {
+            known: HashMap::new(),
+            charge: Charge::zero(meter),
+            loads: 0,
+        };
         for (r, row) in container.rows().iter().enumerate() {
             // `start = info.preloadIndex`, `size = info.preloadSize`: a
             // member the AssetInfo lacks raises; one that is no `int` raises
@@ -378,8 +406,7 @@ impl Environment {
                     continue;
                 }
                 self.inner.preload_derefs.fetch_add(1, Ordering::Relaxed);
-                if let Some(target) =
-                    self.preload_target(sf, p, &mut targets, &mut targets_charge, siblings)?
+                if let Some(target) = self.preload_target(sf, p, &mut targets, siblings)?
                     && !self.may_reopen(target.file())
                 {
                     let tf = target.file();
@@ -410,29 +437,45 @@ impl Environment {
     }
 
     /// `pptr.deref()` for a preload element: the object, or `None` where the
-    /// preload skips (`FileNotFoundError`, `KeyError`). Each external is
-    /// resolved once per walk, in `targets` (charged to `charge`).
+    /// preload skips (`FileNotFoundError`, `KeyError`). An external's answer
+    /// is kept in `targets` while it holds (charged to its charge).
     fn preload_target(
         &self,
         sf: &Arc<SerializedFile>,
         p: PPtr,
-        targets: &mut HashMap<i32, Option<Found>>,
-        charge: &mut Charge,
+        targets: &mut Targets,
         siblings: &mut Siblings,
     ) -> Result<Option<ObjectRef>, Error> {
+        let loads = targets.loads;
+        let kept = targets
+            .known
+            .get(&p.file_id)
+            .filter(|k| k.at.is_none_or(|at| at == loads));
         let found = if p.file_id == 0 {
             Some(Found::File(File::Serialized(sf.clone())))
-        } else if let Some(t) = targets.get(&p.file_id) {
-            t.clone()
+        } else if let Some(k) = kept {
+            k.found.clone()
         } else {
-            let t = match self.external(sf, p.file_id, Some(siblings)) {
-                Ok(t) => Some(t),
-                Err(DerefError::FileIdPastEnd { .. } | DerefError::NotFound { .. }) => None,
+            // What to keep: `Some(at)` as `Known::at`, `None` nothing.
+            let (found, keep) = match self.external(sf, p.file_id, Some(siblings)) {
+                Ok((t, Reached::Sibling)) => (Some(t), Some(None)),
+                Ok((t, Reached::Lookup)) => (Some(t), Some(Some(loads))),
+                Ok((t, Reached::Load)) => {
+                    targets.loads = loads.saturating_add(1);
+                    (Some(t), None)
+                }
+                Err(DerefError::FileIdPastEnd { .. }) => (None, Some(None)),
+                Err(DerefError::NotFound { .. }) => (None, Some(Some(loads))),
                 Err(e) => return Err(deref_error(e)),
             };
-            charge.grow(TARGET_SHARE)?;
-            targets.insert(p.file_id, t.clone());
-            t
+            if let Some(at) = keep {
+                if !targets.known.contains_key(&p.file_id) {
+                    targets.charge.grow(TARGET_SHARE)?;
+                }
+                let found = found.clone();
+                targets.known.insert(p.file_id, Known { found, at });
+            }
+            found
         };
         let Some(found) = found else {
             return Ok(None);
