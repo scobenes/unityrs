@@ -327,7 +327,8 @@ impl Parser<'_> {
     }
 
     /// The object table (`ObjectReader.from_reader`, `ObjectReader.py:67-130`),
-    /// writing script indexes back into `types` at 11-16.
+    /// writing script indexes back into `types` at 11-16. Below 16 each
+    /// object's type is found through [`TypesByClass`].
     fn objects(
         &mut self,
         big_id_enabled: i32,
@@ -336,6 +337,7 @@ impl Parser<'_> {
     ) -> Result<MeteredVec<ObjectInfo>, Error> {
         let v = self.version;
         let mut objects = MeteredVec::new(self.meter);
+        let mut by_class: Option<TypesByClass> = None;
         for _ in 0..self.r.read_i32()?.max(0) {
             let r = &mut self.r;
             let path_id = if big_id_enabled != 0 {
@@ -356,8 +358,13 @@ impl Parser<'_> {
             let type_id = r.read_i32()?;
             let (class_id, type_index) = if v < 16 {
                 let class_id = i32::from(r.read_u16()?);
-                let index = types.as_slice().iter().position(|t| t.class_id == type_id);
-                (class_id, index)
+                // A script index written back below changes no class id, so
+                // the index built on the first object holds for every one.
+                let by_class = match &mut by_class {
+                    Some(t) => t,
+                    none => none.insert(TypesByClass::new(types.as_slice(), self.meter)?),
+                };
+                (class_id, by_class.first(type_id))
             } else {
                 // `types[type_id]`: Python indexing.
                 let len = types.len();
@@ -401,6 +408,43 @@ impl Parser<'_> {
             })?;
         }
         Ok(objects)
+    }
+}
+
+/// The types by class id, below format 16, where an object's type is the
+/// first type whose class id is the object's stored type id
+/// (`ObjectReader.py:91-97`, a scan of `types` per object): `(class id,
+/// index)` pairs sorted, built once, on the first object, in a table charged
+/// to the input's meter whose bytes count as the open's work, as a decode's
+/// output does. A lookup is a binary search, so O objects over T types cost
+/// O log T steps, not the O x T of a scan each (round 4's sweep).
+struct TypesByClass {
+    pairs: MeteredVec<(i32, u32)>,
+}
+
+impl TypesByClass {
+    fn new(types: &[SerializedType], meter: &Arc<Meter>) -> Result<Self, Error> {
+        let bytes = types
+            .len()
+            .saturating_mul(std::mem::size_of::<(i32, u32)>());
+        meter.count_decode(u64::try_from(bytes).unwrap_or(u64::MAX))?;
+        let mut pairs = MeteredVec::with_capacity(meter, types.len())?;
+        for (i, t) in types.iter().enumerate() {
+            // The table is a `MeteredVec` of an `i32` count's rows.
+            pairs.push((t.class_id, u32::try_from(i).unwrap_or(u32::MAX)))?;
+        }
+        pairs.as_mut_slice().sort_unstable();
+        Ok(Self { pairs })
+    }
+
+    /// The index of the first type of class `class_id`.
+    fn first(&self, class_id: i32) -> Option<usize> {
+        let pairs = self.pairs.as_slice();
+        let at = pairs.partition_point(|(c, _)| *c < class_id);
+        pairs
+            .get(at)
+            .filter(|(c, _)| *c == class_id)
+            .and_then(|(_, i)| usize::try_from(*i).ok())
     }
 }
 
