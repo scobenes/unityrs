@@ -6,8 +6,10 @@
 Produces the numbers of `PARITY.md` section 19.1, "ShaderConverter fails on 6000.3". For
 every Shader object it records the engine version of its file, the blob version of every
 sub-program in its compressed blobs (read from the blob's offset table, as `ShaderProgram`
-does, but without parsing the rest), whether a property has type Int (5), and what
-`Shader.export()` does: return text, or raise (counted by exception type and by the
+does, but without parsing the rest), whether a property has type Int (5), how many
+sub-program entries its passes hold in `m_SubPrograms` (which ShaderConverter reads) and in
+`m_PlayerSubPrograms` (which it does not), and what `Shader.export()` does: return text,
+with or without a `Program "..."` block, or raise (counted by exception type and by the
 ShaderConverter line that raised). Prints one JSON object. Files are loaded one at a time.
 """
 
@@ -68,6 +70,25 @@ def blob_versions(shader, version) -> list[int]:
     return found
 
 
+PROGRAMS = ("progVertex", "progFragment", "progGeometry", "progHull", "progDomain", "progRayTracing")
+
+
+def sub_program_entries(shader) -> collections.Counter:
+    """Entries of each pass's programs: `m_SubPrograms`, and `m_PlayerSubPrograms` (a list per keyword set)."""
+    found = collections.Counter()
+    form = getattr(shader, "m_ParsedForm", None)
+    for subshader in getattr(form, "m_SubShaders", None) or []:
+        for pass_ in subshader.m_Passes:
+            for name in PROGRAMS:
+                program = getattr(pass_, name, None)
+                if program is None:
+                    continue
+                found["m_SubPrograms"] += len(program.m_SubPrograms or [])
+                player = getattr(program, "m_PlayerSubPrograms", None) or []
+                found["m_PlayerSubPrograms"] += sum(len(group) for group in player)
+    return found
+
+
 def raise_site(e: BaseException) -> str:
     frames = [f for f in traceback.extract_tb(e.__traceback__) if f.filename.endswith("ShaderConverter.py")]
     where = f"ShaderConverter.py:{frames[-1].lineno}" if frames else "elsewhere"
@@ -86,6 +107,7 @@ def main(argv=None) -> int:
     engines = collections.Counter()
     versions = collections.Counter()
     results = collections.Counter()
+    entries = collections.Counter()
     shaders = with_int = files = 0
     for path in inputs(args):
         files += 1
@@ -97,12 +119,13 @@ def main(argv=None) -> int:
             engines[".".join(map(str, obj.version[:2]))] += 1
             shader = obj.read()
             versions.update(blob_versions(shader, obj.version))
+            entries.update(sub_program_entries(shader))
             props = getattr(getattr(shader, "m_ParsedForm", None), "m_PropInfo", None)
             if props is not None and any(p.m_Type == INT_PROPERTY for p in props.m_Props):
                 with_int += 1
             try:
-                shader.export()
-                results["text"] += 1
+                text = shader.export()
+                results["text with a Program block" if 'Program "' in text else "text with no Program block"] += 1
             except Exception as e:  # noqa: BLE001 - the survey counts every failure
                 results[raise_site(e)] += 1
         del env
@@ -115,6 +138,7 @@ def main(argv=None) -> int:
             "sub_programs": sum(versions.values()),
             "sub_program_versions": {str(k): v for k, v in sorted(versions.items())},
             "shaders_with_an_int_property": with_int,
+            "pass_sub_program_entries": {k: entries[k] for k in ("m_SubPrograms", "m_PlayerSubPrograms")},
             "export": dict(sorted(results.items())),
         },
         sys.stdout,

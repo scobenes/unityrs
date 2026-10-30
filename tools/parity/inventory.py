@@ -12,13 +12,19 @@ The groups, and how PARITY.md names a symbol of each, inside a code span (backti
 - `functions`, every public module-level function: `Module.function`
   (`ImportHelper.check_file_type`), where `Module` is the file's name without `.py`,
   or the package's name for an `__init__.py`.
-- `data`, every public name a module assigns at its top level whose value is not a
+- `data`, every public name a module binds at its top level whose value is not a
   class, function, module or typing construct (tables, registries, settings,
   caches): `Module.NAME` (`CompressionHelper.DECOMPRESSION_MAP`), `Module` as above.
+  The top level includes the blocks of its `if`, `for`, `while`, `try`, `with` and
+  `match` statements, and a `for` loop's target is bound too (`Texture2DConverter.tf`);
+  a name bound only where the import does not run is not the module's.
 - `methods`, every public callable or property a class defines in its own body
   (`Environment.load_file`), for every class UnityPy defines; for the classes of
   `classes/generated.py`, the members a `classes/legacy_patch` module adds
   (`Texture2D.set_image`). Inherited members are named under the class that defines them.
+  A special method (`PPtr.__bool__`, `PPtr.__eq__`) is public too, where a UnityPy module's
+  own code defines it: not one attrs, `dataclasses`, `namedtuple` or `enum` generates, nor
+  the constructor's `__init__` and `__new__`, which calling the class runs.
 - `fields`, every public attrs field a class declares itself, for every attrs class
   UnityPy defines, the generated classes included: `Class.field` (`GameObject.m_Name`).
 - `attributes`, every other public attribute of a class UnityPy defines outside
@@ -30,16 +36,26 @@ The groups, and how PARITY.md names a symbol of each, inside a code span (backti
 - `exports`, every public name a package's `__init__.py` holds that it imports from
   another UnityPy module or assigns as an alias: the dotted path from `UnityPy`
   (`UnityPy.files.File`, `UnityPy.load`). A package's own submodules are `modules`.
+- `aliases`, every public name a module other than a package's `__init__.py` binds at its
+  top level to a class or function that another UnityPy module, or UnityPyBoost, defines and
+  does not itself bind under that name: `Module.name` (`TypeTreeHelper.read_typetree_boost`,
+  `Texture2DConverter.TF`). An alias of another library's object (`TypeTreeNode.Lock`) is not
+  UnityPy's, and a name the defining module binds too (`generated.float3`, imported from
+  `classes/math.py`) is that module's.
 - `boost`, every public name UnityPyBoost exports, and every public member its classes
-  define: `UnityPyBoost.read_typetree`, `UnityPyBoost.TypeTreeNode.m_Level`.
+  define: `UnityPyBoost.read_typetree`, `UnityPyBoost.TypeTreeNode.m_Level`. A special method
+  a class's C type defines (`UnityPyBoost.TypeTreeNode.__repr__`) counts too, the constructor's
+  `__init__` and `__new__` aside.
 - `enum_members`, every member of every enum UnityPy defines except `TextureFormat`:
   its name and value, as a code span `` `NAME = value` `` in a table column headed
   `values`, on the row whose first code span is the enum (`` `BuildTarget` ``).
 - `texture_formats`, every `TextureFormat` member: a row of the TextureFormat matrix (the
   table whose header starts `value | format`) whose `format` cell is `` `Name` `` and whose
-  `value` cell is its value. A row of any other table names no format.
+  `value` cell is its value. A row of any other table names no format, and a second table
+  with the matrix's header fails the check, since either could then be the matrix. So do two
+  matrix rows with one format name or one value, since either row could then be the format's.
 
-Out of scope: private names (a leading underscore), and an attribute that only code
+Out of scope: private names (a leading underscore, special methods aside), and an attribute that only code
 outside the class sets (`obj.x = ...` in another module, or `setattr`), because the
 collector reads a class's own body and methods. The generated classes' attributes are
 their attrs fields: the one `legacy_patch` function that assigns through `self`
@@ -91,11 +107,12 @@ GROUPS = (
     "fields",
     "attributes",
     "exports",
+    "aliases",
     "boost",
     "enum_members",
     "texture_formats",
 )
-DOTTED_GROUPS = ("classes", "functions", "data", "methods", "fields", "attributes", "exports", "boost")
+DOTTED_GROUPS = ("classes", "functions", "data", "methods", "fields", "attributes", "exports", "aliases", "boost")
 COMPACT_COLUMNS = ("fields", "members", "attributes")
 VALUES_COLUMN = "values"
 ENUM_VALUE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*) = (-?[0-9]+)")
@@ -123,6 +140,33 @@ def _defined_in(value, prefix: str) -> bool:
     return (getattr(func, "__module__", None) or "").startswith(prefix)
 
 
+# Calling the class runs these: the class's own name stands for them.
+CONSTRUCTORS = ("__init__", "__new__")
+
+
+def _special_method(member: str, value, root: Path) -> bool:
+    """A special method (`__eq__`) whose code a UnityPy module holds: not one that attrs, `dataclasses`,
+    `namedtuple` or `enum` generates (their code lives in a string or in the standard library), nor a constructor."""
+    if not (member.startswith("__") and member.endswith("__") and len(member) > 4) or member in CONSTRUCTORS:
+        return False
+    func = value.fget if isinstance(value, property) else getattr(value, "__func__", value)
+    code = getattr(func, "__code__", None)
+    return code is not None and Path(code.co_filename).resolve().is_relative_to(root)
+
+
+def _unpacked(targets) -> list:
+    """Assignment targets with tuples, lists and starred names unpacked."""
+    out = []
+    for target in targets:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            out += _unpacked(target.elts)
+        elif isinstance(target, ast.Starred):
+            out += _unpacked([target.value])
+        else:
+            out.append(target)
+    return out
+
+
 def _targets(node) -> list:
     """What an assignment statement binds, tuples unpacked; nothing for any other node."""
     if isinstance(node, ast.Assign):
@@ -131,22 +175,52 @@ def _targets(node) -> list:
         targets = [node.target]
     else:
         return []
-    return [name for target in targets for name in (target.elts if isinstance(target, ast.Tuple) else [target])]
+    return _unpacked(targets)
 
 
-def _bound_names(body) -> list[str]:
-    """The public names a block of statements assigns or annotates (`X = ...`, `X: T`, `X, Y = ...`)."""
-    return [
+# The compound statements whose blocks run in the scope around them; a `def`'s or a class's body has its own.
+BLOCKS = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.TryStar, ast.With, ast.AsyncWith, ast.Match)
+
+
+def _block_bindings(body, augmented: bool) -> list:
+    """The targets a block of statements binds in its own scope: its assignments (augmented ones only when asked),
+    and those of the blocks of its `if`, `for`, `while`, `try`, `with` and `match` statements, a `for` loop's target
+    and a `with`'s `as` targets included (an `except ... as` name is deleted when its handler ends)."""
+    out = []
+    for node in body:
+        if augmented or not isinstance(node, ast.AugAssign):
+            out += _targets(node)
+        if not isinstance(node, BLOCKS):
+            continue
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            out += _unpacked([node.target])
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            out += _unpacked([item.optional_vars for item in node.items if item.optional_vars is not None])
+        blocks = [getattr(node, "body", [])]  # in source order: a `try`'s handlers before its `else`
+        blocks += [handler.body for handler in getattr(node, "handlers", [])]
+        blocks += [case.body for case in getattr(node, "cases", [])]
+        blocks += [getattr(node, field, []) for field in ("orelse", "finalbody")]
+        for block in blocks:
+            out += _block_bindings(block, augmented)
+    return out
+
+
+def _bound_names(body, augmented: bool = True) -> list[str]:
+    """The public names a block of statements assigns or annotates (`X = ...`, `X: T`, `X, Y = ...`), in its
+    nested `if`, `for`, `while`, `try`, `with` and `match` blocks too, and a `for` loop's or a `with`'s targets."""
+    names = [
         target.id
-        for node in body
-        for target in _targets(node)
+        for target in _block_bindings(body, augmented)
         if isinstance(target, ast.Name) and not target.id.startswith("_")
     ]
+    return list(dict.fromkeys(names))
 
 
 def _assigned_names(source: str) -> list[str]:
-    """The public names a module's top level assigns (`X = ...`, `X: T = ...`, `X, Y = ...`)."""
-    return _bound_names(node for node in ast.parse(source).body if not isinstance(node, ast.AugAssign))
+    """The public names a module's top level binds (`X = ...`, `X: T = ...`, `X, Y = ...`, `for X in ...`), inside
+    its `if`, `for`, `while`, `try`, `with` and `match` blocks too. A name bound only in a block the import does
+    not run (`if __name__ == "__main__":`) is not the module's: `collect` keeps the names the module holds."""
+    return _bound_names(ast.parse(source).body, augmented=False)
 
 
 def _class_defs(source: str) -> dict[str, ast.ClassDef]:
@@ -190,6 +264,14 @@ def _origin(value) -> str | None:
     if inspect.isclass(value) or inspect.isroutine(value):
         return getattr(value, "__module__", None)
     return None
+
+
+def _boost_special_method(member: str, value) -> bool:
+    """A special method a UnityPyBoost class's C type defines in its own slots (`__repr__`, `__del__`): its type's
+    `__dict__` holds a callable for it. The constructor's `__init__` and `__new__` are left out, as for UnityPy's own
+    classes."""
+    special = member.startswith("__") and member.endswith("__") and len(member) > 4
+    return special and member not in CONSTRUCTORS and callable(value)
 
 
 def _modules(root: Path):
@@ -242,7 +324,7 @@ def collect() -> dict:
                 add("functions", f"{label}.{name}", f"{dotted}.{name}")
                 function_names[id(value)] = f"{label}.{name}"
         for name in _assigned_names(source):
-            if _is_data(getattr(module, name)):
+            if hasattr(module, name) and _is_data(getattr(module, name)):
                 add("data", f"{label}.{name}", f"{dotted}.{name}")
 
     # Package re-exports: what `UnityPy.files.File` or `UnityPy.load` reach.
@@ -270,7 +352,7 @@ def collect() -> dict:
     for cls, name in classes:
         generated = cls.__module__ == GENERATED
         for member, attr in vars(cls).items():
-            if member.startswith("_") or not _is_member(attr):
+            if not _is_member(attr) or (member.startswith("_") and not _special_method(member, attr, root)):
                 continue
             if generated and not _defined_in(attr, LEGACY_PATCH):
                 continue
@@ -314,14 +396,34 @@ def collect() -> dict:
             add("attributes", f"{name}.{attribute}", *(f"{p}.{attribute}" for p in class_paths[id(cls)]))
 
     boost = importlib.import_module("UnityPy.UnityPyBoost")
+    boost_objects = {id(getattr(boost, name)) for name in dir(boost) if not name.startswith("_")}
+
+    # Aliases: a module's name for a class or function defined elsewhere in UnityPy or in UnityPyBoost, under a
+    # name its defining module does not bind (`TF = TextureFormat`, `import read_typetree as read_typetree_boost`).
+    for rel, dotted, module, _source in modules:
+        if rel.endswith("__init__.py"):
+            continue  # a package's names are exports
+        for name, value in vars(module).items():
+            if name.startswith("_") or not (inspect.isclass(value) or inspect.isroutine(value)):
+                continue
+            origin = _origin(value) or ""
+            if id(value) in boost_objects:
+                home = boost
+            elif origin.startswith("UnityPy") and origin != module.__name__:
+                home = sys.modules.get(origin)
+            else:
+                continue
+            if getattr(home, name, None) is not value:
+                add("aliases", f"{_module_label(dotted)}.{name}", f"{dotted}.{name}")
+
     for name in sorted(dir(boost)):
         if name.startswith("_"):
             continue
         add("boost", f"UnityPyBoost.{name}", f"UnityPy.UnityPyBoost.{name}")
         value = getattr(boost, name)
         if inspect.isclass(value):
-            for member in vars(value):
-                if not member.startswith("_"):
+            for member, attr in vars(value).items():
+                if not member.startswith("_") or _boost_special_method(member, attr):
                     add("boost", f"UnityPyBoost.{name}.{member}", f"UnityPy.UnityPyBoost.{name}.{member}")
 
     groups["texture_formats"] = [[member.name, member.value] for member in TextureFormat]
@@ -430,14 +532,30 @@ class Mentions:
         return any((name, value) in self.values for name in self._spellings(short, full))
 
 
+MATRIX_HEADER = ["value", "format"]
+
+
 def texture_rows(text: str) -> dict[str, dict[str, str]]:
-    """The TextureFormat matrix (the table whose header starts `value | format`): cells by header, per format."""
+    """The TextureFormat matrix (the table whose header starts `value | format`): cells by header, per format.
+
+    Raises ValueError when more than one table has that header, since either could then be the matrix, and when
+    two rows give one format name or one value, since either row's claims could then be the format's.
+    """
+    matrices = [(header, body) for header, body in tables(text) if header[:2] == MATRIX_HEADER]
+    if len(matrices) > 1:
+        raise ValueError(f"{len(matrices)} tables have the matrix's header `value | format`; only the matrix may")
     rows: dict[str, dict[str, str]] = {}
-    for header, body in tables(text):
-        if header[:2] == ["value", "format"]:
-            for cells in body:
-                row = dict(zip(header, cells, strict=False))
-                rows[row["format"].strip("`")] = row
+    values: dict[str, str] = {}
+    for header, body in matrices:
+        for cells in body:
+            row = dict(zip(header, cells, strict=False))
+            name = row["format"].strip("`")
+            if name in rows:
+                raise ValueError(f"two matrix rows name the format `{name}`")
+            if row["value"] in values:
+                raise ValueError(f"two matrix rows give the value {row['value']}: `{values[row['value']]}`, `{name}`")
+            rows[name] = row
+            values[row["value"]] = name
     return rows
 
 
@@ -450,7 +568,11 @@ def missing(symbols: dict, text: str) -> dict[str, list[str]]:
         if group == "modules":
             absent = [rel for rel in symbols.get(group, []) if rel not in seen.paths]
         elif group == "texture_formats":
-            matrix = texture_rows(text)
+            try:
+                matrix = texture_rows(text)
+            except ValueError as e:
+                result[group] = [str(e)]
+                continue
             absent = [
                 f"{name} ({value})"
                 for name, value in symbols.get(group, [])

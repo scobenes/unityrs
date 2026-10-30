@@ -13,21 +13,23 @@
 # manylinux wheels, and the pin is the manylinux_2_28 one the image holds. No
 # sdist is allowed, since a local build would not be the image's binary.
 #
-# Three pins are no dependency of the stack, but the stack imports them
+# Four pins are no dependency of the stack, but the stack imports them
 # when they are there, and the image holds them, so they are pinned too: the
 # oracle is the image's stack, these included.
 # - numpy: UnityPy's export/SpriteHelper.py solves a sprite's affine transform
 #   with numpy, and with a pure-Python solver otherwise, and the two render
 #   different pixels.
 # - cffi (with its dependency pycparser): Pillow's PIL/Image.py imports it.
+# - pycryptodome: UnityPy's helpers/ArchiveStorageManager.py imports its
+#   Crypto.Cipher.AES to decrypt a UnityCN bundle, once a decryption key is
+#   set; without it no UnityCN bundle loads. Its wheel is abi3 (cp37-abi3),
+#   the one the image holds.
 # - zstandard: fsspec's compression.py imports it, to register a codec.
 # unitypy_dump.py refuses to dump when it loads any other module from outside
 # the standard library, at import or while it dumps, or a copy of a
 # standard-library module from outside its folder, even at start-up
 # (oracle_env.LoadedModules), and it refuses PYTHONPATH (start_up_problems),
-# so another package the image holds cannot change a dump unseen. Of those,
-# UnityPy can import pycryptodome's Crypto (UnityCN decryption), but only once
-# a decryption key is set, which the oracle never does.
+# so another package the image holds cannot change a dump unseen.
 #
 # The pinned set is the whole oracle: tools/parity/oracle_env.py checks that an
 # interpreter holds each pin's wheel, its version and every file (--exact: and
@@ -74,6 +76,9 @@ pillow==9.5.0 \
 pycparser==2.21 \
     --hash=sha256:8ee45429555515e1f6b185e78100aea234072576aa43ab53aefcae078162fca9
     # via cffi
+pycryptodome==3.23.0 \
+    --hash=sha256:c8987bd3307a39bc03df5c8e0e3d8be0c4c3518b7f044b0f4c15d1aa78f52575
+    # imported by unitypy (helpers/ArchiveStorageManager.py) to decrypt UnityCN; the image holds it
 pyfmodex==0.7.2 \
     --hash=sha256:1c42112b788e80ee7b4b57ae25bbbc0a98eb1e32a8e7c9e1246698cdf72efa9d
     # via fmod-toolkit

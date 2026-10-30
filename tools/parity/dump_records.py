@@ -196,8 +196,8 @@ def serialized_l1(sf):
         "script_types": [[s.local_serialized_file_index, s.local_identifier_in_file] for s in sf.script_types],
         # FileIdentifier's own __init__ sets temp_empty from format 6 and guid
         # and type from format 5 only (files/SerializedFile.py:78-83), and its
-        # slots leave the others unset (an AttributeError): each is recorded as
-        # null, as the spec has a member its format lacks.
+        # slots leave the others unset (an AttributeError, PARITY.md 7.1): each
+        # is recorded as null, as the spec has a member its format lacks.
         "externals": [
             [
                 C.enc_name(getattr(e, "temp_empty", None)),

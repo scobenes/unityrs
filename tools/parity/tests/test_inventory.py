@@ -37,15 +37,28 @@ GROUP_SIZES = {
     "modules": 78,
     "classes": 955,
     "functions": 126,
-    "data": 65,
-    "methods": 228,
+    "data": 73,
+    "methods": 267,
     "fields": 8456,
     "attributes": 145,
     "exports": 924,
-    "boost": 15,
+    "aliases": 4,
+    "boost": 17,
     "enum_members": 741,
     "texture_formats": 78,
 }
+
+# The special methods UnityPy's own code defines, constructors aside: 39 of `methods`' 267.
+SPECIAL_METHODS = [
+    *(f"ContainerHelper.__{name}__" for name in ("contains", "delitem", "getattr", "getitem", "iter", "len")),
+    *("ContainerHelper.__setitem__", "ContainerHelper.__str__", "EndianBinaryReader_Streamable_LocalFile.__del__"),
+    *("File.__getitem__", "File.__repr__", "FileIdentifier.__repr__", "Object.__copy__", "Object.__repr__"),
+    *("ObjectReader.__getattr__", "ObjectReader.__repr__", "PPtr.__bool__", "PPtr.__eq__", "PPtr.__hash__"),
+    *("Quaternionf.__repr__", "Vector2f.__repr__", "Vector3f.__repr__", "Vector4f.__repr__", "UnknownObject.__repr__"),
+    *("TpkUnityClass.__eq__", "TpkUnityClass.__hash__", "TpkUnityNode.__eq__", "TpkUnityNode.__hash__"),
+    "TypeTreeNode.__eq__",
+    *(f"UnityVersion.__{name}__" for name in ("eq", "ne", "lt", "le", "gt", "ge", "hash", "getitem", "repr", "str")),
+]
 
 
 SYMBOLS = {
@@ -57,6 +70,7 @@ SYMBOLS = {
     "fields": ["GameObject.m_Name", "GameObject.m_Layer", "ObjectReader.path_id"],
     "attributes": ["Environment.files", "SerializedFile.objects"],
     "exports": ["UnityPy.files.File", "UnityPy.load"],
+    "aliases": ["TypeTreeHelper.read_typetree_boost"],
     "boost": ["UnityPyBoost.read_typetree"],
     "enum_members": [["BuildTarget.Switch", 38], ["BuildTarget.XBOX360", 11]],
     "texture_formats": [["Alpha8", 1], ["RGB24", 3]],
@@ -81,6 +95,7 @@ SYMBOLS = {
         "UnityPy.files.File": ["UnityPy.files.File"],
         "UnityPy.load": ["UnityPy.load"],
         "UnityPyBoost.read_typetree": ["UnityPy.UnityPyBoost.read_typetree"],
+        "TypeTreeHelper.read_typetree_boost": ["UnityPy.helpers.TypeTreeHelper.read_typetree_boost"],
     },
 }
 
@@ -97,6 +112,7 @@ COMPLETE = """
 | `ObjectReader.path_id` | a field written whole |
 | `UnityPy.load` | a package export |
 | `UnityPyBoost.read_typetree` | a Boost export |
+| `TypeTreeHelper.read_typetree_boost` | a module's alias of it |
 | `Environment.files` | an attribute written whole |
 
 | class | bases | fields | attributes |
@@ -139,7 +155,30 @@ class MatchingRules(unittest.TestCase):
 
     def test_assigned_names_are_the_public_top_level_targets(self):
         source = "A = 1\nB: int = 2\nC, _D = 3, 4\n_E = 5\nif A:\n    F = 6\ndef g():\n    H = 7\n"
-        self.assertEqual(inventory._assigned_names(source), ["A", "B", "C"])
+        self.assertEqual(inventory._assigned_names(source), ["A", "B", "C", "F"])
+        # A module's top level runs the blocks of its compound statements in its own scope: a loop's target, what
+        # a loop, `if`, `while`, `try`, `with` or `match` block binds, at any depth, are module globals. A
+        # function's or a class's body, an augmented assignment and an `except ... as` name bind none.
+        source = (
+            "for tf in T:\n"
+            "    if tf:\n"
+            "        split, [*rest] = tf, ()\n"
+            "    else:\n"
+            "        block = None\n"
+            "while W:\n    w = 1\nelse:\n    w2 = 2\n"
+            "try:\n    t = 1\nexcept E as err:\n    e = 2\nelse:\n    t2 = 3\nfinally:\n    f = 4\n"
+            "with open(p) as (h, _h):\n    k = 1\n"
+            "match M:\n    case 1:\n        m = 1\n"
+            "class C:\n    c = 1\n"
+            "def g():\n    for x in y:\n        z = 1\n"
+            "A += 1\n"
+            "if A:\n    A += 2\n"
+            "for tf in U:\n    pass\n"
+        )
+        self.assertEqual(
+            inventory._assigned_names(source),
+            ["tf", "split", "rest", "block", "w", "w2", "t", "e", "t2", "f", "h", "k", "m"],
+        )
 
     def test_a_module_needs_its_whole_path(self):
         text = COMPLETE.replace("`export/Texture2DConverter.py`", "`Texture2DConverter.py`")
@@ -153,7 +192,7 @@ class MatchingRules(unittest.TestCase):
             COMPLETE.replace("| 3 | `RGB24` |", "| 3 | `RGB24` and more |"),
             COMPLETE.replace("| 3 | `RGB24` |", "| 13 | `RGB24` |"),
             COMPLETE.replace(matrix_row, "") + "\n`RGB24` is format 3.\n",
-            # A row of another table names no format: the package table, or a table of the matrix's shape.
+            # A row of another table names no format: the package table, or a table of the matrix's width.
             COMPLETE.replace(matrix_row, "").replace(
                 "| `UnityPy.files` | `File` |", "| `UnityPy.files` | `File` |\n| 3 | `RGB24` |"
             ),
@@ -161,6 +200,35 @@ class MatchingRules(unittest.TestCase):
         ):
             with self.subTest(text=text[-60:]):
                 self.assertEqual(inventory.missing(SYMBOLS, text), {"texture_formats": ["RGB24 (3)"]})
+        # A second table with the matrix's header fails the check, whether it holds the row the matrix lacks, a
+        # copy of one the matrix has, or two columns only.
+        for text in (
+            COMPLETE.replace(matrix_row, "") + "\n| value | format | result |\n|---|---|---|\n" + matrix_row + "\n",
+            COMPLETE.replace(matrix_row, "") + "\n| value | format |\n|---|---|\n| 3 | `RGB24` |\n",
+            COMPLETE + "\n| value | format |\n|---|---|\n| 3 | `RGB24` |\n",
+        ):
+            with self.subTest(text=text[-60:]):
+                self.assertEqual(
+                    inventory.missing(SYMBOLS, text),
+                    {"texture_formats": ["2 tables have the matrix's header `value | format`; only the matrix may"]},
+                )
+            with self.subTest(text=text[-60:]), self.assertRaisesRegex(ValueError, "2 tables"):
+                inventory.texture_rows(text)
+        # Two matrix rows for one format name, or for one value, fail the check: a dict keyed by name keeps only
+        # the later row, so a wrong row before the right one would go unseen.
+        same_name = "two matrix rows name the format `RGB24`"
+        for rows, error in (
+            (["| 3 | `RGB24` | raises |", matrix_row], same_name),
+            ([matrix_row, "| 3 | `RGB24` | raises |"], same_name),
+            (["| 4 | `RGB24` | works |", matrix_row], same_name),
+            ([matrix_row, "| 3 | `RGB24x` | works |"], "two matrix rows give the value 3: `RGB24`, `RGB24x`"),
+            (["| 3 | `RGB24x` | works |", matrix_row], "two matrix rows give the value 3: `RGB24x`, `RGB24`"),
+        ):
+            text = COMPLETE.replace(matrix_row, "\n".join(rows))
+            with self.subTest(rows=rows):
+                self.assertEqual(inventory.missing(SYMBOLS, text), {"texture_formats": [error]})
+            with self.subTest(rows=rows), self.assertRaisesRegex(ValueError, re.escape(error)):
+                inventory.texture_rows(text)
 
     def test_an_enum_member_needs_its_value_in_a_values_column(self):
         for old, new in (
@@ -302,6 +370,11 @@ class MatchingRules(unittest.TestCase):
             "fields": ("`m_Layer`, `m_Name`", "`m_Name`", "GameObject.m_Layer"),
             "exports": ("| `UnityPy.files` | `File` |", "| `UnityPy.files` | |", "UnityPy.files.File"),
             "boost": ("`UnityPyBoost.read_typetree`", "`read_typetree`", "UnityPyBoost.read_typetree"),
+            "aliases": (
+                "`TypeTreeHelper.read_typetree_boost`",
+                "`read_typetree_boost`",
+                "TypeTreeHelper.read_typetree_boost",
+            ),
             "attributes": ("| — | `objects` |", "| — | — |", "SerializedFile.objects"),
             "enum_members": ("`Switch = 38`", "`Switch`", "BuildTarget.Switch (38)"),
             # The whole line: a blank line would end the matrix, and the rows after it would name nothing.
@@ -361,8 +434,25 @@ class AgainstTheOracle(unittest.TestCase):
                 "DirectoryInfo.path",  # a namedtuple field
                 "TypeTreeError.nodes",  # set by an exception's __init__
             ],
-            "boost": ["UnityPyBoost.read_typetree", "UnityPyBoost.TypeTreeNode.m_Level"],  # a C type's member
+            "boost": [
+                "UnityPyBoost.read_typetree",
+                "UnityPyBoost.TypeTreeNode.m_Level",  # a C type's member
+                "UnityPyBoost.TypeTreeNode.__repr__",  # a special method its C type defines (tp_repr)
+            ],
         }
+        # A module's own name for a class or function another UnityPy module or UnityPyBoost defines: the four there
+        # are. Not one: a package's (an export), an alias of another library's object (`TypeTreeNode.Lock`, the
+        # `_thread` lock), or a name the defining module binds too (`generated.float3`, `classes/math.py`'s).
+        self.assertEqual(
+            groups["aliases"],
+            [
+                "ClassIDTypeToClassMap.CIT",
+                "Texture2DConverter.TF",
+                "TypeTreeHelper.read_typetree_boost",
+                "TypeTreeNode.TypeTreeNodeC",
+            ],
+        )
+        self.assertEqual(groups["paths"]["Texture2DConverter.TF"], ["UnityPy.export.Texture2DConverter.TF"])
         for group, names in kinds.items():
             for name in names:
                 self.assertIn(name, groups[group], group)
@@ -380,9 +470,29 @@ class AgainstTheOracle(unittest.TestCase):
         self.assertIn("Environment.load_file", groups["methods"])
         self.assertIn("Texture2D.set_image", groups["methods"])
         self.assertIn("EndianBinaryReader.read_string_to_null", groups["methods"], "a class outside any fixed list")
+        # A special method UnityPy's own code defines is a member. One that attrs (`AimConstraint.__eq__`,
+        # `ColorRGBA.__attrs_init__`), `dataclasses` (`NodeClass.__eq__`), `namedtuple` (`BlockInfo.__getnewargs__`)
+        # or `enum` (`CompressionFlags.__or__`) generates is not, nor is a constructor (`Environment.__init__`).
+        self.assertEqual(sorted(n for n in groups["methods"] if n.split(".")[-1][:2] == "__"), sorted(SPECIAL_METHODS))
+        self.assertEqual(len(SPECIAL_METHODS), 39)
+        self.assertIn("PPtr.__bool__", groups["methods"])
         self.assertIn("UnityPyBoost.read_typetree", groups["boost"])
+        # Of UnityPyBoost's own special members, its TypeTreeNode's `__repr__` and `__del__` (the C type's tp_repr and
+        # tp_finalize) are members; its `__init__` and `__new__` are the constructor, and `__doc__` is no method.
+        boost_special = sorted(n for n in groups["boost"] if n.split(".")[-1][:2] == "__")
+        self.assertEqual(boost_special, ["UnityPyBoost.TypeTreeNode.__del__", "UnityPyBoost.TypeTreeNode.__repr__"])
+        from UnityPy import UnityPyBoost
+
+        self.assertTrue({"__init__", "__new__", "__doc__"} <= set(vars(UnityPyBoost.TypeTreeNode)))
         self.assertIn("CompressionHelper.DECOMPRESSION_MAP", groups["data"])
         self.assertIn("config.FALLBACK_UNITY_VERSION", groups["data"])
+        # Globals a module-level loop binds: its targets and what its body assigns, nested loops included.
+        for name in ("Texture2DConverter.tf", "Texture2DConverter.split", "Texture2DConverter.block_size"):
+            self.assertIn(name, groups["data"])
+        for name in ("endian_s", "reader_type_name", "struct_type_char", "func_name", "struct"):
+            self.assertIn(f"EndianBinaryReader.{name}", groups["data"])
+        # A name bound only in a block the import does not run is not the module's (`t1`, under `__main__`).
+        self.assertNotIn("TpkClassGenerator.t1", groups["data"])
         # Not data: an alias of a class (TF = TextureFormat), a TypeVar, a typing alias.
         for name in ("Texture2DConverter.TF", "ObjectReader.T", "CompressionHelper.ByteString"):
             self.assertNotIn(name, groups["data"])
@@ -431,6 +541,11 @@ class AgainstTheOracle(unittest.TestCase):
             "fields": (r"^(\| `GameObject` \|.*)`m_IsActive`, ", r"\1", "GameObject.m_IsActive"),
             "exports": (r"^(\| `UnityPy\.files` \|.*)`DirectoryInfo`, ", r"\1", "UnityPy.files.DirectoryInfo"),
             "boost": (r"\bUnityPyBoost\.decrypt_block\b", "UnityPyBoost.decrypt_blockX", "UnityPyBoost.decrypt_block"),
+            "aliases": (
+                r"\bTypeTreeHelper\.read_typetree_boost\b",
+                "TypeTreeHelper.read_typetree_boostX",
+                "TypeTreeHelper.read_typetree_boost",
+            ),
             "attributes": (r"^(\| `Environment` \|.*)`local_files`, ", r"\1", "Environment.local_files"),
             "enum_members": (r"^(\| `BuildTarget` \|.*)`Switch = 38`", r"\1`Switch = 39`", "BuildTarget.Switch (38)"),
             "texture_formats": (r"^\| 34 \| `ETC_RGB4` \|", "| 340 | `ETC_RGB4` |", "ETC_RGB4 (34)"),
@@ -440,6 +555,22 @@ class AgainstTheOracle(unittest.TestCase):
             with self.subTest(group):
                 absent = inventory.missing(self.symbols, mutate(self, self.text, pattern, repl))
                 self.assertIn(name, absent.get(group, []))
+        # A special method, named in a row's prose or in an Appendix B `members` cell.
+        for pattern, repl, name in (
+            (r"`PPtr\.__bool__`", "`PPtr.__boolX__`", "PPtr.__bool__"),
+            (r"^(\| `TpkUnityNode` \|.*)`__eq__`, ", r"\1", "TpkUnityNode.__eq__"),
+        ):
+            with self.subTest(name):
+                absent = inventory.missing(self.symbols, mutate(self, self.text, pattern, repl))
+                self.assertEqual(absent, {"methods": [name]})
+        # A special method of UnityPyBoost's C type, named in prose or in its Appendix B `members` cell.
+        for pattern, repl, name in (
+            (r"`UnityPyBoost\.TypeTreeNode\.__repr__`", "`UnityPyBoost.TypeTreeNode.__reprX__`", "__repr__"),
+            (r"^(\| `UnityPyBoost\.TypeTreeNode` \|.*)`__del__`, ", r"\1", "__del__"),
+        ):
+            with self.subTest(name):
+                absent = inventory.missing(self.symbols, mutate(self, self.text, pattern, repl))
+                self.assertEqual(absent, {"boost": [f"UnityPyBoost.TypeTreeNode.{name}"]})
 
     def test_a_name_under_a_wrong_parent_fails_the_check(self):
         cases = [

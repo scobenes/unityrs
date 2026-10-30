@@ -6,6 +6,7 @@ Needs UnityPy 1.25.2 and Pillow 9.5.0 (the oracle image); skipped elsewhere.
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
@@ -65,15 +66,34 @@ class PillowTables(unittest.TestCase):
         self.assertEqual(self.heading_before(printed), "### 15.8 Image files by extension")
 
     def test_libraries_row_is_what_the_writers_call(self):
-        """Section 1: the libraries bundled with Pillow that decide a writer's bytes are those its encoders call;
-        TIFF is written with Pillow's own `raw`, so libtiff decides none."""
-        printed = pillow_tables.libraries()
+        """Section 1: the libraries that decide a writer's bytes are those its encoders call; TIFF is written with
+        Pillow's own `raw`, so libtiff decides none. The row holds what the pinned wheel decides: zlib, which the
+        wheel does not bundle, is the host's, and its version is no part of the row."""
+        found = pillow_tables.encoders()
+        printed = pillow_tables.libraries(found)
         self.assertTrue(printed in self.text.splitlines(), "section 1 has no such row")
         above = self.text[: self.text.index(printed)]
         self.assertEqual([line for line in above.splitlines() if line.startswith("## ")][-1], "## 1. The oracle stack")
-        found = pillow_tables.encoders()
         self.assertEqual(found["TIFF"], {"raw"})
         self.assertEqual(found["PNG"], {"zip"})
+        # Which libraries the wheel bundles, and where this process loads each one from: a bundled one from the
+        # wheel's Pillow.libs, zlib from the host, as any host does.
+        self.assertEqual(
+            {name: pillow_tables.bundled(stem) for name, _, _, stem in pillow_tables.LIBRARIES},
+            {"libjpeg-turbo": True, "libwebp": True, "OpenJPEG": True, "zlib": False, "libtiff": True},
+        )
+        for name, _, _, stem in pillow_tables.LIBRARIES:
+            with self.subTest(name):
+                loaded = pillow_tables.loaded_file(stem)
+                self.assertIsNotNone(loaded)
+                self.assertEqual(Path(loaded).parent.name == "Pillow.libs", pillow_tables.bundled(stem), loaded)
+        # Another zlib on the host (CI's runner has its own) prints the same row; `host` names it.
+        from PIL import features
+
+        version = features.version
+        with mock.patch.object(features, "version", lambda key: "9.9.9" if key == "zlib" else version(key)):
+            self.assertEqual(pillow_tables.libraries(found), printed)
+            self.assertEqual(pillow_tables.host(), f"zlib 9.9.9: {pillow_tables.loaded_file('libz')}")
 
 
 if __name__ == "__main__":
