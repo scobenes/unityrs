@@ -25,7 +25,7 @@ mod line;
 #[cfg(test)]
 mod tests;
 
-pub use line::{end, file_line, header, object_line};
+pub use line::{end, file_line, file_line_into, header, object_line, object_line_into};
 
 /// The format's name and version (section 4.1).
 pub const FORMAT: &str = "unityrs-canonical-dump";

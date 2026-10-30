@@ -30,12 +30,11 @@
 //! [`MAX_DEPTH`] (the reader's own bound, `Limits::max_value_depth`, is far
 //! below it).
 
-use std::fmt::Write as _;
-
 use unityrs_core::value::Map;
 use unityrs_core::{Parsed, PrimArray, Value};
 
 use crate::json::{push_hex, write_name, write_raw, write_value_str};
+use crate::text::Sink;
 
 /// How deep a value may nest before the encoder refuses it. The reader stops
 /// at `Limits::max_value_depth` (512 by default); this bounds the encoder's
@@ -64,13 +63,15 @@ pub fn encode(parsed: &Parsed) -> Result<String, EncodeError> {
     Ok(out)
 }
 
-/// Appends `parsed`'s value as canonical JSON text to `out`. On an error
-/// `out` holds a partial encoding, which the caller drops.
-pub fn encode_into(out: &mut String, parsed: &Parsed) -> Result<(), EncodeError> {
+/// Appends `parsed`'s value as canonical JSON text to `out` (the dump's
+/// records: a charged [`crate::text::Text`], whose refusal its caller
+/// reads). On an error `out` holds a partial encoding, which the caller
+/// drops.
+pub fn encode_into<S: Sink>(out: &mut S, parsed: &Parsed) -> Result<(), EncodeError> {
     value(out, parsed, parsed.value(), 0)
 }
 
-fn value(out: &mut String, p: &Parsed, v: &Value, depth: usize) -> Result<(), EncodeError> {
+fn value<S: Sink>(out: &mut S, p: &Parsed, v: &Value, depth: usize) -> Result<(), EncodeError> {
     if depth > MAX_DEPTH {
         return Err(EncodeError(format!(
             "value nested deeper than {MAX_DEPTH} levels"
@@ -104,7 +105,7 @@ fn value(out: &mut String, p: &Parsed, v: &Value, depth: usize) -> Result<(), En
     Ok(())
 }
 
-fn seq(out: &mut String, p: &Parsed, items: &[Value], depth: usize) -> Result<(), EncodeError> {
+fn seq<S: Sink>(out: &mut S, p: &Parsed, items: &[Value], depth: usize) -> Result<(), EncodeError> {
     out.push('[');
     for (i, item) in items.iter().enumerate() {
         if i > 0 {
@@ -118,7 +119,12 @@ fn seq(out: &mut String, p: &Parsed, items: &[Value], depth: usize) -> Result<()
 
 /// `_seq` on a list read item by item: packed when every item is a float of
 /// one width (the element node is `float` or `double`), else an array.
-fn list(out: &mut String, p: &Parsed, items: &[Value], depth: usize) -> Result<(), EncodeError> {
+fn list<S: Sink>(
+    out: &mut S,
+    p: &Parsed,
+    items: &[Value],
+    depth: usize,
+) -> Result<(), EncodeError> {
     if !items.is_empty() {
         if items.iter().all(|v| matches!(v, Value::F32(_))) {
             out.push_str("{\"t\":\"f32s\",\"v\":\"");
@@ -146,8 +152,8 @@ fn list(out: &mut String, p: &Parsed, items: &[Value], depth: usize) -> Result<(
 
 /// `_seq` on a primitive run: an empty one is `[]`; `float`, `double` and
 /// `UInt8`/`char` runs pack; every other run is a JSON array.
-fn prims(out: &mut String, a: &PrimArray) {
-    fn ints<T: std::fmt::Display>(out: &mut String, v: &[T]) {
+fn prims<S: Sink>(out: &mut S, a: &PrimArray) {
+    fn ints<S: Sink, T: std::fmt::Display>(out: &mut S, v: &[T]) {
         out.push('[');
         for (i, x) in v.iter().enumerate() {
             if i > 0 {
@@ -199,7 +205,7 @@ fn prims(out: &mut String, a: &PrimArray) {
 
 /// `_dict`: each key's name from the list the map names, by the
 /// metadata-string rule.
-fn dict(out: &mut String, p: &Parsed, m: &Map, depth: usize) -> Result<(), EncodeError> {
+fn dict<S: Sink>(out: &mut S, p: &Parsed, m: &Map, depth: usize) -> Result<(), EncodeError> {
     let list = usize::try_from(m.list())
         .ok()
         .and_then(|i| p.lists().get(i))

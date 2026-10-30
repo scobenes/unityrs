@@ -59,6 +59,20 @@ impl File {
             Self::Raw(f) => f.meter(),
         }
     }
+
+    /// What `check_file_type` called the bytes [`parse_file`] built this
+    /// from, kept so a caller never detects them again (a gzip entry's
+    /// detection inflates it): each kind but a reader has one type, and a
+    /// reader keeps its own ([`RawFile::file_type`]).
+    #[must_use]
+    pub fn file_type(&self) -> FileType {
+        match self {
+            Self::Serialized(_) => FileType::AssetsFile,
+            Self::Bundle(_) => FileType::BundleFile,
+            Self::Web(_) => FileType::WebFile,
+            Self::Raw(f) => f.file_type(),
+        }
+    }
 }
 
 /// A file UnityPy keeps as a reader.
@@ -68,25 +82,44 @@ pub struct RawFile {
     pub name: RawStr,
     /// Its bytes (a slice of the parent's buffer for an entry).
     pub data: Bytes,
+    /// What `check_file_type` called `data`: `ResourceFile`, a zip entry's
+    /// `Zip`, or an `AssetsFile` the name rule keeps as a reader.
+    ty: FileType,
     /// The handle's own allocation, charged to the input.
     charge: Charge,
 }
 
 impl RawFile {
-    /// A raw file of `data` under `name`, its allocation charged to `meter`
-    /// first (`data` is a slice of a buffer already charged, or the
-    /// caller's).
-    pub fn new(name: RawStr, data: Bytes, meter: &Arc<Meter>) -> Result<Arc<Self>, ChargeError> {
+    /// A raw file of `data` under `name`, which `check_file_type` called
+    /// `ty`, its allocation charged to `meter` first (`data` is a slice of a
+    /// buffer already charged, or the caller's).
+    pub fn new(
+        name: RawStr,
+        data: Bytes,
+        ty: FileType,
+        meter: &Arc<Meter>,
+    ) -> Result<Arc<Self>, ChargeError> {
         let charge = meter.charge(heap_cost(
             u64::try_from(std::mem::size_of::<Self>() + 16).unwrap_or(u64::MAX),
         ))?;
-        Ok(Arc::new(Self { name, data, charge }))
+        Ok(Arc::new(Self {
+            name,
+            data,
+            ty,
+            charge,
+        }))
     }
 
     /// The meter of the input it belongs to.
     #[must_use]
     pub fn meter(&self) -> &Arc<Meter> {
         self.charge.meter()
+    }
+
+    /// What `check_file_type` called its bytes.
+    #[must_use]
+    pub fn file_type(&self) -> FileType {
+        self.ty
     }
 }
 
@@ -153,6 +186,6 @@ pub fn parse_file(
         ParsedAs::BundleFile => File::Bundle(BundleFile::open(name, data, parent, meter, ctx)?),
         ParsedAs::WebFile => File::Web(WebFile::open(name, data, parent, meter, ctx)?),
         ParsedAs::Zip => return Err(Error::Unsupported(Unsupported::Zip)),
-        ParsedAs::Raw | ParsedAs::Error => File::Raw(RawFile::new(name, data, meter)?),
+        ParsedAs::Raw | ParsedAs::Error => File::Raw(RawFile::new(name, data, ty, meter)?),
     })
 }

@@ -5,15 +5,21 @@
 //! - An input longer than `max_input_bytes` is refused unread, and one whose
 //!   buffer cannot be had is a `crash` record; the run goes on
 //!   (`unityrs_dump::read`).
+//! - An input's records count toward its memory: past `max_input_memory`
+//!   they are its `InputMemory` refusal, and refused by the budget its
+//!   `crash` record; the run goes on (`unityrs_dump::input`).
 //! - Nested containers: lifted, the container depth is
 //!   [`LIFTED_CONTAINER_DEPTH`], past what UnityPy reads, and a nest that
 //!   deep dumps whole on the worker stack [`worker_stack`] names, at `-j 1`
 //!   and `-j 2`, with or without the reverse pre-pass; one level more is the
-//!   `ContainerDepth` refusal.
+//!   `ContainerDepth` refusal. Its container term alone pays for the
+//!   nesting: the nest dumps on the least stack of its leaf plus
+//!   [`CONTAINER_LEVEL_STACK`] a level.
 //!
-//! `container_stack_measured` (ignored) finds the least stack such a nest
-//! needs, by bisection over child processes (a thread that overflows its
-//! stack aborts its process), and prints what a level costs:
+//! `least` finds the least stack a nest needs, by bisection over child
+//! processes (a thread that overflows its stack aborts its process);
+//! `container_stack_measured` (ignored) prints it at several depths, and
+//! what a level costs:
 //!
 //!     scripts/dev cargo test -p unityrs-dump --test limits
 //!     scripts/dev cargo test -p unityrs-dump --test limits -- --ignored --nocapture
@@ -28,13 +34,13 @@ use serde_json::Value as Json;
 use unityrs_core::budget::Counting;
 use unityrs_core::limits::Limits;
 use unityrs_core::{FileContext, LimitKind};
-use unityrs_dump::run::{RunOptions, run, worker_stack};
+use unityrs_dump::run::{CONTAINER_LEVEL_STACK, RunOptions, run, worker_stack};
 use unityrs_dump::select::Selection;
 use unityrs_dump::{DumpOptions, LIFTED_CONTAINER_DEPTH, Levels};
 use unityrs_testkit::blob::NodeSpec;
 use unityrs_testkit::bundle::{BundleSpec, EntrySpec, TestCodec, build};
 use unityrs_testkit::depth::{Depth, Row, Wrap, Z_ROWS};
-use unityrs_testkit::serialized::{TypeSpec, build as build_serialized, one_object};
+use unityrs_testkit::serialized::{ObjectSpec, TypeSpec, build as build_serialized, one_object};
 
 /// The limit refusals in `text`, as `tools/parity/g3b.py`'s `LIMIT`
 /// (`\blimit (\w+): (\d+) > (\d+)`) finds them anywhere in a note.
@@ -358,6 +364,159 @@ fn an_input_too_large_to_hold_is_a_crash_record_and_the_run_goes_on() {
     assert_eq!(records.last().unwrap()["rec"], "end");
 }
 
+/// A SerializedFile of `objects` objects, each 4 data bytes that read as a
+/// vector of `count` empty structs: its records are thousands of times its
+/// size (the dump writes every struct), its parse of one object at a time
+/// a fraction of them.
+fn empties(objects: i64, count: i32) -> Vec<u8> {
+    empties_of(114, objects, count)
+}
+
+/// [`empties`] whose objects are of class `class_id`.
+fn empties_of(class_id: i32, objects: i64, count: i32) -> Vec<u8> {
+    let tree = vec![
+        NodeSpec::new(0, "MyThing", "Base"),
+        NodeSpec::new(1, "vector", "v"),
+        NodeSpec {
+            type_flags: 1,
+            ..NodeSpec::new(2, "Array", "Array")
+        },
+        NodeSpec::new(3, "int", "size").size(4),
+        NodeSpec::new(3, "Empty", "data"),
+    ];
+    let mut spec = one_object(class_id, tree, count.to_le_bytes().to_vec());
+    let first = spec.objects[0].clone();
+    spec.objects = (1..=objects)
+        .map(|path_id| ObjectSpec {
+            path_id,
+            ..first.clone()
+        })
+        .collect();
+    build_serialized(&spec)
+}
+
+/// An input's records count toward its memory with what its parse holds,
+/// until the run writes them: records past `max_input_memory` are the
+/// input's `InputMemory` refusal, in g3b's grammar, and records the budget
+/// (or the allocator) refuses are its `crash` record, as the oracle's
+/// `MemoryError` is; either way the inputs beside it dump as they would
+/// alone. Uncharged, a 2 KB input's records once took the process down.
+#[test]
+fn an_inputs_records_count_toward_its_memory_and_the_run_goes_on() {
+    const MAX: u64 = 4 << 20;
+    let tmp = Tmp::new("records-memory");
+    let dir = tmp.0.join("in");
+    std::fs::create_dir_all(&dir).unwrap();
+    let big = empties(400, 1 << 12);
+    std::fs::write(dir.join("a-small"), empties(2, 3)).unwrap();
+    std::fs::write(dir.join("b-big"), &big).unwrap();
+    std::fs::write(dir.join("c-small"), empties(1, 5)).unwrap();
+    let whole = dump(&tmp, "whole.jsonl", 1, DumpOptions::default());
+    let held: usize = of(&whole, "b-big")
+        .iter()
+        .map(|r| r.to_string().len())
+        .sum();
+    // The records are well past the bound below; the parse of one object is not.
+    assert!(
+        held > 3 * usize::try_from(MAX).unwrap(),
+        "the records are {held} bytes"
+    );
+    assert_eq!(of(&whole, "b-big").len(), 401);
+
+    let bounded = dump(
+        &tmp,
+        "bounded.jsonl",
+        2,
+        with_limits(|l| l.max_input_memory = MAX),
+    );
+    let (kind, note) = refusal(&bounded, "b-big");
+    let found = limits_in(&note);
+    assert!(
+        matches!(found.as_slice(), [(k, v, MAX)] if k == "InputMemory" && *v > MAX),
+        "{note}"
+    );
+    assert_eq!(
+        (kind.as_str(), note.as_str()),
+        (
+            "parse",
+            format!("limit InputMemory: {} > {MAX}", found[0].1).as_str()
+        )
+    );
+    let rec = of(&bounded, "b-big")[0];
+    assert_eq!(rec["l0"]["type"], "AssetsFile");
+    assert_eq!(rec["l0"]["parsed_as"], "error");
+    assert_eq!(rec["l0"]["sha256"], unityrs_dump::json::sha256_hex(&big));
+
+    let mut ctx = FileContext::unitypy();
+    ctx.budget = Arc::new(Counting::new(MAX));
+    let budget = DumpOptions {
+        context: Arc::new(ctx),
+        ..DumpOptions::default()
+    };
+    let refused = dump(&tmp, "budget.jsonl", 1, budget);
+    let (kind, note) = refusal(&refused, "b-big");
+    assert_eq!(kind, "crash");
+    assert!(
+        note.starts_with("unityrs ran out of memory dumping this input ("),
+        "{note}"
+    );
+    assert!(limits_in(&note).is_empty(), "{note}");
+    assert_eq!(of(&refused, "b-big")[0]["l0"]["type"], "AssetsFile");
+    for records in [&bounded, &refused] {
+        for name in ["a-small", "c-small"] {
+            assert_eq!(of(records, name), of(&whole, name), "{name}");
+        }
+        assert_eq!(records.last().unwrap()["rec"], "end");
+    }
+}
+
+/// An object's read the budget (or the allocator) refuses is the input's
+/// `crash` record, as the oracle's `MemoryError` inside an object's parse
+/// is, never the object's L2 outcome: it depends on the machine and on what
+/// the other inputs hold, not on the input. So is the AssetBundle read at
+/// load, whose refusal reaches the dump inside the load's error.
+#[test]
+fn an_objects_read_the_budget_refuses_is_the_inputs_crash() {
+    let tmp = Tmp::new("object-memory");
+    let dir = tmp.0.join("in");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a-small"), empties(1, 5)).unwrap();
+    // One object whose value is 2^16 structs; its record about 1.3 MB.
+    std::fs::write(dir.join("b-wide"), empties(1, 1 << 16)).unwrap();
+    // The same as the AssetBundle (class 142) the load reads.
+    std::fs::write(dir.join("c-asset-bundle"), empties_of(142, 1, 1 << 16)).unwrap();
+    let mut ctx = FileContext::unitypy();
+    ctx.budget = Arc::new(Counting::new(1 << 20));
+    let opts = DumpOptions {
+        context: Arc::new(ctx),
+        ..DumpOptions::default()
+    };
+    let records = dump(&tmp, "o.jsonl", 1, opts);
+    for name in ["b-wide", "c-asset-bundle"] {
+        let (kind, note) = refusal(&records, name);
+        assert_eq!(kind, "crash", "{name}: {note}");
+        assert!(
+            note.starts_with(
+                "unityrs ran out of memory dumping this input (memory budget refused "
+            ) && note.ends_with(" bytes for Input)"),
+            "{name}: {note}"
+        );
+    }
+    let whole = dump(&tmp, "w.jsonl", 1, DumpOptions::default());
+    assert_eq!(of(&records, "a-small"), of(&whole, "a-small"));
+    // Unbudgeted, the wide object reads, and the AssetBundle, which has none
+    // of an AssetBundle's fields, is a `parse` record: neither for memory.
+    let wide = of(&whole, "b-wide");
+    assert_eq!(wide.len(), 2);
+    assert!(
+        wide.iter()
+            .all(|r| r["error"].is_null() && r["l2"]["error"].is_null())
+    );
+    let (kind, note) = refusal(&whole, "c-asset-bundle");
+    assert_eq!(kind, "parse", "{note}");
+    assert!(!note.contains("memory"), "{note}");
+}
+
 /// Plan 3.15 and `PARITY.md` 19.3, "nested containers": with the container
 /// depth lifted (`--unbounded ContainerDepth`), a nest whose innermost
 /// bundle sits at [`LIFTED_CONTAINER_DEPTH`] dumps whole on the workers'
@@ -415,11 +574,11 @@ fn a_lifted_container_depth_dumps_to_its_bound_and_refuses_past_it() {
 
 const PROBE: &str = "UNITYRS_DUMP_NEST_PROBE";
 
-/// The child process `container_stack_measured` runs: a nest of `levels`
-/// bundles dumped with the container depth lifted, through the reverse
-/// pre-pass or not, on one worker of `stack` bytes.
+/// The child process [`fits`] runs: a nest of `levels` bundles dumped with
+/// the container depth lifted, through the reverse pre-pass or not, on one
+/// worker of `stack` bytes.
 #[test]
-#[ignore = "run by container_stack_measured"]
+#[ignore = "run by fits"]
 fn container_stack_probe() {
     let Ok(spec) = std::env::var(PROBE) else {
         return;
@@ -444,49 +603,77 @@ fn container_stack_probe() {
     .unwrap();
 }
 
-/// The least worker stack that dumps a nest at several depths, to the
-/// deepest [`LIFTED_CONTAINER_DEPTH`] lets parse and one past it (refused),
-/// eagerly and through the reverse pre-pass, to 4 KiB, found by bisection
-/// over child processes; what each level costs; and [`worker_stack`] with
-/// the container depth lifted, which must hold each.
+/// Whether a nest of `levels` dumps (`mode` "eager" or "reverse") on a
+/// worker of `stack` bytes, in a child process: a thread that overflows its
+/// stack aborts its process.
+fn fits(levels: u32, stack: usize, mode: &str) -> bool {
+    std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "container_stack_probe",
+            "--ignored",
+            "--test-threads=1",
+        ])
+        .env(PROBE, format!("{levels} {stack} {mode}"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+/// The least worker stack a nest of `levels` dumps on, to 4 KiB, by
+/// bisection over [`fits`].
+fn least(levels: u32, mode: &str) -> usize {
+    let (mut lo, mut hi) = (0, 256 << 20);
+    assert!(fits(levels, hi, mode), "{levels} levels at {hi}");
+    while hi - lo > 4 << 10 {
+        let mid = usize::midpoint(lo, hi) / 4096 * 4096;
+        if fits(levels, mid, mode) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi
+}
+
+/// [`worker_stack`]'s container term pays for the nesting by itself: the
+/// deepest nest [`LIFTED_CONTAINER_DEPTH`] lets parse dumps on the least
+/// stack its leaf needs alone plus [`CONTAINER_LEVEL_STACK`] for each level
+/// the term counts, eagerly and through the reverse pre-pass. The test of
+/// the nest on [`worker_stack`] cannot show it: the doubling of
+/// `stack_needed` there held the nest with the term zero.
+#[test]
+fn the_container_term_pays_for_every_level() {
+    let levels = LIFTED_CONTAINER_DEPTH + 1;
+    let counted = usize::try_from(levels).unwrap();
+    for mode in ["eager", "reverse"] {
+        let leaf = least(0, mode);
+        let stack = leaf + counted * CONTAINER_LEVEL_STACK;
+        assert!(
+            fits(levels, stack, mode),
+            "{levels} levels ({mode}) overflow {stack} bytes: the leaf's least {leaf} \
+             and {CONTAINER_LEVEL_STACK} a level"
+        );
+    }
+}
+
+/// The least worker stack that dumps a nest at several depths, from the
+/// leaf alone to the deepest [`LIFTED_CONTAINER_DEPTH`] lets parse and one
+/// past it (refused), eagerly and through the reverse pre-pass, to 4 KiB;
+/// what each level costs; and [`worker_stack`] with the container depth
+/// lifted, which must hold each.
 #[test]
 #[ignore = "measures; run with --ignored --nocapture"]
 fn container_stack_measured() {
-    let exe = std::env::current_exe().unwrap();
-    let fits = |levels: u32, stack: usize, mode: &str| {
-        std::process::Command::new(&exe)
-            .args([
-                "--exact",
-                "container_stack_probe",
-                "--ignored",
-                "--test-threads=1",
-            ])
-            .env(PROBE, format!("{levels} {stack} {mode}"))
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .unwrap()
-            .success()
-    };
-    let least = |levels: u32, mode: &str| {
-        let (mut lo, mut hi) = (0, 256 << 20);
-        assert!(fits(levels, hi, mode), "{levels} levels at {hi}");
-        while hi - lo > 4 << 10 {
-            let mid = usize::midpoint(lo, hi) / 4096 * 4096;
-            if fits(levels, mid, mode) {
-                hi = mid;
-            } else {
-                lo = mid;
-            }
-        }
-        hi
-    };
     let mut lifted = Limits::default();
     lifted.max_container_depth = LIFTED_CONTAINER_DEPTH;
     let have = worker_stack(&lifted);
     for mode in ["eager", "reverse"] {
         let mut prev: Option<(u32, usize)> = None;
         for levels in [
+            0,
             17,
             257,
             513,
@@ -506,5 +693,8 @@ fn container_stack_measured() {
             );
         }
     }
-    println!("worker_stack with the container depth lifted: {have}");
+    println!(
+        "worker_stack with the container depth lifted: {have}; stack_needed {}",
+        Limits::default().stack_needed()
+    );
 }

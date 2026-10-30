@@ -4,7 +4,17 @@
 //! - **Order and `-j N`.** Inputs are dumped by up to `N` workers at once
 //!   and written in input order ([`ordered`]), with at most `2N` finished or
 //!   running at a time, as `run_jobs` keeps them, so the output does not
-//!   depend on `N` and memory is bounded by the window.
+//!   depend on `N`.
+//! - **Memory.** The window bounds how many inputs are held, and each
+//!   input's meter what one holds: its parse and its records together, the
+//!   records charged as they are made and returned once they are written
+//!   ([`crate::input`]), so at most `2N` times `max_input_memory` (plus each
+//!   worker's stack, [`worker_stack`]). The run has no bound over its
+//!   inputs together (the batch engine's budget, plan section 4.1): a
+//!   shared budget would make an input's record depend on what the others
+//!   held at the time, and so on `N`.
+//! - **An input's records are written as they are**, line by line, never
+//!   copied into one buffer first.
 //! - **Output.** The dump goes to `OUT.partial` and is renamed to `OUT` when
 //!   complete, so a dump at the requested path is always whole; a `.partial`
 //!   left by a killed run is removed first. A path ending in `.gz` is gzip
@@ -269,12 +279,15 @@ fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
 }
 
 /// The stack one level of container nesting takes, in the core's eager load
-/// and the dump's own walks of the nest (load, pre-pass, records): about
-/// twice what a level costs up to the deepest nest
-/// [`crate::LIFTED_CONTAINER_DEPTH`] lets parse, which `tests/limits.rs`'s
-/// `container_stack_measured` finds is 5,488 bytes in a debug build and
-/// 1,520 in a release one (toolchain 1.99.1), eagerly and through the
-/// reverse pre-pass alike.
+/// and the dump's own walks of the nest (load, pre-pass, records), up to the
+/// deepest nest [`crate::LIFTED_CONTAINER_DEPTH`] lets parse. It was set at
+/// about twice the 5,488 bytes a level cost in a debug build and 1,520 in a
+/// release one; since the records of each file are made outside the
+/// recursion's frame (`input.rs`, `Writer::emit`), `tests/limits.rs`'s
+/// `container_stack_measured` finds 1,312 and 352 (toolchain 1.99.1),
+/// eagerly and through the reverse pre-pass alike, and
+/// `the_container_term_pays_for_every_level` checks that this term alone,
+/// on the least stack of the nest's leaf, holds the deepest nest.
 pub const CONTAINER_LEVEL_STACK: usize = if cfg!(debug_assertions) {
     12 << 10
 } else {
@@ -415,7 +428,11 @@ pub fn write_dump(
         let d = r.map_err(|e| {
             RunError::Failed(format!("{e}: the dumper itself failed; no dump written"))
         })?;
-        w.write_all(d.text().as_bytes()).map_err(io)?;
+        for line in &d.lines {
+            w.write_all(line.as_bytes())
+                .and_then(|()| w.write_all(b"\n"))
+                .map_err(io)?;
+        }
         files += d.files;
         objects += d.objects;
         match inputs.get(i) {

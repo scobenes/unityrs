@@ -21,27 +21,47 @@
 //! refusal of the meter, which the load did not meet) fails the input the
 //! same way, so an input is dumped whole or as one error record.
 //!
+//! **Memory.** The records are held until the run writes them, and they can
+//! be thousands of times the input (an object of 4 bytes read as 2^20 empty
+//! structs; an object record repeating a long container path). Each line is
+//! a [`Text`] charged to the input's meter as it grows, and the list of
+//! lines is charged too, so the records count toward the input's
+//! `max_input_memory` (and the caller's budget) with what its parse holds,
+//! until the run has written them ([`InputDump::charge`]). A refusal fails
+//! the input as any core error does: the meter's own bound is a `parse`
+//! record whose note is the limit (`limit InputMemory: <v> > <max>`), and a
+//! refusal of the caller's budget or of the allocator (an out-of-memory,
+//! met by the records or by the core, an object's read included, which is
+//! never that object's L2 outcome: `out_of_memory`) is a `crash` record,
+//! the oracle's record for a `MemoryError` (`CANONICAL_DUMP.md` section
+//! 4.2); either way the records made so far are dropped first, and the run
+//! goes on.
+//!
 //! **Context**: the dump reads with the [`DumpOptions::context`] it is
 //! given, `FileContext::unitypy()` by default, and nothing else.
 
 use std::sync::Arc;
 
-use unityrs_core::budget::Reservation;
+use unityrs_core::budget::{BudgetExceeded, Reservation};
 use unityrs_core::detect::{FileType, ParsedAs, check_file_type};
+use unityrs_core::env::DerefError;
 use unityrs_core::files::{File, LayoutKind, WebPacker, parse_file};
-use unityrs_core::limits::Meter;
+use unityrs_core::limits::{Charge, ChargeError, Meter, MeteredVec};
 use unityrs_core::provider::TreeSource;
 use unityrs_core::stream::Endian;
-use unityrs_core::walk::{L2Kind, ParseError, WriteRules};
+use unityrs_core::typetree::TreeError;
+use unityrs_core::walk::{L2Kind, ParseError, ReadDetail, WriteError, WriteRules};
 use unityrs_core::{BundleFile, Bytes, Error, ObjectRef, Parsed, RawStr, SerializedFile, WebFile};
 
-use crate::encode::encode;
+use crate::encode::encode_into;
 use crate::json::sha256;
 use crate::record::{
     BlockRow, BundleL1, ContainerRow, DirRow, ExternalRow, FileError, FileErrorKind, FileL1,
     FileRecord, L0, L2, L2Error, L3, ObjectL1, ObjectRecord, Resave, SerializedHeaderRow,
-    SerializedL1, TypeRecord, WebL1, file_line, first_difference, note, object_line,
+    SerializedL1, TypeRecord, WebL1, file_line, file_line_into, first_difference, note,
+    object_line_into,
 };
+use crate::text::Text;
 use crate::{DumpOptions, InputDump, Levels};
 
 /// UnityPy's `SerializedFile.unity_version` below format 7, where the file
@@ -105,8 +125,7 @@ pub fn dump_on(rel: &[u8], data: Bytes, meter: &Arc<Meter>, opts: &DumpOptions) 
         }));
         return out;
     }
-    let mut lines = Vec::new();
-    let (mut files, mut objects) = (0, 0);
+    let mut records = Records::on(meter);
     let result = parse_file(name.clone(), data, ty, None, meter, ctx).and_then(|file| {
         if opts.lazy_reverse {
             prepass_reverse(&file);
@@ -115,33 +134,76 @@ pub fn dump_on(rel: &[u8], data: Bytes, meter: &Arc<Meter>, opts: &DumpOptions) 
         l0.parsed_as = parsed_as_of(&file);
         let mut w = Writer {
             levels: opts.levels,
-            opts,
-            lines: &mut lines,
-            files: &mut files,
-            objects: &mut objects,
+            meter,
+            records: &mut records,
         };
         w.emit(&file, std::slice::from_ref(&name), l0.clone())
     });
     match result {
         Ok(()) => {
+            let Records {
+                lines,
+                mut charge,
+                files,
+                objects,
+            } = records;
+            let (lines, list) = lines.into_parts();
+            charge.absorb(list);
             out.lines = lines;
+            out.charge = Some(charge);
             out.files = files;
             out.objects = objects;
         }
         Err(e) => {
+            // What was made is dropped before the one record is.
+            drop(records);
             l0.parsed_as = ParsedAs::Error;
+            let (kind, text) = match memory_refused(&e) {
+                Some(b) => (
+                    FileErrorKind::Crash,
+                    format!("unityrs ran out of memory dumping this input ({b})"),
+                ),
+                None => (FileErrorKind::Parse, e.to_string()),
+            };
             out.push_file(file_line(&FileRecord {
                 file: vec![name],
                 l0,
                 l1: None,
                 error: Some(FileError {
-                    kind: FileErrorKind::Parse,
-                    note: Some(note(&e.to_string())),
+                    kind,
+                    note: Some(note(&text)),
                 }),
             }));
         }
     }
     out
+}
+
+/// One input's records as they are made: the lines, in a list charged to
+/// the input's meter, and the charges of the lines themselves.
+struct Records {
+    lines: MeteredVec<String>,
+    charge: Charge,
+    files: u64,
+    objects: u64,
+}
+
+impl Records {
+    fn on(meter: &Arc<Meter>) -> Self {
+        Self {
+            lines: MeteredVec::new(meter),
+            charge: Charge::zero(meter),
+            files: 0,
+            objects: 0,
+        }
+    }
+
+    /// Appends a line [`Text::finish`] gave, with its charge.
+    fn push(&mut self, (line, charge): (String, Charge)) -> Result<(), ChargeError> {
+        self.lines.push(line)?;
+        self.charge.absorb(charge);
+        Ok(())
+    }
 }
 
 /// UnityPy's eager load: every directory entry of every bundle parsed, in
@@ -187,16 +249,37 @@ pub fn parsed_as_of(file: &File) -> ParsedAs {
 
 struct Writer<'a> {
     levels: Levels,
-    opts: &'a DumpOptions,
-    lines: &'a mut Vec<String>,
-    files: &'a mut u64,
-    objects: &'a mut u64,
+    /// The input's meter: every line is charged to it.
+    meter: &'a Arc<Meter>,
+    records: &'a mut Records,
 }
 
 impl Writer<'_> {
     /// `emit_file`: one file record, its objects by path id, then its
-    /// entries in `files` order.
+    /// entries in `files` order. It recurses once a level of nesting, so
+    /// its frame is kept to what the recursion needs: the records are made
+    /// in frames of their own (`CONTAINER_LEVEL_STACK`, `run/mod.rs`).
     fn emit(&mut self, file: &File, path: &[RawStr], l0: L0) -> Result<(), Error> {
+        self.file_record(file, path, l0)?;
+        match file {
+            File::Serialized(sf) => self.object_records(sf, path),
+            File::Bundle(b) => {
+                for slot in b.files() {
+                    let (child, l0) = entry_l0(b, slot.dir_index)?;
+                    let mut child_path = path.to_vec();
+                    child_path.push(slot.name.clone());
+                    self.emit(&child, &child_path, l0)?;
+                }
+                Ok(())
+            }
+            // A WebFile's entries: P3 (core refuses WebFiles in P1, plan section 1).
+            File::Web(_) | File::Raw(_) => Ok(()),
+        }
+    }
+
+    /// `file`'s own record.
+    #[inline(never)]
+    fn file_record(&mut self, file: &File, path: &[RawStr], l0: L0) -> Result<(), Error> {
         let l1 = if self.levels.l1 {
             match file {
                 File::Serialized(sf) => Some(FileL1::Serialized(Box::new(serialized_l1(sf)?))),
@@ -207,46 +290,53 @@ impl Writer<'_> {
         } else {
             None
         };
-        self.lines.push(file_line(&FileRecord {
-            file: path.to_vec(),
-            l0,
-            l1,
-            error: None,
-        }));
-        *self.files += 1;
-        match file {
-            File::Serialized(sf) => {
-                let mut objs: Vec<ObjectRef> = sf.objects().collect();
-                objs.sort_by_key(ObjectRef::path_id);
-                for obj in &objs {
-                    let rec = object_record(obj, self.levels, self.opts);
-                    self.lines.push(object_line(path, &rec));
-                    *self.objects += 1;
-                }
-            }
-            File::Bundle(b) => {
-                let limits = &self.opts.context.limits;
-                for slot in b.files() {
-                    let bytes = b.entry_bytes(slot.dir_index)?;
-                    // The entry parsed (load_deep), so its detection did not raise.
-                    let ty = check_file_type(&bytes, limits)?;
-                    let child = b.entry(slot.dir_index)?;
-                    let l0 = L0 {
-                        ty: Some(ty),
-                        parsed_as: parsed_as_of(&child),
-                        size: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-                        sha256: sha256(&bytes),
-                    };
-                    let mut child_path = path.to_vec();
-                    child_path.push(slot.name.clone());
-                    self.emit(&child, &child_path, l0)?;
-                }
-            }
-            // A WebFile's entries: P3 (core refuses WebFiles in P1, plan section 1).
-            File::Web(_) | File::Raw(_) => {}
+        let mut line = Text::on(self.meter);
+        file_line_into(
+            &mut line,
+            &FileRecord {
+                file: path.to_vec(),
+                l0,
+                l1,
+                error: None,
+            },
+        );
+        self.records.push(line.finish()?)?;
+        self.records.files += 1;
+        Ok(())
+    }
+
+    /// The records of `sf`'s objects, by path id.
+    #[inline(never)]
+    fn object_records(&mut self, sf: &Arc<SerializedFile>, path: &[RawStr]) -> Result<(), Error> {
+        let mut objs: Vec<ObjectRef> = sf.objects().collect();
+        objs.sort_by_key(ObjectRef::path_id);
+        for obj in &objs {
+            let (rec, value) = object_record(obj, self.levels, self.meter)?;
+            let mut line = Text::on(self.meter);
+            object_line_into(&mut line, path, &rec);
+            // The value's text is in the line now.
+            drop((rec, value));
+            self.records.push(line.finish()?)?;
+            self.records.objects += 1;
         }
         Ok(())
     }
+}
+
+/// A bundle entry, and its `l0`: its type is what the core's detection of
+/// it gave (`BundleFile::entry`), counted as the open's work then; detecting
+/// the bytes again would inflate a gzip entry a second time, uncounted.
+#[inline(never)]
+fn entry_l0(b: &BundleFile, dir_index: usize) -> Result<(File, L0), Error> {
+    let bytes = b.entry_bytes(dir_index)?;
+    let child = b.entry(dir_index)?;
+    let l0 = L0 {
+        ty: Some(child.file_type()),
+        parsed_as: parsed_as_of(&child),
+        size: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        sha256: sha256(&bytes),
+    };
+    Ok((child, l0))
 }
 
 fn bundle_l1(b: &BundleFile) -> BundleL1 {
@@ -435,8 +525,14 @@ impl ParsedValue {
     }
 }
 
-/// `object_record`.
-fn object_record(obj: &ObjectRef, levels: Levels, _opts: &DumpOptions) -> ObjectRecord {
+/// `object_record`, its value's text charged to `meter`: the record, and
+/// the charge for that text, which must live as long as the record does.
+/// A refusal of the text's growth fails the input.
+fn object_record(
+    obj: &ObjectRef,
+    levels: Levels,
+    meter: &Arc<Meter>,
+) -> Result<(ObjectRecord, Option<Charge>), Error> {
     let info = obj.info();
     let l1 = levels.l1.then_some(ObjectL1 {
         type_id: info.type_id,
@@ -450,6 +546,7 @@ fn object_record(obj: &ObjectRef, levels: Levels, _opts: &DumpOptions) -> Object
     let mut l3 = None;
     // The value a full parse gave, kept for the resave (`parsed_ok`).
     let mut resavable: Option<Parsed> = None;
+    let mut held = None;
     if levels.l2 {
         let mut out = L2 {
             root_type: None,
@@ -466,12 +563,21 @@ fn object_record(obj: &ObjectRef, levels: Levels, _opts: &DumpOptions) -> Object
                     TreeSource::Provider(name) => name,
                     TreeSource::Explicit => "explicit",
                 });
-                let (error, value) = l2_outcome(obj.parse_as_dict(true));
+                let parsed = obj.parse_as_dict(true);
+                if let Err(e) = &parsed {
+                    out_of_memory(e)?;
+                }
+                let (error, value) = l2_outcome(parsed);
                 out.error = error;
                 if let Some(v) = value {
-                    match encode(v.get()) {
-                        Ok(text) => {
+                    let mut text = Text::on(meter);
+                    let encoded = encode_into(&mut text, v.get());
+                    // A refused growth fails the input, whatever the encoder said.
+                    let (text, charge) = text.finish()?;
+                    match encoded {
+                        Ok(()) => {
                             out.value = Some(text);
+                            held = Some(charge);
                             if let ParsedValue::Owned(p) = v
                                 && out.error.is_none()
                             {
@@ -498,6 +604,7 @@ fn object_record(obj: &ObjectRef, levels: Levels, _opts: &DumpOptions) -> Object
                 });
             }
             Err(e) => {
+                out_of_memory(&e)?;
                 out.error = Some(L2Error {
                     kind: L2Kind::NoTypetree,
                     bytes_read: None,
@@ -508,32 +615,102 @@ fn object_record(obj: &ObjectRef, levels: Levels, _opts: &DumpOptions) -> Object
         l2 = Some(out);
     }
     if levels.l3 {
-        let raw = obj.raw_data();
-        let resave = match &resavable {
-            None => Resave::Skipped,
-            Some(p) => match obj.write_typetree(p, None, WriteRules::UnityPy) {
-                Ok(bytes) if bytes == raw => Resave::Equal,
-                Ok(bytes) => Resave::Differs {
-                    size: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-                    sha256: sha256(&bytes),
-                    first_diff: first_difference(&bytes, &raw),
-                },
-                Err(e) => Resave::Error {
-                    note: Some(note(&e.to_string())),
-                },
-            },
-        };
-        l3 = Some(L3 {
-            raw_size: u64::try_from(raw.len()).unwrap_or(u64::MAX),
-            raw_sha256: sha256(&raw),
-            resave,
-        });
+        l3 = Some(l3_of(obj, resavable.as_ref())?);
     }
-    ObjectRecord {
-        path_id: info.path_id,
-        l1,
-        l2,
-        l3,
+    Ok((
+        ObjectRecord {
+            path_id: info.path_id,
+            l1,
+            l2,
+            l3,
+        },
+        held,
+    ))
+}
+
+/// The object's `l3`: its raw bytes, and the resave of `resavable`, the
+/// value a full parse gave. A resave the budget or the allocator refuses
+/// fails the input ([`out_of_memory`]).
+fn l3_of(obj: &ObjectRef, resavable: Option<&Parsed>) -> Result<L3, Error> {
+    let raw = obj.raw_data();
+    let resave = match resavable {
+        None => Resave::Skipped,
+        Some(p) => match obj.write_typetree(p, None, WriteRules::UnityPy) {
+            Ok(bytes) if bytes == raw => Resave::Equal,
+            Ok(bytes) => Resave::Differs {
+                size: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                sha256: sha256(&bytes),
+                first_diff: first_difference(&bytes, &raw),
+            },
+            Err(WriteError::Charge(c)) if charge_refused(&c).is_some() => return Err(c.into()),
+            Err(e) => Resave::Error {
+                note: Some(note(&e.to_string())),
+            },
+        },
+    };
+    Ok(L3 {
+        raw_size: u64::try_from(raw.len()).unwrap_or(u64::MAX),
+        raw_sha256: sha256(&raw),
+        resave,
+    })
+}
+
+/// `Err(Error::Budget)` when `e` is the caller's budget or the allocator
+/// refusing memory to an object's read (its value, its tree, or the load
+/// `m_Script` names): the oracle's `MemoryError`, which is never an L2 or
+/// L3 outcome but the input's crash record (`CANONICAL_DUMP.md` 4.2). It
+/// depends on the machine and on what the other inputs hold, not on the
+/// input. The input's own bound, `InputMemory`, stays the object's limit
+/// refusal.
+fn out_of_memory(e: &ParseError) -> Result<(), Error> {
+    read_refused(e).map_or(Ok(()), |b| Err(Error::Budget(b.clone())))
+}
+
+/// The budget's or the allocator's refusal under `e`, through every error
+/// that wraps one (an entry's, the load-time AssetBundle read's, a
+/// dereference's load), or `None`: what [`dump_on`] makes a `crash` record.
+fn memory_refused(e: &Error) -> Option<&BudgetExceeded> {
+    match e {
+        Error::Budget(b) => Some(b),
+        Error::Tree(t) => tree_refused(t),
+        Error::Entry { source, .. } => memory_refused(source),
+        Error::AssetBundle(p) => read_refused(p),
+        Error::Deref(d) => deref_refused(d),
+        _ => None,
+    }
+}
+
+fn read_refused(e: &ParseError) -> Option<&BudgetExceeded> {
+    match e {
+        ParseError::Read(r) => match &r.detail {
+            ReadDetail::Charge(c) => charge_refused(c),
+            ReadDetail::Tree(t) => tree_refused(t),
+            _ => None,
+        },
+        ParseError::Tree(t) => tree_refused(t),
+        ParseError::Deref(d) => deref_refused(d),
+        _ => None,
+    }
+}
+
+fn deref_refused(e: &DerefError) -> Option<&BudgetExceeded> {
+    match e {
+        DerefError::Load(e) => memory_refused(e),
+        _ => None,
+    }
+}
+
+fn tree_refused(e: &TreeError) -> Option<&BudgetExceeded> {
+    match e {
+        TreeError::Charge(c) => charge_refused(c),
+        _ => None,
+    }
+}
+
+fn charge_refused(e: &ChargeError) -> Option<&BudgetExceeded> {
+    match e {
+        ChargeError::Budget(b) => Some(b),
+        ChargeError::Limit(_) => None,
     }
 }
 
