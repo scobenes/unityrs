@@ -416,10 +416,14 @@ class TestColumn(unittest.TestCase):
         argument under a top-level folder the local disk lacks, unless said otherwise), and every other case is not
         characterised (Tier U): a path the local disk also holds loads where an unscoped sentence said it raised or
         loaded nothing. So each sentence of PARITY.md or DESIGN.md that names a non-local fs with the constructor or
-        an argument, and each sentence of the two rows about a non-local fs that names `load_folder` or the builtin
-        `open`, and states an outcome, names that filesystem or the cases tested or stated, or says the rest is not
-        characterised; the U clauses and DESIGN.md's Tier U bullet are there."""
+        an argument, and each sentence of the two rows about a non-local fs that names `load_file`, `load_folder` or
+        the builtin `open`, and states an outcome, names that filesystem or the cases tested or stated, or says the
+        rest is not characterised; a sentence that opens with "That", "This", "It" or "There" is read with the one
+        before it, which it continues. The scope sentences themselves are held verbatim, since a rewording that
+        drops "non-local" (or the words a row is found by) would leave the sentences after them unchecked; the U
+        clauses and DESIGN.md's Tier U bullet are there."""
         sentence_end = re.compile(r"(?<=\.)\s+(?=[A-Z`])")
+        continues = re.compile(r"(?:That|This|It|There)\b")
         outcome = re.compile(r"\b(?:loads?|raises?|not found|nothing)\b")
         scoped = re.compile(
             r"`MemoryFileSystem`|\bnot characterised\b|\bcases? (?:tested|stated|section 3 tests)\b"
@@ -427,15 +431,26 @@ class TestColumn(unittest.TestCase):
         )
         rows = ("| `Environment.fs` |", "| a name read through a non-local `fs` |")
 
+        def sentences(cell):
+            joined = []
+            for sentence in sentence_end.split(cell):
+                if joined and continues.match(sentence):
+                    joined[-1] += " " + sentence
+                else:
+                    joined.append(sentence)
+            return joined
+
         def unscoped(line):
             found = []
             for cell in line.split(" | "):
-                for sentence in sentence_end.split(cell):
+                for sentence in sentences(cell):
                     about_constructor = re.search(r"non-local", sentence) and re.search(
                         r"\b(?:constructor|argument)\b", sentence
                     )
-                    about_open = line.startswith(rows) and re.search(r"`load_folder`|builtin `open`", sentence)
-                    if (about_constructor or about_open) and outcome.search(sentence):
+                    about_rows = line.startswith(rows) and re.search(
+                        r"`load_file`|`load_folder`|builtin `open`", sentence
+                    )
+                    if (about_constructor or about_rows) and outcome.search(sentence):
                         found.append((sentence, bool(scoped.search(sentence))))
             return found
 
@@ -443,6 +458,20 @@ class TestColumn(unittest.TestCase):
             ("| x | with a non-local `fs`, a file argument other than a zip/apk, or a folder, is not found |", True),
             ("| x | with a non-local `fs`, any other file argument raises naming its folder, or loads nothing |", True),
             ("| `Environment.fs` | `load_folder` opens it with the builtin `open`, which raises. |", True),
+            # Round 17's put-back of round 16's wording: the scope moved out of the sentence that states the raise.
+            (
+                "| `Environment.fs` | `load_folder` opens what it finds with the builtin `open`. That raises "
+                "`FileNotFoundError` naming the file. A path. |",
+                True,
+            ),
+            # Round 16's `load_file` wording, which a local `{name}.split0` or a case variant the walk resolves makes
+            # false: it loads, or raises naming the variant.
+            (
+                "| a name read through a non-local `fs` | `load_file` tests a name and walks `path` on the local disk, "
+                "so a name the local disk lacks is not found even when `fs` holds it: `load_file` returns `None`. |",
+                True,
+            ),
+            ("| `Environment.fs` | In the cases tested, `load_file` raises `FileNotFoundError`. It loads. |", False),
             ("| x | through a non-local `fs`, a `MemoryFileSystem` holds each argument: `x.assets` raises |", False),
             ("| x | Every other constructor argument through a non-local `fs` is not characterised (Tier U). |", False),
         ):
@@ -462,6 +491,27 @@ class TestColumn(unittest.TestCase):
         self.assertIn("U for every other constructor argument through a non-local `fs` |", constructor)
         self.assertIn(
             "Every other constructor argument through a non-local `fs` is not characterised (Tier U).", constructor
+        )
+        self.assertIn(
+            "Through a non-local `fs` the row states only the cases its test runs: a `MemoryFileSystem` holds each "
+            "argument, at an absolute path under a top-level folder the local disk lacks unless said otherwise "
+            "(`Environment.fs`). There ",
+            constructor,
+        )
+        fs_row = next(line for line in parity.splitlines() if line.startswith(rows[0]))
+        for sentence in (
+            "In the cases tested, with a non-local `fs` a name is not found even when `fs` holds it: ",
+            "In two more cases tested a test on the local disk sends the read to `fs`: ",
+            "Any other name `load_file` reads through a non-local `fs` is not characterised (Tier U). `load_folder` "
+            "walks `fs` but opens what it finds with the builtin `open` (`load_files`, `:75-81`). In the case tested "
+            "(a file under a top-level folder the local disk lacks) that raises `FileNotFoundError` naming the file; "
+            "any other file it opens with `open` is not characterised (Tier U).",
+        ):
+            self.assertIn(sentence, fs_row)
+        non_local = next(line for line in parity.splitlines() if line.startswith(rows[1]))
+        self.assertIn("In the cases section 3 tests, a name is not found even when `fs` holds it: ", non_local)
+        self.assertIn(
+            "section 3 leaves the other cases of `load_file`, `load_folder` and the constructor not", non_local
         )
         unsupported = design.split("- **Unsupported until a sample and a reference exist.**", 1)[1].split("\n- **")[0]
         self.assertRegex(
