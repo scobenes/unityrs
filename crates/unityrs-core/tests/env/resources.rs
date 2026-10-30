@@ -259,3 +259,39 @@ fn batch_options_keep_no_resolver_load_in_files_objects_or_the_container() {
         assert_eq!(env.container().unwrap().count(), 0, "{mode:?}");
     }
 }
+
+/// A texture inside a nested bundle, read from a batch job's own handle
+/// (the same bytes, opened outside this Environment, which holds them as a
+/// dependency), finds its sibling `.resS` by name under every mode, as
+/// UnityPy's does (`tests/fixtures/d/env.json` scene
+/// `resource_in_nested_cab`): under `Lazy` the reader's own container is
+/// reached through the reader's handle before the lookup (review round 4:
+/// every candidate missed, `NotFound`).
+#[test]
+fn a_reader_inside_a_nested_bundle_on_its_own_handle_reads_its_sibling_resource() {
+    let scene = unityrs_testkit::env::resource_in_nested_cab();
+    let (name, data) = scene.files[0].clone();
+    let data = Bytes::from(data);
+    let source = || Source::Bytes {
+        name: RawStr::new(name.clone()),
+        data: data.clone(),
+    };
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let mut o = EnvOptions::batch(Arc::new(FileContext::unitypy()));
+        o.load = mode;
+        let shared = Environment::new(o.clone());
+        drop(shared.load_dependency(source()).unwrap());
+        let File::Bundle(outer) = Environment::new(o).load(source()).unwrap() else {
+            panic!("o.bundle is a bundle");
+        };
+        let File::Bundle(inner) = outer.entry(0).unwrap() else {
+            panic!("INNER is a bundle");
+        };
+        let File::Serialized(cab) = inner.entry(0).unwrap() else {
+            panic!("CAB-I is a SerializedFile");
+        };
+        let (path, offset, size) = stream(&object(&cab, 1));
+        let bytes = shared.resource(&cab, &path, offset, size).unwrap();
+        assert_eq!(bytes.as_ref(), [40, 41, 42, 43], "{mode:?}");
+    }
+}

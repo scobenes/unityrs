@@ -121,6 +121,7 @@ impl Environment {
         if pptr.file_id == 0 {
             return object_in(from, pptr.path_id);
         }
+        self.reach_chain(from)?;
         let (target, _) = self.external(from, pptr.file_id, None)?;
         Self::object_of(&target, pptr.path_id)
     }
@@ -173,9 +174,9 @@ impl Environment {
                         Some(i) => {
                             let f = bundle.entry(i)?;
                             // Named as a sibling, a nested container is
-                            // expanded as a `get` of its name would.
+                            // reached, as a `get` of its name would reach it.
                             if let File::Bundle(nested) = &f {
-                                self.expand_sibling(from, &bundle, i, nested)?;
+                                self.reach_sibling(from, &bundle, i, nested)?;
                             }
                             Some((f, Reached::Sibling))
                         }

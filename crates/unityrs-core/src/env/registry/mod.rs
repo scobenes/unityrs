@@ -16,14 +16,34 @@
 //! the order the registrations arrive in: a registration below the key's
 //! value's rank leaves the value, one below its position's rank moves the
 //! key there, and one of equal rank (the same entry registered again) is no
-//! change. So a lazy bundle (`LoadMode::Lazy`), which registers every
-//! directory entry's name at open and a nested container's entries when that
-//! entry is first asked for, gives each nested entry the position and the
-//! value an eager load gives it, whichever nested container was asked for
-//! first and from whichever thread (plan section 3.13, difference (b)). What
-//! remains of (b) is the nested container's own name: a key under `Lazy`
-//! (its slot answers `None`), where an eager load registers no such key and
-//! keeps an earlier CAB of that path under it. Under eager loading a bundle
+//! change. So the registry holds what an eager load registers whatever
+//! the order its registrations arrive in, from whichever thread.
+//!
+//! **Nested containers under `LoadMode::Lazy`** (plan section 3.13,
+//! difference (b)). A lazy bundle registers every directory entry's name at
+//! open, unread, so an entry that is itself a bundle is a key of its own
+//! (its slot answers `None`) until it is *reached*: its first bytes are
+//! read and, when they are a bundle's, it is parsed and its whole subtree
+//! registered in place, at the ranks an eager load gives them (a container
+//! inside it has no key, as under `Eager`). One routine reaches
+//! ([`Registry::reach`], `reach.rs`), and the invariant it keeps is: a
+//! nested container is reached before any of these returns: a lookup that
+//! resolves its slot (a `get` of its name, a pointer that names it, the
+//! container pass); a lookup from a file inside it (a dereference, a
+//! resource read: `super::Environment`'s `reach_chain`); a pointer or a
+//! resource candidate that reaches it through the asking file's own
+//! bundle; a container pass, which reaches every registered entry before
+//! it walks; and a registration that would drop its slot (replace it, or
+//! lose to a greater rank), which reaches the dropped slot first
+//! ([`Registry::settle`]): nothing could reach it by name afterwards, and
+//! an eager load registered its entries at load (review round 4: a later
+//! load's entry of the same path dropped it unread, and its entries were
+//! never registered). What remains of (b) is a lookup by name alone (a
+//! `get_cab`, a `find_file`, a pointer to a file that is not the asking
+//! file's sibling) of an entry of a container nothing has reached, which
+//! misses or finds an earlier registration of its key, and the container's
+//! own name, a key at its rank where an eager load registers none and keeps
+//! an earlier CAB of that path under it. Under eager loading a bundle
 //! registers its CABs as it parses them, so a later entry's failure leaves
 //! the earlier ones registered (difference (a)).
 //!
@@ -56,10 +76,10 @@
 //! returned and not kept, so a shared dependency refused once (while other
 //! jobs held the pool) is parsed again on the next `get`. A parse has no side
 //! effect but its charges. A nested container's entries are registered from
-//! the parsed value by every `get` that finds them not yet all registered,
+//! the parsed value by every reach that finds them not yet all registered,
 //! and the slot is marked once they all are; a second registration of an
 //! entry has the rank of the first and changes nothing, so two threads that
-//! expand one container at once both return with every entry registered.
+//! reach one container at once both return with every entry registered.
 //!
 //! **Memory.** Every registration is charged to the meter of the file that
 //! registers it: the key ([`crate::raw::RawStr::charged`]), the slot's
@@ -71,7 +91,9 @@
 //! element cover the tree; a doubling hash table holds up to 16/7 buckets per
 //! key at rest and 24/7 while it grows (the crate's `HASH_TABLE_SHARES`), so
 //! the tables' spare capacity and every growth are paid for. The first key
-//! also pays for the B-tree's root leaf. `tests/env_memory.rs` measures the
+//! also pays for the B-tree's root leaf. A lazy entry's slot also pays for
+//! its place in the list of dropped slots waiting to be reached
+//! ([`Registry::settle`]). `tests/env_memory.rs` measures the
 //! heap against the charge. A refused charge registers nothing and is the
 //! registering load's error.
 //!
@@ -79,18 +101,25 @@
 
 mod dependency;
 mod lru;
+mod rank;
+mod reach;
+mod slot;
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
 use std::mem::size_of;
 use std::ops::Bound;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 pub(crate) use dependency::{DepSlot, Dependency, WeakFile, open_source};
 pub(crate) use lru::DepCache;
 #[cfg(test)]
 pub(crate) use lru::{Hook, HookFn};
+pub(crate) use rank::Rank;
+pub(crate) use slot::{Slot, SlotKind};
+
+use super::watch::Watches;
 
 use crate::budget::Reservation;
 use crate::error::Error;
@@ -138,94 +167,8 @@ pub struct HeldCab {
 
 const _: () = crate::send_sync::<HeldCab>();
 
-/// Where a registration falls in the order an eager load registers it
-/// (module docs): the load's sequence number, then the directory indexes
-/// from the load's top-level file to the entry.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct Rank {
-    load: u64,
-    path: Arc<[usize]>,
-}
-
-impl Rank {
-    /// The directory indexes from the load's top-level file.
-    pub(crate) fn path(&self) -> &[usize] {
-        &self.path
-    }
-
-    /// The heap a rank's path takes: its `Arc` in a glibc chunk.
-    fn heap(path_len: usize) -> u64 {
-        let bytes = 2 * size_of::<usize>() + size_of::<usize>().saturating_mul(path_len);
-        heap_cost(u64::try_from(bytes).unwrap_or(u64::MAX))
-    }
-}
-
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// One registry slot, with the charge for its registration (module docs).
-#[derive(Debug)]
-pub(crate) struct Slot {
-    pub(crate) kind: SlotKind,
-    /// Its rank (module docs).
-    pub(crate) rank: Rank,
-    /// Whether every entry of the nested container it is has been
-    /// registered (set after the last one is).
-    expanded: AtomicBool,
-    /// Whether a parse through the slot was counted (`EnvStats`).
-    counted: AtomicBool,
-    /// Whether the container preload walked the table of the file the slot
-    /// holds (`parse_preload_table` sets `_preload_table = None` when it
-    /// ends). Kept on the slot, which outlives an eviction, so a
-    /// dependency reopened after one is not walked again, as UnityPy, which
-    /// never evicts, walks each file once.
-    walked: AtomicBool,
-    /// The slot's own charge (its `Arc`, its rank's path), returned when
-    /// the last handle on the slot drops.
-    _charge: Charge,
-}
-
-/// What a slot reaches.
-#[derive(Debug)]
-pub(crate) enum SlotKind {
-    /// A CAB of a file the caller loaded, parsed at registration (`Eager`):
-    /// never evicted.
-    Ready(Cab),
-    /// An entry of a bundle the caller loaded `Lazy`, parsed on first use
-    /// through the bundle's own entry cell: never evicted.
-    Entry {
-        /// The bundle.
-        bundle: Arc<BundleFile>,
-        /// Its directory index.
-        dir_index: usize,
-    },
-    /// A dependency's CAB, reached from the LRU's handle on its top-level
-    /// file along the slot's rank's path, and reopened from its source after
-    /// an eviction. Holds no strong handle on the file; its handle on the
-    /// dependency is counted, so the LRU lets go of a dependency no slot
-    /// reaches ([`DepSlot`]).
-    Dependency {
-        /// The dependency.
-        dep: DepSlot,
-    },
-}
-
-impl Slot {
-    /// Whether the slot is a dependency's (`is_dependency` in UnityPy).
-    pub(crate) fn is_dependency(&self) -> bool {
-        matches!(self.kind, SlotKind::Dependency { .. })
-    }
-
-    /// Whether the container preload walked its file's table.
-    pub(crate) fn walked(&self) -> bool {
-        self.walked.load(Ordering::Acquire)
-    }
-
-    /// Marks its file's table walked.
-    pub(crate) fn set_walked(&self) {
-        self.walked.store(true, Ordering::Release);
-    }
 }
 
 /// One key: the slot of greatest rank, the key's position (the least rank
@@ -249,15 +192,16 @@ pub struct Registry {
     /// Bumped by every load's registration that changes the dict: UnityPy's
     /// `register_cab` clears `_container_index_built` (`environment.py:264`).
     generation: AtomicU64,
-    /// Bumped by every registration that changes the dict, a nested
-    /// container's expansion included, and by every change to the
-    /// Environment's `files` ([`Self::changed`]): an answer a lookup gave
-    /// stands while this does not move.
-    changes: AtomicU64,
+    /// Lazy slots a registration dropped unreached, to reach
+    /// ([`Self::settle`]), and how many there are.
+    pending: Mutex<Vec<Arc<Slot>>>,
+    pending_len: AtomicUsize,
     /// The generation the last finished container pass started at (0: none).
     built: AtomicU64,
     /// Entries parsed through slots, for `EnvStats`.
     parsed: AtomicU64,
+    /// The running container preload walks' watches on keys.
+    watches: Watches,
 }
 
 impl Default for Registry {
@@ -266,9 +210,11 @@ impl Default for Registry {
             inner: RwLock::default(),
             loads: AtomicU64::new(0),
             generation: AtomicU64::new(1),
-            changes: AtomicU64::new(0),
+            pending: Mutex::default(),
+            pending_len: AtomicUsize::new(0),
             built: AtomicU64::new(0),
             parsed: AtomicU64::new(0),
+            watches: Watches::default(),
         }
     }
 }
@@ -298,6 +244,11 @@ const SHARE: u64 = ORDER_LEAF / 5
 /// A slot's own allocation: the `Slot` in its `Arc`.
 const SLOT_ARC: u64 = heap_cost((size_of::<Slot>() + 2 * size_of::<usize>()) as u64);
 
+/// A lazy slot's share of the list of dropped slots waiting to be reached:
+/// four elements, the most the list keeps per element it holds
+/// ([`Registry::settle`]).
+const PENDING_SHARE: u64 = 4 * size_of::<Arc<Slot>>() as u64;
+
 thread_local! {
     /// New keys loads made on this thread: the container pass counts the
     /// ones its own dereferences make (UnityPy's `RuntimeError: dictionary
@@ -311,11 +262,11 @@ pub(crate) fn load_keys_here() -> u64 {
 }
 
 /// Who makes a registration: a load (a new key counts for the container
-/// pass's `RuntimeError`), or a nested container's expansion.
+/// pass's `RuntimeError`), or the reach of a nested container.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum By {
     Load,
-    Expansion,
+    Reach,
 }
 
 impl Registry {
@@ -354,11 +305,19 @@ impl Registry {
         path: &[usize],
         meter: &Arc<Meter>,
     ) -> Result<(), Error> {
-        self.insert(name, SlotKind::Ready(cab), load, path, meter, By::Load)
+        self.insert(
+            name,
+            SlotKind::Ready(cab),
+            load,
+            path,
+            meter,
+            By::Load,
+            false,
+        )
     }
 
     /// Registers entry `dir_index` of a caller's `Lazy` bundle, of load
-    /// `load` at `path`.
+    /// `load` at `path`, unread (a lazy slot, module docs).
     pub(crate) fn register_entry(
         &self,
         name: &RawStr,
@@ -369,7 +328,7 @@ impl Registry {
         meter: &Arc<Meter>,
     ) -> Result<(), Error> {
         let kind = SlotKind::Entry { bundle, dir_index };
-        self.insert(name, kind, load, path, meter, By::Load)
+        self.insert(name, kind, load, path, meter, By::Load, true)
     }
 
     /// Registers a dependency's CAB of load `load` at `path` (module docs),
@@ -385,7 +344,24 @@ impl Registry {
         let kind = SlotKind::Dependency {
             dep: DepSlot::new(dep),
         };
-        self.insert(name, kind, load, path, meter, By::Load)
+        self.insert(name, kind, load, path, meter, By::Load, false)
+    }
+
+    /// Registers entry `path` of a dependency's `Lazy` bundle, of load
+    /// `load`, unread (a lazy slot, module docs), charged to `meter`, the
+    /// dependency's.
+    pub(crate) fn register_lazy_dependency(
+        &self,
+        name: &RawStr,
+        dep: &Arc<Dependency>,
+        load: u64,
+        path: &[usize],
+        meter: &Arc<Meter>,
+    ) -> Result<(), Error> {
+        let kind = SlotKind::Dependency {
+            dep: DepSlot::new(dep),
+        };
+        self.insert(name, kind, load, path, meter, By::Load, true)
     }
 
     /// Registers `kind` at rank `(load, path)` under `simplify_name(name)`
@@ -394,7 +370,13 @@ impl Registry {
     /// known key takes the slot only if its rank is greater than its slot's,
     /// moves to the rank if it is less than its position's, and pays only for
     /// the slot (and its new position's path when it moves). Charged before
-    /// anything is allocated; a refusal registers nothing.
+    /// anything is allocated; a refusal registers nothing. A lazy slot the
+    /// registration drops unreached (the value it replaces, or its own slot
+    /// when that ranks below the value) is reached before it returns
+    /// ([`Self::settle`], module docs), and a change is noted for the
+    /// running container preload walks ([`super::watch`]).
+    // The registration's parts, each one of the module docs' terms.
+    #[allow(clippy::too_many_arguments)]
     fn insert(
         &self,
         name: &RawStr,
@@ -403,6 +385,7 @@ impl Registry {
         path: &[usize],
         meter: &Arc<Meter>,
         by: By,
+        lazy: bool,
     ) -> Result<(), Error> {
         // UnityPy environment.py:252-264
         let lowered = simplify_name(name, meter)?;
@@ -410,6 +393,9 @@ impl Registry {
         let mut charge = Charge::zero(meter);
         charge.grow(SLOT_ARC)?;
         charge.grow(rank_heap)?;
+        if lazy {
+            charge.grow(PENDING_SHARE)?;
+        }
         let rank = Rank {
             load,
             path: Arc::from(path),
@@ -417,7 +403,8 @@ impl Registry {
         let slot = Arc::new(Slot {
             kind,
             rank: rank.clone(),
-            expanded: AtomicBool::new(false),
+            lazy,
+            reached: AtomicBool::new(false),
             counted: AtomicBool::new(false),
             walked: AtomicBool::new(false),
             _charge: charge,
@@ -455,12 +442,16 @@ impl Registry {
                     first_charge
                 };
                 let replaces = rank > e.slot.rank;
+                // Equal ranks are one entry registered again: nothing of it
+                // is dropped.
+                let distinct = rank != e.slot.rank;
                 let slot = if replaces {
                     std::mem::replace(&mut e.slot, slot)
                 } else {
                     slot
                 };
-                (Some((slot, charge)), moves || replaces, false)
+                let unreached = distinct && slot.unreached() && !reach::same_entry(&slot, &e.slot);
+                (Some((slot, charge, unreached)), moves || replaces, false)
             } else if let Some((key, share)) = fresh {
                 order.insert(rank.clone(), key.clone());
                 slots.reserve(1);
@@ -484,9 +475,9 @@ impl Registry {
             }
         };
         if changed {
-            self.changed();
+            self.watches.notify(lowered.as_bytes());
         }
-        // An expansion registers what an eager load registered at load,
+        // A reach registers what an eager load registered at load,
         // before any container pass: only a load's change starts a new one.
         if changed && by == By::Load {
             self.generation.fetch_add(1, Ordering::AcqRel);
@@ -495,7 +486,15 @@ impl Registry {
             LOAD_KEYS_HERE.with(|c| c.set(c.get().saturating_add(1)));
         }
         // What the registration replaced or did not use (and its charges)
-        // is dropped after the lock.
+        // is dropped after the lock; a lazy slot not yet reached is reached
+        // first (module docs).
+        if let Some((slot, charge, true)) = dropped {
+            drop(charge);
+            self.defer(slot);
+            // A refusal leaves it for the next call (`settle`).
+            self.settle().ok();
+            return Ok(());
+        }
         drop(dropped);
         Ok(())
     }
@@ -509,12 +508,15 @@ impl Registry {
     }
 
     /// The slot under `simplify_name(name)`, the key built charged to `meter`
-    /// (no copy when `name` is already simplified) and dropped on return.
+    /// (no copy when `name` is already simplified) and dropped on return,
+    /// after the dropped lazy slots are reached ([`Self::settle`]).
     pub(crate) fn slot(
         &self,
         name: &RawStr,
         meter: &Arc<Meter>,
     ) -> Result<Option<Arc<Slot>>, Error> {
+        // A refusal leaves it for the next call (`settle`).
+        self.settle().ok();
         let key = simplify_name(name, meter)?;
         Ok(self
             .read()
@@ -543,18 +545,13 @@ impl Registry {
     }
 
     /// The generation now (bumped by every change to the dict).
+    /// The running container preload walks' watches on keys.
+    pub(crate) fn watches(&self) -> &Watches {
+        &self.watches
+    }
+
     pub(crate) fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
-    }
-
-    /// How many times the dict or `files` changed so far ([`Self::changed`]).
-    pub(crate) fn changes(&self) -> u64 {
-        self.changes.load(Ordering::Acquire)
-    }
-
-    /// Counts a change to the dict or to the Environment's `files`.
-    pub(crate) fn changed(&self) {
-        self.changes.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Whether a container pass that started at `generation` has finished.
@@ -604,9 +601,9 @@ impl Registry {
 
     /// What a slot answers: its CAB, parsed through its bundle's own cell
     /// (`Lazy`) or reached from its dependency's open handle (reopened from
-    /// its source after an eviction); `None` for a nested container, whose
-    /// entries are registered then (module docs). A dependency read the pool
-    /// refuses evicts the others and retries once.
+    /// its source after an eviction); `None` for a nested container, which
+    /// is reached then (module docs). A dependency read the pool refuses
+    /// evicts the others and retries once.
     pub(crate) fn resolve(&self, slot: &Arc<Slot>) -> Result<Option<Cab>, Error> {
         Ok(self.resolve_held(slot)?.map(|h| h.cab))
     }
@@ -619,7 +616,7 @@ impl Registry {
             SlotKind::Entry { bundle, dir_index } => {
                 let file = bundle.entry(*dir_index)?;
                 self.count(slot);
-                self.answer(slot, file, Some((bundle, *dir_index)), None)
+                self.answer(slot, file, Some((bundle, *dir_index)))
                     .map(held)
             }
             SlotKind::Dependency { dep } => {
@@ -661,7 +658,7 @@ impl Registry {
             cache.refresh(dep);
         }
         let at = at.as_ref().map(|(b, i)| (b, *i));
-        let cab = self.answer(slot, file, at, Some(dep))?;
+        let cab = self.answer(slot, file, at)?;
         Ok(cab.map(|cab| HeldCab {
             cab,
             hold: Some(top),
@@ -670,69 +667,30 @@ impl Registry {
 
     /// The CAB a slot's file is: a `SerializedFile`, or a raw reader (read
     /// through its bundle when it is an entry); a nested container is none,
-    /// and its entries are registered then, as the slot's own kind registers
-    /// them (`Lazy` entries of the nested bundle, or dependency slots one
-    /// level deeper), at the ranks below the slot's.
+    /// and is reached then ([`Self::reach`]).
     fn answer(
         &self,
         slot: &Arc<Slot>,
         file: File,
         at: Option<(&Arc<BundleFile>, usize)>,
-        dep: Option<&Arc<Dependency>>,
     ) -> Result<Option<Cab>, Error> {
-        match file {
-            File::Serialized(sf) => Ok(Some(Cab::Serialized(sf))),
-            File::Raw(raw) => Ok(Some(Cab::Raw(match at {
+        let cab = match file {
+            File::Serialized(sf) => Some(Cab::Serialized(sf)),
+            File::Raw(raw) => Some(Cab::Raw(match at {
                 Some((bundle, dir_index)) => RawCab::InBundle {
                     bundle: bundle.clone(),
                     dir_index,
                 },
                 None => RawCab::File(raw),
-            }))),
+            })),
             File::Bundle(nested) => {
-                self.expand(slot, &nested, dep)?;
-                Ok(None)
+                self.reach(slot, Some(&nested))?;
+                return Ok(None);
             }
-            File::Web(_) => Ok(None),
-        }
-    }
-
-    /// Registers a nested container's entries from its slot, at the ranks
-    /// below the slot's, unless they all already are (module docs: every
-    /// caller that finds them not yet all registered registers them, and the
-    /// second registration of an entry changes nothing). `nested` is the
-    /// slot's file, or a reader's handle on the same entry of its own bundle
-    /// (`super::resource_data`'s `expand_own`).
-    pub(crate) fn expand(
-        &self,
-        slot: &Arc<Slot>,
-        nested: &Arc<BundleFile>,
-        dep: Option<&Arc<Dependency>>,
-    ) -> Result<(), Error> {
-        if slot.expanded.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        let meter = nested.meter();
-        let load = slot.rank.load;
-        let mut path = slot.rank.path().to_vec();
-        for (j, d) in nested.directory().iter().enumerate() {
-            path.push(j);
-            let kind = match dep {
-                Some(dep) => SlotKind::Dependency {
-                    dep: DepSlot::new(dep),
-                },
-                None => SlotKind::Entry {
-                    bundle: nested.clone(),
-                    dir_index: j,
-                },
-            };
-            let r = self.insert(&d.path, kind, load, &path, meter, By::Expansion);
-            path.pop();
-            // A refused registration is asked again by the next `get`.
-            r?;
-        }
-        slot.expanded.store(true, Ordering::Release);
-        Ok(())
+            File::Web(_) => None,
+        };
+        slot.mark_reached();
+        Ok(cab)
     }
 
     /// Keys in dict order, as an iterator that takes the read lock briefly

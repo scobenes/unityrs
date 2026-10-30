@@ -10,14 +10,15 @@ use std::sync::atomic::Ordering;
 
 use super::deref::Reached;
 use super::registry::{Rank, load_keys_here};
-use super::{Cab, DerefError, Environment, Found, PPtr, never_evicts};
+use super::watch::{FLAG, Flag, WATCH_SHARE, Walk};
+use super::{Cab, DerefError, Environment, Found, LoadMode, PPtr, never_evicts, pptr};
 use crate::budget::Reservation;
 use crate::container::{Container, ContainerPath, ContainerRow};
 use crate::error::{Error, Unsupported};
 use crate::files::{BundleFile, File, SerializedFile};
 use crate::limits::{Charge, HASH_TABLE_SHARES, Meter, MeteredVec};
 use crate::object::ObjectRef;
-use crate::pystr::py_lower;
+use crate::pystr::{clean_external_path, py_lower, simplify_name};
 use crate::raw::RawStr;
 
 /// The iterator [`Environment::container`] returns, CABs in registry order.
@@ -176,40 +177,73 @@ impl Undone {
     }
 }
 
-/// What one table entry of a preload walk costs the walk's map of the
-/// file's externals: [`HASH_TABLE_SHARES`] buckets.
+/// What one external costs a preload walk's map of answers:
+/// [`HASH_TABLE_SHARES`] buckets.
 const TARGET_SHARE: u64 = HASH_TABLE_SHARES * (size_of::<i32>() + size_of::<Known>() + 1) as u64;
 
 /// A preload walk's answers for its file's externals, each kept only while
-/// UnityPy's next dereference would give the same one: a bundle sibling for
-/// the walk, a lookup of `files` or the registry (found or not) until either
-/// changes, and the resolver's load not at all (the next dereference looks
-/// again, and finds it if the load registered the name asked for, or loads
-/// again if not, as UnityPy's `find_file` does when its walk matched a
-/// longer file name by suffix). A change is any registration that changes
-/// the dict and any change to `files` ([`Registry::changes`]): the walk's own
-/// loads, another thread's, and under [`LoadMode::Lazy`] a nested
-/// container's expansion, which registers what an eager load registered at
-/// load (review round 3: only the walk's loads expired a lookup, so a miss
-/// kept from before an element named the nested container outlived its
-/// expansion, where UnityPy's lookup finds the entry).
+/// UnityPy's next dereference would give the same one: a bundle sibling, or
+/// a file id past the externals' end, for the walk; an answer of `files` or
+/// the registry (found or not) until a change to a key its lookup read
+/// ([`super::watch`]: a load's registration, any thread's, the resolver's
+/// included, and under [`LoadMode::Lazy`] the entries a reach registers),
+/// so the answer UnityPy's next lookup could find changed is asked again
+/// and every other is kept; and the resolver's load not at all (the next
+/// dereference looks again, and finds it if the load registered the name
+/// asked for, or loads again if not, as UnityPy's `find_file` does when its
+/// walk matched a longer file name by suffix). An external is looked up
+/// once, and once more per change to one of its keys, so a walk costs its
+/// table and its externals' names (plan decision 11), plus a lookup per
+/// change another thread makes to a key it asked (review round 4: every
+/// change, any thread's, expired every answer, so a table of pointers to
+/// long names cost the table times the names).
 ///
-/// [`Registry::changes`]: super::registry::Registry::changes
 /// [`LoadMode::Lazy`]: super::LoadMode::Lazy
-struct Targets {
+struct Targets<'a> {
     known: HashMap<i32, Known>,
     charge: Charge,
+    /// After `known`, so the flags drop before the watches end.
+    walk: Walk<'a>,
 }
 
 /// One external's answer in [`Targets`].
 struct Known {
     found: Option<Found>,
-    /// [`Registry::changes`] before the lookup that found it, or `None` (a
-    /// bundle sibling, or a file id past the externals' end): kept for the
-    /// walk.
-    ///
-    /// [`Registry::changes`]: super::registry::Registry::changes
-    at: Option<u64>,
+    /// Set when a key its lookup read changes; `None`: kept for the walk (a
+    /// sibling, a file id past the end).
+    flag: Option<Arc<Flag>>,
+}
+
+impl Targets<'_> {
+    /// The answer kept for `file_id`, if it holds.
+    fn kept(&self, file_id: i32) -> Option<&Known> {
+        self.known
+            .get(&file_id)
+            .filter(|k| k.flag.as_ref().is_none_or(|f| !f.changed()))
+    }
+
+    /// A flag on `keys`, set up before the lookup that reads them, charged
+    /// for the walk (its entries stay until the walk ends).
+    fn watch(&mut self, keys: &[u64]) -> Result<Arc<Flag>, Error> {
+        let grow = WATCH_SHARE.saturating_mul(keys.len() as u64);
+        self.charge.grow(grow.saturating_add(FLAG))?;
+        Ok(self.walk.watch(keys))
+    }
+
+    /// Keeps `found` for `file_id` while `flag` is unset (`None`: for the
+    /// walk).
+    fn keep(
+        &mut self,
+        file_id: i32,
+        found: Option<Found>,
+        flag: Option<Arc<Flag>>,
+    ) -> Result<(), Error> {
+        if !self.known.contains_key(&file_id) {
+            self.charge.grow(TARGET_SHARE)?;
+        }
+        self.known.insert(file_id, Known { found, flag });
+        Ok(())
+    }
 }
 
 /// A dereference failure as a file-level error (the container preload's
@@ -282,7 +316,9 @@ impl Environment {
     /// `cabs.values()` does (`RuntimeError: dictionary changed size during
     /// iteration`), at the step after; a key a nested container's entries
     /// make under [`LoadMode::Lazy`] is not one (an eager load made it at
-    /// load), nor is one another thread's load makes. Two passes may run at
+    /// load), nor is one another thread's load makes. Under `Lazy` the pass
+    /// first reaches every registered entry (the registry's module docs),
+    /// so it walks what an eager load registered. Two passes may run at
     /// once: each walks every table not yet marked, and each `path_dict`
     /// entry keeps the least stamp ([`crate::container`]), so both leave
     /// what one after the other would.
@@ -305,6 +341,20 @@ impl Environment {
             what: "container",
             detail: "dictionary changed size during iteration".into(),
         };
+        // Under `Lazy`, every registered entry is reached before the walk
+        // (the registry's module docs), so a nested container's entries are
+        // walked at the positions and with the values an eager load gives
+        // them, whichever container the walk would meet first (review round
+        // 4: a later container's entry replaced the value of a key the walk
+        // had passed, and the walk had read the earlier one).
+        if self.inner.options.load == LoadMode::Lazy {
+            reg.settle()?;
+            let mut after: Option<Rank> = None;
+            while let Some((rank, slot)) = reg.slot_after(after.as_ref()) {
+                reg.reach(&slot, None)?;
+                after = Some(rank);
+            }
+        }
         let mut siblings = Siblings::default();
         let mut after: Option<Rank> = None;
         let mut grew = false;
@@ -349,6 +399,9 @@ impl Environment {
     /// each table index is dereferenced once ([`Undone`]), at the first row
     /// whose span reaches it, which is the row whose `setdefault` UnityPy
     /// keeps; each external's answer is kept while it holds ([`Targets`]),
+    /// so an external is looked up once, and once more per change to a key
+    /// its lookup read, under every option set and whatever other keys other
+    /// threads change meanwhile (`EnvStats::preload_lookups` counts them);
     /// each bundle's names indexed once per pass ([`Siblings`]), and each
     /// row's path copied once, charged to this file's meter. A dereference
     /// of an external answered before answers as UnityPy's would:
@@ -379,6 +432,7 @@ impl Environment {
         let mut targets = Targets {
             known: HashMap::new(),
             charge: Charge::zero(meter),
+            walk: self.inner.registry.watches().start(),
         };
         for (r, row) in container.rows().iter().enumerate() {
             // `start = info.preloadIndex`, `size = info.preloadSize`: a
@@ -455,33 +509,29 @@ impl Environment {
         targets: &mut Targets,
         siblings: &mut Siblings,
     ) -> Result<Option<ObjectRef>, Error> {
-        // Read before the lookup: a change the lookup makes (a load, an
-        // expansion) expires its own answer.
-        let changes = self.inner.registry.changes();
-        let kept = targets
-            .known
-            .get(&p.file_id)
-            .filter(|k| k.at.is_none_or(|at| at == changes));
         let found = if p.file_id == 0 {
             Some(Found::File(File::Serialized(sf.clone())))
-        } else if let Some(k) = kept {
+        } else if let Some(k) = targets.kept(p.file_id) {
             k.found.clone()
         } else {
-            // What to keep: `Some(at)` as `Known::at`, `None` nothing.
+            self.inner.preload_lookups.fetch_add(1, Ordering::Relaxed);
+            // Watched before the lookup reads, so no change it misses is
+            // missed by the flag.
+            let keys = Self::lookup_keys(sf, p.file_id, &targets.walk)?;
+            let flag = targets.watch(&keys)?;
+            // What to keep: `Some(until_a_change)`, or `None` nothing.
             let (found, keep) = match self.external(sf, p.file_id, Some(siblings)) {
-                Ok((t, Reached::Sibling)) => (Some(t), Some(None)),
-                Ok((t, Reached::Lookup)) => (Some(t), Some(Some(changes))),
+                Ok((t, Reached::Sibling)) => (Some(t), Some(false)),
+                Ok((t, Reached::Lookup)) => (Some(t), Some(true)),
                 Ok((t, Reached::Load)) => (Some(t), None),
-                Err(DerefError::FileIdPastEnd { .. }) => (None, Some(None)),
-                Err(DerefError::NotFound { .. }) => (None, Some(Some(changes))),
+                Err(DerefError::FileIdPastEnd { .. }) => (None, Some(false)),
+                Err(DerefError::NotFound { .. }) => (None, Some(true)),
                 Err(e) => return Err(deref_error(e)),
             };
-            if let Some(at) = keep {
-                if !targets.known.contains_key(&p.file_id) {
-                    targets.charge.grow(TARGET_SHARE)?;
-                }
-                let found = found.clone();
-                targets.known.insert(p.file_id, Known { found, at });
+            match keep {
+                Some(true) => targets.keep(p.file_id, found.clone(), Some(flag))?,
+                Some(false) => targets.keep(p.file_id, found.clone(), None)?,
+                None => {}
             }
             found
         };
@@ -493,5 +543,27 @@ impl Environment {
             Err(DerefError::MissingObject { .. }) => Ok(None),
             Err(e) => Err(deref_error(e)),
         }
+    }
+
+    /// The keys external `file_id`'s lookup read past `sf`'s bundle names
+    /// ([`Self::external`]): the registry key `find_file` asks
+    /// (`simplify_name` twice), and for a top-level file the lowered `files`
+    /// key its sibling scan matches.
+    fn lookup_keys(sf: &SerializedFile, file_id: i32, walk: &Walk) -> Result<Vec<u64>, Error> {
+        let externals = sf.externals();
+        let Some(external) = pptr::external_index(file_id, externals.len())
+            .ok()
+            .and_then(|i| externals.get(i))
+        else {
+            return Ok(Vec::new());
+        };
+        let meter = sf.meter();
+        let clean = clean_external_path(&external.path, meter)?;
+        let simple = simplify_name(&simplify_name(&clean, meter)?, meter)?;
+        let mut keys = vec![walk.hash(simple.as_bytes())];
+        if sf.parent().is_none() {
+            keys.push(walk.hash(clean.as_bytes()));
+        }
+        Ok(keys)
     }
 }

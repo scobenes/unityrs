@@ -9,399 +9,23 @@
 // Test code: a failed lookup is a failed test.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::Path;
+#[path = "env_fixtures/lazy.rs"]
+mod lazy;
+#[path = "env_fixtures/run.rs"]
+mod run;
+
 use std::sync::Arc;
 
 use serde_json::{Value as J, json};
-use unityrs_core::container::ContainerPath;
-use unityrs_core::env::{CabResolver, DerefError, EnvOptions, Environment, LoadMode, PPtr, Source};
-use unityrs_core::error::{Error, NotFound};
-use unityrs_core::files::File;
+use unityrs_core::RawStr;
+use unityrs_core::env::{EnvOptions, LoadMode};
 use unityrs_core::limits::Meter;
 use unityrs_core::pystr::{
     is_split_path, ntpath_basename, ntpath_splitext, py_lower, simplify_name,
 };
-use unityrs_core::value::Value;
-use unityrs_core::{Bytes, RawStr};
-use unityrs_testkit::env::{Scene, scenes};
+use unityrs_testkit::env::scenes;
 
-fn load(name: &str) -> Option<J> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/d")
-        .join(name);
-    let text = std::fs::read_to_string(path).ok()?;
-    Some(serde_json::from_str(&text).unwrap())
-}
-
-fn hex(b: &[u8]) -> String {
-    use std::fmt::Write;
-    b.iter().fold(String::new(), |mut s, x| {
-        let _ = write!(s, "{x:02x}");
-        s
-    })
-}
-
-fn unhex(s: &str) -> Vec<u8> {
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-        .collect()
-}
-
-fn text(b: &[u8]) -> String {
-    String::from_utf8_lossy(b).into_owned()
-}
-
-/// UnityPy's `env.path`: the scene's resolver files, keyed `@/<name>` as
-/// `tools/fixtures/env.py` writes the temporary directory.
-#[derive(Debug)]
-struct SceneResolver(Vec<(Vec<u8>, Bytes)>);
-
-impl CabResolver for SceneResolver {
-    /// UnityPy's `find_file` walk of `env.path` (`environment.py:330-354`):
-    /// the file of the name asked, else the first whose path ends with it.
-    /// The walk's last step matches lower-cased names and opens the
-    /// lower-cased absolute path, which `find_sensitive_path` cannot correct
-    /// (`helpers/ImportHelper.py:159-173` splits it into a directory and a
-    /// name), so it loads nothing the steps before missed. A resource
-    /// fallback's `load_file` takes the name only, and no scene's resource
-    /// candidate is the end of another resolver file's name.
-    fn resolve(&self, name: &[u8]) -> Option<Source> {
-        let (n, data) = self
-            .0
-            .iter()
-            .find(|(n, _)| n == name)
-            .or_else(|| self.0.iter().find(|(n, _)| n.ends_with(name)))?;
-        let mut key = b"@/".to_vec();
-        key.extend_from_slice(n);
-        Some(Source::Bytes {
-            name: RawStr::new(key),
-            data: data.clone(),
-        })
-    }
-}
-
-/// The exception UnityPy raises where the core returns `e`.
-fn deref_kind(e: &DerefError) -> &'static str {
-    match e {
-        DerefError::Null => "ValueError",
-        DerefError::FileIdPastEnd { .. } | DerefError::NotFound { .. } => "FileNotFoundError",
-        DerefError::FileIdBelowStart { .. } => "IndexError",
-        DerefError::MissingObject { .. } => "KeyError",
-        DerefError::RawTarget { .. } => "AttributeError",
-        DerefError::ContainerDropped { .. } => "ContainerDropped",
-        DerefError::Load(_) => "load",
-        _ => "other",
-    }
-}
-
-/// The exception UnityPy raises where the core returns `e`, for the steps
-/// that return a file-level error (a resource read, the container).
-fn error_kind(e: &Error) -> String {
-    match e {
-        Error::NotFound(NotFound::Resource(_)) => "FileNotFoundError".into(),
-        Error::Malformed {
-            what: "resource", ..
-        } => "AttributeError".into(),
-        // The preload's raise.
-        Error::Deref(d) => deref_kind(d).into(),
-        // The container pass's loop over `env.cabs` when it grew.
-        Error::Malformed {
-            what: "container",
-            detail,
-        } if detail.contains("changed size") => "RuntimeError".into(),
-        other => format!("core: {other}"),
-    }
-}
-
-/// `File.name` in UnityPy: `os.path.basename` of the name it was loaded
-/// under (`files/File.py:38`); the core keeps the whole name.
-fn file_name(name: &RawStr) -> String {
-    let b = name.as_bytes();
-    text(&b[b.iter().rposition(|&c| c == b'/').map_or(0, |i| i + 1)..])
-}
-
-fn kind(f: &File) -> &'static str {
-    match f {
-        File::Serialized(_) => "serialized",
-        File::Bundle(_) => "bundle",
-        File::Raw(_) | File::Web(_) => "raw",
-    }
-}
-
-struct Run {
-    scene: Scene,
-    env: Environment,
-}
-
-impl Run {
-    fn new(scene: Scene, mode: LoadMode) -> Self {
-        Self::with(scene, mode, EnvOptions::unitypy())
-    }
-
-    fn with(scene: Scene, mode: LoadMode, mut options: EnvOptions) -> Self {
-        options.load = mode;
-        options.resolver = Some(Arc::new(SceneResolver(
-            scene
-                .resolver
-                .iter()
-                .map(|(n, d)| (n.clone(), Bytes::from(d.clone())))
-                .collect(),
-        )));
-        Self {
-            scene,
-            env: Environment::new(options),
-        }
-    }
-
-    fn state(&self) -> J {
-        let files: Vec<J> = self
-            .env
-            .files()
-            .map(|f| json!([text(f.name.as_bytes()), f.is_dependency, kind(&f.file)]))
-            .collect();
-        let cabs: Vec<J> = self
-            .env
-            .registry()
-            .keys()
-            .map(|k| json!(text(k.as_bytes())))
-            .collect();
-        let objects: Vec<J> = self
-            .env
-            .objects()
-            .map(|o| match o {
-                Ok(o) => json!([file_name(o.file().name()), o.path_id(), o.class_id()]),
-                Err(e) => json!(format!("core: {e}")),
-            })
-            .collect();
-        json!({"files": files, "cabs": cabs, "objects": objects})
-    }
-
-    fn load(&self, i: usize) -> J {
-        let (name, data) = &self.scene.files[i];
-        let source = Source::Bytes {
-            name: RawStr::new(name.clone()),
-            data: Bytes::from(data.clone()),
-        };
-        json!(if self.env.load(source).is_ok() {
-            "ok"
-        } else {
-            "error"
-        })
-    }
-
-    fn objects(&self) -> Vec<unityrs_core::object::ObjectRef> {
-        self.env.objects().filter_map(Result::ok).collect()
-    }
-
-    fn name_of(o: &unityrs_core::object::ObjectRef) -> J {
-        match o.parse_as_dict(true) {
-            Ok(p) => match p.get(&[b"m_Name"]) {
-                Some(Value::Str(s)) => json!(text(s.as_bytes())),
-                _ => J::Null,
-            },
-            Err(_) => json!("error"),
-        }
-    }
-
-    fn reads(&self) -> J {
-        let out: Vec<J> = self
-            .objects()
-            .iter()
-            .map(|o| {
-                if o.class_id() != 142 {
-                    return Self::name_of(o);
-                }
-                match o.parse_as_dict(true) {
-                    Ok(p) => match p.value() {
-                        Value::Dict(m) => {
-                            json!(p.entries(m).map(|(k, _)| text(k)).collect::<Vec<_>>())
-                        }
-                        _ => J::Null,
-                    },
-                    Err(_) => json!("error"),
-                }
-            })
-            .collect();
-        json!(out)
-    }
-
-    fn derefs(&self) -> J {
-        let mut out = Vec::new();
-        for o in self.objects() {
-            if o.class_id() != 1 {
-                continue;
-            }
-            let p = o.parse_as_dict(true).unwrap();
-            let Value::Dict(m) = p.value() else { continue };
-            for (k, v) in p.entries(m) {
-                if !k.starts_with(b"m_Ptr") {
-                    continue;
-                }
-                let Value::Dict(fields) = v else { continue };
-                let target = PPtr {
-                    file_id: i32::try_from(p.field(fields, b"m_FileID").unwrap().as_i64().unwrap())
-                        .unwrap(),
-                    path_id: p.field(fields, b"m_PathID").unwrap().as_i64().unwrap(),
-                };
-                out.push(match self.env.deref(o.file(), target) {
-                    Ok(t) => json!([
-                        file_name(t.file().name()),
-                        t.path_id(),
-                        t.class_id(),
-                        Self::name_of(&t)
-                    ]),
-                    Err(e) => json!(deref_kind(&e)),
-                });
-            }
-        }
-        json!(out)
-    }
-
-    fn resources(&self) -> J {
-        let mut out = Vec::new();
-        for o in self.objects() {
-            if o.class_id() != 28 {
-                continue;
-            }
-            let p = o.parse_as_dict(true).unwrap();
-            let path = match p.get(&[b"m_StreamData", b"path"]) {
-                Some(Value::Str(s)) => s.clone(),
-                _ => panic!("no path"),
-            };
-            let offset = p
-                .get(&[b"m_StreamData", b"offset"])
-                .unwrap()
-                .as_u64()
-                .unwrap();
-            let size = p
-                .get(&[b"m_StreamData", b"size"])
-                .unwrap()
-                .as_u64()
-                .unwrap();
-            out.push(match self.env.resource(o.file(), &path, offset, size) {
-                Ok(b) => json!(hex(&b)),
-                Err(e) => json!(error_kind(&e)),
-            });
-        }
-        json!(out)
-    }
-
-    fn container(&self) -> J {
-        let items = match self.env.container() {
-            Ok(items) => items,
-            Err(e) => return json!(error_kind(&e)),
-        };
-        let mut rows = Vec::new();
-        for item in items {
-            match item {
-                Ok(i) => rows.push(json!([
-                    i.row.path.as_ref().map(|p| text(p.as_bytes())),
-                    i.row.preload_index,
-                    i.row.preload_size,
-                    i.row.file_id,
-                    i.row.path_id
-                ])),
-                Err(e) => return json!(error_kind(&e)),
-            }
-        }
-        json!(rows)
-    }
-
-    /// `obj.container` for every object.
-    fn container_of(&self, o: &unityrs_core::object::ObjectRef) -> J {
-        match self.env.container_path(o) {
-            Ok(None) => J::Null,
-            Ok(Some(ContainerPath::Str(s))) => json!(text(s.as_bytes())),
-            Ok(Some(ContainerPath::NotAString)) => json!("<not a str>"),
-            Err(e) => json!(error_kind(&e)),
-        }
-    }
-
-    fn paths(&self) -> J {
-        let out: Vec<J> = self
-            .objects()
-            .iter()
-            .map(|o| self.container_of(o))
-            .collect();
-        json!(out)
-    }
-
-    /// `obj.container` for the objects of every `files` entry loaded as a
-    /// dependency, which `env.objects` leaves out: `[key, path id, path]`.
-    fn dep_paths(&self) -> J {
-        // No scene holds a web file.
-        fn walk(run: &Run, key: &str, file: &File, out: &mut Vec<J>) {
-            match file {
-                File::Serialized(sf) => out.extend(
-                    sf.objects()
-                        .map(|o| json!([key, o.path_id(), run.container_of(&o)])),
-                ),
-                File::Bundle(b) => {
-                    for i in 0..b.directory().len() {
-                        if let Ok(f) = b.entry(i) {
-                            walk(run, key, &f, out);
-                        }
-                    }
-                }
-                File::Web(_) | File::Raw(_) => {}
-            }
-        }
-        let mut out = Vec::new();
-        for f in self.env.files().filter(|f| f.is_dependency) {
-            walk(self, &text(f.name.as_bytes()), &f.file, &mut out);
-        }
-        json!(out)
-    }
-
-    fn step(&self, op: &J) -> J {
-        let result = match op[0].as_str().unwrap() {
-            "load" => self.load(usize::try_from(op[1].as_u64().unwrap()).unwrap()),
-            "reads" => self.reads(),
-            "derefs" => self.derefs(),
-            "resources" => self.resources(),
-            "container" => self.container(),
-            "paths" => self.paths(),
-            "dep_paths" => self.dep_paths(),
-            other => panic!("unknown step {other}"),
-        };
-        let mut s = self.state();
-        s["op"] = op.clone();
-        s["result"] = result;
-        s
-    }
-
-    fn steps(&self, ops: &[J]) -> Vec<J> {
-        ops.iter().map(|op| self.step(op)).collect()
-    }
-}
-
-fn scene_by_name(name: &str) -> Scene {
-    scenes()
-        .into_iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, s)| s)
-        .unwrap()
-}
-
-fn recorded() -> Vec<(String, Vec<J>)> {
-    let doc = load("env.json").expect("tests/fixtures/d/env.json");
-    doc["scenes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| {
-            (
-                s["name"].as_str().unwrap().to_owned(),
-                s["steps"].as_array().unwrap().clone(),
-            )
-        })
-        .collect()
-}
-
-fn ops(steps: &[J]) -> Vec<J> {
-    steps.iter().map(|s| s["op"].clone()).collect()
-}
+use run::{Run, hex, load, ops, recorded, scene_by_name, text, unhex};
 
 /// The fixture's scenes are the testkit's, byte for byte. With
 /// `UNITYRS_WRITE_SCENES=<path>` it writes them there instead, as JSON lines
@@ -552,6 +176,8 @@ const LAZY_DIFFERS: &[&str] = &[
     "preload_nested_external",
     "resource_in_own_nested",
     "deref_sibling_nested",
+    "resource_in_nested_cab",
+    "nested_replaced_unread",
     // (c): the block after the last entry is never decoded.
     "last_block_fails",
 ];
@@ -576,18 +202,21 @@ const LAZY_KEYS_DIFFER: &[(&str, &str)] = &[
     ("preload_nested_external", "inner"),
     ("resource_in_own_nested", "inner"),
     ("deref_sibling_nested", "inner"),
+    ("resource_in_nested_cab", "inner"),
+    ("nested_replaced_unread", "inner"),
 ];
 
 /// Difference (b) and nothing more on [`LAZY_KEYS_DIFFER`]'s scenes, under
 /// `EnvOptions::unitypy()` and `batch()`: every step's result, `files` and
-/// `objects` are UnityPy's; its keys but the nested container's own name
+/// `objects` are UnityPy's; its keys, the nested container's own name out
+/// of both lists (a later load's CAB of that path is a key of UnityPy's),
 /// are UnityPy's, in order, the container's entries missing until a step
-/// asks for it, and all of them at the end. A nested container reached
-/// without a `get` of its name registers its entries as that `get` does:
-/// named by a preload element (and a miss the walk kept before then is not
-/// kept), as a resource candidate read through the reader's own bundle, or
-/// as the asking file's sibling (review round 3: the kept miss and the own
-/// bundle's read gave no path and no bytes where UnityPy gives them).
+/// reaches it, and all of them at the end. A nested container is reached
+/// without a `get` of its name: by the container pass, as a resource
+/// candidate read through the reader's own bundle, as the asking file's
+/// sibling, from a file inside it, or by the registration that drops it
+/// (review rounds 3 and 4: none of these registered its entries, so a path,
+/// a read's bytes and a container row UnityPy gives were missing).
 #[test]
 fn lazy_reaches_what_unitypy_reaches_through_a_nested_container() {
     let keys = |step: &J| step["cabs"].as_array().unwrap().clone();
@@ -603,7 +232,9 @@ fn lazy_reaches_what_unitypy_reaches_through_a_nested_container() {
                     assert_eq!(got[part], want[part], "{name} {op} {part}");
                 }
                 // A subsequence of UnityPy's keys, once `nested` is out.
-                let mut theirs = keys(want).into_iter();
+                let mut theirs = keys(want)
+                    .into_iter()
+                    .filter(|k| k.as_str() != Some(nested));
                 let ok = keys(got)
                     .iter()
                     .filter(|k| k.as_str() != Some(nested))
@@ -611,10 +242,12 @@ fn lazy_reaches_what_unitypy_reaches_through_a_nested_container() {
                 assert!(ok, "{name} {op}: keys {} of {}", got["cabs"], want["cabs"]);
             }
             let (want, got) = (keys(steps.last().unwrap()), keys(ours.last().unwrap()));
-            let got: Vec<J> = got
-                .into_iter()
-                .filter(|k| k.as_str() != Some(nested))
-                .collect();
+            let out = |k: Vec<J>| -> Vec<J> {
+                k.into_iter()
+                    .filter(|k| k.as_str() != Some(nested))
+                    .collect()
+            };
+            let (want, got) = (out(want), out(got));
             assert_eq!(got, want, "{name}: the keys at the end");
         }
     }

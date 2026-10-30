@@ -12,6 +12,7 @@ mod files;
 mod locks;
 mod lru;
 mod modes;
+mod preload;
 mod resources;
 
 use std::path::PathBuf;

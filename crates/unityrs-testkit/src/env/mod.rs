@@ -22,9 +22,9 @@ mod catalog;
 pub use catalog::{
     asset_bundle_modes, bad_cab, container_other_file, cross_bundle_pointer, deref_rules,
     deref_sibling_nested, fallback_file_pointer, last_block_fails, loose_external_pointer,
-    nested_after_cab, nested_duplicates, preload_below_start, preload_loads_new_cab,
-    preload_nested_external, preload_paths, preload_raw_target, preload_skips, resolver_loads,
-    resource_in_own_nested, scenes,
+    nested_after_cab, nested_duplicates, nested_replaced_unread, preload_below_start,
+    preload_loads_new_cab, preload_nested_external, preload_paths, preload_raw_target,
+    preload_skips, resolver_loads, resource_in_nested_cab, resource_in_own_nested, scenes,
 };
 
 use crate::blob::NodeSpec;

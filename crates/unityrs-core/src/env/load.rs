@@ -90,7 +90,7 @@ impl Environment {
                                 reg.register_entry(&d.path, b.clone(), i, load, &[i], b.meter())?;
                             }
                             Target::Dependency(dep) => {
-                                reg.register_dependency(&d.path, dep, load, &[i], b.meter())?;
+                                reg.register_lazy_dependency(&d.path, dep, load, &[i], b.meter())?;
                             }
                         }
                     }
