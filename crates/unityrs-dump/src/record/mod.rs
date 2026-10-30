@@ -12,6 +12,7 @@
 //! format's rules: the metadata-string rule to every name, hex to fixed
 //! bytes, `null` where a member does not apply.
 
+use std::fmt;
 use std::sync::Arc;
 
 use unityrs_core::RawStr;
@@ -45,6 +46,40 @@ pub fn note(text: &str) -> String {
     let mut s: String = text.chars().take(NOTE_MAX - 3).collect();
     s.push_str("...");
     s
+}
+
+/// [`note`] of `e`'s text, formatting no more of it than the note keeps
+/// (its first `NOTE_MAX + 1` characters, which decide the cut): an error's
+/// text can quote a string of the input whole (a node name, a path), and
+/// `to_string()` would allocate all of it, uncharged, to keep 300
+/// characters.
+#[must_use]
+pub fn note_of(e: &(impl fmt::Display + ?Sized)) -> String {
+    /// The first `NOTE_MAX + 1` characters written to it; a write past
+    /// them fails, which ends the formatting.
+    struct Prefix {
+        text: String,
+        chars: usize,
+    }
+    impl fmt::Write for Prefix {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            for c in s.chars() {
+                if self.chars > NOTE_MAX {
+                    return Err(fmt::Error);
+                }
+                self.text.push(c);
+                self.chars += 1;
+            }
+            Ok(())
+        }
+    }
+    let mut p = Prefix {
+        text: String::new(),
+        chars: 0,
+    };
+    // An `Err` is the prefix filling up: what it holds is the note's.
+    let _ = fmt::Write::write_fmt(&mut p, format_args!("{e}"));
+    note(&p.text)
 }
 
 /// `l0` (section 4.2).
