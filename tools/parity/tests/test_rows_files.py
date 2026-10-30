@@ -234,9 +234,12 @@ class FileRows(unittest.TestCase):
     def test_writeable_cabs(self):
         from UnityPy.streams import EndianBinaryWriter
 
-        bundle = load(S.fs_bundle([(b"CAB-a", text_asset_file(), 4), (b"CAB-a.resS", b"\x11" * 8, 0)]))[0]
-        # File.get_writeable_cab: the default name is `cab_file`; flags and endian come from the first .resS.
+        bundle, env = load(S.fs_bundle([(b"CAB-a", text_asset_file(), 4), (b"CAB-a.resS", b"\x11" * 8, 0)]))
+        # File.get_writeable_cab: the default name is `cab_file`; flags and endian come from the first .resS. The
+        # writer goes into `files` and is not registered as a CAB.
+        cabs = dict(env.cabs)
         writer = bundle.get_writeable_cab()
+        self.assertEqual(env.cabs, cabs)
         self.assertIsInstance(writer, EndianBinaryWriter)
         self.assertEqual((writer.name, writer.flags, writer.endian), ("CAB-UnityPy_Mod.resS", 0, ">"))
         self.assertIs(bundle.files["CAB-UnityPy_Mod.resS"], writer)
@@ -824,6 +827,13 @@ class FileRows(unittest.TestCase):
         saved = bundle.save(packer=(195, 3))
         self.assertEqual((flags(saved), block_flags(saved)[1:]), (0xC3, (3, ["p"])))
         self.assertIn(hc(entry), saved)
+        # Entry names are read surrogate-escaped and written back with write_string_to_null, which encodes with
+        # surrogateescape: a name holding the byte 0xFF saves and reloads.
+        odd = load(S.fs_bundle([(b"CAB-\xff", payload, 4), (b"r\xff.resS", b"\x11" * 8, 0)]))[0]
+        self.assertEqual(list(odd.files), ["CAB-\udcff", "r\udcff.resS"])
+        for packer in ("none", "lz4"):
+            with self.subTest(packer=packer):
+                self.assertEqual(list(load(odd.save(packer=packer))[0].files), ["CAB-\udcff", "r\udcff.resS"])
         # On several chunks 1.25.2 stores a chunk only when compressing makes it larger, whatever came before;
         # HEAD compresses the first chunk always and stores every chunk once 0x20000 compressed bytes are out.
         from UnityPy.helpers import CompressionHelper as H

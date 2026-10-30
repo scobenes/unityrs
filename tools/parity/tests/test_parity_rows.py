@@ -2767,11 +2767,12 @@ class Rows(unittest.TestCase):
         self.assertEqual(ColorRGBA(), ColorRGBA(0, 0, 0, 1))
         self.assertEqual(ColorRGBA(rgba=0x80FF0040), ColorRGBA(128 / 255, 1.0, 0.0, 64 / 255))
         self.assertEqual(ColorRGBA(rgba=0x80FF0040).rgba, 0x80FF0040)
-        # PPtr: truthy when the path id is not 0; equality and hash on the two ids alone.
+        # PPtr: truthy when the path id is not 0; equality and hash on the two ids alone, the hash that of the pair.
         a, b = PPtr(m_FileID=1, m_PathID=5), PPtr(m_FileID=1, m_PathID=5, assetsfile=object())
         self.assertEqual(
             (bool(a), bool(PPtr(m_FileID=1, m_PathID=0)), a == b, hash(a) == hash(b)), (True, False, True, True)
         )
+        self.assertEqual(hash(a), hash((1, 5)))
         self.assertNotEqual(a, PPtr(m_FileID=2, m_PathID=5))
         self.assertEqual((a.file_id, a.path_id), (1, 5))
         # Object: keyword fields, no reader, save raises, copy.copy rebuilds; UnknownObject.get_type.
@@ -2847,6 +2848,8 @@ class Rows(unittest.TestCase):
             (len(repeated), sorted(repeated), "b" in repeated, "c" in repeated), (3, ["a/path", "b"], True, False)
         )
         self.assertIs(repeated["b"], last.asset)
+        # items(): every (path, PPtr) in container order, repeats kept.
+        self.assertEqual(list(repeated.items()), [("a/path", info.asset), ("b", first.asset), ("b", last.asset)])
         with self.assertRaisesRegex(NotImplementedError, "^Assigning to container is not allowed!$"):
             repeated["c"] = info.asset
         with self.assertRaisesRegex(NotImplementedError, "^Deleting from the container is not allowed!$"):
