@@ -60,7 +60,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::dict::{Dict, RefNode, Trees, names_match, ref_tree, slot_count, slot_of};
+use super::dict::{Dict, RefIndex, RefNode, Trees, ref_tree, slot_count, slot_of};
 use super::{
     FloatMode, Out, ReadCtx, ReadDetail, ReadError, ReadErrorKind, RefTypes, Work, charge_error,
     f32_bits, int, uint,
@@ -91,6 +91,7 @@ pub fn read(
         big: ctx.endian == Endian::Big,
         floats: ctx.options.floats,
         ref_types: ctx.ref_types,
+        refs: RefIndex::new(ctx.ref_types),
         builder,
         trees,
         work: Work::new(ctx.options.limits),
@@ -119,6 +120,8 @@ struct Reader<'a, 'c> {
     big: bool,
     floats: FloatMode,
     ref_types: RefTypes<'c>,
+    /// The ref types' search, one per read ([`RefIndex`]).
+    refs: RefIndex<'c>,
     builder: ValueBuilder,
     trees: Trees,
     work: Work,
@@ -472,13 +475,22 @@ impl Reader<'_, '_> {
         let width = slot_count(t, node);
         let type_slot = slot_of(t, node, b"type");
         let mut d = Dict::new(&self.builder, &mut self.scratch, 0, width, at)?;
+        // The current `type`'s resolution, kept until a child sets `type`
+        // again, as the Boost reader keeps it.
+        let mut resolved: Option<Option<RefNode>> = None;
         for c in kids {
+            let (key, slot) = t.info(*c).map_or((*c, 0), |i| (i.key, i.slot));
             let v = if t.py_kind(*c) == Kind::ReferencedObjectData {
-                let ty = type_slot
-                    .and_then(|s| d.position(&self.scratch, s))
-                    .and_then(|p| d.entries.as_slice().get(p))
-                    .map(|(_, v)| v);
-                match (self.ref_node(ty)?, in_array) {
+                let node = if let Some(r) = &resolved {
+                    r.clone()
+                } else {
+                    let ty = type_slot
+                        .and_then(|s| d.position(&self.scratch, s))
+                        .and_then(|p| d.entries.as_slice().get(p))
+                        .map(|(_, v)| v);
+                    resolved.insert(self.ref_node(ty)?).clone()
+                };
+                match (node, in_array) {
                     (Some(RefNode::Tree(rt)), _) => {
                         let at = self.at();
                         let rlx = self.trees.index(&mut self.builder, &rt, at)?;
@@ -492,9 +504,11 @@ impl Reader<'_, '_> {
             } else {
                 self.value(t, lx, *c)?
             };
-            let (key, slot) = t.info(*c).map_or((*c, 0), |i| (i.key, i.slot));
             let at = self.at();
             d.set(&mut self.scratch, key, slot, v, at)?;
+            if Some(slot) == type_slot {
+                resolved = None;
+            }
         }
         Ok(d.finish(&self.builder, &mut self.scratch, lx))
     }
@@ -504,7 +518,7 @@ impl Reader<'_, '_> {
     /// (`KeyError`, or `AttributeError` when `type` is not a dict), then
     /// `ref_types` (absent or empty: `ref_type`), then the empty-class skip,
     /// then the scan.
-    fn ref_node(&self, ty: Option<&Value>) -> Result<Option<RefNode>, ReadError> {
+    fn ref_node(&mut self, ty: Option<&Value>) -> Result<Option<RefNode>, ReadError> {
         let Some(ty) = ty else {
             return Err(self.raise(Py::Other("KeyError: 'type'")));
         };
@@ -519,15 +533,19 @@ impl Reader<'_, '_> {
         let cls = field(b"class", "KeyError: 'class'")?;
         let ns = field(b"ns", "KeyError: 'ns'")?;
         let asm = field(b"asm", "KeyError: 'asm'")?;
-        let list = match self.ref_types {
-            RefTypes::List(l) if !l.is_empty() => l,
-            _ => return Err(self.fail(ReadErrorKind::RefType, ReadDetail::NoRefTypes)),
-        };
+        if !matches!(self.ref_types, RefTypes::List(l) if !l.is_empty()) {
+            return Err(self.fail(ReadErrorKind::RefType, ReadDetail::NoRefTypes));
+        }
         if matches!(cls, Value::Str(s) if s.is_empty()) {
             return Ok(None);
         }
-        match list.iter().find(|r| names_match(r, cls, ns, asm)) {
-            Some(r) => Ok(Some(ref_tree(r, &self.work.limits, self.at())?)),
+        let at = self.at();
+        let found = self
+            .refs
+            .find(self.builder.meter(), cls, ns, asm)
+            .map_err(|e| charge_error(at, e))?;
+        match found {
+            Some(r) => Ok(Some(ref_tree(r, &self.work.limits, at)?)),
             None => Err(self.fail(ReadErrorKind::RefType, ReadDetail::RefTypeNotFound)),
         }
     }
