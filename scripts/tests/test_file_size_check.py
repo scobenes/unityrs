@@ -1,9 +1,10 @@
-"""scripts/file-size-check.sh on scratch repositories: no tracked .rs or .py file
-over 800 lines outside the allowlist.
+"""scripts/file-size-check.sh on scratch repositories: no tracked Rust or Python
+file over 800 lines outside the allowlist, and every allowlist entry holds.
 
 Standard library only; needs git and sh.
 """
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -20,6 +21,15 @@ GIT_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
 
 def lines(n):
     return "".join(f"line {i}\n" for i in range(n))
+
+
+def blob(text):
+    """The git blob id of `text`, as `git hash-object` gives it."""
+    data = text.encode()
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+ALLOWLIST = "scripts/file-size-allowlist.txt"
 
 
 class FileSizeCheckTests(unittest.TestCase):
@@ -88,13 +98,104 @@ class FileSizeCheckTests(unittest.TestCase):
         self.write(
             {
                 "scripts/file-size-allowlist.txt": allowlist,
-                "crates/b/crates/a/src/table.rs": lines(900),
-                "crates/a/src/table.rs.rs": lines(900),
+                "crates/a/src/table.rs": lines(900),
+                "crates/b/crates/a/src/table.rs": lines(901),
+                "crates/a/src/table.rs.rs": lines(902),
             }
         )
         code, out, _ = self.check()
         self.assertEqual(code, 1)
-        self.assertEqual(len(out.splitlines()), 2, out)
+        self.assertEqual(out.splitlines(), ["902 crates/a/src/table.rs.rs", "901 crates/b/crates/a/src/table.rs"])
+
+    def failures(self, allowlist, files):
+        """The entries of `allowlist` the check fails, as it prints them."""
+        self.write({ALLOWLIST: allowlist, **files})
+        code, out, err = self.check()
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("entries of scripts/file-size-allowlist.txt fail", err)
+        return out.splitlines()
+
+    def test_an_entry_needs_a_reason(self):
+        out = self.failures(
+            "# a comment\ntools/a.py\ntools/b.py  #\ntools/c.py  # a fixture generator\n",
+            {"tools/a.py": lines(900), "tools/b.py": lines(900), "tools/c.py": lines(900)},
+        )
+        self.assertEqual(
+            out,
+            [
+                f"{ALLOWLIST}:2: tools/a.py: no reason (end the line with `# reason`)",
+                f"{ALLOWLIST}:3: tools/b.py: no reason (end the line with `# reason`)",
+            ],
+        )
+
+    def test_an_entry_for_a_file_that_is_gone_fails(self):
+        self.write({"tools/kept.py": lines(900)})
+        self.git("rm", "-q", "--cached", "--", "tools/kept.py")
+        out = self.failures(
+            "tools/gone.py  # a fixture generator\ntools/kept.py  # untracked now\nnotes.md  # not code\n",
+            {"notes.md": lines(900)},
+        )
+        self.assertEqual(
+            out,
+            [
+                f"{ALLOWLIST}:1: tools/gone.py: not a tracked Rust or Python file",
+                f"{ALLOWLIST}:2: tools/kept.py: not a tracked Rust or Python file",
+                f"{ALLOWLIST}:3: notes.md: not a tracked Rust or Python file",
+            ],
+        )
+
+    def test_an_entry_for_a_file_back_under_the_limit_fails(self):
+        out = self.failures("tools/a.py  # a fixture generator\n", {"tools/a.py": lines(800)})
+        self.assertEqual(out, [f"{ALLOWLIST}:1: tools/a.py: 800 lines, so it no longer needs listing"])
+
+    def test_an_entry_listed_twice_fails(self):
+        out = self.failures("tools/a.py  # one\ntools/a.py  # two\n", {"tools/a.py": lines(900)})
+        self.assertEqual(out, [f"{ALLOWLIST}:2: tools/a.py: listed twice (first at line 1)"])
+
+    def test_a_file_may_grow_to_its_limit_and_no_further(self):
+        self.write({ALLOWLIST: "tools/a.py 900  # a fixture generator\n", "tools/a.py": lines(900)})
+        code, out, err = self.check()
+        self.assertEqual(code, 0, out + err)
+        out = self.failures("tools/a.py 900  # a fixture generator\n", {"tools/a.py": lines(901)})
+        self.assertEqual(out, [f"{ALLOWLIST}:1: tools/a.py: 901 lines, over its limit of 900"])
+
+    def test_a_pinned_file_must_keep_its_blob(self):
+        text = lines(900)
+        entry = f"tools/copy.py 900 blob={blob(text)}  # byte-identical to main's copy\n"
+        self.write({ALLOWLIST: entry, "tools/copy.py": text})
+        code, out, err = self.check()
+        self.assertEqual(code, 0, out + err)
+        edited = text.replace("line 5\n", "line five\n")
+        out = self.failures(entry, {"tools/copy.py": edited})
+        self.assertEqual(
+            out,
+            [
+                f"{ALLOWLIST}:1: tools/copy.py: blob {blob(edited)}, not the pinned {blob(text)}: "
+                "split it, or list it again with its reason checked"
+            ],
+        )
+        out = self.failures("tools/copy.py blob=12ab  # a copy\n", {"tools/copy.py": text})
+        self.assertEqual(out, [f"{ALLOWLIST}:1: tools/copy.py: blob=12ab is not a 40-digit blob id"])
+
+    def test_a_last_line_with_no_newline_counts(self):
+        self.write({"tools/a.py": lines(800) + "one more", "crates/a/src/lib.rs": lines(799) + "x"})
+        code, out, _ = self.check()
+        self.assertEqual(code, 1)
+        self.assertEqual(out.splitlines(), ["801 tools/a.py"])
+
+    def test_a_python_script_with_no_extension_counts(self):
+        self.write(
+            {
+                "scripts/suites": "#!/usr/bin/env python3\n" + lines(800),
+                "scripts/run": "#!/usr/bin/python -I\n" + lines(799),
+                "scripts/dev": "#!/bin/sh\n" + lines(2000),
+                "scripts/build.sh": "#!/usr/bin/env python3\n" + lines(2000),
+                "LICENSE": lines(2000),
+            }
+        )
+        code, out, _ = self.check()
+        self.assertEqual(code, 1)
+        self.assertEqual(out.splitlines(), ["801 scripts/suites"])
 
     def test_only_tracked_rust_and_python_files_count(self):
         self.write({"notes.md": lines(2000), "data.json": lines(2000), "crates/a/src/lib.rs": lines(3)})
