@@ -8,7 +8,7 @@ use unityrs_core::provider::TreeSource;
 use unityrs_core::walk::{L2Kind, ParseError, WriteRules};
 use unityrs_core::{Error, ObjectRef, Parsed, RawStr};
 
-use super::refused::{out_of_memory, write_out_of_memory};
+use super::refused::{out_of_memory, read_note, write_note, write_out_of_memory};
 use super::{count_hashed, hashed};
 use crate::Levels;
 use crate::encode::encode_into;
@@ -35,7 +35,7 @@ fn l2_outcome(result: Result<Parsed, ParseError>) -> (Option<L2Error>, Option<Pa
     match result {
         Ok(p) => (None, Some(ParsedValue::Owned(p))),
         Err(e) => {
-            let text = note_of(&e);
+            let text = read_note(&e);
             if let ParseError::CheckRead { parsed, .. } = e {
                 let (kind, bytes_read) = check_read_kind(parsed.bytes_read);
                 let error = L2Error {
@@ -174,7 +174,7 @@ pub(super) fn object_record(
                         L2Kind::NoTypetree
                     },
                     bytes_read: None,
-                    note: Some(note_of(&e)),
+                    note: Some(read_note(&e)),
                 });
             }
         }
@@ -221,7 +221,7 @@ fn l3_of(obj: &ObjectRef, resavable: Option<&Parsed>, meter: &Meter) -> Result<L
             Err(e) => {
                 write_out_of_memory(&e)?;
                 Resave::Error {
-                    note: Some(note_of(&e)),
+                    note: Some(write_note(&e)),
                 }
             }
         },

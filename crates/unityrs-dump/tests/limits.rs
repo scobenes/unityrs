@@ -34,6 +34,7 @@ use serde_json::Value as Json;
 use unityrs_core::budget::Counting;
 use unityrs_core::limits::Limits;
 use unityrs_core::{FileContext, LimitKind};
+use unityrs_dump::record::NOTE_MAX;
 use unityrs_dump::run::{CONTAINER_LEVEL_STACK, RunOptions, run, worker_stack};
 use unityrs_dump::select::Selection;
 use unityrs_dump::{DumpOptions, LIFTED_CONTAINER_DEPTH, Levels};
@@ -248,6 +249,61 @@ fn every_limit_note_is_in_g3bs_grammar() {
         []
     );
     assert_eq!(limits_in("unlimit A: 2 > 1"), []);
+}
+
+/// An entry's refusal behind a name longer than a note (`entry <name>: `,
+/// for the entry that failed) is still read by g3b: the note keeps the
+/// refusal whole after the text's first characters, at [`NOTE_MAX`]
+/// characters.
+#[test]
+fn a_limit_note_behind_long_entry_names_keeps_the_refusal_whole() {
+    let tmp = Tmp::new("limit-names");
+    let dir = tmp.0.join("in");
+    std::fs::create_dir_all(&dir).unwrap();
+    let gz = gzip_of_zeros(5000);
+    let mut cases = Vec::new();
+    for len in [10, 200, 260, 300, 5000] {
+        let name = "e".repeat(len);
+        let input = format!("long-{len}");
+        let data = unityrs_testkit::env::bundle(&[(name.as_str(), gz.clone())]);
+        std::fs::write(dir.join(&input), data).unwrap();
+        cases.push((input, format!("entry {name}: detection: ")));
+    }
+    // The same, three bundles down: the note names the entry that failed,
+    // and no entry around it.
+    let name = "g".repeat(400);
+    let mut nest = unityrs_testkit::env::bundle(&[(name.as_str(), gz)]);
+    for i in 0..3 {
+        nest = unityrs_testkit::env::bundle(&[(format!("{i}{}", "n".repeat(100)).as_str(), nest)]);
+    }
+    std::fs::write(dir.join("nest"), nest).unwrap();
+    cases.push(("nest".to_owned(), format!("entry {name}: detection: ")));
+    let records = dump(
+        &tmp,
+        "names.jsonl",
+        2,
+        with_limits(|l| l.max_inflate = 1000),
+    );
+    let mut cut = 0;
+    for (input, prefix) in cases {
+        let (kind, note) = refusal(&records, &input);
+        let found = limits_in(&note);
+        assert!(
+            matches!(found.as_slice(), [(k, v, 1000)] if k == "Inflate" && *v > 1000),
+            "{input}: {note}"
+        );
+        let whole = format!("{prefix}limit Inflate: {} > 1000", found[0].1);
+        assert_eq!(kind, "parse");
+        if whole.chars().count() <= NOTE_MAX {
+            assert_eq!(note, whole, "{input}");
+        } else {
+            cut += 1;
+            let tail = format!("...limit Inflate: {} > 1000", found[0].1);
+            let head: String = whole.chars().take(NOTE_MAX - tail.len()).collect();
+            assert_eq!(note, format!("{head}{tail}"), "{input}");
+        }
+    }
+    assert_eq!(cut, 4);
 }
 
 /// A bundle entry's gzip detection draws on its open's decode work
