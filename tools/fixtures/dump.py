@@ -10,7 +10,10 @@ replays without Python (crates/unityrs-dump/tests/oracle_fixtures.rs):
   packed integers past 64 bits (UnityPy's UnityVersion, a 4,300-digit group included);
 - select.json: unitypy_dump.py's input selection (collect_inputs) over a synthetic
   tree and corpus index built here in a temporary folder, and fnmatch.fnmatchcase
-  (what --name means) over names and patterns, invalid UTF-8 included;
+  (what --name means) over names and patterns, invalid UTF-8 included; and what
+  the oracle's whole run (its exit status, its index_sha256_mismatch count) makes
+  of an index entry's sha256 of every JSON kind, of a repeated name's pins, and of
+  an index whose files are no list of objects;
 - l2_kinds.json: dump_records.py's error_kind on read_typetree's check_read message,
   for a real pure-Python read whose bytes_read is negative, and on positive ones;
 - records.json: dump_records.py's first_difference (an L3 record's first_diff) on
@@ -442,6 +445,118 @@ def selection_cases(root: Path) -> list[dict]:
     return out
 
 
+# ----------------------------------------------------------------------- pins
+#
+# What the oracle's run does with an index entry's `sha256` (`unitypy_dump.py`
+# `main`: `if expected[rel] and expected[rel] != sha`, `expected` a dict, so a
+# repeated name takes its last entry's), and with an index that is not a list of
+# objects: the oracle itself is run on each index, and its own counts and exit
+# status recorded.
+
+REAL = "@REAL@"  # stands for the file's real sha256, lowercase hex
+UPPER = "@UPPER@"  # the same in upper case
+WRONG = '"' + "00" * 32 + '"'
+
+# (case, [sha256 member of each entry, as JSON text; None for no member]): each case
+# names one file of its own, in one entry or (a repeated name) several.
+PIN_CASES = [
+    ("absent", [None]),
+    ("null", ["null"]),
+    ("false", ["false"]),
+    ("true", ["true"]),
+    ("zero", ["0"]),
+    ("negative_zero", ["-0"]),
+    ("zero_float", ["0.0"]),
+    ("negative_zero_float", ["-0.0"]),
+    ("zero_exponent", ["0e5"]),
+    ("underflow", ["1e-400"]),
+    ("one", ["1"]),
+    ("half", ["0.5"]),
+    ("empty_string", ['""']),
+    ("other_string", ['"x"']),
+    ("real", ['"' + REAL + '"']),
+    ("real_upper", ['"' + UPPER + '"']),
+    ("empty_list", ["[]"]),
+    ("list", ["[0]"]),
+    ("empty_object", ["{}"]),
+    ("object", ['{"a":0}']),
+    ("repeated_last_null", [WRONG, "null"]),
+    ("repeated_first_null", ["null", WRONG]),
+    ("repeated_last_empty", [WRONG, '""']),
+    ("repeated_last_real", ['"x"', '"' + REAL + '"']),
+]
+
+# (case, the index's text): what the oracle makes of an index whose `files` is
+# no list of objects.
+INDEX_SHAPES = [
+    ("files_empty_object", '{"files":{}}'),
+    ("files_empty_string", '{"files":""}'),
+    ("files_object", '{"files":{"a":1}}'),
+    ("files_string", '{"files":"a"}'),
+    ("files_number", '{"files":0}'),
+    ("no_files", "{}"),
+    ("index_list", "[]"),
+    ("entry_number", '{"files":[{"path":"f","kind":"bundle"},1]}'),
+    ("entry_string_unselected", '{"files":["bundle"]}'),
+    ("entry_list", '{"files":[[]]}'),
+    ("entry_null", '{"files":[null]}'),
+    ("path_number", '{"files":[{"path":5,"kind":"bundle"}]}'),
+    ("no_path", '{"files":[{"kind":"bundle"}]}'),
+    ("none_selected", '{"files":[{"path":"f","kind":"other"}]}'),
+    ("one", '{"files":[{"path":"f","kind":"bundle"}]}'),
+]
+
+
+def run_oracle(index: Path) -> tuple[int, str]:
+    """The oracle's exit status on `index`, run with --allow-index-mismatch, and its stderr."""
+    import subprocess
+
+    out = index.parent / "out.jsonl"
+    argv = [sys.executable, str(ROOT / "tools/parity/unitypy_dump.py"), "--index", str(index), "-q",
+            "--allow-index-mismatch", "-o", str(out)]
+    proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, check=False)
+    out.unlink(missing_ok=True)
+    return proc.returncode, proc.stderr.decode("utf-8", "replace")
+
+
+def pin_cases(root: Path) -> dict:
+    """The pin cases, in one index the oracle dumps once: each case's entries (its file's path below the index
+    is `<case>/f`), its file's bytes, and how many index mismatches the oracle warned of for it. Then each index
+    shape, dumped on its own: the index's text and the oracle's exit status."""
+    import hashlib
+
+    pins, entries = [], []
+    for name, members in PIN_CASES:
+        (root / name).mkdir()
+        data = f"the file of {name}".encode()
+        (root / name / "f").write_bytes(data)
+        real = hashlib.sha256(data).hexdigest()
+        mine = []
+        for m in members:
+            sha = "" if m is None else ',"sha256":' + m.replace(REAL, real).replace(UPPER, real.upper())
+            mine.append('{"path":"' + name + '/f","kind":"bundle"' + sha + "}")
+        entries += mine
+        pins.append({"name": name, "data": data.hex(), "entries": mine})
+    (root / "index.json").write_text('{"files":[' + ",".join(entries) + "]}")
+    status, err = run_oracle(root / "index.json")
+    if status != 0:
+        raise AssertionError(f"the oracle stopped ({status}): {err}")
+    warned = [line.split(": sha256 ")[0].removeprefix("warning: ") for line in err.splitlines()
+              if line.startswith("warning: ") and " differs from the index's " in line]
+    for case in pins:
+        case["mismatches"] = warned.count(case["name"] + "/f")
+    if sum(c["mismatches"] for c in pins) != len(warned):
+        raise AssertionError(f"a warning names no case: {warned}")
+    shapes = []
+    for name, text in INDEX_SHAPES:
+        folder = root / "shapes" / name
+        folder.mkdir(parents=True)
+        (folder / "f").write_bytes(b"f")
+        (folder / "index.json").write_text(text)
+        shapes.append({"name": name, "index": text, "status": run_oracle(folder / "index.json")[0]})
+    return {"pins": pins, "shapes": shapes}
+
+
 # ------------------------------------------------------------------- L2 kinds
 
 
@@ -522,6 +637,8 @@ def fixtures() -> dict[str, dict]:
         selection = selection_cases(Path(tmp))
     with tempfile.TemporaryDirectory(prefix="unityrs-fixtures-") as tmp:
         records = record_cases(Path(tmp))
+    with tempfile.TemporaryDirectory(prefix="unityrs-fixtures-") as tmp:
+        pins = pin_cases(Path(tmp))
     return {
         "encode.json": {**meta, "values": value_cases(), "names": name_cases(), "ints": int_cases()},
         "select.json": {
@@ -530,6 +647,7 @@ def fixtures() -> dict[str, dict]:
             "index": INDEX,
             "selections": selection,
             "fnmatch": fnmatch_cases(),
+            **pins,
         },
         "l2_kinds.json": {**meta, "cases": l2_kind_cases()},
         "records.json": {**meta, **records},

@@ -286,8 +286,11 @@ pub struct InputDump {
     pub files: u64,
     /// `object` records among them.
     pub objects: u64,
-    /// The sha256 of the input's bytes (checked against a corpus index).
-    pub sha256: [u8; 32],
+    /// The sha256 of the input's bytes (checked against a corpus index), or
+    /// `None` when it was not taken: hashing them would have passed the
+    /// input's `max_decode_work` ([`read`], [`input`]), and its record's
+    /// `l0.sha256` is then [`read::NOT_TAKEN`].
+    pub sha256: Option<[u8; 32]>,
     /// The input's size.
     pub bytes_in: u64,
 }

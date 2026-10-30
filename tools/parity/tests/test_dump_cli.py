@@ -20,7 +20,14 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import canonical as C  # noqa: E402
 from dump_harness import SAMPLES, DumpCase, dump, records, samples_dir, unitypy_dump  # noqa: E402
+
+
+def as_a_checkout():
+    """The tools' own tree as the repository the oracle refuses (canonical.repo_roots: the tools' ancestors
+    holding a .git), whether the tree is a git checkout or not, a source archive: the refusals hold anywhere."""
+    return mock.patch.object(C, "repo_roots", lambda start: [HERE.parents[1]])
 
 
 @unittest.skipIf(unitypy_dump is None, "needs UnityPy (the oracle image)")
@@ -87,16 +94,25 @@ class DumpCliTests(DumpCase):
             self.assertFalse((self.tmp / "x.jsonl").exists())
 
     def test_refuses_output_inside_the_repository(self):
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+        with as_a_checkout(), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             unitypy_dump.main([str(HERE), "-o", str(HERE / "dump.jsonl")])
         self.assertFalse((HERE / "dump.jsonl").exists())
+        # What makes a repository: an ancestor holding a .git, a clone's folder or a worktree's file.
+        for kind in ("clone", "worktree"):
+            repo = self.tmp / kind
+            (repo / "sub").mkdir(parents=True)
+            if kind == "clone":
+                (repo / ".git").mkdir()
+            else:
+                (repo / ".git").write_text("gitdir: elsewhere\n")
+            self.assertEqual(C.repo_roots(repo / "sub")[:1], [repo], kind)
 
     def test_refuses_stats_inside_the_repository(self):
         """The stats list every input path, so they are kept out of the repository like the dump."""
         tiny, stats = self.tmp / "tiny", HERE / "stats.json"
         tiny.write_bytes(b"tiny")
         try:
-            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            with as_a_checkout(), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 unitypy_dump.main([str(tiny), "-o", str(self.tmp / "x.jsonl"), "--stats", str(stats)])
             self.assertFalse(stats.exists())
             self.assertFalse((self.tmp / "x.jsonl").exists())

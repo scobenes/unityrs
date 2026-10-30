@@ -10,7 +10,13 @@
 #   - `clippy::todo` or `clippy::unimplemented` under `allow(` or `expect(`
 #     in an attribute, on one line or several (under `deny(`, as in
 #     unityrs-core's own lib.rs, it is the opposite of a stub);
-#   - `todo!(` or `unimplemented!(` in code; a comment may name them.
+#   - `todo!` or `unimplemented!` invoked in code with any delimiter, `()`,
+#     `[]` or `{}`, spaces or line breaks between its tokens (`todo !`,
+#     `todo!` then `{` on a later line, comment lines between); a comment
+#     may name them. The workspace's own lints (Cargo.toml
+#     `[workspace.lints.clippy]`, which every crate inherits) deny both
+#     macros as well, so a form no line scan sees, a comment between the
+#     tokens, still fails `cargo clippy`.
 #
 # Each hit is printed with its owning package, `[X] FILE:LINE: text`: the
 # package a `STUB(X)` on the line names (for a blocked test, the package it
@@ -31,8 +37,13 @@ hits=$(find crates -type f -name '*.rs' \
             if (match(s, /STUB\([A-Za-z]+\)/)) return substr(s, RSTART + 5, RLENGTH - 6)
             return ""
         }
+        function report(n, text,    who) {
+            who = owner_of(text)
+            if (who == "") who = first
+            print "[" who "] " FILENAME ":" n ": " text
+        }
         FNR == 1 {
-            depth = 0; level = ""; first = ""
+            depth = 0; level = ""; first = ""; pend = ""
             while ((getline l < FILENAME) > 0) if (first == "") first = owner_of(l)
             close(FILENAME)
             if (first == "") first = "?"
@@ -60,13 +71,23 @@ hits=$(find crates -type f -name '*.rs' \
                     depth += gsub(/\[/, "", o) - gsub(/\]/, "", c)
                     if (depth < 0) depth = 0
                 }
-                if (line ~ /(todo|unimplemented)!\(/) hit = 1
+                if (line ~ /(^|[^A-Za-z0-9_])(todo|unimplemented)[ \t]*![ \t]*[[({]/) hit = 1
             }
-            if (hit) {
-                who = owner_of(line)
-                if (who == "") who = first
-                print "[" who "] " FILENAME ":" FNR ": " line
+            if (code != "" && substr(code, 1, 2) != "//") {
+                # A macro an earlier code line began (`pend`: its name, or
+                # its name and `!`) and this one completes; blank and
+                # comment lines between keep it pending.
+                if ((pend == "name" && code ~ /^![ \t]*[[({]/) || (pend == "bang" && code ~ /^[[({]/))
+                    report(pline, ptext)
+                if (pend == "name" && code ~ /^![ \t]*$/) pend = "bang"
+                else pend = ""
+                if (line ~ /(^|[^A-Za-z0-9_])(todo|unimplemented)[ \t]*$/) {
+                    pend = "name"; pline = FNR; ptext = line
+                } else if (line ~ /(^|[^A-Za-z0-9_])(todo|unimplemented)[ \t]*![ \t]*$/) {
+                    pend = "bang"; pline = FNR; ptext = line
+                }
             }
+            if (hit) report(FNR, line)
         }')
 if [ -n "$hits" ]; then
     printf '%s\n' "$hits"

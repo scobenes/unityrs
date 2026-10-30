@@ -24,9 +24,9 @@
 //!   public), through a symlink, or over an input or the index.
 //! - **Failures.** An input that cannot be opened or read (an I/O error), a
 //!   panic while dumping one (a bug: the core does not panic on input) and
-//!   an input whose sha256 differs from its index entry (unless allowed)
-//!   stop the run with no dump written, as the oracle's `DumperError` and
-//!   `IndexMismatch` do. An input refused at a limit, or too large for its
+//!   an input whose sha256 differs from what its index entry pins, or was
+//!   not taken (unless allowed; [`crate::read`]), stop the run with no dump
+//!   written, as the oracle's `DumperError` and `IndexMismatch` do. An input refused at a limit, or too large for its
 //!   buffer to be allocated, is its own record and the run goes on
 //!   ([`crate::read`]).
 
@@ -47,7 +47,7 @@ use unityrs_core::limits::{Limits, Meter};
 
 use crate::json::hex;
 use crate::read::{ReadInput, read_input};
-use crate::select::{Input, Selection, collect};
+use crate::select::{Input, Pin, Selection, collect};
 use crate::{DumpOptions, InputDump, end_line, header_line_unbounded};
 
 /// The producer name the header carries.
@@ -163,22 +163,15 @@ fn resolve_at(path: &Path, depth: u32) -> Result<PathBuf, String> {
     Ok(p)
 }
 
-/// Every git repository root the dump must not write into: this crate's
-/// own repository (every ancestor of its manifest holding a `.git`, as
-/// `canonical.py`'s `repo_roots` lists the parity tools' ancestors; a
-/// worktree nests in its repository), and any repository the output itself
-/// lies in.
+/// The git repository the resolved path `resolved` lies in, if any: its
+/// nearest ancestor holding a `.git`, a clone's folder or a worktree's file
+/// (`canonical.py`'s `repo_roots` lists the parity tools' own; this is
+/// stricter, any repository). This crate's own checkout is one of them
+/// wherever it is, and nothing about where the dump was built is kept.
 fn repo_root_of(resolved: &Path) -> Option<PathBuf> {
-    let manifest = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).ok();
-    let ours: Vec<PathBuf> = manifest
-        .iter()
-        .flat_map(|m| m.ancestors())
-        .filter(|a| a.join(".git").exists())
-        .map(Path::to_path_buf)
-        .collect();
     resolved
         .ancestors()
-        .find(|a| a.join(".git").exists() || ours.iter().any(|r| r == a))
+        .find(|a| a.join(".git").exists())
         .map(Path::to_path_buf)
 }
 
@@ -531,11 +524,11 @@ pub fn run_with(opts: &RunOptions, dump_one: &DumpOne<'_>) -> Result<Summary, Ru
         }
     }
 
-    // The expected sha256 of each name: a repeated name takes its last
-    // entry's, as the oracle's dict does.
-    let expected: HashMap<&[u8], &str> = inputs
+    // What each name's entry pins: a repeated name takes its last entry's,
+    // one that pins nothing included, as the oracle's dict does.
+    let expected: HashMap<&[u8], Option<&Pin>> = inputs
         .iter()
-        .filter_map(|i| i.sha256.as_deref().map(|s| (i.name.as_slice(), s)))
+        .map(|i| (i.name.as_slice(), i.sha256.as_ref()))
         .collect();
 
     if let Some(dir) = out_path.parent() {
@@ -577,13 +570,23 @@ pub fn run_with(opts: &RunOptions, dump_one: &DumpOne<'_>) -> Result<Summary, Ru
     let mut on_input = |input: &Input, d: &InputDump| -> Result<(), RunError> {
         done += 1;
         let name = String::from_utf8_lossy(&input.name).into_owned();
-        let sha = hex(&d.sha256);
-        if let Some(want) = expected
+        let differs = |want: &Pin| match d.sha256.map(|s| hex(&s)) {
+            Some(sha) if want.matches(&sha) => None,
+            Some(sha) => Some(format!(
+                "{name}: sha256 {sha} differs from the index's {want}"
+            )),
+            // Not taken (`crate::read`): it cannot be the file the pin names.
+            None => Some(format!(
+                "{name}: its sha256 was not taken (hashing it would pass its max_decode_work), \
+                 so it cannot be the index's {want}"
+            )),
+        };
+        if let Some(said) = expected
             .get(input.name.as_slice())
-            .filter(|w| !w.is_empty())
-            && *want != sha
+            .copied()
+            .flatten()
+            .and_then(differs)
         {
-            let said = format!("{name}: sha256 {sha} differs from the index's {want}");
             if !opts.allow_index_mismatch {
                 return Err(RunError::Failed(format!(
                     "{said}\nunityrs dump: the input is not the file the index pins; no dump written \

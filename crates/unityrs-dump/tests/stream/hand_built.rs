@@ -249,7 +249,7 @@ pub(crate) fn values() -> Vec<String> {
 /// The hand-built records of the input named `name` (its bytes are `data`).
 pub(crate) fn records(name: &[u8], data: &[u8], levels: Levels, values: &[String]) -> InputDump {
     let mut d = InputDump {
-        sha256: sha256(data),
+        sha256: Some(sha256(data)),
         bytes_in: data.len() as u64,
         ..InputDump::default()
     };

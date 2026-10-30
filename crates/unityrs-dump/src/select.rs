@@ -3,8 +3,10 @@
 //! globs (`fnmatch.fnmatchcase`), so both producers dump the same inputs
 //! under the same names in the same order (`docs/CANONICAL_DUMP.md` section
 //! 4.2 "Names", section 5). `tests/fixtures/dump/select.json` records the
-//! oracle's selections over a synthetic tree and index, and Python's
-//! `fnmatchcase` over names and patterns, invalid UTF-8 included.
+//! oracle's selections over a synthetic tree and index, Python's
+//! `fnmatchcase` over names and patterns, invalid UTF-8 included, and what
+//! the oracle's run makes of an index entry's `sha256` of every JSON kind
+//! ([`Pin`]) and of an index whose `files` is no list of objects.
 //!
 //! Names are bytes throughout: a path's name is its bytes as given (Python's
 //! `os.fsencode` of the surrogate-escaped `str`), never resolved, so a
@@ -12,6 +14,7 @@
 
 use std::ffi::OsStr;
 use std::fmt::Write as _;
+use std::num::FpCategory;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -69,11 +72,64 @@ pub struct Input {
     /// Its dump name: the path below the folder, the file's name, or the
     /// index entry's `path`, as bytes.
     pub name: Vec<u8>,
-    /// The sha256 its index entry pins, as written there.
-    pub sha256: Option<String>,
+    /// What its index entry's `sha256` pins ([`Pin`]): `None` for an input
+    /// that is no index entry's, or whose entry pins nothing.
+    pub sha256: Option<Pin>,
 }
 
 const _: () = crate::send_sync::<Input>();
+
+/// What an index entry's `sha256` pins, as the oracle's run tests it
+/// (`unitypy_dump.py` `main`: `if expected[rel] and expected[rel] != sha`).
+/// A value Python reads as false (`null`, `false`, a zero, `""`, `[]`,
+/// `{}`), or no `sha256` at all, pins nothing ([`pin_of`]); any other
+/// value pins the input, and a value that is no string matches no digest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pin {
+    /// A string: the input is the file it pins when its sha256, as
+    /// lowercase hex, is this string.
+    Sha256(String),
+    /// Any other value Python reads as true (`true`, a number that is not
+    /// zero, a list or an object that is not empty): no digest is equal to
+    /// it, so no input is the file it pins. Held as Python's `str()` of it
+    /// ([`py_str`]), which the oracle's message prints.
+    Other(String),
+}
+
+const _: () = crate::send_sync::<Pin>();
+
+impl Pin {
+    /// Whether an input whose sha256 is `sha` (lowercase hex) is the file
+    /// this pins.
+    #[must_use]
+    pub fn matches(&self, sha: &str) -> bool {
+        matches!(self, Self::Sha256(s) if s == sha)
+    }
+}
+
+impl std::fmt::Display for Pin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sha256(s) | Self::Other(s) => f.write_str(s),
+        }
+    }
+}
+
+/// The pin an index entry's `sha256` member `v` makes ([`Pin`]): `None`
+/// when it is missing or Python reads it as false.
+#[must_use]
+pub fn pin_of(v: Option<&serde_json::Value>) -> Option<Pin> {
+    use serde_json::Value as V;
+    match v? {
+        V::Null | V::Bool(false) => None,
+        V::String(s) if s.is_empty() => None,
+        V::String(s) => Some(Pin::Sha256(s.clone())),
+        V::Number(n) if n.as_f64().is_some_and(|f| f.classify() == FpCategory::Zero) => None,
+        V::Array(a) if a.is_empty() => None,
+        V::Object(o) if o.is_empty() => None,
+        other => Some(Pin::Other(py_str(other))),
+    }
+}
 
 /// `collect_inputs`: the inputs in canonical order, filtered, sampled and
 /// limited (`unitypy_dump.py` `collect_inputs`).
@@ -142,11 +198,23 @@ fn collect_one(sel: &Selection, given: &Path, items: &mut Vec<Input>) -> Result<
         let resolved =
             std::fs::canonicalize(given).map_err(|e| format!("{}: {e}", given.display()))?;
         let root = resolved.parent().unwrap_or(Path::new("/"));
-        let files = index
-            .get("files")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| format!("{}: the index has no files list", given.display()))?;
+        // `for e in index["files"]`: a list's items; an empty object or
+        // string is iterable and gives none, and anything else fails, as
+        // Python's iteration and then `e.get` do on it.
+        let files: &[serde_json::Value] = match index.get("files") {
+            Some(serde_json::Value::Array(a)) => a,
+            Some(serde_json::Value::Object(o)) if o.is_empty() => &[],
+            Some(serde_json::Value::String(s)) if s.is_empty() => &[],
+            _ => return Err(format!("{}: the index has no files list", given.display())),
+        };
         for e in files {
+            // `e.get(...)`: an entry that is no object fails the run.
+            if !e.is_object() {
+                return Err(format!(
+                    "{}: an index entry is not an object",
+                    given.display()
+                ));
+            }
             let kind = e.get("kind");
             if !kind
                 .and_then(serde_json::Value::as_str)
@@ -164,15 +232,10 @@ fn collect_one(sel: &Selection, given: &Path, items: &mut Vec<Input>) -> Result<
                 .get("path")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| format!("{}: an index entry has no path", given.display()))?;
-            let sha256 = match e.get("sha256") {
-                None | Some(serde_json::Value::Null) => None,
-                Some(serde_json::Value::String(s)) => Some(s.clone()),
-                Some(other) => Some(other.to_string()),
-            };
             items.push(Input {
                 path: root.join(rel),
                 name: rel.as_bytes().to_vec(),
-                sha256,
+                sha256: pin_of(e.get("sha256")),
             });
         }
     } else if std::fs::metadata(given).is_ok_and(|m| m.is_dir()) {
