@@ -277,14 +277,52 @@ class Rows(unittest.TestCase):
         )
         self.assertEqual((len(mip), len(swizzled_mip)), (4096, 16384))
         self.assertTrue(TextureSwizzler.is_switch_swizzled(BuildTarget.Switch, blob))
-        # XBOX360: the reader swaps DXT1's byte pairs, the writer never does, so a written texture reads back wrong.
-        xbox = texture(BuildTarget.XBOX360)
-        Texture2D.set_image(xbox, image, TextureFormat.DXT1)
-        self.assertEqual(xbox.image_data, Texture2DConverter.image_to_texture2d(image, TextureFormat.DXT1)[0])
-        args = (xbox.image_data, 64, 64, TextureFormat.DXT1, (2021, 3, 1, 3))
-        plain = Texture2DConverter.parse_image_data(*args, BuildTarget.StandaloneWindows64)
-        swapped = Texture2DConverter.parse_image_data(*args, BuildTarget.XBOX360)
-        self.assertNotEqual(list(swapped.getdata()), list(plain.getdata()))
+        # XBOX360: the reader swaps the byte pairs of five formats, the writer never does. Of every target, only DXT1,
+        # DXT1Crunched, DXT5 and DXT5Crunched are written in one of them (as DXT1 or DXT5), and those read back wrong;
+        # an RGB565 target is written as RGB24, which the reader does not swap, and reads back as elsewhere.
+        swap = set(Texture2DConverter.XBOX_SWAP_FORMATS)
+        self.assertEqual({f.name for f in swap}, {"RGB565", "DXT1", "DXT1Crunched", "DXT5", "DXT5Crunched"})
+        # The format each target is written as, the compressors stubbed (the format does not depend on them).
+        etcpak_stub = mock.patch.object(Texture2DConverter, "compress_etcpak", lambda *_: b"")
+        with etcpak_stub, mock.patch.object(Texture2DConverter, "compress_astc", lambda *_: b""):
+            written = {target: Texture2DConverter.image_to_texture2d(image, target)[1] for target in TextureFormat}
+        self.assertEqual(
+            {target.name: fmt.name for target, fmt in written.items() if fmt in swap},
+            {"DXT1": "DXT1", "DXT1Crunched": "DXT1", "DXT5": "DXT5", "DXT5Crunched": "DXT5"},
+        )
+        for target, wrong in (
+            (TextureFormat.DXT1, True),
+            (TextureFormat.DXT1Crunched, True),
+            (TextureFormat.DXT5, True),
+            (TextureFormat.DXT5Crunched, True),
+            (TextureFormat.RGB565, False),
+        ):
+            with self.subTest(target.name):
+                xbox = texture(BuildTarget.XBOX360)
+                Texture2D.set_image(xbox, image, target)
+                data, fmt = Texture2DConverter.image_to_texture2d(image, target)
+                self.assertEqual((xbox.image_data, xbox.m_TextureFormat), (data, fmt))
+                self.assertEqual(fmt, written[target])
+                args = (xbox.image_data, 64, 64, fmt, (2021, 3, 1, 3))
+                plain = Texture2DConverter.parse_image_data(*args, BuildTarget.StandaloneWindows64)
+                swapped = Texture2DConverter.parse_image_data(*args, BuildTarget.XBOX360)
+                self.assertEqual(list(swapped.getdata()) != list(plain.getdata()), wrong)
+        self.assertEqual(plain.getpixel((10, 20)), (40, 80, 128))
+        # The lines section 19.2 cites for those mappings: `:138-143` and `:189-198`.
+        source = Path(Texture2DConverter.__file__).read_text().splitlines()
+        self.assertEqual(
+            [source[i - 1].strip() for i in (138, 139, 141, 142, 143, 189, 190, 198)],
+            [
+                "if target_texture_format in [TF.DXT1, TF.DXT1Crunched]:",
+                "tex_format = TF.DXT1",
+                "elif target_texture_format in [TF.DXT5, TF.DXT5Crunched]:",
+                "tex_format = TF.DXT5",
+                "compress_func = compress_etcpak",
+                "elif target_texture_format in [",
+                "TF.RGB565,",
+                "tex_format = TF.RGB24",
+            ],
+        )
 
     # Sections 15.1, 18, 18.1, 19.2: `set_image` packs the image in the mode it opened in.
     def test_set_image_packs_only_what_pillow_packs(self):

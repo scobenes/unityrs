@@ -114,8 +114,11 @@ class DocTiers(unittest.TestCase):
 
     def test_xbox360_refuses_no_zero_side(self):
         """An image with a zero side has no texel to swap, and the reader returns its empty image before the swap, so
-        section 19.1's zero-size row takes it on XBOX360 too: every sentence that sends `set_image` on XBOX360's
-        swapped formats to Tier U names an image with no zero side, and so does the 19.2 row's tier."""
+        section 19.1's zero-size row takes it on XBOX360 too: every sentence that sends `set_image` on XBOX360 to a
+        format the reader swaps to Tier U names an image with no zero side, and so does the 19.2 row's tier. And
+        `set_image` writes an RGB565 target, a format the reader swaps, as RGB24, which it does not, so it reads back
+        right (`test_rows_textures.py` set_image_writes_linear_mips_and_never_swaps_for_xbox): each of those sentences
+        refuses by the format written, never by the target's own format."""
         refusal = re.compile(r"\bU\b|Tier U|Unsupported|refuses")
         seen = 0
         for name, text in (("PARITY.md", self.parity), ("DESIGN.md", self.design)):
@@ -124,12 +127,20 @@ class DocTiers(unittest.TestCase):
                     seen += 1
                     with self.subTest(name, sentence=sentence[:80]):
                         self.assertIn("no zero side", sentence)
-        self.assertGreaterEqual(seen, 3)
+                        self.assertRegex(sentence, r"written format|format written")
+                        self.assertNotRegex(sentence, r"to a format (?:UnityPy's |the )?reader|XBOX360's swapped")
+        self.assertGreaterEqual(seen, 5)
         bullets = [line for line in self.unsupported().splitlines() if "XBOX360" in line and "swap" in line]
         self.assertEqual(len(bullets), 1)
         self.assertIn("no zero side", SENTENCE_END.split(bullets[0])[0])
+        self.assertIn("An `RGB565` target, a format the reader swaps, is written as `RGB24`", bullets[0])
         row = next(line for line in self.parity.splitlines() if line.startswith("| `set_image` on XBOX360 |"))
-        self.assertEqual(row.split(" | ")[2], "U for an image with no zero side (one with a zero side: section 19.1)")
+        self.assertEqual(
+            row.split(" | ")[2],
+            "A; U for an image with no zero side to a target whose written format the reader swaps (one with a zero "
+            "side: section 19.1)",
+        )
+        self.assertIn("an `RGB565` target is written as `RGB24` (`:189-198`), which the reader does not swap", row)
 
     def test_a_zero_side_image_needs_its_fetch(self):
         """`Texture2D.image` fetches the data before `parse_image_data` returns its 0×0 image for a zero side (section
@@ -239,9 +250,9 @@ class DocTiers(unittest.TestCase):
 
     def test_a_zero_size_write_names_its_format_on_xbox360(self):
         """The zero-size Tier C (writing) rule takes the format unityrs writes for a non-empty image, and on XBOX360
-        unityrs refuses an image with no zero side to a format the reader byte-swaps, so that names none there:
-        DESIGN.md's rule and section 19.1's row name section 17's `set_image` writes column, which does, and its
-        DXT formats there as the matrix states them."""
+        unityrs refuses an image with no zero side to a target written in a format the reader byte-swaps, so that
+        names none there: DESIGN.md's rule and section 19.1's row name section 17's `set_image` writes column, which
+        does, and its DXT formats there as the matrix states them."""
         writing = self.design.split("| Tier C (writing) | acceptance |", 1)[1].split("\n\n", 1)[0]
         design = next(line for line in writing.splitlines() if line.startswith("| `set_image` of a zero-size image"))
         parity = next(line for line in self.parity.splitlines() if line.startswith("| `set_image` of a zero-size"))
