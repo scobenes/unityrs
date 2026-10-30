@@ -52,14 +52,26 @@ fn text(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
-/// UnityPy's `env.path`: a name the scene's resolver holds exactly, keyed
-/// `@/<name>` as `tools/fixtures/env.py` writes the temporary directory.
+/// UnityPy's `env.path`: the scene's resolver files, keyed `@/<name>` as
+/// `tools/fixtures/env.py` writes the temporary directory.
 #[derive(Debug)]
 struct SceneResolver(Vec<(Vec<u8>, Bytes)>);
 
 impl CabResolver for SceneResolver {
+    /// UnityPy's `find_file` walk of `env.path` (`environment.py:330-354`):
+    /// the file of the name asked, else the first whose path ends with it.
+    /// The walk's last step matches lower-cased names and opens the
+    /// lower-cased absolute path, which `find_sensitive_path` cannot correct
+    /// (`helpers/ImportHelper.py:159-173` splits it into a directory and a
+    /// name), so it loads nothing the steps before missed. A resource
+    /// fallback's `load_file` takes the name only, and no scene's resource
+    /// candidate is the end of another resolver file's name.
     fn resolve(&self, name: &[u8]) -> Option<Source> {
-        let (n, data) = self.0.iter().find(|(n, _)| n == name)?;
+        let (n, data) = self
+            .0
+            .iter()
+            .find(|(n, _)| n == name)
+            .or_else(|| self.0.iter().find(|(n, _)| n.ends_with(name)))?;
         let mut key = b"@/".to_vec();
         key.extend_from_slice(n);
         Some(Source::Bytes {
@@ -294,17 +306,48 @@ impl Run {
     }
 
     /// `obj.container` for every object.
+    fn container_of(&self, o: &unityrs_core::object::ObjectRef) -> J {
+        match self.env.container_path(o) {
+            Ok(None) => J::Null,
+            Ok(Some(ContainerPath::Str(s))) => json!(text(s.as_bytes())),
+            Ok(Some(ContainerPath::NotAString)) => json!("<not a str>"),
+            Err(e) => json!(error_kind(&e)),
+        }
+    }
+
     fn paths(&self) -> J {
         let out: Vec<J> = self
             .objects()
             .iter()
-            .map(|o| match self.env.container_path(o) {
-                Ok(None) => J::Null,
-                Ok(Some(ContainerPath::Str(s))) => json!(text(s.as_bytes())),
-                Ok(Some(ContainerPath::NotAString)) => json!("<not a str>"),
-                Err(e) => json!(error_kind(&e)),
-            })
+            .map(|o| self.container_of(o))
             .collect();
+        json!(out)
+    }
+
+    /// `obj.container` for the objects of every `files` entry loaded as a
+    /// dependency, which `env.objects` leaves out: `[key, path id, path]`.
+    fn dep_paths(&self) -> J {
+        // No scene holds a web file.
+        fn walk(run: &Run, key: &str, file: &File, out: &mut Vec<J>) {
+            match file {
+                File::Serialized(sf) => out.extend(
+                    sf.objects()
+                        .map(|o| json!([key, o.path_id(), run.container_of(&o)])),
+                ),
+                File::Bundle(b) => {
+                    for i in 0..b.directory().len() {
+                        if let Ok(f) = b.entry(i) {
+                            walk(run, key, &f, out);
+                        }
+                    }
+                }
+                File::Web(_) | File::Raw(_) => {}
+            }
+        }
+        let mut out = Vec::new();
+        for f in self.env.files().filter(|f| f.is_dependency) {
+            walk(self, &text(f.name.as_bytes()), &f.file, &mut out);
+        }
         json!(out)
     }
 
@@ -316,6 +359,7 @@ impl Run {
             "resources" => self.resources(),
             "container" => self.container(),
             "paths" => self.paths(),
+            "dep_paths" => self.dep_paths(),
             other => panic!("unknown step {other}"),
         };
         let mut s = self.state();

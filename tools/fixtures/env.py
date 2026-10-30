@@ -13,7 +13,8 @@ asks cargo for, and the strings here. No file is read.
 order, read every object, dereference every pointer, read every resource,
 dereference every pointer again (a resource fallback may have loaded files),
 list the container, ask every object its `container` path, list the container
-again), and after each step the Environment's state is recorded:
+again, ask every object of a file loaded as a dependency its `container`
+path), and after each step the Environment's state is recorded:
 `env.files` (key, `is_dependency`, kind), `env.cabs` keys in order, and
 `env.objects` (file, path id, class id). The resolver's files sit in a
 temporary `env.path`; a key under it is written `@/<name>`.
@@ -180,15 +181,32 @@ class Run:
             for path, info in c.container
         ]
 
+    @staticmethod
+    def container_of(o):
+        try:
+            c = o.container
+        except Exception as e:  # noqa: BLE001
+            return type(e).__name__
+        return c if c is None or isinstance(c, str) else "<not a str>"
+
     def paths(self):
+        return [self.container_of(o) for o in self.objects()]
+
+    def dep_paths(self):
+        """`obj.container` for the objects of every `files` entry loaded as a
+        dependency, which `env.objects` leaves out: `[key, path id, path]`."""
         out = []
-        for o in self.objects():
-            try:
-                c = o.container
-            except Exception as e:  # noqa: BLE001
-                out.append(type(e).__name__)
-                continue
-            out.append(c if c is None or isinstance(c, str) else "<not a str>")
+
+        def walk(key, item):
+            if isinstance(item, SerializedFile):
+                out.extend([key, o.path_id, self.container_of(o)] for o in item.objects.values())
+            elif getattr(item, "files", None):
+                for sub in item.files.values():
+                    walk(key, sub)
+
+        for k, f in self.env.files.items():
+            if getattr(f, "is_dependency", False):
+                walk(self.key(k), f)
         return out
 
     def steps(self) -> list[dict]:
@@ -206,6 +224,7 @@ class Run:
         step(["container"], self.container())
         step(["paths"], self.paths())
         step(["container"], self.container())
+        step(["dep_paths"], self.dep_paths())
         return out
 
 
