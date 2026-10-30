@@ -16,9 +16,6 @@
 //! The TPK is built here (a class 1 whose tree is one node, `s0 s1`), so the
 //! tests need no oracle image.
 
-#![allow(unsafe_code)]
-
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -30,6 +27,7 @@ use unityrs_core::typetree::Tree;
 use unityrs_core::typetree::commonstring::CommonStrings;
 use unityrs_core::{Bytes, FileContext};
 use unityrs_dump::DumpOptions;
+use unityrs_testkit::counted::{Allocator, Tally};
 use unityrs_testkit::serialized::{SerializedSpec, build, one_object};
 use unityrs_tpk::TpkProvider;
 
@@ -43,42 +41,23 @@ fn refused_now() -> bool {
     REFUSE_NEXT.try_with(|c| c.replace(false)).unwrap_or(false)
 }
 
-/// Refuses the next allocation of the thread that armed it, once.
+/// Refuses the next allocation of the thread that armed it, once (a
+/// `realloc` too: the old block stays the caller's, as a failed `realloc`
+/// leaves it). It counts nothing.
 struct OnceRefusing;
 
-// SAFETY: every method forwards to `System`, or returns null for a refused
-// allocation, which `GlobalAlloc` allows.
-unsafe impl GlobalAlloc for OnceRefusing {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if refused_now() {
-            return std::ptr::null_mut();
-        }
-        // SAFETY: the caller's contract is `System`'s.
-        unsafe { System.alloc(layout) }
+impl Tally for OnceRefusing {
+    fn refuses(&self, _size: usize) -> bool {
+        refused_now()
     }
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if refused_now() {
-            return std::ptr::null_mut();
-        }
-        // SAFETY: as above.
-        unsafe { System.alloc_zeroed(layout) }
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if refused_now() {
-            // The old block stays the caller's, as a failed `realloc` leaves it.
-            return std::ptr::null_mut();
-        }
-        // SAFETY: as above.
-        unsafe { System.realloc(ptr, layout, new_size) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: as above.
-        unsafe { System.dealloc(ptr, layout) }
-    }
+
+    fn grew(&self, _size: usize, _zeroed: bool) {}
+
+    fn shrank(&self, _size: usize) {}
 }
 
 #[global_allocator]
-static ALLOC: OnceRefusing = OnceRefusing;
+static ALLOC: Allocator<OnceRefusing> = Allocator(OnceRefusing);
 
 /// A stored TPK (`helpers/Tpk.py:146-174`) whose blob (`:232-240`) holds
 /// one version, 2.0.0, and one class, 1, from that version on, whose release

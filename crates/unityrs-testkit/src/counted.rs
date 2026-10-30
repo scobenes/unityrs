@@ -89,6 +89,14 @@ pub trait Tally: Sync {
         false
     }
 
+    /// Whether a `realloc` to `new_size` bytes fails without reaching
+    /// `System`: [`Self::refuses`], by default. A test that refuses one
+    /// fresh allocation of a size, and never a growth or shrink the code
+    /// under test makes infallibly, answers `false` here.
+    fn refuses_realloc(&self, new_size: usize) -> bool {
+        self.refuses(new_size)
+    }
+
     /// A block of `size` bytes became live on a counted thread; `zeroed`
     /// when `alloc_zeroed` made it.
     fn grew(&self, size: usize, zeroed: bool);
@@ -144,7 +152,7 @@ unsafe impl<T: Tally> GlobalAlloc for Allocator<T> {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if self.0.refuses(new_size) {
+        if self.0.refuses_realloc(new_size) {
             return ptr::null_mut();
         }
         // SAFETY: the caller's contract is `System.realloc`'s.
@@ -269,6 +277,48 @@ mod tests {
                     .alloc(Layout::from_size_align(HUGE, 8).unwrap())
                     .is_null()
             );
+        }
+    }
+
+    /// Refuses a fresh allocation of 12,345 bytes, never a `realloc`.
+    struct FreshOnly(Log);
+
+    impl Tally for FreshOnly {
+        fn refuses(&self, size: usize) -> bool {
+            self.0.refuses(size)
+        }
+        fn refuses_realloc(&self, _new_size: usize) -> bool {
+            false
+        }
+        fn grew(&self, size: usize, zeroed: bool) {
+            self.0.grew(size, zeroed);
+        }
+        fn shrank(&self, size: usize) {
+            self.0.shrank(size);
+        }
+    }
+
+    /// A tally that refuses a fresh allocation may let a `realloc` to the
+    /// same size by (the dump's staging test: the code under test shrinks
+    /// into exact allocations infallibly); by default it refuses both
+    /// (`a_failed_realloc_keeps_the_old_block_counted`).
+    #[test]
+    fn a_tally_may_refuse_fresh_allocations_and_no_realloc() {
+        count_this_thread();
+        let a = Allocator(FreshOnly(Log(Mutex::new(Vec::new()))));
+        let layout = Layout::from_size_align(64, 8).unwrap();
+        let refused = Layout::from_size_align(12_345, 8).unwrap();
+        // SAFETY: non-zero layouts; each pointer is used under the layout
+        // it was made with, and freed once.
+        unsafe {
+            assert!(a.alloc(refused).is_null());
+            assert!(a.alloc_zeroed(refused).is_null());
+            let p = a.alloc(layout);
+            assert!(!p.is_null());
+            let q = a.realloc(p, layout, 12_345);
+            assert!(!q.is_null(), "a realloc refused");
+            a.dealloc(q, refused);
+            assert_eq!(a.0.0.take(), [64, 12_345, -64, -12_345]);
         }
     }
 

@@ -19,9 +19,6 @@
 //! The allocator counts only the test's own thread
 //! (`unityrs_testkit::counted`): libtest's main thread allocates beside it.
 
-#![allow(unsafe_code)]
-
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -33,7 +30,7 @@ use unityrs_core::limits::{Meter, heap_cost};
 use unityrs_core::{Bytes, RawStr};
 use unityrs_dump::record::DirRow;
 use unityrs_dump::{DumpOptions, Levels};
-use unityrs_testkit::counted::{count_this_thread, counted, others_are_not_counted};
+use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 use unityrs_testkit::env::{Bundle, Obj, bundle, row, serialized};
 
 /// Live heap on the test thread, in glibc chunks.
@@ -67,9 +64,8 @@ fn note_peak() {
     }
 }
 
-/// Whether to refuse this fresh allocation (a `realloc` is never refused:
-/// the core shrinks its tables into exact allocations, infallibly): the size
-/// this thread armed, once. It allocates nothing.
+/// Whether to refuse this fresh allocation: the size this thread armed,
+/// once. It allocates nothing.
 fn refuse(size: usize) -> bool {
     size != 0
         && REFUSE
@@ -77,67 +73,33 @@ fn refuse(size: usize) -> bool {
             .unwrap_or(false)
 }
 
+/// The test thread's live heap in chunks, its peak above the charge, and
+/// the one fresh allocation it armed refused.
 struct Watching;
 
-// SAFETY: every method forwards to `System`, or refuses with null, and only
-// counts, on the thread under test.
-unsafe impl GlobalAlloc for Watching {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if refuse(layout.size()) {
-            return std::ptr::null_mut();
-        }
-        // SAFETY: the caller's contract is `System`'s.
-        let p = unsafe { System.alloc(layout) };
-        if !p.is_null() && counted() {
-            LIVE.fetch_add(chunk(layout.size()), Ordering::Relaxed);
-            note_peak();
-        }
-        p
+impl Tally for Watching {
+    fn refuses(&self, size: usize) -> bool {
+        refuse(size)
     }
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if refuse(layout.size()) {
-            return std::ptr::null_mut();
-        }
-        // SAFETY: as above.
-        let p = unsafe { System.alloc_zeroed(layout) };
-        if !p.is_null() && counted() {
-            LIVE.fetch_add(chunk(layout.size()), Ordering::Relaxed);
-            note_peak();
-        }
-        p
+
+    /// A `realloc` is never refused: the core shrinks its tables into exact
+    /// allocations, infallibly.
+    fn refuses_realloc(&self, _new_size: usize) -> bool {
+        false
     }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if counted() {
-            LIVE.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
-        }
-        // SAFETY: as above.
-        unsafe { System.dealloc(ptr, layout) }
+
+    fn grew(&self, size: usize, _zeroed: bool) {
+        LIVE.fetch_add(chunk(size), Ordering::Relaxed);
+        note_peak();
     }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let on = counted();
-        // The worst case of a moving realloc: both blocks live at once.
-        if on {
-            LIVE.fetch_add(chunk(new_size), Ordering::Relaxed);
-            note_peak();
-        }
-        // SAFETY: as above.
-        let p = unsafe { System.realloc(ptr, layout, new_size) };
-        if on {
-            // A failed realloc leaves the old block live, and the new one
-            // never was.
-            let gone = if p.is_null() {
-                chunk(new_size)
-            } else {
-                chunk(layout.size())
-            };
-            LIVE.fetch_sub(gone, Ordering::Relaxed);
-        }
-        p
+
+    fn shrank(&self, size: usize) {
+        LIVE.fetch_sub(chunk(size), Ordering::Relaxed);
     }
 }
 
 #[global_allocator]
-static ALLOC: Watching = Watching;
+static ALLOC: Allocator<Watching> = Allocator(Watching);
 
 /// A UnityFS bundle of `n` one-byte entries (`n` directory rows, a block
 /// row per 160 bytes of data).
