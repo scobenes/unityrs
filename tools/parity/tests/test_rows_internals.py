@@ -7,6 +7,7 @@ corpus, and each test names the rows it pins; a row's test column names the test
 oracle image); skipped elsewhere.
 """
 
+import ctypes
 import importlib
 import io
 import json
@@ -93,6 +94,62 @@ def walk_end(block):
     return last
 
 
+def with_tables(index, substitute):
+    """A decryptor whose `index` and `substitute` tables (16 nibbles each) are these."""
+    decryptor = ArchiveStorageManager.ArchiveStorageDecryptor.__new__(ArchiveStorageManager.ArchiveStorageDecryptor)
+    decryptor.index, decryptor.substitute = bytes(index), bytes(substitute)
+    return decryptor
+
+
+class Padded:
+    """The block with one 0 byte after it, seen from `base`, as the Python loop's `decrypt` reads a memoryview: it
+    records the furthest index read, and a read past the 0 byte raises."""
+
+    def __init__(self, data, base, furthest):
+        self.data, self.base, self.furthest = data, base, furthest
+
+    def __getitem__(self, i):
+        if self.base + i >= len(self.data):
+            raise IndexError("past the 0 byte")
+        self.furthest[0] = max(self.furthest[0], self.base + i)
+        return self.data[self.base + i]
+
+    def __setitem__(self, i, value):
+        self.data[self.base + i] = value
+
+
+def padded_walk(decryptor, block):
+    """UnityPy's own `decrypt` steps (`helpers/ArchiveStorageManager.py:119-143`) over the block with one 0 byte after
+    it, the loop bounded by the block as UnityPyBoost's is (`ArchiveStorageDecryptor.cpp:79-82`): the bytes, the 0
+    byte decrypted where the walk reads it, and the furthest index the walk reads."""
+    data, furthest, offset, index = bytearray(block + b"\0"), [-1], 0, 0
+    while offset < len(block):
+        offset += decryptor.decrypt(Padded(data, offset, furthest), index, len(block) - offset)
+        index += 1
+    return bytes(data), furthest[0]
+
+
+def held_at_the_raise(decryptor, block):
+    """The bytes the Python loop holds when it raises reading past the block, and its message."""
+    held, decrypt = [], decryptor.decrypt
+
+    def spy(view, index, remaining):
+        held.append(view.obj)
+        return decrypt(view, index, remaining)
+
+    with mock.patch.object(ArchiveStorageManager, "UnityPyBoost", None), mock.patch.object(decryptor, "decrypt", spy):
+        try:
+            decryptor.decrypt_block(block, 0)
+        except IndexError as error:
+            return bytes(held[-1]), str(error)
+    raise AssertionError("the Python loop read no byte past the block")
+
+
+def terminator(value):
+    """The NUL CPython keeps after a bytes object's last byte, which is not part of its value."""
+    return ctypes.string_at(id(value) + bytes.__basicsize__ - 1 + len(value), 1)
+
+
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class InternalRows(unittest.TestCase):
     # Section 23: a module's own name for a class or function defined elsewhere (section 21, group `aliases`).
@@ -175,10 +232,32 @@ class InternalRows(unittest.TestCase):
         for block in (b"\0\0", b"\xf0"):
             with self.subTest(block=block.hex()):
                 self.assertEqual(walk_end(block), len(block))
-                self.assertEqual(UnityPyBoost.decrypt_block(decryptor.index, decryptor.substitute, block, 0), block)
+                self.assertEqual(padded_walk(decryptor, block), (block + b"\0", len(block)))
+                returned = UnityPyBoost.decrypt_block(decryptor.index, decryptor.substitute, block, 0)
+                self.assertEqual((returned, terminator(returned)), (block, b"\0"))
                 self.assertEqual(bytes(decryptor.decrypt_block(block, 0)), block)
-                with no_boost, self.assertRaisesRegex(IndexError, "^index out of bounds on dimension 1$"):
-                    decryptor.decrypt_block(block, 0)
+                self.assertEqual(held_at_the_raise(decryptor, block), (block, "index out of bounds on dimension 1"))
+        # With tables that change bytes (`index` (7i+3) mod 16, `substitute` 1 to 15 then 0), the walk of `80`, `81`
+        # and `82` decrypts the token to a literal count of 15 and reads its length byte past the block: UnityPyBoost
+        # reads it as 0, the terminator of the bytes object it returns, decrypts it there (to 0x66, which ends the
+        # walk), and returns the bytes the Python loop holds when it raises, the token decrypted.
+        changing = with_tables([(7 * i + 3) % 16 for i in range(16)], [*range(1, 16), 0])
+        for block, decrypted in ((b"\x80", b"\xf7"), (b"\x81", b"\xfe"), (b"\x82", b"\xf5")):
+            with self.subTest(block=block.hex()):
+                self.assertEqual(padded_walk(changing, block), (decrypted + b"\x66", len(block)))
+                self.assertEqual(held_at_the_raise(changing, block), (decrypted, "index out of bounds on dimension 1"))
+                returned = UnityPyBoost.decrypt_block(changing.index, changing.substitute, block, 0)
+                self.assertEqual((returned, terminator(returned)), (decrypted, b"\x66"))
+                self.assertEqual(bytes(changing.decrypt_block(block, 0)), decrypted)
+        # With other tables the decrypted 0 is a length byte of 0xFF, so the walk of `80` reads on past it: the Python
+        # loop raises, and UnityPyBoost, which would read and write past its bytes object there, is not run.
+        further = with_tables(
+            bytes.fromhex("020d000a070c090f040b0a060f030406"), bytes.fromhex("0a08040d0b08020a060707010a0b0104")
+        )
+        with self.assertRaisesRegex(IndexError, "^past the 0 byte$"):
+            padded_walk(further, b"\x80")
+        with no_boost, self.assertRaisesRegex(IndexError, "^index out of bounds on dimension 1$"):
+            further.decrypt_block(b"\x80", 0)
         # Through loading: an LZMA block flagged 0x101 whose walk does the same loads with UnityPyBoost and raises
         # without it. compress_lzma's output depends on liblzma, so the payload is found, not fixed.
         for size in range(400):

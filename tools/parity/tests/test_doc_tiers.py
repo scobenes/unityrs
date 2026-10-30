@@ -1,8 +1,8 @@
-"""PARITY.md and DESIGN.md agree on what a tier covers where a zero side, an image mode or a missing characterisation
-decides it (standard library).
+"""PARITY.md and DESIGN.md agree on what a tier covers where a zero side, an image mode, a missing characterisation
+or a walk past a UnityCN block decides it (standard library).
 
 Each guard reads both files as text. The behaviour each one keeps the wording to is pinned by the row tests the cells
-name (`test_rows_images.py`, `test_rows_textures.py`).
+name (`test_rows_images.py`, `test_rows_textures.py`, `test_rows_internals.py`).
 """
 
 import re
@@ -79,15 +79,8 @@ class DocTiers(unittest.TestCase):
                     else:
                         seen += 1
                         self.assertRegex(sentence, r"\bU\b")
-        self.assertGreaterEqual(seen, 5)
+        self.assertGreaterEqual(seen, 7)
         self.assertGreaterEqual(exempt, 1)
-        # Section 12's two decrypt rows file the walk that runs further past the block as U: each calls it so.
-        walk = "A; U for a walk that runs more than one byte past the block"
-        decrypt = [cells[1] for cells, tier in rows_by_tier(self.parity) if tier == walk]
-        self.assertEqual(len(decrypt), 2)
-        for cell in decrypt:
-            with self.subTest("section 12", row=cell[:60]):
-                self.assertRegex(cell, r"not characterised \(Tier U\b")
         reading = self.design.split("**Reading**", 1)[1].split("**Writing**", 1)[0].splitlines()
         lead = reading.index(next(line for line in reading if line.startswith(f"- **{UNSUPPORTED_RULE}.**")))
         end = next(i for i in range(lead + 1, len(reading)) if reading[i].startswith("- **"))
@@ -164,6 +157,30 @@ class DocTiers(unittest.TestCase):
                         self.assertIn("zero side", clause)
                         self.assertIn("sprite", clause)
         self.assertGreaterEqual(seen, 3)
+
+    def test_a_walk_past_the_terminator_is_u_for_want_of_a_sample(self):
+        """UnityPyBoost reads the byte just past a UnityCN block as 0, the terminator of the bytes object it returns,
+        and decrypts it there: a walk that reads that byte and stops there returns the bytes the Python loop holds when
+        it raises, the block decrypted, and a walk that goes on reads and writes past the bytes object, which no run
+        can pin (`test_rows_internals.py` decrypt_block_past_the_block_end). So section 12's two rows and DESIGN.md's
+        Tier U bullet read that byte as 0 and file the walk past it as U for want of a sample, never as a case a test
+        could characterise, and the Boost row says what it returns."""
+        walk = "A; U for a walk that runs more than one byte past the block"
+        decrypt = [cells[1] for cells, tier in rows_by_tier(self.parity) if tier == walk]
+        self.assertEqual(len(decrypt), 2)
+        bullets = [line for line in self.unsupported().splitlines() if line.startswith("  - a UnityCN block")]
+        self.assertEqual(len(bullets), 1)
+        for text in (*decrypt, *bullets):
+            with self.subTest(text=text[:60]):
+                self.assertRegex(text, r"byte just past (?:the block|it)(?: read)? as 0\b")
+                self.assertIn("reads and writes memory past the bytes object", text)
+                self.assertIn("no sample shows such a block", text)
+                self.assertNotIn("not characterised", text)
+        for cell in decrypt:
+            self.assertIn("(Tier U", cell)
+        boost = next(cell for cell in decrypt if cell.startswith("the C version of the loop"))
+        self.assertIn("returns with no error the bytes the Python loop holds when it raises", boost)
+        self.assertNotIn("returns the block with no error", boost)
 
 
 if __name__ == "__main__":
