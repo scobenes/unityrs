@@ -292,24 +292,42 @@ fn info_at(info: &MeteredVec<NodeInfo>, node: NodeId) -> NodeInfo {
     info.as_slice().get(node.index()).copied().unwrap_or(BLANK)
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// Name comparisons [`group_by_name`] made on this thread (tests only).
+    static COMPARED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// `a == b` on two names, counted (tests only).
+fn same(a: &[u8], b: &[u8]) -> bool {
+    #[cfg(test)]
+    COMPARED.with(|c| c.set(c.get() + 1));
+    a == b
+}
+
 /// Sets `key` and `slot` for `kids`, the children of one node: `key` is the
 /// first sibling with the same `m_Name`, `slot` that key's ordinal among
-/// the distinct names in first-sighting order. Sorted by (length, hash,
+/// the distinct names in first-sighting order. Sorted by (length, `hash`,
 /// position), so equal names are adjacent; a run of equal length and hash
-/// is checked byte for byte against its first member, and a hash collision
-/// falls back to a scan of the run's earlier keys.
+/// is checked byte for byte against its first member, which keys it when
+/// every member has its name. A run that holds more than one name (a hash
+/// collision, which a hostile tree can make of any number of names: FNV-1a
+/// is no defence) is sorted by name, then position, and each name keyed by
+/// its first member: `O(k log k)` comparisons of its names, where a scan
+/// of the run's earlier keys for each member was `O(k²)` (review round 2).
 fn group_by_name(
     list: &NodeList,
     kids: &[NodeId],
     order: &mut MeteredVec<u32>,
     hashes: &mut MeteredVec<(usize, u64)>,
     info: &mut [NodeInfo],
+    hash: fn(&[u8]) -> u64,
 ) -> Result<(), ChargeError> {
     order.truncate(0);
     hashes.truncate(0);
     for (j, c) in kids.iter().enumerate() {
         let name = list.name(*c);
-        hashes.push((name.len(), name_hash(name)))?;
+        hashes.push((name.len(), hash(name)))?;
         order.push(u32::try_from(j).unwrap_or(u32::MAX))?;
     }
     let hk = |j: u32| -> (usize, u64) {
@@ -323,29 +341,38 @@ fn group_by_name(
         .as_mut_slice()
         .sort_unstable_by(|a, b| hk(*a).cmp(&hk(*b)).then(a.cmp(b)));
     let kid = |j: u32| kids.get(j as usize).copied().unwrap_or(NodeId(0));
-    let sorted = order.as_slice();
+    let name = |j: u32| list.name(kid(j));
     let mut start = 0;
-    while start < sorted.len() {
+    while start < order.len() {
+        let sorted = order.as_slice();
         let first = sorted.get(start).copied().unwrap_or(0);
         let mut end = start + 1;
         while end < sorted.len() && hk(sorted.get(end).copied().unwrap_or(0)) == hk(first) {
             end += 1;
         }
         let run = sorted.get(start..end).unwrap_or_default();
-        for (r, j) in run.iter().enumerate().skip(1) {
-            let me = kid(*j);
-            let name = list.name(me);
-            // The run's earlier keys, the first (most likely) first.
-            let key = run
-                .get(..r)
-                .unwrap_or_default()
-                .iter()
-                .map(|e| kid(*e))
-                .filter(|e| info.get(e.index()).is_some_and(|i| i.key == *e))
-                .find(|e| list.name(*e) == name)
-                .unwrap_or(me);
-            if let Some(i) = info.get_mut(me.index()) {
-                i.key = key;
+        let one_name = run.iter().skip(1).all(|j| same(name(*j), name(first)));
+        if !one_name && let Some(run) = order.as_mut_slice().get_mut(start..end) {
+            run.sort_unstable_by(|a, b| {
+                #[cfg(test)]
+                COMPARED.with(|c| c.set(c.get() + 1));
+                name(*a).cmp(name(*b)).then(a.cmp(b))
+            });
+        }
+        // Each member after its name's first takes that first as its key.
+        let run = order.as_slice().get(start..end).unwrap_or_default();
+        let mut leader = first;
+        for (r, j) in run.iter().enumerate() {
+            if r == 0 {
+                leader = *j;
+                continue;
+            }
+            if one_name || same(name(*j), name(leader)) {
+                if let Some(i) = info.get_mut(kid(*j).index()) {
+                    i.key = kid(leader);
+                }
+            } else {
+                leader = *j;
             }
         }
         start = end;
@@ -500,7 +527,14 @@ impl Tree {
             if kids.is_empty() {
                 continue;
             }
-            group_by_name(&list, kids, &mut order, &mut hashes, info.as_mut_slice())?;
+            group_by_name(
+                &list,
+                kids,
+                &mut order,
+                &mut hashes,
+                info.as_mut_slice(),
+                name_hash,
+            )?;
             let dup = kids.iter().any(|c| info_at(&info, *c).key != *c);
             let registry = kids
                 .iter()
