@@ -132,9 +132,13 @@ pub mod resource;
 
 mod container_index;
 mod deref;
+#[cfg(test)]
+mod gate;
 mod listing;
 mod load;
 mod object_tree;
+#[cfg(test)]
+mod preload_tests;
 mod resource_data;
 mod watch;
 

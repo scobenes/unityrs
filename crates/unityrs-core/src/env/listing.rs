@@ -168,7 +168,11 @@ impl Environment {
     /// indexes, and its lowered copy for rule 4's lookup (a key copied from
     /// a resolver's name carries its own charge). Every load is charged so,
     /// a caller's included (review round 2: a caller's load charged
-    /// nothing, and its lowered key was built on an unlimited meter).
+    /// nothing, and its lowered key was built on an unlimited meter). The
+    /// lowered key's change is noted for the running container preload
+    /// walks after it is published, whether or not one ran before
+    /// (`super::watch`, invariant W1: review round 5 decided before the
+    /// publication, so a walk that started in between kept a stale miss).
     pub(super) fn list(
         &self,
         name: RawStr,
@@ -177,22 +181,13 @@ impl Environment {
         meter: &Arc<Meter>,
     ) -> Result<(), Error> {
         let charge = meter.charge(LISTED_SHARE)?;
-        let lowered = if self.files_read().index.contains_key(name.as_bytes()) {
-            None
-        } else {
-            Some(py_lower(&name, meter)?)
-        };
-        // A running container preload walk asks again a lookup this key
-        // answered (`super::watch`).
+        // The lowered key: a new key's index entry, and in every case the
+        // key a walk's lookup watches (`super::watch`).
+        let lowered = py_lower(&name, meter)?;
         let watches = self.inner.registry.watches();
-        let noted = if watches.active() {
-            Some(match &lowered {
-                Some(l) => l.clone(),
-                None => py_lower(&name, meter)?,
-            })
-        } else {
-            None
-        };
+        let key_hash = watches.hash(lowered.as_bytes());
+        #[cfg(test)]
+        self.inner.registry.hook(super::registry::Hook::Listing);
         let replaced = {
             let mut files = self.files_write();
             let at = files.index.get(name.as_bytes()).copied();
@@ -210,15 +205,11 @@ impl Environment {
                     _charge: charge,
                 });
                 files.index.insert(name, at);
-                if let Some(lowered) = lowered {
-                    files.lowered.entry(lowered).or_insert(at);
-                }
+                files.lowered.entry(lowered).or_insert(at);
                 None
             }
         };
-        if let Some(key) = noted {
-            watches.notify(key.as_bytes());
-        }
+        watches.notify_hash(key_hash);
         drop(replaced);
         Ok(())
     }
