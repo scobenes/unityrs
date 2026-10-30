@@ -78,7 +78,23 @@
 //! row pays for them), and what its AssetBundle read builds and drops is
 //! counted by the read (`files::serialized`, "Work"; round 5). A failure the
 //! cell does not keep (the meter's or the budget's refusal) is
-//! [`crate::once`]'s to count.
+//! [`crate::once`]'s to count. A block's stored bytes count too, before a
+//! codec reads them, as credit for what it writes (`decode`, "The input is
+//! work"; round 6: LZ4 scans a whole block before it writes, so a nested
+//! bundle whose blocks-info or block fails at its end cost each row over it
+//! a scan no count saw).
+//!
+//! **Twins.** Rows with the same offset and size read the same bytes, and
+//! when their names agree on the one rule that changes what a parse builds
+//! from given bytes (a raw suffix, [`crate::detect::parsed_as`]) they parse
+//! alike, but for the name each file and each wrapped error carries. Such
+//! rows are twins, and they answer a failure as one cell does: the first
+//! failure the input decides kept for any of them (the first twin's cell
+//! holds it) is every twin's answer, under each one's own name, so K rows
+//! over one failing span parse it once (round 6). A twin that parses
+//! successfully parses for itself, as its file carries its name. The table
+//! of first twins is a sort of the directory's keys at open, charged with
+//! the other per-row tables.
 //!
 //! Decodes and user codecs run with no
 //! lock held: a run is decoded first and then published into `runs`, and an
@@ -241,6 +257,10 @@ pub struct BundleFile {
     /// Parsed entries, by directory index, published once; a kept error
     /// carries the charge for its heap, and a refused charge is not kept.
     entries: Box<[ResultCell<File, Error>]>,
+    /// Each row's first twin (module docs, "Twins"): the first row, in
+    /// directory order, with its offset, size and name rule; a row with no
+    /// earlier twin names itself.
+    twins: Box<[u32]>,
     /// The handle and its tables (header, blocks, directory, `files`, the
     /// parse cells), charged to the input at open, with the engine version's
     /// heap ([`crate::version::UnityVersion::heap_bytes`]; its string is the
@@ -418,9 +438,47 @@ impl BundleFile {
         }
     }
 
+    /// The entry's parse (module docs, "Twins"): its first twin's kept
+    /// failure, when there is one; else its own parse, whose failure the
+    /// input decides is kept for its first twin too.
+    fn parse_entry(&self, dir_index: usize) -> Result<File, Error> {
+        let twin = self
+            .twins
+            .get(dir_index)
+            .and_then(|t| usize::try_from(*t).ok())
+            .filter(|t| *t != dir_index);
+        let twin_cell = twin.and_then(|t| Some((t, self.entries.get(t)?)));
+        if let Some((t, cell)) = twin_cell
+            && let Some(Err(kept)) = cell.get()
+        {
+            return Err(self.as_row(kept.error(), t, dir_index));
+        }
+        let got = self.parse_own(dir_index);
+        if let (Some((t, cell)), Err(e)) = (twin_cell, &got)
+            && !e.is_transient()
+        {
+            let _ = get_or_publish_result(cell, self.meter(), || Err(self.as_row(e, dir_index, t)));
+        }
+        got
+    }
+
+    /// `e`, the failure of row `from`, as row `to`'s: the same failure, under
+    /// `to`'s name where [`Self::entry_error`] gave it `from`'s. Only that
+    /// wrapping builds an [`Error::Entry`]: no parse returns one.
+    fn as_row(&self, e: &Error, from: usize, to: usize) -> Error {
+        let path = |i: usize| self.directory.get(i).map(|d| &d.path);
+        match e {
+            Error::Entry { name, source } if path(from) == Some(name) => Error::Entry {
+                name: path(to).cloned().unwrap_or_default(),
+                source: source.clone(),
+            },
+            e => e.clone(),
+        }
+    }
+
     /// `parse_file` on the entry's bytes, its detection included, as
     /// `File.read_files` calls it.
-    fn parse_entry(&self, dir_index: usize) -> Result<File, Error> {
+    fn parse_own(&self, dir_index: usize) -> Result<File, Error> {
         let e = self
             .directory
             .get(dir_index)

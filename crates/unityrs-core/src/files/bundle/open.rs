@@ -12,6 +12,7 @@ use super::decode::{BlockContext, decode_one};
 use super::index::{Ends, RunIndex};
 use super::{BlockInfo, BundleFile, BundleHeader, DirEntry, FileSlot, LayoutKind};
 use crate::codec::Codec;
+use crate::detect::raw_by_name;
 use crate::error::{Error, Unsupported};
 use crate::files::{File, Parent};
 use crate::limits::{Charge, Meter, MeteredVec, heap_cost};
@@ -83,13 +84,12 @@ impl BundleFile {
             data_flags,
             0,
         )?;
-        let (blocks, directory) = read_blocks_info(&info, meter)?;
+        let (mut blocks, directory) = read_blocks_info(&info, meter)?;
         // :165-166
         if class == FlagsClass::New && data_flags & 0x200 != 0 {
             r.align(16);
         }
         // :168-178: the blocks, read in order from here.
-        let mut blocks = blocks;
         let (stored, lengths) = stored_blocks(&mut blocks, &mut r, meter, ctx)?;
         let files = files_dict(&directory, meter)?;
         let mut entries: MeteredVec<ResultCell<File, Error>> = MeteredVec::new(meter);
@@ -116,6 +116,7 @@ impl BundleFile {
         let files = keep(files, &mut charge)?;
         let lengths = keep(lengths, &mut charge)?;
         let entries = keep(entries, &mut charge)?;
+        let twins = keep(twins(&directory, meter)?, &mut charge)?;
         let stored = keep(stored, &mut charge)?;
         let (ends, c) = Ends::new(blocks.len(), meter)?;
         charge.absorb(c);
@@ -131,6 +132,7 @@ impl BundleFile {
             ends,
             runs: Mutex::new(RunIndex::new(meter)),
             entries,
+            twins,
             charge,
             ctx: blocks_ctx,
             stored,
@@ -341,6 +343,37 @@ fn files_dict(
         })?;
     }
     Ok(files)
+}
+
+/// Each row's first twin (the `bundle` module docs, "Twins"): the first row,
+/// in directory order, whose offset, size and name rule
+/// ([`crate::detect::raw_by_name`]) are the row's own, or the row itself.
+/// Computed by sorting the rows' keys, the scratch charged.
+fn twins(rows: &[DirEntry], meter: &Arc<Meter>) -> Result<MeteredVec<u32>, Error> {
+    let mut keys: MeteredVec<(i64, i64, bool, u32)> = MeteredVec::with_capacity(meter, rows.len())?;
+    let mut twins: MeteredVec<u32> = MeteredVec::with_capacity(meter, rows.len())?;
+    for (i, d) in rows.iter().enumerate() {
+        // A directory holds at most `i32::MAX` rows (its count is an `i32`).
+        let i = u32::try_from(i).unwrap_or(u32::MAX);
+        keys.push((d.offset, d.size, raw_by_name(d.path.as_bytes()), i))?;
+        twins.push(i)?;
+    }
+    keys.as_mut_slice().sort_unstable();
+    let mut first = None;
+    for &(offset, size, raw, i) in keys.as_slice() {
+        match first {
+            Some((key, f)) if key == (offset, size, raw) => {
+                if let Some(t) = usize::try_from(i)
+                    .ok()
+                    .and_then(|i| twins.as_mut_slice().get_mut(i))
+                {
+                    *t = f;
+                }
+            }
+            _ => first = Some(((offset, size, raw), i)),
+        }
+    }
+    Ok(twins)
 }
 
 /// A table as the bundle keeps it, its charge moved into the bundle's.

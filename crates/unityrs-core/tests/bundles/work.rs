@@ -20,7 +20,13 @@ const ROW: usize = 8 + 8 + 4 + 13;
 /// Round 4's bundle: UnityFS 6, engine 2018.4.0f1, a stored blocks-info and
 /// `entry` in one data block, and `rows` directory rows `CAB-%08d`, every one
 /// at offset 0 with the whole entry's size.
-fn rows_over_one_entry(entry: &[u8], rows: usize) -> Vec<u8> {
+pub(super) fn rows_over_one_entry(entry: &[u8], rows: usize) -> Vec<u8> {
+    rows_over(entry, rows, |_| entry.len())
+}
+
+/// [`rows_over_one_entry`], row `k` sized `size(k)` (row 0 keeps the
+/// entry's size).
+pub(super) fn rows_over(entry: &[u8], rows: usize, size: impl Fn(usize) -> usize) -> Vec<u8> {
     let entries: Vec<EntrySpec> = (0..rows)
         .map(|k| EntrySpec {
             name: format!("CAB-{k:08}").into_bytes(),
@@ -43,12 +49,11 @@ fn rows_over_one_entry(entry: &[u8], rows: usize) -> Vec<u8> {
         .windows(13)
         .position(|w| w == b"CAB-00000000\0")
         .unwrap();
-    let size = i64::try_from(entry.len()).unwrap().to_be_bytes();
     for k in 1..rows {
         let at = first + k * ROW;
         assert_eq!(&data[at..at + 12], format!("CAB-{k:08}").as_bytes());
         data[at - 20..at - 12].copy_from_slice(&0_i64.to_be_bytes());
-        data[at - 12..at - 4].copy_from_slice(&size);
+        data[at - 12..at - 4].copy_from_slice(&i64::try_from(size(k)).unwrap().to_be_bytes());
     }
     data
 }
@@ -65,19 +70,43 @@ fn failed_parse(got: &Result<File, Error>) -> bool {
 /// Round 4 (HIGH): K rows over one entry whose parse fails after reading R
 /// rows of blob were K parses, each returning what it was granted, so no
 /// limit saw them (100,000 rows over a 3.2 MB entry ran about 41 hours
-/// under `Lazy`). What a failing parse was granted is now the open's work:
-/// each parse here counts at least its R rows' 32 bytes each, so the
-/// allowance admits at most `allowance / (32 R) + 1` parses, and every
-/// later row is refused with `DecodeWork` without parsing. Before the fix
-/// all K rows parsed.
+/// under `Lazy`). Rows over one span are twins now (`bundle` module docs,
+/// "Twins"; round 6) and parse it once. Rows over spans of it that differ
+/// (here by bytes of `0x7F` past its end, which only make the dependency
+/// count huge, so the read still runs past the end) each parse, and what a
+/// failing parse was granted is the open's work: each parse here counts at
+/// least its R rows' 32 bytes each, so the allowance admits at most
+/// `allowance / (32 R) + 1` parses, and every later row is refused with
+/// `DecodeWork` without parsing. Before round 4's fix all K rows parsed.
 #[test]
 fn rows_over_one_failing_entry_stop_at_the_opens_work() {
     const R: usize = 20_000;
     const K: usize = 200;
     const ALLOWANCE: u64 = 16 << 20;
     let entry = no_nul_strings(R, false);
-    let data = rows_over_one_entry(&entry, K);
+    // Twins: one parse, whatever K.
     let ctx = ctx_with(|c| c.limits.max_decode_work = ALLOWANCE);
+    let parse_rows = |rows: usize| {
+        let meter = meter_for(&ctx);
+        let b = open_with(&rows_over_one_entry(&entry, rows), &ctx, &meter).unwrap();
+        let before = meter.decoded();
+        for i in 0..rows {
+            let got = b.entry(i);
+            assert!(failed_parse(&got), "row {i}: {got:?}");
+        }
+        meter.decoded() - before
+    };
+    let one = parse_rows(1);
+    assert!(
+        one >= 32 * u64::try_from(R).unwrap(),
+        "a parse counted {one}"
+    );
+    let all = parse_rows(K);
+    assert!(all < 2 * one, "{K} twins counted {all}, one parse {one}");
+    // Spans that differ: the allowance.
+    let mut padded = entry.clone();
+    padded.resize(entry.len() + K, 0x7F);
+    let data = rows_over(&padded, K, |k| entry.len() + k);
     let meter = meter_for(&ctx);
     let b = open_with(&data, &ctx, &meter).unwrap();
     let got: Vec<Result<File, Error>> = (0..K).map(|i| b.entry(i)).collect();
@@ -198,6 +227,7 @@ fn junk_asset_bundle(n: usize, cut: bool) -> Vec<u8> {
 
 /// Whether `ctx` reads every row's file, and its container, before the
 /// allowance runs out: `(the rows read, the rows refused with DecodeWork)`.
+/// Row `k` spans the entry and `k` bytes past it, so no two rows are twins.
 /// A row is read when its entry parses and its container is read
 /// (successfully, or with the read's own failure: `reads_ok` says which).
 fn rows_over_one_asset_bundle(
@@ -207,7 +237,11 @@ fn rows_over_one_asset_bundle(
     eager: bool,
     reads_ok: bool,
 ) -> (usize, usize) {
-    let data = rows_over_one_entry(entry, rows);
+    // Spans that differ by trailing bytes the file does not read: rows over
+    // one span are twins, which share a failing parse (round 6).
+    let mut padded = entry.to_vec();
+    padded.resize(entry.len() + rows, 0);
+    let data = rows_over(&padded, rows, |k| entry.len() + k);
     let ctx = ctx_with(|c: &mut FileContext| {
         c.limits.max_decode_work = allowance;
         c.eager_asset_bundle = eager;
@@ -264,5 +298,40 @@ fn rows_over_one_asset_bundle_stop_at_the_opens_work() {
             );
             assert_eq!(read + refused, K, "cut {cut}, eager {eager}");
         }
+    }
+}
+
+/// Review round 6 (LOW): the test above holds with the AssetBundle grant
+/// count deleted, the read's walk counting a value's work besides. A read of
+/// the container counts what it was granted beyond what its container keeps,
+/// whatever its walk counts: here `n` null pointers, whose maps are granted
+/// more than the walk counts for them, so a read that counted its walk alone
+/// counts less than its grants. Without the count, the first assertion
+/// fails.
+#[test]
+fn a_container_read_counts_what_it_was_granted_beyond_its_container() {
+    const N: usize = 20_000;
+    for (cut, eager) in [(false, false), (true, false), (false, true)] {
+        let entry = junk_asset_bundle(N, cut);
+        let data = rows_over_one_entry(&entry, 1);
+        let ctx = ctx_with(|c: &mut FileContext| c.eager_asset_bundle = eager);
+        let meter = meter_for(&ctx);
+        let b = open_with(&data, &ctx, &meter).unwrap();
+        b.entry_bytes(0).unwrap();
+        let (granted, work, kept) = (meter.granted(), meter.decoded(), meter.used());
+        // Lazily, the read is `container()`'s; eagerly, the parse's.
+        let read = match b.entry(0) {
+            Ok(File::Serialized(f)) if !eager => f.container().map(|_| ()),
+            Ok(File::Serialized(_)) => Ok(()),
+            got => panic!("{got:?}"),
+        };
+        assert_eq!(read.is_err(), cut, "cut {cut}: {read:?}");
+        let granted = meter.granted() - granted;
+        let work = meter.decoded() - work;
+        let kept = meter.used() - kept;
+        assert!(
+            work >= granted - kept,
+            "cut {cut}, eager {eager}: the read counted {work}, granted {granted}, kept {kept}"
+        );
     }
 }

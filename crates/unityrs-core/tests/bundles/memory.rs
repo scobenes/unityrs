@@ -505,10 +505,22 @@ fn rows_over_one_gzip_stream(rows: usize) -> Vec<u8> {
 
 /// `rows` directory rows, every one naming all of `stream`.
 fn rows_over_one_stream(stream: &[u8], rows: usize) -> Vec<u8> {
+    rows_over_stream(stream, rows, None)
+}
+
+/// `rows` directory rows, every one naming all of `stream`; with `pad`, the
+/// stream is followed by `rows` bytes of `pad`, of which row 0 names all and
+/// row `k` the first `k`, so no two rows name one span (rows over one span
+/// are twins, which share a failing detection: round 6).
+fn rows_over_stream(stream: &[u8], rows: usize, pad: Option<u8>) -> Vec<u8> {
+    let mut padded = stream.to_vec();
+    if let Some(b) = pad {
+        padded.resize(stream.len() + rows, b);
+    }
     let entries: Vec<EntrySpec> = (0..rows)
         .map(|k| EntrySpec {
             name: format!("gz-{k:02}").into_bytes(),
-            data: if k == 0 { stream.to_vec() } else { Vec::new() },
+            data: if k == 0 { padded.clone() } else { Vec::new() },
             flags: 0,
         })
         .collect();
@@ -518,8 +530,9 @@ fn rows_over_one_stream(stream: &[u8], rows: usize) -> Vec<u8> {
         entries,
         ..BundleSpec::default()
     });
-    let size = i64::try_from(stream.len()).unwrap();
     for k in 1..rows {
+        let size = stream.len() + if pad.is_some() { k } else { 0 };
+        let size = i64::try_from(size).unwrap();
         let key = format!("gz-{k:02}\0").into_bytes();
         let at = data.windows(key.len()).position(|w| w == key).unwrap();
         data[at - 20..at - 12].copy_from_slice(&0_i64.to_be_bytes());
@@ -538,7 +551,10 @@ fn rows_over_one_stream(stream: &[u8], rows: usize) -> Vec<u8> {
 fn a_detection_refused_at_its_inflate_bound_still_draws_on_the_opens_work() {
     const ROWS: usize = 64;
     const MIB: u64 = 1 << 20;
-    let data = rows_over_one_gzip_stream(ROWS);
+    let mut gz = GzEncoder::new(Vec::new(), Compression::best());
+    gz.write_all(&vec![0u8; 1 << 20]).unwrap();
+    // Zero padding after the member, a different span for each row.
+    let data = rows_over_stream(&gz.finish().unwrap(), ROWS, Some(0));
     let ctx = ctx_with(|c| {
         c.limits.max_inflate = 1;
         c.limits.max_decode_work = MIB;
@@ -599,14 +615,17 @@ fn a_detection_counts_the_stream_it_reads_not_only_what_it_inflates() {
     // size 0); or BFINAL 1 with BTYPE 11, which zlib refuses.
     empty.extend_from_slice(&[1, 0, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0]);
     malformed.push(0x07);
+    // Each row a different span, padded with bytes that leave its case as
+    // it is: more zero padding, more of the name, padding after the
+    // trailer, bytes after the block zlib refuses.
     let cases = [
-        (padded, "padding"),
-        (named, "file name"),
-        (empty, "empty stored blocks"),
-        (malformed, "a block of the reserved type"),
+        (padded, "padding", 0),
+        (named, "file name", b'A'),
+        (empty, "empty stored blocks", 0),
+        (malformed, "a block of the reserved type", 0),
     ];
-    for (stream, what) in cases {
-        let data = rows_over_one_stream(&stream, ROWS);
+    for (stream, what, pad) in cases {
+        let data = rows_over_stream(&stream, ROWS, Some(pad));
         let ctx = ctx_with(|c| c.limits.max_decode_work = 4 << 20);
         let meter = meter_for(&ctx);
         let b = open_with(&data, &ctx, &meter).unwrap();
