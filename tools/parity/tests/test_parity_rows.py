@@ -1583,6 +1583,63 @@ class Rows(unittest.TestCase):
                 ]
             )
 
+    # Sections 18, 19.1: a zero-size image through `image_to_texture2d` and `set_image`.
+    def test_zero_size_images_crash_etcpak(self):
+        # Each call that reaches etcpak runs in a forked child, which etcpak 0.9.14 kills with SIGBUS on empty data.
+        # The child is made non-dumpable first (PR_SET_DUMPABLE, 0), so the crash writes no core dump anywhere.
+        import ctypes
+        import signal
+
+        def crashes(target, width, height):
+            pid = os.fork()
+            if pid == 0:  # the child: the one call, then out without running the parent's cleanups
+                try:
+                    ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0)
+                    os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+                    Texture2DConverter.image_to_texture2d(Image.new("RGBA", (width, height)), TextureFormat[target])
+                finally:
+                    os._exit(0)
+            status = os.waitpid(pid, 0)[1]
+            return os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGBUS
+
+        etcpak_targets = ["DXT1", "DXT1Crunched", "DXT5", "DXT5Crunched", "BC4", "BC5", "ETC_RGB4", "ETC_RGB4Crunched"]
+        etcpak_targets += ["ETC_RGB4_3DS", "ETC2_RGB", "ETC2_RGBA1", "ETC2_RGBA8", "ETC2_RGBA8Crunched"]
+        sizes = ((0, 0), (0, 4), (4, 0))
+        cases = [(target, *size) for target in etcpak_targets for size in sizes]
+        self.assertEqual([case for case in cases if not crashes(*case)], [])
+        # BC7 raises before etcpak reads the data; where padding to whole blocks resizes an empty strip, Pillow
+        # raises first, for every one of these targets.
+        bc7 = "^params must be an instance of BC7CompressBlockParams$"
+        for size in sizes:
+            with self.subTest("BC7", size=size), self.assertRaisesRegex(ValueError, bc7):
+                Texture2DConverter.image_to_texture2d(Image.new("RGBA", size), TextureFormat.BC7)
+        padded = "^height and width must be > 0$"
+        for target in [*etcpak_targets, "BC7"]:
+            for size in ((0, 5), (5, 0)):
+                with self.subTest(target=target, size=size), self.assertRaisesRegex(ValueError, padded):
+                    Texture2DConverter.image_to_texture2d(Image.new("RGBA", size), TextureFormat[target])
+        # The other targets tested write 0 bytes, under the format image_to_texture2d maps each to.
+        mapped = {"RGBA32": "RGBA32", "ARGB32": "RGBA32", "Alpha8": "Alpha8", "R16": "R8", "RGB565": "RGB24"}
+        mapped["ASTC_HDR_4x4"] = "ASTC_RGBA_4x4"
+        for target, tag in mapped.items():
+            for size in sizes:
+                with self.subTest(target=target, size=size):
+                    data, written = Texture2DConverter.image_to_texture2d(
+                        Image.new("RGBA", size), TextureFormat[target]
+                    )
+                    self.assertEqual((data, written.name), (b"", tag))
+        # Texture2D.image of a texture with a zero side is that 0×0 image, and set_image to RGBA32 writes it with
+        # the image's size.
+        texture = Texture2D.__new__(Texture2D)
+        for field in attrs.fields(Texture2D):
+            object.__setattr__(texture, field.name, None)
+        texture.object_reader, texture.m_PlatformBlob = None, None
+        texture.m_Width, texture.m_Height, texture.m_TextureFormat = 4, 0, TextureFormat.RGBA32
+        texture.image_data = b"\x01" * 16
+        self.assertEqual((texture.image.mode, texture.image.size), ("RGBA", (0, 0)))
+        texture.set_image(Image.new("RGBA", (4, 0)), TextureFormat.RGBA32)
+        self.assertEqual((texture.image_data, texture.m_Width, texture.m_Height), (b"", 4, 0))
+
     # Sections 15.1, 18, 19.2: the BC7 bytes `set_image` should write.
     def test_bc7_set_image_reference_is_etcpak_default(self):
         image = Image.new("RGBA", (6, 5))
@@ -1837,6 +1894,24 @@ class Rows(unittest.TestCase):
                 else:
                     with self.assertRaises(error):
                         image.convert(mode).save(path)
+        # A texture of non-zero width and zero height passes exportTexture2D's `m_Width` test, and its image is the
+        # 0×0 one Texture2D.image gives, which Pillow refuses to save under these extensions.
+        texture = Texture2D.__new__(Texture2D)
+        for field in attrs.fields(Texture2D):
+            object.__setattr__(texture, field.name, None)
+        texture.object_reader, texture.m_PlatformBlob = None, None
+        texture.m_Width, texture.m_Height, texture.m_TextureFormat = 4, 0, TextureFormat.RGBA32
+        texture.image_data = b"\x01" * 16
+        tile = (SystemError, "tile cannot extend outside image")
+        for extension, (error, message) in (
+            ("", tile),
+            (".png", tile),
+            (".tga", tile),
+            (".bmp", tile),
+            (".jpg", (ValueError, "cannot write empty image as JPEG")),
+        ):
+            with self.subTest("zero height", extension=extension), self.assertRaisesRegex(error, f"^{message}$"):
+                extractor.exportTexture2D(texture, str(self.tmp / "zero"), extension)
 
     # Sections 15.7, 19.2: the names `export_obj(ref, fp, True, True)` gives, as exportGameObject means to call it.
     def test_export_obj_appends_none_for_the_path_id(self):
