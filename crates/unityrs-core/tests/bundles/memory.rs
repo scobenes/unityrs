@@ -475,11 +475,15 @@ fn gzip_detection_across_the_rows_of_one_open_draws_on_its_work() {
 fn rows_over_one_gzip_stream(rows: usize) -> Vec<u8> {
     let mut gz = GzEncoder::new(Vec::new(), Compression::best());
     gz.write_all(&vec![0u8; 1 << 20]).unwrap();
-    let stream = gz.finish().unwrap();
+    rows_over_one_stream(&gz.finish().unwrap(), rows)
+}
+
+/// `rows` directory rows, every one naming all of `stream`.
+fn rows_over_one_stream(stream: &[u8], rows: usize) -> Vec<u8> {
     let entries: Vec<EntrySpec> = (0..rows)
         .map(|k| EntrySpec {
             name: format!("gz-{k:02}").into_bytes(),
-            data: if k == 0 { stream.clone() } else { Vec::new() },
+            data: if k == 0 { stream.to_vec() } else { Vec::new() },
             flags: 0,
         })
         .collect();
@@ -537,4 +541,40 @@ fn a_detection_refused_at_its_inflate_bound_still_draws_on_the_opens_work() {
         );
     }
     assert!(meter.decoded() <= MIB + (64 << 10), "{}", meter.decoded());
+}
+
+/// Round 4's sweep: a detection also reads what it does not inflate, and
+/// every row naming the stream reads it again: here one member of one byte
+/// followed by 1 MiB of zero padding, and a header whose file name runs to
+/// the end with no NUL. Every byte a detection reads counts as the open's
+/// work, so 64 rows stop at a 4 MiB allowance after a few; counted by what
+/// it inflated alone, every row read the stream.
+#[test]
+fn a_detection_counts_the_stream_it_reads_not_only_what_it_inflates() {
+    const ROWS: usize = 64;
+    const MIB: usize = 1 << 20;
+    let mut gz = GzEncoder::new(Vec::new(), Compression::best());
+    gz.write_all(b"x").unwrap();
+    let mut padded = gz.finish().unwrap();
+    padded.resize(padded.len() + MIB, 0);
+    let mut named = vec![0x1f, 0x8b, 8, 8, 0, 0, 0, 0, 0, 0xff];
+    named.resize(named.len() + MIB, b'A');
+    for (stream, what) in [(padded, "padding"), (named, "file name")] {
+        let data = rows_over_one_stream(&stream, ROWS);
+        let ctx = ctx_with(|c| c.limits.max_decode_work = 4 << 20);
+        let meter = meter_for(&ctx);
+        let b = open_with(&data, &ctx, &meter).unwrap();
+        let got: Vec<Result<File, Error>> = (0..ROWS).map(|i| b.entry(i)).collect();
+        let read = got
+            .iter()
+            .take_while(|r| !matches!(r, Err(Error::Limit(_))))
+            .count();
+        assert!((1..=5).contains(&read), "{what}: {read} rows read it");
+        for r in &got[read..] {
+            assert!(
+                matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork),
+                "{what}: {r:?}"
+            );
+        }
+    }
 }
