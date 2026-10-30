@@ -33,17 +33,19 @@ fn ordered_keeps_order_at_any_worker_count() {
 /// The sleeps above only make a reordering likely; here it is certain. On
 /// `jobs` workers, `jobs` items run at once, and each waits for the next to
 /// finish, so they finish last to first, and the sink still sees them first
-/// to last. The wait only turns a hang into a failure.
+/// to last. The wait only turns a hang into a failure (a deadlock guard,
+/// `unityrs_testkit::guard`).
 #[test]
 fn ordered_hands_back_in_item_order_items_that_finish_last_to_first() {
     use std::sync::{Condvar, Mutex};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
+    use unityrs_testkit::guard::DEADLOCK_GUARD;
     for jobs in [2, 4] {
         let done = (Mutex::new(Vec::new()), Condvar::new());
         let f = |k: &usize| -> Option<usize> {
             let (finished, cv) = &done;
             let mut finished = finished.lock().unwrap();
-            let deadline = Instant::now() + Duration::from_secs(600);
+            let deadline = Instant::now() + DEADLOCK_GUARD;
             while *k + 1 < jobs && !finished.contains(&(*k + 1)) {
                 let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() {
@@ -61,6 +63,12 @@ fn ordered_hands_back_in_item_order_items_that_finish_last_to_first() {
             Ok(())
         })
         .unwrap();
+        assert!(
+            seen.iter().all(|(_, r)| r.is_some()),
+            "deadlock guard: an item waited {} s for the next to finish, which only a hang \
+             takes, not load (-j {jobs})",
+            DEADLOCK_GUARD.as_secs()
+        );
         let finished = done.0.into_inner().unwrap();
         assert_eq!(finished, (0..jobs).rev().collect::<Vec<_>>(), "-j {jobs}");
         let want: Vec<_> = (0..jobs).map(|i| (i, Some(i))).collect();
@@ -73,12 +81,14 @@ fn ordered_hands_back_in_item_order_items_that_finish_last_to_first() {
 /// pool's size), and the pool holds `jobs` workers, or one per item when
 /// there are fewer, however many items the window of `2 * jobs` queues.
 /// And `jobs` items that wait for each other all start: a rendezvous,
-/// whose wait only turns a hang into a failure.
+/// whose wait only turns a hang into a failure (a deadlock guard,
+/// `unityrs_testkit::guard`).
 #[test]
 fn ordered_runs_jobs_items_at_once_and_no_more() {
     use std::collections::BTreeSet;
     use std::sync::{Condvar, Mutex};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
+    use unityrs_testkit::guard::DEADLOCK_GUARD;
     for (jobs, items) in [(1, 5), (3, 2), (3, 12), (4, 4), (4, 40), (8, 3)] {
         let workers = Mutex::new(BTreeSet::new());
         let f = |_: &usize| {
@@ -103,7 +113,7 @@ fn ordered_runs_jobs_items_at_once_and_no_more() {
         let mut n = count.lock().unwrap();
         *n += 1;
         cv.notify_all();
-        let deadline = Instant::now() + Duration::from_secs(600);
+        let deadline = Instant::now() + DEADLOCK_GUARD;
         while *n < jobs {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -120,8 +130,11 @@ fn ordered_runs_jobs_items_at_once_and_no_more() {
     })
     .unwrap();
     assert_eq!(
-        met, [true; 4],
-        "{jobs} workers never ran {jobs} items at once"
+        met,
+        [true; 4],
+        "deadlock guard: {jobs} workers never ran {jobs} items at once in {} s, which only a \
+         hang takes, not load",
+        DEADLOCK_GUARD.as_secs()
     );
 }
 

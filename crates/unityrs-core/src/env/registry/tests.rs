@@ -14,7 +14,6 @@
 use std::sync::{Arc, Barrier, Mutex, mpsc};
 #[cfg(test)]
 use std::thread::ThreadId;
-use std::time::Duration;
 
 use super::{Hook, HookFn};
 use crate::env::{EnvOptions, Environment, Source};
@@ -69,9 +68,7 @@ impl Held {
     }
 
     fn wait_stopped(&self) {
-        self.stopped
-            .recv_timeout(Duration::from_secs(60))
-            .expect("the armed thread reaches its hook (a deadlock guard, not a timing)");
+        unityrs_testkit::guard::wait(&self.stopped, "the armed thread to reach its hook");
     }
 
     fn release(&self) {
@@ -107,7 +104,7 @@ impl Pause {
         }
         let go = self.go.lock().unwrap().take();
         if let Some(rx) = go {
-            let _ = rx.recv_timeout(Duration::from_secs(60));
+            unityrs_testkit::guard::hold(&rx, "the test to let the held thread go");
         }
     }
 }

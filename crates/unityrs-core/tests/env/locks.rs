@@ -2,26 +2,25 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
 
 use unityrs_core::env::{Cab, CabResolver, EnvOptions, Environment, Fetch, LoadMode, PPtr, Source};
 use unityrs_core::error::Error;
 use unityrs_core::limits::Meter;
 use unityrs_core::{Bytes, FileContext, RawStr};
 use unityrs_testkit::env::{Obj, serialized};
+use unityrs_testkit::guard;
 
 use crate::{file_of, key, name_of, named_bundle, object, serialized_cab, src, unlimited};
 
-/// Runs `f` on its own thread and fails the test if it has not finished in
-/// ten seconds (a deadlock), without waiting for it.
-fn within_ten_seconds(f: impl FnOnce() + Send + 'static) {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        f();
-        let _ = tx.send(());
-    });
-    rx.recv_timeout(Duration::from_secs(10))
-        .expect("finished within 10 s");
+/// Runs `f` on its own thread and fails the test, past the deadlock guard
+/// (`unityrs_testkit::guard`), if it has not finished, without waiting for
+/// it.
+fn without_a_deadlock(f: impl FnOnce() + Send + 'static) {
+    let () = guard::finishes(
+        "a resolver and a fetch that call the Environment (a core lock held across either \
+         deadlocks them)",
+        f,
+    );
 }
 
 /// A resolver that calls back into the Environment (`get_cab` and `deref`)
@@ -77,7 +76,7 @@ fn a_resolver_and_a_fetch_may_call_the_environment_and_take_caller_locks() {
         }
     }
     for mode in [LoadMode::Eager, LoadMode::Lazy] {
-        within_ten_seconds(move || {
+        without_a_deadlock(move || {
             let scene = unityrs_testkit::env::cross_bundle_pointer();
             let lock = Arc::new(Mutex::new(()));
             let resolver = Arc::new(Reentrant {
@@ -149,9 +148,10 @@ impl Rendezvous {
         };
         let _ = tx.send(());
         let rx = self.done.lock().unwrap().take().unwrap();
-        rx.recv_timeout(Duration::from_secs(60)).expect(
-            "the other thread's loads finished while the core called this one: \
-             a core lock is held across a resolver or a fetch",
+        guard::wait(
+            &rx,
+            "the other thread's loads while the core calls this one (a core lock held across \
+             a resolver or a fetch blocks them)",
         );
     }
 }
@@ -248,9 +248,7 @@ fn a_resolver_or_a_fetch_may_wait_for_a_thread_that_loads() {
                     name_of(&t.unwrap())
                 })
             };
-            inside
-                .recv_timeout(Duration::from_secs(60))
-                .expect("the core called the resolver");
+            guard::wait(&inside, "the core to call the resolver");
             writers(&env, round);
             done.send(()).unwrap();
             assert_eq!(caller.join().unwrap(), "b7", "{mode:?} fetch {fetch}");
@@ -307,9 +305,7 @@ fn an_evicted_dependencys_fetch_may_wait_for_a_thread_that_loads() {
             let env = env.clone();
             std::thread::spawn(move || name_of(&object(&serialized_cab(&env, "cab-f"), 1)))
         };
-        inside
-            .recv_timeout(Duration::from_secs(60))
-            .expect("the core called the fetch");
+        guard::wait(&inside, "the core to call the fetch");
         writers(&env, round);
         done.send(()).unwrap();
         assert_eq!(caller.join().unwrap(), "CAB-F", "{mode:?}");

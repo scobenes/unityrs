@@ -36,6 +36,12 @@ except ImportError:  # pragma: no cover - outside the oracle image
 import compare  # noqa: E402
 import synth as S  # noqa: E402
 
+# How long a test waits on a process or a thread before it calls it hung: a
+# deadlock guard, not a timing. A correct run answers long before, and ten
+# minutes is beyond any delay a loaded machine adds, so only a hang reaches it
+# (the Rust tests' guard is the same, unityrs_testkit::guard::DEADLOCK_GUARD).
+DEADLOCK_GUARD_S = 600
+
 SAMPLES = {
     "atlas_test": "61ee5afb5f5c64f0a4f65f039d09b2509198363e713423289c895067ac215177",
     "banner_1": "6bd0c3bc36c97e5f1cd2de71bb58477b6c32ac2c254a5705884306c56b94417f",
@@ -113,12 +119,17 @@ def dump_process(*argv, env=None, flags=(), first=(), preload=()):
         boot += "".join(f"import {name}; " for name in preload)
         boot += f"sys.argv = {args!r}; runpy.run_path(sys.argv[0], run_name='__main__')"
         args = ["-c", boot]
-    return subprocess.run(
-        [sys.executable, "-B", *flags, *args],
-        capture_output=True,
-        env={**os.environ, **(env or {})},
-        timeout=300,
-    )
+    try:
+        return subprocess.run(
+            [sys.executable, "-B", *flags, *args],
+            capture_output=True,
+            env={**os.environ, **(env or {})},
+            timeout=DEADLOCK_GUARD_S,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise AssertionError(
+            f"deadlock guard: the dumper gave no answer in {DEADLOCK_GUARD_S} s, which only a hang takes, not load"
+        ) from e
 
 
 def ints_value(**fields):
