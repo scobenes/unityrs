@@ -121,11 +121,13 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
 use std::mem::size_of;
 use std::ops::Bound;
+#[cfg(test)]
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, RwLock};
 
 pub use cab::{Cab, HeldCab, RawCab};
-pub(crate) use dependency::{DepSlot, Dependency, WeakFile, open_source};
+pub(crate) use dependency::{DepSlot, Dependency, Open, open_source};
 pub(crate) use lru::DepCache;
 #[cfg(test)]
 pub(crate) use lru::{Hook, HookFn};
@@ -133,6 +135,7 @@ pub(crate) use rank::Rank;
 pub(crate) use reach::{Through, entry_of};
 pub(crate) use slot::{Slot, SlotKind};
 
+use super::held::{self, Held, lock};
 use super::watch::Watches;
 
 use crate::budget::Reservation;
@@ -141,10 +144,6 @@ use crate::files::{BundleFile, File};
 use crate::limits::{Charge, HASH_TABLE_SHARES, Meter, heap_cost};
 use crate::pystr::simplify_name;
 use crate::raw::RawStr;
-
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// One key: the slot of greatest rank, the key's position (the least rank
 /// registered under it), and the charges for its share of the two tables
@@ -539,12 +538,12 @@ impl Registry {
         }
     }
 
-    fn read(&self) -> std::sync::RwLockReadGuard<'_, RegistryInner> {
-        self.inner.read().unwrap_or_else(PoisonError::into_inner)
+    fn read(&self) -> Held<std::sync::RwLockReadGuard<'_, RegistryInner>> {
+        held::read(&self.inner)
     }
 
-    fn write(&self) -> std::sync::RwLockWriteGuard<'_, RegistryInner> {
-        self.inner.write().unwrap_or_else(PoisonError::into_inner)
+    fn write(&self) -> Held<std::sync::RwLockWriteGuard<'_, RegistryInner>> {
+        held::write(&self.inner)
     }
 
     /// The slot under `simplify_name(name)`, the key built charged to `meter`

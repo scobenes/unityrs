@@ -35,7 +35,7 @@ use std::sync::atomic::Ordering;
 use super::super::Source;
 #[cfg(test)]
 use super::Hook;
-use super::{By, Cab, DepSlot, Dependency, RawCab, Registry, Slot, SlotKind, lock};
+use super::{By, Cab, DepSlot, Dependency, RawCab, Registry, Slot, SlotKind};
 use crate::detect::{FileType, check_file_type};
 use crate::error::Error;
 use crate::files::{BundleFile, File};
@@ -286,7 +286,7 @@ impl Registry {
             SlotKind::Entry { .. } | SlotKind::Ready(_) => None,
         };
         let meter = match dep {
-            Some(dep) => lock(&dep.meter).clone(),
+            Some(dep) => dep.meter(),
             None => nested.meter().clone(),
         };
         if let Some(limit) = meter.work_used_up() {

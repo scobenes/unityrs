@@ -17,7 +17,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
 
-use super::{Hook, Registry, Slot, lock};
+use super::{Hook, Registry, Slot};
 #[cfg(test)]
 use crate::env::gate::{Event, Gate, Run};
 use crate::env::{Cab, EnvOptions, Environment, LoadMode, RawCab, Source};
@@ -446,6 +446,13 @@ fn every_load_and_the_key_listing_reach_what_is_listed() {
     }
 }
 
+/// The test's own lock, held across an operation, so not one of the
+/// Environment's (`super::super::held`).
+#[cfg(test)]
+fn plain<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Random operations on four threads, each step's invariants checked when
 /// it returns (R1, R3, and R4 for what was listed when it started); once
 /// all are done, the registry answers as an eager load of the same loads
@@ -468,7 +475,7 @@ fn reach_and_settle_keep_their_invariants_under_a_random_stress() {
                         let op = OPS[rng.below(OPS.len())];
                         let listed = rig.env.registry().listed();
                         let found = if matches!(op, Op::LoadP | Op::LoadR) {
-                            let mut order = lock(&loads);
+                            let mut order = plain(&loads);
                             let found = apply(&rig.env, &rig.scene, op);
                             order.push(op);
                             found
@@ -483,7 +490,7 @@ fn reach_and_settle_keep_their_invariants_under_a_random_stress() {
         for t in threads {
             t.join().unwrap();
         }
-        let order = lock(&loads).clone();
+        let order = plain(&loads).clone();
         quiet(&rig, &order);
     }
 }

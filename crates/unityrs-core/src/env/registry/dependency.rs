@@ -25,13 +25,11 @@ pub(crate) struct Dependency {
     pub(crate) name: RawStr,
     /// Where its bytes come from again after an eviction.
     pub(crate) source: Source,
-    /// The meter of its current open. An eviction keeps it; the next open
-    /// is on its [`Meter::reopen`], which charges the same memory account
-    /// and has its own work allowance, so an old open's handle that someone
-    /// still holds keeps counting against the old one (plan section 3.13).
-    pub(crate) meter: Mutex<Arc<Meter>>,
-    /// The LRU's handle, weakly: an eviction drops the LRU's strong one.
-    pub(crate) open: Mutex<Option<WeakFile>>,
+    /// Its current open: the LRU's handle, weakly, and its meter, under one
+    /// lock, so a reopen publishes both in one step and no lock is taken
+    /// while another is held (plan section 3.16; review round 6: the meter
+    /// had a lock of its own, taken while this one was held).
+    pub(crate) open: Mutex<Open>,
     /// The context it is parsed with.
     pub(crate) ctx: Arc<FileContext>,
     /// The LRU that keeps its open handle, weakly: the LRU holds the
@@ -41,6 +39,32 @@ pub(crate) struct Dependency {
     /// How many registry slots reach it ([`DepSlot`]): when the last goes,
     /// nothing can reach it any more and the LRU lets go of it.
     pub(crate) slots: AtomicUsize,
+}
+
+/// A dependency's current open ([`Dependency::open`]).
+#[derive(Debug)]
+pub(crate) struct Open {
+    /// The LRU's handle, weakly: an eviction drops the LRU's strong one.
+    pub(crate) file: Option<WeakFile>,
+    /// The meter of the open. An eviction keeps it; the next open is on its
+    /// [`Meter::reopen`], which charges the same memory account and has its
+    /// own work allowance, so an old open's handle that someone still holds
+    /// keeps counting against the old one (plan section 3.13).
+    pub(crate) meter: Arc<Meter>,
+}
+
+impl Open {
+    /// An open of `file` on `meter`.
+    pub(crate) fn of(file: &File, meter: Arc<Meter>) -> Self {
+        Self {
+            file: WeakFile::of(file),
+            meter,
+        }
+    }
+
+    fn alive(&self) -> Option<File> {
+        self.file.as_ref().and_then(WeakFile::upgrade)
+    }
 }
 
 /// A registry slot's handle on its dependency, counted in
@@ -158,25 +182,28 @@ impl Dependency {
     /// The handle the LRU keeps, opening the dependency again from its
     /// source when it was evicted (on [`Meter::reopen`] of its meter). The
     /// source is read and parsed with no lock held; the first open to
-    /// publish wins.
+    /// publish wins, and publishes its handle and its meter in one step.
+    /// A meter it replaces is dropped after the lock.
     pub(crate) fn handle(self: &Arc<Self>) -> Result<File, Error> {
-        let alive = lock(&self.open).as_ref().and_then(WeakFile::upgrade);
+        let (alive, meter) = {
+            let open = lock(&self.open);
+            (open.alive(), open.meter.clone())
+        };
         if let Some(f) = alive {
             if let Some(cache) = self.cache.upgrade() {
                 cache.touch(self, &f)?;
             }
             return Ok(f);
         }
-        let meter = lock(&self.meter).reopen();
+        let meter = meter.reopen();
         let file = open_source(&self.name, &self.source, &meter, &self.ctx)?;
-        let file = {
+        let (file, _replaced) = {
             let mut open = lock(&self.open);
-            if let Some(theirs) = open.as_ref().and_then(WeakFile::upgrade) {
-                theirs
+            if let Some(theirs) = open.alive() {
+                (theirs, None)
             } else {
-                *open = WeakFile::of(&file);
-                *lock(&self.meter) = meter;
-                file
+                let mine = Open::of(&file, meter);
+                (file, Some(std::mem::replace(&mut *open, mine)))
             }
         };
         if let Some(cache) = self.cache.upgrade() {
@@ -187,6 +214,11 @@ impl Dependency {
 
     /// The open handle if it is alive, without opening anything.
     pub(crate) fn alive(&self) -> Option<File> {
-        lock(&self.open).as_ref().and_then(WeakFile::upgrade)
+        lock(&self.open).alive()
+    }
+
+    /// The meter of its current open.
+    pub(crate) fn meter(&self) -> Arc<Meter> {
+        lock(&self.open).meter.clone()
     }
 }

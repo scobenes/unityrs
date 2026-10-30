@@ -37,8 +37,9 @@ use std::collections::HashMap;
 use std::hash::{BuildHasher, RandomState};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
+use super::held::lock;
 use crate::error::Error;
 use crate::limits::{Charge, HASH_TABLE_SHARES, Meter, heap_cost};
 
@@ -70,10 +71,6 @@ pub(crate) struct Watches {
     /// Walks running.
     walks: AtomicUsize,
     map: Mutex<HashMap<u64, Vec<Weak<Flag>>>>,
-}
-
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Watches {

@@ -138,6 +138,7 @@ mod container_index;
 mod deref;
 #[cfg(test)]
 mod gate;
+mod held;
 mod listing;
 mod load;
 mod object_tree;

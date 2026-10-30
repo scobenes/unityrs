@@ -5,9 +5,10 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::mem::size_of;
-use std::sync::{Arc, PoisonError};
+use std::sync::Arc;
 
 use super::Environment;
+use super::held::{self, Held};
 use crate::error::Error;
 use crate::files::{BundleFile, File, SerializedFile};
 use crate::limits::{Charge, HASH_TABLE_SHARES, Meter};
@@ -145,18 +146,12 @@ const LISTED_SHARE: u64 = 3 * size_of::<Listed>() as u64
     + 2 * HASH_TABLE_SHARES * (size_of::<RawStr>() + size_of::<usize>() + 1) as u64;
 
 impl Environment {
-    fn files_read(&self) -> std::sync::RwLockReadGuard<'_, Files> {
-        self.inner
-            .files
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
+    fn files_read(&self) -> Held<std::sync::RwLockReadGuard<'_, Files>> {
+        held::read(&self.inner.files)
     }
 
-    fn files_write(&self) -> std::sync::RwLockWriteGuard<'_, Files> {
-        self.inner
-            .files
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
+    fn files_write(&self) -> Held<std::sync::RwLockWriteGuard<'_, Files>> {
+        held::write(&self.inner.files)
     }
 
     fn file_at(&self, i: usize) -> Option<FileEntry> {
