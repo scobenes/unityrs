@@ -1,8 +1,11 @@
 //! G7 (`docs/plans/core.md` section 6): for every class a TPK holds, at every
 //! version it lists, [`TpkProvider`] gives UnityPy 1.25.2's outcome: the node
 //! list `helpers/Tpk.py` builds, "no node" (`Ok(None)`) where it raises
-//! `KeyError`, `ValueError` or `AssertionError`, and an error where it raises
-//! anything else; and the TPK's class count is UnityPy's.
+//! `KeyError`, `ValueError` or `AssertionError`, and where it raises anything
+//! else the error the port gives for that exception
+//! (`common::walk_error_is_unitypys`); and the TPK's class count is
+//! UnityPy's. A TPK UnityPy refuses to load is refused with the error the
+//! port gives for UnityPy's exception (`common::load_error_is_unitypys`).
 //!
 //! Each answer is checked twice: the node list ([`TpkProvider::node_list`])
 //! and the compiled tree ([`TypeTreeProvider::tree`]), which must be the
@@ -38,6 +41,8 @@ use unityrs_core::provider::{TreeRequest, TypeTreeProvider};
 use unityrs_core::typetree::{NodeList, NodeRow};
 use unityrs_core::{LimitError, LimitKind, UnityVersion};
 use unityrs_tpk::{TpkError, TpkProvider};
+
+mod common;
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -168,7 +173,18 @@ fn compare<'r>(
                 (None, Ok(None), Ok(None)) => {
                     assert!(want.get("none").is_some(), "{}: {want}", at());
                 }
-                (None, Err(_), Err(_)) => assert!(want.get("error").is_some(), "{}: {want}", at()),
+                // The exception UnityPy raised, as the port's error for it,
+                // the same from the node list and the tree (round 4: any
+                // error passed).
+                (None, Err(list), Err(tree)) => {
+                    let python = want["error"].as_str();
+                    assert!(
+                        python.is_some_and(|p| common::walk_error_is_unitypys(p, &list)),
+                        "{}: UnityPy {want}, unityrs {list:?}",
+                        at()
+                    );
+                    assert_eq!(tree, list, "{}: the tree's error", at());
+                }
                 (_, got, tree) => {
                     panic!("{}: UnityPy {want}, unityrs {got:?}, tree {tree:?}", at())
                 }
@@ -243,12 +259,8 @@ fn g7_the_synthetic_tpks_give_unitypys_outcomes() {
             assert_eq!(refusal(&e), what, "{name}: {e}");
             continue;
         }
-        if case["load"].is_string() {
-            assert!(
-                provider.is_err(),
-                "{name}: UnityPy raised {}, unityrs loaded it",
-                case["load"]
-            );
+        if let Some(python) = case["load"].as_str() {
+            common::assert_load_is_unitypys(name, Some(python), &provider);
             continue;
         }
         let provider =
@@ -501,7 +513,8 @@ fn the_provider_answers_trees_where_unitypy_builds_them_and_shares_each() {
                 let list = provider.node_list(class_id, &v);
                 match (provider.tree(&req), list) {
                     (Ok(Some(tree)), Ok(Some(list))) => assert!(Arc::ptr_eq(tree.list(), &list)),
-                    (Ok(None), Ok(None)) | (Err(_), Err(_)) => {}
+                    (Ok(None), Ok(None)) => {}
+                    (Err(tree), Err(list)) => assert_eq!(tree, list, "class {class_id}"),
                     (tree, list) => panic!("class {class_id}: tree {tree:?}, node list {list:?}"),
                 }
             }

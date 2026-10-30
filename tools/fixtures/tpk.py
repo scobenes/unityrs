@@ -30,7 +30,9 @@ the exception's name), the table every blob typetree reads.
 An outcome is UnityPy's node list (every node in pre-order, each with all ten
 `TypeTreeNode` fields the dump reads), or "none" where UnityPy raises `KeyError`,
 `ValueError` or `AssertionError` (`no_typetree`), or "error" with the exception's name
-for anything else (an id past its table).
+for anything else (an id past its table). A TPK UnityPy cannot load records the
+exception's name as its "load". G7 maps each exception name to the error the port gives
+for it (`crates/unityrs-tpk/tests/common/mod.rs`), and an unmapped pair fails G7.
 
     scripts/dev python tools/fixtures/tpk.py            # write the synthetic fixtures
     scripts/dev python tools/fixtures/tpk.py --check    # regenerate and compare them, then
