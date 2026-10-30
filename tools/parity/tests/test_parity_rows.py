@@ -1036,6 +1036,20 @@ class Rows(unittest.TestCase):
             quietly(env.load, [given])
             with self.subTest(given):
                 self.assertEqual((list(env.files), len(env.objects)), (keys, len(keys)))
+        # The basename is ntpath's, and so is the constructor's dirname: a backslash and a drive colon split a name,
+        # so a file so named in the cwd is keyed twice, and `path` is the part before it (`.` for a bare name).
+        for name, base, folder in (
+            ("a\\b.assets", "b.assets", "a"),
+            ("C:c.assets", "c.assets", "C:"),
+            ("p.assets", None, "."),
+        ):
+            (self.tmp / "sub" / name).write_bytes(text_asset_file())
+            env = UnityPy.Environment()
+            quietly(env.load, [name])
+            with self.subTest(name):
+                keys = [name] if base is None else [name, base]
+                self.assertEqual((list(env.files), len(env.objects)), (keys, len(keys)))
+                self.assertEqual(quietly(UnityPy.Environment, name).path, folder)
 
     def test_load_file_tries_the_cwd_first(self):
         (self.tmp / "cwd").mkdir()
@@ -1124,6 +1138,36 @@ class Rows(unittest.TestCase):
         with fs.open(f"{root}/x.assets", "rb") as stream:
             loaded = quietly(UnityPy.Environment(fs=fs).load_file, stream, name="x.assets")
         self.assertEqual([o.parse_as_dict()["m_Name"] for o in loaded.objects.values()], ["in memory"])
+        # A .splitN name skips os.path and the builtin open: _load_split_file tests and reads its parts through fs,
+        # so it loads, keyed by its base path, from load_file, the constructor, load_folder and find_file.
+        split = f"{root}-split"
+        whole = text_asset_file("split")
+        fs.pipe({f"{split}/a.assets.split0": whole[:40], f"{split}/a.assets.split1": whole[40:]})
+        self.addCleanup(fs.rm, split, recursive=True)
+
+        def loaded(env):
+            return env.path, list(env.files), list(env.cabs), [o.parse_as_dict()["m_Name"] for o in env.objects]
+
+        for part in ("split0", "split1"):
+            with self.subTest(part):
+                env = quietly(UnityPy.Environment, f"{split}/a.assets.{part}", fs=fs)
+                self.assertEqual(loaded(env), (split, [f"{split}/a.assets"], ["a.assets"], ["split"]))
+                env = UnityPy.Environment(fs=fs)
+                self.assertEqual(type(quietly(env.load_file, f"{split}/a.assets.{part}")).__name__, "SerializedFile")
+                self.assertEqual(loaded(env), ("", [f"{split}/a.assets"], ["a.assets"], ["split"]))
+                env = UnityPy.Environment(fs=fs, path=split)
+                self.assertEqual(type(quietly(env.find_file, f"a.assets.{part}")).__name__, "SerializedFile")
+                self.assertEqual(loaded(env), (split, [f"{split}/a.assets"], ["a.assets"], []))  # a dependency
+        self.assertEqual(
+            loaded(quietly(UnityPy.Environment, split, fs=fs))[1:], ([f"{split}/a.assets"], ["a.assets"], ["split"])
+        )
+        env = UnityPy.Environment(fs=fs)
+        quietly(env.load_folder, split)
+        self.assertEqual(loaded(env)[1:], ([f"{split}/a.assets"], ["a.assets"], ["split"]))
+        # Any other file in the folder still meets the builtin open.
+        fs.pipe(f"{split}/sub/x.assets", text_asset_file("x"))
+        with self.assertRaisesRegex(FileNotFoundError, re.escape(f"No such file or directory: '{split}/sub/x.assets'")):
+            quietly(UnityPy.Environment(fs=fs).load_folder, split)
 
     # Sections 14.1, 14.3: file ids and the preload pass.
     def test_negative_file_ids_index_from_the_end(self):
@@ -2337,7 +2381,7 @@ class Rows(unittest.TestCase):
         # load_file misses any other prefixed name: None where os.listdir lists Environment.path, FileNotFoundError
         # where Environment.path has a prefix. So a file argument with no folder part loads nothing, one with a
         # folder part raises, wherever the file lies, and find_file from a prefixed `path` (deref through it) raises
-        # where its path/name step finds the file, while a file only its walk finds loads.
+        # where its path/name step finds the file, a .splitN name aside, while a file only its walk finds loads.
         zipped = io.BytesIO()
         with zipfile.ZipFile(zipped, "w") as archive:
             archive.writestr("in.assets", text_asset_file("in"))
@@ -2406,6 +2450,25 @@ class Rows(unittest.TestCase):
         env = UnityPy.Environment()
         self.assertEqual(type(quietly(env.load_file, "local://d/a.assets.split1")).__name__, "SerializedFile")
         self.assertEqual(loaded(env)[1:], (["local://d/a.assets"], ["a.assets"], ["d"]))
+        # So find_file's path/name step from a prefixed `path` loads a .splitN name, and deref through it, where any
+        # other name raises.
+        (work / "d" / "b.bin").write_bytes(text_asset_file("b"))
+        for prefix in ("file://", "file:", "local://", "local:"):
+            folder = f"{prefix}{cwd}/d"
+            for part in ("a.assets.split0", "a.assets.split1"):
+                with self.subTest(prefix=prefix, part=part):
+                    env = UnityPy.Environment(path=folder)
+                    self.assertEqual(names(quietly(env.find_file, part)), ["d"])
+                    self.assertEqual((list(env.files), list(env.cabs)), ([f"{folder}/a.assets"], ["a.assets"]))
+            env = UnityPy.Environment(path=folder)
+            main = load(text_asset_file("main"), "main.assets", env)[0]
+            main.externals = [SimpleNamespace(path="archive:/CAB-x/a.assets.split0")]
+            pointed = quietly(PPtr(m_FileID=1, m_PathID=1, assetsfile=main).deref)
+            self.assertEqual(
+                (pointed.parse_as_dict()["m_Name"], list(env.files)), ("d", ["main.assets", f"{folder}/a.assets"])
+            )
+            with self.subTest(prefix=prefix), self.assertRaisesRegex(FileNotFoundError, unlistable(folder)):
+                quietly(UnityPy.Environment(path=folder).find_file, "b.bin")
         # Links under the folder are files: a link to a folder is never entered and raises when opened, a broken one
         # raises, a link to a file loads under its own path and name. find_file reaches a file under a linked folder
         # only as path/name.
