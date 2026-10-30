@@ -42,6 +42,7 @@ GROUP_SIZES = {
     "fields": 8456,
     "attributes": 145,
     "exports": 924,
+    "aliases": 4,
     "boost": 17,
     "enum_members": 741,
     "texture_formats": 78,
@@ -69,6 +70,7 @@ SYMBOLS = {
     "fields": ["GameObject.m_Name", "GameObject.m_Layer", "ObjectReader.path_id"],
     "attributes": ["Environment.files", "SerializedFile.objects"],
     "exports": ["UnityPy.files.File", "UnityPy.load"],
+    "aliases": ["TypeTreeHelper.read_typetree_boost"],
     "boost": ["UnityPyBoost.read_typetree"],
     "enum_members": [["BuildTarget.Switch", 38], ["BuildTarget.XBOX360", 11]],
     "texture_formats": [["Alpha8", 1], ["RGB24", 3]],
@@ -93,6 +95,7 @@ SYMBOLS = {
         "UnityPy.files.File": ["UnityPy.files.File"],
         "UnityPy.load": ["UnityPy.load"],
         "UnityPyBoost.read_typetree": ["UnityPy.UnityPyBoost.read_typetree"],
+        "TypeTreeHelper.read_typetree_boost": ["UnityPy.helpers.TypeTreeHelper.read_typetree_boost"],
     },
 }
 
@@ -109,6 +112,7 @@ COMPLETE = """
 | `ObjectReader.path_id` | a field written whole |
 | `UnityPy.load` | a package export |
 | `UnityPyBoost.read_typetree` | a Boost export |
+| `TypeTreeHelper.read_typetree_boost` | a module's alias of it |
 | `Environment.files` | an attribute written whole |
 
 | class | bases | fields | attributes |
@@ -366,6 +370,11 @@ class MatchingRules(unittest.TestCase):
             "fields": ("`m_Layer`, `m_Name`", "`m_Name`", "GameObject.m_Layer"),
             "exports": ("| `UnityPy.files` | `File` |", "| `UnityPy.files` | |", "UnityPy.files.File"),
             "boost": ("`UnityPyBoost.read_typetree`", "`read_typetree`", "UnityPyBoost.read_typetree"),
+            "aliases": (
+                "`TypeTreeHelper.read_typetree_boost`",
+                "`read_typetree_boost`",
+                "TypeTreeHelper.read_typetree_boost",
+            ),
             "attributes": ("| — | `objects` |", "| — | — |", "SerializedFile.objects"),
             "enum_members": ("`Switch = 38`", "`Switch`", "BuildTarget.Switch (38)"),
             # The whole line: a blank line would end the matrix, and the rows after it would name nothing.
@@ -431,6 +440,19 @@ class AgainstTheOracle(unittest.TestCase):
                 "UnityPyBoost.TypeTreeNode.__repr__",  # a special method its C type defines (tp_repr)
             ],
         }
+        # A module's own name for a class or function another UnityPy module or UnityPyBoost defines: the four there
+        # are. Not one: a package's (an export), an alias of another library's object (`TypeTreeNode.Lock`, the
+        # `_thread` lock), or a name the defining module binds too (`generated.float3`, `classes/math.py`'s).
+        self.assertEqual(
+            groups["aliases"],
+            [
+                "ClassIDTypeToClassMap.CIT",
+                "Texture2DConverter.TF",
+                "TypeTreeHelper.read_typetree_boost",
+                "TypeTreeNode.TypeTreeNodeC",
+            ],
+        )
+        self.assertEqual(groups["paths"]["Texture2DConverter.TF"], ["UnityPy.export.Texture2DConverter.TF"])
         for group, names in kinds.items():
             for name in names:
                 self.assertIn(name, groups[group], group)
@@ -519,6 +541,11 @@ class AgainstTheOracle(unittest.TestCase):
             "fields": (r"^(\| `GameObject` \|.*)`m_IsActive`, ", r"\1", "GameObject.m_IsActive"),
             "exports": (r"^(\| `UnityPy\.files` \|.*)`DirectoryInfo`, ", r"\1", "UnityPy.files.DirectoryInfo"),
             "boost": (r"\bUnityPyBoost\.decrypt_block\b", "UnityPyBoost.decrypt_blockX", "UnityPyBoost.decrypt_block"),
+            "aliases": (
+                r"\bTypeTreeHelper\.read_typetree_boost\b",
+                "TypeTreeHelper.read_typetree_boostX",
+                "TypeTreeHelper.read_typetree_boost",
+            ),
             "attributes": (r"^(\| `Environment` \|.*)`local_files`, ", r"\1", "Environment.local_files"),
             "enum_members": (r"^(\| `BuildTarget` \|.*)`Switch = 38`", r"\1`Switch = 39`", "BuildTarget.Switch (38)"),
             "texture_formats": (r"^\| 34 \| `ETC_RGB4` \|", "| 340 | `ETC_RGB4` |", "ETC_RGB4 (34)"),
