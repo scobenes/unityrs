@@ -268,14 +268,36 @@ fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "a panic".to_owned())
 }
 
+/// The stack one level of container nesting takes, in the core's eager load
+/// and the dump's own walks of the nest (load, pre-pass, records): about
+/// twice what a level costs up to the deepest nest
+/// [`crate::LIFTED_CONTAINER_DEPTH`] lets parse, which `tests/limits.rs`'s
+/// `container_stack_measured` finds is 5,472 bytes in a debug build and
+/// 1,520 in a release one (toolchain 1.99.1), eagerly and through the
+/// reverse pre-pass alike.
+pub const CONTAINER_LEVEL_STACK: usize = if cfg!(debug_assertions) {
+    12 << 10
+} else {
+    3 << 10
+};
+
 /// The stack a worker dumps an input on, under `limits`: what reading and
 /// writing one object needs ([`Limits::stack_needed`]), and as much again
 /// for the dump's own frames around it and the value encoder, which recurses
 /// as deep as the value the reader made (`tests/deep_values.rs` dumps the
-/// deepest inputs at `-j 1` and `-j 8`).
+/// deepest inputs at `-j 1` and `-j 8`), on top of
+/// [`CONTAINER_LEVEL_STACK`] for each level of nesting
+/// `limits.max_container_depth` lets an input reach, inside which that
+/// object is read (`tests/limits.rs`).
 #[must_use]
 pub fn worker_stack(limits: &Limits) -> usize {
-    limits.stack_needed().saturating_mul(2)
+    let levels = usize::try_from(limits.max_container_depth)
+        .unwrap_or(usize::MAX)
+        .saturating_add(1);
+    limits
+        .stack_needed()
+        .saturating_mul(2)
+        .saturating_add(levels.saturating_mul(CONTAINER_LEVEL_STACK))
 }
 
 /// [`ordered_on`] workers of [`worker_stack`] at the default limits.

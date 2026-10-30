@@ -1,11 +1,23 @@
 //! The dump's limit refusals (`PARITY.md` section 19.3): each is its
-//! input's own record, in `tools/parity/g3b.py`'s grammar.
+//! input's own record, in `tools/parity/g3b.py`'s grammar, and a bound
+//! `--unbounded` lifts never lets an input outrun a worker's stack.
 //!
-//! An input longer than `max_input_bytes` is refused unread, and one whose
-//! buffer cannot be had is a `crash` record; the run goes on
-//! (`unityrs_dump::read`).
+//! - An input longer than `max_input_bytes` is refused unread, and one whose
+//!   buffer cannot be had is a `crash` record; the run goes on
+//!   (`unityrs_dump::read`).
+//! - Nested containers: lifted, the container depth is
+//!   [`LIFTED_CONTAINER_DEPTH`], past what UnityPy reads, and a nest that
+//!   deep dumps whole on the worker stack [`worker_stack`] names, at `-j 1`
+//!   and `-j 2`, with or without the reverse pre-pass; one level more is the
+//!   `ContainerDepth` refusal.
+//!
+//! `container_stack_measured` (ignored) finds the least stack such a nest
+//! needs, by bisection over child processes (a thread that overflows its
+//! stack aborts its process), and prints what a level costs:
 //!
 //!     scripts/dev cargo test -p unityrs-dump --test limits
+//!     scripts/dev cargo test -p unityrs-dump --test limits -- --ignored --nocapture
+//!     scripts/dev cargo test -p unityrs-dump --test limits --release -- --ignored --nocapture
 
 mod common;
 
@@ -16,9 +28,9 @@ use serde_json::Value as Json;
 use unityrs_core::budget::Counting;
 use unityrs_core::limits::Limits;
 use unityrs_core::{FileContext, LimitKind};
-use unityrs_dump::run::{RunOptions, run};
+use unityrs_dump::run::{RunOptions, run, worker_stack};
 use unityrs_dump::select::Selection;
-use unityrs_dump::{DumpOptions, Levels};
+use unityrs_dump::{DumpOptions, LIFTED_CONTAINER_DEPTH, Levels};
 use unityrs_testkit::blob::NodeSpec;
 use unityrs_testkit::bundle::{BundleSpec, EntrySpec, TestCodec, build};
 use unityrs_testkit::depth::{Depth, Row, Wrap, Z_ROWS};
@@ -302,4 +314,155 @@ fn an_input_too_large_to_hold_is_a_crash_record_and_the_run_goes_on() {
     assert_eq!(small.len(), 1);
     assert_eq!(small[0]["l0"]["parsed_as"], "raw");
     assert_eq!(records.last().unwrap()["rec"], "end");
+}
+
+/// Plan 3.15 and `PARITY.md` 19.3, "nested containers": with the container
+/// depth lifted (`--unbounded ContainerDepth`), a nest whose innermost
+/// bundle sits at [`LIFTED_CONTAINER_DEPTH`] dumps whole on the workers'
+/// [`worker_stack`], at `-j 1` and `-j 2` and through the reverse pre-pass,
+/// and one level deeper, or 3,000 levels, is refused there, never a stack
+/// overflow.
+#[test]
+fn a_lifted_container_depth_dumps_to_its_bound_and_refuses_past_it() {
+    let tmp = Tmp::new("lifted-nest");
+    let dir = tmp.0.join("in");
+    std::fs::create_dir_all(&dir).unwrap();
+    let depth = usize::try_from(LIFTED_CONTAINER_DEPTH).unwrap();
+    std::fs::write(dir.join("at"), nest(depth + 1)).unwrap();
+    std::fs::write(dir.join("past"), nest(depth + 2)).unwrap();
+    // Lifted to `u32::MAX`, a nest of a few thousand overflowed the stack.
+    std::fs::write(dir.join("past-far"), nest(3000)).unwrap();
+    let lifted = DumpOptions::default()
+        .with_unbounded(&[LimitKind::ContainerDepth])
+        .unwrap();
+    assert_eq!(
+        lifted.context.limits.max_container_depth,
+        LIFTED_CONTAINER_DEPTH
+    );
+    let one = dump(&tmp, "j1.jsonl", 1, lifted.clone());
+    let at = of(&one, "at");
+    // The leaf's objects read to the value depth bound, at the nest's foot.
+    for obj in &at[depth + 2..] {
+        let note = obj["l2"]["error"]["note"].as_str().unwrap_or_default();
+        assert!(note.contains("limit ValueDepth: "), "{obj}");
+    }
+    assert_eq!(
+        at.len(),
+        depth + 4,
+        "every bundle, the SerializedFile, its objects"
+    );
+    assert!(at.iter().all(|r| r.get("error").is_none_or(Json::is_null)));
+    for name in ["past", "past-far"] {
+        let (kind, note) = refusal(&one, name);
+        assert_eq!(
+            (kind.as_str(), note.as_str()),
+            (
+                "parse",
+                format!("limit ContainerDepth: {} > {depth}", depth + 1).as_str()
+            ),
+            "{name}"
+        );
+    }
+    assert_eq!(dump(&tmp, "j2.jsonl", 2, lifted.clone()), one);
+    let reverse = DumpOptions {
+        lazy_reverse: true,
+        ..lifted
+    };
+    assert_eq!(dump(&tmp, "rev.jsonl", 2, reverse), one);
+}
+
+const PROBE: &str = "UNITYRS_DUMP_NEST_PROBE";
+
+/// The child process `container_stack_measured` runs: a nest of `levels`
+/// bundles dumped with the container depth lifted, through the reverse
+/// pre-pass or not, on one worker of `stack` bytes.
+#[test]
+#[ignore = "run by container_stack_measured"]
+fn container_stack_probe() {
+    let Ok(spec) = std::env::var(PROBE) else {
+        return;
+    };
+    let [levels, stack, reverse]: [&str; 3] =
+        spec.split(' ').collect::<Vec<_>>().try_into().unwrap();
+    let data = nest(levels.parse().unwrap());
+    let opts = DumpOptions {
+        lazy_reverse: reverse == "reverse",
+        ..DumpOptions::default()
+            .with_unbounded(&[LimitKind::ContainerDepth])
+            .unwrap()
+    };
+    let dump_one = |d: &Vec<u8>| unityrs_dump::dump_input(b"nest", d.clone().into(), &opts);
+    unityrs_dump::run::ordered_on(
+        &[data],
+        1,
+        stack.parse().unwrap(),
+        &dump_one,
+        &mut |_, _| Ok(()),
+    )
+    .unwrap();
+}
+
+/// The least worker stack that dumps a nest at several depths, to the
+/// deepest [`LIFTED_CONTAINER_DEPTH`] lets parse and one past it (refused),
+/// eagerly and through the reverse pre-pass, to 4 KiB, found by bisection
+/// over child processes; what each level costs; and [`worker_stack`] with
+/// the container depth lifted, which must hold each.
+#[test]
+#[ignore = "measures; run with --ignored --nocapture"]
+fn container_stack_measured() {
+    let exe = std::env::current_exe().unwrap();
+    let fits = |levels: u32, stack: usize, mode: &str| {
+        std::process::Command::new(&exe)
+            .args([
+                "--exact",
+                "container_stack_probe",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env(PROBE, format!("{levels} {stack} {mode}"))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    let least = |levels: u32, mode: &str| {
+        let (mut lo, mut hi) = (0, 256 << 20);
+        assert!(fits(levels, hi, mode), "{levels} levels at {hi}");
+        while hi - lo > 4 << 10 {
+            let mid = usize::midpoint(lo, hi) / 4096 * 4096;
+            if fits(levels, mid, mode) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        hi
+    };
+    let mut lifted = Limits::default();
+    lifted.max_container_depth = LIFTED_CONTAINER_DEPTH;
+    let have = worker_stack(&lifted);
+    for mode in ["eager", "reverse"] {
+        let mut prev: Option<(u32, usize)> = None;
+        for levels in [
+            17,
+            257,
+            513,
+            LIFTED_CONTAINER_DEPTH + 1,
+            LIFTED_CONTAINER_DEPTH + 2,
+        ] {
+            let need = least(levels, mode);
+            let per = prev.map_or(String::new(), |(l, n)| {
+                let per = need.saturating_sub(n) / usize::try_from(levels - l).unwrap();
+                format!(", {per} a level since {l}")
+            });
+            println!("{mode:>7} {levels:>5} levels: least {need}{per}");
+            prev = Some((levels, need));
+            assert!(
+                need <= have,
+                "{levels} levels need {need}, worker_stack {have}"
+            );
+        }
+    }
+    println!("worker_stack with the container depth lifted: {have}");
 }
