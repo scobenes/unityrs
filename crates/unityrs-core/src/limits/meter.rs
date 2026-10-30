@@ -169,7 +169,8 @@ impl Meter {
 
     /// Counts `bytes` of work already done, unchecked: what a lazy
     /// computation that ended unkept was granted
-    /// ([`crate::once::get_or_publish_result`]). The work is done whatever
+    /// ([`crate::once::get_or_publish_result`]), or a bundle entry's parse
+    /// that ended in a kept error (`files::bundle`). The work is done whatever
     /// the bound says; what follows is refused ([`Self::work_used_up`]).
     pub(crate) fn add_work(&self, bytes: u64) {
         let _ = self

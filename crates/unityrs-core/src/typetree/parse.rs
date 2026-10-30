@@ -38,6 +38,18 @@
 //! rows than it is long (LZMA compresses repeated rows well) is stopped by
 //! the meter, not by a count.
 //!
+//! **Work.** A string's search reads up to 32,767 bytes and consumes only the
+//! string, and a parse's position can move back (a blob's negative
+//! `node_count` or `stringbuffer_size`), so the bytes searched are counted as
+//! the open's work ([`Meter::count_decode`], `Limits::max_decode_work`):
+//! `string_to_null` counts each search's bytes, and a blob, whose rows
+//! each look two strings up in its string buffer without consuming
+//! anything, finds the buffer's NULs once, on its first local string, in one
+//! counted pass, and answers every offset from them by a binary search, so
+//! a row costs the same whatever its strings' lengths (round 4: each row
+//! searched up to 32,767 bytes for each of its strings, and nothing counted
+//! it; `tests::a_blobs_rows_search_its_string_buffer_once_whatever_their_strings`).
+//!
 //! Owner: package C.
 
 use std::sync::Arc;
@@ -47,7 +59,9 @@ use bytes::Bytes;
 use crate::error::Error;
 use crate::limits::{Limits, Meter, MeteredVec};
 use crate::raw::RawStr;
-use crate::stream::{Endian, Reader, STRING_TO_NULL_WINDOW, py_read, py_string_to_null};
+use crate::stream::{
+    Endian, Reader, STRING_TO_NULL_WINDOW, py_read, py_string_to_null_found, py_string_window,
+};
 use crate::typetree::NodeRow;
 use crate::typetree::commonstring::{CommonStrings, common_string};
 
@@ -68,15 +82,63 @@ fn shared(data: &Bytes, range: std::ops::Range<usize>) -> RawStr {
 }
 
 /// `read_string_to_null()` on `r` as a zero-copy slice of `data` (the
-/// buffer `r` reads).
-pub(crate) fn string_to_null(r: &mut Reader<'_>, data: &Bytes) -> Result<RawStr, Error> {
-    match py_string_to_null(r.data(), r.position(), STRING_TO_NULL_WINDOW) {
+/// buffer `r` reads), the bytes its search reads (up to and including the
+/// NUL, or the whole window) counted first as `meter`'s work (module docs,
+/// "Work").
+pub(crate) fn string_to_null(
+    r: &mut Reader<'_>,
+    data: &Bytes,
+    meter: &Meter,
+) -> Result<RawStr, Error> {
+    let (len, pos) = (r.data().len(), r.position());
+    let window = py_string_window(len, pos, STRING_TO_NULL_WINDOW);
+    let found = r
+        .data()
+        .get(window.clone())
+        .and_then(|w| w.iter().position(|b| *b == 0));
+    let searched = found.map_or(window.len(), |k| k + 1);
+    meter.count_decode(u64::try_from(searched).unwrap_or(u64::MAX))?;
+    let nul = found.map(|k| window.start + k);
+    match py_string_to_null_found(len, pos, STRING_TO_NULL_WINDOW, nul) {
         Some((range, new)) => {
             r.set_position(new);
             Ok(shared(data, range))
         }
         // The reader's own read raises the same way.
         None => r.read_string_to_null().map(|_| RawStr::default()),
+    }
+}
+
+/// The NULs of a blob's string buffer, by position, found in one pass that
+/// counts the buffer as the open's work and kept in a table charged to the
+/// input's meter: where a search from any offset stops, in a binary search
+/// (module docs, "Work").
+struct NulIndex {
+    nuls: MeteredVec<u32>,
+}
+
+impl NulIndex {
+    fn new(buffer: &[u8], meter: &Arc<Meter>) -> Result<Self, Error> {
+        meter.count_decode(u64::try_from(buffer.len()).unwrap_or(u64::MAX))?;
+        let mut nuls = MeteredVec::new(meter);
+        for (at, _) in buffer.iter().enumerate().filter(|(_, b)| **b == 0) {
+            // A string buffer is a slice of at most `i32::MAX` bytes
+            // (`stringbuffer_size`), so a position fits.
+            let at = u32::try_from(at).map_err(|_| Error::Malformed {
+                what: "typetree blob",
+                detail: "a string buffer past 4 GiB".into(),
+            })?;
+            nuls.push(at)?;
+        }
+        Ok(Self { nuls })
+    }
+
+    /// The first NUL in `window`.
+    fn first(&self, window: &std::ops::Range<usize>) -> Option<usize> {
+        let nuls = self.nuls.as_slice();
+        let position = |p: &u32| usize::try_from(*p).unwrap_or(usize::MAX);
+        let at = nuls.partition_point(|p| position(p) < window.start);
+        nuls.get(at).map(position).filter(|p| *p < window.end)
     }
 }
 
@@ -103,8 +165,8 @@ pub fn parse_old(
             top.1 = count - 1;
         }
         let level = parent_level.saturating_add(1);
-        let ty = string_to_null(r, data)?;
-        let name = string_to_null(r, data)?;
+        let ty = string_to_null(r, data, meter)?;
+        let name = string_to_null(r, data, meter)?;
         let byte_size = r.read_i32()?;
         let variable_count = if format == 2 {
             Some(r.read_i32()?)
@@ -216,15 +278,21 @@ pub fn parse_blob(
     let endian = r.endian();
     // Growth follows the rows present, never `node_count`.
     let mut rows: MeteredVec<NodeRow> = MeteredVec::with_capacity(meter, rows_data.len() / size)?;
-    let mut last_unknown: Option<(u32, RawStr)> = None;
+    let mut strings = BlobStrings {
+        buffer: &buffer,
+        nuls: None,
+        common,
+        meter,
+        last_unknown: None,
+    };
     for row in rows_data.chunks_exact(size) {
         let b = BlobRow { row, endian };
         let version = i16::from_le_bytes(b.bytes(0));
         let level = row.get(2).copied().unwrap_or(0);
         let type_flags = row.get(3).copied().unwrap_or(0);
         // UnityPy helpers/TypeTreeNode.py:135-138: the type before the name.
-        let ty = blob_string(&buffer, b.u32(4), common, meter, &mut last_unknown)?;
-        let name = blob_string(&buffer, b.u32(8), common, meter, &mut last_unknown)?;
+        let ty = strings.get(b.u32(4))?;
+        let name = strings.get(b.u32(8))?;
         rows.push(NodeRow {
             level: i32::from(level),
             ty,
@@ -241,27 +309,53 @@ pub fn parse_blob(
     Ok(rows)
 }
 
-/// `read_string` in `parse_blob` (`helpers/TypeTreeNode.py:122-129`): a
-/// local offset reads to a NUL in the string buffer from there (a reader
-/// over the buffer, the 32,767-byte window); a high-bit offset is the common
-/// string (`common`'s, or [`super::commonstring::COMMON_STRINGS`]'s), or the
-/// offset's decimal string when the table has none, the last such string
-/// shared with the next row that names it.
-fn blob_string(
-    buffer: &Bytes,
+/// What `read_string` in `parse_blob` reads (`helpers/TypeTreeNode.py:122-129`):
+/// the string buffer, its NULs once a local string needs them, the common
+/// strings, and the last unknown common offset's decimal string.
+struct BlobStrings<'a> {
+    buffer: &'a Bytes,
+    nuls: Option<NulIndex>,
+    common: Option<&'a CommonStrings>,
+    meter: &'a Arc<Meter>,
+    last_unknown: Option<(u32, RawStr)>,
+}
+
+impl BlobStrings<'_> {
+    /// `read_string(stringbuffer_reader, value)`: a local offset reads to a
+    /// NUL in the string buffer from there (a reader over the buffer, the
+    /// 32,767-byte window), the NUL found in the buffer's index; a high-bit
+    /// offset is the common string (`common`'s, or
+    /// [`super::commonstring::COMMON_STRINGS`]'s), or the offset's decimal
+    /// string when the table has none, the last such string shared with the
+    /// next row that names it.
+    fn get(&mut self, value: u32) -> Result<RawStr, Error> {
+        if value & 0x8000_0000 == 0 {
+            let nuls = match &mut self.nuls {
+                Some(nuls) => nuls,
+                none => none.insert(NulIndex::new(self.buffer, self.meter)?),
+            };
+            let (len, pos) = (self.buffer.len(), i128::from(value));
+            let window = py_string_window(len, pos, STRING_TO_NULL_WINDOW);
+            let nul = nuls.first(&window);
+            let (range, _) = py_string_to_null_found(len, pos, STRING_TO_NULL_WINDOW, nul)
+                .ok_or_else(|| Error::Malformed {
+                    what: "typetree string",
+                    detail: format!("String not terminated at offset {value}").into(),
+                })?;
+            return Ok(shared(self.buffer, range));
+        }
+        common_or_decimal(value, self.common, self.meter, &mut self.last_unknown)
+    }
+}
+
+/// A high-bit offset: the common string, or its decimal string
+/// ([`BlobStrings::get`]).
+fn common_or_decimal(
     value: u32,
     common: Option<&CommonStrings>,
     meter: &Arc<Meter>,
     last_unknown: &mut Option<(u32, RawStr)>,
 ) -> Result<RawStr, Error> {
-    if value & 0x8000_0000 == 0 {
-        let (range, _) = py_string_to_null(buffer, i128::from(value), STRING_TO_NULL_WINDOW)
-            .ok_or_else(|| Error::Malformed {
-                what: "typetree string",
-                detail: format!("String not terminated at offset {value}").into(),
-            })?;
-        return Ok(shared(buffer, range));
-    }
     let offset = value & 0x7FFF_FFFF;
     match common {
         Some(table) => {
@@ -298,4 +392,147 @@ fn blob_string(
     let s = RawStr::charged(digits.get(at..).unwrap_or_default(), meter)?;
     *last_unknown = Some((offset, s.clone()));
     Ok(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use bytes::Bytes;
+
+    use super::{BlobStrings, parse_blob, string_to_null};
+    use crate::budget::{Reservation, Unbounded};
+    use crate::error::{Error, LimitKind};
+    use crate::limits::{Limits, Meter};
+    use crate::stream::{Endian, Reader, STRING_TO_NULL_WINDOW, py_string_to_null};
+
+    /// Every local offset of a string buffer reads, through the buffer's NUL
+    /// index, what a search reads (`py_string_to_null`, the scaffold's port
+    /// of `read_string_to_null`, which `tests/fixtures/scaffold/reader.json`
+    /// pins to UnityPy): buffers with no NUL, only NULs and NULs at random,
+    /// shorter and longer than the window, at every offset to past the end.
+    #[test]
+    fn a_blob_string_found_through_the_index_is_the_one_a_search_finds() {
+        let mut rng = unityrs_testkit::Rng::new(4);
+        let meter = Meter::unlimited();
+        let mut buffers: Vec<Vec<u8>> = vec![
+            vec![],
+            vec![0],
+            vec![b'a'],
+            vec![0; 100],
+            vec![b'a'; 32_766],
+            vec![b'a'; 32_767],
+            vec![b'a'; 32_768],
+            vec![b'a'; 40_000],
+        ];
+        let mut two = vec![b'a'; 70_000];
+        two[32_766] = 0;
+        two[65_534] = 0;
+        buffers.push(two);
+        for _ in 0..300 {
+            let (len, density) = (rng.below(300), rng.below(9));
+            buffers.push(
+                (0..len)
+                    .map(|_| if rng.below(8) < density { 0 } else { b'x' })
+                    .collect(),
+            );
+        }
+        let mut checked = 0;
+        for buffer in buffers {
+            let bytes = Bytes::from(buffer.clone());
+            let mut strings = BlobStrings {
+                buffer: &bytes,
+                nuls: None,
+                common: None,
+                meter: &meter,
+                last_unknown: None,
+            };
+            let len = buffer.len();
+            let mut offsets: Vec<usize> = (0..len.min(300) + 3).collect();
+            offsets.extend([
+                len.saturating_sub(32_768),
+                len.saturating_sub(32_767),
+                len.saturating_sub(32_766),
+                32_766,
+                32_767,
+                32_768,
+                len + 100,
+                0x7FFF_FFFF,
+            ]);
+            for offset in offsets {
+                let value = u32::try_from(offset.min(0x7FFF_FFFF)).unwrap();
+                let want = py_string_to_null(&buffer, i128::from(value), STRING_TO_NULL_WINDOW)
+                    .map(|(range, _)| buffer[range].to_vec());
+                let got = strings.get(value).ok().map(|s| s.as_bytes().to_vec());
+                assert_eq!(got, want, "offset {value} of {len} bytes");
+                checked += 1;
+            }
+        }
+        assert!(checked > 40_000, "{checked}");
+    }
+
+    fn parse(data: &Bytes, limits: &Limits) -> (Result<usize, Error>, Arc<Meter>) {
+        let meter = Meter::for_input(limits, Arc::new(Unbounded), Reservation::Input);
+        let mut r = Reader::new(data, Endian::Little);
+        let got = parse_blob(&mut r, data, 22, &meter, limits, None).map(|rows| {
+            assert!(
+                rows.as_slice()
+                    .iter()
+                    .all(|row| row.ty.len() == 32_767 && row.name.len() == 32_767)
+            );
+            rows.len()
+        });
+        (got, meter)
+    }
+
+    /// Round 4: each row of a blob whose type and name are at offset 0 of a
+    /// 64 KiB string buffer with no NUL reads two 32,767-byte strings, and
+    /// the lookup searched the window for each, 6.5 x 10^9 bytes for 100,000
+    /// rows that no limit counted. Now the buffer is searched once, on the
+    /// first local string, and that one pass is all the work the rows count,
+    /// whatever their number or their strings' lengths; it is the open's
+    /// work, so an allowance below it refuses the blob.
+    #[test]
+    fn a_blobs_rows_search_its_string_buffer_once_whatever_their_strings() {
+        for rows in [1, 1_000, 100_000] {
+            let data = Bytes::from(unityrs_testkit::blob::no_nul_blob(rows, 65_536));
+            let (got, meter) = parse(&data, &Limits::default());
+            assert_eq!(got.unwrap(), rows);
+            assert_eq!(meter.decoded(), 65_536, "{rows} rows: the buffer, once");
+        }
+        let limits = Limits {
+            max_decode_work: 65_535,
+            ..Limits::default()
+        };
+        let data = Bytes::from(unityrs_testkit::blob::no_nul_blob(1_000, 65_536));
+        let (got, _) = parse(&data, &limits);
+        assert!(
+            matches!(got, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork
+                && l.value == 65_536 && l.max == 65_535),
+            "{got:?}"
+        );
+    }
+
+    /// `read_string_to_null` counts what its search reads as the open's
+    /// work: to and including the NUL, or the whole window where it finds
+    /// none.
+    #[test]
+    fn a_string_read_counts_the_bytes_its_search_reads() {
+        let mut data = vec![b'a'; 40_000];
+        data[9] = 0;
+        let data = Bytes::from(data);
+        let meter = Meter::unlimited();
+        let mut r = Reader::new(&data, Endian::Little);
+        assert_eq!(string_to_null(&mut r, &data, &meter).unwrap().len(), 9);
+        assert_eq!(meter.decoded(), 10);
+        assert_eq!(
+            string_to_null(&mut r, &data, &meter).unwrap().len(),
+            STRING_TO_NULL_WINDOW
+        );
+        assert_eq!(meter.decoded(), 10 + 32_767);
+        // Past the window's end there is no NUL and no more room: it raises,
+        // having searched the rest.
+        assert!(string_to_null(&mut r, &data, &meter).is_err());
+        assert_eq!(meter.decoded(), 40_000);
+    }
 }

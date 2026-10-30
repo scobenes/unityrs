@@ -187,6 +187,65 @@ fn type_ids_index_types_as_python_lists() {
     assert_eq!(f.object_infos()[0].class_id, 9);
 }
 
+/// Below 16 an object's type is the first type of its stored class, found
+/// by a scan of `types` in file order (`ObjectReader.py:91-97`, modelled
+/// here by `position`): with classes repeated and missing, every object gets
+/// the type the scan finds. The lookup is an index of the types built once,
+/// on the first object, and its 8 bytes per type are all the work the
+/// lookups count, whatever the number of objects (round 4's sweep: a scan
+/// per object was O x T steps no limit counted, and nothing was counted).
+#[test]
+fn old_format_objects_find_their_type_through_one_index() {
+    const CLASSES: [i32; 6] = [5, 3, 5, 7, 3, 1];
+    const STORED: [i32; 6] = [0, 1, 3, 5, 7, 9];
+    let file = |objects: usize| {
+        build(&SerializedSpec {
+            format: 15,
+            types: CLASSES
+                .iter()
+                .map(|&class_id| TypeSpec {
+                    class_id,
+                    nodes: tree(),
+                    ..TypeSpec::default()
+                })
+                .collect(),
+            objects: (0..objects)
+                .map(|i| ObjectSpec {
+                    path_id: i64::try_from(i).unwrap() + 1,
+                    type_id: STORED[i % STORED.len()],
+                    class_id: 2,
+                    data: vec![0; 4],
+                    ..ObjectSpec::default()
+                })
+                .collect(),
+            ..SerializedSpec::default()
+        })
+    };
+    let work = |objects: usize| {
+        let c = ctx();
+        let m = Meter::for_input(&c.limits, c.budget.clone(), Reservation::Input);
+        let f = SerializedFile::parse(
+            RawStr::from("CAB-t"),
+            Bytes::from(file(objects)),
+            None,
+            &m,
+            &c,
+        )
+        .unwrap();
+        for (i, o) in f.object_infos().iter().enumerate() {
+            let stored = STORED[i % STORED.len()];
+            let want = CLASSES.iter().position(|&c| c == stored);
+            assert_eq!(o.type_index, want, "object {i}, stored type id {stored}");
+            assert_eq!(o.class_id, 2);
+        }
+        m.decoded()
+    };
+    let none = work(0);
+    let index = u64::try_from(8 * CLASSES.len()).unwrap();
+    assert_eq!(work(1), none + index);
+    assert_eq!(work(6_000), none + index);
+}
+
 #[test]
 fn metadata_strings_are_kept_raw() {
     let spec = SerializedSpec {

@@ -134,3 +134,87 @@ pub fn v2() -> UnityVersion {
 pub fn limit_of(e: &ProviderError) -> LimitError {
     e.limit.unwrap_or_else(|| panic!("not a limit: {e}"))
 }
+
+/// The tables of a TPK's blob, as [`TpkError::TooLarge`] names their bounds.
+const TABLES: [&str; 7] = [
+    "versions",
+    "classes",
+    "class entries",
+    "common-string versions",
+    "common-string indices",
+    "nodes",
+    "strings",
+];
+
+/// Whether `e` is the provider's error for the exception `python` that
+/// UnityPy 1.25.2's walk raised (`generate_node`, `helpers/Tpk.py:58-88`):
+/// G7's porting rule, the same for every case. `NODES[node_id]` or
+/// `StringBuffer[...]` past its table raises `IndexError`, which the port
+/// gives as an error of no bound naming the table it ran past. Every other
+/// exception, and every other error, is no match: a walk error G7 meets that
+/// this rule does not list fails G7, so a new pair is a decision, not a
+/// pass (round 4: any error passed where UnityPy recorded one).
+#[must_use]
+pub fn walk_error_is_unitypys(python: &str, e: &ProviderError) -> bool {
+    let past_table = [
+        "IndexError: a node id past the node buffer",
+        "IndexError: a string id past the string buffer",
+    ];
+    match python {
+        "IndexError" => {
+            e.provider == TpkProvider::NAME && e.limit.is_none() && past_table.contains(&&*e.detail)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `e` is the port's refusal of a TPK on which UnityPy 1.25.2's
+/// load (`TpkFile(stream).GetDataBlob()`, `helpers/Tpk.py:145-240`) raised
+/// `python`: G7's porting rule for a load, the same for every case. Each
+/// exception maps to the errors the port gives where `Tpk.py` raises it; a
+/// table's bound ([`TpkError::TooLarge`]) refuses a count before the reads
+/// UnityPy runs out on, so it stands for the exception those reads raise.
+/// Every other pair is no match.
+#[must_use]
+pub fn load_error_is_unitypys(python: &str, e: &TpkError) -> bool {
+    let table = matches!(e, TpkError::TooLarge { what, .. } if TABLES.contains(what));
+    match (python, e) {
+        // `struct.error`: a read past the payload, or a negative count read
+        // as a struct format; `ValueError`: a string or a length read past
+        // the payload (a short LZMA payload among them);
+        // `UnicodeDecodeError`: a string's bytes run past the payload and
+        // decode short; `Exception`: `Tpk.py`'s own raise on the header (the
+        // magic, the version, the compressed size).
+        ("error" | "ValueError" | "UnicodeDecodeError" | "Exception", TpkError::Malformed(_)) => {
+            true
+        }
+        ("error" | "ValueError", TpkError::TooLarge { .. }) => table,
+        // python-lz4 and liblzma, by the class the port's message names.
+        ("LZ4BlockError" | "OverflowError", TpkError::Decompress { codec, detail }) => {
+            *codec == "lz4" && detail.split(':').next() == Some(python)
+        }
+        ("LZMAError", TpkError::Decompress { codec, detail }) => {
+            *codec == "lzma" && detail.split(':').next() == Some(python)
+        }
+        _ => false,
+    }
+}
+
+/// Asserts that `got` is UnityPy's load outcome for case `name`: loaded
+/// where `python` is `None`, else refused with the error the port gives for
+/// that exception ([`load_error_is_unitypys`]).
+#[track_caller]
+pub fn assert_load_is_unitypys(
+    name: &str,
+    python: Option<&str>,
+    got: &Result<TpkProvider, TpkError>,
+) {
+    match (python, got) {
+        (None, Ok(_)) => {}
+        (Some(python), Err(e)) => assert!(
+            load_error_is_unitypys(python, e),
+            "{name}: UnityPy raised {python}, unityrs {e:?}"
+        ),
+        (python, got) => panic!("{name}: UnityPy {python:?}, unityrs {got:?}"),
+    }
+}

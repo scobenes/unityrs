@@ -174,6 +174,25 @@ pub fn old_tree(nodes: &[NodeSpec], format: u32, big_endian: bool) -> Vec<u8> {
     w.into_inner()
 }
 
+/// A little-endian blob of format 19 and up whose `rows` rows each name
+/// offset 0 of a string buffer of `buffer` bytes `A` with no NUL for both
+/// their type and their name (round 4's input): every string is the
+/// 32,767-byte window where the buffer is longer, and raises where it is
+/// not. Each row is a level-0 node of byte size -1 and index `i`.
+#[must_use]
+pub fn no_nul_blob(rows: usize, buffer: usize) -> Vec<u8> {
+    let mut w = ByteWriter::le();
+    w.i32(len_i32(rows)).i32(len_i32(buffer));
+    for i in 0..rows {
+        // version, level, type flags, type, name, byte size, index, meta
+        // flag, ref type hash.
+        w.i16(1).u8(0).u8(0).u32(0).u32(0);
+        w.i32(-1).i32(len_i32(i)).i32(0).u64(0);
+    }
+    w.bytes(&vec![b'A'; buffer]);
+    w.into_inner()
+}
+
 /// Each row's parent under UnityPy's stack rule (`TypeTreeNode.from_list`):
 /// a row above the previous row's level nests under the previous row, a row
 /// at its level is its sibling, and a row below it pops to the nearest

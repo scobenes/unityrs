@@ -95,20 +95,32 @@
 //! the bound is refused, before it is walked, with a
 //! [`unityrs_core::LimitKind::Count`] limit naming the total it would reach
 //! (a root whose walk fails counts the rows it may build before it fails).
-//! So the provider never builds, and never holds, more than that bound of
-//! rows, however many classes an input asks for, and which roots it refuses
-//! depends on the TPK alone, never on the order of the requests. Each is a
-//! [`ProviderError`] whose `limit` names the bound. `PARITY.md` section 19.3
-//! lists every one.
+//! So the provider keeps no more than that bound of rows, however many
+//! classes an input asks for, and builds no more on any one thread; which
+//! roots it refuses depends on the TPK alone, never on the order of the
+//! requests. Each is a [`ProviderError`] whose `limit` names the bound.
+//! `PARITY.md` section 19.3 lists every one.
+//!
+//! **Threads.** The provider never waits (plan sections 3.16 and 4.1), so
+//! threads that ask for one release root before its first answer is
+//! published each walk it (and compile it, for a tree), and every one of
+//! them then gets the first answer published; the others are dropped with
+//! their charges. A thread walks a root at most once. So with T threads
+//! asking at once, the walks build at most T times
+//! [`TpkProvider::MAX_TOTAL_ROWS`] rows in all, and besides what is kept
+//! the provider holds at most one unpublished tree per asking thread, each
+//! at most one row past [`TpkProvider::MAX_TREE_ROWS`]
+//! (`provider::tests::racing_first_requests_walk_a_root_at_most_once_per_thread`).
 //!
 //! **Memory.** The TPK is the provider's, not an input's: its tables, rows,
 //! trees and kept errors are charged to the provider's own unlimited meter
 //! (plan section 3.15's constant per context; the bounds above are what
-//! bound it), the rows and tree of a release root built once, when first
-//! asked for, and kept. Each is computed with no lock held and published
-//! through [`unityrs_core::once::get_or_publish`]. A kept error's text is
-//! shared (`ProviderError::detail` is an `Arc<str>`), so the clone each
-//! later request gets allocates nothing.
+//! bound it), as are the file's bytes while it loads and the copy of a
+//! compressed payload its codec reads; the rows and tree of a release root
+//! are kept once first published. Each is computed with no lock held and
+//! published through [`unityrs_core::once::get_or_publish`]. A kept error's
+//! text is shared (`ProviderError::detail` is an `Arc<str>`), so the clone
+//! each later request gets allocates nothing.
 //!
 //! [`TypeTreeProvider`]: unityrs_core::provider::TypeTreeProvider
 //! [`TypeTreeProvider::common_strings`]: unityrs_core::provider::TypeTreeProvider::common_strings

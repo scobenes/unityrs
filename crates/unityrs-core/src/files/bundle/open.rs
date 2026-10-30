@@ -49,7 +49,7 @@ impl BundleFile {
             class,
             encrypted,
             block_alignment,
-        } = read_fs_header(&mut r, &data, ctx)?;
+        } = read_fs_header(&mut r, &data, meter, ctx)?;
         charge.grow(u64::try_from(engine.version.heap_bytes()).unwrap_or(u64::MAX))?;
         // :133-139
         let start = r.position();
@@ -186,13 +186,18 @@ struct FsHeader {
 
 /// `BundleFile.__init__` up to the signature dispatch, then `read_fs` up to
 /// the blocks-info section (`BundleFile.py:36-51`, `:93-131`); leaves `r` where
-/// blocks-info would start.
-fn read_fs_header(r: &mut Reader<'_>, data: &Bytes, ctx: &FileContext) -> Result<FsHeader, Error> {
+/// blocks-info would start. Its strings' searches are `meter`'s work.
+fn read_fs_header(
+    r: &mut Reader<'_>,
+    data: &Bytes,
+    meter: &Meter,
+    ctx: &FileContext,
+) -> Result<FsHeader, Error> {
     // UnityPy files/BundleFile.py:36-39
-    let signature = string_to_null(r, data)?;
+    let signature = string_to_null(r, data, meter)?;
     let format = r.read_u32()?;
-    let version_player = string_to_null(r, data)?;
-    let version_engine = string_to_null(r, data)?;
+    let version_player = string_to_null(r, data, meter)?;
+    let version_engine = string_to_null(r, data, meter)?;
     // :41-51
     match signature.as_bytes() {
         b"UnityArchive" => return Err(Error::Unsupported(Unsupported::UnityArchive)),
@@ -282,7 +287,7 @@ fn read_blocks_info(
         let offset = r.read_i64()?;
         let size = r.read_i64()?;
         let flags = r.read_u32()?;
-        let path = string_to_null(&mut r, info)?;
+        let path = string_to_null(&mut r, info, meter)?;
         directory.push(DirEntry {
             offset,
             size,

@@ -11,10 +11,10 @@
 
 use std::sync::Arc;
 
-use common::{Blob, V2, limit_of, limits, load, stored, v2};
+use common::{Blob, V2, assert_load_is_unitypys, limit_of, limits, load, stored, v2};
 use serde_json::Value as J;
 use unityrs_core::limits::Limits;
-use unityrs_core::provider::{TreeRequest, TypeTreeProvider};
+use unityrs_core::provider::{ProviderError, TreeRequest, TypeTreeProvider};
 use unityrs_core::typetree::NodeList;
 use unityrs_core::{LimitError, LimitKind, RawStr, UnityVersion};
 use unityrs_tpk::{TpkError, TpkProvider};
@@ -83,9 +83,13 @@ fn absent(case: &J) -> i64 {
 }
 
 /// The provider's answer for `class_id` at `v`, as UnityPy's outcome is
-/// recorded: its levels for a tree, `none` or `error`; the compiled tree
+/// recorded: its levels for a tree, `none`, or its error; the compiled tree
 /// must agree with the node list.
-fn answer(provider: &TpkProvider, class_id: i32, v: &UnityVersion) -> Result<Option<Vec<i32>>, ()> {
+fn answer(
+    provider: &TpkProvider,
+    class_id: i32,
+    v: &UnityVersion,
+) -> Result<Option<Vec<i32>>, ProviderError> {
     let tree = provider.tree(&TreeRequest {
         class_id,
         version: v,
@@ -97,13 +101,17 @@ fn answer(provider: &TpkProvider, class_id: i32, v: &UnityVersion) -> Result<Opt
             Ok(Some(levels(&list)))
         }
         (Ok(None), Ok(None)) => Ok(None),
-        (Err(_), Err(_)) => Err(()),
+        (Err(list), Err(tree)) => {
+            assert_eq!(list, tree, "class {class_id}: the tree's error");
+            Err(list)
+        }
         (list, tree) => panic!("class {class_id}: node list {list:?}, tree {tree:?}"),
     }
 }
 
-/// What UnityPy's outcome says [`answer`] gives.
-fn expected(outcome: &J) -> Result<Option<Vec<i32>>, ()> {
+/// What UnityPy's outcome says [`answer`] gives: the levels of its tree,
+/// `None`, or the name of the exception it raised.
+fn expected(outcome: &J) -> Result<Option<Vec<i32>>, String> {
     if let Some(rows) = outcome.get("rows") {
         let levels = rows.as_array().unwrap().iter();
         return Ok(Some(
@@ -115,8 +123,24 @@ fn expected(outcome: &J) -> Result<Option<Vec<i32>>, ()> {
     if outcome.get("none").is_some() {
         return Ok(None);
     }
-    assert!(outcome.get("error").is_some(), "{outcome}");
-    Err(())
+    Err(outcome["error"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{outcome}"))
+        .to_owned())
+}
+
+/// Whether the provider's answer is UnityPy's outcome: the same levels or
+/// none, or the error the port gives for UnityPy's exception
+/// ([`common::walk_error_is_unitypys`]).
+fn is_unitypys(
+    got: &Result<Option<Vec<i32>>, ProviderError>,
+    want: &Result<Option<Vec<i32>>, String>,
+) -> bool {
+    match (got, want) {
+        (Ok(got), Ok(want)) => got == want,
+        (Err(e), Err(python)) => common::walk_error_is_unitypys(python, e),
+        _ => false,
+    }
 }
 
 fn levels(list: &NodeList) -> Vec<i32> {
@@ -133,7 +157,11 @@ fn replay(name: &str) -> usize {
         for (at, v) in versions(&case).iter().enumerate() {
             let want = expected(&outcome(&case, class, at));
             let got = answer(&provider, i32::try_from(class).unwrap(), v);
-            assert_eq!(got, want, "{name}: class {class} at {:?}", v.packed());
+            assert!(
+                is_unitypys(&got, &want),
+                "{name}: class {class} at {:?}: UnityPy {want:?}, unityrs {got:?}",
+                v.packed()
+            );
             pairs += 1;
         }
     }
@@ -204,7 +232,7 @@ fn f3_negative_header_sizes_are_errors_and_huge_ones_fail_at_the_end() {
     for name in &names {
         let case = case(name);
         let got = open(&case);
-        assert_eq!(got.is_ok(), case["load"].is_null(), "{name}: {got:?}");
+        assert_load_is_unitypys(name, case["load"].as_str(), &got);
         if let Ok(provider) = got {
             assert_eq!(provider.class_count(), 9, "{name}");
             loaded += 1;
@@ -228,7 +256,7 @@ fn f3_negative_and_huge_counts_read_as_unitypy_reads_them_and_never_panic() {
             continue;
         }
         let got = open(&case);
-        assert_eq!(got.is_ok(), case["load"].is_null(), "{name}: {got:?}");
+        assert_load_is_unitypys(&name, case["load"].as_str(), &got);
         if let Ok(provider) = got {
             let count = case["class_count"].as_u64().unwrap();
             assert_eq!(
@@ -385,10 +413,15 @@ fn f4_a_300_deep_chain_gives_levels_0_to_299_when_the_depth_allows_and_an_error_
     let v = &versions(&case)[0];
     let provider = TpkProvider::from_bytes(&bytes, &limits(300)).unwrap();
     let want = expected(&outcome(&case, 1, 0));
-    assert_eq!(answer(&provider, 1, v), want);
+    assert_eq!(answer(&provider, 1, v).unwrap(), want.unwrap());
     for depth in [299, 256, 255, 1] {
         let provider = TpkProvider::from_bytes(&bytes, &limits(depth)).unwrap();
-        assert_eq!(answer(&provider, 1, v), Err(()), "depth {depth}");
+        let e = answer(&provider, 1, v).unwrap_err();
+        assert_eq!(
+            e.limit.map(|l| l.kind),
+            Some(LimitKind::TreeDepth),
+            "depth {depth}"
+        );
     }
     // A root alone fits a depth of 1: class 50 at 2019 is node 2, a leaf.
     let case = self::case("entries");

@@ -127,34 +127,61 @@ pub fn py_align(pos: i128, n: u32) -> i128 {
 /// (`streams/EndianBinaryReader.py:275-284`) at `pos` over `data`: the
 /// string's byte range and the new position, or `None` where it raises
 /// ("String not terminated"). `re.search(view, pos, pos + max_length)` clamps
-/// both bounds into `0..=len`, so a negative start searches from 0; a hit
-/// returns the bytes up to the first NUL in the window and sets the position
-/// after that NUL (an absolute index). With no NUL in the window it raises
-/// when `pos + max_length >= len`, and otherwise returns `read(max_length)`,
-/// a slice from `pos` that may hold a NUL or nothing at all. Implemented by
-/// the scaffold.
+/// both bounds into `0..=len` (`py_string_window`), so a negative start
+/// searches from 0; a hit returns the bytes up to the first NUL in the window
+/// and sets the position after that NUL (an absolute index). With no NUL in
+/// the window it raises when `pos + max_length >= len`, and otherwise returns
+/// `read(max_length)`, a slice from `pos` that may hold a NUL or nothing at
+/// all (`py_string_to_null_found`, which a caller that indexed the buffer's
+/// NULs answers with). Implemented by the scaffold.
 #[must_use]
 pub fn py_string_to_null(
     data: &[u8],
     pos: i128,
     max_length: usize,
 ) -> Option<(Range<usize>, i128)> {
-    let l = i128::try_from(data.len()).ok()?;
-    let max = i128::try_from(max_length).ok()?;
+    let window = py_string_window(data.len(), pos, max_length);
+    let nul = data
+        .get(window.clone())
+        .and_then(|w| w.iter().position(|b| *b == 0))
+        .map(|k| window.start + k);
+    py_string_to_null_found(data.len(), pos, max_length, nul)
+}
+
+/// The bytes [`py_string_to_null`] searches for its NUL at `pos` over `len`
+/// bytes: `re.search`'s window `pos..pos + max_length`, each bound clamped
+/// into `0..=len`, empty where the end falls before the start.
+#[must_use]
+pub(crate) fn py_string_window(len: usize, pos: i128, max_length: usize) -> Range<usize> {
+    let l = i128::try_from(len).unwrap_or(i128::MAX);
+    let max = i128::try_from(max_length).unwrap_or(i128::MAX);
     let clamp = |i: i128| usize::try_from(i.clamp(0, l)).unwrap_or(0);
     let start = clamp(pos);
-    let end = clamp(pos.saturating_add(max)).max(start);
-    if let Some(k) = data
-        .get(start..end)
-        .and_then(|w| w.iter().position(|b| *b == 0))
-    {
-        let nul = start + k;
+    start..clamp(pos.saturating_add(max)).max(start)
+}
+
+/// [`py_string_to_null`]'s answer once its search is done: `nul` is the
+/// first NUL in [`py_string_window`]'s window, as an index of the whole
+/// buffer, or `None` where the window holds none. A caller that knows where
+/// the NULs are (a typetree blob's string buffer, indexed once) answers
+/// every offset without searching it again.
+#[must_use]
+pub(crate) fn py_string_to_null_found(
+    len: usize,
+    pos: i128,
+    max_length: usize,
+    nul: Option<usize>,
+) -> Option<(Range<usize>, i128)> {
+    let l = i128::try_from(len).ok()?;
+    let max = i128::try_from(max_length).ok()?;
+    if let Some(nul) = nul {
+        let start = py_string_window(len, pos, max_length).start;
         return Some((start..nul, i128::try_from(nul).ok()? + 1));
     }
     if pos.saturating_add(max) >= l {
         return None;
     }
-    Some(py_read(data.len(), pos, i64::try_from(max_length).ok()?))
+    Some(py_read(len, pos, i64::try_from(max_length).ok()?))
 }
 
 /// What `read(N)` returns where UnityPy keeps the bytes as they are (a

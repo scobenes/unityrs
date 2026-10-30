@@ -24,7 +24,13 @@
 //! [`Meter::count_decode`]): the open's detections together inflate no more
 //! than that, and the one that passes it is refused
 //! ([`DetectError::Work`], which the container reports as the open's
-//! `LimitKind::DecodeWork` limit), as is every one after it.
+//! `LimitKind::DecodeWork` limit), as is every one after it. The bytes of
+//! the stream a detection reads count too, inflated or not: a header's file
+//! name or comment searched for its NUL, deflate input that inflates to
+//! nothing (empty blocks), each member's header and trailer, and the zero
+//! padding after it, all of which each row naming the stream reads again
+//! (round 4's sweep: a stream of one tiny member and a gigabyte of padding
+//! counted a few bytes per row).
 //!
 //! Owner: package C.
 
@@ -253,21 +259,71 @@ fn inflate_limit(total: u64, max_inflate: u64) -> DetectError {
     })
 }
 
+/// The bytes from `from` to `to`, as work.
+fn read_from(from: usize, to: usize) -> u64 {
+    u64::try_from(to.saturating_sub(from)).unwrap_or(u64::MAX)
+}
+
+/// `_read_gzip_header` from the magic at `*pos`, which it moves past the
+/// header, every byte of which, the file name's and comment's searches
+/// included, is counted as `open`'s work when there is one.
+fn member_header(data: &[u8], pos: &mut usize, open: Option<&Meter>) -> Result<(), DetectError> {
+    const FHCRC: u8 = 2;
+    const FEXTRA: u8 = 4;
+    const FNAME: u8 = 8;
+    const FCOMMENT: u8 = 16;
+    let member = *pos;
+    *pos += 2;
+    let head = read_exact(data, pos, 8)?;
+    let (method, flag) = (
+        head.first().copied().unwrap_or(0),
+        head.get(1).copied().unwrap_or(0),
+    );
+    if method != 8 {
+        return Err(gzip_error("BadGzipFile: Unknown compression method"));
+    }
+    if flag & FEXTRA != 0 {
+        let n = read_exact(data, pos, 2)?;
+        let n = u16::from_le_bytes([
+            n.first().copied().unwrap_or(0),
+            n.get(1).copied().unwrap_or(0),
+        ]);
+        read_exact(data, pos, usize::from(n))?;
+    }
+    for bit in [FNAME, FCOMMENT] {
+        if flag & bit != 0 {
+            // Up to and including a NUL, or to the end.
+            let rest = data.get(*pos..).unwrap_or_default();
+            *pos += rest
+                .iter()
+                .position(|b| *b == 0)
+                .map_or(rest.len(), |i| i + 1);
+        }
+    }
+    if let Some(meter) = open {
+        count_work(meter, read_from(member, *pos))?;
+    }
+    if flag & FHCRC != 0 {
+        read_exact(data, pos, 2)?;
+        if let Some(meter) = open {
+            count_work(meter, 2)?;
+        }
+    }
+    Ok(())
+}
+
 /// Inflates every member of a gzip file as Python 3.11's `gzip._GzipReader`
 /// reads it (`_read_gzip_header`, `read`, `_read_eof`), handing each output
 /// chunk to `sink`; returns the decompressed length. The header's FHCRC is
-/// skipped, not checked, as Python skips it. Each chunk is counted as
-/// `open`'s work when there is one (module docs, "Work").
+/// skipped, not checked, as Python skips it. Each chunk, and every byte of
+/// `data` read for it, is counted as `open`'s work when there is one
+/// (module docs, "Work").
 fn gzip_inflate(
     data: &[u8],
     max_inflate: u64,
     open: Option<&Meter>,
     mut sink: impl FnMut(&[u8]),
 ) -> Result<u64, DetectError> {
-    const FHCRC: u8 = 2;
-    const FEXTRA: u8 = 4;
-    const FNAME: u8 = 8;
-    const FCOMMENT: u8 = 16;
     if let Some(l) = open.and_then(Meter::work_used_up) {
         return Err(DetectError::Work(l));
     }
@@ -284,36 +340,7 @@ fn gzip_inflate(
         if !rest.starts_with(&GZIP_MAGIC) {
             return Err(gzip_error("BadGzipFile: Not a gzipped file"));
         }
-        pos += 2;
-        let head = read_exact(data, &mut pos, 8)?;
-        let (method, flag) = (
-            head.first().copied().unwrap_or(0),
-            head.get(1).copied().unwrap_or(0),
-        );
-        if method != 8 {
-            return Err(gzip_error("BadGzipFile: Unknown compression method"));
-        }
-        if flag & FEXTRA != 0 {
-            let n = read_exact(data, &mut pos, 2)?;
-            let n = u16::from_le_bytes([
-                n.first().copied().unwrap_or(0),
-                n.get(1).copied().unwrap_or(0),
-            ]);
-            read_exact(data, &mut pos, usize::from(n))?;
-        }
-        for bit in [FNAME, FCOMMENT] {
-            if flag & bit != 0 {
-                // Up to and including a NUL, or to the end.
-                let rest = data.get(pos..).unwrap_or_default();
-                pos += rest
-                    .iter()
-                    .position(|b| *b == 0)
-                    .map_or(rest.len(), |i| i + 1);
-            }
-        }
-        if flag & FHCRC != 0 {
-            read_exact(data, &mut pos, 2)?;
-        }
+        member_header(data, &mut pos, open)?;
         // The member's raw deflate stream.
         let input = data.get(pos..).unwrap_or_default();
         let mut z = Decompress::new(false);
@@ -334,9 +361,10 @@ fn gzip_inflate(
             let made = u64::try_from(made).unwrap_or(u64::MAX);
             total = total.saturating_add(made);
             // Counted before the stream's own bound is checked, so the
-            // chunk that passes `max_inflate` is the open's work too.
+            // chunk that passes `max_inflate` is the open's work too, with
+            // the input it consumed.
             if let Some(meter) = open {
-                count_work(meter, made)?;
+                count_work(meter, made.saturating_add(z.total_in() - in_before))?;
             }
             if total > max_inflate {
                 return Err(inflate_limit(total, max_inflate));
@@ -350,6 +378,7 @@ fn gzip_inflate(
             }
         }
         pos = pos.saturating_add(usize::try_from(z.total_in()).unwrap_or(usize::MAX));
+        let eof = pos;
         // `_read_eof`: the CRC-32 and the size modulo 2^32, then zero bytes.
         let trailer = read_exact(data, &mut pos, 8)?;
         let word = |i: usize| {
@@ -366,6 +395,9 @@ fn gzip_inflate(
         }
         while data.get(pos) == Some(&0) {
             pos += 1;
+        }
+        if let Some(meter) = open {
+            count_work(meter, read_from(eof, pos))?;
         }
     }
 }

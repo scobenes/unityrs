@@ -17,7 +17,7 @@ impl BlockCodec for Lz4 {
     /// `lz4.block.decompress(data, uncompressed_size)` (python-lz4 4.4.4
     /// over liblz4 1.9.4's `LZ4_decompress_safe`): a declared size above
     /// `i32::MAX` is python-lz4's `OverflowError`; otherwise the block is
-    /// scanned with liblz4's exact control flow ([`lz4_run`]), which gives
+    /// scanned with liblz4's exact control flow (`lz4_run`), which gives
     /// its verdict and the output's length, and only then is the output
     /// allocated (that length, charged) and decoded.
     fn decode(
