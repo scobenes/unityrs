@@ -3,8 +3,8 @@
 //! refusals that are not kept, decode work, no lock across caller code, the
 //! entries' weak parent handle, entry slicing as Python slices, and the
 //! input's meter over several files and hostile directories, the work an
-//! entry's parse counts, and what a read's search of its blocks and runs
-//! costs.
+//! entry's parse counts, what a read's search of its blocks and runs
+//! costs, and rows over a nested bundle whose scan fails.
 
 use std::sync::Arc;
 
@@ -19,6 +19,7 @@ mod entries;
 mod format;
 mod layout;
 mod memory;
+mod nested;
 mod outcomes;
 mod runs;
 mod work;

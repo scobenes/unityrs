@@ -2,6 +2,23 @@
 //! `decompress_data` (`BundleFile.py:509-521`): one block, or the
 //! blocks-info section, through its registered codec, decrypted first
 //! where UnityPy decrypts it.
+//!
+//! **The input is work.** A block's stored bytes count as the open's work
+//! ([`crate::limits::Limits::max_decode_work`]) before a decryptor or a codec
+//! reads them, whatever the decode then gives (round 6): LZ4 scans the whole
+//! block before it writes a byte ([`crate::codec::Lz4`]), so a block that
+//! fails at its end, or whose output the meter then refuses, wrote nothing
+//! and counted nothing, and every directory row over a nested bundle opened
+//! it again and scanned again, uncounted. The count is credit for what the
+//! decode writes ([`DecodeBuf::prepay`]), so a decode counts the larger of
+//! its block's stored bytes and its output: a compressed block that decodes
+//! counts its output, as before. The built-in stored codec reads nothing
+//! (it names its input), so a stored block counts what is copied from it,
+//! as before. The count is one checked add before the read
+//! ([`crate::limits::Meter::count_decode`]): a block the allowance cannot
+//! pay for is refused with [`LimitKind::DecodeWork`] unread, and a decode the
+//! budget or the allocator refuses gives back what its writes did not use
+//! (`reading`).
 
 use std::ops::Deref;
 use std::sync::Arc;
@@ -62,17 +79,19 @@ pub(super) fn decode_one(
 ) -> Result<Bytes, Error> {
     let mut out = DecodeBuf::new(meter, 0, u64::MAX, LimitKind::InputMemory)?;
     let (which, codec) = codec_for(ctx, flags)?;
-    let input = decrypted(ctx, meter, input, flags, which, index)?;
-    match decode_block(
-        which,
-        codec.as_ref(),
-        &input,
-        uncompressed,
-        &mut out,
-        ctx.limits.max_block_output,
-    )
-    .map_err(|e| with_codec(e, which))?
-    {
+    let decoded = reading(ctx, which, input.len(), &mut out, |out| {
+        let input = decrypted(ctx, meter, input, flags, which, index)?;
+        decode_block(
+            which,
+            codec.as_ref(),
+            &input,
+            uncompressed,
+            out,
+            ctx.limits.max_block_output,
+        )
+        .map_err(|e| with_codec(e, which))
+    })?;
+    match decoded {
         Some(slice) => Ok(slice),
         None => Ok(out.into_bytes()?),
     }
@@ -89,20 +108,54 @@ pub(super) fn decode_block_into(
     out: &mut DecodeBuf,
 ) -> Result<(), Error> {
     let (which, codec) = codec_for(ctx, flags)?;
-    let input = decrypted(ctx, meter, input, flags, which, index)?;
-    if let Some(slice) = decode_block(
-        which,
-        codec.as_ref(),
-        &input,
-        uncompressed,
-        out,
-        ctx.limits.max_block_output,
-    )
-    .map_err(|e| with_codec(e, which))?
-    {
-        out.extend_from_slice(&slice)?;
+    reading(ctx, which, input.len(), out, |out| {
+        let input = decrypted(ctx, meter, input, flags, which, index)?;
+        if let Some(slice) = decode_block(
+            which,
+            codec.as_ref(),
+            &input,
+            uncompressed,
+            out,
+            ctx.limits.max_block_output,
+        )
+        .map_err(|e| with_codec(e, which))?
+        {
+            out.extend_from_slice(&slice)?;
+        }
+        Ok(())
+    })
+}
+
+/// `decode`, which decrypts and decodes a block's `input` stored bytes
+/// into `out`, with the bytes counted as the open's work before it runs
+/// (module docs), as credit for what it writes ([`DecodeBuf::prepay`]): for
+/// every codec but the built-in stored one
+/// ([`crate::codec::Codecs::stores_as_is`]), which reads none. A decode
+/// that ends in the budget's or the allocator's refusal
+/// ([`Error::Budget`]) gives back the credit its writes did not use, as a
+/// refused growth counts nothing: that depends on what else the process
+/// held, and contention must not use up an open's allowance. Anything else
+/// the decode ends in keeps it, the input's own meter refusing included, as
+/// [`crate::once`] counts what such a refusal was granted.
+fn reading<T>(
+    ctx: &BlockContext,
+    which: Codec,
+    input: usize,
+    out: &mut DecodeBuf,
+    decode: impl FnOnce(&mut DecodeBuf) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let n = if which == Codec::None && ctx.codecs.stores_as_is() {
+        0
+    } else {
+        u64::try_from(input).unwrap_or(u64::MAX)
+    };
+    out.prepay(n)?;
+    let got = decode(out);
+    let unused = out.end_prepaid();
+    if matches!(got, Err(Error::Budget(_))) {
+        out.meter().uncount_decode(unused);
     }
-    Ok(())
+    got
 }
 
 /// The registered codec for `flags & 0x3F`: LZHAM and an unknown type

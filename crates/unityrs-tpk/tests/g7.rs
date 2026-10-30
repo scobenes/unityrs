@@ -194,7 +194,7 @@ fn compare<'r>(
     }
     // One record per class the provider holds, and one for a class it does
     // not; exactly the pairs UnityPy was asked for.
-    let ids: HashSet<i32> = provider.class_ids().into_iter().collect();
+    let ids: HashSet<i32> = provider.class_ids().collect();
     assert_eq!(ids.len(), class_count, "class ids");
     assert!(ids.is_subset(&seen), "a class without a record");
     assert_eq!(seen.len(), class_count + 1, "the records");

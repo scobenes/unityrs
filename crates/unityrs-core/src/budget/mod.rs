@@ -330,7 +330,9 @@ pub fn charged_bytes(buf: Vec<u8>, mut charge: Charge) -> Result<Bytes, ChargeEr
 /// and output written in small pieces count every byte (round 6: growths
 /// alone were counted, so all three decoded without bound). Room made ahead
 /// ([`Self::new`]'s `initial`, [`Self::reserve`]) is memory, charged, and
-/// counts as work only when it is written.
+/// counts as work only when it is written. Work counted ahead for what a
+/// decode reads (`prepay`, the bundle reader's) is credit its writes use
+/// first.
 ///
 /// **Drop.** A buffer dropped unfinished (a decode that failed) returns its
 /// charge with its allocation.
@@ -344,6 +346,8 @@ pub struct DecodeBuf {
     /// below the segment's start, so [`crate::codec::decode_block`] can see
     /// that a codec left its own segment (round 6).
     seg_epoch: u64,
+    /// Work counted ahead ([`Self::prepay`]) that no write has used yet.
+    prepaid: u64,
 }
 
 impl fmt::Debug for DecodeBuf {
@@ -375,6 +379,7 @@ impl DecodeBuf {
             seg_cap: cap,
             seg_kind: cap_kind,
             seg_epoch: 0,
+            prepaid: 0,
         };
         let initial = usize::try_from(initial.min(cap)).unwrap_or(usize::MAX);
         grow_charged(&mut out.buf, &mut out.charge, initial, initial)?;
@@ -388,6 +393,28 @@ impl DecodeBuf {
         self.seg_cap = cap;
         self.seg_kind = cap_kind;
         self.seg_epoch = self.seg_epoch.wrapping_add(1);
+    }
+
+    /// Counts `n` bytes as its meter's open's work now, in one checked add
+    /// ([`crate::limits::Meter::count_decode`]), before what they pay for
+    /// runs, and keeps them as credit for the next `n` bytes written into a
+    /// block's segment, which then count nothing more. The bundle reader
+    /// prepays a block's stored bytes before a codec reads them, so a decode
+    /// counts the larger of what it reads and what it writes, and one that
+    /// reads its whole block and fails before it writes still counts its
+    /// read (review round 6: an LZ4 scan that failed counted nothing). A
+    /// refusal ([`LimitKind::DecodeWork`]) counts nothing and leaves no
+    /// credit.
+    pub(crate) fn prepay(&mut self, n: u64) -> Result<(), ChargeError> {
+        self.charge.meter().count_decode(n)?;
+        self.prepaid = self.prepaid.saturating_add(n);
+        Ok(())
+    }
+
+    /// Ends [`Self::prepay`]'s credit: what no write used, which stays
+    /// counted unless the caller gives it back.
+    pub(crate) fn end_prepaid(&mut self) -> u64 {
+        std::mem::take(&mut self.prepaid)
     }
 
     /// The meter this buffer charges: a codec charges what it holds beside
@@ -470,13 +497,18 @@ impl DecodeBuf {
     /// ([`LimitKind::DecodeWork`]) writes and allocates nothing, and a growth
     /// the meter or the budget refuses counts no work, so a refusal leaves
     /// the input as it was and the same read succeeds once there is room.
+    /// Work already counted ahead ([`Self::prepay`]) pays for the bytes
+    /// first, and is used only by a write that is made.
     fn room_to_write(&mut self, n: usize) -> Result<(), ChargeError> {
         let work = if self.seg_kind == LimitKind::BlockOutput {
             u64::try_from(n).unwrap_or(u64::MAX)
         } else {
             0
         };
-        self.make_room(n, work)
+        let credit = work.min(self.prepaid);
+        self.make_room(n, work - credit)?;
+        self.prepaid -= credit;
+        Ok(())
     }
 
     fn make_room(&mut self, additional: usize, work: u64) -> Result<(), ChargeError> {

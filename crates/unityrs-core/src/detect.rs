@@ -456,13 +456,20 @@ pub enum ParsedAs {
 pub fn parsed_as(ty: FileType, name: &[u8], is_entry: bool) -> ParsedAs {
     // UnityPy helpers/ImportHelper.py:138-151; a zip input is refused before
     // `parse_file` (CANONICAL_DUMP.md section 4.2), an entry stays a reader.
-    const RAW_SUFFIXES: [&[u8]; 5] = [b".resS", b".resource", b".config", b".xml", b".dat"];
     match ty {
-        FileType::AssetsFile if RAW_SUFFIXES.iter().any(|s| name.ends_with(s)) => ParsedAs::Raw,
+        FileType::AssetsFile if raw_by_name(name) => ParsedAs::Raw,
         FileType::AssetsFile => ParsedAs::SerializedFile,
         FileType::BundleFile => ParsedAs::BundleFile,
         FileType::WebFile => ParsedAs::WebFile,
         FileType::Zip if !is_entry => ParsedAs::Zip,
         FileType::Zip | FileType::ResourceFile => ParsedAs::Raw,
     }
+}
+
+/// Whether `name` ends in one of the suffixes that keep an `AssetsFile` raw
+/// ([`parsed_as`]): the only part of a name that changes what `parse_file`
+/// builds from given bytes.
+pub(crate) fn raw_by_name(name: &[u8]) -> bool {
+    const RAW_SUFFIXES: [&[u8]; 5] = [b".resS", b".resource", b".config", b".xml", b".dat"];
+    RAW_SUFFIXES.iter().any(|s| name.ends_with(s))
 }

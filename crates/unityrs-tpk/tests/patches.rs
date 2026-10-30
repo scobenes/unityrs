@@ -197,7 +197,7 @@ fn f2_an_unknown_class_has_no_tree() {
                 case["name"]
             );
             let class = i32::try_from(class).unwrap();
-            assert!(!provider.class_ids().contains(&class));
+            assert!(!provider.class_ids().any(|c| c == class));
             assert_eq!(answer(&provider, class, v), Ok(None), "{}", case["name"]);
         }
         checked += usize::from(!versions.is_empty());
@@ -394,7 +394,7 @@ fn f4_a_class_lists_its_entries_and_each_release_tree_as_rows() {
         .filter(|&id| i64::from(id) != absent(&case))
         .collect();
     ids.sort_unstable();
-    assert_eq!(provider.class_ids(), ids);
+    assert_eq!(provider.class_ids().collect::<Vec<_>>(), ids);
     assert_eq!(provider.class_count(), ids.len());
     replay("entries");
     // An editor root alone (flags 64), at the entry's version: AssertionError.
@@ -534,7 +534,11 @@ fn f5_an_lzma_tpk_reads_as_its_payload_not_behind_zeros() {
     for name in ["lzma", "lzma_declared_zero", "lzma_declared_larger", "lz4"] {
         let case = case(name);
         let provider = open(&case).unwrap();
-        assert_eq!(provider.class_ids(), stored.class_ids(), "{name}");
+        assert_eq!(
+            provider.class_ids().collect::<Vec<_>>(),
+            stored.class_ids().collect::<Vec<_>>(),
+            "{name}"
+        );
         assert_eq!(provider.versions(), stored.versions(), "{name}");
         for class in stored.class_ids() {
             for v in stored.versions() {

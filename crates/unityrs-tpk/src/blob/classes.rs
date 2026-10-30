@@ -131,7 +131,7 @@ impl ClassInformation {
     }
 
     /// Every class's id, sorted.
-    pub(crate) fn ids(&self) -> impl Iterator<Item = i32> + '_ {
+    pub(crate) fn ids(&self) -> impl DoubleEndedIterator<Item = i32> + ExactSizeIterator + '_ {
         self.classes.as_slice().iter().map(|c| c.id)
     }
 

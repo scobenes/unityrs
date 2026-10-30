@@ -108,10 +108,13 @@
 //! published each walk it (and compile it, for a tree), and every one of
 //! them then gets the first answer published; the others are dropped with
 //! their charges. A thread walks a root at most once, unless the allocator
-//! refused that walk or its compile: a refusal is not kept
-//! ([`unityrs_core::once`]'s transient rule), so each later request for the
-//! root walks it again, on any thread, each walk bounded at one row past
-//! [`TpkProvider::MAX_TREE_ROWS`] (round 5). So with T threads asking at
+//! refused that walk: a refusal is not kept ([`unityrs_core::once`]'s
+//! transient rule), so each later request for the root walks it again, on
+//! any thread, each walk bounded at one row past
+//! [`TpkProvider::MAX_TREE_ROWS`] (round 5). A compile the allocator refused
+//! is not kept either, but the rows it compiled are: each later request
+//! compiles them again and walks nothing (review round 6: these docs said
+//! it walked the root again). So with T threads asking at
 //! once and no walk refused, the walks build at most T times
 //! [`TpkProvider::MAX_TOTAL_ROWS`] rows in all, and besides what is kept
 //! the provider holds at most one unpublished tree per asking thread, each
@@ -128,7 +131,12 @@
 //! compile the allocator refuses is the exception: that depends on what else
 //! the process held at that moment, not on the TPK or the request, so it is
 //! returned unkept, `ProviderError::memory` set (the meter's refusals are
-//! labelled `Reservation::Provider`), and the next request walks again. A
+//! labelled `Reservation::Provider`), and the next request computes it
+//! again: a refused walk is walked again, a refused compile compiled again
+//! from the rows its walk kept. So is a load: liblzma's own allocations (an
+//! LZMA payload's dictionary above all) that the allocator refuses are the
+//! load's `OutOfMemory` ([`TpkError::Io`]), as a growth of the provider's is,
+//! never a decode failure (round 6). A
 //! kept error's text is shared (`ProviderError::detail` is an `Arc<str>`),
 //! so the clone each later request gets allocates nothing.
 //!
@@ -169,7 +177,8 @@ pub(crate) const fn send_sync<T: Send + Sync + ?Sized>() {}
 #[non_exhaustive]
 pub enum TpkError {
     /// The file could not be read, or the memory for what it holds could not
-    /// be had (the allocator refused a growth: `OutOfMemory`).
+    /// be had (the allocator refused a growth, or liblzma's own allocation
+    /// of an LZMA payload's dictionary: `OutOfMemory`).
     #[error("reading the TPK: {0}")]
     Io(#[from] std::io::Error),
     /// Its header or its blob is malformed, where UnityPy raises too: a bad

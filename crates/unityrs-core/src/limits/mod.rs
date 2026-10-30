@@ -84,8 +84,10 @@ pub struct Limits {
     /// [`crate::once::get_or_publish_result`]); and the bytes a parse
     /// searches or indexes (a string's search, a typetree blob's one pass
     /// over its string buffer, an old-format file's type index:
-    /// `typetree::parse` and `files::serialized`), the bytes a bundle
-    /// entry's gzip detection reads and inflates (`detect`), and every byte
+    /// `typetree::parse` and `files::serialized`), every byte of a block a
+    /// codec reads beyond what it writes, counted before it reads it
+    /// (`files::bundle`: an LZ4 scan that fails writes nothing), the bytes a
+    /// bundle entry's gzip detection reads and inflates (`detect`), and every byte
     /// the meter granted an entry parse that ended in an error its cell
     /// keeps (`files::bundle`), all of which K directory rows over one span
     /// repeat K times (round 4); and the work of every read and write of an
