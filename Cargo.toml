@@ -22,3 +22,13 @@ missing_errors_doc = "allow"
 # allow of either lint or of `clippy::restriction`) can lower them again.
 todo = "forbid"
 unimplemented = "forbid"
+
+# Debug and test builds keep only file and line numbers (enough for panics and
+# backtraces), and dependencies none: full debug info made each build folder
+# 7-8 GB. To step through code in a debugger, set `debug = true` here while
+# doing so, and set it back after. Release builds already carry none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
