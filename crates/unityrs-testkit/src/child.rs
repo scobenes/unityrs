@@ -14,13 +14,15 @@
 //! signal. A test that kills a child itself (`std::process::Child::kill`)
 //! does not run it through here: that `SIGKILL` is the test's own doing.
 //!
-//! Every test in the workspace that runs a child process runs it through
-//! here: [`crate::stack`]'s and [`crate::address_space`]'s probes, the
-//! counting allocator's tally-panic probe, the `unityrs` binary's tests,
-//! the tests that run Python, `cargo`, `rustc`, `git` and `sh`. (Review
-//! round 7 gave the rule to [`crate::stack::run`] alone; review round 8
-//! found the rest failing on one kill under memory pressure.) A source scan
-//! keeps it so ([`direct_runs`]).
+//! Every Rust test in the workspace that runs a child process runs it
+//! through here: [`crate::stack`]'s and [`crate::address_space`]'s probes,
+//! the counting allocator's tally-panic probe, the `unityrs` binary's
+//! tests, the tests that run Python, `cargo`, `rustc`, `git` and `sh`.
+//! (Review round 7 gave the rule to [`crate::stack::run`] alone; review
+//! round 8 found the rest failing on one kill under memory pressure.) A
+//! source scan keeps it so ([`direct_runs`]). The Python suites and tools
+//! (`tools/`, `scripts/`) run theirs through `subprocess`, outside this
+//! rule.
 //!
 //! Owner: package B.
 
