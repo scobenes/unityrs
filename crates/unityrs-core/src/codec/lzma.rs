@@ -4,7 +4,7 @@
 use bytes::Bytes;
 
 use super::{BlockCodec, Codec, Decoded};
-use crate::budget::{BudgetExceeded, DecodeBuf, Reservation};
+use crate::budget::{DecodeBuf, Reservation};
 use crate::error::{Error, LimitKind};
 use crate::limits::{ChargeError, heap_cost};
 
@@ -128,10 +128,9 @@ fn failure(e: liblzma::stream::Error, produced: usize, held: u64, what: Reservat
     match e {
         liblzma::stream::Error::Data => LzmaFail::Data(produced),
         liblzma::stream::Error::Options => other("LZMAError: Invalid or unsupported options"),
-        liblzma::stream::Error::Mem => LzmaFail::Other(Error::Budget(BudgetExceeded {
-            requested: held,
-            what,
-        })),
+        liblzma::stream::Error::Mem => {
+            LzmaFail::Other(Error::Budget(crate::limits::refusal(held, what)))
+        }
         _ => other("LZMAError: Internal error"),
     }
 }
@@ -303,5 +302,24 @@ mod tests {
             failure(liblzma::stream::Error::Data, 3, 4096, Reservation::Input),
             LzmaFail::Data(3)
         ));
+    }
+
+    /// On a dependency's meter, liblzma's memory error is a refusal of the
+    /// dependency pool, counted as every other one is
+    /// (`crate::limits::pool_refusals`), which the Environment's retry tells
+    /// a refusal it already retried from a later one by (review round 8).
+    #[test]
+    fn liblzmas_memory_error_on_a_dependency_counts_as_a_pool_refusal() {
+        let before = crate::limits::pool_refusals();
+        let fail = failure(
+            liblzma::stream::Error::Mem,
+            3,
+            8 << 20,
+            Reservation::Dependency,
+        );
+        assert!(
+            matches!(&fail, LzmaFail::Other(Error::Budget(b)) if b.what == Reservation::Dependency)
+        );
+        assert_eq!(crate::limits::pool_refusals() - before, 1);
     }
 }

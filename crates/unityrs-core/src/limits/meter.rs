@@ -1,14 +1,16 @@
 //! The [`Meter`] of one open of an input, the memory account every open of
 //! the input shares, what each lazy computation was granted on its own thread
-//! ([`GrantScope`]), and the [`Charge`] each grant is.
+//! ([`GrantScope`]), the [`Charge`] each grant is, and how many refusals of
+//! the dependency pool each thread met ([`pool_refusals`]).
 
+use std::cell::Cell;
 use std::fmt;
 use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{ChargeError, Limits, heap_cost};
-use crate::budget::{MemoryBudget, Permit, Reservation, Unbounded};
+use crate::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation, Unbounded};
 use crate::error::{LimitError, LimitKind};
 
 /// The bytes an `Arc` of a `T` of `size` bytes asks for: the value and the
@@ -280,7 +282,7 @@ impl Meter {
             .try_reserve(bytes, account.what)
             .map_err(|e| {
                 self.refund(bytes);
-                ChargeError::Budget(e)
+                ChargeError::Budget(counted(e))
             })?;
         let _ = self
             .granted
@@ -300,6 +302,36 @@ impl Meter {
                 Some(used.saturating_sub(bytes))
             });
     }
+}
+
+thread_local! {
+    /// How many refusals of [`Reservation::Dependency`] this thread met
+    /// ([`pool_refusals`]).
+    static POOL_REFUSALS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// How many refusals of the dependency pool ([`Reservation::Dependency`])
+/// this thread has met: the budget's, and an allocation refused on a
+/// dependency's meter ([`refusal`]). The Environment's one retry of a pool
+/// refusal tells by it whether the refusal it holds is one a retry already
+/// met, or a later one (`env::registry::with_room`).
+pub(crate) fn pool_refusals() -> u64 {
+    POOL_REFUSALS.with(Cell::get)
+}
+
+/// `e`, counted in [`pool_refusals`] when it refuses the dependency pool.
+fn counted(e: BudgetExceeded) -> BudgetExceeded {
+    if e.what == Reservation::Dependency {
+        POOL_REFUSALS.with(|n| n.set(n.get().wrapping_add(1)));
+    }
+    e
+}
+
+/// The refusal of `requested` bytes for `what` that the core makes itself
+/// (an allocation the allocator refused after the budget granted it),
+/// counted as a budget's is ([`pool_refusals`]).
+pub(crate) fn refusal(requested: u64, what: Reservation) -> BudgetExceeded {
+    counted(BudgetExceeded { requested, what })
 }
 
 /// How many lazy computations one thread tracks at once ([`GrantScope`]):

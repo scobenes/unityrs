@@ -15,7 +15,7 @@ use unityrs_core::env::{EnvOptions, LoadMode, Source};
 use unityrs_core::{FileContext, RawStr};
 use unityrs_testkit::env::dependency_scenes;
 
-use super::run::{Run, load, ops};
+use super::run::{Run, dep_objects, load, ops};
 
 /// The recorded dependency scenes: each one's name and steps.
 fn recorded() -> Vec<(String, Vec<J>)> {
@@ -48,8 +48,10 @@ fn option_sets() -> Vec<(&'static str, EnvOptions)> {
 }
 
 /// The core's steps for one recorded dependency scene: its loads, a
-/// dependency's through `Environment::load_dependency`, then the steps
-/// `Run` takes.
+/// dependency's through `Environment::load_dependency` (whose handle the
+/// replay holds, as a caller that reads from a dependency's files holds
+/// its container), then the steps `Run` takes, and the dereferences and
+/// resource reads from the dependencies' objects.
 fn replay(name: &str, steps: &[J], mode: LoadMode, options: EnvOptions) -> (Vec<J>, u64) {
     let (_, d) = dependency_scenes()
         .into_iter()
@@ -57,21 +59,31 @@ fn replay(name: &str, steps: &[J], mode: LoadMode, options: EnvOptions) -> (Vec<
         .unwrap();
     let run = Run::with(d.scene.clone(), mode, options);
     let mut out = Vec::new();
+    let mut held = Vec::new();
     for op in ops(steps) {
-        if op[0] == "load_dependency" {
-            let i = usize::try_from(op[1].as_u64().unwrap()).unwrap();
-            let (file, data) = &d.scene.files[i];
-            let loaded = run.env.load_dependency(Source::Bytes {
-                name: RawStr::new(file.clone()),
-                data: unityrs_core::Bytes::from(data.clone()),
-            });
-            let mut s = run.state();
-            s["op"] = op.clone();
-            s["result"] = json!(if loaded.is_ok() { "ok" } else { "error" });
-            out.push(s);
-        } else {
-            out.push(run.step(&op));
-        }
+        let result = match op[0].as_str().unwrap() {
+            "load_dependency" => {
+                let i = usize::try_from(op[1].as_u64().unwrap()).unwrap();
+                let (file, data) = &d.scene.files[i];
+                let loaded = run.env.load_dependency(Source::Bytes {
+                    name: RawStr::new(file.clone()),
+                    data: unityrs_core::Bytes::from(data.clone()),
+                });
+                let ok = loaded.is_ok();
+                held.extend(loaded);
+                json!(if ok { "ok" } else { "error" })
+            }
+            "dep_derefs" => run.derefs_of(dep_objects(&held)),
+            "dep_resources" => run.resources_of(dep_objects(&held)),
+            _ => {
+                out.push(run.step(&op));
+                continue;
+            }
+        };
+        let mut s = run.state();
+        s["op"] = op.clone();
+        s["result"] = result;
+        out.push(s);
     }
     (out, run.env.stats().dependencies_evicted)
 }

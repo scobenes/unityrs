@@ -230,7 +230,11 @@ impl Environment {
     /// dependency, listed in `files` under the source's name with
     /// `keep_resolver_loads`; a resource fallback's (`asked` is the name it
     /// asked for) is a caller's load under that name with
-    /// `keep_resolver_loads`, and a dependency without it.
+    /// `keep_resolver_loads`, and a dependency without it. A dependency's
+    /// listing is charged to its meter, so it is part of the load the pool
+    /// may refuse and retry ([`Self::load_dep`]): a second run loads and
+    /// lists again (review round 8: a refused listing failed the load,
+    /// whose file then stayed registered and unlisted).
     pub(super) fn load_resolved(
         &self,
         source: &Source,
@@ -242,13 +246,16 @@ impl Environment {
             Some(name) => self.load_dep(name, source),
             None => {
                 let name = source_name(source);
-                let file = self.load_dep(&name, source)?;
-                if keep {
+                if !keep {
+                    return self.load_dep(&name, source);
+                }
+                with_room(Some(&self.inner.cache), None, || {
+                    let file = self.try_load_dep(&name, source)?;
                     let meter = file.meter().clone();
                     let key = RawStr::charged(name.as_bytes(), &meter)?;
                     self.list(key, file.clone(), true, &meter)?;
-                }
-                Ok(file)
+                    Ok(file)
+                })
             }
         }
     }

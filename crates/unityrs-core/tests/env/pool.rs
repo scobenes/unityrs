@@ -1,23 +1,32 @@
-//! The dependency pool's refusals (plan section 3.13): a dependency read or
-//! registration the pool refuses evicts the other cached dependencies and
-//! is tried once more, whichever step of a call makes it, under both modes
-//! (review round 7: under `LoadMode::Lazy` the container pass's reach of an
-//! evicted dependency's nested container opened it again with no retry, so
-//! a pool with room for one open failed every `container()` and
-//! `container_path` where `Eager` made room and succeeded).
+//! The dependency pool's refusals (plan section 3.13): every Environment
+//! call that reads or registers through a dependency's meter, when the pool
+//! refuses it, evicts the other cached dependencies and is tried once more,
+//! whichever step of the call makes the refusal, under both modes (review
+//! round 7: under `LoadMode::Lazy` the container pass's reach of an evicted
+//! dependency's nested container opened it again with no retry, so a pool
+//! with room for one open failed every `container()` and `container_path`
+//! where `Eager` made room and succeeded; review round 8: a dereference or a
+//! resource read from a dependency's file took no retry, nor did a lookup
+//! whose key was charged to a dependency's meter).
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde_json::Value as J;
+use serde_json::{Value as J, json};
 use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
 use unityrs_core::container::ContainerPath;
-use unityrs_core::env::{Cab, EnvOptions, Environment, LoadMode, Source};
+use unityrs_core::env::{Cab, CabResolver, EnvOptions, Environment, LoadMode, PPtr, Source};
+use unityrs_core::files::{File, SerializedFile};
+use unityrs_core::limits::Meter;
 use unityrs_core::object::ObjectRef;
+use unityrs_core::value::Value;
 use unityrs_core::{Bytes, RawStr};
-use unityrs_testkit::env::{DepScene, dependency_scenes};
+use unityrs_testkit::env::{
+    DepScene, Scene, bundle, dependency_reads, dependency_scenes, res_bytes,
+};
 
-use crate::{ctx_with, unlimited};
+use crate::{DepPool, ctx_with};
 
 /// A budget that grants every reservation but one: the `n`-th dependency
 /// reservation after it is armed with `n` ([`Self::arm`]), refused once.
@@ -59,10 +68,11 @@ impl MemoryBudget for RefuseOnce {
 }
 
 /// What UnityPy 1.25.2 recorded for dependency scene `name`
-/// (`tests/fixtures/d/env.json`, `tools/fixtures/env.py`): the container's
-/// rows, and `obj.container` of each object of the files it did not load
-/// as dependencies.
-fn oracle(name: &str) -> (J, J) {
+/// (`tests/fixtures/d/env.json`, `tools/fixtures/env.py`): the result of
+/// its step `op` (the container's rows, `obj.container` of each object of
+/// the files it did not load as dependencies, and each pointer and resource
+/// of the objects of those it did).
+fn oracle(name: &str, op: &str) -> J {
     let doc: J = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/d/env.json"
@@ -74,93 +84,262 @@ fn oracle(name: &str) -> (J, J) {
         .iter()
         .find(|s| s["name"] == name)
         .unwrap();
-    let step = |op: &str| {
-        scene["steps"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|s| s["op"][0] == op)
-            .unwrap()["result"]
-            .clone()
-    };
-    (step("container"), step("paths"))
+    scene["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["op"][0] == op)
+        .unwrap()["result"]
+        .clone()
 }
 
-/// An Environment with `batch()` options on `budget`, in `mode`, with a
-/// dependency cache of `cache` bytes.
-fn batch_env(mode: LoadMode, cache: u64, budget: &Arc<RefuseOnce>) -> Environment {
-    let mut options = EnvOptions::batch(ctx_with(budget.clone()));
-    options.load = mode;
-    options.dep_cache_bytes = cache;
+/// UnityPy's `env.path` for the scenes here: a file of exactly the name
+/// asked (no scene's pointer or resource candidate is the end of another
+/// resolver file's name), keyed `@/<name>` as `env.py` writes its folder.
+#[derive(Debug)]
+struct Files(Vec<(Vec<u8>, Bytes)>);
+
+impl CabResolver for Files {
+    fn resolve(&self, name: &[u8]) -> Option<Source> {
+        let (n, data) = self.0.iter().find(|(n, _)| n == name)?;
+        let mut key = b"@/".to_vec();
+        key.extend_from_slice(n);
+        Some(Source::Bytes {
+            name: RawStr::new(key),
+            data: data.clone(),
+        })
+    }
+}
+
+/// The options a sweep runs under: `batch()`'s, in `mode`, with a cache of
+/// `cache` bytes, keeping the resolver's loads in `files` with `keep` (a
+/// `find_file` load then lists its file, charged to its meter).
+#[derive(Clone, Copy, Debug)]
+struct Setup {
+    mode: LoadMode,
+    cache: u64,
+    keep: bool,
+}
+
+/// Both modes, each with a cache that evicts a dependency at each
+/// dependency load, one that never does, and the first keeping the
+/// resolver's loads.
+fn setups() -> Vec<Setup> {
+    let mut out = Vec::new();
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        for (cache, keep) in [(1, false), (u64::MAX, false), (1, true)] {
+            out.push(Setup { mode, cache, keep });
+        }
+    }
+    out
+}
+
+/// An Environment of `s` on `budget`, the resolver serving `scene`'s files.
+fn batch_env(s: Setup, budget: Arc<dyn MemoryBudget>, scene: &Scene) -> Environment {
+    let mut options = EnvOptions::batch(ctx_with(budget));
+    options.load = s.mode;
+    options.dep_cache_bytes = s.cache;
+    options.keep_resolver_loads = s.keep;
+    let files = scene
+        .resolver
+        .iter()
+        .map(|(n, d)| (n.clone(), Bytes::from(d.clone())))
+        .collect();
+    options.resolver = Some(Arc::new(Files(files)));
     Environment::new(options)
 }
 
 /// Loads scene `d`'s files in order, a dependency's through
-/// `load_dependency`.
-fn load(env: &Environment, d: &DepScene) -> Result<(), String> {
+/// `load_dependency`: the dependencies' handles, which the caller of a read
+/// from a dependency's file holds.
+fn load(env: &Environment, d: &DepScene) -> Result<Vec<File>, String> {
+    let mut held = Vec::new();
     for (i, (name, data)) in d.scene.files.iter().enumerate() {
         let source = Source::Bytes {
             name: RawStr::new(name.clone()),
             data: Bytes::from(data.clone()),
         };
-        let loaded = if d.dependencies.contains(&i) {
-            env.load_dependency(source)
+        if d.dependencies.contains(&i) {
+            held.push(env.load_dependency(source).map_err(|e| e.to_string())?);
         } else {
-            env.load(source)
-        };
-        drop(loaded.map_err(|e| e.to_string())?);
+            drop(env.load(source).map_err(|e| e.to_string())?);
+        }
     }
-    Ok(())
+    Ok(held)
 }
 
-/// The objects of `CAB-F`, the scenes' one file whose objects `env.objects`
-/// lists.
-fn objects(env: &Environment) -> Vec<ObjectRef> {
-    let Some(Cab::Serialized(sf)) = env.get_cab(&RawStr::from("CAB-F"), &unlimited()).unwrap()
-    else {
-        panic!("CAB-F");
-    };
-    sf.objects().collect()
+/// Every object of the dependencies' files (`held`, in load order), as
+/// `env.py`'s `dep_objects` walks UnityPy's: a bundle's entries in
+/// directory order, a nested bundle's in place.
+fn dep_objects(held: &[File]) -> Vec<ObjectRef> {
+    fn walk(file: &File, out: &mut Vec<ObjectRef>) {
+        match file {
+            File::Serialized(sf) => out.extend(sf.objects()),
+            File::Bundle(b) => {
+                for i in 0..b.directory().len() {
+                    walk(&b.entry(i).unwrap(), out);
+                }
+            }
+            File::Web(_) | File::Raw(_) => {}
+        }
+    }
+    let mut out = Vec::new();
+    for f in held {
+        walk(f, &mut out);
+    }
+    out
 }
 
-/// What each key of the registry answers, looked up by name.
-fn lookups(env: &Environment, keys: &[String]) -> Vec<String> {
-    keys.iter()
-        .map(
-            |k| match env.get_cab(&RawStr::from(k.as_str()), &unlimited()) {
-                Ok(Some(Cab::Serialized(sf))) => format!("{k}: {}", sf.name()),
-                Ok(Some(Cab::Raw(_))) => format!("{k}: raw"),
-                Ok(None) => format!("{k}: none"),
-                Err(e) => format!("{k}: {e}"),
-            },
-        )
+/// Every pointer of the dependencies' named objects, with its file.
+fn pointers(held: &[File]) -> Vec<(Arc<SerializedFile>, PPtr)> {
+    let mut out = Vec::new();
+    for o in dep_objects(held).iter().filter(|o| o.class_id() == 1) {
+        let p = o.parse_as_dict(true).unwrap();
+        let Value::Dict(m) = p.value() else { continue };
+        for (k, v) in p.entries(m) {
+            let Value::Dict(fields) = v else { continue };
+            if !k.starts_with(b"m_Ptr") {
+                continue;
+            }
+            let int = |name: &[u8]| p.field(fields, name).unwrap().as_i64().unwrap();
+            let file_id = i32::try_from(int(b"m_FileID")).unwrap();
+            let path_id = int(b"m_PathID");
+            out.push((o.file().clone(), PPtr { file_id, path_id }));
+        }
+    }
+    out
+}
+
+/// A resource read from a dependency's file: the file, the path, the offset
+/// and the size.
+type Stream = (Arc<SerializedFile>, RawStr, u64, u64);
+
+/// Every resource of the dependencies' textures.
+fn streams(held: &[File]) -> Vec<Stream> {
+    let mut out = Vec::new();
+    for o in dep_objects(held).iter().filter(|o| o.class_id() == 28) {
+        let p = o.parse_as_dict(true).unwrap();
+        let Some(Value::Str(path)) = p.get(&[b"m_StreamData", b"path"]) else {
+            panic!("no path");
+        };
+        let at = |k: &[u8]| p.get(&[b"m_StreamData", k]).unwrap().as_u64().unwrap();
+        out.push((o.file().clone(), path.clone(), at(b"offset"), at(b"size")));
+    }
+    out
+}
+
+fn text(b: &[u8]) -> J {
+    J::from(String::from_utf8_lossy(b).into_owned())
+}
+
+/// Every pointer of `ptrs` dereferenced.
+fn derefs(
+    env: &Environment,
+    ptrs: &[(Arc<SerializedFile>, PPtr)],
+) -> Vec<Result<ObjectRef, String>> {
+    ptrs.iter()
+        .map(|(f, p)| env.deref(f, *p).map_err(|e| e.to_string()))
         .collect()
 }
 
-/// The container's rows and each object's path, as the fixture writes them.
-fn answers(env: &Environment, objects: &[ObjectRef]) -> Result<(J, J), String> {
-    let text = |b: &[u8]| J::from(String::from_utf8_lossy(b).into_owned());
+/// Every resource of `streams` read.
+fn reads(env: &Environment, streams: &[Stream]) -> Vec<Result<Bytes, String>> {
+    streams
+        .iter()
+        .map(|(f, path, offset, size)| {
+            env.resource(f, path, *offset, *size)
+                .map_err(|e| e.to_string())
+        })
+        .collect()
+}
+
+/// What the dereferences reached, as `env.py` writes it: each target's file
+/// name (UnityPy's basename), its path id, class id and `m_Name`.
+fn targets(got: &[Result<ObjectRef, String>]) -> J {
+    let target = |t: &Result<ObjectRef, String>| {
+        let t = match t {
+            Ok(t) => t,
+            Err(e) => return J::from(format!("core: {e}")),
+        };
+        let name = t.file().name().as_bytes();
+        let base = &name[name.iter().rposition(|&c| c == b'/').map_or(0, |i| i + 1)..];
+        let p = t.parse_as_dict(true).unwrap();
+        let Some(Value::Str(m_name)) = p.get(&[b"m_Name"]) else {
+            panic!("no name");
+        };
+        json!([
+            text(base),
+            t.path_id(),
+            t.class_id(),
+            text(m_name.as_bytes())
+        ])
+    };
+    J::from(got.iter().map(target).collect::<Vec<_>>())
+}
+
+/// The resource reads, as `env.py` writes them.
+fn hex(got: &[Result<Bytes, String>]) -> J {
+    let one = |r: &Result<Bytes, String>| match r {
+        Ok(b) => J::from(b.iter().fold(String::new(), |mut s, x| {
+            let _ = write!(s, "{x:02x}");
+            s
+        })),
+        Err(e) => J::from(format!("core: {e}")),
+    };
+    J::from(got.iter().map(one).collect::<Vec<_>>())
+}
+
+/// What each key of the registry answers, looked up by name in upper case
+/// (a key the lookup lowers, charged to `meter`) through `get_cab` and
+/// `find_file`.
+fn lookups(env: &Environment, keys: &[String], meter: &Arc<Meter>) -> Vec<String> {
+    let answer = |k: &str, found: Result<Option<Cab>, _>| match found {
+        Ok(Some(Cab::Serialized(sf))) => format!("{k}: {}", sf.name()),
+        Ok(Some(Cab::Raw(_))) => format!("{k}: raw"),
+        Ok(None) => format!("{k}: none"),
+        Err(e) => format!("{k}: {e}"),
+    };
+    let mut out = Vec::new();
+    for k in keys {
+        let name = RawStr::from(k.to_uppercase().as_str());
+        out.push(answer(k, env.get_cab(&name, meter)));
+        out.push(answer(k, env.find_file(&name, meter)));
+    }
+    out
+}
+
+/// The container's rows and each of `objects`' path, as the fixture writes
+/// them.
+fn answers(env: &Environment, objects: &[ObjectRef]) -> J {
     let mut rows = Vec::new();
-    for item in env.container().map_err(|e| e.to_string())? {
-        let r = item.map_err(|e| e.to_string())?.row;
+    let items = match env.container() {
+        Ok(items) => items,
+        Err(e) => return J::from(format!("core: {e}")),
+    };
+    for item in items {
+        let r = match item {
+            Ok(item) => item.row,
+            Err(e) => return J::from(format!("core: {e}")),
+        };
         let int = |v: Option<i128>| J::from(v.and_then(|v| i64::try_from(v).ok()));
-        rows.push(J::from(vec![
+        rows.push(json!([
             r.path.map_or(J::Null, |p| text(p.as_bytes())),
             int(r.preload_index),
             int(r.preload_size),
             int(r.file_id),
-            int(r.path_id),
+            int(r.path_id)
         ]));
     }
     let mut paths = Vec::new();
     for o in objects {
-        paths.push(match env.container_path(o).map_err(|e| e.to_string())? {
-            None => J::Null,
-            Some(ContainerPath::Str(s)) => text(s.as_bytes()),
-            Some(ContainerPath::NotAString) => J::from("<not a str>"),
+        paths.push(match env.container_path(o) {
+            Ok(None) => J::Null,
+            Ok(Some(ContainerPath::Str(s))) => text(s.as_bytes()),
+            Ok(Some(ContainerPath::NotAString)) => J::from("<not a str>"),
+            Err(e) => return J::from(format!("core: {e}")),
         });
     }
-    Ok((J::from(rows), J::from(paths)))
+    json!([rows, paths])
 }
 
 /// Which calls a sweep refuses a reservation of.
@@ -168,86 +347,177 @@ fn answers(env: &Environment, objects: &[ObjectRef]) -> Result<(J, J), String> {
 enum Phase {
     /// The scene's loads.
     Loads,
-    /// A lookup by name of every key.
+    /// A lookup by name of every key, charged to a dependency's meter.
     Lookups,
     /// The container pass and `container_path`.
     Pass,
+    /// Every pointer of the dependencies' objects dereferenced.
+    Derefs,
+    /// Every resource of the dependencies' objects read.
+    Resources,
+}
+
+const PHASES: [Phase; 5] = [
+    Phase::Loads,
+    Phase::Lookups,
+    Phase::Pass,
+    Phase::Derefs,
+    Phase::Resources,
+];
+
+/// What a phase's calls returned, before it is written as the fixture
+/// writes it.
+enum Got {
+    Json(J),
+    Targets(Vec<Result<ObjectRef, String>>),
+    Reads(Vec<Result<Bytes, String>>),
+}
+
+/// One run of `phase` on scene `d` under `s`, with the `k`-th dependency
+/// reservation of the phase refused once (none for `None`): its answer,
+/// the dependency reservations the phase made, and how many were refused.
+/// What a phase reads first (the objects, their pointers and resources) is
+/// read before the refusal is armed, and its answer is written after it is
+/// disarmed, so the reservations swept are the Environment calls' alone.
+fn run(phase: Phase, s: Setup, d: &DepScene, keys: &[String], k: Option<u64>) -> (J, u64, u64) {
+    let budget = Arc::new(RefuseOnce::default());
+    let env = batch_env(s, budget.clone(), &d.scene);
+    let arm = || budget.arm(k.unwrap_or(0));
+    if phase == Phase::Loads {
+        arm();
+    }
+    let at = budget.asked();
+    let held = load(&env, d).unwrap_or_else(|e| panic!("{phase:?} {s:?} {k:?}: {e}"));
+    let loads = budget.asked() - at;
+    let objects: Vec<ObjectRef> = env.objects().map(Result::unwrap).collect();
+    let (ptrs, res) = (pointers(&held), streams(&held));
+    let meter = held[0].meter().clone();
+    if phase != Phase::Loads {
+        arm();
+    }
+    let at = budget.asked();
+    let got = match phase {
+        Phase::Loads | Phase::Pass => Got::Json(answers(&env, &objects)),
+        Phase::Lookups => Got::Json(json!(lookups(&env, keys, &meter))),
+        Phase::Derefs => Got::Targets(derefs(&env, &ptrs)),
+        Phase::Resources => Got::Reads(reads(&env, &res)),
+    };
+    let asked = match phase {
+        Phase::Loads => loads,
+        _ => budget.asked() - at,
+    };
+    budget.arm(0);
+    let answer = match got {
+        Got::Json(j) => j,
+        Got::Targets(t) => targets(&t),
+        Got::Reads(r) => hex(&r),
+    };
+    (answer, asked, budget.refused.load(Ordering::Acquire))
 }
 
 /// Every dependency reservation of each phase (the scene's loads, a lookup
-/// by name of every key, the container pass with `container_path`) refused
-/// once in turn, on each dependency scene, under both modes, with a cache
-/// that evicts a dependency at each dependency load and one that never
-/// does: the loads and the pass end in UnityPy's container rows and paths,
-/// and the lookups answer as they do with nothing refused (no answer is an
-/// error). The `k`-th reservation of a run whose first `k - 1` were granted
-/// is the `k`-th of the run that counted them, so each is refused once. The
-/// reach's reopen without a retry fails the pass's first reservation under
-/// `Lazy`; a retry that looks only for a bare refusal fails an `Eager` pass
-/// whose reopen's entry parse is refused (the entry's error wraps it); a
-/// dependency's table walk without one fails under both modes.
+/// by name of every key charged to a dependency's meter, the container pass
+/// with `container_path`, and a dereference of every pointer and a read of
+/// every resource of the dependencies' objects) refused once in turn, on
+/// each dependency scene, under both modes, with a cache that evicts a
+/// dependency at each dependency load and one that never does, and with the
+/// resolver's loads kept in `files`: the loads and the pass end in UnityPy's
+/// container rows and paths, the dereferences and the reads give UnityPy's
+/// answers, and the lookups answer as they do with nothing refused (no
+/// answer is an error). The `k`-th reservation of a run whose first `k - 1`
+/// were granted is the `k`-th of the run that counted them, so each is
+/// refused once. The reach's reopen without a retry fails the pass's first
+/// reservation under `Lazy`; a retry that looks only for a bare refusal
+/// fails an `Eager` pass whose reopen's entry parse is refused (the entry's
+/// error wraps it); a dependency's table walk without one fails under both
+/// modes; and a dereference, a resource read or a lookup without one fails
+/// at its first reservation no inner retry covers (review round 8).
 #[test]
 fn a_pool_refusal_anywhere_evicts_the_others_and_retries_once() {
     let mut refused = 0;
     for (name, d) in dependency_scenes() {
-        let (rows, paths) = oracle(name);
-        let want = Ok((rows, paths));
-        for mode in [LoadMode::Eager, LoadMode::Lazy] {
-            for cache in [1, u64::MAX] {
-                let budget = Arc::new(RefuseOnce::default());
-                let env = batch_env(mode, cache, &budget);
-                let at_load = budget.asked();
-                load(&env, &d).unwrap();
-                let keys: Vec<String> = env
-                    .registry()
+        let want = |phase: Phase| match phase {
+            Phase::Loads | Phase::Pass => json!([oracle(name, "container"), oracle(name, "paths")]),
+            Phase::Derefs => oracle(name, "dep_derefs"),
+            Phase::Resources => oracle(name, "dep_resources"),
+            Phase::Lookups => J::Null,
+        };
+        for s in setups() {
+            let keys: Vec<String> = {
+                let env = batch_env(s, Arc::new(RefuseOnce::default()), &d.scene);
+                let _held = load(&env, &d).unwrap();
+                env.registry()
                     .keys()
                     .map(|k| String::from_utf8_lossy(k.as_bytes()).into_owned())
-                    .collect();
-                let at_lookups = budget.asked();
-                let found = lookups(&env, &keys);
-                // The pass on an Environment of its own, with no lookup
-                // before it.
-                let budget2 = Arc::new(RefuseOnce::default());
-                let env2 = batch_env(mode, cache, &budget2);
-                load(&env2, &d).unwrap();
-                let objects2 = objects(&env2);
-                let at_pass = budget2.asked();
-                assert_eq!(answers(&env2, &objects2), want, "{name} {mode:?} {cache}");
-                let counts = [
-                    (Phase::Loads, at_lookups - at_load),
-                    (Phase::Lookups, budget.asked() - at_lookups),
-                    (Phase::Pass, budget2.asked() - at_pass),
-                ];
-                for (phase, n) in counts {
-                    for k in 1..=n {
-                        let what = format!("{name} {mode:?} cache {cache} {phase:?}: {k} of {n}");
-                        let budget = Arc::new(RefuseOnce::default());
-                        let env = batch_env(mode, cache, &budget);
-                        if phase == Phase::Loads {
-                            budget.arm(k);
-                        }
-                        load(&env, &d).unwrap_or_else(|e| panic!("{what}: {e}"));
-                        match phase {
-                            Phase::Loads => {
-                                let objects = objects(&env);
-                                assert_eq!(answers(&env, &objects), want, "{what}");
-                            }
-                            Phase::Lookups => {
-                                budget.arm(k);
-                                assert_eq!(lookups(&env, &keys), found, "{what}");
-                            }
-                            Phase::Pass => {
-                                let objects = objects(&env);
-                                budget.arm(k);
-                                assert_eq!(answers(&env, &objects), want, "{what}");
-                            }
-                        }
-                        assert_eq!(budget.refused.load(Ordering::Acquire), 1, "{what}");
-                        refused += 1;
-                    }
+                    .collect()
+            };
+            for phase in PHASES {
+                let (first, n, _) = run(phase, s, &d, &keys, None);
+                let want = match phase {
+                    Phase::Lookups => first.clone(),
+                    _ => want(phase),
+                };
+                assert_eq!(first, want, "{name} {s:?} {phase:?}");
+                for k in 1..=n {
+                    let what = format!("{name} {s:?} {phase:?}: {k} of {n}");
+                    let (answer, _, refusals) = run(phase, s, &d, &keys, Some(k));
+                    assert_eq!(answer, want, "{what}");
+                    assert_eq!(refusals, 1, "{what}");
+                    refused += 1;
                 }
             }
         }
     }
     assert!(refused > 0, "no call made a dependency reservation");
+}
+
+/// A pool whose cached dependencies leave no room for a dereference or a
+/// resource read from a dependency's file: each call evicts them and
+/// succeeds, every time (review round 8: with `p.bundle`'s decoded pad in
+/// the LRU and 16 bytes to spare, every call failed and nothing was
+/// evicted). The answers are UnityPy's for the scene `dependency_reads`.
+#[test]
+fn a_full_pool_makes_room_for_a_read_from_a_dependency() {
+    let d = dependency_reads();
+    let want = (
+        oracle("dependency_reads", "dep_derefs"),
+        oracle("dependency_reads", "dep_resources"),
+    );
+    let pad = bundle(&[("P.resS", res_bytes(128 << 10, 3))]);
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let pool = Arc::new(DepPool::new(u64::MAX));
+        let s = Setup {
+            mode,
+            cache: 512 << 20,
+            keep: false,
+        };
+        let env = batch_env(s, pool.clone(), &d.scene);
+        let held = load(&env, &d).unwrap();
+        let (ptrs, res) = (pointers(&held), streams(&held));
+        // The pad, read once so that its run stays decoded in the LRU's
+        // handle, and then held by nothing but the LRU.
+        let p = env
+            .load_dependency(Source::Bytes {
+                name: RawStr::from("p.bundle"),
+                data: Bytes::from(pad.clone()),
+            })
+            .unwrap();
+        let File::Bundle(pb) = &p else {
+            panic!("p.bundle is a bundle")
+        };
+        assert_eq!(pb.entry_range(0, 0..4).unwrap().len(), 4);
+        drop(p);
+        let room = || {
+            let used = pool.used.used.load(Ordering::Acquire);
+            pool.limit.store(used + 16, Ordering::Release);
+        };
+        room();
+        for round in 0..3 {
+            let (got, read) = (derefs(&env, &ptrs), reads(&env, &res));
+            pool.limit.store(u64::MAX, Ordering::Release);
+            assert_eq!((targets(&got), hex(&read)), want, "{mode:?} round {round}");
+            room();
+        }
+        assert!(env.stats().dependencies_evicted > 0, "{mode:?}");
+    }
 }

@@ -67,6 +67,13 @@ impl Environment {
     /// ([`resource::resource_candidates`]), and each whole name and lowered
     /// key a lookup builds is charged to `from`'s meter while it lives.
     ///
+    /// A pool refusal (a read or a lookup from a dependency's file) evicts
+    /// the others and retries once, `from`'s top-level bundle held
+    /// meanwhile: each lookup of the candidates, and each candidate's name
+    /// with its fallback load, the load taking its own retry, so a retry
+    /// never loads again what a load before it loaded (plan section 3.13;
+    /// review round 8: the read had no retry).
+    ///
     /// [`EnvOptions::keep_resolver_loads`]: super::EnvOptions::keep_resolver_loads
     /// [`FileEntry`]: super::FileEntry
     /// [`resource::resource_candidates`]: super::resource::resource_candidates
@@ -77,10 +84,14 @@ impl Environment {
         offset: u64,
         size: u64,
     ) -> Result<Bytes, Error> {
+        let _top = top_bundle(from);
         // UnityPy helpers/ResourceReader.py:11-33
-        self.reach_chain(from)?;
         let candidates = resource_candidates(path);
-        if let Some(bytes) = self.resource_try(from, &candidates, offset, size)? {
+        let first = self.room(|| {
+            self.reach_chain(from)?;
+            self.resource_try(from, &candidates, offset, size)
+        })?;
+        if let Some(bytes) = first {
             return Ok(bytes);
         }
         // :26: `assets_file.load_dependencies(possible_names)`
@@ -91,10 +102,9 @@ impl Environment {
             self.fallback_load(&external.path)?;
         }
         for c in &candidates {
-            let name = c.joined(meter)?;
-            self.fallback_load(&name)?;
+            self.room(|| self.fallback_load(&c.joined(meter)?))?;
         }
-        if let Some(bytes) = self.resource_try(from, &candidates, offset, size)? {
+        if let Some(bytes) = self.room(|| self.resource_try(from, &candidates, offset, size))? {
             return Ok(bytes);
         }
         let [basename, ..] = candidates;
@@ -230,6 +240,18 @@ impl Environment {
             Through::Slot => reg.reach(slot, None),
         }
     }
+}
+
+/// The top-level bundle `from` is read through, while it is alive: its
+/// container's container, and so on up. A call that reads from `from` holds
+/// it, so an eviction while it runs (its own retry's, another thread's)
+/// drops only the LRU's handle, and the chain the call reads through stays.
+pub(super) fn top_bundle(from: &SerializedFile) -> Option<Arc<BundleFile>> {
+    let mut top = parent_bundle(from.parent())?;
+    while let Some(up) = parent_bundle(top.parent()) {
+        top = up;
+    }
+    Some(top)
 }
 
 /// The bundle a parent link names, while it is alive.

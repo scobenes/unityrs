@@ -4,10 +4,10 @@
 mod nested;
 
 pub use nested::{
-    deref_sibling_nested, nested_dropped_evicted, nested_duplicates, nested_evicted,
-    nested_raw_replaced, nested_reloaded, nested_reloaded_spans, nested_reloaded_spans_raced,
-    nested_replaced_unread, preload_nested_external, resource_in_nested_cab,
-    resource_in_own_nested,
+    dependency_reads, deref_sibling_nested, nested_dropped_evicted, nested_duplicates,
+    nested_evicted, nested_raw_replaced, nested_reloaded, nested_reloaded_spans,
+    nested_reloaded_spans_raced, nested_replaced_unread, preload_nested_external,
+    resource_in_nested_cab, resource_in_own_nested,
 };
 
 use super::{Bundle, DepScene, Obj, Scene, bundle, bundle_spec, res_bytes, row, serialized};
@@ -621,6 +621,7 @@ pub fn dependency_scenes() -> Vec<(&'static str, DepScene)> {
     vec![
         ("nested_dropped_evicted", nested_dropped_evicted()),
         ("nested_evicted", nested_evicted()),
+        ("dependency_reads", dependency_reads()),
     ]
 }
 

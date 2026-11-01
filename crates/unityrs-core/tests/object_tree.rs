@@ -8,10 +8,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use unityrs_core::env::{Cab, DerefError, EnvOptions, Environment, Source};
-use unityrs_core::files::SerializedFile;
+use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
+use unityrs_core::env::{Cab, DerefError, EnvOptions, Environment, LoadMode, Source};
+use unityrs_core::files::{File, SerializedFile};
 use unityrs_core::limits::{Limits, Meter};
 use unityrs_core::provider::{
     ProviderChain, ProviderError, TreeRequest, TreeSource, TypeTreeProvider,
@@ -225,11 +226,9 @@ struct Setup {
     scripts: Arc<Scripts>,
 }
 
-fn setup(pointers: &[(i32, i64)], embedded: bool, with_scripts: bool) -> Setup {
-    let scripts = Arc::new(Scripts {
-        tree: tree(script_rows()),
-        asked: AtomicUsize::new(0),
-    });
+/// The class provider, and the script provider `scripts` after it when
+/// `with_scripts`.
+fn chain(scripts: &Arc<Scripts>, with_scripts: bool) -> Arc<ProviderChain> {
     let mut providers: Vec<Arc<dyn TypeTreeProvider>> = vec![Arc::new(Classes {
         behaviour: tree(behaviour_rows()),
         monoscript: tree(monoscript_rows()),
@@ -237,8 +236,16 @@ fn setup(pointers: &[(i32, i64)], embedded: bool, with_scripts: bool) -> Setup {
     if with_scripts {
         providers.push(scripts.clone());
     }
+    Arc::new(ProviderChain::new(providers))
+}
+
+fn setup(pointers: &[(i32, i64)], embedded: bool, with_scripts: bool) -> Setup {
+    let scripts = Arc::new(Scripts {
+        tree: tree(script_rows()),
+        asked: AtomicUsize::new(0),
+    });
     let mut ctx = FileContext::unitypy();
-    ctx.providers = Arc::new(ProviderChain::new(providers));
+    ctx.providers = chain(&scripts, with_scripts);
     let mut o = EnvOptions::unitypy();
     o.context = Arc::new(ctx);
     let env = Environment::new(o);
@@ -385,4 +392,86 @@ fn an_embedded_or_explicit_tree_never_dereferences_the_script() {
     assert_eq!(t.source, TreeSource::Explicit);
     assert_eq!(s.scripts.asked.load(Ordering::Relaxed), 0);
     assert_eq!(stripped.scripts.asked.load(Ordering::Relaxed), 0);
+}
+
+/// A budget that refuses the `n`-th dependency reservation after it is
+/// armed with `n`, once, and counts the dependency reservations it is asked
+/// for.
+#[derive(Debug, Default)]
+struct RefuseOnce {
+    countdown: AtomicU64,
+    asked: AtomicU64,
+    refused: AtomicU64,
+}
+
+impl MemoryBudget for RefuseOnce {
+    fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
+        if what == Reservation::Dependency {
+            self.asked.fetch_add(1, Ordering::AcqRel);
+            let left = self
+                .countdown
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+            if left == Ok(1) {
+                self.refused.fetch_add(1, Ordering::AcqRel);
+                return Err(BudgetExceeded {
+                    requested: bytes,
+                    what,
+                });
+            }
+        }
+        Ok(Permit::detached(bytes))
+    }
+}
+
+/// The script hook on an object of a dependency's file reads the object's
+/// head and the script through the dependency's meter: each of those
+/// reservations, refused once in turn, evicts the other dependencies and is
+/// tried once more, under both modes, so the hook still finds the script
+/// provider's tree (plan section 3.13; review round 8: a read from a
+/// dependency's file the pool refused failed the call).
+#[test]
+fn a_pool_refusal_in_the_script_hook_evicts_and_retries_once() {
+    let scripts = Arc::new(Scripts {
+        tree: tree(script_rows()),
+        asked: AtomicUsize::new(0),
+    });
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        // The tree's source, the dependency reservations the hook made, and
+        // how many were refused, with the `k`-th of them refused once.
+        let run = |k: u64| {
+            let budget = Arc::new(RefuseOnce::default());
+            let mut ctx = FileContext::unitypy();
+            ctx.providers = chain(&scripts, true);
+            ctx.budget = budget.clone();
+            let mut o = EnvOptions::batch(Arc::new(ctx));
+            o.load = mode;
+            let env = Environment::new(o);
+            let held = env
+                .load_dependency(Source::Bytes {
+                    name: RawStr::from("CAB-T"),
+                    data: Bytes::from(file(&[(0, 100)], false)),
+                })
+                .unwrap();
+            let File::Serialized(sf) = &held else {
+                panic!("CAB-T is a SerializedFile")
+            };
+            let o = sf.object(1).unwrap();
+            budget.countdown.store(k, Ordering::Release);
+            let at = budget.asked.load(Ordering::Acquire);
+            let t = env.object_tree(&o, None).map(|t| t.unwrap().source);
+            (
+                t.map_err(|e| e.to_string()),
+                budget.asked.load(Ordering::Acquire) - at,
+                budget.refused.load(Ordering::Acquire),
+            )
+        };
+        let (source, n, _) = run(0);
+        assert_eq!(source, Ok(TreeSource::Provider("script")), "{mode:?}");
+        assert!(n > 0, "{mode:?}: the hook read nothing through the pool");
+        for k in 1..=n {
+            let (got, _, refused) = run(k);
+            assert_eq!(got, source, "{mode:?}: {k} of {n}");
+            assert_eq!(refused, 1, "{mode:?}: {k} of {n}");
+        }
+    }
 }

@@ -25,8 +25,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use crate::budget::{BudgetExceeded, charged_bytes};
-use crate::limits::{ChargeError, Meter, heap_cost};
+use crate::budget::charged_bytes;
+use crate::limits::{ChargeError, Meter, heap_cost, reserve_exact};
 
 /// Bytes UnityPy holds as a `str`. Valid UTF-8 or not.
 #[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -66,12 +66,7 @@ impl RawStr {
         let n = u64::try_from(len).unwrap_or(u64::MAX);
         let charge = meter.charge(heap_cost(n))?;
         let mut buf = Vec::new();
-        if buf.try_reserve_exact(len).is_err() {
-            return Err(ChargeError::Budget(BudgetExceeded {
-                requested: n,
-                what: meter.reservation(),
-            }));
-        }
+        reserve_exact(&mut buf, len, n, meter).map_err(ChargeError::Budget)?;
         for p in parts {
             buf.extend_from_slice(p);
         }

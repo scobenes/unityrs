@@ -85,10 +85,15 @@
 //! that someone still holds (a nested bundle a resource read kept) goes on
 //! counting against the old open's, which nothing resets. A
 //! [`Source::Bytes`] dependency keeps its bytes, which are the caller's.
-//! The files a caller loaded are never evicted. A dependency read the pool
-//! refuses evicts and retries once; the refusal is never cached
+//! The files a caller loaded are never evicted. Every call that reads or
+//! registers through a dependency's meter (a load, a lookup, a dereference,
+//! a resource read, the script hook, the container pass), when the pool
+//! refuses it, evicts the others and retries once, by one rule however the
+//! calls nest ([`registry`]'s `with_room`); the refusal is never cached
 //! ([`crate::once::get_or_publish_result`]), so a later read with room in
-//! the pool succeeds.
+//! the pool succeeds. A read the caller makes itself on a dependency's
+//! handle (an object's value) is no call of the Environment's, and its
+//! refusal is the caller's.
 //!
 //! **Resolver loads in `files`** (probed on UnityPy 1.25.2, plan section
 //! 3.13). UnityPy keeps every file it loads, those it loads to resolve a
@@ -453,6 +458,19 @@ impl Environment {
             preload_dereferences: self.inner.preload_derefs.load(Ordering::Relaxed),
             preload_lookups: self.inner.preload_lookups.load(Ordering::Relaxed),
         }
+    }
+}
+
+impl Environment {
+    /// [`registry::with_room`] on this Environment's LRU for the work of one
+    /// of its calls (a lookup, a dereference, a resource read: plan section
+    /// 3.13), keeping no dependency cached: the handles the call reads
+    /// through are held while it runs, by the caller (a dependency's
+    /// top-level handle, as [`Self::load_dependency`] says) and by the call
+    /// itself (the asking file's container, `resource_data.rs`'s
+    /// `top_bundle`), so an eviction drops only the LRU's.
+    fn room<T, E: registry::PoolRefusal>(&self, f: impl FnMut() -> Result<T, E>) -> Result<T, E> {
+        registry::with_room(Some(&self.inner.cache), None, f)
     }
 }
 
