@@ -5,6 +5,7 @@
 //! script on it and removes it. The stub markers are assembled at run time
 //! so this file itself never matches the script.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -33,6 +34,14 @@ impl Tree {
             std::fs::write(path, text).unwrap();
         }
         Self(root)
+    }
+
+    /// The same tree with a symlink at `path` to `target`.
+    fn link(self, path: &str, target: &Path) -> Self {
+        let path = self.0.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(target, path).unwrap();
+        self
     }
 
     /// The script's exit code and output on this tree.
@@ -67,6 +76,10 @@ fn lint(name: &str) -> String {
     format!("clippy::{name}")
 }
 
+/// The two macros' names, held in strings so this file never names them
+/// as words of its own.
+const NAMES: (&str, &str) = ("todo", "unimplemented");
+
 /// A crate file with no stub: the core's real `lib.rs` (its doc names the
 /// macro, and it denies both lints) beside an implemented function.
 fn clean() -> Vec<(&'static str, String)> {
@@ -87,6 +100,20 @@ fn with(extra: (&'static str, String)) -> Vec<(&'static str, String)> {
     let mut files = clean();
     files.push(extra);
     files
+}
+
+/// Each case (a tree, what it holds, and the text its hit prints) that the
+/// script does not fail with that hit, with the script's output, so a
+/// failing test lists every form that passed.
+fn missed(cases: impl IntoIterator<Item = (Tree, String, String)>) -> String {
+    let mut missed = String::new();
+    for (tree, what, hit) in cases {
+        let (code, out) = tree.check();
+        if code != 1 || !out.contains(&hit) {
+            writeln!(missed, "--- {what}\nexit {code}, no `{hit}`:\n{out}").unwrap();
+        }
+    }
+    missed
 }
 
 #[test]
@@ -155,6 +182,7 @@ fn every_form_of_the_macros_fails() {
             forms.push(format!("{name}!{open}{close}"));
             forms.push(format!("{name} ! {open} {close}"));
             forms.push(format!("core::{name}!{open}{close}"));
+            forms.push(format!("r#{name}!{open}{close}"));
             forms.push(format!("{name}!\n    {open}{close}"));
             forms.push(format!("{name}\n\n    // why\n    !\n    {open}{close}"));
             // Round 7: a comment between the tokens on one line, a trailing
@@ -174,79 +202,179 @@ fn every_form_of_the_macros_fails() {
     }
 }
 
-/// What only looks like the macros passes: another macro whose name ends
-/// in one, a variable compared or assigned on the next line, a name with no
-/// delimiter after it, a comment; and outside a macro call, a variable in a
-/// condition a `!` negates, and the lint paths a `deny` names.
+/// What only looks like the macros passes: a longer word holding either
+/// name (another macro whose name ends in one, a variable, a type, a
+/// `restriction` that no `::` comes before), a comment, a string, and the
+/// lint paths a `deny` or `forbid` names in an inner attribute at the
+/// file's top level, inside `cfg_attr`s or not, whatever whitespace or
+/// comments lie between their tokens.
 #[test]
 fn what_only_looks_like_the_macros_passes() {
-    let todo = "todo";
+    let (todo_name, unimpl_name) = NAMES;
     let text = format!(
-        "pub fn f() -> bool {{\n    my_{todo}!();\n    let {todo} = 1;\n    let x = {todo}\n        != 2;\n             let y = {todo}\n        + 1;\n    // {todo}![]\n    if !({todo} == 3) {{\n        return !{todo}.is_positive();\n    }}\n    x\n}}\n#[deny(clippy :: {todo}, clippy::unimplemented)]\nfn g() {{}}\n"
+        "#![deny(clippy::{todo_name})]\n\
+         #![cfg_attr(\n    not(test),\n    deny(\n        clippy::unwrap_used,\n        clippy::{todo_name},\n        clippy::{unimpl_name},\n    )\n)]\n\
+         # ! [ forbid ( clippy /* why */ :: {unimpl_name} , clippy::restriction ) ]\n\
+         #![cfg_attr(a, cfg_attr(not(b), forbid(clippy::{todo_name})))]\n\
+         pub fn f(restriction: u8) -> bool {{\n    my_{todo_name}!();\n    let {todo_name}_list = 1;\n    let x: Todo = {unimpl_name}_yet() != restriction;\n    // {todo_name}![] and let {todo_name} = 1;\n    let _ = \"{todo_name}!()\";\n    x\n}}\n"
     );
     let (code, out) = Tree::new(&with(("crates/b/src/m.rs", text))).check();
     assert_eq!(code, 0, "{out}");
+}
+
+/// Review round 9: the scan's rule became one sentence. Outside comments,
+/// strings and character literals, either name, raw or not, appears only as
+/// a `clippy::` lint name directly under `deny(` or `forbid(` in an inner
+/// attribute at its file's top level. So any other word of either name
+/// fails at its line: a variable, a field, a module or a function of that
+/// name (round 9: `let todo` passed outside a macro call), a re-export (round
+/// 9: `pub use core::todo;` gave a module a macro `clippy::todo!` could
+/// call), and a lint path anywhere else: in an outer attribute (a derive or
+/// an attribute macro on the item is handed it), inside a macro call, a
+/// module, a function or an impl, under another attribute, or spelled
+/// otherwise.
+#[test]
+fn every_other_word_of_either_name_fails() {
+    let (todo_name, unimpl_name) = NAMES;
+    let cases = [
+        format!("pub fn f() -> u8 {{\n    let {todo_name} = 1;\n    {todo_name}\n}}\n"),
+        format!("pub fn f(\n    {unimpl_name}: u8,\n) {{}}\n"),
+        format!("pub struct S {{\n    pub {todo_name}: u8,\n}}\n"),
+        format!("pub fn f(s: &S) -> u8 {{\n    s.{todo_name}\n}}\n"),
+        format!("pub mod\n    r#{todo_name} {{}}\n"),
+        format!("pub fn\n    {unimpl_name}() {{}}\n"),
+        format!("mod clippy {{\n    pub use core::{todo_name};\n}}\n"),
+        format!("pub use core::\n    {unimpl_name};\n"),
+        // The lint path inside a module, a function, an impl or a macro call.
+        format!("mod m {{\n    #![deny(clippy::{todo_name})]\n}}\n"),
+        format!("pub fn f() {{\n    #[forbid(clippy::{unimpl_name})]\n    let _x = 1;\n}}\n"),
+        format!("impl S {{\n    #[deny(clippy::{todo_name})]\n    fn g() {{}}\n}}\n"),
+        format!("call! {{\n    #[deny(clippy::{todo_name})]\n}}\n"),
+        "call!(\n    #![forbid(clippy::restriction)]\n);\n".to_owned(),
+        // An outer attribute.
+        format!("#[deny(\n    clippy::{todo_name})]\nfn g() {{}}\n"),
+        format!("#[cfg_attr(x, forbid(\n    clippy::{unimpl_name}))]\npub struct S;\n"),
+        // An inner one, but under another attribute or spelled otherwise.
+        format!("#![anything(\n    clippy::{todo_name},\n)]\n"),
+        format!("#![tool::deny(\n    clippy::{todo_name})]\n"),
+        format!("#![r#deny(\n    clippy::{todo_name})]\n"),
+        format!("#![deny(\n    clippy::r#{unimpl_name})]\n"),
+        format!("#![deny(\n    r#clippy::{todo_name})]\n"),
+        format!("#![deny(\n    tool::clippy::{todo_name})]\n"),
+        format!("#![deny(\n    clippy::{todo_name}::more)]\n"),
+        format!("#![deny(lint(\n    clippy::{todo_name}))]\n"),
+        format!("#![cfg_attr(x, anything(deny(\n    clippy::{unimpl_name})))]\n"),
+        format!("#![deny(deny(\n    clippy::{todo_name}))]\n"),
+        "#![deny(\n    clippy::restriction::all)]\n".to_owned(),
+        // No attribute: a macro call or an expression of the same shape.
+        format!("call![deny(\n    clippy::{todo_name})];\n"),
+        format!("pub static S: [u8; 0] = [deny(\n    clippy::{todo_name})];\n"),
+        format!("pub const C: () = deny(\n    clippy::{todo_name});\n"),
+        "#![allow(\n    clippy::r#restriction)]\n".to_owned(),
+    ];
+    let missed = missed(cases.map(|text| {
+        let tree = Tree::new(&with(("crates/b/src/m.rs", text.clone())));
+        (tree, text, "] crates/b/src/m.rs:2: ".to_owned())
+    }));
+    assert!(missed.is_empty(), "{missed}");
 }
 
 /// Review round 8: a `macro_rules!` body that puts the `!` after a name it
 /// is handed (`$m!()`) or after one it holds (`todo $($t)*`) calls the macro
 /// where no name scan reads the call, and clippy, which lints the macro whose
 /// expansion the call starts, lints the outer one: both passed G6 with a
-/// reachable `todo!()`. Either name as a word of its own inside a macro
-/// call or a `macro_rules!` definition (a `clippy::` path included, which
-/// there can name a module's macro), or inside an attribute other than as
-/// a lint path, fails, at its line.
+/// reachable `todo!()`. Review round 9: so did a raw name (a `macro_rules!
+/// r#later` whose body holds the name, a macro called as `r#loop!` or
+/// `r#if!`), and a lint path inside an attribute that is itself handed to a
+/// macro (`call!(#[deny(clippy::todo)])`, `#[anything(..)]` too), which the
+/// macro can make a call of. Each fails, at the line that holds the name.
 #[test]
 fn a_macro_named_inside_another_macro_fails() {
-    let (todo, unimplemented) = ("todo", "unimplemented");
+    let (todo_name, unimpl_name) = NAMES;
     let cases = [
         (
             format!(
-                "macro_rules! call {{\n    ($m:ident) => {{ $m!() }};\n}}\npub fn f() -> u8 {{\n    call!({todo})\n}}\n"
+                "macro_rules! call {{\n    ($m:ident) => {{ $m!() }};\n}}\npub fn f() -> u8 {{\n    call!({todo_name})\n}}\n"
             ),
             5,
         ),
         (
             format!(
-                "macro_rules! call {{\n    ($m:path) => {{ $m!() }};\n}}\npub fn f() -> u8 {{\n    call![\n        core::{unimplemented}\n    ]\n}}\n"
+                "macro_rules! call {{\n    ($m:path) => {{ $m!() }};\n}}\npub fn f() -> u8 {{\n    call![\n        core::{unimpl_name}\n    ]\n}}\n"
             ),
             6,
         ),
         (
             format!(
-                "macro_rules! bang {{\n    ($($t:tt)*) => {{ {todo} $($t)* }};\n}}\npub fn f() -> u8 {{\n    bang!(!())\n}}\n"
+                "macro_rules! bang {{\n    ($($t:tt)*) => {{ {todo_name} $($t)* }};\n}}\npub fn f() -> u8 {{\n    bang!(!())\n}}\n"
             ),
             2,
         ),
         (
             format!(
-                "macro_rules! two {{\n    ($a:ident $b:tt) => {{ $a $b () }};\n}}\npub fn f() -> u8 {{\n    two! {{ {unimplemented} ! }}\n}}\n"
+                "macro_rules! two {{\n    ($a:ident $b:tt) => {{ $a $b () }};\n}}\npub fn f() -> u8 {{\n    two! {{ {unimpl_name} ! }}\n}}\n"
             ),
             5,
         ),
         // A lint path's spelling, inside a macro call: a module's macro.
         (
             format!(
-                "mod clippy {{\n    pub use core::{todo};\n}}\nmacro_rules! call {{\n    ($($p:ident)::+) => {{ $($p)::+!() }};\n}}\npub fn f() -> u8 {{\n    call!(clippy::{todo})\n}}\n"
+                "mod clippy {{\n    pub use core::{todo_name};\n}}\nmacro_rules! call {{\n    ($($p:ident)::+) => {{ $($p)::+!() }};\n}}\npub fn f() -> u8 {{\n    call!(clippy::{todo_name})\n}}\n"
             ),
             8,
         ),
-        (format!("#[stub_attr({todo})]\npub fn f() {{}}\n"), 1),
-        (format!("#![stub_attr(x, {unimplemented})]\n"), 1),
+        (format!("#[stub_attr({todo_name})]\npub fn f() {{}}\n"), 1),
+        // Review round 9: a lint path in an attribute handed to a macro,
+        // which makes a call of it.
+        (
+            format!(
+                "mod clippy {{\n    pub use core::{todo_name};\n}}\nmacro_rules! call {{\n    (#[deny($($p:ident)::+)]) => {{ $($p)::+!() }};\n}}\npub fn f() -> u8 {{\n    call!(#[deny(clippy::{todo_name})])\n}}\n"
+            ),
+            8,
+        ),
+        (
+            format!(
+                "mod clippy {{\n    pub use core::{unimpl_name};\n}}\nmacro_rules! call {{\n    (#[$a:ident($($p:ident)::+)]) => {{ $($p)::+!() }};\n}}\npub fn f() -> u8 {{\n    call!(#[anything(clippy::{unimpl_name})])\n}}\n"
+            ),
+            8,
+        ),
+        // Review round 9: raw names.
+        (
+            format!(
+                "macro_rules! r#later {{\n    ($b:tt) => {{ {todo_name} $b () }};\n}}\npub fn f() -> u8 {{\n    later!(!)\n}}\n"
+            ),
+            2,
+        ),
+        (
+            format!(
+                "macro_rules! call {{\n    ($m:ident) => {{ $m!() }};\n}}\nuse call as r#loop;\npub fn f() -> u8 {{\n    r#loop!({todo_name})\n}}\n"
+            ),
+            6,
+        ),
+        (
+            format!(
+                "macro_rules! r#if {{\n    ($m:ident) => {{ $m!() }};\n}}\npub fn f() -> u8 {{\n    r#if!({todo_name})\n}}\n"
+            ),
+            5,
+        ),
+        (
+            format!(
+                "macro_rules! call {{\n    ($m:ident) => {{ $m!() }};\n}}\npub fn f() -> u8 {{\n    call!(r#{unimpl_name})\n}}\n"
+            ),
+            5,
+        ),
+        (format!("#![stub_attr(x, {unimpl_name})]\n"), 1),
     ];
-    for (text, line) in cases {
-        let (code, out) = Tree::new(&with(("crates/b/src/m.rs", text.clone()))).check();
-        assert_eq!(code, 1, "{text} passed:\n{out}");
-        assert!(
-            out.contains(&format!("crates/b/src/m.rs:{line}: ")),
-            "{text}: {out}"
-        );
-    }
+    let missed = missed(cases.map(|(text, line)| {
+        let tree = Tree::new(&with(("crates/b/src/m.rs", text.clone())));
+        (tree, text, format!("] crates/b/src/m.rs:{line}: "))
+    }));
+    assert!(missed.is_empty(), "{missed}");
 }
 
 /// Round 7: a lint allowed under a form the line scan did not read (spaces
 /// or a comment inside the path, the `restriction` group, `warn`, `#` and
-/// `[` apart) passed G6. Each fails, at the line of the lint's path.
+/// `[` apart) passed G6. Each fails, at the line of the lint's name.
 #[test]
 fn every_form_of_an_allowed_lint_fails() {
     let path = |name: &str| lint(name);
@@ -256,7 +384,7 @@ fn every_form_of_an_allowed_lint_fails() {
         ("#![allow(clippy /* why */ :: unimplemented)]".to_owned(), 1),
         (
             "#[allow(\n    unused,\n    clippy // why\n    ::todo\n)]".to_owned(),
-            3,
+            4,
         ),
         (format!("#[warn({})]", path("todo")), 1),
         (
@@ -283,10 +411,10 @@ fn every_form_of_an_allowed_lint_fails() {
 /// no scan read. The import fails, on one line or several.
 #[test]
 fn a_macro_imported_under_another_name_fails() {
-    let todo = "todo";
+    let (todo_name, _) = NAMES;
     let cases = [
-        (format!("use core::{todo} as later;"), 1),
-        (format!("pub use std::{todo} /* why */ as _;"), 1),
+        (format!("use core::{todo_name} as later;"), 1),
+        (format!("pub use std::{todo_name} /* why */ as _;"), 1),
         ("use core::{\n    unimplemented as later,\n};".to_owned(), 2),
     ];
     for (import, line) in cases {
@@ -300,18 +428,71 @@ fn a_macro_imported_under_another_name_fails() {
     }
 }
 
+/// Review round 9: the scan read only `crates/`, never through a symlink,
+/// so a module a `#[path]` names elsewhere in the tree, or one reached
+/// through a symlinked folder or file, went unread, and a file name with a
+/// space or a quote was split. Every `.rs` file under the root is read,
+/// symlinks followed, but in the root's own `target/` and hidden folders
+/// (a build's output, `.git`, worktrees); each hit names its file as given.
+#[test]
+fn every_rust_file_under_the_root_is_read() {
+    let stub = || format!("pub fn f() -> u8 {{\n    {}\n}}\n", todo_call());
+    let mut cases = Vec::new();
+    for path in [
+        "tools/stub.rs",
+        "crates/b/target/m.rs",
+        "crates/b/.hidden/m.rs",
+        "crates/b/src/a b'\"c.rs",
+    ] {
+        let tree = Tree::new(&with((path, stub())));
+        cases.push((tree, path.to_owned(), format!("] {path}:2: ")));
+    }
+    let outside = Tree::new(&[("m.rs", stub())]);
+    for (link, target, shown) in [
+        (
+            "crates/b/src/sub",
+            outside.0.clone(),
+            "crates/b/src/sub/m.rs",
+        ),
+        (
+            "crates/b/src/l.rs",
+            outside.0.join("m.rs"),
+            "crates/b/src/l.rs",
+        ),
+    ] {
+        let tree = Tree::new(&clean()).link(link, &target);
+        cases.push((
+            tree,
+            format!("a symlink at {link}"),
+            format!("] {shown}:2: "),
+        ));
+    }
+    let missed = missed(cases);
+    assert!(missed.is_empty(), "{missed}");
+    let mut files = clean();
+    for path in [
+        "target/debug/build/x/out/m.rs",
+        ".git/m.rs",
+        ".wt/w/crates/b/src/m.rs",
+    ] {
+        files.push((path, stub()));
+    }
+    let (code, out) = Tree::new(&files).check();
+    assert_eq!(code, 0, "{out}");
+}
+
 /// The script reads Rust's comments, strings and character literals as
 /// such: what they hold passes, and the code after them is still read
 /// (a lifetime is no character literal, an escaped quote ends no string).
 #[test]
 fn comments_strings_and_characters_are_read_as_rust_reads_them() {
-    let (todo, call, allow) = ("todo", todo_call(), lint("todo"));
+    let (todo_name, call, allow) = (NAMES.0, todo_call(), lint("todo"));
     let clean = format!(
         "/* {call} /* nested {call} */ still a comment {call} */\n\
-         /// use core::{todo} as later;\n\
+         #![cfg_attr(not(test), deny({allow}, {}))]\n\
+         #![forbid({})]\n\
+         /// use core::{todo_name} as later;\n\
          #[doc = \"#[allow({allow})] {call}\"]\n\
-         #[cfg_attr(not(test), deny({allow}, {}))]\n\
-         #[forbid({})]\n\
          pub fn f<'a>(x: &'a u8) -> (&'a u8, [&'static str; 6], char, u8) {{\n\
              let quotes = ['\"', '\\'', '\\\\'];\n\
              let s = [\"{call}\", \"\\\"{call}\\\"\", r#\"{call} \" \"#, \"a\n    {call}\n\", \"\\\\\", \"\"];\n\

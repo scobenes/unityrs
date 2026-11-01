@@ -114,15 +114,15 @@ impl<'a> Work<'a> {
     /// through; refused, the scanned bytes count all the same (they were
     /// read), and the step does not run.
     fn step(&mut self, limbs: usize) -> Result<(), Error> {
-        let todo = u64::try_from(limbs)
+        let pending = u64::try_from(limbs)
             .unwrap_or(u64::MAX)
             .saturating_mul(LIMB_WORK);
         let done = std::mem::take(&mut self.scanned);
-        let Some(charge) = self.charge.as_deref().filter(|_| done > 0 || todo > 0) else {
+        let Some(charge) = self.charge.as_deref().filter(|_| done > 0 || pending > 0) else {
             return Ok(());
         };
         let meter = charge.meter();
-        meter.count_work(done.saturating_add(todo)).map_err(|e| {
+        meter.count_work(done.saturating_add(pending)).map_err(|e| {
             meter.add_work(done);
             Error::Limit(e)
         })
