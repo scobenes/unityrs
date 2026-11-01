@@ -559,24 +559,35 @@ fn room(pool: &DepPool) {
 /// resource read from a dependency's file: each call evicts them and
 /// succeeds, every time (review round 8: with `p.bundle`'s decoded pad in
 /// the LRU and 16 bytes to spare, every call failed and nothing was
-/// evicted). The answers are UnityPy's for the scene `dependency_reads`.
+/// evicted). The dereferences and the reads each start on a full pool of
+/// their own, so neither runs in the room the other made. The answers are
+/// UnityPy's for the scene `dependency_reads`.
 #[test]
 fn a_full_pool_makes_room_for_a_read_from_a_dependency() {
-    let want = (
-        oracle("dependency_reads", "dep_derefs"),
-        oracle("dependency_reads", "dep_resources"),
-    );
-    for mode in [LoadMode::Eager, LoadMode::Lazy] {
-        let (env, pool, held) = full_pool(mode);
-        let (ptrs, res) = (pointers(&held), streams(&held));
-        room(&pool);
-        for round in 0..3 {
-            let (got, read) = (derefs(&env, &ptrs), reads(&env, &res));
-            pool.limit.store(u64::MAX, Ordering::Release);
-            assert_eq!((targets(&got), hex(&read)), want, "{mode:?} round {round}");
+    for (op, reads_them) in [("dep_derefs", false), ("dep_resources", true)] {
+        let want = oracle("dependency_reads", op);
+        for mode in [LoadMode::Eager, LoadMode::Lazy] {
+            let (env, pool, held) = full_pool(mode);
+            let (ptrs, res) = (pointers(&held), streams(&held));
             room(&pool);
+            for round in 0..3 {
+                let got = if reads_them {
+                    Got::Reads(reads(&env, &res))
+                } else {
+                    Got::Targets(derefs(&env, &ptrs))
+                };
+                // The targets' names are read with the pool's room back.
+                pool.limit.store(u64::MAX, Ordering::Release);
+                let got = match got {
+                    Got::Reads(r) => hex(&r),
+                    Got::Targets(t) => targets(&t),
+                    Got::Json(j) => j,
+                };
+                assert_eq!(got, want, "{op} {mode:?} round {round}");
+                room(&pool);
+            }
+            assert!(env.stats().dependencies_evicted > 0, "{op} {mode:?}");
         }
-        assert!(env.stats().dependencies_evicted > 0, "{mode:?}");
     }
 }
 
