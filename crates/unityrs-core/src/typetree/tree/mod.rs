@@ -220,10 +220,14 @@ pub struct NodeInfo {
     /// that first position and the last value).
     pub key: NodeId,
     /// The ordinal of [`Self::key`] among the parent's distinct child names, in
-    /// first-sighting order. In a `dup_names` class the walker indexes a
-    /// per-read scratch by it to find the key's entry position, so a repeated
-    /// name costs O(1) ([`crate::value::Map::replace_at`]) and a registry
-    /// child skipped at run time cannot misplace a later key (plan section 3.10).
+    /// first-sighting order. A dict whose names may repeat (a `dup_names`
+    /// class, a `ReferencedObject`) keeps, while its node is read, a table
+    /// from this slot to the key's entry position, grown to each slot as its
+    /// children are set, so a repeated name replaces its first entry's value
+    /// in O(1) ([`crate::limits::MeteredVec::set_entry`], which keeps the new
+    /// value's charge) and a registry child skipped at run time cannot
+    /// misplace a later key; the writer keeps one too, for a `dup_names`
+    /// class's dict (plan section 3.10, "Linear dicts").
     pub slot: u32,
     /// A lower bound on the bytes a successful read of the node consumes,
     /// in either reader and whatever registry is in scope (0 for a class

@@ -15,6 +15,7 @@ use std::process::Command;
 
 use serde_json::Value as Json;
 use unityrs_dump::json::hex;
+use unityrs_testkit::child;
 
 fn fixture() -> Json {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -48,21 +49,23 @@ impl Tmp {
 
     /// `unityrs dump --index` on `text` with `extra` arguments: the exit
     /// status, and the names of the file records it dumped when it wrote a
-    /// dump.
+    /// dump. A run the system kills from outside is run again
+    /// (`unityrs_testkit::child`).
     fn run(&self, text: &[u8], extra: &[Vec<u8>]) -> (i32, Option<Vec<String>>) {
         let index = self.0.join("index.json");
         std::fs::write(&index, text).unwrap();
         let out = self.0.join("out.jsonl");
-        let o = Command::new(env!("CARGO_BIN_EXE_unityrs"))
-            .arg("dump")
-            .arg("--index")
-            .arg(&index)
-            .arg("-q")
-            .arg("-o")
-            .arg(&out)
-            .args(extra.iter().map(|a| OsStr::from_bytes(a)))
-            .output()
-            .expect("the unityrs binary runs");
+        let o = child::output(
+            Command::new(env!("CARGO_BIN_EXE_unityrs"))
+                .arg("dump")
+                .arg("--index")
+                .arg(&index)
+                .arg("-q")
+                .arg("-o")
+                .arg(&out)
+                .args(extra.iter().map(|a| OsStr::from_bytes(a))),
+        )
+        .expect("the unityrs binary runs");
         let names = std::fs::read_to_string(&out).ok().map(|dump| {
             dump.lines()
                 .map(|l| serde_json::from_str::<Json>(l).unwrap())

@@ -18,6 +18,7 @@ unityrs-dump = { path = "../unityrs-dump" }
 
 [dev-dependencies]
 serde_json = "=1.0.154"
+unityrs-testkit = { path = "../unityrs-testkit" }
 
 [lints]
 workspace = true

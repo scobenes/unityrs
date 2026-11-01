@@ -11,6 +11,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use unityrs_testkit::child;
+
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -55,25 +57,26 @@ fn no_resolved_crate_enables_a_tpk_feature() {
     // Offline, `cargo metadata` needs every platform's packages unless it is
     // filtered to one; a fresh CI runner holds only the host's.
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
-    let version = Command::new(rustc).arg("-vV").output().unwrap();
+    let version = child::output(Command::new(rustc).arg("-vV")).unwrap();
     let version = String::from_utf8(version.stdout).unwrap();
     let host = version
         .lines()
         .find_map(|l| l.strip_prefix("host: "))
         .unwrap();
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let out = Command::new(cargo)
-        .args([
-            "metadata",
-            "--format-version",
-            "1",
-            "--offline",
-            "--filter-platform",
-            host,
-        ])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .unwrap();
+    let out = child::output(
+        Command::new(cargo)
+            .args([
+                "metadata",
+                "--format-version",
+                "1",
+                "--offline",
+                "--filter-platform",
+                host,
+            ])
+            .current_dir(env!("CARGO_MANIFEST_DIR")),
+    )
+    .unwrap();
     assert!(
         out.status.success(),
         "{}",
@@ -104,16 +107,17 @@ fn no_file_in_the_repository_is_a_tpk() {
     // The tracked and untracked files git sees, where git works; a walk of
     // the tree otherwise (a worktree in the dev container, whose .git file
     // names a host path), skipping what .gitignore leaves out.
-    let git = Command::new("git")
-        .args([
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-        ])
-        .current_dir(repo())
-        .output();
+    let git = child::output(
+        Command::new("git")
+            .args([
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+            ])
+            .current_dir(repo()),
+    );
     let files: Vec<PathBuf> = match git {
         Ok(out) if out.status.success() => out
             .stdout

@@ -6,10 +6,12 @@
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
+use unityrs_testkit::child;
+
+/// A run of the binary; one the system kills from outside is run again
+/// (`unityrs_testkit::child`).
 fn unityrs(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_unityrs"))
-        .args(args)
-        .output()
+    child::output(Command::new(env!("CARGO_BIN_EXE_unityrs")).args(args))
         .expect("the unityrs binary runs")
 }
 

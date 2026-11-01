@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use unityrs_testkit::child;
+
 /// The workspace root, two levels above this crate.
 fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -35,11 +37,12 @@ impl Tree {
 
     /// The script's exit code and output on this tree.
     fn check(&self) -> (i32, String) {
-        let out = Command::new("sh")
-            .arg(workspace().join("scripts/stub-check.sh"))
-            .arg(&self.0)
-            .output()
-            .unwrap();
+        let out = child::output(
+            Command::new("sh")
+                .arg(workspace().join("scripts/stub-check.sh"))
+                .arg(&self.0),
+        )
+        .unwrap();
         let text = String::from_utf8_lossy(&out.stdout).into_owned()
             + &String::from_utf8_lossy(&out.stderr);
         (out.status.code().unwrap(), text)
