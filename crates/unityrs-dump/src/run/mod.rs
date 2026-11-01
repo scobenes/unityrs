@@ -240,10 +240,12 @@ pub fn gzip<W: Write>(w: W) -> GzEncoder<W> {
     GzBuilder::new().mtime(0).write(w, Compression::best())
 }
 
-/// The output stream.
+/// The output stream. The encoder is boxed (`clippy::large_enum_variant`):
+/// zlib-rs's deflate stream, which flate2 holds inline, makes it many
+/// times a `BufWriter`'s size.
 enum Out {
     Plain(BufWriter<File>),
-    Gz(GzEncoder<BufWriter<File>>),
+    Gz(Box<GzEncoder<BufWriter<File>>>),
 }
 
 impl Write for Out {
@@ -266,7 +268,7 @@ impl Out {
     fn finish(self) -> std::io::Result<()> {
         let mut file = match self {
             Self::Plain(w) => w,
-            Self::Gz(w) => w.finish()?,
+            Self::Gz(w) => (*w).finish()?,
         };
         file.flush()?;
         file.into_inner()
@@ -567,7 +569,7 @@ pub fn run_with(opts: &RunOptions, dump_one: &DumpOne<'_>) -> Result<Summary, Ru
         })?;
     let buf = BufWriter::with_capacity(1 << 20, file);
     let mut out = if out_path.extension().is_some_and(|e| e == "gz") {
-        Out::Gz(gzip(buf))
+        Out::Gz(Box::new(gzip(buf)))
     } else {
         Out::Plain(buf)
     };

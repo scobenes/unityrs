@@ -15,8 +15,9 @@ unityrs-core = { path = "../unityrs-core" }
 unityrs-tpk = { path = "../unityrs-tpk" }
 # The raw-bytes rule's summaries (CANONICAL_DUMP section 3).
 sha2 = "=0.11.1"
-# Output streams; the oracle writes level 9 with mtime 0.
-flate2 = "=1.1.10"
+# Output streams; the oracle writes level 9 with mtime 0. The same backend
+# as unityrs-core's (its manifest says why), so the build holds one.
+flate2 = { version = "=1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 # `-j N`: inputs in parallel, written in order.
 rayon = "=1.12.0"
 # Reading a corpus index and the value-case files. Output JSON is written by
