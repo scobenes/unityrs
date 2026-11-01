@@ -2,15 +2,15 @@
 //! from UnityPy 1.25.2: files UnityPy reads differently from a path, which
 //! its `Environment` opens and reads with the stream reader, than from
 //! bytes, which the memory reader reads. Each case is loaded both ways
-//! ([`Source::Path`] from a directory this test owns and removes, and
-//! [`Source::Bytes`]), and the loads, every object's read with and without
+//! ([`Source::Path`] from a `unityrs_testkit::scratch` folder this test
+//! owns, removed however it ends, and [`Source::Bytes`]), and the loads, every object's read with and without
 //! `check_read`, its raw data, the `SerializedFile`'s `userInformation` and
 //! the case's resource reads must be UnityPy's for that way.
 
 // Test code: a failed lookup is a failed test.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{Value as J, json};
@@ -19,6 +19,7 @@ use unityrs_core::stream::{STREAM_READER, StreamRefusal};
 use unityrs_core::value::Value;
 use unityrs_core::walk::{L2Kind, ParseError, ReadDetail, ReadError};
 use unityrs_core::{Bytes, Error, File, Parsed, RawStr, SerializedFile};
+use unityrs_testkit::scratch::Scratch;
 
 fn fixture() -> J {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/d/paths.json");
@@ -43,25 +44,6 @@ fn hex(b: &[u8]) -> String {
         let _ = write!(s, "{x:02x}");
         s
     })
-}
-
-/// A directory this test owns, removed with what it holds when dropped (a
-/// failed assertion included: the test unwinds through it).
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        let path =
-            std::env::temp_dir().join(format!("unityrs-env-paths-{}-{tag}", std::process::id()));
-        std::fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 const REFUSALS: [StreamRefusal; 5] = [
@@ -213,13 +195,13 @@ fn a_path_is_read_with_the_stream_readers_rules() {
     assert!(cases.len() >= 15, "{}", cases.len());
     let mut differ = 0;
     for (i, case) in cases.iter().enumerate() {
-        let dir = TempDir::new(&i.to_string());
+        let dir = Scratch::new(&format!("env-paths-{i}"));
         for f in case["files"].as_array().unwrap() {
-            std::fs::write(dir.0.join(f[0].as_str().unwrap()), unruns(&f[1])).unwrap();
+            std::fs::write(dir.join(f[0].as_str().unwrap()), unruns(&f[1])).unwrap();
         }
         let name = case["name"].as_str().unwrap();
         for (how, by_path) in [("bytes", false), ("path", true)] {
-            let got = run(case, &dir.0, by_path);
+            let got = run(case, &dir, by_path);
             assert_eq!(got, case[how], "{name}, loaded from {how}");
         }
         differ += usize::from(case["bytes"] != case["path"]);

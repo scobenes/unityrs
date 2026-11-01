@@ -10,19 +10,17 @@
 use std::cell::Cell;
 use std::path::PathBuf;
 
+use unityrs_testkit::scratch::Scratch;
+
 use super::{NAME_STEPS, Selection, collect};
 
-/// A folder of index files under the system temp folder, removed on drop,
-/// a failing test's included.
-struct Scratch(PathBuf);
+/// A folder of index files, removed however the test ends
+/// (`unityrs_testkit::scratch`).
+struct Folder(Scratch);
 
-impl Scratch {
+impl Folder {
     fn new(what: &str) -> Self {
-        let held = Self(
-            std::env::temp_dir().join(format!("unityrs-dump-select-{what}-{}", std::process::id())),
-        );
-        std::fs::create_dir_all(&held.0).unwrap();
-        held
+        Self(Scratch::new(&format!("dump-select-{what}")))
     }
 
     /// An index file `name` whose entries are bundles at `paths`.
@@ -34,12 +32,6 @@ impl Scratch {
         let path = self.0.join(name);
         std::fs::write(&path, format!(r#"{{"files": [{}]}}"#, entries.join(", "))).unwrap();
         path
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -63,7 +55,7 @@ type Names = Result<Vec<String>, String>;
 
 #[test]
 fn a_name_two_inputs_give_fails_the_run_at_its_first_repeat() {
-    let dir = Scratch::new("repeat");
+    let dir = Folder::new("repeat");
     let xyz = dir.index("xyz.json", &["x", "y", "z"]);
     let wzyz = dir.index("wzyz.json", &["w", "z", "y", "z"]);
     let vv = dir.index("vv.json", &["v", "v"]);
@@ -103,7 +95,7 @@ fn a_name_two_inputs_give_fails_the_run_at_its_first_repeat() {
 #[test]
 fn the_repeat_check_takes_a_step_a_name() {
     const N: usize = 4096;
-    let dir = Scratch::new("steps");
+    let dir = Folder::new("steps");
     let a = dir.index(
         "a.json",
         &(0..N).map(|i| format!("a/{i}")).collect::<Vec<_>>(),

@@ -25,7 +25,6 @@ import contextlib
 import json
 import struct
 import sys
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -38,6 +37,9 @@ from UnityPy.streams import EndianBinaryReader
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "crates/unityrs-core/tests/fixtures/scaffold"
+sys.path.insert(0, str(ROOT / "tools/parity"))
+
+import scratch  # noqa: E402
 
 I64_MIN, I64_MAX = -(2**63), 2**63 - 1
 I32_MIN, I32_MAX = -(2**31), 2**31 - 1
@@ -312,8 +314,8 @@ def int_array_cases(s: Streams | None) -> list[dict]:
 
 
 def stream_fixture(meta: dict, string_datas: list[bytes]) -> dict:
-    with tempfile.TemporaryDirectory() as tmp:
-        s = Streams(Path(tmp))
+    with scratch.folder() as tmp:
+        s = Streams(tmp)
         return {
             "stream_set_position": stream_set_cases(s),
             "stream_read": stream_read_cases(s),

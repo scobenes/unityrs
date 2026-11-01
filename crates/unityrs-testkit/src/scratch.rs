@@ -159,9 +159,9 @@ pub fn remove_tree(path: &Path) {
         let _ = std::fs::remove_file(path);
         return;
     }
-    let mut todo = vec![path.to_path_buf()];
+    let mut pending = vec![path.to_path_buf()];
     let mut folders = Vec::new();
-    while let Some(dir) = todo.pop() {
+    while let Some(dir) = pending.pop() {
         open_up(&dir);
         let entries = std::fs::read_dir(&dir);
         folders.push(dir);
@@ -170,7 +170,7 @@ pub fn remove_tree(path: &Path) {
         };
         for e in entries.flatten() {
             if e.file_type().is_ok_and(|t| t.is_dir()) {
-                todo.push(e.path());
+                pending.push(e.path());
             } else {
                 let _ = std::fs::remove_file(e.path());
             }
