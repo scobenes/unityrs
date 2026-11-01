@@ -71,7 +71,11 @@ pub struct Limits {
     /// One block's actual decoded output (blocks-info's included). LZMA
     /// decodes to the end of its input whatever blocks-info says
     /// (`helpers/CompressionHelper.py:17-44`), so a bomb is stopped here
-    /// before the meter. Default 1 GiB.
+    /// before the meter. Default 4 GiB: a bundle states each block's size,
+    /// and its blocks-info's, in 32 bits (`files/BundleFile.py`, each
+    /// `read_u_int`), so no well-formed block's output reaches it (review
+    /// round 9's sweep; it was 1 GiB, which refused an LZMA bundle, one
+    /// block, that decodes to more).
     pub max_block_output: u64,
     /// The *work* one open of an input may cost, in bytes: every byte a
     /// block decode writes, kept or not (a first decode, a measuring decode
@@ -143,26 +147,32 @@ pub struct Limits {
     /// UnityPy refuses with `RecursionError` (Python's 1,000 frames) passes
     /// this first. What it costs in stack: [`Self::stack_needed`]. Default 512.
     pub max_value_depth: u32,
-    /// Values built by one object read, each element of a primitive run
-    /// included, and each child the read skips (a `ReferencedObject`'s data
+    /// The *work* of one object read or write that neither its bytes nor
+    /// its memory bound: each child it skips (a `ReferencedObject`'s data
     /// that does not resolve to a tree, a `ManagedReferencesRegistry` once
-    /// one is in scope); likewise the values one write of an object writes
-    /// and the children it skips. This bounds the *work* of one read or
-    /// write, which their bytes do not: the pure-Python reader can read the
-    /// same bytes again after a negative length, a class can skip many
-    /// children for each element of an array, and a tree that repeats a name
-    /// hands one value to each child of the name, which writes it whole. A
-    /// write through the tree its value was read with counts no more than
-    /// its read did unless the tree repeats a name
-    /// (`tests/walk_bounds.rs`). The values' memory is the meter's, and the
-    /// work of every read and write together the open's
+    /// one is in scope), since a class can skip many children for each
+    /// element of an array; each value built or written under a child whose
+    /// name a sibling repeats, since such a tree hands one value to each
+    /// child of the name, which writes it whole, and a read keeps only the
+    /// last; each value a write writes of a class whose value is not a dict;
+    /// and every value and every element of a primitive run the pure-Python
+    /// reader reads, since a negative length lets it read the same bytes
+    /// again. A value UnityPyBoost's reader keeps, a primitive run being
+    /// one, is charged to the meter, and a write writes it from there, so
+    /// neither counts (review round 9: a `vector<UInt8>` of 2^26 + 1 bytes
+    /// was refused at this default; `tests/walk_runs.rs`). A write through
+    /// the tree its value was read with counts no more than its read did
+    /// unless the tree repeats a name (`tests/walk_bounds.rs`). The work of
+    /// every read and write together is the open's
     /// ([`Self::max_decode_work`]). Default 2^26.
     pub max_values_per_object: u64,
     /// Array elements whose read ended no further on than it began, per
     /// object: a vector of empty structs with a huge count reads no byte per
     /// element, nor does a pure-Python element whose negative `TypelessData`
     /// length takes the reader back to its start. An element that reads a
-    /// byte is never counted, whatever its tree. Default 2^20.
+    /// byte is never counted, whatever its tree. An array of more elements
+    /// than this of a class with no fields is well-formed and refused
+    /// (`PARITY.md` 19.3; plan section 9, Q15). Default 2^20.
     pub max_zero_size_elements: u64,
     /// Elements a read reserves before the bytes prove they exist, in all
     /// the lists it holds open at once (a list nested in another, or in a
@@ -208,7 +218,7 @@ impl Default for Limits {
         Self {
             max_input_memory: 8 << 30,
             max_input_bytes: 4 << 30,
-            max_block_output: 1 << 30,
+            max_block_output: 4 << 30,
             max_decode_work: 32 << 30,
             max_inflate: 4 << 30,
             max_container_depth: 16,
