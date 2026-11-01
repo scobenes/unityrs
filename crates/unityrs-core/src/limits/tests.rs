@@ -265,12 +265,19 @@ fn a_boxed_slice_is_charged_at_its_exact_size() {
     assert_eq!(tight.used(), 0);
 }
 
+/// The defaults. A bundle states each block's size, and its blocks-info's,
+/// as a `u32` (UnityPy's `files/BundleFile.py`, each `read_u_int`), so the
+/// block cap is above every size a well-formed block can have (review round
+/// 9's sweep: at 1 GiB it refused an LZMA bundle, one block, decoding to
+/// more, which UnityPy reads).
 #[test]
 fn the_defaults() {
     let l = Limits::default();
     assert_eq!(l.max_input_memory, 8 << 30);
     assert_eq!(l.max_input_bytes, 4 << 30);
-    assert_eq!(l.max_block_output, 1 << 30);
+    assert_eq!(l.max_block_output, 4 << 30);
+    assert!(l.max_block_output > u64::from(u32::MAX));
+    assert!(l.max_block_output < l.max_input_memory);
 }
 
 /// Every refusal of the dependency pool the core meets is counted on its

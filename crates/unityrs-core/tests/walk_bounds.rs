@@ -1,19 +1,23 @@
-//! Plan 3.10, "Bounds", and 3.11: the writer counts the values it writes
-//! against the bound the readers count theirs against,
-//! `Limits::max_values_per_object`, and that bound refuses no write whose
-//! read it allowed, unless the tree repeats a name.
+//! Plan 3.10, "Bounds", and 3.11: the writer counts what it writes against
+//! the bound the readers count against, `Limits::max_values_per_object`,
+//! and that bound refuses no write whose read it allowed, unless the tree
+//! repeats a name.
 //!
 //!     scripts/dev cargo test -p unityrs-core --test walk_bounds
 //!
 //! Every case `tools/fixtures/walk.py` records (`tests/fixtures/walk/cases.json`)
 //! is read by both readers, then read again with the bound at the least
 //! the read passes under, found by bisection: the read then counts exactly
-//! that many values. Its value, written under that bound with either rule,
-//! has the outcome it has under the default limits: a write through the
-//! tree it was read with counts no more values than its read, one a value
-//! or a skipped child. A tree that repeats a name hands one value to every
-//! child of the name, each of which writes it whole, so a write can count
-//! more than its read; the last test pins one that does.
+//! that much. Its value, written under that bound with either rule, has the
+//! outcome it has under the default limits: a write through the tree it
+//! was read with counts no more than its read. UnityPyBoost's read counts
+//! each child it skips and each value under a name a sibling repeats; the
+//! pure-Python reader every value and every element of a primitive run;
+//! the writer each child it skips, each value under a repeated name and
+//! each class it writes from a value that is not a dict (`walk::Work`'s
+//! docs). A tree that repeats a name hands one value to every child of the
+//! name, each of which writes it whole, so a write can count more than its
+//! read; the last test pins one that does.
 
 use std::sync::Arc;
 
@@ -205,12 +209,93 @@ fn a_write_counts_no_more_values_than_its_read() {
     assert!(n > 200, "only {n} reads");
 }
 
+/// Whether a tree can skip a child (a `ManagedReferencesRegistry` once one
+/// is in scope, a `ReferencedObject`'s data) or repeats a name: what
+/// UnityPyBoost's read and the writer count against the bound.
+fn counts_against_the_bound(tree: &Tree) -> bool {
+    repeats_a_name(tree)
+        || tree.list().rows().iter().any(|r| {
+            matches!(
+                r.ty.as_bytes(),
+                b"ManagedReferencesRegistry" | b"ReferencedObjectData"
+            )
+        })
+}
+
+/// Review round 9: every value UnityPyBoost's read keeps sits in a slot the
+/// meter charges, and a primitive run is one value of the object's bytes,
+/// so the read counts none of them against `max_values_per_object`, nor
+/// does a write of its value through the same tree count a value it
+/// writes. Every case whose tree (and ref types') skips nothing and repeats
+/// no name reads, and writes under either rule, under a bound of 0 exactly
+/// as under the default (a struct array, a run and a string list among
+/// them), where the bound counted each value and each run's element (a
+/// `Mesh` of a 2^26 + 1 byte `vector<UInt8>` was refused at the default).
+/// The pure-Python reader still counts every value: each of those cases
+/// that builds one is refused under 0.
+#[test]
+fn a_boost_read_and_its_write_count_no_value_they_keep() {
+    let cases = load("cases.json");
+    let default = Limits::default().max_values_per_object;
+    let (mut n, mut bad) = (0, Vec::new());
+    for c in cases.as_array().unwrap() {
+        let name = c["name"].as_str().unwrap();
+        let tree = Tree::compile(nodes(&c["nodes"]), &Limits::default()).unwrap();
+        let refs = ref_types(c.get("ref_types"));
+        let ref_counts = refs.iter().any(|r| match r.tree(&Limits::default()) {
+            Some(Ok(t)) => counts_against_the_bound(&t),
+            _ => false,
+        });
+        if counts_against_the_bound(&tree) || ref_counts {
+            continue;
+        }
+        let endian = match c.get("endian").and_then(Json::as_str) {
+            Some(">") => Endian::Big,
+            _ => Endian::Little,
+        };
+        let data = Bytes::from(unhex(c["hex"].as_str().unwrap()));
+        let start = usize::try_from(c.get("start").and_then(Json::as_i64).unwrap_or(0)).unwrap();
+        let read_at = |reader, max| read(reader, &data, start, &tree, &refs, endian, max);
+        let Ok(want) = read_at("boost", default) else {
+            continue;
+        };
+        n += 1;
+        match read_at("boost", 0) {
+            Ok(p) if p.value() == want.value() && p.bytes_read == want.bytes_read => {}
+            other => bad.push(format!("{name} [boost read]: {other:?}")),
+        }
+        for rules in [WriteRules::UnityPy, WriteRules::MirrorReader] {
+            let w = write(&want, &tree, &refs, endian, rules, default);
+            let have = write(&want, &tree, &refs, endian, rules, 0);
+            if have != w {
+                bad.push(format!("{name} [{rules:?} write]: {have:?}, not {w:?}"));
+            }
+        }
+        if read_at("python", default).is_ok() {
+            assert!(
+                matches!(read_at("python", 0), Err(ReadError { detail: walk::ReadDetail::Limit(l), .. })
+                    if l.kind == LimitKind::ValuesPerObject),
+                "{name}: the pure-Python reader under 0"
+            );
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{} of {n} cases differ under a bound of 0:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+    assert!(n > 60, "only {n} reads");
+}
+
 /// The exception: `Base { vector<int> a; vector<int> a }` over an empty
-/// vector and one of five ints reads eight values (the class, the two
-/// vectors and the second's five ints), and keeps the second vector, which
-/// the write writes through both children: thirteen values, so under the
-/// least bound its read passes the write is refused, and under twice that
-/// it is not.
+/// vector and one of five ints. UnityPyBoost's read counts the two vectors,
+/// both under the repeated name, each run one value; the pure-Python
+/// reader counts eight (the class, the two vectors and the second's five
+/// ints). Both keep the second vector, which the write writes through both
+/// children, each a vector and its five ints under the repeated name:
+/// twelve, so under the least bound either read passes the write is
+/// refused, and it passes under its own twelve.
 #[test]
 fn a_repeated_name_can_write_more_values_than_its_read() {
     let mut rows = vec![NodeRow::new(0, "Base", "Base")];
@@ -232,23 +317,25 @@ fn a_repeated_name_can_write_more_values_than_its_read() {
         bytes.extend_from_slice(&i.to_le_bytes());
     }
     let data = Bytes::from(bytes);
-    for reader in ["boost", "python"] {
+    for (reader, counted) in [("boost", 2), ("python", 8)] {
         let read_at = |max| read(reader, &data, 0, &tree, &[], Endian::Little, max);
         let least = least_bound(|max| read_at(max).is_ok());
-        assert_eq!(least, 8, "{reader}: the class, two vectors and five ints");
+        assert_eq!(least, counted, "{reader}");
         let p = read_at(least).unwrap();
         for rules in [WriteRules::UnityPy, WriteRules::MirrorReader] {
-            assert_eq!(
-                write(&p, &tree, &[], Endian::Little, rules, least),
-                Err(WriteError::Limit(LimitError {
-                    kind: LimitKind::ValuesPerObject,
-                    value: least + 1,
-                    max: least,
-                })),
-                "{reader} read, {rules:?} write"
-            );
+            for max in [least, 11] {
+                assert_eq!(
+                    write(&p, &tree, &[], Endian::Little, rules, max),
+                    Err(WriteError::Limit(LimitError {
+                        kind: LimitKind::ValuesPerObject,
+                        value: max + 1,
+                        max,
+                    })),
+                    "{reader} read, {rules:?} write under {max}"
+                );
+            }
             assert!(
-                write(&p, &tree, &[], Endian::Little, rules, 2 * least).is_ok(),
+                write(&p, &tree, &[], Endian::Little, rules, 12).is_ok(),
                 "{reader} read, {rules:?} write"
             );
         }

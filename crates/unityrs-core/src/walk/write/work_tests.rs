@@ -164,8 +164,9 @@ fn a_long_child_name_is_cleaned_from_its_first_bytes() {
 /// children repeat a name kept each name's position in a table it counted
 /// and cleared by two passes over the children before it wrote the first.
 /// The table now grows as the children find their entries, so a write
-/// refused at the first child (past `max_values_per_object`, 1 here: the
-/// root's value) takes the same steps and work for 4 children as for 2^16.
+/// refused at the first child (past `max_values_per_object`, 0 here: the
+/// first child's name repeats, so its value counts against the bound)
+/// takes the same steps and work for 4 children as for 2^16.
 #[test]
 fn a_write_refused_at_a_class_first_child_takes_no_pass_over_the_rest() {
     let run = |n: usize| {
@@ -186,7 +187,7 @@ fn a_write_refused_at_a_class_first_child_takes_no_pass_over_the_rest() {
                 .collect(),
         );
         let limits = Limits {
-            max_values_per_object: 1,
+            max_values_per_object: 0,
             ..Limits::default()
         };
         STEPS.with(|s| s.set(0));

@@ -7,14 +7,15 @@
 //! (`Dict::set`) and by the writer (`write::Lookup::get`).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 
 use super::{ReadCtx, ReadOptions, RefTypes, STEP_WORK, WriteCtx, WriteRules, boost, python};
-use crate::budget::DecodeBuf;
+use crate::budget::{BudgetExceeded, DecodeBuf, MemoryBudget, Permit, PermitHome, Reservation};
 use crate::error::LimitKind;
 use crate::files::SerializedType;
-use crate::limits::{Limits, Meter};
+use crate::limits::{Limits, Meter, heap_cost};
 use crate::raw::RawStr;
 use crate::stream::Endian;
 use crate::typetree::{NodeList, NodeRow, Tree};
@@ -237,15 +238,69 @@ fn a_finished_dict_holds_no_spare_entries() {
     }
 }
 
+/// A budget that refuses nothing and keeps the most it ever held: a
+/// meter books every charge it grants with its budget, so this is the
+/// read's peak, a growth's two buffers included. Its permits share one
+/// home, so they merge as a pool's do.
+#[derive(Debug, Default)]
+struct Peak(Arc<Held>);
+
+#[derive(Debug, Default)]
+struct Held {
+    now: AtomicU64,
+    most: AtomicU64,
+}
+
+impl PermitHome for Held {
+    fn release(&self, bytes: u64) {
+        self.now.fetch_sub(bytes, Ordering::AcqRel);
+    }
+}
+
+impl MemoryBudget for Peak {
+    fn try_reserve(&self, bytes: u64, _: Reservation) -> Result<Permit, BudgetExceeded> {
+        let now = self.0.now.fetch_add(bytes, Ordering::AcqRel) + bytes;
+        self.0.most.fetch_max(now, Ordering::AcqRel);
+        Ok(Permit::new(bytes, self.0.clone()))
+    }
+}
+
+/// `tree` read over `data` by `reader`: the most its meter held at once.
+fn peak(reader: &str, tree: &Arc<Tree>, data: &[u8]) -> u64 {
+    let data = Bytes::copy_from_slice(data);
+    let options = ReadOptions::default();
+    let budget = Peak::default();
+    let held = budget.0.clone();
+    let meter = Meter::new(u64::MAX, Arc::new(budget), Reservation::Input);
+    let ctx = ReadCtx {
+        endian: Endian::Little,
+        ref_types: RefTypes::List(&[]),
+        options: &options,
+        meter: &meter,
+    };
+    let p = match reader {
+        "boost" => boost::read(&data, tree, &ctx),
+        _ => python::read(&data, 0, tree, &ctx),
+    };
+    p.unwrap_or_else(|e| panic!("{reader}: {e:?}"));
+    held.most.load(Ordering::Acquire)
+}
+
 /// The same rule for lists (plan 3.10, "Bounds"): a list read past its
 /// first reservation (`Limits::max_prealloc` elements, 2^16) grows
 /// geometrically but never past its length, so it ends with no spare item,
-/// in each reader's list loops (a string, a `pair`, a class; the element
-/// aligned or not).
+/// in each reader's list loops (a string, a `pair`, a class, an `int`; the
+/// element aligned or not). A primitive run ends boxed, which gives back
+/// any spare capacity, so the growth is pinned by its peak instead: no read
+/// holds more at once than its value and its first reservation, the one
+/// buffer its growth moves out of (review round 9: the pure-Python
+/// reader's unaligned `vector<int>`, read one element at a time, passed the
+/// suite growing to twice its length).
 #[test]
 fn a_list_read_past_its_first_reservation_holds_no_spare_item() {
-    let count = Limits::default().max_prealloc + 1;
-    let elements: [Element; 3] = [
+    let first = Limits::default().max_prealloc;
+    let count = first + 1;
+    let elements: [Element; 4] = [
         ("string", &[(3, "string", "data")], 4),
         (
             "pair",
@@ -257,6 +312,7 @@ fn a_list_read_past_its_first_reservation_holds_no_spare_item() {
             8,
         ),
         ("class", &[(3, "X", "data"), (4, "int", "a")], 4),
+        ("int", &[(3, "int", "data")], 4),
     ];
     for (what, element, size) in elements {
         for flag in [0, 0x4000] {
@@ -279,17 +335,29 @@ fn a_list_read_past_its_first_reservation_holds_no_spare_item() {
             let mut data = u32::try_from(count).unwrap().to_le_bytes().to_vec();
             data.resize(4 + count * size, 0);
             for reader in READERS {
-                let (p, _, _) = read(reader, &t, &data);
+                let (p, used, _) = read(reader, &t, &data);
                 let mut found = Vec::new();
                 spare(p.value(), &mut found);
                 assert_eq!(found, [], "{reader} {what} {flag:#x}: (length, capacity)");
                 let Value::Dict(m) = p.value() else {
                     panic!("{reader} {what}: not a dict")
                 };
-                let items = m.entries().first().map(|(_, v)| v);
+                let (len, width) = match m.entries().first().map(|(_, v)| v) {
+                    Some(Value::List(l)) => (l.len(), size_of::<Value>()),
+                    Some(Value::Tuple(l)) => (l.len(), size_of::<Value>()),
+                    Some(Value::Prims(r)) => (r.len(), size),
+                    other => panic!("{reader} {what} {flag:#x}: {other:?}"),
+                };
+                assert_eq!(len, count, "{reader} {what} {flag:#x}: items");
+                // What the value holds, the buffer a growth moves out of,
+                // and a little for the read's own small charges a growth
+                // may overlap (far less than a growth past the length
+                // takes: `first * width` more).
+                let most = used + heap_cost(u64::try_from(first * width).unwrap()) + 64;
+                let held = peak(reader, &t, &data);
                 assert!(
-                    matches!(items, Some(Value::List(l)) if l.len() == count),
-                    "{reader} {what} {flag:#x}: not {count} items"
+                    held <= most,
+                    "{reader} {what} {flag:#x}: held {held} bytes at once, past {most}"
                 );
             }
         }

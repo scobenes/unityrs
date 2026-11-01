@@ -202,6 +202,24 @@ impl Reader<'_, '_> {
         out
     }
 
+    /// A class's or a `ReferencedObject`'s child, read by `read`: under a
+    /// name a sibling repeats, every value it builds counts against
+    /// `max_values_per_object` (`Work`'s docs).
+    #[inline]
+    fn child(
+        &mut self,
+        repeated: bool,
+        read: impl FnOnce(&mut Self) -> Result<Out, ReadError>,
+    ) -> Result<Out, ReadError> {
+        if !repeated {
+            return read(self);
+        }
+        self.work.enter_repeated();
+        let out = read(self);
+        self.work.leave_repeated();
+        out
+    }
+
     /// `read_typetree_value` (UnityPy TypeTreeHelper.cpp:702-884).
     fn value_inner(&mut self, t: &Arc<Tree>, lx: ListIx, node: NodeId) -> Result<Out, ReadError> {
         let me = t.info(node).copied().ok_or_else(|| {
@@ -210,7 +228,7 @@ impl Reader<'_, '_> {
                 ReadDetail::Python("node outside its tree"),
             )
         })?;
-        self.work.values(1, self.at())?;
+        self.work.kept(self.at())?;
         // R15: a flagged node aligns after its value.
         let mut align = me.align;
         let out = match me.shape {
@@ -329,7 +347,7 @@ impl Reader<'_, '_> {
         let out = match ei.kind {
             Kind::U8 => {
                 let end = self.bound(count)?;
-                self.work.run(as_u64(count), 1, self.at())?;
+                self.work.run(as_u64(count), self.at())?;
                 let b = self.data.slice(self.pos..end);
                 self.pos = end;
                 Out::Plain(Value::Prims(PrimArray::U8(b)))
@@ -366,7 +384,7 @@ impl Reader<'_, '_> {
         let total = count.checked_mul(N).ok_or_else(|| self.eof(usize::MAX))?;
         let end = self.bound(total)?;
         let at = self.at();
-        self.work.run(as_u64(count), N as u64, at)?;
+        self.work.run(as_u64(total), at)?;
         let mut items: MeteredVec<T> = self.builder.vec();
         // The bytes are there: the run's memory is that of its bytes.
         items
@@ -412,7 +430,7 @@ impl Reader<'_, '_> {
             .map_err(|e| charge_error(at, e))?;
         for i in 0..count {
             grow_step(&mut items, count).map_err(|e| charge_error(self.at(), e))?;
-            self.work.values(1, self.at())?;
+            self.work.kept(self.at())?;
             let before = self.pos;
             let first = self.value(t, lx, a)?;
             let second = self.value(t, lx, b)?;
@@ -455,7 +473,7 @@ impl Reader<'_, '_> {
                 changed = true;
                 self.has_registry = true;
             }
-            let v = self.value(t, lx, *c)?;
+            let v = self.child(ci.repeated, |r| r.value(t, lx, *c))?;
             let at = self.at();
             dict.set(&mut self.work, ci.key, ci.slot, v, at)?;
         }
@@ -508,11 +526,11 @@ impl Reader<'_, '_> {
                     Some(RefNode::Tree(rt)) => {
                         let at = self.at();
                         let rlx = self.trees.index(&mut self.builder, &rt, at)?;
-                        self.value(&rt, rlx, rt.root())?
+                        self.child(ci.repeated, |r| r.value(&rt, rlx, rt.root()))?
                     }
                 }
             } else {
-                self.value(t, lx, *c)?
+                self.child(ci.repeated, |r| r.value(t, lx, *c))?
             };
             let at = self.at();
             dict.set(&mut self.work, ci.key, ci.slot, v, at)?;
