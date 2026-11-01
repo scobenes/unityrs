@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::Value as Json;
 use unityrs_dump::select::{MAX_FOLDER_DEPTH, Selection, collect};
+use unityrs_testkit::child;
 
 fn fixture() -> Json {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -77,16 +78,14 @@ impl Tree {
             Some(n) => format!("ulimit -n {n} && exec \"$@\""),
             None => "exec \"$@\"".to_owned(),
         });
-        let o = cmd
-            .arg("sh")
+        cmd.arg("sh")
             .arg(env!("CARGO_BIN_EXE_unityrs"))
             .arg("dump")
             .arg(&self.top)
             .arg("-q")
             .arg("-o")
-            .arg(&out)
-            .output()
-            .expect("sh runs the unityrs binary");
+            .arg(&out);
+        let o = child::output(&mut cmd).expect("sh runs the unityrs binary");
         let names = std::fs::read_to_string(&out).ok().map(|dump| {
             dump.lines()
                 .map(|l| serde_json::from_str::<Json>(l).unwrap())
