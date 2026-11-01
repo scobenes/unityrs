@@ -8,7 +8,8 @@ entry's `sha256` pin (`collect_inputs`, `main`). Recorded here:
 
 - "str": Python's `str(json.loads(text))` for a table of JSON texts of every kind: integers of any
   sign and size, floats at and past every boundary (and seeded random ones, in more digits than round
-  trip), NaN and the infinities, strings with every escape and lone surrogates, lists and dicts of all
+  trip; seeded doubles whose shortest digits break a tie, and powers of two whose nearest digits of
+  that length do not round-trip), NaN and the infinities, strings with every escape and lone surrogates, lists and dicts of all
   of these (their `repr`s; seeded random code points, so `str.isprintable` and the quote rule are
   read), a repeated key;
 - "select": `unitypy_dump.collect_inputs` itself over an index this script writes, with a `--kind` and
@@ -31,12 +32,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import struct
 import subprocess
 import sys
 import tempfile
+from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Context, Decimal, localcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -97,6 +100,51 @@ def random_float(rng: random.Random) -> str:
     return f"{x:.{rng.randint(0, 25)}e}"
 
 
+def shortest_digits(x: float) -> tuple[Decimal, int]:
+    """`abs(x)`'s exact value, and the exponent of the last digit `repr(x)` gives."""
+    digits = repr(abs(x)).split("e")[0].replace(".", "").strip("0") or "0"
+    exact = Decimal(abs(x))
+    return exact, exact.adjusted() - len(digits) + 1
+
+
+def shortest_tie(x: float) -> bool:
+    """Whether `repr(x)`'s digits are one of two of that length that round-trip and lie equally near."""
+    exact, q = shortest_digits(x)
+    with localcontext(Context(prec=1200)):
+        lo = exact.scaleb(-q).to_integral_value(rounding=ROUND_FLOOR).scaleb(q)
+        hi = lo + Decimal(1).scaleb(q)
+        return exact - lo == hi - exact and float(lo) == float(hi) == abs(x)
+
+
+def nearest_misses(x: float) -> bool:
+    """Whether the decimal of `repr(x)`'s length nearest `x` fails to round-trip."""
+    exact, q = shortest_digits(x)
+    with localcontext(Context(prec=1200)):
+        return float(exact.scaleb(-q).to_integral_value(rounding=ROUND_HALF_EVEN).scaleb(q)) != abs(x)
+
+
+def tie_floats(rng: random.Random) -> list[str]:
+    """Exact decimal texts of doubles whose shortest digits break a tie, which random doubles almost never
+    do (review round 8: Rust's shortest digits break it upwards, Python's `repr` to the even digit), and
+    of powers of two whose nearest decimal of that length does not round-trip. A tie's exact decimal has
+    at most 18 digits, so its double is an odd number over at most 2^25, or an odd multiple of 5^(t+1)
+    times 2^t: a decimal ending in 5 and t zeros."""
+    ties: list[float] = []
+    while len(ties) < 160:
+        if rng.random() < 0.6:
+            x = (rng.getrandbits(rng.randint(1, 53)) | 1) / 2 ** rng.randint(1, 25)
+        else:
+            t = rng.randint(0, 21)
+            x = float((rng.randrange(1, max(2, 2**53 // 5 ** (t + 1))) | 1) * 5 ** (t + 1) * 2**t)
+        x = -x if rng.random() < 0.25 else x
+        if shortest_tie(x) and x not in ties:
+            ties.append(x)
+    misses = [x for x in (math.ldexp(1.0, e) for e in range(-1074, 1024)) if nearest_misses(x)]
+    # A float's text, `.0` after an integer's digits so json.loads reads a float.
+    texts = [str(Decimal(x)) for x in ties + misses[:4] + rng.sample(misses[4:], 12)]
+    return [t if "." in t or "E" in t else t + ".0" for t in texts]
+
+
 STR_TEXTS = [
     "null", "true", "false",
     "0", "-0", "1", "-1", "4100", "100056", "9223372036854775807", "9223372036854775808",
@@ -118,6 +166,9 @@ STR_TEXTS = [
     '["\\u0378\\u00a0\\u2028\\u007f\\udcff\\ud83d\\ude00\\\\\\t\\n\\r\\u0000\\u001f\\u0085\\u00ad"]',
     '{"x": 1}', '{"a": 1, "b": 2, "a": 3}', '{"k": [1, {"k": true}]}', '{"\\u0000": "\'", "\'\\"": ""}',
     '[[[["deep"]]]]', '{"a": {"b": {"c": [null]}}}',
+    # Review round 8: shortest digits that break a tie (Python `...320.2`, `...806.62`).
+    "1551563132437320.25", "79686618578806.625", "1125899906842624.25", "22620844907483.3125",
+    "-1551563132437320.25", "[79686618578806.625]", "2.98023223876953125E-8", "5.9604644775390625E-7",
 ]
 
 
@@ -127,6 +178,7 @@ def str_cases() -> list[dict]:
     texts += [random_float(rng) for _ in range(300)]
     texts += ["[" + ", ".join(random_string(rng) for _ in range(rng.randint(1, 3))) + "]" for _ in range(200)]
     texts += ["{" + random_string(rng) + ": " + random_string(rng) + "}" for _ in range(50)]
+    texts += tie_floats(random.Random(SEED + 1))
     out = []
     for text in texts:
         try:
@@ -157,7 +209,8 @@ BUILDS = (
     '{"path":"bb","kind":"bundle","build":{"a":1,"a":2}},'
     '{"path":"bc","kind":"bundle","build":-0.0},'
     '{"path":"bd","kind":"bundle","build":["\\u00e9\\u0378", "it\'s"]},'
-    '{"path":"be","kind":"bundle","build":["\\u00e9\\u0378\\u00a0it\'s\\ud83d\\ude00\\udbff\\udfff"]}'
+    '{"path":"be","kind":"bundle","build":["\\u00e9\\u0378\\u00a0it\'s\\ud83d\\ude00\\udbff\\udfff"]},'
+    '{"path":"bf","kind":"bundle","build":1551563132437320.25}'
     "]}"
 )
 BUILD_ARGS = [
@@ -165,6 +218,7 @@ BUILD_ARGS = [
     b"\xff", b"nan", b"inf", b"None", b"4100", b"4100.0", b"{'a': 2}", b"x,0,inf", b"[True],,None",
     "['\u00e9\\u0378', \"it's\"]".encode(),
     "[\"\u00e9\\u0378\\xa0it's\U0001f600\\U0010ffff\"]".encode(),
+    b"1551563132437320.2", b"1551563132437320.3",  # review round 8: a tie, `repr` takes the even digit
 ]
 KINDS = (
     '{"files":['
@@ -278,11 +332,13 @@ RUN_TEXTS = [
     ("kind_lone_surrogate", b'{"files":[{"path":"f","kind":"\\udcff"}]}'),
     ("build_object", b'{"files":[{"path":"f","kind":"bundle","build":{"x": 1}}]}'),
     ("build_negative_zero", b'{"files":[{"path":"f","kind":"bundle","build":-0}]}'),
+    ("build_tie", b'{"files":[{"path":"f","kind":"bundle","build":79686618578806.625}]}'),
 ]
 RUN_ARGV = {
     "kind_lone_surrogate": [b"--kind", b"bundle,\xff"],
     "build_object": [b"--build", b"{'x': 1}"],
     "build_negative_zero": [b"--build", b"0,\xfe"],
+    "build_tie": [b"--build", b"79686618578806.62"],
 }
 RUN_FILES = ["66", "ff"]  # "f", and the byte 0xFF
 
