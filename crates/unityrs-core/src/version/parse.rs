@@ -18,9 +18,9 @@ pub const LIMB_WORK: u64 = 8;
 const LIMBS: usize = 226;
 
 /// The most limbs a packed version a parse makes holds
-/// ([`super::Packed::big_limbs`]): every step stays within the
-/// 226-limb scratch it packs in, so a writer can convert any input's
-/// version in a scratch of its own of this size (`unityrs_dump::json::write_packed`).
+/// ([`super::Packed::big_limbs`]): every step stays within the 226-limb
+/// scratch it packs in, so a writer can convert any input's version in a
+/// scratch of its own of this size (`unityrs_dump::json::write_packed`).
 pub const MAX_LIMBS: usize = LIMBS;
 
 /// 10^19, the most digits a `u64` chunk takes.

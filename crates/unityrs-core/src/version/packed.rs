@@ -60,8 +60,9 @@ impl Packed {
     /// The limbs of a value of 2^128 or more, borrowed: little-endian, the
     /// last one non-zero, at most [`super::MAX_LIMBS`] for a version a
     /// parse packed. `None` below 2^128, where [`Self::as_u128`] is the
-    /// value. Unlike [`Self::to_limbs`] it copies nothing, so a writer of an
-    /// input's version needs no heap for it (`unityrs_dump::json::write_packed`).
+    /// value. Unlike [`Self::to_limbs`] it copies nothing, so a writer of
+    /// an input's version needs no heap for it
+    /// (`unityrs_dump::json::write_packed`).
     #[must_use]
     pub fn big_limbs(&self) -> Option<&[u64]> {
         match &self.0 {

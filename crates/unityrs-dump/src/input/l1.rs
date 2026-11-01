@@ -7,10 +7,10 @@
 //! a vector charged to the input's meter before it is allocated
 //! ([`MeteredVec`]), its charge held with the record's (`held`) until the
 //! record's line is written; so is a packed version of 2^128 or more, whose
-//! limbs the record copies (up to 226, 1,808 bytes: [`packed`]). A refusal of the meter is the input's
-//! `InputMemory` refusal, and of the budget or the allocator its `crash`
-//! record ([`super::dump_on`]), never an abort of the run. Each row's own
-//! strings are the core's, shared, not copied.
+//! limbs the record copies (up to 226, 1,808 bytes: [`packed`]). A refusal
+//! of the meter is the input's `InputMemory` refusal, and of the budget or
+//! the allocator its `crash` record ([`super::dump_on`]), never an abort of
+//! the run. Each row's own strings are the core's, shared, not copied.
 
 use std::sync::Arc;
 
