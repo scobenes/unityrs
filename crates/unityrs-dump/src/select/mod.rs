@@ -28,7 +28,10 @@ mod glob;
 pub mod index;
 mod printable;
 mod py;
+#[cfg(test)]
+mod tests;
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -151,22 +154,51 @@ pub fn pin_of(v: Option<&Value>) -> Option<Pin> {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// Name steps this thread's selections took: each name the check for a
+    /// name two inputs give looks up or keeps (the linear-work test).
+    static NAME_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts one name step (tests only).
+#[inline]
+fn name_step() {
+    #[cfg(test)]
+    NAME_STEPS.with(|s| s.set(s.get().saturating_add(1)));
+}
+
 /// `collect_inputs`: the inputs in canonical order, filtered, sampled and
 /// limited (`unitypy_dump.py` `collect_inputs`).
+///
+/// With several inputs (an extension: the oracle takes one), each is
+/// collected in turn, and a name it gives that an input before it gave
+/// fails the run, naming the first such name in its collection order,
+/// before any input after it is collected: two records under one key are
+/// what no single run of the oracle writes. One input may give a name
+/// twice, as the oracle's may. The check keeps the names given so far in a
+/// hash set, so it takes a step a name (review round 9: it compared each
+/// name with every earlier one, quadratic in the inputs' sizes).
 pub fn collect(sel: &Selection) -> Result<Vec<Input>, String> {
     let mut items = Vec::new();
+    let mut named = (sel.inputs.len() > 1).then(HashSet::<Vec<u8>>::new);
     for given in &sel.inputs {
         let before = items.len();
         collect_one(sel, given, &mut items)?;
-        if sel.inputs.len() > 1 {
-            // Several inputs: a name two of them give would be two records
-            // under one key, which no single run of the oracle writes.
-            let (old, new) = items.split_at(before);
-            if let Some(dup) = new.iter().find(|n| old.iter().any(|o| o.name == n.name)) {
+        if let Some(named) = &mut named {
+            let new = items.get(before..).unwrap_or_default();
+            if let Some(dup) = new.iter().find(|n| {
+                name_step();
+                named.contains(&n.name)
+            }) {
                 return Err(format!(
                     "{} is named by two inputs",
                     String::from_utf8_lossy(&dup.name)
                 ));
+            }
+            for n in new {
+                name_step();
+                named.insert(n.name.clone());
             }
         }
     }
