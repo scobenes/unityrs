@@ -4,7 +4,8 @@ Runs in the oracle image against UnityPy 1.25.2 and writes small JSON files unde
 crates/unityrs-core/tests/fixtures/d/, which `cargo test -p unityrs-core` replays
 without Python (crates/unityrs-core/tests/env_fixtures.rs). Every input is built
 in code: the scenes by unityrs-testkit (`env::scenes`), whose bytes this script
-asks cargo for, and the strings here. No file is read.
+asks cargo for, the path cases' files and the strings here. No file is read but
+those the script writes itself.
 
     scripts/dev python tools/fixtures/env.py           # write the fixtures
     scripts/dev python tools/fixtures/env.py --check   # regenerate and compare
@@ -23,6 +24,15 @@ temporary `env.path`; a key under it is written `@/<name>`. Each scene of
 every object its `container` path, and dereferences every pointer and reads
 every resource of the objects of the files it loaded as dependencies (which
 `env.objects` leaves out), the state recorded after each step.
+
+`paths.json`: files UnityPy reads differently from a path, where `Environment` opens the
+file and reads it with the stream reader (`environment.py:136-139`), than from bytes,
+which the memory reader reads: each case's files are loaded both ways, from a temporary
+directory removed whatever happens, and for each way the loads, every object's
+`parse_as_dict` with and without `check_read` and its raw data, the `SerializedFile`'s
+`userInformation`, and the resource reads it names are recorded. The inputs are built
+here (`tools/parity/tests/synth.py`, and `files.py`'s short reads) and stored as
+`[count, byte]` runs.
 
 `pystr.json`: `str.lower` over every BMP code point (as the list of those it
 changes), astral samples and final-sigma contexts, `ntpath` cases, which
@@ -43,6 +53,7 @@ import io
 import json
 import ntpath
 import os
+import struct
 import subprocess
 import sys
 import tempfile
@@ -51,6 +62,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "crates/unityrs-core/tests/fixtures/d"
 sys.path.insert(0, str(ROOT / "tools/fixtures"))
+sys.path.insert(0, str(ROOT / "tools/parity"))
 
 import UnityPy  # noqa: E402
 from UnityPy.classes import PPtr  # noqa: E402
@@ -58,6 +70,7 @@ from UnityPy.environment import reSplit  # noqa: E402
 from UnityPy.files import BundleFile, SerializedFile  # noqa: E402
 from UnityPy.helpers.ResourceReader import get_resource_data  # noqa: E402
 
+import dump_records as D  # noqa: E402
 from scaffold import dump  # noqa: E402
 
 # ------------------------------------------------------------------ scenes
@@ -287,6 +300,173 @@ def scene_case(scene: dict) -> dict:
     if "dependencies" in scene:
         case["dependencies"] = scene["dependencies"]
     return {**case, "steps": steps}
+
+
+# ------------------------------------------------------------------ paths
+
+# The stream reader's own exceptions (tests/fixtures/scaffold/reader.json), recorded by
+# their text; any other failure is recorded by its L2 kind, or as "error".
+STREAM_REFUSALS = {
+    ("ValueError", "Position cannot be negative"),
+    ("ValueError", "cannot fit 'int' into an offset-sized integer"),
+    ("ValueError", "read length must be non-negative or -1"),
+    ("OverflowError", "byte string is too large"),
+    ("OverflowError", "cannot fit 'int' into an index-sized integer"),
+}
+
+
+def refusal(e: BaseException) -> str | None:
+    text = (type(e).__name__, str(e))
+    return f"{text[0]}: {text[1]}" if text in STREAM_REFUSALS else None
+
+
+def path_inputs() -> list[dict]:
+    """The cases: each names its files (loaded in order) and the resource reads it makes."""
+    sys.path.insert(0, str(ROOT / "tools/parity/tests"))
+    from files import short_read_inputs
+    from synth import Node, Obj, Type, fs_bundle, serialized_file
+
+    def tree(*kids):
+        return Node("Base", "Base", list(kids))
+
+    two_ints = Type(1, tree(Node("int", "a"), Node("int", "b")))
+
+    def with_start(data: bytes, start: int) -> bytes:
+        """The first object's stored (format 22) start replaced, in a file of `two_ints`."""
+        out = bytearray(data)
+        at = 48 + len(b"2021.3.2f1\0") + 5 + 4 + len(two_ints.encode(22, True, False, "<")) + 4
+        at += -at % 4
+        assert struct.unpack_from("<q", out, at)[0] == 1
+        struct.pack_into("<q", out, at + 8, start)
+        return bytes(out)
+
+    cases = []
+
+    def case(name, files, resources=()):
+        cases.append({"name": name, "files": list(files), "resources": list(resources)})
+
+    # The pure-Python reader (byte_size 0): a `TypelessData` length of -2 raises from a path
+    # and moves the position back from bytes (claude9-b MEDIUM-2's case); a length past the
+    # end stops at the end of a stream, so `bytes_read` differs.
+    t = Type(1, tree(Node("TypelessData", "d"), Node("int", "x")))
+    data = struct.pack("<ii", -2, 7) + b"\x11\x22\x33\x44"
+    case("typeless-minus-2", [("a.assets", serialized_file([t], [Obj(1, 0, data, byte_size=0)]))])
+    t = Type(1, tree(Node("TypelessData", "d")))
+    data = struct.pack("<i", 100) + b"abcd"
+    case("typeless-past-the-end", [("a.assets", serialized_file([t], [Obj(1, 0, data, byte_size=0)]))])
+    # Aligned strings (a control): a length outside `0 < n <= remaining` reads "" on both readers.
+    t = Type(1, tree(Node("string", "a"), Node("string", "b"), Node("string", "c"), Node("int", "x")))
+    data = struct.pack("<i", 3) + b"abc\0" + struct.pack("<iii", -1, 99, 7)
+    case("strings-outside-the-test", [("a.assets", serialized_file([t], [Obj(1, 0, data, byte_size=0)]))])
+    # A format-22 start below 0 or at 2^63 and up: `reset()` raises on a stream; bytes slice
+    # from the end, or read nothing. Both readers, Boost (byte_size 8) and pure Python (0).
+    for size, label in ((None, "boost"), (0, "python")):
+        base = serialized_file([two_ints], [Obj(1, 0, struct.pack("<ii", 5, 6), byte_size=size)])
+        for start, what in ((-(10**6), "far-below"), (-(2**63), "i64-min"), (2**63 - 1, "i64-max")):
+            case(f"start-{what}-{label}", [("a.assets", with_start(base, start))])
+        case(f"start-past-the-end-{label}", [("a.assets", with_start(base, 10**6))])
+    # Strings to NUL: no NUL in reach drops the last byte read on a stream, which raises
+    # only past the end; the memory reader returns the window, or raises at the end.
+    case("user-information-past-the-window", [("a.assets", serialized_file([two_ints], [], user_information=b"U" * 40000))])
+    sf = serialized_file([two_ints], [], user_information=b"abc")
+    cut = bytearray(sf[: sf.find(b"abc\0") + 3])
+    struct.pack_into(">qq", cut, 24, len(cut), len(cut))  # file_size and data_offset
+    case("user-information-unterminated", [("a.assets", bytes(cut))])
+    # A blob whose string buffer size is negative (files.py's short reads): `read(n)` below
+    # -1 raises from a path.
+    name, data = short_read_inputs()[0]
+    case(f"blob-{name}", [("a.assets", data)])
+    # Blocks-info at the end with a compressed size past the file: a negative position.
+    cab = serialized_file([two_ints], [Obj(1, 0, struct.pack("<ii", 5, 6))])
+    b = bytearray(fs_bundle([(b"CAB-x", cab, 4)], codec=0))
+    at = b.find(b"2021.3.2f1\0") + len(b"2021.3.2f1\0") + 8
+    _, unc, flags = struct.unpack_from(">III", b, at)
+    struct.pack_into(">III", b, at, len(b) + 100, unc, flags | 0x80)
+    case("bundle-blocks-info-before-the-start", [("a.bundle", bytes(b))])
+    # Detection: 20 bytes with no NUL raise from bytes, and are a resource from a path.
+    case("twenty-bytes-no-nul", [("a.bin", b"A" * 20)])
+    # Resource reads from a .resS kept as a reader: past i64 an offset is refused by the
+    # file's `seek` and a size by its `read`; below, both readers read what exists.
+    res = bytes(range(10))
+    reads = [(0, 3), (8, 5), (12, 3), (3, 0), (2**40, 3), (2**63, 1), (2**64 - 1, 1), (0, 2**63 - 33), (0, 2**63), (0, 2**64 - 1), (5, 2**32)]
+    case("resource-reads", [("a.assets", serialized_file([two_ints], [])), ("a.resS", res)], reads)
+    return cases
+
+
+def object_read(o, check: bool) -> dict:
+    try:
+        d = o.parse_as_dict(check_read=check)
+    except Exception as e:  # noqa: BLE001 - the exception is the outcome
+        stream = refusal(e)
+        if stream:
+            return {"stream": stream}
+        kind, read = D.error_kind(e)
+        return {"error": kind, "bytes_read": read}
+    return {"value": {k: v.hex() if isinstance(v, (bytes, bytearray)) else v for k, v in d.items()}}
+
+
+def raw_read(o):
+    try:
+        return o.get_raw_data().hex()
+    except Exception as e:  # noqa: BLE001
+        return {"stream": refusal(e) or "error"}
+
+
+def path_run(case: dict, tmp: Path, how: str) -> dict:
+    env = UnityPy.Environment(path=str(tmp))
+    loads, files = [], []
+    for name, data in case["files"]:
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                if how == "bytes":
+                    f = env.load_file(data, name=name)
+                else:
+                    f = env.load_file(str(tmp / name))
+        except Exception as e:  # noqa: BLE001
+            loads.append(refusal(e) or "error")
+            files.append(None)
+            continue
+        loads.append(kind(f))
+        files.append(f)
+    out = {"loads": loads, "files": []}
+    for f in files:
+        if not isinstance(f, SerializedFile):
+            out["files"].append(None)
+            continue
+        info = f.userInformation.encode("utf8", "surrogateescape")
+        out["files"].append(
+            {
+                # Its length, first and last bytes: the long case's string is 32 KiB.
+                "user_information": [len(info), info[:8].hex(), info[-8:].hex()],
+                "objects": [
+                    [o.path_id, object_read(o, True), object_read(o, False), raw_read(o)] for o in f.objects.values()
+                ],
+            }
+        )
+    resources = []
+    sf = next((f for f in files if isinstance(f, SerializedFile)), None)
+    for offset, size in case["resources"]:
+        try:
+            resources.append(get_resource_data("a.resS", sf, offset, size).hex())
+        except Exception as e:  # noqa: BLE001
+            resources.append({"stream": refusal(e) or "error"})
+    out["resources"] = resources
+    return out
+
+
+def path_case(case: dict) -> dict:
+    from files import runs
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, data in case["files"]:
+            (Path(tmp) / name).write_bytes(data)
+        outcomes = {how: path_run(case, Path(tmp), how) for how in ("bytes", "path")}
+    return {
+        "name": case["name"],
+        "files": [[name, runs(data)] for name, data in case["files"]],
+        "resources": [[str(o), str(s)] for o, s in case["resources"]],
+        **outcomes,
+    }
 
 
 # ------------------------------------------------------------------ strings
@@ -521,6 +701,7 @@ def fixtures() -> dict[str, dict]:
     deps = [scene_case(s) for s in inputs if "dependencies" in s]
     return {
         "env.json": {**meta, "scenes": plain, "dependency_scenes": deps},
+        "paths.json": {**meta, "cases": [path_case(c) for c in path_inputs()]},
         "pystr.json": {**meta, **pystr_fixture()},
     }
 
