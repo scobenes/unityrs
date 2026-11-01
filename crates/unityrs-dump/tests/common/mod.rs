@@ -11,6 +11,7 @@ use unityrs_core::limits::{Meter, MeteredVec};
 use unityrs_core::typetree::{NodeId, NodeList, NodeRow};
 use unityrs_core::{Built, Bytes, Parsed, PrimArray, PrimRun, RawStr, Value, ValueBuilder};
 use unityrs_testkit::child;
+use unityrs_testkit::scratch::Scratch;
 
 pub fn fixture(name: &str) -> Json {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -155,29 +156,16 @@ pub fn parsed(desc: &Json) -> Parsed {
     b.finish(v, 0)
 }
 
-/// A fresh folder outside the repository, removed on drop.
-pub struct Tmp(pub PathBuf);
-
-impl Drop for Tmp {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+/// A fresh folder outside the repository, its path resolved, removed on
+/// drop (`unityrs_testkit::scratch`).
+pub struct Tmp(pub PathBuf, Scratch);
 
 impl Tmp {
     /// A new empty folder under the system's temporary folder (outside the
     /// repository), its path resolved.
     pub fn new(what: &str) -> Self {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static N: AtomicU32 = AtomicU32::new(0);
-        let base = std::env::temp_dir().join(format!(
-            "unityrs-dump-{what}-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        Self(std::fs::canonicalize(&base).unwrap())
+        let dir = Scratch::new(&format!("dump-{what}"));
+        Self(std::fs::canonicalize(dir.path()).unwrap(), dir)
     }
 }
 

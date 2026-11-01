@@ -58,17 +58,17 @@ import json
 import ntpath
 import os
 import struct
-import subprocess
 import sys
-import tempfile
 import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "crates/unityrs-core/tests/fixtures/d"
-sys.path.insert(0, str(ROOT / "tools/fixtures"))
 sys.path.insert(0, str(ROOT / "tools/parity"))
+sys.path.insert(0, str(ROOT / "tools/fixtures"))
 
+import child  # noqa: E402
+import scratch  # noqa: E402
 import UnityPy  # noqa: E402
 from UnityPy.classes import PPtr  # noqa: E402
 from UnityPy.environment import reSplit  # noqa: E402
@@ -84,10 +84,10 @@ from scaffold import dump  # noqa: E402
 def scene_inputs() -> list[dict]:
     """unityrs-testkit's env::scenes() and env::dependency_scenes() (a line
     with a `dependencies` key), as the replay test writes them."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with scratch.folder() as tmp:
         out = Path(tmp) / "scenes.jsonl"
         env = dict(os.environ, UNITYRS_WRITE_SCENES=str(out))
-        subprocess.run(
+        child.run(
             [
                 "cargo",
                 "test",
@@ -106,7 +106,7 @@ def scene_inputs() -> list[dict]:
             cwd=ROOT,
             env=env,
             check=True,
-            stdout=subprocess.DEVNULL,
+            stdout=child.DEVNULL,
         )
         return [json.loads(line) for line in out.read_text().splitlines()]
 
@@ -295,11 +295,11 @@ class Run:
 
 
 def scene_case(scene: dict) -> dict:
-    with tempfile.TemporaryDirectory() as tmp:
+    with scratch.folder() as tmp:
         for name, data in scene["resolver"]:
             (Path(tmp) / name).write_bytes(bytes.fromhex(data))
         with contextlib.redirect_stdout(io.StringIO()):
-            run = Run(scene, tmp)
+            run = Run(scene, str(tmp))
             steps = run.dependency_steps() if "dependencies" in scene else run.steps()
     case = {"name": scene["name"], "files": scene["files"], "resolver": scene["resolver"]}
     if "dependencies" in scene:
@@ -510,7 +510,7 @@ def path_run(case: dict, tmp: Path, how: str) -> dict:
 def path_case(case: dict) -> dict:
     from files import runs
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with scratch.folder() as tmp:
         for name, data in case["files"]:
             (Path(tmp) / name).write_bytes(data)
         outcomes = {how: path_run(case, Path(tmp), how) for how in ("bytes", "path")}
@@ -701,8 +701,8 @@ def check_g5(probe_path: Path, corpus: Path) -> int:
     outside the repository) and prints counts only."""
     report = json.loads(probe_path.read_text())
     rels = report["bundles"]
-    with tempfile.TemporaryDirectory() as empty:
-        return check_g5_in(report, rels, corpus, empty)
+    with scratch.folder() as empty:
+        return check_g5_in(report, rels, corpus, str(empty))
 
 
 def check_g5_in(report: dict, rels: list[str], corpus: Path, empty: str) -> int:

@@ -15,7 +15,6 @@ import pickle
 import resource
 import signal
 import struct
-import subprocess
 import sys
 import time
 import unittest
@@ -26,6 +25,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import child  # noqa: E402
 import canonical as C  # noqa: E402
 import synth as S  # noqa: E402
 from dump_harness import DumpCase, assets, dump, dump_process, dump_records, records, unitypy_dump  # noqa: E402
@@ -293,7 +293,7 @@ class DumpCrashTests(DumpCase):
         # More references than None has in a fresh dumper process, measured there: this process's count
         # says nothing about that one. Bounded, so a surprise cannot grow the file without limit.
         probe = f"import sys; sys.path.insert(0, {str(HERE)!r}); import unitypy_dump; print(sys.getrefcount(None))"
-        n = 2 * int(subprocess.run([sys.executable, "-B", "-c", probe], capture_output=True, check=True).stdout)
+        n = 2 * int(child.run([sys.executable, "-B", "-c", probe], capture_output=True, check=True).stdout)
         self.assertLess(n, 1_000_000)
         empty = struct.pack("<q", 0) + S.s32("") * 3
         tree = S.Node("MyRefs", "Base", [S.vec("refs", S.ref_object())])

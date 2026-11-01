@@ -8,6 +8,7 @@ use std::io::Write;
 
 use unityrs_core::limits::Limits;
 use unityrs_testkit::bundle::{TestCodec, compress};
+use unityrs_testkit::scratch::Scratch;
 use unityrs_tpk::{TpkError, TpkProvider};
 
 /// A TPK file around `payload` (`Tpk.py`'s `<IbbbbIII` header).
@@ -58,17 +59,15 @@ fn too_large(got: Result<TpkProvider, TpkError>) -> (&'static str, u64, u64) {
 #[test]
 fn a_file_past_the_bound_is_refused_unread() {
     let max = TpkProvider::MAX_FILE_BYTES;
-    let dir = std::env::temp_dir().join(format!("unityrs-tpk-bounds-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    // Removed when dropped, a failing assert's unwinding included (review
+    // round 9: removed only after the assert, it stayed on a failure).
+    let dir = Scratch::new("tpk-bounds");
     let path = dir.join("large.tpk");
     // Sparse: the length is set, nothing is written.
     let file = std::fs::File::create(&path).unwrap();
     file.set_len(max + 1).unwrap();
     drop(file);
-    let got = too_large(TpkProvider::open(&path));
-    std::fs::remove_file(&path).unwrap();
-    std::fs::remove_dir(&dir).unwrap();
-    assert_eq!(got, ("file", max + 1, max));
+    assert_eq!(too_large(TpkProvider::open(&path)), ("file", max + 1, max));
     if std::path::Path::new("/dev/zero").exists() {
         assert_eq!(
             too_large(TpkProvider::open("/dev/zero")),
@@ -137,17 +136,15 @@ fn many_entries_are_refused_by_the_payload_or_the_entry_bound() {
 }
 
 /// A file removed when dropped, with its handle.
-struct TempFile(std::path::PathBuf, std::fs::File);
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
+struct TempFile(
+    std::path::PathBuf,
+    std::fs::File,
+    #[allow(dead_code, reason = "held for its drop, which removes the folder")] Scratch,
+);
 
 fn tempfile(name: &str) -> TempFile {
-    let path =
-        std::env::temp_dir().join(format!("unityrs-tpk-bounds-{}-{name}", std::process::id()));
+    let dir = Scratch::new("tpk-bounds");
+    let path = dir.join(name);
     let file = std::fs::File::create(&path).unwrap();
-    TempFile(path, file)
+    TempFile(path, file, dir)
 }

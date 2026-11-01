@@ -13,7 +13,6 @@ import io
 import random
 import struct
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -22,6 +21,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import scratch  # noqa: E402
 from rows_support import ORACLE, TEXT_ASSET, load, quietly, text_asset_file  # noqa: E402
 
 import synth as S  # noqa: E402
@@ -39,8 +39,7 @@ if ORACLE:
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class Rows(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-rows-"))
-        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp))
+        self.tmp = scratch.for_case(self, "unityrs-rows-")
 
     # Sections 4, 5.2, 6: WebFile gzip.
     def test_gzip_webfile_is_detected_and_never_parsed(self):

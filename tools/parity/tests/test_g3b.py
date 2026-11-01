@@ -20,7 +20,6 @@ import os
 import shutil
 import struct
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -35,6 +34,7 @@ except ImportError:  # pragma: no cover - outside the oracle image
 
 import canonical as C  # noqa: E402
 import g3b  # noqa: E402
+import scratch  # noqa: E402
 import synth as S  # noqa: E402
 
 VERSION = "0.0.0-test"
@@ -144,8 +144,7 @@ class OracleReferenceTests(unittest.TestCase):
     nothing."""
 
     def setUp(self):
-        self.run = Path(tempfile.mkdtemp(prefix="unityrs-g3b-oracle-"))
-        self.addCleanup(shutil.rmtree, self.run)
+        self.run = scratch.for_case(self, "unityrs-g3b-oracle-")
         (self.run / "in").mkdir()
         self.head = {"rec": "dump", "format": C.FORMAT, "version": 1, "levels": list(C.LEVELS)}
         (self.run / "in" / "x").write_bytes(b"abcd")
@@ -191,8 +190,7 @@ class InputCoverageTests(unittest.TestCase):
     library only: no input differs, so G3b re-runs nothing."""
 
     def setUp(self):
-        self.run = Path(tempfile.mkdtemp(prefix="unityrs-g3b-inputs-"))
-        self.addCleanup(shutil.rmtree, self.run)
+        self.run = scratch.for_case(self, "unityrs-g3b-inputs-")
         (self.run / "in").mkdir()
         self.head = {"rec": "dump", "format": C.FORMAT, "version": 1, "levels": list(C.LEVELS)}
 
@@ -249,7 +247,9 @@ class InputCoverageTests(unittest.TestCase):
 class G3bTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp = Path(tempfile.mkdtemp(prefix="unityrs-g3b-"))
+        # Removed by a class cleanup, which unittest runs when this method raises too (review round 9: the
+        # tearDownClass that removed it never runs then, and a failure here left the folder).
+        cls.tmp = scratch.for_class(cls, "unityrs-g3b-")
         cls.inputs = cls.tmp / "in"
         cls.inputs.mkdir()
         files = {
@@ -292,10 +292,6 @@ class G3bTests(unittest.TestCase):
             if rec.get("rec") in ("file", "object"):
                 cls.oracle[rec["file"][0]] = cls.oracle.get(rec["file"][0], "") + line + "\n"
 
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(cls.tmp)
-
     def uncapped(self, data, name):
         """The oracle's records of `data` named `name`, dumped in this process without a cap."""
         path = self.tmp / f"uncapped-{name}"
@@ -319,7 +315,7 @@ class G3bTests(unittest.TestCase):
     def g3b(self, table, gate=None, oracle=None, names=None, extra=()):
         """Runs g3b.py on the oracle's dump (with `oracle`'s replacements) and a unityrs dump of `gate`
         (else each table entry's bounded answer), over `names` (default: the table's and the oracle's)."""
-        run = Path(tempfile.mkdtemp(dir=self.tmp))
+        run = scratch.make(within=self.tmp)
         names = set(names or set(table) | set(self.oracle))
         # The inputs folder holds the inputs the dumps are of, and no other: G3b requires each in both.
         (run / "in").mkdir()
@@ -516,7 +512,7 @@ class G3bTests(unittest.TestCase):
         self.assertEqual((status, report["classes"]), (0, {"agree": 1}))
 
     def test_a_malformed_or_incomplete_unityrs_dump_fails(self):
-        run = Path(tempfile.mkdtemp(dir=self.tmp))
+        run = scratch.make(within=self.tmp)
         (run / "in").mkdir()
         shutil.copyfile(self.inputs / "agree", run / "in" / "agree")
         write_dump(run / "a.jsonl", self.oracle_head, {"agree": self.oracle["agree"]})
@@ -545,7 +541,7 @@ class G3bTests(unittest.TestCase):
             self.assertEqual(g3b.main([str(a) for a in argv]), 0)
 
     def test_a_gzip_dump_reads_as_its_lines(self):
-        run = Path(tempfile.mkdtemp(dir=self.tmp))
+        run = scratch.make(within=self.tmp)
         write_dump(run / "a.jsonl", self.oracle_head, {"agree": self.oracle["agree"]})
         with gzip.open(run / "a.jsonl.gz", "wb") as f:
             f.write((run / "a.jsonl").read_bytes())
@@ -575,7 +571,7 @@ class G3bTests(unittest.TestCase):
     def test_the_inputs_are_the_files_the_oracle_dumps_from_the_folder(self):
         """g3b.py's inputs are the names unitypy_dump.py's collect_inputs gives a folder: subfolders, a link to a
         file (named after itself), a link to a folder (not entered), names that are not UTF-8, glob characters."""
-        root = Path(tempfile.mkdtemp(dir=self.tmp))
+        root = scratch.make(within=self.tmp)
         for rel in (b"a/b", b"a/c/d", b"\xff\xfe", b"x[1]*?", b"z"):
             path = root / os.fsdecode(rel)
             path.parent.mkdir(parents=True, exist_ok=True)

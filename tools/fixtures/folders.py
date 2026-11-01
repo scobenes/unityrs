@@ -36,16 +36,18 @@ import argparse
 import json
 import os
 import resource
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "crates/unityrs-dump/tests/fixtures/dump/folders.json"
 ORACLE = ROOT / "tools/parity/unitypy_dump.py"
+sys.path.insert(0, str(ROOT / "tools/parity"))
 
 import UnityPy  # noqa: E402
+
+import child  # noqa: E402
+import scratch  # noqa: E402
 
 SHAPES = ("file", "empty", "link", "unreadable")
 NOFILE = {"shape": "file", "levels": 100, "limit": 32}
@@ -78,15 +80,9 @@ def build(base: str, shape: str, levels: int) -> str:
     return top
 
 
-def remove(base: str) -> None:
-    """Removes `base` and the tree in it (shutil.rmtree recurses past Python's limit)."""
-    subprocess.run(["chmod", "-R", "u+rwx", base], check=True)
-    subprocess.run(["rm", "-rf", base], check=True)
-
-
 def run_oracle(shape: str, levels: int, nofile: int | None = None) -> dict:
     """The oracle's run on a fresh tree of `shape` and `levels`, under `nofile` open files."""
-    base = tempfile.mkdtemp(prefix="unityrs-fixtures-")
+    base = str(scratch.make("unityrs-fixtures-"))  # removed with its deep chain and its closed folder
     try:
         top = build(base, shape, levels)
         out = os.path.join(base, "out.jsonl")
@@ -95,7 +91,7 @@ def run_oracle(shape: str, levels: int, nofile: int | None = None) -> dict:
             if nofile is not None:
                 resource.setrlimit(resource.RLIMIT_NOFILE, (nofile, nofile))
 
-        proc = subprocess.run([sys.executable, str(ORACLE), top, "-q", "-o", out], stdin=subprocess.DEVNULL,
+        proc = child.run([sys.executable, str(ORACLE), top, "-q", "-o", out], stdin=child.DEVNULL,
                               capture_output=True, check=False, preexec_fn=limit)
         names = None
         if os.path.exists(out):
@@ -106,7 +102,7 @@ def run_oracle(shape: str, levels: int, nofile: int | None = None) -> dict:
             raise AssertionError(f"{shape} {levels}: exit 1: {proc.stderr.decode(errors='replace')}")
         return {"shape": shape, "levels": levels, "status": proc.returncode, "names": names}
     finally:
-        remove(base)
+        scratch.remove(base)
 
 
 def depth_cases() -> dict:

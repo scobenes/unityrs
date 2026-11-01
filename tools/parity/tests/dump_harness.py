@@ -15,11 +15,8 @@ import hashlib
 import io
 import json
 import os
-import shutil
 import struct
-import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -27,6 +24,8 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import child  # noqa: E402
+import scratch  # noqa: E402
 try:
     import dump_records  # noqa: F401 - for the tests that patch a record function
     import unitypy_dump
@@ -120,13 +119,13 @@ def dump_process(*argv, env=None, flags=(), first=(), preload=()):
         boot += f"sys.argv = {args!r}; runpy.run_path(sys.argv[0], run_name='__main__')"
         args = ["-c", boot]
     try:
-        return subprocess.run(
+        return child.run(
             [sys.executable, "-B", *flags, *args],
             capture_output=True,
             env={**os.environ, **(env or {})},
             timeout=DEADLOCK_GUARD_S,
         )
-    except subprocess.TimeoutExpired as e:
+    except child.TimeoutExpired as e:
         raise AssertionError(
             f"deadlock guard: the dumper gave no answer in {DEADLOCK_GUARD_S} s, which only a hang takes, not load"
         ) from e
@@ -146,8 +145,7 @@ class DumpCase(unittest.TestCase):
     """A scratch folder per test, and the checks every dump test shares."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-parity-"))
-        self.addCleanup(shutil.rmtree, self.tmp)
+        self.tmp = scratch.for_case(self, "unityrs-parity-")
 
     def assert_canonical(self, path):
         """Every line the oracle wrote is in the canonical form, and the dump compares clean with itself."""

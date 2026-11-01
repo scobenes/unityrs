@@ -36,9 +36,7 @@ import math
 import os
 import random
 import struct
-import subprocess
 import sys
-import tempfile
 from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Context, Decimal, localcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,6 +46,8 @@ OUT = ROOT / "crates/unityrs-dump/tests/fixtures/dump/index.json"
 ORACLE = ROOT / "tools/parity/unitypy_dump.py"
 sys.path.insert(0, str(ROOT / "tools" / "parity"))
 
+import child  # noqa: E402
+import scratch  # noqa: E402
 import unitypy_dump  # noqa: E402
 import UnityPy  # noqa: E402
 
@@ -350,7 +350,7 @@ def run_oracle(folder: Path, text: bytes, extra: list[bytes]) -> tuple[int, list
     out = folder / "out.jsonl"
     argv = [sys.executable.encode(), str(ORACLE).encode(), b"--index", str(index).encode(), b"-q",
             b"-o", str(out).encode(), *extra]
-    proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, check=False)
+    proc = child.run(argv, stdin=child.DEVNULL, capture_output=True, check=False)
     names = None
     if out.exists():
         names = []
@@ -420,9 +420,9 @@ def depth_cases(root: Path) -> dict:
 
 
 def fixture() -> dict:
-    with tempfile.TemporaryDirectory(prefix="unityrs-fixtures-") as tmp:
+    with scratch.folder("unityrs-fixtures-") as tmp:
         select = select_cases(Path(tmp))
-    with tempfile.TemporaryDirectory(prefix="unityrs-fixtures-") as tmp:
+    with scratch.folder("unityrs-fixtures-") as tmp:
         runs = run_cases(Path(tmp))
         depth = depth_cases(Path(tmp))
     return {

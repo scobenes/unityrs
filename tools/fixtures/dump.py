@@ -36,7 +36,6 @@ import json
 import os
 import struct
 import sys
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -45,6 +44,8 @@ OUT = ROOT / "crates/unityrs-dump/tests/fixtures/dump"
 sys.path.insert(0, str(ROOT / "tools" / "parity"))
 sys.path.insert(0, str(ROOT / "tools" / "parity" / "tests"))
 
+import child  # noqa: E402
+import scratch  # noqa: E402
 import canonical as C  # noqa: E402
 import dump_records  # noqa: E402
 import synth as S  # noqa: E402
@@ -509,12 +510,11 @@ INDEX_SHAPES = [
 
 def run_oracle(index: Path) -> tuple[int, str]:
     """The oracle's exit status on `index`, run with --allow-index-mismatch, and its stderr."""
-    import subprocess
 
     out = index.parent / "out.jsonl"
     argv = [sys.executable, str(ROOT / "tools/parity/unitypy_dump.py"), "--index", str(index), "-q",
             "--allow-index-mismatch", "-o", str(out)]
-    proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, check=False)
+    proc = child.run(argv, stdin=child.DEVNULL, capture_output=True, check=False)
     out.unlink(missing_ok=True)
     return proc.returncode, proc.stderr.decode("utf-8", "replace")
 
@@ -632,12 +632,12 @@ def record_cases(root: Path) -> dict:
 
 def fixtures() -> dict[str, dict]:
     meta = {"unitypy": UnityPy.__version__, "python": sys.version.split()[0]}
-    with tempfile.TemporaryDirectory(prefix="unityrs-fixtures-") as tmp:
+    with scratch.folder("unityrs-fixtures-") as tmp:
         make_tree(Path(tmp))
         selection = selection_cases(Path(tmp))
-    with tempfile.TemporaryDirectory(prefix="unityrs-fixtures-") as tmp:
+    with scratch.folder("unityrs-fixtures-") as tmp:
         records = record_cases(Path(tmp))
-    with tempfile.TemporaryDirectory(prefix="unityrs-fixtures-") as tmp:
+    with scratch.folder("unityrs-fixtures-") as tmp:
         pins = pin_cases(Path(tmp))
     return {
         "encode.json": {**meta, "values": value_cases(), "names": name_cases(), "ints": int_cases()},

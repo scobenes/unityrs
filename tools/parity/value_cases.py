@@ -24,9 +24,7 @@ bytes with each other and with the input (`l3_verdict`).
 import argparse
 import json
 import struct
-import subprocess
 import sys
-import tempfile
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +32,8 @@ from types import SimpleNamespace
 PARITY = Path(__file__).resolve().parent
 sys.path.insert(0, str(PARITY))
 
+import child  # noqa: E402
+import scratch  # noqa: E402
 from UnityPy.helpers import TypeTreeHelper as TTH  # noqa: E402
 from UnityPy.helpers.TypeTreeNode import TypeTreeNode  # noqa: E402
 from UnityPy.streams import EndianBinaryReader, EndianBinaryWriter  # noqa: E402
@@ -533,10 +533,10 @@ def main(argv=None):
     ap.add_argument("binary", help="path to the unityrs binary")
     ap.add_argument("--json", help="write the table as JSON here")
     args = ap.parse_args(argv)
-    with tempfile.TemporaryDirectory() as tmp:
+    with scratch.folder() as tmp:
         path = Path(tmp) / "cases.json"
         path.write_text(json.dumps(protocol_cases()))
-        out = subprocess.run([args.binary, "values", str(path)], check=True, capture_output=True).stdout
+        out = child.run([args.binary, "values", str(path)], check=True, capture_output=True).stdout
     try:
         unityrs = parse_outcomes(out, [c["name"] for c in CASES])
     except ProtocolError as e:

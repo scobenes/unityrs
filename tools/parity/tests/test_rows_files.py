@@ -9,7 +9,6 @@ Needs UnityPy 1.25.2 (the oracle image); skipped elsewhere.
 import gzip
 import ntpath
 import random
-import shutil
 import struct
 import sys
 import tempfile
@@ -21,6 +20,8 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import child  # noqa: E402
+import scratch  # noqa: E402
 from rows_support import ORACLE, TEXT_ASSET, load, quietly, text_asset_file  # noqa: E402
 
 import synth as S  # noqa: E402
@@ -63,8 +64,7 @@ def unity_brotli(data, comment=b"UnityWeb Compressed Content (brotli)"):
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class FileRows(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-file-rows-"))
-        self.addCleanup(shutil.rmtree, self.tmp)
+        self.tmp = scratch.for_case(self, "unityrs-file-rows-")
 
     # Section 7.1: the gates below format 14, and the script types and externals of every format.
     def test_old_format_gates(self):
@@ -489,13 +489,12 @@ class FileRows(unittest.TestCase):
         # The bytes key is the process's string hash, which PYTHONHASHSEED randomises: two processes key one
         # input differently, two under one seed alike, and in each the key is str(hash(data)), which the binding
         # computes in the caller's process (Tier A, section 19.2).
-        import subprocess
 
         (d / "q.bin").write_bytes(data)
         code = "import sys, UnityPy; b = open(sys.argv[1], 'rb').read(); print(*UnityPy.Environment(b).files, hash(b))"
 
         def key_under(seed):
-            run = subprocess.run(
+            run = child.run(
                 [sys.executable, "-c", code, str(d / "q.bin")],
                 env=dict(os.environ, PYTHONHASHSEED=seed),
                 capture_output=True,

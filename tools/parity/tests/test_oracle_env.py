@@ -13,10 +13,8 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import sysconfig
-import tempfile
 import types
 import unittest
 import zipfile
@@ -27,6 +25,8 @@ from unittest import mock
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
+import child  # noqa: E402
+import scratch  # noqa: E402
 import canonical as C  # noqa: E402
 import oracle_env  # noqa: E402
 
@@ -115,8 +115,7 @@ class PinTests(unittest.TestCase):
 
 class EnvTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-oracle-env-"))
-        self.addCleanup(shutil.rmtree, self.tmp)
+        self.tmp = scratch.for_case(self, "unityrs-oracle-env-")
 
     def test_installed_packages_and_exact(self):
         site = self.tmp / "site"
@@ -383,8 +382,7 @@ class EnvTests(unittest.TestCase):
 
 class LoadedModulesTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-oracle-env-"))
-        self.addCleanup(shutil.rmtree, self.tmp)
+        self.tmp = scratch.for_case(self, "unityrs-oracle-env-")
 
     def test_pinned_files_are_the_records_files(self):
         site = self.tmp / "site"
@@ -465,7 +463,7 @@ class StartUpTests(unittest.TestCase):
 
     def test_the_user_site_is_the_one_site_added(self):
         """user_site() names the folder when site put it on sys.path at start-up, and None under -s."""
-        with tempfile.TemporaryDirectory(prefix="unityrs-oracle-env-") as tmp:
+        with scratch.folder("unityrs-oracle-env-") as tmp:
             base = Path(tmp)
             folder = base / "lib" / f"python{sys.version_info[0]}.{sys.version_info[1]}" / "site-packages"
             folder.mkdir(parents=True)
@@ -476,7 +474,7 @@ class StartUpTests(unittest.TestCase):
             env = {**os.environ, "PYTHONUSERBASE": str(base)}
             for flags in ([], ["-s"]):
                 with self.subTest(flags=flags):
-                    out = subprocess.run([sys.executable, *flags, "-c", code], env=env, capture_output=True, text=True)
+                    out = child.run([sys.executable, *flags, "-c", code], env=env, capture_output=True, text=True)
                     self.assertEqual(out.returncode, 0, out.stderr)
                     enabled, found, on_path = out.stdout.split()
                     # A venv turns the user site off by itself, as -s does.

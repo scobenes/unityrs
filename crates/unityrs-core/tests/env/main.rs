@@ -29,6 +29,7 @@ use unityrs_core::limits::Meter;
 use unityrs_core::value::Value;
 use unityrs_core::{Bytes, FileContext, ObjectRef, RawStr};
 use unityrs_testkit::env::{Obj, bundle, res_bytes, serialized};
+use unityrs_testkit::scratch::Scratch;
 
 fn src(name: &str, data: &[u8]) -> Source {
     Source::Bytes {
@@ -115,25 +116,19 @@ fn file_of(scene: &unityrs_testkit::env::Scene, i: usize) -> Source {
     }
 }
 
-/// A file of the scratch directory this test owns, removed on drop.
-struct TempFile(PathBuf);
+/// A file in a scratch folder of its own, removed with it on drop
+/// (`unityrs_testkit::scratch`).
+struct TempFile(
+    PathBuf,
+    #[allow(dead_code, reason = "held for its drop, which removes the folder")] Scratch,
+);
 
 impl TempFile {
     fn new(tag: &str, data: &[u8]) -> Self {
-        static N: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "unityrs-env-{}-{tag}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
+        let dir = Scratch::new(&format!("env-{tag}"));
+        let path = dir.join(tag);
         std::fs::write(&path, data).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        Self(path, dir)
     }
 }
 
@@ -144,20 +139,17 @@ fn named_bundle(cab: &str, pad: usize) -> Vec<u8> {
     ])
 }
 
-/// A temporary directory, removed with what it holds when dropped.
-struct TempDir(PathBuf);
+/// A temporary directory, removed with what it holds when dropped
+/// (`unityrs_testkit::scratch`).
+struct TempDir(
+    PathBuf,
+    #[allow(dead_code, reason = "held for its drop, which removes the folder")] Scratch,
+);
 
 impl TempDir {
     fn new(tag: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("unityrs-env-{}-{tag}", std::process::id()));
-        std::fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let dir = Scratch::new(&format!("env-{tag}"));
+        Self(dir.to_path_buf(), dir)
     }
 }
 

@@ -599,14 +599,11 @@ mod tests {
         let bytes = |n: usize| heap_cost(u64::try_from(n).unwrap());
         let stored = tpk(1000);
         let from_bytes = TpkProvider::from_bytes(&stored, &Limits::default()).unwrap();
-        let path = std::env::temp_dir().join(format!(
-            "unityrs-tpk-charged-read-{}.tpk",
-            std::process::id()
-        ));
+        let dir = unityrs_testkit::scratch::Scratch::new("tpk-charged-read");
+        let path = dir.join("charged.tpk");
         std::fs::write(&path, &stored).unwrap();
-        let from_path = TpkProvider::open(&path);
-        let _ = std::fs::remove_file(&path);
-        let from_path = from_path.unwrap();
+        let from_path = TpkProvider::open(&path).unwrap();
+        drop(dir);
         assert_eq!(
             from_path.meter.granted() - from_bytes.meter.granted(),
             bytes(stored.len()),

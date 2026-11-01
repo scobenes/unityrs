@@ -4,15 +4,16 @@ Standard library only.
 """
 
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
 import textwrap
 import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "unittest-suites"
+sys.path.insert(0, str(SCRIPT.parents[1] / "tools" / "parity"))
+
+import child  # noqa: E402
+import scratch  # noqa: E402
 
 PASSING = """
 import unittest
@@ -53,8 +54,7 @@ class T(unittest.TestCase):
 
 class GateTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-gate-"))
-        self.addCleanup(shutil.rmtree, self.tmp)
+        self.tmp = scratch.for_case(self, "unityrs-gate-")
 
     def suite(self, name, files):
         folder = self.tmp / name
@@ -68,7 +68,7 @@ class GateTests(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k != "GITHUB_ACTIONS"}
         if actions:
             env["GITHUB_ACTIONS"] = "true"
-        proc = subprocess.run(
+        proc = child.run(
             [sys.executable, str(SCRIPT), *map(str, args)], capture_output=True, text=True, env=env, cwd=self.tmp
         )
         return proc.returncode, proc.stdout + proc.stderr

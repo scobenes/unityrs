@@ -36,9 +36,7 @@ import random
 import re
 import shutil
 import struct
-import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -46,6 +44,8 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import child  # noqa: E402
+import scratch  # noqa: E402
 from texture_cases import PIXEL_CASES, RGB48_PIXELS, H, W, rgb48  # noqa: E402
 from texture_cells import (  # noqa: E402
     COLUMNS,
@@ -165,7 +165,7 @@ def change_cells(text, columns):
 def rebuilt_elsewhere(parity_text):
     """Every row as `expected_row` builds it in a new process, from a copy of tools/parity whose PARITY.md
     is `parity_text`, so a builder that read PARITY.md, even at import, would build from that text."""
-    with tempfile.TemporaryDirectory(prefix="unityrs-matrix-") as root:
+    with scratch.folder("unityrs-matrix-") as root:
         copy = Path(root) / "tools" / "parity"
         shutil.copytree(HERE, copy, ignore=shutil.ignore_patterns("__pycache__"))
         (Path(root) / "PARITY.md").write_text(parity_text, encoding="utf-8")
@@ -173,7 +173,7 @@ def rebuilt_elsewhere(parity_text):
             "import json, test_texture_matrix as t\n"
             "print(json.dumps({f.name: t.expected_row(f) for f in t.TextureFormat}))\n"
         )
-        result = subprocess.run(
+        result = child.run(
             [sys.executable, "-B", "-c", script], cwd=copy / "tests", capture_output=True, text=True, check=True
         )
     return json.loads(result.stdout)

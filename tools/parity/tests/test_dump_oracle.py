@@ -13,7 +13,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -23,6 +22,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import child  # noqa: E402
 import canonical as C  # noqa: E402
 import oracle_env  # noqa: E402
 from dump_harness import DumpCase, dump, dump_process, dump_records, unitypy_dump  # noqa: E402
@@ -207,7 +207,9 @@ class DumpOracleTests(DumpCase):
         folder.mkdir(parents=True)
         with_user = {"PYTHONUSERBASE": str(base)}
         probe = [sys.executable, "-c", "import site; print(site.ENABLE_USER_SITE)"]
-        enabled = subprocess.run(probe, env={**os.environ, **with_user}, capture_output=True, text=True).stdout
+        # The probe's answer, never its failure (review round 9: a probe killed from outside read as "disabled").
+        enabled = child.run(probe, env={**os.environ, **with_user}, capture_output=True, text=True, check=True).stdout
+        self.assertIn(enabled, ("True\n", "False\n", "None\n"))
         proc = dump_process(tiny, "-o", out, env=with_user)
         if enabled.strip() == "True":
             self.assertEqual(proc.returncode, 2, proc.stderr.decode(errors="replace"))

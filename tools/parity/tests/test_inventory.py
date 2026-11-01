@@ -11,13 +11,13 @@ import contextlib
 import io
 import re
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
+import scratch  # noqa: E402
 import inventory  # noqa: E402
 
 try:
@@ -636,7 +636,7 @@ class AgainstTheOracle(unittest.TestCase):
         self.assertEqual(rows, inventory.enum_table(self.symbols))
 
     def test_check_exits_1_and_lists_what_is_missing(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch.folder() as tmp:
             path = Path(tmp) / "PARITY.md"
             path.write_text(self.text.replace("`Texture2DConverter.parse_image_data`", "parse_image_data"))
             stderr = io.StringIO()

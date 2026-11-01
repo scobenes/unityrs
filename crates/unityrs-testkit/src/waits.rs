@@ -592,11 +592,8 @@ mod tests {
     fn only_the_crates_own_once_rs_is_exempt_from_the_cell_scan() {
         // Round 5: the scan exempted every file whose path ended in
         // `once.rs` (`src/files/bonce.rs`, `src/env/once.rs`).
-        let dir = std::env::temp_dir().join(format!(
-            "unityrs-waits-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        let scratch = crate::scratch::Scratch::new("waits");
+        let dir = scratch.to_path_buf();
         let fill = "pub fn f(c: &std::sync::OnceLock<u8>) -> &u8 {\n    c.get_or_init(|| 1)\n}\n";
         std::fs::create_dir_all(dir.join("env")).unwrap();
         std::fs::create_dir_all(dir.join("files")).unwrap();
@@ -604,7 +601,6 @@ mod tests {
             std::fs::write(dir.join(f), fill).unwrap();
         }
         let found = super::cell_fills(&dir);
-        std::fs::remove_dir_all(&dir).unwrap();
         let rel: Vec<String> = found
             .iter()
             .map(|f| {

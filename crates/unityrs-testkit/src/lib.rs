@@ -14,7 +14,8 @@
 //! hands work between threads), [`stack`] (the child-process probes that
 //! measure a stack, and tell an overflow from every other failure) and
 //! [`child`] (how every test runs a child process: a `SIGKILL` from
-//! outside is no result) are package B's; [`address_space`] (the cap that makes the C allocator
+//! outside is no result) and [`scratch`] (how every test's scratch is
+//! removed, whatever happens to the test or its child) are package B's; [`address_space`] (the cap that makes the C allocator
 //! refuse, for the tests of liblzma's own allocations) is package C's;
 //! [`mutate`] (G3b's mutator) is the integration's.
 
@@ -29,6 +30,7 @@ pub mod guard;
 pub mod mutate;
 pub mod public_types;
 pub mod rng;
+pub mod scratch;
 pub mod serialized;
 pub mod stack;
 pub mod waits;

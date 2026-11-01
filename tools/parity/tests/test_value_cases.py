@@ -10,14 +10,14 @@ import contextlib
 import io
 import json
 import os
-import shutil
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
+
+import scratch  # noqa: E402
 
 try:
     import value_cases
@@ -136,8 +136,7 @@ for c in json.load(open(sys.argv[2])):
 @unittest.skipIf(value_cases is None, "needs UnityPy (the oracle image)")
 class GateStatusTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-g2-"))
-        self.addCleanup(shutil.rmtree, self.tmp)
+        self.tmp = scratch.for_case(self, "unityrs-g2-")
 
     def run_with(self, mode):
         fake = self.tmp / f"fake-{mode}"

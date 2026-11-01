@@ -7,7 +7,6 @@ import copy
 import gzip
 import io
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import canonical as C  # noqa: E402
 import compare  # noqa: E402
+import scratch  # noqa: E402
 
 LEVELS = ["L0", "L1", "L2", "L3"]
 SIDES = ("reference", "candidate")
@@ -146,11 +146,10 @@ def one_object(value):
 
 class CompareCase(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.tmp = scratch.for_case(self, "unityrs-compare-")
 
     def write(self, name, records, head=None, lines=None, raw=None):
-        path = Path(self.tmp.name) / name
+        path = self.tmp / name
         if raw is None:
             body = lines if lines is not None else [C.dumps(r) for r in records]
             raw = ("\n".join([C.dumps(head or header()), *body]) + "\n").encode()

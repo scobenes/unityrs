@@ -6,13 +6,15 @@ Standard library only; needs git and sh.
 
 import hashlib
 import os
-import shutil
-import subprocess
-import tempfile
+import sys
 import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "file-size-check.sh"
+sys.path.insert(0, str(SCRIPT.parents[1] / "tools" / "parity"))
+
+import child  # noqa: E402
+import scratch  # noqa: E402
 
 # Inherited, these would point the scratch repository's git at the
 # checkout's (CLAUDE.md: they make `git init` write into the main config).
@@ -34,13 +36,12 @@ ALLOWLIST = "scripts/file-size-allowlist.txt"
 
 class FileSizeCheckTests(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="unityrs-file-size-"))
-        self.addCleanup(shutil.rmtree, self.root)
+        self.root = scratch.for_case(self, "unityrs-file-size-")
         self.env = {k: v for k, v in os.environ.items() if k not in GIT_VARS}
         self.git("init", "-q")
 
     def git(self, *args):
-        subprocess.run(["git", "-C", str(self.root), *args], env=self.env, check=True)
+        child.run(["git", "-C", str(self.root), *args], env=self.env, check=True)
 
     def write(self, files, track=True):
         for path, text in files.items():
@@ -51,7 +52,7 @@ class FileSizeCheckTests(unittest.TestCase):
                 self.git("add", "--", path)
 
     def check(self):
-        run = subprocess.run(
+        run = child.run(
             ["sh", str(SCRIPT), str(self.root)],
             env=self.env,
             capture_output=True,

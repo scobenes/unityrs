@@ -52,9 +52,7 @@ import json
 import lzma
 import os
 import struct
-import subprocess
 import sys
-import tempfile
 from collections.abc import Iterator
 from io import BytesIO
 from pathlib import Path
@@ -68,6 +66,11 @@ from UnityPy.helpers.UnityVersion import UnityVersion
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "crates/unityrs-tpk/tests/fixtures/tpk"
+sys.path.insert(0, str(ROOT / "tools/parity"))
+
+import child  # noqa: E402
+import scratch  # noqa: E402
+
 UNITYPY = "1.25.2"
 
 MAGIC = 0x2A4B5054  # b"TPK*"
@@ -739,12 +742,12 @@ def survey() -> None:
 
 def run_g7(tpk: Path) -> int:
     """G7 on `tpk`: UnityPy's outcomes outside the repository, then unityrs-tpk's test."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with scratch.folder() as tmp:
         out = Path(tmp) / "outcomes.jsonl"
         write_outcomes(tpk, out)
         env = dict(os.environ, UNITYRS_ORACLE_TPK=str(tpk), UNITYRS_ORACLE_TPK_OUTCOMES=str(out))
         cmd = ["cargo", "test", "--locked", "-p", "unityrs-tpk", "--test", "g7", "--", "--exact", "image_tpk", "--nocapture"]
-        run = subprocess.run(cmd, cwd=ROOT, env=env, check=False, stdout=subprocess.PIPE, text=True)
+        run = child.run(cmd, cwd=ROOT, env=env, check=False, stdout=child.PIPE, text=True)
         sys.stdout.write(run.stdout)
         if run.returncode != 0:
             return run.returncode

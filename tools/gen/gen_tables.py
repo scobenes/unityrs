@@ -44,9 +44,7 @@ from __future__ import annotations
 
 import argparse
 import re
-import subprocess
 import sys
-import tempfile
 import tomllib
 import unicodedata
 from pathlib import Path
@@ -57,6 +55,11 @@ from UnityPy.enums.CommonString import CommonString
 from UnityPy.helpers.TypeTreeNode import get_common_strings
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools/parity"))
+
+import child  # noqa: E402
+import scratch  # noqa: E402
+
 CORE = ROOT / "crates/unityrs-core/src"
 DUMP = ROOT / "crates/unityrs-dump/src"
 GENERATOR = "tools/gen/gen_tables.py"
@@ -145,12 +148,12 @@ def nd_zeros() -> list[int]:
 
 def rust_lowercase(rustc_version: str) -> tuple[tuple[int, int, int], dict[int, str]]:
     """Rust's `char::to_lowercase` for every code point it changes, from the pinned rustc."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with scratch.folder() as tmp:
         src = Path(tmp) / "lower.rs"
         exe = Path(tmp) / "lower"
         src.write_text(RUST_LOWER)
-        subprocess.run(["rustc", "-O", "-o", str(exe), str(src)], cwd=ROOT, check=True)
-        out = subprocess.run([str(exe)], check=True, capture_output=True, text=True).stdout
+        child.run(["rustc", "-O", "-o", str(exe), str(src)], cwd=ROOT, check=True)
+        out = child.run([str(exe)], check=True, capture_output=True, text=True).stdout
     lines = out.splitlines()
     major, minor, update = (int(x) for x in lines[0].split())
     mapping = {}
@@ -234,7 +237,7 @@ def ranges(cps: list[int]) -> list[tuple[int, int]]:
 
 def pinned_rustc() -> str:
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
-    version = subprocess.run(["rustc", "-V"], cwd=ROOT, check=True, capture_output=True, text=True).stdout
+    version = child.run(["rustc", "-V"], cwd=ROOT, check=True, capture_output=True, text=True).stdout
     check(version.split()[1] == channel, f"rustc is {version.strip()}, the toolchain pins {channel}")
     return channel
 

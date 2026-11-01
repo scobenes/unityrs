@@ -1,6 +1,7 @@
 //! [`super`]'s tests: the ordered pool, the writer and the output guard.
 
 use super::*;
+use unityrs_testkit::scratch::Scratch;
 
 #[test]
 fn gzip_header_is_the_oracles() {
@@ -175,15 +176,6 @@ fn ordered_stops_when_the_sink_refuses() {
     assert_eq!(got, [0, 1, 2]);
 }
 
-/// A folder under the system temp directory, removed on drop.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// Round 6: this test refused the crate's own checkout, so it passed only
 /// inside a git checkout. It builds its repositories: a clone's (a `.git`
 /// folder) and a worktree's (a `.git` file) refuse a path in them, one
@@ -191,13 +183,11 @@ impl Drop for Scratch {
 /// beside them does not.
 #[test]
 fn a_repository_is_refused_and_a_folder_beside_it_is_not() {
-    let base = Scratch(
-        std::env::temp_dir().join(format!("unityrs-dump-repo-guard-{}", std::process::id())),
-    );
+    let base = Scratch::new("dump-repo-guard");
     let (clone, worktree, plain) = (
-        base.0.join("clone"),
-        base.0.join("worktree"),
-        base.0.join("plain"),
+        base.join("clone"),
+        base.join("worktree"),
+        base.join("plain"),
     );
     std::fs::create_dir_all(clone.join(".git")).unwrap();
     std::fs::create_dir_all(&worktree).unwrap();
@@ -215,7 +205,7 @@ fn a_repository_is_refused_and_a_folder_beside_it_is_not() {
         }
     }
     assert!(outside_repo(&plain.join("into-clone/out.jsonl")).is_err());
-    let real = std::fs::canonicalize(&base.0).unwrap();
+    let real = std::fs::canonicalize(base.path()).unwrap();
     if let Some(outer) = repo_root_of(&real) {
         // The system temp directory is itself in a repository: nothing
         // under it is a folder outside one.
@@ -248,9 +238,8 @@ fn the_crates_own_checkout_is_refused_when_it_is_one() {
 #[test]
 fn the_run_counts_the_inputs_that_crashed() {
     use unityrs_core::budget::Counting;
-    let base =
-        Scratch(std::env::temp_dir().join(format!("unityrs-dump-crashes-{}", std::process::id())));
-    let input = base.0.join("in");
+    let base = Scratch::new("dump-crashes");
+    let input = base.join("in");
     std::fs::create_dir_all(&input).unwrap();
     std::fs::write(input.join("a.bin"), [7u8; 4096]).unwrap();
     std::fs::write(input.join("b.bin"), [7u8; 4096]).unwrap();
@@ -266,7 +255,7 @@ fn the_run_counts_the_inputs_that_crashed() {
                 inputs: vec![input.clone()],
                 ..Selection::default()
             },
-            output: base.0.join(out),
+            output: base.join(out),
             dump,
             stats: None,
             quiet: true,
@@ -277,7 +266,7 @@ fn the_run_counts_the_inputs_that_crashed() {
     let all = run_on("all.jsonl");
     assert_eq!((all.inputs, all.crashes), (2, 2));
     assert!(all.every_input_crashed());
-    let text = std::fs::read_to_string(base.0.join("all.jsonl")).unwrap();
+    let text = std::fs::read_to_string(base.join("all.jsonl")).unwrap();
     assert_eq!(text.matches(r#""kind":"crash""#).count(), 2, "{text}");
     // One input small enough to read is dumped, and one past
     // `max_input_bytes` is refused unread at that limit: neither crashed.
@@ -286,7 +275,7 @@ fn the_run_counts_the_inputs_that_crashed() {
     let some = run_on("some.jsonl");
     assert_eq!((some.inputs, some.crashes), (4, 2));
     assert!(!some.every_input_crashed());
-    let text = std::fs::read_to_string(base.0.join("some.jsonl")).unwrap();
+    let text = std::fs::read_to_string(base.join("some.jsonl")).unwrap();
     assert_eq!(text.matches(r#""kind":"crash""#).count(), 2, "{text}");
     assert_eq!(text.matches(r#""kind":"detect""#).count(), 1, "{text}");
 }

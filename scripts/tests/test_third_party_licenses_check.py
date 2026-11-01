@@ -4,9 +4,7 @@ Standard library only (tomllib, Python 3.11 or later).
 """
 
 import copy
-import subprocess
 import sys
-import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -14,7 +12,10 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parents[1]
 ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(ROOT / "tools" / "parity"))
 
+import child  # noqa: E402
+import scratch  # noqa: E402
 import third_party_licenses_check as T  # noqa: E402
 
 
@@ -79,21 +80,21 @@ class ConfigTests(unittest.TestCase):
 
     def test_the_command_line(self):
         script = SCRIPTS / "third_party_licenses_check.py"
-        ok = subprocess.run([sys.executable, str(script), "config"], capture_output=True, text=True)
+        ok = child.run([sys.executable, str(script), "config"], capture_output=True, text=True)
         self.assertEqual((ok.returncode, ok.stderr), (0, ""))
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch.folder("unityrs-licenses-") as tmp:
             about = Path(tmp) / "about.toml"
             about.write_text(
                 (ROOT / "about.toml").read_text().replace('accepted = ["0BSD"]', 'accepted = ["0BSD", "GPL-3.0-only"]')
             )
-            bad = subprocess.run(
+            bad = child.run(
                 [sys.executable, str(script), "config", str(about), str(ROOT / "deny.toml")],
                 capture_output=True,
                 text=True,
             )
             self.assertEqual(bad.returncode, 1)
             self.assertIn("GPL-3.0-only", bad.stderr)
-        self.assertEqual(subprocess.run([sys.executable, str(script)], capture_output=True).returncode, 2)
+        self.assertEqual(child.run([sys.executable, str(script)], capture_output=True).returncode, 2)
 
 
 class NoticeTests(unittest.TestCase):

@@ -55,7 +55,6 @@ from __future__ import annotations
 import argparse
 import json
 import struct
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,9 +69,13 @@ OUT = ROOT / "crates/unityrs-core/tests/fixtures/walk"
 sys.path.insert(0, str(ROOT / "tools/parity"))
 sys.path.insert(0, str(ROOT / "tools/fixtures"))
 
+import child  # noqa: E402
 from unitypy_dump import error_kind  # noqa: E402
 from walk_build import (  # noqa: E402
     ALIGN,
+    INT_TREE,
+    LOOKALIKE_CLASSES,
+    REF,
     assets,
     base,
     enc,
@@ -80,6 +83,8 @@ from walk_build import (  # noqa: E402
     i32,
     leaf,
     pair,
+    ref_bytes,
+    ref_object,
     run_case,
     s,
     shift,
@@ -96,27 +101,6 @@ from walk_runs import run_cases  # noqa: E402
 
 U8 = lambda name, meta=0: leaf("UInt8", name, meta)  # noqa: E731
 INT = lambda name, meta=0: leaf("int", name, meta)  # noqa: E731
-
-
-def ref_object(name="obj", data_rows=None, meta=0):
-    """`ReferencedObject { SInt64 rid; ReferencedManagedType type { string class, ns, asm }; ReferencedObjectData data }`."""
-    return [
-        [0, "ReferencedObject", name, meta],
-        [1, "SInt64", "rid", 0],
-        [1, "ReferencedManagedType", "type", 0],
-        [2, "string", "class", 0],
-        [2, "string", "ns", 0],
-        [2, "string", "asm", 0],
-        [1, "ReferencedObjectData", "data", 0],
-    ]
-
-
-def ref_bytes(cls, ns="N", asm="A", rid=1):
-    return struct.pack("<q", rid) + s(cls) + s(ns) + s(asm)
-
-
-INT_TREE = [[0, "Data", "Base", 0], [1, "int", "x", 0]]
-REF = [{"class": "C", "ns": "N", "asm": "A", "nodes": INT_TREE}]
 
 
 def type_rows(cls_rows):
@@ -293,6 +277,9 @@ def r_cases():
     add("r16_negative_length", base(vec("v", INT("data"))), i32(-1))
     add("r16_ref_type", base(ref_object()), ref_bytes("X"), ref_types=REF)
     add("r16_other", base([[0, "pair", "p", 0]]), b"")
+    for i, cls in enumerate(LOOKALIKE_CLASSES):
+        add(f"r16_ref_type_named_like_another_kind_{i}", base(ref_object(), INT("tail")), ref_bytes(cls) + i32(9),
+            ref_types=REF)
     return c
 
 
@@ -582,7 +569,7 @@ def boost_reach():
 
     def reads(name, n):
         argv = [sys.executable, __file__, "--boost-reach-child", name, str(n)]
-        return subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        return child.run(argv, stdout=child.DEVNULL, stderr=child.DEVNULL).returncode == 0
 
     for name in DEPTH_SHAPES:
         lo, hi = 1, 2

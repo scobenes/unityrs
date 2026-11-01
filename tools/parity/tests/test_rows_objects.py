@@ -19,6 +19,7 @@ sys.path.insert(0, str(HERE / "tests"))
 
 from rows_support import ORACLE, TEXT_ASSET, load, quietly, text_asset_file  # noqa: E402
 
+import scratch  # noqa: E402
 import synth as S  # noqa: E402
 
 if ORACLE:
@@ -386,11 +387,7 @@ class ObjectRows(unittest.TestCase):
         # the memory reader's slice view[start:start + size] (section 13), the object's bytes where that slice ends
         # before index 0, and b"" for an object that ends at the file's end, which UnityPyBoost refuses (EOFError).
         # A second AssetBundle object is not read while loading.
-        import shutil
-        import tempfile
-
-        folder = Path(tempfile.mkdtemp(prefix="unityrs-rows-"))
-        self.addCleanup(shutil.rmtree, folder)
+        folder = scratch.for_case(self, "unityrs-rows-")
         text = tpk_object(49, m_Name="t1", m_Script="")
 
         def before_the_start(objects, path_id):
@@ -558,7 +555,6 @@ class ObjectRows(unittest.TestCase):
     # Section 10: TypeTreeGenerator without TypeTreeGeneratorAPI, and the wrapper methods UnityPy adds.
     def test_typetree_generator(self):
         import os
-        import tempfile
 
         from UnityPy.helpers.TypeTreeGenerator import TypeTreeGenerator
 
@@ -600,7 +596,8 @@ class ObjectRows(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         # load_local_dll_folder: every `.dll` in the folder, in listdir order; load_local_game: IL2CPP when the
         # root holds GameAssembly.dll, else the `*_Data/Managed` folder.
-        with tempfile.TemporaryDirectory(prefix="unityrs-gen-") as root:
+        with scratch.folder("unityrs-gen-") as root:
+            root = str(root)  # the str TemporaryDirectory gave, which UnityPy's loaders take
             managed = os.path.join(root, "Game_Data", "Managed")
             os.makedirs(managed)
             for name, data in (("a.dll", b"A"), ("b.txt", b"T"), ("c.DLL", b"C"), ("d.dll", b"D")):

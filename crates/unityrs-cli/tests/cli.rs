@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use unityrs_testkit::child;
+use unityrs_testkit::scratch::Scratch;
 
 /// A run of the binary; one the system kills from outside is run again
 /// (`unityrs_testkit::child`).
@@ -19,21 +20,17 @@ fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
-/// A folder outside the repository, removed when dropped.
-struct Tmp(PathBuf);
+/// A folder outside the repository, its path resolved, removed when
+/// dropped (`unityrs_testkit::scratch`).
+struct Tmp(
+    PathBuf,
+    #[allow(dead_code, reason = "held for its drop, which removes the folder")] Scratch,
+);
 
 impl Tmp {
     fn new(what: &str) -> Self {
-        let base = std::env::temp_dir().join(format!("unityrs-cli-{what}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        Self(std::fs::canonicalize(&base).unwrap())
-    }
-}
-
-impl Drop for Tmp {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let dir = Scratch::new(&format!("cli-{what}"));
+        Self(std::fs::canonicalize(dir.path()).unwrap(), dir)
     }
 }
 
