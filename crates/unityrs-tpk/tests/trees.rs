@@ -311,6 +311,65 @@ fn a_class_listed_twice_takes_only_its_kept_listings_root_from_the_total() {
     assert_eq!(list.rows().len(), 1);
 }
 
+/// Classes 0-31, each the release root of a tree of 65,536 rows (it lists a
+/// 15-level doubling node twice and a leaf: `1 + 2 x 32,767 + 1`), 2,097,152
+/// rows in all, and with `one_more`, class 32, whose root is a leaf after
+/// them, one row more.
+fn roots_at_the_total(one_more: bool) -> Blob {
+    let mut nodes = doubling(0, 15);
+    let leaf = u16::try_from(nodes.len()).unwrap();
+    nodes.push(vec![]);
+    let first = leaf + 1;
+    nodes.extend((0..32).map(|_| vec![0, 0, leaf]));
+    let mut roots: Vec<u16> = (first..first + 32).collect();
+    if one_more {
+        roots.push(u16::try_from(nodes.len()).unwrap());
+        nodes.push(vec![]);
+    }
+    const { assert!(32 * 65_536 == TpkProvider::MAX_TOTAL_ROWS) };
+    Blob {
+        versions: vec![V2],
+        classes: (0_i32..)
+            .zip(roots)
+            .map(|(id, root)| (id, vec![(V2, root)]))
+            .collect(),
+        nodes,
+        strings: 2,
+        ..Blob::default()
+    }
+}
+
+/// The total is a bound on rows past it, not at it (round 9: refusing at
+/// the bound passed every test): release roots whose rows total exactly
+/// [`TpkProvider::MAX_TOTAL_ROWS`] all load, the last asked first.
+#[test]
+fn release_roots_totalling_exactly_the_bound_all_load() {
+    let provider = load(&roots_at_the_total(false), &Limits::default()).unwrap();
+    for id in (0..32).rev() {
+        let list = provider.node_list(id, &v2()).unwrap().unwrap();
+        assert_eq!(list.rows().len(), 65_536, "class {id}");
+    }
+}
+
+/// [`release_roots_totalling_exactly_the_bound_all_load`]'s mirror: one row
+/// more, a leaf root after the 32 trees, is refused unwalked with a `Count`
+/// limit naming the total it would have reached, 2,097,153, asked first;
+/// the root before it still loads.
+#[test]
+fn one_row_past_the_bound_refuses_the_root_that_passes_it() {
+    let provider = load(&roots_at_the_total(true), &Limits::default()).unwrap();
+    assert_eq!(
+        limit_of(&provider.node_list(32, &v2()).unwrap_err()),
+        LimitError {
+            kind: LimitKind::Count,
+            value: 2_097_153,
+            max: u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap(),
+        }
+    );
+    let list = provider.node_list(31, &v2()).unwrap().unwrap();
+    assert_eq!(list.rows().len(), 65_536);
+}
+
 /// A failure the provider keeps is handed to every later request as a clone
 /// that shares its text, so repeated requests allocate nothing: the walk's
 /// errors from the node list and the tree alike, and a refusal of the total.

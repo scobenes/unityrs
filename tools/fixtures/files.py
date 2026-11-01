@@ -175,6 +175,70 @@ def gz_member(data: bytes, flags: int = 0, extra: bytes = b"", name: bytes = b""
     return head + body + struct.pack("<II", zlib.crc32(data), len(data) & 0xFFFFFFFF)
 
 
+# Deflate's distance codes: (base, extra bits) for codes 0-29 (RFC 1951 3.2.5).
+DISTANCES = [(1, 0), (2, 0), (3, 0), (4, 0)] + [
+    (b, e) for e in range(1, 14) for b in ((1 << (e + 1)) + 1, (1 << (e + 1)) + (1 << e) + 1)
+]
+
+
+def fixed_block(items: list) -> bytes:
+    """One final fixed-Huffman deflate block, written bit by bit: each item is
+    literal bytes or a (length, distance) match, length 3-10. A compressor
+    never writes a match reaching before the output's start, so the cases
+    that need one are built here (RFC 1951 3.2.6)."""
+    bits: list[int] = []
+
+    def put(value: int, n: int) -> None:  # extra bits and the header: LSB first
+        bits.extend((value >> i) & 1 for i in range(n))
+
+    def code(value: int, n: int) -> None:  # Huffman codes: MSB first
+        bits.extend((value >> i) & 1 for i in reversed(range(n)))
+
+    def symbol(s: int) -> None:
+        if s < 144:
+            code(0x30 + s, 8)
+        elif s < 256:
+            code(0x190 + s - 144, 9)
+        elif s < 280:
+            code(s - 256, 7)
+        else:
+            code(0xC0 + s - 280, 8)
+
+    put(1, 1)  # BFINAL
+    put(1, 2)  # BTYPE 01: fixed codes
+    for item in items:
+        if isinstance(item, bytes):
+            for b in item:
+                symbol(b)
+            continue
+        length, distance = item
+        assert 3 <= length <= 10
+        symbol(254 + length)
+        c = max(i for i, (base, _) in enumerate(DISTANCES) if base <= distance)
+        code(c, 5)
+        put(distance - DISTANCES[c][0], DISTANCES[c][1])
+    symbol(256)
+    bits.extend([0] * (-len(bits) % 8))
+    return bytes(sum(bit << i for i, bit in enumerate(bits[at : at + 8])) for at in range(0, len(bits), 8))
+
+
+def far_member(items: list) -> bytes:
+    """A gzip member around `fixed_block(items)`, its trailer that of the
+    output an inflater writes when it reads a match reaching before the
+    output's start from a zeroed window instead of refusing it, so only
+    the distance check can refuse the member."""
+    out = bytearray(1 << 15)
+    for item in items:
+        if isinstance(item, bytes):
+            out += item
+        else:
+            for _ in range(item[0]):
+                out.append(out[-item[1]])
+    data = bytes(out[1 << 15 :])
+    trailer = struct.pack("<II", zlib.crc32(data), len(data))
+    return b"\x1f\x8b\x08\0\0\0\0\0\0\xff" + fixed_block(items) + trailer
+
+
 def assets_header(meta: int, size: int, version: int, offset: int, pad: int = 128) -> bytes:
     return struct.pack(">IIII", meta, size, version, offset) + b"\0" * (pad - 16)
 
@@ -224,6 +288,13 @@ def detect_inputs() -> list[tuple[str, bytes]]:
         ("gzip-fhcrc-wrong", gz_member(web, 2)[:10] + b"\0\0" + gz_member(web, 2)[12:] + b"\0" * 64),
         ("gzip-empty-stream", gz(b"") + b"\0" * 200),
         ("gzip-one-byte", gz(b"U") + b"\0" * 200),
+        # A match reaching before the member's output: zlib's "invalid
+        # distance too far back", a distance of the output so far is not.
+        ("gzip-far-first", far_member([(3, 1)]) + b"\0" * 128),
+        ("gzip-far-web", far_member([b"UnityWebData1.0X", (3, 132)]) + b"\0" * 128),
+        ("gzip-far-by-one", far_member([b"UnityWebData1.0X", (3, 17)]) + b"\0" * 128),
+        ("gzip-near-start", far_member([b"UnityWebData1.0X", (3, 16)]) + b"\0" * 128),
+        ("gzip-far-second-member", gz(b"UnityWeb") + far_member([(3, 3)]) + b"\0" * 128),
         ("brotli", b"\0" * 0x20 + b"brotli" + b"\0" * 100),
         ("brotli-short", b"\0" * 0x20 + b"brotl" + b"\0" * 100),
         ("assets-ok", assets_header(100, 128, 17, 120)),

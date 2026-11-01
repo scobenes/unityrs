@@ -13,8 +13,18 @@
 //! `GzipFile` to its end (`:303-308`), which inflates every member. The
 //! output is streamed through a scratch buffer and only its first 20 bytes
 //! and its length are kept, so detection charges nothing: the scratch (at
-//! most 64 KiB) is part of plan section 3.15's constant. Also: `brotli`
-//! at 0x20; the SerializedFile header read big-endian.
+//! most 64 KiB) is part of plan section 3.15's constant, as are the
+//! inflater's state and 32 KiB window, one member's at a time. Also:
+//! `brotli` at 0x20; the SerializedFile header read big-endian.
+//!
+//! **The inflater is zlib's.** flate2 runs `zlib-rs` (`unityrs-core`'s
+//! manifest), a port of zlib that keeps its rules, so a stream inflates
+//! or raises as under `CPython`'s zlib, which `gzip._GzipReader` runs. One
+//! rule differs in flate2's default backend, `miniz_oxide`: a match reaching
+//! before its member's first output byte is zlib's "invalid distance too
+//! far back", where `miniz_oxide` copies zeros from its window (round 9:
+//! a corrupt stream detected as `ResourceFile` or `WebFile`, and a bundle
+//! UnityPy fails loaded). `tests/fixtures/c/detect.json` pins it.
 //!
 //! **Work.** One stream inflates at most [`Limits::max_inflate`] bytes. A
 //! container detects each of its entries ([`check_entry_type`]), and many
@@ -382,9 +392,10 @@ fn gzip_inflate(
                 )
                 .map_err(|e| DetectError::Gzip(format!("zlib.error: {e}").into()));
             // What the call consumed and made counts whether it failed or
-            // not (both backends advance their totals before they fail),
-            // and before the stream's own bound is checked, so the chunk
-            // that passes `max_inflate` is the open's work too.
+            // not (zlib-rs advances flate2's totals by what it read and
+            // wrote before it reports a failure), and before the stream's
+            // own bound is checked, so the chunk that passes `max_inflate`
+            // is the open's work too.
             let made = usize::try_from(z.total_out() - out_before).unwrap_or(0);
             let consumed = z.total_in() - in_before;
             let made_bytes = u64::try_from(made).unwrap_or(u64::MAX);

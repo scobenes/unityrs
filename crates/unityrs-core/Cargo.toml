@@ -20,8 +20,13 @@ thiserror = "=2.0.21"
 # Block codecs (docs/spikes/lzma.md: liblzma static, pinned).
 liblzma = { version = "=0.4.9", features = ["static"] }
 lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-decode"] }
-# The full-stream gzip check of ImportHelper.check_file_type (rule 7).
-flate2 = "=1.1.10"
+# The full-stream gzip check of ImportHelper.check_file_type (rule 7), with
+# zlib-rs (zlib's inflate in Rust) as the backend: it refuses what CPython's
+# zlib refuses, a distance before the start of the output included, which
+# miniz_oxide, flate2's default backend, inflates as zeros (round 9). No
+# default features, so no other backend is built; zlib-rs allocates through
+# the global allocator (flate2 asks for its `rust-allocator`).
+flate2 = { version = "=1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 
 [dev-dependencies]
 unityrs-testkit = { path = "../unityrs-testkit" }
