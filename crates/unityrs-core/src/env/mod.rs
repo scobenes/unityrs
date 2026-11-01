@@ -192,11 +192,14 @@ pub enum LoadMode {
 
 /// Bytes the caller fetches on demand (a batch engine's mmap or object store).
 pub trait Fetch: Send + Sync + fmt::Debug {
-    /// The file's bytes. A fetcher that takes them from the dependency
+    /// The file's bytes. A dependency's fetcher (one a
+    /// [`Environment::load_dependency`], a resolver's load as a dependency or
+    /// a reopen after an eviction calls) that takes them from the dependency
     /// pool may refuse with the pool's refusal ([`Error::Budget`] naming
     /// [`crate::budget::Reservation::Dependency`]): the Environment then
     /// evicts the other dependencies and fetches once more, as for a
-    /// refusal of its own (plan section 3.13).
+    /// refusal of its own (plan section 3.13). A caller's [`Environment::load`]
+    /// is no dependency's, and returns such a refusal as it is.
     fn fetch(&self) -> Result<Bytes, Error>;
     /// Its size, when known without fetching (for budgeting).
     fn size_hint(&self) -> Option<u64> {
