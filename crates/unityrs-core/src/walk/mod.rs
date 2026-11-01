@@ -95,7 +95,7 @@ use crate::files::SerializedType;
 use crate::limits::{ChargeError, Limits, Meter, MeteredVec};
 use crate::provider::ProviderError;
 use crate::raw::RawStr;
-use crate::stream::{Endian, py_read};
+use crate::stream::{Endian, ReaderKind, StreamRefusal};
 use crate::typetree::{NodeId, Tree, TreeError};
 use crate::value::{Built, Parsed, Value};
 
@@ -273,6 +273,11 @@ pub enum ReadDetail {
     /// A pure-Python-path `TypeError` or `struct.error` (aligned `SInt8` or `TypelessData` arrays).
     #[error("python reader: {0}")]
     Python(&'static str),
+    /// The stream reader's refusal (a file loaded from a path): a negative
+    /// or huge `byte_start`, or a `TypelessData` length below -1 on the
+    /// pure-Python path (kind `other`).
+    #[error("{}: {}", .0.exception(), .0)]
+    Stream(StreamRefusal),
     /// A bound from [`Limits`] on work or depth.
     #[error(transparent)]
     Limit(LimitError),
@@ -445,12 +450,12 @@ pub enum WriteError {
     Charge(ChargeError),
 }
 
-/// `TypeTreeHelper.read_typetree`: [`boost::read`] over the Python slice
-/// `file[byte_start : byte_start + byte_size]` ([`crate::stream::py_read`]:
-/// short at the end of a truncated file, from the end for a negative start)
-/// when `byte_size > 0`, else [`python::read`] from `byte_start`; then, with
-/// `check_read`, `bytes_read != byte_size` is [`ParseError::CheckRead`]
-/// carrying the value.
+/// `TypeTreeHelper.read_typetree` over bytes (UnityPy's memory reader):
+/// [`boost::read`] over the Python slice `file[byte_start : byte_start +
+/// byte_size]` ([`crate::stream::py_read`]: short at the end of a truncated
+/// file, from the end for a negative start) when `byte_size > 0`, else
+/// [`python::read`] from `byte_start`; then, with `check_read`, `bytes_read
+/// != byte_size` is [`ParseError::CheckRead`] carrying the value.
 pub fn read_typetree(
     file: &Bytes,
     byte_start: i128,
@@ -459,14 +464,45 @@ pub fn read_typetree(
     ctx: &ReadCtx<'_>,
     check_read: bool,
 ) -> Result<Parsed, ParseError> {
+    read_typetree_with_reader(
+        file,
+        byte_start,
+        byte_size,
+        tree,
+        ctx,
+        check_read,
+        ReaderKind::Memory,
+    )
+}
+
+/// [`read_typetree`] from the file's reader of `kind`
+/// ([`crate::files::SerializedFile::reader_kind`]): `reset()` sets the
+/// position to `byte_start`, which the stream reader refuses when negative
+/// or at or above 2^63 ([`ReadDetail::Stream`], kind `other`); the Boost
+/// path is given `read_bytes(byte_size)` from there (on both readers the
+/// bytes that exist), and the pure-Python reader reads by the reader's
+/// rules ([`python::read_with_reader`]).
+pub fn read_typetree_with_reader(
+    file: &Bytes,
+    byte_start: i128,
+    byte_size: u32,
+    tree: &Arc<Tree>,
+    ctx: &ReadCtx<'_>,
+    check_read: bool,
+    kind: ReaderKind,
+) -> Result<Parsed, ParseError> {
+    // UnityPy files/ObjectReader.py:214-215, :251: `reset()`.
+    let start = kind.seek(byte_start).map_err(|e| stream_refused(0, e))?;
     // UnityPy TypeTreeHelper.py:146-153: `byte_size and read_typetree_boost`.
     let parsed = if byte_size > 0 {
-        // UnityPy TypeTreeHelper.py:147: `reader.read_bytes(byte_size)`, a
-        // Python slice of the file from `byte_start`.
-        let (range, _) = py_read(file.len(), byte_start, i64::from(byte_size));
+        // UnityPy TypeTreeHelper.py:147: `reader.read_bytes(byte_size)`: on
+        // the memory reader a Python slice of the file from `byte_start`.
+        let (range, _) = kind
+            .read(file.len(), start, i64::from(byte_size))
+            .map_err(|e| stream_refused(0, e))?;
         boost::read(&file.slice(range), tree, ctx)?
     } else {
-        python::read(file, byte_start, tree, ctx)?
+        python::read_with_reader(file, start, tree, ctx, kind)?
     };
     // UnityPy TypeTreeHelper.py:155-156.
     if check_read && parsed.bytes_read != i64::from(byte_size) {
@@ -476,6 +512,16 @@ pub fn read_typetree(
         });
     }
     Ok(parsed)
+}
+
+/// The stream reader's refusal at `at` bytes into a read (kind `other`, as
+/// the oracle maps a `ValueError` or `OverflowError` it names no kind for).
+pub(crate) fn stream_refused(at: u64, e: StreamRefusal) -> ReadError {
+    ReadError {
+        kind: ReadErrorKind::Other,
+        at,
+        detail: ReadDetail::Stream(e),
+    }
 }
 
 /// A value as a reader returns it to its parent: one that owns no heap

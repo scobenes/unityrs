@@ -19,15 +19,16 @@ use crate::limits::{Charge, Meter, MeteredVec, heap_cost};
 use crate::once::ResultCell;
 use crate::options::FileContext;
 use crate::raw::RawStr;
-use crate::stream::{Endian, Reader, py_read};
+use crate::stream::{Endian, Reader, ReaderKind};
 use crate::typetree::parse::string_to_null;
 use crate::version::{
     FlagsClass, ResolvedVersion, flags_class, resolve_bundle, uses_block_alignment,
 };
 
 impl BundleFile {
-    /// Reads the header, blocks-info and directory. Decodes no data block.
-    /// Everything it keeps is charged to `meter`, the input's.
+    /// Reads the header, blocks-info and directory of bytes (the memory
+    /// reader's rules). Decodes no data block. Everything it keeps is
+    /// charged to `meter`, the input's.
     pub fn open(
         name: RawStr,
         data: Bytes,
@@ -35,10 +36,26 @@ impl BundleFile {
         meter: &Arc<Meter>,
         ctx: &Arc<FileContext>,
     ) -> Result<Arc<Self>, Error> {
+        Self::open_with_reader(name, data, parent, meter, ctx, ReaderKind::Memory)
+    }
+
+    /// [`Self::open`] by the rules of the reader UnityPy would read `data`
+    /// with ([`ReaderKind::Stream`] for a top-level file loaded from a path):
+    /// the header, the blocks-info section and the blocks' stored bytes are
+    /// read through it; the blocks-info table and the entries are memory
+    /// (UnityPy decodes them into bytes, `BundleFile.py:141-142`, `:173-186`).
+    pub fn open_with_reader(
+        name: RawStr,
+        data: Bytes,
+        parent: Option<Parent>,
+        meter: &Arc<Meter>,
+        ctx: &Arc<FileContext>,
+        reader: ReaderKind,
+    ) -> Result<Arc<Self>, Error> {
         let mut charge = meter.charge(heap_cost(
             u64::try_from(std::mem::size_of::<Self>() + 16).unwrap_or(u64::MAX),
         ))?;
-        let mut r = Reader::new(&data, Endian::Big);
+        let mut r = Reader::with_kind(&data, Endian::Big, reader);
         let FsHeader {
             signature,
             format,
@@ -53,20 +70,17 @@ impl BundleFile {
             block_alignment,
         } = read_fs_header(&mut r, &data, &mut charge, ctx)?;
         let blocks_ctx = BlockContext::new(ctx, encrypted);
-        // :133-139
+        // :133-139: at the end, `Position = Length - compressedSize` (which a
+        // stream refuses when negative), the read, and back to the start.
         let start = r.position();
         let info_range = if data_flags & 0x80 != 0 {
             let len = i128::try_from(data.len()).unwrap_or(i128::MAX);
-            py_read(
-                data.len(),
-                len - i128::from(info_compressed),
-                i64::from(info_compressed),
-            )
-            .0
-        } else {
-            let (range, pos) = py_read(data.len(), start, i64::from(info_compressed));
-            r.set_position(pos);
+            r.set_position(len - i128::from(info_compressed))?;
+            let range = r.read_range(i64::from(info_compressed))?;
+            r.set_position(start)?;
             range
+        } else {
+            r.read_range(i64::from(info_compressed))?
         };
         let info_read = u32::try_from(info_range.len()).unwrap_or(u32::MAX);
         let blocks_info = BlockInfo {
@@ -141,7 +155,8 @@ impl BundleFile {
 }
 
 /// Where each block's stored bytes are (`reader.read_bytes(compressedSize)`
-/// in order from `r`), its `bytes_read` set; and the length cells, a stored
+/// in order from `r`, by its reader's rules: a size is never negative, so
+/// the two readers read the same bytes), its `bytes_read` set; and the length cells, a stored
 /// block's filled with what was read (`lambda cd, _ucs: cd`) when stored
 /// blocks are their own bytes ([`crate::codec::Codecs::stores_as_is`]) and
 /// what was read is within the block cap
@@ -157,12 +172,10 @@ fn stored_blocks(
     ctx: &FileContext,
 ) -> Result<(MeteredVec<Range<usize>>, MeteredVec<ResultCell<u64, Error>>), Error> {
     let (as_is, cap) = (ctx.codecs.stores_as_is(), ctx.limits.max_block_output);
-    let len = r.data().len();
     let mut stored = MeteredVec::new(meter);
     let mut lengths = MeteredVec::new(meter);
     for b in blocks.as_mut_slice() {
-        let (range, pos) = py_read(len, r.position(), i64::from(b.compressed));
-        r.set_position(pos);
+        let range = r.read_range(i64::from(b.compressed))?;
         b.bytes_read = u32::try_from(range.len()).unwrap_or(u32::MAX);
         stored.push(range)?;
         let cell = ResultCell::new();
@@ -248,7 +261,7 @@ fn read_fs_header(
         r.read_u32()?;
         for _ in 0..2 {
             r.read_bytes_short(32);
-            r.set_position(r.position() + 1);
+            r.set_position(r.position() + 1)?;
         }
     }
     // :129-131

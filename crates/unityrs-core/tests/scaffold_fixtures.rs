@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde_json::Value as J;
 use unityrs_core::env::pptr::{ExternalIndexError, external_index};
-use unityrs_core::stream::{py_align, py_read, py_string_to_null, py_unpack_from};
+use unityrs_core::stream::{ReaderKind, py_align, py_read, py_string_to_null, py_unpack_from};
 
 fn load(name: &str) -> J {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -99,6 +99,31 @@ fn string_to_null_clamps_the_search() {
         let data = &datas[usize::try_from(small(&c["data"])).unwrap()];
         let max = usize::try_from(small(&c["max"])).unwrap();
         let got = py_string_to_null(data, big(&c["pos"]), max);
+        if c.get("error").is_some() {
+            assert_eq!(got, None, "{c}");
+        } else {
+            let (range, new_pos) = got.unwrap_or_else(|| panic!("raised: {c}"));
+            assert_eq!(data[range].to_vec(), hex(c["hex"].as_str().unwrap()), "{c}");
+            assert_eq!(new_pos, big(&c["new_pos"]), "{c}");
+        }
+    }
+}
+
+#[test]
+fn the_stream_readers_string_to_null_is_the_base_classs_loop() {
+    // `EndianBinaryReader.read_string_to_null` (`:136-144`) on a stream of a
+    // file `fs.open` opened: every window size the fixture records.
+    let doc = load("reader.json");
+    let datas: Vec<Vec<u8>> = cases(&doc, "string_to_null_data")
+        .iter()
+        .map(|h| hex(h.as_str().unwrap()))
+        .collect();
+    let all = cases(&doc, "stream_string_to_null");
+    assert!(all.len() > 100);
+    for c in all {
+        let data = &datas[usize::try_from(small(&c["data"])).unwrap()];
+        let max = usize::try_from(small(&c["max"])).unwrap();
+        let got = ReaderKind::Stream.string_to_null(data, big(&c["pos"]), max);
         if c.get("error").is_some() {
             assert_eq!(got, None, "{c}");
         } else {

@@ -1,19 +1,26 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/streams/EndianBinaryReader.py. See THIRD_PARTY_LICENSES.
 //! A bounded reader over a byte slice with the semantics of UnityPy's
-//! `EndianBinaryReader_Memoryview` (`streams/EndianBinaryReader.py:230-285`).
+//! `EndianBinaryReader`: the memory reader, `EndianBinaryReader_Memoryview`
+//! (`streams/EndianBinaryReader.py:230-285`), or the stream reader,
+//! `EndianBinaryReader_Streamable` (`:287-324`), which UnityPy reads a file
+//! it loads from a path with ([`ReaderKind`]; `kind`'s module docs list
+//! what it reads that way and its rules).
 //!
 //! Container and metadata parsers read through it; the value walker has its
-//! own cursor (UnityPyBoost's bounds rule differs, plan section 3.10). No
-//! method panics: every read UnityPy refuses is an [`Error::OutOfBounds`].
+//! own cursor (UnityPyBoost's bounds rule differs, plan section 3.10), which
+//! takes the same [`ReaderKind`]. No method panics: every read UnityPy
+//! refuses is an [`Error::OutOfBounds`], or the stream reader's
+//! [`StreamRefusal`] as an [`Error::Malformed`].
 //!
 //! **Positions are signed** (plan section 3.3). A Python `Position` is an
-//! unbounded integer that UnityPy moves with plain arithmetic, so it can go
-//! negative (a negative `node_count` in `parse_blob`, `file_size -
-//! metadata_size` below format 9, `Length - compressedSize` for blocks-info
-//! at the end, a negative `TypelessData` length on the pure-Python path) or
-//! past the end, and the reads after it go on with Python's rules, which this
-//! module's helpers implement once and an oracle fixture pins
-//! (`tests/fixtures/scaffold/reader.json`, from `tools/fixtures/scaffold.py`):
+//! unbounded integer that UnityPy moves with plain arithmetic, so on the
+//! memory reader it can go negative (a negative `node_count` in
+//! `parse_blob`, `file_size - metadata_size` below format 9, `Length -
+//! compressedSize` for blocks-info at the end, a negative `TypelessData`
+//! length on the pure-Python path) or past the end, and the reads after it
+//! go on with Python's rules, which this module's helpers implement once
+//! and an oracle fixture pins (`tests/fixtures/scaffold/reader.json`, from
+//! `tools/fixtures/scaffold.py`):
 //! - [`py_read`]: `read(n)`, a Python slice (negative indexes count from the
 //!   end; a reversed range is empty); the position moves by `n` whatever
 //!   the slice held;
@@ -29,14 +36,22 @@
 //!   buffer, a hit sets the absolute position after the NUL, and a miss reads
 //!   `max_length` bytes as a slice unless `pos + max_length >= len`.
 //!
+//! The stream reader's position is never negative and stops at the end; the
+//! same fixture pins its rules (its `stream_` cases), which [`ReaderKind`]
+//! implements.
+//!
 //! Owner: package C. The free functions and [`Reader::read_i32_array`] are
 //! the scaffold's (implemented).
+
+mod kind;
 
 use std::ops::Range;
 use std::sync::Arc;
 
 use crate::error::Error;
 use crate::limits::{Meter, MeteredVec};
+
+pub use kind::{ReaderKind, STREAM_READER, StreamRefusal};
 
 /// Byte order of a reader or a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -236,24 +251,34 @@ impl<const N: usize> std::fmt::Debug for ShortArray<N> {
     }
 }
 
-/// A cursor over `data`. Positions are absolute within `data` and signed, as
-/// a Python `Position` (module docs): every read follows the helper of its
-/// Python primitive at whatever position it is, negative or past the end.
+/// A cursor over `data`, read by the rules of one of UnityPy's readers
+/// ([`ReaderKind`]). Positions are absolute within `data` and signed, as a
+/// Python `Position` (module docs): on the memory reader every read follows
+/// the helper of its Python primitive at whatever position it is, negative
+/// or past the end; the stream reader's position is never negative.
 #[derive(Clone, Debug)]
 pub struct Reader<'a> {
     data: &'a [u8],
     pos: i128,
     endian: Endian,
+    kind: ReaderKind,
 }
 
 impl<'a> Reader<'a> {
-    /// A reader at position 0.
+    /// A memory reader at position 0 (what UnityPy reads bytes with).
     #[must_use]
     pub fn new(data: &'a [u8], endian: Endian) -> Self {
+        Self::with_kind(data, endian, ReaderKind::Memory)
+    }
+
+    /// A reader of `kind` at position 0.
+    #[must_use]
+    pub fn with_kind(data: &'a [u8], endian: Endian, kind: ReaderKind) -> Self {
         Self {
             data,
             pos: 0,
             endian,
+            kind,
         }
     }
 
@@ -263,15 +288,31 @@ impl<'a> Reader<'a> {
         self.data
     }
 
+    /// Which reader's rules it reads by.
+    #[must_use]
+    pub fn kind(&self) -> ReaderKind {
+        self.kind
+    }
+
     /// The position, as Python holds it.
     #[must_use]
     pub fn position(&self) -> i128 {
         self.pos
     }
 
-    /// Moves the position anywhere, negative or past the end, as an
-    /// assignment to `reader.Position` does.
-    pub fn set_position(&mut self, pos: i128) {
+    /// An assignment to `reader.Position`: the memory reader takes any
+    /// position, negative or past the end; the stream reader refuses a
+    /// negative one or one at or above 2^63 ([`ReaderKind::seek`]), and
+    /// stays where it was.
+    pub fn set_position(&mut self, pos: i128) -> Result<(), Error> {
+        self.pos = self.kind.seek(pos)?;
+        Ok(())
+    }
+
+    /// Where a read the caller made itself, by this reader's rules, leaves
+    /// the position (`typetree::parse::string_to_null`): no assignment, so
+    /// nothing to refuse.
+    pub(crate) fn advance_to(&mut self, pos: i128) {
         self.pos = pos;
     }
 
@@ -287,13 +328,14 @@ impl<'a> Reader<'a> {
     }
 
     /// The bytes `read(-1)` would return from here: what a table's growth may
-    /// count on (plan section 3.3).
+    /// count on (plan section 3.3). The same on both readers.
     #[must_use]
     pub fn remaining(&self) -> usize {
         py_read(self.data.len(), self.pos, -1).0.len()
     }
 
-    /// `align_stream(n)`: [`py_align`], without a bounds check.
+    /// `align_stream(n)`: [`py_align`], without a bounds check (a stream
+    /// position is never negative, so the arithmetic is the same).
     pub fn align(&mut self, n: u32) {
         // UnityPy streams/EndianBinaryReader.py:155-156
         self.pos = py_align(self.pos, n);
@@ -313,12 +355,30 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// `read(n)`, the range of `data` it returns: the memory reader's
+    /// [`py_read`] slice, short or empty at the ends (`read_bytes` on a
+    /// truncated block, `File.py:79`), the position moved by `n`; or the
+    /// stream reader's, which refuses an `n` below -1 and stops at the end
+    /// ([`ReaderKind::read`]).
+    pub fn read_range(&mut self, n: i64) -> Result<Range<usize>, Error> {
+        // UnityPy streams/EndianBinaryReader.py:249-256, :295
+        let (range, pos) = self.kind.read(self.data.len(), self.pos, n)?;
+        self.pos = pos;
+        Ok(range)
+    }
+
+    /// `read(n)` as it is: [`Self::read_range`]'s bytes.
+    pub fn read(&mut self, n: i64) -> Result<&'a [u8], Error> {
+        let range = self.read_range(n)?;
+        Ok(self.data.get(range).unwrap_or_default())
+    }
+
     /// `n` bytes where UnityPy's caller unpacks them whole (`read(n)`, then
-    /// `struct.unpack`): the [`py_read`] slice must hold `n` bytes, else
-    /// `OutOfBounds`; the position moves by `n` either way.
+    /// `struct.unpack`): what `read(n)` returns must hold `n` bytes, else
+    /// `OutOfBounds`; the position moves as `read(n)` moves it either way.
     pub fn read_bytes(&mut self, n: usize) -> Result<&'a [u8], Error> {
         let pos = self.pos;
-        let got = self.read_bytes_short(i64::try_from(n).unwrap_or(i64::MAX));
+        let got = self.read(i64::try_from(n).unwrap_or(i64::MAX))?;
         if got.len() == n {
             Ok(got)
         } else {
@@ -326,21 +386,23 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// `read(n)` as it is: the [`py_read`] slice, short or empty at the ends
-    /// (`read_bytes` on a truncated block, `File.py:79`), the position moved
-    /// by `n`.
-    pub fn read_bytes_short(&mut self, n: i64) -> &'a [u8] {
-        // UnityPy streams/EndianBinaryReader.py:249-256
-        let (range, pos) = py_read(self.data.len(), self.pos, n);
-        self.pos = pos;
-        self.data.get(range).unwrap_or_default()
+    /// `read(n)` as it is for a size UnityPy's own code fixes (3, 16 or 32
+    /// bytes), which neither reader refuses: short or empty at the ends.
+    pub fn read_bytes_short(&mut self, n: usize) -> &'a [u8] {
+        self.read(i64::try_from(n).unwrap_or(i64::MAX))
+            .unwrap_or_default()
     }
 
-    /// `read_string_to_null` with the 32,767-byte window: [`py_string_to_null`].
+    /// `read_string_to_null` with the 32,767-byte window, by the reader's
+    /// rule ([`py_string_to_null`] or the stream reader's loop,
+    /// [`ReaderKind::string_to_null`]).
     pub fn read_string_to_null(&mut self) -> Result<&'a [u8], Error> {
-        // UnityPy streams/EndianBinaryReader.py:275-284
+        // UnityPy streams/EndianBinaryReader.py:136-144, :275-284
         let pos = self.pos;
-        match py_string_to_null(self.data, pos, STRING_TO_NULL_WINDOW) {
+        match self
+            .kind
+            .string_to_null(self.data, pos, STRING_TO_NULL_WINDOW)
+        {
             Some((range, new)) => {
                 self.pos = new;
                 Ok(self.data.get(range).unwrap_or_default())
@@ -356,8 +418,8 @@ impl<'a> Reader<'a> {
         self.out_of_bounds("string to null", self.pos, 1)
     }
 
-    /// One byte for `unpack(fmt, read(1))` (`:93-97`): the position moves by
-    /// 1 even when the slice is empty.
+    /// One byte for `unpack(fmt, read(1))` (`:93-97`): the position moves as
+    /// `read(1)` moves it even when it returns nothing.
     fn one_byte(&mut self, what: &'static str) -> Result<u8, Error> {
         let pos = self.pos;
         match self.read_bytes_short(1) {
@@ -384,18 +446,24 @@ impl<'a> Reader<'a> {
         self.one_byte("i8").map(|b| i8::from_le_bytes([b]))
     }
 
-    /// `N` bytes by `struct.unpack_from(view, Position)` (`:340-343`): the
-    /// position moves by `N` only on success.
+    /// `N` bytes by the reader's own fixed-width read ([`ReaderKind::unpack`]):
+    /// `struct.unpack_from(view, Position)` (`:340-343`) on the memory
+    /// reader, whose position moves by `N` only on success;
+    /// `struct.unpack(stream.read(N))` (`:345-346`) on the stream reader,
+    /// whose position moves by what it read either way.
     fn fixed<const N: usize>(&mut self, what: &'static str) -> Result<[u8; N], Error> {
-        let at = py_unpack_from(self.data.len(), self.pos, N)
-            .ok_or_else(|| self.out_of_bounds(what, self.pos, N))?;
+        let pos = self.pos;
+        let (at, next) = self.kind.unpack(self.data.len(), pos, N);
+        let Some(at) = at else {
+            let e = self.out_of_bounds(what, pos, N);
+            self.pos = next;
+            return Err(e);
+        };
         let mut b = [0u8; N];
         if let Some(src) = self.data.get(at..at.saturating_add(N)) {
             b.copy_from_slice(src);
         }
-        self.pos = self
-            .pos
-            .saturating_add(i128::try_from(N).unwrap_or(i128::MAX));
+        self.pos = next;
         if self.endian == Endian::Big {
             b.reverse();
         }
@@ -403,42 +471,42 @@ impl<'a> Reader<'a> {
         Ok(b)
     }
 
-    /// `u16` in the reader's byte order: [`py_unpack_from`].
+    /// `u16` in the reader's byte order: [`ReaderKind::unpack`].
     pub fn read_u16(&mut self) -> Result<u16, Error> {
         self.fixed("u16").map(u16::from_le_bytes)
     }
 
-    /// `i16` in the reader's byte order: [`py_unpack_from`].
+    /// `i16` in the reader's byte order: [`ReaderKind::unpack`].
     pub fn read_i16(&mut self) -> Result<i16, Error> {
         self.fixed("i16").map(i16::from_le_bytes)
     }
 
-    /// `u32` in the reader's byte order: [`py_unpack_from`].
+    /// `u32` in the reader's byte order: [`ReaderKind::unpack`].
     pub fn read_u32(&mut self) -> Result<u32, Error> {
         self.fixed("u32").map(u32::from_le_bytes)
     }
 
-    /// `i32` in the reader's byte order: [`py_unpack_from`].
+    /// `i32` in the reader's byte order: [`ReaderKind::unpack`].
     pub fn read_i32(&mut self) -> Result<i32, Error> {
         self.fixed("i32").map(i32::from_le_bytes)
     }
 
-    /// `u64` in the reader's byte order: [`py_unpack_from`].
+    /// `u64` in the reader's byte order: [`ReaderKind::unpack`].
     pub fn read_u64(&mut self) -> Result<u64, Error> {
         self.fixed("u64").map(u64::from_le_bytes)
     }
 
-    /// `i64` in the reader's byte order: [`py_unpack_from`].
+    /// `i64` in the reader's byte order: [`ReaderKind::unpack`].
     pub fn read_i64(&mut self) -> Result<i64, Error> {
         self.fixed("i64").map(i64::from_le_bytes)
     }
 
     /// `read(N)` kept as it is ([`ShortArray`]): a GUID or a hash, which
-    /// UnityPy stores without checking its length, so a short slice (at a
-    /// position in `-N..0`, or at the end) is no error; the position moves
-    /// by `N` either way.
+    /// UnityPy stores without checking its length, so a short read (on the
+    /// memory reader at a position in `-N..0`; at the end on either) is no
+    /// error; the position moves as `read(N)` moves it.
     pub fn read_short_array<const N: usize>(&mut self) -> ShortArray<N> {
-        ShortArray::from_slice(self.read_bytes_short(i64::try_from(N).unwrap_or(i64::MAX)))
+        ShortArray::from_slice(self.read_bytes_short(N))
     }
 
     /// A fixed-size byte array: `read(N)`, which must hold `N` bytes where
@@ -452,12 +520,15 @@ impl<'a> Reader<'a> {
     }
 
     /// `read_int_array` (`EndianBinaryReader.py:182`, `read_array_struct` at
-    /// `:258-264`): an `i32` count read as [`py_unpack_from`] reads it (the
-    /// position moves by 4), then `struct.unpack_from` of that many `i32` at
-    /// the new position (a negative one counts from the end), the position
-    /// moving by `4 * count`. A negative count raises (`Struct("<-1i")` is a
-    /// bad format) with the position after the count, as does an array the
-    /// bytes do not hold. The array is a vector on `meter`, the input's,
+    /// `:164-168` and `:258-264`): an `i32` count read as the reader's own
+    /// `read_int` ([`ReaderKind::unpack`]), then the array: on the memory
+    /// reader `struct.unpack_from` of that many `i32` at the new position (a
+    /// negative one counts from the end), the position moving by
+    /// `4 * count`; on the stream reader `struct.unpack(read(4 * count))`,
+    /// which moves it by what it read, even when that is short. A negative
+    /// count raises (`Struct("<-1i")` is a bad format) with the position
+    /// after the count, as does an array the bytes do not hold (the stream
+    /// reader's has moved). The array is a vector on `meter`, the input's,
     /// charged after the bytes are checked and before it is allocated, so a
     /// count allocates nothing the bytes do not back and the array counts
     /// against its input while it is kept (round 5: this returned a plain
@@ -468,40 +539,49 @@ impl<'a> Reader<'a> {
     pub fn read_i32_array(&mut self, meter: &Arc<Meter>) -> Result<MeteredVec<i32>, Error> {
         const WHAT: &str = "int array";
         let len = self.data.len();
-        let at = py_unpack_from(len, self.pos, 4).ok_or(Error::OutOfBounds {
-            what: WHAT,
-            pos: self.pos,
-            need: 4,
-            have: u64::try_from(self.remaining()).unwrap_or(u64::MAX),
-        })?;
+        let have = self.have();
+        let (at, next) = self.kind.unpack(len, self.pos, 4);
+        let Some(at) = at else {
+            let e = Error::OutOfBounds {
+                what: WHAT,
+                pos: self.pos,
+                need: 4,
+                have,
+            };
+            self.pos = next;
+            return Err(e);
+        };
         let count = self.i32_at(at);
-        self.pos = self.pos.saturating_add(4);
+        self.pos = next;
         let Ok(n) = usize::try_from(count) else {
             return Err(Error::Malformed {
                 what: WHAT,
                 detail: format!("negative count {count}").into(),
             });
         };
-        let bytes = n.checked_mul(4);
-        let at =
-            bytes
-                .and_then(|b| py_unpack_from(len, self.pos, b))
-                .ok_or(Error::OutOfBounds {
-                    what: WHAT,
-                    pos: self.pos,
-                    need: u64::try_from(n).unwrap_or(u64::MAX).saturating_mul(4),
-                    have: u64::try_from(self.remaining()).unwrap_or(u64::MAX),
-                })?;
+        let (at, next) = n
+            .checked_mul(4)
+            .map_or((None, self.pos), |b| self.kind.unpack(len, self.pos, b));
+        let Some(at) = at else {
+            let e = Error::OutOfBounds {
+                what: WHAT,
+                pos: self.pos,
+                need: u64::try_from(n).unwrap_or(u64::MAX).saturating_mul(4),
+                have: self.have(),
+            };
+            self.pos = next;
+            return Err(e);
+        };
         let mut out = MeteredVec::with_capacity(meter, n)?;
         for i in 0..n {
             out.push(self.i32_at(at + 4 * i))?;
         }
-        self.pos = self.pos.saturating_add(i128::from(count) * 4);
+        self.pos = next;
         Ok(out)
     }
 
-    /// The `i32` at `at`, which [`py_unpack_from`] checked, in the reader's
-    /// byte order.
+    /// The `i32` at `at`, which [`ReaderKind::unpack`] checked, in the
+    /// reader's byte order.
     fn i32_at(&self, at: usize) -> i32 {
         let mut b = [0u8; 4];
         if let Some(src) = self.data.get(at..at + 4) {
@@ -532,7 +612,7 @@ mod tests {
         let m = Meter::unlimited();
         let ok = |data: &[u8], endian, pos: i128| {
             let mut r = Reader::new(data, endian);
-            r.set_position(pos);
+            r.set_position(pos).unwrap();
             let v = r.read_i32_array(&m).unwrap();
             (v.as_slice().to_vec(), r.position(), v.charge().bytes())
         };

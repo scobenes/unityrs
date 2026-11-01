@@ -10,19 +10,22 @@ use super::{Cab, Candidate, Environment, LoadMode, RawCab, resource_candidates};
 use crate::error::{Error, NotFound};
 use crate::files::{BundleFile, File, Parent, ParentKind, SerializedFile};
 use crate::raw::RawStr;
-use crate::stream::py_read;
 
 /// `ResourceReader._get_resource_data(reader, offset, size)`
 /// (`helpers/ResourceReader.py:36-38`): `reader.Position = offset;
-/// reader.read_bytes(size)`, a Python slice of the reader's bytes.
+/// reader.read_bytes(size)`, by the reader's rules: a bundle entry's and a
+/// file of bytes' are a Python slice of the reader's bytes; a file loaded
+/// from a path is a stream, which refuses an offset or a size at or above
+/// 2^63 ([`crate::stream::ReaderKind`]).
 fn read_cab(cab: &Cab, offset: u64, size: u64) -> Result<Bytes, Error> {
     match cab {
         Cab::Raw(RawCab::InBundle { bundle, dir_index }) => {
             bundle.entry_range(*dir_index, offset..offset.saturating_add(size))
         }
         Cab::Raw(RawCab::File(raw)) => {
-            let size = i64::try_from(size).unwrap_or(i64::MAX);
-            let (range, _) = py_read(raw.data.len(), i128::from(offset), size);
+            let kind = raw.reader_kind();
+            let at = kind.seek(i128::from(offset))?;
+            let (range, _) = kind.read_u64(raw.data.len(), at, size)?;
             Ok(raw.data.slice(range))
         }
         Cab::Serialized(sf) => Err(not_a_reader(sf.name())),

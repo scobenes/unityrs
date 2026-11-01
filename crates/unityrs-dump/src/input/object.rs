@@ -201,7 +201,8 @@ pub(super) fn object_record(
 /// ([`count_hashed`]): objects may overlap, so their raw bytes together are
 /// not bounded by the file's.
 fn l3_of(obj: &ObjectRef, resavable: Option<&Parsed>, meter: &Meter) -> Result<L3, Error> {
-    let raw = obj.raw_data();
+    // The dump reads bytes (the memory reader), which refuse no position.
+    let raw = obj.raw_data()?;
     let raw_sha256 = hashed(meter, &raw)?;
     let resave = match resavable {
         None => Resave::Skipped,

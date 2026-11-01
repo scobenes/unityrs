@@ -22,6 +22,10 @@
 //!   winning; the `objects` dict keeps a repeated path id at its first position
 //!   with its last entry;
 //! - `read_string_to_null`'s 32,767-byte window for every metadata string;
+//! - the reader UnityPy reads the file with ([`crate::stream::ReaderKind`]):
+//!   the memory reader for bytes and every entry of a container, the stream
+//!   reader for a file loaded from a path, whose rules the metadata's reads
+//!   and every object read follow ([`SerializedFile::reader_kind`]);
 //! - every table is built with `range(count)` (`SerializedFile.py:282-308`):
 //!   a negative count is zero records, and a table grows record by record, so
 //!   no count sizes an allocation;
@@ -63,7 +67,7 @@ use crate::object::ObjectRef;
 use crate::once::{CellError, ResultCell, get_or_publish_result};
 use crate::options::FileContext;
 use crate::raw::RawStr;
-use crate::stream::{Endian, ShortArray};
+use crate::stream::{Endian, ReaderKind, ShortArray};
 use crate::typetree::{NodeList, Tree, TreeError};
 use crate::version::ResolvedVersion;
 use crate::walk::RefTypes;
@@ -255,6 +259,8 @@ pub struct SerializedFile {
     /// Published by [`get_or_publish_result`]: a refused charge is not kept.
     container: ResultCell<Container, Error>,
     parent: Option<Parent>,
+    /// The reader UnityPy reads it with, for its metadata and its objects.
+    reader: ReaderKind,
     /// The handle and every table above, charged to the input, with the
     /// resolved version's heap ([`crate::version::UnityVersion::heap_bytes`], charged
     /// by the chain before it was allocated;
@@ -290,6 +296,13 @@ impl SerializedFile {
     /// The whole file's bytes.
     pub fn data(&self) -> &Bytes {
         &self.data
+    }
+
+    /// The reader UnityPy reads it with: the stream reader for a file loaded
+    /// from a path, else the memory reader (module docs). Its objects are
+    /// read by its rules ([`ObjectRef::read_typetree`], [`ObjectRef::raw_data`]).
+    pub fn reader_kind(&self) -> ReaderKind {
+        self.reader
     }
 
     /// The header.
@@ -474,6 +487,7 @@ impl SerializedFile {
             object_order: order,
             container: ResultCell::new(),
             parent: None,
+            reader: ReaderKind::Memory,
             charge: Charge::zero(&meter),
             ctx: Arc::new(FileContext::unitypy()),
         })
