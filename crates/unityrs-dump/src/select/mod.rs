@@ -12,6 +12,11 @@
 //! `os.fsencode` of the surrogate-escaped `str`), never resolved, so a
 //! symlink is named after itself, and inputs sort by those bytes.
 //!
+//! A folder is walked as Python 3.11's `os.walk` walks it, one open folder
+//! at a time and no deeper than [`MAX_FOLDER_DEPTH`]:
+//! `tests/fixtures/dump/folders.json` records the oracle's runs on deep
+//! folders (`tools/fixtures/folders.py`).
+//!
 //! An index is read as Python's `json.loads` reads it ([`index`]), and
 //! `--kind`, `--build` and an entry's `path` are compared and named as the
 //! Python `str`s they are ([`PyStr`]): `tests/fixtures/dump/index.json`
