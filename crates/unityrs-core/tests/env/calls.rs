@@ -35,7 +35,9 @@ enum Pool {
     /// retries: a reach of a dependency's nested container (the `settle`
     /// a registration and a lookup run, the container pass's reaches), a
     /// dependency slot's resolve, a walk of a dependency's table. A
-    /// refusal a `settle` meets twice is left for the next call.
+    /// refusal a `settle` meets twice is left for the next call. (The
+    /// registry's public registrations take a caller's file, never a
+    /// dependency's: `Registry::register`'s docs.)
     Inner,
     /// [`Self::Inner`], but the key a lookup builds is charged to the
     /// meter the caller gives, and returned as it is when refused: the

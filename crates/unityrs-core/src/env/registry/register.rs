@@ -89,14 +89,21 @@ impl Registry {
     }
 
     /// `register_cab(name, cab)` for a file the caller loaded, as a load of
-    /// its own, charged to `meter` (module docs).
+    /// its own, charged to `meter` (module docs). The slot holds `cab`, so it
+    /// is never evicted: `cab` is a file on a caller's input meter
+    /// ([`crate::budget::Reservation::Input`]), not one the Environment
+    /// loaded as a dependency, which its load registered already, and
+    /// whose reads through such a slot would charge the dependency pool
+    /// outside the Environment's retry (plan section 3.13).
     pub fn register(&self, name: &RawStr, cab: Cab, meter: &Arc<Meter>) -> Result<(), Error> {
         let load = self.next_load();
         self.register_ready(name, cab, load, &[], meter)
     }
 
     /// Registers entry `dir_index` of a bundle the caller loaded `Lazy`, as a
-    /// load of its own, to parse on first use; charged to `meter`.
+    /// load of its own, to parse on first use; charged to `meter`. As for
+    /// [`Self::register`], `bundle` is on a caller's input meter, not a
+    /// dependency's.
     pub fn register_lazy(
         &self,
         name: &RawStr,

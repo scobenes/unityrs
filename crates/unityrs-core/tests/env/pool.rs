@@ -317,12 +317,13 @@ fn hex(got: &[Result<Bytes, String>]) -> J {
 }
 
 /// What each key of the registry answers, looked up by name in upper case
-/// (a key the lookup lowers, charged to `meter`) through `get_cab` and
-/// `find_file`, and through the registry's own `get` with its key on an
-/// unlimited meter: the registry holds no LRU, so its key's charge is the
-/// caller's to retry (`get_cab` does), and only its slot's resolve, which
-/// reads through a dependency's meter, makes room itself (review round 9:
-/// no test refused that resolve outside a call that retries it again).
+/// through the registry's own `get`, with its key on an unlimited meter
+/// (the registry holds no LRU, so its key's charge is the caller's to
+/// retry, and only its slot's resolve, which reads through a dependency's
+/// meter and so comes first, reopening an evicted one, makes room itself:
+/// review round 9 found no test that refused that resolve outside a call
+/// that retries it again), then through `get_cab` and `find_file` (a key
+/// the lookup lowers, charged to `meter`).
 fn lookups(env: &Environment, keys: &[String], meter: &Arc<Meter>) -> Vec<String> {
     let answer = |k: &str, found: Result<Option<Cab>, _>| match found {
         Ok(Some(Cab::Serialized(sf))) => format!("{k}: {}", sf.name()),
@@ -333,9 +334,9 @@ fn lookups(env: &Environment, keys: &[String], meter: &Arc<Meter>) -> Vec<String
     let mut out = Vec::new();
     for k in keys {
         let name = RawStr::from(k.to_uppercase().as_str());
+        out.push(answer(k, env.registry().get(&name, &Meter::unlimited())));
         out.push(answer(k, env.get_cab(&name, meter)));
         out.push(answer(k, env.find_file(&name, meter)));
-        out.push(answer(k, env.registry().get(&name, &Meter::unlimited())));
     }
     out
 }
