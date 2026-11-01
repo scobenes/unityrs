@@ -15,15 +15,27 @@
 #     `{}`, by any path (`core::todo!`), whatever whitespace or comments lie
 #     between its tokens, on one line or several;
 #   - either macro imported under another name (`use core::todo as later;`,
-#     on one line or several), whose calls no name scan would see.
+#     on one line or several), whose calls no name scan would see;
+#   - either name as a word of its own anywhere inside a macro call's
+#     delimiters (`call!(todo)`), a `macro_rules!` definition or an
+#     attribute, other than as a `clippy::` lint path: a macro_rules! body
+#     can put a `!` after a name it is handed (`$m!()`) or after one it
+#     holds (`todo $bang`), and then the call is written nowhere a name
+#     scan reads, and clippy, which lints a call by the macro whose
+#     expansion it starts, lints `call!`, not `todo!`. Neither name has
+#     another use in the crates, so a variable of either name inside a
+#     macro call fails too.
 # Each file is lexed as Rust is first: comments (nested block comments
 # included), strings (raw, byte and C strings included) and character
 # literals are blanked, so they may name the macros and the lints freely,
 # and a comment between two tokens is whitespace. The workspace's lints
 # (Cargo.toml `[workspace.lints.clippy]`, which every crate inherits) forbid
 # both macros as well, so no attribute can allow them again: `cargo clippy`
-# fails on any reachable call outside a macro_rules! body, an aliased one
-# included, and this scan sees a call inside one.
+# fails on any reachable call written in the code, an aliased one included,
+# and this scan sees a call a macro_rules! body writes or assembles. Not
+# read: what a procedural macro (the crates use thiserror's derive) or
+# a dependency's own macro expands to, and files other than `.rs` that
+# `include!` reads (clippy lints a call written in one).
 #
 # Each hit is printed with its owning package, `[X] FILE:LINE: text`: the
 # package a `STUB(X)` on the line names (for a blocked test, the package it
@@ -165,6 +177,42 @@ hits=$(find crates -type f -name '*.rs' \
             }
             return 0
         }
+        # Whether the code at pos lies inside the delimiters of a macro call
+        # (`name!(...)`, `[...]` or `{...}`, a keyword before the `!` aside),
+        # of a `macro_rules! name {...}` definition or of an attribute.
+        function in_tree(pos,    i, c, depth, j, w) {
+            depth = 0
+            for (i = pos - 1; i >= 1; i--) {
+                c = substr(J, i, 1)
+                if (c == ")" || c == "]" || c == "}") depth++
+                else if (c == "(" || c == "[" || c == "{") {
+                    if (depth > 0) { depth--; continue }
+                    j = i - 1
+                    while (j >= 1 && substr(J, j, 1) ~ ws) j--
+                    if (c == "[" && j >= 1 && substr(J, j, 1) == "#") return 1
+                    if (j >= 1 && substr(J, j, 1) == "!") {
+                        j--
+                        while (j >= 1 && substr(J, j, 1) ~ ws) j--
+                        if (c == "[" && j >= 1 && substr(J, j, 1) == "#") return 1
+                        w = word_before(j + 1)
+                        if (w != "" && w !~ /^(if|while|match|return|in|else|break|let|for|loop|move|mut|ref|as|yield)$/) return 1
+                    } else if (j >= 1 && substr(J, j, 1) ~ /[A-Za-z0-9_]/) {
+                        # `macro_rules! name {`: the name, then `!` and `macro_rules`.
+                        while (j >= 1 && substr(J, j, 1) ~ /[A-Za-z0-9_]/) j--
+                        while (j >= 1 && substr(J, j, 1) ~ ws) j--
+                        if (j >= 1 && substr(J, j, 1) == "!" && word_before(j) == "macro_rules") return 1
+                    }
+                }
+            }
+            return 0
+        }
+        # Whether the name at pos ends a `clippy::` lint path.
+        function lint_path(pos,    j) {
+            j = pos - 1
+            while (j >= 1 && substr(J, j, 1) ~ ws) j--
+            if (j < 2 || substr(J, j - 1, 2) != "::") return 0
+            return word_before(j - 1) == "clippy"
+        }
         function report(k,    who) {
             who = owner_of(L[k])
             if (who == "") who = first
@@ -180,6 +228,18 @@ hits=$(find crates -type f -name '*.rs' \
             for (k = 1; k <= n; k++) if (L[k] ~ /STUB\(/) H[k] = 1
             scan("(^|[^A-Za-z0-9_])(todo|unimplemented)" ws "*!" ws "*[[({]")
             scan("(^|[^A-Za-z0-9_])(todo|unimplemented)" ws "+as" ws "+[A-Za-z_]")
+            # Either name as a word of its own in a macro call, a macro_rules!
+            # definition or an attribute.
+            rest = J
+            off = 0
+            while (match(rest, /(^|[^A-Za-z0-9_])(todo|unimplemented)([^A-Za-z0-9_]|$)/)) {
+                pos = off + RSTART
+                if (substr(rest, RSTART, 1) !~ /[tu]/) pos++
+                end = substr(J, pos, 1) == "t" ? 4 : 13
+                if (in_tree(pos) && !lint_path(pos)) H[line_of(pos)] = 1
+                off = pos + end - 1
+                rest = substr(J, off + 1)
+            }
             re = "clippy" ws "*::" ws "*(todo|unimplemented|restriction)"
             rest = J
             off = 0
