@@ -184,20 +184,26 @@ pub fn load_error_is_unitypys(python: &str, e: &TpkError) -> bool {
         // `struct.error`: a read past the payload, or a negative count read
         // as a struct format; `ValueError`: a string or a length read past
         // the payload (a short LZMA payload among them), or a compression or
-        // data type that is not a member; `UnicodeDecodeError`: a string's
-        // bytes run past the payload and decode short; `IndexError`: a byte
-        // read past the payload (`stream.read(1)[0]`: an entry's presence, a
-        // common-string version's count); `Exception`: `Tpk.py`'s own raise
-        // on the header (the magic, the version, the compressed size).
+        // data type that is not a member; `IndexError`: a byte read past the
+        // payload (`stream.read(1)[0]`: an entry's presence, a common-string
+        // version's count); `Exception`: `Tpk.py`'s own raise on the header
+        // (the magic, the version, the compressed size).
         // And a data type of 1-5 (`TpkDataType.ToBlob`, `:113-124`): a
         // collection blob's reads (`error`), a file system or JSON blob that
         // `init`'s assertion refuses (`AssertionError`), and `ToBlob`'s own
         // raise for the other two (`Exception`).
-        (
-            "error" | "ValueError" | "UnicodeDecodeError" | "IndexError" | "Exception",
-            TpkError::Malformed(_),
-        )
+        ("error" | "ValueError" | "IndexError" | "Exception", TpkError::Malformed(_))
         | ("error" | "AssertionError" | "Exception", TpkError::NotTypeTrees) => true,
+        // `UnicodeDecodeError` (`read_string`'s strict `.decode("utf-8")`,
+        // `Tpk.py:456`): a string that is not UTF-8, the port's own
+        // `UnicodeDecodeError`, or one whose bytes run past the payload and
+        // decode short, which the port refuses unread (`PARITY.md` section
+        // 19.3). Round 8: any refusal stood for it, so a port that took a
+        // string's bytes unchecked could pass on another reason.
+        ("UnicodeDecodeError", TpkError::Malformed(why)) => {
+            why.starts_with("UnicodeDecodeError: ")
+                || &**why == "a string longer than the rest of the payload"
+        }
         (
             "error" | "ValueError" | "UnicodeDecodeError" | "IndexError",
             TpkError::TooLarge { .. },
