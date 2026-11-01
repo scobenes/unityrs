@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
+use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, PermitHome, Reservation};
 use unityrs_core::env::{Cab, DerefError, EnvOptions, Environment, LoadMode, Source};
 use unityrs_core::files::{File, SerializedFile};
 use unityrs_core::limits::{Limits, Meter};
@@ -424,67 +424,220 @@ impl MemoryBudget for RefuseOnce {
     }
 }
 
-/// The script hook on an object of a dependency's file reads the object's
-/// head and the script through the dependency's meter: each of those
-/// reservations, refused once in turn, evicts the dependencies and is tried
-/// once more, under both modes, so the hook still finds the script
-/// provider's tree (plan section 3.13; review round 8: a read from a
-/// dependency's file the pool refused failed the call). The object's file
+/// A budget that grants dependencies up to a limit and anything else
+/// whole: the dependency pool.
+#[derive(Debug)]
+struct Pool {
+    limit: AtomicU64,
+    used: Arc<PoolHome>,
+}
+
+#[derive(Debug, Default)]
+struct PoolHome(AtomicU64);
+
+impl PermitHome for PoolHome {
+    fn release(&self, bytes: u64) {
+        self.0.fetch_sub(bytes, Ordering::AcqRel);
+    }
+}
+
+impl MemoryBudget for Pool {
+    fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
+        if what != Reservation::Dependency {
+            return Ok(Permit::detached(bytes));
+        }
+        let limit = self.limit.load(Ordering::Acquire);
+        self.used
+            .0
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |u| {
+                u.checked_add(bytes).filter(|n| *n <= limit)
+            })
+            .map_err(|_| BudgetExceeded {
+                requested: bytes,
+                what,
+            })?;
+        Ok(Permit::new(bytes, self.used.clone()))
+    }
+}
+
+/// The ways an object's tree is found that a sweep runs: the type record's
+/// own tree (`embedded`) or the class provider's, each with and without a
+/// script provider in the chain.
+const TREES: [(bool, bool); 4] = [(false, true), (false, false), (true, true), (true, false)];
+
+/// The tree UnityPy's order gives the behaviour of [`dependency_objects`]
+/// (`files/ObjectReader.py:285-307`): the type record's own, else the
+/// class provider's, which the script provider's replaces for its known
+/// script `Foo`.
+fn behaviour_source(embedded: bool, with_scripts: bool) -> TreeSource {
+    match (embedded, with_scripts) {
+        (true, _) => TreeSource::Embedded,
+        (false, true) => TreeSource::Provider("script"),
+        (false, false) => TreeSource::Provider("tpk"),
+    }
+}
+
+/// An Environment of `batch()`'s options in `mode` on `budget`, its chain
+/// the class provider and, when `with_scripts`, `scripts`.
+fn batch_env(
+    mode: LoadMode,
+    budget: Arc<dyn MemoryBudget>,
+    scripts: &Arc<Scripts>,
+    with_scripts: bool,
+) -> Environment {
+    let mut ctx = FileContext::unitypy();
+    ctx.providers = chain(scripts, with_scripts);
+    ctx.budget = budget;
+    let mut o = EnvOptions::batch(Arc::new(ctx));
+    o.load = mode;
+    Environment::new(o)
+}
+
+/// `t.bundle`, loaded into `env` as a dependency: `CAB-T`, whose behaviour
+/// 1 names the `MonoScript` 100 of its sibling `CAB-GONE`, then `CAB-GONE`,
+/// both with their type records' own trees when `embedded`. `CAB-T`'s
+/// objects in path id order (the behaviour, then its two `MonoScript`s),
+/// which the caller holds alone: only the LRU holds the bundle.
+fn dependency_objects(env: &Environment, embedded: bool) -> Vec<ObjectRef> {
+    let data = bundle(&[
+        ("CAB-T", file(&[(1, 100)], embedded)),
+        ("CAB-GONE", file(&[], embedded)),
+    ]);
+    let held = env
+        .load_dependency(Source::Bytes {
+            name: RawStr::from("t.bundle"),
+            data: Bytes::from(data),
+        })
+        .unwrap();
+    let File::Bundle(b) = &held else {
+        panic!("t.bundle is a bundle")
+    };
+    let Ok(File::Serialized(sf)) = b.entry(0) else {
+        panic!("CAB-T is a SerializedFile")
+    };
+    sf.objects_by_path().collect()
+}
+
+/// Every dependency reservation `object_tree` makes on an object of a
+/// dependency's file, refused once in turn, evicts the dependencies and is
+/// tried once more, under both modes, whichever way the tree is found, so
+/// the call answers as it does with nothing refused (plan section 3.13):
+/// the compile of a tree the type record stores (review round 9: it ran
+/// outside the retry, so every refusal of it failed the call), and the
+/// script hook's head read, its dereference and its script read (review
+/// round 8). The class provider's tree charges nothing, so with no script
+/// provider a stripped file's call makes no reservation. The object's file
 /// is `CAB-T` in `t.bundle`, its script in the sibling `CAB-GONE`, and the
 /// caller holds the object alone, so that only the LRU holds the bundle: the
-/// call holds it while it runs, and the head read's eviction does not drop
-/// the bundle the dereference after it reads through.
+/// call holds it while it runs, and an eviction its first step makes does
+/// not drop the bundle the dereference after it reads through.
 #[test]
-fn a_pool_refusal_in_the_script_hook_evicts_and_retries_once() {
+fn a_pool_refusal_in_object_tree_evicts_and_retries_once() {
     let scripts = Arc::new(Scripts {
         tree: tree(script_rows()),
         asked: AtomicUsize::new(0),
     });
     for mode in [LoadMode::Eager, LoadMode::Lazy] {
-        // The tree's source, the dependency reservations the hook made, and
-        // how many were refused, with the `k`-th of them refused once.
-        let run = |k: u64| {
-            let budget = Arc::new(RefuseOnce::default());
-            let mut ctx = FileContext::unitypy();
-            ctx.providers = chain(&scripts, true);
-            ctx.budget = budget.clone();
-            let mut o = EnvOptions::batch(Arc::new(ctx));
-            o.load = mode;
-            let env = Environment::new(o);
-            let data = bundle(&[
-                ("CAB-T", file(&[(1, 100)], false)),
-                ("CAB-GONE", file(&[], false)),
-            ]);
-            let held = env
+        for (embedded, with_scripts) in TREES {
+            let what = format!("{mode:?} embedded {embedded} scripts {with_scripts}");
+            // The behaviour's tree's source, the dependency reservations
+            // the call made, and how many were refused, with the `k`-th of
+            // them refused once.
+            let run = |k: u64| {
+                let budget = Arc::new(RefuseOnce::default());
+                let env = batch_env(mode, budget.clone(), &scripts, with_scripts);
+                let o = dependency_objects(&env, embedded).swap_remove(0);
+                budget.countdown.store(k, Ordering::Release);
+                let at = budget.asked.load(Ordering::Acquire);
+                let t = env.object_tree(&o, None).map(|t| t.unwrap().source);
+                (
+                    t.map_err(|e| e.to_string()),
+                    budget.asked.load(Ordering::Acquire) - at,
+                    budget.refused.load(Ordering::Acquire),
+                )
+            };
+            let (source, n, _) = run(0);
+            assert_eq!(
+                source,
+                Ok(behaviour_source(embedded, with_scripts)),
+                "{what}"
+            );
+            if embedded || with_scripts {
+                assert!(n > 0, "{what}: the call read nothing through the pool");
+            } else {
+                assert_eq!(n, 0, "{what}: the class provider's tree charged the pool");
+            }
+            for k in 1..=n {
+                let (got, _, refused) = run(k);
+                assert_eq!(got, source, "{what}: {k} of {n}");
+                assert_eq!(refused, 1, "{what}: {k} of {n}");
+            }
+        }
+    }
+}
+
+/// A pool full of another dependency's decoded entry, held by nothing but
+/// the LRU, with 16 bytes to spare: `object_tree` on each object of a
+/// dependency's file evicts that dependency and answers, under both modes,
+/// whichever way the tree is found (review round 9: with an embedded tree,
+/// every call failed with the pool's refusal and nothing was evicted).
+/// Each case starts on a full pool of its own.
+#[test]
+fn a_full_pool_makes_room_for_object_tree() {
+    let scripts = Arc::new(Scripts {
+        tree: tree(script_rows()),
+        asked: AtomicUsize::new(0),
+    });
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        for (embedded, with_scripts) in TREES {
+            let what = format!("{mode:?} embedded {embedded} scripts {with_scripts}");
+            let pool = Arc::new(Pool {
+                limit: AtomicU64::new(u64::MAX),
+                used: Arc::new(PoolHome::default()),
+            });
+            let env = batch_env(mode, pool.clone(), &scripts, with_scripts);
+            let objects = dependency_objects(&env, embedded);
+            let pad = env
                 .load_dependency(Source::Bytes {
-                    name: RawStr::from("t.bundle"),
-                    data: Bytes::from(data),
+                    name: RawStr::from("p.bundle"),
+                    data: Bytes::from(bundle(&[("P.resS", vec![3; 128 << 10])])),
                 })
                 .unwrap();
-            let File::Bundle(b) = &held else {
-                panic!("t.bundle is a bundle")
+            let File::Bundle(pb) = &pad else {
+                panic!("p.bundle is a bundle")
             };
-            let Ok(File::Serialized(sf)) = b.entry(0) else {
-                panic!("CAB-T is a SerializedFile")
+            assert_eq!(pb.entry_range(0, 0..4).unwrap().len(), 4, "{what}");
+            drop(pad);
+            let used = pool.used.0.load(Ordering::Acquire);
+            pool.limit.store(used + 16, Ordering::Release);
+            let got: Vec<_> = objects
+                .iter()
+                .map(|o| {
+                    let t = env.object_tree(o, None);
+                    t.map(|t| t.unwrap().source).map_err(|e| e.to_string())
+                })
+                .collect();
+            // The `MonoScript`s are no behaviours: the class tree.
+            let script = if embedded {
+                TreeSource::Embedded
+            } else {
+                TreeSource::Provider("tpk")
             };
-            let o = sf.object(1).unwrap();
-            drop(held);
-            budget.countdown.store(k, Ordering::Release);
-            let at = budget.asked.load(Ordering::Acquire);
-            let t = env.object_tree(&o, None).map(|t| t.unwrap().source);
-            (
-                t.map_err(|e| e.to_string()),
-                budget.asked.load(Ordering::Acquire) - at,
-                budget.refused.load(Ordering::Acquire),
-            )
-        };
-        let (source, n, _) = run(0);
-        assert_eq!(source, Ok(TreeSource::Provider("script")), "{mode:?}");
-        assert!(n > 0, "{mode:?}: the hook read nothing through the pool");
-        for k in 1..=n {
-            let (got, _, refused) = run(k);
-            assert_eq!(got, source, "{mode:?}: {k} of {n}");
-            assert_eq!(refused, 1, "{mode:?}: {k} of {n}");
+            let want = vec![
+                Ok(behaviour_source(embedded, with_scripts)),
+                Ok(script),
+                Ok(script),
+            ];
+            assert_eq!(got, want, "{what}");
+            let evicted = env.stats().dependencies_evicted;
+            if embedded || with_scripts {
+                assert!(evicted > 0, "{what}: nothing was evicted");
+            } else {
+                assert_eq!(
+                    evicted, 0,
+                    "{what}: the class provider's tree charged the pool"
+                );
+            }
         }
     }
 }

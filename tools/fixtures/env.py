@@ -24,6 +24,10 @@ every object its `container` path, and dereferences every pointer and reads
 every resource of the objects of the files it loaded as dependencies (which
 `env.objects` leaves out), the state recorded after each step.
 
+`resolver.json`: the names UnityPy's lookups hand on where it looks in
+`env.path` (the core's `CabResolver`): a resource read's fallback and a
+pointer to each external of a file, none of them found.
+
 `pystr.json`: `str.lower` over every BMP code point (as the list of those it
 changes), astral samples and final-sigma contexts, `ntpath` cases, which
 paths UnityPy's `reSplit` reads as the parts of a split file, and every
@@ -46,6 +50,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -289,6 +294,54 @@ def scene_case(scene: dict) -> dict:
     return {**case, "steps": steps}
 
 
+# ------------------------------------------------------------------ resolver names
+
+RESOLVER_EXTERNALS = ["archive:/CAB-DE/CAB-DE", "Assets/Level/Thing.asset", "archive:/CAB-E/CAB-E"]
+RESOLVER_RESOURCE = "archive:/CAB-Q/CAB-Q.resS"
+
+
+def resolver_fixture() -> dict:
+    """The names UnityPy hands on where it looks in `env.path` (the core's
+    `CabResolver`), for a file whose externals are `RESOLVER_EXTERNALS`: a
+    read of the resource `RESOLVER_RESOURCE` that no CAB answers
+    (`get_resource_data`, whose fallback `load_dependencies` calls
+    `load_file` with each external's stored path, then each candidate), and a
+    pointer to each external that no sibling answers (`PPtr.deref`, which
+    calls `find_file` with the cleaned path). UnityPy's own functions run on
+    stand-ins for the file and its container, whose `load_file` and
+    `find_file` record what they are asked and find nothing."""
+    asked = []
+    env = UnityPy.Environment()
+    env.load_file = lambda name, *_a, **_k: asked.append(name)
+    env.find_file = lambda name, *_a, **_k: asked.append(name)
+    f = types.SimpleNamespace(
+        environment=env,
+        externals=[types.SimpleNamespace(path=p) for p in RESOLVER_EXTERNALS],
+        parent=types.SimpleNamespace(files={}),
+    )
+    f.load_dependencies = types.MethodType(SerializedFile.load_dependencies, f)
+    out = {"externals": RESOLVER_EXTERNALS, "resource": RESOLVER_RESOURCE}
+    try:
+        get_resource_data(RESOLVER_RESOURCE, f, 0, 4)
+        out["resource_error"] = None
+    except Exception as e:  # noqa: BLE001 - the raise is the recorded outcome
+        out["resource_error"] = type(e).__name__
+    out["resource_asked"] = list(asked)
+    derefs = []
+    for file_id in range(1, len(RESOLVER_EXTERNALS) + 1):
+        asked.clear()
+        p = PPtr.__new__(PPtr)
+        p.m_FileID, p.m_PathID, p.assetsfile = file_id, 5, f
+        try:
+            p.deref(f)
+            error = None
+        except Exception as e:  # noqa: BLE001
+            error = type(e).__name__
+        derefs.append({"file_id": file_id, "asked": list(asked), "error": error})
+    out["derefs"] = derefs
+    return out
+
+
 # ------------------------------------------------------------------ strings
 
 ASTRAL = [0x10400, 0x10428, 0x104B0, 0x10570, 0x10C80, 0x118A0, 0x16E40, 0x1E900, 0x1F600, 0x1D400, 0x10FFFF]
@@ -522,6 +575,7 @@ def fixtures() -> dict[str, dict]:
     return {
         "env.json": {**meta, "scenes": plain, "dependency_scenes": deps},
         "pystr.json": {**meta, **pystr_fixture()},
+        "resolver.json": {**meta, **resolver_fixture()},
     }
 
 

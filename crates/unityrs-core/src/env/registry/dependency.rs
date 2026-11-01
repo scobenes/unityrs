@@ -12,10 +12,10 @@ use std::sync::{Arc, Mutex, Weak};
 use super::{DepCache, lock};
 use crate::budget::Reservation;
 use crate::detect::check_file_type;
-use crate::env::{DerefError, Source};
+use crate::env::{DerefError, Fetch, Source};
 use crate::error::{Error, Unsupported};
 use crate::files::{BundleFile, File, RawFile, SerializedFile, parse_file};
-use crate::limits::{ChargeError, Meter, pool_refusals};
+use crate::limits::{ChargeError, Meter, pool_refusals, refusal};
 use crate::options::FileContext;
 use crate::pystr::is_split_path;
 use crate::raw::RawStr;
@@ -177,11 +177,31 @@ pub(crate) fn open_source(
             }
             crate::env::read_path(p, &ctx.limits, meter)?
         }
-        Source::Fetch { fetch, .. } => fetch.fetch()?,
+        Source::Fetch { fetch, .. } => fetched(fetch.as_ref())?,
     };
     // UnityPy environment.py:139-154
     let ty = check_file_type(&data, &ctx.limits)?;
     parse_file(name.clone(), data, ty, None, meter, ctx)
+}
+
+/// `fetch`'s bytes. A refusal of the dependency pool it returns that no
+/// work of the core's counted while it ran (one the caller's code made
+/// itself: a fetcher that reserves its bytes from the pool) is counted here
+/// in [`pool_refusals`], as every refusal the core makes is: [`with_room`]
+/// retries it as the core's own, and tells it from one a retry already met
+/// by that count (review round 9: it moved nothing, so a mark an earlier
+/// refusal left matched it, and the retry was skipped). One the core
+/// counted during the fetch (a fetcher that reads through an Environment)
+/// is not counted twice.
+fn fetched(fetch: &dyn Fetch) -> Result<bytes::Bytes, Error> {
+    let before = pool_refusals();
+    fetch.fetch().inspect_err(|e| {
+        if pool_refused(e) && pool_refusals() == before {
+            // `refusal` counts the refusal it builds; the fetcher's own is
+            // the one returned.
+            let _counted = refusal(0, Reservation::Dependency);
+        }
+    })
 }
 
 thread_local! {
@@ -192,7 +212,11 @@ thread_local! {
     /// ([`pool_refusals`]), when a [`with_room`] of that Environment last
     /// returned a refusal that a retry had already met: an enclosing one
     /// that gets a refusal while the count is still there holds that one.
+    /// Cleared when the outermost `with_room` running on this thread
+    /// returns ([`Running`]), so it never outlives the call that set it.
     static RETRIED: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
+    /// How many [`with_room`]s are running on this thread, nested.
+    static RUNNING: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Restores [`RETRYING`] when a retry ends, a panic included.
@@ -207,6 +231,31 @@ impl Retrying {
 impl Drop for Retrying {
     fn drop(&mut self) {
         RETRYING.set(self.0);
+    }
+}
+
+/// One [`with_room`] running on this thread ([`RUNNING`]). When the
+/// outermost one returns, a panic included, [`RETRIED`] is cleared: no
+/// `with_room` encloses it, so the mark has no one left to tell, and a
+/// later call's retry depends only on that call (review round 9: the mark
+/// stayed, and a later call on the thread whose refusal moved no count,
+/// a fetcher's own, matched it and was not retried).
+struct Running;
+
+impl Running {
+    fn enter() -> Self {
+        RUNNING.set(RUNNING.get().saturating_add(1));
+        Self
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let left = RUNNING.get().saturating_sub(1);
+        RUNNING.set(left);
+        if left == 0 {
+            RETRIED.set(None);
+        }
     }
 }
 
@@ -227,7 +276,11 @@ impl Drop for Retrying {
 /// count, so a later one is retried (review round 8: `resource` and
 /// `deref` had no retry, and calls that nest, a lookup inside a
 /// dereference inside a container pass, retried one refusal at every
-/// level). `f` must be work that can run twice: a lookup, a read, or a
+/// level). Every refusal moves the count, a fetcher's own included
+/// ([`fetched`]), and the mark is cleared when the outermost `with_room`
+/// returns ([`Running`]), so whether a refusal is retried depends on the
+/// current call alone, never on what the thread ran before it (review
+/// round 9). `f` must be work that can run twice: a lookup, a read, or a
 /// whole load (whose registrations a second run makes again at its own
 /// ranks).
 pub(crate) fn with_room<T, E: PoolRefusal>(
@@ -236,6 +289,7 @@ pub(crate) fn with_room<T, E: PoolRefusal>(
     mut f: impl FnMut() -> Result<T, E>,
 ) -> Result<T, E> {
     let at = cache.map_or(0, |c| std::ptr::from_ref(c).addr());
+    let _running = Running::enter();
     let first = f();
     let Err(e) = &first else {
         return first;

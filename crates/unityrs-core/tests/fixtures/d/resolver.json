@@ -1,0 +1,25 @@
+{
+ "derefs": [
+  {"asked":["cab-de"],"error":"FileNotFoundError","file_id":1},
+  {"asked":["thing.asset"],"error":"FileNotFoundError","file_id":2},
+  {"asked":["cab-e"],"error":"FileNotFoundError","file_id":3}
+ ],
+ "externals": [
+  "archive:/CAB-DE/CAB-DE",
+  "Assets/Level/Thing.asset",
+  "archive:/CAB-E/CAB-E"
+ ],
+ "generator": "tools/fixtures/env.py",
+ "resource": "archive:/CAB-Q/CAB-Q.resS",
+ "resource_asked": [
+  "archive:/CAB-DE/CAB-DE",
+  "Assets/Level/Thing.asset",
+  "archive:/CAB-E/CAB-E",
+  "CAB-Q.resS",
+  "CAB-Q.resource",
+  "CAB-Q.assets.resS",
+  "CAB-Q.resS"
+ ],
+ "resource_error": "FileNotFoundError",
+ "unitypy": "1.25.2"
+}
