@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use super::resource_data::top_bundle;
 use super::{DerefError, Environment};
 use crate::container::View;
 use crate::object::ObjectRef;
@@ -47,6 +48,10 @@ impl Environment {
     /// (`FileNotFoundError`, `KeyError`, `IndexError`) is the object's error.
     /// With no such provider nothing is dereferenced (UnityPy raises its
     /// `ValueError` before any deref), so in P1 this equals [`ObjectRef::tree`].
+    /// A read of a dependency's object here (the head, the script) that the
+    /// pool refuses evicts the others and retries once, the object's
+    /// top-level bundle held meanwhile, as the dereference does (plan
+    /// section 3.13; review round 8).
     pub fn object_tree(
         &self,
         obj: &ObjectRef,
@@ -64,6 +69,7 @@ impl Environment {
             return Ok(Some(class_tree));
         }
         // UnityPy files/ObjectReader.py:332-350
+        let _top = top_bundle(obj.file());
         let Some(ident) = self.script_ident(obj, &class_tree.tree)? else {
             return Ok(Some(class_tree));
         };
@@ -88,7 +94,7 @@ impl Environment {
         class_tree: &Arc<Tree>,
     ) -> Result<Option<ScriptIdent>, ParseError> {
         // :325-330: the head, read with the class tree, `check_read` off.
-        let head = match obj.read_typetree(Some(class_tree), false) {
+        let head = match self.room(|| obj.read_typetree(Some(class_tree), false)) {
             Ok(p) => p,
             Err(e) if is_value_error(&e) => return Ok(None),
             Err(e) => return Err(e),
@@ -114,7 +120,7 @@ impl Environment {
             Err(e) => return Err(ParseError::Deref(Arc::new(e))),
         };
         // `parse_as_object()`, `check_read` on.
-        let script = match target.read_typetree(None, true) {
+        let script = match self.room(|| target.read_typetree(None, true)) {
             Ok(p) => p,
             Err(e) if is_value_error(&e) => return Ok(None),
             Err(e) => return Err(e),

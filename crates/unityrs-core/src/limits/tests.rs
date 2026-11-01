@@ -272,3 +272,35 @@ fn the_defaults() {
     assert_eq!(l.max_input_bytes, 4 << 30);
     assert_eq!(l.max_block_output, 1 << 30);
 }
+
+/// Every refusal of the dependency pool the core meets is counted on its
+/// thread ([`super::pool_refusals`]), the Environment's one retry of a pool
+/// refusal telling by the count a refusal it already retried from a later
+/// one (`env::registry::with_room`; review round 8): a budget's refusal of
+/// a dependency's meter, and an allocation the allocator refuses after a
+/// dependency's meter granted it ([`super::reserve_exact`]), but no
+/// refusal of another reservation.
+#[test]
+fn every_refusal_of_the_dependency_pool_is_counted() {
+    let pool = Arc::new(Counting::new(0));
+    let refused = |what: Reservation| {
+        let before = super::pool_refusals();
+        let meter = Meter::new(100, pool.clone(), what);
+        assert!(matches!(meter.charge(1), Err(ChargeError::Budget(_))));
+        super::pool_refusals() - before
+    };
+    assert_eq!(refused(Reservation::Dependency), 1);
+    assert_eq!(refused(Reservation::Input), 0);
+    // A request past `isize::MAX` bytes, which no allocator meets, granted
+    // first by a meter with no bound.
+    let huge = |what: Reservation| {
+        let before = super::pool_refusals();
+        let meter = Meter::new(u64::MAX, Arc::new(Unbounded), what);
+        let mut v: Vec<u64> = Vec::new();
+        let e = super::reserve_exact(&mut v, usize::MAX / 4, 1, &meter).unwrap_err();
+        assert_eq!(e.what, what);
+        super::pool_refusals() - before
+    };
+    assert_eq!(huge(Reservation::Dependency), 1);
+    assert_eq!(huge(Reservation::Input), 0);
+}

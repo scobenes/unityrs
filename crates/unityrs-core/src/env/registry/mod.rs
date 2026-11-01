@@ -137,7 +137,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 pub use cab::{Cab, HeldCab, RawCab};
-pub(crate) use dependency::{DepSlot, Dependency, Open, open_source, with_room};
+pub(crate) use dependency::{DepSlot, Dependency, Open, PoolRefusal, open_source, with_room};
 pub(crate) use lru::DepCache;
 #[cfg(test)]
 pub(crate) use lru::{Hook, HookFn};
@@ -345,7 +345,10 @@ impl Registry {
     /// dependency again from its source. The key is `simplify_name(name)`,
     /// built charged to `meter` (`crate::pystr::simplify_name`) and dropped
     /// when the lookup returns; a name already in its simplified form is
-    /// looked up as it is, with no copy.
+    /// looked up as it is, with no copy. The registry holds no LRU, so a
+    /// pool refusal of the key's charge, when `meter` is a dependency's, is
+    /// returned here as it is: `Environment::get_cab` is the lookup that
+    /// evicts and retries (the registry's `with_room`).
     pub fn get(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<Cab>, Error> {
         Ok(self.get_held(name, meter)?.map(|h| h.cab))
     }
@@ -493,5 +496,7 @@ impl Iterator for Keys<'_> {
 mod pass_tests;
 #[cfg(test)]
 mod reach_tests;
+#[cfg(test)]
+mod room_tests;
 #[cfg(test)]
 mod tests;

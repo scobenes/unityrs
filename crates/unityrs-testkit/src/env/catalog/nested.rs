@@ -377,3 +377,77 @@ pub fn nested_evicted() -> DepScene {
     scene.scene.files.truncate(3);
     scene
 }
+
+/// Reads from inside dependencies: `d.bundle` holds `CAB-D`, its `.resS`
+/// and its sibling `CAB-DE`; `n.bundle` holds the same shape inside the
+/// nested bundle `INNER` (`CAB-N`, `CAB-N.resS`, `CAB-NE`); `e.bundle`
+/// holds `CAB-E` and `CAB-E.resS`; all three are loaded as dependencies.
+/// `CAB-D`'s and `CAB-N`'s pointers name a sibling, `CAB-E` (another
+/// dependency, found by `find_file`'s registry lookup) and, from `CAB-D`,
+/// `CAB-R` (only the resolver has it, lower-cased as `find_file` asks); their
+/// textures read their own `.resS`, `CAB-E.resS` and, from `CAB-D`,
+/// `CAB-X.resS`, which a resource fallback loads (a bundle of that name
+/// whose one entry is the `.resS`). Every dereference and resource read
+/// starts from a dependency's file, so each charges the dependency pool
+/// (review round 8: a pool refusal there failed the call, with no eviction
+/// and no retry).
+#[must_use]
+pub fn dependency_reads() -> DepScene {
+    let d = serialized(
+        &[
+            "archive:/CAB-DE/CAB-DE",
+            "archive:/CAB-E/CAB-E",
+            "archive:/CAB-R/CAB-R",
+        ],
+        &[
+            Obj::named(1, "d1", &[(1, 7), (2, 1), (3, 1)]),
+            Obj::streamed(2, "dtex", "archive:/CAB-D/CAB-D.resS", 4, 8),
+            Obj::streamed(3, "etex", "archive:/CAB-E/CAB-E.resS", 2, 4),
+            Obj::streamed(4, "xtex", "archive:/CAB-X/CAB-X.resS", 1, 3),
+        ],
+    );
+    let n = serialized(
+        &["archive:/CAB-NE/CAB-NE", "archive:/CAB-E/CAB-E"],
+        &[
+            Obj::named(1, "n1", &[(1, 3), (2, 1)]),
+            Obj::streamed(2, "ntex", "archive:/CAB-N/CAB-N.resS", 2, 6),
+        ],
+    );
+    DepScene {
+        scene: Scene {
+            files: vec![
+                named(
+                    "d.bundle",
+                    bundle(&[
+                        ("CAB-D", d),
+                        ("CAB-D.resS", res_bytes(64, 7)),
+                        ("CAB-DE", serialized(&[], &[Obj::named(7, "de7", &[])])),
+                    ]),
+                ),
+                named(
+                    "n.bundle",
+                    bundle(&[(
+                        "INNER",
+                        bundle(&[
+                            ("CAB-N", n),
+                            ("CAB-N.resS", res_bytes(32, 40)),
+                            ("CAB-NE", serialized(&[], &[Obj::named(3, "ne3", &[])])),
+                        ]),
+                    )]),
+                ),
+                named(
+                    "e.bundle",
+                    bundle(&[
+                        ("CAB-E", serialized(&[], &[Obj::named(1, "e1", &[])])),
+                        ("CAB-E.resS", res_bytes(16, 90)),
+                    ]),
+                ),
+            ],
+            resolver: vec![
+                named("cab-r", serialized(&[], &[Obj::named(1, "r1", &[])])),
+                named("CAB-X.resS", bundle(&[("CAB-X.resS", res_bytes(8, 120))])),
+            ],
+        },
+        dependencies: vec![0, 1, 2],
+    }
+}

@@ -19,8 +19,10 @@ path), and after each step the Environment's state is recorded:
 `env.objects` (file, path id, class id). The resolver's files sit in a
 temporary `env.path`; a key under it is written `@/<name>`. Each scene of
 `dependency_scenes` loads the files it names as dependencies
-(`load_file(..., is_dependency=True)`), then lists the container and asks
-every object its `container` path, the state recorded after each step.
+(`load_file(..., is_dependency=True)`), then lists the container, asks
+every object its `container` path, and dereferences every pointer and reads
+every resource of the objects of the files it loaded as dependencies (which
+`env.objects` leaves out), the state recorded after each step.
 
 `pystr.json`: `str.lower` over every BMP code point (as the list of those it
 changes), astral samples and final-sigma contexts, `ntpath` cases, which
@@ -106,6 +108,8 @@ class Run:
         self.scene = scene
         self.path = path
         self.env = UnityPy.Environment(path=path)
+        # The files the scene loaded as dependencies, in load order.
+        self.dependencies = []
 
     def key(self, name: str) -> str:
         return name.replace(self.path, "@", 1) if name.startswith(self.path) else name
@@ -121,9 +125,11 @@ class Run:
     def load(self, i: int, is_dependency: bool = False):
         name, data = self.scene["files"][i]
         try:
-            self.env.load_file(bytes.fromhex(data), name=name, is_dependency=is_dependency)
+            f = self.env.load_file(bytes.fromhex(data), name=name, is_dependency=is_dependency)
         except Exception:  # noqa: BLE001 - a failed load is a recorded outcome
             return "error"
+        if is_dependency:
+            self.dependencies.append(f)
         return "ok"
 
     def objects(self) -> list:
@@ -147,9 +153,26 @@ class Run:
             name = type(e).__name__
         return [self.key(t.assets_file.name), t.path_id, t.class_id, name]
 
-    def derefs(self):
+    def dep_objects(self) -> list:
+        """Every object of the files the scene loaded as dependencies, in
+        load order: a bundle's entries in its order, a nested bundle's in
+        place."""
         out = []
-        for o in self.objects():
+
+        def walk(item):
+            if isinstance(item, SerializedFile):
+                out.extend(item.objects.values())
+            elif getattr(item, "files", None):
+                for sub in item.files.values():
+                    walk(sub)
+
+        for f in self.dependencies:
+            walk(f)
+        return out
+
+    def derefs(self, objects=None):
+        out = []
+        for o in self.objects() if objects is None else objects:
             if o.class_id != 1:
                 continue
             d = o.parse_as_dict()
@@ -163,9 +186,9 @@ class Run:
                     out.append(type(e).__name__)
         return out
 
-    def resources(self):
+    def resources(self, objects=None):
         out = []
-        for o in self.objects():
+        for o in self.objects() if objects is None else objects:
             if o.class_id != 28:
                 continue
             s = o.parse_as_dict()["m_StreamData"]
@@ -233,7 +256,8 @@ class Run:
 
     def dependency_steps(self) -> list[dict]:
         """The loads, each file `dependencies` names as a dependency, then the
-        container and every object's `container` path."""
+        container, every object's `container` path, and every pointer and
+        resource of the dependencies' objects."""
         out = []
 
         def step(op, result):
@@ -247,6 +271,8 @@ class Run:
                 step(["load", i], self.load(i))
         step(["container"], self.container())
         step(["paths"], self.paths())
+        step(["dep_derefs"], self.derefs(self.dep_objects()))
+        step(["dep_resources"], self.resources(self.dep_objects()))
         return out
 
 

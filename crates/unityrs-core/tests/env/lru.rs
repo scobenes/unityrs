@@ -1,9 +1,9 @@
 //! The dependency LRU and its pool.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
-use unityrs_core::budget::{BudgetExceeded, Counting, MemoryBudget, Permit, Reservation};
+use unityrs_core::budget::{Counting, Reservation};
 use unityrs_core::env::{CabResolver, DerefError, EnvOptions, Environment, LoadMode, PPtr, Source};
 use unityrs_core::error::Error;
 use unityrs_core::files::File;
@@ -11,8 +11,8 @@ use unityrs_core::{Bytes, FileContext, RawStr};
 use unityrs_testkit::env::{Obj, bundle, res_bytes, serialized};
 
 use crate::{
-    TempFile, batch, ctx_with, key, keys, name_of, named_bundle, object, serialized_cab, src,
-    unlimited,
+    DepPool, TempFile, batch, ctx_with, key, keys, name_of, named_bundle, object, serialized_cab,
+    src, unlimited,
 };
 
 /// `load_dependency` registers an evictable dependency whose meter names the
@@ -91,55 +91,6 @@ fn path_dependencies_twice_the_bound_round_robin_are_never_refused() {
         }
     }
     assert!(env.stats().dependencies_evicted > 0);
-}
-
-/// A budget that grants inputs anything and dependencies up to a limit,
-/// recording the most the dependencies held at once.
-#[derive(Debug)]
-struct DepPool {
-    limit: AtomicU64,
-    used: Arc<PoolHome>,
-}
-
-#[derive(Debug, Default)]
-struct PoolHome {
-    used: AtomicU64,
-    peak: AtomicU64,
-}
-
-impl unityrs_core::budget::PermitHome for PoolHome {
-    fn release(&self, bytes: u64) {
-        self.used.fetch_sub(bytes, Ordering::AcqRel);
-    }
-}
-
-impl DepPool {
-    fn new(limit: u64) -> Self {
-        Self {
-            limit: AtomicU64::new(limit),
-            used: Arc::new(PoolHome::default()),
-        }
-    }
-}
-
-impl MemoryBudget for DepPool {
-    fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
-        if what == Reservation::Input {
-            return Ok(Permit::detached(bytes));
-        }
-        let limit = self.limit.load(Ordering::Acquire);
-        let used = &self.used.used;
-        let now =
-            used.try_update(Ordering::AcqRel, Ordering::Acquire, |u| {
-                u.checked_add(bytes).filter(|n| *n <= limit)
-            })
-            .map_err(|_| BudgetExceeded {
-                requested: bytes,
-                what,
-            })? + bytes;
-        self.used.peak.fetch_max(now, Ordering::AcqRel);
-        Ok(Permit::new(bytes, self.used.clone()))
-    }
 }
 
 /// A pool refusal evicts the cached dependencies and retries once; a

@@ -227,8 +227,13 @@ impl Run {
     }
 
     pub(crate) fn derefs(&self) -> J {
+        self.derefs_of(self.objects())
+    }
+
+    /// Every pointer of `objects` dereferenced (`env.py`'s `derefs`).
+    pub(crate) fn derefs_of(&self, objects: Vec<unityrs_core::object::ObjectRef>) -> J {
         let mut out = Vec::new();
-        for o in self.objects() {
+        for o in objects {
             if o.class_id() != 1 {
                 continue;
             }
@@ -259,8 +264,13 @@ impl Run {
     }
 
     pub(crate) fn resources(&self) -> J {
+        self.resources_of(self.objects())
+    }
+
+    /// Every resource of `objects` read (`env.py`'s `resources`).
+    pub(crate) fn resources_of(&self, objects: Vec<unityrs_core::object::ObjectRef>) -> J {
         let mut out = Vec::new();
-        for o in self.objects() {
+        for o in objects {
             if o.class_id() != 28 {
                 continue;
             }
@@ -404,6 +414,32 @@ impl Run {
     pub(crate) fn steps(&self, ops: &[J]) -> Vec<J> {
         ops.iter().map(|op| self.step(op)).collect()
     }
+}
+
+/// Every object of `files` (the handles of the files a scene loaded as
+/// dependencies, in load order), walked as `env.py`'s `dep_objects` walks
+/// UnityPy's: a bundle's entries in directory order, a nested bundle's in
+/// place.
+pub(crate) fn dep_objects(files: &[File]) -> Vec<unityrs_core::object::ObjectRef> {
+    // No scene holds a web file.
+    fn walk(file: &File, out: &mut Vec<unityrs_core::object::ObjectRef>) {
+        match file {
+            File::Serialized(sf) => out.extend(sf.objects()),
+            File::Bundle(b) => {
+                for i in 0..b.directory().len() {
+                    if let Ok(f) = b.entry(i) {
+                        walk(&f, out);
+                    }
+                }
+            }
+            File::Web(_) | File::Raw(_) => {}
+        }
+    }
+    let mut out = Vec::new();
+    for f in files {
+        walk(f, &mut out);
+    }
+    out
 }
 
 pub(crate) fn scene_by_name(name: &str) -> Scene {

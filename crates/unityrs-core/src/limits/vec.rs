@@ -10,6 +10,21 @@ use super::{Charge, ChargeError, Meter, heap_cost};
 use crate::budget::BudgetExceeded;
 use crate::error::LimitKind;
 
+/// `vec.try_reserve_exact(additional)`, after `meter` granted the `charged`
+/// bytes it costs: an allocation the allocator refuses is a refusal of
+/// those bytes for `meter`'s reservation, counted as a budget's refusal is
+/// ([`super::refusal`]). Every allocation the core charges before it makes
+/// it reports a failure this way.
+pub(crate) fn reserve_exact<T>(
+    vec: &mut Vec<T>,
+    additional: usize,
+    charged: u64,
+    meter: &Meter,
+) -> Result<(), BudgetExceeded> {
+    vec.try_reserve_exact(additional)
+        .map_err(|_| super::refusal(charged, meter.reservation()))
+}
+
 fn bytes_of<T>(n: usize) -> u64 {
     u64::try_from(n)
         .unwrap_or(u64::MAX)
@@ -82,16 +97,13 @@ fn grow_exact<T>(
         charge.meter().count_decode(work)?;
     }
     let additional = cap.saturating_sub(vec.len());
-    if vec.try_reserve_exact(additional).is_err() {
+    if let Err(e) = reserve_exact(vec, additional, new, charge.meter()) {
         // `extra` drops here: nothing stays charged or counted for a failed
         // allocation.
         if work > 0 {
             charge.meter().uncount_decode(work);
         }
-        return Err(ChargeError::Budget(BudgetExceeded {
-            requested: new,
-            what: charge.meter().reservation(),
-        }));
+        return Err(ChargeError::Budget(e));
     }
     let got = heap_cost(bytes_of::<T>(vec.capacity()));
     if got > new && extra.grow(got - new).is_err() {

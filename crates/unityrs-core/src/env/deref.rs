@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use super::container_index::Siblings;
+use super::resource_data::top_bundle;
 use super::{Cab, DerefError, Environment, Found, HeldCab, PPtr, RawCab, pptr};
 use crate::error::Error;
 use crate::files::{File, ParentKind, SerializedFile};
@@ -42,11 +43,13 @@ impl Environment {
     /// [`Meter::unlimited`]), and a name already in its simplified form is
     /// not copied ([`Registry::get`]). A dependency's CAB may outlive its
     /// bundle in the LRU: [`Self::get_cab_held`] returns the handle that
-    /// keeps it.
+    /// keeps it. A pool refusal anywhere in the lookup, the key's charge to
+    /// a dependency's meter included, evicts the others and retries once
+    /// (plan section 3.13).
     ///
     /// [`Registry::get`]: super::Registry::get
     pub fn get_cab(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<Cab>, Error> {
-        self.inner.registry.get(name, meter)
+        Ok(self.get_cab_held(name, meter)?.map(|h| h.cab))
     }
 
     /// [`Self::get_cab`], with the handle that keeps a dependency's CAB's
@@ -59,7 +62,7 @@ impl Environment {
         name: &RawStr,
         meter: &Arc<Meter>,
     ) -> Result<Option<HeldCab>, Error> {
-        self.inner.registry.get_held(name, meter)
+        self.room(|| self.inner.registry.get_held(name, meter))
     }
 
     /// `find_file(name, is_dependency=True)`: [`Self::get_cab`], else the
@@ -80,15 +83,19 @@ impl Environment {
         })
     }
 
-    /// [`Self::find_file`]'s lookup, and how it reached what it found.
+    /// [`Self::find_file`]'s lookup, and how it reached what it found. A
+    /// pool refusal in the registry's lookup evicts the others and retries
+    /// it once; the resolver's load takes its own (plan section 3.13).
     fn find(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<(Found, Reached)>, Error> {
         // UnityPy environment.py:326-329: `get_cab(simplify_name(name))`,
         // which simplifies again.
-        let simple = simplify_name(name, meter)?;
-        if let Some(cab) = self.inner.registry.get(&simple, meter)? {
+        let found = self.room(|| {
+            let simple = simplify_name(name, meter)?;
+            self.inner.registry.get(&simple, meter)
+        })?;
+        if let Some(cab) = found {
             return Ok(Some((Found::Cab(cab), Reached::Lookup)));
         }
-        drop(simple);
         // :330-354: the resolver stands for the walk of `env.path`.
         let Some(resolver) = self.inner.options.resolver.clone() else {
             return Ok(None);
@@ -111,7 +118,10 @@ impl Environment {
     /// with [`DerefError::ContainerDropped`] rather than guess: UnityPy
     /// cannot reach that state, since an object keeps its file's parent
     /// alive, so the bindings and a batch engine keep a strong bundle handle
-    /// beside every `SerializedFile` they hand out.
+    /// beside every `SerializedFile` they hand out. A pool refusal anywhere
+    /// in the dereference (reading or looking up from a dependency's file)
+    /// evicts the others and retries once, `from`'s top-level bundle held
+    /// meanwhile (plan section 3.13; review round 8: it had no retry).
     pub fn deref(&self, from: &Arc<SerializedFile>, pptr: PPtr) -> Result<ObjectRef, DerefError> {
         // UnityPy classes/PPtr.py:49-50
         if pptr.path_id == 0 {
@@ -121,9 +131,14 @@ impl Environment {
         if pptr.file_id == 0 {
             return object_in(from, pptr.path_id);
         }
-        self.reach_chain(from)?;
-        let (target, _) = self.external(from, pptr.file_id, None)?;
-        Self::object_of(&target, pptr.path_id)
+        let _top = top_bundle(from);
+        // Nothing after a resolver's load charges anything, so a retry never
+        // loads again what the first run loaded.
+        self.room(|| {
+            self.reach_chain(from)?;
+            let (target, _) = self.external(from, pptr.file_id, None)?;
+            Self::object_of(&target, pptr.path_id)
+        })
     }
 
     /// The file `from`'s external `file_id` names (`classes/PPtr.py:57-85`):

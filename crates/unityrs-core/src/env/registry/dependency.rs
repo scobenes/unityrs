@@ -4,6 +4,7 @@
 //! [`with_room`], the one retry every dependency read or registration the
 //! pool refuses takes.
 
+use std::cell::Cell;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -14,7 +15,7 @@ use crate::detect::check_file_type;
 use crate::env::{DerefError, Source};
 use crate::error::{Error, Unsupported};
 use crate::files::{BundleFile, File, RawFile, SerializedFile, parse_file};
-use crate::limits::{ChargeError, Meter};
+use crate::limits::{ChargeError, Meter, pool_refusals};
 use crate::options::FileContext;
 use crate::pystr::is_split_path;
 use crate::raw::RawStr;
@@ -183,30 +184,105 @@ pub(crate) fn open_source(
     parse_file(name.clone(), data, ty, None, meter, ctx)
 }
 
-/// Runs `f`, a read or a registration charged to a dependency's meter (one
-/// being loaded when `keep` is `None`); when the dependency pool refuses it
-/// ([`pool_refused`]), evicts every cached dependency but `keep` and runs
-/// it once more, the second refusal being the caller's (plan section 3.13:
-/// "a dependency read the pool refuses evicts and retries once"). Every
-/// such read takes this one retry: a dependency's load, a lookup that opens
-/// or reads one, and a reach of a dependency's nested container, the
-/// container pass's reopen included (review round 7: that reopen had none,
-/// so under `LoadMode::Lazy` a pool with room for one open failed every
-/// container pass where `Eager` made room and succeeded).
-pub(crate) fn with_room<T>(
+thread_local! {
+    /// The LRU (its address) a [`with_room`] running on this thread is
+    /// retrying in: no `with_room` of that Environment retries inside it.
+    static RETRYING: Cell<Option<usize>> = const { Cell::new(None) };
+    /// The LRU, and this thread's count of pool refusals
+    /// ([`pool_refusals`]), when a [`with_room`] of that Environment last
+    /// returned a refusal that a retry had already met: an enclosing one
+    /// that gets a refusal while the count is still there holds that one.
+    static RETRIED: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
+}
+
+/// Restores [`RETRYING`] when a retry ends, a panic included.
+struct Retrying(Option<usize>);
+
+impl Retrying {
+    fn enter(at: usize) -> Self {
+        Self(RETRYING.replace(Some(at)))
+    }
+}
+
+impl Drop for Retrying {
+    fn drop(&mut self) {
+        RETRYING.set(self.0);
+    }
+}
+
+/// Runs `f`, work an Environment call does through a dependency's meter (a
+/// dependency's load, a lookup that opens or reads one, a reach of its
+/// nested container, a read from its file); when the dependency pool
+/// refuses it ([`pool_refused`]), evicts every cached dependency but `keep`
+/// and runs it once more, the second refusal being the caller's (plan
+/// section 3.13: "a dependency read the pool refuses evicts and retries
+/// once"). One rule, wherever the calls nest: a refusal is retried by the
+/// innermost `with_room` it reaches, once, and by no other. So a
+/// `with_room` passes on, untried, a refusal one inside it already retried
+/// (it knows it by this thread's count of pool refusals, which no refusal
+/// has moved since: [`RETRIED`]), and none of an Environment retries inside
+/// a retry of that Environment's ([`RETRYING`]): the room is made, and
+/// what the second run meets is final. A refusal another one inside it met
+/// and let go (a `settle` leaves a refusal for the next call) moves the
+/// count, so a later one is retried (review round 8: `resource` and
+/// `deref` had no retry, and calls that nest, a lookup inside a
+/// dereference inside a container pass, retried one refusal at every
+/// level). `f` must be work that can run twice: a lookup, a read, or a
+/// whole load (whose registrations a second run makes again at its own
+/// ranks).
+pub(crate) fn with_room<T, E: PoolRefusal>(
     cache: Option<&DepCache>,
     keep: Option<&Arc<Dependency>>,
-    mut f: impl FnMut() -> Result<T, Error>,
-) -> Result<T, Error> {
-    match f() {
-        Err(e) if pool_refused(&e) => {
-            drop(e);
-            if let Some(cache) = cache {
-                cache.evict_others(keep);
-            }
-            f()
-        }
-        other => other,
+    mut f: impl FnMut() -> Result<T, E>,
+) -> Result<T, E> {
+    let at = cache.map_or(0, |c| std::ptr::from_ref(c).addr());
+    let first = f();
+    let Err(e) = &first else {
+        return first;
+    };
+    if !e.pool_refused() {
+        return first;
+    }
+    if RETRYING.get() == Some(at) || RETRIED.get() == Some((at, pool_refusals())) {
+        RETRIED.set(Some((at, pool_refusals())));
+        return first;
+    }
+    drop(first);
+    if let Some(cache) = cache {
+        cache.evict_others(keep);
+    }
+    let second = {
+        let _retrying = Retrying::enter(at);
+        f()
+    };
+    if matches!(&second, Err(e) if e.pool_refused()) {
+        RETRIED.set(Some((at, pool_refusals())));
+    }
+    second
+}
+
+/// An error that may be the dependency pool's refusal, as it is or wrapped
+/// ([`pool_refused`]): what [`with_room`] retries.
+pub(crate) trait PoolRefusal {
+    /// Whether it is the dependency pool refusing a charge.
+    fn pool_refused(&self) -> bool;
+}
+
+impl PoolRefusal for Error {
+    fn pool_refused(&self) -> bool {
+        pool_refused(self)
+    }
+}
+
+impl PoolRefusal for DerefError {
+    fn pool_refused(&self) -> bool {
+        deref_refused(self)
+    }
+}
+
+impl PoolRefusal for ParseError {
+    fn pool_refused(&self) -> bool {
+        parse_refused(self)
     }
 }
 
@@ -256,10 +332,10 @@ fn parse_refused(p: &ParseError) -> bool {
 impl Dependency {
     /// [`with_room`] for a read or a registration of this dependency, which
     /// the eviction keeps.
-    pub(crate) fn with_room<T>(
+    pub(crate) fn with_room<T, E: PoolRefusal>(
         self: &Arc<Self>,
-        f: impl FnMut() -> Result<T, Error>,
-    ) -> Result<T, Error> {
+        f: impl FnMut() -> Result<T, E>,
+    ) -> Result<T, E> {
         with_room(self.cache.upgrade().as_deref(), Some(self), f)
     }
 

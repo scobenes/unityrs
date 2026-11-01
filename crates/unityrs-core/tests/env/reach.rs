@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use unityrs_core::env::{EnvOptions, Environment, LoadMode, Source};
+use unityrs_core::env::{Cab, EnvOptions, Environment, LoadMode, RawCab, Source};
 use unityrs_core::files::File;
 use unityrs_core::limits::Meter;
 use unityrs_core::{Bytes, FileContext, RawStr};
@@ -326,5 +326,99 @@ fn settling_dropped_slots_counts_steps_that_grow_as_m_log_m() {
             "m = {m}: {steps} steps counted of {design}"
         );
         assert!(steps <= (3 * m + 1) * log, "m = {m}: {steps} steps");
+    }
+}
+
+/// The steps `pending.rs` counts for listing `m` slots one after another,
+/// worked out from its rule (a search of `n` counts ⌈log2 n⌉ + 1, of none
+/// one), not from the code's own `search_steps`.
+fn listing_steps(m: u64) -> u64 {
+    (0..m).map(search).sum()
+}
+
+fn search(n: u64) -> u64 {
+    match n {
+        0 => 1,
+        n => u64::from(n.next_power_of_two().trailing_zeros()) + 1,
+    }
+}
+
+/// The dependency `a.bundle` of `m` raw entries `E00000`.. (one 160-byte
+/// block each) and a last, `A-KEEP`; then the dependency `b.bundle`, whose
+/// nested `INNER` holds entries of the same `m` names, so that a lookup of
+/// `INNER` reaches it and drops all `m` of `a.bundle`'s slots unreached at
+/// once, under `LoadMode::Lazy`. With `evicted`, a cache that holds one
+/// dependency has evicted `a.bundle` by then (loading `b.bundle`), so the
+/// lookup's `settle` moves each dropped slot to the list only the container
+/// pass reaches (`defer`, plan section 9, Q13), and a lookup of `A-KEEP`
+/// opens `a.bundle` again before the pass, which reaches them; without it,
+/// the `settle` reaches each, after a lookup of `A-KEEP` as well, so that
+/// the open that reads the `m` entries has read the same before them (a
+/// bundle's read counts its searches of what it has read, plan section
+/// 3.6). The work `a.bundle`'s first open counted across the lookup of
+/// `INNER`, and the work its reopen counted across the container pass.
+fn dropped_work(m: usize, evicted: bool) -> (u64, u64) {
+    let names: Vec<String> = (0..m).map(|i| format!("E{i:05}")).collect();
+    let entries = |data: &dyn Fn() -> Vec<u8>| -> Vec<(&str, Vec<u8>)> {
+        names.iter().map(|n| (n.as_str(), data())).collect()
+    };
+    let mut ours = entries(&|| res_bytes(160, 7));
+    ours.push(("A-KEEP", res_bytes(160, 8)));
+    let a = Bytes::from(bundle(&ours));
+    let b = Bytes::from(bundle(&[("INNER", bundle(&entries(&|| res_bytes(8, 9))))]));
+    let mut o = EnvOptions::batch(Arc::new(FileContext::unitypy()));
+    o.dep_cache_bytes = if evicted { 1 } else { u64::MAX };
+    let env = Environment::new(o);
+    let first = env
+        .load_dependency(bytes("a.bundle", &a))
+        .unwrap()
+        .meter()
+        .clone();
+    drop(env.load_dependency(bytes("b.bundle", &b)).unwrap());
+    let asker = Meter::unlimited();
+    let kept = || env.get_cab(&RawStr::from("A-KEEP"), &asker).unwrap();
+    let mut keep = (!evicted).then(kept);
+    let before = first.decoded();
+    let found = env.get_cab(&RawStr::from("INNER"), &asker);
+    assert!(found.unwrap().is_none(), "INNER is a container");
+    let dropped = first.decoded() - before;
+    // `a.bundle` open again, held while the pass runs.
+    let keep = keep.get_or_insert_with(kept);
+    let Some(Cab::Raw(RawCab::InBundle { bundle: open, .. })) = keep else {
+        panic!("A-KEEP is a raw entry of a.bundle: {keep:?}");
+    };
+    assert_eq!(!Arc::ptr_eq(open.meter(), &first), evicted, "a reopen");
+    let before = open.meter().decoded();
+    let _ = env.container().unwrap().count();
+    (dropped, open.meter().decoded() - before)
+}
+
+/// The steps that move a dropped slot of an evicted dependency to the list
+/// only the container pass reaches (plan section 9, Q13) count as its
+/// input's work, every designed step (plan section 9, "How a test sees
+/// bounded work"; review round 8: `defer`'s count was pinned by no test).
+/// With `a.bundle` evicted, the lookup that drops its `m` slots counts on
+/// its first open exactly: each slot's listing (a search of the list of the
+/// `k` listed before it), and for each in turn the settle's search and its
+/// removal from the list of the `n` still listed (`n` from `m` down to 1)
+/// and its insertion into the list of the `e` moved before it (`e` from 0
+/// to `m - 1`), and the last search of the empty list; it reads nothing.
+/// The container pass then counts on the reopen, for each slot, what a
+/// settle that reaches a listed slot counts past its listing: a search and
+/// a removal of the list it is on, and the read of its first bytes; so the
+/// pass counts what the settle without the eviction counts, but for the
+/// listings. A step is 8 bytes (`pending.rs`).
+#[test]
+fn moving_a_dropped_slot_of_an_evicted_dependency_counts_every_step() {
+    for m in [64_u64, 256, 1024] {
+        let n = usize::try_from(m).unwrap();
+        let ((deferred, pass), (settled, _)) = (dropped_work(n, true), dropped_work(n, false));
+        let moved: u64 = (1..=m).map(|n| 2 * search(n)).sum::<u64>() + listing_steps(m) + 1;
+        assert_eq!(
+            deferred,
+            8 * (listing_steps(m) + moved),
+            "m = {m}: the drop and the moves"
+        );
+        assert_eq!(pass, settled - 8 * listing_steps(m), "m = {m}: the pass");
     }
 }
