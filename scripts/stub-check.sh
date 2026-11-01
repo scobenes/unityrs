@@ -17,8 +17,8 @@
 #   - either macro imported under another name (`use core::todo as later;`,
 #     on one line or several), whose calls no name scan would see;
 #   - either name as a word of its own anywhere inside a macro call's
-#     delimiters (`call!(todo)`), a `macro_rules!` definition or an
-#     attribute, other than as a `clippy::` lint path: a macro_rules! body
+#     delimiters (`call!(todo)`) or a `macro_rules!` definition, or inside
+#     an attribute other than as a `clippy::` lint path: a macro_rules! body
 #     can put a `!` after a name it is handed (`$m!()`) or after one it
 #     holds (`todo $bang`), and then the call is written nowhere a name
 #     scan reads, and clippy, which lints a call by the macro whose
@@ -177,9 +177,10 @@ hits=$(find crates -type f -name '*.rs' \
             }
             return 0
         }
-        # Whether the code at pos lies inside the delimiters of a macro call
-        # (`name!(...)`, `[...]` or `{...}`, a keyword before the `!` aside),
-        # of a `macro_rules! name {...}` definition or of an attribute.
+        # What the innermost delimiters around pos belong to, of a macro call
+        # (`name!(...)`, `[...]` or `{...}`, a keyword before the `!` aside)
+        # or a `macro_rules! name {...}` definition (1), and an attribute (2);
+        # 0 for neither.
         function in_tree(pos,    i, c, depth, j, w) {
             depth = 0
             for (i = pos - 1; i >= 1; i--) {
@@ -189,11 +190,11 @@ hits=$(find crates -type f -name '*.rs' \
                     if (depth > 0) { depth--; continue }
                     j = i - 1
                     while (j >= 1 && substr(J, j, 1) ~ ws) j--
-                    if (c == "[" && j >= 1 && substr(J, j, 1) == "#") return 1
+                    if (c == "[" && j >= 1 && substr(J, j, 1) == "#") return 2
                     if (j >= 1 && substr(J, j, 1) == "!") {
                         j--
                         while (j >= 1 && substr(J, j, 1) ~ ws) j--
-                        if (c == "[" && j >= 1 && substr(J, j, 1) == "#") return 1
+                        if (c == "[" && j >= 1 && substr(J, j, 1) == "#") return 2
                         w = word_before(j + 1)
                         if (w != "" && w !~ /^(if|while|match|return|in|else|break|let|for|loop|move|mut|ref|as|yield)$/) return 1
                     } else if (j >= 1 && substr(J, j, 1) ~ /[A-Za-z0-9_]/) {
@@ -218,7 +219,7 @@ hits=$(find crates -type f -name '*.rs' \
             if (who == "") who = first
             print "[" who "] " fname ":" k ": " L[k]
         }
-        function flush(    k, re, rest, off, pos, end) {
+        function flush(    k, re, rest, off, pos, end, t) {
             first = ""
             for (k = 1; k <= n && first == ""; k++) first = owner_of(L[k])
             if (first == "") first = "?"
@@ -228,15 +229,17 @@ hits=$(find crates -type f -name '*.rs' \
             for (k = 1; k <= n; k++) if (L[k] ~ /STUB\(/) H[k] = 1
             scan("(^|[^A-Za-z0-9_])(todo|unimplemented)" ws "*!" ws "*[[({]")
             scan("(^|[^A-Za-z0-9_])(todo|unimplemented)" ws "+as" ws "+[A-Za-z_]")
-            # Either name as a word of its own in a macro call, a macro_rules!
-            # definition or an attribute.
+            # Either name as a word of its own in a macro call or a
+            # macro_rules! definition, or in an attribute but as a lint path
+            # (in a macro call, `clippy::todo` may name the macro of a module).
             rest = J
             off = 0
             while (match(rest, /(^|[^A-Za-z0-9_])(todo|unimplemented)([^A-Za-z0-9_]|$)/)) {
                 pos = off + RSTART
                 if (substr(rest, RSTART, 1) !~ /[tu]/) pos++
                 end = substr(J, pos, 1) == "t" ? 4 : 13
-                if (in_tree(pos) && !lint_path(pos)) H[line_of(pos)] = 1
+                t = in_tree(pos)
+                if (t == 1 || (t == 2 && !lint_path(pos))) H[line_of(pos)] = 1
                 off = pos + end - 1
                 rest = substr(J, off + 1)
             }

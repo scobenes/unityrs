@@ -190,7 +190,9 @@ fn what_only_looks_like_the_macros_passes() {
 /// where no name scan reads the call, and clippy, which lints the macro whose
 /// expansion the call starts, lints the outer one: both passed G6 with a
 /// reachable `todo!()`. Either name as a word of its own inside a macro
-/// call, a `macro_rules!` definition or an attribute fails, at its line.
+/// call or a `macro_rules!` definition (a `clippy::` path included, which
+/// there can name a module's macro), or inside an attribute other than as
+/// a lint path, fails, at its line.
 #[test]
 fn a_macro_named_inside_another_macro_fails() {
     let (todo, unimplemented) = ("todo", "unimplemented");
@@ -218,6 +220,13 @@ fn a_macro_named_inside_another_macro_fails() {
                 "macro_rules! two {{\n    ($a:ident $b:tt) => {{ $a $b () }};\n}}\npub fn f() -> u8 {{\n    two! {{ {unimplemented} ! }}\n}}\n"
             ),
             5,
+        ),
+        // A lint path's spelling, inside a macro call: a module's macro.
+        (
+            format!(
+                "mod clippy {{\n    pub use core::{todo};\n}}\nmacro_rules! call {{\n    ($($p:ident)::+) => {{ $($p)::+!() }};\n}}\npub fn f() -> u8 {{\n    call!(clippy::{todo})\n}}\n"
+            ),
+            8,
         ),
         (format!("#[stub_attr({todo})]\npub fn f() {{}}\n"), 1),
         (format!("#![stub_attr(x, {unimplemented})]\n"), 1),
