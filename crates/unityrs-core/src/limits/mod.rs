@@ -194,7 +194,7 @@ impl Limits {
     /// At the defaults: 1.75 MiB in a release build, 9 MiB in a debug one.
     /// `tests/walk_stack.rs` reads, writes and drops the deepest object of
     /// every shape on a thread this size, and its `stack_measured` prints
-    /// the least each needs (at most 0.96 MiB release, 6.8 MiB debug, with
+    /// the least each needs (at most 0.90 MiB release, 6.6 MiB debug, with
     /// toolchain 1.99.1). Rust's spawned threads get 2 MiB unless told
     /// otherwise, and a main thread usually 8 MiB, so a debug build reads
     /// untrusted input on a thread built with

@@ -291,8 +291,8 @@ impl<'a> Writer<'a, '_> {
     /// are never inlined here, so a level's frame holds only its own
     /// branch's locals: inlined, every class level carried a
     /// `ReferencedObject`'s too (`tests/walk_stack.rs`'s `stack_measured`,
-    /// release: 1,212,416 bytes for the deepest class write, 901,120 out of
-    /// line).
+    /// release: 1,011,712 bytes for the deepest class write, 905,216 out of
+    /// line, with toolchain 1.99.1).
     fn value_inner(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         let mut align = tree.info(node).is_some_and(|i| i.align);
         let kind = tree.py_kind(node);
