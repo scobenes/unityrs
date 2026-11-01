@@ -305,8 +305,10 @@ impl Map {
 
     /// `PyDict_SetItem` on an unmetered map, for the scaffold's tests: an
     /// existing key keeps its position and takes the new value. Not in the
-    /// library: the reader grows a class's entries in a metered vector and
-    /// collapses a repeated name with [`Self::replace_at`] (plan 3.10).
+    /// library: the reader grows a class's entries in a metered vector, and
+    /// a repeated name replaces its first entry's value in place with
+    /// `MeteredVec::set_entry`, which keeps the new value's charge (plan
+    /// 3.10, "Linear dicts").
     #[cfg(test)]
     pub(crate) fn insert(&mut self, key: NodeId, value: Value) {
         match self.entries.iter_mut().find(|(k, _)| *k == key) {
@@ -315,17 +317,11 @@ impl Map {
         }
     }
 
-    /// Replaces the value at entry position `pos`, keeping its key and
-    /// position (a repeated name's `PyDict_SetItem`, in O(1)). Returns the
-    /// value back when `pos` is not an entry.
-    pub fn replace_at(&mut self, pos: usize, value: Value) -> Result<(), Value> {
-        match self.entries.get_mut(pos) {
-            Some((_, v)) => {
-                *v = value;
-                Ok(())
-            }
-            None => Err(value),
-        }
+    /// The entries' capacity (tests: a finished dict holds no spare
+    /// entries, plan 3.10, "Bounds").
+    #[cfg(test)]
+    pub(crate) fn capacity(&self) -> usize {
+        self.entries.capacity()
     }
 
     /// The entries in order.

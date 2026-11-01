@@ -222,20 +222,6 @@ fn a_repeated_key_keeps_its_first_position_and_the_last_value() {
 }
 
 #[test]
-fn replace_at_keeps_the_position_and_takes_the_value() {
-    let mut m = Map::from_entries(
-        0,
-        vec![(NodeId(1), Value::Int(1)), (NodeId(2), Value::Int(2))],
-    );
-    assert_eq!(m.replace_at(0, Value::Bool(true)), Ok(()));
-    assert_eq!(
-        m.entries(),
-        &[(NodeId(1), Value::Bool(true)), (NodeId(2), Value::Int(2))]
-    );
-    assert_eq!(m.replace_at(2, Value::Int(9)), Err(Value::Int(9)));
-}
-
-#[test]
 fn fields_resolve_through_the_node_list() {
     let list = NodeList::trusted(vec![
         NodeRow::new(0, "Base", "Base"),

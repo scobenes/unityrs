@@ -80,6 +80,8 @@ pub(crate) use work::{OpenWork, Work, limit_refused};
 pub use work::{STEP_WORK, VALUE_WORK, WORK_CHUNK};
 
 #[cfg(test)]
+mod dict_tests;
+#[cfg(test)]
 mod linear_tests;
 #[cfg(test)]
 mod prepass_tests;
