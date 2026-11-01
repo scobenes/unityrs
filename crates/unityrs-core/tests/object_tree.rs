@@ -22,6 +22,7 @@ use unityrs_core::walk::{ParseError, WriteError, WriteRules};
 use unityrs_core::{Bytes, FileContext, ObjectRef, RawStr, Value};
 use unityrs_testkit::ByteWriter;
 use unityrs_testkit::blob::NodeSpec;
+use unityrs_testkit::env::bundle;
 use unityrs_testkit::serialized::{ExternalSpec, ObjectSpec, SerializedSpec, TypeSpec, build};
 
 const ALIGN: i64 = 0x4000;
@@ -425,10 +426,14 @@ impl MemoryBudget for RefuseOnce {
 
 /// The script hook on an object of a dependency's file reads the object's
 /// head and the script through the dependency's meter: each of those
-/// reservations, refused once in turn, evicts the other dependencies and is
-/// tried once more, under both modes, so the hook still finds the script
+/// reservations, refused once in turn, evicts the dependencies and is tried
+/// once more, under both modes, so the hook still finds the script
 /// provider's tree (plan section 3.13; review round 8: a read from a
-/// dependency's file the pool refused failed the call).
+/// dependency's file the pool refused failed the call). The object's file
+/// is `CAB-T` in `t.bundle`, its script in the sibling `CAB-GONE`, and the
+/// caller holds the object alone, so that only the LRU holds the bundle: the
+/// call holds it while it runs, and the head read's eviction does not drop
+/// the bundle the dereference after it reads through.
 #[test]
 fn a_pool_refusal_in_the_script_hook_evicts_and_retries_once() {
     let scripts = Arc::new(Scripts {
@@ -446,16 +451,24 @@ fn a_pool_refusal_in_the_script_hook_evicts_and_retries_once() {
             let mut o = EnvOptions::batch(Arc::new(ctx));
             o.load = mode;
             let env = Environment::new(o);
+            let data = bundle(&[
+                ("CAB-T", file(&[(1, 100)], false)),
+                ("CAB-GONE", file(&[], false)),
+            ]);
             let held = env
                 .load_dependency(Source::Bytes {
-                    name: RawStr::from("CAB-T"),
-                    data: Bytes::from(file(&[(0, 100)], false)),
+                    name: RawStr::from("t.bundle"),
+                    data: Bytes::from(data),
                 })
                 .unwrap();
-            let File::Serialized(sf) = &held else {
+            let File::Bundle(b) = &held else {
+                panic!("t.bundle is a bundle")
+            };
+            let Ok(File::Serialized(sf)) = b.entry(0) else {
                 panic!("CAB-T is a SerializedFile")
             };
             let o = sf.object(1).unwrap();
+            drop(held);
             budget.countdown.store(k, Ordering::Release);
             let at = budget.asked.load(Ordering::Acquire);
             let t = env.object_tree(&o, None).map(|t| t.unwrap().source);

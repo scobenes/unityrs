@@ -521,6 +521,40 @@ fn a_pool_refusal_anywhere_evicts_the_others_and_retries_once() {
     assert!(refused > 0, "no call made a dependency reservation");
 }
 
+/// An Environment in `mode` whose pool (its limit set by [`room`]) holds
+/// scene `dependency_reads`, loaded, and the pad `p.bundle`, read once so
+/// that its run stays decoded in the LRU's handle, and then held by nothing
+/// but the LRU: the dependencies' handles, which the caller holds.
+fn full_pool(mode: LoadMode) -> (Environment, Arc<DepPool>, Vec<File>) {
+    let d = dependency_reads();
+    let pool = Arc::new(DepPool::new(u64::MAX));
+    let s = Setup {
+        mode,
+        cache: 512 << 20,
+        keep: false,
+    };
+    let env = batch_env(s, pool.clone(), &d.scene);
+    let held = load(&env, &d).unwrap();
+    let p = env
+        .load_dependency(Source::Bytes {
+            name: RawStr::from("p.bundle"),
+            data: Bytes::from(bundle(&[("P.resS", res_bytes(128 << 10, 3))])),
+        })
+        .unwrap();
+    let File::Bundle(pb) = &p else {
+        panic!("p.bundle is a bundle")
+    };
+    assert_eq!(pb.entry_range(0, 0..4).unwrap().len(), 4);
+    drop(p);
+    (env, pool, held)
+}
+
+/// Leaves `pool` 16 bytes of room over what it holds.
+fn room(pool: &DepPool) {
+    let used = pool.used.used.load(Ordering::Acquire);
+    pool.limit.store(used + 16, Ordering::Release);
+}
+
 /// A pool whose cached dependencies leave no room for a dereference or a
 /// resource read from a dependency's file: each call evicts them and
 /// succeeds, every time (review round 8: with `p.bundle`'s decoded pad in
@@ -528,46 +562,63 @@ fn a_pool_refusal_anywhere_evicts_the_others_and_retries_once() {
 /// evicted). The answers are UnityPy's for the scene `dependency_reads`.
 #[test]
 fn a_full_pool_makes_room_for_a_read_from_a_dependency() {
-    let d = dependency_reads();
     let want = (
         oracle("dependency_reads", "dep_derefs"),
         oracle("dependency_reads", "dep_resources"),
     );
-    let pad = bundle(&[("P.resS", res_bytes(128 << 10, 3))]);
     for mode in [LoadMode::Eager, LoadMode::Lazy] {
-        let pool = Arc::new(DepPool::new(u64::MAX));
-        let s = Setup {
-            mode,
-            cache: 512 << 20,
-            keep: false,
-        };
-        let env = batch_env(s, pool.clone(), &d.scene);
-        let held = load(&env, &d).unwrap();
+        let (env, pool, held) = full_pool(mode);
         let (ptrs, res) = (pointers(&held), streams(&held));
-        // The pad, read once so that its run stays decoded in the LRU's
-        // handle, and then held by nothing but the LRU.
-        let p = env
-            .load_dependency(Source::Bytes {
-                name: RawStr::from("p.bundle"),
-                data: Bytes::from(pad.clone()),
-            })
-            .unwrap();
-        let File::Bundle(pb) = &p else {
-            panic!("p.bundle is a bundle")
-        };
-        assert_eq!(pb.entry_range(0, 0..4).unwrap().len(), 4);
-        drop(p);
-        let room = || {
-            let used = pool.used.used.load(Ordering::Acquire);
-            pool.limit.store(used + 16, Ordering::Release);
-        };
-        room();
+        room(&pool);
         for round in 0..3 {
             let (got, read) = (derefs(&env, &ptrs), reads(&env, &res));
             pool.limit.store(u64::MAX, Ordering::Release);
             assert_eq!((targets(&got), hex(&read)), want, "{mode:?} round {round}");
-            room();
+            room(&pool);
         }
         assert!(env.stats().dependencies_evicted > 0, "{mode:?}");
+    }
+}
+
+/// A call's eviction never drops the bundle the call reads through: with
+/// the dependencies' handles let go once their pointers and resources are
+/// read, so that only the LRU holds each bundle, a dereference or a
+/// resource read the full pool refuses evicts every dependency, its own
+/// file's among them, and its second run still reads through that bundle,
+/// which the call holds while it runs. Each call runs on an Environment of
+/// its own (the eviction drops the bundle once the call returns), and
+/// answers as UnityPy does.
+#[test]
+fn a_retry_keeps_the_bundle_the_call_reads_through() {
+    let want = (
+        oracle("dependency_reads", "dep_derefs"),
+        oracle("dependency_reads", "dep_resources"),
+    );
+    let want: Vec<J> = [want.0, want.1]
+        .iter()
+        .flat_map(|w| w.as_array().unwrap().clone())
+        .collect();
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let mut evicted = 0;
+        for (i, one) in want.iter().enumerate() {
+            let (env, pool, held) = full_pool(mode);
+            let (mut ptrs, mut res) = (pointers(&held), streams(&held));
+            assert_eq!(ptrs.len() + res.len(), want.len());
+            // The one call, its file's bundle held by nothing but the LRU.
+            let n = ptrs.len();
+            let ptr = (i < n).then(|| ptrs.swap_remove(i));
+            let stream = (i >= n).then(|| res.swap_remove(i - n));
+            drop((held, ptrs, res));
+            room(&pool);
+            let got = match (ptr, stream) {
+                (Some(ptr), _) => targets(&derefs(&env, &[ptr])),
+                (_, Some(stream)) => hex(&reads(&env, &[stream])),
+                (None, None) => unreachable!(),
+            };
+            pool.limit.store(u64::MAX, Ordering::Release);
+            assert_eq!(got, J::from(vec![one.clone()]), "{mode:?} call {i}");
+            evicted += env.stats().dependencies_evicted;
+        }
+        assert!(evicted > 0, "{mode:?}");
     }
 }
