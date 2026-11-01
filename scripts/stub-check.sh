@@ -46,9 +46,10 @@
 # so it misses that one, and this scan reads it. Not read: comments (a
 # doctest's code among them, which is a test and never part of a crate),
 # what a procedural macro (the crates use thiserror's derive) or a
-# dependency's own macro expands to, and a file a crate compiles that is no
-# `.rs` file under ROOT (one `#[path]` or `include!` names by another name
-# or outside ROOT; clippy lints a call written in one).
+# dependency's own macro expands to, and a file a crate compiles that the
+# scan does not list (one `#[path]` or `include!` names by another name,
+# outside ROOT, or in ROOT's `target/` or hidden entries; clippy lints a
+# call written in one).
 #
 # Each hit is printed with its owning package, `[X] FILE:LINE: text`: the
 # package a `STUB(X)` on the line names (for a blocked test, the package it
