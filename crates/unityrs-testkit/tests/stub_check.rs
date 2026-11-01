@@ -176,15 +176,72 @@ fn every_form_of_the_macros_fails() {
 
 /// What only looks like the macros passes: another macro whose name ends
 /// in one, a variable compared or assigned on the next line, a name with no
-/// delimiter after it, a comment.
+/// delimiter after it, a comment; and outside a macro call, a variable in a
+/// condition a `!` negates, and the lint paths a `deny` names.
 #[test]
 fn what_only_looks_like_the_macros_passes() {
     let todo = "todo";
     let text = format!(
-        "pub fn f() -> bool {{\n    my_{todo}!();\n    let {todo} = 1;\n    let x = {todo}\n        != 2;\n             let y = {todo}\n        + 1;\n    // {todo}![]\n    x\n}}\n"
+        "pub fn f() -> bool {{\n    my_{todo}!();\n    let {todo} = 1;\n    let x = {todo}\n        != 2;\n             let y = {todo}\n        + 1;\n    // {todo}![]\n    if !({todo} == 3) {{\n        return !{todo}.is_positive();\n    }}\n    x\n}}\n#[deny(clippy :: {todo}, clippy::unimplemented)]\nfn g() {{}}\n"
     );
     let (code, out) = Tree::new(&with(("crates/b/src/m.rs", text))).check();
     assert_eq!(code, 0, "{out}");
+}
+
+/// Review round 8: a `macro_rules!` body that puts the `!` after a name it
+/// is handed (`$m!()`) or after one it holds (`todo $($t)*`) calls the macro
+/// where no name scan reads the call, and clippy, which lints the macro whose
+/// expansion the call starts, lints the outer one: both passed G6 with a
+/// reachable `todo!()`. Either name as a word of its own inside a macro
+/// call or a `macro_rules!` definition (a `clippy::` path included, which
+/// there can name a module's macro), or inside an attribute other than as
+/// a lint path, fails, at its line.
+#[test]
+fn a_macro_named_inside_another_macro_fails() {
+    let (todo, unimplemented) = ("todo", "unimplemented");
+    let cases = [
+        (
+            format!(
+                "macro_rules! call {{\n    ($m:ident) => {{ $m!() }};\n}}\npub fn f() -> u8 {{\n    call!({todo})\n}}\n"
+            ),
+            5,
+        ),
+        (
+            format!(
+                "macro_rules! call {{\n    ($m:path) => {{ $m!() }};\n}}\npub fn f() -> u8 {{\n    call![\n        core::{unimplemented}\n    ]\n}}\n"
+            ),
+            6,
+        ),
+        (
+            format!(
+                "macro_rules! bang {{\n    ($($t:tt)*) => {{ {todo} $($t)* }};\n}}\npub fn f() -> u8 {{\n    bang!(!())\n}}\n"
+            ),
+            2,
+        ),
+        (
+            format!(
+                "macro_rules! two {{\n    ($a:ident $b:tt) => {{ $a $b () }};\n}}\npub fn f() -> u8 {{\n    two! {{ {unimplemented} ! }}\n}}\n"
+            ),
+            5,
+        ),
+        // A lint path's spelling, inside a macro call: a module's macro.
+        (
+            format!(
+                "mod clippy {{\n    pub use core::{todo};\n}}\nmacro_rules! call {{\n    ($($p:ident)::+) => {{ $($p)::+!() }};\n}}\npub fn f() -> u8 {{\n    call!(clippy::{todo})\n}}\n"
+            ),
+            8,
+        ),
+        (format!("#[stub_attr({todo})]\npub fn f() {{}}\n"), 1),
+        (format!("#![stub_attr(x, {unimplemented})]\n"), 1),
+    ];
+    for (text, line) in cases {
+        let (code, out) = Tree::new(&with(("crates/b/src/m.rs", text.clone()))).check();
+        assert_eq!(code, 1, "{text} passed:\n{out}");
+        assert!(
+            out.contains(&format!("crates/b/src/m.rs:{line}: ")),
+            "{text}: {out}"
+        );
+    }
 }
 
 /// Round 7: a lint allowed under a form the line scan did not read (spaces

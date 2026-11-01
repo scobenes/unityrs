@@ -6,6 +6,12 @@
   be moved to other code, a SHA cannot.
 - Every job has a `timeout-minutes`, so a hung step fails in minutes instead
   of GitHub's six hours.
+- Every oracle fixture script (a `tools/fixtures/*.py` run as a program) is
+  run with `--check` by some step, and every other file there is a module a
+  checked script imports, directly or through another such module, so a new
+  script's fixtures cannot go stale unseen (integration 7 found two of the
+  walk fixture's modules named in no step, which then held only because
+  `walk.py --check`, which imports them, was).
 
 Needs PyYAML (scripts/requirements-tests.txt), which CI's scripts-py job
 installs; without it the tests skip, and CI's gate fails on a skip.
@@ -21,6 +27,10 @@ except ImportError:  # pragma: no cover - outside CI's scripts venv
     yaml = None
 
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+FIXTURES = Path(__file__).resolve().parents[2] / "tools" / "fixtures"
+CHECK_RUN = re.compile(r"\bpython3?\s+tools/fixtures/([A-Za-z0-9_]+)\.py\s+--check\b")
+IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z0-9_]+)\s+import\b|import\s+([A-Za-z0-9_]+))", re.M)
+MAIN = re.compile(r"^if __name__ == [\"']__main__[\"']:", re.M)
 ACTION = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}")
 # What may follow the value on its line: closing flow brackets, then the tag comment.
 TAG_COMMENT = re.compile(r"[ \t\]},]*# v\d+(?:\.\d+)*[ \t]*")
@@ -77,6 +87,41 @@ def timeout_problems(text: str) -> list[str]:
     ]
 
 
+def run_texts(text: str) -> list[str]:
+    """Every step's `run` script in the workflow `text`, in every job."""
+    workflow = yaml.safe_load(text)
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    runs = []
+    for body in (jobs or {}).values():
+        for step in (body.get("steps") or []) if isinstance(body, dict) else []:
+            if isinstance(step, dict) and isinstance(step.get("run"), str):
+                runs.append(step["run"])
+    return runs
+
+
+def fixture_problems(texts: list[str], fixtures: dict[str, str]) -> list[str]:
+    """Each fixture script (by stem, from `fixtures`: stem -> source) that no step of the workflows
+    `texts` runs with `--check`, and each module that no checked script imports, directly or through
+    another such module."""
+    checked = {m for text in texts for run in run_texts(text) for m in CHECK_RUN.findall(run)}
+    scripts = {stem for stem, src in fixtures.items() if MAIN.search(src)}
+    problems = [f"{stem}.py: a fixture script no step runs with --check" for stem in sorted(scripts - checked)]
+    problems += [f"{stem}.py: a step runs it, but it is no fixture script" for stem in sorted(checked - scripts)]
+    reached, todo = set(), sorted(scripts & checked)
+    while todo:
+        stem = todo.pop()
+        for a, b in IMPORT.findall(fixtures[stem]):
+            name = a or b
+            if name in fixtures and name not in reached:
+                reached.add(name)
+                todo.append(name)
+    problems += [
+        f"{stem}.py: a module no checked fixture script imports"
+        for stem in sorted(set(fixtures) - scripts - reached)
+    ]
+    return problems
+
+
 @unittest.skipIf(yaml is None, "needs PyYAML (scripts/requirements-tests.txt)")
 class WorkflowTests(unittest.TestCase):
     def workflows(self):
@@ -121,6 +166,42 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(timeout_problems(good + "  d:\n    timeout-minutes: '5'\n"), ["job d: no timeout-minutes"])
         self.assertEqual(timeout_problems("on: push\n"), ["no jobs"])
         self.assertEqual(timeout_problems("- a\n"), ["no jobs"])
+
+    def test_every_fixture_script_is_checked_in_ci(self):
+        fixtures = {p.stem: p.read_text(encoding="utf-8") for p in FIXTURES.glob("*.py")}
+        self.assertGreaterEqual(len(fixtures), 12)
+        self.assertEqual(fixture_problems([text for _, text in self.workflows()], fixtures), [])
+
+    def test_the_fixture_rule_catches_what_it_is_for(self):
+        main = 'if __name__ == "__main__":\n    main()\n'
+        fixtures = {
+            "a": "import b\n" + main,
+            "b": "from c import x\n",
+            "c": "x = 1\n",
+            "d": main,
+            "e": "import a\n",
+        }
+
+        def workflow(*lines):
+            body = "".join(f"          {line}\n" for line in lines)
+            return f"jobs:\n  j:\n    timeout-minutes: 5\n    steps:\n      - run: |\n{body}"
+
+        self.assertEqual(fixture_problems([workflow("python tools/fixtures/a.py --check",
+                                                     "python3 tools/fixtures/d.py --check")], fixtures),
+                         ["e.py: a module no checked fixture script imports"])
+        # A script a step runs without --check, or no step runs, is unchecked, and so is what it imports.
+        self.assertEqual(
+            fixture_problems([workflow("python tools/fixtures/a.py", "python tools/fixtures/d.py --check")],
+                             fixtures),
+            ["a.py: a fixture script no step runs with --check",
+             "b.py: a module no checked fixture script imports",
+             "c.py: a module no checked fixture script imports",
+             "e.py: a module no checked fixture script imports"])
+        # A step that checks a module, which records nothing, checks nothing.
+        self.assertEqual(
+            fixture_problems([workflow("python tools/fixtures/a.py --check", "python tools/fixtures/c.py --check",
+                                       "python tools/fixtures/d.py --check")], {**fixtures, "e": "import c\nimport a\n"} | {"a": "import b\nimport e\n" + main}),
+            ["c.py: a step runs it, but it is no fixture script"])
 
 
 if __name__ == "__main__":
