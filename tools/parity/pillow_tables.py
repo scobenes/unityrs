@@ -13,7 +13,6 @@ import contextlib
 import os
 import re
 import sys
-import tempfile
 import time
 from pathlib import Path
 from unittest import mock
@@ -21,6 +20,7 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import scratch  # noqa: E402
 # The modes the extractor hands `Image.save`: those of a decoded texture (PARITY.md section 17), and `LA`, which
 # `SpriteHelper.mask_sprite` gives a sprite of an `L` texture (its `putalpha`, section 15.2).
 SAVED_MODES = ("RGBA", "RGB", "L", "LA")
@@ -264,7 +264,7 @@ def writers():
         "| unityrs writes, and the acceptance |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
-    with tempfile.TemporaryDirectory(prefix="unityrs-writers-") as folder:
+    with scratch.folder("unityrs-writers-") as folder:
         for fmt in sorted(by_format):
             extensions = by_format[fmt]
             cells = [writer_cell(fmt, extensions[0], mode, folder) for mode in SAVED_MODES]
@@ -324,7 +324,7 @@ def encoders():
 
     getencoder, webp_encode = Image._getencoder, WebPImagePlugin._webp.WebPEncode
     found = {}
-    with tempfile.TemporaryDirectory(prefix="unityrs-encoders-") as folder:
+    with scratch.folder("unityrs-encoders-") as folder:
         for fmt, extensions in sorted(writer_extensions().items()):
             seen = set()
 

@@ -25,9 +25,7 @@ import io
 import json
 import os
 import struct
-import subprocess
 import sys
-import tempfile
 import zlib
 from pathlib import Path
 
@@ -36,6 +34,8 @@ OUT = ROOT / "crates/unityrs-core/tests/fixtures/c"
 sys.path.insert(0, str(ROOT / "tools/parity"))
 sys.path.insert(0, str(ROOT / "tools/fixtures"))
 
+import child  # noqa: E402
+import scratch  # noqa: E402
 import UnityPy  # noqa: E402
 from UnityPy.helpers.UnityVersion import UnityVersion  # noqa: E402
 
@@ -250,10 +250,10 @@ def detect_case(name: str, data: bytes) -> dict:
 
 def matrix_inputs() -> list[tuple[str, bytes]]:
     """unityrs-testkit's bundle::matrix(), as the replay test writes it."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with scratch.folder() as tmp:
         out = Path(tmp) / "matrix.jsonl"
         env = dict(os.environ, UNITYRS_WRITE_MATRIX=str(out))
-        subprocess.run(
+        child.run(
             [
                 "cargo",
                 "test",
@@ -272,7 +272,7 @@ def matrix_inputs() -> list[tuple[str, bytes]]:
             cwd=ROOT,
             env=env,
             check=True,
-            stdout=subprocess.DEVNULL,
+            stdout=child.DEVNULL,
         )
         rows = [json.loads(line) for line in out.read_text().splitlines()]
     return [(r["name"], bytes.fromhex(r["hex"])) for r in rows]

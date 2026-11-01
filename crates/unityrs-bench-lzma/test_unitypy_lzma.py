@@ -8,11 +8,15 @@ import argparse
 import contextlib
 import io
 import lzma
-import tempfile
+import sys
 import unittest
 from pathlib import Path
 
 import unitypy_lzma as bench
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "parity"))
+
+import scratch  # noqa: E402
 
 
 def quietly(command, **args):
@@ -27,13 +31,8 @@ def quietly(command, **args):
 class Synth(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.TemporaryDirectory()
-        cls.dir = Path(cls.tmp.name)
+        cls.dir = scratch.for_class(cls, "unityrs-lzma-")
         quietly(bench.cmd_synth, out_dir=str(cls.dir))
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.tmp.cleanup()
 
     def capture(self, name):
         with contextlib.redirect_stdout(io.StringIO()):
@@ -106,7 +105,7 @@ class EngineVersions(unittest.TestCase):
 
 class Report(unittest.TestCase):
     def test_the_report_names_no_bundle_and_compares_with_liblzma(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch.folder("unityrs-lzma-") as tmp:
             runs, blocks = Path(tmp) / "runs.tsv", Path(tmp) / "blocks.tsv"
             runs.write_text(
                 "liblzma\ts\t1\t0\t2\t3000000\t0.020000\n"

@@ -53,7 +53,6 @@ from __future__ import annotations
 import argparse
 import json
 import struct
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -68,6 +67,7 @@ OUT = ROOT / "crates/unityrs-core/tests/fixtures/walk"
 sys.path.insert(0, str(ROOT / "tools/parity"))
 sys.path.insert(0, str(ROOT / "tools/fixtures"))
 
+import child  # noqa: E402
 from unitypy_dump import error_kind  # noqa: E402
 from walk_build import (  # noqa: E402
     ALIGN,
@@ -566,7 +566,7 @@ def boost_reach():
 
     def reads(name, n):
         argv = [sys.executable, __file__, "--boost-reach-child", name, str(n)]
-        return subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        return child.run(argv, stdout=child.DEVNULL, stderr=child.DEVNULL).returncode == 0
 
     for name in DEPTH_SHAPES:
         lo, hi = 1, 2

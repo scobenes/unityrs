@@ -14,7 +14,6 @@ import json
 import operator
 import resource
 import struct
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -24,6 +23,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import child  # noqa: E402
 from rows_support import ORACLE, load, quietly, text_asset_file  # noqa: E402
 
 import synth as S  # noqa: E402
@@ -405,11 +405,11 @@ class InternalRows(unittest.TestCase):
 
         for which in ("subclass", "boost"):
             with self.subTest(which):
-                child = subprocess.run(
+                proc = child.run(
                     [sys.executable, "-c", code, which], capture_output=True, text=True, preexec_fn=no_core_dump
                 )
-                self.assertEqual(child.returncode, 0, child.stderr)
-                released, shown = json.loads(child.stdout)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                released, shown = json.loads(proc.stdout)
                 self.assertEqual(released, 1)
                 self.assertEqual(shown, "TypeTreeNode(m_Level=0, m_Type='int', m_Name='node name', m_MetaFlag=None)")
 

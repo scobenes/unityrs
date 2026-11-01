@@ -72,6 +72,11 @@ path relative to the folder), so an input both dumps left out fails G3b.
 Each re-run runs in a process of its own under the address-space limit
 `--rerun-cap` (default 32 GiB), killed when its resident set passes
 `--rerun-rss` (default 1 GiB): a reservation is free, memory touched is not.
+A re-run SIGKILL ends from outside (the OOM killer, as no re-run holds more
+than `--rerun-rss` for long) is run again, up to `child.KILLED_RUNS` runs,
+and one killed on each of them stops G3b (exit 1), saying the system killed
+it (review round 9: it was read as out of memory, so the input was admitted
+as `beyond_memory` with nothing compared).
 `--list` writes every differing input with its class. Exit status: 0 when both
 dumps are well-formed, each holds every input under `--inputs` and nothing
 else, and every differing input is admitted (`limit`, `crash_non_utf8`,
@@ -89,17 +94,16 @@ import os
 import re
 import resource
 import signal
-import subprocess
 import sys
-import tempfile
-import time
 from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import canonical as C  # noqa: E402
+import child  # noqa: E402
 import compare  # noqa: E402
+import scratch  # noqa: E402
 
 ADMITTED = ("limit", "crash_non_utf8", "memory_bound", "beyond_memory")
 # A unityrs limit refusal (unityrs_core::LimitError's text).
@@ -294,7 +298,8 @@ def resident(pid):
 
 def run_all(jobs, workers, cap, rss):
     """Runs each (key, argv, out) with stdout to `out`, at most `workers` at once, each under RLIMIT_AS `cap`
-    and killed once its resident set passes `rss`: {key: None when it exited 0, else why not}."""
+    and killed once its resident set passes `rss`, and run again when SIGKILL from outside ends it
+    (`child.run_all`): {key: None when it exited 0, else why not}."""
 
     hard = resource.getrlimit(resource.RLIMIT_AS)[1]
     soft = cap if hard == resource.RLIM_INFINITY else min(cap, hard)
@@ -302,33 +307,19 @@ def run_all(jobs, workers, cap, rss):
     def limit():
         resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
 
-    todo, running, results = list(reversed(jobs)), {}, {}
-    while todo or running:
-        while todo and len(running) < workers:
-            key, argv, out = todo.pop()
-            with open(out, "wb") as fh, open(f"{out}.err", "wb") as err:
-                proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=fh, stderr=err, preexec_fn=limit)
-            running[key] = [proc, False]
-        for key, entry in list(running.items()):
-            proc, killed = entry
-            code = proc.poll()
-            if code is None:
-                if not killed and resident(proc.pid) > rss:
-                    proc.kill()
-                    entry[1] = True
-                continue
-            del running[key]
-            if killed:
-                results[key] = f"passed the resident bound of {rss} bytes"
-            elif code < 0:
-                try:
-                    results[key] = f"died of {signal.Signals(-code).name}"
-                except ValueError:
-                    results[key] = f"died of signal {-code}"
-            else:
-                results[key] = None if code == 0 else f"exited {code}"
-        if running:
-            time.sleep(0.005)
+    results = {}
+    ends = child.run_all(jobs, workers, stop=lambda proc: resident(proc.pid) > rss, preexec_fn=limit)
+    for key, end in ends.items():
+        code = end.returncode
+        if end.stopped:
+            results[key] = f"passed the resident bound of {rss} bytes"
+        elif code < 0:
+            try:
+                results[key] = f"died of {signal.Signals(-code).name}"
+            except ValueError:
+                results[key] = f"died of signal {-code}"
+        else:
+            results[key] = None if code == 0 else f"exited {code}"
     return results
 
 
@@ -459,7 +450,7 @@ class Verdict:
         out = {}
         for key, why in self.run(jobs).items():
             if why is not None:
-                memory = why.startswith("passed the resident bound") or why == "died of SIGKILL"
+                memory = why.startswith("passed the resident bound")
                 out[key] = (f"out of memory ({why})" if memory else why, None, None)
                 continue
             r = json.loads(files[key].read_bytes())
@@ -637,9 +628,13 @@ def main(argv=None):
         return 2
     version = (hb.get("producer") or {}).get("unityrs")
     expected = inputs_under(args.inputs)
-    with tempfile.TemporaryDirectory(prefix="g3b-") as scratch:
-        v = Verdict(oracle, unityrs, args, version, Path(scratch), expected)
-        keys = v.classify()
+    try:
+        with scratch.folder("g3b-") as folder:
+            v = Verdict(oracle, unityrs, args, version, folder, expected)
+            keys = v.classify()
+    except child.SystemKilled as e:
+        print(f"g3b: {e}", file=sys.stderr)
+        return 1
     rows = v.rows
     counts = Counter(cls for cls, _ in rows.values())
     counts["agree"] = len(keys) - len(rows)

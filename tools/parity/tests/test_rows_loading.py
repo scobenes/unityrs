@@ -9,10 +9,8 @@ the corpus, and each test names the rows it pins; a row's test column names the 
 import io
 import os
 import re
-import shutil
 import struct
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -20,6 +18,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import scratch  # noqa: E402
 from rows_support import ORACLE, load, quietly, text_asset_file, zip_with_a_directory  # noqa: E402
 
 import synth as S  # noqa: E402
@@ -49,8 +48,7 @@ class ReadOnly:
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class LoadingRows(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-loading-rows-"))
-        self.addCleanup(shutil.rmtree, self.tmp)
+        self.tmp = scratch.for_case(self, "unityrs-loading-rows-")
 
     def chdir(self, path):
         cwd = os.getcwd()

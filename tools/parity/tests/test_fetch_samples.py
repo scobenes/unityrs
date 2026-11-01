@@ -16,7 +16,6 @@ import os
 import shutil
 import socket
 import sys
-import tempfile
 import threading
 import time
 import unittest
@@ -27,6 +26,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import scratch  # noqa: E402
 import fetch_unitypy_samples as F  # noqa: E402
 from dump_harness import DEADLOCK_GUARD_S, SAMPLES  # noqa: E402
 
@@ -103,8 +103,7 @@ class Server:
 
 class FetchTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-samples-"))
-        self.addCleanup(shutil.rmtree, self.tmp)
+        self.tmp = scratch.for_case(self, "unityrs-samples-")
         self.dest = self.tmp / "samples"
         self.dest.mkdir()
         self.sleeps = []
@@ -497,8 +496,7 @@ class DeadlineTests(unittest.TestCase):
         url = self.serve(
             [*trickle(b"HTTP/1.1 200 OK\r\n", 0.125), (0, b"Content-Length: %d\r\n\r\n" % len(BODY_A) + BODY_A)]
         )
-        tmp = Path(tempfile.mkdtemp(prefix="unityrs-samples-"))
-        self.addCleanup(shutil.rmtree, tmp)
+        tmp = scratch.for_case(self, "unityrs-samples-")
         err = io.StringIO()
         with (
             mock.patch.multiple(F, TIMEOUT_S=10, DEADLINE_S=1),

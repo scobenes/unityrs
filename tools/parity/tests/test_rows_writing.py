@@ -9,10 +9,8 @@ elsewhere.
 """
 
 import random
-import shutil
 import struct
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -21,6 +19,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import scratch  # noqa: E402
 from rows_support import ORACLE, TEXT_ASSET, load, quietly, text_asset_file  # noqa: E402
 
 import synth as S  # noqa: E402
@@ -36,8 +35,7 @@ VERSION = "2021.3.2f1"  # synth.serialized_file's default engine version
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class FileRows(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-file-rows-"))
-        self.addCleanup(shutil.rmtree, self.tmp)
+        self.tmp = scratch.for_case(self, "unityrs-file-rows-")
 
     # Sections 18, 19.2: File.get_writeable_cab, and SerializedFile.get_writeable_cab, which never returns a writer.
     def test_writeable_cabs(self):

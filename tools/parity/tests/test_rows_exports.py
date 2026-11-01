@@ -9,10 +9,8 @@ rules (`export_support.py`), not by UnityPy. Needs UnityPy 1.25.2 (the oracle im
 
 import ctypes
 import json
-import shutil
 import struct
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +20,8 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import child  # noqa: E402
+import scratch  # noqa: E402
 from export_support import element, fsb5, wav_header  # noqa: E402
 from rows_support import ORACLE, load  # noqa: E402
 from test_rows_objects import default_value, tpk_file, tpk_object  # noqa: E402
@@ -40,8 +40,7 @@ if ORACLE:
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class ExportRows(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-exports-"))
-        self.addCleanup(shutil.rmtree, self.tmp)
+        self.tmp = scratch.for_case(self, "unityrs-exports-")
 
     # Section 16: what FMOD and fmod_toolkit make of each codec, on banks built here.
     def test_audio_codecs(self):
@@ -501,7 +500,6 @@ class ExportRows(unittest.TestCase):
         # The table of that count is allocated first, a list of that many slots: a low byte of 1 asks for 16777216
         # and reaches the struct.error, one of 0x7F for 2130706432, which raises MemoryError where the process
         # cannot allocate them (here, a subprocess allowed 1 GiB more than it holds after importing UnityPy).
-        import subprocess
 
         limited = (
             "import resource, sys\n"
@@ -517,7 +515,7 @@ class ExportRows(unittest.TestCase):
         for count, slots, error in ((1, 16777216, "error"), (127, 2130706432, "MemoryError")):
             little = program([subprogram(201510240, 4, b"code")] * count, 8)
             self.assertEqual(struct.unpack(">i", little[:4]), (slots,))
-            run = subprocess.run([sys.executable, "-c", limited], input=little, capture_output=True, check=True)
+            run = child.run([sys.executable, "-c", limited], input=little, capture_output=True, check=True)
             self.assertEqual(run.stdout.decode().strip(), error, f"count {count}")
         # A count whose low byte is 0x80 or more reads big-endian as negative (128 as -2147483648): the table is
         # empty, no entry is read, and export raises the TypeError of a blob that parses. Export has no sub-program

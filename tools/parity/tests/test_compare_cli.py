@@ -172,7 +172,7 @@ class CompareTests(CompareCase):
         }
         for name, raw in bad.items():
             with self.subTest(name):
-                path = Path(self.tmp.name) / name
+                path = self.tmp / name
                 path.write_bytes(raw)
                 self.assertEqual(self.cli(pa, path), 2)
                 self.assertTrue(self.errors.startswith("compare: "), self.errors)
@@ -181,7 +181,7 @@ class CompareTests(CompareCase):
         """The report quotes input names, so --json is refused inside the repository, through symlinks too."""
         a = self.write("a.jsonl", base_records())
         here = Path(__file__).resolve().parents[1]
-        link = Path(self.tmp.name) / "link"
+        link = self.tmp / "link"
         link.symlink_to(here)
         for target in (here / "report.json", link / "report.json"):
             with self.subTest(target=target):
@@ -191,7 +191,7 @@ class CompareTests(CompareCase):
                     self.assertFalse((here / "report.json").exists())
                 finally:
                     (here / "report.json").unlink(missing_ok=True)
-        out = Path(self.tmp.name) / "report.json"
+        out = self.tmp / "report.json"
         self.assertEqual(self.cli(a, a, "--json", out), 0)
         self.assertEqual(json.loads(out.read_text())["counts"]["identical"], 4)
 
@@ -200,9 +200,9 @@ class CompareTests(CompareCase):
         b[1]["l3"]["resave"] = "differs"
         pa, pb = self.write("a.jsonl", a), self.write("b.jsonl", b)
         self.assertEqual(self.cli(pa, pa), 0)
-        self.assertEqual(self.cli(pa, pb, "--json", Path(self.tmp.name) / "r.json"), 1)
+        self.assertEqual(self.cli(pa, pb, "--json", self.tmp / "r.json"), 1)
         self.assertIn("L3      Transform", self.output)
-        report = json.loads((Path(self.tmp.name) / "r.json").read_text())
+        report = json.loads((self.tmp / "r.json").read_text())
         self.assertEqual(report["by_path"][0]["path"], "l3.resave")
 
 

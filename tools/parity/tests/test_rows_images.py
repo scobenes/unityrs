@@ -7,9 +7,7 @@ needs the corpus, and each test names the rows it pins; a row's test column name
 """
 
 import inspect
-import shutil
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -18,6 +16,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import scratch  # noqa: E402
 from export_support import element  # noqa: E402
 from rows_support import ORACLE, load  # noqa: E402
 from test_rows_objects import VERSION, pptr, tpk_file, tpk_object  # noqa: E402
@@ -62,8 +61,7 @@ def sprite_object(box, texture=1, alpha=0, settings=2):
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class ImageRows(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-images-"))
-        self.addCleanup(shutil.rmtree, self.tmp)
+        self.tmp = scratch.for_case(self, "unityrs-images-")
 
     # Sections 15.1, 18.1, 19.1, 19.2: a zero-size image reaches no packer, whatever its mode.
     def test_zero_size_images_skip_the_packer(self):

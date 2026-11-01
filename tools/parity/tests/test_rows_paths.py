@@ -10,7 +10,6 @@ import io
 import os
 import re
 import sys
-import tempfile
 import unittest
 import zipfile
 from pathlib import Path
@@ -21,6 +20,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import scratch  # noqa: E402
 from rows_support import ORACLE, load, quietly, text_asset_file, zip_with_a_directory  # noqa: E402
 
 if ORACLE:
@@ -34,8 +34,7 @@ if ORACLE:
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class Rows(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-rows-"))
-        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp))
+        self.tmp = scratch.for_case(self, "unityrs-rows-")
 
     def chdir(self, path):
         cwd = os.getcwd()
