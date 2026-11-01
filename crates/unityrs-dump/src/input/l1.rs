@@ -6,7 +6,8 @@
 //! per object, a script, an external, a container row, the record's path) is
 //! a vector charged to the input's meter before it is allocated
 //! ([`MeteredVec`]), its charge held with the record's (`held`) until the
-//! record's line is written. A refusal of the meter is the input's
+//! record's line is written; so is a packed version of 2^128 or more, whose
+//! limbs the record copies (up to 226, 1,808 bytes: [`packed`]). A refusal of the meter is the input's
 //! `InputMemory` refusal, and of the budget or the allocator its `crash`
 //! record ([`super::dump_on`]), never an abort of the run. Each row's own
 //! strings are the core's, shared, not copied.
@@ -14,8 +15,9 @@
 use std::sync::Arc;
 
 use unityrs_core::files::{BlockInfo, DirEntry, LayoutKind, SerializedType, WebPacker};
-use unityrs_core::limits::{Charge, ChargeError, MeteredVec};
+use unityrs_core::limits::{Charge, ChargeError, MeteredVec, heap_cost};
 use unityrs_core::stream::Endian;
+use unityrs_core::version::Packed;
 use unityrs_core::{BundleFile, Error, RawStr, SerializedFile, WebFile};
 
 use crate::record::{
@@ -53,6 +55,17 @@ pub(super) fn copy<T>(
     Ok(keep(held, t))
 }
 
+/// A copy of a packed version for a record: a value of 2^128 or more owns
+/// its limbs, which are charged to `held`, at [`heap_cost`], before they
+/// are copied. Round 7 left the copy uncharged.
+pub(super) fn packed(p: &Packed, held: &mut Charge) -> Result<Packed, ChargeError> {
+    let heap = u64::try_from(p.heap_bytes()).unwrap_or(u64::MAX);
+    if heap > 0 {
+        held.grow(heap_cost(heap))?;
+    }
+    Ok(p.clone())
+}
+
 fn block_row(bi: &BlockInfo) -> BlockRow {
     BlockRow {
         uncompressed: bi.uncompressed,
@@ -78,7 +91,7 @@ pub(super) fn bundle_l1(b: &BundleFile, held: &mut Charge) -> Result<BundleL1, C
         version_player: h.version_player.clone(),
         version_engine: h.version_engine.clone(),
         engine_version_packed: match &h.engine_version {
-            Some(Ok(v)) => Some(v.version.packed().clone()),
+            Some(Ok(v)) => Some(packed(v.version.packed(), held)?),
             _ => None,
         },
         flags: h.data_flags,
@@ -211,7 +224,10 @@ pub(super) fn serialized_l1(
             .unity_version()
             .cloned()
             .unwrap_or_else(|| RawStr::from(DEFAULT_UNITY_VERSION)),
-        version_packed: sf.version().map(|v| v.version.packed().clone()),
+        version_packed: match sf.version() {
+            Some(v) => Some(packed(v.version.packed(), held)?),
+            None => None,
+        },
         target_platform: sf.target_platform(),
         enable_type_tree: sf.enable_type_tree(),
         big_id_enabled: sf.big_id_enabled(),

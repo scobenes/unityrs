@@ -57,6 +57,19 @@ impl Packed {
         }
     }
 
+    /// The limbs of a value of 2^128 or more, borrowed: little-endian, the
+    /// last one non-zero, at most [`super::MAX_LIMBS`] for a version a
+    /// parse packed. `None` below 2^128, where [`Self::as_u128`] is the
+    /// value. Unlike [`Self::to_limbs`] it copies nothing, so a writer of an
+    /// input's version needs no heap for it (`unityrs_dump::json::write_packed`).
+    #[must_use]
+    pub fn big_limbs(&self) -> Option<&[u64]> {
+        match &self.0 {
+            Repr::Small(_) => None,
+            Repr::Big(limbs) => Some(limbs),
+        }
+    }
+
     /// The value as little-endian `u64` limbs, without leading zero limbs
     /// (empty for 0).
     #[must_use]
@@ -208,6 +221,10 @@ mod tests {
             [u64::MAX, u64::MAX]
         );
         assert_eq!(Packed::from_u128(0).to_limbs(), Vec::<u64>::new());
+        // Borrowed: a big value's own limbs, none below 2^128.
+        let big = Packed::from_limbs(&[1, 2, 3, 0]);
+        assert_eq!(big.big_limbs(), Some(&[1, 2, 3][..]));
+        assert_eq!(Packed::from_u128(u128::MAX).big_limbs(), None);
     }
 
     #[test]

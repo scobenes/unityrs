@@ -16,12 +16,14 @@
 //! the input's `crash` record, never an abort of the run: the allocator
 //! refuses one request of the exact size of the directory's copy.
 //!
-//! The allocator counts only the test's own thread
+//! The allocator counts only the measuring thread
 //! (`unityrs_testkit::counted`): libtest's main thread allocates beside it.
+//! Two tests measure, and the counts are one set for the file, so each
+//! measures on a thread of its own, one at a time ([`counting`]).
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use unityrs_core::budget::{Counting, Reservation};
 use unityrs_core::detect::check_file_type;
@@ -30,8 +32,10 @@ use unityrs_core::limits::{Meter, heap_cost};
 use unityrs_core::{Bytes, RawStr};
 use unityrs_dump::record::DirRow;
 use unityrs_dump::{DumpOptions, Levels};
+use unityrs_testkit::bundle::{BundleSpec, EntrySpec, build};
 use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 use unityrs_testkit::env::{Bundle, Obj, bundle, row, serialized};
+use unityrs_testkit::serialized::{SerializedSpec, build as build_serialized};
 
 /// Live heap on the test thread, in glibc chunks.
 static LIVE: AtomicUsize = AtomicUsize::new(0);
@@ -159,6 +163,26 @@ fn whole(text: &str) {
     );
 }
 
+/// One measuring test at a time ([`counting`]).
+static COUNTING: Mutex<()> = Mutex::new(());
+
+/// `f` on a thread of its own whose allocations are counted, while no
+/// other test measures: the thread has ended, its last frees counted,
+/// before the next one starts. (A test's own libtest thread, counted, would
+/// go on freeing after its test returned, into the next test's window.)
+fn counting<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    let _one = COUNTING.lock().unwrap_or_else(PoisonError::into_inner);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            count_this_thread();
+            others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
+            f()
+        })
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
+
 /// The two sizes measured: what one row or object costs uncharged shows as
 /// their difference times 19,000.
 const SMALL: usize = 1_000;
@@ -166,25 +190,95 @@ const LARGE: usize = 20_000;
 
 #[test]
 fn the_dump_holds_nothing_uncharged_a_row_or_an_object() {
-    count_this_thread();
-    others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
-    for (what, input) in [
-        ("directory rows", rows as fn(usize) -> Vec<u8>),
-        ("objects", objects),
+    counting(|| {
+        for (what, input) in [
+            ("directory rows", rows as fn(usize) -> Vec<u8>),
+            ("objects", objects),
+        ] {
+            let (small, at_small) = measured(&input(SMALL));
+            whole(&small);
+            let (large, at_large) = measured(&input(LARGE));
+            whole(&large);
+            eprintln!(
+                "{what}: heap above the charge at most {at_small} bytes at {SMALL}, {at_large} at {LARGE}"
+            );
+            // The same constant, give or take one allocation's rounding.
+            assert!(
+                at_large - at_small <= 64,
+                "{what}: {at_small} bytes above the charge at {SMALL}, {at_large} at {LARGE}"
+            );
+        }
+    });
+}
+
+/// A bundle whose engine string is `engine`, holding one SerializedFile with
+/// no version string of its own, which takes the bundle's (the core's
+/// version chain 2): two file records, each with the version packed.
+fn engine_versioned(engine: &str) -> Vec<u8> {
+    let mut entry = build_serialized(&SerializedSpec {
+        unity_version: Vec::new(),
+        ..SerializedSpec::default()
+    });
+    // Detection reads 128 bytes or more as a SerializedFile header.
+    entry.resize(entry.len().max(128), 0);
+    build(&BundleSpec {
+        version_engine: engine.as_bytes().to_vec(),
+        entries: vec![EntrySpec {
+            name: b"CAB-versioned".to_vec(),
+            data: entry,
+            flags: 4,
+        }],
+        ..BundleSpec::default()
+    })
+}
+
+/// The decimal digits `text` writes for `key`'s value.
+fn digits_of(text: &str, key: &str) -> usize {
+    text.split(&format!("\"{key}\":"))
+        .nth(1)
+        .map_or(0, |v| v.bytes().take_while(u8::is_ascii_digit).count())
+}
+
+/// Round 7's leftover (integration 7): a file record copied its packed
+/// version, up to 226 limbs (1,808 bytes) past 2^128, uncharged, and
+/// `json::write_packed` converted it to decimal in uncharged heap (a copy of
+/// the limbs, a working copy, the base-10^19 digits and their string). The
+/// record's copy is now charged to its `held` before it is made, and the
+/// conversion works on the stack and writes into the record's charged line.
+/// A bundle whose engine string is a 4,300-digit major of nines, with a
+/// SerializedFile that takes that string, holds no more heap above the
+/// charge, at its peak, than the same bundle at `2022.3.0f1`: both records
+/// write the 4,315-digit value (`(10^4300 - 1) << 48 | 3 << 8 | 1`, its
+/// digits counted by Python). On the old code this test measured 15,577
+/// bytes above the charge against 64; with only the copies uncharged,
+/// 1,801; with only the conversion's scratch on the heap, 13,769.
+#[test]
+fn a_big_packed_version_is_copied_charged_and_written_without_scratch() {
+    let nines = format!("{}.0.0f1", "9".repeat(4300));
+    let ((small, at_small), (big, at_big)) = counting(|| {
+        (
+            measured(&engine_versioned("2022.3.0f1")),
+            measured(&engine_versioned(&nines)),
+        )
+    });
+    whole(&small);
+    whole(&big);
+    for (key, text, digits) in [
+        ("engine_version_packed", &small, 18),
+        ("version_packed", &small, 18),
+        ("engine_version_packed", &big, 4315),
+        ("version_packed", &big, 4315),
     ] {
-        let (small, at_small) = measured(&input(SMALL));
-        whole(&small);
-        let (large, at_large) = measured(&input(LARGE));
-        whole(&large);
-        eprintln!(
-            "{what}: heap above the charge at most {at_small} bytes at {SMALL}, {at_large} at {LARGE}"
-        );
-        // The same constant, give or take one allocation's rounding.
-        assert!(
-            at_large - at_small <= 64,
-            "{what}: {at_small} bytes above the charge at {SMALL}, {at_large} at {LARGE}"
-        );
+        assert_eq!(digits_of(text, key), digits, "{key}");
     }
+    eprintln!(
+        "heap above the charge at most {at_small} bytes at 2022.3.0f1, {at_big} at 4,300 nines"
+    );
+    // The same constant, give or take one allocation's rounding.
+    assert!(
+        at_big - at_small <= 64,
+        "{at_small} bytes above the charge at 2022.3.0f1, {at_big} at a 4,300-digit major"
+    );
 }
 
 /// The copy of the directory the allocator refuses: the input's `crash`
