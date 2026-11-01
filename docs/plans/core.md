@@ -195,7 +195,7 @@ Line counts are the spike's `rabex_loc.py` library lines (`docs/spikes/rabex.md`
 
 ### 2.6 Generated tables
 
-`tools/gen/gen_tables.py` runs in the oracle image (`scripts/dev python tools/gen/gen_tables.py [--check]`) and writes six tables into core. `--check` regenerates and diffs, and runs in CI where the oracle is present.
+`tools/gen/gen_tables.py` runs in the oracle image (`scripts/dev python tools/gen/gen_tables.py [--check]`) and writes seven tables: six into core and one into the dump. `--check` regenerates and diffs, and runs in CI where the oracle is present. `about.hbs`'s data provenance names each file the tables are written to and its source (2.5).
 
 | table | file | source |
 |---|---|---|
@@ -204,6 +204,7 @@ Line counts are the spike's `rabex_loc.py` library lines (`docs/spikes/rabex.md`
 | `ND_ZEROS` | `tables.rs` | Python 3.11 `unicodedata` (Unicode 14.0): the zero of every `Nd` run. Asserted: every `Nd` character is `zero + d` for `d` in 0-9. The scaffold seeds ASCII `0`. |
 | `LOWER_EXCEPTIONS` | `tables.rs` | every code point whose `str.lower()` in Python 3.11 differs from Rust's `char::to_lowercase` (the generator emits Python's side; a Rust test checks the other side is what Rust does) |
 | `SIGMA_CASED`, `SIGMA_CASE_IGNORABLE` | `tables.rs` | the two classes that decide a capital sigma's form (`Final_Sigma`, Unicode 14.0), read from Python 3.11's own `str.lower()` with three probes per code point (`c + "Σ"`, `"A" + c + "Σ"`, `"A" + "Σ" + c`); a case-ignorable character's casedness is never read, so the cased table lists only cased characters that are not case-ignorable. Ranges. Asserted: every code point fits one class, and the lone surrogates `py_lower` meets are in neither (D request 5) |
+| `NOT_PRINTABLE` | `unityrs-dump`'s `select/printable.rs` | every code point Python 3.11's `str.isprintable()` refuses (Unicode 14.0: the categories Cc, Cf, Cs, Co, Cn, Zl, Zp and Zs but the space), which `repr` of a `str` escapes; the dump writes that `repr` where `--build` and an index pin compare `str()` of a list or a dict. Ranges |
 
 ---
 
@@ -563,7 +564,7 @@ The review rounds found the same few mistakes again and again. Each rule below i
 
 **Superseded after P1** (as 2.3 is): the fork this section first named (`crates/unityrs-rabex`, `UPSTREAM.md`, `scripts/fork-check.sh`, the fence) was removed when `unityrs-tpk` became a port of `helpers/Tpk.py` (section 9's "Decided after P1"). The bullets below describe the package as it now stands: patches F2-F11 survive as behaviours of the port (`PARITY.md` section 19.3), each pinned by a regression test in `crates/unityrs-tpk/tests/patches.rs` named after its patch.
 
-- **Owns:** `crates/unityrs-tpk/**`; `tools/gen/**`; `about.hbs` and `about.toml` (cargo-about's template and configuration, from which `THIRD_PARTY_LICENSES` is generated, 2.5); `deny.toml`; `tools/fixtures/tpk.py` (G7's UnityPy side; commits the synthetic set's outcomes under `crates/unityrs-tpk/tests/fixtures/tpk/`, where `unityrs-tpk`'s G7 test reads them, core being unable to depend on it; nothing from UnityPy's own TPK); the CI steps for `gen_tables.py --check` and `tools/fixtures/tpk.py --check` (the last in the oracle job) in `.github/workflows/ci.yml`; in core, the table bodies of `tables.rs`, `classid.rs` and `typetree/commonstring.rs`.
+- **Owns:** `crates/unityrs-tpk/**`; `tools/gen/**`; `about.hbs` and `about.toml` (cargo-about's template and configuration, from which `THIRD_PARTY_LICENSES` is generated, 2.5); `deny.toml`; `tools/fixtures/tpk.py` (G7's UnityPy side; commits the synthetic set's outcomes under `crates/unityrs-tpk/tests/fixtures/tpk/`, where `unityrs-tpk`'s G7 test reads them, core being unable to depend on it; nothing from UnityPy's own TPK); the CI steps for `gen_tables.py --check` and `tools/fixtures/tpk.py --check` (the last in the oracle job) in `.github/workflows/ci.yml`; in core, the table bodies of `tables.rs`, `classid.rs` and `typetree/commonstring.rs`, and in the dump, `select/printable.rs`'s.
 - **Depends on:** the scaffold. `unityrs-tpk` picks a TPK entry with the scaffold's implemented `UnityVersion::from_packed`, `packed_u64` and ordering (3.4), so it does not wait for C; it uses B's `Tree::compile`, stubbed until B lands, so A's tests that compile trees are committed `#[ignore = "STUB(B): Tree::compile"]` and B un-ignores them (7.1, 7.3).
 - **Milestone (day 1):** the four generated tables committed.
 - **Work:** `gen_tables.py` with `--check`; `TpkProvider` (3.12), the port of `Tpk.py` with the behaviour of F2-F11 (2.4); checking the UnityPy, CNStudio and common-string provenance notices in `about.hbs` against what it ports and generates, then regenerating `THIRD_PARTY_LICENSES` (2.5); `deny.toml` (the per-crate 0BSD exception); the no-TPK checks (2.5).
