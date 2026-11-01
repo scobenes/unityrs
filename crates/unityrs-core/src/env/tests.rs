@@ -18,24 +18,20 @@ fn unitypy_options_keep_resolver_loads_in_files_and_batch_options_do_not() {
     assert!(!batch.keep_resolver_loads);
 }
 
-/// A temporary file, removed when dropped, so a failing test leaves
-/// nothing behind.
-struct TempFile(std::path::PathBuf);
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
+/// A temporary file in a folder of its own, removed with it when dropped,
+/// so a failing test leaves nothing behind (`unityrs_testkit::scratch`).
+struct TempFile(
+    std::path::PathBuf,
+    #[allow(dead_code, reason = "held for its drop, which removes the folder")]
+    unityrs_testkit::scratch::Scratch,
+);
 
 fn temp_file(name: &str, len: usize) -> TempFile {
-    let path = std::env::temp_dir().join(format!(
-        "unityrs-core-read-path-{}-{name}",
-        std::process::id()
-    ));
+    let dir = unityrs_testkit::scratch::Scratch::new("core-read-path");
+    let path = dir.join(name);
     let mut f = std::fs::File::create(&path).unwrap();
     f.write_all(&vec![7_u8; len]).unwrap();
-    TempFile(path)
+    TempFile(path, dir)
 }
 
 #[test]

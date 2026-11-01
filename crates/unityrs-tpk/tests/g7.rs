@@ -41,6 +41,7 @@ use unityrs_core::provider::{TreeRequest, TypeTreeProvider};
 use unityrs_core::typetree::{NodeList, NodeRow};
 use unityrs_core::{LimitError, LimitKind, UnityVersion};
 use unityrs_testkit::child;
+use unityrs_testkit::scratch::Scratch;
 use unityrs_tpk::{TpkError, TpkProvider};
 
 mod common;
@@ -699,15 +700,14 @@ fn image_tpk() {
     );
 }
 
-/// A file removed when dropped.
-struct TempFile(PathBuf);
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
+/// A file in a scratch folder of its own, removed with it when dropped
+/// (`unityrs_testkit::scratch`).
+struct TempFile(
+    PathBuf,
+    #[allow(dead_code, reason = "held for its drop, which removes the folder")] Scratch,
+);
 
 fn tempfile(name: &str) -> TempFile {
-    TempFile(std::env::temp_dir().join(name))
+    let dir = Scratch::new("tpk-g7");
+    TempFile(dir.join(name), dir)
 }

@@ -29,6 +29,7 @@ use unityrs_core::limits::heap_cost;
 use unityrs_core::{Bytes, FileContext, RawStr};
 use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 use unityrs_testkit::env::{Obj, res_bytes, serialized};
+use unityrs_testkit::scratch::Scratch;
 
 struct Counting;
 
@@ -95,26 +96,22 @@ fn tiny() -> Source {
     }
 }
 
-/// A file of the test's own, removed when dropped.
-struct TempFile(PathBuf);
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-        let _ = self.0.parent().map(std::fs::remove_dir);
-    }
-}
+/// A file of the test's own, in a scratch folder removed with it when
+/// dropped (`unityrs_testkit::scratch`).
+struct TempFile(
+    PathBuf,
+    #[allow(dead_code, reason = "held for its drop, which removes the folder")] Scratch,
+);
 
 /// A dependency whose meter alone passes `bound`: a raw file read from a
 /// path (its bytes charged to its meter, in one buffer, and nothing parsed),
 /// named `CAB-0`, a key the small ones made, so its registration adds no key
 /// whatever their number.
 fn over(bound: u64) -> TempFile {
-    let dir = std::env::temp_dir().join(format!("unityrs-env-charges-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = Scratch::new("env-charges");
     let path = dir.join("CAB-0");
     std::fs::write(&path, res_bytes(usize::try_from(bound).unwrap() + 1, 5)).unwrap();
-    TempFile(path)
+    TempFile(path, dir)
 }
 
 /// The heap above its start that `load` peaks at.

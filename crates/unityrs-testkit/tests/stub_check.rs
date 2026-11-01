@@ -7,32 +7,32 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use unityrs_testkit::child;
+use unityrs_testkit::scratch::Scratch;
 
 /// The workspace root, two levels above this crate.
 fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// A temporary tree holding `files` (path, text), removed on drop.
-struct Tree(PathBuf);
+/// A temporary tree holding `files` (path, text), removed on drop
+/// (`unityrs_testkit::scratch`).
+struct Tree(
+    PathBuf,
+    #[allow(dead_code, reason = "held for its drop, which removes the folder")] Scratch,
+);
 
 impl Tree {
     fn new(files: &[(&str, String)]) -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "unityrs-stub-check-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let dir = Scratch::new("stub-check");
+        let root = dir.to_path_buf();
         for (path, text) in files {
             let path = root.join(path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, text).unwrap();
         }
-        Self(root)
+        Self(root, dir)
     }
 
     /// The script's exit code and output on this tree.
@@ -46,12 +46,6 @@ impl Tree {
         let text = String::from_utf8_lossy(&out.stdout).into_owned()
             + &String::from_utf8_lossy(&out.stderr);
         (out.status.code().unwrap(), text)
-    }
-}
-
-impl Drop for Tree {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 

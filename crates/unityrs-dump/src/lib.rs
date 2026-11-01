@@ -511,8 +511,9 @@ mod tests {
             .step_by(2)
             .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
             .collect();
-        let dir = std::env::temp_dir().join(format!("unityrs-dump-tpk-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // Removed when dropped, a failing assert's unwinding included
+        // (review round 9: removed by the last line, it stayed on a failure).
+        let dir = unityrs_testkit::scratch::Scratch::new("dump-tpk");
         let (good, bad) = (dir.join("good.tpk"), dir.join("bad.tpk"));
         std::fs::write(&good, &bytes).unwrap();
         std::fs::write(&bad, b"not a tpk").unwrap();
@@ -542,7 +543,6 @@ mod tests {
                 .with_tpk(&dir.join("missing.tpk"))
                 .is_err()
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Plan section 3.16: the dump's public types are asserted as the core's

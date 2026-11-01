@@ -16,6 +16,7 @@ use std::process::Command;
 use serde_json::Value as Json;
 use unityrs_dump::json::hex;
 use unityrs_testkit::child;
+use unityrs_testkit::scratch::Scratch;
 
 fn fixture() -> Json {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -33,18 +34,19 @@ fn unhex(s: &str) -> Vec<u8> {
 
 /// A folder outside the repository holding the files the indexes name,
 /// `f` and the byte 0xFF; removed when dropped.
-struct Tmp(PathBuf);
+struct Tmp(
+    PathBuf,
+    #[allow(dead_code, reason = "held for its drop, which removes the folder")] Scratch,
+);
 
 impl Tmp {
     fn new(what: &str) -> Self {
-        let base = std::env::temp_dir().join(format!("unityrs-cli-{what}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        let base = std::fs::canonicalize(&base).unwrap();
+        let dir = Scratch::new(&format!("cli-{what}"));
+        let base = std::fs::canonicalize(dir.path()).unwrap();
         for name in [&b"f"[..], b"\xff"] {
             std::fs::write(base.join(OsStr::from_bytes(name)), b"f").unwrap();
         }
-        Self(base)
+        Self(base, dir)
     }
 
     /// `unityrs dump --index` on `text` with `extra` arguments: the exit

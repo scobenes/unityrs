@@ -16,11 +16,11 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::Value as Json;
 use unityrs_dump::select::{MAX_FOLDER_DEPTH, Selection, collect};
 use unityrs_testkit::child;
+use unityrs_testkit::scratch::Scratch;
 
 fn fixture() -> Json {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -32,23 +32,17 @@ fn fixture() -> Json {
 /// A folder outside the repository holding one tree of the fixture's
 /// (`folders.py`'s module docs): the input folder `in` with the file `top`
 /// and a chain of `levels` folders named `d`, the deepest level by `shape`.
-/// Removed when dropped.
+/// Removed when dropped, a chain past the stack or the open-file limit and
+/// a folder of mode 000 included (`unityrs_testkit::scratch`).
 struct Tree {
-    base: PathBuf,
+    base: Scratch,
     top: PathBuf,
 }
 
 impl Tree {
     fn new(shape: &str, levels: usize) -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let base = std::env::temp_dir().join(format!(
-            "unityrs-cli-folders-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        remove(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        let top = std::fs::canonicalize(&base).unwrap().join("in");
+        let base = Scratch::new("cli-folders");
+        let top = std::fs::canonicalize(base.path()).unwrap().join("in");
         std::fs::create_dir(&top).unwrap();
         std::fs::write(top.join("top"), b"t").unwrap();
         let mut deepest = top.clone();
@@ -110,36 +104,6 @@ impl Tree {
                 .map(|i| String::from_utf8(i.name).unwrap())
                 .collect()
         })
-    }
-}
-
-impl Drop for Tree {
-    fn drop(&mut self) {
-        remove(&self.base);
-    }
-}
-
-/// Removes `base` and everything in it a folder at a time, so a chain past
-/// the stack or the open-file limit, and a folder of mode 000, go too.
-fn remove(base: &Path) {
-    let mut todo = vec![base.to_path_buf()];
-    let mut folders = Vec::new();
-    while let Some(dir) = todo.pop() {
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            if e.file_type().is_ok_and(|t| t.is_dir()) {
-                todo.push(e.path());
-            } else {
-                let _ = std::fs::remove_file(e.path());
-            }
-        }
-        folders.push(dir);
-    }
-    for dir in folders.iter().rev() {
-        let _ = std::fs::remove_dir(dir);
     }
 }
 

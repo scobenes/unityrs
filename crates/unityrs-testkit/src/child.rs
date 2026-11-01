@@ -21,8 +21,15 @@
 //! (Review round 7 gave the rule to [`crate::stack::run`] alone; review
 //! round 8 found the rest failing on one kill under memory pressure.) A
 //! source scan keeps it so ([`direct_runs`]). The Python suites and tools
-//! (`tools/`, `scripts/`) run theirs through `subprocess`, outside this
-//! rule.
+//! (`tools/`, `scripts/`) keep the same rule through `tools/parity/child.py`
+//! (review round 9), which its own scan keeps.
+//!
+//! Each run of a child also gets a scratch folder this process owns and
+//! removes when the run ends, however it ends, named in the child's
+//! [`crate::scratch::VAR`], so what the child writes there is gone even
+//! when it aborts or is killed ([`crate::scratch`]). A caller that sets the
+//! variable on its command (`Command::env`) or removes it
+//! (`Command::env_remove`) keeps what it chose.
 //!
 //! Owner: package B.
 
@@ -92,8 +99,17 @@ fn again<T>(
     ending: impl Fn(&T) -> (ExitStatus, String, String),
 ) -> io::Result<T> {
     let mut runs = 0;
+    // A caller that set or removed the variable keeps what it chose.
+    let chosen = cmd.get_envs().any(|(k, _)| k == crate::scratch::VAR);
     loop {
+        // The run's own folder, removed when this iteration ends, however
+        // the child ended (crate::scratch).
+        let own = (!chosen).then(|| crate::scratch::Scratch::new("child"));
+        if let Some(own) = &own {
+            cmd.env(crate::scratch::VAR, own.path());
+        }
         let done = run(cmd)?;
+        drop(own);
         runs += 1;
         let (status, out, err) = ending(&done);
         if !killed(status) {
@@ -173,20 +189,20 @@ pub fn direct_runs(root: &Path) -> Vec<String> {
 }
 
 /// A fresh directory of marks, one a run of a probe, removed when dropped
-/// (the tests of the probes a `SIGKILL` from outside ends).
+/// (the tests of the probes a `SIGKILL` from outside ends): a
+/// [`crate::scratch::Scratch`] and its path.
 #[cfg(test)]
-pub(crate) struct Marks(pub(crate) std::path::PathBuf);
+pub(crate) struct Marks(
+    pub(crate) std::path::PathBuf,
+    #[allow(dead_code, reason = "held for its drop, which removes the folder")]
+    crate::scratch::Scratch,
+);
 
 #[cfg(test)]
 impl Marks {
     pub(crate) fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "unityrs-testkit-child-{name}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
+        let dir = crate::scratch::Scratch::new(&format!("marks-{name}"));
+        Self(dir.path().to_path_buf(), dir)
     }
 
     pub(crate) fn runs(&self) -> usize {
@@ -200,16 +216,9 @@ impl Marks {
     }
 }
 
-#[cfg(test)]
-impl Drop for Marks {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// In a probe, `N:DIR`: the run that finds fewer than `N` marks in `DIR`
-/// adds one and has this process killed by `SIGKILL`, from outside (as the
-/// OOM killer kills a child); a later run returns.
+/// adds one and is killed by `SIGKILL` ([`kill_self`]), as the OOM killer
+/// kills a child; a later run returns.
 #[cfg(test)]
 pub(crate) fn kill_self_while(spec: &str) {
     let (n, dir) = spec.split_once(':').unwrap();
@@ -218,14 +227,26 @@ pub(crate) fn kill_self_while(spec: &str) {
     let runs = std::fs::read_dir(dir).unwrap().count();
     if runs < n {
         std::fs::write(dir.join(runs.to_string()), b"").unwrap();
-        let me = std::process::id();
-        status(Command::new("sh").args(["-c", &format!("kill -KILL {me}")]))
-            .expect("sh, to kill the probe");
-        // The kill is pending before the shell exits, so this process
-        // never returns from waiting for it; the sleep is a guard only.
-        std::thread::sleep(std::time::Duration::from_secs(60));
-        panic!("the probe's kill -KILL did not reach it");
+        kill_self();
     }
+}
+
+/// Ends this process by `SIGKILL`: it becomes a shell (`exec`, so the pid
+/// stays) that sends the signal to itself. A `SIGKILL` ends a process the
+/// same way whoever sends it; a helper process that sent it would outlive
+/// the probe, and with no parent left to reap it stay a zombie under an
+/// init that reaps none (the dev container's), which counts against its
+/// limit on processes (fix pass 9).
+#[cfg(test)]
+pub(crate) fn kill_self() -> ! {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let e = Command::new("sh").args(["-c", "kill -KILL $$"]).exec();
+        panic!("cannot exec sh to kill the probe: {e}");
+    }
+    #[cfg(not(unix))]
+    panic!("no SIGKILL to send here");
 }
 
 #[cfg(all(test, unix))]
@@ -236,12 +257,13 @@ mod tests {
     use super::{KILLED_RUNS, Marks, direct_runs, output, status};
 
     /// A shell that marks its run in `dir`; on each of its first `n` runs
-    /// it is then killed by `SIGKILL` from outside (another process sends
-    /// it, as the OOM killer would), and after them it ends as `last` says.
+    /// it is then killed by `SIGKILL` (it sends it to itself: a helper
+    /// process that sent it would be left a zombie, `kill_self`), as the
+    /// OOM killer would kill it, and after them it ends as `last` says.
     fn killed_while(n: usize, dir: &Path, last: &str) -> Command {
         let script = format!(
             "runs=$(( $(ls \"$1\" | wc -l) )); touch \"$1/$runs\"; \
-             if [ \"$runs\" -lt {n} ]; then sh -c \"kill -KILL $$\"; sleep 60; exit 7; fi; {last}"
+             if [ \"$runs\" -lt {n} ]; then kill -KILL $$; sleep 60; exit 7; fi; {last}"
         );
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(script).arg("sh").arg(dir);
