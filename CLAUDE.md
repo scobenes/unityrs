@@ -53,3 +53,11 @@ commits land on the worktree's branch.
   `LICENSE-APACHE` to the repository's (`ln -s ../../LICENSE-MIT`), or the
   script refuses its template notice. A licence clarified or accepted for one
   crate in `about.toml` is mirrored in `deny.toml`, which the script checks.
+- **A test's children and scratch.** A Rust test runs a child through
+  `unityrs_testkit::child` and makes scratch with `unityrs_testkit::scratch`;
+  a Python test or tool through `tools/parity/child.py` and
+  `tools/parity/scratch.py`. A child killed by `SIGKILL` from outside (the
+  OOM killer) is run again, never read as an answer, and a child's scratch is
+  its parent's, removed however the child ends. Source scans
+  (`child::direct_runs`, `scratch::direct_scratch`, `tests/test_child.py`)
+  fail on a process or a temp folder made any other way.
