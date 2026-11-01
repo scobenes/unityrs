@@ -11,15 +11,17 @@
 //! [`env`](mod@env) is package D's; [`depth`] (the deep values of plan
 //! section 3.10), [`counted`] (the counting global allocator, and the
 //! thread it counts), [`guard`] (the deadlock guard of every test that
-//! hands work between threads) and [`stack`] (the child-process probes that
-//! measure a stack, and tell an overflow from every other failure) are
-//! package B's; [`address_space`] (the cap that makes the C allocator
+//! hands work between threads), [`stack`] (the child-process probes that
+//! measure a stack, and tell an overflow from every other failure) and
+//! [`child`] (how every test runs a child process: a `SIGKILL` from
+//! outside is no result) are package B's; [`address_space`] (the cap that makes the C allocator
 //! refuse, for the tests of liblzma's own allocations) is package C's;
 //! [`mutate`] (G3b's mutator) is the integration's.
 
 pub mod address_space;
 pub mod blob;
 pub mod bundle;
+pub mod child;
 pub mod counted;
 pub mod depth;
 pub mod env;

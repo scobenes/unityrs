@@ -328,12 +328,17 @@ mod tests {
     /// Run by [`a_tally_that_panics_aborts_and_never_unwinds`] in a child:
     /// a counted allocation whose tally panics, under `catch_unwind`. Were
     /// the panic to unwind out of the allocator, `catch_unwind` would catch
-    /// it and the probe would pass.
+    /// it and the probe would pass. `killed:N:DIR` is first killed by
+    /// `SIGKILL` from outside on each of its first `N` runs
+    /// (`crate::child::kill_self_while`).
     #[test]
     #[ignore = "run by a_tally_that_panics_aborts_and_never_unwinds"]
     fn tally_panic_probe() {
-        if std::env::var_os(UNWIND_VAR).is_none() {
+        let Ok(what) = std::env::var(UNWIND_VAR) else {
             return;
+        };
+        if let Some(spec) = what.strip_prefix("killed:") {
+            crate::child::kill_self_while(spec);
         }
         count_this_thread();
         let a = Allocator(Panicking);
@@ -348,31 +353,47 @@ mod tests {
     /// A tally that panics ends the process with `SIGABRT` after its
     /// panic's message: no unwind leaves the allocator, which `GlobalAlloc`
     /// forbids (review round 6). The probe runs in a child process, since
-    /// it aborts.
+    /// it aborts; a `SIGKILL` from outside is run again
+    /// ([`crate::child::output`]), and the probe's own abort comes back at
+    /// once (review round 8: one kill failed the test).
     #[cfg(unix)]
     #[test]
     fn a_tally_that_panics_aborts_and_never_unwinds() {
+        let marks = crate::child::Marks::new("tally-panic-once");
+        for (spec, killed) in [
+            ("1".to_owned(), 0),
+            (format!("killed:{}", marks.killed(1)), 1),
+        ] {
+            tally_panic_aborts(&spec);
+            assert_eq!(marks.runs(), killed, "{spec}");
+        }
+    }
+
+    /// The tally-panic probe, run with `spec`, aborts after its panic.
+    #[cfg(unix)]
+    fn tally_panic_aborts(spec: &str) {
         use std::os::unix::process::ExitStatusExt;
         let exe = std::env::current_exe().unwrap();
-        let out = std::process::Command::new(exe)
-            .args([
-                "--exact",
-                "counted::tests::tally_panic_probe",
-                "--ignored",
-                "--test-threads=1",
-                "--nocapture",
-            ])
-            .env(UNWIND_VAR, "1")
-            .output()
-            .unwrap();
+        let out = crate::child::output(
+            std::process::Command::new(exe)
+                .args([
+                    "--exact",
+                    "counted::tests::tally_panic_probe",
+                    "--ignored",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env(UNWIND_VAR, spec),
+        )
+        .unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
         assert_eq!(
             out.status.signal(),
             Some(6),
-            "the probe did not abort: {:?}\n{err}",
+            "{spec}: the probe did not abort: {:?}\n{err}",
             out.status
         );
-        assert!(err.contains("the tally's own panic"), "{err}");
+        assert!(err.contains("the tally's own panic"), "{spec}: {err}");
     }
 
     /// Refuses a fresh allocation of 12,345 bytes, never a `realloc`.

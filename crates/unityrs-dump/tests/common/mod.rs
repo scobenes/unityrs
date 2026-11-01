@@ -10,6 +10,7 @@ use serde_json::Value as Json;
 use unityrs_core::limits::{Meter, MeteredVec};
 use unityrs_core::typetree::{NodeId, NodeList, NodeRow};
 use unityrs_core::{Built, Bytes, Parsed, PrimArray, PrimRun, RawStr, Value, ValueBuilder};
+use unityrs_testkit::child;
 
 pub fn fixture(name: &str) -> Json {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -186,14 +187,16 @@ pub fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// `python3 tools/parity/compare.py A B`'s exit status and output.
+/// `python3 tools/parity/compare.py A B`'s exit status and output; a run
+/// the system kills from outside is run again (`unityrs_testkit::child`).
 pub fn compare(a: &Path, b: &Path) -> (i32, String) {
-    let out = Command::new("python3")
-        .arg(repo().join("tools/parity/compare.py"))
-        .arg(a)
-        .arg(b)
-        .output()
-        .expect("python3 runs compare.py (tools/parity needs only the standard library)");
+    let out = child::output(
+        Command::new("python3")
+            .arg(repo().join("tools/parity/compare.py"))
+            .arg(a)
+            .arg(b),
+    )
+    .expect("python3 runs compare.py (tools/parity needs only the standard library)");
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -218,13 +221,14 @@ for n, line in enumerate(side.lines, 2):
     if problems:
         print(n, problems)
 "#;
-    let out = Command::new("python3")
-        .arg("-c")
-        .arg(script)
-        .arg(repo().join("tools/parity"))
-        .arg(path)
-        .output()
-        .expect("python3");
+    let out = child::output(
+        Command::new("python3")
+            .arg("-c")
+            .arg(script)
+            .arg(repo().join("tools/parity"))
+            .arg(path),
+    )
+    .expect("python3");
     assert!(
         out.status.success(),
         "{}",

@@ -40,6 +40,7 @@ use unityrs_core::limits::Limits;
 use unityrs_core::provider::{TreeRequest, TypeTreeProvider};
 use unityrs_core::typetree::{NodeList, NodeRow};
 use unityrs_core::{LimitError, LimitKind, UnityVersion};
+use unityrs_testkit::child;
 use unityrs_tpk::{TpkError, TpkProvider};
 
 mod common;
@@ -584,16 +585,16 @@ fn the_provider_answers_trees_where_unitypy_builds_them_and_shares_each() {
     assert!(Arc::ptr_eq(&ask(&v0), &ask(&v3)));
 }
 
-/// The Python that runs the oracle, if this is the oracle image.
+/// The Python that runs the oracle, if this is the oracle image. A probe
+/// the system kills from outside is run again (`unityrs_testkit::child`),
+/// so a kill does not skip the test.
 fn python() -> Option<String> {
     let candidates = std::env::var("UNITYRS_PYTHON").map_or_else(
         |_| vec!["python3".to_owned(), "python".to_owned()],
         |p| vec![p],
     );
     candidates.into_iter().find(|p| {
-        Command::new(p)
-            .args(["-c", "import UnityPy"])
-            .output()
+        child::output(Command::new(p).args(["-c", "import UnityPy"]))
             .is_ok_and(|o| o.status.success())
     })
 }
@@ -606,9 +607,8 @@ fn image_tpk() {
     let tpk = match (&required, &python) {
         (Some(path), _) => path.clone(),
         (None, Some(python)) => {
-            let out = Command::new(python)
-                .args(["-c", "import os, UnityPy; print(os.path.join(os.path.dirname(UnityPy.__file__), 'resources', 'lzma.tpk'))"])
-                .output()
+            let out = child::output(Command::new(python)
+                .args(["-c", "import os, UnityPy; print(os.path.join(os.path.dirname(UnityPy.__file__), 'resources', 'lzma.tpk'))"]))
                 .unwrap();
             assert!(out.status.success());
             PathBuf::from(String::from_utf8(out.stdout).unwrap().trim())
@@ -633,14 +633,15 @@ fn image_tpk() {
         );
         let python = python.unwrap();
         let made = tempfile(&format!("unityrs-g7-{}.jsonl", std::process::id()));
-        let status = Command::new(&python)
-            .arg(root().join("tools/fixtures/tpk.py"))
-            .arg("--outcomes")
-            .arg(&made.0)
-            .arg("--tpk")
-            .arg(&tpk)
-            .status()
-            .unwrap();
+        let status = child::status(
+            Command::new(&python)
+                .arg(root().join("tools/fixtures/tpk.py"))
+                .arg("--outcomes")
+                .arg(&made.0)
+                .arg("--tpk")
+                .arg(&tpk),
+        )
+        .unwrap();
         assert!(status.success(), "tools/fixtures/tpk.py --outcomes failed");
         Some(made)
     };

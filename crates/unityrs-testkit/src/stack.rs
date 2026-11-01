@@ -21,13 +21,16 @@
 //! (or a person) ended it from outside, whatever the probe would have come
 //! to. Its run is no measurement, but the probe is the same on the next
 //! run, so [`run`] runs it again, up to [`KILLED_RUNS`] runs in all, and a
-//! probe killed on every one of them fails the test, saying so. A test
-//! then measures what it measures whatever memory the machine has free
-//! (review round 7: one kill under memory pressure failed the test).
+//! probe killed on every one of them fails the test, saying so: the rule
+//! every test's child keeps ([`crate::child`]). A test then measures what
+//! it measures whatever memory the machine has free (review round 7: one
+//! kill under memory pressure failed the test).
 //!
 //! Owner: package B.
 
 use std::process::{Command, ExitStatus, Output};
+
+pub use crate::child::KILLED_RUNS;
 
 /// What Rust's runtime prints when a thread's stack overflows.
 pub const OVERFLOW_REPORT: &str = "has overflowed its stack";
@@ -94,18 +97,13 @@ fn signal(_: ExitStatus) -> Option<i32> {
 
 /// The last lines of `text`, enough to say what a child did.
 fn last(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(20)..].join("\n")
+    crate::child::tail(text.as_bytes())
 }
-
-/// The most runs [`run`] makes of a probe whose child is killed by
-/// `SIGKILL` (module docs) before it fails the test.
-pub const KILLED_RUNS: u32 = 4;
 
 /// Runs this test binary's ignored test `probe` (its whole path, as
 /// `--exact` matches it) in a child process with `var` set to `value`. A
 /// child killed by `SIGKILL` is no measurement, and the probe is run again,
-/// up to [`KILLED_RUNS`] runs in all (module docs).
+/// up to [`KILLED_RUNS`] runs in all ([`crate::child::output`]).
 ///
 /// # Panics
 /// When the child can not start, comes to anything but [`Probe`]
@@ -115,30 +113,18 @@ pub const KILLED_RUNS: u32 = 4;
 #[must_use]
 pub fn run(probe: &str, var: &str, value: &str) -> Probe {
     let exe = std::env::current_exe().expect("the test binary's path");
-    let mut killed = 0;
-    loop {
-        let Output {
-            status,
-            stdout,
-            stderr,
-        } = Command::new(&exe)
+    let Output {
+        status,
+        stdout,
+        stderr,
+    } = crate::child::output(
+        Command::new(exe)
             .args(["--exact", probe, "--ignored", "--test-threads=1"])
-            .env(var, value)
-            .output()
-            .unwrap_or_else(|e| panic!("cannot start probe {probe}: {e}"));
-        match classify(status, &stdout, &stderr) {
-            Ok(p) => return p,
-            Err(e) if signal(status) == Some(KILL) => {
-                killed += 1;
-                assert!(
-                    killed < KILLED_RUNS,
-                    "probe {probe} with {var}={value:?}: killed by SIGKILL on each of its \
-                     {killed} runs, so no measurement: {e}"
-                );
-            }
-            Err(e) => panic!("probe {probe} with {var}={value:?}: {e}"),
-        }
-    }
+            .env(var, value),
+    )
+    .unwrap_or_else(|e| panic!("cannot start probe {probe}: {e}"));
+    classify(status, &stdout, &stderr)
+        .unwrap_or_else(|e| panic!("probe {probe} with {var}={value:?}: {e}"))
 }
 
 /// Whether `probe` passes with `var` set to `value`, and not whether it
@@ -175,6 +161,7 @@ pub fn least(hi: usize, what: &str, mut fits: impl FnMut(usize) -> bool) -> usiz
 #[cfg(test)]
 mod tests {
     use super::{Probe, classify, least, run};
+    use crate::child::Marks;
 
     const VAR: &str = "UNITYRS_TESTKIT_STACK_PROBE";
 
@@ -190,7 +177,7 @@ mod tests {
             return;
         };
         if let Some(spec) = what.strip_prefix("killed:") {
-            kill_self_while(spec);
+            crate::child::kill_self_while(spec);
         }
         let t = std::thread::Builder::new().stack_size(256 << 10);
         t.spawn(move || match what.as_str() {
@@ -208,27 +195,6 @@ mod tests {
         .unwrap()
         .join()
         .unwrap();
-    }
-
-    /// `N:DIR`: the run that finds fewer than `N` marks in `DIR` adds one
-    /// and has this process killed by `SIGKILL`, from outside.
-    fn kill_self_while(spec: &str) {
-        let (n, dir) = spec.split_once(':').unwrap();
-        let n: usize = n.parse().unwrap();
-        let dir = std::path::Path::new(dir);
-        let runs = std::fs::read_dir(dir).unwrap().count();
-        if runs < n {
-            std::fs::write(dir.join(runs.to_string()), b"").unwrap();
-            let me = std::process::id();
-            std::process::Command::new("sh")
-                .args(["-c", &format!("kill -KILL {me}")])
-                .status()
-                .expect("sh, to kill the probe");
-            // The kill is pending before the shell exits, so this process
-            // never returns from waiting for it; the sleep is a guard only.
-            std::thread::sleep(std::time::Duration::from_secs(60));
-            panic!("the probe's kill -KILL did not reach it");
-        }
     }
 
     fn recurse(n: u64) -> u64 {
@@ -298,38 +264,13 @@ mod tests {
         );
     }
 
-    /// A fresh directory for one test's marks, removed when dropped.
-    struct Marks(std::path::PathBuf);
-
-    impl Marks {
-        fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "unityrs-testkit-stack-{name}-{}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-
-        fn runs(&self) -> usize {
-            std::fs::read_dir(&self.0).unwrap().count()
-        }
-    }
-
-    impl Drop for Marks {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
     /// A child the OOM killer ends (`SIGKILL`) is no measurement and is run
     /// again: killed on each of its first `KILLED_RUNS - 1` runs, the probe
     /// still measures (review round 7: one kill failed the test).
     #[cfg(unix)]
     #[test]
     fn a_child_killed_from_outside_is_run_again() {
-        let marks = Marks::new("again");
+        let marks = Marks::new("stack-again");
         let spec = format!("killed:{}:{}", super::KILLED_RUNS - 1, marks.0.display());
         assert_eq!(run(PROBE, VAR, &spec), Probe::Fits);
         assert_eq!(
@@ -342,7 +283,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_child_killed_on_every_run_fails_saying_so() {
-        let marks = Marks::new("always");
+        let marks = Marks::new("stack-always");
         let spec = format!("killed:{}:{}", super::KILLED_RUNS, marks.0.display());
         let m = refused(&spec);
         assert_eq!(marks.runs(), usize::try_from(super::KILLED_RUNS).unwrap());
