@@ -68,11 +68,9 @@ impl MemoryBudget for RefuseOnce {
 }
 
 /// What UnityPy 1.25.2 recorded for dependency scene `name`
-/// (`tests/fixtures/d/env.json`, `tools/fixtures/env.py`): the result of
-/// its step `op` (the container's rows, `obj.container` of each object of
-/// the files it did not load as dependencies, and each pointer and resource
-/// of the objects of those it did).
-fn oracle(name: &str, op: &str) -> J {
+/// (`tests/fixtures/d/env.json`, `tools/fixtures/env.py`): its steps, each
+/// with its result and the Environment's state after it.
+fn oracle_steps(name: &str) -> Vec<J> {
     let doc: J = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/d/env.json"
@@ -84,13 +82,42 @@ fn oracle(name: &str, op: &str) -> J {
         .iter()
         .find(|s| s["name"] == name)
         .unwrap();
-    scene["steps"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|s| s["op"][0] == op)
-        .unwrap()["result"]
-        .clone()
+    scene["steps"].as_array().unwrap().clone()
+}
+
+/// The result of scene `name`'s step `op` (the container's rows,
+/// `obj.container` of each object of the files it did not load as
+/// dependencies, and each pointer and resource of the objects of those it
+/// did).
+fn oracle(name: &str, op: &str) -> J {
+    let steps = oracle_steps(name);
+    steps.iter().find(|s| s["op"][0] == op).unwrap()["result"].clone()
+}
+
+/// What scene `name`'s step `op` added to `env.files` (each entry's name
+/// and `is_dependency`): the resolver's loads it listed, as an Environment
+/// that keeps them lists them ([`EnvOptions::keep_resolver_loads`]).
+fn oracle_listed(name: &str, op: &str) -> J {
+    let steps = oracle_steps(name);
+    let at = steps.iter().position(|s| s["op"][0] == op).unwrap();
+    let names = |s: &J| -> Vec<J> {
+        let files = s["files"].as_array().unwrap();
+        files.iter().map(|f| json!([f[0], f[1]])).collect()
+    };
+    let before = names(&steps[at - 1]);
+    let added: Vec<J> = names(&steps[at])
+        .into_iter()
+        .filter(|f| !before.contains(f))
+        .collect();
+    J::from(added)
+}
+
+/// Every entry `env.files` lists, by name and `is_dependency`.
+fn listed(env: &Environment) -> Vec<J> {
+    let files = env
+        .files()
+        .map(|f| json!([text(f.name.as_bytes()), f.is_dependency]));
+    files.collect()
 }
 
 /// UnityPy's `env.path` for the scenes here: a file of exactly the name
@@ -378,7 +405,9 @@ enum Got {
 /// the dependency reservations the phase made, and how many were refused.
 /// What a phase reads first (the objects, their pointers and resources) is
 /// read before the refusal is armed, and its answer is written after it is
-/// disarmed, so the reservations swept are the Environment calls' alone.
+/// disarmed, so the reservations swept are the Environment calls' alone. A
+/// dereference's or a read's answer, when `s` keeps the resolver's loads,
+/// is also what the phase added to `files`.
 fn run(phase: Phase, s: Setup, d: &DepScene, keys: &[String], k: Option<u64>) -> (J, u64, u64) {
     let budget = Arc::new(RefuseOnce::default());
     let env = batch_env(s, budget.clone(), &d.scene);
@@ -392,6 +421,7 @@ fn run(phase: Phase, s: Setup, d: &DepScene, keys: &[String], k: Option<u64>) ->
     let objects: Vec<ObjectRef> = env.objects().map(Result::unwrap).collect();
     let (ptrs, res) = (pointers(&held), streams(&held));
     let meter = held[0].meter().clone();
+    let before = listed(&env);
     if phase != Phase::Loads {
         arm();
     }
@@ -412,6 +442,14 @@ fn run(phase: Phase, s: Setup, d: &DepScene, keys: &[String], k: Option<u64>) ->
         Got::Targets(t) => targets(&t),
         Got::Reads(r) => hex(&r),
     };
+    let answer = match phase {
+        Phase::Derefs | Phase::Resources if s.keep => {
+            let mut added = listed(&env);
+            added.retain(|f| !before.contains(f));
+            json!([answer, added])
+        }
+        _ => answer,
+    };
     (answer, asked, budget.refused.load(Ordering::Acquire))
 }
 
@@ -424,23 +462,35 @@ fn run(phase: Phase, s: Setup, d: &DepScene, keys: &[String], k: Option<u64>) ->
 /// resolver's loads kept in `files`: the loads and the pass end in UnityPy's
 /// container rows and paths, the dereferences and the reads give UnityPy's
 /// answers, and the lookups answer as they do with nothing refused (no
-/// answer is an error). The `k`-th reservation of a run whose first `k - 1`
-/// were granted is the `k`-th of the run that counted them, so each is
-/// refused once. The reach's reopen without a retry fails the pass's first
+/// answer is an error), the dereferences and the reads that keep the
+/// resolver's loads listing what UnityPy's listed. The `k`-th reservation
+/// of a run whose first `k - 1` were granted is the `k`-th of the run that
+/// counted them, so each is refused once. The reach's reopen without a retry fails the pass's first
 /// reservation under `Lazy`; a retry that looks only for a bare refusal
 /// fails an `Eager` pass whose reopen's entry parse is refused (the entry's
 /// error wraps it); a dependency's table walk without one fails under both
 /// modes; and a dereference, a resource read or a lookup without one fails
-/// at its first reservation no inner retry covers (review round 8).
+/// at its first reservation no inner retry covers, and a resolver load
+/// whose listing is refused outside its retry leaves its file unlisted
+/// (review round 8).
 #[test]
 fn a_pool_refusal_anywhere_evicts_the_others_and_retries_once() {
     let mut refused = 0;
     for (name, d) in dependency_scenes() {
-        let want = |phase: Phase| match phase {
-            Phase::Loads | Phase::Pass => json!([oracle(name, "container"), oracle(name, "paths")]),
-            Phase::Derefs => oracle(name, "dep_derefs"),
-            Phase::Resources => oracle(name, "dep_resources"),
-            Phase::Lookups => J::Null,
+        let want = |phase: Phase, s: Setup| {
+            let step = match phase {
+                Phase::Loads | Phase::Pass => {
+                    return json!([oracle(name, "container"), oracle(name, "paths")]);
+                }
+                Phase::Derefs => "dep_derefs",
+                Phase::Resources => "dep_resources",
+                Phase::Lookups => return J::Null,
+            };
+            if s.keep {
+                json!([oracle(name, step), oracle_listed(name, step)])
+            } else {
+                oracle(name, step)
+            }
         };
         for s in setups() {
             let keys: Vec<String> = {
@@ -455,7 +505,7 @@ fn a_pool_refusal_anywhere_evicts_the_others_and_retries_once() {
                 let (first, n, _) = run(phase, s, &d, &keys, None);
                 let want = match phase {
                     Phase::Lookups => first.clone(),
-                    _ => want(phase),
+                    _ => want(phase, s),
                 };
                 assert_eq!(first, want, "{name} {s:?} {phase:?}");
                 for k in 1..=n {
