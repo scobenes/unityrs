@@ -122,16 +122,16 @@ impl Drop for Tree {
 /// Removes `base` and everything in it a folder at a time, so a chain past
 /// the stack or the open-file limit, and a folder of mode 000, go too.
 fn remove(base: &Path) {
-    let mut todo = vec![base.to_path_buf()];
+    let mut pending = vec![base.to_path_buf()];
     let mut folders = Vec::new();
-    while let Some(dir) = todo.pop() {
+    while let Some(dir) = pending.pop() {
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for e in entries.flatten() {
             if e.file_type().is_ok_and(|t| t.is_dir()) {
-                todo.push(e.path());
+                pending.push(e.path());
             } else {
                 let _ = std::fs::remove_file(e.path());
             }
