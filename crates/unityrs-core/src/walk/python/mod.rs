@@ -18,7 +18,9 @@
 //! `other`); arrays of aligned classes align once and skip the
 //! registry check; `TypelessData` length -1 reads to the end of the file and
 //! other negative lengths follow Python slice semantics (so `bytes_read` can
-//! be negative); a `pair` with three or more children reads its first two,
+//! be negative), on the memory reader: a file loaded from a path is read by
+//! the stream reader's rules ([`read_with_reader`]), where such a length
+//! raises and no read passes the end; a `pair` with three or more children reads its first two,
 //! and an `Array` with three or more reads its elements through
 //! `m_Children[1]` (`:216`, `:309`), where UnityPyBoost raises both;
 //! an aligned `pair` array reads a child whose type is a key of
@@ -63,22 +65,37 @@ use bytes::Bytes;
 use super::dict::{Dict, FindError, RefIndex, RefNode, Trees, ref_tree, visit};
 use super::{
     FloatMode, Out, ReadCtx, ReadDetail, ReadError, ReadErrorKind, RefTypes, Work, charge_error,
-    f32_bits, int, limit_refused, uint,
+    f32_bits, int, limit_refused, stream_refused, uint,
 };
 use crate::raw::RawStr;
-use crate::stream::{Endian, py_align, py_read, py_unpack_from};
+use crate::stream::{Endian, ReaderKind, py_align};
 use crate::typetree::{Kind, NodeId, Tree};
 use crate::value::{ListIx, Parsed, Value, ValueBuilder};
 
-/// Reads one value from `file`, starting at `start` (any Python position).
-/// `bytes_read` counts from `start` and may be negative. Its work is the
-/// open's, counted on `ctx.meter` whatever the outcome (the module docs of
-/// [`super`], "Work").
+/// Reads one value from `file` by the memory reader's rules (bytes),
+/// starting at `start` (any Python position). `bytes_read` counts from
+/// `start` and may be negative. Its work is the open's, counted on
+/// `ctx.meter` whatever the outcome (the module docs of [`super`], "Work").
 pub fn read(
     file: &Bytes,
     start: i128,
     tree: &Arc<Tree>,
     ctx: &ReadCtx<'_>,
+) -> Result<Parsed, ReadError> {
+    read_with_reader(file, start, tree, ctx, ReaderKind::Memory)
+}
+
+/// [`read`] by the rules of the file's reader: on the stream reader (a file
+/// loaded from a path) `start` is a position its `seek` took (never
+/// negative), a read stops at the end, a fixed-width read is
+/// `unpack(read(n))`, and a `TypelessData` length below -1 raises
+/// ([`crate::stream::ReaderKind`]), so `bytes_read` is never negative.
+pub fn read_with_reader(
+    file: &Bytes,
+    start: i128,
+    tree: &Arc<Tree>,
+    ctx: &ReadCtx<'_>,
+    kind: ReaderKind,
 ) -> Result<Parsed, ReadError> {
     let work = Work::start(ctx.options.limits, ctx.meter)?;
     let builder =
@@ -89,6 +106,7 @@ pub fn read(
         bytes: file.as_ref(),
         pos: start,
         start,
+        kind,
         big: ctx.endian == Endian::Big,
         floats: ctx.options.floats,
         ref_types: ctx.ref_types,
@@ -112,14 +130,18 @@ pub fn read(
 }
 
 /// `EndianBinaryReader_Memoryview` over the whole file
-/// (`streams/EndianBinaryReader.py:231-284`) and `TypeTreeConfig`
+/// (`streams/EndianBinaryReader.py:231-284`), or `_Streamable` (`:287-324`)
+/// for a file loaded from a path, and `TypeTreeConfig`
 /// (`helpers/TypeTreeHelper.py:78-85`).
 struct Reader<'a, 'c> {
     data: &'a Bytes,
     bytes: &'a [u8],
-    /// `reader.Position`: any Python integer (plan 3.3).
+    /// `reader.Position`: any Python integer on the memory reader (plan
+    /// 3.3); never negative on the stream reader.
     pos: i128,
     start: i128,
+    /// Which reader's rules.
+    kind: ReaderKind,
     big: bool,
     floats: FloatMode,
     ref_types: RefTypes<'c>,
@@ -181,21 +203,29 @@ impl Reader<'_, '_> {
         }
     }
 
+    /// `read(size)` by the reader's rules ([`ReaderKind::read`]): the range
+    /// it returns, the position moved; the stream reader refuses a size
+    /// below -1.
+    fn read(&mut self, size: i64) -> Result<std::ops::Range<usize>, ReadError> {
+        let (range, next) = self
+            .kind
+            .read(self.bytes.len(), self.pos, size)
+            .map_err(|e| stream_refused(self.at(), e))?;
+        self.pos = next;
+        Ok(range)
+    }
+
     /// `unpack(fmt, self.read(N))`, the base class's `read_byte`, `read_int`,
     /// `read_float`... (`EndianBinaryReader.py:93-127`): `FUNCTION_READ_MAP`
     /// holds these base functions (`TypeTreeHelper.py:29-52`), so every
-    /// primitive node read through it takes this path. `read` is a Python
-    /// slice that moves the position by `N` whatever it returns, and
-    /// `unpack` raises unless it has exactly `N` bytes: so at position `-N`
-    /// (`view[-N:0]`, empty) it raises where `unpack_from` reads the last
-    /// `N` bytes ([`Self::unpack_from`]).
+    /// primitive node read through it takes this path. On the memory reader
+    /// `read` is a Python slice that moves the position by `N` whatever it
+    /// returns, and `unpack` raises unless it has exactly `N` bytes: so at
+    /// position `-N` (`view[-N:0]`, empty) it raises where `unpack_from`
+    /// reads the last `N` bytes ([`Self::unpack_from`]). On the stream
+    /// reader `read` stops at the end.
     fn read_n<const N: usize>(&mut self) -> Result<[u8; N], ReadError> {
-        let (range, next) = py_read(
-            self.bytes.len(),
-            self.pos,
-            i64::try_from(N).unwrap_or(i64::MAX),
-        );
-        self.pos = next;
+        let range = self.read(i64::try_from(N).unwrap_or(i64::MAX))?;
         self.bytes
             .get(range)
             .and_then(|s| <[u8; N]>::try_from(s).ok())
@@ -208,17 +238,24 @@ impl Reader<'_, '_> {
         Ok(b)
     }
 
-    /// `struct.unpack_from(view, Position)` of `N` bytes, the memoryview
-    /// reader's own `read_int` (`EndianBinaryReader.py:388-398`, set on the
-    /// instance by the `endian` setter, `:73-80`): the lengths the reader
-    /// reads with `reader.read_int()` (a vector's, a string's, a
-    /// `TypelessData`'s). The position moves on success only.
+    /// The reader's own `read_int` of `N` bytes, set on the instance by the
+    /// `endian` setter (`EndianBinaryReader.py:73-80`, `:335-349`): the
+    /// lengths the reader reads with `reader.read_int()` (a vector's, a
+    /// string's, a `TypelessData`'s). On the memory reader
+    /// `struct.unpack_from(view, Position)`, the position moving on success
+    /// only; on the stream reader `unpack(stream.read(N))`
+    /// ([`ReaderKind::unpack`]).
     fn unpack_from<const N: usize>(&mut self) -> Result<[u8; N], ReadError> {
-        let b = py_unpack_from(self.bytes.len(), self.pos, N)
+        let (at, next) = self.kind.unpack(self.bytes.len(), self.pos, N);
+        let b = at
             .and_then(|at| self.bytes.get(at..at.checked_add(N)?))
-            .and_then(|s| <[u8; N]>::try_from(s).ok())
-            .ok_or_else(|| self.raise(Py::Struct(N as u64)))?;
-        self.pos = self.pos.saturating_add(N as i128);
+            .and_then(|s| <[u8; N]>::try_from(s).ok());
+        let Some(b) = b else {
+            let e = self.raise(Py::Struct(N as u64));
+            self.pos = next;
+            return Err(e);
+        };
+        self.pos = next;
         Ok(b)
     }
 
@@ -282,8 +319,7 @@ impl Reader<'_, '_> {
             .unwrap_or(i128::MAX)
             .saturating_sub(self.pos);
         if len > 0 && i128::from(len) <= room {
-            let (range, next) = py_read(self.bytes.len(), self.pos, i64::from(len));
-            self.pos = next;
+            let range = self.read(i64::from(len))?;
             let s = RawStr::from_shared(self.data.slice(range));
             self.align();
             return Ok(Value::Str(s));
@@ -291,13 +327,14 @@ impl Reader<'_, '_> {
         Ok(Value::Str(RawStr::default()))
     }
 
-    /// `read_byte_array` (`EndianBinaryReader.py:158-159`): `read(read_int())`,
-    /// a Python slice: 0 is empty, -1 reads to the end, any other negative
-    /// length moves the position back.
+    /// `read_byte_array` (`EndianBinaryReader.py:158-159`): `read(read_int())`:
+    /// 0 is empty and -1 reads to the end; on the memory reader a Python
+    /// slice, so any other negative length moves the position back; on the
+    /// stream reader one below -1 raises (`ValueError` "read length must be
+    /// non-negative or -1") and a read past the end stops there.
     fn typeless(&mut self) -> Result<Value, ReadError> {
         let len = self.read_int()?;
-        let (range, next) = py_read(self.bytes.len(), self.pos, i64::from(len));
-        self.pos = next;
+        let range = self.read(i64::from(len))?;
         Ok(Value::Bytes(self.data.slice(range)))
     }
 

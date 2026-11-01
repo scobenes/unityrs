@@ -9,9 +9,13 @@
 //! - `parse_blob` ports `TypeTreeNode.parse_blob` (`:111-154`): `node_count`,
 //!   `stringbuffer_size`, rows unpacked as `hBBIIiii` plus `Q` from format 19
 //!   (`:331-347`), so `version` is `i16` and `level`/`type_flags` are `u8`. The
-//!   node area and the string buffer are `reader.read(n)`: a Python slice,
-//!   short at the end, and for a negative `node_count` or `stringbuffer_size`
-//!   a slice that moves the position back ([`crate::stream::py_read`]); a node
+//!   node area and the string buffer are `reader.read(n)`: on the memory
+//!   reader a Python slice, short at the end, and for a negative
+//!   `node_count` or `stringbuffer_size` a slice that moves the position
+//!   back ([`crate::stream::py_read`]); on the stream reader (a file loaded
+//!   from a path) a size below -1 raises
+//!   ([`crate::stream::StreamRefusal::NegativeRead`]); the string buffer is
+//!   then read from memory whatever the file's reader (`:118`). A node
 //!   area that is not a whole number of rows raises, as `struct.iter_unpack`
 //!   does. An offset with
 //!   the high bit set indexes the whole common-string table, whatever the
@@ -64,7 +68,7 @@ use crate::error::Error;
 use crate::limits::{Limits, Meter, MeteredVec};
 use crate::raw::RawStr;
 use crate::stream::{
-    Endian, Reader, STRING_TO_NULL_WINDOW, py_read, py_string_to_null_found, py_string_window,
+    Endian, Reader, STRING_TO_NULL_WINDOW, py_string_to_null_found, py_string_window,
 };
 use crate::typetree::NodeRow;
 use crate::typetree::commonstring::{CommonStrings, common_string};
@@ -86,9 +90,11 @@ fn shared(data: &Bytes, range: std::ops::Range<usize>) -> RawStr {
 }
 
 /// `read_string_to_null()` on `r` as a zero-copy slice of `data` (the
-/// buffer `r` reads), the bytes its search reads (up to and including the
-/// NUL, or the whole window) counted first as `meter`'s work (module docs,
-/// "Work").
+/// buffer `r` reads), by the rule of `r`'s reader
+/// ([`crate::stream::ReaderKind`]: the stream reader's loop reads the
+/// window the memory reader searches), the bytes its search reads (up to
+/// and including the NUL, or the whole window) counted first as `meter`'s
+/// work (module docs, "Work").
 pub(crate) fn string_to_null(
     r: &mut Reader<'_>,
     data: &Bytes,
@@ -103,9 +109,12 @@ pub(crate) fn string_to_null(
     let searched = found.map_or(window.len(), |k| k + 1);
     count_done(meter, u64::try_from(searched).unwrap_or(u64::MAX))?;
     let nul = found.map(|k| window.start + k);
-    match py_string_to_null_found(len, pos, STRING_TO_NULL_WINDOW, nul) {
+    match r
+        .kind()
+        .string_to_null_found(len, pos, STRING_TO_NULL_WINDOW, nul)
+    {
         Some((range, new)) => {
-            r.set_position(new);
+            r.advance_to(new);
             Ok(shared(data, range))
         }
         // As the reader's own read raises.
@@ -273,10 +282,9 @@ pub fn parse_blob(
     let buffer_size = r.read_i32()?;
     let size = blob_row_size(format);
     let row_bytes = i64::from(node_count).saturating_mul(i64::try_from(size).unwrap_or(32));
-    let (rows_range, pos) = py_read(data.len(), r.position(), row_bytes);
-    r.set_position(pos);
-    let (buf_range, pos) = py_read(data.len(), r.position(), i64::from(buffer_size));
-    r.set_position(pos);
+    // `reader.read(n)`: the stream reader refuses a negative size.
+    let rows_range = r.read_range(row_bytes)?;
+    let buf_range = r.read_range(i64::from(buffer_size))?;
     let rows_data = data.get(rows_range).unwrap_or_default();
     // `struct.iter_unpack` raises on a buffer that is not whole rows.
     if rows_data.len() % size != 0 {
@@ -337,8 +345,9 @@ struct BlobStrings<'a> {
 
 impl BlobStrings<'_> {
     /// `read_string(stringbuffer_reader, value)`: a local offset reads to a
-    /// NUL in the string buffer from there (a reader over the buffer, the
-    /// 32,767-byte window), the NUL found in the buffer's index; a high-bit
+    /// NUL in the string buffer from there (a memory reader over the buffer,
+    /// whatever the file's, `TypeTreeNode.py:118`; the 32,767-byte window),
+    /// the NUL found in the buffer's index; a high-bit
     /// offset is the common string (`common`'s, or
     /// [`super::commonstring::COMMON_STRINGS`]'s), or the offset's decimal
     /// string when the table has none, the last such string shared with the

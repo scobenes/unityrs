@@ -14,15 +14,15 @@ use crate::limits::{Charge, Limits, Meter, MeteredVec, heap_cost};
 use crate::once::ResultCell;
 use crate::options::FileContext;
 use crate::raw::RawStr;
-use crate::stream::{Endian, Reader};
+use crate::stream::{Endian, Reader, ReaderKind};
 use crate::typetree::NodeList;
 use crate::typetree::commonstring::CommonStrings;
 use crate::typetree::parse::{is_blob_format, parse_blob, parse_old, string_to_null};
 use crate::version::resolve_serialized;
 
 impl SerializedFile {
-    /// `SerializedFile.__init__`. Everything it keeps is charged to `meter`,
-    /// the input's.
+    /// `SerializedFile.__init__` over bytes (the memory reader's rules).
+    /// Everything it keeps is charged to `meter`, the input's.
     pub fn parse(
         name: RawStr,
         data: Bytes,
@@ -30,12 +30,26 @@ impl SerializedFile {
         meter: &Arc<Meter>,
         ctx: &Arc<FileContext>,
     ) -> Result<Arc<Self>, Error> {
+        Self::parse_with_reader(name, data, parent, meter, ctx, ReaderKind::Memory)
+    }
+
+    /// [`Self::parse`] by the rules of the reader UnityPy would read `data`
+    /// with ([`ReaderKind::Stream`] for a top-level file loaded from a path),
+    /// which its objects' reads follow too.
+    pub fn parse_with_reader(
+        name: RawStr,
+        data: Bytes,
+        parent: Option<Parent>,
+        meter: &Arc<Meter>,
+        ctx: &Arc<FileContext>,
+        reader: ReaderKind,
+    ) -> Result<Arc<Self>, Error> {
         // The handle itself, in its `Arc`.
         let mut charge = meter.charge(heap_cost(
             u64::try_from(std::mem::size_of::<Self>() + 16).unwrap_or(u64::MAX),
         ))?;
         let mut p = Parser {
-            r: Reader::new(&data, Endian::Big),
+            r: Reader::with_kind(&data, Endian::Big, reader),
             data: &data,
             meter,
             limits: &ctx.limits,
@@ -123,6 +137,7 @@ impl SerializedFile {
             by_path,
             container: ResultCell::new(),
             parent,
+            reader,
             charge,
             ctx: ctx.clone(),
         });
@@ -172,7 +187,8 @@ impl Parser<'_> {
     /// `SerializedFileHeader` and the header fields `__init__` reads after it
     /// (`SerializedFile.py:248-269`): big-endian, the endian byte at 16 from
     /// format 9, else at `file_size - metadata_size` (a Python position,
-    /// negative when the metadata is larger than the file).
+    /// negative when the metadata is larger than the file, which the stream
+    /// reader refuses).
     fn header(&mut self) -> Result<SerializedHeader, Error> {
         let r = &mut self.r;
         let mut metadata_size = r.read_u32()?;
@@ -200,7 +216,8 @@ impl Parser<'_> {
                 unknown = 0;
             }
         } else {
-            r.set_position(i128::from(file_size) - i128::from(metadata_size));
+            // A stream refuses a negative position (`reader.Position =`).
+            r.set_position(i128::from(file_size) - i128::from(metadata_size))?;
             endian = order(r.read_bool()?);
             reserved = None;
             unknown = 0;

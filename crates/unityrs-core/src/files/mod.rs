@@ -34,6 +34,7 @@ use crate::error::{Error, LimitError, LimitKind, Unsupported};
 use crate::limits::{Charge, ChargeError, Meter, heap_cost};
 use crate::options::FileContext;
 use crate::raw::RawStr;
+use crate::stream::ReaderKind;
 
 /// A parsed file.
 #[derive(Clone, Debug)]
@@ -85,6 +86,8 @@ pub struct RawFile {
     /// What `check_file_type` called `data`: `ResourceFile`, a zip entry's
     /// `Zip`, or an `AssetsFile` the name rule keeps as a reader.
     ty: FileType,
+    /// The reader it is: a resource read from it follows its rules.
+    reader: ReaderKind,
     /// The handle's own allocation, charged to the input.
     charge: Charge,
 }
@@ -92,12 +95,25 @@ pub struct RawFile {
 impl RawFile {
     /// A raw file of `data` under `name`, which `check_file_type` called
     /// `ty`, its allocation charged to `meter` first (`data` is a slice of a
-    /// buffer already charged, or the caller's).
+    /// buffer already charged, or the caller's). A memory reader, as UnityPy
+    /// keeps bytes and every entry of a container.
     pub fn new(
         name: RawStr,
         data: Bytes,
         ty: FileType,
         meter: &Arc<Meter>,
+    ) -> Result<Arc<Self>, ChargeError> {
+        Self::with_reader(name, data, ty, meter, ReaderKind::Memory)
+    }
+
+    /// [`Self::new`] as the reader `reader` ([`ReaderKind::Stream`] for a
+    /// top-level file loaded from a path).
+    pub fn with_reader(
+        name: RawStr,
+        data: Bytes,
+        ty: FileType,
+        meter: &Arc<Meter>,
+        reader: ReaderKind,
     ) -> Result<Arc<Self>, ChargeError> {
         let charge = meter.charge(heap_cost(
             u64::try_from(std::mem::size_of::<Self>() + 16).unwrap_or(u64::MAX),
@@ -106,8 +122,16 @@ impl RawFile {
             name,
             data,
             ty,
+            reader,
             charge,
         }))
+    }
+
+    /// The reader UnityPy keeps it as, whose rules a resource read from it
+    /// follows (`ResourceReader._get_resource_data`).
+    #[must_use]
+    pub fn reader_kind(&self) -> ReaderKind {
+        self.reader
     }
 
     /// The meter of the input it belongs to.
@@ -157,8 +181,9 @@ pub enum ParentKind {
 }
 
 /// `parse_file`: builds the file `ty` says, under the name rule
-/// ([`crate::detect::parsed_as`]). A file with a `parent` is an entry.
-/// Everything it keeps is charged to `meter`, the input's.
+/// ([`crate::detect::parsed_as`]), from bytes (UnityPy's memory reader). A
+/// file with a `parent` is an entry. Everything it keeps is charged to
+/// `meter`, the input's.
 pub fn parse_file(
     name: RawStr,
     data: Bytes,
@@ -166,6 +191,23 @@ pub fn parse_file(
     parent: Option<Parent>,
     meter: &Arc<Meter>,
     ctx: &Arc<FileContext>,
+) -> Result<File, Error> {
+    parse_file_with_reader(name, data, ty, parent, meter, ctx, ReaderKind::Memory)
+}
+
+/// [`parse_file`] by the rules of the reader UnityPy reads the file with:
+/// [`ReaderKind::Stream`] for a top-level file loaded from a path
+/// (`environment.py:136-139`; [`crate::env::Source::Path`]), whose
+/// `SerializedFile`, bundle header or kept reader follows them. A
+/// container's entries are memory whatever its reader. A `WebFile` is P3.
+pub fn parse_file_with_reader(
+    name: RawStr,
+    data: Bytes,
+    ty: FileType,
+    parent: Option<Parent>,
+    meter: &Arc<Meter>,
+    ctx: &Arc<FileContext>,
+    reader: ReaderKind,
 ) -> Result<File, Error> {
     // UnityPy helpers/ImportHelper.py:127-156; a zip input is refused (P3).
     let kind = parsed_as(ty, name.as_bytes(), parent.is_some());
@@ -180,12 +222,16 @@ pub fn parse_file(
         }));
     }
     Ok(match kind {
-        ParsedAs::SerializedFile => {
-            File::Serialized(SerializedFile::parse(name, data, parent, meter, ctx)?)
-        }
-        ParsedAs::BundleFile => File::Bundle(BundleFile::open(name, data, parent, meter, ctx)?),
+        ParsedAs::SerializedFile => File::Serialized(SerializedFile::parse_with_reader(
+            name, data, parent, meter, ctx, reader,
+        )?),
+        ParsedAs::BundleFile => File::Bundle(BundleFile::open_with_reader(
+            name, data, parent, meter, ctx, reader,
+        )?),
         ParsedAs::WebFile => File::Web(WebFile::open(name, data, parent, meter, ctx)?),
         ParsedAs::Zip => return Err(Error::Unsupported(Unsupported::Zip)),
-        ParsedAs::Raw | ParsedAs::Error => File::Raw(RawFile::new(name, data, ty, meter)?),
+        ParsedAs::Raw | ParsedAs::Error => {
+            File::Raw(RawFile::with_reader(name, data, ty, meter, reader)?)
+        }
     })
 }

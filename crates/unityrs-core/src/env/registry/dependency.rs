@@ -11,14 +11,15 @@ use std::sync::{Arc, Mutex, Weak};
 
 use super::{DepCache, lock};
 use crate::budget::Reservation;
-use crate::detect::check_file_type;
+use crate::detect::check_file_type_with_reader;
 use crate::env::{DerefError, Source};
 use crate::error::{Error, Unsupported};
-use crate::files::{BundleFile, File, RawFile, SerializedFile, parse_file};
+use crate::files::{BundleFile, File, RawFile, SerializedFile, parse_file_with_reader};
 use crate::limits::{ChargeError, Meter, pool_refusals};
 use crate::options::FileContext;
 use crate::pystr::is_split_path;
 use crate::raw::RawStr;
+use crate::stream::ReaderKind;
 use crate::typetree::TreeError;
 use crate::walk::{ParseError, ReadDetail};
 
@@ -155,13 +156,20 @@ impl WeakFile {
 /// a top-level file named `name`. A path UnityPy would read as the parts of
 /// a split file (`environment.reSplit`, [`is_split_path`]) is refused with
 /// [`Unsupported::Split`] before anything is read: UnityPy merges the parts
-/// (`environment.py:111-116`), which P1 does not (plan section 1).
+/// (`environment.py:111-116`), which P1 does not (plan section 1). A path is
+/// read by the stream reader's rules, as UnityPy reads the file it opens
+/// for one (`environment.py:136-139`); bytes, fetched or given, by the
+/// memory reader's ([`ReaderKind`]).
 pub(crate) fn open_source(
     name: &RawStr,
     source: &Source,
     meter: &Arc<Meter>,
     ctx: &Arc<FileContext>,
 ) -> Result<File, Error> {
+    let reader = match source {
+        Source::Path(_) => ReaderKind::Stream,
+        Source::Bytes { .. } | Source::Fetch { .. } => ReaderKind::Memory,
+    };
     let data = match source {
         Source::Bytes { data, .. } => data.clone(),
         Source::Path(p) => {
@@ -180,8 +188,8 @@ pub(crate) fn open_source(
         Source::Fetch { fetch, .. } => fetch.fetch()?,
     };
     // UnityPy environment.py:139-154
-    let ty = check_file_type(&data, &ctx.limits)?;
-    parse_file(name.clone(), data, ty, None, meter, ctx)
+    let ty = check_file_type_with_reader(&data, &ctx.limits, reader)?;
+    parse_file_with_reader(name.clone(), data, ty, None, meter, ctx, reader)
 }
 
 thread_local! {

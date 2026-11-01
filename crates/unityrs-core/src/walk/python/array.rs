@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use super::{Py, Reader};
 use crate::limits::MeteredVec;
-use crate::stream::{py_read, py_unpack_from};
 use crate::typetree::{Kind, NodeId, Tree};
 use crate::value::{ListIx, PrimArray, PrimRun, Value};
 use crate::walk::{Out, ReadDetail, ReadError, charge_error, f32_bits, grow_step, int, uint};
@@ -106,13 +105,11 @@ impl Reader<'_, '_> {
             let mut first = None;
             for i in 0..count {
                 self.work.run(1, 1, self.at())?;
-                let (range, next) = py_read(self.bytes.len(), self.pos, 1);
+                let range = self.read(1)?;
                 if range.len() != 1 || first.is_some_and(|f: usize| f + i != range.start) {
-                    self.pos = next;
                     return Err(self.raise(Py::Struct(1)));
                 }
                 first.get_or_insert(range.start);
-                self.pos = next;
             }
             let s = first.unwrap_or(0);
             let b = self
@@ -178,9 +175,14 @@ impl Reader<'_, '_> {
         }
     }
 
-    /// `read_array_struct` (`EndianBinaryReader.py:258-264`): a `struct`
-    /// format of `size` items, refused for a negative count, unpacked from
-    /// the position in one piece; a tuple.
+    /// `read_array_struct` (`EndianBinaryReader.py:164-168`, `:258-264`): a
+    /// `struct` format of `size` items, refused for a negative count,
+    /// unpacked in one piece by the reader's rule ([`ReaderKind::unpack`]:
+    /// from the position on the memory reader, from `read(n)` on the stream
+    /// reader, whose position moves by what it read even when that is
+    /// short); a tuple.
+    ///
+    /// [`ReaderKind::unpack`]: crate::stream::ReaderKind::unpack
     #[inline(never)]
     fn struct_tuple(&mut self, fmt: Fmt, size: i64) -> Result<Out, ReadError> {
         let Ok(count) = usize::try_from(size) else {
@@ -189,8 +191,12 @@ impl Reader<'_, '_> {
         let n = count
             .checked_mul(fmt.size())
             .ok_or_else(|| self.raise(Py::Struct(u64::MAX)))?;
-        let at = py_unpack_from(self.bytes.len(), self.pos, n)
-            .ok_or_else(|| self.raise(Py::Struct(n as u64)))?;
+        let (at, next) = self.kind.unpack(self.bytes.len(), self.pos, n);
+        let Some(at) = at else {
+            let e = self.raise(Py::Struct(n as u64));
+            self.pos = next;
+            return Err(e);
+        };
         let bytes = self.bytes.get(at..at.saturating_add(n)).unwrap_or_default();
         self.work.values(count as u64, self.at())?;
         let here = self.at();
@@ -219,7 +225,7 @@ impl Reader<'_, '_> {
             };
             items.push(v).map_err(|e| charge_error(here, e))?;
         }
-        self.pos = self.pos.saturating_add(n as i128);
+        self.pos = next;
         let built = self
             .builder
             .tuple(items)

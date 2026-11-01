@@ -6,7 +6,8 @@
 //! copy of the row and nothing else, so a batch can hold millions and clone
 //! them freely: every handle of a file shares the one table the file's
 //! parse charged to the input's meter (plan section 3.12). Reading goes
-//! through [`crate::walk::read_typetree`] with the tree that
+//! through [`crate::walk::read_typetree_with_reader`], by the rules of the
+//! file's reader ([`SerializedFile::reader_kind`]), with the tree that
 //! [`ObjectRef::tree`] resolves (plan section 3.12: explicit, embedded, then
 //! the provider chain with the class and packed version as its key).
 //!
@@ -18,13 +19,14 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use crate::budget::DecodeBuf;
-use crate::error::LimitKind;
+use crate::error::{Error, LimitKind};
 use crate::files::{ObjectInfo, SerializedFile, SerializedType};
 use crate::provider::{TreeRef, TreeRequest, TreeSource};
-use crate::stream::py_read;
 use crate::typetree::Tree;
 use crate::value::Parsed;
-use crate::walk::{ParseError, ReadCtx, WriteCtx, WriteError, WriteRules, read_typetree};
+use crate::walk::{
+    ParseError, ReadCtx, WriteCtx, WriteError, WriteRules, read_typetree_with_reader,
+};
 
 /// One object of a `SerializedFile`: the file and the index of its row
 /// (module docs).
@@ -98,15 +100,20 @@ impl ObjectRef {
     }
 
     /// `get_raw_data`: `byte_size` bytes from `byte_start`, cut short at the
-    /// end of the file (a slice of the file's buffer, no copy).
-    #[must_use]
-    pub fn raw_data(&self) -> Bytes {
+    /// end of the file (a slice of the file's buffer, no copy), by the
+    /// file's reader's rules ([`SerializedFile::reader_kind`]): the stream
+    /// reader (a file loaded from a path) refuses a negative `byte_start`, or
+    /// one at or above 2^63, where the memory reader slices from the end or
+    /// reads nothing.
+    pub fn raw_data(&self) -> Result<Bytes, Error> {
         // UnityPy files/ObjectReader.py:278-283: `reset()`, then
-        // `read_bytes(byte_size)`, a Python slice of the file.
+        // `read_bytes(byte_size)`.
         let info = self.info();
         let data = self.file.data();
-        let (range, _) = py_read(data.len(), info.byte_start, i64::from(info.byte_size));
-        data.slice(range)
+        let kind = self.file.reader_kind();
+        let start = kind.seek(info.byte_start)?;
+        let (range, _) = kind.read(data.len(), start, i64::from(info.byte_size))?;
+        Ok(data.slice(range))
     }
 
     /// The tree a read would use: `nodes` when given, else the type record's,
@@ -166,13 +173,14 @@ impl ObjectRef {
             meter: file.meter(),
         };
         let info = self.info();
-        read_typetree(
+        read_typetree_with_reader(
             file.data(),
             info.byte_start,
             info.byte_size,
             &tree.tree,
             &ctx,
             check_read,
+            file.reader_kind(),
         )
     }
 

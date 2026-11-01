@@ -9,20 +9,30 @@ is built here in code; no file is read.
     scripts/dev python tools/fixtures/scaffold.py --check   # regenerate and compare
 
 Integers that can leave the i64 range (positions, sizes) are written as strings.
+
+The `stream_` cases record the stream reader (`EndianBinaryReader_Streamable`), which
+UnityPy reads a file it loads from a path with: each runs on the file
+`LocalFileSystem().open(path, "rb")` gives, as `Environment.load_file` opens a path, over
+a file written to a temporary directory that is removed whatever happens. Positions and
+sizes whose outcome depends on the machine (a seek past the file system's largest file,
+a read larger than it can allocate) are left out (PARITY.md section 19.3).
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import struct
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import lz4
 import lz4.block
 import UnityPy
+from fsspec.implementations.local import LocalFileSystem
 from UnityPy.classes import PPtr
 from UnityPy.streams import EndianBinaryReader
 
@@ -108,11 +118,14 @@ def align_cases() -> list[dict]:
     return out
 
 
+STRING_DATAS = [b"ab\0cdef\0gh", b"abcdefghij", b"\0\0x"]
+
+
 def string_to_null_cases() -> tuple[list[str], list[dict]]:
     """`read_string_to_null(max_length)` (EndianBinaryReader.py:275-284): `re.search` clamps
     its start and end to the buffer; a miss raises when `pos + max_length >= len` and
     otherwise reads `max_length` bytes as a slice; a hit sets the absolute end."""
-    datas = [b"ab\0cdef\0gh", b"abcdefghij", b"\0\0x"]
+    datas = STRING_DATAS
     out = []
     for di, data in enumerate(datas):
         for pos in positions(len(data)):
@@ -132,6 +145,186 @@ def string_to_null_cases() -> tuple[list[str], list[dict]]:
                 except Exception as e:  # noqa: BLE001 - UnityPy raises a bare Exception here
                     out.append({"data": di, "pos": str(pos), "max": max_length, "error": type(e).__name__})
     return [d.hex() for d in datas], out
+
+
+# ------------------------------------------------------------ the stream reader
+
+# Outside the machine-dependent range: a seek this far is below every file system's
+# largest file, and a read this large is refused before any allocation.
+FAR = 2**40
+TOO_LARGE = 2**63 - 33  # CPython refuses a bytes object this large (OverflowError)
+POSITIONS_SET = [-12, -2, -1, 0, 5, 10, 14, FAR, 2**63, 2**64]
+
+
+class Streams:
+    """Stream readers over files of a temporary directory, as `Environment` opens a path."""
+
+    def __init__(self, tmp: Path):
+        self.tmp, self.fs, self.n = tmp, LocalFileSystem(), 0
+
+    @contextlib.contextmanager
+    def reader(self, data: bytes, pos: int):
+        self.n += 1
+        path = self.tmp / f"f{self.n}"
+        path.write_bytes(data)
+        f = self.fs.open(str(path), "rb")
+        try:
+            r = EndianBinaryReader(f, "<")
+            assert type(r).__name__ == "EndianBinaryReader_Streamable"
+            r.Position = pos
+            yield r
+        finally:
+            f.close()
+            path.unlink()
+
+
+def outcome(e: BaseException) -> str:
+    return f"{type(e).__name__}: {e}"
+
+
+def stream_positions(n: int) -> list[int]:
+    return list(range(0, n + 5)) + [FAR]
+
+
+def stream_set_cases(s: Streams) -> list[dict]:
+    """`Position = p`: a negative p raises in the reader, one past what `seek` takes in the file."""
+    out = []
+    for pos in POSITIONS_SET:
+        with s.reader(bytes(range(10)), 3) as r:
+            try:
+                r.Position = pos
+                out.append({"pos": str(pos), "new_pos": str(r.Position)})
+            except Exception as e:  # noqa: BLE001 - the exception is the outcome
+                out.append({"pos": str(pos), "error": outcome(e), "new_pos": str(r.Position)})
+    return out
+
+
+def stream_read_cases(s: Streams) -> list[dict]:
+    """`read(size)`: the file's own read; the position stops at the end."""
+    data = bytes(range(10))
+    sizes = [-14, -11, -10, -3, -2, -1, 0, 1, 3, 10, 11, 2**20, I32_MIN, I64_MIN, TOO_LARGE, I64_MAX]
+    out = []
+    for pos in stream_positions(len(data)):
+        for size in sizes:
+            with s.reader(data, pos) as r:
+                try:
+                    got = r.read(size)
+                    out.append(
+                        {
+                            "pos": str(pos),
+                            "size": str(size),
+                            "start": got[0] if got else None,
+                            "n": len(got),
+                            "new_pos": str(r.Position),
+                        }
+                    )
+                except Exception as e:  # noqa: BLE001
+                    out.append({"pos": str(pos), "size": str(size), "error": outcome(e), "new_pos": str(r.Position)})
+    return out
+
+
+def stream_unpack_cases(s: Streams) -> list[dict]:
+    """Fixed-width reads: `struct.unpack(stream.read(n))` (EndianBinaryReader.py:345-346)."""
+    data = bytes(range(10))
+    funcs = {2: "read_u_short", 4: "read_u_int", 8: "read_u_long"}
+    out = []
+    for pos in stream_positions(len(data)):
+        for n, name in funcs.items():
+            with s.reader(data, pos) as r:
+                try:
+                    start = getattr(r, name)() & 0xFF
+                except struct.error:
+                    start = None
+                out.append({"pos": str(pos), "n": n, "start": start, "new_pos": str(r.Position)})
+    return out
+
+
+def stream_byte_cases(s: Streams) -> list[dict]:
+    """One-byte reads: `unpack(fmt, self.read(1))`."""
+    data = bytes(range(10))
+    out = []
+    for pos in stream_positions(len(data)):
+        with s.reader(data, pos) as r:
+            try:
+                value = r.read_u_byte()
+            except struct.error:
+                value = None
+            out.append({"pos": str(pos), "value": value, "new_pos": str(r.Position)})
+    return out
+
+
+def stream_align_cases(s: Streams) -> list[dict]:
+    """`align_stream(n)`: the same arithmetic, through the `Position` setter."""
+    out = []
+    for n in (4, 16):
+        for pos in list(range(0, 21)) + [FAR + 1]:
+            with s.reader(bytes(range(10)), pos) as r:
+                r.align_stream(n)
+                out.append({"pos": str(pos), "n": n, "new_pos": str(r.Position)})
+    return out
+
+
+def stream_string_to_null_cases(s: Streams, datas: list[bytes]) -> list[dict]:
+    """The base class's `read_string_to_null` loop (EndianBinaryReader.py:136-144)."""
+    out = []
+    for di, data in enumerate(datas):
+        for pos in stream_positions(len(data)):
+            for max_length in (1, 3, 5, 32767):
+                with s.reader(data, pos) as r:
+                    try:
+                        got = r.read_string_to_null(max_length).encode("utf8", "surrogateescape")
+                        out.append(
+                            {"data": di, "pos": str(pos), "max": max_length, "hex": got.hex(), "new_pos": str(r.Position)}
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        out.append(
+                            {"data": di, "pos": str(pos), "max": max_length, "error": outcome(e), "new_pos": str(r.Position)}
+                        )
+    return out
+
+
+INT_ARRAYS = [
+    struct.pack("<4i", 3, 1, -2, 3),
+    struct.pack("<3i", 1, 7, 9),
+    struct.pack("<2i", -1, 5),
+    struct.pack("<i", 2) + b"\x01\x00\x00\x00\x02\x00",
+    bytes([1, 0]),
+    # A count whose array a stream would allocate (8 GiB) before it reads: memory only.
+    struct.pack("<2i", 2**31 - 1, 5),
+]
+
+
+def int_array_cases(s: Streams | None) -> list[dict]:
+    """`read_int_array()`: a count, then `read_array_struct` (EndianBinaryReader.py:164-168, :258-264),
+    on the memory reader (`s` None) at any position, or on the stream reader."""
+    out = []
+    for di, data in enumerate(INT_ARRAYS if s is None else INT_ARRAYS[:-1]):
+        positions = range(-len(data) - 2, len(data) + 2) if s is None else range(0, len(data) + 2)
+        for pos in positions:
+            ctx = s.reader(data, pos) if s else contextlib.nullcontext(reader(data, pos))
+            with ctx as r:
+                try:
+                    values = list(r.read_int_array())
+                    out.append({"data": di, "pos": str(pos), "values": values, "new_pos": str(r.Position)})
+                except struct.error as e:
+                    out.append({"data": di, "pos": str(pos), "error": outcome(e), "new_pos": str(r.Position)})
+    return out
+
+
+def stream_fixture(meta: dict, string_datas: list[bytes]) -> dict:
+    with tempfile.TemporaryDirectory() as tmp:
+        s = Streams(Path(tmp))
+        return {
+            "stream_set_position": stream_set_cases(s),
+            "stream_read": stream_read_cases(s),
+            "stream_unpack": stream_unpack_cases(s),
+            "stream_read_u_byte": stream_byte_cases(s),
+            "stream_align": stream_align_cases(s),
+            "stream_string_to_null": stream_string_to_null_cases(s, string_datas),
+            "int_array_data": [d.hex() for d in INT_ARRAYS],
+            "int_array": int_array_cases(None),
+            "stream_int_array": int_array_cases(s),
+        }
 
 
 def external_cases() -> list[dict]:
@@ -236,6 +429,7 @@ def fixtures() -> dict[str, object]:
             "align": align_cases(),
             "string_to_null_data": string_data,
             "string_to_null": string_cases,
+            **stream_fixture(meta, STRING_DATAS),
         },
         "pptr_external.json": {**meta, "cases": external_cases()},
         "lz4_blocks.json": {

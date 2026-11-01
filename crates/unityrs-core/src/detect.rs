@@ -5,7 +5,9 @@
 //!
 //! Notable rules: eight U+00FA characters as a signature (the UTF-8 bytes
 //! `C3 BA` x 8, never `FA` x 8); a zip only when byte 4 is NUL; a 20-byte file
-//! with no NUL raises; a gzip file must decompress in full, every member and
+//! with no NUL raises from bytes, and from a path, whose stream reader drops
+//! the last byte it read, is a resource ([`check_file_type_with_reader`]);
+//! a gzip file must decompress in full, every member and
 //! trailer checked (the P0 spike inflated only 20 bytes, which this fixes).
 //! That is UnityPy's own behaviour, not a unityrs policy: its streaming
 //! `read_string_to_null` tests `Position != Length` per byte
@@ -43,7 +45,7 @@ use flate2::{Crc, Decompress, FlushDecompress, Status};
 
 use crate::error::{LimitError, LimitKind};
 use crate::limits::{Limits, Meter};
-use crate::stream::py_string_to_null;
+use crate::stream::ReaderKind;
 
 /// UnityPy's `FileType` verdict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -64,7 +66,9 @@ pub enum FileType {
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DetectError {
-    /// A file of exactly 20 bytes with no NUL in them.
+    /// A file of exactly 20 bytes with no NUL in them, read by the memory
+    /// reader (bytes; from a path the stream reader's rule never raises
+    /// here, [`check_file_type_with_reader`]).
     #[error("unterminated signature in a 20-byte file")]
     Unterminated,
     /// A `1f 8b` file whose stream does not decompress in full.
@@ -84,9 +88,23 @@ pub enum DetectError {
     Work(LimitError),
 }
 
-/// `check_file_type` on the bytes.
+/// `check_file_type` on the bytes (UnityPy's memory reader).
 pub fn check_file_type(data: &[u8], limits: &Limits) -> Result<FileType, DetectError> {
-    detect(data, limits, None)
+    detect(data, limits, None, ReaderKind::Memory)
+}
+
+/// [`check_file_type`] by the rules of the reader UnityPy reads `data`
+/// with: the stream reader for a file loaded from a path, whose
+/// `read_string_to_null(20)` drops the last byte it read where no NUL is in
+/// reach and never raises from the start of a file, so a 20-byte file with
+/// no NUL is a `ResourceFile` (or a `WebFile` by its first 19 bytes) where
+/// the memory reader raises ([`DetectError::Unterminated`]).
+pub fn check_file_type_with_reader(
+    data: &[u8],
+    limits: &Limits,
+    reader: ReaderKind,
+) -> Result<FileType, DetectError> {
+    detect(data, limits, None, reader)
 }
 
 /// [`check_file_type`] on a container's entry, with every byte a gzip
@@ -98,18 +116,25 @@ pub fn check_entry_type(
     limits: &Limits,
     meter: &Meter,
 ) -> Result<FileType, DetectError> {
-    detect(data, limits, Some(meter))
+    detect(data, limits, Some(meter), ReaderKind::Memory)
 }
 
-fn detect(data: &[u8], limits: &Limits, work: Option<&Meter>) -> Result<FileType, DetectError> {
+fn detect(
+    data: &[u8],
+    limits: &Limits,
+    work: Option<&Meter>,
+    reader: ReaderKind,
+) -> Result<FileType, DetectError> {
     // UnityPy helpers/ImportHelper.py:54-55
     if data.len() < 20 {
         return Ok(FileType::ResourceFile);
     }
-    // UnityPy helpers/ImportHelper.py:57: the memoryview reader's
+    // UnityPy helpers/ImportHelper.py:57: the reader's
     // `read_string_to_null(20)` at 0, decoded with `surrogateescape`, which
     // is injective, so comparing the bytes compares the strings.
-    let (range, _) = py_string_to_null(data, 0, 20).ok_or(DetectError::Unterminated)?;
+    let (range, _) = reader
+        .string_to_null(data, 0, 20)
+        .ok_or(DetectError::Unterminated)?;
     let signature = data.get(range).unwrap_or_default();
     // UnityPy helpers/ImportHelper.py:60-70
     if BUNDLE_SIGNATURES.contains(&signature) {
