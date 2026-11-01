@@ -145,6 +145,13 @@ fn reference() -> Vec<u8> {
 /// A tree and the data it reads.
 type Read = (Arc<Tree>, Vec<u8>);
 
+/// A list element: its name, its rows (level, type, name) and its bytes.
+type Element = (
+    &'static str,
+    &'static [(i32, &'static str, &'static str)],
+    usize,
+);
+
 /// Each case: a node whose children set fewer entries than it has, with
 /// the data it reads, and a tree whose children set the same entries once
 /// each, with its data (so its value, read exactly, is charged as the
@@ -226,6 +233,65 @@ fn a_finished_dict_holds_no_spare_entries() {
             lens(q.value(), &mut want);
             assert_eq!(got, want, "{reader} {what}: each dict's entries");
             assert_eq!(used, exact_used, "{reader} {what}: the value's charge");
+        }
+    }
+}
+
+/// The same rule for lists (plan 3.10, "Bounds"): a list read past its
+/// first reservation (`Limits::max_prealloc` elements, 2^16) grows
+/// geometrically but never past its length, so it ends with no spare item,
+/// in each reader's list loops (a string, a `pair`, a class; the element
+/// aligned or not).
+#[test]
+fn a_list_read_past_its_first_reservation_holds_no_spare_item() {
+    let count = Limits::default().max_prealloc + 1;
+    let elements: [Element; 3] = [
+        ("string", &[(3, "string", "data")], 4),
+        (
+            "pair",
+            &[
+                (3, "pair", "data"),
+                (4, "int", "first"),
+                (4, "int", "second"),
+            ],
+            8,
+        ),
+        ("class", &[(3, "X", "data"), (4, "int", "a")], 4),
+    ];
+    for (what, element, size) in elements {
+        for flag in [0, 0x4000] {
+            let mut rows = vec![
+                NodeRow::new(0, "Base", "Base"),
+                NodeRow::new(1, "vector", "v"),
+                NodeRow::new(2, "Array", "Array"),
+                NodeRow::new(3, "int", "size"),
+            ];
+            // The element's own flag: aligned, the pure-Python reader
+            // reads it through `read_value_array`.
+            rows.extend(element.iter().enumerate().map(|(i, (l, t, n))| {
+                NodeRow::new(*l, *t, *n).with_meta_flag(if i == 0 { flag } else { 0 })
+            }));
+            let t = Tree::compile(
+                Arc::new(NodeList::trusted(rows).unwrap()),
+                &Limits::default(),
+            )
+            .unwrap();
+            let mut data = u32::try_from(count).unwrap().to_le_bytes().to_vec();
+            data.resize(4 + count * size, 0);
+            for reader in READERS {
+                let (p, _, _) = read(reader, &t, &data);
+                let mut found = Vec::new();
+                spare(p.value(), &mut found);
+                assert_eq!(found, [], "{reader} {what} {flag:#x}: (length, capacity)");
+                let Value::Dict(m) = p.value() else {
+                    panic!("{reader} {what}: not a dict")
+                };
+                let items = m.entries().first().map(|(_, v)| v);
+                assert!(
+                    matches!(items, Some(Value::List(l)) if l.len() == count),
+                    "{reader} {what} {flag:#x}: not {count} items"
+                );
+            }
         }
     }
 }
