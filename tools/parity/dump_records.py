@@ -237,21 +237,39 @@ def container_row(path, info):
 
 # ------------------------------------------------------------ object records
 
-_CHECK_READ = re.compile(r"Expected to read (\d+) bytes, but only read (\d+) bytes")
+# The messages each L2 kind is raised with, by exception class, matched whole (re.fullmatch). A message can
+# carry the file's own strings: the pure-Python reader's "Referenced type not found" names the class, namespace
+# and assembly the object holds (helpers/TypeTreeHelper.py:109), so a substring found anywhere in a message says
+# nothing about its kind (review round 9: a class named "out of bounds" was out_of_bounds, and one named like
+# the check_read message stopped the whole run).
+_CHECK_READ = re.compile(r"Expected to read (\d+) bytes, but only read (\d+) bytes")  # TypeTreeHelper.py:156
+_KINDS = (
+    # UnityPyBoost's bounds checks (UnityPyBoost/TypeTreeHelper.cpp): read_bool, read_u8, read_s8, their
+    # arrays and read_bytes raise ValueError; every other read raises EOFError, which only UnityPyBoost raises.
+    (ValueError, re.compile(r"read_\w+ out of bounds"), "out_of_bounds"),
+    # Both readers (TypeTreeHelper.py:215, TypeTreeHelper.cpp:281).
+    (ValueError, re.compile(r"Negative length read from TypeTree"), "negative_length"),
+    # The pure-Python reader (TypeTreeHelper.py:99-109): no ref types, then a class it does not hold. A file
+    # below format 20 has no `ref_types` attribute, so reading it raises first (PARITY.md, get_ref_type_node).
+    (ValueError, re.compile(r"SerializedFile has no ref_types|Referenced type not found: .*", re.S), "ref_type"),
+    (AttributeError, re.compile(r"'[\w.]+' object has no attribute 'ref_types'"), "ref_type"),
+    # UnityPyBoost: every failure of its get_ref_type_node is reported as this one (TypeTreeHelper.cpp:763).
+    (ValueError, re.compile(r"Failed to get ref type node"), "ref_type"),
+)
 
 
 def error_kind(e: BaseException) -> tuple[str, int | None]:
-    """Map a parse exception to the spec's L2 error kinds (and bytes read, if known)."""
+    """Map a parse exception to the spec's L2 error kinds (and bytes read, if known), by its class and its
+    whole message: one of the forms above, else `other`."""
     msg = str(e)
-    m = _CHECK_READ.search(msg)
+    m = _CHECK_READ.fullmatch(msg) if type(e) is ValueError else None
     if m:
         return "check_read", int(m.group(2))
-    if isinstance(e, EOFError) or "out of bounds" in msg:
+    if type(e) is EOFError:
         return "out_of_bounds", None
-    if "Negative length" in msg:
-        return "negative_length", None
-    if "ref type" in msg.lower() or "ref_types" in msg or "Referenced type" in msg or "Reference Type" in msg:
-        return "ref_type", None
+    for cls, form, kind in _KINDS:
+        if type(e) is cls and form.fullmatch(msg):
+            return kind, None
     return "other", None
 
 

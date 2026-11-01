@@ -301,6 +301,33 @@ class DumpTests(DumpCase):
             },
         )
 
+    def test_a_kind_comes_from_the_whole_message_not_the_files_strings(self):
+        """A ReferencedObject whose class the file does not hold is `ref_type` (spec 4.3), whatever the class is
+        named. The pure-Python reader's message names it (TypeTreeHelper.py:109), so review round 9 found the
+        oracle reading a class named like another kind's message as that kind, and stopping the whole run on one
+        named like the check_read message (it then reads the object again with check_read off)."""
+        d = self.tmp / "in"
+        d.mkdir()
+        named = ["out of bounds", "Negative length read from TypeTree"]
+        named += ["Expected to read 3 bytes, but only read 99 bytes", "read_u8 out of bounds", "Nothing"]
+        known = S.Type(114, S.Node("Other", "Base", [S.Node("int", "x")]), ref_names=[b"Other", b"NS", b"Asm"])
+        tree = S.Node("MyRefs", "Base", [S.ref_object("ref")])
+        body = [struct.pack("<q", 1) + S.s32(cls) + S.s32("NS") + S.s32("Asm") for cls in named]
+        # byte_size 0 is the pure-Python reader's, whose message names the class; the rest UnityPyBoost's.
+        rows = [S.Obj(i + 1, 0, b, byte_size=0) for i, b in enumerate(body)]
+        rows += [S.Obj(i + 11, 0, b) for i, b in enumerate(body)]
+        (d / "refs.assets").write_bytes(S.serialized_file([S.Type(114, tree)], rows, ref_types=[known]))
+        out = self.tmp / "refs.jsonl"
+        self.assertEqual(dump(d, "-o", out), 0, "the run stops on none of them")
+        self.assert_canonical(out)
+        errors = {r["path_id"]: r["l2"]["error"] for r in records(out) if r["rec"] == "object"}
+        self.assertEqual(sorted(errors), [*range(1, 6), *range(11, 16)])
+        for path_id, error in errors.items():
+            with self.subTest(path_id=path_id, note=error["note"]):
+                self.assertEqual((error["kind"], error["bytes_read"]), ("ref_type", None))
+        self.assertEqual(errors[3]["note"], f"ValueError: Referenced type not found: {named[2]} NS Asm")
+        self.assertEqual(errors[13]["note"], "ValueError: Failed to get ref type node")
+
     def test_version_strings_pack_as_unitypy_packs_them(self):
         """Spec 4.2's version-packing rule and its failures, for SerializedFiles and bundles."""
         d = self.tmp / "in"

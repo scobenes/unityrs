@@ -59,6 +59,38 @@ def pair(name, first, second, meta=0):
     return [[0, "pair", name, meta], *shift(first, 1), *shift(second, 1)]
 
 
+def ref_object(name="obj", data_rows=None, meta=0):
+    """`ReferencedObject { SInt64 rid; ReferencedManagedType type { string class, ns, asm }; ReferencedObjectData data }`."""
+    rows = [
+        [0, "ReferencedObject", name, meta],
+        [1, "SInt64", "rid", 0],
+        [1, "ReferencedManagedType", "type", 0],
+        [2, "string", "class", 0],
+        [2, "string", "ns", 0],
+        [2, "string", "asm", 0],
+        [1, "ReferencedObjectData", "data", 0],
+    ]
+    return rows
+
+
+def ref_bytes(cls, ns="N", asm="A", rid=1):
+    return struct.pack("<q", rid) + s(cls) + s(ns) + s(asm)
+
+
+INT_TREE = [[0, "Data", "Base", 0], [1, "int", "x", 0]]
+REF = [{"class": "C", "ns": "N", "asm": "A", "nodes": INT_TREE}]
+# Classes named like the messages of the other L2 kinds, and of an UnityPyBoost bounds check: a reference to one
+# the file does not hold is `ref_type` on both paths (CANONICAL_DUMP.md 4.3), though the pure-Python reader's
+# message names it (review round 9: the oracle read such a message's substrings).
+LOOKALIKE_CLASSES = [
+    "out of bounds",
+    "read_u8 out of bounds",
+    "Negative length read from TypeTree",
+    "Expected to read 3 bytes, but only read 99 bytes",
+    "SerializedFile has no ref_types",
+]
+
+
 def tree(rows):
     return TypeTreeNode.from_list(
         [
