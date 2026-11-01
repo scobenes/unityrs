@@ -1,41 +1,54 @@
 #!/bin/sh
-# Gate G6 (docs/plans/core.md section 6): no stub is left in any crate.
+# Gate G6 (docs/plans/core.md section 6): no stub is left in any crate, and
+# no call of `todo!` or `unimplemented!` is written or assembled in them.
 #
-# A stub module's todo!() bodies were allowed only by its `STUB(X)` line and
-# the `#![allow(clippy::todo, ...)]` under it. This checks every Rust file of
-# every crate for each sign of one:
+# The rule, in one sentence: outside comments, strings and character
+# literals, the words `todo` and `unimplemented`, raw (`r#todo`) or not,
+# appear in no Rust file but as a `clippy::` lint name directly under
+# `deny(` or `forbid(` in an inner attribute (`#![...]`) at its file's top
+# level.
+#
+# In full, the scan reads every file under ROOT whose name ends in `.rs`
+# (symlinks followed; ROOT's own `target/` and hidden entries, such as
+# `.git`, aside), and a line is a hit when it holds:
 #   - the marker `STUB(`, in code or a comment (`#[ignore = "STUB(B): ..."]`
 #     marks a test that waits on another package's stub, plan section 7.1);
-#   - `clippy::todo`, `clippy::unimplemented` or the group that holds them,
-#     `clippy::restriction`, directly under `allow(`, `expect(` or `warn(` in
-#     an attribute, `cfg_attr` included, whatever whitespace or comments lie
-#     between the path's tokens (under `deny(` or `forbid(`, as in
-#     unityrs-core's own lib.rs, it is the opposite of a stub);
-#   - `todo!` or `unimplemented!` invoked with any delimiter, `()`, `[]` or
-#     `{}`, by any path (`core::todo!`), whatever whitespace or comments lie
-#     between its tokens, on one line or several;
-#   - either macro imported under another name (`use core::todo as later;`,
-#     on one line or several), whose calls no name scan would see;
-#   - either name as a word of its own anywhere inside a macro call's
-#     delimiters (`call!(todo)`) or a `macro_rules!` definition, or inside
-#     an attribute other than as a `clippy::` lint path: a macro_rules! body
-#     can put a `!` after a name it is handed (`$m!()`) or after one it
-#     holds (`todo $bang`), and then the call is written nowhere a name
-#     scan reads, and clippy, which lints a call by the macro whose
-#     expansion it starts, lints `call!`, not `todo!`. Neither name has
-#     another use in the crates, so a variable of either name inside a
-#     macro call fails too.
+#   - outside comments, strings and character literals, the word `todo` or
+#     `unimplemented`, or `restriction` after `::` (the lint group that
+#     holds both), raw or not, other than as the lint path `clippy::todo`,
+#     `clippy::unimplemented` or `clippy::restriction` that a `,` or `)`
+#     ends, directly under `deny(` or `forbid(`, with only `cfg_attr(`s
+#     between that and the `#![` of an attribute no other bracket encloses
+#     (the core's and the tpk crate's `deny` lists).
+# Why that is enough: a call of either macro names it where the call is
+# written, where a `macro_rules!` body holds the name (`todo $bang`), in
+# the tokens a macro call is handed (`call!(todo)` over `$m!()`, or
+# `call!(#[deny(clippy::todo)])` over a pattern that makes a path of it),
+# or in a `use` that renames or re-exports it (`use core::todo as later;`,
+# `mod clippy { pub use core::todo; }`), and a `macro_rules!` body cannot
+# build a name from pieces. The scan reads each of these as the word,
+# however the macro around it is named or called (a raw `r#loop!` too).
+# No macro is handed an inner attribute at a file's top level (an outer
+# one is part of the item a derive or an attribute macro is handed), and a
+# lint denied is the opposite of a stub. So a variable named `todo` is a
+# hit too (the crates name none), as is a lint path in an outer attribute,
+# in a macro call, a `macro_rules!` body, a module or a function, or under
+# `allow(`, `expect(` or `warn(`.
+#
 # Each file is lexed as Rust is first: comments (nested block comments
 # included), strings (raw, byte and C strings included) and character
 # literals are blanked, so they may name the macros and the lints freely,
 # and a comment between two tokens is whitespace. The workspace's lints
 # (Cargo.toml `[workspace.lints.clippy]`, which every crate inherits) forbid
 # both macros as well, so no attribute can allow them again: `cargo clippy`
-# fails on any reachable call written in the code, an aliased one included,
-# and this scan sees a call a macro_rules! body writes or assembles. Not
-# read: what a procedural macro (the crates use thiserror's derive) or
-# a dependency's own macro expands to, and files other than `.rs` that
-# `include!` reads (clippy lints a call written in one).
+# fails on a call written in any code it lints, an aliased one included. It
+# lints a call a macro_rules! body writes or assembles as the outer macro's,
+# so it misses that one, and this scan reads it. Not read: comments (a
+# doctest's code among them, which is a test and never part of a crate),
+# what a procedural macro (the crates use thiserror's derive) or a
+# dependency's own macro expands to, and a file a crate compiles that is no
+# `.rs` file under ROOT (one `#[path]` or `include!` names by another name
+# or outside ROOT; clippy lints a call written in one).
 #
 # Each hit is printed with its owning package, `[X] FILE:LINE: text`: the
 # package a `STUB(X)` on the line names (for a blocked test, the package it
@@ -49,15 +62,16 @@
 set -eu
 root=${1:-"$(dirname "$0")/.."}
 cd "$root"
-hits=$(find crates -type f -name '*.rs' \
-    | LC_ALL=C sort \
-    | LC_ALL=C xargs -r awk '
+hits=$(find -L . \( -path ./target -o -path './.?*' \) -prune -o -type f -name '*.rs' -print0 \
+    | LC_ALL=C sort -z \
+    | LC_ALL=C xargs -0 -r awk '
         BEGIN {
             q = sprintf("%c", 39)
             # The first token in code that starts a comment, a string, a raw
             # string or a character literal.
             tok = "//|/\\*|[bc]?r#*\"|[bc]?\"|" q
             ws = "[ \t\r\n]"
+            id = "[A-Za-z0-9_]"
         }
         function owner_of(s) {
             if (match(s, /STUB\([A-Za-z]+\)/)) return substr(s, RSTART + 5, RLENGTH - 6)
@@ -134,92 +148,73 @@ hits=$(find crates -type f -name '*.rs' \
             t = substr(J, 1, pos - 1)
             return gsub(/\n/, "", t) + 1
         }
-        # Marks the line of each match of re in the code; a match starts
-        # with the character before the name unless the name begins the file.
-        function scan(re,    rest, off, pos) {
-            rest = J
-            off = 0
-            while (match(rest, re)) {
-                pos = off + RSTART
-                if (substr(rest, RSTART, 1) !~ /[tu]/) pos++
-                H[line_of(pos)] = 1
-                off += RSTART + RLENGTH - 1
-                rest = substr(rest, RSTART + RLENGTH)
-            }
+        # The position of the last character at or before i that is no
+        # whitespace (0 if none is).
+        function back(i) {
+            while (i >= 1 && substr(J, i, 1) ~ ws) i--
+            return i
         }
-        # The name before position i, whitespace skipped.
-        function word_before(i,    j, k) {
-            j = i - 1
-            while (j >= 1 && substr(J, j, 1) ~ ws) j--
-            k = j
-            while (k >= 1 && substr(J, k, 1) ~ /[A-Za-z0-9_]/) k--
-            return substr(J, k + 1, j - k)
+        # The identifier that ends at or before i, whitespace skipped, with
+        # its `r#` if it is a raw one ("" if none ends there); IDAT is where
+        # it starts.
+        function ident_at(i,    k) {
+            i = back(i)
+            k = i
+            while (k >= 1 && substr(J, k, 1) ~ id) k--
+            if (k < i && k >= 2 && substr(J, k - 1, 2) == "r#" && (k == 2 || substr(J, k - 2, 1) !~ id)) k -= 2
+            IDAT = k + 1
+            return substr(J, k + 1, i - k)
         }
-        # Whether the lint path at pos is directly under allow, expect or
-        # warn inside an attribute, #[...] or #![...].
-        function lowered(pos,    i, c, pd, bd, found, kw, j) {
-            pd = 0; bd = 0; found = 0; kw = ""
-            for (i = pos - 1; i >= 1; i--) {
-                c = substr(J, i, 1)
-                if (c == ")") pd++
-                else if (c == "(") {
-                    if (pd > 0) pd--
-                    else if (!found) { found = 1; kw = word_before(i) }
-                } else if (c == "]") bd++
-                else if (c == "[") {
-                    if (bd > 0) { bd--; continue }
-                    j = i - 1
-                    while (j >= 1 && substr(J, j, 1) ~ ws) j--
-                    if (j >= 1 && substr(J, j, 1) == "!") j--
-                    while (j >= 1 && substr(J, j, 1) ~ ws) j--
-                    return j >= 1 && substr(J, j, 1) == "#" && kw ~ /^(allow|expect|warn)$/
-                } else if (c == ";" || c == "{" || c == "}") return 0
-            }
-            return 0
-        }
-        # What the innermost delimiters around pos belong to, of a macro call
-        # (`name!(...)`, `[...]` or `{...}`, a keyword before the `!` aside)
-        # or a `macro_rules! name {...}` definition (1), and an attribute (2);
-        # 0 for neither.
-        function in_tree(pos,    i, c, depth, j, w) {
+        # Whether the word from pos to end - 1 (no raw one) ends the lint
+        # path `clippy::word` directly under `deny(` or `forbid(`, with only
+        # `cfg_attr(`s between that and an inner attribute at the top level.
+        function excused(pos, end,    i, c, k, w, depth, stage) {
+            i = end
+            while (substr(J, i, 1) ~ ws) i++
+            c = substr(J, i, 1)
+            if (c != "," && c != ")") return 0
+            i = back(pos - 1)
+            if (i < 2 || substr(J, i - 1, 2) != "::") return 0
+            if (ident_at(i - 2) != "clippy") return 0
+            c = substr(J, back(IDAT - 1), 1)
+            if (c != "(" && c != ",") return 0
+            # Outward from the path: stage 0 wants `deny(` or `forbid(`,
+            # stage 1 a `cfg_attr(` or the `[` of `#![`, stage 2 no bracket
+            # at all.
             depth = 0
-            for (i = pos - 1; i >= 1; i--) {
+            stage = 0
+            for (i = IDAT - 1; i >= 1; i--) {
                 c = substr(J, i, 1)
                 if (c == ")" || c == "]" || c == "}") depth++
                 else if (c == "(" || c == "[" || c == "{") {
                     if (depth > 0) { depth--; continue }
-                    j = i - 1
-                    while (j >= 1 && substr(J, j, 1) ~ ws) j--
-                    if (c == "[" && j >= 1 && substr(J, j, 1) == "#") return 2
-                    if (j >= 1 && substr(J, j, 1) == "!") {
-                        j--
-                        while (j >= 1 && substr(J, j, 1) ~ ws) j--
-                        if (c == "[" && j >= 1 && substr(J, j, 1) == "#") return 2
-                        w = word_before(j + 1)
-                        if (w != "" && w !~ /^(if|while|match|return|in|else|break|let|for|loop|move|mut|ref|as|yield)$/) return 1
-                    } else if (j >= 1 && substr(J, j, 1) ~ /[A-Za-z0-9_]/) {
-                        # `macro_rules! name {`: the name, then `!` and `macro_rules`.
-                        while (j >= 1 && substr(J, j, 1) ~ /[A-Za-z0-9_]/) j--
-                        while (j >= 1 && substr(J, j, 1) ~ ws) j--
-                        if (j >= 1 && substr(J, j, 1) == "!" && word_before(j) == "macro_rules") return 1
+                    if (stage == 2 || c == "{") return 0
+                    if (c == "(") {
+                        w = ident_at(i - 1)
+                        c = substr(J, back(IDAT - 1), 1)
+                        if (c != "[" && c != ",") return 0
+                        if (stage == 0 && (w == "deny" || w == "forbid")) stage = 1
+                        else if (stage != 1 || w != "cfg_attr") return 0
+                        i = IDAT
+                    } else {
+                        if (stage != 1) return 0
+                        k = back(i - 1)
+                        if (k < 1 || substr(J, k, 1) != "!") return 0
+                        k = back(k - 1)
+                        if (k < 1 || substr(J, k, 1) != "#") return 0
+                        stage = 2
+                        i = k
                     }
                 }
             }
-            return 0
-        }
-        # Whether the name at pos ends a `clippy::` lint path.
-        function lint_path(pos,    j) {
-            j = pos - 1
-            while (j >= 1 && substr(J, j, 1) ~ ws) j--
-            if (j < 2 || substr(J, j - 1, 2) != "::") return 0
-            return word_before(j - 1) == "clippy"
+            return stage == 2
         }
         function report(k,    who) {
             who = owner_of(L[k])
             if (who == "") who = first
             print "[" who "] " fname ":" k ": " L[k]
         }
-        function flush(    k, re, rest, off, pos, end, t) {
+        function flush(    k, rest, off, pos, end, w, raw, b) {
             first = ""
             for (k = 1; k <= n && first == ""; k++) first = owner_of(L[k])
             if (first == "") first = "?"
@@ -227,38 +222,27 @@ hits=$(find crates -type f -name '*.rs' \
             J = C[1]
             for (k = 2; k <= n; k++) J = J "\n" C[k]
             for (k = 1; k <= n; k++) if (L[k] ~ /STUB\(/) H[k] = 1
-            scan("(^|[^A-Za-z0-9_])(todo|unimplemented)" ws "*!" ws "*[[({]")
-            scan("(^|[^A-Za-z0-9_])(todo|unimplemented)" ws "+as" ws "+[A-Za-z_]")
-            # Either name as a word of its own in a macro call or a
-            # macro_rules! definition, or in an attribute but as a lint path
-            # (in a macro call, `clippy::todo` may name the macro of a module).
             rest = J
             off = 0
-            while (match(rest, /(^|[^A-Za-z0-9_])(todo|unimplemented)([^A-Za-z0-9_]|$)/)) {
+            while (match(rest, /(^|[^A-Za-z0-9_])(todo|unimplemented|restriction)([^A-Za-z0-9_]|$)/)) {
                 pos = off + RSTART
-                if (substr(rest, RSTART, 1) !~ /[tu]/) pos++
-                end = substr(J, pos, 1) == "t" ? 4 : 13
-                t = in_tree(pos)
-                if (t == 1 || (t == 2 && !lint_path(pos))) H[line_of(pos)] = 1
-                off = pos + end - 1
-                rest = substr(J, off + 1)
-            }
-            re = "clippy" ws "*::" ws "*(todo|unimplemented|restriction)"
-            rest = J
-            off = 0
-            while (match(rest, re)) {
-                pos = off + RSTART
-                end = RSTART + RLENGTH
-                if (substr(rest, end, 1) !~ /[A-Za-z0-9_]/ && (pos == 1 || substr(J, pos - 1, 1) !~ /[A-Za-z0-9_]/) && lowered(pos))
-                    H[line_of(pos)] = 1
-                off += end - 1
-                rest = substr(rest, end)
+                if (substr(rest, RSTART, 1) !~ /[tur]/) pos++
+                w = substr(J, pos, 1)
+                w = w == "t" ? "todo" : w == "u" ? "unimplemented" : "restriction"
+                end = pos + length(w)
+                raw = pos >= 3 && substr(J, pos - 2, 2) == "r#" && (pos == 3 || substr(J, pos - 3, 1) !~ id)
+                b = back(raw ? pos - 3 : pos - 1)
+                if (w != "restriction" || (b >= 2 && substr(J, b - 1, 2) == "::"))
+                    if (raw || !excused(pos, end)) H[line_of(pos)] = 1
+                off = end - 1
+                rest = substr(J, end)
             }
             for (k = 1; k <= n; k++) if (k in H) report(k)
         }
         FNR == 1 {
             if (fname != "") flush()
             fname = FILENAME; n = 0; st = ""; bdepth = 0
+            sub(/^\.\//, "", fname)
             split("", L); split("", C)
         }
         { n++; L[n] = $0; C[n] = lex($0) }
