@@ -115,7 +115,7 @@ pub(crate) fn tail(bytes: &[u8]) -> String {
 
 /// What runs a child process other than through this module: `Command`'s
 /// own runs, by method (`.output()`, `.spawn()`) or by path.
-const DIRECT: &[&str] = &[
+pub const DIRECT: &[&str] = &[
     ".output()",
     ".spawn()",
     "Command::output",
