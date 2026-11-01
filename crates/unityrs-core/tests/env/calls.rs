@@ -61,7 +61,7 @@ const CALLS: &[(&str, Pool, &[&str])] = &[
     ("Registry::len", Pool::Never, &[NEVER]),
     ("Registry::is_empty", Pool::Never, &[NEVER]),
     ("Keys::next", Pool::Never, &[NEVER]),
-    ("Environment::load_dependency", Pool::Own, &[SWEEP]),
+    ("Environment::load_dependency", Pool::Own, &[SWEEP, FETCH]),
     ("Environment::get_cab", Pool::Own, &[SWEEP]),
     ("Environment::get_cab_held", Pool::Own, &[SWEEP]),
     ("Environment::find_file", Pool::Own, &[SWEEP]),
@@ -80,6 +80,7 @@ const CALLS: &[(&str, Pool, &[&str])] = &[
 
 const NEVER: &str = "calls_that_never_charge_the_pool_make_no_dependency_reservation";
 const SWEEP: &str = "a_pool_refusal_anywhere_evicts_the_others_and_retries_once";
+const FETCH: &str = "a_fetchers_refusal_is_retried_whatever_the_thread_ran_before";
 const FULL: &str = "a_full_pool_makes_room_for_a_read_from_a_dependency";
 const HOLD: &str = "a_retry_keeps_the_bundle_the_call_reads_through";
 const TREE: &str = "a_pool_refusal_in_object_tree_evicts_and_retries_once";

@@ -9,10 +9,15 @@
 use std::cell::Cell;
 use std::sync::Arc;
 
-use super::{DepCache, with_room};
+use bytes::Bytes;
+
+use super::{DepCache, open_source, with_room};
 use crate::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
+use crate::env::{Fetch, Source};
 use crate::error::Error;
-use crate::limits::{Limits, Meter};
+use crate::limits::{Limits, Meter, pool_refusals};
+use crate::options::FileContext;
+use crate::raw::RawStr;
 
 /// A budget that refuses every reservation.
 #[derive(Debug)]
@@ -138,4 +143,99 @@ fn only_the_pools_refusal_is_retried() {
     });
     assert!(matches!(r, Err(Error::Budget(_))), "{r:?}");
     assert_eq!(runs.get(), 1);
+}
+
+/// A refusal of the pool that moves no count: one the caller's code made
+/// itself, before [`super::dependency`]'s `fetched` counts it.
+fn uncounted() -> Error {
+    Error::Budget(BudgetExceeded {
+        requested: 8,
+        what: Reservation::Dependency,
+    })
+}
+
+/// A call whose closure runs once refused by `refusal`, then succeeds: its
+/// result and how many times it ran.
+fn refused_once(cache: &DepCache, refusal: impl Fn() -> Error) -> (Result<(), Error>, u32) {
+    let runs = Cell::new(0);
+    let r = with_room(Some(cache), None, || {
+        runs.set(runs.get() + 1);
+        if runs.get() == 1 {
+            return Err(refusal());
+        }
+        Ok(())
+    });
+    (r, runs.get())
+}
+
+/// Whether a refusal is retried depends on the current call alone: the
+/// mark an earlier call left, its refusal retried and met again, ends with
+/// that call, so a later call's refusal is retried even when no count moved
+/// between them (review round 9: the mark stayed, and the later refusal, a
+/// fetcher's own, matched it and was passed on untried).
+#[test]
+fn a_mark_an_earlier_call_left_holds_no_later_refusal() {
+    let (cache, meter) = (cache(), refusing());
+    let earlier = with_room(Some(&cache), None, || refused(&meter));
+    assert!(matches!(earlier, Err(Error::Budget(_))), "{earlier:?}");
+    let (r, runs) = refused_once(&cache, uncounted);
+    assert!(r.is_ok(), "{r:?}");
+    assert_eq!(runs, 2, "the later call's refusal was not retried");
+}
+
+/// An outermost call that ends in a panic, a refusal an inner one retried
+/// marked first, leaves no mark either.
+#[test]
+fn a_call_that_panics_leaves_no_mark() {
+    let (cache, meter) = (cache(), refusing());
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _: Result<(), Error> = with_room(Some(&cache), None, || {
+            let inner = with_room(Some(&cache), None, || refused(&meter));
+            assert!(inner.is_err());
+            panic!("the call panics with the mark set");
+        });
+    }));
+    assert!(panicked.is_err());
+    let (r, runs) = refused_once(&cache, uncounted);
+    assert!(r.is_ok(), "{r:?}");
+    assert_eq!(runs, 2, "a mark outlived the call that panicked");
+}
+
+/// A fetcher that refuses the pool: by its own refusal, or by one the core
+/// made (and counted) on `meter` while it ran.
+#[derive(Debug)]
+struct RefusingFetch(Option<Arc<Meter>>);
+
+impl Fetch for RefusingFetch {
+    fn fetch(&self) -> Result<Bytes, Error> {
+        match &self.0 {
+            Some(meter) => refused(meter).map(|()| Bytes::new()),
+            None => Err(uncounted()),
+        }
+    }
+}
+
+/// A fetcher's own refusal of the pool is counted as one the core made,
+/// once, and one the core made and counted while the fetcher ran is not
+/// counted again (review round 9: a fetcher's refusal moved no count).
+#[test]
+fn a_fetchers_refusal_of_the_pool_is_counted_once() {
+    let ctx = Arc::new(FileContext::unitypy());
+    let name = RawStr::from("f.bundle");
+    for (fetch, what) in [
+        (RefusingFetch(None), "the fetcher's own"),
+        (
+            RefusingFetch(Some(refusing())),
+            "the core's, during the fetch",
+        ),
+    ] {
+        let source = Source::Fetch {
+            name: name.clone(),
+            fetch: Arc::new(fetch),
+        };
+        let at = pool_refusals();
+        let r = open_source(&name, &source, &refusing(), &ctx);
+        assert!(matches!(r, Err(Error::Budget(_))), "{what}: {r:?}");
+        assert_eq!(pool_refusals() - at, 1, "{what}");
+    }
 }

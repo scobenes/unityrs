@@ -16,12 +16,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Value as J, json};
 use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
 use unityrs_core::container::ContainerPath;
-use unityrs_core::env::{Cab, CabResolver, EnvOptions, Environment, LoadMode, PPtr, Source};
+use unityrs_core::env::{Cab, CabResolver, EnvOptions, Environment, Fetch, LoadMode, PPtr, Source};
 use unityrs_core::files::{File, SerializedFile};
 use unityrs_core::limits::Meter;
 use unityrs_core::object::ObjectRef;
 use unityrs_core::value::Value;
-use unityrs_core::{Bytes, RawStr};
+use unityrs_core::{Bytes, Error, RawStr};
 use unityrs_testkit::env::{
     DepScene, Scene, bundle, dependency_reads, dependency_scenes, res_bytes,
 };
@@ -637,4 +637,83 @@ fn a_retry_keeps_the_bundle_the_call_reads_through() {
         }
         assert!(evicted > 0, "{mode:?}");
     }
+}
+
+/// A fetcher that refuses the pool itself (as one that reserves its bytes
+/// from the pool would) `refusals` times, then serves `data`, counting its
+/// runs.
+#[derive(Debug)]
+struct RefusingFetch {
+    refusals: AtomicU64,
+    runs: AtomicU64,
+    data: Bytes,
+}
+
+impl RefusingFetch {
+    fn new(refusals: u64) -> Arc<Self> {
+        Arc::new(Self {
+            refusals: AtomicU64::new(refusals),
+            runs: AtomicU64::new(0),
+            data: Bytes::from(bundle(&[("CAB-Q.resS", res_bytes(8, 1))])),
+        })
+    }
+}
+
+impl Fetch for RefusingFetch {
+    fn fetch(&self) -> Result<Bytes, Error> {
+        self.runs.fetch_add(1, Ordering::AcqRel);
+        let left = self
+            .refusals
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+        if left.is_ok() {
+            return Err(Error::Budget(BudgetExceeded {
+                requested: 64,
+                what: Reservation::Dependency,
+            }));
+        }
+        Ok(self.data.clone())
+    }
+}
+
+/// `load_dependency` of `fetch` on `env`: whether it loaded, and how many
+/// times the fetcher ran.
+fn fetch_load(env: &Environment, name: &str, fetch: &Arc<RefusingFetch>) -> (bool, u64) {
+    let source = Source::Fetch {
+        name: RawStr::from(name),
+        fetch: fetch.clone(),
+    };
+    let loaded = env.load_dependency(source).is_ok();
+    (loaded, fetch.runs.load(Ordering::Acquire))
+}
+
+/// A fetcher's own refusal of the pool is retried once whatever the thread
+/// ran before: a load whose fetcher refuses once loads, alone and after a
+/// load on the same thread and Environment whose fetcher always refuses
+/// (review round 9: the failed load's mark stayed, the second refusal
+/// moved no count and matched it, and the second load failed with its
+/// fetcher run once). Each case runs on a thread of its own, so no earlier
+/// test leaves anything on it.
+#[test]
+fn a_fetchers_refusal_is_retried_whatever_the_thread_ran_before() {
+    let options = || {
+        let mut o = EnvOptions::batch(ctx_with(Arc::new(RefuseOnce::default())));
+        o.load = LoadMode::Lazy;
+        o
+    };
+    let alone = std::thread::spawn(move || {
+        let env = Environment::new(options());
+        fetch_load(&env, "once.bundle", &RefusingFetch::new(1))
+    });
+    assert_eq!(alone.join().unwrap(), (true, 2), "alone");
+    let after = std::thread::spawn(move || {
+        let env = Environment::new(options());
+        let failed = fetch_load(&env, "never.bundle", &RefusingFetch::new(u64::MAX));
+        (
+            failed,
+            fetch_load(&env, "once.bundle", &RefusingFetch::new(1)),
+        )
+    });
+    let (failed, once) = after.join().unwrap();
+    assert_eq!(failed, (false, 2), "the load whose fetcher always refuses");
+    assert_eq!(once, (true, 2), "after a failed load on the same thread");
 }
