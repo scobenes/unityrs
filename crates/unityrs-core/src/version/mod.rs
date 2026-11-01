@@ -72,7 +72,7 @@ mod packed;
 mod parse;
 
 pub use packed::Packed;
-pub use parse::LIMB_WORK;
+pub use parse::{LIMB_WORK, MAX_LIMBS};
 
 /// Python 3.11's `sys.get_int_max_str_digits()`: `int()` refuses a longer
 /// digit string, so a version group longer than this does not parse.

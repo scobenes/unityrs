@@ -9,10 +9,8 @@
 //! write each kind of member, into any [`Sink`]: the dump's records go into
 //! a charged [`crate::text::Text`].
 
-use std::fmt::Write as _;
-
 use sha2::{Digest, Sha256};
-use unityrs_core::version::Packed;
+use unityrs_core::version::{MAX_LIMBS, Packed};
 
 use crate::text::Sink;
 
@@ -142,16 +140,25 @@ pub fn write_value_str<S: Sink>(out: &mut S, raw: &[u8]) {
 /// work that every file record of a version repeats, so each pass is
 /// counted first ([`Sink::count_work`], [`LIMB_WORK`] a limb it divides):
 /// when the sink refuses one, nothing is written.
+///
+/// It allocates nothing but what `out` grows by (a [`crate::text::Text`]
+/// charges that first): the limbs are borrowed ([`Packed::big_limbs`]), and
+/// a version a parse packed holds at most [`MAX_LIMBS`] of them, so the
+/// working copy the passes divide and their base-10^19 digits are on the
+/// stack, and the digits are written straight into `out`. Round 7 left a
+/// copy of the limbs, the working copy, the digits and their string on the
+/// heap, uncharged: a dump of a bundle whose engine string is a
+/// 4,300-digit major, and of its SerializedFile, held 13,769 bytes above
+/// its charge at its peak, against 64 at `2022.3.0f1` (`tests/staging.rs`
+/// `a_big_packed_version_is_copied_charged_and_written_without_scratch`,
+/// run on that code). A value of more limbs, which only a caller's own
+/// [`Packed::from_limbs`] makes, is converted on the heap.
 pub fn write_packed<S: Sink>(out: &mut S, packed: &Packed) {
-    match packed.as_u128() {
-        Some(v) => {
-            let _ = write!(out, "{v}");
-        }
+    match packed.big_limbs() {
         None => {
-            if let Some(digits) = decimal_counted(&packed.to_limbs(), &mut |n| out.count_work(n)) {
-                out.push_str(&digits);
-            }
+            let _ = write!(out, "{}", packed.as_u128().unwrap_or_default());
         }
+        Some(limbs) => write_limbs(out, limbs, true),
     }
 }
 
@@ -159,53 +166,101 @@ pub fn write_packed<S: Sink>(out: &mut S, packed: &Packed) {
 /// bytes, as the core counts 8 bytes a step of a bundle read.
 pub const LIMB_WORK: usize = 8;
 
+/// The base-10^19 digits of a value of `limbs` limbs, at most: each digit
+/// divides 10^19 > 2^63 out of it, so `64 * limbs / 63 + 1` of them hold
+/// any value below 2^(64 * limbs).
+const fn chunks_for(limbs: usize) -> usize {
+    limbs.saturating_mul(64) / 63 + 1
+}
+
+/// [`chunks_for`] the most limbs a parse packs: the stack scratch's size.
+const MAX_CHUNKS: usize = chunks_for(MAX_LIMBS);
+
 /// The decimal digits of a little-endian `u64` limb number, by repeated
 /// division by 10^19 (quadratic in the limbs, which a 4,300-digit group
 /// keeps to a few hundred).
 #[must_use]
 pub fn limbs_to_decimal(limbs: &[u64]) -> String {
-    decimal_counted(limbs, &mut |_| true).unwrap_or_default()
+    let mut s = String::new();
+    write_limbs(&mut s, limbs, false);
+    s
 }
 
-/// [`limbs_to_decimal`], each pass's limbs counted by `count` before the
-/// pass divides them ([`LIMB_WORK`] a limb): `None`, with nothing more
-/// done, when it refuses one.
-fn decimal_counted(limbs: &[u64], count: &mut dyn FnMut(usize) -> bool) -> Option<String> {
+/// The decimal digits of `limbs` into `out`: in scratch on the stack when
+/// they are at most [`MAX_LIMBS`], each pass's limbs counted by `out` first
+/// when `counted` ([`LIMB_WORK`] a limb). Nothing is written when a count is
+/// refused. Its own frame, so the stack it takes is only a big version's
+/// record's.
+#[inline(never)]
+fn write_limbs<S: Sink>(out: &mut S, limbs: &[u64], counted: bool) {
+    let limbs = limbs
+        .get(..limbs.iter().rposition(|l| *l != 0).map_or(0, |i| i + 1))
+        .unwrap_or_default();
+    let mut stack_work = [0_u64; MAX_LIMBS];
+    let mut stack_chunks = [0_u64; MAX_CHUNKS];
+    let (mut heap_work, mut heap_chunks);
+    let (work, chunks): (&mut [u64], &mut [u64]) =
+        if let Some(work) = stack_work.get_mut(..limbs.len()) {
+            (work, &mut stack_chunks)
+        } else {
+            // A caller's own value: more limbs than any parse packs.
+            heap_work = vec![0; limbs.len()];
+            heap_chunks = vec![0; chunks_for(limbs.len())];
+            (&mut heap_work, &mut heap_chunks)
+        };
+    work.copy_from_slice(limbs);
+    let k = to_chunks(work, chunks, &mut |n| !counted || out.count_work(n));
+    if let Some(digits) = k.and_then(|k| chunks.get(..k)) {
+        write_chunks(out, digits);
+    }
+}
+
+/// Divides `n` (little-endian, no leading zero limb) by 10^19 until it is
+/// zero, each remainder into `chunks`, least significant first, and each
+/// pass's limbs counted by `count` before the pass divides them: the
+/// number of digits, or `None`, with nothing more done, when `count`
+/// refuses one (or `chunks` is too short, which [`chunks_for`] rules out).
+fn to_chunks(
+    n: &mut [u64],
+    chunks: &mut [u64],
+    count: &mut dyn FnMut(usize) -> bool,
+) -> Option<usize> {
     const CHUNK: u64 = 10_000_000_000_000_000_000;
-    let mut n: Vec<u64> = limbs.to_vec();
-    while n.last() == Some(&0) {
-        n.pop();
-    }
-    if n.is_empty() {
-        return Some("0".to_owned());
-    }
-    // Base-10^19 digits, least significant first.
-    let mut chunks = Vec::new();
-    while !n.is_empty() {
-        if !count(n.len().saturating_mul(LIMB_WORK)) {
+    let mut len = n.len();
+    let mut k = 0;
+    while len > 0 {
+        if !count(len.saturating_mul(LIMB_WORK)) {
             return None;
         }
         let mut rem: u128 = 0;
-        for limb in n.iter_mut().rev() {
+        for limb in n.iter_mut().take(len).rev() {
             let cur = (rem << 64) | u128::from(*limb);
             // cur < CHUNK << 64, so the quotient fits a u64.
             *limb = u64::try_from(cur / u128::from(CHUNK)).unwrap_or(u64::MAX);
             rem = cur % u128::from(CHUNK);
         }
-        chunks.push(u64::try_from(rem).unwrap_or(0));
-        while n.last() == Some(&0) {
-            n.pop();
+        *chunks.get_mut(k)? = u64::try_from(rem).unwrap_or(0);
+        k += 1;
+        while len > 0 && n.get(len - 1) == Some(&0) {
+            len -= 1;
         }
     }
-    let mut s = String::new();
-    let mut it = chunks.iter().rev();
-    if let Some(top) = it.next() {
-        let _ = write!(s, "{top}");
+    Some(k)
+}
+
+/// Base-10^19 `digits`, least significant first, as one decimal integer
+/// ("0" for none).
+fn write_chunks<S: Sink>(out: &mut S, digits: &[u64]) {
+    let mut it = digits.iter().rev();
+    match it.next() {
+        Some(top) => {
+            let _ = write!(out, "{top}");
+        }
+        None => out.push('0'),
     }
     for c in it {
-        let _ = write!(s, "{c:019}");
+        let _ = write!(out, "{c:019}");
     }
-    Some(s)
 }
 
 /// A JSON object being written: members in the order they are added.
@@ -374,6 +429,27 @@ mod tests {
             u64::try_from(v >> 64).unwrap(),
         ];
         assert_eq!(limbs_to_decimal(&limbs), v.to_string());
+        // The most limbs a parse packs, in the stack scratch, and one more,
+        // a caller's own value, on the heap: the core's `Display` (its own
+        // conversion) agrees, and a value written through `write_packed`
+        // too, uncounted by a `String`.
+        for n in [MAX_LIMBS, MAX_LIMBS + 1] {
+            let limbs: Vec<u64> = (0..n)
+                .map(|i| u64::MAX - u64::try_from(i).unwrap())
+                .collect();
+            let want = Packed::from_limbs(&limbs).to_string();
+            assert!(want.len() > 19 * n, "{n} limbs: {} digits", want.len());
+            let mut out = String::new();
+            write_packed(&mut out, &Packed::from_limbs(&limbs));
+            for got in [limbs_to_decimal(&limbs), out] {
+                assert!(
+                    got == want,
+                    "{n} limbs: {} digits, {} wanted",
+                    got.len(),
+                    want.len()
+                );
+            }
+        }
     }
 
     /// A sink that counts the work it is told of, and refuses past `max`.

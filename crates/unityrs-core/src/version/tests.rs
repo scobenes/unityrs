@@ -143,8 +143,21 @@ fn a_versions_packing_counts_the_limbs_it_holds_as_the_inputs_work() {
     assert_eq!(got.unwrap().unwrap().heap_bytes(), 224 * 8);
 }
 
-/// A refused step stops the parse: what it scanned counts, and nothing
-/// after it runs.
+/// A refused step stops the parse: what it scanned counts, its limbs do
+/// not, and nothing after it runs.
+///
+/// The counts are derived by hand, and by the Python-int model of
+/// `a_versions_packing_counts_the_limbs_it_holds_as_the_inputs_work`.
+/// The major's group is 4,300 digits whose value stays 0 until the last
+/// one, so each of its 19-digit chunks counts its 19 bytes and one limb, 27
+/// a step: 37 steps count 999, and the 38th asks for 999 + 27 = 1,026, past
+/// an allowance of 1,000. Refused, its 19 scanned bytes count all the same:
+/// 1,018, past the allowance, so the meter's work is used up. The parse's
+/// last step (the type's merge, one limb) scans nothing: refused at an
+/// allowance one short of the whole parse, it leaves 6,194 - 8 counted,
+/// within the allowance. Round 8: the test took any count from 973 to
+/// 1,019, which a parse that dropped the refused step's bytes (999, still
+/// within the allowance) also gave.
 #[test]
 fn a_refused_step_stops_the_packing() {
     let s = RawStr::from(zeros_major().as_str());
@@ -160,8 +173,14 @@ fn a_refused_step_stops_the_packing() {
         matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork),
         "{got:?}"
     );
-    // A small allowance stops it long before the end of the string: at
-    // most the allowance, then one chunk's 19 bytes scanned.
+    assert_eq!(
+        charge.meter().decoded(),
+        6_194 - 8,
+        "a refused step that scanned nothing counts nothing"
+    );
+    assert!(charge.meter().work_used_up().is_none());
+    // A small allowance stops it long before the end of the string: the
+    // 37 steps that fit, then the refused step's 19 scanned bytes.
     let mut charge = charge_on(1_000);
     let got = UnityVersion::parse_charged(&s, &mut charge);
     assert!(
@@ -169,7 +188,11 @@ fn a_refused_step_stops_the_packing() {
         "{got:?}"
     );
     let work = charge.meter().decoded();
-    assert!((1_000 - 27..=1_000 + 19).contains(&work), "{work}");
+    assert_eq!(work, 37 * (19 + 8) + 19, "the refused step's bytes count");
+    assert!(
+        charge.meter().work_used_up().is_some(),
+        "{work}: the refused step's scan takes the work past the allowance"
+    );
     // Uncounted, a caller's own string parses whatever its size.
     assert!(UnityVersion::parse(&s).is_ok());
 }

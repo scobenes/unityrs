@@ -362,6 +362,40 @@ fn g7_the_synthetic_set_covers_the_headers_checks() {
     }
 }
 
+/// Round 8: a TPK whose string is not UTF-8, within every bound, is
+/// UnityPy's `UnicodeDecodeError` (`read_string`'s strict decode,
+/// `Tpk.py:456`), and the port's refusal is its own UTF-8 check's. The only
+/// case before was past the strings' bound, which refused it before any
+/// string was decoded, so a port that kept the bytes unchecked passed G7.
+/// Each form Python's strict decoder refuses (and Rust's `from_utf8` must
+/// too), as the last string and as the first.
+#[test]
+fn g7_a_string_that_is_not_utf8_is_unitypys_unicode_decode_error() {
+    let forms = [
+        "ff",
+        "surrogate",
+        "overlong_nul",
+        "overlong_slash",
+        "past_10ffff",
+        "continuation",
+        "cut_short",
+    ];
+    for form in forms {
+        for at in ["last", "first"] {
+            let name = format!("string_not_utf8_{form}_{at}");
+            let case = case(&name);
+            assert_eq!(case["load"], "UnicodeDecodeError", "{name}");
+            match open(&case) {
+                Err(TpkError::Malformed(why)) => assert!(
+                    why.starts_with("UnicodeDecodeError: invalid utf-8 sequence"),
+                    "{name}: {why}"
+                ),
+                got => panic!("{name}: UnityPy raised UnicodeDecodeError, unityrs {got:?}"),
+            }
+        }
+    }
+}
+
 /// The cases G7's synthetic set exists for are in it: each root flag
 /// combination and the class after it, every flag byte, the type bytes rabex
 /// refused, the 300-deep chain, every count read as UnityPy reads it, both

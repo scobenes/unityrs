@@ -8,9 +8,9 @@ Runs in the oracle image. Two parts:
   with both roots; a class for every flag byte; versions whose type byte is 0-6 and 255;
   a node's fields at their extremes; a 300-deep chain; entries out of order, removed
   classes, a class listed twice; ids past their tables; counts read as UnityPy reads
-  them; string lengths; header sizes and checks (magic, version, compression and data
-  type, a file or a properties header cut short, reads that run out at a byte); common
-  strings numbered by code points; LZ4 and LZMA
+  them; string lengths, and strings that are not UTF-8; header sizes and checks (magic,
+  version, compression and data type, a file or a properties header cut short, reads
+  that run out at a byte); common strings numbered by code points; LZ4 and LZMA
   payloads, with the blocks and streams on which liblz4 and liblzma decide differently
   from other decoders), run through `Tpk.py` (`TpkFile(...).GetDataBlob()`, then
   `get_typetree_node` per class and version, and `get_common_strings()`, with the blob
@@ -126,7 +126,7 @@ def blob(
     versions: list[int],
     classes: list[tuple[int, list]],
     nodes: list[tuple],
-    strings: list[str],
+    strings: list[str | bytes],
     common: list[tuple[int, int]] = (),
     indices: list[int] = (),
     counts: dict[str, int] | None = None,
@@ -181,7 +181,7 @@ def blob(
     head, write = n("strings", strings)
     out += head
     for s in strings if write else ():
-        data = s.encode()
+        data = s if isinstance(s, bytes) else s.encode()
         out += varint(len(data)) + data
     return bytes(out)
 
@@ -478,6 +478,18 @@ def header_cases() -> Iterator[tuple[str, bytes, int]]:
     yield "class_entries_past_the_bound_cut_at_presence_byte", tpk_file(data), 256
     data = blob([at], [], [node(0, 1, [])], ["x"], counts={"strings": MAX_RECORDS + 1})
     yield "strings_past_the_bound_not_utf8", tpk_file(data[:-1] + b"\xff"), 256
+    # Within every bound, a string that is not UTF-8 (`.decode("utf-8")`, strict:
+    # `UnicodeDecodeError`): a byte no UTF-8 holds, an encoded surrogate, overlong
+    # forms, a code point past U+10FFFF, a lone continuation byte and a sequence cut
+    # short, each the last string or one with strings after it.
+    nodes = [node(0, 1, [1]), node(2, 3, [])]
+    bad = {"ff": b"\xff", "surrogate": b"\xed\xa0\x80", "overlong_nul": b"\xc0\x80"}
+    bad |= {"overlong_slash": b"\xe0\x80\xaf", "past_10ffff": b"\xf4\x90\x80\x80"}
+    bad |= {"continuation": b"a\x80", "cut_short": b"\xe6\x97z"}
+    for name, raw in bad.items():
+        for where, names in (("last", [*strings(4), raw]), ("first", [raw, *strings(4)])):
+            data = blob([at], [(1, [(at, both(0))])], nodes, names)
+            yield f"string_not_utf8_{name}_{where}", tpk_file(data), 256
 
 
 def refused_cases() -> Iterator[tuple[str, bytes, str]]:
