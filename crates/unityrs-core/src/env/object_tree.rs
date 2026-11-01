@@ -48,16 +48,21 @@ impl Environment {
     /// (`FileNotFoundError`, `KeyError`, `IndexError`) is the object's error.
     /// With no such provider nothing is dereferenced (UnityPy raises its
     /// `ValueError` before any deref), so in P1 this equals [`ObjectRef::tree`].
-    /// A read of a dependency's object here (the head, the script) that the
-    /// pool refuses evicts the others and retries once, the object's
-    /// top-level bundle held meanwhile, as the dereference does (plan
-    /// section 3.13; review round 8).
+    /// Each step that reads a dependency's object through its meter (the
+    /// class tree's compile, for a type record that stores its own tree; the
+    /// head; the script), when the pool refuses it, evicts the others and
+    /// retries once, the object's top-level bundle held from the first step
+    /// on, as the dereference does (plan section 3.13; review round 8, and
+    /// round 9: the compile ran outside the retry, so a pool full of an
+    /// evictable dependency failed every call on an object with an embedded
+    /// tree). The provider chain's lookup charges no meter of the core's.
     pub fn object_tree(
         &self,
         obj: &ObjectRef,
         nodes: Option<&Arc<Tree>>,
     ) -> Result<Option<TreeRef>, ParseError> {
-        let found = obj.tree(nodes)?;
+        let _top = top_bundle(obj.file());
+        let found = self.room(|| obj.tree(nodes))?;
         let Some(class_tree) = found else {
             return Ok(None);
         };
@@ -69,7 +74,6 @@ impl Environment {
             return Ok(Some(class_tree));
         }
         // UnityPy files/ObjectReader.py:332-350
-        let _top = top_bundle(obj.file());
         let Some(ident) = self.script_ident(obj, &class_tree.tree)? else {
             return Ok(Some(class_tree));
         };

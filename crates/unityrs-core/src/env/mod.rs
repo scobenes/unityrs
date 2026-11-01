@@ -87,9 +87,11 @@
 //! [`Source::Bytes`] dependency keeps its bytes, which are the caller's.
 //! The files a caller loaded are never evicted. Every call that reads or
 //! registers through a dependency's meter (a load, a lookup, a dereference,
-//! a resource read, the script hook, the container pass), when the pool
-//! refuses it, evicts the others and retries once, by one rule however the
-//! calls nest ([`registry`]'s `with_room`); the refusal is never cached
+//! a resource read, an object's tree with the script hook, the container
+//! pass), when the pool refuses it, evicts the others and retries once, by
+//! one rule however the calls nest ([`registry`]'s `with_room`;
+//! `tests/env/calls.rs` lists every public call and how it meets the
+//! pool); the refusal is never cached
 //! ([`crate::once::get_or_publish_result`]), so a later read with room in
 //! the pool succeeds. A read the caller makes itself on a dependency's
 //! handle (an object's value) is no call of the Environment's, and its
