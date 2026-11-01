@@ -298,6 +298,9 @@ def run_jobs(jobs, workers):
     event caught sooner), becomes a crash record (crash_result) while the dump
     goes on. The dumper's own failure, a raise
     or an exit without a result, raises DumperError: it would hit any input.
+    Each result is settled when its turn in input order comes, not when it
+    arrives, so the input a failure names is the one a serial run names
+    (integration 9: an input after it that finished first was named).
     """
     ctx = get_context("fork")
     workers = max(1, workers)
@@ -325,8 +328,8 @@ def run_jobs(jobs, workers):
                     recv.close()
                     proc.join()
                     del running[k]
-                    finished[k] = _settle(jobs[k], msg, proc.exitcode)
-            yield finished.pop(i)
+                    finished[k] = (msg, proc.exitcode)
+            yield _settle(jobs[i], *finished.pop(i))
     finally:
         for proc, recv in running.values():
             proc.kill()

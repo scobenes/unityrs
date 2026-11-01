@@ -236,6 +236,28 @@ class DumpCrashTests(DumpCase):
             [r["error"]["kind"] for r in records(self.tmp / "all.jsonl") if r["rec"] == "file"], ["crash"] * 3
         )
 
+    def test_the_dumpers_failure_names_the_first_input_however_the_results_arrive(self):
+        """Every input fails in the dumper's own code; a later input's result reaching the parent first (the
+        last input running is made to answer first) still leaves the run naming the first, as a serial run does
+        (integration 9: the failure was settled as each result arrived, so `-j 2` could name `b.assets`)."""
+        d = self.tmp / "in"
+        d.mkdir()
+        tree = S.Node("MyThing", "Base", [S.Node("int", "i")])
+        for name in ("a.assets", "b.assets", "c.assets"):
+            (d / name).write_bytes(assets(tree, struct.pack("<i", 7)))
+        real_wait = unitypy_dump.wait
+
+        def later_first(conns, *args, **kwargs):
+            return real_wait(conns[-1:] if len(conns) > 1 else conns, *args, **kwargs)
+
+        refuse = mock.patch.object(C.ValueEncoder, "encode", side_effect=C.EncodeError("float for an int node"))
+        with refuse, mock.patch.object(unitypy_dump, "wait", later_first):
+            with contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+                rc = unitypy_dump.main([str(d), "-o", str(self.tmp / "x.jsonl"), "-q", "-j", "2"])
+        self.assertEqual(rc, 1)
+        self.assertIn('DumperError: file ["a.assets"] path_id 1: the canonical encoder refused', err.getvalue())
+        self.assertNotIn("b.assets", err.getvalue())
+
     def test_a_unitypyboost_crash_costs_only_its_input(self):
         """A typetree node name or type that is not UTF-8 crashes UnityPyBoost while the file loads (spec 7)."""
         d = self.tmp / "in"
