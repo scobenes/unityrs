@@ -295,3 +295,77 @@ fn a_reader_inside_a_nested_bundle_on_its_own_handle_reads_its_sibling_resource(
         assert_eq!(bytes.as_ref(), [40, 41, 42, 43], "{mode:?}");
     }
 }
+
+/// A resolver that records every name it is asked, and finds nothing.
+#[derive(Debug, Default)]
+struct Asked(std::sync::Mutex<Vec<String>>);
+
+impl Asked {
+    fn take(&self) -> Vec<String> {
+        std::mem::take(&mut *self.0.lock().unwrap())
+    }
+}
+
+impl CabResolver for Asked {
+    fn resolve(&self, name: &[u8]) -> Option<Source> {
+        let name = String::from_utf8_lossy(name).into_owned();
+        self.0.lock().unwrap().push(name);
+        None
+    }
+}
+
+/// The resolver is asked the names UnityPy hands on where it looks in
+/// `env.path` (`tests/fixtures/d/resolver.json`, `tools/fixtures/env.py`):
+/// a resource read's fallback asks for each external's stored path as it
+/// is, not cleaned, then each candidate; a pointer to an external no
+/// sibling answers asks `find_file` for the cleaned path (review round 9:
+/// the resolver's docs named the cleaned path and the candidates only).
+#[test]
+fn the_resolver_is_asked_the_names_unitypy_hands_on() {
+    let doc: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        std::env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/d/resolver.json"
+    )))
+    .unwrap();
+    let strings = |v: &serde_json::Value| -> Vec<String> {
+        let v = v.as_array().unwrap().iter();
+        v.map(|s| s.as_str().unwrap().to_owned()).collect()
+    };
+    let externals = strings(&doc["externals"]);
+    let externals: Vec<&str> = externals.iter().map(String::as_str).collect();
+    let asked = Arc::new(Asked::default());
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let mut o = EnvOptions::unitypy();
+        o.load = mode;
+        o.resolver = Some(asked.clone());
+        let env = Environment::new(o);
+        let data = serialized(&externals, &[Obj::named(1, "n1", &[])]);
+        let File::Serialized(sf) = env.load(src("probe.assets", &data)).unwrap() else {
+            panic!("probe.assets is a SerializedFile")
+        };
+        let path = RawStr::from(doc["resource"].as_str().unwrap());
+        let read = env.resource(&sf, &path, 0, 4);
+        assert_eq!(doc["resource_error"], "FileNotFoundError");
+        assert!(
+            matches!(read, Err(Error::NotFound(_))),
+            "{mode:?}: {read:?}"
+        );
+        assert_eq!(asked.take(), strings(&doc["resource_asked"]), "{mode:?}");
+        for d in doc["derefs"].as_array().unwrap() {
+            let file_id = i32::try_from(d["file_id"].as_i64().unwrap()).unwrap();
+            let got = env.deref(
+                &sf,
+                PPtr {
+                    file_id,
+                    path_id: 5,
+                },
+            );
+            assert_eq!(d["error"], "FileNotFoundError");
+            assert!(
+                matches!(got, Err(DerefError::NotFound { .. })),
+                "{mode:?} {file_id}: {got:?}"
+            );
+            assert_eq!(asked.take(), strings(&d["asked"]), "{mode:?} {file_id}");
+        }
+    }
+}

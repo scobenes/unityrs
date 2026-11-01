@@ -278,11 +278,34 @@ pub fn read_path(path: &Path, limits: &Limits, meter: &Arc<Meter>) -> Result<Byt
     Ok(out.into_bytes()?)
 }
 
-/// Finds a dependency the registry does not hold: UnityPy's `find_file`
-/// fallback after `get_cab` (`environment.py:310-354`).
+/// Finds a file the registry does not hold, where UnityPy looks in
+/// `env.path`: `find_file`'s fallback after `get_cab`
+/// (`environment.py:310-354`), and each `load_file(name, True)` of a
+/// resource read's fallback (`files/SerializedFile.py:330-349`).
 pub trait CabResolver: Send + Sync + fmt::Debug {
-    /// The source for `name` (as the caller gave it: a cleaned external path
-    /// or a resource candidate), or `None` when there is none.
+    /// The source for `name`, or `None` when there is none. `name` is one of
+    /// three kinds, each as UnityPy passes it on (review round 9: these docs
+    /// named only the first and the third):
+    /// - `find_file`'s name ([`Environment::find_file`]): for a dereference,
+    ///   the external's path cleaned as `PPtr.deref` cleans it
+    ///   ([`crate::pystr::clean_external_path`]: a leading `archive:/`, then
+    ///   `assets/`, dropped, the last `/` component kept, lower-cased); for
+    ///   a caller's own call, the name the caller gave, as it is. UnityPy
+    ///   looks for `env.path` joined with it, then walks `env.path` for a
+    ///   file whose path is it, whose simplified name is its simplified
+    ///   name, or whose path ends with it (`environment.py:326-354`).
+    /// - In a resource read's fallback ([`Environment::resource`]), first
+    ///   each of the reading file's externals' stored path, as it is, not
+    ///   cleaned (`archive:/CAB-x/CAB-x`, `Assets/Level/Thing.asset`:
+    ///   `files/SerializedFile.py:339-340`),
+    /// - then each of its four resource candidates ([`resource_candidates`]:
+    ///   the resource path's basename and the three names made from its
+    ///   stem, `helpers/ResourceReader.py:11-17`, `SerializedFile.py:342-349`).
+    ///
+    /// UnityPy's `load_file` opens a name of either of the last two kinds as
+    /// a path when one exists there; else, a relative one, joined to
+    /// `env.path`; else the case-insensitive match `find_sensitive_path`
+    /// finds under `env.path`; else nothing (`environment.py:110-137`).
     fn resolve(&self, name: &[u8]) -> Option<Source>;
 }
 
