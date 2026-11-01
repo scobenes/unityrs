@@ -208,6 +208,7 @@ pub enum Shape {
 
 /// Per-node facts, precomputed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // independent facts, no state machine
 pub struct NodeInfo {
     /// The data type.
     pub kind: Kind,
@@ -244,6 +245,13 @@ pub struct NodeInfo {
     /// A class whose children repeat a name, so inserts must check for an
     /// existing key; otherwise the walker pushes.
     pub dup_names: bool,
+    /// A sibling has this node's `m_Name`: a read keeps only the last of
+    /// their values (a dict's first position, last value), and a write
+    /// writes one value through each of them. What either does under such
+    /// a node counts against
+    /// [`crate::limits::Limits::max_values_per_object`], which bounds the
+    /// work no byte and no charge does (plan section 3.10, "Bounds").
+    pub repeated: bool,
     /// A direct child is a `ManagedReferencesRegistry` (the registry scope).
     pub has_registry: bool,
 }
@@ -283,6 +291,7 @@ const BLANK: NodeInfo = NodeInfo {
     slot: 0,
     min_size: 0,
     dup_names: false,
+    repeated: false,
     has_registry: false,
 };
 
@@ -328,6 +337,25 @@ fn py_kinds(
 
 fn info_at(info: &MeteredVec<NodeInfo>, node: NodeId) -> NodeInfo {
     info.as_slice().get(node.index()).copied().unwrap_or(BLANK)
+}
+
+/// Marks each of one class's children whose name a sibling repeats
+/// ([`NodeInfo::repeated`]), the name's first child included, once
+/// [`group_by_name`] has set their keys; whether any is.
+fn mark_repeated(info: &mut [NodeInfo], kids: &[NodeId]) -> bool {
+    let mut dup = false;
+    for &c in kids {
+        let key = info.get(c.index()).map_or(c, |i| i.key);
+        if key != c {
+            dup = true;
+            for n in [c, key] {
+                if let Some(i) = info.get_mut(n.index()) {
+                    i.repeated = true;
+                }
+            }
+        }
+    }
+    dup
 }
 
 #[cfg(test)]
@@ -574,7 +602,7 @@ impl Tree {
                 info.as_mut_slice(),
                 name_hash,
             )?;
-            let dup = kids.iter().any(|c| info_at(&info, *c).key != *c);
+            let dup = mark_repeated(info.as_mut_slice(), kids);
             let registry = kids
                 .iter()
                 .any(|c| info_at(&info, *c).kind == Kind::ManagedReferencesRegistry);

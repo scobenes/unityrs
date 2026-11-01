@@ -127,6 +127,9 @@ fn repeated_names_share_a_key_and_a_slot() {
     assert_eq!(slots, [0, 1, 0, 2, 1]);
     assert!(info(0).dup_names);
     assert!(info(0).has_registry);
+    // Every child whose name a sibling shares, the first included.
+    let repeated: Vec<_> = (0..=6).map(|i| info(i).repeated).collect();
+    assert_eq!(repeated, [false, true, true, true, false, true, false]);
     // A child's own children are keyed among themselves.
     assert_eq!((info(6).key, info(6).slot), (NodeId(6), 0));
     assert!(!info(5).dup_names);

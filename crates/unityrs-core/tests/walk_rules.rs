@@ -362,36 +362,60 @@ fn value_depth_trips_to_other() {
     }
 }
 
-/// Plan 3.10: more values than `max_values_per_object` trips to `other`.
+/// Plan 3.10: more values than `max_values_per_object` trips to `other`,
+/// where they count: in both readers under a name a sibling repeats
+/// (`Base { vector<string> v; vector<string> v }`), and in the
+/// pure-Python reader everywhere. UnityPyBoost's read keeps the same
+/// strings under a name of their own, each in a slot the meter charges,
+/// and reads them whatever their number (review round 9).
 #[test]
 fn values_per_object_trip_to_other() {
-    let strings = tree(&[
-        (0, "Base", "Base", 0),
-        (1, "vector", "v", 0),
-        (2, "Array", "Array", 0),
-        (3, "int", "size", 0),
-        (3, "string", "data", 0),
-    ]);
+    let vector = |name| {
+        [
+            (1, "vector", name, 0),
+            (2, "Array", "Array", 0),
+            (3, "int", "size", 0),
+            (3, "string", "data", 0),
+        ]
+    };
+    let mut repeated = vec![(0, "Base", "Base", 0)];
+    repeated.extend(vector("v"));
+    repeated.extend(vector("v"));
+    let mut single = vec![(0, "Base", "Base", 0)];
+    single.extend(vector("v"));
     let mut w = ByteWriter::le();
     w.i32(200);
     for _ in 0..200 {
         string(&mut w, "");
     }
+    let one = w.into_inner();
+    let mut two = one.clone();
+    two.extend_from_slice(&0_i32.to_le_bytes());
     let mut limits = Limits::default();
     limits.max_values_per_object = 100;
     let options = ReadOptions {
         limits,
         ..ReadOptions::default()
     };
+    let meter = Meter::unlimited();
     for (reader, r) in both(
-        &w.into_inner(),
-        &strings,
+        &two,
+        &tree(&repeated),
         RefTypes::List(&[]),
         &options,
-        &Meter::unlimited(),
+        &meter,
     ) {
         assert_limit(&r, LimitKind::ValuesPerObject, reader);
     }
+    let [(_, boost), (_, python)] =
+        both(&one, &tree(&single), RefTypes::List(&[]), &options, &meter);
+    let p = boost.unwrap_or_else(|e| panic!("boost, a name of its own: {e:?}"));
+    assert_eq!(p.bytes_read, 804, "boost, a name of its own");
+    assert_limit(
+        &python,
+        LimitKind::ValuesPerObject,
+        "python, a name of its own",
+    );
 }
 
 /// Plan 3.10: a ref type's tree deeper than `max_tree_depth` trips to

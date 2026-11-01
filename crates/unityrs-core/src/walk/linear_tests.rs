@@ -411,10 +411,12 @@ fn skipped_registries_count_against_the_values_bound() {
 /// sends them through every same-named sibling, as UnityPy's does: an
 /// `Empty` element takes any value and writes nothing, so `K` × `N` values
 /// were written into `4K + 4N` bytes, with no bound but the output's
-/// memory. The writer counts every value it writes against the bound the
-/// read counts against; the read, of `K` + `N` values, passes it. So it does
-/// when the siblings are `vector<int>`s, whose elements `MirrorReader`
-/// writes as one run.
+/// memory. The writer counts every value it writes under a repeated name
+/// against the bound the read counts against; the read passes it
+/// (UnityPyBoost's counts the `K` vectors, each run one value; the
+/// pure-Python one every value, `K` + `N` + 1). So it does when the
+/// siblings are `vector<int>`s, whose elements `MirrorReader` writes as one
+/// run.
 #[test]
 fn one_value_written_through_many_same_named_children_counts_against_the_values_bound() {
     const K: u32 = 64;
@@ -490,6 +492,95 @@ fn registries_skipped_on_a_value_that_is_not_a_dict_count_too() {
             let (got, visits) = write_visits(&p, &tree, &[], rules, &bounded());
             assert_write_refused(&format!("{reader} read, {rules:?} write"), &got, visits);
         }
+    }
+}
+
+/// Review round 9: a value the reader keeps does not count against the
+/// bound, but a class written from a value that is not a dict does, since
+/// its children are the value's attributes, which the value's size does
+/// not bound. `N` ints read as `Base { vector<int> v }` and written
+/// through `Base { vector<Foo> v }`, `Foo` four empty classes named for an
+/// `int`'s attributes (`real`, `imag`, `numerator`, `denominator`): five
+/// classes an element, none writing a byte, and no name repeated.
+#[test]
+fn classes_written_from_values_that_are_not_dicts_count_against_the_values_bound() {
+    const N: u32 = 1 << 12;
+    let read_with = compile(vec![
+        NodeRow::new(0, "Base", "Base"),
+        NodeRow::new(1, "vector", "v"),
+        NodeRow::new(2, "Array", "Array"),
+        NodeRow::new(3, "int", "size"),
+        NodeRow::new(3, "int", "data"),
+    ]);
+    let mut rows = vec![
+        NodeRow::new(0, "Base", "Base"),
+        NodeRow::new(1, "vector", "v"),
+        NodeRow::new(2, "Array", "Array"),
+        NodeRow::new(3, "int", "size"),
+        NodeRow::new(3, "Foo", "data"),
+    ];
+    for name in ["real", "imag", "numerator", "denominator"] {
+        rows.push(NodeRow::new(4, "Empty", name));
+    }
+    let write_with = compile(rows);
+    let mut data = N.to_le_bytes().to_vec();
+    for i in 0..N {
+        data.extend_from_slice(&i.to_le_bytes());
+    }
+    assert!(u64::from(5 * N) > BOUND && u64::from(5 * N) < 2 * BOUND);
+    for reader in ["boost", "python"] {
+        let (p, _) = read_visits(reader, &read_with, &data, &[], Limits::default());
+        let p = p.unwrap_or_else(|e| panic!("{reader}: {e}"));
+        for rules in [WriteRules::UnityPy, WriteRules::MirrorReader] {
+            let (got, visits) = write_visits(&p, &write_with, &[], rules, &bounded());
+            assert_write_refused(&format!("{reader} read, {rules:?} write"), &got, visits);
+        }
+    }
+}
+
+/// A name a `ReferencedObject`'s children repeat counts as a class's does,
+/// in UnityPyBoost's read and in the writer: `ReferencedObject { type; x:
+/// vector<string>; x: vector<string>; data }`, the first `x` empty and the
+/// second of `N` strings, its class empty (the data skipped). The read
+/// keeps the second, and the write writes it through both.
+#[test]
+fn a_referenced_objects_repeated_names_count_against_the_values_bound() {
+    const N: u32 = 1 << 14;
+    let refs = ref_types(std::iter::once("C".to_owned()));
+    let mut rows = vec![
+        NodeRow::new(0, "Base", "Base"),
+        NodeRow::new(1, "ReferencedObject", "o"),
+    ];
+    type_rows(&mut rows, 2, 0);
+    for _ in 0..2 {
+        rows.extend([
+            NodeRow::new(2, "vector", "x"),
+            NodeRow::new(3, "Array", "Array"),
+            NodeRow::new(4, "int", "size"),
+            NodeRow::new(4, "string", "data"),
+        ]);
+    }
+    rows.push(NodeRow::new(2, "ReferencedObjectData", "data"));
+    let tree = compile(rows);
+    let mut data = Vec::new();
+    type_data(&mut data, 0, "");
+    data.extend_from_slice(&0_u32.to_le_bytes());
+    data.extend_from_slice(&N.to_le_bytes());
+    for _ in 0..N {
+        string(&mut data, "");
+    }
+    assert_eq!(u64::from(N), BOUND);
+    // UnityPyBoost's read counts the two vectors and the strings, under the
+    // repeated name, and the skipped data: `N` + 3.
+    let (got, visits) = read_visits("boost", &tree, &data, &refs, bounded());
+    assert_read_refused("boost", &got, visits);
+    let (p, _) = read_visits("boost", &tree, &data, &refs, Limits::default());
+    let p = p.unwrap_or_else(|e| panic!("boost, unbounded: {e}"));
+    // The write sends the second vector through both children, `N` + 1
+    // values each, so it passes the bound in the first.
+    for rules in [WriteRules::UnityPy, WriteRules::MirrorReader] {
+        let (got, visits) = write_visits(&p, &tree, &refs, rules, &bounded());
+        assert_write_refused(&format!("boost read, {rules:?} write"), &got, visits);
     }
 }
 

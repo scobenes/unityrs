@@ -186,18 +186,48 @@ fn a_read_and_a_write_count_their_work_on_the_open() {
 }
 
 /// A read or a write refused by a bound of its own counts the work it did
-/// before the refusal, and none past it.
+/// before the refusal, and none past it. The bound is
+/// `max_values_per_object`, over [`mixed`] and two registries, the second
+/// of which every read and write skips: the pure-Python reader counts every
+/// value and every element of a run against it, UnityPyBoost's reader and
+/// the writer only the skipped registry (`walk::Work`'s docs).
 #[test]
 fn a_refused_read_or_write_counts_what_it_did() {
-    let t = mixed();
-    let data = mixed_bytes();
-    let mut limits = Limits::default();
-    limits.max_values_per_object = 5;
-    let options = ReadOptions {
-        limits,
-        ..ReadOptions::default()
+    let mut rows = vec![
+        (0, "Base", "Base"),
+        (1, "int", "a"),
+        (1, "vector", "b"),
+        (2, "Array", "Array"),
+        (3, "int", "size"),
+        (3, "int", "data"),
+        (1, "vector", "u"),
+        (2, "Array", "Array"),
+        (3, "int", "size"),
+        (3, "UInt8", "data"),
+        (1, "vector", "e"),
+        (2, "Array", "Array"),
+        (3, "int", "size"),
+        (3, "Empty", "data"),
+    ];
+    for name in ["r", "s"] {
+        rows.extend([
+            (1, "ManagedReferencesRegistry", name),
+            (2, "int", "version"),
+        ]);
+    }
+    let t = tree(&rows);
+    let mut data = mixed_bytes();
+    data.extend(2_i32.to_le_bytes());
+    let bounded = |max| {
+        let mut limits = Limits::default();
+        limits.max_values_per_object = max;
+        limits
     };
-    for reader in ["boost", "python"] {
+    for (reader, max) in [("boost", 0), ("python", 5)] {
+        let options = ReadOptions {
+            limits: bounded(max),
+            ..ReadOptions::default()
+        };
         let meter = work_meter(u64::MAX);
         let r = read(reader, &data, &t, &options, &meter);
         assert!(
@@ -205,25 +235,31 @@ fn a_refused_read_or_write_counts_what_it_did() {
                 if l.kind == LimitKind::ValuesPerObject),
             "{reader}: {r:?}"
         );
-        // Counted: the root, `a`, the vector `b`; then UnityPyBoost counts
-        // `b`'s run of three at once, which would make six, and the
-        // pure-Python reader reads it one by one, two of them before the
-        // sixth value is refused.
-        let run = if reader == "boost" { 0 } else { 2 * 4 };
-        assert_eq!(meter.decoded(), 3 * VALUE_WORK + run, "{reader}");
+        // UnityPyBoost reads every value but the skipped registry: the
+        // root, `a`, the three vectors, `e`'s two elements, `r` and its
+        // version, and the runs' bytes. The pure-Python reader counts the
+        // root, `a`, the vector `b` and two of its ints, and is refused the
+        // sixth.
+        let work = if reader == "boost" {
+            9 * VALUE_WORK + 3 * 4 + 5
+        } else {
+            3 * VALUE_WORK + 2 * 4
+        };
+        assert_eq!(meter.decoded(), work, "{reader}");
     }
     let meter = work_meter(u64::MAX);
     let p = read("boost", &data, &t, &ReadOptions::default(), &meter).unwrap();
     let before = meter.decoded();
     let mut out = DecodeBuf::new(&meter, 0, u64::MAX, LimitKind::InputMemory).unwrap();
-    let w = write(&p, &t, &limits, &mut out);
+    let w = write(&p, &t, &bounded(0), &mut out);
     assert!(
         matches!(&w, Err(WriteError::Limit(l)) if l.kind == LimitKind::ValuesPerObject),
         "{w:?}"
     );
-    // Written: the root, `a` (4 bytes), the vector `b` and two of its ints;
-    // refused: its third.
-    assert_eq!(meter.decoded() - before, 2 * VALUE_WORK + 4 + 2 * 4);
+    // Written: the root, the three vectors, `e`'s two elements and `r` as
+    // values; `a`, `b`'s three ints, `u`'s five bytes and `r`'s version as
+    // primitives; refused: the skipped registry `s`.
+    assert_eq!(meter.decoded() - before, 7 * VALUE_WORK + 4 + 3 * 4 + 5 + 4);
 }
 
 /// A read or a write whose own work takes the open past its allowance is

@@ -28,7 +28,9 @@ Files:
   the pure-Python reader raises `RecursionError`, one `A` less, and a quarter
   of it; the outcome only (`pos` or the exception), not the value.
 - `elements.json`: arrays at and past the zero-size element bound, from
-  `walk_elements.py` (its module docs give the recipe and the encoding).
+  `walk_elements.py`; `runs.json`: primitive runs of 2^26 + 1 elements,
+  past the values bound, from `walk_runs.py` (each module's docs give its
+  recipe and encoding).
 - `reentry.json`: reads that hold many values open at once to the end of
   the bytes, from `walk_reentry.py` (likewise).
 
@@ -87,6 +89,7 @@ from walk_build import (  # noqa: E402
 )
 from walk_elements import element_cases  # noqa: E402
 from walk_reentry import reentry_cases, reentry_ok_cases  # noqa: E402
+from walk_runs import run_cases  # noqa: E402
 
 
 # --- R cases
@@ -97,7 +100,7 @@ INT = lambda name, meta=0: leaf("int", name, meta)  # noqa: E731
 
 def ref_object(name="obj", data_rows=None, meta=0):
     """`ReferencedObject { SInt64 rid; ReferencedManagedType type { string class, ns, asm }; ReferencedObjectData data }`."""
-    rows = [
+    return [
         [0, "ReferencedObject", name, meta],
         [1, "SInt64", "rid", 0],
         [1, "ReferencedManagedType", "type", 0],
@@ -106,7 +109,6 @@ def ref_object(name="obj", data_rows=None, meta=0):
         [2, "string", "asm", 0],
         [1, "ReferencedObjectData", "data", 0],
     ]
-    return rows
 
 
 def ref_bytes(cls, ns="N", asm="A", rid=1):
@@ -720,11 +722,8 @@ def write_matrix():
         root = tree(base(rows))
         for vname, _spec, value in W2_VALUES:
             cases.append([kname, vname, write({"f": value}, root, "<", SimpleNamespace(ref_types=[]))])
-    return {
-        "nodes": {k: base(rows) for k, rows in W2_NODES.items()},
-        "values": {name: spec for name, spec, _ in W2_VALUES},
-        "cases": cases,
-    }
+    nodes = {k: base(rows) for k, rows in W2_NODES.items()}
+    return {"nodes": nodes, "values": {name: spec for name, spec, _ in W2_VALUES}, "cases": cases}
 
 
 def py_attrs():
@@ -763,6 +762,7 @@ def fixtures():
         "py_attrs.json": compact(py_attrs()) + "\n",
         "depth.json": dump_list(depth_cases()),
         "elements.json": dump_list(element_cases()),
+        "runs.json": dump_list(run_cases()),
         "reentry.json": dump_list(reentry_cases()),
     }
 

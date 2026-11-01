@@ -43,11 +43,11 @@ use super::{
     OpenWork, RefTypes, VALUE_WORK, WriteCtx, WriteError, WriteRules, py_size_field_is_zero,
 };
 use crate::budget::DecodeBuf;
-use crate::error::{LimitError, LimitKind};
 use crate::raw::RawStr;
 use crate::typetree::{Kind, NodeId, Tree, TreeError};
 use crate::value::{Map, Parsed, Value};
 
+mod bounds;
 mod lookup;
 mod pyobj;
 
@@ -89,6 +89,7 @@ pub fn write(
         limits: *ctx.limits,
         depth: 0,
         values: 0,
+        repeated: 0,
         open,
         has_registry: false,
         shared: 0,
@@ -115,9 +116,11 @@ struct Writer<'a, 'o> {
     limits: crate::limits::Limits,
     max_depth: u32,
     depth: u32,
-    /// Values written and children skipped, against
-    /// `max_values_per_object` ([`Self::count`]).
+    /// What counts against `max_values_per_object` ([`Self::count`]).
     values: u64,
+    /// How many children whose name a sibling repeats are being written
+    /// ([`crate::typetree::NodeInfo::repeated`]).
+    repeated: u32,
     /// The open's work, counted as the write goes.
     open: OpenWork<'o>,
     has_registry: bool,
@@ -281,53 +284,6 @@ impl<'a> Writer<'a, '_> {
     /// a primitive, [`VALUE_WORK`] for any other value.
     fn cost(tree: &Tree, node: NodeId) -> u64 {
         tree.py_kind(node).prim_size().map_or(VALUE_WORK, u64::from)
-    }
-
-    /// Counts one value written (its open's work `work`, about to be done),
-    /// or one child skipped ([`VALUE_WORK`]), against
-    /// `max_values_per_object`, the bound a read counts its values against
-    /// (plan 3.10, "Bounds"; 3.11), and, unless that refuses it, toward the
-    /// open's work. A write of a value through the tree it was read with
-    /// counts no more than its read did, unless the tree repeats a name:
-    /// then one value is written once for each child of the name, which no
-    /// output bound stops when its node writes nothing (claude B, review
-    /// round 3: `K` × `N` values into `4K + 4N` bytes).
-    fn count(&mut self, work: u64) -> Result<(), WriteError> {
-        self.values = self.values.saturating_add(1);
-        let max = self.limits.max_values_per_object;
-        if self.values > max {
-            return Err(WriteError::Limit(LimitError {
-                kind: LimitKind::ValuesPerObject,
-                value: self.values,
-                max,
-            }));
-        }
-        self.open.add(work).map_err(WriteError::Limit)
-    }
-
-    /// One frame UnityPy's `write_value` pushes: a `write_value` call, or the
-    /// list comprehension that writes an array's elements (`:435`). Each
-    /// counts one level against `max_value_depth`, as the pure-Python reader
-    /// counts its own (plan 3.10, "Bounds"), so every value whose write
-    /// raises `RecursionError` in UnityPy (past Python's 1,000 frames) is
-    /// refused here first.
-    fn frame(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> Result<(), WriteError>,
-    ) -> Result<(), WriteError> {
-        self.depth = self.depth.saturating_add(1);
-        if self.depth > self.max_depth {
-            let e = WriteError::Limit(LimitError {
-                kind: LimitKind::ValueDepth,
-                value: u64::from(self.depth),
-                max: u64::from(self.max_depth),
-            });
-            self.depth = self.depth.saturating_sub(1);
-            return Err(e);
-        }
-        let r = f(self);
-        self.depth = self.depth.saturating_sub(1);
-        r
     }
 
     /// `write_value` (`TypeTreeHelper.py:407-458`). The branches that
@@ -551,18 +507,25 @@ impl<'a> Writer<'a, '_> {
     /// The class branch (`:437-455`), W6: `value[child.m_Name]` for a dict
     /// ([`Self::class_dict`]), `getattr(value, child._clean_name)` otherwise;
     /// the registry scope as on read.
+    ///
+    /// A class written from a value that is not a dict counts against
+    /// `max_values_per_object` whatever its name: its children are the
+    /// value's attributes, which the value's size does not bound (an `int`
+    /// element's `real`, written through a class of any number of children
+    /// for each element of an array).
     #[inline(never)]
     fn class(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         if let Obj::V(Value::Dict(m)) = o {
             return self.class_dict(tree, node, m);
         }
+        self.bound()?;
         let outer = self.has_registry;
         let kids = tree.list().children(node);
         for c in kids {
             visit();
             if tree.py_kind(*c) == Kind::ManagedReferencesRegistry {
                 if self.has_registry {
-                    self.count(VALUE_WORK)?;
+                    self.skip()?;
                     continue;
                 }
                 self.has_registry = true;
@@ -587,7 +550,8 @@ impl<'a> Writer<'a, '_> {
                     ));
                 }
             };
-            self.value(tree, *c, item)?;
+            let repeated = tree.info(*c).is_some_and(|i| i.repeated);
+            self.child(repeated, |w| w.value(tree, *c, item))?;
         }
         self.has_registry = outer;
         Ok(())
@@ -604,7 +568,7 @@ impl<'a> Writer<'a, '_> {
                 visit();
                 if tree.py_kind(*c) == Kind::ManagedReferencesRegistry {
                     if w.has_registry {
-                        w.count(VALUE_WORK)?;
+                        w.skip()?;
                         continue;
                     }
                     w.has_registry = true;
@@ -612,7 +576,8 @@ impl<'a> Writer<'a, '_> {
                 let v = w
                     .find(&mut find, tree, *c)?
                     .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
-                w.value(tree, *c, Obj::V(v))?;
+                let repeated = tree.info(*c).is_some_and(|i| i.repeated);
+                w.child(repeated, |w| w.value(tree, *c, Obj::V(v)))?;
             }
             Ok(())
         })?;
@@ -638,11 +603,12 @@ impl<'a> Writer<'a, '_> {
         self.children(tree, node, |w| {
             for c in kids {
                 visit();
+                let repeated = tree.info(*c).is_some_and(|i| i.repeated);
                 if tree.py_kind(*c) != Kind::ReferencedObjectData {
                     let v = w
                         .find(&mut find, tree, *c)?
                         .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
-                    w.value(tree, *c, Obj::V(v))?;
+                    w.child(repeated, |w| w.value(tree, *c, Obj::V(v)))?;
                     continue;
                 }
                 let through = if let Some(d) = &data {
@@ -659,7 +625,7 @@ impl<'a> Writer<'a, '_> {
                     data.insert(d).clone()
                 };
                 let Data::Through(ref_tree) = through else {
-                    w.count(VALUE_WORK)?;
+                    w.skip()?;
                     continue;
                 };
                 // `value[child.m_Name]`, then `write_value(..., None)` raises.
@@ -669,7 +635,7 @@ impl<'a> Writer<'a, '_> {
                 let Some(rt) = ref_tree else {
                     return Err(Self::mismatch(tree, *c, "a ref type with a tree"));
                 };
-                w.value(&rt, rt.root(), Obj::V(v))?;
+                w.child(repeated, |w| w.value(&rt, rt.root(), Obj::V(v)))?;
             }
             Ok(())
         })

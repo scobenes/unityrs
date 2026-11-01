@@ -12,10 +12,9 @@ use crate::value::Value;
 /// ([`crate::limits::Limits::max_decode_work`]): the size of the [`Value`]
 /// that holds it, whether the value is kept or not, as a decode counts every
 /// byte it writes whether its output is kept or not. A child a read or a
-/// write skips costs as much, as it costs a value against
-/// `max_values_per_object`. An element of a primitive run that a read holds
-/// as a run costs its width instead (`Work::run`), and so does a primitive a
-/// write writes.
+/// write skips costs as much. An element of a primitive run that a read
+/// holds as a run costs its width instead (`Work::run`, `Work::elements`),
+/// and so does a primitive a write writes.
 pub const VALUE_WORK: u64 = size_of::<Value>() as u64;
 
 /// The open's work one step costs a read or a write that builds no value,
@@ -120,10 +119,34 @@ pub(crate) fn limit_refused(at: u64, limit: LimitError) -> ReadError {
 }
 
 /// The reader's limits on work, shared by both readers (plan 3.10, "Bounds").
+///
+/// **What counts against `max_values_per_object`.** The bound is for the
+/// work of one read that neither its bytes nor its memory bounds. Every
+/// value a read keeps sits in a slot charged to the input's meter (a list's
+/// item, a dict's entry, a tuple's item: at least a [`Value`] each), and a
+/// primitive run is one value whose elements are bytes of the input
+/// (UnityPyBoost's `vector<UInt8>`, a slice) or of a charged run. So
+/// UnityPyBoost's reader, whose position never goes back, counts against it
+/// only what it does and keeps nothing of: each child it skips
+/// ([`Self::values`]), and each value it builds under a child whose name a
+/// sibling repeats ([`Self::enter_repeated`]), one of which replaces the
+/// other's value ([`Self::kept`]). Everything else it builds is bounded by
+/// `max_input_memory` and by the object's bytes, as UnityPy's own values are
+/// by the memory they take (review round 9: a `Mesh` of a 2^26 + 1 byte
+/// `vector<UInt8>`, and any struct array of more than 2^26 values, was
+/// refused where UnityPy reads it). The pure-Python reader counts every
+/// value it builds and every element of a primitive run
+/// ([`Self::elements`]): a negative `TypelessData` length takes it back, so
+/// it can read the same bytes again any number of times, and a
+/// `vector<UInt8>`'s elements are a slice that holds none of them.
 pub(crate) struct Work<'m> {
     pub(crate) values: u64,
     pub(crate) zero_size: u64,
     pub(crate) depth: u32,
+    /// How many children whose name a sibling repeats are being read
+    /// ([`crate::typetree::NodeInfo::repeated`]): while any is, every value
+    /// built counts against `max_values_per_object`.
+    repeated: u32,
     /// Elements the read's open lists reserved before their bytes were read
     /// and have not filled yet ([`Self::first_room`]).
     unfilled: usize,
@@ -141,6 +164,7 @@ impl<'m> Work<'m> {
             values: 0,
             zero_size: 0,
             depth: 0,
+            repeated: 0,
             unfilled: 0,
             open,
             limits,
@@ -184,17 +208,45 @@ impl<'m> Work<'m> {
     }
 
     /// Counts `n` values against `max_values_per_object`, each
-    /// [`VALUE_WORK`] of the open's work.
+    /// [`VALUE_WORK`] of the open's work: a child a read skips, and every
+    /// value the pure-Python reader builds.
     pub(crate) fn values(&mut self, n: u64, at: u64) -> Result<(), ReadError> {
         self.count(n, n.saturating_mul(VALUE_WORK), at)
     }
 
-    /// Counts a primitive run of `n` elements of `width` bytes each, held as
-    /// a run (a [`crate::value::PrimRun`] or a slice of the file): `n`
-    /// values against `max_values_per_object`, and their bytes as the
-    /// open's work, as a decode counts the bytes it writes.
-    pub(crate) fn run(&mut self, n: u64, width: u64, at: u64) -> Result<(), ReadError> {
+    /// Counts one value UnityPyBoost's reader builds: [`VALUE_WORK`] of the
+    /// open's work, and against `max_values_per_object` only under a child
+    /// whose name a sibling repeats (the type's docs).
+    pub(crate) fn kept(&mut self, at: u64) -> Result<(), ReadError> {
+        let n = u64::from(self.repeated > 0);
+        self.count(n, VALUE_WORK, at)
+    }
+
+    /// Counts a primitive run of `bytes` bytes that UnityPyBoost's reader
+    /// holds as one value (a [`crate::value::PrimRun`] or a slice of the
+    /// object), its vector's: its bytes as the open's work, as a decode
+    /// counts the bytes it writes, and no value of its own. Its elements
+    /// are the object's bytes, which its position passes once.
+    pub(crate) fn run(&mut self, bytes: u64, at: u64) -> Result<(), ReadError> {
+        self.open.add(bytes).map_err(|l| limit_refused(at, l))
+    }
+
+    /// Counts `n` elements of `width` bytes each of a primitive run the
+    /// pure-Python reader reads one by one: `n` values against
+    /// `max_values_per_object`, and their bytes as the open's work.
+    pub(crate) fn elements(&mut self, n: u64, width: u64, at: u64) -> Result<(), ReadError> {
         self.count(n, n.saturating_mul(width), at)
+    }
+
+    /// Starts reading a child whose name a sibling repeats: until the
+    /// matching [`Self::leave_repeated`], [`Self::kept`] counts every value
+    /// against `max_values_per_object`.
+    pub(crate) fn enter_repeated(&mut self) {
+        self.repeated = self.repeated.saturating_add(1);
+    }
+
+    pub(crate) fn leave_repeated(&mut self) {
+        self.repeated = self.repeated.saturating_sub(1);
     }
 
     fn count(&mut self, n: u64, work: u64, at: u64) -> Result<(), ReadError> {

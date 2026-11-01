@@ -105,7 +105,7 @@ impl Reader<'_, '_> {
             // (crossing position -1 is an empty read, which raises).
             let mut first = None;
             for i in 0..count {
-                self.work.run(1, 1, self.at())?;
+                self.work.elements(1, 1, self.at())?;
                 let (range, next) = py_read(self.bytes.len(), self.pos, 1);
                 if range.len() != 1 || first.is_some_and(|f: usize| f + i != range.start) {
                     self.pos = next;
@@ -130,7 +130,7 @@ impl Reader<'_, '_> {
                     .reserve_exact(first)
                     .map_err(|e| charge_error(at, e))?;
                 for i in 0..count {
-                    self.work.run(1, u64::from(size), self.at())?;
+                    self.work.elements(1, u64::from(size), self.at())?;
                     grow_step(&mut items, count).map_err(|e| charge_error(self.at(), e))?;
                     let v: $t = $get(self)?;
                     items.push(v).map_err(|e| charge_error(self.at(), e))?;
