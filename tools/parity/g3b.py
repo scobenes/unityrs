@@ -33,11 +33,13 @@ died, UnityPy's records from a re-run (below). Classes:
   `--memory-cap` (a `MemoryError`, or SIGKILL), and unityrs's records equal a
   re-run's under `--rerun-cap`, with an old-format tree's children read as they
   come instead of into a list of `children_count` placeholders (the one
-  allocation UnityPy touches before it reads; an LZMA dictionary and
-  UnityPyBoost's list for an array's count are reserved, not touched, so a
-  larger cap lets them by). Given the memory, UnityPy reads on and fails where
-  the bytes run out, as unityrs does without allocating: `PARITY.md` section
-  19.3, "a count UnityPy allocates before it reads".
+  allocation UnityPy touches before it reads; an LZMA dictionary, python-lz4's
+  output buffer of an LZ4 block's or LZ4 blocks-info's stored uncompressed
+  size, up to 2^31 - 1 bytes, and UnityPyBoost's list for an array's count are
+  reserved, not touched, so a larger cap lets them by). Given the memory,
+  UnityPy reads on and fails where the bytes run out, as unityrs does without
+  allocating: `PARITY.md` section 19.3, "a count UnityPy allocates before it
+  reads".
 - `limit`: unityrs's records differ from the reference and carry limit
   refusals (`limit <Kind>: <value> > <max>` in a note, each with value above
   max). Each record no refusal covers must be the reference's, in the same
