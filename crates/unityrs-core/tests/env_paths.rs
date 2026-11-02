@@ -5,7 +5,11 @@
 //! ([`Source::Path`] from a `unityrs_testkit::scratch` folder this test
 //! owns, removed however it ends, and [`Source::Bytes`]), and the loads, every object's read with and without
 //! `check_read`, its raw data, the `SerializedFile`'s `userInformation` and
-//! the case's resource reads must be UnityPy's for that way.
+//! the case's resource reads must be UnityPy's for that way. UnityPy loaded
+//! a case marked `tmpfs` from tmpfs files, whose `seek` takes every position
+//! below 2^63, where a smaller file system's raises `OSError`; unityrs reads
+//! every path by that rule (`PARITY.md` section 19.3), so it loads such a
+//! case from this test's folder.
 
 // Test code: a failed lookup is a failed test.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -192,8 +196,7 @@ fn run(case: &J, dir: &Path, by_path: bool) -> J {
 fn a_path_is_read_with_the_stream_readers_rules() {
     let doc = fixture();
     let cases = doc["cases"].as_array().unwrap();
-    assert!(cases.len() >= 15, "{}", cases.len());
-    let mut differ = 0;
+    assert!(cases.len() >= 25, "{}", cases.len());
     for (i, case) in cases.iter().enumerate() {
         let dir = Scratch::new(&format!("env-paths-{i}"));
         for f in case["files"].as_array().unwrap() {
@@ -204,8 +207,8 @@ fn a_path_is_read_with_the_stream_readers_rules() {
             let got = run(case, &dir, by_path);
             assert_eq!(got, case[how], "{name}, loaded from {how}");
         }
-        differ += usize::from(case["bytes"] != case["path"]);
+        // Every case is one where the two readers differ, but the controls.
+        let control = case.get("control").is_some_and(|c| c == true);
+        assert_eq!(case["bytes"] != case["path"], !control, "{name}");
     }
-    // Every case is one where the two readers differ, but the controls.
-    assert!(differ + 3 >= cases.len(), "{differ} of {}", cases.len());
 }
