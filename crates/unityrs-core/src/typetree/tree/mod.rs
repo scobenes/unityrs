@@ -15,7 +15,11 @@
 //! first element: UnityPyBoost's `read_pair_array` checks the arity once
 //! after the length, so an *empty* array of a 3-child `pair` fails
 //! (`TypeTreeHelper.cpp:356-360`), where the pure-Python reader returns `[]`.
-//! Compilation itself fails only on a limit (depth).
+//! Compilation itself fails only on a limit: depth, or the open's work. A
+//! class's children are grouped by name ids numbered once per name buffer
+//! (`names`, whose docs say what the compile reads and counts), and a
+//! type's kind reads at most its first 26 bytes, one past the longest kind
+//! name, so a row costs the same whatever its strings' lengths.
 //!
 //! Owner: package B.
 
@@ -24,6 +28,8 @@ use std::sync::Arc;
 use crate::error::{LimitError, LimitKind};
 use crate::limits::{Charge, ChargeError, Limits, MeteredVec, heap_cost};
 use crate::typetree::{NodeId, NodeList, TreeError};
+
+pub use names::NameTable;
 
 /// UnityPyBoost's `NodeDataType`, decided from `m_Type` alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -105,18 +111,55 @@ const KINDS: [(&[u8], Kind); 27] = [
     ),
 ];
 
+/// The longest name in [`KINDS`] (`ManagedReferencesRegistry`).
+const LONGEST_KIND: usize = 25;
+
+/// The bytes of a type name [`kind_of`] reads: one past [`LONGEST_KIND`].
+/// A C string with no NUL among them is longer than every kind name, so it
+/// is none of them, and whether it starts with `PPtr<` is in its first
+/// five; so the first [`KIND_SCAN`] bytes decide the kind, and a row costs
+/// the same whatever its type's length (review round 13: the compile
+/// searched every row's type to its first NUL, twice, and a blob's rows can
+/// all name one 32,767-byte string).
+const KIND_SCAN: usize = LONGEST_KIND + 1;
+
+#[cfg(test)]
+std::thread_local! {
+    /// Type-name bytes this thread's kind lookups read (tests only).
+    static SCANNED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts `bytes` of type names read (tests only).
+fn scanned(bytes: usize) {
+    #[cfg(test)]
+    SCANNED.with(|s| s.set(s.get().saturating_add(bytes as u64)));
+    #[cfg(not(test))]
+    let _ = bytes;
+}
+
+/// The first [`KIND_SCAN`] bytes of `type_name`, counted as read.
+fn kind_head(type_name: &[u8]) -> &[u8] {
+    let head = type_name.get(..KIND_SCAN).unwrap_or(type_name);
+    scanned(head.len());
+    head
+}
+
 /// UnityPyBoost's table: a type name to its [`Kind`] (`get_node_data_type`,
 /// `UnityPyBoost/TypeTreeHelper.cpp:1105-1128`). The name is a C string
 /// there (`PyUnicode_AsUTF8`, then `strcmp`), so it ends at its first NUL; a
-/// `PPtr<` prefix is tested first.
+/// `PPtr<` prefix is tested first. Reads at most its first 26 bytes, one
+/// past the longest kind name: the C string of a name with no NUL among
+/// them is longer than every kind name, so it is none of them.
 #[must_use]
 pub fn kind_of(type_name: &[u8]) -> Kind {
-    // UnityPy TypeTreeHelper.cpp:1112: `PyUnicode_AsUTF8` is a C string.
-    let c = type_name
+    // UnityPy TypeTreeHelper.cpp:1112: `PyUnicode_AsUTF8` is a C string,
+    // which ends past `head` when `head` holds no NUL.
+    let head = kind_head(type_name);
+    let c = head
         .iter()
         .position(|b| *b == 0)
-        .and_then(|n| type_name.get(..n))
-        .unwrap_or(type_name);
+        .and_then(|n| head.get(..n))
+        .unwrap_or(head);
     // UnityPy TypeTreeHelper.cpp:1113-1116: the `PPtr<` prefix first.
     if c.starts_with(b"PPtr<") {
         return Kind::PPtr;
@@ -131,9 +174,14 @@ pub fn kind_of(type_name: &[u8]) -> Kind {
 /// The kind UnityPy's pure-Python reader and its writer dispatch on: they
 /// compare `m_Type` as a whole Python `str` (`FUNCTION_READ_MAP.get`,
 /// `node.m_Type == "pair"`, `TypeTreeHelper.py:190-208`, `:416-429`), with no
-/// C string's end at a NUL and no `PPtr<` rule (that is object mode's).
+/// C string's end at a NUL and no `PPtr<` rule (that is object mode's). A
+/// name longer than every kind name is none of them, unread.
 pub(crate) fn py_kind_of(type_name: &[u8]) -> Kind {
+    if type_name.len() > LONGEST_KIND {
+        return Kind::Unknown;
+    }
     crate::walk::steps(type_name.len());
+    scanned(type_name.len());
     if type_name.contains(&0) {
         return Kind::Unknown;
     }
@@ -263,10 +311,12 @@ pub struct Tree {
     list: Arc<NodeList>,
     info: Box<[NodeInfo]>,
     depth: u32,
-    /// Some node's `m_Type` holds a NUL, so the pure-Python reader's and the
-    /// writer's whole-string kind can differ from UnityPyBoost's C-string
-    /// one ([`py_kind_of`]). False for every tree a parser builds (its names
-    /// end at a NUL), so they never compare a string.
+    /// Some node's `m_Type` holds a NUL among its first [`KIND_SCAN`]
+    /// bytes, so the pure-Python reader's and the writer's whole-string kind
+    /// can differ from UnityPyBoost's C-string one ([`py_kind_of`]); a NUL
+    /// past them ends a C string longer than every kind name, which is a
+    /// class (or a `PPtr<`) in both. False for every tree a parser builds
+    /// (its names end at a NUL), so they never compare a string.
     nul_types: bool,
     /// Each node's [`py_kind_of`] when [`Self::nul_types`], found once here
     /// (a read or a write asks it at every visit of a node, and a type name
@@ -296,9 +346,8 @@ const BLANK: NodeInfo = NodeInfo {
     has_registry: false,
 };
 
-/// FNV-1a over a name, to group a class's children by name in
-/// `O(k log k)` plus their names' length (a repeated long name is compared
-/// in full once per child, never once per comparison of the sort).
+/// FNV-1a over a name, to number the names of one length
+/// ([`names::name_ids`]).
 fn name_hash(name: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in name {
@@ -359,94 +408,31 @@ fn mark_repeated(info: &mut [NodeInfo], kids: &[NodeId]) -> bool {
     dup
 }
 
-#[cfg(test)]
-std::thread_local! {
-    /// Name comparisons [`group_by_name`] made on this thread (tests only).
-    static COMPARED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// `a == b` on two names, counted (tests only).
-fn same(a: &[u8], b: &[u8]) -> bool {
-    #[cfg(test)]
-    COMPARED.with(|c| c.set(c.get() + 1));
-    a == b
-}
-
-/// Sets `key` and `slot` for `kids`, the children of one node: `key` is the
-/// first sibling with the same `m_Name`, `slot` that key's ordinal among
-/// the distinct names in first-sighting order. Sorted by (length, `hash`,
-/// position), so equal names are adjacent; a run of equal length and hash
-/// is checked byte for byte against its first member, which keys it when
-/// every member has its name. A run that holds more than one name (a hash
-/// collision, which a hostile tree can make of any number of names: FNV-1a
-/// is no defence) is sorted by name, then position, and each name keyed by
-/// its first member: `O(k log k)` comparisons of its names, where a scan
-/// of the run's earlier keys for each member was `O(k²)` (review round 2).
+/// Sets `key` and `slot` for `kids`, the children of `parent`, from their
+/// name ids ([`names::name_ids`]): `key` is the first sibling with the same
+/// `m_Name`, `slot` that key's ordinal among the distinct names in
+/// first-sighting order. `seen` holds, for each name id, the last parent
+/// that saw it and that parent's key for it, so a class costs a step per
+/// child and reads no name (review round 2's `O(k²)` scan, review round
+/// 13's rows x length hashing).
 fn group_by_name(
-    list: &NodeList,
+    parent: u32,
     kids: &[NodeId],
-    order: &mut MeteredVec<u32>,
-    hashes: &mut MeteredVec<(usize, u64)>,
+    ids: &[u32],
+    seen: &mut [(u32, u32)],
     info: &mut [NodeInfo],
-    hash: fn(&[u8]) -> u64,
-) -> Result<(), ChargeError> {
-    order.truncate(0);
-    hashes.truncate(0);
-    for (j, c) in kids.iter().enumerate() {
-        let name = list.name(*c);
-        hashes.push((name.len(), hash(name)))?;
-        order.push(u32::try_from(j).unwrap_or(u32::MAX))?;
-    }
-    let hk = |j: u32| -> (usize, u64) {
-        hashes
-            .as_slice()
-            .get(j as usize)
-            .copied()
-            .unwrap_or_default()
-    };
-    order
-        .as_mut_slice()
-        .sort_unstable_by(|a, b| hk(*a).cmp(&hk(*b)).then(a.cmp(b)));
-    let kid = |j: u32| kids.get(j as usize).copied().unwrap_or(NodeId(0));
-    let name = |j: u32| list.name(kid(j));
-    let mut start = 0;
-    while start < order.len() {
-        let sorted = order.as_slice();
-        let first = sorted.get(start).copied().unwrap_or(0);
-        let mut end = start + 1;
-        while end < sorted.len() && hk(sorted.get(end).copied().unwrap_or(0)) == hk(first) {
-            end += 1;
-        }
-        let run = sorted.get(start..end).unwrap_or_default();
-        let one_name = run.iter().skip(1).all(|j| same(name(*j), name(first)));
-        if !one_name && let Some(run) = order.as_mut_slice().get_mut(start..end) {
-            run.sort_unstable_by(|a, b| {
-                #[cfg(test)]
-                COMPARED.with(|c| c.set(c.get() + 1));
-                name(*a).cmp(name(*b)).then(a.cmp(b))
-            });
-        }
-        // Each member after its name's first takes that first as its key.
-        let run = order.as_slice().get(start..end).unwrap_or_default();
-        let mut leader = first;
-        for (r, j) in run.iter().enumerate() {
-            if r == 0 {
-                leader = *j;
-                continue;
-            }
-            if one_name || same(name(*j), name(leader)) {
-                if let Some(i) = info.get_mut(kid(*j).index()) {
-                    i.key = kid(leader);
-                }
-            } else {
-                leader = *j;
-            }
-        }
-        start = end;
-    }
+) {
     let mut next = 0_u32;
     for c in kids {
-        let key = info.get(c.index()).map_or(*c, |i| i.key);
+        let name = ids.get(c.index()).copied().unwrap_or(c.0);
+        let key = match seen.get_mut(name as usize) {
+            Some((p, key)) if *p == parent => NodeId(*key),
+            Some(e) => {
+                *e = (parent, c.0);
+                *c
+            }
+            None => *c,
+        };
         let slot = if key == *c {
             next = next.saturating_add(1);
             next - 1
@@ -454,7 +440,52 @@ fn group_by_name(
             info.get(key.index()).map_or(0, |i| i.slot)
         };
         if let Some(i) = info.get_mut(c.index()) {
+            i.key = key;
             i.slot = slot;
+        }
+    }
+}
+
+/// Sets every node's `key`, `slot`, `repeated`, `dup_names` and
+/// `has_registry`: each class's children grouped by name, the names
+/// numbered once ([`names`], whose bytes are the list's work), or taken
+/// from `table` when it holds every row's name.
+fn key_children(
+    list: &NodeList,
+    table: Option<&NameTable>,
+    info: &mut MeteredVec<NodeInfo>,
+) -> Result<(), TreeError> {
+    let known = match table {
+        Some(t) => t.ids_of(list)?,
+        None => None,
+    };
+    let (ids, names) = match known {
+        Some(known) => known,
+        None => names::name_ids(list, name_hash)?,
+    };
+    let mut seen: MeteredVec<(u32, u32)> = MeteredVec::with_capacity(list.meter(), names)?;
+    for _ in 0..names {
+        seen.push((u32::MAX, 0))?;
+    }
+    for p in 0..list.len() {
+        let kids = list.children(id(p));
+        if kids.is_empty() {
+            continue;
+        }
+        group_by_name(
+            id(p).0,
+            kids,
+            ids.as_slice(),
+            seen.as_mut_slice(),
+            info.as_mut_slice(),
+        );
+        let dup = mark_repeated(info.as_mut_slice(), kids);
+        let registry = kids
+            .iter()
+            .any(|c| info_at(info, *c).kind == Kind::ManagedReferencesRegistry);
+        if let Some(pi) = info.as_mut_slice().get_mut(p) {
+            pi.dup_names = dup;
+            pi.has_registry = registry;
         }
     }
     Ok(())
@@ -524,11 +555,34 @@ fn min_size_of(list: &NodeList, info: &MeteredVec<NodeInfo>, node: NodeId) -> u3
 
 impl Tree {
     /// Classifies every node. Fails when the tree is deeper than
-    /// `limits.max_tree_depth`, or when the list's meter refuses the
-    /// tree's memory ([`TreeError::Charge`]): `info` and any scratch grow
-    /// through [`crate::limits::MeteredVec`] on [`NodeList::meter`], so a
-    /// tree compiled from an input's rows is charged to that input.
+    /// `limits.max_tree_depth`, when the list's meter refuses the tree's
+    /// memory ([`TreeError::Charge`]): `info` and any scratch grow through
+    /// [`crate::limits::MeteredVec`] on [`NodeList::meter`], so a tree
+    /// compiled from an input's rows is charged to that input; or when the
+    /// names it reads take the meter's open past its work allowance
+    /// ([`TreeError::Limit`], [`crate::LimitKind::DecodeWork`]: each name
+    /// buffer that shares its length with another is hashed once and
+    /// compared, every byte counted before it is read).
     pub fn compile(list: Arc<NodeList>, limits: &Limits) -> Result<Arc<Self>, TreeError> {
+        Self::compile_inner(list, limits, None)
+    }
+
+    /// [`Self::compile`], the names of rows whose names are all `names`'
+    /// strings taken from it, reading none of them ([`NameTable`]); a list
+    /// with any other name is compiled as [`Self::compile`] compiles it.
+    pub fn compile_with_names(
+        list: Arc<NodeList>,
+        limits: &Limits,
+        names: &NameTable,
+    ) -> Result<Arc<Self>, TreeError> {
+        Self::compile_inner(list, limits, Some(names))
+    }
+
+    fn compile_inner(
+        list: Arc<NodeList>,
+        limits: &Limits,
+        table: Option<&NameTable>,
+    ) -> Result<Arc<Self>, TreeError> {
         let meter = list.meter().clone();
         let n = list.len();
         if u32::try_from(n).is_err() {
@@ -572,7 +626,7 @@ impl Tree {
         let mut nul_types = false;
         for (i, row) in list.rows().iter().enumerate() {
             let ty = row.ty.as_bytes();
-            nul_types |= ty.contains(&0);
+            nul_types |= kind_head(ty).contains(&0);
             info.push(NodeInfo {
                 kind: kind_of(ty),
                 // UnityPy TypeTreeHelper.cpp:1216: `m_MetaFlag & 0x4000`.
@@ -584,35 +638,7 @@ impl Tree {
 
         // Dict keys: a class's children grouped by name (a Python dict
         // keeps a repeated key's first position, UnityPy TypeTreeHelper.cpp:427).
-        let widest = (0..n)
-            .map(|i| list.children(id(i)).len())
-            .max()
-            .unwrap_or(0);
-        let mut order: MeteredVec<u32> = MeteredVec::with_capacity(&meter, widest)?;
-        let mut hashes: MeteredVec<(usize, u64)> = MeteredVec::with_capacity(&meter, widest)?;
-        for p in 0..n {
-            let kids = list.children(id(p));
-            if kids.is_empty() {
-                continue;
-            }
-            group_by_name(
-                &list,
-                kids,
-                &mut order,
-                &mut hashes,
-                info.as_mut_slice(),
-                name_hash,
-            )?;
-            let dup = mark_repeated(info.as_mut_slice(), kids);
-            let registry = kids
-                .iter()
-                .any(|c| info_at(&info, *c).kind == Kind::ManagedReferencesRegistry);
-            if let Some(pi) = info.as_mut_slice().get_mut(p) {
-                pi.dup_names = dup;
-                pi.has_registry = registry;
-            }
-        }
-        drop((order, hashes));
+        key_children(&list, table, &mut info)?;
 
         // Shapes (`read_typetree_value`'s switch, UnityPy TypeTreeHelper.cpp:702-883).
         for p in 0..n {
@@ -708,5 +734,10 @@ impl Tree {
     }
 }
 
+mod names;
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod work_tests;

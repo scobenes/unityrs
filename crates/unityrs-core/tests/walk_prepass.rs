@@ -55,7 +55,9 @@ fn objects(k: usize, n: usize, dup: bool, byte_size: u32) -> Vec<u8> {
 }
 
 /// Every object of `data` read under `max_decode_work`: the work of the
-/// file's load, the work of the reads, and each read's outcome.
+/// file's load and of its tree's compile (the bytes of names it reads,
+/// which grow with the children; `Tree::compile`'s "Work"), the work of
+/// the reads, and each read's outcome.
 fn read_all(data: &[u8], max_decode_work: u64) -> (u64, u64, Vec<Result<Parsed, ParseError>>) {
     let mut c = FileContext::unitypy();
     c.limits.max_decode_work = max_decode_work;
@@ -73,6 +75,7 @@ fn read_all(data: &[u8], max_decode_work: u64) -> (u64, u64, Vec<Result<Parsed, 
         &c,
     )
     .unwrap();
+    f.types()[0].tree(&c.limits).unwrap().unwrap();
     let load = m.decoded();
     let outcomes: Vec<_> = f.objects().map(|o| o.parse_as_dict(true)).collect();
     (load, m.decoded() - load, outcomes)

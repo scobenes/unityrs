@@ -458,6 +458,8 @@ fn objects_over_one_span_stop_at_the_opens_work() {
                 &c,
             )
             .unwrap();
+            // The tree's compile is the load's work here, not a read's.
+            f.types()[0].tree(&c.limits).unwrap().unwrap();
             let load = m.decoded();
             let outcomes: Vec<_> = f.objects().map(|o| o.parse_as_dict(true)).collect();
             (load, m.decoded() - load, outcomes)
@@ -494,6 +496,75 @@ fn objects_over_one_span_stop_at_the_opens_work() {
             }
         }
     }
+}
+
+/// Review round 13: an object's first read compiles its class's tree, and
+/// the compile reads the tree's names (`Tree::compile`, "Work": each buffer
+/// that shares its length with another hashed once). Those bytes are the
+/// open's work: a file whose class has `R` children named by `R` distinct
+/// strings of `L` bytes counts `R` x `L` for its compile, on the meter its
+/// objects are read on, and a read under an allowance below it fails with
+/// the compile's `DecodeWork` refusal, which the type keeps (plan 3.1: not
+/// transient), so a second object of the type is refused without a compile.
+#[test]
+fn an_objects_tree_compile_counts_the_names_it_reads_on_the_open() {
+    const R: usize = 64;
+    const L: usize = 4096;
+    let mut nodes = vec![NodeSpec::new(0, "Base", "Base")];
+    for i in 0..R {
+        nodes.push(NodeSpec::new(1, "int", &format!("{i:0L$}")));
+    }
+    let data: Vec<u8> = (0..R)
+        .flat_map(|i| u32::try_from(i).unwrap().to_le_bytes())
+        .collect();
+    let mut spec = one_object(1, nodes, data);
+    let second = ObjectSpec {
+        path_id: 2,
+        ..spec.objects[0].clone()
+    };
+    spec.objects.push(second);
+    let file = build(&spec);
+    let open = |max_decode_work: u64| {
+        let mut c = FileContext::unitypy();
+        c.limits.max_decode_work = max_decode_work;
+        let c = Arc::new(c);
+        let m = Meter::for_input(&c.limits, c.budget.clone(), Reservation::Input);
+        let f = SerializedFile::parse(
+            RawStr::from("CAB-t"),
+            Bytes::from(file.clone()),
+            None,
+            &m,
+            &c,
+        );
+        (m, f.unwrap())
+    };
+    let names = u64::try_from(R * L).unwrap();
+    let (m, f) = open(u64::MAX);
+    let load = m.decoded();
+    f.types()[0].tree(&f.context().limits).unwrap().unwrap();
+    assert_eq!(
+        m.decoded() - load,
+        names,
+        "the compile reads each name once"
+    );
+    let (m, f) = open(load + names - 1);
+    let mut granted = Vec::new();
+    for o in f.objects() {
+        let e = o.parse_as_dict(true).unwrap_err();
+        granted.push(m.granted());
+        let ParseError::Tree(unityrs_core::typetree::TreeError::Limit(l)) = e else {
+            panic!("not the compile's refusal: {e:?}");
+        };
+        let want = LimitError {
+            kind: LimitKind::DecodeWork,
+            value: load + names,
+            max: load + names - 1,
+        };
+        assert_eq!(l, want);
+        assert_eq!(m.decoded(), load, "a refused count counts nothing");
+    }
+    // The second object's read compiled nothing: its meter granted nothing.
+    assert_eq!(granted[0], granted[1]);
 }
 
 /// A SerializedFile of `k` objects at one offset, each of `byte_size`, each
