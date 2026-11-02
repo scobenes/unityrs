@@ -352,12 +352,10 @@ fn py_kind(type_name: &[u8]) -> Kind {
     }
 }
 
-/// [`kind_of`] and [`py_kind_of`] read at most [`KIND_SCAN`] bytes of a type
-/// name, and give the whole name's kind: every kind name and `PPtr<`, each
-/// followed by nothing, by a NUL at every position to 40 bytes past it,
-/// and by 32,767 bytes with no NUL or a NUL at their end.
-#[test]
-fn a_kind_reads_at_most_its_first_bytes_and_is_the_whole_names() {
+/// Every kind name, `PPtr<`, `PPtr<X>`, the empty name and `x`, each
+/// followed by nothing, by a NUL at every position to 40 bytes past it
+/// (then `int`), and by 32,767 bytes with no NUL or a NUL at their end.
+fn type_names() -> Vec<Vec<u8>> {
     let mut names: Vec<Vec<u8>> = Vec::new();
     let mut heads: Vec<&[u8]> = KINDS.iter().map(|(n, _)| *n).collect();
     heads.extend([b"PPtr<".as_slice(), b"PPtr<X>", b"", b"x"]);
@@ -377,6 +375,14 @@ fn a_kind_reads_at_most_its_first_bytes_and_is_the_whole_names() {
             names.push(n);
         }
     }
+    names
+}
+
+/// [`kind_of`] and [`py_kind_of`] read at most [`KIND_SCAN`] bytes of a type
+/// name, and give the whole name's kind, for each of [`type_names`].
+#[test]
+fn a_kind_reads_at_most_its_first_bytes_and_is_the_whole_names() {
+    let names = type_names();
     assert_eq!(
         KINDS.iter().map(|(n, _)| n.len()).max(),
         Some(KIND_SCAN - 1),
@@ -400,6 +406,75 @@ fn a_kind_reads_at_most_its_first_bytes_and_is_the_whole_names() {
         );
         assert!(scanned_now() - before <= 2 * u64::try_from(KIND_SCAN).unwrap());
     }
+}
+
+/// The bytes [`py_kind_of`] reads of a type of `len` bytes: none past
+/// [`super::LONGEST_KIND`], else its NUL search and, with no NUL, its kind.
+fn py_read(len: usize, nul: bool) -> usize {
+    match (len > KIND_SCAN - 1, nul) {
+        (true, _) => 0,
+        (false, true) => len,
+        (false, false) => 2 * len,
+    }
+}
+
+/// The compile reads a row's type only in its first [`KIND_SCAN`] bytes,
+/// and a NUL decides what it keeps only there. For each of [`type_names`],
+/// a tree of a `Base` root and `ROWS` rows of that type: the compile
+/// reads each row's head exactly twice (its kind, and whether it holds a
+/// NUL), and only when some head holds a NUL does it keep a pure-Python
+/// kind for every node, reading again each type of at most 25 bytes
+/// ([`py_read`]); a NUL past the head ends a C string longer than every
+/// kind name and keeps nothing, the tree charged as one whose type has no
+/// NUL. Every node's kind is the C string's and its pure-Python kind the
+/// whole string's. (Review round 14: the compile's NUL check searching
+/// every type to its end, rows x length bytes uncounted, passed every
+/// test, since only the head's NUL changes what the compile gives.)
+#[test]
+fn a_types_nul_is_looked_for_only_in_its_head() {
+    const ROWS: usize = 8;
+    let compile = |ty: &[u8]| {
+        let meter = Meter::unlimited();
+        let (ty, name) = (RawStr::from(ty), RawStr::from("a"));
+        let mut rows = MeteredVec::new(&meter);
+        rows.push(NodeRow::new(0, "Base", "Base")).unwrap();
+        for _ in 0..ROWS {
+            rows.push(NodeRow::new(1, ty.clone(), name.clone()))
+                .unwrap();
+        }
+        let list = Arc::new(NodeList::from_rows(rows).unwrap());
+        let before = scanned_now();
+        let tree = Tree::compile(list, &Limits::default()).unwrap();
+        (tree, scanned_now() - before)
+    };
+    let (mut past_head, mut in_head) = (0, 0);
+    for ty in type_names() {
+        let show = &ty[..ty.len().min(48)];
+        let (tree, scanned) = compile(&ty);
+        let nul = ty.contains(&0);
+        let head_nul = ty.iter().take(KIND_SCAN).any(|b| *b == 0);
+        let head = |len: usize| 2 * len.min(KIND_SCAN);
+        let mut want = head(4) + ROWS * head(ty.len());
+        if head_nul {
+            want += py_read(4, false) + ROWS * py_read(ty.len(), nul);
+        }
+        assert_eq!(scanned, u64::try_from(want).unwrap(), "{show:?}");
+        assert_eq!(tree.nul_types, head_nul, "{show:?}");
+        assert_eq!(tree.py.len(), if head_nul { ROWS + 1 } else { 0 });
+        for i in 1..=u32::try_from(ROWS).unwrap() {
+            assert_eq!(tree.info(NodeId(i)).unwrap().kind, c_kind(&ty), "{show:?}");
+            assert_eq!(tree.py_kind(NodeId(i)), py_kind(&ty), "{show:?}");
+        }
+        if nul && !head_nul {
+            past_head += 1;
+            let plain: Vec<u8> = ty.iter().map(|b| if *b == 0 { b'x' } else { *b }).collect();
+            let (twin, _) = compile(&plain);
+            assert!(!twin.nul_types);
+            assert_eq!(tree.charge().bytes(), twin.charge().bytes(), "{show:?}");
+        }
+        in_head += usize::from(head_nul);
+    }
+    assert!(past_head > 300 && in_head > 500, "{past_head} {in_head}");
 }
 
 /// A [`super::NameTable`] over strings (two entries of one content among
@@ -520,4 +595,83 @@ fn a_name_tables_compile_is_the_plain_compile() {
         }
     }
     assert!(grouped > 1_000, "{grouped}");
+}
+
+/// A [`super::NameTable`] knows a string by its buffer, so it keeps every
+/// string it was given alive: once the caller drops its own copies, no
+/// string made afterwards takes the address of one the table knows (which
+/// would let the table answer for a name it never read), and a list of
+/// such strings compiles as the plain compile does, reading its names.
+#[test]
+fn a_name_table_keeps_the_buffers_it_knows() {
+    let strings: Vec<RawStr> = (0..64).map(|_| RawStr::from("aa")).collect();
+    let known: std::collections::HashSet<usize> = strings
+        .iter()
+        .map(|s| s.as_bytes().as_ptr().addr())
+        .collect();
+    let table = super::NameTable::new(&strings, &Meter::unlimited()).unwrap();
+    drop(strings);
+    let fresh: Vec<RawStr> = (0..256)
+        .map(|i| RawStr::from(format!("{:02}", i % 100).as_str()))
+        .collect();
+    let taken = fresh
+        .iter()
+        .filter(|s| known.contains(&s.as_bytes().as_ptr().addr()))
+        .count();
+    assert_eq!(taken, 0, "strings at the addresses the table knows");
+    let meter = Meter::unlimited();
+    let mut rows = MeteredVec::new(&meter);
+    rows.push(NodeRow::new(0, fresh[0].clone(), fresh[0].clone()))
+        .unwrap();
+    for s in &fresh[1..8] {
+        rows.push(NodeRow::new(1, s.clone(), s.clone())).unwrap();
+    }
+    let list = Arc::new(NodeList::from_rows(rows).unwrap());
+    let read = read_now();
+    let with = Tree::compile_with_names(list.clone(), &Limits::default(), &table).unwrap();
+    assert!(
+        read_now() > read,
+        "the table answered for names it never read"
+    );
+    let plain = Tree::compile(list.clone(), &Limits::default()).unwrap();
+    for i in 0..u32::try_from(list.len()).unwrap() {
+        assert_eq!(with.info(NodeId(i)), plain.info(NodeId(i)), "{i}");
+    }
+}
+
+/// One hash's buffers, all of `L` bytes under a hash that makes every name
+/// collide, cost exactly what `names`'s docs ("Work") say, traced by hand:
+/// each hashed (3 x `L`); each compared with the first until one differs;
+/// on a difference, a bottom-up merge sort (its comparisons traced below)
+/// and a comparison of each neighbour after the first. Names `A`, `B` and
+/// `A'` (`A`'s content in a buffer of its own), in row order:
+/// - `A B A'`: `B` differs from `A` at the first comparison, which stops
+///   there (1); the sort compares `B`-`A` in its first pass and `A'`-`A`,
+///   `A'`-`B` in its second (3); neighbours `A'`-`A`, `B`-`A` (2): 6.
+/// - `A A' B`: `A'`-`A` agree, `B`-`A` differ (2); the sort compares
+///   `A'`-`A`, then `B`-`A` and `B`-`A'` (3); neighbours (2): 7.
+///
+/// Each comparison counts `L` bytes. (Review round 14: a first loop that
+/// went on past the first difference passed every test.)
+#[test]
+fn a_collision_compares_with_the_first_until_one_differs_then_sorts() {
+    use super::names::COMPARED;
+    const L: usize = 8;
+    let (a, b) = (vec![b'A'; L], vec![b'B'; L]);
+    let compared_now = || COMPARED.with(std::cell::Cell::get);
+    for (names, compared) in [([&a, &b, &a], 6_u64), ([&a, &a, &b], 7)] {
+        let meter = Meter::unlimited();
+        let list = list_on(&meter, names.map(|n| RawStr::from(n.as_slice())));
+        let (work, before) = (meter.decoded(), compared_now());
+        let (ids, _) = super::names::name_ids(&list, |_| 0).unwrap();
+        assert_eq!(compared_now() - before, compared, "{names:?}");
+        let len = u64::try_from(L).unwrap();
+        assert_eq!(meter.decoded() - work, (3 + compared) * len, "{names:?}");
+        let ids = ids.as_slice();
+        for i in 1..=3 {
+            for j in 1..=3 {
+                assert_eq!(ids[i] == ids[j], names[i - 1] == names[j - 1]);
+            }
+        }
+    }
 }
