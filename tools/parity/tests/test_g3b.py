@@ -246,7 +246,8 @@ class InputCoverageTests(unittest.TestCase):
     def test_a_value_of_any_depth_and_an_integer_of_any_width_agree(self):
         """Review round 10: a value deeper than Python's recursion limit stopped the verdict with a
         RecursionError, and an integer wider than 4,300 digits made it exit 2, though both dumps agree."""
-        from compare_support import S as struct_value, bundle_rec, file_rec, obj_rec
+        from compare_support import S as struct_value
+        from compare_support import bundle_rec, file_rec, obj_rec
 
         value = 7
         for _ in range(5_000):

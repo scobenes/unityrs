@@ -88,8 +88,30 @@ class Loads(unittest.TestCase):
                 self.assertEqual(json.dumps(got, **OPTS), json.dumps(json.loads(text), **OPTS))
 
     def test_the_loop_refuses_what_json_refuses(self):
-        bad = ["", "[", "[1,]", "[1 2]", '{"a" 1}', '{"a":1,}', "{1:2}", "01", "1.", ".5", "-", "[1]x", '"\x01"',
-               "nul", "tru", "[,1]", '{"a":}', '"\\x"', "[1e]", "[NaN", "+1", "١"]
+        bad = [
+            "",
+            "[",
+            "[1,]",
+            "[1 2]",
+            '{"a" 1}',
+            '{"a":1,}',
+            "{1:2}",
+            "01",
+            "1.",
+            ".5",
+            "-",
+            "[1]x",
+            '"\x01"',
+            "nul",
+            "tru",
+            "[,1]",
+            '{"a":}',
+            '"\\x"',
+            "[1e]",
+            "[NaN",
+            "+1",
+            "١",
+        ]
         for text in bad:
             with self.subTest(text=text):
                 with self.assertRaises(ValueError):
@@ -116,13 +138,16 @@ class Loads(unittest.TestCase):
                 text = '{"a":1,"b":{},"a":[{"c":2}]}'
             calls = {"json": [], "loop": []}
 
-            def hook(pairs, side):
-                calls[side].append(json.dumps(pairs, **OPTS))
-                return ("obj", len(calls[side]))
+            def hook(side, calls=calls):
+                def record(pairs):
+                    calls[side].append(json.dumps(pairs, **OPTS))
+                    return ("obj", len(calls[side]))
+
+                return record
 
             with self.subTest(i=i, text=text):
-                want = json.loads(text, object_pairs_hook=lambda p: hook(p, "json"))
-                got = J._loads_deep(text, float, json.decoder._CONSTANTS.__getitem__, lambda p: hook(p, "loop"))
+                want = json.loads(text, object_pairs_hook=hook("json"))
+                got = J._loads_deep(text, float, json.decoder._CONSTANTS.__getitem__, hook("loop"))
                 self.assertEqual(calls["loop"], calls["json"])
                 self.assertEqual(json.dumps(got, **OPTS), json.dumps(want, **OPTS))
 
