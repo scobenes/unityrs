@@ -15,8 +15,12 @@ use crate::raw::RawStr;
 /// (`helpers/ResourceReader.py:36-38`): `reader.Position = offset;
 /// reader.read_bytes(size)`, by the reader's rules: a bundle entry's and a
 /// file of bytes' are a Python slice of the reader's bytes; a file loaded
-/// from a path is a stream, which refuses an offset or a size at or above
-/// 2^63 ([`crate::stream::ReaderKind`]).
+/// from a path is a stream, which refuses what `CPython` refuses on every
+/// machine, an offset at or above 2^63 and a size at or above 2^63 - 33,
+/// and reads what exists otherwise ([`crate::stream::ReaderKind`]). An
+/// offset past the largest file the file system takes, or a size the
+/// machine cannot allocate, is UnityPy's `OSError` or `MemoryError` on that
+/// machine, and reads short or nothing here (`PARITY.md` section 19.3).
 fn read_cab(cab: &Cab, offset: u64, size: u64) -> Result<Bytes, Error> {
     match cab {
         Cab::Raw(RawCab::InBundle { bundle, dir_index }) => {
