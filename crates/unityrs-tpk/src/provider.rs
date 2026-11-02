@@ -14,6 +14,7 @@ use unityrs_core::limits::{Charge, ChargeError, Limits, Meter, MeteredVec, heap_
 use unityrs_core::once::get_or_publish;
 use unityrs_core::provider::{NoTree, ProviderError, TreeRequest, TypeTreeProvider};
 use unityrs_core::typetree::commonstring::CommonStrings;
+use unityrs_core::typetree::tree::NameTable;
 use unityrs_core::typetree::{NodeList, Tree, TreeError};
 use unityrs_core::{LimitError, LimitKind, UnityVersion};
 
@@ -52,6 +53,9 @@ pub struct TpkProvider {
     roots: MeteredVec<Root>,
     /// UnityPy's `get_common_strings()` over this TPK.
     common: CommonStrings,
+    /// The names of the blob's strings, numbered once at load, so a tree's
+    /// compile reads none of them (crate docs, "Limits").
+    names: NameTable,
     limits: Limits,
     /// The provider's own meter, unlimited, its refusals labelled
     /// [`Reservation::Provider`] (crate docs, "Memory").
@@ -172,10 +176,15 @@ impl TpkProvider {
         drop(payload);
         let common = common_strings(&blob, &meter)?;
         let roots = roots(&blob, limits, &meter).map_err(memory)?;
+        let names = NameTable::new(blob.strings.as_slice(), &meter).map_err(|e| match e {
+            TreeError::Charge(c) => memory(c),
+            e => TpkError::Malformed(e.to_string().into()),
+        })?;
         Ok(Self {
             blob,
             roots,
             common,
+            names,
             limits: *limits,
             meter,
         })
@@ -492,7 +501,8 @@ impl TypeTreeProvider for TpkProvider {
     }
 
     /// [`TpkProvider::node_list`], compiled once per release root with
-    /// [`Tree::compile`] on the provider's meter and kept: every request
+    /// [`Tree::compile_with_names`] (the blob's strings' names, numbered at
+    /// load) on the provider's meter and kept: every request
     /// whose picked entry names one root gets the same `Arc` (UnityPy's
     /// `NODES_CACHE`, crate docs). A walk or compile the allocator refuses is
     /// that request's error, its [`ProviderError::memory`] set, and is not
@@ -510,7 +520,7 @@ impl TypeTreeProvider for TpkProvider {
             let Some(list) = self.rows_of(root)? else {
                 return Ok(None);
             };
-            Tree::compile(list, &self.limits)
+            Tree::compile_with_names(list, &self.limits, &self.names)
                 .map(Some)
                 .map_err(|e| match e {
                     TreeError::Limit(l) => limit_error(l),

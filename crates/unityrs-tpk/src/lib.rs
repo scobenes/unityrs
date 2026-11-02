@@ -103,6 +103,20 @@
 //! depends on the TPK alone, never on the order of the requests. Each is a [`ProviderError`] whose `limit` names the bound.
 //! `PARITY.md` section 19.3 lists every one.
 //!
+//! **A compile reads no name.** Every tree of the TPK names its one
+//! string table, and a tree's compile groups each class's children by name
+//! (unityrs-core's `Tree::compile`, which reads each name buffer that
+//! shares its length with another). The provider numbers its strings'
+//! names once, at load, as the compile numbers a tree's
+//! ([`NameTable`](unityrs_core::typetree::tree::NameTable), its work
+//! counted and its tables charged on the provider's meter), and compiles
+//! every tree with them (`Tree::compile_with_names`), so a compile reads
+//! none of its rows' names (and at most the first 26 bytes of each type),
+//! whatever their lengths and however many roots name them
+//! (fix pass 13's sweep: each compile read them again, so a TPK whose many
+//! release roots each name long strings of one length read them once a
+//! root; `tests/names.rs`).
+//!
 //! **Threads.** The provider never waits (plan sections 3.16 and 4.1), so
 //! threads that ask for one release root before its first answer is
 //! published each walk it (and compile it, for a tree), and every one of
@@ -121,8 +135,9 @@
 //! at most one row past [`TpkProvider::MAX_TREE_ROWS`]
 //! (`provider::tests::racing_first_requests_walk_a_root_at_most_once_per_thread`).
 //!
-//! **Memory.** The TPK is the provider's, not an input's: its tables, rows,
-//! trees and kept errors are charged to the provider's own unlimited meter
+//! **Memory.** The TPK is the provider's, not an input's: its tables, name
+//! table, rows, trees and kept errors are charged to the provider's own
+//! unlimited meter
 //! (plan section 3.15's constant per context; the bounds above are what
 //! bound it), as are the file's bytes while it loads and the copy of a
 //! compressed payload its codec reads; the rows and tree of a release root
