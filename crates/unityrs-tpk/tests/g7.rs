@@ -177,7 +177,11 @@ fn compare<'r>(
                 // (review round 11: every "none" passed alike).
                 (None, Ok(None), Ok(None)) => {
                     let why = provider.why_none(class_id, Some(v)).map(NoTree::exception);
-                    assert_eq!(why, want["none"].as_str(), "{}: {want}", at());
+                    assert!(
+                        why.is_some() && why == want["none"].as_str(),
+                        "{}: UnityPy {want}, unityrs {why:?}",
+                        at()
+                    );
                 }
                 // The exception UnityPy raised, as the port's error for it,
                 // the same from the node list and the tree (round 4: any
