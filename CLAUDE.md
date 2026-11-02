@@ -68,7 +68,8 @@ commits land on the worktree's branch.
   UnityPy 1.25.2, with the path from the package root when two files share
   its name (`files/BundleFile.py`), a whole span (no blank first or last
   line; in Python no statement or function cut, in UnityPyBoost's C++ no
-  top-level definition cut), and a bare `:N` (in backticks,
+  top-level definition or brace block cut, its statements unread), and a
+  bare `:N` (in backticks,
   opening a comment, or after a space or `(` in prose) only where its
   paragraph names the file before it (or, naming none, its section's "Lines
   are in `<file>`" or its file's Ported-from header does), never a line in

@@ -300,7 +300,7 @@ impl Reader<'_, '_> {
         Ok(Out::Built(built))
     }
 
-    /// R11 (UnityPy TypeTreeHelper.cpp:835-849): elements read one by one,
+    /// R11 (UnityPy TypeTreeHelper.cpp:846-855): elements read one by one,
     /// each aligning itself.
     fn list(
         &mut self,
@@ -552,7 +552,7 @@ impl Reader<'_, '_> {
             // `:587-591`, `:592-598`.
             return Err(ref_type(ReadDetail::NoRefTypes));
         }
-        // `:600-606`: `type` read yet; `:611-633`: a dict with all three
+        // `:600-606`: `type` read yet; `:611-635`: a dict with all three
         // keys (any other object the reader makes has no such attributes).
         let Some(Value::Dict(m)) = ty else {
             return Err(ref_type(ReadDetail::RefTypeNotFound));
@@ -567,11 +567,11 @@ impl Reader<'_, '_> {
         else {
             return Err(self.fail(ReadErrorKind::RefType, ReadDetail::RefTypeNotFound));
         };
-        // `:635-642`: `PyUnicode_GET_LENGTH(cls) == 0` skips the data.
+        // `:637-644`: `PyUnicode_GET_LENGTH(cls) == 0` skips the data.
         if py_size_field_is_zero(cls) {
             return Ok(None);
         }
-        // `:644-670`: the first ref type whose three names compare equal.
+        // `:646-673`: the first ref type whose three names compare equal.
         let found = self
             .refs
             .find(self.builder.meter(), &mut self.work.open, cls, ns, asm)

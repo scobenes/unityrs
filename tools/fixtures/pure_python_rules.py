@@ -215,7 +215,7 @@ CASES = [
     # refuses a negative one, before it indexes its `Array`'s element
     # (TypeTreeHelper.py:213-216), and reads a pair's first child before it
     # indexes its second (:194-195); UnityPyBoost checks each arity first
-    # (TypeTreeHelper.cpp:820-833, :328-332). So a malformed one fails with
+    # (TypeTreeHelper.cpp:822-836, :328-332). So a malformed one fails with
     # whatever those reads raise first (round 5).
     *[
         (

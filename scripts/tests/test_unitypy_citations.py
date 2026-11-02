@@ -617,7 +617,7 @@ class CommandLineTests(unittest.TestCase):
                 self.assertIn(
                     "2 citations of UnityPy 1.25.2 in 1 files (1 of them bare lines, 0 UnityPyBoost's) name lines "
                     "that exist and whole spans (no blank first or last line; in UnityPy's Python no statement or "
-                    "function cut, in UnityPyBoost's C++ no top-level definition cut); ",
+                    "function cut, in UnityPyBoost's C++ no top-level definition or brace block cut); ",
                     out,
                 )
                 write(repo, {"a.md": f"`environment.py:{3}`\n"})

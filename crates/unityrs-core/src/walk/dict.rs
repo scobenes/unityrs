@@ -302,7 +302,7 @@ fn names_match(t: &SerializedType, cls: &Value, ns: &Value, asm: &Value) -> bool
 
 /// `get_ref_type_node`'s search: the *first* ref type whose class,
 /// namespace and assembly equal the three values ([`names_match`]; UnityPy
-/// TypeTreeHelper.cpp:644-670, TypeTreeHelper.py:105-107), found in steps
+/// TypeTreeHelper.cpp:646-673, TypeTreeHelper.py:105-107), found in steps
 /// linear in the list plus the lookups of one read or one write. UnityPy
 /// scans the list for every lookup, so an object of `n` references into
 /// `n` ref types costs it `n`² comparisons (claude X, review round 2).
