@@ -636,12 +636,20 @@ pub fn dependency_scenes() -> Vec<(&'static str, DepScene)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dependency_scenes, scenes};
+    use super::{dependency_scenes, find_scenes, race_scenes, scenes};
 
+    /// Every scene of every list (fix pass 15: the `find_file` and race
+    /// lists were left out), a race scene's other file among its files.
     #[test]
     fn every_scene_has_files_with_distinct_names() {
         let deps = dependency_scenes().into_iter().map(|(n, d)| (n, d.scene));
-        for (name, scene) in scenes().into_iter().chain(deps) {
+        let finds = find_scenes().into_iter().map(|(n, f)| (n, f.scene));
+        let races = race_scenes().into_iter().map(|(n, r)| {
+            let mut scene = r.scene;
+            scene.files.push(r.other);
+            (n, scene)
+        });
+        for (name, scene) in scenes().into_iter().chain(deps).chain(finds).chain(races) {
             assert!(!scene.files.is_empty(), "{name}");
             let mut names: Vec<_> = scene.files.iter().map(|f| &f.0).collect();
             names.sort();
