@@ -37,11 +37,11 @@
 //! made on the walk's own thread sets (its own lookups' loads, which are
 //! UnityPy's whole walk) is logged, once, in the walk's [`Fired`] list, so
 //! the walk learns which of its answers its own loads changed without
-//! reading every flag it holds (`super::container_index`'s `Revisits`). A
+//! reading every flag it holds (`super::container_index`'s `Targets`). A
 //! change another thread makes sets the flag and logs nothing: the walk's
 //! next lookup of that external sees it, and no table index the walk has
-//! dereferenced is dereferenced again for it, so the walk's work never
-//! depends on what other threads load.
+//! dereferenced is dereferenced again for it, so the indexes a walk
+//! dereferences again never depend on what other threads load.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, RandomState};

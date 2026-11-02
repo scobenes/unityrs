@@ -154,12 +154,13 @@ const NONE: usize = usize::MAX;
 /// dereference looks again, and finds it if the load registered the name
 /// asked for, or loads again if not, as UnityPy's `find_file` does when its
 /// walk matched a longer file name by suffix). An external is looked up
-/// once, and once more per change to one of its keys, so a walk costs its
-/// table and its externals' names (plan decision 11), plus a lookup per
-/// change to a key it asked, each counted as work on the walking file's
-/// meter (`STEP_WORK` and the external's path's bytes; review round 4:
-/// every change, any thread's, expired every answer, so a table of pointers
-/// to long names cost the table times the names).
+/// once, and once more per change to one of its keys (one the resolver
+/// loads under another name, once per dereference), so a walk costs its
+/// table and its externals' names (plan decision 11), plus those lookups
+/// again, each lookup past an external's first counted as work on the
+/// walking file's meter (`STEP_WORK` and the external's path's bytes;
+/// review round 4: every change, any thread's, expired every answer, so a
+/// table of pointers to long names cost the table times the names).
 ///
 /// Each answer with a flag (one of `files`, the registry or the resolver's
 /// load) lists the table indexes dereferenced under it (`answers`, linked

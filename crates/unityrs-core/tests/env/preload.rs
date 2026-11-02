@@ -199,7 +199,7 @@ fn a_kept_miss_is_asked_again_after_another_threads_load_of_its_key() {
 
 /// A load another thread makes is seen by the walk's next lookup of the
 /// external it changed, and puts back no table index the walk has
-/// dereferenced, so what a walk does again, and counts, depends on its
+/// dereferenced, so the indexes a walk dereferences again depend on its
 /// input and its own loads alone (review round 13; a load of the walk's own
 /// puts such an index back: `tests/env/revisit.rs`). Row 0 spans `CAB-A`'s
 /// 5 and `t`'s 1, row 1 the first alone; the resolver call `CAB-A`'s miss

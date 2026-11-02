@@ -22,10 +22,11 @@ const _: () = assert!(MAX_LEVELS >= 11);
 /// index `i`; each level's bit `w` is set while the level below's word `w`
 /// is not empty; the last level is one word. Finding the first index from
 /// `i`, putting one back and taking one out each read at most two words a
-/// level, and `len` indexes take `⌈log64 len⌉` levels (at most
-/// [`MAX_LEVELS`]): a walk dereferences each index once at the cost of a
-/// few words (plan decision 11), where the skip list it replaces could take
-/// nothing back. Its words are charged to the walking file's meter.
+/// level, and `len` indexes take `⌈log64 len⌉` levels, one at least (at
+/// most [`MAX_LEVELS`]): a walk finds each index it dereferences at the
+/// cost of a few words (plan decision 11), and can put an index back, which
+/// the skip list it replaces could not. Its words are charged to the
+/// walking file's meter.
 pub(super) struct Pending {
     words: MeteredVec<u64>,
     /// Where each level's words start in `words`, and the end of the last.
