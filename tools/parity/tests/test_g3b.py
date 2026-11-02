@@ -263,7 +263,6 @@ class InputCoverageTests(unittest.TestCase):
         self.assertEqual((status, report["classes"], report["form"], rows), (0, {"agree": 2}, {}, {}))
 
 
-@unittest.skipIf(unitypy_dump is None, "needs UnityPy (the oracle image)")
 class SharedObjectTests(unittest.TestCase):
     """A long line's record shares its equal small objects (compare.parse, `C.LONG_LINE`); its digest copies
     each shared object once and is the digest of the record parsed whole (Q15 (c): a G3b mutant's records of
@@ -303,6 +302,7 @@ class SharedObjectTests(unittest.TestCase):
         self.assertEqual(inputs['"in"'].records[0][1], g3b.digest(json.loads(line))[0])
 
 
+@unittest.skipIf(unitypy_dump is None, "needs UnityPy (the oracle image)")
 class G3bTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
