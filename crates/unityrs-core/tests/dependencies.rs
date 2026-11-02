@@ -29,11 +29,31 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// Whether `code` (a Rust source through [`code_only`]) names the crate
 /// `ident`: a path through it (`ident::`), a `use` of it, or one of its
-/// macros (`ident!`).
+/// macros (`ident!`). `ident` is a whole identifier there, which no
+/// identifier character touches, and a path's first segment (`::ident::`,
+/// never `x::ident::`, a module of `x`): `serde_json::`, `liblzma::`,
+/// `my_dep::`, `crate::dep::`, `use depot` and `dep != 0` name no crate
+/// `serde`, `lzma` or `dep` (review round 12).
 fn names(code: &str, ident: &str) -> bool {
-    code.contains(&format!("{ident}::"))
-        || code.contains(&format!("use {ident}"))
-        || code.contains(&format!("{ident}!"))
+    let b = code.as_bytes();
+    let word = |c: &u8| c.is_ascii_alphanumeric() || *c == b'_';
+    code.match_indices(ident).any(|(at, _)| {
+        let (before, after) = (&b[..at], &b[at + ident.len()..]);
+        if before.last().is_some_and(word) || after.first().is_some_and(word) {
+            return false;
+        }
+        if let Some(path) = before.strip_suffix(b"::")
+            && path.last().is_some_and(|c| word(c) || *c == b'>')
+        {
+            return false;
+        }
+        let spaced = before.trim_ascii_end();
+        let used = spaced.len() < before.len()
+            && spaced
+                .strip_suffix(b"use")
+                .is_some_and(|u| !u.last().is_some_and(word));
+        used || after.starts_with(b"::") || (after.starts_with(b"!") && !after.starts_with(b"!="))
+    })
 }
 
 /// `text` with its comments (`//` to the end of the line, doc comments
@@ -147,6 +167,25 @@ fn only_code_names_a_crate() {
     ] {
         assert!(!names(&code_only(text), "dep"), "counted a use in {text:?}");
     }
+    // Named as part of another identifier, or as a module of another path:
+    // not a use (review round 12).
+    for (text, ident) in [
+        ("use serde_json::Value;\n", "serde"),
+        ("fn f() { liblzma::decode(); }\n", "lzma"),
+        ("fn f() { my_dep::x(); }\n", "dep"),
+        ("fn f() { crate::dep::x(); }\n", "dep"),
+        ("fn f() { <T as Tr>::dep::x(); }\n", "dep"),
+        ("use depot;\n", "dep"),
+        ("fn f() { reuse dep(); }\n", "dep"),
+        ("fn f() { undep!(); }\n", "dep"),
+        ("fn f(dep: u8) -> bool { dep != 0 }\n", "dep"),
+        ("fn f(dep: u8) -> bool { dep!=0 }\n", "dep"),
+    ] {
+        assert!(
+            !names(&code_only(text), ident),
+            "counted {ident} as used in {text:?}"
+        );
+    }
     // Named by code, around comments, strings, characters and lifetimes.
     for text in [
         "use dep::Thing;\n",
@@ -157,6 +196,11 @@ fn only_code_names_a_crate() {
         "const Q: char = '\\''; fn f() { dep::g(); }\n",
         "/* a */ fn f() { dep::g(); } // b\n",
         "fn f() -> char { 'é' } fn g() { dep::h(); }\n",
+        "pub use dep as d;\n",
+        "use\tdep;\n",
+        "fn f() { ::dep::g(); }\n",
+        "fn f() { (dep::g)(); }\n",
+        "fn f() -> Vec<u8> { dep![1] }\n",
     ] {
         assert!(names(&code_only(text), "dep"), "missed the use in {text:?}");
     }
