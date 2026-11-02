@@ -176,12 +176,16 @@ fn mirror_reader_round_trips_what_each_reader_reads() {
 /// (`walk_fixtures.rs` replays every outcome, so the value is UnityPy's),
 /// reads exactly its bytes, padding as zeros, so the mirror writes back the
 /// very bytes that reader read: a pure-Python read as `read_value_array`
-/// reads a flagged run (aligned once after; a `pair`'s primitive children
-/// without their own flags; a class with no registry check; 16-bit
-/// signedness swapped), an empty string unaligned, a type name holding a
-/// NUL as a class; a UnityPyBoost read as UnityPyBoost reads (review round
-/// 11: the mirror wrote every value as UnityPyBoost reads, and refused the
-/// pure-Python value of a zero-byte object read through `int\0x`).
+/// reads a flagged run (aligned once after; a `pair`'s primitive and
+/// string children without their own flags, its 16-bit ones unswapped; a
+/// class with no registry check; a 16-bit run's signedness swapped), an
+/// empty string unaligned (a top-level field, an element of a flagged run
+/// and a flagged `pair` run's child: review round 12 found these last
+/// three rules unpinned), a type name
+/// holding a NUL as a class; a UnityPyBoost read as UnityPyBoost reads
+/// (review round 11: the mirror wrote every value as UnityPyBoost reads,
+/// and refused the pure-Python value of a zero-byte object read through
+/// `int\0x`).
 #[test]
 fn mirror_reader_writes_back_the_bytes_each_reader_read() {
     let cases = load("cases.json");
@@ -229,7 +233,7 @@ fn mirror_reader_writes_back_the_bytes_each_reader_read() {
             unitypy_differs += usize::from(c[format!("{}_write", reader.key())] != want);
         }
     }
-    assert_eq!(n, 13, "the mirror_ cases");
+    assert_eq!(n, 16, "the mirror_ cases");
     assert_eq!(
         reads[1], n,
         "the pure-Python reader reads every mirror_ case"

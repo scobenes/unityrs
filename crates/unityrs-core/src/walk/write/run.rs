@@ -128,8 +128,13 @@ impl<'a> Writer<'a, '_> {
     /// `read_value_array` reads it (`TypeTreeHelper.py:266-361`), already
     /// counted: a primitive by its `struct` format, whose 16-bit signedness
     /// is swapped (`read_short_array` unpacks `H`, `read_u_short_array` `h`,
-    /// `EndianBinaryReader.py:176-180`); a string or bytes by its function;
-    /// a `pair`'s children by [`Self::direct`]; a `ReferencedObject` or a
+    /// `EndianBinaryReader.py:176-180`); a string by its function, so an
+    /// empty one unaligned (`read_aligned_string`); bytes by
+    /// `FUNCTION_READ_MAP`'s function, though no value this reader read
+    /// through this node holds one (`read_value_array` calls `read_bytes()`
+    /// without its length, `TypeTreeHelper.py:280`, and raises on a first
+    /// element, so the run it read was empty); a `pair`'s children by
+    /// [`Self::direct`]; a `ReferencedObject` or a
     /// class with each child's own flag, a class with no registry check
     /// (`:314-318`); a vector as its length and its elements, through
     /// `read_value_array` again when its own element is flagged (`:306-313`).

@@ -5,12 +5,16 @@ them reads exactly, so the mirror must write back the bytes the reader read.
 A value UnityPyBoost read is written back as UnityPyBoost reads, and one the
 pure-Python reader read as that reader reads (`CANONICAL_DUMP.md` section 7):
 a type name holding a NUL is a class to the pure-Python reader and the name
-before the NUL to UnityPyBoost; an empty string is not aligned after; the
-elements of a flagged array are read by `read_value_array`
+before the NUL to UnityPyBoost; an empty string does not align itself
+(`read_aligned_string`, `streams/EndianBinaryReader.py:266-273`, aligns only
+after a non-empty one), so one whose node's flag is not read either (an
+element of a flagged run, a flagged `pair` run's child) is not aligned at all;
+the elements of a flagged array are read by `read_value_array`
 (`helpers/TypeTreeHelper.py:266-361`), which aligns once after the run for
 every element kind (a class, a `pair`, a vector, a `ReferencedObject`), reads
-a flagged `pair`'s primitive children without their own flags, a flagged
-class element's registry children with no registry check, and 16-bit
+a flagged `pair`'s primitive and string children without their own flags
+(16-bit ones as `read_short` and `read_u_short` read them), a flagged class
+element's registry children with no registry check, and a run of 16-bit
 integers with their signedness swapped. Each case's bytes are exactly what
 the pure-Python reader reads, from 0, padding as zeros (`ref_run` lays its
 run out with UnityPy's own writer's primitives, which align from the start
@@ -57,6 +61,11 @@ def mirror_cases():
     add("mirror_nul_type_name_then_int", base(leaf("int\0x", "a"), leaf("int", "b")), i32(5, 7))
     # An empty string: not aligned after by the pure-Python reader (UnityPyBoost aligns, and reads past the end).
     add("mirror_empty_string", base(U8("c"), leaf("string", "s"), U8("d")), b"\x09" + i32(0) + b"\x07")
+    # The same inside a flagged run, from an odd offset (review round 12: neither rule was pinned): an empty
+    # element of a flagged `string` run, its own flag ignored, then a non-empty one, which aligns itself
+    # (`read_aligned_string`); and a flagged `pair` run's flagged `string` child, empty, read without its flag.
+    add("mirror_aligned_string_run_empty_first", base(U8("c"), vec("v", leaf("string", "data", ALIGN)), U8("d")), b"\x09" + i32(2, 0, 1) + b"x\0\0\x07")
+    add("mirror_aligned_pair_run_empty_string_first", base(U8("c"), vec("v", pair("data", leaf("string", "first", ALIGN), U8("second"), ALIGN)), U8("d")), b"\x09" + i32(1, 0) + b"\x05\0\0\x07")
     # 16-bit runs: `read_short_array` unpacks `H`, `read_u_short_array` `h` (both readers).
     add("mirror_aligned_sint16_run", base(vec("v", leaf("SInt16", "data", ALIGN)), U8("c")), i32(1) + struct.pack("<h", -1) + b"\0\0\x09")
     add("mirror_aligned_uint16_run", base(vec("v", leaf("UInt16", "data", ALIGN)), U8("c")), i32(1) + struct.pack("<H", 40000) + b"\0\0\x09")
@@ -65,6 +74,9 @@ def mirror_cases():
     registries = [[0, "Foo", "data", ALIGN], [1, "ManagedReferencesRegistry", "r1", 0], [2, "UInt8", "version", 0], [1, "ManagedReferencesRegistry", "r2", 0], [2, "UInt8", "version", 0]]
     add("mirror_aligned_class_run_registries", base(vec("v", registries)), i32(1) + b"\x01\0\0\0")
     add("mirror_aligned_pair_run", base(vec("v", pair("data", U8("first", ALIGN), U8("second", ALIGN), ALIGN)), U8("c")), i32(1) + b"\x05\x06\0\0\x09")
+    # A flagged `pair` run's 16-bit children by `FUNCTION_READ_MAP` (`read_short` `h`, `read_u_short` `H`): no
+    # signedness swap there, where the run of a 16-bit element itself swaps (review round 12: unpinned).
+    add("mirror_aligned_pair_run_16bit", base(vec("v", pair("data", leaf("SInt16", "first"), leaf("UInt16", "second"), ALIGN)), U8("c")), i32(1) + struct.pack("<hH", -1, 40000) + b"\x09")
     class_first = pair("data", [[0, "Foo", "first", ALIGN], [1, "UInt8", "x", 0]], U8("second"), ALIGN)
     add("mirror_aligned_pair_run_class_first", base(vec("v", class_first), U8("c")), i32(1, 5, 6) + b"\x09")
     add("mirror_aligned_vector_run", base(vec("v", vec("data", U8("data"), meta=ALIGN)), U8("c")), i32(2, 1) + b"\x05" + i32(1) + b"\x06\0\0\x09")
