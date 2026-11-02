@@ -70,7 +70,7 @@ use super::{
 use crate::raw::RawStr;
 use crate::stream::{Endian, ReaderKind};
 use crate::typetree::{Kind, NodeId, Tree};
-use crate::value::{ListIx, Parsed, Value, ValueBuilder};
+use crate::value::{ListIx, Parsed, ReadBy, Value, ValueBuilder};
 
 /// Reads one value from `file` by the memory reader's rules (bytes),
 /// starting at `start` (any Python position). `bytes_read` counts from
@@ -127,7 +127,9 @@ pub fn read_with_reader(
     let read = r.pos.saturating_sub(start);
     let bytes_read = i64::try_from(read).unwrap_or(if read < 0 { i64::MIN } else { i64::MAX });
     let Reader { builder, .. } = r;
-    Ok(builder.finish(built, bytes_read))
+    Ok(builder
+        .finish(built, bytes_read)
+        .with_read_by(ReadBy::Python))
 }
 
 /// `EndianBinaryReader_Memoryview` over the whole file

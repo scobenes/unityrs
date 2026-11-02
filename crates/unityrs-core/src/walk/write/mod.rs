@@ -32,6 +32,13 @@
 //! elements through `m_Children[1]` (`:434`), as the pure-Python reader
 //! reads them.
 //!
+//! **The mirror.** Under [`super::WriteRules::MirrorReader`] the writer
+//! takes the rules of the reader that built the value ([`Parsed::read_by`]):
+//! its kinds (`Writer::kind`), its runs (`run.rs`), its empty strings and its
+//! `ReferencedObject` data. Review round 11: it took UnityPyBoost's for every
+//! value, so it refused the pure-Python reader's value of a zero-byte object
+//! read through a type name holding a NUL, which UnityPy writes.
+//!
 //! Owner: package B.
 
 use std::sync::Arc;
@@ -45,11 +52,12 @@ use super::{
 use crate::budget::DecodeBuf;
 use crate::raw::RawStr;
 use crate::typetree::{Kind, NodeId, Tree, TreeError};
-use crate::value::{Map, Parsed, Value};
+use crate::value::{Map, Parsed, ReadBy, Value};
 
 mod bounds;
 mod lookup;
 mod pyobj;
+mod run;
 
 use lookup::{KeptTables, Lookup};
 pub use pyobj::python_attributes;
@@ -82,7 +90,10 @@ pub fn write(
         out,
         base,
         big: ctx.endian == crate::stream::Endian::Big,
-        rules: ctx.rules,
+        mirror: match ctx.rules {
+            WriteRules::UnityPy => None,
+            WriteRules::MirrorReader => Some(parsed.read_by()),
+        },
         ref_types: ctx.ref_types,
         refs: RefIndex::new(ctx.ref_types),
         max_depth: ctx.limits.max_value_depth,
@@ -109,7 +120,10 @@ struct Writer<'a, 'o> {
     /// writer's own stream, which starts at the object).
     base: usize,
     big: bool,
-    rules: WriteRules,
+    /// The reader whose rules [`WriteRules::MirrorReader`] writes by (the
+    /// one that built the value, [`Parsed::read_by`]); `None` under
+    /// [`WriteRules::UnityPy`].
+    mirror: Option<ReadBy>,
     ref_types: RefTypes<'a>,
     /// The ref types' search, one per write ([`RefIndex`]).
     refs: RefIndex<'a>,
@@ -135,8 +149,8 @@ struct Writer<'a, 'o> {
 /// write of the dict.
 #[derive(Clone)]
 enum Data {
-    /// Nothing: [`WriteRules::MirrorReader`] writes no data the reader
-    /// skipped.
+    /// Nothing: [`WriteRules::MirrorReader`] writes no data the reader that
+    /// read the value skipped.
     Skip,
     /// The matched ref type's tree, or none (the write then fails).
     Through(Option<Arc<Tree>>),
@@ -290,17 +304,46 @@ impl<'a> Writer<'a, '_> {
 
     /// The kind the write dispatches `node` on: under [`WriteRules::UnityPy`]
     /// its whole type name's (`FUNCTION_WRITE_MAP` is a dict, `node.m_Type
-    /// == "pair"` a comparison of `str`s: [`Tree::py_kind`]); under
-    /// [`WriteRules::MirrorReader`] the name's to its first NUL, as
-    /// UnityPyBoost reads it (a `PPtr<` is a class either way), so a value
-    /// read through a type name holding a NUL writes back to what reads as
-    /// it (review round 10's cases: UnityPy writes an `int\0x` element as a
-    /// class with no children, which writes nothing).
+    /// == "pair"` a comparison of `str`s: [`Tree::py_kind`]), and so under
+    /// [`WriteRules::MirrorReader`] for a value the pure-Python reader read,
+    /// which dispatches on the whole name too (`TypeTreeHelper.py:190-208`);
+    /// for one UnityPyBoost read, the name's to its first NUL, as that reader
+    /// takes it (a `PPtr<` is a class either way). So a value read through a
+    /// type name holding a NUL writes back to what reads as it, by either
+    /// reader (review round 10's cases: UnityPy writes an `int\0x` element as
+    /// a class with no children, which writes nothing, where UnityPyBoost
+    /// reads an `int`; review round 11: the pure-Python reader reads that
+    /// node as such a class, and the mirror, taking it as an `int`, refused
+    /// the value).
     fn kind(&self, tree: &Tree, node: NodeId) -> Kind {
-        match self.rules {
-            WriteRules::UnityPy => tree.py_kind(node),
-            WriteRules::MirrorReader => tree.info(node).map_or(Kind::Unknown, |i| i.kind),
+        match self.mirror {
+            Some(ReadBy::Boost) => tree.info(node).map_or(Kind::Unknown, |i| i.kind),
+            None | Some(ReadBy::Python) => tree.py_kind(node),
         }
+    }
+
+    /// `write_aligned_string` (`EndianBinaryWriter.py:88-92`), W3: its length,
+    /// its bytes, then aligned. Under the pure-Python mirror an empty string
+    /// is not aligned: `read_aligned_string` returns `""` before its
+    /// `align_stream` (`EndianBinaryReader.py:266-273`).
+    fn string(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
+        let s = Self::as_str(o).ok_or_else(|| Self::mismatch(tree, node, "str"))?;
+        self.write_int(s.len(), tree, node)?;
+        self.put_counted(s)?;
+        if s.is_empty() && self.mirror == Some(ReadBy::Python) {
+            return Ok(());
+        }
+        self.align()
+    }
+
+    /// `write_byte_array` (`EndianBinaryWriter.py:110-112`), W4: its length,
+    /// then its bytes.
+    fn bytes(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
+        let Obj::V(Value::Bytes(b)) = o else {
+            return Err(Self::mismatch(tree, node, "bytes"));
+        };
+        self.write_int(b.len(), tree, node)?;
+        self.put_counted(b)
     }
 
     /// `write_value` (`TypeTreeHelper.py:407-458`). The branches that
@@ -317,18 +360,9 @@ impl<'a> Writer<'a, '_> {
         if kind.prim_size().is_some() {
             self.prim(tree, node, kind, o)?;
         } else if kind == Kind::Str {
-            // `write_aligned_string` (`EndianBinaryWriter.py:88-92`), W3.
-            let s = Self::as_str(o).ok_or_else(|| Self::mismatch(tree, node, "str"))?;
-            self.write_int(s.len(), tree, node)?;
-            self.put_counted(s)?;
-            self.align()?;
+            self.string(tree, node, o)?;
         } else if kind == Kind::Bytes {
-            // `write_byte_array` (`:110-112`), W4.
-            let Obj::V(Value::Bytes(b)) = o else {
-                return Err(Self::mismatch(tree, node, "bytes"));
-            };
-            self.write_int(b.len(), tree, node)?;
-            self.put_counted(b)?;
+            self.bytes(tree, node, o)?;
         } else if kind == Kind::Pair {
             // `:419-421`: `value[0]`, `value[1]` through the first two children.
             for i in 0..2 {
@@ -361,94 +395,10 @@ impl<'a> Writer<'a, '_> {
                 .ok_or_else(|| WriteError::Malformed(Self::name(tree, node)))?;
             self.frame(|w| w.elements(tree, elem, o))?;
         } else {
-            self.class(tree, node, o)?;
+            self.class(tree, node, o, true)?;
         }
         if align {
             self.align()?;
-        }
-        Ok(())
-    }
-
-    /// Each element of `o` through `elem` (`:435`). Under
-    /// [`WriteRules::MirrorReader`] a primitive or `pair` element does not
-    /// align itself; the run aligns once after, as UnityPyBoost reads it.
-    fn elements(&mut self, tree: &Tree, elem: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
-        let mirror_run =
-            self.rules == WriteRules::MirrorReader && self.kind(tree, elem).reads_as_run();
-        let elem_align = tree.info(elem).is_some_and(|i| i.align);
-        let one = |w: &mut Self, item: Obj<'a>| -> Result<(), WriteError> {
-            visit();
-            if mirror_run {
-                w.value_unaligned(tree, elem, item)
-            } else {
-                w.value(tree, elem, item)
-            }
-        };
-        self.str_work(o)?;
-        match o {
-            Obj::V(Value::Str(s)) => {
-                for c in chars(s.as_bytes()) {
-                    one(self, Obj::Str(c))?;
-                }
-            }
-            Obj::Str(s) => {
-                for c in chars(s) {
-                    one(self, Obj::Str(c))?;
-                }
-            }
-            Obj::V(Value::Bytes(b)) => {
-                for x in b {
-                    one(self, Obj::Int(i128::from(*x)))?;
-                }
-            }
-            Obj::V(Value::Prims(p)) => {
-                for i in 0..p.len() {
-                    if let Some(item) = Self::prim_item(p, i) {
-                        one(self, item)?;
-                    }
-                }
-            }
-            Obj::V(Value::List(l)) => {
-                for v in l {
-                    one(self, Obj::V(v))?;
-                }
-            }
-            Obj::V(Value::Tuple(t)) => {
-                for v in t {
-                    one(self, Obj::V(v))?;
-                }
-            }
-            Obj::V(Value::Dict(m)) => {
-                for (k, _) in m.entries() {
-                    one(self, Obj::Str(self.parsed.key_name(m, *k)))?;
-                }
-            }
-            _ => return Err(Self::mismatch(tree, elem, "a sized iterable")),
-        }
-        if mirror_run && elem_align {
-            self.align()?;
-        }
-        Ok(())
-    }
-
-    /// An element of a run under [`WriteRules::MirrorReader`]: its value
-    /// without its own trailing alignment.
-    fn value_unaligned(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
-        self.count(self.cost(tree, node))?;
-        let kind = self.kind(tree, node);
-        if kind.prim_size().is_some() {
-            return self.prim(tree, node, kind, o);
-        }
-        let kids = tree.list().children(node);
-        for i in 0..2 {
-            let item = self
-                .index(o, i)?
-                .ok_or_else(|| Self::mismatch(tree, node, "a sequence of two"))?;
-            let child = kids
-                .get(i)
-                .copied()
-                .ok_or_else(|| WriteError::Malformed(Self::name(tree, node)))?;
-            self.value(tree, child, item)?;
         }
         Ok(())
     }
@@ -536,16 +486,26 @@ impl<'a> Writer<'a, '_> {
     /// whose type name holds a NUL, which UnityPyBoost reads as a primitive,
     /// a string or bytes, was counted once an element by this branch, and
     /// its re-save refused past the default bound where UnityPy writes it).
+    ///
+    /// With `registry` false, a registry child is written as any other
+    /// child, and puts no registry in scope: the pure-Python reader reads a
+    /// flagged run's class elements so (`:314-318`, [`Self::run_element`]).
     #[inline(never)]
-    fn class(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
+    fn class(
+        &mut self,
+        tree: &Tree,
+        node: NodeId,
+        o: Obj<'a>,
+        registry: bool,
+    ) -> Result<(), WriteError> {
         if let Obj::V(Value::Dict(m)) = o {
-            return self.class_dict(tree, node, m);
+            return self.class_dict(tree, node, m, registry);
         }
         let outer = self.has_registry;
         let kids = tree.list().children(node);
         for c in kids {
             visit();
-            if self.kind(tree, *c) == Kind::ManagedReferencesRegistry {
+            if registry && self.kind(tree, *c) == Kind::ManagedReferencesRegistry {
                 if self.has_registry {
                     self.skip()?;
                     continue;
@@ -584,15 +544,22 @@ impl<'a> Writer<'a, '_> {
     }
 
     /// The class branch on a dict (`:438-446`): `value[child.m_Name]` for
-    /// each child, found by a [`Lookup`].
+    /// each child, found by a [`Lookup`]; a registry child as
+    /// [`Self::class`] takes it.
     #[inline(never)]
-    fn class_dict(&mut self, tree: &Tree, node: NodeId, m: &'a Map) -> Result<(), WriteError> {
+    fn class_dict(
+        &mut self,
+        tree: &Tree,
+        node: NodeId,
+        m: &'a Map,
+        registry: bool,
+    ) -> Result<(), WriteError> {
         let outer = self.has_registry;
         let mut find = Lookup::new(self.parsed, tree, node, m);
         self.children(tree, node, |w| {
             for c in tree.list().children(node) {
                 visit();
-                if w.kind(tree, *c) == Kind::ManagedReferencesRegistry {
+                if registry && w.kind(tree, *c) == Kind::ManagedReferencesRegistry {
                     if w.has_registry {
                         w.skip()?;
                         continue;
@@ -640,13 +607,18 @@ impl<'a> Writer<'a, '_> {
                 let through = if let Some(d) = &data {
                     d.clone()
                 } else {
-                    let d = match w.rules {
-                        WriteRules::UnityPy => Data::Through(w.ref_node_py(m)?),
-                        WriteRules::MirrorReader => match w.ref_node_boost(m)? {
-                            // The reader skipped the data: so does the mirror.
-                            None => Data::Skip,
-                            Some(t) => Data::Through(Some(t)),
-                        },
+                    let d = match w.mirror {
+                        None => Data::Through(w.ref_node_py(m)?),
+                        // The reader skipped the data: so does the mirror.
+                        Some(ReadBy::Boost) => w
+                            .ref_node_boost(m)?
+                            .map_or(Data::Skip, |t| Data::Through(Some(t))),
+                        // The pure-Python reader skips it for an empty
+                        // class or a matched ref type with no tree
+                        // (`:197-206`).
+                        Some(ReadBy::Python) => w
+                            .ref_node_py(m)?
+                            .map_or(Data::Skip, |t| Data::Through(Some(t))),
                     };
                     data.insert(d).clone()
                 };

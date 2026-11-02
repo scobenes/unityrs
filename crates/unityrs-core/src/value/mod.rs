@@ -166,8 +166,9 @@ use crate::typetree::{NodeId, NodeList};
 /// costs nothing: [`Map`] stays 32 bytes.
 pub type ListIx = u32;
 
-/// One object's value, the node lists that name its keys, and the charge
-/// for the value's memory and the lists' table (module docs).
+/// One object's value, the node lists that name its keys, the reader that
+/// built it, and the charge for the value's memory and the lists' table
+/// (module docs).
 #[derive(Debug)]
 pub struct Parsed {
     lists: Vec<Arc<NodeList>>,
@@ -178,15 +179,34 @@ pub struct Parsed {
     /// `TypelessData` length moves it back; UnityPy then reports, say,
     /// "only read -96 bytes"). UnityPyBoost's is never negative.
     pub bytes_read: i64,
+    read_by: ReadBy,
     charge: Charge,
 }
 
+/// Which of UnityPy's two readers built a value: `read_typetree` picks
+/// UnityPyBoost's for an object of `byte_size > 0` and the pure-Python one
+/// for `byte_size == 0` (`helpers/TypeTreeHelper.py:146-153`). Each reads
+/// some trees its own way (`CANONICAL_DUMP.md` section 7), and
+/// [`crate::walk::WriteRules::MirrorReader`] writes a value as the reader
+/// that built it reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ReadBy {
+    /// UnityPyBoost's reader ([`crate::walk::boost`]), and a value a caller
+    /// builds ([`ValueBuilder::finish`]).
+    #[default]
+    Boost,
+    /// The pure-Python reader ([`crate::walk::python`]).
+    Python,
+}
+
 impl PartialEq for Parsed {
-    /// The value, the lists and `bytes_read`; the charge is bookkeeping.
+    /// The value, the lists, `bytes_read` and the reader; the charge is
+    /// bookkeeping.
     fn eq(&self, other: &Self) -> bool {
         self.lists == other.lists
             && self.value == other.value
             && self.bytes_read == other.bytes_read
+            && self.read_by == other.read_by
     }
 }
 
@@ -443,8 +463,21 @@ impl Parsed {
             lists,
             value,
             bytes_read,
+            read_by: ReadBy::Boost,
             charge: Charge::zero(&crate::limits::Meter::unlimited()),
         }
+    }
+
+    /// The same value, marked as `read_by`'s.
+    pub(crate) fn with_read_by(mut self, read_by: ReadBy) -> Self {
+        self.read_by = read_by;
+        self
+    }
+
+    /// The reader that built the value ([`ReadBy`]).
+    #[must_use]
+    pub fn read_by(&self) -> ReadBy {
+        self.read_by
     }
 
     /// The value. By reference only: the value lives as long as its charge.

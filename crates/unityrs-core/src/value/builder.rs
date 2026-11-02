@@ -233,7 +233,8 @@ impl ValueBuilder {
     }
 
     /// The `Parsed`: `value`, where the read ended, the lists, and the
-    /// charges of both.
+    /// charges of both; [`super::ReadBy::Boost`]'s, as a caller's value is
+    /// (the pure-Python reader marks its own).
     #[must_use]
     pub fn finish(self, value: Built, bytes_read: i64) -> Parsed {
         let (lists, lists_charge) = self.lists.into_parts();
@@ -243,6 +244,7 @@ impl ValueBuilder {
             lists,
             value,
             bytes_read,
+            read_by: super::ReadBy::Boost,
             charge,
         }
     }
