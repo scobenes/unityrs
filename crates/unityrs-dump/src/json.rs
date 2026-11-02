@@ -20,6 +20,12 @@ pub const INLINE_MAX: usize = 64;
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
+/// The lowercase hex digit of `nibble`'s low four bits.
+fn hex_digit(nibble: u8) -> char {
+    HEX.get(usize::from(nibble & 15))
+        .map_or('0', |d| char::from(*d))
+}
+
 /// A JSON string exactly as `json.dumps(ensure_ascii=False)` writes it:
 /// `"` and `\` escaped, the five short escapes, every other code point
 /// below U+0020 as `\u00xx` in lower case, everything else literal.
@@ -42,8 +48,8 @@ pub fn write_str<S: Sink>(out: &mut S, s: &str) {
         out.push_str(s.get(start..i).unwrap_or_default());
         if esc.is_empty() {
             out.push_str("\\u00");
-            out.push(char::from(HEX[usize::from(b >> 4)]));
-            out.push(char::from(HEX[usize::from(b & 15)]));
+            out.push(hex_digit(b >> 4));
+            out.push(hex_digit(b));
         } else {
             out.push_str(esc);
         }
@@ -56,8 +62,8 @@ pub fn write_str<S: Sink>(out: &mut S, s: &str) {
 /// Appends `bytes` as lowercase hex, two digits per byte.
 pub fn push_hex<S: Sink>(out: &mut S, bytes: &[u8]) {
     for b in bytes {
-        out.push(char::from(HEX[usize::from(b >> 4)]));
-        out.push(char::from(HEX[usize::from(b & 15)]));
+        out.push(hex_digit(b >> 4));
+        out.push(hex_digit(*b));
     }
 }
 

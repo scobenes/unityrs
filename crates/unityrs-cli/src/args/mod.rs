@@ -274,10 +274,17 @@ fn negative_number(arg: &[u8]) -> bool {
     };
     let rest = rest.strip_suffix(b"\n").unwrap_or(rest);
     let digits = |s: &[u8]| s.iter().all(u8::is_ascii_digit);
-    match rest.iter().position(|b| *b == b'.') {
+    match split_once(rest, b'.') {
         None => !rest.is_empty() && digits(rest),
-        Some(p) => digits(&rest[..p]) && rest.len() > p + 1 && digits(&rest[p + 1..]),
+        Some((whole, fraction)) => digits(whole) && !fraction.is_empty() && digits(fraction),
     }
+}
+
+/// `s` split at its first `sep`, which neither part holds (`str.partition`'s
+/// head and tail), or `None` when `s` holds no `sep`.
+fn split_once(s: &[u8], sep: u8) -> Option<(&[u8], &[u8])> {
+    let p = s.iter().position(|b| *b == sep)?;
+    Some((s.get(..p)?, s.get(p + 1..)?))
 }
 
 /// One argument as `_parse_optional` reads it.
@@ -285,24 +292,28 @@ fn negative_number(arg: &[u8]) -> bool {
 enum Class {
     /// A value or an input.
     Positional,
-    /// An option string: its action (none for an unknown option, which
-    /// goes to the extras), the string matched, whether `=` separated the
-    /// value, and the value attached to it.
-    Optional {
-        dest: Option<Dest>,
-        option: Vec<u8>,
-        eq: bool,
-        explicit: Option<Vec<u8>>,
-    },
+    /// An option string.
+    Optional(Opt),
+}
+
+/// An option string: its action (none for an unknown option, which goes to
+/// the extras), the string matched, whether `=` separated the value, and
+/// the value attached to it.
+#[derive(Clone, Debug)]
+struct Opt {
+    dest: Option<Dest>,
+    option: Vec<u8>,
+    eq: bool,
+    explicit: Option<Vec<u8>>,
 }
 
 fn optional(dest: Dest, option: &[u8], eq: bool, explicit: Option<&[u8]>) -> Class {
-    Class::Optional {
+    Class::Optional(Opt {
         dest: Some(dest),
         option: option.to_vec(),
         eq,
         explicit: explicit.map(<[u8]>::to_vec),
-    }
+    })
 }
 
 /// `_get_option_tuples`.
@@ -310,8 +321,8 @@ fn option_tuples(arg: &[u8]) -> Vec<Class> {
     let mut out = Vec::new();
     if arg.get(1) == Some(&b'-') {
         // Long: a prefix, split at the first `=` only.
-        let (prefix, explicit) = match arg.iter().position(|b| *b == b'=') {
-            Some(p) => (&arg[..p], Some(&arg[p + 1..])),
+        let (prefix, explicit) = match split_once(arg, b'=') {
+            Some((prefix, value)) => (prefix, Some(value)),
             None => (arg, None),
         };
         for (o, d) in STRINGS {
@@ -321,10 +332,11 @@ fn option_tuples(arg: &[u8]) -> Vec<Class> {
         }
     } else {
         // Short: the first two characters, the rest attached.
-        let short = &arg[..2.min(arg.len())];
+        let short = arg.get(..2).unwrap_or(arg);
+        let attached = arg.get(short.len()..).unwrap_or_default();
         for (o, d) in STRINGS {
             if o.as_bytes() == short {
-                out.push(optional(d, o.as_bytes(), false, Some(&arg[short.len()..])));
+                out.push(optional(d, o.as_bytes(), false, Some(attached)));
             } else if o.as_bytes().starts_with(arg) {
                 out.push(optional(d, o.as_bytes(), false, None));
             }
@@ -344,19 +356,17 @@ fn classify(arg: &[u8]) -> Result<Class, Usage> {
     if arg.len() == 1 {
         return Ok(Class::Positional);
     }
-    if let Some(p) = arg.iter().position(|b| *b == b'=')
-        && let Some(d) = exact(&arg[..p])
+    if let Some((option, value)) = split_once(arg, b'=')
+        && let Some(d) = exact(option)
     {
-        return Ok(optional(d, &arg[..p], true, Some(&arg[p + 1..])));
+        return Ok(optional(d, option, true, Some(value)));
     }
     let mut tuples = option_tuples(arg);
     if tuples.len() > 1 {
         let names: Vec<String> = tuples
             .iter()
             .filter_map(|t| match t {
-                Class::Optional { option, .. } => {
-                    Some(String::from_utf8_lossy(option).into_owned())
-                }
+                Class::Optional(o) => Some(String::from_utf8_lossy(&o.option).into_owned()),
                 Class::Positional => None,
             })
             .collect();
@@ -372,12 +382,12 @@ fn classify(arg: &[u8]) -> Result<Class, Usage> {
     if negative_number(arg) || arg.contains(&b' ') {
         return Ok(Class::Positional);
     }
-    Ok(Class::Optional {
+    Ok(Class::Optional(Opt {
         dest: None,
         option: arg.to_vec(),
         eq: false,
         explicit: None,
-    })
+    }))
 }
 
 /// What the options stored, as argparse's namespace holds it.
@@ -433,23 +443,21 @@ impl Namespace {
     }
 }
 
-/// `consume_optional` for the option at `args[i]`: returns the index after
-/// it and its value, or that `-h` was taken.
+/// `consume_optional` for `opt`, the option at `args[i]`: returns the index
+/// after it and its value, or that `-h` was taken.
 fn consume_optional(
     args: &[Vec<u8>],
     classes: &[Class],
     i: usize,
+    opt: Opt,
     ns: &mut Namespace,
 ) -> Result<Option<usize>, Usage> {
-    let Class::Optional {
+    let Opt {
         mut dest,
         mut option,
         mut eq,
         mut explicit,
-    } = classes[i].clone()
-    else {
-        unreachable!("consume_optional on a positional");
-    };
+    } = opt;
     let ignored = |d: Dest, ex: &[u8]| {
         Usage(format!(
             "argument {}: ignored explicit argument {}",
@@ -461,23 +469,27 @@ fn consume_optional(
     let mut stop = i + 1;
     loop {
         let Some(d) = dest else {
-            ns.extras.push(args[i].clone());
+            ns.extras.extend(args.get(i).cloned());
             return Ok(Some(i + 1));
         };
         if let Some(ex) = explicit.take() {
-            if !d.takes_value() && option.get(1) != Some(&b'-') && !ex.is_empty() {
-                // `-qj4`: more single-dash options in the tail.
-                if eq || ex[0] == b'-' {
+            // `-qj4`: more single-dash options in the tail.
+            let tail = if !d.takes_value() && option.get(1) != Some(&b'-') {
+                ex.split_first()
+            } else {
+                None
+            };
+            if let Some((&first, rest)) = tail {
+                if eq || first == b'-' {
                     return Err(ignored(d, &ex));
                 }
                 taken.push((d, None));
-                option = vec![b'-', ex[0]];
+                option = vec![b'-', first];
                 if let Some(next) = exact(&option) {
                     dest = Some(next);
-                    let rest = &ex[1..];
-                    (eq, explicit) = match rest.first() {
+                    (eq, explicit) = match rest.split_first() {
                         None => (false, None),
-                        Some(b'=') => (true, Some(rest[1..].to_vec())),
+                        Some((b'=', value)) => (true, Some(value.to_vec())),
                         Some(_) => (false, Some(rest.to_vec())),
                     };
                 } else {
@@ -530,21 +542,25 @@ fn path(v: &[u8]) -> PathBuf {
 pub fn parse(args: &[Vec<u8>]) -> Result<Parsed, Usage> {
     // `--` ends the options; the arguments before it are classified first.
     let dd = args.iter().position(|a| a == b"--").unwrap_or(args.len());
-    let classes = args[..dd]
+    let head = args.get(..dd).unwrap_or(args);
+    let classes = head
         .iter()
         .map(|a| classify(a))
         .collect::<Result<Vec<_>, _>>()?;
     let mut ns = Namespace::default();
     let mut i = 0;
-    while i < dd {
-        if matches!(classes[i], Class::Positional) {
-            ns.inputs.push(args[i].clone());
-            i += 1;
-            continue;
-        }
-        match consume_optional(&args[..dd], &classes, i, &mut ns)? {
-            Some(next) => i = next,
-            None => return Ok(Parsed::Help),
+    while let (Some(arg), Some(class)) = (head.get(i), classes.get(i)) {
+        match class {
+            Class::Positional => {
+                ns.inputs.push(arg.clone());
+                i += 1;
+            }
+            Class::Optional(opt) => {
+                match consume_optional(head, &classes, i, opt.clone(), &mut ns)? {
+                    Some(next) => i = next,
+                    None => return Ok(Parsed::Help),
+                }
+            }
         }
     }
     ns.inputs.extend(args.iter().skip(dd + 1).cloned());
@@ -638,14 +654,18 @@ fn unbounded(v: &[u8]) -> Result<Vec<LimitKind>, Usage> {
     let names: Vec<String> = LIFTABLE.iter().map(|k| format!("{k:?}")).collect();
     let mut picked = Vec::new();
     for name in v.split(|b| *b == b',') {
-        let Some(i) = names.iter().position(|n| n.as_bytes() == name) else {
+        let Some((kind, _)) = LIFTABLE
+            .iter()
+            .zip(&names)
+            .find(|(_, n)| n.as_bytes() == name)
+        else {
             return Err(Usage(format!(
                 "argument --unbounded: invalid limit: {} (choose from {})",
                 py_repr(name),
                 names.join(", ")
             )));
         };
-        picked.push(LIFTABLE[i]);
+        picked.push(*kind);
     }
     Ok(LIFTABLE
         .into_iter()
