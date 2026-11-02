@@ -1,13 +1,24 @@
 //! The Environment's own locks, taken one at a time (plan section 3.16: no
 //! lock is taken while another is held, the budget's aside). Every guard on
 //! one of them is a [`Held`], made by [`lock`], [`read`] or [`write`]: the
-//! registry's table, a dependency's `open`, the LRU's list, the walks'
-//! watch map and the `files` list. In a test build each thread counts the
-//! guards it holds, and taking one while it holds another panics, so every
-//! unit test that runs an Environment checks the rule (review round 6: a
-//! dependency's reopen took its meter's lock while it held its `open`
-//! lock, and nothing would have told). The budget's lock, which a charge
-//! may take under a core lock, is not one of them.
+//! registry's (over its keys, its lists of dropped slots
+//! and `RegistryInner.watched`, the table of the walks' flags under
+//! registry keys), the `files` listing's (over the list, its indexes and
+//! `Files.watched`, the table of the walks' flags under `files` keys), a
+//! dependency's `open` and the LRU's list. In a test build each thread
+//! counts the guards it holds, and taking one while it holds another
+//! panics, so every unit test that runs an Environment checks the rule
+//! (review round 6: a dependency's reopen took its meter's lock while it
+//! held its `open` lock, and nothing would have told). The budget's lock,
+//! which a charge may take under a core lock, is not one of them.
+//!
+//! In a test build [`after_each_release`] runs a check on this thread right
+//! as each guard is released, with nothing between the release and the
+//! check, so a test sees what another thread can see the moment a lock is
+//! free: a step that must be one step under a lock is pinned there (W1 and
+//! P1, plan section 3.16; review round 15: a test hook placed after the lock
+//! passed a notify moved out of it, and a marker the publishing code set
+//! itself would have moved out with it).
 
 use std::ops::{Deref, DerefMut};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -72,6 +83,22 @@ pub(crate) fn write<T>(l: &RwLock<T>) -> Held<RwLockWriteGuard<'_, T>> {
 thread_local! {
     /// The Environment's locks this thread holds.
     static HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// What runs on this thread as each of its guards is released.
+    static AFTER: std::cell::RefCell<Option<AfterRelease>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A check [`after_each_release`] runs.
+#[cfg(test)]
+pub(crate) type AfterRelease = std::rc::Rc<dyn Fn()>;
+
+/// Runs `check` on this thread right after each guard this thread releases,
+/// its lock free and nothing run since (a guard's `Count` is the field that
+/// drops right after its lock's); `None` takes it off. The check may take
+/// locks: their releases do not run it again.
+#[cfg(test)]
+pub(crate) fn after_each_release(check: Option<AfterRelease>) {
+    AFTER.with(|a| *a.borrow_mut() = check);
 }
 
 /// One held guard, counted on its thread.
@@ -98,6 +125,16 @@ impl Count {
 impl Drop for Count {
     fn drop(&mut self) {
         HELD.with(|held| held.set(held.get().saturating_sub(1)));
+        // A guard dropped while its thread unwinds a panic checks nothing:
+        // a second panic would abort the test binary.
+        if std::thread::panicking() {
+            return;
+        }
+        let check = AFTER.with(|a| a.borrow_mut().take());
+        if let Some(check) = check {
+            check();
+            AFTER.with(|a| *a.borrow_mut() = Some(check));
+        }
     }
 }
 
@@ -105,7 +142,10 @@ impl Drop for Count {
 mod tests {
     use std::sync::{Mutex, RwLock};
 
-    use super::{lock, read, write};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use super::{after_each_release, lock, read, write};
 
     /// Each lock alone, one after another, is fine; one taken while another
     /// is held panics.
@@ -122,5 +162,27 @@ mod tests {
         assert!(nested.is_err(), "the nested lock was not caught");
         // The count is back to none after the panic unwound the guard.
         assert_eq!(*read(&l), 3);
+    }
+
+    /// The check runs right after each release, the lock free, and what it
+    /// takes itself does not run it again; off, it runs no more.
+    #[test]
+    fn a_check_runs_after_each_release_with_the_lock_free() {
+        let l = Rc::new(RwLock::new(1));
+        let seen = Rc::new(Cell::new(0));
+        after_each_release(Some({
+            let (l, seen) = (l.clone(), seen.clone());
+            Rc::new(move || {
+                assert!(l.try_write().is_ok(), "the lock is still held");
+                seen.set(seen.get() + *read(&l));
+            })
+        }));
+        *write(&l) = 2;
+        assert_eq!(seen.get(), 2, "the check saw the release's value, once");
+        drop(read(&l));
+        assert_eq!(seen.get(), 4);
+        after_each_release(None);
+        drop(read(&l));
+        assert_eq!(seen.get(), 4);
     }
 }

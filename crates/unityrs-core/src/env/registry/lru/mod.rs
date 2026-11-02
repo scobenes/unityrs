@@ -88,7 +88,8 @@ pub(crate) enum Hook {
     /// step.
     Evicting,
     /// A registration published its change (and, in the same step, set
-    /// the walks' flags under its key), before it settles.
+    /// the walks' flags under its key and, for a load's, started a new
+    /// container index generation), before it settles.
     Published,
     /// A registration listed the lazy slot it dropped, before it settles.
     Deferred,

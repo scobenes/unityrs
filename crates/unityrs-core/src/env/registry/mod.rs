@@ -176,9 +176,6 @@ pub struct Registry {
     inner: RwLock<RegistryInner>,
     /// The next load's sequence number.
     loads: AtomicU64,
-    /// Bumped by every load's registration that changes the dict: UnityPy's
-    /// `register_cab` clears `_container_index_built` (`environment.py:264`).
-    generation: AtomicU64,
     /// How many lazy slots `RegistryInner::pending` lists for every
     /// `settle` ([`pending::List::Listed`]).
     pending_len: AtomicUsize,
@@ -201,7 +198,6 @@ impl Default for Registry {
         Self {
             inner: RwLock::default(),
             loads: AtomicU64::new(0),
-            generation: AtomicU64::new(1),
             pending_len: AtomicUsize::new(0),
             evicted_len: AtomicUsize::new(0),
             built: AtomicU64::new(0),
@@ -221,7 +217,7 @@ impl Under for Registry {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct RegistryInner {
     /// Each key at its position.
     order: BTreeMap<Rank, RawStr>,
@@ -231,6 +227,40 @@ struct RegistryInner {
     /// The running container preload walks' flags under registry keys,
     /// set in the step that publishes a key's change (`super::watch`).
     watched: Table,
+    /// The container index generation: a new one starts in the step that
+    /// publishes a load's change to the dict ([`Self::publish`]), as
+    /// UnityPy's `register_cab` clears `_container_index_built` in the
+    /// statement after the one that sets the key (`environment.py:263-264`).
+    generation: u64,
+}
+
+impl Default for RegistryInner {
+    fn default() -> Self {
+        Self {
+            order: BTreeMap::new(),
+            slots: HashMap::new(),
+            pending: pending::Pending::default(),
+            watched: Table::default(),
+            generation: 1,
+        }
+    }
+}
+
+impl RegistryInner {
+    /// The step that publishes a change to the key hashed `hash`, under the
+    /// write lock that made it: the walks' flags under it set
+    /// (`super::watch`, W1) and, for a load's (`load`), a new container
+    /// index generation started (plan section 3.16, P1), so a thread that
+    /// finds the change also finds every answer read under the key's old
+    /// value invalidated (review round 15: the generation was bumped after
+    /// the lock, so a thread that found a new key could still read the old
+    /// generation's built index).
+    fn publish(&mut self, hash: u64, load: bool) {
+        self.watched.notify(hash);
+        if load {
+            self.generation = self.generation.saturating_add(1);
+        }
+    }
 }
 
 /// A B-tree node of `order`: its header, 11 keys and 11 values; an internal
@@ -333,9 +363,10 @@ impl Registry {
         self.read().watched.room()
     }
 
-    /// The generation now (bumped by every change to the dict).
+    /// The generation now (a new one at every load's change to the dict,
+    /// in the step that publishes it).
     pub(crate) fn generation(&self) -> u64 {
-        self.generation.load(Ordering::Acquire)
+        self.read().generation
     }
 
     /// Whether a container pass that started at `generation` has finished.

@@ -227,6 +227,8 @@ impl Environment {
                 files.lowered.entry(lowered).or_insert(at);
                 None
             };
+            // The entry and the setting of the walks' flags under its
+            // lowered key are one step (`super::watch`, W1).
             files.watched.notify(key_hash);
             replaced
         };
