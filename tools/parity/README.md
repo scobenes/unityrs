@@ -144,6 +144,7 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | `test_object_mode.py` | `PARITY.md` section 9.2.1 holds exactly what `object_mode.py` prints, and section 9.2's extra-field rule holds for every class of `UnityPy.classes` | UnityPy with UnityPyBoost |
 | `test_doc_tiers.py` | `PARITY.md` and `DESIGN.md` agree on what a tier covers where a zero side, an image mode, a missing characterisation, a walk past a UnityCN block, an empty first FSB5 subsound or a reader handed to a reader decides it | stdlib |
 | `test_readme.py` | this README's two tables list every file in this folder and in `tests/`, and no other | stdlib |
+| `test_fixture_modules.py` | each module under `tools/fixtures` (a file no step runs, which a fixture script imports) runs on its own, as plan section 10's G4 line runs every `tools/fixtures/*.py` with `--check`: it puts on its path what it imports | UnityPy |
 | `test_pillow_tables.py` | `PARITY.md` sections 15.8 and 18.1, and section 1's row for the libraries the Pillow writers call, hold exactly what `pillow_tables.py` prints; that row holds nothing the host decides | UnityPy, Pillow 9.5.0 |
 | `synth.py`, `dump_harness.py` | not tests: `synth.py` builds the synthetic inputs, and `dump_harness.py` holds what the `test_dump*.py` modules share (the sample pins included) | stdlib; UnityPy for `dump_harness.py`'s dumps |
 

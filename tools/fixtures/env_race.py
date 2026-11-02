@@ -19,11 +19,15 @@ from __future__ import annotations
 
 import contextlib
 import io
+import sys
 from pathlib import Path
 
-from UnityPy.helpers.ContainerHelper import ContainerHelper
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools/parity"))
 
-import scratch
+from UnityPy.helpers.ContainerHelper import ContainerHelper  # noqa: E402
+
+import scratch  # noqa: E402
 
 WALK = ContainerHelper.parse_preload_table
 

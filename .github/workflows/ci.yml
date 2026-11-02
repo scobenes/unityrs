@@ -194,10 +194,12 @@ jobs:
       # tools/fixtures/*.py run as a program is listed here or in G7's step;
       # the rest are modules a listed script imports (walk.py records
       # through walk_build.py, walk_elements.py, walk_mirror.py,
-      # walk_reentry.py and walk_runs.py, env.py through env_paths.py,
-      # dump.py through dump_inputs.py, tpk.py through tpk_build.py), as
-      # scripts/tests/test_ci_workflow.py checks. no_tree.py reads with
-      # tpk.py's synthetic TPKs, unityrs-tpk's test replays it.
+      # walk_reentry.py and walk_runs.py, env.py through env_paths.py and
+      # env_race.py, dump.py through dump_inputs.py, tpk.py through
+      # tpk_build.py), as scripts/tests/test_ci_workflow.py checks, and each
+      # module also runs on its own (tools/parity/tests/test_fixture_modules.py).
+      # no_tree.py reads with tpk.py's synthetic TPKs, unityrs-tpk's test
+      # replays it.
       - name: The scaffold's and packages B to E's oracle fixtures are current
         run: |
           python tools/fixtures/scaffold.py --check
@@ -212,7 +214,7 @@ jobs:
       - name: Self-tests (parity tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=425
+          tools/parity/tests=426
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6
       # and 10), each a unityrs dump compared with the oracle's: compare.py
