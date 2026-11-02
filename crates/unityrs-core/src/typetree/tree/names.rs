@@ -33,8 +33,9 @@
 //! there are (`work_tests::rows_naming_one_long_string_read_it_at_most_once`).
 //!
 //! A [`NameTable`] numbers a table of strings once, for the compiles of
-//! rows that name only its strings, which then read no name (a TPK's trees,
-//! which all name its one string table).
+//! rows that name only its strings, which then read no name and size
+//! their tables by their own rows (a TPK's trees, which all name its one
+//! string table).
 
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -316,11 +317,12 @@ fn one_hash<'a>(
 /// every string, so no buffer it knows is freed, and its address taken by
 /// another, while it lives: a row whose name is one of its strings (a clone
 /// of it, or a slice of the same bytes at the same place) is that string.
+/// A compile through it numbers its rows' names among themselves
+/// (`ids_of`), so what it allocates and fills is its own rows'
+/// size, never the table's.
 pub struct NameTable {
     /// Each string's buffer and name id, sorted.
     buffers: MeteredVec<((usize, usize), u32)>,
-    /// One past the largest name id.
-    bound: usize,
     /// The strings, kept for their buffers.
     _strings: MeteredVec<RawStr>,
 }
@@ -336,7 +338,7 @@ impl NameTable {
             return Err(TreeError::TooManyNodes(strings.len()));
         }
         let text = |i: u32| strings.get(i as usize).map_or(&[][..], RawStr::as_bytes);
-        let (ids, bound) = number(strings.len(), &text, meter, super::name_hash)?;
+        let (ids, _) = number(strings.len(), &text, meter, super::name_hash)?;
         let mut kept = MeteredVec::with_capacity(meter, strings.len())?;
         let mut buffers = MeteredVec::with_capacity(meter, strings.len())?;
         for (s, id) in strings.iter().zip(ids.as_slice()) {
@@ -346,14 +348,18 @@ impl NameTable {
         buffers.as_mut_slice().sort_unstable();
         Ok(Self {
             buffers,
-            bound,
             _strings: kept,
         })
     }
 
-    /// Each row's name id from the table, and one past the largest, when
-    /// every row's name is one of the table's strings; `None` otherwise.
-    /// A binary search a row, which reads no name.
+    /// Each row's name id, and one past the largest, when every row's name
+    /// is one of the table's strings; `None` otherwise. The ids are the
+    /// list's own: each row's table id (a binary search of the table, which
+    /// reads no name) becomes the place of its first copy among the list's
+    /// table ids sorted, so they are below the list's length, and what a
+    /// compile sizes and fills by them is its own rows' size, never the
+    /// table's (review round 14: a TPK's one-row root filled a table of one
+    /// entry per name of the whole TPK).
     pub(super) fn ids_of(
         &self,
         list: &NodeList,
@@ -368,7 +374,14 @@ impl NameTable {
                 _ => return Ok(None),
             }
         }
-        Ok(Some((ids, self.bound)))
+        let mut sorted = MeteredVec::with_capacity(list.meter(), ids.len())?;
+        sorted.extend_from_slice(ids.as_slice())?;
+        sorted.as_mut_slice().sort_unstable();
+        let sorted = sorted.as_slice();
+        for id in ids.as_mut_slice() {
+            *id = id32(sorted.partition_point(|s| s < id));
+        }
+        Ok(Some((ids, list.len())))
     }
 }
 

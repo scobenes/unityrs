@@ -526,7 +526,8 @@ impl TypeTreeProvider for TpkProvider {
 
     /// [`TpkProvider::node_list`], compiled once per release root with
     /// [`Tree::compile_with_names`] (the blob's strings' names, numbered at
-    /// load) on the provider's meter and kept: every request
+    /// load: the compile reads none, and its tables are the root's rows'
+    /// size) on the provider's meter and kept: every request
     /// whose picked entry names one root gets the same `Arc` (UnityPy's
     /// `NODES_CACHE`, crate docs). A walk or compile the allocator refuses is
     /// that request's error, its [`ProviderError::memory`] set, and is not

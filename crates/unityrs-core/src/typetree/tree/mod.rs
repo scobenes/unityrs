@@ -568,8 +568,9 @@ impl Tree {
     }
 
     /// [`Self::compile`], the names of rows whose names are all `names`'
-    /// strings taken from it, reading none of them ([`NameTable`]); a list
-    /// with any other name is compiled as [`Self::compile`] compiles it.
+    /// strings taken from it, reading none of them, and the tables sized by
+    /// the list, whatever the table holds ([`NameTable`]); a list with any
+    /// other name is compiled as [`Self::compile`] compiles it.
     pub fn compile_with_names(
         list: Arc<NodeList>,
         limits: &Limits,

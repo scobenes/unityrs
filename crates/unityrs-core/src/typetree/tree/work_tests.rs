@@ -439,3 +439,85 @@ fn a_name_table_knows_its_strings_buffers_and_nothing_else() {
         assert_eq!((key(1), key(2)), (NodeId(1), NodeId(1)), "{what}");
     }
 }
+
+/// A compile through a [`super::NameTable`] sizes its tables by its own
+/// rows, never by the table: lists of one row and of five, naming the
+/// table's last strings (its highest ids), read no name, key their
+/// children as a dict keys them, and are granted the same bytes on their
+/// meter whether the table holds 2 strings or 65,536. (Review round 14:
+/// each compile sized and filled a table of one entry per name the whole
+/// `NameTable` holds, 8 bytes each, uncounted work proportional to the
+/// table, not the tree.)
+#[test]
+fn a_compile_through_a_name_table_costs_its_own_rows_whatever_the_tables_size() {
+    let mut granted: HashMap<usize, Vec<(usize, u64)>> = HashMap::new();
+    for size in [2_usize, 1_000, 65_536] {
+        let strings: Vec<RawStr> = (0..size)
+            .map(|i| RawStr::from(format!("s{i:05}").as_str()))
+            .collect();
+        let table = super::NameTable::new(&strings, &Meter::unlimited()).unwrap();
+        let high = |i: usize| strings[size - 1 - i % 2].clone();
+        for rows in [1_usize, 5] {
+            let meter = Meter::unlimited();
+            let mut list = MeteredVec::new(&meter);
+            list.push(NodeRow::new(0, high(0), high(0))).unwrap();
+            for i in 1..rows {
+                list.push(NodeRow::new(1, high(1), high(i))).unwrap();
+            }
+            let list = Arc::new(NodeList::from_rows(list).unwrap());
+            let (read, before) = (read_now(), meter.granted());
+            let tree = Tree::compile_with_names(list, &Limits::default(), &table).unwrap();
+            assert_eq!(read_now(), read, "{size} strings, {rows} rows: a name read");
+            granted
+                .entry(rows)
+                .or_default()
+                .push((size, meter.granted() - before));
+            let key = |i: usize| tree.info(NodeId(u32::try_from(i).unwrap())).unwrap().key;
+            let keys: Vec<_> = (1..rows).map(|i| key(i).0).collect();
+            assert_eq!(keys, [1, 2, 1, 2][..rows - 1], "{size} strings");
+        }
+    }
+    for (rows, by_size) in &granted {
+        assert!(
+            by_size.iter().all(|g| g.1 == by_size[0].1),
+            "{rows} rows: bytes granted by table size {by_size:?}"
+        );
+    }
+}
+
+/// Random lists naming a table's strings (equal contents in buffers of
+/// their own among them) compile through the [`super::NameTable`] exactly
+/// as the plain compile compiles them, node for node, reading no name.
+#[test]
+fn a_name_tables_compile_is_the_plain_compile() {
+    let mut rng = Rng::new(14);
+    let strings: Vec<RawStr> = (0..300)
+        .map(|i| RawStr::from(format!("n{}", (i * 7) % 12).as_str()))
+        .collect();
+    let table = super::NameTable::new(&strings, &Meter::unlimited()).unwrap();
+    let mut grouped = 0;
+    for case in 0..300 {
+        let pick = |rng: &mut Rng| strings[rng.below(strings.len())].clone();
+        let meter = Meter::unlimited();
+        let mut rows = MeteredVec::new(&meter);
+        rows.push(NodeRow::new(0, pick(&mut rng), pick(&mut rng)))
+            .unwrap();
+        for _ in 0..rng.below(40) {
+            let level = 1 + i32::try_from(rng.below(2)).unwrap();
+            let level = if rows.len() == 1 { 1 } else { level };
+            let (ty, name) = (pick(&mut rng), pick(&mut rng));
+            rows.push(NodeRow::new(level, ty, name)).unwrap();
+        }
+        let list = Arc::new(NodeList::from_rows(rows).unwrap());
+        let read = read_now();
+        let with = Tree::compile_with_names(list.clone(), &Limits::default(), &table).unwrap();
+        assert_eq!(read_now(), read, "case {case}: a name read");
+        let plain = Tree::compile(list.clone(), &Limits::default()).unwrap();
+        for i in 0..u32::try_from(list.len()).unwrap() {
+            let w = with.info(NodeId(i)).unwrap();
+            assert_eq!(Some(w), plain.info(NodeId(i)), "case {case}: {i}");
+            grouped += usize::from(w.key != NodeId(i));
+        }
+    }
+    assert!(grouped > 1_000, "{grouped}");
+}

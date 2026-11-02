@@ -117,7 +117,9 @@
 //! whatever their lengths and however many roots name them
 //! (fix pass 13's sweep: each compile read them again, so a TPK whose many
 //! release roots each name long strings of one length read them once a
-//! root; `tests/names.rs`).
+//! root; `tests/names.rs`), and sizes its tables by its own rows, whatever
+//! the string table holds (review round 14: each compile filled a table of
+//! one entry per name the TPK holds; `tests/names.rs`).
 //!
 //! **Threads.** The provider never waits (plan sections 3.16 and 4.1), so
 //! threads that ask for one release root before its first answer is
