@@ -76,6 +76,36 @@ class DumpCliTests(DumpCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             unitypy_dump.main([str(src), "-o", str(self.tmp / "x.jsonl"), "--allow-index-mismatch"])
 
+    def test_an_index_path_is_named_matched_and_pinned_by_its_bytes(self):
+        """Review round 13: an entry's `path` whose surrogate escapes spell UTF-8 ("\\udcc3\\udcbf", the bytes
+        c3 bf) was named {"t":"str","hex":"c3bf"}, matched by --name as two code points and pinned apart from
+        the "\\u00ff" its bytes spell. It names, matches and pins as "\\u00ff", as a folder input of those bytes."""
+        root = self.tmp / "corpus"
+        root.mkdir()
+        (root / "ÿ").write_bytes(b"f")
+        index = root / "index.json"
+        escaped = {"path": "\udcc3\udcbf", "kind": "bundle"}
+        index.write_text(json.dumps({"files": [escaped]}))
+        out = self.tmp / "o.jsonl"
+        for pattern, status in (("?", 0), ("??", 2)):
+            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    got = unitypy_dump.main(["-q", "--index", str(index), "-o", str(out), "--name", pattern])
+                except SystemExit as e:  # argparse's error: no inputs matched
+                    got = e.code
+            self.assertEqual(got, status, pattern)
+        self.assertEqual([r["file"] for r in records(out) if r["rec"] == "file"], [["ÿ"]])
+        self.assert_canonical(out)
+        # The two spellings are one name, so the last entry's pin is the name's (main's `expected` dict).
+        wrong = "0" * 64
+        for entries, status in (
+            ([{**escaped, "path": "ÿ", "sha256": wrong}, escaped], 0),
+            ([{**escaped, "path": "ÿ"}, {**escaped, "sha256": wrong}], 1),
+        ):
+            index.write_text(json.dumps({"files": entries}))
+            out.unlink(missing_ok=True)
+            self.assertEqual(dump("--index", index, "-o", out), status, entries)
+
     def test_levels_leave_the_rest_null(self):
         args = self.sample_args()
         out = self.tmp / "l01.jsonl"

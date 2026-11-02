@@ -18,11 +18,16 @@
 //! folders (`tools/fixtures/folders.py`).
 //!
 //! An index is read as Python's `json.loads` reads it ([`index`]), and
-//! `--kind`, `--build` and an entry's `path` are compared and named as the
-//! Python `str`s they are ([`PyStr`]): `tests/fixtures/dump/index.json`
-//! records the oracle's run on every kind of index text, and Python's
-//! `str()` of every kind of value `--build` compares
-//! (`tools/fixtures/index.py`).
+//! `--kind` and `--build` are compared as the Python `str`s they are
+//! ([`PyStr`]). An entry's `path` is a `str` too, but it names its input by
+//! its bytes (`os.fsencode`), as a folder's paths do: surrogate escapes that
+//! spell UTF-8 (`"\udcc3\udcbf"`, the bytes `c3 bf`) name the character
+//! they spell (`"ÿ"`), and the record, `--name` and the pins all see
+//! that one name, as the oracle's `collect_inputs` names it (review round
+//! 13: the oracle named, matched and pinned the `str` as given).
+//! `tests/fixtures/dump/index.json` records the oracle's run on every kind
+//! of index text, such paths included, and Python's `str()` of every kind
+//! of value `--build` compares (`tools/fixtures/index.py`).
 
 mod glob;
 pub mod index;
@@ -266,7 +271,8 @@ fn collect_one(sel: &Selection, given: &Path, items: &mut Vec<Input>) -> Result<
                 }
             }
             // `name_bytes(e["path"])`: a `str`, encoded as `os.fsencode`
-            // encodes it; a surrogate it cannot encode fails the run.
+            // encodes it; a surrogate it cannot encode fails the run. The
+            // bytes are the input's name, as `name_of` gives the oracle's.
             let Some(Value::Str(rel)) = e.get("path") else {
                 return Err(format!("{}: an index entry has no path", given.display()));
             };

@@ -2,11 +2,14 @@
 //! binary: `tools/fixtures/index.py` ran `unitypy_dump.py --index` on each
 //! index text (`unityrs-dump`'s `tests/fixtures/dump/index.json` "runs" and
 //! "depth"), with argument bytes that are not always UTF-8, and recorded
-//! its exit status and the names it dumped. `unityrs dump` exits as it
-//! did and dumps the same names: an index Python's `json.loads` reads is
-//! read (`NaN`, `1e400`, an integer of 4,300 digits, a lone surrogate, the
-//! deepest nesting it decodes), one it refuses is refused with status 1,
-//! and a `--kind` or `--build` that is not UTF-8 selects what it selects.
+//! its exit status and the names its records carry, as written. `unityrs
+//! dump` exits as it did and dumps the same names: an index Python's
+//! `json.loads` reads is read (`NaN`, `1e400`, an integer of 4,300 digits,
+//! a lone surrogate, the deepest nesting it decodes), one it refuses is
+//! refused with status 1, a `--kind` or `--build` that is not UTF-8
+//! selects what it selects, and an entry's `path` is named, matched by
+//! `--name` and pinned by its bytes, so surrogate escapes that spell UTF-8
+//! name what they spell (review round 13).
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
@@ -14,7 +17,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value as Json;
-use unityrs_dump::json::hex;
 use unityrs_testkit::child;
 use unityrs_testkit::scratch::Scratch;
 
@@ -32,28 +34,31 @@ fn unhex(s: &str) -> Vec<u8> {
         .collect()
 }
 
-/// A folder outside the repository holding the files the indexes name,
-/// `f` and the byte 0xFF; removed when dropped.
+/// A folder outside the repository holding the files the indexes name
+/// (`index.json` member `run_files`); removed when dropped.
 struct Tmp(
     PathBuf,
     #[allow(dead_code, reason = "held for its drop, which removes the folder")] Scratch,
 );
 
 impl Tmp {
-    fn new(what: &str) -> Self {
+    fn new(what: &str, f: &Json) -> Self {
         let dir = Scratch::new(&format!("cli-{what}"));
         let base = std::fs::canonicalize(dir.path()).unwrap();
-        for name in [&b"f"[..], b"\xff"] {
-            std::fs::write(base.join(OsStr::from_bytes(name)), b"f").unwrap();
+        let files = f["run_files"].as_array().unwrap();
+        assert!(files.len() >= 5, "{files:?}");
+        for name in files {
+            let name = unhex(name.as_str().unwrap());
+            std::fs::write(base.join(OsStr::from_bytes(&name)), b"f").unwrap();
         }
         Self(base, dir)
     }
 
     /// `unityrs dump --index` on `text` with `extra` arguments: the exit
-    /// status, and the names of the file records it dumped when it wrote a
-    /// dump. A run the system kills from outside is run again
-    /// (`unityrs_testkit::child`).
-    fn run(&self, text: &[u8], extra: &[Vec<u8>]) -> (i32, Option<Vec<String>>) {
+    /// status, and the names its file records carry, as written (a string,
+    /// or a hex-tagged name), when it wrote a dump. A run the system kills
+    /// from outside is run again (`unityrs_testkit::child`).
+    fn run(&self, text: &[u8], extra: &[Vec<u8>]) -> (i32, Option<Vec<Json>>) {
         let index = self.0.join("index.json");
         std::fs::write(&index, text).unwrap();
         let out = self.0.join("out.jsonl");
@@ -72,10 +77,7 @@ impl Tmp {
             dump.lines()
                 .map(|l| serde_json::from_str::<Json>(l).unwrap())
                 .filter(|r| r["rec"] == "file")
-                .map(|r| match &r["file"][0] {
-                    Json::String(n) => hex(n.as_bytes()),
-                    other => other["hex"].as_str().unwrap().to_owned(),
-                })
+                .map(|r| r["file"][0].clone())
                 .collect()
         });
         let _ = std::fs::remove_file(&out);
@@ -89,22 +91,24 @@ impl Drop for Tmp {
     }
 }
 
-fn names(v: &Json) -> Option<Vec<String>> {
-    v.as_array()
-        .map(|a| a.iter().map(|n| n.as_str().unwrap().to_owned()).collect())
+fn names(v: &Json) -> Option<Vec<Json>> {
+    v.as_array().cloned()
 }
 
 /// Review rounds 6 and 7: the index was read with `serde_json`, so every
 /// index here that Python reads but `serde_json` does not (`NaN`, `1e400`, a
 /// lone surrogate, an integer past `u64`) failed the run with status 1 and
 /// no dump, and a `--kind` or `--build` that was not UTF-8 was a usage
-/// error (status 2).
+/// error (status 2). Review round 13: an entry whose `path` spells UTF-8
+/// with surrogate escapes was named, matched by `--name` and pinned as the
+/// oracle's `str`, apart from its bytes; the oracle now names it by its
+/// bytes, as `unityrs dump` does, and these runs record both on it.
 #[test]
 fn every_index_runs_as_the_oracles_run() {
     let f = fixture();
     let runs = f["runs"].as_array().unwrap();
-    assert!(runs.len() >= 30, "{} runs", runs.len());
-    let tmp = Tmp::new("index-runs");
+    assert!(runs.len() >= 40, "{} runs", runs.len());
+    let tmp = Tmp::new("index-runs", &f);
     let mut failed = Vec::new();
     for c in runs {
         let extra: Vec<Vec<u8>> = c["argv"]
@@ -133,7 +137,7 @@ fn every_index_runs_as_the_oracles_run() {
 #[test]
 fn the_deepest_index_runs_as_the_oracles_run() {
     let f = fixture();
-    let tmp = Tmp::new("index-depth");
+    let tmp = Tmp::new("index-depth", &f);
     let mut failed = Vec::new();
     for c in f["depth"]["runs"].as_array().unwrap() {
         let levels = usize::try_from(c["levels"].as_u64().unwrap()).unwrap();

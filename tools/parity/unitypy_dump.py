@@ -197,7 +197,12 @@ def collect_inputs(args) -> list[tuple[bytes, str, str | None]]:
     """(path to read, dump name, expected sha256) in canonical order (spec 4.2 "Names", section 5).
 
     Paths are handled as bytes, so names do not depend on the locale, and
-    as given: a symlink is named after itself, never its target.
+    as given: a symlink is named after itself, never its target. An index
+    entry's `path` is named by its bytes too, name_of(name_bytes(path)), as a
+    folder's paths are: surrogate escapes that spell UTF-8 ("\\udcc3\\udcbf",
+    the bytes c3 bf) name the character they spell ("\\u00ff"), so the record,
+    the --name globs and the pins all see that one name (review round 13: the
+    `str` as given was named, matched and pinned apart from its bytes).
     """
     given = os.fsencode(args.input)
     items = []
@@ -210,7 +215,8 @@ def collect_inputs(args) -> list[tuple[bytes, str, str | None]]:
                 continue
             if args.build and str(e.get("build")) not in args.build:
                 continue
-            items.append((os.path.join(root, name_bytes(e["path"])), e["path"], e.get("sha256")))
+            raw = name_bytes(e["path"])
+            items.append((os.path.join(root, raw), name_of(raw), e.get("sha256")))
     elif os.path.isdir(given):
         for dirpath, dirnames, filenames in os.walk(given):
             dirnames.sort()

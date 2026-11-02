@@ -16,8 +16,9 @@ entry's `sha256` pin (`collect_inputs`, `main`). Recorded here:
   `--build` (as argv bytes): the names it selects, in order, and each one's pin as the run's message
   prints it, or that it raised;
 - "runs": the oracle's whole run (`unitypy_dump.py --index`, a subprocess, so its argv is bytes and its
-  call stack is the real one) on index texts json.loads takes or refuses: its exit status and the
-  names it dumped;
+  call stack is the real one) on index texts json.loads takes or refuses, and on entries whose `path`
+  spells its bytes with surrogate escapes, matched by `--name` and pinned: its exit status and the names
+  its records carry, as written; "run_files" lists the files (hex) the run cases' indexes name;
 - "depth": the deepest nesting of arrays the oracle's json.loads decodes in `collect_inputs`, found by
   running it (Python's recursion limit less the frames below the call), and its runs at that depth and
   one past it, nested arrays and nested objects.
@@ -293,6 +294,9 @@ def select_cases(root: Path) -> list[dict]:
 # ---------------------------------------------------------------------- runs
 
 ENTRY = '{"path":"f","kind":"bundle"}'
+ESC_FF = b"\\udcc3\\udcbf"  # the bytes c3 bf, "\u00ff" in UTF-8, as JSON surrogate escapes
+ESC_EURO = b"\\udce2\\udc82\\udcac"  # the bytes e2 82 ac, the euro sign
+WRONG = b'"' + b"00" * 32 + b'"'  # a pin no file's sha256 matches
 
 
 def with_x(x: str) -> str:
@@ -333,18 +337,42 @@ RUN_TEXTS = [
     ("build_object", b'{"files":[{"path":"f","kind":"bundle","build":{"x": 1}}]}'),
     ("build_negative_zero", b'{"files":[{"path":"f","kind":"bundle","build":-0}]}'),
     ("build_tie", b'{"files":[{"path":"f","kind":"bundle","build":79686618578806.625}]}'),
+    # Review round 13: surrogate escapes whose bytes spell UTF-8 (c3 bf, "\u00ff"; e2 82 ac, the euro sign)
+    # name what they spell, as the path's bytes do, in the record, for --name and for the pins; escapes
+    # that spell no UTF-8 stay escapes (c3 bf ff: "\u00ff\udcff", two code points).
+    ("path_escapes_spell_utf8", b'{"files":[{"path":"' + ESC_FF + b'","kind":"bundle"}]}'),
+    ("path_escapes_spell_utf8_glob_one", b'{"files":[{"path":"' + ESC_FF + b'","kind":"bundle"}]}'),
+    ("path_escapes_spell_utf8_glob_two", b'{"files":[{"path":"' + ESC_FF + b'","kind":"bundle"}]}'),
+    ("path_escapes_spell_utf8_after_a", b'{"files":[{"path":"a' + ESC_EURO + b'","kind":"bundle"}]}'),
+    ("path_escapes_part_utf8_glob_two", b'{"files":[{"path":"' + ESC_FF + b'\\udcff","kind":"bundle"}]}'),
+    ("path_spelled_twice_first_pinned", b'{"files":[{"path":"\\u00ff","kind":"bundle","sha256":' + WRONG
+     + b'},{"path":"' + ESC_FF + b'","kind":"bundle"}]}'),
+    ("path_spelled_twice_last_pinned", b'{"files":[{"path":"\\u00ff","kind":"bundle"},{"path":"' + ESC_FF
+     + b'","kind":"bundle","sha256":' + WRONG + b"}]}"),
+    # A `kind` and a `build` are compared as the `str`s they are, not as bytes: such escapes are not the
+    # "\u00ff" an argument's bytes c3 bf decode to.
+    ("kind_escapes_spell_utf8", b'{"files":[{"path":"f","kind":"' + ESC_FF + b'"}]}'),
+    ("build_escapes_spell_utf8", b'{"files":[{"path":"f","kind":"bundle","build":"' + ESC_FF + b'"}]}'),
 ]
 RUN_ARGV = {
     "kind_lone_surrogate": [b"--kind", b"bundle,\xff"],
     "build_object": [b"--build", b"{'x': 1}"],
     "build_negative_zero": [b"--build", b"0,\xfe"],
     "build_tie": [b"--build", b"79686618578806.62"],
+    "path_escapes_spell_utf8_glob_one": [b"--name", b"?"],
+    "path_escapes_spell_utf8_glob_two": [b"--name", b"??"],
+    "path_escapes_part_utf8_glob_two": [b"--name", b"??"],
+    "kind_escapes_spell_utf8": [b"--kind", b"bundle,\xc3\xbf"],
+    "build_escapes_spell_utf8": [b"--build", b"\xc3\xbf"],
 }
-RUN_FILES = ["66", "ff"]  # "f", and the byte 0xFF
+# The files the run cases' indexes name, as hex: "f", the byte 0xFF, "\u00ff", "\u00ff" then 0xFF, and "a"
+# with the euro sign.
+RUN_FILES = ["66", "ff", "c3bf", "c3bfff", "61e282ac"]
 
 
-def run_oracle(folder: Path, text: bytes, extra: list[bytes]) -> tuple[int, list[str] | None, str]:
-    """The oracle's exit status on the index `text`, the names it dumped (hex) when it wrote a dump, its stderr."""
+def run_oracle(folder: Path, text: bytes, extra: list[bytes]) -> tuple[int, list | None, str]:
+    """The oracle's exit status on the index `text`, the names its file records carry when it wrote a dump (each
+    as written: a JSON string, or the `{"t":"str","hex":H}` of a name that is not UTF-8), and its stderr."""
     index = folder / "index.json"
     index.write_bytes(text)
     out = folder / "out.jsonl"
@@ -357,8 +385,7 @@ def run_oracle(folder: Path, text: bytes, extra: list[bytes]) -> tuple[int, list
         for line in out.read_text().splitlines():
             rec = json.loads(line)
             if rec.get("rec") == "file":
-                name = rec["file"][0]
-                names.append(bytes.fromhex(name["hex"]).hex() if isinstance(name, dict) else name.encode().hex())
+                names.append(rec["file"][0])
         out.unlink()
     return proc.returncode, names, proc.stderr.decode("utf-8", "replace")
 
@@ -431,6 +458,7 @@ def fixture() -> dict:
         "str": str_cases(),
         "select": select,
         "runs": runs,
+        "run_files": RUN_FILES,
         "depth": depth,
     }
 
