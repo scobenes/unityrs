@@ -11,11 +11,13 @@ elements of a flagged array are read by `read_value_array`
 every element kind (a class, a `pair`, a vector, a `ReferencedObject`), reads
 a flagged `pair`'s primitive children without their own flags, a flagged
 class element's registry children with no registry check, and 16-bit
-integers with their signedness swapped. Each case's bytes are those the
-pure-Python reader reads (built here with UnityPy's own writer's primitives,
-aligned from the start as that reader aligns); UnityPyBoost reads some of
-them too, where the case says so. UnityPy's writer (`write_typetree`) of
-each value is recorded too, as for every case.
+integers with their signedness swapped. Each case's bytes are exactly what
+the pure-Python reader reads, from 0, padding as zeros (`ref_run` lays its
+run out with UnityPy's own writer's primitives, which align from the start
+as that reader aligns); UnityPyBoost reads some of them too, each exactly to
+where it stops, and fails on the rest (`tests/walk_mirror.rs` checks both).
+UnityPy's writer (`write_typetree`) of each value is recorded too, as for
+every case.
 
 `walk.py` imports this module; it records nothing when run on its own.
 """
