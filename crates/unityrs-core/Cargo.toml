@@ -6,9 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 # The crate ports UnityPy 1.25.2 (MIT), liblz4 1.9.4's block decoder
 # (BSD-2-Clause: codec/lz4.rs) and code of CPython 3.11's standard library
-# (PSF-2.0: detect.rs, pystr.rs), so their notices travel with it: MIT's in
-# THIRD_PARTY_LICENSES, liblz4's in LICENSE-LZ4 and CPython's in LICENSE-PSF.
-# See docs/plans/core.md section 2.5.
+# (PSF-2.0: detect.rs, pystr.rs), so their notices are files of the crate,
+# which its package carries: UnityPy's in LICENSE-UNITYPY, liblz4's in
+# LICENSE-LZ4, and CPython's agreement in LICENSE-PSF with the summary of
+# changes it asks for in NOTICE-PSF. See THIRD_PARTY_LICENSES and
+# docs/plans/core.md section 2.5.
 license = "(MIT OR Apache-2.0) AND MIT AND BSD-2-Clause AND PSF-2.0"
 repository.workspace = true
 authors.workspace = true

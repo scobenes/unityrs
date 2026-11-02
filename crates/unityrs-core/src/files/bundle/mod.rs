@@ -7,7 +7,7 @@
 //! any decode (for a caller that plans with it, plan section 4.1).
 //!
 //! **One layout** (plan section 3.6). UnityPy always reads entries from the
-//! `b"".join` of every block's *actual* output (`BundleFile.py:173-186`), so
+//! `b"".join` of every block's *actual* output (`files/BundleFile.py:173-186`), so
 //! an entry's offset depends on the actual length of every block before it.
 //! Before a lazy read returns bytes ending at joined offset `X`, every block
 //! starting below `X` has a known length (`lengths`): a stored block's is
@@ -109,7 +109,7 @@
 //!
 //! UnityPy rules ported exactly (plan section 3.6):
 //! - the extra byte after the data flags only for non-UnityFS signatures
-//!   (`BundleFile.py:104-106`; rabex reads it for UnityFS, `files/bundlefile/mod.rs:616-618`);
+//!   (`files/BundleFile.py:104-106`; rabex reads it for UnityFS, `files/bundlefile/mod.rs:616-618`);
 //! - the flag set by engine version (`:113-121`); the decryptor read *before*
 //!   the 16-byte alignment (`:123-124`, then `:129-131`; rabex reads it after,
 //!   `files/bundlefile/mod.rs:638-645`); the alignment at format 7 and up or a

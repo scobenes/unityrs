@@ -4,8 +4,9 @@ description = "A TPK (type-tree package) loaded from a path, as a unityrs-core t
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-# It ports UnityPy 1.25.2's helpers/Tpk.py (MIT), so the MIT notice travels
-# with it. See THIRD_PARTY_LICENSES and docs/plans/core.md section 2.5.
+# It ports UnityPy 1.25.2's helpers/Tpk.py (MIT), so UnityPy's notice is its
+# LICENSE-UNITYPY (a link to unityrs-core's), which its package carries. See
+# THIRD_PARTY_LICENSES and docs/plans/core.md section 2.5.
 license = "(MIT OR Apache-2.0) AND MIT"
 repository.workspace = true
 authors.workspace = true

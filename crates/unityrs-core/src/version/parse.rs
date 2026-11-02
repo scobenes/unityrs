@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/UnityVersion.py. See THIRD_PARTY_LICENSES.
 //! `UnityVersion.from_str`'s pattern and `from_list`'s packing, each step's
 //! work counted before it runs (the parent module's docs, "Work").
 

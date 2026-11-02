@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/BundleFile.py, UnityPy/environment.py, UnityPy/files/File.py, UnityPy/files/ObjectReader.py, UnityPy/files/SerializedFile.py, UnityPy/helpers/CompressionHelper.py, UnityPy/helpers/ContainerHelper.py, UnityPy/helpers/ResourceReader.py. See THIRD_PARTY_LICENSES.
 //! The file-level error type.
 //!
 //! Object-level outcomes (the canonical dump's L2 kinds) are
@@ -221,13 +222,13 @@ impl CellError for Error {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Unsupported {
-    /// The `UnityArchive` signature; UnityPy raises too (`BundleFile.py:41`).
+    /// The `UnityArchive` signature; UnityPy raises too (`files/BundleFile.py:41`).
     #[error("UnityArchive bundles")]
     UnityArchive,
     /// LZHAM blocks; UnityPy raises too (`CompressionHelper.py:234-235`).
     #[error("LZHAM compression")]
     Lzham,
-    /// A compression type no codec is registered for (`BundleFile.py:515-521`).
+    /// A compression type no codec is registered for (`files/BundleFile.py:515-521`).
     #[error("compression type {0}")]
     Codec(u8),
     /// UnityWeb and UnityRaw outside format 6: P3.

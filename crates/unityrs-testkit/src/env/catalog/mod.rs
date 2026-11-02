@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py, UnityPy/classes/PPtr.py, UnityPy/files/SerializedFile.py. See THIRD_PARTY_LICENSES.
 //! The scenes, one function each, and [`scenes`], which lists them by
 //! name for `tools/fixtures/env.py`.
 

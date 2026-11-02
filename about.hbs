@@ -8,28 +8,37 @@ when it is stale).
 It has two parts. The first holds the notices of code ported or vendored into
 unityrs from other projects (UnityPy and UnityPyBoost, liblz4, CPython's
 standard library), and the provenance of bundled data; the notice of a new
-port is added to about.hbs, and its licence to its crate's. The second holds
-the licence of every crate the unityrs workspace builds, its own members
-included, grouped by licence text. A crate offered under a choice of licences
-(such as "MIT OR Apache-2.0") is listed under the one about.toml prefers.
-liblzma-sys is also listed under 0BSD, the licence of the xz sources it
-vendors and compiles.
+port is added to about.hbs, its licence to its crate's, and the notice to
+the crate's own files (a LICENSE-* file, and a NOTICE-* file for a text of
+ours its licence asks for), so that the crate's package carries it with the
+code. The second holds the licence of every crate the unityrs workspace
+builds, its own members included, grouped by licence text. A crate offered
+under a choice of licences (such as "MIT OR Apache-2.0") is listed under the
+one about.toml prefers. liblzma-sys is also listed under 0BSD, the licence of
+the xz sources it vendors and compiles.
 
 ================================================================================
 Ported code
 ================================================================================
 
 --------------------------------------------------------------------------------
-UnityPy 1.25.2 and UnityPyBoost
+UnityPy 1.25.2 (with UnityPyBoost, its C++ extension)
 https://github.com/K0lb3/UnityPy
 Licence: MIT.
 
 unityrs-core ports the read and write rules of UnityPy 1.25.2 and of the
 UnityPyBoost C++ extension shipped in the same release, and unityrs-tpk
 ports UnityPy 1.25.2's UnityPy/helpers/Tpk.py (how a type-tree package is
-read and a class's type tree picked from it). A ported file names its UnityPy source in
-its header and cites lines of that release. The tables in
-crates/unityrs-core/src/classid.rs and
+read and a class's type tree picked from it). The dump (unityrs-dump),
+which loads its inputs by UnityPy's rules, the test kit (unityrs-testkit),
+which writes inputs in the layouts UnityPy reads, and the P0 LZMA spike
+(unityrs-bench-lzma), which finds a bundle's blocks by BundleFile.read_fs's
+rules, follow UnityPy too. A file that ports UnityPy code names its UnityPy
+source in its header ("Ported from UnityPy 1.25.2 (MIT): ...") and cites
+lines of that release; scripts/unitypy_citations.py checks that each file
+under a crate's src/ that cites a line of UnityPy 1.25.2 or UnityPyBoost
+(test modules aside) has that header, and that every cited line exists. The
+tables in crates/unityrs-core/src/classid.rs and
 crates/unityrs-core/src/typetree/commonstring.rs are generated from
 UnityPy 1.25.2's MIT source (UnityPy.enums.ClassIDType and
 UnityPy.enums.CommonString) by tools/gen/gen_tables.py.
@@ -40,11 +49,15 @@ from a later revision cites that revision and that line.
 tools/parity/tests/head_417d595/ keeps two files of UnityPy git 417d595
 (helpers/CompressionHelper.py and files/BundleFile.py) byte for byte, beside
 that revision's LICENSE, whose line is "Copyright (c) 2019-2026 K0lb3"; the
-parity tests run them, and no crate builds them. The test kit
-(unityrs-testkit), which writes inputs in the layouts UnityPy reads, and the
-P0 LZMA spike (unityrs-bench-lzma), which finds a bundle's blocks by
-BundleFile.read_fs's rules, follow UnityPy too, under this notice.
+parity tests run them, and no crate builds them.
 
+UnityPy 1.25.2's LICENSE follows. Each crate that holds UnityPy's code
+(unityrs-core, unityrs-tpk, unityrs-dump, unityrs-testkit and
+unityrs-bench-lzma) has it as its LICENSE-UNITYPY, is under MIT as a term of
+its own licence ("AND MIT", never only as a choice), and is listed under
+this text below.
+
+{{!-- notice: LICENSE-UNITYPY --}}
 MIT License
 
 Copyright (c) 2019-2021 K0lb3
@@ -80,6 +93,7 @@ that UnityPy's python-lz4 4.4.4 runs. The file's header holds lib/lz4.c's
 notice. liblz4's lib/LICENSE follows; it is unityrs-core's LICENSE-LZ4,
 listed under BSD-2-Clause below.
 
+{{!-- notice: LICENSE-LZ4 --}}
 LZ4 Library
 Copyright (c) 2011-2020, Yann Collet
 All rights reserved.
@@ -112,8 +126,20 @@ Licence: PSF-2.0. CPython 3.11's LICENSE: "Python software and
 documentation are licensed under the Python Software Foundation License
 Version 2."
 
-These files translate code of Python 3.11's standard library to Rust, each
-naming it in its header:
+The files below translate code of Python 3.11's standard library to Rust,
+each naming it in its header. The summary of the changes made to them,
+which the agreement's clause 3 asks a derivative work to include, then the
+PSF License Agreement and PSF's notice of copyright, as CPython 3.11's
+LICENSE gives them, follow. The summary is the NOTICE-PSF, and the
+agreement the LICENSE-PSF, of unityrs-core, unityrs-dump and unityrs-cli;
+the agreement is listed under PSF-2.0 below.
+
+{{!-- notice: NOTICE-PSF --}}
+Python's standard library in unityrs, and the changes made to it
+----------------------------------------------------------------
+
+These files of the unityrs repository translate code of Python 3.11's
+standard library (CPython 3.11) to Rust:
 - crates/unityrs-core/src/detect.rs: Lib/gzip.py's _read_exact,
   _read_gzip_header, _GzipReader.read and _GzipReader._read_eof, how gzip
   detection reads each member's header, inflates it and checks its trailer;
@@ -128,21 +154,17 @@ naming it in its header:
   ArgumentParser._parse_known_args (with its consume_optional),
   _parse_optional, _get_option_tuples and _negative_number_matcher.
 
-The changes made to them (the agreement's clause 3 asks for a summary): each
-is rewritten in Rust and keeps only what unityrs uses of it. The path rules
-work on bytes, the glob on code points and the JSON reader on the index's
-UTF-8 text, where Python works on str objects. A failure is an error value
-where Python raises. The gzip reader keeps only the first 20 bytes it
-inflates and the length of the whole, and stops at unityrs's inflate bound
-and the open's work. The glob is matched by a wildcard matcher where Python
-compiles a regular expression. The JSON reader builds the values an index
-holds, as Python's json.loads does. The argument parser parses the dump's
-own options, with unityrs's extensions.
+The changes made to them: each is rewritten in Rust and keeps only what
+unityrs uses of it. The path rules work on bytes, the glob on code points
+and the JSON reader on the index's UTF-8 text, where Python works on str
+objects. A failure is an error value where Python raises. The gzip reader
+keeps only the first 20 bytes it inflates and the length of the whole, and
+stops at unityrs's inflate bound and the open's work. The glob is matched by
+a wildcard matcher where Python compiles a regular expression. The JSON
+reader builds the values an index holds, as Python's json.loads does. The
+argument parser parses the dump's own options, with unityrs's extensions.
 
-The PSF License Agreement and PSF's notice of copyright, as CPython 3.11's
-LICENSE gives them, follow; they are unityrs-core's, unityrs-dump's and
-unityrs-cli's LICENSE-PSF, listed under PSF-2.0 below.
-
+{{!-- notice: LICENSE-PSF --}}
 PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2
 --------------------------------------------
 

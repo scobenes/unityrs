@@ -50,10 +50,20 @@ commits land on the worktree's branch.
 - **Third-party notices.** `THIRD_PARTY_LICENSES` is generated: after a change to
   `Cargo.lock`, `about.toml` or `about.hbs`, run `scripts/third-party-licenses`
   (it says how to install the pinned cargo-about), or CI fails. A port's notice
-  goes into `about.hbs`, its source and licence into the file's header
-  (`// Ported from <source> (<SPDX>): ...`), and its licence into the crate's
-  `license`, with the licence's text as a `LICENSE-*` file of the crate when
-  it is not MIT or Apache-2.0 (the script's `ports` check). A new crate under `crates/` links `LICENSE-MIT` and
+  goes into `about.hbs` (a section titled with the source, ending in the
+  notice after a `{{!-- notice: LICENSE-<NAME> --}}` line), its source and
+  licence into the file's header (`// Ported from <source> (<SPDX>): ...`),
+  its licence into the crate's `license` as a term no `OR` choice drops
+  (`(MIT OR Apache-2.0) AND MIT`), and the notice into the crate as that
+  `LICENSE-<NAME>` file (or a link to another crate's), so the crate's
+  package carries it. A text of ours a licence asks for (PSF's summary of
+  changes) is a `NOTICE-<NAME>` file: cargo-about does not recognise a
+  licence file with our words in it (the script's `ports` and `notices`
+  checks). A file under a crate's `src/` that cites UnityPy's lines carries
+  the UnityPy header, and a citation is `path:line` of UnityPy 1.25.2, with
+  the path from the package root when two files share its name
+  (`files/BundleFile.py`); `scripts/unitypy_citations.py` (CI's parity job)
+  checks both. A new crate under `crates/` links `LICENSE-MIT` and
   `LICENSE-APACHE` to the repository's (`ln -s ../../LICENSE-MIT`), or the
   script refuses its template notice. A licence clarified or accepted for one
   crate in `about.toml` is mirrored in `deny.toml`, which the script checks.

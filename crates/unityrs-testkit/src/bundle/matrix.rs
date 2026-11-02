@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/BundleFile.py, UnityPy/files/ObjectReader.py, UnityPy/files/SerializedFile.py, UnityPy/helpers/ImportHelper.py, UnityPy/helpers/TypeTreeNode.py. See THIRD_PARTY_LICENSES.
 //! Package C's synthetic matrix ([`matrix`]) for the L0-L1 parity check,
 //! and the specs it is built from.
 

@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/BundleFile.py. See THIRD_PARTY_LICENSES.
 //! `UnityFS` bundles (formats 6 to 8) and `UnityWeb`/`UnityRaw` (P3), built
 //! from a spec, with every block codec the core reads.
 //!
@@ -226,7 +227,7 @@ fn engine_triple(engine: &[u8]) -> Option<(u32, u32, u32)> {
 }
 
 /// Whether UnityPy reads these flags as `ArchiveFlags` (the new set) for
-/// this engine (`BundleFile.py:113-121`), on the engine's ASCII digits.
+/// this engine (`files/BundleFile.py:113-121`), on the engine's ASCII digits.
 fn new_flags(engine: &[u8]) -> bool {
     let Some(v) = engine_triple(engine) else {
         return false;
@@ -237,7 +238,7 @@ fn new_flags(engine: &[u8]) -> bool {
         || (v.0 == 2022 && v < (2022, 1, 1)))
 }
 
-/// Whether UnityPy aligns to 16 after the header (`BundleFile.py:129-131`).
+/// Whether UnityPy aligns to 16 after the header (`files/BundleFile.py:129-131`).
 fn aligned(format: u32, engine: &[u8]) -> bool {
     format >= 7 || engine_triple(engine).is_some_and(|v| v.0 == 2019 && v >= (2019, 4, 15))
 }
@@ -250,7 +251,7 @@ pub fn build(spec: &BundleSpec) -> Vec<u8> {
 
 /// The bundle's bytes under another signature: `UnityWeb` or `UnityRaw` at
 /// format 6 take the UnityFS layout with one more byte after the data flags
-/// (`BundleFile.py:104-106`), which this writes for any signature but
+/// (`files/BundleFile.py:104-106`), which this writes for any signature but
 /// `UnityFS`.
 #[must_use]
 pub fn build_with_signature(spec: &BundleSpec, signature: &[u8]) -> Vec<u8> {

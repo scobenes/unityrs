@@ -5,8 +5,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 # It ports code of CPython 3.11's standard library (PSF-2.0: args/mod.rs,
-# from argparse), whose notice travels with it in LICENSE-PSF. See
-# THIRD_PARTY_LICENSES and docs/plans/core.md section 2.5.
+# from argparse), whose agreement is its LICENSE-PSF and the summary of
+# changes the agreement asks for its NOTICE-PSF (links to unityrs-core's),
+# which its package carries. See THIRD_PARTY_LICENSES and
+# docs/plans/core.md section 2.5.
 license = "(MIT OR Apache-2.0) AND PSF-2.0"
 repository.workspace = true
 authors.workspace = true

@@ -124,7 +124,7 @@ fn a_flagged_block_is_decrypted_in_a_charged_copy() {
 }
 
 /// Round 5 (MEDIUM): UnityPy's bundle has a decryptor only when its header's
-/// encryption flag built one (`BundleFile.py:25`, `:123-124`), and
+/// encryption flag built one (`files/BundleFile.py:25`, `:123-124`), and
 /// `decompress_data` decrypts only with one (`:512`), so the key a caller
 /// set (`set_assetbundle_decrypt_key`, global) never touches a bundle whose
 /// flag is clear: its block flagged `0x100` is decoded as stored, and the

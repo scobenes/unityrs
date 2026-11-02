@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/ObjectReader.py. See THIRD_PARTY_LICENSES.
 //! [`Environment::object_tree`]: the tree an object reads with, and the
 //! `MonoBehaviour` script hook.
 

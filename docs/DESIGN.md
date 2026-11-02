@@ -215,7 +215,7 @@ The spike records LOC kept versus rewritten, whether upstream takes patches, obj
 **Licensing**
 - Crates carry accurate SPDX expressions, for example `(MIT OR Apache-2.0) AND MIT-CMU` for Pillow ports.
 - `cargo-deny` checks crates; `cargo-about` with overrides scans vendored C (libwebp BSD-3 plus PATENTS, zlib, xz).
-- `THIRD_PARTY_LICENSES` carries every notice: UnityPy and UnityPyBoost (MIT), liblz4's block decoder (BSD-2-Clause) and parts of CPython's standard library (PSF-2.0), both ported in P1, AssetStudio (MIT), texture2ddecoder, astcenc (Apache-2.0), Pillow, libwebp. A ported file names its source and licence in its header, and its crate's expression includes that licence (`scripts/third_party_licenses_check.py ports` holds the three together).
+- `THIRD_PARTY_LICENSES` carries every notice: UnityPy and UnityPyBoost (MIT), liblz4's block decoder (BSD-2-Clause) and parts of CPython's standard library (PSF-2.0), both ported in P1, AssetStudio (MIT), texture2ddecoder, astcenc (Apache-2.0), Pillow, libwebp. A ported file names its source and licence in its header; its crate's expression requires that licence in every alternative it offers, and the crate carries the source's notice as a file of its own, so its package ships the notice with the code (`scripts/third_party_licenses_check.py ports` holds them together).
 - The provenance of bundled data is recorded.
 - GPL/AGPL code is never read into the repo.
 - **Game data is never committed.** Corpora are private manifests of URLs plus sha256. Only synthetic and Unity-Editor-built fixtures are checked in.

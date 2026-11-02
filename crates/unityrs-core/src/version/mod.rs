@@ -378,7 +378,7 @@ pub fn resolve_serialized(
     })
 }
 
-/// `BundleFile.py:113-121`: `ArchiveFlagsOld` below 2020, and below 2020.3.34,
+/// `files/BundleFile.py:113-121`: `ArchiveFlagsOld` below 2020, and below 2020.3.34,
 /// 2021.3.2 and 2022.1.1 on those lines.
 pub fn flags_class(engine: &UnityVersion) -> Result<FlagsClass, VersionError> {
     // UnityPy files/BundleFile.py:113-121; `version[0]` is `as_tuple()[0]`,
@@ -396,7 +396,7 @@ pub fn flags_class(engine: &UnityVersion) -> Result<FlagsClass, VersionError> {
     })
 }
 
-/// `BundleFile.py:129-131`: the 16-byte alignment after the header applies at
+/// `files/BundleFile.py:129-131`: the 16-byte alignment after the header applies at
 /// format 7 and up, or with a 2019 engine at 2019.4.15 or later.
 pub fn uses_block_alignment(format: u32, engine: &UnityVersion) -> Result<bool, VersionError> {
     // UnityPy files/BundleFile.py:129: `or` short-circuits, so from format 7

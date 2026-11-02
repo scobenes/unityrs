@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/CompressionHelper.py. See THIRD_PARTY_LICENSES.
 //! Hard bounds on what untrusted input can make the library allocate or do,
 //! and the one meter that enforces the memory bound.
 //!

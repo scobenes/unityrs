@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/TypeTreeHelper.py, UnityPy/streams/EndianBinaryWriter.py. See THIRD_PARTY_LICENSES.
 //! UnityPy's pure-Python writer (`helpers/TypeTreeHelper.py:161-179`,
 //! `:381-458`). Dispatch is on the type name first (`FUNCTION_WRITE_MAP`), then
 //! `pair`, `ReferencedObject`, an `Array` first child, and a class. Under

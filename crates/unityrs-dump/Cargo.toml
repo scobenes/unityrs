@@ -4,10 +4,13 @@ description = "The canonical dump (docs/CANONICAL_DUMP.md): unityrs's L0-L3 reco
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-# It ports code of CPython 3.11's standard library (PSF-2.0:
-# select/glob.rs, select/index.rs), whose notice travels with it in
-# LICENSE-PSF. See THIRD_PARTY_LICENSES and docs/plans/core.md section 2.5.
-license = "(MIT OR Apache-2.0) AND PSF-2.0"
+# It follows UnityPy 1.25.2's load rules (MIT: lib.rs, input/), whose notice
+# is its LICENSE-UNITYPY, and ports code of CPython 3.11's standard library
+# (PSF-2.0: select/glob.rs, select/index.rs), whose agreement is its
+# LICENSE-PSF and the summary of changes the agreement asks for its
+# NOTICE-PSF (links to unityrs-core's). See THIRD_PARTY_LICENSES and
+# docs/plans/core.md section 2.5.
+license = "(MIT OR Apache-2.0) AND MIT AND PSF-2.0"
 repository.workspace = true
 authors.workspace = true
 publish = false

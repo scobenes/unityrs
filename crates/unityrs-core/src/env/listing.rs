@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py. See THIRD_PARTY_LICENSES.
 //! UnityPy's `env.files` dict ([`Files`]) and the listings that walk it:
 //! [`Environment::files`] and [`Environment::objects`]. "Module docs"
 //! below are [`super`]'s.

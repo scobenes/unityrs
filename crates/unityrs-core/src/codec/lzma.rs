@@ -51,7 +51,7 @@ impl BlockCodec for Lzma {
         uncompressed: u32,
         out: &mut DecodeBuf,
     ) -> Result<Decoded, Error> {
-        // UnityPy helpers/CompressionHelper.py:27: `struct.unpack("<BI", data[:5])`.
+        // UnityPy helpers/CompressionHelper.py:26: `struct.unpack("<BI", data[:5])`.
         let (Some(&props), Some(dict)) = (input.first(), input.get(1..5)) else {
             return Err(lzma_error(&format!(
                 "struct.error: unpack requires a buffer of 5 bytes (got {})",
@@ -60,7 +60,7 @@ impl BlockCodec for Lzma {
         };
         let named = u32::from_le_bytes(<[u8; 4]>::try_from(dict).unwrap_or_default());
         let data = input.get(5..).unwrap_or_default();
-        // UnityPy helpers/CompressionHelper.py:28-31
+        // UnityPy helpers/CompressionHelper.py:27-30
         let lc = u32::from(props % 9);
         let rest = u32::from(props / 9);
         let (pb, lp) = (rest / 5, rest % 5);

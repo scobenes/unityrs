@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py. See THIRD_PARTY_LICENSES.
 //! The CAB registry: UnityPy's `env.cabs` dict (`environment.py:252-280`).
 //!
 //! Keys are [`crate::pystr::simplify_name`] of the registered name. As a

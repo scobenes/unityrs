@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py, UnityPy/files/ObjectReader.py, UnityPy/helpers/ContainerHelper.py. See THIRD_PARTY_LICENSES.
 //! The container: [`Environment::container`], [`Environment::container_path`]
 //! and the pass that builds their index (UnityPy's
 //! `_build_container_index`), the walk of each file's preload table.

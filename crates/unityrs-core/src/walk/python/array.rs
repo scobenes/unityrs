@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/streams/EndianBinaryReader.py, UnityPy/helpers/TypeTreeHelper.py. See THIRD_PARTY_LICENSES.
 //! The pure-Python reader's arrays: a vector's elements read one by one
 //! (`read_value`'s list comprehension, a primitive element's list held as a
 //! run) and `read_value_array` for an aligned element, with its `struct`

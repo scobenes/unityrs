@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/SerializedFile.py, UnityPy/files/ObjectReader.py. See THIRD_PARTY_LICENSES.
 //! `SerializedFile`s, every format from 1 to 22 (below 9 the header's endian
 //! byte sits at `file_size - metadata_size`), built from a spec, with
 //! overrides for the fields a parser test needs to get wrong.

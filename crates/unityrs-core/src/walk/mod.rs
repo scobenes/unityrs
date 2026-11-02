@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/TypeTreeHelper.py, UnityPyBoost/TypeTreeHelper.cpp, UnityPy/files/ObjectReader.py. See THIRD_PARTY_LICENSES.
 //! Reading and writing values through a typetree.
 //!
 //! `TypeTreeHelper.read_typetree` (`helpers/TypeTreeHelper.py:123-158`) picks

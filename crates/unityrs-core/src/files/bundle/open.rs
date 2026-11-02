@@ -43,7 +43,7 @@ impl BundleFile {
     /// with ([`ReaderKind::Stream`] for a top-level file loaded from a path):
     /// the header, the blocks-info section and the blocks' stored bytes are
     /// read through it; the blocks-info table and the entries are memory
-    /// (UnityPy decodes them into bytes, `BundleFile.py:141-142`, `:173-186`).
+    /// (UnityPy decodes them into bytes, `files/BundleFile.py:141-142`, `:173-186`).
     pub fn open_with_reader(
         name: RawStr,
         data: Bytes,
@@ -204,7 +204,7 @@ struct FsHeader {
 }
 
 /// `BundleFile.__init__` up to the signature dispatch, then `read_fs` up to
-/// the blocks-info section (`BundleFile.py:36-51`, `:93-131`); leaves `r` where
+/// the blocks-info section (`files/BundleFile.py:36-51`, `:93-131`); leaves `r` where
 /// blocks-info would start. Its strings' searches and its engine version's
 /// parse are the work of `charge`'s meter, the input's, and the version's
 /// heap is charged to `charge`, the bundle's handle.
@@ -284,7 +284,7 @@ fn read_fs_header(
     })
 }
 
-/// The blocks-info and directory tables (`BundleFile.py:141-162`), read
+/// The blocks-info and directory tables (`files/BundleFile.py:141-162`), read
 /// big-endian from the decoded section; paths are slices of it.
 fn read_blocks_info(
     info: &Bytes,

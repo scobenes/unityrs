@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py, UnityPy/files/BundleFile.py, UnityPy/files/File.py. See THIRD_PARTY_LICENSES.
 //! Loads: [`Environment::load`], [`Environment::load_dependency`] and the
 //! files the resolver returns, and the registration of their CABs.
 
