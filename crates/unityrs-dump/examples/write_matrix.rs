@@ -17,8 +17,8 @@
 //!
 //! G3b: `write_matrix --mutants [-j N] DIR` writes instead the mutants of every
 //! builder output `unityrs_testkit::mutate::builder_outputs` lists (the matrix
-//! and every Environment scene's files): two for each field the output's build
-//! writes, then `unityrs_testkit::mutate::RANDOM_PER_INPUT` bit flips and
+//! and every Environment scene's files, but a WebFile, which P1 refuses): two
+//! for each field the output's build writes, then `unityrs_testkit::mutate::RANDOM_PER_INPUT` bit flips and
 //! truncations, named `<input>~<index>~<label>`. The mutants are made on `N`
 //! threads (default 4); they do not depend on `N`. Both sides dump them, the
 //! oracle under a memory cap, and `tools/parity/g3b.py` judges the two dumps,

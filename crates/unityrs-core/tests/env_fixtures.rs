@@ -118,6 +118,44 @@ fn scenes_are_the_testkit_scenes() {
     }
 }
 
+/// G3b mutates every file of every scene the fixture records, in whatever
+/// list `tools/fixtures/env.py` records it (every member of `env.json` but
+/// its `generator` and `unitypy`), but a WebFile, which P1 refuses: fix
+/// passes 6 and 11 each added a list of scenes whose files
+/// `unityrs_testkit::mutate::builder_outputs` left out.
+#[test]
+fn g3b_mutates_every_file_of_every_recorded_scene() {
+    let doc = load("env.json").expect("tests/fixtures/d/env.json");
+    let outputs = unityrs_testkit::mutate::builder_outputs();
+    let (mut files, mut web) = (0, Vec::new());
+    for (list, cases) in doc.as_object().unwrap() {
+        if list == "generator" || list == "unitypy" {
+            continue;
+        }
+        for c in cases.as_array().unwrap() {
+            let scene = c["name"].as_str().unwrap();
+            let own = c["files"].as_array().unwrap();
+            for pair in own.iter().chain(c["resolver"].as_array().unwrap()) {
+                let name = pair[0].as_str().unwrap().replace('/', "_");
+                let name = format!("scene-{scene}-{name}");
+                let bytes = unhex(pair[1].as_str().unwrap());
+                if unityrs_testkit::mutate::is_web_file(&bytes) {
+                    web.push(name);
+                    continue;
+                }
+                assert!(
+                    outputs.iter().any(|(n, b)| *n == name && *b == bytes),
+                    "{list}: {name} is no G3b output"
+                );
+                files += 1;
+            }
+        }
+    }
+    assert_eq!(web, ["scene-find_file_kinds-w.web"]);
+    let scene_outputs = outputs.iter().filter(|(n, _)| n.starts_with("scene-"));
+    assert_eq!(scene_outputs.count(), files, "a scene output not recorded");
+}
+
 /// The steps whose result `PARITY.md` decides otherwise than UnityPy, by
 /// scene and op: the core's `path_dict` keys a row by its asset's file and
 /// path id, UnityPy's by path id alone (section 19.2), which
