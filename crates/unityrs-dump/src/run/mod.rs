@@ -43,16 +43,18 @@ use std::os::unix::fs::MetadataExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use flate2::Compression;
 use flate2::GzBuilder;
 use flate2::write::GzEncoder;
 use unityrs_core::Bytes;
+use unityrs_core::budget::Reservation;
 use unityrs_core::limits::{Limits, Meter};
 
 use crate::json::hex;
-use crate::read::{ReadInput, read_input};
+use crate::read::{ReadInput, read_on};
 use crate::select::{Input, Pin, Selection, collect};
 use crate::{DumpOptions, InputDump, end_line, header_line_unbounded};
 
@@ -101,7 +103,10 @@ pub struct RunOptions {
     pub output: PathBuf,
     /// Levels, jobs, context.
     pub dump: DumpOptions,
-    /// `--stats`: per-input timings and totals as JSON.
+    /// `--stats`: JSON of each input's counts (`files`, `objects`,
+    /// `bytes_in`, `bytes_out`, `decode_work`) and the run's totals (those,
+    /// `wall_s`, and `workers`, [`Written::workers`]). Its own format, not
+    /// the oracle's (which times each input), and compared with nothing.
     pub stats: Option<PathBuf>,
     /// `-q`: no per-input progress on stderr.
     pub quiet: bool,
@@ -126,9 +131,31 @@ pub struct Summary {
     /// Inputs whose one record is a `crash`: they ran their dumper out of
     /// memory ([`InputDump::crashes`]).
     pub crashes: u64,
+    /// The work the inputs' meters counted, summed
+    /// ([`InputDump::decode_work`]).
+    pub decode_work: u64,
+    /// The workers the inputs were dumped on ([`Written::workers`]).
+    pub workers: u64,
 }
 
 const _: () = crate::send_sync::<Summary>();
+
+/// What [`write_dump`] wrote, and on how many workers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Written {
+    /// `file` records.
+    pub files: u64,
+    /// `object` records.
+    pub objects: u64,
+    /// The size of the pool the inputs were dumped on, as each input's
+    /// worker saw it (`rayon::current_num_threads`): `-j`, or the number of
+    /// inputs when there are fewer ([`ordered_on`]); 0 with no input. It is
+    /// `-j`'s effect as the run took it, which `--stats` reports, so a run
+    /// meant to dump in parallel (G1b's `-j 8`) shows that it did.
+    pub workers: u64,
+}
+
+const _: () = crate::send_sync::<Written>();
 
 impl Summary {
     /// Every input crashed: the dump is written, but the oracle exits 3
@@ -419,29 +446,37 @@ type Dumped = Result<InputDump, String>;
 type DumpOne<'a> = dyn Fn(&[u8], Bytes, &Arc<Meter>) -> InputDump + Sync + 'a;
 
 /// Writes the header, every input's records in order, and the `end` record
-/// to `w`. Each input is read by [`read_input`] (refused at its limits, its
-/// bytes charged to its meter, a refusal its own record), and `dump_one`
-/// makes its records from its name, its bytes and that meter; `on_input`
-/// sees each input's records after they are written and may stop the run.
-/// Returns the `file` and `object` counts.
+/// to `w`, the inputs dumped on `opts.jobs` workers ([`ordered_on`]). Each
+/// input is read on a meter of its own by [`read_on`] (refused at its
+/// limits, its bytes charged to the meter, a refusal its own record), and
+/// `dump_one` makes its records from its name, its bytes and that meter;
+/// the work the meter counted is then the input's
+/// [`InputDump::decode_work`]. `on_input` sees each input's records after
+/// they are written and may stop the run.
 pub fn write_dump(
     inputs: &[Input],
     opts: &DumpOptions,
     w: &mut dyn Write,
     on_input: &mut dyn FnMut(&Input, &InputDump) -> Result<(), RunError>,
     dump_one: &DumpOne<'_>,
-) -> Result<(u64, u64), RunError> {
+) -> Result<Written, RunError> {
     let io = |e: std::io::Error| RunError::Failed(format!("writing the dump: {e}"));
     w.write_all(header_line_unbounded(opts.levels, PRODUCER, &opts.unbounded).as_bytes())
         .and_then(|()| w.write_all(b"\n"))
         .map_err(io)?;
     let (mut files, mut objects) = (0u64, 0u64);
+    let workers = AtomicUsize::new(0);
     let work = |input: &Input| -> Dumped {
-        match read_input(&input.name, &input.path, &opts.context) {
-            Ok(ReadInput::Bytes { data, meter }) => Ok(dump_one(&input.name, data, &meter)),
-            Ok(ReadInput::Refused(d)) => Ok(d),
-            Err(e) => Err(format!("{}: {e}", String::from_utf8_lossy(&input.name))),
-        }
+        workers.fetch_max(rayon::current_num_threads(), Ordering::Relaxed);
+        let ctx = &opts.context;
+        let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
+        let mut d = match read_on(&input.name, &input.path, ctx, Arc::clone(&meter)) {
+            Ok(ReadInput::Bytes { data, meter }) => dump_one(&input.name, data, &meter),
+            Ok(ReadInput::Refused(d)) => d,
+            Err(e) => return Err(format!("{}: {e}", String::from_utf8_lossy(&input.name))),
+        };
+        d.decode_work = meter.decoded();
+        Ok(d)
     };
     let stack = worker_stack(&opts.context.limits);
     ordered_on(inputs, opts.jobs, stack, &work, &mut |i, r: Dumped| {
@@ -463,7 +498,11 @@ pub fn write_dump(
     w.write_all(end_line(files, objects).as_bytes())
         .and_then(|()| w.write_all(b"\n"))
         .map_err(io)?;
-    Ok((files, objects))
+    Ok(Written {
+        files,
+        objects,
+        workers: u64::try_from(workers.into_inner()).unwrap_or(u64::MAX),
+    })
 }
 
 /// `unitypy_dump.py`'s `main`, after argument parsing: checks the paths,
@@ -596,6 +635,7 @@ pub fn run_with(opts: &RunOptions, dump_one: &DumpOne<'_>) -> Result<Summary, Ru
     let mut on_input = |input: &Input, d: &InputDump| -> Result<(), RunError> {
         done += 1;
         summary.crashes += d.crashes;
+        summary.decode_work = summary.decode_work.saturating_add(d.decode_work);
         let name = String::from_utf8_lossy(&input.name).into_owned();
         let differs = |want: &Pin| match d.sha256.map(|s| hex(&s)) {
             Some(sha) if want.matches(&sha) => None,
@@ -637,18 +677,23 @@ pub fn run_with(opts: &RunOptions, dump_one: &DumpOne<'_>) -> Result<Summary, Ru
                 "objects": d.objects,
                 "bytes_in": d.bytes_in,
                 "bytes_out": bytes_out,
+                "decode_work": d.decode_work,
             }));
         }
         Ok(())
     };
     let result =
-        write_dump(&inputs, &opts.dump, &mut out, &mut on_input, dump_one).and_then(|counts| {
+        write_dump(&inputs, &opts.dump, &mut out, &mut on_input, dump_one).and_then(|written| {
             out.finish()
                 .map_err(|e| RunError::Failed(format!("writing the dump: {e}")))?;
-            Ok(counts)
+            Ok(written)
         });
-    let (files, objects) = match result {
-        Ok(c) => c,
+    let Written {
+        files,
+        objects,
+        workers,
+    } = match result {
+        Ok(w) => w,
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
             return Err(e);
@@ -660,12 +705,15 @@ pub fn run_with(opts: &RunOptions, dump_one: &DumpOne<'_>) -> Result<Summary, Ru
     })?;
     summary.files = files;
     summary.objects = objects;
+    summary.workers = workers;
     let report = serde_json::json!({
         "inputs": summary.inputs,
         "files": files,
         "objects": objects,
         "index_sha256_mismatch": summary.index_sha256_mismatch,
         "crashes": summary.crashes,
+        "decode_work": summary.decode_work,
+        "workers": workers,
         "wall_s": (t0.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
         "output_bytes": std::fs::metadata(&out_path).map_or(0, |m| m.len()),
     });

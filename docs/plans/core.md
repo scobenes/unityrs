@@ -506,7 +506,7 @@ The gate is what "P1 core done" means. Every row is run by package E at the end 
 | id | what | levels | pass |
 |---|---|---|---|
 | **G1** | the whole private corpus (build A (4100) and build B (100056) inputs of `/corpus/index.json`) and UnityPy's samples, dumped by `unitypy_dump.py` and by `unityrs dump`, compared by `tools/parity/compare.py --oracle` | L0-L3 | **zero differences**, no shim, no `--levels` subset; `compare.py` format findings zero on both sides; the reference's header names the pinned stack (`--oracle` refuses a dump any other producer wrote) |
-| G1b | `unityrs dump -j 1` and `-j 8` of the same corpus | all | byte-identical uncompressed output |
+| G1b | `unityrs dump -j 1` and `-j 8` of the same corpus | all | byte-identical uncompressed output, the `-j 8` run's `--stats` naming 8 `workers` |
 | G1c | the corpus dumped with every bundle opened `Lazy` and its entries read in reverse directory order before the dump's own pass | all | byte-identical uncompressed output to G1's |
 | **G2** | the 32 value cases of `value_cases.py`, plus every case the packages add | L2, L3 | L2 identical for every case; L3 verdict `match` or `same_bytes` wherever the oracle re-saves (`value_cases.py` exits 0 exactly then, and when the binary answers each case once, one line each) |
 | **G3** | the synthetic format matrix: testkit-built files for every format, codec, flag set, endian and gate in P1 scope, dumped by both sides (the files are written to a temporary directory outside the repository and fed to both dumpers), compared by `compare.py --oracle` | L0-L3 | zero differences; the reference's header names the pinned stack |
@@ -705,13 +705,16 @@ sh scripts/stub-check.sh                                 # G6; lists the stubs l
 # /usr/local/lib/python3.11/site-packages/UnityPy/resources/lzma.tpk in unityrs-dev):
 scripts/dev python tools/parity/unitypy_dump.py --index /corpus/index.json -j 8 -o /tmp/p1/oracle.jsonl.gz   # G1
 scripts/dev cargo run --release -p unityrs-cli -- dump --index /corpus/index.json -j 8 \
-    --tpk $T -o /tmp/p1/unityrs.jsonl.gz
+    --tpk $T -o /tmp/p1/unityrs.jsonl.gz --stats /tmp/p1/unityrs.stats.json
 scripts/dev python tools/parity/compare.py --oracle /tmp/p1/oracle.jsonl.gz /tmp/p1/unityrs.jsonl.gz
 scripts/dev target/release/unityrs dump --index /corpus/index.json -j 1 --tpk $T -o /tmp/p1/unityrs-j1.jsonl.gz
-# G1b: zcat each of unityrs.jsonl.gz and unityrs-j1.jsonl.gz | sha256sum, equal
+# G1b: zcat each of unityrs.jsonl.gz and unityrs-j1.jsonl.gz | sha256sum, equal; and unityrs.stats.json's
+#      "summary" names "workers": 8, the pool the -j 8 run's inputs were dumped on (crates/unityrs-cli/tests/flags.rs)
 scripts/dev target/release/unityrs dump --index /corpus/index.json -j 8 --tpk $T --reverse-prepass \
     -o /tmp/p1/unityrs-g1c.jsonl.gz                                                                          # G1c
-# G1c: zcat it | sha256sum, equal to G1's
+# G1c: zcat it | sha256sum, equal to G1's. That --reverse-prepass runs the pre-pass is
+#      crates/unityrs-cli/tests/flags.rs's to show, on a bundle of many blocks: on the corpus the pre-pass
+#      counts no work the eager load does not, so a --stats of this run would show each input's decode_work as G1's
 scripts/dev python tools/parity/value_cases.py target/release/unityrs                                         # G2, exit 0
 scripts/dev cargo run -p unityrs-dump --example write_matrix -- /tmp/p1/g3                                     # G3
 scripts/dev python tools/parity/unitypy_dump.py /tmp/p1/g3 -o /tmp/p1/g3-oracle.jsonl.gz

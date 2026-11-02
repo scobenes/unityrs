@@ -221,6 +221,75 @@ fn ordered_settles_a_panic_when_its_turn_comes() {
     }
 }
 
+/// Review round 14: every test that ran the whole dump at several `-j`
+/// asserted only that its output was `-j 1`'s, so a `write_dump` that
+/// dumped one input at a time whatever `opts.jobs` said passed them all, and
+/// G1b with them. Here `run_with`'s `jobs` inputs each wait in their dumper
+/// until all `jobs` are being dumped at once, which a run on fewer workers
+/// never reaches; the run reports a pool of `jobs` workers. The wait only
+/// turns a hang into a failure (a deadlock guard, `unityrs_testkit::guard`),
+/// and once one dumper has given up the others do not wait again.
+#[test]
+fn a_run_dumps_jobs_inputs_at_once() {
+    use std::sync::{Condvar, Mutex};
+    use unityrs_testkit::guard::DEADLOCK_GUARD;
+    for jobs in [2, 3] {
+        let base = Scratch::new("dump-jobs");
+        let input = base.join("in");
+        std::fs::create_dir_all(&input).unwrap();
+        for i in 0..jobs {
+            std::fs::write(input.join(format!("{i}.bin")), [7u8; 16]).unwrap();
+        }
+        // (inputs in their dumpers, a dumper gave up), and each one's answer.
+        let state = (Mutex::new((0usize, false)), Condvar::new());
+        let met = Mutex::new(Vec::new());
+        let dump_one = |_: &[u8], _: Bytes, _: &Arc<Meter>| {
+            let (lock, cv) = &state;
+            let mut s = lock.lock().unwrap();
+            s.0 += 1;
+            cv.notify_all();
+            let deadline = Instant::now() + DEADLOCK_GUARD;
+            while s.0 < jobs && !s.1 {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    s.1 = true;
+                    cv.notify_all();
+                    break;
+                }
+                s = cv.wait_timeout(s, left).unwrap().0;
+            }
+            met.lock().unwrap().push(s.0 >= jobs);
+            InputDump::default()
+        };
+        let summary = run_with(
+            &RunOptions {
+                selection: Selection {
+                    inputs: vec![input.clone()],
+                    ..Selection::default()
+                },
+                output: base.join("out.jsonl"),
+                dump: DumpOptions {
+                    jobs,
+                    ..DumpOptions::default()
+                },
+                stats: None,
+                quiet: true,
+                allow_index_mismatch: false,
+            },
+            &dump_one,
+        )
+        .unwrap();
+        assert_eq!(
+            met.into_inner().unwrap(),
+            vec![true; jobs],
+            "deadlock guard: -j {jobs} never dumped {jobs} inputs at once in {} s, which only \
+             a hang takes, not load",
+            DEADLOCK_GUARD.as_secs()
+        );
+        assert_eq!(summary.workers, u64::try_from(jobs).unwrap(), "-j {jobs}");
+    }
+}
+
 #[test]
 fn ordered_stops_when_the_sink_refuses() {
     let items: Vec<u32> = (0..20).collect();

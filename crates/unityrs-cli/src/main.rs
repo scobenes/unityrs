@@ -235,6 +235,11 @@ mod tests {
             "s.json",
             "-q",
             "--allow-index-mismatch",
+            "-j",
+            "3",
+            "--reverse-prepass",
+            "--unbounded",
+            "TreeDepth",
         ])
         .unwrap();
         assert_eq!(o.selection.inputs, [std::path::PathBuf::from("idx.json")]);
@@ -246,6 +251,75 @@ mod tests {
         assert_eq!(o.dump.levels.names(), ["L0", "L1"]);
         assert_eq!(o.output, std::path::PathBuf::from("out.jsonl.gz"));
         assert_eq!(o.stats, Some(std::path::PathBuf::from("s.json")));
+        // Review round 14: `--reverse-prepass` and `--unbounded` could be
+        // dropped here with every test passing (`tests/flags.rs` runs each
+        // through the binary).
+        assert_eq!(o.dump.jobs, 3);
+        assert!(o.dump.lazy_reverse);
+        assert_eq!(o.dump.unbounded, [unityrs_core::LimitKind::TreeDepth]);
+        let mut lifted = DumpOptions::default().context.limits;
+        assert!(unityrs_dump::lift(
+            &mut lifted,
+            unityrs_core::LimitKind::TreeDepth
+        ));
+        assert_eq!(o.dump.context.limits, lifted);
+        assert_ne!(lifted, DumpOptions::default().context.limits);
+    }
+
+    /// `--tpk`'s provider answers through the run's context, and is opened
+    /// under the limits `--unbounded` lifts, wherever either stands on the
+    /// command line: UnityPy's chain 300 deep (`tools/fixtures/tpk.py`'s
+    /// `deep_chain_300`) is a `TreeDepth` refusal at the default depth of 256
+    /// and a tree with `TreeDepth` lifted (review round 14: no test held
+    /// `run_options` to opening the TPK after lifting the bounds).
+    #[test]
+    fn the_tpk_answers_under_the_lifted_limits() {
+        use unityrs_core::provider::TreeRequest;
+        use unityrs_core::{LimitKind, UnityVersion};
+
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../unityrs-tpk/tests/fixtures/tpk/synthetic.json");
+        let all: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
+        let case = all["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "deep_chain_300")
+            .unwrap();
+        let hex = case["tpk"].as_str().unwrap();
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let dir = unityrs_testkit::scratch::Scratch::new("cli-tpk");
+        let tpk = dir.join("deep.tpk");
+        std::fs::write(&tpk, bytes).unwrap();
+        let tpk = tpk.to_str().unwrap();
+        let version =
+            UnityVersion::from_packed(case["versions"][0].as_str().unwrap().parse().unwrap());
+        let lookup = |args: &[&str]| {
+            let o = opts(&[&["x", "-o", "y"], args].concat()).unwrap();
+            o.dump
+                .context
+                .providers
+                .lookup(&TreeRequest {
+                    class_id: 1,
+                    version: &version,
+                    script: None,
+                })
+                .map(|t| t.map(|t| t.source))
+                .map_err(|e| e.limit.map(|l| l.kind))
+        };
+        let tree = Ok(Some(unityrs_core::provider::TreeSource::Provider("tpk")));
+        assert_eq!(
+            lookup(&["--tpk", tpk]),
+            Err(Some(LimitKind::TreeDepth)),
+            "the default depth"
+        );
+        assert_eq!(lookup(&["--tpk", tpk, "--unbounded", "TreeDepth"]), tree);
+        assert_eq!(lookup(&["--unbounded", "TreeDepth", "--tpk", tpk]), tree);
+        assert_eq!(lookup(&["--unbounded", "TreeDepth"]), Ok(None), "no TPK");
     }
 
     /// Review round 7: when every input crashed the oracle exits 3, and
@@ -268,6 +342,6 @@ mod tests {
         let e = opts(&["x", "-o", "y", "--tpk", "/nonexistent/t.tpk"]).unwrap_err();
         assert!(e.starts_with("--tpk /nonexistent/t.tpk: "), "{e}");
         let o = opts(&["x", "-o", "y"]).unwrap();
-        assert!(o.dump.tpk_path.is_none() && o.dump.context.providers.is_empty());
+        assert!(o.dump.context.providers.is_empty());
     }
 }
