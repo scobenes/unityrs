@@ -140,8 +140,9 @@ fn values(path: &Path) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let stdout = std::io::stdout();
-    let mut out = std::io::BufWriter::new(stdout.lock());
+    // `Stdout`, not its lock, which no other thread may hold: the cases run
+    // on a thread of their own, and each line is written as its case ends.
+    let mut out = std::io::BufWriter::new(std::io::stdout());
     let done = unityrs_dump::values::run(&text, &mut out)
         .and_then(|()| out.flush().map_err(|e| e.to_string()));
     match done {

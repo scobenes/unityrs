@@ -147,9 +147,17 @@ impl Text {
         Ok((self.buf, self.charge))
     }
 
-    /// Room for `more` bytes, growing geometrically and charged first, at
-    /// exactly what is needed when a doubling is refused; `false` once a
-    /// growth has been refused.
+    /// Room for `more` bytes, growing geometrically and charged first. A
+    /// growth the meter, the budget or the allocator refuses is asked for
+    /// again with half the room past what is needed, and so on down to
+    /// exactly what is needed, so a text that meets a bound grows a few
+    /// dozen more times at most, each time by at least half of what could
+    /// still be granted. (Fix pass 15: once a doubling was refused it asked
+    /// for the doubling again on every write past its room, then for
+    /// exactly that write's bytes, so each such write cost a refused
+    /// request, a failed `mmap` where the allocator is what refuses:
+    /// `a_text_that_meets_its_bound_asks_a_few_dozen_times`.) `false` once
+    /// a growth of exactly what is needed has been refused.
     fn reserve(&mut self, more: usize) -> bool {
         if self.refused.is_some() {
             return false;
@@ -158,16 +166,15 @@ impl Text {
         if need <= self.buf.capacity() {
             return true;
         }
-        let doubled = self.buf.capacity().saturating_mul(2).max(need).max(FIRST);
-        let grown = match self.grow_to(doubled) {
-            Err(_) if doubled > need => self.grow_to(need),
-            r => r,
-        };
-        match grown {
-            Ok(()) => true,
-            Err(e) => {
-                self.refused = Some(e);
-                false
+        let mut target = self.buf.capacity().saturating_mul(2).max(need).max(FIRST);
+        loop {
+            match self.grow_to(target) {
+                Ok(()) => return true,
+                Err(_) if target > need => target = need + (target - need) / 2,
+                Err(e) => {
+                    self.refused = Some(e);
+                    return false;
+                }
             }
         }
     }
@@ -352,9 +359,10 @@ mod tests {
         assert!(s.count_work(usize::MAX), "a String counts nothing");
     }
 
-    /// A doubling the meter refuses is asked again at exactly what is
-    /// needed, so a growth that fits the meter (both blocks, while the
-    /// allocator moves the text) is never refused by the growth policy.
+    /// A doubling the meter refuses is asked again with less room, down to
+    /// exactly what is needed, so a growth that fits the meter (both
+    /// blocks, while the allocator moves the text) is never refused by the
+    /// growth policy.
     #[test]
     fn a_growth_that_fits_is_never_refused_by_doubling() {
         let limit = heap_cost(600) + heap_cost(1000);
@@ -369,5 +377,63 @@ mod tests {
         t.push_str(&"x".repeat(600));
         t.push_str(&"y".repeat(400));
         assert!(t.finish().is_err());
+    }
+
+    /// A meter of `limit` bytes that counts the charges it refuses.
+    fn refusals_counted(limit: u64) -> (Arc<Meter>, Arc<std::sync::atomic::AtomicU64>) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use unityrs_core::budget::{MemoryBudget, Permit};
+        #[derive(Debug)]
+        struct Tally(Counting, Arc<AtomicU64>);
+        impl MemoryBudget for Tally {
+            fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
+                self.0.try_reserve(bytes, what).inspect_err(|_| {
+                    self.1.fetch_add(1, Ordering::Relaxed);
+                })
+            }
+        }
+        let refused = Arc::new(AtomicU64::new(0));
+        let budget = Tally(Counting::new(limit), refused.clone());
+        let meter = Meter::new(u64::MAX, Arc::new(budget), Reservation::Input);
+        (meter, refused)
+    }
+
+    /// A text that meets its bound grows a few dozen more times at most:
+    /// a refused growth is asked again with half the room past what is
+    /// needed, down to exactly that, never once for every write past its
+    /// room. Here 1,000,000 one-byte writes meet a budget of 1,200 KiB
+    /// with 23 refused requests, 655,360 bytes written. Before fix pass 15
+    /// the refused doubling was asked again on every write past the room,
+    /// then exactly that write's bytes: 90,090 refused requests (each a
+    /// failed `mmap` where the allocator is what refuses), 614,376 bytes
+    /// written. A bound 128 times the size asks about as many, in writes of
+    /// 4 KiB.
+    #[test]
+    fn a_text_that_meets_its_bound_asks_a_few_dozen_times() {
+        use std::sync::atomic::Ordering;
+        // Room of 512 KiB doubled is refused, and up to about 640 KiB fits
+        // beside it: the writes past 512 KiB are where the growths are asked.
+        for (limit, write, writes, at_least) in [
+            (1_200_u64 << 10, 1, 1_000_000, 512 << 10),
+            (150_u64 << 20, 4096, 40_000, 64 << 20),
+        ] {
+            let (meter, refused) = refusals_counted(limit);
+            let mut t = Text::on(&meter);
+            let piece = "x".repeat(write);
+            let mut written = 0;
+            for _ in 0..writes {
+                t.push_str(&piece);
+                if t.refused().is_none() {
+                    written += write;
+                }
+            }
+            let refusals = refused.load(Ordering::Relaxed);
+            assert!(written > at_least, "{written}");
+            assert!(t.refused().is_some());
+            assert!(
+                refusals <= 64,
+                "{refusals} refused requests for {written} bytes written"
+            );
+        }
     }
 }

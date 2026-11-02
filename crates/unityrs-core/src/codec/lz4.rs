@@ -51,7 +51,11 @@ impl BlockCodec for Lz4 {
     /// `i32::MAX` is python-lz4's `OverflowError`; otherwise the block is
     /// scanned with liblz4's exact control flow (`lz4_run`), which gives
     /// its verdict and the output's length, and only then is the output
-    /// allocated (that length, charged) and decoded.
+    /// allocated (that length, charged) and decoded. python-lz4 reserves
+    /// the whole declared size before it decodes, so where the machine
+    /// cannot reserve it UnityPy raises `MemoryError` and unityrs reads on
+    /// (`PARITY.md` section 19.3, "a count UnityPy allocates before it
+    /// reads").
     fn decode(
         &self,
         input: &Bytes,

@@ -91,6 +91,7 @@ mod refused;
 
 pub use l1::DEFAULT_UNITY_VERSION;
 pub use object::check_read_kind;
+pub(crate) use refused::{out_of_memory, write_out_of_memory};
 
 use refused::memory_refused;
 

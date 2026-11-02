@@ -13,6 +13,7 @@ import io
 import random
 import struct
 import sys
+import tracemalloc
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -21,6 +22,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import child  # noqa: E402
 import scratch  # noqa: E402
 from rows_support import ORACLE, TEXT_ASSET, load, quietly, text_asset_file  # noqa: E402
 
@@ -31,7 +33,7 @@ if ORACLE:
     import UnityPy
     from UnityPy.enums import ArchiveFlags, ArchiveFlagsOld, ClassIDType, FileType
     from UnityPy.files import BundleFile, WebFile
-    from UnityPy.helpers import ImportHelper, ResourceReader
+    from UnityPy.helpers import CompressionHelper, ImportHelper, ResourceReader
     from UnityPy.helpers.TypeTreeNode import TypeTreeNode
     from UnityPy.streams import EndianBinaryReader
 
@@ -97,6 +99,63 @@ class Rows(unittest.TestCase):
                 loaded = load(S.fs_bundle([(b"CAB-x", sf, 4)], blocks=blocks))[0]
                 names = [o.parse_as_dict()["m_Name"] for o in loaded.files["CAB-x"].objects.values()]
                 self.assertEqual((list(loaded.files), names), (["CAB-x"], ["hello"]))
+
+    # Sections 6, 19.3 ("a count UnityPy allocates before it reads"): python-lz4 reserves a block's stored size.
+    def test_lz4_reserves_the_stored_size_before_it_decodes(self):
+        stored = 64 << 20
+        block = lz4.block.compress(b"a", store_size=False)
+
+        def peak(f):
+            tracemalloc.start()
+            try:
+                return f(), tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+
+        # `helpers/CompressionHelper.py:83-94`: one byte out, the whole stored size reserved (`PyMem_Malloc`, which
+        # tracemalloc traces) before the decode.
+        out, at_peak = peak(lambda: CompressionHelper.decompress_lz4(block, stored))
+        self.assertEqual(out, b"a")
+        self.assertGreaterEqual(at_peak, stored)
+        # A data block (`files/BundleFile.py:173-184`) and an LZ4 blocks-info (`files/BundleFile.py:141`) alike.
+        data = S.fs_bundle([(b"CAB-x", b"hello", 0)], stored_sizes=[stored])
+        loaded, at_peak = peak(lambda: load(data)[0])
+        self.assertEqual((list(loaded.files), at_peak >= stored), (["CAB-x"], True))
+        info = bytearray(S.fs_bundle([(b"CAB-x", b"hello", 0)]))
+        head = len(b"UnityFS\0") + 4 + len(b"5.x.x\0") + len(b"2021.3.2f1\0")
+        size_at = head + 8 + 4  # after the file size (q) and the info's compressed size (I)
+        self.assertEqual(struct.unpack_from(">I", info, head + 8 + 4 + 4)[0], 0x43, "the flags follow the size")
+        struct.pack_into(">I", info, size_at, stored)
+        loaded, at_peak = peak(lambda: load(bytes(info))[0])
+        self.assertEqual((list(loaded.files), at_peak >= stored), (["CAB-x"], True))
+        # Reserved, not touched: a child that decodes into 512 MiB of room grows its resident set by far less.
+        probe = (
+            "import resource, lz4.block\n"
+            "before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+            "assert lz4.block.decompress(lz4.block.compress(b'a', store_size=False), 512 << 20) == b'a'\n"
+            "print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before)\n"
+        )
+        grown_kib = int(child.run([sys.executable, "-B", "-c", probe], capture_output=True, check=True).stdout)
+        self.assertLess(grown_kib, 64 << 10)
+        # And a stored size the process cannot reserve (an address space capped at 1 GiB) is `MemoryError`, a block
+        # that decodes and one that does not alike: the reservation comes first.
+        probe = (
+            "import resource, lz4.block\n"
+            "resource.setrlimit(resource.RLIMIT_AS, (1 << 30, resource.getrlimit(resource.RLIMIT_AS)[1]))\n"
+            "for block in (lz4.block.compress(b'a', store_size=False), b'\\xff'):\n"
+            "    try:\n"
+            "        lz4.block.decompress(block, (1 << 31) - 1)\n"
+            "    except MemoryError:\n"
+            "        print('MemoryError')\n"
+        )
+        out = child.run([sys.executable, "-B", "-c", probe], capture_output=True, check=True, text=True).stdout
+        self.assertEqual(out, "MemoryError\nMemoryError\n")
+        # Reserved, that block is python-lz4's own refusal.
+        with self.assertRaises(lz4.block.LZ4BlockError):
+            lz4.block.decompress(b"\xff", 1 << 16)
+        # Above 2^31 - 1, python-lz4 refuses the size itself.
+        with self.assertRaisesRegex(OverflowError, "signed integer is greater than maximum"):
+            lz4.block.decompress(block, 1 << 31)
 
     # Sections 5.2, 13: reads past the end.
     def test_reads_past_the_end_return_short_data(self):

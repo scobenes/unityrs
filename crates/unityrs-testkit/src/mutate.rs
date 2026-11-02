@@ -528,40 +528,74 @@ mod tests {
     }
 
     /// Every file of every Environment scene is an output, a dependency
-    /// scene's, a `find_file` scene's and a race scene's included (fix
-    /// passes 6 and 11 each added the first scene of a list of its own,
-    /// which G3b's outputs left out), but the one WebFile, which P1 refuses.
+    /// scene's, a `find_file` scene's and a race scene's (its other file
+    /// too) included (fix passes 6 and 11 each added the first scene of a
+    /// list of its own, which G3b's outputs left out), but the one WebFile,
+    /// which P1 refuses. The files expected are taken from each list's own
+    /// function, never from `every_scene`, which `builder_outputs` reads:
+    /// taken from it (fix pass 14), the test passed with the base or the
+    /// dependency list dropped from G3b's outputs (review round 15).
     #[test]
     fn every_file_of_every_scene_is_an_output() {
-        let inputs = builder_outputs();
-        let (mut files, mut web) = (0, Vec::new());
-        // Each race scene's other file, by the lists themselves.
-        let race = crate::env::race_scenes();
-        assert_ne!(race.len(), 0);
-        for (scene, r) in race {
-            let name = String::from_utf8_lossy(&r.other.0).replace('/', "_");
-            let name = format!("scene-{scene}-{name}");
-            assert!(
-                inputs.iter().any(|(n, b)| *n == name && *b == r.other.1),
-                "{name} is no output"
-            );
+        type Files = Vec<(Vec<u8>, Vec<u8>)>;
+        fn files(s: crate::env::Scene) -> Files {
+            s.files.into_iter().chain(s.resolver).collect()
         }
-        for (scene, s) in super::every_scene() {
-            for (name, bytes) in s.files.iter().chain(&s.resolver) {
-                let name = String::from_utf8_lossy(name).replace('/', "_");
-                let name = format!("scene-{scene}-{name}");
-                if super::is_web_file(bytes) {
-                    web.push(name);
-                    continue;
+        let inputs = builder_outputs();
+        let lists: [(&str, Vec<(&str, Files)>); 4] = [
+            (
+                "scenes",
+                crate::env::scenes()
+                    .into_iter()
+                    .map(|(scene, s)| (scene, files(s)))
+                    .collect(),
+            ),
+            (
+                "dependency_scenes",
+                crate::env::dependency_scenes()
+                    .into_iter()
+                    .map(|(scene, d)| (scene, files(d.scene)))
+                    .collect(),
+            ),
+            (
+                "find_scenes",
+                crate::env::find_scenes()
+                    .into_iter()
+                    .map(|(scene, f)| (scene, files(f.scene)))
+                    .collect(),
+            ),
+            (
+                "race_scenes",
+                crate::env::race_scenes()
+                    .into_iter()
+                    .map(|(scene, r)| {
+                        let mut all = files(r.scene);
+                        all.push(r.other);
+                        (scene, all)
+                    })
+                    .collect(),
+            ),
+        ];
+        let (mut count, mut web) = (0, Vec::new());
+        for (list, scenes) in lists {
+            assert_ne!(scenes.len(), 0, "{list}");
+            for (scene, files) in scenes {
+                for (name, bytes) in files {
+                    let name = String::from_utf8_lossy(&name).replace('/', "_");
+                    let name = format!("scene-{scene}-{name}");
+                    if super::is_web_file(&bytes) {
+                        web.push(name);
+                        continue;
+                    }
+                    assert!(
+                        inputs.iter().any(|(n, b)| *n == name && *b == bytes),
+                        "{list}: {name} is no output"
+                    );
+                    count += 1;
                 }
-                assert!(
-                    inputs.iter().any(|(n, b)| *n == name && b == bytes),
-                    "{name} is no output"
-                );
-                files += 1;
             }
         }
         assert_eq!(web, ["scene-find_file_kinds-w.web"]);
-        assert_eq!(inputs.len(), crate::bundle::matrix().len() + files);
+        assert_eq!(inputs.len(), crate::bundle::matrix().len() + count);
     }
 }

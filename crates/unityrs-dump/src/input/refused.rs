@@ -51,7 +51,7 @@ impl<'a> Refusal<'a> {
 /// refusing memory to an object's read: its value, its tree (an embedded
 /// tree's compile, or a provider's walk: [`unityrs_core::provider::ProviderError::memory`]),
 /// or the load `m_Script` names.
-pub(super) fn out_of_memory(e: &ParseError) -> Result<(), Error> {
+pub(crate) fn out_of_memory(e: &ParseError) -> Result<(), Error> {
     read_refusal(e)
         .and_then(Refusal::memory)
         .map_or(Ok(()), |b| Err(Error::Budget(b.clone())))
@@ -60,7 +60,7 @@ pub(super) fn out_of_memory(e: &ParseError) -> Result<(), Error> {
 /// `Err(Error::Budget)` when `e` is the caller's budget or the allocator
 /// refusing memory to an object's resave: its output, or the tree it looks
 /// up again (a provider asked anew: a refusal is never kept).
-pub(super) fn write_out_of_memory(e: &WriteError) -> Result<(), Error> {
+pub(crate) fn write_out_of_memory(e: &WriteError) -> Result<(), Error> {
     write_refusal(e)
         .and_then(Refusal::memory)
         .map_or(Ok(()), |b| Err(Error::Budget(b.clone())))
