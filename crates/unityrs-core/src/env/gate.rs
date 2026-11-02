@@ -50,6 +50,23 @@ struct Armed {
     go: Arc<Mutex<Receiver<()>>>,
 }
 
+/// Takes its thread's [`Armed`] off the gate as the thread leaves its
+/// operation, however it leaves: the entry holds a sender of the test's
+/// channel, so a thread that panicked before its point would leave the test
+/// waiting out the deadlock guard for an answer that cannot come (review
+/// round 15: ten minutes), when `guard::recv` fails at once on a closed
+/// channel and says that the thread's own message tells why.
+#[cfg(test)]
+struct Leaving(Arc<Mutex<Vec<Armed>>>);
+
+#[cfg(test)]
+impl Drop for Leaving {
+    fn drop(&mut self) {
+        let me = std::thread::current().id();
+        lock(&self.0).retain(|a| a.thread != me);
+    }
+}
+
 /// The gate, installed on an Environment's registry and LRU hooks.
 #[cfg(test)]
 #[derive(Clone, Default)]
@@ -112,9 +129,9 @@ impl Gate {
                 });
             }
             let _ = ready_tx.send(());
+            let leaving = Leaving(armed);
             let out = f();
-            let me = std::thread::current().id();
-            lock(&armed).retain(|a| a.thread != me);
+            drop(leaving);
             let _ = events_tx.send(Event::Done);
             out
         });
@@ -192,4 +209,29 @@ impl<T> Run<T> {
             None => unreachable!("joined once"),
         }
     }
+}
+
+/// An armed thread that panics before its point fails the test's wait at
+/// once, by its closed channel, not by the deadlock guard ([`Leaving`]).
+#[cfg(test)]
+#[test]
+fn an_armed_thread_that_panics_closes_its_channel() {
+    let gate = Gate::default();
+    let mut run = gate.run(Some((Hook::Published, 1)), || {
+        panic!("the armed thread's own failure")
+    });
+    let joined = run.join.take().map(JoinHandle::join);
+    assert!(matches!(joined, Some(Err(_))), "the thread did not panic");
+    assert!(
+        lock(&gate.armed).is_empty(),
+        "the gate still holds a sender of the thread's channel"
+    );
+    let waited = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run.next()));
+    let failure = waited.expect_err("a closed channel fails the wait");
+    assert!(
+        failure
+            .downcast_ref::<String>()
+            .is_some_and(|m| m.contains("panicked without answering")),
+        "the wait failed some other way"
+    );
 }
