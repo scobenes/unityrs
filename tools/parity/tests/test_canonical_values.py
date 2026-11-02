@@ -114,8 +114,12 @@ class ReferencedObjects(unittest.TestCase):
         # Review round 11: [x: double, type, x: data, type: int] as an aligned array's element, read by the
         # pure-Python array reader. The later `type` hides the one the data was resolved from, so every ref type
         # is a candidate for `x`; the double before the data is not, since that reader never leaves data out.
-        elem = Node("ReferencedObject", "e", [Node("double", "x"), managed(), Node("ReferencedObjectData", "x"),
-                                             Node("int", "type")], meta=ALIGN)
+        elem = Node(
+            "ReferencedObject",
+            "e",
+            [Node("double", "x"), managed(), Node("ReferencedObjectData", "x"), Node("int", "type")],
+            meta=ALIGN,
+        )
         v = Node("vector", "v", [Node("Array", "Array", [Node("int", "size"), elem])])
         f = RefType("F", Node("float", "Base"))
         self.assertEqual(enc([{"x": 1.5, "type": 9}], v, [f], boost=False), [d(("x", f32(1.5)), ("type", 9))])
@@ -204,8 +208,12 @@ class Registries(unittest.TestCase):
         pair = Node("pair", "data", [holder, Node("int", "second")], meta=ALIGN)
         self.assertEqual(enc([(read, 7)], vector(pair), boost=False), [{"t": "tuple", "v": [inner, 7]}])
         r_type = RefType("R", Node("R", "Base", holder.m_Children))
-        elem = Node("ReferencedObject", "data", [Node("SInt64", "rid"), managed(), Node("ReferencedObjectData", "d")],
-                    meta=ALIGN)
+        elem = Node(
+            "ReferencedObject",
+            "data",
+            [Node("SInt64", "rid"), managed(), Node("ReferencedObjectData", "d")],
+            meta=ALIGN,
+        )
         value = [{"rid": 2, "type": {"class": "R", "ns": "NS", "asm": "Asm"}, "d": read}]
         typ = d(("class", "R"), ("ns", "NS"), ("asm", "Asm"))
         want = [d(("rid", 2), ("type", typ), ("d", inner))]
