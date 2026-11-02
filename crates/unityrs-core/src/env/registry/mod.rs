@@ -137,7 +137,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 pub use cab::{Cab, HeldCab, RawCab};
-pub(crate) use dependency::{DepSlot, Dependency, Open, PoolRefusal, open_source, with_room};
+pub(crate) use dependency::{
+    DepSlot, Dependency, Open, PoolRefusal, from_callers, open_source, with_room,
+};
 pub(crate) use lru::DepCache;
 #[cfg(test)]
 pub(crate) use lru::{Hook, HookFn};

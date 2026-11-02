@@ -61,9 +61,14 @@
 //! **Memory.** Each load makes its input's meter
 //! ([`crate::limits::Meter::for_input`]): [`crate::budget::Reservation::Input`]
 //! for what a caller loads, [`crate::budget::Reservation::Dependency`] for a
-//! dependency. A [`Source::Path`] is read by [`read_path`], bounded by
-//! [`crate::limits::Limits::max_input_bytes`] and charged to that meter
-//! before its bytes exist. Each registry slot, its key and its share of the
+//! dependency. Every [`Source`] is bounded by
+//! [`crate::limits::Limits::max_input_bytes`] before its bytes are detected
+//! ([`LimitKind::InputBytes`]): a [`Source::Path`] is read by [`read_path`],
+//! refused from its length before anything is read and charged to that
+//! meter before its bytes exist; a [`Source::Fetch`] is refused from the
+//! size its fetcher states ([`Fetch::size_hint`]) before it is fetched, and
+//! from the length of what it returns; [`Source::Bytes`] from their length.
+//! Each registry slot, its key and its share of the
 //! registry's tables are charged to the meter of the file that registered
 //! it ([`registry`]), and each `files` entry, its share of the list and its
 //! lowered key to the loaded file's ([`Environment::files`]); the LRU's
@@ -198,19 +203,33 @@ pub trait Fetch: Send + Sync + fmt::Debug {
     /// pool may refuse with the pool's refusal ([`Error::Budget`] naming
     /// [`crate::budget::Reservation::Dependency`]): the Environment then
     /// evicts the other dependencies and fetches once more, as for a
-    /// refusal of its own (plan section 3.13). A caller's [`Environment::load`]
-    /// is no dependency's, and returns such a refusal as it is.
+    /// refusal of its own (plan section 3.13), whatever the fetcher did
+    /// before it returned the refusal: a refusal it passes on from a call of
+    /// its own into the Environment, which that call already retried, is
+    /// fetched once more too, since the core cannot tell it from the
+    /// fetcher's own (`registry::from_callers`). A caller's
+    /// [`Environment::load`] is no dependency's, and returns such a refusal
+    /// as it is.
     fn fetch(&self) -> Result<Bytes, Error>;
-    /// Its size, when known without fetching (for budgeting).
+    /// Its size, when known without fetching. A size above
+    /// [`Limits::max_input_bytes`] refuses the source before it is fetched
+    /// ([`LimitKind::InputBytes`], the size stated as its value), whatever
+    /// the fetch would return; the bytes a fetch returns are checked against
+    /// the bound whatever was stated (the [`Source`] docs).
     fn size_hint(&self) -> Option<u64> {
         None
     }
 }
 
-/// Something to load.
+/// Something to load. Every kind is bounded by [`Limits::max_input_bytes`]:
+/// bytes longer than it, however they came, are refused
+/// ([`LimitKind::InputBytes`]) before anything detects, parses or keeps
+/// them, so a refused fetch's bytes drop at once, with any charge they
+/// carry.
 #[derive(Clone, Debug)]
 pub enum Source {
-    /// Bytes in memory, under a name.
+    /// Bytes in memory, under a name: refused above the bound from their
+    /// length.
     Bytes {
         /// The name UnityPy would key it by (`stream_name`).
         name: RawStr,
@@ -224,7 +243,9 @@ pub enum Source {
     /// caller who wants a mapping passes [`Source::Bytes`] or
     /// [`Source::Fetch`], whose bytes are the caller's.)
     Path(PathBuf),
-    /// Bytes fetched on demand.
+    /// Bytes fetched on demand: refused above the bound from the size the
+    /// fetcher states ([`Fetch::size_hint`]) before it is fetched, and from
+    /// the length of the bytes it returns.
     Fetch {
         /// The name.
         name: RawStr,
@@ -247,13 +268,7 @@ pub fn read_path(path: &Path, limits: &Limits, meter: &Arc<Meter>) -> Result<Byt
     let mut file = std::fs::File::open(path)?;
     let max = limits.max_input_bytes;
     let len = file.metadata()?.len();
-    if len > max {
-        return Err(Error::Limit(LimitError {
-            kind: LimitKind::InputBytes,
-            value: len,
-            max,
-        }));
-    }
+    within_input_bytes(len, limits)?;
     let mut out = DecodeBuf::new(meter, len, max, LimitKind::InputBytes)?;
     // The stat'd length, into the buffer allocated for it (no growth).
     let stated = usize::try_from(len).unwrap_or(usize::MAX);
@@ -281,6 +296,22 @@ pub fn read_path(path: &Path, limits: &Limits, meter: &Arc<Meter>) -> Result<Byt
     Ok(out.into_bytes()?)
 }
 
+/// `len`, an input's length or the length its fetcher states for it
+/// ([`Fetch::size_hint`]), within [`Limits::max_input_bytes`]; above it,
+/// the input's [`LimitKind::InputBytes`] refusal. Every [`Source`] is
+/// checked by it before its bytes are detected (`registry::open_source`).
+pub(crate) fn within_input_bytes(len: u64, limits: &Limits) -> Result<(), Error> {
+    let max = limits.max_input_bytes;
+    if len > max {
+        return Err(Error::Limit(LimitError {
+            kind: LimitKind::InputBytes,
+            value: len,
+            max,
+        }));
+    }
+    Ok(())
+}
+
 /// Finds a file the registry does not hold, where UnityPy looks in
 /// `env.path`: `find_file`'s fallback after `get_cab`
 /// (`environment.py:310-354`), and each `load_file(name, True)` of a
@@ -294,9 +325,19 @@ pub trait CabResolver: Send + Sync + fmt::Debug {
     ///   ([`crate::pystr::clean_external_path`]: a leading `archive:/`, then
     ///   `assets/`, dropped, the last `/` component kept, lower-cased); for
     ///   a caller's own call, the name the caller gave, as it is. UnityPy
-    ///   looks for `env.path` joined with it, then walks `env.path` for a
-    ///   file whose path is it, whose simplified name is its simplified
-    ///   name, or whose path ends with it (`environment.py:326-354`).
+    ///   opens `env.path` joined with it when that exists; else it takes,
+    ///   from the files a walk of `env.path` lists, the first whose walked
+    ///   path is the name, else the first whose walked path ends with it, a
+    ///   plain suffix with no separator boundary (beside `sub/ab.assets`, a
+    ///   root `xab.assets` answers `ab.assets`), else the first whose
+    ///   walked path, its basename lower-cased, ends with the name's
+    ///   simplified name, which it opens by that lower-cased path, so on a
+    ///   case-sensitive file system only a basename all lower case on disk
+    ///   is found that way; a miss raises `FileNotFoundError`. Its test of
+    ///   the simplified name alone never matches (it compares a bare name
+    ///   with the walk's full paths). `environment.py:326-354`; `PARITY.md`
+    ///   section 3's `Environment.find_file` row has the whole account (the
+    ///   walk built once, links, prefixes).
     /// - In a resource read's fallback ([`Environment::resource`]), first
     ///   each of the reading file's externals' stored path, as it is, not
     ///   cleaned (`archive:/CAB-x/CAB-x`, `Assets/Level/Thing.asset`:

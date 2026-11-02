@@ -6,6 +6,7 @@
 // Test code: a failed lookup is a failed test.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod callers;
 mod calls;
 mod container;
 mod deref;
@@ -17,6 +18,7 @@ mod pool;
 mod preload;
 mod reach;
 mod resources;
+mod sources;
 
 use std::path::PathBuf;
 use std::sync::Arc;

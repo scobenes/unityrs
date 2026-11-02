@@ -15,8 +15,12 @@ use crate::raw::RawStr;
 /// (`helpers/ResourceReader.py:36-38`): `reader.Position = offset;
 /// reader.read_bytes(size)`, by the reader's rules: a bundle entry's and a
 /// file of bytes' are a Python slice of the reader's bytes; a file loaded
-/// from a path is a stream, which refuses an offset or a size at or above
-/// 2^63 ([`crate::stream::ReaderKind`]).
+/// from a path is a stream, which takes the offset and reads the size by
+/// the stream reader's rules ([`crate::stream::ReaderKind::seek`] and
+/// [`crate::stream::ReaderKind::read_u64`]; `PARITY.md` section 13, and
+/// section 19.3's row "a path's stream past the machine's limits" for what
+/// it refuses where UnityPy's outcome depends on the machine). Review round
+/// 10: this restated a bound for the size that was not the reader's.
 fn read_cab(cab: &Cab, offset: u64, size: u64) -> Result<Bytes, Error> {
     match cab {
         Cab::Raw(RawCab::InBundle { bundle, dir_index }) => {

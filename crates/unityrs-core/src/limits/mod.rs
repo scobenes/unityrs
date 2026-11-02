@@ -64,9 +64,13 @@ pub struct Limits {
     /// the input's [`Meter`] before every allocation whose size the input
     /// chooses (module docs). Default 8 GiB.
     pub max_input_memory: u64,
-    /// The longest file [`crate::env::Source::Path`] reads, checked against
-    /// the file's length before anything is read, and again as it is read
-    /// ([`crate::env::read_path`]). Default 4 GiB.
+    /// The longest input the Environment loads, from any
+    /// [`crate::env::Source`]: a path's file is checked from its length
+    /// before anything is read, and again as it is read
+    /// ([`crate::env::read_path`]); a fetch from the size its fetcher states
+    /// ([`crate::env::Fetch::size_hint`]) before it is fetched, and from the
+    /// length of what it returns; given bytes from their length. Default
+    /// 4 GiB.
     pub max_input_bytes: u64,
     /// One block's actual decoded output (blocks-info's included). LZMA
     /// decodes to the end of its input whatever blocks-info says
