@@ -92,6 +92,35 @@ fn each_block_of_a_run_has_its_own_cap() {
     assert_eq!(out.len(), 32);
 }
 
+/// Review round 13: the doubling passed the segment's end, so a block held
+/// room no write of it could use, up to twice its cap (a TPK's LZMA payload
+/// of 16 MiB held 32 MiB, which its retry's dictionary then had to fit
+/// beside). The room stops at the segment's end, in each block of a run.
+#[test]
+fn room_never_passes_the_segments_end() {
+    let m = meter(1 << 20);
+    let mut out = DecodeBuf::new(&m, 0, 100, LimitKind::BlockOutput).unwrap();
+    out.extend_from_slice(&[1; 60]).unwrap();
+    out.extend_from_slice(&[2; 30]).unwrap();
+    assert_eq!(out.capacity(), 100, "doubled from 60, cut at the cap");
+    assert_eq!(out.charged(), heap_cost(100));
+    out.extend_from_slice(&[3; 10]).unwrap();
+    assert_eq!(out.capacity(), 100);
+    // The run's next block ends 50 bytes past where it begins.
+    out.begin_block(50, LimitKind::BlockOutput);
+    out.grow_zeroed(1).unwrap();
+    assert_eq!(
+        out.capacity(),
+        150,
+        "doubled from 100, cut at the block's end"
+    );
+    // Below the end it still doubles.
+    let mut out = DecodeBuf::new(&m, 0, 1000, LimitKind::BlockOutput).unwrap();
+    out.extend_from_slice(&[1; 60]).unwrap();
+    out.extend_from_slice(&[2; 30]).unwrap();
+    assert_eq!(out.capacity(), 120);
+}
+
 #[test]
 fn a_dropped_decode_returns_its_charge() {
     let m = meter(1 << 20);

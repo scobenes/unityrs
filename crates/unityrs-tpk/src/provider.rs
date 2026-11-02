@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use unityrs_core::budget::{Reservation, Unbounded};
+use unityrs_core::codec::Lzma;
 use unityrs_core::limits::{Charge, ChargeError, Limits, Meter, MeteredVec, heap_cost};
 use unityrs_core::once::get_or_publish;
 use unityrs_core::provider::{NoTree, ProviderError, TreeRequest, TypeTreeProvider};
@@ -85,6 +86,20 @@ fn get_item_for_version(version: &UnityVersion, entries: &[ClassEntry]) -> Optio
     ret
 }
 
+/// [`TpkProvider::MAX_DECODER_MEMORY`] holds the most an LZMA decode of a
+/// payload within [`TpkProvider::MAX_DECODED_BYTES`] charges: its output,
+/// allocated once at that bound, and a dictionary of at most twice it with
+/// liblzma's state (the bound's docs).
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "twice MAX_DECODED_BYTES, 32 MiB, fits a u32; From is not const"
+)]
+const _: () = assert!(
+    heap_cost(TpkProvider::MAX_DECODED_BYTES)
+        + Lzma::decoder_charge((2 * TpkProvider::MAX_DECODED_BYTES) as u32)
+        <= TpkProvider::MAX_DECODER_MEMORY
+);
+
 impl TpkProvider {
     /// The most rows one class tree may have. UnityPy's own TPK's largest
     /// has 3,849 (`tools/fixtures/tpk.py --survey`); a tree past this is an
@@ -117,10 +132,19 @@ impl TpkProvider {
     pub const MAX_DECODED_BYTES: u64 = 16 << 20;
 
     /// The most the decoder may hold while it decodes, 64 MiB: its output
-    /// and, for LZMA, the dictionary, which unityrs-core's codec keeps within
-    /// twice the output, and liblzma's state
-    /// ([`unityrs_core::codec::Lzma::DECODER_STATE`]), so the output's bound
-    /// is the one a stream meets first.
+    /// and, for LZMA, a dictionary and liblzma's state. An LZMA payload's
+    /// output is allocated once, at [`Self::MAX_DECODED_BYTES`], before the
+    /// decoder starts, so it never grows or moves, whatever the header
+    /// declares; unityrs-core's codec retries with a dictionary at most
+    /// twice the output so far ([`unityrs_core::codec::Lzma`]), so at most
+    /// twice [`Self::MAX_DECODED_BYTES`], charged with liblzma's state
+    /// ([`unityrs_core::codec::Lzma::decoder_charge`]). Together that is
+    /// 50,372,880 bytes, which a constant assertion beside this one checks
+    /// against this bound, so a payload within the decoded bound never meets
+    /// this one (review round 13: the output's room grew by doubling, to
+    /// twice the payload for some declared sizes, and a valid TPK was
+    /// refused; `tests/bounds.rs`
+    /// `an_lzma_payload_at_the_decoded_bound_loads_whatever_its_header_declares`).
     pub const MAX_DECODER_MEMORY: u64 = 64 << 20;
 
     /// The most records any one table of the blob may hold, 65,536: the

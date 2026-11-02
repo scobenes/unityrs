@@ -123,9 +123,12 @@ const LZMA_PROBE: &str = "UNITYRS_TPK_LZMA_DICTIONARY_PROBE";
 
 /// Run by `liblzmas_refused_dictionary_is_the_loads_out_of_memory`, in a
 /// child process, on the TPK the variable holds in hex: the load under an
-/// address-space cap 4 MiB above what the child maps, which the 8 MiB
-/// dictionary passes and nothing the load allocates before it does, then
-/// the same bytes with the cap lifted. The parent builds the TPK: building
+/// address-space cap 20 MiB above what the child maps, which the 8 MiB
+/// dictionary passes and nothing the load allocates before it does (the
+/// payload's output, allocated first at the 16 MiB bound,
+/// `TpkProvider::MAX_DECODED_BYTES`, since review round 13, and a few
+/// small blocks), then the same bytes with the cap lifted. The parent
+/// builds the TPK: building
 /// it here would allocate and free blocks of megabytes, after which glibc
 /// serves a block of 8 MiB from memory the process already maps (a freed
 /// `mmap`ped chunk raises its threshold for `mmap`), which no cap refuses.
@@ -141,7 +144,7 @@ fn lzma_dictionary_probe() {
         .collect();
     let limits = Limits::default();
     let got = {
-        let _cap = address_space::cap_above_current(4 << 20).unwrap();
+        let _cap = address_space::cap_above_current(20 << 20).unwrap();
         TpkProvider::from_bytes(&tpk, &limits)
     };
     let e = match got {
