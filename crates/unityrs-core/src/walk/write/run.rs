@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/TypeTreeHelper.py, UnityPy/streams/EndianBinaryReader.py, UnityPyBoost/TypeTreeHelper.cpp. See THIRD_PARTY_LICENSES.
 //! An array's elements (`TypeTreeHelper.py:435`): each written by
 //! `write_value`, which aligns after every element whose node is flagged;
 //! or, under [`WriteRules::MirrorReader`], as the reader that read the value

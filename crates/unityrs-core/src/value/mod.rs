@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/TypeTreeHelper.py. See THIRD_PARTY_LICENSES.
 //! The dynamic value: UnityPy's `parse_as_dict()` model, made self-describing.
 //!
 //! Each variant is one Python type with the distinctions the canonical dump
