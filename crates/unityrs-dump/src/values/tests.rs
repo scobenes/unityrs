@@ -299,7 +299,11 @@ fn a_long_resave_is_written_whole() {
             .collect();
         let mut data = i32::try_from(len).unwrap().to_le_bytes().to_vec();
         data.extend_from_slice(&body);
-        let want: String = data.iter().map(|b| format!("{b:02x}")).collect();
+        let want: String = data
+            .iter()
+            .flat_map(|b| [b >> 4, b & 15])
+            .map(|digit| char::from_digit(u32::from(digit), 16).unwrap())
+            .collect();
         let case = Case {
             name: "long".into(),
             big_endian: false,
