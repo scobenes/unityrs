@@ -100,7 +100,7 @@ impl BundleFile {
         let (mut blocks, directory) = read_blocks_info(&info, meter)?;
         // :165-166
         if class == FlagsClass::New && data_flags & 0x200 != 0 {
-            r.align(16);
+            r.align(16)?;
         }
         // :168-178: the blocks, read in order from here.
         let (stored, lengths) = stored_blocks(&mut blocks, &mut r, meter, ctx)?;
@@ -267,7 +267,7 @@ fn read_fs_header(
     // :129-131
     let block_alignment = uses_block_alignment(format, &engine.version)?;
     if block_alignment {
-        r.align(16);
+        r.align(16)?;
     }
     Ok(FsHeader {
         signature,

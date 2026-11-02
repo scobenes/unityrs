@@ -112,14 +112,26 @@ fn string_to_null_clamps_the_search() {
 #[test]
 fn the_stream_readers_string_to_null_is_the_base_classs_loop() {
     // `EndianBinaryReader.read_string_to_null` (`:136-144`) on a stream of a
-    // file `fs.open` opened: every window size the fixture records.
+    // file `fs.open` opened: every window size the fixture records, 0
+    // included (the loop never runs, so `""` past the end too), and far
+    // positions on a tmpfs file.
     let doc = load("reader.json");
     let datas: Vec<Vec<u8>> = cases(&doc, "string_to_null_data")
         .iter()
         .map(|h| hex(h.as_str().unwrap()))
         .collect();
-    let all = cases(&doc, "stream_string_to_null");
-    assert!(all.len() > 100);
+    let far = cases(&doc, "stream_tmpfs_string_to_null");
+    assert!(far.len() >= 30, "{}", far.len());
+    let all: Vec<_> = cases(&doc, "stream_string_to_null")
+        .iter()
+        .chain(far)
+        .collect();
+    assert!(all.len() > 150);
+    let empty_past_the_end = all
+        .iter()
+        .filter(|c| small(&c["max"]) == 0 && big(&c["pos"]) > 10)
+        .count();
+    assert!(empty_past_the_end >= 6, "{empty_past_the_end}");
     for c in all {
         let data = &datas[usize::try_from(small(&c["data"])).unwrap()];
         let max = usize::try_from(small(&c["max"])).unwrap();

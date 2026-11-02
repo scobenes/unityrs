@@ -479,7 +479,10 @@ pub fn read_typetree(
 /// [`read_typetree`] from the file's reader of `kind`
 /// ([`crate::files::SerializedFile::reader_kind`]): `reset()` sets the
 /// position to `byte_start`, which the stream reader refuses when negative
-/// or at or above 2^63 ([`ReadDetail::Stream`], kind `other`); the Boost
+/// or at or above 2^63 ([`ReadDetail::Stream`], kind `other`), as UnityPy's
+/// does on every machine; a `byte_start` past the largest file the file
+/// system takes is UnityPy's `OSError` on that machine, and taken here
+/// ([`crate::stream::ReaderKind`], `PARITY.md` section 19.3). The Boost
 /// path is given `read_bytes(byte_size)` from there (on both readers the
 /// bytes that exist), and the pure-Python reader reads by the reader's
 /// rules ([`python::read_with_reader`]).

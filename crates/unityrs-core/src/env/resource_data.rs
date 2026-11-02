@@ -17,10 +17,12 @@ use crate::raw::RawStr;
 /// file of bytes' are a Python slice of the reader's bytes; a file loaded
 /// from a path is a stream, which takes the offset and reads the size by
 /// the stream reader's rules ([`crate::stream::ReaderKind::seek`] and
-/// [`crate::stream::ReaderKind::read_u64`]; `PARITY.md` section 13, and
-/// section 19.3's row "a path's stream past the machine's limits" for what
-/// it refuses where UnityPy's outcome depends on the machine). Review round
-/// 10: this restated a bound for the size that was not the reader's.
+/// [`crate::stream::ReaderKind::read_u64`]; `PARITY.md` section 13). An
+/// offset past the largest file the file system takes, or a size the
+/// machine cannot allocate, is UnityPy's `OSError` or `MemoryError` on that
+/// machine, and reads short or nothing here (section 19.3's row "a path's
+/// stream past the machine's limits"). Review round 10: this restated a
+/// bound for the size that was not the reader's.
 fn read_cab(cab: &Cab, offset: u64, size: u64) -> Result<Bytes, Error> {
     match cab {
         Cab::Raw(RawCab::InBundle { bundle, dir_index }) => {

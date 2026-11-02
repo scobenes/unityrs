@@ -334,11 +334,15 @@ impl<'a> Reader<'a> {
         py_read(self.data.len(), self.pos, -1).0.len()
     }
 
-    /// `align_stream(n)`: [`py_align`], without a bounds check (a stream
-    /// position is never negative, so the arithmetic is the same).
-    pub fn align(&mut self, n: u32) {
+    /// `align_stream(n)`: [`py_align`], without a bounds check, assigned
+    /// to the position: the memory reader takes any result; the stream
+    /// reader's position is never negative, so the arithmetic is the same,
+    /// and it refuses a result at or above 2^63 as its `seek` does
+    /// ([`ReaderKind::align`]), staying where it was.
+    pub fn align(&mut self, n: u32) -> Result<(), Error> {
         // UnityPy streams/EndianBinaryReader.py:155-156
-        self.pos = py_align(self.pos, n);
+        self.pos = self.kind.align(self.pos, n)?;
+        Ok(())
     }
 
     /// The bytes after the position, as [`Error::OutOfBounds`] reports them.

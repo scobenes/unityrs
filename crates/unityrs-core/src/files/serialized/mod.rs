@@ -192,7 +192,8 @@ pub struct ObjectInfo {
     /// Absolute within the `SerializedFile`: the stored `u32` (or format 22's
     /// `i64`) plus `data_offset`, added as Python adds them, so it can pass
     /// `i64::MAX` (`2^63 - 1 + 144` loads in UnityPy) or go negative; a read
-    /// from it is a Python slice ([`crate::stream::py_read`]).
+    /// from it is by the file's reader's rules ([`SerializedFile::reader_kind`]):
+    /// a Python slice on the memory reader ([`crate::stream::py_read`]).
     pub byte_start: i128,
     /// `byte_size`.
     pub byte_size: u32,

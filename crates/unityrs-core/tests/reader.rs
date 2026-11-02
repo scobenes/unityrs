@@ -1,7 +1,9 @@
 //! `stream::Reader` against the scaffold's oracle fixture
 //! (`tests/fixtures/scaffold/reader.json`): every method at positions from
 //! below `-len` to past the end, as UnityPy 1.25.2's memoryview reader, and
-//! as its stream reader over a file `fs.open` opened (the `stream_` cases).
+//! as its stream reader over a file `fs.open` opened (the `stream_` cases),
+//! up to 2^63 on a tmpfs file (the `stream_tmpfs_` cases, at positions a
+//! file system with a smaller largest file refuses with `OSError`).
 
 use std::path::Path;
 
@@ -111,7 +113,8 @@ fn align_is_python_floor_modulo() {
     let doc = load();
     for c in cases(&doc, "align") {
         let mut r = at(&DATA, big(&c["pos"]));
-        r.align(u32::try_from(c["n"].as_u64().unwrap()).unwrap());
+        r.align(u32::try_from(c["n"].as_u64().unwrap()).unwrap())
+            .unwrap();
         assert_eq!(r.position(), big(&c["new_pos"]), "{c}");
     }
 }
@@ -217,11 +220,19 @@ fn refusal(e: &Error) -> String {
     }
 }
 
+/// The stream cases of `key` on a file of the scratch folder and on a
+/// tmpfs file (`stream_tmpfs_`), the latter at least `tmpfs` of them.
+fn stream_cases<'a>(doc: &'a J, key: &str, tmpfs: usize) -> impl Iterator<Item = &'a J> {
+    let far = cases(doc, &format!("stream_tmpfs_{key}"));
+    assert!(far.len() >= tmpfs, "{key}: {}", far.len());
+    cases(doc, &format!("stream_{key}")).iter().chain(far)
+}
+
 #[test]
 fn the_stream_reader_refuses_a_position_seek_cannot_take() {
     let doc = load();
-    let all = cases(&doc, "stream_set_position");
-    assert!(all.len() >= 10);
+    let all: Vec<_> = stream_cases(&doc, "set_position", 6).collect();
+    assert!(all.len() >= 16);
     for c in all {
         let mut r = stream_at(&DATA, 3);
         match (r.set_position(big(&c["pos"])), c.get("error")) {
@@ -236,12 +247,25 @@ fn the_stream_reader_refuses_a_position_seek_cannot_take() {
 #[test]
 fn the_stream_reader_reads_what_exists_and_stops_at_the_end() {
     let doc = load();
-    let all = cases(&doc, "stream_read");
-    assert!(all.len() > 200);
+    let all: Vec<_> = stream_cases(&doc, "read", 40).collect();
+    assert!(all.len() > 240);
+    let mut machine = 0;
     for c in all {
         let size = i64::try_from(big(&c["size"])).unwrap();
         let mut r = stream_at(&DATA, big(&c["pos"]));
-        match (r.read(size), c.get("error")) {
+        let want = c
+            .get("error")
+            .filter(|e| !e.as_str().unwrap().starts_with("OSError"));
+        if want.is_none() && c.get("error").is_some() {
+            // The machine's refusal (`PARITY.md` section 19.3): at 2^63 - 1
+            // the buffered file's fill would end past it, which Linux refuses
+            // (`EINVAL`). unityrs reads on, here past the end: nothing.
+            assert_eq!(r.read(size).map(<[u8]>::len).ok(), Some(0), "{c}");
+            assert_eq!(r.position(), big(&c["new_pos"]), "{c}");
+            machine += 1;
+            continue;
+        }
+        match (r.read(size), want) {
             (Ok(got), None) => {
                 assert_eq!(
                     got.len(),
@@ -258,6 +282,7 @@ fn the_stream_reader_reads_what_exists_and_stops_at_the_end() {
         }
         assert_eq!(r.position(), big(&c["new_pos"]), "{c}");
     }
+    assert!(machine > 0, "no read the machine refuses is recorded");
 }
 
 #[test]
@@ -294,12 +319,25 @@ fn the_stream_readers_fixed_reads_move_by_what_they_read() {
 
 #[test]
 fn the_stream_reader_aligns_as_the_memory_reader() {
+    // The memory reader's arithmetic, assigned through the `Position`
+    // setter: from within `n - 1` of 2^63 - 1 its `seek` refuses the result,
+    // and the position stays (the tmpfs cases).
     let doc = load();
-    for c in cases(&doc, "stream_align") {
+    let mut refused = 0;
+    for c in stream_cases(&doc, "align", 30) {
         let mut r = stream_at(&DATA, big(&c["pos"]));
-        r.align(u32::try_from(c["n"].as_u64().unwrap()).unwrap());
+        let got = r.align(u32::try_from(c["n"].as_u64().unwrap()).unwrap());
+        match (got, c.get("error")) {
+            (Ok(()), None) => {}
+            (Err(e), Some(want)) => {
+                assert_eq!(refusal(&e), want.as_str().unwrap(), "{c}");
+                refused += 1;
+            }
+            (got, _) => panic!("{got:?}: {c}"),
+        }
         assert_eq!(r.position(), big(&c["new_pos"]), "{c}");
     }
+    assert!(refused >= 10, "{refused}");
 }
 
 #[test]

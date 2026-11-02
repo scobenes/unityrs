@@ -23,37 +23,54 @@
 //! file's `tell()` (`:298-299`), and its fixed-width reads
 //! `struct.unpack(stream.read(n))` (`:345-346`). Over a file of `len` bytes,
 //! recorded from UnityPy 1.25.2 on a file `fs.open` opened
-//! (`tests/fixtures/scaffold/reader.json`, the `stream_` cases):
+//! (`tests/fixtures/scaffold/reader.json`: the `stream_` cases on a file of
+//! the scratch folder, the `stream_tmpfs_` cases on a tmpfs file, whose
+//! largest is 2^63 - 1):
 //! - `Position = p` refuses a negative `p` (`ValueError` "Position cannot be
 //!   negative", `:302-305`) and one at or above 2^63, which the file's
-//!   `seek` cannot take (`ValueError` "cannot fit 'int' into an offset-sized
-//!   integer"); any other moves there, past the end included. A stream
-//!   position is never negative.
+//!   `seek` cannot take on any machine (`ValueError` "cannot fit 'int' into
+//!   an offset-sized integer", `CPython`'s `PyNumber_AsOff_t`); any other moves
+//!   there, past the end included, where the file system takes it. Past the
+//!   largest file a file system takes (ext4's is 2^44 - 4096 with 4 KiB
+//!   blocks; tmpfs's 2^63 - 1, the `stream_tmpfs_` cases) `seek` raises
+//!   `OSError` (`EINVAL`), which depends on the machine: this module does not
+//!   model it, and moves there (`PARITY.md` section 19.3). A stream position
+//!   is never negative.
 //! - `read(n)`: `n` below -1 raises (`ValueError` "read length must be
 //!   non-negative or -1"); -1 reads to the end and 0 nothing; any other `n`
 //!   reads the bytes that exist, and the position moves by the bytes read,
 //!   so it stops at the end, and stays where it is past the end. A buffered
 //!   file allocates `n` bytes before it reads
 //!   (`_bufferedreader_read_generic`), so `n` at or above 2^63 - 33 raises
-//!   `OverflowError` ("byte string is too large"); an `n` below that but
-//!   above what the machine can allocate raises `MemoryError`, which this
-//!   module does not model (`PARITY.md` section 19.3).
+//!   `OverflowError` ("byte string is too large", from `_PyBytes_FromSize`)
+//!   on any machine; an `n` below that but above what the machine can
+//!   allocate raises `MemoryError`, which depends on the machine: this
+//!   module does not model it, and reads what exists (`PARITY.md` section
+//!   19.3). The fixture's sizes are those that raise on every machine or
+//!   that every machine allocates. At a position where the buffered file's
+//!   fill would end past 2^63 - 1 a read raises `OSError` (`EINVAL`) on
+//!   Linux, whose `rw_verify_area` refuses a read whose end overflows (the
+//!   `stream_tmpfs_read` cases at 2^63 - 1); this module reads nothing
+//!   there, as past the end anywhere.
 //! - a fixed-width read is `read(n)`, which raises unless it got `n` bytes,
 //!   the position moved by what it got either way.
 //! - `read_string_to_null(max)` is the base class's loop (`:136-144`): it
 //!   reads a byte at a time until a NUL, `max` bytes, or the end, and drops
 //!   the last byte it read when that byte is no NUL. So with no NUL in reach
-//!   it returns one byte fewer than it read; at the end it returns `""`; and
-//!   only past the end, where its first read is empty, it raises
-//!   (`ValueError` "Unterminated string: [b'']").
+//!   it returns one byte fewer than it read; at the end, or with `max` 0
+//!   anywhere, it returns `""`; and only past the end with `max` above 0,
+//!   where its first read is empty, it raises (`ValueError` "Unterminated
+//!   string: [b'']").
 //! - `align_stream` is the memory reader's arithmetic (`:155-156`), the
-//!   position never negative.
+//!   position never negative, assigned through the `Position` setter: so a
+//!   position it takes to 2^63 or more raises as that `seek` does
+//!   ([`ReaderKind::align`]).
 //!
 //! The memory reader's rules are the free functions of [`super`].
 
 use std::ops::Range;
 
-use super::{py_read, py_string_to_null_found, py_string_window, py_unpack_from};
+use super::{py_align, py_read, py_string_to_null_found, py_string_window, py_unpack_from};
 
 /// Which of UnityPy's readers a file is read with (module docs).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -131,9 +148,12 @@ const _: () = {
 /// The `what` of an [`crate::Error::Malformed`] a [`StreamRefusal`] becomes.
 pub const STREAM_READER: &str = "stream reader";
 
-/// The smallest `read(n)` a buffered file refuses for its bytes object
-/// (`PY_SSIZE_T_MAX - PyBytesObject_SIZE + 1`, probed: `2^63 - 34` is a
-/// `MemoryError`, `2^63 - 33` "byte string is too large").
+/// The smallest `read(n)` a buffered file refuses for its bytes object on
+/// every machine (`_PyBytes_FromSize` refuses a size above
+/// `PY_SSIZE_T_MAX - PyBytesObject_SIZE`, `PyBytesObject_SIZE` being 33:
+/// the fixture records `2^63 - 33` as "byte string is too large"). Below
+/// it the read allocates first, so its outcome depends on the machine
+/// (module docs).
 const READ_TOO_LARGE: i64 = i64::MAX - 32;
 
 impl ReaderKind {
@@ -145,6 +165,15 @@ impl ReaderKind {
             Self::Stream if pos > i128::from(i64::MAX) => Err(StreamRefusal::PositionTooLarge),
             Self::Memory | Self::Stream => Ok(pos),
         }
+    }
+
+    /// `align_stream(n)` at `pos`: `Position += (n - Position % n) % n`
+    /// ([`py_align`]), an assignment through the `Position` setter
+    /// (`streams/EndianBinaryReader.py:155-156`), so the stream reader
+    /// refuses a result its `seek` cannot take, as [`Self::seek`] does: at
+    /// 2^63 or more (from a position within `n - 1` of 2^63 - 1).
+    pub fn align(self, pos: i128, n: u32) -> Result<i128, StreamRefusal> {
+        self.seek(py_align(pos, n))
     }
 
     /// `read(size)` at `pos` over `len` bytes: the bytes' range and the new
@@ -205,7 +234,9 @@ impl ReaderKind {
     }
 
     /// `read_string_to_null(max_length)` at `pos` over `data`: the string's
-    /// range and the new position, or `None` where it raises.
+    /// range and the new position, or `None` where it raises (module docs:
+    /// the stream reader raises only past the end with `max_length` above
+    /// 0).
     #[must_use]
     pub fn string_to_null(
         self,
@@ -274,14 +305,16 @@ fn stream_string_to_null(
     nul: Option<usize>,
 ) -> Option<(Range<usize>, i128)> {
     let l = i128::try_from(len).ok()?;
+    let start = usize::try_from(pos.clamp(0, l)).ok()?;
+    if max_length == 0 || pos == l {
+        // The loop never runs (`len(ret) < max_length` or `Position !=
+        // Length` is false before its first read): `""`, nothing read,
+        // wherever the position is.
+        return Some((start..start, pos));
+    }
     if pos > l {
         // The loop's first `read(1)` is empty: "Unterminated string: [b'']".
         return None;
-    }
-    let start = usize::try_from(pos.max(0)).ok()?;
-    if pos == l || max_length == 0 {
-        // The loop never runs: `""`, nothing read.
-        return Some((start..start, pos));
     }
     if let Some(nul) = nul {
         // The NUL is read and dropped.
@@ -313,18 +346,18 @@ mod tests {
 
     #[test]
     fn the_stream_kind_refuses_what_a_buffered_file_refuses() {
-        // Probed on UnityPy 1.25.2's stream reader over a 10-byte file
-        // `fs.open` opened (the scaffold fixture's `stream_` cases pin the
-        // grid; these are the edges the fixture's sizes leave out).
+        // What CPython refuses on every machine, each edge recorded from
+        // UnityPy 1.25.2 (`tests/fixtures/scaffold/reader.json`'s `stream_`
+        // and `stream_tmpfs_` cases, `tests/fixtures/d/paths.json`'s
+        // `resource-reads`), which `tests/reader.rs` and `tests/env_paths.rs`
+        // replay in full.
         let s = ReaderKind::Stream;
         assert_eq!(s.seek(-1), Err(StreamRefusal::NegativePosition));
         assert_eq!(
             s.seek(i128::from(i64::MAX) + 1),
             Err(StreamRefusal::PositionTooLarge)
         );
-        assert_eq!(s.seek(i128::from(i64::MAX)), Ok(i128::from(i64::MAX)));
         assert_eq!(s.read(10, 3, -2), Err(StreamRefusal::NegativeRead));
-        assert_eq!(s.read(10, 3, i64::MAX - 33), Ok((3..10, 10)));
         assert_eq!(
             s.read(10, 3, i64::MAX - 32),
             Err(StreamRefusal::ReadTooLarge)
@@ -334,10 +367,36 @@ mod tests {
             s.read_u64(10, 0, 1 << 63),
             Err(StreamRefusal::ReadSizeOverflow)
         );
-        assert_eq!(s.read_u64(10, 5, 1 << 32), Ok((5..10, 10)));
+        // `align_stream` assigns `Position`, so an alignment to 2^63 is the
+        // seek's refusal; the memory reader's is plain arithmetic.
+        let near = i128::from(i64::MAX) - 2;
+        assert_eq!(s.align(near, 4), Err(StreamRefusal::PositionTooLarge));
+        assert_eq!(s.align(near - 1, 4), Ok(near - 1));
+        assert_eq!(ReaderKind::Memory.align(near, 4), Ok(near + 3));
         // Past the end a read is empty and the position stays.
         assert_eq!(s.read(10, 15, -1), Ok((10..10, 15)));
         assert_eq!(s.unpack(10, 8, 4), (None, 10));
         assert_eq!(s.unpack(10, 12, 0), (Some(10), 12));
+        // With `max_length` 0 the string loop never runs, past the end too.
+        assert_eq!(s.string_to_null(b"abc", 7, 0), Some((3..3, 7)));
+        assert_eq!(s.string_to_null(b"abc", 7, 1), None);
+    }
+
+    #[test]
+    fn the_stream_kind_reads_on_where_the_machine_decides() {
+        // Not UnityPy's outcome on every machine: unityrs's model of the
+        // edges `PARITY.md` section 19.3 admits ("a path's stream past the
+        // machine's limits"), where it reads what exists.
+        let s = ReaderKind::Stream;
+        // A seek past the file system's largest file raises `OSError`
+        // (`EINVAL`) in UnityPy; on tmpfs, whose largest is 2^63 - 1, it
+        // moves there (`reader.json`'s `stream_tmpfs_set_position`).
+        assert_eq!(s.seek(i128::from(i64::MAX)), Ok(i128::from(i64::MAX)));
+        // A read the machine cannot allocate raises `MemoryError` in UnityPy
+        // (not recorded: a buffered file allocates `n` bytes first).
+        assert_eq!(s.read(10, 3, i64::MAX - 33), Ok((3..10, 10)));
+        // A read of 4 GiB reads what exists where the machine allocates it,
+        // as the oracle's did (`paths.json`'s `resource-reads`).
+        assert_eq!(s.read_u64(10, 5, 1 << 32), Ok((5..10, 10)));
     }
 }

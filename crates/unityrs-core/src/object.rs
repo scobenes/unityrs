@@ -103,8 +103,11 @@ impl ObjectRef {
     /// end of the file (a slice of the file's buffer, no copy), by the
     /// file's reader's rules ([`SerializedFile::reader_kind`]): the stream
     /// reader (a file loaded from a path) refuses a negative `byte_start`, or
-    /// one at or above 2^63, where the memory reader slices from the end or
-    /// reads nothing.
+    /// one at or above 2^63, as UnityPy's does on every machine, where the
+    /// memory reader slices from the end or reads nothing. A `byte_start`
+    /// past the largest file the file system takes is UnityPy's `OSError`
+    /// on that machine; the stream reader takes it and reads nothing
+    /// ([`crate::stream::ReaderKind`], `PARITY.md` section 19.3).
     pub fn raw_data(&self) -> Result<Bytes, Error> {
         // UnityPy files/ObjectReader.py:278-283: `reset()`, then
         // `read_bytes(byte_size)`.
