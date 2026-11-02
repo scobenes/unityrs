@@ -644,7 +644,7 @@ fn a_watch_sees_what_no_charge_covers() {
 /// as a blob (the row table, the string buffer's NULs, an unknown common
 /// offset's decimal string) and in the old format (the row table, its stack),
 /// each then through `NodeList::from_rows` (its stack, `parents`,
-/// `child_start`, `cursor`, `children`).
+/// `child_start`, `cursor`, `children`) into its `Arc`.
 fn parses(counting: bool) {
     let mut nodes = vec![NodeSpec::new(0, "Base", "Base")];
     nodes.extend((1..=64).map(|level| NodeSpec::new(level, "int", "a")));
@@ -667,7 +667,7 @@ fn parses(counting: bool) {
         } else {
             parse_old(&mut r, &data, 9, &m, &limits)
         };
-        let list = NodeList::from_rows(rows.unwrap()).unwrap();
+        let list = Arc::new(NodeList::from_rows(rows.unwrap()).unwrap());
         let what = if blob {
             "a blob's parse"
         } else {
