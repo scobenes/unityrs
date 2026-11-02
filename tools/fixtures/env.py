@@ -32,7 +32,8 @@ lists the container again, the state recorded after each step. Each scene
 of `race_scenes` (a line with an `other` key) loads its files, then lists
 the container with its other file loaded at one point of the preload walk,
 each point in turn (`env_race.py`), recording the container, every
-object's `container` path, the dependencies' paths and the state.
+object's `container` path, the dependencies' paths and the state, and, for
+a load of more than one key, the same with only its first key made there.
 
 `resolver.json`: the names UnityPy's lookups hand on where it looks in
 `env.path` (the core's `CabResolver`): a resource read's fallback and a

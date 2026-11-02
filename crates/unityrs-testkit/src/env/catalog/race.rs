@@ -148,13 +148,14 @@ pub fn race_in_a_lookup() -> RaceScene {
 /// A load that replaces a CAB with a file whose own preload table the
 /// next container pass walks (review round 15, area d's probe): the table
 /// is `CAB-A`'s 5, in one row; the other file's `CAB-A` holds 5, 7 and an
-/// AssetBundle whose row `assets/x.prefab` spans its own 7. UnityPy's
-/// `register_cab` clears the built flag in the step after the one that
-/// sets the key (`environment.py:263-264`), so once a lookup finds the new
-/// `CAB-A`, its 7's `container` walks the new table (the core started the
-/// new container index generation after the registry's lock, so a thread
-/// that found the new `CAB-A` in between read the old generation's built
-/// index, and 7 no path).
+/// AssetBundle whose row `assets/x.prefab` names its 5 and spans its own 7,
+/// so only a walk of that table gives 7 a path. UnityPy's `register_cab`
+/// clears the built flag in the step after the one that sets the key
+/// (`environment.py:263-264`), so once a lookup finds the new `CAB-A`, its
+/// 7's `container` walks the new table (the core started the new container
+/// index generation after the registry's lock, so a thread that found the
+/// new `CAB-A` in between read the old generation's built index, and 7 no
+/// path).
 #[must_use]
 pub fn race_replaced_by_a_table_of_its_own() -> RaceScene {
     let own = serialized(
@@ -166,7 +167,7 @@ pub fn race_replaced_by_a_table_of_its_own() -> RaceScene {
                 2,
                 Bundle {
                     preload: vec![(0, 7)],
-                    rows: vec![row("assets/x.prefab", (0, 1), (0, 7))],
+                    rows: vec![row("assets/x.prefab", (0, 1), (0, 5))],
                     ..Bundle::default()
                 },
             ),
