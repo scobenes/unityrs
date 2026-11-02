@@ -110,6 +110,24 @@ class ReferencedObjects(unittest.TestCase):
         value = {"rid": 2, "type": 9, "data": {"v": 0.25}}
         self.assertEqual(enc(value, tree, [dbl]), d(("rid", 2), ("type", 9), ("data", d(("v", f64(0.25))))))
 
+    def test_the_pure_python_array_reader_types_named_over_data_by_its_ref_type_alone(self):
+        # Review round 11: [x: double, type, x: data, type: int] as an aligned array's element, read by the
+        # pure-Python array reader. The later `type` hides the one the data was resolved from, so every ref type
+        # is a candidate for `x`; the double before the data is not, since that reader never leaves data out.
+        elem = Node("ReferencedObject", "e", [Node("double", "x"), managed(), Node("ReferencedObjectData", "x"),
+                                             Node("int", "type")], meta=ALIGN)
+        v = Node("vector", "v", [Node("Array", "Array", [Node("int", "size"), elem])])
+        f = RefType("F", Node("float", "Base"))
+        self.assertEqual(enc([{"x": 1.5, "type": 9}], v, [f], boost=False), [d(("x", f32(1.5)), ("type", 9))])
+
+    def test_a_plain_child_types_its_name_alone(self):
+        # Review round 11's sweep: [v: double, v: float], no data child. The later `v` overwrote the earlier, so
+        # only the float typed it; no earlier child of the name is a candidate.
+        tree = ref(Node("double", "v"), Node("float", "v"))
+        for boost in (True, False):
+            with self.subTest(boost=boost):
+                self.assertEqual(enc({"v": 1.5}, tree, [], boost), d(("v", f32(1.5))))
+
     def test_data_left_out_leaves_its_name_to_the_child_before(self):
         # [rid: float, type, rid: data]; a class UnityPyBoost reads as length 0 leaves the data out (spec 7),
         # so `rid` holds the float child's value. Pure Python leaves it out for "" alone. Each class value is
@@ -168,6 +186,30 @@ class Registries(unittest.TestCase):
         inner = Node("Inner", "i", [Node("float", "x"), registry("x")])
         outer = Node("Outer", "Base", [Node("ManagedReferencesRegistry", "reg", [inner])])
         self.assertEqual(enc({"reg": {"i": {"x": 0.5}}}, outer), d(("reg", d(("i", d(("x", f32(0.5))))))))
+
+    def test_what_an_array_elements_members_hold_is_read_with_the_registry_check(self):
+        # Review round 11's sweep: the pure-Python array reader checks no registry among an element's own
+        # children, but reads each child with `read_value`, which checks the registries of what it reads: a
+        # class member, a pair's members (`read_value_array`'s `lambda`) and a ReferencedObject's data. Each
+        # holds a class [r: registry, x: float, x: registry] whose second registry is skipped: `x` is the float.
+        holder = Node("C", "c", [registry("r"), Node("float", "x"), registry("x")])
+        inner = d(("r", d(("version", 1))), ("x", f32(2.5)))
+        read = {"r": {"version": 1}, "x": 2.5}
+
+        def vector(elem):
+            return Node("vector", "v", [Node("Array", "Array", [Node("int", "size"), elem])])
+
+        member = Node("E", "data", [holder], meta=ALIGN)
+        self.assertEqual(enc([{"c": read}], vector(member), boost=False), [d(("c", inner))])
+        pair = Node("pair", "data", [holder, Node("int", "second")], meta=ALIGN)
+        self.assertEqual(enc([(read, 7)], vector(pair), boost=False), [{"t": "tuple", "v": [inner, 7]}])
+        r_type = RefType("R", Node("R", "Base", holder.m_Children))
+        elem = Node("ReferencedObject", "data", [Node("SInt64", "rid"), managed(), Node("ReferencedObjectData", "d")],
+                    meta=ALIGN)
+        value = [{"rid": 2, "type": {"class": "R", "ns": "NS", "asm": "Asm"}, "d": read}]
+        typ = d(("class", "R"), ("ns", "NS"), ("asm", "Asm"))
+        want = [d(("rid", 2), ("type", typ), ("d", inner))]
+        self.assertEqual(enc(value, vector(elem), [r_type], boost=False), want)
 
     def test_the_pure_python_array_reader_checks_no_registry_of_an_element(self):
         elem = Node("Thing", "data", [registry("r"), Node("float", "x"), registry("x")], meta=ALIGN)

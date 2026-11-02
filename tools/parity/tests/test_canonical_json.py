@@ -8,6 +8,7 @@ or exit 2). The loops that take over where `json` raises must give `json`'s own 
 
 import json
 import random
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -65,6 +66,22 @@ class Dumps(unittest.TestCase):
             json.dumps(v, **OPTS)
         line = C.dumps({"rec": "x", "value": v})
         self.assertEqual(line, '{"rec":"x","value":' + '{"t":"dict","v":[["x",' * 50_000 + "1" + "]]}" * 50_000 + "}")
+
+    def test_non_ascii_is_written_literally_and_every_doc_says_so(self):
+        """Review round 11: the plan said the canonical JSON escapes as `ensure_ascii` true does, where the spec
+        and both encoders write non-ASCII characters as literal UTF-8. Every doc, comment or tool in the
+        repository that names the `ensure_ascii` setting must name the one `dumps` uses."""
+        self.assertEqual(C.dumps(["café", "\u2028", "😀"]), '["café","\u2028","😀"]')
+        root = Path(__file__).resolve().parents[3]
+        files = [root / "PARITY.md", root / "README.md"]
+        for top in ("docs", "crates", "tools", "scripts"):
+            files += [p for p in sorted((root / top).rglob("*")) if p.suffix in (".md", ".rs", ".py", ".sh")]
+        named = {}
+        for path in files:
+            for m in re.finditer(r"ensure_ascii[\"']?\s*[=:]\s*(\w+)", path.read_text(errors="replace")):
+                named.setdefault(m.group(1), []).append(str(path.relative_to(root)))
+        self.assertIn("False", named)
+        self.assertEqual(set(named), {"False"}, named)
 
     def test_an_integer_of_any_width_is_written_and_the_limit_restored(self):
         self.assertEqual(sys.get_int_max_str_digits(), 4300)

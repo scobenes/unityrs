@@ -438,7 +438,13 @@ def l2_verdict(o, r):
     "f32_snan_quieted" is a difference with a name: UnityPy quiets a
     signalling NaN, and a reader that keeps its bits (rabex did; unityrs's
     `FloatMode::Lossless`, which the dump never uses) differs only there.
+    "reference_encode": the oracle's encoder refused the value UnityPy read,
+    so the oracle's side vouches for nothing and no answer matches it, the
+    same `encode` included (CANONICAL_DUMP.md 4.3; compare.py's
+    `reference_encode`).
     """
+    if o["kind"] == "encode":
+        return "reference_encode"
     if (o["kind"], o["bytes_read"], o["value"]) == (r["kind"], r["bytes_read"], r["value"]):
         return "match"
     if (

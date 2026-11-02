@@ -36,6 +36,20 @@ pub trait Sink: fmt::Write + Send + Sync {
         let _ = bytes;
         true
     }
+    /// The meter that memory a writer holds beside the text while it writes
+    /// (the value encoder's stack of open values) is charged to: a
+    /// [`Text`]'s. A `String` has none, and that memory is charged to an
+    /// unlimited meter, so only the allocator refuses it.
+    fn meter(&self) -> Option<&Arc<Meter>> {
+        None
+    }
+    /// Stops the text on `e`, a refusal of memory a writer charged to
+    /// [`Sink::meter`], as a refused growth stops it: `None` once the sink
+    /// holds the refusal, which [`Text::finish`] returns; `Some(e)` back from
+    /// a sink that holds none (a `String`), for the writer to report.
+    fn stop(&mut self, e: ChargeError) -> Option<ChargeError> {
+        Some(e)
+    }
 }
 
 const _: () = crate::send_sync::<dyn Sink>();
@@ -168,6 +182,16 @@ impl Text {
 }
 
 impl Sink for Text {
+    fn meter(&self) -> Option<&Arc<Meter>> {
+        Some(self.charge.meter())
+    }
+
+    /// Holds `e` as a refused growth is held, unless an earlier refusal is.
+    fn stop(&mut self, e: ChargeError) -> Option<ChargeError> {
+        self.refused.get_or_insert(e);
+        None
+    }
+
     fn push_str(&mut self, s: &str) {
         if self.reserve(s.len()) {
             self.buf.push_str(s);
@@ -252,6 +276,36 @@ mod tests {
         t.push_str(&"x".repeat(2000));
         assert!(matches!(t.finish(), Err(ChargeError::Budget(_))));
         assert_eq!(budget.used(), 0);
+    }
+
+    /// A refusal of memory a writer charged to the text's meter beside it
+    /// (the value encoder's stack) stops the text as a refused growth does,
+    /// the first refusal kept; a `String` holds none and gives it back.
+    #[test]
+    fn a_stop_is_held_as_a_refused_growth() {
+        let meter = Meter::new(1 << 20, Arc::new(Unbounded), Reservation::Input);
+        let refusal = |requested| {
+            ChargeError::Budget(BudgetExceeded {
+                requested,
+                what: Reservation::Input,
+            })
+        };
+        let mut t = Text::on(&meter);
+        assert!(Arc::ptr_eq(t.meter().unwrap(), &meter));
+        t.push('a');
+        assert!(t.stop(refusal(1)).is_none());
+        assert!(t.stop(refusal(2)).is_none());
+        t.push_str("b");
+        assert!(!t.count_work(0));
+        assert_eq!(t.as_str(), "a");
+        assert!(matches!(
+            t.finish(),
+            Err(ChargeError::Budget(BudgetExceeded { requested: 1, .. }))
+        ));
+        assert_eq!(meter.used(), 0);
+        let mut s = String::new();
+        assert!(s.meter().is_none());
+        assert!(matches!(s.stop(refusal(3)), Some(ChargeError::Budget(_))));
     }
 
     /// A summary's work is counted as the meter's, before it is done, and

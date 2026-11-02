@@ -33,6 +33,21 @@
 //!
 //! Owner: package E.
 
+// No panics on untrusted input (plan section 3.15): the dump reads files,
+// index JSON and value-case files. Tests may opt out.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unreachable,
+        clippy::indexing_slicing
+    )
+)]
+
 pub mod encode;
 pub mod input;
 pub mod json;

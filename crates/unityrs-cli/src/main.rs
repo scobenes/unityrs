@@ -18,6 +18,21 @@
 //! `values` runs the spike's value-case protocol
 //! ([`unityrs_dump::values`]), which `tools/parity/value_cases.py` drives.
 
+// No panics on untrusted input (plan section 3.15): the CLI parses its
+// arguments, which a caller chooses. Tests may opt out.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unreachable,
+        clippy::indexing_slicing
+    )
+)]
+
 mod args;
 
 use std::ffi::OsStr;
@@ -143,9 +158,10 @@ fn main() -> ExitCode {
         .skip(1)
         .map(OsStringExt::into_vec)
         .collect();
+    let rest = argv.get(1..).unwrap_or_default();
     match argv.first().map(Vec::as_slice) {
-        Some(b"dump") => dump(&argv[1..]),
-        Some(b"values") => match &argv[1..] {
+        Some(b"dump") => dump(rest),
+        Some(b"values") => match rest {
             [h] if h == b"-h" || h == b"--help" => {
                 println!("{VALUES_USAGE}");
                 ExitCode::SUCCESS

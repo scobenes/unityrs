@@ -13,6 +13,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
@@ -45,6 +46,12 @@ class ValueCasesTests(unittest.TestCase):
         self.assertEqual(v(side("check_read", 4), side("check_read", 1)), "differs")
         self.assertEqual(v(side(None, None, "7fc00001"), side(None, None, "7f800001")), "f32_snan_quieted")
         self.assertEqual(v(side(None, None, "7fc00001"), side("check_read", 1, "7f800001")), "differs")
+        # Review round 11: an oracle whose encoder refused vouches for nothing, so the same refusal on both sides
+        # is no match (CANONICAL_DUMP.md 4.3), nor is any other answer.
+        refused = side("encode", None, None)
+        self.assertEqual(v(refused, side("encode", None, None)), "reference_encode")
+        self.assertEqual(v(refused, side(None, None)), "reference_encode")
+        self.assertEqual(v(side(None, None), refused), "differs")
 
     def test_empty_struct_align_last_reads_four_bytes_in_unitypy(self):
         case = next(c for c in value_cases.CASES if c["name"] == "empty_struct_align_last")
@@ -128,6 +135,8 @@ for c in json.load(open(sys.argv[2])):
         line.update(kind="other", value=None)
     if MODE == "missing" and c["name"] == value_cases.CASES[-1]["name"]:
         continue
+    if MODE == "encode" and c["name"] == value_cases.CASES[0]["name"]:
+        line.update(kind="encode", value=None, resave="skipped", resave_hex=None)
     # As serde_json writes it: U+2028, U+2029 and U+0085 unescaped.
     out.write(json.dumps(line, ensure_ascii=False).encode() + b"\\n")
 """
@@ -138,13 +147,14 @@ class GateStatusTests(unittest.TestCase):
     def setUp(self):
         self.tmp = scratch.for_case(self, "unityrs-g2-")
 
-    def run_with(self, mode):
+    def run_with(self, mode, oracle=None):
         fake = self.tmp / f"fake-{mode}"
         fake.write_text(FAKE.format(python=sys.executable, parity=str(HERE), mode=mode))
         os.chmod(fake, 0o755)
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            status = value_cases.main([str(fake)])
+            with mock.patch.object(value_cases, "oracle", oracle or value_cases.oracle):
+                status = value_cases.main([str(fake)])
         return status, out.getvalue(), err.getvalue()
 
     def test_every_case_matching_passes(self):
@@ -157,6 +167,22 @@ class GateStatusTests(unittest.TestCase):
         status, _, err = self.run_with("wrong")
         self.assertEqual(status, 1)
         self.assertIn(value_cases.CASES[0]["name"], err)
+
+    def test_a_case_both_sides_refuse_to_encode_fails(self):
+        """Review round 11: the oracle's `encode` and the same refusal from unityrs agreed, no re-save on either
+        side was `not_resaved`, and G2 passed a case whose value neither side could write."""
+        real, first = value_cases.oracle, value_cases.CASES[0]["name"]
+
+        def oracle(case):
+            if case["name"] != first:
+                return real(case)
+            out = {"kind": "encode", "bytes_read": None, "value": None, "resave": "skipped", "resave_hex": None}
+            return {**out, "note": "the oracle's encoder refused it"}
+
+        status, out, err = self.run_with("encode", oracle)
+        self.assertEqual(status, 1)
+        self.assertIn(f"G2 fails on 1 case(s): {first}", err)
+        self.assertEqual(json.loads(out.splitlines()[-1])["l2"]["reference_encode"], 1)
 
     def test_a_case_left_unanswered_fails(self):
         status, _, err = self.run_with("missing")
@@ -180,6 +206,7 @@ class GateStatusTests(unittest.TestCase):
         self.assertEqual(f([{"case": "a", "l2": "f32_snan_quieted", "l3": "match"}]), ["a"])
         self.assertEqual(f([{"case": "a", "l2": "match", "l3": "differs"}]), ["a"])
         self.assertEqual(f([{"case": "a", "l2": "differs", "l3": "one_side"}]), ["a"])
+        self.assertEqual(f([{"case": "a", "l2": "reference_encode", "l3": "not_resaved"}]), ["a"])
 
 
 if __name__ == "__main__":
