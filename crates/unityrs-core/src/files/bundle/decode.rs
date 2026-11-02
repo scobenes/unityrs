@@ -193,7 +193,9 @@ fn decrypted(
     let mut copy = DecodeBuf::new(meter, 0, u64::MAX, LimitKind::InputMemory)?;
     let block = copy.grow_zeroed(input.len())?;
     block.copy_from_slice(&input);
-    d.decrypt(block, index)?;
+    // A pool refusal the decryptor returns is counted for the
+    // Environment's retry (`env::registry::from_callers`).
+    crate::env::registry::from_callers(d.decrypt(block, index))?;
     Ok(copy.into_bytes()?)
 }
 

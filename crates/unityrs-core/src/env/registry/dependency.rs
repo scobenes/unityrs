@@ -207,20 +207,39 @@ pub(crate) fn open_source(
     parse_file_with_reader(name.clone(), data, ty, None, meter, ctx, reader)
 }
 
-/// `fetch`'s bytes. A refusal of the dependency pool it returns that no
-/// work of the core's counted while it ran (one the caller's code made
-/// itself: a fetcher that reserves its bytes from the pool) is counted here
-/// in [`pool_refusals`], as every refusal the core makes is: [`with_room`]
-/// retries it as the core's own, and tells it from one a retry already met
-/// by that count (review round 9: it moved nothing, so a mark an earlier
-/// refusal left matched it, and the retry was skipped). One the core
-/// counted during the fetch (a fetcher that reads through an Environment)
-/// is not counted twice.
+/// `fetch`'s bytes, a refusal of the dependency pool it returns counted
+/// ([`from_callers`]).
 fn fetched(fetch: &dyn Fetch) -> Result<bytes::Bytes, Error> {
-    let before = pool_refusals();
-    fetch.fetch().inspect_err(|e| {
-        if pool_refused(e) && pool_refusals() == before {
-            // `refusal` counts the refusal it builds; the fetcher's own is
+    from_callers(fetch.fetch())
+}
+
+/// What the caller's code returned to the core (a [`Fetch`]'s bytes, a
+/// [`crate::codec::BlockCodec`]'s decode, a
+/// [`crate::codec::BlockDecryptor`]'s decryption), a refusal of the
+/// dependency pool in it ([`pool_refused`]) counted in [`pool_refusals`] as
+/// it enters the core, as every refusal the core makes is counted where it
+/// is made. [`with_room`] tells a refusal a retry already met from a later
+/// one by that count, so a refusal the caller's code made itself (a fetcher
+/// or a codec that reserves its bytes from the pool), had it moved no
+/// count, would match a mark an earlier refusal left and go untried
+/// (review round 9, for a fetcher's).
+///
+/// It is counted whatever was counted while the code ran (review round 10:
+/// a fetcher's was counted only when nothing had been, so a fetcher that
+/// read through the Environment, let go of the refusal its read met twice,
+/// then refused the pool itself, returned a refusal that matched its
+/// read's mark, and was not retried; and a codec's or a decryptor's was
+/// never counted). The returned value cannot say where it came from (a
+/// [`crate::budget::BudgetExceeded`] is the caller's to build), so a
+/// refusal the code passes on from a call of its own into the Environment,
+/// which that call's retry already met, is counted again too: the
+/// [`with_room`] around the code then retries it once more, one more run of
+/// the code, the price of never skipping the retry the code's own refusal
+/// is owed.
+pub(crate) fn from_callers<T>(returned: Result<T, Error>) -> Result<T, Error> {
+    returned.inspect_err(|e| {
+        if pool_refused(e) {
+            // `refusal` counts the refusal it builds; the caller's own is
             // the one returned.
             let _counted = refusal(0, Reservation::Dependency);
         }
@@ -299,8 +318,9 @@ impl Drop for Running {
 /// count, so a later one is retried (review round 8: `resource` and
 /// `deref` had no retry, and calls that nest, a lookup inside a
 /// dereference inside a container pass, retried one refusal at every
-/// level). Every refusal moves the count, a fetcher's own included
-/// ([`fetched`]), and the mark is cleared when the outermost `with_room`
+/// level). Every refusal moves the count, one the caller's code returns (a
+/// fetcher's, a codec's, a decryptor's) included, as it returns
+/// ([`from_callers`]), and the mark is cleared when the outermost `with_room`
 /// returns ([`Running`]), so whether a refusal is retried depends on the
 /// current call alone, never on what the thread ran before it (review
 /// round 9). `f` must be work that can run twice: a lookup, a read, or a

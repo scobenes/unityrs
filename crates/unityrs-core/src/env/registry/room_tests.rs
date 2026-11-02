@@ -8,13 +8,15 @@
 
 use std::cell::Cell;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use bytes::Bytes;
 
 use super::{DepCache, open_source, with_room};
-use crate::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
+use crate::budget::{BudgetExceeded, DecodeBuf, MemoryBudget, Permit, Reservation};
+use crate::codec::{BlockCodec, Codec, Decoded, Stored, decode_block};
 use crate::env::{Fetch, Source};
-use crate::error::Error;
+use crate::error::{Error, LimitKind};
 use crate::limits::{Limits, Meter, pool_refusals};
 use crate::options::FileContext;
 use crate::raw::RawStr;
@@ -146,7 +148,7 @@ fn only_the_pools_refusal_is_retried() {
 }
 
 /// A refusal of the pool that moves no count: one the caller's code made
-/// itself, before [`super::dependency`]'s `fetched` counts it.
+/// itself, before [`super::from_callers`] counts it.
 fn uncounted() -> Error {
     Error::Budget(BudgetExceeded {
         requested: 8,
@@ -215,18 +217,22 @@ impl Fetch for RefusingFetch {
     }
 }
 
-/// A fetcher's own refusal of the pool is counted as one the core made,
-/// once, and one the core made and counted while the fetcher ran is not
-/// counted again (review round 9: a fetcher's refusal moved no count).
+/// A fetcher's refusal of the pool is counted as it returns, whatever was
+/// counted while the fetcher ran: its own once, and one the core made (and
+/// counted where it made it) while the fetcher ran once more, since the
+/// value returned cannot say which it is (`from_callers`; review round 9: a
+/// fetcher's own refusal moved no count; review round 10: one counted only
+/// when nothing had been was missed after a refusal the fetcher let go).
 #[test]
-fn a_fetchers_refusal_of_the_pool_is_counted_once() {
+fn a_fetchers_refusal_of_the_pool_is_counted_as_it_returns() {
     let ctx = Arc::new(FileContext::unitypy());
     let name = RawStr::from("f.bundle");
-    for (fetch, what) in [
-        (RefusingFetch(None), "the fetcher's own"),
+    for (fetch, what, counted) in [
+        (RefusingFetch(None), "the fetcher's own", 1),
         (
             RefusingFetch(Some(refusing())),
             "the core's, during the fetch",
+            2,
         ),
     ] {
         let source = Source::Fetch {
@@ -236,6 +242,95 @@ fn a_fetchers_refusal_of_the_pool_is_counted_once() {
         let at = pool_refusals();
         let r = open_source(&name, &source, &refusing(), &ctx);
         assert!(matches!(r, Err(Error::Budget(_))), "{what}: {r:?}");
-        assert_eq!(pool_refusals() - at, 1, "{what}");
+        assert_eq!(pool_refusals() - at, counted, "{what}");
     }
+}
+
+/// A fetcher that, on its first run, reads through the Environment (a
+/// `with_room` of `cache`, whose retry meets the pool's refusal twice),
+/// lets that refusal go and refuses the pool itself, and on its second run
+/// serves no bytes (review round 10's probes).
+#[derive(Debug)]
+struct LetGoFetch {
+    cache: Arc<DepCache>,
+    meter: Arc<Meter>,
+    runs: AtomicU32,
+}
+
+impl Fetch for LetGoFetch {
+    fn fetch(&self) -> Result<Bytes, Error> {
+        if self.runs.fetch_add(1, Ordering::AcqRel) > 0 {
+            return Ok(Bytes::new());
+        }
+        let read = with_room(Some(&self.cache), None, || refused(&self.meter));
+        assert!(read.is_err());
+        Err(uncounted())
+    }
+}
+
+/// The refusal a fetcher makes itself after it let go of one its own read
+/// met twice is retried by the `with_room` around the fetch: the read's
+/// mark does not hold it (review round 10: it was counted only when nothing
+/// had been counted during the fetch, so it matched the mark and was passed
+/// on untried).
+#[test]
+fn a_fetchers_own_refusal_after_one_it_let_go_is_retried() {
+    let cache = Arc::new(cache());
+    let fetch = Arc::new(LetGoFetch {
+        cache: cache.clone(),
+        meter: refusing(),
+        runs: AtomicU32::new(0),
+    });
+    let name = RawStr::from("f.bundle");
+    let source = Source::Fetch {
+        name: name.clone(),
+        fetch: fetch.clone(),
+    };
+    let ctx = Arc::new(FileContext::unitypy());
+    let r = with_room(Some(&cache), None, || {
+        open_source(&name, &source, &Meter::unlimited(), &ctx).map(drop)
+    });
+    assert!(r.is_ok(), "{r:?}");
+    assert_eq!(fetch.runs.load(Ordering::Acquire), 2, "the fetcher's runs");
+}
+
+/// A stored codec that refuses the pool itself on its first run.
+struct RefusesOnce(AtomicU32);
+
+impl BlockCodec for RefusesOnce {
+    fn decode(
+        &self,
+        input: &Bytes,
+        uncompressed: u32,
+        out: &mut DecodeBuf,
+    ) -> Result<Decoded, Error> {
+        if self.0.fetch_add(1, Ordering::AcqRel) == 0 {
+            return Err(uncounted());
+        }
+        Stored.decode(input, uncompressed, out)
+    }
+}
+
+/// A codec's own refusal of the pool, after a refusal an inner `with_room`
+/// met twice and let go in the same call, is retried: it is counted as it
+/// returns (`from_callers`), so the inner one's mark does not hold it
+/// (review round 10: a codec's refusal was never counted, so it matched
+/// the mark and was passed on untried; a decryptor's likewise, which
+/// `tests/env/callers.rs` pins through a load).
+#[test]
+fn a_codecs_own_refusal_after_one_let_go_is_retried() {
+    let (cache, meter) = (cache(), refusing());
+    let codec = RefusesOnce(AtomicU32::new(0));
+    let input = Bytes::from_static(b"stored");
+    let runs = Cell::new(0);
+    let r = with_room(Some(&cache), None, || {
+        runs.set(runs.get() + 1);
+        let let_go = with_room(Some(&cache), None, || refused(&meter));
+        assert!(let_go.is_err());
+        let unlimited = Meter::unlimited();
+        let mut out = DecodeBuf::new(&unlimited, 0, u64::MAX, LimitKind::InputMemory)?;
+        decode_block(Codec::Other(5), &codec, &input, 6, &mut out, u64::MAX).map(drop)
+    });
+    assert!(r.is_ok(), "{r:?}");
+    assert_eq!(runs.get(), 2, "the call's runs");
 }

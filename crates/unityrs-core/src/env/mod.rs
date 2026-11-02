@@ -203,8 +203,13 @@ pub trait Fetch: Send + Sync + fmt::Debug {
     /// pool may refuse with the pool's refusal ([`Error::Budget`] naming
     /// [`crate::budget::Reservation::Dependency`]): the Environment then
     /// evicts the other dependencies and fetches once more, as for a
-    /// refusal of its own (plan section 3.13). A caller's [`Environment::load`]
-    /// is no dependency's, and returns such a refusal as it is.
+    /// refusal of its own (plan section 3.13), whatever the fetcher did
+    /// before it returned the refusal: a refusal it passes on from a call of
+    /// its own into the Environment, which that call already retried, is
+    /// fetched once more too, since the core cannot tell it from the
+    /// fetcher's own (`registry::from_callers`). A caller's
+    /// [`Environment::load`] is no dependency's, and returns such a refusal
+    /// as it is.
     fn fetch(&self) -> Result<Bytes, Error>;
     /// Its size, when known without fetching. A size above
     /// [`Limits::max_input_bytes`] refuses the source before it is fetched

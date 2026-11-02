@@ -6,6 +6,7 @@
 // Test code: a failed lookup is a failed test.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod callers;
 mod calls;
 mod container;
 mod deref;

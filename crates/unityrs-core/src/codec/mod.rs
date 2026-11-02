@@ -186,7 +186,9 @@ pub fn decode_block(
 ) -> Result<Option<Bytes>, Error> {
     out.begin_block(cap, LimitKind::BlockOutput);
     let epoch = out.segment_epoch();
-    let decoded = codec.decode(input, uncompressed, out)?;
+    // A pool refusal the codec returns is counted for the Environment's
+    // retry (`env::registry::from_callers`).
+    let decoded = crate::env::registry::from_callers(codec.decode(input, uncompressed, out))?;
     let bad = |detail: String| Error::Decompress {
         codec: which,
         detail: detail.into(),
