@@ -6,8 +6,11 @@ A value UnityPyBoost read is written back as UnityPyBoost reads, and one the
 pure-Python reader read as that reader reads (`CANONICAL_DUMP.md` section 7):
 a type name holding a NUL is a class to the pure-Python reader and the name
 before the NUL to UnityPyBoost; an empty string does not align itself
-(`read_aligned_string`, `streams/EndianBinaryReader.py:266-273`, aligns only
-after a non-empty one), so one whose node's flag is not read either (an
+(`read_aligned_string` aligns only after a non-empty one: the base reader's,
+`streams/EndianBinaryReader.py:146-153`, which `FUNCTION_READ_MAP` holds for a
+`pair` run's child, and the memoryview reader's override, `:266-273`, which an
+array's elements read from bytes run), so one whose node's flag is not read
+either (an
 element of a flagged run, a flagged `pair` run's child) is not aligned at all;
 the elements of a flagged array are read by `read_value_array`
 (`helpers/TypeTreeHelper.py:266-361`), which aligns once after the run for

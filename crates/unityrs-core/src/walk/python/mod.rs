@@ -12,11 +12,14 @@
 //! only when its length is above 0 (`read_bytes()` inside the loop; an empty
 //! one reads as `[]`); a negative or out-of-range string
 //! length reads as `""`, and a string of length 0 or read as `""` that way
-//! is not aligned after (`streams/EndianBinaryReader.py:266-273` returns
-//! before `align_stream`); in an array whose aligned element is a vector, a
-//! negative inner length reads as `[]`, unless the inner element is an
-//! aligned primitive, whose `struct` format rejects it (`struct.error`,
-//! `other`); arrays of aligned classes align once and skip the
+//! is not aligned after (`read_aligned_string` returns before
+//! `align_stream`: the base reader's, `streams/EndianBinaryReader.py:146-153`,
+//! which `FUNCTION_READ_MAP` holds for a `string` node and a `pair` run's
+//! child, and for an array's elements read from bytes the memoryview
+//! reader's override, `:266-273`, the same body); in an array whose aligned
+//! element is a vector, a negative inner length reads as `[]`, unless the
+//! inner element is an aligned primitive, whose `struct` format rejects it
+//! (`struct.error`, `other`); arrays of aligned classes align once and skip the
 //! registry check; `TypelessData` length -1 reads to the end of the file and
 //! other negative lengths follow Python slice semantics (so `bytes_read` can
 //! be negative), on the memory reader: a file loaded from a path is read by
@@ -326,8 +329,11 @@ impl Reader<'_, '_> {
         })
     }
 
-    /// `read_aligned_string` (`EndianBinaryReader.py:266-273`): a length of
-    /// 0, or one that is negative or past the end, is `""` and does not align.
+    /// `read_aligned_string` (`EndianBinaryReader.py:146-153`, the base
+    /// reader's, which `FUNCTION_READ_MAP` holds, and for an array's elements
+    /// read from bytes the memoryview reader's override, `:266-273`, the same
+    /// body): a length of 0, or one that is negative or past the end, is `""`
+    /// and does not align.
     fn string(&mut self) -> Result<Value, ReadError> {
         let len = self.read_int()?;
         let room = i128::try_from(self.bytes.len())

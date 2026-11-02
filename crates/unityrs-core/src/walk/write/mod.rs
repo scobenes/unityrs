@@ -326,7 +326,10 @@ impl<'a> Writer<'a, '_> {
     /// `write_aligned_string` (`EndianBinaryWriter.py:88-92`), W3: its length,
     /// its bytes, then aligned. Under the pure-Python mirror an empty string
     /// is not aligned: `read_aligned_string` returns `""` before its
-    /// `align_stream` (`EndianBinaryReader.py:266-273`).
+    /// `align_stream` (the base reader's, `EndianBinaryReader.py:146-153`,
+    /// which `FUNCTION_READ_MAP` holds, and the memoryview reader's override,
+    /// `:266-273`, which an array's elements read from bytes run: the same
+    /// body).
     fn string(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         let s = Self::as_str(o).ok_or_else(|| Self::mismatch(tree, node, "str"))?;
         self.write_int(s.len(), tree, node)?;
