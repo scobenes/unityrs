@@ -310,10 +310,18 @@ pub struct InputDump {
     /// which `unitypy_dump.py` exits 3 on when every input has one
     /// ([`run::Summary::every_input_crashed`]).
     pub crashes: u64,
+    /// The work the input's meter counted
+    /// ([`unityrs_core::limits::Meter::decoded`]: every byte decoded,
+    /// inflated or hashed for it, against its `max_decode_work`), set by the
+    /// run once the input's records are made ([`run::write_dump`]; 0 until
+    /// then) and reported per input by `--stats`. It shows what an option
+    /// made the dump do that the records do not show: G1c's pre-pass
+    /// ([`DumpOptions::lazy_reverse`]) adds work and changes no record.
+    pub decode_work: u64,
 }
 
 /// Two dumps of an input are equal when their records are: the charges
-/// they hold are not compared.
+/// they hold and the work counted for them are not compared.
 impl PartialEq for InputDump {
     fn eq(&self, other: &Self) -> bool {
         (
