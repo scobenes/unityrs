@@ -86,6 +86,56 @@ class EncodeError(ValueError):
 # ---------------------------------------------------------------- JSON layer
 
 
+# A line longer than this is parsed with its equal small JSON objects shared (`sharing_decoder`). A value of
+# millions of equal elements is a few bytes of input (an array of a class with no fields, read at any count
+# the meter holds: docs/plans/core.md section 9, Q15 (c)), and parsed whole each element is objects of its
+# own: `json.loads` of a list of 2^20 `{"t":"dict","v":[]}` grew the process's peak resident set by 310 bytes
+# an element (Python 3.11), so one G3b mutant's two records, 33,554,432 such elements each, needed about 21 GB.
+LONG_LINE = 64 << 20
+# The most JSON values one shared object may hold, itself included: past it, it is parsed as it comes.
+SHARED_NODES = 64
+
+
+def _frozen(v, budget):
+    """A key for the parsed JSON value `v`, equal only for values that serialise alike, or None past `budget`."""
+    budget[0] -= 1
+    if budget[0] < 0:
+        return None
+    t = type(v)
+    if t is dict:
+        # Already the shared object when it could be one (the hook runs on the innermost objects first),
+        # and kept alive by the object that holds it.
+        return (dict, id(v))
+    if t is list:
+        items = []
+        for x in v:
+            k = _frozen(x, budget)
+            if k is None:
+                return None
+            items.append(k)
+        return (list, tuple(items))
+    if t is float:
+        return (t, v.hex())  # 0.0 and -0.0 are equal in Python
+    return (t, v)  # the type too: 1, 1.0 and true are equal in Python
+
+
+def sharing_decoder(parse_float, parse_constant):
+    """A JSON decoder whose equal small objects (at most `SHARED_NODES` values each) are one Python object."""
+    shared = {}
+
+    def hook(pairs):
+        budget = [SHARED_NODES]
+        key = []
+        for k, v in pairs:
+            f = _frozen(v, budget)
+            if f is None:
+                return dict(pairs)
+            key.append((k, f))
+        return shared.setdefault(tuple(key), dict(pairs))
+
+    return json.JSONDecoder(parse_float=parse_float, parse_constant=parse_constant, object_pairs_hook=hook)
+
+
 def dumps(obj) -> str:
     """Serialise one record exactly as the spec's JSON rules require.
 

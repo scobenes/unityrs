@@ -101,12 +101,13 @@ def _float(text):
 
 _DECODER = json.JSONDecoder(parse_float=_float, parse_constant=_no_constant)
 
-
 def parse(line: bytes):
-    """A line's record, and whether it held a JSON float. Unreadable lines raise FormatError."""
+    """A line's record, and whether it held a JSON float. Unreadable lines raise FormatError. A line longer than
+    `C.LONG_LINE` shares its equal small objects (`C.sharing_decoder`): no reader of a record may change one."""
     _Floats.seen = False
+    decoder = _DECODER if len(line) <= C.LONG_LINE else C.sharing_decoder(_float, _no_constant)
     try:
-        rec = _DECODER.decode(line.decode("utf-8"))
+        rec = decoder.decode(line.decode("utf-8"))
     except ValueError as e:  # JSONDecodeError, UnicodeDecodeError, NaN/Infinity
         raise C.FormatError(f"not a JSON line: {e}") from e
     if not isinstance(rec, dict) or "rec" not in rec:

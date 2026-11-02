@@ -1,8 +1,10 @@
 """compare.py on hand-built dumps: how values compare (types, kinds, lengths, floats, NaNs and nulls)."""
 
+import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -196,6 +198,39 @@ class CompareTests(CompareCase):
             },
         )
         self.assertEqual(d["by_level"]["L2"]["records"], 2)
+
+
+class LongLines(CompareCase):
+    """A line longer than `C.LONG_LINE` is parsed with its equal small objects shared: a G3b mutant's two
+    records of 33,554,432 equal elements each (an array of a class with no fields, read since Q15 (c)) needed
+    about 21 GB parsed whole. The record it gives serialises as the plain parse's, and compares alike."""
+
+    def test_a_long_lines_equal_objects_are_one_object(self):
+        elems = [{"t": "dict", "v": []}] * 3
+        # Equal in Python, apart in JSON: none may stand for another.
+        apart = [{"a": 1}, {"a": True}, {"a": 1.0}, {"a": 0.0}, {"a": -0.0}, {"a": [1]}, {"a": [True]}, {"a": None}]
+        line = (json.dumps({"rec": "object", "v": elems + apart + elems}) + "\n").encode()
+        plain, _ = compare.parse(line)
+        with mock.patch.object(C, "LONG_LINE", 0):
+            rec, floats = compare.parse(line)
+        self.assertTrue(floats)
+        self.assertEqual(C.dumps(rec), C.dumps(plain))
+        v = rec["v"]
+        self.assertTrue(all(x is v[0] for x in v[:3] + v[-3:]), "equal objects are one")
+        self.assertEqual(len({id(x) for x in v[3:-3]}), len(apart), "objects that differ in JSON stay apart")
+        self.assertIsNot(plain["v"][0], plain["v"][1], "a short line parses as it comes")
+
+    def test_a_long_line_compares_as_it_would_parsed_whole(self):
+        a, b = base_records(), base_records()
+        for recs in (a, b):
+            recs[1]["l2"]["value"]["v"].append(["empties", [{"t": "dict", "v": []}] * 50])
+        b[1]["l2"]["value"]["v"][-1][1][7] = {"t": "dict", "v": [["x", 1]]}
+        whole, d_whole = self.run_compare(self.write("a.jsonl", a), self.write("b.jsonl", b))
+        with mock.patch.object(C, "LONG_LINE", 0):
+            shared, d_shared = self.run_compare(self.write("a2.jsonl", a), self.write("b2.jsonl", b))
+        self.assertTrue(whole.has_diffs())
+        self.assertEqual(self.paths(d_shared), self.paths(d_whole))
+        self.assertEqual(shared.counts, whole.counts)
 
 
 if __name__ == "__main__":

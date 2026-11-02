@@ -136,13 +136,18 @@ RERUN_RSS = 1 << 30
 
 
 def stripped(rec):
-    """compare.strip_notes without recursion, so any depth the JSON parser takes: (rec without notes, the notes)."""
+    """compare.strip_notes without recursion, so any depth the JSON parser takes: (rec without notes, the notes).
+    An object or a list that a long line's parse shares (compare.parse) is copied once, and its copy shared."""
     notes, root = [], [None]
+    copies = {}
     stack = [(rec, root, 0)]
     while stack:
         v, parent, at = stack.pop()
+        if type(v) in (dict, list) and id(v) in copies:
+            parent[at] = copies[id(v)]
+            continue
         if isinstance(v, dict):
-            out = {}
+            out = copies[id(v)] = {}
             for k, x in v.items():
                 if k == "note":
                     if isinstance(x, str):
@@ -152,7 +157,7 @@ def stripped(rec):
                 stack.append((x, out, k))
             parent[at] = out
         elif isinstance(v, list):
-            out = [None] * len(v)
+            out = copies[id(v)] = [None] * len(v)
             stack.extend((x, out, i) for i, x in enumerate(v))
             parent[at] = out
         else:
@@ -227,7 +232,7 @@ def inputs_of(lines, keep=None):
     """{input: Input} for the file and object records among `lines`, keyed by the input's name as written."""
     inputs = {}
     for line in lines:
-        rec = json.loads(line)
+        rec = compare.parse(line)[0]
         if rec.get("rec") not in ("file", "object"):
             continue
         key = json.dumps(rec["file"][0])

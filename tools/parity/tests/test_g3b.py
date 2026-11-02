@@ -22,6 +22,7 @@ import struct
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
@@ -244,6 +245,45 @@ class InputCoverageTests(unittest.TestCase):
 
 
 @unittest.skipIf(unitypy_dump is None, "needs UnityPy (the oracle image)")
+class SharedObjectTests(unittest.TestCase):
+    """A long line's record shares its equal small objects (compare.parse, `C.LONG_LINE`); its digest copies
+    each shared object once and is the digest of the record parsed whole (Q15 (c): a G3b mutant's records of
+    33,554,432 equal elements each needed about 21 GB parsed whole)."""
+
+    def test_a_shared_record_digests_as_parsed_whole_and_its_copy_shares(self):
+        rec = {
+            "rec": "object",
+            "l2": {"error": {"kind": "check_read", "bytes_read": 8, "note": "limit ZeroSizeElements: 3 > 2"}},
+            "value": [{"t": "dict", "v": [["note", 1]]}] * 4,
+        }
+        line = (C.dumps(rec) + "\n").encode()
+        with mock.patch.object(C, "LONG_LINE", 0):
+            shared = g3b.compare.parse(line)[0]
+        self.assertIs(shared["value"][0], shared["value"][3])
+        self.assertEqual(g3b.digest(shared), g3b.digest(json.loads(line)))
+        self.assertEqual(g3b.digest(shared)[1], [("ZeroSizeElements", 3, 2)])
+        body, _ = g3b.stripped(shared)
+        self.assertIs(body["value"][0], body["value"][3], "a shared object is copied once")
+        self.assertNotIn("note", body["l2"]["error"])
+
+    def test_a_dumps_lines_are_read_by_compares_parse(self):
+        rec = {"rec": "object", "file": ["in"], "path_id": 1, "value": [{"t": "dict", "v": []}] * 2}
+        line = (C.dumps(rec) + "\n").encode()
+        seen = []
+
+        def parse(line):
+            got = parse_line(line)
+            seen.append(got[0])
+            return got
+
+        parse_line = g3b.compare.parse
+        with mock.patch.object(C, "LONG_LINE", 0), mock.patch.object(g3b.compare, "parse", parse):
+            inputs = g3b.inputs_of([line])
+        self.assertEqual(len(seen), 1)
+        self.assertIs(seen[0]["value"][0], seen[0]["value"][1])
+        self.assertEqual(inputs['"in"'].records[0][1], g3b.digest(json.loads(line))[0])
+
+
 class G3bTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
