@@ -4,37 +4,40 @@
 //!
 //! **Work.** A blob's rows are zero-copy slices of its string buffer, and
 //! every row that names one offset holds one slice of it
-//! ([`crate::typetree::parse`]), so a name is read here once per *buffer*
-//! (an address and a length), never once per row. The rows are sorted by
+//! ([`crate::typetree::parse`]), so what is read here goes by *buffer*
+//! (an address and a length), never by row. The rows are sorted by
 //! their name's length and address, which reads no byte of it; a buffer
 //! whose length no other buffer of the list has is a name of its own and is
 //! not read. Only buffers that share a length are read: each is hashed once
 //! (FNV-1a), the buffers of one hash are compared byte for byte with the
-//! first of them, and a run of one hash that holds more than one name (a
-//! collision, which a hostile tree can make of any number of names: FNV-1a
-//! is no defence) is sorted by its bytes in a merge sort of at most
-//! ⌈log2 k⌉ passes of fewer than k comparisons each (review round 2: a scan
-//! of the run's earlier names for each member was `O(k²)`), then its
-//! neighbours compared. The buffers of one hash are taken, and a sort's
-//! ties broken, in the order of the rows that first name them, never by
-//! their addresses, so the same rows read and count the same bytes wherever
-//! their buffers lie. Every byte read is the list's work
-//! ([`crate::limits::Meter::count_work`] on [`NodeList::meter`],
-//! `Limits::max_decode_work`), counted before it is read: a length's names
-//! before they are hashed, and each comparison, as many bytes as its names
-//! have, before it is made. So an allowance below it refuses the compile
-//! ([`crate::LimitKind::DecodeWork`]) before it reads past the allowance
-//! (review round 13: the compile hashed and compared every row's name and
-//! searched every row's type, rows x length bytes, and counted none of it).
+//! first of them until one differs, and a run of one hash that holds more
+//! than one name (a collision, which a hostile tree can make of any number
+//! of names: FNV-1a is no defence) is sorted by its bytes in a merge sort
+//! of at most ⌈log2 k⌉ passes of fewer than k comparisons each (review
+//! round 2: a scan of the run's earlier names for each member was
+//! `O(k²)`), then its neighbours compared. The buffers of one hash are
+//! taken, and a sort's ties broken, in the order of the rows that first
+//! name them, never by their addresses, so the same rows read and count
+//! the same bytes wherever their buffers lie. What is read is the list's
+//! work ([`crate::limits::Meter::count_work`] on [`NodeList::meter`],
+//! `Limits::max_decode_work`), counted before it is read: a length's
+//! names, all their bytes, before they are hashed, and each comparison,
+//! the length of one of its names, before it is made. So an allowance
+//! below it refuses the compile ([`crate::LimitKind::DecodeWork`]) before
+//! it reads past the allowance (review round 13: the compile hashed and
+//! compared every row's name and searched every row's type, rows x length
+//! bytes, and counted none of it).
 //! Distinct buffers of one content cannot be told apart without reading them
 //! (R offsets of a NUL-less string buffer name R equal windows of 32,767
 //! bytes, from a buffer of 32,767 + R bytes), so the allowance is what
-//! bounds that work; rows that share a buffer cost it once, however many
-//! there are (`work_tests::rows_naming_one_long_string_read_it_at_most_once`).
+//! bounds that work; rows that share a buffer cost what one row naming it
+//! costs, however many there are
+//! (`work_tests::rows_naming_one_long_string_read_it_at_most_once`).
 //!
 //! A [`NameTable`] numbers a table of strings once, for the compiles of
-//! rows that name only its strings, which then read no name (a TPK's trees,
-//! which all name its one string table).
+//! rows that name only its strings, which then read no name and size
+//! their tables by their own rows (a TPK's trees, which all name its one
+//! string table).
 
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -316,11 +319,12 @@ fn one_hash<'a>(
 /// every string, so no buffer it knows is freed, and its address taken by
 /// another, while it lives: a row whose name is one of its strings (a clone
 /// of it, or a slice of the same bytes at the same place) is that string.
+/// A compile through it numbers its rows' names among themselves
+/// (`ids_of`), so what it allocates and fills is its own rows'
+/// size, never the table's.
 pub struct NameTable {
     /// Each string's buffer and name id, sorted.
     buffers: MeteredVec<((usize, usize), u32)>,
-    /// One past the largest name id.
-    bound: usize,
     /// The strings, kept for their buffers.
     _strings: MeteredVec<RawStr>,
 }
@@ -336,7 +340,7 @@ impl NameTable {
             return Err(TreeError::TooManyNodes(strings.len()));
         }
         let text = |i: u32| strings.get(i as usize).map_or(&[][..], RawStr::as_bytes);
-        let (ids, bound) = number(strings.len(), &text, meter, super::name_hash)?;
+        let (ids, _) = number(strings.len(), &text, meter, super::name_hash)?;
         let mut kept = MeteredVec::with_capacity(meter, strings.len())?;
         let mut buffers = MeteredVec::with_capacity(meter, strings.len())?;
         for (s, id) in strings.iter().zip(ids.as_slice()) {
@@ -346,14 +350,18 @@ impl NameTable {
         buffers.as_mut_slice().sort_unstable();
         Ok(Self {
             buffers,
-            bound,
             _strings: kept,
         })
     }
 
-    /// Each row's name id from the table, and one past the largest, when
-    /// every row's name is one of the table's strings; `None` otherwise.
-    /// A binary search a row, which reads no name.
+    /// Each row's name id, and one past the largest, when every row's name
+    /// is one of the table's strings; `None` otherwise. The ids are the
+    /// list's own: each row's table id (a binary search of the table, which
+    /// reads no name) becomes the place of its first copy among the list's
+    /// table ids sorted, so they are below the list's length, and what a
+    /// compile sizes and fills by them is its own rows' size, never the
+    /// table's (review round 14: a TPK's one-row root filled a table of one
+    /// entry per name of the whole TPK).
     pub(super) fn ids_of(
         &self,
         list: &NodeList,
@@ -368,7 +376,14 @@ impl NameTable {
                 _ => return Ok(None),
             }
         }
-        Ok(Some((ids, self.bound)))
+        let mut sorted = MeteredVec::with_capacity(list.meter(), ids.len())?;
+        sorted.extend_from_slice(ids.as_slice())?;
+        sorted.as_mut_slice().sort_unstable();
+        let sorted = sorted.as_slice();
+        for id in ids.as_mut_slice() {
+            *id = id32(sorted.partition_point(|s| s < id));
+        }
+        Ok(Some((ids, list.len())))
     }
 }
 

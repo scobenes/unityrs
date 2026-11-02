@@ -123,3 +123,45 @@ fn a_trees_compile_reads_none_of_the_tpks_strings() {
         }
     }
 }
+
+/// A tree's compile costs its own rows, whatever the TPK's string table
+/// holds: four classes, each a one-row root naming one of the table's
+/// first four strings, over a table of those four strings and over one of
+/// 65,536 (the most a TPK holds), are each granted the same bytes on the
+/// provider's meter by their compile, and read no name. (Review round 14:
+/// with the table's names numbered at load, each compile sized and filled
+/// a table of one entry per name the TPK holds: before the fix this test
+/// saw 528,656 bytes granted a one-row root's compile over 65,536 strings,
+/// against 320 over four.)
+#[test]
+fn a_one_row_roots_compile_does_not_depend_on_the_string_tables_size() {
+    let v = v2();
+    let roots: Vec<u16> = (0..4).collect();
+    let nodes: Vec<(u16, u16, Vec<u16>)> = roots.iter().map(|r| (*r, *r, vec![])).collect();
+    let mut granted = Vec::new();
+    for size in [4, usize::from(u16::MAX) + 1] {
+        let strings: Vec<Vec<u8>> = (0..size).map(|i| format!("s{i:05}").into_bytes()).collect();
+        let tpk = stored(&blob(&nodes, &roots, &strings));
+        let provider = TpkProvider::from_bytes(&tpk, &Limits::default()).unwrap();
+        let mut each = Vec::new();
+        for class_id in 0..4 {
+            let list = provider.node_list(class_id, &v).unwrap().unwrap();
+            assert_eq!(list.len(), 1);
+            let meter = list.meter().clone();
+            let (before, work) = (meter.granted(), meter.decoded());
+            let req = TreeRequest {
+                class_id,
+                version: &v,
+                script: None,
+            };
+            provider.tree(&req).unwrap().unwrap();
+            assert_eq!(meter.decoded(), work, "class {class_id}: names read");
+            each.push(meter.granted() - before);
+        }
+        granted.push((size, each));
+    }
+    assert_eq!(
+        granted[0].1, granted[1].1,
+        "bytes granted a compile: {granted:?}"
+    );
+}
