@@ -208,12 +208,13 @@ fn spanning(n: usize, distinct: bool) -> Vec<u8> {
     )
 }
 
-/// The container preload dereferences each table index once and resolves
-/// each external once, however many rows' spans cover them (review round
-/// 1: every row walked its whole span, so `n` rows over one `n`-pointer
-/// table made `n`² dereferences), and counts no work on the walking file's
-/// meter while no load changes an answer (what a walk does again is
-/// counted: `tests/env/revisit.rs`). Counted in steps, never by a clock.
+/// Where no load changes an answer, the container preload dereferences
+/// each table index once and resolves each external once, however many
+/// rows' spans cover them (review round 1: every row walked its whole span,
+/// so `n` rows over one `n`-pointer table made `n`² dereferences), and
+/// counts no work on the walking file's meter (what a load makes a walk do
+/// again is counted: `tests/env/revisit.rs`). Counted in steps, never by a
+/// clock.
 #[test]
 fn the_preload_dereferences_each_table_index_once() {
     const N: usize = 64;
@@ -258,8 +259,9 @@ fn the_preload_dereferences_each_table_index_once() {
 /// (review round 2: the walk kept the first load's answer, so both objects
 /// of one copy got the row's path; UnityPy's registered copy has none for
 /// object 5, `tests/fixtures/d/env.json` scene `preload_suffix_external`).
-/// Where rows' spans overlap, an index is still dereferenced once
-/// (`PARITY.md` section 19.3), where UnityPy loads once per row and index.
+/// Where rows' spans overlap, such an index, whose load leaves the name it
+/// asked unregistered, is still dereferenced once (`PARITY.md` section
+/// 19.3; plan section 9, Q11), where UnityPy loads once per row and index.
 /// The walk's loads register a new key, so the pass fails as UnityPy's does.
 #[test]
 fn a_preload_external_found_by_suffix_loads_at_each_dereference() {
