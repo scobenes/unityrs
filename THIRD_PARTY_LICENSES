@@ -8,7 +8,9 @@ when it is stale).
 It has two parts. The first holds the notices of code ported or vendored into
 unityrs from other projects (UnityPy and UnityPyBoost, liblz4, CPython's
 standard library), and the provenance of bundled data; the notice of a new
-port is added to about.hbs, and its licence to its crate's. The second holds
+port is added to about.hbs, its licence to its crate's, and the notice to
+the crate's own files as a LICENSE-* file, so that the crate's package
+carries it with the code. The second holds
 the licence of every crate the unityrs workspace builds, its own members
 included, grouped by licence text. A crate offered under a choice of licences
 (such as "MIT OR Apache-2.0") is listed under the one about.toml prefers.
@@ -20,15 +22,15 @@ Ported code
 ================================================================================
 
 --------------------------------------------------------------------------------
-UnityPy 1.25.2 and UnityPyBoost
+UnityPy 1.25.2 (with UnityPyBoost, its C++ extension)
 https://github.com/K0lb3/UnityPy
 Licence: MIT.
 
 unityrs-core ports the read and write rules of UnityPy 1.25.2 and of the
 UnityPyBoost C++ extension shipped in the same release, and unityrs-tpk
 ports UnityPy 1.25.2's UnityPy/helpers/Tpk.py (how a type-tree package is
-read and a class's type tree picked from it). A ported file names its UnityPy source in
-its header and cites lines of that release. The tables in
+read and a class's type tree picked from it). A ported file names its
+UnityPy source in its header and cites lines of that release. The tables in
 crates/unityrs-core/src/classid.rs and
 crates/unityrs-core/src/typetree/commonstring.rs are generated from
 UnityPy 1.25.2's MIT source (UnityPy.enums.ClassIDType and
@@ -44,6 +46,11 @@ parity tests run them, and no crate builds them. The test kit
 (unityrs-testkit), which writes inputs in the layouts UnityPy reads, and the
 P0 LZMA spike (unityrs-bench-lzma), which finds a bundle's blocks by
 BundleFile.read_fs's rules, follow UnityPy too, under this notice.
+
+UnityPy 1.25.2's LICENSE follows. Each crate that holds UnityPy's code
+(unityrs-core and unityrs-tpk) has it as its LICENSE-UNITYPY, is under MIT
+as a term of its own licence ("AND MIT", never only as a choice), and is
+listed under this text below.
 
 MIT License
 
@@ -112,8 +119,19 @@ Licence: PSF-2.0. CPython 3.11's LICENSE: "Python software and
 documentation are licensed under the Python Software Foundation License
 Version 2."
 
-These files translate code of Python 3.11's standard library to Rust, each
-naming it in its header:
+The files below translate code of Python 3.11's standard library to Rust,
+each naming it in its header. The summary of the changes made to them,
+which the agreement's clause 3 asks a derivative work to include, then the
+PSF License Agreement and PSF's notice of copyright, as CPython 3.11's
+LICENSE gives them, follow. The summary is the NOTICE-PSF, and the
+agreement the LICENSE-PSF, of unityrs-core, unityrs-dump and unityrs-cli;
+the agreement is listed under PSF-2.0 below.
+
+Python's standard library in unityrs, and the changes made to it
+----------------------------------------------------------------
+
+These files of the unityrs repository translate code of Python 3.11's
+standard library (CPython 3.11) to Rust:
 - crates/unityrs-core/src/detect.rs: Lib/gzip.py's _read_exact,
   _read_gzip_header, _GzipReader.read and _GzipReader._read_eof, how gzip
   detection reads each member's header, inflates it and checks its trailer;
@@ -128,20 +146,15 @@ naming it in its header:
   ArgumentParser._parse_known_args (with its consume_optional),
   _parse_optional, _get_option_tuples and _negative_number_matcher.
 
-The changes made to them (the agreement's clause 3 asks for a summary): each
-is rewritten in Rust and keeps only what unityrs uses of it. The path rules
-work on bytes, the glob on code points and the JSON reader on the index's
-UTF-8 text, where Python works on str objects. A failure is an error value
-where Python raises. The gzip reader keeps only the first 20 bytes it
-inflates and the length of the whole, and stops at unityrs's inflate bound
-and the open's work. The glob is matched by a wildcard matcher where Python
-compiles a regular expression. The JSON reader builds the values an index
-holds, as Python's json.loads does. The argument parser parses the dump's
-own options, with unityrs's extensions.
-
-The PSF License Agreement and PSF's notice of copyright, as CPython 3.11's
-LICENSE gives them, follow; they are unityrs-core's, unityrs-dump's and
-unityrs-cli's LICENSE-PSF, listed under PSF-2.0 below.
+The changes made to them: each is rewritten in Rust and keeps only what
+unityrs uses of it. The path rules work on bytes, the glob on code points
+and the JSON reader on the index's UTF-8 text, where Python works on str
+objects. A failure is an error value where Python raises. The gzip reader
+keeps only the first 20 bytes it inflates and the length of the whole, and
+stops at unityrs's inflate bound and the open's work. The glob is matched by
+a wildcard matcher where Python compiles a regular expression. The JSON
+reader builds the values an index holds, as Python's json.loads does. The
+argument parser parses the dump's own options, with unityrs's extensions.
 
 PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2
 --------------------------------------------
@@ -1221,6 +1234,36 @@ AUTHORS: (ordered alphabetically)
         Rob Bradford <robert.bradford@intel.com>, <rbradford@rivosinc.com>
         Tom Gundersen <teg@jklm.no>
         Trevor Gross <tmgross@umich.edu>
+
+
+--------------------------------------------------------------------------------
+MIT License (MIT)
+
+Used by:
+- unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-tpk 0.0.1 (https://github.com/scobenes/unityrs)
+
+MIT License
+
+Copyright (c) 2019-2021 K0lb3
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 
 --------------------------------------------------------------------------------
