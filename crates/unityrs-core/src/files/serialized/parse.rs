@@ -244,7 +244,7 @@ impl Parser<'_> {
             let identifier = if self.version < 14 {
                 i64::from(self.r.read_i32()?)
             } else {
-                self.r.align(4);
+                self.r.align(4)?;
                 self.r.read_i64()?
             };
             scripts.push(ScriptRef {
@@ -362,7 +362,7 @@ impl Parser<'_> {
             } else if v < 14 {
                 i64::from(r.read_i32()?)
             } else {
-                r.align(4);
+                r.align(4)?;
                 r.read_i64()?
             };
             let stored = if v >= 22 {

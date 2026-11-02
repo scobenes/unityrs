@@ -316,7 +316,7 @@ impl Reader<'_, '_> {
             self.comprehension(count, min, |r| r.plain_class(t, lx, node))?
         };
         if align {
-            self.align();
+            self.align()?;
         }
         Ok(out)
     }

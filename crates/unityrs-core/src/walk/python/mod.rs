@@ -68,7 +68,7 @@ use super::{
     f32_bits, int, limit_refused, stream_refused, uint,
 };
 use crate::raw::RawStr;
-use crate::stream::{Endian, ReaderKind, py_align};
+use crate::stream::{Endian, ReaderKind};
 use crate::typetree::{Kind, NodeId, Tree};
 use crate::value::{ListIx, Parsed, Value, ValueBuilder};
 
@@ -88,7 +88,8 @@ pub fn read(
 /// [`read`] by the rules of the file's reader: on the stream reader (a file
 /// loaded from a path) `start` is a position its `seek` took (never
 /// negative), a read stops at the end, a fixed-width read is
-/// `unpack(read(n))`, and a `TypelessData` length below -1 raises
+/// `unpack(read(n))`, a `TypelessData` length below -1 raises, and an
+/// alignment to 2^63 or more raises as the `seek` it makes does
 /// ([`crate::stream::ReaderKind`]), so `bytes_read` is never negative.
 pub fn read_with_reader(
     file: &Bytes,
@@ -284,9 +285,15 @@ impl Reader<'_, '_> {
     }
 
     /// `align_stream` (`EndianBinaryReader.py:155-156`): Python's floor modulo
-    /// on the file-absolute position.
-    fn align(&mut self) {
-        self.pos = py_align(self.pos, 4);
+    /// on the file-absolute position, assigned through the `Position`
+    /// setter, which the stream reader refuses at 2^63 or more
+    /// ([`ReaderKind::align`]).
+    fn align(&mut self) -> Result<(), ReadError> {
+        self.pos = self
+            .kind
+            .align(self.pos, 4)
+            .map_err(|e| stream_refused(self.at(), e))?;
+        Ok(())
     }
 
     /// `FUNCTION_READ_MAP` (`TypeTreeHelper.py:29-52`) for a primitive
@@ -321,7 +328,7 @@ impl Reader<'_, '_> {
         if len > 0 && i128::from(len) <= room {
             let range = self.read(i64::from(len))?;
             let s = RawStr::from_shared(self.data.slice(range));
-            self.align();
+            self.align()?;
             return Ok(Value::Str(s));
         }
         Ok(Value::Str(RawStr::default()))
@@ -403,7 +410,7 @@ impl Reader<'_, '_> {
             self.class(t, lx, node)?
         };
         if align {
-            self.align();
+            self.align()?;
         }
         Ok(out)
     }

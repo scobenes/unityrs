@@ -13,9 +13,15 @@ Integers that can leave the i64 range (positions, sizes) are written as strings.
 The `stream_` cases record the stream reader (`EndianBinaryReader_Streamable`), which
 UnityPy reads a file it loads from a path with: each runs on the file
 `LocalFileSystem().open(path, "rb")` gives, as `Environment.load_file` opens a path, over
-a file written to a temporary directory that is removed whatever happens. Positions and
-sizes whose outcome depends on the machine (a seek past the file system's largest file,
-a read larger than it can allocate) are left out (PARITY.md section 19.3).
+a file written to a temporary directory that is removed whatever happens. A seek past the
+largest file the file system takes raises `OSError` (`EINVAL`), so how far a seek goes
+depends on the machine: the `stream_` cases seek no further than 2^40, which the file
+systems the oracle runs on take (ext4's largest file is 2^44 - 4096 with 4 KiB blocks,
+`ext4_max_size`), and the `stream_tmpfs_` cases run on a tmpfs file (a `memfd_create`
+file opened by its `/proc/self/fd` path), whose largest is 2^63 - 1 (`MAX_LFS_FILESIZE`),
+so they record the positions up to 2^63 that such a file system takes. A read larger than
+the machine can allocate (`MemoryError`) is left out; a read of 2^63 - 33 bytes or more,
+which CPython refuses on every machine, is in (PARITY.md section 19.3).
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import struct
 import sys
 from pathlib import Path
@@ -131,7 +138,7 @@ def string_to_null_cases() -> tuple[list[str], list[dict]]:
     out = []
     for di, data in enumerate(datas):
         for pos in positions(len(data)):
-            for max_length in (1, 3, 5, 32767):
+            for max_length in (0, 1, 3, 5, 32767):
                 r = reader(data, pos)
                 try:
                     s = r.read_string_to_null(max_length).encode("utf8", "surrogateescape")
@@ -151,33 +158,47 @@ def string_to_null_cases() -> tuple[list[str], list[dict]]:
 
 # ------------------------------------------------------------ the stream reader
 
-# Outside the machine-dependent range: a seek this far is below every file system's
-# largest file, and a read this large is refused before any allocation.
+# Outside the machine-dependent range: a seek this far is one the file systems the oracle
+# runs on take (module docs), and a read this large is refused before any allocation.
 FAR = 2**40
 TOO_LARGE = 2**63 - 33  # CPython refuses a bytes object this large (OverflowError)
 POSITIONS_SET = [-12, -2, -1, 0, 5, 10, 14, FAR, 2**63, 2**64]
+# On tmpfs: past ext4's largest file, and up to 2^63 - 1, the largest tmpfs takes.
+TMPFS_SET = [2**44 - 4096, 2**44, 2**62, 2**63 - 2, 2**63 - 1, 2**63]
+TMPFS_FAR = [2**44, 2**62, 2**63 - 1]
 
 
 class Streams:
-    """Stream readers over files of a temporary directory, as `Environment` opens a path."""
+    """Stream readers over files of a temporary directory, as `Environment` opens a path,
+    or (`tmpfs`) over tmpfs files: each a `memfd_create` file, opened by its path."""
 
-    def __init__(self, tmp: Path):
-        self.tmp, self.fs, self.n = tmp, LocalFileSystem(), 0
+    def __init__(self, tmp: Path, tmpfs: bool = False):
+        self.tmp, self.fs, self.n, self.tmpfs = tmp, LocalFileSystem(), 0, tmpfs
 
     @contextlib.contextmanager
     def reader(self, data: bytes, pos: int):
         self.n += 1
-        path = self.tmp / f"f{self.n}"
-        path.write_bytes(data)
-        f = self.fs.open(str(path), "rb")
+        fd, path = None, self.tmp / f"f{self.n}"
+        if self.tmpfs:
+            fd = os.memfd_create(f"f{self.n}")
+            os.write(fd, data)
+            path = Path(f"/proc/self/fd/{fd}")
+        else:
+            path.write_bytes(data)
         try:
-            r = EndianBinaryReader(f, "<")
-            assert type(r).__name__ == "EndianBinaryReader_Streamable"
-            r.Position = pos
-            yield r
+            f = self.fs.open(str(path), "rb")
+            try:
+                r = EndianBinaryReader(f, "<")
+                assert type(r).__name__ == "EndianBinaryReader_Streamable"
+                r.Position = pos
+                yield r
+            finally:
+                f.close()
         finally:
-            f.close()
-            path.unlink()
+            if fd is None:
+                path.unlink()
+            else:
+                os.close(fd)
 
 
 def outcome(e: BaseException) -> str:
@@ -188,10 +209,10 @@ def stream_positions(n: int) -> list[int]:
     return list(range(0, n + 5)) + [FAR]
 
 
-def stream_set_cases(s: Streams) -> list[dict]:
+def stream_set_cases(s: Streams, positions: list[int] = POSITIONS_SET) -> list[dict]:
     """`Position = p`: a negative p raises in the reader, one past what `seek` takes in the file."""
     out = []
-    for pos in POSITIONS_SET:
+    for pos in positions:
         with s.reader(bytes(range(10)), 3) as r:
             try:
                 r.Position = pos
@@ -201,12 +222,12 @@ def stream_set_cases(s: Streams) -> list[dict]:
     return out
 
 
-def stream_read_cases(s: Streams) -> list[dict]:
+def stream_read_cases(s: Streams, far: list[int] | None = None) -> list[dict]:
     """`read(size)`: the file's own read; the position stops at the end."""
     data = bytes(range(10))
     sizes = [-14, -11, -10, -3, -2, -1, 0, 1, 3, 10, 11, 2**20, I32_MIN, I64_MIN, TOO_LARGE, I64_MAX]
     out = []
-    for pos in stream_positions(len(data)):
+    for pos in stream_positions(len(data)) if far is None else far:
         for size in sizes:
             with s.reader(data, pos) as r:
                 try:
@@ -255,23 +276,27 @@ def stream_byte_cases(s: Streams) -> list[dict]:
     return out
 
 
-def stream_align_cases(s: Streams) -> list[dict]:
-    """`align_stream(n)`: the same arithmetic, through the `Position` setter."""
+def stream_align_cases(s: Streams, positions: list[int] | None = None) -> list[dict]:
+    """`align_stream(n)`: the same arithmetic, through the `Position` setter, whose `seek`
+    refuses a result of 2^63 or more."""
     out = []
     for n in (4, 16):
-        for pos in list(range(0, 21)) + [FAR + 1]:
+        for pos in list(range(0, 21)) + [FAR + 1] if positions is None else positions:
             with s.reader(bytes(range(10)), pos) as r:
-                r.align_stream(n)
-                out.append({"pos": str(pos), "n": n, "new_pos": str(r.Position)})
+                try:
+                    r.align_stream(n)
+                    out.append({"pos": str(pos), "n": n, "new_pos": str(r.Position)})
+                except Exception as e:  # noqa: BLE001
+                    out.append({"pos": str(pos), "n": n, "error": outcome(e), "new_pos": str(r.Position)})
     return out
 
 
-def stream_string_to_null_cases(s: Streams, datas: list[bytes]) -> list[dict]:
+def stream_string_to_null_cases(s: Streams, datas: list[bytes], far: list[int] | None = None) -> list[dict]:
     """The base class's `read_string_to_null` loop (EndianBinaryReader.py:136-144)."""
     out = []
     for di, data in enumerate(datas):
-        for pos in stream_positions(len(data)):
-            for max_length in (1, 3, 5, 32767):
+        for pos in stream_positions(len(data)) if far is None else far:
+            for max_length in (0, 1, 3, 5, 32767):
                 with s.reader(data, pos) as r:
                     try:
                         got = r.read_string_to_null(max_length).encode("utf8", "surrogateescape")
@@ -315,7 +340,8 @@ def int_array_cases(s: Streams | None) -> list[dict]:
 
 def stream_fixture(meta: dict, string_datas: list[bytes]) -> dict:
     with scratch.folder() as tmp:
-        s = Streams(tmp)
+        s, t = Streams(tmp), Streams(tmp, tmpfs=True)
+        near = [2**44 + 1] + list(range(2**63 - 17, 2**63))
         return {
             "stream_set_position": stream_set_cases(s),
             "stream_read": stream_read_cases(s),
@@ -323,6 +349,10 @@ def stream_fixture(meta: dict, string_datas: list[bytes]) -> dict:
             "stream_read_u_byte": stream_byte_cases(s),
             "stream_align": stream_align_cases(s),
             "stream_string_to_null": stream_string_to_null_cases(s, string_datas),
+            "stream_tmpfs_set_position": stream_set_cases(t, TMPFS_SET),
+            "stream_tmpfs_read": stream_read_cases(t, TMPFS_FAR),
+            "stream_tmpfs_align": stream_align_cases(t, near),
+            "stream_tmpfs_string_to_null": stream_string_to_null_cases(t, string_datas, TMPFS_FAR),
             "int_array_data": [d.hex() for d in INT_ARRAYS],
             "int_array": int_array_cases(None),
             "stream_int_array": int_array_cases(s),
