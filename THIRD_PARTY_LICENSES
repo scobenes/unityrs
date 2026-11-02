@@ -6,12 +6,14 @@ edit it by hand. Regenerate it with scripts/third-party-licenses (CI fails
 when it is stale).
 
 It has two parts. The first holds the notices of code ported or vendored into
-unityrs from other projects, and the provenance of bundled data; the notice of
-a new port is added to about.hbs. The second holds the licence of every crate
-the unityrs workspace builds, its own members included, grouped by licence
-text. A crate offered under a choice of licences (such as "MIT OR Apache-2.0")
-is listed under the one about.toml prefers. liblzma-sys is also listed under
-0BSD, the licence of the xz sources it vendors and compiles.
+unityrs from other projects (UnityPy and UnityPyBoost, liblz4, CPython's
+standard library), and the provenance of bundled data; the notice of a new
+port is added to about.hbs, and its licence to its crate's. The second holds
+the licence of every crate the unityrs workspace builds, its own members
+included, grouped by licence text. A crate offered under a choice of licences
+(such as "MIT OR Apache-2.0") is listed under the one about.toml prefers.
+liblzma-sys is also listed under 0BSD, the licence of the xz sources it
+vendors and compiles.
 
 ================================================================================
 Ported code
@@ -35,6 +37,13 @@ UnityPy.enums.CommonString) by tools/gen/gen_tables.py.
 The copyright line below is the one in the UnityPy 1.25.2 release's LICENSE.
 Later UnityPy revisions read "Copyright (c) 2019-2026 K0lb3"; code ported
 from a later revision cites that revision and that line.
+tools/parity/tests/head_417d595/ keeps two files of UnityPy git 417d595
+(helpers/CompressionHelper.py and files/BundleFile.py) byte for byte, beside
+that revision's LICENSE, whose line is "Copyright (c) 2019-2026 K0lb3"; the
+parity tests run them, and no crate builds them. The test kit
+(unityrs-testkit), which writes inputs in the layouts UnityPy reads, and the
+P0 LZMA spike (unityrs-bench-lzma), which finds a bundle's blocks by
+BundleFile.read_fs's rules, follow UnityPy too, under this notice.
 
 MIT License
 
@@ -57,6 +66,131 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+--------------------------------------------------------------------------------
+liblz4 1.9.4
+https://github.com/lz4/lz4
+Licence: BSD-2-Clause.
+
+crates/unityrs-core/src/codec/lz4.rs translates liblz4 1.9.4's block
+decoder (lib/lz4.c: LZ4_decompress_generic as LZ4_decompress_safe calls it,
+read_variable_length and the fast loop's constants) to Rust, keeping each of
+its checks at its place, so a block decodes or fails as under the liblz4
+that UnityPy's python-lz4 4.4.4 runs. The file's header holds lib/lz4.c's
+notice. liblz4's lib/LICENSE follows; it is unityrs-core's LICENSE-LZ4,
+listed under BSD-2-Clause below.
+
+LZ4 Library
+Copyright (c) 2011-2020, Yann Collet
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice, this
+  list of conditions and the following disclaimer in the documentation and/or
+  other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--------------------------------------------------------------------------------
+CPython 3.11 (Python's standard library)
+https://github.com/python/cpython
+Licence: PSF-2.0. CPython 3.11's LICENSE: "Python software and
+documentation are licensed under the Python Software Foundation License
+Version 2."
+
+These files translate code of Python 3.11's standard library to Rust, each
+naming it in its header:
+- crates/unityrs-core/src/detect.rs: Lib/gzip.py's _read_exact,
+  _read_gzip_header, _GzipReader.read and _GzipReader._read_eof, how gzip
+  detection reads each member's header, inflates it and checks its trailer;
+- crates/unityrs-core/src/pystr.rs: Lib/ntpath.py's splitdrive and split
+  (for basename), and Lib/genericpath.py's _splitext (for splitext);
+- crates/unityrs-dump/src/select/glob.rs: Lib/fnmatch.py's translate, and the
+  character set of Lib/re/_parser.py's _parse;
+- crates/unityrs-dump/src/select/index.rs: Modules/_json.c's
+  scan_once_unicode, _match_number_unicode, scanstring_unicode,
+  _parse_array_unicode and _parse_object_unicode;
+- crates/unityrs-cli/src/args/mod.rs: Lib/argparse.py's
+  ArgumentParser._parse_known_args (with its consume_optional),
+  _parse_optional, _get_option_tuples and _negative_number_matcher.
+
+The changes made to them (the agreement's clause 3 asks for a summary): each
+is rewritten in Rust and keeps only what unityrs uses of it. The path rules
+work on bytes, the glob on code points and the JSON reader on the index's
+UTF-8 text, where Python works on str objects. A failure is an error value
+where Python raises. The gzip reader keeps only the first 20 bytes it
+inflates and the length of the whole, and stops at unityrs's inflate bound
+and the open's work. The glob is matched by a wildcard matcher where Python
+compiles a regular expression. The JSON reader builds the values an index
+holds, as Python's json.loads does. The argument parser parses the dump's
+own options, with unityrs's extensions.
+
+The PSF License Agreement and PSF's notice of copyright, as CPython 3.11's
+LICENSE gives them, follow; they are unityrs-core's, unityrs-dump's and
+unityrs-cli's LICENSE-PSF, listed under PSF-2.0 below.
+
+PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2
+--------------------------------------------
+
+1. This LICENSE AGREEMENT is between the Python Software Foundation
+("PSF"), and the Individual or Organization ("Licensee") accessing and
+otherwise using this software ("Python") in source or binary form and
+its associated documentation.
+
+2. Subject to the terms and conditions of this License Agreement, PSF hereby
+grants Licensee a nonexclusive, royalty-free, world-wide license to reproduce,
+analyze, test, perform and/or display publicly, prepare derivative works,
+distribute, and otherwise use Python alone or in any derivative version,
+provided, however, that PSF's License Agreement and PSF's notice of copyright,
+i.e., "Copyright (c) 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010,
+2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023 Python Software Foundation;
+All Rights Reserved" are retained in Python alone or in any derivative version
+prepared by Licensee.
+
+3. In the event Licensee prepares a derivative work that is based on
+or incorporates Python or any part thereof, and wants to make
+the derivative work available to others as provided herein, then
+Licensee hereby agrees to include in any such work a brief summary of
+the changes made to Python.
+
+4. PSF is making Python available to Licensee on an "AS IS"
+basis.  PSF MAKES NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR
+IMPLIED.  BY WAY OF EXAMPLE, BUT NOT LIMITATION, PSF MAKES NO AND
+DISCLAIMS ANY REPRESENTATION OR WARRANTY OF MERCHANTABILITY OR FITNESS
+FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF PYTHON WILL NOT
+INFRINGE ANY THIRD PARTY RIGHTS.
+
+5. PSF SHALL NOT BE LIABLE TO LICENSEE OR ANY OTHER USERS OF PYTHON
+FOR ANY INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES OR LOSS AS
+A RESULT OF MODIFYING, DISTRIBUTING, OR OTHERWISE USING PYTHON,
+OR ANY DERIVATIVE THEREOF, EVEN IF ADVISED OF THE POSSIBILITY THEREOF.
+
+6. This License Agreement will automatically terminate upon a material
+breach of its terms and conditions.
+
+7. Nothing in this License Agreement shall be deemed to create any
+relationship of agency, partnership, or joint venture between PSF and
+Licensee.  This License Agreement does not grant permission to use PSF
+trademarks or trade name in a trademark sense to endorse or promote
+products or services of Licensee, or any third party.
+
+8. By copying, installing or otherwise using Python, Licensee
+agrees to be bound by the terms and conditions of this License
+Agreement.
 
 --------------------------------------------------------------------------------
 Data provenance
@@ -99,8 +233,10 @@ Crates
 
 Licences:
 - MIT License (MIT)
+- Python Software Foundation License 2.0 (PSF-2.0)
 - BSD Zero Clause License (0BSD)
 - Apache License 2.0 (Apache-2.0)
+- BSD 2-Clause "Simplified" License (BSD-2-Clause)
 - Unicode License v3 (Unicode-3.0)
 - zlib License (Zlib)
 
@@ -330,6 +466,38 @@ Used by:
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+--------------------------------------------------------------------------------
+BSD 2-Clause "Simplified" License (BSD-2-Clause)
+
+Used by:
+- unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
+
+LZ4 Library
+Copyright (c) 2011-2020, Yann Collet
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice, this
+  list of conditions and the following disclaimer in the documentation and/or
+  other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 
 --------------------------------------------------------------------------------
 MIT License (MIT)
@@ -1335,6 +1503,64 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+--------------------------------------------------------------------------------
+Python Software Foundation License 2.0 (PSF-2.0)
+
+Used by:
+- unityrs-cli 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-dump 0.0.1 (https://github.com/scobenes/unityrs)
+
+PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2
+--------------------------------------------
+
+1. This LICENSE AGREEMENT is between the Python Software Foundation
+("PSF"), and the Individual or Organization ("Licensee") accessing and
+otherwise using this software ("Python") in source or binary form and
+its associated documentation.
+
+2. Subject to the terms and conditions of this License Agreement, PSF hereby
+grants Licensee a nonexclusive, royalty-free, world-wide license to reproduce,
+analyze, test, perform and/or display publicly, prepare derivative works,
+distribute, and otherwise use Python alone or in any derivative version,
+provided, however, that PSF's License Agreement and PSF's notice of copyright,
+i.e., "Copyright (c) 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010,
+2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023 Python Software Foundation;
+All Rights Reserved" are retained in Python alone or in any derivative version
+prepared by Licensee.
+
+3. In the event Licensee prepares a derivative work that is based on
+or incorporates Python or any part thereof, and wants to make
+the derivative work available to others as provided herein, then
+Licensee hereby agrees to include in any such work a brief summary of
+the changes made to Python.
+
+4. PSF is making Python available to Licensee on an "AS IS"
+basis.  PSF MAKES NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR
+IMPLIED.  BY WAY OF EXAMPLE, BUT NOT LIMITATION, PSF MAKES NO AND
+DISCLAIMS ANY REPRESENTATION OR WARRANTY OF MERCHANTABILITY OR FITNESS
+FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF PYTHON WILL NOT
+INFRINGE ANY THIRD PARTY RIGHTS.
+
+5. PSF SHALL NOT BE LIABLE TO LICENSEE OR ANY OTHER USERS OF PYTHON
+FOR ANY INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES OR LOSS AS
+A RESULT OF MODIFYING, DISTRIBUTING, OR OTHERWISE USING PYTHON,
+OR ANY DERIVATIVE THEREOF, EVEN IF ADVISED OF THE POSSIBILITY THEREOF.
+
+6. This License Agreement will automatically terminate upon a material
+breach of its terms and conditions.
+
+7. Nothing in this License Agreement shall be deemed to create any
+relationship of agency, partnership, or joint venture between PSF and
+Licensee.  This License Agreement does not grant permission to use PSF
+trademarks or trade name in a trademark sense to endorse or promote
+products or services of Licensee, or any third party.
+
+8. By copying, installing or otherwise using Python, Licensee
+agrees to be bound by the terms and conditions of this License
+Agreement.
+
 
 --------------------------------------------------------------------------------
 Unicode License v3 (Unicode-3.0)

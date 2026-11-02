@@ -15,6 +15,9 @@
 # - about.toml accepts other licences, or another order, than deny.toml allows,
 #   or a crate's accepted licences or clarification differ between the two
 #   (scripts/third_party_licenses_check.py config);
+# - a ported file's header, its crate's `license`, its crate's licence files
+#   and about.hbs's ported-code sections disagree (third_party_licenses_check.py
+#   ports);
 # - cargo-about warns: a clarification whose checksums no longer match is
 #   dropped with only a warning, which would lose the licences it adds;
 # - a crate's licence cannot be satisfied (--fail);
@@ -42,6 +45,7 @@ if [ "$have" != "cargo-about $CARGO_ABOUT_VERSION" ]; then
 fi
 
 python3 scripts/third_party_licenses_check.py config
+python3 scripts/third_party_licenses_check.py ports
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

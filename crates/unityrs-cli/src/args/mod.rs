@@ -1,3 +1,4 @@
+// Ported from CPython 3.11 (PSF-2.0): Lib/argparse.py, ArgumentParser._parse_known_args (consume_optional), _parse_optional, _get_option_tuples and _negative_number_matcher. See THIRD_PARTY_LICENSES.
 //! `unityrs dump`'s command line, parsed as `tools/parity/unitypy_dump.py`'s
 //! `argparse` parser parses its own (Python 3.11): the same options, the same
 //! defaults, the same values from the same arguments, and an error (status

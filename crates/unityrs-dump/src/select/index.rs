@@ -1,3 +1,4 @@
+// Ported from CPython 3.11 (PSF-2.0): Modules/_json.c, scan_once_unicode, _match_number_unicode, scanstring_unicode, _parse_array_unicode and _parse_object_unicode. See THIRD_PARTY_LICENSES.
 //! A corpus index, read as `unitypy_dump.py` reads it:
 //! `json.loads(fh.read().decode("utf-8"))`, Python 3.11's `json` module
 //! (its C scanner) over the file's text, so every index the oracle reads is
