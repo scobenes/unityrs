@@ -18,8 +18,10 @@
 //! meter booking an `Unbounded` budget and a `Counting` one. It also watches
 //! the typetree compile on the list's own meter ([`compiles`]): a
 //! `Tree::compile`, and a `NameTable::new` with a `Tree::compile_with_names`
-//! through it, whose rows build every scratch table the compile makes
-//! (review round 15: no counting test saw them). The largest request
+//! through it, whose rows build every scratch table the compile makes, and
+//! the tables the rows come through ([`parses`]): a blob's and an old-format
+//! tree's parse with `NodeList::from_rows` after it (review round 15: no
+//! counting test saw this scratch). The largest request
 //! of each big read is the exact size of its 2^16 + 1 elements: the dict's
 //! entries and the list's items end with their capacity equal to their
 //! length (plan 3.10, "list growth"). The allocator counts only the test's
@@ -39,11 +41,13 @@ use unityrs_core::budget::{
 };
 use unityrs_core::files::SerializedType;
 use unityrs_core::limits::{Limits, Meter, MeteredVec, heap_cost};
-use unityrs_core::stream::Endian;
+use unityrs_core::stream::{Endian, Reader};
+use unityrs_core::typetree::parse::{parse_blob, parse_old};
 use unityrs_core::typetree::tree::NameTable;
 use unityrs_core::typetree::{NodeId, NodeList, NodeRow, Tree};
 use unityrs_core::walk::{self, ReadCtx, ReadError, ReadOptions, RefTypes, WriteCtx, WriteRules};
 use unityrs_core::{Bytes, LimitKind, Parsed, RawStr, Value};
+use unityrs_testkit::blob::{NodeSpec, Strings, blob_tree, old_tree};
 use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 
 struct Counting;
@@ -603,6 +607,7 @@ fn every_allocation_of_a_read_and_a_write_is_charged() {
         WATCHED.with(Cell::get).is_null(),
         "the meter's pointer outlived the watch"
     );
+    a_watch_sees_what_no_charge_covers();
     for counting in [false, true] {
         let ok = cases(counting);
         assert!(ok > 200, "only {ok} reads succeeded");
@@ -611,6 +616,62 @@ fn every_allocation_of_a_read_and_a_write_is_charged() {
         references(1 << 12, counting);
         shared(1 << 12, counting);
         compiles(counting);
+        parses(counting);
+    }
+}
+
+/// The watch's own check, on a meter that holds a charge when the watch
+/// starts ([`watch_from`]): an allocation no charge covers shows in full,
+/// however much less it is than what the meter already held.
+fn a_watch_sees_what_no_charge_covers() {
+    let m = meter(false);
+    let held = MeteredVec::<u8>::with_capacity(&m, 1 << 12).unwrap();
+    let watching = watch_from(&m);
+    let plain = std::hint::black_box(vec![0_u8; 64]);
+    let excess = EXCESS.load(Ordering::Relaxed);
+    drop(watching);
+    drop((plain, held));
+    assert_eq!(
+        excess,
+        chunk(64),
+        "the watch missed an uncharged allocation"
+    );
+}
+
+/// Review round 15's sweep: the tables a tree's rows come through before any
+/// compile, each charged before it is allocated. A comb 64 levels deep (two
+/// children a level, the first going on, so a stack of open parents grows),
+/// as a blob (the row table, the string buffer's NULs, an unknown common
+/// offset's decimal string) and in the old format (the row table, its stack),
+/// each then through `NodeList::from_rows` (its stack, `parents`,
+/// `child_start`, `cursor`, `children`).
+fn parses(counting: bool) {
+    let mut nodes = vec![NodeSpec::new(0, "Base", "Base")];
+    nodes.extend((1..=64).map(|level| NodeSpec::new(level, "int", "a")));
+    nodes.extend((1..=64).rev().map(|level| NodeSpec::new(level, "int", "b")));
+    let common: [(u32, &[u8]); 1] = [(99_999, b"int")];
+    for blob in [true, false] {
+        let data = Bytes::from(if blob {
+            blob_tree(&nodes, 19, false, Strings::Common, &common)
+        } else {
+            old_tree(&nodes, 9, false)
+        });
+        // Its shared header, which the rows' slices would allocate once.
+        drop(data.clone());
+        let m = meter(counting);
+        let limits = Limits::default();
+        let mut r = Reader::new(&data, Endian::Little);
+        let watching = watch(&m);
+        let rows = if blob {
+            parse_blob(&mut r, &data, 19, &m, &limits, None)
+        } else {
+            parse_old(&mut r, &data, 9, &m, &limits)
+        };
+        let list = NodeList::from_rows(rows.unwrap()).unwrap();
+        unwatch(watching, &format!("a parse, a blob: {blob}"));
+        assert_eq!(list.len(), nodes.len());
+        let ty = list.rows()[1].ty.as_bytes();
+        assert_eq!(ty, if blob { &b"99999"[..] } else { &b"int"[..] });
     }
 }
 
