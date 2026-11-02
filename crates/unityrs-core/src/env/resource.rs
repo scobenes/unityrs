@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/ResourceReader.py. See THIRD_PARTY_LICENSES.
 //! Resource lookup (`helpers/ResourceReader.py:10-38`).
 //!
 //! `get_resource_data(res_path, ...)` tries four CAB names, in order:

@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/classes/PPtr.py, UnityPy/environment.py, UnityPy/files/File.py, UnityPy/helpers/ContainerHelper.py. See THIRD_PARTY_LICENSES.
 //! `PPtr` and its dereference (`classes/PPtr.py:15-107`).
 //!
 //! The rules, in UnityPy's order:

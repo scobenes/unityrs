@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/SerializedFile.py. See THIRD_PARTY_LICENSES.
 //! A file record's `l1` (`dump_records.py`'s L1 builders), copied from the
 //! core's tables.
 //!

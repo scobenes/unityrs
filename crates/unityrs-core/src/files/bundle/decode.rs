@@ -1,5 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/files/BundleFile.py. See THIRD_PARTY_LICENSES.
-//! `decompress_data` (`BundleFile.py:509-521`): one block, or the
+//! `decompress_data` (`files/BundleFile.py:509-521`): one block, or the
 //! blocks-info section, through its registered codec, decrypted first
 //! where UnityPy decrypts it.
 //!
@@ -33,7 +33,7 @@ use crate::options::FileContext;
 
 /// What a bundle's blocks decode with: the caller's context, and whether
 /// the bundle has a decryptor. UnityPy's `BundleFile.decryptor` is `None`
-/// unless the header's encryption flag built one (`BundleFile.py:25`,
+/// unless the header's encryption flag built one (`files/BundleFile.py:25`,
 /// `:123-124`), and `decompress_data` decrypts only with one (`:512`), so a
 /// decryptor the caller set reaches only the blocks of a bundle whose flag
 /// is set (round 5: it decrypted a flagged block of any bundle). It
@@ -66,7 +66,7 @@ impl Deref for BlockContext {
     }
 }
 
-/// `decompress_data` (`BundleFile.py:509-521`) on one block or the
+/// `decompress_data` (`files/BundleFile.py:509-521`) on one block or the
 /// blocks-info section, as a whole buffer: a slice of the input for a stored
 /// one, else a charged decode.
 pub(super) fn decode_one(
@@ -159,7 +159,7 @@ fn reading<T>(
 }
 
 /// The registered codec for `flags & 0x3F`: LZHAM and an unknown type
-/// raise (`CompressionHelper.py:234-235`, `BundleFile.py:515-521`).
+/// raise (`CompressionHelper.py:234-235`, `files/BundleFile.py:515-521`).
 fn codec_for(
     ctx: &FileContext,
     flags: u32,

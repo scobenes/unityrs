@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py, UnityPy/files/SerializedFile.py, UnityPy/files/BundleFile.py, UnityPy/files/File.py, UnityPy/helpers/ResourceReader.py. See THIRD_PARTY_LICENSES.
 //! UnityPy's `Environment` (`environment.py:27-363`): loaded files, the CAB
 //! registry, dependency loading, pointer dereference, resource reads and the
 //! container.

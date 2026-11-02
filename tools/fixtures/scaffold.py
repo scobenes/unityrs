@@ -85,7 +85,7 @@ def read_cases() -> list[dict]:
 
 
 def unpack_cases() -> list[dict]:
-    """Fixed-width reads: `struct.unpack_from(view, Position)` (EndianBinaryReader.py:327-331)."""
+    """Fixed-width reads: `struct.unpack_from(view, Position)` (EndianBinaryReader.py:340-343)."""
     data = bytes(range(10))
     funcs = {2: "read_u_short", 4: "read_u_int", 8: "read_u_long"}
     out = []
@@ -117,7 +117,7 @@ def byte_cases() -> list[dict]:
 
 
 def align_cases() -> list[dict]:
-    """`align_stream(n)` (EndianBinaryReader.py:186-187): Python's floor modulo."""
+    """`align_stream(n)` (EndianBinaryReader.py:155-156): Python's floor modulo."""
     out = []
     for n in (4, 16):
         for pos in list(range(-20, 21)) + [I64_MIN, I64_MAX]:

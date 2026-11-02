@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/UnityVersion.py. See THIRD_PARTY_LICENSES.
 //! Unicode tables pinned to the oracle's Python (3.11, Unicode 14.0), so the
 //! core's string rules do not drift with Rust's newer Unicode.
 //!

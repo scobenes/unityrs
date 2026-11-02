@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py. See THIRD_PARTY_LICENSES.
 //! A dependency's record ([`Dependency`]): what reopens it after an
 //! eviction, and the weak handle on the file the LRU keeps open;
 //! [`open_source`], which reads a source, detects it and parses it; and

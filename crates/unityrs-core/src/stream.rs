@@ -25,10 +25,10 @@
 //!   end; a reversed range is empty); the position moves by `n` whatever
 //!   the slice held;
 //! - [`py_unpack_from`]: every fixed-width read of 2, 4 or 8 bytes is
-//!   `struct.unpack_from(view, Position)` (`:327-331`): a negative offset
+//!   `struct.unpack_from(view, Position)` (`:340-343`): a negative offset
 //!   counts from the end, and the read must fit;
 //! - one-byte reads (`read_u8`, `read_i8`, `read_bool`) are
-//!   `unpack(fmt, read(1))` (`:91-95`): the slice of [`py_read`] must hold
+//!   `unpack(fmt, read(1))` (`:93-97`, `:126-127`): the slice of [`py_read`] must hold
 //!   exactly one byte, and the position has moved by 1 even when it raises
 //!   (at `-1`, `view[-1:0]` is empty);
 //! - [`py_align`]: `align_stream`, Python's floor modulo (`-7` aligns to `-4`);
@@ -68,7 +68,7 @@ pub enum Endian {
 pub const STRING_TO_NULL_WINDOW: usize = 32_767;
 
 /// The memoryview reader's `read(size)` at `pos` over `len` bytes
-/// (`streams/EndianBinaryReader.py:248-255`), with Python's arithmetic: size
+/// (`streams/EndianBinaryReader.py:249-256`), with Python's arithmetic: size
 /// 0 reads nothing and leaves the position; size -1 reads to the end; any
 /// other size is the slice `view[pos : pos + size]`, where a negative index
 /// counts from the end, indexes clamp to `0..=len` and a reversed range is
@@ -125,7 +125,7 @@ pub fn py_unpack_from(len: usize, pos: i128, n: usize) -> Option<usize> {
     usize::try_from(offset).ok()
 }
 
-/// `align_stream(n)` (`streams/EndianBinaryReader.py:186-187`):
+/// `align_stream(n)` (`streams/EndianBinaryReader.py:155-156`):
 /// `pos + (n - pos % n) % n` with Python's floor modulo, so a negative
 /// position aligns towards zero (`-7` to `-4` for `n = 4`). `n` 0 leaves the
 /// position (Python would raise; no caller passes 0). Implemented by the scaffold.

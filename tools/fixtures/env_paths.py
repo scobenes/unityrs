@@ -172,7 +172,7 @@ def path_inputs() -> list[dict]:
     blob[end - 1] = ord("X")
     case("blob-buffer-name-unterminated", [("a.assets", bytes(blob))], control=True)
     # A bundle's entries and its blocks-info table are read from memory whatever the bundle's reader
-    # (`BundleFile.py:141-142`, `:173-186`): an entry whose `userInformation` runs to its end, and a
+    # (`files/BundleFile.py:141-142`, `:173-186`): an entry whose `userInformation` runs to its end, and a
     # directory whose last path runs to the table's end, raise from a path too (controls).
     case("bundle-entry-unterminated", [("a.bundle", fs_bundle([(b"CAB-x", bytes(cut), 4)], codec=0))], control=True)
     good = fs_bundle([(b"CAB-x", serialized_file([two_ints], [Obj(1, 0, struct.pack("<ii", 5, 6))]), 4)], codec=0)

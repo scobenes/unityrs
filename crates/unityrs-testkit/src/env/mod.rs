@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/ImportHelper.py. See THIRD_PARTY_LICENSES.
 //! Multi-file scenes for the `Environment` tests: bundles whose objects
 //! point into each other, resources in sibling entries and in other bundles.
 //!

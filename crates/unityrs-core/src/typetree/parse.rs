@@ -76,7 +76,7 @@ use crate::typetree::commonstring::{CommonStrings, common_string};
 /// Whether a `SerializedFile` of this format stores typetrees as blobs.
 #[must_use]
 pub fn is_blob_format(format: u32) -> bool {
-    // UnityPy files/SerializedFile.py:137
+    // UnityPy files/SerializedFile.py:138
     format == 10 || format >= 12
 }
 
@@ -313,7 +313,7 @@ pub fn parse_blob(
         let version = i16::from_le_bytes(b.bytes(0));
         let level = row.get(2).copied().unwrap_or(0);
         let type_flags = row.get(3).copied().unwrap_or(0);
-        // UnityPy helpers/TypeTreeNode.py:135-138: the type before the name.
+        // UnityPy helpers/TypeTreeNode.py:140-141: the type before the name.
         let ty = strings.get(b.u32(4))?;
         let name = strings.get(b.u32(8))?;
         rows.push(NodeRow {

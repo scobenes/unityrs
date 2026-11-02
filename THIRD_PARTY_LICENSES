@@ -29,9 +29,16 @@ Licence: MIT.
 unityrs-core ports the read and write rules of UnityPy 1.25.2 and of the
 UnityPyBoost C++ extension shipped in the same release, and unityrs-tpk
 ports UnityPy 1.25.2's UnityPy/helpers/Tpk.py (how a type-tree package is
-read and a class's type tree picked from it). A ported file names its
-UnityPy source in its header and cites lines of that release. The tables in
-crates/unityrs-core/src/classid.rs and
+read and a class's type tree picked from it). The dump (unityrs-dump),
+which loads its inputs by UnityPy's rules, the test kit (unityrs-testkit),
+which writes inputs in the layouts UnityPy reads, and the P0 LZMA spike
+(unityrs-bench-lzma), which finds a bundle's blocks by BundleFile.read_fs's
+rules, follow UnityPy too. A file that ports UnityPy code names its UnityPy
+source in its header ("Ported from UnityPy 1.25.2 (MIT): ...") and cites
+lines of that release; scripts/unitypy_citations.py checks that each file
+under a crate's src/ that cites a line of UnityPy 1.25.2 or UnityPyBoost
+(test modules aside) has that header, and that every cited line exists. The
+tables in crates/unityrs-core/src/classid.rs and
 crates/unityrs-core/src/typetree/commonstring.rs are generated from
 UnityPy 1.25.2's MIT source (UnityPy.enums.ClassIDType and
 UnityPy.enums.CommonString) by tools/gen/gen_tables.py.
@@ -42,15 +49,13 @@ from a later revision cites that revision and that line.
 tools/parity/tests/head_417d595/ keeps two files of UnityPy git 417d595
 (helpers/CompressionHelper.py and files/BundleFile.py) byte for byte, beside
 that revision's LICENSE, whose line is "Copyright (c) 2019-2026 K0lb3"; the
-parity tests run them, and no crate builds them. The test kit
-(unityrs-testkit), which writes inputs in the layouts UnityPy reads, and the
-P0 LZMA spike (unityrs-bench-lzma), which finds a bundle's blocks by
-BundleFile.read_fs's rules, follow UnityPy too, under this notice.
+parity tests run them, and no crate builds them.
 
 UnityPy 1.25.2's LICENSE follows. Each crate that holds UnityPy's code
-(unityrs-core and unityrs-tpk) has it as its LICENSE-UNITYPY, is under MIT
-as a term of its own licence ("AND MIT", never only as a choice), and is
-listed under this text below.
+(unityrs-core, unityrs-tpk, unityrs-dump, unityrs-testkit and
+unityrs-bench-lzma) has it as its LICENSE-UNITYPY, is under MIT as a term of
+its own licence ("AND MIT", never only as a choice), and is listed under
+this text below.
 
 MIT License
 
@@ -1240,7 +1245,10 @@ AUTHORS: (ordered alphabetically)
 MIT License (MIT)
 
 Used by:
+- unityrs-bench-lzma 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-dump 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-testkit 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-tpk 0.0.1 (https://github.com/scobenes/unityrs)
 
 MIT License

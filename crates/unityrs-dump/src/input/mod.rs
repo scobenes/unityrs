@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/File.py. See THIRD_PARTY_LICENSES.
 //! One input's records, from `unityrs-core`'s public API: a port of
 //! `tools/parity/dump_records.py`'s `_dump_input`, `emit_file`,
 //! `object_record` (`object`) and the L1 builders (`l1`).

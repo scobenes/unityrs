@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/BundleFile.py, UnityPy/files/File.py, UnityPy/files/ObjectReader.py, UnityPy/helpers/ImportHelper.py. See THIRD_PARTY_LICENSES.
 //! The canonical dump (`docs/CANONICAL_DUMP.md`, format 1) from `unityrs-core`.
 //!
 //! One input gives its records depth-first (section 5): its `file` record,

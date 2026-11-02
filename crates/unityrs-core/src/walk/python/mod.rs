@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/TypeTreeHelper.py, UnityPy/streams/EndianBinaryReader.py. See THIRD_PARTY_LICENSES.
 //! UnityPy's pure-Python reader (`helpers/TypeTreeHelper.py:182-361`), for
 //! objects with `byte_size == 0`. It starts at `byte_start` in the whole
 //! `SerializedFile` and may read on past the object, with Python's reader

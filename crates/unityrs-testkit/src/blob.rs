@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/TypeTreeNode.py. See THIRD_PARTY_LICENSES.
 //! Typetree node lists, written in the blob format (format 10 and 12 up) or
 //! the old recursive format (below 10, and 11).
 //!

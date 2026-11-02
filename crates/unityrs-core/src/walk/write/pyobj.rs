@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPyBoost/TypeTreeHelper.cpp. See THIRD_PARTY_LICENSES.
 //! The Python objects UnityPy's writer duck-types (W2): what a value is to
 //! Python ([`Obj`]), the attributes of each type the writer models, and the
 //! operations the writer applies to an object (`bool`, `len`, `o[i]`,

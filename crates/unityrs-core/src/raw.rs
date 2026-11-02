@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/streams/EndianBinaryReader.py. See THIRD_PARTY_LICENSES.
 //! Raw strings: the bytes UnityPy holds as a `str` decoded with `surrogateescape`.
 //!
 //! Every string unityrs reads from a file is kept as bytes, never as `String`:

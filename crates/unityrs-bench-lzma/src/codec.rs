@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/CompressionHelper.py. See THIRD_PARTY_LICENSES.
 //! The decoders under test. Each takes one Unity LZMA block (5 property bytes,
 //! then raw LZMA1 with no size and, in practice, no end marker) and fills an
 //! output buffer of the size the blocks-info gives, then stops.

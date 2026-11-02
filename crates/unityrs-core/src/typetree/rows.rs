@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/Tpk.py, UnityPy/helpers/TypeTreeNode.py. See THIRD_PARTY_LICENSES.
 //! Typetree node rows, and UnityPy's rule for building a tree from them.
 //!
 //! A [`NodeRow`] holds one node as stored: UnityPy's `TypeTreeNode` fields,

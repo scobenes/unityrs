@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/Tpk.py, UnityPy/files/ObjectReader.py. See THIRD_PARTY_LICENSES.
 //! Typetree providers for stripped files, keyed by `(class, version)`.
 //!
 //! UnityPy's order (`files/ObjectReader.py:285-307`): an explicit `nodes=`

@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/classes/PPtr.py, UnityPy/environment.py. See THIRD_PARTY_LICENSES.
 //! Lookups and dereference: `get_cab`, `find_file` and `PPtr.deref`, by
 //! the rules of [`super::pptr`]. "Module docs" below are [`super`]'s.
 

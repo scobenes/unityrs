@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/TypeTreeNode.py. See THIRD_PARTY_LICENSES.
 //! The common-string tables that blob typetrees index with the high bit set.
 //!
 //! UnityPy 1.25.2's blob parser uses `get_common_strings()`

@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/SerializedFile.py. See THIRD_PARTY_LICENSES.
 //! The options every file loaded through one environment shares.
 //!
 //! A [`FileContext`] is built once (usually by [`crate::env::EnvOptions`]) and

@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/ResourceReader.py, UnityPy/classes/PPtr.py, UnityPy/files/SerializedFile.py. See THIRD_PARTY_LICENSES.
 //! [`Environment::resource`]: UnityPy's `get_resource_data`, over the
 //! candidates of [`super::resource`]. "Module docs" below are [`super`]'s.
 

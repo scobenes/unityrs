@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/ObjectReader.py. See THIRD_PARTY_LICENSES.
 //! `ObjectReader` (`files/ObjectReader.py:44-312`): one object of a
 //! `SerializedFile`, read on demand.
 //!

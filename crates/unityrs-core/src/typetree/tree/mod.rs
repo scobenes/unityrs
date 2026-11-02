@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPyBoost/TypeTreeHelper.cpp, UnityPy/helpers/TypeTreeHelper.py. See THIRD_PARTY_LICENSES.
 //! The compiled typetree: what UnityPyBoost precomputes per node, computed
 //! once per type and shared by every object of that type through `Arc`.
 //!

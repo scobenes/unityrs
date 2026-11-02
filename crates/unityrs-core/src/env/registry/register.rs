@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py. See THIRD_PARTY_LICENSES.
 //! Registering a key (module docs, "Ranks", "Nested containers under
 //! `LoadMode::Lazy`" and "Memory"): `register_cab`'s dict by rank, the lazy
 //! slot a registration drops listed in the same step, or stood in for

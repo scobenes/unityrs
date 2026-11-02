@@ -8,4 +8,4 @@ target-version = "py311"
 select = ["E", "F", "W", "B", "UP", "SIM", "I"]
 
 [lint.isort]
-known-first-party = ["child", "scratch", "third_party_licenses_check"]
+known-first-party = ["child", "scratch", "third_party_licenses_check", "unitypy_citations"]
