@@ -165,7 +165,7 @@ pub fn pin_of(v: Option<&Value>) -> Option<Pin> {
 /// before any input after it is collected: two records under one key are
 /// what no single run of the oracle writes. One input may give a name
 /// twice, as the oracle's may. The check keeps the names given so far in a
-/// hash set of [`name::Name`]s, so its work grows with the number of names
+/// hash set of names (`select/name.rs`), so its work grows with the number of names
 /// (review round 9: it compared each name with every earlier one, quadratic
 /// in the inputs' sizes).
 pub fn collect(sel: &Selection) -> Result<Vec<Input>, String> {
