@@ -307,7 +307,7 @@ pub enum NotFound {
     /// `find_file` walk raises `FileNotFoundError`.
     #[error("CAB {0}")]
     Cab(RawStr),
-    /// No resource under any of UnityPy's candidate names (`ResourceReader.py:10-34`).
+    /// No resource under any of UnityPy's candidate names (`ResourceReader.py:10-33`).
     #[error("resource {0}")]
     Resource(RawStr),
     /// A source the environment has no slot for.

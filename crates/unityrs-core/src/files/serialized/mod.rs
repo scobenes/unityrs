@@ -6,9 +6,9 @@
 //! - the header (`SerializedFile.py:255-269`): the endian byte at offset 16
 //!   from format 9, else at `file_size - metadata_size` (absolute); the
 //!   format-22 fields replace the legacy `u32`s;
-//! - gates (`:271-288`): the version string from format 7, the target platform
+//! - gates (`SerializedFile.py:271-288`): the version string from format 7, the target platform
 //!   from 8, `enable_type_tree` from 13 (else true), `big_id_enabled` at 7-13;
-//! - type records (`:117-148`): `is_stripped_type` from 16, `script_type_index`
+//! - type records (`SerializedFile.py:112-149`): `is_stripped_type` from 16, `script_type_index`
 //!   from 17 (else -1), `script_id` and `old_type_hash` from 13 under
 //!   UnityPy's condition, trees only when `enable_type_tree`, blobs at format
 //!   10 and 12 and up; at 21 ref types read three names and plain types a

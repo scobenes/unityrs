@@ -356,7 +356,7 @@ pub fn matrix() -> Vec<(String, Vec<u8>)> {
 /// input: a negative `node_count` and `stringbuffer_size` (UnityPy
 /// helpers/TypeTreeNode.py:113-118 reads `read(24 * node_count)`), a
 /// format-8 header whose `metadata_size` exceeds `file_size`
-/// (files/SerializedFile.py:266; detection, helpers/ImportHelper.py:110-120,
+/// (files/SerializedFile.py:266; detection, helpers/ImportHelper.py:110-121,
 /// already keeps such a file raw, so the oracle records a raw file),
 /// blocks-info at the end whose stored size
 /// exceeds the file (files/BundleFile.py:134-135), and a format-22 object

@@ -11,7 +11,7 @@
 //!   order only after them, `SerializedFile.py:260-269`);
 //! - the metadata, in the file's byte order, right after the header from
 //!   format 9, and at the end of the file below 9, where its first byte is
-//!   the endian byte (`:266`);
+//!   the endian byte (`SerializedFile.py:266`);
 //! - the objects' data after the metadata (from format 9; below 9 after the
 //!   header), at `data_offset`, each object's start aligned to 8 within it.
 //!
@@ -317,7 +317,7 @@ fn metadata(spec: &SerializedSpec, starts: &[usize], w: &mut ByteWriter) {
     }
 }
 
-/// One `SerializedType` (`SerializedFile.py:112-148`).
+/// One `SerializedType` (`SerializedFile.py:112-149`).
 fn type_record(
     t: &TypeSpec,
     v: u32,

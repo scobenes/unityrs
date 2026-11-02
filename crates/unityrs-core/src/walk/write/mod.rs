@@ -27,7 +27,7 @@
 //! (its non-dict branch iterates no children and writes nothing); a class
 //! with children a `Dict` (`value[child.m_Name]`) or any other value that has
 //! each child's cleaned name as a Python attribute (`getattr(value,
-//! child._clean_name)`, `:447-455`: an `int` value satisfies a child named
+//! child._clean_name)`, `TypeTreeHelper.py:447-455`: an `int` value satisfies a child named
 //! `real`, a `list` one named `count`, whose bound method a `bool` node
 //! writes as true). An `Array` node with three or more children writes its
 //! elements through `m_Children[1]` (`:434`), as the pure-Python reader
@@ -475,7 +475,7 @@ impl<'a> Writer<'a, '_> {
         self.put(bytes)
     }
 
-    /// The class branch (`:437-455`), W6: `value[child.m_Name]` for a dict
+    /// The class branch (`TypeTreeHelper.py:437-455`), W6: `value[child.m_Name]` for a dict
     /// ([`Self::class_dict`]), `getattr(value, child._clean_name)` otherwise;
     /// the registry scope as on read.
     ///
@@ -493,7 +493,7 @@ impl<'a> Writer<'a, '_> {
     ///
     /// With `registry` false, a registry child is written as any other
     /// child, and puts no registry in scope: the pure-Python reader reads a
-    /// flagged run's class elements so (`:314-318`, [`Self::run_element`]).
+    /// flagged run's class elements so (`TypeTreeHelper.py:314-318`, [`Self::run_element`]).
     #[inline(never)]
     fn class(
         &mut self,
@@ -547,7 +547,7 @@ impl<'a> Writer<'a, '_> {
         Ok(())
     }
 
-    /// The class branch on a dict (`:438-446`): `value[child.m_Name]` for
+    /// The class branch on a dict (`TypeTreeHelper.py:438-446`): `value[child.m_Name]` for
     /// each child, found by a [`Lookup`]; a registry child as
     /// [`Self::class`] takes it.
     #[inline(never)]
@@ -582,7 +582,7 @@ impl<'a> Writer<'a, '_> {
         Ok(())
     }
 
-    /// `ReferencedObject` (`:422-428`), W7: each child's entry found by a
+    /// `ReferencedObject` (`TypeTreeHelper.py:422-428`), W7: each child's entry found by a
     /// [`Lookup`]; the data's ref type resolved once a write of the dict,
     /// which does not change while it is written (claude X, review round 2:
     /// a node of many data children resolved it for each).
@@ -619,7 +619,7 @@ impl<'a> Writer<'a, '_> {
                             .map_or(Data::Skip, |t| Data::Through(Some(t))),
                         // The pure-Python reader skips it for an empty
                         // class or a matched ref type with no tree
-                        // (`:197-206`).
+                        // (`TypeTreeHelper.py:197-206`).
                         Some(ReadBy::Python) => w
                             .ref_node_py(m)?
                             .map_or(Data::Skip, |t| Data::Through(Some(t))),

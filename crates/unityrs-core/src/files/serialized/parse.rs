@@ -292,7 +292,7 @@ impl Parser<'_> {
         Ok(types)
     }
 
-    /// `SerializedType.__init__` (`SerializedFile.py:110-148`).
+    /// `SerializedType.__init__` (`SerializedFile.py:112-149`).
     fn serialized_type(&mut self, is_ref: bool) -> Result<SerializedType, Error> {
         let v = self.version;
         let class_id = self.r.read_i32()?;

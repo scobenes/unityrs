@@ -305,7 +305,7 @@ class Rows(unittest.TestCase):
                 swapped = Texture2DConverter.parse_image_data(*args, BuildTarget.XBOX360)
                 self.assertEqual(list(swapped.getdata()) != list(plain.getdata()), wrong)
         self.assertEqual(plain.getpixel((10, 20)), (40, 80, 128))
-        # The lines section 19.2 cites for those mappings: `:138-143` and `:189-198`.
+        # The lines section 19.2 cites for those mappings: `export/Texture2DConverter.py:138-143` and `:189-198`.
         source = Path(Texture2DConverter.__file__).read_text().splitlines()
         self.assertEqual(
             [source[i - 1].strip() for i in (138, 139, 141, 142, 143, 189, 190, 198)],

@@ -63,7 +63,7 @@ def positions(n: int) -> list[int]:
 
 
 def read_cases() -> list[dict]:
-    """`read(size)` (streams/EndianBinaryReader.py:248-255): a Python slice of the view."""
+    """`read(size)` (streams/EndianBinaryReader.py:249-256): a Python slice of the view."""
     data = bytes(range(10))
     sizes = [-14, -11, -10, -3, -1, 0, 1, 3, 10, 11, I32_MIN, I32_MAX, I64_MIN, I64_MAX]
     out = []
@@ -102,7 +102,7 @@ def unpack_cases() -> list[dict]:
 
 
 def byte_cases() -> list[dict]:
-    """One-byte reads: `unpack(fmt, self.read(1))` (EndianBinaryReader.py:91-95), so a slice
+    """One-byte reads: `unpack(fmt, self.read(1))` (EndianBinaryReader.py:93-97, :126-127), so a slice
     that yields no byte raises after the position moved."""
     data = bytes(range(10))
     out = []

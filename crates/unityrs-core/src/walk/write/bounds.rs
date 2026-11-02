@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/TypeTreeHelper.py. See THIRD_PARTY_LICENSES.
 //! What a write counts against its bounds as it goes: the open's work, the
 //! values `max_values_per_object` bounds, and the frames `max_value_depth`
 //! bounds (plan 3.10, "Bounds"; 3.11).
@@ -70,7 +71,7 @@ impl Writer<'_, '_> {
     }
 
     /// One frame UnityPy's `write_value` pushes: a `write_value` call, or the
-    /// list comprehension that writes an array's elements (`:435`). Each
+    /// list comprehension that writes an array's elements (`TypeTreeHelper.py:435`). Each
     /// counts one level against `max_value_depth`, as the pure-Python reader
     /// counts its own (plan 3.10, "Bounds"), so every value whose write
     /// raises `RecursionError` in UnityPy (past Python's 1,000 frames) is

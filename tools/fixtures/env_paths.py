@@ -156,7 +156,7 @@ def path_inputs() -> list[dict]:
     name, data = short_read_inputs()[0]
     case(f"blob-{name}", [("a.assets", data)])
     # A blob whose node count is negative: `read(32 * count)` raises from a path; from bytes the
-    # slice is empty and the position moves back (`helpers/TypeTreeNode.py:115`).
+    # slice is empty and the position moves back (`helpers/TypeTreeNode.py:117`).
     plain = serialized_file([two_ints], [Obj(1, 0, struct.pack("<ii", 5, 6))])
     count_at = 48 + len(b"2021.3.2f1\0") + 5 + 4 + 4 + 1 + 2 + 16  # the first type's blob
     assert struct.unpack_from("<i", plain, count_at)[0] == 3

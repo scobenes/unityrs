@@ -1,5 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py, UnityPy/files/SerializedFile.py, UnityPy/files/BundleFile.py, UnityPy/files/File.py, UnityPy/helpers/ResourceReader.py. See THIRD_PARTY_LICENSES.
-//! UnityPy's `Environment` (`environment.py:27-363`): loaded files, the CAB
+//! UnityPy's `Environment` (`environment.py:28-363`): loaded files, the CAB
 //! registry, dependency loading, pointer dereference, resource reads and the
 //! container.
 //!
@@ -349,7 +349,7 @@ pub trait CabResolver: Send + Sync + fmt::Debug {
     ///   `files/SerializedFile.py:339-340`),
     /// - then each of its four resource candidates ([`resource_candidates`]:
     ///   the resource path's basename and the three names made from its
-    ///   stem, `helpers/ResourceReader.py:11-17`, `SerializedFile.py:342-349`).
+    ///   stem, `helpers/ResourceReader.py:11-18`, `SerializedFile.py:342-349`).
     ///
     /// UnityPy's `load_file` opens a name of either of the last two kinds as
     /// a path when one exists there; else, a relative one, joined to

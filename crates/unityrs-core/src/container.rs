@@ -1,6 +1,6 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/ContainerHelper.py, UnityPyBoost/TypeTreeHelper.cpp, UnityPy/classes/PPtr.py, UnityPy/files/SerializedFile.py, UnityPy/environment.py, UnityPy/files/ObjectReader.py, UnityPy/helpers/TypeTreeNode.py. See THIRD_PARTY_LICENSES.
 //! The AssetBundle container (`files/SerializedFile.py:316-324`,
-//! `classes/generated.py` `AssetBundle`, `environment.py:207-224`).
+//! `classes/generated.py` `AssetBundle`, `environment.py:208-226`).
 //!
 //! A `SerializedFile`'s container is the `m_Container` of the first
 //! AssetBundle object in dict order, as `(path, AssetInfo)` pairs in file

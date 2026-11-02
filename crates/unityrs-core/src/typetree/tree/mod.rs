@@ -165,7 +165,7 @@ impl Kind {
 }
 
 /// What the walker does with a node (`read_typetree_value`'s switch,
-/// `UnityPyBoost/TypeTreeHelper.cpp:702-884`).
+/// `UnityPyBoost/TypeTreeHelper.cpp:702-883`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shape {
     /// A scalar of the node's [`Kind`] (integers, floats, bool).
@@ -461,7 +461,7 @@ fn group_by_name(
 }
 
 /// What UnityPyBoost's `read_typetree_value` does with `node`
-/// (UnityPy TypeTreeHelper.cpp:702-884).
+/// (UnityPy TypeTreeHelper.cpp:702-883).
 fn shape_of(list: &NodeList, info: &MeteredVec<NodeInfo>, node: NodeId) -> Shape {
     let kids = list.children(node);
     let kind = info_at(info, node).kind;
@@ -509,7 +509,7 @@ fn min_size_of(list: &NodeList, info: &MeteredVec<NodeInfo>, node: NodeId) -> u3
     match me.shape {
         Shape::Prim => me.kind.prim_size().unwrap_or(0),
         // A length; the pure-Python reader reads a malformed `Array`'s too,
-        // then its elements through `m_Children[1]` (`TypeTreeHelper.py:211-216`).
+        // then its elements through `m_Children[1]` (`TypeTreeHelper.py:212-216`).
         Shape::Str | Shape::Bytes | Shape::Vector { .. } | Shape::BadVector => 4,
         Shape::Pair => sum(kids, None),
         // The pure-Python reader reads a malformed `pair`'s first two
@@ -614,7 +614,7 @@ impl Tree {
         }
         drop((order, hashes));
 
-        // Shapes (`read_typetree_value`'s switch, UnityPy TypeTreeHelper.cpp:702-884).
+        // Shapes (`read_typetree_value`'s switch, UnityPy TypeTreeHelper.cpp:702-883).
         for p in 0..n {
             let shape = shape_of(&list, &info, id(p));
             if let Some(pi) = info.as_mut_slice().get_mut(p) {

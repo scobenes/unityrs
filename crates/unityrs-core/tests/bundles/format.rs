@@ -10,7 +10,7 @@ use unityrs_testkit::Rng;
 use unityrs_testkit::bundle::{BundleSpec, EntrySpec, TestCodec, build, matrix};
 
 /// The block and directory counts as `range(count)` reads them (UnityPy
-/// files/BundleFile.py:145-164): a negative count is no records, a huge one
+/// files/BundleFile.py:145-165): a negative count is no records, a huge one
 /// fails at the end of the bytes with nothing allocated from the count.
 #[test]
 fn block_and_directory_counts_are_python_ranges() {
