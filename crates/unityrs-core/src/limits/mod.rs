@@ -205,8 +205,12 @@ impl Limits {
     /// At the defaults: 1.75 MiB in a release build, 9 MiB in a debug one.
     /// `tests/walk_stack.rs` reads, writes and drops the deepest object of
     /// every shape on a thread this size, and its `stack_measured` prints
-    /// the least each needs (at most 0.90 MiB release, 6.6 MiB debug, with
-    /// toolchain 1.99.1). Rust's spawned threads get 2 MiB unless told
+    /// the least each needs: at most 974,848 bytes (0.93 MiB) in release
+    /// and 6,922,240 (6.6 MiB) in debug, with toolchain 1.99.1 (`cargo test
+    /// -p unityrs-core --test walk_stack [--release] -- --ignored
+    /// --nocapture`; review round 11: this said 0.90 MiB, measured before
+    /// fix pass 10; `docs/plans/core.md` section 6 records each integrated
+    /// head's). Rust's spawned threads get 2 MiB unless told
     /// otherwise, and a main thread usually 8 MiB, so a debug build reads
     /// untrusted input on a thread built with
     /// `std::thread::Builder::stack_size(limits.stack_needed())`.

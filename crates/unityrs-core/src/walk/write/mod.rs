@@ -349,10 +349,13 @@ impl<'a> Writer<'a, '_> {
     /// `write_value` (`TypeTreeHelper.py:407-458`). The branches that
     /// recurse ([`Self::class`], [`Self::class_dict`], [`Self::ref_object`])
     /// are never inlined here, so a level's frame holds only its own
-    /// branch's locals: inlined, every class level carried a
-    /// `ReferencedObject`'s too (`tests/walk_stack.rs`'s `stack_measured`,
-    /// release: 1,011,712 bytes for the deepest class write, 905,216 out of
-    /// line, with toolchain 1.99.1).
+    /// branch's locals. Measured by `tests/walk_stack.rs`'s `stack_measured`
+    /// (release, toolchain 1.99.1): out of line, no path's write needs more
+    /// stack than its read (each `Written` path's least stack equals its
+    /// `Refused` one); with the three `#[inline(always)]`, the `pair` shape's
+    /// `Written(Boost, UnityPy)` needs 520,192 bytes, where its read needs
+    /// 393,216 (review round 11's re-measure: the figures this cited for the
+    /// `class` shape, from before fix pass 10, no longer reproduce).
     fn value_inner(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         let mut align = tree.info(node).is_some_and(|i| i.align);
         let kind = self.kind(tree, node);
