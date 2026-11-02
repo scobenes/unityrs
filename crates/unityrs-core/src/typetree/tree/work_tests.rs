@@ -270,6 +270,60 @@ fn names_number_as_a_dict_keys_them_and_every_byte_read_is_counted() {
     assert!(checked > 5_000, "{checked}");
 }
 
+/// What the names read and count is a function of the rows alone, never of
+/// where their buffers lie: the same rows, each name its own buffer, laid
+/// out in one allocation at ascending, descending and shuffled offsets,
+/// and every name of one hash (a collision of all of them, the comparisons'
+/// worst order), read and count the same bytes, and key alike. (Keyed by
+/// address, a run's first buffer, and so how far its first comparisons get
+/// before a differing name, moved with the layout.)
+#[test]
+fn what_the_names_read_is_the_same_wherever_their_buffers_lie() {
+    const LEN: usize = 8;
+    let mut rng = Rng::new(131);
+    let mut read_some = 0;
+    for case in 0..300 {
+        let n = 2 + rng.below(24);
+        let names: Vec<u8> = (0..n)
+            .map(|_| b'a' + u8::try_from(rng.below(4)).unwrap())
+            .collect();
+        let mut shuffled: Vec<usize> = (0..n).collect();
+        for i in (1..n).rev() {
+            shuffled.swap(i, rng.below(i + 1));
+        }
+        let layouts: [Vec<usize>; 3] = [(0..n).collect(), (0..n).rev().collect(), shuffled];
+        let mut seen = Vec::new();
+        for at in &layouts {
+            // Row j's name at offset at[j] * LEN of one buffer.
+            let mut whole = vec![0; n * LEN];
+            for (j, &slot) in at.iter().enumerate() {
+                whole[slot * LEN..(slot + 1) * LEN].fill(names[j]);
+            }
+            let whole = Bytes::from(whole);
+            let meter = Meter::unlimited();
+            let list = list_on(
+                &meter,
+                at.iter()
+                    .map(|slot| RawStr::from_shared(whole.slice(slot * LEN..(slot + 1) * LEN))),
+            );
+            let before = (read_now(), meter.decoded());
+            let (ids, _) = super::names::name_ids(&list, |_| 0).unwrap();
+            let read = read_now() - before.0;
+            assert_eq!(meter.decoded() - before.1, read, "case {case}");
+            let ids = ids.as_slice();
+            for (a, x) in list.rows().iter().zip(ids) {
+                for (b, y) in list.rows().iter().zip(ids) {
+                    assert_eq!(a.name == b.name, x == y, "case {case}");
+                }
+            }
+            seen.push(read);
+        }
+        assert!(seen.iter().all(|r| *r == seen[0]), "case {case}: {seen:?}");
+        read_some += usize::from(seen[0] > 0);
+    }
+    assert!(read_some > 250, "{read_some}");
+}
+
 /// The kind a type name's whole C string has: UnityPyBoost's table read to
 /// its first NUL, however far (the rule [`kind_of`] reads at most
 /// [`KIND_SCAN`] bytes of).

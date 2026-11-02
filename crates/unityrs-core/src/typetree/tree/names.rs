@@ -15,7 +15,10 @@
 //! is no defence) is sorted by its bytes in a merge sort of at most
 //! ⌈log2 k⌉ passes of fewer than k comparisons each (review round 2: a scan
 //! of the run's earlier names for each member was `O(k²)`), then its
-//! neighbours compared. Every byte read is the list's work
+//! neighbours compared. The buffers of one hash are taken, and a sort's
+//! ties broken, in the order of the rows that first name them, never by
+//! their addresses, so the same rows read and count the same bytes wherever
+//! their buffers lie. Every byte read is the list's work
 //! ([`crate::limits::Meter::count_work`] on [`NodeList::meter`],
 //! `Limits::max_decode_work`), counted before it is read: a length's names
 //! before they are hashed, and each comparison, as many bytes as its names
@@ -140,18 +143,28 @@ fn number<'a>(
         }
     }
     drop(order);
-    let text = |b: u32| name(rows.as_slice().get(b as usize).copied().unwrap_or(0));
-    let names = buffer_names(&text, rows.len(), meter, hash)?;
+    // A buffer's first row, the least that names it, orders the buffers of
+    // one hash, so what a compile reads and counts depends on its rows and
+    // never on where their buffers lie in memory.
+    let first = |b: u32| rows.as_slice().get(b as usize).copied().unwrap_or(0);
+    let text = |b: u32| name(first(b));
+    let names = buffer_names(&Buffers { text, first }, rows.len(), meter, hash)?;
     for id in ids.as_mut_slice() {
         *id = names.as_slice().get(*id as usize).copied().unwrap_or(*id);
     }
     Ok((ids, rows.len()))
 }
 
-/// For each of `m` buffers (`text(b)` the `b`th, the buffers sorted by
-/// length), the number of the first buffer of its content.
+/// The buffers [`buffer_names`] names: `text(b)` the `b`th's bytes (the
+/// buffers sorted by length), `first(b)` the least row that names it.
+struct Buffers<T, F> {
+    text: T,
+    first: F,
+}
+
+/// For each of `m` buffers, the number of the first buffer of its content.
 fn buffer_names<'a>(
-    text: &impl Fn(u32) -> &'a [u8],
+    bufs: &Buffers<impl Fn(u32) -> &'a [u8], impl Fn(u32) -> u32>,
     m: usize,
     meter: &Arc<Meter>,
     hash: fn(&[u8]) -> u64,
@@ -166,6 +179,7 @@ fn buffer_names<'a>(
         tmp: MeteredVec::new(meter),
     };
     let mut start = 0;
+    let text = &bufs.text;
     while start < m {
         let len = text(id32(start)).len();
         let mut end = start + 1;
@@ -175,7 +189,7 @@ fn buffer_names<'a>(
         if end - start > 1 {
             one_length(
                 meter,
-                text,
+                bufs,
                 id32(start)..id32(end),
                 len,
                 hash,
@@ -190,16 +204,18 @@ fn buffer_names<'a>(
 
 /// The tables [`one_length`] reuses, each charged as it grows.
 struct Scratch {
-    hashes: MeteredVec<(u64, u32)>,
+    /// `(hash, first row, buffer)`.
+    hashes: MeteredVec<(u64, u32, u32)>,
     run: MeteredVec<u32>,
     tmp: MeteredVec<u32>,
 }
 
 /// Names the buffers `buffers`, all of `len` bytes: each hashed, and the
-/// buffers of one hash compared (module docs, "Work").
+/// buffers of one hash compared, in the order of their first rows (module
+/// docs, "Work").
 fn one_length<'a>(
     meter: &Meter,
-    text: &impl Fn(u32) -> &'a [u8],
+    bufs: &Buffers<impl Fn(u32) -> &'a [u8], impl Fn(u32) -> u32>,
     buffers: std::ops::Range<u32>,
     len: usize,
     hash: fn(&[u8]) -> u64,
@@ -210,7 +226,7 @@ fn one_length<'a>(
     s.hashes.truncate(0);
     for b in buffers {
         read(len);
-        s.hashes.push((hash(text(b)), b))?;
+        s.hashes.push((hash((bufs.text)(b)), (bufs.first)(b), b))?;
     }
     s.hashes.as_mut_slice().sort_unstable();
     let mut at = 0;
@@ -223,9 +239,9 @@ fn one_length<'a>(
         if to - at > 1 {
             s.run.truncate(0);
             for e in s.hashes.as_slice().get(at..to).unwrap_or_default() {
-                s.run.push(e.1)?;
+                s.run.push(e.2)?;
             }
-            one_hash(meter, text, len, s, names)?;
+            one_hash(meter, bufs, len, s, names)?;
         }
         at = to;
     }
@@ -237,11 +253,12 @@ fn one_length<'a>(
 /// each run of equal neighbours one name.
 fn one_hash<'a>(
     meter: &Meter,
-    text: &impl Fn(u32) -> &'a [u8],
+    bufs: &Buffers<impl Fn(u32) -> &'a [u8], impl Fn(u32) -> u32>,
     len: usize,
     s: &mut Scratch,
     names: &mut [u32],
 ) -> Result<(), TreeError> {
+    let text = &bufs.text;
     let k = s.run.len();
     let Some(&first) = s.run.as_slice().first() else {
         return Ok(());
@@ -271,7 +288,8 @@ fn one_hash<'a>(
         #[cfg(test)]
         COMPARED.with(|c| c.set(c.get() + 1));
         read(len);
-        Ok::<_, TreeError>(text(a).cmp(text(b)).then(a.cmp(&b)))
+        let row = &bufs.first;
+        Ok::<_, TreeError>(text(a).cmp(text(b)).then(row(a).cmp(&row(b))))
     })?;
     let mut leader = first;
     for (r, &b) in s.run.as_slice().iter().enumerate() {
