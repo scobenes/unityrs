@@ -32,6 +32,16 @@
 //! shrunk back to what the running walks pay for (review round 5: the
 //! charge was released before the entries left, and a key list kept the
 //! room a finished walk had paid for).
+//!
+//! **What a walk dereferences again** (review round 13): a flag a change
+//! made on the walk's own thread sets (its own lookups' loads, which are
+//! UnityPy's whole walk) is logged, once, in the walk's [`Fired`] list, so
+//! the walk learns which of its answers its own loads changed without
+//! reading every flag it holds (`super::container_index`'s `Revisits`). A
+//! change another thread makes sets the flag and logs nothing: the walk's
+//! next lookup of that external sees it, and no table index the walk has
+//! dereferenced is dereferenced again for it, so the walk's work never
+//! depends on what other threads load.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, RandomState};
@@ -44,18 +54,66 @@ use crate::error::Error;
 use crate::limits::{Charge, HASH_TABLE_SHARES, Meter, heap_cost};
 
 /// Set when a key it watches changes.
-#[derive(Debug, Default)]
-pub(crate) struct Flag(AtomicBool);
+#[derive(Debug)]
+pub(crate) struct Flag {
+    set: AtomicBool,
+    /// Its number among its walk's flags, from 0 in the order they were
+    /// set up.
+    id: usize,
+    /// Its walk's log.
+    log: Arc<Fired>,
+}
 
 impl Flag {
     /// Whether a key it watches changed since it was set up.
     pub(crate) fn changed(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.set.load(Ordering::Acquire)
+    }
+
+    /// Its number among its walk's flags.
+    pub(crate) fn id(&self) -> usize {
+        self.id
+    }
+
+    /// Sets it; the first time, on its walk's own thread, logs it in its
+    /// walk's [`Fired`] list (module docs).
+    fn fire(&self) {
+        if !self.set.swap(true, Ordering::AcqRel) && self.log.thread == thread_here() {
+            lock(&self.log.ids).push(self.id);
+        }
     }
 }
 
-/// What one flag costs its walk: its `Arc` in a glibc chunk.
-pub(crate) const FLAG: u64 = heap_cost((size_of::<Flag>() + 2 * size_of::<usize>()) as u64);
+/// A walk's log of its flags a change on the walk's own thread set, by
+/// number, each once (module docs).
+#[derive(Debug)]
+pub(crate) struct Fired {
+    /// The walk's thread ([`thread_here`]).
+    thread: usize,
+    ids: Mutex<Vec<usize>>,
+}
+
+thread_local! {
+    /// Its address names the thread that holds it while that thread runs.
+    static HERE: u8 = const { 0 };
+}
+
+/// A number no other running thread has: the address of this thread's
+/// [`HERE`] (a walk's flags live on its thread's stack, so its thread runs
+/// while any of them can be set).
+fn thread_here() -> usize {
+    HERE.with(|h| std::ptr::from_ref(h).addr())
+}
+
+/// What one flag costs its walk: its `Arc` in a glibc chunk, and its
+/// element in the walk's [`Fired`] list and in the list the walk takes it
+/// out into, each of which doubles.
+pub(crate) const FLAG: u64 =
+    heap_cost((size_of::<Flag>() + 2 * size_of::<usize>()) as u64) + 4 * size_of::<usize>() as u64;
+
+/// What a walk's [`Fired`] list costs it, made with its first flag: its
+/// `Arc` in a glibc chunk.
+pub(crate) const FIRED: u64 = heap_cost((size_of::<Fired>() + 2 * size_of::<usize>()) as u64);
 
 /// What one watch of one key costs its walk: its share of the map, and its
 /// element in the key's list and in the walk's own list, each twice (the
@@ -85,6 +143,8 @@ impl Watches {
         Walk {
             watches: self,
             hashes: Vec::new(),
+            fired: None,
+            flags: 0,
             charge: Charge::zero(meter),
         }
     }
@@ -102,8 +162,9 @@ impl Watches {
     }
 
     /// [`Self::notify`] of the key whose [`Self::hash`] is `hash`: when a
-    /// walk runs, every flag under it is set, and the key is watched no more
-    /// until a lookup watches it again.
+    /// walk runs, every flag under it is set (and logged, on its walk's own
+    /// thread: module docs), and the key is watched no more until a lookup
+    /// watches it again.
     pub(crate) fn notify_hash(&self, hash: u64) {
         if !self.active() {
             return;
@@ -111,7 +172,7 @@ impl Watches {
         let flags = lock(&self.map).remove(&hash);
         for flag in flags.into_iter().flatten() {
             if let Some(flag) = flag.upgrade() {
-                flag.0.store(true, Ordering::Release);
+                flag.fire();
             }
         }
     }
@@ -139,7 +200,12 @@ pub(crate) struct Walk<'a> {
     watches: &'a Watches,
     /// Every hash it watched, once per watch.
     hashes: Vec<u64>,
-    /// [`FLAG`] per flag and [`WATCH_SHARE`] per watch of a key.
+    /// Its flags' log, made with the first.
+    fired: Option<Arc<Fired>>,
+    /// The flags it has set up: the next one's number.
+    flags: usize,
+    /// [`FIRED`] once, [`FLAG`] per flag and [`WATCH_SHARE`] per watch of a
+    /// key.
     charge: Charge,
 }
 
@@ -152,11 +218,32 @@ impl Walk<'_> {
     /// A flag set at the next change to any of `hashes`, to be set up before
     /// the lookup that reads them, charged first ([`FLAG`], and
     /// [`WATCH_SHARE`] per hash); a refusal sets up nothing.
+    /// Its number ([`Flag::id`]) is the count of the walk's flags set up
+    /// before it.
     pub(crate) fn watch(&mut self, hashes: &[u64]) -> Result<Arc<Flag>, Error> {
         let n = u64::try_from(hashes.len()).unwrap_or(u64::MAX);
-        self.charge
-            .grow(WATCH_SHARE.saturating_mul(n).saturating_add(FLAG))?;
-        let flag = Arc::new(Flag::default());
+        let first = if self.fired.is_none() { FIRED } else { 0 };
+        self.charge.grow(
+            WATCH_SHARE
+                .saturating_mul(n)
+                .saturating_add(FLAG)
+                .saturating_add(first),
+        )?;
+        let log = self
+            .fired
+            .get_or_insert_with(|| {
+                Arc::new(Fired {
+                    thread: thread_here(),
+                    ids: Mutex::new(Vec::new()),
+                })
+            })
+            .clone();
+        let flag = Arc::new(Flag {
+            set: AtomicBool::new(false),
+            id: self.flags,
+            log,
+        });
+        self.flags += 1;
         {
             let mut map = lock(&self.watches.map);
             for &h in hashes {
@@ -165,6 +252,15 @@ impl Walk<'_> {
         }
         self.hashes.extend_from_slice(hashes);
         Ok(flag)
+    }
+
+    /// The numbers of its flags a change on its own thread set since the
+    /// last call, each once over the walk (module docs).
+    pub(crate) fn fired(&self) -> Vec<usize> {
+        self.fired
+            .as_ref()
+            .map(|f| std::mem::take(&mut *lock(&f.ids)))
+            .unwrap_or_default()
     }
 
     /// What the walk's charge holds, for a test.

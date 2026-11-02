@@ -211,7 +211,9 @@ fn spanning(n: usize, distinct: bool) -> Vec<u8> {
 /// The container preload dereferences each table index once and resolves
 /// each external once, however many rows' spans cover them (review round
 /// 1: every row walked its whole span, so `n` rows over one `n`-pointer
-/// table made `n`² dereferences). Counted in steps, never by a clock.
+/// table made `n`² dereferences), and counts no work on the walking file's
+/// meter while no load changes an answer (what a walk does again is
+/// counted: `tests/env/revisit.rs`). Counted in steps, never by a clock.
 #[test]
 fn the_preload_dereferences_each_table_index_once() {
     const N: usize = 64;
@@ -223,7 +225,15 @@ fn the_preload_dereferences_each_table_index_once() {
             o.resolver = Some(asked.clone());
             let env = Environment::new(o);
             env.load(src("CAB-S", &spanning(N, distinct))).unwrap();
+            let walked = serialized_cab(&env, "cab-s");
+            walked.container().unwrap();
+            let before = walked.meter().decoded();
             assert_eq!(env.container().unwrap().count(), N);
+            assert_eq!(
+                walked.meter().decoded(),
+                before,
+                "{mode:?} distinct {distinct}: work"
+            );
             let want = if distinct { N } else { 1 };
             assert_eq!(
                 env.stats().preload_dereferences,

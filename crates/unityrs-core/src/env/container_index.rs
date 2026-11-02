@@ -11,6 +11,7 @@ use std::sync::atomic::Ordering;
 
 use super::deref::Reached;
 use super::registry::{Rank, SlotKind, load_keys_here};
+use super::revisit::Pending;
 use super::watch::{Flag, Walk};
 use super::{Cab, DerefError, Environment, Found, LoadMode, PPtr, never_evicts, pptr};
 use crate::budget::Reservation;
@@ -22,6 +23,7 @@ use crate::object::ObjectRef;
 use crate::once::CellError;
 use crate::pystr::{clean_external_path, py_lower, simplify_name};
 use crate::raw::RawStr;
+use crate::walk::STEP_WORK;
 
 /// The iterator [`Environment::container`] returns, CABs in registry order.
 pub struct ContainerItems<'a> {
@@ -134,54 +136,12 @@ impl Siblings {
     }
 }
 
-/// The skip list of a preload walk: `next[i]` leads to the first table
-/// index from `i` not yet dereferenced (a disjoint-set forest whose finds
-/// compress their paths), so each index is dereferenced once however many
-/// rows' spans cover it.
-struct Undone(MeteredVec<usize>);
-
-impl Undone {
-    fn new(len: usize, meter: &Arc<Meter>) -> Result<Self, Error> {
-        let mut next = MeteredVec::with_capacity(meter, len.saturating_add(1))?;
-        for i in 0..=len {
-            next.push(i)?;
-        }
-        Ok(Self(next))
-    }
-
-    /// The first index from `i` not yet done (the table's length past it).
-    fn find(&mut self, i: usize) -> usize {
-        let next = self.0.as_mut_slice();
-        let mut root = i;
-        while let Some(&n) = next.get(root) {
-            if n == root {
-                break;
-            }
-            root = n;
-        }
-        let mut at = i;
-        while let Some(n) = next.get_mut(at) {
-            let up = *n;
-            if up == root {
-                break;
-            }
-            *n = root;
-            at = up;
-        }
-        root
-    }
-
-    /// Marks `i` done.
-    fn done(&mut self, i: usize) {
-        if let Some(n) = self.0.as_mut_slice().get_mut(i) {
-            *n = i.saturating_add(1);
-        }
-    }
-}
-
 /// What one external costs a preload walk's map of answers:
 /// [`HASH_TABLE_SHARES`] buckets.
 const TARGET_SHARE: u64 = HASH_TABLE_SHARES * (size_of::<i32>() + size_of::<Known>() + 1) as u64;
+
+/// No table index: the end of a list in [`Targets::next`].
+const NONE: usize = usize::MAX;
 
 /// A preload walk's answers for its file's externals, each kept only while
 /// UnityPy's next dereference would give the same one: a bundle sibling, or
@@ -196,20 +156,37 @@ const TARGET_SHARE: u64 = HASH_TABLE_SHARES * (size_of::<i32>() + size_of::<Know
 /// walk matched a longer file name by suffix). An external is looked up
 /// once, and once more per change to one of its keys, so a walk costs its
 /// table and its externals' names (plan decision 11), plus a lookup per
-/// change another thread makes to a key it asked (review round 4: every
-/// change, any thread's, expired every answer, so a table of pointers to
-/// long names cost the table times the names).
+/// change to a key it asked, each counted as work on the walking file's
+/// meter (`STEP_WORK` and the external's path's bytes; review round 4:
+/// every change, any thread's, expired every answer, so a table of pointers
+/// to long names cost the table times the names).
+///
+/// Each answer with a flag (one of `files`, the registry or the resolver's
+/// load) lists the table indexes dereferenced under it (`answers`, linked
+/// through `next`), so when a load of the walk's own sets its flag
+/// ([`Walk::fired`]) those indexes are dereferenced again at the next row
+/// whose span reaches them (review round 13: a walk that dereferenced each
+/// index once never gave a later row's path to the file a load in between
+/// put under the key the index's external resolves through).
 ///
 /// [`LoadMode::Lazy`]: super::LoadMode::Lazy
 ///
 /// Each charge is released after the memory it pays for (plan section 3.15):
-/// fields drop in order, so `known` (with the flags) goes first, then the
-/// walk's watches with their own charge, then `known`'s charge (review
-/// round 5: the watches' charge was released before their entries left the
-/// map).
+/// fields drop in order, so `known` and `answers` (with the flags) go
+/// first, then the walk's watches with their own charge, then `known`'s
+/// charge (review round 5: the watches' charge was released before their
+/// entries left the map).
 struct Targets<'a> {
     known: HashMap<i32, Known>,
-    /// After `known`, so the flags drop before the watches end.
+    /// Every flag the walk set up, by its number, with the head of the list
+    /// of table indexes dereferenced under its answer.
+    answers: MeteredVec<Answer>,
+    /// Each table index's next in its answer's list, made at the first
+    /// link: an index is in one list at most, the one of the answer it last
+    /// got, and leaves it when the list is taken.
+    next: Option<MeteredVec<usize>>,
+    /// After `known` and `answers`, so the flags drop before the watches
+    /// end.
     walk: Walk<'a>,
     /// `known`'s table, after it.
     charge: Charge,
@@ -218,9 +195,30 @@ struct Targets<'a> {
 /// One external's answer in [`Targets`].
 struct Known {
     found: Option<Found>,
+    /// Whether the walk keeps it: not the resolver's load, which the next
+    /// dereference asks again.
+    kept: bool,
     /// Set when a key its lookup read changes; `None`: kept for the walk (a
     /// sibling, a file id past the end).
     flag: Option<Arc<Flag>>,
+}
+
+/// The table indexes dereferenced under one flag's answer: the head of a
+/// list linked through [`Targets::next`].
+struct Answer {
+    /// Kept alive while the walk runs, so a change sets it: a resolver
+    /// load's flag lives here only.
+    _flag: Arc<Flag>,
+    head: usize,
+}
+
+/// The work a preload walk counts on its file's meter for each index it
+/// puts back to be dereferenced again ([`Targets::reopen`]): a step for the
+/// dereference, and one per level of the [`Pending`] set for putting the
+/// index back (the find and the removal that dereference makes read no
+/// more words than a first dereference's).
+fn reopen_work(pending: &Pending) -> u64 {
+    STEP_WORK.saturating_mul(1 + u64::try_from(pending.levels()).unwrap_or(u64::MAX))
 }
 
 impl Targets<'_> {
@@ -228,21 +226,62 @@ impl Targets<'_> {
     fn kept(&self, file_id: i32) -> Option<&Known> {
         self.known
             .get(&file_id)
-            .filter(|k| k.flag.as_ref().is_none_or(|f| !f.changed()))
+            .filter(|k| k.kept && k.flag.as_ref().is_none_or(|f| !f.changed()))
     }
 
-    /// Keeps `found` for `file_id` while `flag` is unset (`None`: for the
-    /// walk).
+    /// Records `found` for `file_id`, kept (`kept`) while `flag` is unset
+    /// (`None`: for the walk).
     fn keep(
         &mut self,
         file_id: i32,
         found: Option<Found>,
+        kept: bool,
         flag: Option<Arc<Flag>>,
     ) -> Result<(), Error> {
         if !self.known.contains_key(&file_id) {
             self.charge.grow(TARGET_SHARE)?;
         }
-        self.known.insert(file_id, Known { found, flag });
+        self.known.insert(file_id, Known { found, kept, flag });
+        Ok(())
+    }
+
+    /// Lists table index `i` (of a table of `len`) under the answer of flag
+    /// `id`.
+    fn link(&mut self, i: usize, id: usize, len: usize, meter: &Arc<Meter>) -> Result<(), Error> {
+        if self.next.is_none() {
+            let mut n = MeteredVec::with_capacity(meter, len)?;
+            for _ in 0..len {
+                n.push(NONE)?;
+            }
+            self.next = Some(n);
+        }
+        if let (Some(answer), Some(slot)) = (
+            self.answers.as_mut_slice().get_mut(id),
+            self.next.as_mut().and_then(|n| n.as_mut_slice().get_mut(i)),
+        ) {
+            *slot = answer.head;
+            answer.head = i;
+        }
+        Ok(())
+    }
+
+    /// Puts back into `pending` every table index listed under an answer
+    /// whose flag a load of the walk's own set since the last call, each
+    /// counted on `meter` first ([`reopen_work`]); the lists are taken, so
+    /// an index is put back once per dereference.
+    fn reopen(&mut self, pending: &mut Pending, meter: &Meter) -> Result<(), Error> {
+        for id in self.walk.fired() {
+            let Some(answer) = self.answers.as_mut_slice().get_mut(id) else {
+                continue;
+            };
+            let mut i = std::mem::replace(&mut answer.head, NONE);
+            let links = self.next.as_ref().map(MeteredVec::as_slice);
+            while i != NONE {
+                meter.count_work(reopen_work(pending))?;
+                pending.insert(i);
+                i = links.and_then(|l| l.get(i)).copied().unwrap_or(NONE);
+            }
+        }
         Ok(())
     }
 }
@@ -452,25 +491,39 @@ impl Environment {
     /// file's `path_dict` unless it has one (`setdefault`);
     /// `FileNotFoundError` and `KeyError` skipped, any other failure raised.
     ///
-    /// Linear in the rows, the table and the externals (plan decision 11),
-    /// where UnityPy's loop is quadratic (every row walks its whole span):
-    /// each table index is dereferenced once ([`Undone`]), at the first row
-    /// whose span reaches it, which is the row whose `setdefault` UnityPy
-    /// keeps; each external's answer is kept while it holds ([`Targets`]),
-    /// so an external is looked up once, and once more per change to a key
-    /// its lookup read, under every option set and whatever other keys other
-    /// threads change meanwhile (`EnvStats::preload_lookups` counts them);
-    /// each bundle's names indexed once per pass ([`Siblings`]), and each
-    /// row's path copied once, charged to this file's meter. A dereference
-    /// of an external answered before answers as UnityPy's would:
-    /// `find_file` registers what it loads under the path it found, whose
-    /// basename is the name asked when the walk found that name, and a
+    /// UnityPy's loop is quadratic (every row walks its whole span). Here a
+    /// table index is dereferenced at the first row whose span reaches it,
+    /// and at a later row only once a load of the walk's own has changed a
+    /// key its external's lookup read since its last dereference
+    /// ([`Pending`], and the lists of [`Targets`]): UnityPy's dereference
+    /// that gives the file the last one gave sets nothing (`setdefault`), so
+    /// each file a dereference reaches gets the path of the first row that
+    /// reaches it there, as in UnityPy (review round 13: each index was
+    /// dereferenced once, so the file a load in between put under its
+    /// external's key got no later row's path). Each external's answer is
+    /// kept while it holds ([`Targets`]), so an external is looked up once,
+    /// and once more per change to a key its lookup read, under every option
+    /// set and whatever other keys other threads change meanwhile
+    /// (`EnvStats::preload_lookups` counts them); each bundle's names indexed
+    /// once per pass ([`Siblings`]), and each row's path copied once, charged
+    /// to this file's meter. So a walk no load changes is linear in the
+    /// rows, the table and the externals (plan decision 11, counting no
+    /// work), and what changes make it do again (an index put back, an
+    /// external looked up again) is counted as work on this file's meter,
+    /// whose allowance bounds a table whose own loads change its answers
+    /// over and over ([`crate::LimitKind::DecodeWork`]).
+    ///
+    /// A dereference of an external answered before answers as UnityPy's
+    /// would: `find_file` registers what it loads under the path it found,
+    /// whose basename is the name asked when the walk found that name, and a
     /// longer one when it matched a file name by suffix (`ab.assets` finds
     /// `xab.assets`, `environment.py:345-354`), so every dereference of that
-    /// external loads it again and the last copy keeps its key. Where rows'
-    /// spans overlap, an index is still dereferenced once, so such an
-    /// external is loaded once per index, not once per row and index
-    /// (`PARITY.md` section 19.3).
+    /// external loads it again and the last copy keeps its key. The index
+    /// that loaded such a copy is dereferenced again only once a change to a
+    /// key its lookup read makes the name it asked findable; until then,
+    /// where rows' spans overlap, the external is loaded once per index, not
+    /// once per row and index (`PARITY.md` section 19.3; plan section 9,
+    /// Q11).
     fn preload(
         &self,
         sf: &Arc<SerializedFile>,
@@ -486,9 +539,11 @@ impl Environment {
             detail: detail.into(),
         };
         let meter = sf.meter();
-        let mut undone: Option<Undone> = None;
+        let mut pending: Option<Pending> = None;
         let mut targets = Targets {
             known: HashMap::new(),
+            answers: MeteredVec::new(meter),
+            next: None,
             walk: self.inner.registry.watches().start(meter),
             charge: Charge::zero(meter),
         };
@@ -510,24 +565,33 @@ impl Environment {
             let (Ok(s), Ok(e)) = (usize::try_from(start), usize::try_from(start + size)) else {
                 continue;
             };
-            let undone = match &mut undone {
+            let pending = match &mut pending {
                 Some(u) => u,
-                None => undone.insert(Undone::new(table.len(), meter)?),
+                None => pending.insert(Pending::full(table.len(), meter)?),
             };
             let mut path: Option<Option<RawStr>> = None;
-            let mut j = undone.find(s);
-            while j < e {
-                undone.done(j);
+            let mut next = pending.first_from(s);
+            while let Some(j) = next.filter(|&j| j < e) {
+                pending.remove(j);
+                next = pending.first_from(j.saturating_add(1));
                 // An element that is no pointer raises (PARITY.md 19.3).
                 let Some(p) = table.get(j).copied().flatten() else {
                     return Err(malformed("a preload table element is not a pointer"));
                 };
                 if !p.is_set() {
-                    j = undone.find(j.saturating_add(1));
                     continue;
                 }
                 self.inner.preload_derefs.fetch_add(1, Ordering::Relaxed);
-                if let Some(target) = self.preload_target(sf, p, &mut targets, siblings)?
+                let (target, answer) = self.preload_target(sf, p, &mut targets, siblings)?;
+                if let Some(id) = answer {
+                    targets.link(j, id, table.len(), meter)?;
+                }
+                // What this dereference's loads changed, this index's own
+                // answer included, is dereferenced again from the next row
+                // on, or later in this one past `j`.
+                targets.reopen(pending, meter)?;
+                next = pending.first_from(j.saturating_add(1));
+                if let Some(target) = target
                     && !self.may_reopen(target.file())
                 {
                     let tf = target.file();
@@ -551,58 +615,82 @@ impl Environment {
                     tf.container()?
                         .set_default(p.path_id, path.as_ref(), &stamp, tf.meter())?;
                 }
-                j = undone.find(j.saturating_add(1));
             }
         }
         Ok(())
     }
 
     /// `pptr.deref()` for a preload element: the object, or `None` where the
-    /// preload skips (`FileNotFoundError`, `KeyError`). An external's answer
-    /// is kept in `targets` while it holds (charged to its charge).
+    /// preload skips (`FileNotFoundError`, `KeyError`); and the number of
+    /// the flag whose setting changes the answer (`None`: an answer for the
+    /// walk, the own file's, a sibling's or a file id past the end). An
+    /// external's answer is kept in `targets` while it holds (charged to its
+    /// charge); a lookup of an external the walk looked up before is
+    /// counted as work on `sf`'s meter first (`STEP_WORK` and the bytes of
+    /// the external's path, which the lookup cleans, simplifies and hashes).
     fn preload_target(
         &self,
         sf: &Arc<SerializedFile>,
         p: PPtr,
         targets: &mut Targets,
         siblings: &mut Siblings,
-    ) -> Result<Option<ObjectRef>, Error> {
-        let found = if p.file_id == 0 {
-            Some(Found::File(File::Serialized(sf.clone())))
+    ) -> Result<(Option<ObjectRef>, Option<usize>), Error> {
+        let (found, answer) = if p.file_id == 0 {
+            (Some(Found::File(File::Serialized(sf.clone()))), None)
         } else if let Some(k) = targets.kept(p.file_id) {
-            k.found.clone()
+            (k.found.clone(), k.flag.as_ref().map(|f| f.id()))
         } else {
+            if targets.known.contains_key(&p.file_id) {
+                let bytes = Self::external_path(sf, p.file_id).map_or(0, <[u8]>::len);
+                sf.meter().count_work(
+                    STEP_WORK.saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX)),
+                )?;
+            }
             self.inner.preload_lookups.fetch_add(1, Ordering::Relaxed);
             // Watched before the lookup reads, so no change it misses is
-            // missed by the flag.
+            // missed by the flag; its answer's list made first, so the flag's
+            // number is its place there.
             let keys = Self::lookup_keys(sf, p.file_id, &targets.walk)?;
+            targets.answers.reserve(1)?;
             let flag = targets.walk.watch(&keys)?;
+            let id = flag.id();
+            targets.answers.push(Answer {
+                _flag: flag.clone(),
+                head: NONE,
+            })?;
             #[cfg(test)]
             self.inner.registry.hook(super::registry::Hook::Watched);
-            // What to keep: `Some(until_a_change)`, or `None` nothing.
-            let (found, keep) = match self.external(sf, p.file_id, Some(siblings)) {
-                Ok((t, Reached::Sibling)) => (Some(t), Some(false)),
-                Ok((t, Reached::Lookup)) => (Some(t), Some(true)),
-                Ok((t, Reached::Load)) => (Some(t), None),
-                Err(DerefError::FileIdPastEnd { .. }) => (None, Some(false)),
-                Err(DerefError::NotFound { .. }) => (None, Some(true)),
+            // What to record: kept until a change, kept for the walk, or
+            // not kept (the resolver's load).
+            let (found, kept, flag) = match self.external(sf, p.file_id, Some(siblings)) {
+                Ok((t, Reached::Sibling)) => (Some(t), true, None),
+                Ok((t, Reached::Lookup)) => (Some(t), true, Some(flag)),
+                Ok((t, Reached::Load)) => (Some(t), false, Some(flag)),
+                Err(DerefError::FileIdPastEnd { .. }) => (None, true, None),
+                Err(DerefError::NotFound { .. }) => (None, true, Some(flag)),
                 Err(e) => return Err(deref_error(e)),
             };
-            match keep {
-                Some(true) => targets.keep(p.file_id, found.clone(), Some(flag))?,
-                Some(false) => targets.keep(p.file_id, found.clone(), None)?,
-                None => {}
-            }
-            found
+            let answer = flag.is_some().then_some(id);
+            targets.keep(p.file_id, found.clone(), kept, flag)?;
+            (found, answer)
         };
         let Some(found) = found else {
-            return Ok(None);
+            return Ok((None, answer));
         };
         match Self::object_of(&found, p.path_id) {
-            Ok(o) => Ok(Some(o)),
-            Err(DerefError::MissingObject { .. }) => Ok(None),
+            Ok(o) => Ok((Some(o), answer)),
+            Err(DerefError::MissingObject { .. }) => Ok((None, answer)),
             Err(e) => Err(deref_error(e)),
         }
+    }
+
+    /// External `file_id`'s stored path, if `sf` has that external.
+    fn external_path(sf: &SerializedFile, file_id: i32) -> Option<&[u8]> {
+        let externals = sf.externals();
+        pptr::external_index(file_id, externals.len())
+            .ok()
+            .and_then(|i| externals.get(i))
+            .map(|e| e.path.as_bytes())
     }
 
     /// The keys external `file_id`'s lookup read past `sf`'s bundle names
