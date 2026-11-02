@@ -58,7 +58,6 @@ pub mod select;
 pub mod text;
 pub mod values;
 
-use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -150,10 +149,9 @@ pub struct DumpOptions {
     pub levels: Levels,
     /// Inputs dumped at once.
     pub jobs: usize,
-    /// The core context every input is read with.
+    /// The core context every input is read with; `--tpk`'s provider is
+    /// in its chain ([`DumpOptions::with_tpk`]).
     pub context: Arc<FileContext>,
-    /// The TPK the typetree provider loads for stripped objects (`--tpk`).
-    pub tpk_path: Option<std::path::PathBuf>,
     /// The gate's G1c (plan section 6, `--reverse-prepass`): before an input is
     /// dumped, every entry of every bundle in it is parsed in reverse
     /// directory order, nested bundles' included, with nothing decoded up
@@ -170,7 +168,6 @@ impl Default for DumpOptions {
             levels: Levels::ALL,
             jobs: 1,
             context: Arc::new(FileContext::unitypy()),
-            tpk_path: None,
             lazy_reverse: false,
             unbounded: Vec::new(),
         }
@@ -283,7 +280,6 @@ impl DumpOptions {
         let mut context = FileContext::clone(&self.context);
         context.providers = Arc::new(ProviderChain::new(vec![Arc::new(tpk)]));
         self.context = Arc::new(context);
-        self.tpk_path = Some(path.to_path_buf());
         Ok(self)
     }
 }
@@ -395,32 +391,6 @@ pub fn end_line(files: u64, objects: u64) -> String {
 #[must_use]
 pub fn dump_input(rel: &[u8], data: unityrs_core::Bytes, opts: &DumpOptions) -> InputDump {
     input::dump_input(rel, data, opts)
-}
-
-/// Dumps every file under `root`, in bytewise path order, to `out` (gzip,
-/// level 9, mtime 0, as the oracle writes). Returns the `file` and `object`
-/// record counts.
-pub fn dump_tree(
-    root: &Path,
-    opts: &DumpOptions,
-    out: &mut dyn Write,
-) -> std::io::Result<(u64, u64)> {
-    let sel = select::Selection {
-        inputs: vec![root.to_path_buf()],
-        ..select::Selection::default()
-    };
-    let inputs = select::collect(&sel).map_err(std::io::Error::other)?;
-    let mut gz = run::gzip(out);
-    let counts = run::write_dump(
-        &inputs,
-        opts,
-        &mut gz,
-        &mut |_, _| Ok(()),
-        &|rel, data, m| input::dump_on(rel, data, m, opts),
-    )
-    .map_err(std::io::Error::other)?;
-    gz.finish()?;
-    Ok(counts)
 }
 
 #[cfg(test)]
@@ -537,7 +507,6 @@ mod tests {
         let plain = super::DumpOptions::default();
         assert!(plain.context.providers.is_empty());
         let opts = plain.with_tpk(&good).unwrap();
-        assert_eq!(opts.tpk_path.as_deref(), Some(good.as_path()));
         let version =
             UnityVersion::from_packed(case["versions"][0].as_str().unwrap().parse().unwrap());
         let found = |class_id| {

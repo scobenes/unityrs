@@ -268,6 +268,6 @@ mod tests {
         let e = opts(&["x", "-o", "y", "--tpk", "/nonexistent/t.tpk"]).unwrap_err();
         assert!(e.starts_with("--tpk /nonexistent/t.tpk: "), "{e}");
         let o = opts(&["x", "-o", "y"]).unwrap();
-        assert!(o.dump.tpk_path.is_none() && o.dump.context.providers.is_empty());
+        assert!(o.dump.context.providers.is_empty());
     }
 }
