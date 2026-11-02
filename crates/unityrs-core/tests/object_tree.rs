@@ -321,7 +321,8 @@ fn trees_resolve_in_unitypys_order() {
     assert_eq!(
         o.write_typetree(&value, None, WriteRules::UnityPy),
         Err(WriteError::NoTypeTree {
-            class_id: o.class_id()
+            class_id: o.class_id(),
+            why: None,
         })
     );
 }

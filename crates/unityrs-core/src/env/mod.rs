@@ -113,12 +113,16 @@
 //!   asked, their objects are in `env.objects` and their CABs' rows in
 //!   `env.container`, and a second fallback loads the file again and
 //!   replaces the entry in place;
-//! - `find_file` loads a file **as a dependency**, keyed by the path it
-//!   resolved (`env.path` joined with the name: `load_file` keys a path by
-//!   itself); `env.objects` and `env.container` skip it, and since
+//! - `find_file` loads a file **as a dependency** (its `is_dependency`
+//!   defaults to true, and a dereference takes the default), keyed by the
+//!   path it resolved (`env.path` joined with the name: `load_file` keys a
+//!   path by itself); `env.objects` and `env.container` skip it, and since
 //!   `env.container` walks `env.cabs`, where a dependency's CAB replaces a
 //!   CAB of the same key, the replaced file's rows leave the container while
-//!   its objects stay in `env.objects`, which walks `env.files`.
+//!   its objects stay in `env.objects`, which walks `env.files`. With
+//!   `is_dependency=False` the file is a caller's load under that key. A raw
+//!   reader carries no flag (`parse_file` returns the reader itself), so it
+//!   is no dependency to `getattr(f, "is_dependency", False)`.
 //!
 //! [`EnvOptions::keep_resolver_loads`] (true in [`EnvOptions::unitypy`]) does
 //! exactly that: [`Environment::files`] lists each resolver load as a
@@ -352,6 +356,27 @@ pub trait CabResolver: Send + Sync + fmt::Debug {
     /// `env.path`; else the case-insensitive match `find_sensitive_path`
     /// finds under `env.path`; else nothing (`environment.py:110-137`).
     fn resolve(&self, name: &[u8]) -> Option<Source>;
+
+    /// What `find_file` gets for `name` (the first kind above), where the
+    /// registry has no CAB of it: [`Self::resolve`]'s source by default, a
+    /// miss `None`. UnityPy's walk answers a miss two ways
+    /// (`environment.py:330-354`): `None` where `load_file` cannot open the
+    /// path it matched (a broken link, or a basename it lower-cased, which
+    /// on a case-sensitive file system names no file), and
+    /// `FileNotFoundError` where it matched nothing. A resolver that tells
+    /// them apart (the bindings') returns the second as
+    /// `Err(Error::NotFound(NotFound::Cab(name)))`
+    /// ([`crate::error::NotFound::Cab`]): [`Environment::find_file`] returns
+    /// it as it is, and a dereference, which raises `FileNotFoundError`
+    /// either way (`classes/PPtr.py:80-85`), fails with
+    /// [`DerefError::NotFound`], which a container preload skips as
+    /// UnityPy's skips every `FileNotFoundError`. Any other error fails the
+    /// call that asked. An error returned here is the caller's code's, a
+    /// pool refusal in it counted as it enters the core, as a fetcher's is
+    /// ([`Fetch::fetch`]).
+    fn find_file(&self, name: &[u8]) -> Result<Option<Source>, Error> {
+        Ok(self.resolve(name))
+    }
 }
 
 /// Environment options.

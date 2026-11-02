@@ -12,7 +12,7 @@ use std::sync::{Arc, OnceLock};
 use unityrs_core::budget::{Reservation, Unbounded};
 use unityrs_core::limits::{Charge, ChargeError, Limits, Meter, MeteredVec, heap_cost};
 use unityrs_core::once::get_or_publish;
-use unityrs_core::provider::{ProviderError, TreeRequest, TypeTreeProvider};
+use unityrs_core::provider::{NoTree, ProviderError, TreeRequest, TypeTreeProvider};
 use unityrs_core::typetree::commonstring::CommonStrings;
 use unityrs_core::typetree::{NodeList, Tree, TreeError};
 use unityrs_core::{LimitError, LimitKind, UnityVersion};
@@ -212,25 +212,31 @@ impl TpkProvider {
         version: &UnityVersion,
     ) -> Result<Option<Arc<NodeList>>, ProviderError> {
         match self.entry(class_id, version) {
-            Some(root) => self.rows_of(root),
-            None => Ok(None),
+            Ok(root) => self.rows_of(root),
+            Err(_) => Ok(None),
         }
     }
 
     /// `TPKTYPETREE.ClassInformation[class_id].getVersionedClass(version)`
     /// (`Tpk.py:49-51`), then `generate_node`'s assertion (`:64`): the
-    /// picked entry's release root; `None` where UnityPy raises `KeyError`
-    /// (no such class), `ValueError` (no entry at or below the version, or
-    /// the class removed there) or `AssertionError` (no release root).
-    fn entry(&self, class_id: i32, version: &UnityVersion) -> Option<&Root> {
-        let entries = self.blob.classes.get(class_id)?;
-        let at = get_item_for_version(version, entries)?;
-        let id = entries.get(at)?.class?.release_root?;
+    /// picked entry's release root, or the exception UnityPy raises
+    /// ([`NoTree`]): `KeyError` (no such class), `ValueError` (no entry at
+    /// or below the version, or the class removed there) or
+    /// `AssertionError` (no release root). Every root a kept entry names is
+    /// in `roots` (built from them at load).
+    fn entry(&self, class_id: i32, version: &UnityVersion) -> Result<&Root, NoTree> {
+        let entries = self
+            .blob
+            .classes
+            .get(class_id)
+            .ok_or(NoTree::UnknownClass)?;
+        let at = get_item_for_version(version, entries).ok_or(NoTree::NoEntry)?;
+        let class = entries.get(at).and_then(|e| e.class);
+        let id = class.ok_or(NoTree::NoEntry)?.release_root;
         let roots = self.roots.as_slice();
-        roots
-            .binary_search_by_key(&id, |r| r.id)
-            .ok()
+        id.and_then(|id| roots.binary_search_by_key(&id, |r| r.id).ok())
             .and_then(|at| roots.get(at))
+            .ok_or(NoTree::NoReleaseRoot)
     }
 
     fn rows_of(&self, root: &Root) -> Outcome<NodeList> {
@@ -493,7 +499,7 @@ impl TypeTreeProvider for TpkProvider {
     /// after a refused compile it compiles the rows the walk kept (review
     /// round 6: this said it walked again either way).
     fn tree(&self, req: &TreeRequest<'_>) -> Result<Option<Arc<Tree>>, ProviderError> {
-        let Some(root) = self.entry(req.class_id, req.version) else {
+        let Ok(root) = self.entry(req.class_id, req.version) else {
             return Ok(None);
         };
         if let Some(kept) = root.tree.get() {
@@ -512,6 +518,22 @@ impl TypeTreeProvider for TpkProvider {
                 })
         };
         self.publish(&root.tree, compile())
+    }
+
+    /// The exception UnityPy raises where [`Self::tree`] answers `None`
+    /// ([`TpkProvider::node_list`]'s cases). With no version (a file below
+    /// format 7), `ClassInformation[class_id]` raises `KeyError` first,
+    /// then `get_item_for_version` compares `None` with the class's first
+    /// entry, `NotImplementedError`, or with no entry raises `ValueError`.
+    fn why_none(&self, class_id: i32, version: Option<&UnityVersion>) -> Option<NoTree> {
+        match version {
+            Some(v) => self.entry(class_id, v).err(),
+            None => Some(match self.blob.classes.get(class_id) {
+                None => NoTree::UnknownClass,
+                Some([]) => NoTree::NoEntry,
+                Some(_) => NoTree::NoVersion,
+            }),
+        }
     }
 }
 

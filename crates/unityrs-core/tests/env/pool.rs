@@ -336,7 +336,13 @@ fn lookups(env: &Environment, keys: &[String], meter: &Arc<Meter>) -> Vec<String
         let name = RawStr::from(k.to_uppercase().as_str());
         out.push(answer(k, env.registry().get(&name, &Meter::unlimited())));
         out.push(answer(k, env.get_cab(&name, meter)));
-        out.push(answer(k, env.find_file(&name, meter)));
+        out.push(match env.find_file(&name, true, meter) {
+            Ok(Some(File::Serialized(sf))) => format!("{k}: {}", sf.name()),
+            Ok(Some(File::Raw(_))) => format!("{k}: raw"),
+            Ok(Some(f)) => format!("{k}: {:?}", f.file_type()),
+            Ok(None) => format!("{k}: none"),
+            Err(e) => format!("{k}: {e}"),
+        });
     }
     out
 }

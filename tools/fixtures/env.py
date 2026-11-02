@@ -23,7 +23,11 @@ temporary `env.path`; a key under it is written `@/<name>`. Each scene of
 (`load_file(..., is_dependency=True)`), then lists the container, asks
 every object its `container` path, and dereferences every pointer and reads
 every resource of the objects of the files it loaded as dependencies (which
-`env.objects` leaves out), the state recorded after each step.
+`env.objects` leaves out), the state recorded after each step. Each scene of
+`find_scenes` loads its files, then calls `env.find_file(name, is_dependency)`
+for each of its asks, recording what it returns (its kind, its name and
+contents, and the `env.files` and `env.cabs` keys that hold that very
+object) or the exception it raises, and the state after each step.
 
 `resolver.json`: the names UnityPy's lookups hand on where it looks in
 `env.path` (the core's `CabResolver`): a resource read's fallback and a
@@ -66,7 +70,7 @@ import scratch  # noqa: E402
 import UnityPy  # noqa: E402
 from UnityPy.classes import PPtr  # noqa: E402
 from UnityPy.environment import reSplit  # noqa: E402
-from UnityPy.files import SerializedFile  # noqa: E402
+from UnityPy.files import BundleFile, SerializedFile, WebFile  # noqa: E402
 from UnityPy.helpers.ResourceReader import get_resource_data  # noqa: E402
 
 from env_paths import kind, path_case, path_inputs  # noqa: E402
@@ -76,8 +80,9 @@ from scaffold import dump  # noqa: E402
 
 
 def scene_inputs() -> list[dict]:
-    """unityrs-testkit's env::scenes() and env::dependency_scenes() (a line
-    with a `dependencies` key), as the replay test writes them."""
+    """unityrs-testkit's env::scenes(), env::dependency_scenes() (a line
+    with a `dependencies` key) and its find_file scenes (a line with an
+    `asks` key), as the replay test writes them."""
     with scratch.folder() as tmp:
         out = Path(tmp) / "scenes.jsonl"
         env = dict(os.environ, UNITYRS_WRITE_SCENES=str(out))
@@ -240,6 +245,43 @@ class Run:
                 walk(self.key(k), f)
         return out
 
+    def describe(self, f) -> list | None:
+        """What `find_file` returned: its kind, name and contents (a
+        `SerializedFile`'s path ids, a container's entry names, a reader's
+        bytes), then the `env.files` key and the `env.cabs` key whose value
+        is that very object, each `None` where there is none."""
+        if f is None:
+            return None
+        files_key = next((self.key(k) for k, v in self.env.files.items() if v is f), None)
+        cab_key = next((k for k, v in self.env.cabs.items() if v is f), None)
+        if isinstance(f, SerializedFile):
+            what = ["serialized", f.name, sorted(f.objects)]
+        elif isinstance(f, (BundleFile, WebFile)):
+            what = ["bundle" if isinstance(f, BundleFile) else "web", f.name, list(f.files)]
+        else:
+            what = ["raw", None, bytes(f.bytes).hex()]
+        return [*what, files_key, cab_key]
+
+    def find_file(self, name: str, is_dependency: bool):
+        try:
+            f = self.env.find_file(name, is_dependency=is_dependency)
+        except Exception as e:  # noqa: BLE001 - a raise is a recorded outcome
+            return type(e).__name__
+        return self.describe(f)
+
+    def find_steps(self) -> list[dict]:
+        """The loads, then each ask's `find_file`."""
+        out = []
+
+        def step(op, result):
+            out.append({"op": op, "result": result, **self.state()})
+
+        for i in range(len(self.scene["files"])):
+            step(["load", i], self.load(i))
+        for name, is_dependency in self.scene["asks"]:
+            step(["find_file", name, is_dependency], self.find_file(name, is_dependency))
+        return out
+
     def steps(self) -> list[dict]:
         out = []
 
@@ -286,10 +328,16 @@ def scene_case(scene: dict) -> dict:
             (Path(tmp) / name).write_bytes(bytes.fromhex(data))
         with contextlib.redirect_stdout(io.StringIO()):
             run = Run(scene, str(tmp))
-            steps = run.dependency_steps() if "dependencies" in scene else run.steps()
+            if "asks" in scene:
+                steps = run.find_steps()
+            elif "dependencies" in scene:
+                steps = run.dependency_steps()
+            else:
+                steps = run.steps()
     case = {"name": scene["name"], "files": scene["files"], "resolver": scene["resolver"]}
-    if "dependencies" in scene:
-        case["dependencies"] = scene["dependencies"]
+    for extra in ("dependencies", "asks"):
+        if extra in scene:
+            case[extra] = scene[extra]
     return {**case, "steps": steps}
 
 
@@ -569,10 +617,11 @@ def check_g5_in(report: dict, rels: list[str], corpus: Path, empty: str) -> int:
 def fixtures() -> dict[str, dict]:
     meta = {"generator": "tools/fixtures/env.py", "unitypy": UnityPy.__version__}
     inputs = scene_inputs()
-    plain = [scene_case(s) for s in inputs if "dependencies" not in s]
+    plain = [scene_case(s) for s in inputs if "dependencies" not in s and "asks" not in s]
     deps = [scene_case(s) for s in inputs if "dependencies" in s]
+    finds = [scene_case(s) for s in inputs if "asks" in s]
     return {
-        "env.json": {**meta, "scenes": plain, "dependency_scenes": deps},
+        "env.json": {**meta, "scenes": plain, "dependency_scenes": deps, "find_scenes": finds},
         "paths.json": {**meta, "cases": [path_case(c) for c in path_inputs()]},
         "pystr.json": {**meta, **pystr_fixture()},
         "resolver.json": {**meta, **resolver_fixture()},

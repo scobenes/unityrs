@@ -36,7 +36,10 @@
 //!    `str.lower` (no basename): a bundle's directory paths, or the
 //!    Environment's `files` keys, the names given to `load`, dependencies
 //!    included. The first equal key wins. Else `find_file` (the CAB registry,
-//!    then the resolver), whose miss is `FileNotFoundError`.
+//!    then the resolver), whose miss is `FileNotFoundError`: its `None`, and
+//!    the walk's own `FileNotFoundError` (a resolver's
+//!    [`super::CabResolver::find_file`] error naming
+//!    [`crate::error::NotFound::Cab`]), are [`DerefError::NotFound`].
 //! 6. The target's `objects[m_PathID]`: a missing id is a `KeyError`; a raw
 //!    target or a container (a bundle under an Environment `files` key) has no
 //!    `objects` (`AttributeError`).

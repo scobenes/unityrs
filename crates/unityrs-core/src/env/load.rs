@@ -22,6 +22,22 @@ enum Target<'a> {
     Dependency(&'a Arc<Dependency>),
 }
 
+/// Who asked the resolver for the file [`Environment::load_resolved`]
+/// loads, which decides how it is loaded and keyed.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Asked<'a> {
+    /// `find_file(name, is_dependency)`: keyed by the source's name (UnityPy
+    /// keys the path it found, `load_file` keying a path by itself).
+    Find {
+        /// UnityPy's flag (a dereference's `find_file` takes its default,
+        /// `True`).
+        is_dependency: bool,
+    },
+    /// A resource read's fallback, `load_file(name, True)`: keyed by the
+    /// name it asked for.
+    Fallback(&'a RawStr),
+}
+
 impl Environment {
     /// `load_file`: detect, parse, register the CABs, add to `files` under the
     /// source's name (a repeated name replaces the value in place, as a dict).
@@ -227,34 +243,41 @@ impl Environment {
         Ok(file)
     }
 
-    /// A file the resolver returned: `find_file`'s (`asked` is `None`) is a
-    /// dependency, listed in `files` under the source's name with
-    /// `keep_resolver_loads`; a resource fallback's (`asked` is the name it
-    /// asked for) is a caller's load under that name with
-    /// `keep_resolver_loads`, and a dependency without it. A dependency's
-    /// listing is charged to its meter, so it is part of the load the pool
-    /// may refuse and retry ([`Self::load_dep`]): a second run loads and
-    /// lists again (review round 8: a refused listing failed the load,
-    /// whose file then stayed registered and unlisted).
-    pub(super) fn load_resolved(
-        &self,
-        source: &Source,
-        asked: Option<&RawStr>,
-    ) -> Result<File, Error> {
+    /// A file the resolver returned (module docs, "Resolver loads in
+    /// `files`"). With `keep_resolver_loads`: `find_file`'s
+    /// ([`Asked::Find`]) with `is_dependency` is a dependency, listed in
+    /// `files` under the source's name (flagged a dependency unless it is a
+    /// raw reader, which UnityPy gives no flag); without `is_dependency` a caller's
+    /// load under that name (UnityPy's `load_file(fp, name=name,
+    /// is_dependency=False)`, `environment.py:332`, `:354`); a resource
+    /// fallback's ([`Asked::Fallback`]) is a caller's load under the name it
+    /// asked for. Without `keep_resolver_loads` every one is a dependency in
+    /// the LRU only. A dependency's listing is charged to its meter, so it
+    /// is part of the load the pool may refuse and retry ([`Self::load_dep`]):
+    /// a second run loads and lists again (review round 8: a refused listing
+    /// failed the load, whose file then stayed registered and unlisted).
+    pub(super) fn load_resolved(&self, source: &Source, asked: Asked<'_>) -> Result<File, Error> {
         let keep = self.inner.options.keep_resolver_loads;
         match asked {
-            Some(name) if keep => self.load_listed(name, source, true),
-            Some(name) => self.load_dep(name, source),
-            None => {
+            Asked::Fallback(name) if keep => self.load_listed(name, source, true),
+            Asked::Fallback(name) => self.load_dep(name, source),
+            Asked::Find { .. } if !keep => self.load_dep(&source_name(source), source),
+            Asked::Find {
+                is_dependency: false,
+            } => self.load_listed(&source_name(source), source, true),
+            Asked::Find {
+                is_dependency: true,
+            } => {
                 let name = source_name(source);
-                if !keep {
-                    return self.load_dep(&name, source);
-                }
                 with_room(Some(&self.inner.cache), None, || {
                     let file = self.try_load_dep(&name, source)?;
                     let meter = file.meter().clone();
                     let key = RawStr::charged(name.as_bytes(), &meter)?;
-                    self.list(key, file.clone(), true, &meter)?;
+                    // A reader has no `is_dependency`: `parse_file` returns
+                    // the reader itself (`helpers/ImportHelper.py:136-156`),
+                    // which `getattr(f, "is_dependency", False)` reads false.
+                    let flag = !matches!(file, File::Raw(_));
+                    self.list(key, file.clone(), flag, &meter)?;
                     Ok(file)
                 })
             }

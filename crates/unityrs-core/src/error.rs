@@ -302,7 +302,9 @@ pub struct LimitError {
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum NotFound {
-    /// No CAB of that simplified name, loaded or loadable.
+    /// No CAB or file of that name, loaded or loadable: what a
+    /// [`crate::env::CabResolver::find_file`] returns where UnityPy's
+    /// `find_file` walk raises `FileNotFoundError`.
     #[error("CAB {0}")]
     Cab(RawStr),
     /// No resource under any of UnityPy's candidate names (`ResourceReader.py:10-34`).

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
+use super::load::Asked;
 use super::registry::{Slot, Through, entry_of};
 use super::{Cab, Candidate, Environment, LoadMode, RawCab, resource_candidates};
 use crate::error::{Error, NotFound};
@@ -130,7 +131,7 @@ impl Environment {
         let Some(source) = resolver.resolve(name.as_bytes()) else {
             return Ok(());
         };
-        self.load_resolved(&source, Some(name)).map(drop)
+        self.load_resolved(&source, Asked::Fallback(name)).map(drop)
     }
 
     /// The first candidate a registered slot answers, read.

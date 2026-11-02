@@ -40,13 +40,16 @@ fn lookups_take_the_names_string_and_a_meter_for_the_key_they_build() {
     // took `&[u8]` and no meter, so the lowered key of a name an input
     // chose (and every resource candidate) could only be built
     // uncharged. Package D implements the bodies.
-    use crate::files::SerializedFile;
+    use crate::files::{File, SerializedFile};
     use crate::raw::RawStr;
     type Lookup<S> = fn(&S, &RawStr, &Arc<Meter>) -> Result<Option<Cab>, Error>;
+    // Round 11: `find_file` returns the file UnityPy's does, of any kind,
+    // and takes its `is_dependency`.
+    type Find = fn(&Environment, &RawStr, bool, &Arc<Meter>) -> Result<Option<File>, Error>;
     type Resource =
         fn(&Environment, &Arc<SerializedFile>, &RawStr, u64, u64) -> Result<bytes::Bytes, Error>;
     let _: Lookup<Environment> = Environment::get_cab;
-    let _: Lookup<Environment> = Environment::find_file;
+    let _: Find = Environment::find_file;
     let _: Lookup<Registry> = Registry::get;
     let _: Resource = Environment::resource;
 }

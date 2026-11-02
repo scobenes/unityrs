@@ -94,8 +94,11 @@ pub struct FileEntry {
     pub name: RawStr,
     /// The file.
     pub file: File,
-    /// True for a `find_file` load ([`Environment::objects`] and
-    /// [`Environment::container`] skip it), false for every other.
+    /// True for a `find_file` load with `is_dependency`
+    /// ([`Environment::objects`] and [`Environment::container`] skip it),
+    /// false for every other, and for a raw reader, to which UnityPy's
+    /// `parse_file` gives no `is_dependency` (`getattr(f, "is_dependency",
+    /// False)` reads it false).
     pub is_dependency: bool,
 }
 

@@ -1,5 +1,6 @@
 //! A refusal of the dependency pool the caller's code returns (a fetcher's,
-//! a block codec's, a decryptor's) is retried as the core's own are, once,
+//! a block codec's, a decryptor's, a resolver's `find_file`'s) is retried
+//! as the core's own are, once,
 //! whatever the code did before it returned (plan section 3.13; review
 //! round 10: a fetcher that read through the Environment, let go of the
 //! refusal its read met twice and then refused the pool itself had that
@@ -14,11 +15,12 @@ use std::sync::{Arc, Mutex};
 
 use unityrs_core::budget::{BudgetExceeded, DecodeBuf, Reservation};
 use unityrs_core::codec::{BlockCodec, BlockDecryptor, Codec, Codecs, Decoded, Stored};
-use unityrs_core::env::{EnvOptions, Environment, Fetch, LoadMode, Source};
+use unityrs_core::env::{CabResolver, EnvOptions, Environment, Fetch, LoadMode, PPtr, Source};
 use unityrs_core::{Bytes, Error, FileContext, RawStr};
 use unityrs_testkit::bundle::{BundleSpec, EntrySpec, TestCodec, build};
+use unityrs_testkit::env::{Obj, serialized};
 
-use crate::named_bundle;
+use crate::{named_bundle, serialized_cab, src};
 
 /// The pool's refusal as the caller's code makes it, moving no count of
 /// the core's.
@@ -116,6 +118,20 @@ impl BlockDecryptor for CodeDecryptor {
             *b ^= KEY;
         }
         Ok(())
+    }
+}
+
+/// A resolver whose `find_file` is [`Code::run`] first, then `source`.
+#[derive(Debug)]
+struct CodeResolver(Arc<Code>, Source);
+
+impl CabResolver for CodeResolver {
+    fn resolve(&self, _: &[u8]) -> Option<Source> {
+        Some(self.1.clone())
+    }
+
+    fn find_file(&self, _: &[u8]) -> Result<Option<Source>, Error> {
+        self.0.run().map(|()| Some(self.1.clone()))
     }
 }
 
@@ -233,4 +249,35 @@ fn a_decryptors_own_refusal_after_a_read_it_let_go_is_retried() {
     let r = load(&env, &code, crate::src("d.bundle", &encrypted_bundle(300)));
     assert!(r.is_ok(), "{r:?}");
     assert_eq!(code.runs(), 2, "the decryptor's runs");
+}
+
+/// A dereference runs the resolver's `find_file` inside its retry (review
+/// round 11 added the call, which returns the caller's error): a refusal of
+/// its own, after a read it let go, is counted as it enters the core and
+/// retried, so the pointer resolves on the resolver's second run.
+#[test]
+fn a_resolvers_own_refusal_after_a_read_it_let_go_is_retried() {
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let code = Arc::new(Code::default());
+        let target = serialized(&[], &[Obj::named(5, "x5", &[])]);
+        let resolver = CodeResolver(code.clone(), src("cab-x", &target));
+        let mut o = EnvOptions::batch(Arc::new(FileContext::unitypy()));
+        o.load = mode;
+        o.resolver = Some(Arc::new(resolver));
+        let env = Environment::new(o);
+        let from = serialized(&["archive:/CAB-X/CAB-X"], &[Obj::named(1, "a1", &[(1, 5)])]);
+        env.load(src("CAB-A", &from)).unwrap();
+        let a = serialized_cab(&env, "cab-a");
+        code.set(&env);
+        let got = env.deref(
+            &a,
+            PPtr {
+                file_id: 1,
+                path_id: 5,
+            },
+        );
+        code.clear();
+        assert_eq!(got.map(|o| o.path_id()).ok(), Some(5), "{mode:?}");
+        assert_eq!(code.runs(), 2, "{mode:?}: the resolver's runs");
+    }
 }
