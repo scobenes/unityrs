@@ -61,9 +61,14 @@
 //! **Memory.** Each load makes its input's meter
 //! ([`crate::limits::Meter::for_input`]): [`crate::budget::Reservation::Input`]
 //! for what a caller loads, [`crate::budget::Reservation::Dependency`] for a
-//! dependency. A [`Source::Path`] is read by [`read_path`], bounded by
-//! [`crate::limits::Limits::max_input_bytes`] and charged to that meter
-//! before its bytes exist. Each registry slot, its key and its share of the
+//! dependency. Every [`Source`] is bounded by
+//! [`crate::limits::Limits::max_input_bytes`] before its bytes are detected
+//! ([`LimitKind::InputBytes`]): a [`Source::Path`] is read by [`read_path`],
+//! refused from its length before anything is read and charged to that
+//! meter before its bytes exist; a [`Source::Fetch`] is refused from the
+//! size its fetcher states ([`Fetch::size_hint`]) before it is fetched, and
+//! from the length of what it returns; [`Source::Bytes`] from their length.
+//! Each registry slot, its key and its share of the
 //! registry's tables are charged to the meter of the file that registered
 //! it ([`registry`]), and each `files` entry, its share of the list and its
 //! lowered key to the loaded file's ([`Environment::files`]); the LRU's
@@ -201,16 +206,25 @@ pub trait Fetch: Send + Sync + fmt::Debug {
     /// refusal of its own (plan section 3.13). A caller's [`Environment::load`]
     /// is no dependency's, and returns such a refusal as it is.
     fn fetch(&self) -> Result<Bytes, Error>;
-    /// Its size, when known without fetching (for budgeting).
+    /// Its size, when known without fetching. A size above
+    /// [`Limits::max_input_bytes`] refuses the source before it is fetched
+    /// ([`LimitKind::InputBytes`], the size stated as its value), whatever
+    /// the fetch would return; the bytes a fetch returns are checked against
+    /// the bound whatever was stated (the [`Source`] docs).
     fn size_hint(&self) -> Option<u64> {
         None
     }
 }
 
-/// Something to load.
+/// Something to load. Every kind is bounded by [`Limits::max_input_bytes`]:
+/// bytes longer than it, however they came, are refused
+/// ([`LimitKind::InputBytes`]) before anything detects, parses or keeps
+/// them, so a refused fetch's bytes drop at once, with any charge they
+/// carry.
 #[derive(Clone, Debug)]
 pub enum Source {
-    /// Bytes in memory, under a name.
+    /// Bytes in memory, under a name: refused above the bound from their
+    /// length.
     Bytes {
         /// The name UnityPy would key it by (`stream_name`).
         name: RawStr,
@@ -224,7 +238,9 @@ pub enum Source {
     /// caller who wants a mapping passes [`Source::Bytes`] or
     /// [`Source::Fetch`], whose bytes are the caller's.)
     Path(PathBuf),
-    /// Bytes fetched on demand.
+    /// Bytes fetched on demand: refused above the bound from the size the
+    /// fetcher states ([`Fetch::size_hint`]) before it is fetched, and from
+    /// the length of the bytes it returns.
     Fetch {
         /// The name.
         name: RawStr,
@@ -247,13 +263,7 @@ pub fn read_path(path: &Path, limits: &Limits, meter: &Arc<Meter>) -> Result<Byt
     let mut file = std::fs::File::open(path)?;
     let max = limits.max_input_bytes;
     let len = file.metadata()?.len();
-    if len > max {
-        return Err(Error::Limit(LimitError {
-            kind: LimitKind::InputBytes,
-            value: len,
-            max,
-        }));
-    }
+    within_input_bytes(len, limits)?;
     let mut out = DecodeBuf::new(meter, len, max, LimitKind::InputBytes)?;
     // The stat'd length, into the buffer allocated for it (no growth).
     let stated = usize::try_from(len).unwrap_or(usize::MAX);
@@ -279,6 +289,22 @@ pub fn read_path(path: &Path, limits: &Limits, meter: &Arc<Meter>) -> Result<Byt
         }
     }
     Ok(out.into_bytes()?)
+}
+
+/// `len`, an input's length or the length its fetcher states for it
+/// ([`Fetch::size_hint`]), within [`Limits::max_input_bytes`]; above it,
+/// the input's [`LimitKind::InputBytes`] refusal. Every [`Source`] is
+/// checked by it before its bytes are detected (`registry::open_source`).
+pub(crate) fn within_input_bytes(len: u64, limits: &Limits) -> Result<(), Error> {
+    let max = limits.max_input_bytes;
+    if len > max {
+        return Err(Error::Limit(LimitError {
+            kind: LimitKind::InputBytes,
+            value: len,
+            max,
+        }));
+    }
+    Ok(())
 }
 
 /// Finds a file the registry does not hold, where UnityPy looks in

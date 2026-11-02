@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, Weak};
 use super::{DepCache, lock};
 use crate::budget::Reservation;
 use crate::detect::check_file_type_with_reader;
-use crate::env::{DerefError, Fetch, Source};
+use crate::env::{DerefError, Fetch, Source, within_input_bytes};
 use crate::error::{Error, Unsupported};
 use crate::files::{BundleFile, File, RawFile, SerializedFile, parse_file_with_reader};
 use crate::limits::{ChargeError, Meter, pool_refusals, refusal};
@@ -160,6 +160,15 @@ impl WeakFile {
 /// read by the stream reader's rules, as UnityPy reads the file it opens
 /// for one (`environment.py:136-139`); bytes, fetched or given, by the
 /// memory reader's ([`ReaderKind`]).
+///
+/// Every source is bounded by [`crate::limits::Limits::max_input_bytes`]
+/// ([`within_input_bytes`]): a path by [`crate::env::read_path`], from its
+/// length before anything is read; a fetch from the size its fetcher states
+/// ([`Fetch::size_hint`]) before it is fetched, then from the length of the
+/// bytes it returns; given bytes from their length. Bytes above the bound
+/// are refused here, before anything detects, parses or keeps them, and
+/// drop with whatever charge they carry (review round 10: a fetch was not
+/// bounded at all).
 pub(crate) fn open_source(
     name: &RawStr,
     source: &Source,
@@ -185,8 +194,14 @@ pub(crate) fn open_source(
             }
             crate::env::read_path(p, &ctx.limits, meter)?
         }
-        Source::Fetch { fetch, .. } => fetched(fetch.as_ref())?,
+        Source::Fetch { fetch, .. } => {
+            if let Some(stated) = fetch.size_hint() {
+                within_input_bytes(stated, &ctx.limits)?;
+            }
+            fetched(fetch.as_ref())?
+        }
     };
+    within_input_bytes(u64::try_from(data.len()).unwrap_or(u64::MAX), &ctx.limits)?;
     // UnityPy environment.py:139-154
     let ty = check_file_type_with_reader(&data, &ctx.limits, reader)?;
     parse_file_with_reader(name.clone(), data, ty, None, meter, ctx, reader)

@@ -17,6 +17,7 @@ mod pool;
 mod preload;
 mod reach;
 mod resources;
+mod sources;
 
 use std::path::PathBuf;
 use std::sync::Arc;
