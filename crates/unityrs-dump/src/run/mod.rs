@@ -28,7 +28,9 @@
 //!   dump written, as the oracle's `InputUnreadable` and `IndexMismatch` do.
 //!   So does a panic while dumping one (a bug: the core does not panic on
 //!   input), where the oracle's own bug costs only its input (a `dumper`
-//!   record, `CANONICAL_DUMP.md` section 4.2). An input refused at a limit,
+//!   record, `CANONICAL_DUMP.md` section 4.2). Each is settled when its
+//!   input's turn comes ([`ordered_on`]), so the input a stop names is a
+//!   serial run's at any `-j`. An input refused at a limit,
 //!   or too large for its buffer to be allocated, is its own record and the
 //!   run goes on ([`crate::read`]).
 
@@ -338,7 +340,11 @@ pub fn ordered<T: Sync, R: Send>(
 /// `f` over `items` on `jobs` workers of `stack` bytes each, each result
 /// handed to `sink` in item order (`run_jobs`): at most `2 * jobs` items are
 /// running or waiting at once. A panic in `f` stops the run with an error
-/// naming the item; so does an error from `sink`. `jobs` 1 runs on one
+/// naming the item; so does an error from `sink`. Each is settled when its
+/// item's turn comes, not when it arrives, so the stop is a serial run's
+/// whatever `jobs` is, as `run_jobs` settles its results (review round 13:
+/// a later item's panic that finished first pre-empted an earlier item's
+/// panic or the sink's refusal of it). `jobs` 1 runs on one
 /// worker too, so the stack an input is read on never depends on the
 /// caller's. No more workers start than there are items (`run_jobs` forks no
 /// more processes than inputs), so a large `-j` costs nothing.
@@ -368,7 +374,8 @@ pub fn ordered_on<T: Sync, R: Send>(
     let (tx, rx) = std::sync::mpsc::channel::<(usize, std::thread::Result<R>)>();
     pool.in_place_scope(|s| {
         let mut started = 0usize;
-        let mut finished: BTreeMap<usize, R> = BTreeMap::new();
+        // Every result that arrived before its turn, a panic's included.
+        let mut finished: BTreeMap<usize, std::thread::Result<R>> = BTreeMap::new();
         for want in 0..items.len() {
             loop {
                 while started < items.len() && started < want + window {
@@ -382,19 +389,18 @@ pub fn ordered_on<T: Sync, R: Send>(
                     }
                     started += 1;
                 }
-                if let Some(r) = finished.remove(&want) {
-                    sink(want, r)?;
-                    break;
+                match finished.remove(&want) {
+                    Some(Ok(r)) => {
+                        sink(want, r)?;
+                        break;
+                    }
+                    Some(Err(p)) => return Err(died(want, &*p)),
+                    None => {}
                 }
                 let (i, r) = rx
                     .recv()
                     .map_err(|e| RunError::Failed(format!("a worker vanished: {e}")))?;
-                match r {
-                    Ok(r) => {
-                        finished.insert(i, r);
-                    }
-                    Err(p) => return Err(died(i, &*p)),
-                }
+                finished.insert(i, r);
             }
         }
         Ok(())
