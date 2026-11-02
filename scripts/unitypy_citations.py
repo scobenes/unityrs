@@ -193,7 +193,7 @@ ANY_CITATION = re.compile(r"(?<![\w./-])(?:[\w.-]+/)*[\w-]+\.[A-Za-z][A-Za-z0-9]
 MENTION = re.compile(rf"(?<![\w./-])(?P<path>{PATH})(?![\w-]|:\d)")
 BARE = re.compile(r"(?<=`):(?P<first>\d+)(?:-(?P<last>\d+))?(?=`)")
 BARE_COMMENT = re.compile(r"^\s*(?://[/!]?|#)\s*:(?P<first>\d+)(?:-(?P<last>\d+))?(?=[\s:,.;)]|$)")
-# A bare line in prose, after a space or an opening parenthesis: `, :295`, `(:223-225)`.
+# A bare line in prose, after a space or an opening parenthesis: `, :<line>`, `(:<line>)`.
 BARE_PROSE = re.compile(r"(?:(?<=\s)|(?<=\()):(?P<first>\d+)(?:-(?P<last>\d+))?(?=[\s:,.;)]|$)")
 # A line cited in words next to a file's name: `<file>` line <N>, `<file>`'s lines <N>-<M>, line <N> of `<file>`.
 WORDS_AFTER = re.compile(r"^`?(?:'s)?,? lines? \d")
