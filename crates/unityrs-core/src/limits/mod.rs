@@ -323,7 +323,9 @@ pub const fn heap_cost(bytes: u64) -> u64 {
 /// The most a live allocation whose chunk is below 128 KiB holds past its
 /// [`heap_cost`]: glibc hands over a free chunk whole when what would be left
 /// is under its 32-byte minimum chunk, and chunks are multiples of 16, so
-/// what is left is 0 or 16 bytes ([`heap_cost`]'s docs).
+/// what is left is 0 or 16 bytes ([`heap_cost`]'s docs). That is for an
+/// alignment of 16 bytes or less (`malloc`'s), which every allocation the
+/// core charges has.
 pub const CHUNK_SLACK: u64 = 16;
 
 /// Whether a buffer whose block holds `cap` bytes gives back its spare room,
@@ -332,7 +334,9 @@ pub const CHUNK_SLACK: u64 = 16;
 /// (its chunk is 128 KiB or more) and the bytes left would be a heap chunk
 /// (below it). glibc's `realloc` keeps a shrunk mapped block mapped
 /// (`mremap_chunk`), rounded up to a page, so 10 bytes cut from a 1 MiB
-/// buffer held 4,096 bytes against a [`heap_cost`] of 32 (review round 13).
+/// buffer held a page against a [`heap_cost`] of 32 (review round 13;
+/// `tests/heap_rounding.rs` with the move undone: "10 bytes hold 4088", its
+/// usable bytes and an 8-byte header).
 /// A new allocation below 128 KiB is a heap chunk, which [`heap_cost`]
 /// covers ([`CHUNK_SLACK`] aside). Both blocks exist while the bytes move,
 /// as they may while `realloc` moves them, so a caller charges both first.

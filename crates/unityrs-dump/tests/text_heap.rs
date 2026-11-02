@@ -2,8 +2,9 @@
 //! `Text::finish` gave back its spare room with `String::shrink_to_fit`, and
 //! glibc's `realloc` keeps a shrunk mapped block mapped, rounded up to a page,
 //! so a record of 100,000 bytes, written into room of 140,000 (a mapped
-//! block), held 102,392 bytes against a charge of 100,016. It now moves such
-//! a record to a new allocation (`unityrs_core::limits::shrink_moves`).
+//! block), held 102,392 bytes against a charge of 100,016 (this test, with
+//! the move undone). It now moves such a record to a new allocation
+//! (`unityrs_core::limits::shrink_moves`).
 //!
 //! Linux and glibc only (`malloc_usable_size` and `mallopt`, which every
 //! glibc has); elsewhere the test says it skipped.

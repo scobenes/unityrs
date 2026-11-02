@@ -122,7 +122,8 @@ fn covered(p: *const u8, len: u64, what: &str) {
 /// charge covers, and a buffer whose kept bytes are still 128 KiB or more
 /// is shrunk where it is, to a page-rounded block `heap_cost` covers. Before
 /// review round 13 `realloc` shrank the block in place, and glibc kept it
-/// mapped: 10 bytes held 4,096 against a charge of 32.
+/// mapped: 10 bytes held a page against a charge of 32 (this test, with the
+/// move undone: "10 bytes hold 4088, charged 32").
 #[test]
 fn a_buffer_given_back_its_room_holds_what_its_charge_covers() {
     if !glibc::SUPPORTED {
