@@ -140,3 +140,58 @@ fn every_source_is_refused_above_its_bytes_bound_before_it_is_detected() {
         }
     }
 }
+
+/// A fetcher that serves `first` on its first fetch and `later` after.
+#[derive(Debug)]
+struct Grows {
+    first: Bytes,
+    later: Bytes,
+    runs: AtomicU64,
+}
+
+impl Fetch for Grows {
+    fn fetch(&self) -> Result<Bytes, Error> {
+        let first = self.runs.fetch_add(1, Ordering::AcqRel) == 0;
+        Ok(if first { &self.first } else { &self.later }.clone())
+    }
+}
+
+/// A dependency reopened after an eviction goes through the same bound:
+/// its fetcher, which served a bundle at the bound for the load, serves
+/// one byte more for the reopen, which a lookup of its CAB then meets as
+/// the `InputBytes` refusal.
+#[test]
+fn a_reopened_fetch_is_refused_above_its_bytes_bound() {
+    let data = named_bundle("CAB-A", 100);
+    let len = u64::try_from(data.len()).unwrap();
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let mut ctx = FileContext::unitypy();
+        ctx.limits.max_input_bytes = len;
+        let mut o = EnvOptions::batch(Arc::new(ctx));
+        o.load = mode;
+        // Room for one dependency at a time: each load evicts the other.
+        o.dep_cache_bytes = 1;
+        let env = Environment::new(o);
+        let mut later = data.clone();
+        later.push(0);
+        let fetch = Arc::new(Grows {
+            first: Bytes::from(data.clone()),
+            later: Bytes::from(later),
+            runs: AtomicU64::new(0),
+        });
+        let source = Source::Fetch {
+            name: RawStr::from("a.bundle"),
+            fetch: fetch.clone(),
+        };
+        drop(env.load_dependency(source).unwrap());
+        let other = crate::src("b.bundle", &named_bundle("CAB-B", 100));
+        drop(env.load_dependency(other).unwrap());
+        assert!(env.stats().dependencies_evicted > 0, "{mode:?}");
+        let got = env.get_cab(&RawStr::from("cab-a"), &crate::unlimited());
+        assert!(
+            matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::InputBytes && l.value == len + 1),
+            "{mode:?}: {got:?}"
+        );
+        assert_eq!(fetch.runs.load(Ordering::Acquire), 2, "{mode:?}: fetches");
+    }
+}
