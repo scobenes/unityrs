@@ -15,7 +15,11 @@
 //! over 2^16 + 1 children (the writer's name table), 4,096 references into
 //! as many ref types (the ref-type and node-list tables) and two classes of
 //! one name over 4,096 dicts (the writer's kept name tables), each with the
-//! meter booking an `Unbounded` budget and a `Counting` one. The largest request
+//! meter booking an `Unbounded` budget and a `Counting` one. It also watches
+//! the typetree compile on the list's own meter ([`compiles`]): a
+//! `Tree::compile`, and a `NameTable::new` with a `Tree::compile_with_names`
+//! through it, whose rows build every scratch table the compile makes
+//! (review round 15: no counting test saw them). The largest request
 //! of each big read is the exact size of its 2^16 + 1 elements: the dict's
 //! entries and the list's items end with their capacity equal to their
 //! length (plan 3.10, "list growth"). The allocator counts only the test's
@@ -34,8 +38,9 @@ use unityrs_core::budget::{
     Counting as CountingBudget, DecodeBuf, MemoryBudget, Reservation, Unbounded,
 };
 use unityrs_core::files::SerializedType;
-use unityrs_core::limits::{Limits, Meter, heap_cost};
+use unityrs_core::limits::{Limits, Meter, MeteredVec, heap_cost};
 use unityrs_core::stream::Endian;
+use unityrs_core::typetree::tree::NameTable;
 use unityrs_core::typetree::{NodeId, NodeList, NodeRow, Tree};
 use unityrs_core::walk::{self, ReadCtx, ReadError, ReadOptions, RefTypes, WriteCtx, WriteRules};
 use unityrs_core::{Bytes, LimitKind, Parsed, RawStr, Value};
@@ -46,6 +51,8 @@ struct Counting;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 /// The heap when the watched run started.
 static BASE: AtomicUsize = AtomicUsize::new(0);
+/// The watched meter's charge when the run started ([`watch_from`]).
+static START: AtomicUsize = AtomicUsize::new(0);
 /// The most the heap above `BASE` exceeded the watched meter's charge.
 static EXCESS: AtomicUsize = AtomicUsize::new(0);
 /// The largest single request while watched.
@@ -74,7 +81,7 @@ fn check(now: usize, request: usize) {
     let used = usize::try_from(unsafe { &*m }.used()).unwrap_or(usize::MAX);
     let over = now
         .saturating_sub(BASE.load(Ordering::Relaxed))
-        .saturating_sub(used);
+        .saturating_sub(used.saturating_sub(START.load(Ordering::Relaxed)));
     EXCESS.fetch_max(over, Ordering::Relaxed);
     MAX_REQUEST.fetch_max(request, Ordering::Relaxed);
 }
@@ -109,6 +116,13 @@ impl Drop for Watch<'_> {
 /// Starts watching `m` until the watch drops ([`unwatch`]).
 fn watch(m: &Arc<Meter>) -> Watch<'_> {
     assert_eq!(m.used(), 0);
+    watch_from(m)
+}
+
+/// Starts watching `m`, which may hold charges already (a node list's):
+/// the heap may grow by what the meter's charge grows by.
+fn watch_from(m: &Arc<Meter>) -> Watch<'_> {
+    START.store(usize::try_from(m.used()).unwrap(), Ordering::Relaxed);
     BASE.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
     EXCESS.store(0, Ordering::Relaxed);
     MAX_REQUEST.store(0, Ordering::Relaxed);
@@ -596,5 +610,111 @@ fn every_allocation_of_a_read_and_a_write_is_charged() {
         renamed((1 << 16) + 1, counting);
         references(1 << 12, counting);
         shared(1 << 12, counting);
+        compiles(counting);
     }
+}
+
+/// FNV-1a, the compile's name hash (`typetree/tree/mod.rs`, `name_hash`).
+fn fnv1a(name: &[u8]) -> u64 {
+    name.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// Two names of 8 bytes and one FNV-1a hash (found by a distinguished-point
+/// search): a run of one hash holding both is sorted (`names.rs`, `tmp`).
+const A: [u8; 8] = 0x037a_85c7_f7a9_042c_u64.to_le_bytes();
+const B: [u8; 8] = 0xe69f_154c_6166_a4a8_u64.to_le_bytes();
+/// An 8-byte name of a hash of its own.
+const C: [u8; 8] = *b"cccccccc";
+
+/// The rows `compiles` compiles, each name a string of its own (`fresh`) or
+/// a table's (`theirs`): 256 names of 5 bytes (the hashes), 64 copies of one
+/// name (a run of one hash), 64 of `A` then 64 of `other` (with `B`, a run
+/// of two names: the sort), a vector (depths) and a type whose head holds a
+/// NUL (the pure-Python kinds).
+fn compile_rows(other: [u8; 8], name: &mut impl FnMut(&[u8]) -> RawStr) -> Vec<NodeRow> {
+    let mut rows = vec![NodeRow::new(0, "Base", name(b"Base"))];
+    let mut add = |level, ty: &str, n: &[u8]| rows.push(NodeRow::new(level, ty, name(n)));
+    (0..256).for_each(|i| add(1, "int", format!("n{i:04}").as_bytes()));
+    (0..64).for_each(|_| add(1, "int", b"dup"));
+    (0..64).for_each(|_| add(1, "int", &A));
+    (0..64).for_each(|_| add(1, "int", &other));
+    for (level, ty, n) in [
+        (1, "vector", "v"),
+        (2, "Array", "Array"),
+        (3, "int", "size"),
+    ] {
+        add(level, ty, n.as_bytes());
+    }
+    add(3, "int", b"data");
+    add(1, "in\0t", b"z");
+    rows
+}
+
+/// A compile of `rows` on `m`'s meter, under watch when `watched`; the work
+/// it counted.
+fn compile_on(m: &Arc<Meter>, rows: Vec<NodeRow>, watched: bool, names: Option<&NameTable>) -> u64 {
+    let list = Arc::new(NodeList::from_rows(MeteredVec::from_vec(rows, m).unwrap()).unwrap());
+    let (work, watching) = (m.decoded(), watched.then(|| watch_from(m)));
+    let tree = match names {
+        Some(t) => Tree::compile_with_names(list, &Limits::default(), t),
+        None => Tree::compile(list, &Limits::default()),
+    };
+    let work = m.decoded() - work;
+    drop(tree.unwrap());
+    if let Some(watching) = watching {
+        unwatch(
+            watching,
+            &format!("a compile, names from a table: {}", names.is_some()),
+        );
+    }
+    work
+}
+
+/// Review round 15: the compile's scratch tables (the depths, the names'
+/// order, ids, buffers, hashes, runs and sort, the classes' `seen`, the
+/// table's ids and their sorted copy) and the tables it keeps (`info`, the
+/// pure-Python kinds, the tree's `Arc`) are each charged to the list's meter
+/// before they are allocated, through a plain compile and through a
+/// `NameTable` as a TPK's trees are compiled (its strings slices of one
+/// buffer, the rows' names clones of them).
+fn compiles(counting: bool) {
+    let mut fresh = |n: &[u8]| RawStr::from(n);
+    let m = meter(counting);
+    assert_eq!(fnv1a(&A), fnv1a(&B));
+    let sorted = compile_on(&m, compile_rows(B, &mut fresh), true, None);
+    // Only a collision sorts (`tmp`): with `C` for `B` no run is sorted, and
+    // the comparisons of neighbours after the sort alone are 127 of 8 bytes.
+    let unsorted = compile_on(&meter(counting), compile_rows(C, &mut fresh), false, None);
+    assert!(
+        sorted >= unsorted + 127 * 8,
+        "A and B were not sorted: {sorted} {unsorted}"
+    );
+
+    let mut text: Vec<u8> = Vec::new();
+    let mut at = Vec::new();
+    for row in compile_rows(B, &mut fresh) {
+        for s in [row.ty.as_bytes(), row.name.as_bytes()] {
+            at.push(text.len()..text.len() + s.len());
+            text.extend_from_slice(s);
+        }
+    }
+    let text = Bytes::from(text);
+    let strings: Vec<RawStr> = at
+        .iter()
+        .map(|r| RawStr::from(text.slice(r.clone())))
+        .collect();
+    let m = meter(counting);
+    let watching = watch_from(&m);
+    let table = NameTable::new(&strings, &m).unwrap();
+    unwatch(watching, "a name table");
+    let mut next = strings.iter().skip(1).step_by(2);
+    let mut theirs = |n: &[u8]| {
+        let s = next.next().unwrap().clone();
+        assert_eq!(s.as_bytes(), n);
+        s
+    };
+    let work = compile_on(&m, compile_rows(B, &mut theirs), true, Some(&table));
+    assert_eq!(work, 0, "the compile through the table read no name");
 }
