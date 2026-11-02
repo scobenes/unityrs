@@ -123,7 +123,9 @@ pub enum TreeError {
     /// More rows than a `u32` indexes.
     #[error("typetree has {0} nodes")]
     TooManyNodes(usize),
-    /// A compiled-tree bound (depth) was exceeded.
+    /// A compiled-tree bound was exceeded: its depth, or the open's work
+    /// allowance, which the names a compile reads count toward
+    /// ([`crate::LimitKind::DecodeWork`]: [`super::Tree::compile`]).
     #[error(transparent)]
     Limit(#[from] LimitError),
     /// The input's meter or the budget refused the tree's memory.
