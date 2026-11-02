@@ -668,7 +668,12 @@ fn parses(counting: bool) {
             parse_old(&mut r, &data, 9, &m, &limits)
         };
         let list = NodeList::from_rows(rows.unwrap()).unwrap();
-        unwatch(watching, &format!("a parse, a blob: {blob}"));
+        let what = if blob {
+            "a blob's parse"
+        } else {
+            "an old-format parse"
+        };
+        unwatch(watching, what);
         assert_eq!(list.len(), nodes.len());
         let ty = list.rows()[1].ty.as_bytes();
         assert_eq!(ty, if blob { &b"99999"[..] } else { &b"int"[..] });
@@ -725,10 +730,12 @@ fn compile_on(m: &Arc<Meter>, rows: Vec<NodeRow>, watched: bool, names: Option<&
     let work = m.decoded() - work;
     drop(tree.unwrap());
     if let Some(watching) = watching {
-        unwatch(
-            watching,
-            &format!("a compile, names from a table: {}", names.is_some()),
-        );
+        let what = if names.is_some() {
+            "a compile through a name table"
+        } else {
+            "a plain compile"
+        };
+        unwatch(watching, what);
     }
     work
 }
