@@ -23,7 +23,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytes::Bytes;
 
 use crate::error::{LimitError, LimitKind};
-use crate::limits::{Charge, ChargeError, Meter, grow_charged, grow_counted, heap_cost};
+use crate::limits::{
+    Charge, ChargeError, Meter, grow_charged, grow_counted, heap_cost, shrink_exact,
+};
 
 /// Which kind of load a charge belongs to, so a refusal says which pool
 /// refused (plan section 4.1).
@@ -561,14 +563,20 @@ impl DecodeBuf {
     /// The output as `Bytes` that carry their charge ([`charged_bytes`]).
     /// A buffer with spare capacity is shrunk to its length when the meter
     /// can also pay for the smaller block while the allocator moves it, and
-    /// is kept (charged as it is) otherwise.
+    /// is kept (charged as it is) otherwise, or when the allocator refuses
+    /// the smaller block. A block that may be mapped is never shrunk below
+    /// 128 KiB in place ([`crate::limits::shrink_moves`]; review round 13:
+    /// 10 bytes cut from room of 1 MiB, as an LZMA block's first window
+    /// leaves a short block, held a page against a charge of 32 bytes).
     pub fn into_bytes(mut self) -> Result<Bytes, ChargeError> {
         let len = self.buf.len();
         let cap = self.buf.capacity();
         if cap > len {
             let bytes = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
-            if let Ok(smaller) = self.charge.meter().charge(heap_cost(bytes(len))) {
-                self.buf.shrink_to_fit();
+            let exact = heap_cost(bytes(len));
+            if let Ok(smaller) = self.charge.meter().charge(exact)
+                && shrink_exact(&mut self.buf)
+            {
                 self.charge.release(heap_cost(bytes(cap)));
                 self.charge.absorb(smaller);
             }

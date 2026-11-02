@@ -6,7 +6,9 @@
 //!
 //! A counting global allocator watches the heap while each path runs, and
 //! checks two things: the heap never holds more than the meter has charged,
-//! with no slack, and the two inputs round 2 of the review built,
+//! with no slack in [`heap_cost`]'s unit (what glibc holds beyond it, at most
+//! `limits::CHUNK_SLACK` bytes a chunk, `tests/heap_rounding.rs` measures),
+//! and the two inputs round 2 of the review built,
 //! overlapping directory entries and lazily re-decoded block spans, now stop
 //! with `LimitKind::InputMemory` at the meter's limit. They are run here at
 //! a 64 MiB limit, scaled down from the reviewers' 13 GiB and 748 GiB, through

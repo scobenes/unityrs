@@ -25,6 +25,26 @@ pub(crate) fn reserve_exact<T>(
         .map_err(|_| super::refusal(charged, meter.reservation()))
 }
 
+/// `vec` with no spare capacity: shrunk by the allocator, or, where
+/// [`super::shrink_moves`] says so, moved to a new allocation of exactly its
+/// length, after which the old block is freed. The caller has charged the
+/// smaller block beside the old one, both of which exist while either way
+/// runs. `false`, with `vec` as it was, when the allocator refuses the new
+/// allocation.
+pub(crate) fn shrink_exact<T>(vec: &mut Vec<T>) -> bool {
+    if super::shrink_moves(bytes_of::<T>(vec.len()), bytes_of::<T>(vec.capacity())) {
+        let mut exact = Vec::new();
+        if exact.try_reserve_exact(vec.len()).is_err() {
+            return false;
+        }
+        exact.append(vec);
+        *vec = exact;
+    } else {
+        vec.shrink_to_fit();
+    }
+    true
+}
+
 fn bytes_of<T>(n: usize) -> u64 {
     u64::try_from(n)
         .unwrap_or(u64::MAX)
@@ -254,15 +274,19 @@ impl<T> MeteredVec<T> {
     /// Gives back any spare capacity: a vector with spare capacity is moved
     /// into an exact allocation, which is charged before it is made (both
     /// blocks exist while the allocator moves it), so a refusal leaves the
-    /// vector as it was and nothing allocated beyond what was charged.
+    /// vector as it was and nothing allocated beyond what was charged. A
+    /// block that may be mapped is never shrunk below 128 KiB in place
+    /// ([`super::shrink_moves`]; review round 13).
     pub fn shrink_to_fit(&mut self) -> Result<(), ChargeError> {
         if self.vec.capacity() > self.vec.len() {
-            let smaller = self
-                .charge
-                .meter()
-                .charge(heap_cost(bytes_of::<T>(self.vec.len())))?;
+            let exact = heap_cost(bytes_of::<T>(self.vec.len()));
+            let smaller = self.charge.meter().charge(exact)?;
             let old = heap_cost(bytes_of::<T>(self.vec.capacity()));
-            self.vec.shrink_to_fit();
+            if !shrink_exact(&mut self.vec) {
+                // `smaller` drops here: nothing stays charged for it.
+                let what = self.charge.meter().reservation();
+                return Err(ChargeError::Budget(super::refusal(exact, what)));
+            }
             self.charge.release(old);
             self.charge.absorb(smaller);
         }
