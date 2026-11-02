@@ -15,7 +15,7 @@ Files:
   UnityPyBoost's `read_typetree` (over the bytes from `start`) and by the
   pure-Python `read_value` (over all the bytes, from `start`), each value
   re-saved by `write_typetree`. Case names start with the rule they pin
-  (`r09_...`, `py_...`, `w5_...`).
+  (`r09_...`, `py_...`, `w5_...`; `mirror_...`, `walk_mirror.py`'s).
 - `value_cases.json`: the 32 value cases of `tools/parity/value_cases.py` (G2), read as
   `parse_as_dict` reads them (`read_typetree` with `byte_size` and
   `check_read`), with UnityPy's L2 outcome and its L3 re-save.
@@ -93,6 +93,7 @@ from walk_build import (  # noqa: E402
     write,
 )
 from walk_elements import element_cases  # noqa: E402
+from walk_mirror import mirror_cases  # noqa: E402
 from walk_reentry import reentry_cases, reentry_ok_cases  # noqa: E402
 from walk_runs import run_cases  # noqa: E402
 
@@ -743,7 +744,7 @@ def dump_matrix(m):
 
 
 def fixtures():
-    cases = [run_case(c) for c in r_cases() + reentry_ok_cases() + py_cases() + w_cases()]
+    cases = [run_case(c) for c in r_cases() + reentry_ok_cases() + py_cases() + w_cases() + mirror_cases()]
     names = [c["name"] for c in cases]
     assert len(names) == len(set(names)), "case names repeat"
     return {

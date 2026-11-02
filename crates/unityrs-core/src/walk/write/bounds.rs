@@ -18,9 +18,11 @@ impl Writer<'_, '_> {
     /// dict, which [`Self::class`] counts when its write writes no byte; so
     /// a primitive run of any length writes as UnityPy writes it (review
     /// round 9). A write of a value through the tree it was read with counts
-    /// no more than UnityPyBoost's read of it did, unless the tree repeats a
-    /// name, or a node whose type name holds a NUL (read as a primitive, a
-    /// string or bytes, written as a class) has a child that writes no byte.
+    /// no more than its read did (either reader's, under either rule), unless
+    /// the tree repeats a name, or a node whose type name holds a NUL (read
+    /// by UnityPyBoost as a primitive, a string or bytes, written under
+    /// [`super::WriteRules::UnityPy`] as a class) has a child that writes no
+    /// byte (`tests/walk_bounds.rs`).
     pub(super) fn count(&mut self, work: u64) -> Result<(), WriteError> {
         if self.repeated > 0 {
             self.bound()?;

@@ -120,13 +120,26 @@ pub enum WriteRules {
     /// run. The oracle's L3 behaviour, and the default.
     #[default]
     UnityPy,
-    /// Write as the reader reads: align once after a flagged primitive or
-    /// pair run, write no data where the reader skipped it, and take a type
-    /// name to its first NUL, as UnityPyBoost does. A value UnityPyBoost
-    /// reads through a tree that repeats no name writes back to bytes that
-    /// read as the same value (padding as zeros); a repeated name keeps only
-    /// its last value, so no writer gives back the others' bytes (plan 3.11;
-    /// a `PARITY.md` Tier C option).
+    /// Write as the reader that built the value reads ([`Parsed::read_by`]).
+    /// For UnityPyBoost's: align once after a flagged primitive or `pair`
+    /// run, write no data where the reader skipped it (a `class` whose size
+    /// field is 0, or a matched ref type with no tree), and take a type name
+    /// to its first NUL. For the pure-Python reader's: take a type name
+    /// whole, write a flagged array's elements as `read_value_array` reads
+    /// them (each kind without its own trailing alignment, the run aligned
+    /// once after; a `pair`'s primitive, string or bytes children without
+    /// their own flags; a class's registry children with no registry check;
+    /// 16-bit integers with their signedness swapped), align no empty
+    /// string, and write no data for an empty `class` or a matched ref type
+    /// with no tree. A value either reader reads through a tree that
+    /// repeats no name writes back to bytes the same reader reads as the
+    /// same value (padding as zeros), unless the pure-Python reader moved
+    /// its position other than forward over what it holds (a negative
+    /// `TypelessData` length, or one past the end) or started at a position
+    /// not a multiple of 4 (it aligns to the file, the writer to the
+    /// object); a repeated name keeps only its last value, so no writer
+    /// gives back the others' bytes (plan 3.11; a `PARITY.md` Tier C
+    /// option; `tests/walk_mirror.rs`).
     MirrorReader,
 }
 

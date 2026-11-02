@@ -20,151 +20,18 @@
 use std::sync::Arc;
 
 use serde_json::{Value as Json, json};
-use unityrs_core::budget::DecodeBuf;
 use unityrs_core::files::SerializedType;
 use unityrs_core::limits::{Limits, Meter};
 use unityrs_core::stream::Endian;
-use unityrs_core::typetree::{NodeId, NodeList, NodeRow, Tree};
+use unityrs_core::typetree::{NodeId, NodeList};
 use unityrs_core::walk::{
-    self, ParseError, ReadCtx, ReadError, ReadErrorKind, ReadOptions, RefTypes, WriteCtx,
-    WriteRules,
+    self, ParseError, ReadCtx, ReadError, ReadErrorKind, ReadOptions, RefTypes, WriteRules,
 };
-use unityrs_core::{
-    Bytes, LimitKind, Map, Parsed, PrimArray, PrimRun, RawStr, Value, ValueBuilder,
-};
+use unityrs_core::{Bytes, Parsed, PrimArray, PrimRun, RawStr, Value, ValueBuilder};
 
-const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/walk/");
+mod walk_common;
 
-fn load(name: &str) -> Json {
-    let text = std::fs::read_to_string(format!("{DIR}{name}")).unwrap();
-    serde_json::from_str(&text).unwrap()
-}
-
-fn unhex(s: &str) -> Vec<u8> {
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-        .collect()
-}
-
-fn hex(b: &[u8]) -> String {
-    use std::fmt::Write as _;
-    b.iter().fold(String::new(), |mut s, x| {
-        let _ = write!(s, "{x:02x}");
-        s
-    })
-}
-
-/// `[[level, type, name, meta], ...]` as a node list.
-fn nodes(rows: &Json) -> Arc<NodeList> {
-    let rows = rows
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| {
-            let level = i32::try_from(r[0].as_i64().unwrap()).unwrap();
-            NodeRow::new(level, r[1].as_str().unwrap(), r[2].as_str().unwrap())
-                .with_meta_flag(i32::try_from(r[3].as_i64().unwrap()).unwrap())
-        })
-        .collect();
-    Arc::new(NodeList::trusted(rows).unwrap())
-}
-
-fn compile(rows: &Json) -> Arc<Tree> {
-    Tree::compile(nodes(rows), &Limits::default()).unwrap()
-}
-
-/// A case's ref types: `null` is no file, `"absent"` a file without
-/// `ref_types`, a list the file's ref types.
-enum Refs {
-    NoFile,
-    Absent,
-    List(Vec<SerializedType>),
-}
-
-impl Refs {
-    fn of(spec: Option<&Json>) -> Self {
-        match spec {
-            None => Self::List(Vec::new()),
-            Some(Json::Null) => Self::NoFile,
-            Some(Json::String(s)) if s == "absent" => Self::Absent,
-            Some(Json::Array(a)) => Self::List(
-                a.iter()
-                    .map(|r| {
-                        let tree = (!r["nodes"].is_null()).then(|| nodes(&r["nodes"]));
-                        SerializedType::ref_type(
-                            114,
-                            RawStr::from(r["class"].as_str().unwrap()),
-                            RawStr::from(r["ns"].as_str().unwrap()),
-                            RawStr::from(r["asm"].as_str().unwrap()),
-                            tree,
-                        )
-                    })
-                    .collect(),
-            ),
-            Some(other) => panic!("ref types {other}"),
-        }
-    }
-
-    fn get(&self) -> RefTypes<'_> {
-        match self {
-            Self::NoFile => RefTypes::NoFile,
-            Self::Absent => RefTypes::Absent,
-            Self::List(l) => RefTypes::List(l),
-        }
-    }
-}
-
-/// The widening `(double)f` of x86-64 (a NaN's quiet bit set, its payload kept).
-fn widen(bits: u32) -> u64 {
-    let f = f32::from_bits(bits);
-    if f.is_nan() {
-        let sign = u64::from(bits >> 31) << 63;
-        let mant = u64::from(bits & 0x007f_ffff | 0x0040_0000) << 29;
-        sign | 0x7ff0_0000_0000_0000 | mant
-    } else {
-        f64::from(f).to_bits()
-    }
-}
-
-fn float(bits: u64) -> Json {
-    json!({ "f": format!("{bits:016x}") })
-}
-
-/// `value` as the fixture writes the Python object UnityPy made.
-fn enc(p: &Parsed, value: &Value) -> Json {
-    match value {
-        Value::Bool(b) => json!(b),
-        Value::Int(i) => json!(i),
-        Value::UInt(u) => json!(u),
-        Value::F32(b) => float(widen(*b)),
-        Value::F64(b) => float(*b),
-        Value::Str(s) => json!({ "s": hex(s.as_bytes()) }),
-        Value::Bytes(b) => json!({ "y": hex(b) }),
-        Value::Prims(a) => Json::Array(match a {
-            PrimArray::Bool(v) => v.iter().map(|x| json!(x)).collect(),
-            PrimArray::U8(v) => v.iter().map(|x| json!(x)).collect(),
-            PrimArray::I8(v) => v.iter().map(|x| json!(x)).collect(),
-            PrimArray::U16(v) => v.iter().map(|x| json!(x)).collect(),
-            PrimArray::I16(v) => v.iter().map(|x| json!(x)).collect(),
-            PrimArray::U32(v) => v.iter().map(|x| json!(x)).collect(),
-            PrimArray::I32(v) => v.iter().map(|x| json!(x)).collect(),
-            PrimArray::U64(v) => v.iter().map(|x| json!(x)).collect(),
-            PrimArray::I64(v) => v.iter().map(|x| json!(x)).collect(),
-            PrimArray::F32(v) => v.iter().map(|x| float(widen(*x))).collect(),
-            PrimArray::F64(v) => v.iter().map(|x| float(*x)).collect(),
-        }),
-        Value::List(v) => Json::Array(v.iter().map(|x| enc(p, x)).collect()),
-        Value::Tuple(v) => json!({ "t": v.iter().map(|x| enc(p, x)).collect::<Vec<_>>() }),
-        Value::Dict(m) => json!({ "d": dict(p, m) }),
-    }
-}
-
-fn dict(p: &Parsed, m: &Map) -> Vec<Json> {
-    p.entries(m)
-        .map(|(k, v)| json!([String::from_utf8(k.to_vec()).unwrap(), enc(p, v)]))
-        .collect()
-}
+use walk_common::{Refs, compile, enc, endian, load, nodes, unhex, write_out};
 
 fn kind(k: ReadErrorKind) -> &'static str {
     match k {
@@ -191,39 +58,11 @@ fn expected(want: &Json) -> Json {
     }
 }
 
-fn write_out(
-    p: &Parsed,
-    tree: &Tree,
-    endian: Endian,
-    refs: RefTypes<'_>,
-    rules: WriteRules,
-) -> Json {
-    let limits = Limits::default();
-    let ctx = WriteCtx {
-        endian,
-        ref_types: refs,
-        rules,
-        limits: &limits,
-    };
-    let mut out = DecodeBuf::new(&Meter::unlimited(), 0, u64::MAX, LimitKind::InputMemory).unwrap();
-    match walk::write::write(p, tree, &ctx, &mut out) {
-        Ok(()) => json!({ "hex": hex(out.as_slice()) }),
-        Err(_) => json!({ "err": true }),
-    }
-}
-
 fn expected_write(want: &Json) -> Json {
     if want.get("err").is_some() {
         json!({ "err": true })
     } else {
         want.clone()
-    }
-}
-
-fn endian(c: &Json) -> Endian {
-    match c.get("endian").and_then(Json::as_str) {
-        Some(">") => Endian::Big,
-        _ => Endian::Little,
     }
 }
 
@@ -407,84 +246,6 @@ fn w6_class_writes_each_child_registry_scope() {
 #[test]
 fn w7_referenced_object_write_failures() {
     replay_prefix("w7_");
-}
-
-/// `WriteRules::MirrorReader` (plan 3.11): each value UnityPyBoost reads
-/// from a tree that repeats no name (a repeated name keeps its last value
-/// only) writes, under the mirror, to bytes the reader reads back to the
-/// same value and the same `bytes_read`. Under `WriteRules::UnityPy` some do
-/// not: a flagged run's elements each pad, and an empty-class
-/// `ReferencedObject` fails, so the mirror is what makes the round trip.
-#[test]
-fn mirror_reader_round_trips_what_the_reader_reads() {
-    let cases = load("cases.json");
-    let (mut n, mut unitypy_differs) = (0, 0);
-    let mut bad = Vec::new();
-    for c in cases.as_array().unwrap() {
-        let name = c["name"].as_str().unwrap();
-        let tree = compile(&c["nodes"]);
-        let unique = (0..tree.list().len()).all(|i| {
-            let id = NodeId(u32::try_from(i).unwrap());
-            tree.info(id).is_none_or(|x| x.key == id)
-        });
-        let refs = Refs::of(c.get("ref_types"));
-        // A ref type's own tree may repeat names too.
-        let ref_unique = match &refs {
-            Refs::List(l) => l.iter().all(|r| match r.tree(&Limits::default()) {
-                Some(Ok(t)) => (0..t.list().len()).all(|i| {
-                    let id = NodeId(u32::try_from(i).unwrap());
-                    t.info(id).is_none_or(|x| x.key == id)
-                }),
-                _ => true,
-            }),
-            _ => true,
-        };
-        let data = Bytes::from(unhex(c["hex"].as_str().unwrap()));
-        let start = usize::try_from(c.get("start").and_then(Json::as_i64).unwrap_or(0)).unwrap();
-        let options = ReadOptions::default();
-        let meter = Meter::unlimited();
-        let ctx = ReadCtx {
-            endian: endian(c),
-            ref_types: refs.get(),
-            options: &options,
-            meter: &meter,
-        };
-        let Ok(first) = walk::boost::read(&data.slice(start..), &tree, &ctx) else {
-            continue;
-        };
-        if !unique || !ref_unique {
-            continue;
-        }
-        n += 1;
-        for rules in [WriteRules::MirrorReader, WriteRules::UnityPy] {
-            let written = write_out(&first, &tree, endian(c), refs.get(), rules);
-            let again = written["hex"]
-                .as_str()
-                .map(|h| walk::boost::read(&Bytes::from(unhex(h)), &tree, &ctx));
-            let same = match &again {
-                Some(Ok(p)) => {
-                    enc(p, p.value()) == enc(&first, first.value())
-                        && p.bytes_read == first.bytes_read
-                        && i64::try_from(unhex(written["hex"].as_str().unwrap()).len()).unwrap()
-                            == first.bytes_read
-                }
-                _ => false,
-            };
-            match rules {
-                WriteRules::MirrorReader if !same => bad.push(format!("{name}: {written}")),
-                WriteRules::UnityPy if !same => unitypy_differs += 1,
-                _ => {}
-            }
-        }
-    }
-    assert!(n > 80, "only {n} cases read");
-    assert!(
-        bad.is_empty(),
-        "{} of {n} do not round-trip:\n{}",
-        bad.len(),
-        bad.join("\n")
-    );
-    assert!(unitypy_differs > 0, "no case needs the mirror");
 }
 
 /// Seeded no-panic runs over the recorded cases with their bytes mutated

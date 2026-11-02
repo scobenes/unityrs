@@ -18,8 +18,9 @@
 //! `stack_measured` (ignored) finds the least stack each path needs, by
 //! running it in a child process per size (a thread that overflows its
 //! stack aborts its process; only an overflow says a size is too small, and
-//! any other failure fails the test: `unityrs_testkit::stack`), and prints
-//! each:
+//! any other failure fails the test: `unityrs_testkit::stack`), prints
+//! each, and fails unless the worst is the figure `Limits::stack_needed`'s
+//! docs give for the build:
 //!
 //!     scripts/dev cargo test -p unityrs-core --test walk_stack -- --ignored --nocapture
 //!     scripts/dev cargo test -p unityrs-core --test walk_stack --release -- --ignored --nocapture
@@ -336,8 +337,24 @@ fn stack_probe() {
     on_thread(stack.parse().unwrap(), || run(&shape, path));
 }
 
+/// `n` with a comma between each group of three digits, as the docs write
+/// a byte count.
+fn grouped(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, d) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(d);
+    }
+    out
+}
+
 /// The least stack each path needs, to 4 KiB, found by bisection over
-/// child processes, each within [`Limits::stack_needed`].
+/// child processes, each within [`Limits::stack_needed`], and the worst of
+/// them the figure [`Limits::stack_needed`]'s docs give for this build
+/// (review round 11: they gave one measured before a change grew it).
 #[test]
 #[ignore = "measures; run with --ignored --nocapture"]
 fn stack_measured() {
@@ -359,4 +376,22 @@ fn stack_measured() {
     }
     println!("worst {worst}, stack_needed {needed}");
     assert!(worst <= needed);
+    let docs =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/limits/mod.rs")).unwrap();
+    // The doc comment's words, its lines' `///` left out.
+    let docs = docs
+        .split_whitespace()
+        .filter(|w| *w != "///")
+        .collect::<Vec<_>>()
+        .join(" ");
+    let figure = if cfg!(debug_assertions) {
+        format!("and {} (", grouped(worst))
+    } else {
+        format!("at most {} bytes (", grouped(worst))
+    };
+    assert!(
+        docs.contains(&figure),
+        "Limits::stack_needed's docs do not give the worst measured, {worst} bytes \
+         (`{figure}`): update them"
+    );
 }
