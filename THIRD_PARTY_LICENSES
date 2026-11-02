@@ -9,13 +9,13 @@ It has two parts. The first holds the notices of code ported or vendored into
 unityrs from other projects (UnityPy and UnityPyBoost, liblz4, CPython's
 standard library), and the provenance of bundled data; the notice of a new
 port is added to about.hbs, its licence to its crate's, and the notice to
-the crate's own files as a LICENSE-* file, so that the crate's package
-carries it with the code. The second holds
-the licence of every crate the unityrs workspace builds, its own members
-included, grouped by licence text. A crate offered under a choice of licences
-(such as "MIT OR Apache-2.0") is listed under the one about.toml prefers.
-liblzma-sys is also listed under 0BSD, the licence of the xz sources it
-vendors and compiles.
+the crate's own files (a LICENSE-* file, and a NOTICE-* file for a text of
+ours its licence asks for), so that the crate's package carries it with the
+code. The second holds the licence of every crate the unityrs workspace
+builds, its own members included, grouped by licence text. A crate offered
+under a choice of licences (such as "MIT OR Apache-2.0") is listed under the
+one about.toml prefers. liblzma-sys is also listed under 0BSD, the licence of
+the xz sources it vendors and compiles.
 
 ================================================================================
 Ported code
