@@ -13,6 +13,13 @@ walked table's elements and rows that only tell each look: an element's
 `preloadIndex` (its first use of each row). The core's walk is stopped at
 each point it reaches and the load made by another thread there
 (`crates/unityrs-core/src/env/race_tests.rs`).
+
+A load publishes its keys one at a time (plan section 3.16 item 6), and the
+core's other load is also run stopped right after it published its first
+key, then let go once the walk has ended. For a load that registers more
+than one key, each point inside the walk is recorded that way too
+(`first_key`): the load made there with only its first `register_cab`, and
+the rest made after the walk, in their order (review round 15).
 """
 
 from __future__ import annotations
@@ -33,19 +40,45 @@ WALK = ContainerHelper.parse_preload_table
 
 
 class Race:
-    """Where the other load is made, and the looks the walk has made."""
+    """Where the other load is made, and the looks the walk has made; with
+    `first_key`, the load's registrations past its first are held back
+    until `rest`."""
 
-    def __init__(self, run, at):
+    def __init__(self, run, at, first_key: bool = False):
         self.run = run
         self.at = tuple(at) if isinstance(at, list) else None
+        self.first_key = first_key
         self.made = False
         self.row = None
         self.looks: list[tuple[int, int]] = []
+        self.keys = 0
+        self.held: list = []
 
     def make(self):
         name, data = self.run.scene["other"]
-        self.run.env.load_file(bytes.fromhex(data), name=name)
+        env = self.run.env
+        register = env.register_cab
+
+        def counted(cab, item):
+            self.keys += 1
+            if self.first_key and self.keys > 1:
+                self.held.append((cab, item))
+            else:
+                register(cab, item)
+
+        # `File.read_files` and `load_file` call it through the instance.
+        env.register_cab = counted
+        try:
+            env.load_file(bytes.fromhex(data), name=name)
+        finally:
+            del env.register_cab
         self.made = True
+
+    def rest(self):
+        """The registrations held back, made now."""
+        for cab, item in self.held:
+            self.run.env.register_cab(cab, item)
+        self.held = []
 
     def look(self, index: int):
         """The walk looks at element `index` of the current row's span."""
@@ -122,9 +155,10 @@ def watched(race: Race):
         ContainerHelper.parse_preload_table = WALK
 
 
-def race_point(scene: dict, new_run, at) -> tuple[dict, list]:
-    """The scene with the other load made at `at`: what it records, and the
-    looks the walk made."""
+def race_point(scene: dict, new_run, at, first_key: bool = False) -> tuple[dict, list, int]:
+    """The scene with the other load made at `at` (with `first_key`, only
+    its first registration there, the rest after the walk): what it
+    records, the looks the walk made, and the keys the load registered."""
     with scratch.folder() as tmp:
         for name, data in scene["resolver"]:
             (Path(tmp) / name).write_bytes(bytes.fromhex(data))
@@ -132,11 +166,12 @@ def race_point(scene: dict, new_run, at) -> tuple[dict, list]:
             run = new_run(scene, str(tmp))
             for i in range(len(scene["files"])):
                 run.load(i)
-            race = Race(run, at)
+            race = Race(run, at, first_key)
             if at == "before":
                 race.make()
             with watched(race):
                 container = run.container()
+            race.rest()
             if at == "after":
                 race.make()
             assert race.made, at
@@ -147,13 +182,20 @@ def race_point(scene: dict, new_run, at) -> tuple[dict, list]:
                 "dep_paths": run.dep_paths(),
                 **run.state(),
             }
-    return out, race.looks
+    return out, race.looks, race.keys
+
+
+# What a run whose load is stopped after its first key is compared on: the
+# rest of the record lists the load's `files` entry, which the core makes
+# after the walk (`race_tests.rs`'s `compared`).
+FIRST_KEY = ("container", "paths", "dep_paths", "cabs")
 
 
 def race_case(scene: dict, new_run) -> dict:
     """Every point of the walk: before it, before each element of each
-    row's span and after each row, after it."""
-    _, looks = race_point(scene, new_run, "after")
+    row's span and after each row, after it; for a load of more than one
+    key, each point inside the walk also with only its first key there."""
+    _, looks, keys = race_point(scene, new_run, "after")
     spans: dict[int, list[int]] = {}
     for r, j in looks:
         spans.setdefault(r, []).append(j)
@@ -161,5 +203,12 @@ def race_case(scene: dict, new_run) -> dict:
     for r in sorted(spans):
         points.extend([r, x] for x in range(min(spans[r]), max(spans[r]) + 2))
     points.append("after")
+    recorded = []
+    for at in points:
+        out = race_point(scene, new_run, at)[0]
+        if keys > 1 and isinstance(at, list):
+            first = race_point(scene, new_run, at, first_key=True)[0]
+            out["first_key"] = {k: first[k] for k in FIRST_KEY}
+        recorded.append(out)
     case = {k: scene[k] for k in ("name", "files", "resolver", "other")}
-    return {**case, "points": [race_point(scene, new_run, at)[0] for at in points]}
+    return {**case, "points": recorded}

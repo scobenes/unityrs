@@ -32,22 +32,29 @@
 //! the flags, [`Flag::next`]), so the walk learns which of its answers
 //! changed without reading every flag it holds, and puts the table indexes
 //! dereferenced under them back (`super::container_index`'s `Targets`).
-//! What the walk does is then UnityPy's walk with every load of another
-//! thread made at the point of the walk at which it was made: the step
-//! that comes after it sees it, through a lookup, a kept answer or the log
-//! (review round 14: another thread's change set a flag without logging it
-//! and took it from its key, so a load of the walk's own that changed the
-//! key later put back nothing, and which indexes a later row dereferenced
-//! again depended on which thread changed the key first). A key such a
-//! load adds does not fail the pass, where UnityPy's loop over `env.cabs`
-//! raises (`PARITY.md`'s `parse_preload_table` row).
+//! What the walk does is then UnityPy's walk with each key another
+//! thread's load changes changed at the point of the walk at which it was
+//! published (a load publishes its keys one at a time, plan section 3.16
+//! item 6): the step that comes after it sees it, through a lookup, a kept
+//! answer or the log (review round 14: another thread's change set a flag
+//! without logging it and took it from its key, so a load of the walk's own
+//! that changed the key later put back nothing, and which indexes a later
+//! row dereferenced again depended on which thread changed the key first).
+//! A key such a load adds does not fail the pass, where UnityPy's loop over
+//! `env.cabs` raises (`PARITY.md`'s `parse_preload_table` row).
 //!
 //! **Memory** (W2): each watch is charged to its walk's meter, by a charge
 //! the walk itself holds ([`Walk`]), so the charge is released only after
 //! the walk's entries have left both tables and every key list it grew has
 //! shrunk back to what the running walks pay for (review round 5: the
 //! charge was released before the entries left the map, and a key list
-//! kept the room a finished walk had paid for).
+//! kept the room a finished walk had paid for). A walk's end takes out of
+//! each table every entry that is its own, by identity (its flag's log is
+//! the walk's), and only then lets go of its flags, so no table holds a dead
+//! flag: an end that told its entries by whether their flags were still
+//! alive kept the one a change another thread was publishing under the other
+//! lock held, which stayed there, dead, after the walk's charge was released
+//! (review round 15).
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, RandomState};
@@ -104,6 +111,8 @@ impl Flag {
         let mut head = self.log.head.load(Ordering::Acquire);
         loop {
             self.next.store(head, Ordering::Relaxed);
+            #[cfg(test)]
+            hook(Point::Pushing);
             match self.log.head.compare_exchange_weak(
                 head,
                 self.id,
@@ -162,6 +171,8 @@ impl Table {
         };
         for flag in flags {
             if let Some(flag) = flag.upgrade() {
+                #[cfg(test)]
+                hook(Point::Upgraded);
                 flag.fire();
             }
         }
@@ -174,13 +185,13 @@ impl Table {
         }
     }
 
-    /// A walk's end: the flags no walk holds leave the lists of `hashes`
-    /// (each once), and each list and the map keep no room the running
-    /// walks do not pay for.
-    fn end(&mut self, hashes: &[u64]) {
+    /// A walk's end: its entries (those whose flag's log is `mine`) leave
+    /// the lists of `hashes` (each once), by identity, and each list and the
+    /// map keep no room the running walks do not pay for.
+    fn end(&mut self, hashes: &[u64], mine: &Arc<Fired>) {
         for h in hashes {
             if let Some(flags) = self.map.get_mut(h) {
-                flags.retain(|f| f.strong_count() > 0);
+                flags.retain(|f| f.upgrade().is_some_and(|f| !Arc::ptr_eq(&f.log, mine)));
                 if flags.is_empty() {
                     self.map.remove(h);
                 } else if flags.capacity() > 2 * flags.len() + 4 {
@@ -349,18 +360,69 @@ impl Walk<'_> {
 
 impl Drop for Walk<'_> {
     fn drop(&mut self) {
-        // Its flags first, so its entries are the ones no walk holds.
-        self.flags.clear();
-        for (lock, mine) in self.locks.iter().zip(&mut self.hashes) {
-            if mine.is_empty() {
-                continue;
+        // Its entries leave each table by identity, not by whether their
+        // flags are alive, and its flags outlive them: `flags` drops after
+        // this body (module docs, W2). A walk with no log set up no flag.
+        if let Some(log) = &self.log {
+            for at in [REGISTRY, FILES] {
+                let (Some(lock), Some(hashes)) = (self.locks.get(at), self.hashes.get_mut(at))
+                else {
+                    continue;
+                };
+                if hashes.is_empty() {
+                    continue;
+                }
+                hashes.sort_unstable();
+                hashes.dedup();
+                lock.with_table(&mut |t| t.end(hashes, log));
+                #[cfg(test)]
+                hook(Point::Ended(at));
             }
-            mine.sort_unstable();
-            mine.dedup();
-            lock.with_table(&mut |t| t.end(mine));
         }
         self.watches.walks.fetch_sub(1, Ordering::SeqCst);
-        // `charge` drops after this body, once what it paid for is freed.
+        // `flags` drops after this body, then `charge`: what it paid for is
+        // freed first.
+    }
+}
+
+/// Where a test stops a thread in this module ([`set_hook`]).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Point {
+    /// A notify upgraded a flag under its key, before it sets it (the
+    /// publishing lock held).
+    Upgraded,
+    /// A flag's first setting read its walk's log's head and linked the
+    /// flag to it, before the exchange that pushes it.
+    Pushing,
+    /// A walk's end took its entries out of the table of lock `at`
+    /// ([`REGISTRY`], [`FILES`]), before the next.
+    Ended(usize),
+}
+
+/// A test's hook on this module's points ([`Point`]).
+#[cfg(test)]
+pub(crate) type PointFn = std::rc::Rc<dyn Fn(Point)>;
+
+#[cfg(test)]
+thread_local! {
+    /// The hook of the thread that runs it, so tests on other threads are
+    /// never stopped.
+    static HOOK: std::cell::RefCell<Option<PointFn>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Sets this thread's hook ([`Point`]); `None` takes it off.
+#[cfg(test)]
+pub(crate) fn set_hook(f: Option<PointFn>) {
+    HOOK.with(|h| *h.borrow_mut() = f);
+}
+
+/// Runs this thread's hook at `at`.
+#[cfg(test)]
+fn hook(at: Point) {
+    let f = HOOK.with(|h| h.borrow().clone());
+    if let Some(f) = f {
+        f(at);
     }
 }
 

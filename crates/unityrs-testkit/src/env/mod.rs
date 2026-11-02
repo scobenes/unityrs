@@ -63,7 +63,8 @@ pub struct DepScene {
 /// A scene whose container preload walk races a load another thread makes:
 /// `other` is loaded at one point of the walk, each in turn
 /// (`tools/fixtures/env.py` records UnityPy's walk with the load made at
-/// each point). Exactly one file of the scene holds an AssetBundle, so the
+/// each point and, for a load of more than one key, with only its first key
+/// made there). Exactly one file of the scene holds an AssetBundle, so the
 /// walk is of one table; `other` registers only keys a file of the scene
 /// registered first, so UnityPy's pass, which fails when its dict of CABs
 /// grows under it, finishes wherever the load is made.

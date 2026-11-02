@@ -25,7 +25,8 @@ use std::sync::{Arc, Mutex};
 use super::gate::{Event, Gate, Run};
 use super::registry::Hook;
 use super::watch::{FILES, REGISTRY};
-use super::{CabResolver, EnvOptions, Environment, Source};
+use super::{CabResolver, EnvOptions, Environment, Source, held};
+use crate::files::File;
 use crate::limits::Meter;
 use crate::raw::RawStr;
 use bytes::Bytes;
@@ -295,6 +296,79 @@ fn a_change_is_published_with_the_flags_under_its_key_set() {
         assert!(flag.changed(), "{at:?}: published with its flag unset");
         assert_eq!(walk.fired().collect::<Vec<_>>(), [flag.id()], "{at:?}");
         load.finish();
+    }
+}
+
+/// `files`: each entry's name and the file it holds.
+fn listed(env: &Environment) -> Vec<(Vec<u8>, usize)> {
+    env.files()
+        .map(|e| {
+            let File::Serialized(sf) = &e.file else {
+                panic!("the scene's files are SerializedFiles");
+            };
+            (e.name.as_bytes().to_vec(), Arc::as_ptr(sf) as usize)
+        })
+        .collect()
+}
+
+/// A `files` entry's change and the setting of the walks' flags under its
+/// lowered key are one step, under the listing's lock (W1). Checked as each
+/// lock the loading thread takes is released ([`held::after_each_release`]),
+/// so a notify that leaves the lock, ahead of the entry or behind it, is
+/// seen at the release in between, where another thread could see it
+/// (review round 15: it was pinned only at a hook after the lock), for each
+/// thing a load can do to the listing: `first` is what is listed first, and
+/// `then` the name the next load lists.
+#[test]
+fn at_each_release_a_listings_entry_and_flags_agree() {
+    let cases = [
+        ("a new entry", None, "foo"),
+        ("the entry replaced", Some("foo"), "foo"),
+        ("a new entry that lowers to the key", Some("foo"), "FOO"),
+    ];
+    let load = |env: &Environment, name: &str| {
+        env.load(Source::Bytes {
+            name: RawStr::from(name),
+            data: Bytes::from(serialized(&[], &[Obj::named(1, "foo1", &[])])),
+        })
+        .unwrap();
+    };
+    for (what, first, then) in cases {
+        let env = Environment::new(EnvOptions::unitypy());
+        if let Some(first) = first {
+            load(&env, first);
+        }
+        // Held, so a replaced entry's file keeps its address.
+        let kept: Vec<_> = env.files().collect();
+        let meter = Meter::unlimited();
+        let mut walk = env
+            .inner
+            .registry
+            .watches()
+            .start(&meter, [&env.inner.registry, &env.inner.files]);
+        let foo = walk.hash(b"foo");
+        let flag = walk.watch(&[(FILES, foo)]).unwrap();
+        let before = listed(&env);
+        let seen = std::rc::Rc::new(std::cell::Cell::new((0_u32, 0_u32)));
+        held::after_each_release(Some(std::rc::Rc::new({
+            let (env, flag, seen) = (env.clone(), flag.clone(), seen.clone());
+            move || {
+                let changed = listed(&env) != before;
+                assert_eq!(
+                    flag.changed(),
+                    changed,
+                    "{what}: at a release the entry's change and the walks' flag differ (W1)"
+                );
+                let (releases, with_change) = seen.get();
+                seen.set((releases + 1, with_change + u32::from(changed)));
+            }
+        })));
+        load(&env, then);
+        held::after_each_release(None);
+        let (releases, with_change) = seen.get();
+        assert_ne!(releases, 0, "{what}: no lock was released");
+        assert_ne!(with_change, 0, "{what}: the entry was not listed");
+        drop(kept);
     }
 }
 

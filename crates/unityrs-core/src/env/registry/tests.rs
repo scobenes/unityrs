@@ -15,8 +15,9 @@ use std::sync::{Arc, Barrier, Mutex, mpsc};
 #[cfg(test)]
 use std::thread::ThreadId;
 
-use super::{Hook, HookFn};
-use crate::env::{EnvOptions, Environment, Source};
+use super::{By, Cab, Hook, HookFn, Loads, Rank, SlotKind};
+use crate::env::watch::REGISTRY;
+use crate::env::{EnvOptions, Environment, Source, held};
 use crate::limits::Meter;
 use crate::raw::RawStr;
 use bytes::Bytes;
@@ -244,5 +245,93 @@ fn slots_dropped_together_never_leave_a_dependency_behind() {
         drop(a);
         other.join().unwrap();
         assert_eq!(env.inner.cache.len(), 1, "round {round}");
+    }
+}
+
+/// What the key `foo` holds: its value's slot and its position.
+fn foo(env: &Environment) -> Option<(usize, Rank)> {
+    let inner = env.inner.registry.read();
+    let entry = inner.slots.get(b"foo".as_slice())?;
+    Some((Arc::as_ptr(&entry.slot) as usize, entry.first.clone()))
+}
+
+/// A registration's change to a key, the setting of the walks' flags under
+/// it and a load's new container index generation are one step, under the
+/// registry's lock (W1 and P1, plan section 3.16). Checked as each lock the
+/// registering thread takes is released ([`held::after_each_release`]), so
+/// whichever part of the step leaves the lock, ahead of the change or
+/// behind it, is seen at the release in between, where another thread could
+/// see it (review round 15: the generation was bumped after the lock, and
+/// the notify was pinned only at a hook after it). By a load and by a reach,
+/// which starts no generation (`Registry::insert`), for each thing a
+/// registration can do to a key: `before` are the loads registered first,
+/// `at` the one that runs, and `changes` whether it changes the key.
+#[test]
+fn at_each_release_a_registrations_key_flags_and_generation_agree() {
+    let cases = [
+        ("a new key", &[][..], 5, true),
+        ("a later load replaces the value", &[5][..], 9, true),
+        ("an earlier load moves the key", &[5][..], 3, true),
+        ("an equal rank is no change", &[5][..], 5, false),
+        (
+            "a load between its position and its value",
+            &[3, 9][..],
+            5,
+            false,
+        ),
+    ];
+    for by in [By::Load, By::Reach] {
+        for (what, before, at, changes) in cases {
+            let env = Environment::new(EnvOptions::unitypy());
+            env.load(Source::Bytes {
+                name: RawStr::from("seed"),
+                data: Bytes::from(serialized(&[], &[Obj::named(1, "s1", &[])])),
+            })
+            .unwrap();
+            let meter = Meter::unlimited();
+            let name = RawStr::from("foo");
+            let cab: Cab = env.get_cab(&RawStr::from("seed"), &meter).unwrap().unwrap();
+            let register = |load: u64, by: By| {
+                let kind = SlotKind::Ready(cab.clone());
+                let reg = &env.inner.registry;
+                reg.insert(&name, kind, Loads::at(load), &[], &meter, by, false)
+                    .unwrap();
+            };
+            for &load in before {
+                register(load, By::Load);
+            }
+            let reg = &env.inner.registry;
+            let mut walk = reg.watches().start(&meter, [reg, &env.inner.files]);
+            let hash = walk.hash(b"foo");
+            let flag = walk.watch(&[(REGISTRY, hash)]).unwrap();
+            let (key_before, generation_before) = (foo(&env), reg.generation());
+            let seen = std::rc::Rc::new(std::cell::Cell::new((0_u32, 0_u32)));
+            held::after_each_release(Some(std::rc::Rc::new({
+                let (env, flag, key_before, seen) =
+                    (env.clone(), flag.clone(), key_before.clone(), seen.clone());
+                let by_load = by == By::Load;
+                move || {
+                    let changed = foo(&env) != key_before;
+                    let generation = env.inner.registry.generation();
+                    assert_eq!(
+                        flag.changed(),
+                        changed,
+                        "{what}: at a release the key's change and the walks' flag differ (W1)"
+                    );
+                    assert_eq!(
+                        generation != generation_before,
+                        changed && by_load,
+                        "{what}: at a release the key's change and the generation differ (P1)"
+                    );
+                    let (releases, with_change) = seen.get();
+                    seen.set((releases + 1, with_change + u32::from(changed)));
+                }
+            })));
+            register(at, by);
+            held::after_each_release(None);
+            let (releases, with_change) = seen.get();
+            assert_ne!(releases, 0, "{what}: no lock was released");
+            assert_eq!(with_change != 0, changes, "{what}");
+        }
     }
 }

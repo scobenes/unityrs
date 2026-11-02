@@ -199,8 +199,10 @@ impl Registry {
     /// 9, Q14: told before the lock, [`Stand`]), which then takes its
     /// position; a load's registration reaches every listed slot before it
     /// returns ([`Self::settle`], module docs), and a change sets the
-    /// running container preload walks' flags under the key in the step
-    /// that publishes it, under the write lock ([`super::watch`], W1).
+    /// running container preload walks' flags under the key and, for a
+    /// load's, starts a new container index generation, in the step that
+    /// publishes it, under the write lock ([`super::watch`], W1;
+    /// `RegistryInner::publish`).
     // The registration's parts, each one of the module docs' terms.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn insert(
@@ -251,7 +253,7 @@ impl Registry {
                 order,
                 slots,
                 pending,
-                watched,
+                ..
             } = &mut *inner;
             let out = if let Some(e) = slots.get_mut(lowered.as_bytes()) {
                 let moves = position < e.first;
@@ -308,10 +310,10 @@ impl Registry {
                     detail: "a key vanished".into(),
                 });
             };
-            // The change and the setting of the walks' flags under its key
-            // are one step (`super::watch`, W1).
+            // The change, the setting of the walks' flags under its key and
+            // a load's new generation are one step (`super::watch`, W1).
             if out.1 {
-                watched.notify(hash);
+                inner.publish(hash, by == By::Load);
             }
             out
         };
@@ -326,16 +328,14 @@ impl Registry {
     }
 
     /// What a registration counts once its change is published: a load's
-    /// change starts a new container index generation, and a load's new
-    /// key counts on this thread (`LOAD_KEYS_HERE`); a reach registers what
-    /// an eager load registered at load, before any container pass.
+    /// new key counts on this thread (`LOAD_KEYS_HERE`); a reach registers
+    /// what an eager load registered at load, before any container pass.
+    // `changed` is the test's hook's.
+    #[cfg_attr(not(test), allow(unused_variables, clippy::unused_self))]
     fn count_change(&self, changed: bool, new_key: bool, by: By) {
         #[cfg(test)]
         if changed {
             self.hook(Hook::Published);
-        }
-        if changed && by == By::Load {
-            self.generation.fetch_add(1, Ordering::AcqRel);
         }
         if new_key && by == By::Load {
             LOAD_KEYS_HERE.with(|c| c.set(c.get().saturating_add(1)));

@@ -1,20 +1,30 @@
 //! The walks' watches keep no memory past their charge (invariant W2, plan
 //! section 3.16): a walk's charge is released only after its entries left
 //! both tables and every key list it grew shrank back to what the running
-//! walks pay for (review round 5). A walk's log lists each flag a change
-//! set once, whichever thread made the change (review round 14).
+//! walks pay for (review round 5), whatever another thread's change does
+//! meanwhile (review round 15). A walk's log lists each flag a change set
+//! once, whichever thread made the change (review round 14), however its
+//! push meets another push or a take (review round 15). Each race is run by
+//! the module's hooks ([`super::Point`]) and the testkit's handshakes, never
+//! by repetition or timing.
 
 // The source scan behind "the core starts no thread and never waits"
 // (`unityrs_testkit::waits`) takes only an item under `#[cfg(test)]` in its
 // own file for test code, so every item here that names a thread, a channel
 // or a lock carries one.
 #[cfg(test)]
+use std::sync::mpsc::{Receiver, Sender, channel};
+#[cfg(test)]
 use std::sync::{Arc, Mutex, RwLock};
 
-use super::{FILES, FIRED, FLAG, REGISTRY, Table, Under, WATCH_SHARE, Walk, Watches};
+use super::{
+    FILES, FIRED, FLAG, Point, REGISTRY, Table, Under, WATCH_SHARE, Walk, Watches, set_hook,
+};
 use crate::budget::{BudgetExceeded, MemoryBudget, Permit, PermitHome, Reservation};
 use crate::env::held;
 use crate::limits::{Meter, heap_cost};
+#[cfg(test)]
+use unityrs_testkit::guard;
 
 /// A lock of the test's own that keys are published under, as the
 /// registry's and the `files` listing's are.
@@ -27,6 +37,23 @@ impl Under for Lock {
     fn with_table(&self, f: &mut dyn FnMut(&mut Table)) {
         f(&mut held::write(&self.0));
     }
+}
+
+/// Stops the calling thread the first time it reaches `at` ([`Point`]): it
+/// tells `stopped`, then waits for `go`. Its hook is taken off when `run`
+/// returns.
+#[cfg(test)]
+fn stopping_at<T>(at: Point, stopped: Sender<()>, go: Receiver<()>, run: impl FnOnce() -> T) -> T {
+    let armed = std::cell::Cell::new(true);
+    set_hook(Some(std::rc::Rc::new(move |p| {
+        if p == at && armed.replace(false) {
+            let _ = stopped.send(());
+            guard::hold(&go, "the test to let the stopped thread go");
+        }
+    })));
+    let out = run();
+    set_hook(None);
+    out
 }
 
 /// The two locks and the watches a walk starts on.
@@ -306,4 +333,119 @@ fn the_log_lists_each_flag_once_under_changes_from_many_threads() {
     seen.sort_unstable();
     assert_eq!(seen, (0..N).collect::<Vec<_>>());
     assert!(flags.iter().all(|f| f.changed()));
+}
+
+/// A walk's end takes out every entry of its own, by identity, while
+/// another thread's change holds one of its flags (W2; review round 15: the
+/// end kept every entry whose flag was still alive, so the one a notify
+/// held stayed in the registry's table, dead, after the walk's charge was
+/// released). The walk's flag watches a registry key and a `files` key;
+/// another thread publishes the `files` key and is stopped right after its
+/// notify upgraded the flag, its lock held; the walk ends on a third thread,
+/// stopped right after it left the registry's table; the notify is let go,
+/// then the end.
+#[cfg(test)]
+#[test]
+fn a_walks_end_takes_out_its_entries_while_another_thread_holds_its_flag() {
+    let (rig, home, meter) = spied();
+    let mut walk = rig.start(&meter);
+    let (r, f) = (walk.hash(b"r"), walk.hash(b"f"));
+    drop(walk.watch(&[(REGISTRY, r), (FILES, f)]).unwrap());
+    home.seen.lock().unwrap().clear();
+    let rig = &*rig;
+    std::thread::scope(|s| {
+        let (notified, notify_stopped) = channel();
+        let (notify_go, go) = channel();
+        let notify = s.spawn(move || {
+            stopping_at(Point::Upgraded, notified, go, || rig.publish(FILES, f));
+        });
+        guard::wait(&notify_stopped, "the notify to hold the walk's flag");
+        let (ended, end_stopped) = channel();
+        let (end_go, go) = channel();
+        let end = s.spawn(move || {
+            stopping_at(Point::Ended(REGISTRY), ended, go, || drop(walk));
+        });
+        guard::wait(&end_stopped, "the walk's end to leave the registry's table");
+        notify_go.send(()).unwrap();
+        notify.join().unwrap();
+        end_go.send(()).unwrap();
+        end.join().unwrap();
+    });
+    assert_eq!(rig.room(), (0, Vec::new()), "the walk left an entry");
+    let seen = home.seen.lock().unwrap().clone();
+    assert_ne!(seen.len(), 0, "the walk's charge was released");
+    assert!(
+        seen.iter()
+            .all(|&(walks, entries, _)| walks == 0 && entries == 0),
+        "released while its entries were in a table: {seen:?}"
+    );
+}
+
+/// A flag's push that meets another flag's push of the same walk tries
+/// again, so the log holds both (review round 15: a push that gave up on
+/// a failed exchange was caught only by a test whose threads met by
+/// chance): one flag's push, under the registry's lock, is stopped right
+/// after it read the log's head; the other flag, under the `files` lock,
+/// is pushed then; the first is let go.
+#[cfg(test)]
+#[test]
+fn a_push_that_meets_another_push_tries_again() {
+    let (rig, _home, meter) = spied();
+    let mut walk = rig.start(&meter);
+    let (a, b) = (walk.hash(b"a"), walk.hash(b"b"));
+    let first = walk.watch(&[(REGISTRY, a)]).unwrap();
+    let second = walk.watch(&[(FILES, b)]).unwrap();
+    let rig = &*rig;
+    std::thread::scope(|s| {
+        let (read, stopped) = channel();
+        let (go, go_rx) = channel();
+        let push = s.spawn(move || {
+            stopping_at(Point::Pushing, read, go_rx, || rig.publish(REGISTRY, a));
+        });
+        guard::wait(&stopped, "the first push to read the log's head");
+        rig.publish(FILES, b);
+        go.send(()).unwrap();
+        push.join().unwrap();
+    });
+    assert_eq!(
+        walk.fired().collect::<Vec<_>>(),
+        [first.id(), second.id()],
+        "the log lost a flag"
+    );
+}
+
+/// A flag's push that meets its walk's take of the log tries again, so the
+/// next take holds it (review round 15): a flag is logged; another flag's
+/// push, under the registry's lock, is stopped right after it read the
+/// log's head (the first flag); the walk takes the log then; the push is
+/// let go.
+#[cfg(test)]
+#[test]
+fn a_push_that_meets_a_take_tries_again() {
+    let (rig, _home, meter) = spied();
+    let mut walk = rig.start(&meter);
+    let (a, c) = (walk.hash(b"a"), walk.hash(b"c"));
+    let earlier = walk.watch(&[(REGISTRY, c)]).unwrap();
+    let pushed = walk.watch(&[(REGISTRY, a)]).unwrap();
+    rig.publish(REGISTRY, c);
+    let rig = &*rig;
+    let mut taken = Vec::new();
+    std::thread::scope(|s| {
+        let (read, stopped) = channel();
+        let (go, go_rx) = channel();
+        let push = s.spawn(move || {
+            stopping_at(Point::Pushing, read, go_rx, || rig.publish(REGISTRY, a));
+        });
+        guard::wait(&stopped, "the push to read the log's head");
+        taken.extend(walk.fired());
+        go.send(()).unwrap();
+        push.join().unwrap();
+    });
+    assert_eq!(taken, [earlier.id()]);
+    assert!(pushed.changed());
+    assert_eq!(
+        walk.fired().collect::<Vec<_>>(),
+        [pushed.id()],
+        "the log lost a flag"
+    );
 }

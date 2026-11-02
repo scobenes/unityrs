@@ -5,7 +5,7 @@
 //! before each element of each row's span it looks at, after each row, and
 //! after the walk, and the core's walk is stopped at each point it reaches
 //! while another thread makes the load. In each, the other file replaces a
-//! CAB a scene file registered (`RaceScene`'s docs).
+//! CAB a scene file registered, or two (`RaceScene`'s docs).
 
 use super::named;
 use super::revisit::preload_revisits_after_load;
@@ -145,6 +145,71 @@ pub fn race_in_a_lookup() -> RaceScene {
     }
 }
 
+/// A load that replaces a CAB with a file whose own preload table the
+/// next container pass walks (review round 15, area d's probe): the table
+/// is `CAB-A`'s 5, in one row; the other file's `CAB-A` holds 5, 7 and an
+/// AssetBundle whose row `assets/x.prefab` names its 5 and spans its own 7,
+/// so only a walk of that table gives 7 a path. UnityPy's `register_cab`
+/// clears the built flag in the step after the one that sets the key
+/// (`environment.py:263-264`), so once a lookup finds the new `CAB-A`, its
+/// 7's `container` walks the new table (the core started the new container
+/// index generation after the registry's lock, so a thread that found the
+/// new `CAB-A` in between read the old generation's built index, and 7 no
+/// path).
+#[must_use]
+pub fn race_replaced_by_a_table_of_its_own() -> RaceScene {
+    let own = serialized(
+        &[],
+        &[
+            Obj::named(5, "other5", &[]),
+            Obj::named(7, "other7", &[]),
+            Obj::asset_bundle(
+                2,
+                Bundle {
+                    preload: vec![(0, 7)],
+                    rows: vec![row("assets/x.prefab", (0, 1), (0, 5))],
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    );
+    RaceScene {
+        scene: walked(&["archive:/CAB-A/CAB-A"], vec![(1, 5)], &[(0, 1)]),
+        other: named("d.bundle", bundle(&[("CAB-A", own)])),
+    }
+}
+
+/// A load that changes two keys, publishing one at a time (review round
+/// 15, area d's probe; plan section 3.16 item 6): `c.bundle` holds `CAB-A`
+/// (5) and `CAB-B` (6), and the table is `CAB-A`'s 5 and `CAB-B`'s 6, in one
+/// row; the other file holds a new `CAB-A` (5) and `CAB-B` (6). A load
+/// stopped right after it published its first key gives what UnityPy's
+/// walk gives with that key changed at the point it was published and the
+/// other after the walk, a split no whole load at one point gives.
+#[must_use]
+pub fn race_two_keys() -> RaceScene {
+    let mut scene = walked(
+        &["archive:/CAB-A/CAB-A", "archive:/CAB-B/CAB-B"],
+        vec![(1, 5), (2, 6)],
+        &[(0, 2)],
+    );
+    let c = bundle(&[
+        ("CAB-A", serialized(&[], &[Obj::named(5, "c5", &[])])),
+        ("CAB-B", serialized(&[], &[Obj::named(6, "c6", &[])])),
+    ]);
+    if let Some(first) = scene.files.first_mut() {
+        *first = named("c.bundle", c);
+    }
+    let d = bundle(&[
+        ("CAB-A", serialized(&[], &[Obj::named(5, "d5", &[])])),
+        ("CAB-B", serialized(&[], &[Obj::named(6, "d6", &[])])),
+    ]);
+    RaceScene {
+        scene,
+        other: named("d.bundle", d),
+    }
+}
+
 /// Every race scene, by name: what `tools/fixtures/env.py` records.
 #[must_use]
 pub fn race_scenes() -> Vec<(&'static str, RaceScene)> {
@@ -160,5 +225,10 @@ pub fn race_scenes() -> Vec<(&'static str, RaceScene)> {
             race_around_the_walks_own_load(),
         ),
         ("race_in_a_lookup", race_in_a_lookup()),
+        (
+            "race_replaced_by_a_table_of_its_own",
+            race_replaced_by_a_table_of_its_own(),
+        ),
+        ("race_two_keys", race_two_keys()),
     ]
 }
