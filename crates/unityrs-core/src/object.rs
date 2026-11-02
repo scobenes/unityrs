@@ -144,8 +144,11 @@ impl ObjectRef {
             }));
         }
         // :298-299: `get_typetree_node(class_id, version)`. A file below
-        // format 7 has no version (UnityPy's `assets_file.version` is unset,
-        // an `AttributeError`): no tree.
+        // format 7 has no version: UnityPy's `assets_file.version` is unset,
+        // so the `ObjectReader.version` property's `AttributeError` falls to
+        // `ObjectReader.__getattr__` (:223-225), which returns `None`, and
+        // `get_typetree_node` raises with that `None` (`why_no_tree` names
+        // which exception: `NoTree::NoVersion` for the comparison). No tree.
         let Some(version) = self.file.version() else {
             return Ok(None);
         };
