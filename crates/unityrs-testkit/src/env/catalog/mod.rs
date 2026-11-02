@@ -4,6 +4,7 @@
 
 mod find;
 mod nested;
+mod race;
 mod revisit;
 
 pub use find::{FindAsk, FindScene, find_file_kinds, find_file_listing, find_scenes, web_file};
@@ -13,6 +14,7 @@ pub use nested::{
     nested_reloaded_spans_raced, nested_replaced_unread, preload_nested_external,
     resource_in_nested_cab, resource_in_own_nested,
 };
+pub use race::race_scenes;
 pub use revisit::{preload_revisits_after_load, preload_revisits_ahead};
 
 use super::{Bundle, DepScene, Obj, Scene, bundle, bundle_spec, res_bytes, row, serialized};

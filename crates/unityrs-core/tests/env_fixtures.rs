@@ -29,20 +29,21 @@ use unityrs_core::limits::Meter;
 use unityrs_core::pystr::{
     is_split_path, ntpath_basename, ntpath_splitext, py_lower, simplify_name,
 };
-use unityrs_testkit::env::{dependency_scenes, find_scenes, scenes};
+use unityrs_testkit::env::{dependency_scenes, find_scenes, race_scenes, scenes};
 
 use run::{Run, hex, load, ops, recorded, scene_by_name, text, unhex};
 
-/// The fixture's scenes are the testkit's, byte for byte, its dependency
-/// and `find_file` scenes too. With `UNITYRS_WRITE_SCENES=<path>` it writes
-/// them there instead, as JSON lines, a dependency scene's with its
-/// `dependencies`, a `find_file` scene's with its `asks`
-/// (`tools/fixtures/env.py` reads them).
+/// The fixture's scenes are the testkit's, byte for byte, its dependency,
+/// `find_file` and race scenes too. With `UNITYRS_WRITE_SCENES=<path>` it
+/// writes them there instead, as JSON lines, a dependency scene's with its
+/// `dependencies`, a `find_file` scene's with its `asks`, a race scene's
+/// with its `other` file (`tools/fixtures/env.py` reads them).
 #[test]
 fn scenes_are_the_testkit_scenes() {
     let all = scenes();
     let deps = dependency_scenes();
     let finds = find_scenes();
+    let races = race_scenes();
     let asks = |f: &unityrs_testkit::env::FindScene| -> J {
         json!(
             f.asks
@@ -72,6 +73,13 @@ fn scenes_are_the_testkit_scenes() {
             let s = &f.scene;
             let row = json!({"name": n, "files": pairs(&s.files), "resolver": pairs(&s.resolver),
                 "asks": asks(f)});
+            lines.push_str(&row.to_string());
+            lines.push('\n');
+        }
+        for (n, r) in &races {
+            let s = &r.scene;
+            let row = json!({"name": n, "files": pairs(&s.files), "resolver": pairs(&s.resolver),
+                "other": pairs(std::slice::from_ref(&r.other))[0]});
             lines.push_str(&row.to_string());
             lines.push('\n');
         }
@@ -116,6 +124,17 @@ fn scenes_are_the_testkit_scenes() {
     for (c, (n, f)) in doc["find_scenes"].as_array().unwrap().iter().zip(&finds) {
         assert_eq!(c["asks"], asks(f), "{n}");
     }
+    check(
+        &doc["race_scenes"],
+        races.iter().map(|(n, r)| (*n, &r.scene)).collect(),
+    );
+    for (c, (n, r)) in doc["race_scenes"].as_array().unwrap().iter().zip(&races) {
+        assert_eq!(
+            c["other"],
+            pairs(std::slice::from_ref(&r.other))[0],
+            "{n}: the builder changed"
+        );
+    }
 }
 
 /// G3b mutates every file of every scene the fixture records, in whatever
@@ -135,7 +154,13 @@ fn g3b_mutates_every_file_of_every_recorded_scene() {
         for c in cases.as_array().unwrap() {
             let scene = c["name"].as_str().unwrap();
             let own = c["files"].as_array().unwrap();
-            for pair in own.iter().chain(c["resolver"].as_array().unwrap()) {
+            // A race scene's other file is among its files.
+            let other = c.get("other");
+            for pair in own
+                .iter()
+                .chain(c["resolver"].as_array().unwrap())
+                .chain(other)
+            {
                 let name = pair[0].as_str().unwrap().replace('/', "_");
                 let name = format!("scene-{scene}-{name}");
                 let bytes = unhex(pair[1].as_str().unwrap());
