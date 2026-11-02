@@ -508,7 +508,8 @@ mod tests {
             [
                 "scene-resolver_loads-CAB-H2.resS",
                 "scene-find_file_kinds-top.resS",
-                "scene-find_file_kinds-r.resS"
+                "scene-find_file_kinds-r.resS",
+                "scene-find_file_listing-x.resS"
             ]
         );
     }

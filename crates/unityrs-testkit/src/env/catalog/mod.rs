@@ -5,7 +5,7 @@
 mod find;
 mod nested;
 
-pub use find::{FindAsk, FindScene, find_file_kinds, find_scenes, web_file};
+pub use find::{FindAsk, FindScene, find_file_kinds, find_file_listing, find_scenes, web_file};
 pub use nested::{
     dependency_reads, deref_sibling_nested, nested_dropped_evicted, nested_duplicates,
     nested_evicted, nested_raw_replaced, nested_reloaded, nested_reloaded_spans,

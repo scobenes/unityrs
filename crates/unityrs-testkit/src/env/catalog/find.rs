@@ -2,7 +2,7 @@
 //! The scene `Environment::find_file` is recorded on: every kind of file it
 //! can return, found through the CAB registry and through the resolver.
 
-use super::{Obj, Scene, bundle, named, res_bytes, serialized};
+use super::{Bundle, Obj, Scene, bundle, named, res_bytes, row, serialized};
 
 /// One `find_file(name, is_dependency)` call.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,8 +102,63 @@ pub fn find_file_kinds() -> FindScene {
     }
 }
 
+/// What a `find_file` load lists, under each flag. Loaded: a bundle whose
+/// CAB holds a named object and an AssetBundle with one container row. The
+/// resolver: two such bundles, such a `SerializedFile` and a raw file.
+/// `find_file` is asked for the first bundle as a dependency (UnityPy's
+/// default, a dereference's), then with `is_dependency=False` for the second
+/// bundle, the `SerializedFile` and the raw file, then for the
+/// `SerializedFile` again, now the registry's. UnityPy lists each load in
+/// `env.files`, and the objects and container rows of those loaded with
+/// `is_dependency=False` in `env.objects` and `env.container`, which
+/// `EnvOptions::batch()` leaves out (`PARITY.md` section 19.3).
+#[must_use]
+pub fn find_file_listing() -> FindScene {
+    let cab = |path_id: i64, name: &str| {
+        let rows = vec![row(&format!("assets/{name}.asset"), (0, 0), (0, path_id))];
+        serialized(
+            &[],
+            &[
+                Obj::named(path_id, name, &[]),
+                Obj::asset_bundle(
+                    path_id + 1,
+                    Bundle {
+                        rows,
+                        ..Bundle::default()
+                    },
+                ),
+            ],
+        )
+    };
+    let ask = |name: &str, is_dependency: bool| FindAsk {
+        name: name.as_bytes().to_vec(),
+        is_dependency,
+    };
+    FindScene {
+        scene: Scene {
+            files: vec![named("l.bundle", bundle(&[("CAB-L", cab(1, "l1"))]))],
+            resolver: vec![
+                named("d.bundle", bundle(&[("CAB-D", cab(3, "d3"))])),
+                named("n.bundle", bundle(&[("CAB-N", cab(5, "n5"))])),
+                named("cab-m", cab(7, "m7")),
+                named("x.resS", res_bytes(8, 9)),
+            ],
+        },
+        asks: vec![
+            ask("d.bundle", true),
+            ask("n.bundle", false),
+            ask("cab-m", false),
+            ask("x.resS", false),
+            ask("cab-m", true),
+        ],
+    }
+}
+
 /// Every `find_file` scene, by name: what `tools/fixtures/env.py` records.
 #[must_use]
 pub fn find_scenes() -> Vec<(&'static str, FindScene)> {
-    vec![("find_file_kinds", find_file_kinds())]
+    vec![
+        ("find_file_kinds", find_file_kinds()),
+        ("find_file_listing", find_file_listing()),
+    ]
 }

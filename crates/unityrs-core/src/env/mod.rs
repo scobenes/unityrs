@@ -129,8 +129,14 @@
 //! [`FileEntry`], `is_dependency` as UnityPy sets it, and none is evicted.
 //! With it false ([`EnvOptions::batch`]) resolver loads are LRU
 //! dependencies, evictable, and in neither `files`, `objects` nor
-//! `container`, a `PARITY.md` divergence. [`Environment::load_dependency`],
-//! which UnityPy has no call for, never adds to `files`.
+//! `container`, whatever `find_file`'s `is_dependency`: `PARITY.md`
+//! section 19.3's row "resolver loads under `keep_resolver_loads` false"
+//! (`find_file`'s and a dereference's; review round 12: no row listed
+//! them) and section 19.2's `SerializedFile.load_dependencies` row (a
+//! resource fallback's). An evicted dependency is opened again from its
+//! source by the next read that needs it (section 19.3's row "a dependency
+//! the LRU evicts"). [`Environment::load_dependency`], which UnityPy has
+//! no call for, never adds to `files`.
 //!
 //! **Locks.** The registry, the `files` list, the LRU and a file's
 //! `path_dict` are locked only to look up or publish; a file is loaded, an
@@ -202,10 +208,12 @@ pub enum LoadMode {
 
 /// Bytes the caller fetches on demand (a batch engine's mmap or object store).
 pub trait Fetch: Send + Sync + fmt::Debug {
-    /// The file's bytes. A dependency's fetcher (one a
-    /// [`Environment::load_dependency`], a resolver's load as a dependency or
-    /// a reopen after an eviction calls) that takes them from the dependency
-    /// pool may refuse with the pool's refusal ([`Error::Budget`] naming
+    /// The file's bytes. A fetcher of a load the Environment makes itself
+    /// (an [`Environment::load_dependency`], any load of a source the
+    /// resolver returned, whether it is listed as a dependency or not, or a
+    /// reopen after an eviction; review round 12: a resolver's load listed
+    /// as no dependency was not retried) that takes them from the
+    /// dependency pool may refuse with the pool's refusal ([`Error::Budget`] naming
     /// [`crate::budget::Reservation::Dependency`]): the Environment then
     /// evicts the other dependencies and fetches once more, as for a
     /// refusal of its own (plan section 3.13), whatever the fetcher did
@@ -372,8 +380,11 @@ pub trait CabResolver: Send + Sync + fmt::Debug {
     /// [`DerefError::NotFound`], which a container preload skips as
     /// UnityPy's skips every `FileNotFoundError`. Any other error fails the
     /// call that asked. An error returned here is the caller's code's, a
-    /// pool refusal in it counted as it enters the core, as a fetcher's is
-    /// ([`Fetch::fetch`]).
+    /// pool refusal in it counted as it enters the core and retried once,
+    /// as a fetcher's is ([`Fetch::fetch`]): [`Environment::find_file`], a
+    /// dereference and the container pass's preload each evict the other
+    /// dependencies and ask once more (review round 12: only a
+    /// dereference did).
     fn find_file(&self, name: &[u8]) -> Result<Option<Source>, Error> {
         Ok(self.resolve(name))
     }
@@ -399,7 +410,10 @@ pub struct EnvOptions {
     /// Whether the files the resolver loads (for `find_file` and a resource
     /// read's fallback) are kept in [`Environment::files`] as UnityPy keeps
     /// them, and never evicted (module docs). False keeps them in the
-    /// dependency LRU only, a `PARITY.md` divergence.
+    /// dependency LRU only, whatever `find_file`'s `is_dependency`, a
+    /// `PARITY.md` divergence (section 19.3, "resolver loads under
+    /// `keep_resolver_loads` false"; section 19.2,
+    /// `SerializedFile.load_dependencies`).
     pub keep_resolver_loads: bool,
 }
 

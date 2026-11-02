@@ -90,18 +90,27 @@ impl Environment {
     /// that load is a [`FileEntry`] under the resolved source's name, never
     /// evicted, a dependency as `is_dependency` says (UnityPy's default is
     /// true, and a dereference's call takes it): a dependency's objects are
-    /// in neither [`Self::objects`] nor [`Self::container`]. Without it the
-    /// load is an evictable dependency in the LRU only, whatever the flag
-    /// (module docs). `None` where the resolver answers none (UnityPy's
-    /// `None`); the resolver's error where it returns one (UnityPy's walk's
-    /// `FileNotFoundError`, [`CabResolver::find_file`]). `meter` as for
-    /// [`Self::get_cab`]. A dependency's `SerializedFile` may outlive its
-    /// bundle in the LRU, as `get_cab`'s may: [`Self::get_cab_held`] returns
-    /// the handle that keeps it. (Review round 11: a container the resolver
-    /// loaded was `None`, the answer a miss gives.)
+    /// in neither [`Self::objects`] nor [`Self::container`]. Without it
+    /// ([`EnvOptions::batch`]) the load is an evictable dependency in the
+    /// LRU only, whatever the flag, so it is in none of [`Self::files`],
+    /// `objects` or `container`, the one way this call differs from
+    /// UnityPy's there (`PARITY.md` section 19.3, "resolver loads under
+    /// `keep_resolver_loads` false"). `None` where the resolver answers
+    /// none (UnityPy's `None`); the resolver's error where it returns one
+    /// (UnityPy's walk's `FileNotFoundError`, [`CabResolver::find_file`]).
+    /// `meter` as for [`Self::get_cab`]. A pool refusal in the lookup, in
+    /// the resolver's answer (its own, counted as it returns) or in the
+    /// load evicts the others and retries that step once (plan section
+    /// 3.13; review round 12: the resolver's own refusal was returned
+    /// untried, which a dereference retried). A dependency's
+    /// `SerializedFile` may outlive its bundle in the LRU, as `get_cab`'s
+    /// may: [`Self::get_cab_held`] returns the handle that keeps it.
+    /// (Review round 11: a container the resolver loaded was `None`, the
+    /// answer a miss gives.)
     ///
     /// [`CabResolver::find_file`]: super::CabResolver::find_file
     /// [`EnvOptions::keep_resolver_loads`]: super::EnvOptions::keep_resolver_loads
+    /// [`EnvOptions::batch`]: super::EnvOptions::batch
     /// [`FileEntry`]: super::FileEntry
     pub fn find_file(
         &self,
@@ -119,8 +128,12 @@ impl Environment {
     }
 
     /// [`Self::find_file`]'s lookup, and how it reached what it found. A
-    /// pool refusal in the registry's lookup evicts the others and retries
-    /// it once; the resolver's load takes its own (plan section 3.13).
+    /// pool refusal in the registry's lookup, or one the resolver's
+    /// `find_file` returns, evicts the others and retries that step once;
+    /// the resolver's load takes its own (`load_resolved`), so a retry never
+    /// loads again what a load before it loaded (plan section 3.13; review
+    /// round 12: the resolver's refusal was retried inside a dereference
+    /// only, whose retry encloses this lookup).
     fn find(
         &self,
         name: &RawStr,
@@ -138,11 +151,11 @@ impl Environment {
         }
         // :330-354: the resolver stands for the walk of `env.path`. What it
         // returns is the caller's code's, a pool refusal in it counted as it
-        // enters the core (`from_callers`).
+        // enters the core (`from_callers`) and retried as the core's own.
         let Some(resolver) = self.inner.options.resolver.clone() else {
             return Ok(None);
         };
-        let Some(source) = from_callers(resolver.find_file(name.as_bytes()))? else {
+        let Some(source) = self.room(|| from_callers(resolver.find_file(name.as_bytes())))? else {
             return Ok(None);
         };
         let file = self.load_resolved(&source, Asked::Find { is_dependency })?;

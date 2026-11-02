@@ -24,10 +24,11 @@ temporary `env.path`; a key under it is written `@/<name>`. Each scene of
 every object its `container` path, and dereferences every pointer and reads
 every resource of the objects of the files it loaded as dependencies (which
 `env.objects` leaves out), the state recorded after each step. Each scene of
-`find_scenes` loads its files, then calls `env.find_file(name, is_dependency)`
-for each of its asks, recording what it returns (its kind, its name and
-contents, and the `env.files` and `env.cabs` keys that hold that very
-object) or the exception it raises, and the state after each step.
+`find_scenes` loads its files, lists the container, then calls
+`env.find_file(name, is_dependency)` for each of its asks, recording what it
+returns (its kind, its name and contents, and the `env.files` and
+`env.cabs` keys that hold that very object) or the exception it raises, and
+lists the container again, the state recorded after each step.
 
 `resolver.json`: the names UnityPy's lookups hand on where it looks in
 `env.path` (the core's `CabResolver`): a resource read's fallback and a
@@ -270,7 +271,7 @@ class Run:
         return self.describe(f)
 
     def find_steps(self) -> list[dict]:
-        """The loads, then each ask's `find_file`."""
+        """The loads, the container, each ask's `find_file`, the container."""
         out = []
 
         def step(op, result):
@@ -278,8 +279,10 @@ class Run:
 
         for i in range(len(self.scene["files"])):
             step(["load", i], self.load(i))
+        step(["container"], self.container())
         for name, is_dependency in self.scene["asks"]:
             step(["find_file", name, is_dependency], self.find_file(name, is_dependency))
+        step(["container"], self.container())
         return out
 
     def steps(self) -> list[dict]:
