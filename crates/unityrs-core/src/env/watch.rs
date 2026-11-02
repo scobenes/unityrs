@@ -106,14 +106,18 @@ fn thread_here() -> usize {
 }
 
 /// What one flag costs its walk: its `Arc` in a glibc chunk, and its
-/// element in the walk's [`Fired`] list and in the list the walk takes it
-/// out into, each of which doubles.
+/// element in the walk's [`Fired`] list, twice (the list doubles). The list
+/// holds the flags set since the walk last took it ([`Walk::fired`]), each
+/// once, and the walk drops what it takes before it can be set again, so
+/// one list lives at a time.
 pub(crate) const FLAG: u64 =
-    heap_cost((size_of::<Flag>() + 2 * size_of::<usize>()) as u64) + 4 * size_of::<usize>() as u64;
+    heap_cost((size_of::<Flag>() + 2 * size_of::<usize>()) as u64) + 2 * size_of::<usize>() as u64;
 
 /// What a walk's [`Fired`] list costs it, made with its first flag: its
-/// `Arc` in a glibc chunk.
-pub(crate) const FIRED: u64 = heap_cost((size_of::<Fired>() + 2 * size_of::<usize>()) as u64);
+/// `Arc` in a glibc chunk, and the four elements its vector holds room for
+/// at its first push, in a chunk.
+pub(crate) const FIRED: u64 = heap_cost((size_of::<Fired>() + 2 * size_of::<usize>()) as u64)
+    + heap_cost(4 * size_of::<usize>() as u64);
 
 /// What one watch of one key costs its walk: its share of the map, and its
 /// element in the key's list and in the walk's own list, each twice (the
@@ -261,6 +265,12 @@ impl Walk<'_> {
             .as_ref()
             .map(|f| std::mem::take(&mut *lock(&f.ids)))
             .unwrap_or_default()
+    }
+
+    /// The room its [`Fired`] list holds, in elements, for a test.
+    #[cfg(test)]
+    pub(crate) fn log_room(&self) -> usize {
+        self.fired.as_ref().map_or(0, |f| lock(&f.ids).capacity())
     }
 
     /// What the walk's charge holds, for a test.
