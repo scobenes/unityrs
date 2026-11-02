@@ -18,9 +18,14 @@
 //! that drops: a [`crate::Parsed`] carries the charge for its values, a
 //! decoded buffer's [`bytes::Bytes`] the charge for the buffer. So what one
 //! input holds at any moment, retained values included, is at most
-//! [`Limits::max_input_memory`] (plus the constant overhead plan section 3.15
-//! states). A top-level load makes the meter; every file inside it (a
-//! bundle's entries, nested bundles) charges the same one.
+//! [`Limits::max_input_memory`] in the unit the meter charges ([`heap_cost`],
+//! a request in glibc's chunks), plus the constant overhead plan section 3.15
+//! states; in glibc's own chunks a live allocation below 128 KiB may hold up
+//! to [`CHUNK_SLACK`] bytes more than its charge, at most half again of it
+//! ([`heap_cost`]'s docs), so the heap such an input holds is at most half
+//! again of that limit, plus the constant. A top-level load makes the meter;
+//! every file inside it (a bundle's entries, nested bundles) charges the same
+//! one.
 //!
 //! **A meter is one open of its input.** Its memory is the input's: an
 //! account every open of the input shares, so the bound holds across opens.

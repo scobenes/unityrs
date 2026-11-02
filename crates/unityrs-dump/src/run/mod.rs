@@ -8,11 +8,13 @@
 //! - **Memory.** The window bounds how many inputs are held, and each
 //!   input's meter what one holds: its parse and its records together, the
 //!   records charged as they are made and returned once they are written
-//!   ([`crate::input`]), so at most `2N` times `max_input_memory` (plus each
-//!   worker's stack, [`worker_stack`]). The run has no bound over its
-//!   inputs together (the batch engine's budget, plan section 4.1): a
-//!   shared budget would make an input's record depend on what the others
-//!   held at the time, and so on `N`.
+//!   ([`crate::input`]), so at most `2N` times `max_input_memory` in the
+//!   unit the meter charges (plus each worker's stack, [`worker_stack`], and
+//!   glibc's slack past that unit, at most half again, plan section
+//!   3.15). The run has no bound over its inputs together (the batch
+//!   engine's budget, plan section 4.1): a shared budget would make an
+//!   input's record depend on what the others held at the time, and so on
+//!   `N`.
 //! - **An input's records are written as they are**, line by line, never
 //!   copied into one buffer first.
 //! - **Output.** The dump goes to `OUT.partial` and is renamed to `OUT` when

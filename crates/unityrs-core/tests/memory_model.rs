@@ -1,6 +1,10 @@
 //! The memory model of plan section 3.15, measured: everything the core
 //! allocates in proportion to what an input chooses is charged to the input's
-//! meter first, so one input holds at most the meter's limit plus a constant.
+//! meter first, so one input holds at most the meter's limit plus a constant
+//! in the unit the meter charges (`heap_cost`, a request in glibc's chunks),
+//! which is what this file checks; glibc's own slack past that unit, up to
+//! `CHUNK_SLACK` bytes per live allocation below 128 KiB, is
+//! `tests/heap_rounding.rs`'s.
 //!
 //!     scripts/dev cargo test -p unityrs-core --test memory_model -- --nocapture
 //!
@@ -449,7 +453,7 @@ fn the_meter_bounds_every_path() {
     // by the depth limits. The provider cache is per context, bounded on its
     // own.
     println!(
-        "bound per input: max_input_memory {} GiB + {} bytes (the meter and its account; {} more per reopen) + per reading thread its stack and detection's fixed scratch; per context the provider cache, at most {} MiB",
+        "bound per input, in the unit the meter charges (glibc's slack past it: tests/heap_rounding.rs): max_input_memory {} GiB + {} bytes (the meter and its account; {} more per reopen) + per reading thread its stack and detection's fixed scratch; per context the provider cache, at most {} MiB",
         l.max_input_memory >> 30,
         Meter::OWN_HEAP,
         Meter::REOPEN_HEAP,
