@@ -119,11 +119,11 @@ function of the same name in another class (review 13:
 override), or a whole definition cited for what another does (review 15:
 all of `read_typetree_value_array` cited for the elements its caller reads
 one by one, a range that is right wherever that function is meant, so no
-rule on the range alone can refuse it). Requiring a cited range to fall within, or hold, the definition of
-the name a comment gives with it is not a check: even in the narrowest form,
-`` `name` (`path:lines`) ``, most of the citations whose range misses the
-name's definition are right, citing a caller, an alias, an attribute or a
-module table.
+rule on the range alone can refuse it). Requiring a cited range to fall
+within, or hold, the definition of the name a comment gives with it is not a
+check: even in the narrowest form, `` `name` (`path:lines`) ``, most of the
+citations whose range misses the name's definition are right, citing a
+caller, an alias, an attribute or a module table.
 
 Exit status: 0 when every citation passes (a summary on stdout), 1 when one
 does not (each problem on its own line on stderr), 2 for a usage error, a
