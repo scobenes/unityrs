@@ -274,6 +274,9 @@ class BraceRuleTests(T.Checked):
                 whole = "is not a whole span of UnityPyBoost/TypeTreeHelper.cpp: it"
                 self.assert_problem(report, f"{cite} {whole} {message}")
 
+    def test_a_range_from_the_first_line_starts_outside_every_block(self):
+        self.assertEqual(B.brace_problem("11", 1, 1), "opens at line 1 a block it does not close")
+
     def test_a_whole_span_of_blocks_passes(self):
         for cite in (
             f"TypeTreeHelper.cpp:{1}-11",  # the function
@@ -292,8 +295,8 @@ class BraceRuleTests(T.Checked):
     def test_the_pins_refuse_review_15s_citations(self):
         """Each range review round 15 found within one definition but cutting a block is refused under the pins, and
         its correction passes. A whole span that is the wrong one still passes, wherever it is cited: R11's old
-        range, all of `read_typetree_value_array`, and the two comment lines above the `__slots__` read cited for
-        the read (PARITY.md, section 9.2)."""
+        range, all of `read_typetree_value_array`; the two comment lines above the `__slots__` read cited for the
+        read (PARITY.md, section 9.2); and the `default:` branch's array half cited as the branch (tree/mod.rs)."""
         with scratch.folder("unityrs-citations-") as tmp:
             repo = T.repository(Path(tmp), {})
             folder = T.unitypy_folder(Path(tmp), {"environment.py": "a\n"})
@@ -306,7 +309,7 @@ class BraceRuleTests(T.Checked):
                     self.assertIn(f"TypeTreeHelper.cpp: it {message}", report.problems[0])
                     T.write(repo, {"a.rs": f"// (TypeTreeHelper.cpp:{c}-{d})\n"})
                     self.assertEqual(C.check(repo, package).problems, [])
-            for a, b in ((885, 940), (508, 509)):
+            for a, b in ((885, 940), (508, 509), (812, 861)):
                 with self.subTest(f"{a}-{b}"):
                     T.write(repo, {"a.rs": f"// (TypeTreeHelper.cpp:{a}-{b})\n"})
                     self.assertEqual(C.check(repo, package).problems, [])

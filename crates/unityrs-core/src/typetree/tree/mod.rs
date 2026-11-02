@@ -236,7 +236,7 @@ pub enum Shape {
     /// A node whose [`Kind`] the reader's switch does not handle itself
     /// (`Unknown`, `PPtr`, `Array`, `ReferencedObjectData`,
     /// `ManagedReferencesRegistry`: the `default:` branch,
-    /// `TypeTreeHelper.cpp:812-861`) and whose first child's kind is `Array`
+    /// `TypeTreeHelper.cpp:812-874`) and whose first child's kind is `Array`
     /// with two children. Every other kind takes its own shape whatever its
     /// children: an `int`, `string`, `TypelessData` or `float` node with an
     /// `Array` first child reads as a scalar, a `pair` as a pair, a
@@ -511,7 +511,7 @@ fn shape_of(list: &NodeList, info: &MeteredVec<NodeInfo>, node: NodeId) -> Shape
         Kind::Pair if kids.len() == 2 => Shape::Pair,
         Kind::Pair => Shape::BadPair,
         Kind::ReferencedObject => Shape::RefObject,
-        // UnityPy TypeTreeHelper.cpp:812-861: the `default:` branch.
+        // UnityPy TypeTreeHelper.cpp:812-874: the `default:` branch.
         _ => match kids.first() {
             Some(first) if info_at(info, *first).kind == Kind::Array => {
                 let array = list.children(*first);
