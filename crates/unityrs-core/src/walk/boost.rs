@@ -151,7 +151,7 @@ impl Reader<'_, '_> {
         self.pos = self.pos.checked_add(3).map_or(usize::MAX & !3, |p| p & !3);
     }
 
-    /// `_read_length` (UnityPy TypeTreeHelper.cpp:262-281): bounds, then a
+    /// `_read_length` (UnityPy TypeTreeHelper.cpp:266-286): bounds, then a
     /// negative length fails before the cursor moves.
     fn length(&mut self) -> Result<usize, ReadError> {
         let end = self.bound(4)?;
@@ -233,7 +233,7 @@ impl Reader<'_, '_> {
         let mut align = me.align;
         let out = match me.shape {
             Shape::Prim => Out::Plain(self.prim(me.kind)?),
-            // R6 (UnityPy TypeTreeHelper.cpp:283-300): length, bounds, the
+            // R6 (UnityPy TypeTreeHelper.cpp:288-305): length, bounds, the
             // raw bytes, then always aligned.
             Shape::Str => {
                 let len = self.length()?;
@@ -243,7 +243,7 @@ impl Reader<'_, '_> {
                 self.align4();
                 Out::Plain(Value::Str(s))
             }
-            // R7 (UnityPy TypeTreeHelper.cpp:303-319): aligned only by its flag.
+            // R7 (UnityPy TypeTreeHelper.cpp:307-323): aligned only by its flag.
             Shape::Bytes => {
                 let len = self.length()?;
                 let end = self.bound(len)?;
@@ -251,7 +251,7 @@ impl Reader<'_, '_> {
                 self.pos = end;
                 Out::Plain(Value::Bytes(b))
             }
-            // R8 (UnityPy TypeTreeHelper.cpp:322-347).
+            // R8 (UnityPy TypeTreeHelper.cpp:325-351).
             Shape::Pair => {
                 let (a, b) = two(t, node);
                 let first = self.value(t, lx, a)?;
@@ -372,7 +372,7 @@ impl Reader<'_, '_> {
         Ok(out)
     }
 
-    /// `read_num_array` and friends (UnityPy TypeTreeHelper.cpp:88-260):
+    /// `read_num_array` and friends (UnityPy TypeTreeHelper.cpp:86-264):
     /// the whole run's bounds first, then every element.
     #[inline(never)]
     fn nums<const N: usize, T>(
@@ -406,7 +406,7 @@ impl Reader<'_, '_> {
         Ok(Out::Built(built))
     }
 
-    /// `read_pair_array` (UnityPy TypeTreeHelper.cpp:350-391): the arity is
+    /// `read_pair_array` (UnityPy TypeTreeHelper.cpp:353-392): the arity is
     /// checked once, before the first element (R10), so even an empty run of
     /// malformed pairs fails.
     fn pairs(
