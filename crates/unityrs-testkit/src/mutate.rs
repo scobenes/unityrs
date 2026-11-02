@@ -295,26 +295,17 @@ fn random_mutants(data: &[u8], rng: &mut Rng) -> Vec<Mutant> {
 
 /// G3b's inputs: every builder output the gate mutates, `(name, bytes)`:
 /// the format matrix ([`crate::bundle::matrix`]) and every file of every
-/// Environment scene, those some of whose loads are dependencies and those
-/// `find_file` is recorded on included ([`crate::env::scenes`],
-/// [`crate::env::dependency_scenes`], [`crate::env::find_scenes`]; named
-/// `scene-<scene>-<file>`), but a WebFile ([`is_web_file`]): P1 refuses
-/// one (plan section 1), so the dump writes no record of the entries UnityPy
-/// reads from it.
+/// Environment scene, those some of whose loads are dependencies, those
+/// `find_file` is recorded on and those whose walk races another load
+/// (its file among the scene's) included ([`crate::env::scenes`],
+/// [`crate::env::dependency_scenes`], [`crate::env::find_scenes`],
+/// [`crate::env::race_scenes`]; named `scene-<scene>-<file>`), but a
+/// WebFile ([`is_web_file`]): P1 refuses one (plan section 1), so the dump
+/// writes no record of the entries UnityPy reads from it.
 #[must_use]
 pub fn builder_outputs() -> Outputs {
     let mut out = crate::bundle::matrix();
-    let dependency = crate::env::dependency_scenes()
-        .into_iter()
-        .map(|(scene, d)| (scene, d.scene));
-    let find = crate::env::find_scenes()
-        .into_iter()
-        .map(|(scene, f)| (scene, f.scene));
-    for (scene, s) in crate::env::scenes()
-        .into_iter()
-        .chain(dependency)
-        .chain(find)
-    {
+    for (scene, s) in every_scene() {
         for (name, bytes) in s.files.into_iter().chain(s.resolver) {
             if is_web_file(&bytes) {
                 continue;
@@ -324,6 +315,28 @@ pub fn builder_outputs() -> Outputs {
         }
     }
     out
+}
+
+/// Every Environment scene of every list, by name, a race scene's other
+/// file among its files.
+fn every_scene() -> Vec<(&'static str, crate::env::Scene)> {
+    let dependency = crate::env::dependency_scenes()
+        .into_iter()
+        .map(|(scene, d)| (scene, d.scene));
+    let find = crate::env::find_scenes()
+        .into_iter()
+        .map(|(scene, f)| (scene, f.scene));
+    let race = crate::env::race_scenes().into_iter().map(|(scene, r)| {
+        let mut s = r.scene;
+        s.files.push(r.other);
+        (scene, s)
+    });
+    crate::env::scenes()
+        .into_iter()
+        .chain(dependency)
+        .chain(find)
+        .chain(race)
+        .collect()
 }
 
 /// Whether `bytes` are a WebFile by UnityPy's detection: a signature that
@@ -515,24 +528,25 @@ mod tests {
     }
 
     /// Every file of every Environment scene is an output, a dependency
-    /// scene's and a `find_file` scene's included (fix passes 6 and 11 each
-    /// added the first scene of a list of its own, which G3b's outputs left
-    /// out), but the one WebFile, which P1 refuses.
+    /// scene's, a `find_file` scene's and a race scene's included (fix
+    /// passes 6 and 11 each added the first scene of a list of its own,
+    /// which G3b's outputs left out), but the one WebFile, which P1 refuses.
     #[test]
     fn every_file_of_every_scene_is_an_output() {
         let inputs = builder_outputs();
-        let dependency = crate::env::dependency_scenes()
-            .into_iter()
-            .map(|(scene, d)| (scene, d.scene));
-        let find = crate::env::find_scenes()
-            .into_iter()
-            .map(|(scene, f)| (scene, f.scene));
         let (mut files, mut web) = (0, Vec::new());
-        for (scene, s) in crate::env::scenes()
-            .into_iter()
-            .chain(dependency)
-            .chain(find)
-        {
+        // Each race scene's other file, by the lists themselves.
+        let race = crate::env::race_scenes();
+        assert_ne!(race.len(), 0);
+        for (scene, r) in race {
+            let name = String::from_utf8_lossy(&r.other.0).replace('/', "_");
+            let name = format!("scene-{scene}-{name}");
+            assert!(
+                inputs.iter().any(|(n, b)| *n == name && *b == r.other.1),
+                "{name} is no output"
+            );
+        }
+        for (scene, s) in super::every_scene() {
             for (name, bytes) in s.files.iter().chain(&s.resolver) {
                 let name = String::from_utf8_lossy(name).replace('/', "_");
                 let name = format!("scene-{scene}-{name}");

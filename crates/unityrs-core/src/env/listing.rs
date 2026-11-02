@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use super::Environment;
 use super::held::{self, Held};
+use super::watch::{Table, Under};
 use crate::error::Error;
 use crate::files::{BundleFile, File, SerializedFile};
 use crate::limits::{Charge, HASH_TABLE_SHARES, Meter};
@@ -139,6 +140,17 @@ pub(super) struct Files {
     list: Vec<Listed>,
     index: HashMap<RawStr, usize>,
     lowered: HashMap<RawStr, usize>,
+    /// The running container preload walks' flags under lowered keys, set
+    /// in the step that publishes a key's change (`super::watch`).
+    watched: Table,
+}
+
+impl Under for std::sync::RwLock<Files> {
+    /// Under the listing's write lock, which publishes every entry
+    /// ([`Environment::list`]).
+    fn with_table(&self, f: &mut dyn FnMut(&mut Table)) {
+        f(&mut held::write(self).watched);
+    }
 }
 
 /// What one listed load costs the `files` tables: three elements of the
@@ -158,6 +170,13 @@ impl Environment {
         held::write(&self.inner.files)
     }
 
+    /// The entries of both tables of the walks' flags (the registry's and
+    /// the listing's), for a test.
+    #[cfg(test)]
+    pub(super) fn watch_entries(&self) -> usize {
+        self.inner.registry.watch_room().0 + self.files_read().watched.room().0
+    }
+
     fn file_at(&self, i: usize) -> Option<FileEntry> {
         self.files_read().list.get(i).map(|l| l.entry.clone())
     }
@@ -168,10 +187,12 @@ impl Environment {
     /// a resolver's name carries its own charge). Every load is charged so,
     /// a caller's included (review round 2: a caller's load charged
     /// nothing, and its lowered key was built on an unlimited meter). The
-    /// lowered key's change is noted for the running container preload
-    /// walks after it is published, whether or not one ran before
+    /// lowered key's change sets the running container preload walks'
+    /// flags under it in the step that publishes it, under the write lock
     /// (`super::watch`, invariant W1: review round 5 decided before the
-    /// publication, so a walk that started in between kept a stale miss).
+    /// publication whether a walk ran, so a walk that started in between
+    /// kept a stale miss; review round 14 set the flags after the lock, so
+    /// a walk could find the entry while its kept miss of it still held).
     pub(super) fn list(
         &self,
         name: RawStr,
@@ -183,14 +204,13 @@ impl Environment {
         // The lowered key: a new key's index entry, and in every case the
         // key a walk's lookup watches (`super::watch`).
         let lowered = py_lower(&name, meter)?;
-        let watches = self.inner.registry.watches();
-        let key_hash = watches.hash(lowered.as_bytes());
+        let key_hash = self.inner.registry.watches().hash(lowered.as_bytes());
         #[cfg(test)]
         self.inner.registry.hook(super::registry::Hook::Listing);
         let replaced = {
             let mut files = self.files_write();
             let at = files.index.get(name.as_bytes()).copied();
-            if let Some(entry) = at.and_then(|i| files.list.get_mut(i)) {
+            let replaced = if let Some(entry) = at.and_then(|i| files.list.get_mut(i)) {
                 entry.entry.is_dependency = is_dependency;
                 Some(std::mem::replace(&mut entry.entry.file, file))
             } else {
@@ -206,9 +226,12 @@ impl Environment {
                 files.index.insert(name, at);
                 files.lowered.entry(lowered).or_insert(at);
                 None
-            }
+            };
+            files.watched.notify(key_hash);
+            replaced
         };
-        watches.notify_hash(key_hash);
+        #[cfg(test)]
+        self.inner.registry.hook(super::registry::Hook::Listed);
         drop(replaced);
         Ok(())
     }

@@ -87,7 +87,8 @@ pub(crate) enum Hook {
     /// An eviction (a use's, [`DepCache::evict_others`]), before its next
     /// step.
     Evicting,
-    /// A registration published its change, before it notifies the walks.
+    /// A registration published its change (and, in the same step, set
+    /// the walks' flags under its key), before it settles.
     Published,
     /// A registration listed the lazy slot it dropped, before it settles.
     Deferred,
@@ -98,8 +99,30 @@ pub(crate) enum Hook {
     Reached,
     /// The `files` listing lowered its key, before it publishes.
     Listing,
+    /// The `files` listing published its entry (and, in the same step, set
+    /// the walks' flags under its key), before it returns.
+    Listed,
     /// A preload walk's lookup set up its flag, before it reads.
     Watched,
+    /// A preload walk is about to take what changed since its last search
+    /// and look for the next table index of container row `row` from
+    /// `index` on (`index` is the row's span's end when the row is done):
+    /// UnityPy's walk before it looks at element `index` of the row's span.
+    Search {
+        /// The row, by its position in the container.
+        row: usize,
+        /// The table index.
+        index: usize,
+    },
+    /// A preload walk found table index `index` of container row `row` to
+    /// dereference, before it does: UnityPy's walk before it looks at that
+    /// element.
+    Step {
+        /// The row, by its position in the container.
+        row: usize,
+        /// The table index.
+        index: usize,
+    },
 }
 
 /// A test's hook ([`Hook`]).

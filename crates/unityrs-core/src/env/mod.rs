@@ -55,6 +55,11 @@
 //! `files` entry are. A call's result depends on what was done before it,
 //! by its thread or another, as a Python dict's does: a load, a resolver
 //! load, and under `Lazy` the first call that reaches a nested container.
+//! A container pass's preload walk that a load on another thread meets
+//! gives, for each key the load changes, what UnityPy's walk gives with
+//! that change made at the point of the walk at which it was made, between
+//! two of its steps (`watch`'s module docs, W1; review round 14); a key
+//! the load adds does not fail the pass, where UnityPy's raises.
 //! What a set of calls leaves does not depend on the order of the ones that
 //! are not loads: the registry orders entries by rank ([`registry`]), and
 //! each `path_dict` entry keeps the least stamp ([`crate::container`]).
@@ -168,6 +173,8 @@ mod load;
 mod object_tree;
 #[cfg(test)]
 mod preload_tests;
+#[cfg(test)]
+mod race_tests;
 mod resource_data;
 mod revisit;
 #[cfg(test)]
@@ -468,8 +475,9 @@ pub struct EnvStats {
     pub dependency_bytes: u64,
     /// Preload table pointers the container passes dereferenced: each index
     /// of a file's table once per walk, however many rows' spans cover it,
-    /// and once more at a later row each time a load of the walk's own has
-    /// changed what its external resolves to ([`Environment::container`]).
+    /// and once more, at the next row whose span reaches it or later in the
+    /// row, each time a load (the walk's own or another thread's) has
+    /// changed a key its external's lookup read ([`Environment::container`]).
     pub preload_dereferences: u64,
     /// Of those, the ones that looked their external up: a walk keeps an
     /// answer until a key its lookup read changes, by any thread

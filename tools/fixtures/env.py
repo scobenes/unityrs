@@ -28,7 +28,11 @@ every resource of the objects of the files it loaded as dependencies (which
 `env.find_file(name, is_dependency)` for each of its asks, recording what it
 returns (its kind, its name and contents, and the `env.files` and
 `env.cabs` keys that hold that very object) or the exception it raises, and
-lists the container again, the state recorded after each step.
+lists the container again, the state recorded after each step. Each scene
+of `race_scenes` (a line with an `other` key) loads its files, then lists
+the container with its other file loaded at one point of the preload walk,
+each point in turn (`env_race.py`), recording the container, every
+object's `container` path, the dependencies' paths and the state.
 
 `resolver.json`: the names UnityPy's lookups hand on where it looks in
 `env.path` (the core's `CabResolver`): a resource read's fallback and a
@@ -75,6 +79,7 @@ from UnityPy.files import BundleFile, SerializedFile, WebFile  # noqa: E402
 from UnityPy.helpers.ResourceReader import get_resource_data  # noqa: E402
 
 from env_paths import kind, path_case, path_inputs  # noqa: E402
+from env_race import race_case  # noqa: E402
 from scaffold import dump  # noqa: E402
 
 # ------------------------------------------------------------------ scenes
@@ -620,11 +625,18 @@ def check_g5_in(report: dict, rels: list[str], corpus: Path, empty: str) -> int:
 def fixtures() -> dict[str, dict]:
     meta = {"generator": "tools/fixtures/env.py", "unitypy": UnityPy.__version__}
     inputs = scene_inputs()
-    plain = [scene_case(s) for s in inputs if "dependencies" not in s and "asks" not in s]
+    plain = [scene_case(s) for s in inputs if not {"dependencies", "asks", "other"} & s.keys()]
     deps = [scene_case(s) for s in inputs if "dependencies" in s]
     finds = [scene_case(s) for s in inputs if "asks" in s]
+    races = [race_case(s, Run) for s in inputs if "other" in s]
     return {
-        "env.json": {**meta, "scenes": plain, "dependency_scenes": deps, "find_scenes": finds},
+        "env.json": {
+            **meta,
+            "scenes": plain,
+            "dependency_scenes": deps,
+            "find_scenes": finds,
+            "race_scenes": races,
+        },
         "paths.json": {**meta, "cases": [path_case(c) for c in path_inputs()]},
         "pystr.json": {**meta, **pystr_fixture()},
         "resolver.json": {**meta, **resolver_fixture()},

@@ -1,7 +1,7 @@
 //! What a container preload walk has yet to dereference
 //! (`super::container_index`): every table index at first, and again an
-//! index whose answer a load of the walk's own has since changed (review
-//! round 13).
+//! index whose answer a load has since changed, the walk's own or another
+//! thread's (review rounds 13 and 14).
 
 use std::sync::Arc;
 

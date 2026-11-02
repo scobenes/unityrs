@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 use super::deref::Reached;
 use super::registry::{Rank, SlotKind, load_keys_here};
 use super::revisit::Pending;
-use super::watch::{Flag, Walk};
+use super::watch::{FILES, Flag, REGISTRY, Walk};
 use super::{Cab, DerefError, Environment, Found, LoadMode, PPtr, never_evicts, pptr};
 use crate::budget::Reservation;
 use crate::container::{Container, ContainerPath, ContainerRow};
@@ -164,19 +164,22 @@ const NONE: usize = usize::MAX;
 ///
 /// Each answer with a flag (one of `files`, the registry or the resolver's
 /// load) lists the table indexes dereferenced under it (`answers`, linked
-/// through `next`), so when a load of the walk's own sets its flag
-/// ([`Walk::fired`]) those indexes are dereferenced again at the next row
-/// whose span reaches them (review round 13: a walk that dereferenced each
-/// index once never gave a later row's path to the file a load in between
-/// put under the key the index's external resolves through).
+/// through `next`), so when a load sets its flag, the walk's own or another
+/// thread's ([`Walk::fired`]), those indexes are dereferenced again at the
+/// next row whose span reaches them, or later in the row the walk is in
+/// (review round 13: a walk that dereferenced each index once never gave a
+/// later row's path to the file a load in between put under the key the
+/// index's external resolves through; review round 14: only a load of the
+/// walk's own put them back, and not after another thread's had set the
+/// flag first).
 ///
 /// [`LoadMode::Lazy`]: super::LoadMode::Lazy
 ///
 /// Each charge is released after the memory it pays for (plan section 3.15):
-/// fields drop in order, so `known` and `answers` (with the flags) go
-/// first, then the walk's watches with their own charge, then `known`'s
-/// charge (review round 5: the watches' charge was released before their
-/// entries left the map).
+/// fields drop in order, so `known` and `answers` go first, then the walk's
+/// watches with their flags and their own charge, then `known`'s charge
+/// (review round 5: the watches' charge was released before their entries
+/// left the map).
 struct Targets<'a> {
     known: HashMap<i32, Known>,
     /// Every flag the walk set up, by its number, with the head of the list
@@ -186,8 +189,7 @@ struct Targets<'a> {
     /// link: an index is in one list at most, the one of the answer it last
     /// got, and leaves it when the list is taken.
     next: Option<MeteredVec<usize>>,
-    /// After `known` and `answers`, so the flags drop before the watches
-    /// end.
+    /// After `known`, whose flags drop before the walk's watches end.
     walk: Walk<'a>,
     /// `known`'s table, after it.
     charge: Charge,
@@ -205,11 +207,9 @@ struct Known {
 }
 
 /// The table indexes dereferenced under one flag's answer: the head of a
-/// list linked through [`Targets::next`].
+/// list linked through [`Targets::next`] (the walk holds the flag itself,
+/// [`Walk`]).
 struct Answer {
-    /// Kept alive while the walk runs, so a change sets it: a resolver
-    /// load's flag lives here only.
-    _flag: Arc<Flag>,
     head: usize,
 }
 
@@ -267,16 +267,22 @@ impl Targets<'_> {
     }
 
     /// Puts back into `pending` every table index listed under an answer
-    /// whose flag a load of the walk's own set since the last call, each
+    /// whose flag a load set since the last call, any thread's, each
     /// counted on `meter` first ([`reopen_work`]); the lists are taken, so
     /// an index is put back once per dereference.
     fn reopen(&mut self, pending: &mut Pending, meter: &Meter) -> Result<(), Error> {
-        for id in self.walk.fired() {
-            let Some(answer) = self.answers.as_mut_slice().get_mut(id) else {
+        let Self {
+            walk,
+            answers,
+            next,
+            ..
+        } = self;
+        let links = next.as_ref().map(MeteredVec::as_slice);
+        for id in walk.fired() {
+            let Some(answer) = answers.as_mut_slice().get_mut(id) else {
                 continue;
             };
             let mut i = std::mem::replace(&mut answer.head, NONE);
-            let links = self.next.as_ref().map(MeteredVec::as_slice);
             while i != NONE {
                 meter.count_work(reopen_work(pending))?;
                 pending.insert(i);
@@ -494,25 +500,32 @@ impl Environment {
     ///
     /// UnityPy's loop is quadratic (every row walks its whole span). Here a
     /// table index is dereferenced at the first row whose span reaches it,
-    /// and at a later row only once a load of the walk's own has changed a
-    /// key its external's lookup read since its last dereference
-    /// ([`Pending`], and the lists of [`Targets`]): UnityPy's dereference
-    /// that gives the file the last one gave sets nothing (`setdefault`), so
-    /// each file a dereference reaches gets the path of the first row that
-    /// reaches it there, as in UnityPy (review round 13: each index was
-    /// dereferenced once, so the file a load in between put under its
-    /// external's key got no later row's path). Each external's answer is
-    /// kept while it holds ([`Targets`]), so an external is looked up once,
-    /// and once more per change to a key its lookup read, under every option
-    /// set and whatever other keys other threads change meanwhile
-    /// (`EnvStats::preload_lookups` counts them); each bundle's names indexed
-    /// once per pass ([`Siblings`]), and each row's path copied once, charged
-    /// to this file's meter. So a walk no load changes is linear in the
-    /// rows, the table and the externals (plan decision 11, counting no
-    /// work), and what changes make it do again (an index put back, an
-    /// external looked up again) is counted as work on this file's meter,
-    /// whose allowance bounds a table whose own loads change its answers
-    /// over and over ([`crate::LimitKind::DecodeWork`]).
+    /// and again, from the walk's next search for an index on, once a load
+    /// has changed a key its external's lookup read since its last
+    /// dereference, the walk's own or another thread's ([`Pending`], and the
+    /// lists of [`Targets`]): UnityPy's dereference that gives the file the
+    /// last one gave sets nothing (`setdefault`), so each file a dereference
+    /// reaches gets the path of the first row that reaches it there, as in
+    /// UnityPy (review round 13: each index was dereferenced once, so the
+    /// file a load in between put under its external's key got no later
+    /// row's path). The walk takes what changed before each search, so a
+    /// load another thread makes gives what UnityPy's walk gives with the
+    /// load made at the point of the walk at which it was made, a point
+    /// between two searches or dereferences (`super::watch`'s module docs;
+    /// review round 14: another thread's change put back no index, and set
+    /// a flag the walk's own later change of the key then found gone), but
+    /// for a key the load adds, which does not fail the pass (below).
+    /// Each external's answer is kept while it holds ([`Targets`]), so an
+    /// external is looked up once, and once more per change to a key its
+    /// lookup read, under every option set and whatever other keys other
+    /// threads change meanwhile (`EnvStats::preload_lookups` counts them);
+    /// each bundle's names indexed once per pass ([`Siblings`]), and each
+    /// row's path copied once, charged to this file's meter. So a walk no
+    /// load changes is linear in the rows, the table and the externals
+    /// (plan decision 11, counting no work), and what changes make it do
+    /// again (an index put back, an external looked up again) is counted as
+    /// work on this file's meter, whose allowance bounds a table whose
+    /// answers loads change over and over ([`crate::LimitKind::DecodeWork`]).
     ///
     /// A dereference of an external answered before answers as UnityPy's
     /// would: `find_file` registers what it loads under the path it found,
@@ -545,7 +558,11 @@ impl Environment {
             known: HashMap::new(),
             answers: MeteredVec::new(meter),
             next: None,
-            walk: self.inner.registry.watches().start(meter),
+            walk: self
+                .inner
+                .registry
+                .watches()
+                .start(meter, [&self.inner.registry, &self.inner.files]),
             charge: Charge::zero(meter),
         };
         for (r, row) in container.rows().iter().enumerate() {
@@ -571,10 +588,29 @@ impl Environment {
                 None => pending.insert(Pending::full(table.len(), meter)?),
             };
             let mut path: Option<Option<RawStr>> = None;
-            let mut next = pending.first_from(s);
-            while let Some(j) = next.filter(|&j| j < e) {
+            let mut from = s;
+            loop {
+                #[cfg(test)]
+                self.inner.registry.hook(super::registry::Hook::Search {
+                    row: r,
+                    index: from,
+                });
+                // What a load changed since the last search, any thread's
+                // (the last dereference's own included, this index's
+                // answer too), is dereferenced again from here on in this
+                // row, or from the next row on: UnityPy's walk, which
+                // dereferences every element of every span, would find the
+                // change at each of those.
+                targets.reopen(pending, meter)?;
+                let Some(j) = pending.first_from(from).filter(|&j| j < e) else {
+                    break;
+                };
                 pending.remove(j);
-                next = pending.first_from(j.saturating_add(1));
+                from = j.saturating_add(1);
+                #[cfg(test)]
+                self.inner
+                    .registry
+                    .hook(super::registry::Hook::Step { row: r, index: j });
                 // An element that is no pointer raises (PARITY.md 19.3).
                 let Some(p) = table.get(j).copied().flatten() else {
                     return Err(malformed("a preload table element is not a pointer"));
@@ -587,11 +623,6 @@ impl Environment {
                 if let Some(id) = answer {
                     targets.link(j, id, table.len(), meter)?;
                 }
-                // What this dereference's loads changed, this index's own
-                // answer included, is dereferenced again from the next row
-                // on, or later in this one past `j`.
-                targets.reopen(pending, meter)?;
-                next = pending.first_from(j.saturating_add(1));
                 if let Some(target) = target
                     && !self.may_reopen(target.file())
                 {
@@ -655,10 +686,7 @@ impl Environment {
             targets.answers.reserve(1)?;
             let flag = targets.walk.watch(&keys)?;
             let id = flag.id();
-            targets.answers.push(Answer {
-                _flag: flag.clone(),
-                head: NONE,
-            })?;
+            targets.answers.push(Answer { head: NONE })?;
             #[cfg(test)]
             self.inner.registry.hook(super::registry::Hook::Watched);
             // What to record: kept until a change, kept for the walk, or
@@ -695,10 +723,14 @@ impl Environment {
     }
 
     /// The keys external `file_id`'s lookup read past `sf`'s bundle names
-    /// ([`Self::external`]): the registry key `find_file` asks
-    /// (`simplify_name` twice), and for a top-level file the lowered `files`
-    /// key its sibling scan matches.
-    fn lookup_keys(sf: &SerializedFile, file_id: i32, walk: &Walk) -> Result<Vec<u64>, Error> {
+    /// ([`Self::external`]), each with the lock it is published under: the
+    /// registry key `find_file` asks (`simplify_name` twice), and for a
+    /// top-level file the lowered `files` key its sibling scan matches.
+    fn lookup_keys(
+        sf: &SerializedFile,
+        file_id: i32,
+        walk: &Walk,
+    ) -> Result<Vec<(usize, u64)>, Error> {
         let externals = sf.externals();
         let Some(external) = pptr::external_index(file_id, externals.len())
             .ok()
@@ -709,9 +741,9 @@ impl Environment {
         let meter = sf.meter();
         let clean = clean_external_path(&external.path, meter)?;
         let simple = simplify_name(&simplify_name(&clean, meter)?, meter)?;
-        let mut keys = vec![walk.hash(simple.as_bytes())];
+        let mut keys = vec![(REGISTRY, walk.hash(simple.as_bytes()))];
         if sf.parent().is_none() {
-            keys.push(walk.hash(clean.as_bytes()));
+            keys.push((FILES, walk.hash(clean.as_bytes())));
         }
         Ok(keys)
     }

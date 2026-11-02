@@ -28,8 +28,8 @@ pub use catalog::{
     nested_raw_replaced, nested_reloaded, nested_reloaded_spans, nested_reloaded_spans_raced,
     nested_replaced_unread, preload_below_start, preload_loads_new_cab, preload_nested_external,
     preload_paths, preload_raw_target, preload_revisits_after_load, preload_revisits_ahead,
-    preload_skips, resolver_loads, resource_in_nested_cab, resource_in_own_nested, scenes,
-    web_file,
+    preload_skips, race_scenes, resolver_loads, resource_in_nested_cab, resource_in_own_nested,
+    scenes, web_file,
 };
 
 use crate::blob::NodeSpec;
@@ -58,6 +58,21 @@ pub struct DepScene {
     pub scene: Scene,
     /// The indexes of `scene.files` loaded as dependencies.
     pub dependencies: Vec<usize>,
+}
+
+/// A scene whose container preload walk races a load another thread makes:
+/// `other` is loaded at one point of the walk, each in turn
+/// (`tools/fixtures/env.py` records UnityPy's walk with the load made at
+/// each point). Exactly one file of the scene holds an AssetBundle, so the
+/// walk is of one table; `other` registers only keys a file of the scene
+/// registered first, so UnityPy's pass, which fails when its dict of CABs
+/// grows under it, finishes wherever the load is made.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RaceScene {
+    /// The files loaded before the walk, and the resolver's.
+    pub scene: Scene,
+    /// `(name, bytes)` of the load made while the walk runs.
+    pub other: (Vec<u8>, Vec<u8>),
 }
 
 /// One container row: the path, its preload span and the asset pointer.
