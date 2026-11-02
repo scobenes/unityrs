@@ -5,9 +5,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::{Walk, Watches};
+use super::{FIRED, FLAG, WATCH_SHARE, Walk, Watches};
 use crate::budget::{BudgetExceeded, MemoryBudget, Permit, PermitHome, Reservation};
-use crate::limits::Meter;
+use crate::limits::{Meter, heap_cost};
 
 /// A budget that, at every release, records the walks running and the
 /// map's entries of the watches it is given.
@@ -114,4 +114,56 @@ fn a_walks_charge_outlives_its_entries() {
             .all(|&(walks, entries, _)| walks == 0 && entries == 0),
         "released while its entries were in the map: {seen:?}"
     );
+}
+
+/// A walk's log of its flags set on its own thread lists each once, in the
+/// order they were set, and its vector holds no more room than the walk's
+/// charge pays for it ([`FIRED`] once, two elements a flag in [`FLAG`]):
+/// `n` flags each watching two keys, both keys changed, the list taken
+/// half way and at the end (review round 13).
+#[test]
+fn a_walks_log_lists_each_flag_once_within_its_charge() {
+    let (watches, _home, meter) = spied();
+    for n in [1_usize, 3, 5, 64, 1000] {
+        let mut walk = watches.start(&meter);
+        let keys: Vec<[u64; 2]> = (0..n)
+            .map(|i| {
+                let i = u64::try_from(i).unwrap();
+                [
+                    walk.hash(&i.to_le_bytes()),
+                    walk.hash(&((i + 1) << 32).to_le_bytes()),
+                ]
+            })
+            .collect();
+        let flags: Vec<_> = keys.iter().map(|k| walk.watch(k).unwrap()).collect();
+        let charged = walk.charged();
+        let flags_n = u64::try_from(n).unwrap();
+        assert_eq!(charged, FIRED + flags_n * (FLAG + 2 * WATCH_SHARE), "{n}");
+        // What the charge holds past the flags' and the list's `Arc`s.
+        let arcs = heap_cost(size_of::<super::Fired>() as u64 + 16)
+            + flags_n * heap_cost(size_of::<super::Flag>() as u64 + 16);
+        let log_share = FIRED + flags_n * FLAG - arcs;
+        let mut seen = Vec::new();
+        for (i, k) in keys.iter().enumerate() {
+            watches.notify_hash(k[0]);
+            watches.notify_hash(k[1]);
+            let room = u64::try_from(walk.log_room()).unwrap();
+            assert!(
+                heap_cost(room * 8) <= log_share,
+                "{n}: room {room} past {log_share}"
+            );
+            if i == n / 2 {
+                seen.extend(walk.fired());
+            }
+        }
+        seen.extend(walk.fired());
+        assert_eq!(
+            seen,
+            (0..n).collect::<Vec<_>>(),
+            "{n}: each flag once, in order"
+        );
+        assert!(flags.iter().all(|f| f.changed()), "{n}");
+        assert_eq!(walk.fired(), Vec::<usize>::new(), "{n}: taken");
+        drop(flags);
+    }
 }

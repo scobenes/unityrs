@@ -27,8 +27,9 @@ pub use catalog::{
     nested_after_cab, nested_dropped_evicted, nested_duplicates, nested_evicted,
     nested_raw_replaced, nested_reloaded, nested_reloaded_spans, nested_reloaded_spans_raced,
     nested_replaced_unread, preload_below_start, preload_loads_new_cab, preload_nested_external,
-    preload_paths, preload_raw_target, preload_skips, resolver_loads, resource_in_nested_cab,
-    resource_in_own_nested, scenes, web_file,
+    preload_paths, preload_raw_target, preload_revisits_after_load, preload_revisits_ahead,
+    preload_skips, resolver_loads, resource_in_nested_cab, resource_in_own_nested, scenes,
+    web_file,
 };
 
 use crate::blob::NodeSpec;

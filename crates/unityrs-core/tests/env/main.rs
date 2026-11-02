@@ -18,6 +18,7 @@ mod pool;
 mod preload;
 mod reach;
 mod resources;
+mod revisit;
 mod sources;
 
 use std::path::PathBuf;

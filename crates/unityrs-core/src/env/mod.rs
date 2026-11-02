@@ -169,6 +169,7 @@ mod object_tree;
 #[cfg(test)]
 mod preload_tests;
 mod resource_data;
+mod revisit;
 #[cfg(test)]
 mod threads_tests;
 mod watch;
@@ -466,8 +467,9 @@ pub struct EnvStats {
     /// Bytes the LRU holds now.
     pub dependency_bytes: u64,
     /// Preload table pointers the container passes dereferenced: each index
-    /// of a file's table at most once per walk, however many rows' spans
-    /// cover it ([`Environment::container`]).
+    /// of a file's table once per walk, however many rows' spans cover it,
+    /// and once more at a later row each time a load of the walk's own has
+    /// changed what its external resolves to ([`Environment::container`]).
     pub preload_dereferences: u64,
     /// Of those, the ones that looked their external up: a walk keeps an
     /// answer until a key its lookup read changes, by any thread

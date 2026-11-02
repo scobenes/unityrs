@@ -4,6 +4,7 @@
 
 mod find;
 mod nested;
+mod revisit;
 
 pub use find::{FindAsk, FindScene, find_file_kinds, find_file_listing, find_scenes, web_file};
 pub use nested::{
@@ -12,6 +13,7 @@ pub use nested::{
     nested_reloaded_spans_raced, nested_replaced_unread, preload_nested_external,
     resource_in_nested_cab, resource_in_own_nested,
 };
+pub use revisit::{preload_revisits_after_load, preload_revisits_ahead};
 
 use super::{Bundle, DepScene, Obj, Scene, bundle, bundle_spec, res_bytes, row, serialized};
 use crate::bundle::{BlockOverride, TestCodec};
@@ -603,6 +605,8 @@ pub fn scenes() -> Vec<(&'static str, Scene)> {
         ("fallback_file_pointer", fallback_file_pointer()),
         ("nested_duplicates", nested_duplicates()),
         ("preload_suffix_external", preload_suffix_external()),
+        ("preload_revisits_after_load", preload_revisits_after_load()),
+        ("preload_revisits_ahead", preload_revisits_ahead()),
         ("same_named_cabs", same_named_cabs()),
         ("preload_nested_external", preload_nested_external()),
         ("resource_in_own_nested", resource_in_own_nested()),
