@@ -9,7 +9,7 @@ use unityrs_core::Bytes;
 use unityrs_core::budget::{BudgetExceeded, DecodeBuf, Reservation, Unbounded};
 use unityrs_core::codec::{BlockCodec, Codec, Codecs, Decoded, Lz4, Lzma, Stored, decode_block};
 use unityrs_core::error::{Error, LimitKind};
-use unityrs_core::limits::Meter;
+use unityrs_core::limits::{Meter, heap_cost};
 use unityrs_testkit::address_space;
 use unityrs_testkit::bundle::{LZMA_DICT, TestCodec, compress};
 
@@ -250,7 +250,20 @@ fn lzma_output_is_capped_per_block_and_charged() {
         "{got:?}"
     );
     assert_eq!(output_only.used(), 0);
-    let fits = meter(2 * (100_000 + 64));
+    // So are the dictionary's buffer as liblzma allocates it (rounded up to
+    // 16 bytes, and 576 more: `lz/lz_decoder.c:253-289` of xz 5.8.4) and the
+    // decoder's state (review round 12: neither was charged): a meter that
+    // holds exactly the output, that buffer and the state decodes the block,
+    // and one a byte smaller refuses it, whatever the windows.
+    let exact = heap_cost(100_000) + heap_cost(100_000 + 576) + Lzma::DECODER_STATE;
+    let short = meter(exact - 1);
+    let got = run_on(&short, &Lzma, &block, 100_000, u64::MAX);
+    assert!(
+        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory),
+        "{got:?}"
+    );
+    assert_eq!(short.used(), 0);
+    let fits = meter(exact);
     assert_eq!(
         run_on(&fits, &Lzma, &block, 100_000, u64::MAX).unwrap(),
         data
@@ -294,10 +307,11 @@ fn lzma_dictionary_probe() {
         };
         match got {
             Err(Error::Budget(b)) => {
-                // 8 MiB in one piece, glibc's `mmap`ped chunk: the request
-                // and its 8-byte header rounded up to a 4 KiB page.
+                // The attempt's charge: 8 MiB and liblzma's 576 bytes in one
+                // piece, glibc's `mmap`ped chunk (the request and its 8-byte
+                // header rounded up to a 4 KiB page), and the decoder's state.
                 let want = BudgetExceeded {
-                    requested: (8 << 20) + 4096,
+                    requested: (8 << 20) + 4096 + Lzma::DECODER_STATE,
                     what,
                 };
                 assert_eq!(b, want, "{what:?}");

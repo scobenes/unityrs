@@ -22,6 +22,48 @@ const LZMA_FIRST_DICT_MAX: u64 = 8 << 20;
 /// allocated at this, and the first attempt asks for no less.
 const LZMA_DICT_SIZE_MIN: u32 = 4096;
 
+/// The room liblzma's LZ decoder keeps on each side of its dictionary
+/// (`2 * LZ_DICT_REPEAT_MAX`, `lz/lz_decoder.h:75` of the xz 5.8.4 that
+/// `liblzma-sys` 0.4.9 builds).
+const LZ_DICT_REPEAT_ROOM: u64 = 2 * 288;
+
+impl Lzma {
+    /// What one liblzma raw LZMA1 decoder holds beside its dictionary, in
+    /// glibc chunks ([`heap_cost`]): liblzma's own state, 32,784 bytes (the
+    /// stream's `lzma_internal`, `common/common.c:183`; the LZ decoder's
+    /// coder, `lz/lz_decoder.c:229`; the LZMA1 decoder and its probability
+    /// tables, `lzma/lzma_decoder.c:1122`, of the xz 5.8.4 that
+    /// `liblzma-sys` 0.4.9 builds), and the 256 bytes the `liblzma` crate's
+    /// filter chain takes on the Rust heap while it is built (a one-entry
+    /// array grown to four, 16 bytes then 64, both held while it grows, and
+    /// a 128-byte options node: `src/stream.rs:709-735` and `:1128-1131` of
+    /// `liblzma` 0.4.9). Each attempt charges it beside the dictionary
+    /// ([`Self::decoder_charge`]; review round 12: only the dictionary was
+    /// charged, so about 32 KiB a decode reached no meter).
+    ///
+    /// `tests/lzma_decoder_heap.rs` measures both on glibc, in a child
+    /// process, and fails unless liblzma's allocations and the filter chain
+    /// are exactly [`Self::decoder_charge`], and one decode's charge covers
+    /// the heap it holds with at most 32 bytes to spare (the filter array's
+    /// first chunk, freed once it grows); `cargo test -p unityrs-core --test
+    /// lzma_decoder_heap -- --nocapture` prints what it measured.
+    pub const DECODER_STATE: u64 = 32_784 + 256;
+
+    /// What one decode attempt with a dictionary of `dict` bytes charges
+    /// before liblzma allocates anything: the dictionary buffer liblzma
+    /// allocates (`lz/lz_decoder.c:253-289`: at least 4 KiB, rounded up to
+    /// a multiple of 16, and `2 * LZ_DICT_REPEAT_MAX`, 576 bytes, more; its
+    /// `LZ_DICT_EXTRA` is 0 in `liblzma-sys`'s build, whose `config.h`
+    /// defines no `HAVE_IMMINTRIN_H`, `lz/lz_decoder.h:22-46`), in a glibc
+    /// chunk, and [`Self::DECODER_STATE`].
+    #[must_use]
+    pub fn decoder_charge(dict: u32) -> u64 {
+        let buffer =
+            u64::from(dict.max(LZMA_DICT_SIZE_MIN)).next_multiple_of(16) + LZ_DICT_REPEAT_ROOM;
+        heap_cost(buffer) + Self::DECODER_STATE
+    }
+}
+
 impl BlockCodec for Lzma {
     /// `decompress_lzma` (`CompressionHelper.py:17-44`): the properties byte
     /// and the little-endian dictionary size, then a raw LZMA1
@@ -41,9 +83,10 @@ impl BlockCodec for Lzma {
     /// after it outgrew its dictionary is decoded again with a larger one
     /// (at least twice the output so far, capped by the named size), so the
     /// dictionary stays within a constant plus twice the block's charged
-    /// output. Each attempt's dictionary is charged to the input's meter
-    /// ([`DecodeBuf::meter`]) before liblzma allocates it, and returned when
-    /// the attempt ends, so the meter sees it beside the output (plan
+    /// output. Each attempt's dictionary buffer and the decoder's state
+    /// ([`Lzma::DECODER_STATE`]) are charged to the input's meter
+    /// ([`DecodeBuf::meter`]) before liblzma allocates them, and returned
+    /// when the attempt ends, so the meter sees them beside the output (plan
     /// section 3.15); a refusal is the meter's, like a refused growth.
     fn decode(
         &self,
@@ -110,9 +153,9 @@ impl From<ChargeError> for LzmaFail {
 }
 
 /// A liblzma failure after `produced` bytes of the block's output, in an
-/// attempt that holds `held` bytes of dictionary on a meter booked as
-/// `what`. `LZMA_MEM_ERROR` is the allocator refusing what liblzma
-/// allocates itself, the dictionary above all, which the meter had granted:
+/// attempt that holds `held` bytes of dictionary and decoder state on a
+/// meter booked as `what`. `LZMA_MEM_ERROR` is the allocator refusing what
+/// liblzma allocates itself, the dictionary above all, which the meter had granted:
 /// a refusal of memory, as a growth the Rust allocator refuses is
 /// ([`crate::limits::MeteredVec`]), so it is the meter's reservation's
 /// [`Error::Budget`] (transient: nothing keeps it, and the same block decodes
@@ -149,7 +192,11 @@ fn lzma_attempt(
     use liblzma::stream::{Action, Filters, LzmaOptions, Status, Stream};
 
     let other = |what: &str| LzmaFail::Other(lzma_error(what));
-    let held = heap_cost(u64::from(dict.max(LZMA_DICT_SIZE_MIN)));
+    // liblzma allocates the whole dictionary (at least its 4 KiB minimum)
+    // and its state when the decoder starts, and the filter chain allocates
+    // on the Rust heap: all charged first, held for the attempt.
+    let held = Lzma::decoder_charge(dict);
+    let _decoder = out.meter().charge(held)?;
     let what = out.meter().reservation();
     let map = |e: liblzma::stream::Error, produced: usize| failure(e, produced, held, what);
     // CPython's `parse_filter_spec_lzma` starts from the default preset and
@@ -161,9 +208,6 @@ fn lzma_attempt(
         .position_bits(pb);
     let mut filters = Filters::new();
     filters.lzma1(&opts);
-    // liblzma allocates the whole dictionary (at least its 4 KiB minimum)
-    // when the decoder starts: charged first, held for the attempt.
-    let _dictionary = out.meter().charge(held)?;
     let mut stream = Stream::new_raw_decoder(&filters).map_err(|e| map(e, 0))?;
     let seg_start = out.len();
     // The first window is the declared size, which a well-formed block
