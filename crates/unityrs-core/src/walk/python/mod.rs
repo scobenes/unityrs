@@ -248,7 +248,7 @@ impl Reader<'_, '_> {
     }
 
     /// The reader's own `read_int` of `N` bytes, set on the instance by the
-    /// `endian` setter (`EndianBinaryReader.py:73-80`, `:335-349`): the
+    /// `endian` setter (`EndianBinaryReader.py:75-82`, `:335-349`): the
     /// lengths the reader reads with `reader.read_int()` (a vector's, a
     /// string's, a `TypelessData`'s). On the memory reader
     /// `struct.unpack_from(view, Position)`, the position moving on success

@@ -62,7 +62,7 @@ impl SerializedFile {
         p.version = header.version;
         p.r.set_endian(header.endian);
         let format = header.version;
-        // UnityPy files/SerializedFile.py:271-273, :346-360
+        // UnityPy files/SerializedFile.py:271-273, :351-360
         let (unity_version, version) = if format >= 7 {
             let own = string_to_null(&mut p.r, &data, meter)?;
             let parent_engine = match parent.as_ref().map(|p| &p.kind) {

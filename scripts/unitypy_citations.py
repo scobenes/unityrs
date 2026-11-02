@@ -11,18 +11,32 @@ path from the package's root (`environment.py`, `files/BundleFile.py`, with
 or without a leading `UnityPy/`; `UnityPyBoost/TypeTreeHelper.cpp`), or the
 end of exactly one file's path (`TypeTreeHelper.py`, `TypeTreeHelper.cpp`).
 Any other path (CPython's `Lib/gzip.py`, a file of this repository) is not
-checked.
+checked, unless it is written as UnityPy's (below).
 
-A bare line, `:<line>` or `:<first>-<last>` in backticks or opening a comment
-(`// :53-54`), cites the file named last before it in its paragraph: a blank
-line ends a paragraph, and so does a heading in Markdown, while a list item
-and a Markdown table row are each one of their own. A UnityPy citation, or a
+A bare line is `:<line>` or `:<first>-<last>` in backticks, opening a comment
+(`// :53-54`), or after a space or an opening parenthesis and before a space,
+a `,`, `.`, `;`, `:` or `)` or the line's end (`, :<line>`, `(:<line>)`). It
+cites the file named last before it in its paragraph: a blank line ends a
+paragraph, and so does a heading in Markdown, while a list item and a
+Markdown table row are each one of their own. A UnityPy citation, or a
 UnityPy file named with no line, names a file; so does a citation of any
 other file (`Lib/gzip.py:120`, `stream.rs:31`), whose bare lines are not
 checked. A bare line its paragraph names no file for cites its default: in
 Markdown, the file a sentence "Lines are in `<file>`" names for its section
 (up to the next heading of that section's level or above); in a source, the
 one UnityPy file its `Ported from UnityPy 1.25.2` header names.
+
+A path is written as UnityPy's when it starts with `UnityPy/` or
+`UnityPyBoost/` or its first folder is one of UnityPy's package folders
+(`helpers/`, `files/`, ...). A citation of such a path that names no file of
+UnityPy 1.25.2, nor of this repository (`tools/parity/compare.py:12`), is
+refused, not taken for another project's file; so is a "Lines are in" sentence
+naming anything but one UnityPy file, a path a `UnityPy 1.25.2` header names
+that is no UnityPy file, and a bare line after a path written as UnityPy's
+that names no file. A line of a UnityPy file cited in words next to its name
+(`<file>` line <N>, `<file>`'s lines <N>-<M>, line <N> of `<file>`) is refused:
+write `<file>:<N>`. No other wording of a line is read, and a path with no
+folder that ends no UnityPy file's path (`fmod.py:61`) is another project's.
 
 A citation is of UnityPy git 417d595 (the HEAD oracle, PARITY.md section 20)
 when `HEAD` or `417d595` comes right before its path, when its path runs
@@ -39,19 +53,27 @@ It fails:
 - on a citation of a line past its file's end, of line 0, or of a range that
   runs backwards;
 - on a citation that is not a whole span of the Python file it cites: one
-  that starts or ends on a blank line; a range that starts on the last line
-  of a statement begun above it; one that starts where a statement starts
-  and ends inside a statement that goes on below it (a range within one
-  statement, such as some entries of a table, is a span); one that ends on a
-  decorator, or on the header of a `def`, `class`, `else`, `try`, `except`,
-  `finally` or `with` that begins after the range does, without what it
-  heads (an `if`, `elif`, `for` or `while` header holds a condition, which a
-  range may end on). Reviews 11 and 12 found `Length` cited as lines 303-308
-  of EndianBinaryReader.py, which stop on its `def`, and `read` as 248-255,
-  which start on the blank line above it;
+  that starts or ends on a blank line; a range that starts inside a
+  statement begun above it and runs past that statement's end; one that
+  starts where a statement starts and ends inside a statement that goes on
+  below it (a range within one statement, such as some entries of a table,
+  is a span); one that ends on a decorator, or on the header of a `def`,
+  `class`, `else`, `try`, `except`, `finally` or `with` that begins after the
+  range does, without what it heads (an `if`, `elif`, `for` or `while` header
+  holds a condition, which a range may end on); one that holds part of a
+  function (a `def` with its decorators) and lines outside it: a range holds
+  a whole function, lies within one, or misses it. Reviews 11 and 12 found
+  `Length` in EndianBinaryReader.py cited by a range that stopped on its
+  `def`, and `read` by one that started on the blank line above it; review 13
+  found `set_version` in SerializedFile.py cited by one whose first lines end
+  `load_dependencies`;
 - on a bare line with neither a file before it in its paragraph nor a
   default, and on one whose paragraph names a file other than its default,
   which a reader could take for a line of either: write the path;
+- on a path that names no UnityPy file where it must name one (a "Lines are
+  in" sentence, a `UnityPy 1.25.2` header) or is written as UnityPy's (a
+  citation, a bare line's paragraph), and on a line cited in words beside a
+  UnityPy file's name;
 - on a file under a crate's src/ (test modules aside: `tests.rs`, `*_tests.rs`
   and `tests/` folders) that cites UnityPy and has no header line naming
   UnityPy 1.25.2 under MIT, `// Ported from UnityPy 1.25.2 (MIT): ...` or, for
@@ -68,11 +90,13 @@ checks a copy of the sources against the pins. A UnityPyBoost citation is
 held to the blank-line rule only: the statement rules are Python's.
 
 A whole span need not be the right one: a citation a few lines off that lands
-on another whole statement passes. Reading the name a comment gives with its
-citation, and requiring the cited range to fall within that name's
-definition in UnityPy, flagged 20 of the 87 citations it could read on
-2026-11-01, and only 2 of those 20 were wrong (the rest cite a caller, an
-alias or a module table), so it is not a check.
+on another whole statement passes, and so does one of a function of the same
+name in another class (review 13: `EndianBinaryReader.read_aligned_string`
+cited at the memoryview reader's override). Requiring a cited range to fall
+within, or hold, the definition of the name a comment gives with it is not
+a check: even in the narrowest form, `` `name` (`path:lines`) ``, most of
+the citations whose range misses the name's definition are right, citing a
+caller, an alias, an attribute or a module table.
 
 Exit status: 0 when every citation passes (a summary on stdout), 1 when one
 does not (each problem on its own line on stderr), 2 for a usage error, a
@@ -83,6 +107,7 @@ Standard library only.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -168,9 +193,14 @@ ANY_CITATION = re.compile(r"(?<![\w./-])(?:[\w.-]+/)*[\w-]+\.[A-Za-z][A-Za-z0-9]
 MENTION = re.compile(rf"(?<![\w./-])(?P<path>{PATH})(?![\w-]|:\d)")
 BARE = re.compile(r"(?<=`):(?P<first>\d+)(?:-(?P<last>\d+))?(?=`)")
 BARE_COMMENT = re.compile(r"^\s*(?://[/!]?|#)\s*:(?P<first>\d+)(?:-(?P<last>\d+))?(?=[\s:,.;)]|$)")
+# A bare line in prose, after a space or an opening parenthesis: `, :295`, `(:223-225)`.
+BARE_PROSE = re.compile(r"(?:(?<=\s)|(?<=\()):(?P<first>\d+)(?:-(?P<last>\d+))?(?=[\s:,.;)]|$)")
+# A line cited in words next to a file's name: `<file>` line <N>, `<file>`'s lines <N>-<M>, line <N> of `<file>`.
+WORDS_AFTER = re.compile(r"^`?(?:'s)?,? lines? \d")
+WORDS_BEFORE = re.compile(r"\blines? \d+(?:-\d+)?(?:(?:,| and| or) \d+(?:-\d+)?)* (?:of|in) `?$")
 REVISION_BEFORE = re.compile(rf"(?<!\w)(?:HEAD|{HEAD})\s+`?$")
 REVISION_NAMED = re.compile(rf"(?<!\w)(?:HEAD|{HEAD})(?!\w)")
-DEFAULT = re.compile(r"\blines are in `(?P<path>[^`]+)`(?: and `(?P<also>[^`]+)`)?", re.IGNORECASE)
+DEFAULT = re.compile(rf"\blines are in `(?P<path>{PATH})`(?: and `(?P<also>{PATH})`)?", re.IGNORECASE)
 HEADING = re.compile(r"^(#+) ")
 COMMENT_MARK = re.compile(r"^\s*(?://[!/]?|#!?|\*(?!\S))")
 LIST_ITEM = re.compile(r"(?:[-*+]|\d+\.) ")
@@ -205,6 +235,8 @@ class Shape(NamedTuple):
     # `except`, `finally`, `with`) -> the line it begins on. An `if`, `elif`, `for` or `while` header is left out:
     # its condition is a rule a citation may end on.
     header: dict[int, int]
+    # Each function (`def`, nested ones too): its first line (its first decorator's), its last, and its name.
+    functions: tuple[tuple[int, int, str], ...] = ()
 
 
 class Package(NamedTuple):
@@ -220,6 +252,8 @@ class Source(NamedTuple):
     revision: str
     # The UnityPy files the path can name: one, or several when it is ambiguous; () for a file that is not UnityPy's.
     named: tuple[str, ...]
+    # A path written as UnityPy's that names no file of it (a mistyped one), which no bare line may follow.
+    unknown: str = ""
 
 
 ANOTHER_FILE = Source("", ())
@@ -259,7 +293,12 @@ def shape(text: str) -> Shape:
         if start is None:
             start, first = tok.start[0], tok
         last = tok
-    return Shape(blank, inside, open_, header)
+    functions = tuple(
+        (min([node.lineno] + [d.lineno for d in node.decorator_list]), node.end_lineno, node.name)
+        for node in ast.walk(ast.parse(text))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    return Shape(blank, inside, open_, header, functions)
 
 
 def blank_shape(rows: list[str]) -> Shape:
@@ -274,12 +313,17 @@ def span_problem(s: Shape, first: int, last: int) -> str | None:
         return f"{'starts' if s.blank[first] else 'ends'} on a blank line"
     if last == first:
         return None
-    if s.inside[first] and not s.open[first]:
-        return f"starts on the last line of a statement that begins above line {first}"
+    if s.inside[first] and not all(s.open[first:last]):
+        return f"starts inside a statement that begins above line {first} and runs past its end"
     if s.open[last] and not s.inside[first]:
         return f"ends inside a statement that goes on past line {last}"
     if s.header.get(last, first) > first:
         return f"ends on the decorator or header that begins at line {s.header[last]}, without what it heads"
+    for start, end, name in s.functions:
+        if start < first <= end < last:
+            return f"starts inside `{name}` (lines {start}-{end}) and runs past its end"
+        if first < start <= last < end:
+            return f"ends inside `{name}` (lines {start}-{end}), which begins after the range does"
     return None
 
 
@@ -391,12 +435,48 @@ def header_default(text: str, lines: dict[str, int]) -> list[Source] | None:
     return [Source(VERSION, named.pop())] if len(named) == 1 else None
 
 
-def citations(rel: str, text: str, lines: dict[str, int]) -> tuple[list[Cite], list[str]]:
-    """Each citation of UnityPy in a file, explicit or bare, with the file it names; and each bare line that names
-    no file, or that a reader could take for a line of either of two."""
+def written_as_unitypys(path: str, lines: dict[str, int]) -> bool:
+    """Whether `path` is written as a path of UnityPy's package: from `UnityPy/` or `UnityPyBoost/`, or through one
+    of the package's folders (`helpers/Tpk.py`)."""
+    head, _, rest = path.partition("/")
+    return bool(rest) and (head in ("UnityPy", "UnityPyBoost") or any(k.startswith(head + "/") for k in lines))
+
+
+def one_file(path: str, lines: dict[str, int]) -> str | None:
+    """Why `path` does not name exactly one UnityPy file, or None when it does."""
+    found = resolve(path, lines)
+    if not found:
+        return f"names no file of UnityPy {VERSION}"
+    if len(found) > 1:
+        return f"could be any of {', '.join(sorted(found))}; write the path from the root"
+    return None
+
+
+def header_problems(rel: str, text: str, lines: dict[str, int]) -> list[str]:
+    """Each path a `UnityPy 1.25.2` header of the file names that is not one UnityPy file."""
+    return [
+        f"{rel}: its `{SOURCE}` header names {m['path']}, which {why}"
+        for h in source_headers(text)
+        if h.source == SOURCE
+        for m in MENTION.finditer(h.what)
+        if (why := one_file(m["path"], lines))
+    ]
+
+
+def citations(
+    rel: str, text: str, lines: dict[str, int], exists=lambda path: False
+) -> tuple[list[Cite], list[str]]:
+    """Each citation of UnityPy in a file, explicit or bare, with the file it names; and each problem a citation
+    has before its lines are read: a bare line that names no file, or that a reader could take for a line of
+    either of two; a path written as UnityPy's that names no file of it or of the repository (`exists`); a
+    section default that is not one UnityPy file; a line cited in words."""
     markdown = rel.endswith(".md")
     cites, problems = [], []
     rows = text.splitlines()
+
+    def unknown(path: str, source: Source) -> bool:
+        return not source.named and source.revision == VERSION and written_as_unitypys(path, lines) and not exists(path)
+
     # The file named last in this paragraph (a Markdown table row is one); the file the section's "Lines are in"
     # (Markdown) or the file's header names, with the heading level that sentence is under.
     current: Source | None = None
@@ -423,31 +503,49 @@ def citations(rel: str, text: str, lines: dict[str, int]) -> tuple[list[Cite], l
             if m := DEFAULT.search(line):
                 named = [m["path"]] + ([m["also"]] if m["also"] else [])
                 default = (level, [Source(VERSION, tuple(resolve(p, lines))) for p in named])
+                for p in named:
+                    if why := one_file(p, lines):
+                        problems.append(f'{rel}:{n}: "Lines are in `{p}`" {why}')
         events = [(m.start(), "cite", m) for m in ANY_CITATION.finditer(line)]
         spans = [(m.start(), m.end()) for _, _, m in events]
         events += [
             (m.start(), "mention", m) for m in MENTION.finditer(line) if not any(a <= m.start() < b for a, b in spans)
         ]
-        events += [(m.start(), "bare", m) for m in BARE.finditer(line)]
+        bare = {m.start("first"): m for m in BARE_PROSE.finditer(line)}
+        bare |= {m.start("first"): m for m in BARE.finditer(line)}
         if m := BARE_COMMENT.match(line):
-            events.append((m.start("first"), "bare", m))
+            bare[m.start("first")] = m
+        events += [(pos, "bare", m) for pos, m in bare.items()]
         for pos, kind, m in sorted(events, key=lambda e: e[0]):
             revision = revisions.get(column(line, pos), VERSION) if revisions else VERSION
             if kind == "cite":
                 cite = CITATION.fullmatch(m[0])
                 source = source_of(cite["path"], line[:pos], lines, revision) if cite else ANOTHER_FILE
-                current = source if source.named else ANOTHER_FILE
+                if cite and unknown(cite["path"], source):
+                    problems.append(
+                        f"{rel}:{n}: {cite[0]} names no file of UnityPy {VERSION} or of the repository, though its "
+                        "path is written as UnityPy's: correct the path"
+                    )
+                    source = Source(VERSION, (), cite["path"])
+                current = source if source.named or source.unknown else ANOTHER_FILE
                 if source.named:
                     first, last = int(cite["first"]), int(cite["last"] or cite["first"])
                     cites.append(Cite(n, cite[0], source, first, last, False))
                 continue
             if kind == "mention":
                 source = source_of(m["path"], line[:pos], lines, revision)
-                current = source if source.named else current
+                if unknown(m["path"], source):
+                    source = Source(VERSION, (), m["path"])
+                current = source if source.named or source.unknown else current
+                if source.named and (WORDS_AFTER.match(line[m.end() :]) or WORDS_BEFORE.search(line[:pos])):
+                    problems.append(f"{rel}:{n}: cites a line of {m['path']} in words: write `{m['path']}:<line>`")
                 continue
             written = ":" + m["first"] + (f"-{m['last']}" if m["last"] else "")
             files = default[1] if default is not None and default[1] else None
             source = current
+            if source is not None and source.unknown:
+                problems.append(f"{rel}:{n}: {written} follows {source.unknown}, which names no file of {SOURCE}")
+                continue
             if source is None and files is None:
                 problems.append(f"{rel}:{n}: {written} names no file: no file is named before it in its paragraph")
                 continue
@@ -472,7 +570,8 @@ def citations(rel: str, text: str, lines: dict[str, int]) -> tuple[list[Cite], l
 def check(root: Path, package: Package) -> Report:
     problems, checked, bare, boost, files, head_checked, head_unchecked, ported = [], 0, 0, 0, 0, 0, 0, 0
     for rel, text in text_files(root):
-        cites, unnamed = citations(rel, text, package.lines)
+        cites, unnamed = citations(rel, text, package.lines, lambda path: (root / path).is_file())
+        unnamed += header_problems(rel, text, package.lines)
         problems += unnamed
         for cite in cites:
             where, named = f"{rel}:{cite.n}: {cite.text}", cite.source.named
