@@ -127,7 +127,8 @@ pub(crate) fn payload<'a>(bytes: &'a [u8], meter: &Arc<Meter>) -> Result<Payload
 
 /// `data` decoded by `codec`, as one block of unityrs-core's: the output
 /// capped at [`TpkProvider::MAX_DECODED_BYTES`], and the output and an LZMA
-/// dictionary charged to a meter of [`TpkProvider::MAX_DECODER_MEMORY`].
+/// decoder (its dictionary and liblzma's state) charged to a meter of
+/// [`TpkProvider::MAX_DECODER_MEMORY`].
 /// The codec reads its input as `Bytes`, so `data` is copied once, the copy
 /// charged to `provider` (the provider's meter) before it is made (round 4:
 /// it was not charged). The decoder's meter is the provider's reservation,

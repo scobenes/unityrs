@@ -128,10 +128,12 @@ pub enum WriteRules {
     /// whole, write a flagged array's elements as `read_value_array` reads
     /// them (each kind without its own trailing alignment, the run aligned
     /// once after; a `pair`'s primitive, string or bytes children without
-    /// their own flags; a class's registry children with no registry check;
-    /// 16-bit integers with their signedness swapped), align no empty
-    /// string, and write no data for an empty `class` or a matched ref type
-    /// with no tree. A value either reader reads through a tree that
+    /// their own flags, its 16-bit ones unswapped; a class's registry
+    /// children with no registry check; a run of 16-bit integers with their
+    /// signedness swapped), align no empty string after itself (so not at
+    /// all where that reader reads no flag: a run's element, a flagged
+    /// `pair` run's child), and write no data for an empty `class` or a
+    /// matched ref type with no tree. A value either reader reads through a tree that
     /// repeats no name writes back to bytes the same reader reads as the
     /// same value (padding as zeros), unless the pure-Python reader moved
     /// its position other than forward over what it holds (a negative

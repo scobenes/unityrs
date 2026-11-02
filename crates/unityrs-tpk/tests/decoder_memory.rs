@@ -12,6 +12,7 @@ use std::cell::Cell;
 
 use unityrs_core::UnityVersion;
 use unityrs_core::budget::{BudgetExceeded, Reservation};
+use unityrs_core::codec::Lzma;
 use unityrs_core::limits::{ChargeError, Limits};
 use unityrs_core::provider::{TreeRequest, TypeTreeProvider};
 use unityrs_testkit::address_space;
@@ -112,9 +113,11 @@ fn lzma_tpk() -> Vec<u8> {
     tpk(2, &data, payload.len())
 }
 
-/// The dictionary's charge: 8 MiB in one piece is `mmap`ped by glibc, its
-/// request and the 8-byte chunk header rounded up to a 4 KiB page.
-const DICTIONARY_CHARGE: u64 = (8 << 20) + 4096;
+/// The decoder's charge: its dictionary buffer, 8 MiB and liblzma's 576
+/// bytes in one piece, which glibc `mmap`s (the request and the 8-byte chunk
+/// header rounded up to a 4 KiB page), and liblzma's state
+/// (`Lzma::DECODER_STATE`; review round 12: it was not charged).
+const DICTIONARY_CHARGE: u64 = (8 << 20) + 4096 + Lzma::DECODER_STATE;
 
 const LZMA_PROBE: &str = "UNITYRS_TPK_LZMA_DICTIONARY_PROBE";
 

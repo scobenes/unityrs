@@ -118,8 +118,9 @@ impl TpkProvider {
 
     /// The most the decoder may hold while it decodes, 64 MiB: its output
     /// and, for LZMA, the dictionary, which unityrs-core's codec keeps within
-    /// twice the output, so the output's bound is the one a stream meets
-    /// first.
+    /// twice the output, and liblzma's state
+    /// ([`unityrs_core::codec::Lzma::DECODER_STATE`]), so the output's bound
+    /// is the one a stream meets first.
     pub const MAX_DECODER_MEMORY: u64 = 64 << 20;
 
     /// The most records any one table of the blob may hold, 65,536: the
