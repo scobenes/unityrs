@@ -184,7 +184,8 @@ jobs:
       # inputs with unityrs-testkit, so they need the toolchain too). Every
       # tools/fixtures/*.py run as a program is listed here or in G7's step;
       # the rest are modules a listed script imports (walk.py records
-      # through walk_build.py, walk_elements.py and walk_reentry.py), as
+      # through walk_build.py, walk_elements.py, walk_reentry.py and
+      # walk_runs.py, env.py through env_paths.py), as
       # scripts/tests/test_ci_workflow.py checks.
       - name: The scaffold's and packages B to E's oracle fixtures are current
         run: |
