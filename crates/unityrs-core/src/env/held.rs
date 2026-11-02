@@ -143,6 +143,7 @@ mod tests {
     use std::sync::{Mutex, RwLock};
 
     use std::cell::Cell;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::rc::Rc;
 
     use super::{after_each_release, lock, read, write};
@@ -165,7 +166,9 @@ mod tests {
     }
 
     /// The check runs right after each release, the lock free, and what it
-    /// takes itself does not run it again; off, it runs no more.
+    /// takes itself does not run it again; a release a panic unwinds runs
+    /// none (a second panic would abort the test binary); off, it runs no
+    /// more.
     #[test]
     fn a_check_runs_after_each_release_with_the_lock_free() {
         let l = Rc::new(RwLock::new(1));
@@ -181,6 +184,12 @@ mod tests {
         assert_eq!(seen.get(), 2, "the check saw the release's value, once");
         drop(read(&l));
         assert_eq!(seen.get(), 4);
+        let unwound = catch_unwind(AssertUnwindSafe(|| {
+            let _held = read(&l);
+            panic!("unwinds the guard");
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(seen.get(), 4, "a release a panic unwound ran the check");
         after_each_release(None);
         drop(read(&l));
         assert_eq!(seen.get(), 4);
