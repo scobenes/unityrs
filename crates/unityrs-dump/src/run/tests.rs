@@ -159,6 +159,68 @@ fn ordered_stops_on_a_panic_and_names_the_input() {
     }
 }
 
+/// Review round 13: a panic stopped the run the moment it arrived, so at
+/// `-j` above 1 a later item's panic that finished first was named, where a
+/// serial run (and the oracle's `run_jobs`) names the earlier item's panic,
+/// or the sink's refusal of the earlier item. Here the later panic is sure
+/// to arrive first, whatever the scheduling: item 1 panics at once, and
+/// item 0 (with items 2 to `jobs - 1`, which keep the other workers busy)
+/// waits until item `jobs` has run, which a worker can take only once
+/// item 1's worker is free, after it sent item 1's panic. The wait only
+/// turns a hang into a failure (a deadlock guard, `unityrs_testkit::guard`).
+#[test]
+fn ordered_settles_a_panic_when_its_turn_comes() {
+    use std::sync::{Condvar, Mutex};
+    use std::time::Instant;
+    use unityrs_testkit::guard::DEADLOCK_GUARD;
+    for jobs in [2, 4, 8] {
+        for refuse_first in [false, true] {
+            let released = (Mutex::new(false), Condvar::new());
+            let f = |k: &usize| -> usize {
+                let (flag, cv) = &released;
+                assert!(*k != 1, "the later item's panic");
+                let mut set = flag.lock().unwrap();
+                if *k == jobs {
+                    *set = true;
+                    cv.notify_all();
+                } else if *k < jobs {
+                    let deadline = Instant::now() + DEADLOCK_GUARD;
+                    while !*set {
+                        let left = deadline.saturating_duration_since(Instant::now());
+                        assert!(
+                            !left.is_zero(),
+                            "deadlock guard: item {k} waited {} s for item {jobs}, which only \
+                             a hang takes, not load (-j {jobs})",
+                            DEADLOCK_GUARD.as_secs()
+                        );
+                        set = cv.wait_timeout(set, left).unwrap().0;
+                    }
+                }
+                drop(set);
+                assert!(*k != 0 || refuse_first, "the earlier item's panic");
+                *k
+            };
+            let items: Vec<usize> = (0..3 * jobs).collect();
+            let err = ordered(&items, jobs, &f, &mut |i, _| {
+                if refuse_first && i == 0 {
+                    return Err(RunError::Failed("the sink refused item 1".into()));
+                }
+                Ok(())
+            })
+            .unwrap_err();
+            let want = if refuse_first {
+                "the sink refused item 1".to_owned()
+            } else {
+                format!(
+                    "input 1 of {}: the dumper panicked: the earlier item's panic",
+                    items.len()
+                )
+            };
+            assert_eq!(err.to_string(), want, "-j {jobs}");
+        }
+    }
+}
+
 #[test]
 fn ordered_stops_when_the_sink_refuses() {
     let items: Vec<u32> = (0..20).collect();

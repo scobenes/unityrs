@@ -112,7 +112,7 @@ The oracle's `producer` holds, in this order: `name` (`"unitypy_dump.py"`), `uni
 - `input` is the input's path relative to the dump root, with `/` separators:
   - the file name for a single-file input;
   - the path below the folder for a folder input (walked as Python 3.11's `os.walk` walks it; a folder listed more than 995 levels below the input stops the run with status 1 and no dump, the oracle's `RecursionError`: `tools/fixtures/folders.py`);
-  - the entry's `path` for a corpus index.
+  - the entry's `path` for a corpus index, as the bytes `os.fsencode` gives for it: surrogate escapes in it that spell UTF-8 (`"\udcc3\udcbf"`, the bytes `c3 bf`) name the character they spell (`"ÿ"`), so `--name` and the index's pins see that name too (`tools/fixtures/index.py`).
 - An entry name is the bundle directory's `path` string.
 - An input's name comes from its path's bytes, as given, decoded as UTF-8 whatever the process locale, so bytes that are not UTF-8 reach the metadata-string rule below unchanged. The path is not resolved: a symlink is named after itself, in either input mode, and the name rule (under `l0` below) tests that name.
 
