@@ -81,7 +81,7 @@ GENERATED = (
 def package(files: dict[str, str], head: dict[str, str]) -> C.Package:
     def shaped(texts):
         lines = {k: len(v.splitlines()) for k, v in texts.items()}
-        shapes = {k: C.shape(v) if k.endswith(".py") else C.blank_shape(v.splitlines()) for k, v in texts.items()}
+        shapes = {k: C.shape(v) if k.endswith(".py") else C.cpp_shape(v) for k, v in texts.items()}
         return lines, shapes
 
     return C.Package(*shaped(files), *shaped(head))
@@ -599,54 +599,6 @@ class PackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "is not files/BundleFile.py of UnityPy git 417d595"):
                 C.load_package(folder, None, repo, C.package_digest(folder))
 
-    def test_the_pinned_boost_sources(self):
-        with scratch.folder("unityrs-citations-") as tmp:
-            repo = repository(Path(tmp), {})
-            folder = unitypy_folder(Path(tmp), {"environment.py": "a\nb\n"})
-            got = C.load_package(folder, None, repo, C.package_digest(folder))
-        name = "UnityPyBoost/TypeTreeHelper.cpp"
-        self.assertEqual(got.lines[name], C.BOOST[name][0])
-        # Without --boost, its blank lines are the pinned ones (review round 12 found a citation of TypeTreeHelper.cpp
-        # ending on its blank line 1033).
-        blank = [n for n in range(1, got.lines[name] + 1) if got.shapes[name].blank[n]]
-        self.assertEqual(blank, [int(n) for n in C.BOOST[name][2].split()])
-        self.assertIn(1033, blank)
-
-    def test_a_boost_copy_must_be_the_pinned_one(self):
-        with scratch.folder("unityrs-citations-") as tmp:
-            repo = repository(Path(tmp), {})
-            folder = unitypy_folder(Path(tmp), {"environment.py": "a\n"})
-            digest = C.package_digest(folder)
-            boost = Path(tmp) / "boost"
-            boost.mkdir()
-            for name in C.BOOST:
-                (boost / Path(name).name).write_text("not the source\n")
-            with self.assertRaisesRegex(ValueError, "is not UnityPy 1.25.2's UnityPyBoost/"):
-                C.load_package(folder, boost, repo, digest)
-            # A copy matching its sha256, whose blank lines are not the pinned ones.
-            (boost / "X.cpp").write_text("a\n\nb\n")
-            sha = hashlib.sha256(b"a\n\nb\n").hexdigest()
-            for pins, ok in (((3, sha, "2"), True), ((3, sha, "1"), False), ((4, sha, "2"), False)):
-                with self.subTest(pins), mock.patch.dict(C.BOOST, {"UnityPyBoost/X.cpp": pins}, clear=True):
-                    if ok:
-                        self.assertEqual(C.load_package(folder, boost, repo, digest).lines["UnityPyBoost/X.cpp"], 3)
-                    else:
-                        with self.assertRaisesRegex(ValueError, "line count or blank lines for UnityPyBoost/X.cpp"):
-                            C.load_package(folder, boost, repo, digest)
-
-    def test_the_pins_are_well_formed(self):
-        for name, (count, sha, blanks) in C.BOOST.items():
-            with self.subTest(name):
-                self.assertTrue(name.startswith("UnityPyBoost/") and count > 0)
-                self.assertRegex(sha, r"^[0-9a-f]{64}$")
-                numbers = [int(n) for n in blanks.split()]
-                self.assertEqual(numbers, sorted(set(numbers)))
-                self.assertTrue(all(1 <= n <= count for n in numbers))
-        self.assertNotEqual(hashlib.sha256(b"").hexdigest(), C.BOOST["UnityPyBoost/Mesh.hpp"][1])
-        self.assertRegex(C.PACKAGE, r"^[0-9a-f]{64}$")
-        for copy, blob in C.HEAD_FILES.values():
-            self.assertEqual(C.blob_id((ROOT / C.HEAD_DIR / copy).read_bytes()), blob)
-
 
 class CommandLineTests(unittest.TestCase):
     def main(self, args):
@@ -664,7 +616,8 @@ class CommandLineTests(unittest.TestCase):
                 self.assertEqual((code, err), (0, ""))
                 self.assertIn(
                     "2 citations of UnityPy 1.25.2 in 1 files (1 of them bare lines, 0 UnityPyBoost's) name lines "
-                    "that exist and whole spans",
+                    "that exist and whole spans (no blank first or last line; in UnityPy's Python no statement or "
+                    "function cut, in UnityPyBoost's C++ no top-level definition cut); ",
                     out,
                 )
                 write(repo, {"a.md": f"`environment.py:{3}`\n"})
