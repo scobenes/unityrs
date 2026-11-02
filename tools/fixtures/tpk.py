@@ -12,7 +12,9 @@ Runs in the oracle image. Two parts:
   version, compression and data type, a file or a properties header cut short, reads
   that run out at a byte); common strings numbered by code points; LZ4 and LZMA
   payloads, with the blocks and streams on which liblz4 and liblzma decide differently
-  from other decoders), run through `Tpk.py` (`TpkFile(...).GetDataBlob()`, then
+  from other decoders, and LZMA payloads at `TpkProvider`'s decoded bound whose one far
+  match makes unityrs-core's codec decode again with a larger dictionary), run through
+  `Tpk.py` (`TpkFile(...).GetDataBlob()`, then
   `get_typetree_node` per class and version, and `get_common_strings()`, with the blob
   in place of the bundled one). The TPKs (hex) and UnityPy's outcomes (JSON)
   are committed under crates/unityrs-tpk/tests/fixtures/tpk/, and
