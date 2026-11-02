@@ -326,8 +326,12 @@ class CanonicalForm(unittest.TestCase):
             "ZIP": ("raw",),
             "error": (),
         }
-        for typ in C.L0_TYPES:
-            for parsed in C.L0_PARSED_AS:
+        # Section 4.2's lists, written out here: read from `C`, a value dropped from the checker passed this test.
+        parsed_as = ("SerializedFile", "BundleFile", "WebFile", "raw", "zip", "error")
+        self.assertEqual(sorted(C.L0_TYPES), sorted(entry_ok))
+        self.assertEqual(sorted(C.L0_PARSED_AS), sorted(parsed_as))
+        for typ in entry_ok:
+            for parsed in parsed_as:
                 on_input = (
                     parsed in entry_ok[typ]
                     and typ != "ZIP"
@@ -366,6 +370,8 @@ class CanonicalForm(unittest.TestCase):
             ("error", "crash", []),
             ("AssetsFile", "parse", []),
             ("AssetsFile", "crash", []),
+            ("error", "dumper", []),
+            ("AssetsFile", "dumper", []),
             ("error", "parse", [("error.kind", "error_mismatch")]),
             ("BundleFile", "detect", [("error.kind", "error_mismatch")]),
             ("AssetsFile", "boom", [("error.kind", "unknown_value")]),
@@ -380,7 +386,10 @@ class CanonicalForm(unittest.TestCase):
             "l2": {"root_type": "T", "source": "tpk", "error": None, "value": None},
             "l3": None,
         }
-        for kind in C.L2_ERROR_KINDS:
+        # Section 4.3's list, written out here for the same reason.
+        l2_kinds = ("no_typetree", "check_read", "out_of_bounds", "negative_length", "ref_type", "encode", "other")
+        self.assertEqual(sorted(C.L2_ERROR_KINDS), sorted(l2_kinds))
+        for kind in l2_kinds:
             obj["l2"]["error"] = {"kind": kind, "bytes_read": 4 if kind == "check_read" else None}
             obj["l2"]["value"] = 1 if kind == "check_read" else None
             self.assertEqual(kinds(obj, ("L0", "L2")), [], kind)
