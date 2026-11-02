@@ -518,7 +518,7 @@ impl<'a> Node<'a> {
 }
 
 /// The AssetBundle's value with its root node list, read as UnityPy's
-/// object mode reads it (`UnityPyBoost/TypeTreeHelper.cpp:458-582`): a class
+/// object mode reads it (`UnityPyBoost/TypeTreeHelper.cpp:458-583`): a class
 /// is built from keyword arguments keyed by each child's clean name, so an
 /// attribute is the value of the *last* child whose name cleans to it.
 /// The Environment's `MonoBehaviour` hook reads `m_Script` and a
@@ -587,7 +587,7 @@ impl<'a> View<'a> {
     /// children's clean names and `assetsfile` (`TypeTreeHelper.cpp:476-501`),
     /// which takes exactly those three fields (`classes/PPtr.py:16-19`) and is
     /// slotted, so any other child or a missing id makes an `UnknownObject`
-    /// (`TypeTreeHelper.cpp:505-513`). `None` for that and for every other
+    /// (`TypeTreeHelper.cpp:508-515`). `None` for that and for every other
     /// value.
     fn pptr_object(&self, node: Node<'a>) -> Option<(Node<'a>, Node<'a>)> {
         const FIELDS: [&[u8]; 3] = [b"m_FileID", b"m_PathID", b"assetsfile"];

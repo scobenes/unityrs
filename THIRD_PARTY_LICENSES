@@ -48,8 +48,9 @@ words beside a UnityPy file's name, and reads no other wording): each cited
 line exists; a cited range starts and ends on a line that is not blank and,
 in UnityPy's Python, is a whole span of statements that cuts no function,
 or, in UnityPyBoost's C++, cuts no top-level definition (a function, a
-struct, an enum, or a variable with a braced value such as a table; its
-statements are not read); each path written as UnityPy's names one of its
+struct, an enum, or a variable with a braced value such as a table) and
+closes every brace block it opens and no other (its statements are not
+read); each path written as UnityPy's names one of its
 files; and each file under a crate's src/ that cites one (test modules
 aside) has one of those headers.
 

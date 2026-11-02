@@ -516,7 +516,7 @@ fn shape_of(list: &NodeList, info: &MeteredVec<NodeInfo>, node: NodeId) -> Shape
             Some(first) if info_at(info, *first).kind == Kind::Array => {
                 let array = list.children(*first);
                 match array {
-                    // UnityPy TypeTreeHelper.cpp:820-833: `Array` needs two children.
+                    // UnityPy TypeTreeHelper.cpp:822-826: `Array` needs two children.
                     [_, elem] => Shape::Vector {
                         elem: *elem,
                         run: info_at(info, *elem).kind.reads_as_run(),
