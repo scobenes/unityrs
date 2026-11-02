@@ -496,15 +496,19 @@ fn registries_skipped_on_a_value_that_is_not_a_dict_count_too() {
 }
 
 /// Review round 9: a value the reader keeps does not count against the
-/// bound, but a class written from a value that is not a dict does, since
-/// its children are the value's attributes, which the value's size does
-/// not bound. `N` ints read as `Base { vector<int> v }` and written
-/// through `Base { vector<Foo> v }`, `Foo` four empty classes named for an
-/// `int`'s attributes (`real`, `imag`, `numerator`, `denominator`): five
-/// classes an element, none writing a byte, and no name repeated.
+/// bound, but a child of a class written from a value that is not a dict
+/// does when it writes no byte, since its value is an attribute of the
+/// class's, which neither the value's memory nor the output bounds (review
+/// round 10: counted once a class, the class's children or not). `N` ints
+/// read as `Base { vector<int> v }` and written through `Base { vector<Foo>
+/// v }`, `Foo` four empty classes named for an `int`'s attributes (`real`,
+/// `imag`, `numerator`, `denominator`): four such children an element, none
+/// writing a byte, and no name repeated. With `Foo`'s children `int`s,
+/// which write their bytes, the same write counts nothing: it writes
+/// whole under a bound of 0.
 #[test]
 fn classes_written_from_values_that_are_not_dicts_count_against_the_values_bound() {
-    const N: u32 = 1 << 12;
+    const N: u32 = (1 << 12) + 1;
     let read_with = compile(vec![
         NodeRow::new(0, "Base", "Base"),
         NodeRow::new(1, "vector", "v"),
@@ -512,28 +516,38 @@ fn classes_written_from_values_that_are_not_dicts_count_against_the_values_bound
         NodeRow::new(3, "int", "size"),
         NodeRow::new(3, "int", "data"),
     ]);
-    let mut rows = vec![
-        NodeRow::new(0, "Base", "Base"),
-        NodeRow::new(1, "vector", "v"),
-        NodeRow::new(2, "Array", "Array"),
-        NodeRow::new(3, "int", "size"),
-        NodeRow::new(3, "Foo", "data"),
-    ];
-    for name in ["real", "imag", "numerator", "denominator"] {
-        rows.push(NodeRow::new(4, "Empty", name));
-    }
-    let write_with = compile(rows);
+    let write_with = |child: &str| {
+        let mut rows = vec![
+            NodeRow::new(0, "Base", "Base"),
+            NodeRow::new(1, "vector", "v"),
+            NodeRow::new(2, "Array", "Array"),
+            NodeRow::new(3, "int", "size"),
+            NodeRow::new(3, "Foo", "data"),
+        ];
+        for name in ["real", "imag", "numerator", "denominator"] {
+            rows.push(NodeRow::new(4, child, name));
+        }
+        compile(rows)
+    };
+    let (empty, ints) = (write_with("Empty"), write_with("int"));
     let mut data = N.to_le_bytes().to_vec();
     for i in 0..N {
         data.extend_from_slice(&i.to_le_bytes());
     }
-    assert!(u64::from(5 * N) > BOUND && u64::from(5 * N) < 2 * BOUND);
+    assert!(u64::from(4 * N) > BOUND && u64::from(4 * N) < 2 * BOUND);
+    let none = Limits {
+        max_values_per_object: 0,
+        ..Limits::default()
+    };
     for reader in ["boost", "python"] {
         let (p, _) = read_visits(reader, &read_with, &data, &[], Limits::default());
         let p = p.unwrap_or_else(|e| panic!("{reader}: {e}"));
         for rules in [WriteRules::UnityPy, WriteRules::MirrorReader] {
-            let (got, visits) = write_visits(&p, &write_with, &[], rules, &bounded());
-            assert_write_refused(&format!("{reader} read, {rules:?} write"), &got, visits);
+            let what = format!("{reader} read, {rules:?} write");
+            let (got, visits) = write_visits(&p, &empty, &[], rules, &bounded());
+            assert_write_refused(&what, &got, visits);
+            let (got, _) = write_visits(&p, &ints, &[], rules, &none);
+            got.unwrap_or_else(|e| panic!("{what}, ints under a bound of 0: {e}"));
         }
     }
 }

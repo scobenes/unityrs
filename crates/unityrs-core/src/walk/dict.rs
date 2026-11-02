@@ -149,6 +149,8 @@ impl Dict {
     ) -> Result<(), ReadError> {
         steps(1);
         if let Some(pos) = self.position(slot) {
+            // The value it replaces was built and is not kept.
+            work.discard();
             value.set_entry(&mut self.entries, pos);
             return Ok(());
         }

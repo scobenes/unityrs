@@ -14,9 +14,13 @@
 //! `tools/fixtures/walk.py` from the cases of `tools/fixtures/walk_runs.py`
 //! (its module docs give the recipe and the encoding): a `vector<UInt8>`
 //! and a `vector<float>` of 2^26 + 1 elements, each read by UnityPyBoost
-//! and re-saved. The pure-Python reader still counts each element of a run
-//! it reads, since a negative `TypelessData` length lets it read the same
-//! bytes again and again (the last test).
+//! and re-saved; and (review round 10) a vector of 2^26 + 1 elements whose
+//! type name is `int\0x`, which UnityPyBoost reads as a run of `int`s and
+//! UnityPy's writer writes as classes with no children, which write
+//! nothing: the writer counted each such class against the bound. The
+//! pure-Python reader still counts each element of a run it reads, since a
+//! negative `TypelessData` length lets it read the same bytes again and
+//! again (the last test).
 
 use std::sync::Arc;
 
@@ -113,6 +117,10 @@ fn summary(v: &Value) -> Json {
         Value::Prims(PrimArray::U8(b)) => {
             json!({ "n": b.len(), "u8_crc32": crc(b.iter().copied()) })
         }
+        Value::Prims(PrimArray::I32(v)) => json!({
+            "n": v.len(),
+            "i32_crc32": crc(v.iter().flat_map(|x| x.to_le_bytes())),
+        }),
         Value::Prims(PrimArray::F32(f)) => json!({
             "n": f.len(),
             "f64_crc32": crc(f.iter().flat_map(|b| widen(*b).to_le_bytes())),
@@ -165,16 +173,23 @@ fn read(
 
 /// Review round 9's HIGH: each run of 2^26 + 1 elements, past the default
 /// `max_values_per_object`, reads through UnityPyBoost's reader at the
-/// defaults as UnityPy reads it, and re-saves as UnityPy re-saves it. The
+/// defaults as UnityPy reads it, and re-saves as UnityPy re-saves it
+/// (review round 10: the `int\0x` run's re-save was refused). The
 /// pure-Python reader, which reads an object only when its `byte_size` is
-/// 0 (so such an object fails `check_read` in UnityPy), still refuses it.
+/// 0 (so such an object fails `check_read` in UnityPy), still refuses a
+/// run; it reads `int\0x` elements as classes, not as a run
+/// (`tests/fixtures/walk/cases.json`'s `w1_nul_type_name_run`).
 #[test]
 fn runs_past_the_values_bound_read_and_resave_as_unitypy_at_the_defaults() {
     let limits = EnvOptions::unitypy().context.limits;
     assert_eq!(limits, Limits::default());
     let cases: Json = serde_json::from_str(&std::fs::read_to_string(FIXTURE).unwrap()).unwrap();
     let cases = cases.as_array().unwrap();
-    assert_eq!(cases.len(), 2, "a vector<UInt8> and a vector<float>");
+    assert_eq!(
+        cases.len(),
+        3,
+        "a vector<UInt8>, a vector<float> and a vector<int\\0x>"
+    );
     for c in cases {
         let name = c["name"].as_str().unwrap();
         let tree = compile(&c["nodes"]);
@@ -196,6 +211,10 @@ fn runs_past_the_values_bound_read_and_resave_as_unitypy_at_the_defaults() {
         let written = json!({ "n": out.len(), "crc32": crc(out.as_slice().iter().copied()) });
         assert_eq!(written, c["boost_write"], "{name}: the re-save");
         drop((out, p));
+        let elem = c["nodes"].as_array().unwrap().last().unwrap()[1].as_str();
+        if elem.unwrap().contains('\0') {
+            continue;
+        }
         match read("python", &data, &tree, &meter) {
             Err(ReadError {
                 detail: ReadDetail::Limit(l),

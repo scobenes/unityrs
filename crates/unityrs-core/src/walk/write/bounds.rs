@@ -14,11 +14,13 @@ impl Writer<'_, '_> {
     /// bound stops when its node writes nothing (claude B, review round 3:
     /// `K` × `N` values into `4K + 4N` bytes). Elsewhere each value written
     /// is one of the value's own, once (the value is held, its memory
-    /// charged) or an attribute a class takes from a value that is not a
-    /// dict, which [`Self::class`] counts; so a primitive run of any length
-    /// writes as UnityPy writes it (review round 9). A write of a value
-    /// through the tree it was read with counts no more than UnityPyBoost's
-    /// read of it did, unless the tree repeats a name.
+    /// charged), or an attribute a class takes from a value that is not a
+    /// dict, which [`Self::class`] counts when its write writes no byte; so
+    /// a primitive run of any length writes as UnityPy writes it (review
+    /// round 9). A write of a value through the tree it was read with counts
+    /// no more than UnityPyBoost's read of it did, unless the tree repeats a
+    /// name, or a node whose type name holds a NUL (read as a primitive, a
+    /// string or bytes, written as a class) has a child that writes no byte.
     pub(super) fn count(&mut self, work: u64) -> Result<(), WriteError> {
         if self.repeated > 0 {
             self.bound()?;

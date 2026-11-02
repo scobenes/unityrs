@@ -128,7 +128,7 @@ pub(crate) fn limit_refused(at: u64, limit: LimitError) -> ReadError {
 /// (UnityPyBoost's `vector<UInt8>`, a slice) or of a charged run. So
 /// UnityPyBoost's reader, whose position never goes back, counts against it
 /// only what it does and keeps nothing of: each child it skips
-/// ([`Self::values`]), and each value it builds under a child whose name a
+/// ([`Self::skipped`]), and each value it builds under a child whose name a
 /// sibling repeats ([`Self::enter_repeated`]), one of which replaces the
 /// other's value ([`Self::kept`]). Everything else it builds is bounded by
 /// `max_input_memory` and by the object's bytes, as UnityPy's own values are
@@ -142,6 +142,10 @@ pub(crate) fn limit_refused(at: u64, limit: LimitError) -> ReadError {
 pub(crate) struct Work<'m> {
     pub(crate) values: u64,
     pub(crate) zero_size: u64,
+    /// How many times the read has done work it keeps nothing of
+    /// ([`Self::discard`]); an element's [`Self::zero_size`] compares it
+    /// with its value before the element.
+    discards: u64,
     pub(crate) depth: u32,
     /// How many children whose name a sibling repeats are being read
     /// ([`crate::typetree::NodeInfo::repeated`]): while any is, every value
@@ -163,6 +167,7 @@ impl<'m> Work<'m> {
         Ok(Self {
             values: 0,
             zero_size: 0,
+            discards: 0,
             depth: 0,
             repeated: 0,
             unfilled: 0,
@@ -208,10 +213,36 @@ impl<'m> Work<'m> {
     }
 
     /// Counts `n` values against `max_values_per_object`, each
-    /// [`VALUE_WORK`] of the open's work: a child a read skips, and every
-    /// value the pure-Python reader builds.
+    /// [`VALUE_WORK`] of the open's work: every value the pure-Python reader
+    /// builds.
     pub(crate) fn values(&mut self, n: u64, at: u64) -> Result<(), ReadError> {
         self.count(n, n.saturating_mul(VALUE_WORK), at)
+    }
+
+    /// Counts one child the read skips (a `ReferencedObject`'s data that
+    /// resolves to no tree, a `ManagedReferencesRegistry` once one is in
+    /// scope) as a value ([`Self::values`]): the class's loop visits it
+    /// whether or not a value comes out, and keeps nothing of it
+    /// ([`Self::discard`]).
+    pub(crate) fn skipped(&mut self, at: u64) -> Result<(), ReadError> {
+        self.discard();
+        self.values(1, at)
+    }
+
+    /// Marks work the read keeps nothing of: a child it skips
+    /// ([`Self::skipped`]), a value a later sibling of the same name
+    /// replaces (`walk::dict::Dict::set`), and, in the pure-Python reader, a
+    /// read that takes the position back, so later reads read the same
+    /// bytes again. An element that does any of these and reads no byte is
+    /// what [`Self::zero_size`] counts.
+    pub(crate) fn discard(&mut self) {
+        self.discards = self.discards.wrapping_add(1);
+    }
+
+    /// The mark an element's [`Self::zero_size`] is given: how many times
+    /// the read had done work it keeps nothing of before the element.
+    pub(crate) fn discards(&self) -> u64 {
+        self.discards
     }
 
     /// Counts one value UnityPyBoost's reader builds: [`VALUE_WORK`] of the
@@ -263,17 +294,27 @@ impl<'m> Work<'m> {
     }
 
     /// Counts one array element whose read ended no further on than it
-    /// began: it read nothing (an empty class, a class whose children were
-    /// all skipped), or, in the pure-Python reader, a negative
-    /// `TypelessData` length took the position back. Such elements cost
-    /// values without bytes, so a count in a few bytes could build any
-    /// number of them; every other element reads bytes, so the input
-    /// bounds them. What an element really read is the test, not its
-    /// tree's [`crate::typetree::NodeInfo::min_size`]: which children a read
-    /// skips depends on the registry in scope, and the pure-Python reader
-    /// reads a malformed `pair` or `Array` UnityPyBoost refuses (review
-    /// round 4: both were refused past the bound where UnityPy read them).
-    pub(crate) fn zero_size(&mut self, at: u64) -> Result<(), ReadError> {
+    /// began (plan section 9, Q15 (c)), when the read did work it keeps
+    /// nothing of since `before` (the [`Self::discards`] mark taken before
+    /// the element): it skipped a child, a sibling of the same name replaced
+    /// a value, or, in the pure-Python reader, a negative `TypelessData`
+    /// length took the position back ([`Self::discard`]). Such elements do
+    /// work that neither the object's bytes nor the meter bound, so a count
+    /// in a few bytes could ask any number of them. Every other element
+    /// keeps what it builds, each value in a slot charged to the meter (a
+    /// list's item, a dict's entry), and [`VALUE_WORK`] of the open's work a
+    /// value: an array of a class with no fields reads no byte per element,
+    /// and is read at any count the meter holds, as UnityPy reads it (review
+    /// round 9's sweep found it refused past 2^20). What an element really
+    /// read is the test, not its tree's
+    /// [`crate::typetree::NodeInfo::min_size`]: which children a read skips
+    /// depends on the registry in scope, and the pure-Python reader reads a
+    /// malformed `pair` or `Array` UnityPyBoost refuses (review round 4:
+    /// both were refused past the bound where UnityPy read them).
+    pub(crate) fn zero_size(&mut self, before: u64, at: u64) -> Result<(), ReadError> {
+        if self.discards == before {
+            return Ok(());
+        }
         self.zero_size = self.zero_size.saturating_add(1);
         if self.zero_size > self.limits.max_zero_size_elements {
             return Err(limit_error(

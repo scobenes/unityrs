@@ -609,6 +609,10 @@ def w_cases():
     add("w1_pair_before_array_child", base([[0, "pair", "p", 0], [1, "Array", "Array", 0], [2, "int", "size", 0], [2, "int", "data", 0], [1, "int", "second", 0]]), i32(1, 5, 9))
     add("w1_ref_object_before_array_child", base([[0, "ReferencedObject", "o", 0], [1, "Array", "Array", 0], [2, "int", "size", 0], [2, "int", "data", 0]]), i32(1, 5))
     add("w1_array_child_before_class", base([[0, "Foo", "v", 0], [1, "Array", "Array", 0], [2, "int", "size", 0], [2, "int", "data", 0]], [[0, "Foo", "c", 0], [1, "int", "a", 0], [1, "Array", "Array", 0], [2, "int", "size", 0], [2, "int", "data", 0]]), i32(2, 5, 6, 3, 1, 4))
+    # W1 by the whole name: a type name holding a NUL is a class here, and UnityPyBoost reads the name before the NUL.
+    for name, elem, body in (("run", "int", i32(3, 1, 2, 3)), ("strings", "string", i32(2) + s("ab") + s("")), ("bytes", "TypelessData", i32(2, 1) + b"\x07" + i32(0))):
+        add(f"w1_nul_type_name_{name}", base(vec("v", leaf(f"{elem}\0x", "data"))), body)
+    add("w1_nul_type_name_child_writes", base(vec("v", [[0, "int\0x", "data", 0], [1, "int", "real", 0]])), i32(2, 5, 6))
     add("w3_strings_align", base(leaf("string", "s"), U8("c"), leaf("string", "t")), s("abc") + b"\x09" + b"\0\0\0" + s(""))
     add("w4_bytes_flag", base([[0, "TypelessData", "t", 0]], [[0, "TypelessData", "u", ALIGN]], U8("c")), i32(1) + b"\x01" + i32(1) + b"\x02\0\0\0\x09")
     add("w5_array_elements_align_each", base(vec("v", U8("data", ALIGN)), vec("p", pair("data", U8("first"), U8("second"), ALIGN)), U8("c")), i32(2) + b"\x01\x02\0\0" + i32(1) + b"\x03\x04\0\0\x09")

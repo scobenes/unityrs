@@ -205,12 +205,17 @@ impl Reader<'_, '_> {
 
     /// `read(size)` by the reader's rules ([`ReaderKind::read`]): the range
     /// it returns, the position moved; the stream reader refuses a size
-    /// below -1.
+    /// below -1. A read that takes the position back (the memory reader's
+    /// negative size, its -1 past the end) is work the read will repeat
+    /// ([`Work::discard`]).
     fn read(&mut self, size: i64) -> Result<std::ops::Range<usize>, ReadError> {
         let (range, next) = self
             .kind
             .read(self.bytes.len(), self.pos, size)
             .map_err(|e| stream_refused(self.at(), e))?;
+        if next < self.pos {
+            self.work.discard();
+        }
         self.pos = next;
         Ok(range)
     }
@@ -456,7 +461,7 @@ impl Reader<'_, '_> {
             if is_registry(*c) {
                 if self.has_registry {
                     // A skipped child counts as a value (plan 3.10, "Bounds").
-                    self.work.values(1, self.at())?;
+                    self.work.skipped(self.at())?;
                     continue;
                 }
                 // `config = config.copy(); config.has_registry = True`: for
@@ -517,7 +522,7 @@ impl Reader<'_, '_> {
                     }
                     (None | Some(RefNode::NoTree), false) => {
                         // A skipped child counts as a value (plan 3.10, "Bounds").
-                        self.work.values(1, self.at())?;
+                        self.work.skipped(self.at())?;
                         continue;
                     }
                     (None | Some(RefNode::NoTree), true) => {

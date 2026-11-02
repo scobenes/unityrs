@@ -154,25 +154,32 @@ pub struct Limits {
     /// element of an array; each value built or written under a child whose
     /// name a sibling repeats, since such a tree hands one value to each
     /// child of the name, which writes it whole, and a read keeps only the
-    /// last; each value a write writes of a class whose value is not a dict;
-    /// and every value and every element of a primitive run the pure-Python
-    /// reader reads, since a negative length lets it read the same bytes
-    /// again. A value UnityPyBoost's reader keeps, a primitive run being
-    /// one, is charged to the meter, and a write writes it from there, so
-    /// neither counts (review round 9: a `vector<UInt8>` of 2^26 + 1 bytes
-    /// was refused at this default; `tests/walk_runs.rs`). A write through
-    /// the tree its value was read with counts no more than its read did
-    /// unless the tree repeats a name (`tests/walk_bounds.rs`). The work of
-    /// every read and write together is the open's
-    /// ([`Self::max_decode_work`]). Default 2^26.
+    /// last; each child of a class a write writes from a value that is not
+    /// a dict whose write writes no byte (the child's value is an attribute
+    /// of the class's, which neither the value's memory nor the output
+    /// bounds); and every value and every element of a primitive run the
+    /// pure-Python reader reads, since a negative length lets it read the
+    /// same bytes again. A value UnityPyBoost's reader keeps, a primitive
+    /// run being one, is charged to the meter, and a write writes it from
+    /// there, so neither counts (review round 9: a `vector<UInt8>` of 2^26 +
+    /// 1 bytes was refused at this default; `tests/walk_runs.rs`). A write
+    /// through the tree its value was read with counts no more than its
+    /// read did unless the tree repeats a name, or a node whose type name
+    /// holds a NUL (read by UnityPyBoost as a primitive, a string or bytes,
+    /// written as a class) has a child that writes no byte
+    /// (`tests/walk_bounds.rs`). The work of every read and write together
+    /// is the open's ([`Self::max_decode_work`]). Default 2^26.
     pub max_values_per_object: u64,
-    /// Array elements whose read ended no further on than it began, per
-    /// object: a vector of empty structs with a huge count reads no byte per
-    /// element, nor does a pure-Python element whose negative `TypelessData`
-    /// length takes the reader back to its start. An element that reads a
-    /// byte is never counted, whatever its tree. An array of more elements
-    /// than this of a class with no fields is well-formed and refused
-    /// (`PARITY.md` 19.3; plan section 9, Q15). Default 2^20.
+    /// Array elements, per object, whose read ended no further on than it
+    /// began and did work it keeps nothing of: skipped a child (a registry
+    /// while one is in scope, a `ReferencedObject`'s data that resolves to
+    /// no tree), built a value a sibling of the same name replaces, or, in
+    /// the pure-Python reader, took the position back (a negative
+    /// `TypelessData` length), so every element reads the same bytes. An
+    /// element that reads a byte is never counted, whatever its tree, nor is
+    /// one that keeps all it builds: an array of a class with no fields is
+    /// read at any count, each element a value charged to the meter (plan
+    /// section 9, Q15 (c); `tests/walk_elements.rs`). Default 2^20.
     pub max_zero_size_elements: u64,
     /// Elements a read reserves before the bytes prove they exist, in all
     /// the lists it holds open at once (a list nested in another, or in a

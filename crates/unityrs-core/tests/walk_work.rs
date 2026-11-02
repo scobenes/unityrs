@@ -422,21 +422,27 @@ fn two_reads_or_writes_on_one_meter_pass_its_allowance_once() {
 }
 
 /// Fix pass 4's sweep, scaled down: `K` objects of a SerializedFile over one
-/// 4-byte span, each a vector of empty structs one past the zero-size bound,
-/// read through the file's objects on both readers (`byte_size` 4, and 0
-/// for the pure-Python path). Each read is refused after the same number of
-/// values, and counts them; once the open's work has passed its allowance,
-/// every later object is refused before its read starts, so the input's
-/// reads together stop within a chunk of its allowance (here one read, less
-/// than a chunk, whose own refusal comes first), whatever `K`.
+/// 8-byte span, each a vector one past the zero-size bound of elements that
+/// read nothing and skip a child (a registry while one is in scope: since
+/// plan section 9's Q15 (c) the bound counts only such elements, an empty
+/// struct being bounded by the meter), read through the file's objects on
+/// both readers (`byte_size` 8, and 0 for the pure-Python path). Each read
+/// is refused after the same number of values, and counts them; once the
+/// open's work has passed its allowance, every later object is refused
+/// before its read starts, so the input's reads together stop within a
+/// chunk of its allowance (here one read, less than a chunk, whose own
+/// refusal comes first), whatever `K`.
 #[test]
 fn objects_over_one_span_stop_at_the_opens_work() {
     const K: usize = 64;
-    const ZERO: u64 = 1 << 10;
-    // The root, the vector and every element, the one that trips included.
-    let per_read = (ZERO + 3) * VALUE_WORK;
-    for byte_size in [4, 0] {
-        let reader = if byte_size == 4 { "boost" } else { "python" };
+    const ZERO: u64 = 1 << 9;
+    // The root, the registry, its version and the vector; then each element
+    // and the child it skips, the element that trips included: less than a
+    // chunk.
+    let per_read = (4 + 2 * (ZERO + 1)) * VALUE_WORK;
+    assert!(per_read < WORK_CHUNK);
+    for byte_size in [8, 0] {
+        let reader = if byte_size == 8 { "boost" } else { "python" };
         let data = empties(K, ZERO + 1, byte_size);
         let all = |max_decode_work: u64| {
             let mut c = FileContext::unitypy();
@@ -491,19 +497,26 @@ fn objects_over_one_span_stop_at_the_opens_work() {
 }
 
 /// A SerializedFile of `k` objects at one offset, each of `byte_size`, each
-/// `Base { vector v { Array { int size; Empty data } } }` of `count`
-/// elements: one 4-byte span that every object reads.
+/// `Base { ManagedReferencesRegistry reg { int version }; vector v { Array {
+/// int size; Foo data { ManagedReferencesRegistry r { int x } } } } }` of
+/// `count` elements, each `r` skipped: one 8-byte span that every object
+/// reads.
 fn empties(k: usize, count: u64, byte_size: u32) -> Vec<u8> {
     let nodes = vec![
         NodeSpec::new(0, "Base", "Base"),
+        NodeSpec::new(1, "ManagedReferencesRegistry", "reg"),
+        NodeSpec::new(2, "int", "version"),
         NodeSpec::new(1, "vector", "v"),
         NodeSpec::new(2, "Array", "Array"),
         NodeSpec::new(3, "int", "size"),
-        NodeSpec::new(3, "Empty", "data"),
+        NodeSpec::new(3, "Foo", "data"),
+        NodeSpec::new(4, "ManagedReferencesRegistry", "r"),
+        NodeSpec::new(5, "int", "x"),
     ];
     let mut spec = one_object(1, nodes, Vec::new());
     let first = spec.objects[0].clone();
-    let span = i32::try_from(count).unwrap().to_le_bytes().to_vec();
+    let mut span = 1_i32.to_le_bytes().to_vec();
+    span.extend(i32::try_from(count).unwrap().to_le_bytes());
     spec.objects = (1..=k)
         .map(|i| ObjectSpec {
             path_id: i64::try_from(i).unwrap(),
