@@ -294,6 +294,59 @@ fn a_fetchers_own_refusal_after_one_it_let_go_is_retried() {
     assert_eq!(fetch.runs.load(Ordering::Acquire), 2, "the fetcher's runs");
 }
 
+/// A fetcher that reads through the Environment (a `with_room` of `cache`,
+/// whose retry, where it may take one, meets the pool's refusal again) and
+/// passes that refusal on, counting its runs and its read's.
+#[derive(Debug)]
+struct PassesOn {
+    cache: Arc<DepCache>,
+    meter: Arc<Meter>,
+    runs: AtomicU32,
+    reads: AtomicU32,
+}
+
+impl Fetch for PassesOn {
+    fn fetch(&self) -> Result<Bytes, Error> {
+        self.runs.fetch_add(1, Ordering::AcqRel);
+        with_room(Some(&self.cache), None, || {
+            self.reads.fetch_add(1, Ordering::AcqRel);
+            refused(&self.meter)
+        })
+        .map(|()| Bytes::new())
+    }
+}
+
+/// The price of counting every refusal a fetcher returns (`from_callers`):
+/// one its own read already retried, passed on, cannot be told from the
+/// fetcher's own, so the `with_room` around the fetch retries it once more.
+/// That is one more fetch, whose read takes no retry of its own inside the
+/// retry: two fetches and three reads, never more.
+#[test]
+fn a_refusal_a_fetcher_passes_on_costs_one_more_fetch() {
+    let cache = Arc::new(cache());
+    let fetch = Arc::new(PassesOn {
+        cache: cache.clone(),
+        meter: refusing(),
+        runs: AtomicU32::new(0),
+        reads: AtomicU32::new(0),
+    });
+    let name = RawStr::from("f.bundle");
+    let source = Source::Fetch {
+        name: name.clone(),
+        fetch: fetch.clone(),
+    };
+    let ctx = Arc::new(FileContext::unitypy());
+    let r = with_room(Some(&cache), None, || {
+        open_source(&name, &source, &Meter::unlimited(), &ctx).map(drop)
+    });
+    assert!(matches!(r, Err(Error::Budget(_))), "{r:?}");
+    let runs = (
+        fetch.runs.load(Ordering::Acquire),
+        fetch.reads.load(Ordering::Acquire),
+    );
+    assert_eq!(runs, (2, 3), "(fetches, reads)");
+}
+
 /// A stored codec that refuses the pool itself on its first run.
 struct RefusesOnce(AtomicU32);
 

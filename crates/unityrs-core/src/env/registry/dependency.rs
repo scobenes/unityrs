@@ -235,7 +235,11 @@ fn fetched(fetch: &dyn Fetch) -> Result<bytes::Bytes, Error> {
 /// which that call's retry already met, is counted again too: the
 /// [`with_room`] around the code then retries it once more, one more run of
 /// the code, the price of never skipping the retry the code's own refusal
-/// is owed.
+/// is owed (`room_tests.rs` pins both). The built-in codecs return through
+/// the same call, so a refusal of theirs, counted where it was made, is
+/// counted again there; that changes no decision, since they make no call
+/// into the Environment, whose `with_room` alone sets the mark the count
+/// is compared with.
 pub(crate) fn from_callers<T>(returned: Result<T, Error>) -> Result<T, Error> {
     returned.inspect_err(|e| {
         if pool_refused(e) {
