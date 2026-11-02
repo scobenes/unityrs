@@ -13,6 +13,12 @@ files, none of them a symlink, an input or the index. docs/CANONICAL_DUMP.md
 specifies the format; this script needs only the standard library and UnityPy
 (the pinned oracle stack in the unityrs-dev container), and refuses to run
 with PYTHONPATH set (python -E ignores it).
+
+Exit status: 0 when the dump is written; 1 when an input is not the file its
+index entry pins or cannot be read (no dump), or when the dumper's own code
+failed on an input or its encoder on an object (the dump is written, and those
+records say so: spec 4.2's `dumper` and 4.3's `encode`); 2 when this is not the
+pinned oracle; 3 when every input crashed (the dump is written).
 """
 
 from __future__ import annotations
@@ -56,10 +62,11 @@ import oracle_env  # noqa: E402
 # One input's records (dump_records.py); the record functions the fixture scripts and
 # tests call through this script stay reachable here.
 from dump_records import (  # noqa: E402, F401
-    DumperError,
+    InputUnreadable,
     crash_result,
     detect,
     dump_input,
+    dumper_result,
     emit_file,
     error_kind,
     parsed_as,
@@ -259,9 +266,17 @@ def _child(conn, job):
         # The machine's limit, not an outcome of the input: as for the OOM killer's
         # SIGKILL, the input gets the crash record (spec 4.2).
         result = ("out of memory", OUT_OF_MEMORY)
+    except InputUnreadable as e:
+        result = ("unreadable", str(e))
     except BaseException:  # noqa: BLE001 - every UnityPy outcome is recorded inside; this is the dumper's own failure
         result = ("raised", traceback.format_exc())
-    _send(conn, result)
+    try:
+        _send(conn, result)
+    except MemoryError:
+        # Pickling the records ran out of memory (under --memory-cap): the machine's limit again, and nothing
+        # was written to the pipe, since a message is pickled whole before it is sent.
+        result = None
+        _send(conn, ("out of memory", OUT_OF_MEMORY))
     conn.close()
 
 
@@ -273,18 +288,23 @@ def _died(code):
 
 
 def _settle(job, msg, exitcode):
-    """An input's result: its records, or a crash record for a death by signal; else NotTheOracle or DumperError."""
+    """An input's result: its records; a crash record for a death by signal or out of memory; a dumper record
+    for the dumper's own failure (spec 4.2), its traceback on stderr; or NotTheOracle, or InputUnreadable."""
     if msg is not None and msg[0] == "ok":
         return msg[1]
     if msg is not None and msg[0] == "not the oracle":
         raise NotTheOracle(f"while dumping {job[1]!r}: {msg[1]}")
+    if msg is not None and msg[0] == "unreadable":
+        raise InputUnreadable(msg[1])
     if msg is not None and msg[0] == "out of memory":
         return crash_result(job, msg[1])
     if msg is not None:
-        raise DumperError(f"{job[1]!r}: the dumper raised\n{msg[1].rstrip()}")
+        trace = msg[1].rstrip()
+        print(f"unitypy_dump: {job[1]!r}: the dumper raised\n{trace}", file=sys.stderr)
+        return dumper_result(job, f"the dumper raised {trace.splitlines()[-1]}")
     if exitcode is not None and exitcode < 0:
         return crash_result(job, _died(exitcode))
-    raise DumperError(f"{job[1]!r}: the process dumping it exited with status {exitcode} and no result")
+    return dumper_result(job, f"the process dumping this input exited with status {exitcode} and no result")
 
 
 def run_jobs(jobs, workers):
@@ -296,10 +316,13 @@ def run_jobs(jobs, workers):
     killer), before or while it sends its result, or whose dump ends in a
     MemoryError the dumper's own code meets (under --memory-cap, the same
     event caught sooner), becomes a crash record (crash_result) while the dump
-    goes on. The dumper's own failure, a raise
-    or an exit without a result, raises DumperError: it would hit any input.
+    goes on. The dumper's own failure on an input, a raise or an exit without a
+    result, becomes that input's dumper record (dumper_result), and the dump
+    goes on too: one input's value never costs the others theirs. An input
+    that cannot be read raises InputUnreadable, and one whose process loaded a
+    module from outside the pins NotTheOracle: neither is the input's outcome.
     Each result is settled when its turn in input order comes, not when it
-    arrives, so the input a failure names is the one a serial run names
+    arrives, so the records, and the input a stop names, are a serial run's
     (integration 9: an input after it that finished first was named).
     """
     ctx = get_context("fork")
@@ -501,7 +524,7 @@ def main(argv=None):
         for i, (rel, text, stats, sha) in enumerate(results, 1):
             fh.write(text.encode("utf-8"))
             totals.update(stats)
-            if stats["crashes"]:
+            if stats["crashes"] or stats["dumper_errors"]:
                 print(f"warning: {rel}: {json.loads(text)['error']['note']}", file=sys.stderr)
             if expected[rel] and expected[rel] != sha:
                 totals["index_sha256_mismatch"] += 1
@@ -518,9 +541,6 @@ def main(argv=None):
                 )
         fh.write((C.dumps({"rec": "end", "files": totals["files"], "objects": totals["objects"]}) + "\n").encode())
         done = True
-    except DumperError as e:
-        print(f"unitypy_dump: {e}\nunitypy_dump: the dumper itself failed; no dump written", file=sys.stderr)
-        return 1
     except IndexMismatch as e:
         print(
             f"unitypy_dump: {e}\nunitypy_dump: the input is not the file the index pins; no dump written "
@@ -531,6 +551,9 @@ def main(argv=None):
     except NotTheOracle as e:
         print(f"unitypy_dump: refusing to dump: this is not the pinned oracle ({e}); no dump written", file=sys.stderr)
         return 2
+    except InputUnreadable as e:
+        print(f"unitypy_dump: {e}; no dump written", file=sys.stderr)
+        return 1
     finally:
         if results is not None:
             results.close()
@@ -550,6 +573,15 @@ def main(argv=None):
     print(json.dumps(summary, indent=1), file=sys.stderr)
     if stats_path:
         write_new(stats_path, json.dumps({"summary": summary, "inputs": per_input}, indent=1).encode())
+    if totals["dumper_errors"] or totals["l2_encode"]:
+        # A bug in the oracle: the dump is written, each such record says what failed, and no comparison
+        # passes them (compare.py's reference_dumper and reference_encode).
+        print(
+            f"unitypy_dump: the dumper failed on {totals['dumper_errors']} input(s) and its encoder on "
+            f"{totals['l2_encode']} object(s); the dump is written, and their records say so",
+            file=sys.stderr,
+        )
+        return 1
     if totals["crashes"] == len(inputs):
         # One crash is an input's; every input crashing is the machine's.
         print(

@@ -3,8 +3,9 @@
 A death by signal (the OOM killer, a UnityPyBoost crash), a MemoryError
 anywhere in an input, a load error quoting bad bytes and the `None` leak each
 cost only that input, which gets its record; finished results wait in bounded
-number; the dumper's own failure stops the run with no dump. Needs the oracle
-stack; skipped elsewhere.
+number; the dumper's own failure on an input, or its encoder's on an object,
+costs that input's or that object's records alone. Needs the oracle stack;
+skipped elsewhere.
 """
 
 import contextlib
@@ -28,7 +29,16 @@ sys.path.insert(0, str(HERE / "tests"))
 import child  # noqa: E402
 import canonical as C  # noqa: E402
 import synth as S  # noqa: E402
-from dump_harness import DumpCase, assets, dump, dump_process, dump_records, records, unitypy_dump  # noqa: E402
+from dump_harness import (  # noqa: E402
+    DumpCase,
+    assets,
+    compare,
+    dump,
+    dump_process,
+    dump_records,
+    records,
+    unitypy_dump,
+)
 
 
 @unittest.skipIf(unitypy_dump is None, "needs UnityPy (the oracle image)")
@@ -151,6 +161,29 @@ class DumpCrashTests(DumpCase):
         # L3 resaves: there the write's MemoryError fails the input too.
         self.assertEqual([r["error"] for r in records(out3) if r["rec"] == "file"], [crash])
 
+    def test_records_too_big_to_send_are_a_crash_record(self):
+        """Pickling an input's records to send them can run out of memory too (under --memory-cap): the cap's,
+        as everywhere else in the input, so its crash record, not the dumper's failure (review round 10)."""
+        d = self.tmp / "in"
+        d.mkdir()
+        good = assets(S.Node("MyThing", "Base", [S.Node("int", "i")]), struct.pack("<i", 7))
+        for name in ("a", "b", "c"):
+            (d / name).write_bytes(good)
+        real_send = unitypy_dump._send
+
+        def send(conn, result):
+            if result[0] == "ok" and result[1][0] == "b":
+                raise MemoryError
+            real_send(conn, result)
+
+        out = self.tmp / "m.jsonl"
+        with mock.patch.object(unitypy_dump, "_send", send):
+            self.assertEqual(dump(d, "-o", out, "-j", "2"), 0)
+        self.assert_canonical(out)
+        files = [r for r in records(out) if r["rec"] == "file"]
+        crash = {"kind": "crash", "note": unitypy_dump.OUT_OF_MEMORY}
+        self.assertEqual([r["error"] for r in files], [None, crash, None])
+
     def test_finished_results_wait_in_bounded_number(self):
         """While the first input is slow, at most 2 x -j inputs start, so held results cannot grow without limit."""
         d = self.tmp / "in"
@@ -172,54 +205,99 @@ class DumpCrashTests(DumpCase):
             self.assertEqual(dump(d, "-o", self.tmp / "o.jsonl", "-j", "2"), 0)
         self.assertLessEqual(set(seen.read_text().split()), set("abcd"))
 
-    def test_the_dumpers_own_failure_stops_the_run(self):
-        """A raise in the dumper, or a process that ends without a result and no signal, is no input's outcome."""
+    def test_the_dumpers_own_failure_costs_its_input_alone(self):
+        """A raise in the dumper, a process that ends without a result and no signal, and the oracle's encoder
+        refusing a value UnityPy read are no input's outcome: each is a bug in the oracle, and costs only the
+        input (a `dumper` record, spec 4.2) or the object (an `encode` error, spec 4.3) it hit. The dump is
+        written, every other record in it, and the exit status is 1 (review round 10: they stopped the run)."""
         d = self.tmp / "in"
         d.mkdir()
         tree = S.Node("MyThing", "Base", [S.Node("int", "i")])
         for name in ("a.assets", "b.assets", "c.assets"):
             (d / name).write_bytes(assets(tree, struct.pack("<i", 7)))
-        real_send = unitypy_dump._send
+        real_send, real_l1 = unitypy_dump._send, dump_records.serialized_l1
 
         def buggy_l1(sf):
-            raise AttributeError("'SerializedFile' object has no attribute '_m_target_platform'")
+            if sf.name == "b.assets":
+                raise AttributeError("'SerializedFile' object has no attribute '_m_target_platform'")
+            return real_l1(sf)
 
         def exit_without_result(conn, result):
             if result[1][0] == "b.assets":
                 os._exit(1)
             real_send(conn, result)
 
+        def dumper(why):
+            return {"kind": "dumper", "note": why}
+
+        good = {"kind": None, "objects": 1}
         cases = {
             "a bug in the record code": (
                 mock.patch.object(dump_records, "serialized_l1", buggy_l1),
-                "the dumper raised",
+                ["'b.assets': the dumper raised", "AttributeError: 'SerializedFile' object has no attribute"],
+                dumper("the dumper raised AttributeError: 'SerializedFile' object has no attribute "
+                       "'_m_target_platform'"),
+                None,
             ),
             "an exit without a result": (
                 mock.patch.object(unitypy_dump, "_send", exit_without_result),
-                "exited with status 1 and no result",
+                ["warning: b.assets: the process dumping this input exited with status 1 and no result"],
+                dumper("the process dumping this input exited with status 1 and no result"),
+                None,
             ),
-            # UnityPy read the value, and the oracle's own encoder refuses it: no `encode`
-            # record (spec 4.3), the run stops naming the input and the object.
+            # UnityPy read the value, and the oracle's own encoder refuses it.
             "the canonical encoder refusing UnityPy's value": (
                 mock.patch.object(C.ValueEncoder, "encode", side_effect=C.EncodeError("float for an int node")),
-                "'a.assets': the dumper raised",
+                ["its encoder on 3 object(s)"],
+                None,
+                {"kind": "encode", "bytes_read": None, "note": "the oracle's encoder: float for an int node"},
             ),
         }
-        for label, (patch, message) in cases.items():
+        for label, (patch, messages, b_error, l2_error) in cases.items():
             for jobs in ("1", "2"):
+                out = self.tmp / f"x{jobs}.jsonl"
                 with self.subTest(label, jobs=jobs), patch, contextlib.redirect_stderr(io.StringIO()) as err:
                     with contextlib.redirect_stdout(io.StringIO()):
-                        rc = unitypy_dump.main([str(d), "-o", str(self.tmp / "x.jsonl"), "-q", "-j", jobs])
+                        rc = unitypy_dump.main([str(d), "-o", str(out), "-q", "-j", jobs])
                     self.assertEqual(rc, 1)
-                    self.assertIn(message, err.getvalue())
-                    if "encoder" in label:
-                        self.assertIn(
-                            'DumperError: file ["a.assets"] path_id 1: the canonical encoder refused the value '
-                            "UnityPy read (float for an int node)",
-                            err.getvalue(),
-                        )
-                    self.assertIn("no dump written", err.getvalue())
-                    self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["in"])
+                    for message in messages:
+                        self.assertIn(message, err.getvalue())
+                    # Each such record is canonical, and compare.py never passes it: it vouches for nothing.
+                    report, *_ = compare.run(str(out), str(out))
+                    found = [(p["kind"], p["records"]) for p in report.as_dict()["by_path"]]
+                    self.assertEqual(found, [("reference_dumper", 1)] if b_error else [("reference_encode", 3)])
+                    recs = records(out)
+                    files = [r for r in recs if r["rec"] == "file"]
+                    self.assertEqual([r["file"] for r in files], [["a.assets"], ["b.assets"], ["c.assets"]])
+                    self.assertEqual([r["error"] for r in files], [None, b_error, None])
+                    objects = [r for r in recs if r["rec"] == "object"]
+                    want = [["a.assets"], ["c.assets"]] if b_error else [["a.assets"], ["b.assets"], ["c.assets"]]
+                    self.assertEqual([r["file"] for r in objects], want)
+                    for r in objects:
+                        self.assertEqual(r["l2"].get("error"), l2_error)
+                        self.assertEqual(r["l3"]["resave"], "skipped" if l2_error else "equal")
+                    self.assertEqual(recs[-1], {"rec": "end", "files": 3, "objects": len(objects)})
+                out.unlink()
+        # An input that cannot be read is the machine's or the folder's fault, no outcome of the input: the run
+        # stops with no dump, as a unityrs producer's does (spec 4.2).
+        real_open = open
+
+        def unreadable(path, *args, **kwargs):
+            if os.fsdecode(path).endswith("b.assets"):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, *args, **kwargs)
+
+        for jobs in ("1", "2"):
+            with self.subTest("an input that cannot be read", jobs=jobs):
+                patch = mock.patch.object(dump_records, "open", unreadable, create=True)
+                with patch, contextlib.redirect_stderr(io.StringIO()) as err:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        rc = unitypy_dump.main([str(d), "-o", str(self.tmp / "x.jsonl"), "-q", "-j", jobs])
+                self.assertEqual(rc, 1)
+                self.assertIn("b.assets': [Errno 13] Permission denied", err.getvalue())
+                self.assertIn("no dump written", err.getvalue())
+                self.assertNotIn("the dumper raised", err.getvalue())
+                self.assertFalse((self.tmp / "x.jsonl").exists())
         # A build None cannot be pinned in is refused before any input runs.
         unpinnable = mock.patch.object(unitypy_dump, "pin_problem", lambda: "None cannot be pinned")
         with unpinnable, contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
@@ -236,10 +314,11 @@ class DumpCrashTests(DumpCase):
             [r["error"]["kind"] for r in records(self.tmp / "all.jsonl") if r["rec"] == "file"], ["crash"] * 3
         )
 
-    def test_the_dumpers_failure_names_the_first_input_however_the_results_arrive(self):
+    def test_the_dumpers_failures_are_settled_in_input_order_however_the_results_arrive(self):
         """Every input fails in the dumper's own code; a later input's result reaching the parent first (the
-        last input running is made to answer first) still leaves the run naming the first, as a serial run does
-        (integration 9: the failure was settled as each result arrived, so `-j 2` could name `b.assets`)."""
+        last input running is made to answer first) still leaves the records, and the tracebacks on stderr, in
+        input order, as a serial run writes them (integration 9: the failure was settled as each result
+        arrived, so `-j 2` could name `b.assets` first)."""
         d = self.tmp / "in"
         d.mkdir()
         tree = S.Node("MyThing", "Base", [S.Node("int", "i")])
@@ -250,13 +329,23 @@ class DumpCrashTests(DumpCase):
         def later_first(conns, *args, **kwargs):
             return real_wait(conns[-1:] if len(conns) > 1 else conns, *args, **kwargs)
 
-        refuse = mock.patch.object(C.ValueEncoder, "encode", side_effect=C.EncodeError("float for an int node"))
-        with refuse, mock.patch.object(unitypy_dump, "wait", later_first):
+        def buggy_l1(sf):
+            raise AttributeError(f"no record for {sf.name}")
+
+        out = self.tmp / "x.jsonl"
+        bug = mock.patch.object(dump_records, "serialized_l1", buggy_l1)
+        with bug, mock.patch.object(unitypy_dump, "wait", later_first):
             with contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
-                rc = unitypy_dump.main([str(d), "-o", str(self.tmp / "x.jsonl"), "-q", "-j", "2"])
+                rc = unitypy_dump.main([str(d), "-o", str(out), "-q", "-j", "2"])
         self.assertEqual(rc, 1)
-        self.assertIn('DumperError: file ["a.assets"] path_id 1: the canonical encoder refused', err.getvalue())
-        self.assertNotIn("b.assets", err.getvalue())
+        names = ("a.assets", "b.assets", "c.assets")
+        self.assertEqual(
+            [(r["file"], r["error"]) for r in records(out) if r["rec"] == "file"],
+            [([n], {"kind": "dumper", "note": f"the dumper raised AttributeError: no record for {n}"}) for n in names],
+        )
+        text = err.getvalue()
+        at = [text.index(f"unitypy_dump: {n!r}: the dumper raised") for n in names]
+        self.assertEqual(at, sorted(at))
 
     def test_a_unitypyboost_crash_costs_only_its_input(self):
         """A typetree node name or type that is not UTF-8 crashes UnityPyBoost while the file loads (spec 7)."""

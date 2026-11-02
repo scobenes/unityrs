@@ -26,6 +26,7 @@
 
 mod glob;
 pub mod index;
+mod name;
 mod printable;
 mod py;
 #[cfg(test)]
@@ -38,6 +39,7 @@ use std::path::{Path, PathBuf};
 
 pub use glob::{Glob, fnmatchcase, py_units};
 pub use index::Value;
+use name::Name;
 pub use printable::is_printable;
 pub use py::{PyStr, py_float_repr, py_str};
 
@@ -154,20 +156,6 @@ pub fn pin_of(v: Option<&Value>) -> Option<Pin> {
     }
 }
 
-#[cfg(test)]
-std::thread_local! {
-    /// Name steps this thread's selections took: each name the check for a
-    /// name two inputs give looks up or keeps (the linear-work test).
-    static NAME_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// Counts one name step (tests only).
-#[inline]
-fn name_step() {
-    #[cfg(test)]
-    NAME_STEPS.with(|s| s.set(s.get().saturating_add(1)));
-}
-
 /// `collect_inputs`: the inputs in canonical order, filtered, sampled and
 /// limited (`unitypy_dump.py` `collect_inputs`).
 ///
@@ -177,29 +165,29 @@ fn name_step() {
 /// before any input after it is collected: two records under one key are
 /// what no single run of the oracle writes. One input may give a name
 /// twice, as the oracle's may. The check keeps the names given so far in a
-/// hash set, so it takes a step a name (review round 9: it compared each
-/// name with every earlier one, quadratic in the inputs' sizes).
+/// hash set of names (`select/name.rs`), so its work grows with the number of names
+/// (review round 9: it compared each name with every earlier one, quadratic
+/// in the inputs' sizes).
 pub fn collect(sel: &Selection) -> Result<Vec<Input>, String> {
     let mut items = Vec::new();
-    let mut named = (sel.inputs.len() > 1).then(HashSet::<Vec<u8>>::new);
+    let mut named = (sel.inputs.len() > 1).then(HashSet::<Name>::new);
     for given in &sel.inputs {
         let before = items.len();
         collect_one(sel, given, &mut items)?;
         if let Some(named) = &mut named {
             let new = items.get(before..).unwrap_or_default();
-            if let Some(dup) = new.iter().find(|n| {
-                name_step();
-                named.contains(&n.name)
-            }) {
+            let keys: Vec<Name> = new.iter().map(|n| Name::new(&n.name)).collect();
+            if let Some(dup) = new
+                .iter()
+                .zip(&keys)
+                .find_map(|(n, key)| named.contains(key).then_some(n))
+            {
                 return Err(format!(
                     "{} is named by two inputs",
                     String::from_utf8_lossy(&dup.name)
                 ));
             }
-            for n in new {
-                name_step();
-                named.insert(n.name.clone());
-            }
+            named.extend(keys);
         }
     }
     if !sel.names.is_empty() {

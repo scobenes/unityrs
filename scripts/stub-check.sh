@@ -2,11 +2,11 @@
 # Gate G6 (docs/plans/core.md section 6): no stub is left in any crate, and
 # no call of `todo!` or `unimplemented!` is written or assembled in them.
 #
-# The rule, in one sentence: outside comments, strings and character
-# literals, the words `todo` and `unimplemented`, raw (`r#todo`) or not,
-# appear in no Rust file but as a `clippy::` lint name directly under
-# `deny(` or `forbid(` in an inner attribute (`#![...]`) at its file's top
-# level.
+# The rule, in one sentence: outside a shebang line, comments, strings
+# and character literals, the words `todo` and `unimplemented`, raw
+# (`r#todo`) or not, appear in no Rust file but as a `clippy::` lint name
+# directly under `deny(` or `forbid(` in an inner attribute (`#![...]`) at
+# its file's top level.
 #
 # In full, the scan reads every file under ROOT whose name ends in `.rs`
 # (symlinks followed; ROOT's own `target/` and hidden entries, such as
@@ -35,10 +35,14 @@
 # in a macro call, a `macro_rules!` body, a module or a function, or under
 # `allow(`, `expect(` or `warn(`.
 #
-# Each file is lexed as Rust is first: comments (nested block comments
-# included), strings (raw, byte and C strings included) and character
-# literals are blanked, so they may name the macros and the lints freely,
-# and a comment between two tokens is whitespace. The workspace's lints
+# Each file is lexed as Rust is first: a first line rustc skips as a
+# shebang (`#!` not followed, past whitespace and comments, by `[`),
+# comments (nested block comments included), strings (raw, byte and C
+# strings included) and character literals are blanked, so they may name
+# the macros and the lints freely, and a comment between two tokens is
+# whitespace. (Review round 10: a file whose first line was `#!/*` or
+# `#!"` was read as one comment or string to its end, which rustc compiles
+# as code.) The workspace's lints
 # (Cargo.toml `[workspace.lints.clippy]`, which every crate inherits) forbid
 # both macros as well, so no attribute can allow them again: `cargo clippy`
 # fails on a call written in any code it lints, an aliased one included. It
@@ -145,6 +149,56 @@ hits=$(find -L . \( -path ./target -o -path './.?*' \) -prune -o -type f -name '
             }
             return out
         }
+        # Whether rustc takes the first line of the file for a shebang and
+        # skips it (rustc_lexer::strip_shebang): it starts with `#!` (after
+        # the byte-order mark rustc removes first), and the first token
+        # after those two characters, past whitespace and comments that are
+        # not doc comments, on any later line too, is not `[`. So `#!/*`,
+        # `#!"`, `#!/** c */[` and `#!/usr/bin/env x` start one; `#![`,
+        # `#! [`, `#!/* c */[` and `#!` then `[` on the next line start an
+        # inner attribute.
+        function shebang(    s, k, d, c) {
+            s = L[1]
+            if (substr(s, 1, 3) == "\357\273\277") s = substr(s, 4)
+            if (substr(s, 1, 2) != "#!") return 0
+            s = substr(s, 3)
+            k = 1
+            d = 0
+            while (1) {
+                if (s == "") {
+                    if (k >= n) return 1
+                    s = L[++k]
+                    continue
+                }
+                if (d > 0) {
+                    if (!match(s, /\/\*|\*\//)) { s = ""; continue }
+                    d += substr(s, RSTART, 2) == "/*" ? 1 : -1
+                    s = substr(s, RSTART + 2)
+                    continue
+                }
+                # rustc_lexer::is_whitespace: tab, LF, VT, FF, CR, space,
+                # U+0085, U+200E, U+200F, U+2028 and U+2029.
+                if (match(s, /^([\t\n\v\f\r ]|\302\205|\342\200[\216\217\250\251])+/)) {
+                    s = substr(s, RLENGTH + 1)
+                    continue
+                }
+                c = substr(s, 3, 1)
+                if (substr(s, 1, 2) == "//") {
+                    # `//!` and `///` (not `////`) are doc comments, tokens.
+                    if (c == "!" || (c == "/" && substr(s, 4, 1) != "/")) return 1
+                    s = ""
+                    continue
+                }
+                if (substr(s, 1, 2) == "/*") {
+                    # `/*!` and `/**` (not `/***` or `/**/`) are doc comments.
+                    if (c == "!" || (c == "*" && substr(s, 4, 1) !~ /^[*\/]$/)) return 1
+                    d = 1
+                    s = substr(s, 3)
+                    continue
+                }
+                return substr(s, 1, 1) != "["
+            }
+        }
         function line_of(pos,    t) {
             t = substr(J, 1, pos - 1)
             return gsub(/\n/, "", t) + 1
@@ -220,6 +274,11 @@ hits=$(find -L . \( -path ./target -o -path './.?*' \) -prune -o -type f -name '
             for (k = 1; k <= n && first == ""; k++) first = owner_of(L[k])
             if (first == "") first = "?"
             split("", H)
+            st = ""
+            bdepth = 0
+            k = shebang()
+            C[1] = k ? blank(length(L[1])) : lex(L[1])
+            for (k = 2; k <= n; k++) C[k] = lex(L[k])
             J = C[1]
             for (k = 2; k <= n; k++) J = J "\n" C[k]
             for (k = 1; k <= n; k++) if (L[k] ~ /STUB\(/) H[k] = 1
@@ -242,11 +301,11 @@ hits=$(find -L . \( -path ./target -o -path './.?*' \) -prune -o -type f -name '
         }
         FNR == 1 {
             if (fname != "") flush()
-            fname = FILENAME; n = 0; st = ""; bdepth = 0
+            fname = FILENAME; n = 0
             sub(/^\.\//, "", fname)
             split("", L); split("", C)
         }
-        { n++; L[n] = $0; C[n] = lex($0) }
+        { n++; L[n] = $0 }
         END { if (fname != "") flush() }')
 if [ -n "$hits" ]; then
     printf '%s\n' "$hits"

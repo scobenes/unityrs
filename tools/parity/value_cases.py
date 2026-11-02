@@ -413,7 +413,8 @@ def oracle(case):
             return out
         value = read(False)
     try:
-        out["value"] = C.dumps(C.ValueEncoder(lambda t: None).encode(value, root))
+        boost = bool(len(data)) and TTH.read_typetree_boost is not None  # read_typetree's choice of reader
+        out["value"] = C.dumps(C.ValueEncoder(assetsfile.ref_types).encode(value, root, boost=boost))
     except C.EncodeError as e:
         out.update(kind="encode", note=str(e))
         return out

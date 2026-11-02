@@ -19,7 +19,7 @@
 //! the run goes on, as the oracle's does past an input whose process ran
 //! out of memory. Any other failure to read an input (one that cannot be
 //! opened, an I/O error) is no outcome of the input and stops the run, as
-//! the oracle's `DumperError` does.
+//! the oracle's `InputUnreadable` does.
 //!
 //! **The refused input's `l0`** is `"error"` with `parsed_as` `"error"`:
 //! its `size` is its length as the file system gives it, and its `sha256`

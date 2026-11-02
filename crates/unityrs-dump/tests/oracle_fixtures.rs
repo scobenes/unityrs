@@ -387,3 +387,51 @@ fn an_embedded_tree_that_does_not_compile_keeps_its_root_type_and_source() {
     }
     assert_eq!(ours["l3"]["resave"], "skipped");
 }
+
+/// `v` without any member named `note`, at any depth: notes are free text
+/// two producers may word differently (`CANONICAL_DUMP.md` section 1).
+fn without_notes(v: &Json) -> Json {
+    match v {
+        Json::Object(m) => Json::Object(
+            m.iter()
+                .filter(|(k, _)| k.as_str() != "note")
+                .map(|(k, x)| (k.clone(), without_notes(x)))
+                .collect(),
+        ),
+        Json::Array(a) => Json::Array(a.iter().map(without_notes).collect()),
+        x => x.clone(),
+    }
+}
+
+/// Values whose members a node other than the last child of their name
+/// typed (an `Array` or a `pair` of three children, a ReferencedObject's
+/// data named `type` or left out, a `type` child after the data, a registry
+/// the reader skips), which the oracle's encoder once refused (review round
+/// 10): its records of each, which it now writes, are the dump's.
+#[test]
+fn members_typed_by_another_child_are_recorded_as_the_oracle_records_them() {
+    let f = fixture("records.json");
+    let names: Vec<String> = f["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| s(&c["name"]).to_owned())
+        .filter(|n| n != "own_tree")
+        .collect();
+    assert_eq!(names.len(), 10, "{names:?}");
+    for name in &names {
+        let (data, oracle) = oracle_input(name);
+        assert!(
+            oracle
+                .iter()
+                .all(|r| r["l2"]["value"] != Json::Null || r["rec"] != "object"),
+            "{name}: the oracle read each value"
+        );
+        let got = records_of(name, &data, FileContext::unitypy());
+        assert_eq!(
+            without_notes(&Json::Array(got)),
+            without_notes(&Json::Array(oracle)),
+            "{name}"
+        );
+    }
+}

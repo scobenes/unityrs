@@ -515,6 +515,80 @@ fn comments_strings_and_characters_are_read_as_rust_reads_them() {
     }
 }
 
+/// Review round 10: rustc skips a first line that starts with `#!` unless
+/// the first token after those two characters, past whitespace and
+/// comments that are not doc comments, is `[` (`rustc_lexer::strip_shebang`),
+/// in every file it compiles. The scan read `#!/*` and `#!"` as code that
+/// opens a comment or a string running to the file's end, so a stub after
+/// them passed it, and a stub a macro assembles passes clippy too.
+#[test]
+fn a_first_line_is_a_shebang_exactly_where_rustc_skips_it() {
+    let (todo_name, unimpl_name) = NAMES;
+    let deny = lint("todo");
+    let assembled = |name: &str| {
+        format!(
+            "macro_rules! call {{\n    ($m:ident) => {{ $m!() }};\n}}\npub fn g() -> u8 {{\n    call!({name})\n}}\n"
+        )
+    };
+    let mut cases = Vec::new();
+    // A shebang: the stub five lines below it is read.
+    for (first, name) in [
+        ("#!/*", todo_name),
+        ("#!\"", unimpl_name),
+        ("\u{feff}#!/*", todo_name),
+        ("#!/**/\"", todo_name),
+        ("#!/***/ r#\"", unimpl_name),
+        ("#!\u{2028}\"", todo_name),
+        ("#!/// \"", todo_name),
+        ("#!/*! [ */ \"", unimpl_name),
+        ("#!/usr/bin/env some-runner", todo_name),
+    ] {
+        let text = format!("{first}\n{}", assembled(name));
+        cases.push((
+            Tree::new(&with(("crates/b/src/m.rs", text.clone()))),
+            text,
+            "crates/b/src/m.rs:6: ".to_owned(),
+        ));
+    }
+    // An inner attribute: the line is code, and a stub on it is read.
+    for (first, line) in [
+        ("#! [", 1),
+        ("#!\t/* c */[", 1),
+        ("#!/**/[", 1),
+        ("#!/***/[", 1),
+        ("#!/* a /* nested */ comment */[", 1),
+        ("#!\n[", 2),
+        ("#!// c\n[", 2),
+        ("#!/*\n*/[", 2),
+    ] {
+        let text = format!(
+            "{first}deny({deny})] pub fn h() -> u8 {{ {} }}\n",
+            todo_call()
+        );
+        cases.push((
+            Tree::new(&with(("crates/b/src/m.rs", text.clone()))),
+            text,
+            format!("crates/b/src/m.rs:{line}: "),
+        ));
+        // And without the stub, its lint path is excused as `#![` is.
+        let clean = format!("{first}deny({deny})]\npub fn f() -> u8 {{\n    1\n}}\n");
+        let (code, out) = Tree::new(&with(("crates/b/src/m.rs", clean.clone()))).check();
+        assert_eq!(code, 0, "{clean:?} failed:\n{out}");
+    }
+    // A doc comment is a token, so a `[` after one starts no attribute:
+    // rustc skips the line, the stub on it included.
+    for first in ["#!/*! c */[", "#!/** c */["] {
+        let text = format!(
+            "{first}deny({deny})] pub fn h() -> u8 {{ {} }}\n",
+            todo_call()
+        );
+        let (code, out) = Tree::new(&with(("crates/b/src/m.rs", text.clone()))).check();
+        assert_eq!(code, 0, "{text:?} failed:\n{out}");
+    }
+    let missed = missed(cases);
+    assert!(missed.is_empty(), "{missed}");
+}
+
 /// Rounds 6 and 7: clippy denied the macros only in the core and the tpk
 /// crate, and then `deny` let an attribute allow them again. The
 /// workspace's lints forbid both, and every crate inherits them, so no

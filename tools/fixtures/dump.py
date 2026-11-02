@@ -19,8 +19,10 @@ replays without Python (crates/unityrs-dump/tests/oracle_fixtures.rs):
 - records.json: dump_records.py's first_difference (an L3 record's first_diff) on
   pairs of byte strings, and the oracle's records (unitypy_dump.py dump_input) of
   SerializedFiles built here with tools/parity/tests/synth.py, the input's bytes
-  beside them: an object whose resave differs from its raw bytes, and one whose
-  embedded tree is deeper than the dump's test lowers max_tree_depth to.
+  beside them: an object whose resave differs from its raw bytes, one whose
+  embedded tree is deeper than the dump's test lowers max_tree_depth to, and
+  values whose members are typed by a node other than the last child of their
+  name (member_typing_inputs).
 
 Every input is built here in code; no file outside the temporary folder is read.
 
@@ -615,9 +617,65 @@ def own_tree_input() -> bytes:
     return S.serialized_file([S.Type(114, deep), S.Type(114, flat)], objects)
 
 
+def member_typing_inputs() -> list[tuple[str, bytes]]:
+    """SerializedFiles of one object each, whose values the oracle's encoder once refused (review round 10), so
+    its run stopped: a member's node is not the last child of its name, or not a child the encoder looked at.
+    `py` reads with the pure-Python reader (byte_size 0), the rest with UnityPyBoost (CANONICAL_DUMP.md 3)."""
+
+    def one(tree, data, byte_size=None, ref_types=None):
+        obj = S.Obj(1, 0, data, byte_size=byte_size)
+        return S.serialized_file([S.Type(114, tree)], [obj], ref_types=ref_types)
+
+    def managed(cls="string"):
+        return S.Node("ReferencedManagedType", "type", [S.Node(cls, "class"), S.Node("string", "ns"), S.Node("string", "asm")])
+
+    def refs(*children):
+        return S.Node("MyRefs", "Base", [S.Node("ReferencedObject", "ref", list(children))])
+
+    def ref_type(cls, *fields):
+        return S.Type(114, S.Node(cls, "Base", list(fields)), ref_names=[cls.encode(), b"NS", b"Asm"])
+
+    def registry(name):
+        return S.Node("ManagedReferencesRegistry", name, [S.Node("int", "version")])
+
+    def head(cls):
+        return struct.pack("<q", 2) + S.s32(cls) + S.s32("NS") + S.s32("Asm")
+
+    out = []
+    # An `Array` of three children: the pure-Python reader reads its elements by the second.
+    for elem, data in (("int", struct.pack("<iii", 2, 7, 9)), ("float", struct.pack("<iff", 2, 1.5, -0.0))):
+        kids = [S.Node("int", "size"), S.Node(elem, "data"), S.Node("int", "extra")]
+        vec = S.Node("vector", "v", [S.Node("Array", "Array", kids, flags=1)])
+        out.append((f"array_of_three_{elem}_py", one(S.Node("MyThing", "Base", [vec]), data, byte_size=0)))
+    # A `pair` of three: the pure-Python reader reads its first two.
+    pair = S.Node("pair", "p", [S.Node("int", "a"), S.Node("float", "b"), S.Node("int", "c")])
+    out.append(("pair_of_three_py", one(S.Node("MyThing", "Base", [pair]), struct.pack("<ifi", 1, 2.5, 3), byte_size=0)))
+    # A ReferencedObject's data named `type`: the data overwrites the type it was resolved from. A second ref
+    # type whose tree cannot hold the data leaves only the first to have typed it.
+    a, c = ref_type("A", S.Node("float", "v")), ref_type("C", S.Node("double", "w"))
+    tree = refs(S.Node("SInt64", "rid"), managed(), S.Node("ReferencedObjectData", "type"))
+    for tag, byte_size in (("", None), ("_py", 0)):
+        out.append((f"data_named_type{tag}", one(tree, head("A") + struct.pack("<f", 1.5), byte_size, [a, c])))
+    # A `type` child after the data: the value's `type` is that int, the data's type is lost to it.
+    d = ref_type("D", S.Node("double", "v"))
+    tree = refs(S.Node("SInt64", "rid"), managed(), S.Node("ReferencedObjectData", "data"), S.Node("int", "type"))
+    body = head("D") + struct.pack("<d", 0.25) + struct.pack("<i", 9)
+    for tag, byte_size in (("", None), ("_py", 0)):
+        out.append((f"type_after_data{tag}", one(tree, body, byte_size, [d])))
+    # Data left out (a class UnityPyBoost reads as length 0: the int 0) leaves its name to the float before it.
+    tree = refs(S.Node("float", "rid"), managed("int"), S.Node("ReferencedObjectData", "rid"))
+    body = struct.pack("<f", 1.5) + struct.pack("<i", 0) + S.s32("NS") + S.s32("Asm")
+    out.append(("data_left_out", one(tree, body, ref_types=[d])))
+    # A registry the reader skips (a class's second) names no member: `x` is the float's.
+    tree = S.Node("MyThing", "Base", [registry("r"), S.Node("float", "x"), registry("x")])
+    for tag, byte_size in (("", None), ("_py", 0)):
+        out.append((f"skipped_registry{tag}", one(tree, struct.pack("<if", 1, 2.5) + bytes(8), byte_size)))
+    return out
+
+
 def record_cases(root: Path) -> dict:
     inputs = []
-    for name, data in (("own_tree", own_tree_input()),):
+    for name, data in (("own_tree", own_tree_input()), *member_typing_inputs()):
         path = root / name
         path.write_bytes(data)
         _, text, _, _ = unitypy_dump.dump_input((str(path), name, C.LEVELS))

@@ -22,13 +22,15 @@
 //!   oracle's `GzipFile` writes it). Like the oracle, it refuses to write
 //!   into the repository (a dump names corpus inputs, and this repository is
 //!   public), through a symlink, or over an input or the index.
-//! - **Failures.** An input that cannot be opened or read (an I/O error), a
-//!   panic while dumping one (a bug: the core does not panic on input) and
-//!   an input whose sha256 differs from what its index entry pins, or was
-//!   not taken (unless allowed; [`crate::read`]), stop the run with no dump
-//!   written, as the oracle's `DumperError` and `IndexMismatch` do. An input refused at a limit, or too large for its
-//!   buffer to be allocated, is its own record and the run goes on
-//!   ([`crate::read`]).
+//! - **Failures.** An input that cannot be opened or read (an I/O error)
+//!   and an input whose sha256 differs from what its index entry pins, or
+//!   was not taken (unless allowed; [`crate::read`]), stop the run with no
+//!   dump written, as the oracle's `InputUnreadable` and `IndexMismatch` do.
+//!   So does a panic while dumping one (a bug: the core does not panic on
+//!   input), where the oracle's own bug costs only its input (a `dumper`
+//!   record, `CANONICAL_DUMP.md` section 4.2). An input refused at a limit,
+//!   or too large for its buffer to be allocated, is its own record and the
+//!   run goes on ([`crate::read`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
@@ -58,8 +60,8 @@ pub const PRODUCER: &str = "unityrs";
 pub enum RunError {
     /// Bad arguments or paths (argparse's `ap.error`: status 2).
     Usage(String),
-    /// The dump itself failed (`DumperError`, `IndexMismatch`, an input that
-    /// does not exist: status 1).
+    /// The dump itself failed (`InputUnreadable`, `IndexMismatch`, an input
+    /// that does not exist: status 1).
     Failed(String),
 }
 

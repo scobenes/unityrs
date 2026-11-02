@@ -12,7 +12,8 @@ use std::path::PathBuf;
 
 use unityrs_testkit::scratch::Scratch;
 
-use super::{NAME_STEPS, Selection, collect};
+use super::name::NAME_STEPS;
+use super::{Selection, collect};
 
 /// A folder of index files, removed however the test ends
 /// (`unityrs_testkit::scratch`).
@@ -89,11 +90,15 @@ fn a_name_two_inputs_give_fails_the_run_at_its_first_repeat() {
     }
 }
 
-/// Two inputs of N names each, every name distinct: the check looks each
-/// name up once and keeps it once, 4N steps, where comparing each name with
-/// every earlier one took N² (16,777,216 at N = 4096).
+/// Two inputs of N names each, every name distinct. Every `Eq` and `Hash`
+/// call on a kept name is a step (`name.rs`), and the check reaches a name's
+/// bytes through nothing else, so it cannot take work it does not count. A
+/// hash set takes a few steps a name (it hashes each name to look it up and
+/// to keep it, and again as it grows); a scan of the names kept compares
+/// each of the second input's names with all N of the first's, N² steps
+/// (16,777,216 at N = 4096) that no bound linear in N admits.
 #[test]
-fn the_repeat_check_takes_a_step_a_name() {
+fn the_repeat_check_takes_a_few_steps_a_name() {
     const N: usize = 4096;
     let dir = Folder::new("steps");
     let a = dir.index(
@@ -109,8 +114,10 @@ fn the_repeat_check_takes_a_step_a_name() {
     let steps = NAME_STEPS.with(Cell::get);
     assert_eq!(got.len(), 2 * N);
     let n = u64::try_from(N).unwrap();
+    // At least the second input's N lookups and the 2N names kept; at most
+    // 16 steps a name.
     assert!(
-        (2 * n..=4 * n).contains(&steps),
+        (3 * n..=16 * n).contains(&steps),
         "{steps} name steps for {} names",
         2 * N
     );
