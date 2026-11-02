@@ -167,11 +167,12 @@ fn with_work(max: u64) -> DumpOptions {
     }
 }
 
-/// The work the core's load of `data` counts, the dump's records of it with
-/// the work its whole dump counted, and what one more read of a directory
-/// row costs the loaded bundle (the dump reads each row's bytes again to
-/// hash them; a read of a cached run counts its steps, the core's plan 3.6
-/// "Runs"), 0 for a SerializedFile.
+/// The work the core's load of `data` counts, with the compile of each of
+/// its trees (the bytes of names it reads: `Tree::compile`'s "Work"), the
+/// dump's records of it with the work its whole dump counted, and what one
+/// more read of a directory row costs the loaded bundle (the dump reads
+/// each row's bytes again to hash them; a read of a cached run counts its
+/// steps, the core's plan 3.6 "Runs"), 0 for a SerializedFile.
 fn work(data: &[u8], opts: &DumpOptions) -> (u64, String, u64, u64) {
     let ctx = &opts.context;
     let meter = || Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
@@ -180,6 +181,11 @@ fn work(data: &[u8], opts: &DumpOptions) -> (u64, String, u64, u64) {
     let ty = check_file_type(&bytes, &ctx.limits).unwrap();
     let file = parse_file(RawStr::from("in"), bytes, ty, None, &load, ctx).unwrap();
     load_deep(&file).unwrap();
+    if let File::Serialized(f) = &file {
+        for t in f.types() {
+            t.tree(&ctx.limits).transpose().unwrap();
+        }
+    }
     let loaded = load.decoded();
     let read = match &file {
         File::Bundle(b) => {
