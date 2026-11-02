@@ -1,9 +1,9 @@
 //! The compile's work on its rows' strings (review round 13): a name is
-//! read once per buffer and counted as the list's work before it is read
-//! (`names`'s docs, "Work"), and a type's kind reads at most
-//! [`super::KIND_SCAN`] bytes of it. Each test sees the work through the
-//! list's meter (plan section 9, "How a test sees bounded work") and the
-//! bytes really read through the compile's own counts.
+//! read by buffer, never by row, and counted as the list's work before it
+//! is read (`names`'s docs, "Work"), and a type's kind and NUL check read
+//! at most [`super::KIND_SCAN`] bytes of it. Each test sees the work
+//! through the list's meter (plan section 9, "How a test sees bounded
+//! work") and the bytes really read through the compile's own counts.
 
 use std::collections::HashMap;
 use std::sync::Arc;

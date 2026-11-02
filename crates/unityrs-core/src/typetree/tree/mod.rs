@@ -15,11 +15,16 @@
 //! first element: UnityPyBoost's `read_pair_array` checks the arity once
 //! after the length, so an *empty* array of a 3-child `pair` fails
 //! (`TypeTreeHelper.cpp:356-360`), where the pure-Python reader returns `[]`.
-//! Compilation itself fails only on a limit: depth, or the open's work. A
+//! Compilation itself fails only on a limit: depth, or the open's work.
+//! What a row's type costs is bounded whatever its length: its kind and
+//! the NUL check each read at most its first 26 bytes, one past the
+//! longest kind name (and, when some type's head holds a NUL, its
+//! pure-Python kind at most its first 25). What its name costs is not: a
 //! class's children are grouped by name ids numbered once per name buffer
-//! (`names`, whose docs say what the compile reads and counts), and a
-//! type's kind reads at most its first 26 bytes, one past the longest kind
-//! name, so a row costs the same whatever its strings' lengths.
+//! (`names`, whose docs say exactly what is read), so a buffer that shares
+//! its length with another is hashed, and compared when another shares its
+//! hash, each time its length counted as the open's work before it is
+//! read.
 //!
 //! Owner: package B.
 
@@ -117,8 +122,8 @@ const LONGEST_KIND: usize = 25;
 /// The bytes of a type name [`kind_of`] reads: one past [`LONGEST_KIND`].
 /// A C string with no NUL among them is longer than every kind name, so it
 /// is none of them, and whether it starts with `PPtr<` is in its first
-/// five; so the first [`KIND_SCAN`] bytes decide the kind, and a row costs
-/// the same whatever its type's length (review round 13: the compile
+/// five; so the first [`KIND_SCAN`] bytes decide the kind, and what a row's
+/// type costs is bounded whatever its length (review round 13: the compile
 /// searched every row's type to its first NUL, twice, and a blob's rows can
 /// all name one 32,767-byte string).
 const KIND_SCAN: usize = LONGEST_KIND + 1;
@@ -561,8 +566,9 @@ impl Tree {
     /// compiled from an input's rows is charged to that input; or when the
     /// names it reads take the meter's open past its work allowance
     /// ([`TreeError::Limit`], [`crate::LimitKind::DecodeWork`]: each name
-    /// buffer that shares its length with another is hashed once and
-    /// compared, every byte counted before it is read).
+    /// buffer that shares its length with another is hashed once, and
+    /// compared when another shares its hash, its length counted before
+    /// each).
     pub fn compile(list: Arc<NodeList>, limits: &Limits) -> Result<Arc<Self>, TreeError> {
         Self::compile_inner(list, limits, None)
     }

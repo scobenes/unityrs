@@ -4,33 +4,35 @@
 //!
 //! **Work.** A blob's rows are zero-copy slices of its string buffer, and
 //! every row that names one offset holds one slice of it
-//! ([`crate::typetree::parse`]), so a name is read here once per *buffer*
-//! (an address and a length), never once per row. The rows are sorted by
+//! ([`crate::typetree::parse`]), so what is read here goes by *buffer*
+//! (an address and a length), never by row. The rows are sorted by
 //! their name's length and address, which reads no byte of it; a buffer
 //! whose length no other buffer of the list has is a name of its own and is
 //! not read. Only buffers that share a length are read: each is hashed once
 //! (FNV-1a), the buffers of one hash are compared byte for byte with the
-//! first of them, and a run of one hash that holds more than one name (a
-//! collision, which a hostile tree can make of any number of names: FNV-1a
-//! is no defence) is sorted by its bytes in a merge sort of at most
-//! ⌈log2 k⌉ passes of fewer than k comparisons each (review round 2: a scan
-//! of the run's earlier names for each member was `O(k²)`), then its
-//! neighbours compared. The buffers of one hash are taken, and a sort's
-//! ties broken, in the order of the rows that first name them, never by
-//! their addresses, so the same rows read and count the same bytes wherever
-//! their buffers lie. Every byte read is the list's work
-//! ([`crate::limits::Meter::count_work`] on [`NodeList::meter`],
-//! `Limits::max_decode_work`), counted before it is read: a length's names
-//! before they are hashed, and each comparison, as many bytes as its names
-//! have, before it is made. So an allowance below it refuses the compile
-//! ([`crate::LimitKind::DecodeWork`]) before it reads past the allowance
-//! (review round 13: the compile hashed and compared every row's name and
-//! searched every row's type, rows x length bytes, and counted none of it).
+//! first of them until one differs, and a run of one hash that holds more
+//! than one name (a collision, which a hostile tree can make of any number
+//! of names: FNV-1a is no defence) is sorted by its bytes in a merge sort
+//! of at most ⌈log2 k⌉ passes of fewer than k comparisons each (review
+//! round 2: a scan of the run's earlier names for each member was
+//! `O(k²)`), then its neighbours compared. The buffers of one hash are
+//! taken, and a sort's ties broken, in the order of the rows that first
+//! name them, never by their addresses, so the same rows read and count
+//! the same bytes wherever their buffers lie. What is read is the list's
+//! work ([`crate::limits::Meter::count_work`] on [`NodeList::meter`],
+//! `Limits::max_decode_work`), counted before it is read: a length's
+//! names, all their bytes, before they are hashed, and each comparison,
+//! the length of one of its names, before it is made. So an allowance
+//! below it refuses the compile ([`crate::LimitKind::DecodeWork`]) before
+//! it reads past the allowance (review round 13: the compile hashed and
+//! compared every row's name and searched every row's type, rows x length
+//! bytes, and counted none of it).
 //! Distinct buffers of one content cannot be told apart without reading them
 //! (R offsets of a NUL-less string buffer name R equal windows of 32,767
 //! bytes, from a buffer of 32,767 + R bytes), so the allowance is what
-//! bounds that work; rows that share a buffer cost it once, however many
-//! there are (`work_tests::rows_naming_one_long_string_read_it_at_most_once`).
+//! bounds that work; rows that share a buffer cost what one row naming it
+//! costs, however many there are
+//! (`work_tests::rows_naming_one_long_string_read_it_at_most_once`).
 //!
 //! A [`NameTable`] numbers a table of strings once, for the compiles of
 //! rows that name only its strings, which then read no name and size
