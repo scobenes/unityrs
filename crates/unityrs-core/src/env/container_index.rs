@@ -509,9 +509,10 @@ impl Environment {
     /// UnityPy (review round 13: each index was dereferenced once, so the
     /// file a load in between put under its external's key got no later
     /// row's path). The walk takes what changed before each search, so a
-    /// load another thread makes gives what UnityPy's walk gives with the
-    /// load made at the point of the walk at which it was made, a point
-    /// between two searches or dereferences (`super::watch`'s module docs;
+    /// load another thread makes gives what UnityPy's walk gives with each
+    /// key the load changes changed at the point of the walk at which it
+    /// was published, a point between two searches or dereferences (a load
+    /// publishes its keys one at a time; `super::watch`'s module docs;
     /// review round 14: another thread's change put back no index, and set
     /// a flag the walk's own later change of the key then found gone), but
     /// for a key the load adds, which does not fail the pass (below).

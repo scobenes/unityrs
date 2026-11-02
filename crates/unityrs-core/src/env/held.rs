@@ -1,11 +1,11 @@
 //! The Environment's own locks, taken one at a time (plan section 3.16: no
 //! lock is taken while another is held, the budget's aside). Every guard on
 //! one of them is a [`Held`], made by [`lock`], [`read`] or [`write`]: the
-//! registry's (over its keys, its lists of dropped slots
-//! and `RegistryInner.watched`, the table of the walks' flags under
-//! registry keys), the `files` listing's (over the list, its indexes and
-//! `Files.watched`, the table of the walks' flags under `files` keys), a
-//! dependency's `open` and the LRU's list. In a test build each thread
+//! registry's (over its keys, its lists of dropped slots, the container
+//! index generation and `RegistryInner.watched`, the table of the walks'
+//! flags under registry keys), the `files` listing's (over the list, its
+//! indexes and `Files.watched`, the table of the walks' flags under `files`
+//! keys), a dependency's `open` and the LRU's list. In a test build each thread
 //! counts the guards it holds, and taking one while it holds another
 //! panics, so every unit test that runs an Environment checks the rule
 //! (review round 6: a dependency's reopen took its meter's lock while it
