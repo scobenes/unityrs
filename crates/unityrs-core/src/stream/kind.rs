@@ -49,8 +49,9 @@
 //!   19.3). The fixture's sizes are those that raise on every machine or
 //!   that every machine allocates. At a position where the buffered file's
 //!   fill would end past 2^63 - 1 a read raises `OSError` (`EINVAL`) on
-//!   Linux (the `stream_tmpfs_read` cases at 2^63 - 1); this module reads
-//!   nothing there, as past the end anywhere.
+//!   Linux, whose `rw_verify_area` refuses a read whose end overflows (the
+//!   `stream_tmpfs_read` cases at 2^63 - 1); this module reads nothing
+//!   there, as past the end anywhere.
 //! - a fixed-width read is `read(n)`, which raises unless it got `n` bytes,
 //!   the position moved by what it got either way.
 //! - `read_string_to_null(max)` is the base class's loop (`:136-144`): it
