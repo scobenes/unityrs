@@ -93,7 +93,7 @@ use bytes::Bytes;
 use crate::error::{LimitError, LimitKind};
 use crate::files::SerializedType;
 use crate::limits::{ChargeError, Limits, Meter, MeteredVec};
-use crate::provider::ProviderError;
+use crate::provider::{NoTree, ProviderError};
 use crate::raw::RawStr;
 use crate::stream::{Endian, ReaderKind, StreamRefusal};
 use crate::typetree::{NodeId, Tree, TreeError};
@@ -294,11 +294,15 @@ pub enum ReadDetail {
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ParseError {
-    /// No tree for the class (`TypeTreeError` in UnityPy).
+    /// No tree for the class: UnityPy raises the exception `why` names
+    /// (its TPK's; review round 11: nothing told them apart).
     #[error("no typetree for class {class_id}")]
     NoTypeTree {
         /// The object's class.
         class_id: i32,
+        /// Which exception: `None` where no provider says (with no provider
+        /// at all; UnityPy always has its TPK).
+        why: Option<NoTree>,
     },
     /// The reader failed; no value.
     #[error(transparent)]
@@ -432,12 +436,14 @@ pub enum WriteError {
     #[error("malformed node {0:?}")]
     Malformed(RawStr),
     /// The object has no tree to write with: UnityPy raises the same
-    /// `TypeTreeError` for a write as for a read (`files/ObjectReader.py:296-307`;
+    /// exception for a write as for a read (`files/ObjectReader.py:264-307`;
     /// the read side's [`ParseError::NoTypeTree`]).
     #[error("no typetree for class {class_id}")]
     NoTypeTree {
         /// The object's class.
         class_id: i32,
+        /// Which exception, as the read side's.
+        why: Option<NoTree>,
     },
     /// Resolving the object's tree failed (a tree that does not compile, a
     /// provider's failure): the writer never ran.

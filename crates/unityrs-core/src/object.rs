@@ -21,7 +21,7 @@ use bytes::Bytes;
 use crate::budget::DecodeBuf;
 use crate::error::{Error, LimitKind};
 use crate::files::{ObjectInfo, SerializedFile, SerializedType};
-use crate::provider::{TreeRef, TreeRequest, TreeSource};
+use crate::provider::{NoTree, TreeRef, TreeRequest, TreeSource};
 use crate::typetree::Tree;
 use crate::value::Parsed;
 use crate::walk::{
@@ -121,9 +121,10 @@ impl ObjectRef {
 
     /// The tree a read would use: `nodes` when given, else the type record's,
     /// else the provider chain's class tree (`ObjectReader.py:285-307`), with
-    /// no script (`TreeRequest::script` is `None`). `Ok(None)` is UnityPy's
-    /// `TypeTreeError`. The `MonoBehaviour` script hook needs the Environment
-    /// to dereference `m_Script`: [`crate::env::Environment::object_tree`].
+    /// no script (`TreeRequest::script` is `None`). `Ok(None)` where UnityPy
+    /// raises: [`Self::why_no_tree`] says which exception. The
+    /// `MonoBehaviour` script hook needs the Environment to dereference
+    /// `m_Script`: [`crate::env::Environment::object_tree`].
     pub fn tree(&self, nodes: Option<&Arc<Tree>>) -> Result<Option<TreeRef>, ParseError> {
         // UnityPy files/ObjectReader.py:285-307
         if let Some(tree) = nodes {
@@ -155,6 +156,23 @@ impl ObjectRef {
         Ok(self.file.context().providers.lookup(&req)?)
     }
 
+    /// Why [`Self::tree`] finds none for this object without `nodes` (its
+    /// type record holds none, and no provider has its class's): the
+    /// exception UnityPy raises there ([`NoTree`],
+    /// [`ProviderChain::why_none`] for the file's version, or for none below
+    /// format 7). `None` where no provider says. What
+    /// [`ParseError::NoTypeTree`] and [`WriteError::NoTypeTree`] carry.
+    ///
+    /// [`ProviderChain::why_none`]: crate::provider::ProviderChain::why_none
+    #[must_use]
+    pub fn why_no_tree(&self) -> Option<NoTree> {
+        let version = self.file.version().map(|v| &v.version);
+        self.file
+            .context()
+            .providers
+            .why_none(self.class_id(), version)
+    }
+
     /// `read_typetree(nodes, wrap=False, check_read)`.
     pub fn read_typetree(
         &self,
@@ -165,6 +183,7 @@ impl ObjectRef {
         let Some(tree) = self.tree(nodes)? else {
             return Err(ParseError::NoTypeTree {
                 class_id: self.class_id(),
+                why: self.why_no_tree(),
             });
         };
         let file = &self.file;
@@ -209,6 +228,7 @@ impl ObjectRef {
             Ok(None) => {
                 return Err(WriteError::NoTypeTree {
                     class_id: self.class_id(),
+                    why: self.why_no_tree(),
                 });
             }
             Err(e) => return Err(WriteError::Tree(Box::new(e))),

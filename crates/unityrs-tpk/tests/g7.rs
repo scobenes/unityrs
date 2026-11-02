@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 use serde_json::Value as J;
 use unityrs_core::limits::Limits;
-use unityrs_core::provider::{TreeRequest, TypeTreeProvider};
+use unityrs_core::provider::{NoTree, TreeRequest, TypeTreeProvider};
 use unityrs_core::typetree::{NodeList, NodeRow};
 use unityrs_core::{LimitError, LimitKind, UnityVersion};
 use unityrs_testkit::child;
@@ -161,6 +161,7 @@ fn compare<'r>(
             match (want.get("rows"), got, tree) {
                 (Some(rows), Ok(Some(list)), Ok(Some(tree))) => {
                     assert!(Arc::ptr_eq(tree.list(), &list), "{}: the tree's list", at());
+                    assert_eq!(provider.why_none(class_id, Some(v)), None, "{}", at());
                     let object = want["tree"].as_u64().unwrap();
                     let first = shared.entry(object).or_insert_with(|| list.clone());
                     assert!(
@@ -172,8 +173,11 @@ fn compare<'r>(
                         compare_rows(&list, rows, &at());
                     }
                 }
+                // Which exception UnityPy raised, as the provider tells it
+                // (review round 11: every "none" passed alike).
                 (None, Ok(None), Ok(None)) => {
-                    assert!(want.get("none").is_some(), "{}: {want}", at());
+                    let why = provider.why_none(class_id, Some(v)).map(NoTree::exception);
+                    assert_eq!(why, want["none"].as_str(), "{}: {want}", at());
                 }
                 // The exception UnityPy raised, as the port's error for it,
                 // the same from the node list and the tree (round 4: any

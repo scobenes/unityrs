@@ -16,7 +16,12 @@
 //!
 //! The TPK itself is not here: `unityrs-tpk` (package A) loads one from a
 //! path and implements [`TypeTreeProvider`]. With no provider, a stripped
-//! object is `no_typetree`.
+//! object is `no_typetree`. Where no provider has a class's tree, which of
+//! UnityPy's exceptions that is ([`NoTree`]: the TPK's `KeyError`,
+//! `ValueError` or `AssertionError`, or the comparison's
+//! `NotImplementedError` for a file with no version) is
+//! [`ProviderChain::why_none`]'s answer (review round 11: nothing public
+//! told them apart, and a binding must raise UnityPy's).
 //!
 //! **The cache.** [`ProviderChain`] caches *answers only*, as UnityPy does
 //! (`Tpk.py:42-54` raises before `CLASSES_CACHE[key] = node` on a miss): a
@@ -55,6 +60,10 @@ use crate::raw::RawStr;
 use crate::typetree::Tree;
 use crate::typetree::commonstring::CommonStrings;
 use crate::version::{Packed, UnityVersion};
+
+mod no_tree;
+
+pub use no_tree::NoTree;
 
 /// A `MonoBehaviour`'s script, for script-tree providers.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -111,7 +120,8 @@ pub trait TypeTreeProvider: Send + Sync + fmt::Debug {
     /// below the class's first entry, and a picked entry that is `None` (the
     /// class removed at that version), both `ValueError`
     /// (`helpers/Tpk.py:472-481`); and a picked entry with no release root
-    /// (`AssertionError`, `Tpk.py:64`). The pick is UnityPy's floor over
+    /// (`AssertionError`, `Tpk.py:64`), which [`Self::why_none`] tells
+    /// apart. The pick is UnityPy's floor over
     /// **every** entry in its stored order, `None` and release-less entries
     /// included: a provider never steps back past one of them to an earlier
     /// entry that has a tree.
@@ -122,6 +132,14 @@ pub trait TypeTreeProvider: Send + Sync + fmt::Debug {
     /// trees a chain caches are bounded by the provider's data, not by the
     /// versions an input names.
     fn tree(&self, req: &TreeRequest<'_>) -> Result<Option<Arc<Tree>>, ProviderError>;
+    /// Why the class tree of `class_id` at `version` is none ([`NoTree`]),
+    /// where [`Self::tree`] answers `Ok(None)`; `version` is `None` for a
+    /// file below format 7, which [`Self::tree`] is never asked about. `None`
+    /// where the provider has the tree, or does not say (the default).
+    fn why_none(&self, class_id: i32, version: Option<&UnityVersion>) -> Option<NoTree> {
+        let _ = (class_id, version);
+        None
+    }
     /// Whether this provider answers script requests (`TreeRequest::script`):
     /// UnityPy's `env.typetree_generator`. Only then does the Environment
     /// dereference a `MonoBehaviour`'s `m_Script` (P3; the TPK provider does not).
@@ -404,6 +422,19 @@ impl ProviderChain {
             }
         }
         Ok(None)
+    }
+
+    /// Why no provider answers the class tree of `class_id` at `version`
+    /// ([`TypeTreeProvider::why_none`]): the reason of the last provider
+    /// that states one, the one a fallback that raised in turn would leave
+    /// (UnityPy has one TPK). Asked only where [`Self::lookup`] found none;
+    /// nothing is cached.
+    #[must_use]
+    pub fn why_none(&self, class_id: i32, version: Option<&UnityVersion>) -> Option<NoTree> {
+        self.providers
+            .iter()
+            .rev()
+            .find_map(|p| p.why_none(class_id, version))
     }
 
     fn publish(&self, req: &TreeRequest<'_>, value: CacheValue) {

@@ -186,7 +186,8 @@ jobs:
       # the rest are modules a listed script imports (walk.py records
       # through walk_build.py, walk_elements.py, walk_reentry.py and
       # walk_runs.py, env.py through env_paths.py), as
-      # scripts/tests/test_ci_workflow.py checks.
+      # scripts/tests/test_ci_workflow.py checks. no_tree.py reads with
+      # tpk.py's synthetic TPKs, unityrs-tpk's test replays it.
       - name: The scaffold's and packages B to E's oracle fixtures are current
         run: |
           python tools/fixtures/scaffold.py --check
@@ -197,6 +198,7 @@ jobs:
           python tools/fixtures/dump.py --check
           python tools/fixtures/index.py --check
           python tools/fixtures/folders.py --check
+          python tools/fixtures/no_tree.py --check
       - name: Self-tests (parity tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
