@@ -235,7 +235,7 @@ fn read_fs_header(
             });
         }
     }
-    // :94-105
+    // :97-106
     let _size = r.read_i64()?;
     let info_compressed = r.read_u32()?;
     let info_uncompressed = r.read_u32()?;

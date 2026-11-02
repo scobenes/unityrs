@@ -191,6 +191,11 @@ class SpanTests(Checked):
             f"TypeTreeHelper.py:{8}-9",
             f"TypeTreeHelper.cpp:{4}",
             f"TypeTreeHelper.cpp:{6}-20",
+            f"TypeTreeHelper.py:{1}-17",  # whole functions, or lines within one
+            f"TypeTreeHelper.py:{2}-5",
+            f"environment.py:{4}-6",
+            f"environment.py:{1}-14",
+            f"environment.py:{10}-14",
         ):
             with self.subTest(cite):
                 self.assert_passes({"a.md": f"`{cite}`\n"}, checked=1)
@@ -203,7 +208,10 @@ class SpanTests(Checked):
             f"environment.py:{7}-9": "starts on a blank line",
             f"TypeTreeHelper.cpp:{5}": "starts on a blank line",  # UnityPyBoost: the pinned blank lines
             f"TypeTreeHelper.cpp:{1}-5": "ends on a blank line",
-            f"environment.py:{13}-14": "starts on the last line of a statement that begins above line 13",
+            f"environment.py:{13}-14": "starts inside a statement that begins above line 13 and runs past its end",
+            # Review round 13: a range that starts inside a statement, not on its last line, and runs past it.
+            f"environment.py:{11}-14": "starts inside a statement that begins above line 11 and runs past its end",
+            f"TypeTreeHelper.py:{15}-17": "starts inside a statement that begins above line 15 and runs past its end",
             f"environment.py:{9}-11": "ends inside a statement that goes on past line 11",
             f"environment.py:{10}-12": "ends inside a statement that goes on past line 12",
             f"environment.py:{6}-8": "ends on the decorator or header that begins at line 8",
@@ -213,6 +221,12 @@ class SpanTests(Checked):
             f"TypeTreeHelper.py:{7}-8": "ends on the decorator or header that begins at line 8",  # except
             f"TypeTreeHelper.py:{9}-10": "ends on the decorator or header that begins at line 10",  # with
             f"TypeTreeHelper.py:{11}-16": "ends on the decorator or header that begins at line 14",  # a long one
+            # Review round 13: part of a function and lines outside it (`set_version` cited from the end of the
+            # function above it).
+            f"TypeTreeHelper.py:{10}-17": "starts inside `read` (lines 1-11) and runs past its end",
+            f"environment.py:{6}-14": "starts inside `__init__` (lines 5-6) and runs past its end",
+            f"environment.py:{4}-13": "ends inside `files` (lines 8-14), which begins after the range does",
+            f"environment.py:{1}-13": "ends inside `files` (lines 8-14), which begins after the range does",
         }
         for cite, message in cases.items():
             with self.subTest(cite):
@@ -228,6 +242,10 @@ class SpanTests(Checked):
         self.assertEqual([n for n in range(1, 15) if s.open[n]], [10, 11, 12])
         self.assertEqual(s.header, {4: 4, 5: 5, 8: 8, 9: 9})
         self.assertEqual(C.shape(HELPER).header, {1: 1, 6: 6, 8: 8, 10: 10, 16: 14})
+        self.assertEqual(s.functions, ((5, 6, "__init__"), (8, 14, "files")))
+        self.assertEqual(C.shape(HELPER).functions, ((1, 11, "read"), (14, 17, "write")))
+        nested = "def f():\n    @x\n    def g():\n        pass\n    return g\n"
+        self.assertEqual(sorted(C.shape(nested).functions), [(1, 5, "f"), (2, 4, "g")])
 
 
 class BareLineTests(Checked):
@@ -260,8 +278,41 @@ class BareLineTests(Checked):
             with self.subTest(text):
                 self.assertEqual(self.report({rel: text}).bare, 1)
         self.assert_problem(self.report({"a.rs": f"// `environment.py:{1}`\n// :{7}\n"}), "starts on a blank line")
-        # Not at a comment's start, or not followed by a word's end, it is no bare line.
-        self.assertEqual(self.report({"a.rs": f"// `environment.py:{1}`\n// see :{7}\n// :{7}x\n"}).bare, 0)
+        # Followed by a word, it is no bare line.
+        self.assertEqual(self.report({"a.rs": f"// `environment.py:{1}`\n// :{7}x\n"}).bare, 0)
+
+    def test_a_bare_line_in_prose(self):
+        """Review round 13: a bare line after a comma, or in parentheses, was never read."""
+        for text in (
+            f"// UnityPy environment.py:{1}, :{4}-6\n",
+            f"// UnityPy environment.py:{1}, :{4}-6: the class\n",
+            f"# `environment.py:{1}` and :{4}-6.\n",
+            f"// In `environment.py`, the class (:{4}-6), which\n",
+            f"/// `environment.py:{1}`; :{4}-6\n",
+            f"(`TypeTreeHelper.py:{1}`, :{2}-4)\n",
+            f"// `environment.py:{1}`\n// see :{4}-6\n",
+        ):
+            with self.subTest(text):
+                report = self.report({"a.rs": text})
+                self.assertEqual((report.problems, report.bare), ([], 1))
+        for text, message in (
+            (f"// UnityPy environment.py:{1}, :{15}\n", "is not a range of environment.py's 14 lines"),
+            (f"// `environment.py:{1}` (:{9346}-9360)\n", "is not a range of environment.py's 14 lines"),
+            (f"// `TypeTreeHelper.py:{1}`, :{12}\n", "is not a whole span of helpers/TypeTreeHelper.py"),
+            (f"// the class (:{4}-6)\n", "names no file"),
+        ):
+            with self.subTest(text):
+                self.assert_problem(self.report({"a.rs": text}), message)
+        # Code is not prose: a slice, a format field, a JSON member, a path's line.
+        for text in (
+            f"// `environment.py:{1}`\nx = a[:{4}] + b[1:{4}]\n",
+            f"// `environment.py:{1}`\nformat!(\"{{:{4}}}\", x)\n",
+            f"// `environment.py:{1}`\ns = '{{\"a\":{99}}}'\n",
+            f"// `environment.py:{1}`\n// x:{99} and :{99}x\n",
+        ):
+            with self.subTest(text):
+                report = self.report({"a.rs": text})
+                self.assertEqual((report.problems, report.bare), ([], 0))
 
     def test_what_ends_a_paragraph(self):
         cases = {
@@ -306,6 +357,23 @@ class BareLineTests(Checked):
         )
         self.assert_passes({"a.md": f"{lines_in}\n\n`environment.py:{1}` and `:{4}`\n"}, checked=2)
 
+    def test_a_default_must_name_one_unitypy_file(self):
+        """Review round 13: a default naming no UnityPy file silenced every bare line of its section."""
+        for path, message in (
+            ("helpers/Tpkk.py", "names no file of UnityPy 1.25.2"),
+            ("Lib/gzip.py", "names no file of UnityPy 1.25.2"),
+            ("BundleFile.py", "could be any of enums/BundleFile.py, files/BundleFile.py"),
+        ):
+            with self.subTest(path):
+                report = self.report({"a.md": f"## X\nLines are in `{path}`.\n\nThe walk (`:{9999}`).\n"})
+                self.assert_problem(report, f'a.md:{2}: "Lines are in `{path}`" {message}')
+        two = "Lines are in `environment.py` and `helpers/Tpkk.py`."
+        self.assert_problem(self.report({"a.md": two + "\n"}), '"Lines are in `helpers/Tpkk.py`" names no file')
+        # A sentence naming no path is no default: its section's bare lines name no file.
+        report = self.report({"a.md": f"## X\nLines are in `<file>`.\n\n`:{4}`\n"})
+        self.assertEqual(len(report.problems), 1, report.problems)
+        self.assert_problem(report, f":{4} names no file")
+
     def test_a_sources_default_is_its_port_header(self):
         self.assert_passes({"crates/d/src/a.rs": HEADER + f"\n// :{4}-6\npub fn f() {{}}\n"}, checked=1)
         self.assert_problem(
@@ -321,6 +389,67 @@ class BareLineTests(Checked):
             with self.subTest(header):
                 report = self.report({"crates/d/src/a.rs": header + f"\n// :{4}\n"})
                 self.assert_problem(report, f":{4} names no file")
+
+
+class UnityPyPathTests(Checked):
+    """Review round 13: a path written as UnityPy's that names no file of it was taken for another project's."""
+
+    def test_a_path_written_as_unitypys_must_name_a_file(self):
+        for cite in (
+            f"helpers/Tpkk.py:{3}",
+            f"UnityPy/environmentt.py:{3}",
+            f"UnityPy/files/Gone.py:{3}",
+            f"UnityPyBoost/Gone.cpp:{3}",
+            f"files/x/BundleFile.py:{3}",
+        ):
+            with self.subTest(cite):
+                report = self.report({"a.md": f"`{cite}`\n"})
+                self.assertEqual(len(report.problems), 1, report.problems)
+                self.assert_problem(report, f"a.md:{1}: {cite} names no file of UnityPy 1.25.2 or of the repository")
+        # Another project's path, or a file of the repository, is not checked.
+        cites = f"`x/helpers.py:{3}`, `notes.py:{3}`, `helpers/notes.py:{99}`\n"
+        self.assert_passes({"a.md": cites, "helpers/notes.py": "x\n"}, checked=0)
+        # Nor is a path of another revision, whose files are not all 1.25.2's.
+        report = self.report({"a.md": f"HEAD `files/Gone.py:{3}`\n"})
+        self.assertEqual(report.problems, [])
+
+    def test_no_bare_line_follows_a_path_that_names_no_file(self):
+        for text in (
+            f"`environment.py:{1}`; in `helpers/Tpkk.py`, `:{4}`\n",
+            f"`environment.py:{1}`; in `helpers/Tpkk.py:{2}`, `:{4}`\n",
+        ):
+            with self.subTest(text):
+                report = self.report({"a.md": text})
+                self.assert_problem(report, f":{4} follows helpers/Tpkk.py, which names no file of UnityPy 1.25.2")
+        # A mention of another project's file leaves the run as it was.
+        self.assert_passes({"a.md": f"`environment.py:{1}`; in `fmod.py`, `:{4}`\n"}, checked=2)
+
+    def test_a_header_names_unitypy_files(self):
+        for path, message in (
+            ("UnityPy/helpers/Tpkk.py", "names no file of UnityPy 1.25.2"),
+            ("UnityPy/BundleFile.py", "could be any of enums/BundleFile.py, files/BundleFile.py"),
+        ):
+            with self.subTest(path):
+                report = self.report({"crates/d/src/a.rs": HEADER.replace("UnityPy/environment.py", path)})
+                self.assert_problem(report, f"a.rs: its `UnityPy 1.25.2` header names {path}, which {message}")
+        self.assert_passes({"crates/d/src/a.rs": HEADER, "tools/x.py": GENERATED.replace("//", "#")})
+
+    def test_a_line_cited_in_words(self):
+        for text in (
+            f"`environment.py` line {4}",
+            f"`environment.py`, lines {4}-6",
+            f"`environment.py`'s line {4}",
+            f"environment.py line {4}",
+            f"line {4} of `environment.py`",
+            f"lines {4} and 6 in `environment.py`",
+        ):
+            with self.subTest(text):
+                report = self.report({"a.md": text + "\n"})
+                self.assertEqual(len(report.problems), 1, report.problems)
+                self.assert_problem(report, "a.md:1: cites a line of environment.py in words: write `environment.py:")
+        for text in (f"`fmod.py` line {61}", f"`environment.py` holds the line {4}", f"lines of `environment.py`"):
+            with self.subTest(text):
+                self.assert_passes({"a.md": text + "\n"})
 
 
 class RevisionTests(Checked):
@@ -477,7 +606,8 @@ class PackageTests(unittest.TestCase):
             got = C.load_package(folder, None, repo, C.package_digest(folder))
         name = "UnityPyBoost/TypeTreeHelper.cpp"
         self.assertEqual(got.lines[name], C.BOOST[name][0])
-        # Without --boost, its blank lines are the pinned ones (review round 12's TypeTreeHelper.cpp line 1033).
+        # Without --boost, its blank lines are the pinned ones (review round 12 found a citation of TypeTreeHelper.cpp
+        # ending on its blank line 1033).
         blank = [n for n in range(1, got.lines[name] + 1) if got.shapes[name].blank[n]]
         self.assertEqual(blank, [int(n) for n in C.BOOST[name][2].split()])
         self.assertIn(1033, blank)

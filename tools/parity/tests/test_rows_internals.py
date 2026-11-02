@@ -59,8 +59,9 @@ def decryptor_header(nibbles, key=KEY):
 
 
 def walk_end(block):
-    """The last index the decryptor's LZ4-token walk visits (`helpers/ArchiveStorageManager.py:100-143`), given
-    tables that leave every byte as it is; an index of `len(block)` is the byte just past the block."""
+    """The last index the decryptor's LZ4-token walk visits (`helpers/ArchiveStorageManager.py:100-107`,
+    `:109-143`), given tables that leave every byte as it is; an index of `len(block)` is the byte just past the
+    block."""
     last = -1
 
     def visit(i):

@@ -2,8 +2,9 @@
 //! [`NoTree`]: which of UnityPy's exceptions a class with no tree raises.
 
 /// Why no tree answers a class: the exception UnityPy raises there, the
-/// TPK's (`helpers/Tpk.py:42-64`, `:472-481`), which a binding raises where
-/// the core reports no tree ([`crate::walk::ParseError::NoTypeTree`]).
+/// TPK's (`helpers/Tpk.py:42-55`, `:58-64`, `:472-481`), which a binding
+/// raises where the core reports no tree
+/// ([`crate::walk::ParseError::NoTypeTree`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum NoTree {
