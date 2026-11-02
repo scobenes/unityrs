@@ -294,9 +294,9 @@ fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
 /// about twice the 5,488 bytes a level cost in a debug build and 1,520 in a
 /// release one; since the records of each file are made outside the
 /// recursion's frame (`input/`, `Writer::emit`), `tests/limits.rs`'s
-/// `container_stack_measured` finds 1,392 and 320 (toolchain 1.99.1, on
-/// the head that charges the dump's path stack), eagerly and through the
-/// reverse pre-pass alike, and
+/// `container_stack_measured` finds 1,328 and 320 (toolchain 1.99.1;
+/// `docs/plans/core.md` section 6 records each integrated head's), eagerly
+/// and through the reverse pre-pass alike, and
 /// `the_container_term_pays_for_every_level` checks that this term alone,
 /// on the least stack of the nest's leaf, holds the deepest nest.
 pub const CONTAINER_LEVEL_STACK: usize = if cfg!(debug_assertions) {
