@@ -4,9 +4,11 @@
 use std::sync::Arc;
 
 use super::container_index::Siblings;
+use super::load::Asked;
+use super::registry::from_callers;
 use super::resource_data::top_bundle;
 use super::{Cab, DerefError, Environment, Found, HeldCab, PPtr, RawCab, pptr};
-use crate::error::Error;
+use crate::error::{Error, NotFound};
 use crate::files::{File, ParentKind, SerializedFile};
 use crate::limits::Meter;
 use crate::object::ObjectRef;
@@ -18,6 +20,16 @@ fn object_in(sf: &Arc<SerializedFile>, path_id: i64) -> Result<ObjectRef, DerefE
     sf.object(path_id).ok_or_else(|| DerefError::MissingObject {
         file: sf.name().clone(),
         path_id,
+    })
+}
+
+/// The file a CAB is: the `SerializedFile`, or the raw reader (a bundle
+/// entry's, read from its bundle's cell).
+fn cab_file(cab: &Cab) -> Result<File, Error> {
+    Ok(match cab {
+        Cab::Serialized(sf) => File::Serialized(sf.clone()),
+        Cab::Raw(RawCab::File(raw)) => File::Raw(raw.clone()),
+        Cab::Raw(RawCab::InBundle { bundle, dir_index }) => bundle.entry(*dir_index)?,
     })
 }
 
@@ -65,28 +77,55 @@ impl Environment {
         self.room(|| self.inner.registry.get_held(name, meter))
     }
 
-    /// `find_file(name, is_dependency=True)`: [`Self::get_cab`], else the
-    /// resolver, loading what it returns as a dependency: with
-    /// [`EnvOptions::keep_resolver_loads`] also a [`FileEntry`] with
-    /// `is_dependency` set, under the resolved source's name, never evicted
-    /// (module docs). `meter` as for [`Self::get_cab`]. A container the
-    /// resolver loaded is no CAB (`None`).
+    /// `find_file(name, is_dependency)`: what UnityPy's returns
+    /// (`environment.py:310-354`), the file itself, of whatever kind. First
+    /// the CAB [`Self::get_cab`] finds, as the file it is (UnityPy's `cabs`
+    /// hold the file: `environment.py:252-264`): a `SerializedFile`, or a raw
+    /// reader, a bundle entry's being that entry
+    /// ([`crate::files::BundleFile::entry`]). Else the resolver's source for
+    /// `name` ([`CabResolver::find_file`]), loaded: a bundle, a
+    /// `SerializedFile`, a raw reader (a WebFile is refused in P1, as
+    /// [`Self::load`] refuses one). With [`EnvOptions::keep_resolver_loads`]
+    /// that load is a [`FileEntry`] under the resolved source's name, never
+    /// evicted, a dependency as `is_dependency` says (UnityPy's default is
+    /// true, and a dereference's call takes it): a dependency's objects are
+    /// in neither [`Self::objects`] nor [`Self::container`]. Without it the
+    /// load is an evictable dependency in the LRU only, whatever the flag
+    /// (module docs). `None` where the resolver answers none (UnityPy's
+    /// `None`); the resolver's error where it returns one (UnityPy's walk's
+    /// `FileNotFoundError`, [`CabResolver::find_file`]). `meter` as for
+    /// [`Self::get_cab`]. A dependency's `SerializedFile` may outlive its
+    /// bundle in the LRU, as `get_cab`'s may: [`Self::get_cab_held`] returns
+    /// the handle that keeps it. (Review round 11: a container the resolver
+    /// loaded was `None`, the answer a miss gives.)
     ///
+    /// [`CabResolver::find_file`]: super::CabResolver::find_file
     /// [`EnvOptions::keep_resolver_loads`]: super::EnvOptions::keep_resolver_loads
     /// [`FileEntry`]: super::FileEntry
-    pub fn find_file(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<Cab>, Error> {
-        Ok(match self.find(name, meter)?.map(|(found, _)| found) {
-            Some(Found::Cab(cab)) => Some(cab),
-            Some(Found::File(File::Serialized(sf))) => Some(Cab::Serialized(sf)),
-            Some(Found::File(File::Raw(raw))) => Some(Cab::Raw(RawCab::File(raw))),
-            Some(Found::File(File::Bundle(_) | File::Web(_))) | None => None,
-        })
+    pub fn find_file(
+        &self,
+        name: &RawStr,
+        is_dependency: bool,
+        meter: &Arc<Meter>,
+    ) -> Result<Option<File>, Error> {
+        match self.find(name, is_dependency, meter)? {
+            None => Ok(None),
+            Some((Found::File(file), _)) => Ok(Some(file)),
+            // A raw entry the registry answered is in its bundle's cell, so
+            // `entry` reads the cell; it takes the retry all the same.
+            Some((Found::Cab(cab), _)) => self.room(|| cab_file(&cab)).map(Some),
+        }
     }
 
     /// [`Self::find_file`]'s lookup, and how it reached what it found. A
     /// pool refusal in the registry's lookup evicts the others and retries
     /// it once; the resolver's load takes its own (plan section 3.13).
-    fn find(&self, name: &RawStr, meter: &Arc<Meter>) -> Result<Option<(Found, Reached)>, Error> {
+    fn find(
+        &self,
+        name: &RawStr,
+        is_dependency: bool,
+        meter: &Arc<Meter>,
+    ) -> Result<Option<(Found, Reached)>, Error> {
         // UnityPy environment.py:326-329: `get_cab(simplify_name(name))`,
         // which simplifies again.
         let found = self.room(|| {
@@ -96,14 +135,16 @@ impl Environment {
         if let Some(cab) = found {
             return Ok(Some((Found::Cab(cab), Reached::Lookup)));
         }
-        // :330-354: the resolver stands for the walk of `env.path`.
+        // :330-354: the resolver stands for the walk of `env.path`. What it
+        // returns is the caller's code's, a pool refusal in it counted as it
+        // enters the core (`from_callers`).
         let Some(resolver) = self.inner.options.resolver.clone() else {
             return Ok(None);
         };
-        let Some(source) = resolver.resolve(name.as_bytes()) else {
+        let Some(source) = from_callers(resolver.find_file(name.as_bytes()))? else {
             return Ok(None);
         };
-        let file = self.load_resolved(&source, None)?;
+        let file = self.load_resolved(&source, Asked::Find { is_dependency })?;
         Ok(Some((Found::File(file), Reached::Load)))
     }
 
@@ -204,12 +245,14 @@ impl Environment {
         };
         match sibling {
             Some((f, reached)) => Ok((Found::File(f), reached)),
-            // :80-85
-            None => match self.find(&clean, meter)? {
-                Some(t) => Ok(t),
-                None => Err(DerefError::NotFound {
+            // :80-85: `find_file`'s `None`, and its walk's
+            // `FileNotFoundError`, are the pointer's `FileNotFoundError`.
+            None => match self.find(&clean, true, meter) {
+                Ok(Some(t)) => Ok(t),
+                Ok(None) | Err(Error::NotFound(NotFound::Cab(_))) => Err(DerefError::NotFound {
                     path: external.path.clone(),
                 }),
+                Err(e) => Err(e.into()),
             },
         }
     }

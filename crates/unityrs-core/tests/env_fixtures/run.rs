@@ -70,6 +70,14 @@ impl CabResolver for SceneResolver {
             data: data.clone(),
         })
     }
+
+    /// `find_file`'s: the walk raises `FileNotFoundError` where nothing
+    /// matches (`environment.py:351-352`), which a dereference raises too.
+    fn find_file(&self, name: &[u8]) -> Result<Option<Source>, Error> {
+        self.resolve(name)
+            .map(Some)
+            .ok_or_else(|| Error::NotFound(NotFound::Cab(RawStr::new(name.to_vec()))))
+    }
 }
 
 /// The exception UnityPy raises where the core returns `e`.
@@ -90,7 +98,7 @@ pub(crate) fn deref_kind(e: &DerefError) -> &'static str {
 /// that return a file-level error (a resource read, the container).
 pub(crate) fn error_kind(e: &Error) -> String {
     match e {
-        Error::NotFound(NotFound::Resource(_)) => "FileNotFoundError".into(),
+        Error::NotFound(NotFound::Resource(_) | NotFound::Cab(_)) => "FileNotFoundError".into(),
         Error::Malformed {
             what: "resource", ..
         } => "AttributeError".into(),
@@ -110,6 +118,29 @@ pub(crate) fn error_kind(e: &Error) -> String {
 pub(crate) fn file_name(name: &RawStr) -> String {
     let b = name.as_bytes();
     text(&b[b.iter().rposition(|&c| c == b'/').map_or(0, |i| i + 1)..])
+}
+
+/// Whether `a` and `b` are one file (UnityPy's `is`).
+pub(crate) fn same_file(a: &File, b: &File) -> bool {
+    match (a, b) {
+        (File::Serialized(x), File::Serialized(y)) => Arc::ptr_eq(x, y),
+        (File::Bundle(x), File::Bundle(y)) => Arc::ptr_eq(x, y),
+        (File::Web(x), File::Web(y)) => Arc::ptr_eq(x, y),
+        (File::Raw(x), File::Raw(y)) => Arc::ptr_eq(x, y),
+        _ => false,
+    }
+}
+
+/// Whether CAB `c` is the file `f` (`env.cabs[key] is f`): a bundle entry's
+/// raw reader is the entry its bundle holds.
+fn cab_is(c: &Cab, f: &File) -> bool {
+    match c {
+        Cab::Serialized(sf) => same_file(&File::Serialized(sf.clone()), f),
+        Cab::Raw(RawCab::File(raw)) => same_file(&File::Raw(raw.clone()), f),
+        Cab::Raw(RawCab::InBundle { bundle, dir_index }) => {
+            bundle.entry(*dir_index).is_ok_and(|e| same_file(&e, f))
+        }
+    }
 }
 
 pub(crate) fn kind(f: &File) -> &'static str {
@@ -393,6 +424,61 @@ impl Run {
         json!(out)
     }
 
+    /// What `find_file` returned, as `env.py`'s `describe` writes it: the
+    /// kind, the name and the contents, then the `files` key and the CAB key
+    /// that hold that very file.
+    pub(crate) fn describe(&self, f: &File) -> J {
+        let files_key = self
+            .env
+            .files()
+            .find(|e| same_file(&e.file, f))
+            .map(|e| text(e.name.as_bytes()));
+        let cab_key = self
+            .env
+            .registry()
+            .keys()
+            .find(|k| {
+                matches!(self.env.get_cab(k, &Meter::unlimited()), Ok(Some(c)) if cab_is(&c, f))
+            })
+            .map(|k| text(k.as_bytes()));
+        let names = |d: &[unityrs_core::files::DirEntry]| -> Vec<String> {
+            d.iter().map(|e| text(e.path.as_bytes())).collect()
+        };
+        let (kind, name, contents) = match f {
+            File::Serialized(sf) => {
+                let mut ids: Vec<i64> = sf.objects().map(|o| o.path_id()).collect();
+                ids.sort_unstable();
+                ("serialized", json!(file_name(sf.name())), json!(ids))
+            }
+            File::Bundle(b) => (
+                "bundle",
+                json!(file_name(b.name())),
+                json!(names(b.directory())),
+            ),
+            File::Web(w) => (
+                "web",
+                json!(file_name(w.name())),
+                json!(names(w.directory())),
+            ),
+            File::Raw(raw) => ("raw", J::Null, json!(hex(&raw.data))),
+        };
+        json!([kind, name, contents, files_key, cab_key])
+    }
+
+    /// `env.find_file(name, is_dependency=...)` (`env.py`'s `find_file`).
+    pub(crate) fn find_file(&self, name: &J, is_dependency: &J) -> J {
+        let name = RawStr::new(name.as_str().unwrap().as_bytes().to_vec());
+        let is_dependency = is_dependency.as_bool().unwrap();
+        match self
+            .env
+            .find_file(&name, is_dependency, &Meter::unlimited())
+        {
+            Ok(None) => J::Null,
+            Ok(Some(f)) => self.describe(&f),
+            Err(e) => json!(error_kind(&e)),
+        }
+    }
+
     pub(crate) fn step(&self, op: &J) -> J {
         let result = match op[0].as_str().unwrap() {
             "load" => self.load(usize::try_from(op[1].as_u64().unwrap()).unwrap()),
@@ -403,6 +489,7 @@ impl Run {
             "paths" => self.paths(),
             "dep_paths" => self.dep_paths(),
             "get_cab" => self.get_cabs(&op[1]),
+            "find_file" => self.find_file(&op[1], &op[2]),
             other => panic!("unknown step {other}"),
         };
         let mut s = self.state();
