@@ -82,10 +82,10 @@ impl Reader<'_, '_> {
             .map_err(|e| charge_error(at, e))?;
         for i in 0..count {
             grow_step(&mut items, count).map_err(|e| charge_error(self.at(), e))?;
-            let before = self.pos;
+            let (before, mark) = (self.pos, self.work.discards());
             let v = self.value(t, lx, elem)?;
             if self.pos <= before {
-                self.work.zero_size(self.at())?;
+                self.work.zero_size(mark, self.at())?;
             }
             v.push_to(&mut items)
                 .map_err(|e| charge_error(self.at(), e))?;
@@ -347,10 +347,10 @@ impl Reader<'_, '_> {
         for i in 0..count {
             self.work.values(1, self.at())?;
             grow_step(&mut items, count).map_err(|e| charge_error(self.at(), e))?;
-            let before = self.pos;
+            let (before, mark) = (self.pos, self.work.discards());
             let v = item(self)?;
             if self.pos <= before {
-                self.work.zero_size(self.at())?;
+                self.work.zero_size(mark, self.at())?;
             }
             v.push_to(&mut items)
                 .map_err(|e| charge_error(self.at(), e))?;

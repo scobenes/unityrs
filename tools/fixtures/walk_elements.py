@@ -2,19 +2,24 @@
 records into `elements.json` (docs/plans/core.md 3.10, "Bounds").
 
 `Limits::max_zero_size_elements` (2^20 by default) refuses an array once more
-than that many of its elements have read nothing: an element whose read ends
-no further on than it began. Each case here holds 2^20 or 2^20 + 1 elements,
-so its bytes are a recipe, `runs`: a list of `[count, hex]`, each hex
-repeated `count` times. Its tree's elements either read bytes (a `pair` of
-three children and an `Array` of three, both of which only the pure-Python
-reader reads; a class whose only bytes are its registry's), which unityrs
-must read at any count as UnityPy does (review round 4 found them refused),
-or read nothing (an empty class; the same registry class with a registry in
-scope; in the pure-Python reader a `TypelessData` whose negative length
-moves the position back), which unityrs refuses past the bound (`PARITY.md`
-19.3) and, with the bound lifted, reads as UnityPy does. A case names the
-readers that refuse it in `refused`; that is the case's claim, not UnityPy's
-outcome.
+than that many of its elements have read nothing (an element whose read ends
+no further on than it began) and have done work the read keeps nothing of:
+skipped a child, built a value a sibling of the same name replaces, or, in
+the pure-Python reader, taken the position back (plan section 9, Q15 (c)).
+Each case here holds 2^20 or 2^20 + 1 elements, so its bytes are a recipe,
+`runs`: a list of `[count, hex]`, each hex repeated `count` times. Its tree's
+elements either read bytes (a `pair` of three children and an `Array` of
+three, both of which only the pure-Python reader reads; a class whose only
+bytes are its registry's), or read nothing and keep what they build (an
+empty class, a class of empty classes, a `pair` of them, an aligned empty
+class), which unityrs must read at any count as UnityPy does (review round 4
+found the first kind refused; Q15 (c) the second, which only the meter now
+bounds), or read nothing and keep nothing of some of it (the registry class
+with a registry in scope; a class that repeats a name; in the pure-Python
+reader a `TypelessData` whose negative length moves the position back),
+which unityrs refuses past the bound (`PARITY.md` 19.3) and, with the bound
+lifted, reads as UnityPy does. A case names the readers that refuse it in
+`refused`; that is the case's claim, not UnityPy's outcome.
 
 Every case is read from 0 by UnityPyBoost's `read_typetree` (as an object
 with `byte_size > 0`) and by the pure-Python `read_value` (`byte_size ==
@@ -57,6 +62,10 @@ def registry_class(name):
 
 
 EMPTY = [[0, "Empty", "data", 0]]
+EMPTIES = [[0, "Outer", "data", 0], [1, "Empty", "a", 0], [1, "Empty", "b", 0]]
+EMPTY_PAIR = [[0, "pair", "data", 0], [1, "Empty", "first", 0], [1, "Empty", "second", 0]]
+ALIGNED_EMPTY = [[0, "Empty", "data", 0x4000]]
+REPEATED = [[0, "Foo", "data", 0], [1, "Empty", "x", 0], [1, "Empty", "x", 0]]
 TYPELESS = [[0, "Foo", "data", 0], [1, "TypelessData", "d", 0]]
 REGISTRY = [[0, "ManagedReferencesRegistry", "reg", 0], [1, "int", "version", 0]]
 
@@ -81,9 +90,17 @@ CASES = [
         [[1, i32(PAST).hex()], [PAST, i32(7).hex()]],
         [],
     ),
-    # Elements that read nothing: refused one past the bound, read at it.
+    # Elements that read nothing and keep what they build: read at any count
+    # (Q15 (c); the meter bounds them). The aligned one is the pure-Python
+    # reader's `read_value_array`, the `pair` UnityPyBoost's pair run.
     ("empty_elements_at_the_bound", base(vec("v", EMPTY)), [[1, i32(BOUND).hex()]], []),
-    ("empty_elements_past_the_bound", base(vec("v", EMPTY)), [[1, i32(PAST).hex()]], ["boost", "python"]),
+    ("empty_elements_past_the_bound", base(vec("v", EMPTY)), [[1, i32(PAST).hex()]], []),
+    ("classes_of_empty_classes_past_the_bound", base(vec("v", EMPTIES)), [[1, i32(PAST).hex()]], []),
+    ("pairs_of_empty_classes_past_the_bound", base(vec("v", EMPTY_PAIR)), [[1, i32(PAST).hex()]], []),
+    ("aligned_empty_elements_past_the_bound", base(vec("v", ALIGNED_EMPTY)), [[1, i32(PAST).hex()]], []),
+    # Elements that read nothing and keep nothing of some of it: refused one
+    # past the bound.
+    ("repeated_name_elements_past_the_bound", base(vec("v", REPEATED)), [[1, i32(PAST).hex()]], ["boost", "python"]),
     (
         "registry_class_elements_in_scope_past_the_bound",
         base(REGISTRY, vec("v", registry_class("data"))),

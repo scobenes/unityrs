@@ -319,10 +319,10 @@ impl Reader<'_, '_> {
             .map_err(|e| charge_error(at, e))?;
         for i in 0..count {
             grow_step(&mut items, count).map_err(|e| charge_error(self.at(), e))?;
-            let before = self.pos;
+            let (before, mark) = (self.pos, self.work.discards());
             let v = self.value(t, lx, elem)?;
             if self.pos <= before {
-                self.work.zero_size(self.at())?;
+                self.work.zero_size(mark, self.at())?;
             }
             v.push_to(&mut items)
                 .map_err(|e| charge_error(self.at(), e))?;
@@ -431,11 +431,11 @@ impl Reader<'_, '_> {
         for i in 0..count {
             grow_step(&mut items, count).map_err(|e| charge_error(self.at(), e))?;
             self.work.kept(self.at())?;
-            let before = self.pos;
+            let (before, mark) = (self.pos, self.work.discards());
             let first = self.value(t, lx, a)?;
             let second = self.value(t, lx, b)?;
             if self.pos <= before {
-                self.work.zero_size(self.at())?;
+                self.work.zero_size(mark, self.at())?;
             }
             let pair = self.tuple2(first, second)?;
             pair.push_to(&mut items)
@@ -467,7 +467,7 @@ impl Reader<'_, '_> {
             if ci.kind == Kind::ManagedReferencesRegistry {
                 if self.has_registry {
                     // A skipped child counts as a value (plan 3.10, "Bounds").
-                    self.work.values(1, self.at())?;
+                    self.work.skipped(self.at())?;
                     continue;
                 }
                 changed = true;
@@ -520,7 +520,7 @@ impl Reader<'_, '_> {
                 match node {
                     None | Some(RefNode::NoTree) => {
                         // A skipped child counts as a value (plan 3.10, "Bounds").
-                        self.work.values(1, self.at())?;
+                        self.work.skipped(self.at())?;
                         continue;
                     }
                     Some(RefNode::Tree(rt)) => {

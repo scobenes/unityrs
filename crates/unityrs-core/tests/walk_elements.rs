@@ -1,6 +1,6 @@
 //! Arrays at and past the zero-size element bound (plan section 3.10,
-//! "Bounds"), replayed against UnityPy 1.25.2 under the limits
-//! `EnvOptions::unitypy()` reads with:
+//! "Bounds"; section 9, Q15 (c)), replayed against UnityPy 1.25.2 under the
+//! limits `EnvOptions::unitypy()` reads with:
 //!
 //!     scripts/dev cargo test -p unityrs-core --test walk_elements
 //!
@@ -11,12 +11,16 @@
 //! that reads bytes is read at any count, as UnityPy reads it (review round
 //! 4: a malformed `pair` or `Array`, which only the pure-Python reader
 //! reads, and a class whose only bytes are its registry's were refused,
-//! their compiled minimum being 0). An element that reads nothing (an empty
-//! class, the registry class with a registry in scope, a pure-Python
-//! element whose negative `TypelessData` length takes the reader back) is
-//! refused one past the bound in the readers the case names (`PARITY.md`
-//! 19.3), and with the bound lifted is read as UnityPy reads it. Each value
-//! read is written back, and compared with UnityPy's re-save.
+//! their compiled minimum being 0), and so is one that reads nothing and
+//! keeps all it builds (an empty class, a class of empty classes, a `pair`
+//! of them, an aligned empty class: Q15 (c), the meter bounds them). An
+//! element that reads nothing and does work it keeps nothing of (the
+//! registry class with a registry in scope, a class that repeats a name, a
+//! pure-Python element whose negative `TypelessData` length takes the
+//! reader back) is refused one past the bound in the readers the case names
+//! (`PARITY.md` 19.3), and with the bound lifted is read as UnityPy reads
+//! it. Each value read is written back, and compared with UnityPy's
+//! re-save.
 
 use std::sync::Arc;
 
@@ -251,94 +255,186 @@ fn replay(refused: bool) -> (usize, Vec<String>) {
     (n, bad)
 }
 
-/// Elements that read bytes are read at any count, by both readers, as
-/// UnityPy reads them, and written back as UnityPy writes them.
+/// Elements that read bytes, or keep all they build, are read at any count,
+/// by both readers, as UnityPy reads them, and written back as UnityPy
+/// writes them (review round 9's sweep, Q15 (c): an array of 2^20 + 1 empty
+/// classes was refused).
 #[test]
-fn elements_that_read_bytes_are_read_past_the_zero_size_bound() {
+fn elements_that_read_bytes_or_keep_all_they_build_are_read_past_the_bound() {
     let (n, bad) = replay(false);
-    assert_eq!(n, 4, "the cases that read every element");
+    assert_eq!(n, 8, "the cases that read every element");
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
-/// Elements that read nothing are refused one past the bound by the
-/// readers each case names, and read as UnityPy reads them with it lifted.
+/// Elements that read nothing and do work they keep nothing of are refused
+/// one past the bound by the readers each case names, and read as UnityPy
+/// reads them with it lifted.
 #[test]
-fn elements_that_read_nothing_are_refused_past_the_bound() {
+fn elements_that_read_nothing_and_keep_nothing_of_it_are_refused_past_the_bound() {
     let (n, bad) = replay(true);
     assert_eq!(n, 3, "the cases refused");
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
-/// Plan 3.10, at a bound of 10: more zero-size elements than
-/// `max_zero_size_elements` trip to `other`; as many as the bound read.
-/// Each of the four element loops that count them is reached: an empty
-/// class element reads through UnityPyBoost's `list` and the pure-Python
-/// `list`; flagged, through the pure-Python `read_value_array` (`each`); a
-/// `pair` of empty classes through UnityPyBoost's `pairs` (review round 5:
-/// no test reached `each` or `pairs`, so dropping either check passed the
-/// suite).
-#[test]
-fn zero_size_elements_trip_to_other() {
-    let vector = |data: Json| {
-        let mut rows = json!([
-            [0, "Base", "Base", 0],
-            [1, "vector", "v", 0],
-            [2, "Array", "Array", 0],
-            [3, "int", "size", 0]
-        ]);
-        rows.as_array_mut()
-            .unwrap()
-            .extend(data.as_array().unwrap().iter().cloned());
-        compile(&rows)
-    };
+/// `Base { ManagedReferencesRegistry reg { int version }; vector v { Array
+/// { int size; <data> } } }`: a registry in scope for every element.
+fn vector(data: &Json) -> Arc<Tree> {
+    let mut rows = json!([
+        [0, "Base", "Base", 0],
+        [1, "ManagedReferencesRegistry", "reg", 0],
+        [2, "int", "version", 0],
+        [1, "vector", "v", 0],
+        [2, "Array", "Array", 0],
+        [3, "int", "size", 0]
+    ]);
+    rows.as_array_mut()
+        .unwrap()
+        .extend(data.as_array().unwrap().iter().cloned());
+    compile(&rows)
+}
+
+/// A `pair` element of two subtrees (rooted at level 4).
+fn pair(first: &Json, second: &Json) -> Json {
+    let mut rows = json!([[3, "pair", "data", 0]]);
+    let r = rows.as_array_mut().unwrap();
+    r.extend(first.as_array().unwrap().iter().cloned());
+    r.extend(second.as_array().unwrap().iter().cloned());
+    rows
+}
+
+/// `Foo name { Empty x; Empty x }` at `level`: a value its second `x`
+/// replaces.
+fn repeated(level: i64, name: &str, meta: i64) -> Json {
+    json!([
+        [level, "Foo", name, meta],
+        [level + 1, "Empty", "x", 0],
+        [level + 1, "Empty", "x", 0]
+    ])
+}
+
+fn empty(level: i64, name: &str) -> Json {
+    json!([[level, "Empty", name, 0]])
+}
+
+/// The registry's version, the count `n`, then each element's bytes.
+fn elements(n: i32, element: &[u8]) -> Bytes {
+    let mut d = 1_i32.to_le_bytes().to_vec();
+    d.extend(n.to_le_bytes());
+    for _ in 0..n {
+        d.extend_from_slice(element);
+    }
+    Bytes::from(d)
+}
+
+/// `max_zero_size_elements` at 10.
+fn ten() -> Limits {
     let mut limits = Limits::default();
     limits.max_zero_size_elements = 10;
-    for (shape, t) in [
-        ("empty", vector(json!([[3, "Empty", "data", 0]]))),
+    limits
+}
+
+/// The number of elements of the vector `v` a read of `Base { reg; v }` holds.
+fn items(r: &Result<Parsed, ReadError>, what: &str) -> usize {
+    let p = r.as_ref().unwrap_or_else(|e| panic!("{what}: {e:?}"));
+    let Value::Dict(m) = p.value() else {
+        panic!("{what}: {:?}", p.value());
+    };
+    match p.entries(m).find(|(k, _)| *k == b"v") {
+        Some((_, Value::List(items))) => items.len(),
+        other => panic!("{what}: {other:?}"),
+    }
+}
+
+/// Plan 3.10, at a bound of 10, through each of the four element loops
+/// that count (UnityPyBoost's `list` and `pairs`, the pure-Python `list`
+/// and, for a flagged element, `read_value_array`'s `each`; review round 5:
+/// no test reached `each` or `pairs`, so dropping either check passed the
+/// suite): 11 elements that read nothing and do work they keep nothing of
+/// trip to `other`, and 10 read. Such work is a child skipped (a registry
+/// while one is in scope; the pure-Python `read_value_array` reads its
+/// classes without the registry check, so not there), a value a sibling of
+/// the same name replaces, or, in the pure-Python reader, a negative
+/// `TypelessData` length that takes the position back.
+#[test]
+fn zero_size_elements_trip_to_other() {
+    let registry = json!([
+        [3, "Foo", "data", 0],
+        [4, "ManagedReferencesRegistry", "r", 0],
+        [5, "int", "x", 0]
+    ]);
+    let rewinding = |meta: i64| json!([[3, "Foo", "data", meta], [4, "TypelessData", "d", 0]]);
+    let back = (-4_i32).to_le_bytes();
+    let both: &[&str] = &["boost", "python"];
+    // Shape, element, each element's bytes, the readers that count it.
+    let trips: [(&str, Json, &[u8], &[&str]); 6] = [
+        ("registry in scope", registry, &[], both),
+        ("repeated name", repeated(3, "data", 0), &[], both),
         (
-            "aligned empty",
-            vector(json!([[3, "Empty", "data", 0x4000]])),
+            "aligned repeated name",
+            repeated(3, "data", 0x4000),
+            &[],
+            both,
         ),
         (
-            "pair of empties",
-            vector(json!([
-                [3, "pair", "data", 0],
-                [4, "Empty", "first", 0],
-                [4, "Empty", "second", 0]
-            ])),
+            "pair of a repeated name",
+            pair(&repeated(4, "first", 0), &empty(4, "second")),
+            &[],
+            both,
         ),
-    ] {
-        for reader in ["boost", "python"] {
+        ("rewinding", rewinding(0), &back, &["python"]),
+        ("aligned rewinding", rewinding(0x4000), &back, &["python"]),
+    ];
+    for (shape, data, element, readers) in trips {
+        let t = vector(&data);
+        for reader in readers {
             let what = format!("{shape}, {reader}");
-            let r = read(
-                reader,
-                &Bytes::from(11_i32.to_le_bytes().to_vec()),
-                &t,
-                limits,
-            );
+            let r = read(reader, &elements(11, element), &t, ten());
             assert!(
                 matches!(&r, Err(ReadError {
                     kind: ReadErrorKind::Other,
                     detail: ReadDetail::Limit(l),
                     ..
-                }) if l.kind == LimitKind::ZeroSizeElements),
+                }) if l.kind == LimitKind::ZeroSizeElements && l.value == 11 && l.max == 10),
                 "{what}: {r:?}"
             );
             // Ten fit.
-            let r = read(
-                reader,
-                &Bytes::from(10_i32.to_le_bytes().to_vec()),
-                &t,
-                limits,
-            );
-            let p = r.unwrap_or_else(|e| panic!("{what}: {e:?}"));
-            let Value::Dict(m) = p.value() else {
-                panic!("{what}: {:?}", p.value());
-            };
-            let Some((_, Value::List(items))) = m.entries().first() else {
-                panic!("{what}: {m:?}");
-            };
-            assert_eq!(items.len(), 10, "{what}");
+            let r = read(reader, &elements(10, element), &t, ten());
+            assert_eq!(items(&r, &what), 10, "{what}");
+        }
+    }
+}
+
+/// Q15 (c): elements that read nothing and keep all they build (an empty
+/// class, an aligned one, a `pair` of them, a class of them) are read past
+/// a bound of 10, and far past it, by both readers, a registry in scope:
+/// the meter bounds them.
+#[test]
+fn elements_that_keep_all_they_build_are_read_past_the_bound() {
+    let keeps = [
+        ("empty", empty(3, "data")),
+        ("aligned empty", json!([[3, "Empty", "data", 0x4000]])),
+        (
+            "pair of empties",
+            pair(&empty(4, "first"), &empty(4, "second")),
+        ),
+        (
+            "class of empties",
+            json!([
+                [3, "Foo", "data", 0],
+                [4, "Empty", "a", 0],
+                [4, "Empty", "b", 0]
+            ]),
+        ),
+    ];
+    for (shape, data) in keeps {
+        let t = vector(&data);
+        for reader in ["boost", "python"] {
+            let what = format!("{shape}, {reader}");
+            for n in [11_usize, 1 << 12] {
+                let count = i32::try_from(n).unwrap();
+                let r = read(reader, &elements(count, &[]), &t, ten());
+                assert_eq!(items(&r, &what), n, "{what}");
+            }
         }
     }
 }
