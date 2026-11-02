@@ -1,4 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py, UnityPy/classes/PPtr.py, UnityPy/helpers/ResourceReader.py. See THIRD_PARTY_LICENSES.
+// Ported from CPython 3.11 (PSF-2.0): Lib/ntpath.py, splitdrive and split; Lib/genericpath.py, _splitext. See THIRD_PARTY_LICENSES.
 //! Python string semantics on raw bytes, as UnityPy applies them to names.
 //!
 //! UnityPy compares CAB and resource names after `ntpath.basename` and

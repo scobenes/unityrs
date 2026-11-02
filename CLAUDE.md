@@ -42,14 +42,18 @@ commits land on the worktree's branch.
   Only synthetic fixtures, or fixtures built with the Unity Editor, are checked
   in.
 - **Licences.** UnityPy, UnityPyBoost and AssetStudio are MIT and may be ported;
-  keep their notices. Pillow ports carry MIT-CMU. AssetRipper and other
+  keep their notices. Pillow ports carry MIT-CMU, liblz4 ports BSD-2-Clause and
+  ports of CPython's standard library PSF-2.0. AssetRipper and other
   GPL/AGPL projects are read for format knowledge only; never copy their code.
 - **Parity is measured, not assumed.** A behaviour claimed as UnityPy-equal needs
   a test against the pinned oracle. See `docs/DESIGN.md` section 3 for the tiers.
 - **Third-party notices.** `THIRD_PARTY_LICENSES` is generated: after a change to
   `Cargo.lock`, `about.toml` or `about.hbs`, run `scripts/third-party-licenses`
   (it says how to install the pinned cargo-about), or CI fails. A port's notice
-  goes into `about.hbs`. A new crate under `crates/` links `LICENSE-MIT` and
+  goes into `about.hbs`, its source and licence into the file's header
+  (`// Ported from <source> (<SPDX>): ...`), and its licence into the crate's
+  `license`, with the licence's text as a `LICENSE-*` file of the crate when
+  it is not MIT or Apache-2.0 (the script's `ports` check). A new crate under `crates/` links `LICENSE-MIT` and
   `LICENSE-APACHE` to the repository's (`ln -s ../../LICENSE-MIT`), or the
   script refuses its template notice. A licence clarified or accepted for one
   crate in `about.toml` is mirrored in `deny.toml`, which the script checks.

@@ -26,8 +26,8 @@
 //! bytes of the declared size or the last 8 bytes of input must be the last
 //! sequence and end exactly at the end of input; a match must end at least 5
 //! bytes before the declared size; the length-extension guards). [`Lz4`]
-//! checks the sequence stream against those conditions, and the oracle
-//! fixture `tests/fixtures/scaffold/lz4_blocks.json` (python-lz4's verdict and
+//! is a port of liblz4's decoder (`lz4.rs`), so it refuses what liblz4
+//! refuses and decodes what it decodes, and the oracle fixture `tests/fixtures/scaffold/lz4_blocks.json` (python-lz4's verdict and
 //! output for a grid of blocks around each boundary) is the acceptance test.
 //!
 //! **Output.** A codec writes into a [`DecodeBuf`], which checks the block's

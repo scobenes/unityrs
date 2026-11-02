@@ -1,3 +1,4 @@
+// Ported from CPython 3.11 (PSF-2.0): Lib/fnmatch.py, translate; Lib/re/_parser.py, _parse's character set. See THIRD_PARTY_LICENSES.
 //! `--name`'s globs: Python 3.11's `fnmatch.fnmatchcase`, which
 //! `fnmatch.translate` compiles to a regular expression, ported to a
 //! wildcard matcher over code points (`tests/fixtures/dump/select.json`

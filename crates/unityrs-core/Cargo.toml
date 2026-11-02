@@ -4,9 +4,12 @@ description = "Read and write Unity asset bundles, serialized files and typetree
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-# The crate ports UnityPy 1.25.2 (MIT), so the MIT notice travels with it.
-# See THIRD_PARTY_LICENSES and docs/plans/core.md section 2.5.
-license = "(MIT OR Apache-2.0) AND MIT"
+# The crate ports UnityPy 1.25.2 (MIT), liblz4 1.9.4's block decoder
+# (BSD-2-Clause: codec/lz4.rs) and code of CPython 3.11's standard library
+# (PSF-2.0: detect.rs, pystr.rs), so their notices travel with it: MIT's in
+# THIRD_PARTY_LICENSES, liblz4's in LICENSE-LZ4 and CPython's in LICENSE-PSF.
+# See docs/plans/core.md section 2.5.
+license = "(MIT OR Apache-2.0) AND MIT AND BSD-2-Clause AND PSF-2.0"
 repository.workspace = true
 authors.workspace = true
 
@@ -17,9 +20,9 @@ authors.workspace = true
 # SerializedFile and every TypelessData value share one allocation.
 bytes = "=1.12.1"
 thiserror = "=2.0.21"
-# Block codecs (docs/spikes/lzma.md: liblzma static, pinned).
+# Block codecs (docs/spikes/lzma.md: liblzma static, pinned). LZ4 has no
+# dependency: `codec/lz4.rs` ports liblz4 1.9.4's decoder (plan section 3.6).
 liblzma = { version = "=0.4.9", features = ["static"] }
-lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-decode"] }
 # The full-stream gzip check of ImportHelper.check_file_type (rule 7), with
 # zlib-rs (zlib's inflate in Rust) as the backend: it refuses what CPython's
 # zlib refuses, a distance before the start of the output included, which
@@ -34,6 +37,9 @@ unityrs-testkit = { path = "../unityrs-testkit" }
 # are replayed without Python. Already in the lock through unityrs-dump, so
 # no package changes Cargo.lock to read them (plan section 7.1).
 serde_json = "=1.0.154"
+# Only `tests/scaffold_fixtures.rs`, which pins that lz4_flex and liblz4
+# disagree both ways (plan section 3.6); no production code decodes with it.
+lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-decode"] }
 
 [lints]
 workspace = true

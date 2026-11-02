@@ -1,4 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/ImportHelper.py. See THIRD_PARTY_LICENSES.
+// Ported from CPython 3.11 (PSF-2.0): Lib/gzip.py, _read_exact, _read_gzip_header, _GzipReader.read and _read_eof. See THIRD_PARTY_LICENSES.
 //! `ImportHelper.check_file_type` and `parse_file`'s naming rule
 //! (`helpers/ImportHelper.py:44-156`), quirks included: every rule of
 //! `docs/CANONICAL_DUMP.md` section 4.2 (`l0`) and section 7 (L0 detection).

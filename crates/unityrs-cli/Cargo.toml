@@ -4,7 +4,10 @@ description = "Command-line Unity asset extraction."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# It ports code of CPython 3.11's standard library (PSF-2.0: args/mod.rs,
+# from argparse), whose notice travels with it in LICENSE-PSF. See
+# THIRD_PARTY_LICENSES and docs/plans/core.md section 2.5.
+license = "(MIT OR Apache-2.0) AND PSF-2.0"
 repository.workspace = true
 authors.workspace = true
 
