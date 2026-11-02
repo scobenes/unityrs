@@ -745,8 +745,9 @@ fn compile_on(m: &Arc<Meter>, rows: Vec<NodeRow>, watched: bool, names: Option<&
 /// table's ids and their sorted copy) and the tables it keeps (`info`, the
 /// pure-Python kinds, the tree's `Arc`) are each charged to the list's meter
 /// before they are allocated, through a plain compile and through a
-/// `NameTable` as a TPK's trees are compiled (its strings slices of one
-/// buffer, the rows' names clones of them).
+/// `NameTable` as a TPK's trees are compiled (`unityrs-tpk`, `blob/strings.rs`
+/// and `provider.rs`: each of its strings a charged copy on the meter the
+/// table and the trees use, the rows' names clones of them).
 fn compiles(counting: bool) {
     let mut fresh = |n: &[u8]| RawStr::from(n);
     let m = meter(counting);
@@ -760,20 +761,13 @@ fn compiles(counting: bool) {
         "A and B were not sorted: {sorted} {unsorted}"
     );
 
-    let mut text: Vec<u8> = Vec::new();
-    let mut at = Vec::new();
-    for row in compile_rows(B, &mut fresh) {
-        for s in [row.ty.as_bytes(), row.name.as_bytes()] {
-            at.push(text.len()..text.len() + s.len());
-            text.extend_from_slice(s);
-        }
-    }
-    let text = Bytes::from(text);
-    let strings: Vec<RawStr> = at
-        .iter()
-        .map(|r| RawStr::from(text.slice(r.clone())))
-        .collect();
     let m = meter(counting);
+    let strings: Vec<RawStr> = compile_rows(B, &mut fresh)
+        .iter()
+        .flat_map(|row| {
+            [row.ty.as_bytes(), row.name.as_bytes()].map(|s| RawStr::charged(s, &m).unwrap())
+        })
+        .collect();
     let watching = watch_from(&m);
     let table = NameTable::new(&strings, &m).unwrap();
     unwatch(watching, "a name table");
