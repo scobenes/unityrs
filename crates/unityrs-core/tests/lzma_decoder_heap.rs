@@ -11,8 +11,11 @@
 //! (`tcache_count=0`: a chunk freed into it still counts as in use, and a
 //! request it serves counts nothing), and with a fixed `mmap` threshold of
 //! 128 KiB, the one [`heap_cost`] models (glibc raises its threshold after a
-//! mapped chunk is freed, unless it is set). Linux and glibc only; elsewhere
-//! the test says it skipped.
+//! mapped chunk is freed, unless it is set). Linux and glibc 2.33 or later
+//! only: `mallinfo2` is looked up when the test runs, so the test links on
+//! any glibc (review round 13: it linked `mallinfo2`, and the test target
+//! failed to link on glibc 2.28-2.32), says it skipped on an older one or
+//! elsewhere, and fails, never skips, where glibc says it is 2.33 or later.
 //!
 //! Owner: package C.
 
@@ -39,10 +42,12 @@ const TUNABLES: &str = "glibc.malloc.tcache_count=0:glibc.malloc.mmap_threshold=
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod heap {
+    use std::ffi::{CStr, c_char, c_void};
+
     /// `struct mallinfo2` (glibc 2.33 and later).
     #[repr(C)]
     #[allow(dead_code)]
-    struct Mallinfo2 {
+    pub struct Mallinfo2 {
         arena: usize,
         ordblks: usize,
         smblks: usize,
@@ -56,24 +61,65 @@ mod heap {
     }
 
     unsafe extern "C" {
-        fn mallinfo2() -> Mallinfo2;
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        fn gnu_get_libc_version() -> *const c_char;
     }
 
-    pub const SUPPORTED: bool = true;
+    /// glibc's `mallinfo2`, looked up in the running process
+    /// (`RTLD_DEFAULT`, a null handle in glibc), if this glibc has it.
+    fn mallinfo2() -> Option<unsafe extern "C" fn() -> Mallinfo2> {
+        // SAFETY: a null handle and a NUL-terminated name; `dlsym` returns
+        // the symbol's address or null.
+        let f = unsafe { dlsym(std::ptr::null_mut(), c"mallinfo2".as_ptr()) };
+        // SAFETY: glibc's `mallinfo2` takes no argument and returns its
+        // struct by value (`malloc.h`), as this type says.
+        (!f.is_null()).then(|| unsafe {
+            std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> Mallinfo2>(f)
+        })
+    }
+
+    /// The running glibc's version, `gnu_get_libc_version()`.
+    pub fn version() -> String {
+        // SAFETY: glibc returns a static NUL-terminated string.
+        unsafe { CStr::from_ptr(gnu_get_libc_version()) }
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Whether the heap can be measured here: `Err` with the reason when
+    /// this glibc has no `mallinfo2`, which only one before 2.33 may lack (a
+    /// later one without it is a failure, not a skip: the test must run
+    /// wherever it can).
+    pub fn measurable() -> Result<(), String> {
+        if mallinfo2().is_some() {
+            return Ok(());
+        }
+        let v = version();
+        let mut parts = v.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+        let at = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+        assert!(
+            at < (2, 33),
+            "glibc {v} has mallinfo2 (2.33 and later), but dlsym did not find it"
+        );
+        Err(format!("glibc {v} has no mallinfo2 (it came in 2.33)"))
+    }
 
     /// The bytes the process's heap holds, in glibc chunks: the arenas'
     /// chunks in use and the mapped ones.
     pub fn held() -> u64 {
+        let f = mallinfo2().expect("mallinfo2 (checked by measurable())");
         // SAFETY: `mallinfo2` takes no argument, returns its struct by value
         // and allocates nothing.
-        let m = unsafe { mallinfo2() };
+        let m = unsafe { f() };
         u64::try_from(m.uordblks + m.hblkhd).unwrap()
     }
 }
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 mod heap {
-    pub const SUPPORTED: bool = false;
+    pub fn measurable() -> Result<(), String> {
+        Err("no glibc heap statistics on this target".to_owned())
+    }
 
     pub fn held() -> u64 {
         0
@@ -138,6 +184,7 @@ fn lzma_decoder_heap_probe() {
     if std::env::var(PROBE).is_err() {
         return;
     }
+    heap::measurable().unwrap();
     // The settings took: a freed small chunk is no longer counted in use
     // (in a thread cache it would be).
     let before = heap::held();
@@ -242,8 +289,8 @@ fn lzma_decoder_heap_probe() {
 /// allocated, with at most 32 bytes to spare (`lzma_decoder_heap_probe`).
 #[test]
 fn liblzmas_decoder_is_charged() {
-    if !heap::SUPPORTED {
-        eprintln!("skipped: no glibc heap statistics on this target");
+    if let Err(why) = heap::measurable() {
+        eprintln!("skipped: {why}");
         return;
     }
     let exe = std::env::current_exe().expect("the test binary's path");
