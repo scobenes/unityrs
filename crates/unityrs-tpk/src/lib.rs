@@ -73,9 +73,11 @@
 //! **Limits, where UnityPy has none.** Loading is bounded before it
 //! allocates ([`TpkError::TooLarge`]): the file at
 //! [`TpkProvider::MAX_FILE_BYTES`], the decoded payload at
-//! [`TpkProvider::MAX_DECODED_BYTES`], what the decoder holds (its output and
-//! an LZMA decoder's dictionary and state, charged to a meter) at
-//! [`TpkProvider::MAX_DECODER_MEMORY`], and each table of the blob at
+//! [`TpkProvider::MAX_DECODED_BYTES`], what the decoder holds (its output,
+//! for LZMA allocated once at that bound, and an LZMA decoder's dictionary
+//! and state, charged to a meter) at [`TpkProvider::MAX_DECODER_MEMORY`],
+//! which a payload within the decoded bound never meets, whatever its header
+//! declares, and each table of the blob at
 //! [`TpkProvider::MAX_RECORDS`] records, refused when its count is read,
 //! before any of its records. No count sizes an allocation: every table grows
 //! as its records are read, each growth charged first. A string whose length

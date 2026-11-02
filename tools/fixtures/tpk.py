@@ -12,7 +12,9 @@ Runs in the oracle image. Two parts:
   version, compression and data type, a file or a properties header cut short, reads
   that run out at a byte); common strings numbered by code points; LZ4 and LZMA
   payloads, with the blocks and streams on which liblz4 and liblzma decide differently
-  from other decoders), run through `Tpk.py` (`TpkFile(...).GetDataBlob()`, then
+  from other decoders, and LZMA payloads at `TpkProvider`'s decoded bound whose one far
+  match makes unityrs-core's codec decode again with a larger dictionary), run through
+  `Tpk.py` (`TpkFile(...).GetDataBlob()`, then
   `get_typetree_node` per class and version, and `get_common_strings()`, with the blob
   in place of the bundled one). The TPKs (hex) and UnityPy's outcomes (JSON)
   are committed under crates/unityrs-tpk/tests/fixtures/tpk/, and
@@ -48,8 +50,8 @@ for it (`crates/unityrs-tpk/tests/common/mod.rs`), and an unmapped pair fails G7
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-import lzma
 import os
 import struct
 import sys
@@ -67,205 +69,41 @@ from UnityPy.helpers.UnityVersion import UnityVersion
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "crates/unityrs-tpk/tests/fixtures/tpk"
 sys.path.insert(0, str(ROOT / "tools/parity"))
+sys.path.insert(0, str(ROOT / "tools/fixtures"))
 
 import child  # noqa: E402
 import scratch  # noqa: E402
+from tpk_build import (  # noqa: E402
+    BROTLI,
+    I32_MAX,
+    LZ4,
+    LZMA,
+    MAX_DECODED_BYTES,
+    MAX_RECORDS,
+    NONE,
+    blob,
+    both,
+    chain,
+    cls,
+    compress,
+    decoded_before_failing,
+    far_match_stream,
+    header,
+    lz4_sequence,
+    node,
+    root_flags_blob,
+    strings,
+    tpk_file,
+    ver,
+)
 
 UNITYPY = "1.25.2"
-
-MAGIC = 0x2A4B5054  # b"TPK*"
-NONE, LZ4, LZMA, BROTLI = 0, 1, 2, 3
-I32_MAX = 2**31 - 1
-
-# TpkProvider's bounds (crates/unityrs-tpk/src/provider.rs), for the `refused` cases.
-MAX_DECODED_BYTES = 16 << 20
-MAX_RECORDS = 1 << 16
-
 
 def image_tpk() -> Path:
     return Path(UnityPy.__file__).parent / "resources" / "lzma.tpk"
 
 
 # --- building TPKs --------------------------------------------------------------------
-
-
-def ver(major: int, minor: int = 0, build: int = 0, typ: int = 3, number: int = 1) -> int:
-    """A version packed as a TPK stores it (`UnityVersion.from_list`)."""
-    return (major << 48) | (minor << 32) | (build << 16) | (typ << 8) | number
-
-
-def node(
-    type_name: int,
-    name: int,
-    subs: list[int],
-    byte_size: int = -1,
-    version: int = 1,
-    meta: int = 0x4000,
-    type_flags: int = 0,
-):
-    return (type_name, name, byte_size, version, type_flags, meta, subs)
-
-
-def cls(flags: int, editor: int | None = None, release: int | None = None):
-    return (flags, editor, release)
-
-
-def both(root: int):
-    return cls(192, root, root)
-
-
-def varint(n: int) -> bytes:
-    out = bytearray()
-    while True:
-        byte = n & 0x7F
-        n >>= 7
-        if not n:
-            out.append(byte)
-            return bytes(out)
-        out.append(byte | 0x80)
-
-
-def blob(
-    versions: list[int],
-    classes: list[tuple[int, list]],
-    nodes: list[tuple],
-    strings: list[str | bytes],
-    common: list[tuple[int, int]] = (),
-    indices: list[int] = (),
-    counts: dict[str, int] | None = None,
-    items_anyway: bool = False,
-) -> bytes:
-    """A type-tree blob as `TpkTypeTreeBlob` reads it (`Tpk.py:232-240`).
-
-    `counts` replaces a count (`versions`, `classes`, `entries` (each class's),
-    `common`, `indices`, `nodes`, `strings`) with another value; for a count of zero or
-    less the items are not written, unless `items_anyway`.
-    """
-    counts = counts or {}
-
-    def n(key: str, items) -> tuple[bytes, bool]:
-        value = counts.get(key, len(items))
-        return struct.pack("<i", value), value > 0 or items_anyway
-
-    out = bytearray(struct.pack("<q", 1))
-    head, write = n("versions", versions)
-    out += head
-    if write:
-        out += b"".join(struct.pack("<Q", v) for v in versions)
-    head, write = n("classes", classes)
-    out += head
-    for class_id, entries in classes if write else ():
-        out += struct.pack("<i", class_id)
-        head, write_entries = n("entries", entries)
-        out += head
-        for version, c, *presence in entries if write_entries else ():
-            out += struct.pack("<Q", version)
-            if c is None:
-                out += b"\0"
-                continue
-            flags, editor, release = c
-            # The class's presence byte (`stream.read(1)[0]`, `Tpk.py:342`): 1, or
-            # another nonzero byte given after the class.
-            out += bytes(presence or [1]) + struct.pack("<HHB", 7, 0, flags)
-            out += b"".join(struct.pack("<H", r) for r in (editor, release) if r is not None)
-    head, write = n("common", common)
-    out += head
-    for v, c in common if write else ():
-        out += struct.pack("<QB", v, c)
-    head, write = n("indices", indices)
-    out += head
-    if write:
-        out += b"".join(struct.pack("<H", i) for i in indices)
-    head, write = n("nodes", nodes)
-    out += head
-    for type_name, name, byte_size, version, type_flags, meta, subs in nodes if write else ():
-        out += struct.pack("<HHihbIH", type_name, name, byte_size, version, type_flags, meta, len(subs))
-        out += b"".join(struct.pack("<H", s) for s in subs)
-    head, write = n("strings", strings)
-    out += head
-    for s in strings if write else ():
-        data = s if isinstance(s, bytes) else s.encode()
-        out += varint(len(data)) + data
-    return bytes(out)
-
-
-def compress(payload: bytes, compression: int) -> bytes:
-    if compression == LZ4:
-        return lz4.block.compress(payload, store_size=False)
-    if compression == LZMA:
-        # `decompress_lzma` (helpers/CompressionHelper.py): 5 bytes of properties, then
-        # a raw LZMA1 stream.
-        lc, lp, pb, dict_size = 3, 0, 2, 1 << 16
-        filters = [{"id": lzma.FILTER_LZMA1, "dict_size": dict_size, "lc": lc, "lp": lp, "pb": pb}]
-        data = struct.pack("<BI", (pb * 5 + lp) * 9 + lc, dict_size)
-        return data + lzma.compress(payload, format=lzma.FORMAT_RAW, filters=filters)
-    if compression == BROTLI:
-        return brotli.compress(payload)
-    return payload
-
-
-def header(compression: int, compressed: int, uncompressed: int) -> bytes:
-    """`TpkFile.Struct` (`<IbbbbIII`); a negative size is written as its u32."""
-    sizes = (compressed & 0xFFFF_FFFF, uncompressed & 0xFFFF_FFFF)
-    return struct.pack("<IBBBBIII", MAGIC, 1, compression, 0, 0, 0, *sizes)
-
-
-def tpk_file(
-    payload: bytes,
-    compression: int = NONE,
-    sizes: tuple[int, int] | None = None,
-    data: bytes | None = None,
-) -> bytes:
-    """A TPK file around `payload` (`Tpk.py:146-174`), compressed as asked (or `data`
-    as the stored bytes); `sizes` replaces the header's compressed and uncompressed
-    sizes."""
-    if data is None:
-        data = compress(payload, compression)
-    compressed, uncompressed = sizes or (len(data), len(payload))
-    return header(compression, compressed, uncompressed) + data
-
-
-def lz4_sequence(literals: bytes, offset: int | None = None, length: int = 0) -> bytes:
-    """One LZ4 sequence: a token, the literals, and a match of `length` bytes at
-    `offset` (none for the block's last sequence)."""
-
-    def extra(n: int) -> bytes:
-        out = bytearray()
-        while n >= 255:
-            out.append(255)
-            n -= 255
-        out.append(n)
-        return bytes(out)
-
-    match = 0 if offset is None else length - 4
-    token = bytes([min(len(literals), 15) << 4 | min(match, 15)])
-    out = token + (extra(len(literals) - 15) if len(literals) >= 15 else b"") + literals
-    if offset is not None:
-        out += struct.pack("<H", offset) + (extra(match - 15) if match >= 15 else b"")
-    return out
-
-
-def chain(n: int) -> list[tuple]:
-    return [node(0, 1, [i + 1] if i + 1 < n else []) for i in range(n)]
-
-
-def strings(n: int) -> list[str]:
-    return [f"s{i}" for i in range(n)]
-
-
-def root_flags_blob() -> bytes:
-    """Classes 10, 20, 30, 40 with root flags 0, 64, 128, 192, each followed by a class
-    with both roots; class 45 carries other flag bits with its release root."""
-    nodes = [node(0, 1, [1]), node(2, 3, []), node(4, 5, [1, 1], meta=0)]
-    at = ver(2018, 4, 2)
-    classes = []
-    for class_id, c in [(10, cls(0)), (20, cls(64, editor=2)), (30, cls(128, release=0)), (40, cls(192, 2, 0))]:
-        classes.append((class_id, [(at, c)]))
-        classes.append((class_id + 1, [(at, both(2))]))
-    classes.append((45, [(at, cls(1 | 4 | 16 | 128, release=2))]))
-    return blob([ver(5), at, ver(2022, 1)], classes, nodes, strings(6))
-
-
 def synthetic_cases() -> Iterator[tuple[str, bytes, int]]:
     """`(name, TPK bytes, the tree depth to open it with)`."""
     yield "root_flags", tpk_file(root_flags_blob()), 256
@@ -429,6 +267,40 @@ def codec_cases() -> Iterator[tuple[str, bytes, int]]:
     yield "lzma_cut_short", tpk_file(payload, LZMA, data=stream[:-8]), 256
     bad_props = bytes([225]) + stream[1:]
     yield "lzma_bad_properties", tpk_file(payload, LZMA, data=bad_props), 256
+    yield from far_match_cases()
+
+
+# Where a stream's one far match begins in each `far_match_cases` payload, by the
+# header's declared size. 1 MiB - 1 is review round 13's: 4 KiB before the end. 4095:
+# unityrs-core's LZMA windows then end 16,772,632 bytes in, just below the output's
+# room of 4095 * 2^12 bytes, so an attempt that fails there and a retry that grows that
+# room past it would hold both blocks and a 32 MiB dictionary, more than the decoder's
+# 64 MiB (`TpkProvider::MAX_DECODER_MEMORY`), had the output not been allocated whole.
+FAR_MATCHES = {1048575: MAX_DECODED_BYTES - 4096, 4095: 16_772_568}
+
+
+def far_match_cases() -> Iterator[tuple[str, bytes, int]]:
+    """Payloads of exactly `MAX_DECODED_BYTES` whose LZMA stream has one match about
+    16 MiB back, near its end: a decoder whose dictionary is smaller fails there, and
+    unityrs-core's codec decodes again with a dictionary of twice what it made, about
+    32 MiB, beside the output (review round 13: with the output's room grown as it
+    decoded, a valid TPK was refused for decoder memory, depending on the header's
+    declared size, which UnityPy ignores)."""
+    blob = root_flags_blob()
+    marked = hashlib.sha256(b"unityrs far match").digest()
+    for declared, at in FAR_MATCHES.items():
+        # A marker byte before the first copy, so no match can start before the second.
+        payload = bytearray(MAX_DECODED_BYTES)
+        payload[: len(blob)] = blob
+        payload[len(blob)] = 1
+        payload[len(blob) + 1 : len(blob) + 1 + len(marked)] = marked
+        payload[at : at + len(marked)] = marked
+        stream = far_match_stream(bytes(payload))
+        failed = decoded_before_failing(stream, 4096)
+        assert failed in (at - 1, at), (declared, at, failed)
+        sizes = (len(stream), declared)
+        name = f"lzma_far_match_at_the_decoded_bound_declared_{declared}"
+        yield name, tpk_file(bytes(payload), LZMA, sizes=sizes, data=stream), 256
 
 
 def header_cases() -> Iterator[tuple[str, bytes, int]]:

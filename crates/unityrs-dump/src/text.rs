@@ -19,7 +19,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use unityrs_core::budget::BudgetExceeded;
-use unityrs_core::limits::{Charge, ChargeError, Meter, heap_cost};
+use unityrs_core::limits::{Charge, ChargeError, Meter, heap_cost, shrink_moves};
 
 /// Where a JSON text is written: a `String`, which grows as `String` does,
 /// or a [`Text`].
@@ -71,6 +71,25 @@ fn bytes(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }
 
+/// `buf` with no spare room: shrunk by the allocator, or moved to a new
+/// allocation where a shrink would keep a mapped block, a page or more
+/// against the charge of a heap chunk ([`shrink_moves`]; review round 13).
+/// `false`, with `buf` as it was, when the allocator refuses the new
+/// allocation.
+fn shrink(buf: &mut String) -> bool {
+    if shrink_moves(bytes(buf.len()), bytes(buf.capacity())) {
+        let mut exact = String::new();
+        if exact.try_reserve_exact(buf.len()).is_err() {
+            return false;
+        }
+        exact.push_str(buf);
+        *buf = exact;
+    } else {
+        buf.shrink_to_fit();
+    }
+    true
+}
+
 /// A JSON text whose every growth is charged to a [`Meter`] before it is
 /// reserved, and reserved fallibly (module docs). After a refusal it writes
 /// nothing more, and [`Text::finish`] returns the refusal.
@@ -120,8 +139,8 @@ impl Text {
         let (len, cap) = (self.buf.len(), self.buf.capacity());
         if cap > len
             && let Ok(smaller) = self.charge.meter().charge(heap_cost(bytes(len)))
+            && shrink(&mut self.buf)
         {
-            self.buf.shrink_to_fit();
             self.charge.release(heap_cost(bytes(cap)));
             self.charge.absorb(smaller);
         }

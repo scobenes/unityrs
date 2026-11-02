@@ -56,10 +56,16 @@ impl Lzma {
     /// `LZ_DICT_EXTRA` is 0 in `liblzma-sys`'s build, whose `config.h`
     /// defines no `HAVE_IMMINTRIN_H`, `lz/lz_decoder.h:22-46`), in a glibc
     /// chunk, and [`Self::DECODER_STATE`].
+    /// A `const fn`, so a bound sized from it is checked when it compiles
+    /// (`unityrs-tpk`'s `TpkProvider::MAX_DECODER_MEMORY`).
     #[must_use]
-    pub fn decoder_charge(dict: u32) -> u64 {
-        let buffer =
-            u64::from(dict.max(LZMA_DICT_SIZE_MIN)).next_multiple_of(16) + LZ_DICT_REPEAT_ROOM;
+    pub const fn decoder_charge(dict: u32) -> u64 {
+        let dict = if dict < LZMA_DICT_SIZE_MIN {
+            LZMA_DICT_SIZE_MIN
+        } else {
+            dict
+        };
+        let buffer = (dict as u64).next_multiple_of(16) + LZ_DICT_REPEAT_ROOM;
         heap_cost(buffer) + Self::DECODER_STATE
     }
 }
@@ -87,7 +93,13 @@ impl BlockCodec for Lzma {
     /// ([`Lzma::DECODER_STATE`]) are charged to the input's meter
     /// ([`DecodeBuf::meter`]) before liblzma allocates them, and returned
     /// when the attempt ends, so the meter sees them beside the output (plan
-    /// section 3.15); a refusal is the meter's, like a refused growth.
+    /// section 3.15); a refusal is the meter's, like a refused growth. The
+    /// output's room is `out`'s: it grows geometrically, never past the
+    /// block's cap, and a retry keeps the room the failed attempt grew, so an
+    /// attempt holds its room (and, while the room grows, the block it
+    /// replaces) beside its dictionary. A caller that must bound that sum by
+    /// the output's cap alone allocates the room whole first, as unityrs-tpk
+    /// does (`TpkProvider::MAX_DECODER_MEMORY`; review round 13).
     fn decode(
         &self,
         input: &Bytes,

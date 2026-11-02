@@ -23,7 +23,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytes::Bytes;
 
 use crate::error::{LimitError, LimitKind};
-use crate::limits::{Charge, ChargeError, Meter, grow_charged, grow_counted, heap_cost};
+use crate::limits::{
+    Charge, ChargeError, Meter, grow_charged, grow_counted, heap_cost, shrink_exact,
+};
 
 /// Which kind of load a charge belongs to, so a refusal says which pool
 /// refused (plan section 4.1).
@@ -311,8 +313,10 @@ pub fn charged_bytes(buf: Vec<u8>, mut charge: Charge) -> Result<Bytes, ChargeEr
 /// (a path read, the writer's output) use it too. Every growth first checks
 /// the current segment's cap, then charges the new allocation to the input's
 /// meter (which books it with the budget), and only then grows; a refused
-/// growth allocates nothing. Capacity grows geometrically, and a refused
-/// doubling retries at exactly the size needed.
+/// growth allocates nothing. Capacity grows geometrically, never past the
+/// current segment's end (its start and its cap: room no write may use is
+/// never allocated, review round 13), and a refused doubling retries at
+/// exactly the size needed.
 ///
 /// **Segments.** A run of several blocks is one buffer, but each block has
 /// its own cap ([`crate::limits::Limits::max_block_output`]): the caller
@@ -479,10 +483,11 @@ impl DecodeBuf {
     }
 
     /// Makes room for `additional` more bytes: the segment's cap is checked
-    /// and the meter charged before the buffer grows. The capacity doubles
-    /// while the meter can pay for the old and the new block at once, and
-    /// grows to exactly what is needed when it cannot. Room is memory, not
-    /// work: what is written into it counts ([`Self::extend_from_slice`]).
+    /// and the meter charged before the buffer grows. The capacity doubles,
+    /// up to the segment's end, while the meter can pay for the old and the
+    /// new block at once, and grows to exactly what is needed when it
+    /// cannot. Room is memory, not work: what is written into it counts
+    /// ([`Self::extend_from_slice`]).
     pub fn reserve(&mut self, additional: usize) -> Result<(), ChargeError> {
         self.make_room(additional, 0)
     }
@@ -513,14 +518,20 @@ impl DecodeBuf {
 
     fn make_room(&mut self, additional: usize, work: u64) -> Result<(), ChargeError> {
         let need = self.buf.len().saturating_add(additional);
-        if need > self.seg_end() {
+        let end = self.seg_end();
+        if need > end {
             return Err(ChargeError::Limit(LimitError {
                 kind: self.seg_kind,
                 value: u64::try_from(need - self.seg_start).unwrap_or(u64::MAX),
                 max: self.seg_cap,
             }));
         }
-        grow_counted(&mut self.buf, &mut self.charge, need, usize::MAX, work)
+        // Review round 13: the doubling was not capped, so a block whose
+        // output ended just past a power of two of its first window held
+        // room up to twice its cap (a TPK's LZMA payload of 16 MiB, 32 MiB),
+        // which a later charge (an LZMA retry's dictionary) then had to fit
+        // beside.
+        grow_counted(&mut self.buf, &mut self.charge, need, end, work)
     }
 
     /// Appends `data`.
@@ -552,14 +563,20 @@ impl DecodeBuf {
     /// The output as `Bytes` that carry their charge ([`charged_bytes`]).
     /// A buffer with spare capacity is shrunk to its length when the meter
     /// can also pay for the smaller block while the allocator moves it, and
-    /// is kept (charged as it is) otherwise.
+    /// is kept (charged as it is) otherwise, or when the allocator refuses
+    /// the smaller block. A block that may be mapped is never shrunk below
+    /// 128 KiB in place ([`crate::limits::shrink_moves`]; review round 13:
+    /// 10 bytes cut from room of 1 MiB, as an LZMA block's first window
+    /// leaves a short block, held a page against a charge of 32 bytes).
     pub fn into_bytes(mut self) -> Result<Bytes, ChargeError> {
         let len = self.buf.len();
         let cap = self.buf.capacity();
         if cap > len {
             let bytes = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
-            if let Ok(smaller) = self.charge.meter().charge(heap_cost(bytes(len))) {
-                self.buf.shrink_to_fit();
+            let exact = heap_cost(bytes(len));
+            if let Ok(smaller) = self.charge.meter().charge(exact)
+                && shrink_exact(&mut self.buf)
+            {
                 self.charge.release(heap_cost(bytes(cap)));
                 self.charge.absorb(smaller);
             }

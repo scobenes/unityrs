@@ -55,7 +55,7 @@ mod vec;
 pub use meter::{Charge, Meter};
 pub(crate) use meter::{GrantScope, pool_refusals, refusal};
 pub use vec::MeteredVec;
-pub(crate) use vec::{grow_charged, grow_counted, reserve_exact};
+pub(crate) use vec::{grow_charged, grow_counted, reserve_exact, shrink_exact};
 
 /// Bounds on allocation, recursion and work per input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -278,26 +278,71 @@ pub(crate) fn hash_table_cost(len: usize, entry: usize) -> u64 {
 /// serves more chunks from the heap, never fewer).
 const MMAP_THRESHOLD: u64 = 128 << 10;
 
+/// glibc's chunk for a request of `bytes` from its heap on x86-64: the
+/// request and its 8-byte header rounded up to 16, at least 32
+/// (`request2size`).
+const fn heap_chunk(bytes: u64) -> u64 {
+    let chunk = bytes.saturating_add(8 + 15) & !15;
+    if chunk < 32 { 32 } else { chunk }
+}
+
 /// What one heap allocation of `bytes` costs, which is what a charge for it
 /// is: glibc's chunk on x86-64. The request gets its 8-byte header and is
 /// rounded to 16, with a 32-byte minimum (`request2size`); a chunk of
-/// 128 KiB (glibc's default `M_MMAP_THRESHOLD`) or more may be `mmap`ped instead, which adds another
-/// 8 bytes and rounds to a 4 KiB page (`sysmalloc`'s
-/// `ALIGN_UP(nb + SIZE_SZ, pagesize)`), and that is the larger of the two.
-/// So a charge covers the allocator's rounding too, and many small
-/// allocations cannot hold more than they were charged. 0 for no allocation.
+/// 128 KiB (glibc's default `M_MMAP_THRESHOLD`) or more may be `mmap`ped
+/// instead, which adds another 8 bytes and rounds to a 4 KiB page
+/// (`sysmalloc`'s `ALIGN_UP(nb + SIZE_SZ, pagesize)`), and that is the
+/// larger of the two. 0 for no allocation.
+///
+/// So a charge covers the rounding of a fresh chunk, carved from the top of
+/// a heap or mapped. What it does not cover (review round 13): glibc hands
+/// over a free chunk whole when what would be left of it could not be a
+/// chunk of its own (under its 32-byte minimum: `_int_malloc`'s best fit,
+/// and `_int_realloc` when it grows or shrinks a chunk in place), so a live
+/// allocation whose chunk is below 128 KiB can hold [`CHUNK_SLACK`] bytes
+/// past its charge, depending on what the heap freed before it: at most
+/// half again of the smallest charge, 48 bytes against 32, and less as the
+/// charge grows. A mapped chunk's page covers the 16 bytes. A buffer whose
+/// spare room is given back below 128 KiB from a block that may be mapped is
+/// moved to a new allocation ([`shrink_moves`]): glibc's `realloc` would keep
+/// it mapped, a page or more against a charge of tens of bytes.
+/// `tests/heap_rounding.rs` measures both on glibc.
 #[must_use]
 pub const fn heap_cost(bytes: u64) -> u64 {
     if bytes == 0 {
         return 0;
     }
-    let chunk = bytes.saturating_add(8 + 15) & !15;
-    let chunk = if chunk < 32 { 32 } else { chunk };
+    let chunk = heap_chunk(bytes);
     if chunk < MMAP_THRESHOLD {
         chunk
     } else {
         chunk.saturating_add(8 + 4095) & !4095
     }
+}
+
+/// The most a live allocation whose chunk is below 128 KiB holds past its
+/// [`heap_cost`]: glibc hands over a free chunk whole when what would be left
+/// is under its 32-byte minimum chunk, and chunks are multiples of 16, so
+/// what is left is 0 or 16 bytes ([`heap_cost`]'s docs). That is for an
+/// alignment of 16 bytes or less (`malloc`'s), which every allocation the
+/// core charges has.
+pub const CHUNK_SLACK: u64 = 16;
+
+/// Whether a buffer whose block holds `cap` bytes gives back its spare room,
+/// down to `len` bytes, by moving them to a new allocation rather than by
+/// asking the allocator to shrink the block: when the block may be `mmap`ped
+/// (its chunk is 128 KiB or more) and the bytes left would be a heap chunk
+/// (below it). glibc's `realloc` keeps a shrunk mapped block mapped
+/// (`mremap_chunk`), rounded up to a page, so 10 bytes cut from a 1 MiB
+/// buffer held a page against a [`heap_cost`] of 32 (review round 13;
+/// `tests/heap_rounding.rs` with the move undone: "10 bytes hold 4088", its
+/// usable bytes and an 8-byte header).
+/// A new allocation below 128 KiB is a heap chunk, which [`heap_cost`]
+/// covers ([`CHUNK_SLACK`] aside). Both blocks exist while the bytes move,
+/// as they may while `realloc` moves them, so a caller charges both first.
+#[must_use]
+pub const fn shrink_moves(len: u64, cap: u64) -> bool {
+    len < cap && heap_chunk(cap) >= MMAP_THRESHOLD && heap_chunk(len) < MMAP_THRESHOLD
 }
 
 /// A charge the meter or the budget refused. Nothing was allocated.

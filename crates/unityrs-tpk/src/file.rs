@@ -128,7 +128,15 @@ pub(crate) fn payload<'a>(bytes: &'a [u8], meter: &Arc<Meter>) -> Result<Payload
 /// `data` decoded by `codec`, as one block of unityrs-core's: the output
 /// capped at [`TpkProvider::MAX_DECODED_BYTES`], and the output and an LZMA
 /// decoder (its dictionary and liblzma's state) charged to a meter of
-/// [`TpkProvider::MAX_DECODER_MEMORY`].
+/// [`TpkProvider::MAX_DECODER_MEMORY`]. An LZMA payload's output is
+/// allocated once, at the cap, before the decoder starts: the stream runs
+/// to its end whatever the header declares (`decompress_lzma`), so room
+/// grown as it decodes would depend on the declared size, which UnityPy
+/// ignores, and a retry with a larger dictionary would hold it beside the
+/// room's last growth (review round 13: a payload of 16 MiB declared
+/// 1 MiB - 1 held 32 MiB of room and a 32 MiB dictionary, and was refused
+/// for decoder memory). LZ4's output is allocated once by the codec, at
+/// the length its scan finds.
 /// The codec reads its input as `Bytes`, so `data` is copied once, the copy
 /// charged to `provider` (the provider's meter) before it is made (round 4:
 /// it was not charged). The decoder's meter is the provider's reservation,
@@ -172,8 +180,9 @@ fn decode(
         Reservation::Provider,
     );
     let cap = TpkProvider::MAX_DECODED_BYTES;
+    let room = if which == Codec::Lzma { cap } else { 0 };
     let mut out =
-        DecodeBuf::new(&meter, 0, cap, LimitKind::BlockOutput).map_err(|e| fail(e.into()))?;
+        DecodeBuf::new(&meter, room, cap, LimitKind::BlockOutput).map_err(|e| fail(e.into()))?;
     let mut copy = MeteredVec::with_capacity(provider, data.len()).map_err(memory)?;
     copy.extend_from_slice(data).map_err(memory)?;
     let (copy, charge) = copy.into_parts();

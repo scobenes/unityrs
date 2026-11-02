@@ -6,7 +6,8 @@
 
 use std::io::Write;
 
-use unityrs_core::limits::Limits;
+use unityrs_core::codec::Lzma;
+use unityrs_core::limits::{Limits, heap_cost};
 use unityrs_testkit::bundle::{TestCodec, compress};
 use unityrs_testkit::scratch::Scratch;
 use unityrs_tpk::{TpkError, TpkProvider};
@@ -133,6 +134,58 @@ fn many_entries_are_refused_by_the_payload_or_the_entry_bound() {
     assert_eq!(got, ("class entries", u64::from(max) + 1, u64::from(max)));
     let at = TpkProvider::from_bytes(&tpk(2, &removed_entries(max), 0), &Limits::default());
     assert_eq!(at.unwrap().class_count(), 1);
+}
+
+/// Review round 13: a valid LZMA TPK whose payload is exactly
+/// [`TpkProvider::MAX_DECODED_BYTES`] was refused for decoder memory,
+/// depending on the header's declared size, which UnityPy ignores: the
+/// output's room doubled as it decoded, to twice the payload, and a stream
+/// whose one far match lies near its end is decoded again with a dictionary
+/// of twice what it made, about 32 MiB, beside that room. `tools/fixtures/tpk.py`
+/// records UnityPy loading two such TPKs (declared 1 MiB - 1, and 4095, whose
+/// room would have stopped just short of the payload's end while the retry
+/// grew it), and both load, with UnityPy's class count. The most such a
+/// decode holds, the output allocated once at the bound and a dictionary of
+/// twice it with liblzma's state, is the figure `MAX_DECODER_MEMORY`'s docs
+/// give.
+#[test]
+fn an_lzma_payload_at_the_decoded_bound_loads_whatever_its_header_declares() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tpk/synthetic.json");
+    let fixture: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let mut loaded = Vec::new();
+    for case in fixture["cases"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let Some(declared) = name.strip_prefix("lzma_far_match_at_the_decoded_bound_declared_")
+        else {
+            continue;
+        };
+        assert!(case["load"].is_null(), "{name}: UnityPy loads it");
+        let hex = case["tpk"].as_str().unwrap();
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        assert_eq!(
+            bytes[16..20],
+            declared.parse::<u32>().unwrap().to_le_bytes()
+        );
+        let provider = TpkProvider::from_bytes(&bytes, &Limits::default())
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(
+            u64::try_from(provider.class_count()).ok(),
+            case["class_count"].as_u64(),
+            "{name}"
+        );
+        loaded.push(declared.to_owned());
+    }
+    assert_eq!(loaded, ["1048575", "4095"]);
+    let max = TpkProvider::MAX_DECODED_BYTES;
+    assert_eq!(
+        heap_cost(max) + Lzma::decoder_charge(u32::try_from(2 * max).unwrap()),
+        50_372_880
+    );
 }
 
 /// A file removed when dropped, with its handle.

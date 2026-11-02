@@ -195,7 +195,7 @@ jobs:
       # the rest are modules a listed script imports (walk.py records
       # through walk_build.py, walk_elements.py, walk_mirror.py,
       # walk_reentry.py and walk_runs.py, env.py through env_paths.py,
-      # dump.py through dump_inputs.py), as
+      # dump.py through dump_inputs.py, tpk.py through tpk_build.py), as
       # scripts/tests/test_ci_workflow.py checks. no_tree.py reads with
       # tpk.py's synthetic TPKs, unityrs-tpk's test replays it.
       - name: The scaffold's and packages B to E's oracle fixtures are current
