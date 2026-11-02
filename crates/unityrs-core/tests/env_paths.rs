@@ -196,7 +196,7 @@ fn run(case: &J, dir: &Path, by_path: bool) -> J {
 fn a_path_is_read_with_the_stream_readers_rules() {
     let doc = fixture();
     let cases = doc["cases"].as_array().unwrap();
-    assert!(cases.len() >= 25, "{}", cases.len());
+    assert!(cases.len() >= 26, "{}", cases.len());
     for (i, case) in cases.iter().enumerate() {
         let dir = Scratch::new(&format!("env-paths-{i}"));
         for f in case["files"].as_array().unwrap() {

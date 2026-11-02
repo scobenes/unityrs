@@ -147,6 +147,10 @@ def path_inputs() -> list[dict]:
     cut = bytearray(sf[: sf.find(b"abc\0") + 3])
     struct.pack_into(">qq", cut, 24, len(cut), len(cut))  # file_size and data_offset
     case("user-information-unterminated", [("a.assets", bytes(cut))])
+    # ... and from the end, a stream reads "" where the memory reader raises.
+    end = bytearray(sf[: sf.find(b"abc\0")])
+    struct.pack_into(">qq", end, 24, len(end), len(end))
+    case("user-information-at-the-end", [("a.assets", bytes(end))])
     # A blob whose string buffer size is negative (files.py's short reads): `read(n)` below
     # -1 raises from a path.
     name, data = short_read_inputs()[0]
