@@ -221,3 +221,69 @@ fn unitypy_options_evict_nothing_for_a_pool_refusal() {
     assert_eq!(env.stats().dependencies_evicted, 0);
     assert!(env.get_cab(&key("cab-a"), &unlimited()).unwrap().is_some());
 }
+
+/// A fetcher that serves `first` once, then `later`.
+#[derive(Debug)]
+struct Changes {
+    fetched: std::sync::atomic::AtomicU64,
+    first: Bytes,
+    later: Bytes,
+}
+
+impl unityrs_core::env::Fetch for Changes {
+    fn fetch(&self) -> Result<Bytes, Error> {
+        let n = self.fetched.fetch_add(1, Ordering::AcqRel);
+        Ok(if n == 0 { &self.first } else { &self.later }.clone())
+    }
+}
+
+/// `PARITY.md` section 19.3's row "a dependency the LRU evicts": under
+/// options that evict, a dependency the LRU let go of is opened again from
+/// its source at the next lookup that needs it, a new open. So the lookup
+/// returns that open's objects, not the ones an earlier lookup returned
+/// (UnityPy's `get_cab` returns one object for good), and a source that
+/// serves other bytes then gives those; while the caller holds what
+/// `get_cab_held` returned, the dependency is not opened again and the
+/// lookup returns the same object. In both load modes.
+#[test]
+fn an_evicted_dependency_is_opened_again_from_its_source() {
+    let cab = |name: &str| bundle(&[("CAB-X", serialized(&[], &[Obj::named(5, name, &[])]))]);
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let mut o = EnvOptions::batch(Arc::new(FileContext::unitypy()));
+        o.load = mode;
+        o.dep_cache_bytes = 1;
+        let env = Environment::new(o);
+        let fetch = Arc::new(Changes {
+            fetched: std::sync::atomic::AtomicU64::new(0),
+            first: Bytes::from(cab("first")),
+            later: Bytes::from(cab("later")),
+        });
+        let source = Source::Fetch {
+            name: RawStr::from("x.bundle"),
+            fetch: fetch.clone(),
+        };
+        drop(env.load_dependency(source).unwrap());
+        let held = env
+            .get_cab_held(&key("cab-x"), &unlimited())
+            .unwrap()
+            .unwrap();
+        let first = serialized_cab(&env, "cab-x");
+        env.load_dependency(src("o.bundle", &named_bundle("CAB-O", 16)))
+            .unwrap();
+        assert_eq!(env.stats().dependencies_evicted, 1, "{mode:?}");
+        // Held: no reopen, the same object (and the LRU holds it again).
+        let again = serialized_cab(&env, "cab-x");
+        assert!(Arc::ptr_eq(&again, &first), "{mode:?}: held");
+        assert_eq!(fetch.fetched.load(Ordering::Acquire), 1, "{mode:?}");
+        drop((held, again));
+        env.load_dependency(src("p.bundle", &named_bundle("CAB-P", 16)))
+            .unwrap();
+        assert!(env.stats().dependencies_evicted >= 2, "{mode:?}");
+        // Let go: the next lookup opens it again, from the bytes served now.
+        let reopened = serialized_cab(&env, "cab-x");
+        assert!(!Arc::ptr_eq(&reopened, &first), "{mode:?}: a new open");
+        assert_eq!(fetch.fetched.load(Ordering::Acquire), 2, "{mode:?}");
+        assert_eq!(name_of(&object(&first, 5)), "first", "{mode:?}");
+        assert_eq!(name_of(&object(&reopened, 5)), "later", "{mode:?}");
+    }
+}

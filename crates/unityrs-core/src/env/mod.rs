@@ -129,8 +129,14 @@
 //! [`FileEntry`], `is_dependency` as UnityPy sets it, and none is evicted.
 //! With it false ([`EnvOptions::batch`]) resolver loads are LRU
 //! dependencies, evictable, and in neither `files`, `objects` nor
-//! `container`, a `PARITY.md` divergence. [`Environment::load_dependency`],
-//! which UnityPy has no call for, never adds to `files`.
+//! `container`, whatever `find_file`'s `is_dependency`: `PARITY.md`
+//! section 19.3's row "resolver loads under `keep_resolver_loads` false"
+//! (`find_file`'s and a dereference's; review round 12: no row listed
+//! them) and section 19.2's `SerializedFile.load_dependencies` row (a
+//! resource fallback's). An evicted dependency is opened again from its
+//! source by the next read that needs it (section 19.3's row "a dependency
+//! the LRU evicts"). [`Environment::load_dependency`], which UnityPy has
+//! no call for, never adds to `files`.
 //!
 //! **Locks.** The registry, the `files` list, the LRU and a file's
 //! `path_dict` are locked only to look up or publish; a file is loaded, an
@@ -404,7 +410,10 @@ pub struct EnvOptions {
     /// Whether the files the resolver loads (for `find_file` and a resource
     /// read's fallback) are kept in [`Environment::files`] as UnityPy keeps
     /// them, and never evicted (module docs). False keeps them in the
-    /// dependency LRU only, a `PARITY.md` divergence.
+    /// dependency LRU only, whatever `find_file`'s `is_dependency`, a
+    /// `PARITY.md` divergence (section 19.3, "resolver loads under
+    /// `keep_resolver_loads` false"; section 19.2,
+    /// `SerializedFile.load_dependencies`).
     pub keep_resolver_loads: bool,
 }
 
