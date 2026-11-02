@@ -214,9 +214,15 @@ fn check(c: &Case, rec: &Json) -> Option<String> {
 /// The record with its L2 value replaced by `null`: a value nests deeper
 /// than `serde_json` parses (128 levels).
 fn without_value(line: &[u8]) -> Vec<u8> {
+    split_value(line).0
+}
+
+/// The record with its L2 value replaced by `null`, and the value's text
+/// (`None` for a record with no value member).
+fn split_value(line: &[u8]) -> (Vec<u8>, Option<&[u8]>) {
     const KEY: &[u8] = b",\"value\":";
     let Some(at) = line.windows(KEY.len()).position(|w| w == KEY) else {
-        return line.to_vec();
+        return (line.to_vec(), None);
     };
     let start = at + KEY.len();
     let (mut depth, mut in_str, mut escaped, mut end) = (0usize, false, false, start);
@@ -241,7 +247,10 @@ fn without_value(line: &[u8]) -> Vec<u8> {
             }
         }
     }
-    [&line[..start], b"null", &line[end..]].concat()
+    (
+        [&line[..start], b"null", &line[end..]].concat(),
+        Some(&line[start..end]),
+    )
 }
 
 #[test]
@@ -263,9 +272,9 @@ fn deep_values_dump_the_same_at_any_jobs_as_unitypy_or_the_depth_limit() {
 /// `--unbounded ValueDepth`, G3b's check that a depth refusal is the whole
 /// difference (`tools/parity/g3b.py`): every object UnityPyBoost reads,
 /// those the default depth refuses included, reads whole with the depth
-/// lifted, with no L2 error, or past the encoder's own bound
-/// (`encode::MAX_DEPTH`, 4,096 levels, a value no reader at the default
-/// depth makes) an `encode` one. (The pure-Python reader and the writer,
+/// lifted, with no L2 error (review round 11: an `encode` one, which the
+/// encoder's old bound of 4,096 levels wrote, passed here, and G3b fails
+/// it). (The pure-Python reader and the writer,
 /// which UnityPy runs in Python frames, raise at Python's 1,000 where the
 /// lifted depth reads on: `PARITY.md` section 19.3, "value depth".)
 ///
@@ -316,7 +325,7 @@ fn a_dump_with_the_value_depth_lifted_reads_what_unitypyboost_reads() {
     {
         let err = &object(&lifted, &c.name)["l2"]["error"];
         assert!(
-            err.is_null() || err["kind"] == "encode",
+            err.is_null(),
             "{}: UnityPyBoost reads it; lifted {err}",
             c.name
         );
@@ -324,6 +333,116 @@ fn a_dump_with_the_value_depth_lifted_reads_what_unitypyboost_reads() {
         refused_by_default += usize::from(was.as_str().is_some_and(|n| n.contains("ValueDepth")));
     }
     assert!(refused_by_default > 0, "no case passes the default depth");
+}
+
+/// `v` without any member named `note`, at any depth: notes are free text
+/// two producers may word differently (`CANONICAL_DUMP.md` section 1).
+fn without_notes(v: &Json) -> Json {
+    match v {
+        Json::Object(m) => Json::Object(
+            m.iter()
+                .filter(|(k, _)| k.as_str() != "note")
+                .map(|(k, x)| (k.clone(), without_notes(x)))
+                .collect(),
+        ),
+        Json::Array(a) => Json::Array(a.iter().map(without_notes).collect()),
+        x => x.clone(),
+    }
+}
+
+/// Review round 11's input, recorded from UnityPy by `tools/fixtures/dump.py`
+/// (`records.json`'s `deep`): one object whose value nests 3,000
+/// `ReferencedObject`s, which UnityPyBoost reads, and which the default
+/// depth refuses with a note in G3b's grammar. With the depth lifted, its
+/// records are UnityPy's, its value by sha256 and every other member
+/// equal, notes aside: G3b's admit of a `limit ValueDepth` refusal
+/// (`tools/parity/g3b.py`). The encoder's old bound of 4,096 levels wrote
+/// `encode` for that value, a difference G3b fails (class `other`).
+#[test]
+fn a_ref_nest_past_the_old_encoder_bound_is_g3bs_value_depth_admit() {
+    let f = &common::fixture("records.json")["deep"];
+    let input = &f["input"];
+    let mut data = common::unhex(common::s(&input["head"]));
+    let level = common::unhex(common::s(&input["level"]));
+    for _ in 0..input["levels"].as_u64().unwrap() {
+        data.extend_from_slice(&level);
+    }
+    data.extend(common::unhex(common::s(&input["tail"])));
+    let name = common::s(&f["name"]);
+    let lines = |opts: DumpOptions| {
+        let mut out = Vec::new();
+        let stack = unityrs_dump::run::worker_stack(&opts.context.limits);
+        let dump_one =
+            |(): &()| unityrs_dump::dump_input(name.as_bytes(), data.clone().into(), &opts).lines;
+        unityrs_dump::run::ordered_on(&[()], 1, stack, &dump_one, &mut |_, l| {
+            out = l;
+            Ok(())
+        })
+        .unwrap();
+        out
+    };
+    let object = |lines: &[String]| -> (Json, Option<Vec<u8>>) {
+        let line = lines
+            .iter()
+            .find(|l| l.starts_with("{\"rec\":\"object\""))
+            .unwrap();
+        let (rest, value) = split_value(line.as_bytes());
+        (
+            serde_json::from_slice(&rest).unwrap(),
+            value.map(<[u8]>::to_vec),
+        )
+    };
+
+    // G3b reads a refusal as `\blimit (\w+): (\d+) > (\d+)` anywhere in the note.
+    let (default, _) = object(&lines(DumpOptions::default()));
+    let note = default["l2"]["error"]["note"].as_str().unwrap_or_default();
+    let refusal = note
+        .split_once("limit ValueDepth: ")
+        .filter(|(before, _)| before.is_empty() || before.ends_with(' '))
+        .and_then(|(_, after)| after.split_once(" > "));
+    assert!(
+        default["l2"]["error"]["kind"] == "other"
+            && default["l2"]["value"].is_null()
+            && refusal.is_some_and(|(value, max)| {
+                value.parse::<u64>().is_ok() && max.parse::<u64>().is_ok()
+            }),
+        "not the default depth's refusal: {default}"
+    );
+
+    // A depth past the nest's lifts the bound as `LIFTED_VALUE_DEPTH` does
+    // (a bound no value reaches refuses nothing), on a worker of the stack
+    // its reader needs, where the lifted depth's would reserve 2 GiB in a
+    // debug build.
+    let past = 8 * u32::try_from(input["levels"].as_u64().unwrap()).unwrap();
+    assert!(past < LIFTED_VALUE_DEPTH);
+    let mut context = FileContext::clone(&DumpOptions::default().context);
+    context.limits.max_value_depth = past;
+    let lifted = lines(DumpOptions {
+        context: Arc::new(context),
+        ..DumpOptions::default()
+    });
+    let oracle: Vec<String> = f["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| common::s(l).to_owned())
+        .collect();
+    assert_eq!(lifted.len(), oracle.len());
+    for (ours, theirs) in lifted.iter().zip(&oracle) {
+        let (ours, value) = split_value(ours.as_bytes());
+        let ours: Json = serde_json::from_slice(&ours).unwrap();
+        let theirs: Json = serde_json::from_str(theirs).unwrap();
+        assert_eq!(without_notes(&ours), without_notes(&theirs));
+        if let Some(value) = value {
+            let want = &f["values"][0];
+            assert_eq!(value.len() as u64, want["bytes"].as_u64().unwrap());
+            assert_eq!(
+                unityrs_dump::json::sha256_hex(value),
+                common::s(&want["sha256"])
+            );
+        }
+    }
+    assert_eq!(f["values"].as_array().unwrap().len(), 1);
 }
 
 const PROBE: &str = "UNITYRS_DUMP_STACK_PROBE";
@@ -372,9 +491,8 @@ fn stack_measured() {
 /// `unityrs_dump::LIFTED_VALUE_DEPTH` against UnityPyBoost's reach: each
 /// `SHAPE:N` of `UNITYRS_BOOST_REACH`, the deepest `N` UnityPyBoost reads
 /// as `tools/fixtures/walk.py --boost-reach` prints it, dumped with the
-/// value depth lifted reads past the reader (an `encode` refusal past the
-/// encoder's own `MAX_DEPTH` is the encoder's, not the read's). A
-/// measurement, since the reach depends on the oracle's stack size:
+/// value depth lifted, reads and encodes with no L2 error. A measurement,
+/// since the reach depends on the oracle's stack size:
 ///
 ///     R=ref:21823,class:174,vector:346,aligned:354,class_array:262,pair:174,pair_array:232
 ///     scripts/dev env UNITYRS_BOOST_REACH=$R cargo test --release -p unityrs-dump \
@@ -409,9 +527,6 @@ fn lifted_depth_reads_unitypyboosts_reach() {
     for name in &names {
         let err = &object(&records, name)["l2"]["error"];
         println!("{name}: l2 error {err}");
-        assert!(
-            err.is_null() || err["kind"] == "encode",
-            "{name}: the lifted read stopped: {err}"
-        );
+        assert!(err.is_null(), "{name}: the lifted dump stopped: {err}");
     }
 }

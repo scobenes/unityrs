@@ -307,9 +307,10 @@ pub const CONTAINER_LEVEL_STACK: usize = if cfg!(debug_assertions) {
 
 /// The stack a worker dumps an input on, under `limits`: what reading and
 /// writing one object needs ([`Limits::stack_needed`]), and as much again
-/// for the dump's own frames around it and the value encoder, which recurses
-/// as deep as the value the reader made (`tests/deep_values.rs` dumps the
-/// deepest inputs at `-j 1` and `-j 8`), on top of
+/// for the dump's own frames around it (`tests/deep_values.rs` dumps the
+/// deepest inputs at `-j 1` and `-j 8`; the value encoder adds no frame a
+/// level, since it walks a value with a heap stack of its own: review round
+/// 11, `encode`'s tests), on top of
 /// [`CONTAINER_LEVEL_STACK`] for each level of nesting
 /// `limits.max_container_depth` lets an input reach, inside which that
 /// object is read (`tests/limits.rs`).
