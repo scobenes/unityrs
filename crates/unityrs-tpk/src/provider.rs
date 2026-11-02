@@ -629,16 +629,24 @@ mod tests {
     /// node 0, lists node 1 twice, and so on down `levels` nodes: a tree of
     /// `2^levels - 1` rows.
     fn doubling_tpk(levels: u16) -> Vec<u8> {
+        one_class_tpk(levels, 0)
+    }
+
+    /// [`doubling_tpk`]'s TPK with its class's release root at node
+    /// `release_root` (its editor root stays node 0).
+    fn one_class_tpk(levels: u16, release_root: u16) -> Vec<u8> {
         let v = (2_u64 << 48).to_le_bytes();
         let mut blob = 1_i64.to_le_bytes().to_vec();
         blob.extend_from_slice(&1_i32.to_le_bytes());
         blob.extend_from_slice(&v);
-        // One class, one entry: release and editor root 0 (flags 192).
+        // One class, one entry: an editor root and a release root (flags
+        // 192), in that order.
         blob.extend_from_slice(&1_i32.to_le_bytes());
         blob.extend_from_slice(&0_i32.to_le_bytes());
         blob.extend_from_slice(&1_i32.to_le_bytes());
         blob.extend_from_slice(&v);
-        blob.extend_from_slice(&[1, b'C', 0, 0, 0, 192, 0, 0, 0, 0]);
+        blob.extend_from_slice(&[1, b'C', 0, 0, 0, 192, 0, 0]);
+        blob.extend_from_slice(&release_root.to_le_bytes());
         // No common strings or indices.
         blob.extend_from_slice(&[0; 8]);
         blob.extend_from_slice(&i32::from(levels).to_le_bytes());
@@ -660,6 +668,36 @@ mod tests {
         out.extend_from_slice(&size);
         out.extend_from_slice(&blob);
         out
+    }
+
+    /// A walk's error is kept for its root, and its heap, the shared text
+    /// with its two reference counts, is charged to the provider's meter
+    /// while it is kept (crate docs, "Memory"): one charge for the first
+    /// request, none for a later one, which gets the same text without
+    /// walking again; and dropping the provider returns it with the rest of
+    /// what the provider held (review round 10: dropping the charge passed
+    /// every test).
+    #[test]
+    fn a_kept_walk_error_is_charged_to_the_providers_meter_while_kept() {
+        use std::sync::Arc;
+
+        use unityrs_core::UnityVersion;
+
+        let v = UnityVersion::from_packed(2 << 48);
+        // Release root 5 of a one-node table: `NODES[5]` raises IndexError.
+        let provider = TpkProvider::from_bytes(&one_class_tpk(1, 5), &Limits::default()).unwrap();
+        let meter = provider.meter.clone();
+        let before = meter.used();
+        let e = provider.node_list(0, &v).unwrap_err();
+        assert!(e.detail.starts_with("IndexError"), "{e:?}");
+        assert!(e.memory.is_none() && e.limit.is_none(), "{e:?}");
+        let held = heap_cost(u64::try_from(e.detail.len() + 2 * size_of::<usize>()).unwrap());
+        assert_eq!(meter.used() - before, held, "the kept error's heap");
+        let again = provider.node_list(0, &v).unwrap_err();
+        assert!(Arc::ptr_eq(&e.detail, &again.detail), "the kept error");
+        assert_eq!(meter.used() - before, held, "charged once");
+        drop((e, again, provider));
+        assert_eq!(meter.used(), 0, "the provider returned what it held");
     }
 
     /// The price of never waiting, as the crate docs state it ("Threads",
