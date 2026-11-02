@@ -1,7 +1,8 @@
 //! Plan 3.10, "Bounds", and 3.11: the writer counts what it writes against
 //! the bound the readers count against, `Limits::max_values_per_object`,
 //! and that bound refuses no write whose read it allowed, unless the tree
-//! repeats a name.
+//! repeats a name, or a node whose type name holds a NUL has a child that
+//! writes no byte.
 //!
 //!     scripts/dev cargo test -p unityrs-core --test walk_bounds
 //!
@@ -14,10 +15,14 @@
 //! each child it skips and each value under a name a sibling repeats; the
 //! pure-Python reader every value and every element of a primitive run;
 //! the writer each child it skips, each value under a repeated name and
-//! each class it writes from a value that is not a dict (`walk::Work`'s
-//! docs). A tree that repeats a name hands one value to every child of the
-//! name, each of which writes it whole, so a write can count more than its
-//! read; the last test pins one that does.
+//! each child that writes no byte of a class it writes from a value that
+//! is not a dict (`walk::Work`'s docs). A tree that repeats a name hands
+//! one value to every child of the name, each of which writes it whole, so
+//! a write can count more than its read; the last test pins one that does.
+//! A node whose type name holds a NUL is read by UnityPyBoost as the name
+//! before it (a primitive, a string or bytes) and written as a class from
+//! that value, its children the value's attributes: one that writes no byte
+//! counts where the read counted nothing (`walk::linear_tests`).
 
 use std::sync::Arc;
 
@@ -230,7 +235,12 @@ fn counts_against_the_bound(tree: &Tree) -> bool {
 /// no name reads, and writes under either rule, under a bound of 0 exactly
 /// as under the default (a struct array, a run and a string list among
 /// them), where the bound counted each value and each run's element (a
-/// `Mesh` of a 2^26 + 1 byte `vector<UInt8>` was refused at the default).
+/// `Mesh` of a 2^26 + 1 byte `vector<UInt8>` was refused at the default);
+/// so do the `w1_nul_type_name_` cases, a run, strings and bytes read
+/// through a type name holding a NUL, and one whose node has a child that
+/// writes its bytes, which the writer writes as classes (review round 10:
+/// it counted each such class, so the re-save of a run past the default was
+/// refused where UnityPy writes it, `tests/walk_runs.rs`).
 /// The pure-Python reader still counts every value: each of those cases
 /// that builds one is refused under 0.
 #[test]

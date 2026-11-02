@@ -119,12 +119,13 @@ pub enum WriteRules {
     /// run. The oracle's L3 behaviour, and the default.
     #[default]
     UnityPy,
-    /// Align as the reader reads: once after a flagged primitive or pair run,
-    /// and no data where the reader skipped it. A value UnityPyBoost reads
-    /// through a tree that repeats no name writes back to bytes that read as
-    /// the same value (padding as zeros); a repeated name keeps only its last
-    /// value, so no writer gives back the others' bytes (plan 3.11; a
-    /// `PARITY.md` Tier C option).
+    /// Write as the reader reads: align once after a flagged primitive or
+    /// pair run, write no data where the reader skipped it, and take a type
+    /// name to its first NUL, as UnityPyBoost does. A value UnityPyBoost
+    /// reads through a tree that repeats no name writes back to bytes that
+    /// read as the same value (padding as zeros); a repeated name keeps only
+    /// its last value, so no writer gives back the others' bytes (plan 3.11;
+    /// a `PARITY.md` Tier C option).
     MirrorReader,
 }
 

@@ -276,14 +276,31 @@ impl<'a> Writer<'a, '_> {
     }
 
     fn value(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
-        self.count(Self::cost(tree, node))?;
+        self.count(self.cost(tree, node))?;
         self.frame(|w| w.value_inner(tree, node, o))
     }
 
     /// The open's work of writing `node`'s value ([`write`]): its bytes for
     /// a primitive, [`VALUE_WORK`] for any other value.
-    fn cost(tree: &Tree, node: NodeId) -> u64 {
-        tree.py_kind(node).prim_size().map_or(VALUE_WORK, u64::from)
+    fn cost(&self, tree: &Tree, node: NodeId) -> u64 {
+        self.kind(tree, node)
+            .prim_size()
+            .map_or(VALUE_WORK, u64::from)
+    }
+
+    /// The kind the write dispatches `node` on: under [`WriteRules::UnityPy`]
+    /// its whole type name's (`FUNCTION_WRITE_MAP` is a dict, `node.m_Type
+    /// == "pair"` a comparison of `str`s: [`Tree::py_kind`]); under
+    /// [`WriteRules::MirrorReader`] the name's to its first NUL, as
+    /// UnityPyBoost reads it (a `PPtr<` is a class either way), so a value
+    /// read through a type name holding a NUL writes back to what reads as
+    /// it (review round 10's cases: UnityPy writes an `int\0x` element as a
+    /// class with no children, which writes nothing).
+    fn kind(&self, tree: &Tree, node: NodeId) -> Kind {
+        match self.rules {
+            WriteRules::UnityPy => tree.py_kind(node),
+            WriteRules::MirrorReader => tree.info(node).map_or(Kind::Unknown, |i| i.kind),
+        }
     }
 
     /// `write_value` (`TypeTreeHelper.py:407-458`). The branches that
@@ -295,7 +312,7 @@ impl<'a> Writer<'a, '_> {
     /// line, with toolchain 1.99.1).
     fn value_inner(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         let mut align = tree.info(node).is_some_and(|i| i.align);
-        let kind = tree.py_kind(node);
+        let kind = self.kind(tree, node);
         let kids = tree.list().children(node);
         if kind.prim_size().is_some() {
             self.prim(tree, node, kind, o)?;
@@ -329,7 +346,7 @@ impl<'a> Writer<'a, '_> {
         } else if let Some(array) = kids
             .first()
             .copied()
-            .filter(|c| tree.py_kind(*c) == Kind::Array)
+            .filter(|c| self.kind(tree, *c) == Kind::Array)
         {
             // `:429-435`, W5.
             align |= tree.info(array).is_some_and(|i| i.align);
@@ -357,7 +374,7 @@ impl<'a> Writer<'a, '_> {
     /// align itself; the run aligns once after, as UnityPyBoost reads it.
     fn elements(&mut self, tree: &Tree, elem: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         let mirror_run =
-            self.rules == WriteRules::MirrorReader && tree.py_kind(elem).reads_as_run();
+            self.rules == WriteRules::MirrorReader && self.kind(tree, elem).reads_as_run();
         let elem_align = tree.info(elem).is_some_and(|i| i.align);
         let one = |w: &mut Self, item: Obj<'a>| -> Result<(), WriteError> {
             visit();
@@ -417,8 +434,8 @@ impl<'a> Writer<'a, '_> {
     /// An element of a run under [`WriteRules::MirrorReader`]: its value
     /// without its own trailing alignment.
     fn value_unaligned(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
-        self.count(Self::cost(tree, node))?;
-        let kind = tree.py_kind(node);
+        self.count(self.cost(tree, node))?;
+        let kind = self.kind(tree, node);
         if kind.prim_size().is_some() {
             return self.prim(tree, node, kind, o);
         }
@@ -508,22 +525,27 @@ impl<'a> Writer<'a, '_> {
     /// ([`Self::class_dict`]), `getattr(value, child._clean_name)` otherwise;
     /// the registry scope as on read.
     ///
-    /// A class written from a value that is not a dict counts against
-    /// `max_values_per_object` whatever its name: its children are the
-    /// value's attributes, which the value's size does not bound (an `int`
-    /// element's `real`, written through a class of any number of children
-    /// for each element of an array).
+    /// On a value that is not a dict, each child whose write writes no byte
+    /// counts against `max_values_per_object` ([`Self::bound`]): its value is
+    /// an attribute of the class's (an `int` element's `real`, or a bound
+    /// method), which neither the value's memory nor the output bounds, so a
+    /// class of many such children, written for each element of an array,
+    /// would do work nothing else counts. A child that writes bytes is
+    /// bounded by the output, charged to the meter, and a class with no
+    /// children writes nothing, so neither counts (review round 10: a node
+    /// whose type name holds a NUL, which UnityPyBoost reads as a primitive,
+    /// a string or bytes, was counted once an element by this branch, and
+    /// its re-save refused past the default bound where UnityPy writes it).
     #[inline(never)]
     fn class(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         if let Obj::V(Value::Dict(m)) = o {
             return self.class_dict(tree, node, m);
         }
-        self.bound()?;
         let outer = self.has_registry;
         let kids = tree.list().children(node);
         for c in kids {
             visit();
-            if tree.py_kind(*c) == Kind::ManagedReferencesRegistry {
+            if self.kind(tree, *c) == Kind::ManagedReferencesRegistry {
                 if self.has_registry {
                     self.skip()?;
                     continue;
@@ -551,7 +573,11 @@ impl<'a> Writer<'a, '_> {
                 }
             };
             let repeated = tree.info(*c).is_some_and(|i| i.repeated);
+            let before = self.out.len();
             self.child(repeated, |w| w.value(tree, *c, item))?;
+            if self.out.len() == before {
+                self.bound()?;
+            }
         }
         self.has_registry = outer;
         Ok(())
@@ -566,7 +592,7 @@ impl<'a> Writer<'a, '_> {
         self.children(tree, node, |w| {
             for c in tree.list().children(node) {
                 visit();
-                if tree.py_kind(*c) == Kind::ManagedReferencesRegistry {
+                if w.kind(tree, *c) == Kind::ManagedReferencesRegistry {
                     if w.has_registry {
                         w.skip()?;
                         continue;
@@ -604,7 +630,7 @@ impl<'a> Writer<'a, '_> {
             for c in kids {
                 visit();
                 let repeated = tree.info(*c).is_some_and(|i| i.repeated);
-                if tree.py_kind(*c) != Kind::ReferencedObjectData {
+                if w.kind(tree, *c) != Kind::ReferencedObjectData {
                     let v = w
                         .find(&mut find, tree, *c)?
                         .ok_or_else(|| WriteError::MissingKey(Self::name(tree, *c)))?;
