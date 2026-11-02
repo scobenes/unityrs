@@ -325,9 +325,19 @@ pub trait CabResolver: Send + Sync + fmt::Debug {
     ///   ([`crate::pystr::clean_external_path`]: a leading `archive:/`, then
     ///   `assets/`, dropped, the last `/` component kept, lower-cased); for
     ///   a caller's own call, the name the caller gave, as it is. UnityPy
-    ///   looks for `env.path` joined with it, then walks `env.path` for a
-    ///   file whose path is it, whose simplified name is its simplified
-    ///   name, or whose path ends with it (`environment.py:326-354`).
+    ///   opens `env.path` joined with it when that exists; else it takes,
+    ///   from the files a walk of `env.path` lists, the first whose walked
+    ///   path is the name, else the first whose walked path ends with it, a
+    ///   plain suffix with no separator boundary (beside `sub/ab.assets`, a
+    ///   root `xab.assets` answers `ab.assets`), else the first whose
+    ///   walked path, its basename lower-cased, ends with the name's
+    ///   simplified name, which it opens by that lower-cased path, so on a
+    ///   case-sensitive file system only a basename all lower case on disk
+    ///   is found that way; a miss raises `FileNotFoundError`. Its test of
+    ///   the simplified name alone never matches (it compares a bare name
+    ///   with the walk's full paths). `environment.py:326-354`; `PARITY.md`
+    ///   section 3's `Environment.find_file` row has the whole account (the
+    ///   walk built once, links, prefixes).
     /// - In a resource read's fallback ([`Environment::resource`]), first
     ///   each of the reading file's externals' stored path, as it is, not
     ///   cleaned (`archive:/CAB-x/CAB-x`, `Assets/Level/Thing.asset`:
