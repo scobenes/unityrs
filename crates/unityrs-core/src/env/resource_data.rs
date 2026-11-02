@@ -81,9 +81,13 @@ impl Environment {
     /// A pool refusal (a read or a lookup from a dependency's file) evicts
     /// the others and retries once, `from`'s top-level bundle held
     /// meanwhile: each lookup of the candidates, and each candidate's name
-    /// with its fallback load, the load taking its own retry, so a retry
-    /// never loads again what a load before it loaded (plan section 3.13;
-    /// review round 8: the read had no retry).
+    /// with its fallback load; and every fallback load, an external's as a
+    /// candidate's, listed or not, takes its own retry
+    /// (`Environment::load_resolved`), a refusal its fetcher returns
+    /// included, so a retry never loads again what a load before it loaded
+    /// (plan section 3.13; review round 8: the read had no retry; review
+    /// round 12: an external's load listed under `keep_resolver_loads`
+    /// returned its fetcher's refusal untried).
     ///
     /// [`EnvOptions::keep_resolver_loads`]: super::EnvOptions::keep_resolver_loads
     /// [`FileEntry`]: super::FileEntry

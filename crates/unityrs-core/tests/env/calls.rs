@@ -34,10 +34,12 @@ enum Pool {
     /// It charges a dependency's meter only inside the registry's own
     /// retries: a reach of a dependency's nested container (the `settle`
     /// a registration and a lookup run, the container pass's reaches), a
-    /// dependency slot's resolve, a walk of a dependency's table. A
-    /// refusal a `settle` meets twice is left for the next call. (The
-    /// registry's public registrations take a caller's file, never a
-    /// dependency's: `Registry::register`'s docs.)
+    /// dependency slot's resolve, a walk of a dependency's table; and, for
+    /// the container pass, inside the retries of the lookups its preload
+    /// makes through the resolver (the resolver's answer, its load:
+    /// `Environment::find_file`'s). A refusal a `settle` meets twice is
+    /// left for the next call. (The registry's public registrations take a
+    /// caller's file, never a dependency's: `Registry::register`'s docs.)
     Inner,
     /// [`Self::Inner`], but the key a lookup builds is charged to the
     /// meter the caller gives, and returned as it is when refused: the
@@ -68,17 +70,25 @@ const CALLS: &[(&str, Pool, &[&str])] = &[
         Pool::Own,
         &[SWEEP, FETCH, CALLERS],
     ),
-    ("Environment::get_cab", Pool::Own, &[SWEEP]),
+    ("Environment::get_cab", Pool::Own, &[SWEEP, RESOLVER]),
     ("Environment::get_cab_held", Pool::Own, &[SWEEP]),
-    ("Environment::find_file", Pool::Own, &[SWEEP]),
-    ("Environment::deref", Pool::Own, &[SWEEP, FULL, HOLD]),
-    ("Environment::resource", Pool::Own, &[SWEEP, FULL, HOLD]),
+    ("Environment::find_file", Pool::Own, &[SWEEP, RESOLVER]),
+    (
+        "Environment::deref",
+        Pool::Own,
+        &[SWEEP, FULL, HOLD, RESOLVER],
+    ),
+    (
+        "Environment::resource",
+        Pool::Own,
+        &[SWEEP, FULL, HOLD, RESOLVER],
+    ),
     ("Environment::object_tree", Pool::Own, &[TREE, TREE_FULL]),
     ("Environment::load", Pool::Inner, &[SETTLE]),
     ("Registry::register", Pool::Inner, &[SETTLE]),
     ("Registry::register_lazy", Pool::Inner, &[SETTLE]),
     ("Registry::keys", Pool::Inner, &[KEYS]),
-    ("Environment::container", Pool::Inner, &[SWEEP]),
+    ("Environment::container", Pool::Inner, &[SWEEP, RESOLVER]),
     ("Environment::container_path", Pool::Inner, &[SWEEP]),
     ("ContainerItems::next", Pool::Inner, &[SWEEP, SETTLE]),
     ("Registry::get", Pool::CallersKey, &[SWEEP]),
@@ -88,6 +98,7 @@ const NEVER: &str = "calls_that_never_charge_the_pool_make_no_dependency_reserva
 const SWEEP: &str = "a_pool_refusal_anywhere_evicts_the_others_and_retries_once";
 const FETCH: &str = "a_fetchers_refusal_is_retried_whatever_the_thread_ran_before";
 const CALLERS: &str = "a_fetchers_own_refusal_after_a_read_it_let_go_is_retried";
+const RESOLVER: &str = "every_load_through_the_resolver_retries_the_callers_own_refusal";
 const FULL: &str = "a_full_pool_makes_room_for_a_read_from_a_dependency";
 const HOLD: &str = "a_retry_keeps_the_bundle_the_call_reads_through";
 const TREE: &str = "a_pool_refusal_in_object_tree_evicts_and_retries_once";

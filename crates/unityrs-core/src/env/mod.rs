@@ -202,10 +202,12 @@ pub enum LoadMode {
 
 /// Bytes the caller fetches on demand (a batch engine's mmap or object store).
 pub trait Fetch: Send + Sync + fmt::Debug {
-    /// The file's bytes. A dependency's fetcher (one a
-    /// [`Environment::load_dependency`], a resolver's load as a dependency or
-    /// a reopen after an eviction calls) that takes them from the dependency
-    /// pool may refuse with the pool's refusal ([`Error::Budget`] naming
+    /// The file's bytes. A fetcher of a load the Environment makes itself
+    /// (an [`Environment::load_dependency`], any load of a source the
+    /// resolver returned, whether it is listed as a dependency or not, or a
+    /// reopen after an eviction; review round 12: a resolver's load listed
+    /// as no dependency was not retried) that takes them from the
+    /// dependency pool may refuse with the pool's refusal ([`Error::Budget`] naming
     /// [`crate::budget::Reservation::Dependency`]): the Environment then
     /// evicts the other dependencies and fetches once more, as for a
     /// refusal of its own (plan section 3.13), whatever the fetcher did
@@ -372,8 +374,11 @@ pub trait CabResolver: Send + Sync + fmt::Debug {
     /// [`DerefError::NotFound`], which a container preload skips as
     /// UnityPy's skips every `FileNotFoundError`. Any other error fails the
     /// call that asked. An error returned here is the caller's code's, a
-    /// pool refusal in it counted as it enters the core, as a fetcher's is
-    /// ([`Fetch::fetch`]).
+    /// pool refusal in it counted as it enters the core and retried once,
+    /// as a fetcher's is ([`Fetch::fetch`]): [`Environment::find_file`], a
+    /// dereference and the container pass's preload each evict the other
+    /// dependencies and ask once more (review round 12: only a
+    /// dereference did).
     fn find_file(&self, name: &[u8]) -> Result<Option<Source>, Error> {
         Ok(self.resolve(name))
     }

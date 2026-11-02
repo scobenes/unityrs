@@ -252,35 +252,51 @@ impl Environment {
     /// is_dependency=False)`, `environment.py:332`, `:354`); a resource
     /// fallback's ([`Asked::Fallback`]) is a caller's load under the name it
     /// asked for. Without `keep_resolver_loads` every one is a dependency in
-    /// the LRU only. A dependency's listing is charged to its meter, so it
-    /// is part of the load the pool may refuse and retry ([`Self::load_dep`]):
-    /// a second run loads and lists again (review round 8: a refused listing
-    /// failed the load, whose file then stayed registered and unlisted).
+    /// the LRU only (`PARITY.md` section 19.3's row "resolver loads under
+    /// `keep_resolver_loads` false", and section 19.2's
+    /// `SerializedFile.load_dependencies` row).
+    ///
+    /// Every one of these loads, whatever its listing, is one run of
+    /// [`with_room`]: a pool refusal anywhere in it (the source's fetcher's
+    /// own included, counted as it returns: `registry::from_callers`)
+    /// evicts the other dependencies and loads once more, as
+    /// [`Self::load_dep`] does (review round 12: a load listed as no
+    /// dependency, `find_file`'s with `is_dependency` false or a resource
+    /// fallback's under `keep_resolver_loads`, returned its fetcher's
+    /// refusal untried, unless the fallback's candidate step around it
+    /// retried it). A listing is charged to the loaded file's meter inside
+    /// that run, so a second run loads and lists again (review round 8: a
+    /// refused listing failed the load, whose file then stayed registered
+    /// and unlisted).
     pub(super) fn load_resolved(&self, source: &Source, asked: Asked<'_>) -> Result<File, Error> {
         let keep = self.inner.options.keep_resolver_loads;
-        match asked {
-            Asked::Fallback(name) if keep => self.load_listed(name, source, true),
-            Asked::Fallback(name) => self.load_dep(name, source),
-            Asked::Find { .. } if !keep => self.load_dep(&source_name(source), source),
-            Asked::Find {
+        let resolved;
+        let name = match asked {
+            Asked::Fallback(name) => name,
+            Asked::Find { .. } => {
+                resolved = source_name(source);
+                &resolved
+            }
+        };
+        with_room(Some(&self.inner.cache), None, || match asked {
+            _ if !keep => self.try_load_dep(name, source),
+            Asked::Fallback(_)
+            | Asked::Find {
                 is_dependency: false,
-            } => self.load_listed(&source_name(source), source, true),
+            } => self.load_listed(name, source, true),
             Asked::Find {
                 is_dependency: true,
             } => {
-                let name = source_name(source);
-                with_room(Some(&self.inner.cache), None, || {
-                    let file = self.try_load_dep(&name, source)?;
-                    let meter = file.meter().clone();
-                    let key = RawStr::charged(name.as_bytes(), &meter)?;
-                    // A reader has no `is_dependency`: `parse_file` returns
-                    // the reader itself (`helpers/ImportHelper.py:136-156`),
-                    // which `getattr(f, "is_dependency", False)` reads false.
-                    let flag = !matches!(file, File::Raw(_));
-                    self.list(key, file.clone(), flag, &meter)?;
-                    Ok(file)
-                })
+                let file = self.try_load_dep(name, source)?;
+                let meter = file.meter().clone();
+                let key = RawStr::charged(name.as_bytes(), &meter)?;
+                // A reader has no `is_dependency`: `parse_file` returns the
+                // reader itself (`helpers/ImportHelper.py:136-156`), which
+                // `getattr(f, "is_dependency", False)` reads false.
+                let flag = !matches!(file, File::Raw(_));
+                self.list(key, file.clone(), flag, &meter)?;
+                Ok(file)
             }
-        }
+        })
     }
 }
