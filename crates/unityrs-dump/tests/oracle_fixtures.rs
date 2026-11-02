@@ -407,7 +407,10 @@ fn without_notes(v: &Json) -> Json {
 /// typed (an `Array` or a `pair` of three children, a ReferencedObject's
 /// data named `type` or left out, a `type` child after the data, a registry
 /// the reader skips), which the oracle's encoder once refused (review round
-/// 10): its records of each, which it now writes, are the dump's.
+/// 10), and an aligned array's ReferencedObject whose data and a child
+/// before it share a name, which only the pure-Python array reader's rule
+/// types (review round 11): its records of each, which it now writes, are
+/// the dump's.
 #[test]
 fn members_typed_by_another_child_are_recorded_as_the_oracle_records_them() {
     let f = fixture("records.json");
@@ -418,7 +421,7 @@ fn members_typed_by_another_child_are_recorded_as_the_oracle_records_them() {
         .map(|c| s(&c["name"]).to_owned())
         .filter(|n| n != "own_tree")
         .collect();
-    assert_eq!(names.len(), 10, "{names:?}");
+    assert_eq!(names.len(), 16, "{names:?}");
     for name in &names {
         let (data, oracle) = oracle_input(name);
         assert!(

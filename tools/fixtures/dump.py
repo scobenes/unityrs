@@ -22,7 +22,7 @@ replays without Python (crates/unityrs-dump/tests/oracle_fixtures.rs):
   beside them: an object whose resave differs from its raw bytes, one whose
   embedded tree is deeper than the dump's test lowers max_tree_depth to, and
   values whose members are typed by a node other than the last child of their
-  name (member_typing_inputs).
+  name, or by one child alone of several of their name (member_typing_inputs).
 
 Every input is built here in code; no file outside the temporary folder is read.
 
@@ -57,6 +57,8 @@ from UnityPy.helpers import TypeTreeHelper as TTH  # noqa: E402
 from UnityPy.helpers.TypeTreeNode import TypeTreeNode  # noqa: E402
 from UnityPy.helpers.UnityVersion import UnityVersion  # noqa: E402
 from UnityPy.streams import EndianBinaryReader  # noqa: E402
+
+ALIGN = 0x4000  # a node's align flag (m_MetaFlag)
 
 # A 4,300-digit version group packs to more digits than str(int) allows by default.
 sys.set_int_max_str_digits(0)
@@ -666,6 +668,34 @@ def member_typing_inputs() -> list[tuple[str, bytes]]:
     tree = refs(S.Node("float", "rid"), managed("int"), S.Node("ReferencedObjectData", "rid"))
     body = struct.pack("<f", 1.5) + struct.pack("<i", 0) + S.s32("NS") + S.s32("Asm")
     out.append(("data_left_out", one(tree, body, ref_types=[d])))
+    def in_aligned_array(elem):
+        """`elem` as the element of an aligned vector, which the pure-Python reader reads by `read_value_array`."""
+        elem.meta = ALIGN
+        array = S.Node("Array", "Array", [S.Node("int", "size"), elem])
+        return S.Node("MyThing", "Base", [S.Node("vector", "v", [array])])
+
+    # Review round 11. An aligned array's element [x: double, type, x: data, type: int], read by the pure-Python
+    # array reader, which never leaves data out: `x` is the data's, typed by ref type `F` (a `float`) alone.
+    f = S.Type(114, S.Node("float", "Base"), ref_names=[b"F", b"NS", b"Asm"])
+    kids = [S.Node("double", "x"), managed(), S.Node("ReferencedObjectData", "x"), S.Node("int", "type")]
+    body = struct.pack("<id", 1, 2.5) + head("F")[8:] + struct.pack("<fi", 1.5, 9)
+    out.append(("array_data_named_over_py", one(in_aligned_array(S.Node("ReferencedObject", "e", kids)), body, 0, [f])))
+    # [v: double, v: float], no data: the later `v` overwrote the earlier, and types it alone.
+    twice = refs(S.Node("double", "v"), S.Node("float", "v"))
+    for tag, byte_size in (("", None), ("_py", 0)):
+        out.append((f"plain_child_named_twice{tag}", one(twice, struct.pack("<df", 2.5, 1.5), byte_size)))
+    # An aligned array's element that is a class, a pair or a ReferencedObject, each holding a class
+    # [r: registry, x: float, x: registry]: `read_value` reads what the element holds, checking registries.
+    holder, held = [registry("r"), S.Node("float", "x"), registry("x")], struct.pack("<if", 1, 2.5)
+    data_kids = [S.Node("SInt64", "rid"), managed(), S.Node("ReferencedObjectData", "d")]
+    for name, elem, ref_types, data in (
+        ("class", S.Node("E", "data", [S.Node("C", "c", holder)]), None, held),
+        ("pair", S.Node("pair", "data", [S.Node("C", "first", holder), S.Node("int", "second")]), None,
+         held + struct.pack("<i", 7)),
+        ("ref", S.Node("ReferencedObject", "data", data_kids), [ref_type("R", *holder)], head("R") + held),
+    ):
+        body = struct.pack("<i", 1) + data
+        out.append((f"array_{name}_holds_registries_py", one(in_aligned_array(elem), body, 0, ref_types)))
     # A registry the reader skips (a class's second) names no member: `x` is the float's.
     tree = S.Node("MyThing", "Base", [registry("r"), S.Node("float", "x"), registry("x")])
     for tag, byte_size in (("", None), ("_py", 0)):
