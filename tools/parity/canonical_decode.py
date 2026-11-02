@@ -81,6 +81,9 @@ def _blob(o, kind):
     if "hex" in o:
         raw = bytes.fromhex(o["hex"])
         return Blob(kind, len(raw), hashlib.sha256(raw).hexdigest(), o["hex"])
+    if type(o["len"]) is not int or type(o["sha256"]) is not str:
+        # A Blob is hashed as a dict key: its members must be what a summary holds.
+        raise TypeError(f"a summary's len and sha256 are {type(o['len']).__name__}, {type(o['sha256']).__name__}")
     return Blob(kind, o["len"], o["sha256"])
 
 
@@ -91,19 +94,10 @@ def _unpack(o, fmt, size, cls):
     return [cls(x) for x in struct.unpack(f">{len(raw) // size}{fmt}", raw)]
 
 
-def decode(tv):
-    """Decode one tagged value into the comparison model."""
-    t = type(tv)
-    if t is list:
-        return [decode(v) for v in tv]
-    if t is not dict:
-        if t is float:
-            raise FormatError("untagged JSON float in a value")
-        return tv
+def _leaf(tv):
+    """A tagged value that holds no other value, decoded; None for a dict or tuple, which hold others."""
     tag = tv.get("t")
     try:
-        if tag == "dict":
-            return Dict((decode_key(k), decode(v)) for k, v in tv["v"])
         if tag == "f32":
             return F32(int(tv["v"], 16))
         if tag == "f64":
@@ -112,16 +106,75 @@ def decode(tv):
             return _unpack(tv, "I", 4, F32)
         if tag == "f64s":
             return _unpack(tv, "Q", 8, F64)
-        if tag == "tuple":
-            return Tuple(decode(v) for v in tv["v"])
         if tag in ("bytes", "str", "u8s"):
             return _blob(tv, tag)
     except (KeyError, TypeError, ValueError) as e:
         raise FormatError(f"malformed {tag!r} value: {e}") from e
+    if tag in ("dict", "tuple"):
+        return None
     raise FormatError(f"unknown value tag {tag!r}")
 
 
+def decode(tv):
+    """Decode one tagged value into the comparison model, at any depth (a stack, not recursion: a value nests
+    as deep as UnityPyBoost reads)."""
+    root = [None]
+    todo = [(tv, root, 0)]
+    while todo:
+        tv, slot, at = todo.pop()
+        if type(tv) is _Freeze:
+            tv.done()
+            continue
+        t = type(tv)
+        if t is list:
+            out = [None] * len(tv)
+            todo.extend((v, out, i) for i, v in enumerate(tv))
+        elif t is not dict:
+            if t is float:
+                raise FormatError("untagged JSON float in a value")
+            out = tv
+        else:
+            out = _leaf(tv)
+            if out is None:
+                tag = tv["t"]
+                try:
+                    items = list(tv["v"])
+                    if tag == "dict":
+                        entries = [(decode_key(k), v) for k, v in items]
+                except (KeyError, TypeError, ValueError) as e:
+                    raise FormatError(f"malformed {tag!r} value: {e}") from e
+                if tag == "tuple":
+                    out = Tuple([None] * len(items))
+                    todo.extend((v, out, i) for i, v in enumerate(items))
+                else:
+                    # Each entry is a (key, value) pair in the comparison model, made once its value is in:
+                    # the freeze sits below the values on the stack, so it runs after all of them.
+                    out = Dict([None] * len(entries))
+                    todo.append((_Freeze(out), None, 0))
+                    for i, (k, v) in enumerate(entries):
+                        pair = [k, None]
+                        out[i] = pair
+                        todo.append((v, pair, 1))
+        slot[at] = out
+    return root[0]
+
+
+class _Freeze:
+    """A decoded Dict whose [key, value] lists become (key, value) tuples once every value is in."""
+
+    __slots__ = ("d",)
+
+    def __init__(self, d):
+        self.d = d
+
+    def done(self):
+        self.d[:] = [tuple(p) for p in self.d]
+
+
 def decode_key(k):
+    """A dict key: a str, or a name's hex form, which decodes to a Blob (anything else is no key: section 3)."""
     if type(k) is str:
         return k
-    return decode(k)
+    if type(k) is dict and k.get("t") == "str":
+        return _leaf(k)
+    raise FormatError(f"a dict key that is no name: {type(k).__name__}")

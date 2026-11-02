@@ -290,8 +290,7 @@ class ThroughBoost(unittest.TestCase):
         value = read(root, data, assetsfile=assetsfile)
         self.assertNotIn("again", value, "a second registry in the class that read one is skipped")
         self.assertNotIn("data", value["references"]["RefIds"][1], "an empty class has no data")
-        resolve = lambda t: TTH.get_ref_type_node({"type": t}, assetsfile)  # noqa: E731
-        enc = C.ValueEncoder(resolve).encode(value, root)
+        enc = C.ValueEncoder(assetsfile.ref_types).encode(value, root)
         self.assertEqual(
             C.dumps(enc),
             '{"t":"dict","v":[["references",{"t":"dict","v":[["version",2],["RefIds",['

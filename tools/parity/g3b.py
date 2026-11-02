@@ -136,7 +136,7 @@ RERUN_RSS = 1 << 30
 
 
 def stripped(rec):
-    """compare.strip_notes without recursion, so any depth the JSON parser takes: (rec without notes, the notes)."""
+    """compare.strip_notes, keeping the notes: (rec without notes, the notes)."""
     notes, root = [], [None]
     stack = [(rec, root, 0)]
     while stack:
@@ -163,7 +163,7 @@ def stripped(rec):
 def digest(rec):
     """A record's content without its notes, as a digest, and its limit refusals as (kind, value, max)."""
     body, notes = stripped(rec)
-    text = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+    text = C.dumps(body)  # at any depth and integer width the dumps hold, as compare.py reads them
     limits = [(m[1], int(m[2]), int(m[3])) for n in notes for m in LIMIT.finditer(n)]
     return hashlib.blake2b(text.encode("utf-8", "surrogatepass"), digest_size=16).digest(), limits
 
@@ -227,7 +227,7 @@ def inputs_of(lines, keep=None):
     """{input: Input} for the file and object records among `lines`, keyed by the input's name as written."""
     inputs = {}
     for line in lines:
-        rec = json.loads(line)
+        rec = C.loads(line)
         if rec.get("rec") not in ("file", "object"):
             continue
         key = json.dumps(rec["file"][0])
@@ -405,10 +405,14 @@ def probe_main(path, name_hex):
                 stack.append((child, children_count))
         return dummy_root.m_Children[0]
 
+    import canonical_encode
+
     enc_name = C.enc_name
     node.__init__ = checked
     node.parse = classmethod(parse)
-    C.enc_name = lambda s: enc_name(original.get(s, s) if isinstance(s, str) else s)
+    # Every name the records hold gets its original back: the record code's (through canonical.py) and a
+    # value's member names (canonical_encode.py, where the value encoder looks it up).
+    C.enc_name = canonical_encode.enc_name = lambda s: enc_name(original.get(s, s) if isinstance(s, str) else s)
     raw = bytes.fromhex(name_hex)
     try:
         _, text, _, _ = unitypy_dump.dump_input((path, unitypy_dump.name_of(raw), C.LEVELS))

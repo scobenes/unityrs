@@ -94,7 +94,7 @@ def rec_text(rec):
 def write_dump(path, head, texts):
     """A dump of `texts` ({input: its lines}) in input order, after `head`, with a matching end record."""
     body = "".join(texts[name] for name in sorted(texts))
-    kinds = [json.loads(line)["rec"] for line in lines(body)]
+    kinds = [C.loads(line)["rec"] for line in lines(body)]
     end = {"rec": "end", "files": kinds.count("file"), "objects": kinds.count("object")}
     path.write_text(head + body + rec_text(end))
 
@@ -241,6 +241,25 @@ class InputCoverageTests(unittest.TestCase):
         status, _, rows = self.verdict(full, {**full, "c": inner})
         self.assertEqual(rows["c"], ("other", "missing from the unityrs dump"))
         self.assertEqual(status, 1)
+
+    def test_a_value_of_any_depth_and_an_integer_of_any_width_agree(self):
+        """Review round 10: a value deeper than Python's recursion limit stopped the verdict with a
+        RecursionError, and an integer wider than 4,300 digits made it exit 2, though both dumps agree."""
+        from compare_support import S as struct_value, bundle_rec, file_rec, obj_rec
+
+        value = 7
+        for _ in range(5_000):
+            value = struct_value(["x", value])
+        bundle = bundle_rec("b")
+        bundle["l1"]["engine_version_packed"] = 10**5000 + 1
+        texts = {
+            "a": "".join(rec_text(r) for r in (file_rec("a"), obj_rec(-5, value, "a"), obj_rec(7, 1, "a"))),
+            "b": rec_text(bundle),
+        }
+        for name in texts:
+            (self.run / "in" / name).write_bytes(b"x")
+        status, report, rows = self.verdict(texts, texts)
+        self.assertEqual((status, report["classes"], report["form"], rows), (0, {"agree": 2}, {}, {}))
 
 
 @unittest.skipIf(unitypy_dump is None, "needs UnityPy (the oracle image)")

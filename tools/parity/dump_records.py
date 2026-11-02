@@ -273,18 +273,6 @@ def error_kind(e: BaseException) -> tuple[str, int | None]:
     return "other", None
 
 
-def ref_resolver(sf):
-    cache = {}
-
-    def resolve(type_value):
-        key = (type_value["class"], type_value["ns"], type_value["asm"])
-        if key not in cache:
-            cache[key] = TypeTreeHelper.get_ref_type_node({"type": {"class": key[0], "ns": key[1], "asm": key[2]}}, sf)
-        return cache[key]
-
-    return resolve
-
-
 def first_difference(a: bytes, b: bytes) -> int:
     """The first offset where a and b differ, or the shorter length if one is a prefix."""
     return next((i for i, (x, y) in enumerate(zip(a, b, strict=False)) if x != y), min(len(a), len(b)))
@@ -322,15 +310,16 @@ def object_record(obj, path, encoder, levels, stats):
         encoded = None
         if value is not None:
             try:
-                encoded = encoder.encode(value, node)
+                # UnityPyBoost reads an object whose byte_size is above 0, the pure-Python reader one of 0
+                # (TypeTreeHelper.read_typetree), and which read it decides some of its members' nodes.
+                boost = bool(obj.byte_size) and TypeTreeHelper.read_typetree_boost is not None
+                encoded = encoder.encode(value, node, boost=boost)
             except C.EncodeError as e:
-                # UnityPy read the value; the oracle's own encoder refusing it is a
-                # bug in the dumper, not an outcome of the input, so the run stops
-                # (spec 4.3: the oracle never writes an `encode` error).
-                raise DumperError(
-                    f"file {C.dumps(path)} path_id {obj.path_id}: the canonical encoder refused the value "
-                    f"UnityPy read ({e})"
-                ) from e
+                # UnityPy read the value and the oracle's own encoder refuses it: a bug in the oracle, never
+                # an outcome of the input. It costs this object's value alone (spec 4.3, "Who writes
+                # `encode`"): compare.py reports it as `reference_encode`, so no comparison passes it.
+                error = {"kind": "encode", "bytes_read": None, "note": note(f"the oracle's encoder: {e}")}
+                parsed_ok = False
         stats["t_parse"] += t1 - t0
         stats["t_encode"] += time.perf_counter() - t1
         if error is not None:
@@ -403,7 +392,8 @@ def emit_file(f, path, l0, levels, out, stats):
     out.append({"rec": "file", "file": path, "l0": l0, "l1": l1, "error": None})
     stats["files"] += 1
     if kind == "SerializedFile":
-        encoder = C.ValueEncoder(ref_resolver(f))
+        # The list both readers resolve a ReferencedObject's data through; a file below format 20 has none.
+        encoder = C.ValueEncoder(getattr(f, "ref_types", None))
         for obj in sorted(f.objects.values(), key=lambda o: o.path_id):
             out.append(object_record(obj, path, encoder, levels, stats))
             stats["objects"] += 1
@@ -423,12 +413,24 @@ def dump_input(job):
         return _dump_input(job)
 
 
+class InputUnreadable(RuntimeError):
+    """An input could not be opened or read: the machine's or the folder's fault, no outcome of the input, so
+    the run stops with no dump (spec 4.2), as a unityrs producer's does."""
+
+
+def read_input(path) -> bytes:
+    try:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except OSError as e:
+        raise InputUnreadable(f"cannot read the input {path!r}: {e}") from e
+
+
 def _dump_input(job):
     path, rel, levels = job
     stats = Counter()
     t0 = time.perf_counter()
-    with open(path, "rb") as fh:
-        data = fh.read()
+    data = read_input(path)
     detected = detect(data)
     l0 = {"type": detected, "parsed_as": None, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
     out = []
@@ -472,9 +474,22 @@ def _dump_input(job):
 
 def crash_result(job, why):
     """The one file record of an input whose process died: error kind "crash"."""
+    return _failed_result(job, "crash", why, "crashes")
+
+
+def dumper_result(job, why):
+    """The one file record of an input the dumper's own code failed on: error kind "dumper" (spec 4.2).
+
+    A raise in the dumper's code, or a process that ended without its records and without a signal, is a
+    bug in the oracle, never an outcome of the input; it costs that input's records alone, and compare.py
+    reports the record as `reference_dumper`, so no comparison passes it.
+    """
+    return _failed_result(job, "dumper", why, "dumper_errors")
+
+
+def _failed_result(job, kind, why, counter):
     path, rel, _ = job
-    with open(path, "rb") as fh:
-        data = fh.read()
+    data = read_input(path)
     sha = hashlib.sha256(data).hexdigest()
     l0 = {"type": detect(data), "parsed_as": "error", "size": len(data), "sha256": sha}
     rec = {
@@ -482,12 +497,9 @@ def crash_result(job, why):
         "file": [C.enc_name(rel)],
         "l0": l0,
         "l1": None,
-        "error": {"kind": "crash", "note": note(why)},
+        "error": {"kind": kind, "note": note(why)},
     }
     text = C.dumps(rec) + "\n"
-    stats = Counter(files=1, crashes=1, bytes_in=len(data), bytes_out=len(text.encode("utf-8")))
+    stats = Counter(files=1, bytes_in=len(data), bytes_out=len(text.encode("utf-8")))
+    stats[counter] += 1
     return rel, text, stats, sha
-
-
-class DumperError(RuntimeError):
-    """The dumper failed on an input in its own code, which no input explains, so the run stops."""

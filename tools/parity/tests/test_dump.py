@@ -347,11 +347,16 @@ class DumpTests(DumpCase):
             "b6_major64k": unityraw(6, [(b"one", b"tiny")], engine=b"65536.1.1f1"),  # major 0 once masked
             "b5_major64k": unityraw(5, [(b"one", b"tiny")], engine=b"65536.1.1f1"),  # never parsed to load
             "b7": unityraw(7, [(b"one", b"tiny")]),  # the web/raw layout: no alignment
+            # A 4,300-digit major: past 4,300 digits once packed, which the oracle once could not write (its
+            # run stopped, review round 10).
+            "v_4300.assets": assets_with(b"9" * 4300 + b".1.1f1"),
+            "b6_4300": unityraw(6, [(b"one", b"tiny")], engine=b"9" * 4300 + b".1.1f1"),
         }
         for name, data in files.items():
             (d / name).write_bytes(data)
         wide = 133091 << 48 | 1 << 32 | 1 << 16 | 3 << 8 | 1
         self.assertGreater(wide, 2**64)
+        widest = (10**4300 - 1) << 48 | 1 << 32 | 1 << 16 | 3 << 8 | 1
         for fallback in (None, "2021.3.2f1"):
             out = self.tmp / f"versions{fallback}.jsonl"
             with mock.patch.object(unitypy_dump.UnityPy.config, "FALLBACK_UNITY_VERSION", fallback):
@@ -360,6 +365,8 @@ class DumpTests(DumpCase):
             with self.subTest(fallback=fallback):
                 self.assertEqual(recs["v_major0.assets"]["l1"]["version_packed"], 5 << 32 | 1 << 16 | 3 << 8 | 1)
                 self.assertEqual(recs["v_wide.assets"]["l1"]["version_packed"], wide)
+                self.assertEqual(recs["v_4300.assets"]["l1"]["version_packed"], widest)
+                self.assertEqual(recs["b6_4300"]["l1"]["engine_version_packed"], widest)
                 self.assertEqual(recs["v_nomatch.assets"]["error"]["note"], "ValueError: Invalid version string: abc")
                 b6 = recs["b6_wide"]["l1"]
                 self.assertEqual((b6["engine_version_packed"], b6["flags_class"]), (wide, "ArchiveFlagsOld"))

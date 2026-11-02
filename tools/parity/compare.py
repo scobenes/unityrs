@@ -37,39 +37,28 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import canonical as C  # noqa: E402
 
-MAX_DIFFS_PER_RECORD = 20
-MAX_ELEMENT_DIFFS = 5
+# How two records with one key are diffed; compare.py names it all, as before it moved.
+from compare_diff import (  # noqa: E402, F401
+    MAX_DIFFS_PER_RECORD,
+    MAX_ELEMENT_DIFFS,
+    Diff,
+    compare_records,
+    compare_section,
+    compared_text,
+    json_diff,
+    record_class,
+    same,
+    short,
+    strip_notes,
+    value_diff,
+    where,
+)
+
 _INDEX = re.compile(r"\[\d+\]")
 
 
 class CompareError(Exception):
     """A comparison that cannot be made: bad --levels, or a reference that is not the pinned oracle."""
-
-
-class Diff:
-    __slots__ = ("level", "cls", "path", "kind", "a", "b", "where")
-
-    def __init__(self, level, cls, path, kind, a=None, b=None, where=""):
-        self.level, self.cls, self.path, self.kind = level, cls, path, kind
-        self.a, self.b, self.where = a, b, where
-
-    def as_dict(self):
-        return {
-            "level": self.level,
-            "class": self.cls,
-            "path": self.path,
-            "kind": self.kind,
-            "where": self.where,
-            "a": short(self.a),
-            "b": short(self.b),
-        }
-
-
-def short(v, limit=160):
-    if v is None:
-        return None
-    text = repr(v) if not isinstance(v, str) else json.dumps(v, ensure_ascii=False)
-    return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 # ------------------------------------------------------------------- reading
@@ -99,14 +88,14 @@ def _float(text):
     return float(text)
 
 
-_DECODER = json.JSONDecoder(parse_float=_float, parse_constant=_no_constant)
-
-
 def parse(line: bytes):
-    """A line's record, and whether it held a JSON float. Unreadable lines raise FormatError."""
+    """A line's record, and whether it held a JSON float. Unreadable lines raise FormatError.
+
+    It is read at any depth and integer width the dumps hold (canonical_json.loads).
+    """
     _Floats.seen = False
     try:
-        rec = _DECODER.decode(line.decode("utf-8"))
+        rec = C.loads(line.decode("utf-8"), parse_float=_float, parse_constant=_no_constant)
     except ValueError as e:  # JSONDecodeError, UnicodeDecodeError, NaN/Infinity
         raise C.FormatError(f"not a JSON line: {e}") from e
     if not isinstance(rec, dict) or "rec" not in rec:
@@ -229,206 +218,6 @@ def compare_orders(a, b):
     return next(((x, y) for x, y in zip(seq_a, seq_b, strict=True) if x != y), None)
 
 
-def where(rec):
-    parts = [p if isinstance(p, str) else json.dumps(p) for p in rec.get("file", [])]
-    w = ":".join(parts)
-    if rec["rec"] == "object":
-        w += f":path_id={rec['path_id']}"
-    return w or rec["rec"]
-
-
-def record_class(rec):
-    if rec["rec"] == "object":
-        l2 = rec.get("l2") if isinstance(rec.get("l2"), dict) else {}
-        rt = l2.get("root_type")
-        if isinstance(rt, str):
-            return rt
-        l1 = rec.get("l1") if isinstance(rec.get("l1"), dict) else {}
-        return f"class_id={l1.get('class_id')}"
-    if rec["rec"] == "file":
-        l0 = rec.get("l0") if isinstance(rec.get("l0"), dict) else {}
-        return "file:" + str(l0.get("parsed_as"))
-    return rec["rec"]
-
-
-# ------------------------------------------------------------------- diffing
-
-
-def strip_notes(v):
-    if isinstance(v, dict):
-        return {k: strip_notes(x) for k, x in v.items() if k != "note"}
-    if isinstance(v, list):
-        return [strip_notes(x) for x in v]
-    return v
-
-
-def same(a, b):
-    """Type-exact equality at any depth. Python's == is not: True == 1 == 1.0, and F32(0) == F64(0)."""
-    t = type(a)
-    if t is not type(b):
-        return False
-    if t is dict:
-        return list(a) == list(b) and all(same(a[k], b[k]) for k in a)
-    if t is list or t is tuple or t is C.Dict or t is C.Tuple:
-        return len(a) == len(b) and all(map(same, a, b))
-    return a == b
-
-
-def json_diff(a, b, path, out):
-    """Plain JSON structures (metadata): exact, with paths."""
-    if type(a) is not type(b):
-        out.append((path, "type", a, b))
-    elif isinstance(a, dict):
-        for k in [*a, *(k for k in b if k not in a)]:
-            if k not in b:
-                out.append((f"{path}.{k}", "missing", a[k], None))
-            elif k not in a:
-                out.append((f"{path}.{k}", "extra", None, b[k]))
-            else:
-                json_diff(a[k], b[k], f"{path}.{k}", out)
-        if list(a) != list(b) and a.keys() == b.keys():
-            out.append((path, "key_order", list(a), list(b)))
-    elif isinstance(a, list):
-        if len(a) != len(b):
-            out.append((path, "length", len(a), len(b)))
-        shown = 0
-        for i, (x, y) in enumerate(zip(a, b, strict=False)):
-            if not same(x, y):
-                if shown == MAX_ELEMENT_DIFFS:
-                    out.append((f"{path}[...]", "more", None, None))
-                    break
-                shown += 1
-                json_diff(x, y, f"{path}[{i}]", out)
-    elif a != b:
-        out.append((path, "value", a, b))
-
-
-def _key_text(k):
-    return k if isinstance(k, str) else repr(k)
-
-
-def _key_id(k):
-    """A dict key as a type-exact dict key: "a" and a hex-tagged key never collide, nor 1 and True."""
-    return (type(k), k)
-
-
-def value_diff(a, b, path, out):
-    """Decoded typetree values (see canonical.decode): type-exact at any depth, with paths."""
-    ta, tb = type(a), type(b)
-    if ta is not tb:
-        out.append((path, "type", a, b))
-        return
-    if ta is C.Dict:
-        ka, kb = [_key_id(k) for k, _ in a], [_key_id(k) for k, _ in b]
-        da, db = {_key_id(k): v for k, v in a}, {_key_id(k): v for k, v in b}
-        if ka != kb:
-            if set(ka) == set(kb):
-                out.append((path, "key_order", [k for _, k in ka], [k for _, k in kb]))
-            for k in ka:
-                if k not in db:
-                    out.append((f"{path}.{_key_text(k[1])}", "missing_key", da[k], None))
-            for k in kb:
-                if k not in da:
-                    out.append((f"{path}.{_key_text(k[1])}", "extra_key", None, db[k]))
-        for k in ka:
-            if k in db:
-                value_diff(da[k], db[k], f"{path}.{_key_text(k[1])}", out)
-    elif ta is list or ta is C.Tuple:
-        if len(a) != len(b):
-            out.append((path, "length", len(a), len(b)))
-        shown = 0
-        for i, (x, y) in enumerate(zip(a, b, strict=False)):
-            if not same(x, y):
-                if shown == MAX_ELEMENT_DIFFS:
-                    out.append((f"{path}[...]", "more", None, None))
-                    break
-                shown += 1
-                value_diff(x, y, f"{path}[{i}]", out)
-    elif a != b:
-        kind = "value"
-        # CPython widens a float32 through the FPU, which quiets a signalling
-        # NaN; UnityPy's dict cannot hold the file's bits (spec: "Floats").
-        # The candidate must be that signalling NaN: a reference qNaN against
-        # an infinity differs in the same bit, and is a real error.
-        if (
-            ta is C.F32
-            and (a ^ b) == 0x00400000
-            and (a & 0x7F800000) == 0x7F800000
-            and a & 0x00400000
-            and b & 0x007FFFFF
-        ):
-            kind = "f32_snan_quieted"
-        out.append((path, kind, a, b))
-
-
-def compare_section(level, cls, name, a, b, w, out, value=False):
-    raw = []
-    if value:
-        if (a is None) != (b is None):
-            raw.append((name, "type", a, b))
-        elif a is not None:
-            try:
-                da, db = C.decode(a), C.decode(b)
-            except C.FormatError as e:
-                raw.append((name, "invalid", str(e), None))
-            else:
-                value_diff(da, db, name, raw)
-    else:
-        json_diff(strip_notes(a), strip_notes(b), name, raw)
-    for path, kind, x, y in raw:
-        out.append(Diff(level, cls, path, kind, x, y, w))
-
-
-def _section(rec, name):
-    v = rec.get(name)
-    return v if isinstance(v, dict) else {}
-
-
-def compare_records(ra, rb, levels, out):
-    w, cls = where(ra), record_class(ra)
-    diffs = []
-    if ra["rec"] == "file":
-        if "L0" in levels:
-            compare_section("L0", cls, "l0", ra.get("l0"), rb.get("l0"), w, diffs)
-        if "L1" in levels:
-            compare_section("L1", cls, "l1", ra.get("l1"), rb.get("l1"), w, diffs)
-        compare_section("L1", cls, "error", ra.get("error"), rb.get("error"), w, diffs)
-    elif ra["rec"] == "object":
-        if "L1" in levels:
-            compare_section("L1", cls, "l1", ra.get("l1"), rb.get("l1"), w, diffs)
-        if "L2" in levels:
-            l2a, l2b = _section(ra, "l2"), _section(rb, "l2")
-            meta_a = {k: v for k, v in l2a.items() if k != "value"}
-            meta_b = {k: v for k, v in l2b.items() if k != "value"}
-            compare_section("L2", cls, "l2", meta_a, meta_b, w, diffs)
-            compare_section("L2", cls, "l2.value", l2a.get("value"), l2b.get("value"), w, diffs, value=True)
-        if "L3" in levels:
-            compare_section("L3", cls, "l3", ra.get("l3"), rb.get("l3"), w, diffs)
-    elif ra["rec"] == "end":
-        compare_section("format", cls, "end", ra, rb, w, diffs)
-    if len(diffs) > MAX_DIFFS_PER_RECORD:
-        extra = len(diffs) - MAX_DIFFS_PER_RECORD
-        diffs = diffs[:MAX_DIFFS_PER_RECORD]
-        diffs.append(Diff(diffs[0].level, cls, "(record)", "more", extra, None, w))
-    out.extend(diffs)
-    return bool(diffs)
-
-
-_LEVEL_SECTION = {"L1": "l1", "L2": "l2", "L3": "l3"}
-
-
-def compared_text(rec, levels):
-    """The canonical text of what compare_records looks at, notes left out."""
-    kind = rec["rec"]
-    if kind == "file":
-        parts = [rec.get("error")] + [rec.get(lv.lower()) for lv in ("L0", "L1") if lv in levels]
-    elif kind == "object":
-        parts = [rec.get(_LEVEL_SECTION[lv]) for lv in ("L1", "L2", "L3") if lv in levels]
-    else:
-        parts = [rec]
-    return C.dumps(strip_notes(parts))
-
-
 # -------------------------------------------------------------------- driver
 
 
@@ -535,16 +324,21 @@ def line_problems(rec, line, saw_float, levels):
 
 
 def reference_problems(rec):
-    """What a reference record may not hold although the format allows it: an `encode` error.
+    """What a reference record may hold that vouches for nothing: an `encode` or a `dumper` error.
 
-    Only a producer under test writes one (spec 4.3); the oracle stops on its
-    own encoder's failure instead, so a reference that has one cannot vouch
-    for that object.
+    The oracle writes one only where its own code failed on that object (its encoder) or input (the rest
+    of the dumper), a bug in the oracle, never an outcome of the input (spec 4.2, 4.3); so a comparison
+    with such a reference never passes there.
     """
-    l2 = rec.get("l2") if rec.get("rec") == "object" else None
-    error = l2.get("error") if isinstance(l2, dict) else None
-    if isinstance(error, dict) and error.get("kind") == "encode":
-        return [("l2.error", "reference_encode", "only a producer under test writes an encode error")]
+    if rec.get("rec") == "object":
+        l2 = rec.get("l2")
+        error = l2.get("error") if isinstance(l2, dict) else None
+        if isinstance(error, dict) and error.get("kind") == "encode":
+            return [("l2.error", "reference_encode", "the oracle's encoder refused the value UnityPy read")]
+    elif rec.get("rec") == "file":
+        error = rec.get("error")
+        if isinstance(error, dict) and error.get("kind") == "dumper":
+            return [("error", "reference_dumper", "the oracle's own code failed on this input")]
     return []
 
 
@@ -555,7 +349,7 @@ def check_reference_producer(header, oracle=False):
     producer = header.get("producer")
     if not isinstance(producer, dict) or producer.get("name") != C.ORACLE_PRODUCER:
         if oracle:
-            raise CompareError(f"the reference's producer is {producer!r}, not the oracle's ({C.ORACLE_PRODUCER})")
+            raise CompareError(f"the reference's producer is {short(producer)}, not the oracle's ({C.ORACLE_PRODUCER})")
         return
     if producer.get("boost") is not True or producer.get("unitypy") != C.ORACLE_UNITYPY:
         raise CompareError(
@@ -573,7 +367,7 @@ def check_reference_producer(header, oracle=False):
         problems = C.stack_problems(packages, pins, exact=True) if isinstance(packages, dict) else []
         raise CompareError(
             f"the reference was dumped on another stack than {C.ORACLE_REQUIREMENTS.name}: "
-            f"{'; '.join(problems) or f'packages {packages!r}'}"
+            f"{'; '.join(problems) or f'packages {short(packages)}'}"
         )
     # The record digests say the dumper hashed every pinned wheel's files (oracle_env.py).
     records, pinned = producer.get("records"), C.oracle_records()
@@ -582,7 +376,7 @@ def check_reference_producer(header, oracle=False):
             names = sorted(n for n in pinned.keys() | records.keys() if records.get(n) != pinned.get(n))
             what = f"the record digests of {', '.join(names)} are not the pinned ones"
         else:
-            what = f"records {records!r}"
+            what = f"records {short(records)}"
         raise CompareError(
             f"the reference was dumped from other files than the pinned wheels' ({C.ORACLE_RECORDS.name}): {what}"
         )
@@ -608,7 +402,15 @@ def select_levels(held_a, held_b, levels):
 
 
 def run(path_a, path_b, levels=None, examples=3, oracle=False):
-    """Compare two dumps; returns (report, header_a, header_b, levels compared); `oracle`: check_reference_producer."""
+    """Compare two dumps; returns (report, header_a, header_b, levels compared); `oracle`: check_reference_producer.
+
+    An integer of any width a record holds is read, compared and quoted (canonical_json.exact_ints).
+    """
+    with C.exact_ints():
+        return _run(path_a, path_b, levels, examples, oracle)
+
+
+def _run(path_a, path_b, levels, examples, oracle):
     a, b = Side("reference", path_a), Side("candidate", path_b)
     report = Report(examples)
     header_problems = (a.read_header(), b.read_header())
@@ -727,11 +529,19 @@ def run(path_a, path_b, levels=None, examples=3, oracle=False):
     return report, a.header, b.header, compared
 
 
+def _printable(producer):
+    """A header's producer as JSON, or the start of it where it nests past Python's recursion limit."""
+    try:
+        return json.dumps(producer)
+    except RecursionError:
+        return short(producer)
+
+
 def print_report(report, ha, hb, compared, path_a, path_b, max_paths, out=None):
     out = out or sys.stdout
     p = lambda *a: print(*a, file=out)  # noqa: E731
-    p(f"reference: {path_a}  producer={json.dumps(ha.get('producer'))}")
-    p(f"candidate: {path_b}  producer={json.dumps(hb.get('producer'))}")
+    p(f"reference: {path_a}  producer={_printable(ha.get('producer'))}")
+    p(f"candidate: {path_b}  producer={_printable(hb.get('producer'))}")
     missing = f"  (the candidate lacks {' '.join(report.missing_levels)})" if report.missing_levels else ""
     p(f"levels compared: {' '.join(compared) or '(none)'}{missing}")
     c = report.counts
@@ -783,7 +593,8 @@ def main(argv=None):
     except (C.FormatError, CompareError, OSError) as e:
         print(f"compare: {e}", file=sys.stderr)
         return 2
-    print_report(report, ha, hb, compared, args.reference, args.candidate, args.max_paths)
+    with C.exact_ints():
+        print_report(report, ha, hb, compared, args.reference, args.candidate, args.max_paths)
     if args.json:
         with open(args.json, "w") as fh:
             json.dump(

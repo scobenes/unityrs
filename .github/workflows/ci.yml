@@ -199,7 +199,7 @@ jobs:
       - name: Self-tests (parity tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=382
+          tools/parity/tests=410
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6
       # and 10), each a unityrs dump compared with the oracle's: compare.py

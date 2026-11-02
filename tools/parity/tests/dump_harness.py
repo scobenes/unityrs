@@ -25,6 +25,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
 import child  # noqa: E402
+import canonical as C  # noqa: E402
 import scratch  # noqa: E402
 try:
     import dump_records  # noqa: F401 - for the tests that patch a record function
@@ -95,7 +96,7 @@ def unityraw(fmt, entries, player=b"5.x.x", engine=b"5.6.7f1"):
 def records(path):
     opener = gzip.open if str(path).endswith(".gz") else open
     with opener(path, "rt", encoding="utf-8") as fh:
-        return [json.loads(line) for line in fh]
+        return [C.loads(line) for line in fh]  # an integer of any width, a value of any depth
 
 
 def dump(*argv):
