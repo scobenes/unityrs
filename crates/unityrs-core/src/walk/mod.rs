@@ -153,7 +153,7 @@ pub struct ReadOptions {
 }
 
 /// `assetsfile.ref_types` as the reader sees it (UnityPyBoost
-/// `TypeTreeHelper.cpp:585-682`; the pure-Python writer, `TypeTreeHelper.py:88-109`).
+/// `TypeTreeHelper.cpp:585-681`; the pure-Python writer, `TypeTreeHelper.py:88-109`).
 #[derive(Clone, Copy, Debug)]
 pub enum RefTypes<'a> {
     /// No assets file at all (UnityPyBoost: `ref_type` error on use).

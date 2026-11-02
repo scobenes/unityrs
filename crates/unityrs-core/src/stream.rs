@@ -1,7 +1,7 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/streams/EndianBinaryReader.py. See THIRD_PARTY_LICENSES.
 //! A bounded reader over a byte slice with the semantics of UnityPy's
 //! `EndianBinaryReader`: the memory reader, `EndianBinaryReader_Memoryview`
-//! (`streams/EndianBinaryReader.py:230-285`), or the stream reader,
+//! (`streams/EndianBinaryReader.py:231-284`), or the stream reader,
 //! `EndianBinaryReader_Streamable` (`:287-324`), which UnityPy reads a file
 //! it loads from a path with ([`ReaderKind`]; `kind`'s module docs list
 //! what it reads that way and its rules).

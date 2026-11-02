@@ -7,7 +7,7 @@
 //! bytes get the memory reader, a file object the stream reader. UnityPy's
 //! `Environment` opens a path as a file (`environment.py:136-139`, the
 //! buffered file `fs.open(path, "rb")` gives; a folder's files through the
-//! builtin `open`, `:75-77`), so a file loaded from a path is read by the
+//! builtin `open`, `environment.py:75-77`), so a file loaded from a path is read by the
 //! stream reader: its header, metadata and objects, the pure-Python typetree
 //! reader's reads, and the slice the Boost reader is given
 //! (`helpers/TypeTreeHelper.py:146-153`), and, for a reader kept as it is
@@ -15,7 +15,7 @@
 //! the memory reader whatever the source: a bundle's entries (its blocks are
 //! decoded into bytes, `files/BundleFile.py:173-186`), a blob's string
 //! buffer (`helpers/TypeTreeNode.py:118`) and a bundle's blocks-info.
-//! `EndianBinaryReader_Streamable_LocalFile` (`:327-332`), the reader of a
+//! `EndianBinaryReader_Streamable_LocalFile` (`streams/EndianBinaryReader.py:327-332`), the reader of a
 //! `str`, is reached by no load: `Environment` opens a path before it makes
 //! a reader.
 //!

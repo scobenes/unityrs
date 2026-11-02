@@ -188,7 +188,7 @@ pub fn load_error_is_unitypys(python: &str, e: &TpkError) -> bool {
         // payload (`stream.read(1)[0]`: an entry's presence, a common-string
         // version's count); `Exception`: `Tpk.py`'s own raise on the header
         // (the magic, the version, the compressed size).
-        // And a data type of 1-5 (`TpkDataType.ToBlob`, `:113-124`): a
+        // And a data type of 1-5 (`TpkDataType.ToBlob`, `:113-123`): a
         // collection blob's reads (`error`), a file system or JSON blob that
         // `init`'s assertion refuses (`AssertionError`), and `ToBlob`'s own
         // raise for the other two (`Exception`).

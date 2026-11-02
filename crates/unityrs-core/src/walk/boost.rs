@@ -65,7 +65,7 @@ pub fn read(data: &Bytes, tree: &Arc<Tree>, ctx: &ReadCtx<'_>) -> Result<Parsed,
     let value = value?;
     ended?;
     let built = value.into_built(&r.builder, at)?;
-    // UnityPy TypeTreeHelper.cpp:1033: `bytes_read = reader.ptr - reader.start`.
+    // UnityPy TypeTreeHelper.cpp:1045: `bytes_read = reader.ptr - reader.start`.
     let bytes_read = i64::try_from(r.pos).unwrap_or(i64::MAX);
     let Reader { builder, .. } = r;
     Ok(builder.finish(built, bytes_read))
@@ -220,7 +220,7 @@ impl Reader<'_, '_> {
         out
     }
 
-    /// `read_typetree_value` (UnityPy TypeTreeHelper.cpp:702-884).
+    /// `read_typetree_value` (UnityPy TypeTreeHelper.cpp:702-883).
     fn value_inner(&mut self, t: &Arc<Tree>, lx: ListIx, node: NodeId) -> Result<Out, ReadError> {
         let me = t.info(node).copied().ok_or_else(|| {
             self.fail(

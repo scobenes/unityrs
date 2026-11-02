@@ -59,7 +59,7 @@ impl Fmt {
 }
 
 impl Reader<'_, '_> {
-    /// `[read_value(subtype) for _ in range(size)]` (`:220`): a list of an
+    /// `[read_value(subtype) for _ in range(size)]` (`TypeTreeHelper.py:220`): a list of an
     /// element read one by one; a primitive element's list is held as a run
     /// (the same Python list of numbers), `vector<UInt8>`'s as a slice.
     pub(super) fn list(
@@ -262,7 +262,7 @@ impl Reader<'_, '_> {
         // `range(size)` of a negative size is empty.
         let count = usize::try_from(size).unwrap_or(0);
         let out = if kind == Kind::S8 {
-            // `:55`: `read_byte_array(reader, size)` takes no length.
+            // `TypeTreeHelper.py:55`: `read_byte_array(reader, size)` takes no length.
             return Err(self.raise(Py::Other(
                 "TypeError: read_byte_array() takes 1 positional argument",
             )));
@@ -271,7 +271,7 @@ impl Reader<'_, '_> {
         } else if kind == Kind::Str {
             self.comprehension(count, 4, |r| r.string().map(Out::Plain))?
         } else if kind == Kind::Bytes {
-            // `:280`: `read_bytes()` without its length, once there is an element.
+            // `TypeTreeHelper.py:280`: `read_bytes()` without its length, once there is an element.
             if count > 0 {
                 return Err(self.raise(Py::Other(
                     "TypeError: read_bytes() missing 1 required positional argument",
@@ -279,7 +279,7 @@ impl Reader<'_, '_> {
             }
             self.comprehension(0, 4, |r| r.typeless().map(Out::Plain))?
         } else if kind == Kind::Pair {
-            // `:282-293`: both children before the loop; each read without
+            // `TypeTreeHelper.py:282-293`: both children before the loop; each read without
             // its own flag when its type is in `FUNCTION_READ_MAP`.
             let a = Self::child(t, node, 0, ReadDetail::PairChildren).map_err(|e| self.raise(e))?;
             let b = Self::child(t, node, 1, ReadDetail::PairChildren).map_err(|e| self.raise(e))?;
@@ -293,7 +293,7 @@ impl Reader<'_, '_> {
             let min = t.info(node).map_or(0, |i| i.min_size);
             self.each(count, min, |r| r.ref_object(t, lx, node, true))?
         } else if let Some(arr) = Self::array_child(t, node) {
-            // `:306-313`: the element's `Array` element is indexed before the loop.
+            // `TypeTreeHelper.py:306-313`: the element's `Array` element is indexed before the loop.
             align |= t.info(arr).is_some_and(|i| i.align);
             let sub =
                 Self::child(t, arr, 1, ReadDetail::ArrayChildren).map_err(|e| self.raise(e))?;
@@ -312,7 +312,7 @@ impl Reader<'_, '_> {
                 })?
             }
         } else {
-            // `:314-318`: classes in a dict comprehension, with no registry check.
+            // `TypeTreeHelper.py:314-318`: classes in a dict comprehension, with no registry check.
             let min = t.info(node).map_or(0, |i| i.min_size);
             self.comprehension(count, min, |r| r.plain_class(t, lx, node))?
         };
@@ -361,7 +361,7 @@ impl Reader<'_, '_> {
     }
 
     /// `FUNCTION_READ_MAP.get(child.m_Type, lambda: read_value(child))`
-    /// (`:285-292`): a primitive, `string` or `TypelessData` child is read by
+    /// (`TypeTreeHelper.py:285-292`): a primitive, `string` or `TypelessData` child is read by
     /// its function, without its own align flag; any other through `read_value`.
     fn direct(&mut self, t: &Arc<Tree>, lx: ListIx, node: NodeId) -> Result<Out, ReadError> {
         let kind = t.py_kind(node);

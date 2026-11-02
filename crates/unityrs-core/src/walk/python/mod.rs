@@ -29,7 +29,7 @@
 //! that function, without the child's own align flag (a non-empty `string`
 //! still aligns itself, as `read_aligned_string` does), and any other child
 //! (a class, a vector, a `pair`) through `read_value`, which keeps its flag
-//! (`:285-293`); a `ReferencedObject` reads `type` before anything else (a
+//! (`TypeTreeHelper.py:285-293`); a `ReferencedObject` reads `type` before anything else (a
 //! missing key is `KeyError`, `other`; a `type` with no `class`, `ns` or
 //! `asm` is `KeyError` and a non-dict `type` `AttributeError`, `:89-97`, both
 //! `other` where UnityPyBoost reports `ref_type`) and raises `SerializedFile has no
@@ -439,14 +439,14 @@ impl Reader<'_, '_> {
         usize::try_from(len.saturating_sub(self.pos).max(0)).unwrap_or(usize::MAX)
     }
 
-    /// The class branch of `read_value` (`:222-231`): children in order, a
+    /// The class branch of `read_value` (`TypeTreeHelper.py:222-231`): children in order, a
     /// `ManagedReferencesRegistry` skipped once one is in scope.
     fn class(&mut self, t: &Arc<Tree>, lx: ListIx, node: NodeId) -> Result<Out, ReadError> {
         self.dict(t, lx, node, true)
     }
 
     /// An aligned class element's `{child.m_Name: read_value(child) ...}`
-    /// (`:316-318`), a dict comprehension and so a frame: no registry check.
+    /// (`TypeTreeHelper.py:316-318`), a dict comprehension and so a frame: no registry check.
     fn plain_class(&mut self, t: &Arc<Tree>, lx: ListIx, node: NodeId) -> Result<Out, ReadError> {
         self.frame(|r| r.dict(t, lx, node, false))
     }
@@ -487,7 +487,7 @@ impl Reader<'_, '_> {
         d.finish(&self.builder, lx, self.at())
     }
 
-    /// A `ReferencedObject` (`:197-206`), or an aligned array's element
+    /// A `ReferencedObject` (`TypeTreeHelper.py:197-206`), or an aligned array's element
     /// (`:294-304`, `in_array`), where a ref type with no node is read as
     /// `read_value(None)` and raises. Its dict grows as its children are
     /// read and keeps each name's position ([`Dict`]), and its `type` is the

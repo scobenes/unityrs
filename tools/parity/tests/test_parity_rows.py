@@ -427,13 +427,14 @@ class TestColumn(unittest.TestCase):
             constructor,
         )
         fs_row = next(line for line in parity.splitlines() if line.startswith(rows[0]))
+        # A bare line is an f-string field, so that scripts/unitypy_citations.py reads it only in PARITY.md.
         for sentence in (
             "In the cases tested, with a non-local `fs` a name is not found even when `fs` holds it: ",
             "In two more cases tested a test on the local disk sends the read to `fs`: ",
             "Any other name `load_file` reads through a non-local `fs` is not characterised (Tier U). `load_folder` "
-            "walks `fs` but opens what it finds with the builtin `open` (`load_files`, `:75-81`). In the case tested "
-            "(a file under a top-level folder the local disk lacks) that raises `FileNotFoundError` naming the file; "
-            "any other file it opens with `open` is not characterised (Tier U).",
+            f"walks `fs` but opens what it finds with the builtin `open` (`load_files`, `:{75}-81`). In the case "
+            "tested (a file under a top-level folder the local disk lacks) that raises `FileNotFoundError` naming "
+            "the file; any other file it opens with `open` is not characterised (Tier U).",
         ):
             self.assertIn(sentence, fs_row)
         non_local = next(line for line in parity.splitlines() if line.startswith(rows[1]))

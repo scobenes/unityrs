@@ -110,11 +110,11 @@
 //! UnityPy rules ported exactly (plan section 3.6):
 //! - the extra byte after the data flags only for non-UnityFS signatures
 //!   (`files/BundleFile.py:104-106`; rabex reads it for UnityFS, `files/bundlefile/mod.rs:616-618`);
-//! - the flag set by engine version (`:113-121`); the decryptor read *before*
+//! - the flag set by engine version (`files/BundleFile.py:113-121`); the decryptor read *before*
 //!   the 16-byte alignment (`:123-124`, then `:129-131`; rabex reads it after,
 //!   `files/bundlefile/mod.rs:638-645`); the alignment at format 7 and up or a
 //!   2019 engine at 2019.4.15 or later;
-//! - blocks-info at the end read at `len - compressed` (`:134-137`); padding at
+//! - blocks-info at the end read at `len - compressed` (`files/BundleFile.py:134-137`); padding at
 //!   the start only under `ArchiveFlags` with 0x200 (`:170-171`);
 //! - short reads: a truncated block is read short and decoded as it is; its
 //!   `bytes_read` is what the dump writes as `compressed`;
@@ -124,7 +124,7 @@
 //!
 //! UnityWeb/UnityRaw: format 6 takes the UnityFS layout (P1); every other
 //! format is [`crate::Unsupported::WebRawLayout`] until P3. `UnityArchive` is
-//! [`crate::Unsupported::UnityArchive`], as UnityPy raises (`:41-42`).
+//! [`crate::Unsupported::UnityArchive`], as UnityPy raises (`files/BundleFile.py:41-42`).
 //!
 //! Owner: package C.
 
@@ -391,7 +391,7 @@ impl BundleFile {
     /// directory included: its earlier entry can fail the bundle though the
     /// `files` dict keeps the later one); the first failure fails the bundle.
     pub fn load_all(&self) -> Result<(), Error> {
-        // UnityPy files/BundleFile.py:168-178: `b"".join` of every block.
+        // UnityPy files/BundleFile.py:173-184: `b"".join` of every block.
         self.read_span(0, u64::MAX)?;
         // UnityPy files/File.py:76-90
         for i in 0..self.directory.len() {

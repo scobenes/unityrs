@@ -98,11 +98,11 @@ impl BundleFile {
             0,
         )?;
         let (mut blocks, directory) = read_blocks_info(&info, meter)?;
-        // :165-166
+        // :170-171
         if class == FlagsClass::New && data_flags & 0x200 != 0 {
             r.align(16)?;
         }
-        // :168-178: the blocks, read in order from here.
+        // :173-184: the blocks, read in order from here.
         let (stored, lengths) = stored_blocks(&mut blocks, &mut r, meter, ctx)?;
         let files = files_dict(&directory, meter)?;
         let mut entries: MeteredVec<ResultCell<File, Error>> = MeteredVec::new(meter);
@@ -204,7 +204,7 @@ struct FsHeader {
 }
 
 /// `BundleFile.__init__` up to the signature dispatch, then `read_fs` up to
-/// the blocks-info section (`files/BundleFile.py:36-51`, `:93-131`); leaves `r` where
+/// the blocks-info section (`files/BundleFile.py:36-51`, `:96-131`); leaves `r` where
 /// blocks-info would start. Its strings' searches and its engine version's
 /// parse are the work of `charge`'s meter, the input's, and the version's
 /// heap is charged to `charge`, the bundle's handle.
@@ -243,7 +243,7 @@ fn read_fs_header(
     if signature.as_bytes() != b"UnityFS" {
         r.read_i8()?;
     }
-    // :107-121
+    // :108-121
     let engine = resolve_bundle(&version_engine, &ctx.version, charge)?;
     let class = flags_class(&engine.version)?;
     // :123-124: the encryption flag, before the alignment.
@@ -284,7 +284,7 @@ fn read_fs_header(
     })
 }
 
-/// The blocks-info and directory tables (`files/BundleFile.py:141-162`), read
+/// The blocks-info and directory tables (`files/BundleFile.py:141-165`), read
 /// big-endian from the decoded section; paths are slices of it.
 fn read_blocks_info(
     info: &Bytes,

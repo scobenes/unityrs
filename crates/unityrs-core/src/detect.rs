@@ -13,7 +13,7 @@
 //! That is UnityPy's own behaviour, not a unityrs policy: its streaming
 //! `read_string_to_null` tests `Position != Length` per byte
 //! (`streams/EndianBinaryReader.py:136-144`), and `Length` seeks the
-//! `GzipFile` to its end (`:303-308`), which inflates every member. The
+//! `GzipFile` to its end (`streams/EndianBinaryReader.py:307-312`), which inflates every member. The
 //! output is streamed through a scratch buffer and only its first 20 bytes
 //! and its length are kept, so detection charges nothing: the scratch (at
 //! most 64 KiB) is part of plan section 3.15's constant, as are the
@@ -235,7 +235,7 @@ const SCRATCH: usize = 64 << 10;
 /// (`ImportHelper.py:78-80`). Its first `Length` seeks the `GzipFile` to its
 /// end (`streams/EndianBinaryReader.py:307-312`), which inflates and checks
 /// every member as Python 3.11's `gzip._GzipReader` does. The streaming loop
-/// (`:136-144`) then keeps each byte it read except the last: byte `i` is kept
+/// (`streams/EndianBinaryReader.py:136-144`) then keeps each byte it read except the last: byte `i` is kept
 /// when it and every byte before it are not NUL, `i < 19`, and `i + 1` is
 /// below the decompressed length.
 fn gzip_signature(

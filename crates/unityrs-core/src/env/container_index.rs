@@ -258,7 +258,7 @@ fn deref_error(e: DerefError) -> Error {
 
 impl Environment {
     /// `container`: every non-dependency CAB's container rows, CABs in
-    /// registry order, after the preload index is built (`environment.py:208-227`),
+    /// registry order, after the preload index is built (`environment.py:208-226`),
     /// as an iterator. It walks the registry, as UnityPy walks `env.cabs`, so
     /// a CAB a dependency's replaced under its key is not listed.
     pub fn container(&self) -> Result<ContainerItems<'_>, Error> {
@@ -304,7 +304,7 @@ impl Environment {
         !never_evicts(&self.inner.options) && sf.meter().reservation() == Reservation::Dependency
     }
 
-    /// `_build_container_index` (`environment.py:208-216`): once until the
+    /// `_build_container_index` (`environment.py:208-215`): once until the
     /// next load's registration, every registered `SerializedFile`'s preload
     /// table, dependencies' included, in registry order. UnityPy sets its
     /// flag before the loop and each registration clears it, so a pass that

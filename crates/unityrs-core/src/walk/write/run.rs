@@ -11,7 +11,7 @@ use crate::typetree::{Kind, NodeId, Tree};
 use crate::value::{ReadBy, Value};
 
 impl<'a> Writer<'a, '_> {
-    /// Each element of `o` through `elem` (`:435`). Under
+    /// Each element of `o` through `elem` (`TypeTreeHelper.py:435`). Under
     /// [`super::WriteRules::MirrorReader`] the elements of a run the reader
     /// reads as one are written without their own trailing alignment, and
     /// the run, when `elem` is flagged, aligns once after: for a value
@@ -102,7 +102,7 @@ impl<'a> Writer<'a, '_> {
     }
 
     /// Items 0 and 1 of `o` through `node`'s first two children, each by
-    /// `each` (a `pair`'s, `:419-421`).
+    /// `each` (a `pair`'s, `TypeTreeHelper.py:419-421`).
     fn two(
         &mut self,
         tree: &Tree,
@@ -132,7 +132,7 @@ impl<'a> Writer<'a, '_> {
     /// a `pair`'s children by [`Self::direct`]; a `ReferencedObject` or a
     /// class with each child's own flag, a class with no registry check
     /// (`:314-318`); a vector as its length and its elements, through
-    /// `read_value_array` again when its own element is flagged (`:306-313`).
+    /// `read_value_array` again when its own element is flagged (`TypeTreeHelper.py:306-313`).
     /// None aligns after itself: the run does, once.
     fn py_element(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         let kind = self.kind(tree, node);

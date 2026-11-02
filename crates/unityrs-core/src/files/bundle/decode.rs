@@ -1,5 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/files/BundleFile.py. See THIRD_PARTY_LICENSES.
-//! `decompress_data` (`files/BundleFile.py:509-521`): one block, or the
+//! `decompress_data` (`files/BundleFile.py:489-521`): one block, or the
 //! blocks-info section, through its registered codec, decrypted first
 //! where UnityPy decrypts it.
 //!
@@ -66,7 +66,7 @@ impl Deref for BlockContext {
     }
 }
 
-/// `decompress_data` (`files/BundleFile.py:509-521`) on one block or the
+/// `decompress_data` (`files/BundleFile.py:489-521`) on one block or the
 /// blocks-info section, as a whole buffer: a slice of the input for a stored
 /// one, else a charged decode.
 pub(super) fn decode_one(

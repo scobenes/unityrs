@@ -111,7 +111,7 @@ fn string_to_null_clamps_the_search() {
 
 #[test]
 fn the_stream_readers_string_to_null_is_the_base_classs_loop() {
-    // `EndianBinaryReader.read_string_to_null` (`:136-144`) on a stream of a
+    // `EndianBinaryReader.read_string_to_null` (`streams/EndianBinaryReader.py:136-144`) on a stream of a
     // file `fs.open` opened: every window size the fixture records, 0
     // included (the loop never runs, so `""` past the end too), and far
     // positions on a tmpfs file.
