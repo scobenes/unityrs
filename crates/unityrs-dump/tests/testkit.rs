@@ -12,9 +12,16 @@
 
 mod common;
 
+use std::sync::Arc;
+
 use common::{Tmp, compare, line_problems};
 use serde_json::Value as Json;
-use unityrs_core::Bytes;
+use unityrs_core::budget::Reservation;
+use unityrs_core::detect::check_entry_type;
+use unityrs_core::files::{File, parse_file};
+use unityrs_core::limits::Meter;
+use unityrs_core::{Bytes, RawStr};
+use unityrs_dump::input::{dump_on, load_deep, prepass_reverse};
 use unityrs_dump::run::{RunOptions, run};
 use unityrs_dump::select::Selection;
 use unityrs_dump::{DumpOptions, Levels};
@@ -302,6 +309,132 @@ fn the_lazy_reverse_prepass_changes_nothing() {
         bundles += usize::from(a.text().contains("\"BundleFile\""));
     }
     assert!(bundles >= 20, "{bundles} bundles");
+}
+
+/// A bundle of blocks of 128 bytes whose entries span several each, a
+/// nested bundle of such blocks among them.
+fn prepass_bundle() -> Vec<u8> {
+    let small = |entries: Vec<(&[u8], Vec<u8>, u32)>| {
+        build(&BundleSpec {
+            block_size: 128,
+            entries: entries
+                .into_iter()
+                .map(|(name, data, flags)| EntrySpec {
+                    name: name.to_vec(),
+                    data,
+                    flags,
+                })
+                .collect(),
+            ..BundleSpec::default()
+        })
+    };
+    let inner = small(vec![(b"CAB-a", good_cab(), 4), (b"CAB-b", good_cab(), 4)]);
+    small(vec![
+        (b"CAB-1", good_cab(), 4),
+        (b"inner.bundle", inner, 0),
+        (b"CAB-2", good_cab(), 4),
+        (b"CAB-2.resS", vec![9; 300], 0),
+    ])
+}
+
+/// Every entry of `file` at every depth, read (`BundleFile::entry`) in
+/// directory order, or in reverse directory order with `reverse`, a nested
+/// bundle's entries as soon as it is read.
+fn read_every_entry(file: &File, reverse: bool) {
+    if let File::Bundle(b) = file {
+        let n = b.directory().len();
+        for k in 0..n {
+            let i = if reverse { n - 1 - k } else { k };
+            read_every_entry(&b.entry(i).unwrap(), reverse);
+        }
+    }
+}
+
+/// Review round 13: every test of the pre-pass compared the dump with it
+/// to the dump without it, so a pre-pass that did nothing passed them all,
+/// and G1c with it. The work an input's meter counts shows what it does on
+/// a bundle of many blocks with a nested bundle: exactly the work of
+/// reading every entry lazily (`BundleFile::entry`, each read decoding the
+/// blocks its span needs) in reverse directory order, a nested bundle's
+/// entries as soon as it is read, which differs from the work in directory
+/// order; every entry at every depth parsed and kept (reading them all
+/// again counts nothing); no bundle's joined data read whole (the eager
+/// load after it still decodes that, and parses no entry); and `dump_on`
+/// with [`DumpOptions::lazy_reverse`] does exactly that much more work
+/// than without it, so it runs the pre-pass before its load.
+#[test]
+fn the_reverse_prepass_parses_every_entry_lazily_before_the_load() {
+    let opts = DumpOptions::default();
+    let ctx = &opts.context;
+    let data = Bytes::from(prepass_bundle());
+    let meter = || Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
+    let open = |meter: &Arc<Meter>| {
+        let ty = check_entry_type(&data, &ctx.limits, meter).unwrap();
+        parse_file(
+            RawStr::from(&b"p.bundle"[..]),
+            data.clone(),
+            ty,
+            None,
+            meter,
+            ctx,
+        )
+        .unwrap()
+    };
+    // The work of `then` on a fresh open of the bundle, after its open.
+    let fresh = |then: &dyn Fn(&File)| {
+        let m = meter();
+        let file = open(&m);
+        let opened = m.decoded();
+        then(&file);
+        m.decoded() - opened
+    };
+    let (forward, backward) = (
+        fresh(&|f| read_every_entry(f, false)),
+        fresh(&|f| read_every_entry(f, true)),
+    );
+    assert_ne!(forward, backward, "the bundle tells the two orders apart");
+    let load = fresh(&|f| load_deep(f).unwrap());
+
+    let m = meter();
+    let file = open(&m);
+    let opened = m.decoded();
+    prepass_reverse(&file);
+    let prepass = m.decoded() - opened;
+    assert_eq!(
+        prepass, backward,
+        "the pre-pass is not every entry read lazily in reverse directory order \
+         (in directory order: {forward})"
+    );
+    read_every_entry(&file, false);
+    assert_eq!(
+        m.decoded() - opened,
+        prepass,
+        "an entry the pre-pass did not parse and keep"
+    );
+    load_deep(&file).unwrap();
+    let load_after = m.decoded() - opened - prepass;
+    assert!(
+        0 < load_after && load_after < load,
+        "after the pre-pass the eager load decodes the joined data ({load_after}) and parses \
+         no entry (fresh: {load})"
+    );
+
+    let lazy = DumpOptions {
+        lazy_reverse: true,
+        ..DumpOptions::default()
+    };
+    let work = |opts: &DumpOptions| {
+        let m = meter();
+        let d = dump_on(b"p.bundle", data.clone(), &m, opts);
+        assert!(!d.text().contains("\"error\":{"), "{}", d.text());
+        m.decoded()
+    };
+    let (with, without) = (work(&lazy), work(&opts));
+    assert_eq!(
+        with + load,
+        without + prepass + load_after,
+        "dump_on with lazy_reverse does the pre-pass's work before its load, and no more"
+    );
 }
 
 /// `CANONICAL_DUMP` section 7's crash divergence, unityrs's side: UnityPyBoost
