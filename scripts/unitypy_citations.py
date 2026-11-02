@@ -67,6 +67,14 @@ It fails:
   `def`, and `read` by one that started on the blank line above it; review 13
   found `set_version` in SerializedFile.py cited by one whose first lines end
   `load_dependencies`;
+- on a citation of UnityPyBoost's C++ that starts or ends on a blank line,
+  or holds part of a top-level definition and lines outside it: a function
+  (from its `template` line, if it has one, to its `}`), or a struct, an
+  enum or a variable with a braced value such as a table (to the `;` that
+  ends it). A range holds a whole definition, lies within one, or misses it.
+  Its statements are not read, so a range that cuts one passes. Review 14
+  found five ranges in walk/boost.rs that each start in the function above
+  the one they cite, and the rule one more;
 - on a bare line with neither a file before it in its paragraph nor a
   default, and on one whose paragraph names a file other than its default,
   which a reader could take for a line of either: write the path;
@@ -84,19 +92,22 @@ UnityPy's package is the installed one (which must be 1.25.2) or `--unitypy
 DIR`, and either is refused unless its .py and .pyi files are UnityPy
 1.25.2's byte for byte (PACKAGE pins their digest), so a mistyped or empty
 folder is an error, not a pass. UnityPyBoost's sources are in UnityPy's
-sdist, not in the wheel the oracle installs, so their line counts and blank
-lines are pinned below (BOOST) with each file's sha256, and `--boost DIR`
-checks a copy of the sources against the pins. A UnityPyBoost citation is
-held to the blank-line rule only: the statement rules are Python's.
+sdist, not in the wheel the oracle installs, so their line counts, blank
+lines and top-level definitions are pinned below (BOOST) with each file's
+sha256, and `--boost DIR` checks a copy of the sources against the pins, the
+definitions by the brace-matching scan that made them (cpp_definitions). A
+UnityPyBoost citation is held to the blank-line and definition rules only:
+the statement rules are Python's.
 
 A whole span need not be the right one: a citation a few lines off that lands
-on another whole statement passes, and so does one of a function of the same
-name in another class (review 13: `EndianBinaryReader.read_aligned_string`
-cited at the memoryview reader's override). Requiring a cited range to fall
-within, or hold, the definition of the name a comment gives with it is not
-a check: even in the narrowest form, `` `name` (`path:lines`) ``, most of
-the citations whose range misses the name's definition are right, citing a
-caller, an alias, an attribute or a module table.
+on another whole statement passes (in C++, any lines within one definition
+do), and so does one of a function of the same name in another class (review
+13: `EndianBinaryReader.read_aligned_string` cited at the memoryview reader's
+override). Requiring a cited range to fall within, or hold, the definition of
+the name a comment gives with it is not a check: even in the narrowest form,
+`` `name` (`path:lines`) ``, most of the citations whose range misses the
+name's definition are right, citing a caller, an alias, an attribute or a
+module table.
 
 Exit status: 0 when every citation passes (a summary on stdout), 1 when one
 does not (each problem on its own line on stderr), 2 for a usage error, a
@@ -129,27 +140,32 @@ SOURCE = "UnityPy 1.25.2"
 # The sha256 of the lines "<path from the package root> <sha256>\n" of UnityPy 1.25.2's 87 .py and .pyi files,
 # sorted by path (`package_digest`); each file's sha256 is the one the wheel's RECORD gives it.
 PACKAGE = "b90eea2a46d82210de1e188c3351e9fa5e0aa5c7365c926aae07de5f6fcac397"
-# UnityPyBoost's sources in UnityPy 1.25.2's sdist: (lines, sha256, the numbers of its blank lines).
+# UnityPyBoost's sources in UnityPy 1.25.2's sdist: (lines, sha256, the numbers of its blank lines, and its top-level
+# definitions as cpp_definitions finds them, `<first>-<last> <name>`). `--boost DIR` checks each against its source.
 BOOST = {
     "UnityPyBoost/ArchiveStorageDecryptor.cpp": (
         90,
         "f387d5093e7f504ec5735d11e67f447da3ec881b70206c54aba10954bb4899ae",
         "2 5 17 21 25 35 37 51 54 60 67 75 78 83 87 90",
+        "6-16 decrypt_byte 18-53 decrypt 55-89 decrypt_block",
     ),
     "UnityPyBoost/ArchiveStorageDecryptor.hpp": (
         5,
         "4b669249b28603ec64130fce258a35ced7f7adaf16ae7509ee47fe9daa5f301e",
         "4",
+        "",
     ),
     "UnityPyBoost/Mesh.cpp": (
         210,
         "ee9542139cb02c1ab8a417192227784c6ee5de3867b9d5761daebf427ad65c8d",
         "4 6 22 35 44 46 48 57 65 76 89 97 100 106",
+        "7-21 VertexFormat 23-210 unpack_vertexdata",
     ),
     "UnityPyBoost/Mesh.hpp": (
         5,
         "7e081fef7e5e9b95881cc7bba8c284aa1d13f025167a3f3b6a4b30bdbe18ec12",
         "4",
+        "",
     ),
     "UnityPyBoost/TypeTreeHelper.cpp": (
         1286,
@@ -161,21 +177,35 @@ BOOST = {
             "1033 1035 1044 1046 1054 1057 1074 1104 1111 1129 1145 1160 1178 1185 1200 1207 1213 1217 1223 1233 "
             "1249 1271"
         ),
+        (
+            "13-18 Reader 20-26 TypeTreeReaderConfig 28-65 clean_name 67-72 align4 74-84 read_bool "
+            "86-101 read_bool_array 103-111 read_u8 113-126 read_u8_array 128-136 read_s8 138-153 read_s8_array "
+            "155-204 read_num 206-264 read_num_array 266-286 _read_length 288-305 read_str 307-323 read_bytes "
+            "325-351 read_pair 353-392 read_pair_array 394-445 read_class 449-456 get_annotations 458-583 parse_class "
+            "585-681 get_ref_type_node 686-699 SUPPORTED_VALUE_ARRAY_READ_TYPES 701-883 read_typetree_value "
+            "885-940 read_typetree_value_array 942-949 set_none_if_null_n_incref 951-960 is_null_none_or_type "
+            "962-1056 read_typetree 1059-1073 TypeTreeNode_finalize 1075-1103 typeToNodeDataType "
+            "1105-1128 get_node_data_type 1130-1222 TypeTreeNode_init 1224-1232 TypeTreeNode_repr "
+            "1234-1248 TypeTreeNode_members 1250-1270 TypeTreeNodeType 1272-1286 add_typetreenode_to_module"
+        ),
     ),
     "UnityPyBoost/TypeTreeHelper.hpp": (
         55,
         "7ca69cd47ce2a71870bc82c3aae7600ad573d76acbd862e3053d664f05ec7543",
         "6 30 52 54",
+        "7-29 NodeDataType 31-51 TypeTreeNodeObject",
     ),
     "UnityPyBoost/UnityPyBoost.cpp": (
         47,
         "80f005e91ccb786c6705a9e50c19c3bfaf19444f40a65d24b82094c0f0417253",
         "6 8 27 40",
+        "9-26 method_table 29-39 UnityPyBoost_module 42-47 PyInit_UnityPyBoost",
     ),
     "UnityPyBoost/swap.hpp": (
         78,
         "48d0ef17909c5c6b07d6b3c50750b3828b9472c2d872f51c4ec36f5699bdf719",
         "52 62",
+        "53-78 swap_any_inplace",
     ),
 }
 # The other UnityPy revision the repository cites, and the files of it that HEAD_DIR keeps, by their path in that
@@ -206,6 +236,14 @@ COMMENT_MARK = re.compile(r"^\s*(?://[!/]?|#!?|\*(?!\S))")
 LIST_ITEM = re.compile(r"(?:[-*+]|\d+\.) ")
 BODY_HEADERS = {"def", "async", "class", "else", "try", "except", "finally", "with"}
 TABLE_RULE = re.compile(r"\s*\|[\s:|-]+")
+# A C++ source's tokens, as cpp_tokens reads them: a word, any other character; and what it skips.
+CPP_TOKEN = re.compile(
+    r"(?P<newline>\n)|(?P<space>[^\S\n]+)|(?P<comment>//[^\n]*|/\*.*?\*/)"
+    r"|(?P<literal>\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*')|(?P<word>\w+)|(?P<other>.)",
+    re.DOTALL,
+)
+IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
+TYPE_KEYS = {"struct", "enum", "class", "union"}
 TEXT_SUFFIXES = {".rs", ".py", ".pyi", ".md", ".hbs", ".toml", ".yml", ".yaml", ".sh", ".txt", ""}
 SKIP_DIRS = {".git", "target", "__pycache__", ".wt", "node_modules", ".venv"}
 # The copies of another revision's files, which cite nothing.
@@ -235,7 +273,8 @@ class Shape(NamedTuple):
     # `except`, `finally`, `with`) -> the line it begins on. An `if`, `elif`, `for` or `while` header is left out:
     # its condition is a rule a citation may end on.
     header: dict[int, int]
-    # Each function (`def`, nested ones too): its first line (its first decorator's), its last, and its name.
+    # Each function (`def`, nested ones too): its first line (its first decorator's), its last, and its name. In a
+    # UnityPyBoost source, each top-level definition with a body in braces (cpp_definitions), as BOOST pins them.
     functions: tuple[tuple[int, int, str], ...] = ()
 
 
@@ -307,6 +346,94 @@ def blank_shape(rows: list[str]) -> Shape:
     return Shape([False] + [not row.strip() for row in rows], [False] * (n + 1), [False] * (n + 1), {})
 
 
+def cpp_tokens(text: str):
+    """(line, token) for each token of a C++ source outside its comments, its string and character literals and
+    its preprocessor lines (a `#` line with the lines its trailing backslashes join to it)."""
+    line, fresh, directive, joined = 1, True, False, False
+    for m in CPP_TOKEN.finditer(text):
+        kind, tok = m.lastgroup, m[0]
+        if kind == "newline":
+            line, fresh, directive = line + 1, True, directive and joined
+            continue
+        joined = tok == "\\"
+        if kind != "space":
+            directive, fresh = directive or (fresh and tok == "#"), False
+            if kind in ("word", "other") and not directive:
+                yield line, tok
+        line += tok.count("\n")
+
+
+def cpp_declaration(words: list[str], line: int) -> tuple[str, bool]:
+    """What the top-level declaration whose tokens before its `{` (on `line`) are `words` defines: its name, and
+    whether it goes on past its `}` to a `;` (a variable or a type) or ends there (a function)."""
+    if words[:1] == ["template"]:  # `template <...>`: its parameters are no part of what follows
+        depth = 0
+        for i, w in enumerate(words):
+            depth += (w == "<") - (w == ">")
+            if w == ">" and not depth:
+                words = words[i + 1 :]
+                break
+    top, depth = [], 0  # the tokens outside parentheses and brackets: `f(int a = 3)` is a function
+    for w in words:
+        depth -= w in (")", "]")
+        top.append(None if depth else w)
+        depth += w in ("(", "[")
+    if "=" in top:  # a variable: `T name[] = {`, `T name = []() -> T {`
+        names, ends_on_semicolon = top[: top.index("=")], True
+    elif "(" in top:  # a function: its name is the word before its parameters
+        names, ends_on_semicolon = top[: top.index("(")], False
+    else:  # a type: `typedef struct Reader {`, `enum NodeDataType {`
+        names, ends_on_semicolon = [w for w, key in zip(top[1:], top[:-1], strict=True) if key in TYPE_KEYS], True
+    names = [w for w in names if w and IDENTIFIER.fullmatch(w)]
+    if not names:  # `namespace x {`, `extern "C" {`, a block with nothing before it
+        raise ValueError(f"line {line}: a top-level block that is no function, type or table")
+    return names[-1], ends_on_semicolon
+
+
+def cpp_definitions(text: str) -> tuple[tuple[int, int, str], ...]:
+    """Each top-level definition of a C++ source whose body is in braces: a function, from its first line (a
+    `template` line's) to its `}`; a variable (a table, or a lambda's value) or a type (a struct, an enum), to the
+    `;` its declaration ends on. Its first line, its last and its name. A brace-matching scan, made for
+    UnityPyBoost's sources, which have no namespace or `extern "C"` block, no raw string and no brace in a
+    preprocessor branch; a block it cannot place is an error, not a guess."""
+    out, head, depth, opened, pending = [], [], 0, (0, "", False), None
+    for line, tok in cpp_tokens(text):
+        if depth:
+            depth += (tok == "{") - (tok == "}")
+            if not depth and opened[2]:
+                pending = opened[:2]
+            elif not depth:
+                out.append((opened[0], line, opened[1]))
+        elif pending is not None:  # `} ReaderT;`, `}();`: a declaration that goes on to its `;`
+            if tok in ("{", "}"):
+                raise ValueError(f"line {line}: a brace before the `;` that ends the declaration of {pending[1]}")
+            if tok == ";":
+                out.append((pending[0], line, pending[1]))
+                pending = None
+        elif tok == "{":
+            name, ends_on_semicolon = cpp_declaration([w for _, w in head], line)
+            opened, depth, head = (head[0][0], name, ends_on_semicolon), 1, []
+        elif tok == "}":
+            raise ValueError(f"line {line}: a `}}` that closes no block")
+        elif tok == ";":
+            head = []
+        else:
+            head.append((line, tok))
+    if depth or pending is not None:
+        raise ValueError(f"the definition of {opened[1]} runs past the source's end")
+    return tuple(out)
+
+
+def cpp_shape(text: str) -> Shape:
+    """A UnityPyBoost source's blank lines and its top-level definitions; its statements are not read."""
+    return blank_shape(text.splitlines())._replace(functions=cpp_definitions(text))
+
+
+def pinned_definitions(pins: str) -> tuple[tuple[int, int, str], ...]:
+    """BOOST's `<first>-<last> <name>` pins of a source's top-level definitions."""
+    return tuple((int(a), int(b), name) for a, b, name in re.findall(r"(\d+)-(\d+) (\w+)", pins))
+
+
 def span_problem(s: Shape, first: int, last: int) -> str | None:
     """Why lines first..last of the source `s` describes are not a whole span, or None when they are."""
     if s.blank[first] or s.blank[last]:
@@ -353,17 +480,21 @@ def load_package(unitypy: Path, boost: Path | None, root: Path, digest: str = PA
         if path.suffix in (".py", ".pyi") and "__pycache__" not in path.parts and path.is_file():
             rel, text = path.relative_to(unitypy).as_posix(), path.read_text(encoding="utf-8")
             lines[rel], shapes[rel] = len(text.splitlines()), shape(text)
-    for name, (count, sha, blanks) in BOOST.items():
+    for name, (count, sha, blanks, definitions) in BOOST.items():
         pinned = ["x"] * count  # a line of the source as the pins have it: blank, or not
         for n in blanks.split():
             pinned[int(n) - 1] = ""
+        shapes[name] = blank_shape(pinned)._replace(functions=pinned_definitions(definitions))
         if boost is not None:
             data = (boost / Path(name).name).read_bytes()
             if hashlib.sha256(data).hexdigest() != sha:
                 raise ValueError(f"{boost / Path(name).name} is not UnityPy {VERSION}'s {name} (sha256 differs)")
             if blank_shape(data.decode("utf-8").splitlines()) != blank_shape(pinned):
                 raise ValueError(f"BOOST's line count or blank lines for {name} are not those of its source")
-        lines[name], shapes[name] = count, blank_shape(pinned)
+            if (found := cpp_definitions(data.decode("utf-8"))) != shapes[name].functions:
+                scan = " ".join(f"{a}-{b} {n}" for a, b, n in found)
+                raise ValueError(f"BOOST's definitions for {name} are not those of its source, which are {scan!r}")
+        lines[name] = count
     head_lines, head_shapes = {}, {}
     for name, (copy, blob) in HEAD_FILES.items():
         data = (root / HEAD_DIR / copy).read_bytes()
@@ -633,7 +764,9 @@ def main(argv=None) -> int:
         return 1
     print(
         f"unitypy-citations: {report.checked} citations of UnityPy {VERSION} in {report.files} files "
-        f"({report.bare} of them bare lines, {report.boost} UnityPyBoost's) name lines that exist and whole spans; "
+        f"({report.bare} of them bare lines, {report.boost} UnityPyBoost's) name lines that exist and whole spans "
+        "(no blank first or last line; in UnityPy's Python no statement or function cut, in UnityPyBoost's C++ no "
+        "top-level definition cut); "
         f"{report.head_checked + report.head_unchecked} of UnityPy git {HEAD}, {report.head_checked} of them checked "
         f"against its copies; {report.ported} files under crates' src/ cite it, each with its header"
     )

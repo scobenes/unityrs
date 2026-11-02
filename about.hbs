@@ -45,10 +45,13 @@ scripts/unitypy_citations.py checks every citation of a line of UnityPy
 documents) written as path:line, path:first-last or a bare :line after its
 file is named, the forms its docstring lists (it refuses a line cited in
 words beside a UnityPy file's name, and reads no other wording): each cited
-line exists, a cited range is a whole span of statements that cuts no
-function, each path written as UnityPy's names one of its files, and each
-file under a crate's src/ that cites one (test modules aside) has one of
-those headers.
+line exists; a cited range starts and ends on a line that is not blank and,
+in UnityPy's Python, is a whole span of statements that cuts no function,
+or, in UnityPyBoost's C++, cuts no top-level definition (a function, a
+struct, an enum, or a variable with a braced value such as a table; its
+statements are not read); each path written as UnityPy's names one of its
+files; and each file under a crate's src/ that cites one (test modules
+aside) has one of those headers.
 
 The copyright line below is the one in the UnityPy 1.25.2 release's LICENSE.
 Later UnityPy revisions read "Copyright (c) 2019-2026 K0lb3"; code ported

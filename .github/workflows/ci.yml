@@ -110,7 +110,7 @@ jobs:
             -r scripts/requirements-tests.txt
       # A skipped test, or fewer tests than the minimum, fails the job.
       - name: Self-tests (scripts)
-        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=83'
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=89'
 
   # The parity tools' Python side, on the pinned oracle stack (docs/DESIGN.md
   # section 3) and with UnityPy's samples, so the tests that need them run;
@@ -179,7 +179,7 @@ jobs:
       # under a crate's src/ that cites one has a "Ported from" or "Generated
       # by ... from UnityPy 1.25.2" header, as about.hbs says. UnityPyBoost's
       # sources are not in the wheel; the script pins their line counts,
-      # digests and blank lines.
+      # digests, blank lines and top-level definitions.
       - name: UnityPy citations name lines of 1.25.2, and the files citing them say they port it
         run: python scripts/unitypy_citations.py
       # The committed synthetic fixtures, then G7 on UnityPy's own TPK: its
