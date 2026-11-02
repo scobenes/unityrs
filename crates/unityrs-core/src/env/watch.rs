@@ -4,54 +4,68 @@
 //! `find_file` asks, and a top-level file's lowered `files` key. Each lookup
 //! sets a [`Flag`] under those keys before it reads them, and every change to
 //! a key, by any thread (a load's registration, a resolver load's, under
-//! `LoadMode::Lazy` the entries a reach registers, a `files` entry), calls
-//! [`Watches::notify`] after it is published, which sets the flags under it
-//! while a walk runs, so a walk asks again exactly the answers UnityPy's next
-//! lookup could find changed, and each external is looked up once, and once
-//! more per change to one of its keys (review round 4: every change, any
-//! thread's, expired every answer, so a table of pointers to long names cost
-//! the table times the names).
+//! `LoadMode::Lazy` the entries a reach registers, a `files` entry), sets
+//! the flags under it ([`Table::notify`]), so a walk asks again exactly the
+//! answers UnityPy's next lookup could find changed, and each external is
+//! looked up once, and once more per change to one of its keys (review
+//! round 4: every change, any thread's, expired every answer, so a table of
+//! pointers to long names cost the table times the names).
 //!
-//! **The invariant** (plan section 3.16, W1): a walk that read a key sees
-//! every change to it published after the read, by any thread. One
-//! mechanism keeps it: the flag is set before the lookup reads, and every
-//! publication calls `notify` after it publishes, unconditionally, and
-//! `notify` decides whether a walk runs only then. A change published before
-//! the reader's lock is seen by the lookup; one published after it finds the
-//! flag, since the walk's start and its flag happen before its read, which
-//! happens before the publication, which happens before `notify` reads the
-//! walk count (review round 5: the `files` listing decided before it
-//! published whether to notify, so a walk that started in between kept a
-//! stale miss). A key is watched as a 64-bit hash under the Environment's
-//! random state, so a collision only asks again an answer that still held,
-//! and an input cannot aim one.
+//! **The invariant** (plan section 3.16, W1): a key's change and the
+//! setting of every flag under it are one step, made under the lock the key
+//! is published under (the registry's for a registry key, the `files`
+//! listing's for a `files` key), which keeps that key's [`Table`]; a walk
+//! sets up its flag under that lock before its lookup reads the key under
+//! it. So a lookup that reads the key before a change has its flag set by
+//! the change, and every step of a walk that comes after a change (a lookup
+//! that finds it, a kept answer whose flag it set, the log a walk takes
+//! next) sees the change and every flag it set, whatever the threads'
+//! timing (review round 14: the change was published, and its flags set
+//! after the lock, so between the two a walk's lookup could find the change
+//! while its kept answer under the same key still held). A key is watched
+//! as a 64-bit hash under the Environment's random state, so a collision
+//! only asks again an answer that still held, and an input cannot aim one.
+//!
+//! **What a walk dereferences again** (review rounds 13 and 14): a flag's
+//! first setting, by whichever thread's change, logs it in its walk's
+//! [`Fired`] list in that same step, without a lock (a stack linked through
+//! the flags, [`Flag::next`]), so the walk learns which of its answers
+//! changed without reading every flag it holds, and puts the table indexes
+//! dereferenced under them back (`super::container_index`'s `Targets`).
+//! What the walk does is then UnityPy's walk with every load of another
+//! thread made at the point of the walk at which it was made: the step
+//! that comes after it sees it, through a lookup, a kept answer or the log
+//! (review round 14: another thread's change set a flag without logging it
+//! and took it from its key, so a load of the walk's own that changed the
+//! key later put back nothing, and which indexes a later row dereferenced
+//! again depended on which thread changed the key first). A key such a
+//! load adds does not fail the pass, where UnityPy's loop over `env.cabs`
+//! raises (`PARITY.md`'s `parse_preload_table` row).
 //!
 //! **Memory** (W2): each watch is charged to its walk's meter, by a charge
 //! the walk itself holds ([`Walk`]), so the charge is released only after
-//! the walk's entries have left the map and every key list it grew has
+//! the walk's entries have left both tables and every key list it grew has
 //! shrunk back to what the running walks pay for (review round 5: the
-//! charge was released before the entries left, and a key list kept the
-//! room a finished walk had paid for).
-//!
-//! **What a walk dereferences again** (review round 13): a flag a change
-//! made on the walk's own thread sets (its own lookups' loads, which are
-//! UnityPy's whole walk) is logged, once, in the walk's [`Fired`] list, so
-//! the walk learns which of its answers its own loads changed without
-//! reading every flag it holds (`super::container_index`'s `Targets`). A
-//! change another thread makes sets the flag and logs nothing: the walk's
-//! next lookup of that external sees it, and no table index the walk has
-//! dereferenced is dereferenced again for it, so the indexes a walk
-//! dereferences again never depend on what other threads load.
+//! charge was released before the entries left the map, and a key list
+//! kept the room a finished walk had paid for).
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, RandomState};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 
-use super::held::lock;
 use crate::error::Error;
 use crate::limits::{Charge, HASH_TABLE_SHARES, Meter, heap_cost};
+
+/// No flag: the end of a walk's [`Fired`] list.
+const NONE: usize = usize::MAX;
+
+/// The lock a key is published under: the registry's ([`REGISTRY`]) or the
+/// `files` listing's ([`FILES`]), an index into a walk's locks.
+pub(crate) const REGISTRY: usize = 0;
+/// The `files` listing's lock ([`REGISTRY`]).
+pub(crate) const FILES: usize = 1;
 
 /// Set when a key it watches changes.
 #[derive(Debug)]
@@ -60,6 +74,9 @@ pub(crate) struct Flag {
     /// Its number among its walk's flags, from 0 in the order they were
     /// set up.
     id: usize,
+    /// The number of the flag its walk's log held before it was logged
+    /// ([`NONE`]: none).
+    next: AtomicUsize,
     /// Its walk's log.
     log: Arc<Fired>,
 }
@@ -75,118 +92,158 @@ impl Flag {
         self.id
     }
 
-    /// Sets it; the first time, on its walk's own thread, logs it in its
-    /// walk's [`Fired`] list (module docs).
+    /// Sets it; the first time, by whichever thread, pushes it on its
+    /// walk's [`Fired`] list (module docs). A flag is pushed once, so its
+    /// `next` is written before it is reachable from the list and never
+    /// after, and a walk that takes the list reads every `next` it follows
+    /// after the push that wrote it (the head's release sequence).
     fn fire(&self) {
-        if !self.set.swap(true, Ordering::AcqRel) && self.log.thread == thread_here() {
-            lock(&self.log.ids).push(self.id);
+        if self.set.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let mut head = self.log.head.load(Ordering::Acquire);
+        loop {
+            self.next.store(head, Ordering::Relaxed);
+            match self.log.head.compare_exchange_weak(
+                head,
+                self.id,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(now) => head = now,
+            }
         }
     }
 }
 
-/// A walk's log of its flags a change on the walk's own thread set, by
-/// number, each once (module docs).
+/// A walk's log: the number of the flag set last since the walk last took
+/// it ([`Walk::fired`]), the others linked from it through [`Flag::next`],
+/// each once (module docs).
 #[derive(Debug)]
 pub(crate) struct Fired {
-    /// The walk's thread ([`thread_here`]).
-    thread: usize,
-    ids: Mutex<Vec<usize>>,
-}
-
-thread_local! {
-    /// Its address names the thread that holds it while that thread runs.
-    static HERE: u8 = const { 0 };
-}
-
-/// A number no other running thread has: the address of this thread's
-/// [`HERE`] (a walk's flags live on its thread's stack, so its thread runs
-/// while any of them can be set).
-fn thread_here() -> usize {
-    HERE.with(|h| std::ptr::from_ref(h).addr())
+    head: AtomicUsize,
 }
 
 /// What one flag costs its walk: its `Arc` in a glibc chunk, and its
-/// element in the walk's [`Fired`] list, twice (the list doubles). The list
-/// holds the flags set since the walk last took it ([`Walk::fired`]), each
-/// once, and the walk drops what it takes before it can be set again, so
-/// one list lives at a time.
-pub(crate) const FLAG: u64 =
-    heap_cost((size_of::<Flag>() + 2 * size_of::<usize>()) as u64) + 2 * size_of::<usize>() as u64;
+/// element in the walk's list of its flags, twice (the list doubles).
+pub(crate) const FLAG: u64 = heap_cost((size_of::<Flag>() + 2 * size_of::<usize>()) as u64)
+    + 2 * size_of::<Arc<Flag>>() as u64;
 
 /// What a walk's [`Fired`] list costs it, made with its first flag: its
-/// `Arc` in a glibc chunk, and the four elements its vector holds room for
-/// at its first push, in a chunk.
+/// `Arc` in a glibc chunk, and the four elements the list of its flags holds
+/// room for at its first push, in a chunk.
 pub(crate) const FIRED: u64 = heap_cost((size_of::<Fired>() + 2 * size_of::<usize>()) as u64)
-    + heap_cost(4 * size_of::<usize>() as u64);
+    + heap_cost(4 * size_of::<Arc<Flag>>() as u64);
 
-/// What one watch of one key costs its walk: its share of the map, and its
-/// element in the key's list and in the walk's own list, each twice (the
-/// lists double, and a key list shrinks back when a walk ends, [`Walk`]).
+/// What one watch of one key costs its walk: its share of its lock's
+/// table, and its element in the key's list and in the walk's own list,
+/// each twice (the lists double, and a key list shrinks back when a walk
+/// ends, [`Walk`]).
 pub(crate) const WATCH_SHARE: u64 = HASH_TABLE_SHARES
     * (size_of::<u64>() + size_of::<Vec<Weak<Flag>>>() + 1) as u64
     + 2 * (size_of::<Weak<Flag>>() + size_of::<u64>()) as u64;
 
-/// The flags of the running walks, by key hash.
+/// The running walks' flags under the keys one lock publishes, by key hash,
+/// kept under that lock (module docs).
 #[derive(Debug, Default)]
-pub(crate) struct Watches {
-    state: RandomState,
-    /// Walks running.
-    walks: AtomicUsize,
-    map: Mutex<HashMap<u64, Vec<Weak<Flag>>>>,
+pub(crate) struct Table {
+    map: HashMap<u64, Vec<Weak<Flag>>>,
 }
 
-impl Watches {
-    /// Whether a walk runs.
-    pub(crate) fn active(&self) -> bool {
-        self.walks.load(Ordering::SeqCst) > 0
-    }
-
-    /// Starts a walk's watches, charged to `meter`; they end when it drops.
-    pub(crate) fn start(&self, meter: &Arc<Meter>) -> Walk<'_> {
-        self.walks.fetch_add(1, Ordering::SeqCst);
-        Walk {
-            watches: self,
-            hashes: Vec::new(),
-            fired: None,
-            flags: 0,
-            charge: Charge::zero(meter),
-        }
-    }
-
-    /// The hash `key` (a registry key, or a `files` key lowered) is watched
-    /// under. Computed before a publication, so the `notify` after it needs
-    /// no copy of the key.
-    pub(crate) fn hash(&self, key: &[u8]) -> u64 {
-        self.state.hash_one(key)
-    }
-
-    /// Notes a change to `key`, after the change is published (module docs).
-    pub(crate) fn notify(&self, key: &[u8]) {
-        self.notify_hash(self.hash(key));
-    }
-
-    /// [`Self::notify`] of the key whose [`Self::hash`] is `hash`: when a
-    /// walk runs, every flag under it is set (and logged, on its walk's own
-    /// thread: module docs), and the key is watched no more until a lookup
-    /// watches it again.
-    pub(crate) fn notify_hash(&self, hash: u64) {
-        if !self.active() {
+impl Table {
+    /// Notes a change to the key whose hash ([`Watches::hash`]) is `hash`,
+    /// in the step that publishes it, under its lock: every flag under it
+    /// is set (and logged, module docs), and the key is watched no more
+    /// until a lookup watches it again.
+    pub(crate) fn notify(&mut self, hash: u64) {
+        let Some(flags) = self.map.remove(&hash) else {
             return;
-        }
-        let flags = lock(&self.map).remove(&hash);
-        for flag in flags.into_iter().flatten() {
+        };
+        for flag in flags {
             if let Some(flag) = flag.upgrade() {
                 flag.fire();
             }
         }
     }
 
-    /// The map's entries and each key list's length and room, for a test.
+    /// Puts `flag` under each of `hashes`.
+    fn add(&mut self, hashes: &[u64], flag: &Arc<Flag>) {
+        for &h in hashes {
+            self.map.entry(h).or_default().push(Arc::downgrade(flag));
+        }
+    }
+
+    /// A walk's end: the flags no walk holds leave the lists of `hashes`
+    /// (each once), and each list and the map keep no room the running
+    /// walks do not pay for.
+    fn end(&mut self, hashes: &[u64]) {
+        for h in hashes {
+            if let Some(flags) = self.map.get_mut(h) {
+                flags.retain(|f| f.strong_count() > 0);
+                if flags.is_empty() {
+                    self.map.remove(h);
+                } else if flags.capacity() > 2 * flags.len() + 4 {
+                    // The running walks pay for two elements a watch: a
+                    // list keeps no room a finished walk paid for.
+                    flags.shrink_to(2 * flags.len());
+                }
+            }
+        }
+        // The map keeps no room the running walks' charges do not pay for
+        // (a key's share covers a growing table's).
+        let len = self.map.len();
+        if self.map.capacity() > 3 * len + 8 {
+            self.map.shrink_to(len);
+        }
+    }
+
+    /// The table's entries and each key list's length and room, for a
+    /// test.
     #[cfg(test)]
     pub(crate) fn room(&self) -> (usize, Vec<(usize, usize)>) {
-        let map = lock(&self.map);
-        let lists = map.values().map(|l| (l.len(), l.capacity())).collect();
-        (map.len(), lists)
+        let lists = self.map.values().map(|l| (l.len(), l.capacity())).collect();
+        (self.map.len(), lists)
+    }
+}
+
+/// A lock keys are published under, which keeps the [`Table`] of the
+/// running walks' flags under those keys (module docs): the registry and
+/// the `files` listing.
+pub(crate) trait Under: Sync {
+    /// Runs `f` on the table, under the lock.
+    fn with_table(&self, f: &mut dyn FnMut(&mut Table));
+}
+
+/// The Environment's hashing of watched keys, and its count of running
+/// walks.
+#[derive(Debug, Default)]
+pub(crate) struct Watches {
+    state: RandomState,
+    /// Walks running.
+    walks: AtomicUsize,
+}
+
+impl Watches {
+    /// Starts a walk's watches under `locks` (the registry's and the
+    /// `files` listing's, in that order: [`REGISTRY`], [`FILES`]), charged
+    /// to `meter`; they end when it drops.
+    pub(crate) fn start<'a>(&'a self, meter: &Arc<Meter>, locks: [&'a dyn Under; 2]) -> Walk<'a> {
+        self.walks.fetch_add(1, Ordering::SeqCst);
+        Walk {
+            watches: self,
+            locks,
+            hashes: [Vec::new(), Vec::new()],
+            log: None,
+            flags: Vec::new(),
+            charge: Charge::zero(meter),
+        }
+    }
+
+    /// The hash `key` (a registry key, or a `files` key lowered) is watched
+    /// under, computed before the lock its change is published under.
+    pub(crate) fn hash(&self, key: &[u8]) -> u64 {
+        self.state.hash_one(key)
     }
 
     /// Walks running, for a test.
@@ -196,18 +253,22 @@ impl Watches {
     }
 }
 
-/// One walk's watches, with the charge that pays for them. Its flags must
-/// drop before it does (`Targets` holds them in a field before this one), so
-/// its entries leave the map; its charge is a field of its own, released
-/// after [`Drop::drop`] has taken them out (W2, module docs).
+/// One walk's watches, with the charge that pays for them. It holds its
+/// flags, so a change sets one until the walk ends, however the answer it
+/// guards was kept; its entries leave both tables when it drops, and its
+/// charge is a field of its own, released after [`Drop::drop`] has taken
+/// them out (W2, module docs).
 pub(crate) struct Walk<'a> {
     watches: &'a Watches,
-    /// Every hash it watched, once per watch.
-    hashes: Vec<u64>,
+    /// The registry's lock and the `files` listing's ([`REGISTRY`],
+    /// [`FILES`]).
+    locks: [&'a dyn Under; 2],
+    /// Every hash it watched under each lock, once per watch.
+    hashes: [Vec<u64>; 2],
     /// Its flags' log, made with the first.
-    fired: Option<Arc<Fired>>,
-    /// The flags it has set up: the next one's number.
-    flags: usize,
+    log: Option<Arc<Fired>>,
+    /// Its flags, by number.
+    flags: Vec<Arc<Flag>>,
     /// [`FIRED`] once, [`FLAG`] per flag and [`WATCH_SHARE`] per watch of a
     /// key.
     charge: Charge,
@@ -219,14 +280,14 @@ impl Walk<'_> {
         self.watches.hash(key)
     }
 
-    /// A flag set at the next change to any of `hashes`, to be set up before
-    /// the lookup that reads them, charged first ([`FLAG`], and
-    /// [`WATCH_SHARE`] per hash); a refusal sets up nothing.
-    /// Its number ([`Flag::id`]) is the count of the walk's flags set up
-    /// before it.
-    pub(crate) fn watch(&mut self, hashes: &[u64]) -> Result<Arc<Flag>, Error> {
-        let n = u64::try_from(hashes.len()).unwrap_or(u64::MAX);
-        let first = if self.fired.is_none() { FIRED } else { 0 };
+    /// A flag set at the next change to any of `keys` (each the lock it is
+    /// published under, [`REGISTRY`] or [`FILES`], and its hash), to be set
+    /// up before the lookup that reads them, charged first ([`FLAG`], and
+    /// [`WATCH_SHARE`] per key); a refusal sets up nothing. Its number
+    /// ([`Flag::id`]) is the count of the walk's flags set up before it.
+    pub(crate) fn watch(&mut self, keys: &[(usize, u64)]) -> Result<Arc<Flag>, Error> {
+        let n = u64::try_from(keys.len()).unwrap_or(u64::MAX);
+        let first = if self.log.is_none() { FIRED } else { 0 };
         self.charge.grow(
             WATCH_SHARE
                 .saturating_mul(n)
@@ -234,43 +295,43 @@ impl Walk<'_> {
                 .saturating_add(first),
         )?;
         let log = self
-            .fired
+            .log
             .get_or_insert_with(|| {
                 Arc::new(Fired {
-                    thread: thread_here(),
-                    ids: Mutex::new(Vec::new()),
+                    head: AtomicUsize::new(NONE),
                 })
             })
             .clone();
         let flag = Arc::new(Flag {
             set: AtomicBool::new(false),
-            id: self.flags,
+            id: self.flags.len(),
+            next: AtomicUsize::new(NONE),
             log,
         });
-        self.flags += 1;
-        {
-            let mut map = lock(&self.watches.map);
-            for &h in hashes {
-                map.entry(h).or_default().push(Arc::downgrade(&flag));
+        self.flags.push(flag.clone());
+        for (at, (lock, mine)) in self.locks.iter().zip(&mut self.hashes).enumerate() {
+            let start = mine.len();
+            mine.extend(keys.iter().filter(|(l, _)| *l == at).map(|(_, h)| *h));
+            if let Some(added) = mine.get(start..).filter(|a| !a.is_empty()) {
+                lock.with_table(&mut |t| t.add(added, &flag));
             }
         }
-        self.hashes.extend_from_slice(hashes);
         Ok(flag)
     }
 
-    /// The numbers of its flags a change on its own thread set since the
-    /// last call, each once over the walk (module docs).
-    pub(crate) fn fired(&self) -> Vec<usize> {
-        self.fired
+    /// The numbers of its flags set since the last call, by any thread,
+    /// each once over the walk, the latest first (module docs); taken as
+    /// the call is made, read as the iterator runs.
+    pub(crate) fn fired(&self) -> impl Iterator<Item = usize> + '_ {
+        let mut at = self
+            .log
             .as_ref()
-            .map(|f| std::mem::take(&mut *lock(&f.ids)))
-            .unwrap_or_default()
-    }
-
-    /// The room its [`Fired`] list holds, in elements, for a test.
-    #[cfg(test)]
-    pub(crate) fn log_room(&self) -> usize {
-        self.fired.as_ref().map_or(0, |f| lock(&f.ids).capacity())
+            .map_or(NONE, |l| l.head.swap(NONE, Ordering::AcqRel));
+        std::iter::from_fn(move || {
+            let id = at;
+            at = self.flags.get(id)?.next.load(Ordering::Acquire);
+            Some(id)
+        })
     }
 
     /// What the walk's charge holds, for a test.
@@ -278,32 +339,25 @@ impl Walk<'_> {
     pub(crate) fn charged(&self) -> u64 {
         self.charge.bytes()
     }
+
+    /// The room its list of flags holds, in elements, for a test.
+    #[cfg(test)]
+    pub(crate) fn flags_room(&self) -> usize {
+        self.flags.capacity()
+    }
 }
 
 impl Drop for Walk<'_> {
     fn drop(&mut self) {
-        self.hashes.sort_unstable();
-        self.hashes.dedup();
-        {
-            let mut map = lock(&self.watches.map);
-            for h in &self.hashes {
-                if let Some(flags) = map.get_mut(h) {
-                    flags.retain(|f| f.strong_count() > 0);
-                    if flags.is_empty() {
-                        map.remove(h);
-                    } else if flags.capacity() > 2 * flags.len() + 4 {
-                        // The running walks pay for two elements a watch:
-                        // a list keeps no room a finished walk paid for.
-                        flags.shrink_to(2 * flags.len());
-                    }
-                }
+        // Its flags first, so its entries are the ones no walk holds.
+        self.flags.clear();
+        for (lock, mine) in self.locks.iter().zip(&mut self.hashes) {
+            if mine.is_empty() {
+                continue;
             }
-            // The map keeps no room the running walks' charges do not pay
-            // for (a key's share covers a growing table's).
-            let len = map.len();
-            if map.capacity() > 3 * len + 8 {
-                map.shrink_to(len);
-            }
+            mine.sort_unstable();
+            mine.dedup();
+            lock.with_table(&mut |t| t.end(mine));
         }
         self.watches.walks.fetch_sub(1, Ordering::SeqCst);
         // `charge` drops after this body, once what it paid for is freed.

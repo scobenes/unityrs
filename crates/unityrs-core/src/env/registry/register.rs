@@ -198,8 +198,9 @@ impl Registry {
     /// same step, unless the slot that stays stands in for it (plan section
     /// 9, Q14: told before the lock, [`Stand`]), which then takes its
     /// position; a load's registration reaches every listed slot before it
-    /// returns ([`Self::settle`], module docs), and a change is noted for
-    /// the running container preload walks ([`super::watch`]).
+    /// returns ([`Self::settle`], module docs), and a change sets the
+    /// running container preload walks' flags under the key in the step
+    /// that publishes it, under the write lock ([`super::watch`], W1).
     // The registration's parts, each one of the module docs' terms.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn insert(
@@ -243,14 +244,16 @@ impl Registry {
             Some((RawStr::charged(lowered.as_bytes(), meter)?, share))
         };
         let first_charge = meter.charge(Rank::heap(path.len()))?;
+        let hash = self.watches.hash(lowered.as_bytes());
         let (dropped, changed, new_key) = {
             let mut inner = self.write();
             let RegistryInner {
                 order,
                 slots,
                 pending,
+                watched,
             } = &mut *inner;
-            if let Some(e) = slots.get_mut(lowered.as_bytes()) {
+            let out = if let Some(e) = slots.get_mut(lowered.as_bytes()) {
                 let moves = position < e.first;
                 let charge = if moves {
                     if let Some(key) = order.remove(&e.first) {
@@ -304,21 +307,15 @@ impl Registry {
                     what: "registry",
                     detail: "a key vanished".into(),
                 });
+            };
+            // The change and the setting of the walks' flags under its key
+            // are one step (`super::watch`, W1).
+            if out.1 {
+                watched.notify(hash);
             }
+            out
         };
-        if changed {
-            #[cfg(test)]
-            self.hook(Hook::Published);
-            self.watches.notify(lowered.as_bytes());
-        }
-        // A reach registers what an eager load registered at load,
-        // before any container pass: only a load's change starts a new one.
-        if changed && by == By::Load {
-            self.generation.fetch_add(1, Ordering::AcqRel);
-        }
-        if new_key && by == By::Load {
-            LOAD_KEYS_HERE.with(|c| c.set(c.get().saturating_add(1)));
-        }
+        self.count_change(changed, new_key, by);
         drop(stand);
         self.release(dropped);
         if by == By::Load {
@@ -326,6 +323,23 @@ impl Registry {
             self.settle().ok();
         }
         Ok(())
+    }
+
+    /// What a registration counts once its change is published: a load's
+    /// change starts a new container index generation, and a load's new
+    /// key counts on this thread (`LOAD_KEYS_HERE`); a reach registers what
+    /// an eager load registered at load, before any container pass.
+    fn count_change(&self, changed: bool, new_key: bool, by: By) {
+        #[cfg(test)]
+        if changed {
+            self.hook(Hook::Published);
+        }
+        if changed && by == By::Load {
+            self.generation.fetch_add(1, Ordering::AcqRel);
+        }
+        if new_key && by == By::Load {
+            LOAD_KEYS_HERE.with(|c| c.set(c.get().saturating_add(1)));
+        }
     }
 
     /// Whether `standing`, the key's value after a registration, stands in

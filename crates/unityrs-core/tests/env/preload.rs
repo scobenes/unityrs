@@ -197,60 +197,6 @@ fn a_kept_miss_is_asked_again_after_another_threads_load_of_its_key() {
     }
 }
 
-/// A load another thread makes is seen by the walk's next lookup of the
-/// external it changed, and puts back no table index the walk has
-/// dereferenced, so the indexes a walk dereferences again depend on its
-/// input and its own loads alone (review round 13; a load of the walk's own
-/// puts such an index back: `tests/env/revisit.rs`). Row 0 spans `CAB-A`'s
-/// 5 and `t`'s 1, row 1 the first alone; the resolver call `CAB-A`'s miss
-/// makes waits for another thread's load of `CAB-A`. Two dereferences and
-/// two lookups, and row 1 gives `CAB-A`'s 5 no path.
-#[test]
-fn a_load_on_another_thread_puts_back_no_index_the_walk_dereferenced() {
-    let a = serialized(&[], &[Obj::named(5, "a5", &[])]);
-    let f = serialized(
-        &["archive:/CAB-A/CAB-A", "archive:/T/t"],
-        &[
-            Obj::named(1, "f1", &[]),
-            Obj::asset_bundle(
-                2,
-                Bundle {
-                    preload: vec![(1, 5), (2, 1)],
-                    rows: vec![
-                        row("assets/0.prefab", (0, 2), (0, 1)),
-                        row("assets/1.prefab", (0, 1), (0, 1)),
-                    ],
-                    ..Bundle::default()
-                },
-            ),
-        ],
-    );
-    let f = bundle(&[("CAB-F", f)]);
-    for (mode, batch) in modes() {
-        let a = a.clone();
-        let load = move |i| {
-            if i == 0 {
-                ("CAB-A".to_owned(), a.clone())
-            } else {
-                (
-                    "CAB-Z".to_owned(),
-                    serialized(&[], &[Obj::named(1, "z", &[])]),
-                )
-            }
-        };
-        let (env, rows) = race(options(mode, batch), &[], &f, load);
-        let what = format!("{mode:?} batch {batch}");
-        assert_eq!(rows, 2, "{what}");
-        let stats = env.stats();
-        assert_eq!(stats.preload_dereferences, 2, "{what}");
-        assert_eq!(stats.preload_lookups, 2, "{what}");
-        let Some(Cab::Serialized(sf)) = env.get_cab(&key("cab-a"), &unlimited()).unwrap() else {
-            panic!("{what}: cab-a is no SerializedFile");
-        };
-        assert_eq!(env.container_path(&object(&sf, 5)).unwrap(), None, "{what}");
-    }
-}
-
 /// A walk looks each external up once while another thread loads between
 /// its lookups, under every mode and option set: `R` rounds of a pointer
 /// to a missing file (which the resolver answers after a load on another

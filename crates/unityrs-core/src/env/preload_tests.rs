@@ -24,7 +24,9 @@ use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use super::gate::{Event, Gate, Run};
 use super::registry::Hook;
+use super::watch::{FILES, REGISTRY};
 use super::{CabResolver, EnvOptions, Environment, Source};
+use crate::limits::Meter;
 use crate::raw::RawStr;
 use bytes::Bytes;
 use unityrs_testkit::env::{Bundle, Obj, bundle, row, serialized};
@@ -242,7 +244,7 @@ fn a_walk_sees_every_change_published_after_its_read() {
                     }
                 }
                 // Every walk has ended: no watch is left.
-                assert_eq!(rig.env.inner.registry.watches().room().0, 0, "{what}");
+                assert_eq!(rig.env.watch_entries(), 0, "{what}");
                 // A walked table is not walked again (UnityPy clears it): a
                 // later pass answers as the walk did, and one after a walk
                 // that failed walks again, after the change.
@@ -252,6 +254,48 @@ fn a_walk_sees_every_change_published_after_its_read() {
         }
     }
     assert_eq!(cases, 2 * 5);
+}
+
+/// A key's change and the setting of the walks' flags under it are one
+/// step, under the lock the key is published under (W1; review round 14:
+/// the flags were set after the lock, so a walk could find the change while
+/// an answer it kept under the key still held): a load of `foo` stopped
+/// right after the registry published its key ([`Hook::Published`]), or
+/// right after the listing published its `files` entry ([`Hook::Listed`]),
+/// shows the change to another thread, and the flag a walk set up under
+/// the key before is already set and in the walk's log.
+#[cfg(test)]
+#[test]
+fn a_change_is_published_with_the_flags_under_its_key_set() {
+    for (at, lock) in [(Hook::Published, REGISTRY), (Hook::Listed, FILES)] {
+        let env = Environment::new(EnvOptions::unitypy());
+        let gate = Gate::install(&env);
+        let meter = Meter::unlimited();
+        let mut walk = env
+            .inner
+            .registry
+            .watches()
+            .start(&meter, [&env.inner.registry, &env.inner.files]);
+        let foo = walk.hash(b"foo");
+        let flag = walk.watch(&[(lock, foo)]).unwrap();
+        let load = {
+            let env = env.clone();
+            gate.run(Some((at, 1)), move || {
+                drop(env.load(Publisher::Cab.source()).unwrap());
+            })
+        };
+        load.stopped();
+        let name = RawStr::from("foo");
+        let published = if lock == REGISTRY {
+            env.get_cab(&name, &meter).unwrap().is_some()
+        } else {
+            env.files_match(&name).is_some()
+        };
+        assert!(published, "{at:?}: the change is not published");
+        assert!(flag.changed(), "{at:?}: published with its flag unset");
+        assert_eq!(walk.fired().collect::<Vec<_>>(), [flag.id()], "{at:?}");
+        load.finish();
+    }
 }
 
 /// Two walks both stopped right after their first lookup read `foo`'s keys:
@@ -298,7 +342,7 @@ fn a_walks_end_leaves_another_walks_watches() {
             3,
             "{p:?}: the other walk's miss was not asked again"
         );
-        assert_eq!(rig.env.inner.registry.watches().room().0, 0, "{p:?}");
+        assert_eq!(rig.env.watch_entries(), 0, "{p:?}");
     }
 }
 
@@ -355,8 +399,7 @@ fn walks_and_publications_keep_their_invariants_under_a_random_stress() {
         for t in threads {
             t.join().unwrap();
         }
-        let watches = rig.env.inner.registry.watches();
-        assert_eq!(watches.room().0, 0, "seed {seed}");
-        assert_eq!(watches.walks(), 0, "seed {seed}");
+        assert_eq!(rig.env.watch_entries(), 0, "seed {seed}");
+        assert_eq!(rig.env.inner.registry.watches().walks(), 0, "seed {seed}");
     }
 }

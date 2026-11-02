@@ -1,8 +1,8 @@
 //! The container preload dereferences a table index again at a later row
-//! whose span reaches it once a load of the walk's own has changed what its
-//! external resolves to, as UnityPy's walk of every row's whole span finds
-//! the new file there (`helpers/ContainerHelper.py:40-47`; review round
-//! 13), and counts each step past an index's first dereference and an
+//! whose span reaches it once a load (here the walk's own; another
+//! thread's: `tests/env/race.rs`) has changed what its external resolves
+//! to, as UnityPy's walk of every row's whole span finds the new file there
+//! (`helpers/ContainerHelper.py:40-47`; review round 13), and counts each step past an index's first dereference and an
 //! external's first lookup as work on the walking file's meter. Counted in
 //! steps (`EnvStats`, the meter's work counter), never by a clock.
 

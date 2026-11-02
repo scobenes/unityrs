@@ -150,7 +150,7 @@ use register::{By, Loads};
 pub(crate) use slot::{Slot, SlotKind};
 
 use super::held::{self, Held, lock};
-use super::watch::Watches;
+use super::watch::{Table, Under, Watches};
 
 use crate::error::Error;
 use crate::files::{BundleFile, File};
@@ -213,6 +213,14 @@ impl Default for Registry {
     }
 }
 
+impl Under for Registry {
+    /// Under the registry's write lock, which publishes every key's change
+    /// (`register.rs`).
+    fn with_table(&self, f: &mut dyn FnMut(&mut Table)) {
+        f(&mut self.write().watched);
+    }
+}
+
 #[derive(Debug, Default)]
 struct RegistryInner {
     /// Each key at its position.
@@ -220,6 +228,9 @@ struct RegistryInner {
     slots: HashMap<RawStr, Entry>,
     /// The lazy slots dropped unreached ([`Registry::settle`]).
     pending: pending::Pending,
+    /// The running container preload walks' flags under registry keys,
+    /// set in the step that publishes a key's change (`super::watch`).
+    watched: Table,
 }
 
 /// A B-tree node of `order`: its header, 11 keys and 11 values; an internal
@@ -311,12 +322,18 @@ impl Registry {
         Some((rank.clone(), key.clone()))
     }
 
-    /// The generation now (bumped by every change to the dict).
-    /// The running container preload walks' watches on keys.
+    /// The hashing of the running container preload walks' watched keys.
     pub(crate) fn watches(&self) -> &Watches {
         &self.watches
     }
 
+    /// The table of the walks' flags under registry keys, for a test.
+    #[cfg(test)]
+    pub(crate) fn watch_room(&self) -> (usize, Vec<(usize, usize)>) {
+        self.read().watched.room()
+    }
+
+    /// The generation now (bumped by every change to the dict).
     pub(crate) fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }

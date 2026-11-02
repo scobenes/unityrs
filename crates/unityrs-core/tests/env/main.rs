@@ -16,6 +16,7 @@ mod lru;
 mod modes;
 mod pool;
 mod preload;
+mod race;
 mod reach;
 mod resources;
 mod revisit;
