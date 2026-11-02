@@ -5,10 +5,14 @@
 //! round 10: a fetcher that read through the Environment, let go of the
 //! refusal its read met twice and then refused the pool itself had that
 //! refusal passed on untried, its read's mark matching it, and a codec's or
-//! a decryptor's own refusal was never counted at all). Each piece of code
-//! here does just that on its first run: a `load_dependency` of a fetcher
-//! that always refuses, which retries and fails, then a refusal of its own;
-//! on its second run it serves. Each load must succeed, its code run twice.
+//! a decryptor's own refusal was never counted at all; review round 12: a
+//! resolver's was retried by a dereference alone, and a fetcher's in a
+//! resolver load listed as no dependency was not). Each piece of code here
+//! does just that on the run that refuses (its first, or a reopen's fetch):
+//! a `load_dependency` of a fetcher that always refuses, which retries and
+//! fails, then a refusal of its own; on its next run it serves. Each call
+//! must answer as it does when the code never refuses, its code run once
+//! more.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
