@@ -289,6 +289,37 @@ fn a_cases_tree_is_charged_to_its_meter() {
     assert_eq!(o.kind, Some(CRASH), "{o:?}");
 }
 
+/// The re-saved bytes as hex, each byte in its place, past the buffer on the
+/// stack the hex goes through (512 bytes at a time) and at its edges.
+#[test]
+fn a_long_resave_is_written_whole() {
+    for len in [511_usize, 512, 513, 1024, 3000] {
+        let body: Vec<u8> = (0..len)
+            .map(|i| u8::try_from((i * 7) % 251).unwrap())
+            .collect();
+        let mut data = i32::try_from(len).unwrap().to_le_bytes().to_vec();
+        data.extend_from_slice(&body);
+        let want: String = data.iter().map(|b| format!("{b:02x}")).collect();
+        let case = Case {
+            name: "long".into(),
+            big_endian: false,
+            nodes: vec![
+                (0, "Base".into(), "Base".into(), 0),
+                (1, "vector".into(), "v".into(), 0),
+                (2, "Array".into(), "Array".into(), 0),
+                (3, "int".into(), "size".into(), 0),
+                (3, "UInt8".into(), "data".into(), 0),
+            ],
+            data,
+        };
+        let mut out = Vec::new();
+        run_cases(&[case], &Limits::default(), &unbounded(), &mut out).unwrap();
+        let rec = &lines(&out)[0];
+        assert_eq!(rec["resave"], "equal", "{len}");
+        assert_eq!(rec["resave_hex"], Json::String(want), "{len}");
+    }
+}
+
 /// Each line is flushed as its case ends, and nothing is held back to the
 /// end of the run: a process killed from outside on a later case (the
 /// container's memory cap, the OOM killer) has answered the earlier ones.

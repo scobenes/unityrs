@@ -129,8 +129,8 @@ fn a_case_too_big_for_memory_is_a_crash_and_the_next_case_runs() {
 }
 
 /// 2,000,000 KiB: the read fits, and the text, 1.3 GB, does not. (The binary
-/// before the fix, on this case: `memory allocation of 35651584 bytes failed`,
-/// status 134, at this cap and at 2,500,000 and 3,000,000 KiB.)
+/// before the fix, on this case: status 134 at this cap, `memory allocation of
+/// 35651584 bytes failed`, and at 2,500,000 and 3,000,000 KiB.)
 #[test]
 fn the_reviews_16_byte_case_is_a_crash_and_the_next_case_runs() {
     crashes_and_the_next_case_runs(&the_reviews(), 2_000_000);
