@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/WebFile.py. See THIRD_PARTY_LICENSES.
 //! The scene `Environment::find_file` is recorded on: every kind of file it
 //! can return, found through the CAB registry and through the resolver.
 

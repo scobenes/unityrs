@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/Tpk.py. See THIRD_PARTY_LICENSES.
 //! [`NoTree`]: which of UnityPy's exceptions a class with no tree raises.
 
 /// Why no tree answers a class: the exception UnityPy raises there, the
