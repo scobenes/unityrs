@@ -286,8 +286,9 @@ def detect_inputs() -> list[tuple[str, bytes]]:
         ("gzip-corrupt", b"\x1f\x8b\x08\0\0\0\0\0\0\xff" + b"\xff" * 200),
         ("gzip-header-fields", gz_member(web, 2 | 4 | 8 | 16, b"ex", b"name", b"comment") + b"\0" * 128),
         ("gzip-fhcrc-wrong", gz_member(web, 2)[:10] + b"\0\0" + gz_member(web, 2)[12:] + b"\0" * 128),
-        # Each optional header field alone, so each is skipped on its own.
-        ("gzip-fextra", gz_member(web, 4, extra=b"ex") + b"\0" * 128),
+        # Each optional header field alone, so each is skipped on its own. The extra field is 300 bytes (XLEN
+        # 0x012C), so both of XLEN's bytes and the length they give are what FEXTRA skips.
+        ("gzip-fextra", gz_member(web, 4, extra=b"ex" * 150) + b"\0" * 128),
         ("gzip-fname", gz_member(web, 8, name=b"name") + b"\0" * 128),
         ("gzip-fcomment", gz_member(web, 16, comment=b"comment") + b"\0" * 128),
         ("gzip-fhcrc", gz_member(web, 2) + b"\0" * 128),
