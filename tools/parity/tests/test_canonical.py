@@ -303,6 +303,10 @@ class CanonicalForm(unittest.TestCase):
         for tv, want in cases:
             with self.subTest(tv=tv):
                 self.assertEqual(self.kinds(tv), want)
+        # Section 3's tags, written out here: read from `C`, a tag added to the checker and not to the format passed
+        # every test.
+        self.assertEqual(sorted(C._RAW_TAGS), ["bytes", "str", "u8s"])
+        self.assertEqual(sorted(C._PACKED), ["f32", "f32s", "f64", "f64s"])
 
     def test_l0_values_and_pairs(self):
         def file_record(typ, parsed, names=("a",), error=None, size=10, sha="00" * 32):

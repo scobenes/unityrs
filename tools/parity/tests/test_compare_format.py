@@ -181,6 +181,9 @@ class CompareTests(CompareCase):
         hl = header(["L0", "L1"])
         _, d = self.run_compare(self.write("c.jsonl", base_records(), head=hl), self.write("d.jsonl", base_records()))
         self.assertIn(("format", "l2 (reference)", "undeclared_level"), self.paths(d))
+        # Section 4.1's levels, written out in compare_support: read from `C`, a level added to the checker and not
+        # to the format passed every test.
+        self.assertEqual(list(C.LEVELS), LEVELS)
 
     def test_noncanonical_encodings_are_found_whatever_the_levels(self):
         """An unpacked f32 vector and an inline 70-byte blob are format findings under --levels too."""
