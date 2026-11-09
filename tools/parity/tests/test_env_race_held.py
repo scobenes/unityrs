@@ -3,10 +3,14 @@ load's registrations past its first made after the later files' loads, and recor
 in the order of their numbers (what the core's racing loads end as, plan section 3.16, R1). So it must record a scene
 exactly when UnityPy's two runs leave the same `env.cabs`, keys in order and values, and refuse every other scene.
 Each scene's loads only register the names given, through the Environment's `register_cab` (the instance's, which
-`held_case` replaces), so both runs, and the stand-in load `held_case` drives, are UnityPy's. Needs UnityPy 1.25.2
-(the oracle image); skipped elsewhere.
+`held_case` replaces), so both runs, and the stand-in load `held_case` drives, are UnityPy's.
+
+The scenes run in a child (`--run`, through tools/parity/child.py): the parity tests share one process, whose
+in-process dumps refuse a module loaded from outside the parity tools and the pinned wheels (oracle_env.py's
+`LoadedModules`), and `env_race` lives in tools/fixtures. Needs UnityPy 1.25.2 (the oracle image); skipped elsewhere.
 """
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -16,13 +20,8 @@ ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import child  # noqa: E402
 from rows_support import ORACLE  # noqa: E402
-
-if ORACLE:
-    import UnityPy
-
-    sys.path.insert(0, str(ROOT / "tools" / "fixtures"))
-    import env_race
 
 # Each scene's files, in the order of their numbers, with the names each load registers, in its order; the second
 # file's load is the held one.
@@ -46,69 +45,93 @@ SCENES = {
 }
 
 
-def unitypy(files: list, held: int | None = None) -> list:
-    """UnityPy's `env.cabs`, as (key, value) pairs in order, after the loads of `files` in the order of their numbers;
-    with `held`, that file's registrations past its first made after the later files' loads."""
-    env = UnityPy.Environment()
-    waiting = []
-    for i, (name, keys) in enumerate(files):
-        for j, key in enumerate(keys):
-            if i == held and j > 0:
-                waiting.append((key, f"{name}:{key}"))
-            else:
-                env.register_cab(key, f"{name}:{key}")
-    for key, item in waiting:
-        env.register_cab(key, item)
-    return list(env.cabs.items())
+def run_scenes() -> dict:
+    """The child's work (`--run`): for each scene, UnityPy's `env.cabs` as (key, value) pairs in order after the
+    loads in the order of their numbers (`loads`) and with the held registrations made after the later files' loads
+    (`held`), and what `held_case` records (`record`) or the message it refuses with (`refused`)."""
+    import UnityPy
 
+    sys.path.insert(0, str(ROOT / "tools" / "fixtures"))
+    import env_race
 
-class Loads:
-    """The run `held_case` drives: file `i`'s load registers its names with the item `file:name`."""
+    def unitypy(files: list, held: int | None = None) -> list:
+        env = UnityPy.Environment()
+        waiting = []
+        for i, (name, keys) in enumerate(files):
+            for j, key in enumerate(keys):
+                if i == held and j > 0:
+                    waiting.append((key, f"{name}:{key}"))
+                else:
+                    env.register_cab(key, f"{name}:{key}")
+        for key, item in waiting:
+            env.register_cab(key, item)
+        return list(env.cabs.items())
 
-    def __init__(self, scene: dict, _folder: str):
-        self.scene = scene
-        self.env = UnityPy.Environment()
+    class Loads:
+        """The run `held_case` drives: file `i`'s load registers its names with the item `file:name`."""
 
-    def load(self, i: int) -> str:
-        name, keys = self.scene["files"][i]
-        for key in keys:
-            self.env.register_cab(key, f"{name}:{key}")
-        return "ok"
+        def __init__(self, scene: dict, _folder: str):
+            self.scene = scene
+            self.env = UnityPy.Environment()
 
-    def container(self) -> list:
-        return []
+        def load(self, i: int) -> str:
+            name, keys = self.scene["files"][i]
+            for key in keys:
+                self.env.register_cab(key, f"{name}:{key}")
+            return "ok"
 
-    def paths(self) -> list:
-        return []
+        def container(self) -> list:
+            return []
 
-    def dep_paths(self) -> list:
-        return []
+        def paths(self) -> list:
+            return []
 
-    def state(self) -> dict:
-        return {"cabs": list(self.env.cabs.items())}
+        def dep_paths(self) -> list:
+            return []
 
+        def state(self) -> dict:
+            return {"cabs": list(self.env.cabs.items())}
 
-def held_case(what: str, files: list) -> dict:
-    return env_race.held_case({"name": what, "files": files}, Loads, HELD)
+    out = {}
+    for what, files in SCENES.items():
+        row = {"loads": unitypy(files), "held": unitypy(files, HELD), "record": None, "refused": None}
+        try:
+            row["record"] = env_race.held_case({"name": what, "files": files}, Loads, HELD)["cabs"]
+        except AssertionError as e:
+            row["refused"] = str(e)
+        out[what] = row
+    return out
 
 
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class HeldCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        proc = child.run([sys.executable, str(Path(__file__)), "--run"], cwd=ROOT, capture_output=True, text=True)
+        assert proc.returncode == 0, f"the child exited {proc.returncode}:\n{proc.stderr[-2000:]}"
+        cls.rows = json.loads(proc.stdout.splitlines()[-1])
+
     def test_a_scene_both_runs_agree_on_is_recorded_as_the_run_in_load_order(self):
-        agreed = [what for what, files in SCENES.items() if unitypy(files, HELD) == unitypy(files)]
+        agreed = [what for what, row in self.rows.items() if row["held"] == row["loads"]]
         self.assertEqual(len(agreed), 3, agreed)
         for what in agreed:
             with self.subTest(scene=what):
-                self.assertEqual(held_case(what, SCENES[what])["cabs"], unitypy(SCENES[what]))
+                row = self.rows[what]
+                self.assertIsNone(row["refused"])
+                self.assertEqual(row["record"], row["loads"])
 
     def test_a_scene_the_runs_disagree_on_is_refused(self):
-        differ = [what for what, files in SCENES.items() if unitypy(files, HELD) != unitypy(files)]
+        differ = [what for what, row in self.rows.items() if row["held"] != row["loads"]]
         self.assertEqual(len(differ), 4, differ)
         for what in differ:
             with self.subTest(scene=what):
-                with self.assertRaisesRegex(AssertionError, "which this cannot record"):
-                    held_case(what, SCENES[what])
+                row = self.rows[what]
+                self.assertIsNone(row["record"])
+                self.assertRegex(row["refused"] or "", "which this cannot record")
 
 
 if __name__ == "__main__":
-    unittest.main()
+    if sys.argv[1:] == ["--run"]:
+        print(json.dumps(run_scenes()))
+    else:
+        unittest.main()
