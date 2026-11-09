@@ -469,6 +469,7 @@ version = "0.0.1"
 dependencies = [
  "liblzma",
  "lz4_flex",
+ "unityrs-core",
 ]
 
 [[package]]
