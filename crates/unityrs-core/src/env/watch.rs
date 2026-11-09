@@ -226,12 +226,13 @@ pub(crate) trait Under: Sync {
     fn with_table(&self, f: &mut dyn FnMut(&mut Table));
 }
 
-/// The Environment's hashing of watched keys, and its count of running
-/// walks.
+/// The Environment's hashing of watched keys, and, for a test, its count of
+/// running walks.
 #[derive(Debug, Default)]
 pub(crate) struct Watches {
     state: RandomState,
-    /// Walks running.
+    /// Walks running, which only tests read.
+    #[cfg(test)]
     walks: AtomicUsize,
 }
 
@@ -240,6 +241,7 @@ impl Watches {
     /// `files` listing's, in that order: [`REGISTRY`], [`FILES`]), charged
     /// to `meter`; they end when it drops.
     pub(crate) fn start<'a>(&'a self, meter: &Arc<Meter>, locks: [&'a dyn Under; 2]) -> Walk<'a> {
+        #[cfg(test)]
         self.walks.fetch_add(1, Ordering::SeqCst);
         Walk {
             watches: self,
@@ -379,6 +381,7 @@ impl Drop for Walk<'_> {
                 hook(Point::Ended(at));
             }
         }
+        #[cfg(test)]
         self.watches.walks.fetch_sub(1, Ordering::SeqCst);
         // `flags` drops after this body, then `charge`: what it paid for is
         // freed first.
