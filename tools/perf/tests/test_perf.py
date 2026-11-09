@@ -75,7 +75,12 @@ class UnityPyBenchTests(unittest.TestCase):
         script = str(PERF / "bench_unitypy.py")
         for extra in (["--phase", "serial"], ["--phase", "parallel", "-j", "2"]):
             with self.subTest(extra=extra):
-                proc = child.run([sys.executable, script, str(index), *extra], capture_output=True, text=True)
+                proc = child.run(
+                    [sys.executable, script, str(index), *extra],
+                    capture_output=True,
+                    text=True,
+                    preexec_fn=perf.limit_address_space,  # every UnityPy run under perf.py's ulimit -v
+                )
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 out = json.loads(proc.stdout)
                 self.assertEqual((out["bench"], out["unitypy"]), ("unitypy", "1.25.2"))
@@ -83,7 +88,11 @@ class UnityPyBenchTests(unittest.TestCase):
                 self.assertEqual((out["file_errors"], out["value_errors"]), (0, 0))
                 self.assertGreater(out["mb_per_s"], 0)
         proc = child.run(
-            [sys.executable, script, str(index), "--kind", "bundle"], capture_output=True, text=True, check=True
+            [sys.executable, script, str(index), "--kind", "bundle"],
+            capture_output=True,
+            text=True,
+            check=True,
+            preexec_fn=perf.limit_address_space,
         )
         self.assertEqual(json.loads(proc.stdout)["objects"], 3, "--kind keeps the bundle only")
 
