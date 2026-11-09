@@ -14,9 +14,13 @@
 //! Each rule of plan 3.10 and 3.11 has a test here named after it
 //! (`r09_...`, `w5_...`) that replays the cases whose names start with its
 //! id, from both readers and, after each successful read, through the
-//! writer; `every_case_is_replayed` replays them all, so a case no rule test
-//! names is still checked.
+//! writer (against the case's `write_ref_types` when it names another file,
+//! then under both write rules); `every_case_is_replayed` replays them all,
+//! so a case no rule test names is still checked. A write UnityPy raised in
+//! must fail with an error whose [`WriteError::exceptions`] name the class
+//! it raised; a read's failure is compared by its kind only.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde_json::{Value as Json, json};
@@ -25,13 +29,14 @@ use unityrs_core::limits::{Limits, Meter};
 use unityrs_core::stream::Endian;
 use unityrs_core::typetree::{NodeId, NodeList};
 use unityrs_core::walk::{
-    self, ParseError, ReadCtx, ReadError, ReadErrorKind, ReadOptions, RefTypes, WriteRules,
+    self, ParseError, ReadCtx, ReadError, ReadErrorKind, ReadOptions, RefTypes, WriteError,
+    WriteRules,
 };
 use unityrs_core::{Bytes, Parsed, PrimArray, PrimRun, RawStr, Value, ValueBuilder};
 
 mod walk_common;
 
-use walk_common::{Refs, compile, enc, endian, load, nodes, unhex, write_out};
+use walk_common::{Refs, compile, enc, endian, hex, load, nodes, unhex, write_result};
 
 fn kind(k: ReadErrorKind) -> &'static str {
     match k {
@@ -58,21 +63,70 @@ fn expected(want: &Json) -> Json {
     }
 }
 
-fn expected_write(want: &Json) -> Json {
-    if want.get("err").is_some() {
-        json!({ "err": true })
-    } else {
-        want.clone()
+/// Each class UnityPy raised in a write that unityrs refused, by the
+/// refusal ([`label`]): the classes it stands for
+/// ([`WriteError::exceptions`]) and those UnityPy raised.
+type Raised = BTreeMap<String, (&'static [&'static str], BTreeSet<String>)>;
+
+/// A refusal's variant, and for a type mismatch what the node takes, which
+/// is what [`WriteError::exceptions`] goes by.
+fn label(e: &WriteError) -> String {
+    match e {
+        WriteError::TypeMismatch { expected, .. } => format!("TypeMismatch: {expected}"),
+        e => format!("{e:?}")
+            .split(['(', ' ', '{'])
+            .next()
+            .unwrap_or_default()
+            .to_owned(),
+    }
+}
+
+/// A write against UnityPy's (`{"hex": ...}` or `{"err": class}`): `None`
+/// when it wrote the same bytes, or failed with an error that stands for
+/// the class UnityPy raised, which `raised` records.
+fn write_differs(
+    want: &Json,
+    have: &Result<Vec<u8>, WriteError>,
+    raised: &mut Raised,
+) -> Option<String> {
+    match (want["err"].as_str(), have) {
+        (None, Ok(b)) if want["hex"].as_str() == Some(hex(b).as_str()) => None,
+        (Some(class), Err(e)) if e.exceptions().contains(&class) => {
+            raised
+                .entry(label(e))
+                .or_insert_with(|| (e.exceptions(), BTreeSet::new()))
+                .1
+                .insert(class.to_owned());
+            None
+        }
+        (_, Ok(b)) => Some(format!("want {want}\n  have {{\"hex\":\"{}\"}}", hex(b))),
+        (_, Err(e)) => Some(format!(
+            "want {want}\n  have {e:?}, which stands for {:?}",
+            e.exceptions()
+        )),
     }
 }
 
 /// Replays one case through both readers and the writer; the mismatches.
-fn replay(c: &Json) -> Vec<String> {
+fn replay(c: &Json, raised: &mut Raised) -> Vec<String> {
     let name = c["name"].as_str().unwrap();
     let tree = compile(&c["nodes"]);
     let data = Bytes::from(unhex(c["hex"].as_str().unwrap()));
     let start = c.get("start").and_then(Json::as_i64).unwrap_or(0);
     let refs = Refs::of(c.get("ref_types"));
+    // The file each value is written against when it is not the one it was
+    // read with (`write_ref_types`), where the mirror refuses it as
+    // UnityPy's writer does.
+    let other = c.get("write_ref_types").map(|r| Refs::of(Some(r)));
+    let written_to = other.as_ref().unwrap_or(&refs);
+    let rules: &[_] = if other.is_some() {
+        &[
+            ("write", WriteRules::UnityPy),
+            ("mirror write", WriteRules::MirrorReader),
+        ]
+    } else {
+        &[("write", WriteRules::UnityPy)]
+    };
     let options = ReadOptions::default();
     let meter = Meter::unlimited();
     let ctx = ReadCtx {
@@ -97,12 +151,12 @@ fn replay(c: &Json) -> Vec<String> {
             continue;
         }
         if let Ok(p) = got {
-            let want = expected_write(&c[format!("{reader}_write")]);
-            let have = write_out(&p, &tree, endian(c), refs.get(), WriteRules::UnityPy);
-            if have != want {
-                bad.push(format!(
-                    "{name} [{reader} write]\n  want {want}\n  have {have}"
-                ));
+            let want = &c[format!("{reader}_write")];
+            for &(what, rules) in rules {
+                let have = write_result(&p, &tree, endian(c), written_to.get(), rules);
+                if let Some(d) = write_differs(want, &have, raised) {
+                    bad.push(format!("{name} [{reader} {what}]\n  {d}"));
+                }
             }
         }
     }
@@ -116,7 +170,7 @@ fn replay_prefix(prefix: &str) {
     for c in cases.as_array().unwrap() {
         if c["name"].as_str().unwrap().starts_with(prefix) {
             n += 1;
-            bad.extend(replay(c));
+            bad.extend(replay(c, &mut Raised::new()));
         }
     }
     assert!(n > 0, "no case starts with {prefix}");
@@ -139,7 +193,7 @@ fn r01_kind_by_exact_match_pptr_prefix_else_class() {
 }
 
 #[test]
-fn r02_bounds_checked_even_for_zero_bytes() {
+fn r02_every_read_bounds_checked() {
     replay_prefix("r02_");
 }
 
@@ -296,7 +350,7 @@ fn mutated_cases_never_panic() {
             for p in reads.iter().flatten() {
                 ok += 1;
                 for rules in [WriteRules::UnityPy, WriteRules::MirrorReader] {
-                    let _ = write_out(p, &tree, endian(c), refs.get(), rules);
+                    let _ = write_result(p, &tree, endian(c), refs.get(), rules);
                 }
             }
         }
@@ -308,6 +362,16 @@ fn mutated_cases_never_panic() {
 /// (`read_typetree` with `check_read`), and re-saved (L2 and L3).
 #[test]
 fn value_cases_l2_and_l3() {
+    let bad = value_cases(&mut Raised::new());
+    assert!(
+        bad.is_empty(),
+        "{} cases differ:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+}
+
+fn value_cases(raised: &mut Raised) -> Vec<String> {
     let cases = load("value_cases.json");
     let cases = cases.as_array().unwrap();
     assert_eq!(cases.len(), 32);
@@ -347,30 +411,20 @@ fn value_cases_l2_and_l3() {
             bad.push(format!("{name} L2\n  want {}\n  have {l2}", c["l2"]));
             continue;
         }
-        let l3 = parsed.map_or(Json::Null, |p| {
-            write_out(
-                p,
-                &tree,
-                endian(c),
-                RefTypes::List(&refs),
-                WriteRules::UnityPy,
-            )
-        });
-        let want = if c["l3"].is_null() {
-            Json::Null
-        } else {
-            expected_write(&c["l3"])
+        let refs = RefTypes::List(&refs);
+        let d = match parsed {
+            None if c["l3"].is_null() => None,
+            None => Some(format!("want {}\n  have no value", c["l3"])),
+            Some(p) => {
+                let have = write_result(p, &tree, endian(c), refs, WriteRules::UnityPy);
+                write_differs(&c["l3"], &have, raised)
+            }
         };
-        if l3 != want {
-            bad.push(format!("{name} L3\n  want {want}\n  have {l3}"));
+        if let Some(d) = d {
+            bad.push(format!("{name} L3\n  {d}"));
         }
     }
-    assert!(
-        bad.is_empty(),
-        "{} cases differ:\n{}",
-        bad.len(),
-        bad.join("\n")
-    );
+    bad
 }
 
 /// Builds a W2 value spec into `items` (a list's or a tuple's) or returns it.
@@ -387,7 +441,8 @@ impl Specs {
             [0, "Aux", "Aux", 0],
             [1, "int", "a", 0],
             [1, "int", "real", 0],
-            [1, "int", "x", 0]
+            [1, "int", "x", 0],
+            [1, "int", "type", 0]
         ]));
         let aux_ix = builder.list_index(&aux).unwrap();
         Self {
@@ -473,9 +528,19 @@ impl Specs {
 }
 
 /// W2: every node kind written from every value variant, duck typing as
-/// Python's operations do.
+/// Python's operations do (`tools/fixtures/walk_write.py`).
 #[test]
 fn w2_every_node_kind_from_every_value_variant() {
+    let bad = write_matrix(&mut Raised::new());
+    assert!(
+        bad.is_empty(),
+        "{} cases differ:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+}
+
+fn write_matrix(raised: &mut Raised) -> Vec<String> {
     let m = load("write_matrix.json");
     let mut bad = Vec::new();
     for case in m["cases"].as_array().unwrap() {
@@ -490,23 +555,79 @@ fn w2_every_node_kind_from_every_value_variant() {
         let Specs { builder, .. } = specs;
         let parsed = builder.finish(root, 0);
         let refs: [SerializedType; 0] = [];
-        let have = write_out(
+        let have = write_result(
             &parsed,
             &tree,
             Endian::Little,
             RefTypes::List(&refs),
             WriteRules::UnityPy,
         );
-        let want = expected_write(&case[2]);
-        if have != want {
-            bad.push(format!("{kname} <- {vname}\n  want {want}\n  have {have}"));
+        if let Some(d) = write_differs(&case[2], &have, raised) {
+            bad.push(format!("{kname} <- {vname}\n  {d}"));
         }
     }
-    assert!(
-        bad.is_empty(),
-        "{} cases differ:\n{}",
-        bad.len(),
-        bad.join("\n")
+    bad
+}
+
+/// Review round 16: every write UnityPy raised in is refused with an error
+/// that stands for the class it raised ([`WriteError::exceptions`]), and
+/// each class an error names is one UnityPy raised there: over every write
+/// recorded (the cases', the value cases' and W2's), the classes each
+/// refusal (its variant, and for a type mismatch what the node takes)
+/// stands for are exactly those UnityPy raised where unityrs refused so.
+/// Every refusal that names a class is met but `NoTypeTree` (an object with
+/// no tree, which `src/walk/write/tests.rs` pins to the read side's class);
+/// the rest name none: a bound, a refused charge, a tree that does not
+/// compile (the same file) and a dunder attribute (`PARITY.md` section 19.3;
+/// `src/walk/write/work_tests.rs`). Before, a write's
+/// failure was compared as a raise only, so a writer that raised
+/// `ValueError` for `KeyError` passed; and until fix pass 17's review, a
+/// file below format 20 (no `ref_types` attribute: `AttributeError`) was
+/// refused as no file is (`ValueError`), which no recording met.
+#[test]
+fn write_errors_stand_for_the_classes_unitypy_raised() {
+    let mut raised = Raised::new();
+    let mut bad = Vec::new();
+    for c in load("cases.json").as_array().unwrap() {
+        bad.extend(replay(c, &mut raised));
+    }
+    bad.extend(value_cases(&mut raised));
+    bad.extend(write_matrix(&mut raised));
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+    for (error, (stands_for, seen)) in &raised {
+        let named: BTreeSet<String> = stands_for.iter().map(|c| (*c).to_owned()).collect();
+        assert_eq!(&named, seen, "{error} stands for {stands_for:?}");
+    }
+    let met: Vec<(&str, &[&str])> = raised.iter().map(|(e, (s, _))| (e.as_str(), *s)).collect();
+    let attr: &[&str] = &["AttributeError"];
+    let type_error: &[&str] = &["TypeError"];
+    assert_eq!(
+        met,
+        [
+            ("Malformed", &["IndexError"][..]),
+            ("MissingKey", &["KeyError"]),
+            ("NoRefTypes", &["ValueError"]),
+            ("NoRefTypesAttribute", attr),
+            ("OutOfRange", &["error", "OverflowError"]),
+            ("RefTypeNotFound", &["ValueError"]),
+            (
+                "TypeMismatch: a dict or an object with class, ns and asm",
+                attr
+            ),
+            ("TypeMismatch: a ref type with a tree", attr),
+            (
+                "TypeMismatch: a sequence of two",
+                &["TypeError", "KeyError", "IndexError"]
+            ),
+            ("TypeMismatch: a sized iterable", type_error),
+            ("TypeMismatch: an object with this attribute", attr),
+            ("TypeMismatch: bytes", type_error),
+            ("TypeMismatch: dict", type_error),
+            ("TypeMismatch: float", &["error"]),
+            ("TypeMismatch: int", &["error"]),
+            ("TypeMismatch: str", attr),
+        ],
+        "the refusals the recordings meet"
     );
 }
 
