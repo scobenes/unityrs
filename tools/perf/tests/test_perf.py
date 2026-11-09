@@ -107,6 +107,8 @@ class PlanTests(unittest.TestCase):
         by = {p["name"]: p["argv"] for p in timed + once}
         self.assertTrue(by["unityrs-serial-nocounters"][0].endswith("target/perf-nocounters/release/examples/bench"))
         self.assertEqual(by["unityrs-parallel"][-2:], ["-j", "8"])
+        self.assertNotIn("--pin", by["unityrs-tracked-serial"], "kept values would raise each input's peak")
+        self.assertIn("--pin", by["unityrs-pin"])
         self.assertEqual(by["unityrs-lazy-r2-sample"][2:6], ["--kind", "bundle", "--sample", "20"])
         trial_timed, trial_once = perf.plan("/i/index.json", 4, 100, out)
         self.assertIn("100", trial_timed[0]["argv"])
@@ -170,6 +172,8 @@ class ReportTests(unittest.TestCase):
         self.assertFalse(s["r4"]["blocker_slower_serially"])
         self.assertAlmostEqual(s["counters_cost_serial"]["median_change"], 0)
         self.assertAlmostEqual(s["r10_counting_over_unbounded"]["serial"]["median_change"], 4.0 / 3.5 - 1)
+        self.assertAlmostEqual(s["r10_counting_over_unbounded"]["serial"]["median_cpu_change"], 4.0 / 3.5 - 1)
+        self.assertEqual(s["counters_cost_serial"]["cpu_s"], [3.0, 4.0])
         self.assertEqual(s["phases"]["unityrs-serial"]["wall_s"], [3.0, 4.0])
         self.assertEqual(len(s["phases"]["unityrs-serial"]["per_run"]), 2)
         self.assertTrue(s["consistency"]["same_inputs_bytes_objects"])

@@ -15,8 +15,10 @@ after, the CPU the container's other processes used, the machine's busy CPUs):
   out (their cost), serially and on `-j` threads with one shared `Counting` budget (R10), and UnityPyBoost
   serially and in a fork pool of `-j` workers (`bench_unitypy.py`, under `ulimit -v` of 4,000,000 KB a process);
 - once each, for counts: unityrs eagerly with a tracked budget serially (each input's peak `Meter::used()` against
-  its decoded size, peak RSS against the peak of live charges, what one value kept pins: R3, R5, R10) and on `-j`
-  threads (peak RSS against live charges), lazily over the R2 sample (the 20 bundles `unitypy_dump.py --kind bundle
+  its decoded size, peak RSS against the peak of live charges, the cached runs' peak per bundle, the version
+  sources: R3, R5, R10) and on `-j` threads (peak RSS against live charges), eagerly keeping every value (what
+  values pin once their handles drop, and what one value holding a slice pins: R3; a pass apart, since kept
+  values raise each input's peak), lazily over the R2 sample (the 20 bundles `unitypy_dump.py --kind bundle
   --sample 20` selects: spread evenly over the index's bundles in name order) reading every directory row in
   order, and lazily over the whole selection (R10 under `Lazy`).
 
@@ -81,9 +83,11 @@ def plan(index: str, jobs: int, sample: int | None, out: Path) -> tuple[list[dic
     once = [
         {
             "name": "unityrs-tracked-serial",
-            "argv": [*urs, "--budget", "tracked", "--pin", "--per-input", str(out / "per-input-tracked.jsonl")],
+            "argv": [*urs, "--budget", "tracked", "--per-input", str(out / "per-input-tracked.jsonl")],
         },
         {"name": "unityrs-tracked-parallel", "argv": [*urs, "-j", j, "--budget", "tracked"]},
+        # Apart from the tracked passes: keeping every value would raise each input's peak.
+        {"name": "unityrs-pin", "argv": [*urs, "--pin", "--per-input", str(out / "per-input-pin.jsonl")]},
         {
             "name": "unityrs-lazy-r2-sample",
             "argv": [*r2, "--load", "lazy", "--budget", "tracked", "--per-input", str(out / "per-input-r2.jsonl")],
@@ -138,7 +142,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--index", default="/corpus/index.json")
-    ap.add_argument("--repeat", type=int, default=3)
+    ap.add_argument("--repeat", type=int, default=3, help="rounds of the timed passes (0: the counts only)")
     ap.add_argument("-j", "--jobs", type=int, default=8)
     ap.add_argument("--sample", type=int, help="every pass on this many inputs (a trial)")
     ap.add_argument("--no-build", action="store_true", help="use the bench binaries already built")

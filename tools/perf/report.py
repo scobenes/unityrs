@@ -79,12 +79,18 @@ def ratio(num: dict | None, den: dict | None, key: str = "objects_per_s") -> dic
 
 
 def change(new: dict | None, base: dict | None) -> dict | None:
-    """How much longer `new`'s passes took than `base`'s: medians' relative difference, and both wall ranges."""
+    """How much longer `new`'s passes took than `base`'s: medians' relative difference, and both wall ranges; the
+    same for the threads' CPU time, which the machine's load moves less than the wall clock."""
     if not new or not base:
         return None
     nw = [r["bench"]["wall_s"] for r in new["_recs"]]
     bw = [r["bench"]["wall_s"] for r in base["_recs"]]
-    return {"wall_s": rng(nw), "base_wall_s": rng(bw), "median_change": median(nw) / median(bw) - 1}
+    out = {"wall_s": rng(nw), "base_wall_s": rng(bw), "median_change": median(nw) / median(bw) - 1}
+    nc = [r["bench"].get("cpu_s", {}).get("threads") for r in new["_recs"]]
+    bc = [r["bench"].get("cpu_s", {}).get("threads") for r in base["_recs"]]
+    if median(nc) and median(bc):
+        out |= {"cpu_s": rng(nc), "base_cpu_s": rng(bc), "median_cpu_change": median(nc) / median(bc) - 1}
+    return out
 
 
 def consistency(records) -> dict:
@@ -110,6 +116,7 @@ def counts(phases) -> dict:
     par = once(phases, "unityrs-tracked-parallel")
     sample = once(phases, "unityrs-lazy-r2-sample")
     lazy = once(phases, "unityrs-lazy")
+    pin = once(phases, "unityrs-pin")
     pss = {n: phases[n][0]["mem"]["peak_pss_sum_bytes"] for n in phases if n.startswith("unityrs-tracked")}
     out = {}
     if sample or lazy or eager:
@@ -134,7 +141,7 @@ def counts(phases) -> dict:
             },
             "runs_peak_per_bundle": eager["runs_peak_per_bundle_max_over_inputs"],
             "runs_peak_per_bundle_lazy": lazy and lazy["runs_peak_per_bundle_max_over_inputs"],
-            "pin": eager.get("pin"),
+            "pin": pin and pin.get("pin"),
         }
         out["r5"] = eager["versions"]
         out["r10"] = {
