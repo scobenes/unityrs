@@ -232,6 +232,81 @@ fn a_refusal_of_memory_is_the_cases_crash() {
     assert_eq!(o.kind, Some(CRASH), "{o:?}");
 }
 
+/// A `vector<UInt8>` holding `body`.
+fn byte_vector(body: &[u8]) -> Case {
+    let mut data = i32::try_from(body.len()).unwrap().to_le_bytes().to_vec();
+    data.extend_from_slice(body);
+    Case {
+        name: "bytes".into(),
+        big_endian: false,
+        nodes: vec![
+            (0, "Base".into(), "Base".into(), 0),
+            (1, "vector".into(), "v".into(), 0),
+            (2, "Array".into(), "Array".into(), 0),
+            (3, "int".into(), "size".into(), 0),
+            (3, "UInt8".into(), "data".into(), 0),
+        ],
+        data,
+    }
+}
+
+/// Review round 16: a resave refused at a bound of the limits is the
+/// resave's error, as any write error is (`value_cases.py`'s `oracle`
+/// keeps UnityPy's value and writes `error: <exception>`), never the case's
+/// `other`: no kind, the value kept, `resave` `error: ` and the limit's
+/// text, no bytes, no note. A `vector<UInt8>` of 1 MiB reads as a slice of
+/// the case's bytes (1 MiB, charged), and its resave needs a buffer as big
+/// again: a bound of 1.5 MiB holds the read and the text and refuses the
+/// buffer.
+#[test]
+fn a_resave_refused_at_a_bound_is_its_resave_error() {
+    let case = byte_vector(&[3; 1 << 20]);
+    let mut out = Vec::new();
+    run_cases(&[case], &bounded(3 << 19), &unbounded(), &mut out).unwrap();
+    let rec = &lines(&out)[0];
+    assert_eq!(rec["kind"], Json::Null, "{rec}");
+    assert!(rec["value"].is_string(), "{rec}");
+    let resave = rec["resave"].as_str().unwrap();
+    assert!(resave.starts_with("error: limit InputMemory: "), "{resave}");
+    assert_eq!(
+        (&rec["resave_hex"], &rec["note"]),
+        (&Json::Null, &Json::Null),
+        "{rec}"
+    );
+}
+
+/// Each case runs on a meter of its own (module docs, "Memory"), so the
+/// work a case does (`max_decode_work`) is its own, as an input's is, and no
+/// case is refused for what the cases before it did. Under an allowance of
+/// one and a half times one case's work, the same case twice is answered
+/// the same twice (review round 16: on one meter for the run, the second
+/// was refused, `limit DecodeWork`); under one byte less than its work, it
+/// is refused.
+#[test]
+fn each_case_runs_on_a_meter_of_its_own() {
+    let body: Vec<u8> = (0..16 << 10)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    let case = byte_vector(&body);
+    let meter = Meter::for_input(&Limits::default(), unbounded(), Reservation::Input);
+    let first = outcome_on(&case, &Limits::default(), &meter);
+    assert!(matches!(&first, Ok(o) if o.kind.is_none() && o.resave == "equal"));
+    drop(first);
+    let work = meter.decoded();
+    let mut limits = Limits::default();
+    limits.max_decode_work = work - 1;
+    let o = run_case_on(&case, &limits, &unbounded());
+    let said = o.note.as_deref().unwrap_or(&o.resave);
+    assert!(said.contains("limit DecodeWork: "), "{said}");
+    limits.max_decode_work = work + work / 2;
+    let mut out = Vec::new();
+    run_cases(&[case.clone(), case], &limits, &unbounded(), &mut out).unwrap();
+    let recs = lines(&out);
+    assert_eq!(recs.len(), 2);
+    assert_eq!(recs[0]["resave"], "equal", "{}", recs[0]);
+    assert_eq!(recs[1], recs[0]);
+}
+
 /// A base of `rows - 1` empty structs, each of type `ty` and named `name`:
 /// no byte to read.
 fn tree_case(rows: usize, ty: &str, name: &str) -> Case {
