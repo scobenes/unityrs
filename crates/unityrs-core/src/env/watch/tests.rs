@@ -8,16 +8,11 @@
 //! 14), however its push meets another push or a take (review round 15).
 //! Each race is run by the module's hooks ([`super::Point`]) and the
 //! testkit's handshakes, never by repetition or timing.
-//!
-//! This file installs the global allocator of the crate's unit tests, a
-//! counting one (`unityrs_testkit::counted`) that counts only a thread that
-//! asks: [`a_walks_charge_is_released_after_the_last_block_it_paid_for`]'s.
 
 // The source scan behind "the core starts no thread and never waits"
 // (`unityrs_testkit::waits`) takes only an item under `#[cfg(test)]` in its
 // own file for test code, so every item here that names a thread, a channel
 // or a lock carries one.
-use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(test)]
 use std::sync::mpsc::{Receiver, Sender, channel};
 #[cfg(test)]
@@ -27,32 +22,11 @@ use super::{
     FILES, FIRED, FLAG, Point, REGISTRY, Table, Under, WATCH_SHARE, Walk, Watches, set_hook,
 };
 use crate::budget::{BudgetExceeded, MemoryBudget, Permit, PermitHome, Reservation};
+use crate::env::heap::{self, Noted};
 use crate::env::held;
 use crate::limits::{Meter, heap_cost};
-use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 #[cfg(test)]
 use unityrs_testkit::guard;
-
-/// The heap of the threads that count (`unityrs_testkit::counted`), in
-/// bytes: only [`a_walks_charge_is_released_after_the_last_block_it_paid_for`]'s
-/// thread asks to be counted.
-static LIVE: AtomicUsize = AtomicUsize::new(0);
-
-/// [`LIVE`]'s tally.
-struct Heap;
-
-impl Tally for Heap {
-    fn grew(&self, size: usize, _zeroed: bool) {
-        LIVE.fetch_add(size, Ordering::Relaxed);
-    }
-    fn shrank(&self, size: usize) {
-        LIVE.fetch_sub(size, Ordering::Relaxed);
-    }
-}
-
-/// The global allocator of every unit test of the crate (module docs).
-#[global_allocator]
-static ALLOC: Allocator<Heap> = Allocator(Heap);
 
 /// A lock of the test's own that keys are published under, as the
 /// registry's and the `files` listing's are.
@@ -304,50 +278,19 @@ fn a_finished_walk_gives_back_the_maps_room() {
     assert_eq!(rig.room(), (0, Vec::new()));
 }
 
-/// A budget whose permits note, at their release, the counted heap
-/// ([`LIVE`]), and count their releases.
-#[derive(Debug, Default)]
-struct HeapAtRelease {
-    live: AtomicUsize,
-    releases: AtomicUsize,
-}
-
-impl PermitHome for HeapAtRelease {
-    fn release(&self, _bytes: u64) {
-        self.live
-            .store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
-        self.releases.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-#[derive(Debug)]
-struct Noting(Arc<HeapAtRelease>);
-
-impl MemoryBudget for Noting {
-    fn try_reserve(&self, bytes: u64, _what: Reservation) -> Result<Permit, BudgetExceeded> {
-        Ok(Permit::new(bytes, self.0.clone()))
-    }
-}
-
 /// A walk's charge is released after every block the walk holds is freed:
 /// its entries in both tables and the maps' room (its `Drop::drop`), and its
 /// own `hashes`, `log` and `flags` (its fields, which drop before `charge`,
-/// declared last). The test's thread counts its heap
-/// (`unityrs_testkit::counted`): the heap the charge's release sees is the
-/// heap the walk's drop leaves, and less than before the drop (review round
+/// declared last). The test's thread counts its heap ([`heap`]): the heap
+/// the charge's release sees is the heap the walk's drop leaves, and less
+/// than before the drop (review round
 /// 16: that order rested on the fields' declaration alone, and no test
 /// failed with `charge` declared before `hashes`, `log` or `flags`, or one
 /// of them after it).
 #[test]
 fn a_walks_charge_is_released_after_the_last_block_it_paid_for() {
-    count_this_thread();
-    others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
-    let noted = Arc::new(HeapAtRelease::default());
-    let meter = Meter::new(
-        u64::MAX,
-        Arc::new(Noting(noted.clone())),
-        Reservation::Input,
-    );
+    heap::count();
+    let (meter, noted) = Noted::meter();
     let rig = Rig::default();
     let mut walk = rig.start(&meter);
     let keys: Vec<u64> = (0..64_u32).map(|i| walk.hash(&i.to_le_bytes())).collect();
@@ -356,25 +299,11 @@ fn a_walks_charge_is_released_after_the_last_block_it_paid_for() {
         .map(|k| walk.watch(&[(REGISTRY, *k), (FILES, *k)]).unwrap())
         .collect();
     drop(flags);
-    let before = LIVE.load(Ordering::Relaxed);
+    let (before, from) = (heap::live(), noted.releases());
     drop(walk);
-    let after = LIVE.load(Ordering::Relaxed);
-    assert_eq!(
-        noted.releases.load(Ordering::Relaxed),
-        1,
-        "the walk's charge was released once"
-    );
-    let at = noted.live.load(Ordering::Relaxed);
-    assert_eq!(
-        at,
-        after,
-        "{} bytes were freed after the walk's charge was released",
-        at.wrapping_sub(after).cast_signed()
-    );
-    assert!(
-        before.wrapping_sub(at).cast_signed() > 0,
-        "the walk freed nothing before its charge was released"
-    );
+    let after = heap::live();
+    assert!(before > after, "the walk's drop freed nothing");
+    heap::released_last(&noted, from, after, "the walk's charge");
 }
 
 /// A walk's log lists each flag a change set once, whichever key and lock
