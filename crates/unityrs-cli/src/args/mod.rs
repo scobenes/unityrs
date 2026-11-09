@@ -263,7 +263,7 @@ pub fn py_int(bytes: &[u8]) -> Option<i64> {
     if !b.first()?.is_ascii_digit() || !b.last()?.is_ascii_digit() {
         return None;
     }
-    let mut v: i64 = 0;
+    let mut v: i64 = 0; // minus the magnitude read so far
     let mut count = 0;
     let mut after_underscore = false;
     for &c in b {
@@ -279,12 +279,14 @@ pub fn py_int(bytes: &[u8]) -> Option<i64> {
         }
         after_underscore = false;
         count += 1;
-        v = v.saturating_mul(10).saturating_add(i64::from(c - b'0'));
+        // Toward `i64::MIN`, whose magnitude is one more than `i64::MAX`'s,
+        // so a negative number saturates there, not one short of it.
+        v = v.saturating_mul(10).saturating_sub(i64::from(c - b'0'));
     }
     if count > PY_INT_MAX_STR_DIGITS {
         return None;
     }
-    Some(if neg { v.saturating_neg() } else { v })
+    Some(if neg { v } else { v.saturating_neg() })
 }
 
 /// argparse's `_negative_number_matcher`, `^-\d+$|^-\d*\.\d+$` (`$` also
