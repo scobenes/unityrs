@@ -451,3 +451,48 @@ pub fn dependency_reads() -> DepScene {
         dependencies: vec![0, 1, 2],
     }
 }
+
+/// `a.bundle` and `b.bundle` each hold a plain `SerializedFile` named `n`;
+/// `c.bundle` holds `e0`, then a nested bundle named `n` of `CAB-Z`, whose
+/// container row `assets/z.prefab` reaches its object 7 through the
+/// preload table. Loaded in this order, an eager load registers `CAB-Z` at
+/// `c.bundle`'s load, and the container gives object 7 the row's path.
+/// The core's unit test `env::order_tests` loads `c.bundle` on a thread
+/// stopped after its first key while `b.bundle` loads and a container pass
+/// runs (`tools/fixtures/env_race.py` records UnityPy's run of that order):
+/// `c.bundle`'s `n` then ranks between the key's position and its value,
+/// so its registration changes no key, and under `LoadMode::Lazy` it
+/// lists its dropped slot, whose reach registers `CAB-Z` (review round 16:
+/// that listing started no container index generation, so no pass walked
+/// `CAB-Z`'s table and object 7 had no path).
+#[must_use]
+pub fn nested_between_loads() -> Scene {
+    let plain = |name: &str| serialized(&[], &[Obj::named(1, name, &[])]);
+    let z = serialized(
+        &[],
+        &[
+            Obj::named(5, "z5", &[]),
+            Obj::named(7, "z7", &[]),
+            Obj::asset_bundle(
+                2,
+                Bundle {
+                    preload: vec![(0, 7)],
+                    rows: vec![row("assets/z.prefab", (0, 1), (0, 5))],
+                    ..Bundle::default()
+                },
+            ),
+        ],
+    );
+    let e0 = serialized(&[], &[Obj::named(3, "e0", &[])]);
+    Scene {
+        files: vec![
+            named("a.bundle", bundle(&[("n", plain("a1"))])),
+            named(
+                "c.bundle",
+                bundle(&[("e0", e0), ("n", bundle(&[("CAB-Z", z)]))]),
+            ),
+            named("b.bundle", bundle(&[("n", plain("b1"))])),
+        ],
+        resolver: Vec::new(),
+    }
+}
