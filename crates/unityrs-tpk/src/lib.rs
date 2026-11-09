@@ -146,7 +146,9 @@
 //! bound it), as are the file's bytes while it loads and the copy of a
 //! compressed payload its codec reads; the rows and tree of a release root
 //! are kept once first published. Each is computed with no lock held and
-//! published through [`unityrs_core::once::get_or_publish`]. A walk or
+//! published through [`unityrs_core::once::get_or_publish`]. A counting
+//! allocator holds every allocation of a load, a walk and a compile to what
+//! the meter charged before it (`provider::memory_tests`). A walk or
 //! compile the allocator refuses is the exception: that depends on what else
 //! the process held at that moment, not on the TPK or the request, so it is
 //! returned unkept, `ProviderError::memory` set (the meter's refusals are
