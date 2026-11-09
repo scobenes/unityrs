@@ -620,7 +620,7 @@ class TestColumn(unittest.TestCase):
     def test_tol_metrics_are_stated_or_said_to_be_planned(self):
         """Both Tol definitions say each row states a metric and threshold. Until every Tol row does (a row names a
         `threshold`), both must say the rows are to state them in the phase each row's unityrs side lands in (its
-        status's `impl Pn`: P1 for the Sprite affine path, P3 for audio) and that none does yet, not that each has
+        status's `impl Pn`: P1b for the Sprite affine path, P3 for audio) and that none does yet, not that each has
         one."""
         root = HERE.parent.parent
         parity = (root / "PARITY.md").read_text(encoding="utf-8")
@@ -639,9 +639,9 @@ class TestColumn(unittest.TestCase):
         phases = {}
         for cells in tol:
             path = "the Sprite affine path" if "Sprite" in cells[0] else "audio"
-            phases.setdefault(path, set()).update(re.findall(r"\bimpl (P\d)\b", cells[-1]))
-        self.assertEqual(phases, {"the Sprite affine path": {"P1"}, "audio": {"P3"}})
-        when = "(P1 for the Sprite affine path, P3 for audio)"
+            phases.setdefault(path, set()).update(re.findall(r"\bimpl (P\d[ab]?)\b", cells[-1]))
+        self.assertEqual(phases, {"the Sprite affine path": {"P1b"}, "audio": {"P3"}})
+        when = "(P1b for the Sprite affine path, P3 for audio)"
         if len(stated) < len(tol):
             for text in definitions:
                 with self.subTest(text[:40]):

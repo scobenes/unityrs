@@ -17,7 +17,7 @@ process, from a copy of it with every cell changed. The cells come:
 - from `RESULT_NOTES` and `RAISE_REASONS` (`texture_cells.py`): the words a row adds to its
   result, each shown by a test here;
 - the tier from the result, and the status: pinned by this test, implemented in the phase
-  `DESIGN.md`'s P1 list gives.
+  `DESIGN.md`'s P1b list gives.
 
 The pixel cases are built from each format's layout, not from UnityPy: raw
 formats from a byte pattern, block formats from solid-colour blocks whose decoded
@@ -51,7 +51,7 @@ from texture_cells import (  # noqa: E402
     COLUMNS,
     GOBS,
     ORACLE,
-    P1,
+    P1B,
     SWITCH_BLOB,
     base_name,
     decode,
@@ -131,16 +131,16 @@ class ThisParityFile(unittest.TestCase):
             ],
         )
 
-    def test_p1_formats_are_the_five_design_names(self):
-        p1 = sorted(name for name, row in self.rows.items() if row["status"] == "pinned P0; impl P1")
-        self.assertEqual(p1, P1)
+    def test_p1b_formats_are_the_five_design_names(self):
+        p1b = sorted(name for name, row in self.rows.items() if row["status"] == "pinned P0; impl P1b")
+        self.assertEqual(p1b, P1B)
 
     def test_tier_and_status_follow_the_result(self):
         for name, row in self.rows.items():
             with self.subTest(name):
                 kind = RESULT.match(row["UnityPy 1.25.2"]).group(1)
                 self.assertEqual(row["tier"], tier_of(name, kind))
-                self.assertEqual(row["status"], "pinned P0; impl P1" if name in P1 else "pinned P0; impl P3")
+                self.assertEqual(row["status"], "pinned P0; impl P1b" if name in P1B else "pinned P0; impl P3")
 
 
 def matrix_errors(rows, expected):
