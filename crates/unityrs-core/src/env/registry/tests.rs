@@ -248,6 +248,13 @@ fn slots_dropped_together_never_leave_a_dependency_behind() {
     }
 }
 
+/// How many dropped slots wait to be reached, on either list.
+fn listed(env: &Environment) -> usize {
+    let reg = &env.inner.registry;
+    reg.pending_len.load(std::sync::atomic::Ordering::Acquire)
+        + reg.evicted_len.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// What the key `foo` holds: its value's slot and its position.
 fn foo(env: &Environment) -> Option<(usize, Rank)> {
     let inner = env.inner.registry.read();
@@ -257,31 +264,43 @@ fn foo(env: &Environment) -> Option<(usize, Rank)> {
 
 /// A registration's change to a key, the setting of the walks' flags under
 /// it and a load's new container index generation are one step, under the
-/// registry's lock (W1 and P1, plan section 3.16). Checked as each lock the
+/// registry's lock (W1 and P1, plan section 3.16); so are a load's listing
+/// of the lazy slot it dropped and a new generation, whether or not it
+/// changes the key (review round 16: a load between the key's position and
+/// its value listed its slot and started none). Checked as each lock the
 /// registering thread takes is released ([`held::after_each_release`]), so
 /// whichever part of the step leaves the lock, ahead of the change or
 /// behind it, is seen at the release in between, where another thread could
 /// see it (review round 15: the generation was bumped after the lock, and
 /// the notify was pinned only at a hook after it). By a load and by a reach,
-/// which starts no generation (`Registry::insert`), for each thing a
-/// registration can do to a key: `before` are the loads registered first,
-/// `at` the one that runs, and `changes` whether it changes the key.
+/// which starts no generation (`Registry::insert`), of slots read at once
+/// and of lazy ones, for each thing a registration can do to a key:
+/// `before` are the loads registered first, `at` the one that runs,
+/// `changes` whether it changes the key and `drops` whether it drops a
+/// slot of another rank (which a lazy one lists).
 #[test]
 fn at_each_release_a_registrations_key_flags_and_generation_agree() {
     let cases = [
-        ("a new key", &[][..], 5, true),
-        ("a later load replaces the value", &[5][..], 9, true),
-        ("an earlier load moves the key", &[5][..], 3, true),
-        ("an equal rank is no change", &[5][..], 5, false),
+        ("a new key", &[][..], 5, true, false),
+        ("a later load replaces the value", &[5][..], 9, true, true),
+        ("an earlier load moves the key", &[5][..], 3, true, true),
+        ("an equal rank is no change", &[5][..], 5, false, false),
         (
             "a load between its position and its value",
             &[3, 9][..],
             5,
             false,
+            true,
         ),
     ];
-    for by in [By::Load, By::Reach] {
-        for (what, before, at, changes) in cases {
+    for (by, lazy) in [
+        (By::Load, false),
+        (By::Reach, false),
+        (By::Load, true),
+        (By::Reach, true),
+    ] {
+        for (what, before, at, changes, drops) in cases {
+            let what = format!("{what}, lazy {lazy}");
             let env = Environment::new(EnvOptions::unitypy());
             env.load(Source::Bytes {
                 name: RawStr::from("seed"),
@@ -294,7 +313,7 @@ fn at_each_release_a_registrations_key_flags_and_generation_agree() {
             let register = |load: u64, by: By| {
                 let kind = SlotKind::Ready(cab.clone());
                 let reg = &env.inner.registry;
-                reg.insert(&name, kind, Loads::at(load), &[], &meter, by, false)
+                reg.insert(&name, kind, Loads::at(load), &[], &meter, by, lazy)
                     .unwrap();
             };
             for &load in before {
@@ -305,14 +324,26 @@ fn at_each_release_a_registrations_key_flags_and_generation_agree() {
             let hash = walk.hash(b"foo");
             let flag = walk.watch(&[(REGISTRY, hash)]).unwrap();
             let (key_before, generation_before) = (foo(&env), reg.generation());
-            let seen = std::rc::Rc::new(std::cell::Cell::new((0_u32, 0_u32)));
+            assert_eq!(listed(&env), 0, "{what}: a slot is listed before");
+            let seen = std::rc::Rc::new(std::cell::Cell::new((0_u32, 0_u32, 0_u32)));
+            // Whether the slot it drops was listed by now (a load's `settle`
+            // takes it off the list again).
+            let was_listed = std::rc::Rc::new(std::cell::Cell::new(false));
             held::after_each_release(Some(std::rc::Rc::new({
-                let (env, flag, key_before, seen) =
-                    (env.clone(), flag.clone(), key_before.clone(), seen.clone());
+                let (env, flag, key_before, seen, was_listed) = (
+                    env.clone(),
+                    flag.clone(),
+                    key_before.clone(),
+                    seen.clone(),
+                    was_listed.clone(),
+                );
                 let by_load = by == By::Load;
+                let what = what.clone();
                 move || {
                     let changed = foo(&env) != key_before;
                     let generation = env.inner.registry.generation();
+                    was_listed.set(was_listed.get() || listed(&env) != 0);
+                    let listed = was_listed.get();
                     assert_eq!(
                         flag.changed(),
                         changed,
@@ -320,18 +351,24 @@ fn at_each_release_a_registrations_key_flags_and_generation_agree() {
                     );
                     assert_eq!(
                         generation != generation_before,
-                        changed && by_load,
-                        "{what}: at a release the key's change and the generation differ (P1)"
+                        (changed || listed) && by_load,
+                        "{what}: at a release the key's change or the slot's listing and the \
+                         generation differ (P1)"
                     );
-                    let (releases, with_change) = seen.get();
-                    seen.set((releases + 1, with_change + u32::from(changed)));
+                    let (releases, with_change, with_listing) = seen.get();
+                    seen.set((
+                        releases + 1,
+                        with_change + u32::from(changed),
+                        with_listing + u32::from(listed),
+                    ));
                 }
             })));
             register(at, by);
             held::after_each_release(None);
-            let (releases, with_change) = seen.get();
+            let (releases, with_change, with_listing) = seen.get();
             assert_ne!(releases, 0, "{what}: no lock was released");
             assert_eq!(with_change != 0, changes, "{what}");
+            assert_eq!(with_listing != 0, drops && lazy, "{what}: the listing");
         }
     }
 }

@@ -374,9 +374,14 @@ impl Environment {
     /// first reaches every registered entry and every dropped one, an
     /// evicted dependency's opened again (the registry's module docs; plan
     /// section 9, Q13), so it walks what an eager load registered; a slot
-    /// dropped after a pass is a later load's, which starts a new
-    /// generation, so a pass finished at the current one leaves none
-    /// unreached but for a kept refusal's. Two passes may run at once: each walks every table not yet marked, and each `path_dict`
+    /// dropped after a pass started is dropped by a later load, whose
+    /// registration starts a new generation in the step that lists the
+    /// slot whether or not it changes a key (review round 16: one ranked
+    /// between the key's position and its value changed none, started
+    /// none, and the entries its slot's reach registered were never
+    /// walked), or by the reach of such a load's slot, so a pass finished
+    /// at the current generation leaves none unreached but for a kept
+    /// refusal's. Two passes may run at once: each walks every table not yet marked, and each `path_dict`
     /// entry keeps the least stamp ([`crate::container`]), so both leave
     /// what one after the other would.
     ///

@@ -23,13 +23,13 @@ mod catalog;
 pub use catalog::{
     FindAsk, FindScene, asset_bundle_modes, bad_cab, container_other_file, cross_bundle_pointer,
     dependency_reads, dependency_scenes, deref_rules, deref_sibling_nested, fallback_file_pointer,
-    find_file_kinds, find_file_listing, find_scenes, last_block_fails, loose_external_pointer,
-    nested_after_cab, nested_dropped_evicted, nested_duplicates, nested_evicted,
-    nested_raw_replaced, nested_reloaded, nested_reloaded_spans, nested_reloaded_spans_raced,
-    nested_replaced_unread, preload_below_start, preload_loads_new_cab, preload_nested_external,
-    preload_paths, preload_raw_target, preload_revisits_after_load, preload_revisits_ahead,
-    preload_skips, race_scenes, resolver_loads, resource_in_nested_cab, resource_in_own_nested,
-    scenes, web_file,
+    find_file_kinds, find_file_listing, find_scenes, last_block_fails, listings_raced,
+    loose_external_pointer, nested_after_cab, nested_between_loads, nested_dropped_evicted,
+    nested_duplicates, nested_evicted, nested_raw_replaced, nested_reloaded, nested_reloaded_spans,
+    nested_reloaded_spans_raced, nested_replaced_unread, preload_below_start,
+    preload_loads_new_cab, preload_nested_external, preload_paths, preload_raw_target,
+    preload_revisits_after_load, preload_revisits_ahead, preload_skips, race_scenes,
+    resolver_loads, resource_in_nested_cab, resource_in_own_nested, scenes, web_file,
 };
 
 use crate::blob::NodeSpec;

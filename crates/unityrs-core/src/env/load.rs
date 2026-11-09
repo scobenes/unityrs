@@ -53,21 +53,22 @@ impl Environment {
 
     /// A load UnityPy's `load_file` makes (the caller's, or a resource
     /// fallback's under `keep_resolver_loads`): its own input meter, its
-    /// CABs registered as a caller's, and a `files` entry under `name`,
-    /// charged to the file's meter (a resolver's name copied into its key
-    /// first; a caller's own name is shared, not copied).
+    /// CABs registered as a caller's, and a `files` entry under `name` at
+    /// the load's number, as its registrations are ranked, charged to the
+    /// file's meter (a resolver's name copied into its key first; a
+    /// caller's own name is shared, not copied).
     fn load_listed(&self, name: &RawStr, source: &Source, resolved: bool) -> Result<File, Error> {
         let ctx = self.ctx();
         let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
         // UnityPy environment.py:139-160
         let file = open_source(name, source, &meter, ctx)?;
-        self.register_file(name, &file, &Target::Caller)?;
+        let load = self.register_file(name, &file, &Target::Caller)?;
         let key = if resolved {
             RawStr::charged(name.as_bytes(), &meter)?
         } else {
             name.clone()
         };
-        self.list(key, file.clone(), false, &meter)?;
+        self.list(key, file.clone(), false, load, &meter)?;
         Ok(file)
     }
 
@@ -75,13 +76,14 @@ impl Environment {
     /// file itself, or a bundle's entries (`Eager`: as UnityPy parses them;
     /// `Lazy`: every directory entry's name now, parsed on first use).
     /// Every registration is one load's, ranked by its directory path
-    /// ([`registry`]).
+    /// ([`registry`]); returns the load's number, which its `files` entry
+    /// takes ([`Self::list`]).
     ///
     /// [`registry`]: super::registry
-    fn register_file(&self, name: &RawStr, file: &File, target: &Target<'_>) -> Result<(), Error> {
+    fn register_file(&self, name: &RawStr, file: &File, target: &Target<'_>) -> Result<u64, Error> {
         let reg = &self.inner.registry;
         let load = reg.next_load();
-        match file {
+        let registered = match file {
             File::Serialized(sf) => self.register_cab(
                 name,
                 Cab::Serialized(sf.clone()),
@@ -115,7 +117,8 @@ impl Environment {
                 }
             },
             File::Web(_) => Err(Error::Unsupported(Unsupported::WebFile)),
-        }
+        };
+        registered.map(|()| load)
     }
 
     fn register_cab(
@@ -209,12 +212,13 @@ impl Environment {
         // dependency is kept (its first attempt's charges returned with its
         // handle).
         with_room(Some(&self.inner.cache), None, || {
-            self.try_load_dep(name, source)
+            self.try_load_dep(name, source).map(|(file, _)| file)
         })
     }
 
-    /// One attempt of [`Self::load_dep`], on a meter of its own.
-    fn try_load_dep(&self, name: &RawStr, source: &Source) -> Result<File, Error> {
+    /// One attempt of [`Self::load_dep`], on a meter of its own: the file
+    /// and the load's number.
+    fn try_load_dep(&self, name: &RawStr, source: &Source) -> Result<(File, u64), Error> {
         let ctx = self.ctx();
         let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Dependency);
         let file = open_source(name, source, &meter, ctx)?;
@@ -226,7 +230,7 @@ impl Environment {
             cache: Arc::downgrade(&self.inner.cache),
             slots: AtomicUsize::new(0),
         });
-        self.register_file(&dep.name, &file, &Target::Dependency(&dep))?;
+        let load = self.register_file(&dep.name, &file, &Target::Dependency(&dep))?;
         #[cfg(test)]
         self.inner.cache.hook(Hook::LoadRegistered);
         self.inner.cache.loaded.fetch_add(1, Ordering::Relaxed);
@@ -240,7 +244,7 @@ impl Environment {
         }
         #[cfg(test)]
         self.inner.cache.hook(Hook::LoadChecked);
-        Ok(file)
+        Ok((file, load))
     }
 
     /// A file the resolver returned (module docs, "Resolver loads in
@@ -279,7 +283,7 @@ impl Environment {
             }
         };
         with_room(Some(&self.inner.cache), None, || match asked {
-            _ if !keep => self.try_load_dep(name, source),
+            _ if !keep => self.try_load_dep(name, source).map(|(file, _)| file),
             Asked::Fallback(_)
             | Asked::Find {
                 is_dependency: false,
@@ -287,14 +291,14 @@ impl Environment {
             Asked::Find {
                 is_dependency: true,
             } => {
-                let file = self.try_load_dep(name, source)?;
+                let (file, load) = self.try_load_dep(name, source)?;
                 let meter = file.meter().clone();
                 let key = RawStr::charged(name.as_bytes(), &meter)?;
                 // A reader has no `is_dependency`: `parse_file` returns the
                 // reader itself (`helpers/ImportHelper.py:136-156`), which
                 // `getattr(f, "is_dependency", False)` reads false.
                 let flag = !matches!(file, File::Raw(_));
-                self.list(key, file.clone(), flag, &meter)?;
+                self.list(key, file.clone(), flag, load, &meter)?;
                 Ok(file)
             }
         })

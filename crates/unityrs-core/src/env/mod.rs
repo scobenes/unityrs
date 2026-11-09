@@ -61,8 +61,14 @@
 //! two of its steps (`watch`'s module docs, W1; review round 14); a key
 //! the load adds does not fail the pass, where UnityPy's raises.
 //! What a set of calls leaves does not depend on the order of the ones that
-//! are not loads: the registry orders entries by rank ([`registry`]), and
-//! each `path_dict` entry keeps the least stamp ([`crate::container`]).
+//! are not loads: the registry orders entries by rank ([`registry`]),
+//! `files` by the loads' numbers the same way ([`Environment::files`]),
+//! and each `path_dict` entry keeps the least stamp ([`crate::container`]).
+//! So once racing loads have returned, the registry and `files` hold what
+//! the same loads make one after another in the order of their numbers
+//! (review round 16: `files` kept the order the threads listed in, so a
+//! load that took the lower number but listed last won `files` and lost
+//! the registry, for good).
 //!
 //! **Memory.** Each load makes its input's meter
 //! ([`crate::limits::Meter::for_input`]): [`crate::budget::Reservation::Input`]
@@ -169,6 +175,8 @@ mod deref;
 mod gate;
 mod held;
 mod listing;
+#[cfg(test)]
+mod listing_tests;
 mod load;
 mod object_tree;
 #[cfg(test)]

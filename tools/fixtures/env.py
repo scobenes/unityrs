@@ -35,6 +35,10 @@ each point in turn (`env_race.py`), recording the container, every
 object's `container` path, the dependencies' paths and the state, and, for
 a load of more than one key, the same with only its first key made there.
 
+`env_threads.json`: two of the scenes run in the orders the core's unit
+test `env::race_tests` makes their loads in on two threads
+(`env_race.py`'s module docs).
+
 `resolver.json`: the names UnityPy's lookups hand on where it looks in
 `env.path` (the core's `CabResolver`): a resource read's fallback and a
 pointer to each external of a file, none of them found.
@@ -80,7 +84,7 @@ from UnityPy.files import BundleFile, SerializedFile, WebFile  # noqa: E402
 from UnityPy.helpers.ResourceReader import get_resource_data  # noqa: E402
 
 from env_paths import kind, path_case, path_inputs  # noqa: E402
-from env_race import race_case  # noqa: E402
+from env_race import race_case, threads_fixture  # noqa: E402
 from scaffold import dump  # noqa: E402
 
 # ------------------------------------------------------------------ scenes
@@ -638,6 +642,7 @@ def fixtures() -> dict[str, dict]:
             "find_scenes": finds,
             "race_scenes": races,
         },
+        "env_threads.json": {**meta, **threads_fixture(inputs, Run)},
         "paths.json": {**meta, "cases": [path_case(c) for c in path_inputs()]},
         "pystr.json": {**meta, **pystr_fixture()},
         "resolver.json": {**meta, **resolver_fixture()},

@@ -11,6 +11,40 @@ use super::named;
 use super::revisit::preload_revisits_after_load;
 use crate::env::{Bundle, Obj, RaceScene, Scene, bundle, row, serialized};
 
+/// Two `SerializedFile`s, each with one container row naming its own
+/// object: `p` (object 10, `assets/a.prefab`) and `q` (object 30,
+/// `assets/b.prefab`). A plain scene ([`super::scenes`]): the core's unit
+/// test `env::race_tests` loads them on two threads, the first stopped
+/// between its registration and its `files` entry while the second loads
+/// whole, under these names and both under `x`, against UnityPy's two
+/// orders of each (`tools/fixtures/env_race.py`; review round 16: `files`
+/// took the order the threads listed in, the registry the loads' order).
+#[must_use]
+pub fn listings_raced() -> Scene {
+    let file = |id: i64, path: &str| {
+        serialized(
+            &[],
+            &[
+                Obj::named(id, "o", &[]),
+                Obj::asset_bundle(
+                    2,
+                    Bundle {
+                        rows: vec![row(path, (0, 0), (0, id))],
+                        ..Bundle::default()
+                    },
+                ),
+            ],
+        )
+    };
+    Scene {
+        files: vec![
+            named("p", file(10, "assets/a.prefab")),
+            named("q", file(30, "assets/b.prefab")),
+        ],
+        resolver: Vec::new(),
+    }
+}
+
 /// `c.bundle` with `CAB-A` holding object 4 only, then `f.bundle`, whose
 /// `CAB-F` has `externals` and the preload table `preload`, and the rows
 /// `assets/<k>.prefab` spanning `spans` in turn.

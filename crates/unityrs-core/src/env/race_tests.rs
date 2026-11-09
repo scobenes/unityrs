@@ -13,6 +13,12 @@
 //! left an index the walk had dereferenced off for good, and a change it
 //! made between two rows was seen by a later lookup but put back no index,
 //! so which file got a later row's path depended on the threads' timing).
+//!
+//! Two loads that race leave what UnityPy leaves when they are made one
+//! after the other in the order of their numbers (review round 16): a
+//! load stopped after its first key while another loads and a container
+//! pass runs, and a load stopped before its `files` entry while another
+//! loads whole (`tools/fixtures/env_race.py`'s `env_threads.json`).
 
 // The source scan behind "the core starts no thread and never waits"
 // (`unityrs_testkit::waits`) takes only an item under `#[cfg(test)]` in its
@@ -404,4 +410,193 @@ fn a_change_is_found_with_its_new_container_index_generation() {
         assert_eq!(path_of(&env, &seven), *want, "{mode:?}");
         load.finish();
     }
+}
+
+/// UnityPy's runs of the orders two threads make loads in
+/// (`env_threads.json`, `tools/fixtures/env_race.py`).
+fn threads() -> J {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/d/env_threads.json"
+    );
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// A recorded run less what names it.
+fn without(case: &J, keys: &[&str]) -> J {
+    let mut case = case.clone();
+    for k in keys {
+        case.as_object_mut().unwrap().remove(*k);
+    }
+    case
+}
+
+/// The options a race runs under: UnityPy's, `Lazy`, and the batch
+/// engine's (`Lazy`, resolver loads kept out of `files`).
+fn race_options() -> [(&'static str, EnvOptions); 3] {
+    let mut lazy = EnvOptions::unitypy();
+    lazy.load = LoadMode::Lazy;
+    let batch = EnvOptions::batch(Arc::new(crate::options::FileContext::unitypy()));
+    [
+        ("eager", EnvOptions::unitypy()),
+        ("lazy", lazy),
+        ("batch", batch),
+    ]
+}
+
+/// Review round 16's first race (scene `nested_between_loads`):
+/// `c.bundle`'s load is stopped right after it published its first key
+/// ([`Hook::Published`]), `b.bundle` loads whole and a container pass is
+/// built, then `c.bundle`'s load goes on. Its `n` ranks between the key's
+/// position (`a.bundle`'s) and its value (`b.bundle`'s), so it changes no
+/// key; under `Lazy` it lists its dropped slot, whose reach registers
+/// `CAB-Z`, and starts a new container index generation in that step, so
+/// the next container pass walks `CAB-Z`'s table: the container, every
+/// object's path and the state are UnityPy's for the same loads with
+/// `c.bundle`'s registrations past its first made after `b.bundle`'s load
+/// and a container listing (`env_race.py`'s `held_case`), under every
+/// option set. The listing started no generation, so the pass built before
+/// it was kept and object 7 of `CAB-Z` had no path under `Lazy`.
+#[cfg(test)]
+#[test]
+fn a_load_between_a_keys_position_and_value_starts_a_container_index_generation() {
+    let doc = threads();
+    let case = doc["held"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "nested_between_loads")
+        .expect("the scene is recorded")
+        .clone();
+    let held = usize::try_from(case["held"].as_u64().unwrap()).unwrap();
+    let want = without(&case, &["name", "held", "before"]);
+    let paths = want["paths"].as_array().unwrap();
+    assert!(
+        paths.contains(&json!("assets/z.prefab")),
+        "UnityPy gives CAB-Z's objects no path: {paths:?}"
+    );
+    let scene = unityrs_testkit::env::nested_between_loads();
+    let src = |i: usize| Source::Bytes {
+        name: RawStr::new(scene.files[i].0.clone()),
+        data: Bytes::from(scene.files[i].1.clone()),
+    };
+    for (what, options) in race_options() {
+        let env = Environment::new(options);
+        for i in 0..held {
+            env.load(src(i)).unwrap();
+        }
+        let gate = Gate::install(&env);
+        let load = {
+            let (env, source) = (env.clone(), src(held));
+            gate.run(Some((Hook::Published, 1)), move || {
+                drop(env.load(source).unwrap());
+            })
+        };
+        load.stopped();
+        for i in held + 1..scene.files.len() {
+            env.load(src(i)).unwrap();
+        }
+        assert_eq!(rows(&env), case["before"], "{what}: the pass before");
+        load.finish();
+        let got = record(&env, &rows(&env));
+        for part in ["paths", "files"] {
+            assert_eq!(got[part], want[part], "{what}: {part}");
+        }
+        assert_eq!(got, want, "{what}");
+    }
+}
+
+/// Review round 16's second race (scene `listings_raced`): the first file's
+/// load is stopped after its registration, before its `files` entry
+/// ([`Hook::Listing`]), or right after its key is published, before the
+/// number its entry is listed at is read ([`Hook::Published`]), while the
+/// second file loads whole; then the first lists. `files` is a dict by the loads' numbers, as the registry is, so
+/// the container, every object's path and the state are UnityPy's for the
+/// two loads made in the order of their numbers, first file first, whose
+/// other order UnityPy answers otherwise: under the files' own names (the
+/// first's key first) and both under `x` (the second's file the value),
+/// under every option set, and with the first file found by `find_file` in
+/// the resolver's `env.path` (a dependency listed under its path), under
+/// the option sets that list resolver loads. `files` took the order the
+/// threads listed in, so the first load's file was listed last: `x` held
+/// the first file in `files` and the second in the registry, and `p` came
+/// after `q`.
+#[cfg(test)]
+#[test]
+fn two_loads_that_race_their_listings_leave_unitypys_order_of_their_numbers() {
+    let doc = threads();
+    let scene = unityrs_testkit::env::listings_raced();
+    let run = |names: &J, find: bool, order: [u64; 2]| -> J {
+        let found = doc["orders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["names"] == *names && c["find"] == find && c["order"] == json!(order))
+            .unwrap_or_else(|| panic!("UnityPy has no run of {names}, find {find}, in {order:?}"));
+        without(found, &["name", "names", "find", "order"])
+    };
+    let mut cases = 0;
+    for (names, find) in [(["p", "q"], false), (["x", "x"], false), (["p", "q"], true)] {
+        let names_j = json!(names);
+        let want = run(&names_j, find, [0, 1]);
+        assert_ne!(
+            want,
+            run(&names_j, find, [1, 0]),
+            "{names:?}, find {find}: UnityPy's orders agree"
+        );
+        let src = |i: usize| Source::Bytes {
+            name: RawStr::from(names[i]),
+            data: Bytes::from(scene.files[i].1.clone()),
+        };
+        let options: Vec<_> = if find {
+            // `env.path` holds the first file under its name.
+            let path = Arc::new(Path(vec![(
+                names[0].as_bytes().to_vec(),
+                Bytes::from(scene.files[0].1.clone()),
+            )]));
+            let [eager, lazy, _] = race_options();
+            [eager, lazy]
+                .into_iter()
+                .map(|(what, mut o)| {
+                    o.resolver = Some(path.clone());
+                    (what, o)
+                })
+                .collect()
+        } else {
+            race_options().into()
+        };
+        for ((what, options), at) in options
+            .into_iter()
+            .flat_map(|o| [(o.clone(), Hook::Listing), (o, Hook::Published)])
+        {
+            cases += 1;
+            let what = format!("{what}, stopped at {at:?}");
+            let env = Environment::new(options);
+            let gate = Gate::install(&env);
+            let load = {
+                let (env, source) = (env.clone(), src(0));
+                gate.run(Some((at, 1)), move || {
+                    if find {
+                        let name = RawStr::from(names[0]);
+                        let found = env.find_file(&name, true, &Meter::unlimited());
+                        assert!(found.unwrap().is_some(), "find_file found nothing");
+                    } else {
+                        drop(env.load(source).unwrap());
+                    }
+                })
+            };
+            load.stopped();
+            env.load(src(1)).unwrap();
+            load.finish();
+            let got = record(&env, &rows(&env));
+            for part in ["files", "objects"] {
+                assert_eq!(
+                    got[part], want[part],
+                    "{names:?}, find {find}, {what}: {part}"
+                );
+            }
+            assert_eq!(got, want, "{names:?}, find {find}, {what}");
+        }
+    }
+    assert_eq!(cases, (2 * 3 + 2) * 2);
 }
