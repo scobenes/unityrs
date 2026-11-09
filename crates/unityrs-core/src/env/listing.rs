@@ -320,7 +320,7 @@ impl Environment {
     }
 
     /// `files`, in the order of the keys' positions (the least load that
-    /// listed each, [`Files`]), as UnityPy's dict iterates when the loads
+    /// listed each, `listing.rs`'s `Files`), as UnityPy's dict iterates when the loads
     /// are made one after another in the order of their numbers: one entry per caller load, and with
     /// [`EnvOptions::keep_resolver_loads`] one per file the resolver loaded
     /// (module docs), a repeated key replacing the value in place. Each
