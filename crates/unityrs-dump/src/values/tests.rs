@@ -260,7 +260,7 @@ fn byte_vector(body: &[u8]) -> Case {
 /// buffer.
 #[test]
 fn a_resave_refused_at_a_bound_is_its_resave_error() {
-    let case = byte_vector(&[3; 1 << 20]);
+    let case = byte_vector(&vec![3; 1 << 20]);
     let mut out = Vec::new();
     run_cases(&[case], &bounded(3 << 19), &unbounded(), &mut out).unwrap();
     let rec = &lines(&out)[0];
