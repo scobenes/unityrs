@@ -5,9 +5,10 @@ typetrees, textures, sprites, meshes, animation and glTF export, as a library,
 a command-line tool and Python bindings.
 
 **Status: pre-alpha.** The core (phase P1) reads asset bundles, serialized
-files and typetrees as UnityPy 1.25.2 reads them, through the `unityrs dump`
-and `unityrs values` commands. Nothing else is built yet: textures, sprites
-and batch extraction are the next phase (P1b). The plan and its phases are in
+files and typetrees as UnityPy 1.25.2 reads them. Its one user-facing command
+is `unityrs dump`, which writes the canonical dump the parity gate compares
+with UnityPy's (`unityrs values` serves the parity tools). Nothing else is
+built yet: textures, sprites and batch extraction are the next phase (P1b). The plan and its phases are in
 [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Goals

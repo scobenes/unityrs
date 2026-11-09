@@ -19,7 +19,7 @@
 - **E1.** A job is a JSON document with a `spec_version`. The binary refuses a version it does not know, before any work, with a named error.
 - **E2.** `unityrs batch JOB.json` runs one job. `unityrs --version` prints the crate version and the highest `spec_version` the binary reads.
 - **E3.** Exit codes tell apart: complete; complete with object-level skips; incomplete; a budget refusal; a bad spec; a crash. Their values are fixed in this plan's review and never reused for another meaning.
-- **E4.** Progress is NDJSON on stdout, one line at least every few seconds while work runs, so a caller can use it as a heartbeat. Its schema is versioned with the spec.
+- **E4.** Progress is NDJSON on stdout, with lines at most 5 seconds apart from start to exit (a line with nothing new is a heartbeat), so a caller can treat 5 seconds of silence as a hung run. Its schema is versioned with the spec.
 - **E5.** The budgets of section 1.13 are required fields; a spec without them is refused (E1's error), and autodetection is only a capped fallback the spec opts into.
 
 Levels: L9 for the CLI's behaviour on synthetic specs.
@@ -47,7 +47,7 @@ Levels: L1 (env) and L9, on testkit scenes.
 
 - **E15.** BC7, DXT1, DXT5, RGBA32 and RGB24 decode bit-exact, with UnityPy 1.25.2's output modes: `RGB` for RGB24, `RGBA` for the other four (`PARITY.md` section 17's rows for these five).
 - **E16.** `meshdecode`'s vertex-data unpack (every VertexFormat table, index formats and topologies, `get_triangles`), in f64, as `PARITY.md` section 15.3's rows marked P1b state. CompressedMesh and PackedBitVector are P2a.
-- **E17.** Sprites render as UnityPy's `SpriteHelper` renders them (`PARITY.md` section 15.2): atlas render data, tight meshes, rotation, flips and the alpha merge. The affine-triangle path is a Tolerance row: its metric and threshold are stated in `PARITY.md` when this phase lands it.
+- **E17.** Sprites render as UnityPy's `SpriteHelper` renders them (`PARITY.md` section 15.2): atlas render data, tight meshes, rotation, flips and the alpha merge. The affine-triangle path is a Tolerance row: its metric and threshold are settled in this plan's review (section 3, item 6) and stated in `PARITY.md` before E17's test is written.
 - **E18.** Every decoder runs under `catch_unwind`. A panic is an object-level skip, recorded in the manifest, never a crashed run.
 
 Levels: L5 on checked-in fixtures for the five formats and every sprite path; L5 on the nightly private corpus.
@@ -168,6 +168,7 @@ Today `ci.yml` runs on pushes to main and on pull requests only; the release job
 3. **The cutter's reference.** UnityPy has no NGUI cutter. E21-E26 are this plan's rules, and their reference is a Python implementation of them in the parity tools, run on the oracle stack. Its review is part of this plan's.
 4. **Spec schema.** The JSON schema itself, its versioning rule, and how a later version may add a field without breaking a consumer pinned to an earlier binary.
 5. **Exit code values and the progress schema** (E3, E4).
+6. **The sprite affine path's tolerance** (E17): the metric (per-channel absolute difference, or the share of pixels that differ) and its threshold, from the cases where Pillow's affine transform and an exact one disagree, and what a test does with a sprite outside it.
 
 ## 4. Before it is built
 
