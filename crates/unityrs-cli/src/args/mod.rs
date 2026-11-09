@@ -640,7 +640,8 @@ pub fn parse(args: &[Vec<u8>]) -> Result<Parsed, Usage> {
         limit: ns.int(Dest::Limit),
         levels,
         jobs: ns.int(Dest::Jobs).unwrap_or(1),
-        stats: ns.last(Dest::Stats).map(path),
+        // `output_path(args.stats) if args.stats else None`: an empty one is none.
+        stats: ns.last(Dest::Stats).filter(|s| !s.is_empty()).map(path),
         quiet: ns.flag(Dest::Quiet),
         tpk: ns.last(Dest::Tpk).map(path),
         lazy_reverse: ns.flag(Dest::LazyReverse),

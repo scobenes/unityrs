@@ -93,6 +93,18 @@ fn values_are_taken_as_argparse_takes_them() {
     // The last of a repeated option wins; an empty --build is none.
     let a = dump(&["x", "-oa", "-o", "b", "-j", "2", "--jobs", "-3", "--build="]);
     assert_eq!((a.output, a.jobs, a.build), (PathBuf::from("b"), -3, None));
+    // So is an empty --stats, the last one given included: the oracle
+    // writes the dump and no stats, and exits 0 (review round 16; pinned on
+    // its side by test_dump_cli.py's
+    // test_an_empty_stats_path_writes_no_stats).
+    for empty in [
+        &["--stats", ""][..],
+        &["--stats="],
+        &["--stats", "s", "--stats="],
+    ] {
+        let a = dump(&[&["x", "-o", "y"][..], empty].concat());
+        assert_eq!(a.stats, None, "{empty:?}");
+    }
     // `--` ends the options; past i64 a count saturates.
     let a = dump(&[
         "-o",
