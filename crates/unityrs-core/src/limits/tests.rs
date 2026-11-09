@@ -78,15 +78,32 @@ fn a_metered_vec_charges_its_capacity_before_it_grows() {
 }
 
 #[test]
-fn a_refused_doubling_retries_at_the_size_needed() {
-    // 100 elements fit the meter; doubling 60 to 120 does not.
+fn a_refused_doubling_retries_down_to_the_size_needed() {
+    // 100 elements fit the meter beside the 60 being moved; doubling 60 to
+    // 120 does not. Each refused size is asked again with half the room past
+    // 100: 110 and 105 (128-byte chunks) are refused, 102 fits glibc's chunk
+    // for 100.
     let fits = heap_cost(100) + heap_cost(60);
     let meter = Meter::new(fits, Arc::new(Unbounded), Reservation::Input);
     let mut v: MeteredVec<u8> = MeteredVec::with_capacity(&meter, 60).unwrap();
     v.extend_from_slice(&[1; 60]).unwrap();
     v.extend_from_slice(&[2; 40]).unwrap();
-    assert_eq!(v.capacity(), 100);
+    assert_eq!(v.capacity(), 102);
     assert_eq!(meter.used(), heap_cost(100));
+    // 104 needed, the most glibc's chunk for 100 holds: 112, 108, 106 and
+    // 105 are refused, and the last size asked is exactly 104.
+    let fits = heap_cost(104) + heap_cost(60);
+    let meter = Meter::new(fits, Arc::new(Unbounded), Reservation::Input);
+    let mut v: MeteredVec<u8> = MeteredVec::with_capacity(&meter, 60).unwrap();
+    v.extend_from_slice(&[1; 60]).unwrap();
+    v.extend_from_slice(&[2; 44]).unwrap();
+    assert_eq!(v.capacity(), 104);
+    // One byte less, and the exact size is refused too.
+    let meter = Meter::new(fits - 1, Arc::new(Unbounded), Reservation::Input);
+    let mut v: MeteredVec<u8> = MeteredVec::with_capacity(&meter, 60).unwrap();
+    v.extend_from_slice(&[1; 60]).unwrap();
+    assert!(v.extend_from_slice(&[2; 40]).is_err());
+    assert_eq!((v.capacity(), meter.used()), (60, heap_cost(60)));
 }
 
 #[test]
@@ -310,4 +327,86 @@ fn every_refusal_of_the_dependency_pool_is_counted() {
     };
     assert_eq!(huge(Reservation::Dependency), 1);
     assert_eq!(huge(Reservation::Input), 0);
+}
+
+/// A meter with no bound of its own over a `Counting` budget of `limit`
+/// bytes, and the number of requests the budget has refused.
+fn refusals_counted(limit: u64) -> (Arc<Meter>, Arc<std::sync::atomic::AtomicU64>) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::budget::{BudgetExceeded, MemoryBudget, Permit};
+    #[derive(Debug)]
+    struct Tally(Counting, Arc<AtomicU64>);
+    impl MemoryBudget for Tally {
+        fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
+            self.0.try_reserve(bytes, what).inspect_err(|_| {
+                let n = self.1.fetch_add(1, Ordering::Relaxed);
+                // A growth that asks again forever fails here, not by a hang.
+                assert!(n < 10_000_000, "{n} refused requests: the growth loops");
+            })
+        }
+    }
+    let refused = Arc::new(AtomicU64::new(0));
+    let budget = Tally(Counting::new(limit), refused.clone());
+    (
+        Meter::new(u64::MAX, Arc::new(budget), Reservation::Input),
+        refused,
+    )
+}
+
+/// Review round 16: a vector or a decode buffer that meets its bound grows
+/// a few dozen more times at most. A refused doubling is asked again with
+/// half the room past what is needed, down to exactly that, as
+/// `unityrs-dump`'s `Text` grows since fix pass 15; before fix pass 17 it
+/// was asked for exactly what the push needed, so while the capacity lay
+/// between a third and a half of the budget every push past the room cost a
+/// refused request (one push at a time: the walk's lists grow so, and the
+/// writer's output). Each of these pushes one element at a time until the
+/// budget refuses one: a `MeteredVec` of bytes and of `u64`s, one grown as
+/// a walk's list grows to a declared length ([`crate::walk::grow_step`]),
+/// and a `DecodeBuf`, each written past a third of its budget.
+#[test]
+fn a_vector_that_meets_its_bound_asks_a_few_dozen_times() {
+    use std::sync::atomic::Ordering;
+
+    use crate::budget::DecodeBuf;
+    type Push = Box<dyn FnMut() -> Result<(), ChargeError>>;
+    // A buffer's name, its element's size, and a push onto a new one.
+    type Case = (&'static str, u64, fn(&Arc<Meter>) -> Push);
+    let limit: u64 = 1_200 << 10;
+    let cases: [Case; 4] = [
+        ("MeteredVec<u8>", 1, |m| {
+            let mut v = MeteredVec::<u8>::new(m);
+            Box::new(move || v.push(1))
+        }),
+        ("MeteredVec<u64>", 8, |m| {
+            let mut v = MeteredVec::<u64>::new(m);
+            Box::new(move || v.push(1))
+        }),
+        ("a walk's list", 8, |m| {
+            let mut v = MeteredVec::<u64>::new(m);
+            Box::new(move || {
+                crate::walk::grow_step(&mut v, 1 << 30)?;
+                v.push(1)
+            })
+        }),
+        ("DecodeBuf", 1, |m| {
+            let mut b = DecodeBuf::new(m, 0, u64::MAX, LimitKind::InputMemory).unwrap();
+            Box::new(move || b.extend_from_slice(&[1]))
+        }),
+    ];
+    for (what, size, make) in cases {
+        let (meter, refused) = refusals_counted(limit);
+        let mut push = make(&meter);
+        let mut written = 0;
+        while push().is_ok() {
+            written += size;
+        }
+        let refusals = refused.load(Ordering::Relaxed);
+        assert!(written > limit / 3, "{what}: {written} bytes written");
+        assert!(
+            refusals <= 64,
+            "{what}: {refusals} refused requests for {written} bytes written"
+        );
+    }
 }
