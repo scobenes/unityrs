@@ -110,7 +110,7 @@ jobs:
             -r scripts/requirements-tests.txt
       # A skipped test, or fewer tests than the minimum, fails the job.
       - name: Self-tests (scripts)
-        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=94'
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=95'
 
   # The parity tools' Python side, on the pinned oracle stack (docs/DESIGN.md
   # section 3) and with UnityPy's samples, so the tests that need them run;
@@ -181,9 +181,11 @@ jobs:
       # sources are not in the wheel; scripts/unitypy_boost.py pins their line
       # counts, digests, blank lines, top-level definitions and brace depths,
       # and a C++ range cuts no definition and no brace block (its statements
-      # are not read).
+      # are not read). --boost checks every pin against the copy of the
+      # sources scripts/tests/unitypyboost_1_25_2/ keeps, by the scans that
+      # made it (review round 16: no gate ran it, so a wrong digit passed).
       - name: UnityPy citations name lines of 1.25.2, and the files citing them say they port it
-        run: python scripts/unitypy_citations.py
+        run: python scripts/unitypy_citations.py --boost scripts/tests/unitypyboost_1_25_2
       # The committed synthetic fixtures, then G7 on UnityPy's own TPK: its
       # outcomes are written outside the checkout and nothing is committed.
       # The test fails, never skips, once the job has set UNITYRS_ORACLE_TPK.
