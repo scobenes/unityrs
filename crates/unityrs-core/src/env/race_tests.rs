@@ -508,8 +508,9 @@ fn a_load_between_a_keys_position_and_value_starts_a_container_index_generation(
 
 /// Review round 16's second race (scene `listings_raced`): the first file's
 /// load is stopped after its registration, before its `files` entry
-/// ([`Hook::Listing`]), while the second file loads whole; then the first
-/// lists. `files` is a dict by the loads' numbers, as the registry is, so
+/// ([`Hook::Listing`]), or right after its key is published, before the
+/// number its entry is listed at is read ([`Hook::Published`]), while the
+/// second file loads whole; then the first lists. `files` is a dict by the loads' numbers, as the registry is, so
 /// the container, every object's path and the state are UnityPy's for the
 /// two loads made in the order of their numbers, first file first, whose
 /// other order UnityPy answers otherwise: under the files' own names (the
@@ -564,13 +565,17 @@ fn two_loads_that_race_their_listings_leave_unitypys_order_of_their_numbers() {
         } else {
             race_options().into()
         };
-        for (what, options) in options {
+        for ((what, options), at) in options
+            .into_iter()
+            .flat_map(|o| [(o.clone(), Hook::Listing), (o, Hook::Published)])
+        {
             cases += 1;
+            let what = format!("{what}, stopped at {at:?}");
             let env = Environment::new(options);
             let gate = Gate::install(&env);
             let load = {
                 let (env, source) = (env.clone(), src(0));
-                gate.run(Some((Hook::Listing, 1)), move || {
+                gate.run(Some((at, 1)), move || {
                     if find {
                         let name = RawStr::from(names[0]);
                         let found = env.find_file(&name, true, &Meter::unlimited());
@@ -593,5 +598,5 @@ fn two_loads_that_race_their_listings_leave_unitypys_order_of_their_numbers() {
             assert_eq!(got, want, "{names:?}, find {find}, {what}");
         }
     }
-    assert_eq!(cases, 2 * 3 + 2);
+    assert_eq!(cases, (2 * 3 + 2) * 2);
 }
