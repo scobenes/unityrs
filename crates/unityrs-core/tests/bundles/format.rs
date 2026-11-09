@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use super::{ctx, ctx_with, meter_for, open, open_with, small_entries};
 use unityrs_core::codec::BlockDecryptor;
+use unityrs_core::version::FlagsClass;
 use unityrs_core::{Error, Unsupported};
 use unityrs_testkit::Rng;
 use unityrs_testkit::bundle::{BundleSpec, EntrySpec, TestCodec, build, matrix};
@@ -142,6 +143,106 @@ fn a_decryptor_reaches_only_a_bundle_whose_header_built_one() {
     let b = open_with(&data, &c, &meter_for(&c)).unwrap();
     b.load_all().unwrap();
     assert_eq!(b.entry_bytes(0).unwrap(), entry);
+}
+
+/// A bundle of one block of 20,000 bytes of noise in `codec`, whose header,
+/// of `engine`'s flag set, carries the encryption flag and `extra_flags`, its
+/// block's flags `0x100` where `flagged`, every byte stored as written (none
+/// scrambled for [`Xor`]). `(the bundle, the entry, where blocks-info ends)`.
+fn encrypted_header(
+    engine: &[u8],
+    codec: TestCodec,
+    flagged: bool,
+    extra_flags: u32,
+) -> (Vec<u8>, Vec<u8>, usize) {
+    let mut rng = Rng::new(7);
+    let entry: Vec<u8> = (0..20_000)
+        .map(|_| rng.next_u64().to_le_bytes()[0])
+        .collect();
+    let mut data = build(&BundleSpec {
+        version_engine: engine.to_vec(),
+        info_codec: TestCodec::None,
+        data_codec: codec,
+        block_size: 1 << 20,
+        entries: vec![EntrySpec {
+            name: b"secret".to_vec(),
+            data: entry.clone(),
+            flags: 0,
+        }],
+        extra_flags,
+        encrypted: true,
+        ..BundleSpec::default()
+    });
+    let nul = |from: usize| from + data[from..].iter().position(|c| *c == 0).unwrap() + 1;
+    // The header's fields after the engine string, then the decryptor's 70
+    // bytes; blocks-info, stored, after the alignment, its size the header's.
+    let head = nul(nul(12));
+    let info = u32::from_be_bytes(data[head + 8..head + 12].try_into().unwrap()) as usize;
+    let start = (head + 20 + 70).next_multiple_of(16);
+    if flagged {
+        // The one block's row: after the hash and the count.
+        let row = start + 20;
+        let flags = u16::from_be_bytes([data[row + 8], data[row + 9]]) | 0x100;
+        data[row + 8..row + 10].copy_from_slice(&flags.to_be_bytes());
+    }
+    (data, entry, start + info)
+}
+
+/// UnityPy files/BundleFile.py:512-513: a bundle whose header built a
+/// decryptor decrypts a block only when its flags carry `0x100` and it is
+/// not stored. An LZ4 block without the flag, a stored block with it, and
+/// stored blocks-info under data flags with it (`decompress_data` is given
+/// the data flags for blocks-info, `:141`) are read as stored, lazily and
+/// after `load_all` (review round 16: dropping either half of the
+/// condition passed every test).
+#[test]
+fn only_a_flagged_block_that_is_not_stored_is_decrypted() {
+    let c = ctx_with(|c| c.decryptor = Some(Arc::new(Xor(0x5A))));
+    for (codec, flagged, extra) in [
+        (TestCodec::Lz4, false, 0),
+        (TestCodec::None, true, 0),
+        (TestCodec::Lz4, false, 0x100),
+    ] {
+        let (data, entry, _) = encrypted_header(b"2022.3.0f1", codec, flagged, extra);
+        let at = format!("{codec:?}, flagged {flagged}, data flags {extra:#x}");
+        for eager in [false, true] {
+            let b = open_with(&data, &c, &meter_for(&c));
+            let b = b.unwrap_or_else(|e| panic!("{at}: {e}"));
+            assert!(b.header().encrypted, "{at}");
+            if eager {
+                b.load_all().unwrap_or_else(|e| panic!("{at}, eager: {e}"));
+            }
+            let got = b.entry_bytes(0);
+            assert!(
+                got.as_deref() == Ok(&entry[..]),
+                "{at}, eager {eager}: not the stored bytes: {:?}",
+                got.map(|g| g.len())
+            );
+        }
+    }
+}
+
+/// UnityPy files/BundleFile.py:170-171: the padding before the blocks is
+/// read only under the new flag set, where `0x200` asks for it. Under
+/// `ArchiveFlagsOld` (an engine before 2020.3.34 and the like, `:113-121`)
+/// `0x200` is the encryption flag, and the blocks start where blocks-info
+/// ends, here off a 16-byte boundary (review round 16: dropping the flag
+/// set's half of the condition passed every test).
+#[test]
+fn an_old_flags_encrypted_bundle_reads_no_padding_before_its_blocks() {
+    let (data, entry, info_end) = encrypted_header(b"2019.4.0f1", TestCodec::None, false, 0);
+    assert_ne!(info_end % 16, 0, "blocks-info ends on a 16-byte boundary");
+    let c = ctx_with(|c| c.decryptor = Some(Arc::new(Xor(0x5A))));
+    let b = open_with(&data, &c, &meter_for(&c)).unwrap();
+    assert_eq!(b.header().flags_class, Some(FlagsClass::Old));
+    assert_eq!(b.header().data_flags.map(|f| f & 0x200), Some(0x200));
+    assert!(b.header().encrypted);
+    let got = b.entry_bytes(0);
+    assert!(
+        got.as_deref() == Ok(&entry[..]),
+        "not the entry: {:?}",
+        got.map(|g| g.len())
+    );
 }
 
 #[test]

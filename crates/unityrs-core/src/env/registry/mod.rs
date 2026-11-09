@@ -370,7 +370,7 @@ impl Registry {
 
     /// The table of the walks' flags under registry keys, for a test.
     #[cfg(test)]
-    pub(crate) fn watch_room(&self) -> (usize, Vec<(usize, usize)>) {
+    pub(crate) fn watch_room(&self) -> (usize, usize, Vec<(usize, usize)>) {
         self.read().watched.room()
     }
 
@@ -386,11 +386,10 @@ impl Registry {
         self.built.load(Ordering::Acquire) >= generation
     }
 
-    /// Publishes a finished container pass that started at `generation`:
-    /// true when it is the first to, false when one that started at it (or
-    /// later) already finished.
-    pub(crate) fn publish_built(&self, generation: u64) -> bool {
-        self.built.fetch_max(generation, Ordering::AcqRel) < generation
+    /// Publishes a finished container pass that started at `generation`;
+    /// [`Self::built`] answers by the greatest one published.
+    pub(crate) fn publish_built(&self, generation: u64) {
+        self.built.fetch_max(generation, Ordering::AcqRel);
     }
 
     fn count(&self, slot: &Slot) {

@@ -574,4 +574,6 @@ impl TypeTreeProvider for TpkProvider {
 }
 
 #[cfg(test)]
+mod memory_tests;
+#[cfg(test)]
 mod tests;

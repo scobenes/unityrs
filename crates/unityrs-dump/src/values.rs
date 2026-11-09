@@ -29,7 +29,9 @@
 //! `a_read_past_the_cases_memory_bound_is_its_outcome` reads that case,
 //! and `unityrs-cli`'s `tests/values.rs` runs it through the binary). So
 //! each case runs on a meter of its own ([`Meter::for_input`], under the
-//! limits and the budget of [`FileContext::unitypy`], the dump's), which its
+//! limits and the budget of [`FileContext::unitypy`], the dump's, so its
+//! work allowance is its own: the tests'
+//! `each_case_runs_on_a_meter_of_its_own`), which its
 //! bytes, its tree's rows and names, its read, its value's text (a [`Text`])
 //! and its re-saved bytes (a [`DecodeBuf`]) are charged to before they are
 //! allocated, each allocated fallibly. Its notes and its resave's error
@@ -45,9 +47,15 @@
 //! next case runs
 //! ([`run_cases`]). A refusal is the case's outcome, never an abort of the
 //! run, and every other case is still answered:
-//! - by a bound of the limits (`max_input_memory` among them): kind
+//! - by a bound of the limits (`max_input_memory` among them) while its
+//!   tree is built, its bytes are read or its value's text is written: kind
 //!   `other`, its note holding the limit's text, `limit <Kind>: <value> >
 //!   <max>`, as a read refused at a bound always was;
+//! - by a bound while its value is re-saved: the resave's error, as any
+//!   write error is (`value_cases.py`'s `oracle` keeps UnityPy's value and
+//!   writes `error: <exception>`): no kind, its value kept, `resave` the
+//!   limit's text after `error: `, no `resave_hex` and no note (the tests'
+//!   `a_resave_refused_at_a_bound_is_its_resave_error`);
 //! - of memory, by the budget or the allocator: kind [`CRASH`], with no
 //!   value and no resave, as the dump makes such an input its `crash`
 //!   record (`docs/CANONICAL_DUMP.md` section 4.2): it says more about the

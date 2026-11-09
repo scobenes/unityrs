@@ -10,7 +10,7 @@ use unityrs_core::files::SerializedType;
 use unityrs_core::limits::{Limits, Meter};
 use unityrs_core::stream::Endian;
 use unityrs_core::typetree::{NodeList, NodeRow, Tree};
-use unityrs_core::walk::{self, RefTypes, WriteCtx, WriteRules};
+use unityrs_core::walk::{self, RefTypes, WriteCtx, WriteError, WriteRules};
 use unityrs_core::{LimitKind, Map, Parsed, PrimArray, RawStr, Value};
 
 pub const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/walk/");
@@ -146,6 +146,8 @@ pub fn dict(p: &Parsed, m: &Map) -> Vec<Json> {
         .collect()
 }
 
+/// A write's outcome as the fixture holds it, less the exception class.
+#[allow(dead_code, reason = "walk_fixtures.rs compares the class too")]
 pub fn write_out(
     p: &Parsed,
     tree: &Tree,
@@ -153,6 +155,20 @@ pub fn write_out(
     refs: RefTypes<'_>,
     rules: WriteRules,
 ) -> Json {
+    match write_result(p, tree, endian, refs, rules) {
+        Ok(bytes) => json!({ "hex": hex(&bytes) }),
+        Err(_) => json!({ "err": true }),
+    }
+}
+
+/// A write's bytes, or its error.
+pub fn write_result(
+    p: &Parsed,
+    tree: &Tree,
+    endian: Endian,
+    refs: RefTypes<'_>,
+    rules: WriteRules,
+) -> Result<Vec<u8>, WriteError> {
     let limits = Limits::default();
     let ctx = WriteCtx {
         endian,
@@ -161,10 +177,7 @@ pub fn write_out(
         limits: &limits,
     };
     let mut out = DecodeBuf::new(&Meter::unlimited(), 0, u64::MAX, LimitKind::InputMemory).unwrap();
-    match walk::write::write(p, tree, &ctx, &mut out) {
-        Ok(()) => json!({ "hex": hex(out.as_slice()) }),
-        Err(_) => json!({ "err": true }),
-    }
+    walk::write::write(p, tree, &ctx, &mut out).map(|()| out.as_slice().to_vec())
 }
 
 pub fn endian(c: &Json) -> Endian {

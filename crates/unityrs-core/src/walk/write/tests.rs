@@ -142,3 +142,53 @@ fn a_dict_inside_a_shared_dict_is_indexed_once() {
         );
     }
 }
+
+/// [`crate::walk::WriteError::exceptions`] where no recorded write reaches:
+/// an object with no tree raises the read side's exception, its `why`'s
+/// ([`crate::provider::NoTree::exception`], `helpers/Tpk.py`), and a bound,
+/// a refused charge or a failed tree has no counterpart in UnityPy's writer.
+#[test]
+fn errors_no_recorded_write_reaches_name_their_exceptions() {
+    use crate::LimitError;
+    use crate::provider::NoTree;
+    use crate::walk::{ParseError, WriteError};
+
+    for why in [
+        NoTree::UnknownClass,
+        NoTree::NoEntry,
+        NoTree::NoReleaseRoot,
+        NoTree::NoVersion,
+    ] {
+        let e = WriteError::NoTypeTree {
+            class_id: 1,
+            why: Some(why),
+        };
+        assert_eq!(e.exceptions(), [why.exception()], "{why:?}");
+    }
+    let limit = LimitError {
+        kind: LimitKind::ValueDepth,
+        value: 2,
+        max: 1,
+    };
+    let charge = Meter::new(
+        0,
+        Arc::new(crate::budget::Unbounded),
+        crate::budget::Reservation::Input,
+    )
+    .charge(1)
+    .unwrap_err();
+    for e in [
+        WriteError::NoTypeTree {
+            class_id: 1,
+            why: None,
+        },
+        WriteError::Limit(limit),
+        WriteError::Charge(charge),
+        WriteError::Tree(Box::new(ParseError::NoTypeTree {
+            class_id: 1,
+            why: None,
+        })),
+    ] {
+        assert!(e.exceptions().is_empty(), "{e:?}");
+    }
+}

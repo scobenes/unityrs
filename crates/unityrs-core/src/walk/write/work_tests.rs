@@ -160,6 +160,30 @@ fn a_long_child_name_is_cleaned_from_its_first_bytes() {
     assert!(steps[1] <= steps[0] + 64, "{steps:?}");
 }
 
+/// Review round 16: a child named by a dunder is the writer's own refusal
+/// (every Python object has `__class__`, which UnityPy reads and may write;
+/// `PARITY.md` section 19.3), so its error names no exception of UnityPy's,
+/// where a name with no such attribute names `AttributeError`.
+#[test]
+fn a_dunder_child_is_refused_naming_no_exception() {
+    let read_with = tree(vec![
+        NodeRow::new(0, "Base", "Base"),
+        NodeRow::new(1, "int", "a"),
+    ]);
+    let p = read(&read_with, 5_i32.to_le_bytes().to_vec());
+    for (name, names) in [("__class__", &[][..]), ("__class", &["AttributeError"])] {
+        let written_with = tree(vec![
+            NodeRow::new(0, "Base", "Base"),
+            NodeRow::new(1, "X", "a"),
+            NodeRow::new(2, "int", name),
+        ]);
+        let (r, _) = write(&p, &written_with);
+        let e = r.unwrap_err();
+        assert!(matches!(e, WriteError::TypeMismatch { .. }), "{e:?}");
+        assert_eq!(e.exceptions(), names, "{name}");
+    }
+}
+
 /// Review round 7's sweep: a write of a dict read through a class whose
 /// children repeat a name kept each name's position in a table it counted
 /// and cleared by two passes over the children before it wrote the first.

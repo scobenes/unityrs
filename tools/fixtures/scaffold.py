@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
+import lzma
 import os
 import struct
 import sys
@@ -40,6 +42,7 @@ import lz4.block
 import UnityPy
 from fsspec.implementations.local import LocalFileSystem
 from UnityPy.classes import PPtr
+from UnityPy.helpers.CompressionHelper import decompress_lzma
 from UnityPy.streams import EndianBinaryReader
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -449,6 +452,34 @@ def lz4_cases() -> list[dict]:
     return out
 
 
+def lzma_blocks() -> dict:
+    """`decompress_lzma` (helpers/CompressionHelper.py:17-44) hands liblzma the dictionary size the block's 5-byte
+    header names, and reads no declared size. One raw LZMA1 stream (`lc` 3, `lp` 0, `pb` 2: properties 0x5D),
+    coded with a 64 KiB dictionary, of 300 bytes of noise, 20,000 bytes of a count modulo 251, then the noise again,
+    so its one far match reaches 20,300 bytes back and every other match 251 or less, under headers naming 4 KiB
+    (liblzma's least), 8 KiB, 16 KiB and 64 KiB: UnityPy's verdict on each, which unityrs's codec must give at a
+    declared size of 0 and of 30,000 alike (the declared size sizes its first dictionary, which the named size
+    caps, as it caps each retry's)."""
+    noise = b"".join(hashlib.sha256(bytes([i])).digest() for i in range(10))[:300]
+    data = noise + bytes(i % 251 for i in range(20_000)) + noise
+    filters = [{"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16, "lc": 3, "lp": 0, "pb": 2}]
+    stream = lzma.compress(data, format=lzma.FORMAT_RAW, filters=filters)
+    cases, output = [], b""
+    for named in (4 << 10, 8 << 10, 16 << 10, 64 << 10):
+        try:
+            output = decompress_lzma(struct.pack("<BI", 0x5D, named) + stream)
+        except lzma.LZMAError:
+            ok = False
+        else:
+            assert output == data, named
+            ok = True
+        cases += [{"named": named, "declared": declared, "ok": ok} for declared in (0, 30_000)]
+    # The stream is what the rows are for: its far match fails each named size below 20,300 bytes.
+    assert [c["ok"] for c in cases] == [False] * 6 + [True] * 2, cases
+    # The output's length, and its last 300 bytes, which the far match copies.
+    return {"stream": stream.hex(), "output_len": len(output), "output_tail": output[-300:].hex(), "cases": cases}
+
+
 def fixtures() -> dict[str, object]:
     meta = {"generator": "tools/fixtures/scaffold.py", "unitypy": UnityPy.__version__}
     string_data, string_cases = string_to_null_cases()
@@ -470,6 +501,7 @@ def fixtures() -> dict[str, object]:
             "liblz4": lz4.library_version_string(),
             "cases": lz4_cases(),
         },
+        "lzma_blocks.json": {**meta, **lzma_blocks()},
     }
 
 

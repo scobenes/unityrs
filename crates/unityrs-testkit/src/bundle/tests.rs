@@ -60,14 +60,53 @@ fn an_encrypted_header_holds_the_decryptors_bytes() {
     }
 }
 
+/// `block`, an LZMA block as `compress` writes it (UnityPy's
+/// `decompress_lzma` layout: a properties byte, the dictionary size as a
+/// little-endian `u32`, then a raw LZMA1 stream), decoded by liblzma's raw
+/// decoder with the properties and dictionary it names, to the end-of-payload
+/// marker liblzma's raw LZMA1 encoder writes: a stream cut short fails.
+fn lzma_decode(block: &[u8]) -> Vec<u8> {
+    use liblzma::stream::{Action, Filters, LzmaOptions, Status, Stream};
+    let props = block[0];
+    let (lc, rest) = (props % 9, props / 9);
+    let mut opts = LzmaOptions::new_preset(0).unwrap();
+    opts.dict_size(u32::from_le_bytes(block[1..5].try_into().unwrap()))
+        .literal_context_bits(u32::from(lc))
+        .literal_position_bits(u32::from(rest % 5))
+        .position_bits(u32::from(rest / 5));
+    let mut filters = Filters::new();
+    filters.lzma1(&opts);
+    let mut stream = Stream::new_raw_decoder(&filters).unwrap();
+    let mut out = Vec::with_capacity(1 << 16);
+    let mut input = &block[5..];
+    loop {
+        let read = stream.total_in();
+        let status = stream.process_vec(input, &mut out, Action::Run).unwrap();
+        input = &input[usize::try_from(stream.total_in() - read).unwrap()..];
+        if status == Status::StreamEnd {
+            return out;
+        }
+        assert!(!input.is_empty(), "the stream ends before its end marker");
+        out.reserve(1 << 16);
+    }
+}
+
+/// Each codec's block decodes back to its input: LZ4 by `lz4_flex`, LZMA
+/// by liblzma's raw decoder (review round 16: the LZMA stream was checked
+/// only for its first byte and its length). The bytes spread over the byte
+/// range, so a literal's context bits matter.
 #[test]
 fn every_codec_round_trips() {
-    let data: Vec<u8> = (0..5000u32).map(|i| u8::try_from(i % 7).unwrap()).collect();
+    let data: Vec<u8> = (0..5000u32)
+        .map(|i| u8::try_from(i % 7 * 37).unwrap())
+        .collect();
     let lz4 = compress(TestCodec::Lz4, &data);
     assert_eq!(lz4_flex::block::decompress(&lz4, data.len()).unwrap(), data);
     let lzma = compress(TestCodec::Lzma, &data);
     assert_eq!(lzma[0], 0x5D);
+    assert_eq!(lzma[1..5], super::LZMA_DICT.to_le_bytes());
     assert!(lzma.len() < data.len());
+    assert_eq!(lzma_decode(&lzma), data);
     for c in [TestCodec::Lzma, TestCodec::Lz4, TestCodec::Lz4Hc] {
         let b = build(&spec(c));
         assert!(b.len() > 64, "{c:?}");

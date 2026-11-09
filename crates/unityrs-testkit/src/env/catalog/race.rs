@@ -9,7 +9,7 @@
 
 use super::named;
 use super::revisit::preload_revisits_after_load;
-use crate::env::{Bundle, Obj, RaceScene, Scene, bundle, row, serialized};
+use crate::env::{Bundle, DepScene, Obj, RaceScene, Scene, bundle, row, serialized};
 
 /// Two `SerializedFile`s, each with one container row naming its own
 /// object: `p` (object 10, `assets/a.prefab`) and `q` (object 30,
@@ -18,7 +18,11 @@ use crate::env::{Bundle, Obj, RaceScene, Scene, bundle, row, serialized};
 /// between its registration and its `files` entry while the second loads
 /// whole, under these names and both under `x`, against UnityPy's two
 /// orders of each (`tools/fixtures/env_race.py`; review round 16: `files`
-/// took the order the threads listed in, the registry the loads' order).
+/// took the order the threads listed in, the registry the loads' order),
+/// and three loads, `p` under `x` and `y` and then `q` under `x`, the
+/// first stopped while the other two load whole, against UnityPy's order
+/// of their numbers (a key listed by a later load before the first lists
+/// moves to the first's number).
 #[must_use]
 pub fn listings_raced() -> Scene {
     let file = |id: i64, path: &str| {
@@ -42,6 +46,34 @@ pub fn listings_raced() -> Scene {
             named("q", file(30, "assets/b.prefab")),
         ],
         resolver: Vec::new(),
+    }
+}
+
+/// The six listings the core's unit test `env::listing_tests` makes in
+/// every order, each load's number its index: `x`, `y`, `X`, `x`, `y` and
+/// `x`, the last as a dependency. Each file is a `SerializedFile` holding
+/// one named object whose path id is its load's number + 1, so a listing's
+/// file and object tell its load. A key is listed again by a later load and
+/// by an earlier one, after it moved, two keys lower to one name, and the
+/// last `x` is a dependency's, which `objects` skips. Not a scene of
+/// [`super::scenes`]: `tools/fixtures/env_race.py` records UnityPy's
+/// `env.files` after every set of these loads, made in the order of their
+/// numbers (review round 16's follow-up: the test's expected values were a
+/// hand-written model of a Python dict).
+#[must_use]
+pub fn listings() -> DepScene {
+    let keys = ["x", "y", "X", "x", "y", "x"];
+    let files = keys
+        .iter()
+        .zip(1_i64..)
+        .map(|(key, id)| named(key, serialized(&[], &[Obj::named(id, "o", &[])])))
+        .collect();
+    DepScene {
+        scene: Scene {
+            files,
+            resolver: Vec::new(),
+        },
+        dependencies: vec![5],
     }
 }
 

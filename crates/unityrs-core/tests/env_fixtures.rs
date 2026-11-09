@@ -29,7 +29,7 @@ use unityrs_core::limits::Meter;
 use unityrs_core::pystr::{
     is_split_path, ntpath_basename, ntpath_splitext, py_lower, simplify_name,
 };
-use unityrs_testkit::env::{dependency_scenes, find_scenes, race_scenes, scenes};
+use unityrs_testkit::env::{dependency_scenes, find_scenes, listings, race_scenes, scenes};
 
 use run::{Run, hex, load, ops, recorded, scene_by_name, text, unhex};
 
@@ -83,6 +83,14 @@ fn scenes_are_the_testkit_scenes() {
             lines.push_str(&row.to_string());
             lines.push('\n');
         }
+        // Not a scene: the listings of `env::listing_tests`, whose `files`
+        // after every set of loads `env_race.py` records (a line with a
+        // `listings` key, the indexes listed as dependencies).
+        let l = listings();
+        let row = json!({"name": "listings", "files": pairs(&l.scene.files),
+            "resolver": pairs(&l.scene.resolver), "listings": l.dependencies});
+        lines.push_str(&row.to_string());
+        lines.push('\n');
         std::fs::write(out, lines).unwrap();
         return;
     }
