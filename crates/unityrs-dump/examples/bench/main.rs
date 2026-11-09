@@ -35,9 +35,10 @@
 //!
 //! It prints one JSON object: throughput, CPU time (each thread's, from
 //! `/proc/thread-self/schedstat`) with the codecs' share, peak RSS, the
-//! bundles' counts (`BundleFile::counts`), the version sources (R5), and,
-//! as the flags ask, meter peaks and pinning. `--per-input` writes a JSON
-//! line per input, by its position in the order, never its name.
+//! bundles' counts (`BundleFile::counts`), the serialized files' copies out
+//! of their runs (`SerializedFile::copies`, R3), the version sources (R5),
+//! and, as the flags ask, meter peaks and pinning. `--per-input` writes a
+//! JSON line per input, by its position in the order, never its name.
 
 mod budget;
 mod clock;

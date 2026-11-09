@@ -11,6 +11,7 @@ use unityrs_core::detect::check_entry_type;
 use unityrs_core::env::read_path;
 use unityrs_core::files::{BundleCounts, parse_file};
 use unityrs_core::limits::Meter;
+use unityrs_core::pin::Copies;
 use unityrs_core::version::{ResolvedVersion, VersionError};
 use unityrs_core::{Error, File, FileContext, Parsed, PrimArray, RawStr, SerializedFile, Value};
 use unityrs_dump::input::load_deep;
@@ -109,6 +110,9 @@ pub struct Done {
     /// Charges still live after every handle and value dropped.
     pub leaked: u64,
     pub pin: Option<Pin>,
+    /// What its serialized files' reads and parses copied out of the runs
+    /// their bytes are slices of (`SerializedFile::copies`; R3), summed.
+    pub copies: Copies,
 }
 
 /// Reads, loads and walks the input at `path` on `ctx` (its budget books
@@ -139,6 +143,13 @@ pub fn work(path: &Path, ctx: &Arc<FileContext>, load: Load, pin: bool, clock: C
             }
         }
         d.values_ns = clock.now().saturating_sub(t1);
+        for sf in &sfs {
+            let c = sf.copies();
+            d.copies.values += c.values;
+            d.copies.value_bytes += c.value_bytes;
+            d.copies.trees += c.trees;
+            d.copies.tree_bytes += c.tree_bytes;
+        }
         // Counted after the timed region; reading them decodes nothing.
         tree(&file, &mut |f| match f {
             File::Bundle(b) => {

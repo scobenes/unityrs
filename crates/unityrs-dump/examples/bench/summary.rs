@@ -123,6 +123,13 @@ pub fn summary(args: &Args, pass: &Pass, input_bytes: u64) -> Value {
         "runs_peak_per_bundle_max_over_inputs": spread(d.iter().map(|x| x.sums.runs_peak_max).collect()),
         "versions": versions,
         "leaked_bytes": sum(|x| x.leaked),
+        "copies": {
+            "values": sum(|x| x.copies.values),
+            "value_bytes": sum(|x| x.copies.value_bytes),
+            "trees": sum(|x| x.copies.trees),
+            "tree_bytes": sum(|x| x.copies.tree_bytes),
+            "inputs": d.iter().filter(|x| x.copies.values + x.copies.trees > 0).count(),
+        },
     });
     if args.budget == crate::budget::BudgetKind::Tracked {
         let peaks: Vec<u64> = pass.meter_peaks.iter().map(|p| p.unwrap_or(0)).collect();
@@ -176,6 +183,7 @@ pub fn per_input(pass: &Pass) -> String {
             "meter_peak": peak,
             "bundles": sums_json(&x.sums),
             "leaked": x.leaked,
+            "copies": [x.copies.values, x.copies.value_bytes, x.copies.trees, x.copies.tree_bytes],
             "pin": x.pin.map(|p| json!({"all": p.all, "one": p.one, "one_own": p.one_own, "one_slices": p.one_slices})),
         });
         text.push_str(&line.to_string());

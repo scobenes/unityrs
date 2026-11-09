@@ -142,6 +142,7 @@ def counts(phases) -> dict:
             "runs_peak_per_bundle": eager["runs_peak_per_bundle_max_over_inputs"],
             "runs_peak_per_bundle_lazy": lazy and lazy["runs_peak_per_bundle_max_over_inputs"],
             "pin": pin and pin.get("pin"),
+            "copies": eager.get("copies"),
         }
         out["r5"] = eager["versions"]
         out["r10"] = {
