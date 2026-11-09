@@ -169,6 +169,8 @@ mod deref;
 mod gate;
 mod held;
 mod listing;
+#[cfg(test)]
+mod listing_tests;
 mod load;
 mod object_tree;
 #[cfg(test)]

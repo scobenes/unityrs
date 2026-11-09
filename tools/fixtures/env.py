@@ -36,7 +36,7 @@ object's `container` path, the dependencies' paths and the state, and, for
 a load of more than one key, the same with only its first key made there.
 
 `env_threads.json`: two of the scenes run in the orders the core's unit
-test `env::order_tests` makes their loads in on two threads
+test `env::race_tests` makes their loads in on two threads
 (`env_race.py`'s module docs).
 
 `resolver.json`: the names UnityPy's lookups hand on where it looks in

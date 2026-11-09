@@ -13,6 +13,12 @@
 //! left an index the walk had dereferenced off for good, and a change it
 //! made between two rows was seen by a later lookup but put back no index,
 //! so which file got a later row's path depended on the threads' timing).
+//!
+//! Two loads that race leave what UnityPy leaves when they are made one
+//! after the other in the order of their numbers (review round 16): a
+//! load stopped after its first key while another loads and a container
+//! pass runs, and a load stopped before its `files` entry while another
+//! loads whole (`tools/fixtures/env_race.py`'s `env_threads.json`).
 
 // The source scan behind "the core starts no thread and never waits"
 // (`unityrs_testkit::waits`) takes only an item under `#[cfg(test)]` in its
@@ -404,4 +410,94 @@ fn a_change_is_found_with_its_new_container_index_generation() {
         assert_eq!(path_of(&env, &seven), *want, "{mode:?}");
         load.finish();
     }
+}
+
+/// UnityPy's runs of the orders two threads make loads in
+/// (`env_threads.json`, `tools/fixtures/env_race.py`).
+fn threads() -> J {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/d/env_threads.json"
+    );
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// A recorded run less what names it.
+fn without(case: &J, keys: &[&str]) -> J {
+    let mut case = case.clone();
+    for k in keys {
+        case.as_object_mut().unwrap().remove(*k);
+    }
+    case
+}
+
+/// The options a race runs under: UnityPy's, `Lazy`, and the batch
+/// engine's (`Lazy`, resolver loads kept out of `files`).
+fn race_options() -> [(&'static str, EnvOptions); 3] {
+    let mut lazy = EnvOptions::unitypy();
+    lazy.load = LoadMode::Lazy;
+    let batch = EnvOptions::batch(Arc::new(crate::options::FileContext::unitypy()));
+    [
+        ("eager", EnvOptions::unitypy()),
+        ("lazy", lazy),
+        ("batch", batch),
+    ]
+}
+
+/// Review round 16's second race (scene `listings_raced`): the first file's
+/// load is stopped after its registration, before its `files` entry
+/// ([`Hook::Listing`]), while the second file loads whole; then the first
+/// lists. `files` is a dict by the loads' numbers, as the registry is, so
+/// the container, every object's path and the state are UnityPy's for the
+/// two loads made in the order of their numbers, first file first, whose
+/// other order UnityPy answers otherwise: under the files' own names (the
+/// first's key first) and both under `x` (the second's file the value),
+/// under every option set. `files` took the order the threads listed in, so
+/// the first load's file was listed last: `x` held the first file in
+/// `files` and the second in the registry, and `p` came after `q`.
+#[cfg(test)]
+#[test]
+fn two_loads_that_race_their_listings_leave_unitypys_order_of_their_numbers() {
+    let doc = threads();
+    let scene = unityrs_testkit::env::listings_raced();
+    let run = |names: &J, order: [u64; 2]| -> J {
+        let found = doc["orders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["names"] == *names && c["order"] == json!(order))
+            .unwrap_or_else(|| panic!("UnityPy has no run of {names} in {order:?}"));
+        without(found, &["name", "names", "order"])
+    };
+    let mut cases = 0;
+    for names in [["p", "q"], ["x", "x"]] {
+        let names_j = json!(names);
+        let want = run(&names_j, [0, 1]);
+        assert_ne!(
+            want,
+            run(&names_j, [1, 0]),
+            "{names:?}: UnityPy's orders agree"
+        );
+        let src = |i: usize| Source::Bytes {
+            name: RawStr::from(names[i]),
+            data: Bytes::from(scene.files[i].1.clone()),
+        };
+        for (what, options) in race_options() {
+            cases += 1;
+            let env = Environment::new(options);
+            let gate = Gate::install(&env);
+            let load = {
+                let (env, source) = (env.clone(), src(0));
+                gate.run(Some((Hook::Listing, 1)), move || {
+                    drop(env.load(source).unwrap());
+                })
+            };
+            load.stopped();
+            env.load(src(1)).unwrap();
+            load.finish();
+            let got = record(&env, &rows(&env));
+            assert_eq!(got, want, "{names:?} {what}");
+        }
+    }
+    assert_eq!(cases, 2 * 3);
 }

@@ -19,10 +19,11 @@ use crate::pystr::py_lower;
 use crate::raw::RawStr;
 
 /// The iterator [`Environment::objects`] returns: a handle per nesting
-/// level (the file list position, the bundle, the entry, the object index).
+/// level (the position of the last `files` entry it stepped into, the
+/// bundle, the entry, the object index).
 pub struct Objects<'a> {
     env: &'a Environment,
-    next_file: usize,
+    after: Option<u64>,
     bundles: Vec<(Arc<BundleFile>, usize)>,
     current: Option<(Arc<SerializedFile>, usize)>,
 }
@@ -69,8 +70,8 @@ impl Iterator for Objects<'_> {
                 }
                 continue;
             }
-            let entry = self.env.file_at(self.next_file)?;
-            self.next_file += 1;
+            let (at, entry) = self.env.file_after(self.after)?;
+            self.after = Some(at);
             // `search`: a dependency file holds no listed objects.
             if !entry.is_dependency {
                 self.enter(entry.file);
@@ -105,11 +106,13 @@ pub struct FileEntry {
 
 const _: () = crate::send_sync::<FileEntry>();
 
-/// The iterator [`Environment::files`] returns.
+/// The iterator [`Environment::files`] returns: a cursor at the position
+/// of the last entry it yielded, which entries listed meanwhile do not
+/// disturb.
 #[derive(Debug)]
 pub struct FileEntries<'a> {
     env: &'a Environment,
-    next: usize,
+    after: Option<u64>,
 }
 
 const _: () = crate::send_sync::<FileEntries<'static>>();
@@ -118,31 +121,96 @@ impl Iterator for FileEntries<'_> {
     type Item = FileEntry;
 
     fn next(&mut self) -> Option<FileEntry> {
-        let entry = self.env.file_at(self.next)?;
-        self.next += 1;
+        let (at, entry) = self.env.file_after(self.after)?;
+        self.after = Some(at);
         Some(entry)
     }
 }
 
-/// One `files` entry, with the charge for its share of the list and the
-/// indexes.
+/// One `files` entry, with the loads of its rank and the charge for its
+/// share of the list and the indexes.
 struct Listed {
     entry: FileEntry,
+    /// The key's position: the least load that listed it.
+    position: u64,
+    /// The load whose file is the value: the greatest that listed the key.
+    value: u64,
     _charge: Charge,
 }
 
-/// `env.files`: a dict, as a list in insertion order and an index by key,
-/// and each key lower-cased to the first position of a key that lowers to
-/// it (the scan of `files` a top-level file's pointer makes, rule 4, as one
-/// lookup).
+/// `env.files`: a dict by rank, as the registry is ([`super::registry`]'s
+/// module docs, "Ranks"): each key at the least number of the loads that
+/// listed it, with the file of the greatest, whatever the order the loads
+/// list in (review round 16: the list took the order the threads listed
+/// in while the registry took the loads', so a load that took the lower
+/// number but listed last won `files` and lost the registry, for good).
+/// A list by position, an index of each key's position, and each key
+/// lower-cased to the least position of a key that lowers to it (the scan
+/// of `files` a top-level file's pointer makes, rule 4, as one lookup). A
+/// load's number is the position of at most the one key it lists, so
+/// positions are distinct.
 #[derive(Default)]
 pub(super) struct Files {
     list: Vec<Listed>,
-    index: HashMap<RawStr, usize>,
-    lowered: HashMap<RawStr, usize>,
+    index: HashMap<RawStr, u64>,
+    lowered: HashMap<RawStr, u64>,
     /// The running container preload walks' flags under lowered keys, set
     /// in the step that publishes a key's change (`super::watch`).
     watched: Table,
+}
+
+impl Files {
+    /// The entry at `position`.
+    fn at(&self, position: u64) -> Option<&Listed> {
+        let i = self
+            .list
+            .binary_search_by_key(&position, |l| l.position)
+            .ok()?;
+        self.list.get(i)
+    }
+
+    /// Key `name`, at `position`, listed again by load `load`
+    /// ([`Environment::list`]): it takes `file` (and `is_dependency`) only
+    /// if `load` is greater than its value's load, and moves to `load`, and
+    /// so does the least position of its lowered key `lowered`, if that is
+    /// less than its position. Returns the file it does not keep.
+    fn relist(
+        &mut self,
+        name: &RawStr,
+        position: u64,
+        file: File,
+        is_dependency: bool,
+        load: u64,
+        lowered: &RawStr,
+    ) -> File {
+        let Ok(i) = self.list.binary_search_by_key(&position, |l| l.position) else {
+            // Never: every key of the index is listed at its position.
+            return file;
+        };
+        let Some(entry) = self.list.get_mut(i) else {
+            return file;
+        };
+        let unused = if load > entry.value {
+            entry.value = load;
+            entry.entry.is_dependency = is_dependency;
+            std::mem::replace(&mut entry.entry.file, file)
+        } else {
+            file
+        };
+        if load < position {
+            let mut moved = self.list.remove(i);
+            moved.position = load;
+            let at = self.list.partition_point(|l| l.position < load);
+            self.list.insert(at, moved);
+            if let Some(p) = self.index.get_mut(name.as_bytes()) {
+                *p = load;
+            }
+            if let Some(least) = self.lowered.get_mut(lowered.as_bytes()) {
+                *least = (*least).min(load);
+            }
+        }
+        unused
+    }
 }
 
 impl Under for std::sync::RwLock<Files> {
@@ -177,12 +245,20 @@ impl Environment {
         self.inner.registry.watch_room().0 + self.files_read().watched.room().0
     }
 
-    fn file_at(&self, i: usize) -> Option<FileEntry> {
-        self.files_read().list.get(i).map(|l| l.entry.clone())
+    /// The first entry after position `after` (the first of all for
+    /// `None`), and its position.
+    fn file_after(&self, after: Option<u64>) -> Option<(u64, FileEntry)> {
+        let files = self.files_read();
+        let i = after.map_or(0, |a| files.list.partition_point(|l| l.position <= a));
+        files.list.get(i).map(|l| (l.position, l.entry.clone()))
     }
 
-    /// Adds `file` to `files` under `name` with dict semantics, charged to
-    /// `meter`, the loaded file's: a new key's share of the list and the
+    /// Adds `file` to `files` under `name` with dict semantics by rank, as
+    /// the listing of load `load` ([`Files`]): a new key takes its place at
+    /// `load`; a known key takes `file` only if `load` is greater than its
+    /// value's load, and moves to `load` if that is less than its
+    /// position; the file it does not keep is dropped after the lock.
+    /// Charged to `meter`, the loaded file's: a new key's share of the list and the
     /// indexes, and its lowered copy for rule 4's lookup (a key copied from
     /// a resolver's name carries its own charge). Every load is charged so,
     /// a caller's included (review round 2: a caller's load charged
@@ -198,6 +274,7 @@ impl Environment {
         name: RawStr,
         file: File,
         is_dependency: bool,
+        load: u64,
         meter: &Arc<Meter>,
     ) -> Result<(), Error> {
         let charge = meter.charge(LISTED_SHARE)?;
@@ -207,38 +284,44 @@ impl Environment {
         let key_hash = self.inner.registry.watches().hash(lowered.as_bytes());
         #[cfg(test)]
         self.inner.registry.hook(super::registry::Hook::Listing);
-        let replaced = {
+        let unused = {
             let mut files = self.files_write();
-            let at = files.index.get(name.as_bytes()).copied();
-            let replaced = if let Some(entry) = at.and_then(|i| files.list.get_mut(i)) {
-                entry.entry.is_dependency = is_dependency;
-                Some(std::mem::replace(&mut entry.entry.file, file))
+            let unused = if let Some(&position) = files.index.get(name.as_bytes()) {
+                Some(files.relist(&name, position, file, is_dependency, load, &lowered))
             } else {
-                let at = files.list.len();
-                files.list.push(Listed {
-                    entry: FileEntry {
-                        name: name.clone(),
-                        file,
-                        is_dependency,
+                let at = files.list.partition_point(|l| l.position < load);
+                files.list.insert(
+                    at,
+                    Listed {
+                        entry: FileEntry {
+                            name: name.clone(),
+                            file,
+                            is_dependency,
+                        },
+                        position: load,
+                        value: load,
+                        _charge: charge,
                     },
-                    _charge: charge,
-                });
-                files.index.insert(name, at);
-                files.lowered.entry(lowered).or_insert(at);
+                );
+                files.index.insert(name, load);
+                let least = files.lowered.entry(lowered).or_insert(load);
+                *least = (*least).min(load);
                 None
             };
             // The entry and the setting of the walks' flags under its
             // lowered key are one step (`super::watch`, W1).
             files.watched.notify(key_hash);
-            replaced
+            unused
         };
         #[cfg(test)]
         self.inner.registry.hook(super::registry::Hook::Listed);
-        drop(replaced);
+        drop(unused);
         Ok(())
     }
 
-    /// `files`, in insertion order: one entry per caller load, and with
+    /// `files`, in the order of the keys' positions (the least load that
+    /// listed each, [`Files`]), as UnityPy's dict iterates when the loads
+    /// are made one after another in the order of their numbers: one entry per caller load, and with
     /// [`EnvOptions::keep_resolver_loads`] one per file the resolver loaded
     /// (module docs), a repeated key replacing the value in place. Each
     /// entry is charged to its file's meter (its share of the list and the
@@ -251,7 +334,10 @@ impl Environment {
     /// [`registry`]: super::registry
     #[must_use]
     pub fn files(&self) -> FileEntries<'_> {
-        FileEntries { env: self, next: 0 }
+        FileEntries {
+            env: self,
+            after: None,
+        }
     }
 
     /// The first `files` entry whose key lower-cases to `clean` (the
@@ -260,7 +346,7 @@ impl Environment {
     pub(super) fn files_match(&self, clean: &RawStr) -> Option<File> {
         let files = self.files_read();
         let at = *files.lowered.get(clean.as_bytes())?;
-        files.list.get(at).map(|l| l.entry.file.clone())
+        files.at(at).map(|l| l.entry.file.clone())
     }
 
     /// `objects`: every object of every non-dependency file of
@@ -271,7 +357,7 @@ impl Environment {
     pub fn objects(&self) -> Objects<'_> {
         Objects {
             env: self,
-            next_file: 0,
+            after: None,
             bundles: Vec::new(),
             current: None,
         }

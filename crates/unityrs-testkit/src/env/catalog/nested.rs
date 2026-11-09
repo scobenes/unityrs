@@ -457,7 +457,7 @@ pub fn dependency_reads() -> DepScene {
 /// container row `assets/z.prefab` reaches its object 7 through the
 /// preload table. Loaded in this order, an eager load registers `CAB-Z` at
 /// `c.bundle`'s load, and the container gives object 7 the row's path.
-/// The core's unit test `env::order_tests` loads `c.bundle` on a thread
+/// The core's unit test `env::race_tests` loads `c.bundle` on a thread
 /// stopped after its first key while `b.bundle` loads and a container pass
 /// runs (`tools/fixtures/env_race.py` records UnityPy's run of that order):
 /// `c.bundle`'s `n` then ranks between the key's position and its value,

@@ -14,7 +14,7 @@ use crate::env::{Bundle, Obj, RaceScene, Scene, bundle, row, serialized};
 /// Two `SerializedFile`s, each with one container row naming its own
 /// object: `p` (object 10, `assets/a.prefab`) and `q` (object 30,
 /// `assets/b.prefab`). A plain scene ([`super::scenes`]): the core's unit
-/// test `env::order_tests` loads them on two threads, the first stopped
+/// test `env::race_tests` loads them on two threads, the first stopped
 /// between its registration and its `files` entry while the second loads
 /// whole, under these names and both under `x`, against UnityPy's two
 /// orders of each (`tools/fixtures/env_race.py`; review round 16: `files`

@@ -22,7 +22,7 @@ than one key, each point inside the walk is recorded that way too
 the rest made after the walk, in their order (review round 15).
 
 Two plain scenes are also recorded in the orders the core's unit test
-`env::order_tests` runs their loads in on two threads (review round 16),
+`env::race_tests` runs their loads in on two threads (review round 16),
 in `env_threads.json`: `nested_between_loads` with one load's
 registrations past its first made only after the files after it are
 loaded and the container listed (`held_case`), and `listings_raced` with
