@@ -255,20 +255,26 @@ def held_case(scene: dict, new_run, held: int) -> dict:
     order; then the container, every object's `container` path, the
     dependencies' paths and the state.
 
-    Its limit (review round 16's verifier): the held registrations are made
-    after the later files' loads, so for a key a later file also registers
-    UnityPy's dict holds the held file (the last assigned), while the core,
-    whose racing loads end as if made in the order of their numbers (plan
-    section 3.16, R1), holds the later file's. So this is UnityPy's answer
-    only when no later file registers a key the held load registers past
-    its first, which is asserted here. The scene it cannot record: `a`, `c`
-    and `b` each holding a `SerializedFile` `n`, `c`'s load held after
-    another first key, so that `c`'s `n` ranks between the key's position
-    (`a`'s) and its value (`b`'s): here UnityPy would give `c`'s `n` as the
-    value, where the core, and UnityPy's run of the three in the order of
-    their numbers, give `b`'s. In `nested_between_loads` the held
-    registration is `CAB-Z`, a key no other file makes, and `c`'s `n` is a
-    `BundleFile`, which UnityPy never registers."""
+    Its limit (review round 16's verifier, and fix pass 17's): the held
+    registrations are made after the later files' loads, while the core's
+    racing loads end as if made in the order of their numbers (plan section
+    3.16, R1). So this is UnityPy's answer for that order only when its
+    `env.cabs` is the same, which is asserted here: no later file registers
+    a key the held load registers past its first (UnityPy's dict would hold
+    the held file's as the value, the last assigned, where that order gives
+    the later file's), and the keys are in the order that run inserts them
+    (a key the held load adds past its first would come after one a later
+    file added, where that order puts it before). The scenes it cannot
+    record: `a`, `c` and `b` each holding a `SerializedFile` `n`, `c`'s load
+    held after another first key, so that `c`'s `n` ranks between the key's
+    position (`a`'s) and its value (`b`'s): here UnityPy would give `c`'s
+    `n` as the value, where the core, and UnityPy's run of the three in the
+    order of their numbers, give `b`'s; and `c` holding `e0` and `cab-z`
+    while `b` adds `m`, where UnityPy would list `m` before `cab-z`. In
+    `nested_between_loads` the held registration is `CAB-Z`, a key no other
+    file makes, `b.bundle` adds no key, and `c`'s `n` is a `BundleFile`,
+    which UnityPy never registers. `tools/parity/tests/test_env_race_held.py`
+    checks both against UnityPy's runs of the two orders."""
     with scratch.folder() as tmp:
         with contextlib.redirect_stdout(io.StringIO()):
             run = new_run(scene, str(tmp))
@@ -290,6 +296,9 @@ def held_case(scene: dict, new_run, held: int) -> dict:
                 register(cab, item)
 
             for i in range(len(scene["files"])):
+                if i == held:
+                    # The keys before the held load, in their order.
+                    base = list(env.cabs)
                 # `File.read_files` and `load_file` call it through the
                 # instance.
                 env.register_cab = first_only if i == held else noted if i > held else register
@@ -305,6 +314,14 @@ def held_case(scene: dict, new_run, held: int) -> dict:
             assert not clash, f"a later file registers {clash}, which this cannot record (docs)"
             for cab, item in later:
                 env.register_cab(cab, item)
+            # The keys in the order the loads made in the order of their
+            # numbers insert them: a key keeps the place it was added at.
+            made_in_order = [*made, *(cab for cab, _ in later), *after]
+            in_order = list(dict.fromkeys([*base, *map(simplify_name, made_in_order)]))
+            assert list(env.cabs) == in_order, (
+                f"the keys are {list(env.cabs)}, where the loads in the order of their numbers give {in_order},"
+                " which this cannot record (docs)"
+            )
             out = {
                 "name": scene["name"],
                 "held": held,

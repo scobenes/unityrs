@@ -459,10 +459,14 @@ fn race_options() -> [(&'static str, EnvOptions); 3] {
 /// option set. The listing started no generation, so the pass built before
 /// it was kept and object 7 of `CAB-Z` had no path under `Lazy`.
 /// `held_case` is UnityPy's answer only because no later file registers a
-/// key the held load registers past its first (it asserts so): were
-/// `c.bundle`'s held registration a `SerializedFile` of a key `b.bundle`
-/// also registers, UnityPy there would keep `c.bundle`'s as the value, and
-/// the core, as the loads' numbers order them, `b.bundle`'s.
+/// key the held load registers past its first, and the held load adds no
+/// key past its first after one a later file added (it asserts both, and
+/// `tools/parity/tests/test_env_race_held.py` checks it against UnityPy):
+/// were `c.bundle`'s held registration a `SerializedFile` of a key
+/// `b.bundle` also registers, UnityPy there would keep `c.bundle`'s as the
+/// value, and the core, as the loads' numbers order them, `b.bundle`'s; were
+/// `b.bundle` to add a key, UnityPy there would list it before `CAB-Z`, and
+/// the core after.
 #[cfg(test)]
 #[test]
 fn a_load_between_a_keys_position_and_value_starts_a_container_index_generation() {
