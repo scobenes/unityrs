@@ -329,19 +329,33 @@ def header_cases() -> Iterator[tuple[str, bytes, int]]:
     # and unityrs, which reads no such blob, refuses it as it refuses one that reads
     # (`PARITY.md`, `TpkFile`'s row; review round 16). A collection is a count, then
     # each blob's string, data type and blob (`:243-256`), so it nests, and a nested
-    # blob raises its own exception: `ToBlob`'s for a nested 4, the type-tree reader's
-    # for a nested 0 (one that ends at a common-string version's count byte:
-    # `IndexError`); a string is a varint length and its UTF-8 (`read_string`,
-    # `:445-456`).
+    # blob raises its own exception: `ToBlob`'s for a nested 4 or 5, the type-tree
+    # reader's for a nested 0, a case for each name it raises (`error`: a blob that
+    # ends before its creation time; `IndexError`: one that ends at a common-string
+    # version's count byte; `ValueError`, `UnicodeDecodeError`, `OverflowError`: its
+    # string buffer's string, past the payload, not UTF-8, or of a length past an
+    # index), and `init`'s `AssertionError` for one that reads (review round 16); a
+    # string is a varint length and its UTF-8 (`read_string`, `:445-456`).
     one = struct.pack("<i", 1)
     not_utf8 = varint(1) + b"\xff"
     nested = (one + varint(0) + bytes([1])) * 1000
     cut = struct.pack("<qiiiQ", 0, 0, 0, 1, 0)
+    one_string = blob([], [], [], [], counts={"strings": 1})
+
+    def nest(data_type: int, data: bytes = b"") -> bytes:
+        return one + varint(0) + bytes([data_type]) + data
+
     unread = {
         "data_type_1_collection_not_utf8": (1, one + not_utf8),
-        "data_type_1_collection_nested_data_type_9": (1, one + varint(0) + bytes([9])),
-        "data_type_1_collection_nested_data_type_4": (1, one + varint(0) + bytes([4])),
-        "data_type_1_collection_nested_type_tree_cut": (1, one + varint(0) + bytes([0]) + cut),
+        "data_type_1_collection_nested_data_type_9": (1, nest(9)),
+        "data_type_1_collection_nested_data_type_4": (1, nest(4)),
+        "data_type_1_collection_nested_data_type_5": (1, nest(5)),
+        "data_type_1_collection_nested_type_tree_cut": (1, nest(0, cut)),
+        "data_type_1_collection_nested_type_tree_empty": (1, nest(0)),
+        "data_type_1_collection_nested_type_tree_string_past_the_payload": (1, nest(0, one_string)),
+        "data_type_1_collection_nested_type_tree_not_utf8": (1, nest(0, blob([], [], [], [b"\xff"]))),
+        "data_type_1_collection_nested_type_tree_length_past_an_index": (1, nest(0, one_string + varint(2**64 - 1))),
+        "data_type_1_collection_nested_type_tree_reads": (1, nest(0, blob([], [], [], []))),
         "data_type_1_collection_nested_1000_deep": (1, nested),
         "data_type_2_file_system_not_utf8": (2, one + not_utf8),
         "data_type_2_file_system_empty": (2, b""),
