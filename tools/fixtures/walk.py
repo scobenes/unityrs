@@ -14,7 +14,8 @@ Files:
 - `cases.json`: each case a typetree, its bytes and its ref types, read by
   UnityPyBoost's `read_typetree` (over the bytes from `start`) and by the
   pure-Python `read_value` (over all the bytes, from `start`), each value
-  re-saved by `write_typetree`. Case names start with the rule they pin
+  re-saved by `write_typetree` (against the case's `write_ref_types` when it
+  has them, else its own). Case names start with the rule they pin
   (`r09_...`, `py_...`, `w5_...`; `mirror_...`, `walk_mirror.py`'s).
 - `value_cases.json`: the 32 value cases of `tools/parity/value_cases.py` (G2), read as
   `parse_as_dict` reads them (`read_typetree` with `byte_size` and
@@ -655,6 +656,10 @@ def w_cases():
     add("w5_vector_and_array_flags", base(vec("v", U8("data", ALIGN), meta=ALIGN, array_meta=ALIGN), U8("c")), i32(1) + b"\x05\0\0\0\x09")
     add("w6_registry_scope", base([[0, "ManagedReferencesRegistry", "r1", 0], [1, "int", "version", 0]], [[0, "ManagedReferencesRegistry", "r2", 0], [1, "int", "version", 0]], INT("t")), i32(1, 2, 3))
     add("w7_empty_ref_types", base(ref_object(), INT("tail")), ref_bytes("C") + i32(42) + i32(9), ref_types=[])
+    # Fix pass 17's review: a value written against no file (`ValueError`), or a file below format 20, which has no
+    # `ref_types` attribute (`AttributeError`, `files/SerializedFile.py:305-308`, `helpers/TypeTreeHelper.py:99`).
+    for name, other in (("no_file", None), ("absent_ref_types", "absent")):
+        add(f"w7_written_against_{name}", base(ref_object(), INT("tail")), ref_bytes("C") + i32(42) + i32(9), ref_types=REF, write_ref_types=other)
     add("w7_empty_class", base(ref_object(), INT("tail")), ref_bytes("") + i32(9), ref_types=REF)
     add("w7_matched_no_tree", base(ref_object(), INT("tail")), ref_bytes("C") + i32(9), ref_types=[dict(REF[0], nodes=None)])
     add("w7_match_writes", base(ref_object(), INT("tail")), ref_bytes("C") + i32(42) + i32(9), ref_types=REF)

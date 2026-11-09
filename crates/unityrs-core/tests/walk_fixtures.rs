@@ -14,10 +14,11 @@
 //! Each rule of plan 3.10 and 3.11 has a test here named after it
 //! (`r09_...`, `w5_...`) that replays the cases whose names start with its
 //! id, from both readers and, after each successful read, through the
-//! writer; `every_case_is_replayed` replays them all, so a case no rule test
-//! names is still checked. A write UnityPy raised in must fail with an error
-//! whose [`WriteError::exceptions`] name the class it raised; a read's
-//! failure is compared by its kind only.
+//! writer (against the case's `write_ref_types` when it names another file,
+//! then under both write rules); `every_case_is_replayed` replays them all,
+//! so a case no rule test names is still checked. A write UnityPy raised in
+//! must fail with an error whose [`WriteError::exceptions`] name the class
+//! it raised; a read's failure is compared by its kind only.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -113,6 +114,19 @@ fn replay(c: &Json, raised: &mut Raised) -> Vec<String> {
     let data = Bytes::from(unhex(c["hex"].as_str().unwrap()));
     let start = c.get("start").and_then(Json::as_i64).unwrap_or(0);
     let refs = Refs::of(c.get("ref_types"));
+    // The file each value is written against when it is not the one it was
+    // read with (`write_ref_types`), where the mirror refuses it as
+    // UnityPy's writer does.
+    let other = c.get("write_ref_types").map(|r| Refs::of(Some(r)));
+    let written_to = other.as_ref().unwrap_or(&refs);
+    let rules: &[_] = if other.is_some() {
+        &[
+            ("write", WriteRules::UnityPy),
+            ("mirror write", WriteRules::MirrorReader),
+        ]
+    } else {
+        &[("write", WriteRules::UnityPy)]
+    };
     let options = ReadOptions::default();
     let meter = Meter::unlimited();
     let ctx = ReadCtx {
@@ -138,9 +152,11 @@ fn replay(c: &Json, raised: &mut Raised) -> Vec<String> {
         }
         if let Ok(p) = got {
             let want = &c[format!("{reader}_write")];
-            let have = write_result(&p, &tree, endian(c), refs.get(), WriteRules::UnityPy);
-            if let Some(d) = write_differs(want, &have, raised) {
-                bad.push(format!("{name} [{reader} write]\n  {d}"));
+            for &(what, rules) in rules {
+                let have = write_result(&p, &tree, endian(c), written_to.get(), rules);
+                if let Some(d) = write_differs(want, &have, raised) {
+                    bad.push(format!("{name} [{reader} {what}]\n  {d}"));
+                }
             }
         }
     }
@@ -565,7 +581,9 @@ fn write_matrix(raised: &mut Raised) -> Vec<String> {
 /// compile (the same file) and a dunder attribute (`PARITY.md` section 19.3;
 /// `src/walk/write/work_tests.rs`). Before, a write's
 /// failure was compared as a raise only, so a writer that raised
-/// `ValueError` for `KeyError` passed.
+/// `ValueError` for `KeyError` passed; and until fix pass 17's review, a
+/// file below format 20 (no `ref_types` attribute: `AttributeError`) was
+/// refused as no file is (`ValueError`), which no recording met.
 #[test]
 fn write_errors_stand_for_the_classes_unitypy_raised() {
     let mut raised = Raised::new();
@@ -589,6 +607,7 @@ fn write_errors_stand_for_the_classes_unitypy_raised() {
             ("Malformed", &["IndexError"][..]),
             ("MissingKey", &["KeyError"]),
             ("NoRefTypes", &["ValueError"]),
+            ("NoRefTypesAttribute", attr),
             ("OutOfRange", &["error", "OverflowError"]),
             ("RefTypeNotFound", &["ValueError"]),
             (

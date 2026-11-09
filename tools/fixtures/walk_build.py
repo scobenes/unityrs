@@ -164,6 +164,8 @@ def run_case(c):
     endian = c.get("endian", "<")
     start = c.get("start", 0)
     af = assets(c.get("ref_types", []))
+    # The file each value is written against, when not the one it was read with.
+    waf = assets(c["write_ref_types"]) if "write_ref_types" in c else af
     out = dict(c)
     try:
         value, n = boost_read(data[start:], root, endian, True, af)
@@ -171,7 +173,7 @@ def run_case(c):
         out["boost"] = err(e)
     else:
         out["boost"] = {"ok": enc(value), "pos": n}
-        out["boost_write"] = write(value, root, endian, af)
+        out["boost_write"] = write(value, root, endian, waf)
     reader = EndianBinaryReader(data, endian)
     reader.Position = start
     try:
@@ -180,5 +182,5 @@ def run_case(c):
         out["python"] = err(e)
     else:
         out["python"] = {"ok": enc(value), "pos": reader.Position - start}
-        out["python_write"] = write(value, root, endian, af)
+        out["python_write"] = write(value, root, endian, waf)
     return out

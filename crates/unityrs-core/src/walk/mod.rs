@@ -456,11 +456,17 @@ pub enum WriteError {
         /// The node's name.
         node: RawStr,
     },
-    /// `ReferencedObject` data with no `ref_types`, or an empty list
-    /// (the writer raises where the reader does not; `TypeTreeHelper.py:99-100`):
+    /// `ReferencedObject` data with no assets file, or an empty `ref_types`
+    /// list (the writer raises where the reader does not; `TypeTreeHelper.py:99-100`):
     /// `ValueError`.
     #[error("SerializedFile has no ref_types")]
     NoRefTypes,
+    /// `ReferencedObject` data against a file with no `ref_types` attribute
+    /// ([`RefTypes::Absent`]: a `SerializedFile` below format 20, which
+    /// UnityPy never sets it on, `files/SerializedFile.py:305-308`): reading
+    /// `assetfile.ref_types` raises `AttributeError` (`TypeTreeHelper.py:99`).
+    #[error("'SerializedFile' object has no attribute 'ref_types'")]
+    NoRefTypesAttribute,
     /// `ReferencedObject` data whose type is not in `ref_types`
     /// (`ValueError`).
     #[error("Referenced type not found")]
@@ -521,6 +527,7 @@ impl WriteError {
             },
             Self::OutOfRange { .. } => &["error", "OverflowError"],
             Self::NoRefTypes | Self::RefTypeNotFound => &["ValueError"],
+            Self::NoRefTypesAttribute => &["AttributeError"],
             Self::Malformed(_) => &["IndexError"],
             Self::NoTypeTree { why, .. } => match why {
                 Some(NoTree::UnknownClass) => &["KeyError"],

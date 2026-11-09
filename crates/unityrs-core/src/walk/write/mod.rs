@@ -697,8 +697,10 @@ impl<'a> Writer<'a, '_> {
     /// `None` for an empty class; the writer then fails on it.
     fn ref_node_py(&mut self, m: &'a Map) -> Result<Option<Arc<Tree>>, WriteError> {
         let (cls, ns, asm) = self.names(m)?;
-        if !matches!(self.ref_types, RefTypes::List(l) if !l.is_empty()) {
-            return Err(WriteError::NoRefTypes);
+        match self.ref_types {
+            RefTypes::List(l) if !l.is_empty() => {}
+            RefTypes::Absent => return Err(WriteError::NoRefTypesAttribute),
+            RefTypes::NoFile | RefTypes::List(_) => return Err(WriteError::NoRefTypes),
         }
         if matches!(cls, Value::Str(s) if s.as_bytes().is_empty()) {
             return Ok(None);
@@ -707,11 +709,16 @@ impl<'a> Writer<'a, '_> {
     }
 
     /// UnityPyBoost's resolution (R14), for [`WriteRules::MirrorReader`]:
-    /// `None` where the reader skipped the data.
+    /// `None` where the reader skipped the data. A file with no `ref_types`
+    /// attribute is refused as `write_typetree` refuses it
+    /// ([`WriteError::NoRefTypesAttribute`]), where UnityPyBoost's reader
+    /// raises `ValueError` (`TypeTreeHelper.cpp:592-596`).
     fn ref_node_boost(&mut self, m: &'a Map) -> Result<Option<Arc<Tree>>, WriteError> {
-        let RefTypes::List(_) = self.ref_types else {
-            return Err(WriteError::NoRefTypes);
-        };
+        match self.ref_types {
+            RefTypes::List(_) => {}
+            RefTypes::Absent => return Err(WriteError::NoRefTypesAttribute),
+            RefTypes::NoFile => return Err(WriteError::NoRefTypes),
+        }
         let (cls, ns, asm) = self.names(m)?;
         if py_size_field_is_zero(cls) {
             return Ok(None);
