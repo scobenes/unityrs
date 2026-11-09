@@ -586,7 +586,7 @@ class G3bTests(unittest.TestCase):
             "no end": (1, good[:-1]),
             "end count": (1, [*good[:-1], rec_text({"rec": "end", "files": 2, "objects": len(recs) - 1})]),
             "noncanonical": (1, [good[0], json.dumps(json.loads(good[1])) + "\n", *good[2:]]),
-            "lifted": (1, [good[0].replace(f'"{VERSION}"', f'"{VERSION}","unbounded":["TreeDepth"]'), *good[1:]]),
+            "lifted": (2, [good[0].replace(f'"{VERSION}"', f'"{VERSION}","unbounded":["TreeDepth"]'), *good[1:]]),
         }
         for what, (expect, parts) in cases.items():
             with self.subTest(what):

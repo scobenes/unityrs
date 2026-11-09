@@ -103,7 +103,7 @@ python tools/parity/compare.py /tmp/dumps/unitypy.jsonl.gz /tmp/dumps/unityrs.js
 
 **Levels.** By default the levels the reference holds are compared, and a level the candidate's header lacks is a `missing_level` difference. `--levels L0,L1` narrows the comparison. A name outside L0-L3, a level the reference lacks, or an empty list exits 2.
 
-**The reference.** A reference written by `unitypy_dump.py` must record the pinned stack in its header's `producer` (`boost: true`, UnityPy 1.25.2, the pinned UnityPyBoost's `boost_sha256`, exactly the pinned `packages` and exactly the pinned wheels' `records`), or the comparison exits 2. With `--oracle`, which every gate's comparison passes (G1 and G3; `g3b.py` always asks for it), a reference any other producer wrote, or one whose header names no producer, exits 2 as well. The candidate's `producer` is not checked.
+**The reference.** A reference written by `unitypy_dump.py` must record the pinned stack in its header's `producer` (`boost: true`, UnityPy 1.25.2, the pinned UnityPyBoost's `boost_sha256`, exactly the pinned `packages` and exactly the pinned wheels' `records`), or the comparison exits 2. With `--oracle`, which every gate's comparison passes (G1 and G3; `g3b.py` always asks for it), a reference any other producer wrote, or one whose header names no producer, exits 2 as well. The candidate's `producer` is checked for one thing, with `--oracle` only: a candidate whose `producer` holds `unbounded` (a dump made with `unityrs dump --unbounded`, limits lifted) exits 2, since no gate takes such a dump.
 
 **What counts as a difference.**
 - Types must match exactly, at any depth: a tuple is not a list, `true` is not `1`, and an `f32` is not an `f64`, also inside a struct inside an array.

@@ -168,14 +168,43 @@ pub fn walk_error_is_unitypys(python: &str, e: &ProviderError) -> bool {
     }
 }
 
+/// What UnityPy 1.25.2 raises, by name, loading a TPK of data type 1-5,
+/// which the port refuses unread as [`TpkError::NotTypeTrees`]: both refuse
+/// the load, and only the exception's name differs (`PARITY.md`,
+/// `TpkFile`'s row, admits it; review round 16). `ToBlob` raises
+/// `Exception` for 4 and 5 before any read (`helpers/Tpk.py:123`); for 1-3
+/// it reads the blob as that kind first (`:113-121`, `:243-279`), so
+/// UnityPy raises `init`'s `AssertionError` (`:38`) where the blob reads,
+/// and its reader's own exception where it does not: `error` (a count or a
+/// nested data type past the payload), `UnicodeDecodeError` (a string that
+/// is not UTF-8, `:456`), `ValueError` (a string's length past the payload,
+/// or a nested data type that is not a member), `OverflowError` (a string's
+/// length past an index) or `RecursionError` (collections nested past
+/// Python's recursion limit). A blob nested in a collection (`:253`) raises
+/// its own exception: `Exception` for a nested 4 or 5, and the type-tree
+/// reader's for a nested 0, `IndexError` among them (a byte read past the
+/// payload, `stream.read(1)[0]`, `:342`, `:420`). Each is a name a case G7
+/// records raises (`tests/g7.rs`
+/// `g7_a_blob_of_another_data_type_is_refused_on_both_sides`).
+pub const NOT_TYPE_TREES: &[&str] = &[
+    "error",
+    "AssertionError",
+    "Exception",
+    "UnicodeDecodeError",
+    "ValueError",
+    "OverflowError",
+    "RecursionError",
+    "IndexError",
+];
+
 /// Whether `e` is the port's refusal of a TPK on which UnityPy 1.25.2's
 /// load (`TpkFile(stream).GetDataBlob()`, `helpers/Tpk.py:145-240`) raised
 /// `python`: G7's porting rule for a load, the same for every case. Each
 /// exception maps to the errors the port gives where `Tpk.py` raises it; a
 /// table's bound ([`TpkError::TooLarge`]) refuses a count before the reads
 /// UnityPy runs out on, so it stands for the exception those reads raise.
-/// Every other pair is no match. [`TpkError::NotTypeTrees`] stands for
-/// whatever a blob of data type 1-5 raises; G7 checks the data type itself
+/// Every other pair is no match. [`TpkError::NotTypeTrees`] stands for each
+/// exception [`NOT_TYPE_TREES`] names; G7 checks the data type itself
 /// (`tests/g7.rs`).
 #[must_use]
 pub fn load_error_is_unitypys(python: &str, e: &TpkError) -> bool {
@@ -188,12 +217,10 @@ pub fn load_error_is_unitypys(python: &str, e: &TpkError) -> bool {
         // payload (`stream.read(1)[0]`: an entry's presence, a common-string
         // version's count); `Exception`: `Tpk.py`'s own raise on the header
         // (the magic, the version, the compressed size).
-        // And a data type of 1-5 (`TpkDataType.ToBlob`, `:113-123`): a
-        // collection blob's reads (`error`), a file system or JSON blob that
-        // `init`'s assertion refuses (`AssertionError`), and `ToBlob`'s own
-        // raise for the other two (`Exception`).
-        ("error" | "ValueError" | "IndexError" | "Exception", TpkError::Malformed(_))
-        | ("error" | "AssertionError" | "Exception", TpkError::NotTypeTrees) => true,
+        ("error" | "ValueError" | "IndexError" | "Exception", TpkError::Malformed(_)) => true,
+        // A data type of 1-5 (`TpkDataType.ToBlob`, `:113-123`): the names
+        // the admitted difference gives, and no other.
+        (python, TpkError::NotTypeTrees) => NOT_TYPE_TREES.contains(&python),
         // `UnicodeDecodeError` (`read_string`'s strict `.decode("utf-8")`,
         // `Tpk.py:456`): a string that is not UTF-8, the port's own
         // `UnicodeDecodeError`, or one whose bytes run past the payload and

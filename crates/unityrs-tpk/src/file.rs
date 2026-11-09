@@ -118,7 +118,9 @@ pub(crate) fn payload<'a>(bytes: &'a [u8], meter: &Arc<Meter>) -> Result<Payload
         _ => return Err(TpkError::Unsupported("brotli")),
     };
     // `self.DataType.ToBlob(...)`, then `init`'s assertion: any other blob
-    // fails the load.
+    // fails the load. UnityPy reads a blob of data type 1-3 first and raises
+    // its reader's exception where it does not read; this reads none, so
+    // only the exception's name differs (`PARITY.md`, `TpkFile`'s row).
     if data_type != TYPE_TREE_INFORMATION {
         return Err(TpkError::NotTypeTrees);
     }

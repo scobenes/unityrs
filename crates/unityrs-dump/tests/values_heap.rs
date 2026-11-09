@@ -13,14 +13,16 @@
 //! peak above the charge as a case of 4,096 structs and one of 1 MiB, so
 //! nothing a struct, a byte of text or a byte read or resaved costs goes
 //! uncharged; and two large cases run one after the other charge at their
-//! peak what one does.
+//! peak what one does. A case whose resave fails quoting a name of 2^18
+//! `é`s has the same peak above the charge as one whose name is 64 (review
+//! round 16: that text was built whole, uncharged).
 //!
 //! It also refuses the one request a test arms: a case's bytes, its rows or
 //! a name the allocator refuses is that case's `crash`, never an abort.
 //!
 //! The allocator counts only the measuring thread
 //! (`unityrs_testkit::counted`): libtest's main thread allocates beside it.
-//! Two tests measure, and the counts are one set for the file, so each
+//! Three tests measure, and the counts are one set for the file, so each
 //! measures on a thread of its own, one at a time ([`counting`]).
 
 use std::cell::Cell;
@@ -30,6 +32,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use unityrs_core::budget::{Counting, MemoryBudget};
 use unityrs_core::limits::{Limits, heap_cost};
 use unityrs_core::typetree::NodeRow;
+use unityrs_dump::record::NOTE_MAX;
 use unityrs_dump::values::{CRASH, Case, run_case_on, run_cases};
 use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 
@@ -222,6 +225,75 @@ fn what_a_case_held_is_returned_before_the_next_runs() {
         assert!(
             two - one <= 64,
             "{one} bytes charged for one case, {two} for two"
+        );
+    });
+}
+
+/// A case read whole whose resave fails, the error quoting a name of `n`
+/// `é`s. UnityPyBoost compares a node's type as a C string
+/// (`TypeTreeHelper.cpp:1112`, `:1121`), so a `string\0` reads its 4 zero
+/// bytes as an empty string; UnityPy's writer looks the type up whole
+/// (`helpers/TypeTreeHelper.py:416`), takes the node for a class and asks
+/// the string for its child's name (`:454-455`). `value_cases.py`'s
+/// `oracle` gives kind null, the value `{"a": ""}`, no resave bytes and
+/// `error: AttributeError`; unityrs's write error quotes the child's name,
+/// four characters for each byte of `é`.
+fn refused_resave(n: usize) -> Case {
+    Case {
+        name: format!("refused{n}"),
+        big_endian: false,
+        nodes: vec![
+            (0, "Base".into(), "Base".into(), 0),
+            (1, "string\0".into(), "a".into(), 0),
+            (2, "int".into(), "é".repeat(n), 0),
+        ],
+        data: vec![0; 4],
+    }
+}
+
+/// Review round 16: a resave's error text was built whole, uncharged, in a
+/// plain `String`, so a case of one long name aborted the run when the
+/// allocator refused it. Its text is the note (`record::note_of`): a name
+/// of 2^18 `é`s holds no more above the charge than one of 64 (whose text
+/// is cut as well), and the case after it is answered.
+#[test]
+fn a_refused_resave_holds_a_note_whatever_its_names_length() {
+    counting(|| {
+        let mut peaks = Vec::new();
+        for n in [64, 1 << 18] {
+            let (out, above, _) = measured(&[refused_resave(n), bytes(16)]);
+            let lines: Vec<serde_json::Value> = out
+                .split(|b| *b == b'\n')
+                .filter(|l| !l.is_empty())
+                .map(|l| serde_json::from_slice(l).unwrap())
+                .collect();
+            assert_eq!(lines.len(), 2, "{n}: every case is answered");
+            let refused = &lines[0];
+            assert_eq!(
+                (&refused["kind"], &refused["value"], &refused["resave_hex"]),
+                (
+                    &serde_json::Value::Null,
+                    &serde_json::json!(r#"{"t":"dict","v":[["a",""]]}"#),
+                    &serde_json::Value::Null
+                ),
+                "{n}"
+            );
+            let resave = refused["resave"].as_str().unwrap();
+            let chars = resave.chars().count();
+            assert!(
+                resave.starts_with("error: ") && chars <= "error: ".len() + NOTE_MAX,
+                "{n}: a resave of {chars} characters: {}",
+                resave.get(..80).unwrap_or(resave)
+            );
+            assert_eq!(lines[1]["resave"], "equal", "{n}: the next case");
+            peaks.push(above);
+        }
+        eprintln!("heap above the charge at most {peaks:?} bytes");
+        assert!(
+            peaks[1] - peaks[0] <= 64,
+            "{} bytes above the charge for a name of 64, {} for 2^18",
+            peaks[0],
+            peaks[1]
         );
     });
 }

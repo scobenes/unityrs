@@ -134,7 +134,40 @@ class CompareTests(CompareCase):
                 pa = self.write("a.jsonl", recs, head=header(producer={**oracle, **change}))
                 self.assertEqual(self.cli(pa, pb), 2)
                 self.assertIn(said, self.errors)
-                self.assertEqual(self.cli(pb, pa), 0, "a candidate's producer is never checked")
+                self.assertEqual(self.cli(pb, pa), 0, "without --oracle, a candidate's producer is not checked")
+
+    def test_every_gate_refuses_a_candidate_dumped_with_limits_lifted(self):
+        # `unityrs dump --unbounded` names the limits it lifted in its producer's `unbounded`, and only such a dump
+        # holds that member (CANONICAL_DUMP.md section 4.1). Lifted, an 18-deep nest the bounded dump refuses
+        # (`limit ContainerDepth: 17 > 16`) agrees with the oracle's records, so `--oracle` (every gate's
+        # comparison) refuses it as the candidate whatever its records hold (review round 16).
+        recs = base_records()
+        oracle = {
+            "name": C.ORACLE_PRODUCER,
+            "unitypy": C.ORACLE_UNITYPY,
+            "boost": True,
+            "boost_sha256": C.ORACLE_BOOST_SHA256,
+            "packages": C.oracle_pins(),
+            "records": C.oracle_records(),
+            "python": "3.11",
+        }
+        pa = self.write("a.jsonl", recs, head=header(producer=oracle))
+        unityrs = {"name": "unityrs", "unityrs": "0.0.1"}
+        bounded = self.write("bounded.jsonl", recs, head=header(producer=unityrs))
+        self.assertEqual(self.cli(pa, bounded, "--oracle"), 0, self.errors)
+        # A producer that is no object names no limits: the candidate's own business, as before.
+        text = self.write("text.jsonl", recs, head=header(producer="unbounded"))
+        self.assertEqual(self.cli(pa, text, "--oracle"), 0, self.errors)
+        for lifted in (["ContainerDepth"], ["TreeDepth", "ValueDepth"], []):
+            with self.subTest(lifted=lifted):
+                pb = self.write("lifted.jsonl", recs, head=header(producer={**unityrs, "unbounded": lifted}))
+                self.assertEqual(self.cli(pa, pb, "--oracle"), 2)
+                said = f"the candidate was dumped with limits lifted (its producer's unbounded: {lifted})"
+                self.assertIn(said, self.errors)
+                with self.assertRaisesRegex(compare.CompareError, "limits lifted"):
+                    compare.run(pa, pb, oracle=True)
+                # Without --oracle, no gate's comparison (two unityrs dumps), it compares.
+                self.assertEqual(self.cli(pa, pb), 0, self.errors)
 
     def test_bad_inputs(self):
         recs = base_records()

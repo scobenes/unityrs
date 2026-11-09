@@ -5,7 +5,8 @@
 
 REFERENCE is normally the UnityPy dump and CANDIDATE the unityrs one. A
 reference unitypy_dump.py wrote must name the pinned stack; with --oracle (every
-gate's comparison), any other reference is refused. Records
+gate's comparison), any other reference is refused, and so is a candidate
+dumped with limits lifted (its producer's "unbounded"). Records
 are matched by key (file path, then path_id), so a candidate that orders
 records differently still compares field by field, and the order itself is
 checked: each dump against the spec's order, and the two against each other.
@@ -346,7 +347,8 @@ def reference_problems(rec):
 
 def check_reference_producer(header, oracle=False):
     """A dump from the oracle dumper must come from the pinned stack, or every difference it finds is suspect;
-    with `oracle` (every gate's comparison), so must the reference. A candidate's `producer` is its own business.
+    with `oracle` (every gate's comparison), so must the reference. A candidate's `producer` is its own business,
+    but for `check_candidate_producer`'s one check.
     """
     producer = header.get("producer")
     if not isinstance(producer, dict) or producer.get("name") != C.ORACLE_PRODUCER:
@@ -384,6 +386,19 @@ def check_reference_producer(header, oracle=False):
         )
 
 
+def check_candidate_producer(header, oracle=False):
+    """With `oracle` (every gate's comparison), a candidate dumped with limits lifted is refused: its producer's
+    `unbounded` names them (`unityrs dump --unbounded`, G3b's check that a limit refusal is the only difference),
+    and no gate takes such a dump, which can agree with the reference where the bounded dump does not.
+    """
+    producer = header.get("producer")
+    if oracle and isinstance(producer, dict) and "unbounded" in producer:
+        raise CompareError(
+            f"the candidate was dumped with limits lifted (its producer's unbounded: {short(producer['unbounded'])}); "
+            "no gate takes such a dump"
+        )
+
+
 def select_levels(held_a, held_b, levels):
     """(levels compared record by record, levels the candidate lacks)."""
     if levels is None:
@@ -404,7 +419,8 @@ def select_levels(held_a, held_b, levels):
 
 
 def run(path_a, path_b, levels=None, examples=3, oracle=False):
-    """Compare two dumps; returns (report, header_a, header_b, levels compared); `oracle`: check_reference_producer.
+    """Compare two dumps; returns (report, header_a, header_b, levels compared); `oracle`: check_reference_producer
+    and check_candidate_producer.
 
     An integer of any width a record holds is read, compared and quoted (canonical_json.exact_ints).
     """
@@ -417,6 +433,7 @@ def _run(path_a, path_b, levels, examples, oracle):
     report = Report(examples)
     header_problems = (a.read_header(), b.read_header())
     check_reference_producer(a.header, oracle)
+    check_candidate_producer(b.header, oracle)
     compared, missing = select_levels(a.levels, b.levels, levels)
     report.missing_levels = missing
     for side, problems in zip((a, b), header_problems, strict=True):
@@ -580,7 +597,11 @@ def main(argv=None):
     ap.add_argument("--examples", type=int, default=3, help="examples kept per field path (default 3)")
     ap.add_argument("--max-paths", type=int, default=50, help="field paths printed (default 50)")
     ap.add_argument("--json", help="also write the full report as JSON to this path")
-    ap.add_argument("--oracle", action="store_true", help="the reference must be the oracle's dump (every gate's)")
+    ap.add_argument(
+        "--oracle",
+        action="store_true",
+        help="the reference must be the oracle's dump and the candidate not one made with limits lifted (every gate's)",
+    )
     args = ap.parse_args(argv)
     levels = args.levels.split(",") if args.levels is not None else None
     # The report quotes input names from both dumps, so it stays out of the repository.

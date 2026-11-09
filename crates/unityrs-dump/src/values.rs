@@ -32,9 +32,17 @@
 //! limits and the budget of [`FileContext::unitypy`], the dump's), which its
 //! bytes, its tree's rows and names, its read, its value's text (a [`Text`])
 //! and its re-saved bytes (a [`DecodeBuf`]) are charged to before they are
-//! allocated, each allocated fallibly. Its line is written to the output
-//! from those, member by member, so the line itself is never held, and
-//! flushed; what the case held is returned before the next case runs
+//! allocated, each allocated fallibly. Its notes and its resave's error
+//! text hold the error's note ([`note_of`]: no more of the error's text is
+//! formatted than a note keeps), as the dump's notes do: a write error
+//! quotes its node's name whole, four characters for each byte of it that
+//! is not ASCII, and that text, built whole in a plain `String`, aborted
+//! the run on a case of one long name (review round 16;
+//! `tests/values_heap.rs`'s
+//! `a_refused_resave_holds_a_note_whatever_its_names_length`). Its line is
+//! written to the output from those, member by member, so the line itself
+//! is never held, and flushed; what the case held is returned before the
+//! next case runs
 //! ([`run_cases`]). A refusal is the case's outcome, never an abort of the
 //! run, and every other case is still answered:
 //! - by a bound of the limits (`max_input_memory` among them): kind
@@ -64,6 +72,7 @@ use unityrs_core::{Error, FileContext, LimitKind, Parsed, RawStr};
 
 use crate::encode::encode_into;
 use crate::input::{check_read_kind, out_of_memory, write_out_of_memory};
+use crate::record::note_of;
 use crate::text::Text;
 
 /// The kind of a case refused memory by the budget or the allocator (module
@@ -272,7 +281,7 @@ fn outcome_on(case: &Case, limits: &Limits, meter: &Arc<Meter>) -> Result<Outcom
             let e = ParseError::Tree(e);
             memory(out_of_memory(&e))?;
             out.kind = Some(L2Kind::Other.as_str());
-            out.note = Some(e.to_string());
+            out.note = Some(note_of(&e));
             return Ok(out);
         }
     };
@@ -304,7 +313,7 @@ fn outcome_on(case: &Case, limits: &Limits, meter: &Arc<Meter>) -> Result<Outcom
         Ok(p) => (Some(p), None),
         Err(e) => {
             memory(out_of_memory(&e))?;
-            out.note = Some(e.to_string());
+            out.note = Some(note_of(&e));
             if let ParseError::CheckRead { parsed, .. } = e {
                 let (kind, n) = check_read_kind(parsed.bytes_read);
                 out.kind = Some(kind.as_str());
@@ -330,7 +339,7 @@ fn outcome_on(case: &Case, limits: &Limits, meter: &Arc<Meter>) -> Result<Outcom
         Ok(()) => out.value = Some((text, charge)),
         Err(e) => {
             out.kind = Some(L2Kind::Encode.as_str());
-            out.note = Some(e.to_string());
+            out.note = Some(note_of(&e));
             return Ok(out);
         }
     }
@@ -353,7 +362,7 @@ fn outcome_on(case: &Case, limits: &Limits, meter: &Arc<Meter>) -> Result<Outcom
             }
             Err(e) => {
                 memory(write_out_of_memory(&e))?;
-                out.resave = format!("error: {e}");
+                out.resave = format!("error: {}", note_of(&e));
             }
         }
     }

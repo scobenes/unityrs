@@ -10,10 +10,10 @@ unityrs CLI that wrote UNITYRS (with `--tpk TPK` when it was given one).
 First both dumps must pass compare.py's checks of their form: a format-1 header
 holding L0-L3, canonical lines in the canonical order, no record twice, an `end`
 record that counts what precedes it. The oracle's header must name the pinned
-stack (compare.py's `--oracle`: a dump any other producer wrote, or one with
-no producer, is refused as the reference), and the unityrs dump must not be one
-made with limits lifted (its producer's `unbounded`). Any failure there fails
-G3b.
+stack, and the unityrs dump must not be one made with limits lifted (its
+producer's `unbounded`): compare.py's `--oracle` refuses a dump any other
+producer wrote, or one with no producer, as the reference, and one made with
+limits lifted as the candidate. Any failure there fails G3b.
 
 Two inputs agree when every record of theirs does, notes left out (compare.py's
 rule). An input that differs is admitted only for a reason checked on that
@@ -83,7 +83,8 @@ as `beyond_memory` with nothing compared).
 dumps are well-formed, each holds every input under `--inputs` and nothing
 else, and every differing input is admitted (`limit`, `crash_non_utf8`,
 `memory_bound`, `beyond_memory`), 1 otherwise, 2 when a dump cannot be read,
-the oracle's is not the pinned stack's, or a usage error.
+the oracle's is not the pinned stack's, the unityrs dump was made with limits
+lifted, or a usage error.
 """
 
 from __future__ import annotations
@@ -270,7 +271,7 @@ def inputs_under(root) -> list[str]:
 
 def form_problems(oracle, unityrs):
     """compare.py's findings on the dumps' form, as {problem: count}; raises C.FormatError or CompareError, the
-    latter when `oracle` is not the oracle's dump on the pinned stack."""
+    latter when `oracle` is not the oracle's dump on the pinned stack or `unityrs` was made with limits lifted."""
     report, ha, hb, _ = compare.run(oracle, unityrs, oracle=True)
     problems = Counter()
     for (level, cls, path, kind), group in report.paths.items():
@@ -283,9 +284,6 @@ def form_problems(oracle, unityrs):
     for side, h in (("oracle", ha), ("unityrs", hb)):
         if h.get("levels") != list(C.LEVELS):
             problems[f"the {side} dump holds {h.get('levels')}, not L0-L3"] += 1
-    producer = hb.get("producer") if isinstance(hb.get("producer"), dict) else {}
-    if producer.get("unbounded"):
-        problems[f"the unityrs dump was made with limits lifted: {producer['unbounded']}"] += 1
     return problems, hb
 
 
