@@ -499,6 +499,9 @@ fn a_load_between_a_keys_position_and_value_starts_a_container_index_generation(
         assert_eq!(rows(&env), case["before"], "{what}: the pass before");
         load.finish();
         let got = record(&env, &rows(&env));
+        for part in ["paths", "files"] {
+            assert_eq!(got[part], want[part], "{what}: {part}");
+        }
         assert_eq!(got, want, "{what}");
     }
 }
@@ -581,6 +584,12 @@ fn two_loads_that_race_their_listings_leave_unitypys_order_of_their_numbers() {
             env.load(src(1)).unwrap();
             load.finish();
             let got = record(&env, &rows(&env));
+            for part in ["files", "objects"] {
+                assert_eq!(
+                    got[part], want[part],
+                    "{names:?}, find {find}, {what}: {part}"
+                );
+            }
             assert_eq!(got, want, "{names:?}, find {find}, {what}");
         }
     }
