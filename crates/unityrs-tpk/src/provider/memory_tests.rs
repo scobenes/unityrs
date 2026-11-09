@@ -3,11 +3,13 @@
 //! charged first, a charge being `heap_cost` of the request (a `MeteredVec`
 //! at `heap_cost` of its capacity), and a TPK's tables are "charged to its
 //! own meter as they grow" (the bound's paragraph); crate docs, "Memory".
-//! So at every allocation a load, a walk and a compile make, the heap above
-//! the run's start is at most what the provider's meter has charged since,
-//! in glibc's chunks and with no slack, as `unityrs-core`'s
+//! So at every allocation a stored TPK's load, a walk and a compile make,
+//! the heap above the run's start is at most what the provider's meter has
+//! charged since, in glibc's chunks and with no slack, as `unityrs-core`'s
 //! `tests/walk_memory.rs` holds core's reads (review round 16: moving any of
-//! fourteen of the provider's tables off its meter passed every test).
+//! fourteen of the provider's tables off its meter passed every test). A
+//! compressed TPK's load is not watched: its decoded payload is charged to
+//! its decoder's own meter, not the provider's (`file::decode`).
 //!
 //! A string the blob reads is charged its owner record at `OWNER_COST`
 //! (`unityrs_core::budget`), a ceiling over the record `Bytes::from_owner`
