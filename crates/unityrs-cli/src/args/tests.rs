@@ -362,6 +362,8 @@ fn numbers_parse_as_python_int() {
         "0".repeat(4301),
         vec!["1"; 4301].join("_"),
         format!("+{}", ones(4301)),
+        format!("-{}", ones(4301)),
+        format!(" -{} ", ones(4301)),
         "\u{661}".repeat(4301),
     ] {
         assert_eq!(py_int(s.as_bytes()), None, "{} characters", s.len());
