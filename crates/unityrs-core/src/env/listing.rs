@@ -227,7 +227,7 @@ impl Under for std::sync::RwLock<Files> {
 ///
 /// [`registry`]: super::registry
 const LISTED_SHARE: u64 = 3 * size_of::<Listed>() as u64
-    + 2 * HASH_TABLE_SHARES * (size_of::<RawStr>() + size_of::<usize>() + 1) as u64;
+    + 2 * HASH_TABLE_SHARES * (size_of::<RawStr>() + size_of::<u64>() + 1) as u64;
 
 impl Environment {
     fn files_read(&self) -> Held<std::sync::RwLockReadGuard<'_, Files>> {
