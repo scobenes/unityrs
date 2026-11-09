@@ -408,8 +408,8 @@ fn g7_a_string_that_is_not_utf8_is_unitypys_unicode_decode_error() {
 
 /// Review round 16: a TPK of data type 1-3 whose blob UnityPy's own reader
 /// cannot read raises that reader's exception (a JSON blob of one byte,
-/// 0xff: `UnicodeDecodeError`; a collection's nested blob, its own), and
-/// unityrs, which reads no such blob,
+/// 0xff: `UnicodeDecodeError`; a collection's nested blob, its own: a case
+/// for each name a nested blob raises), and unityrs, which reads no such blob,
 /// refuses it as `NotTypeTrees`: both refuse the load, and only the
 /// exception's name differs (`PARITY.md`, `TpkFile`'s row). Each case below
 /// is refused on both sides, exactly so. The names
@@ -422,7 +422,25 @@ fn g7_a_blob_of_another_data_type_is_refused_on_both_sides() {
         ("data_type_1_collection_not_utf8", "UnicodeDecodeError"),
         ("data_type_1_collection_nested_data_type_9", "ValueError"),
         ("data_type_1_collection_nested_data_type_4", "Exception"),
+        ("data_type_1_collection_nested_data_type_5", "Exception"),
         ("data_type_1_collection_nested_type_tree_cut", "IndexError"),
+        ("data_type_1_collection_nested_type_tree_empty", "error"),
+        (
+            "data_type_1_collection_nested_type_tree_string_past_the_payload",
+            "ValueError",
+        ),
+        (
+            "data_type_1_collection_nested_type_tree_not_utf8",
+            "UnicodeDecodeError",
+        ),
+        (
+            "data_type_1_collection_nested_type_tree_length_past_an_index",
+            "OverflowError",
+        ),
+        (
+            "data_type_1_collection_nested_type_tree_reads",
+            "AssertionError",
+        ),
         ("data_type_1_collection_nested_1000_deep", "RecursionError"),
         ("data_type_2_file_system_not_utf8", "UnicodeDecodeError"),
         ("data_type_2_file_system_empty", "error"),
