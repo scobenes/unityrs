@@ -329,7 +329,7 @@ fn numbers_parse_as_python_int() {
         ("+3".into(), Some(3)),
         ("1_000".into(), Some(1000)),
         ("-12".into(), Some(-12)),
-        ("-99999999999999999999".into(), Some(-i64::MAX)),
+        ("-99999999999999999999".into(), Some(i64::MIN)),
         // Review round 16: the decimal digits of every script, and the
         // whitespace past ASCII, which `int` maps to ASCII first.
         ("\u{663}".into(), Some(3)),
@@ -342,7 +342,13 @@ fn numbers_parse_as_python_int() {
         ("\u{2028}7\u{2029}".into(), Some(7)),
         // At most 4,300 digits, underscores not counted.
         (ones(4300), Some(i64::MAX)),
-        (format!("-{}", ones(4300)), Some(-i64::MAX)),
+        (format!("-{}", ones(4300)), Some(i64::MIN)),
+        // Saturated at each end of `i64`, `i64::MIN` included.
+        ("9223372036854775807".into(), Some(i64::MAX)),
+        ("9223372036854775808".into(), Some(i64::MAX)),
+        ("-9223372036854775807".into(), Some(-i64::MAX)),
+        ("-9223372036854775808".into(), Some(i64::MIN)),
+        ("-9223372036854775809".into(), Some(i64::MIN)),
         (format!(" {} ", ones(4300)), Some(i64::MAX)),
         (vec!["1"; 4300].join("_"), Some(i64::MAX)),
         ("\u{661}".repeat(4300), Some(i64::MAX)),
