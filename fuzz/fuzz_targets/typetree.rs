@@ -31,9 +31,7 @@ fuzz_target!(|data: &[u8]| {
     } else {
         parse_old(&mut r, &data, format, &meter, &ctx.limits)
     };
-    if let Ok(list) = rows.map(NodeList::from_rows) {
-        if let Ok(list) = list {
-            let _ = Tree::compile(Arc::new(list), &ctx.limits);
-        }
+    if let Ok(Ok(list)) = rows.map(NodeList::from_rows) {
+        let _ = Tree::compile(Arc::new(list), &ctx.limits);
     }
 });
