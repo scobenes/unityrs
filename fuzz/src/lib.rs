@@ -1,10 +1,12 @@
 //! What the fuzz targets share: the limits every run is bounded by, the
 //! context and meter of one input, a thread with the stack a read needs,
-//! and a [`TreeCase`]'s tree and ref types as the core's.
+//! a [`TreeCase`]'s tree and ref types as the core's, and the `lz4`
+//! target's check ([`lz4`]), here so that its tests run.
 //!
 //! Every target uses the core's public API, as a caller would: no target
 //! needs an item the crate does not export.
 
+pub mod lz4;
 #[cfg(test)]
 mod tests;
 
