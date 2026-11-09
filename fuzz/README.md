@@ -20,11 +20,14 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `write_after_read` | a read, `walk::write::write` under `WriteRules::MirrorReader`, the read again and the write again: the value and the bytes must come back the same (`docs/DESIGN.md`'s write rule); a writer's refusal must be its named error | `TreeCase` |
 | `lz4` | `codec::decode_block` with `codec::Lz4` against liblz4 1.9.4's `LZ4_decompress_safe` (lz4-sys 1.10.0): the same verdict, the same bytes, the same error code; `PARITY.md`'s LZ4 row is the one difference allowed | `unityrs_testkit::fuzz::lz4_case`: declared size, block |
 
-Every run is bounded by the limits in `src/lib.rs` (`MEMORY`, `WORK`):
-an input that reaches one ends with the core's named limit error, never an
-abort, and an allocation the meter did not see is what reaches libFuzzer's
-allocation limit. `MEMORY` is low for now; its comment says why and when to
-raise it.
+Every run is bounded by the limits in `src/lib.rs`: 128 MiB of memory, of
+input and of one block's output (`MEMORY`), and 8 MiB of decode work and of
+inflate (`WORK`). An input that reaches one ends with the core's named limit
+error, never an abort, and an allocation the meter did not see is what
+reaches libFuzzer's allocation limit. The work bound keeps the slowest
+inputs (a list of small values read to the bound, about a second and a half
+under the sanitizer) well inside the 10 s timeout; the comments in
+`src/lib.rs` give the numbers.
 
 ## Seeds
 
@@ -50,14 +53,14 @@ With a nightly toolchain and cargo-fuzz 0.13.2 (CI pins the nightly in
 ```sh
 cargo +nightly fuzz build -a
 cargo +nightly fuzz run -a TARGET /tmp/fuzz/corpus/TARGET /tmp/fuzz/seeds/TARGET -- \
-    -max_total_time=900 -timeout=10 -rss_limit_mb=1280 -malloc_limit_mb=1024
+    -max_total_time=900 -timeout=10 -rss_limit_mb=1536 -malloc_limit_mb=2048
 ```
 
 `-a` keeps debug assertions, so an integer overflow panics. The targets
 build with AddressSanitizer, which reserves terabytes of address space: a
 `ulimit -v` must stay above about 20 TiB (25000000000 KiB works), so bound
-memory with `-rss_limit_mb` instead. CI uses `-malloc_limit_mb=2048`, the
-plan's 2 GiB.
+memory with `-rss_limit_mb` instead. `-malloc_limit_mb=2048` is the plan's
+2 GiB, as in CI (which allows 3072 MB of RSS).
 
 ## A finding
 
