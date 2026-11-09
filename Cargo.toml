@@ -12,6 +12,9 @@ authors = ["Scott Benes <scobenes@gmail.com>"]
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+# `--cfg unityrs_no_counters` compiles the core's perf counters out, so the
+# perf bench can measure what they cost (docs/plans/core.md section 10).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(unityrs_no_counters)"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

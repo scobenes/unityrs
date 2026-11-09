@@ -13,6 +13,7 @@ use bytes::Bytes;
 
 use super::decode::decode_block_into;
 use super::index::{Published, STEP, search_steps};
+use super::open::known_at_open;
 use super::{BundleFile, no_entry};
 use crate::budget::DecodeBuf;
 use crate::codec::Codec;
@@ -62,11 +63,16 @@ impl BundleFile {
 
     /// Decodes block `i` onto the end of `out` and records its length (a
     /// failure the input decides is kept, a refusal is not): the length.
+    /// What it wrote is counted ([`Self::counts`]), as written again when
+    /// the block's length was known before it began, but from its stored
+    /// bytes at open.
     fn decode_into(&self, i: usize, out: &mut DecodeBuf) -> Result<u64, Error> {
         let before = out.len();
         let (Some(b), Some(range)) = (self.blocks.get(i), self.stored.get(i)) else {
             return Err(no_entry(i));
         };
+        let known = self.lengths.get(i).is_some_and(|c| c.get().is_some());
+        let again = known && !known_at_open(b, &self.ctx);
         let input = self.source.slice(range.clone());
         let got = decode_block_into(
             &self.ctx,
@@ -83,6 +89,7 @@ impl BundleFile {
         }
         let cell = self.lengths.get(i).ok_or_else(|| no_entry(i))?;
         let mine = got?;
+        self.counts.wrote(mine, again);
         let published = *get_or_publish_result(cell, self.meter(), || Ok(mine))?;
         if published != mine {
             return Err(Error::Decompress {
@@ -126,6 +133,15 @@ impl BundleFile {
         )?)
     }
 
+    /// A measuring decode's buffer, dropped unused: its bytes are counted as
+    /// discarded ([`Self::counts`]).
+    fn discard(&self, scratch: Option<DecodeBuf>) {
+        if let Some(s) = scratch {
+            self.counts
+                .dropped(u64::try_from(s.len()).unwrap_or(u64::MAX));
+        }
+    }
+
     /// Block `k`'s length, measured when it is not known: decoded into a new
     /// buffer, which comes back with it.
     fn measure(&self, k: usize) -> Result<(u64, Option<DecodeBuf>), Error> {
@@ -143,7 +159,8 @@ impl BundleFile {
     pub(super) fn measure_all(&self) -> Result<u64, Error> {
         let n = self.blocks.len();
         for k in self.ends.known()..n {
-            let (len, _) = self.measure(k)?;
+            let (len, scratch) = self.measure(k)?;
+            self.discard(scratch);
             self.learn(k, len)?;
         }
         Ok(self.ends.start(n))
@@ -171,15 +188,15 @@ impl BundleFile {
         let from = usize::try_from(lo.saturating_sub(first_at)).unwrap_or(usize::MAX);
         let to = usize::try_from(hi.min(end_at).saturating_sub(first_at)).unwrap_or(usize::MAX);
         let run = if let Some(b) = buf {
-            self.publish(first, end, first_at, b.into_bytes()?)
+            self.publish(first, end, first_at, b.into_bytes()?, true)
         } else if let Some(bytes) = self.cached(first, end, first_at)? {
             bytes
         } else if let Some(bytes) = self.stored_span(first, end)? {
-            self.publish(first, end, first_at, bytes)
+            self.publish(first, end, first_at, bytes, false)
         } else {
             let mut b = self.new_buf(end_at.saturating_sub(first_at))?;
             self.decode_again(first, end, &mut b)?;
-            self.publish(first, end, first_at, b.into_bytes()?)
+            self.publish(first, end, first_at, b.into_bytes()?, true)
         };
         let to = to.min(run.len());
         Ok(run.slice(from.min(to)..to))
@@ -212,6 +229,7 @@ impl BundleFile {
             if at.saturating_add(len) > lo {
                 return Ok(Some((k, at, scratch)));
             }
+            self.discard(scratch);
             at = at.saturating_add(len);
         }
         Ok(None)
@@ -328,8 +346,16 @@ impl BundleFile {
     /// drops are steps, each run counted as it is found. When the meter
     /// refuses them, the room for the runs it drops or the index's growth,
     /// the run is returned uncached and the index is unchanged, as a refused
-    /// growth of the table left it.
-    fn publish(&self, first: usize, end: usize, first_at: u64, bytes: Bytes) -> Bytes {
+    /// growth of the table left it. A `decoded` run a cached one answers for
+    /// is dropped, its bytes counted as discarded ([`Self::counts`]).
+    fn publish(
+        &self,
+        first: usize,
+        end: usize,
+        first_at: u64,
+        bytes: Bytes,
+        decoded: bool,
+    ) -> Bytes {
         let mut dropped: MeteredVec<Bytes> = MeteredVec::new(self.meter());
         let out = {
             let mut runs = self.runs.lock().unwrap_or_else(PoisonError::into_inner);
@@ -342,7 +368,13 @@ impl BundleFile {
                 }
             }
             match runs.publish(first, end, &bytes, &mut dropped) {
-                Published::Covered(f, b) => self.slice_from_block(f, &b, first_at),
+                Published::Covered(f, b) => {
+                    if decoded {
+                        self.counts
+                            .dropped(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+                    }
+                    self.slice_from_block(f, &b, first_at)
+                }
                 Published::Cached | Published::Refused => bytes,
             }
         };

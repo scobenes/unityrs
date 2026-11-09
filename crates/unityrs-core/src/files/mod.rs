@@ -23,7 +23,9 @@ use std::sync::{Arc, Weak};
 
 use bytes::Bytes;
 
-pub use bundle::{BlockInfo, BundleFile, BundleHeader, DirEntry, FileSlot, LayoutKind};
+pub use bundle::{
+    BlockInfo, BundleCounts, BundleFile, BundleHeader, DirEntry, FileSlot, LayoutKind,
+};
 pub use serialized::{
     External, ObjectInfo, ScriptRef, SerializedFile, SerializedHeader, SerializedType,
 };

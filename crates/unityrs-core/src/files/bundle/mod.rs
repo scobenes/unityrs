@@ -129,7 +129,7 @@
 //! Owner: package C.
 
 use std::ops::Range;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use bytes::Bytes;
 
@@ -144,11 +144,14 @@ use crate::stream::py_read;
 use crate::version::{FlagsClass, ResolvedVersion, VersionError};
 use index::{Ends, RunIndex};
 
+mod counts;
 mod decode;
 mod index;
 mod open;
 mod runs;
 
+pub use counts::BundleCounts;
+use counts::DecodeCounts;
 use decode::BlockContext;
 
 /// Which of UnityPy's two readers a bundle takes.
@@ -254,6 +257,9 @@ pub struct BundleFile {
     /// The cached runs by first block, each run's charge inside its `Bytes`
     /// and the index's own in it. Locked only to look up or publish.
     runs: Mutex<RunIndex>,
+    /// What the block decodes wrote, dropped and wrote again
+    /// ([`Self::counts`]).
+    counts: DecodeCounts,
     /// Parsed entries, by directory index, published once; a kept error
     /// carries the charge for its heap, and a refused charge is not kept.
     entries: Box<[ResultCell<File, Error>]>,
@@ -350,6 +356,17 @@ impl BundleFile {
     #[must_use]
     pub fn uncompressed_size(&self) -> u64 {
         self.blocks.iter().map(|b| u64::from(b.uncompressed)).sum()
+    }
+
+    /// What this bundle's block reads have decoded, dropped, decoded again
+    /// and cached so far ([`BundleCounts`]; a nested bundle counts its own):
+    /// what plan section 8's R2 and R3 measure. Takes the run index's lock
+    /// for the runs' share.
+    #[must_use]
+    pub fn counts(&self) -> BundleCounts {
+        let runs = self.runs.lock().unwrap_or_else(PoisonError::into_inner);
+        let n = u64::try_from(runs.len()).unwrap_or(u64::MAX);
+        self.counts.snapshot(n, runs.bytes())
     }
 
     /// Directory entry `dir_index`'s bytes: the Python slice
