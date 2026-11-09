@@ -157,6 +157,48 @@ class Rows(unittest.TestCase):
         with self.assertRaisesRegex(OverflowError, "signed integer is greater than maximum"):
             lz4.block.decompress(block, 1 << 31)
 
+    # Section 6: python-lz4 refuses an input of 2^31 bytes or more, after a stored size above 2^31 - 1 and before it
+    # reserves the stored size; `crates/unityrs-core/tests/codecs.rs` lz4_refuses_an_input_of_2_gib_or_more asserts
+    # these outcomes. The input is an anonymous mapping (python-lz4 takes any buffer), whose pages only what liblz4
+    # reads touches.
+    def test_lz4_refuses_an_input_of_2_gib_or_more(self):
+        import mmap
+
+        def outcome(data, stored):
+            try:
+                CompressionHelper.decompress_lz4(data, stored)
+            except Exception as e:  # noqa: BLE001 - the outcome is the exception's type and message
+                return f"{type(e).__name__}: {e}"
+            return "ok"
+
+        too_large = "OverflowError: Input too large for LZ4 API"
+        with mmap.mmap(-1, 1 << 31) as big, memoryview(big) as view:
+            self.assertEqual([outcome(view, s) for s in (100, 0, (1 << 31) - 1)], [too_large] * 3)
+            self.assertEqual(outcome(view, 1 << 31), "OverflowError: signed integer is greater than maximum")
+            with view[: (1 << 31) - 1] as shorter:
+                self.assertEqual(
+                    outcome(shorter, 100),
+                    "LZ4BlockError: Decompression failed: corrupt input or insufficient space in destination buffer. "
+                    "Error code: 71",
+                )
+        # Before the reservation: with room for the input and not for 2^31 - 1 more bytes, the input is refused as
+        # above, while a one-byte block's reservation is `MemoryError`.
+        probe = (
+            "import mmap, resource, lz4.block\n"
+            "status = open('/proc/self/status').read().split('VmSize:')[1]\n"
+            "mapped = int(status.split()[0]) << 10\n"
+            "hard = resource.getrlimit(resource.RLIMIT_AS)[1]\n"
+            "resource.setrlimit(resource.RLIMIT_AS, (mapped + (1 << 31) + (256 << 20), hard))\n"
+            "with mmap.mmap(-1, 1 << 31) as big, memoryview(big) as view:\n"
+            "    for data in (view, b'\\xff'):\n"
+            "        try:\n"
+            "            lz4.block.decompress(data, (1 << 31) - 1)\n"
+            "        except (OverflowError, MemoryError) as e:\n"
+            "            print(type(e).__name__)\n"
+        )
+        out = child.run([sys.executable, "-B", "-c", probe], capture_output=True, check=True, text=True).stdout
+        self.assertEqual(out, "OverflowError\nMemoryError\n")
+
     # Sections 5.2, 13: reads past the end.
     def test_reads_past_the_end_return_short_data(self):
         sf = text_asset_file()

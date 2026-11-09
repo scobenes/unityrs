@@ -48,7 +48,9 @@ const _: () = crate::send_sync::<Lz4>();
 impl BlockCodec for Lz4 {
     /// `lz4.block.decompress(data, uncompressed_size)` (python-lz4 4.4.4
     /// over liblz4 1.9.4's `LZ4_decompress_safe`): a declared size above
-    /// `i32::MAX` is python-lz4's `OverflowError`; otherwise the block is
+    /// `i32::MAX` is python-lz4's `OverflowError` (its argument parse, so
+    /// first), and so, next, is an input above `i32::MAX` bytes, before
+    /// anything is reserved or read; otherwise the block is
     /// scanned with liblz4's exact control flow (`lz4_run`), which gives
     /// its verdict and the output's length, and only then is the output
     /// allocated (that length, charged) and decoded. python-lz4 reserves
@@ -71,6 +73,11 @@ impl BlockCodec for Lz4 {
                 "OverflowError: signed integer is greater than maximum".to_owned(),
             ));
         };
+        if i32::try_from(input.len()).is_err() {
+            return Err(fail(
+                "OverflowError: Input too large for LZ4 API".to_owned(),
+            ));
+        }
         let capacity = usize::try_from(capacity).unwrap_or(0);
         let lz4_error = |at: usize| {
             fail(format!(
