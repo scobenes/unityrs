@@ -59,6 +59,10 @@ from UnityPy.helpers.TypeTreeNode import TypeTreeNode  # noqa: E402
 from UnityPy.helpers.UnityVersion import UnityVersion  # noqa: E402
 from UnityPy.streams import EndianBinaryReader  # noqa: E402
 
+# The interpreter by minor version only: CI's setup-python takes the newest 3.11 patch,
+# which a fixture recorded on another patch would otherwise call stale.
+PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
+
 # A 4,300-digit version group packs to more digits than str(int) allows by default.
 sys.set_int_max_str_digits(0)
 
@@ -601,7 +605,7 @@ def l2_kind_cases() -> list[dict]:
 
 
 def fixtures() -> dict[str, dict]:
-    meta = {"unitypy": UnityPy.__version__, "python": sys.version.split()[0]}
+    meta = {"unitypy": UnityPy.__version__, "python": PYTHON}
     with scratch.folder("unityrs-fixtures-") as tmp:
         make_tree(Path(tmp))
         selection = selection_cases(Path(tmp))

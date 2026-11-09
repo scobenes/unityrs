@@ -1,6 +1,6 @@
 {
  "depth": {"max":993,"runs":[{"kind":"array","levels":993,"names":["f"],"status":0},{"kind":"array","levels":994,"names":null,"status":1},{"kind":"object","levels":993,"names":["f"],"status":0},{"kind":"object","levels":994,"names":null,"status":1}]},
- "python": "3.11.17",
+ "python": "3.11",
  "run_files": [
   "66",
   "ff",

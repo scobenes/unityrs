@@ -9,6 +9,6 @@
   {"bytes_read":null,"expected":0,"kind":"other","probe":"message","read":-4},
   {"bytes_read":null,"expected":8,"kind":"other","probe":"message","read":-96}
  ],
- "python": "3.11.17",
+ "python": "3.11",
  "unitypy": "1.25.2"
 }

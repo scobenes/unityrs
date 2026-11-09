@@ -52,6 +52,10 @@ import scratch  # noqa: E402
 import unitypy_dump  # noqa: E402
 import UnityPy  # noqa: E402
 
+# The interpreter by minor version only: CI's setup-python takes the newest 3.11 patch,
+# which a fixture recorded on another patch would otherwise call stale.
+PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
+
 SEED = 7
 
 
@@ -454,7 +458,7 @@ def fixture() -> dict:
         depth = depth_cases(Path(tmp))
     return {
         "unitypy": UnityPy.__version__,
-        "python": sys.version.split()[0],
+        "python": PYTHON,
         "str": str_cases(),
         "select": select,
         "runs": runs,

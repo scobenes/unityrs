@@ -49,6 +49,10 @@ import UnityPy  # noqa: E402
 import child  # noqa: E402
 import scratch  # noqa: E402
 
+# The interpreter by minor version only: CI's setup-python takes the newest 3.11 patch,
+# which a fixture recorded on another patch would otherwise call stale.
+PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
+
 SHAPES = ("file", "empty", "link", "unreadable")
 NOFILE = {"shape": "file", "levels": 100, "limit": 32}
 
@@ -123,7 +127,7 @@ def fixture() -> dict:
     nofile = run_oracle(NOFILE["shape"], NOFILE["levels"], NOFILE["limit"])
     return {
         "unitypy": UnityPy.__version__,
-        "python": sys.version.split()[0],
+        "python": PYTHON,
         "depth": depth_cases(),
         "nofile": {"limit": NOFILE["limit"], **nofile},
     }
