@@ -328,14 +328,20 @@ def header_cases() -> Iterator[tuple[str, bytes, int]]:
     # `Tpk.py:113-121`): it raises that reader's exception before `init`'s assertion,
     # and unityrs, which reads no such blob, refuses it as it refuses one that reads
     # (`PARITY.md`, `TpkFile`'s row; review round 16). A collection is a count, then
-    # each blob's string, data type and blob (`:243-256`), so it nests; a string is a
-    # varint length and its UTF-8 (`read_string`, `:445-456`).
+    # each blob's string, data type and blob (`:243-256`), so it nests, and a nested
+    # blob raises its own exception: `ToBlob`'s for a nested 4, the type-tree reader's
+    # for a nested 0 (one that ends at a common-string version's count byte:
+    # `IndexError`); a string is a varint length and its UTF-8 (`read_string`,
+    # `:445-456`).
     one = struct.pack("<i", 1)
     not_utf8 = varint(1) + b"\xff"
     nested = (one + varint(0) + bytes([1])) * 1000
+    cut = struct.pack("<qiiiQ", 0, 0, 0, 1, 0)
     unread = {
         "data_type_1_collection_not_utf8": (1, one + not_utf8),
         "data_type_1_collection_nested_data_type_9": (1, one + varint(0) + bytes([9])),
+        "data_type_1_collection_nested_data_type_4": (1, one + varint(0) + bytes([4])),
+        "data_type_1_collection_nested_type_tree_cut": (1, one + varint(0) + bytes([0]) + cut),
         "data_type_1_collection_nested_1000_deep": (1, nested),
         "data_type_2_file_system_not_utf8": (2, one + not_utf8),
         "data_type_2_file_system_empty": (2, b""),

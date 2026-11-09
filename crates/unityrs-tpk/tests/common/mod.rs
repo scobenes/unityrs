@@ -180,8 +180,12 @@ pub fn walk_error_is_unitypys(python: &str, e: &ProviderError) -> bool {
 /// is not UTF-8, `:456`), `ValueError` (a string's length past the payload,
 /// or a nested data type that is not a member), `OverflowError` (a string's
 /// length past an index) or `RecursionError` (collections nested past
-/// Python's recursion limit). Each is a name a case G7 records raises
-/// (`tests/g7.rs` `g7_a_blob_of_another_data_type_is_refused_on_both_sides`).
+/// Python's recursion limit). A blob nested in a collection (`:253`) raises
+/// its own exception: `Exception` for a nested 4 or 5, and the type-tree
+/// reader's for a nested 0, `IndexError` among them (a byte read past the
+/// payload, `stream.read(1)[0]`, `:342`, `:420`). Each is a name a case G7
+/// records raises (`tests/g7.rs`
+/// `g7_a_blob_of_another_data_type_is_refused_on_both_sides`).
 pub const NOT_TYPE_TREES: &[&str] = &[
     "error",
     "AssertionError",
@@ -190,6 +194,7 @@ pub const NOT_TYPE_TREES: &[&str] = &[
     "ValueError",
     "OverflowError",
     "RecursionError",
+    "IndexError",
 ];
 
 /// Whether `e` is the port's refusal of a TPK on which UnityPy 1.25.2's
