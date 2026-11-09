@@ -24,9 +24,9 @@ use unityrs_testkit::fuzz::{Row, TreeCase};
 /// It is low for AddressSanitizer's sake. A charged buffer whose doubling
 /// the meter refuses grows by exactly what each push needs, so near the
 /// bound every push reallocates; glibc grows a mapped block in place, but
-/// ASan's `realloc` copies the whole buffer each time, so the time such an
-/// input takes grows with the square of the bound. Without ASan, one
-/// 49-byte input took 15 ms at 8 MiB; under it, 32 s (60 ms at 4 MiB, 30 ms
+/// ASan's `realloc` copies the whole buffer each time, so such an input can
+/// take time quadratic in the bound. Without ASan, one input (13 rows, 49
+/// value bytes) took 15 ms at 8 MiB; under it, 32 s (60 ms at 4 MiB, 30 ms
 /// at 1 MiB, where no input was seen near the 10 s timeout). The growth is
 /// a known defect with its own fix (a refused growth retried with half the
 /// room, down to exactly what is needed): raise this once that fix is in

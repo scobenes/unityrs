@@ -550,6 +550,25 @@ The gate is what "P1 core done" means. Every row is run by package E at the end 
 
 **Fuzz plan (after P1, nightly):** `cargo-fuzz` targets for `check_file_type`, `BundleFile::open` plus `load_all`, `SerializedFile::parse`, `parse_blob`/`parse_old`, `boost::read` and `python::read` over a fuzzed tree and bytes, and write-after-read; seeds from the testkit; one hour per target per night; any panic, hang over 10 s or allocation over 2 GiB is a bug. P1's seeded no-panic tests (3.15) are the down payment.
 
+**The fuzz plan, built (2026-11-09):** `fuzz/` is a `cargo-fuzz` crate outside the workspace (`fuzz/README.md`) with one target per item above and one for R9: `detect`, `bundle` (by the memory and the stream reader's rules), `serialized` (then every object's `parse_as_dict(true)`), `typetree` (then `NodeList::from_rows` and `Tree::compile`), `boost_read`, `python_read`, `write_after_read` and `lz4`. Every target calls the core's public API, as a caller would; no `fuzzing` feature was needed. `write_after_read` reads a value, writes it under `WriteRules::MirrorReader`, reads the written bytes and writes again. Where no two siblings share a name (a repeated name keeps its last value only), the second read must give the first's value and consume every written byte, and the second write must equal the first: `docs/DESIGN.md`'s semantic equality and idempotence. A writer's refusal must be its named error. `lz4` decodes each block with `codec::decode_block` and with liblz4 1.9.4's `LZ4_decompress_safe` (`lz4-sys` 1.10.0, its version asserted), and requires the same verdict, the same bytes and the same error code. liblz4 gets a buffer of the declared size, or of 512 bytes per input byte plus 4,096 when that is smaller. A buffer that large takes every branch a larger one would, and a check that a buffer twice as large gives the same verdict keeps that honest. The one difference allowed is `PARITY.md`'s: a declared size over `i32::MAX` is `OverflowError`. Every input is bounded by the limits in `fuzz/src/lib.rs`: 1 MiB of memory, of input and of one block's output, and 64 MiB of decode work and of inflate. The memory bound is low for now; the finding below says why and when it goes back up. The seeds are written by `unityrs-testkit`'s `fuzz_seeds` example from the builders, never from `/corpus`, and never committed: every builder output, each bundle's files, each object's tree and bytes, `testkit::depth`'s deep values, the stored trees of ten formats each way round, and LZ4 blocks at four declared sizes. Per target, in the order above: 445, 157, 288, 525, 500, 500, 1,000 and 850.
+
+**CI:** `.github/workflows/fuzz.yml` runs every target for an hour each night (03:17 UTC, and on demand). It pins the nightly by date (`nightly-2026-11-09`), caches cargo-fuzz 0.13.2, writes the seeds fresh, and runs with `-timeout=10 -malloc_limit_mb=2048`. Each target's minimized corpus is kept in the Actions cache from one night to the next, and a failing input is uploaded as the run's artifact. The workflow reads the repository and uses no secret. `ci.yml`'s `fuzz-build` job builds every target and runs each for 30 seconds from the seeds on every push; the builds took 23 s (the seeds) and 168 s (the targets, `-j 2`) here. Its `licenses` job runs cargo-deny over `fuzz/` with `fuzz/deny.toml`: the root's allow list plus NCSA for `libfuzzer-sys`. Nothing in `fuzz/` ships, and cargo-about reads only the workspace, so none of its dependencies enters `THIRD_PARTY_LICENSES`.
+
+**Local runs (2026-11-09):** these ran in `unityrs-dev` with AddressSanitizer and debug assertions, at most four targets at a time on a shared box, 20 minutes each, from the seeds alone (`detect`, `bundle`, `typetree`) or the seeds and earlier runs' corpus (the others), with `-timeout=10 -rss_limit_mb=1280 -malloc_limit_mb=1024` under `ulimit -v 25000000000`. "Edges" is libFuzzer's `cov`, before and after the run.
+
+| target | executions | per second | edges | features | corpus | found |
+|---|---|---|---|---|---|---|
+| `detect` | 6,322,497 | 5,264 | 70 → 850 | 3,233 | 597 | nothing |
+| `bundle` | 277,658 | 231 | 3,722 → 5,163 | 16,063 | 1,060 | nothing |
+| `serialized` | 86,390 | 71 | 4,046 → 4,722 | 17,350 | 842 | nothing (an earlier 20-minute run, before the resource-file seeds: 49,189 executions, 40 a second, 2,781 → 4,046 edges, nothing) |
+| `typetree` | 3,862,502 | 3,216 | 1,248 → 1,618 | 6,573 | 844 | nothing |
+| `boost_read` | 640,341 | 533 | 2,271 → 2,795 | 10,817 | 972 | nothing at 1 MiB; a timeout at 128 MiB |
+| `python_read` | 373,646 | 311 | 2,601 → 3,002 | 12,212 | 1,164 | nothing at 1 MiB; timeouts at 128 and 8 MiB |
+| `write_after_read` | 466,376 | 388 | 3,522 → 4,338 | 18,601 | 1,618 | nothing at 1 MiB; timeouts at 128 and 8 MiB |
+| `lz4` | 12,161,764 | 10,126 | 423 → 423 | 765 | 143 | nothing (an earlier 20-minute run: 38,741,792 executions, nothing) |
+
+**Found:** one defect, which caused timeouts in three targets. The bounds were raised step by step: at 128 MiB, `boost_read`, `python_read` and `write_after_read` each timed out within minutes, and at 8 MiB `python_read` and `write_after_read` timed out again. The inputs were small (13 or 14 rows and 33 to 193 value bytes) with a list or array that grows to the memory bound. Once the meter refuses a doubling, `MeteredVec` and `DecodeBuf` grow by exactly what each push needs, so every later push reallocates. glibc grows a mapped block in place, but AddressSanitizer's `realloc` copies the whole buffer each time, so such an input can take time quadratic in the bound. One input at 8 MiB took 15 ms without ASan and 32 s with it; one at 128 MiB took 0.35 s without and over 120 s with it. There was no panic and no allocation outside the meter: every input ended with `InputMemory`. Fix pass 17 fixes this growth (review round 16 found it), so it is not fixed here. The targets run at 1 MiB, where no input came near the timeout, and `MEMORY` goes back up once that fix is merged and the targets run clean at the higher bound. `serialized`'s low rate has the same cause: its slowest corpus input takes 25 ms at a 256 KiB bound, 320 ms at 1 MiB and 5.8 s at 4 MiB under ASan, and 0.3, 0.7 and 3.2 ms without. Nothing else was found.
+
 ---
 
 ## 7. Work packages
@@ -655,7 +674,7 @@ The review rounds found the same few mistakes again and again. Each rule below i
 | R6 | the eager AssetBundle read at load disagrees with UnityPy on a broken container | D's tests; G1 counts `parse` errors on both sides |
 | R7 | `py_lower` drifts with Rust's Unicode version | the `LOWER_EXCEPTIONS` generator and D's all-code-point fixture; re-run on every toolchain bump |
 | R8 | the four TPK-derived common strings are not acceptable for provenance | decided (section 9, Q2): the table is the user-supplied TPK's, built at run time; without a TPK, files that use those offsets differ at L1 (`PARITY.md` section 19.3) |
-| R9 | the LZ4 codec accepts or refuses a block liblz4 does not (3.6) | C replays `lz4_blocks.json` in full; the fuzz plan adds an LZ4 target compared against python-lz4 |
+| R9 | the LZ4 codec accepts or refuses a block liblz4 does not (3.6) | C replays `lz4_blocks.json` in full; the fuzz plan's `lz4` target compares every input with liblz4 1.9.4's `LZ4_decompress_safe`, the decoder python-lz4 4.4.4 calls (section 6) |
 | R10 | the meter costs time (an atomic update and a budget call per growth), or a legitimate input reaches `max_input_memory` under `Lazy` | E's perf report, still owed (section 6; the run before integration took each input's peak `Meter::used()`, not against its decoded size, and no throughput with `Unbounded` budgets): throughput with `Unbounded` budgets, and each input's peak `Meter::used()` against its decoded size on the G1 corpus |
 
 ---
@@ -733,4 +752,16 @@ scripts/dev python tools/parity/g3b.py /tmp/p1/g3b-oracle.jsonl.gz /tmp/p1/g3b-u
     --inputs /tmp/p1/g3b --unityrs target/release/unityrs --tpk $T -j 4 --list /tmp/p1/g3b-list.json       # exit 0
 for f in tools/fixtures/*.py; do scripts/dev python $f --check; done                                       # G4
 sh scripts/stub-check.sh                                                                                       # G6
+
+# The fuzz plan (section 6; fuzz/README.md). The seeds, from the testkit's builders, outside the repository:
+scripts/dev cargo run -p unityrs-testkit --example fuzz_seeds -- /tmp/fuzz/seeds
+# Then, in fuzz/, with a nightly toolchain and cargo-fuzz 0.13.2 (in unityrs-dev, the separate rustup under
+# /opt/nightly: RUSTUP_HOME=/opt/nightly/rustup CARGO_HOME=/opt/nightly/cargo, its cargo/bin first on PATH),
+# each target (detect, bundle, serialized, typetree, boost_read, python_read, write_after_read, lz4) under an
+# address-space cap ASan's shadow fits in, bounded by -rss_limit_mb instead; four at a time at most:
+cargo +nightly fuzz build -a
+ulimit -v 25000000000
+cargo +nightly fuzz run -a TARGET /tmp/fuzz/corpus/TARGET /tmp/fuzz/seeds/TARGET -- \
+    -max_total_time=1200 -timeout=10 -rss_limit_mb=1280 -malloc_limit_mb=1024 -print_final_stats=1
+# A finding: cargo +nightly fuzz tmin -a TARGET artifacts/TARGET/<file>, then a regression test (fuzz/README.md).
 ```
