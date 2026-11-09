@@ -29,9 +29,10 @@ const LISTINGS: [(u64, &str, bool); 6] = [
     (5, "x", true),
 ];
 
-/// UnityPy's `env.files` after the listings of `loads`, made in the order
-/// of their numbers (a Python dict: a key at its first assignment, with
-/// its last's value): each key and the load whose file it holds.
+/// A hand-written model of UnityPy's `env.files` after the listings of
+/// `loads`, made in the order of their numbers (a Python dict: a key at its
+/// first assignment, with its last's value), not a recording of UnityPy:
+/// each key and the load whose file it holds.
 fn dict(loads: &[u64]) -> Vec<(&'static str, u64)> {
     let mut sorted = loads.to_vec();
     sorted.sort_unstable();
@@ -66,7 +67,7 @@ fn orders(n: usize) -> Vec<Vec<usize>> {
 }
 
 /// Every order the six listings can arrive in, each checked after every
-/// listing against UnityPy's dict of the listings made so far: `files`
+/// listing against `dict`'s model of the listings made so far: `files`
 /// lists each key at its place with its file and that file's
 /// `is_dependency`, `objects` steps into the files that are no dependency
 /// in that order (each holds one object, of path id its load + 1),
