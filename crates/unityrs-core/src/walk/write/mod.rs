@@ -712,7 +712,7 @@ impl<'a> Writer<'a, '_> {
     /// `None` where the reader skipped the data. A file with no `ref_types`
     /// attribute is refused as `write_typetree` refuses it
     /// ([`WriteError::NoRefTypesAttribute`]), where UnityPyBoost's reader
-    /// raises `ValueError` (`TypeTreeHelper.cpp:592-596`).
+    /// raises `ValueError` (`TypeTreeHelper.cpp:592-598`).
     fn ref_node_boost(&mut self, m: &'a Map) -> Result<Option<Arc<Tree>>, WriteError> {
         match self.ref_types {
             RefTypes::List(_) => {}

@@ -463,7 +463,7 @@ pub enum WriteError {
     NoRefTypes,
     /// `ReferencedObject` data against a file with no `ref_types` attribute
     /// ([`RefTypes::Absent`]: a `SerializedFile` below format 20, which
-    /// UnityPy never sets it on, `files/SerializedFile.py:305-308`): reading
+    /// UnityPy never sets it on, `files/SerializedFile.py:306-308`): reading
     /// `assetfile.ref_types` raises `AttributeError` (`TypeTreeHelper.py:99`).
     #[error("'SerializedFile' object has no attribute 'ref_types'")]
     NoRefTypesAttribute,

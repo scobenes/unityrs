@@ -658,7 +658,7 @@ def w_cases():
     add("w6_registry_scope", base([[0, "ManagedReferencesRegistry", "r1", 0], [1, "int", "version", 0]], [[0, "ManagedReferencesRegistry", "r2", 0], [1, "int", "version", 0]], INT("t")), i32(1, 2, 3))
     add("w7_empty_ref_types", base(ref_object(), INT("tail")), ref_bytes("C") + i32(42) + i32(9), ref_types=[])
     # Fix pass 17's review: a value written against no file (`ValueError`), or a file below format 20, which has no
-    # `ref_types` attribute (`AttributeError`, `files/SerializedFile.py:305-308`, `helpers/TypeTreeHelper.py:99`).
+    # `ref_types` attribute (`AttributeError`, `files/SerializedFile.py:306-308`, `helpers/TypeTreeHelper.py:99`).
     for name, other in (("no_file", None), ("absent_ref_types", "absent")):
         add(f"w7_written_against_{name}", base(ref_object(), INT("tail")), ref_bytes("C") + i32(42) + i32(9), ref_types=REF, write_ref_types=other)
     add("w7_empty_class", base(ref_object(), INT("tail")), ref_bytes("") + i32(9), ref_types=REF)
