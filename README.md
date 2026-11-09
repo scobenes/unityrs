@@ -4,7 +4,10 @@ Fast Unity asset extraction in Rust: asset bundles, serialized files,
 typetrees, textures, sprites, meshes, animation and glTF export, as a library,
 a command-line tool and Python bindings.
 
-**Status: pre-alpha.** Nothing here is usable yet. The plan is in
+**Status: pre-alpha.** The core (phase P1) reads asset bundles, serialized
+files and typetrees as UnityPy 1.25.2 reads them, through the `unityrs dump`
+and `unityrs values` commands. Nothing else is built yet: textures, sprites
+and batch extraction are the next phase (P1b). The plan and its phases are in
 [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Goals
