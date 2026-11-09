@@ -15,11 +15,19 @@ use crate::raw::RawStr;
 use bytes::Bytes;
 use unityrs_testkit::env::{Obj, serialized};
 
-/// The listings: each load's number and the key it lists. Three loads list
-/// `x` and two `y`, and `X` lowers to `x`, so a key is listed again by a
-/// later load and by an earlier one, after it moved, and two keys lower to
-/// one name.
-const LISTINGS: [(u64, &str); 6] = [(0, "x"), (1, "y"), (2, "X"), (3, "x"), (4, "y"), (5, "x")];
+/// The listings: each load's number, the key it lists and whether as a
+/// dependency. Three loads list `x` and two `y`, and `X` lowers to `x`, so
+/// a key is listed again by a later load and by an earlier one, after it
+/// moved, and two keys lower to one name; the last `x` is a dependency's,
+/// which `objects` skips.
+const LISTINGS: [(u64, &str, bool); 6] = [
+    (0, "x", false),
+    (1, "y", false),
+    (2, "X", false),
+    (3, "x", false),
+    (4, "y", false),
+    (5, "x", true),
+];
 
 /// UnityPy's `env.files` after the listings of `loads`, made in the order
 /// of their numbers (a Python dict: a key at its first assignment, with
@@ -59,8 +67,9 @@ fn orders(n: usize) -> Vec<Vec<usize>> {
 
 /// Every order the six listings can arrive in, each checked after every
 /// listing against UnityPy's dict of the listings made so far: `files`
-/// lists each key at its place with its file, `objects` steps into the
-/// files in that order (each holds one object, of path id its load + 1),
+/// lists each key at its place with its file and that file's
+/// `is_dependency`, `objects` steps into the files that are no dependency
+/// in that order (each holds one object, of path id its load + 1),
 /// and rule 4's lookup by a lowered name answers the first key that lowers
 /// to it (`classes/PPtr.py:72-75`). Each listing comes bounded, so a cursor
 /// that does not advance fails instead of looping.
@@ -70,7 +79,7 @@ fn files_holds_unitypys_dict_whatever_order_the_loads_list_in() {
     let meter = Meter::unlimited();
     let files: Vec<File> = LISTINGS
         .iter()
-        .map(|&(load, _)| {
+        .map(|&(load, _, _)| {
             let id = i64::try_from(load).unwrap() + 1;
             let source = Source::Bytes {
                 name: RawStr::from(format!("f{load}").as_str()),
@@ -95,24 +104,34 @@ fn files_holds_unitypys_dict_whatever_order_the_loads_list_in() {
         let env = Environment::new(EnvOptions::unitypy());
         let mut loads = Vec::new();
         for &i in order {
-            let (load, key) = LISTINGS[i];
-            env.list(RawStr::from(key), files[i].clone(), false, load, &meter)
-                .unwrap();
+            let (load, key, dependency) = LISTINGS[i];
+            env.list(
+                RawStr::from(key),
+                files[i].clone(),
+                dependency,
+                load,
+                &meter,
+            )
+            .unwrap();
             loads.push(load);
             let want = dict(&loads);
             let what = format!("order {order:?}, after {loads:?}");
-            let got: Vec<(String, u64)> = env
+            let dependency = |load: u64| LISTINGS.iter().any(|l| l.0 == load && l.2);
+            let got: Vec<(String, u64, bool)> = env
                 .files()
                 .take(want.len() + 1)
                 .map(|e| {
                     (
                         String::from_utf8_lossy(e.name.as_bytes()).into_owned(),
                         load_of(&e.file),
+                        e.is_dependency,
                     )
                 })
                 .collect();
-            let want_files: Vec<(String, u64)> =
-                want.iter().map(|&(k, l)| (k.to_owned(), l)).collect();
+            let want_files: Vec<(String, u64, bool)> = want
+                .iter()
+                .map(|&(k, l)| (k.to_owned(), l, dependency(l)))
+                .collect();
             assert_eq!(got, want_files, "{what}: files");
             let ids: Vec<i64> = env
                 .objects()
@@ -121,6 +140,7 @@ fn files_holds_unitypys_dict_whatever_order_the_loads_list_in() {
                 .collect();
             let want_ids: Vec<i64> = want
                 .iter()
+                .filter(|&&(_, l)| !dependency(l))
                 .map(|&(_, l)| i64::try_from(l).unwrap() + 1)
                 .collect();
             assert_eq!(ids, want_ids, "{what}: objects");
