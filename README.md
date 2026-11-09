@@ -17,8 +17,10 @@ The plan and its phases are in [`docs/DESIGN.md`](docs/DESIGN.md).
   tested against UnityPy, pinned to an exact version and native stack, and sorted
   into tiers: bit-exact where UnityPy is right, correct where it raises or is
   wrong, and documented either way.
-- **Speed through batching.** Each bundle and dependency is parsed once, the work
-  is decoded and encoded in parallel, and memory stays bounded.
+- **Speed through batching.** The work is decoded and encoded in parallel, and
+  memory stays bounded. In the first version each input decodes what it reaches
+  of its own declared dependencies, so no output depends on what runs beside it;
+  a shared pre-decoded dependency cache is planned.
 - **Any game.** Version detection, a typetree-provider chain for stripped files,
   and hooks for encryption, altered headers and custom compression.
 - **3D export.** Prefabs, skins, Mecanim animation and scenes to glTF/GLB.
