@@ -329,7 +329,7 @@ The positions that go negative on the memory reader (from a path the stream read
 | id | rule | source |
 |---|---|---|
 | R1 | kind from `m_Type` by exact match; `PPtr<` prefix; else Unknown, read as a class | `TypeTreeHelper.cpp:1075-1128`, `:1215` |
-| R2 | every bounds check is `pos + n > end`, evaluated even for `n = 0` (an empty run after an alignment past the end fails) | `TypeTreeHelper.cpp:76`, `:88`, `:211`, `:296` |
+| R2 | every bounds check is `pos + n > end`, a length's before the bytes it counts: an empty run or string after an alignment past the end fails at its length, so no check of `n = 0` is ever the one that fails (review round 16) | `TypeTreeHelper.cpp:76`, `:88`, `:211`, `:269`, `:296` |
 | R3 | `align4` from the object's start, with no bounds check, so `bytes_read` may pass `byte_size` | `TypeTreeHelper.cpp:67-72` |
 | R4 | `bool` is a byte, non-zero true; `char` reads as `u8`; `Type*` as `u32`; `FileSize` as `u64` | `TypeTreeHelper.cpp:74-84`, `:1075-1103` |
 | R5 | `float` is widened to double; under `FloatMode::UnityPy` a signalling NaN gets bit 22 set, as the x86-64 widening does | `TypeTreeHelper.cpp:172-175` |

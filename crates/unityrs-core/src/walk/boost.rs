@@ -2,8 +2,8 @@
 
 //! UnityPyBoost's reader (`UnityPyBoost/TypeTreeHelper.cpp:67-1056`), for
 //! objects with `byte_size > 0`. The rules, each pinned by a test (plan
-//! section 3.10, R1-R16): bounds checks `pos + n > end` evaluated even for
-//! `n = 0`; `align4` from the object's start with no bounds check; strings
+//! section 3.10, R1-R16): bounds checks `pos + n > end`, a length's before
+//! the bytes it counts; `align4` from the object's start with no bounds check; strings
 //! always aligned; `TypelessData` aligned only by its flag; the switch on the
 //! node's own kind first, and only a kind it does not handle (`Unknown`,
 //! `PPtr`, `Array`, `ReferencedObjectData`, `ManagedReferencesRegistry`) is an
@@ -125,8 +125,12 @@ impl Reader<'_, '_> {
         )
     }
 
-    /// R2: `ptr + n > end` fails, evaluated for `n = 0` too (after an
-    /// alignment past the end). The end of the `n` bytes.
+    /// R2: `ptr + n > end` fails. The end of the `n` bytes. A check of `n =
+    /// 0` never fails: every one follows a 4-byte length that passed its own
+    /// check, so the position is within the bytes (an empty run or string
+    /// after an alignment past the end fails at its length, as UnityPyBoost's
+    /// `_read_length` and then `ptr + n > end` do, `TypeTreeHelper.cpp:269`,
+    /// `:296`; review round 16).
     fn bound(&self, n: usize) -> Result<usize, ReadError> {
         match self.pos.checked_add(n) {
             Some(end) if end <= self.bytes.len() => Ok(end),

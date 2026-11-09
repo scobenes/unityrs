@@ -19,9 +19,10 @@ Files:
 - `value_cases.json`: the 32 value cases of `tools/parity/value_cases.py` (G2), read as
   `parse_as_dict` reads them (`read_typetree` with `byte_size` and
   `check_read`), with UnityPy's L2 outcome and its L3 re-save.
-- `write_matrix.json`: W2, every node kind written from every value variant.
-- `py_attrs.json`: the non-dunder attributes of each Python type a value
-  becomes, and which are data, for the writer's `getattr` (W2).
+- `write_matrix.json`: W2, every node kind written from every value variant;
+  `py_attrs.json`: the non-dunder attributes of each Python type a value
+  becomes, and which are data, for the writer's `getattr` (W2). Both from
+  `walk_write.py`.
 - `depth.json`: deep values (plan 3.10, "Bounds"): each shape of
   `DEPTH_SHAPES` (one kind of level nested, or every kind after every other)
   read by both readers and re-saved, at the least depth where
@@ -96,6 +97,7 @@ from walk_elements import element_cases  # noqa: E402
 from walk_mirror import mirror_cases  # noqa: E402
 from walk_reentry import reentry_cases, reentry_ok_cases  # noqa: E402
 from walk_runs import run_cases  # noqa: E402
+from walk_write import py_attrs, write_matrix  # noqa: E402
 
 
 # --- R cases
@@ -151,6 +153,34 @@ def non_str_class_cases():
     return out
 
 
+def ref_type_cases():
+    """R14, review round 16: a `type` read again, which the next data child resolves (`TypeTreeHelper.cpp:758`,
+    `TypeTreeHelper.py:200-201`); and ref types told apart by their assembly alone, scanned and, past the scan,
+    through unityrs's table of first indices."""
+    c = []
+    add = lambda name, nodes, data, **kw: c.append(dict(name=name, nodes=nodes, hex=data.hex(), **kw))  # noqa: E731
+    again = [*ref_object(), [1, "ReferencedManagedType", "type", 0], [2, "string", "class", 0], [2, "string", "ns", 0],
+             [2, "string", "asm", 0], [1, "ReferencedObjectData", "data2", 0]]
+    refs = REF + [{"class": "B", "ns": "N", "asm": "A", "nodes": [[0, "D2", "Base", 0], [1, "double", "y", 0]]}]
+    head = ref_bytes("C") + i32(42)
+    add("r14_type_read_again", base(again, INT("tail")), head + s("B") + s("N") + s("A") + struct.pack("<d", 2.5) + i32(9), ref_types=refs)
+    add("r14_type_read_again_empty_class", base(again, INT("tail")), head + s("") + s("N") + s("A") + i32(9), ref_types=refs)
+    add("r14_type_read_again_unknown", base(again, INT("tail")), head + s("X") + s("N") + s("A") + i32(9), ref_types=refs)
+    add("r14_type_read_again_aligned_element", base(vec("RefIds", [[r[0], r[1], r[2], ALIGN if r[0] == 0 else 0] for r in again]), INT("tail")),
+        i32(1) + head + s("B") + s("N") + s("A") + struct.pack("<d", 2.5) + i32(9), ref_types=refs)
+    by_asm = [dict(REF[0], asm="A1"), {"class": "C", "ns": "N", "asm": "A2", "nodes": [[0, "D2", "Base", 0], [1, "double", "y", 0]]}]
+    add("r14_assembly_tells_apart", base(ref_object(), INT("tail")), ref_bytes("C", asm="A2") + struct.pack("<d", 2.5) + i32(9), ref_types=by_asm)
+    add("r14_assembly_unknown", base(ref_object(), INT("tail")), ref_bytes("C", asm="A3") + i32(9), ref_types=by_asm)
+    # Twelve ref types: the first lookup (`E`) scans them all, so the next is the table's.
+    twelve = [{"class": f"C{i}", "ns": "N", "asm": "A", "nodes": INT_TREE} for i in range(9)] + by_asm + [{"class": "E", "ns": "N", "asm": "A", "nodes": INT_TREE}]
+    e = ref_bytes("E") + i32(5)
+    add("r14_assembly_tells_apart_past_the_scan", base(vec("RefIds", ref_object("data")), INT("tail")),
+        i32(2) + e + ref_bytes("C", asm="A2", rid=2) + struct.pack("<d", 2.5) + i32(9), ref_types=twelve)
+    add("r14_assembly_unknown_past_the_scan", base(vec("RefIds", ref_object("data")), INT("tail")),
+        i32(2) + e + ref_bytes("C", asm="A3", rid=2) + i32(9), ref_types=twelve)
+    return c
+
+
 def r_cases():
     c = []
     add = lambda name, nodes, data, **kw: c.append(dict(name=name, nodes=nodes, hex=data.hex(), **kw))  # noqa: E731
@@ -158,9 +188,10 @@ def r_cases():
     # R1: kind by exact match, PPtr< prefix, else a class.
     add("r01_every_primitive_name", base(*[leaf(t, f"f{i}") for i, t in enumerate(PRIMS)]), PRIM_BYTES)
     add("r01_unknown_and_pptr_are_classes", base([[0, "PPtr<Foo>", "p", 0], [1, "int", "m_FileID", 0], [1, "SInt64", "m_PathID", 0]], [[0, "Unknownish", "u", 0], [1, "UInt8", "a", 0]], [[0, "int ", "near", 0], [1, "UInt8", "b", 0]]), i32(1) + struct.pack("<q", 2) + b"\x05\x06")
-    # R2: bounds checked even for n = 0.
-    add("r02_empty_run_after_align_past_end", base(U8("a", ALIGN), vec("v", leaf("int", "data"))), b"\x01\0\0")
-    add("r02_empty_string_after_align_past_end", base(U8("a", ALIGN), leaf("string", "s")), b"\x01\0\0")
+    # R2: every read bounds-checked. An empty run or string after an alignment past the end fails at its count,
+    # checked first (review round 16: no check of 0 bytes is ever the one that fails).
+    add("r02_empty_run_count_past_end_after_align", base(U8("a", ALIGN), vec("v", leaf("int", "data"))), b"\x01\0\0")
+    add("r02_empty_string_count_past_end_after_align", base(U8("a", ALIGN), leaf("string", "s")), b"\x01\0\0")
     add("r02_read_past_end", base(INT("a"), INT("b")), i32(1) + b"\0\0")
     add("r02_u8_past_end", base(INT("a"), U8("b")), i32(1))
     add("r02_bool_past_end", base(INT("a"), leaf("bool", "b")), i32(1))
@@ -271,8 +302,11 @@ def r_cases():
     add("r14_aligned_array_element_match", base(vec("RefIds", ref_object("data", meta=ALIGN)), INT("tail")), i32(1) + ref_bytes("C") + i32(5) + i32(9), ref_types=REF)
     add("r14_registry_and_refids", base([[0, "ManagedReferencesRegistry", "references", 0], [1, "int", "version", 0], *shift(vec("RefIds", ref_object("data")), 1)], INT("tail")), i32(2, 1) + ref_bytes("C") + i32(3) + i32(9), ref_types=REF)
     c.extend(non_str_class_cases())
-    # R15: align after a flagged node (for an array, its Array).
+    c.extend(ref_type_cases())
+    # R15: align after a flagged node (for an array, its Array), whatever other bits the flag holds (review round 16).
     add("r15_flagged_int_and_class", base(U8("a", ALIGN), [[0, "Foo", "f", ALIGN], [1, "UInt8", "x", 0]], U8("c")), b"\x01\0\0\0\x02\0\0\0\x03")
+    add("r15_flag_beside_another_bit", base(U8("a", ALIGN | 0x8000), U8("c")), b"\x01\0\0\0\x03")
+    add("r15_array_flag_beside_another_bit", base(vec("v", U8("data"), array_meta=ALIGN | 0x8000), U8("c")), i32(1) + b"\x05\0\0\0\x09")
     # R16: error kinds.
     add("r16_out_of_bounds", base(INT("a")), b"\x01")
     add("r16_negative_length", base(vec("v", INT("data"))), i32(-1))
@@ -662,67 +696,6 @@ def value_cases():
         rec["l2"] = l2
         rec["l3"] = write(value, root, endian, af) if l2["kind"] is None else None
         out.append(rec)
-    return out
-
-
-# --- W2: every node kind from every value variant
-
-
-W2_NODES = {
-    "SInt8": leaf("SInt8", "f"), "UInt8": leaf("UInt8", "f"), "char": leaf("char", "f"),
-    "SInt16": leaf("SInt16", "f"), "UInt16": leaf("UInt16", "f"), "SInt32": leaf("SInt32", "f"),
-    "UInt32": leaf("UInt32", "f"), "SInt64": leaf("SInt64", "f"), "UInt64": leaf("UInt64", "f"),
-    "float": leaf("float", "f"), "double": leaf("double", "f"), "bool": leaf("bool", "f"),
-    "string": leaf("string", "f"), "TypelessData": [[0, "TypelessData", "f", 0]],
-    "pair": pair("f", INT("first"), leaf("string", "second")), "pair_u8": pair("f", U8("first"), U8("second")),
-    "vector_int": vec("f", INT("data")), "vector_string": vec("f", leaf("string", "data")),
-    "vector_aligned_u8": vec("f", U8("data", ALIGN)),
-    "class_empty": [[0, "Foo", "f", 0]], "class_real": [[0, "Foo", "f", 0], [1, "SInt64", "real", 0]],
-    "class_count": [[0, "Foo", "f", 0], [1, "bool", "count", 0]], "class_imag_float": [[0, "Foo", "f", 0], [1, "double", "imag", 0]],
-    "class_numerator": [[0, "Foo", "f", 0], [1, "int", "numerator", 0], [1, "int", "denominator", 0]],
-    "class_nested_attr": [[0, "Foo", "f", 0], [1, "Bar", "real", 0], [2, "int", "imag", 0]],
-    "class_missing": [[0, "Foo", "f", 0], [1, "int", "nope", 0]],
-    "class_method_attr": [[0, "Foo", "f", 0], [1, "Bar", "count", 0], [2, "int", "x", 0]],
-}
-
-# (name, how the Rust side builds it, the Python value)
-W2_VALUES = [
-    ("bool_true", {"bool": True}, True), ("bool_false", {"bool": False}, False),
-    ("int_0", {"int": 0}, 0), ("int_5", {"int": 5}, 5), ("int_m1", {"int": -1}, -1), ("int_300", {"int": 300}, 300),
-    ("int_70000", {"int": 70000}, 70000), ("int_2_40", {"int": 2**40}, 2**40), ("int_min", {"int": -(2**63)}, -(2**63)),
-    ("uint_big", {"uint": 2**63 + 5}, 2**63 + 5),
-    ("f32_1_5", {"f32": "3fc00000"}, 1.5), ("f32_snan_quiet", {"f32": "7fc00001"}, struct.unpack("<f", struct.pack("<I", 0x7FC00001))[0]),
-    ("f64_1e300", {"f64": struct.pack(">d", 1e300).hex()}, 1e300), ("f64_m0", {"f64": struct.pack(">d", -0.0).hex()}, -0.0),
-    ("f64_0_1", {"f64": struct.pack(">d", 0.1).hex()}, 0.1), ("f64_inf", {"f64": struct.pack(">d", float("inf")).hex()}, float("inf")),
-    ("str_ab", {"str": "6162"}, "ab"), ("str_empty", {"str": ""}, ""), ("str_invalid", {"str": "61ff62"}, b"a\xffb".decode("utf8", "surrogateescape")),
-    ("str_multibyte", {"str": "c3a9e282ac"}, "é€"),
-    ("bytes_12", {"bytes": "0102"}, b"\x01\x02"), ("bytes_empty", {"bytes": ""}, b""), ("bytes_big", {"bytes": "ff00ff"}, b"\xff\x00\xff"),
-    ("prims_u8", {"prims_u8": "0102"}, [1, 2]), ("prims_i32", {"prims_i32": [-1, 7]}, [-1, 7]), ("prims_f32", {"prims_f32": ["3f800000"]}, [1.0]),
-    ("prims_bool", {"prims_bool": [True, False]}, [True, False]), ("prims_empty", {"prims_i32": []}, []),
-    ("list_ints", {"list": [{"int": 1}, {"int": 2}]}, [1, 2]), ("list_strs", {"list": [{"str": "78"}, {"str": "7979"}]}, ["x", "yy"]),
-    ("list_empty", {"list": []}, []),
-    ("tuple_ints", {"tuple": [{"int": 3}, {"str": "6869"}]}, (3, "hi")), ("tuple_u8s", {"tuple": [{"int": 1}, {"int": 2}]}, (1, 2)),
-    ("dict_a", {"dict": [["a", {"int": 1}]]}, {"a": 1}), ("dict_empty", {"dict": []}, {}),
-    ("dict_real", {"dict": [["real", {"int": 7}], ["x", {"int": 8}]]}, {"real": 7, "x": 8}),
-]
-
-
-def write_matrix():
-    """`Base { <node> f }` written from `{"f": value}`, for every pair."""
-    cases = []
-    for kname, rows in W2_NODES.items():
-        root = tree(base(rows))
-        for vname, _spec, value in W2_VALUES:
-            cases.append([kname, vname, write({"f": value}, root, "<", SimpleNamespace(ref_types=[]))])
-    nodes = {k: base(rows) for k, rows in W2_NODES.items()}
-    return {"nodes": nodes, "values": {name: spec for name, spec, _ in W2_VALUES}, "cases": cases}
-
-
-def py_attrs():
-    out = {}
-    for t, sample in ((int, 5), (bool, True), (float, 1.5), (str, "ab"), (bytes, b"ab"), (list, [1]), (tuple, (1,))):
-        names = [a for a in dir(t) if not a.startswith("__")]
-        out[t.__name__] = [[a, "method" if callable(getattr(sample, a)) else type(getattr(sample, a)).__name__] for a in names]
     return out
 
 
