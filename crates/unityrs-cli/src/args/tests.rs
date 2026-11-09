@@ -314,25 +314,75 @@ fn unbounded_takes_a_comma_list_of_limits() {
     }
 }
 
+/// Each outcome is Python 3.11's `int()`'s, recorded from a probe of it
+/// (`PARITY.md`'s `ShaderProgram` row states the same rules, which
+/// `test_rows_exports.py` pins in the oracle image).
 #[test]
 fn numbers_parse_as_python_int() {
+    let ones = |n: usize| "1".repeat(n);
     for (s, v) in [
-        ("0", Some(0)),
-        ("-0", Some(0)),
-        (" 7\n", Some(7)),
-        ("+3", Some(3)),
-        ("1_000", Some(1000)),
-        ("-12", Some(-12)),
-        ("-99999999999999999999", Some(-i64::MAX)),
+        ("0".to_owned(), Some(0)),
+        ("-0".into(), Some(0)),
+        (" 7\n".into(), Some(7)),
+        ("\x0b7\x0c".into(), Some(7)),
+        ("\r7\r".into(), Some(7)),
+        ("+3".into(), Some(3)),
+        ("1_000".into(), Some(1000)),
+        ("-12".into(), Some(-12)),
+        ("-99999999999999999999".into(), Some(-i64::MAX)),
+        // Review round 16: the decimal digits of every script, and the
+        // whitespace past ASCII, which `int` maps to ASCII first.
+        ("\u{663}".into(), Some(3)),
+        ("-\u{663}".into(), Some(-3)),
+        ("\u{661}_\u{662}".into(), Some(12)),
+        ("\u{661}1\u{662}".into(), Some(112)),
+        ("\u{ff11}".into(), Some(1)),
+        ("\u{1d7ce}".into(), Some(0)),
+        ("\u{3000}-\u{663}\u{3000}".into(), Some(-3)),
+        ("\u{2028}7\u{2029}".into(), Some(7)),
+        // At most 4,300 digits, underscores not counted.
+        (ones(4300), Some(i64::MAX)),
+        (format!("-{}", ones(4300)), Some(-i64::MAX)),
+        (format!(" {} ", ones(4300)), Some(i64::MAX)),
+        (vec!["1"; 4300].join("_"), Some(i64::MAX)),
+        ("\u{661}".repeat(4300), Some(i64::MAX)),
     ] {
         assert_eq!(py_int(s.as_bytes()), v, "{s:?}");
     }
     for s in [
-        "", " ", "_1", "1_", "1__0", "0x10", "1e3", "--1", "+-1", "1 2", "+", "\u{ff11}",
+        "", " ", "_1", "1_", "1__0", "0x10", "1e3", "--1", "+-1", "1 2", "- 1", "+_1", "+",
+        "1\x7f", // Not whitespace to `int`, though `str.isspace()` takes them.
+        "\x1c1", "1\x1f", // Numeric, but no decimal digit.
+        "\u{b2}", "\u{2167}", "\u{f33}",
     ] {
         assert_eq!(py_int(s.as_bytes()), None, "{s:?}");
     }
+    for s in [
+        ones(4301),
+        "0".repeat(4301),
+        vec!["1"; 4301].join("_"),
+        format!("+{}", ones(4301)),
+        "\u{661}".repeat(4301),
+    ] {
+        assert_eq!(py_int(s.as_bytes()), None, "{} characters", s.len());
+    }
     assert_eq!(py_int(b"1\xff"), None);
+    // The whitespace `int` takes around a number: these, and no other
+    // character that is not a digit (Python 3.11, every code point).
+    let spaces: Vec<char> =
+        "\t\n\x0b\x0c\r \u{85}\u{a0}\u{1680}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}"
+            .chars()
+            .chain('\u{2000}'..='\u{200a}')
+            .collect();
+    for c in ('\0'..=char::MAX).filter(|c| nd_digit(*c).is_none()) {
+        let padded = format!("{c}1{c}");
+        assert_eq!(
+            py_int(padded.as_bytes()).is_some(),
+            spaces.contains(&c),
+            "U+{:04X}",
+            u32::from(c)
+        );
+    }
 }
 
 #[test]

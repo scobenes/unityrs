@@ -32,6 +32,8 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 
 use unityrs_core::LimitKind;
+use unityrs_core::tables::nd_digit;
+use unityrs_core::version::PY_INT_MAX_STR_DIGITS;
 use unityrs_dump::select::INDEX_KINDS;
 use unityrs_dump::{LIFTABLE, Levels};
 
@@ -231,12 +233,27 @@ pub fn py_repr(bytes: &[u8]) -> String {
 
 /// Python's `int(s)` for a command-line number, saturated to `i64`: every
 /// count it feeds (`--sample`, `--limit`, `--jobs`) means the same past any
-/// list's length. Surrounding whitespace, a sign, and single underscores
-/// between digits, as `int` takes them; ASCII digits only (Python also
-/// takes other decimal digits, which no corpus run passes).
+/// list's length. The string is read as CPython 3.11's `int` reads it
+/// (`_PyUnicode_TransformDecimalAndSpaceToASCII`, then `PyLong_FromString`;
+/// `PARITY.md`'s `ShaderProgram` row records the same rules for UnityPy's
+/// side). A character past ASCII is a space when it is whitespace and its
+/// digit when it is a decimal (`Nd`) digit of any script ([`nd_digit`]);
+/// any other fails the number. Then: ASCII whitespace around it (space,
+/// `\t`, `\n`, `\v`, `\f` and `\r`, not `\x1c` to `\x1f`, which
+/// `str.isspace()` takes), a sign, and digits with single underscores
+/// between them, at most [`PY_INT_MAX_STR_DIGITS`] of them (leading zeros
+/// counted, underscores not).
 pub fn py_int(bytes: &[u8]) -> Option<i64> {
     let s = std::str::from_utf8(bytes).ok()?;
-    let t = s.trim_matches(|c: char| c.is_whitespace() || ('\x1c'..='\x1f').contains(&c));
+    let ascii: String = s
+        .chars()
+        .map(|c| match c {
+            _ if c.is_ascii() => Some(c),
+            _ if c.is_whitespace() => Some(' '),
+            _ => nd_digit(c).map(|d| char::from(b'0' + d)),
+        })
+        .collect::<Option<_>>()?;
+    let t = ascii.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r'));
     let (neg, digits) = match t.as_bytes().first()? {
         b'-' => (true, &t[1..]),
         b'+' => (false, &t[1..]),
@@ -247,6 +264,7 @@ pub fn py_int(bytes: &[u8]) -> Option<i64> {
         return None;
     }
     let mut v: i64 = 0;
+    let mut count = 0;
     let mut after_underscore = false;
     for &c in b {
         if c == b'_' {
@@ -260,7 +278,11 @@ pub fn py_int(bytes: &[u8]) -> Option<i64> {
             return None;
         }
         after_underscore = false;
+        count += 1;
         v = v.saturating_mul(10).saturating_add(i64::from(c - b'0'));
+    }
+    if count > PY_INT_MAX_STR_DIGITS {
+        return None;
     }
     Some(if neg { v.saturating_neg() } else { v })
 }
