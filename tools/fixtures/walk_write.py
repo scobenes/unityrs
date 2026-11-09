@@ -9,7 +9,7 @@ exception it raised. A value is built here as Python holds it, and on the Rust
 side (`tests/walk_fixtures.rs`) from its spec.
 
 The `class_...` nodes over a value that is not a dict take the class branch's
-`getattr(value, child._clean_name)` (`:447-455`), the name cleaned by
+`getattr(value, child._clean_name)` (`helpers/TypeTreeHelper.py:447-455`), the name cleaned by
 UnityPyBoost's rule (its `TypeTreeNode`, `UnityPyBoost/TypeTreeHelper.cpp:28-65`);
 review round 16 found most of that branch pinned by nothing. Each of these
 pins one of its rules: the `(int&)` prefix and the trailing `?` dropped, each

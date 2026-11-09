@@ -364,7 +364,11 @@ fn refusals_counted(limit: u64) -> (Arc<Meter>, Arc<std::sync::atomic::AtomicU64
 /// writer's output). Each of these pushes one element at a time until the
 /// budget refuses one: a `MeteredVec` of bytes and of `u64`s, one grown as
 /// a walk's list grows to a declared length ([`crate::walk::grow_step`]),
-/// and a `DecodeBuf`, each written past a third of its budget.
+/// and a `DecodeBuf`, each written past a third of its budget. Under the
+/// 1,200 KiB budget here each writes 655,360 bytes with 20 to 23 refused
+/// requests; the growth before fix pass 17 wrote 614,376 bytes with 90,090
+/// refused requests in pushes of a byte and 11,263 in pushes of a `u64`
+/// (this test with each case's counts printed, on each growth).
 #[test]
 fn a_vector_that_meets_its_bound_asks_a_few_dozen_times() {
     use std::sync::atomic::Ordering;
