@@ -25,7 +25,8 @@ Two plain scenes are also recorded in the orders the core's unit test
 `env::race_tests` runs their loads in on two threads (review round 16),
 in `env_threads.json`: `nested_between_loads` with one load's
 registrations past its first made only after the files after it are
-loaded and the container listed (`held_case`), and `listings_raced` with
+loaded and the container listed (`held_case`, whose limit its docs state),
+and `listings_raced` with
 its two files loaded in each order, under their names, both under one name,
 and with the first found by `env.find_file` in `env.path` (`orders_case`).
 """
@@ -40,6 +41,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/parity"))
 
+from UnityPy.environment import simplify_name  # noqa: E402
 from UnityPy.helpers.ContainerHelper import ContainerHelper  # noqa: E402
 
 import scratch  # noqa: E402
@@ -235,7 +237,22 @@ def held_case(scene: dict, new_run, held: int) -> dict:
     first `register_cab` in its turn; the files after it loaded, the
     container listed (`before`), then the held registrations made, in their
     order; then the container, every object's `container` path, the
-    dependencies' paths and the state."""
+    dependencies' paths and the state.
+
+    Its limit (review round 16's verifier): the held registrations are made
+    after the later files' loads, so for a key a later file also registers
+    UnityPy's dict holds the held file (the last assigned), while the core,
+    whose racing loads end as if made in the order of their numbers (plan
+    section 3.16, R1), holds the later file's. So this is UnityPy's answer
+    only when no later file registers a key the held load registers past
+    its first, which is asserted here. The scene it cannot record: `a`, `c`
+    and `b` each holding a `SerializedFile` `n`, `c`'s load held after
+    another first key, so that `c`'s `n` ranks between the key's position
+    (`a`'s) and its value (`b`'s): here UnityPy would give `c`'s `n` as the
+    value, where the core, and UnityPy's run of the three in the order of
+    their numbers, give `b`'s. In `nested_between_loads` the held
+    registration is `CAB-Z`, a key no other file makes, and `c`'s `n` is a
+    `BundleFile`, which UnityPy never registers."""
     with scratch.folder() as tmp:
         with contextlib.redirect_stdout(io.StringIO()):
             run = new_run(scene, str(tmp))
@@ -243,6 +260,7 @@ def held_case(scene: dict, new_run, held: int) -> dict:
             register = env.register_cab
             made: list = []
             later: list = []
+            after: list = []
 
             def first_only(cab, item):
                 if made:
@@ -251,19 +269,24 @@ def held_case(scene: dict, new_run, held: int) -> dict:
                     made.append(cab)
                     register(cab, item)
 
+            def noted(cab, item):
+                after.append(cab)
+                register(cab, item)
+
             for i in range(len(scene["files"])):
-                if i != held:
-                    assert run.load(i) == "ok", i
-                    continue
                 # `File.read_files` and `load_file` call it through the
                 # instance.
-                env.register_cab = first_only
+                env.register_cab = first_only if i == held else noted if i > held else register
                 try:
                     assert run.load(i) == "ok", i
                 finally:
                     del env.register_cab
             before = run.container()
             assert later, "the held load registered one key"
+            # `register_cab` keys a CAB by its simplified name.
+            keys = {simplify_name(cab) for cab in after}
+            clash = [cab for cab, _ in later if simplify_name(cab) in keys]
+            assert not clash, f"a later file registers {clash}, which this cannot record (docs)"
             for cab, item in later:
                 env.register_cab(cab, item)
             out = {
