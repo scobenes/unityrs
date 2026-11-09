@@ -209,12 +209,12 @@ impl Table {
         }
     }
 
-    /// The table's entries and each key list's length and room, for a
-    /// test.
+    /// The table's entries, the room its map holds, and each key list's
+    /// length and room, for a test.
     #[cfg(test)]
-    pub(crate) fn room(&self) -> (usize, Vec<(usize, usize)>) {
+    pub(crate) fn room(&self) -> (usize, usize, Vec<(usize, usize)>) {
         let lists = self.map.values().map(|l| (l.len(), l.capacity())).collect();
-        (self.map.len(), lists)
+        (self.map.len(), self.map.capacity(), lists)
     }
 }
 
@@ -283,7 +283,8 @@ pub(crate) struct Walk<'a> {
     /// Its flags, by number.
     flags: Vec<Arc<Flag>>,
     /// [`FIRED`] once, [`FLAG`] per flag and [`WATCH_SHARE`] per watch of a
-    /// key.
+    /// key. Declared last, so it is released after every field it pays for
+    /// is freed (W2).
     charge: Charge,
 }
 
@@ -383,8 +384,8 @@ impl Drop for Walk<'_> {
         }
         #[cfg(test)]
         self.watches.walks.fetch_sub(1, Ordering::SeqCst);
-        // `flags` drops after this body, then `charge`: what it paid for is
-        // freed first.
+        // `hashes`, `log` and `flags` drop after this body, then `charge`:
+        // what it paid for is freed first.
     }
 }
 

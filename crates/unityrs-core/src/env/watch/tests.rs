@@ -1,17 +1,23 @@
 //! The walks' watches keep no memory past their charge (invariant W2, plan
 //! section 3.16): a walk's charge is released only after its entries left
-//! both tables and every key list it grew shrank back to what the running
-//! walks pay for (review round 5), whatever another thread's change does
-//! meanwhile (review round 15). A walk's log lists each flag a change set
-//! once, whichever thread made the change (review round 14), however its
-//! push meets another push or a take (review round 15). Each race is run by
-//! the module's hooks ([`super::Point`]) and the testkit's handshakes, never
-//! by repetition or timing.
+//! both tables, every key list it grew and each table's map shrank back to
+//! what the running walks pay for (review rounds 5 and 16), and every block
+//! the walk itself holds is freed (review round 16), whatever another
+//! thread's change does meanwhile (review round 15). A walk's log lists each
+//! flag a change set once, whichever thread made the change (review round
+//! 14), however its push meets another push or a take (review round 15).
+//! Each race is run by the module's hooks ([`super::Point`]) and the
+//! testkit's handshakes, never by repetition or timing.
+//!
+//! This file installs the global allocator of the crate's unit tests, a
+//! counting one (`unityrs_testkit::counted`) that counts only a thread that
+//! asks: [`a_walks_charge_is_released_after_the_last_block_it_paid_for`]'s.
 
 // The source scan behind "the core starts no thread and never waits"
 // (`unityrs_testkit::waits`) takes only an item under `#[cfg(test)]` in its
 // own file for test code, so every item here that names a thread, a channel
 // or a lock carries one.
+use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(test)]
 use std::sync::mpsc::{Receiver, Sender, channel};
 #[cfg(test)]
@@ -23,8 +29,30 @@ use super::{
 use crate::budget::{BudgetExceeded, MemoryBudget, Permit, PermitHome, Reservation};
 use crate::env::held;
 use crate::limits::{Meter, heap_cost};
+use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 #[cfg(test)]
 use unityrs_testkit::guard;
+
+/// The heap of the threads that count (`unityrs_testkit::counted`), in
+/// bytes: only [`a_walks_charge_is_released_after_the_last_block_it_paid_for`]'s
+/// thread asks to be counted.
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// [`LIVE`]'s tally.
+struct Heap;
+
+impl Tally for Heap {
+    fn grew(&self, size: usize, _zeroed: bool) {
+        LIVE.fetch_add(size, Ordering::Relaxed);
+    }
+    fn shrank(&self, size: usize) {
+        LIVE.fetch_sub(size, Ordering::Relaxed);
+    }
+}
+
+/// The global allocator of every unit test of the crate (module docs).
+#[global_allocator]
+static ALLOC: Allocator<Heap> = Allocator(Heap);
 
 /// A lock of the test's own that keys are published under, as the
 /// registry's and the `files` listing's are.
@@ -81,16 +109,35 @@ impl Rig {
         let mut entries = 0;
         let mut lists = Vec::new();
         for lock in &self.locks {
-            let (n, l) = held::read(&lock.0).room();
+            let (n, _, l) = held::read(&lock.0).room();
             entries += n;
             lists.extend(l);
         }
         (entries, lists)
     }
+
+    /// Each table's entries and the room its map holds.
+    fn maps(&self) -> Vec<(usize, usize)> {
+        self.locks
+            .iter()
+            .map(|lock| {
+                let (n, room, _) = held::read(&lock.0).room();
+                (n, room)
+            })
+            .collect()
+    }
 }
 
-/// A budget that, at every release, records the walks running and the
-/// tables' entries of the rig it is given.
+/// The most room a map of `len` entries keeps once a walk has ended: three
+/// entries a key and eight more, the bound `Table::end` shrinks a map to
+/// when it holds more (W2: no room the running walks' charges do not pay
+/// for, each watch paying [`crate::limits::HASH_TABLE_SHARES`] buckets).
+fn map_bound(len: usize) -> usize {
+    3 * len + 8
+}
+
+/// A budget that, at every release, records the walks running, the tables'
+/// entries and the room the rig it is given keeps.
 #[cfg(test)]
 #[derive(Debug)]
 struct Spy(Arc<Home>);
@@ -99,9 +146,10 @@ struct Spy(Arc<Home>);
 #[derive(Debug, Default)]
 struct Home {
     rig: Mutex<Option<Arc<Rig>>>,
-    /// At each release: the walks running, the tables' entries, and the
-    /// most room any key list kept past twice its length.
-    seen: Mutex<Vec<(usize, usize, usize)>>,
+    /// At each release: the walks running, the tables' entries, the most
+    /// room any key list kept past twice its length, and the most room any
+    /// map kept past [`map_bound`].
+    seen: Mutex<Vec<(usize, usize, usize, usize)>>,
 }
 
 #[cfg(test)]
@@ -122,10 +170,16 @@ impl PermitHome for Home {
                 .map(|&(len, cap)| cap.saturating_sub(2 * len))
                 .max()
                 .unwrap_or(0);
+            let map_excess = r
+                .maps()
+                .iter()
+                .map(|&(len, room)| room.saturating_sub(map_bound(len)))
+                .max()
+                .unwrap_or(0);
             self.seen
                 .lock()
                 .unwrap()
-                .push((r.watches.walks(), entries, excess));
+                .push((r.watches.walks(), entries, excess, map_excess));
         }
     }
 }
@@ -170,7 +224,7 @@ fn a_finished_walk_leaves_no_room_in_a_shared_keys_list() {
     );
     let seen = home.seen.lock().unwrap().clone();
     assert_ne!(seen.len(), 0, "a's charge was released");
-    for (walks, _, excess) in seen {
+    for (walks, _, excess, _) in seen {
         assert_eq!(walks, 1, "a's charge was released while a still ran");
         assert!(
             excess <= 4,
@@ -201,8 +255,125 @@ fn a_walks_charge_outlives_its_entries() {
     assert_ne!(seen.len(), 0);
     assert!(
         seen.iter()
-            .all(|&(walks, entries, _)| walks == 0 && entries == 0),
+            .all(|&(walks, entries, _, _)| walks == 0 && entries == 0),
         "released while its entries were in a table: {seen:?}"
+    );
+}
+
+/// Walk `a` watches 10,000 keys under each lock while walk `b` watches one
+/// under each: when `a` ends, each table's map keeps no more room than
+/// [`map_bound`] allows for `b`'s one entry, and `a`'s charge is released
+/// only after both maps shrank (W2; review round 16: no test failed when a
+/// map kept, after the walk that grew it ended, the room of every key it had
+/// watched, charged to no one).
+#[test]
+fn a_finished_walk_gives_back_the_maps_room() {
+    let (rig, home, meter) = spied();
+    let mut b = rig.start(&meter);
+    let k = b.hash(b"k");
+    let kept = b.watch(&[(REGISTRY, k), (FILES, k)]).unwrap();
+    {
+        let mut a = rig.start(&meter);
+        let keys: Vec<(usize, u64)> = (0..10_000_u32)
+            .flat_map(|i| {
+                let h = a.hash(&i.to_le_bytes());
+                [(REGISTRY, h), (FILES, h)]
+            })
+            .collect();
+        drop(a.watch(&keys).unwrap());
+        for (len, room) in rig.maps() {
+            assert!(len >= 10_000 && room >= len, "a grew {len} keys, {room}");
+        }
+        home.seen.lock().unwrap().clear();
+    }
+    for (len, room) in rig.maps() {
+        assert_eq!(len, 1, "only b's key is left");
+        assert!(
+            room <= map_bound(len),
+            "the map kept room for {room} after a ended"
+        );
+    }
+    let seen = home.seen.lock().unwrap().clone();
+    assert_ne!(seen.len(), 0, "a's charge was released");
+    for (walks, _, _, map_excess) in seen {
+        assert_eq!(walks, 1, "a's charge was released while a still ran");
+        assert_eq!(map_excess, 0, "a's charge was released before a map shrank");
+    }
+    drop(kept);
+    drop(b);
+    assert_eq!(rig.room(), (0, Vec::new()));
+}
+
+/// A budget whose permits note, at their release, the counted heap
+/// ([`LIVE`]), and count their releases.
+#[derive(Debug, Default)]
+struct HeapAtRelease {
+    live: AtomicUsize,
+    releases: AtomicUsize,
+}
+
+impl PermitHome for HeapAtRelease {
+    fn release(&self, _bytes: u64) {
+        self.live
+            .store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.releases.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug)]
+struct Noting(Arc<HeapAtRelease>);
+
+impl MemoryBudget for Noting {
+    fn try_reserve(&self, bytes: u64, _what: Reservation) -> Result<Permit, BudgetExceeded> {
+        Ok(Permit::new(bytes, self.0.clone()))
+    }
+}
+
+/// A walk's charge is released after every block the walk holds is freed:
+/// its entries in both tables and the maps' room (its `Drop::drop`), and its
+/// own `hashes`, `log` and `flags` (its fields, which drop before `charge`,
+/// declared last). The test's thread counts its heap
+/// (`unityrs_testkit::counted`): the heap the charge's release sees is the
+/// heap the walk's drop leaves, and less than before the drop (review round
+/// 16: that order rested on the fields' declaration alone, and no test
+/// failed with `charge` declared before `hashes`, `log` or `flags`, or one
+/// of them after it).
+#[test]
+fn a_walks_charge_is_released_after_the_last_block_it_paid_for() {
+    count_this_thread();
+    others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
+    let noted = Arc::new(HeapAtRelease::default());
+    let meter = Meter::new(
+        u64::MAX,
+        Arc::new(Noting(noted.clone())),
+        Reservation::Input,
+    );
+    let rig = Rig::default();
+    let mut walk = rig.start(&meter);
+    let keys: Vec<u64> = (0..64_u32).map(|i| walk.hash(&i.to_le_bytes())).collect();
+    let flags: Vec<_> = keys
+        .iter()
+        .map(|k| walk.watch(&[(REGISTRY, *k), (FILES, *k)]).unwrap())
+        .collect();
+    drop(flags);
+    let before = LIVE.load(Ordering::Relaxed);
+    drop(walk);
+    let after = LIVE.load(Ordering::Relaxed);
+    assert_eq!(
+        noted.releases.load(Ordering::Relaxed),
+        1,
+        "the walk's charge was released once"
+    );
+    let at = noted.live.load(Ordering::Relaxed);
+    assert_eq!(
+        at,
+        after,
+        "{} bytes were freed after the walk's charge was released",
+        at.wrapping_sub(after).cast_signed()
+    );
+    assert!(
+        before.wrapping_sub(at).cast_signed() > 0,
+        "the walk freed nothing before its charge was released"
     );
 }
 
@@ -376,7 +547,7 @@ fn a_walks_end_takes_out_its_entries_while_another_thread_holds_its_flag() {
     assert_ne!(seen.len(), 0, "the walk's charge was released");
     assert!(
         seen.iter()
-            .all(|&(walks, entries, _)| walks == 0 && entries == 0),
+            .all(|&(walks, entries, _, _)| walks == 0 && entries == 0),
         "released while its entries were in a table: {seen:?}"
     );
 }

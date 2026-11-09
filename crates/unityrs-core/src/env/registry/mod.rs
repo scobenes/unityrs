@@ -370,7 +370,7 @@ impl Registry {
 
     /// The table of the walks' flags under registry keys, for a test.
     #[cfg(test)]
-    pub(crate) fn watch_room(&self) -> (usize, Vec<(usize, usize)>) {
+    pub(crate) fn watch_room(&self) -> (usize, usize, Vec<(usize, usize)>) {
         self.read().watched.room()
     }
 
