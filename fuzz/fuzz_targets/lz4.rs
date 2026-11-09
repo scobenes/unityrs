@@ -12,12 +12,15 @@
 //! and unityrs refuses it so (an input of 2^31 bytes or more, the row's
 //! other refusal, is longer than any fuzz input).
 //!
-//! liblz4 decodes into a buffer of the declared size. Where that is more
-//! than any output of the block could reach (an LZ4 block of `n` bytes
-//! decodes to fewer than 256 `n` bytes, and each of liblz4's checks against
-//! the end of its buffer looks at most 64 bytes before it), a buffer of
-//! 512 `n` + 4096 bytes takes every branch the declared size would, so the
-//! comparison stays exact without reserving gigabytes.
+//! liblz4 decodes into a buffer of the declared size, and its verdict
+//! depends on that size, not only on the output's length (a literal run
+//! that ends within 12 bytes of the buffer's end must be the block's last).
+//! What it compares with the end of the buffer is the output so far, or
+//! that plus one sequence's length (each term under 256 `n` + 15 for a
+//! block of `n` bytes: every 255 a length adds costs a byte of input), at
+//! most 64 bytes before the end. So a buffer of 512 `n` + 4096 bytes takes
+//! every branch any larger declared size would, and the comparison stays
+//! exact without reserving gigabytes.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -57,8 +60,15 @@ fuzz_target!(|data: &[u8]| {
         "lz4-sys builds another liblz4"
     );
     let declared = u32::from_le_bytes(*head);
-    let limits = unityrs_fuzz::limits();
-    let ctx = unityrs_fuzz::context();
+    // One decode allocates its output once, at the length the scan found,
+    // so the memory bound can be the work bound: no output of a fuzz input
+    // (at most 255 times its length) reaches it, and a limit error would be
+    // a difference from liblz4.
+    let mut ctx = unityrs_core::FileContext::unitypy();
+    ctx.limits = unityrs_fuzz::limits();
+    ctx.limits.max_input_memory = unityrs_fuzz::WORK;
+    ctx.limits.max_block_output = unityrs_fuzz::WORK;
+    let limits = ctx.limits;
     let meter = unityrs_fuzz::meter(&ctx);
     let Ok(mut out) = DecodeBuf::new(&meter, 0, u64::MAX, LimitKind::InputMemory) else {
         return;
@@ -82,9 +92,19 @@ fuzz_target!(|data: &[u8]| {
         assert!(d.starts_with("OverflowError"), "declared {declared}: {d}");
         return;
     };
-    let reach = block.len().saturating_mul(512).saturating_add(4096);
-    let capacity = capacity.min(i32::try_from(reach).unwrap_or(i32::MAX));
-    match (liblz4(block, capacity), &ours) {
+    let reach =
+        i32::try_from(block.len().saturating_mul(512).saturating_add(4096)).unwrap_or(i32::MAX);
+    let theirs = liblz4(block, capacity.min(reach));
+    if capacity > reach {
+        // The module docs' argument, checked where it is used: a larger
+        // buffer gives liblz4's verdict at `reach`.
+        let larger = liblz4(block, capacity.min(reach.saturating_mul(2)));
+        assert!(
+            larger == theirs,
+            "declared {declared}: liblz4 depends on room past {reach}"
+        );
+    }
+    match (theirs, &ours) {
         (Ok(theirs), Ok(None)) => assert!(
             out.as_slice() == theirs.as_slice(),
             "declared {declared}: both accept, the bytes differ ({} and {} bytes)",

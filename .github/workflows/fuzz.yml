@@ -1,0 +1,128 @@
+name: Fuzz
+
+# The fuzz plan (docs/plans/core.md section 6): every target in fuzz/ runs
+# for an hour a night, from the corpus its run of the night before kept and
+# the seeds the testkit's builders write (never a corpus file). Any panic,
+# timeout over 10 s or allocation over 2 GiB fails the target's job, whose
+# failing input is uploaded. fuzz/README.md says how to reproduce one.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "How long each target runs, in seconds"
+        default: "3600"
+
+# No job writes to the repository.
+permissions:
+  contents: read
+
+# One run at a time: a run started while another runs waits for it, so two
+# never fuzz, or save a corpus, at once.
+concurrency:
+  group: fuzz
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # The nightly the targets build with and cargo-fuzz, pinned, so one night
+  # differs from the last only by the code. ci.yml's fuzz-build job uses the
+  # same two; keep them equal.
+  NIGHTLY: nightly-2026-11-09
+  CARGO_FUZZ_VERSION: 0.13.2
+  FUZZ_SECONDS: ${{ inputs.seconds || '3600' }}
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    # The hour, the builds (about ten minutes) and the corpus's minimization.
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - detect
+          - bundle
+          - serialized
+          - typetree
+          - boost_read
+          - python_read
+          - write_after_read
+          - lz4
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain and the nightly
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup toolchain install "$NIGHTLY" --profile minimal
+      # Restored and saved as separate steps, so the binary is cached even
+      # when the run below fails.
+      - name: Restore cargo-fuzz
+        id: cargo-fuzz
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cargo-fuzz
+          key: cargo-fuzz-${{ env.CARGO_FUZZ_VERSION }}-${{ env.NIGHTLY }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Install cargo-fuzz
+        if: steps.cargo-fuzz.outputs.cache-hit != 'true'
+        run: cargo +"$NIGHTLY" install cargo-fuzz --version "=$CARGO_FUZZ_VERSION" --locked --root ~/.cargo-fuzz
+      - name: Save cargo-fuzz
+        if: steps.cargo-fuzz.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cargo-fuzz
+          key: ${{ steps.cargo-fuzz.outputs.cache-primary-key }}
+      - name: Write the seeds from the testkit's builders
+        run: cargo run --locked -p unityrs-testkit --example fuzz_seeds -- "$RUNNER_TEMP/seeds"
+      # Each night saves its corpus under a key of its own (a cache cannot be
+      # overwritten), and the next night restores the newest.
+      - name: Restore the corpus
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Build the target
+        working-directory: fuzz
+        run: |
+          export PATH="$HOME/.cargo-fuzz/bin:$PATH"
+          cargo +"$NIGHTLY" fetch --locked
+          cargo +"$NIGHTLY" fuzz build -a "$TARGET"
+      # -a keeps debug assertions (integer overflow panics). The plan's
+      # limits: -timeout=10, and 2 GiB for one allocation; the RSS bound
+      # sits above it, so a single large allocation is reported as such.
+      - name: Fuzz
+        working-directory: fuzz
+        run: |
+          case "$FUZZ_SECONDS" in
+            '' | *[!0-9]*) echo "seconds: not a number: $FUZZ_SECONDS" >&2; exit 2 ;;
+          esac
+          export PATH="$HOME/.cargo-fuzz/bin:$PATH"
+          mkdir -p "corpus/$TARGET"
+          cargo +"$NIGHTLY" fuzz run -a "$TARGET" "corpus/$TARGET" "$RUNNER_TEMP/seeds/$TARGET" -- \
+            -max_total_time="$FUZZ_SECONDS" -timeout=10 -malloc_limit_mb=2048 -rss_limit_mb=3072 \
+            -print_final_stats=1
+      - name: Minimize the corpus
+        working-directory: fuzz
+        run: |
+          export PATH="$HOME/.cargo-fuzz/bin:$PATH"
+          cargo +"$NIGHTLY" fuzz cmin -a "$TARGET" "corpus/$TARGET" -- \
+            -timeout=10 -malloc_limit_mb=2048 -rss_limit_mb=3072
+      - name: Save the corpus
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+      - name: Upload the failing input
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore

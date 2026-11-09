@@ -54,7 +54,7 @@ const TARGETS: [&str; 8] = [
 const TREE_FORMATS: [u8; 10] = [2, 3, 5, 9, 11, 10, 12, 15, 19, 22];
 
 /// Bytes an LZ4 seed compresses at most of an output.
-const LZ4_MAX: usize = 64 << 10;
+const LZ4_MAX: usize = 16 << 10;
 
 struct Seeds {
     dir: PathBuf,

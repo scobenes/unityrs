@@ -1,0 +1,58 @@
+# cargo-deny for the fuzz crate, a workspace of its own that the repository's
+# deny.toml never sees (CI's licenses job runs both). Nothing built here
+# ships: the targets are run, never distributed, so their dependencies are
+# no part of THIRD_PARTY_LICENSES and about.toml does not list them. They
+# are held to the repository's licences all the same, so a copyleft
+# dependency cannot enter through the fuzz crate unnoticed.
+#
+# The allow list and the clarification and exceptions of the crates both
+# workspaces build are the repository's deny.toml's, copied; keep them equal.
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MIT-CMU",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+unused-license-exception = "deny"
+
+# As the repository's deny.toml (see about.toml).
+[[licenses.clarify]]
+crate = "liblzma-sys"
+expression = "(MIT OR Apache-2.0) AND 0BSD"
+license-files = [
+    { path = "LICENSE-MIT", hash = 0x09841695 },
+    { path = "LICENSE-APACHE", hash = 0x24b54f4b },
+    { path = "xz/COPYING.0BSD", hash = 0xcc44b1e6 },
+]
+
+[[licenses.exceptions]]
+crate = "liblzma-sys"
+allow = ["0BSD"]
+
+[[licenses.exceptions]]
+crate = "unityrs-core"
+allow = ["PSF-2.0"]
+
+# The fuzz crate's own: libfuzzer-sys builds LLVM's libFuzzer, which is
+# NCSA (University of Illinois/NCSA Open Source License), a permissive
+# licence, accepted for this crate only.
+[[licenses.exceptions]]
+crate = "libfuzzer-sys"
+allow = ["NCSA"]
+
+[bans]
+multiple-versions = "warn"
+
+[advisories]
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

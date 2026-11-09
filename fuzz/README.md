@@ -1,0 +1,93 @@
+# unityrs fuzz targets
+
+`cargo-fuzz` targets for `unityrs-core`: the fuzz plan of
+`docs/plans/core.md` section 6, and section 8's R9 (the LZ4 decoder against
+liblz4). Any panic, timeout over 10 s, or allocation over 2 GiB is a bug.
+
+This crate is a workspace of its own. It builds only with a nightly
+toolchain and cargo-fuzz, and nothing in it ships.
+
+## Targets
+
+| target | what it runs | input |
+|---|---|---|
+| `detect` | `detect::check_file_type` (the gzip check bounded by `max_inflate`) | any bytes |
+| `bundle` | `BundleFile::open` plus `load_all` (every block decoded, every entry parsed, nested bundles loaded), by the memory and the stream reader's rules | any bytes |
+| `serialized` | `SerializedFile::parse`, then every object's `parse_as_dict(true)` (UnityPyBoost's reader or the pure-Python one, by the object's size), by both readers' rules | any bytes |
+| `typetree` | `parse_blob` (format 10 and from 12) or `parse_old`, as the format says, then `NodeList::from_rows` and `Tree::compile` | `unityrs_testkit::fuzz::blob_case`: format, endian, stored tree |
+| `boost_read` | `walk::boost::read` | `unityrs_testkit::fuzz::TreeCase`: rows, ref types, value bytes |
+| `python_read` | `walk::python::read_with_reader`, from the case's start, by the memory or the stream reader's rules | `TreeCase` |
+| `write_after_read` | a read, `walk::write::write` under `WriteRules::MirrorReader`, the read again and the write again: the value and the bytes must come back the same (`docs/DESIGN.md`'s write rule); a writer's refusal must be its named error | `TreeCase` |
+| `lz4` | `codec::decode_block` with `codec::Lz4` against liblz4 1.9.4's `LZ4_decompress_safe` (lz4-sys 1.10.0): the same verdict, the same bytes, the same error code; `PARITY.md`'s LZ4 row is the one difference allowed | `unityrs_testkit::fuzz::lz4_case`: declared size, block |
+
+Every run is bounded by the limits in `src/lib.rs` (`MEMORY`, `WORK`):
+an input that reaches one ends with the core's named limit error, never an
+abort, and an allocation the meter did not see is what reaches libFuzzer's
+allocation limit. `MEMORY` is low for now; its comment says why and when to
+raise it.
+
+## Seeds
+
+The seeds are written by the testkit's builders, never taken from a corpus,
+and never committed:
+
+```sh
+cargo run -p unityrs-testkit --example fuzz_seeds -- /tmp/fuzz/seeds
+```
+
+writes one folder per target: every builder output (the format matrix,
+every format, codec and flag set, every Environment scene's files), the
+files each bundle holds, each object's tree and bytes, every stored tree in
+ten formats both ways round, the deep values of `unityrs_testkit::depth`,
+and LZ4 blocks of every output at the exact, a larger, a smaller and a zero
+declared size.
+
+## Running
+
+With a nightly toolchain and cargo-fuzz 0.13.2 (CI pins the nightly in
+`.github/workflows/fuzz.yml`), from this folder:
+
+```sh
+cargo +nightly fuzz build -a
+cargo +nightly fuzz run -a TARGET /tmp/fuzz/corpus/TARGET /tmp/fuzz/seeds/TARGET -- \
+    -max_total_time=900 -timeout=10 -rss_limit_mb=1280 -malloc_limit_mb=1024
+```
+
+`-a` keeps debug assertions, so an integer overflow panics. The targets
+build with AddressSanitizer, which reserves terabytes of address space: a
+`ulimit -v` must stay above about 20 TiB (25000000000 KiB works), so bound
+memory with `-rss_limit_mb` instead. CI uses `-malloc_limit_mb=2048`, the
+plan's 2 GiB.
+
+## A finding
+
+libFuzzer writes the input to `artifacts/TARGET/`. Then:
+
+1. `cargo +nightly fuzz tmin -a TARGET artifacts/TARGET/crash-...` minimizes
+   it;
+2. a regression test goes into the stable suite (`cargo test`), its input
+   written by a testkit builder where it can be, else the minimized bytes
+   as a hex literal (they are synthetic);
+3. the fix gives UnityPy's answer, or the named error `PARITY.md` allows;
+4. the target runs again.
+
+A CI failure uploads its input as the run's artifact; download it and start
+at step 1.
+
+## CI
+
+- `.github/workflows/fuzz.yml`: every night, each target for an hour, from
+  its corpus of the night before (kept with `actions/cache`) and the seeds.
+  A finding fails the target's job and uploads the input.
+- `.github/workflows/ci.yml`'s `fuzz-build`: on every push, every target
+  built and run for 30 seconds from the seeds, and `cargo fmt --check` over
+  this crate.
+
+## Licences
+
+The targets are run, never distributed, so this crate's dependencies are no
+part of `THIRD_PARTY_LICENSES`: cargo-about reads only the repository's
+workspace, which this crate is not a member of. They are held to the same
+licences all the same: CI's `licenses` job runs cargo-deny over this crate
+with `deny.toml` here, the repository's allow list plus one exception,
+NCSA for `libfuzzer-sys` (LLVM's libFuzzer).

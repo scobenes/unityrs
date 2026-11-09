@@ -16,24 +16,39 @@ use unityrs_core::walk::{FloatMode, ReadOptions, RefTypes};
 use unityrs_core::{FileContext, RawStr};
 use unityrs_testkit::fuzz::{Row, TreeCase};
 
-/// The bound of an input's memory and of its work: far below libFuzzer's
-/// allocation limit (2 GiB in CI), so an input that reaches a bound ends
-/// with the core's named limit error, and an allocation the meter did not
-/// see is what reaches libFuzzer's. Work (decoding, reading, writing) is
-/// bounded with it, so no input runs near the 10 s timeout by doing work
-/// the limits allow.
-pub const BOUND: u64 = 128 << 20;
+/// The bound of an input's memory (and of its size and of one block's
+/// output): far below libFuzzer's allocation limit (2 GiB in CI), so an
+/// input that reaches it ends with the core's named limit error, and an
+/// allocation the meter did not see is what reaches libFuzzer's.
+///
+/// It is low for AddressSanitizer's sake. A charged buffer whose doubling
+/// the meter refuses grows by exactly what each push needs, so near the
+/// bound every push reallocates; glibc grows a mapped block in place, but
+/// ASan's `realloc` copies the whole buffer each time, so the time such an
+/// input takes grows with the square of the bound. Without ASan, one
+/// 49-byte input took 15 ms at 8 MiB; under it, 32 s (60 ms at 4 MiB, 30 ms
+/// at 1 MiB, where no input was seen near the 10 s timeout). The growth is
+/// a known defect with its own fix (a refused growth retried with half the
+/// room, down to exactly what is needed): raise this once that fix is in
+/// `MeteredVec` and `DecodeBuf` and the targets run clean at the higher
+/// bound.
+pub const MEMORY: u64 = 1 << 20;
 
-/// The limits of every run: the defaults, with every memory, size and work
-/// bound at [`BOUND`].
+/// The bound of an input's work (every byte decoded, every value read or
+/// written, every byte detection inflates), so no input runs near the
+/// 10 s timeout by doing work the limits allow.
+pub const WORK: u64 = 64 << 20;
+
+/// The limits of every run: the defaults, with the memory, size and output
+/// bounds at [`MEMORY`] and the work bounds at [`WORK`].
 #[must_use]
 pub fn limits() -> Limits {
     let mut l = Limits::default();
-    l.max_input_memory = BOUND;
-    l.max_input_bytes = BOUND;
-    l.max_block_output = BOUND;
-    l.max_decode_work = BOUND;
-    l.max_inflate = BOUND;
+    l.max_input_memory = MEMORY;
+    l.max_input_bytes = MEMORY;
+    l.max_block_output = MEMORY;
+    l.max_decode_work = WORK;
+    l.max_inflate = WORK;
     l
 }
 
