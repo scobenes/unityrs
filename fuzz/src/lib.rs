@@ -78,10 +78,11 @@ pub fn with_stack<R: Send>(f: impl FnOnce() -> R + Send) -> R {
             .spawn_scoped(s, f);
         match worker.map(std::thread::ScopedJoinHandle::join) {
             Ok(Ok(r)) => r,
-            // A panic aborted before this; a thread the system refused is
-            // no finding of the core's.
+            // A panic aborted before this. A thread the system refused
+            // stops the run too, saying so: the harness's failure, not
+            // the core's.
             Ok(Err(p)) => std::panic::resume_unwind(p),
-            Err(e) => panic!("no thread for the read: {e}"),
+            Err(e) => panic!("the harness got no thread for the read: {e}"),
         }
     })
 }

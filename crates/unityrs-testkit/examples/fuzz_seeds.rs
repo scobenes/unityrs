@@ -131,7 +131,9 @@ impl Seeds {
                     }
                 }
             }
-            Ok(FileType::AssetsFile) => {
+            // A resource file too: detection takes an old format's
+            // SerializedFile for one, and the target parses whatever it gets.
+            Ok(FileType::AssetsFile | FileType::ResourceFile) => {
                 self.add("serialized", name, bytes)?;
                 if let Ok(f) = SerializedFile::parse(RawStr::from(name), data, None, &meter, &ctx) {
                     self.objects(name, &f)?;
