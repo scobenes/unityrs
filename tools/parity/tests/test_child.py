@@ -252,6 +252,10 @@ OWN_CHILDREN = {
     "crates/unityrs-bench-lzma/unitypy_lzma.py": (
         "the LZMA benchmark's pool of decoders, which is what it times; run by hand, never a test or a gate"
     ),
+    "tools/perf/bench_unitypy.py": (
+        "UnityPyBoost's side of the perf bench: its fork pool of readers is what it times, as the spike's was; "
+        "perf.py runs the bench itself through child.run"
+    ),
 }
 OWN_SCRATCH = {
     "tools/parity/scratch.py": "the rule itself",
