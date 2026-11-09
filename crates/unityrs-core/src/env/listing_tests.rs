@@ -15,10 +15,11 @@ use crate::raw::RawStr;
 use bytes::Bytes;
 use unityrs_testkit::env::{Obj, serialized};
 
-/// The listings: each load's number and the key it lists. Two loads list
+/// The listings: each load's number and the key it lists. Three loads list
 /// `x` and two `y`, and `X` lowers to `x`, so a key is listed again by a
-/// later load and by an earlier one, and two keys lower to one name.
-const LISTINGS: [(u64, &str); 5] = [(0, "x"), (1, "y"), (2, "X"), (3, "x"), (4, "y")];
+/// later load and by an earlier one, after it moved, and two keys lower to
+/// one name.
+const LISTINGS: [(u64, &str); 6] = [(0, "x"), (1, "y"), (2, "X"), (3, "x"), (4, "y"), (5, "x")];
 
 /// UnityPy's `env.files` after the listings of `loads`, made in the order
 /// of their numbers (a Python dict: a key at its first assignment, with
@@ -56,7 +57,7 @@ fn orders(n: usize) -> Vec<Vec<usize>> {
     out
 }
 
-/// Every order the five listings can arrive in, each checked after every
+/// Every order the six listings can arrive in, each checked after every
 /// listing against UnityPy's dict of the listings made so far: `files`
 /// lists each key at its place with its file, `objects` steps into the
 /// files in that order (each holds one object, of path id its load + 1),
@@ -89,7 +90,7 @@ fn files_holds_unitypys_dict_whatever_order_the_loads_list_in() {
         LISTINGS[at].0
     };
     let all = orders(LISTINGS.len());
-    assert_eq!(all.len(), 120);
+    assert_eq!(all.len(), 720);
     for order in &all {
         let env = Environment::new(EnvOptions::unitypy());
         let mut loads = Vec::new();

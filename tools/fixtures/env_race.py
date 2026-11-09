@@ -26,8 +26,8 @@ Two plain scenes are also recorded in the orders the core's unit test
 in `env_threads.json`: `nested_between_loads` with one load's
 registrations past its first made only after the files after it are
 loaded and the container listed (`held_case`), and `listings_raced` with
-its two files loaded in each order, under their names and both under one
-name (`orders_case`).
+its two files loaded in each order, under their names, both under one name,
+and with the first found by `env.find_file` in `env.path` (`orders_case`).
 """
 
 from __future__ import annotations
@@ -224,9 +224,10 @@ def race_case(scene: dict, new_run) -> dict:
 
 # The plain scenes `env_threads.json` records, and how (module docs): a
 # held scene by the index of the load whose registrations past its first
-# are held, an orders scene by the names its two files are loaded under.
+# are held, an orders scene by the names its two files are loaded under
+# (`None`: their own) and whether the first is found by `find_file`.
 HELD = {"nested_between_loads": 1}
-ORDERS = {"listings_raced": (None, ("x", "x"))}
+ORDERS = {"listings_raced": ((None, False), (("x", "x"), False), (None, True))}
 
 
 def held_case(scene: dict, new_run, held: int) -> dict:
@@ -277,22 +278,30 @@ def held_case(scene: dict, new_run, held: int) -> dict:
     return out
 
 
-def orders_case(scene: dict, new_run, names) -> list:
+def orders_case(scene: dict, new_run, names, find: bool) -> list:
     """The scene's two files loaded in each order, under `names` (`None`:
-    their own): the container, every object's `container` path, the
-    dependencies' paths and the state after both."""
+    their own), the first, with `find`, by `env.find_file(name,
+    is_dependency=True)` from `env.path`, where it lies under its name: the
+    container, every object's `container` path, the dependencies' paths and
+    the state after both."""
     out = []
     files = [[n if names is None else names[i], d] for i, (n, d) in enumerate(scene["files"])]
     for order in ((0, 1), (1, 0)):
         with scratch.folder() as tmp:
             with contextlib.redirect_stdout(io.StringIO()):
                 run = new_run({**scene, "files": files}, str(tmp))
+                if find:
+                    (Path(tmp) / files[0][0]).write_bytes(bytes.fromhex(files[0][1]))
                 for i in order:
-                    assert run.load(i) == "ok", i
+                    if find and i == 0:
+                        assert run.env.find_file(files[0][0], is_dependency=True) is not None
+                    else:
+                        assert run.load(i) == "ok", i
                 out.append(
                     {
                         "name": scene["name"],
                         "names": [f[0] for f in files],
+                        "find": find,
                         "order": list(order),
                         "container": run.container(),
                         "paths": run.paths(),
@@ -310,7 +319,7 @@ def threads_fixture(inputs: list[dict], new_run) -> dict:
     orders = [
         case
         for name, all_names in ORDERS.items()
-        for names in all_names
-        for case in orders_case(by_name[name], new_run, names)
+        for names, find in all_names
+        for case in orders_case(by_name[name], new_run, names, find)
     ]
     return {"held": held, "orders": orders}

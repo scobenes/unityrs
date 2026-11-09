@@ -511,52 +511,78 @@ fn a_load_between_a_keys_position_and_value_starts_a_container_index_generation(
 /// two loads made in the order of their numbers, first file first, whose
 /// other order UnityPy answers otherwise: under the files' own names (the
 /// first's key first) and both under `x` (the second's file the value),
-/// under every option set. `files` took the order the threads listed in, so
-/// the first load's file was listed last: `x` held the first file in
-/// `files` and the second in the registry, and `p` came after `q`.
+/// under every option set, and with the first file found by `find_file` in
+/// the resolver's `env.path` (a dependency listed under its path), under
+/// the option sets that list resolver loads. `files` took the order the
+/// threads listed in, so the first load's file was listed last: `x` held
+/// the first file in `files` and the second in the registry, and `p` came
+/// after `q`.
 #[cfg(test)]
 #[test]
 fn two_loads_that_race_their_listings_leave_unitypys_order_of_their_numbers() {
     let doc = threads();
     let scene = unityrs_testkit::env::listings_raced();
-    let run = |names: &J, order: [u64; 2]| -> J {
+    let run = |names: &J, find: bool, order: [u64; 2]| -> J {
         let found = doc["orders"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|c| c["names"] == *names && c["order"] == json!(order))
-            .unwrap_or_else(|| panic!("UnityPy has no run of {names} in {order:?}"));
-        without(found, &["name", "names", "order"])
+            .find(|c| c["names"] == *names && c["find"] == find && c["order"] == json!(order))
+            .unwrap_or_else(|| panic!("UnityPy has no run of {names}, find {find}, in {order:?}"));
+        without(found, &["name", "names", "find", "order"])
     };
     let mut cases = 0;
-    for names in [["p", "q"], ["x", "x"]] {
+    for (names, find) in [(["p", "q"], false), (["x", "x"], false), (["p", "q"], true)] {
         let names_j = json!(names);
-        let want = run(&names_j, [0, 1]);
+        let want = run(&names_j, find, [0, 1]);
         assert_ne!(
             want,
-            run(&names_j, [1, 0]),
-            "{names:?}: UnityPy's orders agree"
+            run(&names_j, find, [1, 0]),
+            "{names:?}, find {find}: UnityPy's orders agree"
         );
         let src = |i: usize| Source::Bytes {
             name: RawStr::from(names[i]),
             data: Bytes::from(scene.files[i].1.clone()),
         };
-        for (what, options) in race_options() {
+        let options: Vec<_> = if find {
+            // `env.path` holds the first file under its name.
+            let path = Arc::new(Path(vec![(
+                names[0].as_bytes().to_vec(),
+                Bytes::from(scene.files[0].1.clone()),
+            )]));
+            let [eager, lazy, _] = race_options();
+            [eager, lazy]
+                .into_iter()
+                .map(|(what, mut o)| {
+                    o.resolver = Some(path.clone());
+                    (what, o)
+                })
+                .collect()
+        } else {
+            race_options().into()
+        };
+        for (what, options) in options {
             cases += 1;
             let env = Environment::new(options);
             let gate = Gate::install(&env);
             let load = {
                 let (env, source) = (env.clone(), src(0));
                 gate.run(Some((Hook::Listing, 1)), move || {
-                    drop(env.load(source).unwrap());
+                    if find {
+                        let name = RawStr::from(names[0]);
+                        let found = env.find_file(&name, true, &Meter::unlimited());
+                        assert!(found.unwrap().is_some(), "find_file found nothing");
+                    } else {
+                        drop(env.load(source).unwrap());
+                    }
                 })
             };
             load.stopped();
             env.load(src(1)).unwrap();
             load.finish();
             let got = record(&env, &rows(&env));
-            assert_eq!(got, want, "{names:?} {what}");
+            assert_eq!(got, want, "{names:?}, find {find}, {what}");
         }
     }
-    assert_eq!(cases, 2 * 3);
+    assert_eq!(cases, 2 * 3 + 2);
 }
