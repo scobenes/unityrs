@@ -175,8 +175,14 @@ impl BundleFile {
     /// is published. Blocks the known prefix holds are found by binary
     /// search, and a cached run by one search of the run index.
     pub(super) fn read_span(&self, lo: u64, hi: u64) -> Result<Bytes, Error> {
+        Ok(self.read_span_pinned(lo, hi)?.0)
+    }
+
+    /// [`Self::read_span`], with the length of the buffer the bytes are a
+    /// slice of, which a slice of them keeps alive ([`Self::pins`]).
+    pub(super) fn read_span_pinned(&self, lo: u64, hi: u64) -> Result<(Bytes, u64), Error> {
         let Some((first, first_at, buf)) = self.first_block(lo, hi)? else {
-            return Ok(Bytes::new());
+            return Ok((Bytes::new(), 0));
         };
         let Span {
             first,
@@ -187,10 +193,10 @@ impl BundleFile {
         } = self.span_end(first, first_at, buf, hi)?;
         let from = usize::try_from(lo.saturating_sub(first_at)).unwrap_or(usize::MAX);
         let to = usize::try_from(hi.min(end_at).saturating_sub(first_at)).unwrap_or(usize::MAX);
-        let run = if let Some(b) = buf {
+        let (run, pinned) = if let Some(b) = buf {
             self.publish(first, end, first_at, b.into_bytes()?, true)
-        } else if let Some(bytes) = self.cached(first, end, first_at)? {
-            bytes
+        } else if let Some(hit) = self.cached(first, end, first_at)? {
+            hit
         } else if let Some(bytes) = self.stored_span(first, end)? {
             self.publish(first, end, first_at, bytes, false)
         } else {
@@ -199,7 +205,22 @@ impl BundleFile {
             self.publish(first, end, first_at, b.into_bytes()?, true)
         };
         let to = to.min(run.len());
-        Ok(run.slice(from.min(to)..to))
+        Ok((run.slice(from.min(to)..to), pinned))
+    }
+
+    /// What a slice of `run` keeps alive: the buffer of the bundle's own
+    /// bytes when `run` is a slice of them (stored blocks; its
+    /// [`BundleFile::pinned`]), else `run`'s own length, a decoded run being
+    /// a buffer of its own.
+    fn pins(&self, run: &Bytes) -> u64 {
+        let (src, at) = (self.source.as_ptr().addr(), run.as_ptr().addr());
+        let within =
+            src <= at && at.saturating_add(run.len()) <= src.saturating_add(self.source.len());
+        if within && !run.is_empty() {
+            self.pinned()
+        } else {
+            u64::try_from(run.len()).unwrap_or(u64::MAX)
+        }
     }
 
     /// The read's first block, the first that ends past `lo` if it starts
@@ -291,14 +312,25 @@ impl BundleFile {
     }
 
     /// A cached run covering blocks `first..end`, sliced to start at block
-    /// `first` (joined offset `first_at`): one search of the run index.
-    fn cached(&self, first: usize, end: usize, first_at: u64) -> Result<Option<Bytes>, Error> {
+    /// `first` (joined offset `first_at`): one search of the run index. With
+    /// what a slice of it keeps alive ([`Self::pins`]).
+    fn cached(
+        &self,
+        first: usize,
+        end: usize,
+        first_at: u64,
+    ) -> Result<Option<(Bytes, u64)>, Error> {
         let hit = {
             let runs = self.runs.lock().unwrap_or_else(PoisonError::into_inner);
             self.steps(search_steps(runs.len()))?;
             runs.covering(first, end)
         };
-        Ok(hit.map(|(f, bytes)| self.slice_from_block(f, &bytes, first_at)))
+        Ok(hit.map(|(f, bytes)| {
+            (
+                self.slice_from_block(f, &bytes, first_at),
+                self.pins(&bytes),
+            )
+        }))
     }
 
     /// `bytes`, a run from block `f`, from joined offset `first_at` on (every
@@ -347,7 +379,8 @@ impl BundleFile {
     /// refuses them, the room for the runs it drops or the index's growth,
     /// the run is returned uncached and the index is unchanged, as a refused
     /// growth of the table left it. A `decoded` run a cached one answers for
-    /// is dropped, its bytes counted as discarded ([`Self::counts`]).
+    /// is dropped, its bytes counted as discarded ([`Self::counts`]). With
+    /// what a slice of the bytes returned keeps alive ([`Self::pins`]).
     fn publish(
         &self,
         first: usize,
@@ -355,16 +388,20 @@ impl BundleFile {
         first_at: u64,
         bytes: Bytes,
         decoded: bool,
-    ) -> Bytes {
+    ) -> (Bytes, u64) {
         let mut dropped: MeteredVec<Bytes> = MeteredVec::new(self.meter());
         let out = {
             let mut runs = self.runs.lock().unwrap_or_else(PoisonError::into_inner);
+            let uncached = |bytes: Bytes| {
+                let pinned = self.pins(&bytes);
+                (bytes, pinned)
+            };
             if self.steps(search_steps(runs.len())).is_err() {
-                return bytes;
+                return uncached(bytes);
             }
             for _ in runs.inside(first, end) {
                 if self.steps(1).is_err() {
-                    return bytes;
+                    return uncached(bytes);
                 }
             }
             match runs.publish(first, end, &bytes, &mut dropped) {
@@ -373,9 +410,9 @@ impl BundleFile {
                         self.counts
                             .dropped(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
                     }
-                    self.slice_from_block(f, &b, first_at)
+                    (self.slice_from_block(f, &b, first_at), self.pins(&b))
                 }
-                Published::Cached | Published::Refused => bytes,
+                Published::Cached | Published::Refused => uncached(bytes),
             }
         };
         drop(dropped);

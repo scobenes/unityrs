@@ -378,6 +378,15 @@ impl BundleFile {
         self.read_span(span.start, span.end)
     }
 
+    /// The length of the buffer this bundle's own bytes are a slice of,
+    /// which a slice of a stored block keeps alive (`Parent::pinned`; its
+    /// own length for a top-level bundle).
+    #[must_use]
+    pub fn pinned(&self) -> u64 {
+        let own = u64::try_from(self.source.len()).unwrap_or(u64::MAX);
+        self.parent.as_ref().map_or(own, |p| p.pinned.max(own))
+    }
+
     /// A byte range of an entry (a `.resS` read), short at the end of the
     /// entry as a Python slice. It measures every block before the range as
     /// any read does, slices a cached run that covers the range's blocks, and
@@ -501,7 +510,8 @@ impl BundleFile {
             .directory
             .get(dir_index)
             .ok_or_else(|| no_entry(dir_index))?;
-        let bytes = self.entry_bytes(dir_index)?;
+        let span = self.entry_span(dir_index)?;
+        let (bytes, pinned) = self.read_span_pinned(span.start, span.end)?;
         let wrap = |e| self.entry_error(dir_index, e);
         // The inflation of a gzip entry is the open's work (`detect`'s
         // "Work"); its refusal is the open's limit, as a block decode's is.
@@ -522,6 +532,7 @@ impl BundleFile {
                 .as_ref()
                 .map_or(0, |p| p.depth)
                 .saturating_add(1),
+            pinned: pinned.max(u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
         };
         // A failure the cell keeps: its grants are the open's work (module
         // docs, "Memory and work").

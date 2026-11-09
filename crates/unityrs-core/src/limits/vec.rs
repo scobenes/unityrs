@@ -302,12 +302,12 @@ impl<T> MeteredVec<T> {
         (self.vec, self.charge)
     }
 
-    /// Gives back any spare capacity, the charge following it
-    /// ([`shrink_charged`]): shrunk in place, its charge cut after; or, for
-    /// a block that may be mapped given back below 128 KiB
-    /// ([`super::shrink_moves`]; review round 13), moved into an exact
-    /// allocation charged before it is made (both blocks exist while it
-    /// moves), so a refusal leaves the vector as it was and nothing
+    /// Gives back any spare capacity, the charge following it: shrunk in
+    /// place, its charge cut after (no second block exists, so nothing more
+    /// is charged); or, for a block that may be mapped given back below
+    /// 128 KiB ([`super::shrink_moves`]; review round 13), moved into an
+    /// exact allocation charged before it is made (both blocks exist while
+    /// it moves), so a refusal leaves the vector as it was and nothing
     /// allocated beyond what was charged.
     pub fn shrink_to_fit(&mut self) -> Result<(), ChargeError> {
         shrink_charged(&mut self.vec, &mut self.charge)

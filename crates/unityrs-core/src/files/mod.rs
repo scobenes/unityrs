@@ -164,6 +164,14 @@ pub struct Parent {
     /// container at [`crate::limits::Limits::max_container_depth`] refuses to
     /// parse an entry that is itself a container (`LimitKind::ContainerDepth`).
     pub depth: u32,
+    /// The length of the buffer the child's bytes are a slice of, which any
+    /// slice of them keeps alive: the container's decoded run that holds
+    /// them, or, for stored blocks, the buffer of the container's own bytes
+    /// (its own `pinned`). Never less than the child's own length, which is
+    /// what a container that does not know it gives. A value read from the
+    /// child copies its slices out when they would keep much more than
+    /// themselves alive ([`crate::pin`]; plan section 8, R3).
+    pub pinned: u64,
 }
 
 /// A container kind, as the `SerializedFile` version chain and `PPtr.deref`

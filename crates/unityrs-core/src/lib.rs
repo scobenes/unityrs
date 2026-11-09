@@ -8,7 +8,7 @@
 //! deletes the allow.
 //!
 //! Layering, bottom up:
-//! - [`raw`], [`limits`], [`budget`], [`once`], [`error`], [`options`]: shared plumbing;
+//! - [`raw`], [`limits`], [`budget`], [`once`], [`error`], [`options`], [`pin`]: shared plumbing;
 //! - [`tables`], [`classid`]: generated tables pinned to the oracle's UnityPy and Python;
 //! - [`stream`], [`version`], [`detect`], [`codec`]: UnityPy's readers and rules;
 //! - [`files`]: `BundleFile`, `WebFile`, `SerializedFile` and raw files;
@@ -45,6 +45,7 @@ pub mod limits;
 pub mod object;
 pub mod once;
 pub mod options;
+pub mod pin;
 pub mod provider;
 pub mod pystr;
 pub mod raw;

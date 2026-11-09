@@ -199,7 +199,7 @@ impl ObjectRef {
             meter: file.meter(),
         };
         let info = self.info();
-        read_typetree_with_reader(
+        let mut read = read_typetree_with_reader(
             file.data(),
             info.byte_start,
             info.byte_size,
@@ -207,7 +207,22 @@ impl ObjectRef {
             &ctx,
             check_read,
             file.reader_kind(),
-        )
+        );
+        // A value kept past the file's handles keeps alive the buffer its
+        // slices are of: copied out of a run much larger than they are
+        // (`crate::pin`; plan section 8, R3), `check_read`'s value too.
+        match &mut read {
+            Ok(value) => {
+                file.unpin(value);
+            }
+            Err(ParseError::CheckRead { parsed, .. }) => {
+                if let Some(value) = Arc::get_mut(parsed) {
+                    file.unpin(value);
+                }
+            }
+            Err(_) => {}
+        }
+        read
     }
 
     /// `parse_as_dict(check_read=check_read)`: [`Self::read_typetree`] with
