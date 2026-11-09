@@ -52,6 +52,8 @@ class ValueCasesTests(unittest.TestCase):
         self.assertEqual(v(refused, side("encode", None, None)), "reference_encode")
         self.assertEqual(v(refused, side(None, None)), "reference_encode")
         self.assertEqual(v(side(None, None), refused), "differs")
+        # unityrs's `crash` (values.rs `CRASH`) is no answer about the case: never a match.
+        self.assertEqual(v(side(None, None), side("crash", None, None)), "differs")
 
     def test_empty_struct_align_last_reads_four_bytes_in_unitypy(self):
         case = next(c for c in value_cases.CASES if c["name"] == "empty_struct_align_last")
@@ -137,6 +139,8 @@ for c in json.load(open(sys.argv[2])):
         continue
     if MODE == "encode" and c["name"] == value_cases.CASES[0]["name"]:
         line.update(kind="encode", value=None, resave="skipped", resave_hex=None)
+    if MODE == "crash" and c["name"] == value_cases.CASES[0]["name"]:
+        line.update(kind="crash", value=None, resave="skipped", resave_hex=None, note="unityrs ran out of memory")
     # As serde_json writes it: U+2028, U+2029 and U+0085 unescaped.
     out.write(json.dumps(line, ensure_ascii=False).encode() + b"\\n")
 """
@@ -183,6 +187,15 @@ class GateStatusTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn(f"G2 fails on 1 case(s): {first}", err)
         self.assertEqual(json.loads(out.splitlines()[-1])["l2"]["reference_encode"], 1)
+
+    def test_a_case_unityrs_ran_out_of_memory_on_fails(self):
+        """`unityrs values` answers a case refused memory with kind `crash` and no value (values.rs `CRASH`), which
+        says nothing of the case: G2 reads it as an L2 difference and fails, whatever the case's L3 verdict."""
+        first = value_cases.CASES[0]["name"]
+        status, out, err = self.run_with("crash")
+        self.assertEqual(status, 1)
+        self.assertIn(f"G2 fails on 1 case(s): {first}", err)
+        self.assertEqual(json.loads(out.splitlines()[-1])["l2"], {"match": len(value_cases.CASES) - 1, "differs": 1})
 
     def test_a_case_left_unanswered_fails(self):
         status, _, err = self.run_with("missing")

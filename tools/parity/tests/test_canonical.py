@@ -365,6 +365,9 @@ class CanonicalForm(unittest.TestCase):
         def kinds(rec, levels=("L0",)):
             return [(p, k) for p, k, _ in C.check_record(rec, list(levels))]
 
+        # Section 4.2's list, written out here: a kind added to the checker and not to the format passed this test.
+        file_kinds = ("detect", "parse", "crash", "dumper")
+        self.assertEqual(sorted(C.FILE_ERROR_KINDS), sorted(file_kinds))
         for typ, kind, want in (
             ("error", "detect", []),
             ("error", "crash", []),
