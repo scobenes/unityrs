@@ -10,7 +10,8 @@ Runs in the oracle image. Two parts:
   classes, a class listed twice; ids past their tables; counts read as UnityPy reads
   them; string lengths, and strings that are not UTF-8; header sizes and checks (magic,
   version, compression and data type, a file or a properties header cut short, reads
-  that run out at a byte); common strings numbered by code points; LZ4 and LZMA
+  that run out at a byte); blobs of data type 1-3 that UnityPy's own readers cannot
+  read; common strings numbered by code points; LZ4 and LZMA
   payloads, with the blocks and streams on which liblz4 and liblzma decide differently
   from other decoders, and LZMA payloads at `TpkProvider`'s decoded bound whose one far
   match makes unityrs-core's codec decode again with a larger dictionary), run through
@@ -94,6 +95,7 @@ from tpk_build import (  # noqa: E402
     root_flags_blob,
     strings,
     tpk_file,
+    varint,
     ver,
 )
 
@@ -322,6 +324,27 @@ def header_cases() -> Iterator[tuple[str, bytes, int]]:
     tail = payload + b"\0" * 8 + b"zz"
     block = lz4_sequence(payload + b"\0", 1, 7) + lz4_sequence(b"zz")
     yield "data_type_4_lz4_refused", with_byte(6, 4, tpk_file(tail, LZ4, data=block)), 256
+    # A blob of data type 1-3 that UnityPy's own reader cannot read (`ToBlob`,
+    # `Tpk.py:113-121`): it raises that reader's exception before `init`'s assertion,
+    # and unityrs, which reads no such blob, refuses it as it refuses one that reads
+    # (`PARITY.md`, `TpkFile`'s row; review round 16). A collection is a count, then
+    # each blob's string, data type and blob (`:243-256`), so it nests; a string is a
+    # varint length and its UTF-8 (`read_string`, `:445-456`).
+    one = struct.pack("<i", 1)
+    not_utf8 = varint(1) + b"\xff"
+    nested = (one + varint(0) + bytes([1])) * 1000
+    unread = {
+        "data_type_1_collection_not_utf8": (1, one + not_utf8),
+        "data_type_1_collection_nested_data_type_9": (1, one + varint(0) + bytes([9])),
+        "data_type_1_collection_nested_1000_deep": (1, nested),
+        "data_type_2_file_system_not_utf8": (2, one + not_utf8),
+        "data_type_2_file_system_empty": (2, b""),
+        "data_type_3_json_not_utf8": (3, not_utf8),
+        "data_type_3_json_empty": (3, b""),
+        "data_type_3_json_length_past_an_index": (3, varint((1 << 64) - 1)),
+    }
+    for name, (data_type, data) in unread.items():
+        yield name, with_byte(6, data_type, tpk_file(data)), 256
     # The compression type (byte 5), the version (byte 4) and the magic.
     for compression in (4, 127, 128, 255):
         yield f"compression_{compression}", with_byte(5, compression), 256
