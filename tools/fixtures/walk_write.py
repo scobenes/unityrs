@@ -12,10 +12,11 @@ The `class_...` nodes over a value that is not a dict take the class branch's
 `getattr(value, child._clean_name)` (`helpers/TypeTreeHelper.py:447-455`), the name cleaned by
 UnityPyBoost's rule (its `TypeTreeNode`, `UnityPyBoost/TypeTreeHelper.cpp:28-65`);
 review round 16 found most of that branch pinned by nothing. Each of these
-pins one of its rules: the `(int&)` prefix and the trailing `?` dropped, each
-of ` .:-[]` cleaned to `_`, the attributes of a run (a `list`), of `bytes` and
-of a `float` (`real`, an `F32`'s and an `F64`'s, from the value and from an
-element of a run), and the registry scope each class ends. The values added
+pins one of its rules: the `(int&)` prefix and the trailing `?` dropped (each
+alone, and both from one name), each of ` .:-[]` cleaned to `_`, the
+attributes of a run (a `list`), of `bytes` and of a `float` (`real`, an
+`F32`'s and an `F64`'s, from the value and from an element of a run), and
+the registry scope each class ends. The values added
 with them pin what the writer makes of a foreign value: a `str`'s characters
 (an invalid UTF-8 sequence is one character a byte), a double narrowed to a
 float (a signalling NaN quieted), an `int` widened to a double, and `-0.0`
@@ -68,6 +69,7 @@ W2_NODES = {
     # Review round 16: the class branch over a value that is not a dict.
     "class_int_ref_real": holds(leaf("SInt64", "(int&)real")),
     "class_real_question": holds(leaf("SInt64", "real?")),
+    "class_int_ref_real_question": holds(leaf("SInt64", "(int&)real?")),
     "class_clean_space": holds([[0, "Bar", "bit length", 0]]),
     "class_clean_dot": holds([[0, "Bar", "bit.count", 0]]),
     "class_clean_colon": holds([[0, "Bar", "to:bytes", 0]]),

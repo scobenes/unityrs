@@ -156,7 +156,7 @@ def non_str_class_cases():
 
 def ref_type_cases():
     """R14, review round 16: a `type` read again, which the next data child resolves (`TypeTreeHelper.cpp:760`,
-    `TypeTreeHelper.py:200-201`); and ref types told apart by their assembly alone, scanned and, past the scan,
+    `TypeTreeHelper.py:200-201`), whether the data child before it was read or skipped; and ref types told apart by their assembly alone, scanned and, past the scan,
     through unityrs's table of first indices."""
     c = []
     add = lambda name, nodes, data, **kw: c.append(dict(name=name, nodes=nodes, hex=data.hex(), **kw))  # noqa: E731
@@ -166,6 +166,7 @@ def ref_type_cases():
     head = ref_bytes("C") + i32(42)
     add("r14_type_read_again", base(again, INT("tail")), head + s("B") + s("N") + s("A") + struct.pack("<d", 2.5) + i32(9), ref_types=refs)
     add("r14_type_read_again_empty_class", base(again, INT("tail")), head + s("") + s("N") + s("A") + i32(9), ref_types=refs)
+    add("r14_type_read_again_after_skip", base(again, INT("tail")), ref_bytes("") + s("B") + s("N") + s("A") + struct.pack("<d", 2.5) + i32(9), ref_types=refs)
     add("r14_type_read_again_unknown", base(again, INT("tail")), head + s("X") + s("N") + s("A") + i32(9), ref_types=refs)
     add("r14_type_read_again_aligned_element", base(vec("RefIds", [[r[0], r[1], r[2], ALIGN if r[0] == 0 else 0] for r in again]), INT("tail")),
         i32(1) + head + s("B") + s("N") + s("A") + struct.pack("<d", 2.5) + i32(9), ref_types=refs)
