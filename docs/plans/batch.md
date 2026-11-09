@@ -1,15 +1,15 @@
 # P1b plan: unityrs-batch, the engine (draft)
 
-**Status: draft, design round 1 (2026-11-09), not reviewed.** P1b is 2D batch extraction (`docs/DESIGN.md` section 5; called P2 until 2026-11-09, when the phase table gave the 2D work its own phase). This file is the engine's plan: registration, admission, eviction, the hand-off to sinks and refusal. The rest of the phase (the job spec, decoding, images, sinks, the manifest, releases) is `docs/plans/extract.md`, which relies on the engine meeting sections 1 and 2.
-- Until P1's third review round, `docs/plans/core.md` section 4.1 described a batch flow. Each review round found new problems in its admission and eviction, and the batch engine is not built in P1, so the flow left the core plan for this file. Section 3 lists every problem found in it.
-- Design round 1 (2026-11-09) put three designs before a panel of judges and merged the winner with what the judges took from the other two. Section 2 is that design. It replaces the old flow, which is gone from this file; section 3 marks each problem solved or shown wrong, and adds three the panel found.
+**Status: draft, design round 2 (2026-11-09), not reviewed.** P1b is 2D batch extraction (`docs/DESIGN.md` section 5; called P2 until 2026-11-09, when the phase table gave the 2D work its own phase). This file is the engine's plan: admission, the attempt, the hand-off to sinks, the stop path and refusal. The rest of the phase is `docs/plans/extract.md`, whose requirements rely on sections 1 and 2 here. The exact contract (the spec's fields, keys, identity and order, the manifest, the zip bytes, the exit codes) is `docs/BATCH_SPEC.md`.
+- Until P1's third review round, `docs/plans/core.md` section 4.1 described a batch flow. Each review round found new problems in its admission and eviction, so the flow left the core plan for this file. Section 3 lists every problem found in it.
+- Design round 1 (2026-11-09) gave a design with one dependency cache shared by every job, a Shared and an Alone attempt per input, and a retry rule. Its review found that the shared cache made outcomes depend on what ran beside an input in ways no retry rule could close (section 3.14). Design round 2 replaces it: every attempt is **sealed** (2.2). The round's dispositions are recorded outside the repository, like the earlier rounds'.
 - Nothing here is built. Before `unityrs-batch` is, this plan gets its own review rounds, run until a round finds no MEDIUM or HIGH problem.
 
-**What it builds on.** The core API and what it guarantees any batch engine: `docs/plans/core.md` section 4.1, a list of properties each checked by a P1 test. This plan relies on those properties, on the public API named where it is used, and on nothing else the core does. A need the list does not cover is a request to the core, made through its integration rule (section 6), not an assumption. Where the design can work without a request, the request says what it saves.
+**What it builds on.** The core API and what it guarantees any batch engine: `docs/plans/core.md` section 4.1, a list of properties each checked by a P1 test. This plan relies on those properties, on the public API named where it is used, and on nothing else the core does. A need the list does not cover is a request to the core (section 6), not an assumption. Each request says what the engine does until the core grants it.
 
 **Citations.**
 - P1's review findings are cited by the name of the review file that holds them and the finding's id. Those files belong to the review process and are not in the repository; each problem in section 3 restates what it found.
-- Design round 1's findings are cited by what they say. Its files are not in the repository either.
+- Design rounds' findings are cited by what they say.
 - "core 4.1, *property*" names a row of `docs/plans/core.md` section 4.1 by its first column. "core 3.13" is a section of that plan. A source path without a crate is under `crates/unityrs-core/src/`.
 - Corpus figures are aggregates from the private corpus, measured on the P1 core before its perf fixes.
 
@@ -20,22 +20,21 @@
 DESIGN.md section 4's `unityrs-batch` row: a JSON job spec of inputs, outputs and resource budgets (`threads`, `max_inflight_uncompressed_bytes` among them), run in parallel with bounded memory, streaming outputs to sinks, with the run marked `incomplete` when an input fails.
 
 `docs/plans/extract.md` adds what the engine must give the rest of P1b:
-- inputs that each know their dependencies by name (the spec's graph, 3.6);
+- inputs that each know their dependencies by id (the spec's graph and its views, 2.3);
 - the own-bundle-first rule for same-named CABs under `EnvOptions::batch()` (3.9);
 - a failed dependency failing exactly the inputs that need it (3.10);
-- sinks that may hold output across jobs, for the `prefer` winners (3.5).
+- sinks that may hold output across inputs, for the `prefer` winners (3.5).
 
-**DESIGN's "each bundle and dependency parsed once per run, within `dep_cache_bytes`" cannot hold as written.** Under eviction a dependency is reopened after it is evicted, and an input that other inputs read is opened by its own job and again as a dependency (3.8). The goal this design meets instead: each dependency is opened at most once per residency in the dependency cache, and the manifest counts every reopen (`EnvStats`, `env/mod.rs`). `extract.md` E14 says the same; DESIGN's row is the owner's to change (section 8).
+**DESIGN's "each bundle and dependency parsed once per run, within `dep_cache_bytes`" does not hold.** Each attempt opens the bundles of its view in a dependency cache of its own, so a dependency that N inputs read is opened and decoded up to N times (2.2, its cost). The goal this design meets: within one attempt, each bundle of its view is opened at most once per residency in that attempt's cache, and the manifest counts every open and reopen. `extract.md` E14 says the same; DESIGN's row is the owner's to change (section 8).
 
 **Two properties the design keeps.** Every mechanism in section 2 serves one of them or a requirement it names.
 - **D, determinism.** An input's records are a function of three things only: its bytes, the bytes of the bundles in its view (2.3), and the spec. Its records are its outputs and their bytes, its skips, and its failure. They do not depend on:
   - `threads`, or the order inputs run or finish in;
-  - what else is in flight or cached;
-  - which other inputs or dependencies failed, or which others are registered;
-  - any refusal that was retried.
+  - what else is in flight;
+  - which other inputs or bundles failed, or which others exist.
 
-  An input's **canonical run** is an Alone attempt (2.5) made from an empty dependency cache. Section 2.10 shows that every run gives the canonical records, and names its test. D has two limits. A nested container inside a bundle is one (2.10; core Q10). The other is a spool or index refusal, which stops the whole run instead of deciding one input's records (2.7, 2.9).
-- **B, the memory bound.** The process's live heap is at most the two pools' limits plus a constant fixed by the spec (section 5). Every byte that grows with an input or an output is charged to a pool before it is allocated.
+  2.10 shows why, against every counterexample design round 1's review built, and names the test. D has one limit: a host failure (an I/O error on the spool or a bundle's file, an allocation the OS refuses) stops the whole run instead of deciding a record (2.7).
+- **B, the memory bound.** The process's live heap is at most `max_inflight_uncompressed_bytes` plus constants fixed by the spec (section 5). Every byte that grows with an input or an output is charged to a budget before it is allocated.
 
 ---
 
@@ -43,565 +42,330 @@ DESIGN.md section 4's `unityrs-batch` row: a JSON job spec of inputs, outputs an
 
 ### 2.1 Phases
 
-1. **Validate** the spec (`extract.md` E1, E5, E48). Nothing is written. A bad spec exits 78 (`extract.md` section 3, item 5).
-2. **Preflight** (`extract.md` E63). Take the spool's lock, check its free space, read the credentials, check that each sink is reachable, read the stored manifest for fencing, and set the allocator (E57). A failure exits 69, with nothing published.
-3. **Manifest `running`** (E38), fenced by the spec's `attempt`. No output is written before it.
-4. **Download** every input and declared dependency given as a URL, streamed to the spool, at most `download_concurrency` at once (E7, E8).
-5. **Register** (2.3), on the controller's thread, with no job running.
-6. **Extraction round 1** (2.4 to 2.8).
-7. **Discovery round**, only when the spec has a URL rule and an attempt was deferred (2.3). Fetch, register, then extraction round 2 for the deferred inputs.
+1. **Validate** the spec (`BATCH_SPEC.md` section 1). Nothing is written. A bad spec exits 78.
+2. **Preflight** (E63). Take the spool's lock, check its free space and the process's resource limits, read the credentials, check that the sink is reachable, take the output root's lock (directory sink), read the stored manifest head for fencing, stat every local bundle and check its `size` and `sha256`, set the allocator (E57). A failure exits 69, or 6 when the stored head supersedes this attempt.
+3. **Manifest `running`** (E38), fenced. No output is written before it.
+4. **Download** every bundle given as a URL, streamed to the spool, at most `download_concurrency` at once (E7, E8).
+5. **Extraction round 1** (2.4 to 2.8).
+6. **Discovery round**, only when the spec has a URL rule and an attempt was deferred (2.3): fetch the names, then extraction round 2 for the deferred inputs.
+7. **Source check** (E6): every local bundle is stat'd again. One whose size, modification time or inode changed fails every input whose view holds it (`source_changed`), before anything is decided from its records.
 8. **Winners** (2.9): a pure function of the committed records.
 9. **Publish** (2.9), from the spool, at most `download_concurrency` transfers at once.
-10. **Manifest final** (E39), then the progress stream's `exit` line, then exit with `extract.md`'s code.
+10. **Manifest final** (E39), then the progress stream's `exit` line, then exit with the code of `BATCH_SPEC.md` section 9.
 
-A stop (the deadline less `shutdown_grace`, SIGTERM, SIGINT, SIGHUP, the parent's death, stdin's EOF) can come in any phase. It takes the stop path of 2.11.
+A stop (the deadline less the grace, SIGTERM, SIGINT, SIGHUP, the parent's death, stdin's EOF) can come in any phase. It takes the stop path of 2.11.
 
-**Cost.** No decode overlaps a download. Registration needs every bundle's directory, and every rank fixed, before the first job (2.3). On the corpus (1,101 inputs, 1.3-1.8 GB a build) the downloads are a small part of a run, against decoding at 72-75 % of the CPU. That has not been measured end to end (section 7, A9).
+**Cost.** No decode overlaps a download. On the corpus (1,101 inputs, 1.3-1.8 GB a build) the downloads are a small part of a run, against decoding at 72-75 % of the CPU. That has not been measured end to end (section 7, A9).
 
-### 2.2 Budgets and pools
+### 2.2 Sealed attempts
 
-The engine builds its own `MemoryBudget` and `PermitHome` objects out of atomics. They never block, never call the core and take no lock, which is the budget contract (core 4.1; `budget/mod.rs`). Each reservation is routed by its `Reservation` (`budget/mod.rs`):
+An **attempt** is one run of one input's extraction. Each attempt is sealed: everything that holds memory or counts work during it belongs to it alone.
+- **Its budget.** The attempt has one `MemoryBudget` object of its own, built by the engine from atomics. It never blocks, never calls the core and takes no lock (the budget contract, core 4.1; `budget/mod.rs`). It routes each reservation by its `Reservation`:
 
-| pool | what books with it | limit |
-|---|---|---|
-| **Input pool** | every attempt's meter, through the attempt's home; in phase 8, the winners' index; in phase 9, the transfers' buffers | `I` = `max_inflight_uncompressed_bytes` |
-| **Dependency pool** | every dependency meter, of the shared Environment and of an attempt's private Environment (2.3): opens, runs, entries, registry slots, the engine's key table, and what attempts pin | `dep_cache_bytes + F` |
-| `Provider` | unbounded: a TPK's own caps bound it (core 3.12), and the provider cache is one per `ProviderChain`, shared by every context cloned from the base (section 5.3) | none |
+  | `Reservation` | limit | what books with it |
+  |---|---|---|
+  | `Input` | `M` | the attempt's meter `M_X`: its input's bytes, runs, entries, values, and the engine's buffers (2.6) |
+  | `Dependency` | `D_X` | every meter of the attempt's private Environment: its opens, runs, entries, registry slots and keys |
+  | `Provider` | refused | version 1 configures no typetree provider (A8), so nothing books here |
 
-- **Per-attempt home.** Each attempt's budget is a thin wrapper over the Input pool, with its own `used` and `peak` atomics. That is one home per attempt; the budget contract forbids a home per reservation, not this (`budget/mod.rs`, the contract's docs).
-  - When the attempt returns, its worker reads `used`. It must be zero. Otherwise the run stops as an internal error (exit 70), so a leak never leaves the books short. Debug builds assert it.
-  - The controller counts the attempt finished only after that read.
-  - `peak` is the input's peak, reported in the manifest (E40).
-- **Limits.** Every meter of the run (attempts', dependencies' and private Environments') has `max_input_memory` = `max_decoded_bytes` (written `M` below). Its `max_decode_work` is `4 M`, the core's own default ratio (`Limits::default()`: 8 GiB and 32 GiB, `limits/mod.rs`).
-- **F, the registry floor.** F is the Dependency pool's use right after registration and an eviction of every dependency (CR1). It holds the registry's slots and keys and the engine's key table (2.3), which are charged to dependency meters and never freed during a run (core 3.13 and 3.16; the key table by the engine).
-  - The pool's limit is set to `dep_cache_bytes + F` by an atomic store while no job runs, and again after a discovery round's registrations.
-  - The LRU's bound stays `dep_cache_bytes` (`EnvOptions::dep_cache_bytes`).
-  - So the registry's permanent charges never come out of the room the cache and the reads have.
-- **Validation** (E48) refuses a spec unless `M <= I` and `M <= dep_cache_bytes`.
-  - The first lets an Alone attempt be refused only by its own meter, never by the Input pool (2.5).
-  - The second lets one dependency open at its cap fit the pool after a full eviction. With it the LRU never evicts the entry a call has just used, since that entry's meter is within the bound alone (2.6; A6).
-  - A read site may touch two opens (2.6), so the sizing rules recommend `2 M` (section 5.6). Below that, a read site too large for the pool is refused the same way in every run, which D allows.
+  `D_X` is `D` (`dep_cache_bytes`) when `view(X)` holds another bundle, and 0 when it is X alone.
+- **Its Environment.** The attempt builds a private `Environment` with `EnvOptions::batch(ctx_X)`, `dep_cache_bytes` set to `D_X`, and registers its view in it (2.6). No other attempt reads through it. It is dropped when the attempt returns.
+- **Its context.** `ctx_X` is a clone of the base `FileContext` with the attempt's budget. The base context's provider chain is empty and its codecs are stateless (`options.rs`).
+- **Admission by reservation.** The attempt's **slot** is `S_X = M + D_X`. The controller dispatches an attempt only while the slots in flight sum to at most `I` with it (2.4). The budget's limits are its slot, so the attempts in flight together can never hold more than `I`, and no attempt's reservation is ever refused for what another holds.
+- **The rest of the run.** Phases 8 and 9 run when no attempt does, under one **phase budget** of limit `I` (2.9).
+- **Leak check.** When the attempt's function returns, every local of it is dropped: the bundle, the private Environment, every file, value and pin. Its worker then reads the budget's `Input` and `Dependency` use. Both must be zero; otherwise the run stops as an internal error (exit 70). Only then does the worker send the end message, and the controller count the slot free. Debug builds assert it.
+- **Limits.** Every meter (an attempt's and its dependencies') has `max_input_memory` = `M` and `max_decode_work` = `4 M`, the core's default ratio (`Limits::default()`: 8 GiB and 32 GiB, `limits/mod.rs`).
+- **Validation** (`BATCH_SPEC.md` 1.1) refuses a spec unless `M <= D`, `M + D <= I` and `I >= 64 MiB`. The first lets one dependency open at its cap fit the attempt's Dependency budget, its view's registry aside (5.6 sizes for that). The second lets every slot fit with nothing else in flight, so the head of the queue always runs eventually. The third gives phases 8 and 9 their working set.
 
-### 2.3 Registration and views
+**Cost.** This is what sealing pays for D.
+- **Memory.** Each slot is reserved whole for the attempt's life, used or not. Parallelism is the largest number of slots that fit `I`, at most `threads`. For the corpus example (5.6), 8 slots of `M` = `D` = 256 MiB need `I` = 4 GiB, where design round 1 bounded 8 threads at 1.6 GiB. An input whose view is itself alone reserves only `M`.
+- **Throughput.** No dependency is shared between attempts. An attempt reads every bundle of its view from the spool or its local path, whole (`load_dependency` reads a `Source::Path` whole, `env/mod.rs`, `read_path`), and decodes again every block it reaches. A dependency read by N inputs costs N opens and up to N decodes of what they reach. The page cache serves the repeated file reads. How much this costs on the corpus is not measured (A5). CR4 (section 6) would cut each registration to the bundle's header and directory.
+- **What it removes.** The shared dependency cache, the Shared and Alone attempts, the Alone retry, the registration phase before extraction, the key table, flagging, and every request round 1 made for them (section 6).
 
-**Registration.** It happens on the controller's thread, while no job runs.
-- The engine calls `Environment::load_dependency(Source::Path(file))` (core 4.1, *`Environment::load_dependency(source)`*) for **every input and every dependency** the spec names. It calls them one at a time, in bytewise name order, on one Environment built with `EnvOptions::batch(ctx)`: `resolver: None`, and `dep_cache_bytes` from the spec (`env/mod.rs`).
-- Opening reads only each bundle's header, blocks-info and directory (core 4.1, *opening a bundle reads only its header, blocks-info and directory*).
-- From each returned `File` the engine reads the directory's CAB names, keyed as the registry keys them (`pystr::simplify_name`). It adds each to its **key table** (CAB key → the registered bundles that hold it), charged to the Dependency pool through a meter of the engine's own. It then drops the `File`, so the LRU holds the only strong handle (`load_dependency`'s docs, `env/load.rs`).
-- A failed load marks that bundle failed.
+### 2.3 Views and discovery
 
-Why every input, and why all of it before the first job:
-- **Every input.** A dependency may point back into an input's CAB. With every input registered, that read resolves the same way whether or not another input declares the input. Registration reads headers only, so it costs about 300 B of registry per CAB (A4), under 1 MiB for the corpus's 3,139 files.
-- **Before the first job.** A load's keys appear one at a time (core 3.16 item 6; 3.7's last row), and a load's number ranks same-named keys (core 3.13, **Ranks**). No job may see either while it runs.
-
-**Views.** An input's view is what it needs, so `extract.md` E13's "needs" means "is in the view". `view(X)` is the union of:
-- `X` itself;
-- the closure of X's declared list through the spec's graph, where a name that is itself an input adds its own list;
-- when the spec has a URL rule, the names in X's AssetBundle's `m_Dependencies`, and their closure.
+**Views.** `view(X)` (`BATCH_SPEC.md` 4.2) is X, the `deps` of every bundle in it, and, with a URL rule, the names in X's own AssetBundle object's `m_Dependencies`, closed the same way. `extract.md` E13's "needs" means "is in the view".
 
 The view rules:
-1. **A failed member fails X.** A bundle of `view(X)` that failed to download or to load fails X before its first attempt (or at discovery), with `dependency_failed(name, reason)` (3.10).
-2. **Reads stay in the view.** Every read X's attempt makes in another bundle resolves within `view(X)`. A read whose CAB no bundle of `view(X)` holds is an object-level skip, `outside_view(cab)`. The skip and its reason are the same whether some other bundle holds that CAB or none does. The manifest's run-level diagnostics name the other bundle; X's records do not.
-3. **Same-named CABs within a view.** X's own bundle comes first (core section 9, Q12). After it comes the bundle whose name is greatest in bytewise order. This is a Tier C rule of `EnvOptions::batch()` only. `EnvOptions::unitypy()` is unchanged.
-4. **Flagged inputs.** X is **flagged** when some CAB key held by a bundle of `view(X)` is held by two or more registered bundles.
-   - An unflagged input reads through the shared Environment. Every key of its view has one registered holder, so the registry's answer (its registration of greatest rank) is rule 3's answer.
-   - A flagged input's attempt builds a **private Environment**, with `EnvOptions::batch` on the dependency context. It registers the bundles of `view(X)` in bytewise order with X last, each through `load_dependency(Source::Path)`, so its ranks give rule 3's answer. Its meters book with the Dependency pool, and it is dropped with the attempt.
-   - Flagging picks the mechanism, never the answer, so which inputs are flagged changes no record. The manifest lists them, with every same-named CAB (`same_named_cabs`).
+1. **A failed member fails X.** A bundle of `view(X)` that failed to download, failed its `size` or `sha256`, or whose load in the attempt fails, fails X with `dependency_failed(id, reason)` (3.10). One that failed before the attempt fails X before it starts.
+2. **Reads stay in the view.** The private Environment holds only `view(X)`, so every lookup resolves within it. A read whose CAB no bundle of the view holds is an object-level skip, `outside_view(cab)`.
+3. **Same-named CABs** resolve by `BATCH_SPEC.md` 4.3: the reading file's own bundle first, then X, then the greatest id. This is a Tier C rule of `EnvOptions::batch()` only.
+4. **Size.** A view of more than `max_view_bundles` bundles fails X, `view_too_large`. It bounds the uncharged heap a private Environment holds per registration (5.3).
 
-**Discovery** (`extract.md` E9). An attempt reads X's AssetBundle object before anything else.
-- When the spec has a URL rule and `m_Dependencies` names a bundle that is neither registered nor failed, the attempt ends `deferred` at once and commits nothing.
-- After round 1, with no job running, the controller:
-  1. fetches each such name by the URL rule;
-  2. registers the new bundles in bytewise order;
-  3. measures F again and sets the pool's limit;
-  4. rebuilds the key table and the flags;
-  5. runs round 2 for the deferred inputs.
-- A name whose fetch or load fails fails every deferred input whose view holds it.
-- One round is enough. A discovered bundle is a dependency, and no attempt reads a dependency's own `m_Dependencies`, so after one round every view is whole.
-- Bundles registered after round 1 change no record of an input that ran in round 1. That input's view did not hold them, and rule 2 kept its reads inside its view.
+**Discovery** (`extract.md` E9).
+- An attempt reads X's AssetBundle object before anything else. When the spec has a URL rule and `m_Dependencies` names a bundle that was neither fetched nor declared, the attempt ends `deferred` at once and commits nothing.
+- After round 1, with no attempt running, the controller fetches each such name by the URL rule (2.11 bounds the wait) and runs round 2 for the deferred inputs.
+- A name whose fetch fails fails every deferred input whose view holds it.
+- One round is enough: no attempt reads a dependency's own `m_Dependencies`, so after it every view is whole.
+- Whether an input is deferred depends only on the spec and its own bytes, and a deferred attempt commits nothing, so deferral changes no record.
 
-Without a URL rule, an `m_Dependencies` name outside the view is reported (`undeclared_dependencies`), never fetched, and stays outside the view. So the view, and with it every record, is the same whether or not another input declares that name.
+Without a URL rule, an `m_Dependencies` name outside the view is reported (`undeclared_dependencies`), never fetched, and stays out of the view.
 
 ### 2.4 The controller
 
-**Workers.** `threads` OS threads, each with an explicit stack of twice `Limits::stack_needed` (core 3.15). Each runs one attempt from start to end, single-threaded inside it. A meter used by one thread in program order refuses at the same point in every run, which 2.7 needs.
+**Workers.** `threads` OS threads, each with an explicit stack of twice `Limits::stack_needed` (core 3.15). Each runs one attempt from start to end, on that one thread.
 
-**Order.** The ready queue is sorted by declared `uncompressed_size()` (known after registration, `files/bundle/mod.rs`), largest first, then by spec order. Largest first shortens the tail; the corpus's largest single block decodes to 69.4 MB. Order changes no record (D).
+**Order.** The ready queue is sorted by file size, largest first, then by bytewise id. Largest first shortens the tail. Order changes no record (D).
 
-**The loop.** State: `ready` (sorted), `alone` (FIFO), `deferred`, `in_flight` (a count), `alone_running` (a flag).
+**The loop.** State: `ready` (sorted), `deferred`, `in_flight` (a count), `reserved` (the sum of the slots in flight).
 
 ```
 loop:
-  if a stop was requested: take the stop path (2.11)                      // no join
-  if not alone_running:
-      if alone is not empty:
-          if in_flight == 0:
-              evict every dependency (CR1)
-              dispatch(alone.pop(), Alone); alone_running = true
-          // else dispatch nothing: wait for the attempts in flight to end
-      else:
-          while in_flight < threads and ready is not empty: dispatch(ready.pop(), Shared)
-  if in_flight == 0 and ready and alone are empty: end the round
-  wait for one event: an attempt ended | a 1 s tick | a stop
-  on attempt ended (input, kind, outcome):       // sent after the attempt's home read zero
-      in_flight -= 1
-      if kind == Alone: alone_running = false
+  if the stop flag is set: return                                  // the stopper takes over (2.11)
+  while in_flight < threads and ready is not empty and reserved + S(head) <= I:
+      dispatch(ready.pop()); in_flight += 1; reserved += S(head)
+  if in_flight == 0 and ready is empty: end the round
+  wait for one event: an attempt ended | a 1 s tick | the stop flag's wake
+  on attempt ended (input, outcome):              // sent after its budget read zero (2.2)
+      in_flight -= 1; reserved -= S(input)
       match outcome:
-          Transient (Shared only): delete the attempt's spool directory; alone.push(input)
-          Deferred:                delete the attempt's spool directory; deferred.push(input)
-          Done:                    commit the attempt's directory (2.8)
-          Failed(reason):          record the failure; commit no candidate (E60)
+          Done:        commit the attempt's directory (2.8)
+          Deferred:    delete the attempt's directory; deferred.push(input)
+          Failed:      commit its failure record only (E60)
 ```
 
-- `dispatch` increments `in_flight` and sends the attempt on a channel the workers read. That channel never holds more than `threads` attempts.
-- An attempt's end message has a fixed size: the input, the attempt number, its kind, its outcome class, its counters and its peak. Its records are in the spool, never in the message (2.8).
-- The message channel's capacity is `threads`. At most `threads` attempts run, so a send never blocks.
-- `alone_running` keeps every Shared dispatch out while an Alone attempt runs. Once `alone.pop()` empties the queue, nothing else would stop the next pass of the loop from refilling the workers.
+- The queue is served strictly in order: the head waits until its slot fits. Every slot fits `I` alone, and every attempt returns (2.12), so the head always runs.
+- The dispatch channel and the end-message channel each have capacity `threads`. At most `threads` attempts run, so no send blocks.
+- An end message has a fixed size: the input, its outcome class, its counters and its peaks. Its records are in the spool, never in the message (2.8).
+- Each input runs at most once per round.
 
-### 2.5 Shared and Alone
+### 2.5 (Removed)
 
-- A **Shared** attempt runs beside others.
-- An **Alone** attempt is dispatched only when `in_flight` is 0, after CR1 evicts every dependency, and nothing is dispatched beside it until it ends.
-- Each input runs at most one Shared and one Alone attempt per round. A deferred input runs again only in round 2.
-
-**Why Alone ends.**
-- It waits only for `in_flight` to reach 0. An attempt never waits (2.12), and its work is bounded: core 4.1, *bounded work per open input*; core 3.15's per-object limits; and the engine's own loops, bounded by objects and by sheet area. So every attempt in flight returns.
-- Its own run is bounded the same way.
-- Phases 8 and 9, the only other users of the Input pool, run after the last round.
-
-**What an Alone attempt can meet.**
-- The Input pool holds only its charges, since every other attempt's home read zero. With `M <= I`, its own meter refuses before the pool. A `Budget(Input)` refusal in an Alone attempt is an internal error.
-- The Dependency pool holds F plus what this attempt causes.
-- Every dependency open it makes starts cold. CR1 has dropped the LRU's handles, nothing else holds one, and a reopen has a fresh work allowance on the same memory account (`Meter::reopen`, `limits/meter.rs`; core 4.1, *bounded work per open input*).
+Design round 1's Shared and Alone attempts. Sealing makes every attempt the canonical one, so there is nothing to retry.
 
 ### 2.6 An attempt
 
-1. **Meter and bytes.** `M_X = Meter::for_input(&limits, job_budget, Reservation::Input)`, then `bytes = read_path(file, &limits, &M_X)` (`env/mod.rs`). The input's bytes are charged to `M_X`.
-2. **Its own open.** `bundle = BundleFile::open(name, bytes, None, &M_X, &ctx_X)` (`files/bundle/open.rs`). The job's context `ctx_X` is a clone of the base context with the job's budget. This is the job's handle. It is independent of the input's registered copy (core 4.1, *a second handle on the same bytes is independent*).
-3. **View.** Read X's AssetBundle object: `m_Dependencies` and its container rows. Compute `view(X)` and its flag (2.3), charged to `M_X`. Defer when 2.3 says so. Build the private Environment when X is flagged.
-4. **Select.** Walk the entries and objects, filter by `class_id()` from the object table (no value read), and read typetrees only for the selected objects.
-5. **Export one sheet at a time.**
-   - Sprites are grouped by their sheet texture (file, path id). For each group, decode the sheet (and its alpha texture), render every sprite of the group, then drop the sheet.
-   - NGUI atlases are cut one at a time. A plain texture is its own group.
-   - This replaces UnityPy's per-file texture cache with a cache of size one, so the export buffers are bounded by the largest sheet (section 5.5). The output is the same: the cache changes when a sheet is decoded, not what it decodes to.
-6. **Reads into other bundles** go through read sites (below).
-7. **Engine buffers** (`extract.md` E59). Every buffer whose size an input chooses is charged to `M_X` at `heap_cost` before it is allocated: RGBA and alpha sheets, sprite canvases, crops, masks, PNG rows and output, atlas JSON, the record buffer. zlib's deflate state is charged as a constant before `deflateInit`, as the core charges LZMA's decoder state (`codec/lzma.rs`). The charges go through `Meter::charge` or `DecodeBuf` (`limits/meter.rs`, `budget/mod.rs`): the core's rule of 3.15, applied to engine code.
-8. **Copy-out** (2.8).
-9. Between objects the attempt checks the stop flag.
-10. **End.** The attempt's last act is its end message. Returning drops the bundle, the private Environment, every file, value, slice and pin, and so every charge on `M_X`.
+1. **Budget and meter.** Build the attempt's budget (2.2) and `M_X = Meter::for_input(&limits, budget, Reservation::Input)`.
+2. **Its own open.** `bytes = read_path(file, &limits, &M_X)` (`env/mod.rs`). Then `check_file_type_with_reader(&bytes, &limits, ReaderKind::Stream)` (`detect.rs`) and `parse_file_with_reader(name, bytes, ty, None, &M_X, &ctx_X, ReaderKind::Stream)` (`files/mod.rs`): the rules the core uses for a `Source::Path`, and UnityPy's for a path. A file that is not a bundle fails X, `not_a_bundle`.
+3. **View.** Read X's AssetBundle object: `m_Dependencies` and its container rows. Compute `view(X)` (2.3), charged to `M_X`. Defer when 2.3 says so.
+4. **The private Environment.** Register `view(X)` less X with `load_dependency(Source::Path(file))`, one at a time in bytewise order of id, then X last when the view holds another bundle (`env/load.rs`). Drop each returned `File`, so the private LRU holds the only strong handle. A load that fails fails X (2.3, rule 1), and the attempt makes no read through that Environment after it (CR1 explains why).
+5. **Select** (`BATCH_SPEC.md` section 3). Walk the entries and objects in object order, filter by `class_id()` from the object table (no value read), and read typetrees only for the selected objects.
+6. **Export one sheet group at a time.**
+   - Sprites are grouped by their sheet texture (`BATCH_SPEC.md` 4.4). For each group, decode the sheet (and its alpha texture), render every sprite of the group, then drop the sheet.
+   - NGUI atlases are cut one at a time (`BATCH_SPEC.md` section 5). A plain texture is its own group.
+   - This replaces UnityPy's per-file texture cache with a cache of size one, so the export buffers are bounded by the largest sheet (5.5). The output is the same: the cache changes when a sheet is decoded, not what it decodes to.
+7. **Reads into other bundles.** A pointer is dereferenced with `Environment::deref` on the private Environment, from the file that holds it (`env/deref.rs`). Before its next Environment call, the attempt takes the target's top-level `File` from its `Parent` and holds it while it uses the target (core 4.1, *a dropped container is an error, never a guess*). What is read is copied into the attempt's charged buffers, and every handle into another bundle is dropped when that read ends.
+8. **Resources** (own bundle first, core Q12). Take the candidates of `resource_candidates(path)` (`env/resource.rs`) in UnityPy's order. For each, look in the reading file's own container chain for an entry whose simplified name matches: its container's directory, then each enclosing container's, up to the top-level bundle (`BundleFile::directory`, `parent`). Read a match with `entry_range` through that handle (`files/bundle/mod.rs`). Only when no candidate is an own entry, read through `Environment::resource(from, path, offset, size)` on the private Environment, which covers a candidate in another bundle and one that is a top-level raw file (`env/resource_data.rs`). The engine's copy of the candidate rule is checked by `own_first_resources_equal_environment_resource_without_same_named_cabs` (3.9) until CR3 moves the rule into the core.
+9. **The container** comes from X's own `SerializedFile::container()` (`files/serialized/mod.rs`), never from `Environment::container()`.
+10. **Engine buffers** (`extract.md` E59). Every buffer whose size an input chooses is charged to `M_X` at `heap_cost` before it is allocated: RGBA and alpha sheets, the texture's source data, sprite canvases, crops, masks, PNG rows and output, atlas JSON, the sprite-group table, the record buffer. zlib's deflate state is charged as a constant before `deflateInit`, as the core charges LZMA's decoder state (`codec/lzma.rs`). The charges go through `Meter::charge` or `DecodeBuf` (`limits/meter.rs`, `budget/mod.rs`): the core's rule of 3.15, applied to engine code.
+11. **Copy-out** (2.8). Between objects the attempt checks the stop flag; a stopped attempt returns at once and commits nothing.
+12. **End.** The function returns, which drops everything above. The worker reads the budget (2.2), then sends the end message.
 
-**Read sites.** Every read that reaches a bundle other than X's own goes through one engine function, `dep_read`, as one **read site**. A read site is one of:
-- a pointer's target object and the value read from it;
-- a texture's value and its image data (its `.resS`, in the texture's own bundle or another bundle of the view);
-- a name read across a pointer (E21).
+### 2.7 Outcomes
 
-Inside a read site:
-- **The CAB is resolved before any read.** The engine takes the pointer's external's name (`SerializedFile::externals`, `files/serialized/mod.rs`), simplifies it, and resolves it within `view(X)` by 2.3's rules 2 and 3. On the shared Environment the engine checks that the registry answered with that holder: `HeldCab::hold` (`env/registry/cab.rs`), or the target's top-level bundle through its `Parent`.
-- **The target's top-level `File` is taken before the next Environment call.** It comes from `get_cab_held`'s `hold` (`env/deref.rs`), or with the target under CR5. It is held beside each dependency object while that object is used (core 4.1, *a dropped container is an error, never a guess*).
-- **Pins last only for the read site.** What is read is copied into the attempt's charged buffers, and every pin is dropped when the read site ends. A read site pins at most two dependency opens (a texture's bundle and its `.resS` bundle), and never holds a pin across read sites.
+Every error is classified once, by one engine function, `classify` (CR2 would make it the core's).
 
-**The resource rule** (own bundle first, core Q12).
-- Take the candidates of `resource_candidates(path)` (`env/resource.rs`) in UnityPy's order. For each candidate, look in the reading file's own container chain for an entry whose simplified name matches: its container's directory, then each enclosing container's, up to the top-level bundle (`BundleFile::directory`, `parent`). Read a match with `entry_range` through that handle (`files/bundle/mod.rs`).
-- Only when no candidate is found there, look in the registry within `view(X)`.
-- `Environment::resource` and the resolver are not used.
-- The rule copies the core's candidate order and slice rule. A differential test (`own_first_resources_equal_environment_resource_without_same_named_cabs`) compares it with `Environment::resource` under `EnvOptions::unitypy()` on every testkit scene without same-named CABs, until CR3 moves the rule into the core. That case is the rule's own Tier C row (`PARITY.md` section 19.2).
+| what failed | outcome |
+|---|---|
+| a refusal of the attempt's budget or of one of its meters: `Budget(Input)`, `Budget(Dependency)`, any `Limit` | recorded where it surfaced: an object-level skip inside an object's read or export, an input failure while opening X, an entry of X or a view member. Its reason names the budget, or the limit and its configured value |
+| an error the bytes decide: a corrupt block or entry, a typetree, an unsupported format, a decoder panic (E18), a key that breaks a rule, E25's bytes | DESIGN section 4's failure model: a container or entry failure fails X, an object's failure skips it |
+| a host failure: an I/O error reading X's file or a view member's file, or writing the spool | the run stops, exit 74 |
+| a spool claim refused, or free space below the reserve | the run stops, exit 5: spool use depends on the order inputs ran in, so it decides no input |
+| an error `classify` does not know | the run stops, exit 70, so a new core variant is noticed at once |
 
-**The container** comes from X's own `SerializedFile::container()` (`files/serialized/mod.rs`), never from `Environment::container()`. Its pointers resolve through `deref`, which reads the job's own siblings first through its `Parent` (Tier A; core 4.1, *a second handle on the same bytes is independent*). `Environment::container_path` is not used: it refuses a dependency's object under evicting options (core 3.13).
+**Why every refusal is final at once.** The attempt runs on one thread in program order. Its budget and every meter that books with it serve that thread alone (2.2). So each charge meets the same state in every run, and each refusal, and each growth a refusal silently shrank (`limits/vec.rs`, `grow_counted`; `budget/mod.rs`, `DecodeBuf::into_bytes`), falls at the same point. No outcome waits for a retry.
 
-### 2.7 Outcomes, and the one retry rule
+**`classify` until CR2.** One module matches the public enums: `Error`'s `Entry`, `Tree`, `AssetBundle`, `Deref`, `Limit` and `Budget` variants, `DerefError`'s `ContainerDropped` and `Load`, `ParseError`'s `Read`, `Tree` and `Deref`, `ReadError`'s detail, `TreeError` and `ChargeError`. A `DerefError` that `Environment::deref` returns bare is classified as that same chain. Every `#[non_exhaustive]` enum's wildcard arm returns "unknown". Its test builds each wrapper path and checks the class.
 
-Every error is classified before it becomes a skip or a failure. Inside `dep_read` the error is **dependency-side**; outside it, **job-side**.
-
-| what failed | in a Shared attempt | in an Alone attempt |
-|---|---|---|
-| dependency-side, inside `dep_read`: `Budget(Dependency)`; a `Limit` of kind `InputMemory` or `DecodeWork`; `ContainerDropped`; an I/O error reopening a dependency. A refusal of the job's own meter met inside `dep_read` (a lookup's key) is counted here too, which costs an Alone run and never changes a record | the attempt ends `Transient` and is queued Alone | drop the read site's pins, evict every dependency (CR1, on each Environment the attempt reads through), redo the read site once; a second failure is the outcome: an object-level skip of what the read site fed, naming the pool or the limit |
-| inside `dep_read`, an error the dependency's bytes decide: a corrupt block, a bad entry, a `Limit` of another kind (a depth, a count). The core keeps these in its cells (core 4.1, *transient refusals are never cached*), so every reader meets the same one | an object-level skip naming the dependency; not a failed dependency (3.10) | the same |
-| job-side, transient: `Budget(Input)`, or I/O on the job's own file | `Transient`, queued Alone | internal error (`Budget(Input)`; 2.5), or an input failure (I/O) |
-| job-side `Limit` on the job's own meter (`InputMemory`, `DecodeWork`, depths, counts) | deterministic: recorded as it surfaced, an input failure for the container, an entry or a block, a skip for an object | the same |
-| outside `dep_read`, other input-determined errors: a corrupt block, an entry's parse, a typetree, an unsupported format, a decoder panic (E18), an unwritable key, E25's bytes | as DESIGN section 4's failure model: a container or entry failure fails X, an object's failure skips it | the same |
-| a spool claim refused, or free space below the reserve | the run stops as a budget refusal (exit 5): spool use depends on the order inputs ran in, so it decides no input | the same |
-
-**Why the job side is deterministic.** The core counts `InputMemory` transient (`ChargeError::is_transient`, `error.rs`) because a dependency's memory account is shared. A job's meter is shared with nothing:
-- it counts X's own handle, X's buffers, and the keys of X's lookups while they run (core 3.13, **Names**);
-- a registration charges the slot's dependency, whichever handle read the entry (core 3.16, R2);
-- the attempt runs on one thread in program order.
-
-So `M_X` refuses at the same point in every run, and its refusal is final at once, with no Alone run.
-
-**Why the dependency side is not deterministic in a Shared attempt** (3.11, 3.12).
-- A dependency's memory account is shared by every open of it that is alive and by every pin into it. `Meter::reopen` keeps the one account (`limits/meter.rs`).
-- Its work allowance is shared by every reader of the open: "every read and write of an object's value counts its work toward the open's" (core 4.1, *bounded work per open input*; `walk/work.rs`).
-- `DecodeWork` is not transient (`error.rs`). Once the allowance is used up, the cell keeps the refusal (core 4.1, *transient refusals are never cached*).
-- A read the caller makes on a dependency's handle gets no evict-and-retry (core 3.13: "its refusal is the caller's, and nothing is evicted").
-
-Each of these depends on what other attempts read, held and cached before.
-
-**Why the Alone retry is deterministic and never refuses what would fit.**
-- After CR1, with the read site's pins dropped, every open the read site touches is reopened. Each starts with its account at its registrations and a fresh work allowance (`Meter::reopen`).
-- The read site's charges are then its **cold charges**: the source's bytes, the runs it needs, its entry and its value. They are a function of the read site alone.
-- So a second failure is the same in every run. A first refusal caused by the attempt's own earlier read sites (runs cached on an open, or work used up on it) is never the outcome.
-- This is the engine's evict-and-retry for the direct reads core 3.13 leaves untried. CR2 would give Shared attempts the core's retry too and save Alone runs; correctness does not need it.
-- Cold work: one read site's work on one fresh open is its runs, its entry's parse and its value. Each is bounded through `M`, together under the `4 M` allowance (A2). So the canonical run never ends in `DecodeWork` on a dependency.
+**An allocation the allocator refuses** comes back from the core as a `Budget` refusal (`limits/meter.rs`, `refusal`). Until CR2 tells it apart, preflight refuses to start (exit 69) when `RLIMIT_AS` or `RLIMIT_DATA` is below 5.1's bound, so the allocator does not refuse below it. One that still refuses is recorded as the budget's refusal, which is A13.
 
 ### 2.8 Copy-out, records and commit
 
-- **Spool layout:**
-  - `spool/in/`, the downloads;
-  - `spool/attempts/<input>.<n>/`, one attempt's outputs and its `records.ndjson`;
-  - `spool/done/<input>/`, a committed attempt;
-  - `spool/uploads.journal` (2.9);
-  - `spool/manifest.tmp`.
+- **Spool layout and lifecycle:** `BATCH_SPEC.md` section 6.
 - **Each output:**
-  1. It is encoded in charged memory, and its MD5 and visible hash (E20) are computed.
-  2. Its size is claimed from the spool counter, an atomic try-add against `spool_size`, after a `statvfs` check against `spool_reserve`.
+  1. It is encoded in charged memory, and its MD5, CRC-32 and visible hash (E20) are computed.
+  2. Its size is claimed from the spool counter, an atomic try-add against `spool.size_bytes`, after a `statvfs` check against `spool.reserve_bytes`.
   3. It is written to the attempt's directory, and its buffer is dropped.
-- **Records.** Candidate records (key or atlas unit, input, MD5, visible hash, mode, size, file) and skip records are appended to the attempt's `records.ndjson`, through a fixed buffer charged to `M_X`. Nothing about an output stays in memory after its record is written, so no record moves from charged to uncharged memory when the attempt ends.
+- **Records.** Candidate records (key or unit, input, kind, path id, MD5, CRC-32, visible hash, mode, size, file), skip records and diagnostics are appended to the attempt's `records.ndjson` through a fixed 64 KiB buffer charged to `M_X`. A record longer than the buffer is written through it in pieces. An atlas unit is written as one unit line and one line per member.
 - **Commit** (`extract.md` E60, all or nothing per input).
-  - An attempt that ends `Done` has its directory renamed to `spool/done/<input>/` by the controller.
+  - An attempt that ends `Done` has its directory renamed to `done/<input>/` by the controller.
   - An input that fails commits only its failure record: no candidate, so it competes for no key.
-  - `Transient` and `Deferred` attempts' directories are deleted.
+  - A deferred attempt's directory is deleted.
 
 ### 2.9 Winners and publish
 
-**Winners** (E31 to E34), in phase 8, after the last round.
-- The controller streams every committed `records.ndjson` into an index, key → candidates. The index is charged to the Input pool through a meter of its own. No attempt runs, so the pool is empty (2.2's home reads).
-- The decision is a pure function of the committed records, so it is the same whatever order the inputs finished in.
-- An atlas unit is one record with its member keys (E32, and `extract.md`'s cross-kind rule).
-- **Withholding** (E61): a key whose `prefer` input failed in this run is not published (`withheld`). Its rule-2 or rule-3 winner could otherwise overwrite what the next complete run publishes. With `publish_incomplete: false`, nothing is published when any input failed.
-- The winners and the collisions are written to spool files, and the index is dropped.
-- An index the pool refuses stops the run as a budget refusal (exit 5). That is the same in every run for one record set.
+**Winners** (E31 to E34, E61; `BATCH_SPEC.md` 4.5 and 4.6), in phase 8, after the last round.
+- **Sort.** The controller reads every committed `records.ndjson` and sorts the candidate records by key with an external merge sort: runs of at most 64 MiB, sorted in memory and written to `winners/`, then merged at most 64 runs at a time, with a 1 MiB buffer per run. Each key's ancestors (`a`, `a/x` for `a/x/y.png`) are added to the sort as directory markers. All of it is charged to the phase budget.
+- **Decide.** One pass over the sorted stream, a key's candidates at a time, decides each key by E31 to E33, after the units (E32), which a first pass over the unit lines decides. A key that meets a directory marker of another winner is `unwritable_key(prefix_conflict)`. Withholding (E61), and with `publish_incomplete: false` nothing is published when any input failed.
+- The winners and the collisions are written to `winners/` in key order. The decision is a pure function of the committed records, so it is the same whatever order the inputs finished in.
+- A refusal of the phase budget stops the run, exit 5. It cannot happen when `I >= 64 MiB`, so it marks a leak.
 
 **Publish**, in phase 9.
-- Each transfer reserves its buffer from the Input pool before it reads: `heap_cost(size)` for a single-part PUT's body, and the part size (16 MiB) for each part of a multipart upload. At most `download_concurrency` transfers run at once.
-- The scheduler waits only for a transfer to end, never on a counter. A reservation refused with no transfer running is an internal error. It cannot happen without a leak: every output file was encoded under an attempt's meter, so it is at most `M <= I`.
-- The **directory** sink writes each file as a temp file and renames it, runs `syncfs` before the final manifest, and opens paths beneath the root (E62).
-- The **zip** sink streams the archive from the spooled members (E36).
-- The **object store** follows `extract.md` E37 and section 3, item 1.
-- Each multipart upload id is appended to `spool/uploads.journal` before the first part and removed after its complete or abort (E64).
-
-**The manifest** is streamed from the spool's files, never built whole in memory. Each write is fenced (E38).
+- **Resume** (E43). With `resume` set, the object store's LIST of the output prefix (keys in ascending UTF-8 byte order) is merged with the sorted winners file, one LIST page in memory at a time. A winner whose key is listed with its MD5 as ETag (an archive's: its multipart ETag, `BATCH_SPEC.md` section 8) is `present` and not PUT. A LIST page out of order, or a LIST that fails, degrades to "PUT everything" with the warning `resume_list_failed`. In a directory, each winner's destination is stat'd, and hashed only when its size matches.
+- **Transfers.** A transfer reserves its buffer from the phase budget once, at its start: `heap_cost(size)` for a single-part PUT (files up to 16 MiB), or one 16 MiB part for a multipart upload, whose parts go one at a time. It holds that reservation until it ends. The scheduler starts a transfer when a `download_concurrency` permit is free and its reservation is granted; otherwise it waits for a running transfer to end. A reservation refused with no transfer running is an internal error (exit 70): every buffer is at most 16 MiB, below `I`.
+- **The directory sink** writes each file as a temp file named `.unityrs-tmp-<run_id>-<n>` beside its destination and renames it, opens paths beneath the root (E62), and runs `syncfs` before the final manifest.
+- **The zip format** (`BATCH_SPEC.md` section 8) streams each archive from the spooled members, with its central directory spooled while the members stream.
+- **The object store** follows `extract.md` E37. Each multipart upload id is appended to the journal after its create and before its first part, and removed after its complete or abort (E64).
+- **The manifest** (`BATCH_SPEC.md` section 7): its row files are streamed from the spool to the sink; then the head, at most 64 KiB, is written fenced.
 
 ### 2.10 Why D holds
 
-1. **An Alone attempt is deterministic.**
-   - It runs on one thread.
-   - It starts after CR1, on an Environment whose registry is the same in every run of its round (2.3: registration before extraction, in a fixed order).
-   - Every dependency open it makes starts cold.
-   - Its meter, and every dependency meter it touches, sees only its charges.
-2. **A read that succeeds gets the canonical answer.**
-   - Its bytes are the same whatever is cached. Eviction frees only what the core can re-read, and the next read reopens it (core 4.1, *eviction frees what it can re-read*). A resource read gives the same answer through either handle (core 4.1, *a resource read goes through `from`'s own handle when the core can tell without reading*).
-   - Every CAB resolves by `view(X)` (2.3), whatever else is registered or failed.
-3. **A refusal whose outcome could depend on other attempts is retried.** In a Shared attempt it ends the attempt (2.7). The Alone retry runs the read site cold.
-4. **A read site that succeeds in a Shared attempt also succeeds in the canonical run.**
-   - When it succeeded, each open it touched held at least its cold charges, within the open's `M`. The Dependency pool held at least F plus those, within its limit (A3).
-   - So its cold charges fit, and the canonical run's retry, which runs it cold, succeeds too.
-   - A job-side refusal falls at the same point in both runs (2.7).
+**The argument.** An attempt is a program run on one thread. Everything it reads is fixed by D's three inputs:
+- its bytes and its view's bytes, read whole from files that do not change during the run (E6; the source check of phase 7 fails what changed);
+- the spec: its limits, `M` and `D_X`, its rules;
+- the registration order, `BATCH_SPEC.md` 4.3, which depends only on the ids in the view.
 
-So a Shared attempt that meets no refusal commits the canonical records, and any other attempt hands its input to the canonical run.
+Everything it writes to is its own: its budget, its meters, its private Environment's registry, LRU, cells and work counts. No other thread books with them (2.2). The core keeps no state across threads but the budget and the provider chain (A12), and version 1's provider chain is empty. So the attempt computes the same records in every run. A deferred attempt commits nothing, and round 2's attempt starts from nothing again.
 
-**Not covered: nested containers** (core Q10, Q13). A nested container's CABs are registered when it is first reached (core 3.13), so whether a lookup by name finds one can depend on which attempt reached it first. Nested bundles are not expected in real builds (Q10). The engine reports every nested container it meets (`nested_containers`, E40). D is stated for runs without them.
+**Against round 1's counterexamples.**
+
+| counterexample | why a sealed attempt is immune |
+|---|---|
+| a cold decode's transient peaks above a warm read's cached run, so a read succeeds only after another input cached the run | no attempt reads a run another attempt cached. Every read of the attempt meets only runs its own earlier reads cached, in program order |
+| a growth or a shrink silently cut back by a pool another attempt filled, which moves a later refusal of the input's own meter | the attempt's budget is filled only by its own charges |
+| a dependency's growth ladder settled lower under contention, so a read site fits warm and not cold | as above, for the Dependency side |
+| overlapping entry spans: which runs are cached, and their cost, depend on which reader came first | the attempt's private opens see only its own reads |
+| a flagged input's private registry takes room a shared one does not | every attempt registers exactly its view, in one order, so its registry's charges are a function of its view |
+| a registration refused by a pool whose fill depends on every other bundle registered | registration happens inside the attempt, on its own budget |
+| a failed load that published some of its CABs before it failed | a failed load of a view member fails X, and no read follows it (CR1) |
+| a dependency's work allowance used up by other inputs' reads | each attempt opens its own copy, with its own allowance |
+| a same-named CAB in a bundle outside the view, or its failure | the private registry holds only the view |
+| a lookup that reaches a dropped slot of a bundle outside the view | as above |
+| a nested container registered when first reached, by whichever attempt got there | only this attempt reaches its private Environment's containers, in program order |
 
 **Tests.**
-- `an_inputs_records_do_not_depend_on_what_runs_beside_it`. The engine scene runs:
-  - at `threads` 1, 2 and 8;
-  - with the inputs in 20 seeded orders;
-  - with a refusal injected at the k-th `Input`, and then at the k-th `Dependency`, reservation, for every k up to the scene's total;
-  - with pools at 1.0, 1.5 and 4 times the largest peak;
-  - with an unrelated dependency that fails to download;
-  - with a bundle added that holds a same-named copy of a CAB in another input's dependency.
-
-  Every input's records must equal its canonical run's, timings and counters aside. The canonical run is checked as a run of its own, whose spec holds only that input and the bundles of its view.
-- `a_cached_dependencys_work_allowance_used_up_by_many_readers_changes_no_record` (3.11). N inputs each read one large value of one cached dependency, where N is past that open's allowance. Every input's records equal its canonical run's.
-- `an_alone_read_refused_by_its_own_cached_reads_is_retried_cold` (3.12). An Alone attempt reads two dependencies whose cached runs together pass the pool. Its records equal a run with a pool twice the size.
+- `an_inputs_records_do_not_depend_on_what_runs_beside_it`. The engine scene runs at `threads` 1, 2 and 8; with the inputs in 20 seeded orders; with `I` at the smallest valid value and at 4 times it; with an unrelated dependency that fails to download; with a bundle added that holds a same-named copy of a CAB in another input's dependency. Every input's records must equal those of a run whose spec holds only that input and its view, timings and counters aside.
+- `round_one_counterexamples_change_no_record`: one scene per row of the table above, each compared with its solo run.
+- `an_attempt_books_with_no_budget_but_its_own`: a test budget records the thread of each reservation; every reservation of an attempt comes from its worker, while its attempt runs.
+- `a_view_member_that_fails_to_load_fails_the_input_and_nothing_reads_after_it`.
 
 ### 2.11 Lifetime and the stop path
 
-- **The lifecycle thread** owns the stop decision. Signal handlers (SIGTERM, SIGINT, SIGHUP) only write to a self-pipe. The thread waits on that pipe, on a timer and, when the spec asks, on stdin's EOF (E46).
-- **The deadline** is converted once at start to a `CLOCK_BOOTTIME` instant. The engine starts stopping at `deadline - shutdown_grace` (default 20 s), so it has exited by the deadline (E45).
-- **Parent death.** `PR_SET_PDEATHSIG` (SIGTERM), then a `getppid()` check against the parent seen at start, since the parent may have died before the call (E46).
-- **The stop sequence:**
-  1. Set the stop flag. The controller dispatches nothing. Attempts stop at their next object, ending `Transient`, and commit nothing.
-  2. Abort every open multipart upload in the journal, in parallel, each with a timeout inside the grace.
-  3. Write the final manifest `incomplete`, fenced, with the stop reason. Inputs that never finished are `not_run`. Nothing is published after a stop.
-  4. Write the `exit` progress line.
-  5. Exit 6 **without joining** workers or transfers.
+**Threads.** The controller (the main thread), `threads` workers, the lifecycle thread, the progress thread, and, once a stop starts, the stopper. Downloads and transfers are async tasks on a current-thread runtime that only the controller drives, with `block_on`. No async task calls the core.
 
-  When the grace runs out first, the process exits as it stands. The stored manifest then says `running`, with its deadline, which is the truth.
-- **A second signal** during the stop exits at once.
+**The lifecycle thread** owns the stop decision and the hard exit. Its only I/O is reading its self-pipe and stdin.
+- Signal handlers (SIGTERM, SIGINT, SIGHUP) only write to a self-pipe. The thread waits on that pipe, on a timer, and, when the spec asks, on stdin's EOF (E46).
+- **The deadline** is converted once at start to a `CLOCK_BOOTTIME` instant. The stop starts at `deadline - grace` (E45).
+- **Parent death.** At start the binary sets `PR_SET_PDEATHSIG` (SIGTERM), then compares `getppid()` with `parent_pid` when the spec gives it, else with 1. A mismatch (the parent died before the call) stops at once (E46).
+- **On a stop** it sets the stop flag, cancels the runtime's cancellation token, wakes the controller, spawns the stopper, and arms the **hard exit** at `T_hard = min(deadline, now + grace) - 500 ms`.
+- **At `T_hard`**, if the process still runs, it calls `libc::_exit(6)`. It writes nothing first.
+- **A second stop signal** calls `_exit(6)` at once.
+- A stop after the final manifest's write changes nothing.
 
-### 2.12 What an attempt never does
+**What the stop flag stops.**
+- The controller dispatches nothing more and returns from its loop. It joins no worker and no transfer.
+- Each attempt returns at its next object, and commits nothing.
+- Each download and transfer future selects on the cancellation token, so a request in flight is dropped at once. A request the server had already received may still complete there.
+- No transfer starts a committing request after the flag: no PUT, no `CompleteMultipartUpload`, no rename. No new multipart upload starts.
+- Phase 8 checks the flag between sort runs.
 
-An attempt never waits:
-- on a budget: its pools only `try_reserve` (core 4.1, *budgets only `try_reserve`*);
-- on another attempt: its runs are its own, shared cells are computed outside the cell (core 3.16), and a dependency read the pool refuses fails instead of waiting;
+**The stopper**, in order:
+1. **Close the journal.** Under the journal's mutex it marks the journal closed, then reads it. A transfer that creates an upload after the close cannot journal it, and aborts it itself; if it is cancelled first, the bucket's lifecycle rule removes it (E64).
+2. **Abort** every upload id the journal holds, in parallel on its own runtime, each request with a timeout of `min(5 s, T_hard - now - 2 s)`.
+3. **The final manifest**, status `incomplete` with the stop reason, fenced (`BATCH_SPEC.md` 7.2). Its rows come from the spool: the inputs whose directories are in `done/` with their records, every other input `not_run`. Nothing is published after a stop, so no output row says `written` but those whose PUT was acknowledged before it.
+4. **The `exit` line.** The stopper hands it to the progress thread, which writes it before anything else and never overwrites it, and waits for the progress thread to report it written, at most `min(1 s, T_hard - now)`.
+5. `libc::_exit(6)`.
+
+**When the grace runs out first,** the lifecycle thread's `_exit` ends the process. The stored head then says whatever its last write said: `running` with its deadline when the final write did not land. A reader takes a `running` head past its deadline as a dead attempt. The `exit` line may be missing; the exit status is authoritative.
+
+**What cannot be bounded.** Every wait above has a timeout or a cancellation but one: a filesystem call (a write, a rename, `fsync`, `syncfs`, `statvfs`) on a filesystem that stops answering. Linux cannot interrupt a thread in such a call. The plan assumes that the spool and the output directory are local filesystems whose calls complete (A11). When one does not, `_exit` still runs at `T_hard`, but the kernel ends the process only when the stuck call returns, so the process may outlive its deadline. The caller's own timeout and `SIGKILL` are the last resort, and the stored head says what it last said.
+
+### 2.12 What an attempt never waits on
+
+- on a budget: its budget only `try_reserve`s (core 4.1, *budgets only `try_reserve`*);
+- on another attempt: nothing it uses is shared (2.2);
 - on a core lock held by a waiter: every core lock is held only to look up or to publish (core 4.1, *no caller code runs under a core lock but the budget*);
-- on the controller, once it has started;
-- on the spool: a claim is an atomic try-add that refuses, and a write is local file I/O no other party holds;
-- on a sink, which runs only in phase 9;
-- on a download: every download it needs ended before registration.
+- on the controller, once it has started: its end message's send never blocks (2.4);
+- on an engine lock: the attempt takes none;
+- on the network: every download it needs ended before its round;
+- on the spool: a claim is an atomic try-add that refuses, and a write is a local file call (A11).
 
 ---
 
 ## 3. Open problems, and their answers
 
-Each problem keeps the text that states it. Its answer, from design round 1, says whether it is solved or shown wrong, the mechanism, the core property it rests on (or the request of section 6), and the test that shows it. Engine test names are proposals, in `crates/unityrs-batch/tests/`. Sections 3.11 to 3.13 are problems design round 1 found.
+Each problem keeps the text that states it, then its answer: solved or shown wrong, the mechanism, what it rests on, and its test. Engine test names are proposals, in `crates/unityrs-batch/tests/`. Sections 3.11 to 3.13 are problems design round 1 found; 3.14 is the one its review found.
 
 ### 3.1 Cached runs never release, and budgets are bound per load, not per job
 
-`claude1-core-plan.md` M7 (P1 round 1).
-- Under the old step 1 every input was loaded into the shared Environment, which never evicts caller-loaded files, and each kept its decoded runs and parsed entries for the Environment's life. The old step 5's "dropping returns every charge" never happened while the batch ran, so W1 waited forever once the cumulative decoded size reached the in-flight cap; counting completions instead of charges let memory grow without bound.
-- A per-job budget cannot reach a bundle whose budget is the `FileContext` it was opened with.
-- A dependency read from job X into input Y decodes Y's blocks on a budget nobody admitted.
+`claude1-core-plan.md` M7 (P1 round 1). Under the old step 1 every input was loaded into the shared Environment, which never evicts caller-loaded files, and each kept its decoded runs and parsed entries for the Environment's life, so the in-flight cap was reached and never released. A per-job budget could not reach a bundle opened with another `FileContext`. A dependency read from job X into input Y decoded Y's blocks on a budget nobody admitted.
 
-**Solved.**
-- **Who owns what.** Each attempt owns the only job handle on its input, opened on its own meter, which books with the Input pool through the attempt's home (2.2, 2.6). Dependencies (every input's registered copy included) are owned by the Environment's LRU, on Dependency meters. A read site's pins last only for the read site. Section 5.2 lists every holder with its pool and its release point.
-- **Where every counted charge drops.** The controller counts attempts, and the Input pool is the sum of the attempts' homes. Every charge of an attempt is held by a local of its function, so all of them drop when it returns. The worker reads the home's `used` as zero before the controller counts the attempt finished (2.2).
-- **The second bullet is gone.** The per-input bound is `M_X`'s own limit, and `M_X` is the attempt's.
-- **The third is gone too.** A read into Y from X is a read through Y's registered copy, on the Dependency pool, whose budget it is.
-- **Rests on** core 4.1:
-  - *one meter per input, charged before every input-sized allocation*;
-  - *a second handle on the same bytes is independent*;
-  - *`Environment::load_dependency(source)`*;
-  - *eviction frees what it can re-read*;
-  - core 3.16 R2: a registration charges the slot's dependency.
-
-**Tests.**
-- `every_attempt_returns_its_charges`: after every attempt of every engine scene, `home.used() == 0` and `Arc::strong_count(M_X) == 1`.
-- `the_input_pool_is_empty_whenever_nothing_is_in_flight`.
-- `an_attempts_end_message_holds_no_core_type`: a source scan of the message's field types against a deny list (`Bytes`, `File`, `ObjectRef`, `Parsed`, `HeldCab`, `Charge`).
-- `a_dependency_read_is_charged_to_the_dependency_pool`.
+**Solved** (2.2). Each attempt owns its input's only job handle and its private Environment, both on its own budget, and drops both when it returns; the worker reads the budget at zero before the slot is freed. A read into Y from X is a read through Y's copy in X's private Environment, on X's Dependency budget. **Rests on** core 4.1 *one meter per input, charged before every input-sized allocation*, *a second handle on the same bytes is independent*, *`Environment::load_dependency(source)`*. **Tests:** `every_attempt_returns_its_charges` (after every attempt, both sides of its budget read zero and `Arc::strong_count(M_X) == 1`); `an_attempts_end_message_holds_no_core_type` (a source scan of its fields against `Bytes`, `File`, `ObjectRef`, `Parsed`, `HeldCab`, `Charge`).
 
 ### 3.2 The prepaid estimate is too small, and the alone path can hang
 
-`claude2-core-plan.md` M1 (P1 round 2).
-- The estimate must cover what the core's rules can book: the declared blocks, blocks-info, a block decoded once per span that overlaps it, entries, rows and values. Round 2 rewrote the old step 2's estimate, but it is still an engine guess against charges the core makes at actual sizes (an LZMA block ignores its declared size).
-- "Alone" at a cap larger than the in-flight bound waits forever (the alone path's cap was round 2's fix; 3.4 shows the first admission had the same hang).
+`claude2-core-plan.md` M1 (P1 round 2). The estimate had to cover what the core's rules can book, and was still an engine guess against charges made at actual sizes; "Alone" at a cap above the in-flight bound waited forever.
 
-**Shown wrong, as a useful estimate; solved without one.**
-- **No estimate the core's rules provably cannot exceed admits more than one job at a time.**
-  - An LZMA block's output ignores its declared size (core 3.6, **Codecs**), so a decoded size is not known before the decode.
-  - Values are not bounded per input byte at any useful ratio. An element of a class with no fields consumes no input, and up to `max_zero_size_elements` (2^20) of them are allowed per object read (`limits/mod.rs`), each a value on the heap.
-  - The only provable bound is `max_input_memory` itself.
-- **Admission is by count** (2.4), so there is nothing to under-estimate. Every charge is made at its actual size, and the meter or a pool refuses past its limit.
-- **Alone cannot wait forever** (2.5). It waits only for the attempts in flight, which never wait and whose work is bounded. With `M <= I` the Input pool cannot refuse it.
-- **Rests on** core 4.1:
-  - *budgets only `try_reserve`*;
-  - *a refused charge allocates nothing, and leaves the input usable or cleanly failed*;
-  - *transient refusals are never cached*;
-  - *bounded work per open input*.
-
-**Tests.**
-- `a_refusal_at_any_reservation_reruns_the_attempt_alone_with_the_same_records`: 2.10's injection.
-- `an_alone_attempt_runs_with_nothing_beside_it`: no Shared dispatch between an Alone dispatch and its end.
-- `the_controller_always_progresses`: a deterministic model of the controller with fake attempts of random peaks, durations and outcomes. It checks that no state has an attempt queued with nothing running, and that each input runs at most one Shared and one Alone attempt per round.
-- `a_hostile_lzma_block_in_a_shared_run`: one block declared at 1 byte that decodes to 64 MiB, among 50 small inputs. The Input pool never passes `I`. The hostile input fails on its own meter, with no Alone run (a job-side `Limit`). Every other input's records equal its canonical run's.
+**Shown wrong as a useful estimate; solved without one.** No estimate is provable below `max_input_memory`: an LZMA block's output ignores its declared size (core 3.6), and up to `max_zero_size_elements` values per object read consume no input (`limits/mod.rs`). Admission reserves each attempt's slot, `M + D_X`, which is the provable bound, and validation requires `M + D <= I`, so the head of the queue always fits once nothing else runs. **Tests:** `the_controller_always_progresses` (a model of the loop with fake attempts of random slots, durations and outcomes: no state has an input queued with nothing running); `a_hostile_lzma_block_fails_only_its_input` (a block declared at 1 byte that decodes to 64 MiB, among 50 small inputs: it fails on its own meter, and every other input's records equal its solo run's).
 
 ### 3.3 No eviction mechanism, resource reads through the shared handle, untagged refusals
 
-`claude2-core-plan.md` M2 (P1 round 2).
-- Registry handles were never released, so the dependency pool filled and every later cross-bundle read failed.
-- A job's own `.resS` was served by the shared registry handle, moving texture bytes onto the dependency pool.
-- Both pools refused with the same error, so the engine re-ran a job alone for a pool problem.
+`claude2-core-plan.md` M2 (P1 round 2). Registry handles were never released; a job's own `.resS` was served by the shared handle; both pools refused with one error.
 
-**The core now provides:** registry slots that hold no strong dependency handle; eviction that frees runs, parsed entries and re-readable source bytes; resource reads located without parsing and read through `from`'s own handle when the core can tell without reading that the CAB is an entry of `from`'s input; refusals tagged `Input` or `Dependency`.
-
-**Solved.**
-- **Eviction.**
-  - The core's LRU, bounded by `dep_cache_bytes`, orders what goes first (`env/registry/lru/mod.rs`).
-  - A pool refusal inside an Environment call evicts the other dependencies and retries once (core 3.13).
-  - The engine evicts everything with CR1 before each Alone attempt and in the Alone retry (2.7). It evicts nothing during Shared work.
-- **Sizing.**
-  - The Dependency pool is `dep_cache_bytes + F`, with F measured (2.2).
-  - Validation requires `M <= dep_cache_bytes`, and section 5.6 recommends `2 M` and more.
-  - A value too small costs reopens and Alone runs, never a different record (D). The manifest reports evictions, reopens and Alone runs, so undersizing shows.
-- **A `Dependency` refusal** is dependency-side (2.7). In a Shared attempt it sends the input Alone. In an Alone attempt it is retried cold once, and a second refusal is an object-level skip naming the pool.
-- **The job's own `.resS`** never goes through the registry: the engine's resource rule reads it through the job's handle (2.6).
-- **Rests on** core 4.1 *eviction frees what it can re-read* and *transient refusals are never cached* (a refusal under contention does not poison the shared dependency for the Alone run), and on CR1.
-
-**Tests.**
-- 2.10's injection, its `Dependency` half.
-- `a_dependency_cache_smaller_than_the_working_set_costs_reopens_not_records`: the same records at `dep_cache_bytes` = M and = 8 M.
-- `sprites_across_ten_dependencies_with_a_small_pool`: 50 inputs whose sprites use 10 dependency sheets round robin, with the pool at twice the largest dependency. Every record equals an unbounded run's.
-- `a_read_site_larger_than_the_pool_skips_exactly_its_objects`.
-- `the_dependency_pool_holds_f_after_a_full_eviction`.
+**Solved.** The core's LRU evicts within each private Environment, bounded by `D_X`, and its pool-refusal retry evicts the others (core 3.13). A job's own resources are read through its own handle (2.6, step 8). Refusals are tagged `Input` or `Dependency` by the core, and 2.7 records either as final. **Tests:** `a_dependency_cache_smaller_than_the_view_costs_reopens_not_a_scheduling_dependent_record` (the same records at `threads` 1 and 8 with `D` = `M`); `an_input_that_is_also_a_dependency_reads_its_own_resources_through_its_job` (3.8).
 
 ### 3.4 The first admission can wait forever, and the estimate is inflated
 
-`claude3-core-plan.md` M1 and `claude3-core-code.md` M5 (P1 round 3; the same defect, reported twice).
-- The old step 2 capped the estimate at `max_input_memory` only. With `max_inflight_uncompressed_bytes` below that (4 GiB on a 16 GB host), a bundle whose estimate is above the in-flight bound never fits, even with nothing in flight, and the FIFO controller hangs every bundle behind it.
-- The estimate summed the blocks each entry's span overlaps over entries, so N entries in one block count it N times, though the core serves every later entry from the one cached run (core 3.6). Ordinary single-block bundles hit the cap.
+`claude3-core-plan.md` M1 and `claude3-core-code.md` M5 (P1 round 3). A bundle whose estimate was above the in-flight bound never fit, and the FIFO controller hung every bundle behind it; the estimate counted one block once per entry.
 
-**Solved: both come from the estimate, and there is none.**
-- The constraint that replaces 3.4's cap is validation's `M <= I` (2.2).
-- A bundle whose needs exceed what its meter allows fails on its own meter, at once (a job-side `Limit`, 2.7), and is never queued again.
-- Both waits, the Alone drain and the end-of-round drain, are W2 and W3 in section 4.
-
-**Tests.**
-- `a_spec_whose_input_cap_exceeds_the_input_pool_is_refused`.
-- `an_input_above_its_meter_fails_once_and_the_run_goes_on`.
+**Solved: there is no estimate.** Validation's `M + D <= I` replaces the cap, and an input whose needs pass its budget fails on it at once (2.7). **Tests:** `a_spec_whose_slot_exceeds_the_inflight_bound_is_refused`; `an_input_above_its_meter_fails_once_and_the_run_goes_on`.
 
 ### 3.5 What a consumer holds is charged to a job that may never wait
 
-`claude3-core-plan.md` M6 (P1 round 3), and the W2 part of `claude3-core-code.md` M5.
-- A slow sink's backlog of `Parsed` values and slices was charged to the job's fixed budget, so the job was refused, re-run alone with the same sink, and failed: the outcome depended on sink speed, and "a stalled sink slows the run" was false.
-- A sink that holds output across jobs (DESIGN's `prefer` winners, per-atlas collision resolution) held charged bytes that the old W1 or W2 waited on, while it waited for a job the controller would not admit: a cycle.
+`claude3-core-plan.md` M6 and the W2 part of `claude3-core-code.md` M5 (P1 round 3). A slow sink's backlog was charged to the job; a sink that held output across jobs waited on a job the controller would not admit.
 
-P1b needs a consumer that holds output across jobs. The `prefer` winners keep every candidate for a key until each input that can produce it has run, and an atlas, its crops and its JSON win as one unit.
-
-**Solved: copy-out, with winners decided after the last attempt** (2.8, 2.9).
-- **Nothing in memory crosses a job.** A job hands no core type to anyone. It writes each output to the spool and its records to its spool directory.
-- **Pools exclude what consumers hold.** The Input pool's in-flight bytes are exactly the attempts' homes. Consumers hold files on disk, outside every pool.
-- **Winners are decided once, after the last round.** A key's winner can depend on any input that produces it, which is known only once every input has run. So E31 to E34 decide by a pure function of the committed records, and units are allowed as they are. The candidates wait on disk, which the controller never waits on.
-- **Sinks run in phase 9.** A slow or stalled sink lengthens the run and changes no record.
-- **Cost.**
-  - The spool holds every candidate until phase 9, beside the downloads (section 5.7).
-  - Uploads start only after decoding, at about one more pass over the output at network speed.
-  - Publishing a key once nothing can beat it (its `prefer` input committed) changes no rule. It is left for later.
-- **Rests on** nothing in the core: the core never sees a sink.
-
-**Tests.**
-- `winners_are_the_same_whatever_the_completion_order`: every permutation for small scenes, 50 seeded orders otherwise.
-- `a_stalled_sink_never_stalls_an_attempt`: an object-store test server holds every request open. The rounds still end, and the run ends `incomplete` at its deadline.
-- `an_atlas_wins_as_one_unit`.
-- `a_failed_input_commits_no_candidate`.
-- `a_key_whose_preferred_input_failed_is_withheld`.
+**Solved: copy-out, with winners decided after the last round** (2.8, 2.9). An attempt hands no core type to anyone: it writes outputs and records to the spool. Winners are a pure function of the committed records, decided once every input has run, and sinks run only in phase 9, so a slow sink lengthens the run and changes no record. **Cost:** the spool holds every candidate until phase 9 (5.7). **Tests:** `winners_are_the_same_whatever_the_completion_order`; `a_stalled_sink_never_stalls_an_attempt` (every request held open: the rounds end, and the run exits 6 by its deadline); `an_atlas_wins_as_one_unit`; `a_failed_input_commits_no_candidate`; `a_key_whose_preferred_input_failed_is_withheld`.
 
 ### 3.6 The old step 1 named a load the API did not have
 
-`claude3-core-plan.md` L7 (P1 round 3).
-- The only way to open a source into the Environment was `load`, which gives an `Input` meter and is never evicted, so a pool refusal was tagged `Input` and no registry handle could be evicted.
+`claude3-core-plan.md` L7 (P1 round 3). The only way to open a source into the Environment gave an `Input` meter that was never evicted.
 
-**The core now provides:** `Environment::load_dependency(source)` (core 3.13): a `Dependency` meter, CABs registered lazily, evictable, not in `files`.
+**Solved.** Every registration is `load_dependency(Source::Path)` (core 3.13), in a private Environment with no resolver, so no lookup can start a download or a registration. **Test:** `a_deferred_input_matches_a_run_that_declared_its_dependency`.
 
-**Solved** (2.3).
-- **Registration** is `load_dependency(Source::Path)` for every input and declared dependency, one at a time, in bytewise name order, before the first job, with no `CabResolver`. The core never opens a path it was not given, so no lookup inside a job can start a download or a registration.
-- **CAB names** come from each registered bundle's own directory, read by the load.
-- **Bundle names** come from the spec's graph. A name found only in an AssetBundle's `m_Dependencies` is fetched by the URL rule in a discovery round between extraction rounds, and only for the inputs whose view holds it.
-- **Rests on:**
-  - core 4.1, *`Environment::load_dependency(source)`* and *opening a bundle reads only its header, blocks-info and directory*;
-  - core 3.16 item 6 (3.7's last row): every registration has returned before any job that could read it starts.
+### 3.7 Problems settled in the core that the design must not undo
 
-**Tests.**
-- `registration_decodes_no_data_block`: through the engine, a bundle whose every data block is corrupt registers.
-- `registry_answers_do_not_depend_on_download_order`: two inputs holding a CAB of one name, with downloads finishing in each order, 50 runs; the same answers and the same `same_named_cabs` record.
-- `no_attempt_starts_before_registration_ends`.
-- `a_deferred_input_matches_a_run_that_declared_its_dependency`.
-
-### 3.7 Problems settled in the core that the batch design must restate
-
-These were found against the batch flow but were defects of the core API, fixed in P1. The batch design relies on the property and must not undo it. The third column says how section 2 uses it.
-
-| finding | what was wrong | the core property now (core plan 4.1), and its use here |
-|---|---|---|
-| `codex1-core.md` H3 (round 1) | a codec allocated its output before the budget saw it, so jobs could exceed the batch budget before a refusal | one meter per input, charged before every input-sized allocation; a refused charge allocates nothing. **Here:** the engine's own buffers follow the same rule (E59), and output still growing inside an admitted job needs no allowance, because the Input pool refuses it |
-| `codex2-core.md` H2 (round 2) | a retained `Parsed` carried no charge, so values outlived the books | every `Parsed` carries the charge for its value. **Here:** values never leave an attempt (copy-out). A dependency value a read site reads is charged to that dependency and dropped at the read site's end |
-| `claude3-core-plan.md` M2 (round 3) | a cell published a pool refusal for good, so one job's refusal poisoned a shared dependency, and "evict and retry once" retried a cached error | transient refusals are never cached. **Here:** the Alone run and its retry rely on it. `DecodeWork` is not transient, and an open that used its allowance up keeps refusing; 3.11 and 2.7 handle that |
-| `claude3-core-plan.md` M3 (round 3) | resolving a resource's CAB parsed the shared slot, decoding the whole `.resS` on the pool before the redirect to the job's handle | a resource read goes through `from`'s own handle, resolution included, when the core can tell without reading that the slot is `from`'s input. **Here: not used.** The engine's resource rule reads a job's own entries through its handle before any registry lookup (2.6; 3.8) |
-| `claude3-core-plan.md` M5 (round 3) | eviction kept a `Path` dependency's bytes and their charge, so the pool filled with bytes eviction could not free | eviction frees what it can re-read. **Here:** every registration is a `Path`, so eviction frees its bytes |
-| `claude3-core-plan.md` L6 (round 3) | a dereference from a file whose bundle a job had dropped was unspecified | `DerefError::ContainerDropped`; a caller that hands out files keeps a strong bundle handle beside each. **Here:** a read site takes the target's top-level `File` before its next Environment call and holds it while it reads (2.6) |
-| `claude3-core-code.md` M4 (round 3) | under `Lazy`, decode work was unbounded: a failed block and an `entry_range` decode were redone for every read | block outcomes kept, `entry_range` runs cached, and `max_decode_work` per open input; a refused growth counts no work, and the Environment restarts a dependency's count when it reopens it after eviction (`claude4-core-code.md` M2, round 4). **Here:** the Alone path's termination and the cold retry's fresh allowance rely on it |
-| implementation review round 6, the Environment's MEDIUM-3 | the core said concurrent calls act as if made one after another, but a load and a reach publish their keys one at a time, so another thread could find one key of a load and miss the next | each key's registration, each `files` entry and each `path_dict` entry is published whole; a call that reaches a container returns only after its whole subtree is registered, and a load only after all its keys and its `files` entry are (core 3.16, item 6). **Here:** every registration happens while no job runs (2.3). A nested container's reach is the one registration during a round, and D excludes it (2.10) |
-
-The engine also relies on the core's error classes (`CellError::is_transient`, public in `once.rs`; `ChargeError::is_transient`, `error.rs`) only through 2.7's table, which splits them by where the error arose.
+| finding | the core property now (core 4.1), and its use here |
+|---|---|
+| `codex1-core.md` H3 (round 1): a codec allocated before the budget saw it | one meter per input, charged before every input-sized allocation. The engine's buffers follow the same rule (E59) |
+| `codex2-core.md` H2 (round 2): a retained `Parsed` carried no charge | every `Parsed` carries its charge. Values never leave an attempt (copy-out) |
+| `claude3-core-plan.md` M2 (round 3): a cell published a pool refusal for good | transient refusals are never cached. Inside one attempt, a refusal that `with_room`'s retry clears is not kept for the attempt's later reads |
+| `claude3-core-plan.md` M3 (round 3): resolving a resource parsed the shared slot | resource reads through `from`'s own handle. Not needed: the engine reads own entries through the job's handle first (2.6) |
+| `claude3-core-plan.md` M5 (round 3): eviction kept a `Path` dependency's bytes | eviction frees what it can re-read. Every registration is a `Path` |
+| `claude3-core-plan.md` L6 (round 3): a dereference from a dropped bundle was unspecified | `DerefError::ContainerDropped`. The attempt holds the target's top-level `File` while it uses the target (2.6) |
+| `claude3-core-code.md` M4 (round 3): decode work under `Lazy` was unbounded | `max_decode_work` per open input; a reopen restarts the count (`claude4-core-code.md` M2). It bounds every attempt's work (2.12) |
+| implementation review round 6, the Environment's MEDIUM-3: a load published its keys one at a time | each key's registration is published whole, and a load returns after all its keys (core 3.16 item 6). The attempt registers its whole view before its first read (2.6) |
 
 ### 3.8 The resource redirect and eviction cannot both hold for a job's second handle
 
-`claude4-core-plan.md` M3 (P1 round 4).
-- The old step 3's job opened its own handle on its input's bytes. The core redirects a resource read through that handle only when it can tell without reading that the CAB slot is the same input: the slot is the job's handle itself, or a `Source::Bytes` slot whose `Bytes` the job's handle shares (core 3.13). An evicted `Source::Path` or `Source::Fetch` slot holds only a path or a fetcher, so the core resolves it by UnityPy's rule, reopening it on the dependency pool, which is the charge the redirect was for.
-- Eviction frees a dependency's bytes only for `Path` and `Fetch` (3.3; `claude3-core-plan.md` M5). So registering the inputs as `Bytes` keeps the redirect and the bytes for the run's life, and registering them as `Path` frees the bytes on eviction and loses the redirect for every evicted input.
+`claude4-core-plan.md` M3 (P1 round 4). The core redirects a resource read through the job's handle only for a slot it can match without reading; an evicted `Path` slot loses the redirect, and a `Bytes` slot keeps its bytes for the run's life.
 
-**Solved, by needing neither.**
-- **The redirect is not needed.** It exists so that a job's own `.resS`, found through the shared registry, is read through the job's handle. Here a job never asks the registry for its own resources. The engine's resource rule (2.6) reads the input's own entries through the job's handle first, and that rule is the own-bundle-first rule itself (3.9).
-- **So every registration is `Source::Path`**, and eviction frees its bytes (core 4.1, *eviction frees what it can re-read*).
-- **Rejected.**
-  - Reading through the handle `load_dependency` returns would put every job's runs on the Dependency pool, and the Input pool would no longer bound jobs.
-  - `Source::Bytes` over the engine's own buffers keeps every input's bytes for the run's life. Over `mmap`s, it leaves those bytes under no budget and faults when a mapped file is truncated, which the core declined for `Source::Path` (`env/mod.rs`, `Source::Path`'s docs).
-  - An input identity in the core is not needed.
-- **Cost.**
-  - An input that another input reads is opened twice: by its job on the Input pool, and as a dependency on the Dependency pool.
-  - The entries other inputs reach in it are decoded on the dependency side too, once per residency in the cache. For the corpus's single-block bundles that is one more decode of the whole block per residency in which another input reaches it.
-  - Neither cost has been measured (section 7, A5).
-
-**Test.** `an_input_that_is_also_a_dependency_reads_its_own_resources_through_its_job`: its own resource reads charge nothing to the Dependency pool, before and after a full eviction.
+**Solved by needing neither.** The engine reads a job's own entries through its handle before any registry lookup (2.6), so every registration is `Source::Path` and eviction frees its bytes. **Cost:** an input that its own view's other bundles point back into is also registered in its private Environment and read whole a second time. **Test:** `an_input_that_is_also_a_dependency_reads_its_own_resources_through_its_job`: its own resource reads charge nothing to its Dependency budget.
 
 ### 3.9 Same-named CABs: the own-bundle-first rule
 
 `docs/plans/core.md` section 9, Q12 (decided 2026-10-30) gives this plan the rule.
-- Under `EnvOptions::batch()`, an input's `.resS` reads and its container read its own bundle's CAB first when two bundles hold a CAB of one name (Tier C, `PARITY.md` section 19.2's same-named CABs row). `EnvOptions::unitypy()` keeps UnityPy's one registry, Tier A, in both load modes.
-- P1 implements UnityPy's registry under every option set; a `PPtr` from inside a bundle already reads its own bundle's copy first (Tier A).
 
-**Solved; the rule lives in the engine until CR3 moves it into the core.**
-- **Resources:** the engine's resource rule (2.6) looks through the reading file's own container chain before the registry.
-  - The order is UnityPy's candidate order, each candidate checked in the own chain first. The registry is asked only when no candidate is an own entry. This differs from interleaving per candidate only when the own bundle holds a later candidate and another bundle an earlier one, which is this rule's own Tier C case.
-  - A `.resS` in a nested bundle of the input is found in that bundle's directory, through the chain.
-- **The container:** X's own `SerializedFile::container()`. Its pointers read their siblings first (Tier A).
-- **Pointers across bundles:** the view's rule 3 (2.3). Own bundle first, then the greatest name in bytewise order, among the view's bundles only.
-- **`EnvOptions::unitypy()`** is untouched, because the core does not change.
-- **Rests on** Q12's assignment of the rule to this plan, and on CR3 once granted. The engine's copy of the core's candidate and slice rules is guarded by the differential test of 2.6 until then.
-
-**Tests.**
-- `own_bundle_first_for_resources_and_container`. Two inputs each hold `cab-x` and `cab-x.resS` with different pixels, and each lists the other as a dependency. Each input's textures and container rows are its own. The test runs under `EnvOptions::batch()` and under an Eager variant of it. P1's `EnvOptions::unitypy()` suite runs unchanged.
-- `own_first_resources_equal_environment_resource_without_same_named_cabs` (2.6).
+**Solved; the rule lives in the engine until CR3 moves it into the core.** Resources: own container chain first (2.6). The container: X's own `SerializedFile::container()`. Pointers: the core's `deref` from the reading file, then the private registry, where X is registered last (`BATCH_SPEC.md` 4.3). `EnvOptions::unitypy()` is untouched. **Tests:** `own_bundle_first_for_resources_and_container` (two inputs each hold `cab-x` and `cab-x.resS` with different pixels, and each lists the other; each input's textures and container rows are its own, under `EnvOptions::batch()` and an Eager variant); `a_pointer_from_a_dependency_reads_that_dependencys_sibling_first`; `own_first_resources_equal_environment_resource_without_same_named_cabs` (the engine's rule against `Environment::resource` under `EnvOptions::unitypy()` on every testkit scene without same-named CABs; `PARITY.md` section 19.2's row).
 
 ### 3.10 A failed dependency fails the inputs that need it
 
-- A dependency that fails to download or parse fails every input that needs it, and no other; the run is then `incomplete` (DESIGN.md section 4's failure model).
+A dependency that fails to download or parse fails every input that needs it, and no other (DESIGN.md section 4's failure model).
 
-**Solved** (2.3, the views).
-- **"Needs"** means "is in the view". The view is X, the closure of its declared list through the spec's graph, and, with a URL rule, the names in its `m_Dependencies`.
-- **When.** A bundle fails if its download fails after its retries (E10), its source is refused, or `load_dependency` fails. Every input whose view holds it fails before its first attempt, or at discovery for a name found there, with `dependency_failed(name, reason)`.
-- **Inputs whose view does not hold it cannot observe it.**
-  - Their reads resolve within their views (rule 2).
-  - Their answers do not depend on which bundles registered (rules 3 and 4).
-  - So their records are the same as in a run where nothing failed.
-- **A read that fails for a dependency's own bytes** (a corrupt block or entry, found at read time) is not a failed dependency. It is an object-level outcome of the input whose read reached it (2.7). The core keeps block outcomes, so every input that reads that block meets the same error.
-- **Rests on** the key table built from registered directories, `HeldCab::hold` and the target's `Parent` (2.6), and *transient refusals are never cached*.
-
-**Tests.**
-- `a_failed_dependency_fails_exactly_the_inputs_whose_view_holds_it`. A declares D and reads it, B declares nothing, C declares D but never reads into it, and W declares U, which holds a CAB named like one of D's. D fails, in turn, by a 404, a truncated body, a corrupt header and a corrupt data block.
-  - For the first three, A and C fail with the reason, B's and W's records equal a run in which D succeeds, and the run exits 4.
-  - For the corrupt data block, D registers and fails no input. A skips the objects whose reads reach the block, C is unaffected, and B's and W's records again equal a run in which D is whole.
-- `a_shadowing_bundle_outside_the_view_changes_no_record`. The same scene with U failing instead: A's records equal a run in which U succeeds.
+**Solved** (2.3). "Needs" means "is in the view". A bundle fails when its download fails after its retries, its `size` or `sha256` does not match, or its load in an attempt fails. Inputs whose view does not hold it never open it. A read that fails for a dependency's own bytes found at read time (a corrupt block or entry) is an object-level skip of the input that read it. **Tests:** `a_failed_dependency_fails_exactly_the_inputs_whose_view_holds_it` (A declares D and reads it, B declares nothing, C declares D and never reads it, W declares U, which holds a CAB named like one of D's; D fails by a 404, a truncated body, a corrupt header and a corrupt data block. For the first three A and C fail and B's and W's records equal a run where D is whole; for the corrupt block A skips the objects that reach it and C is unaffected); `a_shadowing_bundle_outside_the_view_changes_no_record`.
 
 ### 3.11 A cached dependency's work allowance is shared by every input that reads it
 
-Found in design round 1.
-- A value read counts its work on the meter of the open it reads (`walk/work.rs`; core 4.1, *bounded work per open input*). A cached dependency read by many inputs therefore builds up one shared count, and only a reopen resets it (`Meter::reopen`).
-- `DecodeWork` is not transient (`error.rs`), and once an open's allowance is used up its cells keep the refusal (core 4.1). So the refusal lands on whichever input crosses the line, and every later reader of that open meets it until something evicts the open.
-- At `max_decode_work = 4 M`, a popular dependency kept in the cache reaches its allowance in an ordinary run.
+Found in design round 1. A cached dependency read by many inputs built one shared work count, and a used-up allowance was kept by its cells for every later reader.
 
-**Solved** (2.7).
-- A `Limit` on a dependency's meter is dependency-side. In a Shared attempt it ends the attempt, and the input runs Alone after CR1, which also drops the poisoned open.
-- In the Alone attempt, a read site refused by its own cached reads is retried cold, with a fresh allowance.
-- CR6 would stop a used-up allowance from poisoning later readers at all, and save those Alone runs.
-
-**Test:** `a_cached_dependencys_work_allowance_used_up_by_many_readers_changes_no_record` (2.10).
+**Solved** (2.2). Each attempt opens its own copy, with its own allowance. **Test:** `round_one_counterexamples_change_no_record`.
 
 ### 3.12 A direct read of a dependency object gets no evict-and-retry
 
-Found in design round 1.
-- A value read on a dependency's `ObjectRef` (a sprite's texture, say) is no Environment call. Its refusal is the caller's, and nothing is evicted (core 3.13).
-- The LRU's sum of its meters can lag a use behind, so the pool's refusal, not the LRU, is the real bound (`env/registry/lru/mod.rs`, the LRU's docs).
-- In an Alone attempt that has loaded several dependencies, such a read can be refused by a pool full of the attempt's own evictable entries, and recorded as the outcome though it would fit.
+Found in design round 1. A value read on a dependency's `ObjectRef` is no Environment call, so its refusal gets no eviction and retry (core 3.13), and could be refused by a pool full of evictable entries.
 
-**Solved** (2.7). The Alone retry evicts everything with CR1 and redoes the read site cold, so an Alone outcome never records a refusal that a cold read site would fit. CR2 would give Shared attempts the core's own retry; correctness does not need it.
-
-**Test:** `an_alone_read_refused_by_its_own_cached_reads_is_retried_cold` (2.10).
+**Shown not to matter for D.** Inside a sealed attempt, whether such a read is refused depends only on the attempt's own earlier reads, so it is the same in every run. It can refuse a read that would fit after an eviction: a cost in outcomes, the same in every run. CR2's classifier does not change it; a core request for the retry on direct reads is a follow-up (section 8).
 
 ### 3.13 A same-named CAB in a bundle an input does not need can change its answers
 
-Found in design round 1.
-- Ranks give a CAB key to the registration of greatest rank (core 3.13, **Ranks**). Suppose X declares A, and B, declared only by another input, holds a CAB with the same name as one of A's. Then X's read of that CAB resolves to B.
-- If B fails to download, it is never registered, and the same read resolves to A. X's records then depend on a bundle X does not need, against 3.10's test.
-- Refusing the later registration (a name-conflict rule) only moves the dependence to B's dependents, whose records then depend on A.
+Found in design round 1. Ranks give a CAB key to the registration of greatest rank, so a bundle outside X's view, or its failure, could change X's reads.
 
-**Solved** (2.3, the views).
-- X's reads resolve only within `view(X)`, by rule 3: own bundle first, then the greatest name in bytewise order.
-- A flagged input reads through a private Environment that holds its view alone. So no bundle outside a view, and no failure of one, changes an answer inside it.
+**Solved** (2.3). The private Environment holds only `view(X)`. **Test:** `a_shadowing_bundle_outside_the_view_changes_no_record`.
 
-**Tests.**
-- `a_shadowing_bundle_outside_the_view_changes_no_record` (3.10).
-- `a_flagged_input_gives_the_records_of_a_run_with_only_its_view_registered`.
+### 3.14 A shared dependency cache makes outcomes depend on what runs beside an input
+
+Found in design round 1's review. Design round 1's D argument rested on "a read that succeeds anywhere holds at least its cold charges". It does not: a decode's transient peaks above the run it leaves, growths and shrinks react silently to refusals of a shared pool, overlapping spans make cached runs order-dependent, and a private Environment's registry took room a shared one did not. Each gave a record that depended on another input.
+
+**Solved by sealing** (2.2, 2.10), at the cost 2.2 states.
 
 ---
 
@@ -609,43 +373,23 @@ Found in design round 1.
 
 Every wait in the process:
 
-| # | who waits | for what | why it ends, and why the awaited party never waits on the waiter |
+| # | who waits | for what | why it ends |
 |---|---|---|---|
-| W1 | the controller | one event: an attempt's end message, a 1 s tick, a stop | attempts only send, on a channel of capacity `threads`, and never read the controller's state; the tick and the lifecycle thread hold nothing |
-| W2 | the controller, before an Alone attempt | `in_flight == 0`, through W1 | every attempt returns: it never waits (2.12), and its work is bounded (core 4.1, *bounded work per open input*) |
-| W3 | the controller, at a round's end | `in_flight == 0` with both queues empty, through W1 | as W2 |
-| W4 | an idle worker | the next attempt on the dispatch channel | it holds nothing, and the controller never waits on an idle worker: it dispatches before it waits whenever a worker is free and an attempt is queued |
-| W5 | the controller, in phases 4 and 7 | the downloads to end | each ends by success or by failure within its retries and timeouts (E7), and none starts a retry past `deadline - shutdown_grace` |
-| W6 | a transfer | a `download_concurrency` permit | permits are held only by transfers inside one request, which end by W7 |
-| W7 | a transfer | the network | timeouts and attempt counts (E7, E37) |
-| W8 | a core caller (an attempt, or the controller registering) | a core lock | held only to look up or publish, never across a decode, user code or another lock; the only caller code under one is the budget, which is atomics (core 4.1, *no caller code runs under a core lock but the budget*; *the budget contract*) |
-| W9 | an attempt | its spool file's I/O | local; no other party holds the file; `ENOSPC` is a refusal (2.7) |
-| W10 | the publish scheduler | a transfer to end | as W7. Its Input-pool reservations are `try_reserve`, never a wait (2.9) |
-| W11 | the final manifest's write | every transfer to have ended or been aborted | transfers never wait on the manifest |
-| W12 | the progress thread | stdout | producers overwrite a one-slot mailbox; nothing waits on the progress thread |
-| W13 | the lifecycle thread | the self-pipe, its timer, stdin | nothing waits on it: it sets the stop flag and wakes the controller |
-| W14 | the stop path | the multipart aborts and the manifest write, each with a timeout inside the grace | it never joins a worker or a transfer (2.11) |
+| W1 | the controller, phases 5 and 6 | one event: an end message, a 1 s tick, the stop flag's wake | the tick; attempts only send, on a channel of capacity `threads` |
+| W2 | the controller, in `block_on` (phases 2, 3, 4, 6, 9, 10) | network requests | each request has a timeout (`BATCH_SPEC.md` 1.4 and 1.6), and `block_on` selects on the cancellation token |
+| W3 | an idle worker | the next attempt on the dispatch channel | it holds nothing, and the controller dispatches before it waits whenever a slot fits |
+| W4 | an attempt | a core lock | held only to look up or publish, never across a decode or another lock; the only caller code under one is the budget, which is atomics (core 4.1) |
+| W5 | an attempt, the controller, the stopper | a local filesystem call | A11 |
+| W6 | a transfer | a `download_concurrency` permit, or the phase budget | held only by transfers inside requests, which end by W2 |
+| W7 | a transfer or the stopper | the journal's mutex | held for one append, or for the stopper's close; the file call inside is W5 |
+| W8 | the progress thread | stdout | nothing waits on it but the stopper, for at most 1 s (2.11) |
+| W9 | the lifecycle thread | the self-pipe, its timer, stdin | nothing waits on it; it does no I/O but those reads and `_exit` |
+| W10 | the stopper | abort requests and the manifest's writes | each request's timeout is inside `T_hard`; file calls are W5 |
+| W11 | the spool's and the output root's locks | `flock` with `LOCK_NB` | never waits: busy exits 69 |
 
-**There is no cycle.** Rank the parties:
-- 0: the kernel, the network and stdout, external and bounded by timeouts;
-- 1: core locks, and the engine's budgets, which are atomics and take no lock;
-- 2: a running attempt, its private Environment included;
-- 3: transfers;
-- 4: the controller.
+**There is no cycle.** Rank the parties: 0, the kernel, the network and stdout; 1, core locks, the budgets and the journal's mutex; 2, a running attempt; 3, transfers and the stopper; 4, the controller; and the lifecycle thread apart. Every wait-for edge goes to a lower rank, or to rank 0 with a timeout, except W3's, which comes from an idle worker that holds nothing. The lifecycle thread waits on nothing in the process, and its `_exit` at `T_hard` ends every other wait but a stuck file call (A11). The core blocks nowhere (core 4.1, *the core never waits and never starts a thread*). No engine lock is held across a core call or a network request.
 
-Every wait-for edge goes to a lower rank or to an external party with a timeout:
-- an attempt (2) waits only on 1 and 0;
-- a transfer (3) waits on 0, and on permits held by transfers that wait only on 0;
-- the controller (4) waits on 2, 3 and 0.
-
-The one edge that points up, W4, comes from an idle worker, which holds nothing and is not one of the running attempts the controller waits for. The progress and lifecycle threads only wait on others; no one waits on them. The core blocks nowhere (core 4.1, *the core never waits and never starts a thread*), so no core call adds an edge. `block_on` is called only by the controller, never by an attempt or a tokio worker, and async tasks never call the core.
-
-**Tests.** Every engine test runs under `unityrs_testkit::guard`, which fails a hang instead of waiting forever. The scenes include:
-- a stalled sink, a stalled download server, and a stdout that is never read;
-- attempts paused at test hooks inside core calls while other attempts and an Alone drain proceed;
-- `a_wedged_attempt_cannot_pass_the_deadline`: a test decoder spins, and the process exits 6 by the deadline.
-
-`the_engine_starts_no_unbounded_wait` is a source scan in the core's style (`unityrs_testkit::waits`). It finds every `recv`, `lock`, `join`, `wait`, `park` and `block_on` in `unityrs-batch` and checks each against this table's list, by module.
+**Tests.** Every engine test runs under `unityrs_testkit::guard`, which fails a hang instead of waiting forever. The scenes include a stalled sink, a stalled download server, a stdout that is never read, and a stop in each phase; `a_wedged_attempt_cannot_pass_the_deadline` (a test decoder spins, and the process exits 6 by the deadline); `a_stop_during_a_download_exits_within_the_grace`. `the_engine_starts_no_unbounded_wait` is a source scan in the core's style (`unityrs_testkit::waits`): it finds every `recv`, `lock`, `join`, `wait`, `park`, `flock` and `block_on` in `unityrs-batch` and checks each against this table, by module, and that no lock guard is alive across a call into `unityrs_core` or an `.await`.
 
 ---
 
@@ -656,85 +400,68 @@ The one edge that points up, W4, comes from an idle worker, which holds nothing 
 In the charge unit (`heap_cost`, glibc's chunk, core 3.15), at every instant:
 
 ```
-heap <= I + dep_cache_bytes + F          the Input and Dependency pools' limits (2.2)
-      + C_prov + C_thr + C_open + C_net + C_spec + C_base
+heap <= I + C_thr + C_env + C_net + C_spec + C_base
 ```
 
 **Proof.**
-1. Every allocation that grows with an input or an output is charged before it is made. The core charges its own (core 4.1, *one meter per input, charged before every input-sized allocation*). The engine charges its buffers, the attempt's view, the record buffer (2.6, E59), the key table (2.3), the winners' index (2.9) and the transfers' buffers (2.9) under the same rule.
-2. Each charge books with exactly one pool:
-   - an attempt's meter, through its home, with the Input pool;
-   - every dependency meter with the Dependency pool, since the Environment's context budget is the Dependency pool's (`env/load.rs`, `try_load_dep`);
-   - phases 8 and 9 reserve from the Input pool explicitly.
-3. Each pool refuses any reservation that would take it past its limit, in one compare-and-swap.
-4. Everything else the process allocates is one of the constant terms of section 5.3.
+1. Every allocation that grows with an input or an output is charged before it is made. The core charges its own (core 4.1, *one meter per input, charged before every input-sized allocation*). The engine charges its buffers, the attempt's view, the record buffer (2.6), the sort's runs and buffers, the resume merge's page and the transfers' buffers (2.9) under the same rule.
+2. During the rounds, each charge books with one attempt's budget, whose limits are its slot. The controller dispatches while the slots in flight sum to at most `I`, and frees a slot only after its budget read zero (2.2).
+3. In phases 8 and 9 no attempt runs, and every charge books with the phase budget, of limit `I`.
+4. Each budget refuses any reservation that would pass its limit, in one compare-and-swap.
+5. Everything else the process allocates is a constant term of 5.3.
 
-Records live on disk (2.8), not in memory, so no term grows with the number of outputs or skips.
+Records, candidates, the winners, the zip central directory and the manifest's rows live on disk (2.8, 2.9), so no term grows with the number of outputs, skips or keys in the store.
 
 ### 5.2 Every holder of charged bytes
 
-| holder | pool | taken | released |
+| holder | budget | taken | released |
 |---|---|---|---|
-| the attempt's copy of its input's bytes (`read_path` on `M_X`) | Input | the attempt's start | the attempt's end |
-| the job handle's runs, parsed entries, compiled trees, kept errors (core 3.6, 3.15) | Input | as read | the attempt's end |
-| the values of X's objects | Input | per object | after that object's outputs |
-| a block decode's transients: `DecodeBuf`'s old and new room while it grows, LZMA's dictionary and state | Input | during the decode | at the decode's end |
-| export buffers, one sheet group at a time | Input | per sheet | when the sheet's last output is spooled |
-| the view, the record buffer, the private Environment's lookup keys | Input | the attempt | the attempt's end |
-| the keys of a lookup (core 3.13, **Names**) | Input | during the call | at its return |
-| a dependency's open: a `Path` source's bytes, its runs and entries | Dependency | load, or reopen after eviction | eviction, bytes included |
-| registry slots and keys, and the engine's key table | Dependency | registration | never during the run: F |
-| a read site's pins: a `HeldCab`, an `ObjectRef` with its top-level `File`, a dependency value, a resource's `Bytes` | Dependency | in the read site | at the read site's end |
-| a private Environment's opens and slots | Dependency | the attempt | the attempt's end |
-| the winners' index | Input | phase 8 | before phase 9 |
-| a transfer's buffer | Input | the transfer's start | its end |
-| outputs, records, downloads, archives | disk (spool) | their write | the run's end |
+| the attempt's copy of its input's bytes | the attempt's `Input` | its start | its end |
+| the job handle's runs, parsed entries, compiled trees, kept errors (core 3.6, 3.15) | `Input` | as read | its end |
+| the values of X's objects | `Input` | per object | after that object's outputs |
+| a block decode's transients: `DecodeBuf`'s old and new room while it grows, LZMA's dictionary and state | whichever meter decodes | during the decode | at its end |
+| export buffers, one sheet group at a time | `Input` | per sheet | when its last output is spooled |
+| the view, the sprite-group table, the record buffer | `Input` | the attempt | its end |
+| the keys of a lookup | the meter of the lookup's `from` | during the call | at its return |
+| each private open: a `Path` source's bytes, its runs and entries | the attempt's `Dependency` | load, or reopen after eviction | eviction, or the attempt's end |
+| the private registry's slots and keys | `Dependency` | registration | the attempt's end |
+| a read's handles into another bundle | `Dependency` | the read | the read's end |
+| the sort's runs and merge buffers | phase | phase 8 | before phase 9 |
+| the resume merge's LIST page; a transfer's buffer; the manifest head | phase | phase 9 | its end |
+| outputs, records, downloads, sorted runs, archives, row files | disk (spool) | their write | the run's end (`BATCH_SPEC.md` section 6) |
 
 ### 5.3 The constant terms
 
 | term | value | source |
 |---|---|---|
-| `C_prov` | at most 64 MiB, once, plus a TPK's trees when a TPK is given (A8) | `ProviderChain::DEFAULT_CACHE_BYTES` (`provider.rs`). Core 3.15 states it "per `FileContext`", but the cache lives in the `Arc<ProviderChain>`, and every context the engine makes is a clone of one base context sharing that `Arc` (CR7) |
-| `C_thr` | `(threads + 1)` x about 1.86 MiB | per thread that reads input (the workers and the controller, which registers): `Limits::stack_needed` (release: 512 levels x 3 KiB + 256 KiB = 1.75 MiB, `limits/mod.rs`), detection scratch of at most 64 KiB, the inflater's state and 32 KiB window, the 1 KiB tally (core 3.15) |
-| `C_open` | `(N_reg + threads + P_open) x 192 B`, plus 64 B per old open a stale handle keeps | per live open, `Meter::OWN_HEAP` and the `Bytes` headers the core may clone; `REOPEN_HEAP` per old open (`limits/meter.rs`); `N_reg` registered bundles, `P_open` private opens |
-| `C_net` | `download_concurrency` x `c_net` | connection, TLS and streaming state per transfer, `c_net` <= 2 MiB (A1); payloads are in the Input pool |
-| `C_spec` | at most 4 x the spec's size, plus 256 B per input | the parsed spec and the controller's per-input state (A1). A spec over 16 MiB is refused (E1) |
-| `C_base` | measured | the binary, the I/O runtime, the registry's fixed parts (one per Environment, core 3.15), the progress mailbox |
+| `C_thr` | `threads x (2 x stack_needed + 0.11 MiB) + 4 x 2 MiB` | each worker's stack of twice `Limits::stack_needed` (release: 1.75 MiB, `limits/mod.rs`; 2.4), counted whole, plus its detection scratch, inflater state and window and tally (0.11 MiB, core 3.15); the controller, lifecycle, progress and stopper threads at 2 MiB each |
+| `C_env` | `threads x (c_env + max_view_bundles x 512 B)` | each private Environment's fixed parts, uncharged (core 3.15, one per Environment), and per registered bundle the uncharged `Meter::OWN_HEAP`, `Dependency` record and path (`limits/meter.rs`, `env/load.rs`), 512 B at most (A1) |
+| `C_net` | `download_concurrency x c_net` | connection, TLS and a 64 KiB streaming buffer per transfer, `c_net <= 2 MiB` (A1). Downloads stream to the spool through that buffer; upload payloads are in the phase budget |
+| `C_spec` | at most 4 x the spec's size, plus 256 B per bundle, discovered ones included | the parsed spec and the controller's per-bundle state (A1). A spec over 16 MiB is refused |
+| `C_base` | measured | the binary, the runtime, the progress thread's slots, the controller's queues |
+
+There is no provider term: version 1 configures no typetree provider (A8), so the provider cache (`ProviderChain::DEFAULT_CACHE_BYTES`, 64 MiB, one per `ProviderChain` shared by every cloned context; CR5) holds nothing.
 
 ### 5.4 Outside the charge unit
 
-- **glibc's slack.** A live allocation whose chunk is below 128 KiB may hold up to 16 bytes past its charge (`CHUNK_SLACK`), at most half again of those allocations' charges (core 4.1, *one meter per input*; `limits/mod.rs`). So in glibc's own bytes the worst case is `1.5 x (I + dep_cache_bytes + F)` plus the constants. The pools are dominated by large mapped buffers (runs, pixels, PNG output), whose pages cover the slack, so the excess is a few percent in practice. The nightly reports it.
-- **Allocator retention** (RSS above the live heap). `heap_cost` assumes a chunk of 128 KiB or more is mapped, but glibc raises its mmap threshold each time a mapped chunk is freed. After that, large buffers come from arenas that do not return memory to the system (`limits/mod.rs`; `tests/heap_rounding.rs` pins the threshold for that reason).
-  - `extract.md` E57: the binary calls `mallopt(M_MMAP_THRESHOLD, 128 KiB)` at start. That fixes the threshold, so every buffer of 128 KiB or more is mapped and unmapped on free, which is the `heap_cost` model.
-  - It also sets `M_ARENA_MAX` to `threads + 2`.
-  - Fragmentation of small chunks inside arenas is not bounded by the core's rules (A7). The nightly measures peak RSS against the bound.
-- **Page cache.** Spool writes and the downloads fill the kernel's page cache. It is reclaimable and outside the heap, but a memory cgroup counts it (A7). The spool writer drops each file's pages after closing it (`posix_fadvise(DONTNEED)`).
+- **glibc's slack.** A live allocation whose chunk is below 128 KiB may hold up to 16 bytes past its charge (`CHUNK_SLACK`), at most half again of those allocations' charges (core 4.1, *one meter per input*; `limits/mod.rs`). So in glibc's own bytes the worst case is `1.5 x I` plus the constants. The budgets are dominated by large mapped buffers (runs, pixels, PNG output), whose pages cover the slack, so the excess is a few percent in practice. The nightly reports it.
+- **Allocator retention.** glibc raises its mmap threshold each time a mapped chunk is freed, after which large buffers come from arenas that do not return memory (`limits/mod.rs`; `tests/heap_rounding.rs`). `extract.md` E57: the binary calls `mallopt(M_MMAP_THRESHOLD, 128 KiB)` and sets `M_ARENA_MAX` to `threads + 2` at start. Fragmentation of small chunks inside arenas is not bounded by the core's rules (A7). The nightly measures peak RSS against the bound.
+- **Page cache.** Spool writes and file reads fill the kernel's page cache: reclaimable and outside the heap, but counted by a memory cgroup (A7). The spool writer drops each file's pages after closing it (`posix_fadvise(DONTNEED)`).
 
 ### 5.5 Arithmetic on the corpus
 
 **A block decode's transient** (`limits/vec.rs`, `budget/mod.rs`, `codec/lzma.rs`).
-- `DecodeBuf` doubles its capacity, and while it grows it charges the new room beside the old. `into_bytes` charges the exact size beside the old capacity before it moves the bytes.
-- For an output of `B` bytes with final capacity `c_n < 2B`:
-  - during the last doubling the charge peaks at `c_(n-1) + c_n < 3B`;
-  - at `into_bytes` it is `B + c_n < 3B`.
+- `DecodeBuf` doubles its capacity and, while it grows, charges the new room beside the old. `into_bytes` charges the exact size beside the old capacity before it moves the bytes.
+- For an output of `B` bytes with final capacity `c_n < 2B`, the charge peaks at `c_(n-1) + c_n < 3B` during the last doubling, and at `B + c_n < 3B` at `into_bytes`.
 - LZMA adds its dictionary, `min(clamp(declared, 4 KiB, 8 MiB), named)` plus 576 B, and 33,040 B of state.
 
-For the corpus's largest block, `B` = 69.4 MB = 66.2 MiB:
-- `c_(n-1)` = 64 MiB and `c_n` = 128 MiB, so the peak is 192 MiB + 8 MiB + 32 KiB = 200.03 MiB = 209.8 MB.
-- That is within 1.1 % of that input's measured peak of 212 MB, so the peak is almost all decode transient (A3).
-- The fix in progress, which sizes the room to the declared size, brings it to about `B + 8 MiB`. That is consistent with the measured 145 MB once values are added.
+For the corpus's largest block, `B` = 69.4 MB = 66.2 MiB: `c_(n-1)` = 64 MiB and `c_n` = 128 MiB, so the transient peaks at 192 MiB + 8 MiB + 32 KiB = 209.8 MB. That input's measured peak is 212 MB, which also holds its file bytes and its values, so the transient is most of it; the 2 MB left is not checked against those terms (A5). The fix in progress, which sizes the room to the declared size, brings the transient to about `B + 8 MiB`, consistent with the measured 145 MB once values are added.
 
-**One attempt's peak** is
+**One attempt's Input peak** is `P_X = s_X + runs_X + transient_X + meta_X + values_X + export_X`:
+- `s_X`, X's file size; `runs_X`, at most the declared decoded size plus one more copy of each block a span straddles (core 3.6); `transient_X < 3 B_X + 8 MiB + 33 KiB` before the fix; `values_X`, the objects being exported, one at a time;
+- `export_X` for one sheet group of `L` x `H` pixels: the texture's source data (up to `4 LH x 4/3` with mips, plus its alpha texture's), RGBA and alpha sheets of `4 LH` each, the image being encoded (`4 LH`), PNG output of at most `4 LH + H` plus deflate's overhead, filter rows of `5 (4 L + 1)`, and about 262 KiB of deflate state. So `export_X` is about `24 LH` for sprites and atlases and `13 LH` for a plain texture: 2048 x 2048 takes 96 MiB for sprites, 4096 x 4096 takes 384 MiB.
 
-```
-P_X = s_X + runs_X + transient_X + meta_X + values_X + export_X
-```
-
-- `s_X` is X's file size.
-- `runs_X` is at most the declared decoded size, plus one more copy of each block a span straddles (core 3.6).
-- `transient_X < 3 B_X + 8 MiB + 33 KiB` before the fix.
-- `values_X` covers only the objects being exported, one at a time.
-- `export_X` covers one sheet group of `L` x `H` pixels: RGBA and alpha sheets of `4 LH` each, the image being encoded (at most `4 LH`), PNG output of at most `4 LH + H` plus a deflate block's overhead, filter rows of `5 (4 L + 1)`, and about 262 KiB of deflate state. So `export_X <= 16 LH + 0.3 MiB` for sprites and atlases, and `8 LH + 0.3 MiB` for a plain texture. A 2048 x 2048 sheet takes 64 MiB; a 4096 x 4096 one, 256 MiB.
+**One attempt's Dependency peak** is the private registry (about 300 B per CAB of the view, A4) plus the opens its reads keep within `D_X`, plus one decode's transient.
 
 ### 5.6 Sizing rules, and an example
 
@@ -742,90 +469,79 @@ Each rule is a recommendation the manifest reports against, not a validation.
 
 | goal | rule |
 |---|---|
-| every input that fits at all completes | `M >= max P_X` (an attempt's peak, E40) |
-| few Alone runs for the Input pool | `I >= threads x p95(P_X) + max(P_X)` |
-| every read site fits after a full eviction | `dep_cache_bytes >= 2 M` (validation requires `>= M`, 2.2); a flagged input's private registrations come out of this room too |
-| few Alone runs for the Dependency pool | `dep_cache_bytes >= threads x p95(read site's pins) + the working set worth keeping` |
-| the spool fits | `spool_size >= downloads + all candidates + records + threads x the largest attempt's outputs + the largest archive` |
+| every input that fits at all completes | `M >= max P_X` (E40's input peak) and `D >= max` dependency peak |
+| full parallelism | `I >= threads x (M + D)` |
+| the spool fits | `spool.size_bytes >= downloads + all candidates + records + threads x the largest attempt's outputs + the sort's runs + the largest archive's central directory` |
 
-**Example for the corpus:** `threads` 8, `download_concurrency` 8, `I` = 1 GiB, `M` = 512 MiB, `dep_cache_bytes` = 512 MiB, F about 1 MiB.
-- The constants come to about 121 MiB: 64 MiB of provider cache, 16.7 MiB for 9 threads, 0.2 MiB of opens, 16 MiB for 8 transfers, 4.3 MiB of spec and controller state, and about 20 MiB of base.
-- So the bound is about 1,658 MiB in the charge unit, and about 2.4 GiB under glibc's worst-case slack.
-- The corpus's largest input peaks at 212 MB before the decode fix, well inside `M`. No corpus input should fail for memory at these budgets. How many Alone runs they cause is not yet known (A5).
+**Example for the corpus:** `threads` 8, `download_concurrency` 8, `M` = `D` = 256 MiB, `I` = 4 GiB.
+- The constants come to about 82 MiB: 37 MiB of thread stacks, 5 MiB of private Environments at `max_view_bundles` 1,024, 16 MiB for 8 transfers, 4.3 MiB of spec and controller state, and about 20 MiB of base.
+- So the bound is about 4.1 GiB in the charge unit, and about 6.1 GiB under glibc's worst-case slack.
+- The corpus's largest input peaks at 212 MB before the decode fix, inside `M`. An input whose view is itself alone reserves 256 MiB, so the 8 slots reserve between 2 and 4 GiB.
 
 ### 5.7 Disk
 
-`spool_size` bounds the sum of:
-- downloaded inputs and dependencies, kept until the run ends;
-- every committed candidate and its records, kept until phase 9;
-- the partial outputs of the attempts in flight;
-- archives being built;
-- the manifest.
-
-A free-space check against `spool_reserve` runs before each claim. A refused claim stops the run (2.7).
+`spool.size_bytes` bounds the sum of the downloads, every committed candidate and its records until phase 9, the partial outputs of the attempts in flight, phase 8's sorted runs, archives' central directories while they stream, and the manifest's row files. A free-space check against `spool.reserve_bytes` runs before each claim. A refused claim stops the run (2.7).
 
 ### 5.8 How it is checked
 
-- `every_attempt_returns_its_charges` and `the_input_pool_is_empty_whenever_nothing_is_in_flight` (3.1).
-- X12 in `extract.md`'s gate (its section 5): the core's counting allocator (`unityrs_testkit`) over the engine's export paths. The heap never holds more than the charges plus section 5.3's constants, as `tests/memory_model.rs` checks for the core.
-- X13: each testkit input run with `M` at its peak less one byte, and at its peak. It is refused the same way every time, then gives the records of an unbounded run.
+- `every_attempt_returns_its_charges` (3.1), and `the_slots_in_flight_never_exceed_the_inflight_bound`.
+- X12 in `extract.md`'s gate: the core's counting allocator (`unityrs_testkit`) over the engine's export paths. The heap never holds more than the charges plus 5.3's constants, as `tests/memory_model.rs` checks for the core.
+- X13: each testkit input run with `M` at its peak less one byte, then at its peak, where its peak is the largest over its meter and every dependency meter of its run. It is refused the same way every time, then gives the records of an unbounded run.
 - `rss_tracks_live_heap_after_large_frees`, with and without E57's settings.
-- The nightly writes `VmHWM` (`/proc/self/status`) into the manifest and checks it against 5.1's bound for its spec.
+- The nightly writes `VmHWM` into the manifest and checks it against 5.1's bound for its spec.
 
 ---
 
 ## 6. Requests to the core
 
-Each request goes through the core's integration rule. Each names the change, the property it adds to core 4.1, and what the engine does without it. No core 4.1 property changes, and `EnvOptions::unitypy()` is untouched by all of them.
+Each request goes through the core's integration rule. None changes a core 4.1 property, and `EnvOptions::unitypy()` is untouched by all of them.
 
-| request | change | property it adds | without it |
+| request | change | property it adds, and its test | what the engine does until it lands |
 |---|---|---|---|
-| **CR1, needed** | `Environment::evict_dependencies(&self)`: drop the LRU's handle on every dependency. It is the existing `DepCache::evict_others(None)` (`env/registry/lru/mod.rs`, `pub(crate)` today), made public | after it, the Dependency pool holds only registry charges and what callers pin, and the next read of each dependency reopens it cold, with a fresh work allowance. Test: the pool reads F after it when nothing is pinned, and a read after it reopens (`Meter::reopen`) | the engine drops and rebuilds the Environment, re-registering every bundle, before each Alone attempt and each Alone retry, at the cost of reading every bundle's header again |
-| **CR2, wanted** | `Environment::with_room` public: the private `room` (`env/mod.rs`), with `PoolRefusal` (`env/registry/dependency.rs`) made public | a caller's read on a dependency's handle, made inside it, gets the core's evict-and-retry-once, as an Environment call does (core 3.13) | Shared attempts refused this way run Alone. The Alone retry (2.7) keeps every outcome right |
-| **CR3, wanted** | `EnvOptions::own_bundle_first`, true in `batch()` and false in `unitypy()`: a resource read's candidates and the AssetBundle container are looked up first in `from`'s own container chain, by the registry's key rule | Q12's rule in the core, where its candidate order and slice rule already live. Needs a `PARITY.md` section 19.3 row and Q12's tests in both load modes | the engine's copy (2.6) and its differential test |
-| **CR4, optional** | `Error::refused_by(&self)`, with `DerefError` and `ParseError` equivalents: the `Reservation` or the `LimitKind`, and whether the meter was a dependency's. It is the public form of the internal `pool_refused` classifier (`env/registry/dependency.rs`), generalised | a refusal names its pool, its limit and its meter's kind | 2.7 classifies by where the error arose (inside `dep_read` or not), and the manifest says "dependency-side" without the pool |
-| **CR5, optional** | `Environment::deref_held(from, pptr)`, returning the target with its top-level `File`, as `get_cab_held` does (`env/deref.rs`) | a dereference returns its target's container held, so no eviction can come between them | the engine takes the `File` from the target's `Parent` before its next Environment call. A Shared attempt that loses the race to another thread's eviction meets `ContainerDropped` and runs Alone, where nothing else evicts |
-| **CR6, optional** | a `DecodeWork` refusal on a `Dependency` meter is not kept in a cell, and the Environment evicts that dependency so that its next read reopens it with a fresh allowance | a dependency open's used-up work allowance never poisons its later readers | 3.11's Alone runs, one per allowance's worth of reads of a popular dependency |
-| **CR7, text only** | core 3.15 and its constants' table: the provider cache's bound is per `ProviderChain`, shared by every context that clones its `Arc` | none (a correction) | 5.3 counts `C_prov` once and says why |
+| **CR1, wanted** | `load_dependency` publishes nothing when it fails: a registration refused after some of its keys were inserted (`env/load.rs`, `try_load_dep`; `env/registry/register.rs`) removes them before it returns the error | a failed load leaves the registry as it was. Test: a bundle whose registration is refused at its k-th entry, for every k, after another bundle registered a same-named CAB; every lookup after it answers as before the load | the attempt fails X on any failed load of its view (2.3, rule 1) and makes no read through that Environment after it, so the partial slots are never read. Granted, an attempt could skip a failed member that its reads never reach; D does not need it |
+| **CR2, wanted** | `Error::refusal(&self) -> Option<Refusal>`, with the same on `DerefError` and `ParseError`: `Refusal::{Budget(Reservation), Limit(LimitKind, MeterKind), Allocator(Reservation), Io}`, where `MeterKind` says whether the refused meter was a dependency's. The allocator's refusal (`limits/meter.rs`, `refusal`) gets its own variant | one public classification of every error the engine must route, stable across new variants. Test: every wrapper path the core can build (`Error` → `DerefError` → `ParseError` → `ReadError` → `TreeError` → `ChargeError`) classifies as its innermost cause | 2.7's `classify` over the public enums, with unknown variants stopping the run (exit 70); preflight's resource-limit check stands in for the allocator variant (A13) |
+| **CR3, wanted** | `EnvOptions::own_bundle_first`, true in `batch()` and false in `unitypy()`: a resource read's candidates and the AssetBundle container are looked up first in `from`'s own container chain | Q12's rule in the core, where its candidate order and slice rule live. Needs a `PARITY.md` section 19.3 row and Q12's tests in both load modes | the engine's copy (2.6, step 8) and its differential test (3.9) |
+| **CR4, wanted** | a `Source::Path` registration that reads only the bundle's header, blocks-info and directory, and reads the rest of the file when a data block is first reached | registration costs the directory, not the file. Test: registering an N-byte bundle charges at most its header, blocks-info and directory, and a later read gives the same bytes as a whole-file load | every registration reads its file whole (2.2's cost) |
+| **CR5, text only** | core 3.15 and its constants' table: the provider cache's bound is per `ProviderChain`, shared by every context that clones its `Arc` | none (a correction) | 5.3 says why it is not a term in version 1 |
 
-`DerefError::is_transient` is `pub(crate)` (`env/pptr.rs`). The engine reaches it wrapped as `Error::Deref` through `CellError::is_transient` (`once.rs`, public), and needs no request for it.
+**Withdrawn with design round 1's shared cache:** `Environment::evict_dependencies`, a public `with_room`, `deref_held`, and the `DecodeWork` request. A sealed attempt's Environment is dropped whole, and no outcome waits for a retry.
 
 ---
 
 ## 7. Assumed (not checked)
 
-- **A1.** Sizes not measured: a transfer's connection and TLS state is at most 2 MiB (`c_net`), and a parsed spec at most 4 times its JSON. Test: the counting allocator on a 100 MiB download and on a spec at the cap.
-- **A2.** One read site's work on one fresh open stays under `4 M`. That work is its runs, its entry's parse and its value, each bounded through `M`. The nightly reports the largest read site's work, and the squeeze row (X13) runs a variant with `max_decode_work` at the read site's measured work.
-- **A3.** A read that succeeds through any open holds at least its cold charges on that open at that moment: the source's bytes, its runs, its entry and its value. 2.10's step 4 needs this. Its test is 2.10's injection and pool-size matrix.
-- **A4.** A registry entry costs about 300 B per CAB, worked out from core 3.13's list (key, slot `Arc`, rank path, B-tree share, buckets), not measured. F is measured at run time either way (2.2).
-- **A5.** Not measured on the corpus:
-  - the share of inputs that other inputs read;
-  - how many inputs read each shared dependency;
-  - the total candidate bytes of a build, which sizes the spool;
-  - how often a Shared attempt is refused at realistic budgets;
-  - how often inputs are flagged.
-
-  Section 5.5's 1.1 % agreement is an arithmetic check against one measured peak, not a measurement of the model.
-- **A6.** The LRU evicts least recently used first, and never the entry a call has just used when that entry's meter is within its bound alone (`env/registry/lru/mod.rs`). With `M <= dep_cache_bytes`, a single-threaded Alone attempt therefore finds a dereferenced target's container alive until its next Environment call.
+- **A1.** Sizes not measured: a transfer's connection and TLS state is at most 2 MiB (`c_net`); a parsed spec at most 4 times its JSON; a registered bundle's uncharged heap at most 512 B. Test: the counting allocator on a 100 MiB download, a spec at the cap, and a view of `max_view_bundles` bundles.
+- **A4.** A registry entry costs about 300 B per CAB, from core 3.13's list, not measured. It sizes `D`; the budget enforces whatever it is.
+- **A5.** Not measured on the corpus: how many bundles a view holds; how many inputs read each dependency, and so how many times sealing reopens and re-decodes it (2.2's cost); the total candidate bytes of a build, which sizes the spool; how much of 5.5's 212 MB peak is file bytes and values.
 - **A7.** With E57's settings, glibc's arena retention keeps peak RSS within a few percent of the live heap. The core's rules do not bound fragmentation, and a memory cgroup also counts the spool's page cache. The nightly measures both.
-- **A8.** A TPK provider's trees, charged to an unbounded meter (`unityrs-tpk`), are a bounded constant. The corpus's typetrees are embedded, so P1b's runs configure no TPK.
-- **A9.** Download time is a small part of a run on the corpus, so finishing registration before extraction costs little (2.1). The brief's figures give sizes and the CPU's split, not wall times.
-- **A10.** The MonoBehaviour script hook (`Environment::object_tree`) dereferences `m_Script` inside the core, where 2.6's view check cannot apply. It matters only for stripped MonoBehaviours with a script provider, which P1b does not configure.
+- **A8.** Version 1 configures no typetree provider: the spec has no field for one, and the base context's chain is empty. The corpus's typetrees are embedded.
+- **A9.** Download time is a small part of a run on the corpus, so finishing downloads before extraction costs little (2.1). The figures give sizes and the CPU's split, not wall times.
+- **A10.** The MonoBehaviour script hook (`Environment::object_tree`) dereferences `m_Script` inside the core. It matters only for stripped MonoBehaviours with a script provider, which version 1 does not configure.
+- **A11.** The spool and the output directory are local filesystems whose calls complete. A filesystem that stops answering can hold a thread in a call Linux cannot interrupt, past `T_hard` (2.11).
+- **A12.** The core keeps no state that one thread's call leaves for another's, except the budget and the provider chain. Its non-test thread-locals are in `limits/meter.rs`: the pool-refusal count, which a call reads as a difference, and the grant frames, which each lazy computation opens and closes. So what an earlier attempt on the same worker left in them changes nothing. Test: `an_inputs_records_do_not_depend_on_what_runs_beside_it` at `threads` 1, where every attempt follows another on one thread.
+- **A13.** Under preflight's resource-limit check, the allocator does not refuse an allocation within 5.1's bound. When it does (strict overcommit, a cgroup that refuses mappings), the core reports a budget refusal (`limits/meter.rs`, `refusal`), which the engine records as one, and the record then depends on the host. CR2 removes the assumption.
+
+(A2, A3 and A6 were design round 1's assumptions about the shared cache, and went with it.)
 
 ---
 
 ## 8. Open, for the review rounds
 
-1. **Three of the panel's findings have answers here but no review yet:** 3.11, 3.12 and 3.13. Above all, 2.10's step 4 rests on A2 and A3. A review should look for a read that succeeds in a Shared attempt where its cold read would be refused.
-2. **The views are new.** The panel asked for some rule on same-named CABs among dependencies, and the views are this round's answer. Their cost (the key table, the per-attempt check, and private Environments for flagged inputs) has not been weighed against a core request for lookups restricted to a set of loads. That request was considered and not made: the engine can do this with the public API.
-3. **E9 is kept, with discovery between rounds** (2.3). Dropping its fetch clause and requiring a complete graph would remove the discovery round. That is the owner's choice (`extract.md` section 3).
-4. **DESIGN.md's `unityrs-batch` row** still says "each bundle and dependency parsed once per run, within `dep_cache_bytes`". Section 1 says why it cannot hold. The row is the owner's to change.
-5. **Nested containers** are outside D (2.10). Whether the engine should refuse an input with one, instead of reporting it, is open.
-6. **Overlapping downloads with decoding** is given up (2.1). A later version may start jobs early when the key table shows that no later registration can share a key with the views they need.
-7. **The cross-kind and cross-unit winner rules** (`extract.md` E32) are proposed there, not decided.
+1. **Sealing is new.** Its cost (2.2) is stated but not measured (A5). A review should look for any state an attempt reads that another attempt can write.
+2. **E9 is kept, with discovery between rounds** (2.3). Dropping its fetch clause and requiring a complete graph would remove the discovery round. That is the owner's choice (`extract.md` section 3).
+3. **DESIGN.md's `unityrs-batch` row** still says "each bundle and dependency parsed once per run, within `dep_cache_bytes`". Section 1 says why it does not hold; the row, and `dep_cache_bytes`'s meaning there, are the owner's to change.
+4. **Overlapping downloads with decoding** is given up (2.1). A later version may start an attempt once its view's downloads have ended.
+
+**Follow-ups** (round 1's LOW findings not fixed in this text, and what sealing leaves for later):
+- A shared dependency cache that keeps D. It needs the core to charge a read at its cold cost whatever is cached, growth ladders that ignore budget refusals, and run caching independent of read order. Only worth asking for once A5 shows sealing's re-decodes cost enough.
+- The core's evict-and-retry for direct reads on a dependency's handle (3.12), which would let a read fit that a full cache refuses today.
+- `{container}` in key templates (`extract.md` E27).
+- Pattern-based archive member maps, and a spec field for the manifest's location (`BATCH_SPEC.md` 1.7 and 7.1).
+- Pinning the PNG writer's zlib to the oracle's version, and `PARITY.md`'s IDAT chunk size, `max(65536, 4 x width)` (`extract.md` E19).
+- An optional prune of keys under the output root that the manifest does not list.
 
 ## 9. Before it is built
 
 - This plan's review rounds, run until a round finds no MEDIUM or HIGH problem, with section 8 settled.
-- CR1 granted, or its fallback accepted. CR2 to CR7 answered.
-- `extract.md`'s gate (its section 5) agreed. It holds the engine's tests named here: D (2.10), pool emptiness, charging, the deadlock guard and scans (section 4), and the memory rows (5.8).
+- CR1 to CR5 answered. None is needed for correctness; each has its interim.
+- `extract.md`'s gate (its section 5) agreed. It holds the engine's tests named here: D (2.10), budgets and charging, the deadlock guard and scans (section 4), and the memory rows (5.8).
