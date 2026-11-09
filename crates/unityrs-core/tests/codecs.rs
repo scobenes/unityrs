@@ -258,6 +258,45 @@ fn lzma_matches_beyond_the_first_dictionary_decode_again_with_a_larger_one() {
     assert_eq!(run(&Lzma, &block, 0, u64::MAX).unwrap(), data);
 }
 
+/// `lzma_blocks.json` (UnityPy's `decompress_lzma`): liblzma gets the
+/// dictionary size the block's header names, so a match farther back than
+/// it is `LZMAError`, whatever size blocks-info declares. The codec's first
+/// dictionary (sized by the declared size) and each retry's (by the output
+/// so far) are capped at the named size, so one stream whose far match
+/// reaches 20,300 bytes back fails under a named 4, 8 or 16 KiB at a
+/// declared 0 and 30,000 alike, and decodes under a named 64 KiB (review
+/// round 16: removing either cap passed every test).
+#[test]
+fn lzma_a_match_past_the_named_dictionary_raises_whatever_the_declared_size() {
+    let doc = load("scaffold", "lzma_blocks.json");
+    let stream = hex(doc["stream"].as_str().unwrap());
+    let len = usize::try_from(doc["output_len"].as_u64().unwrap()).unwrap();
+    let tail = hex(doc["output_tail"].as_str().unwrap());
+    let (mut refused, mut decoded) = (0, 0);
+    for c in doc["cases"].as_array().unwrap() {
+        let named = u32::try_from(c["named"].as_u64().unwrap()).unwrap();
+        let declared = u32::try_from(c["declared"].as_u64().unwrap()).unwrap();
+        let mut block = vec![0x5D];
+        block.extend_from_slice(&named.to_le_bytes());
+        block.extend_from_slice(&stream);
+        let got = run(&Lzma, &block, declared, u64::MAX);
+        if c["ok"].as_bool().unwrap() {
+            let out = got.unwrap_or_else(|e| panic!("{c}: UnityPy decodes it: {e}"));
+            assert_eq!(out.len(), len, "{c}");
+            assert_eq!(out[len - tail.len()..], tail[..], "{c}");
+            decoded += 1;
+        } else {
+            assert!(
+                matches!(&got, Err(Error::Decompress { detail, .. }) if detail.starts_with("LZMAError")),
+                "{c}: UnityPy raises LZMAError, unityrs {:?}",
+                got.map(|o| o.len())
+            );
+            refused += 1;
+        }
+    }
+    assert_eq!((refused, decoded), (6, 2));
+}
+
 #[test]
 fn lzma_output_is_capped_per_block_and_charged() {
     let data = vec![3u8; 100_000];

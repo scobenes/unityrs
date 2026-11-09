@@ -36,8 +36,9 @@ object's `container` path, the dependencies' paths and the state, and, for
 a load of more than one key, the same with only its first key made there.
 
 `env_threads.json`: two of the scenes run in the orders the core's unit
-test `env::race_tests` makes their loads in on two threads
-(`env_race.py`'s module docs).
+test `env::race_tests` makes their loads in on two threads, and the
+`files` the listings of `env::listing_tests` leave after every set of
+their loads (`env_race.py`'s module docs).
 
 `resolver.json`: the names UnityPy's lookups hand on where it looks in
 `env.path` (the core's `CabResolver`): a resource read's fallback and a
@@ -92,8 +93,9 @@ from scaffold import dump  # noqa: E402
 
 def scene_inputs() -> list[dict]:
     """unityrs-testkit's env::scenes(), env::dependency_scenes() (a line
-    with a `dependencies` key) and its find_file scenes (a line with an
-    `asks` key), as the replay test writes them."""
+    with a `dependencies` key), its find_file scenes (a line with an `asks`
+    key), its race scenes (a line with an `other` key) and env::listings()
+    (a line with a `listings` key), as the replay test writes them."""
     with scratch.folder() as tmp:
         out = Path(tmp) / "scenes.jsonl"
         env = dict(os.environ, UNITYRS_WRITE_SCENES=str(out))
@@ -630,7 +632,7 @@ def check_g5_in(report: dict, rels: list[str], corpus: Path, empty: str) -> int:
 def fixtures() -> dict[str, dict]:
     meta = {"generator": "tools/fixtures/env.py", "unitypy": UnityPy.__version__}
     inputs = scene_inputs()
-    plain = [scene_case(s) for s in inputs if not {"dependencies", "asks", "other"} & s.keys()]
+    plain = [scene_case(s) for s in inputs if not {"dependencies", "asks", "other", "listings"} & s.keys()]
     deps = [scene_case(s) for s in inputs if "dependencies" in s]
     finds = [scene_case(s) for s in inputs if "asks" in s]
     races = [race_case(s, Run) for s in inputs if "other" in s]

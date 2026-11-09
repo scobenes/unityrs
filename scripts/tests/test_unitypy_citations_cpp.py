@@ -5,8 +5,11 @@ Review round 14 found the C++ ranges held to the blank-line rule only, and five
 citations of TypeTreeHelper.cpp 4-5 lines early, each starting in the function
 above the one it cites. Review round 15 found six more that each lie inside one
 definition but start on a `}` or end inside a block, which the brace rule now
-refuses. No test needs UnityPyBoost's sources (they are in UnityPy's sdist, not
-in the repository); `--boost DIR` checks the pins against a copy of them.
+refuses. UnityPyBoost's sources are in UnityPy's sdist, not in the wheel; a
+copy of them is kept, byte for byte, in unitypyboost_1_25_2/ beside this file,
+with that release's LICENSE, and `--boost DIR` checks the pins against it (CI's
+parity job runs it, and so does a test here: review round 16 found that nothing
+ran `--boost`, so a wrong digit in a pin passed).
 """
 
 import hashlib
@@ -23,6 +26,9 @@ import test_unitypy_citations as T  # noqa: E402
 import scratch  # noqa: E402
 import unitypy_boost as B  # noqa: E402
 import unitypy_citations as C  # noqa: E402
+
+# UnityPyBoost's sources from UnityPy 1.25.2's sdist, kept byte for byte (CI runs `--boost` on this folder).
+BOOST_COPY = TESTS / "unitypyboost_1_25_2"
 
 # Every construct UnityPyBoost's eight sources use, with a brace where the scan must not count one.
 SOURCE = (
@@ -340,6 +346,21 @@ class PinTests(unittest.TestCase):
         self.assertEqual(got.shapes[name].depths, B.BOOST[name][4])
         self.assertEqual(got.shapes[name].depths[636:644], "12222221")
         self.assertEqual(got.shapes["UnityPyBoost/Mesh.hpp"].functions, ())
+
+    def test_every_pin_is_that_of_the_kept_copy(self):
+        """The kept copy is UnityPyBoost's eight sources and the release's LICENSE (the crates' LICENSE-UNITYPY), and
+        every pin of each source (its sha256, line count, blank lines, definitions and brace depths) is what the
+        scans find in it, as `--boost` checks it."""
+        names = sorted([Path(name).name for name in C.BOOST] + ["LICENSE"])
+        self.assertEqual(sorted(path.name for path in BOOST_COPY.iterdir()), names)
+        unitypy = T.ROOT / "crates" / "unityrs-core" / "LICENSE-UNITYPY"
+        self.assertEqual((BOOST_COPY / "LICENSE").read_bytes(), unitypy.read_bytes())
+        for name in C.BOOST:
+            with self.subTest(name):
+                B.check_copy(name, (BOOST_COPY / Path(name).name).read_bytes(), BOOST_COPY / Path(name).name)
+        with scratch.folder("unityrs-citations-") as tmp:
+            got = loader(tmp)(BOOST_COPY)
+        self.assertEqual(got.lines["UnityPyBoost/TypeTreeHelper.cpp"], 1286)
 
     def test_a_boost_copy_must_be_the_pinned_one(self):
         with scratch.folder("unityrs-citations-") as tmp:

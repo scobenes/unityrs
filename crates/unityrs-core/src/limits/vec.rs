@@ -55,8 +55,11 @@ fn bytes_of<T>(n: usize) -> u64 {
 /// (never below `need`), charging the new allocation to `charge`'s meter
 /// first. While the allocator moves the buffer both blocks exist, so both are
 /// charged until it is done; then the old block's charge is returned. A
-/// refused doubling retries at exactly `need` before it fails, so a meter
-/// that fits the data is never refused by the growth policy.
+/// refused doubling is asked for again with half the room past `need`, and
+/// so on down to exactly `need` before it fails, so a meter that fits the
+/// data is never refused by the growth policy, and a vector that meets its
+/// bound grows a few dozen more times at most, each time by at least half of
+/// what could still be granted ([`grow_counted`]).
 pub(crate) fn grow_charged<T>(
     vec: &mut Vec<T>,
     charge: &mut Charge,
@@ -73,6 +76,13 @@ pub(crate) fn grow_charged<T>(
 /// and one the work bound refuses returns its charge and allocates nothing.
 /// The check and the count are one atomic step, so writes on several
 /// threads never pass the bound together.
+///
+/// The growth's ladder is `Text::reserve`'s (`unityrs-dump`, fix pass 15).
+/// Fix pass 17: a refused doubling was asked for exactly `need`, so a vector
+/// whose capacity lay between a third and a half of what was free grew by
+/// one push at a time, each push past its room a refused request (a failed
+/// `mmap` where the allocator is what refuses; review round 16, through the
+/// walk's lists and the writer's [`crate::budget::DecodeBuf`]).
 pub(crate) fn grow_counted<T>(
     vec: &mut Vec<T>,
     charge: &mut Charge,
@@ -89,18 +99,18 @@ pub(crate) fn grow_counted<T>(
         }
         return Ok(());
     }
-    let doubled = have.saturating_mul(2).min(max).max(need);
-    if doubled > need {
-        match grow_exact(vec, charge, doubled, work) {
+    let mut target = have.saturating_mul(2).min(max).max(need);
+    loop {
+        match grow_exact(vec, charge, target, work) {
             Ok(()) => return Ok(()),
             // The work bound refuses the exact size as well.
             Err(ChargeError::Limit(l)) if l.kind == LimitKind::DecodeWork => {
                 return Err(ChargeError::Limit(l));
             }
-            Err(_) => {}
+            Err(_) if target > need => target = need + (target - need) / 2,
+            Err(e) => return Err(e),
         }
     }
-    grow_exact(vec, charge, need, work)
 }
 
 fn grow_exact<T>(

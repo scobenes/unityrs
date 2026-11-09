@@ -15,9 +15,12 @@ use std::sync::{Arc, Barrier, Mutex, mpsc};
 #[cfg(test)]
 use std::thread::ThreadId;
 
-use super::{By, Cab, Hook, HookFn, Loads, Rank, SlotKind};
+use super::{By, Cab, Hook, HookFn, Loads, Rank, RawCab, Registry, SlotKind};
+use crate::detect::FileType;
+use crate::env::heap::{self, Noted};
 use crate::env::watch::REGISTRY;
 use crate::env::{EnvOptions, Environment, Source, held};
+use crate::files::RawFile;
 use crate::limits::Meter;
 use crate::raw::RawStr;
 use bytes::Bytes;
@@ -371,4 +374,44 @@ fn at_each_release_a_registrations_key_flags_and_generation_agree() {
             assert_eq!(with_listing != 0, drops && lazy, "{what}: the listing");
         }
     }
+}
+
+/// A key's entry, taken out of the registry and dropped alone, with the
+/// charge for its position's path on a meter of its own: the charge is
+/// released after the path is freed. The entry's fields drop in order, its
+/// slot, its position, its share, then that charge (fix pass 17's sweep: no
+/// test failed with the charge declared before the position). The heap is
+/// counted on the test's thread ([`crate::env::heap`]).
+#[test]
+fn a_keys_entry_releases_its_paths_charge_after_the_path() {
+    heap::count();
+    let reg = Registry::default();
+    let meter = Meter::unlimited();
+    let raw = RawFile::new(
+        RawStr::from("CAB-K.resS"),
+        Bytes::from_static(b"raw"),
+        FileType::ResourceFile,
+        &meter,
+    )
+    .unwrap();
+    reg.register(&RawStr::from("CAB-K"), Cab::Raw(RawCab::File(raw)), &meter)
+        .unwrap();
+    let mut entry = {
+        let mut inner = reg.write();
+        let entry = inner.slots.remove(b"cab-k".as_slice()).expect("the key");
+        // The order's copy of the position shares its path.
+        inner.order.remove(&entry.first);
+        entry
+    };
+    let (noted_meter, noted) = Noted::meter();
+    let paid = noted_meter
+        .charge(Rank::heap(entry.first.path().len()))
+        .unwrap();
+    drop(std::mem::replace(&mut entry.first_charge, paid));
+    let from = noted.releases();
+    let before = heap::live();
+    drop(entry);
+    let after = heap::live();
+    assert!(before > after, "the drop freed nothing");
+    heap::released_last(&noted, from, after, "the path's charge");
 }

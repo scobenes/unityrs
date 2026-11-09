@@ -1,8 +1,9 @@
 //! Replays package C's oracle fixtures (`tests/fixtures/c/`, written by
 //! `tools/fixtures/files.py` from UnityPy 1.25.2): version strings, detection,
-//! and the testkit file matrix's L0 and L1 records (`docs/CANONICAL_DUMP.md`
-//! section 4.2), which a small dumper here writes from the core's API the way
-//! the oracle dump writes them from UnityPy's.
+//! the testkit file matrix's L0 and L1 records, and those of its
+//! `sample.resS` under each raw name suffix (`docs/CANONICAL_DUMP.md` section
+//! 4.2), which a small dumper here writes from the core's API the way the
+//! oracle dump writes them from UnityPy's.
 
 // SHA-256's constants, as the standard writes them; hex built by `format!`.
 #![allow(clippy::unreadable_literal, clippy::format_collect)]
@@ -421,6 +422,28 @@ fn the_matrix_has_no_l0_l1_differences() {
         doc["cases"].as_array().unwrap().len(),
         differences.join("\n")
     );
+}
+
+/// An `AssetsFile` named with any of the five suffixes UnityPy keeps raw
+/// (`helpers/ImportHelper.py:138-151`, `detect::parsed_as`) stays raw: the
+/// matrix's `sample.resS` bytes under each suffix, every record UnityPy's
+/// (review round 16: only `.resS` had a row, so a typo in any other passed).
+#[test]
+fn each_raw_name_suffix_keeps_an_assets_file_raw() {
+    let doc = load("raw_names.json").expect("tests/fixtures/c/raw_names.json");
+    let of = doc["bytes_of"].as_str().unwrap();
+    let (_, data) = unityrs_testkit::bundle::matrix()
+        .into_iter()
+        .find(|(n, _)| n == of)
+        .unwrap_or_else(|| panic!("no matrix input {of}"));
+    let cases = doc["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 5);
+    for c in cases {
+        let input = c["name"].as_str().unwrap();
+        let theirs = c["records"].as_array().unwrap();
+        assert_eq!(theirs[0]["l0"]["parsed_as"], "raw", "{input}");
+        assert_eq!(dump(input, &data), *theirs, "{input}");
+    }
 }
 
 /// A 16-byte read UnityPy keeps as it is (an external's guid, a type's

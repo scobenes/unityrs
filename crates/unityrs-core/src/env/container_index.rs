@@ -754,3 +754,6 @@ impl Environment {
         Ok(keys)
     }
 }
+
+#[cfg(test)]
+mod drop_tests;

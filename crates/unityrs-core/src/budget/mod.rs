@@ -315,8 +315,9 @@ pub fn charged_bytes(buf: Vec<u8>, mut charge: Charge) -> Result<Bytes, ChargeEr
 /// meter (which books it with the budget), and only then grows; a refused
 /// growth allocates nothing. Capacity grows geometrically, never past the
 /// current segment's end (its start and its cap: room no write may use is
-/// never allocated, review round 13), and a refused doubling retries at
-/// exactly the size needed.
+/// never allocated, review round 13), and a refused doubling is asked again
+/// with half the room past the size needed, down to exactly that size
+/// ([`crate::limits::MeteredVec`]'s growth).
 ///
 /// **Segments.** A run of several blocks is one buffer, but each block has
 /// its own cap ([`crate::limits::Limits::max_block_output`]): the caller

@@ -420,14 +420,28 @@ impl ParseError {
     }
 }
 
-/// Why writing a value failed (the dump's L3 `"error"`).
+/// Why writing a value failed (the dump's L3 `"error"`). Each variant
+/// stands for the exceptions [`Self::exceptions`] names, the classes UnityPy
+/// 1.25.2's `write_typetree` raises there; a variant UnityPy has no
+/// counterpart for names none.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum WriteError {
-    /// A child name missing from the dict (Python `KeyError`).
+    /// A child name missing from the dict, or a `ReferencedObject`'s `type`
+    /// or one of its names (`KeyError`).
     #[error("missing key {0:?}")]
     MissingKey(RawStr),
-    /// A value of the wrong type for its node (`struct.error`, `TypeError`).
+    /// A value of the wrong type for its node. `expected` says what the node
+    /// takes, and which exception UnityPy raises: `struct.error` for `int`
+    /// and `float`; `AttributeError` for a `str` (`value.encode`), an
+    /// attribute, a ref type with a tree (`None.m_MetaFlag`) and a `type`
+    /// that is not a dict (`getattr(typ, "class")`); `TypeError` for
+    /// `bytes`, a sized iterable (`len`) and a `ReferencedObject`'s dict
+    /// (`value[...]`); `TypeError`, `KeyError` or `IndexError` for a
+    /// sequence of two (`value[0]` of an `int`, a `dict` or a short
+    /// sequence). A modelled attribute is the writer's own refusal of a
+    /// dunder name, which UnityPy reads and may write (`PARITY.md` section
+    /// 19.3).
     #[error("{node:?}: expected {expected}")]
     TypeMismatch {
         /// The node's name.
@@ -435,20 +449,32 @@ pub enum WriteError {
         /// What the node takes.
         expected: &'static str,
     },
-    /// An integer outside its node's width, or a finite float that overflows `f32`.
+    /// An integer outside its node's width (`struct.error`), or a finite
+    /// float that overflows `f32` (`OverflowError`).
     #[error("{node:?}: value out of range")]
     OutOfRange {
         /// The node's name.
         node: RawStr,
     },
-    /// `ReferencedObject` data with no `ref_types`, or an empty list
-    /// (the writer raises where the reader does not; `TypeTreeHelper.py:99-100`).
+    /// `ReferencedObject` data with no assets file, or an empty `ref_types`
+    /// list (the writer raises where the reader does not; `TypeTreeHelper.py:99-100`):
+    /// `ValueError`.
     #[error("SerializedFile has no ref_types")]
     NoRefTypes,
-    /// `ReferencedObject` data whose type is not in `ref_types`.
+    /// `ReferencedObject` data against a file with no `ref_types` attribute
+    /// ([`RefTypes::Absent`]: a `SerializedFile` below format 20, which
+    /// UnityPy never sets it on, `files/SerializedFile.py:306-308`): reading
+    /// `assetfile.ref_types` raises `AttributeError` (`TypeTreeHelper.py:99`).
+    #[error("'SerializedFile' object has no attribute 'ref_types'")]
+    NoRefTypesAttribute,
+    /// `ReferencedObject` data whose type is not in `ref_types`
+    /// (`ValueError`).
     #[error("Referenced type not found")]
     RefTypeNotFound,
-    /// A malformed node the writer reached (`pair` or `Array` children).
+    /// A malformed node the writer reached: a `pair`'s or an `Array`'s
+    /// missing child (`IndexError`), or a matched ref type's rows that make
+    /// no tree, which UnityPy refuses when it parses the file (an
+    /// `IndexError` too, [`TreeError`]).
     #[error("malformed node {0:?}")]
     Malformed(RawStr),
     /// The object has no tree to write with: UnityPy raises the same
@@ -471,6 +497,48 @@ pub enum WriteError {
     /// The input's meter or the budget refused the output's memory.
     #[error(transparent)]
     Charge(ChargeError),
+}
+
+impl WriteError {
+    /// The classes, by `__name__` (`error` is `struct.error`), of the
+    /// exceptions UnityPy 1.25.2's `write_typetree` (`TypeTreeHelper.py:407-458`
+    /// and `streams/EndianBinaryWriter.py`) raises where the writer reports
+    /// this error, as the variants' docs give them; `tests/walk_fixtures.rs`
+    /// checks against this every raise in the cases, the value cases and
+    /// W2's matrix `tools/fixtures/walk.py` records.
+    /// None for an error UnityPy has no counterpart for: a bound of
+    /// [`Limits`] or a refused charge (`PARITY.md` section 19.3), a dunder
+    /// attribute ([`Self::TypeMismatch`]), and a tree that failed before the
+    /// writer ran ([`Self::Tree`]: the read side's error); a
+    /// [`Self::NoTypeTree`] with no `why` says nothing of UnityPy's.
+    #[must_use]
+    pub fn exceptions(&self) -> &'static [&'static str] {
+        match self {
+            Self::MissingKey(_) => &["KeyError"],
+            Self::TypeMismatch { expected, .. } => match *expected {
+                "int" | "float" => &["error"],
+                "str"
+                | "an object with this attribute"
+                | "a ref type with a tree"
+                | "a dict or an object with class, ns and asm" => &["AttributeError"],
+                "bytes" | "a sized iterable" | "dict" => &["TypeError"],
+                "a sequence of two" => &["TypeError", "KeyError", "IndexError"],
+                _ => &[],
+            },
+            Self::OutOfRange { .. } => &["error", "OverflowError"],
+            Self::NoRefTypes | Self::RefTypeNotFound => &["ValueError"],
+            Self::NoRefTypesAttribute => &["AttributeError"],
+            Self::Malformed(_) => &["IndexError"],
+            Self::NoTypeTree { why, .. } => match why {
+                Some(NoTree::UnknownClass) => &["KeyError"],
+                Some(NoTree::NoEntry) => &["ValueError"],
+                Some(NoTree::NoReleaseRoot) => &["AssertionError"],
+                Some(NoTree::NoVersion) => &["NotImplementedError"],
+                None => &[],
+            },
+            Self::Tree(_) | Self::Limit(_) | Self::Charge(_) => &[],
+        }
+    }
 }
 
 /// `TypeTreeHelper.read_typetree` over bytes (UnityPy's memory reader):

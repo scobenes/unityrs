@@ -158,6 +158,13 @@ pub(crate) const WATCH_SHARE: u64 = HASH_TABLE_SHARES
 #[derive(Debug, Default)]
 pub(crate) struct Table {
     map: HashMap<u64, Vec<Weak<Flag>>>,
+    /// The entries `map`'s buckets hold room for: its capacity when it last
+    /// grew or shrank. `HashMap::capacity` is the entries it takes before
+    /// it grows again, which a removal that leaves a tombstone lowers while
+    /// the bucket stays allocated (fix pass 17's verifier: a map that kept
+    /// 16,384 buckets after a walk ended read a capacity under its bound,
+    /// and was never shrunk).
+    room: usize,
 }
 
 impl Table {
@@ -183,6 +190,10 @@ impl Table {
         for &h in hashes {
             self.map.entry(h).or_default().push(Arc::downgrade(flag));
         }
+        // Only an insert grows the map, and a growth leaves no tombstone, so
+        // the capacity after one is the room it grew to; a removal since the
+        // last can only have lowered it.
+        self.room = self.room.max(self.map.capacity());
     }
 
     /// A walk's end: its entries (those whose flag's log is `mine`) leave
@@ -202,19 +213,22 @@ impl Table {
             }
         }
         // The map keeps no room the running walks' charges do not pay for
-        // (a key's share covers a growing table's).
+        // (a key's share covers a growing table's), told by the room its
+        // buckets hold (`room`), not by its capacity. Past this bound a
+        // shrink always moves it to fewer buckets, with no tombstone.
         let len = self.map.len();
-        if self.map.capacity() > 3 * len + 8 {
+        if self.room > 3 * len + 8 {
             self.map.shrink_to(len);
+            self.room = self.map.capacity();
         }
     }
 
-    /// The table's entries and each key list's length and room, for a
-    /// test.
+    /// The table's entries, the room its map's buckets hold, and each key
+    /// list's length and room, for a test.
     #[cfg(test)]
-    pub(crate) fn room(&self) -> (usize, Vec<(usize, usize)>) {
+    pub(crate) fn room(&self) -> (usize, usize, Vec<(usize, usize)>) {
         let lists = self.map.values().map(|l| (l.len(), l.capacity())).collect();
-        (self.map.len(), lists)
+        (self.map.len(), self.room, lists)
     }
 }
 
@@ -226,12 +240,13 @@ pub(crate) trait Under: Sync {
     fn with_table(&self, f: &mut dyn FnMut(&mut Table));
 }
 
-/// The Environment's hashing of watched keys, and its count of running
-/// walks.
+/// The Environment's hashing of watched keys, and, for a test, its count of
+/// running walks.
 #[derive(Debug, Default)]
 pub(crate) struct Watches {
     state: RandomState,
-    /// Walks running.
+    /// Walks running, which only tests read.
+    #[cfg(test)]
     walks: AtomicUsize,
 }
 
@@ -240,6 +255,7 @@ impl Watches {
     /// `files` listing's, in that order: [`REGISTRY`], [`FILES`]), charged
     /// to `meter`; they end when it drops.
     pub(crate) fn start<'a>(&'a self, meter: &Arc<Meter>, locks: [&'a dyn Under; 2]) -> Walk<'a> {
+        #[cfg(test)]
         self.walks.fetch_add(1, Ordering::SeqCst);
         Walk {
             watches: self,
@@ -281,7 +297,8 @@ pub(crate) struct Walk<'a> {
     /// Its flags, by number.
     flags: Vec<Arc<Flag>>,
     /// [`FIRED`] once, [`FLAG`] per flag and [`WATCH_SHARE`] per watch of a
-    /// key.
+    /// key. Declared last, so it is released after every field it pays for
+    /// is freed (W2).
     charge: Charge,
 }
 
@@ -379,9 +396,10 @@ impl Drop for Walk<'_> {
                 hook(Point::Ended(at));
             }
         }
+        #[cfg(test)]
         self.watches.walks.fetch_sub(1, Ordering::SeqCst);
-        // `flags` drops after this body, then `charge`: what it paid for is
-        // freed first.
+        // `hashes`, `log` and `flags` drop after this body, then `charge`:
+        // what it paid for is freed first.
     }
 }
 

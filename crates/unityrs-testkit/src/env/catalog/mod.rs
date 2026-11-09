@@ -14,7 +14,7 @@ pub use nested::{
     nested_reloaded_spans_raced, nested_replaced_unread, preload_nested_external,
     resource_in_nested_cab, resource_in_own_nested,
 };
-pub use race::{listings_raced, race_scenes};
+pub use race::{listings, listings_raced, race_scenes};
 pub use revisit::{preload_revisits_after_load, preload_revisits_ahead};
 
 use super::{Bundle, DepScene, Obj, Scene, bundle, bundle_spec, res_bytes, row, serialized};
