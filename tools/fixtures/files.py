@@ -88,6 +88,13 @@ def version_strings() -> list[str]:
         "2023.1.0A1",
         "2023.1.0F1",
         "2023.1.0Q1",
+        # An upper-case type letter packs as its lower case's type (`helpers/UnityVersion.py:81`, `type_str.lower()`).
+        "2023.1.0B1",
+        "2023.1.0C1",
+        "2023.1.0P1",
+        "2023.1.0X1",
+        # A number past 255 runs into the type byte: c (2) | 1024 >> 8 (4) is type byte 6, which `as_tuple` refuses.
+        "2023.1.0c1024",
         "2020.3.34f1024",
         "2020.3.34f255",
         "2020.3.34f256",
