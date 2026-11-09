@@ -62,9 +62,23 @@ fn expected(want: &Json) -> Json {
     }
 }
 
-/// Each class UnityPy raised in a write that unityrs refused, by what the
-/// refusal stands for ([`WriteError::exceptions`]).
-type Raised = BTreeMap<&'static [&'static str], BTreeSet<String>>;
+/// Each class UnityPy raised in a write that unityrs refused, by the
+/// refusal ([`label`]): the classes it stands for
+/// ([`WriteError::exceptions`]) and those UnityPy raised.
+type Raised = BTreeMap<String, (&'static [&'static str], BTreeSet<String>)>;
+
+/// A refusal's variant, and for a type mismatch what the node takes, which
+/// is what [`WriteError::exceptions`] goes by.
+fn label(e: &WriteError) -> String {
+    match e {
+        WriteError::TypeMismatch { expected, .. } => format!("TypeMismatch: {expected}"),
+        e => format!("{e:?}")
+            .split(['(', ' ', '{'])
+            .next()
+            .unwrap_or_default()
+            .to_owned(),
+    }
+}
 
 /// A write against UnityPy's (`{"hex": ...}` or `{"err": class}`): `None`
 /// when it wrote the same bytes, or failed with an error that stands for
@@ -78,8 +92,9 @@ fn write_differs(
         (None, Ok(b)) if want["hex"].as_str() == Some(hex(b).as_str()) => None,
         (Some(class), Err(e)) if e.exceptions().contains(&class) => {
             raised
-                .entry(e.exceptions())
-                .or_default()
+                .entry(label(e))
+                .or_insert_with(|| (e.exceptions(), BTreeSet::new()))
+                .1
                 .insert(class.to_owned());
             None
         }
@@ -410,7 +425,8 @@ impl Specs {
             [0, "Aux", "Aux", 0],
             [1, "int", "a", 0],
             [1, "int", "real", 0],
-            [1, "int", "x", 0]
+            [1, "int", "x", 0],
+            [1, "int", "type", 0]
         ]));
         let aux_ix = builder.list_index(&aux).unwrap();
         Self {
@@ -540,10 +556,16 @@ fn write_matrix(raised: &mut Raised) -> Vec<String> {
 /// Review round 16: every write UnityPy raised in is refused with an error
 /// that stands for the class it raised ([`WriteError::exceptions`]), and
 /// each class an error names is one UnityPy raised there: over every write
-/// recorded (the cases', the value cases' and W2's), each set of classes an
-/// error stands for is exactly the set UnityPy raised where unityrs gave
-/// that error. Before, a write's failure was compared as a raise only, so
-/// a writer that raised `ValueError` for `KeyError` passed.
+/// recorded (the cases', the value cases' and W2's), the classes each
+/// refusal (its variant, and for a type mismatch what the node takes)
+/// stands for are exactly those UnityPy raised where unityrs refused so.
+/// Every refusal that names a class is met but `NoTypeTree` (an object with
+/// no tree, which `src/walk/write/tests.rs` pins to the read side's class);
+/// the rest name none: a bound, a refused charge, a tree that does not
+/// compile (the same file) and a dunder attribute (`PARITY.md` section 19.3;
+/// `src/walk/write/work_tests.rs`). Before, a write's
+/// failure was compared as a raise only, so a writer that raised
+/// `ValueError` for `KeyError` passed.
 #[test]
 fn write_errors_stand_for_the_classes_unitypy_raised() {
     let mut raised = Raised::new();
@@ -554,24 +576,39 @@ fn write_errors_stand_for_the_classes_unitypy_raised() {
     bad.extend(value_cases(&mut raised));
     bad.extend(write_matrix(&mut raised));
     assert!(bad.is_empty(), "{}", bad.join("\n"));
-    for (stands_for, seen) in &raised {
+    for (error, (stands_for, seen)) in &raised {
         let named: BTreeSet<String> = stands_for.iter().map(|c| (*c).to_owned()).collect();
-        assert_eq!(&named, seen, "an error that stands for {stands_for:?}");
+        assert_eq!(&named, seen, "{error} stands for {stands_for:?}");
     }
-    let raised: Vec<&[&str]> = raised.keys().copied().collect();
+    let met: Vec<(&str, &[&str])> = raised.iter().map(|(e, (s, _))| (e.as_str(), *s)).collect();
+    let attr: &[&str] = &["AttributeError"];
+    let type_error: &[&str] = &["TypeError"];
     assert_eq!(
-        raised,
+        met,
         [
-            &["AttributeError"][..],
-            &["IndexError"],
-            &["KeyError"],
-            &["TypeError"],
-            &["TypeError", "KeyError", "IndexError"],
-            &["ValueError"],
-            &["error"],
-            &["error", "OverflowError"],
+            ("Malformed", &["IndexError"][..]),
+            ("MissingKey", &["KeyError"]),
+            ("NoRefTypes", &["ValueError"]),
+            ("OutOfRange", &["error", "OverflowError"]),
+            ("RefTypeNotFound", &["ValueError"]),
+            (
+                "TypeMismatch: a dict or an object with class, ns and asm",
+                attr
+            ),
+            ("TypeMismatch: a ref type with a tree", attr),
+            (
+                "TypeMismatch: a sequence of two",
+                &["TypeError", "KeyError", "IndexError"]
+            ),
+            ("TypeMismatch: a sized iterable", type_error),
+            ("TypeMismatch: an object with this attribute", attr),
+            ("TypeMismatch: bytes", type_error),
+            ("TypeMismatch: dict", type_error),
+            ("TypeMismatch: float", &["error"]),
+            ("TypeMismatch: int", &["error"]),
+            ("TypeMismatch: str", attr),
         ],
-        "the errors the recordings meet"
+        "the refusals the recordings meet"
     );
 }
 

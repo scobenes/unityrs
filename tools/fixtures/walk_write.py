@@ -20,7 +20,9 @@ with them pin what the writer makes of a foreign value: a `str`'s characters
 (an invalid UTF-8 sequence is one character a byte), a double narrowed to a
 float (a signalling NaN quieted), an `int` widened to a double, and `-0.0`
 false. `ref_object_data_only` pins which exception a `ReferencedObject`'s
-data raises first: its `type` key (`KeyError`) before the file's `ref_types`;
+data raises first: its `type` key (`KeyError`), or a `type` that is not a
+dict (`AttributeError`, `getattr(typ, "class")`; `helpers/TypeTreeHelper.py:88-100`),
+before the file's `ref_types`;
 `pair_one_child` and `vector_no_data` the `IndexError` of a node missing a
 child the writer takes.
 
@@ -121,6 +123,7 @@ W2_VALUES = [
     ("int_2_24_1", {"int": 2**24 + 1}, 2**24 + 1),
     ("str_invalid_2", {"str": "e282"}, b"\xe2\x82".decode("utf8", "surrogateescape")),
     ("prims_f32_m0", {"prims_f32": ["80000000"]}, [f32("80000000")]),
+    ("dict_type_int", {"dict": [["type", {"int": 5}]]}, {"type": 5}),
 ]
 
 
