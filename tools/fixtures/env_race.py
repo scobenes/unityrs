@@ -26,9 +26,14 @@ Two plain scenes are also recorded in the orders the core's unit test
 in `env_threads.json`: `nested_between_loads` with one load's
 registrations past its first made only after the files after it are
 loaded and the container listed (`held_case`, whose limit its docs state),
-and `listings_raced` with
-its two files loaded in each order, under their names, both under one name,
-and with the first found by `env.find_file` in `env.path` (`orders_case`).
+and `listings_raced` with its two files loaded in each order, under their
+names, both under one name, and with the first found by `env.find_file` in
+`env.path`, and three loads of its files under `x`, `y` and `x`, in the
+order of their numbers and in the order the core's race lists them in
+(`orders_case`). So is `env.files` after every set of the listings of the
+core's unit test `env::listing_tests`, made in the order of their numbers
+(`listings_case`; review round 16's follow-up: that test's expected values
+were a hand-written model of a Python dict).
 """
 
 from __future__ import annotations
@@ -36,11 +41,14 @@ from __future__ import annotations
 import contextlib
 import io
 import sys
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/parity"))
 
+import UnityPy  # noqa: E402
+from UnityPy.classes import PPtr  # noqa: E402
 from UnityPy.environment import simplify_name  # noqa: E402
 from UnityPy.helpers.ContainerHelper import ContainerHelper  # noqa: E402
 
@@ -226,10 +234,18 @@ def race_case(scene: dict, new_run) -> dict:
 
 # The plain scenes `env_threads.json` records, and how (module docs): a
 # held scene by the index of the load whose registrations past its first
-# are held, an orders scene by the names its two files are loaded under
+# are held, an orders scene by its runs, each the scene's files it loads
+# (by index, in the order of their numbers), the names it loads them under
 # (`None`: their own) and whether the first is found by `find_file`.
 HELD = {"nested_between_loads": 1}
-ORDERS = {"listings_raced": ((None, False), (("x", "x"), False), (None, True))}
+ORDERS = {
+    "listings_raced": (
+        ((0, 1), None, False),
+        ((0, 1), ("x", "x"), False),
+        ((0, 1), None, True),
+        ((0, 0, 1), ("x", "y", "x"), False),
+    )
+}
 
 
 def held_case(scene: dict, new_run, held: int) -> dict:
@@ -301,15 +317,19 @@ def held_case(scene: dict, new_run, held: int) -> dict:
     return out
 
 
-def orders_case(scene: dict, new_run, names, find: bool) -> list:
-    """The scene's two files loaded in each order, under `names` (`None`:
-    their own), the first, with `find`, by `env.find_file(name,
-    is_dependency=True)` from `env.path`, where it lies under its name: the
-    container, every object's `container` path, the dependencies' paths and
-    the state after both."""
+def orders_case(scene: dict, new_run, picks, names, find: bool) -> list:
+    """The scene's files `picks` (by index, in the order of their numbers)
+    loaded under `names` (`None`: their own), the first, with `find`, by
+    `env.find_file(name, is_dependency=True)` from `env.path`, where it lies
+    under its name: in the order of their numbers, and with the first moved
+    last (the order the core's race lists them in), each the container,
+    every object's `container` path, the dependencies' paths and the state
+    after all of them."""
     out = []
-    files = [[n if names is None else names[i], d] for i, (n, d) in enumerate(scene["files"])]
-    for order in ((0, 1), (1, 0)):
+    own = scene["files"]
+    files = [[own[j][0] if names is None else names[i], own[j][1]] for i, j in enumerate(picks)]
+    n = len(files)
+    for order in (tuple(range(n)), (*range(1, n), 0)):
         with scratch.folder() as tmp:
             with contextlib.redirect_stdout(io.StringIO()):
                 run = new_run({**scene, "files": files}, str(tmp))
@@ -323,6 +343,7 @@ def orders_case(scene: dict, new_run, names, find: bool) -> list:
                 out.append(
                     {
                         "name": scene["name"],
+                        "picks": list(picks),
                         "names": [f[0] for f in files],
                         "find": find,
                         "order": list(order),
@@ -335,14 +356,80 @@ def orders_case(scene: dict, new_run, names, find: bool) -> list:
     return out
 
 
+def rule4(env, name: str, made: dict) -> int | None:
+    """The load (a key of `made`, whose value is the file it loaded) whose
+    file a pointer to an external named `name` resolves to through
+    `env.files`: UnityPy's `PPtr.deref` (`classes/PPtr.py:72-75`, the first
+    key in the dict that lowers to the external's name) on a stand-in file
+    whose container is `env`, asked for each load's object (path id its
+    number + 1) until the file it resolved to holds one; `None` when no key
+    lowers to it and `deref` falls back on `env.find_file`, which finds
+    nothing here."""
+    env.find_file = lambda *_a, **_k: None
+    f = types.SimpleNamespace(
+        environment=env,
+        externals=[types.SimpleNamespace(path=name)],
+        parent=env,
+    )
+    try:
+        for load in made:
+            p = PPtr.__new__(PPtr)
+            p.m_FileID, p.m_PathID, p.assetsfile = 1, load + 1, f
+            try:
+                found = p.deref(f)
+            except KeyError:
+                continue
+            return next(i for i, g in made.items() if g is found.assets_file)
+    except FileNotFoundError:
+        return None
+    finally:
+        del env.find_file
+    raise AssertionError(f"{name}: the file it resolved to holds no load's object")
+
+
+def listings_case(line: dict) -> dict:
+    """UnityPy's `env.files` after the listings of every non-empty set of
+    the loads of `env::listing_tests` (the line's files, each load's number
+    its index, those `listings` names loaded as dependencies), made in the
+    order of their numbers: each key with the load whose file it holds and
+    that file's `is_dependency`, the path ids of `env.objects`, and the load
+    whose file a pointer to an external named `x`, and one named `y`,
+    resolves to through `env.files` (`rule4`)."""
+    files = line["files"]
+    dependencies = set(line["listings"])
+    sets = []
+    for mask in range(1, 1 << len(files)):
+        loads = [i for i in range(len(files)) if mask >> i & 1]
+        with contextlib.redirect_stdout(io.StringIO()):
+            env = UnityPy.Environment()
+            made = {}
+            for i in loads:
+                name, data = files[i]
+                made[i] = env.load_file(bytes.fromhex(data), name=name, is_dependency=i in dependencies)
+
+            def load_of(f, made=made):
+                return next(i for i, g in made.items() if g is f)
+
+            sets.append(
+                {
+                    "loads": loads,
+                    "files": [[k, load_of(f), bool(f.is_dependency)] for k, f in env.files.items()],
+                    "objects": [o.path_id for o in env.objects],
+                    "rule4": {n: rule4(env, n, made) for n in ("x", "y")},
+                }
+            )
+    return {"name": line["name"], "files": files, "dependencies": sorted(dependencies), "sets": sets}
+
+
 def threads_fixture(inputs: list[dict], new_run) -> dict:
     """`env_threads.json`'s cases (module docs)."""
     by_name = {s["name"]: s for s in inputs}
     held = [held_case(by_name[n], new_run, i) for n, i in HELD.items()]
     orders = [
         case
-        for name, all_names in ORDERS.items()
-        for names, find in all_names
-        for case in orders_case(by_name[name], new_run, names, find)
+        for name, runs in ORDERS.items()
+        for picks, names, find in runs
+        for case in orders_case(by_name[name], new_run, picks, names, find)
     ]
-    return {"held": held, "orders": orders}
+    (listings,) = [s for s in inputs if "listings" in s]
+    return {"held": held, "orders": orders, "listings": listings_case(listings)}

@@ -14,11 +14,12 @@
 //! made between two rows was seen by a later lookup but put back no index,
 //! so which file got a later row's path depended on the threads' timing).
 //!
-//! Two loads that race leave what UnityPy leaves when they are made one
-//! after the other in the order of their numbers (review round 16): a
-//! load stopped after its first key while another loads and a container
-//! pass runs, and a load stopped before its `files` entry while another
-//! loads whole (`tools/fixtures/env_race.py`'s `env_threads.json`).
+//! Loads that race leave what UnityPy leaves when they are made one after
+//! the other in the order of their numbers (review round 16): a load
+//! stopped after its first key while another loads and a container pass
+//! runs, and a load stopped before its `files` entry while another loads
+//! whole, or two more, one of them of its key
+//! (`tools/fixtures/env_race.py`'s `env_threads.json`).
 
 // The source scan behind "the core starts no thread and never waits"
 // (`unityrs_testkit::waits`) takes only an item under `#[cfg(test)]` in its
@@ -538,7 +539,8 @@ fn two_loads_that_race_their_listings_leave_unitypys_order_of_their_numbers() {
             .iter()
             .find(|c| c["names"] == *names && c["find"] == find && c["order"] == json!(order))
             .unwrap_or_else(|| panic!("UnityPy has no run of {names}, find {find}, in {order:?}"));
-        without(found, &["name", "names", "find", "order"])
+        assert_eq!(found["picks"], json!([0, 1]), "the scene's two files");
+        without(found, &["name", "picks", "names", "find", "order"])
     };
     let mut cases = 0;
     for (names, find) in [(["p", "q"], false), (["x", "x"], false), (["p", "q"], true)] {
@@ -604,4 +606,75 @@ fn two_loads_that_race_their_listings_leave_unitypys_order_of_their_numbers() {
         }
     }
     assert_eq!(cases, (2 * 3 + 2) * 2);
+}
+
+/// Three loads of `listings_raced`'s files (`env_threads.json`'s run whose
+/// names are `x`, `y` and `x`: `p` under `x` and `y`, then `q` under `x`):
+/// the first is stopped before its `files` entry ([`Hook::Listing`]) or
+/// right after its key is published ([`Hook::Published`]) while the other
+/// two load whole, then the first lists. The third listed `x` first, at its
+/// own number, so the first's listing moves `x` to the first's number and
+/// leaves it the third's file: the container, every object's path and the
+/// state are UnityPy's for the three made in the order of their numbers,
+/// which differ from UnityPy's for the order they listed in, under every
+/// option set (review round 16's follow-up: the race of two loads never
+/// moved a key, so only a hand-written model checked the move).
+#[cfg(test)]
+#[test]
+fn a_key_a_later_load_listed_first_moves_to_the_first_loads_number() {
+    let doc = threads();
+    let scene = unityrs_testkit::env::listings_raced();
+    let names = json!(["x", "y", "x"]);
+    let run = |order: [u64; 3]| -> &J {
+        doc["orders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["names"] == names && c["order"] == json!(order))
+            .unwrap_or_else(|| panic!("UnityPy has no run of {names} in {order:?}"))
+    };
+    let found = run([0, 1, 2]);
+    let want = without(found, &["name", "picks", "names", "find", "order"]);
+    assert_ne!(
+        want,
+        without(run([1, 2, 0]), &["name", "picks", "names", "find", "order"]),
+        "UnityPy's orders agree"
+    );
+    assert_eq!(found["find"], json!(false));
+    let picks: Vec<usize> = found["picks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| usize::try_from(p.as_u64().unwrap()).unwrap())
+        .collect();
+    let src = |i: usize| Source::Bytes {
+        name: RawStr::from(names[i].as_str().unwrap()),
+        data: Bytes::from(scene.files[picks[i]].1.clone()),
+    };
+    let mut cases = 0;
+    for ((what, options), at) in race_options()
+        .into_iter()
+        .flat_map(|o| [(o.clone(), Hook::Listing), (o, Hook::Published)])
+    {
+        cases += 1;
+        let what = format!("{what}, stopped at {at:?}");
+        let env = Environment::new(options);
+        let gate = Gate::install(&env);
+        let load = {
+            let (env, source) = (env.clone(), src(0));
+            gate.run(Some((at, 1)), move || {
+                drop(env.load(source).unwrap());
+            })
+        };
+        load.stopped();
+        env.load(src(1)).unwrap();
+        env.load(src(2)).unwrap();
+        load.finish();
+        let got = record(&env, &rows(&env));
+        for part in ["files", "objects"] {
+            assert_eq!(got[part], want[part], "{what}: {part}");
+        }
+        assert_eq!(got, want, "{what}");
+    }
+    assert_eq!(cases, 3 * 2);
 }
