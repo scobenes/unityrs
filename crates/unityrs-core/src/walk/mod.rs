@@ -498,7 +498,8 @@ impl WriteError {
     /// exceptions UnityPy 1.25.2's `write_typetree` (`TypeTreeHelper.py:407-458`
     /// and `streams/EndianBinaryWriter.py`) raises where the writer reports
     /// this error, as the variants' docs give them; `tests/walk_fixtures.rs`
-    /// checks every raise `tools/fixtures/walk.py` records against this.
+    /// checks against this every raise in the cases, the value cases and
+    /// W2's matrix `tools/fixtures/walk.py` records.
     /// None for an error UnityPy has no counterpart for: a bound of
     /// [`Limits`] or a refused charge (`PARITY.md` section 19.3), a dunder
     /// attribute ([`Self::TypeMismatch`]), and a tree that failed before the

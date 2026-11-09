@@ -21,8 +21,9 @@
 //! through it, whose rows build every scratch table the compile makes, and
 //! the tables the rows come through ([`parses`]): a blob's and an old-format
 //! tree's parse with `NodeList::from_rows` after it (review round 15: no
-//! counting test saw this scratch). The largest request
-//! of each big read is the exact size of its 2^16 + 1 elements: the dict's
+//! counting test saw this scratch), and that each tree, list and name table
+//! keeps charged the heap it holds, no more ([`charge_is_held`]). The largest
+//! request of each big read is the exact size of its 2^16 + 1 elements: the dict's
 //! entries and the list's items end with their capacity equal to their
 //! length (plan 3.10, "list growth"). The allocator counts only the test's
 //! own thread (`unityrs_testkit::counted`): libtest's main thread allocates
@@ -37,7 +38,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::Value as Json;
 use unityrs_core::budget::{
-    Counting as CountingBudget, DecodeBuf, MemoryBudget, Reservation, Unbounded,
+    Counting as CountingBudget, DecodeBuf, MemoryBudget, OWNER_COST, Reservation, Unbounded,
 };
 use unityrs_core::files::SerializedType;
 use unityrs_core::limits::{Limits, Meter, MeteredVec, heap_cost};
@@ -142,6 +143,16 @@ fn unwatch(watching: Watch<'_>, what: &str) {
         excess, 0,
         "{what}: the heap went {excess} bytes above the charge"
     );
+}
+
+/// The charge above the start is the heap held above it, but for the room
+/// `OWNER_COST` spares each of `owners` charged strings' records (review
+/// round 16: a charge kept past its table's drop passed every test).
+fn charge_is_held(m: &Meter, what: &str, owners: u64) {
+    let live = (LIVE.load(Ordering::Relaxed) - BASE.load(Ordering::Relaxed)) as u64;
+    let kept = m.used() - START.load(Ordering::Relaxed) as u64;
+    let ok = live <= kept && kept <= live + owners * OWNER_COST;
+    assert!(ok, "{what}: {kept} charged, {live} held");
 }
 
 /// The heap above the start is at most the charge, now.
@@ -674,6 +685,8 @@ fn parses(counting: bool) {
             "an old-format parse"
         };
         unwatch(watching, what);
+        // The blob's unknown common offset: one decimal string.
+        charge_is_held(&m, what, u64::from(blob));
         assert_eq!(list.len(), nodes.len());
         let ty = list.rows()[1].ty.as_bytes();
         assert_eq!(ty, if blob { &b"99999"[..] } else { &b"int"[..] });
@@ -728,7 +741,7 @@ fn compile_on(m: &Arc<Meter>, rows: Vec<NodeRow>, watched: bool, names: Option<&
         None => Tree::compile(list, &Limits::default()),
     };
     let work = m.decoded() - work;
-    drop(tree.unwrap());
+    let tree = tree.unwrap();
     if let Some(watching) = watching {
         let what = if names.is_some() {
             "a compile through a name table"
@@ -736,7 +749,9 @@ fn compile_on(m: &Arc<Meter>, rows: Vec<NodeRow>, watched: bool, names: Option<&
             "a plain compile"
         };
         unwatch(watching, what);
+        charge_is_held(m, what, 0);
     }
+    drop(tree);
     work
 }
 
@@ -771,6 +786,7 @@ fn compiles(counting: bool) {
     let watching = watch_from(&m);
     let table = NameTable::new(&strings, &m).unwrap();
     unwatch(watching, "a name table");
+    charge_is_held(&m, "a name table", 0);
     let mut next = strings.iter().skip(1).step_by(2);
     let mut theirs = |n: &[u8]| {
         let s = next.next().unwrap().clone();
