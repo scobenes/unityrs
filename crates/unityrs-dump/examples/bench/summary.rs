@@ -131,8 +131,10 @@ pub fn summary(args: &Args, pass: &Pass, input_bytes: u64) -> Value {
         out["live_charges_peak"] = json!(pass.process.peak());
         out["meter_peak"] = spread(peaks.clone());
         out["meter_peak_top8_sum"] = json!(top.iter().take(8).sum::<u64>());
-        out["meter_peak_over_decoded"] =
-            ratios(peaks.iter().copied().zip(d.iter().map(|x| x.decoded_size)));
+        let pairs = || peaks.iter().copied().zip(d.iter().map(|x| x.decoded_size));
+        out["meter_peak_over_decoded"] = ratios(pairs());
+        // Small inputs' peaks are mostly fixed costs (a codec's state, tables).
+        out["meter_peak_over_decoded_1mib_up"] = ratios(pairs().filter(|(_, s)| *s >= 1 << 20));
         out["decoded_size"] = spread(d.iter().map(|x| x.decoded_size).collect());
         out["max_input_memory"] = json!(Limits::default().max_input_memory);
     }

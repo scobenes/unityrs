@@ -140,10 +140,12 @@ def counts(phases) -> dict:
         out["r10"] = {
             "meter_peak": eager["meter_peak"],
             "meter_peak_over_decoded": eager["meter_peak_over_decoded"],
+            "meter_peak_over_decoded_1mib_up": eager["meter_peak_over_decoded_1mib_up"],
             "decoded_size": eager["decoded_size"],
             "max_input_memory": eager["max_input_memory"],
             "lazy_meter_peak": lazy and lazy["meter_peak"],
             "lazy_meter_peak_over_decoded": lazy and lazy["meter_peak_over_decoded"],
+            "lazy_meter_peak_over_decoded_1mib_up": lazy and lazy["meter_peak_over_decoded_1mib_up"],
         }
     return out
 
