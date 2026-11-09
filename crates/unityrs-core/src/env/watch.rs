@@ -161,9 +161,9 @@ pub(crate) struct Table {
     /// The entries `map`'s buckets hold room for: its capacity when it last
     /// grew or shrank. `HashMap::capacity` is the entries it takes before
     /// it grows again, which a removal that leaves a tombstone lowers while
-    /// the bucket stays allocated (verify pass 17: a map that kept 16,384
-    /// buckets after a walk ended read a capacity under its bound, and was
-    /// never shrunk).
+    /// the bucket stays allocated (fix pass 17's verifier: a map that kept
+    /// 16,384 buckets after a walk ended read a capacity under its bound,
+    /// and was never shrunk).
     room: usize,
 }
 
