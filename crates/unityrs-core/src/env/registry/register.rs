@@ -202,7 +202,8 @@ impl Registry {
     /// running container preload walks' flags under the key and, for a
     /// load's, starts a new container index generation, in the step that
     /// publishes it, under the write lock ([`super::watch`], W1;
-    /// `RegistryInner::publish`).
+    /// `RegistryInner::publish`); a load's registration that changes no key
+    /// but lists the slot it dropped starts one in the step that lists it.
     // The registration's parts, each one of the module docs' terms.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn insert(
@@ -312,8 +313,17 @@ impl Registry {
             };
             // The change, the setting of the walks' flags under its key and
             // a load's new generation are one step (`super::watch`, W1).
+            // So are a load's listing of the slot it dropped, which changes
+            // no key, and a new generation: the reach that settles the slot
+            // registers its container's entries, which no pass marked built
+            // before this step has walked (plan section 3.16, P1; review
+            // round 16: a load ranked between the key's position and its
+            // value listed its slot with no new generation, so its
+            // container's tables were never walked).
             if out.1 {
                 inner.publish(hash, by == By::Load);
+            } else if by == By::Load && out.0.as_ref().is_some_and(|d| d.listed.is_some()) {
+                inner.start_generation();
             }
             out
         };

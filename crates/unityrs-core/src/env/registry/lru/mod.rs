@@ -91,7 +91,9 @@ pub(crate) enum Hook {
     /// the walks' flags under its key and, for a load's, started a new
     /// container index generation), before it settles.
     Published,
-    /// A registration listed the lazy slot it dropped, before it settles.
+    /// A registration listed the lazy slot it dropped (and, in the same
+    /// step, for a load's, started a new container index generation),
+    /// before it settles.
     Deferred,
     /// A `settle` picked a listed slot, before it reaches it.
     SettleTook,

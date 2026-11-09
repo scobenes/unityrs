@@ -16,7 +16,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use super::{Hook, Slot};
+use super::{Dependency, Hook, Open, Slot, open_source};
 use crate::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
 use crate::container::ContainerPath;
 #[cfg(test)]
@@ -26,7 +26,7 @@ use crate::limits::Meter;
 use crate::options::FileContext;
 use crate::raw::RawStr;
 use bytes::Bytes;
-use unityrs_testkit::env::{Obj, bundle, nested_dropped_evicted, serialized};
+use unityrs_testkit::env::{Obj, bundle, nested_between_loads, nested_dropped_evicted, serialized};
 
 /// A budget that grants every reservation but, once armed, the next
 /// dependency reservation, which it refuses: a pool with no room left until
@@ -311,4 +311,96 @@ fn only_the_pass_reopens_an_evicted_drop() {
     assert!(rig.env.registry().evicted_waiting());
     quiet(&rig);
     assert!(!rig.env.registry().evicted_waiting());
+}
+
+/// UnityPy's keys at the end of the scene `nested_between_loads`
+/// (`tests/fixtures/d/env.json`, `tools/fixtures/env.py`).
+fn between_keys() -> Vec<String> {
+    // Read at run time: no file is compiled into the core
+    // (`crates/unityrs-tpk/tests/no_tpk.rs`).
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/d/env.json");
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("env.json")).expect("env.json");
+    let scene = doc["scenes"]
+        .as_array()
+        .expect("scenes")
+        .iter()
+        .find(|s| s["name"] == "nested_between_loads")
+        .expect("the scene is recorded");
+    let last = scene["steps"]
+        .as_array()
+        .expect("steps")
+        .last()
+        .expect("a step");
+    last["cabs"]
+        .as_array()
+        .expect("keys")
+        .iter()
+        .map(|k| k.as_str().expect("a key").to_owned())
+        .collect()
+}
+
+/// The scene `nested_between_loads` with `c.bundle` a dependency whose
+/// `n`, ranked between the key's position (`a.bundle`'s) and its value
+/// (`b.bundle`'s), changes no key and is registered after a container pass
+/// was built, `c.bundle`'s first key `e0` before it (review round 16). The
+/// load lists the dropped slot and starts a new container index generation
+/// in that step; its `settle` finds the dependency evicted, so the slot
+/// waits for the next container pass, the only reader that opens an
+/// evicted dependency again (plan section 9, Q13). Here the dependency is
+/// evicted before its `n` is registered, which stands for the `settle` of
+/// a load whose reach of the slot the pool refused, twice, and an eviction
+/// after it. The next container pass is run, opens the dependency and
+/// reaches the slot: `CAB-Z` is registered, its table walked, and the keys
+/// are UnityPy's. With no new generation the pass built before was kept,
+/// and `CAB-Z` was never registered.
+#[test]
+fn a_drop_ranked_between_a_keys_position_and_value_is_reached_by_the_next_pass() {
+    let scene = nested_between_loads();
+    let ctx = Arc::new(FileContext::unitypy());
+    let env = Environment::new(EnvOptions::batch(ctx.clone()));
+    let src = |i: usize| Source::Bytes {
+        name: RawStr::new(scene.files[i].0.clone()),
+        data: Bytes::from(scene.files[i].1.clone()),
+    };
+    let reg = env.registry();
+    drop(env.load(src(0)).unwrap());
+    let load = reg.next_load();
+    let name = RawStr::new(scene.files[1].0.clone());
+    let source = src(1);
+    let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Dependency);
+    let file = open_source(&name, &source, &meter, &ctx).unwrap();
+    let dep = Arc::new(Dependency {
+        name,
+        source,
+        open: std::sync::Mutex::new(Open::of(&file, meter.clone())),
+        ctx: ctx.clone(),
+        cache: Arc::downgrade(&env.inner.cache),
+        slots: AtomicUsize::new(0),
+    });
+    reg.register_lazy_dependency(&RawStr::from("e0"), &dep, load, &[0], &meter)
+        .unwrap();
+    drop(env.load(src(2)).unwrap());
+    env.container().unwrap().count();
+    // The pass opened the dependency through the LRU; nothing holds it now.
+    drop(file);
+    env.inner.cache.evict_others(None);
+    assert!(dep.alive().is_none(), "the dependency is still open");
+    reg.register_lazy_dependency(&RawStr::from("n"), &dep, load, &[1], &meter)
+        .unwrap();
+    assert!(reg.evicted_waiting(), "the drop does not wait for the pass");
+    assert!(
+        !reg.has("cab-z"),
+        "the drop was reached at its registration"
+    );
+    env.container().unwrap().count();
+    let keys: Vec<String> = reg
+        .keys()
+        .map(|k| String::from_utf8_lossy(k.as_bytes()).into_owned())
+        .collect();
+    assert_eq!(keys, between_keys(), "the keys");
+    let z = reg.peek("cab-z").expect("CAB-Z is registered");
+    assert!(z.walked(), "CAB-Z's table was not walked");
+    reg.check();
+    assert!(!reg.evicted_waiting());
 }

@@ -444,6 +444,65 @@ fn race_options() -> [(&'static str, EnvOptions); 3] {
     ]
 }
 
+/// Review round 16's first race (scene `nested_between_loads`):
+/// `c.bundle`'s load is stopped right after it published its first key
+/// ([`Hook::Published`]), `b.bundle` loads whole and a container pass is
+/// built, then `c.bundle`'s load goes on. Its `n` ranks between the key's
+/// position (`a.bundle`'s) and its value (`b.bundle`'s), so it changes no
+/// key; under `Lazy` it lists its dropped slot, whose reach registers
+/// `CAB-Z`, and starts a new container index generation in that step, so
+/// the next container pass walks `CAB-Z`'s table: the container, every
+/// object's path and the state are UnityPy's for the same loads with
+/// `c.bundle`'s registrations past its first made after `b.bundle`'s load
+/// and a container listing (`env_race.py`'s `held_case`), under every
+/// option set. The listing started no generation, so the pass built before
+/// it was kept and object 7 of `CAB-Z` had no path under `Lazy`.
+#[cfg(test)]
+#[test]
+fn a_load_between_a_keys_position_and_value_starts_a_container_index_generation() {
+    let doc = threads();
+    let case = doc["held"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "nested_between_loads")
+        .expect("the scene is recorded")
+        .clone();
+    let held = usize::try_from(case["held"].as_u64().unwrap()).unwrap();
+    let want = without(&case, &["name", "held", "before"]);
+    let paths = want["paths"].as_array().unwrap();
+    assert!(
+        paths.contains(&json!("assets/z.prefab")),
+        "UnityPy gives CAB-Z's objects no path: {paths:?}"
+    );
+    let scene = unityrs_testkit::env::nested_between_loads();
+    let src = |i: usize| Source::Bytes {
+        name: RawStr::new(scene.files[i].0.clone()),
+        data: Bytes::from(scene.files[i].1.clone()),
+    };
+    for (what, options) in race_options() {
+        let env = Environment::new(options);
+        for i in 0..held {
+            env.load(src(i)).unwrap();
+        }
+        let gate = Gate::install(&env);
+        let load = {
+            let (env, source) = (env.clone(), src(held));
+            gate.run(Some((Hook::Published, 1)), move || {
+                drop(env.load(source).unwrap());
+            })
+        };
+        load.stopped();
+        for i in held + 1..scene.files.len() {
+            env.load(src(i)).unwrap();
+        }
+        assert_eq!(rows(&env), case["before"], "{what}: the pass before");
+        load.finish();
+        let got = record(&env, &rows(&env));
+        assert_eq!(got, want, "{what}");
+    }
+}
+
 /// Review round 16's second race (scene `listings_raced`): the first file's
 /// load is stopped after its registration, before its `files` entry
 /// ([`Hook::Listing`]), while the second file loads whole; then the first

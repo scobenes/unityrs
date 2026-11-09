@@ -230,7 +230,10 @@ struct RegistryInner {
     /// The container index generation: a new one starts in the step that
     /// publishes a load's change to the dict ([`Self::publish`]), as
     /// UnityPy's `register_cab` clears `_container_index_built` in the
-    /// statement after the one that sets the key (`environment.py:263-264`).
+    /// statement after the one that sets the key (`environment.py:263-264`),
+    /// and in the step in which a load's registration that changes no key
+    /// lists the lazy slot it dropped (`register.rs`), whose reach registers
+    /// what an eager load registered at that load.
     generation: u64,
 }
 
@@ -258,8 +261,16 @@ impl RegistryInner {
     fn publish(&mut self, hash: u64, load: bool) {
         self.watched.notify(hash);
         if load {
-            self.generation = self.generation.saturating_add(1);
+            self.start_generation();
         }
+    }
+
+    /// A new container index generation, under the write lock: for a
+    /// load's change ([`Self::publish`]), or for a load's listing of a slot
+    /// it dropped (`register.rs`), whose reach registers what no pass
+    /// marked built before it has walked.
+    fn start_generation(&mut self) {
+        self.generation = self.generation.saturating_add(1);
     }
 }
 
@@ -364,7 +375,8 @@ impl Registry {
     }
 
     /// The generation now (a new one at every load's change to the dict,
-    /// in the step that publishes it).
+    /// and at every load's listing of a slot it dropped, in the step that
+    /// publishes it).
     pub(crate) fn generation(&self) -> u64 {
         self.read().generation
     }
