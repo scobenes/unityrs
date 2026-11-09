@@ -272,20 +272,25 @@ def detect_inputs() -> list[tuple[str, bytes]]:
         ("zip-no-nul", b"PK\x03\x04\x14\0" + b"\0" * 40),
         ("127", b"\0" * 127),
         ("128-zeros", b"\0" * 128),
-        ("gzip-web", gz(web) + b"\0" * 64),
+        ("gzip-web", gz(web) + b"\0" * 128),
         ("gzip-web-exact", gz(b"UnityWebData") + b"\0" * 128),
         ("gzip-web-13", gz(b"UnityWebData1") + b"\0" * 128),
-        ("gzip-tuanjie", gz(b"TuanjieWebData1.0\0" + b"\0" * 300)),
-        ("gzip-plain", gz(plain) + b"\0" * 100),
-        ("gzip-two-members", gz(b"UnityWeb") + gz(b"Data1.0\0" + b"\0" * 200)),
+        ("gzip-tuanjie", gz(b"TuanjieWebData1.0\0" + b"\0" * 300) + b"\0" * 128),
+        ("gzip-plain", gz(plain) + b"\0" * 128),
+        ("gzip-two-members", gz(b"UnityWeb") + gz(b"Data1.0\0" + b"\0" * 200) + b"\0" * 128),
         ("gzip-trailing-garbage", gz(web) + b"\x01" + b"\0" * 100),
         ("gzip-truncated", gz(web + bytes(range(256)) * 4)[:-20]),
         ("gzip-bad-crc", gz(web)[:-8] + b"\0\0\0\0" + gz(web)[-4:] + b"\0" * 100),
         ("gzip-bad-size", gz(web)[:-4] + b"\x01\0\0\0" + b"\0" * 100),
         ("gzip-bad-method", b"\x1f\x8b\x07" + gz(web)[3:] + b"\0" * 100),
         ("gzip-corrupt", b"\x1f\x8b\x08\0\0\0\0\0\0\xff" + b"\xff" * 200),
-        ("gzip-header-fields", gz_member(web, 2 | 4 | 8 | 16, b"ex", b"name", b"comment") + b"\0" * 64),
-        ("gzip-fhcrc-wrong", gz_member(web, 2)[:10] + b"\0\0" + gz_member(web, 2)[12:] + b"\0" * 64),
+        ("gzip-header-fields", gz_member(web, 2 | 4 | 8 | 16, b"ex", b"name", b"comment") + b"\0" * 128),
+        ("gzip-fhcrc-wrong", gz_member(web, 2)[:10] + b"\0\0" + gz_member(web, 2)[12:] + b"\0" * 128),
+        # Each optional header field alone, so each is skipped on its own.
+        ("gzip-fextra", gz_member(web, 4, extra=b"ex") + b"\0" * 128),
+        ("gzip-fname", gz_member(web, 8, name=b"name") + b"\0" * 128),
+        ("gzip-fcomment", gz_member(web, 16, comment=b"comment") + b"\0" * 128),
+        ("gzip-fhcrc", gz_member(web, 2) + b"\0" * 128),
         ("gzip-empty-stream", gz(b"") + b"\0" * 200),
         ("gzip-one-byte", gz(b"U") + b"\0" * 200),
         # A match reaching before the member's output: zlib's "invalid
@@ -309,6 +314,10 @@ def detect_inputs() -> list[tuple[str, bytes]]:
         ("assets-v21-fields-ignored", assets22(40, -1, 64, version=21)),
         ("le-header", struct.pack("<IIII", 100, 128, 17, 120) + b"\0" * 112),
     ]
+    # Under 128 bytes a file is a ResourceFile before its magic is read (`helpers/ImportHelper.py:72-73`), so a
+    # shorter gzip row would never reach the gzip detection it is named for.
+    short = [name for name, data in cases if name.startswith("gzip-") and len(data) < 128]
+    assert not short, f"gzip rows under 128 bytes: {short}"
     return cases
 
 
