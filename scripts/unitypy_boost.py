@@ -3,9 +3,11 @@
 UnityPyBoost's sources are in UnityPy 1.25.2's sdist, not in the wheel the oracle installs, so the citation
 checker reads them from the pins below (BOOST): each file's line count, sha256, blank lines, top-level definitions
 (cpp_definitions) and the depth of its braces at the end of each line (cpp_depths). check_copy checks a copy of a
-source against its pins with the scans that made them (`unitypy_citations.py --boost DIR`). A citation of one is
-held to the blank-line rule, the definition rule and the brace rule (brace_problem); its statements are not read.
-Standard library only.
+source against its pins with the scans that made them (`unitypy_citations.py --boost DIR`).
+scripts/tests/unitypyboost_1_25_2/ keeps that copy, byte for byte, beside the release's LICENSE: CI's parity job
+runs `--boost` on it, and scripts/tests checks every pin against it (review round 16: nothing ran `--boost`, so a
+wrong digit in a pin passed). A citation of one is held to the blank-line rule, the definition rule and the brace
+rule (brace_problem); its statements are not read. Standard library only.
 """
 
 from __future__ import annotations

@@ -89,7 +89,11 @@ impl BlockCodec for Lzma {
     /// after it outgrew its dictionary is decoded again with a larger one
     /// (at least twice the output so far, capped by the named size), so the
     /// dictionary stays within a constant plus twice the block's charged
-    /// output. Each attempt's dictionary buffer and the decoder's state
+    /// output. The two caps keep a match farther back than the named
+    /// dictionary UnityPy's `LZMAError`, whatever the declared size
+    /// (`tests/codecs.rs`
+    /// `lzma_a_match_past_the_named_dictionary_raises_whatever_the_declared_size`).
+    /// Each attempt's dictionary buffer and the decoder's state
     /// ([`Lzma::DECODER_STATE`]) are charged to the input's meter
     /// ([`DecodeBuf::meter`]) before liblzma allocates them, and returned
     /// when the attempt ends, so the meter sees them beside the output (plan

@@ -157,7 +157,12 @@
 //! load's `OutOfMemory` ([`TpkError::Io`]), as a growth of the provider's is,
 //! never a decode failure (round 6). A
 //! kept error's text is shared (`ProviderError::detail` is an `Arc<str>`),
-//! so the clone each later request gets allocates nothing.
+//! so the clone each later request gets allocates nothing. A counting
+//! allocator holds every allocation of a stored TPK's load, and of a walk
+//! and a compile, to what the provider's meter charged before it
+//! (`provider::memory_tests`). A compressed TPK's load is not watched: its
+//! decoded payload is charged instead to its decoder's own meter, of
+//! [`TpkProvider::MAX_DECODER_MEMORY`] (`file::decode`).
 //!
 //! [`TypeTreeProvider`]: unityrs_core::provider::TypeTreeProvider
 //! [`TypeTreeProvider::common_strings`]: unityrs_core::provider::TypeTreeProvider::common_strings

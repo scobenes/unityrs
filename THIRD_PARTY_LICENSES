@@ -61,6 +61,10 @@ tools/parity/tests/head_417d595/ keeps two files of UnityPy git 417d595
 (helpers/CompressionHelper.py and files/BundleFile.py) byte for byte, beside
 that revision's LICENSE, whose line is "Copyright (c) 2019-2026 K0lb3"; the
 parity tests run them, and no crate builds them.
+scripts/tests/unitypyboost_1_25_2/ keeps UnityPyBoost's eight C++ sources
+from the UnityPy 1.25.2 sdist byte for byte, beside that release's LICENSE
+(the text below); the citation checker and its tests read them, and no crate
+builds them.
 
 UnityPy 1.25.2's LICENSE follows. Each crate that holds UnityPy's code
 (unityrs-core, unityrs-tpk, unityrs-dump, unityrs-testkit and

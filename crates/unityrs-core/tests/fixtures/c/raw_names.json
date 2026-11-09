@@ -1,0 +1,12 @@
+{
+ "bytes_of": "sample.resS",
+ "cases": [
+  {"name":"sample.resS","records":[{"error":null,"file":["sample.resS"],"l0":{"parsed_as":"raw","sha256":"7c5ae2dd2192318cc27665a2f7cdd50d6a5373ddc60af04fd45a38071b648433","size":956,"type":"AssetsFile"},"l1":null,"rec":"file"}]},
+  {"name":"sample.resource","records":[{"error":null,"file":["sample.resource"],"l0":{"parsed_as":"raw","sha256":"7c5ae2dd2192318cc27665a2f7cdd50d6a5373ddc60af04fd45a38071b648433","size":956,"type":"AssetsFile"},"l1":null,"rec":"file"}]},
+  {"name":"sample.config","records":[{"error":null,"file":["sample.config"],"l0":{"parsed_as":"raw","sha256":"7c5ae2dd2192318cc27665a2f7cdd50d6a5373ddc60af04fd45a38071b648433","size":956,"type":"AssetsFile"},"l1":null,"rec":"file"}]},
+  {"name":"sample.xml","records":[{"error":null,"file":["sample.xml"],"l0":{"parsed_as":"raw","sha256":"7c5ae2dd2192318cc27665a2f7cdd50d6a5373ddc60af04fd45a38071b648433","size":956,"type":"AssetsFile"},"l1":null,"rec":"file"}]},
+  {"name":"sample.dat","records":[{"error":null,"file":["sample.dat"],"l0":{"parsed_as":"raw","sha256":"7c5ae2dd2192318cc27665a2f7cdd50d6a5373ddc60af04fd45a38071b648433","size":956,"type":"AssetsFile"},"l1":null,"rec":"file"}]}
+ ],
+ "generator": "tools/fixtures/files.py",
+ "unitypy": "1.25.2"
+}

@@ -410,3 +410,49 @@ fn the_run_counts_the_inputs_that_crashed() {
     assert_eq!(text.matches(r#""kind":"crash""#).count(), 2, "{text}");
     assert_eq!(text.matches(r#""kind":"detect""#).count(), 1, "{text}");
 }
+
+/// Each input is dumped on a meter of its own (`write_dump`), as the oracle
+/// dumps each input in a process of its own: its work allowance
+/// (`max_decode_work`) is its own, so no input is refused for what the
+/// inputs before it did. Under an allowance of one and a half times one
+/// input's work, two copies of it are dumped alike; under one byte less
+/// than its work, each is refused. On one meter for the whole run, the
+/// second copy was refused and every test passed (fix pass 17's sweep).
+#[test]
+fn each_input_is_dumped_on_a_meter_of_its_own() {
+    let base = Scratch::new("dump-meters");
+    let input = base.join("in");
+    std::fs::create_dir_all(&input).unwrap();
+    std::fs::write(input.join("a.bin"), [7u8; 4096]).unwrap();
+    let run_on = |out: &str, max_decode_work: Option<u64>| {
+        let mut dump = DumpOptions::default();
+        if let Some(work) = max_decode_work {
+            let mut ctx = (*dump.context).clone();
+            ctx.limits.max_decode_work = work;
+            dump.context = Arc::new(ctx);
+        }
+        let summary = run(&RunOptions {
+            selection: Selection {
+                inputs: vec![input.clone()],
+                ..Selection::default()
+            },
+            output: base.join(out),
+            dump,
+            stats: None,
+            quiet: true,
+            allow_index_mismatch: false,
+        })
+        .unwrap();
+        (summary, std::fs::read_to_string(base.join(out)).unwrap())
+    };
+    let (one, text) = run_on("one.jsonl", None);
+    let work = one.decode_work;
+    // At least its hashing (CANONICAL_DUMP.md 4.2).
+    assert!(work >= 4096, "{work}: {text}");
+    std::fs::write(input.join("b.bin"), [7u8; 4096]).unwrap();
+    let (two, text) = run_on("two.jsonl", Some(work + work / 2));
+    assert!(!text.contains("limit DecodeWork"), "{text}");
+    assert_eq!(two.decode_work, 2 * work, "{text}");
+    let (_, text) = run_on("less.jsonl", Some(work - 1));
+    assert_eq!(text.matches("limit DecodeWork: ").count(), 2, "{text}");
+}

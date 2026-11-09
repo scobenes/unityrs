@@ -183,9 +183,10 @@ pub fn walk_error_is_unitypys(python: &str, e: &ProviderError) -> bool {
 /// Python's recursion limit). A blob nested in a collection (`:253`) raises
 /// its own exception: `Exception` for a nested 4 or 5, and the type-tree
 /// reader's for a nested 0, `IndexError` among them (a byte read past the
-/// payload, `stream.read(1)[0]`, `:342`, `:420`). Each is a name a case G7
-/// records raises (`tests/g7.rs`
-/// `g7_a_blob_of_another_data_type_is_refused_on_both_sides`).
+/// payload, `stream.read(1)[0]`, `:342`, `:420`), or `init`'s
+/// `AssertionError` where it reads. Each is a name a case G7 records
+/// raises, and each name a nested blob raises has a nested case of its own
+/// (`tests/g7.rs` `g7_a_blob_of_another_data_type_is_refused_on_both_sides`).
 pub const NOT_TYPE_TREES: &[&str] = &[
     "error",
     "AssertionError",

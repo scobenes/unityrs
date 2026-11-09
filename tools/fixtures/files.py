@@ -88,6 +88,13 @@ def version_strings() -> list[str]:
         "2023.1.0A1",
         "2023.1.0F1",
         "2023.1.0Q1",
+        # An upper-case type letter packs as its lower case's type (`helpers/UnityVersion.py:81`, `type_str.lower()`).
+        "2023.1.0B1",
+        "2023.1.0C1",
+        "2023.1.0P1",
+        "2023.1.0X1",
+        # A number past 255 runs into the type byte: c (2) | 1024 >> 8 (4) is type byte 6, which `as_tuple` refuses.
+        "2023.1.0c1024",
         "2020.3.34f1024",
         "2020.3.34f255",
         "2020.3.34f256",
@@ -292,6 +299,10 @@ def detect_inputs() -> list[tuple[str, bytes]]:
         ("gzip-fname", gz_member(web, 8, name=b"name") + b"\0" * 128),
         ("gzip-fcomment", gz_member(web, 16, comment=b"comment") + b"\0" * 128),
         ("gzip-fhcrc", gz_member(web, 2) + b"\0" * 128),
+        # FTEXT (bit 0) and the reserved bits 5-7 name no field: Python 3.11's `_read_gzip_header` reads no byte
+        # for them and refuses none of them.
+        ("gzip-ftext", gz_member(web, 1) + b"\0" * 128),
+        ("gzip-reserved-bits", gz_member(web, 0xE0) + b"\0" * 128),
         ("gzip-empty-stream", gz(b"") + b"\0" * 200),
         ("gzip-one-byte", gz(b"U") + b"\0" * 200),
         # A match reaching before the member's output: zlib's "invalid
@@ -389,6 +400,14 @@ def file_records(name: str, data: bytes) -> list[dict]:
     return [norm(r) for r in out if r["rec"] == "file"]
 
 
+def raw_name_inputs(matrix: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
+    """The matrix's `sample.resS` bytes, an `AssetsFile`, under each of the five name suffixes that keep an
+    `AssetsFile` a raw reader (`helpers/ImportHelper.py:138-151`), so each suffix is pinned on its own; the
+    matrix itself has only `.resS`."""
+    data = dict(matrix)["sample.resS"]
+    return [(f"sample{suffix}", data) for suffix in (".resS", ".resource", ".config", ".xml", ".dat")]
+
+
 # ------------------------------------------------------------ short reads
 
 
@@ -455,12 +474,18 @@ def runs(data: bytes) -> list[list[int]]:
 
 def fixtures() -> dict[str, dict]:
     meta = {"generator": "tools/fixtures/files.py", "unitypy": UnityPy.__version__}
+    matrix = matrix_inputs()
     return {
         "versions.json": {**meta, "cases": [norm(version_case(s)) for s in version_strings()]},
         "detect.json": {**meta, "cases": [detect_case(n, d) for n, d in detect_inputs()]},
         "files.json": {
             **meta,
-            "cases": [{"name": n, "hex": d.hex(), "records": file_records(n, d)} for n, d in matrix_inputs()],
+            "cases": [{"name": n, "hex": d.hex(), "records": file_records(n, d)} for n, d in matrix],
+        },
+        "raw_names.json": {
+            **meta,
+            "bytes_of": "sample.resS",
+            "cases": [{"name": n, "records": file_records(n, d)} for n, d in raw_name_inputs(matrix)],
         },
         "short_reads.json": {
             **meta,
