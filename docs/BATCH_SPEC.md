@@ -1,6 +1,6 @@
 # The batch job contract, version 1
 
-**Status: draft, design round 2 (2026-11-09), not reviewed.** This file is the exact contract of `unityrs batch`: the job spec, keys and templates, identity and order, the NGUI cutter, the spool, the manifest, the zip bytes and the exit codes. `docs/plans/extract.md` states the requirements (E1 onward) and cites this file for their exact form; `docs/plans/batch.md` designs the engine behind them. Where this file and a requirement disagree, the review rounds fix one of them.
+**Status: draft, design round 2 (2026-11-09), not reviewed.** This file is the exact contract of `unityrs batch`: the job spec, keys and templates, identity and order, the NGUI cutter, the spool, the manifest, the zip bytes, the exit codes and the progress stream. `docs/plans/extract.md` states the requirements (E1 onward) and cites this file for their exact form; `docs/plans/batch.md` designs the engine behind them. Where this file and a requirement disagree, the review rounds fix one of them.
 
 **Conventions.**
 - *bytes*: an integer count of bytes. *ms*: an integer count of milliseconds.
@@ -31,6 +31,7 @@ A spec is one JSON object, at most 16 MiB, UTF-8. An unknown field at any level,
 | `max_decoded_bytes` | integer | yes | | `M`, 1 MiB to 2^40: every meter's `max_input_memory`, and each attempt's Input budget |
 | `dep_cache_bytes` | integer | yes | | `D`: each attempt's Dependency budget and its private dependency cache (`batch.md` 2.2) |
 | `max_view_bundles` | integer | no | 1024 | 1 to 65,536: the most bundles one input's view may hold |
+| `max_discovered_bundles` | integer | no | 1024 | 0 to 65,536: the most distinct names the discovery round may fetch (`batch.md` 2.3); more stops the run, `discovery_limit` |
 | `spool` | Spool | yes | | section 6 |
 | `http` | Http | no | every default | section 1.4 |
 | `inputs` | array of Bundle | yes | | 1 to 100,000 items |
@@ -50,7 +51,8 @@ A spec is one JSON object, at most 16 MiB, UTF-8. An unknown field at any level,
 - Every id in a `deps` list names a bundle of the spec, unless `url_rule` is set (it is then fetched by the rule, section 4.1).
 - No declared view (section 4.2, without `m_Dependencies`) holds more than `max_view_bundles` bundles.
 - `spool.reserve_bytes < spool.size_bytes`.
-- Every template parses (section 2.1), and every literal key (`prefer`'s keys, `archives`' keys and member paths, the sink's prefix) passes section 2.3's rules.
+- Every template parses (section 2.1), and every literal key (`prefer`'s keys, `archives`' keys and member paths, the sink's prefix) passes section 2.3's rules but `prefix_conflict` and `archive_conflict`, which phase 8 decides.
+- `archives`' keys are unique, and none is an ancestor of another (`a` of `a/b.zip`).
 
 ### 1.2 Bundle (an item of `inputs` or `dependencies`)
 
@@ -73,7 +75,7 @@ A `size` or `sha256` that does not match fails the bundle (`integrity_mismatch`)
 | `template` | string | yes | | an `http` or `https` URL holding `{name}` exactly once |
 | `headers` | object | no | `{}` | as a Bundle's |
 
-`{name}` is replaced by the name with every byte outside `A-Za-z0-9-._~/` percent-encoded in upper case. The fetched bundle's id is the name, unchanged.
+`{name}` is replaced by the name with every byte outside `A-Za-z0-9-._~/` percent-encoded in upper case. Only names that meet section 4.1's discovered-name rule are fetched, so a name can add path segments to the template but never remove one. The fetched bundle's id is the name, unchanged.
 
 ### 1.4 Http
 
@@ -178,7 +180,9 @@ A key is the template's expansion. It is checked as given, then after the sink's
 | `segment_too_long` | a segment is over 255 bytes (`NAME_MAX`) |
 | `too_long` | the full key is over 1,024 bytes |
 | `reserved_prefix` | it starts with `_unityrs/` (section 7) |
-| `prefix_conflict` | it is also the parent directory of another winner's key (section 4.6) |
+| `reserved_name` | a segment starts with `.unityrs-tmp-` (the directory sink's temp files, E62) |
+| `prefix_conflict` | it is an ancestor of another published key (section 4.6) |
+| `archive_conflict` | it equals an archive's key, is an ancestor of one, or lies under one (section 4.6) |
 
 A literal key that breaks a rule is refused at validation. An expanded key that does is the output's object-level skip, `unwritable_key(rule)`. The rules are the same for every sink and for zip member paths, so a key is writable in one sink exactly when it is writable in all of them.
 
@@ -201,6 +205,7 @@ A texture is exported only in the five formats of E15 with no platform swizzle o
 
 - A bundle's identity is its spec `id`. A bundle found by discovery has the name `m_Dependencies` gives it as its id, unchanged: no case folding, no path or variant rule.
 - A discovered name equal to a declared id is that bundle.
+- **The discovered-name rule.** With `url_rule` set, any other name must be 1-1,024 bytes of UTF-8 with no control character (a Bundle id's rule, 1.2), and must have no empty segment and no segment `.` or `..`, segments split at `/`. A name that breaks it fails the input whose `m_Dependencies` lists it, `invalid_dependency_name`. Without `url_rule` such a name is only reported (E9).
 - Wherever bundles are ordered, it is by bytewise order of their ids.
 
 ### 4.2 Views
@@ -226,11 +231,21 @@ A texture is exported only in the five formats of E15 with no platform swizzle o
 E31 to E33 and E61 as written, with these orders:
 - "first by bytewise input id" everywhere;
 - E31 rule 1 applies when the preferred input has a candidate for the key;
-- E32: a unit's **unit key** is its sheet's texture key when `outputs.textures` is set, else its JSON key, and its `prefer` entry is that key's. Units are decided first, in bytewise order of unit key, then input id, then object order; a unit's member keys are reserved before plain candidates are decided.
+- E32: a unit's **unit key** is its sheet's texture key when `outputs.textures` is set, else its JSON key, and its `prefer` entry is that key's. A unit's **keys** are its unit key and its members' keys.
+- The steps, in order (`batch.md` 2.9):
+  1. Each unit key's winning unit is decided by E31 and E61 among the units with that unit key.
+  2. Every key of every winning unit is **reserved**. Of the winning units that share a key, the first by unit key keeps it, and every other is withheld whole (`unit_conflict`). A key stays reserved even when every unit claiming it is withheld; this step is not repeated.
+  3. A plain candidate for a reserved key loses (rule `unit`). Every other key is decided by E31 and E61.
+  4. Section 4.6 runs once on the keys steps 1 to 3 would publish.
+- So no unit is published in part: a unit is published whole or withheld whole.
 
 ### 4.6 Prefix conflicts
 
-After the winners are decided, a winner's key `K` that is also a parent directory of another winner's key (some key starts with `K/`) loses to them: `K` is `unwritable_key(prefix_conflict)`, in every sink. The check runs on the sorted keys with each key's ancestors added, so its result does not depend on the order of publishing (`batch.md` 2.9).
+Let `P` be the keys section 4.5's steps 1 to 3 would publish: withheld keys, `unit_conflict` keys and losers are not in `P`.
+- A key of `P` that is an ancestor of another key of `P` (some key of `P` starts with `K/`) is `unwritable_key(prefix_conflict)`; the keys beneath it stay.
+- A key of `P` that equals an archive's key, is an ancestor of one, or lies under one is `unwritable_key(archive_conflict)`; the archive stays.
+- A unit with a key refused here is withheld whole: its other keys are `unit_conflict`.
+- The check runs once, on `P` as steps 1 to 3 left it, and is not repeated after a unit is withheld. It runs on the sorted keys with each key's ancestors added, so its result does not depend on the order of publishing (`batch.md` 2.9). It is the same in every sink.
 
 ---
 
@@ -281,13 +296,14 @@ The sheet is decoded as a texture (E15), into the image UnityPy's `Texture2D.ima
 |---|---|
 | `<dir>/lock` | the spool's lock: `flock(LOCK_EX \| LOCK_NB)` for the process's life (E63) |
 | `<dir>/<run_id>/journal` | multipart upload ids, one per line: `bucket`, `key`, `upload_id`, appended and `fdatasync`ed after the create, removed after the complete or abort (E64) |
-| `<dir>/<run_id>/in/` | downloads |
+| `<dir>/<run_id>/in/` | downloads: `i<n>` for the n-th of `inputs`, `d<n>` for the n-th of `dependencies`, `x-<h>` for a discovered bundle, `h` the lowercase hex SHA-256 of its name, and `x-<h>.failed` holding its fetch's reason |
+| `<dir>/<run_id>/deferred/<input>` | a deferred attempt's unfetched names, one per line (`batch.md` 2.3) |
 | `<dir>/<run_id>/attempts/<input>.<round>/` | one attempt's outputs and `records.ndjson` |
 | `<dir>/<run_id>/done/<input>/` | a committed attempt |
 | `<dir>/<run_id>/winners/` | phase 8's sorted runs and its winners file |
 | `<dir>/<run_id>/manifest/` | the manifest's row files before they are written to the sink |
 
-`<input>` is the input's position in `inputs`, in decimal, so an id never becomes a path.
+`<input>` and `<n>` are positions from 0, in decimal, so an id or a name never becomes a path.
 
 **Lifecycle.**
 - **At start**, after the lock: the ids in `<dir>/<run_id>/journal` are aborted (E64). Then every other entry under `<dir>`, other run ids' directories included, is deleted. The lock proves no live run uses them; an upload a deleted journal names is left to the bucket's lifecycle rule (E64).
@@ -315,7 +331,7 @@ No output key may start with `_unityrs/` (2.3). The row files hold the attempt n
 - **Object store, `"conditional"`.** The store client is configured with `S3ConditionalPut::ETagMatch`. The first write is `If-None-Match: *` when no head exists, else `If-Match` on the ETag preflight read. Each later write is `If-Match` on the ETag of this attempt's previous write.
 - **A failed precondition** (412) is read back with a GET. A head with this `attempt` and this write's `write_seq` is this write, whose response was lost: success. Anything else stops the attempt at once, exit 6 (`superseded`).
 - **Object store, `"none"`.** Plain PUTs; the caller runs one attempt of a `run_id` at a time.
-- **Directory.** `<root>/_unityrs/<run_id>/lock`, `flock(LOCK_EX | LOCK_NB)` held for the process's life: busy exits 69 (`output_locked`). Each head write is a temp file, `fsync`, a rename over the head, and an `fsync` of the directory.
+- **Directory.** `<root>/_unityrs/lock`, one lock for the whole root, whatever the `run_id`: `flock(LOCK_EX | LOCK_NB)` held for the process's life, busy exits 69 (`output_locked`). So one process at a time writes a directory root, and E62's cleanup of temp files never meets a live run's. Each head write is a temp file, `fsync`, a rename over the head, and an `fsync` of the directory.
 
 The head is the record of the run. A key the stored head does not list as `written` or `present` is not part of the run's output, whatever the store holds (a PUT that landed after a stop, a key an earlier attempt wrote).
 
@@ -376,10 +392,10 @@ So the archive's MD5, and its multipart ETag at 16 MiB parts, are the same on ev
 | 0 | `complete` | every input extracted, every winner published, no skip | done |
 | 3 | `complete_with_skips` | object-level skips for data reasons only; every winner published | done; review the skips |
 | 4 | `incomplete` | an input failed for a data reason, or an output or archive failed to publish | fix the input, or retry with `attempt + 1` |
-| 5 | `incomplete` | a budget decided an outcome: an input's or a dependency's memory or work limit, an attempt's budget, the spool, phase 8's working set | raise the budget the manifest names |
+| 5 | `incomplete` | a budget decided an outcome: an input's or a dependency's memory or work limit, an attempt's budget, the spool, `max_discovered_bundles` | raise the budget the manifest names |
 | 6 | `incomplete`, or none | stopped: the deadline, a signal, the parent's death, stdin's EOF; or `superseded` | resume with `attempt + 1`; when `superseded`, do not retry |
 | 69 | none | could not start: the spool or output root locked or unusable, a sink unreachable, credentials missing, the manifest unreadable, a resource limit below the bound (E63) | fix the environment, retry |
-| 70 | `incomplete` if possible | internal error: a panic outside a decoder, a leaked charge, an unclassifiable error | report a bug |
+| 70 | `incomplete` if possible | internal error: a panic outside a decoder, a leaked charge (a refusal of phase 8's working set among them, `batch.md` 2.9), an unclassifiable error | report a bug |
 | 74 | `incomplete` if possible | host failure during the run: an I/O error on the spool or on a bundle's file | fix the host, retry with `attempt + 1` |
 | 78 | none | a bad spec or command line, an unknown `spec_version` included | fix the spec; never retry as is |
 
@@ -394,14 +410,40 @@ So the archive's MD5, and its multipart ETag at 16 MiB parts, are the same on ev
 |---|---|
 | an object skipped for a budget: reason `budget(input)`, `budget(dependency)`, `limit(input_memory)` or `limit(decode_work)` | 5 |
 | an object skipped for any other reason | 3 |
-| an input failed for a budget, by the same four reasons | 5 |
-| an input failed for any other reason (a download, `integrity_mismatch`, `source_changed`, `dependency_failed`, `not_a_bundle`, a container or entry error, a depth or count limit) | 4 |
+| an input failed for a budget, by the same four reasons, or by `dependency_failed(<id>, <reason>)` whose inner reason is one of them | 5 |
+| an input failed for any other reason (a download, `integrity_mismatch`, `source_changed`, `dependency_failed` with any other inner reason, `invalid_dependency_name`, `not_a_bundle`, a container or entry error, a depth or count limit) | 4 |
 | an output, archive or row file that failed to publish | 4 |
 | a key withheld (E61) | none of its own: the failed input sets the code |
-| a spool claim refused or below the reserve; phase 8's working set refused | 5 |
+| a spool claim refused or below the reserve; more discovered names than `max_discovered_bundles` | 5 |
+| an I/O error reading an input's or a view member's file, or writing the spool | 74 |
 
 A depth or count limit is a data reason: no budget raises it.
 
 ### 9.3 Reasons
 
-A reason is `name` or `name(argument)`. Version 1's names: `download_failed`, `redirect_refused`, `integrity_mismatch`, `source_changed`, `dependency_failed`, `not_a_bundle`, `container_error`, `entry_error`, `view_too_large`, `budget`, `limit`, `outside_view`, `decode_error`, `decoder_panic`, `unsupported_format`, `unsupported_platform`, `empty_image`, `duplicate_name`, `duplicate_key`, `unwritable_key`, `empty_rect`, `reference_atlas`, `sheet_not_found`, `ngui_layout_unsupported`, `no_typetree`, `json_unwritable`, `withheld`, `publish_failed`, `spool_full`, `deadline`, `sigterm`, `sigint`, `sighup`, `parent_died`, `stdin_eof`, `superseded`, `host_io`, `internal`. A limit's argument is the core's `LimitKind` in snake case.
+A reason is `name` or `name(argument, ...)`; `dependency_failed` takes the bundle's id and its inner reason. Version 1's names: `download_failed`, `redirect_refused`, `integrity_mismatch`, `source_changed`, `dependency_failed`, `invalid_dependency_name`, `discovery_limit`, `not_a_bundle`, `container_error`, `entry_error`, `view_too_large`, `budget`, `limit`, `outside_view`, `decode_error`, `decoder_panic`, `unsupported_format`, `unsupported_platform`, `empty_image`, `duplicate_name`, `duplicate_key`, `unwritable_key`, `empty_rect`, `reference_atlas`, `sheet_not_found`, `ngui_layout_unsupported`, `no_typetree`, `json_unwritable`, `withheld`, `publish_failed`, `spool_full`, `deadline`, `sigterm`, `sigint`, `sighup`, `parent_died`, `stdin_eof`, `superseded`, `host_io`, `internal`. A limit's argument is the core's `LimitKind` in snake case.
+
+---
+
+## 10. The progress stream
+
+NDJSON on stdout (E4), version `p` = the `spec_version` the run reads (for a spec refused at validation, the binary's highest). Each line is one JSON object and a whole snapshot, never a delta: a reader needs only the last line it read. Every line has every field below; a version adds fields only with a new `p`.
+
+| field | type | meaning |
+|---|---|---|
+| `p` | integer | the progress version |
+| `type` | string | `snapshot`, or `exit` for the last line |
+| `seq` | integer | 0 on the first line, then +1 per line, gapless |
+| `ms` | integer | ms since the process started (`CLOCK_BOOTTIME`) |
+| `phase` | string | `validate`, `preflight`, `start`, `download`, `extract`, `discover`, `source_check`, `winners`, `publish`, `finalize` or `stop`: `batch.md` 2.1's phases 1 to 10 in order (phase 3 is `start`; phase 6's fetch is `discover` and its second round `extract`), and `stop` from a stop on |
+| `round` | integer | the extraction round under way or last run: 0 before phase 5, then 1 or 2 |
+| `inputs` | object | integers: `total`, `complete`, `failed`, `running`, `queued`, `deferred`, `not_run` |
+| `transfers` | object | integers: `downloads_active`, `downloads_done`, `downloads_failed`, `uploads_active`, `uploads_done`, `uploads_failed` |
+| `memory` | object | bytes, integers: `inflight_limit` (`I`), `slots_reserved`, `attempts_used` (the attempts' budgets' summed use), `phase_used`, `rss` |
+| `spool` | object | bytes, integers: `used`, `size` |
+| `outputs` | object | integers: `candidates`, `winners`, `published`, `present`, `failed`; `winners` is 0 before phase 8 |
+| `status` | string or null | `exit` lines only: the status the final manifest holds, or null when none was written |
+| `code` | integer | `exit` lines only: the exit code (section 9) |
+| `stop_reason` | string or null | `exit` lines only: a reason of 9.3, or null |
+
+A line is written at least every 2 s from a one-slot mailbox (`extract.md` item 5). No field holds a URL, a header value or a credential (E42).

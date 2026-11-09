@@ -8,7 +8,7 @@
 **What it builds on.** The core API and what it guarantees any batch engine: `docs/plans/core.md` section 4.1, a list of properties each checked by a P1 test. This plan relies on those properties, on the public API named where it is used, and on nothing else the core does. A need the list does not cover is a request to the core (section 6), not an assumption. Each request says what the engine does until the core grants it.
 
 **Citations.**
-- P1's review findings are cited by the name of the review file that holds them and the finding's id. Those files belong to the review process and are not in the repository; each problem in section 3 restates what it found.
+- P1's review findings are cited by the P1 review round that found them, as `core.md` cites its own. Each problem in section 3 restates what was found, so no review document is needed to read it.
 - Design rounds' findings are cited by what they say.
 - "core 4.1, *property*" names a row of `docs/plans/core.md` section 4.1 by its first column. "core 3.13" is a section of that plan. A source path without a crate is under `crates/unityrs-core/src/`.
 - Corpus figures are aggregates from the private corpus, measured on the P1 core before its perf fixes.
@@ -33,7 +33,7 @@ DESIGN.md section 4's `unityrs-batch` row: a JSON job spec of inputs, outputs an
   - what else is in flight;
   - which other inputs or bundles failed, or which others exist.
 
-  2.10 shows why, against every counterexample design round 1's review built, and names the test. D has one limit: a host failure (an I/O error on the spool or a bundle's file, an allocation the OS refuses) stops the whole run instead of deciding a record (2.7).
+  2.10 shows why, against every counterexample design round 1's review built, and names the test. D has one limit: a failure of the run as a whole stops it instead of deciding a record. That is a host failure (an I/O error on the spool or a bundle's file, an allocation the OS refuses; 2.7), the spool's cap (2.7), or the discovered-bundle cap (2.3).
 - **B, the memory bound.** The process's live heap is at most `max_inflight_uncompressed_bytes` plus constants fixed by the spec (section 5). Every byte that grows with an input or an output is charged to a budget before it is allocated.
 
 ---
@@ -68,7 +68,7 @@ An **attempt** is one run of one input's extraction. Each attempt is sealed: eve
   | `Dependency` | `D_X` | every meter of the attempt's private Environment: its opens, runs, entries, registry slots and keys |
   | `Provider` | refused | version 1 configures no typetree provider (A8), so nothing books here |
 
-  `D_X` is `D` (`dep_cache_bytes`) when `view(X)` holds another bundle, and 0 when it is X alone.
+  `D_X` is `D` (`dep_cache_bytes`) when the spec has a URL rule, or when X's declared view (`BATCH_SPEC.md` 4.2 without `m_Dependencies`) holds another bundle; otherwise it is 0. With a URL rule, step 3 of 2.6 can add any declared or discovered bundle to the view, so `D_X` is fixed by the spec alone and is the same in both rounds.
 - **Its Environment.** The attempt builds a private `Environment` with `EnvOptions::batch(ctx_X)`, `dep_cache_bytes` set to `D_X`, and registers its view in it (2.6). No other attempt reads through it. It is dropped when the attempt returns.
 - **Its context.** `ctx_X` is a clone of the base `FileContext` with the attempt's budget. The base context's provider chain is empty and its codecs are stateless (`options.rs`).
 - **Admission by reservation.** The attempt's **slot** is `S_X = M + D_X`. The controller dispatches an attempt only while the slots in flight sum to at most `I` with it (2.4). The budget's limits are its slot, so the attempts in flight together can never hold more than `I`, and no attempt's reservation is ever refused for what another holds.
@@ -87,16 +87,18 @@ An **attempt** is one run of one input's extraction. Each attempt is sealed: eve
 **Views.** `view(X)` (`BATCH_SPEC.md` 4.2) is X, the `deps` of every bundle in it, and, with a URL rule, the names in X's own AssetBundle object's `m_Dependencies`, closed the same way. `extract.md` E13's "needs" means "is in the view".
 
 The view rules:
-1. **A failed member fails X.** A bundle of `view(X)` that failed to download, failed its `size` or `sha256`, or whose load in the attempt fails, fails X with `dependency_failed(id, reason)` (3.10). One that failed before the attempt fails X before it starts.
+1. **A failed member fails X.** A bundle of `view(X)` that failed to download, failed its `size` or `sha256`, or whose load in the attempt is refused or fails on its bytes, fails X with `dependency_failed(<id>, <reason>)` (3.10), where the inner reason is the member's own. The exit code follows the inner reason (`BATCH_SPEC.md` 9.2): a budget or limit is 5, any other 4. One that failed before the attempt fails X before it starts. An I/O error reading a member's file is not a member's failure: it is a host failure and stops the run (2.7).
 2. **Reads stay in the view.** The private Environment holds only `view(X)`, so every lookup resolves within it. A read whose CAB no bundle of the view holds is an object-level skip, `outside_view(cab)`.
 3. **Same-named CABs** resolve by `BATCH_SPEC.md` 4.3: the reading file's own bundle first, then X, then the greatest id. This is a Tier C rule of `EnvOptions::batch()` only.
 4. **Size.** A view of more than `max_view_bundles` bundles fails X, `view_too_large`. It bounds the uncharged heap a private Environment holds per registration (5.3).
 
 **Discovery** (`extract.md` E9).
-- An attempt reads X's AssetBundle object before anything else. When the spec has a URL rule and `m_Dependencies` names a bundle that was neither fetched nor declared, the attempt ends `deferred` at once and commits nothing.
-- After round 1, with no attempt running, the controller fetches each such name by the URL rule (2.11 bounds the wait) and runs round 2 for the deferred inputs.
+- An attempt reads X's AssetBundle object before anything else. When the spec has a URL rule, a name of `m_Dependencies` that is not a declared id must meet the discovered-name rule (`BATCH_SPEC.md` 4.1: at most 1,024 bytes, and no empty, `.` or `..` segment, so the URL rule's path cannot be walked); one that breaks it fails X, `invalid_dependency_name`. When such a name was not fetched yet, the attempt writes X's unfetched names, one per line, to its spool file `deferred/<input>` (`BATCH_SPEC.md` section 6), ends `deferred` and commits nothing else. The end message stays fixed-size.
+- After round 1, with no attempt running, the controller reads the `deferred/` files in input order and builds the set of distinct names. When the set would pass `max_discovered_bundles`, the run stops before any fetch, exit 5 (`discovery_limit`): round 1's committed inputs keep their records, the deferred ones are `not_run`, and nothing is published. Otherwise it fetches each name by the URL rule to `in/x-<sha256 of the name, hex>` (2.11 bounds the wait) and runs round 2 for the deferred inputs. A bundle's spool path is a function of its name, so no table passes from the controller to an attempt.
 - A name whose fetch fails fails every deferred input whose view holds it.
+- The cap is a property of the whole run, not of an input, so it stops the run rather than fail a chosen input (1, D). It bounds the controller's state for discovered bundles (5.3).
 - One round is enough: no attempt reads a dependency's own `m_Dependencies`, so after it every view is whole.
+- **Tests:** `a_discovered_name_with_a_dot_segment_fails_its_input`; `the_discovered_bundle_cap_stops_the_run_before_any_fetch`; `a_view_grown_by_discovery_registers_on_a_full_dependency_budget` (an input whose declared view is itself alone, whose `m_Dependencies` names a declared bundle).
 - Whether an input is deferred depends only on the spec and its own bytes, and a deferred attempt commits nothing, so deferral changes no record.
 
 Without a URL rule, an `m_Dependencies` name outside the view is reported (`undeclared_dependencies`), never fetched, and stays out of the view.
@@ -113,14 +115,14 @@ Without a URL rule, an `m_Dependencies` name outside the view is reported (`unde
 loop:
   if the stop flag is set: return                                  // the stopper takes over (2.11)
   while in_flight < threads and ready is not empty and reserved + S(head) <= I:
-      dispatch(ready.pop()); in_flight += 1; reserved += S(head)
+      x = ready.pop(); dispatch(x); in_flight += 1; reserved += S(x)
   if in_flight == 0 and ready is empty: end the round
   wait for one event: an attempt ended | a 1 s tick | the stop flag's wake
   on attempt ended (input, outcome):              // sent after its budget read zero (2.2)
       in_flight -= 1; reserved -= S(input)
       match outcome:
           Done:        commit the attempt's directory (2.8)
-          Deferred:    delete the attempt's directory; deferred.push(input)
+          Deferred:    delete the attempt's directory (its names are in deferred/<input>); deferred.push(input)
           Failed:      commit its failure record only (E60)
 ```
 
@@ -157,17 +159,18 @@ Every error is classified once, by one engine function, `classify` (CR2 would ma
 
 | what failed | outcome |
 |---|---|
-| a refusal of the attempt's budget or of one of its meters: `Budget(Input)`, `Budget(Dependency)`, any `Limit` | recorded where it surfaced: an object-level skip inside an object's read or export, an input failure while opening X, an entry of X or a view member. Its reason names the budget, or the limit and its configured value |
+| a refusal of the attempt's budget or of one of its meters: `Budget(Input)`, `Budget(Dependency)`, any `Limit` | recorded where it surfaced: an object-level skip inside an object's read or export; an input failure while opening X or an entry of X; `dependency_failed(<id>, <reason>)` while loading a view member (2.3, rule 1). Its reason names the budget, or the limit and its configured value |
 | an error the bytes decide: a corrupt block or entry, a typetree, an unsupported format, a decoder panic (E18), a key that breaks a rule, E25's bytes | DESIGN section 4's failure model: a container or entry failure fails X, an object's failure skips it |
 | a host failure: an I/O error reading X's file or a view member's file, or writing the spool | the run stops, exit 74 |
 | a spool claim refused, or free space below the reserve | the run stops, exit 5: spool use depends on the order inputs ran in, so it decides no input |
+| `DerefError::ContainerDropped` | the run stops, exit 70: the attempt holds every container it reads through (2.6, step 7), so it marks an engine bug |
 | an error `classify` does not know | the run stops, exit 70, so a new core variant is noticed at once |
 
 **Why every refusal is final at once.** The attempt runs on one thread in program order. Its budget and every meter that books with it serve that thread alone (2.2). So each charge meets the same state in every run, and each refusal, and each growth a refusal silently shrank (`limits/vec.rs`, `grow_counted`; `budget/mod.rs`, `DecodeBuf::into_bytes`), falls at the same point. No outcome waits for a retry.
 
 **`classify` until CR2.** One module matches the public enums: `Error`'s `Entry`, `Tree`, `AssetBundle`, `Deref`, `Limit` and `Budget` variants, `DerefError`'s `ContainerDropped` and `Load`, `ParseError`'s `Read`, `Tree` and `Deref`, `ReadError`'s detail, `TreeError` and `ChargeError`. A `DerefError` that `Environment::deref` returns bare is classified as that same chain. Every `#[non_exhaustive]` enum's wildcard arm returns "unknown". Its test builds each wrapper path and checks the class.
 
-**An allocation the allocator refuses** comes back from the core as a `Budget` refusal (`limits/meter.rs`, `refusal`). Until CR2 tells it apart, preflight refuses to start (exit 69) when `RLIMIT_AS` or `RLIMIT_DATA` is below 5.1's bound, so the allocator does not refuse below it. One that still refuses is recorded as the budget's refusal, which is A13.
+**An allocation the allocator refuses** comes back from the core as a `Budget` refusal (`limits/meter.rs`, `refusal`). Until CR2 tells it apart, preflight refuses to start (exit 69) when `RLIMIT_AS` or `RLIMIT_DATA` is below 1.5 times 5.1's bound (glibc's slack, 5.4) plus 64 MiB per arena of `M_ARENA_MAX` (each arena reserves that much address space), so the allocator does not refuse below it. One that still refuses is recorded as the budget's refusal, which is A13.
 
 ### 2.8 Copy-out, records and commit
 
@@ -184,16 +187,20 @@ Every error is classified once, by one engine function, `classify` (CR2 would ma
 
 ### 2.9 Winners and publish
 
-**Winners** (E31 to E34, E61; `BATCH_SPEC.md` 4.5 and 4.6), in phase 8, after the last round.
-- **Sort.** The controller reads every committed `records.ndjson` and sorts the candidate records by key with an external merge sort: runs of at most 64 MiB, sorted in memory and written to `winners/`, then merged at most 64 runs at a time, with a 1 MiB buffer per run. Each key's ancestors (`a`, `a/x` for `a/x/y.png`) are added to the sort as directory markers. All of it is charged to the phase budget.
-- **Decide.** One pass over the sorted stream, a key's candidates at a time, decides each key by E31 to E33, after the units (E32), which a first pass over the unit lines decides. A key that meets a directory marker of another winner is `unwritable_key(prefix_conflict)`. Withholding (E61), and with `publish_incomplete: false` nothing is published when any input failed.
-- The winners and the collisions are written to `winners/` in key order. The decision is a pure function of the committed records, so it is the same whatever order the inputs finished in.
-- A refusal of the phase budget stops the run, exit 5. It cannot happen when `I >= 64 MiB`, so it marks a leak.
+**Winners** (E31 to E34, E61; `BATCH_SPEC.md` 4.5 and 4.6), in phase 8, after the last round. Each step below is an external sort of spool records and one streaming pass over the result, so phase 8 holds no table that grows with keys, units or candidates.
+- **The sort.** Runs whose records and index together take at most 32 MiB, sorted in memory and written to `winners/`; then merges of at most 16 runs, with a 1 MiB buffer per run and 1 MiB for the output. A record line is at most 8 KiB (a key and an id are each at most 1,024 bytes).
+- **Step 1, units.** Sort every unit line by (unit key, input id). One pass decides each unit key's winning unit by E31 and E61, keeping only the best candidate so far: within a key the candidates come in input order, so rules 1 to 3 need no more.
+- **Step 2, member keys.** Sort one line (member key, unit key) per key of every winning unit, its unit key included. One pass: of the units claiming one key, the first by unit key keeps it, and every other is withheld whole (`unit_conflict`). Every key a winning unit claims stays reserved, even when its unit is withheld, so the pass is not repeated (`BATCH_SPEC.md` 4.5).
+- **Step 3, plain keys.** Merge the sorted plain candidates with step 2's reserved keys. A plain candidate for a reserved key loses (`unit`). Every other key is decided by E31 and E61, streaming as in step 1. The output is the set `P` of keys the decision would publish, in key order.
+- **Step 4, prefix and archive conflicts** (`BATCH_SPEC.md` 4.6). Sort `P`'s keys and the archives' keys, each with its ancestors (`a`, `a/x` for `a/x/y.png`) as markers. One pass refuses a key of `P` that is an ancestor of another key of `P` (`prefix_conflict`), or that equals, contains or lies under an archive's key (`archive_conflict`). A unit with a key so refused is withheld whole: its unit keys are sorted, and a merge with `P` marks its other keys `unit_conflict`. The check is not repeated.
+- With `publish_incomplete: false` nothing is published when any input failed.
+- The winners and the collisions are merged into `winners/` in key order. The decision is a pure function of the committed records, so it is the same whatever order the inputs finished in.
+- **Its working set** is at most 40 MiB: a run of 32 MiB, or a merge's 17 MiB, beside at most 8 stream buffers of 1 MiB. `I >= 64 MiB` holds it, so a refusal of the phase budget in phase 8 marks a leak, exit 70.
 
 **Publish**, in phase 9.
-- **Resume** (E43). With `resume` set, the object store's LIST of the output prefix (keys in ascending UTF-8 byte order) is merged with the sorted winners file, one LIST page in memory at a time. A winner whose key is listed with its MD5 as ETag (an archive's: its multipart ETag, `BATCH_SPEC.md` section 8) is `present` and not PUT. A LIST page out of order, or a LIST that fails, degrades to "PUT everything" with the warning `resume_list_failed`. In a directory, each winner's destination is stat'd, and hashed only when its size matches.
+- **Resume** (E43). With `resume` set, the object store's LIST of the output prefix (keys in ascending UTF-8 byte order) is merged with the sorted winners file, one LIST page in memory at a time. A winner whose key is listed with its MD5 as ETag (an archive's, or a file's over 16 MiB: its multipart ETag at 16 MiB parts, `BATCH_SPEC.md` section 8) is `present` and not PUT. A LIST page out of order, or a LIST that fails, degrades to "PUT everything" with the warning `resume_list_failed`. In a directory, each winner's destination is stat'd, and hashed only when its size matches.
 - **Transfers.** A transfer reserves its buffer from the phase budget once, at its start: `heap_cost(size)` for a single-part PUT (files up to 16 MiB), or one 16 MiB part for a multipart upload, whose parts go one at a time. It holds that reservation until it ends. The scheduler starts a transfer when a `download_concurrency` permit is free and its reservation is granted; otherwise it waits for a running transfer to end. A reservation refused with no transfer running is an internal error (exit 70): every buffer is at most 16 MiB, below `I`.
-- **The directory sink** writes each file as a temp file named `.unityrs-tmp-<run_id>-<n>` beside its destination and renames it, opens paths beneath the root (E62), and runs `syncfs` before the final manifest.
+- **The directory sink** holds the root's lock (`BATCH_SPEC.md` 7.2) for the process's life, writes each file as a temp file named `.unityrs-tmp-<run_id>-<n>` beside its destination and renames it, opens paths beneath the root (E62), and runs `syncfs` before the final manifest. No key segment may start with `.unityrs-tmp-` (`BATCH_SPEC.md` 2.3), so the start's cleanup (E62) removes only temp files.
 - **The zip format** (`BATCH_SPEC.md` section 8) streams each archive from the spooled members, with its central directory spooled while the members stream.
 - **The object store** follows `extract.md` E37. Each multipart upload id is appended to the journal after its create and before its first part, and removed after its complete or abort (E64).
 - **The manifest** (`BATCH_SPEC.md` section 7): its row files are streamed from the spool to the sink; then the head, at most 64 KiB, is written fenced.
@@ -243,15 +250,15 @@ Everything it writes to is its own: its budget, its meters, its private Environm
 - A stop after the final manifest's write changes nothing.
 
 **What the stop flag stops.**
-- The controller dispatches nothing more and returns from its loop. It joins no worker and no transfer.
+- The controller dispatches nothing more, leaves its loop and parks until `_exit`: `main` never returns during a stop, which would run exit handlers under the stopper. It joins no worker and no transfer, and drives its runtime no more.
 - Each attempt returns at its next object, and commits nothing.
 - Each download and transfer future selects on the cancellation token, so a request in flight is dropped at once. A request the server had already received may still complete there.
 - No transfer starts a committing request after the flag: no PUT, no `CompleteMultipartUpload`, no rename. No new multipart upload starts.
 - Phase 8 checks the flag between sort runs.
 
-**The stopper**, in order:
+**The stopper** runs on a current-thread runtime of its own, with a store client of its own, built at the stop from the credentials and sink settings preflight read. It never uses the controller's client: that client's pooled connections are driven by tasks on the controller's runtime, which nobody drives after a stop, so a request through it could wait out its timeout. In order:
 1. **Close the journal.** Under the journal's mutex it marks the journal closed, then reads it. A transfer that creates an upload after the close cannot journal it, and aborts it itself; if it is cancelled first, the bucket's lifecycle rule removes it (E64).
-2. **Abort** every upload id the journal holds, in parallel on its own runtime, each request with a timeout of `min(5 s, T_hard - now - 2 s)`.
+2. **Abort** every upload id the journal holds, in parallel, at most `download_concurrency` at once, each request with a timeout of `min(5 s, T_hard - now - 2 s)`.
 3. **The final manifest**, status `incomplete` with the stop reason, fenced (`BATCH_SPEC.md` 7.2). Its rows come from the spool: the inputs whose directories are in `done/` with their records, every other input `not_run`. Nothing is published after a stop, so no output row says `written` but those whose PUT was acknowledged before it.
 4. **The `exit` line.** The stopper hands it to the progress thread, which writes it before anything else and never overwrites it, and waits for the progress thread to report it written, at most `min(1 s, T_hard - now)`.
 5. `libc::_exit(6)`.
@@ -278,37 +285,37 @@ Each problem keeps the text that states it, then its answer: solved or shown wro
 
 ### 3.1 Cached runs never release, and budgets are bound per load, not per job
 
-`claude1-core-plan.md` M7 (P1 round 1). Under the old step 1 every input was loaded into the shared Environment, which never evicts caller-loaded files, and each kept its decoded runs and parsed entries for the Environment's life, so the in-flight cap was reached and never released. A per-job budget could not reach a bundle opened with another `FileContext`. A dependency read from job X into input Y decoded Y's blocks on a budget nobody admitted.
+P1 round 1. Under the old step 1 every input was loaded into the shared Environment, which never evicts caller-loaded files, and each kept its decoded runs and parsed entries for the Environment's life, so the in-flight cap was reached and never released. A per-job budget could not reach a bundle opened with another `FileContext`. A dependency read from job X into input Y decoded Y's blocks on a budget nobody admitted.
 
 **Solved** (2.2). Each attempt owns its input's only job handle and its private Environment, both on its own budget, and drops both when it returns; the worker reads the budget at zero before the slot is freed. A read into Y from X is a read through Y's copy in X's private Environment, on X's Dependency budget. **Rests on** core 4.1 *one meter per input, charged before every input-sized allocation*, *a second handle on the same bytes is independent*, *`Environment::load_dependency(source)`*. **Tests:** `every_attempt_returns_its_charges` (after every attempt, both sides of its budget read zero and `Arc::strong_count(M_X) == 1`); `an_attempts_end_message_holds_no_core_type` (a source scan of its fields against `Bytes`, `File`, `ObjectRef`, `Parsed`, `HeldCab`, `Charge`).
 
 ### 3.2 The prepaid estimate is too small, and the alone path can hang
 
-`claude2-core-plan.md` M1 (P1 round 2). The estimate had to cover what the core's rules can book, and was still an engine guess against charges made at actual sizes; "Alone" at a cap above the in-flight bound waited forever.
+P1 round 2. The estimate had to cover what the core's rules can book, and was still an engine guess against charges made at actual sizes; "Alone" at a cap above the in-flight bound waited forever.
 
 **Shown wrong as a useful estimate; solved without one.** No estimate is provable below `max_input_memory`: an LZMA block's output ignores its declared size (core 3.6), and up to `max_zero_size_elements` values per object read consume no input (`limits/mod.rs`). Admission reserves each attempt's slot, `M + D_X`, which is the provable bound, and validation requires `M + D <= I`, so the head of the queue always fits once nothing else runs. **Tests:** `the_controller_always_progresses` (a model of the loop with fake attempts of random slots, durations and outcomes: no state has an input queued with nothing running); `a_hostile_lzma_block_fails_only_its_input` (a block declared at 1 byte that decodes to 64 MiB, among 50 small inputs: it fails on its own meter, and every other input's records equal its solo run's).
 
 ### 3.3 No eviction mechanism, resource reads through the shared handle, untagged refusals
 
-`claude2-core-plan.md` M2 (P1 round 2). Registry handles were never released; a job's own `.resS` was served by the shared handle; both pools refused with one error.
+P1 round 2. Registry handles were never released; a job's own `.resS` was served by the shared handle; both pools refused with one error.
 
 **Solved.** The core's LRU evicts within each private Environment, bounded by `D_X`, and its pool-refusal retry evicts the others (core 3.13). A job's own resources are read through its own handle (2.6, step 8). Refusals are tagged `Input` or `Dependency` by the core, and 2.7 records either as final. **Tests:** `a_dependency_cache_smaller_than_the_view_costs_reopens_not_a_scheduling_dependent_record` (the same records at `threads` 1 and 8 with `D` = `M`); `an_input_that_is_also_a_dependency_reads_its_own_resources_through_its_job` (3.8).
 
 ### 3.4 The first admission can wait forever, and the estimate is inflated
 
-`claude3-core-plan.md` M1 and `claude3-core-code.md` M5 (P1 round 3). A bundle whose estimate was above the in-flight bound never fit, and the FIFO controller hung every bundle behind it; the estimate counted one block once per entry.
+P1 round 3, in the plan's and the code's reviews. A bundle whose estimate was above the in-flight bound never fit, and the FIFO controller hung every bundle behind it; the estimate counted one block once per entry.
 
 **Solved: there is no estimate.** Validation's `M + D <= I` replaces the cap, and an input whose needs pass its budget fails on it at once (2.7). **Tests:** `a_spec_whose_slot_exceeds_the_inflight_bound_is_refused`; `an_input_above_its_meter_fails_once_and_the_run_goes_on`.
 
 ### 3.5 What a consumer holds is charged to a job that may never wait
 
-`claude3-core-plan.md` M6 and the W2 part of `claude3-core-code.md` M5 (P1 round 3). A slow sink's backlog was charged to the job; a sink that held output across jobs waited on a job the controller would not admit.
+P1 round 3, in the plan's and the code's reviews. A slow sink's backlog was charged to the job; a sink that held output across jobs waited on a job the controller would not admit.
 
-**Solved: copy-out, with winners decided after the last round** (2.8, 2.9). An attempt hands no core type to anyone: it writes outputs and records to the spool. Winners are a pure function of the committed records, decided once every input has run, and sinks run only in phase 9, so a slow sink lengthens the run and changes no record. **Cost:** the spool holds every candidate until phase 9 (5.7). **Tests:** `winners_are_the_same_whatever_the_completion_order`; `a_stalled_sink_never_stalls_an_attempt` (every request held open: the rounds end, and the run exits 6 by its deadline); `an_atlas_wins_as_one_unit`; `a_failed_input_commits_no_candidate`; `a_key_whose_preferred_input_failed_is_withheld`.
+**Solved: copy-out, with winners decided after the last round** (2.8, 2.9). An attempt hands no core type to anyone: it writes outputs and records to the spool. Winners are a pure function of the committed records, decided once every input has run, and sinks run only in phase 9, so a slow sink lengthens the run and changes no record. **Cost:** the spool holds every candidate until phase 9 (5.7). **Tests:** `winners_are_the_same_whatever_the_completion_order`; `a_stalled_sink_never_stalls_an_attempt` (every request held open: the rounds end, and the run exits 6 by its deadline); `an_atlas_wins_as_one_unit`; `a_failed_input_commits_no_candidate`; `a_key_whose_preferred_input_failed_is_withheld`; `a_unit_with_a_refused_member_key_is_withheld_whole` (a member key that loses to `prefix_conflict`, `archive_conflict` or another unit); `phase_8_stays_within_its_working_set` (a million candidates of one key, and a million keys, under the counting allocator).
 
 ### 3.6 The old step 1 named a load the API did not have
 
-`claude3-core-plan.md` L7 (P1 round 3). The only way to open a source into the Environment gave an `Input` meter that was never evicted.
+P1 round 3. The only way to open a source into the Environment gave an `Input` meter that was never evicted.
 
 **Solved.** Every registration is `load_dependency(Source::Path)` (core 3.13), in a private Environment with no resolver, so no lookup can start a download or a registration. **Test:** `a_deferred_input_matches_a_run_that_declared_its_dependency`.
 
@@ -316,18 +323,18 @@ Each problem keeps the text that states it, then its answer: solved or shown wro
 
 | finding | the core property now (core 4.1), and its use here |
 |---|---|
-| `codex1-core.md` H3 (round 1): a codec allocated before the budget saw it | one meter per input, charged before every input-sized allocation. The engine's buffers follow the same rule (E59) |
-| `codex2-core.md` H2 (round 2): a retained `Parsed` carried no charge | every `Parsed` carries its charge. Values never leave an attempt (copy-out) |
-| `claude3-core-plan.md` M2 (round 3): a cell published a pool refusal for good | transient refusals are never cached. Inside one attempt, a refusal that `with_room`'s retry clears is not kept for the attempt's later reads |
-| `claude3-core-plan.md` M3 (round 3): resolving a resource parsed the shared slot | resource reads through `from`'s own handle. Not needed: the engine reads own entries through the job's handle first (2.6) |
-| `claude3-core-plan.md` M5 (round 3): eviction kept a `Path` dependency's bytes | eviction frees what it can re-read. Every registration is a `Path` |
-| `claude3-core-plan.md` L6 (round 3): a dereference from a dropped bundle was unspecified | `DerefError::ContainerDropped`. The attempt holds the target's top-level `File` while it uses the target (2.6) |
-| `claude3-core-code.md` M4 (round 3): decode work under `Lazy` was unbounded | `max_decode_work` per open input; a reopen restarts the count (`claude4-core-code.md` M2). It bounds every attempt's work (2.12) |
+| P1 round 1: a codec allocated before the budget saw it | one meter per input, charged before every input-sized allocation. The engine's buffers follow the same rule (E59) |
+| P1 round 2: a retained `Parsed` carried no charge | every `Parsed` carries its charge. Values never leave an attempt (copy-out) |
+| P1 round 3: a cell published a pool refusal for good | transient refusals are never cached. Inside one attempt, a refusal that `with_room`'s retry clears is not kept for the attempt's later reads |
+| P1 round 3: resolving a resource parsed the shared slot | resource reads through `from`'s own handle. Not needed: the engine reads own entries through the job's handle first (2.6) |
+| P1 round 3: eviction kept a `Path` dependency's bytes | eviction frees what it can re-read. Every registration is a `Path` |
+| P1 round 3: a dereference from a dropped bundle was unspecified | `DerefError::ContainerDropped`. The attempt holds the target's top-level `File` while it uses the target (2.6) |
+| P1 round 3: decode work under `Lazy` was unbounded | `max_decode_work` per open input; a reopen restarts the count (P1 round 4). It bounds every attempt's work (2.12) |
 | implementation review round 6, the Environment's MEDIUM-3: a load published its keys one at a time | each key's registration is published whole, and a load returns after all its keys (core 3.16 item 6). The attempt registers its whole view before its first read (2.6) |
 
 ### 3.8 The resource redirect and eviction cannot both hold for a job's second handle
 
-`claude4-core-plan.md` M3 (P1 round 4). The core redirects a resource read through the job's handle only for a slot it can match without reading; an evicted `Path` slot loses the redirect, and a `Bytes` slot keeps its bytes for the run's life.
+P1 round 4. The core redirects a resource read through the job's handle only for a slot it can match without reading; an evicted `Path` slot loses the redirect, and a `Bytes` slot keeps its bytes for the run's life.
 
 **Solved by needing neither.** The engine reads a job's own entries through its handle before any registry lookup (2.6), so every registration is `Source::Path` and eviction frees its bytes. **Cost:** an input that its own view's other bundles point back into is also registered in its private Environment and read whole a second time. **Test:** `an_input_that_is_also_a_dependency_reads_its_own_resources_through_its_job`: its own resource reads charge nothing to its Dependency budget.
 
@@ -384,8 +391,9 @@ Every wait in the process:
 | W7 | a transfer or the stopper | the journal's mutex | held for one append, or for the stopper's close; the file call inside is W5 |
 | W8 | the progress thread | stdout | nothing waits on it but the stopper, for at most 1 s (2.11) |
 | W9 | the lifecycle thread | the self-pipe, its timer, stdin | nothing waits on it; it does no I/O but those reads and `_exit` |
-| W10 | the stopper | abort requests and the manifest's writes | each request's timeout is inside `T_hard`; file calls are W5 |
+| W10 | the stopper | abort requests and the manifest's writes | on its own runtime and client (2.11); each request's timeout is inside `T_hard`; file calls are W5 |
 | W11 | the spool's and the output root's locks | `flock` with `LOCK_NB` | never waits: busy exits 69 |
+| W12 | the controller, after a stop | nothing: it parks | the lifecycle thread's or the stopper's `_exit` |
 
 **There is no cycle.** Rank the parties: 0, the kernel, the network and stdout; 1, core locks, the budgets and the journal's mutex; 2, a running attempt; 3, transfers and the stopper; 4, the controller; and the lifecycle thread apart. Every wait-for edge goes to a lower rank, or to rank 0 with a timeout, except W3's, which comes from an idle worker that holds nothing. The lifecycle thread waits on nothing in the process, and its `_exit` at `T_hard` ends every other wait but a stuck file call (A11). The core blocks nowhere (core 4.1, *the core never waits and never starts a thread*). No engine lock is held across a core call or a network request.
 
@@ -436,8 +444,8 @@ Records, candidates, the winners, the zip central directory and the manifest's r
 |---|---|---|
 | `C_thr` | `threads x (2 x stack_needed + 0.11 MiB) + 4 x 2 MiB` | each worker's stack of twice `Limits::stack_needed` (release: 1.75 MiB, `limits/mod.rs`; 2.4), counted whole, plus its detection scratch, inflater state and window and tally (0.11 MiB, core 3.15); the controller, lifecycle, progress and stopper threads at 2 MiB each |
 | `C_env` | `threads x (c_env + max_view_bundles x 512 B)` | each private Environment's fixed parts, uncharged (core 3.15, one per Environment), and per registered bundle the uncharged `Meter::OWN_HEAP`, `Dependency` record and path (`limits/meter.rs`, `env/load.rs`), 512 B at most (A1) |
-| `C_net` | `download_concurrency x c_net` | connection, TLS and a 64 KiB streaming buffer per transfer, `c_net <= 2 MiB` (A1). Downloads stream to the spool through that buffer; upload payloads are in the phase budget |
-| `C_spec` | at most 4 x the spec's size, plus 256 B per bundle, discovered ones included | the parsed spec and the controller's per-bundle state (A1). A spec over 16 MiB is refused |
+| `C_net` | `2 x download_concurrency x c_net` | connection, TLS and a 64 KiB streaming buffer per transfer, `c_net <= 2 MiB` (A1), for the controller's client and for the stopper's (2.11). Downloads stream to the spool through that buffer; upload payloads are in the phase budget |
+| `C_spec` | 4 x the spec's size + 256 B x the declared bundles + 1.25 KiB x `max_discovered_bundles` | the parsed spec and the controller's per-bundle state (A1); a discovered bundle's state holds its name, at most 1,024 bytes (2.3). A spec over 16 MiB is refused, and the discovered bundles are capped, so every factor is fixed by the spec |
 | `C_base` | measured | the binary, the runtime, the progress thread's slots, the controller's queues |
 
 There is no provider term: version 1 configures no typetree provider (A8), so the provider cache (`ProviderChain::DEFAULT_CACHE_BYTES`, 64 MiB, one per `ProviderChain` shared by every cloned context; CR5) holds nothing.
@@ -474,13 +482,13 @@ Each rule is a recommendation the manifest reports against, not a validation.
 | the spool fits | `spool.size_bytes >= downloads + all candidates + records + threads x the largest attempt's outputs + the sort's runs + the largest archive's central directory` |
 
 **Example for the corpus:** `threads` 8, `download_concurrency` 8, `M` = `D` = 256 MiB, `I` = 4 GiB.
-- The constants come to about 82 MiB: 37 MiB of thread stacks, 5 MiB of private Environments at `max_view_bundles` 1,024, 16 MiB for 8 transfers, 4.3 MiB of spec and controller state, and about 20 MiB of base.
+- The constants come to about 100 MiB: 37 MiB of thread stacks, 5 MiB of private Environments at `max_view_bundles` 1,024, 32 MiB for 8 transfers on each of two clients, 5.6 MiB of spec and controller state at `max_discovered_bundles` 1,024, and about 20 MiB of base.
 - So the bound is about 4.1 GiB in the charge unit, and about 6.1 GiB under glibc's worst-case slack.
 - The corpus's largest input peaks at 212 MB before the decode fix, inside `M`. An input whose view is itself alone reserves 256 MiB, so the 8 slots reserve between 2 and 4 GiB.
 
 ### 5.7 Disk
 
-`spool.size_bytes` bounds the sum of the downloads, every committed candidate and its records until phase 9, the partial outputs of the attempts in flight, phase 8's sorted runs, archives' central directories while they stream, and the manifest's row files. A free-space check against `spool.reserve_bytes` runs before each claim. A refused claim stops the run (2.7).
+`spool.size_bytes` bounds the sum of the downloads, every committed candidate and its records until phase 9, the partial outputs of the attempts in flight, the deferred inputs' name files, phase 8's sorted runs, archives' central directories while they stream, and the manifest's row files. A free-space check against `spool.reserve_bytes` runs before each claim. A refused claim stops the run (2.7).
 
 ### 5.8 How it is checked
 
@@ -539,6 +547,7 @@ Each request goes through the core's integration rule. None changes a core 4.1 p
 - Pattern-based archive member maps, and a spec field for the manifest's location (`BATCH_SPEC.md` 1.7 and 7.1).
 - Pinning the PNG writer's zlib to the oracle's version, and `PARITY.md`'s IDAT chunk size, `max(65536, 4 x width)` (`extract.md` E19).
 - An optional prune of keys under the output root that the manifest does not list.
+- Check the NGUI atlas's material field name against NGUI's serialized layout (`material`, or `mMat` in some versions) before the cutter is written (`BATCH_SPEC.md` section 5).
 
 ## 9. Before it is built
 
