@@ -158,6 +158,13 @@ pub(crate) const WATCH_SHARE: u64 = HASH_TABLE_SHARES
 #[derive(Debug, Default)]
 pub(crate) struct Table {
     map: HashMap<u64, Vec<Weak<Flag>>>,
+    /// The entries `map`'s buckets hold room for: its capacity when it last
+    /// grew or shrank. `HashMap::capacity` is the entries it takes before
+    /// it grows again, which a removal that leaves a tombstone lowers while
+    /// the bucket stays allocated (verify pass 17: a map that kept 16,384
+    /// buckets after a walk ended read a capacity under its bound, and was
+    /// never shrunk).
+    room: usize,
 }
 
 impl Table {
@@ -183,6 +190,10 @@ impl Table {
         for &h in hashes {
             self.map.entry(h).or_default().push(Arc::downgrade(flag));
         }
+        // Only an insert grows the map, and a growth leaves no tombstone, so
+        // the capacity after one is the room it grew to; a removal since the
+        // last can only have lowered it.
+        self.room = self.room.max(self.map.capacity());
     }
 
     /// A walk's end: its entries (those whose flag's log is `mine`) leave
@@ -202,19 +213,22 @@ impl Table {
             }
         }
         // The map keeps no room the running walks' charges do not pay for
-        // (a key's share covers a growing table's).
+        // (a key's share covers a growing table's), told by the room its
+        // buckets hold (`room`), not by its capacity. Past this bound a
+        // shrink always moves it to fewer buckets, with no tombstone.
         let len = self.map.len();
-        if self.map.capacity() > 3 * len + 8 {
+        if self.room > 3 * len + 8 {
             self.map.shrink_to(len);
+            self.room = self.map.capacity();
         }
     }
 
-    /// The table's entries, the room its map holds, and each key list's
-    /// length and room, for a test.
+    /// The table's entries, the room its map's buckets hold, and each key
+    /// list's length and room, for a test.
     #[cfg(test)]
     pub(crate) fn room(&self) -> (usize, usize, Vec<(usize, usize)>) {
         let lists = self.map.values().map(|l| (l.len(), l.capacity())).collect();
-        (self.map.len(), self.map.capacity(), lists)
+        (self.map.len(), self.room, lists)
     }
 }
 

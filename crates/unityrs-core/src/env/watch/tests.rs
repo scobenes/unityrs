@@ -1,8 +1,9 @@
 //! The walks' watches keep no memory past their charge (invariant W2, plan
 //! section 3.16): a walk's charge is released only after its entries left
 //! both tables, every key list it grew and each table's map shrank back to
-//! what the running walks pay for (review rounds 5 and 16), and every block
-//! the walk itself holds is freed (review round 16), whatever another
+//! what the running walks pay for (review rounds 5 and 16; a map's buckets
+//! counted in the heap, fix pass 17's verifier), and every block the walk
+//! itself holds is freed (review round 16), whatever another
 //! thread's change does meanwhile (review round 15). A walk's log lists each
 //! flag a change set once, whichever thread made the change (review round
 //! 14), however its push meets another push or a take (review round 15).
@@ -16,15 +17,15 @@
 #[cfg(test)]
 use std::sync::mpsc::{Receiver, Sender, channel};
 #[cfg(test)]
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use super::{
-    FILES, FIRED, FLAG, Point, REGISTRY, Table, Under, WATCH_SHARE, Walk, Watches, set_hook,
+    FILES, FIRED, FLAG, Flag, Point, REGISTRY, Table, Under, WATCH_SHARE, Walk, Watches, set_hook,
 };
 use crate::budget::{BudgetExceeded, MemoryBudget, Permit, PermitHome, Reservation};
 use crate::env::heap::{self, Noted};
 use crate::env::held;
-use crate::limits::{Meter, heap_cost};
+use crate::limits::{HASH_TABLE_SHARES, Meter, heap_cost};
 #[cfg(test)]
 use unityrs_testkit::guard;
 
@@ -276,6 +277,118 @@ fn a_finished_walk_gives_back_the_maps_room() {
     drop(kept);
     drop(b);
     assert_eq!(rig.room(), (0, Vec::new()));
+}
+
+/// The bytes `t`'s map holds in its own block, its buckets (not its key
+/// lists'), by the heap the test's thread frees when it drops; `t` is left
+/// with an empty map.
+#[cfg(test)]
+fn map_bytes(t: &mut Table) -> usize {
+    let lists: usize = t
+        .map
+        .values()
+        .map(|l| l.capacity() * size_of::<Weak<Flag>>())
+        .sum();
+    let before = heap::live();
+    drop(std::mem::take(&mut t.map));
+    let freed = before.wrapping_sub(heap::live());
+    freed
+        .checked_sub(lists)
+        .unwrap_or_else(|| panic!("the map freed {freed} bytes, less than its lists' {lists}"))
+}
+
+/// The entries `buckets` buckets of a map hold room for: all but one below
+/// eight, 7/8 of them from eight up (hashbrown's `bucket_mask_to_capacity`,
+/// behind `std`'s `HashMap`, the load `HASH_TABLE_SHARES`'s docs rest on).
+fn room_of(buckets: usize) -> usize {
+    if buckets < 8 {
+        buckets.saturating_sub(1)
+    } else {
+        buckets / 8 * 7
+    }
+}
+
+/// Walk `b` keeps `kept` keys under each lock while walk `a` watches
+/// `grown` more under each, has the first `changed` of them changed (a
+/// change takes its key out of the map, which may leave a tombstone),
+/// watches one more and ends. Each table's map then holds, counted in the
+/// heap, no more than the [`HASH_TABLE_SHARES`] buckets a key `b` pays
+/// for and the fixed part (16 control bytes, one SIMD group), the room it
+/// reports ([`Table::room`]) is its buckets' ([`room_of`]), and `a`'s
+/// charge is released after the last block `a` freed (W2). Fix pass 17's
+/// verifier: `Table::end` told the room by `HashMap::capacity`, which a
+/// removal that leaves a tombstone lowers, so each map kept 16,384
+/// buckets, 540,688 bytes, where `b`'s 2,500 keys paid for 10,000, and the
+/// test before this one leaves `b` one key, which a bound ten times
+/// `Table::end`'s passed. The scenes:
+/// - `b` 2,500 keys, `a` 11,500: the verifier's.
+/// - `b` 4,000 keys, `a` 10,000: the room of the 16,384 buckets `a` grew
+///   the map to, 14,336 entries, lies between three entries a key and four
+///   (`Table::end`'s bound, and one a third looser); every key of `a`'s is
+///   changed before its last watch, whose capacity is then below the room.
+/// - `b` 6,000 keys, `a` 8,000: no shrink, and the map, with its
+///   tombstones, reports its buckets' room.
+#[test]
+fn a_finished_walks_map_holds_no_more_buckets_than_the_running_walks_pay_for() {
+    heap::count();
+    let bucket = size_of::<u64>() + size_of::<Vec<Weak<Flag>>>() + 1;
+    let paid = usize::try_from(HASH_TABLE_SHARES).unwrap();
+    let keys = |walk: &Walk<'_>, from: u32, n: u32| -> Vec<(usize, u64)> {
+        (from..from + n)
+            .flat_map(|i| {
+                let h = walk.hash(&i.to_le_bytes());
+                [(REGISTRY, h), (FILES, h)]
+            })
+            .collect()
+    };
+    let scenes = [
+        (2_500_u32, 11_500, 0_usize),
+        (4_000, 10_000, 10_000),
+        (6_000, 8_000, 0),
+    ];
+    for (kept, grown, changed) in scenes {
+        let what = format!("b keeps {kept} keys, a grows {grown} and has {changed} changed");
+        let rig = Rig::default();
+        let unlimited = Meter::unlimited();
+        let mut b = rig.start(&unlimited);
+        let mine = keys(&b, 1_000_000, kept);
+        let kept_flag = b.watch(&mine).unwrap();
+        let (meter, noted) = Noted::meter();
+        let mut a = rig.start(&meter);
+        let grew = keys(&a, 0, grown);
+        drop(a.watch(&grew).unwrap());
+        for &(at, h) in grew.iter().take(2 * changed) {
+            rig.publish(at, h);
+        }
+        let one = keys(&a, 2_000_000, 1);
+        drop(a.watch(&one).unwrap());
+        let from = noted.releases();
+        drop(a);
+        heap::released_last(&noted, from, heap::live(), &what);
+        for lock in &rig.locks {
+            let mut t = held::write(&lock.0);
+            let (len, room, _) = t.room();
+            assert_eq!(
+                len,
+                usize::try_from(kept).unwrap(),
+                "{what}: only b's keys are left"
+            );
+            let bytes = map_bytes(&mut t);
+            let buckets = bytes / bucket;
+            assert!(
+                bytes <= paid * len * bucket + 16,
+                "{what}: the map holds {buckets} buckets, {bytes} bytes, where b pays for {}",
+                paid * len
+            );
+            assert_eq!(
+                room,
+                room_of(buckets),
+                "{what}: the room it reports is not its {buckets} buckets'"
+            );
+        }
+        drop(kept_flag);
+        drop(b);
+    }
 }
 
 /// A walk's charge is released after every block the walk holds is freed:
