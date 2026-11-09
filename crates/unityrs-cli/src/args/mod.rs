@@ -233,7 +233,7 @@ pub fn py_repr(bytes: &[u8]) -> String {
 
 /// Python's `int(s)` for a command-line number, saturated to `i64`: every
 /// count it feeds (`--sample`, `--limit`, `--jobs`) means the same past any
-/// list's length. The string is read as CPython 3.11's `int` reads it
+/// list's length. The string is read as Python 3.11's `int` reads it
 /// (`_PyUnicode_TransformDecimalAndSpaceToASCII`, then `PyLong_FromString`;
 /// `PARITY.md`'s `ShaderProgram` row records the same rules for UnityPy's
 /// side). A character past ASCII is a space when it is whitespace and its
