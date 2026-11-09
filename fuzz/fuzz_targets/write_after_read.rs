@@ -57,23 +57,21 @@ fn write_out(
 }
 
 fuzz_target!(|data: &[u8]| {
-    let ctx = unityrs_fuzz::context();
-    let meter = unityrs_fuzz::meter(&ctx);
-    let Some(case) = Case::new(data, &meter) else {
+    let Some(case) = Case::new(data) else {
         return;
     };
     unityrs_fuzz::with_stack(|| {
-        let Ok(first) = read(&case, &case.data, &meter) else {
+        let Ok(first) = read(&case, &case.data, &case.meter) else {
             return;
         };
-        let Some(written) = write_out(&case, &first, &meter) else {
+        let Some(written) = write_out(&case, &first, &case.meter) else {
             return;
         };
         if !case.names_unique() {
             return;
         }
         // A fresh meter: the first read and write have used the open's work.
-        let again = unityrs_fuzz::meter(&ctx);
+        let again = case.new_meter();
         let second = match read(&case, &written, &again) {
             Ok(p) => p,
             // The same bounds may stop a read of what was written (its

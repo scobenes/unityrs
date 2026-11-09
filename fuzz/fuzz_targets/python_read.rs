@@ -11,9 +11,7 @@ use unityrs_core::walk::{ReadCtx, python};
 use unityrs_testkit::fuzz::TreeCase;
 
 fuzz_target!(|data: &[u8]| {
-    let ctx = unityrs_fuzz::context();
-    let meter = unityrs_fuzz::meter(&ctx);
-    let Some(case) = unityrs_fuzz::Case::new(data, &meter) else {
+    let Some(case) = unityrs_fuzz::Case::new(data) else {
         return;
     };
     let kind = if case.case.has(TreeCase::STREAM) {
@@ -26,7 +24,7 @@ fuzz_target!(|data: &[u8]| {
             endian: case.endian(),
             ref_types: case.ref_types(),
             options: &case.options,
-            meter: &meter,
+            meter: &case.meter,
         };
         let start = match kind {
             ReaderKind::Memory => i128::from(case.case.start),

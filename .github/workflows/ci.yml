@@ -104,6 +104,11 @@ jobs:
           export PATH="$HOME/.cargo-fuzz/bin:$PATH"
           cargo +"$NIGHTLY" fetch --locked
           cargo +"$NIGHTLY" fuzz build -a
+      # The harness's own tests (fuzz/src/tests.rs): each value case reaches
+      # the memory bound it picks, and the lz4 check's limits.
+      - name: Test the harness
+        working-directory: fuzz
+        run: cargo +"$NIGHTLY" test --locked --lib
       - name: Run each target for 30 seconds
         working-directory: fuzz
         run: |

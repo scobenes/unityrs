@@ -96,6 +96,12 @@ impl TreeCase {
     /// `write_after_read` reads with the pure-Python reader, not
     /// UnityPyBoost's.
     pub const PYTHON: u8 = 32;
+    /// The run bounds memory at the fuzz crate's small bound
+    /// (`SMALL_MEMORY` in `fuzz/src/lib.rs`), which a read of many small
+    /// values reaches before the work bound, not at the large one, which
+    /// no value read reaches. Without it the code that grows a charged
+    /// buffer at the memory bound never runs in the value targets.
+    pub const SMALL_MEMORY: u8 = 64;
 
     /// Whether `flags` holds `bit`.
     #[must_use]

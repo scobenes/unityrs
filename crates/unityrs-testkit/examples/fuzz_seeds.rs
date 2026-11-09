@@ -3,9 +3,11 @@
 //! every output `unityrs_testkit::mutate::builder_outputs` lists (the format
 //! matrix, every format, codec and flag set, and every file of every
 //! Environment scene), the files each bundle holds, every object's tree and
-//! bytes, every tree stored in each format both ways round, the deep values
-//! of `unityrs_testkit::depth`, and LZ4 blocks of every output. Nothing comes
-//! from a corpus. One folder per target:
+//! bytes (at each of the value targets' memory bounds, the case's
+//! `TreeCase::SMALL_MEMORY` clear and set), every tree stored in each format
+//! both ways round, the deep values of `unityrs_testkit::depth`, and LZ4
+//! blocks of every output. Nothing comes from a corpus. One folder per
+//! target:
 //!
 //! ```text
 //! cargo run -p unityrs-testkit --example fuzz_seeds -- DIR
@@ -82,15 +84,21 @@ impl Seeds {
         std::fs::write(self.dir.join(target).join(format!("{n:05}-{name}")), bytes)
     }
 
-    /// One object's tree and bytes, for the three value targets.
+    /// One object's tree and bytes, for the three value targets, at each
+    /// memory bound (`TreeCase::SMALL_MEMORY` clear and set).
     fn value(&mut self, name: &str, case: &TreeCase) -> std::io::Result<()> {
-        let bytes = case.encode();
-        self.add("boost_read", name, &bytes)?;
-        self.add("python_read", name, &bytes)?;
-        self.add("write_after_read", name, &bytes)?;
-        let mut python = case.clone();
-        python.flags |= TreeCase::PYTHON;
-        self.add("write_after_read", &format!("{name}-py"), &python.encode())
+        for (tag, memory) in [("", 0), ("-small", TreeCase::SMALL_MEMORY)] {
+            let mut case = case.clone();
+            case.flags |= memory;
+            let name = format!("{name}{tag}");
+            let bytes = case.encode();
+            self.add("boost_read", &name, &bytes)?;
+            self.add("python_read", &name, &bytes)?;
+            self.add("write_after_read", &name, &bytes)?;
+            case.flags |= TreeCase::PYTHON;
+            self.add("write_after_read", &format!("{name}-py"), &case.encode())?;
+        }
+        Ok(())
     }
 
     /// A tree, kept once, for the `typetree` target.
@@ -282,7 +290,9 @@ fn depth_cases() -> Vec<(String, TreeCase)> {
     out
 }
 
-fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
+/// Every target's seeds, in a folder of `dir` each, and how many. Crate-wide:
+/// `tests/fuzz_seeds.rs` includes this file and checks what it writes.
+pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     for t in TARGETS {
         std::fs::create_dir_all(dir.join(t))?;
     }

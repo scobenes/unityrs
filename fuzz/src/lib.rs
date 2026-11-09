@@ -5,6 +5,9 @@
 //! Every target uses the core's public API, as a caller would: no target
 //! needs an item the crate does not export.
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use unityrs_core::budget::Reservation;
@@ -17,31 +20,40 @@ use unityrs_core::{FileContext, RawStr};
 use unityrs_testkit::fuzz::{Row, TreeCase};
 
 /// The bound of an input's memory (and of its size and of one block's
-/// output): 128 MiB. It is large enough that every seed, and a real file of
-/// that size, is read through to its deep paths rather than stopped at the
-/// bound, and far below libFuzzer's limits (`-malloc_limit_mb=2048`, the
-/// plan's 2 GiB, and `-rss_limit_mb`), so an input that reaches it ends with
-/// the core's named limit error, and an allocation the meter did not see is
-/// what reaches libFuzzer's.
+/// output): 128 MiB. Every seed is read through to its deep paths rather
+/// than stopped at it, and it is far below libFuzzer's limits
+/// (`-malloc_limit_mb=2048`, the plan's 2 GiB, and `-rss_limit_mb`), so an
+/// input that reaches it ends with the core's named limit error, and an
+/// allocation the meter did not see is what reaches libFuzzer's.
 ///
-/// The first runs held it at 1 MiB: a charged buffer whose doubling the
-/// meter refused grew by exactly what each push needed, so near the bound
-/// every push reallocated, and AddressSanitizer's `realloc` copies the whole
-/// buffer each time (one input took over 120 s at 128 MiB under it, 0.35 s
-/// without). Fix pass 17 retries a refused growth with half the room, so
-/// `MeteredVec` and `DecodeBuf` reallocate a few dozen times at most: those
-/// inputs now end in 0.6 to 1.4 s, at the work bound or at the end of their
-/// data.
+/// A file target can reach it (`serialized` does, by its stream reader's
+/// rules). A value read cannot: within the work bound ([`WORK`]) it holds
+/// under 20 MB, about twice the work it has done. So a value case picks its
+/// memory bound ([`Case::new`]), this one or [`SMALL_MEMORY`].
 pub const MEMORY: u64 = 128 << 20;
+
+/// The memory bound of a value case with `TreeCase::SMALL_MEMORY`: 8 MiB.
+/// A read of many small values reaches it at 4 to 6 MiB of work, so the
+/// code that grows a charged buffer at the bound runs: a doubling the meter
+/// refuses, retried with half the extra room until it fits (fix pass 17).
+///
+/// The first runs found the defect fix pass 17 fixed there: a refused
+/// doubling asked for exactly what one push needed, so near the bound
+/// every push reallocated, and AddressSanitizer's `realloc` copies the
+/// whole buffer each time. It showed at memory bounds of 8 and 128 MiB
+/// (with 64 MiB of work), never at 1 MiB, where the copies stay short. Put
+/// back into the core, it times out two of the six inputs those runs kept
+/// (one of `python_read`'s, one of `write_after_read`'s) at this bound, and
+/// none at [`MEMORY`].
+pub const SMALL_MEMORY: u64 = 8 << 20;
 
 /// The bound of an input's work (every byte decoded, every value read or
 /// written, every byte detection inflates): 8 MiB, so no input runs near the
 /// 10 s timeout by doing work the limits allow. A target runs a read at
-/// about 6 MiB of work a second at its slowest, under AddressSanitizer,
-/// libFuzzer's coverage and debug assertions: a list of small values
-/// reading to the bound took 4 to 9 s at 64 MiB and 1.2 to 1.4 s at 8 MiB.
-/// A CI runner may be slower. 8 MiB is eight times the 1 MiB that
-/// bounded every input of the first runs (the memory bound then).
+/// about 6 to 7 MiB of work a second at its slowest, under
+/// AddressSanitizer, libFuzzer's coverage and debug assertions: a list of
+/// small values reading to the bound took 4 to 9 s at 64 MiB and 0.6 to
+/// 1.4 s at 8 MiB. A CI runner may be slower.
 pub const WORK: u64 = 8 << 20;
 
 /// The limits of every run: the defaults, with the memory, size and output
@@ -60,8 +72,13 @@ pub fn limits() -> Limits {
 /// UnityPy's context, under [`limits`].
 #[must_use]
 pub fn context() -> Arc<FileContext> {
+    context_with(limits())
+}
+
+/// UnityPy's context, under `limits`.
+fn context_with(limits: Limits) -> Arc<FileContext> {
     let mut c = FileContext::unitypy();
-    c.limits = limits();
+    c.limits = limits;
     Arc::new(c)
 }
 
@@ -119,18 +136,29 @@ pub struct Case {
     pub data: unityrs_core::Bytes,
     /// The case, as decoded.
     pub case: TreeCase,
-    /// The reader's options.
+    /// The reader's options, whose limits are the case's.
     pub options: ReadOptions,
+    /// The input's meter, under the case's limits: the tree and the ref
+    /// types are charged to it, and the read is.
+    pub meter: Arc<Meter>,
+    ctx: Arc<FileContext>,
 }
 
 impl Case {
-    /// The case `input` holds, its tree compiled on `meter`; `None` when the
-    /// tree does not compile (the `typetree` target's concern).
+    /// The case `input` holds, under [`limits`] with the memory bound at
+    /// [`SMALL_MEMORY`] when it has `TreeCase::SMALL_MEMORY`, its tree
+    /// compiled on a new meter of those limits; `None` when the tree does not
+    /// compile (the `typetree` target's concern).
     #[must_use]
-    pub fn new(input: &[u8], meter: &Arc<Meter>) -> Option<Self> {
+    pub fn new(input: &[u8]) -> Option<Self> {
         let case = TreeCase::decode(input);
-        let limits = limits();
-        let tree = Tree::compile(node_list(&case.rows, meter)?, &limits).ok()?;
+        let mut limits = limits();
+        if case.has(TreeCase::SMALL_MEMORY) {
+            limits.max_input_memory = SMALL_MEMORY;
+        }
+        let ctx = context_with(limits);
+        let meter = meter(&ctx);
+        let tree = Tree::compile(node_list(&case.rows, &meter)?, &limits).ok()?;
         let refs = case
             .refs
             .iter()
@@ -140,7 +168,7 @@ impl Case {
                     RawStr::from(r.class.clone()),
                     RawStr::from(r.namespace.clone()),
                     RawStr::from(r.assembly.clone()),
-                    r.rows.as_ref().and_then(|rows| node_list(rows, meter)),
+                    r.rows.as_ref().and_then(|rows| node_list(rows, &meter)),
                 )
             })
             .collect();
@@ -158,7 +186,16 @@ impl Case {
             data: unityrs_core::Bytes::from(case.data.clone()),
             case,
             options,
+            meter,
+            ctx,
         })
+    }
+
+    /// A new meter under the case's limits, for a read that must not use
+    /// what an earlier one used.
+    #[must_use]
+    pub fn new_meter(&self) -> Arc<Meter> {
+        meter(&self.ctx)
     }
 
     /// The data's byte order.
