@@ -17,27 +17,32 @@ use unityrs_core::{FileContext, RawStr};
 use unityrs_testkit::fuzz::{Row, TreeCase};
 
 /// The bound of an input's memory (and of its size and of one block's
-/// output): far below libFuzzer's allocation limit (2 GiB in CI), so an
-/// input that reaches it ends with the core's named limit error, and an
-/// allocation the meter did not see is what reaches libFuzzer's.
+/// output): 128 MiB. It is large enough that every seed, and a real file of
+/// that size, is read through to its deep paths rather than stopped at the
+/// bound, and far below libFuzzer's limits (`-malloc_limit_mb=2048`, the
+/// plan's 2 GiB, and `-rss_limit_mb`), so an input that reaches it ends with
+/// the core's named limit error, and an allocation the meter did not see is
+/// what reaches libFuzzer's.
 ///
-/// It is low for AddressSanitizer's sake. A charged buffer whose doubling
-/// the meter refuses grows by exactly what each push needs, so near the
-/// bound every push reallocates; glibc grows a mapped block in place, but
-/// ASan's `realloc` copies the whole buffer each time, so such an input can
-/// take time quadratic in the bound. Without ASan, one input (13 rows, 49
-/// value bytes) took 15 ms at 8 MiB; under it, 32 s (60 ms at 4 MiB, 30 ms
-/// at 1 MiB, where no input was seen near the 10 s timeout). The growth is
-/// a known defect with its own fix (a refused growth retried with half the
-/// room, down to exactly what is needed): raise this once that fix is in
-/// `MeteredVec` and `DecodeBuf` and the targets run clean at the higher
-/// bound.
-pub const MEMORY: u64 = 1 << 20;
+/// The first runs held it at 1 MiB: a charged buffer whose doubling the
+/// meter refused grew by exactly what each push needed, so near the bound
+/// every push reallocated, and AddressSanitizer's `realloc` copies the whole
+/// buffer each time (one input took over 120 s at 128 MiB under it, 0.35 s
+/// without). Fix pass 17 retries a refused growth with half the room, so
+/// `MeteredVec` and `DecodeBuf` reallocate a few dozen times at most: those
+/// inputs now end in 0.6 to 1.4 s, at the work bound or at the end of their
+/// data.
+pub const MEMORY: u64 = 128 << 20;
 
 /// The bound of an input's work (every byte decoded, every value read or
-/// written, every byte detection inflates), so no input runs near the
-/// 10 s timeout by doing work the limits allow.
-pub const WORK: u64 = 64 << 20;
+/// written, every byte detection inflates): 8 MiB, so no input runs near the
+/// 10 s timeout by doing work the limits allow. A target runs a read at
+/// about 6 MiB of work a second at its slowest, under AddressSanitizer,
+/// libFuzzer's coverage and debug assertions: a list of small values
+/// reading to the bound took 4 to 9 s at 64 MiB and 1.2 to 1.4 s at 8 MiB.
+/// A CI runner may be slower. 8 MiB is eight times the 1 MiB that
+/// bounded every input of the first runs (the memory bound then).
+pub const WORK: u64 = 8 << 20;
 
 /// The limits of every run: the defaults, with the memory, size and output
 /// bounds at [`MEMORY`] and the work bounds at [`WORK`].
