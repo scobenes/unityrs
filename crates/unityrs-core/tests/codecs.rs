@@ -109,6 +109,43 @@ fn lz4_takes_the_declared_size_as_a_maximum() {
     ));
 }
 
+/// python-lz4 refuses an input above `i32::MAX` bytes, after a declared
+/// size above it and before it reserves or reads anything; one byte
+/// shorter, liblz4 reads the block (`test_rows_containers.py`
+/// `lz4_refuses_an_input_of_2_gib_or_more` records each message, and their
+/// order, from the oracle). The input is `calloc`'s zero pages, never
+/// touched: a refusal reads no byte, and the shorter input is read only
+/// near its start, up to liblz4's error (code 71).
+#[test]
+fn lz4_refuses_an_input_of_2_gib_or_more() {
+    let input = Bytes::from(vec![0_u8; 1 << 31]);
+    let decode = |input: &Bytes, declared: u32| {
+        let meter = Meter::unlimited();
+        let mut out = DecodeBuf::new(&meter, 0, u64::MAX, LimitKind::BlockOutput).unwrap();
+        match decode_block(Codec::Lz4, &Lz4, input, declared, &mut out, u64::MAX) {
+            Err(Error::Decompress { detail, .. }) => detail.to_string(),
+            got => panic!(
+                "{} bytes at {declared}: {:?}",
+                input.len(),
+                got.map(|o| o.map(|b| b.len()))
+            ),
+        }
+    };
+    let too_large = "OverflowError: Input too large for LZ4 API";
+    assert_eq!(decode(&input, 100), too_large);
+    assert_eq!(decode(&input, 0), too_large);
+    assert_eq!(decode(&input, 0x7FFF_FFFF), too_large);
+    assert_eq!(
+        decode(&input, 0x8000_0000),
+        "OverflowError: signed integer is greater than maximum"
+    );
+    assert_eq!(
+        decode(&input.slice(..(1 << 31) - 1), 100),
+        "LZ4BlockError: Decompression failed: corrupt input or insufficient space in \
+         destination buffer. Error code: 71"
+    );
+}
+
 #[test]
 fn lz4_allocates_the_output_it_decodes_not_the_declared_size() {
     // A two-byte block declaring 2 GiB - 1 charges its one byte.
