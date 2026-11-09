@@ -385,14 +385,36 @@ fn numbers_parse_as_python_int() {
     }
 }
 
+/// Each outcome is Python 3.11's `_negative_number_matcher`'s, whose `\d`
+/// takes the decimal digits of every script.
 #[test]
 fn negative_numbers_are_values() {
-    for s in ["-1", "-12", "-.5", "-1.5", "-1\n"] {
+    for s in [
+        "-1",
+        "-12",
+        "-.5",
+        "-1.5",
+        "-1\n",
+        "-\u{663}",
+        "-\u{663}.\u{665}",
+        "-.\u{665}",
+        "-\u{ff11}",
+        "-\u{663}\n",
+    ] {
         assert!(negative_number(s.as_bytes()), "{s:?}");
     }
-    for s in ["-", "-.", "-1.", "--1", "-a", "1", "-1e3", "-1\n\n"] {
+    for s in [
+        "-", "-.", "-1.", "--1", "-a", "1", "-1e3", "-1\n\n", "-\u{b2}",
+    ] {
         assert!(!negative_number(s.as_bytes()), "{s:?}");
     }
+    assert!(!negative_number(b"-1\xff"));
+    // So `--limit -٣` is the value -3, as the oracle takes it (review
+    // round 16's sweep: it was "expected one argument").
+    assert_eq!(
+        dump(&["x", "-o", "y", "--limit", "-\u{663}"]).limit,
+        Some(-3)
+    );
 }
 
 #[test]

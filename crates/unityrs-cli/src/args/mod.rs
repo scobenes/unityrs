@@ -288,14 +288,17 @@ pub fn py_int(bytes: &[u8]) -> Option<i64> {
 }
 
 /// argparse's `_negative_number_matcher`, `^-\d+$|^-\d*\.\d+$` (`$` also
-/// before a final newline; ASCII digits): with no option of that shape,
-/// such an argument is a value, never an option.
+/// before a final newline; `\d` any decimal (`Nd`) digit, as `re` reads a
+/// `str` pattern, [`nd_digit`]; a byte that is not UTF-8 is a lone
+/// surrogate to Python, never one): with no option of that shape, such an
+/// argument is a value, never an option.
 fn negative_number(arg: &[u8]) -> bool {
     let Some(rest) = arg.strip_prefix(b"-") else {
         return false;
     };
     let rest = rest.strip_suffix(b"\n").unwrap_or(rest);
-    let digits = |s: &[u8]| s.iter().all(u8::is_ascii_digit);
+    let digits =
+        |s: &[u8]| std::str::from_utf8(s).is_ok_and(|s| s.chars().all(|c| nd_digit(c).is_some()));
     match split_once(rest, b'.') {
         None => !rest.is_empty() && digits(rest),
         Some((whole, fraction)) => digits(whole) && !fraction.is_empty() && digits(fraction),
