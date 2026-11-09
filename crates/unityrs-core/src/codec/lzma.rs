@@ -99,9 +99,11 @@ impl BlockCodec for Lzma {
     /// when the attempt ends, so the meter sees them beside the output (plan
     /// section 3.15); a refusal is the meter's, like a refused growth. The
     /// output's room is `out`'s: it grows geometrically, never past the
-    /// block's cap, and a retry keeps the room the failed attempt grew, so an
-    /// attempt holds its room (and, while the room grows, the block it
-    /// replaces) beside its dictionary. A caller that must bound that sum by
+    /// block's cap, nor past its declared size while the block is short of it
+    /// (its windows stop there, [`DecodeBuf::begin_block`]), and a retry
+    /// keeps the room the failed attempt grew, so an attempt holds its room
+    /// (and, while the room grows, the block it replaces) beside its
+    /// dictionary. A caller that must bound that sum by
     /// the output's cap alone allocates the room whole first, as unityrs-tpk
     /// does (`TpkProvider::MAX_DECODER_MEMORY`; review round 13).
     fn decode(
@@ -228,9 +230,10 @@ fn lzma_attempt(
     let seg_start = out.len();
     // The first window is the declared size, which a well-formed block
     // fills exactly; a probe then finds the end without growing again.
-    let mut want = match usize::try_from(declared) {
-        Ok(0) | Err(_) => LZMA_WINDOW_MAX,
-        Ok(n) => n.min(LZMA_WINDOW_MAX),
+    let declared_len = usize::try_from(declared).unwrap_or(usize::MAX);
+    let mut want = match declared_len {
+        0 => LZMA_WINDOW_MAX,
+        n => n.min(LZMA_WINDOW_MAX),
     };
     let input_done =
         |stream: &Stream| usize::try_from(stream.total_in()).unwrap_or(usize::MAX) >= data.len();
@@ -269,14 +272,20 @@ fn lzma_attempt(
             full = false;
             continue;
         }
-        // A window the meter or the block's cap refuses is retried smaller,
-        // down to one byte; a refused byte goes to the probe, which fails
-        // only if the stream has another byte to give.
+        // A window never passes the declared size while the block is short
+        // of it, so the room (which `DecodeBuf` grows to the declared end and
+        // no further) ends where a well-formed block does (perf stage 2: the
+        // last 1 MiB window passed it and doubled the room). Past it, windows
+        // are as before. A window the meter or the block's cap refuses is
+        // retried smaller, down to one byte; a refused byte goes to the
+        // probe, which fails only if the stream has another byte to give.
+        let left = declared_len.saturating_sub(produced);
+        let ask = if left > 0 { want.min(left) } else { want };
         let base = out.len();
-        let window = match out.grow_zeroed(want) {
+        let window = match out.grow_zeroed(ask) {
             Ok(w) => w,
-            Err(e) if want > 1 => {
-                want = refused_window(&e, want, produced);
+            Err(e) if ask > 1 => {
+                want = refused_window(&e, ask, produced);
                 continue;
             }
             Err(_) => {

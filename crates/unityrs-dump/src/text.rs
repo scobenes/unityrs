@@ -71,23 +71,36 @@ fn bytes(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }
 
-/// `buf` with no spare room: shrunk by the allocator, or moved to a new
+/// `buf` with no spare room, `charge` (which holds [`heap_cost`] of its
+/// capacity) following it, as the core's `MeteredVec::shrink_to_fit` does:
+/// shrunk in place by the allocator, which holds no second block, so
+/// nothing more is charged and the difference is returned after (perf stage
+/// 2: the smaller block was charged beside the old one); or moved to a new
 /// allocation where a shrink would keep a mapped block, a page or more
-/// against the charge of a heap chunk ([`shrink_moves`]; review round 13).
-/// `false`, with `buf` as it was, when the allocator refuses the new
-/// allocation.
-fn shrink(buf: &mut String) -> bool {
-    if shrink_moves(bytes(buf.len()), bytes(buf.capacity())) {
+/// against the charge of a heap chunk ([`shrink_moves`]; review round 13),
+/// that block charged first, as both exist while the bytes move. A move the
+/// meter or the allocator refuses leaves `buf` and `charge` as they were.
+fn shrink(buf: &mut String, charge: &mut Charge) {
+    let (len, cap) = (bytes(buf.len()), bytes(buf.capacity()));
+    if len >= cap {
+        return;
+    }
+    if shrink_moves(len, cap) {
+        let Ok(smaller) = charge.meter().charge(heap_cost(len)) else {
+            return;
+        };
         let mut exact = String::new();
         if exact.try_reserve_exact(buf.len()).is_err() {
-            return false;
+            return;
         }
         exact.push_str(buf);
         *buf = exact;
+        charge.release(heap_cost(cap));
+        charge.absorb(smaller);
     } else {
         buf.shrink_to_fit();
+        charge.release(heap_cost(cap) - heap_cost(len));
     }
-    true
 }
 
 /// A JSON text whose every growth is charged to a [`Meter`] before it is
@@ -127,8 +140,9 @@ impl Text {
     }
 
     /// The text and the charge for its allocation, which must live as long
-    /// as the text does; spare room is given back first where the meter
-    /// grants the smaller block (both exist while the allocator moves it).
+    /// as the text does; spare room is given back first: in place, or, where
+    /// the bytes move, when the meter grants the smaller block (both exist
+    /// while they move).
     ///
     /// # Errors
     /// The refusal that stopped a growth.
@@ -136,14 +150,7 @@ impl Text {
         if let Some(e) = self.refused {
             return Err(e);
         }
-        let (len, cap) = (self.buf.len(), self.buf.capacity());
-        if cap > len
-            && let Ok(smaller) = self.charge.meter().charge(heap_cost(bytes(len)))
-            && shrink(&mut self.buf)
-        {
-            self.charge.release(heap_cost(bytes(cap)));
-            self.charge.absorb(smaller);
-        }
+        shrink(&mut self.buf, &mut self.charge);
         Ok((self.buf, self.charge))
     }
 
@@ -277,6 +284,33 @@ mod tests {
         assert_eq!(meter.used(), heap_cost(bytes(s.len())));
         drop(charge);
         assert_eq!(meter.used(), 0);
+    }
+
+    /// Perf stage 2 (fix B): spare room is given back in place, charging
+    /// nothing beside the old block, so a meter with no room for a second
+    /// block still gets it back. 200,000 bytes written 1,000 at a time end
+    /// in room of 256,000 (both over 128 KiB, so shrunk in place,
+    /// `shrink_moves`); the meter holds the last doubling, 128,000 and
+    /// 256,000 at once, and no more. Before, the 200,000 bytes were charged
+    /// beside the 256,000, which the meter refused, so the text kept its
+    /// room, charged.
+    #[test]
+    fn spare_room_is_given_back_in_place_charging_nothing_beside_it() {
+        let limit = heap_cost(128_000) + heap_cost(256_000);
+        let meter = Meter::new(limit, Arc::new(Unbounded), Reservation::Input);
+        let mut t = Text::on(&meter);
+        let piece = "x".repeat(1000);
+        for _ in 0..200 {
+            t.write_str(&piece).unwrap();
+        }
+        assert_eq!((t.as_str().len(), t.buf.capacity()), (200_000, 256_000));
+        assert!(!shrink_moves(200_000, 256_000));
+        let (s, charge) = t.finish().unwrap();
+        assert_eq!(s.capacity(), 200_000, "spare room is given back");
+        assert_eq!(
+            (meter.used(), charge.bytes()),
+            (heap_cost(200_000), heap_cost(200_000))
+        );
     }
 
     /// The meter's bound and the budget each stop a text, and a refused

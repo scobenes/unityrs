@@ -193,7 +193,7 @@ fn lazy_runs(counting: bool) -> (usize, u64) {
             }
         };
         for _ in *i..*j {
-            out.begin_block(bytes(BLOCK), LimitKind::BlockOutput);
+            out.begin_block(bytes(BLOCK), LimitKind::BlockOutput, bytes(BLOCK));
             // The codec writes the block's output (an LZMA block of zeros).
             if let Err(e) = out.grow_zeroed(BLOCK) {
                 refused = Some(e);
@@ -222,7 +222,7 @@ fn lazy_runs(counting: bool) -> (usize, u64) {
     // Eager: every block once, into one run, under the same meter.
     let mut all = DecodeBuf::new(&m, 0, bytes(BLOCK), LimitKind::BlockOutput).unwrap();
     for _ in 0..BLOCKS {
-        all.begin_block(bytes(BLOCK), LimitKind::BlockOutput);
+        all.begin_block(bytes(BLOCK), LimitKind::BlockOutput, bytes(BLOCK));
         all.grow_zeroed(BLOCK).unwrap();
     }
     let joined = all.into_bytes().unwrap();

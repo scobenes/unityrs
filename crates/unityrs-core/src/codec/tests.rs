@@ -37,7 +37,7 @@ impl BlockCodec for Escapes {
             out.truncate(len);
         }
         if self.own_segment {
-            out.begin_block(u64::MAX, LimitKind::InputBytes);
+            out.begin_block(u64::MAX, LimitKind::InputBytes, u64::MAX);
         }
         out.grow_zeroed(self.write)?;
         Ok(Decoded::Written)

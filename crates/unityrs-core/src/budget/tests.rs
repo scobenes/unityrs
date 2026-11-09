@@ -80,7 +80,7 @@ fn each_block_of_a_run_has_its_own_cap() {
         "{e:?}"
     );
     // The run's next block may write 16 more, and no further.
-    out.begin_block(16, LimitKind::BlockOutput);
+    out.begin_block(16, LimitKind::BlockOutput, 16);
     out.extend_from_slice(&[1; 16]).unwrap();
     let before = out.capacity();
     let e = out.grow_zeroed(1).unwrap_err();
@@ -107,7 +107,7 @@ fn room_never_passes_the_segments_end() {
     out.extend_from_slice(&[3; 10]).unwrap();
     assert_eq!(out.capacity(), 100);
     // The run's next block ends 50 bytes past where it begins.
-    out.begin_block(50, LimitKind::BlockOutput);
+    out.begin_block(50, LimitKind::BlockOutput, 50);
     out.grow_zeroed(1).unwrap();
     assert_eq!(
         out.capacity(),
@@ -195,7 +195,7 @@ fn every_byte_written_counts_whatever_the_buffer_already_holds() {
     let mut done = 0;
     for _ in 0..10 {
         let mut out = DecodeBuf::new(&m, 1 << 20, 1 << 30, LimitKind::BlockOutput).unwrap();
-        out.begin_block(1 << 30, LimitKind::BlockOutput);
+        out.begin_block(1 << 30, LimitKind::BlockOutput, 1 << 30);
         match out.grow_zeroed(mib) {
             Ok(_) => done += 1,
             Err(e) => assert!(is_work(&e), "{e:?}"),
@@ -208,7 +208,7 @@ fn every_byte_written_counts_whatever_the_buffer_already_holds() {
     let mut done = 0;
     for _ in 0..100 {
         scratch.truncate(0);
-        scratch.begin_block(1 << 30, LimitKind::BlockOutput);
+        scratch.begin_block(1 << 30, LimitKind::BlockOutput, 1 << 30);
         match scratch.grow_zeroed(mib) {
             Ok(_) => done += 1,
             Err(e) => assert!(is_work(&e), "{e:?}"),
