@@ -1,0 +1,14 @@
+{
+ "cases": [
+  {"bytes_read":null,"kind":"other","message":"Expected to read 0 bytes, but only read -4 bytes","probe":"pure_python_negative_typeless_at_16"},
+  {"bytes_read":8,"kind":"check_read","message":"Expected to read 0 bytes, but only read 8 bytes","probe":"pure_python_negative_typeless_at_0"},
+  {"bytes_read":4,"expected":0,"kind":"check_read","probe":"message","read":4},
+  {"bytes_read":4,"expected":8,"kind":"check_read","probe":"message","read":4},
+  {"bytes_read":8,"expected":4,"kind":"check_read","probe":"message","read":8},
+  {"bytes_read":0,"expected":4294967295,"kind":"check_read","probe":"message","read":0},
+  {"bytes_read":null,"expected":0,"kind":"other","probe":"message","read":-4},
+  {"bytes_read":null,"expected":8,"kind":"other","probe":"message","read":-96}
+ ],
+ "python": "3.11",
+ "unitypy": "1.25.2"
+}

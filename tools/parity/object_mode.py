@@ -21,9 +21,10 @@ import inspect
 import json
 import signal
 import struct
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+
+import child
 
 EXTRA = "m_Extra"
 HOLDER = "ObjectModeHolder"  # a type UnityPy.classes lacks
@@ -79,7 +80,7 @@ def module_dir():
     """`dir(UnityPy.classes)` just after its import, read in a process of its own: looking `__annotations__` up on
     a module stores it in the module's `__dict__`, so in this process `dir` would depend on what ran before."""
     code = "import json, UnityPy.classes as m; print(json.dumps(dir(m)))"
-    run = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True, check=True, timeout=120)
+    run = child.run([sys.executable, "-B", "-c", code], capture_output=True, text=True, check=True, timeout=120)
     return tuple(json.loads(run.stdout))
 
 
@@ -148,7 +149,7 @@ def class_rows():
 
 
 def child_outcome(name, count):
-    run = subprocess.run(
+    run = child.run(
         [sys.executable, "-B", "-c", CHILD, name, str(count)], capture_output=True, text=True, timeout=120
     )
     if run.returncode < 0:

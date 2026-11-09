@@ -11,7 +11,6 @@ the test back. `Rows` needs UnityPy 1.25.2 (the oracle image); skipped elsewhere
 import io
 import re
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -19,6 +18,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import scratch  # noqa: E402
 from rows_support import ORACLE  # noqa: E402
 
 import inventory  # noqa: E402
@@ -38,6 +38,7 @@ class TestColumn(unittest.TestCase):
     """PARITY.md's test column and the tests it names agree (standard library)."""
 
     CITED = re.compile(r"`(test_[a-z_]+\.py)` ([a-z0-9_]+)")
+    RUST = re.compile(r"`(crates/[a-z0-9_/-]+\.rs)` ([a-z0-9_]+)")
 
     def test_every_cited_test_exists_and_every_row_test_is_cited(self):
         text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
@@ -84,7 +85,8 @@ class TestColumn(unittest.TestCase):
         """Section 0's status rules: a row that names a test is pinned or verified, one that names none is
         unverified (source reading), n/a (tier —) or a pointer to another row; `planned` is section 17.1's. A test
         or the corpus dump named inside a `planned` clause probes nothing, every row states its own status, and
-        every test a test column names carries its module."""
+        every test a test column names carries its module; a verified P1 row names a Rust test, and that test
+        exists."""
         text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
         seen = 0
         for header, rows in inventory.tables(text):
@@ -98,8 +100,17 @@ class TestColumn(unittest.TestCase):
                 with self.subTest(row=cells[0][:60], status=state):
                     # Every test is named with its module, so a renamed test fails the check above.
                     self.assertIsNone(re.search(r"`test_[a-z_]+\.py` [a-z0-9_]+, [a-z]", cells[test]), "a bare name")
+                    # A row P0 probed and P1 verified ("pinned P0; verified P1") takes both checks.
+                    if "verified P1" in state:
+                        rust = self.RUST.findall(cells[test])
+                        self.assertTrue(rust, "a verified P1 row names the Rust test that pins it")
+                        for path, name in rust:
+                            source = (HERE.parent.parent / path).read_text(encoding="utf-8")
+                            self.assertRegex(source, rf"\bfn {name}\(", f"{path} has no test {name}")
                     if state.startswith(("pinned P0", "verified P0")):
                         self.assertTrue(probed, "a probed row names what probes it")
+                    elif state.startswith("verified P1"):
+                        pass
                     elif state.startswith("unverified (source reading); impl P"):
                         self.assertFalse(probed, "a row a test runs is not unverified")
                     elif state.startswith("planned ("):
@@ -416,13 +427,14 @@ class TestColumn(unittest.TestCase):
             constructor,
         )
         fs_row = next(line for line in parity.splitlines() if line.startswith(rows[0]))
+        # A bare line is an f-string field, so that scripts/unitypy_citations.py reads it only in PARITY.md.
         for sentence in (
             "In the cases tested, with a non-local `fs` a name is not found even when `fs` holds it: ",
             "In two more cases tested a test on the local disk sends the read to `fs`: ",
             "Any other name `load_file` reads through a non-local `fs` is not characterised (Tier U). `load_folder` "
-            "walks `fs` but opens what it finds with the builtin `open` (`load_files`, `:75-81`). In the case tested "
-            "(a file under a top-level folder the local disk lacks) that raises `FileNotFoundError` naming the file; "
-            "any other file it opens with `open` is not characterised (Tier U).",
+            f"walks `fs` but opens what it finds with the builtin `open` (`load_files`, `:{75}-81`). In the case "
+            "tested (a file under a top-level folder the local disk lacks) that raises `FileNotFoundError` naming "
+            "the file; any other file it opens with `open` is not characterised (Tier U).",
         ):
             self.assertIn(sentence, fs_row)
         non_local = next(line for line in parity.splitlines() if line.startswith(rows[1]))
@@ -694,8 +706,7 @@ class TestColumn(unittest.TestCase):
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class Rows(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-rows-"))
-        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp))
+        self.tmp = scratch.for_case(self, "unityrs-rows-")
 
     # Section 23: a module-level loop leaves its variables bound at the top level, holding the last pass's values.
     def test_module_loop_variables_keep_the_last_pass(self):

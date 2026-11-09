@@ -1,0 +1,24 @@
+{
+ "cases": [
+  {"file_id":-2147483648,"len":0,"outcome":"below_start"},
+  {"file_id":-1,"len":0,"outcome":"below_start"},
+  {"file_id":1,"len":0,"outcome":"past_end"},
+  {"file_id":2147483647,"len":0,"outcome":"past_end"},
+  {"file_id":-2147483648,"len":1,"outcome":"below_start"},
+  {"file_id":-2,"len":1,"outcome":"below_start"},
+  {"file_id":-1,"len":1,"outcome":"below_start"},
+  {"file_id":1,"len":1,"outcome":"index:0"},
+  {"file_id":2,"len":1,"outcome":"past_end"},
+  {"file_id":2147483647,"len":1,"outcome":"past_end"},
+  {"file_id":-2147483648,"len":3,"outcome":"below_start"},
+  {"file_id":-4,"len":3,"outcome":"below_start"},
+  {"file_id":-3,"len":3,"outcome":"below_start"},
+  {"file_id":-1,"len":3,"outcome":"index:1"},
+  {"file_id":1,"len":3,"outcome":"index:0"},
+  {"file_id":3,"len":3,"outcome":"index:2"},
+  {"file_id":4,"len":3,"outcome":"past_end"},
+  {"file_id":2147483647,"len":3,"outcome":"past_end"}
+ ],
+ "generator": "tools/fixtures/scaffold.py",
+ "unitypy": "1.25.2"
+}

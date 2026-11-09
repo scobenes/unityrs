@@ -152,7 +152,7 @@ class ThroughBoost(unittest.TestCase):
         self.assertIsNotNone(TTH.read_typetree_boost, "UnityPyBoost must be loaded for the oracle")
 
     def test_boost_is_the_pinned_wheels_binary(self):
-        # The loaded binary, and the RECORD of the wheel it came from, both hash as canonical.py pins.
+        # The loaded binary, and the RECORD of the wheel it came from, both hash as oracle_stack.py pins.
         module = sys.modules["UnityPy.UnityPyBoost"]
         with open(module.__file__, "rb") as fh:
             self.assertEqual(hashlib.sha256(fh.read()).hexdigest(), C.ORACLE_BOOST_SHA256)
@@ -290,8 +290,7 @@ class ThroughBoost(unittest.TestCase):
         value = read(root, data, assetsfile=assetsfile)
         self.assertNotIn("again", value, "a second registry in the class that read one is skipped")
         self.assertNotIn("data", value["references"]["RefIds"][1], "an empty class has no data")
-        resolve = lambda t: TTH.get_ref_type_node({"type": t}, assetsfile)  # noqa: E731
-        enc = C.ValueEncoder(resolve).encode(value, root)
+        enc = C.ValueEncoder(assetsfile.ref_types).encode(value, root)
         self.assertEqual(
             C.dumps(enc),
             '{"t":"dict","v":[["references",{"t":"dict","v":[["version",2],["RefIds",['
@@ -382,6 +381,20 @@ class ThroughBoost(unittest.TestCase):
             with self.subTest(path=path, case="no ref_types"), self.assertRaises(Exception) as cm:
                 reader(N("Base", "Base", [ref_obj]), unknown_ref, assetsfile=SimpleNamespace(ref_types=None))
             self.assertEqual(unitypy_dump.error_kind(cm.exception), ("ref_type", None), f"{path}: {cm.exception}")
+            # An unknown class named like another kind's message is still ref_type, though the pure-Python
+            # reader's message names it: a kind comes from the whole message (review round 9).
+            lookalikes = ("out of bounds", "Negative length read from TypeTree")
+            lookalikes += ("Expected to read 3 bytes, but only read 9 bytes",)
+            for name in lookalikes:
+                named = struct.pack("<q", 1) + s32(name) + s32("") + s32("Asm") + struct.pack("<f", 1.0)
+                with self.subTest(path=path, named=name), self.assertRaises(Exception) as cm:
+                    reader(N("Base", "Base", [ref_obj]), named, assetsfile=assetsfile)
+                self.assertEqual(unitypy_dump.error_kind(cm.exception), ("ref_type", None), f"{path}: {cm.exception}")
+        # A message that only holds another kind's message, in any other class, is `other`.
+        others = (KeyError("out of bounds"), TypeError("Negative length read from TypeTree"))
+        others += (ValueError(" read_u8 out of bounds"), ValueError("Expected to read 1 bytes, but only read 2 bytes."))
+        for e in others:
+            self.assertEqual(unitypy_dump.error_kind(e), ("other", None), repr(e))
 
     def test_check_read_values(self):
         """check_read keeps the value parse_as_dict(check_read=False) returns, in either direction."""

@@ -9,7 +9,6 @@ elsewhere.
 
 import os
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +18,8 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import child  # noqa: E402
+import scratch  # noqa: E402
 from rows_support import ORACLE, load, quietly, text_asset_file, zip_with_a_directory  # noqa: E402
 
 if ORACLE:
@@ -36,8 +37,7 @@ if ORACLE:
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class Rows(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-rows-"))
-        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp))
+        self.tmp = scratch.for_case(self, "unityrs-rows-")
 
     # Sections 5.2, 14.2, 17: a texture with no pixel data.
     def test_an_empty_texture_follows_an_empty_stream_path(self):
@@ -125,15 +125,12 @@ class Rows(unittest.TestCase):
             return Texture2DConverter.image_to_texture2d(Image.new("RGBA", size), TextureFormat[target], *config)
 
         def crashes(target, width, height, config):
-            pid = os.fork()
-            if pid == 0:  # the child: the one call, then out without running the parent's cleanups
-                try:
-                    ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0)
-                    os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
-                    convert(target, (width, height), config)
-                finally:
-                    os._exit(0)
-            status = os.waitpid(pid, 0)[1]
+            def the_call():  # in the child, then out without running the parent's cleanups
+                ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0)
+                os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+                convert(target, (width, height), config)
+
+            status = child.forked(the_call)  # a child the system kills is run again, never read as no crash
             return os.WIFSIGNALED(status) and os.WTERMSIG(status) in (signal.SIGBUS, signal.SIGSEGV)
 
         def write(target, size, config):
@@ -308,7 +305,7 @@ class Rows(unittest.TestCase):
                 swapped = Texture2DConverter.parse_image_data(*args, BuildTarget.XBOX360)
                 self.assertEqual(list(swapped.getdata()) != list(plain.getdata()), wrong)
         self.assertEqual(plain.getpixel((10, 20)), (40, 80, 128))
-        # The lines section 19.2 cites for those mappings: `:138-143` and `:189-198`.
+        # The lines section 19.2 cites for those mappings: `export/Texture2DConverter.py:138-143` and `:189-198`.
         source = Path(Texture2DConverter.__file__).read_text().splitlines()
         self.assertEqual(
             [source[i - 1].strip() for i in (138, 139, 141, 142, 143, 189, 190, 198)],

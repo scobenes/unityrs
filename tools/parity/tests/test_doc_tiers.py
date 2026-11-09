@@ -140,7 +140,8 @@ class DocTiers(unittest.TestCase):
             "A; U for an image with no zero side to a target whose written format the reader swaps (one with a zero "
             "side: section 19.1)",
         )
-        self.assertIn("an `RGB565` target is written as `RGB24` (`:189-198`), which the reader does not swap", row)
+        # The row's bare line, an f-string field here so that scripts/unitypy_citations.py reads it only in the row.
+        self.assertIn(f"an `RGB565` target is written as `RGB24` (`:{189}-198`), which the reader does not swap", row)
 
     def test_a_zero_side_image_needs_its_fetch(self):
         """`Texture2D.image` fetches the data before `parse_image_data` returns its 0×0 image for a zero side (section

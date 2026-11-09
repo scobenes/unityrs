@@ -41,6 +41,20 @@ license-files = [
 crate = "liblzma-sys"
 allow = ["0BSD"]
 
+# The workspace members that port CPython 3.11's standard library carry
+# PSF-2.0 too (see about.toml).
+[[licenses.exceptions]]
+crate = "unityrs-core"
+allow = ["PSF-2.0"]
+
+[[licenses.exceptions]]
+crate = "unityrs-dump"
+allow = ["PSF-2.0"]
+
+[[licenses.exceptions]]
+crate = "unityrs-cli"
+allow = ["PSF-2.0"]
+
 # r-efi ships no licence file; its AUTHORS file holds the notices (see
 # about.toml). The expression is the crate's own.
 [[licenses.clarify]]

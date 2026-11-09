@@ -10,7 +10,6 @@ the module these tests were split from. Needs UnityPy 1.25.2 (the oracle image);
 import random
 import struct
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +19,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import scratch  # noqa: E402
 from rows_support import ORACLE, TEXT_ASSET, load, quietly, text_asset_file, zip_with_a_directory  # noqa: E402
 
 import synth as S  # noqa: E402
@@ -38,8 +38,7 @@ if ORACLE:
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class Rows(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-rows-"))
-        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp))
+        self.tmp = scratch.for_case(self, "unityrs-rows-")
 
     # Sections 15.7, 19.2: what Pillow saves under the container's extension.
     def test_pillow_saves_by_extension_and_mode(self):

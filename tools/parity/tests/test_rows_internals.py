@@ -14,7 +14,6 @@ import json
 import operator
 import resource
 import struct
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -24,6 +23,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import child  # noqa: E402
 from rows_support import ORACLE, load, quietly, text_asset_file  # noqa: E402
 
 import synth as S  # noqa: E402
@@ -59,8 +59,9 @@ def decryptor_header(nibbles, key=KEY):
 
 
 def walk_end(block):
-    """The last index the decryptor's LZ4-token walk visits (`helpers/ArchiveStorageManager.py:100-143`), given
-    tables that leave every byte as it is; an index of `len(block)` is the byte just past the block."""
+    """The last index the decryptor's LZ4-token walk visits (`helpers/ArchiveStorageManager.py:100-107`,
+    `:109-143`), given tables that leave every byte as it is; an index of `len(block)` is the byte just past the
+    block."""
     last = -1
 
     def visit(i):
@@ -119,7 +120,7 @@ class Padded:
 
 
 def padded_walk(decryptor, block):
-    """UnityPy's own `decrypt` steps (`helpers/ArchiveStorageManager.py:119-143`) over the block with one 0 byte after
+    """UnityPy's own `decrypt` steps (`helpers/ArchiveStorageManager.py:120-143`) over the block with one 0 byte after
     it, the loop bounded by the block as UnityPyBoost's is (`ArchiveStorageDecryptor.cpp:79-82`): the bytes, the 0
     byte decrypted where the walk reads it, and the furthest index the walk reads."""
     data, furthest, offset, index = bytearray(block + b"\0"), [-1], 0, 0
@@ -159,7 +160,9 @@ class InternalRows(unittest.TestCase):
         self.assertIs(TypeTreeHelper.read_typetree_boost, UnityPyBoost.read_typetree)
         self.assertIs(importlib.import_module("UnityPy.helpers.TypeTreeNode").TypeTreeNodeC, UnityPyBoost.TypeTreeNode)
         self.assertEqual(TypeTreeNode.__bases__, (UnityPyBoost.TypeTreeNode,))
-        # The row cites the lines that bind each name: the import, or the `try` through the fallback.
+        # The row cites the lines that bind each name: the import, or the `try` through the fallback. The
+        # fallback `TypeTreeNodeC` is a class of its own, so that row cites the `try` and its import, the binding
+        # the oracle stack runs (a range ending on the class's header, without its body, is no whole span).
         parity = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8").splitlines()
         row = next(line for line in parity if line.startswith("| `ClassIDTypeToClassMap.CIT`, "))
         source = Path(UnityPy.__file__).parent
@@ -173,11 +176,13 @@ class InternalRows(unittest.TestCase):
         boost, node = "helpers/TypeTreeHelper.py", "helpers/TypeTreeNode.py"
         imported = "    from ..UnityPyBoost import read_typetree as read_typetree_boost"
         self.assertEqual(line(boost, imported), line(boost, "try:") + 1)
+        node_imported = "    from ..UnityPyBoost import TypeTreeNode as TypeTreeNodeC  # type: ignore"
+        self.assertEqual(line(node, node_imported), line(node, "try:") + 1)
         cited = {
             cit: f"{line(cit, 'from ..enums.ClassIDType import ClassIDType as CIT')}",
             tf: f"{line(tf, 'TF = TextureFormat')}",
             boost: f"{line(boost, 'try:')}-{line(boost, '    read_typetree_boost = None')}",
-            node: f"{line(node, 'try:')}-{line(node, '    class TypeTreeNodeC:')}",
+            node: f"{line(node, 'try:')}-{line(node, node_imported)}",
         }
         self.assertEqual(cited[boost], "22-25")
         for path, lines in cited.items():
@@ -405,11 +410,11 @@ class InternalRows(unittest.TestCase):
 
         for which in ("subclass", "boost"):
             with self.subTest(which):
-                child = subprocess.run(
+                proc = child.run(
                     [sys.executable, "-c", code, which], capture_output=True, text=True, preexec_fn=no_core_dump
                 )
-                self.assertEqual(child.returncode, 0, child.stderr)
-                released, shown = json.loads(child.stdout)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                released, shown = json.loads(proc.stdout)
                 self.assertEqual(released, 1)
                 self.assertEqual(shown, "TypeTreeNode(m_Level=0, m_Type='int', m_Name='node name', m_MetaFlag=None)")
 

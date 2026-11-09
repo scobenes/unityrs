@@ -16,7 +16,6 @@ import os
 import shutil
 import socket
 import sys
-import tempfile
 import threading
 import time
 import unittest
@@ -27,8 +26,9 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import scratch  # noqa: E402
 import fetch_unitypy_samples as F  # noqa: E402
-from test_dump import SAMPLES  # noqa: E402
+from dump_harness import DEADLOCK_GUARD_S, SAMPLES  # noqa: E402
 
 BODY_A = b"UnityFS\0synthetic sample a\0" * 40
 BODY_B = b"UnityFS\0synthetic sample b\0" * 7
@@ -103,8 +103,7 @@ class Server:
 
 class FetchTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-samples-"))
-        self.addCleanup(shutil.rmtree, self.tmp)
+        self.tmp = scratch.for_case(self, "unityrs-samples-")
         self.dest = self.tmp / "samples"
         self.dest.mkdir()
         self.sleeps = []
@@ -361,7 +360,7 @@ class FetchTests(unittest.TestCase):
             self.addCleanup(s.server_close)
             self.addCleanup(s.shutdown)
         with mock.patch.dict(os.environ, NO_PROXY), self.assertRaises(F.FetchError) as cm:
-            F.urlopen(f"http://127.0.0.1:{pinned.server_address[1]}/sample", timeout=10)
+            F.urlopen(f"http://127.0.0.1:{pinned.server_address[1]}/sample", timeout=DEADLOCK_GUARD_S)
         self.assertIn("redirected (302)", str(cm.exception))
         self.assertEqual(hits, [(pinned.server_address[1], "/sample")])
 
@@ -497,8 +496,7 @@ class DeadlineTests(unittest.TestCase):
         url = self.serve(
             [*trickle(b"HTTP/1.1 200 OK\r\n", 0.125), (0, b"Content-Length: %d\r\n\r\n" % len(BODY_A) + BODY_A)]
         )
-        tmp = Path(tempfile.mkdtemp(prefix="unityrs-samples-"))
-        self.addCleanup(shutil.rmtree, tmp)
+        tmp = scratch.for_case(self, "unityrs-samples-")
         err = io.StringIO()
         with (
             mock.patch.multiple(F, TIMEOUT_S=10, DEADLINE_S=1),
@@ -509,8 +507,10 @@ class DeadlineTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn(f"a: {URL_A}: not downloaded within 1 s", err.getvalue())
         for worker in [t for t in threading.enumerate() if t.name == f"fetch {URL_A}"]:
-            worker.join(10)
-            self.assertFalse(worker.is_alive())
+            worker.join(DEADLOCK_GUARD_S)
+            self.assertFalse(
+                worker.is_alive(), f"deadlock guard: the abandoned download did not end in {DEADLOCK_GUARD_S} s"
+            )
         self.assertEqual(list(tmp.iterdir()), [])
 
 

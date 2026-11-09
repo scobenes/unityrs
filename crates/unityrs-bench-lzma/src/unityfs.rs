@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/BundleFile.py. See THIRD_PARTY_LICENSES.
 //! Just enough `UnityFS` to find a bundle's LZMA data blocks.
 //!
 //! Follows `UnityPy` 1.25.2 `BundleFile.read_fs`, with its two rules that hang

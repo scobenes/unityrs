@@ -1,0 +1,780 @@
+//! G7 (`docs/plans/core.md` section 6): for every class a TPK holds, at every
+//! version it lists, [`TpkProvider`] gives UnityPy 1.25.2's outcome: the node
+//! list `helpers/Tpk.py` builds, "no node" (`Ok(None)`) where it raises
+//! `KeyError`, `ValueError` or `AssertionError`, and where it raises anything
+//! else the error the port gives for that exception
+//! (`common::walk_error_is_unitypys`); and the TPK's class count is
+//! UnityPy's. A TPK UnityPy refuses to load is refused with the error the
+//! port gives for UnityPy's exception (`common::load_error_is_unitypys`).
+//!
+//! Each answer is checked twice: the node list ([`TpkProvider::node_list`])
+//! and the compiled tree ([`TypeTreeProvider::tree`]), which must be the
+//! node list's, compiled, wherever UnityPy builds one. Wherever UnityPy
+//! returns one tree object (its caches), the provider returns one `Arc`.
+//! Every node list UnityPy recorded for every class is compared row by row,
+//! including those of trees an earlier class shares.
+//! UnityPy's side counts the records it wrote and the (class, version)
+//! pairs it was asked for, and the comparison must meet exactly those: one
+//! record per class the provider holds and one for a class it does not, and
+//! every version of each.
+//!
+//! Two sets. The synthetic TPKs of `tools/fixtures/tpk.py`, committed with
+//! UnityPy's outcomes under `tests/fixtures/tpk/`, are replayed here without
+//! Python; a case marked `refused` is one UnityPy loads and unityrs refuses
+//! by design (`PARITY.md` section 19.3), and must be refused for the reason
+//! it names. UnityPy's own TPK (`resources/lzma.tpk` in the oracle image) is
+//! read at test time, never committed: `tools/fixtures/tpk.py --check` writes
+//! its outcomes outside the repository and runs [`image_tpk`] with
+//! `UNITYRS_ORACLE_TPK` and `UNITYRS_ORACLE_TPK_OUTCOMES` set; run by plain
+//! `cargo test` in the image, the test asks the image's Python for both.
+//! Outside the image it is skipped, and with `UNITYRS_ORACLE_TPK` set it never
+//! is: a missing or empty TPK or outcome file fails it.
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
+
+use serde_json::Value as J;
+use unityrs_core::limits::Limits;
+use unityrs_core::provider::{NoTree, TreeRequest, TypeTreeProvider};
+use unityrs_core::typetree::{NodeList, NodeRow};
+use unityrs_core::{LimitError, LimitKind, UnityVersion};
+use unityrs_testkit::child;
+use unityrs_testkit::scratch::Scratch;
+use unityrs_tpk::{TpkError, TpkProvider};
+
+mod common;
+
+fn root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn synthetic() -> Vec<J> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tpk/synthetic.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let fixture: J = serde_json::from_str(&text).unwrap();
+    assert_eq!(fixture["unitypy"], "1.25.2");
+    fixture["cases"].as_array().unwrap().clone()
+}
+
+fn case(name: &str) -> J {
+    synthetic()
+        .into_iter()
+        .find(|c| c["name"] == name)
+        .unwrap_or_else(|| panic!("no case {name}"))
+}
+
+fn hex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+fn limits(depth: u32) -> Limits {
+    let mut limits = Limits::default();
+    limits.max_tree_depth = depth;
+    limits
+}
+
+fn open(case: &J) -> Result<TpkProvider, unityrs_tpk::TpkError> {
+    let depth = u32::try_from(case["depth"].as_u64().unwrap()).unwrap();
+    TpkProvider::from_bytes(&hex(case["tpk"].as_str().unwrap()), &limits(depth))
+}
+
+fn version(v: &J) -> UnityVersion {
+    UnityVersion::from_packed(v.as_str().unwrap().parse().unwrap())
+}
+
+/// One node as UnityPy's `TypeTreeNode` holds it, in `tpk.py`'s order: level,
+/// type, name, byte size, version, type flags, variable count, index, meta
+/// flag, ref-type hash.
+fn row_json(row: &NodeRow) -> J {
+    let text = |s: &[u8]| J::from(std::str::from_utf8(s).unwrap());
+    serde_json::json!([
+        row.level,
+        text(row.ty.as_bytes()),
+        text(row.name.as_bytes()),
+        row.byte_size,
+        row.version,
+        row.type_flags,
+        row.variable_count,
+        row.index,
+        row.meta_flag,
+        row.ref_type_hash,
+    ])
+}
+
+/// Compares the provider's answers for one TPK's classes with UnityPy's
+/// records (a header with the class count and versions, a record per class,
+/// and a trailer with UnityPy's counts), and returns how many (class,
+/// version) pairs it checked: exactly the trailer's.
+fn compare<'r>(
+    provider: &TpkProvider,
+    head: &J,
+    classes: impl Iterator<Item = &'r J>,
+    tail: &J,
+) -> usize {
+    assert_eq!(head["load"], J::Null, "UnityPy loaded this TPK");
+    let class_count = usize::try_from(head["class_count"].as_u64().unwrap()).unwrap();
+    assert_eq!(provider.class_count(), class_count, "class count");
+    let versions: Vec<UnityVersion> = head["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(version)
+        .collect();
+    assert_eq!(provider.versions(), &versions[..], "version list");
+    compare_common(provider, &head["common_strings"]);
+    let mut seen = HashSet::new();
+    let mut pairs = 0;
+    // UnityPy's tree object (its number) to the provider's list for it, held
+    // while the comparison runs so that no list's address is reused.
+    let mut shared: HashMap<u64, Arc<NodeList>> = HashMap::new();
+    for record in classes {
+        let class_id = i32::try_from(record["class"].as_i64().unwrap()).unwrap();
+        assert!(seen.insert(class_id), "class {class_id}: two records");
+        let outcomes = record["outcomes"].as_array().unwrap();
+        let picks = record["picks"].as_array().unwrap();
+        assert_eq!(picks.len(), versions.len(), "class {class_id}");
+        // Every node list UnityPy recorded for this class is compared, row
+        // by row, with the provider's answer at the first version that picks
+        // it, whatever an earlier class was answered with: so every (class,
+        // version) pair UnityPy builds a tree for is checked, each pair
+        // that picks the outcome later answered by that same list (`shared`
+        // pins one list per UnityPy tree, and a class's outcomes are one per
+        // tree). Keyed by the provider's list instead, a class answered with
+        // a list an earlier class was compared with, at the same position in
+        // its outcomes, would be checked against nothing (round 3).
+        let mut compared = vec![false; outcomes.len()];
+        for (v, pick) in versions.iter().zip(picks) {
+            let index = usize::try_from(pick.as_u64().unwrap()).unwrap();
+            let want = &outcomes[index];
+            let got = provider.node_list(class_id, v);
+            let tree = provider.tree(&TreeRequest {
+                class_id,
+                version: v,
+                script: None,
+            });
+            let at = || format!("class {class_id} at {:?}", v.packed());
+            match (want.get("rows"), got, tree) {
+                (Some(rows), Ok(Some(list)), Ok(Some(tree))) => {
+                    assert!(Arc::ptr_eq(tree.list(), &list), "{}: the tree's list", at());
+                    assert_eq!(provider.why_none(class_id, Some(v)), None, "{}", at());
+                    let object = want["tree"].as_u64().unwrap();
+                    let first = shared.entry(object).or_insert_with(|| list.clone());
+                    assert!(
+                        Arc::ptr_eq(first, &list),
+                        "{}: UnityPy's tree {object} is shared",
+                        at()
+                    );
+                    if !std::mem::replace(&mut compared[index], true) {
+                        compare_rows(&list, rows, &at());
+                    }
+                }
+                // Which exception UnityPy raised, as the provider tells it
+                // (review round 11: every "none" passed alike).
+                (None, Ok(None), Ok(None)) => {
+                    let why = provider.why_none(class_id, Some(v)).map(NoTree::exception);
+                    assert!(
+                        why.is_some() && why == want["none"].as_str(),
+                        "{}: UnityPy {want}, unityrs {why:?}",
+                        at()
+                    );
+                }
+                // The exception UnityPy raised, as the port's error for it,
+                // the same from the node list and the tree (round 4: any
+                // error passed).
+                (None, Err(list), Err(tree)) => {
+                    let python = want["error"].as_str();
+                    assert!(
+                        python.is_some_and(|p| common::walk_error_is_unitypys(p, &list)),
+                        "{}: UnityPy {want}, unityrs {list:?}",
+                        at()
+                    );
+                    assert_eq!(tree, list, "{}: the tree's error", at());
+                }
+                (_, got, tree) => {
+                    panic!("{}: UnityPy {want}, unityrs {got:?}, tree {tree:?}", at())
+                }
+            }
+            pairs += 1;
+        }
+    }
+    // One record per class the provider holds, and one for a class it does
+    // not; exactly the pairs UnityPy was asked for.
+    let ids: HashSet<i32> = provider.class_ids().collect();
+    assert_eq!(ids.len(), class_count, "class ids");
+    assert!(ids.is_subset(&seen), "a class without a record");
+    assert_eq!(seen.len(), class_count + 1, "the records");
+    let records = usize::try_from(tail["records"].as_u64().unwrap()).unwrap();
+    assert_eq!(seen.len(), records, "UnityPy's records");
+    let want = usize::try_from(tail["pairs"].as_u64().unwrap()).unwrap();
+    assert_eq!(
+        pairs, want,
+        "the (class, version) pairs UnityPy was asked for"
+    );
+    assert_eq!(
+        pairs,
+        records * versions.len(),
+        "every version of every record"
+    );
+    pairs
+}
+
+/// The provider's common strings against UnityPy's `get_common_strings()`.
+fn compare_common(provider: &TpkProvider, want: &J) {
+    let want = want.as_array().expect("UnityPy built the common strings");
+    let got: Vec<J> = provider
+        .common_strings()
+        .expect("a TPK provider has common strings")
+        .iter()
+        .map(|(o, s)| serde_json::json!([o, s.to_str().unwrap()]))
+        .collect();
+    assert_eq!(&got, want, "common strings");
+}
+
+fn compare_rows(list: &Arc<NodeList>, want: &J, at: &str) {
+    let want = want.as_array().unwrap();
+    assert_eq!(list.rows().len(), want.len(), "{at}: row count");
+    for (i, (row, want)) in list.rows().iter().zip(want).enumerate() {
+        assert_eq!(&row_json(row), want, "{at}: row {i}");
+    }
+}
+
+/// What a refusal names: a bound's `what`, or the unsupported codec.
+fn refusal(e: &TpkError) -> String {
+    match e {
+        TpkError::TooLarge { what, .. } => (*what).to_owned(),
+        TpkError::Unsupported(codec) => (*codec).to_owned(),
+        TpkError::CommonStringPastBuffer { .. } => "common-string index".to_owned(),
+        // A string UnityPy reads on (`PARITY.md` section 19.3).
+        TpkError::Malformed(why) => why.to_string(),
+        e => format!("{e}"),
+    }
+}
+
+#[test]
+fn g7_the_synthetic_tpks_give_unitypys_outcomes() {
+    let cases = synthetic();
+    assert!(cases.len() >= 20, "{} cases", cases.len());
+    let mut pairs = 0;
+    for case in &cases {
+        let name = case["name"].as_str().unwrap();
+        let provider = open(case);
+        if let Some(what) = case["refused"].as_str() {
+            assert_eq!(case["load"], J::Null, "{name}: UnityPy refused it too");
+            let e = provider.err().unwrap_or_else(|| panic!("{name}: loaded"));
+            assert_eq!(refusal(&e), what, "{name}: {e}");
+            continue;
+        }
+        if let Some(python) = case["load"].as_str() {
+            common::assert_load_is_unitypys(name, Some(python), &provider);
+            // `NotTypeTrees` stands for UnityPy's raise on a blob of data
+            // type 1-5 only (the header's byte 6).
+            if matches!(provider, Err(TpkError::NotTypeTrees)) {
+                let data_type = hex(case["tpk"].as_str().unwrap())[6];
+                assert!(
+                    (1..=5).contains(&data_type),
+                    "{name}: data type {data_type}"
+                );
+            }
+            continue;
+        }
+        let provider =
+            provider.unwrap_or_else(|e| panic!("{name}: UnityPy loaded it, unityrs: {e}"));
+        pairs += compare(
+            &provider,
+            case,
+            case["classes"].as_array().unwrap().iter(),
+            case,
+        );
+    }
+    assert!(pairs > 100, "{pairs} pairs");
+}
+
+/// The comparison checks every node list UnityPy recorded, those of a class
+/// the provider answers with a list an earlier class was already compared
+/// with included. In `root_flags`, classes 11, 21, 31 and 41 share one of
+/// UnityPy's trees, and 30 and 40 have two equal trees of one release root,
+/// which the provider answers with one list; round 3's G7 compared only the
+/// first class of each, so a provider that answered a later one with another
+/// class's tree passed it. One wrong row in any outcome must fail it.
+#[test]
+fn g7_compares_every_node_list_unitypy_recorded() {
+    let case = case("root_flags");
+    let provider = open(&case).unwrap();
+    let classes = case["classes"].as_array().unwrap();
+    let mut corrupted = 0;
+    for (c, record) in classes.iter().enumerate() {
+        let outcomes = record["outcomes"].as_array().unwrap();
+        for (o, outcome) in outcomes.iter().enumerate() {
+            if outcome.get("rows").is_none() {
+                continue;
+            }
+            let mut bad = classes.clone();
+            bad[c]["outcomes"][o]["rows"][0][2] = J::from("not UnityPy's name");
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                compare(&provider, &case, bad.iter(), &case)
+            }));
+            assert!(
+                run.is_err(),
+                "class {}: a wrong row in outcome {o} passed the comparison",
+                record["class"]
+            );
+            corrupted += 1;
+        }
+    }
+    assert_eq!(
+        corrupted, 7,
+        "the node lists of classes 11, 21, 30, 31, 40, 41, 45"
+    );
+    compare(&provider, &case, classes.iter(), &case);
+}
+
+/// Round 5: the header's checks, each a case UnityPy refuses (every data
+/// type, compression and version byte it refuses, the data types it builds
+/// another blob for, one of those over a block liblz4 refuses, a bad magic,
+/// a file or a properties header cut short), and the reads that run out at
+/// a byte or past a table's bound. None had a case before, and a port that
+/// skipped the magic, version or data-type check passed G7.
+#[test]
+fn g7_the_synthetic_set_covers_the_headers_checks() {
+    for name in [
+        "data_type_1",
+        "data_type_2",
+        "data_type_3",
+        "data_type_4",
+        "data_type_5",
+        "data_type_6",
+        "data_type_127",
+        "data_type_128",
+        "data_type_255",
+        "data_type_4_lz4_refused",
+        "compression_4",
+        "compression_127",
+        "compression_128",
+        "compression_255",
+        "version_0",
+        "version_2",
+        "version_255",
+        "bad_magic",
+        "header_19_bytes",
+        "empty_file",
+        "lzma_properties_4_bytes",
+        "cut_at_presence_byte",
+        "cut_at_common_count_byte",
+        "class_entries_past_the_bound_cut_at_presence_byte",
+        "strings_past_the_bound_not_utf8",
+    ] {
+        assert!(case(name)["load"].is_string(), "{name}: UnityPy loaded it");
+    }
+}
+
+/// Round 8: a TPK whose string is not UTF-8, within every bound, is
+/// UnityPy's `UnicodeDecodeError` (`read_string`'s strict decode,
+/// `Tpk.py:456`), and the port's refusal is its own UTF-8 check's. The only
+/// case before was past the strings' bound, which refused it before any
+/// string was decoded, so a port that kept the bytes unchecked passed G7.
+/// Each form Python's strict decoder refuses (and Rust's `from_utf8` must
+/// too), as the last string and as the first.
+#[test]
+fn g7_a_string_that_is_not_utf8_is_unitypys_unicode_decode_error() {
+    let forms = [
+        "ff",
+        "surrogate",
+        "overlong_nul",
+        "overlong_slash",
+        "past_10ffff",
+        "continuation",
+        "cut_short",
+    ];
+    for form in forms {
+        for at in ["last", "first"] {
+            let name = format!("string_not_utf8_{form}_{at}");
+            let case = case(&name);
+            assert_eq!(case["load"], "UnicodeDecodeError", "{name}");
+            match open(&case) {
+                Err(TpkError::Malformed(why)) => assert!(
+                    why.starts_with("UnicodeDecodeError: invalid utf-8 sequence"),
+                    "{name}: {why}"
+                ),
+                got => panic!("{name}: UnityPy raised UnicodeDecodeError, unityrs {got:?}"),
+            }
+        }
+    }
+}
+
+/// Review round 16: a TPK of data type 1-3 whose blob UnityPy's own reader
+/// cannot read raises that reader's exception (a JSON blob of one byte,
+/// 0xff: `UnicodeDecodeError`; a collection's nested blob, its own), and
+/// unityrs, which reads no such blob,
+/// refuses it as `NotTypeTrees`: both refuse the load, and only the
+/// exception's name differs (`PARITY.md`, `TpkFile`'s row). Each case below
+/// is refused on both sides, exactly so. The names
+/// `common::NOT_TYPE_TREES` admits for `NotTypeTrees` are exactly those the
+/// recorded cases unityrs refuses so raise, and every other name G7
+/// records is no match for it.
+#[test]
+fn g7_a_blob_of_another_data_type_is_refused_on_both_sides() {
+    for (name, python) in [
+        ("data_type_1_collection_not_utf8", "UnicodeDecodeError"),
+        ("data_type_1_collection_nested_data_type_9", "ValueError"),
+        ("data_type_1_collection_nested_data_type_4", "Exception"),
+        ("data_type_1_collection_nested_type_tree_cut", "IndexError"),
+        ("data_type_1_collection_nested_1000_deep", "RecursionError"),
+        ("data_type_2_file_system_not_utf8", "UnicodeDecodeError"),
+        ("data_type_2_file_system_empty", "error"),
+        ("data_type_3_json_not_utf8", "UnicodeDecodeError"),
+        ("data_type_3_json_empty", "ValueError"),
+        ("data_type_3_json_length_past_an_index", "OverflowError"),
+    ] {
+        let case = case(name);
+        assert_eq!(case["load"], python, "{name}: UnityPy's");
+        let got = open(&case);
+        assert!(
+            matches!(got, Err(TpkError::NotTypeTrees)),
+            "{name}: UnityPy raised {python}, unityrs {got:?}"
+        );
+    }
+    let (mut raised, mut recorded) = (HashSet::new(), HashSet::new());
+    for case in synthetic() {
+        let Some(python) = case["load"].as_str() else {
+            continue;
+        };
+        recorded.insert(python.to_owned());
+        if matches!(open(&case), Err(TpkError::NotTypeTrees)) {
+            raised.insert(python.to_owned());
+        }
+    }
+    let admitted: HashSet<String> = common::NOT_TYPE_TREES
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    assert_eq!(
+        raised, admitted,
+        "the names UnityPy raises where unityrs says NotTypeTrees"
+    );
+    for python in &recorded {
+        assert_eq!(
+            common::load_error_is_unitypys(python, &TpkError::NotTypeTrees),
+            admitted.contains(python),
+            "{python}"
+        );
+    }
+}
+
+/// The cases G7's synthetic set exists for are in it: each root flag
+/// combination and the class after it, every flag byte, the type bytes rabex
+/// refused, the 300-deep chain, every count read as UnityPy reads it, both
+/// codecs and the streams on which liblz4 and liblzma decide differently
+/// from rabex's decoders, and a case past each bound.
+#[test]
+fn g7_the_synthetic_set_covers_f6_f7_and_the_deep_chain() {
+    let cases = synthetic();
+    let names: Vec<String> = cases
+        .iter()
+        .map(|c| c["name"].as_str().unwrap().to_owned())
+        .collect();
+    for name in [
+        "root_flags",
+        "version_types",
+        "deep_chain_300",
+        "entries",
+        "lz4",
+        "lzma",
+        "meta_flag_u32",
+        "lz4_offset_0_match",
+        "lz4_match_in_the_last_literals",
+        "lzma_end_marker_corrupt",
+        "lzma_declared_smaller",
+        "common_strings",
+        "flag_bytes",
+        "node_fields",
+        "string_length_5_bytes",
+        "stored_declared_u32_max",
+        "presence_bytes",
+    ] {
+        assert!(names.iter().any(|n| n == name), "{name}");
+    }
+    for key in [
+        "classes", "entries", "common", "nodes", "strings", "versions", "indices",
+    ] {
+        for value in [
+            "-1",
+            "-2147483648",
+            "1073741824",
+            "2147483647",
+            "-1_items_follow",
+        ] {
+            let name = format!("count_{key}_{value}");
+            assert!(names.contains(&name), "{name}");
+        }
+    }
+    // UnityPy loads the offset-0 match and the short LZMA size, and raises on
+    // the last-literals match and the corrupt end marker (rabex's decoders
+    // did the opposite of each).
+    assert_eq!(case("lz4_offset_0_match")["load"], J::Null);
+    assert_eq!(case("lzma_declared_smaller")["load"], J::Null);
+    assert!(case("lz4_match_in_the_last_literals")["load"].is_string());
+    assert!(case("lzma_end_marker_corrupt")["load"].is_string());
+    let refused: Vec<&str> = cases.iter().filter_map(|c| c["refused"].as_str()).collect();
+    for what in [
+        "decoded payload",
+        "versions",
+        "classes",
+        "class entries",
+        "common-string versions",
+        "common-string indices",
+        "nodes",
+        "strings",
+        "brotli",
+        "common-string index",
+        "a string longer than the rest of the payload",
+        "a string length of more than 5 bytes",
+    ] {
+        assert!(refused.contains(&what), "no refused case for {what}");
+    }
+    // UnityPy numbers common strings by code points, and raises on an index
+    // past the string buffer only when a blob reads the table.
+    let common = &case("common_strings")["common_strings"];
+    assert!(common.as_array().is_some_and(|t| t.len() == 6), "{common}");
+    let index = &case("refused_common_string_index")["common_strings"];
+    assert_eq!(index["error"], "IndexError");
+    // A request 3: UnityPy keeps a TPK node's u32 meta flag positive.
+    let high = &case("meta_flag_u32")["classes"][0]["outcomes"][0]["rows"];
+    assert_eq!(high[0][8].as_i64(), Some(0x8000_4000));
+    let flags = case("root_flags");
+    let classes: Vec<i64> = flags["classes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["class"].as_i64().unwrap())
+        .collect();
+    for id in [10, 11, 20, 21, 30, 31, 40, 41] {
+        assert!(classes.contains(&id), "{id}");
+    }
+    let types: Vec<u64> = case("version_types")["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| (v.as_str().unwrap().parse::<u64>().unwrap() >> 8) & 0xFF)
+        .collect();
+    for t in [0, 1, 2, 3, 4, 5, 6, 255] {
+        assert!(types.contains(&t), "type byte {t}");
+    }
+    // A presence byte of 2, 0x80 or 0xFF is a class, as 1 is (UnityPy's
+    // `if stream.read(1)[0]`): each picks a tree; 0 is the class removed.
+    let presence = case("presence_bytes");
+    let trees = |class: usize| -> Vec<bool> {
+        let record = &presence["classes"][class];
+        record["picks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                record["outcomes"][usize::try_from(p.as_u64().unwrap()).unwrap()]["rows"].is_array()
+            })
+            .collect()
+    };
+    assert_eq!(trees(0), [false, true, false, true, true]);
+    assert_eq!(trees(1), [false, true, true, true, true]);
+}
+
+/// UnityPy builds the 300-deep chain; with the default limits (a depth of
+/// 256) the provider refuses it with a `TreeDepth` limit error naming the
+/// first depth past the limit (the root's is 1), from the node list and the
+/// tree alike, never a wrapped level or a shorter tree (a safety divergence,
+/// plan 2.4's F3).
+#[test]
+fn a_tree_deeper_than_the_limit_is_an_error_not_a_wrap() {
+    let case = case("deep_chain_300");
+    let bytes = hex(case["tpk"].as_str().unwrap());
+    let v = version(&case["versions"][0]);
+    for depth in [256, 299] {
+        let provider = TpkProvider::from_bytes(&bytes, &limits(depth)).unwrap();
+        let want = LimitError {
+            kind: LimitKind::TreeDepth,
+            value: u64::from(depth) + 1,
+            max: u64::from(depth),
+        };
+        let list = provider.node_list(1, &v).unwrap_err();
+        assert_eq!(list.limit, Some(want), "depth {depth}: {list}");
+        assert_eq!(&*list.detail, want.to_string(), "depth {depth}");
+        let req = TreeRequest {
+            class_id: 1,
+            version: &v,
+            script: None,
+        };
+        let tree = provider.tree(&req).unwrap_err();
+        assert_eq!(tree.limit, Some(want), "depth {depth}: {tree}");
+    }
+    let provider = TpkProvider::from_bytes(&bytes, &limits(300)).unwrap();
+    let list = provider.node_list(1, &v).unwrap().unwrap();
+    let levels: Vec<i32> = list.rows().iter().map(|r| r.level).collect();
+    assert_eq!(levels, (0..300).collect::<Vec<i32>>());
+}
+
+/// UnityPy's `NODES_CACHE` holds one tree per class record, and a record's
+/// release root is all its walk reads; the provider answers every version
+/// that picks one entry with the same `Arc`, and an entry of another
+/// release root with another.
+#[test]
+fn two_versions_that_pick_one_entry_share_one_node_list() {
+    let provider = open(&case("entries")).unwrap();
+    let at = |major: u64, minor: u64| {
+        UnityVersion::from_packed((major << 48) | (minor << 32) | (3 << 8) | 1)
+    };
+    let a = provider.node_list(50, &at(2017, 0)).unwrap().unwrap();
+    let b = provider.node_list(50, &at(2017, 3)).unwrap().unwrap();
+    let c = provider.node_list(50, &at(2019, 0)).unwrap().unwrap();
+    assert!(Arc::ptr_eq(&a, &b));
+    assert!(!Arc::ptr_eq(&a, &c));
+    // 2018 picks the entry that removes the class: no tree, and no stepping
+    // back to the 2017 entry.
+    assert!(provider.node_list(50, &at(2018, 0)).unwrap().is_none());
+}
+
+#[test]
+fn the_provider_is_named_tpk_and_takes_no_script_requests() {
+    let provider = open(&case("root_flags")).unwrap();
+    assert_eq!(provider.name(), "tpk");
+    assert!(!provider.accepts_scripts());
+}
+
+/// Every request maps to a tree exactly where UnityPy builds a node list,
+/// and two versions that pick one entry get one `Arc<Tree>` (plan 3.12).
+#[test]
+fn the_provider_answers_trees_where_unitypy_builds_them_and_shares_each() {
+    for case in synthetic() {
+        if case["load"].is_string() || case.get("refused").is_some() {
+            continue;
+        }
+        let provider = open(&case).unwrap();
+        for record in case["classes"].as_array().unwrap() {
+            let class_id = i32::try_from(record["class"].as_i64().unwrap()).unwrap();
+            for v in case["versions"].as_array().unwrap() {
+                let v = version(v);
+                let req = TreeRequest {
+                    class_id,
+                    version: &v,
+                    script: None,
+                };
+                let list = provider.node_list(class_id, &v);
+                match (provider.tree(&req), list) {
+                    (Ok(Some(tree)), Ok(Some(list))) => assert!(Arc::ptr_eq(tree.list(), &list)),
+                    (Ok(None), Ok(None)) => {}
+                    (Err(tree), Err(list)) => assert_eq!(tree, list, "class {class_id}"),
+                    (tree, list) => panic!("class {class_id}: tree {tree:?}, node list {list:?}"),
+                }
+            }
+        }
+    }
+    let provider = open(&case("entries")).unwrap();
+    let at = |minor: u64| UnityVersion::from_packed((2017 << 48) | (minor << 32) | (3 << 8) | 1);
+    let (v0, v3) = (at(0), at(3));
+    let ask = |v| {
+        provider
+            .tree(&TreeRequest {
+                class_id: 50,
+                version: v,
+                script: None,
+            })
+            .unwrap()
+            .unwrap()
+    };
+    assert!(Arc::ptr_eq(&ask(&v0), &ask(&v3)));
+}
+
+/// The Python that runs the oracle, if this is the oracle image. A probe
+/// the system kills from outside is run again (`unityrs_testkit::child`),
+/// so a kill does not skip the test.
+fn python() -> Option<String> {
+    let candidates = std::env::var("UNITYRS_PYTHON").map_or_else(
+        |_| vec!["python3".to_owned(), "python".to_owned()],
+        |p| vec![p],
+    );
+    candidates.into_iter().find(|p| {
+        child::output(Command::new(p).args(["-c", "import UnityPy"]))
+            .is_ok_and(|o| o.status.success())
+    })
+}
+
+/// G7 on UnityPy's own TPK (module docs).
+#[test]
+fn image_tpk() {
+    let required = std::env::var_os("UNITYRS_ORACLE_TPK").map(PathBuf::from);
+    let python = python();
+    let tpk = match (&required, &python) {
+        (Some(path), _) => path.clone(),
+        (None, Some(python)) => {
+            let out = child::output(Command::new(python)
+                .args(["-c", "import os, UnityPy; print(os.path.join(os.path.dirname(UnityPy.__file__), 'resources', 'lzma.tpk'))"]))
+                .unwrap();
+            assert!(out.status.success());
+            PathBuf::from(String::from_utf8(out.stdout).unwrap().trim())
+        }
+        (None, None) => {
+            eprintln!(
+                "image_tpk: skipped, not in the oracle image (no Python with UnityPy, UNITYRS_ORACLE_TPK unset)"
+            );
+            return;
+        }
+    };
+    let len = std::fs::metadata(&tpk).map_or(0, |m| m.len());
+    assert!(len > 0, "{}: missing or empty", tpk.display());
+    // UnityPy's outcomes: the job's file, or one the image's Python writes
+    // now (removed when the test ends).
+    let made = if std::env::var_os("UNITYRS_ORACLE_TPK_OUTCOMES").is_some() {
+        None
+    } else {
+        assert!(
+            required.is_none(),
+            "UNITYRS_ORACLE_TPK is set without UNITYRS_ORACLE_TPK_OUTCOMES"
+        );
+        let python = python.unwrap();
+        let made = tempfile(&format!("unityrs-g7-{}.jsonl", std::process::id()));
+        let status = child::status(
+            Command::new(&python)
+                .arg(root().join("tools/fixtures/tpk.py"))
+                .arg("--outcomes")
+                .arg(&made.0)
+                .arg("--tpk")
+                .arg(&tpk),
+        )
+        .unwrap();
+        assert!(status.success(), "tools/fixtures/tpk.py --outcomes failed");
+        Some(made)
+    };
+    let outcomes = made.as_ref().map_or_else(
+        || PathBuf::from(std::env::var_os("UNITYRS_ORACLE_TPK_OUTCOMES").unwrap()),
+        |m| m.0.clone(),
+    );
+    let text = std::fs::read_to_string(&outcomes)
+        .unwrap_or_else(|e| panic!("{}: {e}", outcomes.display()));
+    assert!(!text.is_empty(), "{}: empty", outcomes.display());
+    let records: Vec<J> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let provider = TpkProvider::open(&tpk).unwrap();
+    let (tail, classes) = records.split_last().unwrap();
+    let pairs = compare(&provider, &records[0], classes[1..].iter(), tail);
+    let class_count = provider.class_count();
+    eprintln!(
+        "image_tpk: {class_count} classes, {pairs} (class, version) pairs, every outcome UnityPy's"
+    );
+}
+
+/// A file in a scratch folder of its own, removed with it when dropped
+/// (`unityrs_testkit::scratch`).
+struct TempFile(
+    PathBuf,
+    #[allow(dead_code, reason = "held for its drop, which removes the folder")] Scratch,
+);
+
+fn tempfile(name: &str) -> TempFile {
+    let dir = Scratch::new("tpk-g7");
+    TempFile(dir.join(name), dir)
+}

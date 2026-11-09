@@ -9,10 +9,8 @@ tests were split from. Needs UnityPy 1.25.2 (the oracle image); skipped elsewher
 """
 
 import json
-import shutil
 import struct
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +20,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
+import scratch  # noqa: E402
 from export_support import element, index_buffer, submeshes, vertex_data  # noqa: E402
 from rows_support import ORACLE, load  # noqa: E402
 from test_rows_objects import VERSION, pptr, tpk_file, tpk_object  # noqa: E402
@@ -39,8 +38,7 @@ if ORACLE:
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class ExportRows(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="unityrs-exports-"))
-        self.addCleanup(shutil.rmtree, self.tmp)
+        self.tmp = scratch.for_case(self, "unityrs-exports-")
 
     # Section 15.1: get_image_from_texture2d's arguments; what image_to_texture2d and compress_astc do on the way.
     def test_texture_conversion(self):

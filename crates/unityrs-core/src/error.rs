@@ -1,0 +1,340 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/BundleFile.py, UnityPy/environment.py, UnityPy/files/File.py, UnityPy/files/ObjectReader.py, UnityPy/files/SerializedFile.py, UnityPy/helpers/CompressionHelper.py, UnityPy/helpers/ContainerHelper.py, UnityPy/helpers/ResourceReader.py. See THIRD_PARTY_LICENSES.
+//! The file-level error type.
+//!
+//! Object-level outcomes (the canonical dump's L2 kinds) are
+//! [`crate::walk::ParseError`]; the writer's are [`crate::walk::WriteError`].
+//! `Error` is `Clone` because a lazily computed result, published once into
+//! a `OnceLock`, is handed to every later caller.
+//!
+//! Owner: the scaffold (frozen). A package that needs a new variant asks the
+//! integration package; `#[non_exhaustive]` keeps that additive.
+
+use std::sync::Arc;
+
+use crate::budget::BudgetExceeded;
+use crate::codec::Codec;
+use crate::detect::DetectError;
+use crate::limits::{ChargeError, heap_cost};
+use crate::once::CellError;
+use crate::raw::RawStr;
+use crate::typetree::TreeError;
+use crate::version::VersionError;
+use crate::walk::ParseError;
+
+/// Why loading a file failed. Never a panic.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum Error {
+    /// `check_file_type` raised (the dump's `"detect"`).
+    #[error("detection: {0}")]
+    Detect(#[from] DetectError),
+    /// A read past the end where UnityPy raises too (`struct.error`, `EOFError`).
+    #[error("{what}: out of bounds at {pos} (need {need}, have {have})")]
+    OutOfBounds {
+        /// What was being read.
+        what: &'static str,
+        /// The reader's position at the read: a Python position, which may be
+        /// negative or past the end ([`crate::stream::Reader::position`]).
+        pos: i128,
+        /// Bytes needed.
+        need: u64,
+        /// Bytes left.
+        have: u64,
+    },
+    /// Input UnityPy rejects with an exception other than a short read.
+    #[error("malformed {what}: {detail}")]
+    Malformed {
+        /// What was being read.
+        what: &'static str,
+        /// The detail, for people. Shared, so a clone allocates nothing.
+        detail: Arc<str>,
+    },
+    /// A format or feature unityrs does not read (yet), each named.
+    #[error("unsupported: {0}")]
+    Unsupported(Unsupported),
+    /// A block failed to decode.
+    #[error("{codec:?} block: {detail}")]
+    Decompress {
+        /// The block's codec.
+        codec: Codec,
+        /// The decoder's message. Shared, so a clone allocates nothing.
+        detail: Arc<str>,
+    },
+    /// A version string did not parse, or no fallback was set.
+    #[error(transparent)]
+    Version(#[from] VersionError),
+    /// From format 16, an object's `type_id` outside `types` (Python indexing:
+    /// negative counts from the end; `ObjectReader.py:98-101`).
+    #[error("type index {index} out of range ({len} types)")]
+    TypeIndex {
+        /// The object's `type_id`.
+        index: i32,
+        /// How many types the file has.
+        len: usize,
+    },
+    /// A typetree's rows could not be built into a tree, or the tree is over a limit.
+    #[error(transparent)]
+    Tree(#[from] TreeError),
+    /// The AssetBundle object read at load failed, which fails the file
+    /// (`SerializedFile.py:316-324`; `CANONICAL_DUMP.md` section 7).
+    #[error("AssetBundle: {0}")]
+    AssetBundle(Arc<ParseError>),
+    /// A bundle entry failed, which fails the bundle (`File.py:76-90`).
+    #[error("entry {name}: {source}")]
+    Entry {
+        /// The entry's directory path.
+        name: RawStr,
+        /// Why it failed.
+        source: Arc<Error>,
+    },
+    /// A bound from [`crate::limits::Limits`] was exceeded (the input's
+    /// meter included: [`LimitKind::InputMemory`]).
+    #[error(transparent)]
+    Limit(#[from] LimitError),
+    /// The memory budget refused a reservation, or the allocator failed.
+    #[error(transparent)]
+    Budget(#[from] BudgetExceeded),
+    /// A CAB, external, object or resource that is not there.
+    #[error("not found: {0}")]
+    NotFound(NotFound),
+    /// A pointer that could not be followed where the caller raises it (the
+    /// container preload, `helpers/ContainerHelper.py:43-46`, plan 3.13).
+    /// A failure to load the target is that load's own error, never this.
+    #[error(transparent)]
+    Deref(Arc<crate::env::DerefError>),
+    /// An I/O error from a source.
+    #[error("io: {0}")]
+    Io(IoError),
+}
+
+/// An I/O error, shared because [`Error`] is `Clone`. `std::io::Error` has
+/// no equality, so two are equal when their kinds and OS error codes are.
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct IoError(pub Arc<std::io::Error>);
+
+impl PartialEq for IoError {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.kind() == other.0.kind() && self.0.raw_os_error() == other.0.raw_os_error()
+    }
+}
+
+impl Eq for IoError {}
+
+const _: () = crate::send_sync::<IoError>();
+
+impl From<ChargeError> for Error {
+    fn from(e: ChargeError) -> Self {
+        match e {
+            ChargeError::Limit(l) => Self::Limit(l),
+            ChargeError::Budget(b) => Self::Budget(b),
+        }
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(IoError(Arc::new(e)))
+    }
+}
+
+/// [`heap_cost`] of `n` bytes.
+pub(crate) fn heap_of(n: usize) -> u64 {
+    heap_cost(u64::try_from(n).unwrap_or(u64::MAX))
+}
+
+/// [`heap_cost`] of an `Arc` of `n` bytes: its two counts and the bytes.
+pub(crate) fn arc_heap_of(n: usize) -> u64 {
+    heap_of(n.saturating_add(2 * size_of::<usize>()))
+}
+
+impl ChargeError {
+    /// Whether the refusal depends on what else is held (a budget, or the
+    /// input's meter), not on the input alone ([`crate::once`]).
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Budget(_) => true,
+            Self::Limit(l) => l.kind == LimitKind::InputMemory,
+        }
+    }
+
+    /// Whether the input's own meter refused ([`LimitKind::InputMemory`]),
+    /// not the budget ([`crate::once::CellError::is_meter_refusal`]).
+    #[must_use]
+    pub fn is_meter_refusal(&self) -> bool {
+        matches!(self, Self::Limit(l) if l.kind == LimitKind::InputMemory)
+    }
+}
+
+impl CellError for Error {
+    fn is_transient(&self) -> bool {
+        match self {
+            Self::Budget(_) | Self::Io(_) => true,
+            Self::Limit(l) => l.kind == LimitKind::InputMemory,
+            Self::Tree(t) => t.is_transient(),
+            Self::AssetBundle(p) => p.is_transient(),
+            Self::Entry { source, .. } => source.is_transient(),
+            Self::Deref(d) => d.is_transient(),
+            _ => false,
+        }
+    }
+
+    fn is_meter_refusal(&self) -> bool {
+        match self {
+            Self::Limit(l) => l.kind == LimitKind::InputMemory,
+            Self::Tree(t) => t.is_meter_refusal(),
+            Self::AssetBundle(p) => p.is_meter_refusal(),
+            Self::Entry { source, .. } => source.is_meter_refusal(),
+            Self::Deref(d) => d.is_meter_refusal(),
+            _ => false,
+        }
+    }
+
+    fn heap_bytes(&self) -> u64 {
+        match self {
+            Self::Detect(DetectError::Gzip(d)) => arc_heap_of(d.len()),
+            Self::Malformed { detail, .. } | Self::Decompress { detail, .. } => {
+                arc_heap_of(detail.len())
+            }
+            Self::Version(VersionError::NoMatch(r))
+            | Self::NotFound(NotFound::Cab(r) | NotFound::Resource(r)) => heap_of(r.len()),
+            Self::Tree(t) => t.heap_bytes(),
+            Self::AssetBundle(p) => {
+                arc_heap_of(size_of::<ParseError>()).saturating_add(p.heap_bytes())
+            }
+            Self::Entry { name, source } => heap_of(name.len())
+                .saturating_add(arc_heap_of(size_of::<Self>()))
+                .saturating_add(source.heap_bytes()),
+            Self::Deref(d) => {
+                arc_heap_of(size_of::<crate::env::DerefError>()).saturating_add(d.heap_bytes())
+            }
+            _ => 0,
+        }
+    }
+
+    fn work_refused(limit: LimitError) -> Self {
+        Self::Limit(limit)
+    }
+}
+
+/// Formats and features that are named and refused, never guessed at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum Unsupported {
+    /// The `UnityArchive` signature; UnityPy raises too (`files/BundleFile.py:41`).
+    #[error("UnityArchive bundles")]
+    UnityArchive,
+    /// LZHAM blocks; UnityPy raises too (`CompressionHelper.py:234-235`).
+    #[error("LZHAM compression")]
+    Lzham,
+    /// A compression type no codec is registered for (`files/BundleFile.py:515-521`).
+    #[error("compression type {0}")]
+    Codec(u8),
+    /// UnityWeb and UnityRaw outside format 6: P3.
+    #[error("the UnityWeb/UnityRaw layout")]
+    WebRawLayout,
+    /// `WebFile` (`UnityWebData`, `TuanjieWebData`): P3.
+    #[error("WebFile")]
+    WebFile,
+    /// An encrypted bundle without a decryptor (UnityCN: P3).
+    #[error("an encrypted bundle without a decryptor")]
+    Encrypted,
+    /// A file inside a zip: P3.
+    #[error("zip members")]
+    Zip,
+    /// The parts of a split file (`name.split0`, `name.split1`, ...), which
+    /// UnityPy joins before it reads them (`environment.py:25`, `:111-116`,
+    /// `:126-127`): P3. Refused before anything is read
+    /// ([`crate::pystr::is_split_path`]).
+    #[error("split files (.splitN)")]
+    Split,
+    /// `obj.container` for an object of a dependency the Environment may
+    /// evict, whose paths an eviction would drop
+    /// ([`crate::env::Environment::container_path`]).
+    #[error("obj.container of an evictable dependency's object")]
+    EvictableContainerPath,
+}
+
+/// Which bound was exceeded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum LimitKind {
+    /// [`crate::limits::Limits::max_input_memory`]: the input's meter.
+    InputMemory,
+    /// [`crate::limits::Limits::max_input_bytes`].
+    InputBytes,
+    /// [`crate::limits::Limits::max_block_output`].
+    BlockOutput,
+    /// [`crate::limits::Limits::max_decode_work`]: every byte block decodes
+    /// wrote since the input was opened, and what lazy computations the
+    /// meter refused were granted.
+    DecodeWork,
+    /// [`crate::limits::Limits::max_inflate`].
+    Inflate,
+    /// [`crate::limits::Limits::max_container_depth`].
+    ContainerDepth,
+    /// [`crate::limits::Limits::max_tree_depth`].
+    TreeDepth,
+    /// [`crate::limits::Limits::max_value_depth`].
+    ValueDepth,
+    /// [`crate::limits::Limits::max_values_per_object`].
+    ValuesPerObject,
+    /// [`crate::limits::Limits::max_zero_size_elements`].
+    ZeroSizeElements,
+    /// More nodes, types, objects or ref-type trees than an index type holds.
+    Count,
+}
+
+/// A bound that was exceeded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("limit {kind:?}: {value} > {max}")]
+pub struct LimitError {
+    /// Which bound.
+    pub kind: LimitKind,
+    /// The value that crossed it.
+    pub value: u64,
+    /// The bound.
+    pub max: u64,
+}
+
+/// What was not found.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum NotFound {
+    /// No CAB or file of that name, loaded or loadable: what a
+    /// [`crate::env::CabResolver::find_file`] returns where UnityPy's
+    /// `find_file` walk raises `FileNotFoundError`.
+    #[error("CAB {0}")]
+    Cab(RawStr),
+    /// No resource under any of UnityPy's candidate names (`ResourceReader.py:10-33`).
+    #[error("resource {0}")]
+    Resource(RawStr),
+    /// A source the environment has no slot for.
+    #[error("source {0}")]
+    Source(u32),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn a_short_read_reports_a_negative_position() {
+        // A one-byte read at -1 (`view[-1:0]` is empty) raises at position -1.
+        let e = Error::OutOfBounds {
+            what: "u8",
+            pos: -1,
+            need: 1,
+            have: 0,
+        };
+        assert_eq!(e.to_string(), "u8: out of bounds at -1 (need 1, have 0)");
+        let far = Error::OutOfBounds {
+            what: "u8",
+            pos: i128::from(i64::MAX) + 144,
+            need: 1,
+            have: 0,
+        };
+        assert!(far.to_string().contains("9223372036854775951"));
+    }
+}

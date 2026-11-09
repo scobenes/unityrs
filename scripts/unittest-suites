@@ -16,15 +16,21 @@ where every test has what it needs, so a suite fails when:
 Every suite runs, and each failure is reported. Exit status: 0 when every
 suite passed, 1 when any failed, 2 for a usage error. Under GitHub Actions
 each suite's log is folded into a group and each failure is an error
-annotation. Standard library only.
+annotation. A suite's process the system kills from outside (SIGKILL) is run
+again, and each run's scratch is removed however it ends
+(tools/parity/child.py and scratch.py). Standard library only.
 """
 
 from __future__ import annotations
 
 import os
 import re
-import subprocess
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "parity"))
+
+import child  # noqa: E402
 
 RAN = re.compile(r"Ran (\d+) tests? in ")
 
@@ -67,10 +73,10 @@ def main(argv=None) -> int:
     failed = []
     for suite, minimum in suites:
         print(f"::group::{suite}" if actions else f"== {suite}", flush=True)
-        proc = subprocess.run(
+        proc = child.run(
             [sys.executable, "-m", "unittest", "discover", "-s", suite, "-v"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stdout=child.PIPE,
+            stderr=child.STDOUT,
             text=True,
             errors="replace",
         )

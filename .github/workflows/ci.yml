@@ -32,6 +32,15 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      # G6 (docs/plans/core.md section 6): no stub is left in any crate.
+      - name: No stub is left (G6)
+        run: sh scripts/stub-check.sh
+      # No unmanageable files: no tracked Rust or Python file over 800 lines
+      # outside scripts/file-size-allowlist.txt (generated tables and fixture
+      # generators), and every entry there with its reason, within its limit
+      # and its pin.
+      - name: No file is over 800 lines
+        run: sh scripts/file-size-check.sh
 
   licenses:
     runs-on: ubuntu-latest
@@ -101,13 +110,15 @@ jobs:
             -r scripts/requirements-tests.txt
       # A skipped test, or fewer tests than the minimum, fails the job.
       - name: Self-tests (scripts)
-        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=18'
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=94'
 
   # The parity tools' Python side, on the pinned oracle stack (docs/DESIGN.md
-  # section 3) and with UnityPy's samples, so the tests that need them run.
+  # section 3) and with UnityPy's samples, so the tests that need them run;
+  # what core takes from the oracle: the generated tables and G7; and the
+  # gate's rows that need no corpus: UnityPy's samples, G2 and G3.
   parity-py:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     defaults:
       run:
         # bash -eo pipefail: a step fails at its first failing command.
@@ -155,15 +166,84 @@ jobs:
       # needs: a skipped test, or a suite running fewer tests than it holds
       # (a module discovery no longer finds), fails the job. Raise a minimum
       # when a suite gains tests; scripts/unittest-suites prints each count.
-      - name: Self-tests (parity tools and the spikes' scripts)
+      # gen_tables.py compares Python's lower case with Rust's from a program
+      # it compiles, and tpk.py --check runs unityrs-tpk's G7 test: both need
+      # the pinned toolchain.
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: The generated tables equal what the oracle generates
+        run: python tools/gen/gen_tables.py --check
+      # Every citation of UnityPy's source in the repository, bare `:N` lines
+      # included, names a whole span of lines of 1.25.2 (the oracle's, whose
+      # files the script checks against the wheel's digest), and every file
+      # under a crate's src/ that cites one has a "Ported from" or "Generated
+      # by ... from UnityPy 1.25.2" header, as about.hbs says. UnityPyBoost's
+      # sources are not in the wheel; scripts/unitypy_boost.py pins their line
+      # counts, digests, blank lines, top-level definitions and brace depths,
+      # and a C++ range cuts no definition and no brace block (its statements
+      # are not read).
+      - name: UnityPy citations name lines of 1.25.2, and the files citing them say they port it
+        run: python scripts/unitypy_citations.py
+      # The committed synthetic fixtures, then G7 on UnityPy's own TPK: its
+      # outcomes are written outside the checkout and nothing is committed.
+      # The test fails, never skips, once the job has set UNITYRS_ORACLE_TPK.
+      - name: G7, the TPK provider against UnityPy's Tpk.py
+        run: python tools/fixtures/tpk.py --check
+      # Core's other recorded oracle fixtures, replayed by cargo test without
+      # Python: each script regenerates its fixtures in memory and fails
+      # naming any that drifted from it (files.py and env.py build their
+      # inputs with unityrs-testkit, so they need the toolchain too). Every
+      # tools/fixtures/*.py run as a program is listed here or in G7's step;
+      # the rest are modules a listed script imports (walk.py records
+      # through walk_build.py, walk_elements.py, walk_mirror.py,
+      # walk_reentry.py and walk_runs.py, env.py through env_paths.py and
+      # env_race.py, dump.py through dump_inputs.py, tpk.py through
+      # tpk_build.py), as scripts/tests/test_ci_workflow.py checks, and each
+      # module also runs on its own (tools/parity/tests/test_fixture_modules.py).
+      # no_tree.py reads with tpk.py's synthetic TPKs, unityrs-tpk's test
+      # replays it.
+      - name: The scaffold's and packages B to E's oracle fixtures are current
+        run: |
+          python tools/fixtures/scaffold.py --check
+          python tools/fixtures/pure_python_rules.py --check
+          python tools/fixtures/walk.py --check
+          python tools/fixtures/files.py --check
+          python tools/fixtures/env.py --check
+          python tools/fixtures/dump.py --check
+          python tools/fixtures/index.py --check
+          python tools/fixtures/folders.py --check
+          python tools/fixtures/no_tree.py --check
+      - name: Self-tests (parity tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=333
-          crates/unityrs-spike-rabex/scripts/tests=19
+          tools/parity/tests=429
           crates/unityrs-bench-lzma=8
-      # A smoke test that the oracle runs here; the unityrs side is compared later.
-      - name: Dump the samples with the oracle and compare the dump with itself
+      # The gate's rows that need no corpus (docs/plans/core.md sections 6
+      # and 10), each a unityrs dump compared with the oracle's: compare.py
+      # and value_cases.py exit non-zero on any difference, and compare.py's
+      # --oracle refuses a reference the oracle did not write on the pinned
+      # stack. TPK is the oracle's own, which UnityPy reads for a stripped
+      # object.
+      - name: Build unityrs and the matrix writer (release)
+        run: |
+          cargo build --release --locked -p unityrs-cli
+          cargo build --release --locked -p unityrs-dump --example write_matrix
+          unitypy=$(python -c 'import os, UnityPy; print(os.path.dirname(UnityPy.__file__))')
+          echo "TPK=$unitypy/resources/lzma.tpk" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/dumps"
+      - name: UnityPy's samples, dumped by the oracle and by unityrs, compare equal
         run: |
           python tools/parity/unitypy_dump.py "$UNITYRS_UNITYPY_SAMPLES" -q -o "$RUNNER_TEMP/dumps/samples.jsonl.gz"
-          python tools/parity/compare.py "$RUNNER_TEMP/dumps/samples.jsonl.gz" "$RUNNER_TEMP/dumps/samples.jsonl.gz" \
-            --json "$RUNNER_TEMP/dumps/report.json"
+          target/release/unityrs dump "$UNITYRS_UNITYPY_SAMPLES" -q --tpk "$TPK" \
+            -o "$RUNNER_TEMP/dumps/samples-unityrs.jsonl.gz"
+          python tools/parity/compare.py --oracle "$RUNNER_TEMP/dumps/samples.jsonl.gz" \
+            "$RUNNER_TEMP/dumps/samples-unityrs.jsonl.gz" --json "$RUNNER_TEMP/dumps/samples-report.json"
+      - name: G2, the value cases through `unityrs values`
+        run: python tools/parity/value_cases.py target/release/unityrs
+      - name: G3, the synthetic matrix dumped by the oracle and by unityrs, compare equal
+        run: |
+          target/release/examples/write_matrix "$RUNNER_TEMP/g3"
+          python tools/parity/unitypy_dump.py "$RUNNER_TEMP/g3" -q -o "$RUNNER_TEMP/dumps/g3.jsonl.gz"
+          target/release/unityrs dump "$RUNNER_TEMP/g3" -q --tpk "$TPK" -o "$RUNNER_TEMP/dumps/g3-unityrs.jsonl.gz"
+          python tools/parity/compare.py --oracle "$RUNNER_TEMP/dumps/g3.jsonl.gz" \
+            "$RUNNER_TEMP/dumps/g3-unityrs.jsonl.gz"

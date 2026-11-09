@@ -1,0 +1,28 @@
+Python's standard library in unityrs, and the changes made to it
+----------------------------------------------------------------
+
+These files of the unityrs repository translate code of Python 3.11's
+standard library (CPython 3.11) to Rust:
+- crates/unityrs-core/src/detect.rs: Lib/gzip.py's _read_exact,
+  _read_gzip_header, _GzipReader.read and _GzipReader._read_eof, how gzip
+  detection reads each member's header, inflates it and checks its trailer;
+- crates/unityrs-core/src/pystr.rs: Lib/ntpath.py's splitdrive and split
+  (for basename), and Lib/genericpath.py's _splitext (for splitext);
+- crates/unityrs-dump/src/select/glob.rs: Lib/fnmatch.py's translate, and the
+  character set of Lib/re/_parser.py's _parse;
+- crates/unityrs-dump/src/select/index.rs: Modules/_json.c's
+  scan_once_unicode, _match_number_unicode, scanstring_unicode,
+  _parse_array_unicode and _parse_object_unicode;
+- crates/unityrs-cli/src/args/mod.rs: Lib/argparse.py's
+  ArgumentParser._parse_known_args (with its consume_optional),
+  _parse_optional, _get_option_tuples and _negative_number_matcher.
+
+The changes made to them: each is rewritten in Rust and keeps only what
+unityrs uses of it. The path rules work on bytes, the glob on code points
+and the JSON reader on the index's UTF-8 text, where Python works on str
+objects. A failure is an error value where Python raises. The gzip reader
+keeps only the first 20 bytes it inflates and the length of the whole, and
+stops at unityrs's inflate bound and the open's work. The glob is matched by
+a wildcard matcher where Python compiles a regular expression. The JSON
+reader builds the values an index holds, as Python's json.loads does. The
+argument parser parses the dump's own options, with unityrs's extensions.

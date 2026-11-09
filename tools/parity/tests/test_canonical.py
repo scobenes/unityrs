@@ -21,6 +21,13 @@ class Node:
         self.m_Type, self.m_Name, self.m_Children = m_Type, m_Name, list(children)
 
 
+class RefType:
+    """A duck-typed SerializedType of `ref_types`."""
+
+    def __init__(self, cls, ns, asm, node):
+        self.m_ClassName, self.m_NameSpace, self.m_AssemblyName, self.node = cls, ns, asm, node
+
+
 def vec(name, elem):
     return Node("vector", name, [Node("Array", "Array", [Node("int", "size"), elem])])
 
@@ -106,8 +113,8 @@ class Scalars(unittest.TestCase):
 
 
 class Values(unittest.TestCase):
-    def enc(self, value, node, resolve=None):
-        return C.ValueEncoder(resolve).encode(value, node)
+    def enc(self, value, node, ref_types=None):
+        return C.ValueEncoder(ref_types).encode(value, node)
 
     def test_golden_line(self):
         # Pinned bytes for a Rust producer: every tag in one record.
@@ -209,18 +216,15 @@ class Values(unittest.TestCase):
                 Node("ReferencedObjectData", "data"),
             ],
         )
-        seen = []
-
-        def resolve(t):
-            seen.append(t)
-            return data_node
-
+        other = Node("Bar", "data", [Node("double", "x")])
+        ref_types = [RefType("Bar", "", "A", other), RefType("Foo", "", "A", data_node)]
         value = {"rid": 1, "type": {"class": "Foo", "ns": "", "asm": "A"}, "data": {"x": 1.0}}
-        out = self.enc(value, ref, resolve)
+        out = self.enc(value, ref, ref_types)
         self.assertEqual(out["v"][2], ["data", {"t": "dict", "v": [["x", {"t": "f32", "v": "3f800000"}]]}])
-        self.assertEqual(seen, [{"class": "Foo", "ns": "", "asm": "A"}])
-        with self.assertRaises(C.EncodeError):
-            self.enc(value, ref, None)
+        # A file without ref types, or without this one, cannot have given UnityPy the data.
+        for missing in (None, [], ref_types[:1]):
+            with self.subTest(ref_types=missing), self.assertRaises(C.EncodeError):
+                self.enc(value, ref, missing)
 
 
 class Decoding(unittest.TestCase):
@@ -322,8 +326,12 @@ class CanonicalForm(unittest.TestCase):
             "ZIP": ("raw",),
             "error": (),
         }
-        for typ in C.L0_TYPES:
-            for parsed in C.L0_PARSED_AS:
+        # Section 4.2's lists, written out here: read from `C`, a value dropped from the checker passed this test.
+        parsed_as = ("SerializedFile", "BundleFile", "WebFile", "raw", "zip", "error")
+        self.assertEqual(sorted(C.L0_TYPES), sorted(entry_ok))
+        self.assertEqual(sorted(C.L0_PARSED_AS), sorted(parsed_as))
+        for typ in entry_ok:
+            for parsed in parsed_as:
                 on_input = (
                     parsed in entry_ok[typ]
                     and typ != "ZIP"
@@ -362,6 +370,8 @@ class CanonicalForm(unittest.TestCase):
             ("error", "crash", []),
             ("AssetsFile", "parse", []),
             ("AssetsFile", "crash", []),
+            ("error", "dumper", []),
+            ("AssetsFile", "dumper", []),
             ("error", "parse", [("error.kind", "error_mismatch")]),
             ("BundleFile", "detect", [("error.kind", "error_mismatch")]),
             ("AssetsFile", "boom", [("error.kind", "unknown_value")]),
@@ -376,7 +386,10 @@ class CanonicalForm(unittest.TestCase):
             "l2": {"root_type": "T", "source": "tpk", "error": None, "value": None},
             "l3": None,
         }
-        for kind in C.L2_ERROR_KINDS:
+        # Section 4.3's list, written out here for the same reason.
+        l2_kinds = ("no_typetree", "check_read", "out_of_bounds", "negative_length", "ref_type", "encode", "other")
+        self.assertEqual(sorted(C.L2_ERROR_KINDS), sorted(l2_kinds))
+        for kind in l2_kinds:
             obj["l2"]["error"] = {"kind": kind, "bytes_read": 4 if kind == "check_read" else None}
             obj["l2"]["value"] = 1 if kind == "check_read" else None
             self.assertEqual(kinds(obj, ("L0", "L2")), [], kind)

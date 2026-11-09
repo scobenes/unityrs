@@ -1,0 +1,25 @@
+[package]
+name = "unityrs-tpk"
+description = "A TPK (type-tree package) loaded from a path, as a unityrs-core typetree provider."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# It ports UnityPy 1.25.2's helpers/Tpk.py (MIT), so UnityPy's notice is its
+# LICENSE-UNITYPY (a link to unityrs-core's), which its package carries. See
+# THIRD_PARTY_LICENSES and docs/plans/core.md section 2.5.
+license = "(MIT OR Apache-2.0) AND MIT"
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+unityrs-core = { path = "../unityrs-core" }
+thiserror = "=2.0.21"
+
+[dev-dependencies]
+unityrs-testkit = { path = "../unityrs-testkit" }
+# G7's fixtures (tests/fixtures/) and UnityPy's outcomes on the oracle image's
+# TPK are JSON.
+serde_json = "=1.0.154"
+
+[lints]
+workspace = true

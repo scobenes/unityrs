@@ -5,7 +5,11 @@ publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# It finds blocks by UnityPy 1.25.2's BundleFile.read_fs and reads LZMA
+# properties as its decompress_lzma does (MIT: unityfs.rs, codec.rs), whose
+# notice is its LICENSE-UNITYPY (a link to unityrs-core's). See
+# THIRD_PARTY_LICENSES and docs/plans/core.md section 2.5.
+license = "(MIT OR Apache-2.0) AND MIT"
 repository.workspace = true
 authors.workspace = true
 
