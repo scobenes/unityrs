@@ -149,6 +149,19 @@ class DumpCliTests(DumpCase):
         finally:
             stats.unlink(missing_ok=True)
 
+    def test_an_empty_stats_path_writes_no_stats(self):
+        """`output_path(args.stats) if args.stats else None`: an empty --stats, the last one given included, is no
+        stats. The dump is written and the run exits 0, as unityrs's parser takes it (its `args/tests.rs`)."""
+        src = self.tmp / "in"
+        src.mkdir()
+        (src / "tiny").write_bytes(b"tiny")
+        for n, given in enumerate((["--stats", ""], ["--stats="], ["--stats", self.tmp / "s.json", "--stats="])):
+            out = self.tmp / f"x{n}.jsonl"
+            with self.subTest(given=given):
+                self.assertEqual(dump(src, "-o", out, *given), 0)
+                self.assertEqual(records(out)[-1], {"rec": "end", "files": 1, "objects": 0})
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["in", "x0.jsonl", "x1.jsonl", "x2.jsonl"])
+
     def test_refuses_outputs_that_would_overwrite_each_other_or_an_input(self):
         """The dump, its .partial file and the stats are written in turn; none may be another, an input or the index.
 

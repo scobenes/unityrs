@@ -32,6 +32,8 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 
 use unityrs_core::LimitKind;
+use unityrs_core::tables::nd_digit;
+use unityrs_core::version::PY_INT_MAX_STR_DIGITS;
 use unityrs_dump::select::INDEX_KINDS;
 use unityrs_dump::{LIFTABLE, Levels};
 
@@ -231,12 +233,27 @@ pub fn py_repr(bytes: &[u8]) -> String {
 
 /// Python's `int(s)` for a command-line number, saturated to `i64`: every
 /// count it feeds (`--sample`, `--limit`, `--jobs`) means the same past any
-/// list's length. Surrounding whitespace, a sign, and single underscores
-/// between digits, as `int` takes them; ASCII digits only (Python also
-/// takes other decimal digits, which no corpus run passes).
+/// list's length. The string is read as Python 3.11's `int` reads it
+/// (`_PyUnicode_TransformDecimalAndSpaceToASCII`, then `PyLong_FromString`;
+/// `PARITY.md`'s `ShaderProgram` row records the same rules for UnityPy's
+/// side). A character past ASCII is a space when it is whitespace and its
+/// digit when it is a decimal (`Nd`) digit of any script ([`nd_digit`]);
+/// any other fails the number. Then: ASCII whitespace around it (space,
+/// `\t`, `\n`, `\v`, `\f` and `\r`, not `\x1c` to `\x1f`, which
+/// `str.isspace()` takes), a sign, and digits with single underscores
+/// between them, at most [`PY_INT_MAX_STR_DIGITS`] of them (leading zeros
+/// counted, underscores not).
 pub fn py_int(bytes: &[u8]) -> Option<i64> {
     let s = std::str::from_utf8(bytes).ok()?;
-    let t = s.trim_matches(|c: char| c.is_whitespace() || ('\x1c'..='\x1f').contains(&c));
+    let ascii: String = s
+        .chars()
+        .map(|c| match c {
+            _ if c.is_ascii() => Some(c),
+            _ if c.is_whitespace() => Some(' '),
+            _ => nd_digit(c).map(|d| char::from(b'0' + d)),
+        })
+        .collect::<Option<_>>()?;
+    let t = ascii.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r'));
     let (neg, digits) = match t.as_bytes().first()? {
         b'-' => (true, &t[1..]),
         b'+' => (false, &t[1..]),
@@ -247,6 +264,7 @@ pub fn py_int(bytes: &[u8]) -> Option<i64> {
         return None;
     }
     let mut v: i64 = 0;
+    let mut count = 0;
     let mut after_underscore = false;
     for &c in b {
         if c == b'_' {
@@ -260,20 +278,27 @@ pub fn py_int(bytes: &[u8]) -> Option<i64> {
             return None;
         }
         after_underscore = false;
+        count += 1;
         v = v.saturating_mul(10).saturating_add(i64::from(c - b'0'));
+    }
+    if count > PY_INT_MAX_STR_DIGITS {
+        return None;
     }
     Some(if neg { v.saturating_neg() } else { v })
 }
 
 /// argparse's `_negative_number_matcher`, `^-\d+$|^-\d*\.\d+$` (`$` also
-/// before a final newline; ASCII digits): with no option of that shape,
-/// such an argument is a value, never an option.
+/// before a final newline; `\d` any decimal (`Nd`) digit, as `re` reads a
+/// `str` pattern, [`nd_digit`]; a byte that is not UTF-8 is a lone
+/// surrogate to Python, never one): with no option of that shape, such an
+/// argument is a value, never an option.
 fn negative_number(arg: &[u8]) -> bool {
     let Some(rest) = arg.strip_prefix(b"-") else {
         return false;
     };
     let rest = rest.strip_suffix(b"\n").unwrap_or(rest);
-    let digits = |s: &[u8]| s.iter().all(u8::is_ascii_digit);
+    let digits =
+        |s: &[u8]| std::str::from_utf8(s).is_ok_and(|s| s.chars().all(|c| nd_digit(c).is_some()));
     match split_once(rest, b'.') {
         None => !rest.is_empty() && digits(rest),
         Some((whole, fraction)) => digits(whole) && !fraction.is_empty() && digits(fraction),
@@ -640,7 +665,8 @@ pub fn parse(args: &[Vec<u8>]) -> Result<Parsed, Usage> {
         limit: ns.int(Dest::Limit),
         levels,
         jobs: ns.int(Dest::Jobs).unwrap_or(1),
-        stats: ns.last(Dest::Stats).map(path),
+        // `output_path(args.stats) if args.stats else None`: an empty one is none.
+        stats: ns.last(Dest::Stats).filter(|s| !s.is_empty()).map(path),
         quiet: ns.flag(Dest::Quiet),
         tpk: ns.last(Dest::Tpk).map(path),
         lazy_reverse: ns.flag(Dest::LazyReverse),

@@ -93,6 +93,18 @@ fn values_are_taken_as_argparse_takes_them() {
     // The last of a repeated option wins; an empty --build is none.
     let a = dump(&["x", "-oa", "-o", "b", "-j", "2", "--jobs", "-3", "--build="]);
     assert_eq!((a.output, a.jobs, a.build), (PathBuf::from("b"), -3, None));
+    // So is an empty --stats, the last one given included: the oracle
+    // writes the dump and no stats, and exits 0 (review round 16; pinned on
+    // its side by test_dump_cli.py's
+    // test_an_empty_stats_path_writes_no_stats).
+    for empty in [
+        &["--stats", ""][..],
+        &["--stats="],
+        &["--stats", "s", "--stats="],
+    ] {
+        let a = dump(&[&["x", "-o", "y"][..], empty].concat());
+        assert_eq!(a.stats, None, "{empty:?}");
+    }
     // `--` ends the options; past i64 a count saturates.
     let a = dump(&[
         "-o",
@@ -302,35 +314,109 @@ fn unbounded_takes_a_comma_list_of_limits() {
     }
 }
 
+/// Each outcome is Python 3.11's `int()`'s, recorded from a probe of it
+/// (`PARITY.md`'s `ShaderProgram` row states the same rules, which
+/// `test_rows_exports.py` pins in the oracle image).
 #[test]
 fn numbers_parse_as_python_int() {
+    let ones = |n: usize| "1".repeat(n);
     for (s, v) in [
-        ("0", Some(0)),
-        ("-0", Some(0)),
-        (" 7\n", Some(7)),
-        ("+3", Some(3)),
-        ("1_000", Some(1000)),
-        ("-12", Some(-12)),
-        ("-99999999999999999999", Some(-i64::MAX)),
+        ("0".to_owned(), Some(0)),
+        ("-0".into(), Some(0)),
+        (" 7\n".into(), Some(7)),
+        ("\x0b7\x0c".into(), Some(7)),
+        ("\r7\r".into(), Some(7)),
+        ("+3".into(), Some(3)),
+        ("1_000".into(), Some(1000)),
+        ("-12".into(), Some(-12)),
+        ("-99999999999999999999".into(), Some(-i64::MAX)),
+        // Review round 16: the decimal digits of every script, and the
+        // whitespace past ASCII, which `int` maps to ASCII first.
+        ("\u{663}".into(), Some(3)),
+        ("-\u{663}".into(), Some(-3)),
+        ("\u{661}_\u{662}".into(), Some(12)),
+        ("\u{661}1\u{662}".into(), Some(112)),
+        ("\u{ff11}".into(), Some(1)),
+        ("\u{1d7ce}".into(), Some(0)),
+        ("\u{3000}-\u{663}\u{3000}".into(), Some(-3)),
+        ("\u{2028}7\u{2029}".into(), Some(7)),
+        // At most 4,300 digits, underscores not counted.
+        (ones(4300), Some(i64::MAX)),
+        (format!("-{}", ones(4300)), Some(-i64::MAX)),
+        (format!(" {} ", ones(4300)), Some(i64::MAX)),
+        (vec!["1"; 4300].join("_"), Some(i64::MAX)),
+        ("\u{661}".repeat(4300), Some(i64::MAX)),
     ] {
         assert_eq!(py_int(s.as_bytes()), v, "{s:?}");
     }
     for s in [
-        "", " ", "_1", "1_", "1__0", "0x10", "1e3", "--1", "+-1", "1 2", "+", "\u{ff11}",
+        "", " ", "_1", "1_", "1__0", "0x10", "1e3", "--1", "+-1", "1 2", "- 1", "+_1", "+",
+        "1\x7f", // Not whitespace to `int`, though `str.isspace()` takes them.
+        "\x1c1", "1\x1f", // Numeric, but no decimal digit.
+        "\u{b2}", "\u{2167}", "\u{f33}",
     ] {
         assert_eq!(py_int(s.as_bytes()), None, "{s:?}");
     }
+    for s in [
+        ones(4301),
+        "0".repeat(4301),
+        vec!["1"; 4301].join("_"),
+        format!("+{}", ones(4301)),
+        format!("-{}", ones(4301)),
+        format!(" -{} ", ones(4301)),
+        "\u{661}".repeat(4301),
+    ] {
+        assert_eq!(py_int(s.as_bytes()), None, "{} characters", s.len());
+    }
     assert_eq!(py_int(b"1\xff"), None);
+    // The whitespace `int` takes around a number: these, and no other
+    // character that is not a digit (Python 3.11, every code point).
+    let spaces: Vec<char> =
+        "\t\n\x0b\x0c\r \u{85}\u{a0}\u{1680}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}"
+            .chars()
+            .chain('\u{2000}'..='\u{200a}')
+            .collect();
+    for c in ('\0'..=char::MAX).filter(|c| nd_digit(*c).is_none()) {
+        let padded = format!("{c}1{c}");
+        assert_eq!(
+            py_int(padded.as_bytes()).is_some(),
+            spaces.contains(&c),
+            "U+{:04X}",
+            u32::from(c)
+        );
+    }
 }
 
+/// Each outcome is Python 3.11's `_negative_number_matcher`'s, whose `\d`
+/// takes the decimal digits of every script.
 #[test]
 fn negative_numbers_are_values() {
-    for s in ["-1", "-12", "-.5", "-1.5", "-1\n"] {
+    for s in [
+        "-1",
+        "-12",
+        "-.5",
+        "-1.5",
+        "-1\n",
+        "-\u{663}",
+        "-\u{663}.\u{665}",
+        "-.\u{665}",
+        "-\u{ff11}",
+        "-\u{663}\n",
+    ] {
         assert!(negative_number(s.as_bytes()), "{s:?}");
     }
-    for s in ["-", "-.", "-1.", "--1", "-a", "1", "-1e3", "-1\n\n"] {
+    for s in [
+        "-", "-.", "-1.", "--1", "-a", "1", "-1e3", "-1\n\n", "-\u{b2}",
+    ] {
         assert!(!negative_number(s.as_bytes()), "{s:?}");
     }
+    assert!(!negative_number(b"-1\xff"));
+    // So `--limit -٣` is the value -3, as the oracle takes it (review
+    // round 16's sweep: it was "expected one argument").
+    assert_eq!(
+        dump(&["x", "-o", "y", "--limit", "-\u{663}"]).limit,
+        Some(-3)
+    );
 }
 
 #[test]
