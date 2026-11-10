@@ -40,6 +40,8 @@ fn read(
 }
 
 /// `value` written; `None` when the writer refused it or a limit stopped it.
+/// A refusal is a `WriteError` by its type, and a panic is a crash libFuzzer
+/// reports, so the target's "named error, never a panic" needs no check here.
 fn write_out(
     case: &Case,
     value: &Parsed,
