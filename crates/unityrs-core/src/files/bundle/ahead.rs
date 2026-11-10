@@ -4,12 +4,13 @@
 //!
 //! Before block `k` of a run that began at block `first` is decoded, the
 //! read-ahead holds the declared sizes of the blocks after `k` that start,
-//! by those sizes, below the read's end, at most `max(k - first, 1)` of
-//! them: as many as the buffer holds, so the room can double and no
-//! further. Each block is read ahead once (the window only moves on), so a
-//! run of `n` blocks reads at most `2n + 1` rows ahead, besides the steps
-//! its decodes count (`index`'s module docs): rows whose sizes lie (a run of
-//! blocks that each declare nothing) cost no more to read than honest ones.
+//! by those sizes, below the read's end, at most `k - first` of them: as
+//! many as the buffer holds, so the room can double and no further (the
+//! run's first block has nothing to double). Each block is read ahead once
+//! (the window only moves on), so a run of `n` blocks reads at most `2n`
+//! rows ahead, besides the steps its decodes count (`index`'s module docs):
+//! rows whose sizes lie (a run of blocks that each declare nothing) cost no
+//! more to read than honest ones.
 
 /// A run's read-ahead (module docs).
 #[derive(Debug)]
@@ -54,7 +55,7 @@ impl Ahead {
         } else {
             (self.to, self.bytes) = (k + 1, 0);
         }
-        let most = k.saturating_sub(self.first).max(1);
+        let most = k.saturating_sub(self.first);
         while self.to - (k + 1) < most
             && at.saturating_add(own).saturating_add(self.bytes) < self.hi
             && let Some(d) = declared(self.to)
@@ -73,28 +74,28 @@ mod tests {
     const K: u64 = 64 << 10;
 
     /// Twelve blocks of 64 KiB read from block 0 to their end: before block
-    /// `k` the read-ahead holds `min(k, 11 - k)` blocks (at least one while
-    /// any is left), so a buffer that holds `k` blocks may double.
+    /// `k` the read-ahead holds `min(k, 11 - k)` blocks, so a buffer that
+    /// holds `k` blocks may double; before block 0 it holds none.
     #[test]
     fn it_holds_as_many_blocks_as_the_run_does() {
         let sizes = [K; 12];
         let declared = |i: usize| sizes.get(i).copied();
         let mut a = Ahead::new(0, 12 * K);
-        let got: Vec<u64> = (1..12)
+        let got: Vec<u64> = (0..12)
             .map(|k| a.before(k, k as u64 * K, declared) / K)
             .collect();
-        assert_eq!(got, [1, 2, 3, 4, 5, 5, 4, 3, 2, 1, 0]);
+        assert_eq!(got, [0, 1, 2, 3, 4, 5, 5, 4, 3, 2, 1, 0]);
     }
 
     /// Blocks that declare nothing are read ahead no further than honest
-    /// ones: before block `k` the window ends at most `2k - first + 1`, so
-    /// a run of `n` blocks reads at most `2n + 1` rows ahead.
+    /// ones: before block `k` of a run from block `first` the window ends at
+    /// `2k - first + 1`, so a run of `n` blocks reads at most `2n` rows ahead.
     #[test]
     fn rows_that_declare_nothing_are_read_ahead_no_further() {
         let sizes = [0_u64; 1000];
         let declared = |i: usize| sizes.get(i).copied();
         let mut a = Ahead::new(3, u64::MAX);
-        for k in 4..100 {
+        for k in 3..100 {
             assert_eq!(a.before(k, 0, declared), 0);
             assert_eq!(a.to, 2 * k - 3 + 1, "{k}");
         }

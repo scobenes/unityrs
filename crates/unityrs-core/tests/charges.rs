@@ -14,8 +14,8 @@
 //! whole decode. LZ4 asks for each block's measured length at once. A run
 //! of blocks doubles its room, never past the run's declared end: before
 //! block `k` of a run from block `first` its reader reads ahead what at
-//! most `max(k - first, 1)` of the next blocks declare, none that starts at
-//! the read's end (`files/bundle/ahead.rs`).
+//! most `k - first` of the next blocks declare, none that starts at the
+//! read's end (`files/bundle/ahead.rs`).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
