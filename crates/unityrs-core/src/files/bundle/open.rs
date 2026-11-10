@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 
+use super::counts::DecodeCounts;
 use super::decode::{BlockContext, decode_one};
 use super::index::{Ends, RunIndex};
 use super::{BlockInfo, BundleFile, BundleHeader, DirEntry, FileSlot, LayoutKind};
@@ -144,6 +145,7 @@ impl BundleFile {
             lengths,
             ends,
             runs: Mutex::new(RunIndex::new(meter)),
+            counts: DecodeCounts::default(),
             entries,
             twins,
             charge,
@@ -171,7 +173,6 @@ fn stored_blocks(
     meter: &Arc<Meter>,
     ctx: &FileContext,
 ) -> Result<(MeteredVec<Range<usize>>, MeteredVec<ResultCell<u64, Error>>), Error> {
-    let (as_is, cap) = (ctx.codecs.stores_as_is(), ctx.limits.max_block_output);
     let mut stored = MeteredVec::new(meter);
     let mut lengths = MeteredVec::new(meter);
     for b in blocks.as_mut_slice() {
@@ -179,13 +180,21 @@ fn stored_blocks(
         b.bytes_read = u32::try_from(range.len()).unwrap_or(u32::MAX);
         stored.push(range)?;
         let cell = ResultCell::new();
-        let read = u64::from(b.bytes_read);
-        if as_is && Codec::from_flags(u32::from(b.flags_u16())) == Codec::None && read <= cap {
-            let _ = cell.set(Ok(read));
+        if known_at_open(b, ctx) {
+            let _ = cell.set(Ok(u64::from(b.bytes_read)));
         }
         lengths.push(cell)?;
     }
     Ok((stored, lengths))
+}
+
+/// Whether the open takes block `b`'s length from its stored bytes
+/// ([`stored_blocks`]): a stored block, while stored blocks are their own
+/// bytes and what was read is within the block cap.
+pub(super) fn known_at_open(b: &BlockInfo, ctx: &FileContext) -> bool {
+    ctx.codecs.stores_as_is()
+        && Codec::from_flags(u32::from(b.flags_u16())) == Codec::None
+        && u64::from(b.bytes_read) <= ctx.limits.max_block_output
 }
 
 /// The header fields `read_fs` reads before the blocks-info section.

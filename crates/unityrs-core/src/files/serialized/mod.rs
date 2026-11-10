@@ -66,9 +66,11 @@ use crate::limits::{Charge, GrantScope, Limits, Meter};
 use crate::object::ObjectRef;
 use crate::once::{CellError, ResultCell, get_or_publish_result};
 use crate::options::FileContext;
+use crate::pin::{Copies, CopyCounts};
 use crate::raw::RawStr;
 use crate::stream::{Endian, ReaderKind, ShortArray};
 use crate::typetree::{NodeList, Tree, TreeError};
+use crate::value::Parsed;
 use crate::version::ResolvedVersion;
 use crate::walk::RefTypes;
 
@@ -262,6 +264,9 @@ pub struct SerializedFile {
     parent: Option<Parent>,
     /// The reader UnityPy reads it with, for its metadata and its objects.
     reader: ReaderKind,
+    /// What its reads and its parse copied out of the buffer its bytes are
+    /// a slice of ([`Self::copies`]).
+    copies: CopyCounts,
     /// The handle and every table above, charged to the input, with the
     /// resolved version's heap ([`crate::version::UnityVersion::heap_bytes`], charged
     /// by the chain before it was allocated;
@@ -297,6 +302,33 @@ impl SerializedFile {
     /// The whole file's bytes.
     pub fn data(&self) -> &Bytes {
         &self.data
+    }
+
+    /// The length of the buffer its bytes are a slice of, which a slice of
+    /// them keeps alive: its container's decoded run, or the container's
+    /// own bytes' buffer ([`Parent::pinned`]); its own length for a
+    /// top-level file. A value read from it, and each typetree it parsed,
+    /// copy their slices out when they would keep much more than
+    /// themselves alive ([`crate::pin`]).
+    #[must_use]
+    pub fn pinned(&self) -> u64 {
+        pinned(self.parent.as_ref(), &self.data)
+    }
+
+    /// What its object reads and its parse copied out of the buffer its
+    /// bytes are a slice of so far ([`crate::pin`]; plan section 8, R3).
+    #[must_use]
+    pub fn copies(&self) -> Copies {
+        self.copies.get()
+    }
+
+    /// Copies `value`'s slices of this file out of the buffer they keep
+    /// alive, when they would keep much more than themselves alive
+    /// ([`crate::pin`]), and counts the copy: the bytes copied.
+    pub(crate) fn unpin(&self, value: &mut Parsed) -> u64 {
+        let n = crate::pin::copy_out(value.value_mut(), &self.data, self.pinned(), self.meter());
+        self.copies.value(n);
+        n
     }
 
     /// The reader UnityPy reads it with: the stream reader for a file loaded
@@ -489,10 +521,18 @@ impl SerializedFile {
             container: ResultCell::new(),
             parent: None,
             reader: ReaderKind::Memory,
+            copies: CopyCounts::default(),
             charge: Charge::zero(&meter),
             ctx: Arc::new(FileContext::unitypy()),
         })
     }
+}
+
+/// [`SerializedFile::pinned`] for a file of `data` under `parent`: what its
+/// container says the buffer is, never less than its own bytes.
+pub(crate) fn pinned(parent: Option<&Parent>, data: &Bytes) -> u64 {
+    let own = u64::try_from(data.len()).unwrap_or(u64::MAX);
+    parent.map_or(own, |p| p.pinned.max(own))
 }
 
 #[cfg(test)]

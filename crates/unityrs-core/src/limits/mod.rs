@@ -60,7 +60,7 @@ mod vec;
 pub use meter::{Charge, Meter};
 pub(crate) use meter::{GrantScope, pool_refusals, refusal};
 pub use vec::MeteredVec;
-pub(crate) use vec::{grow_charged, grow_counted, reserve_exact, shrink_exact};
+pub(crate) use vec::{grow_charged, grow_counted, reserve_exact, shrink_charged};
 
 /// Bounds on allocation, recursion and work per input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

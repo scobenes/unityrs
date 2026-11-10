@@ -129,7 +129,7 @@
 //! Owner: package C.
 
 use std::ops::Range;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use bytes::Bytes;
 
@@ -144,11 +144,15 @@ use crate::stream::py_read;
 use crate::version::{FlagsClass, ResolvedVersion, VersionError};
 use index::{Ends, RunIndex};
 
+mod ahead;
+mod counts;
 mod decode;
 mod index;
 mod open;
 mod runs;
 
+pub use counts::BundleCounts;
+use counts::DecodeCounts;
 use decode::BlockContext;
 
 /// Which of UnityPy's two readers a bundle takes.
@@ -254,6 +258,9 @@ pub struct BundleFile {
     /// The cached runs by first block, each run's charge inside its `Bytes`
     /// and the index's own in it. Locked only to look up or publish.
     runs: Mutex<RunIndex>,
+    /// What the block decodes wrote, dropped and wrote again
+    /// ([`Self::counts`]).
+    counts: DecodeCounts,
     /// Parsed entries, by directory index, published once; a kept error
     /// carries the charge for its heap, and a refused charge is not kept.
     entries: Box<[ResultCell<File, Error>]>,
@@ -352,6 +359,17 @@ impl BundleFile {
         self.blocks.iter().map(|b| u64::from(b.uncompressed)).sum()
     }
 
+    /// What this bundle's block reads have decoded, dropped, decoded again
+    /// and cached so far ([`BundleCounts`]; a nested bundle counts its own):
+    /// what plan section 8's R2 and R3 measure. Takes the run index's lock
+    /// for the runs' share.
+    #[must_use]
+    pub fn counts(&self) -> BundleCounts {
+        let runs = self.runs.lock().unwrap_or_else(PoisonError::into_inner);
+        let n = u64::try_from(runs.len()).unwrap_or(u64::MAX);
+        self.counts.snapshot(n, runs.bytes())
+    }
+
     /// Directory entry `dir_index`'s bytes: the Python slice
     /// `data[offset : offset + size]` of the joined data (size -1 to the end,
     /// negative indexes from the end, short at the end). Measures every block
@@ -359,6 +377,15 @@ impl BundleFile {
     pub fn entry_bytes(&self, dir_index: usize) -> Result<Bytes, Error> {
         let span = self.entry_span(dir_index)?;
         self.read_span(span.start, span.end)
+    }
+
+    /// The length of the buffer this bundle's own bytes are a slice of,
+    /// which a slice of a stored block keeps alive (`Parent::pinned`; its
+    /// own length for a top-level bundle).
+    #[must_use]
+    pub fn pinned(&self) -> u64 {
+        let own = u64::try_from(self.source.len()).unwrap_or(u64::MAX);
+        self.parent.as_ref().map_or(own, |p| p.pinned.max(own))
     }
 
     /// A byte range of an entry (a `.resS` read), short at the end of the
@@ -484,7 +511,8 @@ impl BundleFile {
             .directory
             .get(dir_index)
             .ok_or_else(|| no_entry(dir_index))?;
-        let bytes = self.entry_bytes(dir_index)?;
+        let span = self.entry_span(dir_index)?;
+        let (bytes, pinned) = self.read_span_pinned(span.start, span.end)?;
         let wrap = |e| self.entry_error(dir_index, e);
         // The inflation of a gzip entry is the open's work (`detect`'s
         // "Work"); its refusal is the open's limit, as a block decode's is.
@@ -505,6 +533,7 @@ impl BundleFile {
                 .as_ref()
                 .map_or(0, |p| p.depth)
                 .saturating_add(1),
+            pinned: pinned.max(u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
         };
         // A failure the cell keeps: its grants are the open's work (module
         // docs, "Memory and work").

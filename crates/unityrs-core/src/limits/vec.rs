@@ -25,24 +25,41 @@ pub(crate) fn reserve_exact<T>(
         .map_err(|_| super::refusal(charged, meter.reservation()))
 }
 
-/// `vec` with no spare capacity: shrunk by the allocator, or, where
-/// [`super::shrink_moves`] says so, moved to a new allocation of exactly its
-/// length, after which the old block is freed. The caller has charged the
-/// smaller block beside the old one, both of which exist while either way
-/// runs. `false`, with `vec` as it was, when the allocator refuses the new
-/// allocation.
-pub(crate) fn shrink_exact<T>(vec: &mut Vec<T>) -> bool {
-    if super::shrink_moves(bytes_of::<T>(vec.len()), bytes_of::<T>(vec.capacity())) {
-        let mut exact = Vec::new();
-        if exact.try_reserve_exact(vec.len()).is_err() {
-            return false;
+/// Gives back `vec`'s spare room, `charge` (which holds [`heap_cost`] of
+/// its capacity, and may hold more) following it to [`heap_cost`] of its
+/// length. Where glibc shrinks the block where it is (a heap chunk split in
+/// place by `realloc`, a mapped one cut by `mremap`), no second block ever
+/// exists, so nothing more is charged and the difference is returned after.
+/// Where [`super::shrink_moves`] says the bytes move to a new allocation of
+/// exactly their length (a block that may be mapped, given back below
+/// 128 KiB), both blocks exist while they move, so the smaller one is
+/// charged first, and a refusal, the meter's or the allocator's, leaves
+/// `vec` and `charge` as they were (perf stage 2: the smaller block was
+/// charged beside the old one either way, so a decoded run of 69.4 MB cut
+/// from room of 128 MiB was charged both at once).
+pub(crate) fn shrink_charged<T>(vec: &mut Vec<T>, charge: &mut Charge) -> Result<(), ChargeError> {
+    let (len, cap) = (bytes_of::<T>(vec.len()), bytes_of::<T>(vec.capacity()));
+    if len >= cap {
+        return Ok(());
+    }
+    let (old, exact) = (heap_cost(cap), heap_cost(len));
+    if super::shrink_moves(len, cap) {
+        let smaller = charge.meter().charge(exact)?;
+        let mut moved = Vec::new();
+        if moved.try_reserve_exact(vec.len()).is_err() {
+            // `smaller` drops here: nothing stays charged for it.
+            let what = charge.meter().reservation();
+            return Err(ChargeError::Budget(super::refusal(exact, what)));
         }
-        exact.append(vec);
-        *vec = exact;
+        moved.append(vec);
+        *vec = moved;
+        charge.release(old);
+        charge.absorb(smaller);
     } else {
         vec.shrink_to_fit();
+        charge.release(old - exact);
     }
-    true
+    Ok(())
 }
 
 fn bytes_of<T>(n: usize) -> u64 {
@@ -54,7 +71,14 @@ fn bytes_of<T>(n: usize) -> u64 {
 /// Grows `vec`'s capacity to at least `need`, geometrically up to `max`
 /// (never below `need`), charging the new allocation to `charge`'s meter
 /// first. While the allocator moves the buffer both blocks exist, so both are
-/// charged until it is done; then the old block's charge is returned. A
+/// charged until it is done; then the old block's charge is returned. That
+/// is a bound: exact where glibc copies the bytes to a new block, and an
+/// over-count of the old block, for as long as the growth runs, wherever
+/// glibc grows the block without a second one (plan section 3.15): a mapped
+/// block, which it grows with `mremap`, its pages kept (every block of
+/// 32 MiB or more, its largest `mmap` threshold, and a block of 128 KiB or
+/// more while the threshold, which rises as mapped blocks are freed, is
+/// still below it), and a heap chunk it extends in place into free space. A
 /// refused doubling is asked for again with half the room past `need`, and
 /// so on down to exactly `need` before it fails, so a meter that fits the
 /// data is never refused by the growth policy, and a vector that meets its
@@ -281,26 +305,15 @@ impl<T> MeteredVec<T> {
         (self.vec, self.charge)
     }
 
-    /// Gives back any spare capacity: a vector with spare capacity is moved
-    /// into an exact allocation, which is charged before it is made (both
-    /// blocks exist while the allocator moves it), so a refusal leaves the
-    /// vector as it was and nothing allocated beyond what was charged. A
-    /// block that may be mapped is never shrunk below 128 KiB in place
-    /// ([`super::shrink_moves`]; review round 13).
+    /// Gives back any spare capacity, the charge following it: shrunk in
+    /// place, its charge cut after (no second block exists, so nothing more
+    /// is charged); or, for a block that may be mapped given back below
+    /// 128 KiB ([`super::shrink_moves`]; review round 13), moved into an
+    /// exact allocation charged before it is made (both blocks exist while
+    /// it moves), so a refusal leaves the vector as it was and nothing
+    /// allocated beyond what was charged.
     pub fn shrink_to_fit(&mut self) -> Result<(), ChargeError> {
-        if self.vec.capacity() > self.vec.len() {
-            let exact = heap_cost(bytes_of::<T>(self.vec.len()));
-            let smaller = self.charge.meter().charge(exact)?;
-            let old = heap_cost(bytes_of::<T>(self.vec.capacity()));
-            if !shrink_exact(&mut self.vec) {
-                // `smaller` drops here: nothing stays charged for it.
-                let what = self.charge.meter().reservation();
-                return Err(ChargeError::Budget(super::refusal(exact, what)));
-            }
-            self.charge.release(old);
-            self.charge.absorb(smaller);
-        }
-        Ok(())
+        shrink_charged(&mut self.vec, &mut self.charge)
     }
 
     /// The elements as a boxed slice, and its charge, with no spare

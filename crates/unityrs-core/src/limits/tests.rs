@@ -274,10 +274,38 @@ fn a_boxed_slice_is_charged_at_its_exact_size() {
     assert_eq!(meter.used(), heap_cost(4000));
     assert_eq!(charge.bytes(), heap_cost(4000));
     drop((b, charge));
-    // A meter with no room for the exact copy refuses and keeps nothing.
-    let tight = Meter::new(heap_cost(8 * 4), Arc::new(Unbounded), Reservation::Input);
-    let mut v: MeteredVec<u32> = MeteredVec::with_capacity(&tight, 8).unwrap();
+    // Shrunk in place (glibc splits the chunk where it is): no second block
+    // exists, so a meter with no room beside the old block gives the room
+    // back all the same, and the charge drops to the smaller block's (perf
+    // stage 2: the smaller block was charged beside the old one, so this was
+    // refused and the vector dropped).
+    for cap in [8_u32, 100 << 10] {
+        let tight = Meter::new(
+            heap_cost(u64::from(cap) * 4),
+            Arc::new(Unbounded),
+            Reservation::Input,
+        );
+        let mut v: MeteredVec<u32> =
+            MeteredVec::with_capacity(&tight, usize::try_from(cap).unwrap()).unwrap();
+        for i in 0..cap - cap / 4 {
+            v.push(i).unwrap();
+        }
+        let len = u64::from(cap - cap / 4) * 4;
+        let (b, charge) = v.into_boxed_slice().unwrap();
+        assert_eq!(u64::try_from(b.len()).unwrap() * 4, len, "{cap}");
+        assert_eq!(
+            (tight.used(), charge.bytes()),
+            (heap_cost(len), heap_cost(len)),
+            "{cap}"
+        );
+    }
+    // Moved (a block that may be mapped, given back below 128 KiB:
+    // `shrink_moves`): both blocks exist while the bytes move, so a meter
+    // with no room for the smaller one refuses, and keeps nothing.
+    let tight = Meter::new(heap_cost(64 << 12), Arc::new(Unbounded), Reservation::Input);
+    let mut v: MeteredVec<u32> = MeteredVec::with_capacity(&tight, 64 << 10).unwrap();
     v.push(1).unwrap();
+    assert!(crate::limits::shrink_moves(4, 64 << 12));
     assert!(v.into_boxed_slice().is_err());
     assert_eq!(tight.used(), 0);
 }

@@ -17,7 +17,9 @@
 //! outside is no result) and [`scratch`] (how every test's scratch is
 //! removed, whatever happens to the test or its child) are package B's; [`address_space`] (the cap that makes the C allocator
 //! refuse, for the tests of liblzma's own allocations) is package C's;
-//! [`mutate`] (G3b's mutator) is the integration's.
+//! [`mutate`] (G3b's mutator) is the integration's; [`fuzz`] (the fuzz
+//! targets' input layouts, which `examples/fuzz_seeds.rs` writes the seeds
+//! in) is the fuzz package's.
 
 pub mod address_space;
 pub mod blob;
@@ -26,6 +28,7 @@ pub mod child;
 pub mod counted;
 pub mod depth;
 pub mod env;
+pub mod fuzz;
 pub mod guard;
 pub mod mutate;
 pub mod public_types;
