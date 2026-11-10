@@ -1,6 +1,6 @@
 # The batch job contract, version 1
 
-**Status: draft, design round 3 (2026-11-09), not reviewed.** This file is the exact contract of `unityrs batch`: the job spec, keys and templates, identity and order, the NGUI cutter, the spool, the manifest, the zip bytes, the exit codes and the progress stream. `docs/plans/extract.md` states the requirements (E1 onward) and cites this file for their exact form; `docs/plans/batch.md` designs the engine behind them. Where this file and a requirement disagree, the review rounds fix one of them.
+**Status: draft, design round 4 (2026-11-09), not reviewed.** This file is the exact contract of `unityrs batch`: the job spec, keys and templates, identity and order, the NGUI cutter, the spool, the manifest, the zip bytes, the exit codes and the progress stream. `docs/plans/extract.md` states the requirements (E1 onward) and cites this file for their exact form; `docs/plans/batch.md` designs the engine behind them. Where this file and a requirement disagree, the review rounds fix one of them.
 
 **Conventions.**
 - *bytes*: an integer count of bytes. *ms*: an integer count of milliseconds.
@@ -22,7 +22,7 @@ A spec is one JSON object, at most 16 MiB, UTF-8. An unknown field at any level,
 | `spec_version` | integer | yes | | `1` |
 | `run_id` | string | yes | | 1-64 bytes of `[A-Za-z0-9._-]`, not `.` or `..`. Names one logical run; its attempts share it (section 7) |
 | `attempt` | integer | yes | | 1 to 2^31-1. The caller raises it for each attempt of one `run_id` |
-| `deadline` | string or null | no; yes with an object store sink | `null` | an RFC 3339 date-time with `Z` or an offset; `null` sets none (E45) |
+| `deadline` | string or null | no; yes with an object store sink | `null` | an RFC 3339 date-time with `Z` or an offset; `null` sets none (E45). A deadline whose stop cutoff (the deadline less the grace) has passed at preflight exits 69 (`deadline_too_close`) |
 | `shutdown_grace_ms` | integer | no | 20000 | 5,000 to 600,000 (E45) |
 | `stop_on_stdin_eof` | boolean | no | `false` | E46 |
 | `parent_pid` | integer or null | no | `null` | 2 to 2^22: the caller's pid, checked at start (E46) |
@@ -33,6 +33,7 @@ A spec is one JSON object, at most 16 MiB, UTF-8. An unknown field at any level,
 | `dep_cache_bytes` | integer | yes | | `D`, 1 MiB to 2^40: each attempt's Dependency budget and its private dependency cache (`batch.md` 2.2) |
 | `max_view_bundles` | integer | no | 1024 | 1 to 65,536: the most bundles one input's view may hold |
 | `max_attempt_evictions` | integer | no | 1024 | 0 to 2^20: the most dependency evictions one attempt may cause (`batch.md` 2.6 step 7); more fails the input, `limit(attempt_evictions, <value>)` |
+| `max_export_work` | integer | no | 16 x `M` | 1 MiB to 2^53-1: the bytes of pixels one attempt may write (decoded sheets, canvases, crops) plus the PNG bytes it may encode (`batch.md` 2.6 step 10); more fails the input, `limit(export_work, <value>)` |
 | `spool` | Spool | yes | | section 1.3 |
 | `http` | Http | no | every default | section 1.4 |
 | `inputs` | array of Bundle | yes | | 1 to 100,000 items |
@@ -51,7 +52,8 @@ A spec is one JSON object, at most 16 MiB, UTF-8. An unknown field at any level,
 - Every id in a `deps` list names a bundle of the spec.
 - No view (section 4.2) holds more than `max_view_bundles` bundles.
 - With a directory sink, `spool.dir` and `sink.root`, compared as paths after removing a trailing `/`, neither equal nor contain one another (preflight compares their real paths again, section 6.2).
-- `deadline` is set when `sink.kind` is `"object_store"` (the time fence, section 7.2).
+- `deadline` is set when `sink.kind` is `"object_store"`: it bounds when an attempt's process has ended, from which the caller's wait counts (section 7.2).
+- Every `prefer` entry whose `input` is not null names an input.
 - Every template parses and passes its literal checks (section 2.1), and every literal key (`prefer`'s keys, `archives`' keys, the sink's prefix) passes section 2.3's rules but `prefix_conflict` and `archive_conflict`, which phase 6 decides.
 - `archives`' keys are unique, and none is an ancestor of another (`a` of `a/b.zip`). In one archive, each member `kind` appears once.
 
@@ -62,18 +64,18 @@ A spec is one JSON object, at most 16 MiB, UTF-8. An unknown field at any level,
 | `id` | string | yes | | 1-1,024 bytes of UTF-8, no control character. The bundle's identity (section 4.1) |
 | `path` | string | one of `path`, `url` | | an absolute path of a local regular file |
 | `url` | string | one of `path`, `url` | | an `http` or `https` URL with no userinfo |
-| `headers` | object | no | `{}` | only with `url`. Header name → a string, or `{"env": NAME}` read from the environment at preflight |
+| `headers` | object | no | `{}` | only with `url`. Header name → a string, or `{"env": NAME}` read from the environment at preflight, where an unset or empty variable exits 69 (`header_env_missing`). `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Range` and `Accept-Encoding` are refused |
 | `size` | integer | no | | 0 to 2^53-1: the expected byte count |
 | `sha256` | string | no | | 64 lowercase hex digits: the expected digest |
 | `deps` | array of string | no | `[]` | the ids this bundle needs (E11). A dependency may list its own |
 
-Every bundle is staged into the spool before extraction (`batch.md` 2.5), and every read of it reads the staged copy. A `size` or `sha256` that does not match the staged bytes fails the bundle (`integrity_mismatch`). A local path that does not exist, is not a regular file or cannot be opened fails it (`source_missing`). Every bundle in a view must be an AssetBundle file; a member that is not fails its inputs (`dependency_failed(<id>, not_a_bundle)`).
+Every bundle is staged into the spool before extraction (`batch.md` 2.5), and every read of it reads the staged copy. A `size` or `sha256` that does not match the staged bytes fails the bundle (`integrity_mismatch`). A bundle over `M` bytes, by a stated size or by its body, fails before its bytes are claimed (`limit(input_bytes, <M>)`), since no meter could read it. A local path that does not exist, is not a regular file or cannot be opened fails it (`source_missing`), and one written while it is copied fails it (`source_changed`). Every bundle in a view must be an AssetBundle file; a member that is not fails its inputs (`dependency_failed(<id>, not_a_bundle)`).
 
 ### 1.3 Spool
 
 | field | type | required | allowed values and meaning |
 |---|---|---|---|
-| `dir` | string | yes | an absolute path of an existing directory on a local filesystem, dedicated to unityrs spools (section 6.2) |
+| `dir` | string | yes | an absolute path of at most 256 bytes, of an existing directory on a local filesystem that is not tmpfs or ramfs, dedicated to unityrs spools (section 6.2) |
 | `size_bytes` | integer | yes | 1 MiB to 2^53-1: the cap on what the run writes there |
 | `reserve_bytes` | integer | yes | 0 to 2^53-1: the free space, on the spool's filesystem, that every claim leaves |
 
@@ -82,7 +84,7 @@ Every bundle is staged into the spool before extraction (`batch.md` 2.5), and ev
 | field | type | default | allowed values and meaning |
 |---|---|---|---|
 | `idle_timeout_ms` | integer | 30000 | 1,000 to 600,000: a try fails (`"timeout"`) when no byte arrives for this long |
-| `min_rate_bytes` | integer | 1024 | 1 to 2^30: a try also fails (`"timeout"`) when fewer than this many bytes arrive in a period of `idle_timeout_ms`, the periods counted back to back from the request's send. There is no whole-request timeout, so a download slowed by its neighbours takes longer and fails only below this floor. A staged bundle's bytes are claimed from `spool.size_bytes`, so with the floor every try ends |
+| `min_rate_bytes` | integer | 1024 | 1 to 2^30: a try also fails (`"timeout"`) when fewer than this many bytes arrive in a period of `idle_timeout_ms`, the periods counted back to back from the request's send. There is no whole-request timeout, so a download slowed by its neighbours takes longer and fails only below this floor. A staged bundle is at most `M` bytes, so with the floor every try ends |
 | `connect_timeout_ms` | integer | 10000 | 100 to 60,000 |
 | `attempts` | integer | 3 | 1 to 10: tries per download, the first included |
 | `backoff_initial_ms` | integer | 500 | 0 to 60,000 |
@@ -94,6 +96,7 @@ Every bundle is staged into the spool before extraction (`batch.md` 2.5), and ev
 - No retry starts when its wait would pass the stop cutoff (the deadline less the grace, E7). A request in flight at a stop is cancelled (`batch.md` 2.11).
 - `"same_origin"` follows at most 5 redirects whose scheme, host and port equal the request's, with its headers. A redirect anywhere else, or past the fifth, fails the download (`redirect_refused`), so a header never reaches another origin. `"none"` fails at the first redirect.
 - A body shorter than its `Content-Length` is `"truncated"`.
+- Every request sends `Accept-Encoding: identity`, and no body is decompressed. A `Content-Length` other than the bundle's `size` fails it before its body is read (`integrity_mismatch`), and one above `M` too (`limit(input_bytes, <M>)`). A try that fails truncates its file and returns its spool claim before the next try.
 
 ### 1.5 Outputs
 
@@ -123,7 +126,7 @@ One sink per job. Outputs are written to it as loose objects, and each archive (
 | `"directory"` | `root` (required): an absolute path of an existing directory |
 | `"object_store"` | `bucket` (string, required); `region` (string, required); `prefix` (string, default `""`, else ending in `/`); `endpoint` (an `http` or `https` URL or null, default null: AWS; an `http` endpoint allows plain HTTP to that endpoint only); `path_style` (boolean, default `false`); `timeout_ms` (integer, default 30000, 1,000 to 300,000, per request); `attempts` (integer, default 3, 1 to 10) |
 
-Every key is written at the sink's root (directory) or after its prefix (object store). Credentials come from the environment only (E37): `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN` when set. Either of the first two missing exits 69 (`credentials_missing`).
+Every key is written at the sink's root (directory) or after its prefix (object store). Credentials come from the environment only (E37): `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN` when set. Either of the first two missing exits 69 (`credentials_missing`). The caller gives credentials valid until the deadline: when `AWS_CREDENTIAL_EXPIRATION` (RFC 3339, as the AWS CLI exports it) is set and comes before the deadline, preflight exits 69 (`credentials_expire`); a request the store refuses with `ExpiredToken` fails with `credentials_expired`, and is not retried.
 
 ### 1.7 Archive
 
@@ -221,7 +224,7 @@ A texture with a side of 0 is skipped, `empty_image`. UnityPy's extractor skips 
 
 ### 4.3 Resolution inside an attempt
 
-- The attempt's private Environment registers `view(X)` less `X` in bytewise order of id, then `X` last (`batch.md` 2.6).
+- The attempt's private Environment registers `view(X)` less `X` in bytewise order of id, then `X` last, always, from the bytes of its own open (`batch.md` 2.6 step 4). So a pointer between two of `X`'s own containers resolves as UnityPy resolves it, whatever `X` declares.
 - **A pointer** is dereferenced by the core's `Environment::deref` from the file that holds it. The reading file's own bundle answers first (its siblings, through `Parent`; Tier A). Then the registry answers with the registration of greatest rank: `X` when it holds the CAB, else the greatest id among the view's bundles that hold it.
 - **A resource** (`.resS`) read takes UnityPy's candidates in order. Every candidate is looked for in the reading file's own container chain first; only when none is found there are they looked for through `Environment::resource` on the private Environment (`batch.md` 2.6).
 - A CAB no bundle of the view holds is the reading object's skip, `outside_view(<cab>)`.
@@ -229,18 +232,22 @@ A texture with a side of 0 is skipped, `empty_image`. UnityPy's extractor skips 
 ### 4.4 Objects and candidates
 
 - **Object order** in a bundle: its directory's entries in directory order, the SerializedFiles among them, and in each SerializedFile its object table's order.
-- **One input's names** (E29). Of two objects of one class and one `m_Name`, the first in object order takes the name, even when its export then fails. The later one is skipped, `duplicate_name`.
-- **One input's keys.** Of two outputs of one input with one key, the first in (kind, object order) is the candidate, kinds ordered `textures`, `sprites`, `atlases`, and within one atlas its JSON before its sprites, the sprites in `mSprites` order; the later one is skipped, `duplicate_key`. The exception: inside one atlas, of two sprites with one key, the later one wins (E30).
-- **Sprite groups.** Sprites are grouped by their sheet texture (bundle id, path id), and the groups run in the order of each group's first sprite.
+- **The plan.** Before it exports anything, the attempt plans every output its selection makes (section 3; section 5's recognition), in **plan order**: (kind, object order), kinds ordered `textures`, `sprites`, `atlases`, and within one atlas its JSON before its sprites, the sprites in `mSprites` order. In this order:
+  1. **Names** (E29). Of two objects of one class and one `m_Name`, the first in object order takes the name, even when its export then fails. The later one is skipped, `duplicate_name`.
+  2. **Skips that need no pixels**: `unsupported_format`, `unsupported_platform`, `empty_image`, `unnamed_atlas`, `reference_atlas`, `ngui_layout_unsupported`, `no_typetree`, `sheet_not_found`, `empty_rect`. Such an output is not planned and takes no key.
+  3. **Keys.** Every planned output's key is expanded; one that breaks a rule of section 2.3 is skipped, `unwritable_key(<rule>)`. Of two planned outputs with one key, the first in plan order takes it and the later one is skipped, `duplicate_key`, even when the first's export then fails. The exception: inside one atlas, of two sprites with one key, the later one wins (E30).
+- **Sprite groups.** Sprites are grouped by their sheet: the (bundle id, CAB name, path id) of the sheet texture, and the same of its alpha texture or none. The groups run in the order of each group's first sprite.
+- **Export order.** Sprite groups, then each sheet that atlases cut with its atlases (section 4.5), then every other texture, each group's outputs in plan order.
+- **Record order.** An attempt records its `same_named_cab` diagnostics (bundles in registration order, names in directory order), then its `undeclared_dependency` diagnostics (in `m_Dependencies` order) and `nested_container` diagnostics (in object order), then the plan's skips in plan order, then the export's skips in export order. Within an input, the `skips` and `diagnostics` rows are in this order.
 
 ### 4.5 Winners across inputs
 
 E31 to E33 and E61 as written, with these orders and units:
 - "first by bytewise input id" everywhere;
 - E31 rule 1 applies when the preferred input has a candidate for the key;
-- **Units** (E32). With `outputs.textures` set, a unit is an input's sheet texture with every atlas of that input whose sheet it is (section 5), their crops and their JSONs; its **unit key** is the texture's key. Without `outputs.textures`, a unit is one atlas with its crops and JSON; its unit key is the JSON key. A unit's **keys** are its unit key and its members' keys. Its `prefer` entry is its unit key's, and E31 rule 2 compares the MD5 of its unit key's output.
+- **Units** (E32). A unit is made of outputs the attempt made. When the input made a sheet's texture output (`outputs.textures` set, and the texture neither skipped nor failed), the unit is that texture with every atlas of the input that cuts the sheet (section 5), their crops and their JSONs, and its **unit key** is the texture's key. Otherwise each atlas whose JSON was made is a unit of its own, its crops and its JSON, keyed by the JSON's key; an atlas with neither has no unit, and its crops are plain candidates. The attempt exports a sheet's texture before its atlases, and an atlas's JSON before its crops (4.4), so a unit's key is fixed before its crops are recorded. A unit key is always the key of an output of the unit. A unit's **keys** are its unit key and its members' keys. Its `prefer` entry is its unit key's (an entry for another key of a unit is not consulted), and E31 rule 2 compares that output's MD5.
 - The steps, in order (`batch.md` 2.9):
-  1. Each unit key's winning unit is decided by E31 and E61 among the units with that unit key.
+  1. Each unit key's winning unit is decided by E31 and E61 among the units with that unit key. A unit key that E61 withholds withholds every unit with that key, and their keys are reserved in step 2 as a winning unit's are.
   2. Every key of every winning unit is **reserved**. Of the winning units that share a key, the first by unit key keeps it, and every other is withheld whole (`unit_conflict`). A key stays reserved even when every unit claiming it is withheld; this step is not repeated.
   3. A plain candidate for a reserved key loses (rule `unit`). Every other key is decided by E31 and E61.
   4. Section 4.6 runs once on the keys steps 1 to 3 would publish.
@@ -280,6 +287,8 @@ A MonoBehaviour that meets 1 but not 2 is skipped, `ngui_layout_unsupported` (NG
 2. Among the input's own Texture2D objects in object order, the first whose `m_Name` equals that name exactly (bytes, case-sensitive). When there is none, or no name, the first whose `m_Name` equals the atlas's `m_Name`.
 3. No match skips the atlas, `sheet_not_found`.
 
+A sheet that is skipped or fails (`unsupported_format`, `unsupported_platform`, `empty_image`, `decode_error`, a budget) skips each atlas that cuts it, crops and JSON, with the sheet's reason; so does a sprite whose sheet does.
+
 The sheet is decoded as a texture (E15), into the image UnityPy's `Texture2D.image` gives: rows top to bottom. With `outputs.textures` set, the atlases of one input that cut one sheet are one unit with it; without it, each atlas is its own unit (section 4.5).
 
 **Crops.** For each element of `mSprites`, in array order:
@@ -315,14 +324,14 @@ The sheet is decoded as a texture (E15), into the image UnityPy's `Texture2D.ima
 | `<dir>/runs/<run_id>/attempts/<input>/` | one attempt's outputs and `records.ndjson` |
 | `<dir>/runs/<run_id>/done/<input>/` | a committed attempt |
 | `<dir>/runs/<run_id>/winners/` | phase 6's sorted runs, the winners file, the archive member lists and the sorted row files |
-| `<dir>/runs/<run_id>/winners/outcomes`, `archive_outcomes` | phase 7's results: one byte per winner at its index in the winners file (0 not written, 1 `written`, 2 `present`, 3 `failed`), and one 128-byte record per archive (status, size, MD5, ETag), sized before the first transfer (`batch.md` 2.9) |
+| `<dir>/runs/<run_id>/winners/outcomes`, `archive_outcomes` | phase 7's results: one byte per winner at its index in the winners file (0 not written, 1 `written`, 2 `present`, 3 `failed`, 4 `failed` by verification), and one 128-byte record per archive (status, size, MD5, ETag), made at phase 7's start (`batch.md` 2.9); a missing file reads as all 0 |
 
 `<input>` and `<n>` are positions from 0, in decimal, so an id never becomes a path.
 
 ### 6.2 Start
 
 The engine owns only what it created. Preflight starts the spool in this order, after reading the credentials. A failure in steps 1 to 3 exits 69 with nothing deleted; step 4 never fails the start; a failure in step 6 exits 69 after step 5's deletions, which removed only the engine's own files:
-1. **Dedicated.** `dir`'s entries must be none, or only `.unityrs-spool`, `lock` and `runs`, the marker among them, with `lock` a regular file and `runs` a directory, by `lstat` (neither a symlink). Otherwise `spool_not_dedicated`.
+1. **Dedicated.** `dir`'s entries must be none, or only `.unityrs-spool`, `lock` and `runs`, the marker among them, with `lock` a regular file and `runs` a directory, by `lstat` (neither a symlink). Otherwise `spool_not_dedicated`. A `dir` whose `statfs` type is tmpfs or ramfs is `spool_in_memory`: its bytes would be memory outside the bound (`batch.md` 5.4).
 2. **Apart from the sink.** With a directory sink, the real paths of `dir` and `root` neither equal nor contain one another. Otherwise `spool_overlaps_sink`.
 3. **The lock.** `lock` is opened (created if absent) and locked; busy is `spool_locked`. The lock is held until `_exit` and the file is never deleted, so a second process always meets the same inode. An empty `dir` gets its marker now, under the lock.
 4. **Old journals.** Every `runs/*/journal` is read; each upload id whose endpoint and bucket are this sink's is aborted, at most `download_concurrency` at once, each with the sink's `timeout_ms` and `attempts`. `NoSuchUpload` counts as aborted: the upload completed before its id was removed, or the lifecycle rule took it. Any other failure, a 403 among them, leaves the id to the bucket's lifecycle rule (E64) and counts in the warning `abort_failed`, so no journal can stop a later start. An id of another endpoint or bucket is left to that bucket's lifecycle rule.
@@ -339,21 +348,25 @@ Nothing in the spool is reused between attempts: every attempt stages and decode
 
 | sink | the head | the row files |
 |---|---|---|
-| directory | `<root>/_unityrs/<run_id>/manifest.json` | `<root>/_unityrs/<run_id>/<attempt>/*.ndjson` |
-| object store | `<prefix>_unityrs/<run_id>/manifest.json` | `<prefix>_unityrs/<run_id>/<attempt>/*.ndjson` |
+| directory | `<root>/_unityrs/<run_id>/manifest.json` | `<root>/_unityrs/<run_id>/<attempt>/<file>.<k>.ndjson` |
+| object store | `<prefix>_unityrs/<run_id>/manifest.json` | `<prefix>_unityrs/<run_id>/<attempt>/<file>.<k>.ndjson` |
 
-No output key may start with `_unityrs/` (2.3). The row files hold the attempt number, so an earlier attempt never overwrites a later one's rows. The head is at most 64 KiB.
+No output key may start with `_unityrs/` (2.3). The row files hold the attempt number, so an earlier attempt never overwrites a later one's rows. Each row file is written in chunks `k` = 0, 1, ..., each at most 16 MiB and cut at a line's end, so each is one single-part PUT; a reader concatenates them in order. The head is at most 64 KiB.
 
-### 7.2 Fencing
+### 7.2 Fencing, verification and the caller's duties
 
 - **Preflight** reads the head; a 404 proves the sink reachable too. A head over 1 MiB, or one that is not a manifest, exits 69 (`manifest_unreadable`); a sink that cannot be reached exits 69 (`sink_unreachable`). A head of this `run_id` whose `attempt` is at or above this one's exits 7 (`superseded`), and nothing is written.
-- **Object store, `"conditional"`.** The store client is configured with `S3ConditionalPut::ETagMatch`. The `running` write is `If-None-Match: *` when no head exists, else `If-Match` on the ETag preflight read. The final write is `If-Match` on the `running` write's ETag.
-- **A failed precondition** (412) is read back with a GET. A head with this `attempt` and this write's `write_seq` is this write, whose response was lost: success. A head of a higher `attempt` is `superseded`: the attempt writes nothing more and exits 7. A head of a lower `attempt` can meet only the `running` write: it is an earlier attempt's late head write that landed after preflight's read (once this attempt's head exists, an earlier attempt's conditional write cannot replace it, since every write changes the ETag). The attempt applies the time fence to that head as preflight would, and retries the `running` write with `If-Match` on that head's ETag, at most 4 times; a fifth lower head exits 69 (`previous_attempt_live`). At the final write, any head but this write is `superseded`. Only the finisher writes after `running` (`batch.md` 2.11), so no two writes of one attempt share a `write_seq`.
-- **Object store, `"none"`.** Plain PUTs; the caller runs one attempt of a `run_id` at a time.
-- **Directory.** `<root>/_unityrs/lock`, one lock for the whole root, whatever the `run_id`: `flock(LOCK_EX | LOCK_NB)` held for the process's life, busy exits 69 (`output_locked`). So one process at a time writes a root, and E62's cleanup of temp files never meets a live run's. Each head write is a temp file, `fsync`, a rename over the head, and an `fsync` of the directory.
-- **The time fence** (object store). An earlier attempt of this `run_id` may still have a write in flight, after a stop and after a normal end alike: a try its client gave up on may still land (`batch.md` A14). So every head of this `run_id` with a lower `attempt` that preflight or a read-back finds fences this attempt. The head's own fence is its `ended_at` when it is final with a null `stop_reason` (a normal end, at which no output request is open), else its `deadline`, plus the sink's `timeout_ms` plus 30 s. Its **fence time** is the later of that and its `fence_until`, so a fence passes down every attempt of the `run_id`. A fence time past this attempt's stop cutoff (its `deadline` less the grace), or a head that gives neither time, exits 69 (`previous_attempt_live(<fence time>)`, which tells the caller when to retry). Otherwise phase 7 writes no output before the fence time, and this attempt's heads carry it as `fence_until`. An earlier attempt's process is gone by its deadline (E45), and every store connection is reset rather than drained when dropped or at `_exit` (`SO_LINGER` 0, `batch.md` 2.9), so every write it made has landed before this attempt LISTs or writes, and none lands after.
+- **Object store, `"conditional"`.** The store client is configured with `S3ConditionalPut::ETagMatch`. The `running` write is `If-None-Match: *` when no head exists, else `If-Match` on the ETag preflight read. The final write is `If-Match` on the `running` write's ETag, or, when the `running` write's response was never seen, that write's own precondition (`batch.md` 2.11). A `running` write that fails other than by 412 exits 69 (`sink_unreachable`), with nothing written.
+- **A failed precondition** (412) is read back with a GET. A head with this `attempt` and this write's `write_seq` is this write, whose response was lost: success. A head of a higher `attempt` is `superseded`: the attempt writes nothing more and exits 7. A head of a lower `attempt` can meet only the `running` write: an earlier attempt's late head write that landed after preflight's read (once this attempt's head exists, an earlier attempt's conditional write cannot replace it, since every write changes the ETag). The attempt retries the `running` write with `If-Match` on that head's ETag, at most 4 times; a fifth lower head exits 69 (`previous_attempt_live`). At the final write, this attempt's own `running` head is retried with `If-Match` on its ETag, and any other head is `superseded`. Only the finisher writes after `running` (`batch.md` 2.11), so no two writes of one attempt share a `write_seq`.
+- **Object store, `"none"`.** Plain PUTs.
+- **Directory.** `<root>/_unityrs/lock`, one lock for the whole root, whatever the `run_id`: `flock(LOCK_EX | LOCK_NB)` held for the process's life, busy exits 69 (`output_locked`). So one process at a time writes a root. Each head write is a temp file, `fsync`, a rename over the head, and an `fsync` of the directory, made on the writing thread itself.
+- **Verification** (object store). After its last transfer, phase 7 LISTs the prefix and checks every key and archive it marks `written` or `present` against the ETag it expects (`batch.md` 2.9). One that is missing or differs is `failed` (`publish_mismatch`). The head's `verified` is true when the pass ran to its end, false when it did not (a stop, `verify_list_failed`), and null for a directory sink, where the root's lock leaves no other writer.
+- **What no client can fence.** A store may commit a request it has received long after the client gave up on it, and after the client's process has ended: S3 documents that a `CompleteMultipartUpload` can take several minutes. So the engine bounds only its own writes, and the caller owns the rest.
+- **The caller's duties** (object store):
+  1. At most one attempt of a `run_id` runs at a time (an orchestrator's single-flight claim per run does this), nothing but that run's attempts writes its keys, and two `run_id`s never share keys.
+  2. Before it starts attempt `n + 1`, the caller waits `W` past the end of attempt `n`'s process, or past its `deadline` when it cannot see that end. `W` is the store's longest time to commit a request it has received; for AWS S3, 15 minutes. There is no wait when attempt `n`'s final head has a null `stop_reason` and `unanswered_requests` 0: every request it sent was answered.
 
-The head is the record of the run. For every key the final head lists as `written` or `present`, the store holds the bytes of its MD5, given A14 and no writer to the prefix but unityrs attempts. A key the head does not list so is not part of the run's output, whatever the store holds.
+The head is the record of the run. For every key the final head lists as `written` or `present`, the store held this attempt's bytes when verification listed it (with `verified` true), and holds them still if the caller kept its duties. With `verified` false or null, the first half is not checked. A key the head does not list so is not part of the run's output, whatever the store holds.
 
 ### 7.3 Fields
 
@@ -370,11 +383,12 @@ The head is the record of the run. For every key the final head lists as `writte
 | `stop_reason` | string or null | a stop reason of section 9.3, or null |
 | `binary_version`, `spec_version` | string, integer | |
 | `started_at`, `deadline`, `ended_at` | string or null | RFC 3339, UTC |
-| `fence_until` | string or null | RFC 3339, UTC: the time fence this attempt applied (section 7.2), or null |
+| `verified` | boolean or null | whether verification ran to its end (section 7.2); null for a directory sink |
+| `unanswered_requests` | integer | the output, archive and row requests this attempt sent that ended with no response: a timeout, a dropped connection, or in flight at a stop (section 7.2) |
 | `counts` | object | integers: `bundles`, `bundles_failed`, `inputs`, `inputs_complete`, `inputs_with_skips`, `inputs_failed`, `inputs_not_run`, `outputs_written`, `outputs_present`, `outputs_not_written`, `outputs_withheld`, `outputs_failed`, `outputs_unwritable`, `skips`, `collisions`, `flips`, `archives_written`, `archives_present` |
-| `run` | object | E40's run-level figures: `same_named_cabs`, `undeclared_dependencies`, `nested_containers` (counts; the rows hold the names), `opens`, `evictions`, `reopens`, `input_peak`, `dependency_peak`, `spool_peak`, `vm_hwm`, `memory_bound`, the budgets as read |
+| `run` | object | E40's run-level figures: `same_named_cabs`, `undeclared_dependencies`, `nested_containers` (counts of the `diagnostics` rows of each kind), `evictions`, `input_peak`, `dependency_peak`, `spool_peak`, `vm_hwm`, `memory_bound`, the budgets as read |
 | `warnings` | object | warning code (section 9.3) → count |
-| `rows` | object | `bundles`, `inputs`, `skips`, `diagnostics`, `outputs`, `collisions`, `archives`, `archive_members`: each row file's key relative to the head's directory, or null |
+| `rows` | object | `bundles`, `inputs`, `skips`, `diagnostics`, `outputs`, `collisions`, `archives`, `archive_members`: each row file's chunk keys in order, relative to the head's directory, or null when it was not written |
 
 **The row files** (NDJSON, one object per line, each sorted as stated):
 
@@ -382,12 +396,16 @@ The head is the record of the run. For every key the final head lists as `writte
 |---|---|---|
 | `bundles` | id | `id`, `status` (`staged`, `failed`, `not_staged`), `reason`, `size`, `sha256` (of the staged bytes) |
 | `inputs` | id | `id`, `status` (`complete`, `complete_with_skips`, `failed`, `not_run`), `reason`, `input_peak`, `dependency_peak`, `evictions`, `ms`, `skips` (a count), `unresolved_scripts` |
-| `skips` | input, then object order | `input`, `path_id`, `class`, `reason`, `detail`, `cut` |
-| `diagnostics` | kind, then input | `kind` (`same_named_cab`, `undeclared_dependency`, `nested_container`), `input`, `bundle`, `name`, `cut` |
+| `skips` | input, then record order (4.4) | `input`, `path_id`, `class`, `reason`, `detail`, `cut` |
+| `diagnostics` | input, then record order (4.4) | `kind` (`same_named_cab`, `undeclared_dependency`, `nested_container`), `input`, `bundle`, `name`, `cut` |
 | `outputs` | key | `key`, `kind` (`texture`, `sprite`, `atlas_sprite`, `atlas_json`), `unit` (its unit key, or null), `input`, `path_id`, `md5`, `visible_hash`, `mode`, `size`, `status` (`written`, `present`, `not_written`, `withheld`, `failed`, `unwritable_key`), `reason` |
 | `collisions` | key, then input | one line per candidate of a key with more than one: `key`, `input`, `md5`, `visible_hash`, `winner` (boolean), `rule` (`prefer_input`, `prefer_md5`, `first_input`, `unit`, `unit_conflict`, `withheld`), `flip`, `pixels_differ` (against the winner) |
 | `archives` | key | `key`, `status` (`written`, `present`, `not_written`, `empty`, `failed`, `withheld`), `members`, `left_out`, `md5`, `etag`, `size` |
 | `archive_members` | archive, then member order | `archive`, `path`, `key`, `input`, `md5`, `included`, `reason` (when left out) |
+
+- **`outputs`** holds one row per key that has a candidate: the candidate the rules chose, also when its key is `withheld`, `unit_conflict` or `unwritable_key`. The other candidates are in `collisions` only.
+- **A flip** is a rule-3 decision (E31) among candidates whose MD5s are not all equal.
+- **Diagnostics.** `same_named_cab`: a CAB name that two or more bundles of the input's view hold in their top-level directories, one row per name, `bundle` the bundle 4.3 resolves it to. `undeclared_dependency`: `bundle` null, `name` the `m_Dependencies` name (4.1). `nested_container`: an entry of the input's own bundle that is itself a bundle, met while selecting, `bundle` the input, `name` the entry's path.
 
 A reason is a code of section 9.3. A string taken from the bytes is cut to its first 1,024 bytes, at a code point boundary, and its row's `cut` is then true. A row holds at most four strings of at most 1,024 bytes each (an id, a key or path, a cut string), each escaped to at most 6 bytes per byte, so every line is at most 32 KiB (`batch.md` 2.8).
 
@@ -398,9 +416,9 @@ The finisher writes it (`batch.md` 2.11), according to the phase the run reached
 | the finish starts | the head | the row files |
 |---|---|---|
 | before the `running` write was sent | none; the `exit` line's `status` is null | none |
-| with the `running` write in flight | read back first: as below if it landed, else none | as the head |
+| with the `running` write sent and its response not seen (object store) | the row below for the phase reached, written with the `running` write's own precondition (7.2) | as that row |
 | in phase 3, 4, 5 or 6 | `incomplete`, with `phase` and `stop_reason` | `bundles` (unstaged ones `not_staged`); `inputs` (committed ones with their records, the rest `not_run`); the committed inputs' `skips` and `diagnostics`. `outputs`, `collisions`, `archives` and `archive_members` are null |
-| in phase 7, on a stop | `incomplete` | every file. Each winner's and archive's status is read from the outcomes files (section 6.1): `written` where the write was acknowledged, `present` where resume found the bytes, `failed` (`publish_failed`) where its tries ran out, and `not_written` for every other |
+| in phase 7, on a stop | `incomplete` | every file. Each winner's and archive's status is read from the outcomes files (section 6.1): `written` where the write was acknowledged, `present` where resume found the bytes, `failed` where its tries ran out (`publish_failed`) or verification found other bytes (`publish_mismatch`), and `not_written` for every other |
 | after phase 7 | `complete`, `complete_with_skips` or `incomplete`, by section 9.2 | every file, statuses read as above |
 | superseded at the final write | nothing more; the stored head is the newer attempt's | none from this attempt's finish |
 
@@ -410,11 +428,11 @@ The finisher writes it (`batch.md` 2.11), according to the phase the run reached
 
 An archive is a function of its members' bytes, paths and order:
 - every member stored (method 0), in member order (section 4.7), CRC-32 from the spool's record;
-- local and central headers: version needed 20 (45 for a zip64 member), version made by 20, general-purpose flags `0x0800` (UTF-8 names) and no data descriptor, DOS time `0x0000` and date `0x0021` (1980-01-01 00:00), no extra field but zip64's, internal and external attributes 0, no comment;
-- **zip64** only where the classic fields overflow. A member whose size or local-header offset is at least `0xFFFFFFFF` has those fields set to `0xFFFFFFFF` and a zip64 extra field (id `0x0001`) holding, in this order, its uncompressed and compressed sizes (local and central headers) and its offset (central header only, when it overflowed). An archive whose member count is at least `0xFFFF`, or whose central directory's size or offset is at least `0xFFFFFFFF`, ends with a zip64 end of central directory record (version made by and needed 45, no extensible data), its locator (disk 0, total disks 1), and the classic end record with each overflowed field set to its maximum;
+- local and central headers: version needed 20 (45 for an entry that carries a zip64 extra field), version made by 20, general-purpose flags `0x0800` (UTF-8 names) and no data descriptor, DOS time `0x0000` and date `0x0021` (1980-01-01 00:00), no extra field but zip64's, internal and external attributes 0, no comment;
+- **zip64** only where the classic fields overflow (APPNOTE 4.5.3). In a central header, each of the uncompressed size, the compressed size and the local-header offset that is at least `0xFFFFFFFF` is set to `0xFFFFFFFF`, and a zip64 extra field (id `0x0001`) holds exactly those fields, 8 bytes each, in that order. A local header carries a zip64 extra, holding both sizes with both classic size fields set to `0xFFFFFFFF`, only when a size overflowed; an offset alone gives the local header none. An archive whose member count is at least `0xFFFF`, or whose central directory's size or offset is at least `0xFFFFFFFF`, ends with a zip64 end of central directory record (version made by and needed 45, no extensible data), its locator (disk 0, total disks 1), and the classic end record with each overflowed field set to its maximum;
 - the central directory is spooled while the members stream and written after them (`batch.md` 2.9).
 
-So the archive's MD5, and its multipart ETag at 16 MiB parts, are the same on every run with the same members (E43).
+So the archive's MD5, and its multipart ETag at 16 MiB parts, are the same on every run with the same members (E43). An archive over 10,000 such parts (156.25 GiB) is not written (`archive_too_large`). A test hook that starts the offsets near `0xFFFFFFFF` checks the zip64 forms against CPython 3.11's `zipfile`.
 
 ---
 
@@ -426,7 +444,7 @@ So the archive's MD5, and its multipart ETag at 16 MiB parts, are the same on ev
 |---|---|---|---|
 | 0 | `complete` | every input extracted, every winner published, no skip | done |
 | 3 | `complete_with_skips` | object-level skips for data reasons only; every winner published | done; review the skips |
-| 4 | `incomplete` | an input failed for a data or transport reason, or an output, archive, row file or the head failed to publish | fix the input, or retry with `attempt + 1` (a transport reason may pass on a retry as is) |
+| 4 | `incomplete` | an input failed for a data or transport reason, or an output, archive, row file or the head failed to publish, verification among them | fix the input, or retry with `attempt + 1` (a transport reason may pass on a retry as is) |
 | 5 | `incomplete` | a budget decided an outcome: an input's or a dependency's memory, bytes or work limit, an attempt's budget or eviction cap, the spool | raise the budget the manifest names |
 | 6 | `incomplete`, or none | stopped: the deadline, a signal, the parent's death, stdin's EOF | resume with `attempt + 1` |
 | 7 | none by this attempt | `superseded`: a later attempt of this `run_id` owns the head | do not retry |
@@ -445,9 +463,10 @@ So the archive's MD5, and its multipart ETag at 16 MiB parts, are the same on ev
 |---|---|
 | an object skipped for a budget: reason `budget(input)`, `budget(dependency)`, or `limit` of kind `input_memory`, `input_bytes` or `decode_work` | 5 |
 | an object skipped for any other reason | 3 |
-| an input failed for a budget, by the same reasons or `limit(attempt_evictions, ...)`, or by `dependency_failed(<id>, <reason>)` whose inner reason is one of them | 5 |
+| an input failed for a budget, by the same reasons or `limit(attempt_evictions, ...)` or `limit(export_work, ...)`, or by `dependency_failed(<id>, <reason>)` whose inner reason is one of them | 5 |
 | an input failed for any other reason (a transport reason, `integrity_mismatch`, `dependency_failed` with any other inner reason, `not_a_bundle`, a container or entry error, a depth or count limit) | 4 |
-| an output, archive, row file or the head that failed to publish (`publish_failed`) | 4 |
+| an output, archive, row file or the head that failed to publish (`publish_failed`, `publish_mismatch`, `credentials_expired`, `archive_too_large`) | 4 |
+| a key, member or archive that phase 6 refused (`unit_conflict`, `unwritable_key(prefix_conflict)`, `unwritable_key(archive_conflict)`, `duplicate_member`, `unwritable_path`) | 3 |
 | a key withheld (E61) | none of its own: the failed input sets the code |
 
 A depth or count limit is a data reason: no budget raises it.
@@ -458,16 +477,16 @@ A reason is `name` or `name(argument, ...)`. A `limit`'s arguments are the core'
 
 | where | names |
 |---|---|
-| a bundle or an input, transport (exit 4) | `download_failed`, `redirect_refused`, `source_missing` |
+| a bundle or an input, transport (exit 4) | `download_failed`, `redirect_refused`, `source_missing`, `source_changed` |
 | a bundle or an input, data (exit 4) | `integrity_mismatch`, `not_a_bundle`, `container_error`, `entry_error`, `dependency_failed(<id>, <reason>)`, `limit(<kind>, <value>)` |
-| a budget (exit 5) | `budget(input)`, `budget(dependency)`, `limit(input_memory \| input_bytes \| decode_work \| attempt_evictions, <value>)` |
+| a budget (exit 5) | `budget(input)`, `budget(dependency)`, `limit(input_memory \| input_bytes \| decode_work \| attempt_evictions \| export_work, <value>)` |
 | an object's skip | the budget names, a data `limit`, `outside_view(<cab>)`, `bad_pointer`, `decode_error`, `decoder_panic`, `unsupported_format(<name>)`, `unsupported_platform(switch \| xbox360)`, `empty_image`, `duplicate_name`, `duplicate_key`, `unwritable_key(<rule>)`, `empty_rect`, `unnamed_atlas`, `reference_atlas`, `sheet_not_found`, `ngui_layout_unsupported`, `no_typetree`, `json_unwritable` |
-| an output's or archive's status | `withheld` (E61), `unit_conflict`, `publish_incomplete`, `publish_failed`, `unwritable_key(<rule>)` |
+| an output's or archive's status | `withheld` (E61), `unit_conflict`, `publish_incomplete`, `publish_failed`, `publish_mismatch`, `credentials_expired`, `archive_too_large`, `unwritable_key(<rule>)` |
 | a member left out | `duplicate_member`, `unwritable_path(<rule>)`, `prefix_conflict` |
 | a stop | `deadline`, `sigterm`, `sigint`, `sighup`, `parent_died`, `stdin_eof` (6); `superseded` (7); `spool_full` (5); `host_io`, `host_memory` (74); `internal` (70) |
-| preflight (exit 69) | `spool_not_dedicated`, `spool_overlaps_sink`, `spool_locked`, `spool_no_space`, `output_locked`, `manifest_unreadable`, `sink_unreachable`, `credentials_missing`, `rlimit_too_low`, `overcommit_strict`, `previous_attempt_live(<fence time>)`, `thread_spawn_failed` |
+| preflight (exit 69) | `spool_not_dedicated`, `spool_in_memory`, `spool_overlaps_sink`, `spool_locked`, `spool_no_space`, `output_locked`, `manifest_unreadable`, `sink_unreachable`, `credentials_missing`, `credentials_expire`, `header_env_missing`, `deadline_too_close`, `rlimit_too_low`, `overcommit_strict`, `map_count_too_low`, `memory_too_small`, `previous_attempt_live`, `thread_spawn_failed` |
 | validation (exit 78) | `bad_spec`, with the field's JSON pointer and the rule in its detail |
-| a warning (the head's `warnings`) | `resume_list_failed`, `etag_not_md5`, `stderr_dropped`, `abort_failed` |
+| a warning (the head's `warnings`) | `resume_list_failed`, `verify_list_failed`, `etag_not_md5`, `stderr_dropped`, `abort_failed` |
 
 ---
 
@@ -489,8 +508,9 @@ NDJSON on stdout (E4), version `p` = the `spec_version` the run reads (for a spe
 | `outputs` | object | integers: `candidates`, `winners`, `published`, `present`, `failed`; `winners` is 0 before phase 6 |
 | `status` | string or null | on the `exit` line, the status the final manifest holds, or null when none was written; null on a snapshot |
 | `code` | integer or null | on the `exit` line, the exit code (section 9); null on a snapshot |
-| `stop_reason` | string or null | on the `exit` line, a stop reason of 9.3, or null; null on a snapshot |
+| `reason` | string or null | on the `exit` line, the reason that set the code: a stop, preflight or validation reason of 9.3, or null for a code section 9.2 decided; null on a snapshot |
+| `detail` | string or null | on the `exit` line, at most 1,024 bytes: for `bad_spec` the field's JSON pointer and the rule, else the reason's detail or null; null on a snapshot |
 
-- A line is written at least every 2 s from a one-slot mailbox (`extract.md` item 5). No field holds a URL, a header value or a credential (E42).
+- The first line is written when validation ends, and then a line at least every 2 s, from a one-slot mailbox (`extract.md` item 5). No field holds a URL, a header value or a credential (E42).
 - A spec refused at validation, and `--check` either way, write one line: the `exit` line.
 - `unityrs --version` prints one line, not NDJSON: `unityrs <crate version> spec <highest spec_version>`.
