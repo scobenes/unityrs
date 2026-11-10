@@ -8,7 +8,11 @@
 //! cargo run --release -p unityrs-dump --example bench -- INDEX.json [-j N]
 //!     [--budget unbounded|counting|tracked] [--load eager|lazy]
 //!     [--kind KIND]... [--sample N] [--pin] [--per-input FILE]
+//! cargo run --release -p unityrs-dump --example bench -- --many-blocks [--reads N]
 //! ```
+//!
+//! `--many-blocks` reads no index: it times runs of many blocks, which the
+//! corpus lacks, built by the testkit (`runs`).
 //!
 //! The inputs are the dump's (`unityrs_dump::select`, as `unityrs dump
 //! --index` selects them: the index's bundle and UnityPy-sample entries by
@@ -42,6 +46,7 @@
 
 mod budget;
 mod clock;
+mod runs;
 mod summary;
 #[cfg(test)]
 mod tests;
@@ -74,7 +79,8 @@ pub struct Args {
 }
 
 const USAGE: &str = "usage: bench INDEX.json [-j N] [--budget unbounded|counting|tracked] \
-                     [--load eager|lazy] [--kind KIND]... [--sample N] [--pin] [--per-input FILE]";
+                     [--load eager|lazy] [--kind KIND]... [--sample N] [--pin] [--per-input FILE]\n       \
+                     bench --many-blocks [--reads N]";
 
 impl Args {
     pub fn parse(args: &[String]) -> Result<Self, String> {
@@ -238,6 +244,20 @@ pub fn run(args: &Args, paths: &[PathBuf]) -> Pass {
 
 fn main() -> ExitCode {
     let given: Vec<String> = std::env::args().skip(1).collect();
+    if let Some((first, rest)) = given.split_first()
+        && first == "--many-blocks"
+    {
+        return match runs::reads(rest).and_then(|n| runs::many_blocks(&runs::CASES, n)) {
+            Ok(v) => {
+                println!("{v}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("bench: {e}\n{USAGE}");
+                ExitCode::from(2)
+            }
+        };
+    }
     let args = match Args::parse(&given) {
         Ok(a) => a,
         Err(e) => {

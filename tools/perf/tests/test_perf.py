@@ -115,6 +115,10 @@ class PlanTests(unittest.TestCase):
         r2 = next(p for p in trial_once if p["name"] == "unityrs-lazy-r2-sample")["argv"]
         self.assertEqual(r2[2:6], ["--kind", "bundle", "--sample", "20"], "R2's rule whatever the trial's sample")
         self.assertNotIn("100", r2)
+        many = next(p for p in timed if p["name"] == report.MANY_BLOCKS)
+        self.assertEqual((many["argv"][1:], many["unitypy"]), (["--many-blocks"], False))
+        trial_many = next(p for p in trial_timed if p["name"] == report.MANY_BLOCKS)
+        self.assertEqual(trial_many["argv"][1:], ["--many-blocks"], "--sample does not apply")
         builds = perf.build_commands()
         self.assertEqual(builds[1][1], {"RUSTFLAGS": "--cfg unityrs_no_counters"})
         self.assertIn("-j", builds[0][0])
@@ -186,6 +190,26 @@ class ReportTests(unittest.TestCase):
         s = report.summarise(self.records(1.0), {"started_utc": "t", "repeat": 2, "jobs": 8, "sample": None})
         self.assertTrue(s["r4"]["blocker_slower_serially"])
         self.assertIn("Blocker", report.markdown(s))
+
+    def test_runs_of_many_blocks_are_summarised_apart(self):
+        """`bench --many-blocks` records (no corpus inputs) give their cases' ranges over the rounds, and leave the
+        corpus passes' consistency and table alone."""
+        recs = self.records(6.0)
+        for r, ms in ((1, 40.0), (2, 30.0)):
+            case = {"bytes": 64 << 20, "block": 16 << 10, "blocks": 4096, "reads": 5, "best_ms": ms,
+                    "median_ms": ms + 5, "best_mb_per_s": 67.108864 / (ms / 1e3)}
+            many = record(report.MANY_BLOCKS, ms / 100, r)
+            many["bench"] = {"bench": "unityrs-many-block-runs", "wall_s": ms / 100, "cases": [case]}
+            recs.append(many)
+        s = report.summarise(recs, {"started_utc": "t", "repeat": 2, "jobs": 8, "sample": None})
+        [c] = s["many_block_runs"]
+        self.assertEqual((c["blocks"], c["best_ms"], c["median_ms"]), (4096, [30.0, 40.0], [35.0, 45.0]))
+        self.assertEqual([r["round"] for r in c["per_run"]], [1, 2])
+        self.assertNotIn(report.MANY_BLOCKS, s["phases"])
+        self.assertTrue(s["consistency"]["same_inputs_bytes_objects"])
+        self.assertIn("| 64 | 16 | 4096 | 30.0-40.0 | 35.0-45.0 |", report.markdown(s))
+        none = report.summarise(self.records(6.0), {"started_utc": "t", "repeat": 2, "jobs": 8, "sample": None})
+        self.assertIsNone(none["many_block_runs"])
 
     def test_a_pass_that_saw_other_objects_is_flagged(self):
         recs = self.records(6.0)

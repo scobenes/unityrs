@@ -12,8 +12,10 @@ after, the CPU the container's other processes used, the machine's busy CPUs):
 
 - timed passes, each run `--repeat` times, round by round so drift in the load spreads over every pass: unityrs
   serially and on `-j` threads with the `Unbounded` budget (R4), the same serially with the counters compiled
-  out (their cost), serially and on `-j` threads with one shared `Counting` budget (R10), and UnityPyBoost
-  serially and in a fork pool of `-j` workers (`bench_unitypy.py`, under `ulimit -v` of 4,000,000 KB a process);
+  out (their cost), serially and on `-j` threads with one shared `Counting` budget (R10), UnityPyBoost
+  serially and in a fork pool of `-j` workers (`bench_unitypy.py`, under `ulimit -v` of 4,000,000 KB a process),
+  and runs of many blocks, which the corpus lacks (`bench --many-blocks`: an entry of 64 MiB in LZ4 blocks of
+  128 KiB and of 16 KiB, built by the testkit, read whole five times each, the best and the median timed);
 - once each, for counts: unityrs eagerly with a tracked budget serially (each input's peak `Meter::used()` against
   its decoded size, peak RSS against the peak of live charges, the cached runs' peak per bundle, the version
   sources: R3, R5, R10) and on `-j` threads (peak RSS against live charges), eagerly keeping every value (what
@@ -78,6 +80,8 @@ def plan(index: str, jobs: int, sample: int | None, out: Path) -> tuple[list[dic
         {"name": "unityrs-parallel-counting", "argv": [*urs, "-j", j, "--budget", "counting"]},
         {"name": "unitypy-serial", "argv": [*upy, "--phase", "serial"], "unitypy": True},
         {"name": "unitypy-parallel", "argv": [*upy, "--phase", "parallel", "-j", j], "unitypy": True},
+        # Not over the corpus, whose bundles hold at most 6 blocks: --sample does not apply.
+        {"name": report.MANY_BLOCKS, "argv": [str(bench_binary()), "--many-blocks"]},
     ]
     r2 = [str(bench_binary()), index, "--kind", "bundle", "--sample", "20"]  # R2's rule, whatever --sample
     once = [

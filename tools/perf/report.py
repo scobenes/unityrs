@@ -10,6 +10,9 @@ from __future__ import annotations
 import json
 import statistics
 
+# The pass of runs of many blocks (`bench --many-blocks`), which reads no input of the corpus.
+MANY_BLOCKS = "unityrs-many-block-runs"
+
 
 def rng(xs):
     xs = [x for x in xs if x is not None]
@@ -158,7 +161,41 @@ def counts(phases) -> dict:
     return out
 
 
+def many_block_runs(recs: list[dict]) -> list[dict] | None:
+    """Each case of `bench --many-blocks` over the rounds: its best and median read's ranges, and each round's
+    beside its load."""
+    if not recs:
+        return None
+    cases: dict[tuple[int, int], list[tuple[dict, dict]]] = {}
+    for r in recs:
+        for c in r["bench"]["cases"]:
+            cases.setdefault((c["bytes"], c["block"]), []).append((c, r))
+    return [
+        {
+            "bytes": key[0],
+            "block": key[1],
+            "blocks": runs[0][0]["blocks"],
+            "best_ms": rng([c["best_ms"] for c, _ in runs]),
+            "median_ms": rng([c["median_ms"] for c, _ in runs]),
+            "best_mb_per_s": rng([c["best_mb_per_s"] for c, _ in runs]),
+            "per_run": [
+                {
+                    "round": r["round"],
+                    "best_ms": c["best_ms"],
+                    "median_ms": c["median_ms"],
+                    "loadavg_before": r["mem"]["load"]["loadavg_before"],
+                    "others_cores": r["mem"]["load"]["others_cores"],
+                }
+                for c, r in runs
+            ],
+        }
+        for key, runs in cases.items()
+    ]
+
+
 def summarise(records, meta) -> dict:
+    many = [r for r in records if r["phase"] == MANY_BLOCKS]
+    records = [r for r in records if r["phase"] != MANY_BLOCKS]
     phases = by_phase(records)
     stats = {name: {**phase_stats(recs), "_recs": recs} for name, recs in phases.items()}
     get = stats.get
@@ -179,6 +216,7 @@ def summarise(records, meta) -> dict:
         },
         "consistency": consistency(records),
         "counts": counts(phases),
+        "many_block_runs": many_block_runs(many),
     }
     return out
 
@@ -219,6 +257,20 @@ def markdown(s: dict) -> str:
                 f"| {name} | {r['round'] or '-'} | {r['wall_s']:.2f} | {r['mb_per_s']:.1f} "
                 f"| {r['loadavg_before'][0]:.1f} / {r['loadavg_after'][0]:.1f} | {r['others_cores']:.1f} "
                 f"| {r['box_busy_cores']:.1f} |"
+            )
+    if s.get("many_block_runs"):
+        lines += [
+            "",
+            "Runs of many blocks (`bench --many-blocks`; the corpus has none), each read whole, over the rounds:",
+            "",
+            "| entry MiB | block KiB | blocks | best ms | median ms | best MB/s |",
+            "|---|---|---|---|---|---|",
+        ]
+        for c in s["many_block_runs"]:
+            lines.append(
+                f"| {c['bytes'] / (1 << 20):g} | {c['block'] / 1024:g} | {c['blocks']} "
+                f"| {span(c['best_ms'], '{:.1f}')} | {span(c['median_ms'], '{:.1f}')} "
+                f"| {span(c['best_mb_per_s'], '{:,.0f}')} |"
             )
     r4 = s["r4"]
     head = {k: s[k] for k in ("r4", "counters_cost_serial", "r10_counting_over_unbounded", "consistency")}

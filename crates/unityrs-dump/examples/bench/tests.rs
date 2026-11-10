@@ -11,6 +11,7 @@ use unityrs_dump::select::collect;
 use unityrs_testkit::scratch::Scratch;
 
 use crate::budget::{BudgetKind, Tracker};
+use crate::runs::{READS, many_blocks, reads};
 use crate::summary::{at, spread};
 use crate::work::Load;
 use crate::{Args, run};
@@ -151,4 +152,34 @@ fn passes_over_the_format_matrix() {
     assert!(lazy.meter_peaks.iter().all(Option::is_none), "untracked");
     let objects: u64 = eager.done.iter().map(|d| d.objects).sum();
     assert!(objects > 0);
+}
+
+/// `--many-blocks` times each case's whole reads: here 1 MiB in 64 blocks
+/// of 16 KiB and 1 MiB + 1 in 9 of 128 KiB (the last short), twice each.
+#[test]
+fn many_blocks_times_whole_reads_of_long_runs() {
+    let v = many_blocks(&[(1 << 20, 16 << 10), ((1 << 20) + 1, 128 << 10)], 2).unwrap();
+    assert_eq!(v["bench"], "unityrs-many-block-runs");
+    let cases = v["cases"].as_array().unwrap();
+    let blocks: Vec<u64> = cases
+        .iter()
+        .map(|c| c["blocks"].as_u64().unwrap())
+        .collect();
+    assert_eq!(blocks, [64, 9]);
+    for c in cases {
+        assert_eq!(c["reads"], 2);
+        let (best, median) = (
+            c["best_ms"].as_f64().unwrap(),
+            c["median_ms"].as_f64().unwrap(),
+        );
+        assert!(best > 0.0 && best <= median, "{c}");
+        assert!(c["best_mb_per_s"].as_f64().unwrap() > 0.0);
+    }
+    assert!(v["wall_s"].as_f64().unwrap() > 0.0);
+    let s = |l: &[&str]| l.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>();
+    assert_eq!(reads(&[]), Ok(READS));
+    assert_eq!(reads(&s(&["--reads", "3"])), Ok(3));
+    for bad in [&["--reads", "0"][..], &["--reads"], &["--frob", "1"]] {
+        assert!(reads(&s(bad)).is_err(), "{bad:?}");
+    }
 }
