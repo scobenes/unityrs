@@ -1,6 +1,6 @@
-# P2 plan: unityrs-batch (draft)
+# P1b plan: unityrs-batch, the engine (draft)
 
-**Status: draft, not reviewed, P2.** Nothing here is a decision. This file holds the batch flow that `docs/plans/core.md` section 4.1 described until P1's third review round, and every problem reviewers found in it. Each round found new ones in admission and eviction, and the batch engine is not built in P1, so the flow left the core plan. Before `unityrs-batch` is built, this plan gets its own design and review rounds, and every open problem in section 3 is solved or shown wrong.
+**Status: draft, not reviewed, P1b** (2D batch extraction, `docs/DESIGN.md` section 5; called P2 until 2026-11-09, when the phase table gave the 2D work its own phase). This file is the engine's plan: registration, admission, eviction, the hand-off to sinks and refusal. The rest of the phase (the job spec, decoding, images, sinks, the manifest, releases) is `docs/plans/extract.md`, which relies on the engine meeting the requirements in sections 1 and 3. Nothing here is a decision. This file holds the batch flow that `docs/plans/core.md` section 4.1 described until P1's third review round, and every problem reviewers found in it. Each round found new ones in admission and eviction, and the batch engine is not built in P1, so the flow left the core plan. Before `unityrs-batch` is built, this plan gets its own design and review rounds, and every open problem in section 3 is solved or shown wrong.
 
 **What it builds on.** The core API and what it guarantees any batch engine: `docs/plans/core.md` section 4.1, a list of properties each checked by a P1 test. This plan may rely on those properties and on nothing else the core does. A need the list does not cover is a request to the core, not an assumption.
 
@@ -10,7 +10,9 @@
 
 ## 1. Goal
 
-DESIGN.md section 4's `unityrs-batch` row: a JSON job spec of inputs, outputs and resource budgets (`threads`, `max_inflight_uncompressed_bytes` among them), run in parallel with bounded memory, streaming outputs to sinks, with the run marked `incomplete` when an input fails.
+DESIGN.md section 4's `unityrs-batch` row: a JSON job spec of inputs, outputs and resource budgets (`threads`, `max_inflight_uncompressed_bytes` among them), run in parallel with bounded memory, streaming outputs to sinks, with the run marked `incomplete` when an input fails. Each bundle and dependency is parsed once per run, within `dep_cache_bytes`: that is the goal this design must meet, not a property it already has.
+
+`docs/plans/extract.md` adds what the engine must give the rest of P1b: inputs that each know their dependencies by name (the spec's graph, 3.6); the own-bundle-first rule for same-named CABs under `EnvOptions::batch()` (3.9); a failed dependency failing exactly the inputs that need it (3.10); and sinks that may hold output across jobs, for the `prefer` winners (3.5).
 
 ## 2. The flow as P1's plan last described it
 
@@ -83,13 +85,15 @@ Each is a problem this plan must solve, or show wrong, before the batch crate is
 
 **Open:** pick one model and state it. **Backpressure:** a bounded hand-off where the job waits, that wait added to the deadlock argument, and consumers forbidden to hold output across jobs. **Copy out:** consumers copy or spool on receipt, so a job's charges are its own and in-flight bytes exclude what consumers hold.
 
+**P1b needs a consumer that holds output across jobs.** The `prefer` winners (`docs/plans/extract.md`) keep every candidate for a key until each input that can produce that key has run, and an atlas, its crops and its JSON win as one unit. Backpressure as stated forbids that consumer; copy out, spooled to disk under the spool budget, allows it. Whichever model is chosen must allow it, or say how the winners are chosen instead.
+
 ### 3.6 Step 1 names a load the API did not have
 
 `claude3-core-plan.md` L7 (P1 round 3).
 - The only way to open a source into the Environment was `load`, which gives an `Input` meter and is never evicted, so a pool refusal was tagged `Input` and no registry handle could be evicted.
 
 **The core now provides:** `Environment::load_dependency(source)` (core 3.13; D implements and tests it): a `Dependency` meter, CABs registered lazily, evictable, not in `files`.
-**Open:** step 1 rewritten around it, or around a `CabResolver` that maps CAB names to the inputs; say which, and how the engine learns CAB names.
+**Open:** step 1 rewritten around it, or around a `CabResolver` that maps CAB names to the inputs; say which, and how the engine learns CAB names. The job spec now carries each input's dependencies by name (`docs/plans/extract.md`); with the inputs' own directories (step 1 reads them), that graph is where the names can come from. A name found only in an AssetBundle's own dependency list is fetched by the spec's URL rule.
 
 ### 3.7 Problems settled in the core that the batch design must restate
 
@@ -115,10 +119,24 @@ These were found against the batch flow but were defects of the core API, fixed 
 **The core now provides:** both behaviours, correct either way (the bytes are the same entry's), and `Environment::load_dependency`'s returned handle, which the redirect recognises whatever the source.
 **Open:** pick one and state its cost: jobs that read through the handle `load_dependency` returned (then charged to the dependency pool, not the job's), inputs registered as `Bytes` the engine keeps (no byte freed on eviction), or an input identity the core would need to carry (a request to the core, through its integration rule).
 
+### 3.9 Same-named CABs: the own-bundle-first rule
+
+`docs/plans/core.md` section 9, Q12 (decided 2026-10-30) gives this plan the rule.
+- Under `EnvOptions::batch()`, an input's `.resS` reads and its container read its own bundle's CAB first when two bundles hold a CAB of one name (Tier C, `PARITY.md` section 19.2's same-named CABs row). `EnvOptions::unitypy()` keeps UnityPy's one registry, Tier A, in both load modes.
+- P1 implements UnityPy's registry under every option set; a `PPtr` from inside a bundle already reads its own bundle's copy first (Tier A).
+
+**Open:** where the rule lives (the engine's resolver, or a core option requested through the core's integration rule), and its tests: two bundles holding a CAB of one name, each input reading its own `.resS` and container, in both load modes, with `EnvOptions::unitypy()` unchanged.
+
+### 3.10 A failed dependency fails the inputs that need it
+
+- A dependency that fails to download or parse fails every input that needs it, and no other; the run is then `incomplete` (DESIGN.md section 4's failure model).
+
+**Open:** how the engine knows which inputs need a dependency (the spec's graph, plus an AssetBundle's own dependency list for a name found only there), when it fails them (before their jobs are admitted, or when a read reaches the dependency), and a test that an input which does not need the failed dependency gives the same output as in a run where nothing failed.
+
 ---
 
 ## 4. Before it is built
 
-- A design written against core plan section 4.1's properties only.
+- A design written against core plan section 4.1's properties only, that solves or shows wrong each open problem in section 3 (3.1-3.10).
 - A deadlock argument that names every wait, the sinks' included, and shows each cannot close a cycle with the properties it relies on.
 - Its own review rounds, run until a round finds no MEDIUM or HIGH problem.
