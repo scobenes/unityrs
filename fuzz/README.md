@@ -18,16 +18,19 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `boost_read` | `walk::boost::read` | `unityrs_testkit::fuzz::TreeCase`: rows, ref types, value bytes |
 | `python_read` | `walk::python::read_with_reader`, from the case's start, by the memory or the stream reader's rules | `TreeCase` |
 | `write_after_read` | a read, `walk::write::write` under `WriteRules::MirrorReader`, the read again and the write again: the value and the bytes must come back the same (`docs/DESIGN.md`'s write rule); a writer's refusal must be its named error | `TreeCase` |
-| `lz4` | `codec::decode_block` with `codec::Lz4` against liblz4 1.9.4's `LZ4_decompress_safe` (lz4-sys 1.10.0): the same verdict, the same bytes, the same error code; `PARITY.md`'s LZ4 row is the one difference allowed | `unityrs_testkit::fuzz::lz4_case`: declared size, block |
+| `lz4` | `codec::decode_block` with `codec::Lz4` against liblz4 1.9.4's `LZ4_decompress_safe` (lz4-sys 1.10.0): the same verdict, the same bytes, the same error code; the differences allowed are `PARITY.md`'s LZ4 row and its limits (an output past the 8 MiB block bound is refused with `BlockOutput`) | `unityrs_testkit::fuzz::lz4_case`: declared size, block |
 
 Every run is bounded by the limits in `src/lib.rs`: 128 MiB of memory, of
 input and of one block's output (`MEMORY`), and 8 MiB of decode work and of
-inflate (`WORK`). An input that reaches one ends with the core's named limit
-error, never an abort, and an allocation the meter did not see is what
-reaches libFuzzer's allocation limit. The work bound keeps the slowest
-inputs (a list of small values read to the bound, about a second and a half
-under the sanitizer) well inside the 10 s timeout; the comments in
-`src/lib.rs` give the numbers.
+inflate (`WORK`). A value read never reaches 128 MiB within the work bound,
+so a `TreeCase` with `SMALL_MEMORY` set bounds its memory at 8 MiB instead
+(`SMALL_MEMORY`), which a read of many small values reaches first: the code
+that grows a charged buffer at the bound runs there. An input that reaches
+a bound ends with the core's named limit error, never an abort, and an
+allocation the meter did not see is what reaches libFuzzer's allocation
+limit. The work bound keeps the slowest inputs (a list of small values read
+to the bound, 0.6 to 1.4 s under the sanitizer) well inside the 10 s
+timeout; the comments in `src/lib.rs` give the numbers.
 
 ## Seeds
 
@@ -40,10 +43,10 @@ cargo run -p unityrs-testkit --example fuzz_seeds -- /tmp/fuzz/seeds
 
 writes one folder per target: every builder output (the format matrix,
 every format, codec and flag set, every Environment scene's files), the
-files each bundle holds, each object's tree and bytes, every stored tree in
-ten formats both ways round, the deep values of `unityrs_testkit::depth`,
-and LZ4 blocks of every output at the exact, a larger, a smaller and a zero
-declared size.
+files each bundle holds, each object's tree and bytes (with `SMALL_MEMORY`
+clear and set), every stored tree in ten formats both ways round, the deep
+values of `unityrs_testkit::depth`, and LZ4 blocks of every output at the
+exact, a larger, a smaller and a zero declared size.
 
 ## Running
 
@@ -51,6 +54,7 @@ With a nightly toolchain and cargo-fuzz 0.13.2 (CI pins the nightly in
 `.github/workflows/fuzz.yml`), from this folder:
 
 ```sh
+cargo +nightly test --lib     # the harness's own tests (src/tests.rs)
 cargo +nightly fuzz build -a
 cargo +nightly fuzz run -a TARGET /tmp/fuzz/corpus/TARGET /tmp/fuzz/seeds/TARGET -- \
     -max_total_time=900 -timeout=10 -rss_limit_mb=1536 -malloc_limit_mb=2048
@@ -83,8 +87,8 @@ at step 1.
   its corpus of the night before (kept with `actions/cache`) and the seeds.
   A finding fails the target's job and uploads the input.
 - `.github/workflows/ci.yml`'s `fuzz-build`: on every push, every target
-  built and run for 30 seconds from the seeds, and `cargo fmt --check` over
-  this crate.
+  built and run for 30 seconds from the seeds, the harness's own tests
+  (`cargo test --lib`), and `cargo fmt --check` over this crate.
 
 ## Licences
 

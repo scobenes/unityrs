@@ -43,10 +43,10 @@ pub const MEMORY: u64 = 128 << 20;
 /// doubling asked for exactly what one push needed, so near the bound
 /// every push reallocated, and AddressSanitizer's `realloc` copies the
 /// whole buffer each time. It showed at memory bounds of 8 and 128 MiB
-/// (with 64 MiB of work), never at 1 MiB, where the copies stay short. Put
-/// back into the core, it times out two of the six inputs those runs kept
-/// (one of `python_read`'s, one of `write_after_read`'s) at this bound, and
-/// none at [`MEMORY`].
+/// (with 64 MiB of work or more), never at 1 MiB, where the copies stay
+/// short. Put back into the core, it times out two of the six inputs those
+/// runs kept (one of `python_read`'s, one of `write_after_read`'s) at this
+/// bound, and none at [`MEMORY`].
 pub const SMALL_MEMORY: u64 = 8 << 20;
 
 /// The bound of an input's work (every byte decoded, every value read or
