@@ -318,14 +318,14 @@ pub fn charged_bytes(buf: Vec<u8>, mut charge: Charge) -> Result<Bytes, ChargeEr
 /// never allocated, review round 13), nor, while what is needed fits it,
 /// past the run's declared end: the block's start, the size
 /// [`Self::begin_block`] was given, and what the run's next blocks declare
-/// as far as its reader has read ahead ([`Self::set_ahead`]). Room a
-/// well-formed run never writes is never allocated, so a block decoded in
-/// windows ends at its declared size, and a run of blocks doubles, ending
-/// at its last block's end. A refused doubling is asked again with half the
-/// room past the size needed, down to exactly that size
-/// ([`crate::limits::MeteredVec`]'s growth). A block that writes past that
-/// declared end (an LZMA stream that ignores its size) grows geometrically
-/// from there, to the segment's end.
+/// as far as its reader has read ahead (`set_ahead`, which the crate's
+/// bundle reader calls). Room a well-formed run never writes is never
+/// allocated, so a block decoded in windows ends at its declared size, and
+/// a run of blocks doubles, ending at its last block's end. A refused
+/// doubling is asked again with half the room past the size needed, down
+/// to exactly that size ([`crate::limits::MeteredVec`]'s growth). A block
+/// that writes past that declared end (an LZMA stream that ignores its
+/// size) grows geometrically from there, to the segment's end.
 ///
 /// **Segments.** A run of several blocks is one buffer, but each block has
 /// its own cap ([`crate::limits::Limits::max_block_output`]): the caller

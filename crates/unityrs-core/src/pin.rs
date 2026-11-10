@@ -18,7 +18,13 @@
 //! `Bytes`, its owner record included ([`crate::budget::charged_bytes`]), so
 //! it returns when the last slice of it drops. A copy the meter or the
 //! budget refuses is not made: the slices stay as they were, and the read or
-//! the parse goes on. [`Copies`] counts what was copied, per file.
+//! the parse goes on. [`Copies`] counts what was copied, per file. The
+//! other slices the core hands out are not copied, and each keeps its whole
+//! buffer alive as any slice does: [`crate::object::ObjectRef::raw_data`],
+//! [`crate::files::BundleFile::entry_bytes`] and
+//! [`crate::files::BundleFile::entry_range`],
+//! [`crate::files::SerializedFile::data`], and the value of
+//! [`crate::walk::read_typetree`], whose caller hands it the buffer.
 //!
 //! **Each byte once.** The copy holds each byte of the buffer that some
 //! slice names once, however many slices name it, and each slice becomes the

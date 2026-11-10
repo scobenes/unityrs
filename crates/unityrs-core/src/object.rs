@@ -101,8 +101,11 @@ impl ObjectRef {
     }
 
     /// `get_raw_data`: `byte_size` bytes from `byte_start`, cut short at the
-    /// end of the file (a slice of the file's buffer, no copy), by the
-    /// file's reader's rules ([`SerializedFile::reader_kind`]): the stream
+    /// end of the file (a slice of the file's buffer, no copy, so it keeps
+    /// that whole buffer alive while it lives: a bundle entry's run, unlike
+    /// [`Self::read_typetree`]'s value, which [`crate::pin`] copies out of a
+    /// much larger run), by the file's reader's rules
+    /// ([`SerializedFile::reader_kind`]): the stream
     /// reader (a file loaded from a path) refuses a negative `byte_start`, or
     /// one at or above 2^63, as UnityPy's does on every machine, where the
     /// memory reader slices from the end or reads nothing. A `byte_start`
