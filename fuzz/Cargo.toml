@@ -1,0 +1,84 @@
+# The fuzz targets (README.md; docs/plans/core.md section 6, the fuzz plan).
+# A workspace of its own, outside the repository's: it builds only with a
+# nightly toolchain and cargo-fuzz, and nothing here ships, so its
+# dependencies are no part of THIRD_PARTY_LICENSES (README.md, "Licences").
+[package]
+name = "unityrs-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+# liblz4's own decoder, for the `lz4` target's comparison: 1.10.0 builds the
+# liblz4 1.9.4 it vendors, the version python-lz4 4.4.4 wraps in the oracle
+# (the target checks `LZ4_versionNumber` at its first input).
+lz4-sys = "=1.10.0"
+unityrs-core = { path = "../crates/unityrs-core" }
+unityrs-testkit = { path = "../crates/unityrs-testkit" }
+
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = "line-tables-only"
+
+[[bin]]
+name = "detect"
+path = "fuzz_targets/detect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle"
+path = "fuzz_targets/bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "serialized"
+path = "fuzz_targets/serialized.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "typetree"
+path = "fuzz_targets/typetree.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "boost_read"
+path = "fuzz_targets/boost_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "python_read"
+path = "fuzz_targets/python_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "write_after_read"
+path = "fuzz_targets/write_after_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lz4"
+path = "fuzz_targets/lz4.rs"
+test = false
+doc = false
+bench = false
