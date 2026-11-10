@@ -42,7 +42,7 @@ A spec is one JSON object, at most 16 MiB, UTF-8. An unknown field at any level,
 | `publish_incomplete` | boolean | no | `true` | E61 |
 | `resume` | boolean | no | `false` | E43 |
 | `sink` | Sink | yes | | section 1.6 |
-| `archives` | array of Archive | no | `[]` | section 1.7 |
+| `archives` | array of Archive | no | `[]` | section 1.7; 0 to 256 items |
 | `manifest_fencing` | string | no | `"conditional"` | `"conditional"` or `"none"` (section 7.2) |
 
 **Cross-field rules**, each refused at validation:
@@ -81,7 +81,8 @@ Every bundle is staged into the spool before extraction (`batch.md` 2.5), and ev
 
 | field | type | default | allowed values and meaning |
 |---|---|---|---|
-| `idle_timeout_ms` | integer | 30000 | 1,000 to 600,000: a try fails (`"timeout"`) when no byte arrives for this long. There is no whole-request timeout, so a download slowed by its neighbours takes longer and does not fail |
+| `idle_timeout_ms` | integer | 30000 | 1,000 to 600,000: a try fails (`"timeout"`) when no byte arrives for this long |
+| `min_rate_bytes` | integer | 1024 | 1 to 2^30: a try also fails (`"timeout"`) when fewer than this many bytes arrive in a period of `idle_timeout_ms`, the periods counted back to back from the request's send. There is no whole-request timeout, so a download slowed by its neighbours takes longer and fails only below this floor. A staged bundle's bytes are claimed from `spool.size_bytes`, so with the floor every try ends |
 | `connect_timeout_ms` | integer | 10000 | 100 to 60,000 |
 | `attempts` | integer | 3 | 1 to 10: tries per download, the first included |
 | `backoff_initial_ms` | integer | 500 | 0 to 60,000 |
@@ -279,7 +280,7 @@ A MonoBehaviour that meets 1 but not 2 is skipped, `ngui_layout_unsupported` (NG
 2. Among the input's own Texture2D objects in object order, the first whose `m_Name` equals that name exactly (bytes, case-sensitive). When there is none, or no name, the first whose `m_Name` equals the atlas's `m_Name`.
 3. No match skips the atlas, `sheet_not_found`.
 
-The sheet is decoded as a texture (E15), into the image UnityPy's `Texture2D.image` gives: rows top to bottom. Several atlases of one input may cut one sheet; they are then one unit (section 4.5).
+The sheet is decoded as a texture (E15), into the image UnityPy's `Texture2D.image` gives: rows top to bottom. With `outputs.textures` set, the atlases of one input that cut one sheet are one unit with it; without it, each atlas is its own unit (section 4.5).
 
 **Crops.** For each element of `mSprites`, in array order:
 - its rectangle is `(x, y, x + width, y + height)` on that image, origin at its top-left, the element's `x`, `y`, `width` and `height` as integers. Borders, paddings and mirror flags are not applied;
@@ -314,17 +315,18 @@ The sheet is decoded as a texture (E15), into the image UnityPy's `Texture2D.ima
 | `<dir>/runs/<run_id>/attempts/<input>/` | one attempt's outputs and `records.ndjson` |
 | `<dir>/runs/<run_id>/done/<input>/` | a committed attempt |
 | `<dir>/runs/<run_id>/winners/` | phase 6's sorted runs, the winners file, the archive member lists and the sorted row files |
+| `<dir>/runs/<run_id>/winners/outcomes`, `archive_outcomes` | phase 7's results: one byte per winner at its index in the winners file (0 not written, 1 `written`, 2 `present`, 3 `failed`), and one 128-byte record per archive (status, size, MD5, ETag), sized before the first transfer (`batch.md` 2.9) |
 
 `<input>` and `<n>` are positions from 0, in decimal, so an id never becomes a path.
 
 ### 6.2 Start
 
-The engine owns only what it created. Preflight starts the spool in this order, and the first failure exits 69 with nothing deleted:
-1. **Dedicated.** `dir`'s entries must be none, or only `.unityrs-spool`, `lock` and `runs`, the marker among them. Otherwise `spool_not_dedicated`. An empty `dir` gets the marker.
+The engine owns only what it created. Preflight starts the spool in this order, after reading the credentials. A failure in steps 1 to 3 exits 69 with nothing deleted; step 4 never fails the start; a failure in step 6 exits 69 after step 5's deletions, which removed only the engine's own files:
+1. **Dedicated.** `dir`'s entries must be none, or only `.unityrs-spool`, `lock` and `runs`, the marker among them, with `lock` a regular file and `runs` a directory, by `lstat` (neither a symlink). Otherwise `spool_not_dedicated`.
 2. **Apart from the sink.** With a directory sink, the real paths of `dir` and `root` neither equal nor contain one another. Otherwise `spool_overlaps_sink`.
-3. **The lock.** `lock` is opened (created if absent) and locked; busy is `spool_locked`. The lock is held until `_exit` and the file is never deleted, so a second process always meets the same inode.
-4. **Old journals.** Every `runs/*/journal` is read; each upload id whose endpoint and bucket are this sink's is aborted, at most `download_concurrency` at once, each with the sink's `timeout_ms`. An id of another endpoint or bucket is left to that bucket's lifecycle rule (E64).
-5. **Cleanup.** Everything under `runs/` is deleted, this `run_id`'s earlier attempts and other run ids' alike: the lock proves no live process uses them.
+3. **The lock.** `lock` is opened (created if absent) and locked; busy is `spool_locked`. The lock is held until `_exit` and the file is never deleted, so a second process always meets the same inode. An empty `dir` gets its marker now, under the lock.
+4. **Old journals.** Every `runs/*/journal` is read; each upload id whose endpoint and bucket are this sink's is aborted, at most `download_concurrency` at once, each with the sink's `timeout_ms` and `attempts`. `NoSuchUpload` counts as aborted: the upload completed before its id was removed, or the lifecycle rule took it. Any other failure, a 403 among them, leaves the id to the bucket's lifecycle rule (E64) and counts in the warning `abort_failed`, so no journal can stop a later start. An id of another endpoint or bucket is left to that bucket's lifecycle rule.
+5. **Cleanup.** Everything under `runs/` is deleted, through directory handles opened with `O_NOFOLLOW`, so no symlink is followed out of the spool; this `run_id`'s earlier attempts and other run ids' alike: the lock proves no live process uses them.
 6. **Free space.** `statvfs` of `dir` must show at least `reserve_bytes` free. Otherwise `spool_no_space`.
 
 Nothing in the spool is reused between attempts: every attempt stages and decodes again (E44). After the final manifest, and after a stop, the spool is left as it is; the next start clears it.
@@ -346,10 +348,10 @@ No output key may start with `_unityrs/` (2.3). The row files hold the attempt n
 
 - **Preflight** reads the head; a 404 proves the sink reachable too. A head over 1 MiB, or one that is not a manifest, exits 69 (`manifest_unreadable`); a sink that cannot be reached exits 69 (`sink_unreachable`). A head of this `run_id` whose `attempt` is at or above this one's exits 7 (`superseded`), and nothing is written.
 - **Object store, `"conditional"`.** The store client is configured with `S3ConditionalPut::ETagMatch`. The `running` write is `If-None-Match: *` when no head exists, else `If-Match` on the ETag preflight read. The final write is `If-Match` on the `running` write's ETag.
-- **A failed precondition** (412) is read back with a GET. A head with this `attempt` and this write's `write_seq` is this write, whose response was lost: success. Anything else is `superseded`: the attempt writes nothing more and exits 7. Only the finisher writes after `running` (`batch.md` 2.11), so no two writes of one attempt share a `write_seq`.
+- **A failed precondition** (412) is read back with a GET. A head with this `attempt` and this write's `write_seq` is this write, whose response was lost: success. A head of a higher `attempt` is `superseded`: the attempt writes nothing more and exits 7. A head of a lower `attempt` can meet only the `running` write: it is an earlier attempt's late head write that landed after preflight's read (once this attempt's head exists, an earlier attempt's conditional write cannot replace it, since every write changes the ETag). The attempt applies the time fence to that head as preflight would, and retries the `running` write with `If-Match` on that head's ETag, at most 4 times; a fifth lower head exits 69 (`previous_attempt_live`). At the final write, any head but this write is `superseded`. Only the finisher writes after `running` (`batch.md` 2.11), so no two writes of one attempt share a `write_seq`.
 - **Object store, `"none"`.** Plain PUTs; the caller runs one attempt of a `run_id` at a time.
 - **Directory.** `<root>/_unityrs/lock`, one lock for the whole root, whatever the `run_id`: `flock(LOCK_EX | LOCK_NB)` held for the process's life, busy exits 69 (`output_locked`). So one process at a time writes a root, and E62's cleanup of temp files never meets a live run's. Each head write is a temp file, `fsync`, a rename over the head, and an `fsync` of the directory.
-- **The time fence** (object store). Preflight's head may belong to an earlier attempt of this `run_id` whose writes may still be in flight: any head of this `run_id` with a lower `attempt`, unless it is final with a null `stop_reason` (a normal end, every write acknowledged). Its **fence time** is its `deadline` plus the sink's `timeout_ms` plus 30 s (`batch.md` A14). A fence time past this attempt's stop cutoff (its `deadline` less the grace), or such a head without a `deadline`, exits 69 (`previous_attempt_live`). Otherwise phase 7 writes no output before the fence time. The earlier attempt's process is gone by its deadline (E45), so every write it made has landed before this attempt LISTs or writes, and none lands after.
+- **The time fence** (object store). An earlier attempt of this `run_id` may still have a write in flight, after a stop and after a normal end alike: a try its client gave up on may still land (`batch.md` A14). So every head of this `run_id` with a lower `attempt` that preflight or a read-back finds fences this attempt. The head's own fence is its `ended_at` when it is final with a null `stop_reason` (a normal end, at which no output request is open), else its `deadline`, plus the sink's `timeout_ms` plus 30 s. Its **fence time** is the later of that and its `fence_until`, so a fence passes down every attempt of the `run_id`. A fence time past this attempt's stop cutoff (its `deadline` less the grace), or a head that gives neither time, exits 69 (`previous_attempt_live(<fence time>)`, which tells the caller when to retry). Otherwise phase 7 writes no output before the fence time, and this attempt's heads carry it as `fence_until`. An earlier attempt's process is gone by its deadline (E45), and every store connection is reset rather than drained when dropped or at `_exit` (`SO_LINGER` 0, `batch.md` 2.9), so every write it made has landed before this attempt LISTs or writes, and none lands after.
 
 The head is the record of the run. For every key the final head lists as `written` or `present`, the store holds the bytes of its MD5, given A14 and no writer to the prefix but unityrs attempts. A key the head does not list so is not part of the run's output, whatever the store holds.
 
@@ -368,6 +370,7 @@ The head is the record of the run. For every key the final head lists as `writte
 | `stop_reason` | string or null | a stop reason of section 9.3, or null |
 | `binary_version`, `spec_version` | string, integer | |
 | `started_at`, `deadline`, `ended_at` | string or null | RFC 3339, UTC |
+| `fence_until` | string or null | RFC 3339, UTC: the time fence this attempt applied (section 7.2), or null |
 | `counts` | object | integers: `bundles`, `bundles_failed`, `inputs`, `inputs_complete`, `inputs_with_skips`, `inputs_failed`, `inputs_not_run`, `outputs_written`, `outputs_present`, `outputs_not_written`, `outputs_withheld`, `outputs_failed`, `outputs_unwritable`, `skips`, `collisions`, `flips`, `archives_written`, `archives_present` |
 | `run` | object | E40's run-level figures: `same_named_cabs`, `undeclared_dependencies`, `nested_containers` (counts; the rows hold the names), `opens`, `evictions`, `reopens`, `input_peak`, `dependency_peak`, `spool_peak`, `vm_hwm`, `memory_bound`, the budgets as read |
 | `warnings` | object | warning code (section 9.3) → count |
@@ -386,7 +389,7 @@ The head is the record of the run. For every key the final head lists as `writte
 | `archives` | key | `key`, `status` (`written`, `present`, `not_written`, `empty`, `failed`, `withheld`), `members`, `left_out`, `md5`, `etag`, `size` |
 | `archive_members` | archive, then member order | `archive`, `path`, `key`, `input`, `md5`, `included`, `reason` (when left out) |
 
-A reason is a code of section 9.3. A string taken from the bytes is cut to its first 1,024 bytes, at a code point boundary, and its row's `cut` is then true. So every line is bounded.
+A reason is a code of section 9.3. A string taken from the bytes is cut to its first 1,024 bytes, at a code point boundary, and its row's `cut` is then true. A row holds at most four strings of at most 1,024 bytes each (an id, a key or path, a cut string), each escaped to at most 6 bytes per byte, so every line is at most 32 KiB (`batch.md` 2.8).
 
 ### 7.4 The manifest at each phase
 
@@ -397,8 +400,8 @@ The finisher writes it (`batch.md` 2.11), according to the phase the run reached
 | before the `running` write was sent | none; the `exit` line's `status` is null | none |
 | with the `running` write in flight | read back first: as below if it landed, else none | as the head |
 | in phase 3, 4, 5 or 6 | `incomplete`, with `phase` and `stop_reason` | `bundles` (unstaged ones `not_staged`); `inputs` (committed ones with their records, the rest `not_run`); the committed inputs' `skips` and `diagnostics`. `outputs`, `collisions`, `archives` and `archive_members` are null |
-| in phase 7, on a stop | `incomplete` | every file. `outputs` and `archives` are `written` only where the write was acknowledged, `present` where resume found the bytes, and every other winner `not_written` |
-| after phase 7 | `complete`, `complete_with_skips` or `incomplete`, by section 9.2 | every file |
+| in phase 7, on a stop | `incomplete` | every file. Each winner's and archive's status is read from the outcomes files (section 6.1): `written` where the write was acknowledged, `present` where resume found the bytes, `failed` (`publish_failed`) where its tries ran out, and `not_written` for every other |
+| after phase 7 | `complete`, `complete_with_skips` or `incomplete`, by section 9.2 | every file, statuses read as above |
 | superseded at the final write | nothing more; the stored head is the newer attempt's | none from this attempt's finish |
 
 ---
@@ -462,9 +465,9 @@ A reason is `name` or `name(argument, ...)`. A `limit`'s arguments are the core'
 | an output's or archive's status | `withheld` (E61), `unit_conflict`, `publish_incomplete`, `publish_failed`, `unwritable_key(<rule>)` |
 | a member left out | `duplicate_member`, `unwritable_path(<rule>)`, `prefix_conflict` |
 | a stop | `deadline`, `sigterm`, `sigint`, `sighup`, `parent_died`, `stdin_eof` (6); `superseded` (7); `spool_full` (5); `host_io`, `host_memory` (74); `internal` (70) |
-| preflight (exit 69) | `spool_not_dedicated`, `spool_overlaps_sink`, `spool_locked`, `spool_no_space`, `output_locked`, `manifest_unreadable`, `sink_unreachable`, `credentials_missing`, `rlimit_too_low`, `overcommit_strict`, `previous_attempt_live`, `thread_spawn_failed` |
+| preflight (exit 69) | `spool_not_dedicated`, `spool_overlaps_sink`, `spool_locked`, `spool_no_space`, `output_locked`, `manifest_unreadable`, `sink_unreachable`, `credentials_missing`, `rlimit_too_low`, `overcommit_strict`, `previous_attempt_live(<fence time>)`, `thread_spawn_failed` |
 | validation (exit 78) | `bad_spec`, with the field's JSON pointer and the rule in its detail |
-| a warning (the head's `warnings`) | `resume_list_failed`, `etag_not_md5`, `stderr_dropped` |
+| a warning (the head's `warnings`) | `resume_list_failed`, `etag_not_md5`, `stderr_dropped`, `abort_failed` |
 
 ---
 
