@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use bytes::Bytes;
 
+use super::counts::RunBytes;
 use crate::limits::{Charge, ChargeError, Meter, MeteredVec, heap_cost};
 
 /// The work one step counts: the bytes of one row a search reads (a block's
@@ -165,6 +166,8 @@ pub(crate) struct RunIndex {
     charge: Charge,
     /// Whether the root leaf is charged: the tree keeps it once allocated.
     rooted: bool,
+    /// The runs' bytes, now and at most (`counts`, plan section 8's R3).
+    bytes: RunBytes,
 }
 
 /// What a publish did.
@@ -185,12 +188,18 @@ impl RunIndex {
             runs: BTreeMap::new(),
             charge: Charge::zero(meter),
             rooted: false,
+            bytes: RunBytes::default(),
         }
     }
 
     /// How many runs are cached.
     pub(super) fn len(&self) -> usize {
         self.runs.len()
+    }
+
+    /// The runs' bytes, now and at most.
+    pub(super) fn bytes(&self) -> &RunBytes {
+        &self.bytes
     }
 
     /// The cached run that covers blocks `first..end`, if one does: its first
@@ -246,15 +255,18 @@ impl RunIndex {
             return Published::Refused;
         }
         self.rooted = true;
+        let mut gone = 0u64;
         for _ in 0..covered {
             let Some(f) = self.runs.range(first..).next().map(|(f, _)| *f) else {
                 break;
             };
             if let Some(run) = self.runs.remove(&f) {
+                gone = gone.saturating_add(len64(&run.bytes));
                 // Within the room just reserved: no growth, no refusal.
                 let _ = dropped.push(run.bytes);
             }
         }
+        self.bytes.publish(len64(bytes), gone);
         self.runs.insert(
             first,
             Run {
@@ -266,4 +278,8 @@ impl RunIndex {
             .release(RUN_SHARE.saturating_mul(u64::try_from(covered).unwrap_or(u64::MAX)));
         Published::Cached
     }
+}
+
+fn len64(bytes: &Bytes) -> u64 {
+    u64::try_from(bytes.len()).unwrap_or(u64::MAX)
 }

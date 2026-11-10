@@ -311,10 +311,11 @@ jobs:
           python tools/fixtures/index.py --check
           python tools/fixtures/folders.py --check
           python tools/fixtures/no_tree.py --check
-      - name: Self-tests (parity tools and the LZMA spike's scripts)
+      - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
           tools/parity/tests=433
+          tools/perf/tests=10
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6
       # and 10), each a unityrs dump compared with the oracle's: compare.py

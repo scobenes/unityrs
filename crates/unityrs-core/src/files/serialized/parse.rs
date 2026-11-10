@@ -13,6 +13,7 @@ use crate::files::{Parent, ParentKind};
 use crate::limits::{Charge, Limits, Meter, MeteredVec, heap_cost};
 use crate::once::ResultCell;
 use crate::options::FileContext;
+use crate::pin::CopyCounts;
 use crate::raw::RawStr;
 use crate::stream::{Endian, Reader, ReaderKind};
 use crate::typetree::NodeList;
@@ -51,6 +52,8 @@ impl SerializedFile {
         let mut p = Parser {
             r: Reader::with_kind(&data, Endian::Big, reader),
             data: &data,
+            pinned: super::pinned(parent.as_ref(), &data),
+            trees: (0, 0),
             meter,
             limits: &ctx.limits,
             common: ctx.providers.common_strings(),
@@ -119,6 +122,8 @@ impl SerializedFile {
         let object_order = keep(object_order, &mut charge)?;
         let by_path = keep(by_path, &mut charge)?;
         let file = Arc::new(Self {
+            // Before `data` moves: the parser reads it.
+            copies: CopyCounts::new(p.trees.0, p.trees.1),
             name,
             data,
             header,
@@ -170,6 +175,11 @@ fn keep<T>(table: MeteredVec<T>, charge: &mut Charge) -> Result<Box<[T]>, Error>
 struct Parser<'a> {
     r: Reader<'a>,
     data: &'a Bytes,
+    /// The buffer `data` is a slice of ([`SerializedFile::pinned`]).
+    pinned: u64,
+    /// The typetrees whose strings were copied out of it, and their bytes
+    /// ([`crate::pin`]).
+    trees: (u64, u64),
     meter: &'a Arc<Meter>,
     limits: &'a Limits,
     /// The caller's TPK's common strings, which blob trees read (`None`:
@@ -313,7 +323,7 @@ impl Parser<'_> {
             t.old_type_hash = Some(self.r.read_short_array());
         }
         if self.enable_type_tree {
-            let rows = if is_blob_format(v) {
+            let mut rows = if is_blob_format(v) {
                 parse_blob(
                     &mut self.r,
                     self.data,
@@ -325,6 +335,16 @@ impl Parser<'_> {
             } else {
                 parse_old(&mut self.r, self.data, v, self.meter, self.limits)?
             };
+            // A value keeps its tree's node list, whose names are slices of
+            // the file: copied out when they would keep its buffer alive
+            // (`crate::pin`; plan section 8, R3).
+            let n = crate::pin::copy_out(&mut rows, self.data, self.pinned, self.meter);
+            if n > 0 {
+                self.trees = (
+                    self.trees.0.saturating_add(1),
+                    self.trees.1.saturating_add(n),
+                );
+            }
             t.nodes = Some(Arc::new(NodeList::from_rows(rows)?));
             if v >= 21 {
                 if is_ref {

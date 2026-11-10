@@ -11,8 +11,10 @@ use std::sync::PoisonError;
 
 use bytes::Bytes;
 
+use super::ahead::Ahead;
 use super::decode::decode_block_into;
 use super::index::{Published, STEP, search_steps};
+use super::open::known_at_open;
 use super::{BundleFile, no_entry};
 use crate::budget::DecodeBuf;
 use crate::codec::Codec;
@@ -62,11 +64,16 @@ impl BundleFile {
 
     /// Decodes block `i` onto the end of `out` and records its length (a
     /// failure the input decides is kept, a refusal is not): the length.
+    /// What it wrote is counted ([`Self::counts`]), as written again when
+    /// the block's length was known before it began, but from its stored
+    /// bytes at open.
     fn decode_into(&self, i: usize, out: &mut DecodeBuf) -> Result<u64, Error> {
         let before = out.len();
         let (Some(b), Some(range)) = (self.blocks.get(i), self.stored.get(i)) else {
             return Err(no_entry(i));
         };
+        let known = self.lengths.get(i).is_some_and(|c| c.get().is_some());
+        let again = known && !known_at_open(b, &self.ctx);
         let input = self.source.slice(range.clone());
         let got = decode_block_into(
             &self.ctx,
@@ -83,6 +90,7 @@ impl BundleFile {
         }
         let cell = self.lengths.get(i).ok_or_else(|| no_entry(i))?;
         let mine = got?;
+        self.counts.wrote(mine, again);
         let published = *get_or_publish_result(cell, self.meter(), || Ok(mine))?;
         if published != mine {
             return Err(Error::Decompress {
@@ -114,6 +122,21 @@ impl BundleFile {
         Ok(())
     }
 
+    /// [`Self::decode_or_keep`] of block `k`, which starts at joined offset
+    /// `at`, onto the end of a run's buffer, whose room may grow into what
+    /// the run's next blocks declare ([`Ahead`]).
+    fn decode_in_run(
+        &self,
+        k: usize,
+        at: u64,
+        out: &mut DecodeBuf,
+        ahead: &mut Ahead,
+    ) -> Result<u64, Error> {
+        let declared = |i: usize| self.blocks.get(i).map(|b| u64::from(b.uncompressed));
+        out.set_ahead(ahead.before(k, at, declared));
+        self.decode_or_keep(k, out)
+    }
+
     /// A run's buffer with room for `initial` bytes, charged before it is
     /// allocated. The room is memory; each block's decode counts what it
     /// writes into it as the open's work (`DecodeBuf`, round 6).
@@ -124,6 +147,15 @@ impl BundleFile {
             u64::MAX,
             LimitKind::BlockOutput,
         )?)
+    }
+
+    /// A measuring decode's buffer, dropped unused: its bytes are counted as
+    /// discarded ([`Self::counts`]).
+    fn discard(&self, scratch: Option<DecodeBuf>) {
+        if let Some(s) = scratch {
+            self.counts
+                .dropped(u64::try_from(s.len()).unwrap_or(u64::MAX));
+        }
     }
 
     /// Block `k`'s length, measured when it is not known: decoded into a new
@@ -143,7 +175,8 @@ impl BundleFile {
     pub(super) fn measure_all(&self) -> Result<u64, Error> {
         let n = self.blocks.len();
         for k in self.ends.known()..n {
-            let (len, _) = self.measure(k)?;
+            let (len, scratch) = self.measure(k)?;
+            self.discard(scratch);
             self.learn(k, len)?;
         }
         Ok(self.ends.start(n))
@@ -158,8 +191,14 @@ impl BundleFile {
     /// is published. Blocks the known prefix holds are found by binary
     /// search, and a cached run by one search of the run index.
     pub(super) fn read_span(&self, lo: u64, hi: u64) -> Result<Bytes, Error> {
+        Ok(self.read_span_pinned(lo, hi)?.0)
+    }
+
+    /// [`Self::read_span`], with the length of the buffer the bytes are a
+    /// slice of, which a slice of them keeps alive ([`Self::pins`]).
+    pub(super) fn read_span_pinned(&self, lo: u64, hi: u64) -> Result<(Bytes, u64), Error> {
         let Some((first, first_at, buf)) = self.first_block(lo, hi)? else {
-            return Ok(Bytes::new());
+            return Ok((Bytes::new(), 0));
         };
         let Span {
             first,
@@ -170,19 +209,34 @@ impl BundleFile {
         } = self.span_end(first, first_at, buf, hi)?;
         let from = usize::try_from(lo.saturating_sub(first_at)).unwrap_or(usize::MAX);
         let to = usize::try_from(hi.min(end_at).saturating_sub(first_at)).unwrap_or(usize::MAX);
-        let run = if let Some(b) = buf {
-            self.publish(first, end, first_at, b.into_bytes()?)
-        } else if let Some(bytes) = self.cached(first, end, first_at)? {
-            bytes
+        let (run, pinned) = if let Some(b) = buf {
+            self.publish(first, end, first_at, b.into_bytes()?, true)
+        } else if let Some(hit) = self.cached(first, end, first_at)? {
+            hit
         } else if let Some(bytes) = self.stored_span(first, end)? {
-            self.publish(first, end, first_at, bytes)
+            self.publish(first, end, first_at, bytes, false)
         } else {
             let mut b = self.new_buf(end_at.saturating_sub(first_at))?;
             self.decode_again(first, end, &mut b)?;
-            self.publish(first, end, first_at, b.into_bytes()?)
+            self.publish(first, end, first_at, b.into_bytes()?, true)
         };
         let to = to.min(run.len());
-        Ok(run.slice(from.min(to)..to))
+        Ok((run.slice(from.min(to)..to), pinned))
+    }
+
+    /// What a slice of `run` keeps alive: the buffer of the bundle's own
+    /// bytes when `run` is a slice of them (stored blocks; its
+    /// [`BundleFile::pinned`]), else `run`'s own length, a decoded run being
+    /// a buffer of its own.
+    fn pins(&self, run: &Bytes) -> u64 {
+        let (src, at) = (self.source.as_ptr().addr(), run.as_ptr().addr());
+        let within =
+            src <= at && at.saturating_add(run.len()) <= src.saturating_add(self.source.len());
+        if within && !run.is_empty() {
+            self.pinned()
+        } else {
+            u64::try_from(run.len()).unwrap_or(u64::MAX)
+        }
     }
 
     /// The read's first block, the first that ends past `lo` if it starts
@@ -212,6 +266,7 @@ impl BundleFile {
             if at.saturating_add(len) > lo {
                 return Ok(Some((k, at, scratch)));
             }
+            self.discard(scratch);
             at = at.saturating_add(len);
         }
         Ok(None)
@@ -222,7 +277,8 @@ impl BundleFile {
     /// and the walk decoded nothing; otherwise the prefix is extended to it,
     /// and from the first block of the span that is not known (or from
     /// `first`, when the walk decoded it) the run is decoded: its known
-    /// blocks again, then each block as it is learned.
+    /// blocks again, then each block as it is learned, its room read ahead
+    /// ([`Ahead`]).
     fn span_end(
         &self,
         first: usize,
@@ -247,14 +303,18 @@ impl BundleFile {
             k = k.max(known);
         }
         let mut at = self.ends.start(k);
+        let mut ahead = Ahead::new(first, hi);
         while k < self.blocks.len() && at < hi {
             let len = match (self.known(k), buf.as_mut()) {
                 (Some(len), None) => len?,
-                (_, Some(b)) => self.decode_or_keep(k, b)?,
+                (_, Some(b)) => self.decode_in_run(k, at, b, &mut ahead)?,
                 (None, None) => {
                     let mut b = self.new_buf(0)?;
-                    self.decode_again(first, k, &mut b)?;
-                    let len = self.decode_or_keep(k, &mut b)?;
+                    for j in first..k {
+                        self.decode_in_run(j, self.ends.start(j), &mut b, &mut ahead)?;
+                        self.steps(1)?;
+                    }
+                    let len = self.decode_in_run(k, at, &mut b, &mut ahead)?;
                     buf = Some(b);
                     len
                 }
@@ -273,14 +333,25 @@ impl BundleFile {
     }
 
     /// A cached run covering blocks `first..end`, sliced to start at block
-    /// `first` (joined offset `first_at`): one search of the run index.
-    fn cached(&self, first: usize, end: usize, first_at: u64) -> Result<Option<Bytes>, Error> {
+    /// `first` (joined offset `first_at`): one search of the run index. With
+    /// what a slice of it keeps alive ([`Self::pins`]).
+    fn cached(
+        &self,
+        first: usize,
+        end: usize,
+        first_at: u64,
+    ) -> Result<Option<(Bytes, u64)>, Error> {
         let hit = {
             let runs = self.runs.lock().unwrap_or_else(PoisonError::into_inner);
             self.steps(search_steps(runs.len()))?;
             runs.covering(first, end)
         };
-        Ok(hit.map(|(f, bytes)| self.slice_from_block(f, &bytes, first_at)))
+        Ok(hit.map(|(f, bytes)| {
+            (
+                self.slice_from_block(f, &bytes, first_at),
+                self.pins(&bytes),
+            )
+        }))
     }
 
     /// `bytes`, a run from block `f`, from joined offset `first_at` on (every
@@ -328,22 +399,41 @@ impl BundleFile {
     /// drops are steps, each run counted as it is found. When the meter
     /// refuses them, the room for the runs it drops or the index's growth,
     /// the run is returned uncached and the index is unchanged, as a refused
-    /// growth of the table left it.
-    fn publish(&self, first: usize, end: usize, first_at: u64, bytes: Bytes) -> Bytes {
+    /// growth of the table left it. A `decoded` run a cached one answers for
+    /// is dropped, its bytes counted as discarded ([`Self::counts`]). With
+    /// what a slice of the bytes returned keeps alive ([`Self::pins`]).
+    fn publish(
+        &self,
+        first: usize,
+        end: usize,
+        first_at: u64,
+        bytes: Bytes,
+        decoded: bool,
+    ) -> (Bytes, u64) {
         let mut dropped: MeteredVec<Bytes> = MeteredVec::new(self.meter());
         let out = {
             let mut runs = self.runs.lock().unwrap_or_else(PoisonError::into_inner);
+            let uncached = |bytes: Bytes| {
+                let pinned = self.pins(&bytes);
+                (bytes, pinned)
+            };
             if self.steps(search_steps(runs.len())).is_err() {
-                return bytes;
+                return uncached(bytes);
             }
             for _ in runs.inside(first, end) {
                 if self.steps(1).is_err() {
-                    return bytes;
+                    return uncached(bytes);
                 }
             }
             match runs.publish(first, end, &bytes, &mut dropped) {
-                Published::Covered(f, b) => self.slice_from_block(f, &b, first_at),
-                Published::Cached | Published::Refused => bytes,
+                Published::Covered(f, b) => {
+                    if decoded {
+                        self.counts
+                            .dropped(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+                    }
+                    (self.slice_from_block(f, &b, first_at), self.pins(&b))
+                }
+                Published::Cached | Published::Refused => uncached(bytes),
             }
         };
         drop(dropped);

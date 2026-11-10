@@ -165,11 +165,12 @@ pub trait BlockCodec: Send + Sync {
 /// every caller does (package C's bundle; implemented by the scaffold).
 ///
 /// Starts the block's segment in `out`, capped at `cap` bytes
-/// ([`DecodeBuf::begin_block`] with [`LimitKind::BlockOutput`]), runs the
-/// codec, and checks what it returned: `Ok(None)` when the output is in the
-/// segment; `Ok(Some(bytes))`, the slice of `input`, when the codec named a
-/// range of its input, which must lie within the input, leave the segment
-/// empty, and fit `cap` as if it had been written. A range outside the
+/// ([`DecodeBuf::begin_block`] with [`LimitKind::BlockOutput`], and
+/// `uncompressed` as the size its room grows to while what it writes fits
+/// it), runs the codec, and checks what it returned: `Ok(None)` when the
+/// output is in the segment; `Ok(Some(bytes))`, the slice of `input`, when
+/// the codec named a range of its input, which must lie within the input,
+/// leave the segment empty, and fit `cap` as if it had been written. A range outside the
 /// input, or one returned with bytes written, is the codec's error
 /// ([`Error::Decompress`]); a range longer than `cap` is
 /// [`LimitKind::BlockOutput`]. A codec that left its segment (began one of
@@ -184,7 +185,7 @@ pub fn decode_block(
     out: &mut DecodeBuf,
     cap: u64,
 ) -> Result<Option<Bytes>, Error> {
-    out.begin_block(cap, LimitKind::BlockOutput);
+    out.begin_block(cap, LimitKind::BlockOutput, u64::from(uncompressed));
     let epoch = out.segment_epoch();
     // A pool refusal the codec returns is counted for the Environment's
     // retry (`env::registry::from_callers`).

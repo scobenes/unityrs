@@ -33,5 +33,12 @@ serde_json = "=1.0.154"
 [dev-dependencies]
 unityrs-testkit = { path = "../unityrs-testkit" }
 
+# The perf bench (docs/plans/core.md section 10, `tools/perf/perf.py`); its
+# own tests run with the crate's.
+[[example]]
+name = "bench"
+path = "examples/bench/main.rs"
+test = true
+
 [lints]
 workspace = true

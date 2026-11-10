@@ -4,7 +4,8 @@
 //! entries' weak parent handle, entry slicing as Python slices, and the
 //! input's meter over several files and hostile directories, the work an
 //! entry's parse counts, what a read's search of its blocks and runs
-//! costs, and rows over a nested bundle whose scan fails.
+//! costs, rows over a nested bundle whose scan fails, and the counts of
+//! what reads decode, discard, decode again and cache (`counts`).
 
 use std::sync::Arc;
 
@@ -15,6 +16,7 @@ use unityrs_core::{Bytes, Error, FileContext, RawStr};
 use unityrs_testkit::bundle::{EntrySpec, matrix};
 
 mod caller_code;
+mod counts;
 mod entries;
 mod format;
 mod layout;

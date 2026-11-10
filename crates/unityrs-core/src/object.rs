@@ -101,8 +101,11 @@ impl ObjectRef {
     }
 
     /// `get_raw_data`: `byte_size` bytes from `byte_start`, cut short at the
-    /// end of the file (a slice of the file's buffer, no copy), by the
-    /// file's reader's rules ([`SerializedFile::reader_kind`]): the stream
+    /// end of the file (a slice of the file's buffer, no copy, so it keeps
+    /// that whole buffer alive while it lives: a bundle entry's run, unlike
+    /// [`Self::read_typetree`]'s value, which [`crate::pin`] copies out of a
+    /// much larger run), by the file's reader's rules
+    /// ([`SerializedFile::reader_kind`]): the stream
     /// reader (a file loaded from a path) refuses a negative `byte_start`, or
     /// one at or above 2^63, as UnityPy's does on every machine, where the
     /// memory reader slices from the end or reads nothing. A `byte_start`
@@ -199,7 +202,7 @@ impl ObjectRef {
             meter: file.meter(),
         };
         let info = self.info();
-        read_typetree_with_reader(
+        let mut read = read_typetree_with_reader(
             file.data(),
             info.byte_start,
             info.byte_size,
@@ -207,7 +210,22 @@ impl ObjectRef {
             &ctx,
             check_read,
             file.reader_kind(),
-        )
+        );
+        // A value kept past the file's handles keeps alive the buffer its
+        // slices are of: copied out of a run much larger than they are
+        // (`crate::pin`; plan section 8, R3), `check_read`'s value too.
+        match &mut read {
+            Ok(value) => {
+                file.unpin(value);
+            }
+            Err(ParseError::CheckRead { parsed, .. }) => {
+                if let Some(value) = Arc::get_mut(parsed) {
+                    file.unpin(value);
+                }
+            }
+            Err(_) => {}
+        }
+        read
     }
 
     /// `parse_as_dict(check_read=check_read)`: [`Self::read_typetree`] with

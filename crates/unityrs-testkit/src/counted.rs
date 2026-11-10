@@ -188,8 +188,17 @@ unsafe impl<T: Tally> GlobalAlloc for Allocator<T> {
         let p = unsafe { System.realloc(ptr, layout, new_size) };
         if !p.is_null() && counted() {
             no_unwind(|| {
-                self.0.grew(new_size, false);
-                self.0.shrank(layout.size());
+                if new_size <= layout.size() {
+                    // glibc shrinks a block where it is (a heap chunk split
+                    // in place, a mapped one cut by `mremap`): no second
+                    // block ever exists (plan section 3.15, perf stage 2).
+                    self.0.shrank(layout.size());
+                    self.0.grew(new_size, false);
+                } else {
+                    // A growth may move: both blocks exist until it is done.
+                    self.0.grew(new_size, false);
+                    self.0.shrank(layout.size());
+                }
             });
         }
         p
