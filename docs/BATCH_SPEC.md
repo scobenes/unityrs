@@ -513,7 +513,7 @@ So the archive's MD5, and its multipart ETag at 16 MiB parts, are the same on ev
 |---|---|
 | an object skipped for a budget: reason `budget(input)`, or `limit` of kind `input_memory`, `input_bytes` or `decode_work` | 5 |
 | an object skipped for any other reason | 3 |
-| an input failed for a budget, by the same reasons, `budget(dependency)`, `limit(attempt_evictions, ...)` or `limit(export_work, ...)`, or by `dependency_failed(<id>, <reason>)` whose inner reason is one of them | 5 |
+| an input failed for a budget, by the same reasons, `budget(dependency)`, `limit(attempt_evictions, ...)` or `limit(export_work, ...)`, or by `dependency_failed(<id>, <reason>)` whose inner reason is one of them other than these two, which always fail the input by their own reason (`batch.md` 2.7) | 5 |
 | an input failed for any other reason (a transport reason, `integrity_mismatch`, `dependency_failed` with any other inner reason, `not_a_bundle`, a container or entry error, a depth or count limit) | 4 |
 | an output, archive, row file or the head that failed to publish (`publish_failed`, `publish_mismatch`, `credentials_expired`, `archive_too_large`) | 4 |
 | an output or archive `not_written` (none at a normal end: a stop seen after the last transfer's start makes the end a stop, 7.4) | 4 |
