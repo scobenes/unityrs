@@ -72,10 +72,13 @@ fn bytes_of<T>(n: usize) -> u64 {
 /// (never below `need`), charging the new allocation to `charge`'s meter
 /// first. While the allocator moves the buffer both blocks exist, so both are
 /// charged until it is done; then the old block's charge is returned. That
-/// is a bound, exact wherever `realloc` may copy: glibc grows a block of
-/// 32 MiB or more (its largest `mmap` threshold, so such a block is always
-/// mapped) with `mremap`, which holds no second block, so for those it
-/// over-counts the old block while the growth runs (plan section 3.15). A
+/// is a bound: exact where glibc copies the bytes to a new block, and an
+/// over-count of the old block, for as long as the growth runs, wherever
+/// glibc grows the block without a second one (plan section 3.15): a mapped
+/// block, which it grows with `mremap`, its pages kept (every block of
+/// 32 MiB or more, its largest `mmap` threshold, and a block of 128 KiB or
+/// more while the threshold, which rises as mapped blocks are freed, is
+/// still below it), and a heap chunk it extends in place into free space. A
 /// refused doubling is asked for again with half the room past `need`, and
 /// so on down to exactly `need` before it fails, so a meter that fits the
 /// data is never refused by the growth policy, and a vector that meets its

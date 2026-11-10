@@ -313,6 +313,34 @@ mod tests {
         );
     }
 
+    /// Fix B's other branch (perf stage 2's review): spare room the
+    /// allocator would keep mapped (a block of 128 KiB or more whose bytes
+    /// would be a heap chunk, `shrink_moves`) is given back by moving the
+    /// bytes, the smaller block charged first, as both exist while they
+    /// move, and the old block's charge then returned. 100,000 bytes, then
+    /// 10,000 more, end in room of 200,000. With room for both blocks the
+    /// text ends at its length, charged at its size; without room for the
+    /// smaller block beside the old one it keeps its room, charged as it is.
+    #[test]
+    fn spare_room_given_back_by_a_move_is_charged_before_it_moves() {
+        assert!(shrink_moves(110_000, 200_000));
+        let both = heap_cost(200_000) + heap_cost(110_000);
+        for (limit, cap) in [(both, 110_000), (both - 1, 200_000)] {
+            let meter = Meter::new(limit, Arc::new(Unbounded), Reservation::Input);
+            let mut t = Text::on(&meter);
+            t.write_str(&"x".repeat(100_000)).unwrap();
+            t.write_str(&"y".repeat(10_000)).unwrap();
+            assert_eq!(t.buf.capacity(), 200_000);
+            let (s, charge) = t.finish().unwrap();
+            assert_eq!((s.len(), s.capacity()), (110_000, cap), "{limit}");
+            assert_eq!(
+                (meter.used(), charge.bytes()),
+                (heap_cost(bytes(cap)), heap_cost(bytes(cap))),
+                "{limit}"
+            );
+        }
+    }
+
     /// The meter's bound and the budget each stop a text, and a refused
     /// growth writes nothing more and keeps nothing charged.
     #[test]
