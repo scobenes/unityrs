@@ -316,14 +316,16 @@ pub fn charged_bytes(buf: Vec<u8>, mut charge: Charge) -> Result<Bytes, ChargeEr
 /// growth allocates nothing. Capacity grows geometrically, never past the
 /// current segment's end (its start and its cap: room no write may use is
 /// never allocated, review round 13), nor, while what is needed fits it,
-/// past the block's declared end (its start and the size
-/// [`Self::begin_block`] was given: room a well-formed block never writes is
-/// never allocated, so a block decoded in windows ends at its declared size,
-/// and a run of blocks grows by each block's size), and a refused doubling
-/// is asked again with half the room past the size needed, down to exactly
-/// that size ([`crate::limits::MeteredVec`]'s growth). A block that writes
-/// past its declared size (an LZMA stream that ignores it) grows
-/// geometrically from there, to the segment's end.
+/// past the run's declared end: the block's start, the size
+/// [`Self::begin_block`] was given, and what the run's next blocks declare
+/// as far as its reader has read ahead ([`Self::set_ahead`]). Room a
+/// well-formed run never writes is never allocated, so a block decoded in
+/// windows ends at its declared size, and a run of blocks doubles, ending
+/// at its last block's end. A refused doubling is asked again with half the
+/// room past the size needed, down to exactly that size
+/// ([`crate::limits::MeteredVec`]'s growth). A block that writes past that
+/// declared end (an LZMA stream that ignores its size) grows geometrically
+/// from there, to the segment's end.
 ///
 /// **Segments.** A run of several blocks is one buffer, but each block has
 /// its own cap ([`crate::limits::Limits::max_block_output`]): the caller
@@ -354,9 +356,11 @@ pub struct DecodeBuf {
     seg_cap: u64,
     seg_kind: LimitKind,
     /// The segment's declared size ([`Self::begin_block`]'s `declared`;
-    /// the cap for a buffer's first segment): room grows past it only for a
-    /// write that needs it.
+    /// the cap for a buffer's first segment): room grows past it, and past
+    /// `ahead`, only for a write that needs it.
     seg_declared: u64,
+    /// What the run's blocks after this one declare ([`Self::set_ahead`]).
+    ahead: u64,
     /// Bumped by every [`Self::begin_block`] and every [`Self::truncate`]
     /// below the segment's start, so [`crate::codec::decode_block`] can see
     /// that a codec left its own segment (round 6).
@@ -394,6 +398,7 @@ impl DecodeBuf {
             seg_cap: cap,
             seg_kind: cap_kind,
             seg_declared: cap,
+            ahead: 0,
             seg_epoch: 0,
             prepaid: 0,
         };
@@ -412,6 +417,17 @@ impl DecodeBuf {
         self.seg_kind = cap_kind;
         self.seg_declared = declared;
         self.seg_epoch = self.seg_epoch.wrapping_add(1);
+    }
+
+    /// What the run's blocks after the next one declare, `bytes` in all, as
+    /// far as its reader reads ahead: room may grow that far past the next
+    /// block's declared end (type docs), so a run of many blocks doubles its
+    /// room rather than growing it to each block's end in turn (perf stage
+    /// 2's review: 64 MiB in 4,096 blocks reallocated 4,096 times). It holds
+    /// until it is set again; a buffer never given it reads no further than
+    /// each block's own end.
+    pub(crate) fn set_ahead(&mut self, bytes: u64) {
+        self.ahead = bytes;
     }
 
     /// Counts `n` bytes as its meter's open's work now, in one checked add
@@ -499,8 +515,8 @@ impl DecodeBuf {
 
     /// Makes room for `additional` more bytes: the segment's cap is checked
     /// and the meter charged before the buffer grows. The capacity doubles,
-    /// up to the segment's end (and to the block's declared end while what
-    /// is needed fits it), while the meter can pay for the old and the new
+    /// up to the segment's end (and to the run's declared end while what is
+    /// needed fits it), while the meter can pay for the old and the new
     /// block at once, and grows to exactly what is needed when it cannot.
     /// Room is memory, not work: what is written into it counts
     /// ([`Self::extend_from_slice`]).
@@ -550,7 +566,8 @@ impl DecodeBuf {
         // block's declared size, so an LZMA block of 69.4 MB decoded in
         // 1 MiB windows held 128 MiB of room, charged, and a run of LZ4
         // blocks doubled past its last block.
-        let declared = usize::try_from(self.seg_declared).unwrap_or(usize::MAX);
+        let declared = self.seg_declared.saturating_add(self.ahead);
+        let declared = usize::try_from(declared).unwrap_or(usize::MAX);
         let hint = self.seg_start.saturating_add(declared).min(end);
         let most = if need <= hint { hint } else { end };
         grow_counted(&mut self.buf, &mut self.charge, need, most, work)

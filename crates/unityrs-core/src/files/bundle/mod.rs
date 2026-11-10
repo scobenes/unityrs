@@ -144,6 +144,7 @@ use crate::stream::py_read;
 use crate::version::{FlagsClass, ResolvedVersion, VersionError};
 use index::{Ends, RunIndex};
 
+mod ahead;
 mod counts;
 mod decode;
 mod index;

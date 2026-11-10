@@ -11,6 +11,7 @@ use std::sync::PoisonError;
 
 use bytes::Bytes;
 
+use super::ahead::Ahead;
 use super::decode::decode_block_into;
 use super::index::{Published, STEP, search_steps};
 use super::open::known_at_open;
@@ -119,6 +120,21 @@ impl BundleFile {
             self.steps(1)?;
         }
         Ok(())
+    }
+
+    /// [`Self::decode_or_keep`] of block `k`, which starts at joined offset
+    /// `at`, onto the end of a run's buffer, whose room may grow into what
+    /// the run's next blocks declare ([`Ahead`]).
+    fn decode_in_run(
+        &self,
+        k: usize,
+        at: u64,
+        out: &mut DecodeBuf,
+        ahead: &mut Ahead,
+    ) -> Result<u64, Error> {
+        let declared = |i: usize| self.blocks.get(i).map(|b| u64::from(b.uncompressed));
+        out.set_ahead(ahead.before(k, at, declared));
+        self.decode_or_keep(k, out)
     }
 
     /// A run's buffer with room for `initial` bytes, charged before it is
@@ -261,7 +277,8 @@ impl BundleFile {
     /// and the walk decoded nothing; otherwise the prefix is extended to it,
     /// and from the first block of the span that is not known (or from
     /// `first`, when the walk decoded it) the run is decoded: its known
-    /// blocks again, then each block as it is learned.
+    /// blocks again, then each block as it is learned, its room read ahead
+    /// ([`Ahead`]).
     fn span_end(
         &self,
         first: usize,
@@ -286,14 +303,18 @@ impl BundleFile {
             k = k.max(known);
         }
         let mut at = self.ends.start(k);
+        let mut ahead = Ahead::new(first, hi);
         while k < self.blocks.len() && at < hi {
             let len = match (self.known(k), buf.as_mut()) {
                 (Some(len), None) => len?,
-                (_, Some(b)) => self.decode_or_keep(k, b)?,
+                (_, Some(b)) => self.decode_in_run(k, at, b, &mut ahead)?,
                 (None, None) => {
                     let mut b = self.new_buf(0)?;
-                    self.decode_again(first, k, &mut b)?;
-                    let len = self.decode_or_keep(k, &mut b)?;
+                    for j in first..k {
+                        self.decode_in_run(j, self.ends.start(j), &mut b, &mut ahead)?;
+                        self.steps(1)?;
+                    }
+                    let len = self.decode_in_run(k, at, &mut b, &mut ahead)?;
                     buf = Some(b);
                     len
                 }
