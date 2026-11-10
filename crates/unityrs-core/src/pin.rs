@@ -11,14 +11,31 @@
 //! buffer of their own charged to the same meter, when the slices would
 //! keep much more than themselves alive: when `L - S >= max(1 MiB, 4 S)`
 //! ([`worth_copying`]), `L` the length of the buffer they are slices of
-//! (the file's [`crate::files::SerializedFile::pinned`]) and `S` their
-//! bytes. Below that, a kept value keeps at most `max(S + 1 MiB, 5 S)` of
-//! the buffer alive, its own slices included, and a copy would cost more
-//! than it frees. The copy's charge rides in its `Bytes`, its owner record
-//! included ([`crate::budget::charged_bytes`]), so it returns when the last
-//! slice of it drops. A copy the meter or the budget refuses is not made:
-//! the slices stay as they were, and the read or the parse goes on.
-//! [`Copies`] counts what was copied, per file.
+//! (the file's [`crate::files::SerializedFile::pinned`]) and `S` the
+//! distinct bytes they span. Below that, a kept value keeps at most
+//! `max(S + 1 MiB, 5 S)` of the buffer alive, its own slices included, and
+//! a copy would cost more than it frees. The copy's charge rides in its
+//! `Bytes`, its owner record included ([`crate::budget::charged_bytes`]), so
+//! it returns when the last slice of it drops. A copy the meter or the
+//! budget refuses is not made: the slices stay as they were, and the read or
+//! the parse goes on. [`Copies`] counts what was copied, per file.
+//!
+//! **Each byte once.** The copy holds each byte of the buffer that some
+//! slice names once, however many slices name it, and each slice becomes the
+//! slice of the copy at the same place in those bytes: slices that were one
+//! buffer (an address and a length) are one buffer of the copy, and slices
+//! that overlapped overlap there as they did. So what a tree's compile reads
+//! and counts, which goes by buffer
+//! (`typetree::tree::names`: rows that share a buffer cost what one row
+//! naming it costs), is the same for its copied rows as for its rows read
+//! from a short run, and a name 300 rows share is held once (perf stage 2's
+//! review: each slice was copied on its own, so 300 rows naming one
+//! 1,000-byte string held 300 copies of it, and their compile, which no
+//! longer saw one buffer, counted 600,000 bytes of work where the same file
+//! read lazily counted 12,000). To find those bytes the slices are listed
+//! by where they lie, sorted, and merged where they overlap or touch: a
+//! table of two words a slice, charged to the meter while the copy is made,
+//! whose refusal is the copy's.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -80,15 +97,47 @@ impl Slices for MeteredVec<NodeRow> {
     }
 }
 
-fn len64(b: &[u8]) -> u64 {
-    u64::try_from(b.len()).unwrap_or(u64::MAX)
+fn len64(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
+}
+
+/// Where `b` lies in `within`, from and to, if it is a non-empty slice of it.
+fn place(within: &[u8], b: &[u8]) -> Option<(usize, usize)> {
+    let at = b.as_ptr().addr().checked_sub(within.as_ptr().addr())?;
+    let end = at.checked_add(b.len())?;
+    (!b.is_empty() && end <= within.len()).then_some((at, end))
+}
+
+/// `spans` sorted and merged where they overlap or touch, in place: the
+/// number of merged spans, which then lead the table.
+fn merge(spans: &mut [(usize, usize)]) -> usize {
+    spans.sort_unstable();
+    let mut kept = 0usize;
+    for i in 0..spans.len() {
+        let Some(&(from, to)) = spans.get(i) else {
+            break;
+        };
+        if let Some(last) = kept.checked_sub(1).and_then(|k| spans.get_mut(k))
+            && from <= last.1
+        {
+            last.1 = last.1.max(to);
+            continue;
+        }
+        // `kept <= i`: the slot is there.
+        if let Some(slot) = spans.get_mut(kept) {
+            *slot = (from, to);
+        }
+        kept += 1;
+    }
+    kept
 }
 
 /// Copies the slices of `target` that lie in `within` (a slice of a buffer
 /// of `pinned` bytes) into one buffer charged to `meter`, when
-/// [`worth_copying`] says so (module docs), each slice then a slice of the
-/// copy: the bytes copied, 0 when nothing was (no slice lies in `within`,
-/// the copy would free too little, or the meter or the budget refused it).
+/// [`worth_copying`] says so, each byte once (module docs), each slice then
+/// a slice of the copy: the bytes copied, 0 when nothing was (no slice lies
+/// in `within`, the copy would free too little, or the meter or the budget
+/// refused it or its table of slices).
 pub(crate) fn copy_out(
     target: &mut dyn Slices,
     within: &[u8],
@@ -98,42 +147,57 @@ pub(crate) fn copy_out(
     if pinned <= UNPIN_MIN {
         return 0;
     }
-    let start = within.as_ptr().addr();
-    let end = start.saturating_add(within.len());
-    let inside = |b: &[u8]| {
-        let at = b.as_ptr().addr();
-        !b.is_empty() && start <= at && at.saturating_add(b.len()) <= end
+    let mut n = 0usize;
+    target.each(&mut |sl| n += usize::from(place(within, sl.bytes()).is_some()));
+    if n == 0 {
+        return 0;
+    }
+    let Ok(mut table) = MeteredVec::with_capacity(meter, n) else {
+        return 0;
     };
-    let mut s = 0u64;
+    let mut listed = true;
     target.each(&mut |sl| {
-        if inside(sl.bytes()) {
-            s = s.saturating_add(len64(sl.bytes()));
+        if let Some(span) = place(within, sl.bytes()) {
+            listed &= table.push(span).is_ok();
         }
     });
+    if !listed {
+        return 0;
+    }
+    let kept = merge(table.as_mut_slice());
+    let Some(spans) = table.as_mut_slice().get_mut(..kept) else {
+        return 0;
+    };
+    let s = spans
+        .iter()
+        .fold(0u64, |s, (from, to)| s.saturating_add(len64(to - from)));
     if !worth_copying(pinned, s) {
         return 0;
     }
     let Ok(mut buf) = DecodeBuf::new(meter, s, s, LimitKind::InputMemory) else {
         return 0;
     };
-    let mut written = true;
-    target.each(&mut |sl| {
-        if written && inside(sl.bytes()) {
-            written = buf.extend_from_slice(sl.bytes()).is_ok();
+    for span in spans.iter_mut() {
+        let Some(bytes) = within.get(span.0..span.1) else {
+            return 0;
+        };
+        if buf.extend_from_slice(bytes).is_err() {
+            return 0;
         }
-    });
-    if !written {
-        return 0;
+        // From here a span is its start and where its bytes start in the copy.
+        span.1 = buf.len() - (span.1 - span.0);
     }
     let Ok(copy) = buf.into_bytes() else {
         return 0;
     };
-    let mut at = 0usize;
     target.each(&mut |mut sl| {
-        if inside(sl.bytes()) {
-            let n = sl.bytes().len();
-            sl.set(copy.slice(at..at + n));
-            at += n;
+        if let Some((from, to)) = place(within, sl.bytes()) {
+            // The span holding `from`: the last that starts at or before it.
+            let i = spans.partition_point(|&(start, _)| start <= from);
+            if let Some(&(start, at)) = i.checked_sub(1).and_then(|i| spans.get(i)) {
+                let at = at + (from - start);
+                sl.set(copy.slice(at..at + (to - from)));
+            }
         }
     });
     s
@@ -196,3 +260,6 @@ impl CopyCounts {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
