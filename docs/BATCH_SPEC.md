@@ -52,6 +52,7 @@ A spec is one JSON object, at most 16 MiB, UTF-8. An unknown field at any level,
 - Every id in a `deps` list names a bundle of the spec.
 - No view (section 4.2) holds more than `max_view_bundles` bundles.
 - With a directory sink, `spool.dir` and `sink.root`, compared as paths after removing a trailing `/`, neither equal nor contain one another (preflight compares their real paths again, section 6.2).
+- An object store's `endpoint` whose host is an IP address has `path_style` true: `<bucket>.<address>` is not a host (1.6).
 - `deadline` is set when `sink.kind` is `"object_store"`: it bounds when an attempt's process has ended, from which the caller's wait counts (section 7.2).
 - Every `prefer` entry whose `input` is not null names an input.
 - Every template parses and passes its literal checks (section 2.1), and every literal key (`prefer`'s keys, `archives`' keys) passes section 2.3's rules but `prefix_conflict` and `archive_conflict`, which phase 6 decides. A non-empty sink prefix passes them without its final `/`.
@@ -126,7 +127,7 @@ One sink per job. Outputs are written to it as loose objects, and each archive (
 | `"directory"` | `root` (required): an absolute path of an existing directory |
 | `"object_store"` | `bucket` (string, required); `region` (string, required); `prefix` (string, default `""`, else ending in `/`); `endpoint` (an `http` or `https` URL with no path, or null, default null: AWS; an `http` endpoint allows plain HTTP to that endpoint only); `path_style` (boolean, default `false`); `timeout_ms` (integer, default 30000, 1,000 to 300,000, per try); `attempts` (integer, default 3, 1 to 10: tries per request, the first included) |
 
-**`endpoint`** is the service's URL without the bucket (`https://s3.example.net:9000`). The engine maps it for each mode: with `path_style` true, requests go to `<endpoint>/<bucket>/<key>`; with `path_style` false, to `<scheme>://<bucket>.<host>[:<port>]/<key>`, which the engine builds from it. With `endpoint` null, AWS's endpoint for `region` in the same mode. An `endpoint` whose host is an IP address is refused at validation unless `path_style` is true: `<bucket>.<address>` is not a host.
+**`endpoint`** is the service's URL without the bucket (`https://s3.example.net:9000`). The engine maps it for each mode: with `path_style` true, requests go to `<endpoint>/<bucket>/<key>`; with `path_style` false, to `<scheme>://<bucket>.<host>[:<port>]/<key>`, which the engine builds from it. With `endpoint` null, AWS's endpoint for `region` in the same mode.
 
 Every key is written at the sink's root (directory) or after its prefix (object store). The engine makes every try of a store request itself, waiting between tries as `http`'s backoff rule says (1.4), and the store client retries nothing, so each try is seen and counted (7.3). The engine's own HTTP connector records each try's status, `Retry-After` and, for a 4xx, the error code of its body (`batch.md` 2.9), and the try is classified by the first row that matches:
 
@@ -408,7 +409,7 @@ The head is the record of the run. For every key the final head lists as `writte
 | `verified_by_size` | integer | the keys and archives verification checked by size alone (`etag_not_md5`, section 7.2); 0 for a directory sink |
 | `unsettled_tries` | integer | the tries of output, archive and row-file requests this attempt made (`CreateMultipartUpload` and every part included, aborts aside) that the store may still commit: each 1.6's table does not settle (no response, a timeout, a try a stop abandoned, a 5xx, anything unclassified). The engine makes each try itself (1.6), so a try replaced by a later one is counted too (section 7.2) |
 | `counts` | object | integers, each a count of row-file lines but `collisions` and `flips`, which count keys: `bundles` (every `bundles` row), `bundles_failed` (status `failed`); `inputs` (every `inputs` row), `inputs_complete`, `inputs_with_skips`, `inputs_failed`, `inputs_not_run` (by status); `outputs_written`, `outputs_present`, `outputs_not_written`, `outputs_withheld`, `outputs_failed`, `outputs_unwritable` (`outputs` rows by status, the last `unwritable_key`); `skips` (every `skips` row); `collisions` (the keys with more than one candidate); `flips` (those decided by a flip); `archives_written`, `archives_present` (`archives` rows by status). Each is 0 for a row file not written |
-| `run` | object | E40's run-level figures: `same_named_cabs`, `undeclared_dependencies`, `nested_containers` (counts of the `diagnostics` rows of each kind), `evictions`, `input_peak`, `dependency_peak`, `spool_peak`, `spooled_parts` (bytes, `batch.md` 2.6 step 10), `vm_hwm`, `memory_bound`, the budgets as read |
+| `run` | object | E40's run-level figures: `same_named_cabs`, `undeclared_dependencies`, `nested_containers` (counts of the `diagnostics` rows of each kind), `evictions`, `input_peak`, `dependency_peak`, `decode_work_peak` (the most decode work one meter of any input's run counted, `batch.md` 2.2), `spool_peak`, `spooled_parts` (bytes, `batch.md` 2.6 step 10), `vm_hwm`, `memory_bound`, the budgets as read |
 | `warnings` | object | warning code (section 9.3) → count |
 | `rows` | object | `bundles`, `inputs`, `skips`, `diagnostics`, `outputs`, `collisions`, `archives`, `archive_members`: each row file's chunk count `n` (its chunks are `<attempt>/<file>.<k>.ndjson` for `k` below `n`, relative to the head's directory, section 7.1), 0 for one with no rows, or null for one not written in full or after a `syncfs` error (7.4) |
 
@@ -493,7 +494,7 @@ So the archive's MD5, and its multipart ETag at 16 MiB parts, are the same on ev
 | 7 | none by this attempt | `superseded`: a later attempt of this `run_id` owns the head | do not retry |
 | 69 | none | could not start: section 9.3's preflight reasons; nothing written but possibly a fenced `running` head (7.2) | fix the environment, retry with `attempt + 1`, with no wait under `"conditional"` fencing (7.2) |
 | 70 | `incomplete` if possible | internal error: a panic outside a decoder, a leaked charge (a refusal of phase 6's working set among them), an unclassifiable error, `ContainerDropped` | report a bug |
-| 74 | `incomplete` if possible | host failure during the run: an I/O error on the spool, a staged file or a local source being copied, or the output directory's `syncfs`; a mount crossed beneath the output root (`extract.md` E62); an allocation the allocator refused | fix the host, retry with `attempt + 1` |
+| 74 | `incomplete` if possible | host failure during the run: an I/O error on the spool, a staged file or a local source being copied, or the output directory's `syncfs`; a mount crossed beneath the output root in phase 7 (`extract.md` E62); an allocation the allocator refused | fix the host, retry with `attempt + 1` |
 | 78 | none | a bad spec or command line, an unknown `spec_version` included | fix the spec; never retry as is |
 
 - **Precedence**, when several apply: 78, 69, 70, 74, 7, 6, 5, 4, 3, 0. A stop's code is its reason's (section 9.3); a more severe stop that comes before the finisher takes the reason replaces it (`batch.md` 2.11).
@@ -529,8 +530,9 @@ A reason is `name` or `name(argument, ...)`. A `limit`'s arguments are the core'
 | an object's skip | `budget(input)`, `limit(input_memory \| input_bytes \| decode_work, <value>)`, a data `limit`, `outside_view(<cab>)`, `bad_pointer`, `decode_error`, `decoder_panic`, `unsupported_format(<name>)`, `unsupported_platform(switch \| xbox360)`, `empty_image`, `duplicate_name`, `duplicate_key`, `unwritable_key(<rule>)`, `empty_rect`, `unnamed_atlas`, `reference_atlas`, `sheet_not_found`, `ngui_layout_unsupported`, `no_typetree`, `json_unwritable` |
 | an output's or archive's status | `withheld` (E61), `unit_conflict`, `publish_incomplete`, `publish_failed`, `publish_mismatch`, `credentials_expired`, `archive_too_large`, `unwritable_key(<rule>)` |
 | a member left out | `duplicate_member`, `unwritable_path(<rule>)`, `prefix_conflict` |
-| a stop | `deadline`, `sigterm`, `sigint`, `sighup`, `parent_died`, `stdin_eof` (6); `superseded` (7); `spool_full` (5); `host_io`, `host_memory` (74); `internal` (70) |
-| preflight (exit 69) | `spool_not_dedicated`, `spool_in_memory`, `spool_overlaps_sink`, `spool_locked`, `spool_no_space`, `output_locked`, `manifest_unreadable`, `bucket_missing`, `sink_unreachable`, `credentials_missing`, `credentials_expire`, `header_env_missing`, `header_env_too_long`, `header_env_invalid`, `deadline_too_close`, `rlimit_too_low` (address space, data or open files), `overcommit_strict`, `map_count_too_low`, `memory_too_small`, `cgroup_unreadable`, `previous_attempt_live`, `thread_spawn_failed`, `kernel_too_old` (a directory sink on Linux before 5.8) |
+| a stop | `deadline`, `sigterm`, `sigint`, `sighup`, `parent_died`, `stdin_eof` (6); `spool_full` (5); `host_io`, `host_memory` (74); `internal` (70) |
+| a head read (exit 7, 7.2) | `superseded` |
+| preflight (exit 69) | `spool_not_dedicated`, `spool_in_memory`, `spool_overlaps_sink`, `spool_locked`, `spool_no_space`, `output_locked`, `manifest_unreadable`, `bucket_missing`, `sink_unreachable`, `credentials_missing`, `credentials_expire`, `header_env_missing`, `header_env_too_long`, `header_env_invalid`, `deadline_too_close`, `rlimit_too_low` (address space, data or open files), `overcommit_strict`, `map_count_too_low`, `memory_too_small`, `cgroup_unreadable`, `previous_attempt_live`, `thread_spawn_failed`, `kernel_too_old` (a directory sink on Linux before 5.8), `mount_crossing` (`extract.md` E62) |
 | validation (exit 78) | `bad_spec`, with the field's JSON pointer and the rule in its detail |
 | a warning (the head's `warnings`) | `resume_list_failed`, `verify_list_failed`, `etag_not_md5`, `stderr_dropped`, `abort_failed` |
 
@@ -554,7 +556,7 @@ NDJSON on stdout (E4), version `p` = the `spec_version` the run reads (for a spe
 | `outputs` | object | integers: `candidates`, `winners`, `published`, `present`, `failed`; `winners` is 0 before phase 6 |
 | `status` | string or null | on the `exit` line, the status of this attempt's last head write the store acknowledged, or null when none was or the attempt was superseded; null on a snapshot |
 | `code` | integer or null | on the `exit` line, the exit code (section 9); null on a snapshot |
-| `reason` | string or null | on the `exit` line, the reason that set the code: a stop, preflight or validation reason of 9.3, or null for a code section 9.2 decided; null on a snapshot |
+| `reason` | string or null | on the `exit` line, the reason that set the code: a stop, preflight, head-read or validation reason of 9.3, or null for a code section 9.2 decided; null on a snapshot |
 | `detail` | string or null | on the `exit` line, at most 1,024 bytes: for `bad_spec` the field's JSON pointer and the rule, else the reason's detail or null; null on a snapshot |
 
 - The first line is written when validation ends, and then a line at least every 2 s, from a one-slot mailbox (`extract.md` item 5). No field holds a URL, a header value or a credential (E42).
