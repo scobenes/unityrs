@@ -339,7 +339,7 @@ So no panic leaves the process running with nobody to end it, deadline or not. E
 
 ## 3. Open problems, and their answers
 
-Each problem keeps the text that states it, then its answer: solved or shown wrong, the mechanism, what it rests on, and its test. Engine test names are proposals, in `crates/unityrs-batch/tests/`. Sections 3.11 to 3.13 are problems design round 1 found; 3.14 is the one its review found; 3.15 to 3.21 list the reviews of design rounds 2 to 8.
+Each problem keeps the text that states it, then its answer: solved or shown wrong, the mechanism, what it rests on, and its test. Engine test names are proposals, in `crates/unityrs-batch/tests/`. Sections 3.11 to 3.13 are problems design round 1 found; 3.14 is the one its review found; 3.15 to 3.22 list the reviews of design rounds 2 to 9.
 
 ### 3.1 Cached runs never release, and budgets are bound per load, not per job
 
@@ -571,7 +571,7 @@ Every wait in the process:
 | W6 | a transfer | a `download_concurrency` permit, or the phase budget | held only by transfers inside requests, which end by W2 |
 | W7 | a transfer or the finisher | the journal's mutex | held for one append or one removal, never across a request; the file call inside is W5. The outcomes files take no lock (2.9) |
 | W8 | the progress thread | stdout | nothing waits on it but the finisher, for at most 1 s (2.11) |
-| W9 | the lifecycle thread | the self-pipe, its timer, stdin; `CancellationToken::cancel`'s internal mutex | nothing waits on it; it does no I/O but those reads and `_exit`; `tokio_util` holds that mutex for one bounded walk of the token's waiters; its wakes never block: an unpark or a `try_send` (a missed one bounded by W1's 1 s tick), and a token cancel |
+| W9 | the lifecycle thread | the self-pipe, its timer, stdin; `CancellationToken::cancel`'s internal mutex | nothing waits on it; it does no I/O but those reads and `_exit`; `tokio_util` holds that mutex for one bounded walk of the token's waiters; its wakes never block: an unpark or a `try_send` into the end channel's wake slot (2.4; a full channel already holds a wake), and a token cancel |
 | W10 | the finisher | its hand-over; abort requests and the manifest's writes | the hand-over comes from the controller: after phase 7, at a stop, at a 69, 7 or 74 before the `running` head, or from its panic handler; each request is on its own runtime and client, and, once `T_hard` is armed, one try, ending by `T_hard - head_reserve`, the head's by `T_hard - 2 s` (2.11 step 3); file calls are W5 |
 | W11 | the spool's and the output root's locks | `flock` with `LOCK_NB` | never waits: busy exits 69 |
 | W12 | the controller, after its hand-over | nothing: it parks | the finisher's or the lifecycle thread's `_exit` |
