@@ -143,8 +143,8 @@ pub fn pair(first: V, second: V) -> V {
 #[must_use]
 pub fn depth(v: &V) -> usize {
     let mut deepest = 0;
-    let mut todo = vec![(v, 0usize)];
-    while let Some((v, at)) = todo.pop() {
+    let mut stack = vec![(v, 0usize)];
+    while let Some((v, at)) = stack.pop() {
         let below = match v {
             V::Str(_) | V::Vector(..) => 2,
             V::Bytes(_) | V::PPtr(..) => 1,
@@ -152,9 +152,9 @@ pub fn depth(v: &V) -> usize {
         };
         deepest = deepest.max(at + below);
         match v {
-            V::Struct(_, fields) => todo.extend(fields.iter().map(|(_, f)| (f, at + 1))),
-            V::Vector(_, shape, _) => todo.push((shape, at + 2)),
-            V::Pair(first, second) => todo.extend([(&**first, at + 1), (&**second, at + 1)]),
+            V::Struct(_, fields) => stack.extend(fields.iter().map(|(_, f)| (f, at + 1))),
+            V::Vector(_, shape, _) => stack.push((shape, at + 2)),
+            V::Pair(first, second) => stack.extend([(&**first, at + 1), (&**second, at + 1)]),
             _ => {}
         }
     }
