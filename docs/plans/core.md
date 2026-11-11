@@ -465,7 +465,7 @@ The tests: R1 to R5 by `env/registry/reach_tests.rs` (every pair of a load that 
 
 ### 4.1 Batch
 
-`unityrs-batch` (next, not P1) builds on this API. Its design (registration, admission, eviction, sinks, refusal) is `docs/plans/batch.md`, a P1b draft that has not been reviewed: it holds the flow this section used to describe and every open problem reviewers found in it, and gets its own design and review rounds before the batch crate is built. This section is only what the core promises **any** batch engine, each property with the P1 test that checks it (a test named for a package is that package's, 7.2-7.5):
+`unityrs-batch` (next, not P1) builds on this API. Its design (registration, admission, eviction, sinks, refusal) is `docs/plans/batch.md`, the reviewed P1b plan: it holds the flow this section used to describe and every open problem reviewers found in it, and went through its own design and review rounds before the batch crate is built. This section is only what the core promises **any** batch engine, each property with the P1 test that checks it (a test named for a package is that package's, 7.2-7.5):
 
 | property | what it means | checked by |
 |---|---|---|
