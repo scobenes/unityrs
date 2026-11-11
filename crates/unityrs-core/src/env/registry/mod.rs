@@ -113,28 +113,41 @@
 //! its share of a node of the lists of dropped slots waiting to be reached
 //! (`pending.rs`); each list's root, one node at most and none once it
 //! empties, is a constant of the registry, as the hash table's control
-//! tail is (plan section 3.13). A dependency's `Lazy` load holds its staged
-//! registrations in a list charged to the dependency's meter until it
-//! publishes them (below, "A failed dependency load"). `tests/env_memory.rs` measures the
-//! heap against the charge. A refused charge registers nothing and is the
-//! registering load's error.
+//! tail is (plan section 3.13). A dependency's `Lazy` load holds what it
+//! staged until it publishes it (below, "A failed dependency load"): the
+//! list, charged to the dependency's meter, and each registration's
+//! charges, a key new when staged paying its copy and share even when an
+//! earlier row of the same load takes the key first (returned at the
+//! commit). `tests/env_memory.rs` measures the heap against the charge, a
+//! lazy dependency's load included. A refused charge registers nothing and
+//! is the registering load's error.
 //!
 //! **A failed dependency load** (plan section 3.13; `docs/plans/batch.md`
-//! section 6, CR1). Under `LoadMode::Lazy` a dependency's load publishes
-//! nothing when it fails. It stages its registrations (`register.rs`,
-//! `Stage`): each is charged as any registration is (`prepare`: its key,
-//! its slot, a new key's copy and share of the tables, its position's
-//! path), in a list charged to the dependency's meter, and the LRU's entry
-//! is charged after them; only then are they published, one key at a
-//! time and in the order they were staged, each as any load's registration
-//! is (`apply`, then the load's `settle`), and nothing in that can be
-//! refused. A refusal before then drops the stage, which returns every
-//! charge and was never in the registry: no lookup, on this thread or
-//! another, can have found any of it, no slot was dropped or listed, and no
-//! generation or walk's flag moved, so the registry is as it was before the
-//! load. Under `LoadMode::Eager` a dependency's CABs are registered as they
-//! are parsed, as UnityPy's `load_file(..., is_dependency=True)` registers
-//! them, so a load that fails keeps those registered before its failure
+//! section 6, CR1). Under `LoadMode::Lazy` a dependency's load
+//! (`Environment::load_dependency`, or a resolver's load made as a
+//! dependency) publishes nothing when it fails. It stages its
+//! registrations (`register.rs`, `Stage`): the list that holds them, room
+//! for a bundle's whole directory charged before any entry, then each
+//! registration charged as any is (`prepare`: its key, its slot, a new
+//! key's share and copy, its position's path); then the LRU's entry, and a
+//! `find_file` load's `files` entry under `keep_resolver_loads`, are
+//! charged; only then are the registrations published, one key at a time
+//! and in the order they were staged, each as any load's registration is
+//! (`apply`, then the load's `settle`), and nothing in that can fail the
+//! load: the `settle` reaches the lazy slots a registration dropped and
+//! charges what it reads, and keeps a refusal there to itself, the slot
+//! left listed for a later call, as every `settle` does. A refusal before
+//! the commit drops the stage, which returns every charge and was never in
+//! the registry: no lookup, on this thread or another, can have found any
+//! of it, no slot was dropped or listed, and no generation or walk's flag
+//! moved, so the registry is as it was before the load. It does not cover
+//! a caller's load (`Environment::load`, and a resolver's load made as a
+//! caller's under `keep_resolver_loads`), which registers one key at a
+//! time under either mode and keeps, when it fails, those registered
+//! before. Under `LoadMode::Eager` a dependency's CABs are registered as
+//! they are parsed, as UnityPy's `load_file(..., is_dependency=True)`
+//! registers them (`files/File.py:76-90` registers each entry whatever the
+//! flag), so a load that fails keeps those registered before its failure
 //! (the partial registration above, difference (a)).
 //!
 //! Owner: package D.

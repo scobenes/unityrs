@@ -231,24 +231,31 @@ impl Lru {
     }
 
     /// Makes `k` the most recently used and re-reads its meter: the map's
-    /// entry if it holds one, else the one `make` builds, whose refusal
-    /// changes nothing. Whether `k` is cached is asked and acted on here,
-    /// in one step.
-    fn use_key<E>(&mut self, k: usize, make: impl FnOnce() -> Result<LruNode, E>) -> Result<(), E> {
+    /// entry if it holds one, else the one `node` builds with the share
+    /// `share` makes, whose refusal changes nothing. Whether `k` is cached
+    /// is asked and acted on here, in one step. `share`, when the entry was
+    /// there and did not need it, is given back unused, for the caller to
+    /// drop after the lock.
+    fn use_key<E, S: FnOnce() -> Result<Charge, E>>(
+        &mut self,
+        k: usize,
+        share: S,
+        node: impl FnOnce(Charge) -> LruNode,
+    ) -> Result<Option<S>, E> {
         self.visit();
-        let cached = match self.nodes.entry(k) {
-            Entry::Occupied(_) => true,
+        let unused = match self.nodes.entry(k) {
+            Entry::Occupied(_) => Some(share),
             Entry::Vacant(v) => {
-                v.insert(make()?);
-                false
+                v.insert(node(share()?));
+                None
             }
         };
-        if cached {
+        if unused.is_some() {
             self.unlink(k);
         }
         self.link_back(k);
         self.reread(k);
-        Ok(())
+        Ok(unused)
     }
 
     /// Takes `k` out of the list and the map; `None`, changing nothing, for
@@ -367,7 +374,14 @@ impl DepCache {
     /// under a core lock, [`crate::budget::MemoryBudget`]); a refusal
     /// caches nothing and is the caller's error.
     pub(crate) fn touch(&self, dep: &Arc<Dependency>, file: &File) -> Result<(), Error> {
-        self.use_dep(dep, file, || Self::room(file))
+        let k = lru_key(dep);
+        #[cfg(test)]
+        self.hook(Hook::Touching);
+        // The share is charged in the step that inserts the entry, and
+        // only then; unused, it was never made.
+        self.step(|lru| lru.use_key(k, || Self::room(file), |c| Self::node(dep, file, c)))?;
+        self.used(k);
+        Ok(())
     }
 
     /// A new entry's share of the map for `file`, charged to its meter
@@ -379,39 +393,48 @@ impl DepCache {
     }
 
     /// [`Self::touch`] with the new entry's share already charged
-    /// ([`Self::room`]), so nothing in it can be refused; the share is
-    /// returned when `dep` is cached already.
+    /// ([`Self::room`]), so nothing in it can be refused. When `dep` is
+    /// cached already (a read through one of its slots touched it while
+    /// its load published them, the commit's `settle` among them), the
+    /// share is returned after the lock, and the entry's meter re-read
+    /// without it before the eviction check (CR1's review, round 1: it was
+    /// returned under the lock, after the entry was re-read with it).
     pub(crate) fn touch_paid(&self, dep: &Arc<Dependency>, file: &File, room: Charge) {
-        let Ok(()) = self.use_dep::<Infallible>(dep, file, || Ok(room));
-    }
-
-    /// [`Self::touch`], the new entry's share from `share`, asked for in
-    /// the step that inserts the entry and only then.
-    fn use_dep<E>(
-        &self,
-        dep: &Arc<Dependency>,
-        file: &File,
-        share: impl FnOnce() -> Result<Charge, E>,
-    ) -> Result<(), E> {
         let k = lru_key(dep);
         #[cfg(test)]
         self.hook(Hook::Touching);
-        self.step(|lru| {
-            lru.use_key(k, || {
-                Ok(LruNode {
-                    _dep: dep.clone(),
-                    file: file.clone(),
-                    seen: 0,
-                    prev: None,
-                    next: None,
-                    _charge: share()?,
-                })
-            })
-        })?;
+        let Ok(unused) = self
+            .step(|lru| lru.use_key::<Infallible, _>(k, || Ok(room), |c| Self::node(dep, file, c)));
+        if let Some(unused) = unused {
+            drop(unused);
+            self.step(|lru| {
+                if lru.nodes.contains_key(&k) {
+                    lru.visit();
+                    lru.reread(k);
+                }
+            });
+        }
+        self.used(k);
+    }
+
+    /// The entry for `dep`, open as `file`, holding `charge`, its share.
+    fn node(dep: &Arc<Dependency>, file: &File, charge: Charge) -> LruNode {
+        LruNode {
+            _dep: dep.clone(),
+            file: file.clone(),
+            seen: 0,
+            prev: None,
+            next: None,
+            _charge: charge,
+        }
+    }
+
+    /// What a use does after its step: evicts as [`Self::touch`] says,
+    /// never `k`.
+    fn used(&self, k: usize) {
         #[cfg(test)]
         self.hook(Hook::Used);
         self.evict_over(k);
-        Ok(())
     }
 
     /// Re-reads `dep`'s meter after a read through it (the read's parse

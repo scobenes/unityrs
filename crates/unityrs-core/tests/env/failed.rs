@@ -1,67 +1,146 @@
 //! A dependency load that fails publishes nothing (plan section 3.13,
 //! "Dependencies"; `docs/plans/batch.md` section 6, CR1): under
 //! `LoadMode::Lazy` every registration of the load is charged, with the
-//! LRU's entry, before the first is published, so a load refused at any of
-//! them leaves the registry as it was, and every lookup after it answers as
-//! before the load. Under `Eager`, `EnvOptions::unitypy()`'s mode, a
-//! bundle's CABs are registered as they are parsed, as UnityPy's
-//! `load_file` registers them, so a failed load keeps those registered
-//! before its failure.
+//! LRU's entry and a `find_file` load's `files` entry, before the first is
+//! published, so a load refused at any of them leaves the registry as it
+//! was, returns every charge, and every lookup after it answers as before
+//! the load. Under `Eager`, `EnvOptions::unitypy()`'s mode, a bundle's CABs
+//! are registered as they are parsed, as UnityPy's `load_file` registers
+//! them, so a failed load keeps those registered before its failure.
 
 use std::fmt::Write as _;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::ThreadId;
 
-use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
-use unityrs_core::env::{Cab, EnvOptions, Environment, LoadMode, PPtr, RawCab, Source};
-use unityrs_core::files::{File, SerializedFile};
+use unityrs_core::budget::{
+    BudgetExceeded, Counting, MemoryBudget, Permit, Reservation, Unbounded,
+};
+use unityrs_core::detect::{FileType, check_file_type};
+use unityrs_core::env::{
+    Cab, CabResolver, EnvOptions, Environment, LoadMode, PPtr, RawCab, Source,
+};
+use unityrs_core::files::{File, RawFile, SerializedFile, parse_file};
+use unityrs_core::limits::Meter;
 use unityrs_core::object::ObjectRef;
 use unityrs_core::value::Value;
-use unityrs_core::{Error, FileContext, RawStr};
+use unityrs_core::{Bytes, Error, FileContext, LimitKind, RawStr};
 use unityrs_testkit::env::{Obj, bundle, res_bytes, serialized};
+use unityrs_testkit::guard;
 
 use crate::{ctx_with, key, keys, src, unlimited};
 
-/// A budget that grants every reservation but, once armed with `n`, the
-/// `n`-th dependency reservation after it and every one after that, until
-/// it is disarmed: a load refused there is refused again in its retry,
-/// which `with_room` makes after it evicts the others, so the load fails.
-#[derive(Debug, Default)]
-struct RefuseFrom {
-    /// 0 when disarmed.
-    from: AtomicU64,
-    /// The dependency reservations asked for since it was armed.
-    asked: AtomicU64,
+/// How a [`Pool`] treats the dependency reservations it is asked for
+/// after it is armed.
+#[derive(Clone, Copy, Debug)]
+enum Arm {
+    /// Refuses the `n`-th and every one after it: a load refused there is
+    /// refused again in the retry `with_room` makes after it evicts the
+    /// others, so the load fails.
+    From(u64),
+    /// Refuses the `n`-th alone: the retry succeeds.
+    Only(u64),
+    /// Refuses none.
+    Grant,
 }
 
-impl RefuseFrom {
-    fn arm(&self, n: u64) {
+/// The test's dependency pool: a [`Counting`] budget for the dependency
+/// reservations, which it counts and, once armed, refuses as [`Arm`] says
+/// (inputs' and providers' are granted, detached); it can record each
+/// dependency reservation's running total.
+#[derive(Debug)]
+struct Pool {
+    deps: Counting,
+    /// The `n` of an `Arm::From` or `Arm::Only`; 0 grants every one.
+    n: AtomicU64,
+    only: AtomicBool,
+    /// The dependency reservations asked for since it was armed.
+    asked: AtomicU64,
+    /// With `record`: what `deps` held when it was armed, and, for each
+    /// dependency reservation, what it holds above that once the
+    /// reservation is made.
+    record: AtomicBool,
+    base: AtomicU64,
+    totals: Mutex<Vec<u64>>,
+}
+
+impl Default for Pool {
+    fn default() -> Self {
+        Self {
+            deps: Counting::new(u64::MAX),
+            n: AtomicU64::new(0),
+            only: AtomicBool::new(false),
+            asked: AtomicU64::new(0),
+            record: AtomicBool::new(false),
+            base: AtomicU64::new(0),
+            totals: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl Pool {
+    fn arm(&self, arm: Arm) {
         self.asked.store(0, Ordering::Release);
-        self.from.store(n, Ordering::Release);
+        let (n, only) = match arm {
+            Arm::From(n) => (n, false),
+            Arm::Only(n) => (n, true),
+            Arm::Grant => (0, false),
+        };
+        self.only.store(only, Ordering::Release);
+        self.n.store(n, Ordering::Release);
     }
 
     fn disarm(&self) {
-        self.from.store(0, Ordering::Release);
+        self.n.store(0, Ordering::Release);
+        self.record.store(false, Ordering::Release);
     }
 
     fn asked(&self) -> u64 {
         self.asked.load(Ordering::Acquire)
     }
+
+    /// The dependency pool's bytes reserved and not returned.
+    fn used(&self) -> u64 {
+        self.deps.used()
+    }
+
+    /// Records each dependency reservation's running total from now on.
+    fn record(&self) {
+        self.totals.lock().unwrap().clear();
+        self.base.store(self.deps.used(), Ordering::Release);
+        self.record.store(true, Ordering::Release);
+    }
+
+    fn totals(&self) -> Vec<u64> {
+        self.totals.lock().unwrap().clone()
+    }
 }
 
-impl MemoryBudget for RefuseFrom {
+impl MemoryBudget for Pool {
     fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
-        let from = self.from.load(Ordering::Acquire);
-        if what == Reservation::Dependency && from != 0 {
-            let asked = self.asked.fetch_add(1, Ordering::AcqRel) + 1;
-            if asked >= from {
-                return Err(BudgetExceeded {
-                    requested: bytes,
-                    what,
-                });
-            }
+        if what != Reservation::Dependency {
+            return Ok(Permit::detached(bytes));
         }
-        Ok(Permit::detached(bytes))
+        let asked = self.asked.fetch_add(1, Ordering::AcqRel) + 1;
+        let n = self.n.load(Ordering::Acquire);
+        let refused = n != 0
+            && if self.only.load(Ordering::Acquire) {
+                asked == n
+            } else {
+                asked >= n
+            };
+        if refused {
+            return Err(BudgetExceeded {
+                requested: bytes,
+                what,
+            });
+        }
+        if self.record.load(Ordering::Acquire) {
+            let base = self.base.load(Ordering::Acquire);
+            let held = self.deps.used().saturating_sub(base) + bytes;
+            self.totals.lock().unwrap().push(held);
+        }
+        self.deps.try_reserve(bytes, what)
     }
 }
 
@@ -77,9 +156,12 @@ fn a() -> Source {
     )
 }
 
+/// `B`'s entries, as many as its load registers.
+const B_ENTRIES: u64 = 4;
+
 /// `B`, the dependency whose load is refused: a new key, the two keys `A`
 /// registered, and another new key, in that order, so a refusal at its
-/// k-th entry comes after it registered (before CR1, published) a new key,
+/// k-th entry comes after it staged (before CR1, published) a new key,
 /// the value of a key `A` holds, or both.
 fn b() -> Source {
     src(
@@ -157,10 +239,9 @@ fn file(found: Result<Option<File>, Error>) -> String {
     }
 }
 
-/// What every lookup answers: the keys in order; each name's `get_cab` and
-/// `find_file`; each of `c`'s pointers dereferenced; `c`'s texture's
-/// resource read; and the files listed.
-fn answers(env: &Environment, c: &Arc<SerializedFile>) -> Vec<String> {
+/// What the lookups by name answer: the keys in order, and each name's
+/// `get_cab` and `find_file`.
+fn by_name(env: &Environment) -> Vec<String> {
     let m = unlimited();
     let mut out = vec![format!("keys {:?}", keys(env))];
     for name in NAMES {
@@ -171,6 +252,13 @@ fn answers(env: &Environment, c: &Arc<SerializedFile>) -> Vec<String> {
         let found = env.find_file(&key(name), true, &m);
         out.push(format!("find_file {name}: {}", file(found)));
     }
+    out
+}
+
+/// What every lookup answers: [`by_name`]'s; each of `c`'s pointers
+/// dereferenced; `c`'s texture's resource read; and the files listed.
+fn answers(env: &Environment, c: &Arc<SerializedFile>) -> Vec<String> {
+    let mut out = by_name(env);
     for file_id in 1..=3 {
         let got = env.deref(
             c,
@@ -192,23 +280,50 @@ fn answers(env: &Environment, c: &Arc<SerializedFile>) -> Vec<String> {
     out
 }
 
-/// An Environment of `options` on a [`RefuseFrom`] budget, with `A` and
-/// `C` loaded: the budget, `C`, and what every lookup answers.
-fn scene(mut options: EnvOptions) -> (Environment, Arc<RefuseFrom>, Arc<SerializedFile>) {
-    let budget = Arc::new(RefuseFrom::default());
-    options.context = ctx_with(budget.clone());
+/// A resolver that answers every name with `B` while it serves, and
+/// nothing otherwise, so the lookups around the load the test makes
+/// through it load nothing.
+#[derive(Debug, Default)]
+struct ServesB(AtomicBool);
+
+impl CabResolver for ServesB {
+    fn resolve(&self, _: &[u8]) -> Option<Source> {
+        self.0.load(Ordering::Acquire).then(b)
+    }
+}
+
+/// How the test loads `B`.
+#[derive(Clone, Copy, Debug)]
+enum Load {
+    /// `load_dependency`.
+    Dependency,
+    /// `find_file("CAB-B", is_dependency=True)`, which the registry cannot
+    /// answer, through the resolver: a resolver load of `try_load_dep`,
+    /// listed in `files` under `keep_resolver_loads`.
+    Resolved,
+}
+
+/// An Environment of `options` on a [`Pool`], with `A` and `C` loaded and
+/// [`ServesB`] as its resolver, not serving.
+fn scene(mut options: EnvOptions) -> (Environment, Arc<Pool>, Arc<ServesB>, Arc<SerializedFile>) {
+    let pool = Arc::new(Pool::default());
+    let resolver = Arc::new(ServesB::default());
+    options.context = ctx_with(pool.clone());
+    options.resolver = Some(resolver.clone());
     let env = Environment::new(options);
     drop(env.load_dependency(a()).unwrap());
     let File::Serialized(c) = env.load(c()).unwrap() else {
         panic!("C is a SerializedFile");
     };
-    (env, budget, c)
+    (env, pool, resolver, c)
 }
 
-/// The options of the sweep: `batch()`'s with a cache that evicts and
-/// with one that never does, and `unitypy()`'s, each in `mode` (each
-/// scene puts its own budget in the context).
-fn options(mode: LoadMode) -> Vec<(&'static str, EnvOptions)> {
+/// The options of the sweeps: `batch()`'s with a cache that evicts and
+/// with one that never does (and lists resolver loads), and `unitypy()`'s,
+/// each in `mode` (each scene puts its own budget and resolver in them).
+/// Whether each never evicts goes with it: then a pool refusal's retry
+/// evicts nothing.
+fn options(mode: LoadMode) -> Vec<(&'static str, EnvOptions, bool)> {
     let mut evicting = EnvOptions::batch(Arc::new(FileContext::unitypy()));
     evicting.load = mode;
     let mut keeping = evicting.clone();
@@ -217,34 +332,69 @@ fn options(mode: LoadMode) -> Vec<(&'static str, EnvOptions)> {
     let mut unitypy = EnvOptions::unitypy();
     unitypy.load = mode;
     vec![
-        ("batch(), evicting", evicting),
-        ("batch(), never evicting", keeping),
-        ("unitypy()", unitypy),
+        ("batch(), evicting", evicting, false),
+        ("batch(), never evicting", keeping, true),
+        ("unitypy()", unitypy, true),
     ]
 }
 
-/// Loads `B` with its `n`-th dependency reservation and every later one
-/// refused, on a fresh scene: whether the load failed, with a refusal of
-/// the pool, what every lookup answered before it and after it, and the
-/// reservations it asked for.
-fn refused_at(options: &EnvOptions, n: u64) -> (bool, Vec<String>, Vec<String>, u64) {
-    let (env, budget, c) = scene(options.clone());
+/// What one armed load of `B` did.
+struct Outcome {
+    /// Whether it failed (with the pool's refusal).
+    failed: bool,
+    /// What every lookup answered before it and after it.
+    before: Vec<String>,
+    after: Vec<String>,
+    /// The dependency reservations it asked for.
+    asked: u64,
+    /// The dependency pool's bytes just before it and just after it.
+    used_before: u64,
+    used_after: u64,
+    /// The dependencies it evicted (a pool refusal's retry evicts `A` when
+    /// the cache evicts).
+    evicted: u64,
+}
+
+/// Loads `B` as `load` says, on a fresh scene, with the pool armed as
+/// `arm` says.
+fn armed(options: &EnvOptions, load: Load, arm: Arm) -> Outcome {
+    let (env, pool, resolver, c) = scene(options.clone());
     let before = answers(&env, &c);
-    budget.arm(n);
-    let loaded = env.load_dependency(b());
-    budget.disarm();
-    let asked = budget.asked();
+    let used_before = pool.used();
+    let evicted = env.stats().dependencies_evicted;
+    pool.arm(arm);
+    let loaded = match load {
+        Load::Dependency => env.load_dependency(b()).map(Some),
+        Load::Resolved => {
+            resolver.0.store(true, Ordering::Release);
+            let found = env.find_file(&key("CAB-B"), true, &unlimited());
+            resolver.0.store(false, Ordering::Release);
+            found
+        }
+    };
+    pool.disarm();
+    let asked = pool.asked();
     let failed = match loaded {
-        Ok(_) => false,
+        Ok(found) => {
+            assert!(found.is_some(), "{load:?}: B was not found");
+            false
+        }
         Err(e) => {
-            assert!(
-                pool_refused(&e),
-                "refused at {n}: not the pool's refusal: {e}"
-            );
+            assert!(pool_refused(&e), "{arm:?}: not the pool's refusal: {e}");
             true
         }
     };
-    (failed, before, answers(&env, &c), asked)
+    let used_after = pool.used();
+    let evicted = env.stats().dependencies_evicted - evicted;
+    Outcome {
+        failed,
+        before,
+        after: answers(&env, &c),
+        asked,
+        used_before,
+        used_after,
+        evicted,
+    }
 }
 
 /// Whether `e` is the pool's refusal, as it is or as an entry's error
@@ -257,32 +407,126 @@ fn pool_refused(e: &Error) -> bool {
     }
 }
 
+/// The dependency reservations a bare open of `B` makes: `B` parsed on a
+/// dependency's meter, as a load opens it, and nothing registered.
+fn open_reservations() -> u64 {
+    let pool = Arc::new(Pool::default());
+    let ctx = ctx_with(pool.clone());
+    let meter = Meter::for_input(&ctx.limits, pool.clone(), Reservation::Dependency);
+    let Source::Bytes { name, data } = b() else {
+        panic!("B is bytes");
+    };
+    let ty = check_file_type(&data, &ctx.limits).unwrap();
+    pool.arm(Arm::Grant);
+    let opened = parse_file(name, data, ty, None, &meter, &ctx).unwrap();
+    let asked = pool.asked();
+    drop(opened);
+    asked
+}
+
 /// CR1's test: `B`'s load is refused at each of its dependency
-/// reservations in turn (the open's, then each entry's: its key, its slot,
-/// a new key's copy and share, its position's path, the stage's list; then
-/// the LRU's entry), after `A` registered two keys of the same names, so
-/// the registration is refused at its k-th entry for every k, and at each
-/// charge of that entry. Under `Lazy` every lookup after the failed load
-/// answers as before it, under `batch()`'s options with a cache that
-/// evicts `A` for the retry and one that never does, and under
-/// `unitypy()`'s options made lazy. The load that is refused nowhere
-/// changes the answers, so the sweep tells the two apart.
+/// reservations in turn (the open's; then the list of staged
+/// registrations, reserved once for the whole directory before any entry;
+/// then each entry's: its lowered key, its slot, a new key's share then its
+/// copy, its position's path; then the LRU's entry, and a listed resolver
+/// load's `files` entry), after `A` registered two keys of the same names,
+/// so the registration is refused at its k-th entry for every k, and at
+/// each charge of that entry. Under `Lazy`, after every failed load, every
+/// lookup answers as before it, and the pool holds what it held before it
+/// (with a cache that evicts, what it holds after the load refused at its
+/// first reservation: the retry evicted `A` alike), under `batch()`'s
+/// options with a cache that evicts `A` for the retry and one that never
+/// does, and under `unitypy()`'s options made lazy, for a load by
+/// `load_dependency` and one through the resolver. The load that is
+/// refused nowhere changes the answers, so the sweep tells the two apart,
+/// and its registrations ask for at least four reservations per entry and
+/// two more beyond a bare open's (CR1's review, round 1: a stage charged to
+/// another meter passed the sweep).
 #[test]
 fn a_failed_load_leaves_every_lookup_as_it_was() {
-    for (what, options) in options(LoadMode::Lazy) {
-        let mut failures = 0;
-        for n in 1.. {
-            let (failed, before, after, asked) = refused_at(&options, n);
-            if !failed {
-                assert!(asked < n, "{what}: the load passed reservation {n}");
-                assert_ne!(after, before, "{what}: the load changed nothing");
-                break;
+    let open = open_reservations();
+    for load in [Load::Dependency, Load::Resolved] {
+        for (what, options, keeps) in options(LoadMode::Lazy) {
+            let first = armed(&options, load, Arm::From(1));
+            assert!(first.failed, "{what}, {load:?}: refused at its open");
+            for n in 1.. {
+                let o = armed(&options, load, Arm::From(n));
+                if !o.failed {
+                    // Refused at each of its reservations in turn, it failed
+                    // each time.
+                    assert_eq!(o.asked, n - 1, "{what}, {load:?}: passed reservation {n}");
+                    assert_ne!(o.after, o.before, "{what}, {load:?}: it changed nothing");
+                    let registered = o.asked - open;
+                    assert!(
+                        registered >= 4 * B_ENTRIES + 2,
+                        "{what}, {load:?}: {registered} reservations beyond the open's {open}"
+                    );
+                    break;
+                }
+                assert_eq!(
+                    o.after, o.before,
+                    "{what}, {load:?}: refused at reservation {n}"
+                );
+                let returned = if keeps {
+                    o.used_before
+                } else {
+                    first.used_after
+                };
+                assert_eq!(
+                    o.used_after, returned,
+                    "{what}, {load:?}: refused at reservation {n}, it kept a charge"
+                );
             }
-            failures += 1;
-            assert_eq!(after, before, "{what}: refused at reservation {n}");
         }
-        // The open's reservations, and at least four for each entry.
-        assert!(failures > 16, "{what}: only {failures} reservations");
+    }
+}
+
+/// A load refused at one reservation alone succeeds. Where the refusal
+/// fails its first run (at the open, an entry's charge, the stage's list,
+/// the LRU's entry or a listing), the run is retried once, after the
+/// evicting cache evicted `A`, and ends as the load refused at its first
+/// reservation does: the same answers and the same bytes held, so the
+/// refused run left nothing, no key at a lower load number among them
+/// (CR1's review, round 1). Where the open absorbs it (a buffer's growth
+/// refused, then made at the size it needs), the run goes on, evicts
+/// nothing, and ends as the load refused nowhere does.
+#[test]
+fn a_load_refused_once_ends_as_a_retried_load_or_as_one_refused_nowhere() {
+    for load in [Load::Dependency, Load::Resolved] {
+        for (what, options, keeps) in options(LoadMode::Lazy) {
+            let granted = armed(&options, load, Arm::Grant);
+            let reference = armed(&options, load, Arm::Only(1));
+            assert!(!reference.failed, "{what}, {load:?}: the retry succeeds");
+            let total = granted.asked;
+            if keeps {
+                assert_eq!(reference.after, granted.after, "{what}, {load:?}");
+                assert_eq!(reference.used_after, granted.used_after, "{what}");
+            }
+            let mut retried = 0;
+            for n in 1..=total {
+                let o = armed(&options, load, Arm::Only(n));
+                assert!(!o.failed, "{what}, {load:?}: refused at {n}, it failed");
+                // A failed first run stopped at `n`, and a whole run
+                // followed it.
+                let retry = o.asked == n + total;
+                if !keeps {
+                    assert_eq!(o.evicted > 0, retry, "{what}, {load:?}: refused at {n}");
+                }
+                let like = if retry {
+                    retried += 1;
+                    &reference
+                } else {
+                    assert!(o.asked > total, "{what}, {load:?}: {n} not asked for");
+                    &granted
+                };
+                assert_eq!(o.after, like.after, "{what}, {load:?}: refused at {n}");
+                assert_eq!(o.used_after, like.used_after, "{what}, {load:?}: at {n}");
+            }
+            assert!(
+                retried > 4 * B_ENTRIES,
+                "{what}, {load:?}: {retried} retried"
+            );
+        }
     }
 }
 
@@ -293,18 +537,216 @@ fn a_failed_load_leaves_every_lookup_as_it_was() {
 /// refusal after which `CAB-B`, `B`'s first entry, is registered.
 #[test]
 fn under_eager_a_failed_load_keeps_what_it_registered() {
-    for (what, options) in options(LoadMode::Eager) {
+    for (what, options, _) in options(LoadMode::Eager) {
         let mut kept = 0;
         for n in 1.. {
-            let (failed, before, after, _) = refused_at(&options, n);
-            if !failed {
+            let o = armed(&options, Load::Dependency, Arm::From(n));
+            if !o.failed {
                 break;
             }
-            if after != before {
-                assert!(after[0].contains("cab-b"), "{what}: {after:?}");
+            if o.after != o.before {
+                assert!(o.after[0].contains("cab-b"), "{what}: {:?}", o.after);
                 kept += 1;
             }
         }
         assert_ne!(kept, 0, "{what}: no failed load kept a CAB");
+    }
+}
+
+/// `D`: a container `INNER`, a bundle holding `CAB-N`, then a raw entry of
+/// the same path, which drops it unreached when the load publishes it.
+fn d() -> Source {
+    src(
+        "d.bundle",
+        &bundle(&[
+            (
+                "INNER",
+                bundle(&[("CAB-N", serialized(&[], &[Obj::named(1, "n", &[])]))]),
+            ),
+            ("INNER", res_bytes(4, 50)),
+        ]),
+    )
+}
+
+/// The commit of `D`'s load drops its container `INNER` unreached, and its
+/// `settle` reaches it, charging the pool; a refusal there does not fail
+/// the load (CR1's review, round 1: the docs said nothing after the
+/// commit's start could be refused). With the pool refusing from the
+/// settle's first reservation on, the load succeeds with every key
+/// published and `INNER`'s entries not yet registered, a lookup while the
+/// pool still refuses leaves them so, and the first lookup after it
+/// reaches `INNER` and registers them.
+#[test]
+fn a_refusal_in_the_commits_settle_fails_no_load_and_a_later_call_reaches_the_slot() {
+    for (what, options, _) in options(LoadMode::Lazy) {
+        let mut reached = false;
+        for n in 1.. {
+            let pool = Arc::new(Pool::default());
+            let mut options = options.clone();
+            options.context = ctx_with(pool.clone());
+            let env = Environment::new(options);
+            pool.arm(Arm::From(n));
+            let loaded = env.load_dependency(d());
+            if let Err(e) = loaded {
+                // Refused before the commit: nothing published.
+                assert!(pool_refused(&e), "{what}: {e}");
+                assert!(keys(&env).is_empty(), "{what}: refused at {n}");
+                continue;
+            }
+            assert!(
+                pool.asked() >= n,
+                "{what}: the settle reserved nothing, so nothing was refused"
+            );
+            assert_eq!(keys(&env), ["inner"], "{what}: INNER not reached");
+            pool.disarm();
+            assert_eq!(keys(&env), ["inner", "cab-n"], "{what}: INNER reached");
+            let got = cab(env.get_cab(&key("CAB-N"), &unlimited()));
+            assert_eq!(got, "serialized n", "{what}");
+            reached = true;
+            break;
+        }
+        assert!(reached, "{what}");
+    }
+}
+
+/// An Environment like [`scene`]'s whose inputs' meters are bounded at
+/// `limit` bytes, with `A`'s CABs registered by name on an unlimited meter
+/// (so the bound is `B`'s alone) and no `C`.
+fn limited(options: &EnvOptions, limit: u64) -> (Environment, Arc<Pool>) {
+    let pool = Arc::new(Pool::default());
+    let mut ctx = FileContext::unitypy();
+    ctx.budget = pool.clone();
+    ctx.limits.max_input_memory = limit;
+    let ctx = Arc::new(ctx);
+    let mut options = options.clone();
+    options.context = ctx.clone();
+    let env = Environment::new(options);
+    let m = unlimited();
+    let open = |name: &str, data: Vec<u8>| {
+        let data = Bytes::from(data);
+        let ty = check_file_type(&data, &ctx.limits).unwrap();
+        parse_file(RawStr::from(name), data, ty, None, &m, &ctx).unwrap()
+    };
+    for (name, object) in [("CAB-S", "a-s"), ("CAB-A", "a-a")] {
+        let File::Serialized(sf) = open(name, serialized(&[], &[Obj::named(1, object, &[])]))
+        else {
+            panic!("{name} is a SerializedFile");
+        };
+        env.registry()
+            .register(&key(name), Cab::Serialized(sf), &m)
+            .unwrap();
+    }
+    let raw = RawFile::new(
+        RawStr::from("CAB-S.resS"),
+        Bytes::from(res_bytes(64, 1)),
+        FileType::ResourceFile,
+        &m,
+    )
+    .unwrap();
+    env.registry()
+        .register(&key("CAB-S.resS"), Cab::Raw(RawCab::File(raw)), &m)
+        .unwrap();
+    (env, pool)
+}
+
+/// A load its own meter refuses (`LimitKind::InputMemory`, which no retry
+/// follows) at any of its charges leaves every lookup by name as it was and
+/// returns every charge: the bound is set, in turn, one byte below what
+/// `B`'s meter holds at each of its dependency reservations, as a load
+/// refused nowhere records them (CR1's review, round 1: only the pool's
+/// refusals were swept).
+#[test]
+fn a_load_its_meter_refuses_at_any_charge_leaves_every_lookup_as_it_was() {
+    for (what, options, _) in options(LoadMode::Lazy) {
+        let (env, pool) = limited(&options, u64::MAX);
+        pool.record();
+        drop(env.load_dependency(b()).unwrap());
+        pool.disarm();
+        let mut totals = pool.totals();
+        totals.sort_unstable();
+        totals.dedup();
+        assert!(totals.len() as u64 > 4 * B_ENTRIES, "{what}: {totals:?}");
+        for total in totals.into_iter().filter(|&t| t > 0) {
+            let (env, pool) = limited(&options, total - 1);
+            let before = by_name(&env);
+            let used = pool.used();
+            let e = env.load_dependency(b()).unwrap_err();
+            assert!(
+                matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputMemory),
+                "{what}, bound {}: {e}",
+                total - 1
+            );
+            assert_eq!(pool.used(), used, "{what}, bound {}", total - 1);
+            assert_eq!(by_name(&env), before, "{what}, bound {}", total - 1);
+        }
+    }
+}
+
+/// A budget that, at each dependency reservation the loading thread makes,
+/// has another thread list the registry's keys, and keeps what it saw: a
+/// lookup made while the load runs, between any two of its charges and
+/// after the last one before its commit.
+#[derive(Default)]
+struct Probe {
+    env: Mutex<Option<Environment>>,
+    loader: Mutex<Option<ThreadId>>,
+    seen: Mutex<Vec<Vec<String>>>,
+}
+
+impl std::fmt::Debug for Probe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Probe")
+    }
+}
+
+impl MemoryBudget for Probe {
+    fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
+        let loading = *self.loader.lock().unwrap() == Some(std::thread::current().id());
+        if what == Reservation::Dependency && loading {
+            let env = self.env.lock().unwrap().clone();
+            if let Some(env) = env {
+                let seen =
+                    guard::finishes("a lookup on another thread during the load", move || {
+                        keys(&env)
+                    });
+                self.seen.lock().unwrap().push(seen);
+            }
+        }
+        Unbounded.try_reserve(bytes, what)
+    }
+}
+
+/// While `B`'s load runs, no lookup on another thread finds one of its
+/// keys: at each of its dependency reservations, the last of them the
+/// LRU's entry just before the commit, another thread's key listing is
+/// the one before the load (plan section 3.16, item 6).
+#[test]
+fn no_lookup_on_another_thread_finds_a_key_of_a_load_before_its_commit() {
+    for (what, mut options, _) in options(LoadMode::Lazy) {
+        let probe = Arc::new(Probe::default());
+        options.context = ctx_with(probe.clone());
+        let env = Environment::new(options);
+        drop(env.load_dependency(a()).unwrap());
+        // `A`'s slots reached, so the commit's `settle` has none to reach
+        // (it would reserve after the first key is published).
+        for name in NAMES {
+            drop(env.get_cab(&key(name), &unlimited()).unwrap());
+        }
+        let before = keys(&env);
+        *probe.env.lock().unwrap() = Some(env.clone());
+        *probe.loader.lock().unwrap() = Some(std::thread::current().id());
+        drop(env.load_dependency(b()).unwrap());
+        *probe.loader.lock().unwrap() = None;
+        *probe.env.lock().unwrap() = None;
+        let seen = std::mem::take(&mut *probe.seen.lock().unwrap());
+        assert!(
+            seen.len() as u64 > 4 * B_ENTRIES,
+            "{what}: {} probes",
+            seen.len()
+        );
+        for (i, listed) in seen.iter().enumerate() {
+            assert_eq!(listed, &before, "{what}: at reservation {}", i + 1);
+        }
+        assert_ne!(keys(&env), before, "{what}: the load published");
     }
 }

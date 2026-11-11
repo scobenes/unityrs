@@ -214,6 +214,36 @@ fn a_load_whose_keys_are_replaced_before_its_touch_leaves_the_lru() {
     assert_eq!(env.stats().dependency_bytes, current_dep_bytes(&env));
 }
 
+/// The same under `LoadMode::Lazy`, where the load charged its LRU entry
+/// before its commit and is stopped after the commit, before it hands
+/// that charge to the LRU (`DepCache::touch_paid`): its slots went before
+/// the LRU held it, so the load makes the LRU let go after the touch, and
+/// the entry's charge goes with it (CR1's review, round 1).
+#[cfg(test)]
+#[test]
+fn a_lazy_load_whose_keys_are_replaced_before_its_paid_touch_leaves_the_lru() {
+    let mut options = EnvOptions::unitypy();
+    options.load = crate::env::LoadMode::Lazy;
+    let env = Environment::new(options);
+    let held = Held::install(&env, Hook::LoadRegistered);
+    let first = {
+        let env = env.clone();
+        let held_pause = held.pause.clone();
+        std::thread::spawn(move || {
+            held_pause.arm();
+            env.load_dependency(two_keys()).unwrap();
+        })
+    };
+    held.wait_stopped();
+    env.load_dependency(two_keys()).unwrap();
+    held.release();
+    first.join().unwrap();
+    assert_eq!(env.inner.cache.len(), 1);
+    // The current dependency's meter read after the lookup parses its CAB.
+    let current = current_dep_bytes(&env);
+    assert_eq!(env.stats().dependency_bytes, current);
+}
+
 /// The stress run: many rounds of two slots of a replaced dependency
 /// dropped by two threads released together. Passes on any schedule; the
 /// old code left about one round in a thousand in the LRU.

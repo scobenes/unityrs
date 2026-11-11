@@ -229,6 +229,14 @@ impl Under for std::sync::RwLock<Files> {
 const LISTED_SHARE: u64 = 3 * size_of::<Listed>() as u64
     + 2 * HASH_TABLE_SHARES * (size_of::<RawStr>() + size_of::<u64>() + 1) as u64;
 
+/// A listing charged and not yet published ([`Environment::charge_listing`]):
+/// its key, the key lowered, and its share of the tables.
+pub(super) struct Listing {
+    name: RawStr,
+    lowered: RawStr,
+    charge: Charge,
+}
+
 impl Environment {
     fn files_read(&self) -> Held<std::sync::RwLockReadGuard<'_, Files>> {
         held::read(&self.inner.files)
@@ -277,10 +285,40 @@ impl Environment {
         load: u64,
         meter: &Arc<Meter>,
     ) -> Result<(), Error> {
+        let listing = Self::charge_listing(name, meter)?;
+        self.publish_listing(listing, file, is_dependency, load);
+        Ok(())
+    }
+
+    /// The charged half of [`Self::list`]: every charge a listing makes,
+    /// to `meter`, before anything is published (a dependency's load under
+    /// `Lazy` charges its listing before it publishes its keys, the
+    /// registry's module docs, "A failed dependency load").
+    pub(super) fn charge_listing(name: RawStr, meter: &Arc<Meter>) -> Result<Listing, Error> {
         let charge = meter.charge(LISTED_SHARE)?;
         // The lowered key: a new key's index entry, and in every case the
         // key a walk's lookup watches (`super::watch`).
         let lowered = py_lower(&name, meter)?;
+        Ok(Listing {
+            name,
+            lowered,
+            charge,
+        })
+    }
+
+    /// The published half of [`Self::list`], which nothing can refuse.
+    pub(super) fn publish_listing(
+        &self,
+        listing: Listing,
+        file: File,
+        is_dependency: bool,
+        load: u64,
+    ) {
+        let Listing {
+            name,
+            lowered,
+            charge,
+        } = listing;
         let key_hash = self.inner.registry.watches().hash(lowered.as_bytes());
         #[cfg(test)]
         self.inner.registry.hook(super::registry::Hook::Listing);
@@ -316,7 +354,6 @@ impl Environment {
         #[cfg(test)]
         self.inner.registry.hook(super::registry::Hook::Listed);
         drop(unused);
-        Ok(())
     }
 
     /// `files`, in the order of the keys' positions (the least load that

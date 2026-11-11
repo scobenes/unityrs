@@ -5,6 +5,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use super::listing::Listing;
 #[cfg(test)]
 use super::registry::Hook;
 use super::registry::{DepCache, Dependency, Open, Stage, open_source, with_room};
@@ -120,8 +121,15 @@ impl Environment {
                             Target::Caller => {
                                 reg.register_entry(&d.path, b.clone(), i, load, &[i], b.meter())?;
                             }
-                            Target::Dependency(dep) => {
-                                reg.register_lazy_dependency(&d.path, dep, load, &[i], b.meter())?;
+                            // Never: a dependency's lazy bundle is staged, so
+                            // that its load publishes nothing when it fails
+                            // (`try_load_dep`); a caller that came this way
+                            // would publish one key at a time.
+                            Target::Dependency(_) => {
+                                return Err(Error::Malformed {
+                                    what: "registry",
+                                    detail: "a dependency's lazy bundle registered unstaged".into(),
+                                });
                             }
                             Target::Staged(dep, stage) => {
                                 reg.stage(stage, &d.path, dep, load, &[i], b.meter(), true)?;
@@ -237,16 +245,24 @@ impl Environment {
         // dependency is kept (its first attempt's charges returned with its
         // handle; under `Lazy` neither attempt published a key).
         with_room(Some(&self.inner.cache), None, || {
-            self.try_load_dep(name, source).map(|(file, _)| file)
+            self.try_load_dep(name, source, false)
+                .map(|(file, ..)| file)
         })
     }
 
-    /// One attempt of [`Self::load_dep`], on a meter of its own: the file
-    /// and the load's number. Under `Lazy` its registrations are staged,
-    /// every one charged, and the LRU's entry charged, before the first is
-    /// published ([`Self::register_staged`]); under `Eager` each is
-    /// published as it is registered.
-    fn try_load_dep(&self, name: &RawStr, source: &Source) -> Result<(File, u64), Error> {
+    /// One attempt of [`Self::load_dep`], on a meter of its own: the file,
+    /// the load's number and, with `listed` under `Lazy`, its `files`
+    /// entry under `name` charged and not yet published. Under `Lazy` its
+    /// registrations are staged, every one charged, and the LRU's entry and
+    /// the listing charged, before the first is published
+    /// ([`Self::register_staged`]); under `Eager` each is published as it
+    /// is registered, and a listing is the caller's to charge.
+    fn try_load_dep(
+        &self,
+        name: &RawStr,
+        source: &Source,
+        listed: bool,
+    ) -> Result<(File, u64, Option<Listing>), Error> {
         let ctx = self.ctx();
         let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Dependency);
         let file = open_source(name, source, &meter, ctx)?;
@@ -258,14 +274,15 @@ impl Environment {
             cache: Arc::downgrade(&self.inner.cache),
             slots: AtomicUsize::new(0),
         });
-        let (load, room) = match self.inner.options.load {
+        let (load, room, listing) = match self.inner.options.load {
             LoadMode::Lazy => {
-                let (load, room) = self.register_staged(&dep, &file)?;
-                (load, Some(room))
+                let listed = listed.then_some(name);
+                let (load, room, listing) = self.register_staged(&dep, &file, listed)?;
+                (load, Some(room), listing)
             }
             LoadMode::Eager => {
                 let load = self.register_file(&dep.name, &file, &mut Target::Dependency(&dep))?;
-                (load, None)
+                (load, None, None)
             }
         };
         #[cfg(test)]
@@ -284,25 +301,42 @@ impl Environment {
         }
         #[cfg(test)]
         self.inner.cache.hook(Hook::LoadChecked);
-        Ok((file, load))
+        Ok((file, load, listing))
     }
 
-    /// A dependency's registrations under `Lazy`, staged ([`Stage`]: each
-    /// key, slot, new key's copy and share, and position's path charged to
-    /// the dependency's meter, with the list that holds them), then the
-    /// LRU's entry charged ([`DepCache::room`]), then every registration
-    /// published in the order it was staged ([`super::registry::Registry::commit`]).
-    /// A refusal before the commit drops the stage, which returns every
+    /// A dependency's registrations under `Lazy`, staged ([`Stage`]: the
+    /// list that holds them, room for a bundle's whole directory charged
+    /// first, then each key, slot, new key's share and copy, and position's
+    /// path, charged to the dependency's meter), then the LRU's entry
+    /// charged ([`DepCache::room`]) and, with `listed`, the `files` entry
+    /// under that name (its key's copy, its share and its lowered key,
+    /// [`Self::charge_listing`]), then every registration published in the
+    /// order it was staged ([`super::registry::Registry::commit`]). A
+    /// refusal before the commit drops the stage, which returns every
     /// charge and was never in the registry, so no lookup, on this thread
-    /// or another, can have found any of it; nothing after the commit's
-    /// start can be refused. The load's number, and the LRU entry's charge
-    /// for [`DepCache::touch_paid`].
-    fn register_staged(&self, dep: &Arc<Dependency>, file: &File) -> Result<(u64, Charge), Error> {
+    /// or another, can have found any of it. Nothing after the commit's
+    /// start can fail the load: the `settle` each registration runs keeps a
+    /// refusal to itself and leaves the slot it could not reach listed for
+    /// a later call, as every `settle` does. The load's number, the LRU
+    /// entry's charge for [`DepCache::touch_paid`], and the listing.
+    fn register_staged(
+        &self,
+        dep: &Arc<Dependency>,
+        file: &File,
+        listed: Option<&RawStr>,
+    ) -> Result<(u64, Charge, Option<Listing>), Error> {
         let mut stage = Stage::new(file.meter());
         let load = self.register_file(&dep.name, file, &mut Target::Staged(dep, &mut stage))?;
         let room = DepCache::room(file)?;
+        let listing = match listed {
+            Some(name) => {
+                let key = RawStr::charged(name.as_bytes(), file.meter())?;
+                Some(Self::charge_listing(key, file.meter())?)
+            }
+            None => None,
+        };
         self.inner.registry.commit(stage)?;
-        Ok((load, room))
+        Ok((load, room, listing))
     }
 
     /// A file the resolver returned (module docs, "Resolver loads in
@@ -341,7 +375,9 @@ impl Environment {
             }
         };
         with_room(Some(&self.inner.cache), None, || match asked {
-            _ if !keep => self.try_load_dep(name, source).map(|(file, _)| file),
+            _ if !keep => self
+                .try_load_dep(name, source, false)
+                .map(|(file, ..)| file),
             Asked::Fallback(_)
             | Asked::Find {
                 is_dependency: false,
@@ -349,14 +385,22 @@ impl Environment {
             Asked::Find {
                 is_dependency: true,
             } => {
-                let (file, load) = self.try_load_dep(name, source)?;
-                let meter = file.meter().clone();
-                let key = RawStr::charged(name.as_bytes(), &meter)?;
+                // Under `Lazy` the listing is charged before the keys are
+                // published, so a refused one publishes none of them
+                // (`register_staged`); under `Eager`, after.
+                let (file, load, listing) = self.try_load_dep(name, source, true)?;
+                let listing = if let Some(listing) = listing {
+                    listing
+                } else {
+                    let meter = file.meter();
+                    let key = RawStr::charged(name.as_bytes(), meter)?;
+                    Self::charge_listing(key, meter)?
+                };
                 // A reader has no `is_dependency`: `parse_file` returns the
                 // reader itself (`helpers/ImportHelper.py:136-156`), which
                 // `getattr(f, "is_dependency", False)` reads false.
                 let flag = !matches!(file, File::Raw(_));
-                self.list(key, file.clone(), flag, load, &meter)?;
+                self.publish_listing(listing, file.clone(), flag, load);
                 Ok(file)
             }
         })

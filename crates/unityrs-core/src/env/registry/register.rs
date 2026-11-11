@@ -5,11 +5,13 @@
 //! (plan section 9, Q14), and what it dropped released after the lock.
 //!
 //! A registration is charged first ([`Registry::prepare`]: every charge it
-//! makes) and published after ([`Registry::apply`]: nothing it does can be
-//! refused). A load registers each key in turn, each charged and then
-//! published; a dependency's load under `LoadMode::Lazy` charges every one
-//! of its registrations before it publishes the first ([`Stage`], module
-//! docs, "A failed dependency load").
+//! makes) and published after ([`Registry::apply`]: nothing in it can fail
+//! the registration; the `settle` a load's runs reaches the slots it
+//! listed, and a refusal there leaves them listed for a later call, as
+//! every `settle` does). A load registers each key in turn, each charged
+//! and then published; a dependency's load under `LoadMode::Lazy` charges
+//! every one of its registrations before it publishes the first
+//! ([`Stage`], module docs, "A failed dependency load").
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,14 +29,20 @@ use crate::pystr::simplify_name;
 use crate::raw::RawStr;
 
 /// A registration charged and not yet published ([`Registry::prepare`]):
-/// its key, its position, its slot (its rank the value's), and the charges
-/// for a new key's copy and share of the tables and for its position's
-/// path.
+/// its key, its position, its slot (its rank the value's), the share of
+/// the tables a key new when it was charged paid for, and the charge for
+/// its position's path.
 pub(crate) struct Staged {
-    lowered: RawStr,
+    /// The simplified name: for a key the registry did not hold when the
+    /// registration was charged, its own charged copy, which the key keeps
+    /// if it is still new at the lock (the name `simplify_name` built is
+    /// dropped once copied, so a stage holds one copy of each new key, not
+    /// two); for a known key, the name `simplify_name` built.
+    key: RawStr,
     position: Rank,
     slot: Arc<Slot>,
-    fresh: Option<(RawStr, Charge)>,
+    /// A new key's share of the tables (`key` is then its copy).
+    share: Option<Charge>,
     first_charge: Charge,
 }
 
@@ -215,7 +223,11 @@ impl Registry {
 
     /// Registers entry `path` of a dependency's `Lazy` bundle, of load
     /// `load`, unread (a lazy slot, module docs), charged to `meter`, the
-    /// dependency's.
+    /// dependency's, one key at a time. The tests' only: a dependency's load
+    /// under `Lazy` stages every such registration ([`Self::stage`]), so
+    /// that it publishes nothing when it fails (module docs, "A failed
+    /// dependency load"); `pass_tests.rs` registers its slots this way.
+    #[cfg(test)]
     pub(crate) fn register_lazy_dependency(
         &self,
         name: &RawStr,
@@ -258,8 +270,11 @@ impl Registry {
 
     /// Publishes a load's staged registrations, in the order they were
     /// staged, each as [`Self::insert`] publishes one (and a load's
-    /// `settle` after each). Nothing in it can be refused: every charge was
-    /// made when the registration was staged. Its one error is
+    /// `settle` after each). Nothing in it can fail the load: every charge
+    /// a registration makes was made when it was staged, and the `settle`
+    /// after each, which reaches the lazy slots a registration dropped and
+    /// charges what it reads, keeps a refusal to itself and leaves the slot
+    /// listed for a later call, as every `settle` does. Its one error is
     /// [`Self::apply`]'s for a key that went away after it was found,
     /// which nothing does: no registry call removes a key.
     pub(crate) fn commit(&self, stage: Stage) -> Result<(), Error> {
@@ -327,17 +342,18 @@ impl Registry {
         root: &mut bool,
     ) -> Result<Staged, Error> {
         let lowered = simplify_name(name, meter)?;
-        let rank = Rank {
-            load: loads.value,
-            path: Arc::from(path),
-        };
+        let slot = Self::new_slot(kind, loads.value, path, lazy, meter)?;
         // The position shares the value's path, which `first_charge` pays
         // for while the key keeps it.
         let position = Rank {
             load: loads.position.min(loads.value),
-            path: rank.path.clone(),
+            path: slot.rank.path.clone(),
         };
-        let slot = Self::new_slot(kind, rank, lazy, meter)?;
+        // This read and `apply`'s are two: the one before the charges asks
+        // whether the key is new, the one after them reads its value for
+        // the stand-in, with no lock held between (the price of charging a
+        // staged registration before any is published; `insert` pays it
+        // too, one more read lock per registration).
         let (known, first) = {
             let inner = self.read();
             let known = inner.slots.contains_key(lowered.as_bytes());
@@ -345,24 +361,25 @@ impl Registry {
         };
         // A new key's own copy and its share of the tables, made before the
         // lock: the key holds no input's buffer (module docs); the first key
-        // also pays for the B-tree's root. A key found here is found at the
-        // lock too, since no call removes one; a key not found here may be
-        // by then (another load's, or one this load staged before it), and
-        // its copy and share are then returned. A known key may move to
-        // this rank: its path is charged now and returned if it does not.
-        let fresh = if known {
-            None
+        // also pays for the B-tree's root. The share is charged before the
+        // copy. A key found here is found at the lock too, since no call
+        // removes one; a key not found here may be by then (another load's,
+        // or one this load staged before it), and its copy and share are
+        // then returned. A known key may move to this rank: its path is
+        // charged now and returned if it does not.
+        let (key, share) = if known {
+            (lowered, None)
         } else {
             let share = meter.charge(if first { SHARE + ORDER_LEAF } else { SHARE })?;
             *root |= first;
-            Some((RawStr::charged(lowered.as_bytes(), meter)?, share))
+            (RawStr::charged(lowered.as_bytes(), meter)?, Some(share))
         };
         let first_charge = meter.charge(Rank::heap(path.len()))?;
         Ok(Staged {
-            lowered,
+            key,
             position,
             slot,
-            fresh,
+            share,
             first_charge,
         })
     }
@@ -371,26 +388,27 @@ impl Registry {
     /// whether the slot that stays stands in for the one dropped, told with
     /// no lock held ([`Stand`]), then the change, in one step under the
     /// write lock, then what it dropped released and, for a load's, the
-    /// listed slots reached ([`Self::settle`]). Its one error is for a key
-    /// found when the registration was charged and gone at the lock, which
-    /// nothing does: no call removes a key.
+    /// listed slots reached ([`Self::settle`], whose refusal leaves them
+    /// listed for a later call and does not fail the registration). Its one
+    /// error is for a key found when the registration was charged and gone
+    /// at the lock, which nothing does: no call removes a key.
     fn apply(&self, staged: Staged, by: By) -> Result<(), Error> {
         let Staged {
-            lowered,
+            key,
             position,
             slot,
-            fresh,
+            share,
             first_charge,
         } = staged;
         let rank = slot.rank.clone();
         let value = self
             .read()
             .slots
-            .get(lowered.as_bytes())
+            .get(key.as_bytes())
             .map(|e| e.slot.clone());
         let stand = value.as_ref().and_then(|v| Stand::of(&slot, v));
         drop(value);
-        let hash = self.watches.hash(lowered.as_bytes());
+        let hash = self.watches.hash(key.as_bytes());
         let (dropped, changed, new_key) = {
             let mut inner = self.write();
             let RegistryInner {
@@ -399,7 +417,7 @@ impl Registry {
                 pending,
                 ..
             } = &mut *inner;
-            let out = if let Some(e) = slots.get_mut(lowered.as_bytes()) {
+            let out = if let Some(e) = slots.get_mut(key.as_bytes()) {
                 let moves = position < e.first;
                 let charge = if moves {
                     if let Some(key) = order.remove(&e.first) {
@@ -433,7 +451,7 @@ impl Registry {
                     listed,
                 };
                 (Some(dropped), moves || replaces, false)
-            } else if let Some((key, share)) = fresh {
+            } else if let Some(share) = share {
                 order.insert(position.clone(), key.clone());
                 slots.reserve(1);
                 slots.insert(
@@ -526,20 +544,28 @@ impl Registry {
             .store(pending.len(pending::List::Evicted), Ordering::Release);
     }
 
-    /// A slot of `kind` at `rank`, charged to `meter` (its `Arc`, its
-    /// rank's path, and a lazy slot's share of the list of dropped slots).
+    /// A slot of `kind` at rank `(load, path)`, charged to `meter` (its
+    /// `Arc`, its rank's path, and a lazy slot's share of the list of
+    /// dropped slots) before either is allocated.
     fn new_slot(
         kind: SlotKind,
-        rank: Rank,
+        load: u64,
+        path: &[usize],
         lazy: bool,
         meter: &Arc<Meter>,
     ) -> Result<Arc<Slot>, Error> {
         let mut charge = Charge::zero(meter);
         charge.grow(SLOT_ARC)?;
-        charge.grow(Rank::heap(rank.path().len()))?;
+        charge.grow(Rank::heap(path.len()))?;
         if lazy {
             charge.grow(PENDING_SHARE)?;
         }
+        // The path's `Arc` after its charge (CR1's review, round 1: it was
+        // allocated before it).
+        let rank = Rank {
+            load,
+            path: Arc::from(path),
+        };
         Ok(Arc::new(Slot {
             kind,
             rank,
