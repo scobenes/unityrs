@@ -11,9 +11,9 @@
 //! tally records how far the heap ever rose past what was held: at each
 //! allocation, and as each charge is dropped, against the charges held
 //! without it, so a charge given back before its buffer is freed shows. It
-//! also
-//! counts the blocks of the output's planned size and every `realloc`, so
-//! the output is seen made once, at its size, and never grown.
+//! also counts the blocks of the output's planned size and every
+//! `realloc`, so the output is seen made once, at its size, and never
+//! grown. The allocator refuses a request only on the counted thread.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -33,7 +33,7 @@ static BASE: AtomicUsize = AtomicUsize::new(0);
 static HELD: AtomicUsize = AtomicUsize::new(0);
 /// How far the heap above [`BASE`] ever passed [`HELD`].
 static OVER: AtomicUsize = AtomicUsize::new(0);
-/// A request size the allocator refuses (0: none).
+/// A request size the allocator refuses on the counted thread (0: none).
 static REFUSE: AtomicUsize = AtomicUsize::new(0);
 /// The size of the blocks [`OUTPUTS`] counts: the output's plan (0: none).
 static OUTPUT: AtomicUsize = AtomicUsize::new(0);
@@ -46,7 +46,9 @@ struct Watching;
 
 impl Tally for Watching {
     fn refuses(&self, size: usize) -> bool {
-        size != 0 && size == REFUSE.load(Ordering::Relaxed)
+        // The allocator asks on every thread; libtest's main thread, which
+        // allocates beside the test, must never see a refusal.
+        counted() && size != 0 && size == REFUSE.load(Ordering::Relaxed)
     }
     fn refuses_realloc(&self, new_size: usize) -> bool {
         if counted() {
