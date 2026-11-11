@@ -90,6 +90,49 @@ fn the_crate_carries_zlibs_licence() {
     assert_eq!(ours, vendored);
 }
 
+/// The names `nm -g` says `text`'s archive defines: each `address kind
+/// name` line whose kind is one letter but `U` (an undefined symbol has no
+/// address), less Apple's leading underscore when `apple`. A member's
+/// heading ends in `:`; Apple's `nm` writes it with the archive's whole
+/// path, so a path holding two spaces splits into three fields as well.
+fn defined_names(text: &str, apple: bool) -> BTreeSet<&str> {
+    let defined =
+        |kind: &str| matches!(kind.as_bytes(), [k] if k.is_ascii_alphabetic() && *k != b'U');
+    text.lines()
+        .filter(|line| !line.trim_end().ends_with(':'))
+        .filter_map(
+            |line| match line.split_whitespace().collect::<Vec<_>>()[..] {
+                [_, kind, name] if defined(kind) => Some(name),
+                _ => None,
+            },
+        )
+        .map(|name| {
+            if apple {
+                name.strip_prefix('_').unwrap_or(name)
+            } else {
+                name
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn the_nm_parse_reads_only_defined_symbols() {
+    // Apple's headings name the archive by its path, spaces and all.
+    let apple = "\n/t a b/libunityrs_zlib.a(deflate.o):\n\
+                 0000000000000010 T _z_deflate\n\
+                 \x20                U _memcpy\n\
+                 0000000000000000 D _unityrs_z_errmsg\n\
+                 \n/t ab c/libunityrs_zlib.a(trees.o):\n\
+                 0000000000000020 T _z__tr_init\n\
+                 0000000000000030 -- _a_kind_of_two\n";
+    let want = BTreeSet::from(["z_deflate", "unityrs_z_errmsg", "z__tr_init"]);
+    assert_eq!(defined_names(apple, true), want);
+    // GNU nm's heading is the member's name alone.
+    let gnu = "\ndeflate.o:\n0000000000000010 T z_deflate\n                 U memcpy\n";
+    assert_eq!(defined_names(gnu, false), BTreeSet::from(["z_deflate"]));
+}
+
 /// Every name the vendored archive defines is one `Z_PREFIX` makes, a
 /// `z_*` name zconf.h renames a zlib name to, or build.rs's
 /// `unityrs_z_errmsg`; none is one an unprefixed zlib 1.2.13 defines,
@@ -117,25 +160,7 @@ fn the_archive_defines_no_name_an_unprefixed_zlib_does() {
         String::from_utf8_lossy(&out.stderr)
     );
     let text = String::from_utf8(out.stdout).unwrap();
-    // `address type name` for a defined symbol; an undefined one has no
-    // address, a member's heading one field.
-    let defined: BTreeSet<&str> = text
-        .lines()
-        .filter_map(
-            |line| match line.split_whitespace().collect::<Vec<_>>()[..] {
-                [_, kind, name] if kind != "U" => Some(name),
-                _ => None,
-            },
-        )
-        .map(|name| {
-            let apple = cfg!(target_vendor = "apple");
-            if apple {
-                name.strip_prefix('_').unwrap_or(name)
-            } else {
-                name
-            }
-        })
-        .collect();
+    let defined = defined_names(&text, cfg!(target_vendor = "apple"));
     let zconf = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/zlib-1.2.13/zconf.h"),
     )
