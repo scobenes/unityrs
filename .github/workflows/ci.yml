@@ -306,7 +306,7 @@ jobs:
       # no_tree.py reads with tpk.py's synthetic TPKs, unityrs-tpk's test
       # replays it. texture.py records UnityPy's and Pillow's texture decodes
       # and selection, which unityrs-texture's tests replay.
-      - name: The scaffold's and packages B to E's oracle fixtures are current
+      - name: The scaffold's, packages B to E's and the texture decoders' oracle fixtures are current
         run: |
           python tools/fixtures/scaffold.py --check
           python tools/fixtures/pure_python_rules.py --check

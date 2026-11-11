@@ -34,7 +34,10 @@ ports UnityPy 1.25.2's UnityPy/helpers/Tpk.py (how a type-tree package is
 read and a class's type tree picked from it), and unityrs-texture its
 texture rules (UnityPy/export/Texture2DConverter.py: which textures are
 decoded or skipped, and how a block format is padded, cropped and flipped
-around Pillow's decoder). The dump (unityrs-dump),
+around Pillow's decoder; UnityPy/helpers/TextureSwizzler.py's
+is_switch_swizzled; UnityPy/enums/TextureFormat.py's names and values; and
+the Xbox 360 and Switch values of UnityPy/enums/BuildTarget.py). The dump
+(unityrs-dump),
 which loads its inputs by UnityPy's rules, the test kit (unityrs-testkit),
 which writes inputs in the layouts UnityPy reads, and the P0 LZMA spike
 (unityrs-bench-lzma), which finds a bundle's blocks by BundleFile.read_fs's
