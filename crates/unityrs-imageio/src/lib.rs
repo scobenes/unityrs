@@ -50,6 +50,8 @@ pub mod charge;
 mod filter;
 mod hash;
 mod image;
+#[cfg(test)]
+mod memory_tests;
 mod png;
 mod zlib;
 

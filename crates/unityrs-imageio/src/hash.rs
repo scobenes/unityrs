@@ -9,8 +9,11 @@
 //! (`la2rgb`, `Convert.c:193-202`) and `RGB` to (r, g, b, 255)
 //! (`rgb2rgba`, `Convert.c:415-424`). Only `LA` and `RGBA` can hold alpha 0.
 //!
-//! The pixels are converted and hashed in a buffer on the stack, so the
-//! hash allocates nothing.
+//! The prefix is written, and the pixels converted and hashed, in buffers
+//! on the stack, so the hash allocates nothing (`src/memory_tests.rs`
+//! counts).
+
+use std::fmt::{self, Write};
 
 use sha2::{Digest, Sha256};
 
@@ -19,11 +22,47 @@ use crate::image::{Image, Mode};
 /// RGBA pixels converted and hashed at a time.
 const CHUNK_PIXELS: usize = 1024;
 
+/// The longest prefix, `"4294967295x4294967295:"`.
+const PREFIX_MAX: usize = 22;
+
+/// The ASCII prefix `"{width}x{height}:"`, written on the stack.
+struct Prefix {
+    bytes: [u8; PREFIX_MAX],
+    len: usize,
+}
+
+impl Write for Prefix {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let end = self.len.checked_add(s.len()).ok_or(fmt::Error)?;
+        let slot = self.bytes.get_mut(self.len..end).ok_or(fmt::Error)?;
+        slot.copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+impl Prefix {
+    fn new(width: u32, height: u32) -> Self {
+        let mut prefix = Self {
+            bytes: [0; PREFIX_MAX],
+            len: 0,
+        };
+        // Never an error: PREFIX_MAX bytes hold two u32s, the `x` and the
+        // colon. Integer formatting allocates nothing.
+        let _ = write!(prefix, "{width}x{height}:");
+        prefix
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        self.bytes.get(..self.len).unwrap_or_default()
+    }
+}
+
 /// The visible-pixel hash of `image` (module docs).
 #[must_use]
 pub fn visible_hash(image: &Image<'_>) -> [u8; 32] {
     let mut sha = Sha256::new();
-    sha.update(format!("{}x{}:", image.width(), image.height()).as_bytes());
+    sha.update(Prefix::new(image.width(), image.height()).as_bytes());
     let channels = image.mode().channels();
     let mut rgba = [0_u8; CHUNK_PIXELS * 4];
     for pixels in image.pixels().chunks(CHUNK_PIXELS * channels) {
@@ -72,6 +111,21 @@ mod tests {
         let tall = Image::new(1, 4, Mode::L, &[0; 4]).unwrap();
         let wide = Image::new(4, 1, Mode::L, &[0; 4]).unwrap();
         assert_ne!(visible_hash(&tall), visible_hash(&wide));
+    }
+
+    #[test]
+    fn the_prefix_holds_the_widest_sides() {
+        assert_eq!(
+            Prefix::new(u32::MAX, u32::MAX).as_bytes(),
+            b"4294967295x4294967295:"
+        );
+        assert_eq!(Prefix::new(0, 7).as_bytes(), b"0x7:");
+        // An image with a side of 0 has no pixels: its hash is the prefix's.
+        let empty = Image::new(u32::MAX, 0, Mode::Rgba, &[]).unwrap();
+        assert_eq!(
+            visible_hash(&empty),
+            <[u8; 32]>::from(Sha256::digest(b"4294967295x0:"))
+        );
     }
 
     #[test]
