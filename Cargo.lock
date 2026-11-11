@@ -481,6 +481,8 @@ version = "0.0.1"
 dependencies = [
  "liblzma",
  "lz4_flex",
+ "serde_json",
+ "sha2 0.11.1",
  "unityrs-core",
 ]
 
