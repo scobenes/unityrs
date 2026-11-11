@@ -210,8 +210,11 @@ jobs:
 
   # The parity tools' Python side, on the pinned oracle stack (docs/DESIGN.md
   # section 3) and with UnityPy's samples, so the tests that need them run;
-  # what core takes from the oracle: the generated tables and G7; and the
-  # gate's rows that need no corpus: UnityPy's samples, G2 and G3.
+  # what core takes from the oracle: the generated tables and G7; the
+  # gate's rows that need no corpus: UnityPy's samples, G2 and G3; and
+  # unityrs-imageio's X3 and X4, whose step builds its own zlib 1.2.13
+  # (fetched by a versioned URL, verified against the crate's vendor
+  # manifest) and loads it under LD_LIBRARY_PATH within the step.
   parity-py:
     runs-on: ubuntu-latest
     timeout-minutes: 60
