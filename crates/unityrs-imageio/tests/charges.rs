@@ -312,6 +312,9 @@ fn the_plan_refuses_what_pillow_refuses() {
                 "{mode} {width}"
             );
         }
+        // Too wide with a zero height: `_setimage` checks the sides first
+        // (`src/encode.c:253-257`), so Pillow's error is the zero side's.
+        assert_eq!(plan(widest + 1, 0, mode), zero(widest + 1, 0), "{mode}");
     }
     // The crate's own bound: Pillow's sides are C ints.
     assert!(plan(1, 0x7FFF_FFFF, Mode::L).is_ok());
