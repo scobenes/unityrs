@@ -291,17 +291,16 @@ jobs:
       # Python: each script regenerates its fixtures in memory and fails
       # naming any that drifted from it (files.py and env.py build their
       # inputs with unityrs-testkit, so they need the toolchain too). Every
-      # tools/fixtures/*.py run as a program is listed here or in G7's step;
-      # the rest are modules a listed script imports (walk.py records
+      # tools/fixtures/*.py run as a program is listed here, in G7's step or
+      # in X3 and X4's (imageio.py, below); the rest are modules a listed
+      # script imports (walk.py records
       # through walk_build.py, walk_elements.py, walk_mirror.py,
       # walk_reentry.py, walk_runs.py and walk_write.py, env.py through env_paths.py and
       # env_race.py, dump.py through dump_inputs.py, tpk.py through
       # tpk_build.py), as scripts/tests/test_ci_workflow.py checks, and each
       # module also runs on its own (tools/parity/tests/test_fixture_modules.py).
       # no_tree.py reads with tpk.py's synthetic TPKs, unityrs-tpk's test
-      # replays it. imageio.py records Pillow 9.5.0's PNGs (unityrs-imageio's
-      # X3 and X4); under a zlib other than the oracle's 1.2.13 it compares
-      # all but the PNG bytes, and says so.
+      # replays it.
       - name: The scaffold's and packages B to E's oracle fixtures are current
         run: |
           python tools/fixtures/scaffold.py --check
@@ -313,6 +312,28 @@ jobs:
           python tools/fixtures/index.py --check
           python tools/fixtures/folders.py --check
           python tools/fixtures/no_tree.py --check
+      # unityrs-imageio's X3 and X4: imageio.py records Pillow 9.5.0's PNGs,
+      # whose bytes are zlib's, and the reference is zlib 1.2.13, the oracle
+      # image's; under another zlib (the runner's) it compares all but the
+      # PNG bytes, and says so. So the step builds zlib 1.2.13 from its
+      # release tarball, sha256-pinned here and in the crate's manifest,
+      # which zlib_vendor.py verify also holds the vendored files to; then
+      # runs the check with the build's libz.so.1 first on the library path,
+      # which Pillow's _imaging and Python's zlib load by that soname, and
+      # asserts both report 1.2.13 there, so every field is compared.
+      - name: X3 and X4, Pillow's PNGs over zlib 1.2.13, and the vendored zlib against its tarball
+        run: |
+          tarball="$RUNNER_TEMP/zlib-1.2.13.tar.gz"
+          curl -fsSL --retry 3 -o "$tarball" \
+            https://github.com/madler/zlib/releases/download/v1.2.13/zlib-1.2.13.tar.gz
+          echo "b3a24de97a8fdbc835b9833169501030b8977031bcb54b3b3ac13740f846ab30  $tarball" | sha256sum -c -
+          python scripts/zlib_vendor.py verify "$tarball"
+          tar -xzf "$tarball" -C "$RUNNER_TEMP"
+          zlib="$RUNNER_TEMP/zlib-1.2.13"
+          (cd "$zlib" && ./configure && make -j"$(nproc)")
+          test -f "$zlib/libz.so.1"
+          export LD_LIBRARY_PATH="$zlib"
+          python -c 'import zlib; from PIL import Image; v = (Image.core.zlib_version, zlib.ZLIB_RUNTIME_VERSION); assert v == ("1.2.13",) * 2, v'
           python tools/fixtures/imageio.py --check
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
         run: >-

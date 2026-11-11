@@ -1,10 +1,10 @@
 //! The zlib the encoder links is the vendored zlib 1.2.13, pristine
 //! (`docs/plans/extract.md` E19): the library reports 1.2.13,
 //! `vendor/zlib-1.2.13/` holds exactly the files `vendor/zlib-1.2.13.sha256`
-//! lists, each with its hash there, which are those of the release tarball's
-//! members (`scripts/zlib_vendor.py verify TARBALL` checks a downloaded
-//! tarball against the same file), and the archive build.rs compiles
-//! defines no name an unprefixed zlib defines.
+//! lists, each with its hash there, and the archive build.rs compiles
+//! defines no name an unprefixed zlib defines. That the manifest's hashes
+//! are the release tarball's is `scripts/zlib_vendor.py verify TARBALL`'s
+//! to check, which CI's parity-py job runs on the downloaded tarball.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -28,7 +28,7 @@ fn the_linked_zlib_is_1_2_13() {
 }
 
 #[test]
-fn the_vendored_files_are_the_tarballs() {
+fn the_vendored_files_are_the_manifests() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor");
     let manifest = std::fs::read_to_string(root.join("zlib-1.2.13.sha256")).unwrap();
     let mut listed = BTreeMap::new();

@@ -26,7 +26,9 @@ whole PNG as hex when it is at most 256 bytes, and the visible-pixel hash comput
 
 The PNG bytes depend on the zlib Pillow loads; the reference is zlib 1.2.13, the oracle image's
 (`tools/parity/oracle_env.py --image`, PARITY.md section 1). Writing refuses any other. `--check` under another zlib
-(CI's runner) compares everything but the PNG's sha256, length, hex and IDAT sizes, and says so on stderr.
+(a runner's own) compares everything but the PNG's sha256, length, hex and IDAT sizes, and says so on stderr; CI runs
+it over a zlib 1.2.13 it builds from the release tarball, so every field is compared (the parity-py job's X3 and X4
+step).
 
     scripts/dev python -E -s tools/fixtures/imageio.py           # write the fixture
     scripts/dev python -E -s tools/fixtures/imageio.py --check   # regenerate and compare

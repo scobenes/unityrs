@@ -10,7 +10,7 @@
 # tests/zlib.rs checks that vendor/zlib-1.2.13/ holds exactly these files
 # with these hashes. scripts/zlib_vendor.py verify TARBALL checks a
 # downloaded tarball against the first line and every vendored file against
-# its member.
+# its member; CI (parity-py) runs it on the release asset.
 b3a24de97a8fdbc835b9833169501030b8977031bcb54b3b3ac13740f846ab30  zlib-1.2.13.tar.gz
 845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243  zlib-1.2.13/LICENSE
 4bb4d5664fb9d06ef0d47e8ef73104bd545a5a57eb7241be4f2e0be904966322  zlib-1.2.13/README
