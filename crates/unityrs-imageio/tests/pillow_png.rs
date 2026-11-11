@@ -48,13 +48,18 @@ impl Draws {
     }
 }
 
-/// The script's `pixels`.
-fn pixels(kind: &str, mode: Mode, width: u32, height: u32, seed: u64) -> Vec<u8> {
+/// The script's `pixels`; `prefix` is a "prefix" case's.
+fn pixels(kind: &str, mode: Mode, width: u32, height: u32, seed: u64, prefix: usize) -> Vec<u8> {
     let channels = mode.channels();
     let count = width as usize * height as usize;
     let len = count * channels;
     let mut draws = Draws::new(seed);
     match kind {
+        "prefix" => {
+            let mut out = draws.take(prefix);
+            out.resize(len, 0);
+            out
+        }
         "flat" => draws.take(channels).repeat(count),
         "random" => draws.take(len),
         "gradient" | "noisy" | "smooth" => {
@@ -142,7 +147,10 @@ fn check(case: &Value) -> Vec<String> {
     let mode = Mode::from_name(&s("mode")).unwrap();
     let width = u32::try_from(u("width")).unwrap();
     let height = u32::try_from(u("height")).unwrap();
-    let data = pixels(&s("kind"), mode, width, height, u("seed"));
+    let prefix = case["prefix"]
+        .as_u64()
+        .map_or(0, |n| usize::try_from(n).unwrap());
+    let data = pixels(&s("kind"), mode, width, height, u("seed"), prefix);
     if hex(&Sha256::digest(&data)) != s("pixels_sha256") {
         return vec!["the generator's pixels differ from the script's".to_owned()];
     }
@@ -222,7 +230,7 @@ fn pngs_and_visible_hashes_equal_pillows() {
     assert_eq!(fixture["pillow"], "9.5.0");
     assert_eq!(fixture["zlib"], "1.2.13");
     let cases = fixture["cases"].as_array().unwrap();
-    assert!(cases.len() >= 388, "{} cases", cases.len());
+    assert!(cases.len() >= 400, "{} cases", cases.len());
     let mut failed = Vec::new();
     for case in cases {
         let wrong = check(case);
@@ -239,27 +247,58 @@ fn pngs_and_visible_hashes_equal_pillows() {
     );
 }
 
+/// A case's IDAT chunks' data sizes.
+fn idat(case: &Value) -> Vec<u64> {
+    case["idat"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect()
+}
+
 #[test]
 fn the_fixture_covers_every_mode_kind_and_chunk_size() {
     let fixture = fixture();
     let cases = fixture["cases"].as_array().unwrap();
     for mode in Mode::ALL {
         let of_mode: Vec<&Value> = cases.iter().filter(|c| c["mode"] == mode.name()).collect();
-        // Several IDAT chunks, at a width past 16384 (chunks of 4 x width
-        // bytes) and below it (65,536).
-        for (width, size) in [(20000, 80000), (16385, 65540), (257, 65536)] {
-            let case = of_mode
-                .iter()
-                .find(|c| c["width"] == width && c["idat"].as_array().unwrap().len() > 1);
-            if mode != Mode::L || width == 20000 {
-                let case = case.unwrap_or_else(|| panic!("{mode} {width}: no case of two chunks"));
-                assert_eq!(case["idat"][0], size, "{mode} {width}");
-            }
+        // Several IDAT chunks, of the encoder buffer's size but the last: at
+        // widths past 16384 (4 x width bytes) and below it (65,536).
+        for size in [80000, 65540, 65536] {
+            assert!(
+                of_mode.iter().any(|c| {
+                    let sizes = idat(c);
+                    sizes.len() > 1 && sizes[0] == size
+                }),
+                "{mode}: no case of several chunks of {size} bytes"
+            );
         }
-        for kind in [
+        let mut kinds = vec![
             "flat", "gradient", "random", "noisy", "smooth", "sparse", "stripes",
-        ] {
+        ];
+        if matches!(mode, Mode::La | Mode::Rgba) {
+            kinds.push("alpha");
+        }
+        for kind in kinds {
             assert!(of_mode.iter().any(|c| c["kind"] == kind), "{mode} {kind}");
+        }
+    }
+    // Streams that end at a chunk's edge, or one to four bytes past it (the
+    // last call returns only some of zlib's trailer), below 16384 wide and
+    // past it: every chunk but the last is the buffer's size.
+    for (bufsize, wide) in [(65536, false), (65540, true)] {
+        for ends in [0, 1, 2, 3, 4, bufsize].map(|past| bufsize + past) {
+            assert!(
+                cases.iter().any(|c| {
+                    let sizes = idat(c);
+                    let (last, full) = sizes.split_last().unwrap();
+                    (c["width"].as_u64().unwrap() > 16384) == wide
+                        && full.iter().all(|&s| s == bufsize)
+                        && full.iter().sum::<u64>() + last == ends
+                }),
+                "no stream of {ends} bytes in chunks of {bufsize}"
+            );
         }
     }
     // Every filter but average (only with `optimize`) is chosen somewhere.

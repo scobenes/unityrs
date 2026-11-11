@@ -16,7 +16,13 @@ the case's seed, a generator the Rust test runs too:
   Paeth predicts well;
 - "sparse": for each byte, two draws: the second where the first is below 32, else 0;
 - "stripes": one drawn row, then row `y` as that row plus `y // 2`, mod 256, so rows repeat in pairs;
-- "alpha" (`LA`, `RGBA`): each pixel's colour drawn, then its alpha: a draw below 96 is 0, else the draw.
+- "alpha" (`LA`, `RGBA`): each pixel's colour drawn, then its alpha: a draw below 96 is 0, else the draw;
+- "prefix" (`L`): the case's first `prefix` bytes drawn, then zeros, with `prefix` chosen so the zlib stream ends at a
+  chunk's edge: its length is `k x bufsize` or one to four bytes past it (the last chunk holding only some of zlib's
+  trailer), at a width below 16384 and one past it (bufsize 65,536 and 65,540). The seed is that of
+  `{mode}-{width}x{height}-prefix` whatever the prefix, so the stream grows about a byte with each drawn byte, and
+  `--search` finds each `prefix` in the oracle (bisection, then a walk to the least that ends exactly there), which
+  PREFIXES lists.
 
 The draws are the bytes of successive splitmix64 outputs, low byte first. Each case records its parameters and seed,
 the sha256 of its pixels (`tobytes()`), of its filtered rows (the IDAT stream inflated) and of the PNG
@@ -32,6 +38,7 @@ step).
 
     scripts/dev python -E -s tools/fixtures/imageio.py           # write the fixture
     scripts/dev python -E -s tools/fixtures/imageio.py --check   # regenerate and compare
+    scripts/dev python -E -s tools/fixtures/imageio.py --search  # find the "prefix" cases' prefixes again
 """
 
 from __future__ import annotations
@@ -71,6 +78,26 @@ LARGE = [
     (16385, 2, "random"),
     (20000, 5, "random"),
 ]
+# The "prefix" images, and where their streams end: `k x bufsize + past` bytes, bufsize being max(65536, 4 x width).
+PREFIX_IMAGES = [("L", 512, 300), ("L", 16385, 10)]
+PREFIX_ENDS = [(1, 0), (1, 1), (1, 2), (1, 3), (1, 4), (2, 0)]
+# What --search found in the oracle, in that order: (mode, width, height, prefix, the stream's length).
+PREFIXES = [
+    ("L", 512, 300, 64955, 65536),
+    ("L", 512, 300, 64956, 65537),
+    ("L", 512, 300, 64957, 65538),
+    ("L", 512, 300, 64958, 65539),
+    ("L", 512, 300, 64959, 65540),
+    ("L", 512, 300, 130555, 131072),
+    ("L", 16385, 10, 65043, 65540),
+    ("L", 16385, 10, 65044, 65541),
+    ("L", 16385, 10, 65045, 65542),
+    ("L", 16385, 10, 65046, 65543),
+    ("L", 16385, 10, 65047, 65544),
+    ("L", 16385, 10, 130764, 131080),
+]
+# How far --search walks each side of the bisection's answer.
+WALK = 256
 
 
 class Draws:
@@ -101,10 +128,12 @@ class Draws:
         return self.take(1)[0]
 
 
-def pixels(kind: str, mode: str, width: int, height: int, seed: int) -> bytes:
+def pixels(kind: str, mode: str, width: int, height: int, seed: int, prefix: int = 0) -> bytes:
     ch = CHANNELS[mode]
     d = Draws(seed)
     n = width * height * ch
+    if kind == "prefix":
+        return d.take(prefix) + bytes(n - prefix)
     if kind == "flat":
         return d.take(ch) * (width * height)
     if kind == "random":
@@ -150,13 +179,55 @@ def seed_of(case_id: str) -> int:
     return int.from_bytes(hashlib.sha256(case_id.encode()).digest()[:4], "little")
 
 
-def case_list() -> list[tuple[str, int, int, str]]:
+def case_list() -> list[tuple[str, int, int, str, tuple[int, int] | None]]:
+    """Each case's mode, size and kind, and a "prefix" case's prefix and the stream length it ends at."""
     out = []
     for mode in CHANNELS:
         kinds = KINDS + (["alpha"] if mode in ("LA", "RGBA") else [])
-        out += [(mode, w, h, kind) for (w, h) in SMALL for kind in kinds]
-        out += [(mode, w, h, kind) for (w, h, kind) in LARGE]
+        out += [(mode, w, h, kind, None) for (w, h) in SMALL for kind in kinds]
+        out += [(mode, w, h, kind, None) for (w, h, kind) in LARGE]
+    out += [(mode, w, h, "prefix", (prefix, ends)) for (mode, w, h, prefix, ends) in PREFIXES]
     return out
+
+
+def prefix_seed(mode: str, width: int, height: int) -> int:
+    """A "prefix" case's seed, the same for every prefix of its image."""
+    return seed_of(f"{mode}-{width}x{height}-prefix")
+
+
+def stream_len(mode: str, width: int, height: int, prefix: int) -> int:
+    """The length of the zlib stream in the PNG Pillow writes of a "prefix" image."""
+    data = pixels("prefix", mode, width, height, prefix_seed(mode, width, height), prefix)
+    saved = io.BytesIO()
+    Image.frombytes(mode, (width, height), data).save(saved, "PNG")
+    return sum(len(body) for kind, body in chunks(saved.getvalue()) if kind == b"IDAT")
+
+
+def find_prefix(mode: str, width: int, height: int, ends: int) -> int:
+    """The least prefix near the first whose stream is at least `ends` bytes (a bisection: the length grows about a
+    byte a drawn byte, not strictly) whose stream is exactly `ends` bytes."""
+    lo, hi = 0, width * height * CHANNELS[mode]
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if stream_len(mode, width, height, mid) >= ends:
+            hi = mid
+        else:
+            lo = mid + 1
+    for prefix in range(max(0, lo - WALK), lo + WALK):
+        if stream_len(mode, width, height, prefix) == ends:
+            return prefix
+    raise LookupError(f"{mode} {width}x{height}: no prefix within {WALK} of {lo} ends the stream at {ends} bytes")
+
+
+def search() -> list[tuple[str, int, int, int, int]]:
+    """PREFIXES, found again: for each image of PREFIX_IMAGES, the prefix ending its stream at each of PREFIX_ENDS."""
+    found = []
+    for mode, width, height in PREFIX_IMAGES:
+        bufsize = max(65536, 4 * width)
+        for k, past in PREFIX_ENDS:
+            ends = k * bufsize + past
+            found.append((mode, width, height, find_prefix(mode, width, height, ends), ends))
+    return found
 
 
 def chunks(png: bytes) -> list[tuple[bytes, bytes]]:
@@ -178,10 +249,15 @@ def visible_hash(image: Image.Image) -> str:
     return hashlib.sha256(f"{width}x{height}:".encode() + bytes(rgba)).hexdigest()
 
 
-def record(mode: str, width: int, height: int, kind: str) -> dict:
-    case_id = f"{mode}-{width}x{height}-{kind}"
-    seed = seed_of(case_id)
-    data = pixels(kind, mode, width, height, seed)
+def record(mode: str, width: int, height: int, kind: str, prefix: tuple[int, int] | None = None) -> dict:
+    if prefix is None:
+        case_id = f"{mode}-{width}x{height}-{kind}"
+        seed = seed_of(case_id)
+        data = pixels(kind, mode, width, height, seed)
+    else:
+        case_id = f"{mode}-{width}x{height}-{kind}{prefix[0]}"
+        seed = prefix_seed(mode, width, height)
+        data = pixels(kind, mode, width, height, seed, prefix[0])
     image = Image.frombytes(mode, (width, height), data)
     saved = io.BytesIO()
     image.save(saved, "PNG")
@@ -190,6 +266,8 @@ def record(mode: str, width: int, height: int, kind: str) -> dict:
     idat = [body for kind_, body in parts if kind_ == b"IDAT"]
     if [k for k, _ in parts] != [b"IHDR"] + [b"IDAT"] * len(idat) + [b"IEND"]:
         raise AssertionError(f"{case_id}: chunks {[k for k, _ in parts]}")
+    if prefix is not None and Image.core.zlib_version == REFERENCE_ZLIB and sum(map(len, idat)) != prefix[1]:
+        raise AssertionError(f"{case_id}: the stream is {sum(map(len, idat))} bytes, not {prefix[1]}: --search again")
     filtered = zlib.decompress(b"".join(idat))
     stride = width * CHANNELS[mode] + 1
     filters = [0] * 5
@@ -202,6 +280,7 @@ def record(mode: str, width: int, height: int, kind: str) -> dict:
         "height": height,
         "kind": kind,
         "seed": seed,
+        **({} if prefix is None else {"prefix": prefix[0]}),
         "pixels_sha256": hashlib.sha256(data).hexdigest(),
         "filtered_sha256": hashlib.sha256(filtered).hexdigest(),
         "filters": filters,
@@ -252,7 +331,9 @@ def without_zlib(body: dict) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--check", action="store_true", help="regenerate and compare, write nothing")
+    group = ap.add_mutually_exclusive_group()
+    group.add_argument("--check", action="store_true", help="regenerate and compare, write nothing")
+    group.add_argument("--search", action="store_true", help="find the prefix cases' prefixes and print PREFIXES")
     args = ap.parse_args()
     if PIL.__version__ != PILLOW:
         print(f"needs Pillow {PILLOW}, found {PIL.__version__}", file=sys.stderr)
@@ -261,6 +342,12 @@ def main() -> int:
     if not args.check and loaded != REFERENCE_ZLIB:
         print(f"Pillow loads zlib {loaded}; the fixture is written with zlib {REFERENCE_ZLIB}", file=sys.stderr)
         return 2
+    if args.search:
+        print("PREFIXES = [")
+        for entry in search():
+            print(f"    {entry!r},")
+        print("]")
+        return 0
     body = fixture()
     if not args.check:
         OUT.parent.mkdir(parents=True, exist_ok=True)
