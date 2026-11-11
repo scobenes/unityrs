@@ -58,6 +58,29 @@ const ALIGN: usize = align_of::<usize>();
 /// and less on 32-bit targets; its slot is a bound above it.
 pub(crate) const STATE_SLOTS: [usize; 5] = [6 << 10, 64 << 10, 64 << 10, 128 << 10, 128 << 10];
 
+#[cfg(test)]
+thread_local! {
+    /// The slots [`zalloc`] holds this thread's streams to in the unit
+    /// tests: [`STATE_SLOTS`], unless a test narrows one
+    /// (`src/memory_tests.rs`).
+    pub(crate) static TEST_SLOTS: std::cell::Cell<[usize; 5]> =
+        const { std::cell::Cell::new(STATE_SLOTS) };
+}
+
+/// The slots [`zalloc`] holds zlib to.
+#[cfg(not(test))]
+const fn slots() -> [usize; 5] {
+    STATE_SLOTS
+}
+
+/// The slots [`zalloc`] holds zlib to: the thread's `TEST_SLOTS`.
+#[cfg(test)]
+fn slots() -> [usize; 5] {
+    TEST_SLOTS
+        .try_with(std::cell::Cell::get)
+        .unwrap_or(STATE_SLOTS)
+}
+
 /// What the global allocator is asked for a block of `bytes`, as
 /// [`zalloc`] asks: rounded up to [`ALIGN`], plus [`HEADER`].
 pub(crate) const fn request(bytes: usize) -> usize {
@@ -316,7 +339,7 @@ unsafe extern "C" fn zalloc(opaque: *mut c_void, items: c_uint, size: c_uint) ->
         .and_then(|(items, size)| items.checked_mul(size));
     let index = allowance.used;
     allowance.used = allowance.used.saturating_add(1);
-    let (Some(bytes), Some(slot)) = (bytes, STATE_SLOTS.get(index).copied()) else {
+    let (Some(bytes), Some(slot)) = (bytes, slots().get(index).copied()) else {
         allowance.over = true;
         return ptr::null_mut();
     };
@@ -379,9 +402,42 @@ mod tests {
 
     #[test]
     fn a_block_past_its_slot_is_refused() {
+        let mut allowance = Allowance {
+            used: 0,
+            asked: [0; STATE_SLOTS.len()],
+            over: false,
+        };
+        let opaque = (&raw mut allowance).cast();
+        let past = c_uint::try_from(STATE_SLOTS[0] + 1).unwrap();
+        // SAFETY: test-only: `opaque` is a live allowance nothing else reads.
+        let block = unsafe { zalloc(opaque, 1, past) };
+        assert!(block.is_null());
+        assert!(allowance.over);
+        assert_eq!(allowance.asked[0], STATE_SLOTS[0] + 1);
+        assert_eq!(allowance.used, 1);
+        // A block of its slot exactly is made.
+        let mut allowance = Allowance {
+            used: 0,
+            asked: [0; STATE_SLOTS.len()],
+            over: false,
+        };
+        let opaque = (&raw mut allowance).cast();
+        let at = c_uint::try_from(STATE_SLOTS[0]).unwrap();
+        // SAFETY: as above; the block is zalloc's, freed once.
+        unsafe {
+            let block = zalloc(opaque, 1, at);
+            assert!(!block.is_null());
+            zfree(opaque, block);
+        }
+        assert!(!allowance.over);
+    }
+
+    #[test]
+    fn a_block_with_no_slot_left_is_refused() {
         // One slot used up before deflateInit2 starts: its fifth block finds
         // no slot left, so it fails with Z_MEM_ERROR, the allowance's
-        // refusal, and frees the four it had.
+        // refusal (src/memory_tests.rs counts that deflateInit2 frees the
+        // blocks it had).
         let mut d = std::pin::pin!(Deflater::new());
         // SAFETY: test-only: the stream is not initialised yet, so nothing
         // has read the allowance.
