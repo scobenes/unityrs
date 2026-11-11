@@ -321,8 +321,8 @@ A sprite outside the metric fails its test and is listed, never passed silently.
 
 ## 4. Before it is built
 
-- `docs/plans/batch.md`'s design reviewed, in its own review rounds, with its section 8 settled.
-- This plan's review rounds, run until a round finds no MEDIUM or HIGH problem, with section 3 settled.
+- `docs/plans/batch.md`'s design reviewed, in its own review rounds (done, through design round 21, 2026-11-10), with its section 8 settled.
+- This plan's review rounds, run until a round finds no MEDIUM or HIGH problem (done, through design round 21, 2026-11-10), with section 3 settled.
 - Section 5's gate agreed before the first package starts.
 
 ## 5. The gate (proposed in design round 1)
