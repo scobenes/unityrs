@@ -1,4 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/export/Texture2DConverter.py's parse_image_data for the five formats (the checks, the block padding, the crop and the flip), and how Pillow 9.5.0, as it calls it, treats short and long data and the sizes it refuses. See THIRD_PARTY_LICENSES.
+// Ported from Pillow 9.5.0 (MIT-CMU): its raw decoder as UnityPy calls it (src/libImaging/RawDecode.c's row copy, and the width cap of src/decode.c's _setimage), and the decompression-bomb check of src/PIL/Image.py's crop, with its message. See THIRD_PARTY_LICENSES.
 //! [`decode()`]: a texture's mip 0 to pixels, as `parse_image_data` gives them
 //! for the five formats (`export/Texture2DConverter.py:254-320`), and
 //! [`plan()`]: what a decode of data of a given length will need and give,
@@ -26,8 +27,8 @@
 //!    height must be >= 0", or, where padding made a side 0, a crop or tile
 //!    error).
 //! 4. A texture of more than [`MAX_PIXELS`] pixels at its padded size is
-//!    [`DecodeError::TooLarge`], whatever its data: the bound UnityPy does
-//!    not have (below).
+//!    [`DecodeError::TooLarge`], whatever the data's length once it is not
+//!    empty: the bound UnityPy does not have (below).
 //! 5. An RGBA32 texture wider than 67,108,856 pixels, or an RGB24 one wider
 //!    than 89,478,478, is [`DecodeError::PillowMemoryError`]: Pillow's raw
 //!    decoder refuses a row of more than `INT_MAX / bits - 7` pixels (32
@@ -61,14 +62,16 @@
 //!
 //! **The bound, where UnityPy has none.** [`MAX_PIXELS`] is 16384 x 16384
 //! at the padded size, the largest size Unity's texture importer offers,
-//! checked before the data (step 4), so the output is at most 1 GiB, the
-//! work linear in it, and [`plan()`] needs only the data's length. It is
+//! checked before the data's length (step 4), so the output is at most
+//! 1 GiB, the work linear in it, and [`plan()`] needs only the data's
+//! length. It is
 //! the stated divergence (`PARITY.md` section 19.3), and every limit Pillow
 //! has that a texture could meet beyond steps 5 and 8 lies past it:
 //! `Image.new`'s `MemoryError` for a row wider than 536,870,910 pixels, the
 //! `OverflowError` of a `BCn` side padded to 2^31, and the raw decoder's
-//! count of the bytes it read, which wraps through an `int` at 2 GiB. A
-//! texture with a negative side is [`DecodeError::NegativeSize`] whatever
+//! count of the bytes it read, which wraps through an `int` at 2 GiB
+//! (Pillow then returns the image with its unread rows zero). A texture
+//! with a negative side and data is [`DecodeError::NegativeSize`] whatever
 //! its other side, where Pillow, given a padded side past those limits,
 //! raises theirs. With step 5 in, no width that passes overflows the `int`
 //! Pillow's raw decoder computes a row's bytes in
@@ -115,7 +118,14 @@ const INT_MAX: u32 = 0x7FFF_FFFF;
 
 /// Why a texture did not decode, in the order of the module docs' checks.
 /// Every variant but [`Self::TooLarge`], [`Self::Charge`] and
-/// [`Self::Panicked`] is a case where UnityPy 1.25.2 raises too.
+/// [`Self::Panicked`] is a case where UnityPy 1.25.2 raises too. [`plan()`]
+/// returns the checks' variants only, never `Charge` or `Panicked`, which
+/// [`decode()`] alone gives, after a plan that passed.
+///
+/// Not `Clone`, by design, unlike the core's errors: `Panicked` owns the
+/// panic's payload, the box the unwinding carried ([`Payload`]), which
+/// cannot be cloned, and a copy of its text would allocate on the panic
+/// path.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeError {
@@ -338,9 +348,12 @@ impl Image {
     /// The pixels: what Pillow's `tobytes()` gives for the image UnityPy
     /// returns. One exception: `tobytes()`, and so a PNG save, raises
     /// `MemoryError` for an `RGBA` image wider than 67,108,856 pixels (its
-    /// raw encoder's cap, `src/encode.c:260-262`), which a `BCn` texture
-    /// 67,108,857 to 67,108,864 wide and at most 4 high decodes to, in
-    /// UnityPy as here; a PNG writer mirrors that cap.
+    /// raw encoder's cap, `src/encode.c:260-262`). The images that wide
+    /// that decode, in UnityPy as here, are a `BCn` texture's: 67,108,857
+    /// to 67,108,864 wide at a height of 1 or 2, and 67,108,860 or
+    /// 67,108,864 wide at a height of 4 (a height of 3, or another width at
+    /// 4, is a [`DecodeError::DecompressionBomb`], and a raw texture that
+    /// wide is refused before its decode). A PNG writer mirrors that cap.
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
@@ -353,7 +366,11 @@ impl Image {
     }
 
     /// The pixels and their charge, which must live as long as the pixels'
-    /// allocation does: drop the charge last.
+    /// allocation does: drop the charge last. Beware `let (pixels, charge) =
+    /// image.into_parts();`: a pattern's bindings drop in reverse order, so
+    /// that drops `charge` first, returning its bytes while the buffer still
+    /// holds them. Drop the pixels first (`drop(pixels)`), or keep the
+    /// charge in an owner that outlives them.
     pub fn into_parts(self) -> (Vec<u8>, Charge) {
         (self.pixels, self.charge)
     }

@@ -36,7 +36,8 @@
 //! **No panics, bounded work** (`docs/plans/core.md` section 3.15): indexing,
 //! `unwrap` and the like are denied outside tests; sizes are computed in
 //! `u64` from the `i32` sides; a texture past [`MAX_PIXELS`] (16384 x
-//! 16384, padded) is refused whatever its data, before any allocation, the
+//! 16384, padded) is refused whatever its data's length once it is not
+//! empty, before any allocation, the
 //! one bound UnityPy does not have (`PARITY.md` section 19.3), while
 //! Pillow's own limits below it, its raw decoder's width cap and its crop's
 //! decompression-bomb check, are matched (`decode`'s module docs); a

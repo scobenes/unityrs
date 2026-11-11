@@ -1,3 +1,7 @@
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
+
+use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
 use unityrs_core::limits::Meter;
 
 use super::{DecodeError, Format, MAX_CROP_PIXELS, MAX_PIXELS, decode, decode_with, plan};
@@ -163,4 +167,31 @@ fn a_panic_in_the_pixel_loop_is_contained() {
         panic!("not reached")
     });
     assert_eq!(got.map(|_| ()), Err(DecodeError::NoImageData));
+}
+
+/// A budget that panics when the meter asks it.
+#[derive(Debug)]
+struct Panicking;
+
+impl MemoryBudget for Panicking {
+    fn try_reserve(&self, _: u64, _: Reservation) -> Result<Permit, BudgetExceeded> {
+        panic!("the budget panicked");
+    }
+}
+
+/// The output's charge runs outside the decoder's containment: a budget
+/// that panics unwinds out of `decode()`, and is never a
+/// [`DecodeError::Panicked`], which would be taken for the decoder's. (The
+/// meter keeps the bytes it counted before it asked: the core's matter.)
+#[test]
+fn a_panicking_budget_unwinds_out_of_the_decode() {
+    let meter = Meter::new(u64::MAX, Arc::new(Panicking), Reservation::Input);
+    let data = vec![0u8; 4 * 4 * 4];
+    let got = catch_unwind(AssertUnwindSafe(|| {
+        decode(Format::Rgba32, &data, 4, 4, &meter).map(|_| ())
+    }));
+    match got {
+        Err(payload) => assert_eq!(payload.downcast_ref::<&str>(), Some(&"the budget panicked")),
+        Ok(answer) => panic!("decode() answered {answer:?}"),
+    }
 }

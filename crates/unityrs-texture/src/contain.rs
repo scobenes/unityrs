@@ -1,23 +1,31 @@
 //! Panic containment (`docs/plans/extract.md` E18): a decode that panics
 //! becomes [`DecodeError::Panicked`], which the engine records as the
-//! texture's `decoder_panic` skip (`docs/BATCH_SPEC.md` section 3), and the
-//! batch goes on.
+//! texture's `decoder_panic` skip (`docs/BATCH_SPEC.md` sections 7.3 and
+//! 9.3), and the batch goes on.
 //!
 //! The decoders do not panic on any input (indexing, `unwrap` and the rest
 //! are denied, arithmetic is checked or bounded, and the oracle and seeded
 //! tests feed them every size and every BC7 mode); this is the net under
 //! that rule, as E18 asks. [`crate::decode()`] runs only its pixel loop
 //! under it: the checks and the output's charge and allocation come before,
-//! outside it, so a panic there (a panicking `MemoryBudget`, say) is not
-//! taken for the decoder's, and the meter's own refund on a refusal is never
-//! cut short. Unwinding out of the loop drops the image being written, its
-//! buffer first and then its [`Charge`](unityrs_core::limits::Charge), so
-//! the meter is as it was before the call.
+//! outside it, so a panic there (a panicking `MemoryBudget`, say) unwinds
+//! out of `decode()` and is not taken for the decoder's. That is the rule
+//! for any closure [`contain()`] runs: it charges nothing, its checks and
+//! charges made before it, as `decode()` makes them. A closure that names a
+//! [`Meter`](unityrs_core::limits::Meter) is not [`UnwindSafe`] (its
+//! `dyn MemoryBudget` is not `RefUnwindSafe`), so it has to assert unwind
+//! safety ([`std::panic::AssertUnwindSafe`]); a budget that then panicked
+//! inside it would leave the meter charged with the bytes it was asking for
+//! (the core's `Meter::reserve` counts them before it asks the budget).
+//! Unwinding out of the loop drops the image being written, its buffer
+//! first and then its [`Charge`](unityrs_core::limits::Charge), so the
+//! meter is as it was before the call.
 //!
-//! The payload is kept as the unwinding carried it ([`Payload`]): nothing is
-//! copied or allocated on the panic path, whose payload may be as long as
-//! anything a decoder could format from its input, and which no meter has
-//! charged.
+//! The payload is kept as the unwinding carried it ([`Payload`]): the crate
+//! copies and allocates nothing on the panic path (the standard library
+//! allocates the payload and the unwinding's own state), whose payload may
+//! be as long as anything a decoder could format from its input, and which
+//! no meter has charged.
 //!
 //! Two things it cannot do: catch a panic in a build with
 //! `panic = "abort"` (the workspace sets no such profile), and stop the
@@ -42,9 +50,10 @@ pub const NON_STRING_PAYLOAD: &str = "non-string panic payload";
 pub const MESSAGE_BYTES: usize = 1024;
 
 /// Runs `f`, a panic in it becoming [`DecodeError::Panicked`] with its
-/// payload. `f` must be [`UnwindSafe`]: a caller whose closure writes into
-/// a buffer it then drops on the error asserts so itself
-/// ([`std::panic::AssertUnwindSafe`]), as [`crate::decode()`] does.
+/// payload. `f` charges nothing (module docs), and must be [`UnwindSafe`]:
+/// a caller whose closure writes into a buffer it then drops on the error
+/// asserts so itself ([`std::panic::AssertUnwindSafe`]), as
+/// [`crate::decode()`] does.
 pub fn contain<T, F>(f: F) -> Result<T, DecodeError>
 where
     F: FnOnce() -> Result<T, DecodeError> + UnwindSafe,

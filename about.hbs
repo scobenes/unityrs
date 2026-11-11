@@ -259,6 +259,10 @@ reads, and the block order of put_block and decode_bcn), so that a DXT1,
 DXT5 or BC7 texture decodes to the pixels UnityPy 1.25.2 gets from Pillow
 9.5.0. BcnDecode.c's own header dedicates that file to the public domain
 (CC0); the port keeps the notice of the release it comes from all the same.
+crates/unityrs-texture/src/decode.rs ports Pillow 9.5.0's raw decoder as
+UnityPy 1.25.2 calls it (src/libImaging/RawDecode.c's row copy, and the
+width cap of src/decode.c's _setimage) and the decompression-bomb check of
+src/PIL/Image.py's crop, with its message.
 
 Pillow's LICENSE follows: Pillow calls its licence HPND, and its terms are
 the MIT-CMU licence's. It is the LICENSE-PILLOW of unityrs-imageio and of
