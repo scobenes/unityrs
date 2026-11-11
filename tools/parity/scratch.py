@@ -56,13 +56,24 @@ def make(prefix: str = "unityrs-", within: os.PathLike | str | None = None) -> P
                 _root, _given = Path(given), True
             else:
                 sweep()
-                root = Path(tempfile.gettempdir()) / f"{PREFIX}{_namespace() or 0}-{os.getpid()}"
+                root = own_root()
                 remove_tree(root)  # a dead process's of the same pid, which only this process can have now
                 root.mkdir(mode=0o700)
                 _root, _given = root, False
         path = tempfile.mkdtemp(prefix=prefix, dir=_root)
         _live.add(path)
     return Path(path)
+
+
+def own_root() -> Path:
+    """The root this process makes when no parent names a folder: `unityrs-test-<pid namespace>-<pid>` in the temp
+    folder (module docs). The temp folder's first lookup (`tempfile.gettempdir`) may probe it with a write."""
+    return Path(tempfile.gettempdir()) / f"{PREFIX}{_namespace() or 0}-{os.getpid()}"
+
+
+def root() -> Path | None:
+    """This process's root once it has made a folder: the parent's (`VAR`) or `own_root()`; None before."""
+    return _root
 
 
 def remove(path: os.PathLike | str) -> None:

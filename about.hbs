@@ -36,8 +36,12 @@ texture rules (UnityPy/export/Texture2DConverter.py: which textures are
 decoded or skipped, and how a block format is padded, cropped and flipped
 around Pillow's decoder; UnityPy/helpers/TextureSwizzler.py's
 is_switch_swizzled; UnityPy/enums/TextureFormat.py's names and values; and
-the Xbox 360 and Switch values of UnityPy/enums/BuildTarget.py). The dump
-(unityrs-dump),
+the Xbox 360 and Switch values of UnityPy/enums/BuildTarget.py), and
+unityrs-meshdecode its mesh rules (UnityPy/helpers/MeshHelper.py's
+MeshHandler: the vertex data's channels, streams and formats, the index
+buffer and the triangles; UnityPy/enums/VertexFormat.py,
+UnityPy/enums/MeshTopology.py and UnityPy/enums/GfxPrimitiveType.py; and
+UnityPyBoost/Mesh.cpp's unpack_vertexdata). The dump (unityrs-dump),
 which loads its inputs by UnityPy's rules, the test kit (unityrs-testkit),
 which writes inputs in the layouts UnityPy reads, and the P0 LZMA spike
 (unityrs-bench-lzma), which finds a bundle's blocks by BundleFile.read_fs's
@@ -75,10 +79,10 @@ from the UnityPy 1.25.2 sdist byte for byte, beside that release's LICENSE
 builds them.
 
 UnityPy 1.25.2's LICENSE follows. Each crate that holds UnityPy's code
-(unityrs-core, unityrs-tpk, unityrs-dump, unityrs-testkit, unityrs-bench-lzma
-and unityrs-texture) has it as its LICENSE-UNITYPY, is under MIT as a term of
-its own licence ("AND MIT", never only as a choice), and is listed under this
-text below.
+(unityrs-core, unityrs-tpk, unityrs-dump, unityrs-testkit, unityrs-bench-lzma,
+unityrs-texture and unityrs-meshdecode) has it as its LICENSE-UNITYPY, is
+under MIT as a term of its own licence ("AND MIT", never only as a choice),
+and is listed under this text below.
 
 {{!-- notice: LICENSE-UNITYPY --}}
 MIT License

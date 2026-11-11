@@ -106,7 +106,7 @@ jobs:
           cargo +"$NIGHTLY" fuzz build -a
       # The harness's own tests (fuzz/src/tests.rs): each value case reaches
       # the memory bound it picks, the lz4 check's limits, and the texture
-      # check's answers under each meter.
+      # and meshdecode checks' answers under each meter.
       - name: Test the harness
         working-directory: fuzz
         run: cargo +"$NIGHTLY" test --locked --lib
@@ -121,7 +121,7 @@ jobs:
               -print_final_stats=1 > "$RUNNER_TEMP/fuzz-$1.log" 2>&1
           }
           failed=""
-          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture"; do
+          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture meshdecode"; do
             pids=""
             for t in $batch; do
               run "$t" &
@@ -131,7 +131,7 @@ jobs:
               wait "${p#*:}" || failed="$failed ${p%%:*}"
             done
           done
-          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture; do
+          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture meshdecode; do
             echo "== $t"
             grep -E '^(stat::|#[0-9]+ +DONE)' "$RUNNER_TEMP/fuzz-$t.log" || true
           done
@@ -305,8 +305,12 @@ jobs:
       # module also runs on its own (tools/parity/tests/test_fixture_modules.py).
       # no_tree.py reads with tpk.py's synthetic TPKs, unityrs-tpk's test
       # replays it. texture.py records UnityPy's and Pillow's texture decodes
-      # and selection, which unityrs-texture's tests replay.
-      - name: The scaffold's, packages B to E's and the texture decoders' oracle fixtures are current
+      # and selection, which unityrs-texture's tests replay. meshdecode.py
+      # records UnityPy's MeshHandler and UnityPyBoost's unpack_vertexdata,
+      # through meshdecode_build.py, meshdecode_cases.py and
+      # meshdecode_trees.py (its hand-built trees), which
+      # unityrs-meshdecode's tests replay.
+      - name: The scaffold's, packages B to E's, the texture decoders' and the mesh handler's oracle fixtures are current
         run: |
           python tools/fixtures/scaffold.py --check
           python tools/fixtures/pure_python_rules.py --check
@@ -318,6 +322,67 @@ jobs:
           python tools/fixtures/folders.py --check
           python tools/fixtures/no_tree.py --check
           python tools/fixtures/texture.py --check
+          python tools/fixtures/meshdecode.py --check
+      # The mesh handler's cases again on UnityPy's own TPK trees, as G7 runs
+      # on its TPK: the TPK's trees and rows exist only in memory and in the
+      # pipe to the crate's replay, and --tpk's own audit hook refuses any
+      # write to a path in its process; the step fails where the hand-built
+      # trees' outcomes differ from them or the replay of them fails. It
+      # prints the counts and the names of any cases that differ, never what
+      # the TPK's trees hold (the log is public; --verbose is for a local
+      # run). The guard is against accidental writes and leaks (caches, temp
+      # files, bytecode, dumps, logs), not code written to evade it, which is
+      # a review matter. The hook cannot see a native write or the replay's
+      # process, so three checks follow the run, each reported by one fixed
+      # line with a count, never a path, their commands' own errors sent to
+      # /dev/null; a command that fails is a failed check, and every check
+      # runs whatever the others give: the checkout's git status (new,
+      # removed and changed tracked paths, ignored files and target/
+      # included), taken after the test binary is built, the same as before
+      # the run; the run's own TMPDIR, outside the checkout, empty; and no
+      # file in the checkout newer than the run's start, which also sees an
+      # ignored file rewritten in place. A cargo test after --no-run touches
+      # nothing under target/.
+      - name: The mesh handler's cases answer alike on the TPK's trees
+        run: |
+          cargo test --locked -p unityrs-meshdecode --test oracle --no-run
+          status=0
+          was="$RUNNER_TEMP/tpk-before.txt" now="$RUNNER_TEMP/tpk-after.txt"
+          tmp="$RUNNER_TEMP/tpk-tmp" mark="$RUNNER_TEMP/tpk-mark"
+          before=ok
+          git status --porcelain -uall --ignored > "$was" 2> /dev/null || before=failed
+          mkdir "$tmp"
+          touch "$mark"
+          TMPDIR="$tmp" python tools/fixtures/meshdecode.py --tpk || status=$?
+          if [ "$before" != ok ] || ! git status --porcelain -uall --ignored > "$now" 2> /dev/null; then
+            echo "--tpk check: git status could not be taken"
+            status=1
+          elif cmp -s "$was" "$now" 2> /dev/null; then
+            echo "--tpk check: the checkout's git status is unchanged"
+          else
+            n=$( { diff "$was" "$now" 2> /dev/null || true; } | grep -c '^[<>]' || true)
+            echo "--tpk check: the checkout's git status changed: $n lines differ"
+            status=1
+          fi
+          if ! n=$(find "$tmp" -mindepth 1 2> /dev/null | wc -l); then
+            echo "--tpk check: its TMPDIR could not be read whole ($n paths seen)"
+            status=1
+          elif [ "$n" -ne 0 ]; then
+            echo "--tpk check: $n paths left in its TMPDIR"
+            status=1
+          else
+            echo "--tpk check: its TMPDIR is empty"
+          fi
+          if ! n=$(find . -path ./.git -prune -o -type f -newer "$mark" -print 2> /dev/null | wc -l); then
+            echo "--tpk check: the checkout could not be read whole ($n newer files seen)"
+            status=1
+          elif [ "$n" -ne 0 ]; then
+            echo "--tpk check: $n files in the checkout newer than the run's start"
+            status=1
+          else
+            echo "--tpk check: no file in the checkout is newer than the run's start"
+          fi
+          exit "$status"
       # unityrs-imageio's X3 and X4: imageio.py records Pillow 9.5.0's PNGs,
       # whose bytes are zlib's, and the reference is zlib 1.2.13, the oracle
       # image's; under another zlib (the runner's) it compares all but the
@@ -345,7 +410,7 @@ jobs:
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=433
+          tools/parity/tests=450
           tools/perf/tests=10
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6

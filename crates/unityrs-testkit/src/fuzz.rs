@@ -16,6 +16,8 @@
 //!   target.
 //! - [`TextureCase`]: a `Texture2D`'s fields, the meter its decode runs
 //!   under and its data, for the `texture` target.
+//! - [`MeshCase`]: a Mesh's or a Sprite's value, its file's version and
+//!   byte order, its resource and the meter, for the `meshdecode` target.
 //!
 //! Every decoder here takes any bytes: a field the input does not reach is
 //! empty (a row, a reference, the data), never an error.
@@ -277,6 +279,94 @@ fn put_rows(out: &mut Vec<u8>, rows: &[Row]) {
     }
 }
 
+/// A Mesh's or a Sprite's value, the version and byte order its file has,
+/// the bytes its `m_StreamData` reads and the meter, for the `meshdecode`
+/// target (`unityrs-meshdecode`'s `MeshHandler`).
+///
+/// Layout: the flags (a byte of [`MeshCase`]'s bits), the meter (a byte),
+/// the version (major, minor and build, each a `u16`, little-endian, then
+/// the type and its number, a byte each), the resource (a `u16` of length,
+/// little-endian, and its bytes), then the value, a [`TreeCase`], which runs
+/// to the end. An input that stops inside the header is the default case,
+/// and one that stops inside the resource keeps the header alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MeshCase {
+    /// The bits below.
+    pub flags: u8,
+    /// The meter: 0 runs the handler under the case's limits alone; any
+    /// other value runs it again under a meter of `meter² × 64` bytes.
+    pub meter: u8,
+    /// The version's major, minor and build.
+    pub version: [u16; 3],
+    /// The version's type (a `UnityVersionType` byte, any value).
+    pub version_type: u8,
+    /// The number after the type.
+    pub version_number: u8,
+    /// What a resource read returns, at most 65,535 bytes.
+    pub resource: Vec<u8>,
+    /// The value's tree and bytes.
+    pub value: TreeCase,
+}
+
+impl MeshCase {
+    /// The value is a Sprite's (its `m_RD` is the source), not a Mesh's.
+    pub const SPRITE: u8 = 1;
+    /// The file is big-endian (the handler swaps the vertex data's bytes).
+    pub const BIG_ENDIAN: u8 = 2;
+    /// The handler has a resource reader (`MeshHandler::process`'s
+    /// `Resources`), returning [`Self::resource`].
+    pub const RESOURCES: u8 = 4;
+
+    /// Whether `flags` holds `bit`.
+    #[must_use]
+    pub fn has(&self, bit: u8) -> bool {
+        self.flags & bit != 0
+    }
+
+    /// The case's bytes.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = vec![self.flags, self.meter];
+        for v in self.version {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(&[self.version_type, self.version_number]);
+        let r = &self.resource[..self.resource.len().min(usize::from(u16::MAX))];
+        out.extend_from_slice(&u16::try_from(r.len()).unwrap_or(u16::MAX).to_le_bytes());
+        out.extend_from_slice(r);
+        out.extend_from_slice(&self.value.encode());
+        out
+    }
+
+    /// The case `input` holds; what it does not reach is empty.
+    #[must_use]
+    pub fn decode(input: &[u8]) -> Self {
+        let mut c = Cursor(input);
+        let (Some(flags), Some(meter), Some(major), Some(minor), Some(build)) =
+            (c.u8(), c.u8(), c.u16(), c.u16(), c.u16())
+        else {
+            return Self::default();
+        };
+        let (Some(version_type), Some(version_number)) = (c.u8(), c.u8()) else {
+            return Self::default();
+        };
+        let mut case = Self {
+            flags,
+            meter,
+            version: [major, minor, build],
+            version_type,
+            version_number,
+            ..Self::default()
+        };
+        let Some(resource) = c.u16().and_then(|n| c.take(usize::from(n))) else {
+            return case;
+        };
+        case.resource = resource.to_vec();
+        case.value = TreeCase::decode(c.0);
+        case
+    }
+}
+
 /// The bytes not yet read.
 struct Cursor<'a>(&'a [u8]);
 
@@ -289,6 +379,10 @@ impl Cursor<'_> {
 
     fn u8(&mut self) -> Option<u8> {
         self.take(1)?.first().copied()
+    }
+
+    fn u16(&mut self) -> Option<u16> {
+        Some(u16::from_le_bytes(self.take(2)?.try_into().ok()?))
     }
 
     fn i32(&mut self) -> Option<i32> {
@@ -338,7 +432,7 @@ impl Cursor<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RefType, Row, TextureCase, TreeCase, blob_case, lz4_case};
+    use super::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_case, lz4_case};
 
     fn case() -> TreeCase {
         TreeCase {
@@ -425,6 +519,33 @@ mod tests {
             (-3, None, Vec::new())
         );
         assert_eq!(TextureCase::decode(&bytes[..31]).data, [1]);
+    }
+
+    #[test]
+    fn a_mesh_case_decodes_to_what_was_encoded_and_a_cut_one_to_less() {
+        let c = MeshCase {
+            flags: MeshCase::SPRITE | MeshCase::RESOURCES,
+            meter: 9,
+            version: [2019, 4, 40],
+            version_type: 3,
+            version_number: 1,
+            resource: vec![5; 3],
+            value: case(),
+        };
+        let bytes = c.encode();
+        assert_eq!(bytes.len(), 10 + 2 + 3 + c.value.encode().len());
+        assert_eq!(MeshCase::decode(&bytes), c);
+        assert!(c.has(MeshCase::SPRITE) && !c.has(MeshCase::BIG_ENDIAN));
+        // Cut in the header: the default; in the resource: the header alone;
+        // in the value: the value as far as it reaches.
+        assert_eq!(MeshCase::decode(&bytes[..9]), MeshCase::default());
+        let header = MeshCase::decode(&bytes[..13]);
+        assert_eq!(
+            (header.version, header.resource, header.value),
+            ([2019, 4, 40], Vec::new(), TreeCase::default())
+        );
+        let cut = MeshCase::decode(&bytes[..bytes.len() - 1]);
+        assert_eq!((cut.resource, cut.value.data), (vec![5; 3], vec![1, 2, 3]));
     }
 
     #[test]

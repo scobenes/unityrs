@@ -186,7 +186,7 @@ Writing has tiers of its own. Where UnityPy writes, unityrs follows the rule in 
 
 ## 4. Architecture
 
-A Cargo workspace. Licences are declared per crate. The table lists the planned crates and what each will hold; it is not the workspace today. P1 built `unityrs-core`, `unityrs-tpk` and `unityrs-cli` (with `dump` and `values` only), plus the three support crates at the end of the table. Every other crate lands in the phase section 5 gives it; of P1b's, `unityrs-imageio` holds so far the PNG writer and the visible-pixel hash (`docs/plans/extract.md` E19, E20), and `unityrs-texture` the five formats' decoders and the texture selection (E15, E66).
+A Cargo workspace. Licences are declared per crate. The table lists the planned crates and what each will hold; it is not the workspace today. P1 built `unityrs-core`, `unityrs-tpk` and `unityrs-cli` (with `dump` and `values` only), plus the three support crates at the end of the table. Every other crate lands in the phase section 5 gives it; of P1b's, `unityrs-imageio` holds so far the PNG writer and the visible-pixel hash (`docs/plans/extract.md` E19, E20), `unityrs-texture` the five formats' decoders and the texture selection (E15, E66), and `unityrs-meshdecode` the vertex-data unpack and `get_triangles`, CompressedMesh aside (E16).
 
 | crate | contents |
 |---|---|
@@ -218,7 +218,7 @@ The spike records LOC kept versus rewritten, whether upstream takes patches, obj
 **Licensing**
 - Crates carry accurate SPDX expressions, for example `(MIT OR Apache-2.0) AND MIT-CMU` for Pillow ports.
 - `cargo-deny` checks crates; `cargo-about` with overrides scans vendored C (libwebp BSD-3 plus PATENTS, zlib, xz).
-- `THIRD_PARTY_LICENSES` carries every notice: UnityPy and UnityPyBoost (MIT), liblz4's block decoder (BSD-2-Clause) and parts of CPython's standard library (PSF-2.0), both ported in P1, AssetStudio (MIT), texture2ddecoder, astcenc (Apache-2.0), Pillow, libwebp. A ported file names its source and licence in its header; its crate's expression requires that licence in every alternative it offers, and the crate carries the source's notice as a file of its own, so its package ships the notice with the code (`scripts/third_party_licenses_check.py ports` holds them together).
+- `THIRD_PARTY_LICENSES` carries every notice: UnityPy and UnityPyBoost (MIT), liblz4's block decoder (BSD-2-Clause) and parts of CPython's standard library (PSF-2.0), both ported in P1, texture2ddecoder, astcenc (Apache-2.0), Pillow, libwebp. No AssetStudio code is ported yet, so it carries no AssetStudio notice; the format facts read from AssetStudio's MIT readers are cited where they are used. P3's UnityCN decryptor ports UnityPyBoost's `ArchiveStorageDecryptor.cpp`, which is based on RazTools/Studio's `AssetStudio/Crypto/UnityCN.cs`; P3 records that project's licence and carries its notice. A ported file names its source and licence in its header; its crate's expression requires that licence in every alternative it offers, and the crate carries the source's notice as a file of its own, so its package ships the notice with the code (`scripts/third_party_licenses_check.py ports` holds them together).
 - The provenance of bundled data is recorded, and a file of generated tables names their source and its licence in its header.
 - GPL/AGPL code is never read into the repo.
 - **Game data is never committed.** Corpora are private manifests of URLs plus sha256. Only synthetic and Unity-Editor-built fixtures are checked in.

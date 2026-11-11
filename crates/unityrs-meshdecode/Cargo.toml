@@ -1,0 +1,32 @@
+[package]
+name = "unityrs-meshdecode"
+description = "UnityPy 1.25.2's MeshHandler vertex-data unpack, index formats and get_triangles, for meshes and sprites."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# It ports UnityPy 1.25.2's mesh rules (MIT: helpers/MeshHelper.py's
+# MeshHandler, enums/VertexFormat.py, enums/MeshTopology.py,
+# enums/GfxPrimitiveType.py, and UnityPyBoost/Mesh.cpp's unpack_vertexdata,
+# the C++ extension shipped in the same release), whose notice is its
+# LICENSE-UNITYPY (a link to unityrs-core's), which its package carries. See
+# THIRD_PARTY_LICENSES.
+license = "(MIT OR Apache-2.0) AND MIT"
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# The typetree values it reads (a Mesh's, a Sprite's render data), the
+# version they were read under, the resource read for `m_StreamData`, and
+# the meter every array is charged to before it is allocated
+# (docs/plans/extract.md E59).
+unityrs-core = { path = "../unityrs-core" }
+thiserror = "=2.0.21"
+
+[dev-dependencies]
+unityrs-testkit = { path = "../unityrs-testkit" }
+# The oracle's fixtures (tests/fixtures/, written by
+# tools/fixtures/meshdecode.py) are JSON.
+serde_json = "=1.0.154"
+
+[lints]
+workspace = true

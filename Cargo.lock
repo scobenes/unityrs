@@ -476,11 +476,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "unityrs-meshdecode"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "thiserror",
+ "unityrs-core",
+ "unityrs-testkit",
+]
+
+[[package]]
 name = "unityrs-testkit"
 version = "0.0.1"
 dependencies = [
  "liblzma",
  "lz4_flex",
+ "serde_json",
  "unityrs-core",
 ]
 
