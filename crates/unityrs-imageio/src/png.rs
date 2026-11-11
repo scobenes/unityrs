@@ -88,7 +88,8 @@ impl<C> fmt::Debug for Png<C> {
 /// Why no PNG was written. `R` is the [`Charger`]'s refusal.
 #[derive(Debug, thiserror::Error)]
 pub enum EncodeError<R> {
-    /// Pillow 9.5.0 writes no PNG of the image.
+    /// Pillow 9.5.0 writes no PNG of the image, or this crate does not
+    /// ([`ImageError::TooLarge`]); nothing was written or charged.
     #[error(transparent)]
     Image(#[from] ImageError),
     /// The charger refused the charge for `buffer`; nothing was allocated

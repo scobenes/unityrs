@@ -118,25 +118,31 @@ pub struct Plan {
 }
 
 /// The [`Plan`] of encoding a `width` x `height` image in `mode`, or why
-/// Pillow 9.5.0 writes no PNG of it.
+/// Pillow 9.5.0 writes no PNG of it ([`ImageError::ZeroSide`], then
+/// [`ImageError::TooWide`], in the order Pillow's `_setimage` checks), or
+/// why this crate does not ([`ImageError::TooLarge`]).
 pub fn plan(width: u32, height: u32, mode: Mode) -> Result<Plan, ImageError> {
     if width == 0 || height == 0 {
         return Err(ImageError::ZeroSide { width, height });
     }
+    let widest = widest(mode);
+    if width > widest {
+        return Err(ImageError::TooWide {
+            width,
+            mode,
+            widest,
+        });
+    }
+    // Within `widest`, the row (at most 268,435,448 bytes) and the encoder
+    // buffer, `max(65536, 4 x width)` bytes (at most 1,073,741,792), are C
+    // ints, so neither ZipEncode.c's check of the row (`:38`) nor a buffer
+    // size past a C int can refuse. The rest is the crate's own.
     let too_large = ImageError::TooLarge { width, height };
-    let int_max = u64::from(i32::MAX.unsigned_abs());
-    let row = u64::from(width) * mode.channels() as u64;
-    // Pillow's sides are C ints; ZipEncode.c refuses a row of INT_MAX - 1
-    // bytes or more before its `malloc(bytes + 1)`; `_encode` hands the
-    // encoder its buffer's size, `max(65536, 4 x width)`, as a C int.
-    let idat_size = (u64::from(width) * 4).max(65536);
-    if u64::from(width) > int_max
-        || u64::from(height) > int_max
-        || row > int_max - 1
-        || idat_size > int_max
-    {
+    if u64::from(height) > u64::from(i32::MAX.unsigned_abs()) {
         return Err(too_large);
     }
+    let row = u64::from(width) * mode.channels() as u64;
+    let idat_size = (u64::from(width) * 4).max(65536);
     let filtered = u64::from(height) * (row + 1);
     let bound = deflate_bound(filtered).ok_or(too_large.clone())?;
     let chunks = bound / idat_size + 1;
@@ -156,6 +162,20 @@ pub fn plan(width: u32, height: u32, mode: Mode) -> Result<Plan, ImageError> {
         idat_size,
         filtered,
     })
+}
+
+/// The widest image Pillow 9.5.0's encoder takes in `mode`,
+/// `INT_MAX / bits - 7` (`src/encode.c:261`), with the raw mode's bits a
+/// pixel from the packers' table (`src/libImaging/Pack.c:553-588`):
+/// [`ImageError::TooWide`].
+const fn widest(mode: Mode) -> u32 {
+    let bits = match mode {
+        Mode::L => 8,
+        Mode::La => 16,
+        Mode::Rgb => 24,
+        Mode::Rgba => 32,
+    };
+    i32::MAX.unsigned_abs() / bits - 7
 }
 
 /// zlib 1.2.13's `deflateBound` of `len` bytes for a zlib stream at

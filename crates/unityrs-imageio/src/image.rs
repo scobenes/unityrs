@@ -170,12 +170,32 @@ pub enum ImageError {
         /// The height.
         height: u32,
     },
-    /// Past what Pillow 9.5.0's PNG writer handles: a side over
-    /// 2,147,483,647 (a C `int`), a row of 2,147,483,647 bytes or more
-    /// (`ZipEncode.c`'s check), or a width whose encoder buffer, `4 x
-    /// width` bytes, passes a C `int`; or an output larger than this
-    /// machine's address space.
-    #[error("a {width}x{height} image is past what Pillow 9.5.0's PNG writer handles")]
+    /// Wider than Pillow 9.5.0's encoder takes in the mode: `_setimage`
+    /// raises `MemoryError` for a tile wider than `INT_MAX / bits - 7`
+    /// pixels, `bits` being the raw mode's bits a pixel, 8 x
+    /// [`Mode::channels`] (Pillow 9.5.0, `src/encode.c:261`; the packers'
+    /// bits, `src/libImaging/Pack.c:553-588`, which `get_packer` sets,
+    /// `src/encode.c:372`). `widest` is 268,435,448 for `L`, 134,217,720
+    /// for `LA`, 89,478,478 for `RGB` and 67,108,856 for `RGBA`, each below
+    /// the widest image Pillow holds, 536,870,910
+    /// (`src/libImaging/Storage.c:51`), so this is where Pillow stops.
+    /// Pillow raises after writing the signature and IHDR to the file;
+    /// unityrs writes nothing.
+    #[error(
+        "a {width}-pixel-wide {mode} image is wider than Pillow 9.5.0's encoder takes, {widest}: its MemoryError"
+    )]
+    TooWide {
+        /// The width.
+        width: u32,
+        /// The mode.
+        mode: Mode,
+        /// The widest Pillow's encoder takes in the mode.
+        widest: u32,
+    },
+    /// Past this crate's own bounds, which no image Pillow 9.5.0 holds
+    /// meets: a height over 2,147,483,647 (Pillow's sides are C `int`s),
+    /// or an output larger than this machine's address space.
+    #[error("a {width}x{height} image is past what this crate encodes")]
     TooLarge {
         /// The width.
         width: u32,

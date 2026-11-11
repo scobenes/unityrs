@@ -13,7 +13,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use unityrs_imageio::{
-    Buffer, Charger, DEFLATE_STATE_REQUESTS, EncodeError, Image, Mode, Plan, encode, plan,
+    Buffer, Charger, DEFLATE_STATE_REQUESTS, EncodeError, Image, ImageError, Mode, Plan, encode,
+    plan,
 };
 use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
 
@@ -232,13 +233,43 @@ fn a_refused_allocation_is_an_error() {
 
 #[test]
 fn the_plan_refuses_what_pillow_refuses() {
-    assert!(plan(0, 1, Mode::L).is_err());
-    assert!(plan(1, 0, Mode::Rgba).is_err());
-    // Pillow's encoder buffer, `4 x width` bytes, is a C int.
-    assert!(plan(0x1FFF_FFFF, 1, Mode::Rgba).is_ok());
-    assert!(plan(0x2000_0000, 1, Mode::L).is_err());
+    let zero = |width, height| Err(ImageError::ZeroSide { width, height });
+    assert_eq!(plan(0, 1, Mode::L), zero(0, 1));
+    assert_eq!(plan(1, 0, Mode::Rgba), zero(1, 0));
+    assert_eq!(plan(0, u32::MAX, Mode::Rgba), zero(0, u32::MAX));
+    // Pillow's encoder takes rows of at most `INT_MAX / bits - 7` pixels
+    // (Pillow 9.5.0, `src/encode.c:261`), each mode's widest here, and
+    // raises MemoryError one past it.
+    for (mode, widest) in [
+        (Mode::L, 268_435_448_u32),
+        (Mode::La, 134_217_720),
+        (Mode::Rgb, 89_478_478),
+        (Mode::Rgba, 67_108_856),
+    ] {
+        let p = plan(widest, 1, mode).unwrap_or_else(|e| panic!("{mode} {widest}: {e}"));
+        assert_eq!(p.rows, [widest as usize * mode.channels() + 1; 5], "{mode}");
+        assert_eq!(p.idat_size, 4 * widest as usize, "{mode}");
+        for width in [widest + 1, u32::MAX] {
+            assert_eq!(
+                plan(width, 1, mode),
+                Err(ImageError::TooWide {
+                    width,
+                    mode,
+                    widest
+                }),
+                "{mode} {width}"
+            );
+        }
+    }
+    // The crate's own bound: Pillow's sides are C ints.
     assert!(plan(1, 0x7FFF_FFFF, Mode::L).is_ok());
-    assert!(plan(1, 0x8000_0000, Mode::L).is_err());
+    assert_eq!(
+        plan(1, 0x8000_0000, Mode::L),
+        Err(ImageError::TooLarge {
+            width: 1,
+            height: 0x8000_0000
+        })
+    );
     // The deflate state is a constant: its slots' requests, about 398 KiB.
     let state: usize = DEFLATE_STATE_REQUESTS.iter().sum();
     assert_eq!(state, (6 << 10) + 2 * (64 << 10) + 2 * (128 << 10) + 5 * 8);
