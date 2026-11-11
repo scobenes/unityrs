@@ -327,7 +327,7 @@ jobs:
       - name: X3 and X4, Pillow's PNGs over zlib 1.2.13, and the vendored zlib against its tarball
         run: |
           tarball="$RUNNER_TEMP/zlib-1.2.13.tar.gz"
-          curl -fsSL --retry 3 -o "$tarball" \
+          curl -fsSL --connect-timeout 30 --max-time 300 --retry 3 --retry-all-errors -o "$tarball" \
             https://github.com/madler/zlib/releases/download/v1.2.13/zlib-1.2.13.tar.gz
           echo "b3a24de97a8fdbc835b9833169501030b8977031bcb54b3b3ac13740f846ab30  $tarball" | sha256sum -c -
           python scripts/zlib_vendor.py verify "$tarball"
