@@ -1,4 +1,4 @@
-"""Oracle fixture for the NGUI cutter (docs/plans/extract.md E21 to E26, X5): the reference's outputs on the testkit scenes.
+"""Oracle fixture for the NGUI cutter (docs/plans/extract.md E21 to E26, X5): the reference on the testkit scenes.
 
 Runs in the oracle image against UnityPy 1.25.2 and Pillow 9.5.0 and writes
 crates/unityrs-testkit/tests/fixtures/ngui.json, which the Rust cutter's tests replay without Python, and whose
@@ -14,14 +14,15 @@ of docs/BATCH_SPEC.md on each input over its view) and `tools/parity/ngui_winner
 output in export order (its kind, key, unit key, serialized file, path id and sprite index; a JSON's text, MD5 and
 SHA-256; an image's mode, size, the SHA-256 of its pixels (`tobytes()`), those pixels as hex for at most 64 of
 them, and its PNG's SHA-256 and MD5), the skips in record order (docs/BATCH_SPEC.md 4.4, with the output each
-skips and the sprite's index, which 7.3's `skips` rows leave out), `unresolved_scripts`, the textures the plan
-keys that no atlas cuts, and each found sheet with the step that found it. `winners`: the winners scene's results decided with several `prefer` maps, failed inputs
+skips and the sprite's index, as 7.3's `skips` rows carry them), `unresolved_scripts`, and each found sheet with
+the step that found it. `winners`: the winners scenes' results decided with several `prefer` maps, failed inputs
 and `publish_incomplete` (each key's status, reason, flip, winner and every candidate's rule).
 
 The PNG bytes depend on the zlib Pillow loads; the reference is zlib 1.2.13, the oracle image's (as
 `tools/fixtures/imageio.py`'s). Writing refuses any other. `--check` under another zlib (a runner's own) compares
-everything but the PNGs' SHA-256 and MD5, and says so on stderr: the pixels, every JSON byte and every decision
-are compared under any zlib, the winners' `prefer` MD5s being JSON MD5s.
+everything but the PNGs' SHA-256 and MD5 and the one winner case whose `prefer` names a PNG's MD5 (`zlib`), and
+says so on stderr: the pixels, every JSON byte and every other decision are compared under any zlib, the other
+cases' `prefer` MD5s being JSON MD5s.
 """
 
 from __future__ import annotations
@@ -38,13 +39,13 @@ OUT = ROOT / "crates/unityrs-testkit/tests/fixtures/ngui.json"
 sys.path.insert(0, str(ROOT / "tools/parity"))
 sys.path.insert(0, str(ROOT / "tools/fixtures"))
 
-import ngui_scenes  # noqa: E402
-import ngui_winners  # noqa: E402
 import PIL  # noqa: E402
 import UnityPy  # noqa: E402
 from PIL import Image  # noqa: E402
-
 from scaffold import dump  # noqa: E402
+
+import ngui_scenes  # noqa: E402
+import ngui_winners  # noqa: E402
 
 REFERENCE_ZLIB = "1.2.13"
 # The fields that depend on the zlib Pillow loads.
@@ -76,34 +77,54 @@ def scene_row(scene) -> dict:
     return {"name": scene.name, "bundles": bundles, "inputs": scene.inputs, "options": scene.row["options"]}
 
 
-def winner_cases(results) -> list[dict]:
-    """The winners scene decided several ways: all five inputs, then `a` to `d` (no unit conflict) with each
-    rule of E31, E61's withholding and `publish_incomplete` false."""
-    four = [r for r in results if r.input != "e.bundle"]
-    c_json = next(o.data for r in four if r.input == "c.bundle" for o in r.outputs if o.key == "shared.json")
+def winner_cases(results: list, textured: list) -> list[dict]:
+    """The winners scenes decided several ways (docs/BATCH_SPEC.md 4.5): the winners scene's inputs in several
+    sets, with each rule of E31, E61's withholding and `publish_incomplete` false, and the textured scene's, where a
+    unit is keyed by its sheet's texture key. A case whose `prefer` names a PNG's MD5 depends on the zlib (`zlib`)."""
+    by = {r.input: r for r in results + textured}
+
+    def pick(*ids):
+        return [by[f"{i}.bundle"] for i in ids]
+
+    def digest(input_id, key):
+        return hashlib.md5(next(o.data for o in by[input_id].outputs if o.key == key)).hexdigest()
+
+    z = ["z.bundle"]
+    plain = pick("a", "b", "c", "d", "f")
     cases = [
-        ("five_inputs", results, {}, [], True),
-        ("first_input", four, {}, [], True),
-        ("prefer_input", four, {"shared.json": {"input": "c.bundle", "md5": None}}, [], True),
-        ("prefer_md5", four, {"shared.json": {"input": None, "md5": hashlib.md5(c_json).hexdigest()}}, [], True),
-        ("member_key_entry", four, {"k.png": {"input": "d.bundle", "md5": None}}, [], True),
-        ("withheld_unit", four, {"shared.json": {"input": "z.bundle", "md5": None}}, ["z.bundle"], True),
-        ("withheld_plain", four, {"h.png": {"input": "z.bundle", "md5": None}}, ["z.bundle"], True),
-        ("publish_incomplete", four, {}, ["z.bundle"], False),
-    ]
+        ("all_inputs", pick("a", "b", "c", "d", "e", "f"), {}, [], True),
+        ("first_input", plain, {}, [], True),
+        ("lost_only", pick("a", "b", "c", "d"), {}, [], True),
+        ("equal_md5", pick("a", "b"), {}, [], True),
+        ("prefer_input", plain, {"shared.json": {"input": "c.bundle", "md5": None}}, [], True),
+        ("prefer_md5", plain, {"shared.json": {"input": None, "md5": digest("c.bundle", "shared.json")}}, [], True),
+        ("member_key_entry", plain, {"k.png": {"input": "d.bundle", "md5": None}}, [], True),
+        ("withheld_unit", plain, {"shared.json": {"input": "z.bundle", "md5": None}}, z, True),
+        ("withheld_plain", plain, {"h.png": {"input": "z.bundle", "md5": None}}, z, True),
+        ("withheld_keeper", pick("a", "b", "c", "d", "e"), {"other.json": {"input": "z.bundle", "md5": None}}, z, True),
+        ("publish_incomplete", plain, {}, z, False),
+        ("textured_first", textured, {}, [], True),
+        ("textured_prefer_plain", textured, {"sheet.png": {"input": "r.bundle", "md5": None}}, [], True),
+        ("textured_prefer_md5", textured, {"sheet.png": {"input": None, "md5": digest("q.bundle", "sheet.png")}}, [],
+         True),
+    ]  # fmt: skip
     out = []
     for name, rs, prefer, failed, publish_incomplete in cases:
         decided = ngui_winners.winners(rs, prefer=prefer, failed=failed, publish_incomplete=publish_incomplete)
-        out.append({"case": name, "inputs": [r.input for r in rs], "prefer": prefer, "failed": failed,
-                    "publish_incomplete": publish_incomplete, "decisions": ngui_winners.report(decided)})  # fmt: skip
+        row = {"case": name, "inputs": [r.input for r in rs], "prefer": prefer, "failed": failed,
+               "publish_incomplete": publish_incomplete, "decisions": ngui_winners.report(decided)}  # fmt: skip
+        if name == "textured_prefer_md5":
+            row["zlib"] = True
+        out.append(row)
     return out
 
 
 def fixture() -> dict:
     scenes = ngui_scenes.scenes()
-    results, winners = [], []
+    results, ran = [], {}
     for scene in scenes.values():
         rs = ngui_scenes.run(scene)
+        ran[scene.name] = rs
         for r in rs:
             results.append({
                 "scene": scene.name,
@@ -111,26 +132,25 @@ def fixture() -> dict:
                 "outputs": [output_row(o) for o in r.outputs],
                 "skips": [s.__dict__ for s in r.skips],
                 "unresolved_scripts": r.unresolved_scripts,
-                "uncut_textures": [list(t) for t in r.uncut_textures],
                 "sheets": [list(t) for t in r.sheets],
             })  # fmt: skip
-        if scene.name == "winners":
-            winners = winner_cases(rs)
     return {
         "zlib": Image.core.zlib_version,
         "scenes": [scene_row(s) for s in scenes.values()],
         "results": results,
-        "winners": winners,
+        "winners": winner_cases(ran["winners"], ran["textured_winners"]),
     }
 
 
 def without_zlib(body: dict) -> dict:
-    """The fixture less what depends on the zlib Pillow loads."""
+    """The fixture less what depends on the zlib Pillow loads: the PNGs' digests, and the winner cases that name one."""
     results = [
         {**r, "outputs": [{k: v for k, v in o.items() if k not in ZLIB_FIELDS} for o in r["outputs"]]}
         for r in body["results"]
     ]
-    return {**{k: v for k, v in body.items() if k not in ("results", "zlib")}, "results": results}
+    winners = [w for w in body["winners"] if not w.get("zlib")]
+    return {**{k: v for k, v in body.items() if k not in ("results", "winners", "zlib")}, "results": results,
+            "winners": winners}  # fmt: skip
 
 
 def main() -> int:

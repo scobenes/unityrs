@@ -4,7 +4,7 @@
 `crates/unityrs-testkit/tests/ngui_scenes.rs` writes them, one JSON line a scene, when `UNITYRS_WRITE_NGUI_SCENES`
 names a file; `rows()` runs that test through `child.run` into a scratch folder and reads the lines back. A scene
 is its bundles (id, bytes, `deps`), its inputs and the cutter's options; `run` cuts each input over its view
-(docs/BATCH_SPEC.md 4.2). `tools/parity/tests/test_ngui_cutter.py` and `tools/fixtures/ngui.py` share it.
+(docs/BATCH_SPEC.md 4.2). The `tools/parity/tests/test_ngui_*.py` modules and `tools/fixtures/ngui.py` share it.
 """
 
 from __future__ import annotations

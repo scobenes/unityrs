@@ -35,7 +35,7 @@ fn options(scene: &AtlasScene) -> J {
 
 #[test]
 fn scenes_are_the_recorded_scenes() {
-    let all = scenes();
+    let all = scenes().unwrap();
     if let Ok(out) = std::env::var("UNITYRS_WRITE_NGUI_SCENES") {
         let mut lines = String::new();
         for (name, scene) in &all {

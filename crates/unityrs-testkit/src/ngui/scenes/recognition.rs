@@ -1,0 +1,197 @@
+//! The scenes of recognition (`docs/BATCH_SPEC.md` section 5's first
+//! paragraph, decided from the typetree alone) and of reads that fail.
+
+use super::super::{Object, V, atlas, file, mono_behaviour, mono_script, pair, s, st, vector};
+use super::{Built, CutOptions, NULL, SCRIPT, by_name, one, plain, rgba, scene};
+
+/// An `mSprites` element of these fields, in this order.
+fn element(fields: Vec<(&str, V)>) -> V {
+    st("UISpriteData", fields)
+}
+
+/// A MonoBehaviour of the atlas script whose `mSprites` is `sprites`.
+fn shaped(path_id: i64, name: &[u8], sprites: V) -> Object {
+    mono_behaviour(path_id, name, SCRIPT, vec![("mSprites", sprites)])
+}
+
+/// A vector of one `item`.
+fn one_of(item: V) -> V {
+    vector(item.clone(), vec![item])
+}
+
+/// The `mSprites` that are not a list of sprites, at path ids 17 to 23, and
+/// one of mixed integer types that is, at 24.
+fn odd_shapes() -> Vec<Object> {
+    let rect = |name: V, x: V, height: V| {
+        element(vec![
+            ("name", name),
+            ("x", x),
+            ("y", V::Int(0)),
+            ("width", V::Int(1)),
+            ("height", height),
+        ])
+    };
+    vec![
+        shaped(17, b"str_empty", s("")),
+        shaped(18, b"str_full", s("abc")),
+        shaped(
+            19,
+            b"no_width",
+            one_of(element(vec![
+                ("name", s("w")),
+                ("x", V::Int(0)),
+                ("y", V::Int(0)),
+                ("height", V::Int(1)),
+            ])),
+        ),
+        shaped(
+            20,
+            b"float_rect",
+            one_of(rect(s("f"), V::Float(0.0), V::Int(1))),
+        ),
+        shaped(
+            21,
+            b"bool_rect",
+            one_of(rect(s("b"), V::Int(0), V::Bool(true))),
+        ),
+        shaped(
+            22,
+            b"map_sprites",
+            V::Vector(
+                "map".to_owned(),
+                Box::new(pair(s(""), V::Int(0))),
+                vec![pair(s("a"), V::Int(1))],
+            ),
+        ),
+        shaped(
+            23,
+            b"int_name",
+            one_of(rect(V::Int(0), V::Int(0), V::Int(1))),
+        ),
+        shaped(
+            24,
+            b"mixed",
+            one_of(element(vec![
+                ("name", s("m")),
+                ("x", V::UInt8(0)),
+                ("y", V::UInt(0)),
+                ("width", V::UInt64(1)),
+                ("height", V::Int(1)),
+            ])),
+        ),
+    ]
+}
+
+/// Recognition: a MonoBehaviour of another class, a null `m_Script` and one
+/// to a missing object (both `unresolved_scripts`), one whose `m_Script` is
+/// no MonoScript (not counted), and every `mSprites` that is not a list of
+/// sprites (`ngui_layout_unsupported`): NGUI 2's `sprites` layout, an `int`,
+/// an empty and a non-empty `string` (whose node's first child is `Array`
+/// too), elements without `width`, with a `float` or a `bool` rectangle
+/// field or an `int` name, and a `map`. An empty name is `unnamed_atlas`;
+/// an atlas whose rectangle fields are `UInt8`, `unsigned int`, `UInt64` and
+/// `int` is recognised and cut. In a second file with no typetrees, an
+/// atlas script's MonoBehaviour is `no_typetree`; in a third, with no
+/// typetrees either, so is one whose MonoScript the TPK reads.
+pub fn layouts() -> Built {
+    let legacy = st(
+        "Sprite",
+        vec![
+            ("name", s("old")),
+            (
+                "outer",
+                st(
+                    "Rect",
+                    vec![
+                        ("x", V::Float(0.0)),
+                        ("y", V::Float(0.0)),
+                        ("width", V::Float(1.0)),
+                        ("height", V::Float(1.0)),
+                    ],
+                ),
+            ),
+            ("rotated", V::Bool(false)),
+        ],
+    );
+    let empty = || vector(V::Int(0), Vec::new());
+    let mut objects = vec![
+        mono_script(1, "NGUIAtlas"),
+        mono_script(2, "UIPanel"),
+        rgba(3, "t", 1, 1, 1),
+        mono_behaviour(10, b"panel", (0, 2), vec![("depth", V::Int(3))]),
+        mono_behaviour(11, b"t", NULL, vec![("mSprites", empty())]),
+        mono_behaviour(12, b"t", (0, 77), vec![("mSprites", empty())]),
+        mono_behaviour(13, b"old", SCRIPT, vec![("sprites", one_of(legacy))]),
+        shaped(14, b"flat", V::Int(0)),
+        by_name(15, "", vec![plain("e", (0, 0, 1, 1))]),
+        mono_behaviour(16, b"t", (0, 3), vec![("mSprites", empty())]),
+    ];
+    objects.extend(odd_shapes());
+    objects.push(rgba(25, "mixed", 0x0C, 1, 1));
+    let first = file(&[], &objects, true)?;
+    let bare = file(
+        &["archive:/CAB-x11a/CAB-x11a"],
+        &[atlas(
+            1,
+            b"bare",
+            (1, 1),
+            NULL,
+            vec![plain("e", (0, 0, 1, 1))],
+            Vec::new(),
+        )],
+        false,
+    )?;
+    let stripped = file(
+        &[],
+        &[
+            mono_script(1, "NGUIAtlas"),
+            by_name(2, "stripped", vec![plain("e", (0, 0, 1, 1))]),
+        ],
+        false,
+    )?;
+    Ok(scene(
+        vec![one(
+            "x.bundle",
+            &[
+                ("CAB-x11a", first),
+                ("CAB-x11b", bare),
+                ("CAB-x11c", stripped),
+            ],
+            &[],
+        )],
+        &["x.bundle"],
+        CutOptions::default(),
+    ))
+}
+
+/// Reads that fail, with textures exported. The first texture named `ui`
+/// is cut short after its name: `peek_name` reads it, so it takes the name
+/// (the second `ui` is `duplicate_name`) and is the sheet of the atlas `ui`,
+/// whose skip is that texture's read's failure. The atlas `short` is cut
+/// short after its MonoBehaviour head, so it is recognised (from the
+/// typetree) but its own read fails, before its sheet is looked for; that
+/// sheet, which no atlas then cuts, is a plain texture output.
+pub fn failed_reads() -> Built {
+    // `ui`'s `m_Name`: an `int` length, two bytes, two of alignment.
+    let ui_name = 8;
+    // The head: two pointers of 12 bytes, an aligned `bool` and `m_Name`
+    // `short` (an `int`, five bytes, three of alignment).
+    let head = 12 + 4 + 12 + 12;
+    let cab = file(
+        &[],
+        &[
+            mono_script(1, "NGUIAtlas"),
+            rgba(2, "ui", 0x13, 2, 2).cut_to(ui_name),
+            rgba(3, "ui", 0x14, 2, 2),
+            by_name(4, "ui", vec![plain("s", (0, 0, 1, 1))]),
+            by_name(5, "short", vec![plain("s", (0, 0, 1, 1))]).cut_to(head),
+            rgba(6, "short", 0x15, 1, 1),
+        ],
+        true,
+    )?;
+    Ok(scene(
+        vec![one("x.bundle", &[("CAB-x15", cab)], &[])],
+        &["x.bundle"],
+        CutOptions::textures("{name}.png"),
+    ))
+}

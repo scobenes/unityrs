@@ -1,19 +1,19 @@
 //! The scenes of keys, units and the JSON: collisions inside an input, a
-//! sheet's unit, the JSON's values, and several inputs for the winners.
+//! sheet's unit, the export's order, and the JSON's values.
 
 use super::super::{
-    PropName, V, atlas, file, format, material, mono_script, sheet, sprite, st, texture, vector,
+    Object, PropName, V, atlas, file, format, material, mono_script, pair, s, sheet, sprite, st,
+    texture, vector,
 };
-use super::{AtlasScene, CutOptions, NULL, SCRIPT, SceneBundle, one, plain, rgba, scene};
+use super::{Built, CutOptions, NULL, SCRIPT, alone, by_name, one, plain, rgba, scene, with};
 
 /// Collisions in one input: two sprites of one atlas with one key (the later
 /// wins, E30), a second atlas of the same name (`duplicate_name`), and two
 /// atlases whose sprites expand to one key (`p` / `q/r` and `p/q` / `r`), where
 /// the first in plan order keeps it.
-#[must_use]
-pub fn duplicates() -> AtlasScene {
-    let cab = file(
-        &[],
+pub fn duplicates() -> Built {
+    alone(
+        "CAB-x6",
         &[
             mono_script(1, "NGUIAtlas"),
             rgba(2, "dsheet", 2, 4, 2),
@@ -55,167 +55,167 @@ pub fn duplicates() -> AtlasScene {
                 Vec::new(),
             ),
         ],
-        true,
-    );
-    scene(
-        vec![one("x.bundle", &[("CAB-x6", cab)], &[])],
-        &["x.bundle"],
-        CutOptions::default(),
     )
 }
 
-fn two_atlases_cab() -> Vec<u8> {
-    file(
-        &[],
-        &[
-            mono_script(1, "NGUIAtlas"),
-            rgba(2, "shared", 0x11, 3, 2),
-            rgba(3, "other", 0x21, 1, 1),
-            material(4, "smat", PropName::Plain, &[("_MainTex", (0, 2))]),
-            atlas(
-                5,
-                b"left",
-                SCRIPT,
-                (0, 4),
-                vec![plain("l", (0, 0, 1, 2))],
-                Vec::new(),
-            ),
-            atlas(
-                6,
-                b"right",
-                SCRIPT,
-                (0, 4),
-                vec![plain("r", (1, 0, 2, 2))],
-                Vec::new(),
-            ),
-        ],
-        true,
+fn two_atlases(textures: [Object; 2], shared: i64) -> Vec<Object> {
+    let [first, second] = textures;
+    vec![
+        mono_script(1, "NGUIAtlas"),
+        first,
+        second,
+        material(4, "smat", PropName::Plain, &[("_MainTex", (0, shared))]),
+        atlas(
+            5,
+            b"left",
+            SCRIPT,
+            (0, 4),
+            vec![plain("l", (0, 0, 1, 2))],
+            Vec::new(),
+        ),
+        atlas(
+            6,
+            b"right",
+            SCRIPT,
+            (0, 4),
+            vec![plain("r", (1, 0, 2, 2))],
+            Vec::new(),
+        ),
+    ]
+}
+
+fn shared_first() -> Vec<Object> {
+    two_atlases(
+        [rgba(2, "shared", 0x11, 3, 2), rgba(3, "other", 0x21, 1, 1)],
+        2,
     )
 }
 
 /// Two atlases cutting one sheet, with textures exported: one unit, keyed
-/// by the sheet's texture key. The other texture, which no atlas cuts, is
-/// planned, and left to the texture exporter.
-#[must_use]
-pub fn two_atlases_one_sheet() -> AtlasScene {
-    scene(
-        vec![one("x.bundle", &[("CAB-x7", two_atlases_cab())], &[])],
+/// by the sheet's texture key. The other texture, which no atlas cuts, is a
+/// plain texture output, exported after the sheet's group.
+pub fn two_atlases_one_sheet() -> Built {
+    let cab = file(&[], &shared_first(), true)?;
+    Ok(scene(
+        vec![one("x.bundle", &[("CAB-x7", cab)], &[])],
         &["x.bundle"],
-        CutOptions {
-            texture_key: Some("{name}.png".to_owned()),
-            ..CutOptions::default()
-        },
-    )
+        CutOptions::textures("{name}.png"),
+    ))
 }
 
 /// Two atlases cutting one sheet, with textures exported under a key every
 /// texture expands to (`sheet.png`): a texture before the sheet in object
-/// order takes it, the sheet's texture is `duplicate_key`, so the input makes
-/// no texture output for the sheet, and each atlas is a unit of its own.
-#[must_use]
-pub fn sheet_texture_key_taken() -> AtlasScene {
+/// order takes it (a plain texture output), the sheet's texture is
+/// `duplicate_key`, so the input makes no texture output for the sheet, and
+/// each atlas is a unit of its own.
+pub fn sheet_texture_key_taken() -> Built {
+    let objects = two_atlases(
+        [rgba(2, "decoy", 0x61, 1, 1), rgba(3, "shared", 0x11, 3, 2)],
+        3,
+    );
+    let cab = file(&[], &objects, true)?;
+    Ok(scene(
+        vec![one("x.bundle", &[("CAB-x13", cab)], &[])],
+        &["x.bundle"],
+        CutOptions::textures("sheet.png"),
+    ))
+}
+
+/// [`two_atlases_one_sheet`]'s bundle without textures: each atlas a unit.
+pub fn two_atlases_without_textures() -> Built {
+    let cab = file(&[], &shared_first(), true)?;
+    Ok(scene(
+        vec![one("x.bundle", &[("CAB-x7", cab)], &[])],
+        &["x.bundle"],
+        CutOptions::default(),
+    ))
+}
+
+/// A texture key equal to its atlas's JSON key (`{name}.json` and
+/// `{atlas}.json`): textures come first in plan order, so the sheet's
+/// texture takes `tk.json`, the atlas's JSON is `duplicate_key`, and the
+/// crop is in the unit `tk.json`, the texture's.
+pub fn texture_key_is_json_key() -> Built {
     let cab = file(
         &[],
         &[
             mono_script(1, "NGUIAtlas"),
-            rgba(2, "decoy", 0x61, 1, 1),
-            rgba(3, "shared", 0x11, 3, 2),
-            material(4, "smat", PropName::Plain, &[("_MainTex", (0, 3))]),
+            rgba(2, "tk", 0x1C, 2, 1),
+            by_name(3, "tk", vec![plain("s", (0, 0, 2, 1))]),
+        ],
+        true,
+    )?;
+    Ok(scene(
+        vec![one("x.bundle", &[("CAB-x18", cab)], &[])],
+        &["x.bundle"],
+        CutOptions::textures("{name}.json"),
+    ))
+}
+
+/// Two sheet groups whose first atlases come in the other order than their
+/// textures: `ga` and `gc` cut `s2`, `gb` cuts `s1`, and `ga` and `gb` each
+/// have a JSON that is unwritable, an export skip. The groups export in the
+/// order of their first atlas (`s2`'s, then `s1`'s), so `ga`'s skip is
+/// recorded before `gb`'s.
+pub fn two_sheet_groups() -> Built {
+    let blob = |n: &str| with(plain(n, (0, 0, 1, 1)), vec![("blob", V::Bytes(vec![5]))]);
+    alone(
+        "CAB-x19",
+        &[
+            mono_script(1, "NGUIAtlas"),
+            rgba(2, "s1", 0x1D, 1, 1),
+            rgba(3, "s2", 0x1E, 1, 1),
+            material(4, "m1", PropName::Plain, &[("_MainTex", (0, 2))]),
+            material(5, "m2", PropName::Plain, &[("_MainTex", (0, 3))]),
+            atlas(6, b"ga", SCRIPT, (0, 5), vec![blob("x")], Vec::new()),
+            atlas(7, b"gb", SCRIPT, (0, 4), vec![blob("x")], Vec::new()),
             atlas(
-                5,
-                b"left",
+                8,
+                b"gc",
                 SCRIPT,
-                (0, 4),
-                vec![plain("l", (0, 0, 1, 2))],
-                Vec::new(),
-            ),
-            atlas(
-                6,
-                b"right",
-                SCRIPT,
-                (0, 4),
-                vec![plain("r", (1, 0, 2, 2))],
+                (0, 5),
+                vec![plain("x", (0, 0, 1, 1))],
                 Vec::new(),
             ),
         ],
-        true,
-    );
-    scene(
-        vec![one("x.bundle", &[("CAB-x13", cab)], &[])],
-        &["x.bundle"],
-        CutOptions {
-            texture_key: Some("sheet.png".to_owned()),
-            ..CutOptions::default()
-        },
     )
 }
 
-/// [`two_atlases_one_sheet`]'s bundle without textures: each atlas a unit.
-#[must_use]
-pub fn two_atlases_without_textures() -> AtlasScene {
-    scene(
-        vec![one("x.bundle", &[("CAB-x7", two_atlases_cab())], &[])],
-        &["x.bundle"],
-        CutOptions::default(),
-    )
-}
-
-fn bytes_cab() -> Vec<u8> {
-    let with_blob = |name: &str, rect| match plain(name, rect) {
-        V::Struct(ty, mut fields) => {
-            fields.push(("blob".to_owned(), V::Bytes(vec![1, 2, 3])));
-            V::Struct(ty, fields)
-        }
-        other => other,
-    };
-    file(
-        &[],
+fn bytes_cab() -> Built {
+    let with_blob =
+        |name: &str, rect| with(plain(name, rect), vec![("blob", V::Bytes(vec![1, 2, 3]))]);
+    alone(
+        "CAB-x8",
         &[
             mono_script(1, "NGUIAtlas"),
             rgba(2, "bin", 9, 2, 2),
-            atlas(
+            by_name(
                 3,
-                b"bin",
-                SCRIPT,
-                NULL,
+                "bin",
                 vec![with_blob("c", (0, 0, 1, 1)), with_blob("d", (1, 1, 1, 1))],
-                Vec::new(),
             ),
         ],
-        true,
     )
 }
 
 /// An atlas whose sprites hold `TypelessData` (bytes): its JSON is
 /// `json_unwritable` and its crops stay, with no unit (textures off).
-#[must_use]
-pub fn json_bytes() -> AtlasScene {
-    scene(
-        vec![one("x.bundle", &[("CAB-x8", bytes_cab())], &[])],
-        &["x.bundle"],
-        CutOptions::default(),
-    )
+pub fn json_bytes() -> Built {
+    bytes_cab()
 }
 
 /// [`json_bytes`] with textures: the crops are in the sheet's unit.
-#[must_use]
-pub fn json_bytes_with_textures() -> AtlasScene {
-    scene(
-        vec![one("x.bundle", &[("CAB-x8", bytes_cab())], &[])],
-        &["x.bundle"],
-        CutOptions {
-            texture_key: Some("{name}.png".to_owned()),
-            ..CutOptions::default()
-        },
-    )
+pub fn json_bytes_with_textures() -> Built {
+    let mut built = bytes_cab()?;
+    built.options = CutOptions::textures("{name}.png");
+    Ok(built)
 }
 
 /// Floats Python's `repr` writes in its own forms: doubles 1e-05, 1e+16,
 /// -0.0, NaN and both infinities, floats widened exactly (0.1, 1e-05,
 /// 16777217 as 16777216, -0.0, NaN, the largest finite), an `mSettings`
-/// struct holding them, and `mPixelSize` 0.1.
-#[must_use]
-pub fn floats() -> AtlasScene {
+/// struct holding them and a pair (an array of two), and `mPixelSize` 0.1.
+pub fn floats() -> Built {
     let settings = st(
         "AtlasSettings",
         vec![
@@ -236,16 +236,13 @@ pub fn floats() -> AtlasScene {
                 "list",
                 vector(V::Float(0.0), vec![V::Float(0.1), V::Float(2.5)]),
             ),
+            ("pair", pair(V::Int(3), s("three"))),
         ],
     );
-    let with_scale = match plain("x", (0, 0, 1, 1)) {
-        V::Struct(ty, mut fields) => {
-            fields.push(("scale".to_owned(), V::Float(0.1)));
-            fields.push(("weight".to_owned(), V::Double(0.1)));
-            V::Struct(ty, fields)
-        }
-        other => other,
-    };
+    let with_scale = with(
+        plain("x", (0, 0, 1, 1)),
+        vec![("scale", V::Float(0.1)), ("weight", V::Double(0.1))],
+    );
     let mut f_atlas = atlas(
         3,
         b"f",
@@ -261,15 +258,9 @@ pub fn floats() -> AtlasScene {
             }
         }
     }
-    let cab = file(
-        &[],
+    alone(
+        "CAB-x9",
         &[mono_script(1, "NGUIAtlas"), rgba(2, "f", 4, 1, 1), f_atlas],
-        true,
-    );
-    scene(
-        vec![one("x.bundle", &[("CAB-x9", cab)], &[])],
-        &["x.bundle"],
-        CutOptions::default(),
     )
 }
 
@@ -277,11 +268,10 @@ pub fn floats() -> AtlasScene {
 /// invalid UTF-8 byte (UnityPy's `surrogateescape` gives `\udcff`), and one
 /// with a tab. The sprite key writes the names verbatim, so the last two are
 /// `unwritable_key` (`not_utf8`, `control_char`); the JSON key is `safe()`'s.
-#[must_use]
-pub fn non_ascii() -> AtlasScene {
+pub fn non_ascii() -> Built {
     let name = "ätlas".as_bytes();
-    let cab = file(
-        &[],
+    let mut built = alone(
+        "CAB-x10",
         &[
             mono_script(1, "NGUIAtlas"),
             texture(2, name, format::RGBA32, (2, 2), sheet(6, 2, 2, false)),
@@ -298,71 +288,7 @@ pub fn non_ascii() -> AtlasScene {
                 Vec::new(),
             ),
         ],
-        true,
-    );
-    scene(
-        vec![one("x.bundle", &[("CAB-x10", cab)], &[])],
-        &["x.bundle"],
-        CutOptions {
-            json_key: "{safe_atlas}.json".to_owned(),
-            ..CutOptions::default()
-        },
-    )
-}
-
-/// One input's bundle for [`winners`]: an atlas `atlas` cutting its own
-/// sheet `sheet` of base `base`, with `sprites`, and `blob` when its JSON is
-/// to be unwritable.
-fn winner_input(id: &str, atlas_name: &str, base: u8, sprites: &[&str], blob: bool) -> SceneBundle {
-    let list = sprites
-        .iter()
-        .enumerate()
-        .map(|(i, n)| {
-            let x = i32::try_from(i % 2).unwrap_or(0);
-            match plain(n, (x, 0, 1, 1)) {
-                V::Struct(ty, mut fields) if blob => {
-                    fields.push(("blob".to_owned(), V::Bytes(vec![0])));
-                    V::Struct(ty, fields)
-                }
-                other => other,
-            }
-        })
-        .collect();
-    let cab_name = format!("CAB-{}", id.trim_end_matches(".bundle"));
-    let cab = file(
-        &[],
-        &[
-            mono_script(1, "NGUIAtlas"),
-            rgba(2, "sheet", base, 2, 1),
-            material(3, "wmat", PropName::Plain, &[("_MainTex", (0, 2))]),
-            atlas(4, atlas_name.as_bytes(), SCRIPT, (0, 3), list, Vec::new()),
-        ],
-        true,
-    );
-    one(id, &[(cab_name.as_str(), cab)], &[])
-}
-
-/// Several inputs cutting atlases into the same keys, for the winners
-/// (`docs/BATCH_SPEC.md` 4.5), the sprite key `{sprite}.png`: `a` and `b`
-/// alike, `c` with other pixels and one more sprite (so its JSON differs),
-/// `d` whose JSON is unwritable (its crops plain candidates), and `e`, an
-/// atlas `other` whose unit shares the key `k.png` with the others'.
-#[must_use]
-pub fn winners() -> AtlasScene {
-    let bundles = vec![
-        winner_input("a.bundle", "shared", 1, &["k", "j"], false),
-        winner_input("b.bundle", "shared", 1, &["k", "j"], false),
-        winner_input("c.bundle", "shared", 0x31, &["k", "j", "i"], false),
-        winner_input("d.bundle", "shared", 0x41, &["k", "h"], true),
-        winner_input("e.bundle", "other", 0x51, &["k"], false),
-    ];
-    let inputs = bundles.iter().map(|b| b.id.clone()).collect();
-    AtlasScene {
-        bundles,
-        inputs,
-        options: CutOptions {
-            sprite_key: "{sprite}.png".to_owned(),
-            ..CutOptions::default()
-        },
-    }
+    )?;
+    "{safe_atlas}.json".clone_into(&mut built.options.json_key);
+    Ok(built)
 }
