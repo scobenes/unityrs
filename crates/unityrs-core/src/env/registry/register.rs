@@ -3,6 +3,15 @@
 //! `LoadMode::Lazy`" and "Memory"): `register_cab`'s dict by rank, the lazy
 //! slot a registration drops listed in the same step, or stood in for
 //! (plan section 9, Q14), and what it dropped released after the lock.
+//!
+//! A registration is charged first ([`Registry::prepare`]: every charge it
+//! makes) and published after ([`Registry::apply`]: nothing in it can fail
+//! the registration; the `settle` a load's runs reaches the slots it
+//! listed, and a refusal there leaves them listed for a later call, as
+//! every `settle` does). A load registers each key in turn, each charged
+//! and then published; a dependency's load under `LoadMode::Lazy` charges
+//! every one of its registrations before it publishes the first
+//! ([`Stage`], module docs, "A failed dependency load").
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -15,9 +24,54 @@ use super::{
 };
 use crate::error::Error;
 use crate::files::BundleFile;
-use crate::limits::{Charge, Meter};
+use crate::limits::{Charge, Meter, MeteredVec};
 use crate::pystr::simplify_name;
 use crate::raw::RawStr;
+
+/// A registration charged and not yet published ([`Registry::prepare`]):
+/// its key, its position, its slot (its rank the value's), the share of
+/// the tables a key new when it was charged paid for, and the charge for
+/// its position's path.
+pub(crate) struct Staged {
+    /// The simplified name: for a key the registry did not hold when the
+    /// registration was charged, its own charged copy, which the key keeps
+    /// if it is still new at the lock (the name `simplify_name` built is
+    /// dropped once copied, so a staged registration holds one copy of its
+    /// new key, not two); for a known key, the name `simplify_name` built.
+    key: RawStr,
+    position: Rank,
+    slot: Arc<Slot>,
+    /// A new key's share of the tables (`key` is then its copy).
+    share: Option<Charge>,
+    first_charge: Charge,
+}
+
+/// A dependency load's registrations, each charged and none published
+/// (module docs, "A failed dependency load"): [`Registry::stage`] adds one,
+/// [`Registry::commit`] publishes them all in order. Dropped unpublished,
+/// it returns every charge and holds no key, so a load that fails before
+/// its commit leaves the registry as it was. The list is charged to the
+/// dependency's meter.
+pub(crate) struct Stage {
+    staged: MeteredVec<Staged>,
+    /// Whether a staged registration paid for the `order` B-tree's root.
+    root: bool,
+}
+
+impl Stage {
+    /// An empty stage, its list charged to `meter`, the dependency's.
+    pub(crate) fn new(meter: &Arc<Meter>) -> Self {
+        Self {
+            staged: MeteredVec::new(meter),
+            root: false,
+        }
+    }
+
+    /// Room for `n` more registrations, charged first.
+    pub(crate) fn reserve(&mut self, n: usize) -> Result<(), Error> {
+        Ok(self.staged.reserve_exact(n)?)
+    }
+}
 
 /// What a registration dropped (module docs): the slot and its charges,
 /// and whether it was listed, with the steps the listing took.
@@ -169,7 +223,11 @@ impl Registry {
 
     /// Registers entry `path` of a dependency's `Lazy` bundle, of load
     /// `load`, unread (a lazy slot, module docs), charged to `meter`, the
-    /// dependency's.
+    /// dependency's, one key at a time. The tests' only: a dependency's load
+    /// under `Lazy` stages every such registration ([`Self::stage`]), so
+    /// that it publishes nothing when it fails (module docs, "A failed
+    /// dependency load"); `pass_tests.rs` registers its slots this way.
+    #[cfg(test)]
     pub(crate) fn register_lazy_dependency(
         &self,
         name: &RawStr,
@@ -182,6 +240,49 @@ impl Registry {
             dep: DepSlot::new(dep),
         };
         self.insert(name, kind, Loads::at(load), path, meter, By::Load, true)
+    }
+
+    /// Stages a dependency's CAB of load `load` at `path`, charged to
+    /// `meter`, the dependency's: [`Self::register_dependency`]'s
+    /// registration, or with `lazy` the tests' `register_lazy_dependency`'s,
+    /// every charge made and nothing published until [`Self::commit`].
+    // The registration's parts, as `register_lazy_dependency`'s, and its stage.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn stage(
+        &self,
+        stage: &mut Stage,
+        name: &RawStr,
+        dep: &Arc<Dependency>,
+        load: u64,
+        path: &[usize],
+        meter: &Arc<Meter>,
+        lazy: bool,
+    ) -> Result<(), Error> {
+        let kind = SlotKind::Dependency {
+            dep: DepSlot::new(dep),
+        };
+        let loads = Loads::at(load);
+        let staged = self.prepare(name, kind, loads, path, meter, lazy, &mut stage.root)?;
+        // Within the room the caller reserved, no growth; past it, a
+        // charged one, whose refusal drops the registration with the rest.
+        Ok(stage.staged.push(staged)?)
+    }
+
+    /// Publishes a load's staged registrations, in the order they were
+    /// staged, each as [`Self::insert`] publishes one (and a load's
+    /// `settle` after each). Nothing in it can fail the load: every charge
+    /// a registration makes was made when it was staged, and the `settle`
+    /// after each, which reaches the lazy slots a registration dropped and
+    /// charges what it reads, keeps a refusal to itself and leaves the slot
+    /// listed for a later call, as every `settle` does. Its one error is
+    /// [`Self::apply`]'s for a key that went away after it was found,
+    /// which nothing does: no registry call removes a key.
+    pub(crate) fn commit(&self, stage: Stage) -> Result<(), Error> {
+        let (staged, _list) = stage.staged.into_parts();
+        for one in staged {
+            self.apply(one, By::Load)?;
+        }
+        Ok(())
     }
 
     /// Registers `kind` at rank `(loads.value, path)` under
@@ -217,37 +318,98 @@ impl Registry {
         lazy: bool,
     ) -> Result<(), Error> {
         // UnityPy environment.py:252-264
+        let staged = self.prepare(name, kind, loads, path, meter, lazy, &mut false)?;
+        self.apply(staged, by)
+    }
+
+    /// The charged half of [`Self::insert`]: the key, the slot and, for a
+    /// key the registry does not hold now, its copy and its share of the
+    /// tables (the first key's with the B-tree's root, unless a registration
+    /// staged before it paid for that, `root`, which this one sets when it
+    /// pays), and the position's path. Every charge a registration makes is
+    /// made here, before anything is published: a refusal registers
+    /// nothing.
+    // The registration's parts, as `insert`'s, and the stage's root.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare(
+        &self,
+        name: &RawStr,
+        kind: SlotKind,
+        loads: Loads,
+        path: &[usize],
+        meter: &Arc<Meter>,
+        lazy: bool,
+        root: &mut bool,
+    ) -> Result<Staged, Error> {
         let lowered = simplify_name(name, meter)?;
-        let rank = Rank {
-            load: loads.value,
-            path: Arc::from(path),
-        };
+        let slot = Self::new_slot(kind, loads.value, path, lazy, meter)?;
         // The position shares the value's path, which `first_charge` pays
         // for while the key keeps it.
         let position = Rank {
             load: loads.position.min(loads.value),
-            path: rank.path.clone(),
+            path: slot.rank.path.clone(),
         };
-        let slot = Self::new_slot(kind, rank.clone(), lazy, meter)?;
-        let (known, first, value) = {
+        // This read and `apply`'s are two: the one before the charges asks
+        // whether the key is new, the one after them reads its value for
+        // the stand-in, with no lock held between (the price of charging a
+        // staged registration before any is published; `insert` pays it
+        // too, one more read lock per registration).
+        let (known, first) = {
             let inner = self.read();
-            let value = inner.slots.get(lowered.as_bytes()).map(|e| e.slot.clone());
-            (value.is_some(), inner.order.is_empty(), value)
+            let known = inner.slots.contains_key(lowered.as_bytes());
+            (known, inner.order.is_empty() && !*root)
         };
-        let stand = value.as_ref().and_then(|v| Stand::of(&slot, v));
-        drop(value);
         // A new key's own copy and its share of the tables, made before the
         // lock: the key holds no input's buffer (module docs); the first key
-        // also pays for the B-tree's root. A known key may move to this
-        // rank: its path is charged now and returned if it does not.
-        let fresh = if known {
-            None
+        // also pays for the B-tree's root. The share is charged before the
+        // copy. A key found here is found at the lock too, since no call
+        // removes one; a key not found here may be by then (another load's,
+        // or one this load staged before it), and its copy and share are
+        // then returned. A known key may move to this rank: its path is
+        // charged now and returned if it does not.
+        let (key, share) = if known {
+            (lowered, None)
         } else {
             let share = meter.charge(if first { SHARE + ORDER_LEAF } else { SHARE })?;
-            Some((RawStr::charged(lowered.as_bytes(), meter)?, share))
+            *root |= first;
+            (RawStr::charged(lowered.as_bytes(), meter)?, Some(share))
         };
         let first_charge = meter.charge(Rank::heap(path.len()))?;
-        let hash = self.watches.hash(lowered.as_bytes());
+        Ok(Staged {
+            key,
+            position,
+            slot,
+            share,
+            first_charge,
+        })
+    }
+
+    /// The published half of [`Self::insert`], in which nothing can fail
+    /// the registration: whether the slot that stays stands in for the
+    /// one dropped, told with no lock held ([`Stand`]), then the change,
+    /// in one step under the write lock, then what it dropped released
+    /// and, for a load's, the listed slots reached ([`Self::settle`],
+    /// whose refusal leaves them listed for a later call and does not fail
+    /// the registration). Its one error is for a key found when the
+    /// registration was charged and gone at the lock, which nothing does:
+    /// no call removes a key.
+    fn apply(&self, staged: Staged, by: By) -> Result<(), Error> {
+        let Staged {
+            key,
+            position,
+            slot,
+            share,
+            first_charge,
+        } = staged;
+        let rank = slot.rank.clone();
+        let value = self
+            .read()
+            .slots
+            .get(key.as_bytes())
+            .map(|e| e.slot.clone());
+        let stand = value.as_ref().and_then(|v| Stand::of(&slot, v));
+        drop(value);
+        let hash = self.watches.hash(key.as_bytes());
         let (dropped, changed, new_key) = {
             let mut inner = self.write();
             let RegistryInner {
@@ -256,7 +418,7 @@ impl Registry {
                 pending,
                 ..
             } = &mut *inner;
-            let out = if let Some(e) = slots.get_mut(lowered.as_bytes()) {
+            let out = if let Some(e) = slots.get_mut(key.as_bytes()) {
                 let moves = position < e.first;
                 let charge = if moves {
                     if let Some(key) = order.remove(&e.first) {
@@ -290,7 +452,7 @@ impl Registry {
                     listed,
                 };
                 (Some(dropped), moves || replaces, false)
-            } else if let Some((key, share)) = fresh {
+            } else if let Some(share) = share {
                 order.insert(position.clone(), key.clone());
                 slots.reserve(1);
                 slots.insert(
@@ -304,7 +466,7 @@ impl Registry {
                 );
                 (None, true, true)
             } else {
-                // The key went away between the check and the lock: never,
+                // The key went away between the charge and the lock: never,
                 // since nothing removes one; register it on the next call.
                 return Err(Error::Malformed {
                     what: "registry",
@@ -383,20 +545,28 @@ impl Registry {
             .store(pending.len(pending::List::Evicted), Ordering::Release);
     }
 
-    /// A slot of `kind` at `rank`, charged to `meter` (its `Arc`, its
-    /// rank's path, and a lazy slot's share of the list of dropped slots).
+    /// A slot of `kind` at rank `(load, path)`, charged to `meter` (its
+    /// `Arc`, its rank's path, and a lazy slot's share of the list of
+    /// dropped slots) before either is allocated.
     fn new_slot(
         kind: SlotKind,
-        rank: Rank,
+        load: u64,
+        path: &[usize],
         lazy: bool,
         meter: &Arc<Meter>,
     ) -> Result<Arc<Slot>, Error> {
         let mut charge = Charge::zero(meter);
         charge.grow(SLOT_ARC)?;
-        charge.grow(Rank::heap(rank.path().len()))?;
+        charge.grow(Rank::heap(path.len()))?;
         if lazy {
             charge.grow(PENDING_SHARE)?;
         }
+        // The path's `Arc` after its charge (CR1's review, round 1: it was
+        // allocated before it).
+        let rank = Rank {
+            load,
+            path: Arc::from(path),
+        };
         Ok(Arc::new(Slot {
             kind,
             rank,
