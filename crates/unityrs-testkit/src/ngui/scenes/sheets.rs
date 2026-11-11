@@ -300,7 +300,12 @@ pub fn fallback_rows() -> Built {
         ],
         true,
     )?;
-    let holder = bundle(&[("n.resS", x22(0x83))]);
+    // A nested WebFile row in X, read by no case: X is not failed (selection
+    // opens only its top-level rows).
+    let holder = bundle(&[
+        ("n.resS", x22(0x83)),
+        ("pad5.resS", web_file(&[("in5.resS", x22(0x99))])),
+    ]);
     Ok(scene(
         vec![
             fallback_dependency()?,

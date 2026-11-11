@@ -109,8 +109,11 @@ READ = ("decode_error", "read")
 
 
 class Divergence(Exception):
-    """A case the reference knowingly does not model, where the engine and UnityPy part: not a `Failure`, so it is
-    never classified, and a corpus run shows the input as an `error` row."""
+    """A case the reference knowingly does not model, where the engine and UnityPy part: not a `Failure`, so it
+    propagates from `cut` unclassified, and any harness running the reference sees an exception, not a record. Two
+    cases raise it: a view member or input that UnityPy does not parse as a `BundleFile` (`load`), which the engine
+    fails at its peek or at selection (`not_a_bundle`, or the open's code: a WebFile's `unsupported`), where UnityPy
+    goes on; and an input with a top-level WebFile row (`ngui_cutter.cut`)."""
 
 
 class _Sealed:
@@ -146,16 +149,22 @@ def _recording(read_files):
 
 
 def load(view: dict[str, bytes], input_id: str):
-    """The input's bundle, in an Environment of its view, its containers' rows kept, sealed."""
+    """The input's bundle, in an Environment of its view, its containers' rows kept, sealed; `Divergence` for a
+    view member or the input that UnityPy does not parse as a bundle."""
     env = UnityPy.Environment(path="")
     original = File.read_files
     File.read_files = _recording(original)
+    loaded = []
     try:
         for bid in sorted((b for b in view if b != input_id), key=bytewise):
-            env.load_file(view[bid], name=bid, is_dependency=True)
+            loaded.append((bid, env.load_file(view[bid], name=bid, is_dependency=True)))
         bundle = env.load_file(view[input_id], name=input_id)
+        loaded.append((input_id, bundle))
     finally:
         File.read_files = original
+    for bid, f in loaded:
+        if not isinstance(f, BundleFile):
+            raise Divergence(f"{bid}: UnityPy gives a {type(f).__name__}, which the engine fails (not a bundle)")
     setattr(env, REGISTRY, registry(env.files.values()))
     env.find_file = lambda name, is_dependency=True: found(env, name)
     env.load_file = lambda *args, **kwargs: None

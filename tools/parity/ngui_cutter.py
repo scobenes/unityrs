@@ -18,11 +18,13 @@ spec's, each rule cited where it is applied:
   `ngui_winners.py`'s.
 
 **Its input** is one input's view (4.2): `{bundle id: bytes}`, the input among them. The input's own SerializedFiles
-are the SerializedFile values of its bundle's `files` (section 3). One known divergence is out of scope: an input
-with a top-level WebFile row, which the engine fails (`entry_error`: selection opens each of the input's top-level
-rows, and version 1's core refuses to open a WebFile, section 3), where UnityPy parses the WebFile and goes on. The
-reference does not go on either: it raises `ngui_read.Divergence`, which no record classifies, so a corpus run would
-show such an input as an `error` row. No fixture or corpus input has one.
+are the SerializedFile values of its bundle's `files` (section 3). Two known divergences are out of scope, where
+the engine fails the input and UnityPy goes on: a view member or input that UnityPy does not parse as a bundle,
+which the engine fails at its peek or at selection (`not_a_bundle`, or the open's code); and an input with a
+top-level WebFile row, shadowed or not, which it fails at selection (`entry_error`: selection opens each of the
+input's top-level directory rows, and version 1's core refuses to open a WebFile, section 3). The reference does not
+go on either: it raises `ngui_read.Divergence`, which propagates from `cut` unclassified, so any harness running the
+reference sees an exception, not a record. No fixture scene or corpus input raises it.
 
 **Its output** (`Result`) is one entry per file the cutter produces: each `Output` (kind `texture`, when the options
 name a texture key, for a sheet's texture, in its unit, and for every other texture, a plain candidate;
@@ -256,8 +258,9 @@ def cut(input_id: str, view: dict[str, bytes], opts: Options | None = None) -> R
     if opts.sheet_scope != "own_files_by_name":
         raise ValueError(f"sheet scope {opts.sheet_scope!r}: version 1 has only own_files_by_name")
     bundle = rd.load(view, input_id)
-    if any(isinstance(f, WebFile) for _, f in rd.rows(bundle)):
-        raise rd.Divergence(f"{input_id}: a top-level WebFile row, which fails the input (entry_error, section 3)")
+    web = next((path for path, f in rd.rows(bundle) if isinstance(f, WebFile)), None)
+    if web is not None:
+        raise rd.Divergence(f"{input_id}: a top-level WebFile row {web!r}, which fails the input (entry_error)")
     result = Result(input_id)
     objects = [(sf, o) for sf in bundle.files.values() if isinstance(sf, SerializedFile) for o in sf.objects.values()]
     common = {"input": raw(input_id)}

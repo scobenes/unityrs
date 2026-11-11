@@ -53,7 +53,6 @@ UNSEALED = textwrap.dedent("""
 SEALED = textwrap.dedent("""
     import sys
     sys.path.insert(0, sys.argv[1])
-    import ngui_cutter
     import ngui_read as rd
     from UnityPy.files import SerializedFile
     from UnityPy.helpers.ResourceReader import get_resource_data
@@ -403,7 +402,9 @@ class UnityPyDeparts(unittest.TestCase):
                 self.assertEqual((caught.exception.reason, caught.exception.detail), ("decode_error", "unsupported"))
                 self.assertIsNone(rd.maintex_name(rd.atlas_tree(by_id[atlas]), by_id[atlas]))
         # A WebFile sibling: the dependency's `CAB-d22` names its own bundle's WebFile row `w4.resS`, which
-        # `PPtr.deref` finds among the siblings, as the core's `Parent` does, and the core refuses to open.
+        # `PPtr.deref` finds among the siblings, as the core's `Parent` does, and the core refuses to open. This pins
+        # the check's presence, not that siblings answer before the registry: `w4.ress`'s registry value is the
+        # same row, and no scene has an external whose sibling and registry value differ.
         d22 = keys["cab-d22"]
         self.assertIsInstance(rd.sibling(1, d22), WebFile)
         with self.assertRaises(rd.Failure) as caught:
@@ -424,6 +425,17 @@ class UnityPyDeparts(unittest.TestCase):
         scene = ngui_scenes.scenes()["fallback_rows"]
         with self.assertRaises(rd.Divergence):
             ngui_cutter.cut("d.bundle", scene.view("d.bundle"), scene.options)
+
+    def test_a_view_member_or_input_not_a_bundle_is_out_of_scope(self):
+        """A view member or input UnityPy parses as no `BundleFile`, which the engine fails at its peek (a WebFile's
+        `unsupported`), where UnityPy goes on: `Divergence`. The WebFile is `fallback_rows`' own row `w4.resS`, as
+        UnityPy's `WebFile.save` writes it."""
+        scene = ngui_scenes.scenes()["fallback_rows"]
+        d = rd.load(scene.view("d.bundle"), "d.bundle")
+        web = next(f for path, f in rd.rows(d) if path == "w4.resS").save()
+        for view, x in (({**scene.view("x.bundle"), "w.bundle": web}, "x.bundle"), ({"w.bundle": web}, "w.bundle")):
+            with self.subTest(input=x), self.assertRaises(rd.Divergence):
+                ngui_cutter.cut(x, view, scene.options)
 
     def test_the_view_s_registry_keys_a_container_by_its_name(self):
         """`fallback_rows`: UnityPy's registry gives a container no key, so it answers `r.resS` with the
