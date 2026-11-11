@@ -135,8 +135,9 @@ pub fn plan(width: u32, height: u32, mode: Mode) -> Result<Plan, ImageError> {
     }
     // Within `widest`, the row (at most 268,435,448 bytes) and the encoder
     // buffer, `max(65536, 4 x width)` bytes (at most 1,073,741,792), are C
-    // ints, so neither ZipEncode.c's check of the row (`:38`) nor a buffer
-    // size past a C int can refuse. The rest is the crate's own.
+    // ints, so neither the encoder's check of the row (Pillow 9.5.0,
+    // `src/libImaging/ZipEncode.c:37-40`) nor a buffer size past a C int can
+    // refuse. The rest is the crate's own.
     let too_large = ImageError::TooLarge { width, height };
     if u64::from(height) > u64::from(i32::MAX.unsigned_abs()) {
         return Err(too_large);
