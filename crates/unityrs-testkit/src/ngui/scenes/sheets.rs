@@ -243,7 +243,7 @@ pub fn repeated_rows() -> Built {
 /// reach keys above it, so `wv`'s read fails; so does `wt`'s, whose stream
 /// names a top-level WebFile row. `wi`'s names `in2.resS`, inside that
 /// nested WebFile, which is never registered: `outside_view(<path>)`, where
-/// UnityPy's registration would read it. The input holds no WebFile row:
+/// UnityPy's registration would read it. The input holds no top-level WebFile row:
 /// one fails it (`entry_error`, section 3). A pointer of `CAB-d22` through
 /// its external names its bundle's WebFile row `w4.resS`, a sibling:
 /// `unsupported`. The SerializedFile `CAB-dw` is followed by a top-level
