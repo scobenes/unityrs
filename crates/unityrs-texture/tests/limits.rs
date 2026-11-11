@@ -60,7 +60,7 @@ fn the_largest_texture_plans_and_one_more_column_is_refused() {
 fn sizes_do_not_wrap() {
     for format in Format::ALL {
         for (w, h) in [(i32::MAX, i32::MAX), (i32::MAX, 1), (1, i32::MAX)] {
-            // Past the bound, whatever the data, and nothing charged.
+            // Past the bound, whatever the data's length, and nothing charged.
             assert!(
                 matches!(
                     plan(format, ENOUGH, w, h),
@@ -223,9 +223,9 @@ const EDGES: [i32; 44] = [
     i32::MAX,
 ];
 
-/// Past this, a round's data is zeroed (calloc'd, untouched unless read)
-/// and a decode the plan allows is refused by its meter, so the rounds stay
-/// fast.
+/// Past this, a round's data is a slice of one zeroed buffer, allocated
+/// once and untouched unless read, and a decode the plan allows is refused
+/// by its meter, so the rounds stay fast and small.
 const BIG: u64 = 1 << 20;
 
 /// Any format, size, data length and meter: an image or a named error,
@@ -236,6 +236,9 @@ const BIG: u64 = 1 << 20;
 fn no_panic_on_any_input() {
     let mut rng = Rng::new(0x7e57_0000_0000_0001);
     let mut decoded = 0;
+    // The most data a round asks for: an RGBA32 texture at the bound, and
+    // a byte more.
+    let zeros = vec![0u8; usize::try_from(4 * MAX_PIXELS + 1).unwrap()];
     for round in 0..10_000 {
         let format = Format::ALL[rng.below(5)];
         let side = |rng: &mut Rng| {
@@ -263,13 +266,18 @@ fn no_panic_on_any_input() {
             }
         };
         let len = usize::try_from(len).unwrap();
-        let mut data = vec![0u8; len];
-        if need <= BIG {
-            for chunk in data.chunks_mut(8) {
-                let bytes = rng.next_u64().to_le_bytes();
-                chunk.copy_from_slice(&bytes[..chunk.len()]);
+        let random;
+        let data: &[u8] = if need <= BIG {
+            let mut bytes = vec![0u8; len];
+            for chunk in bytes.chunks_mut(8) {
+                let next = rng.next_u64().to_le_bytes();
+                chunk.copy_from_slice(&next[..chunk.len()]);
             }
-        }
+            random = bytes;
+            &random
+        } else {
+            &zeros[..len]
+        };
         let planned = plan(format, len, w, h);
         let charge = planned.as_ref().map_or(0, Plan::charge);
         let big = planned.as_ref().is_ok_and(|p| p.output_bytes > BIG);
@@ -285,7 +293,7 @@ fn no_panic_on_any_input() {
             Meter::new(l, Arc::new(Unbounded), Reservation::Input)
         });
         let what = format!("round {round}: {format:?} {w}x{h}, {len} bytes, limit {limit:?}");
-        match (decode(format, &data, w, h, &meter), planned) {
+        match (decode(format, data, w, h, &meter), planned) {
             (Ok(image), Ok(p)) => {
                 decoded += 1;
                 check(&image, &p, &what);

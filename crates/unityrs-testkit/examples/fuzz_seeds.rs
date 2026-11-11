@@ -324,15 +324,32 @@ fn depth_cases() -> Vec<(String, TreeCase)> {
     out
 }
 
-/// What mip 0 of a `width` x `height` texture of `format` holds: 4x4 blocks
-/// of 8 bytes (DXT1) or 16 (DXT5, BC7), else 3 or 4 bytes a pixel; 0 for a
-/// side of 0 or below.
+/// The format the `texture` target's check decodes `format` as
+/// (`fuzz/src/texture.rs`): itself when it is one of the five, else the
+/// five's `format mod 5`th, in `TextureFormat` order.
+fn texture_decoded_as(format: i32) -> i32 {
+    match format {
+        3 | 4 | 10 | 12 | 25 => format,
+        _ => match format.rem_euclid(5) {
+            0 => 3,
+            1 => 4,
+            2 => 10,
+            3 => 12,
+            _ => 25,
+        },
+    }
+}
+
+/// What mip 0 of a `width` x `height` texture of `format` holds, decoded
+/// as the check decodes it: 4x4 blocks of 8 bytes (DXT1) or 16 (DXT5,
+/// BC7), else 3 bytes a pixel (RGB24) or 4 (RGBA32); 0 for a side of 0 or
+/// below.
 fn texture_need(format: i32, width: i32, height: i32) -> u64 {
     let (Ok(w), Ok(h)) = (u64::try_from(width), u64::try_from(height)) else {
         return 0;
     };
     let blocks = w.div_ceil(4) * h.div_ceil(4);
-    match format {
+    match texture_decoded_as(format) {
         10 => blocks * 8,
         12 | 25 => blocks * 16,
         3 => w * h * 3,
@@ -342,9 +359,10 @@ fn texture_need(format: i32, width: i32, height: i32) -> u64 {
 
 /// The `texture` target's seeds: each of [`TEXTURE_FORMATS`] on Windows at
 /// each of [`TEXTURE_SIZES`], with data a byte short of mip 0, exact and a
-/// byte long (at most [`TEXTURE_DATA`]), under the memory bound and a
-/// meter of the charge less 1; and the five at 7x9 on Switch, with no blob,
-/// one GOB per block and more, and on Xbox 360.
+/// byte long (at most [`TEXTURE_DATA`]; one seed for those of one length,
+/// as where mip 0 holds nothing or more than that), under the memory bound
+/// and a meter of the charge less 1; and the five at 7x9 on Switch, with no
+/// blob, one GOB per block and more, and on Xbox 360.
 fn texture(s: &mut Seeds) -> std::io::Result<()> {
     let mut rng = Rng::new(0x7e57_7e57_0000_0001);
     let mut bytes = |len: u64| {
@@ -358,12 +376,18 @@ fn texture(s: &mut Seeds) -> std::io::Result<()> {
     for format in TEXTURE_FORMATS {
         for (width, height) in TEXTURE_SIZES {
             let need = texture_need(format, width, height);
+            let mut last = None;
             for (tag, len) in [
                 ("short", need.saturating_sub(1)),
                 ("exact", need),
                 ("long", need + 1),
             ] {
-                let data = bytes(len.min(TEXTURE_DATA));
+                let len = len.min(TEXTURE_DATA);
+                if last == Some(len) {
+                    continue;
+                }
+                last = Some(len);
+                let data = bytes(len);
                 for meter in [0, 1] {
                     let case = TextureCase {
                         format,

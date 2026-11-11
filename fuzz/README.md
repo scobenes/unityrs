@@ -21,7 +21,7 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `python_read` | `walk::python::read_with_reader`, from the case's start, by the memory or the stream reader's rules | `TreeCase` |
 | `write_after_read` | a read, `walk::write::write` under `WriteRules::MirrorReader`, the read again and the write again: the value and the bytes must come back the same (`docs/DESIGN.md`'s write rule); a writer's refusal must be its named error | `TreeCase` |
 | `lz4` | `codec::decode_block` with `codec::Lz4` against liblz4 1.9.4's `LZ4_decompress_safe` (lz4-sys 1.10.0): the same verdict, the same bytes, the same error code; the differences allowed are `PARITY.md`'s LZ4 row and its limits (an output past the 8 MiB block bound is refused with `BlockOutput`) | `unityrs_testkit::fuzz::lz4_case`: declared size, block |
-| `texture` | `unityrs_texture::select` and `decode` (a format outside the five decoded as one of them), under the memory bound or a meter of the decode's charge less 1, the charge or plus 1: an export must be of the texture's own format, the decode's answer its `plan`'s (but a refusal of a charge past the meter's limit), the image the plan's size, mode and charge, and the meter back at 0 after it | `unityrs_testkit::fuzz::TextureCase`: format, size, platform, meter, platform blob, data |
+| `texture` | `unityrs_texture::select` and `decode` (a format outside the five decoded as one of them), under the memory bound or a meter of the decode's charge less 1, the charge or plus 1: an export must be of the texture's own format, the decode's answer its `plan`'s (but a refusal of a charge past the meter's limit), the image the plan's size, mode and charge, and the meter back at 0 after it. Its data is the input, a few KiB at most, so the decodes it reaches are small: what needs more data (a crop's decompression-bomb check, a large decode) is the unit and seeded tests' (`crates/unityrs-texture/src/decode/tests.rs`, `crates/unityrs-texture/tests/limits.rs`) | `unityrs_testkit::fuzz::TextureCase`: format, size, platform, meter, platform blob, data |
 
 Every run is bounded by the limits in `src/lib.rs`: 128 MiB of memory, of
 input and of one block's output (`MEMORY`), and 8 MiB of decode work and of
@@ -50,9 +50,10 @@ files each bundle holds, each object's tree and bytes (with `SMALL_MEMORY`
 clear and set), every stored tree in ten formats both ways round, the deep
 values of `unityrs_testkit::depth`, LZ4 blocks of every output at the
 exact, a larger, a smaller and a zero declared size, and textures of the
-five formats and two others, from a side of 0 to past the decoders' bound
-and Pillow's limits, with data a byte short, exact and a byte long (at most
-4 KiB), on Windows, Switch and Xbox 360.
+five formats and two others, at sizes from a side of 0 to past the
+decoders' bound and Pillow's limits, with data a byte short, exact and a
+byte long, cut to at most 4 KiB (so past a few KiB of mip 0 only the checks
+before the data's are reached), on Windows, Switch and Xbox 360.
 
 ## Running
 
