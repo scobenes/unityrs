@@ -26,8 +26,11 @@ after mip 0), zero and negative sides (a negative one with empty data, one byte 
 and BC3 endpoint orders, the platforms whose textures UnityPy neither deswizzles nor byte-swaps (an Xbox 360 RGBA32
 or RGB24 texture, a Switch texture with one GOB per block), and two limits of Pillow's: its raw decoder's width cap
 (`MemoryError` before the data is read, one byte given, at the cap and one past it) and its crop's
-decompression-bomb check (the fewest pixels past it, 59 x 3,033,169 as DXT1, from about 91 MB of zeros; Pillow
-decodes the padded image, about 728 MB, before the crop raises).
+decompression-bomb check. The bomb's cases, DXT1 from zeros: the fewest pixels past it, 59 x 3,033,169, with mip 0's
+91 MB (Pillow decodes the padded image, about 728 MB, before the crop raises) and with one byte (the data check
+speaks first); the most pixels it lets through, 12,470 x 14,351 (178,956,970, a `DecompressionBombWarning` only);
+and an aligned texture past it, 4 x 44,739,244, which no crop checks. Recorded in the oracle container, the three
+past the bomb's own take about 12 s together and at most about 2.5 GB.
 
 **select.json.** The selection of docs/BATCH_SPEC.md section 3 (E66), computed with UnityPy's own predicates:
 `TextureFormat(value).name` (or the decimal value where the enum has none), `TextureSwizzler.is_switch_swizzled`
@@ -220,14 +223,20 @@ def side_cases() -> list[dict]:
 
 def limit_cases() -> list[dict]:
     """Pillow's raw decoder's width cap (`MemoryError` past `INT_MAX / bits - 7`, before it reads the data, so one
-    byte is given: at the cap the data check speaks), and its crop's decompression-bomb check at the fewest pixels
-    past twice `MAX_IMAGE_PIXELS`, 59 x 3,033,169 (178,956,971), as DXT1 with all of mip 0's bytes, zero."""
+    byte is given: at the cap the data check speaks), and its crop's decompression-bomb check, as DXT1: at the fewest
+    pixels past twice `MAX_IMAGE_PIXELS`, 59 x 3,033,169 (178,956,971), with all of mip 0's bytes, zero, and with one
+    byte (the data check comes before the bomb's); at the most it lets through, 12,470 x 14,351 (178,956,970, padded
+    to 12,472 x 14,352: a warning, and the image); and past it at a size no crop changes, 4 x 44,739,244
+    (178,956,976), which decodes. Each image is recorded by its sha256 only, as every image past `HEX_PIXELS` is."""
     out = []
     for fmt, cap in ((TF.RGBA32, 67_108_856), (TF.RGB24, 89_478_478)):
         for w in (cap, cap + 1):
             out.append(case(f"{fmt.name}-{w}x1-one", fmt, w, 1, {"hex": "00"}))
     w, h = 59, 3_033_169
     out.append(case(f"DXT1-{w}x{h}-zeros", TF.DXT1, w, h, {"zeros": needed(TF.DXT1, w, h)}))
+    out.append(case(f"DXT1-{w}x{h}-one", TF.DXT1, w, h, {"hex": "00"}))
+    for w, h in ((12_470, 14_351), (4, 44_739_244)):
+        out.append(case(f"DXT1-{w}x{h}-zeros", TF.DXT1, w, h, {"zeros": needed(TF.DXT1, w, h)}))
     return out
 
 

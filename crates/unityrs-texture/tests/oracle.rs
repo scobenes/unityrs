@@ -16,8 +16,8 @@ use unityrs_texture::{
 };
 
 /// The decode cases `texture.py` records, and how many are images.
-const DECODE_CASES: usize = 520;
-const IMAGES: usize = 315;
+const DECODE_CASES: usize = 523;
+const IMAGES: usize = 317;
 /// The selection cases.
 const SELECT_CASES: usize = 723;
 
