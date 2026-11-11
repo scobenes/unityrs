@@ -20,8 +20,9 @@
 //!   shared object this crate is linked into (a Python extension), so the
 //!   library neither interposes on nor is interposed by a zlib loaded beside
 //!   it.
-//! - `-std=gnu99`: zlib 1.2.13 defines its functions in the K&R style, which
-//!   C23 (GCC 15's default) no longer accepts.
+//! - `-std=gnu99`: zlib 1.2.13 defines its functions in the K&R style,
+//!   which C23 removed; Clang rejects them in C23 mode. CI's build of the
+//!   release tarball, for Pillow's side, uses the same standard.
 //! - Optimised whatever the profile: deflate's bytes do not depend on it,
 //!   and the debug build's tests deflate megabytes.
 //!

@@ -323,7 +323,8 @@ jobs:
       # which zlib_vendor.py verify also holds the vendored files to; then
       # runs the check with the build's libz.so.1 first on the library path,
       # which Pillow's _imaging and Python's zlib load by that soname, and
-      # asserts both report 1.2.13 there, so every field is compared.
+      # asserts both report 1.2.13 there, so every field is compared. It
+      # builds with -std=gnu99, as crates/unityrs-imageio/build.rs does.
       - name: X3 and X4, Pillow's PNGs over zlib 1.2.13, and the vendored zlib against its tarball
         run: |
           tarball="$RUNNER_TEMP/zlib-1.2.13.tar.gz"
@@ -333,7 +334,7 @@ jobs:
           python scripts/zlib_vendor.py verify "$tarball"
           tar -xzf "$tarball" -C "$RUNNER_TEMP"
           zlib="$RUNNER_TEMP/zlib-1.2.13"
-          (cd "$zlib" && ./configure && make -j"$(nproc)")
+          (cd "$zlib" && CFLAGS="-O2 -std=gnu99" ./configure && make -j"$(nproc)")
           test -f "$zlib/libz.so.1"
           export LD_LIBRARY_PATH="$zlib"
           python -c 'import zlib; from PIL import Image; v = (Image.core.zlib_version, zlib.ZLIB_RUNTIME_VERSION); assert v == ("1.2.13",) * 2, v'
