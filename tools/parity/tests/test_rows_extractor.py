@@ -532,7 +532,7 @@ class ExportRows(unittest.TestCase):
         def encode(image):
             """Each row filtered by the type whose bytes, as signed, have the least absolute sum, tried in the order
             none, up, sub, Paeth with the first kept on a tie (average only with `optimize`); zlib level 6, memLevel
-            9, Z_FILTERED; IDAT chunks of 65536 bytes."""
+            9, Z_FILTERED; IDAT chunks of max(65536, 4 x width) bytes, the encoder's buffer (ImageFile._save)."""
             bpp, color = {"L": (1, 0), "LA": (2, 4), "RGB": (3, 2), "RGBA": (4, 6)}[image.mode]
             width, height = image.size
             stride, pixels = width * bpp, image.tobytes()
@@ -551,12 +551,21 @@ class ExportRows(unittest.TestCase):
                 prev = row
             packer = zlib.compressobj(6, zlib.DEFLATED, 15, 9, zlib.Z_FILTERED)
             stream = packer.compress(bytes(raw)) + packer.flush()
-            idat = b"".join(chunk(b"IDAT", stream[i : i + 65536]) for i in range(0, len(stream), 65536))
+            size = max(65536, 4 * width)
+            idat = b"".join(chunk(b"IDAT", stream[i : i + size]) for i in range(0, len(stream), size))
             head = chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, color, 0, 0, 0))
             return b"\x89PNG\r\n\x1a\n" + head + idat + chunk(b"IEND", b"")
 
         rnd = random.Random(5)
-        cases = [("RGBA", 24, 16, 4), ("RGB", 40, 20, 4), ("L", 30, 30, 4), ("LA", 33, 17, 4), ("RGBA", 130, 130, 256)]
+        cases = [
+            ("RGBA", 24, 16, 4),
+            ("RGB", 40, 20, 4),
+            ("L", 30, 30, 4),
+            ("LA", 33, 17, 4),
+            ("RGBA", 16500, 2, 256),
+            ("RGBA", 130, 130, 256),
+        ]
+        sizes = {}
         for mode, width, height, noise in cases:
             image = Image.new(mode, (width, height))
             image.frombytes(
@@ -571,4 +580,13 @@ class ExportRows(unittest.TestCase):
             image.save(saved, "PNG")
             with self.subTest(mode=mode, size=(width, height)):
                 self.assertEqual(saved.getvalue(), encode(image))
-        self.assertEqual(saved.getvalue().count(b"IDAT"), 2)  # the noisy 130x130 needs two chunks
+            png, pos, sizes[width] = saved.getvalue(), 8, []
+            while pos < len(png):
+                (n,) = struct.unpack(">I", png[pos : pos + 4])
+                if png[pos + 4 : pos + 8] == b"IDAT":
+                    sizes[width].append(n)
+                pos += 12 + n
+        # The noisy 130x130 needs two chunks, the first of 65536 bytes; the noisy 16500x2, three, the first two of
+        # 4 x 16500.
+        self.assertEqual([len(sizes[130]), sizes[130][0]], [2, 65536])
+        self.assertEqual([len(sizes[16500]), *sizes[16500][:2]], [3, 66000, 66000])

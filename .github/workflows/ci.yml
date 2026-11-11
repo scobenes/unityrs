@@ -206,12 +206,15 @@ jobs:
             -r scripts/requirements-tests.txt
       # A skipped test, or fewer tests than the minimum, fails the job.
       - name: Self-tests (scripts)
-        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=95'
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=100'
 
   # The parity tools' Python side, on the pinned oracle stack (docs/DESIGN.md
   # section 3) and with UnityPy's samples, so the tests that need them run;
-  # what core takes from the oracle: the generated tables and G7; and the
-  # gate's rows that need no corpus: UnityPy's samples, G2 and G3.
+  # what core takes from the oracle: the generated tables and G7; the
+  # gate's rows that need no corpus: UnityPy's samples, G2 and G3; and
+  # unityrs-imageio's X3 and X4, whose step builds its own zlib 1.2.13
+  # (fetched by a versioned URL, verified against the crate's vendor
+  # manifest) and loads it under LD_LIBRARY_PATH within the step.
   parity-py:
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -291,8 +294,9 @@ jobs:
       # Python: each script regenerates its fixtures in memory and fails
       # naming any that drifted from it (files.py and env.py build their
       # inputs with unityrs-testkit, so they need the toolchain too). Every
-      # tools/fixtures/*.py run as a program is listed here or in G7's step;
-      # the rest are modules a listed script imports (walk.py records
+      # tools/fixtures/*.py run as a program is listed here, in G7's step or
+      # in X3 and X4's (imageio.py, below); the rest are modules a listed
+      # script imports (walk.py records
       # through walk_build.py, walk_elements.py, walk_mirror.py,
       # walk_reentry.py, walk_runs.py and walk_write.py, env.py through env_paths.py and
       # env_race.py, dump.py through dump_inputs.py, tpk.py through
@@ -311,6 +315,30 @@ jobs:
           python tools/fixtures/index.py --check
           python tools/fixtures/folders.py --check
           python tools/fixtures/no_tree.py --check
+      # unityrs-imageio's X3 and X4: imageio.py records Pillow 9.5.0's PNGs,
+      # whose bytes are zlib's, and the reference is zlib 1.2.13, the oracle
+      # image's; under another zlib (the runner's) it compares all but the
+      # PNG bytes, and says so. So the step builds zlib 1.2.13 from its
+      # release tarball, sha256-pinned here and in the crate's manifest,
+      # which zlib_vendor.py verify also holds the vendored files to; then
+      # runs the check with the build's libz.so.1 first on the library path,
+      # which Pillow's _imaging and Python's zlib load by that soname, and
+      # asserts both report 1.2.13 there, so every field is compared. It
+      # builds with -std=gnu99, as crates/unityrs-imageio/build.rs does.
+      - name: X3 and X4, Pillow's PNGs over zlib 1.2.13, and the vendored zlib against its tarball
+        run: |
+          tarball="$RUNNER_TEMP/zlib-1.2.13.tar.gz"
+          curl -fsSL --connect-timeout 30 --max-time 300 --retry 3 --retry-all-errors -o "$tarball" \
+            https://github.com/madler/zlib/releases/download/v1.2.13/zlib-1.2.13.tar.gz
+          echo "b3a24de97a8fdbc835b9833169501030b8977031bcb54b3b3ac13740f846ab30  $tarball" | sha256sum -c -
+          python scripts/zlib_vendor.py verify "$tarball"
+          tar -xzf "$tarball" -C "$RUNNER_TEMP"
+          zlib="$RUNNER_TEMP/zlib-1.2.13"
+          (cd "$zlib" && CFLAGS="-O2 -std=gnu99" ./configure && make -j"$(nproc)")
+          test -f "$zlib/libz.so.1"
+          export LD_LIBRARY_PATH="$zlib"
+          python -c 'import zlib; from PIL import Image; v = (Image.core.zlib_version, zlib.ZLIB_RUNTIME_VERSION); assert v == ("1.2.13",) * 2, v'
+          python tools/fixtures/imageio.py --check
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites

@@ -464,6 +464,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "unityrs-imageio"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "flate2",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror",
+ "unityrs-testkit",
+]
+
+[[package]]
 name = "unityrs-testkit"
 version = "0.0.1"
 dependencies = [

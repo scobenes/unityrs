@@ -7,15 +7,17 @@ when it is stale).
 
 It has two parts. The first holds the notices of code ported or vendored into
 unityrs from other projects (UnityPy and UnityPyBoost, liblz4, CPython's
-standard library), and the provenance of bundled data; the notice of a new
-port is added to about.hbs, its licence to its crate's, and the notice to
-the crate's own files (a LICENSE-* file, and a NOTICE-* file for a text of
-ours its licence asks for), so that the crate's package carries it with the
-code. The second holds the licence of every crate the unityrs workspace
-builds, its own members included, grouped by licence text. A crate offered
-under a choice of licences (such as "MIT OR Apache-2.0") is listed under the
-one about.toml prefers. liblzma-sys is also listed under 0BSD, the licence of
-the xz sources it vendors and compiles.
+standard library, Pillow, zlib), and the provenance of bundled data; the
+notice of a new port is added to about.hbs, its licence to its crate's, and
+the notice to the crate's own files (a LICENSE-* file, and a NOTICE-* file
+for a text of ours its licence asks for), so that the crate's package
+carries it with the code. The second holds the licence of every crate the
+unityrs workspace builds, its own members included, grouped by licence
+text. A crate offered under a choice of licences (such as "MIT OR
+Apache-2.0") is listed under the one about.toml prefers. liblzma-sys is also
+listed under 0BSD, the licence of the xz sources it vendors and compiles,
+and unityrs-imageio under Zlib, the licence of the zlib it vendors and
+compiles (twice: the vendored LICENSE, and its LICENSE-ZLIB, the same text).
 
 ================================================================================
 Ported code
@@ -228,6 +230,91 @@ products or services of Licensee, or any third party.
 8. By copying, installing or otherwise using Python, Licensee
 agrees to be bound by the terms and conditions of this License
 Agreement.
+
+--------------------------------------------------------------------------------
+Pillow 9.5.0 (the Python Imaging Library's fork)
+https://github.com/python-pillow/Pillow
+Licence: MIT-CMU.
+
+unityrs-imageio ports Pillow 9.5.0's PNG writer as Image.save(fp, "PNG")
+runs it at its defaults, so its PNG files are Pillow's byte for byte:
+crates/unityrs-imageio/src/png.rs translates src/PIL/PngImagePlugin.py's
+_save, putchunk and _idat, src/PIL/ImageFile.py's _save and _encode_tile,
+and the encode loop of src/libImaging/ZipEncode.c;
+crates/unityrs-imageio/src/filter.rs translates ZipEncode.c's choice of each
+row's PNG filter; crates/unityrs-imageio/src/hash.rs translates the
+converters of convert("RGBA") in src/libImaging/Convert.c (l2rgb, la2rgb,
+rgb2rgba). Pillow's LICENSE follows: Pillow calls its licence HPND, and its
+terms are the MIT-CMU licence's. It is unityrs-imageio's LICENSE-PILLOW,
+listed under MIT-CMU below.
+
+{{!-- notice: LICENSE-PILLOW --}}
+The Python Imaging Library (PIL) is
+
+    Copyright © 1997-2011 by Secret Labs AB
+    Copyright © 1995-2011 by Fredrik Lundh
+
+Pillow is the friendly PIL fork. It is
+
+    Copyright © 2010-2023 by Jeffrey A. Clark (Alex) and contributors.
+
+Like PIL, Pillow is licensed under the open source HPND License:
+
+By obtaining, using, and/or copying this software and/or its associated
+documentation, you agree that you have read, understood, and will comply
+with the following terms and conditions:
+
+Permission to use, copy, modify and distribute this software and its
+documentation for any purpose and without fee is hereby granted,
+provided that the above copyright notice appears in all copies, and that
+both that copyright notice and this permission notice appear in supporting
+documentation, and that the name of Secret Labs AB or the author not be
+used in advertising or publicity pertaining to distribution of the software
+without specific, written prior permission.
+
+SECRET LABS AB AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS
+SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS.
+IN NO EVENT SHALL SECRET LABS AB OR THE AUTHOR BE LIABLE FOR ANY SPECIAL,
+INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
+OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.
+
+--------------------------------------------------------------------------------
+zlib 1.2.13 (vendored)
+https://zlib.net
+Licence: Zlib.
+
+unityrs-imageio vendors the deflate side of zlib 1.2.13, unchanged, in
+crates/unityrs-imageio/vendor/zlib-1.2.13/ (each file's sha256 is in
+vendor/zlib-1.2.13.sha256, beside the release tarball's), and its build
+script compiles it into the crate, so that its PNG files deflate as Pillow
+9.5.0's do over the same zlib. zlib's LICENSE follows; it is
+unityrs-imageio's LICENSE-ZLIB, listed under Zlib below.
+
+{{!-- notice: LICENSE-ZLIB --}}
+Copyright notice:
+
+ (C) 1995-2022 Jean-loup Gailly and Mark Adler
+
+  This software is provided 'as-is', without any express or implied
+  warranty.  In no event will the authors be held liable for any damages
+  arising from the use of this software.
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software
+     in a product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
+
+  Jean-loup Gailly        Mark Adler
+  jloup@gzip.org          madler@alumni.caltech.edu
 
 --------------------------------------------------------------------------------
 Data provenance

@@ -974,7 +974,7 @@ It needs CR6 (section 6). A full build's distinct dependencies decode to about 3
 - The core's evict-and-retry for direct reads on a dependency's handle (3.12), which would let a read fit that a full cache refuses today.
 - `{container}` in key templates (`extract.md` E27).
 - A spec field for the manifest's location (`BATCH_SPEC.md` 7.1).
-- `PARITY.md`'s IDAT chunk size, `max(65536, 4 x width)` (`extract.md` E19).
+- `PARITY.md`'s IDAT chunk size, `max(65536, 4 x width)` (`extract.md` E19): settled in P1b. `PARITY.md`'s PNG bytes row says it, from Pillow 9.5.0's source (`src/PIL/ImageFile.py:513`), `test_rows_extractor.py` png_bytes pins it at width 16500 on the oracle, and `unityrs-imageio`'s fixtures at widths 16384, 16385 and 20000.
 - An optional prune of keys under the output root that the manifest does not list.
 - Check the NGUI atlas's material field name against NGUI's serialized layout (`material`, or `mMat` in some versions) before the cutter is written (`BATCH_SPEC.md` section 5); name a component atlas (`UIAtlas`) by its GameObject, so it can join `script_classes`' default.
 - A `PARITY.md` row, before X2 meets it, for UnityPy's sprite-sheet cache, keyed by path id alone, which aliases two sheets of one path id in different CABs that one sprite file reaches; the engine's groups keep them apart (`BATCH_SPEC.md` 4.4).
