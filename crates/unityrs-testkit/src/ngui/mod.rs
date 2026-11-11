@@ -288,8 +288,10 @@ fn bytes(w: &mut ByteWriter, v: &V) -> Result<(), BuildError> {
 }
 
 /// One object: its path id, class id and value (a [`V::Struct`] whose type
-/// is the class's name, written as the root node `Base`), and its bytes cut
-/// to `cut` when that is set (a read that runs out).
+/// is the class's name, written as the root node `Base`), its bytes cut to
+/// `cut` when that is set (a read that runs out), and `trailing` zero bytes
+/// stored after them (a read that ends before the object does, which
+/// UnityPy's `check_read` refuses).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Object {
     /// `path_id`.
@@ -300,6 +302,8 @@ pub struct Object {
     pub value: V,
     /// The object's stored bytes are the value's first `cut`.
     pub cut: Option<usize>,
+    /// Zero bytes stored after the value's (or the cut's).
+    pub trailing: usize,
 }
 
 impl Object {
@@ -311,6 +315,7 @@ impl Object {
             class_id,
             value,
             cut: None,
+            trailing: 0,
         }
     }
 
@@ -318,6 +323,13 @@ impl Object {
     #[must_use]
     pub fn cut_to(mut self, n: usize) -> Self {
         self.cut = Some(n);
+        self
+    }
+
+    /// The same object with `n` zero bytes stored after its value.
+    #[must_use]
+    pub fn with_trailing(mut self, n: usize) -> Self {
+        self.trailing = n;
         self
     }
 }
@@ -347,6 +359,7 @@ pub fn file(
         if let Some(n) = o.cut {
             data.truncate(n);
         }
+        data.resize(data.len() + o.trailing, 0);
         objs.push(ObjectSpec {
             path_id: o.path_id,
             type_id,
@@ -478,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cut_object_stores_its_first_bytes() {
+    fn a_cut_object_stores_its_first_bytes_and_trailing_ones_after() {
         let whole = file(
             &[],
             &[Object::new(1, 49, st("T", vec![("i", V::Int(7))]))],
@@ -492,6 +505,13 @@ mod tests {
         )
         .unwrap();
         assert!(cut.len() < whole.len());
+        let longer = file(
+            &[],
+            &[Object::new(1, 49, st("T", vec![("i", V::Int(7))])).with_trailing(16)],
+            true,
+        )
+        .unwrap();
+        assert_eq!(longer.len(), whole.len() + 16);
     }
 
     #[test]

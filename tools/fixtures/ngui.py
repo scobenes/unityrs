@@ -92,16 +92,20 @@ def winner_cases(results: list, textured: list) -> list[dict]:
     z = ["z.bundle"]
     plain = pick("a", "b", "c", "d", "f")
     cases = [
-        ("all_inputs", pick("a", "b", "c", "d", "e", "f"), {}, [], True),
+        ("a_to_f", pick("a", "b", "c", "d", "e", "f"), {}, [], True),
         ("first_input", plain, {}, [], True),
         ("lost_only", pick("a", "b", "c", "d"), {}, [], True),
+        ("lost_two", pick("a", "b", "c", "d", "g"), {}, [], True),
+        ("lost_prefer_failed", pick("a", "b", "c", "d", "g"), {"i.png": {"input": "z.bundle", "md5": None}}, z, True),
         ("equal_md5", pick("a", "b"), {}, [], True),
         ("prefer_input", plain, {"shared.json": {"input": "c.bundle", "md5": None}}, [], True),
         ("prefer_md5", plain, {"shared.json": {"input": None, "md5": digest("c.bundle", "shared.json")}}, [], True),
-        ("member_key_entry", plain, {"k.png": {"input": "d.bundle", "md5": None}}, [], True),
+        ("member_key_entry", plain, {"k.png": {"input": "c.bundle", "md5": None}}, [], True),
         ("withheld_unit", plain, {"shared.json": {"input": "z.bundle", "md5": None}}, z, True),
         ("withheld_plain", plain, {"h.png": {"input": "z.bundle", "md5": None}}, z, True),
         ("withheld_keeper", pick("a", "b", "c", "d", "e"), {"other.json": {"input": "z.bundle", "md5": None}}, z, True),
+        ("withheld_and_conflict", pick("a", "b", "c", "d", "e"), {"shared.json": {"input": "z.bundle", "md5": None}}, z,
+         True),
         ("publish_incomplete", plain, {}, z, False),
         ("textured_first", textured, {}, [], True),
         ("textured_prefer_plain", textured, {"sheet.png": {"input": "r.bundle", "md5": None}}, [], True),

@@ -1,11 +1,12 @@
 """The NGUI reference's winners across inputs (`ngui_winners.py`) on the testkit's winners scenes, against each key's
 decision worked out by hand from docs/BATCH_SPEC.md 4.5 and 7.3 (E31, E32, E61).
 
-`winners`: inputs `a` to `f`, each an atlas cutting its own sheet, sprite key `{sprite}.png`. `a` and `b` are alike
+`winners`: inputs `a` to `g`, each an atlas cutting its own sheet, sprite key `{sprite}.png`. `a` and `b` are alike
 (unit `shared.json`: `k.png`, `j.png`); `c` has other pixels and one more sprite, `i.png`; `d`'s and `f`'s JSONs are
 unwritable, so their crops are plain candidates (`k.png`, `h.png`; `i.png`); `e` is a unit `other.json` whose
-`k.png` meets `shared.json`'s. `textured_winners`: `p` and `q` units keyed by their sheet's texture key `sheet.png`,
-other pixels in `q`, and `r` a plain `sheet.png`. Needs UnityPy 1.25.2 (the oracle image), skipped elsewhere.
+`k.png` meets `shared.json`'s; `g` is like `c`, with other pixels again. `textured_winners`: `p` and `q` units
+keyed by their sheet's texture key `sheet.png`, other pixels in `q`, and `r` a plain `sheet.png`. Needs UnityPy
+1.25.2 (the oracle image), skipped elsewhere.
 """
 
 import sys
@@ -60,6 +61,15 @@ class Winners(unittest.TestCase):
         self.assertEqual(units["d"], [("h.png", None), ("k.png", None)])  # its JSON unwritable: no unit
         self.assertEqual(units["e"], [("k.png", "other.json"), ("other.json", "other.json")])
         self.assertEqual(units["f"], [("i.png", None)])
+        self.assertEqual(
+            units["g"],
+            [
+                ("i.png", "shared.json"),
+                ("j.png", "shared.json"),
+                ("k.png", "shared.json"),
+                ("shared.json", "shared.json"),
+            ],
+        )
         self.assertEqual(units["p"], [("at.json", "sheet.png"), ("at/s.png", "sheet.png"), ("sheet.png", "sheet.png")])
         self.assertEqual(units["r"], [("sheet.png", None)])
 
@@ -97,6 +107,19 @@ class Winners(unittest.TestCase):
         self.assertEqual(got["i.png"], ("withheld", "unit_lost", False, "c.bundle", rows("first_input", "c", "c")))
         self.assertEqual(got["shared.json"], unit("first_input"))
 
+    def test_a_key_two_losing_units_hold(self):
+        # `c` and `g` lose `shared.json` to `a`: `i.png`, which only they hold, is withheld, its row the first by
+        # input, every candidate with the rule that beat its unit; a `prefer` entry for it, naming an input that
+        # failed, changes nothing (E61 decides among plain candidates, and it has none).
+        lost = ("withheld", "unit_lost", False, "c.bundle", [("c.bundle", "first_input", True),
+                                                               ("g.bundle", "first_input", False)])  # fmt: skip
+        for kw in ({}, {"prefer": {"i.png": {"input": "z.bundle", "md5": None}}, "failed": Z}):
+            with self.subTest(**{k: str(v) for k, v in kw.items()}):
+                got = decisions(self.pick("abcdg"), **kw)
+                self.assertEqual(got["i.png"], lost)
+                self.assertEqual(got["shared.json"][:4], ("publish", None, True, "a.bundle"))
+                self.assertEqual([c[1] for c in got["shared.json"][4]], ["first_input"] * 4)
+
     def test_rule_three_among_equal_md5s_is_no_flip(self):
         got = decisions(self.pick("ab"))
         for key in ("shared.json", "j.png", "k.png"):
@@ -117,8 +140,12 @@ class Winners(unittest.TestCase):
                 self.assertEqual(got["k.png"][3], "c.bundle")
 
     def test_an_entry_for_another_key_of_a_unit_is_not_consulted(self):
+        # `c` holds a `shared.json` unit with `k.png`: were the member key's entry consulted, `c` would win.
         plain = self.pick("abcdf")
-        self.assertEqual(decisions(plain, prefer={"k.png": {"input": "d.bundle", "md5": None}}), decisions(plain))
+        got = decisions(plain, prefer={"k.png": {"input": "c.bundle", "md5": None}})
+        self.assertEqual(got, decisions(plain))
+        self.assertEqual(got["shared.json"], unit("first_input"))
+        self.assertEqual(got["k.png"][3], "a.bundle")
 
     def test_a_withheld_unit_key_reserves_every_unit_s_keys(self):
         got = decisions(self.pick("abcdf"), prefer={"shared.json": {"input": "z.bundle", "md5": None}}, failed=Z)
@@ -150,6 +177,19 @@ class Winners(unittest.TestCase):
         self.assertEqual(got["k.png"], (*held, False, "e.bundle", conflict))
         self.assertEqual(got["shared.json"][:4], ("withheld", "unit_conflict", True, "a.bundle"))
         self.assertEqual(got["i.png"][:2], ("withheld", "unit_lost"))
+
+    def test_a_withheld_unit_key_that_also_loses_step_two(self):
+        # E61 withholds `shared.json` (its preferred input failed); `other.json` keeps `k.png` (first by unit key).
+        # `shared.json` is withheld by E61 (`withheld`), not by step 2, and its candidates carry `withheld`.
+        got = decisions(self.pick("abcde"), prefer={"shared.json": {"input": "z.bundle", "md5": None}}, failed=Z)
+        held = ("withheld", "withheld")
+        self.assertEqual(got["shared.json"], unit("withheld", status=held))
+        self.assertEqual(got["j.png"], unit("withheld", status=held))
+        self.assertEqual(got["i.png"], (*held, False, "c.bundle", [("c.bundle", "withheld", True)]))
+        k_rows = [(i, "withheld", False) for i in ("a.bundle", "b.bundle", "c.bundle")]
+        k_rows += [("d.bundle", "unit", False), ("e.bundle", "first_input", True)]
+        self.assertEqual(got["k.png"], ("publish", None, False, "e.bundle", k_rows))
+        self.assertEqual(got["other.json"], ("publish", None, False, "e.bundle", rows("first_input", "e", "e")))
 
     def test_publish_incomplete_false(self):
         got = decisions(self.pick("abcdf"), failed=Z, publish_incomplete=False)

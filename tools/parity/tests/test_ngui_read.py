@@ -7,6 +7,7 @@ Needs UnityPy 1.25.2 and Pillow 9.5.0 (the oracle image), skipped elsewhere; the
 
 import json
 import os
+import struct
 import sys
 import textwrap
 import unittest
@@ -44,6 +45,23 @@ UNSEALED = textwrap.dedent("""
                 if obj.type.name == "Texture2D" and obj.peek_name() == "gone":
                     print(list(obj.read().image.getpixel((0, 0))))
 """)
+# A child that runs UnityPy's own resource lookup for `gone` on the reference's sealed Environment, in its working
+# directory: `get_resource_data` (helpers/ResourceReader.py:10-33), and `load_dependencies` then `get_cab`.
+SEALED = textwrap.dedent("""
+    import sys
+    sys.path.insert(0, sys.argv[1])
+    import ngui_read as rd
+    from UnityPy.files import SerializedFile
+    from UnityPy.helpers.ResourceReader import get_resource_data
+    bundle = rd.load({b: open(b, "rb").read() for b in ("d.bundle", "x.bundle")}, "x.bundle")
+    sf = next(f for f in bundle.files.values() if isinstance(f, SerializedFile))
+    try:
+        print(list(get_resource_data("archive:/CAB-x16/CAB-missing.resS", sf, 0, 4)))
+    except FileNotFoundError:
+        print("not found")
+    sf.load_dependencies(["CAB-missing.resS"])
+    print(sf.environment.get_cab("CAB-missing.resS"))
+""")
 
 
 def objects(bundle):
@@ -72,6 +90,10 @@ class Sealed(unittest.TestCase):
         # UnityPy, unsealed, reads the planted file: so it would decide the record.
         proc = child.run([sys.executable, "-c", UNSEALED], cwd=tmp, capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(proc.stdout), [10, 11, 12, 13])
+        # UnityPy's own lookup, on the sealed Environment in the same directory, finds nothing there.
+        proc = child.run([sys.executable, "-c", SEALED, str(HERE)], cwd=tmp, capture_output=True, text=True,
+                         check=True)  # fmt: skip
+        self.assertEqual(proc.stdout.splitlines(), ["not found", "None"])
         proc = child.run(args, cwd=tmp, capture_output=True, text=True, check=True)
         reasons = {(s["path_id"], s["reason"]) for s in json.loads(proc.stdout)["skips"]}
         self.assertIn((4, GONE), reasons)
@@ -96,13 +118,17 @@ class Sealed(unittest.TestCase):
         scene = self.scenes["missing_sheets"]
         bundle = rd.load(scene.view("x.bundle"), "x.bundle")
         sf = next(o for o in objects(bundle) if o.path_id == 10).assets_file
+        # Four externals: CAB-gone, CAB-d5, the raw `CAB-x5.resS` row, etc. `m_FileID - 1` indexes them as a Python
+        # list does (classes/PPtr.py:56-60), a negative index from the end.
         cases = [
             ((0, 0), "bad_pointer"),  # null
-            ((-1, 2), "bad_pointer"),  # below the start
-            ((5, 2), "bad_pointer"),  # past the externals
+            ((-4, 1), "bad_pointer"),  # index -5, below the start
+            ((5, 2), "bad_pointer"),  # index 4, past the externals
             ((0, 98), "bad_pointer"),  # a missing object
             ((3, 1), "bad_pointer"),  # the raw `.resS` row
+            ((-1, 2), "bad_pointer"),  # index -2: the raw row again
             ((1, 99), "outside_view(CAB-gone)"),
+            ((-3, 1), "outside_view(CAB-gone)"),  # index -4: the first external
             ((4, 1), "outside_view(etc)"),
         ]
         for (file_id, path_id), reason in cases:
@@ -110,6 +136,15 @@ class Sealed(unittest.TestCase):
                 rd.deref(file_id, path_id, sf)
             self.assertEqual(caught.exception.reason, reason)
         self.assertEqual(rd.deref(2, 1, sf).peek_name(), "elsewhere")  # the dependency's CAB
+        self.assertEqual(rd.deref(-2, 1, sf).peek_name(), "elsewhere")  # index -3: the same external
+        with self.assertRaises(IndexError):  # UnityPy's own `FileIdBelowStart`
+            UnityPy.classes.PPtr(m_FileID=-4, m_PathID=1, assetsfile=sf).deref()
+        # A pointer whose external names a container row (`streamed_sheets`' nested bundle `inner`).
+        streamed = rd.load(self.scenes["streamed_sheets"].view("x.bundle"), "x.bundle")
+        self.assertEqual([e.path for e in streamed.files["CAB-x16p"].externals], ["archive:/inner/inner"])
+        with self.assertRaises(rd.Failure) as caught:
+            rd.deref(1, 1, streamed.files["CAB-x16p"])
+        self.assertEqual(caught.exception.reason, "bad_pointer")
 
 
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
@@ -137,6 +172,72 @@ class UnityPyDeparts(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             empty.image  # noqa: B018
         self.assertEqual(rd.data_of(empty, self.textures["empty"].assets_file), b"")
+
+    def test_the_own_chain_walks_the_directory_s_rows(self):
+        """UnityPy's `files` dict keeps one object per path, a repeated path's last in its first row's place; 4.3
+        walks the rows, which the reference keeps at the load."""
+        scene = ngui_scenes.scenes()["repeated_rows"]
+        bundle = rd.load(scene.view("x.bundle"), "x.bundle")
+        self.assertEqual(list(bundle.files), ["CAB-x20", "sheet.resS", "SHEET.resS", "CAB-n.resS"])
+        paths = [path for path, _ in rd.rows(bundle)]
+        self.assertEqual(paths, ["CAB-x20", "sheet.resS", "SHEET.resS", "sheet.resS", "CAB-n.resS", "CAB-n.resS"])
+        first = [bytes(rd._get_resource_data(f, 0, 1)) for _, f in rd.rows(bundle)[1:5]]
+        self.assertEqual(first, [b"\x51", b"\x52", b"\x53", b"\x54"])
+        # The dict, reversed, meets `SHEET.resS` (0x52) before `sheet.resS`, which holds the third row (0x53).
+        self.assertEqual(bytes(rd._get_resource_data(bundle.files["sheet.resS"], 0, 1)), b"\x53")
+        textures = {o.peek_name(): o for o in objects(bundle) if o.type.name == "Texture2D"}
+        for name, own, registry in (("rep", 0x53, 0x53), ("nest", 0x54, 0x55)):
+            with self.subTest(texture=name):
+                texture = textures[name].read()
+                self.assertEqual(rd.decode(texture, textures[name]).getpixel((0, 0))[0], own)
+                # UnityPy's registry answers `nest` with the nested bundle's row, registered after the raw one.
+                self.assertEqual(texture.image.getpixel((0, 0))[0], registry)
+
+    def test_a_check_read_refusal_is_told_by_the_check(self):
+        """UnityPy's `check_read` raises a `ValueError` when a read ends before the object does
+        (helpers/TypeTreeHelper.py:155-156); without the check the same read gives its value."""
+        scene = ngui_scenes.scenes()["failed_reads"]
+        bundle = rd.load(scene.view("x.bundle"), "x.bundle")
+        by_id = {(o.assets_file.name, o.path_id): o for o in objects(bundle)}
+        tail, ttail, ui = by_id[("CAB-x15", 10)], by_id[("CAB-x15", 11)], by_id[("CAB-x15", 2)]
+        for obj, method in ((tail, tail.parse_as_dict), (ttail, ttail.read)):
+            with self.subTest(path_id=obj.path_id):
+                with self.assertRaisesRegex(ValueError, "^Expected to read"):
+                    method()
+                method(check_read=False)
+                with self.assertRaises(rd.Failure) as caught:
+                    rd.checked(method)
+                self.assertEqual(caught.exception.detail, "asset_bundle")
+        # A read that runs out fails with the check or without it: `read`.
+        with self.assertRaises(rd.Failure) as caught:
+            rd.checked(ui.read)
+        self.assertEqual(caught.exception.detail, "read")
+
+    def test_an_object_of_no_bytes_is_read_by_unitypy_s_own_reader(self):
+        """An object of no bytes skips UnityPyBoost (helpers/TypeTreeHelper.py:146-153); UnityPy's own reader, at the
+        file's end, raises `struct.error`: a read failure, the texture's name peek and the MonoBehaviour's head."""
+        scene = ngui_scenes.scenes()["failed_reads"]
+        bundle = rd.load(scene.view("x.bundle"), "x.bundle")
+        by_file = {o.assets_file.name: o for o in objects(bundle) if o.assets_file.name != "CAB-x15"}
+        for cab, method in (("CAB-x15b", by_file["CAB-x15b"].peek_name),
+                            ("CAB-x15c", by_file["CAB-x15c"].parse_monobehaviour_head)):  # fmt: skip
+            with self.subTest(cab=cab):
+                with self.assertRaises(struct.error):
+                    method()
+                with self.assertRaises(rd.Failure) as caught:
+                    rd.read(method)
+                self.assertEqual(caught.exception.detail, "read")
+        self.assertEqual(rd.recognise(by_file["CAB-x15c"], ("NGUIAtlas",)), ("unresolved", None))
+
+    def test_a_texture_whose_typetree_lacks_a_field_is_a_read_failure(self):
+        """UnityPy reads a Texture2D whose typetree has `m_Name` alone as an `UnknownObject`."""
+        scene = ngui_scenes.scenes()["failed_reads"]
+        bundle = rd.load(scene.view("x.bundle"), "x.bundle")
+        stub = next(o for o in objects(bundle) if o.assets_file.name == "CAB-x15" and o.path_id == 13)
+        self.assertEqual(type(stub.read()).__name__, "UnknownObject")
+        with self.assertRaises(rd.Failure) as caught:
+            rd.texture_of(stub)
+        self.assertEqual((caught.exception.reason, caught.exception.detail), ("decode_error", "read"))
 
     def test_a_negative_side_is_negative_size(self):
         negs = self.textures["negs"].read()

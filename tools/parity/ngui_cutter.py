@@ -9,8 +9,9 @@ spec's, each rule cited where it is applied:
 
 - the reads (`ngui_read.py`): the view's Environment, sealed; recognition from the typetree; the sheet's name
   (step 1, whose `PPtr.deref` may cross into the view's other bundles) and its texture among the input's own, by
-  the name `peek_name` reads (step 2); a streamed sheet's resource by 4.3's own-chain procedure; and each failure
-  classified as `batch.md` 2.7 classifies it;
+  the name `peek_name` reads (steps 1 and 2); a streamed sheet's resource by 4.3's own-chain procedure, over each
+  container's directory rows; and each failure classified as `batch.md` 2.7 classifies it, a `check_read`
+  refusal `asset_bundle`;
 - the plan of 4.4 (names, the skips that need no pixels, keys with 2.1's templates and 2.3's rules but
   `prefix_conflict` and `archive_conflict`, E30's later sprite), and its export order;
 - the units of 4.5 (E26, E32); their winners across inputs (4.5's steps 1 to 3, with E31 and E61) are
@@ -227,19 +228,19 @@ class Atlas:
 
 
 def own_textures(objects) -> list[Tex]:
-    """Every own Texture2D, in object order, read once without its pixels."""
+    """Every own Texture2D, in object order, read once without its pixels: its name peeked (4.4 step 1; a failed
+    peek gives no name, and its failure is the texture's), then its object read."""
     out = []
     for sf, obj in objects:
         if obj.type != ClassIDType.Texture2D:
             continue
         try:
-            name = rd.read(obj.peek_name)
+            name = rd.shaped(rd.read(obj.peek_name), str)
         except rd.Failure as f:
             out.append(Tex(sf, obj, None, None, f))
             continue
-        name = name if isinstance(name, str) else None
         try:
-            out.append(Tex(sf, obj, name, rd.read(obj.read), None))
+            out.append(Tex(sf, obj, name, rd.texture_of(obj), None))
         except rd.Failure as f:
             out.append(Tex(sf, obj, name, None, f))
     return out
@@ -316,7 +317,7 @@ def cut(input_id: str, view: dict[str, bytes], opts: Options | None = None) -> R
             reason = "reference_atlas"
         if reason is None:
             try:
-                tree = rd.read(obj.parse_as_dict)
+                tree = rd.atlas_tree(obj)
             except rd.Failure as f:  # the atlas's own read, before its sheet (section 5)
                 reason, detail = f.reason, f.detail
         if reason is None:

@@ -2,8 +2,10 @@
 //! of sheets streamed from a `.resS` (4.3's own-chain procedure) and of the
 //! crops Pillow refuses.
 
-use super::super::{file, format, mono_script, sheet, texture, texture_streamed};
-use super::{Built, CutOptions, by_name, one, plain, rgba, scene};
+use super::super::{
+    PropName, atlas, file, format, material, mono_script, sheet, texture, texture_streamed,
+};
+use super::{Built, CutOptions, SCRIPT, by_name, one, plain, rgba, scene};
 use crate::env::{bundle, res_bytes};
 
 /// Sheets whose answers are skips, with textures exported: an `Alpha8`
@@ -57,33 +59,59 @@ pub fn sheet_skips() -> Built {
 /// nested one. A texture whose stream path is empty has no data
 /// (`no_image_data`); one with a negative side and streamed data is
 /// `negative_size`.
+///
+/// And 4.3's other rules. UnityPy's later candidates: `res.dat` is found as
+/// `res.resource` (the second candidate), before the later row `res.resS`
+/// (the fourth); `as.dat` as `as.assets.resS` (the third); `st.dat` as
+/// `st.resS`. A container row of the key is passed over: `CAB-b.resS` is a
+/// nested bundle (holding a row of that name, with other pixels, which the
+/// registry would answer with) after the raw row `sub/CAB-b.resS`, of the
+/// same key, which is read. Of two raw rows of one key, `CAB-c.resS` and
+/// then `dir/CAB-c.resS`, the last is read. A stream path naming the reading
+/// file itself, `CAB-x16`, finds a SerializedFile (`decode_error`, code
+/// `malformed`, the texture and its atlas). A second SerializedFile,
+/// `CAB-x16p`, holds nothing but one external, naming the nested bundle
+/// `inner`, for a pointer to a container row (on `CAB-x16` it would be among
+/// the names UnityPy's own lookup loads first).
 pub fn streamed_sheets() -> Built {
     let streamed = |id, name: &str, size, path: &str, offset, len| {
         texture_streamed(id, name.as_bytes(), format::RGBA32, size, path, offset, len)
     };
     let mut own_res = res_bytes(5, 0x70);
     own_res.extend(sheet(0x17, 2, 2, false));
-    let cab = file(
-        &[],
-        &[
-            mono_script(1, "NGUIAtlas"),
-            streamed(2, "own", (2, 2), "archive:/CAB-x16/CAB-x16.resS", 5, 16),
-            streamed(3, "dep", (1, 2), "archive:/CAB-d16/CAB-d16.resS", 0, 8),
-            streamed(4, "gone", (1, 1), "archive:/CAB-x16/CAB-missing.resS", 0, 4),
-            streamed(5, "twin", (2, 1), "archive:/CAB-x16/CAB-twin.resS", 0, 8),
-            streamed(6, "empty", (2, 2), "", 0, 0),
-            streamed(7, "negs", (-1, 1), "archive:/CAB-x16/CAB-x16.resS", 5, 4),
-            by_name(8, "own", vec![plain("s", (0, 0, 2, 2))]),
-            by_name(9, "dep", vec![plain("s", (0, 0, 1, 2))]),
-            by_name(10, "gone", vec![plain("s", (0, 0, 1, 1))]),
-            by_name(11, "twin", vec![plain("s", (0, 0, 2, 1))]),
-            by_name(12, "empty", vec![plain("s", (0, 0, 1, 1))]),
-            by_name(13, "negs", vec![plain("s", (0, 0, 1, 1))]),
-        ],
-        true,
-    )?;
+    let rows: [(i64, &str, &str); 6] = [
+        (14, "res", "archive:/CAB-x16/res.dat"),
+        (15, "as", "archive:/CAB-x16/as.dat"),
+        (16, "st", "archive:/CAB-x16/st.dat"),
+        (17, "bb", "archive:/CAB-x16/CAB-b.resS"),
+        (18, "cc", "archive:/CAB-x16/CAB-c.resS"),
+        (19, "self", "archive:/CAB-x16/CAB-x16"),
+    ];
+    let mut objects = vec![
+        mono_script(1, "NGUIAtlas"),
+        streamed(2, "own", (2, 2), "archive:/CAB-x16/CAB-x16.resS", 5, 16),
+        streamed(3, "dep", (1, 2), "archive:/CAB-d16/CAB-d16.resS", 0, 8),
+        streamed(4, "gone", (1, 1), "archive:/CAB-x16/CAB-missing.resS", 0, 4),
+        streamed(5, "twin", (2, 1), "archive:/CAB-x16/CAB-twin.resS", 0, 8),
+        streamed(6, "empty", (2, 2), "", 0, 0),
+        streamed(7, "negs", (-1, 1), "archive:/CAB-x16/CAB-x16.resS", 5, 4),
+        by_name(8, "own", vec![plain("s", (0, 0, 2, 2))]),
+        by_name(9, "dep", vec![plain("s", (0, 0, 1, 2))]),
+        by_name(10, "gone", vec![plain("s", (0, 0, 1, 1))]),
+        by_name(11, "twin", vec![plain("s", (0, 0, 2, 1))]),
+        by_name(12, "empty", vec![plain("s", (0, 0, 1, 1))]),
+        by_name(13, "negs", vec![plain("s", (0, 0, 1, 1))]),
+    ];
+    for (id, name, path) in rows {
+        objects.push(streamed(id, name, (1, 1), path, 0, 4));
+        objects.push(by_name(id + 10, name, vec![plain("s", (0, 0, 1, 1))]));
+    }
+    let cab = file(&[], &objects, true)?;
+    let pointing = file(&["archive:/inner/inner"], &[], true)?;
     let inner = bundle(&[("CAB-twin.resS", sheet(0x19, 2, 1, false))]);
+    let nested_b = bundle(&[("CAB-b.resS", sheet(0x46, 1, 1, false))]);
     let dep = file(&[], &[], true)?;
+    let x16 = |base| sheet(base, 1, 1, false);
     Ok(scene(
         vec![
             one(
@@ -95,9 +123,18 @@ pub fn streamed_sheets() -> Built {
                 "x.bundle",
                 &[
                     ("CAB-x16", cab),
+                    ("CAB-x16p", pointing),
                     ("CAB-x16.resS", own_res),
                     ("CAB-twin.resS", sheet(0x18, 2, 1, false)),
                     ("inner", inner),
+                    ("res.resource", x16(0x41)),
+                    ("res.resS", x16(0x44)),
+                    ("as.assets.resS", x16(0x42)),
+                    ("st.resS", x16(0x43)),
+                    ("sub/CAB-b.resS", x16(0x45)),
+                    ("CAB-b.resS", nested_b),
+                    ("CAB-c.resS", x16(0x47)),
+                    ("dir/CAB-c.resS", x16(0x48)),
                 ],
                 &["d.bundle"],
             ),
@@ -107,11 +144,55 @@ pub fn streamed_sheets() -> Built {
     ))
 }
 
+/// A bundle whose directory repeats a path, for 4.3's own-chain procedure on
+/// the rows themselves, where UnityPy's `files` dict keeps one object per
+/// path, the last row's, in the first row's place. Three raw rows of one key,
+/// `sheet.resS`, `SHEET.resS` and `sheet.resS` again, each with other pixels:
+/// the last is read (the dict, reversed, would give `SHEET.resS`'s). A raw
+/// row `CAB-n.resS` and then a nested bundle at the same path, holding a row
+/// of that name with other pixels: the bundle is passed over and the raw row
+/// read (the dict holds only the bundle, and the registry the nested row).
+pub fn repeated_rows() -> Built {
+    let x16 = |base| sheet(base, 1, 1, false);
+    let streamed = |id, name: &[u8], path: &str| {
+        texture_streamed(id, name, format::RGBA32, (1, 1), path, 0, 4)
+    };
+    let cab = file(
+        &[],
+        &[
+            mono_script(1, "NGUIAtlas"),
+            streamed(2, b"rep", "archive:/CAB-x20/sheet.resS"),
+            streamed(3, b"nest", "archive:/CAB-x20/CAB-n.resS"),
+            by_name(4, "rep", vec![plain("s", (0, 0, 1, 1))]),
+            by_name(5, "nest", vec![plain("s", (0, 0, 1, 1))]),
+        ],
+        true,
+    )?;
+    let nested = bundle(&[("CAB-n.resS", x16(0x55))]);
+    Ok(scene(
+        vec![one(
+            "x.bundle",
+            &[
+                ("CAB-x20", cab),
+                ("sheet.resS", x16(0x51)),
+                ("SHEET.resS", x16(0x52)),
+                ("sheet.resS", x16(0x53)),
+                ("CAB-n.resS", x16(0x54)),
+                ("CAB-n.resS", nested),
+            ],
+            &[],
+        )],
+        &["x.bundle"],
+        CutOptions::textures("{name}.png"),
+    ))
+}
+
 /// Crops Pillow 9.5.0 refuses, on a 1 x 1 sheet: one of 20000 x 10000
-/// pixels, past twice `Image.MAX_IMAGE_PIXELS` (`decompression_bomb`), and
-/// one at `x` 2^31 - 1 with a width of 1, whose right edge is past a C `int`
-/// (`crop_overflow`); each the sprite's skip at the plan, beside a crop that
-/// is cut.
+/// pixels, past twice `Image.MAX_IMAGE_PIXELS` (`decompression_bomb`), one
+/// at `x` 2^31 - 1 with a width of 1, whose right edge is past a C `int`
+/// (`crop_overflow`), and one at `y` 2^31 - 1 with a height of 1, whose
+/// bottom edge is (`crop_overflow`); each the sprite's skip at the plan,
+/// beside a crop that is cut.
 pub fn crop_bounds() -> Built {
     super::alone(
         "CAB-x17",
@@ -125,8 +206,56 @@ pub fn crop_bounds() -> Built {
                     plain("ok", (0, 0, 1, 1)),
                     plain("bomb", (0, 0, 20_000, 10_000)),
                     plain("far", (i32::MAX, 0, 1, 1)),
+                    plain("low", (0, i32::MAX, 1, 1)),
                 ],
             ),
         ],
     )
+}
+
+/// A sheet whose decode fails, with textures exported under one key
+/// (`sheet.png`), the JSON key one key too (`atlas.json`) and the sprite key
+/// `{sprite}.png`. The texture `decoy`, first in plan order, takes
+/// `sheet.png`, so the sheet `bad`'s texture output is `duplicate_key` at
+/// the plan; of the two atlases cutting `bad`, the second, `a2`, has every
+/// output `duplicate_key`. At the export the decode fails
+/// (`not_enough_data`): one `skips` row, for `a1`, and none for the texture
+/// (its output did not keep its key) nor for `a2` (no output still planned).
+pub fn failed_sheet_rows() -> Built {
+    let cab = file(
+        &[],
+        &[
+            mono_script(1, "NGUIAtlas"),
+            rgba(2, "decoy", 0x61, 1, 1),
+            texture(3, b"bad", format::RGBA32, (4, 4), vec![7; 10]),
+            material(4, "bmat", PropName::Plain, &[("_MainTex", (0, 3))]),
+            atlas(
+                5,
+                b"a1",
+                SCRIPT,
+                (0, 4),
+                vec![plain("s", (0, 0, 1, 1))],
+                Vec::new(),
+            ),
+            atlas(
+                6,
+                b"a2",
+                SCRIPT,
+                (0, 4),
+                vec![plain("s", (0, 0, 1, 1))],
+                Vec::new(),
+            ),
+        ],
+        true,
+    )?;
+    let options = CutOptions {
+        sprite_key: "{sprite}.png".to_owned(),
+        json_key: "atlas.json".to_owned(),
+        ..CutOptions::textures("sheet.png")
+    };
+    Ok(scene(
+        vec![one("x.bundle", &[("CAB-x21", cab)], &[])],
+        &["x.bundle"],
+        options,
+    ))
 }

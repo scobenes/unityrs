@@ -1,7 +1,9 @@
 //! The scenes of recognition (`docs/BATCH_SPEC.md` section 5's first
 //! paragraph, decided from the typetree alone) and of reads that fail.
 
-use super::super::{Object, V, atlas, file, mono_behaviour, mono_script, pair, s, st, vector};
+use super::super::{
+    Object, PropName, V, atlas, file, material, mono_behaviour, mono_script, pair, s, st, vector,
+};
 use super::{Built, CutOptions, NULL, SCRIPT, by_name, one, plain, rgba, scene};
 
 /// An `mSprites` element of these fields, in this order.
@@ -171,26 +173,57 @@ pub fn layouts() -> Built {
 /// short after its MonoBehaviour head, so it is recognised (from the
 /// typetree) but its own read fails, before its sheet is looked for; that
 /// sheet, which no atlas then cuts, is a plain texture output.
+///
+/// The atlas `via`'s material names the cut-short `ui`: step 1 reads its
+/// name as `peek_name` does, so step 2 finds it and its failed read skips
+/// `via` (a full read in step 1 would give no name, and `via` would cut the
+/// texture of its own name). The atlas `tail` and the texture `ttail` hold
+/// four bytes past their values: their reads end early, which UnityPy's
+/// `check_read` refuses (`decode_error`, code `asset_bundle`), `ttail` the
+/// sheet of the atlas `ttail` too. The texture `stub` has a typetree of
+/// `m_Name` alone, which UnityPy reads as an `UnknownObject`. Two more files
+/// each end with an object of no bytes, which UnityPy reads with its own
+/// reader, past the file's end: a texture (`CAB-x15b`) and a MonoBehaviour
+/// (`CAB-x15c`), whose head's read fails, so its script is unresolved.
 pub fn failed_reads() -> Built {
     // `ui`'s `m_Name`: an `int` length, two bytes, two of alignment.
     let ui_name = 8;
     // The head: two pointers of 12 bytes, an aligned `bool` and `m_Name`
     // `short` (an `int`, five bytes, three of alignment).
     let head = 12 + 4 + 12 + 12;
+    let one_sprite = || vec![plain("s", (0, 0, 1, 1))];
+    let stub = Object::new(13, 28, st("Texture2D", vec![("m_Name", s("stub"))]));
     let cab = file(
         &[],
         &[
             mono_script(1, "NGUIAtlas"),
             rgba(2, "ui", 0x13, 2, 2).cut_to(ui_name),
             rgba(3, "ui", 0x14, 2, 2),
-            by_name(4, "ui", vec![plain("s", (0, 0, 1, 1))]),
-            by_name(5, "short", vec![plain("s", (0, 0, 1, 1))]).cut_to(head),
+            by_name(4, "ui", one_sprite()),
+            by_name(5, "short", one_sprite()).cut_to(head),
             rgba(6, "short", 0x15, 1, 1),
+            material(7, "viamat", PropName::Plain, &[("_MainTex", (0, 2))]),
+            atlas(8, b"via", SCRIPT, (0, 7), one_sprite(), Vec::new()),
+            rgba(9, "via", 0x16, 1, 1),
+            by_name(10, "tail", one_sprite()).with_trailing(4),
+            rgba(11, "ttail", 0x17, 1, 1).with_trailing(4),
+            by_name(12, "ttail", one_sprite()),
+            stub,
         ],
         true,
     )?;
+    let zero_texture = file(&[], &[rgba(1, "zero", 0x18, 1, 1).cut_to(0)], true)?;
+    let zero_head = file(&[], &[by_name(1, "zmb", one_sprite()).cut_to(0)], true)?;
     Ok(scene(
-        vec![one("x.bundle", &[("CAB-x15", cab)], &[])],
+        vec![one(
+            "x.bundle",
+            &[
+                ("CAB-x15", cab),
+                ("CAB-x15b", zero_texture),
+                ("CAB-x15c", zero_head),
+            ],
+            &[],
+        )],
         &["x.bundle"],
         CutOptions::textures("{name}.png"),
     ))

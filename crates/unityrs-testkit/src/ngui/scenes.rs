@@ -23,7 +23,7 @@ pub use outputs::{
     texture_key_is_json_key, two_atlases_one_sheet, two_atlases_without_textures, two_sheet_groups,
 };
 pub use recognition::{failed_reads, layouts};
-pub use sheets::{crop_bounds, sheet_skips, streamed_sheets};
+pub use sheets::{crop_bounds, failed_sheet_rows, repeated_rows, sheet_skips, streamed_sheets};
 pub use winners::{textured_winners, winners};
 
 /// One bundle of a scene: its spec `id`, its bytes and its `deps`.
@@ -309,10 +309,21 @@ pub fn null_material_and_reference() -> Built {
 /// texture, read in a dependency, whose name no own texture has (n6), a
 /// pointer into the input's raw `.resS` row (n7), and a CAB outside the view
 /// whose name is a directory at the root of a Linux host (n8), which
-/// UnityPy's own lookup would try to open.
+/// UnityPy's own lookup would try to open. And n9, whose material pointer's
+/// `m_FileID` is -2: it counts from the end of the four externals, as
+/// UnityPy's `PPtr.deref` indexes them, to `CAB-d5`, whose material names
+/// `far`, so n9 cuts the own texture `far` (step 1), not its own name's.
 pub fn missing_sheets() -> Built {
     let one_sprite = || vec![plain("p", (0, 0, 1, 1))];
-    let dep = file(&[], &[rgba(1, "elsewhere", 0x21, 1, 1)], true)?;
+    let dep = file(
+        &[],
+        &[
+            rgba(1, "elsewhere", 0x21, 1, 1),
+            material(2, "dmat", PropName::Plain, &[("_MainTex", (0, 3))]),
+            rgba(3, "far", 0x22, 1, 1),
+        ],
+        true,
+    )?;
     let mut objects = vec![
         mono_script(1, "NGUIAtlas"),
         material(2, "no_main", PropName::Plain, &[("_BumpMap", (0, 4))]),
@@ -343,6 +354,9 @@ pub fn missing_sheets() -> Built {
         ));
         objects.push(rgba(path_id + 10, &name, 0x30 + n, 1, 1));
     }
+    objects.push(atlas(18, b"n9", SCRIPT, (-2, 2), one_sprite(), Vec::new()));
+    objects.push(rgba(28, "n9", 0x39, 1, 1));
+    objects.push(rgba(29, "far", 0x3A, 1, 1));
     let externals = [
         "archive:/CAB-gone/CAB-gone",
         "archive:/CAB-d5/CAB-d5",
@@ -366,7 +380,7 @@ pub fn missing_sheets() -> Built {
 
 /// Every scene, by name.
 pub fn scenes() -> Result<Vec<(&'static str, AtlasScene)>, BuildError> {
-    let all: [(&'static str, Make); 22] = [
+    let all: [(&'static str, Make); 24] = [
         ("own_sheet_by_material_name", own_sheet_by_material_name),
         ("struct_maintex_in_dependency", struct_maintex_in_dependency),
         ("material_in_dependency", material_in_dependency),
@@ -386,7 +400,9 @@ pub fn scenes() -> Result<Vec<(&'static str, AtlasScene)>, BuildError> {
         ("failed_reads", failed_reads),
         ("sheet_skips", sheet_skips),
         ("streamed_sheets", streamed_sheets),
+        ("repeated_rows", repeated_rows),
         ("crop_bounds", crop_bounds),
+        ("failed_sheet_rows", failed_sheet_rows),
         ("winners", winners),
         ("textured_winners", textured_winners),
     ];

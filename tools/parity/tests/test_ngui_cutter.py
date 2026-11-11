@@ -158,10 +158,15 @@ class Cutter(unittest.TestCase):
 
     def test_every_way_step_one_gives_no_name_falls_to_the_atlas_name(self):
         r = self.one("missing_sheets")
-        self.assertEqual(outputs(r), [o for n in range(1, 9) for o in unit_of(f"n{n}.json", f"n{n}/p.png")])
+        self.assertEqual(outputs(r), [o for n in range(1, 10) for o in unit_of(f"n{n}.json", f"n{n}/p.png")])
         self.assertEqual(skips(r), [])
-        # n1 to n8 (path ids 10 to 17) each cut the own texture of its name (20 to 27).
-        self.assertEqual(r.sheets, [("CAB-x5", p, "atlas_name", "CAB-x5", p + 10) for p in range(10, 18)])
+        # n1 to n8 (path ids 10 to 17) each cut the own texture of its name (20 to 27); n9's material pointer, at
+        # `m_FileID` -2, counts from the end of the externals to CAB-d5, whose material names `far` (29).
+        self.assertEqual(
+            r.sheets,
+            [("CAB-x5", p, "atlas_name", "CAB-x5", p + 10) for p in range(10, 18)]
+            + [("CAB-x5", 18, "material_name", "CAB-x5", 29)],
+        )
 
     def test_names_and_keys_inside_one_input(self):
         r = self.one("duplicates")
@@ -353,13 +358,28 @@ class Cutter(unittest.TestCase):
             [
                 texture_skip("CAB-x15", 2, "decode_error", "read"),  # cut short, read past its end
                 texture_skip("CAB-x15", 3, "duplicate_name"),  # the first `ui`, peeked, took the name
+                texture_skip("CAB-x15", 11, "decode_error", "asset_bundle"),  # four bytes past its value
+                texture_skip("CAB-x15", 13, "decode_error", "read"),  # `m_Name` alone: an UnknownObject
+                texture_skip("CAB-x15b", 1, "decode_error", "read"),  # no bytes: its name's peek fails
                 atlas_skip("CAB-x15", 4, "decode_error", "read"),  # its sheet's read: the sheet's answer
                 atlas_skip("CAB-x15", 5, "decode_error", "read"),  # its own read, before its sheet
+                atlas_skip("CAB-x15", 8, "decode_error", "read"),  # its material names the failing `ui`
+                atlas_skip("CAB-x15", 10, "decode_error", "asset_bundle"),  # its own read, checked
+                atlas_skip("CAB-x15", 12, "decode_error", "asset_bundle"),  # its sheet `ttail`'s
             ],
         )
-        self.assertEqual(r.sheets, [("CAB-x15", 4, "atlas_name", "CAB-x15", 2)])
-        # No atlas cuts `short` once its atlas failed: a plain texture output.
-        self.assertEqual(outputs(r), [("texture", "short.png", None)])
+        self.assertEqual(
+            r.sheets,
+            [
+                ("CAB-x15", 4, "atlas_name", "CAB-x15", 2),
+                ("CAB-x15", 8, "material_name", "CAB-x15", 2),  # step 1 peeks the name, as step 2 does
+                ("CAB-x15", 12, "atlas_name", "CAB-x15", 11),
+            ],
+        )
+        # The MonoBehaviour of no bytes: its head's read fails, so its script is unresolved.
+        self.assertEqual(r.unresolved_scripts, 1)
+        # No atlas cuts `short` once its atlas failed, nor `via`: plain texture outputs.
+        self.assertEqual(outputs(r), [("texture", "short.png", None), ("texture", "via.png", None)])
 
     def test_a_sheet_s_skip_skips_its_atlas(self):
         r = self.one("sheet_skips")
@@ -387,7 +407,7 @@ class Cutter(unittest.TestCase):
     def test_streamed_sheets_by_the_own_chain(self):
         r = self.one("streamed_sheets")
         units = []
-        for name in ("own", "dep", "twin"):
+        for name in ("own", "dep", "twin", "res", "as", "st", "bb", "cc"):
             units += [("texture", f"{name}.png", f"{name}.png"), ("atlas_json", f"{name}.json", f"{name}.png"),
                       ("atlas_sprite", f"{name}/s.png", f"{name}.png")]  # fmt: skip
         self.assertEqual(outputs(r), units)
@@ -401,11 +421,33 @@ class Cutter(unittest.TestCase):
                 atlas_skip("CAB-x16", 12, "decode_error", "no_image_data"),
                 texture_skip("CAB-x16", 7, "decode_error", "negative_size"),
                 atlas_skip("CAB-x16", 13, "decode_error", "negative_size"),
+                texture_skip("CAB-x16", 19, "decode_error", "malformed"),  # its stream names CAB-x16 itself
+                atlas_skip("CAB-x16", 29, "decode_error", "malformed"),
             ],
         )
         # The input's own top-level `CAB-twin.resS` (base 0x18), not the nested bundle's (0x19).
         self.crop(r, "twin.png", "RGBA", (2, 1), [px(0x18, 0, 0), px(0x18, 1, 0)])
         self.crop(r, "own.png", "RGBA", (2, 2), [px(0x17, x, y) for y in (0, 1) for x in (0, 1)])
+        for key, base in (
+            ("res.png", 0x41),  # `res.resource`, the second candidate, before the later row `res.resS`
+            ("as.png", 0x42),  # `as.assets.resS`, the third
+            ("st.png", 0x43),  # `st.resS`, the fourth
+            ("bb.png", 0x45),  # the raw `sub/CAB-b.resS`: the later container row of its key is passed over
+            ("cc.png", 0x48),  # the later of two raw rows of one key
+        ):
+            self.crop(r, key, "RGBA", (1, 1), [px(base, 0, 0)])
+
+    def test_the_own_chain_reads_the_directory_s_rows(self):
+        r = self.one("repeated_rows")
+        units = []
+        for name in ("rep", "nest"):
+            units += [("texture", f"{name}.png", f"{name}.png"), ("atlas_json", f"{name}.json", f"{name}.png"),
+                      ("atlas_sprite", f"{name}/s.png", f"{name}.png")]  # fmt: skip
+        self.assertEqual(outputs(r), units)
+        self.assertEqual(skips(r), [])
+        # The third row of the key `sheet.ress`, the last; and the raw `CAB-n.resS`, its bundle passed over.
+        self.crop(r, "rep.png", "RGBA", (1, 1), [px(0x53, 0, 0)])
+        self.crop(r, "nest.png", "RGBA", (1, 1), [px(0x54, 0, 0)])
 
     def test_crops_pillow_refuses_are_skipped_at_the_plan(self):
         r = self.one("crop_bounds")
@@ -415,9 +457,30 @@ class Cutter(unittest.TestCase):
             [
                 ("CAB-x17", 3, MB, "atlas_sprite", "decode_error", 1, "decompression_bomb"),  # 2 x 10^8 pixels
                 ("CAB-x17", 3, MB, "atlas_sprite", "decode_error", 2, "crop_overflow"),  # a right edge of 2^31
+                ("CAB-x17", 3, MB, "atlas_sprite", "decode_error", 3, "crop_overflow"),  # a bottom edge of 2^31
             ],
         )
-        self.assertEqual(json.loads(by_key(r)["cb.json"].data)["sprite_count"], 3)
+        self.assertEqual(json.loads(by_key(r)["cb.json"].data)["sprite_count"], 4)
+
+    def test_a_failed_sheet_s_export_rows(self):
+        r = self.one("failed_sheet_rows")
+        # The decoy took `sheet.png`; `a2`'s JSON and sprite keys were `a1`'s. At the export the sheet's decode
+        # fails: a row for `a1` alone, none for the texture (it lost its key) nor for `a2` (nothing left).
+        self.assertEqual(
+            skips(r),
+            [
+                texture_skip("CAB-x21", 3, "duplicate_key"),
+                ("CAB-x21", 6, MB, "atlas_json", "duplicate_key", None, None),
+                ("CAB-x21", 6, MB, "atlas_sprite", "duplicate_key", 0, None),
+                atlas_skip("CAB-x21", 5, "decode_error", "not_enough_data"),
+            ],
+        )
+        self.assertEqual(outputs(r), [("texture", "sheet.png", None)])
+        self.assertEqual(by_key(r)["sheet.png"].path_id, 2)
+        self.assertEqual(
+            r.sheets,
+            [("CAB-x21", 5, "material_name", "CAB-x21", 3), ("CAB-x21", 6, "material_name", "CAB-x21", 3)],
+        )
 
     def test_every_json_has_section_five_s_keys_in_order(self):
         for name, scene in self.scenes.items():

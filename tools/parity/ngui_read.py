@@ -2,40 +2,51 @@
 reads, each failure classified as docs/plans/batch.md 2.7 classifies it.
 
 **The Environment** (4.3) registers the input's view, from its bytes: the other bundles with `is_dependency=True` in
-bytewise order of id, then the input. Then it is sealed: UnityPy's lookups past its registry (`find_file`'s check
-of `<path>/<name>`, which with an empty `path` is the host's root, and the files `load_file` finds relative to the
-working directory, which `load_dependencies` asks for) are replaced by a miss, and its filesystem by one that
-refuses every call. So a name the view does not register is not found, whatever is on the host.
+bytewise order of id, then the input. While it loads, each container's directory rows are kept, in directory order,
+each with the object UnityPy's reader made of it (`File.read_files`, files/File.py:76-90, wrapped to record what it
+assigns): UnityPy's `files` dict keeps one object per path, a repeated path's last in its first row's place, and 4.3
+walks the rows. Then it is sealed: UnityPy's lookups past its registry (`find_file`'s check of `<path>/<name>`,
+which with an empty `path` is the host's root, and the files `load_file` finds relative to the working directory,
+which `load_dependencies` asks for) are replaced by a miss, and its filesystem by one that refuses every call. So a
+name the view does not register is not found, whatever is on the host.
 
 **Pointers** are dereferenced by UnityPy's `PPtr.deref` (classes/PPtr.py:43-90), which looks in the reading file's
-own bundle, then the registry. Its failures are batch.md 2.7's `DerefError`s: a null pointer, an `m_FileID` below 0
-or past the externals, a missing object and a target that is no SerializedFile (a raw or container row) are
-`bad_pointer`; a CAB the view does not register is `outside_view(<cab>)`.
+own bundle, then the registry. Its failures are batch.md 2.7's `DerefError`s: a null pointer, an `m_FileID` whose
+index `m_FileID - 1` is past the externals or below their start (a negative index counts from the end, as Python's
+list and the core's `external_index` do), a missing object and a target that is no SerializedFile (a raw or
+container row) are `bad_pointer`; a CAB the view does not register is `outside_view(<cab>)`.
 
-**Object reads** go through UnityPy (UnityPyBoost's reader): a read that runs out or meets a value of the wrong
-shape is a `ParseError`'s `Read`, `decode_error` with the code `read`, and UnityPy's `TypeTreeError` its `Tree`,
-`tree` (BATCH_SPEC 7.3's codes). `MemoryError` and anything else are not classified: they propagate, as the
-engine stops on a host's refusal or an unknown error.
+**Object reads** go through UnityPy (UnityPyBoost's reader, or UnityPy's own for an object of no bytes): a read
+that runs out or meets a value of the wrong shape is a `ParseError`'s `Read`, `decode_error` with the code `read`.
+The atlas, texture, Material and MonoScript reads use UnityPy's `check_read`, its default: a read that ends before
+the object does fails the check (`helpers/TypeTreeHelper.py:155-156`), which is the core's `ParseError::CheckRead`,
+code `asset_bundle` (BATCH_SPEC 7.3). That failure is told apart from every other `ValueError` by the check itself:
+the same read without it succeeds. Names and the MonoBehaviour's head are read without the check (`peek_name`,
+`parse_monobehaviour_head`). UnityPy's `TypeTreeError` is never one: its one raise passes one argument to a class
+that takes two (files/ObjectReader.py:306), so it surfaces as a `TypeError`, a `read`, and no read here is `tree`.
+Only UnityPy's calls are wrapped; the values they return are checked for the shape the reads need, a wrong one the
+read's failure. `MemoryError` and anything else are not classified: they propagate, as the engine stops on a host's
+refusal or an unknown error.
 
 **A sheet's data** (section 5) is its `image_data`, else the `m_StreamData` resource that 4.3's own-chain procedure
-finds: the spec's lookup, written here, over UnityPy's candidate names (helpers/ResourceReader.py:10-33), reading
-the row with UnityPy's own `_get_resource_data`; the registry (UnityPy's `get_cab`) only when no own row answers.
-The bytes go to UnityPy's `parse_image_data`, as `Texture2D.image` gives them to it, so the image is UnityPy's and
-Pillow's, after section 3's answers 5 to 10 in their order.
+finds: the spec's lookup, written here over the rows kept at the load and UnityPy's candidate names
+(helpers/ResourceReader.py:10-33), reading the row with UnityPy's own `_get_resource_data`; the registry (UnityPy's
+`get_cab`) only when no own row answers. The bytes go to UnityPy's `parse_image_data`, as `Texture2D.image` gives
+them to it, so the image is UnityPy's and Pillow's, after section 3's answers 5 to 10 in their order.
 """
 
 from __future__ import annotations
 
 import ntpath
+import struct
 
 import UnityPy
 from PIL import Image
-from UnityPy.classes import PPtr
+from UnityPy.classes import PPtr, Texture2D
 from UnityPy.enums import BuildTarget, ClassIDType, TextureFormat
 from UnityPy.environment import simplify_name
-from UnityPy.exceptions import TypeTreeError
 from UnityPy.export import Texture2DConverter
-from UnityPy.files import BundleFile, SerializedFile, WebFile
+from UnityPy.files import BundleFile, File, SerializedFile, WebFile
 from UnityPy.helpers import TextureSwizzler
 from UnityPy.helpers.ResourceReader import _get_resource_data
 from UnityPy.helpers.TypeTreeHelper import FUNCTION_READ_MAP
@@ -51,8 +62,12 @@ CROP_PIXELS = 2 * Image.MAX_IMAGE_PIXELS
 # `double`, `bool`, `string` and `TypelessData`.
 INTEGER = frozenset(FUNCTION_READ_MAP) - {"float", "double", "bool", "string", "TypelessData"}
 RECT = ("x", "y", "width", "height")
-# What an object read raises when its bytes run out or a value has the wrong shape.
-READ_FAILURES = (EOFError, ValueError, IndexError, KeyError, TypeError, AttributeError)
+# What UnityPy's object reads raise when the bytes run out or a value has the wrong shape: `struct.error` from
+# UnityPy's own reader (an object of no bytes skips UnityPyBoost, helpers/TypeTreeHelper.py:146-153), the others from
+# either reader.
+READ_FAILURES = (EOFError, ValueError, IndexError, KeyError, TypeError, AttributeError, struct.error)
+# Where each container's directory rows are kept at the load.
+ROWS = "unityrs_rows"
 
 
 class Failure(Exception):
@@ -61,6 +76,9 @@ class Failure(Exception):
     def __init__(self, reason: str, detail: str | None = None):
         super().__init__(reason if detail is None else f"{reason}, {detail}")
         self.reason, self.detail = reason, detail
+
+
+READ = ("decode_error", "read")
 
 
 class _Sealed:
@@ -74,31 +92,88 @@ def bytewise(text: str) -> bytes:
     return text.encode("utf-8")
 
 
+def _recording(read_files):
+    """`File.read_files`, keeping each directory row's name and object in directory order on the container."""
+
+    def wrapper(self, reader, nodes):
+        rows = []
+
+        class Recording(dict):
+            def __setitem__(inner, name, f):
+                rows.append((name, f))
+                super().__setitem__(name, f)
+
+        self.files = Recording(self.files)
+        try:
+            read_files(self, reader, nodes)
+        finally:
+            self.files = dict(self.files)
+        setattr(self, ROWS, rows)
+
+    return wrapper
+
+
 def load(view: dict[str, bytes], input_id: str):
-    """The input's bundle, in an Environment of its view, sealed."""
+    """The input's bundle, in an Environment of its view, its containers' rows kept, sealed."""
     env = UnityPy.Environment(path="")
-    for bid in sorted((b for b in view if b != input_id), key=bytewise):
-        env.load_file(view[bid], name=bid, is_dependency=True)
-    bundle = env.load_file(view[input_id], name=input_id)
+    original = File.read_files
+    File.read_files = _recording(original)
+    try:
+        for bid in sorted((b for b in view if b != input_id), key=bytewise):
+            env.load_file(view[bid], name=bid, is_dependency=True)
+        bundle = env.load_file(view[input_id], name=input_id)
+    finally:
+        File.read_files = original
     env.find_file = lambda name, is_dependency=True: env.get_cab(name)
     env.load_file = lambda *args, **kwargs: None
     env.fs = _Sealed()
     return bundle
 
 
+def rows(container) -> list:
+    """A container's directory rows, `(path, object)`, in directory order, as the load kept them."""
+    return getattr(container, ROWS)
+
+
 def read(f, *args):
-    """An object read through UnityPy: its value, or its `Failure`."""
+    """A UnityPy read: its value, or its `Failure`."""
     try:
         return f(*args)
-    except TypeTreeError as e:
-        raise Failure("decode_error", "tree") from e
     except READ_FAILURES as e:
-        raise Failure("decode_error", "read") from e
+        raise Failure(*READ) from e
+
+
+def checked(method):
+    """A UnityPy object read with `check_read`, as UnityPy's default: `method(check_read=True)`'s value, or its
+    `Failure`. A `ValueError` is the check's when the same read without it succeeds: `asset_bundle`."""
+    try:
+        return method(check_read=True)
+    except ValueError as e:
+        try:
+            method(check_read=False)
+        except READ_FAILURES:
+            raise Failure(*READ) from e
+        raise Failure("decode_error", "asset_bundle") from e
+    except READ_FAILURES as e:
+        raise Failure(*READ) from e
+
+
+def shaped(value, *types):
+    """A read value, or the read's failure when it is not of `types`."""
+    if not isinstance(value, types) or isinstance(value, bool) and bool not in types:
+        raise Failure(*READ)
+    return value
+
+
+def field(tree, name: str, *types):
+    """A field of a read dict, checked for `types`; a missing one, or a value not a dict, is the read's failure."""
+    return shaped(shaped(tree, dict).get(name), *types)
 
 
 def deref(file_id: int, path_id: int, assets_file):
     """The object a pointer of `assets_file` names, or its `DerefError` as a `Failure`."""
-    if path_id == 0 or file_id < 0 or file_id > len(assets_file.externals):
+    n = len(assets_file.externals)
+    if path_id == 0 or (file_id != 0 and not -n <= file_id - 1 < n):
         raise Failure("bad_pointer")  # Null, FileIdBelowStart, FileIdPastEnd
     try:
         return PPtr(m_FileID=file_id, m_PathID=path_id, assetsfile=assets_file).deref()
@@ -110,9 +185,7 @@ def deref(file_id: int, path_id: int, assets_file):
 
 def deref_value(pointer, assets_file):
     """A typetree pointer value dereferenced from the file that holds it."""
-    if not isinstance(pointer, dict):
-        raise Failure("decode_error", "read")
-    return deref(read(pointer.__getitem__, "m_FileID"), read(pointer.__getitem__, "m_PathID"), assets_file)
+    return deref(field(pointer, "m_FileID", int), field(pointer, "m_PathID", int), assets_file)
 
 
 # ------------------------------------------------------------------ recognition (BATCH_SPEC section 5)
@@ -131,10 +204,10 @@ def sprites_field(root) -> bool:
     """Recognition 2, from the typetree alone: the root's last field `mSprites` is a vector
     (helpers/TypeTreeHelper.py:182-263) whose element is a struct with integer `x`, `y`, `width` and `height`
     and a `string` `name`, the last child of each name counting, as the dict `read_value` builds keeps it."""
-    field = next((c for c in reversed(root.m_Children) if c.m_Name == "mSprites"), None)
-    if field is None or not _vector(field) or len(field.m_Children[0].m_Children) < 2:
+    field_node = next((c for c in reversed(root.m_Children) if c.m_Name == "mSprites"), None)
+    if field_node is None or not _vector(field_node) or len(field_node.m_Children[0].m_Children) < 2:
         return False
-    element = field.m_Children[0].m_Children[1]
+    element = field_node.m_Children[0].m_Children[1]
     if not _plain(element) or _vector(element):
         return False
     named = {c.m_Name: c.m_Type for c in element.m_Children}
@@ -147,43 +220,66 @@ def recognise(obj, script_classes) -> tuple[str, str | None]:
     is read with UnityPy's MonoBehaviour head (files/ObjectReader.py:325-330), which needs no typetree."""
     try:
         head = read(obj.parse_monobehaviour_head)
-        script = deref(head.m_Script.m_FileID, head.m_Script.m_PathID, obj.assets_file)
+        pointer = shaped(getattr(head, "m_Script", None), PPtr)
+        name = shaped(getattr(head, "m_Name", None), str)
+        script = deref(shaped(pointer.m_FileID, int), shaped(pointer.m_PathID, int), obj.assets_file)
         if script.type != ClassIDType.MonoScript:
             return "none", None
-        class_name = read(lambda: script.parse_as_dict()["m_ClassName"])
+        class_name = field(checked(script.parse_as_dict), "m_ClassName", str)
     except Failure:
         return "unresolved", None
     if class_name not in script_classes:
         return "none", None
     node = obj.serialized_type.node if obj.serialized_type is not None else None
     if node is None:
-        return "no_typetree", head.m_Name
-    return ("atlas" if sprites_field(node) else "layout"), head.m_Name
+        return "no_typetree", name
+    return ("atlas" if sprites_field(node) else "layout"), name
+
+
+def atlas_tree(obj) -> dict:
+    """The atlas's own read, whole (section 5's "Skipped atlases"): its typetree's value, checked."""
+    tree = checked(obj.parse_as_dict)
+    field(tree, "mSprites", list)
+    return tree
 
 
 def maintex_name(tree: dict, obj) -> str | None:
-    """Step 1: the material's `_MainTex` texture's `m_Name`; None for no name, a missing `material` field and
-    every object-level failure among them."""
+    """Step 1: the material's `_MainTex` texture's `m_Name`, read as `peek_name` reads it (4.4 step 1); None for no
+    name, a missing `material` field and every object-level failure among them."""
     if "material" not in tree:
         return None
     try:
         material = deref_value(tree["material"], obj.assets_file)
-        envs = read(lambda: [tuple(e) for e in material.parse_as_dict()["m_SavedProperties"]["m_TexEnvs"]])
-        for env in envs:
-            if len(env) != 2:
-                raise Failure("decode_error", "read")
+        properties = field(checked(material.parse_as_dict), "m_SavedProperties", dict)
+        for env in field(properties, "m_TexEnvs", list):
+            if len(shaped(env, tuple, list)) != 2:
+                raise Failure(*READ)
             first, second = env
             # The first a string, or a struct whose `name` is (classes/generated.py:11477).
             if first == "_MainTex" or (isinstance(first, dict) and first.get("name") == "_MainTex"):
-                texture = deref_value(read(lambda second=second: second["m_Texture"]), material.assets_file)
-                name = read(texture.peek_name)
-                return name if isinstance(name, str) else None
+                texture = deref_value(field(second, "m_Texture", dict), material.assets_file)
+                return shaped(read(texture.peek_name), str)
     except Failure:
         return None
     return None
 
 
 # ------------------------------------------------------------------ a texture's answers (BATCH_SPEC section 3)
+
+
+def texture_of(obj):
+    """A Texture2D's object read, with `check_read`: UnityPy's `Texture2D`, whose side and format fields are
+    integers, and its `m_StreamData`, when it has one, a path and two integers. A typetree that lacks a field the
+    class needs is read as an `UnknownObject`: the read's failure."""
+    texture = shaped(checked(obj.read), Texture2D)
+    for name in ("m_Width", "m_Height", "m_TextureFormat"):
+        shaped(getattr(texture, name, None), int)
+    stream = getattr(texture, "m_StreamData", None)
+    if stream is not None:
+        shaped(getattr(stream, "path", None), str)
+        shaped(getattr(stream, "offset", None), int)
+        shaped(getattr(stream, "size", None), int)
+    return texture
 
 
 def format_name(value: int) -> str:
@@ -218,7 +314,8 @@ def candidates(path: str) -> list[str]:
 
 
 def _row(f, offset: int, size: int) -> bytes | None:
-    """A matched row: a raw one's bytes, a SerializedFile's failure (`not_a_reader`), a container's None."""
+    """A matched row: a raw one's bytes, a SerializedFile's failure (`decode_error`, `malformed`: the core's
+    `not_a_reader`), a container's None."""
     if isinstance(f, SerializedFile):
         raise Failure("decode_error", "malformed")
     if isinstance(f, (BundleFile, WebFile)):
@@ -228,13 +325,13 @@ def _row(f, offset: int, size: int) -> bytes | None:
 
 def resource(sf: SerializedFile, path: str, offset: int, size: int) -> bytes:
     """4.3's own-chain procedure: for each candidate in order, the containers that hold `sf`, innermost first,
-    each one's matching top-level rows (by registry key) last to first, a container row passed over; then the
-    registry (`batch.md` 2.6 step 8); else `outside_view(<the path as read>)`."""
+    each one's matching top-level directory rows (by registry key) last to first, a container row passed over;
+    then the registry (`batch.md` 2.6 step 8); else `outside_view(<the path as read>)`."""
     for name in candidates(path):
         key = simplify_name(name)
         container = sf.parent
         while isinstance(container, (BundleFile, WebFile)):
-            for row, f in reversed(list(container.files.items())):
+            for row, f in reversed(rows(container)):
                 if simplify_name(row) == key and (data := _row(f, offset, size)) is not None:
                     return data
             container = container.parent
@@ -288,8 +385,9 @@ def decode(texture, obj):
 
 
 def crop_refusal(x: int, y: int, width: int, height: int) -> str | None:
-    """Section 5: a crop Pillow 9.5.0 refuses, decided from the rectangle alone. `Image._crop` checks the area
-    first, then its C crop parses each edge as an `int`."""
+    """Section 5: a crop Pillow 9.5.0 refuses, decided from the rectangle alone, after `empty_rect` (both sides
+    positive). `Image._crop` checks the area first (computed exactly: an unsigned 128-bit product), then its C crop
+    parses each edge as an `int`."""
     if width * height > CROP_PIXELS:
         return "decompression_bomb"
     if x < INT_MIN or y < INT_MIN or x + width > INT_MAX or y + height > INT_MAX:

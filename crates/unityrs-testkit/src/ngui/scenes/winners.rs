@@ -45,8 +45,9 @@ fn winner_input(
 /// (`docs/BATCH_SPEC.md` 4.5), the sprite key `{sprite}.png`: `a` and `b`
 /// alike, `c` with other pixels and one more sprite (so its JSON differs),
 /// `d` whose JSON is unwritable (its crops plain candidates), `e`, an atlas
-/// `other` whose unit shares the key `k.png` with the others', and `f`,
-/// whose JSON is unwritable too, with a plain candidate for `c`'s `i.png`.
+/// `other` whose unit shares the key `k.png` with the others', `f`, whose
+/// JSON is unwritable too, with a plain candidate for `c`'s `i.png`, and
+/// `g`, like `c` with other pixels again (a second holder of `i.png`).
 pub fn winners() -> Result<AtlasScene, BuildError> {
     let bundles = vec![
         winner_input("a.bundle", "shared", 1, &["k", "j"], false)?,
@@ -55,6 +56,7 @@ pub fn winners() -> Result<AtlasScene, BuildError> {
         winner_input("d.bundle", "shared", 0x41, &["k", "h"], true)?,
         winner_input("e.bundle", "other", 0x51, &["k"], false)?,
         winner_input("f.bundle", "shared", 0x61, &["i"], true)?,
+        winner_input("g.bundle", "shared", 0x71, &["k", "j", "i"], false)?,
     ];
     let inputs = bundles.iter().map(|b| b.id.clone()).collect();
     Ok(AtlasScene {

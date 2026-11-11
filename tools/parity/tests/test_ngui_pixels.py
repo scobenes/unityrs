@@ -39,6 +39,15 @@ def winner_input(base, sprites):
     return {f"{n}.png": cut(s, (i % 2, 0, 1, 1)) for i, n in enumerate(sprites)}
 
 
+def one_by_one(bases):
+    """Each streamed 1 x 1 sheet of `bases` as its texture output and its atlas's one crop."""
+    out = {}
+    for name, base in bases.items():
+        out[f"{name}.png"] = cut(sheet(base, 1, 1))
+        out[f"{name}/s.png"] = cut(sheet(base, 1, 1), (0, 0, 1, 1))
+    return out
+
+
 def table():
     x1, x7, x8 = sheet(1, 4, 4), sheet(0x11, 3, 2), sheet(9, 2, 2)
     dup, x16 = sheet(2, 4, 2), sheet(0x17, 2, 2)
@@ -57,7 +66,8 @@ def table():
             "plain/p.png": cut(sheet(7, 2, 1), (0, 0, 2, 1)), "nomat/q.png": cut(sheet(0x0B, 1, 1), (0, 0, 1, 1)),
         },
         ("missing_sheets", "x.bundle"): {
-            f"n{n}/p.png": cut(sheet(0x30 + n, 1, 1), (0, 0, 1, 1)) for n in range(1, 9)
+            **{f"n{n}/p.png": cut(sheet(0x30 + n, 1, 1), (0, 0, 1, 1)) for n in range(1, 9)},
+            "n9/p.png": cut(sheet(0x3A, 1, 1), (0, 0, 1, 1)),  # the own `far`, by n9's material
         },
         ("duplicates", "x.bundle"): {
             "dup/t.png": cut(dup, (1, 0, 1, 1)), "dup/s.png": cut(dup, (2, 0, 2, 2)),
@@ -82,19 +92,23 @@ def table():
         ("floats", "x.bundle"): {"f/x.png": cut(sheet(4, 1, 1), (0, 0, 1, 1))},
         ("non_ascii", "x.bundle"): {"ätlas/精灵.png": cut(sheet(6, 2, 2), (0, 0, 1, 1))},
         ("layouts", "x.bundle"): {"mixed/m.png": cut(sheet(0x0C, 1, 1), (0, 0, 1, 1))},
-        ("failed_reads", "x.bundle"): {"short.png": cut(sheet(0x15, 1, 1))},
+        ("failed_reads", "x.bundle"): {"short.png": cut(sheet(0x15, 1, 1)), "via.png": cut(sheet(0x16, 1, 1))},
         ("streamed_sheets", "x.bundle"): {
             "own.png": cut(x16), "own/s.png": cut(x16, (0, 0, 2, 2)),
             "dep.png": cut(sheet(0x1A, 1, 2)), "dep/s.png": cut(sheet(0x1A, 1, 2), (0, 0, 1, 2)),
             "twin.png": cut(sheet(0x18, 2, 1)), "twin/s.png": cut(sheet(0x18, 2, 1), (0, 0, 2, 1)),
+            **one_by_one({"res": 0x41, "as": 0x42, "st": 0x43, "bb": 0x45, "cc": 0x48}),
         },
+        ("repeated_rows", "x.bundle"): one_by_one({"rep": 0x53, "nest": 0x54}),
         ("crop_bounds", "x.bundle"): {"cb/ok.png": cut(sheet(0x1B, 1, 1), (0, 0, 1, 1))},
+        ("failed_sheet_rows", "x.bundle"): {"sheet.png": cut(sheet(0x61, 1, 1))},
         ("winners", "a.bundle"): winner_input(1, ["k", "j"]),
         ("winners", "b.bundle"): winner_input(1, ["k", "j"]),
         ("winners", "c.bundle"): winner_input(0x31, ["k", "j", "i"]),
         ("winners", "d.bundle"): winner_input(0x41, ["k", "h"]),
         ("winners", "e.bundle"): winner_input(0x51, ["k"]),
         ("winners", "f.bundle"): winner_input(0x61, ["i"]),
+        ("winners", "g.bundle"): winner_input(0x71, ["k", "j", "i"]),
     }  # fmt: skip
     for input_id, base in (("p.bundle", 0x21), ("q.bundle", 0x22)):
         s = sheet(base, 2, 1)
