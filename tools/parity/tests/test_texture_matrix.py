@@ -52,6 +52,7 @@ from texture_cells import (  # noqa: E402
     GOBS,
     ORACLE,
     P1B,
+    P1B_STATUS,
     SWITCH_BLOB,
     base_name,
     decode,
@@ -132,7 +133,7 @@ class ThisParityFile(unittest.TestCase):
         )
 
     def test_p1b_formats_are_the_five_design_names(self):
-        p1b = sorted(name for name, row in self.rows.items() if row["status"] == "pinned P0; impl P1b")
+        p1b = sorted(name for name, row in self.rows.items() if row["status"] == P1B_STATUS)
         self.assertEqual(p1b, P1B)
 
     def test_tier_and_status_follow_the_result(self):
@@ -140,7 +141,7 @@ class ThisParityFile(unittest.TestCase):
             with self.subTest(name):
                 kind = RESULT.match(row["UnityPy 1.25.2"]).group(1)
                 self.assertEqual(row["tier"], tier_of(name, kind))
-                self.assertEqual(row["status"], "pinned P0; impl P1b" if name in P1B else "pinned P0; impl P3")
+                self.assertEqual(row["status"], P1B_STATUS if name in P1B else "pinned P0; impl P3")
 
 
 def matrix_errors(rows, expected):
