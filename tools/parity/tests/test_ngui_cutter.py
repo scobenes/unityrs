@@ -510,9 +510,12 @@ class Cutter(unittest.TestCase):
              texture_skip("CAB-x22", 18, "decode_error", "malformed"),
              atlas_skip("CAB-x22", 19, "decode_error", "malformed")]
             # `wv`: a WebFile inside a reached bundle keys `w2.ress` above the raw row; `wt`: a top-level WebFile
-            # row; `wo`: the input's own WebFile row. Version 1's core refuses to open each: `unsupported`.
-            + [s for p in (20, 22, 30) for s in (texture_skip("CAB-x22", p, "decode_error", "unsupported"),
-                                                 atlas_skip("CAB-x22", p + 1, "decode_error", "unsupported"))],
+            # row. Version 1's core refuses to open each: `unsupported`.
+            + [s for p in (20, 22) for s in (texture_skip("CAB-x22", p, "decode_error", "unsupported"),
+                                             atlas_skip("CAB-x22", p + 1, "decode_error", "unsupported"))]
+            # `wi`: `in2.resS`, an entry of that nested WebFile, is never registered, where UnityPy's is (0x91).
+            + [texture_skip("CAB-x22", 30, "outside_view(archive:/CAB-x22/in2.resS)"),
+               atlas_skip("CAB-x22", 31, "outside_view(archive:/CAB-x22/in2.resS)")],
         )  # fmt: skip
         self.assertEqual(
             [(s[1], s[2], s[4]) for s in r.sheets],

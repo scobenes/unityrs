@@ -15,15 +15,16 @@ is sealed: `find_file` answers from that registry, a bundle's key not found (the
 (`find_file`'s check of `<path>/<name>`, which with an empty `path` is the host's root, and the files `load_file`
 finds relative to the working directory, which `load_dependencies` asks for) are replaced by a miss, and its
 filesystem by one that refuses every call. So a name the view does not register is not found, whatever is on the
-host, and a CAB whose key a later container takes is not found either, where UnityPy's `get_cab`, which gives a
-container no key, would answer with it.
+host; a CAB whose key a later bundle row takes is not found either, where UnityPy's `get_cab`, which gives a bundle
+no key, would answer with it; and one a later WebFile row takes fails `unsupported`.
 
 **Pointers** are dereferenced by UnityPy's `PPtr.deref` (classes/PPtr.py:43-90), which looks in the reading file's
 own bundle, then `find_file`, the registry above. Its failures are batch.md 2.7's `DerefError`s. A null pointer,
 an `m_FileID` whose index `m_FileID - 1` is past the externals or below their start (a negative index counts from
-the end, as Python's list and the core's `external_index` do), a missing object, a raw or container row of the
-reading file's own bundle and a raw row the registry answers are `bad_pointer`; a container the registry answers,
-and a CAB the view does not register, are `outside_view(<cab>)`.
+the end, as Python's list and the core's `external_index` do), a missing object, a raw or bundle row of the
+reading file's own bundle and a raw row the registry answers are `bad_pointer`; a bundle the registry answers, and a
+CAB the view does not register, are `outside_view(<cab>)`; a WebFile row, of the reading file's own bundle or the
+registry's, is `decode_error`, `unsupported` (version 1's core refuses to open one).
 
 **Object reads** go through UnityPy (UnityPyBoost's reader, or UnityPy's own for an object of no bytes): a read
 that runs out or meets a value of the wrong shape is a `ParseError`'s `Read`, `decode_error` with the code `read`.
@@ -35,9 +36,9 @@ fails the check (`helpers/TypeTreeHelper.py:155-156`), which is the core's `Pars
 the same read without it succeeds. Names and the MonoBehaviour's head are read without the check (`name_of`, as
 `peek_name` reads a name, and `parse_monobehaviour_head`). A peeked name of an object whose type has no typetree
 fails as its object read does (`asset_bundle`): the core reads such a name through the object's typetree, and has
-none without a provider. A MonoBehaviour's head name needs no typetree. UnityPy's
-`TypeTreeError` is never one: its one raise passes one argument to a class that takes two
-(files/ObjectReader.py:306), so it surfaces as a `TypeError`, a `read`, and no read here is `tree`.
+none without a provider. A MonoBehaviour's head name needs no typetree. UnityPy's `TypeTreeError` is never one: its
+one raise passes one argument to a class that takes two (files/ObjectReader.py:306), so it surfaces as a
+`TypeError`, a `read`, and no read here is `tree`.
 Only UnityPy's calls are wrapped; the values they return are checked for the shape the reads need, a wrong one the
 read's failure (4.4 step 2's rule, in its order). `MemoryError` and anything else are not classified: they
 propagate, as the engine stops on a host's refusal or an unknown error.
@@ -50,9 +51,11 @@ no answer depends on the order objects are read in.
 **A sheet's data** (section 5) is its `image_data`, else the `m_StreamData` resource that 4.3's own-chain procedure
 finds: the spec's lookup, written here over the rows kept at the load and UnityPy's candidate names
 (helpers/ResourceReader.py:10-33), reading the row with UnityPy's own `_get_resource_data`; the view's registry, built
-from the rows, only when no own row answers, each candidate in order answered by its key's value, a container
-passing to the next candidate (the core's `resource_try`, crates/unityrs-core/src/env/resource_data.rs), where
-UnityPy's `get_cab`, which gives a container no key, would answer with an earlier row. The bytes go to UnityPy's
+from the rows, only when no own row answers, each candidate in order answered by its key's value, a bundle passing
+to the next candidate and a WebFile failing the read, `decode_error`, `unsupported` (the core's `resource_try`,
+crates/unityrs-core/src/env/resource_data.rs), where UnityPy's `get_cab`, which gives a bundle no key, would answer
+with an earlier row. The own chain meets no WebFile row: the input's own rows are the only ones it walks, and an
+input with one is out of scope (`Divergence`). The bytes go to UnityPy's
 `parse_image_data`, as `Texture2D.image` gives them to it, so the image is UnityPy's and Pillow's, after section 3's
 answers 5 to 10 in their order.
 """
@@ -103,6 +106,11 @@ class Failure(Exception):
 
 
 READ = ("decode_error", "read")
+
+
+class Divergence(Exception):
+    """A case the reference knowingly does not model, where the engine and UnityPy part: not a `Failure`, so it is
+    never classified, and a corpus run shows the input as an `error` row."""
 
 
 class _Sealed:
@@ -246,11 +254,28 @@ def field(tree, name: str, *types):
     return shaped(shaped(tree, dict).get(name), *types)
 
 
+def sibling(file_id: int, assets_file):
+    """The row of the reading file's own bundle that `PPtr.deref` takes for an external (classes/PPtr.py:68-78:
+    the external's path less `archive:/` and `assets/`, its last part, against each `files` key, lower-cased), or
+    None."""
+    container = assets_file.parent
+    if file_id == 0 or container is None:
+        return None
+    path = assets_file.externals[file_id - 1].path
+    path = path[9:] if path.startswith("archive:/") else path
+    path = path[7:] if path.startswith("assets/") else path
+    name = path.rsplit("/")[-1].lower()
+    return next((f for key, f in container.files.items() if key.lower() == name), None)
+
+
 def deref(file_id: int, path_id: int, assets_file):
-    """The object a pointer of `assets_file` names, or its `DerefError` as a `Failure`."""
+    """The object a pointer of `assets_file` names, or its `DerefError` as a `Failure`: a WebFile sibling, as a
+    WebFile the registry answers (`found`), `decode_error`, `unsupported`."""
     n = len(assets_file.externals)
     if path_id == 0 or (file_id != 0 and not -n <= file_id - 1 < n):
         raise Failure("bad_pointer")  # Null, FileIdBelowStart, FileIdPastEnd
+    if isinstance(sibling(file_id, assets_file), WebFile):
+        raise Failure("decode_error", "unsupported")
     try:
         return PPtr(m_FileID=file_id, m_PathID=path_id, assetsfile=assets_file).deref()
     except FileNotFoundError as e:  # the sealed registry: NotFound
@@ -410,9 +435,10 @@ def _row(f, offset: int, size: int) -> bytes | None:
 
 def resource(sf: SerializedFile, path: str, offset: int, size: int) -> bytes:
     """4.3's own-chain procedure: for each candidate in order, the containers that hold `sf`, innermost first,
-    each one's matching top-level directory rows (by registry key) last to first, a container row passed over;
-    then the view's registry (`batch.md` 2.6 step 8), each candidate in order by its key's value, a container
-    passing to the next candidate; else `outside_view(<the path as read>)`."""
+    each one's matching top-level directory rows (by registry key) last to first, a bundle row passed over; then
+    the view's registry (`batch.md` 2.6 step 8), each candidate in order by its key's value, a bundle passing to the
+    next candidate and a WebFile failing the read (`decode_error`, `unsupported`); else `outside_view(<the path as
+    read>)`."""
     for name in candidates(path):
         key = simplify_name(name)
         container = sf.parent

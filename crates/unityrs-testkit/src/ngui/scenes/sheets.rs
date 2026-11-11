@@ -241,8 +241,12 @@ pub fn repeated_rows() -> Built {
 /// (`decode_error`, `unsupported`). The dependency's raw `w2.resS` is
 /// followed by a top-level bundle holding a WebFile at `w2.resS`, which the
 /// reach keys above it, so `wv`'s read fails; so does `wt`'s, whose stream
-/// names a top-level WebFile row, and `wo`'s, whose names the input's own
-/// WebFile row. The SerializedFile `CAB-dw` is followed by a top-level
+/// names a top-level WebFile row. `wi`'s names `in2.resS`, inside that
+/// nested WebFile, which is never registered: `outside_view(<path>)`, where
+/// UnityPy's registration would read it. The input holds no WebFile row:
+/// one fails it (`entry_error`, section 3). A pointer of `CAB-d22` through
+/// its external names its bundle's WebFile row `w4.resS`, a sibling:
+/// `unsupported`. The SerializedFile `CAB-dw` is followed by a top-level
 /// WebFile row of its key (`sub/CAB-dw`), and `CAB-dz` by a bundle holding
 /// a WebFile at `CAB-dz`: the atlases `aw` and `az`, whose materials are
 /// there, get no name and cut the textures of their own names, not `wx` or
@@ -291,8 +295,8 @@ pub fn fallback_rows() -> Built {
             rgba(27, "aw", 0x95, 1, 1),
             rgba(28, "zx", 0x96, 1, 1),
             rgba(29, "az", 0x97, 1, 1),
-            streamed(30, b"wo", "archive:/CAB-x22/w5.resS"),
-            by_name(31, "wo", one_sprite()),
+            streamed(30, b"wi", "archive:/CAB-x22/in2.resS"),
+            by_name(31, "wi", one_sprite()),
         ],
         true,
     )?;
@@ -314,7 +318,6 @@ pub fn fallback_rows() -> Built {
                     ("CAB-x22", cab),
                     ("n.resS", holder),
                     ("q.resS", bundle(&[("q.resS", x22(0x89))])),
-                    ("w5.resS", web_file(&[("in5.resS", x22(0x99))])),
                 ],
                 &["d.bundle", "e.bundle"],
             ),
@@ -329,7 +332,12 @@ pub fn fallback_rows() -> Built {
 fn fallback_dependency() -> Result<SceneBundle, BuildError> {
     let x22 = |base| sheet(base, 1, 1, false);
     let wrap = bundle(&[("w.resS", bundle(&[("inner.resS", x22(0x8A))]))]);
-    let dep = file(&[], &[mono_script(1, "Dependency")], true)?;
+    // Its external names its bundle's WebFile row `w4.resS`, a sibling.
+    let dep = file(
+        &["archive:/CAB-d22/w4.resS"],
+        &[mono_script(1, "Dependency")],
+        true,
+    )?;
     // A material naming its file's `<x>` (3), a MonoScript (2) and `<x>`.
     let held = |x: &str| {
         file(

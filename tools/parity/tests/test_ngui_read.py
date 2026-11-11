@@ -30,6 +30,7 @@ if ORACLE:
     from UnityPy.files import BundleFile, SerializedFile, WebFile
     from UnityPy.helpers import TypeTreeNode as TypeTreeNodeModule
 
+    import ngui_cutter
     import ngui_read as rd
     import ngui_scenes
 
@@ -52,6 +53,7 @@ UNSEALED = textwrap.dedent("""
 SEALED = textwrap.dedent("""
     import sys
     sys.path.insert(0, sys.argv[1])
+    import ngui_cutter
     import ngui_read as rd
     from UnityPy.files import SerializedFile
     from UnityPy.helpers.ResourceReader import get_resource_data
@@ -400,6 +402,28 @@ class UnityPyDeparts(unittest.TestCase):
                     rd.deref(file_id, 1, by_id[atlas].assets_file)
                 self.assertEqual((caught.exception.reason, caught.exception.detail), ("decode_error", "unsupported"))
                 self.assertIsNone(rd.maintex_name(rd.atlas_tree(by_id[atlas]), by_id[atlas]))
+        # A WebFile sibling: the dependency's `CAB-d22` names its own bundle's WebFile row `w4.resS`, which
+        # `PPtr.deref` finds among the siblings, as the core's `Parent` does, and the core refuses to open.
+        d22 = keys["cab-d22"]
+        self.assertIsInstance(rd.sibling(1, d22), WebFile)
+        with self.assertRaises(rd.Failure) as caught:
+            rd.deref(1, 1, d22)
+        self.assertEqual((caught.exception.reason, caught.exception.detail), ("decode_error", "unsupported"))
+        # No WebFile's entries are registered: `in2.resS`, inside the nested WebFile at `w2.resS`, is no key, where
+        # UnityPy's registration holds it (0x91).
+        self.assertEqual(bytes(rd._get_resource_data(env.get_cab("in2.resS"), 0, 1)), b"\x91")
+        wi = by_id[30]
+        with self.assertRaises(rd.Failure) as caught:
+            rd.decode(wi.read(), wi)
+        self.assertEqual(caught.exception.reason, "outside_view(archive:/CAB-x22/in2.resS)")
+
+    def test_an_input_with_a_webfile_row_is_out_of_scope(self):
+        """Section 3: an input with a top-level WebFile row fails (`entry_error`), where UnityPy parses the WebFile
+        and goes on; the reference raises `Divergence`, never a classified answer. `fallback_rows`' `d.bundle`, cut
+        as an input, has two (`w4.resS`, `sub/CAB-dw`)."""
+        scene = ngui_scenes.scenes()["fallback_rows"]
+        with self.assertRaises(rd.Divergence):
+            ngui_cutter.cut("d.bundle", scene.view("d.bundle"), scene.options)
 
     def test_the_view_s_registry_keys_a_container_by_its_name(self):
         """`fallback_rows`: UnityPy's registry gives a container no key, so it answers `r.resS` with the

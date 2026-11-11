@@ -18,7 +18,11 @@ spec's, each rule cited where it is applied:
   `ngui_winners.py`'s.
 
 **Its input** is one input's view (4.2): `{bundle id: bytes}`, the input among them. The input's own SerializedFiles
-are the SerializedFile values of its bundle's `files` (section 3).
+are the SerializedFile values of its bundle's `files` (section 3). One known divergence is out of scope: an input
+with a top-level WebFile row, which the engine fails (`entry_error`: selection opens each of the input's top-level
+rows, and version 1's core refuses to open a WebFile, section 3), where UnityPy parses the WebFile and goes on. The
+reference does not go on either: it raises `ngui_read.Divergence`, which no record classifies, so a corpus run would
+show such an input as an `error` row. No fixture or corpus input has one.
 
 **Its output** (`Result`) is one entry per file the cutter produces: each `Output` (kind `texture`, when the options
 name a texture key, for a sheet's texture, in its unit, and for every other texture, a plain candidate;
@@ -47,7 +51,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from UnityPy.enums import ClassIDType
-from UnityPy.files import SerializedFile
+from UnityPy.files import SerializedFile, WebFile
 
 import ngui_read as rd
 
@@ -252,6 +256,8 @@ def cut(input_id: str, view: dict[str, bytes], opts: Options | None = None) -> R
     if opts.sheet_scope != "own_files_by_name":
         raise ValueError(f"sheet scope {opts.sheet_scope!r}: version 1 has only own_files_by_name")
     bundle = rd.load(view, input_id)
+    if any(isinstance(f, WebFile) for _, f in rd.rows(bundle)):
+        raise rd.Divergence(f"{input_id}: a top-level WebFile row, which fails the input (entry_error, section 3)")
     result = Result(input_id)
     objects = [(sf, o) for sf in bundle.files.values() if isinstance(sf, SerializedFile) for o in sf.objects.values()]
     common = {"input": raw(input_id)}
