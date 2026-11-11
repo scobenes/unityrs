@@ -8,7 +8,10 @@
 //! (`unityrs_testkit::counted`): libtest's main thread allocates beside it.
 //! The measures share the allocator's counts, so one test runs them in turn.
 //! Each charge the test grants adds to `HELD` until it is dropped, and the
-//! tally records how far the heap ever rose past what was held. It also
+//! tally records how far the heap ever rose past what was held: at each
+//! allocation, and as each charge is dropped, against the charges held
+//! without it, so a charge given back before its buffer is freed shows. It
+//! also
 //! counts the blocks of the output's planned size and every `realloc`, so
 //! the output is seen made once, at its size, and never grown.
 
@@ -74,6 +77,12 @@ struct Held(usize);
 
 impl Drop for Held {
     fn drop(&mut self) {
+        // What is live must fit the charges still held once this one is
+        // given back: its buffer is freed first.
+        let live = LIVE.load(Ordering::Relaxed);
+        let above = live.saturating_sub(BASE.load(Ordering::Relaxed));
+        let rest = HELD.load(Ordering::Relaxed).saturating_sub(self.0);
+        OVER.fetch_max(above.saturating_sub(rest), Ordering::Relaxed);
         HELD.fetch_sub(self.0, Ordering::Relaxed);
     }
 }
@@ -141,8 +150,9 @@ fn start() {
     REALLOCS.store(0, Ordering::Relaxed);
 }
 
-/// How far the heap passed the charges since [`start`], the charges held,
-/// and what is live above where it started.
+/// How far the heap passed the charges since [`start`] (at an allocation,
+/// or as a charge was given back), the charges held, and what is live above
+/// where it started.
 fn settled() -> (usize, usize, usize) {
     let live = LIVE.load(Ordering::Relaxed) - BASE.load(Ordering::Relaxed);
     (
@@ -208,7 +218,16 @@ fn every_block_is_charged_before_it_is_allocated() {
             "{width}x{height} {mode}: what the encode kept"
         );
         assert!(png.bytes().len() < plan.output);
+        // The test's own blocks above (`seen`'s) may have passed the
+        // charges; the drop is measured alone: the bytes are freed before
+        // their charge is given back.
+        OVER.store(0, Ordering::Relaxed);
         drop(png);
+        assert_eq!(
+            OVER.load(Ordering::Relaxed),
+            0,
+            "{width}x{height} {mode}: the output's charge given back before its bytes"
+        );
         assert_eq!(HELD.load(Ordering::Relaxed), 0);
         assert_eq!(LIVE.load(Ordering::Relaxed), BASE.load(Ordering::Relaxed));
     }
