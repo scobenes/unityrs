@@ -361,8 +361,9 @@ fn texture_need(format: i32, width: i32, height: i32) -> u64 {
 /// each of [`TEXTURE_SIZES`], with data a byte short of mip 0, exact and a
 /// byte long (at most [`TEXTURE_DATA`]; one seed for those of one length,
 /// as where mip 0 holds nothing or more than that), under the memory bound
-/// and a meter of the charge less 1; and the five at 7x9 on Switch, with no
-/// blob, one GOB per block and more, and on Xbox 360.
+/// and a meter of the charge less 1; the five at 7x9 on Switch, with no
+/// blob, one GOB per block and more, and on Xbox 360; and one block down
+/// each decoder path ([`texture_blocks`]).
 fn texture(s: &mut Seeds) -> std::io::Result<()> {
     let mut rng = Rng::new(0x7e57_7e57_0000_0001);
     let mut bytes = |len: u64| {
@@ -424,6 +425,60 @@ fn texture(s: &mut Seeds) -> std::io::Result<()> {
             };
             s.add("texture", &format!("f{format}-7x9-{tag}"), &case.encode())?;
         }
+    }
+    texture_blocks(s)
+}
+
+/// The rest of a `texture_blocks` BC7 block after its first byte.
+const BC7_TAIL: [u8; 15] = [
+    0x5a, 0xc3, 0x96, 0x3c, 0xa5, 0x0f, 0xf0, 0x69, 0x87, 0x1e, 0xe1, 0x2d, 0xd2, 0x4b, 0xb4,
+];
+
+/// A BC1 colour block: `c0` and `c1` (RGB565, little-endian), then indices
+/// 0 to 3 along each row.
+const fn bc1_block(c0: u16, c1: u16) -> [u8; 8] {
+    let (a, b) = (c0.to_le_bytes(), c1.to_le_bytes());
+    [a[0], a[1], b[0], b[1], 0xe4, 0xe4, 0xe4, 0xe4]
+}
+
+/// One 4x4 block down each decoder path, so the `texture` target's seeds
+/// reach every one whatever the random seeds hold: a BC7 block of each
+/// mode (its first byte's lowest set bit) and of none (a zero first byte,
+/// Pillow's degenerate block); a DXT1 block with `c0 > c1` (four colours)
+/// and with `c0 <= c1` (three and black); a DXT5 block with `a0 > a1`
+/// (eight alphas) and with `a0 <= a1` (six, 0 and 255), its alpha indices
+/// 0 to 7 twice over. Each at the memory bound, so it decodes.
+fn texture_blocks(s: &mut Seeds) -> std::io::Result<()> {
+    let mut add = |name: &str, format: i32, data: Vec<u8>| {
+        let case = TextureCase {
+            format,
+            width: 4,
+            height: 4,
+            platform: 19,
+            meter: 0,
+            blob: None,
+            data,
+        };
+        s.add("texture", name, &case.encode())
+    };
+    for mode in 0..=8 {
+        let first = if mode == 8 { 0 } else { 1u8 << mode };
+        let mut block = vec![first];
+        block.extend_from_slice(&BC7_TAIL);
+        add(&format!("bc7-mode{mode}"), 25, block)?;
+    }
+    let (red, green) = (0xf800, 0x07e0);
+    add("dxt1-c0-above-c1", 10, bc1_block(red, green).to_vec())?;
+    add("dxt1-c0-not-above-c1", 10, bc1_block(green, red).to_vec())?;
+    let alpha_indices = [0x88, 0xc6, 0xfa, 0x88, 0xc6, 0xfa];
+    for (name, a0, a1) in [
+        ("dxt5-a0-above-a1", 0xff, 0x00),
+        ("dxt5-a0-not-above-a1", 0x00, 0xff),
+    ] {
+        let mut block = vec![a0, a1];
+        block.extend_from_slice(&alpha_indices);
+        block.extend_from_slice(&bc1_block(red, green));
+        add(name, 12, block)?;
     }
     Ok(())
 }
