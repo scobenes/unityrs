@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::convert::Infallible;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -233,11 +234,7 @@ impl Lru {
     /// entry if it holds one, else the one `make` builds, whose refusal
     /// changes nothing. Whether `k` is cached is asked and acted on here,
     /// in one step.
-    fn use_key(
-        &mut self,
-        k: usize,
-        make: impl FnOnce() -> Result<LruNode, Error>,
-    ) -> Result<(), Error> {
+    fn use_key<E>(&mut self, k: usize, make: impl FnOnce() -> Result<LruNode, E>) -> Result<(), E> {
         self.visit();
         let cached = match self.nodes.entry(k) {
             Entry::Occupied(_) => true,
@@ -370,6 +367,32 @@ impl DepCache {
     /// under a core lock, [`crate::budget::MemoryBudget`]); a refusal
     /// caches nothing and is the caller's error.
     pub(crate) fn touch(&self, dep: &Arc<Dependency>, file: &File) -> Result<(), Error> {
+        self.use_dep(dep, file, || Self::room(file))
+    }
+
+    /// A new entry's share of the map for `file`, charged to its meter
+    /// ahead of [`Self::touch_paid`]: a dependency load under `Lazy`
+    /// charges it before it publishes a registration (the registry's module
+    /// docs, "A failed dependency load").
+    pub(crate) fn room(file: &File) -> Result<Charge, Error> {
+        Ok(file.meter().charge(LRU_SHARE)?)
+    }
+
+    /// [`Self::touch`] with the new entry's share already charged
+    /// ([`Self::room`]), so nothing in it can be refused; the share is
+    /// returned when `dep` is cached already.
+    pub(crate) fn touch_paid(&self, dep: &Arc<Dependency>, file: &File, room: Charge) {
+        let Ok(()) = self.use_dep::<Infallible>(dep, file, || Ok(room));
+    }
+
+    /// [`Self::touch`], the new entry's share from `share`, asked for in
+    /// the step that inserts the entry and only then.
+    fn use_dep<E>(
+        &self,
+        dep: &Arc<Dependency>,
+        file: &File,
+        share: impl FnOnce() -> Result<Charge, E>,
+    ) -> Result<(), E> {
         let k = lru_key(dep);
         #[cfg(test)]
         self.hook(Hook::Touching);
@@ -381,7 +404,7 @@ impl DepCache {
                     seen: 0,
                     prev: None,
                     next: None,
-                    _charge: file.meter().charge(LRU_SHARE)?,
+                    _charge: share()?,
                 })
             })
         })?;

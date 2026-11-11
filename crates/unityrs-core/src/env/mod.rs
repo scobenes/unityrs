@@ -52,7 +52,10 @@
 //! docs said concurrent calls act as if made one after another, which that
 //! does not). A call that reaches a nested container returns only after its
 //! whole subtree is registered, and a load only after all its keys and its
-//! `files` entry are. A call's result depends on what was done before it,
+//! `files` entry are. A dependency's load under `Lazy` publishes its first
+//! key only once every one is charged, so one that fails publishes none
+//! ([`registry`]'s module docs, "A failed dependency load"). A call's
+//! result depends on what was done before it,
 //! by its thread or another, as a Python dict's does: a load, a resolver
 //! load, and under `Lazy` the first call that reaches a nested container.
 //! A container pass's preload walk that a load on another thread meets

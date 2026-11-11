@@ -10,6 +10,7 @@ mod callers;
 mod calls;
 mod container;
 mod deref;
+mod failed;
 mod files;
 mod locks;
 mod lru;

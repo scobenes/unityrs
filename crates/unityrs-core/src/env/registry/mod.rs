@@ -113,9 +113,29 @@
 //! its share of a node of the lists of dropped slots waiting to be reached
 //! (`pending.rs`); each list's root, one node at most and none once it
 //! empties, is a constant of the registry, as the hash table's control
-//! tail is (plan section 3.13). `tests/env_memory.rs` measures the
+//! tail is (plan section 3.13). A dependency's `Lazy` load holds its staged
+//! registrations in a list charged to the dependency's meter until it
+//! publishes them (below, "A failed dependency load"). `tests/env_memory.rs` measures the
 //! heap against the charge. A refused charge registers nothing and is the
 //! registering load's error.
+//!
+//! **A failed dependency load** (plan section 3.13; `docs/plans/batch.md`
+//! section 6, CR1). Under `LoadMode::Lazy` a dependency's load publishes
+//! nothing when it fails. It stages its registrations (`register.rs`,
+//! `Stage`): each is charged as any registration is (`prepare`: its key,
+//! its slot, a new key's copy and share of the tables, its position's
+//! path), in a list charged to the dependency's meter, and the LRU's entry
+//! is charged after them; only then are they published, one key at a
+//! time and in the order they were staged, each as any load's registration
+//! is (`apply`, then the load's `settle`), and nothing in that can be
+//! refused. A refusal before then drops the stage, which returns every
+//! charge and was never in the registry: no lookup, on this thread or
+//! another, can have found any of it, no slot was dropped or listed, and no
+//! generation or walk's flag moved, so the registry is as it was before the
+//! load. Under `LoadMode::Eager` a dependency's CABs are registered as they
+//! are parsed, as UnityPy's `load_file(..., is_dependency=True)` registers
+//! them, so a load that fails keeps those registered before its failure
+//! (the partial registration above, difference (a)).
 //!
 //! Owner: package D.
 
@@ -146,6 +166,7 @@ pub(crate) use lru::DepCache;
 pub(crate) use lru::{Hook, HookFn};
 pub(crate) use rank::Rank;
 pub(crate) use reach::{Through, entry_of};
+pub(crate) use register::Stage;
 use register::{By, Loads};
 pub(crate) use slot::{Slot, SlotKind};
 
