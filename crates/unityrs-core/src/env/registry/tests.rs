@@ -244,6 +244,17 @@ fn a_lazy_load_whose_keys_are_replaced_before_its_paid_touch_leaves_the_lru() {
     assert_eq!(env.stats().dependency_bytes, current);
 }
 
+/// A staged registration is 240 bytes on a 64-bit target, the figure the
+/// docs give for a staged row (`docs/plans/core.md` 3.13,
+/// `docs/plans/batch.md` 5.2, 5.5 and A4): its key (32), position (24),
+/// slot (8), a new key's share (88) and its path's charge (88). CR1's
+/// review, round 2: the figure was measured once and pinned by nothing.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn a_staged_registration_is_240_bytes() {
+    assert_eq!(std::mem::size_of::<super::register::Staged>(), 240);
+}
+
 /// The stress run: many rounds of two slots of a replaced dependency
 /// dropped by two threads released together. Passes on any schedule; the
 /// old code left about one round in a thousand in the LRU.

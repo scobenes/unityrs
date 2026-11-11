@@ -36,8 +36,8 @@ pub(crate) struct Staged {
     /// The simplified name: for a key the registry did not hold when the
     /// registration was charged, its own charged copy, which the key keeps
     /// if it is still new at the lock (the name `simplify_name` built is
-    /// dropped once copied, so a stage holds one copy of each new key, not
-    /// two); for a known key, the name `simplify_name` built.
+    /// dropped once copied, so a staged registration holds one copy of its
+    /// new key, not two); for a known key, the name `simplify_name` built.
     key: RawStr,
     position: Rank,
     slot: Arc<Slot>,
@@ -244,7 +244,7 @@ impl Registry {
 
     /// Stages a dependency's CAB of load `load` at `path`, charged to
     /// `meter`, the dependency's: [`Self::register_dependency`]'s
-    /// registration, or with `lazy` [`Self::register_lazy_dependency`]'s,
+    /// registration, or with `lazy` the tests' `register_lazy_dependency`'s,
     /// every charge made and nothing published until [`Self::commit`].
     // The registration's parts, as `register_lazy_dependency`'s, and its stage.
     #[allow(clippy::too_many_arguments)]
@@ -384,8 +384,8 @@ impl Registry {
         })
     }
 
-    /// The published half of [`Self::insert`], which nothing can refuse:
-    /// whether the slot that stays stands in for the one dropped, told with
+    /// The published half of [`Self::insert`], in which nothing can fail
+    /// the registration: whether the slot that stays stands in for the one dropped, told with
     /// no lock held ([`Stand`]), then the change, in one step under the
     /// write lock, then what it dropped released and, for a load's, the
     /// listed slots reached ([`Self::settle`], whose refusal leaves them

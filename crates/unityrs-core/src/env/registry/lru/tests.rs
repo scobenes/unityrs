@@ -517,3 +517,45 @@ fn the_lru_visits_a_constant_number_of_entries_per_use() {
         "visits: {small} for 200 lookups over 200 dependencies, {large} for 800 over 800"
     );
 }
+
+/// A `Lazy` dependency load charges its entry's share before its commit
+/// and hands it to the LRU after ([`DepCache::touch_paid`]). Stopped
+/// between the two, while another thread's `get` of one of its keys
+/// caches it first ([`DepCache::touch`], through the dependency's handle),
+/// the load finds its entry cached and returns its share after the lock:
+/// the entry is read again without it, so the LRU's sum is the meter's,
+/// and once the Environment is dropped the pool holds nothing (CR1's
+/// review, round 2: no test saw the sum stay a share high when the share
+/// was returned under the lock, after the entry was read with it, nor the
+/// pool keep it when the share was forgotten).
+#[cfg(test)]
+#[test]
+fn a_paid_touch_that_finds_its_entry_cached_reads_it_without_the_share() {
+    let pool = Arc::new(crate::budget::Counting::new(u64::MAX));
+    let mut ctx = FileContext::unitypy();
+    ctx.budget = pool.clone();
+    let mut options = EnvOptions::unitypy();
+    options.context = Arc::new(ctx);
+    options.load = crate::env::LoadMode::Lazy;
+    let env = Environment::new(options);
+    let held = Held::install(&env.inner.cache, Hook::LoadRegistered, 1);
+    let load = {
+        let env = env.clone();
+        held.run(move || {
+            env.load_dependency(source("CAB-A", 64)).unwrap();
+        })
+    };
+    assert_eq!(held.next(), Event::Stopped);
+    let m = Meter::unlimited();
+    assert!(env.get_cab(&RawStr::from("cab-a"), &m).unwrap().is_some());
+    assert_eq!(env.inner.cache.len(), 1, "the get cached the dependency");
+    held.release();
+    assert_eq!(held.next(), Event::Done);
+    load.join().unwrap();
+    let cache = &env.inner.cache;
+    cache.check();
+    assert_eq!(cache.len(), 1);
+    assert_eq!(cache.total(), env.stats().dependency_bytes);
+    drop(env);
+    assert_eq!(pool.used(), 0, "a charge was kept");
+}

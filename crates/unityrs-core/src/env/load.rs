@@ -26,6 +26,15 @@ enum Target<'a> {
     Staged(&'a Arc<Dependency>, &'a mut Stage),
 }
 
+/// The internal error of a dependency's registration under `Lazy` made one
+/// key at a time ([`Target::Dependency`]), which no load makes.
+fn unstaged() -> Error {
+    Error::Malformed {
+        what: "registry",
+        detail: "a dependency's lazy load registered unstaged".into(),
+    }
+}
+
 /// Who asked the resolver for the file [`Environment::load_resolved`]
 /// loads, which decides how it is loaded and keyed.
 #[derive(Clone, Copy, Debug)]
@@ -91,6 +100,13 @@ impl Environment {
         file: &File,
         target: &mut Target<'_>,
     ) -> Result<u64, Error> {
+        // Never: a dependency's load under `Lazy` is staged, so that it
+        // publishes nothing when it fails (`try_load_dep`); one that came
+        // this way would publish one key at a time (CR1's review, round 2:
+        // only a lazy bundle's entries were checked).
+        if self.inner.options.load == LoadMode::Lazy && matches!(target, Target::Dependency(_)) {
+            return Err(unstaged());
+        }
         let reg = &self.inner.registry;
         let load = reg.next_load();
         let registered = match file {
@@ -121,16 +137,8 @@ impl Environment {
                             Target::Caller => {
                                 reg.register_entry(&d.path, b.clone(), i, load, &[i], b.meter())?;
                             }
-                            // Never: a dependency's lazy bundle is staged, so
-                            // that its load publishes nothing when it fails
-                            // (`try_load_dep`); a caller that came this way
-                            // would publish one key at a time.
-                            Target::Dependency(_) => {
-                                return Err(Error::Malformed {
-                                    what: "registry",
-                                    detail: "a dependency's lazy bundle registered unstaged".into(),
-                                });
-                            }
+                            // Never: refused at the top.
+                            Target::Dependency(_) => return Err(unstaged()),
                             Target::Staged(dep, stage) => {
                                 reg.stage(stage, &d.path, dep, load, &[i], b.meter(), true)?;
                             }

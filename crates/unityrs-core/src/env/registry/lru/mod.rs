@@ -230,12 +230,13 @@ impl Lru {
         self.tail = Some(k);
     }
 
-    /// Makes `k` the most recently used and re-reads its meter: the map's
-    /// entry if it holds one, else the one `node` builds with the share
-    /// `share` makes, whose refusal changes nothing. Whether `k` is cached
-    /// is asked and acted on here, in one step. `share`, when the entry was
-    /// there and did not need it, is given back unused, for the caller to
-    /// drop after the lock.
+    /// Makes `k` the most recently used: the map's entry if it holds one,
+    /// else the one `node` builds with the share `share` makes, whose
+    /// refusal changes nothing. Whether `k` is cached is asked and acted on
+    /// here, in one step; the caller re-reads the entry's meter
+    /// ([`Self::reread`]). `share`, when the entry was there and did not
+    /// need it, is given back unused, for the caller to drop after the
+    /// lock.
     fn use_key<E, S: FnOnce() -> Result<Charge, E>>(
         &mut self,
         k: usize,
@@ -254,7 +255,6 @@ impl Lru {
             self.unlink(k);
         }
         self.link_back(k);
-        self.reread(k);
         Ok(unused)
     }
 
@@ -379,7 +379,11 @@ impl DepCache {
         self.hook(Hook::Touching);
         // The share is charged in the step that inserts the entry, and
         // only then; unused, it was never made.
-        self.step(|lru| lru.use_key(k, || Self::room(file), |c| Self::node(dep, file, c)))?;
+        self.step(|lru| {
+            let unused = lru.use_key(k, || Self::room(file), |c| Self::node(dep, file, c))?;
+            lru.reread(k);
+            Ok::<_, Error>(unused)
+        })?;
         self.used(k);
         Ok(())
     }
@@ -394,17 +398,23 @@ impl DepCache {
 
     /// [`Self::touch`] with the new entry's share already charged
     /// ([`Self::room`]), so nothing in it can be refused. When `dep` is
-    /// cached already (a read through one of its slots touched it while
-    /// its load published them, the commit's `settle` among them), the
-    /// share is returned after the lock, and the entry's meter re-read
-    /// without it before the eviction check (CR1's review, round 1: it was
-    /// returned under the lock, after the entry was re-read with it).
+    /// cached already (another thread's read through a key the commit
+    /// published touched it), the share is returned after the lock, and
+    /// the entry's meter read only then, without it, before the eviction
+    /// check (CR1's review, round 1: it was returned under the lock, after
+    /// the entry was re-read with it; round 2: it is no longer re-read
+    /// with it first).
     pub(crate) fn touch_paid(&self, dep: &Arc<Dependency>, file: &File, room: Charge) {
         let k = lru_key(dep);
         #[cfg(test)]
         self.hook(Hook::Touching);
-        let Ok(unused) = self
-            .step(|lru| lru.use_key::<Infallible, _>(k, || Ok(room), |c| Self::node(dep, file, c)));
+        let Ok(unused) = self.step(|lru| {
+            let unused = lru.use_key::<Infallible, _>(k, || Ok(room), |c| Self::node(dep, file, c));
+            if matches!(unused, Ok(None)) {
+                lru.reread(k);
+            }
+            unused
+        });
         if let Some(unused) = unused {
             drop(unused);
             self.step(|lru| {
