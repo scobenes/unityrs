@@ -309,8 +309,14 @@ jobs:
       # records UnityPy's MeshHandler and UnityPyBoost's unpack_vertexdata,
       # through meshdecode_build.py, meshdecode_cases.py and
       # meshdecode_trees.py (its hand-built trees), which
-      # unityrs-meshdecode's tests replay.
-      - name: The scaffold's, packages B to E's, the texture decoders' and the mesh handler's oracle fixtures are current
+      # unityrs-meshdecode's tests replay. ngui.py records the NGUI cutter's
+      # reference (tools/parity/ngui_cutter.py) on the testkit's NGUI scenes,
+      # whose bundles unityrs-testkit's test holds to it; under the runner's
+      # zlib it compares all but the PNGs' digests and the one winner case
+      # whose `prefer` names a PNG's MD5, and says so (the pixels, the JSON
+      # and the other winners are compared); the X3, X4 and X5 step runs it
+      # again under zlib 1.2.13, comparing every field.
+      - name: The scaffold's, packages B to E's, the texture decoders', the mesh handler's and the NGUI cutter's oracle fixtures are current
         run: |
           python tools/fixtures/scaffold.py --check
           python tools/fixtures/pure_python_rules.py --check
@@ -323,6 +329,7 @@ jobs:
           python tools/fixtures/no_tree.py --check
           python tools/fixtures/texture.py --check
           python tools/fixtures/meshdecode.py --check
+          python tools/fixtures/ngui.py --check
       # The mesh handler's cases again on UnityPy's own TPK trees, as G7 runs
       # on its TPK: the TPK's trees and rows exist only in memory and in the
       # pipe to the crate's replay, and --tpk's own audit hook refuses any
@@ -386,14 +393,15 @@ jobs:
       # unityrs-imageio's X3 and X4: imageio.py records Pillow 9.5.0's PNGs,
       # whose bytes are zlib's, and the reference is zlib 1.2.13, the oracle
       # image's; under another zlib (the runner's) it compares all but the
-      # PNG bytes, and says so. So the step builds zlib 1.2.13 from its
+      # PNG bytes, and says so, as ngui.py does for the NGUI cutter's
+      # reference (X5). So the step builds zlib 1.2.13 from its
       # release tarball, sha256-pinned here and in the crate's manifest,
       # which zlib_vendor.py verify also holds the vendored files to; then
       # runs the check with the build's libz.so.1 first on the library path,
       # which Pillow's _imaging and Python's zlib load by that soname, and
-      # asserts both report 1.2.13 there, so every field is compared. It
+      # asserts both report 1.2.13 there, so every field of both is compared. It
       # builds with -std=gnu99, as crates/unityrs-imageio/build.rs does.
-      - name: X3 and X4, Pillow's PNGs over zlib 1.2.13, and the vendored zlib against its tarball
+      - name: X3, X4 and X5, Pillow's PNGs over zlib 1.2.13, and the vendored zlib against its tarball
         run: |
           tarball="$RUNNER_TEMP/zlib-1.2.13.tar.gz"
           curl -fsSL --connect-timeout 30 --max-time 300 --retry 3 --retry-all-errors -o "$tarball" \
@@ -407,10 +415,11 @@ jobs:
           export LD_LIBRARY_PATH="$zlib"
           python -c 'import zlib; from PIL import Image; v = (Image.core.zlib_version, zlib.ZLIB_RUNTIME_VERSION); assert v == ("1.2.13",) * 2, v'
           python tools/fixtures/imageio.py --check
+          python tools/fixtures/ngui.py --check
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=450
+          tools/parity/tests=516
           tools/perf/tests=10
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6
