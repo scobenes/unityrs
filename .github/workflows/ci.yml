@@ -303,7 +303,8 @@ jobs:
       # tpk_build.py), as scripts/tests/test_ci_workflow.py checks, and each
       # module also runs on its own (tools/parity/tests/test_fixture_modules.py).
       # no_tree.py reads with tpk.py's synthetic TPKs, unityrs-tpk's test
-      # replays it.
+      # replays it. texture.py records UnityPy's and Pillow's texture decodes
+      # and selection, which unityrs-texture's tests replay.
       - name: The scaffold's and packages B to E's oracle fixtures are current
         run: |
           python tools/fixtures/scaffold.py --check
@@ -315,6 +316,7 @@ jobs:
           python tools/fixtures/index.py --check
           python tools/fixtures/folders.py --check
           python tools/fixtures/no_tree.py --check
+          python tools/fixtures/texture.py --check
       # unityrs-imageio's X3 and X4: imageio.py records Pillow 9.5.0's PNGs,
       # whose bytes are zlib's, and the reference is zlib 1.2.13, the oracle
       # image's; under another zlib (the runner's) it compares all but the
