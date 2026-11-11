@@ -49,6 +49,8 @@ pub enum V {
     UInt8(u8),
     /// `UInt64`.
     UInt64(u64),
+    /// `SInt64`.
+    Int64(i64),
     /// `bool`, aligned.
     Bool(bool),
     /// `float`: UnityPy widens it exactly to a double.
@@ -179,6 +181,7 @@ fn rows(level: u8, name: &str, v: &V, out: &mut Vec<NodeSpec>) {
         V::UInt(_) => out.push(leaf("unsigned int", 4)),
         V::UInt8(_) => out.push(leaf("UInt8", 1)),
         V::UInt64(_) => out.push(leaf("UInt64", 8)),
+        V::Int64(_) => out.push(leaf("SInt64", 8)),
         V::Float(_) => out.push(leaf("float", 4)),
         V::Double(_) => out.push(leaf("double", 8)),
         V::Bool(_) => out.push(leaf("bool", 1).aligned()),
@@ -251,6 +254,9 @@ fn bytes(w: &mut ByteWriter, v: &V) -> Result<(), BuildError> {
         }
         V::UInt64(x) => {
             w.u64(*x);
+        }
+        V::Int64(x) => {
+            w.i64(*x);
         }
         V::Float(x) => {
             w.f32(*x);

@@ -7,6 +7,7 @@ use super::super::{
 };
 use super::{Built, CutOptions, SCRIPT, by_name, one, plain, rgba, scene};
 use crate::env::{bundle, res_bytes};
+use crate::ngui::V;
 
 /// Sheets whose answers are skips, with textures exported: an `Alpha8`
 /// sheet (`unsupported_format(Alpha8)`) and a zero-height one
@@ -70,8 +71,10 @@ pub fn sheet_skips() -> Built {
 /// then `dir/CAB-c.resS`, the last is read. A stream path naming the reading
 /// file itself, `CAB-x16`, finds a SerializedFile (`decode_error`, code
 /// `malformed`, the texture and its atlas). A second SerializedFile,
-/// `CAB-x16p`, holds nothing but one external, naming the nested bundle
-/// `inner`, for a pointer to a container row (on `CAB-x16` it would be among
+/// `CAB-x16p`, has one external, naming the nested bundle `inner`, and an
+/// atlas `pp` whose material pointer `(1, 1)` names that container row
+/// (`bad_pointer`: no name, so `pp` cuts the texture of its own name), with
+/// its MonoScript and that texture (on `CAB-x16` the external would be among
 /// the names UnityPy's own lookup loads first).
 pub fn streamed_sheets() -> Built {
     let streamed = |id, name: &str, size, path: &str, offset, len| {
@@ -107,7 +110,22 @@ pub fn streamed_sheets() -> Built {
         objects.push(by_name(id + 10, name, vec![plain("s", (0, 0, 1, 1))]));
     }
     let cab = file(&[], &objects, true)?;
-    let pointing = file(&["archive:/inner/inner"], &[], true)?;
+    let pointing = file(
+        &["archive:/inner/inner"],
+        &[
+            mono_script(1, "NGUIAtlas"),
+            atlas(
+                2,
+                b"pp",
+                SCRIPT,
+                (1, 1),
+                vec![plain("s", (0, 0, 1, 1))],
+                Vec::new(),
+            ),
+            rgba(3, "pp", 0x49, 1, 1),
+        ],
+        true,
+    )?;
     let inner = bundle(&[("CAB-twin.resS", sheet(0x19, 2, 1, false))]);
     let nested_b = bundle(&[("CAB-b.resS", sheet(0x46, 1, 1, false))]);
     let dep = file(&[], &[], true)?;
@@ -187,6 +205,53 @@ pub fn repeated_rows() -> Built {
     ))
 }
 
+/// 4.3's lookup through the view, after the own chain finds no row, where a
+/// container row's own name is a key (the core's `resource_try`). The
+/// dependency `d.bundle` holds a raw `r.resS` and then a nested bundle at
+/// the same path (holding only `other.resS`): `dr`'s stream names `r.resS`,
+/// which no row of the input holds, and the key's last registration is the
+/// container, so nothing is read (`outside_view(<path>)`), where UnityPy's
+/// registry, which gives a container no key, answers with the raw row. The
+/// input holds a nested bundle `n.resS` holding a raw `n.resS`: `nn`'s
+/// stream names it, the own chain passes the container over, and the view's
+/// lookup answers as the core does.
+pub fn fallback_rows() -> Built {
+    let x22 = |base| sheet(base, 1, 1, false);
+    let streamed = |id, name: &[u8], path: &str| {
+        texture_streamed(id, name, format::RGBA32, (1, 1), path, 0, 4)
+    };
+    let cab = file(
+        &[],
+        &[
+            mono_script(1, "NGUIAtlas"),
+            streamed(2, b"dr", "archive:/CAB-x22/r.resS"),
+            streamed(3, b"nn", "archive:/CAB-x22/n.resS"),
+            by_name(4, "dr", vec![plain("s", (0, 0, 1, 1))]),
+            by_name(5, "nn", vec![plain("s", (0, 0, 1, 1))]),
+        ],
+        true,
+    )?;
+    let dep = file(&[], &[], true)?;
+    let shadow = bundle(&[("other.resS", x22(0x82))]);
+    let holder = bundle(&[("n.resS", x22(0x83))]);
+    Ok(scene(
+        vec![
+            one(
+                "d.bundle",
+                &[("CAB-d22", dep), ("r.resS", x22(0x81)), ("r.resS", shadow)],
+                &[],
+            ),
+            one(
+                "x.bundle",
+                &[("CAB-x22", cab), ("n.resS", holder)],
+                &["d.bundle"],
+            ),
+        ],
+        &["x.bundle"],
+        CutOptions::textures("{name}.png"),
+    ))
+}
+
 /// Crops Pillow 9.5.0 refuses, on a 1 x 1 sheet: one of 20000 x 10000
 /// pixels, past twice `Image.MAX_IMAGE_PIXELS` (`decompression_bomb`), one
 /// at `x` 2^31 - 1 with a width of 1, whose right edge is past a C `int`
@@ -209,6 +274,24 @@ pub fn crop_bounds() -> Built {
                     plain("low", (0, i32::MAX, 1, 1)),
                 ],
             ),
+            rgba(4, "big", 0x1F, 1, 1),
+            by_name(5, "big", vec![wide_sprite()]),
+        ],
+    )
+}
+
+/// A sprite of `SInt64` fields at the origin, 2^33 wide and 2^31 high: its
+/// area is 2^64, which a 64-bit product wraps to 0.
+fn wide_sprite() -> V {
+    let int64 = |name: &str, v: i64| (name.to_owned(), V::Int64(v));
+    V::Struct(
+        "UISpriteData".to_owned(),
+        vec![
+            ("name".to_owned(), V::Str(b"wide".to_vec())),
+            int64("x", 0),
+            int64("y", 0),
+            int64("width", 1 << 33),
+            int64("height", 1 << 31),
         ],
     )
 }

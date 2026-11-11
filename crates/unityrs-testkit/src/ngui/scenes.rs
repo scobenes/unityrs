@@ -23,7 +23,9 @@ pub use outputs::{
     texture_key_is_json_key, two_atlases_one_sheet, two_atlases_without_textures, two_sheet_groups,
 };
 pub use recognition::{failed_reads, layouts};
-pub use sheets::{crop_bounds, failed_sheet_rows, repeated_rows, sheet_skips, streamed_sheets};
+pub use sheets::{
+    crop_bounds, failed_sheet_rows, fallback_rows, repeated_rows, sheet_skips, streamed_sheets,
+};
 pub use winners::{textured_winners, winners};
 
 /// One bundle of a scene: its spec `id`, its bytes and its `deps`.
@@ -380,7 +382,7 @@ pub fn missing_sheets() -> Built {
 
 /// Every scene, by name.
 pub fn scenes() -> Result<Vec<(&'static str, AtlasScene)>, BuildError> {
-    let all: [(&'static str, Make); 24] = [
+    let all: [(&'static str, Make); 25] = [
         ("own_sheet_by_material_name", own_sheet_by_material_name),
         ("struct_maintex_in_dependency", struct_maintex_in_dependency),
         ("material_in_dependency", material_in_dependency),
@@ -401,6 +403,7 @@ pub fn scenes() -> Result<Vec<(&'static str, AtlasScene)>, BuildError> {
         ("sheet_skips", sheet_skips),
         ("streamed_sheets", streamed_sheets),
         ("repeated_rows", repeated_rows),
+        ("fallback_rows", fallback_rows),
         ("crop_bounds", crop_bounds),
         ("failed_sheet_rows", failed_sheet_rows),
         ("winners", winners),

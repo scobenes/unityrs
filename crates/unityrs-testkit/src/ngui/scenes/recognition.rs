@@ -16,6 +16,17 @@ fn shaped(path_id: i64, name: &[u8], sprites: V) -> Object {
     mono_behaviour(path_id, name, SCRIPT, vec![("mSprites", sprites)])
 }
 
+/// `o`, a struct, with its fields edited by `edit`.
+fn edited(o: Object, edit: impl FnOnce(&mut Vec<(String, V)>)) -> Object {
+    match o.value {
+        V::Struct(ty, mut fields) => {
+            edit(&mut fields);
+            Object::new(o.path_id, o.class_id, V::Struct(ty, fields))
+        }
+        other => Object::new(o.path_id, o.class_id, other),
+    }
+}
+
 /// A vector of one `item`.
 fn one_of(item: V) -> V {
     vector(item.clone(), vec![item])
@@ -185,6 +196,16 @@ pub fn layouts() -> Built {
 /// each end with an object of no bytes, which UnityPy reads with its own
 /// reader, past the file's end: a texture (`CAB-x15b`) and a MonoBehaviour
 /// (`CAB-x15c`), whose head's read fails, so its script is unresolved.
+///
+/// The texture `cb` is cut just after `m_ForcedFallbackFormat`, so the next
+/// read, `m_DownscaleFallback`'s `bool`, raises a `ValueError` that is not
+/// the check's, with the check or without it. The texture `nolm` lacks only
+/// `m_LightmapFormat`, which UnityPy's `Texture2D` requires; `extra` has
+/// one field past UnityPy's. The material `trailmat` holds four bytes past
+/// its value, so the atlas `mt`'s step 1 gives no name and `mt` cuts the
+/// texture of its own name, not `mtx`, which the material names. The atlas
+/// `ms`'s MonoScript holds four bytes past its value: its script is
+/// unresolved.
 pub fn failed_reads() -> Built {
     // `ui`'s `m_Name`: an `int` length, two bytes, two of alignment.
     let ui_name = 8;
@@ -193,6 +214,14 @@ pub fn failed_reads() -> Built {
     let head = 12 + 4 + 12 + 12;
     let one_sprite = || vec![plain("s", (0, 0, 1, 1))];
     let stub = Object::new(13, 28, st("Texture2D", vec![("m_Name", s("stub"))]));
+    // `cb`'s `m_Name` (8 bytes, as `ui`'s) and `m_ForcedFallbackFormat`.
+    let cb = rgba(14, "cb", 0x1C, 1, 1).cut_to(ui_name + 4);
+    let nolm = edited(rgba(15, "nolm", 0x1D, 1, 1), |f| {
+        f.retain(|(n, _)| n != "m_LightmapFormat");
+    });
+    let extra = edited(rgba(16, "extra", 0x1E, 1, 1), |f| {
+        f.push(("m_Extra".to_owned(), V::Int(7)));
+    });
     let cab = file(
         &[],
         &[
@@ -209,6 +238,15 @@ pub fn failed_reads() -> Built {
             rgba(11, "ttail", 0x17, 1, 1).with_trailing(4),
             by_name(12, "ttail", one_sprite()),
             stub,
+            cb,
+            nolm,
+            extra,
+            material(17, "trailmat", PropName::Plain, &[("_MainTex", (0, 19))]).with_trailing(4),
+            atlas(18, b"mt", SCRIPT, (0, 17), one_sprite(), Vec::new()),
+            rgba(19, "mtx", 0x19, 1, 1),
+            rgba(20, "mt", 0x1A, 1, 1),
+            mono_script(21, "NGUIAtlas").with_trailing(4),
+            atlas(22, b"ms", (0, 21), NULL, one_sprite(), Vec::new()),
         ],
         true,
     )?;

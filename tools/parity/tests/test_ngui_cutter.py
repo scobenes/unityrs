@@ -319,14 +319,17 @@ class Cutter(unittest.TestCase):
 
     def test_recognition_from_the_typetree(self):
         r = self.one("layouts")
-        self.assertEqual(r.unresolved_scripts, 2)  # a null m_Script, and one to a missing object
+        # A null m_Script, one to a missing object, and CAB-x11c's, whose MonoScript has no typetree: version 1
+        # configures no typetree provider, so its read fails (the core's `NoTypeTree`), where UnityPy reads it by
+        # its TPK.
+        self.assertEqual(r.unresolved_scripts, 3)
         unsupported = [atlas_skip("CAB-x11a", p, "ngui_layout_unsupported") for p in range(17, 24)]
         self.assertEqual(
             skips(r),
             [atlas_skip("CAB-x11a", p, "ngui_layout_unsupported") for p in (13, 14)]
             + [atlas_skip("CAB-x11a", 15, "unnamed_atlas")]
             + unsupported  # strings, no `width`, a float, a bool, a map, an `int` name
-            + [atlas_skip("CAB-x11b", 1, "no_typetree"), atlas_skip("CAB-x11c", 2, "no_typetree")],
+            + [atlas_skip("CAB-x11b", 1, "no_typetree")],  # its MonoScript, in CAB-x11a, has a typetree
         )
         # Rectangle fields of `UInt8`, `unsigned int`, `UInt64` and `int`: recognised, read as integers.
         self.assertEqual(outputs(r), unit_of("mixed.json", "mixed/m.png"))
@@ -360,6 +363,8 @@ class Cutter(unittest.TestCase):
                 texture_skip("CAB-x15", 3, "duplicate_name"),  # the first `ui`, peeked, took the name
                 texture_skip("CAB-x15", 11, "decode_error", "asset_bundle"),  # four bytes past its value
                 texture_skip("CAB-x15", 13, "decode_error", "read"),  # `m_Name` alone: an UnknownObject
+                texture_skip("CAB-x15", 14, "decode_error", "read"),  # cut at a `bool`: not the check's ValueError
+                texture_skip("CAB-x15", 15, "decode_error", "read"),  # no `m_LightmapFormat`: an UnknownObject
                 texture_skip("CAB-x15b", 1, "decode_error", "read"),  # no bytes: its name's peek fails
                 atlas_skip("CAB-x15", 4, "decode_error", "read"),  # its sheet's read: the sheet's answer
                 atlas_skip("CAB-x15", 5, "decode_error", "read"),  # its own read, before its sheet
@@ -374,12 +379,22 @@ class Cutter(unittest.TestCase):
                 ("CAB-x15", 4, "atlas_name", "CAB-x15", 2),
                 ("CAB-x15", 8, "material_name", "CAB-x15", 2),  # step 1 peeks the name, as step 2 does
                 ("CAB-x15", 12, "atlas_name", "CAB-x15", 11),
+                # `trailmat` fails its check, so step 1 gives no name: `mt` cuts `mt`, not `mtx`.
+                ("CAB-x15", 18, "atlas_name", "CAB-x15", 20),
             ],
         )
-        # The MonoBehaviour of no bytes: its head's read fails, so its script is unresolved.
-        self.assertEqual(r.unresolved_scripts, 1)
-        # No atlas cuts `short` once its atlas failed, nor `via`: plain texture outputs.
-        self.assertEqual(outputs(r), [("texture", "short.png", None), ("texture", "via.png", None)])
+        # The MonoBehaviour of no bytes, whose head's read fails, and `ms`, whose MonoScript fails its check: two
+        # unresolved scripts, and `ms` no atlas.
+        self.assertEqual(r.unresolved_scripts, 2)
+        # No atlas cuts `short` once its atlas failed, nor `via`, `extra` (a field past UnityPy's, read as a
+        # Texture2D) or `mtx`: plain texture outputs.
+        self.assertEqual(
+            outputs(r),
+            [("texture", "mt.png", "mt.png"), ("atlas_json", "mt.json", "mt.png"),
+             ("atlas_sprite", "mt/s.png", "mt.png"), ("texture", "short.png", None), ("texture", "via.png", None),
+             ("texture", "extra.png", None), ("texture", "mtx.png", None)],
+        )  # fmt: skip
+        self.crop(r, "mt/s.png", "RGBA", (1, 1), [px(0x1A, 0, 0)])
 
     def test_a_sheet_s_skip_skips_its_atlas(self):
         r = self.one("sheet_skips")
@@ -407,10 +422,13 @@ class Cutter(unittest.TestCase):
     def test_streamed_sheets_by_the_own_chain(self):
         r = self.one("streamed_sheets")
         units = []
-        for name in ("own", "dep", "twin", "res", "as", "st", "bb", "cc"):
+        for name in ("own", "dep", "twin", "res", "as", "st", "bb", "cc", "pp"):
             units += [("texture", f"{name}.png", f"{name}.png"), ("atlas_json", f"{name}.json", f"{name}.png"),
                       ("atlas_sprite", f"{name}/s.png", f"{name}.png")]  # fmt: skip
         self.assertEqual(outputs(r), units)
+        # CAB-x16p's `pp`: its material pointer `(1, 1)` names the container row `inner` (`bad_pointer`), so no name.
+        self.assertIn(("CAB-x16p", 2, "atlas_name", "CAB-x16p", 3), r.sheets)
+        self.crop(r, "pp/s.png", "RGBA", (1, 1), [px(0x49, 0, 0)])
         gone = "outside_view(archive:/CAB-x16/CAB-missing.resS)"
         self.assertEqual(
             skips(r),
@@ -449,15 +467,31 @@ class Cutter(unittest.TestCase):
         self.crop(r, "rep.png", "RGBA", (1, 1), [px(0x53, 0, 0)])
         self.crop(r, "nest.png", "RGBA", (1, 1), [px(0x54, 0, 0)])
 
+    def test_the_view_s_lookup_passes_a_container_over(self):
+        r = self.one("fallback_rows")
+        # `dr`: the dependency's last registration of `r.ress` is its container, which UnityPy's registry gives no
+        # key: the core finds nothing (its raw row, 0x81, is masked). `nn`: the own chain passes the container
+        # `n.resS` over, and the view's registry answers with the raw row inside it (0x83), as the core does.
+        self.assertEqual(
+            outputs(r),
+            [("texture", "nn.png", "nn.png"), ("atlas_json", "nn.json", "nn.png"),
+             ("atlas_sprite", "nn/s.png", "nn.png")],
+        )  # fmt: skip
+        gone = "outside_view(archive:/CAB-x22/r.resS)"
+        self.assertEqual(skips(r), [texture_skip("CAB-x22", 2, gone), atlas_skip("CAB-x22", 4, gone)])
+        self.crop(r, "nn.png", "RGBA", (1, 1), [px(0x83, 0, 0)])
+
     def test_crops_pillow_refuses_are_skipped_at_the_plan(self):
         r = self.one("crop_bounds")
-        self.assertEqual(outputs(r), unit_of("cb.json", "cb/ok.png"))
+        self.assertEqual(outputs(r), [*unit_of("cb.json", "cb/ok.png"), ("atlas_json", "big.json", "big.json")])
         self.assertEqual(
             skips(r),
             [
                 ("CAB-x17", 3, MB, "atlas_sprite", "decode_error", 1, "decompression_bomb"),  # 2 x 10^8 pixels
                 ("CAB-x17", 3, MB, "atlas_sprite", "decode_error", 2, "crop_overflow"),  # a right edge of 2^31
                 ("CAB-x17", 3, MB, "atlas_sprite", "decode_error", 3, "crop_overflow"),  # a bottom edge of 2^31
+                # `SInt64` sides of 2^33 and 2^31: an area of 2^64, which a 64-bit product would wrap to 0.
+                ("CAB-x17", 5, MB, "atlas_sprite", "decode_error", 0, "decompression_bomb"),
             ],
         )
         self.assertEqual(json.loads(by_key(r)["cb.json"].data)["sprite_count"], 4)

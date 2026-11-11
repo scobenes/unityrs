@@ -27,7 +27,7 @@ if ORACLE:
     from PIL import Image
     from UnityPy.enums import TextureFormat
     from UnityPy.export import Texture2DConverter
-    from UnityPy.files import SerializedFile
+    from UnityPy.files import BundleFile, SerializedFile
 
     import ngui_read as rd
     import ngui_scenes
@@ -213,6 +213,22 @@ class UnityPyDeparts(unittest.TestCase):
             rd.checked(ui.read)
         self.assertEqual(caught.exception.detail, "read")
 
+    def test_a_value_error_not_the_check_s_is_a_read(self):
+        """`cb` is cut after `m_ForcedFallbackFormat`: UnityPyBoost's `read_bool` for `m_DownscaleFallback` raises a
+        `ValueError` that is not the check's, with the check and without it, so `checked` gives `read`. (Taking every
+        `ValueError` for the check's would give `asset_bundle` here.)"""
+        scene = ngui_scenes.scenes()["failed_reads"]
+        bundle = rd.load(scene.view("x.bundle"), "x.bundle")
+        cb = next(o for o in objects(bundle) if o.assets_file.name == "CAB-x15" and o.path_id == 14)
+        with self.assertRaises(ValueError) as checked:
+            cb.read()
+        self.assertNotRegex(str(checked.exception), "^Expected to read")
+        with self.assertRaises(ValueError):
+            cb.read(check_read=False)
+        with self.assertRaises(rd.Failure) as caught:
+            rd.checked(cb.read)
+        self.assertEqual((caught.exception.reason, caught.exception.detail), ("decode_error", "read"))
+
     def test_an_object_of_no_bytes_is_read_by_unitypy_s_own_reader(self):
         """An object of no bytes skips UnityPyBoost (helpers/TypeTreeHelper.py:146-153); UnityPy's own reader, at the
         file's end, raises `struct.error`: a read failure, the texture's name peek and the MonoBehaviour's head."""
@@ -238,6 +254,79 @@ class UnityPyDeparts(unittest.TestCase):
         with self.assertRaises(rd.Failure) as caught:
             rd.texture_of(stub)
         self.assertEqual((caught.exception.reason, caught.exception.detail), ("decode_error", "read"))
+
+    def test_a_texture_s_read_value_by_4_4_step_2_s_rule(self):
+        """UnityPy's `Texture2D` requires 11 fields (classes/generated.py:5153-5164): one lacking
+        `m_LightmapFormat` is an `UnknownObject`, a read failure; one with a field past them is a `Texture2D`, that
+        field an attribute (helpers/TypeTreeHelper.py:241-258), and exported. `image_data` must be bytes and
+        `m_PlatformBlob` a list or absent."""
+        scene = ngui_scenes.scenes()["failed_reads"]
+        bundle = rd.load(scene.view("x.bundle"), "x.bundle")
+        by_id = {o.path_id: o for o in objects(bundle) if o.assets_file.name == "CAB-x15"}
+        self.assertEqual(type(by_id[15].read()).__name__, "UnknownObject")
+        with self.assertRaises(rd.Failure) as caught:
+            rd.texture_of(by_id[15])
+        self.assertEqual(caught.exception.detail, "read")
+        extra = rd.texture_of(by_id[16])
+        self.assertEqual((type(extra).__name__, extra.m_Extra), ("Texture2D", 7))
+
+        class Changed:
+            """`obj`, its read's value with `changes` set on it."""
+
+            def __init__(self, obj, **changes):
+                self.obj, self.changes, self.serialized_type = obj, changes, obj.serialized_type
+
+            def read(self, check_read=True):
+                value = self.obj.read(check_read=check_read)
+                for name, v in self.changes.items():
+                    setattr(value, name, v)
+                return value
+
+        for changes, ok in (
+            ({"image_data": "x"}, False),
+            ({"image_data": 4}, False),
+            ({"m_PlatformBlob": 3}, False),
+            ({"m_PlatformBlob": []}, True),
+            ({"m_PlatformBlob": None}, True),
+            ({"m_Width": 1.0}, False),
+            ({"m_Height": True}, False),
+        ):
+            with self.subTest(changes=changes):
+                if ok:
+                    rd.texture_of(Changed(by_id[16], **changes))
+                    continue
+                with self.assertRaises(rd.Failure) as caught:
+                    rd.texture_of(Changed(by_id[16], **changes))
+                self.assertEqual(caught.exception.detail, "read")
+
+    def test_an_object_with_no_typetree_is_not_read(self):
+        """Version 1 configures no typetree provider: `layouts`' CAB-x11c stores no typetrees, and UnityPy reads its
+        MonoScript by the TPK, where the core's read is `NoTypeTree`. So its MonoBehaviour's `m_Script` read fails:
+        unresolved, counted."""
+        scene = ngui_scenes.scenes()["layouts"]
+        bundle = rd.load(scene.view("x.bundle"), "x.bundle")
+        by_id = {o.path_id: o for o in objects(bundle) if o.assets_file.name == "CAB-x11c"}
+        self.assertEqual(by_id[1].read().m_ClassName, "NGUIAtlas")
+        with self.assertRaises(rd.Failure) as caught:
+            rd.typed(by_id[1])
+        self.assertEqual((caught.exception.reason, caught.exception.detail), ("decode_error", "asset_bundle"))
+        self.assertEqual(rd.recognise(by_id[2], ("NGUIAtlas",)), ("unresolved", None))
+
+    def test_the_view_s_registry_keys_a_container_by_its_name(self):
+        """`fallback_rows`: UnityPy's registry gives a container no key, so it answers `r.resS` with the
+        dependency's earlier raw row; 4.3's registry, as the core keeps it, holds the container under the key, and
+        the read moves on to the next candidate. A container's own entries register after its key."""
+        scene = ngui_scenes.scenes()["fallback_rows"]
+        bundle = rd.load(scene.view("x.bundle"), "x.bundle")
+        env = next(o for o in objects(bundle)).assets_file.environment
+        self.assertEqual(bytes(rd._get_resource_data(env.get_cab("r.resS"), 0, 1)), b"\x81")
+        keys = getattr(env, rd.REGISTRY)
+        self.assertIsInstance(keys["r.ress"], BundleFile)
+        self.assertEqual(bytes(rd._get_resource_data(keys["n.ress"], 0, 1)), b"\x83")
+        dr = next(o for o in objects(bundle) if o.path_id == 2)
+        with self.assertRaises(rd.Failure) as caught:
+            rd.decode(dr.read(), dr)
+        self.assertEqual(caught.exception.reason, "outside_view(archive:/CAB-x22/r.resS)")
 
     def test_a_negative_side_is_negative_size(self):
         negs = self.textures["negs"].read()
@@ -284,9 +373,13 @@ class Bounds(unittest.TestCase):
         self.assertEqual(rd.crop_refusal(0, 0, 20_000, 10_000), "decompression_bomb")
         self.assertEqual(rd.crop_refusal(0, 0, 178_956_970, 1), None)
         self.assertEqual(rd.crop_refusal(0, 0, 178_956_971, 1), "decompression_bomb")
+        # An area past 64 bits: 2^33 x 2^31 = 2^64, which a 64-bit product wraps to 0.
+        self.assertEqual(rd.crop_refusal(0, 0, 2**33, 2**31), "decompression_bomb")
         for box, rect in (
             ((2**31 - 1, 0, 2**31, 1), (2**31 - 1, 0, 1, 1)),
             ((-(2**31) - 1, 0, -(2**31), 1), (-(2**31) - 1, 0, 1, 1)),
+            ((0, 2**31 - 1, 1, 2**31), (0, 2**31 - 1, 1, 1)),
+            ((0, -(2**31) - 1, 1, -(2**31)), (0, -(2**31) - 1, 1, 1)),
         ):
             with self.subTest(box=box), self.assertRaises(OverflowError):
                 im.crop(box)
