@@ -6,9 +6,12 @@ edition.workspace = true
 rust-version.workspace = true
 # It ports UnityPy 1.25.2's texture rules (MIT: export/Texture2DConverter.py,
 # helpers/TextureSwizzler.py, enums/TextureFormat.py), whose notice is its
-# LICENSE-UNITYPY (a link to unityrs-core's), and Pillow 9.5.0's BCn block
-# decoders (MIT-CMU: src/libImaging/BcnDecode.c), whose notice is its
-# LICENSE-PILLOW; its package carries both. See THIRD_PARTY_LICENSES.
+# LICENSE-UNITYPY (a link to unityrs-core's), and Pillow 9.5.0's code as
+# UnityPy calls it (MIT-CMU: src/libImaging/BcnDecode.c's BCn block decoders,
+# src/libImaging/RawDecode.c's row copy, the width cap of src/decode.c's
+# _setimage, and the decompression-bomb check of src/PIL/Image.py's crop),
+# whose notice is its LICENSE-PILLOW; its package carries both. See
+# THIRD_PARTY_LICENSES.
 license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU"
 repository.workspace = true
 authors.workspace = true
