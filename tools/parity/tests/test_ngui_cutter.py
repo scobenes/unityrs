@@ -329,7 +329,9 @@ class Cutter(unittest.TestCase):
             [atlas_skip("CAB-x11a", p, "ngui_layout_unsupported") for p in (13, 14)]
             + [atlas_skip("CAB-x11a", 15, "unnamed_atlas")]
             + unsupported  # strings, no `width`, a float, a bool, a map, an `int` name
-            + [atlas_skip("CAB-x11b", 1, "no_typetree")],  # its MonoScript, in CAB-x11a, has a typetree
+            + [atlas_skip("CAB-x11b", 1, "no_typetree")]  # its MonoScript, in CAB-x11a, has a typetree
+            # The head's name needs no typetree, so the `no_typetree` `bare` took the name: the typed one is later.
+            + [atlas_skip("CAB-x11d", 2, "duplicate_name")],
         )
         # Rectangle fields of `UInt8`, `unsigned int`, `UInt64` and `int`: recognised, read as integers.
         self.assertEqual(outputs(r), unit_of("mixed.json", "mixed/m.png"))
@@ -387,6 +389,7 @@ class Cutter(unittest.TestCase):
                 ("CAB-x15", 26, "atlas_name", "CAB-x15", 28),  # `tsmat`'s `m_TexEnvs` is a struct: no name
                 ("CAB-x15e", 5, "atlas_name", "CAB-x15e", 2),  # the typed `tl`, not the stripped one
                 ("CAB-x15e", 6, "atlas_name", "CAB-x15e", 4),  # `tlmat` has no typetree: no name, not `tmx`
+                ("CAB-x15e", 8, "atlas_name", "CAB-x15e", 9),  # `tqmat` names the stripped `tl`: no name
             ],
         )
         # The MonoBehaviour of no bytes, whose head's read fails, `ms`, whose MonoScript fails its check, and `mi`,
@@ -396,12 +399,18 @@ class Cutter(unittest.TestCase):
         # Texture2D), `mtx`, `tsx` or `tmx`: plain texture outputs.
         unit = [
             (kind, key.format(n), f"{n}.png")
-            for n in ("mt", "ts", "tl", "tm")
+            for n in ("mt", "ts", "tl", "tm", "tq")
             for kind, key in (("texture", "{}.png"), ("atlas_json", "{}.json"), ("atlas_sprite", "{}/s.png"))
         ]
         plain = [("texture", f"{n}.png", None) for n in ("short", "via", "extra", "mtx", "tsx", "tmx")]
         self.assertEqual(outputs(r), unit + plain)  # fmt: skip
-        for key, base in (("mt/s.png", 0x1A), ("ts/s.png", 0x2F), ("tl/s.png", 0x2B), ("tm/s.png", 0x2D)):
+        for key, base in (
+            ("mt/s.png", 0x1A),
+            ("ts/s.png", 0x2F),
+            ("tl/s.png", 0x2B),
+            ("tm/s.png", 0x2D),
+            ("tq/s.png", 0x31),
+        ):
             self.crop(r, key, "RGBA", (1, 1), [px(base, 0, 0)])
 
     def test_a_sheet_s_skip_skips_its_atlas(self):
@@ -483,13 +492,15 @@ class Cutter(unittest.TestCase):
         # `wq`: the dependency's raw `w.resS`, a container two levels down being no key (0x88). `qq`: the nested
         # raw `q.resS`, registered after its container's key when the container is reached at its registration
         # (0x89), not the dependency's `q.resource` (0x8C) a lookup that reaches it only then would read.
-        # `am`, `an`: their materials' files are masked by containers (the same bundle's, a later dependency's),
-        # so no name; the textures `mx` and `nx` those materials name are plain.
+        # `am`, `an`: their materials' files are masked by containers (the same bundle's, at another path of the
+        # key, and a later dependency's), so no name; the textures `mx` and `nx` those materials name are plain.
+        # `aw`, `az`: masked by WebFile rows (top-level, and inside a reached bundle), which version 1's core
+        # refuses to open, so no name either; `wx` and `zx` are plain.
         self.assertEqual(
             outputs(r),
-            [(kind, key.format(n), f"{n}.png") for n in ("nn", "am", "an", "wq", "qq")
+            [(kind, key.format(n), f"{n}.png") for n in ("nn", "am", "an", "wq", "qq", "aw", "az")
              for kind, key in (("texture", "{}.png"), ("atlas_json", "{}.json"), ("atlas_sprite", "{}/s.png"))]
-            + [("texture", "mx.png", None), ("texture", "nx.png", None)],
+            + [("texture", f"{n}.png", None) for n in ("mx", "nx", "wx", "zx")],
         )  # fmt: skip
         gone = "outside_view(archive:/CAB-x22/r.resS)"
         self.assertEqual(
@@ -497,16 +508,29 @@ class Cutter(unittest.TestCase):
             [texture_skip("CAB-x22", 2, gone), atlas_skip("CAB-x22", 4, gone),
              # `sd`'s stream names the dependency's SerializedFile `CAB-d22`, by the view's lookup.
              texture_skip("CAB-x22", 18, "decode_error", "malformed"),
-             atlas_skip("CAB-x22", 19, "decode_error", "malformed")],
+             atlas_skip("CAB-x22", 19, "decode_error", "malformed")]
+            # `wv`: a WebFile inside a reached bundle keys `w2.ress` above the raw row; `wt`: a top-level WebFile
+            # row; `wo`: the input's own WebFile row. Version 1's core refuses to open each: `unsupported`.
+            + [s for p in (20, 22, 30) for s in (texture_skip("CAB-x22", p, "decode_error", "unsupported"),
+                                                 atlas_skip("CAB-x22", p + 1, "decode_error", "unsupported"))],
         )  # fmt: skip
         self.assertEqual(
             [(s[1], s[2], s[4]) for s in r.sheets],
             [(4, "atlas_name", 2), (5, "atlas_name", 3), (6, "atlas_name", 11), (8, "atlas_name", 13),
-             (15, "atlas_name", 14), (17, "atlas_name", 16), (19, "atlas_name", 18)],
+             (15, "atlas_name", 14), (17, "atlas_name", 16), (19, "atlas_name", 18), (21, "atlas_name", 20),
+             (23, "atlas_name", 22), (24, "atlas_name", 27), (25, "atlas_name", 29), (31, "atlas_name", 30)],
         )  # fmt: skip
         # `ms` and `ns`: their MonoScripts' files are masked too, so their `m_Script` reads fail.
         self.assertEqual(r.unresolved_scripts, 2)
-        for key, base in (("nn.png", 0x83), ("am/s.png", 0x85), ("an/s.png", 0x87), ("wq.png", 0x88), ("qq.png", 0x89)):
+        for key, base in (
+            ("nn.png", 0x83),
+            ("am/s.png", 0x85),
+            ("an/s.png", 0x87),
+            ("wq.png", 0x88),
+            ("qq.png", 0x89),
+            ("aw/s.png", 0x95),
+            ("az/s.png", 0x97),
+        ):
             self.crop(r, key, "RGBA", (1, 1), [px(base, 0, 0)])
 
     def test_crops_pillow_refuses_are_skipped_at_the_plan(self):

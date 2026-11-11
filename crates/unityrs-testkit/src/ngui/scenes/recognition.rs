@@ -109,7 +109,9 @@ fn odd_shapes() -> Vec<Object> {
 /// `no_typetree`. In a third, with no typetrees either, a MonoBehaviour's
 /// MonoScript is in its own file, which the TPK reads and version 1 does
 /// not (the core's `NoTypeTree`): its `m_Script` read fails, so its script
-/// is unresolved and counted.
+/// is unresolved and counted. A fourth file, with typetrees, holds a second
+/// atlas `bare`: the head's name needs no typetree, so the first `bare`
+/// took the name, and this one is `duplicate_name`.
 pub fn layouts() -> Built {
     let legacy = st(
         "Sprite",
@@ -166,6 +168,14 @@ pub fn layouts() -> Built {
         ],
         false,
     )?;
+    let again = file(
+        &[],
+        &[
+            mono_script(1, "NGUIAtlas"),
+            by_name(2, "bare", vec![plain("e", (0, 0, 1, 1))]),
+        ],
+        true,
+    )?;
     Ok(scene(
         vec![one(
             "x.bundle",
@@ -173,6 +183,7 @@ pub fn layouts() -> Built {
                 ("CAB-x11a", first),
                 ("CAB-x11b", bare),
                 ("CAB-x11c", stripped),
+                ("CAB-x11d", again),
             ],
             &[],
         )],
@@ -324,7 +335,9 @@ fn nameless(o: Object) -> Object {
 /// texture `tl`'s name read fails (`asset_bundle`), so it owns no name and
 /// the later `tl`, of the second file, is the atlas `tl`'s sheet; its
 /// material `tlmat`, in the TPK's layout, names the second file's `tmx`,
-/// but is not read, so the atlas `tm` cuts the texture of its own name.
+/// but is not read, so the atlas `tm` cuts the texture of its own name. The
+/// second file's typed material `tqmat` names the stripped `tl`, whose name
+/// read fails, so the atlas `tq` gets no name and cuts `tq`.
 fn typetree_reach() -> Result<(Vec<u8>, Vec<u8>), BuildError> {
     let one_sprite = || vec![plain("s", (0, 0, 1, 1))];
     let typeless = file(
@@ -344,6 +357,9 @@ fn typetree_reach() -> Result<(Vec<u8>, Vec<u8>), BuildError> {
             rgba(4, "tm", 0x2D, 1, 1),
             by_name(5, "tl", one_sprite()),
             atlas(6, b"tm", SCRIPT, (1, 2), one_sprite(), Vec::new()),
+            material(7, "tqmat", PropName::Plain, &[("_MainTex", (1, 1))]),
+            atlas(8, b"tq", SCRIPT, (0, 7), one_sprite(), Vec::new()),
+            rgba(9, "tq", 0x31, 1, 1),
         ],
         true,
     )?;

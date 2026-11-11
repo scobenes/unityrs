@@ -27,12 +27,14 @@ if ORACLE:
     from PIL import Image
     from UnityPy.enums import TextureFormat
     from UnityPy.export import Texture2DConverter
-    from UnityPy.files import BundleFile, SerializedFile
+    from UnityPy.files import BundleFile, SerializedFile, WebFile
+    from UnityPy.helpers import TypeTreeNode as TypeTreeNodeModule
 
     import ngui_read as rd
     import ngui_scenes
 
 GONE = "outside_view(archive:/CAB-x16/CAB-missing.resS)"
+MISSING = object()
 # A child that reads the texture `gone` through UnityPy's own `Texture2D.image`, unsealed, in its working directory.
 UNSEALED = textwrap.dedent("""
     import sys, UnityPy
@@ -339,6 +341,23 @@ class UnityPyDeparts(unittest.TestCase):
         self.assertEqual([(name, env.m_Texture.m_PathID) for name, env in envs], [("_MainTex", 3)])
         atlas = by_id[("CAB-x15e", 6)]
         self.assertIsNone(rd.maintex_name(rd.atlas_tree(atlas), atlas))
+        # The name is read over the object's own nodes, not from UnityPy's process-wide peek cache: a cache entry
+        # that says the root has no name field changes `peek_name`'s answer, not `name_of`'s.
+        typed_tl = by_id[("CAB-x15e", 2)]
+        root = typed_tl.serialized_type.node
+        cache_key = (root.m_Name, root.m_Type, root.m_Version)
+        saved = TypeTreeNodeModule.NAME_PEEK_NODE_CACHE.get(cache_key, MISSING)
+        TypeTreeNodeModule.NAME_PEEK_NODE_CACHE[cache_key] = None
+        try:
+            self.assertIsNone(typed_tl.peek_name())
+            self.assertEqual(rd.name_of(typed_tl), "tl")
+        finally:
+            if saved is MISSING:
+                del TypeTreeNodeModule.NAME_PEEK_NODE_CACHE[cache_key]
+            else:
+                TypeTreeNodeModule.NAME_PEEK_NODE_CACHE[cache_key] = saved
+        # `nameless` (and `ts`, whose `m_TexEnvs` is a struct) fail by more than one of the reference's checks, so
+        # they pin the Rust cutter's answer more than the reference's own guards.
         nameless = by_id[("CAB-x15", 29)]
         self.assertIsNone(nameless.peek_name())
         with self.assertRaises(rd.Failure) as caught:
@@ -364,10 +383,23 @@ class UnityPyDeparts(unittest.TestCase):
                 self.assertEqual(caught.exception.reason, f"outside_view({cab})")
                 self.assertIsNone(rd.maintex_name(tree, by_id[atlas]))
                 self.assertEqual(rd.recognise(by_id[script], ("NGUIAtlas",)), ("unresolved", None))
-        # A container two levels down is no key; a raw row is returned as is (`bad_pointer` at its `objects`).
+        # A container two levels down is no key; a raw row is returned as is, `bad_pointer` at its `objects`.
         keys = getattr(env, rd.REGISTRY)
         self.assertNotIsInstance(keys["w.ress"], (BundleFile, SerializedFile))
         self.assertIs(env.find_file("w.resS"), keys["w.ress"])
+        with self.assertRaises(rd.Failure) as caught:
+            rd.deref(5, 1, by_id[24].assets_file)  # the fifth external: the dependency's raw `w.resS`
+        self.assertEqual(caught.exception.reason, "bad_pointer")
+        # A WebFile row is a key, top-level or inside a reached bundle, its entries never registered; version 1's core
+        # refuses to open one, so a pointer through it is `unsupported`, and `aw`, `az` get no name.
+        self.assertIsInstance(keys["w2.ress"], WebFile)
+        self.assertNotIn("in2.ress", keys)
+        for file_id, atlas in ((3, 24), (4, 25)):
+            with self.subTest(file_id=file_id):
+                with self.assertRaises(rd.Failure) as caught:
+                    rd.deref(file_id, 1, by_id[atlas].assets_file)
+                self.assertEqual((caught.exception.reason, caught.exception.detail), ("decode_error", "unsupported"))
+                self.assertIsNone(rd.maintex_name(rd.atlas_tree(by_id[atlas]), by_id[atlas]))
 
     def test_the_view_s_registry_keys_a_container_by_its_name(self):
         """`fallback_rows`: UnityPy's registry gives a container no key, so it answers `r.resS` with the

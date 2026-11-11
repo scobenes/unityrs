@@ -96,7 +96,7 @@ def table():
             "short.png": cut(sheet(0x15, 1, 1)), "via.png": cut(sheet(0x16, 1, 1)),
             "extra.png": cut(sheet(0x1E, 1, 1)), "mtx.png": cut(sheet(0x19, 1, 1)),
             "tsx.png": cut(sheet(0x2E, 1, 1)), "tmx.png": cut(sheet(0x2C, 1, 1)),
-            **one_by_one({"mt": 0x1A, "ts": 0x2F, "tl": 0x2B, "tm": 0x2D}),
+            **one_by_one({"mt": 0x1A, "ts": 0x2F, "tl": 0x2B, "tm": 0x2D, "tq": 0x31}),
         },
         ("streamed_sheets", "x.bundle"): {
             "own.png": cut(x16), "own/s.png": cut(x16, (0, 0, 2, 2)),
@@ -107,7 +107,8 @@ def table():
         ("repeated_rows", "x.bundle"): one_by_one({"rep": 0x53, "nest": 0x54}),
         ("fallback_rows", "x.bundle"): {
             "mx.png": cut(sheet(0x84, 1, 1)), "nx.png": cut(sheet(0x86, 1, 1)),
-            **one_by_one({"nn": 0x83, "am": 0x85, "an": 0x87, "wq": 0x88, "qq": 0x89}),
+            "wx.png": cut(sheet(0x94, 1, 1)), "zx.png": cut(sheet(0x96, 1, 1)),
+            **one_by_one({"nn": 0x83, "am": 0x85, "an": 0x87, "wq": 0x88, "qq": 0x89, "aw": 0x95, "az": 0x97}),
         },
         ("crop_bounds", "x.bundle"): {"cb/ok.png": cut(sheet(0x1B, 1, 1), (0, 0, 1, 1))},
         ("failed_sheet_rows", "x.bundle"): {"sheet.png": cut(sheet(0x61, 1, 1))},

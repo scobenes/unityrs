@@ -3,10 +3,11 @@
 //! crops Pillow refuses.
 
 use super::super::{
-    PropName, atlas, file, format, material, mono_script, sheet, texture, texture_streamed,
+    BuildError, PropName, atlas, file, format, material, mono_script, sheet, texture,
+    texture_streamed,
 };
-use super::{Built, CutOptions, NULL, SCRIPT, by_name, one, plain, rgba, scene};
-use crate::env::{bundle, res_bytes};
+use super::{Built, CutOptions, NULL, SCRIPT, SceneBundle, by_name, one, plain, rgba, scene};
+use crate::env::{bundle, res_bytes, web_file};
 use crate::ngui::V;
 
 /// Sheets whose answers are skips, with textures exported: an `Alpha8`
@@ -231,7 +232,21 @@ pub fn repeated_rows() -> Built {
 /// dependency a raw `q.resource`: 4.3 reaches the container at its
 /// registration, so the nested row, registered after the container's key,
 /// answers `qq`'s first candidate. `sd`'s stream names the dependency's
-/// SerializedFile `CAB-d22`: `decode_error`, `malformed`.
+/// SerializedFile `CAB-d22`: `decode_error`, `malformed`. The input's fifth
+/// external names the dependency's raw `w.resS`: a pointer through it is
+/// `bad_pointer`.
+///
+/// WebFile rows, each a key, top-level or inside a reached container, its
+/// entries never registered; version 1's core refuses to open one
+/// (`decode_error`, `unsupported`). The dependency's raw `w2.resS` is
+/// followed by a top-level bundle holding a WebFile at `w2.resS`, which the
+/// reach keys above it, so `wv`'s read fails; so does `wt`'s, whose stream
+/// names a top-level WebFile row, and `wo`'s, whose names the input's own
+/// WebFile row. The SerializedFile `CAB-dw` is followed by a top-level
+/// WebFile row of its key (`sub/CAB-dw`), and `CAB-dz` by a bundle holding
+/// a WebFile at `CAB-dz`: the atlases `aw` and `az`, whose materials are
+/// there, get no name and cut the textures of their own names, not `wx` or
+/// `zx`.
 pub fn fallback_rows() -> Built {
     let x22 = |base| sheet(base, 1, 1, false);
     let streamed = |id, name: &[u8], path: &str| {
@@ -239,7 +254,13 @@ pub fn fallback_rows() -> Built {
     };
     let one_sprite = || vec![plain("s", (0, 0, 1, 1))];
     let cab = file(
-        &["archive:/CAB-dm/CAB-dm", "archive:/CAB-dn/CAB-dn"],
+        &[
+            "archive:/CAB-dm/CAB-dm",
+            "archive:/CAB-dn/CAB-dn",
+            "archive:/CAB-dw/CAB-dw",
+            "archive:/CAB-dz/CAB-dz",
+            "archive:/CAB-d22/w.resS",
+        ],
         &[
             mono_script(1, "NGUIAtlas"),
             streamed(2, b"dr", "archive:/CAB-x22/r.resS"),
@@ -260,42 +281,25 @@ pub fn fallback_rows() -> Built {
             by_name(17, "qq", one_sprite()),
             streamed(18, b"sd", "archive:/CAB-d22/CAB-d22"),
             by_name(19, "sd", one_sprite()),
+            streamed(20, b"wv", "archive:/CAB-x22/w2.resS"),
+            by_name(21, "wv", one_sprite()),
+            streamed(22, b"wt", "archive:/CAB-x22/w4.resS"),
+            by_name(23, "wt", one_sprite()),
+            atlas(24, b"aw", SCRIPT, (3, 1), one_sprite(), Vec::new()),
+            atlas(25, b"az", SCRIPT, (4, 1), one_sprite(), Vec::new()),
+            rgba(26, "wx", 0x94, 1, 1),
+            rgba(27, "aw", 0x95, 1, 1),
+            rgba(28, "zx", 0x96, 1, 1),
+            rgba(29, "az", 0x97, 1, 1),
+            streamed(30, b"wo", "archive:/CAB-x22/w5.resS"),
+            by_name(31, "wo", one_sprite()),
         ],
         true,
     )?;
-    let dep = file(&[], &[mono_script(1, "Dependency")], true)?;
-    // A material naming its file's `<x>` (3), a MonoScript (2) and `<x>`.
-    let held = |x: &str| {
-        file(
-            &[],
-            &[
-                material(1, "held", PropName::Plain, &[("_MainTex", (0, 3))]),
-                mono_script(2, "NGUIAtlas"),
-                rgba(3, x, 0x8F, 1, 1),
-            ],
-            true,
-        )
-    };
-    let shadow = bundle(&[("other.resS", x22(0x82))]);
     let holder = bundle(&[("n.resS", x22(0x83))]);
-    let wrap = bundle(&[("w.resS", bundle(&[("inner.resS", x22(0x8A))]))]);
     Ok(scene(
         vec![
-            one(
-                "d.bundle",
-                &[
-                    ("CAB-d22", dep),
-                    ("r.resS", x22(0x81)),
-                    ("r.resS", shadow),
-                    ("CAB-dm", held("mx")?),
-                    ("CAB-dm", bundle(&[("pad.resS", x22(0x8B))])),
-                    ("CAB-dn", held("nx")?),
-                    ("w.resS", x22(0x88)),
-                    ("wrap", wrap),
-                    ("q.resource", x22(0x8C)),
-                ],
-                &[],
-            ),
+            fallback_dependency()?,
             one(
                 "e.bundle",
                 &[
@@ -310,12 +314,62 @@ pub fn fallback_rows() -> Built {
                     ("CAB-x22", cab),
                     ("n.resS", holder),
                     ("q.resS", bundle(&[("q.resS", x22(0x89))])),
+                    ("w5.resS", web_file(&[("in5.resS", x22(0x99))])),
                 ],
                 &["d.bundle", "e.bundle"],
             ),
         ],
         &["x.bundle"],
         CutOptions::textures("{name}.png"),
+    ))
+}
+
+/// `fallback_rows`' dependency `d.bundle`: its rows, as that scene's
+/// documentation lists them.
+fn fallback_dependency() -> Result<SceneBundle, BuildError> {
+    let x22 = |base| sheet(base, 1, 1, false);
+    let wrap = bundle(&[("w.resS", bundle(&[("inner.resS", x22(0x8A))]))]);
+    let dep = file(&[], &[mono_script(1, "Dependency")], true)?;
+    // A material naming its file's `<x>` (3), a MonoScript (2) and `<x>`.
+    let held = |x: &str| {
+        file(
+            &[],
+            &[
+                material(1, "held", PropName::Plain, &[("_MainTex", (0, 3))]),
+                mono_script(2, "NGUIAtlas"),
+                rgba(3, x, 0x8F, 1, 1),
+            ],
+            true,
+        )
+    };
+    let shadow = bundle(&[("other.resS", x22(0x82))]);
+    Ok(one(
+        "d.bundle",
+        &[
+            ("CAB-d22", dep),
+            ("r.resS", x22(0x81)),
+            ("r.resS", shadow),
+            ("CAB-dm", held("mx")?),
+            ("sub/CAB-dm", bundle(&[("pad.resS", x22(0x8B))])),
+            ("CAB-dn", held("nx")?),
+            ("w.resS", x22(0x88)),
+            ("wrap", wrap),
+            ("q.resource", x22(0x8C)),
+            ("w2.resS", x22(0x90)),
+            (
+                "wrap2",
+                bundle(&[("w2.resS", web_file(&[("in2.resS", x22(0x91))]))]),
+            ),
+            ("w4.resS", web_file(&[("in4.resS", x22(0x92))])),
+            ("CAB-dw", held("wx")?),
+            ("sub/CAB-dw", web_file(&[("pad3.resS", x22(0x93))])),
+            ("CAB-dz", held("zx")?),
+            (
+                "wrap3",
+                bundle(&[("CAB-dz", web_file(&[("pad4.resS", x22(0x98))]))]),
+            ),
+        ],
+        &[],
     ))
 }
 
