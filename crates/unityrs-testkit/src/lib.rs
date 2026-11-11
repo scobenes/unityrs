@@ -19,7 +19,9 @@
 //! refuse, for the tests of liblzma's own allocations) is package C's;
 //! [`mutate`] (G3b's mutator) is the integration's; [`fuzz`] (the fuzz
 //! targets' input layouts, which `examples/fuzz_seeds.rs` writes the seeds
-//! in) is the fuzz package's.
+//! in) is the fuzz package's; [`ngui`] (the NGUI-shaped atlases the cutter's
+//! reference, `tools/parity/ngui_cutter.py`, is tested and recorded on) is
+//! P1b's.
 
 pub mod address_space;
 pub mod blob;
@@ -31,6 +33,7 @@ pub mod env;
 pub mod fuzz;
 pub mod guard;
 pub mod mutate;
+pub mod ngui;
 pub mod public_types;
 pub mod rng;
 pub mod scratch;
