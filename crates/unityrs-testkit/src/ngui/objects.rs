@@ -192,6 +192,44 @@ pub fn material(path_id: i64, name: &str, kind: PropName, envs: &[(&str, (i32, i
     )
 }
 
+/// A Material (class 21) of every field of the 2022.3 layout, in the bytes
+/// the TPK reads a stripped one by, its `m_TexEnvs` holding `envs` (plain
+/// names): [`material`]'s value with the keyword lists, flags, tag map,
+/// shader passes, `m_Ints` and texture stacks between, all empty. The two
+/// flags are a `UInt8` and an aligned `bool`, the TPK's alignment.
+#[must_use]
+pub fn material_tpk(path_id: i64, name: &str, envs: &[(&str, (i32, i64))]) -> Object {
+    let mut value = material(path_id, name, PropName::Plain, envs).value;
+    let strings = || vector(s(""), Vec::new());
+    let map = |shape: V| V::Vector("map".to_owned(), Box::new(shape), Vec::new());
+    if let V::Struct(_, fields) = &mut value {
+        let sheet = fields.pop();
+        fields.extend(
+            [
+                ("m_ValidKeywords", strings()),
+                ("m_InvalidKeywords", strings()),
+                ("m_LightmapFlags", V::UInt(4)),
+                ("m_EnableInstancingVariants", V::UInt8(0)),
+                ("m_DoubleSidedGI", V::Bool(false)),
+                ("m_CustomRenderQueue", V::Int(-1)),
+                ("stringTagMap", map(pair(s(""), s("")))),
+                ("disabledShaderPasses", strings()),
+            ]
+            .map(|(n, v)| (n.to_owned(), v)),
+        );
+        if let Some((n, V::Struct(ty, mut sheet))) = sheet {
+            sheet.insert(1, ("m_Ints".to_owned(), map(pair(s(""), V::Int(0)))));
+            fields.push((n, V::Struct(ty, sheet)));
+        }
+        let stack = st(
+            "BuildTextureStackReference",
+            vec![("groupName", s("")), ("itemName", s(""))],
+        );
+        fields.push(("m_BuildTextureStacks".to_owned(), vector(stack, Vec::new())));
+    }
+    Object::new(path_id, 21, value)
+}
+
 /// `TextureFormat` values the scenes use.
 pub mod format {
     /// `Alpha8`, outside E15's five.

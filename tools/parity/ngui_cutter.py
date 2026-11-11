@@ -235,7 +235,7 @@ def own_textures(objects) -> list[Tex]:
         if obj.type != ClassIDType.Texture2D:
             continue
         try:
-            name = rd.shaped(rd.read(obj.peek_name), str)
+            name = rd.name_of(obj)
         except rd.Failure as f:
             out.append(Tex(sf, obj, None, None, f))
             continue

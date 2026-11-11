@@ -6,15 +6,20 @@ bytewise order of id, then the input. While it loads, each container's directory
 each with the object UnityPy's reader made of it (`File.read_files`, files/File.py:76-90, wrapped to record what it
 assigns): UnityPy's `files` dict keeps one object per path, a repeated path's last in its first row's place, and 4.3
 walks the rows. From the rows it builds 4.3's registry, as the core keeps it: each top-level bundle in load order,
-each row in directory order under its registry key (`simplify_name`), a top-level container row's own name a key at
-its place and its entries after it (Lazy difference (b)), a container inside it no key; a key's value is its last
-registration. Then it is sealed: UnityPy's lookups past its registry (`find_file`'s check of `<path>/<name>`,
-which with an empty `path` is the host's root, and the files `load_file` finds relative to the working directory,
-which `load_dependencies` asks for) are replaced by a miss, and its filesystem by one that refuses every call. So a
-name the view does not register is not found, whatever is on the host.
+each row in directory order under its registry key (`simplify_name`), a top-level row's own name a key at its place,
+a bundle's entries after it (Lazy difference (b)); a row inside a nested bundle is registered but for a container,
+which is no key, a bundle's entries registered and a WebFile's not (the core's registration skips a WebFile,
+crates/unityrs-core/src/env/load.rs). A key's value is its last registration. Then it is sealed: `find_file` answers
+from that registry, a container's key not found (the core's `NotFound`), and UnityPy's lookups past its registry
+(`find_file`'s check of `<path>/<name>`, which with an empty `path` is the host's root, and the files `load_file`
+finds relative to the working directory, which `load_dependencies` asks for) are replaced by a miss, and its
+filesystem by one that refuses every call. So a name the view does not register is not found, whatever is on the
+host, and a CAB whose key a later container takes is not found either, where UnityPy's `get_cab`, which gives a
+container no key, would answer with it.
 
 **Pointers** are dereferenced by UnityPy's `PPtr.deref` (classes/PPtr.py:43-90), which looks in the reading file's
-own bundle, then the registry. Its failures are batch.md 2.7's `DerefError`s: a null pointer, an `m_FileID` whose
+own bundle, then `find_file`, the registry above. Its failures are batch.md 2.7's `DerefError`s: a null pointer, an
+`m_FileID` whose
 index `m_FileID - 1` is past the externals or below their start (a negative index counts from the end, as Python's
 list and the core's `external_index` do), a missing object and a target that is no SerializedFile (a raw or
 container row) are `bad_pointer`; a CAB the view does not register is `outside_view(<cab>)`.
@@ -27,15 +32,20 @@ and MonoScript reads use UnityPy's `check_read`, its default: a read that does n
 fails the check (`helpers/TypeTreeHelper.py:155-156`), which is the core's `ParseError::CheckRead`, code
 `asset_bundle` (BATCH_SPEC 7.3). That failure is told apart from every other `ValueError` by the check itself:
 the same read without it succeeds. Names and the MonoBehaviour's head are read without the check (`peek_name`,
-`parse_monobehaviour_head`). UnityPy's `TypeTreeError` is never one: its one raise passes one argument to a class
-that takes two (files/ObjectReader.py:306), so it surfaces as a `TypeError`, a `read`, and no read here is `tree`.
+`parse_monobehaviour_head`). A name read of an object whose type has no typetree fails as its object read does
+(`asset_bundle`): the core reads a name through the object's typetree, and has none without a provider. UnityPy's
+`TypeTreeError` is never one: its one raise passes one argument to a class that takes two
+(files/ObjectReader.py:306), so it surfaces as a `TypeError`, a `read`, and no read here is `tree`.
 Only UnityPy's calls are wrapped; the values they return are checked for the shape the reads need, a wrong one the
 read's failure (4.4 step 2's rule, in its order). `MemoryError` and anything else are not classified: they
 propagate, as the engine stops on a host's refusal or an unknown error.
 
-UnityPy's `peek_name` caches, for the process, the nodes up to `m_Name` by the root's name, type and version
-(helpers/TypeTreeNode.py:190-211): every scene's types put `m_Name` first, so no answer here depends on the order the
-scenes run in.
+UnityPy's `peek_name` caches, for the process, the nodes up to `m_Name` (or `name`) by the root's name, type and
+version, and caches a type with no name field as `None` too (helpers/TypeTreeNode.py:190-211). So whether a type has
+a name field is decided here from the object's own nodes, before `peek_name` runs; and a type with no name field must
+not share its root's name, type and version with one that has, or every later peek of that root would give `None`.
+Every scene's named types put `m_Name` first, and its one nameless texture has a root type of its own, so no answer
+here depends on the order the scenes run in.
 
 **A sheet's data** (section 5) is its `image_data`, else the `m_StreamData` resource that 4.3's own-chain procedure
 finds: the spec's lookup, written here over the rows kept at the load and UnityPy's candidate names
@@ -138,7 +148,7 @@ def load(view: dict[str, bytes], input_id: str):
     finally:
         File.read_files = original
     setattr(env, REGISTRY, registry(env.files.values()))
-    env.find_file = lambda name, is_dependency=True: env.get_cab(name)
+    env.find_file = lambda name, is_dependency=True: found(env, name)
     env.load_file = lambda *args, **kwargs: None
     env.fs = _Sealed()
     return bundle
@@ -150,23 +160,28 @@ def rows(container) -> list:
 
 
 def registry(loaded) -> dict:
-    """4.3's registry of the loaded top-level files, in load order: every row by its registry key, a key's value
-    its last registration (the core's greatest rank). A top-level container row's own name is a key, its entries
-    registered after it; a container inside one is no key, its entries registered."""
+    """4.3's registry of the loaded top-level bundles, in load order: every row by its registry key, a key's value
+    its last registration (the core's greatest rank). A top-level row's own name is a key, a bundle's entries
+    registered after it; a container inside one is no key, a bundle's entries registered and a WebFile's not."""
     keys = {}
 
-    def walk(container, top: bool):
-        for path, f in rows(container):
-            nested = isinstance(f, (BundleFile, WebFile))
-            if top or not nested:
+    def walk(bundle, top: bool):
+        for path, f in rows(bundle):
+            if top or not isinstance(f, (BundleFile, WebFile)):
                 keys[simplify_name(path)] = f
-            if nested:
+            if isinstance(f, BundleFile):
                 walk(f, False)
 
     for f in loaded:
-        if isinstance(f, (BundleFile, WebFile)):
+        if isinstance(f, BundleFile):
             walk(f, True)
     return keys
+
+
+def found(env, name: str):
+    """`find_file`, sealed to 4.3's registry: its key's value, None for a container (the core's `NotFound`)."""
+    f = getattr(env, REGISTRY).get(simplify_name(name))
+    return None if isinstance(f, (BundleFile, WebFile)) else f
 
 
 def typed(obj):
@@ -174,6 +189,16 @@ def typed(obj):
     if obj.serialized_type is None or obj.serialized_type.node is None:
         raise Failure("decode_error", "asset_bundle")
     return obj
+
+
+def name_of(obj) -> str:
+    """4.4 step 1's name read, in its order: no typetree is its object read's failure (`typed`); a root with no
+    `m_Name` or `name` child, decided from the object's own nodes, and a value not a string, the read's; else
+    UnityPy's `peek_name`, its failure the read's."""
+    node = typed(obj).serialized_type.node
+    if not any(child.m_Name in ("m_Name", "name") for child in node.m_Children):
+        raise Failure(*READ)
+    return shaped(read(obj.peek_name), str)
 
 
 def read(f, *args):
@@ -285,8 +310,9 @@ def atlas_tree(obj) -> dict:
 
 
 def maintex_name(tree: dict, obj) -> str | None:
-    """Step 1: the material's `_MainTex` texture's `m_Name`, read as `peek_name` reads it (4.4 step 1); None for no
-    name, a missing `material` field and every object-level failure among them."""
+    """Step 1: the material's `_MainTex` texture's `m_Name`, read as 4.4 step 1 reads it (`name_of`); None for no
+    name, a missing `material` field and every object-level failure among them. The pairs are read up to the first
+    `_MainTex` match; a pair whose first is neither a string nor a struct whose `name` is one is passed over."""
     if "material" not in tree:
         return None
     try:
@@ -299,7 +325,7 @@ def maintex_name(tree: dict, obj) -> str | None:
             # The first a string, or a struct whose `name` is (classes/generated.py:11477).
             if first == "_MainTex" or (isinstance(first, dict) and first.get("name") == "_MainTex"):
                 texture = deref_value(field(second, "m_Texture", dict), material.assets_file)
-                return shaped(read(texture.peek_name), str)
+                return name_of(texture)
     except Failure:
         return None
     return None

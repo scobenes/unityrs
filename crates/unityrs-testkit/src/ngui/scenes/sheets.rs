@@ -5,7 +5,7 @@
 use super::super::{
     PropName, atlas, file, format, material, mono_script, sheet, texture, texture_streamed,
 };
-use super::{Built, CutOptions, SCRIPT, by_name, one, plain, rgba, scene};
+use super::{Built, CutOptions, NULL, SCRIPT, by_name, one, plain, rgba, scene};
 use crate::env::{bundle, res_bytes};
 use crate::ngui::V;
 
@@ -215,36 +215,103 @@ pub fn repeated_rows() -> Built {
 /// input holds a nested bundle `n.resS` holding a raw `n.resS`: `nn`'s
 /// stream names it, the own chain passes the container over, and the view's
 /// lookup answers as the core does.
+///
+/// Pointers by name take the same registry. The dependency holds the
+/// SerializedFile `CAB-dm` (a material, a MonoScript and the texture `mx`
+/// the material names), then a nested bundle at the same path; the
+/// SerializedFile `CAB-dn` is the same, but the container that takes its
+/// key is the later dependency `e.bundle`'s. Through either, a pointer finds
+/// nothing (`outside_view`): the atlases `am` and `an`, whose materials are
+/// there, get no name and cut the textures of their own names, not `mx` or
+/// `nx`; `ms` and `ns`, whose scripts are there, are unresolved.
+///
+/// The dependency's raw `w.resS` is followed by a top-level bundle holding
+/// a container `w.resS`, two levels down and so no key: `wq` reads the raw
+/// row. The input holds a container `q.resS` holding a raw `q.resS`, and the
+/// dependency a raw `q.resource`: 4.3 reaches the container at its
+/// registration, so the nested row, registered after the container's key,
+/// answers `qq`'s first candidate. `sd`'s stream names the dependency's
+/// SerializedFile `CAB-d22`: `decode_error`, `malformed`.
 pub fn fallback_rows() -> Built {
     let x22 = |base| sheet(base, 1, 1, false);
     let streamed = |id, name: &[u8], path: &str| {
         texture_streamed(id, name, format::RGBA32, (1, 1), path, 0, 4)
     };
+    let one_sprite = || vec![plain("s", (0, 0, 1, 1))];
     let cab = file(
-        &[],
+        &["archive:/CAB-dm/CAB-dm", "archive:/CAB-dn/CAB-dn"],
         &[
             mono_script(1, "NGUIAtlas"),
             streamed(2, b"dr", "archive:/CAB-x22/r.resS"),
             streamed(3, b"nn", "archive:/CAB-x22/n.resS"),
-            by_name(4, "dr", vec![plain("s", (0, 0, 1, 1))]),
-            by_name(5, "nn", vec![plain("s", (0, 0, 1, 1))]),
+            by_name(4, "dr", one_sprite()),
+            by_name(5, "nn", one_sprite()),
+            atlas(6, b"am", SCRIPT, (1, 1), one_sprite(), Vec::new()),
+            atlas(7, b"ms", (1, 2), NULL, one_sprite(), Vec::new()),
+            atlas(8, b"an", SCRIPT, (2, 1), one_sprite(), Vec::new()),
+            atlas(9, b"ns", (2, 2), NULL, one_sprite(), Vec::new()),
+            rgba(10, "mx", 0x84, 1, 1),
+            rgba(11, "am", 0x85, 1, 1),
+            rgba(12, "nx", 0x86, 1, 1),
+            rgba(13, "an", 0x87, 1, 1),
+            streamed(14, b"wq", "archive:/CAB-x22/w.resS"),
+            by_name(15, "wq", one_sprite()),
+            streamed(16, b"qq", "archive:/CAB-x22/q.resS"),
+            by_name(17, "qq", one_sprite()),
+            streamed(18, b"sd", "archive:/CAB-d22/CAB-d22"),
+            by_name(19, "sd", one_sprite()),
         ],
         true,
     )?;
-    let dep = file(&[], &[], true)?;
+    let dep = file(&[], &[mono_script(1, "Dependency")], true)?;
+    // A material naming its file's `<x>` (3), a MonoScript (2) and `<x>`.
+    let held = |x: &str| {
+        file(
+            &[],
+            &[
+                material(1, "held", PropName::Plain, &[("_MainTex", (0, 3))]),
+                mono_script(2, "NGUIAtlas"),
+                rgba(3, x, 0x8F, 1, 1),
+            ],
+            true,
+        )
+    };
     let shadow = bundle(&[("other.resS", x22(0x82))]);
     let holder = bundle(&[("n.resS", x22(0x83))]);
+    let wrap = bundle(&[("w.resS", bundle(&[("inner.resS", x22(0x8A))]))]);
     Ok(scene(
         vec![
             one(
                 "d.bundle",
-                &[("CAB-d22", dep), ("r.resS", x22(0x81)), ("r.resS", shadow)],
+                &[
+                    ("CAB-d22", dep),
+                    ("r.resS", x22(0x81)),
+                    ("r.resS", shadow),
+                    ("CAB-dm", held("mx")?),
+                    ("CAB-dm", bundle(&[("pad.resS", x22(0x8B))])),
+                    ("CAB-dn", held("nx")?),
+                    ("w.resS", x22(0x88)),
+                    ("wrap", wrap),
+                    ("q.resource", x22(0x8C)),
+                ],
+                &[],
+            ),
+            one(
+                "e.bundle",
+                &[
+                    ("CAB-e22", file(&[], &[mono_script(1, "Dependency")], true)?),
+                    ("CAB-dn", bundle(&[("pad.resS", x22(0x8D))])),
+                ],
                 &[],
             ),
             one(
                 "x.bundle",
-                &[("CAB-x22", cab), ("n.resS", holder)],
-                &["d.bundle"],
+                &[
+                    ("CAB-x22", cab),
+                    ("n.resS", holder),
+                    ("q.resS", bundle(&[("q.resS", x22(0x89))])),
+                ],
+                &["d.bundle", "e.bundle"],
             ),
         ],
         &["x.bundle"],

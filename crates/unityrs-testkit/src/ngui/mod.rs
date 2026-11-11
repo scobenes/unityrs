@@ -29,7 +29,7 @@ mod objects;
 mod scenes;
 
 pub use objects::{
-    PropName, atlas, format, material, mono_behaviour, mono_script, sprite, texture,
+    PropName, atlas, format, material, material_tpk, mono_behaviour, mono_script, sprite, texture,
     texture_streamed,
 };
 pub use scenes::{AtlasScene, CutOptions, SceneBundle, scenes};

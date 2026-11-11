@@ -270,6 +270,12 @@ class UnityPyDeparts(unittest.TestCase):
         extra = rd.texture_of(by_id[16])
         self.assertEqual((type(extra).__name__, extra.m_Extra), ("Texture2D", 7))
 
+        class Stream:
+            """An `m_StreamData` of these values."""
+
+            def __init__(self, path, offset, size):
+                self.path, self.offset, self.size = path, offset, size
+
         class Changed:
             """`obj`, its read's value with `changes` set on it."""
 
@@ -290,6 +296,11 @@ class UnityPyDeparts(unittest.TestCase):
             ({"m_PlatformBlob": None}, True),
             ({"m_Width": 1.0}, False),
             ({"m_Height": True}, False),
+            ({"m_TextureFormat": 1.0}, False),
+            ({"m_StreamData": Stream(3, 0, 4)}, False),
+            ({"m_StreamData": Stream("", "0", 4)}, False),
+            ({"m_StreamData": Stream("", 0, None)}, False),
+            ({"m_StreamData": Stream("", 0, 4)}, True),
         ):
             with self.subTest(changes=changes):
                 if ok:
@@ -311,6 +322,52 @@ class UnityPyDeparts(unittest.TestCase):
             rd.typed(by_id[1])
         self.assertEqual((caught.exception.reason, caught.exception.detail), ("decode_error", "asset_bundle"))
         self.assertEqual(rd.recognise(by_id[2], ("NGUIAtlas",)), ("unresolved", None))
+
+    def test_a_name_read_of_no_typetree_and_of_no_name_field(self):
+        """The core reads a name through the object's typetree, so a texture with none owns no name, where UnityPy
+        peeks it by the TPK; a Material with none is not read, where UnityPy reads its `_MainTex` by the TPK. A type
+        with no name field is a read failure, decided from its own nodes."""
+        scene = ngui_scenes.scenes()["failed_reads"]
+        bundle = rd.load(scene.view("x.bundle"), "x.bundle")
+        by_id = {(o.assets_file.name, o.path_id): o for o in objects(bundle)}
+        stripped, tlmat = by_id[("CAB-x15d", 1)], by_id[("CAB-x15d", 2)]
+        self.assertEqual(stripped.peek_name(), "tl")
+        with self.assertRaises(rd.Failure) as caught:
+            rd.name_of(stripped)
+        self.assertEqual((caught.exception.reason, caught.exception.detail), ("decode_error", "asset_bundle"))
+        envs = tlmat.read().m_SavedProperties.m_TexEnvs
+        self.assertEqual([(name, env.m_Texture.m_PathID) for name, env in envs], [("_MainTex", 3)])
+        atlas = by_id[("CAB-x15e", 6)]
+        self.assertIsNone(rd.maintex_name(rd.atlas_tree(atlas), atlas))
+        nameless = by_id[("CAB-x15", 29)]
+        self.assertIsNone(nameless.peek_name())
+        with self.assertRaises(rd.Failure) as caught:
+            rd.name_of(nameless)
+        self.assertEqual(caught.exception.detail, "read")
+
+    def test_a_pointer_s_registry_lookup_finds_no_container(self):
+        """`fallback_rows`' `CAB-dm` and `CAB-dn`: UnityPy's `get_cab` answers with the SerializedFile, which a
+        container row of the same name, later in its bundle or in a later dependency, takes the key of in 4.3's
+        registry, as in the core's: `find_file` gives None, and the pointer is `outside_view(<cab>)`."""
+        scene = ngui_scenes.scenes()["fallback_rows"]
+        bundle = rd.load(scene.view("x.bundle"), "x.bundle")
+        env = next(o for o in objects(bundle)).assets_file.environment
+        by_id = {o.path_id: o for o in objects(bundle) if o.assets_file.name == "CAB-x22"}
+        for cab, atlas, script in (("CAB-dm", 6, 7), ("CAB-dn", 8, 9)):
+            with self.subTest(cab=cab):
+                self.assertIsInstance(env.get_cab(cab), SerializedFile)
+                self.assertIsInstance(getattr(env, rd.REGISTRY)[cab.lower()], BundleFile)
+                self.assertIsNone(env.find_file(cab))
+                tree = rd.atlas_tree(by_id[atlas])
+                with self.assertRaises(rd.Failure) as caught:
+                    rd.deref_value(tree["material"], by_id[atlas].assets_file)
+                self.assertEqual(caught.exception.reason, f"outside_view({cab})")
+                self.assertIsNone(rd.maintex_name(tree, by_id[atlas]))
+                self.assertEqual(rd.recognise(by_id[script], ("NGUIAtlas",)), ("unresolved", None))
+        # A container two levels down is no key; a raw row is returned as is (`bad_pointer` at its `objects`).
+        keys = getattr(env, rd.REGISTRY)
+        self.assertNotIsInstance(keys["w.ress"], (BundleFile, SerializedFile))
+        self.assertIs(env.find_file("w.resS"), keys["w.ress"])
 
     def test_the_view_s_registry_keys_a_container_by_its_name(self):
         """`fallback_rows`: UnityPy's registry gives a container no key, so it answers `r.resS` with the
@@ -373,7 +430,9 @@ class Bounds(unittest.TestCase):
         self.assertEqual(rd.crop_refusal(0, 0, 20_000, 10_000), "decompression_bomb")
         self.assertEqual(rd.crop_refusal(0, 0, 178_956_970, 1), None)
         self.assertEqual(rd.crop_refusal(0, 0, 178_956_971, 1), "decompression_bomb")
-        # An area past 64 bits: 2^33 x 2^31 = 2^64, which a 64-bit product wraps to 0.
+        # An area past 64 bits: 2^33 x 2^31 = 2^64, which a 64-bit product wraps to 0; Pillow refuses it first.
+        with self.assertRaises(Image.DecompressionBombError):
+            im.crop((0, 0, 2**33, 2**31))
         self.assertEqual(rd.crop_refusal(0, 0, 2**33, 2**31), "decompression_bomb")
         for box, rect in (
             ((2**31 - 1, 0, 2**31, 1), (2**31 - 1, 0, 1, 1)),

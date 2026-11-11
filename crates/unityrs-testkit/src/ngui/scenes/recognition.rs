@@ -2,7 +2,8 @@
 //! paragraph, decided from the typetree alone) and of reads that fail.
 
 use super::super::{
-    Object, PropName, V, atlas, file, material, mono_behaviour, mono_script, pair, s, st, vector,
+    BuildError, Object, PropName, V, atlas, file, material, material_tpk, mono_behaviour,
+    mono_script, pair, pptr, s, st, vector,
 };
 use super::{Built, CutOptions, NULL, SCRIPT, by_name, one, plain, rgba, scene};
 
@@ -104,8 +105,11 @@ fn odd_shapes() -> Vec<Object> {
 /// field or an `int` name, and a `map`. An empty name is `unnamed_atlas`;
 /// an atlas whose rectangle fields are `UInt8`, `unsigned int`, `UInt64` and
 /// `int` is recognised and cut. In a second file with no typetrees, an
-/// atlas script's MonoBehaviour is `no_typetree`; in a third, with no
-/// typetrees either, so is one whose MonoScript the TPK reads.
+/// atlas MonoBehaviour whose MonoScript, in the first file, has one is
+/// `no_typetree`. In a third, with no typetrees either, a MonoBehaviour's
+/// MonoScript is in its own file, which the TPK reads and version 1 does
+/// not (the core's `NoTypeTree`): its `m_Script` read fails, so its script
+/// is unresolved and counted.
 pub fn layouts() -> Built {
     let legacy = st(
         "Sprite",
@@ -206,6 +210,14 @@ pub fn layouts() -> Built {
 /// texture of its own name, not `mtx`, which the material names. The atlas
 /// `ms`'s MonoScript holds four bytes past its value: its script is
 /// unresolved.
+///
+/// The shape rule's remaining cases: the atlas `mi`'s MonoScript has an
+/// `int` `m_ClassName` (unresolved, counted); the material `tsmat`'s
+/// `m_TexEnvs` is a struct, so the atlas `ts` gets no name and cuts `ts`,
+/// not `tsx`; a texture with no name field, under a root type of its own
+/// (UnityPy caches a name peek by the root's name, type and version), is a
+/// read failure. Two more files pin the no-typetree rule's reach
+/// ([`typetree_reach`]).
 pub fn failed_reads() -> Built {
     // `ui`'s `m_Name`: an `int` length, two bytes, two of alignment.
     let ui_name = 8;
@@ -247,9 +259,31 @@ pub fn failed_reads() -> Built {
             rgba(20, "mt", 0x1A, 1, 1),
             mono_script(21, "NGUIAtlas").with_trailing(4),
             atlas(22, b"ms", (0, 21), NULL, one_sprite(), Vec::new()),
+            edited(mono_script(23, "NGUIAtlas"), |f| {
+                for (n, v) in f.iter_mut() {
+                    if n == "m_ClassName" {
+                        *v = V::Int(5);
+                    }
+                }
+            }),
+            atlas(24, b"mi", (0, 23), NULL, one_sprite(), Vec::new()),
+            edited(material(25, "tsmat", PropName::Plain, &[]), |f| {
+                let env = st("UnityTexEnv", vec![("m_Texture", pptr("Texture", (0, 27)))]);
+                let envs = st("TexEnvs", vec![("_MainTex", env)]);
+                f.pop();
+                f.push((
+                    "m_SavedProperties".to_owned(),
+                    st("UnityPropertySheet", vec![("m_TexEnvs", envs)]),
+                ));
+            }),
+            atlas(26, b"ts", SCRIPT, (0, 25), one_sprite(), Vec::new()),
+            rgba(27, "tsx", 0x2E, 1, 1),
+            rgba(28, "ts", 0x2F, 1, 1),
+            nameless(rgba(29, "", 0x30, 1, 1)),
         ],
         true,
     )?;
+    let (typeless, typed) = typetree_reach()?;
     let zero_texture = file(&[], &[rgba(1, "zero", 0x18, 1, 1).cut_to(0)], true)?;
     let zero_head = file(&[], &[by_name(1, "zmb", one_sprite()).cut_to(0)], true)?;
     Ok(scene(
@@ -259,10 +293,59 @@ pub fn failed_reads() -> Built {
                 ("CAB-x15", cab),
                 ("CAB-x15b", zero_texture),
                 ("CAB-x15c", zero_head),
+                ("CAB-x15d", typeless),
+                ("CAB-x15e", typed),
             ],
             &[],
         )],
         &["x.bundle"],
         CutOptions::textures("{name}.png"),
     ))
+}
+
+/// A texture with no name field, under the root type `NamelessTexture2D`,
+/// so its name peek shares no cache entry with a named type's.
+fn nameless(o: Object) -> Object {
+    match o.value {
+        V::Struct(_, mut fields) => {
+            fields.retain(|(n, _)| n != "m_Name");
+            Object::new(
+                o.path_id,
+                o.class_id,
+                V::Struct("NamelessTexture2D".to_owned(), fields),
+            )
+        }
+        other => Object::new(o.path_id, o.class_id, other),
+    }
+}
+
+/// `failed_reads`' two files of the no-typetree rule's reach. The first,
+/// `CAB-x15d`, is stored with no typetrees, which the TPK reads: its
+/// texture `tl`'s name read fails (`asset_bundle`), so it owns no name and
+/// the later `tl`, of the second file, is the atlas `tl`'s sheet; its
+/// material `tlmat`, in the TPK's layout, names the second file's `tmx`,
+/// but is not read, so the atlas `tm` cuts the texture of its own name.
+fn typetree_reach() -> Result<(Vec<u8>, Vec<u8>), BuildError> {
+    let one_sprite = || vec![plain("s", (0, 0, 1, 1))];
+    let typeless = file(
+        &["archive:/CAB-x15e/CAB-x15e"],
+        &[
+            rgba(1, "tl", 0x2A, 1, 1),
+            material_tpk(2, "tlmat", &[("_MainTex", (1, 3))]),
+        ],
+        false,
+    )?;
+    let typed = file(
+        &["archive:/CAB-x15d/CAB-x15d"],
+        &[
+            mono_script(1, "NGUIAtlas"),
+            rgba(2, "tl", 0x2B, 1, 1),
+            rgba(3, "tmx", 0x2C, 1, 1),
+            rgba(4, "tm", 0x2D, 1, 1),
+            by_name(5, "tl", one_sprite()),
+            atlas(6, b"tm", SCRIPT, (1, 2), one_sprite(), Vec::new()),
+        ],
+        true,
+    )?;
+    Ok((typeless, typed))
 }

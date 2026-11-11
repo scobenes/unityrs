@@ -94,7 +94,9 @@ def table():
         ("layouts", "x.bundle"): {"mixed/m.png": cut(sheet(0x0C, 1, 1), (0, 0, 1, 1))},
         ("failed_reads", "x.bundle"): {
             "short.png": cut(sheet(0x15, 1, 1)), "via.png": cut(sheet(0x16, 1, 1)),
-            "extra.png": cut(sheet(0x1E, 1, 1)), "mtx.png": cut(sheet(0x19, 1, 1)), **one_by_one({"mt": 0x1A}),
+            "extra.png": cut(sheet(0x1E, 1, 1)), "mtx.png": cut(sheet(0x19, 1, 1)),
+            "tsx.png": cut(sheet(0x2E, 1, 1)), "tmx.png": cut(sheet(0x2C, 1, 1)),
+            **one_by_one({"mt": 0x1A, "ts": 0x2F, "tl": 0x2B, "tm": 0x2D}),
         },
         ("streamed_sheets", "x.bundle"): {
             "own.png": cut(x16), "own/s.png": cut(x16, (0, 0, 2, 2)),
@@ -103,7 +105,10 @@ def table():
             **one_by_one({"res": 0x41, "as": 0x42, "st": 0x43, "bb": 0x45, "cc": 0x48, "pp": 0x49}),
         },
         ("repeated_rows", "x.bundle"): one_by_one({"rep": 0x53, "nest": 0x54}),
-        ("fallback_rows", "x.bundle"): one_by_one({"nn": 0x83}),
+        ("fallback_rows", "x.bundle"): {
+            "mx.png": cut(sheet(0x84, 1, 1)), "nx.png": cut(sheet(0x86, 1, 1)),
+            **one_by_one({"nn": 0x83, "am": 0x85, "an": 0x87, "wq": 0x88, "qq": 0x89}),
+        },
         ("crop_bounds", "x.bundle"): {"cb/ok.png": cut(sheet(0x1B, 1, 1), (0, 0, 1, 1))},
         ("failed_sheet_rows", "x.bundle"): {"sheet.png": cut(sheet(0x61, 1, 1))},
         ("winners", "a.bundle"): winner_input(1, ["k", "j"]),
