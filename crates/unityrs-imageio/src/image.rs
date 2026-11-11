@@ -160,9 +160,16 @@ pub enum ImageError {
         /// The bytes given.
         actual: usize,
     },
-    /// A side of 0. Pillow 9.5.0 writes no PNG of it (`SystemError` "tile
-    /// cannot extend outside image", `PARITY.md` section 15.8), and neither
-    /// does this crate.
+    /// A side of 0. Pillow 9.5.0 writes no PNG of it: `_setimage` raises
+    /// `SystemError` "tile cannot extend outside image" (Pillow 9.5.0,
+    /// `src/encode.c:253-257`; `PARITY.md` section 15.8), before it checks
+    /// the width ([`ImageError::TooWide`]).
+    ///
+    /// Pillow raises after writing the PNG signature and IHDR, 33 bytes.
+    /// Written to a file object, they stay; `Image.save` to a path removes
+    /// the file if it created it, and leaves a file that was there before
+    /// truncated to those 33 bytes (Pillow 9.5.0, `src/PIL/Image.py:2421-2441`),
+    /// a case for P3's extractor tree. This crate writes nothing.
     #[error("a {width}x{height} image has a side of 0, which Pillow writes no PNG of")]
     ZeroSide {
         /// The width.
@@ -179,8 +186,12 @@ pub enum ImageError {
     /// for `LA`, 89,478,478 for `RGB` and 67,108,856 for `RGBA`, each below
     /// the widest image Pillow holds, 536,870,910
     /// (`src/libImaging/Storage.c:51`), so this is where Pillow stops.
-    /// Pillow raises after writing the signature and IHDR to the file;
-    /// unityrs writes nothing.
+    ///
+    /// Pillow raises after writing the PNG signature and IHDR, 33 bytes.
+    /// Written to a file object, they stay; `Image.save` to a path removes
+    /// the file if it created it, and leaves a file that was there before
+    /// truncated to those 33 bytes (Pillow 9.5.0, `src/PIL/Image.py:2421-2441`),
+    /// a case for P3's extractor tree. This crate writes nothing.
     #[error(
         "a {width}-pixel-wide {mode} image is wider than Pillow 9.5.0's encoder takes, {widest}: its MemoryError"
     )]
