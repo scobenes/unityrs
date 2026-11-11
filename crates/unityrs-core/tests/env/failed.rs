@@ -1,5 +1,5 @@
 //! A dependency load that fails publishes nothing (plan section 3.13,
-//! "Dependencies"; `docs/plans/batch.md` section 6, CR1): under
+//! "Registry"; `docs/plans/batch.md` section 6, CR1): under
 //! `LoadMode::Lazy` every registration of the load is charged, with the
 //! LRU's entry and a `find_file` load's `files` entry, before the first is
 //! published, so a load refused at any of them leaves the registry as it
@@ -441,12 +441,18 @@ fn open_reservations() -> u64 {
 /// refused nowhere changes the answers, so the sweep tells the two apart,
 /// and its registrations ask for at least four reservations per entry and
 /// two more beyond a bare open's (CR1's review, round 1: a stage charged to
-/// another meter passed the sweep).
+/// another meter passed the sweep); under `keep_resolver_loads`, the load
+/// through the resolver asks for at least three more than
+/// `load_dependency`'s, its listing's: its key's copy (the bytes, then
+/// their owner) and its share and lowered key, at least one reservation
+/// (CR1's review, round 2: a listing charged to another meter passed the
+/// sweep).
 #[test]
 fn a_failed_load_leaves_every_lookup_as_it_was() {
     let open = open_reservations();
-    for load in [Load::Dependency, Load::Resolved] {
-        for (what, options, keeps) in options(LoadMode::Lazy) {
+    for (what, options, keeps) in options(LoadMode::Lazy) {
+        let mut whole = [0; 2];
+        for (i, load) in [Load::Dependency, Load::Resolved].into_iter().enumerate() {
             let first = armed(&options, load, Arm::From(1));
             assert!(first.failed, "{what}, {load:?}: refused at its open");
             for n in 1.. {
@@ -461,6 +467,7 @@ fn a_failed_load_leaves_every_lookup_as_it_was() {
                         registered >= 4 * B_ENTRIES + 2,
                         "{what}, {load:?}: {registered} reservations beyond the open's {open}"
                     );
+                    whole[i] = o.asked;
                     break;
                 }
                 assert_eq!(
@@ -477,6 +484,13 @@ fn a_failed_load_leaves_every_lookup_as_it_was() {
                     "{what}, {load:?}: refused at reservation {n}, it kept a charge"
                 );
             }
+        }
+        if options.keep_resolver_loads {
+            let [by_dependency, resolved] = whole;
+            assert!(
+                resolved >= by_dependency + 3,
+                "{what}: the resolved load asked for {resolved}, load_dependency {by_dependency}"
+            );
         }
     }
 }
@@ -609,6 +623,31 @@ fn a_refusal_in_the_commits_settle_fails_no_load_and_a_later_call_reaches_the_sl
     }
 }
 
+/// `D`'s load refused nowhere: its commit's `settle` reaches `INNER`,
+/// charging the pool after the first key is published, and once the
+/// Environment and the load's file are dropped the pool holds nothing, so
+/// every charge the load made was returned, the settle's among them (CR1's
+/// review, round 2). The settle reaches through the load's open, not the
+/// LRU, so it never caches the dependency before the load's own touch: the
+/// share that touch finds unused, which a share forgotten instead of
+/// returned kept, is `env::registry::lru::tests`'s
+/// `a_paid_touch_that_finds_its_entry_cached_reads_it_without_the_share`.
+#[test]
+fn a_load_whose_commit_reaches_a_dropped_container_returns_every_charge() {
+    for (what, options, _) in options(LoadMode::Lazy) {
+        let pool = Arc::new(Pool::default());
+        let mut options = options.clone();
+        options.context = ctx_with(pool.clone());
+        let env = Environment::new(options);
+        let file = env.load_dependency(d()).unwrap();
+        assert_eq!(keys(&env), ["inner", "cab-n"], "{what}: INNER reached");
+        assert!(pool.used() > 0, "{what}: nothing charged to the pool");
+        drop(file);
+        drop(env);
+        assert_eq!(pool.used(), 0, "{what}: a charge was kept");
+    }
+}
+
 /// An Environment like [`scene`]'s whose inputs' meters are bounded at
 /// `limit` bytes, with `A`'s CABs registered by name on an unlimited meter
 /// (so the bound is `B`'s alone) and no `C`.
@@ -650,23 +689,34 @@ fn limited(options: &EnvOptions, limit: u64) -> (Environment, Arc<Pool>) {
 }
 
 /// A load its own meter refuses (`LimitKind::InputMemory`, which no retry
-/// follows) at any of its charges leaves every lookup by name as it was and
-/// returns every charge: the bound is set, in turn, one byte below what
-/// `B`'s meter holds at each of its dependency reservations, as a load
-/// refused nowhere records them (CR1's review, round 1: only the pool's
-/// refusals were swept).
+/// follows) leaves every lookup by name as it was and returns every
+/// charge, refused at each charge whose running total is a new high: the
+/// bound is set, in turn, one byte below what `B`'s meter holds at each
+/// such reservation of a load refused nowhere, so the first reservation it
+/// refuses is that one. A charge whose total is not a new high comes after
+/// a greater one, which a bound below it refuses first; the pool's sweeps
+/// above refuse those too (CR1's review, round 1: only the pool's refusals
+/// were swept; round 2: these docs said each charge was).
 #[test]
 fn a_load_its_meter_refuses_at_any_charge_leaves_every_lookup_as_it_was() {
+    let open = open_reservations();
     for (what, options, _) in options(LoadMode::Lazy) {
         let (env, pool) = limited(&options, u64::MAX);
         pool.record();
         drop(env.load_dependency(b()).unwrap());
         pool.disarm();
-        let mut totals = pool.totals();
-        totals.sort_unstable();
-        totals.dedup();
-        assert!(totals.len() as u64 > 4 * B_ENTRIES, "{what}: {totals:?}");
-        for total in totals.into_iter().filter(|&t| t > 0) {
+        // Each new high, and the reservation it is, from 1.
+        let mut highs = Vec::new();
+        for (i, total) in pool.totals().into_iter().enumerate() {
+            if total > highs.last().map_or(0, |&(_, high)| high) {
+                highs.push((i as u64 + 1, total));
+            }
+        }
+        // The reservations targeted after the open's: more than four an
+        // entry.
+        let staged = highs.iter().filter(|&&(at, _)| at > open).count();
+        assert!(staged as u64 > 4 * B_ENTRIES, "{what}: {highs:?}");
+        for (_, total) in highs {
             let (env, pool) = limited(&options, total - 1);
             let before = by_name(&env);
             let used = pool.used();
@@ -682,9 +732,24 @@ fn a_load_its_meter_refuses_at_any_charge_leaves_every_lookup_as_it_was() {
     }
 }
 
+/// `B`'s names: two new keys and the two `A` holds, whose values `B`
+/// replaces.
+const B_NAMES: [&str; 4] = ["CAB-B", "CAB-S", "CAB-S.resS", "CAB-B2"];
+
+/// What another thread finds during `B`'s load: the registry's keys, and
+/// each of `B`'s names' `get_cab`.
+fn probed(env: &Environment) -> Vec<String> {
+    let mut out = vec![format!("keys {:?}", keys(env))];
+    for name in B_NAMES {
+        let found = cab(env.get_cab(&key(name), &unlimited()));
+        out.push(format!("get_cab {name}: {found}"));
+    }
+    out
+}
+
 /// A budget that, at each dependency reservation the loading thread makes,
-/// has another thread list the registry's keys, and keeps what it saw: a
-/// lookup made while the load runs, between any two of its charges and
+/// has another thread look up what [`probed`] does, and keeps what it saw:
+/// lookups made while the load runs, between any two of its charges and
 /// after the last one before its commit.
 #[derive(Default)]
 struct Probe {
@@ -707,7 +772,7 @@ impl MemoryBudget for Probe {
             if let Some(env) = env {
                 let seen =
                     guard::finishes("a lookup on another thread during the load", move || {
-                        keys(&env)
+                        probed(&env)
                     });
                 self.seen.lock().unwrap().push(seen);
             }
@@ -718,8 +783,10 @@ impl MemoryBudget for Probe {
 
 /// While `B`'s load runs, no lookup on another thread finds one of its
 /// keys: at each of its dependency reservations, the last of them the
-/// LRU's entry just before the commit, another thread's key listing is
-/// the one before the load (plan section 3.16, item 6).
+/// LRU's entry just before the commit, another thread's key listing, and
+/// its `get_cab` of each of `B`'s names, two of them keys `A` holds whose
+/// values `B` replaces, are the ones before the load (plan section 3.16,
+/// item 6; CR1's review, round 2: the probe saw the keys, not the values).
 #[test]
 fn no_lookup_on_another_thread_finds_a_key_of_a_load_before_its_commit() {
     for (what, mut options, _) in options(LoadMode::Lazy) {
@@ -732,7 +799,7 @@ fn no_lookup_on_another_thread_finds_a_key_of_a_load_before_its_commit() {
         for name in NAMES {
             drop(env.get_cab(&key(name), &unlimited()).unwrap());
         }
-        let before = keys(&env);
+        let before = probed(&env);
         *probe.env.lock().unwrap() = Some(env.clone());
         *probe.loader.lock().unwrap() = Some(std::thread::current().id());
         drop(env.load_dependency(b()).unwrap());
@@ -744,9 +811,11 @@ fn no_lookup_on_another_thread_finds_a_key_of_a_load_before_its_commit() {
             "{what}: {} probes",
             seen.len()
         );
-        for (i, listed) in seen.iter().enumerate() {
-            assert_eq!(listed, &before, "{what}: at reservation {}", i + 1);
+        for (i, found) in seen.iter().enumerate() {
+            assert_eq!(found, &before, "{what}: at reservation {}", i + 1);
         }
-        assert_ne!(keys(&env), before, "{what}: the load published");
+        let after = probed(&env);
+        assert_ne!(after[0], before[0], "{what}: the load published its keys");
+        assert_ne!(after[2], before[2], "{what}: the load replaced CAB-S");
     }
 }
