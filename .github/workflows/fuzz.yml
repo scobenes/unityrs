@@ -50,6 +50,7 @@ jobs:
           - python_read
           - write_after_read
           - lz4
+          - texture
     env:
       TARGET: ${{ matrix.target }}
     steps:

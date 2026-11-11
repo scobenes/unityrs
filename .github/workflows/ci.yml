@@ -105,7 +105,8 @@ jobs:
           cargo +"$NIGHTLY" fetch --locked
           cargo +"$NIGHTLY" fuzz build -a
       # The harness's own tests (fuzz/src/tests.rs): each value case reaches
-      # the memory bound it picks, and the lz4 check's limits.
+      # the memory bound it picks, the lz4 check's limits, and the texture
+      # check's answers under each meter.
       - name: Test the harness
         working-directory: fuzz
         run: cargo +"$NIGHTLY" test --locked --lib
@@ -120,7 +121,7 @@ jobs:
               -print_final_stats=1 > "$RUNNER_TEMP/fuzz-$1.log" 2>&1
           }
           failed=""
-          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4"; do
+          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture"; do
             pids=""
             for t in $batch; do
               run "$t" &
@@ -130,7 +131,7 @@ jobs:
               wait "${p#*:}" || failed="$failed ${p%%:*}"
             done
           done
-          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4; do
+          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture; do
             echo "== $t"
             grep -E '^(stat::|#[0-9]+ +DONE)' "$RUNNER_TEMP/fuzz-$t.log" || true
           done

@@ -20,6 +20,7 @@ libfuzzer-sys = "=0.4.13"
 lz4-sys = "=1.10.0"
 unityrs-core = { path = "../crates/unityrs-core" }
 unityrs-testkit = { path = "../crates/unityrs-testkit" }
+unityrs-texture = { path = "../crates/unityrs-texture" }
 
 [workspace]
 members = ["."]
@@ -79,6 +80,13 @@ bench = false
 [[bin]]
 name = "lz4"
 path = "fuzz_targets/lz4.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "texture"
+path = "fuzz_targets/texture.rs"
 test = false
 doc = false
 bench = false

@@ -14,6 +14,8 @@
 //!   or `TypeTreeNode.parse` read, for the `typetree` target.
 //! - [`lz4_case`]: one LZ4 block and its declared size, for the `lz4`
 //!   target.
+//! - [`TextureCase`]: a `Texture2D`'s fields, the meter its decode runs
+//!   under and its data, for the `texture` target.
 //!
 //! Every decoder here takes any bytes: a field the input does not reach is
 //! empty (a row, a reference, the data), never an error.
@@ -177,6 +179,87 @@ pub fn lz4_case(declared: u32, block: &[u8]) -> Vec<u8> {
     out
 }
 
+/// A `Texture2D`'s fields, the meter its decode runs under and its data,
+/// for the `texture` target (`unityrs-texture`'s `select` and `decode`).
+///
+/// Layout: `m_TextureFormat`, `m_Width`, `m_Height` and the platform, each
+/// an `i32`, little-endian; the meter (a byte); the platform blob, a byte of
+/// length ([`Self::NO_BLOB`] for none) and its bytes; then the data, which
+/// runs to the end. An input that stops inside the header is the default
+/// case, and one that stops inside the blob keeps the header alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextureCase {
+    /// `m_TextureFormat`.
+    pub format: i32,
+    /// `m_Width`.
+    pub width: i32,
+    /// `m_Height`.
+    pub height: i32,
+    /// The platform of the file that holds it (a `BuildTarget`).
+    pub platform: i32,
+    /// The meter, by its low two bits: 0 is the fuzz memory bound; 1, 2
+    /// and 3 the decode's charge less 1, the charge, and the charge plus 1.
+    pub meter: u8,
+    /// `m_PlatformBlob`, at most 254 bytes, or none.
+    pub blob: Option<Vec<u8>>,
+    /// The image data, mip 0 first.
+    pub data: Vec<u8>,
+}
+
+impl TextureCase {
+    /// The blob length that says there is no blob.
+    pub const NO_BLOB: u8 = u8::MAX;
+
+    /// The case's bytes.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for v in [self.format, self.width, self.height, self.platform] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.push(self.meter);
+        match &self.blob {
+            Some(b) => {
+                let b = &b[..b.len().min(usize::from(Self::NO_BLOB - 1))];
+                out.push(u8::try_from(b.len()).unwrap_or(0));
+                out.extend_from_slice(b);
+            }
+            None => out.push(Self::NO_BLOB),
+        }
+        out.extend_from_slice(&self.data);
+        out
+    }
+
+    /// The case `input` holds; what it does not reach is empty.
+    #[must_use]
+    pub fn decode(input: &[u8]) -> Self {
+        let mut c = Cursor(input);
+        let (Some(format), Some(width), Some(height), Some(platform), Some(meter)) =
+            (c.i32(), c.i32(), c.i32(), c.i32(), c.u8())
+        else {
+            return Self::default();
+        };
+        let mut case = Self {
+            format,
+            width,
+            height,
+            platform,
+            meter,
+            ..Self::default()
+        };
+        case.blob = match c.u8() {
+            None => return case,
+            Some(Self::NO_BLOB) => None,
+            Some(n) => match c.take(usize::from(n)) {
+                Some(b) => Some(b.to_vec()),
+                None => return case,
+            },
+        };
+        case.data = c.0.to_vec();
+        case
+    }
+}
+
 fn put_str(out: &mut Vec<u8>, s: &[u8]) {
     let s = &s[..s.len().min(usize::from(u8::MAX))];
     out.push(u8::try_from(s.len()).unwrap_or(u8::MAX));
@@ -206,6 +289,10 @@ impl Cursor<'_> {
 
     fn u8(&mut self) -> Option<u8> {
         self.take(1)?.first().copied()
+    }
+
+    fn i32(&mut self) -> Option<i32> {
+        Some(i32::from_le_bytes(self.take(4)?.try_into().ok()?))
     }
 
     fn str(&mut self) -> Option<Vec<u8>> {
@@ -251,7 +338,7 @@ impl Cursor<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RefType, Row, TreeCase, blob_case, lz4_case};
+    use super::{RefType, Row, TextureCase, TreeCase, blob_case, lz4_case};
 
     fn case() -> TreeCase {
         TreeCase {
@@ -309,6 +396,35 @@ mod tests {
         let d = TreeCase::decode(&c.encode());
         assert_eq!(d.rows[0].ty.len(), 255);
         assert_eq!(d.rows[0].name, b"Base");
+    }
+
+    #[test]
+    fn a_texture_case_decodes_to_what_was_encoded_and_a_cut_one_to_less() {
+        let c = TextureCase {
+            format: 25,
+            width: -3,
+            height: 16384,
+            platform: 38,
+            meter: 2,
+            blob: Some(vec![0; 12]),
+            data: vec![1, 2, 3],
+        };
+        let bytes = c.encode();
+        assert_eq!(bytes.len(), 17 + 1 + 12 + 3);
+        assert_eq!(TextureCase::decode(&bytes), c);
+        let none = TextureCase {
+            blob: None,
+            ..c.clone()
+        };
+        assert_eq!(TextureCase::decode(&none.encode()), none);
+        // Cut in the header: the default; in the blob: the header alone.
+        assert_eq!(TextureCase::decode(&bytes[..16]), TextureCase::default());
+        let header = TextureCase::decode(&bytes[..20]);
+        assert_eq!(
+            (header.width, header.blob, header.data),
+            (-3, None, Vec::new())
+        );
+        assert_eq!(TextureCase::decode(&bytes[..31]).data, [1]);
     }
 
     #[test]

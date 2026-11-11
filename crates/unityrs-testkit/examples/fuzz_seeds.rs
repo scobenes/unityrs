@@ -5,9 +5,9 @@
 //! Environment scene), the files each bundle holds, every object's tree and
 //! bytes (at each of the value targets' memory bounds, the case's
 //! `TreeCase::SMALL_MEMORY` clear and set), every tree stored in each format
-//! both ways round, the deep values of `unityrs_testkit::depth`, and LZ4
-//! blocks of every output. Nothing comes from a corpus. One folder per
-//! target:
+//! both ways round, the deep values of `unityrs_testkit::depth`, LZ4
+//! blocks of every output, and textures of every size class the decoders
+//! tell apart. Nothing comes from a corpus. One folder per target:
 //!
 //! ```text
 //! cargo run -p unityrs-testkit --example fuzz_seeds -- DIR
@@ -33,13 +33,14 @@ use unityrs_core::stream::Endian;
 use unityrs_core::typetree::NodeList;
 use unityrs_core::typetree::commonstring::COMMON_STRINGS;
 use unityrs_core::{FileContext, RawStr};
+use unityrs_testkit::Rng;
 use unityrs_testkit::blob::{NodeSpec, Strings, blob_tree, old_tree};
 use unityrs_testkit::bundle::{TestCodec, compress};
 use unityrs_testkit::depth::{Depth, Wrap, Z_ROWS};
-use unityrs_testkit::fuzz::{RefType, Row, TreeCase, blob_case, lz4_case};
+use unityrs_testkit::fuzz::{RefType, Row, TextureCase, TreeCase, blob_case, lz4_case};
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 8] = [
+const TARGETS: [&str; 9] = [
     "detect",
     "bundle",
     "serialized",
@@ -48,7 +49,40 @@ const TARGETS: [&str; 8] = [
     "python_read",
     "write_after_read",
     "lz4",
+    "texture",
 ];
+
+/// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
+/// RGBA32, DXT1, DXT5, BC7), a named one it skips (`ETC_RGB4`) and a value
+/// with no name.
+const TEXTURE_FORMATS: [i32; 7] = [3, 4, 10, 12, 25, 34, 1000];
+
+/// The `texture` seeds' sizes: a side of 0 or below, the size classes, the
+/// bound (16384 x 16384, padded) and one column past it, Pillow's raw width
+/// caps and one past each, the fewest pixels past its crop bound, and the
+/// end of `i32`.
+const TEXTURE_SIZES: [(i32, i32); 17] = [
+    (0, 4),
+    (4, 0),
+    (-1, 4),
+    (1, 1),
+    (3, 5),
+    (4, 4),
+    (7, 9),
+    (16, 16),
+    (33, 2),
+    (16384, 16384),
+    (16385, 16384),
+    (67_108_856, 1),
+    (67_108_857, 1),
+    (89_478_478, 1),
+    (89_478_479, 1),
+    (59, 3_033_169),
+    (i32::MAX, 1),
+];
+
+/// The most data a `texture` seed holds.
+const TEXTURE_DATA: u64 = 4096;
 
 /// Old-format and blob-format tree formats a stored tree is written in:
 /// format 2 (with `m_VariableCount`), 3 (no index, no meta flag), the other
@@ -290,6 +324,86 @@ fn depth_cases() -> Vec<(String, TreeCase)> {
     out
 }
 
+/// What mip 0 of a `width` x `height` texture of `format` holds: 4x4 blocks
+/// of 8 bytes (DXT1) or 16 (DXT5, BC7), else 3 or 4 bytes a pixel; 0 for a
+/// side of 0 or below.
+fn texture_need(format: i32, width: i32, height: i32) -> u64 {
+    let (Ok(w), Ok(h)) = (u64::try_from(width), u64::try_from(height)) else {
+        return 0;
+    };
+    let blocks = w.div_ceil(4) * h.div_ceil(4);
+    match format {
+        10 => blocks * 8,
+        12 | 25 => blocks * 16,
+        3 => w * h * 3,
+        _ => w * h * 4,
+    }
+}
+
+/// The `texture` target's seeds: each of [`TEXTURE_FORMATS`] on Windows at
+/// each of [`TEXTURE_SIZES`], with data a byte short of mip 0, exact and a
+/// byte long (at most [`TEXTURE_DATA`]), under the memory bound and a
+/// meter of the charge less 1; and the five at 7x9 on Switch, with no blob,
+/// one GOB per block and more, and on Xbox 360.
+fn texture(s: &mut Seeds) -> std::io::Result<()> {
+    let mut rng = Rng::new(0x7e57_7e57_0000_0001);
+    let mut bytes = |len: u64| {
+        let mut out = Vec::new();
+        while u64::try_from(out.len()).unwrap_or(u64::MAX) < len {
+            out.extend_from_slice(&rng.next_u64().to_le_bytes());
+        }
+        out.truncate(usize::try_from(len).unwrap_or(0));
+        out
+    };
+    for format in TEXTURE_FORMATS {
+        for (width, height) in TEXTURE_SIZES {
+            let need = texture_need(format, width, height);
+            for (tag, len) in [
+                ("short", need.saturating_sub(1)),
+                ("exact", need),
+                ("long", need + 1),
+            ] {
+                let data = bytes(len.min(TEXTURE_DATA));
+                for meter in [0, 1] {
+                    let case = TextureCase {
+                        format,
+                        width,
+                        height,
+                        platform: 19,
+                        meter,
+                        blob: None,
+                        data: data.clone(),
+                    };
+                    let name = format!("f{format}-{width}x{height}-{tag}-m{meter}");
+                    s.add("texture", &name, &case.encode())?;
+                }
+            }
+        }
+    }
+    let swizzled = [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0];
+    let platforms = [
+        ("switch-none", 38, None),
+        ("switch-one-gob", 38, Some(vec![0; 12])),
+        ("switch-swizzled", 38, Some(swizzled.to_vec())),
+        ("xbox360", 11, None),
+    ];
+    for format in &TEXTURE_FORMATS[..5] {
+        for (tag, platform, blob) in &platforms {
+            let case = TextureCase {
+                format: *format,
+                width: 7,
+                height: 9,
+                platform: *platform,
+                meter: 0,
+                blob: blob.clone(),
+                data: bytes(texture_need(*format, 7, 9)),
+            };
+            s.add("texture", &format!("f{format}-7x9-{tag}"), &case.encode())?;
+        }
+    }
+    Ok(())
+}
+
 /// Every target's seeds, in a folder of `dir` each, and how many. Crate-wide:
 /// `tests/fuzz_seeds.rs` includes this file and checks what it writes.
 pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
@@ -320,6 +434,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     // `lz4.block.compress(b"")`, the empty block, declared 0 and 1.
     s.add("lz4", "empty", &lz4_case(0, &[0]))?;
     s.add("lz4", "empty-over", &lz4_case(1, &[0]))?;
+    texture(&mut s)?;
     for (name, case) in depth_cases() {
         for r in case.refs.iter().filter_map(|r| r.rows.as_ref()) {
             let nodes = r

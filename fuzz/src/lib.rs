@@ -1,14 +1,17 @@
 //! What the fuzz targets share: the limits every run is bounded by, the
 //! context and meter of one input, a thread with the stack a read needs,
-//! a [`TreeCase`]'s tree and ref types as the core's, and the `lz4`
-//! target's check ([`lz4`]), here so that its tests run.
+//! a [`TreeCase`]'s tree and ref types as the core's, and the `lz4` and
+//! `texture` targets' checks ([`lz4`], [`texture`]), here so that their
+//! tests run.
 //!
-//! Every target uses the core's public API, as a caller would: no target
-//! needs an item the crate does not export.
+//! Every target uses the public API of the crate it runs (the core's, or
+//! `unityrs-texture`'s), as a caller would: no target needs an item a crate
+//! does not export.
 
 pub mod lz4;
 #[cfg(test)]
 mod tests;
+pub mod texture;
 
 use std::sync::Arc;
 
