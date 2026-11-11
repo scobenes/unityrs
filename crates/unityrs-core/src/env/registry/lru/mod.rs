@@ -398,8 +398,10 @@ impl DepCache {
 
     /// [`Self::touch`] with the new entry's share already charged
     /// ([`Self::room`]), so nothing in it can be refused. When `dep` is
-    /// cached already (another thread's read through a key the commit
-    /// published touched it), the share is returned after the lock, and
+    /// cached already (another thread's use of it after the commit
+    /// published its first key touched it: a read through one of its
+    /// keys, or a container pass reaching a slot the commit dropped), the
+    /// share is returned after the lock, and
     /// the entry's meter read only then, without it, before the eviction
     /// check (CR1's review, round 1: it was returned under the lock, after
     /// the entry was re-read with it; round 2: it is no longer re-read

@@ -706,16 +706,23 @@ fn a_load_its_meter_refuses_at_any_charge_leaves_every_lookup_as_it_was() {
         drop(env.load_dependency(b()).unwrap());
         pool.disarm();
         // Each new high, and the reservation it is, from 1.
+        let totals = pool.totals();
+        let past_open = totals.len() as u64 - open;
         let mut highs = Vec::new();
-        for (i, total) in pool.totals().into_iter().enumerate() {
+        for (i, total) in totals.into_iter().enumerate() {
             if total > highs.last().map_or(0, |&(_, high)| high) {
                 highs.push((i as u64 + 1, total));
             }
         }
         // The reservations targeted after the open's: more than four an
-        // entry.
-        let staged = highs.iter().filter(|&&(at, _)| at > open).count();
-        assert!(staged as u64 > 4 * B_ENTRIES, "{what}: {highs:?}");
+        // entry, and all but two of those the load makes past its open
+        // (the two that follow a charge it returned are no new high; CR1's
+        // review, round 3).
+        let staged = highs.iter().filter(|&&(at, _)| at > open).count() as u64;
+        assert!(
+            staged > 4 * B_ENTRIES && staged + 2 >= past_open,
+            "{what}: {staged} of {past_open} past the open: {highs:?}"
+        );
         for (_, total) in highs {
             let (env, pool) = limited(&options, total - 1);
             let before = by_name(&env);

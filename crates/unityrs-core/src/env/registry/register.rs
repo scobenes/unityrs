@@ -385,13 +385,14 @@ impl Registry {
     }
 
     /// The published half of [`Self::insert`], in which nothing can fail
-    /// the registration: whether the slot that stays stands in for the one dropped, told with
-    /// no lock held ([`Stand`]), then the change, in one step under the
-    /// write lock, then what it dropped released and, for a load's, the
-    /// listed slots reached ([`Self::settle`], whose refusal leaves them
-    /// listed for a later call and does not fail the registration). Its one
-    /// error is for a key found when the registration was charged and gone
-    /// at the lock, which nothing does: no call removes a key.
+    /// the registration: whether the slot that stays stands in for the
+    /// one dropped, told with no lock held ([`Stand`]), then the change,
+    /// in one step under the write lock, then what it dropped released
+    /// and, for a load's, the listed slots reached ([`Self::settle`],
+    /// whose refusal leaves them listed for a later call and does not fail
+    /// the registration). Its one error is for a key found when the
+    /// registration was charged and gone at the lock, which nothing does:
+    /// no call removes a key.
     fn apply(&self, staged: Staged, by: By) -> Result<(), Error> {
         let Staged {
             key,
