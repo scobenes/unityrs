@@ -1,14 +1,15 @@
 //! The harness's own tests: each value case reaches the memory bound it
 //! picks, the `lz4` check takes the block-output bound for the limit it
-//! is, at the bound and on each side of it, and the `texture` check takes
-//! each answer a decode gives under each of its meters.
+//! is, at the bound and on each side of it, the `texture` check takes
+//! each answer a decode gives under each of its meters, and the
+//! `meshdecode` check takes every handler fixture case under each meter.
 
 use std::sync::Arc;
 
 use unityrs_core::error::LimitKind;
 use unityrs_core::limits::{ChargeError, Meter};
 use unityrs_core::walk::{ReadCtx, ReadDetail, ReadError, boost, python};
-use unityrs_testkit::fuzz::{Row, TextureCase, TreeCase, lz4_case};
+use unityrs_testkit::fuzz::{MeshCase, Row, TextureCase, TreeCase, lz4_case};
 
 use crate::Case;
 
@@ -140,4 +141,111 @@ fn the_texture_check_takes_each_answer_under_each_meter() {
         crate::texture::check(&case(12, 4, 4, meter, Vec::new()));
     }
     crate::texture::check(&[]);
+}
+
+/// Every case of `unityrs-meshdecode`'s handler fixture as a `MeshCase`, as
+/// the seed command (`unityrs-testkit`'s `examples/fuzz_seeds.rs`) writes
+/// them, at meter 0.
+fn mesh_fixture_cases() -> Vec<MeshCase> {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/unityrs-meshdecode/tests/fixtures/process.json"
+    ))
+    .expect("the handler fixture");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+    let hex = |v: &serde_json::Value| -> Vec<u8> {
+        let h = v.as_str().expect("hex").as_bytes();
+        h.chunks(2)
+            .map(|p| u8::from_str_radix(std::str::from_utf8(p).expect("ascii"), 16).expect("hex"))
+            .collect()
+    };
+    let int = |v: &serde_json::Value| v.as_i64().expect("an int");
+    let cases = body["cases"].as_array().expect("cases");
+    cases
+        .iter()
+        .map(|c| {
+            let rows = body["trees"][c["tree"].as_str().expect("a tree key")]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .map(|r| {
+                    Row::new(
+                        u8::try_from(int(&r[0])).expect("a level"),
+                        r[1].as_str().expect("a type").as_bytes(),
+                        r[2].as_str().expect("a name").as_bytes(),
+                        i32::try_from(int(&r[3])).expect("a meta flag"),
+                    )
+                })
+                .collect();
+            let v: Vec<i64> = c["version"]
+                .as_array()
+                .expect("a version")
+                .iter()
+                .map(int)
+                .collect();
+            let mut flags = 0;
+            if c["source"] == "sprite" {
+                flags |= MeshCase::SPRITE;
+            }
+            if c["endian"] == ">" {
+                flags |= MeshCase::BIG_ENDIAN;
+            }
+            if c["reader"].as_bool() == Some(true) && !c["resource"].is_null() {
+                flags |= MeshCase::RESOURCES;
+            }
+            MeshCase {
+                flags,
+                meter: 0,
+                version: [0, 1, 2].map(|i| u16::try_from(v[i]).expect("a u16")),
+                version_type: u8::try_from(v[3]).expect("a type"),
+                version_number: u8::try_from(v[4]).expect("a number"),
+                resource: if c["resource"].is_null() {
+                    Vec::new()
+                } else {
+                    hex(&c["resource"])
+                },
+                value: TreeCase {
+                    rows,
+                    data: hex(&c["hex"]),
+                    ..TreeCase::default()
+                },
+            }
+        })
+        .collect()
+}
+
+/// The `meshdecode` check passes every handler fixture case under the
+/// case's limits and under meters of 64 bytes to about 4 MiB, and each kind
+/// of answer is among them: arrays and triangles, the handler's errors, and
+/// the smaller meter's refusals, of `process` and of `get_triangles` alone.
+#[test]
+fn the_meshdecode_check_takes_every_handler_fixture_case_under_each_meter() {
+    use crate::meshdecode::{Outcome, answers};
+    let cases = mesh_fixture_cases();
+    assert!(cases.len() > 300, "{} cases", cases.len());
+    let (mut done, mut errors, mut refused, mut triangles_refused, mut same) = (0, 0, 0, 0, 0);
+    for mut case in cases {
+        for meter in [0, 1, 4, 16, 64, 255] {
+            case.meter = meter;
+            let (full, small) = answers(&case.encode()).expect("every fixture value reads");
+            match full {
+                (Outcome::Done(_), Some(Outcome::Done(_))) => done += 1,
+                (Outcome::Error(_), None) | (Outcome::Done(_), Some(Outcome::Error(_))) => {
+                    errors += 1
+                }
+                other => panic!("{other:?} under the case's limits"),
+            }
+            match small {
+                Some((Outcome::Refused, _)) => refused += 1,
+                Some((_, Some(Outcome::Refused))) => triangles_refused += 1,
+                Some(_) => same += 1,
+                None => {}
+            }
+        }
+    }
+    assert!(
+        done > 0 && errors > 0 && refused > 0 && triangles_refused > 0 && same > 0,
+        "done {done}, errors {errors}, refused {refused}, triangles refused {triangles_refused}, same {same}"
+    );
+    assert!(answers(&[]).is_none());
 }

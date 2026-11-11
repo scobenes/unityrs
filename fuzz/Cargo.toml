@@ -19,8 +19,14 @@ libfuzzer-sys = "=0.4.13"
 # (the target checks `LZ4_versionNumber` at its first input).
 lz4-sys = "=1.10.0"
 unityrs-core = { path = "../crates/unityrs-core" }
+unityrs-meshdecode = { path = "../crates/unityrs-meshdecode" }
 unityrs-testkit = { path = "../crates/unityrs-testkit" }
 unityrs-texture = { path = "../crates/unityrs-texture" }
+
+[dev-dependencies]
+# The harness's test of the `meshdecode` check reads unityrs-meshdecode's
+# handler fixture (JSON), as the seed command does.
+serde_json = "=1.0.154"
 
 [workspace]
 members = ["."]
@@ -87,6 +93,13 @@ bench = false
 [[bin]]
 name = "texture"
 path = "fuzz_targets/texture.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "meshdecode"
+path = "fuzz_targets/meshdecode.rs"
 test = false
 doc = false
 bench = false

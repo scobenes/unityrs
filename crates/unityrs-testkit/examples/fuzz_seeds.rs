@@ -6,8 +6,10 @@
 //! bytes (at each of the value targets' memory bounds, the case's
 //! `TreeCase::SMALL_MEMORY` clear and set), every tree stored in each format
 //! both ways round, the deep values of `unityrs_testkit::depth`, LZ4
-//! blocks of every output, and textures of every size class the decoders
-//! tell apart. Nothing comes from a corpus. One folder per target:
+//! blocks of every output, textures of every size class the decoders tell
+//! apart, and every mesh and sprite case `unityrs-meshdecode`'s oracle
+//! fixture records (`tools/fixtures/meshdecode.py`'s synthetic values).
+//! Nothing comes from a corpus. One folder per target:
 //!
 //! ```text
 //! cargo run -p unityrs-testkit --example fuzz_seeds -- DIR
@@ -37,10 +39,10 @@ use unityrs_testkit::Rng;
 use unityrs_testkit::blob::{NodeSpec, Strings, blob_tree, old_tree};
 use unityrs_testkit::bundle::{TestCodec, compress};
 use unityrs_testkit::depth::{Depth, Wrap, Z_ROWS};
-use unityrs_testkit::fuzz::{RefType, Row, TextureCase, TreeCase, blob_case, lz4_case};
+use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_case, lz4_case};
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 9] = [
+const TARGETS: [&str; 10] = [
     "detect",
     "bundle",
     "serialized",
@@ -50,6 +52,7 @@ const TARGETS: [&str; 9] = [
     "write_after_read",
     "lz4",
     "texture",
+    "meshdecode",
 ];
 
 /// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
@@ -91,6 +94,17 @@ const TREE_FORMATS: [u8; 10] = [2, 3, 5, 9, 11, 10, 12, 15, 19, 22];
 
 /// Bytes an LZ4 seed compresses at most of an output.
 const LZ4_MAX: usize = 16 << 10;
+
+/// The `meshdecode` seeds' source: `unityrs-meshdecode`'s handler fixture.
+const MESH_CASES: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../unityrs-meshdecode/tests/fixtures/process.json"
+);
+
+/// The `meshdecode` seeds' meters: the case's limits alone, then a meter of
+/// 64 bytes (refusing the first array), 16 KiB and 256 KiB (most of the
+/// fixture's arrays fit, the largest do not).
+pub(crate) const MESH_METERS: [u8; 4] = [0, 1, 16, 64];
 
 struct Seeds {
     dir: PathBuf,
@@ -483,6 +497,80 @@ fn texture_blocks(s: &mut Seeds) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The `meshdecode` target's seeds: every case of `unityrs-meshdecode`'s
+/// handler fixture (`tests/fixtures/process.json`), its tree, value,
+/// version, byte order, resource and reader as recorded, under each of
+/// [`MESH_METERS`].
+fn meshdecode(s: &mut Seeds) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(MESH_CASES)?;
+    let body: serde_json::Value = serde_json::from_str(&text).map_err(std::io::Error::other)?;
+    let bad = || std::io::Error::other("process.json: a case is not as the script writes it");
+    let int = |v: &serde_json::Value| v.as_i64().ok_or_else(bad);
+    let hex = |v: &serde_json::Value| -> std::io::Result<Vec<u8>> {
+        let h = v.as_str().ok_or_else(bad)?.as_bytes();
+        h.chunks(2)
+            .map(|p| {
+                std::str::from_utf8(p)
+                    .ok()
+                    .and_then(|p| u8::from_str_radix(p, 16).ok())
+                    .ok_or_else(bad)
+            })
+            .collect()
+    };
+    for c in body["cases"].as_array().ok_or_else(bad)? {
+        let tree = &body["trees"][c["tree"].as_str().ok_or_else(bad)?];
+        let mut rows = Vec::new();
+        for r in tree.as_array().ok_or_else(bad)? {
+            let text = |i: usize| r[i].as_str().map(str::as_bytes).ok_or_else(bad);
+            rows.push(Row::new(
+                u8::try_from(int(&r[0])?).map_err(|_| bad())?,
+                text(1)?,
+                text(2)?,
+                i32::try_from(int(&r[3])?).map_err(|_| bad())?,
+            ));
+        }
+        let v = c["version"].as_array().ok_or_else(bad)?;
+        let part = |i: usize| v.get(i).ok_or_else(bad).and_then(int);
+        let mut flags = 0;
+        if c["source"] == "sprite" {
+            flags |= MeshCase::SPRITE;
+        }
+        if c["endian"] == ">" {
+            flags |= MeshCase::BIG_ENDIAN;
+        }
+        if c["reader"].as_bool() == Some(true) && !c["resource"].is_null() {
+            flags |= MeshCase::RESOURCES;
+        }
+        let mut case = MeshCase {
+            flags,
+            meter: 0,
+            version: [
+                u16::try_from(part(0)?).map_err(|_| bad())?,
+                u16::try_from(part(1)?).map_err(|_| bad())?,
+                u16::try_from(part(2)?).map_err(|_| bad())?,
+            ],
+            version_type: u8::try_from(part(3)?).map_err(|_| bad())?,
+            version_number: u8::try_from(part(4)?).map_err(|_| bad())?,
+            resource: if c["resource"].is_null() {
+                Vec::new()
+            } else {
+                hex(&c["resource"])?
+            },
+            value: TreeCase {
+                rows,
+                data: hex(&c["hex"])?,
+                ..TreeCase::default()
+            },
+        };
+        let name = c["name"].as_str().ok_or_else(bad)?;
+        for meter in MESH_METERS {
+            case.meter = meter;
+            s.add("meshdecode", &format!("{name}-m{meter}"), &case.encode())?;
+        }
+    }
+    Ok(())
+}
+
 /// Every target's seeds, in a folder of `dir` each, and how many. Crate-wide:
 /// `tests/fuzz_seeds.rs` includes this file and checks what it writes.
 pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
@@ -514,6 +602,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     s.add("lz4", "empty", &lz4_case(0, &[0]))?;
     s.add("lz4", "empty-over", &lz4_case(1, &[0]))?;
     texture(&mut s)?;
+    meshdecode(&mut s)?;
     for (name, case) in depth_cases() {
         for r in case.refs.iter().filter_map(|r| r.rows.as_ref()) {
             let nodes = r
