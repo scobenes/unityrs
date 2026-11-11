@@ -1,7 +1,7 @@
 //! Replays the oracle's fixtures (`tests/fixtures/`, written by
 //! `tools/fixtures/texture.py` from UnityPy 1.25.2 and Pillow 9.5.0)
-//! without Python: every decode case's image, bit for bit, or its error, and
-//! every selection.
+//! without Python: every decode case's image, bit for bit, or its
+//! exception, by type and message, and every selection.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -11,9 +11,15 @@ use sha2::{Digest, Sha256};
 use unityrs_core::limits::Meter;
 use unityrs_testkit::Rng;
 use unityrs_texture::{
-    DecodeError, Format, Selection, TEXTURE_FORMATS, TextureFields, XBOX_SWAP_FORMATS, decode,
-    plan, select,
+    DecodeError, Format, MAX_CROP_PIXELS, Selection, TEXTURE_FORMATS, TextureFields,
+    XBOX_SWAP_FORMATS, decode, plan, select,
 };
+
+/// The decode cases `texture.py` records, and how many are images.
+const DECODE_CASES: usize = 520;
+const IMAGES: usize = 315;
+/// The selection cases.
+const SELECT_CASES: usize = 723;
 
 fn load(name: &str) -> J {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -59,6 +65,9 @@ fn build(spec: &J) -> Vec<u8> {
     if let Some(h) = spec["hex"].as_str() {
         return unhex(h);
     }
+    if let Some(n) = spec["zeros"].as_u64() {
+        return vec![0; usize::try_from(n).unwrap()];
+    }
     let len = usize::try_from(spec["len"].as_u64().unwrap()).unwrap();
     let mut data = splitmix(spec["seed"].as_u64().unwrap(), len);
     if let Some(mode) = spec["bc7_mode"].as_u64() {
@@ -91,13 +100,54 @@ const NEGATIVE: [&str; 3] = [
     "tile cannot extend outside image",
 ];
 
+/// The bytes mip 0 of a texture holds at its padded size (`texture.py`'s
+/// `needed`), both sides positive.
+fn needed(format: Format, width: i32, height: i32) -> u64 {
+    let (w, h) = (
+        u64::try_from(width).unwrap(),
+        u64::try_from(height).unwrap(),
+    );
+    match format.block_bytes() {
+        Some(block) => w.div_ceil(4) * h.div_ceil(4) * block,
+        None => w * h * format.mode().bytes_per_pixel(),
+    }
+}
+
+/// The error the crate names for the exception the oracle recorded.
+fn named(c: &J, format: Format, width: i32, height: i32, len: usize) -> DecodeError {
+    let id = c["id"].as_str().unwrap();
+    let message = c["message"].as_str().unwrap();
+    match (c["raises"].as_str().unwrap(), message) {
+        ("ValueError", "Texture2D has no image data") => DecodeError::NoImageData,
+        ("ValueError", "not enough image data") => DecodeError::NotEnoughData {
+            needed: needed(format, width, height),
+            got: u64::try_from(len).unwrap(),
+        },
+        ("ValueError", m) if NEGATIVE.contains(&m) => DecodeError::NegativeSize { width, height },
+        // Pillow's raw decoder's width cap: `PyErr_NoMemory`, no message.
+        ("MemoryError", "") => DecodeError::PillowMemoryError {
+            width: width.unsigned_abs(),
+            max: match format {
+                Format::Rgba32 => 67_108_856,
+                Format::Rgb24 => 89_478_478,
+                _ => panic!("{id}: a block format's MemoryError"),
+            },
+        },
+        ("DecompressionBombError", _) => DecodeError::DecompressionBomb {
+            pixels: u64::try_from(width).unwrap() * u64::try_from(height).unwrap(),
+            max: MAX_CROP_PIXELS,
+        },
+        (t, m) => panic!("{id}: an exception the decoders do not name: {t}: {m}"),
+    }
+}
+
 #[test]
 fn every_decode_is_the_oracle_image_or_error() {
     let doc = load("decode.json");
     assert_eq!(doc["unitypy"], "1.25.2");
     assert_eq!(doc["pillow"], "9.5.0");
     let cases = doc["cases"].as_array().unwrap();
-    assert!(cases.len() >= 400, "{} cases", cases.len());
+    assert_eq!(cases.len(), DECODE_CASES);
     let mut images = 0;
     let mut errors = 0;
     let mut bc7_modes = BTreeSet::new();
@@ -106,6 +156,12 @@ fn every_decode_is_the_oracle_image_or_error() {
         let format = Format::from_texture_format(int(&c["format"])).unwrap();
         let (width, height) = (int(&c["width"]), int(&c["height"]));
         let data = build(&c["data"]);
+        // The input is the one the oracle decoded.
+        assert_eq!(
+            hex(&Sha256::digest(&data)),
+            c["data_sha256"].as_str().unwrap(),
+            "{id}"
+        );
         if let Some(mode) = c["data"]["bc7_mode"].as_u64() {
             bc7_modes.insert(mode);
         }
@@ -123,6 +179,7 @@ fn every_decode_is_the_oracle_image_or_error() {
         }
         let meter = Meter::unlimited();
         let got = decode(format, &data, width, height, &meter);
+        let planned = plan(format, data.len(), width, height);
         if let Some(mode) = c["mode"].as_str() {
             images += 1;
             let image = got.unwrap_or_else(|e| panic!("{id}: {e}"));
@@ -145,45 +202,35 @@ fn every_decode_is_the_oracle_image_or_error() {
             );
             // What the plan said, and what the meter holds while the image
             // lives.
-            let p = plan(format, width, height).unwrap();
+            let p = planned.unwrap_or_else(|e| panic!("{id}: planned {e}"));
             assert_eq!(p.output_bytes, u64::try_from(image.pixels().len()).unwrap());
-            assert!(image.charge().bytes() >= p.charge(), "{id}");
+            assert_eq!(image.charge().bytes(), p.charge(), "{id}");
             assert_eq!(meter.used(), image.charge().bytes(), "{id}");
             drop(image);
             assert_eq!(meter.used(), 0, "{id}");
         } else {
             errors += 1;
-            let message = c["message"].as_str().unwrap();
-            assert_eq!(c["raises"], "ValueError", "{id}");
             let err = got.err().unwrap_or_else(|| panic!("{id}: decoded"));
-            match message {
-                "Texture2D has no image data" => assert_eq!(err, DecodeError::NoImageData, "{id}"),
-                "not enough image data" => {
-                    let needed = plan(format, width, height).unwrap().input_bytes;
-                    assert_eq!(
-                        err,
-                        DecodeError::NotEnoughData {
-                            needed,
-                            got: u64::try_from(data.len()).unwrap()
-                        },
-                        "{id}"
-                    );
-                }
-                m if NEGATIVE.contains(&m) => {
-                    assert_eq!(err, DecodeError::NegativeSize { width, height }, "{id}");
-                }
-                m => panic!("{id}: an error the decoders do not name: {m}"),
+            assert_eq!(err, named(c, format, width, height, data.len()), "{id}");
+            // Where the crate gives Pillow's message, it is Pillow's.
+            if c["raises"] == "DecompressionBombError" {
+                assert_eq!(err.to_string(), c["message"].as_str().unwrap(), "{id}");
             }
+            // The plan names it too, before any data is read.
+            assert_eq!(planned.err(), Some(err), "{id}");
             assert_eq!(meter.used(), 0, "{id}");
         }
     }
-    assert!(
-        images >= 300 && errors >= 100,
-        "{images} images, {errors} errors"
-    );
+    assert_eq!((images, errors), (IMAGES, DECODE_CASES - IMAGES));
     assert_eq!(bc7_modes, (0..=8).collect::<BTreeSet<_>>());
 }
 
+/// The selection the oracle recorded. Its predicates are UnityPy's own,
+/// measured (`TextureFormat`'s names, `is_switch_swizzled`,
+/// `XBOX_SWAP_FORMATS`); the order between the skips is the recorder's rule
+/// (`texture.py`'s `selected`, `docs/BATCH_SPEC.md` section 3), not a
+/// measurement, so for it this test checks only that the crate keeps the
+/// rule.
 #[test]
 fn every_selection_is_the_oracle_one() {
     let doc = load("select.json");
@@ -206,7 +253,7 @@ fn every_selection_is_the_oracle_one() {
         .collect();
     assert_eq!(xbox, XBOX_SWAP_FORMATS);
     let cases = doc["cases"].as_array().unwrap();
-    assert!(cases.len() >= 700, "{} cases", cases.len());
+    assert_eq!(cases.len(), SELECT_CASES);
     let mut seen = BTreeSet::new();
     for c in cases {
         let platform_blob = blob(c);
@@ -222,13 +269,19 @@ fn every_selection_is_the_oracle_one() {
             Selection::Skip(s) => s.to_string(),
         };
         assert_eq!(got, c["selected"].as_str().unwrap(), "{c}");
-        seen.insert(got.split('(').next().unwrap().to_owned());
+        // Each kind of answer, and each platform's skip.
+        seen.insert(if got.starts_with("unsupported_platform") {
+            got
+        } else {
+            got.split('(').next().unwrap().to_owned()
+        });
     }
     let want: BTreeSet<String> = [
         "empty_image",
         "export",
         "unsupported_format",
-        "unsupported_platform",
+        "unsupported_platform(switch)",
+        "unsupported_platform(xbox360)",
     ]
     .map(str::to_owned)
     .into();

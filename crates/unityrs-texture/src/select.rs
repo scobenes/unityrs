@@ -29,10 +29,12 @@
 //! `parse_image_data` sees the size (`get_image_data`,
 //! `classes/legacy_patch/Texture2D.py:63-75`: the object's `image_data`, else
 //! what its `m_StreamData` names), and raises there for a texture with
-//! neither, or whose resource file is not loaded, whatever its size or
-//! format. [`select()`] reads no data, so that failure, and its place before
-//! `empty_image`, is the engine's to record, as the oracle's exception table
-//! maps it (`docs/plans/extract.md` section 5).
+//! neither, or whose resource file is not loaded. A side of 0 is
+//! `empty_image` without any fetch (`docs/BATCH_SPEC.md` section 3): the
+//! extractor skips a zero width before it reads the image, and the oracle
+//! records a zero height's raise as `empty_image` (`docs/plans/extract.md`
+//! section 5). [`select()`] reads no data, so for any other texture the
+//! fetch, and its failure, are the engine's to record.
 
 use std::fmt;
 

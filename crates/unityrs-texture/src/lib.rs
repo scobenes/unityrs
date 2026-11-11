@@ -9,14 +9,15 @@
 //! - [`select()`]: a texture's fields to [`Selection::Export`] with its
 //!   [`Format`], or [`Selection::Skip`] with the [`Skip`] reason the manifest
 //!   records (`docs/BATCH_SPEC.md` section 3). Pure; it reads no data.
-//! - [`plan()`]: what decoding a format at a size needs (mip 0's bytes) and
-//!   gives (the image's mode, size and bytes, and what it charges), before
-//!   any data is read, so the engine can count the work and the memory
-//!   first.
+//! - [`plan()`]: what decoding a format at a size from data of a given
+//!   length needs (mip 0's bytes) and gives (the image's mode, size and
+//!   bytes, and what it charges), or the error the decode would return,
+//!   before any data is read, so the engine can count the work and the
+//!   memory first.
 //! - [`decode()`]: a texture's data (mip 0 first; the rest is ignored, as
 //!   Pillow ignores it) to an [`Image`], its pixels charged to the caller's
-//!   meter before they are allocated, the decode run under [`contain()`] so a
-//!   panic is an error ([`DecodeError::Panicked`]).
+//!   meter before they are allocated, its pixel loop run under [`contain()`]
+//!   so a panic is an error ([`DecodeError::Panicked`]).
 //!
 //! **How each format matches UnityPy.** UnityPy decodes these five with
 //! Pillow (`CONV_TABLE`, `export/Texture2DConverter.py:491-516`), so each
@@ -29,13 +30,17 @@
 //! library, decodes none of the five. `tests/oracle.rs` replays what the
 //! oracle recorded (`tools/fixtures/texture.py`): every format at sizes
 //! from 1x1 to 257x3, every BC7 mode, short, long and empty data, zero and
-//! negative sides, and the skips.
+//! negative sides, Pillow's raw width cap and its crop's decompression-bomb
+//! check, and the skips.
 //!
 //! **No panics, bounded work** (`docs/plans/core.md` section 3.15): indexing,
 //! `unwrap` and the like are denied outside tests; sizes are computed in
 //! `u64` from the `i32` sides; a texture past [`MAX_PIXELS`] (16384 x
-//! 16384, padded) is refused before any allocation; a decode's work is
-//! linear in its output.
+//! 16384, padded) is refused whatever its data, before any allocation, the
+//! one bound UnityPy does not have (`PARITY.md` section 19.3), while
+//! Pillow's own limits below it, its raw decoder's width cap and its crop's
+//! decompression-bomb check, are matched (`decode`'s module docs); a
+//! decode's work is linear in its output.
 
 #![forbid(unsafe_code)]
 // No panics on a texture's contents (plan section 3.15). Tests may opt out.
@@ -58,8 +63,8 @@ mod decode;
 mod format;
 mod select;
 
-pub use contain::{NON_STRING_PAYLOAD, contain};
-pub use decode::{DecodeError, Image, MAX_PIXELS, Plan, bcn_length, decode, plan};
+pub use contain::{MESSAGE_BYTES, NON_STRING_PAYLOAD, Payload, contain};
+pub use decode::{DecodeError, Image, MAX_CROP_PIXELS, MAX_PIXELS, Plan, bcn_length, decode, plan};
 pub use format::{Format, Mode, TEXTURE_FORMATS, texture_format_name};
 pub use select::{
     SWITCH, Selection, Skip, SkippedPlatform, TextureFields, XBOX_SWAP_FORMATS, XBOX360,

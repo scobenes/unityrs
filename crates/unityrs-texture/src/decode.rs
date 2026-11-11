@@ -1,30 +1,57 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/export/Texture2DConverter.py's parse_image_data for the five formats (the checks, the block padding, the crop and the flip), and how Pillow 9.5.0's decoders, as it calls them, treat short and long data. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/export/Texture2DConverter.py's parse_image_data for the five formats (the checks, the block padding, the crop and the flip), and how Pillow 9.5.0, as it calls it, treats short and long data and the sizes it refuses. See THIRD_PARTY_LICENSES.
 //! [`decode()`]: a texture's mip 0 to pixels, as `parse_image_data` gives them
 //! for the five formats (`export/Texture2DConverter.py:254-320`), and
-//! [`plan()`]: what a decode will need, before it runs.
+//! [`plan()`]: what a decode of data of a given length will need and give,
+//! or why it fails, before the data is read.
 //!
-//! **What UnityPy does**, in order, and so what [`decode()`] does:
+//! **What UnityPy does.** `parse_image_data` returns an empty image for a
+//! side of 0, raises for empty data, pads a block format's size to whole
+//! 4x4 blocks (`:291`, `get_compressed_image_size`; the raw formats are not
+//! padded), has Pillow decode the padded image (`Image.frombytes` with
+//! `CONV_TABLE`'s arguments, `:331-344`, `:491-516`), crops it back to size
+//! (`:314-315`) and flips it top to bottom (`:317-318`). Pillow decodes the
+//! data from its start and stops when the image is full: bytes past it
+//! (later mips, anything else) are ignored, so a texture with mips decodes
+//! as its mip 0.
+//!
+//! **The order.** [`plan()`] and [`decode()`] make one series of checks,
+//! the first that fails naming the error, so a plan's answer is the
+//! decode's:
 //! 1. A side of 0 gives an empty `RGBA` image, 0x0, before the data, the
 //!    format or the other side is looked at (`:265-266`).
-//! 2. Empty data raises `ValueError("Texture2D has no image data")`
-//!    (`:268-269`): [`DecodeError::NoImageData`].
-//! 3. A block format's size is padded to whole 4x4 blocks (`:291`,
-//!    `get_compressed_image_size`), Pillow decodes the padded image
-//!    (`Image.frombytes` with `CONV_TABLE`'s arguments, `:331-344`, `:491-516`),
-//!    it is cropped back to size (`:314-315`) and flipped top to bottom
-//!    (`:317-318`). The raw formats are not padded.
-//! 4. A negative side raises `ValueError` in Pillow, whichever check meets
-//!    it first ("Width and height must be >= 0", or, where padding made a
-//!    side 0, a crop or tile error): [`DecodeError::NegativeSize`].
-//! 5. Pillow decodes the data from its start and stops when the image is
-//!    full: bytes past it (later mips, anything else) are ignored, and data
-//!    that runs out first raises `ValueError` "not enough image data"
-//!    (`Image.frombytes`; `RawDecode.c` reads whole rows, `BcnDecode.c`
-//!    whole blocks): [`DecodeError::NotEnoughData`]. So a texture with mips
-//!    decodes as its mip 0. The `BCn` decoder takes the data's length as a C
-//!    `int` (`decode_bcn`'s `bytes`), so data of 2 GiB or more is read as
-//!    that length's low 32 bits, signed: data whose low 32 bits are below
-//!    what the image needs, or negative, raises too ([`bcn_length`]).
+//! 2. Empty data is [`DecodeError::NoImageData`], UnityPy's
+//!    `ValueError("Texture2D has no image data")` (`:268-269`).
+//! 3. A negative side is [`DecodeError::NegativeSize`]: Pillow's
+//!    `ValueError`, whichever of its checks meets it first ("Width and
+//!    height must be >= 0", or, where padding made a side 0, a crop or tile
+//!    error).
+//! 4. A texture of more than [`MAX_PIXELS`] pixels at its padded size is
+//!    [`DecodeError::TooLarge`], whatever its data: the bound UnityPy does
+//!    not have (below).
+//! 5. An RGBA32 texture wider than 67,108,856 pixels, or an RGB24 one wider
+//!    than 89,478,478, is [`DecodeError::PillowMemoryError`]: Pillow's raw
+//!    decoder refuses a row of more than `INT_MAX / bits - 7` pixels (32
+//!    bits a pixel for `RGBA`, 24 for `RGB`) with `MemoryError` when it is
+//!    set up, before it reads any data (`_setimage`, `src/decode.c:197-198`).
+//!    The `bcn` decoder has no such cap.
+//! 6. Data that runs out before mip 0 does is [`DecodeError::NotEnoughData`],
+//!    Pillow's `ValueError` "not enough image data" (`Image.frombytes`;
+//!    `RawDecode.c` reads whole rows, `BcnDecode.c` whole blocks). The `BCn`
+//!    decoder takes the data's length as a C `int` (`decode_bcn`'s
+//!    `bytes`), so data of 2 GiB or more is read as that length's low 32
+//!    bits, signed: data whose low 32 bits are below what the image needs,
+//!    or negative, is short too ([`bcn_length`]).
+//! 7. The decode.
+//! 8. A DXT1, DXT5 or BC7 texture with a side that is no multiple of 4 and
+//!    more than [`MAX_CROP_PIXELS`] (178,956,970) pixels is
+//!    [`DecodeError::DecompressionBomb`]: UnityPy's crop of the padded image
+//!    runs Pillow's decompression-bomb check on the size it crops to, which
+//!    raises `DecompressionBombError` past twice `Image.MAX_IMAGE_PIXELS`
+//!    (`Image._crop`, `src/PIL/Image.py:1232-1250`; `:3162-3180`), after the
+//!    decode. No pixel depends on it, so it is decided before the decode,
+//!    after the data check, as in Pillow. An aligned texture is not cropped,
+//!    nor is a raw one, and neither is checked. Past `MAX_IMAGE_PIXELS`
+//!    alone the crop only warns, which changes no pixel.
 //!
 //! The decoders write straight into the output, cropped and flipped as they
 //! go, with no padded image between: each block is decoded into a 16-pixel
@@ -32,42 +59,64 @@
 //! each to its flipped row. That is the padded decode, then the crop and
 //! the flip, pixel for pixel.
 //!
-//! **Bounds, where UnityPy has none.** A texture of more than
-//! [`MAX_PIXELS`] pixels, counted at its padded size, is refused before
-//! anything is allocated ([`DecodeError::TooLarge`]): 16384 x 16384, the
-//! largest size Unity's texture importer offers. [`decode()`] makes the
-//! data checks above first, so a texture whose data is short is
-//! [`DecodeError::NotEnoughData`] whatever its size, as in UnityPy;
-//! [`plan()`], which has no data, refuses on the size alone. So the output
-//! is at most 1 GiB and the work linear in it. Sizes are computed in `u64`,
-//! from the `i32` sides, so none wraps.
+//! **The bound, where UnityPy has none.** [`MAX_PIXELS`] is 16384 x 16384
+//! at the padded size, the largest size Unity's texture importer offers,
+//! checked before the data (step 4), so the output is at most 1 GiB, the
+//! work linear in it, and [`plan()`] needs only the data's length. It is
+//! the stated divergence (`PARITY.md` section 19.3), and every limit Pillow
+//! has that a texture could meet beyond steps 5 and 8 lies past it:
+//! `Image.new`'s `MemoryError` for a row wider than 536,870,910 pixels, the
+//! `OverflowError` of a `BCn` side padded to 2^31, and the raw decoder's
+//! count of the bytes it read, which wraps through an `int` at 2 GiB. A
+//! texture with a negative side is [`DecodeError::NegativeSize`] whatever
+//! its other side, where Pillow, given a padded side past those limits,
+//! raises theirs. With step 5 in, no width that passes overflows the `int`
+//! Pillow's raw decoder computes a row's bytes in
+//! (`src/libImaging/RawDecode.c:31`, `state->xsize * state->bits + 7`): a
+//! width of at most `INT_MAX / bits - 7` makes it at most
+//! `INT_MAX - 7 * bits + 7`. Sizes are computed here in `u64`, from the
+//! `i32` sides, so none wraps.
 //!
 //! **Memory** (`docs/plans/extract.md` E59). The output is the only buffer a
 //! decode allocates in proportion to the texture (no scratch: a block is 64
 //! bytes on the stack). It is charged to the caller's [`Meter`] at
 //! [`heap_cost`] of its length before it is allocated (through
 //! [`MeteredVec`], whose refusal allocates nothing and whose allocation
-//! failure is a refusal too), and the [`Charge`] lives in the [`Image`], so
-//! it returns when the image drops, a panic's unwinding included. The
-//! engine calls [`plan()`] first: [`Plan::output_bytes`] is the pixel bytes
-//! the decode writes (export work, `docs/plans/batch.md` 2.6 step 10) and
-//! [`Plan::charge`] the memory it charges.
+//! failure is a refusal too), once every check above has passed, and the
+//! [`Charge`] lives in the [`Image`], declared after its pixels, so it is
+//! returned after their buffer is freed, on every path, a panic's unwinding
+//! included. Only the pixel loop runs under [`crate::contain()`]. The
+//! engine calls [`plan()`] first: an `Ok` is a decode that will charge
+//! [`Plan::charge`] and write [`Plan::output_bytes`] (export work,
+//! `docs/plans/batch.md` 2.6 step 10); an `Err` is the decode's error, which
+//! charges nothing.
 
 use std::fmt;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use unityrs_core::limits::{Charge, ChargeError, Meter, MeteredVec, heap_cost};
 
 use crate::bcn;
+use crate::contain::Payload;
 use crate::format::{Format, Mode};
 
 /// The most pixels a texture may have, at its padded size: 16384 x 16384.
+/// UnityPy has no such bound (module docs; `PARITY.md` section 19.3).
 pub const MAX_PIXELS: u64 = 1 << 28;
 
-/// Why a texture did not decode. Every variant but [`Self::TooLarge`],
-/// [`Self::Charge`] and [`Self::Panicked`] is a case where UnityPy 1.25.2
-/// raises too.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+/// The most pixels UnityPy's crop of a padded `BCn` image takes: twice
+/// Pillow 9.5.0's `Image.MAX_IMAGE_PIXELS`, `1024 * 1024 * 1024 // 4 // 3`
+/// (module docs, step 8).
+pub const MAX_CROP_PIXELS: u64 = 2 * 89_478_485;
+
+/// C's `INT_MAX`, the bound of Pillow's `int` sizes.
+const INT_MAX: u32 = 0x7FFF_FFFF;
+
+/// Why a texture did not decode, in the order of the module docs' checks.
+/// Every variant but [`Self::TooLarge`], [`Self::Charge`] and
+/// [`Self::Panicked`] is a case where UnityPy 1.25.2 raises too.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeError {
     /// The data is empty: UnityPy's `ValueError("Texture2D has no
@@ -91,6 +140,16 @@ pub enum DecodeError {
         /// [`MAX_PIXELS`].
         max: u64,
     },
+    /// An RGBA32 or RGB24 row wider than Pillow's raw decoder takes:
+    /// Pillow's `MemoryError`, raised before the data is read (module docs,
+    /// step 5).
+    #[error("Pillow's raw decoder refuses a row of {width} pixels, past {max} (MemoryError)")]
+    PillowMemoryError {
+        /// `m_Width`.
+        width: u32,
+        /// The widest row it takes: `INT_MAX / bits - 7`.
+        max: u32,
+    },
     /// The data ends before mip 0 does: Pillow's `ValueError` "not enough
     /// image data".
     #[error("not enough image data: {needed} bytes needed, {got} given")]
@@ -100,23 +159,35 @@ pub enum DecodeError {
         /// The data's length.
         got: u64,
     },
+    /// UnityPy's crop of a padded `BCn` image meets Pillow's
+    /// decompression-bomb check: its `DecompressionBombError`, whose message
+    /// this one is (module docs, step 8).
+    #[error(
+        "Image size ({pixels} pixels) exceeds limit of {max} pixels, could be decompression bomb DOS attack."
+    )]
+    DecompressionBomb {
+        /// `m_Width` x `m_Height`.
+        pixels: u64,
+        /// [`MAX_CROP_PIXELS`].
+        max: u64,
+    },
     /// The meter or its budget refused the output buffer, or the allocator
     /// did; nothing was allocated.
     #[error(transparent)]
     Charge(#[from] ChargeError),
-    /// The decoder panicked ([`crate::contain()`]): the panic's payload, or
-    /// [`crate::NON_STRING_PAYLOAD`].
+    /// The decoder panicked ([`crate::contain()`]): its payload, kept whole.
     #[error("the decoder panicked: {payload}")]
     Panicked {
-        /// The payload.
-        payload: String,
+        /// The payload; [`Payload::message`] is the manifest's detail.
+        payload: Payload,
     },
 }
 
 const _: () = crate::send_sync::<DecodeError>();
 
-/// What decoding a texture of a format and a size will need and give,
-/// worked out before any data is read ([`plan()`]).
+/// What decoding a texture of a format and a size, from data of a given
+/// length, will need and give, worked out before the data is read
+/// ([`plan()`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Plan {
     /// The image's mode: the format's, or `RGBA` for a side of 0.
@@ -145,99 +216,89 @@ impl Plan {
     }
 }
 
-/// What decoding `format` at `width` x `height` needs and gives: the steps
-/// of the module docs that need no data. A side of 0 plans the empty `RGBA`
-/// image; a negative side is [`DecodeError::NegativeSize`]; a texture past
-/// [`MAX_PIXELS`] is [`DecodeError::TooLarge`].
-pub fn plan(format: Format, width: i32, height: i32) -> Result<Plan, DecodeError> {
-    let (plan, pixels) = sizes(format, width, height)?;
-    bounded(pixels)?;
-    Ok(plan)
-}
-
-/// [`plan()`] with no bound, and the pixels of the padded image (0 for a
-/// side of 0).
-fn sizes(format: Format, width: i32, height: i32) -> Result<(Plan, u64), DecodeError> {
+/// What decoding `format` at `width` x `height` from `data_len` bytes of
+/// data needs and gives, or the error [`decode()`] returns for it: the
+/// module docs' checks, all of them but the decode itself, in their order.
+pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<Plan, DecodeError> {
     if width == 0 || height == 0 {
-        let empty = Plan {
+        return Ok(Plan {
             mode: Mode::Rgba,
             width: 0,
             height: 0,
             input_bytes: 0,
             output_bytes: 0,
-        };
-        return Ok((empty, 0));
+        });
+    }
+    if data_len == 0 {
+        return Err(DecodeError::NoImageData);
     }
     let (Ok(w), Ok(h)) = (u32::try_from(width), u32::try_from(height)) else {
         return Err(DecodeError::NegativeSize { width, height });
     };
     let (w64, h64) = (u64::from(w), u64::from(h));
-    let (padded_w, padded_h) = match format.block_bytes() {
+    let block = format.block_bytes();
+    let (padded_w, padded_h) = match block {
         Some(_) => (w64.div_ceil(4) * 4, h64.div_ceil(4) * 4),
         None => (w64, h64),
     };
     // Each side is at most 2^31, so the product fits a u64.
-    let pixels = padded_w.saturating_mul(padded_h);
-    let mode = format.mode();
-    let input_bytes = match format.block_bytes() {
-        Some(block) => (pixels / 16).saturating_mul(block),
-        None => pixels.saturating_mul(mode.bytes_per_pixel()),
-    };
-    let plan = Plan {
-        mode,
-        width: w,
-        height: h,
-        input_bytes,
-        output_bytes: w64
-            .saturating_mul(h64)
-            .saturating_mul(mode.bytes_per_pixel()),
-    };
-    Ok((plan, pixels))
-}
-
-/// [`DecodeError::TooLarge`] past [`MAX_PIXELS`].
-fn bounded(pixels: u64) -> Result<(), DecodeError> {
+    let pixels = padded_w * padded_h;
     if pixels > MAX_PIXELS {
         return Err(DecodeError::TooLarge {
             pixels,
             max: MAX_PIXELS,
         });
     }
-    Ok(())
-}
-
-/// What [`decode()`] checks before it allocates, in the module docs' order,
-/// for data of `len` bytes: the image to decode, or why not.
-fn admit(format: Format, len: usize, width: i32, height: i32) -> Result<Plan, DecodeError> {
-    if width == 0 || height == 0 {
-        return sizes(format, width, height).map(|(plan, _)| plan);
+    let mode = format.mode();
+    if block.is_none() {
+        let max = match mode {
+            Mode::Rgb => INT_MAX / 24 - 7,
+            Mode::Rgba => INT_MAX / 32 - 7,
+        };
+        if w > max {
+            return Err(DecodeError::PillowMemoryError { width: w, max });
+        }
     }
-    if len == 0 {
-        return Err(DecodeError::NoImageData);
-    }
-    let (plan, pixels) = sizes(format, width, height)?;
-    let got = u64::try_from(len).unwrap_or(u64::MAX);
-    let seen = match format.block_bytes() {
-        Some(_) => bcn_length(len),
-        None => got,
+    // From here every size is at most 4 x MAX_PIXELS.
+    let (input_bytes, seen) = match block {
+        Some(b) => (pixels / 16 * b, bcn_length(data_len)),
+        None => (
+            pixels * mode.bytes_per_pixel(),
+            u64::try_from(data_len).unwrap_or(u64::MAX),
+        ),
     };
-    if seen < plan.input_bytes {
+    if seen < input_bytes {
         return Err(DecodeError::NotEnoughData {
-            needed: plan.input_bytes,
-            got,
+            needed: input_bytes,
+            got: u64::try_from(data_len).unwrap_or(u64::MAX),
         });
     }
-    bounded(pixels)?;
-    Ok(plan)
+    let shown = w64 * h64;
+    if (padded_w, padded_h) != (w64, h64) && shown > MAX_CROP_PIXELS {
+        return Err(DecodeError::DecompressionBomb {
+            pixels: shown,
+            max: MAX_CROP_PIXELS,
+        });
+    }
+    Ok(Plan {
+        mode,
+        width: w,
+        height: h,
+        input_bytes,
+        output_bytes: shown * mode.bytes_per_pixel(),
+    })
 }
 
 /// A decoded image: rows top to bottom, each pixel its mode's bytes, red
-/// first. It holds the [`Charge`] for its pixels, returned when it drops.
+/// first. It holds the [`Charge`] for its pixels, returned when it drops,
+/// after the pixels' buffer is freed.
 pub struct Image {
     mode: Mode,
     width: u32,
     height: u32,
     pixels: Vec<u8>,
+    // After `pixels`: fields drop in order, so the charge outlives the
+    // buffer it pays for.
     charge: Charge,
 }
 
@@ -275,7 +336,11 @@ impl Image {
     }
 
     /// The pixels: what Pillow's `tobytes()` gives for the image UnityPy
-    /// returns.
+    /// returns. One exception: `tobytes()`, and so a PNG save, raises
+    /// `MemoryError` for an `RGBA` image wider than 67,108,856 pixels (its
+    /// raw encoder's cap, `src/encode.c:260-262`), which a `BCn` texture
+    /// 67,108,857 to 67,108,864 wide and at most 4 high decodes to, in
+    /// UnityPy as here; a PNG writer mirrors that cap.
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
@@ -288,7 +353,7 @@ impl Image {
     }
 
     /// The pixels and their charge, which must live as long as the pixels'
-    /// allocation does.
+    /// allocation does: drop the charge last.
     pub fn into_parts(self) -> (Vec<u8>, Charge) {
         (self.pixels, self.charge)
     }
@@ -297,9 +362,9 @@ impl Image {
 /// Decodes a texture's mip 0, `data` being its image data from the start
 /// (`image_data`, or what its `m_StreamData` names: `Texture2D.get_image_data`),
 /// mips and all, as UnityPy 1.25.2 with Pillow 9.5.0 does (module docs),
-/// charging the output to `meter` before it is allocated. It runs under
-/// [`crate::contain()`], so a panic is [`DecodeError::Panicked`], with the
-/// output's charge returned.
+/// charging the output to `meter` before it is allocated. Its pixel loop
+/// runs under [`crate::contain()`], so a panic there is
+/// [`DecodeError::Panicked`], with the output's charge returned.
 pub fn decode(
     format: Format,
     data: &[u8],
@@ -307,17 +372,23 @@ pub fn decode(
     height: i32,
     meter: &Arc<Meter>,
 ) -> Result<Image, DecodeError> {
-    crate::contain(|| decode_uncontained(format, data, width, height, meter))
+    decode_with(format, data, width, height, meter, fill)
 }
 
-fn decode_uncontained(
+/// The pixels the loop writes: `out` is `w` x `h` pixels of the format's
+/// mode, and `data` holds at least mip 0 ([`plan()`]).
+type Fill = fn(Format, &[u8], usize, usize, &mut [u8]);
+
+/// [`decode()`] with its pixel loop, which a test may replace.
+fn decode_with(
     format: Format,
     data: &[u8],
     width: i32,
     height: i32,
     meter: &Arc<Meter>,
+    fill: Fill,
 ) -> Result<Image, DecodeError> {
-    let plan = admit(format, data.len(), width, height)?;
+    let plan = plan(format, data.len(), width, height)?;
     let (Ok(out_len), Ok(w), Ok(h)) = (
         usize::try_from(plan.output_bytes),
         usize::try_from(plan.width),
@@ -330,30 +401,45 @@ fn decode_uncontained(
         });
     };
     // The empty image of a side of 0 charges and allocates nothing.
-    let (mut pixels, charge) = MeteredVec::<u8>::with_capacity(meter, out_len)?.into_parts();
-    // Within the capacity just reserved: no allocation.
-    pixels.resize(out_len, 0);
-    match format {
-        _ if out_len == 0 => {}
-        Format::Rgb24 | Format::Rgba32 => raw(data, w, h, &mut pixels, plan.mode),
-        Format::Dxt1 => bcn::decode(bcn::Kind::Bc1, data, w, h, &mut pixels),
-        Format::Dxt5 => bcn::decode(bcn::Kind::Bc3, data, w, h, &mut pixels),
-        Format::Bc7 => bcn::decode(bcn::Kind::Bc7, data, w, h, &mut pixels),
-    }
-    Ok(Image {
+    let (pixels, charge) = MeteredVec::<u8>::with_capacity(meter, out_len)?.into_parts();
+    let mut image = Image {
         mode: plan.mode,
         width: plan.width,
         height: plan.height,
         pixels,
         charge,
-    })
+    };
+    // Within the capacity just reserved: no allocation.
+    image.pixels.resize(out_len, 0);
+    if out_len > 0 {
+        let out = &mut image.pixels;
+        // Unwind-safe: on a panic `image` is dropped, never read, so its
+        // half-written pixels are seen by no one; `data` is only read.
+        crate::contain(AssertUnwindSafe(|| {
+            fill(format, data, w, h, out);
+            Ok(())
+        }))?;
+    }
+    Ok(image)
+}
+
+/// The format's decoder.
+fn fill(format: Format, data: &[u8], w: usize, h: usize, out: &mut [u8]) {
+    match format {
+        Format::Rgb24 | Format::Rgba32 => raw(data, w, h, out, format.mode()),
+        Format::Dxt1 => bcn::decode(bcn::Kind::Bc1, data, w, h, out),
+        Format::Dxt5 => bcn::decode(bcn::Kind::Bc3, data, w, h, out),
+        Format::Bc7 => bcn::decode(bcn::Kind::Bc7, data, w, h, out),
+    }
 }
 
 /// The length Pillow 9.5.0's `BCn` decoder sees for `len` bytes of data:
 /// `ImagingBcnDecode` passes its `Py_ssize_t` length to `decode_bcn`'s `int`
-/// parameter, which keeps its low 32 bits as a signed value (gcc's
-/// conversion on x86-64), so the decode loop (`while (bytes >= SZ)`) runs
-/// on that. Below 2 GiB it is the length itself.
+/// parameter, a conversion GCC and Clang both make modulo 2^32, then as a
+/// signed value (C leaves an out-of-range conversion to the
+/// implementation), so the decode loop (`while (bytes >= SZ)`) runs on the
+/// length's low 32 bits, none when bit 31 is set. Below 2 GiB it is the
+/// length itself.
 #[must_use]
 pub fn bcn_length(len: usize) -> u64 {
     let low = u64::try_from(len).unwrap_or(u64::MAX) & 0xFFFF_FFFF;
@@ -380,58 +466,4 @@ fn raw(data: &[u8], w: usize, h: usize, out: &mut [u8], mode: Mode) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{DecodeError, Format, MAX_PIXELS, admit, plan};
-
-    /// The data checks come before the bound, as UnityPy's come before any
-    /// bound it could have: a texture past [`MAX_PIXELS`] with short data is
-    /// short; with enough, too large.
-    #[test]
-    fn short_data_is_short_whatever_the_size() {
-        let (w, h) = (16388, 16384);
-        assert!(matches!(
-            plan(Format::Dxt1, w, h),
-            Err(DecodeError::TooLarge { .. })
-        ));
-        let needed = 4097 * 4096 * 8;
-        assert_eq!(
-            admit(Format::Dxt1, needed - 1, w, h),
-            Err(DecodeError::NotEnoughData {
-                needed: 4097 * 4096 * 8,
-                got: 4097 * 4096 * 8 - 1,
-            })
-        );
-        assert_eq!(
-            admit(Format::Dxt1, needed, w, h),
-            Err(DecodeError::TooLarge {
-                pixels: 16388 * 16384,
-                max: MAX_PIXELS
-            })
-        );
-        assert!(matches!(
-            admit(Format::Rgba32, 3, i32::MAX, i32::MAX),
-            Err(DecodeError::NotEnoughData { got: 3, .. })
-        ));
-    }
-
-    /// Pillow's `BCn` decoder sees the data's length as a C `int`.
-    #[cfg(target_pointer_width = "64")]
-    #[test]
-    fn a_bcn_length_past_2_gib_is_read_as_its_low_32_bits() {
-        // A 4x4 BC7 texture needs 16 bytes.
-        assert!(admit(Format::Bc7, (1 << 32) + 16, 4, 4).is_ok());
-        assert_eq!(
-            admit(Format::Bc7, (1 << 32) + 15, 4, 4),
-            Err(DecodeError::NotEnoughData {
-                needed: 16,
-                got: (1 << 32) + 15
-            })
-        );
-        assert!(matches!(
-            admit(Format::Bc7, (1 << 31) + 16, 4, 4),
-            Err(DecodeError::NotEnoughData { .. })
-        ));
-        // The raw formats read the whole length.
-        assert!(admit(Format::Rgba32, (1 << 31) + 16, 2, 2).is_ok());
-    }
-}
+mod tests;

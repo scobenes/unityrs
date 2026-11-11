@@ -13,23 +13,28 @@ UnityPy's own converter on raw bytes: `Texture2DConverter.get_image_from_texture
 that holds the case's data, size, format, platform and platform blob (`fake_texture`). It runs `parse_image_data`
 (export/Texture2DConverter.py:254-320), which pads a block format to whole 4x4 blocks, calls Pillow's `bcn` or
 `raw` decoder through `Image.frombytes` with UnityPy's arguments (`CONV_TABLE`, export/Texture2DConverter.py:491-516),
-crops back to size and flips top to bottom. A case records its parameters and data, then either the image (its
-mode, size, the sha256 of `tobytes()`, and those bytes as hex for an image of at most 64 pixels) or the exception
-(its type and message).
+crops back to size and flips top to bottom. A case records its parameters, its data and the data's sha256
+(`data_sha256`, which the replay checks before it decodes), then either the image (its mode, size, the sha256 of
+`tobytes()`, and those bytes as hex for an image of at most 64 pixels) or the exception (its type and message).
 
 A case's data is `{"seed": S, "len": N}`, the first N bytes of SplitMix64 seeded with S (each output little-endian,
 as `unityrs_testkit::rng::Rng` makes them), with `"bc7_mode": M` when every 16-byte block's first byte is then set
-so the block is BC7 mode M (its lowest set bit is bit M; 8 is the all-zero byte, Pillow's degenerate block), or
-`{"hex": ...}` for a crafted block. The cases cover each format at every size class (1x1, 2x2, 3x5, 4x4, 7x9,
-non-power-of-two, wide and tall), data that is exact, short, empty and long (a mip chain after mip 0), zero and
-negative sides, every BC7 mode, the BC1 and BC3 endpoint orders, and the platforms whose textures UnityPy neither
-deswizzles nor byte-swaps (an Xbox 360 RGBA32 or RGB24 texture, a Switch texture with one GOB per block).
+so the block is BC7 mode M (its lowest set bit is bit M; 8 is the all-zero byte, Pillow's degenerate block),
+`{"hex": ...}` for a crafted block, or `{"zeros": N}`, N zero bytes. The cases cover each format at every size class
+(1x1, 2x2, 3x5, 4x4, 7x9, non-power-of-two, wide and tall), data that is exact, short, empty and long (a mip chain
+after mip 0), zero and negative sides (a negative one with empty data, one byte and more), every BC7 mode, the BC1
+and BC3 endpoint orders, the platforms whose textures UnityPy neither deswizzles nor byte-swaps (an Xbox 360 RGBA32
+or RGB24 texture, a Switch texture with one GOB per block), and two limits of Pillow's: its raw decoder's width cap
+(`MemoryError` before the data is read, one byte given, at the cap and one past it) and its crop's
+decompression-bomb check (the fewest pixels past it, 59 x 3,033,169 as DXT1, from about 91 MB of zeros; Pillow
+decodes the padded image, about 728 MB, before the crop raises).
 
 **select.json.** The selection of docs/BATCH_SPEC.md section 3 (E66), computed with UnityPy's own predicates:
 `TextureFormat(value).name` (or the decimal value where the enum has none), `TextureSwizzler.is_switch_swizzled`
 (helpers/TextureSwizzler.py:121-127) and `Texture2DConverter.XBOX_SWAP_FORMATS` (export/Texture2DConverter.py:569),
 in the order a skip takes: a side of 0 (`parse_image_data` returns its empty image before it reads the format,
-export/Texture2DConverter.py:265-266), then the format, then the platform.
+export/Texture2DConverter.py:265-266), then the format, then the platform. The predicates are measured; the order
+between the skips is this script's rule (`selected`), BATCH_SPEC's, which the replay checks the crate keeps.
 """
 
 from __future__ import annotations
@@ -88,6 +93,8 @@ def bc7_mode(data: bytes, mode: int) -> bytes:
 def build(spec: dict) -> bytes:
     if "hex" in spec:
         return bytes.fromhex(spec["hex"])
+    if "zeros" in spec:
+        return bytes(spec["zeros"])
     data = splitmix(spec["seed"], spec["len"])
     return bc7_mode(data, spec["bc7_mode"]) if "bc7_mode" in spec else data
 
@@ -148,6 +155,7 @@ def case(name: str, fmt: TextureFormat, width: int, height: int, spec: dict, pla
         "platform": platform,
         "blob": blob,
         "data": spec,
+        "data_sha256": hashlib.sha256(data).hexdigest(),
         **outcome(data, width, height, int(fmt), platform, blob),
     }
 
@@ -195,7 +203,8 @@ def length_cases() -> list[dict]:
 
 
 def side_cases() -> list[dict]:
-    """A side of 0 (the empty RGBA image, whatever the data, empty included) and negative sides."""
+    """A side of 0 (the empty RGBA image, whatever the data, empty included) and negative sides, with empty data
+    (UnityPy's empty-data check comes first), one byte (Pillow's size checks come before its data check) and more."""
     out = []
     for fmt in FIVE:
         for w, h in ((0, 0), (0, 4), (4, 0), (0, -3), (-3, 0), (0, 1)):
@@ -204,6 +213,21 @@ def side_cases() -> list[dict]:
         for w, h in ((-1, 4), (4, -1), (-3, -3), (-4, 4), (4, -4), (-1, -1), (-8, 8), (-2, 1), (1, -3)):
             name = f"{fmt.name}-{w}x{h}-negative"
             out.append(case(name, fmt, w, h, seeded(name, 1024)))
+            out.append(case(f"{name}-empty", fmt, w, h, {"hex": ""}))
+            out.append(case(f"{name}-one", fmt, w, h, seeded(f"{name}-one", 1)))
+    return out
+
+
+def limit_cases() -> list[dict]:
+    """Pillow's raw decoder's width cap (`MemoryError` past `INT_MAX / bits - 7`, before it reads the data, so one
+    byte is given: at the cap the data check speaks), and its crop's decompression-bomb check at the fewest pixels
+    past twice `MAX_IMAGE_PIXELS`, 59 x 3,033,169 (178,956,971), as DXT1 with all of mip 0's bytes, zero."""
+    out = []
+    for fmt, cap in ((TF.RGBA32, 67_108_856), (TF.RGB24, 89_478_478)):
+        for w in (cap, cap + 1):
+            out.append(case(f"{fmt.name}-{w}x1-one", fmt, w, 1, {"hex": "00"}))
+    w, h = 59, 3_033_169
+    out.append(case(f"DXT1-{w}x{h}-zeros", TF.DXT1, w, h, {"zeros": needed(TF.DXT1, w, h)}))
     return out
 
 
@@ -318,6 +342,7 @@ def names() -> list[dict]:
 def fixtures() -> dict[str, dict]:
     meta = {"generator": "tools/fixtures/texture.py", "unitypy": UnityPy.__version__, "pillow": PIL.__version__}
     decode = size_cases() + length_cases() + side_cases() + bc7_cases() + crafted_cases() + platform_cases()
+    decode += limit_cases()
     return {
         "decode.json": {**meta, "hex_pixels": HEX_PIXELS, "cases": decode},
         "select.json": {
