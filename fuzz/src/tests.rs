@@ -1,13 +1,14 @@
 //! The harness's own tests: each value case reaches the memory bound it
-//! picks, and the `lz4` check takes the block-output bound for the limit it
-//! is, at the bound and on each side of it.
+//! picks, the `lz4` check takes the block-output bound for the limit it
+//! is, at the bound and on each side of it, and the `texture` check takes
+//! each answer a decode gives under each of its meters.
 
 use std::sync::Arc;
 
 use unityrs_core::error::LimitKind;
 use unityrs_core::limits::{ChargeError, Meter};
 use unityrs_core::walk::{ReadCtx, ReadDetail, ReadError, boost, python};
-use unityrs_testkit::fuzz::{Row, TreeCase, lz4_case};
+use unityrs_testkit::fuzz::{Row, TextureCase, TreeCase, lz4_case};
 
 use crate::Case;
 
@@ -110,4 +111,33 @@ fn the_lz4_check_takes_the_block_output_bound_for_the_limit_it_is() {
             crate::lz4::check(&lz4_case(declared, &block_of(len)));
         }
     }
+}
+
+/// The `texture` check passes an image, a meter's refusal below the charge,
+/// and each of the plan's errors as the decode's, under each meter.
+#[test]
+fn the_texture_check_takes_each_answer_under_each_meter() {
+    let case = |format, width, height, meter, data: Vec<u8>| {
+        TextureCase {
+            format,
+            width,
+            height,
+            platform: 19,
+            meter,
+            blob: None,
+            data,
+        }
+        .encode()
+    };
+    for meter in 0..4 {
+        // An image (refused under the charge less 1), short data, past the
+        // bound, Pillow's raw width cap, a side of 0, empty data.
+        crate::texture::check(&case(4, 2, 2, meter, vec![7; 16]));
+        crate::texture::check(&case(25, 5, 3, meter, vec![1; 31]));
+        crate::texture::check(&case(10, 16385, 16384, meter, vec![1; 3]));
+        crate::texture::check(&case(4, 67_108_857, 1, meter, vec![1]));
+        crate::texture::check(&case(1000, 0, 4, meter, Vec::new()));
+        crate::texture::check(&case(12, 4, 4, meter, Vec::new()));
+    }
+    crate::texture::check(&[]);
 }

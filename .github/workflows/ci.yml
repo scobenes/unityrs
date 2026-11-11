@@ -105,7 +105,8 @@ jobs:
           cargo +"$NIGHTLY" fetch --locked
           cargo +"$NIGHTLY" fuzz build -a
       # The harness's own tests (fuzz/src/tests.rs): each value case reaches
-      # the memory bound it picks, and the lz4 check's limits.
+      # the memory bound it picks, the lz4 check's limits, and the texture
+      # check's answers under each meter.
       - name: Test the harness
         working-directory: fuzz
         run: cargo +"$NIGHTLY" test --locked --lib
@@ -120,7 +121,7 @@ jobs:
               -print_final_stats=1 > "$RUNNER_TEMP/fuzz-$1.log" 2>&1
           }
           failed=""
-          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4"; do
+          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture"; do
             pids=""
             for t in $batch; do
               run "$t" &
@@ -130,7 +131,7 @@ jobs:
               wait "${p#*:}" || failed="$failed ${p%%:*}"
             done
           done
-          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4; do
+          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture; do
             echo "== $t"
             grep -E '^(stat::|#[0-9]+ +DONE)' "$RUNNER_TEMP/fuzz-$t.log" || true
           done
@@ -303,8 +304,9 @@ jobs:
       # tpk_build.py), as scripts/tests/test_ci_workflow.py checks, and each
       # module also runs on its own (tools/parity/tests/test_fixture_modules.py).
       # no_tree.py reads with tpk.py's synthetic TPKs, unityrs-tpk's test
-      # replays it.
-      - name: The scaffold's and packages B to E's oracle fixtures are current
+      # replays it. texture.py records UnityPy's and Pillow's texture decodes
+      # and selection, which unityrs-texture's tests replay.
+      - name: The scaffold's, packages B to E's and the texture decoders' oracle fixtures are current
         run: |
           python tools/fixtures/scaffold.py --check
           python tools/fixtures/pure_python_rules.py --check
@@ -315,6 +317,7 @@ jobs:
           python tools/fixtures/index.py --check
           python tools/fixtures/folders.py --check
           python tools/fixtures/no_tree.py --check
+          python tools/fixtures/texture.py --check
       # unityrs-imageio's X3 and X4: imageio.py records Pillow 9.5.0's PNGs,
       # whose bytes are zlib's, and the reference is zlib 1.2.13, the oracle
       # image's; under another zlib (the runner's) it compares all but the

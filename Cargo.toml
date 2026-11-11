@@ -35,3 +35,13 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# unityrs-texture's oracle replay (tests/oracle.rs) decodes and hashes images
+# of 179 million pixels: about a minute at opt-level 0, under 2 s with the
+# decoders and sha2 optimised (review round 3). Only the optimisation changes:
+# overflow checks and debug assertions stay on, as the dev profile has them.
+[profile.dev.package.unityrs-texture]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3

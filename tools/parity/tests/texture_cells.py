@@ -59,6 +59,9 @@ def tier_of(name, kind):
 
 # DESIGN.md section 5: the formats P1b implements; every other format is P3.
 P1B = ["BC7", "DXT1", "DXT5", "RGB24", "RGBA32"]
+# Their status: unityrs-texture decodes them, as crates/unityrs-texture/tests/oracle.rs checks against what
+# tools/fixtures/texture.py records (section 17's text); their Switch and Xbox 360 gates and `set_image` are P3.
+P1B_STATUS = "pinned P0; verified P1b (decoding); impl P3"
 VERSION = (2021, 3, 1, 3)  # the matrix's 2021.3.1f3
 # A platform blob that makes TextureSwizzler.is_switch_swizzled hold: 1 << 1 = 2 GOBs per block.
 GOBS = 2
@@ -420,5 +423,5 @@ def expected_row(fmt):
         "UnityPy 1.25.2": result_cell(fmt, kind, raised),
         "`set_image` writes": set_image_cell(fmt),
         "tier": tier_of(fmt.name, kind),
-        "status": "pinned P0; impl P1b" if fmt.name in P1B else "pinned P0; impl P3",
+        "status": P1B_STATUS if fmt.name in P1B else "pinned P0; impl P3",
     }

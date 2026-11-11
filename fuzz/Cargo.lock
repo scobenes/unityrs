@@ -221,6 +221,7 @@ dependencies = [
  "lz4-sys",
  "unityrs-core",
  "unityrs-testkit",
+ "unityrs-texture",
 ]
 
 [[package]]
@@ -229,6 +230,14 @@ version = "0.0.1"
 dependencies = [
  "liblzma",
  "lz4_flex",
+]
+
+[[package]]
+name = "unityrs-texture"
+version = "0.0.1"
+dependencies = [
+ "thiserror",
+ "unityrs-core",
 ]
 
 [[package]]
