@@ -31,7 +31,10 @@ Licence: MIT.
 unityrs-core ports the read and write rules of UnityPy 1.25.2 and of the
 UnityPyBoost C++ extension shipped in the same release, and unityrs-tpk
 ports UnityPy 1.25.2's UnityPy/helpers/Tpk.py (how a type-tree package is
-read and a class's type tree picked from it). The dump (unityrs-dump),
+read and a class's type tree picked from it), and unityrs-texture its
+texture rules (UnityPy/export/Texture2DConverter.py: which textures are
+decoded or skipped, and how a block format is padded, cropped and flipped
+around Pillow's decoder). The dump (unityrs-dump),
 which loads its inputs by UnityPy's rules, the test kit (unityrs-testkit),
 which writes inputs in the layouts UnityPy reads, and the P0 LZMA spike
 (unityrs-bench-lzma), which finds a bundle's blocks by BundleFile.read_fs's
@@ -69,10 +72,10 @@ from the UnityPy 1.25.2 sdist byte for byte, beside that release's LICENSE
 builds them.
 
 UnityPy 1.25.2's LICENSE follows. Each crate that holds UnityPy's code
-(unityrs-core, unityrs-tpk, unityrs-dump, unityrs-testkit and
-unityrs-bench-lzma) has it as its LICENSE-UNITYPY, is under MIT as a term of
-its own licence ("AND MIT", never only as a choice), and is listed under
-this text below.
+(unityrs-core, unityrs-tpk, unityrs-dump, unityrs-testkit, unityrs-bench-lzma
+and unityrs-texture) has it as its LICENSE-UNITYPY, is under MIT as a term of
+its own licence ("AND MIT", never only as a choice), and is listed under this
+text below.
 
 MIT License
 
@@ -240,9 +243,19 @@ and the encode loop of src/libImaging/ZipEncode.c;
 crates/unityrs-imageio/src/filter.rs translates ZipEncode.c's choice of each
 row's PNG filter; crates/unityrs-imageio/src/hash.rs translates the
 converters of convert("RGBA") in src/libImaging/Convert.c (l2rgb, la2rgb,
-rgb2rgba). Pillow's LICENSE follows: Pillow calls its licence HPND, and its
-terms are the MIT-CMU licence's. It is unityrs-imageio's LICENSE-PILLOW,
-listed under MIT-CMU below.
+rgb2rgba).
+
+crates/unityrs-texture/src/bcn.rs translates Pillow 9.5.0's BC1, BC3 and
+BC7 block decoders to Rust (src/libImaging/BcnDecode.c: decode_565,
+decode_bc1_color, decode_bc3_alpha, decode_bc7_block with the tables it
+reads, and the block order of put_block and decode_bcn), so that a DXT1,
+DXT5 or BC7 texture decodes to the pixels UnityPy 1.25.2 gets from Pillow
+9.5.0. BcnDecode.c's own header dedicates that file to the public domain
+(CC0); the port keeps the notice of the release it comes from all the same.
+
+Pillow's LICENSE follows: Pillow calls its licence HPND, and its terms are
+the MIT-CMU licence's. It is the LICENSE-PILLOW of unityrs-imageio and of
+unityrs-texture, listed under MIT-CMU below.
 
 The Python Imaging Library (PIL) is
 
@@ -359,10 +372,10 @@ Licences:
 - MIT License (MIT)
 - Python Software Foundation License 2.0 (PSF-2.0)
 - zlib License (Zlib)
+- CMU License (MIT-CMU)
 - BSD Zero Clause License (0BSD)
 - Apache License 2.0 (Apache-2.0)
 - BSD 2-Clause "Simplified" License (BSD-2-Clause)
-- CMU License (MIT-CMU)
 - Unicode License v3 (Unicode-3.0)
 
 --------------------------------------------------------------------------------
@@ -1356,6 +1369,7 @@ Used by:
 - unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-dump 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-testkit 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-tpk 0.0.1 (https://github.com/scobenes/unityrs)
 
 MIT License
@@ -1391,6 +1405,7 @@ Used by:
 - unityrs-dump 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-imageio 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-testkit 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-tpk 0.0.1 (https://github.com/scobenes/unityrs)
 
 MIT License
@@ -1668,6 +1683,7 @@ CMU License (MIT-CMU)
 
 Used by:
 - unityrs-imageio 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
 
 The Python Imaging Library (PIL) is
 

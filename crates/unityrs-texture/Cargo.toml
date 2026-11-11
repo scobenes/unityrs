@@ -1,0 +1,30 @@
+[package]
+name = "unityrs-texture"
+description = "Texture2D decoders with UnityPy 1.25.2's output: BC7, DXT1, DXT5, RGBA32 and RGB24."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# It ports UnityPy 1.25.2's texture rules (MIT: export/Texture2DConverter.py,
+# helpers/TextureSwizzler.py, enums/TextureFormat.py), whose notice is its
+# LICENSE-UNITYPY (a link to unityrs-core's), and Pillow 9.5.0's BCn block
+# decoders (MIT-CMU: src/libImaging/BcnDecode.c), whose notice is its
+# LICENSE-PILLOW; its package carries both. See THIRD_PARTY_LICENSES.
+license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU"
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# The meter every output buffer is charged to before it is allocated
+# (docs/plans/extract.md E59).
+unityrs-core = { path = "../unityrs-core" }
+thiserror = "=2.0.21"
+
+[dev-dependencies]
+unityrs-testkit = { path = "../unityrs-testkit" }
+# The oracle's fixtures (tests/fixtures/, written by tools/fixtures/texture.py)
+# are JSON, and record each image's sha256.
+serde_json = "=1.0.154"
+sha2 = "=0.11.1"
+
+[lints]
+workspace = true
