@@ -157,8 +157,9 @@ fn check(case: &Value) -> Vec<String> {
     // X3: the PNG.
     let png = encode(&image, &mut Unmetered).unwrap();
     let (bytes, ()) = png.into_parts();
+    // Its capacity; tests/charges.rs counts that it is one allocation.
     if bytes.capacity() != plan(width, height, mode).unwrap().output {
-        wrong.push("the output was not one allocation of the plan's size".to_owned());
+        wrong.push("the output's capacity is not the plan's".to_owned());
     }
     let parts = chunks(&bytes);
     let idat: Vec<&[u8]> = parts

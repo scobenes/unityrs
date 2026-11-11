@@ -8,7 +8,9 @@
 //! (`unityrs_testkit::counted`): libtest's main thread allocates beside it.
 //! The measures share the allocator's counts, so one test runs them in turn.
 //! Each charge the test grants adds to `HELD` until it is dropped, and the
-//! tally records how far the heap ever rose past what was held.
+//! tally records how far the heap ever rose past what was held. It also
+//! counts the blocks of the output's planned size and every `realloc`, so
+//! the output is seen made once, at its size, and never grown.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -16,7 +18,9 @@ use unityrs_imageio::{
     Buffer, Charger, DEFLATE_STATE_REQUESTS, EncodeError, Image, ImageError, Mode, Plan, encode,
     plan,
 };
-use unityrs_testkit::counted::{Allocator, Tally, count_this_thread, others_are_not_counted};
+use unityrs_testkit::counted::{
+    Allocator, Tally, count_this_thread, counted, others_are_not_counted,
+};
 
 /// Bytes live on the counted thread.
 static LIVE: AtomicUsize = AtomicUsize::new(0);
@@ -28,6 +32,12 @@ static HELD: AtomicUsize = AtomicUsize::new(0);
 static OVER: AtomicUsize = AtomicUsize::new(0);
 /// A request size the allocator refuses (0: none).
 static REFUSE: AtomicUsize = AtomicUsize::new(0);
+/// The size of the blocks [`OUTPUTS`] counts: the output's plan (0: none).
+static OUTPUT: AtomicUsize = AtomicUsize::new(0);
+/// Blocks of [`OUTPUT`] bytes made on the counted thread.
+static OUTPUTS: AtomicUsize = AtomicUsize::new(0);
+/// `realloc` calls on the counted thread.
+static REALLOCS: AtomicUsize = AtomicUsize::new(0);
 
 struct Watching;
 
@@ -35,7 +45,16 @@ impl Tally for Watching {
     fn refuses(&self, size: usize) -> bool {
         size != 0 && size == REFUSE.load(Ordering::Relaxed)
     }
+    fn refuses_realloc(&self, new_size: usize) -> bool {
+        if counted() {
+            REALLOCS.fetch_add(1, Ordering::Relaxed);
+        }
+        self.refuses(new_size)
+    }
     fn grew(&self, size: usize, _zeroed: bool) {
+        if size != 0 && size == OUTPUT.load(Ordering::Relaxed) {
+            OUTPUTS.fetch_add(1, Ordering::Relaxed);
+        }
         let now = LIVE.fetch_add(size, Ordering::Relaxed) + size;
         let above = now.saturating_sub(BASE.load(Ordering::Relaxed));
         let over = above.saturating_sub(HELD.load(Ordering::Relaxed));
@@ -118,6 +137,8 @@ fn noise(width: u32, height: u32, mode: Mode) -> Vec<u8> {
 fn start() {
     BASE.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
     OVER.store(0, Ordering::Relaxed);
+    OUTPUTS.store(0, Ordering::Relaxed);
+    REALLOCS.store(0, Ordering::Relaxed);
 }
 
 /// How far the heap passed the charges since [`start`], the charges held,
@@ -159,9 +180,21 @@ fn every_block_is_charged_before_it_is_allocated() {
         let image = Image::new(width, height, mode, &pixels).unwrap();
         let plan = plan(width, height, mode).unwrap();
         let mut charger = Recording::new(None);
+        OUTPUT.store(plan.output, Ordering::Relaxed);
         start();
         let png = encode(&image, &mut charger).unwrap();
+        let made = (
+            OUTPUTS.load(Ordering::Relaxed),
+            REALLOCS.load(Ordering::Relaxed),
+        );
+        OUTPUT.store(0, Ordering::Relaxed);
         let over = OVER.load(Ordering::Relaxed);
+        // The output is one allocation of its planned size, never grown.
+        assert_eq!(
+            made,
+            (1, 0),
+            "{width}x{height} {mode}: (blocks of the output's size, reallocs)"
+        );
         assert_eq!(
             over, 0,
             "{width}x{height} {mode}: {over} bytes past the charges"
