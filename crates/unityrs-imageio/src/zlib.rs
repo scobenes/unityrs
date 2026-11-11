@@ -27,6 +27,8 @@ use std::ptr;
 pub(crate) const Z_OK: c_int = 0;
 /// What `deflate(Z_FINISH)` returns once the stream is complete.
 pub(crate) const Z_STREAM_END: c_int = 1;
+/// A stream zlib does not know, or a call it cannot make on it: a bug.
+const Z_STREAM_ERROR: c_int = -2;
 /// zlib's allocator refused (here: Rust's global allocator, or the slots).
 pub(crate) const Z_MEM_ERROR: c_int = -4;
 pub(crate) const Z_NO_FLUSH: c_int = 0;
@@ -297,12 +299,14 @@ impl Deflater {
         this.stream.avail_out = c_uint::try_from(output.len()).unwrap_or(c_uint::MAX);
     }
 
-    /// One call of `deflate(flush)`; zlib's return code.
+    /// One call of `deflate(flush)`; zlib's return code, or
+    /// `Z_STREAM_ERROR`, as zlib's for a stream it does not know, when the
+    /// stream is not live: a bug, never the allocator's refusal.
     pub(crate) fn deflate(self: Pin<&mut Self>, flush: c_int) -> c_int {
         // SAFETY: as in `init`.
         let this = unsafe { self.get_unchecked_mut() };
         if !this.live {
-            return Z_MEM_ERROR;
+            return Z_STREAM_ERROR;
         }
         // SAFETY: the stream is initialised and pinned; its input and output
         // windows were set by `set_input` and `set_output`, whose callers
@@ -445,6 +449,14 @@ mod tests {
         let code = d.as_mut().init();
         assert_eq!(code, Z_MEM_ERROR);
         assert!(d.over_allowance());
+        // The stream is not live, so a deflate is a bug, not a refusal.
+        assert_eq!(d.as_mut().deflate(Z_FINISH), Z_STREAM_ERROR);
+    }
+
+    #[test]
+    fn a_stream_not_live_is_a_stream_error() {
+        let mut d = std::pin::pin!(Deflater::new());
+        assert_eq!(d.as_mut().deflate(Z_NO_FLUSH), Z_STREAM_ERROR);
     }
 
     #[test]
