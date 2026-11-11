@@ -1,0 +1,28 @@
+# zlib 1.2.13's release tarball, and the files of it vendored in
+# vendor/zlib-1.2.13/, byte for byte. The tarball is
+# https://zlib.net/fossils/zlib-1.2.13.tar.gz, the same file as the release
+# asset https://github.com/madler/zlib/releases/download/v1.2.13/zlib-1.2.13.tar.gz;
+# its sha256 is the first line below. Each other line is a member of it
+# (the folder named as in the tarball): the deflate side the build compiles
+# (build.rs), the headers it includes, and the licence and README. Nothing
+# else of the tarball is vendored, and no vendored file is changed.
+#
+# tests/zlib.rs checks that vendor/zlib-1.2.13/ holds exactly these files
+# with these hashes. scripts/zlib_vendor.py verify TARBALL checks a
+# downloaded tarball against the first line and every vendored file against
+# its member.
+b3a24de97a8fdbc835b9833169501030b8977031bcb54b3b3ac13740f846ab30  zlib-1.2.13.tar.gz
+845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243  zlib-1.2.13/LICENSE
+4bb4d5664fb9d06ef0d47e8ef73104bd545a5a57eb7241be4f2e0be904966322  zlib-1.2.13/README
+d7f1b6e44fee20ab41cef1d650776a039a2348935eb96bcbd294a4096139be3a  zlib-1.2.13/adler32.c
+ec3ff0f97858b228513027a490e4330cbb23c6fbdd24d839902ffa89854f209c  zlib-1.2.13/crc32.c
+9a2223575183ac2ee8a247f20bf3ac066e8bd0140369556bdbdffc777435749e  zlib-1.2.13/crc32.h
+4470e36709ce7d6067fa3e8f60bb7f693b055bee42a0d6655ed71faa2db87fde  zlib-1.2.13/deflate.c
+0db1b5ef79ca6ba0f508b7b8bdaa11af45c5ebe2c89ab4f1086dc22b963a52fa  zlib-1.2.13/deflate.h
+fa85c9dabe24e42ba95c702870416ff67ecc58906321f8e74b72a50dfd7df400  zlib-1.2.13/gzguts.h
+b338f1ec9038bd77efc09c8fdb99ef27b5db5b3da9baa301e544adc8e3b6a662  zlib-1.2.13/trees.c
+bb0a9d3ca88ee00c81adb7c636e73b97085f6ef1b52d6d58edbe2b6dc3adeb4d  zlib-1.2.13/trees.h
+80e0a31a4c0e6f20d1bad0df99271b9d535aa9f7c4e62f1a54f643adb4c6dfa2  zlib-1.2.13/zconf.h
+a980a0d104198a53cc220c51ab5856e5be901bec8a2d02e0ee79a8754219dfed  zlib-1.2.13/zlib.h
+8108af451ad14271065844736ac7c436275b92826c319318070508d769371428  zlib-1.2.13/zutil.c
+cf94d865e3a9162c0571cba7f74c8f01efbdca26b981d6cc9c545d4c3991e3c2  zlib-1.2.13/zutil.h

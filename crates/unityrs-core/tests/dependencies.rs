@@ -13,7 +13,8 @@
 //! The same holds for the platform: every C function a file under `crates/`
 //! declares is one every glibc the workspace builds on has
 //! ([`C_FUNCTIONS`]), so no test target fails to link on an older one
-//! (review round 13).
+//! (review round 13), or one a crate's own vendored C defines
+//! ([`VENDORED_C_FUNCTIONS`]).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -236,6 +237,19 @@ const C_FUNCTIONS: [(&str, &str); 6] = [
     ("setrlimit", "2.2.5"),
 ];
 
+/// The C functions a crate compiles from vendored source, which link
+/// whatever the glibc: zlib 1.2.13's, which unityrs-imageio's `build.rs`
+/// compiles under `Z_PREFIX`, each declared by the `z_` name that
+/// `zconf.h` gives it there, and only in the file named.
+const VENDORED_C_FUNCTIONS: [(&str, &str); 6] = [
+    ("z_crc32", "unityrs-imageio/src/zlib.rs"),
+    ("z_deflate", "unityrs-imageio/src/zlib.rs"),
+    ("z_deflateBound", "unityrs-imageio/src/zlib.rs"),
+    ("z_deflateEnd", "unityrs-imageio/src/zlib.rs"),
+    ("z_deflateInit2_", "unityrs-imageio/src/zlib.rs"),
+    ("z_zlibVersion", "unityrs-imageio/src/zlib.rs"),
+];
+
 /// The oldest glibc Rust's `*-linux-gnu` targets run on, which the
 /// workspace builds on with them.
 const OLDEST_GLIBC: [u32; 3] = [2, 17, 0];
@@ -342,6 +356,7 @@ fn every_c_function_a_crate_declares_links_on_every_glibc_it_builds_on() {
     let mut sources = Vec::new();
     files(&crates, &mut sources);
     let known: BTreeMap<&str, &str> = C_FUNCTIONS.into_iter().collect();
+    let vendored: BTreeMap<&str, &str> = VENDORED_C_FUNCTIONS.into_iter().collect();
     let mut declared = BTreeMap::new();
     for file in sources
         .iter()
@@ -355,6 +370,15 @@ fn every_c_function_a_crate_declares_links_on_every_glibc_it_builds_on() {
             path.display()
         );
         for name in c_functions(&code) {
+            if let Some(file) = vendored.get(name.as_str()) {
+                assert_eq!(
+                    path,
+                    Path::new(file),
+                    "{name} is the vendored C of {file} alone"
+                );
+                declared.entry(name).or_insert_with(|| path.to_path_buf());
+                continue;
+            }
             let Some(since) = known.get(name.as_str()) else {
                 panic!(
                     "{}: declares the C function {name}, which C_FUNCTIONS does not list: \
@@ -376,6 +400,27 @@ fn every_c_function_a_crate_declares_links_on_every_glibc_it_builds_on() {
         assert!(
             declared.contains_key(name),
             "C_FUNCTIONS lists {name}, which no file declares"
+        );
+    }
+    // Each vendored function is declared, and is one zlib's `zconf.h`
+    // renames to it under `Z_PREFIX` (`#  define deflate  z_deflate`).
+    let zconf =
+        std::fs::read_to_string(crates.join("unityrs-imageio/vendor/zlib-1.2.13/zconf.h")).unwrap();
+    let renames: Vec<Vec<&str>> = zconf
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>())
+        .filter(|w| w.len() == 4 && w[0] == "#" && w[1] == "define")
+        .collect();
+    for (name, _) in VENDORED_C_FUNCTIONS {
+        assert!(
+            declared.contains_key(name),
+            "VENDORED_C_FUNCTIONS lists {name}, which no file declares"
+        );
+        assert!(
+            renames
+                .iter()
+                .any(|w| Some(w[2]) == name.strip_prefix("z_") && w[3] == name),
+            "{name} is no function zconf.h renames under Z_PREFIX"
         );
     }
 }

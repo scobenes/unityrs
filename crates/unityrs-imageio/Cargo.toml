@@ -1,0 +1,39 @@
+[package]
+name = "unityrs-imageio"
+description = "PNG files byte-identical to Pillow 9.5.0's, over a vendored zlib 1.2.13, and the visible-pixel hash."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# The encoder ports Pillow 9.5.0's PNG writer and its RGBA conversions
+# (MIT-CMU: src/png.rs, src/filter.rs, src/hash.rs), whose notice is its
+# LICENSE-PILLOW, and the build compiles the deflate side of zlib 1.2.13
+# (Zlib), vendored pristine in vendor/zlib-1.2.13/, whose licence is its
+# LICENSE-ZLIB (a link to the vendored LICENSE). See THIRD_PARTY_LICENSES.
+license = "(MIT OR Apache-2.0) AND MIT-CMU AND Zlib"
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# The visible-pixel hash (docs/plans/extract.md E20). Already in the lock
+# through unityrs-dump.
+sha2 = "=0.11.1"
+thiserror = "=2.0.21"
+
+# Compiles the vendored zlib (build.rs). Already in the lock through
+# liblzma-sys.
+[build-dependencies]
+cc = "=1.10.0"
+
+[dev-dependencies]
+# tests/flate2_backends.rs runs `cargo metadata` through the testkit's child
+# runner; tests/charges.rs counts the heap with its allocator.
+unityrs-testkit = { path = "../unityrs-testkit" }
+# The oracle fixtures (tests/fixtures/, written by tools/fixtures/imageio.py)
+# and `cargo metadata`'s output are JSON.
+serde_json = "=1.0.154"
+# tests/pillow_png.rs inflates the IDAT stream to compare the filtered rows:
+# the same backend as unityrs-core's, so no other is built.
+flate2 = { version = "=1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+
+[lints]
+workspace = true
