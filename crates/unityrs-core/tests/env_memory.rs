@@ -7,19 +7,24 @@
 //! A counting global allocator watches the heap, in glibc chunks (the unit
 //! the meter charges; `memory_model.rs` explains why), of the test's own
 //! thread only (`unityrs_testkit::counted`): libtest's main thread allocates
-//! beside it. The tests take [`SERIAL`] in turn, since each counts into the
-//! same totals.
+//! beside it. The binary has one test, so no other test's thread is counted
+//! (CR1's review, round 2: with two, the first test's thread, still counted,
+//! allocated libtest's result send in the second's window).
 //!
 //! A dependency's load under `LoadMode::Lazy` stages every registration
-//! before it publishes the first (plan section 3.13, CR1): what the stage
-//! holds is charged before it is allocated, so the heap above the charge,
-//! at every allocation of the load, is the same for a bundle of many
-//! entries as for one of few.
+//! before it publishes the first (plan section 3.13, CR1), and the heap
+//! above the charge, at every allocation of the load, is the same for a
+//! bundle of many entries as for one of few. That catches a stage's
+//! up-front charge missed (its list's) and a per-row charge missed by more
+//! than a row's headroom (each staged new key's share is charged at once
+//! and allocated only at the commit, so the heap trails the charge); the
+//! per-row charges `prepare` makes are [`many_names`]'s to check, where each
+//! registration is published as it is charged.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use unityrs_core::budget::{
     BudgetExceeded, Counting as CountingBudget, MemoryBudget, Permit, PermitHome, Reservation,
@@ -35,9 +40,6 @@ use unityrs_testkit::env::{bundle, res_bytes};
 struct Counting;
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
-
-/// One test at a time counts.
-static SERIAL: Mutex<()> = Mutex::new(());
 
 /// What [`Watched`] has charged and not had returned.
 static CHARGED: AtomicU64 = AtomicU64::new(0);
@@ -152,15 +154,6 @@ fn many_names(counting: bool) {
     assert!(live() <= base, "counting {counting}: the heap returned");
 }
 
-#[test]
-fn many_registered_names_hold_no_more_heap_than_their_charge() {
-    let _one = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
-    count_this_thread();
-    others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
-    many_names(false);
-    many_names(true);
-}
-
 /// The most the heap above its start passes what the pool charged, at any
 /// allocation of the dependency load of a bundle of `n` entries with
 /// mixed-case names (each key a lowered copy, staged with its own copy
@@ -195,16 +188,20 @@ fn staged_over(n: usize) -> i64 {
     OVER.load(Ordering::Relaxed)
 }
 
-/// CR1's stage is paid for: a lazy dependency's load of 2,000 entries holds
-/// no more heap above its charge, at any allocation, than one of 20 (the
-/// per-load constants: the meter, the dependency's record). Linux only, as
-/// the other counting tests (CR1's review, round 1: no memory test loaded a
-/// lazy bundle as a dependency).
+/// Many registered names hold no more heap than their charge, under each
+/// budget ([`many_names`]); and CR1's stage is paid for: a lazy
+/// dependency's load of 2,000 entries holds no more heap above its charge,
+/// at any allocation, than one of 20 (the per-load constants: the meter,
+/// the dependency's record). Linux only, as the other counting tests
+/// (CR1's review, round 1: no memory test loaded a lazy bundle as a
+/// dependency). One test, so that only its thread is counted (module
+/// docs).
 #[test]
-fn a_lazy_dependency_load_holds_no_more_heap_than_its_charge_at_any_allocation() {
-    let _one = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+fn registered_names_and_a_lazy_dependency_load_hold_no_more_heap_than_their_charge() {
     count_this_thread();
     others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
+    many_names(false);
+    many_names(true);
     let few = staged_over(20);
     let many = staged_over(2000);
     assert!(
