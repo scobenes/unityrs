@@ -6,10 +6,18 @@
 //! the best so far has a non-zero sum; a later filter wins only with a
 //! sum strictly below the best, so a tie keeps the earlier one. A row's sum
 //! adds, for each filtered byte `v`, `v` below 128 and `256 - v` from 128:
-//! its distance from zero taken as signed. Pillow's sums are C `int`s; they
-//! wrap here as two's-complement `int` arithmetic compiles, which only a
-//! row of more than 2^24 bytes can reach. Average is tried only with
+//! its distance from zero taken as signed. Average is tried only with
 //! `optimize`, which Pillow's defaults leave off.
+//!
+//! Pillow's sums are C `int`s, and so are these (`i32`), wrapping as
+//! two's-complement `int` arithmetic does. A sum passes 2^31 - 1 only in a
+//! row of 2^24 bytes (16 MiB) or more, each byte adding at most 128: an
+//! `L` row 16,777,216 pixels wide, an `RGBA` one 4,194,304, both within
+//! what Pillow encodes. There C leaves the overflow undefined, so such a
+//! row's choice rests on the oracle's build wrapping it as two's
+//! complement (a compiler may instead take a sum of non-negative terms to
+//! be non-negative); no fixture holds such a row, and one would show only
+//! the bytes it held, not what the build does with others.
 
 /// The filter types (PNG's numbering), each a row's first byte.
 const NONE: u8 = 0;
