@@ -1,13 +1,21 @@
 [package]
 name = "unityrs-export"
-description = "Exports beside the textures: the NGUI atlas cutter, its crops, its JSON and its winners."
+description = "Exports beside the textures: Sprites, the NGUI atlas cutter, its crops, its JSON and its winners."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-# Written from docs/BATCH_SPEC.md and docs/plans/extract.md, not ported: the
-# reads go through unityrs-core, the decodes through unityrs-texture and the
-# PNGs through unityrs-imageio, which carry their own notices.
-license.workspace = true
+# Written from docs/BATCH_SPEC.md and docs/plans/extract.md: the reads go
+# through unityrs-core, the decodes through unityrs-texture and the PNGs
+# through unityrs-imageio, which carry their own notices. The sprites kind
+# ports UnityPy 1.25.2's Sprite rules (MIT: export/SpriteHelper.py's
+# get_image_from_sprite and get_image, its atlas lookup among them;
+# UnityPyBoost/TypeTreeHelper.cpp's parse_class, the class a read is
+# constructed as; the Sprite, SpriteRenderData, SpriteAtlasData and GUID
+# layouts of classes/generated.py; classes/PPtr.py's PPtr; and
+# files/ObjectReader.py's read, its set_object_reader), whose notice is its
+# LICENSE-UNITYPY (a link to unityrs-core's), which its package carries. See
+# THIRD_PARTY_LICENSES.
+license = "(MIT OR Apache-2.0) AND MIT"
 repository.workspace = true
 authors.workspace = true
 
@@ -15,6 +23,8 @@ authors.workspace = true
 unityrs-core = { path = "../unityrs-core" }
 # The sheets' decoders and E66's texture selection.
 unityrs-texture = { path = "../unityrs-texture" }
+# A tight Sprite's mesh (E16), which the sprite renderer masks or maps by.
+unityrs-meshdecode = { path = "../unityrs-meshdecode" }
 # The crops' and textures' PNGs, byte-equal to Pillow 9.5.0's, and the
 # visible-pixel hash.
 unityrs-imageio = { path = "../unityrs-imageio" }
@@ -25,14 +35,19 @@ thiserror = "=2.0.21"
 md5 = { package = "md-5", version = "=0.11.0", default-features = false }
 
 # Test-only (docs/plans/batch.md section 6, CR8): turns the core's test-only
-# counters on, for tests/counters.rs; CI's feature step enables it.
+# counters on, for tests/counters.rs, and this crate's own (src/testing.rs:
+# the tables' counting hasher, the tag walk's comparisons and the owner
+# join's late names, for tests/tag_walk.rs and tests/late_names.rs); CI's
+# feature step enables it.
 [features]
 test-counters = ["unityrs-core/test-counters"]
 
 [dev-dependencies]
 # The NGUI scenes, and the fixture their reference recorded
 # (tests/fixtures/ngui.json in unityrs-testkit, JSON, with sha256 digests).
-unityrs-testkit = { path = "../unityrs-testkit" }
+# The core's growth invocation ids distinguish a ladder retry from a later
+# call at the same site in sprites_bounds, in either export feature mode.
+unityrs-testkit = { path = "../unityrs-testkit", features = ["test-counters"] }
 serde_json = "=1.0.154"
 sha2 = "=0.11.1"
 # tests/ngui_fixture.rs inflates each PNG to compare its pixels: the core's

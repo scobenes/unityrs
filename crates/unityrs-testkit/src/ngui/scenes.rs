@@ -58,6 +58,8 @@ pub struct CutOptions {
     pub json_key: String,
     /// `textures.key`, when the scene exports textures.
     pub texture_key: Option<String>,
+    /// `sprites.key`, when the scene exports Sprites.
+    pub sprites_key: Option<String>,
     /// `atlases.script_classes`.
     pub script_classes: Vec<String>,
     /// `atlases.skip_name_suffixes`.
@@ -70,6 +72,7 @@ impl Default for CutOptions {
             sprite_key: "{atlas}/{sprite}.png".to_owned(),
             json_key: "{atlas}.json".to_owned(),
             texture_key: None,
+            sprites_key: None,
             script_classes: vec!["NGUIAtlas".to_owned()],
             skip_name_suffixes: Vec::new(),
         }

@@ -327,8 +327,10 @@ jobs:
       # zlib it compares all but the PNGs' digests and the one winner case
       # whose `prefer` names a PNG's MD5, and says so (the pixels, the JSON
       # and the other winners are compared); the X3, X4 and X5 step runs it
-      # again under zlib 1.2.13, comparing every field.
-      - name: The scaffold's, packages B to E's, the texture decoders', the mesh handler's and the NGUI cutter's oracle fixtures are current
+      # again under zlib 1.2.13, comparing every field. sprites.py records the
+      # engine's `sprites` kind's reference (tools/parity/sprites_kind.py) on
+      # the testkit's sprite scenes, none with an affine path, the same way.
+      - name: The scaffold's, packages B to E's, the texture decoders', the mesh handler's, the NGUI cutter's and the sprites kind's oracle fixtures are current
         run: |
           python tools/fixtures/scaffold.py --check
           python tools/fixtures/pure_python_rules.py --check
@@ -342,6 +344,7 @@ jobs:
           python tools/fixtures/texture.py --check
           python tools/fixtures/meshdecode.py --check
           python tools/fixtures/ngui.py --check
+          python tools/fixtures/sprites.py --check
       # sprite.py records UnityPy's SpriteHelper on hand-built sprites (its
       # trees and cases in sprite_build.py and sprite_cases.py, over
       # meshdecode.py's builders), into sprite.json, and numpy's solution bits
@@ -428,7 +431,7 @@ jobs:
       # whose bytes are zlib's, and the reference is zlib 1.2.13, the oracle
       # image's; under another zlib (the runner's) it compares all but the
       # PNG bytes, and says so, as ngui.py does for the NGUI cutter's
-      # reference (X5). So the step builds zlib 1.2.13 from its
+      # reference (X5) and sprites.py for the sprites kind's (X2). So the step builds zlib 1.2.13 from its
       # release tarball, sha256-pinned here and in the crate's manifest,
       # which zlib_vendor.py verify also holds the vendored files to; then
       # runs the check with the build's libz.so.1 first on the library path,
@@ -450,10 +453,11 @@ jobs:
           python -c 'import zlib; from PIL import Image; v = (Image.core.zlib_version, zlib.ZLIB_RUNTIME_VERSION); assert v == ("1.2.13",) * 2, v'
           python tools/fixtures/imageio.py --check
           python tools/fixtures/ngui.py --check
+          python tools/fixtures/sprites.py --check
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=526
+          tools/parity/tests=556
           tools/perf/tests=10
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6

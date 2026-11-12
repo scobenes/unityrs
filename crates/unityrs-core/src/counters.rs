@@ -1,7 +1,8 @@
 //! The core's side of CR8's test-only counters (`docs/plans/batch.md`
 //! section 6, CR8; `crate::testing` under the `test-counters` feature):
 //! the refusal counts, the fallible helper's mark, the load ids and the
-//! span reads, each called where the core makes the event it counts.
+//! span reads, each called where the core makes the event it counts, and
+//! the identity of each vector-growth invocation across its retries.
 //!
 //! Without the feature every item here is a unit struct with no `Drop`, or
 //! an empty function, so a field of one takes no room, a guard of one does
@@ -12,11 +13,13 @@
 
 #[cfg(feature = "test-counters")]
 pub(crate) use crate::testing::{
-    Fallible, LoadId, Origin, SpanRow, allocator, budget, limit, span_read,
+    Fallible, Growing, LoadId, Origin, SpanRow, allocator, budget, limit, span_read,
 };
 
 #[cfg(not(feature = "test-counters"))]
-pub(crate) use off::{Fallible, LoadId, Origin, SpanRow, allocator, budget, limit, span_read};
+pub(crate) use off::{
+    Fallible, Growing, LoadId, Origin, SpanRow, allocator, budget, limit, span_read,
+};
 
 #[cfg(not(feature = "test-counters"))]
 #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
@@ -43,6 +46,16 @@ mod off {
     pub(crate) struct Fallible;
 
     impl Fallible {
+        #[inline]
+        pub(crate) fn enter() -> Self {
+            Self
+        }
+    }
+
+    /// No growth invocation mark.
+    pub(crate) struct Growing;
+
+    impl Growing {
         #[inline]
         pub(crate) fn enter() -> Self {
             Self
@@ -95,6 +108,7 @@ mod off {
     // Nothing the core keeps or passes takes room.
     const _: () = assert!(
         size_of::<Fallible>() == 0
+            && size_of::<Growing>() == 0
             && size_of::<LoadId>() == 0
             && size_of::<Origin>() == 0
             && size_of::<SpanRow>() == 0

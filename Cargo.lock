@@ -825,6 +825,7 @@ dependencies = [
  "thiserror",
  "unityrs-core",
  "unityrs-imageio",
+ "unityrs-meshdecode",
  "unityrs-testkit",
  "unityrs-texture",
 ]

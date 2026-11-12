@@ -32,7 +32,11 @@ fn stream(offset: V, size: V, path: &str) -> V {
 /// whose data node is named `image data` (`image_data` to UnityPy's
 /// object), and one with an empty `image_data` and, after it, an
 /// `image data` holding its pixels, the later of the two names that clean
-/// to one key winning. Each has an atlas of its name.
+/// to one key winning; and two sheets with a field more, `assets_file` and
+/// `image`, attributes UnityPy's `Texture2D` cannot be given (a property of
+/// no setter, and one whose setter raises for a number), so each is an
+/// `UnknownObject` and its read fails, `read` (B3's review round 4, R4).
+/// Each has an atlas of its name.
 pub fn cleaned_names() -> Built {
     let spaced = set_field(
         rgba(2, "spaced", 0xB0, 1, 1),
@@ -52,6 +56,13 @@ pub fn cleaned_names() -> Built {
         V::Bytes(sheet(0xB1, 1, 1, false)),
         None,
     );
+    let assets = set_field(
+        rgba(6, "assets", 0xB2, 1, 1),
+        "assets_file",
+        V::Int(0),
+        None,
+    );
+    let image = set_field(rgba(7, "image", 0xB3, 1, 1), "image", V::Int(0), None);
     let cab = file(
         &[],
         &[
@@ -60,6 +71,10 @@ pub fn cleaned_names() -> Built {
             twice,
             by_name(4, "spaced", one_sprite()),
             by_name(5, "twice", one_sprite()),
+            assets,
+            image,
+            by_name(8, "assets", one_sprite()),
+            by_name(9, "image", one_sprite()),
         ],
         true,
     )?;

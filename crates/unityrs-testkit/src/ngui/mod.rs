@@ -27,12 +27,17 @@
 
 mod objects;
 mod scenes;
+mod sprite_atlases;
+mod sprite_objects;
+mod sprites;
 
 pub use objects::{
     PropName, atlas, format, material, material_tpk, mono_behaviour, mono_script, set_field,
     sprite, texture, texture_streamed,
 };
 pub use scenes::{AtlasScene, CutOptions, SceneBundle, failure_scenes, scenes};
+pub use sprite_atlases::{AtlasEntry, sprite_atlas};
+pub use sprites::{Mesh, SpriteSpec, packed, sprite_scenes};
 
 use crate::blob::NodeSpec;
 use crate::serialized::{ExternalSpec, ObjectSpec, SerializedSpec, TypeSpec};
@@ -86,8 +91,6 @@ pub enum BuildError {
         /// The length.
         len: usize,
     },
-    /// A class id past the `u16` an object row holds.
-    ClassId(i32),
     /// More objects than a type index (`int`) counts.
     TooManyObjects(usize),
 }
@@ -97,7 +100,6 @@ impl std::fmt::Display for BuildError {
         match self {
             Self::TooDeep { level } => write!(f, "a typetree row at level {level}, past 255"),
             Self::TooLong { len } => write!(f, "a length of {len}, past an int"),
-            Self::ClassId(id) => write!(f, "class id {id}, past a u16"),
             Self::TooManyObjects(n) => write!(f, "{n} objects, past an int"),
         }
     }
@@ -365,7 +367,9 @@ pub fn file_on(
     let mut objs = Vec::new();
     for (i, o) in objects.iter().enumerate() {
         let type_id = i32::try_from(i).map_err(|_| BuildError::TooManyObjects(objects.len()))?;
-        let class_id = u16::try_from(o.class_id).map_err(|_| BuildError::ClassId(o.class_id))?;
+        // Format 22 keeps the class id in the type record (an `int`); an
+        // object row holds one only below format 16.
+        let class_id = u16::try_from(o.class_id).unwrap_or(0);
         types.push(TypeSpec {
             class_id: o.class_id,
             nodes: nodes(0, "Base", &o.value)?,
@@ -505,8 +509,9 @@ mod tests {
             file(&[], &[object], true),
             Err(BuildError::TooDeep { level: 1_000 })
         );
-        let object = Object::new(1, 70_000, V::Int(0));
-        assert_eq!(file(&[], &[object], true), Err(BuildError::ClassId(70_000)));
+        // A class id past a `u16` (`SpriteAtlas`'s) is the type record's.
+        let object = Object::new(1, 687_078_895, V::Int(0));
+        assert!(file(&[], &[object], true).is_ok());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+// Ported from UnityPy 1.25.2 (MIT): the names a Sprite's or a Texture2D's attribute cannot be set under (UnityPyBoost/TypeTreeHelper.cpp's parse_class, classes/legacy_patch/Sprite.py, classes/legacy_patch/Texture2D.py and classes/Object.py), for SETTERLESS. See THIRD_PARTY_LICENSES.
 //! The cutter's reads (`docs/BATCH_SPEC.md` 4.4 steps 1 and 2, section 5):
 //! a MonoBehaviour's head, a peeked name, a texture's fields, an atlas's
 //! material name, each as the shape the cutter reads or a [`Class`].
@@ -161,21 +162,23 @@ fn head_rows(wide: bool) -> Vec<NodeRow> {
     ]
 }
 
-/// A peek tree kept for one type of X's own files: the type's full tree's
-/// address (the key), that tree (kept alive, so the address is not reused
-/// while the entry lives) and its peek tree, or none.
-type Peek = (usize, Arc<Tree>, Option<Arc<Tree>>);
+/// A peek tree kept for one type of X's own files, under its full tree's
+/// address: that tree (kept alive, so the address is not reused while the
+/// entry lives) and its peek tree, or none.
+type Peek = (Arc<Tree>, Option<Arc<Tree>>);
 
 /// The cutter's reader: the head trees, and the peek tree of each type of
-/// X's own files, built once, in a table sorted by the type's tree, charged
-/// to `M_X`. A dependency's tree is never kept: its peek tree is built,
+/// X's own files, built once, in a hash table by the type's tree, charged
+/// to `M_X` (one entry per type a name is read of: as many as the input
+/// has objects, so a sorted table's inserts would be quadratic, B3's review
+/// round 1). A dependency's tree is never kept: its peek tree is built,
 /// read with and dropped in the read (`docs/plans/batch.md` 2.6 step 7;
 /// review round 2's S3).
 #[derive(Debug)]
 pub struct Reader {
     wide: Arc<Tree>,
     narrow: Arc<Tree>,
-    peeks: MeteredVec<Peek>,
+    peeks: table::Map<usize, Peek>,
 }
 
 impl Reader {
@@ -192,7 +195,7 @@ impl Reader {
         Ok(Self {
             wide: tree(true)?,
             narrow: tree(false)?,
-            peeks: MeteredVec::new(meter),
+            peeks: table::Map::new(meter),
         })
     }
 
@@ -226,6 +229,30 @@ impl Reader {
     /// core call is under the refusal probe on its own (review round 2's
     /// S4).
     pub(super) fn peek_name(&mut self, seam: &Seam<'_>, obj: &ObjectRef) -> Result<RawStr, Class> {
+        self.peek(seam, obj)?.ok_or_else(shape)
+    }
+
+    /// [`Self::peek`] of an atlas's name for the sprites kind's tag walk
+    /// (`sprites::atlas`): a frame of its own, so a reservation refused in
+    /// it is named for the walk (the tests' `site`, B3's review round 5, Q6).
+    #[inline(never)]
+    pub(super) fn atlas_name(
+        &mut self,
+        seam: &Seam<'_>,
+        obj: &ObjectRef,
+    ) -> Result<Option<RawStr>, Class> {
+        self.peek(seam, obj)
+    }
+
+    /// `peek_name` as a `SpriteAtlas`'s is compared with a Sprite's tag
+    /// (`sprites::atlas`): as [`Self::peek_name`], but a type
+    /// with no name field (UnityPy's `None`) and a name that is no string
+    /// (no tag equals it) are `None`, no failure.
+    pub(super) fn peek(
+        &mut self,
+        seam: &Seam<'_>,
+        obj: &ObjectRef,
+    ) -> Result<Option<RawStr>, Class> {
         let found = seam.probe(|| obj.tree(None).map_err(|e| classify::parse(&e)))?;
         let Some(tree) = found else {
             return Err(Class::Skip(Reason::decode_error("asset_bundle")));
@@ -238,7 +265,7 @@ impl Reader {
         };
         drop(tree);
         let Some(peek) = peek else {
-            return Err(shape());
+            return Ok(None);
         };
         let parsed = seam.probe(|| {
             obj.read_typetree(Some(&peek), false)
@@ -251,10 +278,9 @@ impl Reader {
             .last()
             .map(|c| list.name(*c))
             .ok_or_else(shape)?;
-        field(&parsed, parsed.value(), key)
+        Ok(field(&parsed, parsed.value(), key)
             .and_then(string)
-            .cloned()
-            .ok_or_else(shape)
+            .cloned())
     }
 
     /// The peek tree of one of X's own types, built once and kept.
@@ -265,20 +291,13 @@ impl Reader {
         file: &SerializedFile,
     ) -> Result<Option<Arc<Tree>>, Class> {
         let at = Arc::as_ptr(tree) as usize;
-        let i = match self.peeks.as_slice().binary_search_by_key(&at, |p| p.0) {
-            Ok(i) => i,
-            Err(i) => {
-                let peek = peek_tree(seam, tree, file)?;
-                let peeks = &mut self.peeks;
-                seam.probe(|| table::push(peeks, (at, tree.clone(), peek)))?;
-                // Into its place: a rotation, no allocation.
-                if let Some(tail) = self.peeks.as_mut_slice().get_mut(i..) {
-                    tail.rotate_right(1);
-                }
-                i
-            }
-        };
-        Ok(self.peeks.as_slice().get(i).and_then(|p| p.2.clone()))
+        if let Some((_, peek)) = self.peeks.get(&at) {
+            return Ok(peek.clone());
+        }
+        let peek = peek_tree(seam, tree, file)?;
+        let peeks = &mut self.peeks;
+        seam.probe(|| peeks.insert(at, (tree.clone(), peek.clone())))?;
+        Ok(peek)
     }
 }
 
@@ -484,6 +503,12 @@ pub fn answer(t: &Texture, platform: i32) -> Result<Format, Class> {
     if t.width == 0 || t.height == 0 {
         return Err(Class::Skip(Reason::plain(Skip::EmptyImage.to_string())));
     }
+    formats(t, platform)
+}
+
+/// Section 3's answers 2 and 3 for `t`, whose sides are not 0, on
+/// `platform`: [`answer`] past its first.
+pub(crate) fn formats(t: &Texture, platform: i32) -> Result<Format, Class> {
     let Ok(format) = i32::try_from(t.format) else {
         return Err(Class::Skip(Reason::plain(format!(
             "unsupported_format({})",
@@ -543,14 +568,59 @@ pub fn integer(value: &Value) -> Option<i128> {
     }
 }
 
-/// A texture's object read (4.4 step 2): the checked read, then the shape.
+/// The names an extra field of a `Sprite` or a `Texture2D` cannot be set
+/// under, so that `parse_class`'s set of it fails and the value is an
+/// `UnknownObject` (`UnityPyBoost/TypeTreeHelper.cpp:538-574`; B3's review
+/// rounds 3 and 4, S3b and R4): the data descriptors on each class and its
+/// bases that refuse the set, `image` (`classes/legacy_patch/Sprite.py:10`,
+/// a property of no setter; `classes/legacy_patch/Texture2D.py:78`, whose
+/// setter raises for any value but an image or a path Pillow opens,
+/// `classes/legacy_patch/Texture2D.py:25-26`: unityrs refuses every value,
+/// since a sealed attempt never opens a host path a file's data names, a
+/// stated divergence, `PARITY.md`, B3's review round 5, Q2) and `assets_file`
+/// (`classes/Object.py:23-27`), and the three every instance of a class with
+/// a `__dict__` refuses, `__class__`, `__dict__` and `__weakref__` (Python's
+/// own). `SpriteAtlas` refuses the same but `image`; its class changes
+/// nothing (an atlas is used whatever its class). `test_sprites_kind.py`
+/// checks the list against UnityPy's classes.
+pub(crate) const SETTERLESS: [&[u8]; 5] = [
+    b"image",
+    b"assets_file",
+    b"__class__",
+    b"__dict__",
+    b"__weakref__",
+];
+
+/// Whether a child of `map`'s node cleans to one of [`SETTERLESS`].
+#[must_use]
+pub(crate) fn setterless(parsed: &Parsed, map: &Map) -> bool {
+    SETTERLESS.iter().any(|n| parsed.attr(map, n).is_some())
+}
+
+/// Whether a child of `map`'s node cleans to `set_object_reader`: UnityPy
+/// sets the child as an attribute of whatever class it builds, then its
+/// object read calls that attribute as the method it shadows
+/// (`files/ObjectReader.py`'s `read`), so the read fails, `read` (B3's
+/// review round 3, S3b), for any object read.
+#[must_use]
+pub(crate) fn shadowed(parsed: &Parsed, map: &Map) -> bool {
+    parsed.attr(map, b"set_object_reader").is_some()
+}
+
+/// A texture's object read (4.4 step 2): the checked read, then the class
+/// UnityPy builds (a `Texture2D` lacking a field of no default, or with a
+/// field it cannot be given, is an `UnknownObject`; one that shadows
+/// `set_object_reader` fails its read), then the shape.
 pub fn texture(obj: &ObjectRef) -> Result<Texture, Class> {
     let parsed = obj
         .read_typetree(None, true)
         .map_err(|e| classify::parse(&e))?;
     let root = parsed.value();
     let map: &Map = root.as_dict().ok_or_else(shape)?;
-    if TEXTURE_FIELDS.iter().any(|f| parsed.attr(map, f).is_none()) {
+    if TEXTURE_FIELDS.iter().any(|f| parsed.attr(map, f).is_none())
+        || setterless(&parsed, map)
+        || shadowed(&parsed, map)
+    {
         return Err(shape());
     }
     let get = |name: &[u8]| parsed.attr(map, name);

@@ -1,6 +1,6 @@
 //! 4.4's plan: names (step 1), the skips that need no pixels (step 2) and
 //! keys (step 3), in plan order: the textures kind, then the sprites kind
-//! (E17's stage, whose slot is here), then the atlases, each in object
+//! (E17's, [`super::sprites`]), then the atlases, each in object
 //! order, an atlas's JSON before its sprites. Every kind takes its keys
 //! from the engine's one table ([`super::KeyTable`]), each key checked as
 //! given and after the sink's prefix (2.3), and expands its archive member
@@ -67,6 +67,7 @@ impl AtlasPlan {
 /// The plan, and its strings' charge, dropped with it.
 pub(super) struct Planned {
     pub textures: MeteredVec<TexturePlan>,
+    pub sprites: super::sprites::Sprites,
     pub atlases: MeteredVec<AtlasPlan>,
     _strings: Charge,
 }
@@ -214,7 +215,7 @@ impl Attempt<'_> {
             Some(t) => self.plan_textures(&t)?,
             None => MeteredVec::new(meter),
         };
-        self.plan_sprites()?;
+        let sprites = self.plan_sprites(files)?;
         let mut atlases = MeteredVec::new(meter);
         let mut names: Set<RawStr> = Set::new(meter);
         for obj in behaviours.as_slice() {
@@ -228,17 +229,10 @@ impl Attempt<'_> {
         let strings = std::mem::replace(&mut self.plan_strings, Charge::zero(meter));
         Ok(Planned {
             textures,
+            sprites,
             atlases,
             _strings: strings,
         })
-    }
-
-    /// The sprites kind's stage (E17), between the textures' and the
-    /// atlases', so a sprite takes its key before an atlas does. Version 1
-    /// of the cutter plans no sprite.
-    #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-    fn plan_sprites(&mut self) -> Result<(), Failure> {
-        Ok(())
     }
 
     /// The textures kind: a texture whose name an earlier one has is
@@ -257,18 +251,31 @@ impl Attempt<'_> {
                 output: SkipOutput::Texture,
                 sprite: None,
             };
-            let name = match &t.name {
+            // A name `names` left unread (a refusal) is read again here,
+            // by its own texture (B3's review round 3, S9).
+            if let Err(c) = self.name(i) {
+                self.record(c, &site)?;
+                continue;
+            }
+            let name = match self.texs.as_slice().get(i).and_then(|t| t.name.as_ref()) {
                 Some(Ok(n)) => n.clone(),
-                Some(Err(c)) => {
-                    let c = c.clone();
+                Some(Err(k)) => {
+                    let c = k.class();
                     self.record(c, &site)?;
                     continue;
                 }
                 None => continue,
             };
-            if self.owner(name.as_bytes()) != Some(i) {
-                self.skip(&site, Reason::plain("duplicate_name"))?;
-                continue;
+            match self.owner(name.as_bytes()) {
+                Ok(Some(o)) if o == i => {}
+                Ok(_) => {
+                    self.skip(&site, Reason::plain("duplicate_name"))?;
+                    continue;
+                }
+                Err(c) => {
+                    self.record(c, &site)?;
+                    continue;
+                }
             }
             if let Err(c) = self.sheet_answer(i) {
                 self.record(c, &site)?;
@@ -412,7 +419,15 @@ impl Attempt<'_> {
             self.record(shape(), &site)?;
             return Ok(None);
         };
-        let Some((sheet, by)) = self.find_sheet(obj, &name, &parsed, &site)? else {
+        let found = match self.find_sheet(obj, &name, &parsed, &site)? {
+            Ok(found) => found,
+            // A texture's name read late was refused: the atlas's skip.
+            Err(c) => {
+                self.record(c, &site)?;
+                return Ok(None);
+            }
+        };
+        let Some((sheet, by)) = found else {
             self.skip(&site, Reason::plain("sheet_not_found"))?;
             return Ok(None);
         };
@@ -453,7 +468,7 @@ impl Attempt<'_> {
         name: &RawStr,
         parsed: &Parsed,
         site: &Site<'_>,
-    ) -> Result<Option<(usize, SheetBy)>, Failure> {
+    ) -> Result<Result<Option<(usize, SheetBy)>, Class>, Failure> {
         let seam = self.seam;
         let material = match read::material_name(&seam, &mut self.reader, obj, parsed) {
             Ok(n) => n,
@@ -466,10 +481,16 @@ impl Attempt<'_> {
             Err(c) => return Err(c.into()),
         };
         self.names()?;
-        if let Some(i) = material.and_then(|m| self.owner(m.as_bytes())) {
-            return Ok(Some((i, SheetBy::MaterialName)));
+        if let Some(m) = material {
+            match self.owner(m.as_bytes()) {
+                Ok(Some(i)) => return Ok(Ok(Some((i, SheetBy::MaterialName)))),
+                Ok(None) => {}
+                Err(c) => return Ok(Err(c)),
+            }
         }
-        Ok(self.owner(name.as_bytes()).map(|i| (i, SheetBy::AtlasName)))
+        Ok(self
+            .owner(name.as_bytes())
+            .map(|o| o.map(|i| (i, SheetBy::AtlasName))))
     }
 
     /// The atlas's crops' plan skips and every key (steps 2 and 3, E30).

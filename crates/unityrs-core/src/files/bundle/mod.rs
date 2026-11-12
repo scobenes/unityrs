@@ -541,6 +541,7 @@ impl BundleFile {
             kind: ParentKind::Bundle {
                 version_engine: self.header.version_engine.clone(),
                 bundle: self.this.clone(),
+                dir_index,
             },
             depth: self
                 .parent

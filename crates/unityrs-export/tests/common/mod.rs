@@ -8,6 +8,8 @@
 
 #![allow(dead_code)]
 
+pub mod pixels;
+
 use std::backtrace::Backtrace;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,6 +40,10 @@ pub fn options(scene: &AtlasScene) -> Options {
             .texture_key
             .as_ref()
             .map(|k| Template::parse(k, TemplateKind::Texture).unwrap()),
+        sprites_key: o
+            .sprites_key
+            .as_ref()
+            .map(|k| Template::parse(k, TemplateKind::Sprite).unwrap()),
         script_classes: o
             .script_classes
             .iter()
@@ -78,6 +84,8 @@ pub fn view_of(scene: &AtlasScene, input: &str) -> Vec<Member> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Handed {
     pub kind: OutputKind,
+    /// The object's SerializedFile and path id.
+    pub object: (String, i64),
     pub key: String,
     pub unit: Option<String>,
     pub md5: [u8; 16],
@@ -178,6 +186,15 @@ pub struct Refuse {
     pub then_site: Mutex<Option<&'static str>>,
     /// The two refusals' stacks, `<` and `>` taken out.
     pub stacks: Mutex<[String; 2]>,
+    /// The bytes the `at`-th asked for.
+    pub bytes: Mutex<u64>,
+    /// The vector-growth invocation active at the refused reservation.
+    pub growth: Mutex<Option<u64>>,
+    /// Whether the reservation after the `at`-th is recorded ([`Self::next`]).
+    follow: bool,
+    /// The reservation after the `at`-th, granted, when [`Refuse::followed`]
+    /// made the budget: its stack, bytes and growth invocation.
+    pub next: Mutex<Option<Asked>>,
 }
 
 impl fmt::Debug for Refuse {
@@ -199,6 +216,19 @@ impl Refuse {
             site: Mutex::new(None),
             then_site: Mutex::new(None),
             stacks: Mutex::new([String::new(), String::new()]),
+            bytes: Mutex::new(0),
+            growth: Mutex::new(None),
+            follow: false,
+            next: Mutex::new(None),
+        }
+    }
+
+    /// [`Refuse::new`], the reservation after the `at`-th granted and
+    /// recorded ([`Self::next`]): whether the call refused asked again.
+    pub fn followed(at: u64) -> Self {
+        Self {
+            follow: true,
+            ..Self::new(at)
         }
     }
 
@@ -224,12 +254,13 @@ impl Refuse {
 /// The frames are read with their `<` and `>` taken out, so a method reads
 /// the same under either demangling (`<a::B>::m` and `a::B::m::h..`).
 pub fn site(stack: &str) -> &'static str {
-    const SITES: [(&str, &str); 15] = [
+    const SITES: [(&str, &str); 16] = [
         ("ngui::resource::", "resource"),
         ("ngui::attempt::Attempt::image", "decode"),
         ("unityrs_imageio::png", "png"),
         ("ngui::read::Reader::head", "head"),
         ("ngui::read::Reader::peek_name", "peek_name"),
+        ("ngui::read::Reader::atlas_name", "atlas_name"),
         ("ngui::read::material_name", "material"),
         ("ngui::read::deref", "deref"),
         ("ngui::read::texture", "texture_read"),
@@ -263,8 +294,18 @@ impl MemoryBudget for Refuse {
         } else if self.then == Some(n) {
             (&self.then_site, 1)
         } else {
+            if self.follow && n == self.at + 1 {
+                let stack = Backtrace::force_capture().to_string();
+                let stack = stack.chars().filter(|c| !matches!(c, '<' | '>')).collect();
+                *self.next.lock().unwrap() =
+                    Some((stack, bytes, unityrs_core::testing::current_growth()));
+            }
             return Unbounded.try_reserve(bytes, what);
         };
+        if k == 0 {
+            *self.bytes.lock().unwrap() = bytes;
+            *self.growth.lock().unwrap() = unityrs_core::testing::current_growth();
+        }
         let stack = Backtrace::force_capture().to_string();
         *named.lock().unwrap() = Some(site(&stack));
         if let Some(s) = self.stacks.lock().unwrap().get_mut(k) {
@@ -318,6 +359,9 @@ pub struct Engine {
     pub dropping: bool,
     /// Every check, work count and sink call, in order.
     pub log: RefCell<Vec<Event>>,
+    /// Each sprite group's Sprites, as the export told them: the group's
+    /// number, the Sprite's file and its path id.
+    pub groups: RefCell<Vec<(usize, String, i64)>>,
 }
 
 impl Hooks for Engine {
@@ -330,6 +374,11 @@ impl Hooks for Engine {
 
     fn refusals(&self) -> Option<u64> {
         self.refusals.as_ref().map(|r| r.load(Ordering::Acquire))
+    }
+
+    fn sprite_group(&self, group: usize, file: &unityrs_core::RawStr, path_id: i64) {
+        let file = String::from_utf8_lossy(file.as_bytes()).into_owned();
+        self.groups.borrow_mut().push((group, file, path_id));
     }
 
     fn export_work(&self, bytes: u64) -> Result<(), Reason> {
@@ -389,6 +438,10 @@ pub fn run_in(
         engine.log.borrow_mut().push(Event::Sink(o.key.clone()));
         handed.push(Handed {
             kind: o.kind,
+            object: (
+                String::from_utf8_lossy(o.serialized_file.as_bytes()).into_owned(),
+                o.path_id,
+            ),
             key: o.key.clone(),
             unit: o.unit.clone(),
             md5: o.md5,
@@ -492,6 +545,38 @@ pub fn refused_with_stack(
     let site = *refuse.site.lock().unwrap();
     let [stack, _] = refuse.stacks.lock().unwrap().clone();
     (site, stack, got)
+}
+
+/// A reservation as the budget was asked for it: its stack (`<` and `>`
+/// taken out), its bytes, and the core's active vector-growth invocation.
+pub type Asked = (String, u64, Option<u64>);
+
+/// [`refused_with_stack`], with the refused reservation's bytes and the
+/// reservation after it, granted ([`Refuse::followed`]).
+pub fn refused_with_next(
+    s: &AtlasScene,
+    input: &str,
+    at: u64,
+) -> (
+    Option<&'static str>,
+    Asked,
+    Option<Asked>,
+    Result<Ran, Failure>,
+) {
+    let refuse = Arc::new(Refuse::followed(at));
+    let engine = Engine {
+        refusals: Some(refuse.refusals.clone()),
+        dropping: true,
+        ..Engine::default()
+    };
+    let meter = Meter::new(u64::MAX, refuse.clone(), Reservation::Input);
+    let got = run_in(s, input, FileContext::default(), &meter, &engine);
+    let site = *refuse.site.lock().unwrap();
+    let [stack, _] = refuse.stacks.lock().unwrap().clone();
+    let bytes = *refuse.bytes.lock().unwrap();
+    let growth = *refuse.growth.lock().unwrap();
+    let next = refuse.next.lock().unwrap().clone();
+    (site, (stack, bytes, growth), next, got)
 }
 
 /// Each refusal's operation and core call ([`absorbed_at`]).

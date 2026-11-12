@@ -18,6 +18,8 @@ use unityrs_core::limits::ChargeError;
 use unityrs_core::typetree::TreeError;
 use unityrs_core::walk::{ParseError, ReadDetail};
 use unityrs_core::{Error, LimitError, LimitKind, NotFound, RawStr};
+use unityrs_meshdecode::MeshError;
+use unityrs_texture::sprite::SpriteError;
 use unityrs_texture::{DecodeError, MAX_PIXELS};
 
 /// The longest detail or reason argument, in bytes (7.3's cut).
@@ -313,17 +315,64 @@ pub fn decode(e: &DecodeError) -> Class {
             )));
         }
         DecodeError::Charge(c) => return charge(c),
-        DecodeError::Panicked { payload } => {
-            // The payload is cut where the panic was contained, to
-            // `MESSAGE_BYTES` (1,024) at a code point boundary: its flag is
-            // the row's `cut`.
-            return Class::Skip(Reason {
-                reason: "decoder_panic".to_owned(),
-                detail: Some(payload.message().to_owned()),
-                cut: payload.is_cut(),
-            });
-        }
+        DecodeError::Panicked { payload } => return panicked(payload),
         _ => return internal(),
+    };
+    Class::Skip(Reason::decode_error(code))
+}
+
+/// A contained panic: `decoder_panic`, its payload the detail. The payload
+/// is cut where the panic was contained, to `MESSAGE_BYTES` (1,024) at a
+/// code point boundary: its flag is the row's `cut`.
+fn panicked(payload: &unityrs_texture::Payload) -> Class {
+    Class::Skip(Reason {
+        reason: "decoder_panic".to_owned(),
+        detail: Some(payload.message().to_owned()),
+        cut: payload.is_cut(),
+    })
+}
+
+/// A Sprite's render failure (E17; 7.3's codes for a Sprite): Pillow's
+/// refusals of a crop or an image as an atlas crop's are named
+/// (`decompression_bomb`, `crop_overflow` for a box edge outside a C
+/// `int` or `long`, `pillow_memory_error` for an image wider than Pillow
+/// makes), a field of another shape is `read` (4.4 step 2's rule), a
+/// canvas past the renderer's bound is `limit(texture_pixels, ..)` as a
+/// texture's is, a refused charge or work count is its own class, and a
+/// panic `decoder_panic`; every other exception UnityPy 1.25.2's
+/// `SpriteHelper` raises is `render`.
+#[must_use]
+pub fn render(e: &SpriteError) -> Class {
+    let code = match e {
+        SpriteError::DecompressionBomb { .. } => "decompression_bomb",
+        SpriteError::CIntOverflow { .. } | SpriteError::CLongOverflow => "crop_overflow",
+        SpriteError::ImageTooWide => "pillow_memory_error",
+        SpriteError::Malformed(_) => "read",
+        SpriteError::AtlasUnresolved => return Class::Skip(Reason::plain("bad_pointer")),
+        SpriteError::TooLarge { .. } => {
+            return Class::Skip(Reason::plain(format!(
+                "limit(texture_pixels, {MAX_PIXELS})"
+            )));
+        }
+        SpriteError::Charge(c) => return charge(c),
+        SpriteError::Panicked(payload) => return panicked(payload),
+        SpriteError::Mesh(m) => return mesh(m),
+        _ => "render",
+    };
+    Class::Skip(Reason::decode_error(code))
+}
+
+/// A Sprite's mesh failure (E16 inside E17): a refused charge or work count
+/// is its own class, a part `unityrs-meshdecode` leaves to a later phase
+/// `unsupported`, a field of another shape `read`, and every exception
+/// UnityPy's `MeshHandler` raises `render`, as the render's own.
+fn mesh(e: &MeshError) -> Class {
+    let code = match e {
+        MeshError::Charge(c) => return charge(c),
+        MeshError::Resource(e) => return error(e),
+        MeshError::Unsupported(_) => "unsupported",
+        MeshError::Malformed(_) => "read",
+        _ => "render",
     };
     Class::Skip(Reason::decode_error(code))
 }

@@ -29,18 +29,55 @@ fn an_entry_holds_its_bundle_weakly() {
     let ParentKind::Bundle {
         bundle,
         version_engine,
+        dir_index,
+        ..
     } = &parent.kind
     else {
         panic!("a bundle parent")
     };
     assert_eq!(version_engine.as_bytes(), b"2022.3.0f1");
     assert_eq!(parent.depth, 1);
+    assert_eq!(*dir_index, 0);
     assert!(bundle.upgrade().is_some());
     drop(b);
     assert!(
         bundle.upgrade().is_none(),
         "the entry does not keep its bundle alive"
     );
+}
+
+/// Two rows of one path: `files()` names only the last, and each entry
+/// knows the row it was opened from (its parent's `dir_index`).
+#[test]
+fn an_entry_knows_its_own_row_of_a_repeated_path() {
+    let entry = |path_id: i64| {
+        let mut spec = one_object(1, vec![NodeSpec::new(0, "GameObject", "Base")], vec![]);
+        spec.objects[0].path_id = path_id;
+        EntrySpec {
+            name: b"CAB-x".to_vec(),
+            data: file(&spec),
+            flags: 4,
+        }
+    };
+    let data = build(&BundleSpec {
+        entries: vec![entry(1), entry(2)],
+        ..BundleSpec::default()
+    });
+    let b = open(&data);
+    let slots = b.files();
+    assert_eq!(slots.len(), 1);
+    assert_eq!(slots[0].dir_index, 1);
+    for row in 0..2 {
+        let File::Serialized(sf) = b.entry(row).unwrap() else {
+            panic!("a SerializedFile entry")
+        };
+        let Some(ParentKind::Bundle { dir_index, .. }) = sf.parent().map(|p| &p.kind) else {
+            panic!("a bundle parent")
+        };
+        assert_eq!(*dir_index, row);
+        let path_id = i64::try_from(row).unwrap() + 1;
+        assert_eq!(sf.objects().next().map(|o| o.path_id()), Some(path_id));
+    }
 }
 
 /// The directory row of `name` patched to `offset` and `size` (blocks-info

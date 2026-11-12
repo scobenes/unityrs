@@ -10,8 +10,6 @@
 //! fixture records.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
-use std::io::Read as _;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -24,22 +22,8 @@ use unityrs_export::ngui::{self, Candidate, OutputKind, Prefer, SheetBy};
 use unityrs_testkit::ngui::{AtlasScene, scenes};
 
 mod common;
+use common::pixels::{hex, png_pixels, unhex, visible_hash};
 use common::{Ran, run};
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut s, b| {
-        write!(s, "{b:02x}").unwrap();
-        s
-    })
-}
-
-fn unhex(s: &str) -> [u8; 16] {
-    let mut out = [0u8; 16];
-    for (i, o) in out.iter_mut().enumerate() {
-        *o = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap();
-    }
-    out
-}
 
 fn fixture() -> J {
     let path =
@@ -48,82 +32,8 @@ fn fixture() -> J {
     serde_json::from_str(&text).unwrap()
 }
 
-/// A PNG's pixels: its IDAT stream inflated and unfiltered.
-fn png_pixels(png: &[u8], width: usize, height: usize, channels: usize) -> Vec<u8> {
-    let mut at = 8;
-    let mut idat = Vec::new();
-    while at + 8 <= png.len() {
-        let len = u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as usize;
-        let kind = &png[at + 4..at + 8];
-        if kind == b"IDAT" {
-            idat.extend_from_slice(&png[at + 8..at + 8 + len]);
-        }
-        at += 12 + len;
-    }
-    let mut raw = Vec::new();
-    flate2::read::ZlibDecoder::new(idat.as_slice())
-        .read_to_end(&mut raw)
-        .unwrap();
-    let stride = width * channels;
-    let mut out = vec![0u8; stride * height];
-    for y in 0..height {
-        let filter = raw[y * (stride + 1)];
-        let line = &raw[y * (stride + 1) + 1..(y + 1) * (stride + 1)];
-        for x in 0..stride {
-            let a = if x >= channels {
-                out[y * stride + x - channels]
-            } else {
-                0
-            };
-            let b = if y > 0 { out[(y - 1) * stride + x] } else { 0 };
-            let c = if x >= channels && y > 0 {
-                out[(y - 1) * stride + x - channels]
-            } else {
-                0
-            };
-            let pred = match filter {
-                0 => 0,
-                1 => a,
-                2 => b,
-                3 => a.midpoint(b),
-                4 => {
-                    let p = i16::from(a) + i16::from(b) - i16::from(c);
-                    let (pa, pb, pc) = (
-                        (p - i16::from(a)).abs(),
-                        (p - i16::from(b)).abs(),
-                        (p - i16::from(c)).abs(),
-                    );
-                    if pa <= pb && pa <= pc {
-                        a
-                    } else if pb <= pc {
-                        b
-                    } else {
-                        c
-                    }
-                }
-                f => panic!("filter {f}"),
-            };
-            out[y * stride + x] = line[x].wrapping_add(pred);
-        }
-    }
-    out
-}
-
 fn text(s: &unityrs_core::RawStr) -> String {
     String::from_utf8_lossy(s.as_bytes()).into_owned()
-}
-
-/// E20's visible-pixel hash, computed here from the PNG's own pixels: the
-/// SHA-256 of `"{width}x{height}:"` and the RGBA bytes, an RGB pixel's alpha
-/// 255 and a pixel of alpha 0 written as zeros.
-fn visible_hash(width: u32, height: u32, channels: usize, pixels: &[u8]) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(format!("{width}x{height}:").as_bytes());
-    for px in pixels.chunks(channels) {
-        let rgba = [px[0], px[1], px[2], px.get(3).copied().unwrap_or(255)];
-        h.update(if rgba[3] == 0 { [0; 4] } else { rgba });
-    }
-    h.finalize().into()
 }
 
 /// The top-level rows of `input` that are bundles, in directory order,
@@ -262,8 +172,8 @@ fn scene_rows_match(doc: &J, all: &[(&str, AtlasScene)]) {
 /// The rows the fixture test compares: outputs, skips, sheets, and nested
 /// containers (these computed apart from the reference, which records none).
 const ROWS_OUTPUTS: usize = 211;
-const ROWS_SKIPS: usize = 93;
-const ROWS_SHEETS: usize = 97;
+const ROWS_SKIPS: usize = 97;
+const ROWS_SHEETS: usize = 99;
 const ROWS_NESTED: usize = 5;
 
 #[test]

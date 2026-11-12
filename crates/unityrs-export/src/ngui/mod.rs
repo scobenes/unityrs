@@ -10,20 +10,23 @@
 //! table and the sink. [`cut`] opens every top-level row of X's own handle
 //! (section 3's selection), plans (4.4: names, the skips that need no
 //! pixels, keys, in the textures, sprites, atlases order) and exports
-//! (sheet groups, then the other textures), handing each output to the
-//! sink as it is made, and returns its skips (the plan's and the
-//! export's apart), sheets and counts. Its reasons are 9.3's, its details
-//! 7.3's, classified as 2.7's `classify` does ([`classify`]). [`winners`]
-//! decides 4.5's steps 1 to 3 over several inputs' cuts.
+//! (sprite groups, then sheet groups, then the other textures), handing
+//! each output to the sink as it is made, and returns its skips (the
+//! plan's and the export's apart), sheets and counts. Its reasons are
+//! 9.3's, its details 7.3's, classified as 2.7's `classify` does
+//! ([`classify`]). [`winners`] decides 4.5's steps 1 to 3 over several
+//! inputs' cuts. The `sprites` kind (`outputs.sprites`, E17) is
+//! [`sprites`]'s: one PNG per Sprite of the input's own files, rendered by
+//! `unityrs_texture::sprite` from a sheet that may be in a dependency.
 //!
 //! Not here, being the engine's: staging, the peek pass, the attempt's
-//! budget and its counts, the spool and a file's export work, the
-//! `sprites` kind (E17, whose stage has its slot), the records' files and
-//! 4.6.
+//! budget and its counts, the spool and a file's export work, the records'
+//! files and 4.6.
 
 mod attempt;
 pub mod classify;
 mod export;
+mod kept;
 pub mod keys;
 mod plan;
 pub mod read;
@@ -31,6 +34,7 @@ pub mod recognize;
 pub mod register;
 mod resource;
 pub mod seam;
+mod sprites;
 mod table;
 pub mod winners;
 
@@ -54,6 +58,8 @@ pub struct Options {
     pub json_key: Template,
     /// `outputs.textures.key`, when textures are exported.
     pub texture_key: Option<Template>,
+    /// `outputs.sprites.key`, when Sprites are exported (E17).
+    pub sprites_key: Option<Template>,
     /// `atlases.script_classes`.
     pub script_classes: Vec<Vec<u8>>,
     /// `atlases.skip_name_suffixes`.
@@ -86,6 +92,8 @@ pub struct View<'a> {
 pub enum OutputKind {
     /// `texture`.
     Texture,
+    /// `sprite`: a Sprite's PNG (E17).
+    Sprite,
     /// `atlas_json`.
     AtlasJson,
     /// `atlas_sprite`.
@@ -98,6 +106,7 @@ impl OutputKind {
     pub fn name(self) -> &'static str {
         match self {
             Self::Texture => "texture",
+            Self::Sprite => "sprite",
             Self::AtlasJson => "atlas_json",
             Self::AtlasSprite => "atlas_sprite",
         }
@@ -109,6 +118,8 @@ impl OutputKind {
 pub enum SkipOutput {
     /// `texture`.
     Texture,
+    /// `sprite`: a Sprite's PNG.
+    Sprite,
     /// `atlas_json`.
     AtlasJson,
     /// `atlas_sprite`.
@@ -123,6 +134,7 @@ impl SkipOutput {
     pub fn name(self) -> &'static str {
         match self {
             Self::Texture => "texture",
+            Self::Sprite => "sprite",
             Self::AtlasJson => "atlas_json",
             Self::AtlasSprite => "atlas_sprite",
             Self::Atlas => "atlas",
@@ -179,7 +191,8 @@ pub struct Output {
     pub unit: Option<String>,
     /// Its object's SerializedFile, by its stored name.
     pub serialized_file: RawStr,
-    /// Its object's path id (an atlas's outputs, the MonoBehaviour's).
+    /// Its object's path id (an atlas's outputs, the MonoBehaviour's; a
+    /// Sprite's, the Sprite's).
     pub path_id: i64,
     /// An atlas sprite's index in `mSprites`.
     pub sprite: Option<usize>,
