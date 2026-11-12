@@ -241,7 +241,21 @@ const C_FUNCTIONS: [(&str, &str); 6] = [
 /// whatever the glibc: zlib 1.2.13's, which unityrs-imageio's `build.rs`
 /// compiles under `Z_PREFIX`, each declared by the `z_` name that
 /// `zconf.h` gives it there, and only in the file named.
-const VENDORED_C_FUNCTIONS: [(&str, &str); 6] = [
+const VENDORED_C_FUNCTIONS: [(&str, &str); 9] = [
+    // The pristine zlib 1.2.13 reference under the `test-reference`
+    // feature, its entry points renamed (`zlib-match/reference.c`).
+    (
+        "unityrs_zref_deflate",
+        "unityrs-imageio/src/zlib/reference.rs",
+    ),
+    (
+        "unityrs_zref_deflateEnd",
+        "unityrs-imageio/src/zlib/reference.rs",
+    ),
+    (
+        "unityrs_zref_deflateInit2_",
+        "unityrs-imageio/src/zlib/reference.rs",
+    ),
     ("z_crc32", "unityrs-imageio/src/zlib.rs"),
     ("z_deflate", "unityrs-imageio/src/zlib.rs"),
     ("z_deflateBound", "unityrs-imageio/src/zlib.rs"),
@@ -411,16 +425,30 @@ fn every_c_function_a_crate_declares_links_on_every_glibc_it_builds_on() {
         .map(|l| l.split_whitespace().collect::<Vec<_>>())
         .filter(|w| w.len() == 4 && w[0] == "#" && w[1] == "define")
         .collect();
+    // The test-only pristine reference renames its entry points itself
+    // (`#define deflate unityrs_zref_deflate`).
+    let reference =
+        std::fs::read_to_string(crates.join("unityrs-imageio/zlib-match/reference.c")).unwrap();
+    let reference: Vec<Vec<&str>> = reference
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>())
+        .filter(|w| w.len() == 3 && w[0] == "#define")
+        .collect();
     for (name, _) in VENDORED_C_FUNCTIONS {
         assert!(
             declared.contains_key(name),
             "VENDORED_C_FUNCTIONS lists {name}, which no file declares"
         );
-        assert!(
-            renames
+        let found = match name.strip_prefix("unityrs_zref_") {
+            Some(bare) => reference.iter().any(|w| w[1] == bare && w[2] == name),
+            None => renames
                 .iter()
                 .any(|w| Some(w[2]) == name.strip_prefix("z_") && w[3] == name),
-            "{name} is no function zconf.h renames under Z_PREFIX"
+        };
+        assert!(
+            found,
+            "{name} is no function zconf.h renames under Z_PREFIX, nor one \
+             zlib-match/reference.c renames for the test-only reference"
         );
     }
 }

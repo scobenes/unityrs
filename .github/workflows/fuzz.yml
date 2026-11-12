@@ -52,6 +52,7 @@ jobs:
           - lz4
           - texture
           - meshdecode
+          - zlib_match
     env:
       TARGET: ${{ matrix.target }}
     steps:

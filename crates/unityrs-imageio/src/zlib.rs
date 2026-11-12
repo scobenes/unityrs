@@ -23,6 +23,9 @@ use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::ptr;
 
+#[cfg(feature = "test-reference")]
+pub mod reference;
+
 /// What zlib's `deflate` returns when it made progress.
 pub(crate) const Z_OK: c_int = 0;
 /// What `deflate(Z_FINISH)` returns once the stream is complete.
