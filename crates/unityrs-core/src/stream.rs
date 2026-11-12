@@ -666,7 +666,7 @@ mod tests {
         // is allocated.
         let (e, pos, used) = err(&le(&[64; 65]), 100);
         assert!(
-            matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputMemory),
+            matches!(&e, Error::Limit(l) if l.kind() == LimitKind::InputMemory),
             "{e:?}"
         );
         assert_eq!((pos, used), (4, 0));

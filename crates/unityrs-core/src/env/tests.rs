@@ -65,7 +65,7 @@ fn a_path_is_refused_above_the_bound_before_it_is_read() {
     let e = read_path(&path.0, &limits, &meter).unwrap_err();
     // The stat'd length is refused; a read to the bound would report 4097.
     assert!(
-        matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputBytes && l.value == 8192),
+        matches!(&e, Error::Limit(l) if l.kind() == LimitKind::InputBytes && l.value() == 8192),
         "{e:?}"
     );
     assert_eq!(meter.used(), 0, "nothing was read or charged");
@@ -88,7 +88,7 @@ fn a_path_is_charged_to_the_meter_and_released_with_its_bytes() {
     let small = Meter::new(1000, Arc::new(Unbounded), Reservation::Input);
     let e = read_path(&path.0, &limits, &small).unwrap_err();
     assert!(
-        matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputMemory),
+        matches!(&e, Error::Limit(l) if l.kind() == LimitKind::InputMemory),
         "{e:?}"
     );
 }
@@ -126,7 +126,7 @@ fn a_file_longer_than_its_length_says_stops_at_the_bound() {
     let meter = Meter::new(1 << 30, Arc::new(Unbounded), Reservation::Input);
     let e = read_path(std::path::Path::new("/dev/zero"), &limits, &meter).unwrap_err();
     assert!(
-        matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputBytes),
+        matches!(&e, Error::Limit(l) if l.kind() == LimitKind::InputBytes),
         "{e:?}"
     );
     assert_eq!(meter.used(), 0);

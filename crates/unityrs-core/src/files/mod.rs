@@ -225,11 +225,11 @@ pub fn parse_file_with_reader(
         && let Some(p) = &parent
         && p.depth > ctx.limits.max_container_depth
     {
-        return Err(Error::Limit(LimitError {
-            kind: LimitKind::ContainerDepth,
-            value: u64::from(p.depth),
-            max: u64::from(ctx.limits.max_container_depth),
-        }));
+        return Err(Error::Limit(LimitError::refused(
+            LimitKind::ContainerDepth,
+            u64::from(p.depth),
+            u64::from(ctx.limits.max_container_depth),
+        )));
     }
     Ok(match kind {
         ParsedAs::SerializedFile => File::Serialized(SerializedFile::parse_with_reader(

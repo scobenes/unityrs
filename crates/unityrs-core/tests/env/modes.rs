@@ -280,7 +280,7 @@ fn difference_d_overlapping_spans_stop_lazy_at_the_meter() {
     lazy.load(src("d.bundle", &data)).unwrap();
     let stopped = lazy.objects().find_map(Result::err).expect("a read stops");
     assert!(
-        matches!(&stopped, Error::Limit(l) if l.kind == LimitKind::InputMemory),
+        matches!(&stopped, Error::Limit(l) if l.kind() == LimitKind::InputMemory),
         "{stopped:?}"
     );
 }

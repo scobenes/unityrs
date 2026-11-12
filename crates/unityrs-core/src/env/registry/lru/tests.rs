@@ -24,7 +24,7 @@ use std::thread::ThreadId;
 
 use super::{DepCache, Hook, HookFn, LRU_SHARE, Lru, LruNode, lock, lru_key};
 use crate::budget::Reservation;
-use crate::env::registry::{Dependency, Open, open_source};
+use crate::env::registry::{Dependency, Open, open_bare};
 use crate::env::{EnvOptions, Environment, Source};
 use crate::files::File;
 use crate::limits::Meter;
@@ -87,7 +87,7 @@ impl Rig {
             let src = source(&format!("CAB-{i}"), 64);
             let name = RawStr::from(format!("d{i}").as_str());
             let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Dependency);
-            let file = open_source(&name, &src, &meter, &ctx).unwrap();
+            let file = open_bare(&name, &src, &meter, &ctx).unwrap();
             (name, src, meter, file)
         };
         // What one holds while it is open (its charges go with the file).
@@ -105,6 +105,8 @@ impl Rig {
                     ctx: ctx.clone(),
                     cache: Arc::downgrade(&cache),
                     slots: std::sync::atomic::AtomicUsize::new(0),
+                    #[cfg(feature = "test-counters")]
+                    load_id: crate::counters::LoadId::BARE,
                 });
                 (dep, file)
             })

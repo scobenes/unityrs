@@ -89,7 +89,7 @@ fn refusal(o: &Result<Parsed, ParseError>) -> Option<LimitError> {
             detail: ReadDetail::Limit(l),
             ..
         })) => {
-            assert_eq!(l.kind, LimitKind::DecodeWork, "{o:?}");
+            assert_eq!(l.kind(), LimitKind::DecodeWork, "{o:?}");
             Some(*l)
         }
         Err(ParseError::Read(ReadError {

@@ -134,7 +134,7 @@ pub fn get_or_publish_result<'a, T, E: CellError + Clone>(
     if let Some(r) = cell.get() {
         return published(r);
     }
-    if let Some(used_up) = meter.work_used_up() {
+    if let Some(used_up) = meter.work_refused() {
         return keep(cell, meter, E::work_refused(used_up));
     }
     let scope = GrantScope::enter(meter);
@@ -307,12 +307,12 @@ mod tests {
         assert!(
             got[..4]
                 .iter()
-                .all(|r| matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory))
+                .all(|r| matches!(r, Err(Error::Limit(l)) if l.kind() == LimitKind::InputMemory))
         );
         assert!(
             got[4..]
                 .iter()
-                .all(|r| matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork))
+                .all(|r| matches!(r, Err(Error::Limit(l)) if l.kind() == LimitKind::DecodeWork))
         );
         assert!(cell.get().is_some(), "the work refusal is kept");
         assert_eq!((m.decoded(), m.used()), (1200, 0));
@@ -377,14 +377,14 @@ mod tests {
                         .join()
                         .unwrap(),
                 );
-                Err(Error::Limit(crate::error::LimitError {
-                    kind: LimitKind::InputMemory,
-                    value: 1,
-                    max: 0,
-                }))
+                Err(Error::Limit(crate::error::LimitError::refused(
+                    LimitKind::InputMemory,
+                    1,
+                    0,
+                )))
             });
             assert!(
-                matches!(got, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory),
+                matches!(got, Err(Error::Limit(l)) if l.kind() == LimitKind::InputMemory),
                 "{got:?}"
             );
         }

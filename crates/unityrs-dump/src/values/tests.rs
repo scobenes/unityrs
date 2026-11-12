@@ -337,7 +337,7 @@ fn a_cases_tree_is_charged_to_its_meter() {
         let meter = Meter::for_input(&bounded(1 << 20), unbounded(), Reservation::Input);
         let refused = case_tree(&case, &bounded(1 << 20), &meter).map(|_| ());
         assert!(
-            matches!(&refused, Err(TreeError::Charge(ChargeError::Limit(l))) if l.kind == LimitKind::InputMemory),
+            matches!(&refused, Err(TreeError::Charge(ChargeError::Limit(l))) if l.kind() == LimitKind::InputMemory),
             "{refused:?}"
         );
         assert_eq!(meter.used(), 0, "a refused tree holds nothing");

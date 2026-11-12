@@ -16,7 +16,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use super::{Dependency, Hook, Open, Slot, open_source};
+use super::{Dependency, Hook, Open, Slot, open_bare};
 use crate::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
 use crate::container::ContainerPath;
 #[cfg(test)]
@@ -369,7 +369,7 @@ fn a_drop_ranked_between_a_keys_position_and_value_is_reached_by_the_next_pass()
     let name = RawStr::new(scene.files[1].0.clone());
     let source = src(1);
     let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Dependency);
-    let file = open_source(&name, &source, &meter, &ctx).unwrap();
+    let file = open_bare(&name, &source, &meter, &ctx).unwrap();
     let dep = Arc::new(Dependency {
         name,
         source,
@@ -377,6 +377,8 @@ fn a_drop_ranked_between_a_keys_position_and_value_is_reached_by_the_next_pass()
         ctx: ctx.clone(),
         cache: Arc::downgrade(&env.inner.cache),
         slots: AtomicUsize::new(0),
+        #[cfg(feature = "test-counters")]
+        load_id: crate::counters::LoadId::BARE,
     });
     reg.register_lazy_dependency(&RawStr::from("e0"), &dep, load, &[0], &meter)
         .unwrap();

@@ -80,7 +80,7 @@ fn a_refused_growth_allocates_nothing() {
     let grew = rise(|| {
         let e = out.grow_zeroed(ASKED).unwrap_err();
         assert!(
-            matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::InputMemory),
+            matches!(&e, ChargeError::Limit(l) if l.kind() == LimitKind::InputMemory),
             "{e:?}"
         );
     });

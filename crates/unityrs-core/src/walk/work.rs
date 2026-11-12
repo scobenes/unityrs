@@ -34,7 +34,7 @@ pub const WORK_CHUNK: u64 = 64 << 10;
 /// while it is within it: what a read or a write meets before it starts and
 /// when it ends (module docs of [`super`], "Work").
 pub(crate) fn work_left(meter: &Meter) -> Result<(), LimitError> {
-    meter.work_used_up().map_or(Ok(()), Err)
+    meter.work_refused().map_or(Ok(()), Err)
 }
 
 /// The open's work of one read or one write, counted on the open's meter

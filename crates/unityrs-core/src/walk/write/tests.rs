@@ -165,11 +165,7 @@ fn errors_no_recorded_write_reaches_name_their_exceptions() {
         };
         assert_eq!(e.exceptions(), [why.exception()], "{why:?}");
     }
-    let limit = LimitError {
-        kind: LimitKind::ValueDepth,
-        value: 2,
-        max: 1,
-    };
+    let limit = LimitError::refused(LimitKind::ValueDepth, 2, 1);
     let charge = Meter::new(
         0,
         Arc::new(crate::budget::Unbounded),

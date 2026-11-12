@@ -40,7 +40,7 @@ fn a_decode_is_refused_before_it_outgrows_the_meter() {
     out.extend_from_slice(&[1; 10]).unwrap();
     let e = out.grow_zeroed(1000).unwrap_err();
     assert!(
-        matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::InputMemory),
+        matches!(&e, ChargeError::Limit(l) if l.kind() == LimitKind::InputMemory),
         "{e:?}"
     );
     assert_eq!(out.capacity(), 10, "never allocated past the meter");
@@ -76,7 +76,7 @@ fn each_block_of_a_run_has_its_own_cap() {
     out.extend_from_slice(&[0; 16]).unwrap();
     let e = out.extend_from_slice(&[0]).unwrap_err();
     assert!(
-        matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::BlockOutput && l.max == 16 && l.value == 17),
+        matches!(&e, ChargeError::Limit(l) if l.kind() == LimitKind::BlockOutput && l.max() == 16 && l.value() == 17),
         "{e:?}"
     );
     // The run's next block may write 16 more, and no further.
@@ -85,7 +85,7 @@ fn each_block_of_a_run_has_its_own_cap() {
     let before = out.capacity();
     let e = out.grow_zeroed(1).unwrap_err();
     assert!(
-        matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::BlockOutput),
+        matches!(&e, ChargeError::Limit(l) if l.kind() == LimitKind::BlockOutput),
         "{e:?}"
     );
     assert_eq!(out.capacity(), before, "the cap is checked before growing");
@@ -202,7 +202,7 @@ fn a_decode_repeated_for_every_read_stops_at_the_work_bound() {
     let mut out = DecodeBuf::new(&m, 0, 1 << 30, LimitKind::BlockOutput).unwrap();
     let e = out.grow_zeroed(1 << 20).unwrap_err();
     assert!(
-        matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::DecodeWork),
+        matches!(&e, ChargeError::Limit(l) if l.kind() == LimitKind::DecodeWork),
         "{e:?}"
     );
     assert_eq!(out.capacity(), 0, "refused before it allocated");
@@ -226,7 +226,7 @@ fn every_byte_written_counts_whatever_the_buffer_already_holds() {
         Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Input)
     };
     let is_work =
-        |e: &ChargeError| matches!(e, ChargeError::Limit(l) if l.kind == LimitKind::DecodeWork);
+        |e: &ChargeError| matches!(e, ChargeError::Limit(l) if l.kind() == LimitKind::DecodeWork);
     // W1: pre-sized from blocks-info, ten blocks of 1 MiB.
     let m = work(3 << 20);
     let mut done = 0;
@@ -363,7 +363,9 @@ fn decodes_on_several_threads_never_pass_the_work_bound_together() {
         let granted = outcomes.iter().filter(|o| o.is_ok()).count();
         let refused = outcomes
             .iter()
-            .filter(|o| matches!(o, Err(ChargeError::Limit(l)) if l.kind == LimitKind::DecodeWork))
+            .filter(
+                |o| matches!(o, Err(ChargeError::Limit(l)) if l.kind() == LimitKind::DecodeWork),
+            )
             .count();
         let held = m.used();
         let decoded = m.decoded();

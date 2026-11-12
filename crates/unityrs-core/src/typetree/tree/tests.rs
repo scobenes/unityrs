@@ -228,11 +228,7 @@ fn a_tree_deeper_than_the_limit_does_not_compile() {
     assert_eq!(Tree::compile(chain(8), &limits).unwrap().depth(), 8);
     assert_eq!(
         Tree::compile(chain(9), &limits).unwrap_err(),
-        TreeError::Limit(crate::LimitError {
-            kind: LimitKind::TreeDepth,
-            value: 9,
-            max: 8
-        })
+        TreeError::Limit(crate::LimitError::refused(LimitKind::TreeDepth, 9, 8))
     );
     // A level jump nests one level deeper, whatever the jump.
     let jump = Arc::new(

@@ -108,10 +108,12 @@ fn the_trees_of_every_release_root_together_stop_at_the_total() {
     );
     let fit = TpkProvider::MAX_TOTAL_ROWS / per_tree;
     let max = u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap();
-    let refused = |kept: usize| LimitError {
-        kind: LimitKind::Count,
-        value: u64::try_from(kept * per_tree + per_tree).unwrap(),
-        max,
+    let refused = |kept: usize| {
+        LimitError::refused(
+            LimitKind::Count,
+            u64::try_from(kept * per_tree + per_tree).unwrap(),
+            max,
+        )
     };
 
     // The last class first: refused, before anything was built.
@@ -188,10 +190,12 @@ fn a_root_whose_walk_fails_counts_the_rows_its_walk_may_build() {
         ..Blob::default()
     };
     let provider = load(&blob, &Limits::default()).unwrap();
-    let total = |value: u64| LimitError {
-        kind: LimitKind::Count,
-        value,
-        max: u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap(),
+    let total = |value: u64| {
+        LimitError::refused(
+            LimitKind::Count,
+            value,
+            u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap(),
+        )
     };
     let before = 31 * 65_535 + 301 + 2;
     assert_eq!(before, 2_031_888);
@@ -208,7 +212,7 @@ fn a_root_whose_walk_fails_counts_the_rows_its_walk_may_build() {
         1
     );
     let depth = limit_of(&provider.node_list(31, &v2()).unwrap_err());
-    assert_eq!(depth.kind, LimitKind::TreeDepth);
+    assert_eq!(depth.kind(), LimitKind::TreeDepth);
     let e = provider.node_list(32, &v2()).unwrap_err();
     assert_eq!(e.limit, None, "{e}");
     for id in 0..31 {
@@ -246,11 +250,11 @@ fn failing_walks_together_build_no_more_than_the_total() {
     let per_walk = TpkProvider::MAX_TREE_ROWS + 1;
     let walked = TpkProvider::MAX_TOTAL_ROWS / per_walk;
     assert_eq!((roots, walked), (65_519, 31), "the docs");
-    let total = LimitError {
-        kind: LimitKind::Count,
-        value: u64::try_from((walked + 1) * per_walk).unwrap(),
-        max: u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap(),
-    };
+    let total = LimitError::refused(
+        LimitKind::Count,
+        u64::try_from((walked + 1) * per_walk).unwrap(),
+        u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap(),
+    );
     let provider = load(&blob, &Limits::default()).unwrap();
     let last = ids.end - 1;
     assert_eq!(
@@ -262,7 +266,11 @@ fn failing_walks_together_build_no_more_than_the_total() {
     for id in ids {
         let e = limit_of(&provider.node_list(id, &v2()).unwrap_err());
         if usize::try_from(id).unwrap() < walked {
-            assert_eq!((e.kind, e.max), (LimitKind::Count, row_bound), "class {id}");
+            assert_eq!(
+                (e.kind(), e.max()),
+                (LimitKind::Count, row_bound),
+                "class {id}"
+            );
             own += 1;
         } else {
             assert_eq!(e, total, "class {id}");
@@ -360,11 +368,11 @@ fn one_row_past_the_bound_refuses_the_root_that_passes_it() {
     let provider = load(&roots_at_the_total(true), &Limits::default()).unwrap();
     assert_eq!(
         limit_of(&provider.node_list(32, &v2()).unwrap_err()),
-        LimitError {
-            kind: LimitKind::Count,
-            value: 2_097_153,
-            max: u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap(),
-        }
+        LimitError::refused(
+            LimitKind::Count,
+            2_097_153,
+            u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap()
+        )
     );
     let list = provider.node_list(31, &v2()).unwrap().unwrap();
     assert_eq!(list.rows().len(), 65_536);

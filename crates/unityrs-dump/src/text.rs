@@ -353,7 +353,7 @@ mod tests {
         assert_eq!(t.as_str(), "x".repeat(500));
         assert!(matches!(
             t.refused(),
-            Some(ChargeError::Limit(l)) if l.kind == LimitKind::InputMemory
+            Some(ChargeError::Limit(l)) if l.kind() == LimitKind::InputMemory
         ));
         assert!(matches!(t.finish(), Err(ChargeError::Limit(_))));
         assert_eq!(meter.used(), 0);
@@ -415,7 +415,7 @@ mod tests {
         assert!(!t.count_work(0), "a stopped text counts nothing more");
         assert!(matches!(
             t.finish(),
-            Err(ChargeError::Limit(l)) if l.kind == LimitKind::DecodeWork
+            Err(ChargeError::Limit(l)) if l.kind() == LimitKind::DecodeWork
         ));
         let mut s = String::new();
         assert!(s.count_work(usize::MAX), "a String counts nothing");

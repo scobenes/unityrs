@@ -32,6 +32,16 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      # CR8's test-only counters (docs/plans/batch.md section 6): the core,
+      # the testkit, the TPK provider and the exporters with the core's
+      # `test-counters` feature on, which each of the other three crates'
+      # features of the same name enables (the TPK's and the exporters'
+      # counter tests, tests/counters.rs, are built only under theirs). The
+      # steps above build the core without it.
+      - name: Clippy, CR8's test feature
+        run: cargo clippy -p unityrs-core -p unityrs-testkit -p unityrs-tpk -p unityrs-export --all-targets --features unityrs-testkit/test-counters,unityrs-tpk/test-counters,unityrs-export/test-counters -- -D warnings
+      - name: Test, CR8's test feature
+        run: cargo test -p unityrs-core -p unityrs-testkit -p unityrs-tpk -p unityrs-export --features unityrs-testkit/test-counters,unityrs-tpk/test-counters,unityrs-export/test-counters
       # G6 (docs/plans/core.md section 6): no stub is left in any crate.
       - name: No stub is left (G6)
         run: sh scripts/stub-check.sh

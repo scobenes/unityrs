@@ -190,6 +190,7 @@ fn failure(e: liblzma::stream::Error, produced: usize, held: u64, what: Reservat
         liblzma::stream::Error::Data => LzmaFail::Data(produced),
         liblzma::stream::Error::Options => other("LZMAError: Invalid or unsupported options"),
         liblzma::stream::Error::Mem => {
+            crate::counters::allocator(what);
             LzmaFail::Other(Error::Budget(crate::limits::refusal(held, what)))
         }
         _ => other("LZMAError: Internal error"),
@@ -325,8 +326,8 @@ fn lzma_attempt(
 fn refused_window(e: &ChargeError, want: usize, produced: usize) -> usize {
     let half = (want / 2).max(1);
     match e {
-        ChargeError::Limit(l) if l.kind == LimitKind::BlockOutput => {
-            let room = usize::try_from(l.max)
+        ChargeError::Limit(l) if l.kind() == LimitKind::BlockOutput => {
+            let room = usize::try_from(l.max())
                 .unwrap_or(usize::MAX)
                 .saturating_sub(produced);
             room.clamp(1, half)

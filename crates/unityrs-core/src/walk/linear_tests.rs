@@ -233,11 +233,9 @@ fn bounded() -> Limits {
 }
 
 /// The refusal one value past [`BOUND`] is.
-const REFUSED: LimitError = LimitError {
-    kind: LimitKind::ValuesPerObject,
-    value: BOUND + 1,
-    max: BOUND,
-};
+fn refused() -> LimitError {
+    LimitError::refused(LimitKind::ValuesPerObject, BOUND + 1, BOUND)
+}
 
 fn compile(rows: Vec<NodeRow>) -> Arc<Tree> {
     Tree::compile(
@@ -304,7 +302,7 @@ fn assert_read_refused(what: &str, got: &Result<Parsed, ReadError>, visits: u64)
         Err(ReadError {
             detail: ReadDetail::Limit(l),
             ..
-        }) => assert_eq!(*l, REFUSED, "{what}"),
+        }) => assert_eq!(*l, refused(), "{what}"),
         Err(e) => panic!("{what}: {e}, not the values bound"),
         Ok(_) => panic!("{what}: read whole, {visits} loop turns past a bound of {BOUND}"),
     }
@@ -314,7 +312,7 @@ fn assert_read_refused(what: &str, got: &Result<Parsed, ReadError>, visits: u64)
 /// A write the values bound stopped, in at most twice its turns.
 fn assert_write_refused(what: &str, got: &Result<(), WriteError>, visits: u64) {
     match got {
-        Err(WriteError::Limit(l)) => assert_eq!(*l, REFUSED, "{what}"),
+        Err(WriteError::Limit(l)) => assert_eq!(*l, refused(), "{what}"),
         Err(e) => panic!("{what}: {e}, not the values bound"),
         Ok(()) => panic!("{what}: written whole, {visits} loop turns past a bound of {BOUND}"),
     }

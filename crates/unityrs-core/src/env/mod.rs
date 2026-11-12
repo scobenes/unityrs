@@ -340,11 +340,11 @@ pub fn read_path(path: &Path, limits: &Limits, meter: &Arc<Meter>) -> Result<Byt
 pub(crate) fn within_input_bytes(len: u64, limits: &Limits) -> Result<(), Error> {
     let max = limits.max_input_bytes;
     if len > max {
-        return Err(Error::Limit(LimitError {
-            kind: LimitKind::InputBytes,
-            value: len,
+        return Err(Error::Limit(LimitError::refused(
+            LimitKind::InputBytes,
+            len,
             max,
-        }));
+        )));
     }
     Ok(())
 }

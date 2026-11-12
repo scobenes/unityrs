@@ -24,6 +24,11 @@ thiserror = "=2.0.21"
 # library's name, `md5`.
 md5 = { package = "md-5", version = "=0.11.0", default-features = false }
 
+# Test-only (docs/plans/batch.md section 6, CR8): turns the core's test-only
+# counters on, for tests/counters.rs; CI's feature step enables it.
+[features]
+test-counters = ["unityrs-core/test-counters"]
+
 [dev-dependencies]
 # The NGUI scenes, and the fixture their reference recorded
 # (tests/fixtures/ngui.json in unityrs-testkit, JSON, with sha256 digests).

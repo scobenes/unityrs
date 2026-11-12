@@ -276,7 +276,7 @@ fn every_buffer_is_charged_and_returned() {
 /// handler's.
 fn decode_work_refused(e: &SpriteError) -> bool {
     let work =
-        |c: &ChargeError| matches!(c, ChargeError::Limit(l) if l.kind == LimitKind::DecodeWork);
+        |c: &ChargeError| matches!(c, ChargeError::Limit(l) if l.kind() == LimitKind::DecodeWork);
     match e {
         SpriteError::Charge(c) | SpriteError::Mesh(MeshError::Charge(c)) => work(c),
         _ => false,

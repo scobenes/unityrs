@@ -287,3 +287,23 @@ fn an_evicted_dependency_is_opened_again_from_its_source() {
         assert_eq!(name_of(&object(&reopened, 5)), "later", "{mode:?}");
     }
 }
+
+/// A dependency's `Debug`, which `Environment::registry` prints, has no
+/// `load_id` without CR8's test feature (`docs/plans/batch.md` section 6,
+/// CR8): round 4 found the field, a unit struct without the feature,
+/// printed in every build. Under the feature it prints.
+#[test]
+fn a_dependency_prints_a_load_id_only_under_the_test_feature() {
+    let env = batch(ctx_with(Arc::new(Counting::new(u64::MAX))), 1 << 30);
+    drop(
+        env.load_dependency(src("a.bundle", &named_bundle("CAB-A", 64)))
+            .unwrap(),
+    );
+    let printed = format!("{:?}", env.registry());
+    assert!(printed.contains("Dependency {"), "{printed}");
+    assert_eq!(
+        printed.contains("load_id"),
+        cfg!(feature = "test-counters"),
+        "{printed}"
+    );
+}

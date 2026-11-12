@@ -187,8 +187,8 @@ pub fn limit_kind(kind: LimitKind) -> Option<&'static str> {
 /// its kind is the budget class's or data (2.7: both at the same sites).
 #[must_use]
 pub fn limit(l: &LimitError) -> Class {
-    match limit_kind(l.kind) {
-        Some(kind) => Class::Skip(Reason::plain(format!("limit({kind}, {})", l.max))),
+    match limit_kind(l.kind()) {
+        Some(kind) => Class::Skip(Reason::plain(format!("limit({kind}, {})", l.max()))),
         None => internal(),
     }
 }
@@ -430,11 +430,7 @@ mod tests {
             parse(&read(ReadDetail::Eof { need: 4 })),
             skip("decode_error", Some("read"))
         );
-        let depth = LimitError {
-            kind: LimitKind::ValueDepth,
-            value: 600,
-            max: 512,
-        };
+        let depth = LimitError::refused(LimitKind::ValueDepth, 600, 512);
         assert_eq!(
             parse(&read(ReadDetail::Limit(depth))),
             skip("limit(value_depth, 512)", None)

@@ -112,11 +112,7 @@ fn a_note_keeps_its_limit_refusal_whole() {
             write!(f, "{}{}", self.0, self.1)
         }
     }
-    let l = LimitError {
-        kind: unityrs_core::LimitKind::Inflate,
-        value: 5000,
-        max: 1000,
-    };
+    let l = LimitError::refused(unityrs_core::LimitKind::Inflate, 5000, 1000);
     let tail = "limit Inflate: 5000 > 1000";
     for n in [
         0,

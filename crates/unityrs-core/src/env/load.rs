@@ -11,6 +11,7 @@ use super::registry::Hook;
 use super::registry::{DepCache, Dependency, Open, Stage, open_source, with_room};
 use super::{Cab, Environment, LoadMode, RawCab, Source, source_name};
 use crate::budget::Reservation;
+use crate::counters::LoadId;
 use crate::error::{Error, Unsupported};
 use crate::files::{BundleFile, File};
 use crate::limits::{Charge, Meter};
@@ -59,7 +60,8 @@ impl Environment {
     #[allow(clippy::needless_pass_by_value)]
     pub fn load(&self, source: Source) -> Result<File, Error> {
         let name = source_name(&source);
-        let file = self.load_listed(&name, &source, false)?;
+        let load_id = LoadId::draw(&name);
+        let file = self.load_listed(&name, &source, false, load_id)?;
         self.inner.loaded.fetch_add(1, Ordering::Relaxed);
         Ok(file)
     }
@@ -69,12 +71,20 @@ impl Environment {
     /// CABs registered as a caller's, and a `files` entry under `name` at
     /// the load's number, as its registrations are ranked, charged to the
     /// file's meter (a resolver's name copied into its key first; a
-    /// caller's own name is shared, not copied).
-    fn load_listed(&self, name: &RawStr, source: &Source, resolved: bool) -> Result<File, Error> {
+    /// caller's own name is shared, not copied). Its bundle's reads are
+    /// keyed by `load_id`, which the load drew before its first attempt
+    /// (CR8's test feature, `crate::testing`).
+    fn load_listed(
+        &self,
+        name: &RawStr,
+        source: &Source,
+        resolved: bool,
+        load_id: LoadId,
+    ) -> Result<File, Error> {
         let ctx = self.ctx();
         let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
         // UnityPy environment.py:139-160
-        let file = open_source(name, source, &meter, ctx)?;
+        let file = open_source(name, source, &meter, ctx, load_id)?;
         let load = self.register_file(name, &file, &mut Target::Caller)?;
         let key = if resolved {
             RawStr::charged(name.as_bytes(), &meter)?
@@ -248,12 +258,14 @@ impl Environment {
     }
 
     fn load_dep(&self, name: &RawStr, source: &Source) -> Result<File, Error> {
+        // Drawn once, so the retry keeps it (CR8's test feature).
+        let load_id = LoadId::draw(name);
         // A pool refusal evicts the others and retries once (plan 3.13); a
         // second refusal fails naming the pool, and nothing of the
         // dependency is kept (its first attempt's charges returned with its
         // handle; under `Lazy` neither attempt published a key).
         with_room(Some(&self.inner.cache), None, || {
-            self.try_load_dep(name, source, false)
+            self.try_load_dep(name, source, false, load_id)
                 .map(|(file, ..)| file)
         })
     }
@@ -264,16 +276,19 @@ impl Environment {
     /// registrations are staged, every one charged, and the LRU's entry and
     /// the listing charged, before the first is published
     /// ([`Self::register_staged`]); under `Eager` each is published as it
-    /// is registered, and a listing is the caller's to charge.
+    /// is registered, and a listing is the caller's to charge. Its
+    /// bundle's reads, and every reopen's, are keyed by `load_id` (CR8's
+    /// test feature).
     fn try_load_dep(
         &self,
         name: &RawStr,
         source: &Source,
         listed: bool,
+        load_id: LoadId,
     ) -> Result<(File, u64, Option<Listing>), Error> {
         let ctx = self.ctx();
         let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Dependency);
-        let file = open_source(name, source, &meter, ctx)?;
+        let file = open_source(name, source, &meter, ctx, load_id)?;
         let dep = Arc::new(Dependency {
             name: name.clone(),
             source: source.clone(),
@@ -281,6 +296,8 @@ impl Environment {
             ctx: ctx.clone(),
             cache: Arc::downgrade(&self.inner.cache),
             slots: AtomicUsize::new(0),
+            #[cfg(feature = "test-counters")]
+            load_id,
         });
         let (load, room, listing) = match self.inner.options.load {
             LoadMode::Lazy => {
@@ -382,21 +399,23 @@ impl Environment {
                 &resolved
             }
         };
+        // Drawn once, so the retry keeps it (CR8's test feature).
+        let load_id = LoadId::draw(name);
         with_room(Some(&self.inner.cache), None, || match asked {
             _ if !keep => self
-                .try_load_dep(name, source, false)
+                .try_load_dep(name, source, false, load_id)
                 .map(|(file, ..)| file),
             Asked::Fallback(_)
             | Asked::Find {
                 is_dependency: false,
-            } => self.load_listed(name, source, true),
+            } => self.load_listed(name, source, true, load_id),
             Asked::Find {
                 is_dependency: true,
             } => {
                 // Under `Lazy` the listing is charged before the keys are
                 // published, so a refused one publishes none of them
                 // (`register_staged`); under `Eager`, after.
-                let (file, load, listing) = self.try_load_dep(name, source, true)?;
+                let (file, load, listing) = self.try_load_dep(name, source, true, load_id)?;
                 let listing = if let Some(listing) = listing {
                     listing
                 } else {

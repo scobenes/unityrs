@@ -171,11 +171,11 @@ fn read_too_deep(r: &Result<Parsed, ReadError>) -> bool {
         kind: ReadErrorKind::Other,
         detail: ReadDetail::Limit(l),
         ..
-    }) if l.kind == LimitKind::ValueDepth)
+    }) if l.kind() == LimitKind::ValueDepth)
 }
 
 fn write_too_deep(r: &Result<Vec<u8>, WriteError>) -> bool {
-    matches!(r, Err(WriteError::Limit(l)) if l.kind == LimitKind::ValueDepth)
+    matches!(r, Err(WriteError::Limit(l)) if l.kind() == LimitKind::ValueDepth)
 }
 
 /// Runs `f` on a thread of `stack` bytes; a stack overflow aborts the

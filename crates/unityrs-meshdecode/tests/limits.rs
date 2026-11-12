@@ -193,7 +193,7 @@ fn answer(c: &Case, meter: &Arc<Meter>) -> Result<String, MeshError> {
 
 fn kind(e: &MeshError) -> Option<LimitKind> {
     match e {
-        MeshError::Charge(ChargeError::Limit(l)) => Some(l.kind),
+        MeshError::Charge(ChargeError::Limit(l)) => Some(l.kind()),
         _ => None,
     }
 }

@@ -217,11 +217,11 @@ pub fn decode_block(
     }
     let n = u64::try_from(range.len()).unwrap_or(u64::MAX);
     if n > cap {
-        return Err(Error::Limit(LimitError {
-            kind: LimitKind::BlockOutput,
-            value: n,
-            max: cap,
-        }));
+        return Err(Error::Limit(LimitError::refused(
+            LimitKind::BlockOutput,
+            n,
+            cap,
+        )));
     }
     Ok(Some(input.slice(range)))
 }

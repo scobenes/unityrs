@@ -104,7 +104,7 @@ fn a_table_of_one_byte_externals_stops_at_the_meter() {
         &c,
     );
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::InputMemory),
         "{got:?}"
     );
     assert_eq!(parse(&data).unwrap().externals().len(), 20_000);

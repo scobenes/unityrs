@@ -118,11 +118,11 @@ impl ValueBuilder {
             self.push_list(list, addr)?
         };
         ListIx::try_from(at).map_err(|_| {
-            ChargeError::Limit(LimitError {
-                kind: LimitKind::Count,
-                value: u64::try_from(at).unwrap_or(u64::MAX),
-                max: u64::from(ListIx::MAX),
-            })
+            ChargeError::Limit(LimitError::refused(
+                LimitKind::Count,
+                u64::try_from(at).unwrap_or(u64::MAX),
+                u64::from(ListIx::MAX),
+            ))
         })
     }
 

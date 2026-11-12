@@ -284,7 +284,7 @@ fn a_boost_read_and_its_write_count_no_value_they_keep() {
         if read_at("python", default).is_ok() {
             assert!(
                 matches!(read_at("python", 0), Err(ReadError { detail: walk::ReadDetail::Limit(l), .. })
-                    if l.kind == LimitKind::ValuesPerObject),
+                    if l.kind() == LimitKind::ValuesPerObject),
                 "{name}: the pure-Python reader under 0"
             );
         }
@@ -336,11 +336,11 @@ fn a_repeated_name_can_write_more_values_than_its_read() {
             for max in [least, 11] {
                 assert_eq!(
                     write(&p, &tree, &[], Endian::Little, rules, max),
-                    Err(WriteError::Limit(LimitError {
-                        kind: LimitKind::ValuesPerObject,
-                        value: max + 1,
-                        max,
-                    })),
+                    Err(WriteError::Limit(LimitError::refused(
+                        LimitKind::ValuesPerObject,
+                        max + 1,
+                        max
+                    ))),
                     "{reader} read, {rules:?} write under {max}"
                 );
             }

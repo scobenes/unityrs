@@ -196,7 +196,7 @@ fn a_codecs_range_is_checked_and_sliced_from_its_input() {
         99,
     );
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::BlockOutput && l.value == 100),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::BlockOutput && l.value() == 100),
         "{got:?}"
     );
     // The segment was begun at the block's cap: a codec writing past it
@@ -209,7 +209,7 @@ fn a_codecs_range_is_checked_and_sliced_from_its_input() {
         49,
     );
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::BlockOutput),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::BlockOutput),
         "{got:?}"
     );
 }

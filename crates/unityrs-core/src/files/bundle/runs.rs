@@ -18,6 +18,7 @@ use super::open::known_at_open;
 use super::{BundleFile, no_entry};
 use crate::budget::DecodeBuf;
 use crate::codec::Codec;
+use crate::counters::SpanRow;
 use crate::error::{Error, LimitKind};
 use crate::limits::MeteredVec;
 use crate::once::get_or_publish_result;
@@ -190,13 +191,22 @@ impl BundleFile {
     /// blocks, which is then cached as a run), or decoded into a new run that
     /// is published. Blocks the known prefix holds are found by binary
     /// search, and a cached run by one search of the run index.
-    pub(super) fn read_span(&self, lo: u64, hi: u64) -> Result<Bytes, Error> {
-        Ok(self.read_span_pinned(lo, hi)?.0)
+    pub(super) fn read_span(&self, lo: u64, hi: u64, row: SpanRow) -> Result<Bytes, Error> {
+        Ok(self.read_span_pinned(lo, hi, row)?.0)
     }
 
     /// [`Self::read_span`], with the length of the buffer the bytes are a
-    /// slice of, which a slice of them keeps alive ([`Self::pins`]).
-    pub(super) fn read_span_pinned(&self, lo: u64, hi: u64) -> Result<(Bytes, u64), Error> {
+    /// slice of, which a slice of them keeps alive ([`Self::pins`]). Every
+    /// read of the joined data comes here, for the row its caller names
+    /// (`load_all` for the whole file), and is counted once under the test
+    /// feature (`crate::testing`, "Span reads").
+    pub(super) fn read_span_pinned(
+        &self,
+        lo: u64,
+        hi: u64,
+        row: SpanRow,
+    ) -> Result<(Bytes, u64), Error> {
+        crate::counters::span_read(&self.origin, row);
         let Some((first, first_at, buf)) = self.first_block(lo, hi)? else {
             return Ok((Bytes::new(), 0));
         };

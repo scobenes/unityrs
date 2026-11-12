@@ -219,6 +219,28 @@ enum Class {
     Comment,
 }
 
+/// The source's live code: every comment, every test item and every
+/// string and character literal blanked to spaces (newlines kept, so line
+/// numbers hold), for a scan that matches code forms and counts braces
+/// (the core's CR8 refusal scan, `counters_scan_tests.rs`).
+#[must_use]
+pub fn live_code(text: &str) -> String {
+    let live = live_text(text);
+    let class = classify(live.as_bytes());
+    let kept: Vec<u8> = live
+        .bytes()
+        .zip(class)
+        .map(|(b, c)| {
+            if c == Class::Literal && b != b'\n' {
+                b' '
+            } else {
+                b
+            }
+        })
+        .collect();
+    String::from_utf8_lossy(&kept).into_owned()
+}
+
 /// The source with every comment and every test item blanked to spaces
 /// (newlines kept, so line numbers hold).
 fn live_text(text: &str) -> String {
@@ -322,9 +344,11 @@ fn block_comment_end(b: &[u8], from: usize) -> usize {
     b.len()
 }
 
-/// `r"`, `r#"`, `br##"`…: the bytes up to the body, and the `#` count.
+/// `r"`, `r#"`, `br##"`, `cr#"`…: the bytes up to the body, and the `#`
+/// count (round 3 of CR8: a raw C string was read as two plain strings, so
+/// the code after it was blanked as a literal).
 fn raw_string_start(rest: &[u8]) -> Option<(usize, usize)> {
-    let after_b = usize::from(rest.first() == Some(&b'b'));
+    let after_b = usize::from(matches!(rest.first(), Some(b'b' | b'c')));
     if rest.get(after_b) != Some(&b'r') {
         return None;
     }
@@ -340,13 +364,14 @@ fn raw_string_start(rest: &[u8]) -> Option<(usize, usize)> {
 /// `None` for a lifetime.
 fn char_literal_len(rest: &[u8]) -> Option<usize> {
     if rest.get(1) == Some(&b'\\') {
-        // An escape: the closing quote comes within a `\u{10FFFF}`.
+        // An escape: the closing quote comes after the escaped character
+        // (which may itself be a quote, `'\''`), within a `\u{10FFFF}`.
         return rest
             .iter()
-            .skip(2)
+            .skip(3)
             .take(10)
             .position(|c| *c == b'\'')
-            .map(|n| n + 3);
+            .map(|n| n + 4);
     }
     let lead = *rest.get(1)?;
     let width = match lead {
@@ -628,6 +653,60 @@ mod tests {
         let text = "fn entry(&self) -> &File {\n    self.cell.get_or_init(|| parse(self))\n}\nstatic T: LazyLock<u8> = LazyLock::new(|| 1);\n#[cfg(test)]\nmod tests { fn t() { c.get_or_init(|| 1); } }\n";
         scan("f.rs", text, CELL_FILLS, &mut found);
         assert_eq!(found, ["f.rs:2: get_or_init", "f.rs:4: LazyLock"]);
+    }
+
+    /// `live_code` blanks every kind of literal, its braces and quotes
+    /// with it, and every comment, nested ones too, and keeps the code
+    /// around them (round 3 of CR8: a raw C string and `'\''` were
+    /// misread, so the code after them was blanked).
+    #[test]
+    fn live_code_blanks_each_literal_and_keeps_the_code_after_it() {
+        let text = concat!(
+            "let a = \"{\\\"}\";\n",
+            "let b = r#\"{\"}\"#;\n",
+            "let c = cr#\"a\"b{\"#;\n",
+            "let d = c\"{\\\"}\";\n",
+            "let e = br\"}\";\n",
+            "let f = '\\'';\n",
+            "let g = b'{';\n",
+            "let h = b'\\'';\n",
+            "let i = '\\u{7B}';\n",
+            "/* /* nested } */ { */\n",
+            "fn live<'a>(m: &'a Meter) { m.work_used_up(); }\n",
+        );
+        let code = super::live_code(text);
+        let lines: Vec<&str> = code.lines().collect();
+        assert_eq!(lines.len(), 11, "{code}");
+        for (i, l) in lines.iter().take(9).enumerate() {
+            assert!(!l.contains(['{', '}', '"', '\'', '\\']), "line {i}: {l:?}");
+            assert!(l.trim_end().ends_with(';'), "line {i}: {l:?}");
+        }
+        assert_eq!(lines[9].trim(), "");
+        assert_eq!(lines[10], "fn live<'a>(m: &'a Meter) { m.work_used_up(); }");
+    }
+
+    /// A test item mid-file is blanked, an attribute on its item's line
+    /// included, and the live code after it is kept; a raw identifier is
+    /// code.
+    #[test]
+    fn live_code_blanks_test_items_and_keeps_what_follows() {
+        let text = "fn a() { x(); }\n#[cfg(test)]\nfn t() { y(); }\nfn b() { z(); }\n\
+            #[cfg(test)] impl S { fn u() { w(); } }\n#[allow(dead_code)] impl T { fn v() {} }\n\
+            let r#fn = r#work_used_up();\n";
+        let code = super::live_code(text);
+        let lines: Vec<&str> = code.lines().map(str::trim).collect();
+        assert_eq!(
+            lines,
+            [
+                "fn a() { x(); }",
+                "",
+                "",
+                "fn b() { z(); }",
+                "",
+                "#[allow(dead_code)] impl T { fn v() {} }",
+                "let r#fn = r#work_used_up();",
+            ]
+        );
     }
 
     #[test]

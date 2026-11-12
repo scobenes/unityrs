@@ -2,7 +2,8 @@
 //!
 //! Everything here is made from scratch by the builders: never game data,
 //! never bytes copied from a real file. The builders return `Vec<u8>` and
-//! know nothing of `unityrs-core`, so core's own tests can use them.
+//! know nothing of `unityrs-core`, so core's own tests can use them (but
+//! for `core_counters`, under the `test-counters` feature alone).
 //!
 //! Owners (docs/plans/core.md section 7): [`writer`], [`rng`],
 //! [`public_types`] (the `Send + Sync` source scan the crates' tests share)
@@ -44,3 +45,11 @@ pub mod writer;
 
 pub use rng::Rng;
 pub use writer::ByteWriter;
+
+/// The core's test-only counters (`docs/plans/batch.md` section 6, CR8),
+/// under this crate's `test-counters` feature, which turns the core's
+/// feature of the same name on for every crate a test build links. The
+/// core's own unit tests read `unityrs_core::testing` instead: theirs is
+/// the core built for the test, this the library build's.
+#[cfg(feature = "test-counters")]
+pub use unityrs_core::testing as core_counters;

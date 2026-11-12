@@ -44,11 +44,11 @@ impl Writer<'_, '_> {
         self.values = self.values.saturating_add(1);
         let max = self.limits.max_values_per_object;
         if self.values > max {
-            return Err(WriteError::Limit(LimitError {
-                kind: LimitKind::ValuesPerObject,
-                value: self.values,
+            return Err(WriteError::Limit(LimitError::refused(
+                LimitKind::ValuesPerObject,
+                self.values,
                 max,
-            }));
+            )));
         }
         Ok(())
     }
@@ -82,11 +82,11 @@ impl Writer<'_, '_> {
     ) -> Result<(), WriteError> {
         self.depth = self.depth.saturating_add(1);
         if self.depth > self.max_depth {
-            let e = WriteError::Limit(LimitError {
-                kind: LimitKind::ValueDepth,
-                value: u64::from(self.depth),
-                max: u64::from(self.max_depth),
-            });
+            let e = WriteError::Limit(LimitError::refused(
+                LimitKind::ValueDepth,
+                u64::from(self.depth),
+                u64::from(self.max_depth),
+            ));
             self.depth = self.depth.saturating_sub(1);
             return Err(e);
         }

@@ -57,7 +57,7 @@ use crate::error::LimitError;
 mod meter;
 mod vec;
 
-pub use meter::{Charge, Meter};
+pub use meter::{Charge, Meter, WorkPast};
 pub(crate) use meter::{GrantScope, pool_refusals, refusal};
 pub use vec::MeteredVec;
 pub(crate) use vec::{grow_charged, grow_counted, reserve_exact, shrink_charged};

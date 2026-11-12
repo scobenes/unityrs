@@ -11,11 +11,7 @@ fn a_refused_charge_charges_nothing_and_drops_return_everything() {
     let e = meter.charge(41).unwrap_err();
     assert_eq!(
         e,
-        ChargeError::Limit(crate::LimitError {
-            kind: LimitKind::InputMemory,
-            value: 101,
-            max: 100
-        })
+        ChargeError::Limit(crate::LimitError::refused(LimitKind::InputMemory, 101, 100))
     );
     assert_eq!(meter.used(), 60, "a refused charge adds nothing");
     let mut b = meter.charge(40).unwrap();
@@ -169,7 +165,7 @@ fn a_reopen_has_its_own_work_and_shares_the_inputs_memory() {
     new.count_decode(100).unwrap();
     let e = old.count_decode(1).unwrap_err();
     assert!(
-        matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::DecodeWork),
+        matches!(&e, ChargeError::Limit(l) if l.kind() == LimitKind::DecodeWork),
         "the old open stays used up: {e:?}"
     );
     assert_eq!((old.decoded(), new.decoded()), (100, 100));
@@ -177,7 +173,7 @@ fn a_reopen_has_its_own_work_and_shares_the_inputs_memory() {
     assert_eq!(new.used(), 600);
     let e = new.charge(401).unwrap_err();
     assert!(
-        matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::InputMemory && l.value == 1001),
+        matches!(&e, ChargeError::Limit(l) if l.kind() == LimitKind::InputMemory && l.value() == 1001),
         "{e:?}"
     );
     let more = new.charge(400).unwrap();
@@ -201,8 +197,11 @@ fn work_done_is_counted_past_the_bound_and_refuses_what_follows() {
     meter.add_work(90);
     assert_eq!(meter.decoded(), 130);
     let used_up = meter.work_used_up().unwrap();
+    assert_eq!((used_up.done(), used_up.allowance()), (130, 100));
+    // The refusal the core makes of new work then.
+    let refused = meter.work_refused().unwrap();
     assert_eq!(
-        (used_up.kind, used_up.value, used_up.max),
+        (refused.kind(), refused.value(), refused.max()),
         (LimitKind::DecodeWork, 130, 100)
     );
     assert!(meter.count_decode(1).is_err());
@@ -227,7 +226,7 @@ fn decode_work_is_counted_and_never_returned() {
     meter.count_decode(40).unwrap();
     let e = meter.count_decode(1).unwrap_err();
     assert!(
-        matches!(&e, ChargeError::Limit(l) if l.kind == LimitKind::DecodeWork && l.value == 101 && l.max == 100),
+        matches!(&e, ChargeError::Limit(l) if l.kind() == LimitKind::DecodeWork && l.value() == 101 && l.max() == 100),
         "{e:?}"
     );
     assert_eq!(meter.decoded(), 100, "a refusal counts nothing");

@@ -16,7 +16,7 @@ use crate::Case;
 /// The bound a read stopped at, if a bound stopped it.
 fn bound(e: &ReadError) -> Option<LimitKind> {
     match &e.detail {
-        ReadDetail::Limit(l) | ReadDetail::Charge(ChargeError::Limit(l)) => Some(l.kind),
+        ReadDetail::Limit(l) | ReadDetail::Charge(ChargeError::Limit(l)) => Some(l.kind()),
         _ => None,
     }
 }

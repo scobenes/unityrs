@@ -217,7 +217,7 @@ fn a_write_refused_at_a_class_first_child_takes_no_pass_over_the_rest() {
         STEPS.with(|s| s.set(0));
         let (r, work) = write_under(&p, &t, limits);
         assert!(
-            matches!(&r, Err(WriteError::Limit(l)) if l.kind == LimitKind::ValuesPerObject),
+            matches!(&r, Err(WriteError::Limit(l)) if l.kind() == LimitKind::ValuesPerObject),
             "{n}: {r:?}"
         );
         (STEPS.with(std::cell::Cell::get), work)

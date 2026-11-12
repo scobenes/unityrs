@@ -310,7 +310,7 @@ mod tests {
                     script: None,
                 })
                 .map(|t| t.map(|t| t.source))
-                .map_err(|e| e.limit.map(|l| l.kind))
+                .map_err(|e| e.limit.map(|l| l.kind()))
         };
         let tree = Ok(Some(unityrs_core::provider::TreeSource::Provider("tpk")));
         assert_eq!(

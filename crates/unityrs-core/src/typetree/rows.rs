@@ -137,7 +137,7 @@ impl crate::once::CellError for TreeError {
     fn is_transient(&self) -> bool {
         match self {
             Self::Charge(c) => c.is_transient(),
-            Self::Limit(l) => l.kind == crate::LimitKind::InputMemory,
+            Self::Limit(l) => l.kind() == crate::LimitKind::InputMemory,
             Self::Empty | Self::LevelUnderflow { .. } | Self::TooManyNodes(_) => false,
         }
     }
@@ -145,7 +145,7 @@ impl crate::once::CellError for TreeError {
     fn is_meter_refusal(&self) -> bool {
         match self {
             Self::Charge(c) => c.is_meter_refusal(),
-            Self::Limit(l) => l.kind == crate::LimitKind::InputMemory,
+            Self::Limit(l) => l.kind() == crate::LimitKind::InputMemory,
             Self::Empty | Self::LevelUnderflow { .. } | Self::TooManyNodes(_) => false,
         }
     }

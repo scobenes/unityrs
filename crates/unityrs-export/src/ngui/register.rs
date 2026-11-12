@@ -214,11 +214,11 @@ fn open(
         Data::Bytes(b) => {
             let len = u64::try_from(b.len()).unwrap_or(u64::MAX);
             if len > limits.max_input_bytes {
-                let e = Error::Limit(LimitError {
-                    kind: LimitKind::InputBytes,
-                    value: len,
-                    max: limits.max_input_bytes,
-                });
+                let e = Error::Limit(LimitError::refused(
+                    LimitKind::InputBytes,
+                    len,
+                    limits.max_input_bytes,
+                ));
                 return Err(opened(&e));
             }
             let charge = seam::probe(hooks, || {

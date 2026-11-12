@@ -116,11 +116,7 @@ pub fn check(data: &[u8]) {
         let len = u64::try_from(theirs.len()).unwrap_or(u64::MAX);
         if len > limits.max_block_output {
             // PARITY.md's limits: the block-output bound, not a difference.
-            let bound = LimitError {
-                kind: LimitKind::BlockOutput,
-                value: len,
-                max: limits.max_block_output,
-            };
+            let bound = LimitError::refused(LimitKind::BlockOutput, len, limits.max_block_output);
             assert!(
                 matches!(&ours, Err(Error::Limit(l)) if *l == bound),
                 "declared {declared}: liblz4 makes {len} bytes, past the bound; unityrs {:?}",

@@ -614,11 +614,11 @@ impl Tree {
             for i in 0..n {
                 let d = depth.as_slice().get(i).copied().unwrap_or(0);
                 if d > limits.max_tree_depth {
-                    return Err(TreeError::Limit(LimitError {
-                        kind: LimitKind::TreeDepth,
-                        value: u64::from(d),
-                        max: u64::from(limits.max_tree_depth),
-                    }));
+                    return Err(TreeError::Limit(LimitError::refused(
+                        LimitKind::TreeDepth,
+                        u64::from(d),
+                        u64::from(limits.max_tree_depth),
+                    )));
                 }
                 max = max.max(d);
                 for c in list.children(id(i)) {

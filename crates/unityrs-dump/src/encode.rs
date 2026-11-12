@@ -490,7 +490,7 @@ mod tests {
             assert_eq!(encode_into(&mut sink, parsed), Ok(()));
             assert!(matches!(
                 sink.stopped,
-                Some(ChargeError::Limit(ref l)) if l.kind == LimitKind::InputMemory
+                Some(ChargeError::Limit(ref l)) if l.kind() == LimitKind::InputMemory
             ));
             assert_eq!(meter.used(), 0);
 
