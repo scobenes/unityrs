@@ -14,15 +14,25 @@ use crate::error::LimitKind;
 /// bytes it costs: an allocation the allocator refuses is a refusal of
 /// those bytes for `meter`'s reservation, counted as a budget's refusal is
 /// ([`super::refusal`]). Every allocation the core charges before it makes
-/// it reports a failure this way.
+/// it reports a failure this way, and makes it here (or, for
+/// [`shrink_charged`]'s move, as here): under the test feature this thread
+/// is marked while `try_reserve_exact` runs, and the refusal is counted
+/// (`crate::counters`; `docs/plans/batch.md` section 6, CR8), so a test's
+/// allocator can refuse this allocation alone.
 pub(crate) fn reserve_exact<T>(
     vec: &mut Vec<T>,
     additional: usize,
     charged: u64,
     meter: &Meter,
 ) -> Result<(), BudgetExceeded> {
-    vec.try_reserve_exact(additional)
-        .map_err(|_| super::refusal(charged, meter.reservation()))
+    let got = {
+        let _mark = crate::counters::Fallible::enter();
+        vec.try_reserve_exact(additional)
+    };
+    got.map_err(|_| {
+        crate::counters::allocator(meter.reservation());
+        super::refusal(charged, meter.reservation())
+    })
 }
 
 /// Gives back `vec`'s spare room, `charge` (which holds [`heap_cost`] of
@@ -46,9 +56,16 @@ pub(crate) fn shrink_charged<T>(vec: &mut Vec<T>, charge: &mut Charge) -> Result
     if super::shrink_moves(len, cap) {
         let smaller = charge.meter().charge(exact)?;
         let mut moved = Vec::new();
-        if moved.try_reserve_exact(vec.len()).is_err() {
+        // Marked and counted as `reserve_exact` is; written out here, so a
+        // build without the test feature compiles this to what it was.
+        let got = {
+            let _mark = crate::counters::Fallible::enter();
+            moved.try_reserve_exact(vec.len())
+        };
+        if got.is_err() {
             // `smaller` drops here: nothing stays charged for it.
             let what = charge.meter().reservation();
+            crate::counters::allocator(what);
             return Err(ChargeError::Budget(super::refusal(exact, what)));
         }
         moved.append(vec);
@@ -128,7 +145,7 @@ pub(crate) fn grow_counted<T>(
         match grow_exact(vec, charge, target, work) {
             Ok(()) => return Ok(()),
             // The work bound refuses the exact size as well.
-            Err(ChargeError::Limit(l)) if l.kind == LimitKind::DecodeWork => {
+            Err(ChargeError::Limit(l)) if l.kind() == LimitKind::DecodeWork => {
                 return Err(ChargeError::Limit(l));
             }
             Err(_) if target > need => target = need + (target - need) / 2,

@@ -287,15 +287,47 @@ pub enum LimitKind {
 }
 
 /// A bound that was exceeded.
+///
+/// Its fields are private, so [`Self::refused`] is the one way to build
+/// one, by the core or by a caller's code: under CR8's test feature it
+/// counts each (`crate::testing`; `docs/plans/batch.md` section 6, CR8).
+/// Round 3 made them private (a public API change, before 1.0), after
+/// three rounds each found a spelling of a literal a source scan missed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("limit {kind:?}: {value} > {max}")]
 pub struct LimitError {
+    kind: LimitKind,
+    value: u64,
+    max: u64,
+}
+
+impl LimitError {
+    /// The refusal of `kind`'s bound by `value` past `max`. Every
+    /// `LimitError` is built here, so the test feature counts each.
+    #[inline]
+    #[must_use]
+    pub fn refused(kind: LimitKind, value: u64, max: u64) -> Self {
+        crate::counters::limit(kind);
+        Self { kind, value, max }
+    }
+
     /// Which bound.
-    pub kind: LimitKind,
+    #[must_use]
+    pub const fn kind(&self) -> LimitKind {
+        self.kind
+    }
+
     /// The value that crossed it.
-    pub value: u64,
+    #[must_use]
+    pub const fn value(&self) -> u64 {
+        self.value
+    }
+
     /// The bound.
-    pub max: u64,
+    #[must_use]
+    pub const fn max(&self) -> u64 {
+        self.max
+    }
 }
 
 /// What was not found.

@@ -66,7 +66,7 @@ fn bounded(max: u64, mode: LoadMode) -> Environment {
 fn outcome(r: Result<unityrs_core::files::File, Error>) -> Result<(), u64> {
     match r {
         Ok(_) => Ok(()),
-        Err(Error::Limit(l)) if l.kind == LimitKind::InputBytes => Err(l.value),
+        Err(Error::Limit(l)) if l.kind() == LimitKind::InputBytes => Err(l.value()),
         Err(e) => panic!("{e:?}"),
     }
 }
@@ -189,7 +189,7 @@ fn a_reopened_fetch_is_refused_above_its_bytes_bound() {
         assert!(env.stats().dependencies_evicted > 0, "{mode:?}");
         let got = env.get_cab(&RawStr::from("cab-a"), &crate::unlimited());
         assert!(
-            matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::InputBytes && l.value == len + 1),
+            matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::InputBytes && l.value() == len + 1),
             "{mode:?}: {got:?}"
         );
         assert_eq!(fetch.runs.load(Ordering::Acquire), 2, "{mode:?}: fetches");

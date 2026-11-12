@@ -181,7 +181,7 @@ fn a_walk_counts_what_it_does_again_and_its_allowance_stops_it() {
         cab_b.container().unwrap();
         assert_eq!(cab_b.meter().decoded(), before, "{mode:?}: the read's work");
         match env.container().err() {
-            Some(Error::Limit(l)) => assert_eq!(l.kind, LimitKind::DecodeWork, "{mode:?}"),
+            Some(Error::Limit(l)) => assert_eq!(l.kind(), LimitKind::DecodeWork, "{mode:?}"),
             other => panic!("{mode:?}: {other:?}"),
         }
         assert!(env.stats().preload_dereferences < m * (m + 1), "{mode:?}");

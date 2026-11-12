@@ -159,7 +159,7 @@ fn lz4_allocates_the_output_it_decodes_not_the_declared_size() {
     let block = compress(TestCodec::Lz4, &data);
     let got = run(&Lz4, &block, 1000, 999);
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::BlockOutput),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::BlockOutput),
         "{got:?}"
     );
     assert_eq!(run(&Lz4, &block, 1000, 1000).unwrap(), data);
@@ -305,7 +305,7 @@ fn lzma_output_is_capped_per_block_and_charged() {
     assert_eq!(run(&Lzma, &block, 0, 100_000).unwrap(), data);
     let got = run(&Lzma, &block, 0, 99_999);
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::BlockOutput),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::BlockOutput),
         "{got:?}"
     );
     // A meter smaller than the output refuses it; one that holds it and the
@@ -313,7 +313,7 @@ fn lzma_output_is_capped_per_block_and_charged() {
     let small = meter(50_000);
     let got = run_on(&small, &Lzma, &block, 100_000, u64::MAX);
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::InputMemory),
         "{got:?}"
     );
     // The dictionary liblzma allocates (the declared 100,000 bytes here) is
@@ -322,7 +322,7 @@ fn lzma_output_is_capped_per_block_and_charged() {
     let output_only = meter(100_000 + 64);
     let got = run_on(&output_only, &Lzma, &block, 100_000, u64::MAX);
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::InputMemory),
         "{got:?}"
     );
     assert_eq!(output_only.used(), 0);
@@ -335,7 +335,7 @@ fn lzma_output_is_capped_per_block_and_charged() {
     let short = meter(exact - 1);
     let got = run_on(&short, &Lzma, &block, 100_000, u64::MAX);
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::InputMemory),
         "{got:?}"
     );
     assert_eq!(short.used(), 0);
@@ -377,10 +377,19 @@ fn lzma_dictionary_probe() {
         Reservation::Provider,
     ] {
         let meter = Meter::new(u64::MAX, Arc::new(Unbounded), what);
+        #[cfg(feature = "test-counters")]
+        let before = unityrs_core::testing::refusals();
         let got = {
             let _cap = address_space::cap_above_current(4 << 20).unwrap();
             decode(&meter)
         };
+        // Under CR8's test feature, the C allocator's refusal is counted
+        // once, as the meter's reservation's (`unityrs_core::testing`).
+        #[cfg(feature = "test-counters")]
+        {
+            let r = unityrs_core::testing::refusals().since(&before);
+            assert_eq!((r.allocator(what), r.total()), (1, 1), "{what:?}: {r:?}");
+        }
         match got {
             Err(Error::Budget(b)) => {
                 // The attempt's charge: 8 MiB and liblzma's 576 bytes in one

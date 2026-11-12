@@ -12,17 +12,27 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
-# The testkit builds bytes only. Its library never depends on unityrs-core, so
-# core's tests can use it without a dependency cycle (docs/plans/core.md
-# section 7.1).
+# The testkit builds bytes only. Its library never depends on unityrs-core
+# (but under its `test-counters` feature, below, which only enables the
+# core's), so core's tests can use it without a dependency cycle
+# (docs/plans/core.md section 7.1).
 [dependencies]
 liblzma = { version = "=0.4.9", features = ["static"] }
 lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
+# Only under `test-counters`, which turns the core's test-only counters on
+# (docs/plans/batch.md section 6, CR8) for every crate a test build links:
+# CI runs `cargo test -p unityrs-core -p unityrs-testkit --features
+# unityrs-testkit/test-counters`. Without it the library never depends on
+# the core.
+unityrs-core = { path = "../unityrs-core", optional = true }
+
+[features]
+test-counters = ["dep:unityrs-core", "unityrs-core/test-counters"]
 
 # `examples/fuzz_seeds.rs` only, which splits what the builders made (a
 # bundle into its files, a file into its objects) to write the fuzz targets'
-# seeds. A dev-dependency: the library never depends on the core, so the
-# core's tests use it with no cycle.
+# seeds. A dev-dependency: the library never depends on the core but under
+# `test-counters` (above), so the core's tests use it with no cycle.
 [dev-dependencies]
 unityrs-core = { path = "../unityrs-core" }
 # The same command's `meshdecode` seeds, read from unityrs-meshdecode's

@@ -153,11 +153,7 @@ fn names_the_compile_reads_are_the_lists_work_and_stop_at_its_allowance() {
     let before = read_now();
     let e = Tree::compile(list_on(&meter, windows()), &limits).map(|_| ());
     assert_eq!((read_now() - before, meter.decoded()), (0, 0));
-    let refused = crate::LimitError {
-        kind: LimitKind::DecodeWork,
-        value: r * window,
-        max,
-    };
+    let refused = crate::LimitError::refused(LimitKind::DecodeWork, r * window, max);
     assert_eq!(e, Err(TreeError::Limit(refused)));
     let max = (r + 10) * window + window / 2;
     let limits = Limits {
@@ -174,11 +170,11 @@ fn names_the_compile_reads_are_the_lists_work_and_stop_at_its_allowance() {
     assert_eq!(meter.decoded(), read, "counted as read");
     assert_eq!(
         e,
-        TreeError::Limit(crate::LimitError {
-            kind: LimitKind::DecodeWork,
-            value: read + window,
+        TreeError::Limit(crate::LimitError::refused(
+            LimitKind::DecodeWork,
+            read + window,
             max
-        })
+        ))
     );
 
     let meter = input_meter(&Limits::default());

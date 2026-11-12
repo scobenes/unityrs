@@ -118,7 +118,7 @@ fn assert_limit(r: &Result<Parsed, ReadError>, kind: LimitKind, what: &str) {
             kind: ReadErrorKind::Other,
             detail: ReadDetail::Limit(l),
             ..
-        }) if l.kind == kind => {}
+        }) if l.kind() == kind => {}
         other => panic!("{what}: want an Other {kind:?} limit, have {other:?}"),
     }
 }
@@ -356,7 +356,7 @@ fn value_depth_trips_to_other() {
     for (reader, p) in read_both(&one, &deep, RefTypes::List(&[])) {
         let out = write(&p, &deep, RefTypes::List(&[]), WriteRules::UnityPy, &limits);
         assert!(
-            matches!(out, Err(WriteError::Limit(ref l)) if l.kind == LimitKind::ValueDepth),
+            matches!(out, Err(WriteError::Limit(ref l)) if l.kind() == LimitKind::ValueDepth),
             "{reader} write: {out:?}"
         );
     }
@@ -453,7 +453,7 @@ fn tree_depth_trips_to_other() {
                     kind: ReadErrorKind::Other,
                     detail: ReadDetail::Tree(TreeError::Limit(l)),
                     ..
-                }) if l.kind == LimitKind::TreeDepth
+                }) if l.kind() == LimitKind::TreeDepth
             ),
             "{reader}: {r:?}"
         );

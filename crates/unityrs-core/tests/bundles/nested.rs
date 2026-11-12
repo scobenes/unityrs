@@ -67,7 +67,7 @@ fn lz4_failure(e: &Error) -> bool {
 }
 
 fn work_refused(e: &Error) -> bool {
-    matches!(e, Error::Limit(l) if l.kind == LimitKind::DecodeWork)
+    matches!(e, Error::Limit(l) if l.kind() == LimitKind::DecodeWork)
 }
 
 /// K rows over one span (offset 0, the nested bundle's size) are twins: the

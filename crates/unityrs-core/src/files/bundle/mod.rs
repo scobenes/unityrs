@@ -133,6 +133,7 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use bytes::Bytes;
 
+use crate::counters::{Origin, SpanRow};
 use crate::detect::{DetectError, check_entry_type};
 use crate::error::Error;
 use crate::files::{File, Parent, ParentKind, parse_file};
@@ -281,6 +282,12 @@ pub struct BundleFile {
     stored: Box<[Range<usize>]>,
     /// This bundle, for its entries' [`ParentKind::Bundle`].
     this: Weak<BundleFile>,
+    /// Under the test feature, the key its span reads are counted by: its
+    /// load's id and, for a nested bundle, a node naming its row, given by
+    /// the core's open that made it (`crate::testing`, "The key";
+    /// `docs/plans/batch.md` section 6, CR8). Without it a unit struct,
+    /// which takes no room.
+    origin: Origin,
 }
 
 impl std::fmt::Debug for BundleFile {
@@ -376,7 +383,7 @@ impl BundleFile {
     /// before the slice first (module docs).
     pub fn entry_bytes(&self, dir_index: usize) -> Result<Bytes, Error> {
         let span = self.entry_span(dir_index)?;
-        self.read_span(span.start, span.end)
+        self.read_span(span.start, span.end, SpanRow::row(dir_index))
     }
 
     /// The length of the buffer this bundle's own bytes are a slice of,
@@ -397,7 +404,7 @@ impl BundleFile {
         let span = self.entry_span(dir_index)?;
         let lo = span.start.saturating_add(range.start).min(span.end);
         let hi = span.start.saturating_add(range.end).clamp(lo, span.end);
-        self.read_span(lo, hi)
+        self.read_span(lo, hi, SpanRow::row(dir_index))
     }
 
     /// Directory entry `dir_index`, detected and parsed (`parse_file`) and
@@ -419,7 +426,7 @@ impl BundleFile {
     /// `files` dict keeps the later one); the first failure fails the bundle.
     pub fn load_all(&self) -> Result<(), Error> {
         // UnityPy files/BundleFile.py:173-184: `b"".join` of every block.
-        self.read_span(0, u64::MAX)?;
+        self.read_span(0, u64::MAX, SpanRow::WHOLE)?;
         // UnityPy files/File.py:76-90
         for i in 0..self.directory.len() {
             if let File::Bundle(b) = self.entry(i)? {
@@ -450,6 +457,12 @@ impl BundleFile {
         let (range, _) = py_read(len, i128::from(e.offset), e.size);
         Ok(u64::try_from(range.start).unwrap_or(u64::MAX)
             ..u64::try_from(range.end).unwrap_or(u64::MAX))
+    }
+
+    /// The key its span reads are counted by (`crate::testing`).
+    #[cfg(feature = "test-counters")]
+    pub(crate) fn span_origin(&self) -> &Origin {
+        &self.origin
     }
 
     fn entry_error(&self, dir_index: usize, e: Error) -> Error {
@@ -512,7 +525,8 @@ impl BundleFile {
             .get(dir_index)
             .ok_or_else(|| no_entry(dir_index))?;
         let span = self.entry_span(dir_index)?;
-        let (bytes, pinned) = self.read_span_pinned(span.start, span.end)?;
+        let (bytes, pinned) =
+            self.read_span_pinned(span.start, span.end, SpanRow::row(dir_index))?;
         let wrap = |e| self.entry_error(dir_index, e);
         // The inflation of a gzip entry is the open's work (`detect`'s
         // "Work"); its refusal is the open's limit, as a block decode's is.
@@ -547,6 +561,10 @@ impl BundleFile {
             meter,
             self.ctx.file(),
         );
+        // A nested bundle is keyed by this one's load and its row: a
+        // statement only the feature builds.
+        #[cfg(feature = "test-counters")]
+        crate::testing::adopt(&got, || self.origin.child(dir_index));
         let granted = scope.finish(meter);
         if got.as_ref().is_err_and(|e| !e.is_transient()) {
             meter.add_work(granted);

@@ -423,7 +423,7 @@ impl Environment {
         match walked {
             Err(e) if e.is_meter_refusal() => {
                 meter.add_work(own);
-                Err(meter.work_used_up().map_or(e, Error::Limit))
+                Err(meter.work_refused().map_or(e, Error::Limit))
             }
             other => other,
         }

@@ -44,7 +44,7 @@ fn decode_work_stops_a_lazy_read_and_a_reopen_on_the_same_meter_shares_it() {
     // cap and dropped) until the work bound stops the read.
     let got = b.entry_bytes(1);
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::DecodeWork),
         "{got:?}"
     );
     assert_eq!(
@@ -58,7 +58,7 @@ fn decode_work_stops_a_lazy_read_and_a_reopen_on_the_same_meter_shares_it() {
     let again = open_with(&data, &ctx, &meter).unwrap();
     let got = again.entry_range(0, ten.clone());
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::DecodeWork),
         "{got:?}"
     );
     // A reopen (a new open of the input) has its own allowance.
@@ -78,7 +78,7 @@ fn decode_work_stops_a_lazy_read_and_a_reopen_on_the_same_meter_shares_it() {
 /// and its note counts that chunk: no refusal names work at the bound.
 #[test]
 fn work_that_lands_exactly_on_the_allowance_is_within_it() {
-    let past = |r: &Error| matches!(r, Error::Limit(l) if l.kind == LimitKind::DecodeWork && l.value > l.max);
+    let past = |r: &Error| matches!(r, Error::Limit(l) if l.kind() == LimitKind::DecodeWork && l.value() > l.max());
     let entry: Vec<u8> = (0..100u8).collect();
     let data = build(&BundleSpec {
         entries: vec![EntrySpec {
@@ -181,7 +181,7 @@ fn each_block_of_a_run_is_capped_on_its_own() {
     let b = open_with(&one, &ctx, &meter_for(&ctx)).unwrap();
     let got = b.entry_bytes(0);
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::BlockOutput),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::BlockOutput),
         "{got:?}"
     );
 }
@@ -348,7 +348,7 @@ fn nested_suffix_spans_stop_a_lazy_read_at_the_meter_where_load_all_fits() {
         }
     };
     assert!(
-        matches!(&stopped, Error::Limit(l) if l.kind == LimitKind::InputMemory),
+        matches!(&stopped, Error::Limit(l) if l.kind() == LimitKind::InputMemory),
         "{stopped:?}"
     );
     assert!(kept.len() > 1 && meter.used() <= 6 << 20);
@@ -395,7 +395,7 @@ fn a_meter_spans_every_file_of_one_bundle() {
     let b = open_with(&double, &ctx, &m).unwrap();
     let got = b.load_all();
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::InputMemory),
         "{got:?}"
     );
 }
@@ -423,8 +423,12 @@ fn many_rows_of_one_entry_stop_at_the_meter() {
     let m = meter_for(&ctx);
     let b = open_with(&data, &ctx, &m).unwrap();
     let got = b.load_all();
+    // The meter refuses at a row's own charge: the bundle's limit, as it
+    // is. Under CR8's test feature too, whose key makes the bundle larger
+    // by what its open charges (round 1: a key of 280 bytes moved the
+    // refusal inside row CAB-560's type tree, as that row's error).
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::InputMemory),
         "{got:?}"
     );
     assert!(m.used() <= 2 << 20);
@@ -465,7 +469,7 @@ fn gzip_detection_across_the_rows_of_one_open_draws_on_its_work() {
     assert!(got[..fit].iter().all(|r| matches!(r, Ok(File::Raw(_)))));
     for r in &got[fit..] {
         assert!(
-            matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork && l.max == 4 * MIB),
+            matches!(r, Err(Error::Limit(l)) if l.kind() == LimitKind::DecodeWork && l.max() == 4 * MIB),
             "{r:?}"
         );
     }
@@ -480,7 +484,7 @@ fn gzip_detection_across_the_rows_of_one_open_draws_on_its_work() {
     let b = open_with(&data, &ctx, &meter).unwrap();
     let got = b.load_all();
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::DecodeWork),
         "{got:?}"
     );
     assert!(
@@ -565,7 +569,7 @@ fn a_detection_refused_at_its_inflate_bound_still_draws_on_the_opens_work() {
     let inflate = |r: &Result<File, Error>| {
         matches!(r, Err(Error::Entry { source, .. })
             if matches!(&**source, Error::Detect(DetectError::InflateLimit(l))
-                if l.kind == LimitKind::Inflate && l.max == 1))
+                if l.kind() == LimitKind::Inflate && l.max() == 1))
     };
     let first = got.iter().take_while(|r| inflate(r)).count();
     // Each refused row inflated one chunk (at most 64 KiB, here all of it)
@@ -577,7 +581,7 @@ fn a_detection_refused_at_its_inflate_bound_still_draws_on_the_opens_work() {
     );
     for r in &got[first..] {
         assert!(
-            matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork && l.max == MIB),
+            matches!(r, Err(Error::Limit(l)) if l.kind() == LimitKind::DecodeWork && l.max() == MIB),
             "{r:?}"
         );
     }
@@ -649,7 +653,7 @@ fn a_detection_counts_the_stream_it_reads_not_only_what_it_inflates() {
         }
         for r in &got[read..] {
             assert!(
-                matches!(r, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork),
+                matches!(r, Err(Error::Limit(l)) if l.kind() == LimitKind::DecodeWork),
                 "{what}: {r:?}"
             );
         }

@@ -60,7 +60,7 @@ fn nested_containers_past_the_depth_bound_are_refused() {
     assert_eq!(bundles, 3);
     // A limit is the bundle's error as it is, not wrapped in the entry's.
     assert!(
-        matches!(e, Some(Error::Limit(l)) if l.kind == LimitKind::ContainerDepth && l.value == 3 && l.max == 2),
+        matches!(e, Some(Error::Limit(l)) if l.kind() == LimitKind::ContainerDepth && l.value() == 3 && l.max() == 2),
         "{e:?}"
     );
 }
@@ -76,7 +76,7 @@ fn a_gzip_stream_past_the_inflate_bound_is_refused_at_detection() {
     let refused = check_file_type(&data, &small);
     assert!(
         matches!(&refused, Err(DetectError::InflateLimit(l))
-            if l.kind == LimitKind::Inflate && l.value > l.max && l.max == 1 << 16),
+            if l.kind() == LimitKind::Inflate && l.value() > l.max() && l.max() == 1 << 16),
         "{refused:?}"
     );
     // Its text is every limit refusal's (`PARITY.md` section 19.3).

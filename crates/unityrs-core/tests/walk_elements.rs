@@ -224,9 +224,9 @@ fn replay(refused: bool) -> (usize, Vec<String>) {
                     Err(ReadError {
                         detail: ReadDetail::Limit(l),
                         ..
-                    }) if l.kind == LimitKind::ZeroSizeElements
-                        && l.value == l.max + 1
-                        && l.max == limits.max_zero_size_elements => {}
+                    }) if l.kind() == LimitKind::ZeroSizeElements
+                        && l.value() == l.max() + 1
+                        && l.max() == limits.max_zero_size_elements => {}
                     got => bad.push(format!(
                         "{name} [{reader}]: not refused one past the bound: {}",
                         outcome(&got)
@@ -394,7 +394,7 @@ fn zero_size_elements_trip_to_other() {
                     kind: ReadErrorKind::Other,
                     detail: ReadDetail::Limit(l),
                     ..
-                }) if l.kind == LimitKind::ZeroSizeElements && l.value == 11 && l.max == 10),
+                }) if l.kind() == LimitKind::ZeroSizeElements && l.value() == 11 && l.max() == 10),
                 "{what}: {r:?}"
             );
             // Ten fit.

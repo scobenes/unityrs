@@ -13,6 +13,7 @@ use super::decode::{BlockContext, decode_one};
 use super::index::{Ends, RunIndex};
 use super::{BlockInfo, BundleFile, BundleHeader, DirEntry, FileSlot, LayoutKind};
 use crate::codec::Codec;
+use crate::counters::Origin;
 use crate::detect::raw_by_name;
 use crate::error::{Error, Unsupported};
 use crate::files::{File, Parent};
@@ -152,6 +153,7 @@ impl BundleFile {
             ctx: blocks_ctx,
             stored,
             this: this.clone(),
+            origin: Origin::opened(),
         }))
     }
 }

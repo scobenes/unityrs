@@ -9,11 +9,11 @@ use super::*;
 use crate::record::NOTE_MAX;
 
 fn limit() -> LimitError {
-    LimitError {
-        kind: LimitKind::ZeroSizeElements,
-        value: 18_446_744_073_709_551_615,
-        max: 18_446_744_073_709_551_614,
-    }
+    LimitError::refused(
+        LimitKind::ZeroSizeElements,
+        18_446_744_073_709_551_615,
+        18_446_744_073_709_551_614,
+    )
 }
 
 fn budget() -> BudgetExceeded {

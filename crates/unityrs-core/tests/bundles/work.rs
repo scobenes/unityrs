@@ -129,7 +129,7 @@ fn rows_over_one_failing_entry_stop_at_the_opens_work() {
     );
     for (i, g) in got.iter().enumerate().skip(parsed) {
         assert!(
-            matches!(g, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork),
+            matches!(g, Err(Error::Limit(l)) if l.kind() == LimitKind::DecodeWork),
             "row {i}: {g:?}"
         );
     }
@@ -284,10 +284,10 @@ fn rows_over_one_asset_bundle(
 fn work(e: &Error) -> bool {
     let read = |p: &ParseError| {
         matches!(p, ParseError::Read(r)
-            if matches!(r.detail, ReadDetail::Limit(l) if l.kind == LimitKind::DecodeWork))
+            if matches!(r.detail, ReadDetail::Limit(l) if l.kind() == LimitKind::DecodeWork))
     };
     match e {
-        Error::Limit(l) => l.kind == LimitKind::DecodeWork,
+        Error::Limit(l) => l.kind() == LimitKind::DecodeWork,
         Error::Entry { source, .. } => work(source),
         Error::AssetBundle(p) => read(p),
         _ => false,

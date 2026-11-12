@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use serde_json::{Value as J, json};
 
-use super::registry::open_source;
+use super::registry::open_bare;
 use super::{EnvOptions, Environment, Source};
 use crate::files::File;
 use crate::limits::Meter;
@@ -109,7 +109,7 @@ fn files_holds_unitypys_dict_whatever_order_the_loads_list_in() {
                 name: RawStr::from(format!("f{load}").as_str()),
                 data: Bytes::from(data.clone()),
             };
-            open_source(&RawStr::from("f"), &source, &meter, &ctx).unwrap()
+            open_bare(&RawStr::from("f"), &source, &meter, &ctx).unwrap()
         })
         .collect();
     let load_of = |f: &File| -> u64 {

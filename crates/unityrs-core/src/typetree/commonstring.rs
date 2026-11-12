@@ -338,7 +338,7 @@ mod tests {
         let small = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Input);
         let refused = CommonStrings::new(strings(), &small).err();
         assert!(
-            matches!(&refused, Some(ChargeError::Limit(l)) if l.kind == LimitKind::InputMemory),
+            matches!(&refused, Some(ChargeError::Limit(l)) if l.kind() == LimitKind::InputMemory),
             "{refused:?}"
         );
         assert_eq!(small.used(), 0);

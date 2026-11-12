@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use super::{DepCache, lock};
 use crate::budget::Reservation;
+use crate::counters::LoadId;
 use crate::detect::check_file_type_with_reader;
 use crate::env::{DerefError, Fetch, Source, within_input_bytes};
 use crate::error::{Error, Unsupported};
@@ -47,6 +48,13 @@ pub(crate) struct Dependency {
     /// How many registry slots reach it ([`DepSlot`]): when the last goes,
     /// nothing can reach it any more and the LRU lets go of it.
     pub(crate) slots: AtomicUsize,
+    /// Under the test feature, the id its load drew, which every reopen
+    /// ([`Self::handle`]) keys its span reads by (`crate::testing`;
+    /// `docs/plans/batch.md` section 6, CR8). Only the feature has the
+    /// field, so the derived `Debug` is the same without it (round 4: a
+    /// field of a unit struct still printed, through `Environment::registry`).
+    #[cfg(feature = "test-counters")]
+    pub(crate) load_id: LoadId,
 }
 
 /// A dependency's current open ([`Dependency::open`]).
@@ -170,11 +178,19 @@ impl WeakFile {
 /// are refused here, before anything detects, parses or keeps them, and
 /// drop with whatever charge they carry (review round 10: a fetch was not
 /// bounded at all).
+///
+/// Under the test feature a bundle the parse opens is keyed by `load`, the
+/// id its load drew (`crate::testing`; `docs/plans/batch.md` section 6,
+/// CR8), given to it when the parse returns: no code of a caller's runs
+/// under it, so a bundle a fetcher or a codec opens itself is read under
+/// the bare key.
+#[cfg_attr(not(feature = "test-counters"), allow(unused_variables))]
 pub(crate) fn open_source(
     name: &RawStr,
     source: &Source,
     meter: &Arc<Meter>,
     ctx: &Arc<FileContext>,
+    load: LoadId,
 ) -> Result<File, Error> {
     let reader = match source {
         Source::Path(_) => ReaderKind::Stream,
@@ -205,7 +221,23 @@ pub(crate) fn open_source(
     within_input_bytes(u64::try_from(data.len()).unwrap_or(u64::MAX), &ctx.limits)?;
     // UnityPy environment.py:139-154
     let ty = check_file_type_with_reader(&data, &ctx.limits, reader)?;
-    parse_file_with_reader(name.clone(), data, ty, None, meter, ctx, reader)
+    let file = parse_file_with_reader(name.clone(), data, ty, None, meter, ctx, reader);
+    // A statement only the feature builds, so a build without it is the
+    // code it was before the counters.
+    #[cfg(feature = "test-counters")]
+    crate::testing::adopt(&file, || crate::testing::Key::load(load));
+    file
+}
+
+/// [`open_source`] outside any load: the bare key.
+#[cfg(test)]
+pub(crate) fn open_bare(
+    name: &RawStr,
+    source: &Source,
+    meter: &Arc<Meter>,
+    ctx: &Arc<FileContext>,
+) -> Result<File, Error> {
+    open_source(name, source, meter, ctx, LoadId::BARE)
 }
 
 /// `fetch`'s bytes, a refusal of the dependency pool it returns counted
@@ -458,7 +490,11 @@ impl Dependency {
             return Ok(f);
         }
         let meter = meter.reopen();
-        let file = open_source(&self.name, &self.source, &meter, &self.ctx)?;
+        #[cfg(feature = "test-counters")]
+        let load = self.load_id;
+        #[cfg(not(feature = "test-counters"))]
+        let load = LoadId::BARE;
+        let file = open_source(&self.name, &self.source, &meter, &self.ctx, load)?;
         let (file, _replaced) = {
             let mut open = lock(&self.open);
             if let Some(theirs) = open.alive() {

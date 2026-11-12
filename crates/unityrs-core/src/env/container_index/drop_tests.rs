@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use super::{Answer, NONE, Siblings, Targets};
 use crate::env::heap::{self, Noted};
-use crate::env::registry::open_source;
+use crate::env::registry::open_bare;
 use crate::env::watch::{FILES, REGISTRY};
 use crate::env::{EnvOptions, Environment, Source};
 use crate::files::File;
@@ -85,7 +85,7 @@ fn a_bundles_sibling_names_release_their_tables_charge_last() {
         name: RawStr::from("b.bundle"),
         data: Bytes::from(bundle(&named)),
     };
-    let File::Bundle(b) = open_source(&RawStr::from("b"), &source, &meter, &ctx).unwrap() else {
+    let File::Bundle(b) = open_bare(&RawStr::from("b"), &source, &meter, &ctx).unwrap() else {
         panic!("the testkit's bundle opens as a BundleFile");
     };
     let mut siblings = Siblings::default();

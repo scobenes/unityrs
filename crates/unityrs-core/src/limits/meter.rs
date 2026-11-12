@@ -27,6 +27,31 @@ struct Account {
     what: Reservation,
 }
 
+/// An open's work past its allowance, as [`Meter::work_used_up`] reports
+/// it: a status, not an error, so no refusal is made, or counted, until the
+/// core refuses new work for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkPast {
+    done: u64,
+    allowance: u64,
+}
+
+const _: () = crate::send_sync::<WorkPast>();
+
+impl WorkPast {
+    /// The work counted.
+    #[must_use]
+    pub const fn done(&self) -> u64 {
+        self.done
+    }
+
+    /// The allowance it passed.
+    #[must_use]
+    pub const fn allowance(&self) -> u64 {
+        self.allowance
+    }
+}
+
 /// One open of an input: what the input holds, against
 /// [`Limits::max_input_memory`], and what this open has done, against
 /// [`Limits::max_decode_work`] (module docs). Thread-safe: a lazily read
@@ -189,30 +214,52 @@ impl Meter {
             });
     }
 
-    /// The refusal a new piece of work gets once this open's work has passed
-    /// its allowance, or `None` while it has not. The allowance is inclusive,
-    /// as [`Self::count_decode`] admits work: work that lands exactly on it
-    /// is within it, and what follows is refused by `count_decode` itself,
-    /// its note naming the work it would reach. Only work counted past the
-    /// bound (`add_work`, unchecked: a detection's refused chunk, what a
-    /// refused computation was granted) passes it, so the note's work is
-    /// always past the bound (`limit DecodeWork: <work> > <bound>`).
+    /// Whether this open's work has passed its allowance: the work done and
+    /// the allowance when it has, `None` while it has not. A status, not an
+    /// error: the core turns it into its refusal of new work
+    /// ([`LimitKind::DecodeWork`]) where it refuses that work, through
+    /// [`LimitError::refused`], which counts under CR8's test feature (round
+    /// 4: this query returned the `LimitError` itself, uncounted, so a
+    /// caller's code could hand the core a refusal no counter saw). The
+    /// allowance is inclusive, as [`Self::count_decode`] admits work: work
+    /// that lands exactly on it is within it, and what follows is refused by
+    /// `count_decode` itself. Only work counted past the bound (`add_work`,
+    /// unchecked: a detection's refused chunk, what a refused computation was
+    /// granted) passes it, so the refusal's work is always past the bound
+    /// (`limit DecodeWork: <work> > <bound>`).
     #[must_use]
-    pub fn work_used_up(&self) -> Option<LimitError> {
+    pub fn work_used_up(&self) -> Option<WorkPast> {
         let done = self.decoded();
-        (done > self.work_limit).then_some(LimitError {
-            kind: LimitKind::DecodeWork,
-            value: done,
-            max: self.work_limit,
+        (done > self.work_limit).then_some(WorkPast {
+            done,
+            allowance: self.work_limit,
         })
     }
 
-    fn decode_refused(&self, done: u64, bytes: u64) -> LimitError {
-        LimitError {
-            kind: LimitKind::DecodeWork,
-            value: done.saturating_add(bytes),
-            max: self.work_limit,
+    /// The refusal the core makes of new work once the open's work has
+    /// passed its allowance ([`Self::work_used_up`]), built by
+    /// [`LimitError::refused`], which counts: what a read, a parse or a lazy
+    /// computation meets then.
+    #[inline]
+    pub(crate) fn work_refused(&self) -> Option<LimitError> {
+        let done = self.decoded();
+        if done > self.work_limit {
+            Some(LimitError::refused(
+                LimitKind::DecodeWork,
+                done,
+                self.work_limit,
+            ))
+        } else {
+            None
         }
+    }
+
+    fn decode_refused(&self, done: u64, bytes: u64) -> LimitError {
+        LimitError::refused(
+            LimitKind::DecodeWork,
+            done.saturating_add(bytes),
+            self.work_limit,
+        )
     }
 
     /// Work counted so far by this open.
@@ -272,16 +319,15 @@ impl Meter {
             .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 used.checked_add(bytes).filter(|t| *t <= limit)
             })
-            .map_err(|used| LimitError {
-                kind: LimitKind::InputMemory,
-                value: used.saturating_add(bytes),
-                max: limit,
+            .map_err(|used| {
+                LimitError::refused(LimitKind::InputMemory, used.saturating_add(bytes), limit)
             })?;
         let permit = account
             .budget
             .try_reserve(bytes, account.what)
             .map_err(|e| {
                 self.refund(bytes);
+                crate::counters::budget(e.what);
                 ChargeError::Budget(counted(e))
             })?;
         let _ = self

@@ -531,8 +531,8 @@ mod tests {
         let data = Bytes::from(unityrs_testkit::blob::no_nul_blob(1_000, 65_536));
         let (got, _) = parse(&data, &limits);
         assert!(
-            matches!(got, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork
-                && l.value == 65_536 && l.max == 65_535),
+            matches!(got, Err(Error::Limit(l)) if l.kind() == LimitKind::DecodeWork
+                && l.value() == 65_536 && l.max() == 65_535),
             "{got:?}"
         );
     }
@@ -575,8 +575,8 @@ mod tests {
         let mut r = Reader::new(&data, Endian::Little);
         let got = string_to_null(&mut r, &data, &meter);
         assert!(
-            matches!(got, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork
-                && l.value == 32_767 && l.max == 1_000),
+            matches!(got, Err(Error::Limit(l)) if l.kind() == LimitKind::DecodeWork
+                && l.value() == 32_767 && l.max() == 1_000),
             "{got:?}"
         );
         assert_eq!(meter.decoded(), 32_767);

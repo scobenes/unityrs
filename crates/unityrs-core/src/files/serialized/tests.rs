@@ -62,11 +62,11 @@ fn a_refused_compile_is_not_kept() {
     // A failure the rows decide is kept.
     let deep = SerializedType::new(2, t.nodes.clone());
     let too_deep = |_: Arc<NodeList>| {
-        Err(TreeError::Limit(crate::LimitError {
-            kind: crate::LimitKind::TreeDepth,
-            value: 2,
-            max: 1,
-        }))
+        Err(TreeError::Limit(crate::LimitError::refused(
+            crate::LimitKind::TreeDepth,
+            2,
+            1,
+        )))
     };
     assert!(deep.tree_with(too_deep).unwrap().is_err());
     assert!(
@@ -113,9 +113,8 @@ fn a_compile_the_meter_refuses_on_its_own_runs_a_bounded_number_of_times() {
     // to 512 KiB, at `heap_cost`), so the fourth uses up the 4 MiB.
     let runs = runs.load(Ordering::Relaxed);
     assert_eq!(runs, 4, "{runs} compiles for 200 asks");
-    let memory = |e: &TreeError| matches!(e, TreeError::Charge(crate::limits::ChargeError::Limit(l)) if l.kind == crate::LimitKind::InputMemory);
-    let work =
-        |e: &TreeError| matches!(e, TreeError::Limit(l) if l.kind == crate::LimitKind::DecodeWork);
+    let memory = |e: &TreeError| matches!(e, TreeError::Charge(crate::limits::ChargeError::Limit(l)) if l.kind() == crate::LimitKind::InputMemory);
+    let work = |e: &TreeError| matches!(e, TreeError::Limit(l) if l.kind() == crate::LimitKind::DecodeWork);
     assert!(
         outcomes[..runs].iter().all(memory),
         "{:?}",

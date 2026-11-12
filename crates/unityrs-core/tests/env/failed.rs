@@ -730,7 +730,7 @@ fn a_load_its_meter_refuses_at_any_charge_leaves_every_lookup_as_it_was() {
             let used = pool.used();
             let e = env.load_dependency(b()).unwrap_err();
             assert!(
-                matches!(&e, Error::Limit(l) if l.kind == LimitKind::InputMemory),
+                matches!(&e, Error::Limit(l) if l.kind() == LimitKind::InputMemory),
                 "{what}, bound {}: {e}",
                 total - 1
             );

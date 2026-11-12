@@ -102,7 +102,7 @@ fn load(name: &str, data: &Bytes, ctx: &Arc<FileContext>, limit: u64, eager: boo
             let got = b.load_all();
             within(base, &m, name, "load_all", 0);
             if let Err(Error::Limit(l)) = &got {
-                assert_eq!(l.kind, LimitKind::InputMemory, "{name}");
+                assert_eq!(l.kind(), LimitKind::InputMemory, "{name}");
             }
         }
         for i in 0..b.directory().len().min(kept.capacity()) {

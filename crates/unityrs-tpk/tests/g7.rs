@@ -612,11 +612,8 @@ fn a_tree_deeper_than_the_limit_is_an_error_not_a_wrap() {
     let v = version(&case["versions"][0]);
     for depth in [256, 299] {
         let provider = TpkProvider::from_bytes(&bytes, &limits(depth)).unwrap();
-        let want = LimitError {
-            kind: LimitKind::TreeDepth,
-            value: u64::from(depth) + 1,
-            max: u64::from(depth),
-        };
+        let want =
+            LimitError::refused(LimitKind::TreeDepth, u64::from(depth) + 1, u64::from(depth));
         let list = provider.node_list(1, &v).unwrap_err();
         assert_eq!(list.limit, Some(want), "depth {depth}: {list}");
         assert_eq!(&*list.detail, want.to_string(), "depth {depth}");

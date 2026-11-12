@@ -116,7 +116,7 @@ fn held_within_charge(base: u64, m: &Meter, what: &str) {
 
 fn assert_limit(e: &ChargeError) {
     assert!(
-        matches!(e, ChargeError::Limit(l) if l.kind == LimitKind::InputMemory && l.max == LIMIT),
+        matches!(e, ChargeError::Limit(l) if l.kind() == LimitKind::InputMemory && l.max() == LIMIT),
         "{e:?}"
     );
 }

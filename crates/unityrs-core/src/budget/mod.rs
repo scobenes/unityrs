@@ -552,11 +552,11 @@ impl DecodeBuf {
         let need = self.buf.len().saturating_add(additional);
         let end = self.seg_end();
         if need > end {
-            return Err(ChargeError::Limit(LimitError {
-                kind: self.seg_kind,
-                value: u64::try_from(need - self.seg_start).unwrap_or(u64::MAX),
-                max: self.seg_cap,
-            }));
+            return Err(ChargeError::Limit(LimitError::refused(
+                self.seg_kind,
+                u64::try_from(need - self.seg_start).unwrap_or(u64::MAX),
+                self.seg_cap,
+            )));
         }
         // Review round 13: the doubling was not capped, so a block whose
         // output ended just past a power of two of its first window held

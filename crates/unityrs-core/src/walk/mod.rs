@@ -736,7 +736,7 @@ pub(crate) fn limit_error(at: u64, kind: LimitKind, value: u64, max: u64) -> Rea
     ReadError {
         kind: ReadErrorKind::Other,
         at,
-        detail: ReadDetail::Limit(LimitError { kind, value, max }),
+        detail: ReadDetail::Limit(LimitError::refused(kind, value, max)),
     }
 }
 

@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use bytes::Bytes;
 
-use super::{DepCache, open_source, with_room};
+use super::{DepCache, open_bare, with_room};
 use crate::budget::{BudgetExceeded, DecodeBuf, MemoryBudget, Permit, Reservation};
 use crate::codec::{BlockCodec, Codec, Decoded, Stored, decode_block};
 use crate::env::{Fetch, Source};
@@ -240,7 +240,7 @@ fn a_fetchers_refusal_of_the_pool_is_counted_as_it_returns() {
             fetch: Arc::new(fetch),
         };
         let at = pool_refusals();
-        let r = open_source(&name, &source, &refusing(), &ctx);
+        let r = open_bare(&name, &source, &refusing(), &ctx);
         assert!(matches!(r, Err(Error::Budget(_))), "{what}: {r:?}");
         assert_eq!(pool_refusals() - at, counted, "{what}");
     }
@@ -288,7 +288,7 @@ fn a_fetchers_own_refusal_after_one_it_let_go_is_retried() {
     };
     let ctx = Arc::new(FileContext::unitypy());
     let r = with_room(Some(&cache), None, || {
-        open_source(&name, &source, &Meter::unlimited(), &ctx).map(drop)
+        open_bare(&name, &source, &Meter::unlimited(), &ctx).map(drop)
     });
     assert!(r.is_ok(), "{r:?}");
     assert_eq!(fetch.runs.load(Ordering::Acquire), 2, "the fetcher's runs");
@@ -337,7 +337,7 @@ fn a_refusal_a_fetcher_passes_on_costs_one_more_fetch() {
     };
     let ctx = Arc::new(FileContext::unitypy());
     let r = with_room(Some(&cache), None, || {
-        open_source(&name, &source, &Meter::unlimited(), &ctx).map(drop)
+        open_bare(&name, &source, &Meter::unlimited(), &ctx).map(drop)
     });
     assert!(matches!(r, Err(Error::Budget(_))), "{r:?}");
     let runs = (

@@ -41,7 +41,11 @@ struct Kept<T> {
 /// whose record UnityPy shares a tree for shares this root's too.
 struct Root {
     id: u16,
-    over: Option<LimitError>,
+    /// The rows the walks up to this one's would take, when that is past
+    /// the total: the figure its walk's `Count` refusal names, made when
+    /// the walk is asked for (round 4 of CR8: made at load, it was counted
+    /// for every root past the total, asked for or not).
+    over: Option<u64>,
     rows: OnceLock<Kept<NodeList>>,
     tree: OnceLock<Kept<Tree>>,
 }
@@ -310,8 +314,12 @@ impl TpkProvider {
     /// `generate_node(class_info)` (`Tpk.py:58-88`) from one release root,
     /// unless its walk is past the provider's total.
     fn walk(&self, root: &Root) -> Outcome<NodeList> {
-        if let Some(over) = root.over {
-            return Err(limit_error(over));
+        if let Some(rows) = root.over {
+            return Err(limit_error(LimitError::refused(
+                LimitKind::Count,
+                rows,
+                u64::try_from(Self::MAX_TOTAL_ROWS).unwrap_or(u64::MAX),
+            )));
         }
         let max_depth = usize::try_from(self.limits.max_tree_depth).unwrap_or(usize::MAX);
         let rows = generate_node(
@@ -426,11 +434,7 @@ fn roots(
         let mut over = None;
         let with = total.saturating_add(build.work());
         if with > TpkProvider::MAX_TOTAL_ROWS {
-            over = Some(LimitError {
-                kind: LimitKind::Count,
-                value: u64::try_from(with).unwrap_or(u64::MAX),
-                max: u64::try_from(TpkProvider::MAX_TOTAL_ROWS).unwrap_or(u64::MAX),
-            });
+            over = Some(u64::try_from(with).unwrap_or(u64::MAX));
         } else {
             total = with;
         }
@@ -467,11 +471,11 @@ fn charge_error(e: &ChargeError) -> ProviderError {
 
 /// A walk that crossed a bound, as a limit error.
 fn limit(kind: LimitKind, value: usize, max: usize) -> ProviderError {
-    limit_error(LimitError {
+    limit_error(LimitError::refused(
         kind,
-        value: u64::try_from(value).unwrap_or(u64::MAX),
-        max: u64::try_from(max).unwrap_or(u64::MAX),
-    })
+        u64::try_from(value).unwrap_or(u64::MAX),
+        u64::try_from(max).unwrap_or(u64::MAX),
+    ))
 }
 
 /// A bound, as the error that names it.

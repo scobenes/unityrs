@@ -219,7 +219,7 @@ fn runs_past_the_values_bound_read_and_resave_as_unitypy_at_the_defaults() {
             Err(ReadError {
                 detail: ReadDetail::Limit(l),
                 ..
-            }) if l.kind == LimitKind::ValuesPerObject => {}
+            }) if l.kind() == LimitKind::ValuesPerObject => {}
             other => panic!(
                 "{name}: the pure-Python reader: {:?}",
                 other.map(|p| p.bytes_read)
@@ -288,7 +288,7 @@ fn the_pure_python_reader_counts_each_element_it_reads_again() {
             detail: ReadDetail::Limit(l),
             ..
         }) => assert_eq!(
-            (l.kind, l.value, l.max),
+            (l.kind(), l.value(), l.max()),
             (LimitKind::ValuesPerObject, bound + 1, bound)
         ),
         other => panic!("not refused: {:?}", other.map(|p| p.bytes_read)),

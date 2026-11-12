@@ -141,7 +141,7 @@ fn write_with(
 }
 
 fn decode_work(e: &LimitError) -> bool {
-    e.kind == LimitKind::DecodeWork
+    e.kind() == LimitKind::DecodeWork
 }
 
 /// What one value costs is the size of the value that holds it.
@@ -232,7 +232,7 @@ fn a_refused_read_or_write_counts_what_it_did() {
         let r = read(reader, &data, &t, &options, &meter);
         assert!(
             matches!(&r, Err(ReadError { detail: ReadDetail::Limit(l), .. })
-                if l.kind == LimitKind::ValuesPerObject),
+                if l.kind() == LimitKind::ValuesPerObject),
             "{reader}: {r:?}"
         );
         // UnityPyBoost reads every value but the skipped registry: the
@@ -253,7 +253,7 @@ fn a_refused_read_or_write_counts_what_it_did() {
     let mut out = DecodeBuf::new(&meter, 0, u64::MAX, LimitKind::InputMemory).unwrap();
     let w = write(&p, &t, &bounded(0), &mut out);
     assert!(
-        matches!(&w, Err(WriteError::Limit(l)) if l.kind == LimitKind::ValuesPerObject),
+        matches!(&w, Err(WriteError::Limit(l)) if l.kind() == LimitKind::ValuesPerObject),
         "{w:?}"
     );
     // Written: the root, the three vectors, `e`'s two elements and `r` as
@@ -281,11 +281,7 @@ fn past_the_opens_work_a_read_or_a_write_is_refused() {
         let meter = work_meter(max);
         let options = ReadOptions::default();
         read(reader, &data, &t, &options, &meter).unwrap();
-        let passed = LimitError {
-            kind: LimitKind::DecodeWork,
-            value: 2 * read_work,
-            max,
-        };
+        let passed = LimitError::refused(LimitKind::DecodeWork, 2 * read_work, max);
         let refused = |at| ReadError {
             kind: ReadErrorKind::Other,
             at,
@@ -309,7 +305,7 @@ fn past_the_opens_work_a_read_or_a_write_is_refused() {
     // The read and the write use the allowance up exactly: within it.
     write(&p, &t, &Limits::default(), &mut out).unwrap();
     assert_eq!(meter.decoded(), max);
-    let passed = |value| move |w: &Result<(), WriteError>| matches!(w, Err(WriteError::Limit(l)) if decode_work(l) && l.value == value);
+    let passed = |value| move |w: &Result<(), WriteError>| matches!(w, Err(WriteError::Limit(l)) if decode_work(l) && l.value() == value);
     out.truncate(0);
     let w = write(&p, &t, &Limits::default(), &mut out);
     assert!(passed(max + write_work)(&w), "the second write: {w:?}");
@@ -387,7 +383,7 @@ fn two_reads_or_writes_on_one_meter_pass_its_allowance_once() {
         assert!(ok <= 1, "both succeeded: {outcomes:?}");
         for o in &outcomes {
             if let Err(l) = o {
-                assert!(decode_work(l) && l.value > l.max, "{l:?}");
+                assert!(decode_work(l) && l.value() > l.max(), "{l:?}");
             }
         }
         // Each stops within a chunk of the allowance: neither runs on to
@@ -469,7 +465,7 @@ fn objects_over_one_span_stop_at_the_opens_work() {
         assert_eq!(reads, u64::try_from(K).unwrap() * per_read, "{reader}");
         for o in &outcomes {
             assert_eq!(
-                limit_of(o).map(|l| l.kind),
+                limit_of(o).map(|l| l.kind()),
                 Some(LimitKind::ZeroSizeElements),
                 "{reader}"
             );
@@ -482,15 +478,15 @@ fn objects_over_one_span_stop_at_the_opens_work() {
         let kinds: Vec<_> = outcomes.iter().map(|o| limit_of(o).unwrap()).collect();
         for (i, l) in kinds.iter().enumerate() {
             if i < 5 {
-                assert_eq!(l.kind, LimitKind::ZeroSizeElements, "{reader}: object {i}");
+                assert_eq!(
+                    l.kind(),
+                    LimitKind::ZeroSizeElements,
+                    "{reader}: object {i}"
+                );
             } else {
                 assert_eq!(
                     *l,
-                    LimitError {
-                        kind: LimitKind::DecodeWork,
-                        value: load + 5 * per_read,
-                        max,
-                    },
+                    LimitError::refused(LimitKind::DecodeWork, load + 5 * per_read, max),
                     "{reader}: object {i}"
                 );
             }
@@ -555,11 +551,7 @@ fn an_objects_tree_compile_counts_the_names_it_reads_on_the_open() {
         let ParseError::Tree(unityrs_core::typetree::TreeError::Limit(l)) = e else {
             panic!("not the compile's refusal: {e:?}");
         };
-        let want = LimitError {
-            kind: LimitKind::DecodeWork,
-            value: load + names,
-            max: load + names - 1,
-        };
+        let want = LimitError::refused(LimitKind::DecodeWork, load + names, load + names - 1);
         assert_eq!(l, want);
         assert_eq!(m.decoded(), load, "a refused count counts nothing");
     }
@@ -738,13 +730,13 @@ fn objects_over_many_ref_types_stop_at_the_opens_work() {
             let ReadDetail::Limit(l) = o.as_ref().unwrap_err().detail else {
                 panic!("{reader}: object {i}: {o:?}");
             };
-            assert_eq!((l.kind, l.max), (LimitKind::DecodeWork, max));
+            assert_eq!((l.kind(), l.max()), (LimitKind::DecodeWork, max));
             if i == 4 {
                 // Refused in its scan, by its chunk that would pass the
                 // allowance: the steps before it are counted.
-                assert!(l.value > done && l.value <= done + WORK_CHUNK, "{l:?}");
+                assert!(l.value() > done && l.value() <= done + WORK_CHUNK, "{l:?}");
             } else {
-                assert_eq!(l.value, done, "{reader}: object {i}");
+                assert_eq!(l.value(), done, "{reader}: object {i}");
             }
         }
     }

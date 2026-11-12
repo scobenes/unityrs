@@ -367,7 +367,7 @@ impl Registry {
             Some(dep) => dep.meter(),
             None => nested.meter().clone(),
         };
-        if let Some(limit) = meter.work_used_up() {
+        if let Some(limit) = meter.work_refused() {
             return Err(Error::Limit(limit));
         }
         let mut path = slot.rank.path().to_vec();
@@ -389,7 +389,7 @@ impl Registry {
             // Past the allowance the refusal is `DecodeWork`, kept.
             Err(Failed::Register(e)) if e.is_meter_refusal() => {
                 meter.add_work(own);
-                Err(meter.work_used_up().map_or(e, Error::Limit))
+                Err(meter.work_refused().map_or(e, Error::Limit))
             }
             Err(Failed::Register(e) | Failed::Read(e)) => Err(e),
         }

@@ -278,15 +278,16 @@ fn read_exact<'a>(data: &'a [u8], pos: &mut usize, n: usize) -> Result<&'a [u8],
 
 /// `bytes` inflated, counted as the open's work: when that passes the
 /// allowance, they are counted anyway (they were inflated), so every later
-/// detection of the open is refused before it inflates anything.
+/// detection of the open is refused before it inflates anything. The
+/// refusal is the one the meter's count made, and counted (CR8; round 4: it
+/// was the work query's afterwards, which a sum past `u64::MAX` under an
+/// allowance of `u64::MAX` answered with nothing, so a counted refusal
+/// returned `Ok`).
 fn count_work(meter: &Meter, bytes: u64) -> Result<(), DetectError> {
-    if meter.count_decode(bytes).is_ok() {
-        return Ok(());
-    }
-    meter.add_work(bytes);
-    meter
-        .work_used_up()
-        .map_or(Ok(()), |l| Err(DetectError::Work(l)))
+    meter.count_work(bytes).map_err(|refused| {
+        meter.add_work(bytes);
+        DetectError::Work(refused)
+    })
 }
 
 /// `got`, after the `bytes` read or inflated for it are counted as `open`'s
@@ -312,11 +313,7 @@ fn counted<T>(
 
 /// The stream inflated to `total`, past `max_inflate`.
 fn inflate_limit(total: u64, max_inflate: u64) -> DetectError {
-    DetectError::InflateLimit(LimitError {
-        kind: LimitKind::Inflate,
-        value: total,
-        max: max_inflate,
-    })
+    DetectError::InflateLimit(LimitError::refused(LimitKind::Inflate, total, max_inflate))
 }
 
 /// The bytes from `from` to `to`, as work.
@@ -386,7 +383,7 @@ fn gzip_inflate(
     open: Option<&Meter>,
     mut sink: impl FnMut(&[u8]),
 ) -> Result<u64, DetectError> {
-    if let Some(l) = open.and_then(Meter::work_used_up) {
+    if let Some(l) = open.and_then(Meter::work_refused) {
         return Err(DetectError::Work(l));
     }
     let mut scratch = vec![0u8; SCRATCH];
@@ -509,4 +506,36 @@ pub fn parsed_as(ty: FileType, name: &[u8], is_entry: bool) -> ParsedAs {
 pub(crate) fn raw_by_name(name: &[u8]) -> bool {
     const RAW_SUFFIXES: [&[u8]; 5] = [b".resS", b".resource", b".config", b".xml", b".dat"];
     RAW_SUFFIXES.iter().any(|s| name.ends_with(s))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DetectError, count_work};
+    use crate::error::LimitKind;
+    use crate::limits::Meter;
+
+    /// Under an allowance of `u64::MAX`, inflated work whose sum passes
+    /// `u64::MAX` is refused by the meter's count, and that refusal, which
+    /// it counted (CR8), is returned: round 4 asked, and the work query
+    /// that answered then saw the saturated sum within the allowance and
+    /// returned `Ok`. No input inflates that much, so only this test
+    /// reaches it.
+    #[test]
+    fn work_past_u64_max_is_refused_under_an_allowance_of_u64_max() {
+        let meter = Meter::unlimited();
+        meter.add_work(u64::MAX - 5);
+        assert!(count_work(&meter, 5).is_ok(), "the allowance is inclusive");
+        match count_work(&meter, 1) {
+            Err(DetectError::Work(l)) => assert_eq!(
+                (l.kind(), l.value(), l.max()),
+                (LimitKind::DecodeWork, u64::MAX, u64::MAX)
+            ),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(meter.decoded(), u64::MAX);
+        assert!(
+            meter.work_used_up().is_none(),
+            "the sum saturates at the allowance"
+        );
+    }
 }

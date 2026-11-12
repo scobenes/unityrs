@@ -158,13 +158,13 @@ fn decode(
     let name = if which == Codec::Lz4 { "lz4" } else { "lzma" };
     let fail = |e: unityrs_core::Error| match e {
         unityrs_core::Error::Limit(l) => TpkError::TooLarge {
-            what: if l.kind == LimitKind::InputMemory {
+            what: if l.kind() == LimitKind::InputMemory {
                 "decoder memory"
             } else {
                 "decoded payload"
             },
-            value: l.value,
-            max: l.max,
+            value: l.value(),
+            max: l.max(),
         },
         unityrs_core::Error::Budget(b) => memory(ChargeError::Budget(b)),
         unityrs_core::Error::Decompress { detail, .. } => TpkError::Decompress {

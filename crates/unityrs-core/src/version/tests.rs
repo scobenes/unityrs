@@ -170,7 +170,7 @@ fn a_refused_step_stops_the_packing() {
     let mut charge = charge_on(6_193);
     let got = UnityVersion::parse_charged(&s, &mut charge);
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::DecodeWork),
         "{got:?}"
     );
     assert_eq!(
@@ -184,7 +184,7 @@ fn a_refused_step_stops_the_packing() {
     let mut charge = charge_on(1_000);
     let got = UnityVersion::parse_charged(&s, &mut charge);
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork),
+        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::DecodeWork),
         "{got:?}"
     );
     let work = charge.meter().decoded();

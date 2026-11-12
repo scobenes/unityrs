@@ -139,7 +139,7 @@ fn a_refused_block_is_not_kept() {
     let held = first.entry_bytes(0).unwrap();
     let refused = second.entry_bytes(0);
     assert!(
-        matches!(&refused, Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory),
+        matches!(&refused, Err(Error::Limit(l)) if l.kind() == LimitKind::InputMemory),
         "{refused:?}"
     );
     drop((held, first));
@@ -181,7 +181,7 @@ fn a_decode_the_inputs_meter_refuses_keeps_its_prepaid_work() {
     loop {
         let before = meter.decoded();
         match b.entry_bytes(0) {
-            Err(Error::Limit(l)) if l.kind == LimitKind::InputMemory => {
+            Err(Error::Limit(l)) if l.kind() == LimitKind::InputMemory => {
                 let counted = meter.decoded() - before;
                 assert!(
                     counted >= stored,
@@ -190,7 +190,7 @@ fn a_decode_the_inputs_meter_refuses_keeps_its_prepaid_work() {
                 );
                 refused += 1;
             }
-            Err(Error::Limit(l)) if l.kind == LimitKind::DecodeWork => break,
+            Err(Error::Limit(l)) if l.kind() == LimitKind::DecodeWork => break,
             got => panic!("read {refused}: {:?}", got.map(|b| b.len())),
         }
         assert!(

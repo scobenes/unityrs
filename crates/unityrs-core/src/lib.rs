@@ -17,6 +17,10 @@
 //!   pure-Python reader and UnityPy's writer;
 //! - [`provider`], [`object`], [`container`], [`env`](mod@env): typetree sources,
 //!   objects, container paths and the `Environment`.
+//!
+//! Under the `test-counters` feature, for tests alone (`docs/plans/batch.md`
+//! section 6, CR8), `testing` counts the refusals the core meets and the
+//! span reads of its bundles; a build without it has none of that code.
 
 #![forbid(unsafe_code)]
 // No panics on untrusted input (plan section 3.15). Tests may opt out.
@@ -37,6 +41,7 @@ pub mod budget;
 pub mod classid;
 pub mod codec;
 pub mod container;
+mod counters;
 pub mod detect;
 pub mod env;
 pub mod error;
@@ -52,6 +57,8 @@ pub mod pystr;
 pub mod raw;
 pub mod stream;
 pub mod tables;
+#[cfg(feature = "test-counters")]
+pub mod testing;
 pub mod typetree;
 pub mod value;
 pub mod version;

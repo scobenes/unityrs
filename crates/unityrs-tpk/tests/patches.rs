@@ -418,7 +418,7 @@ fn f4_a_300_deep_chain_gives_levels_0_to_299_when_the_depth_allows_and_an_error_
         let provider = TpkProvider::from_bytes(&bytes, &limits(depth)).unwrap();
         let e = answer(&provider, 1, v).unwrap_err();
         assert_eq!(
-            e.limit.map(|l| l.kind),
+            e.limit.map(|l| l.kind()),
             Some(LimitKind::TreeDepth),
             "depth {depth}"
         );
@@ -447,27 +447,19 @@ fn f9_the_walk_names_the_bound_it_stops_at() {
     for (max, depth) in [(256, 257), (299, 300), (1, 2)] {
         let provider = TpkProvider::from_bytes(&bytes, &limits(max)).unwrap();
         let got = limit_of(&provider.node_list(1, v).unwrap_err());
-        let want = LimitError {
-            kind: LimitKind::TreeDepth,
-            value: depth,
-            max: u64::from(max),
-        };
+        let want = LimitError::refused(LimitKind::TreeDepth, depth, u64::from(max));
         assert_eq!(got, want, "{max}");
     }
     let rows = rows_past_the_bound();
     let got = limit_of(&rows.node_list(1, &v2()).unwrap_err());
     let max = u64::try_from(TpkProvider::MAX_TREE_ROWS).unwrap();
-    let want = LimitError {
-        kind: LimitKind::Count,
-        value: max + 1,
-        max,
-    };
+    let want = LimitError::refused(LimitKind::Count, max + 1, max);
     assert_eq!(got, want);
     // A node that lists itself reaches the depth first.
     let provider = load(&Blob::class_1(vec![vec![0]]), &limits(256)).unwrap();
     let got = limit_of(&provider.node_list(1, &v2()).unwrap_err());
     assert_eq!(
-        (got.kind, got.value, got.max),
+        (got.kind(), got.value(), got.max()),
         (LimitKind::TreeDepth, 257, 256)
     );
 }
@@ -480,7 +472,7 @@ fn f4_a_node_that_lists_itself_or_its_grandparent_is_an_error_not_a_hang() {
         for depth in [256, u32::MAX] {
             let provider = load(&Blob::class_1(nodes.clone()), &limits(depth)).unwrap();
             let got = without_a_hang(move || provider.node_list(1, &v2()).map(|_| ()));
-            let kind = limit_of(&got.unwrap_err()).kind;
+            let kind = limit_of(&got.unwrap_err()).kind();
             let want = if depth == 256 {
                 LimitKind::TreeDepth
             } else {
@@ -515,11 +507,7 @@ fn f4_the_row_bound_counts_the_rows_still_to_walk() {
     let blob = Blob::class_1(vec![vec![1, 2], vec![2; usize::from(u16::MAX)], vec![]]);
     let provider = load(&blob, &Limits::default()).unwrap();
     let max = u64::try_from(TpkProvider::MAX_TREE_ROWS).unwrap();
-    let want = LimitError {
-        kind: LimitKind::Count,
-        value: max + 2,
-        max,
-    };
+    let want = LimitError::refused(LimitKind::Count, max + 2, max);
     assert_eq!(limit_of(&provider.node_list(1, &v2()).unwrap_err()), want);
 }
 
