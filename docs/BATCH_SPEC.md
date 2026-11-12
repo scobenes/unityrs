@@ -276,6 +276,12 @@ Else the texture's image is exported. 1 to 3 are selection's skips, which need n
 
 - A bundle's identity is its spec `id`.
 - A job declares its whole dependency graph. A name in an input's AssetBundle object's `m_Dependencies` is compared, exactly (no case folding, no path or variant rule), with the ids of the bundles of its view. A name that matches none is reported, never fetched or opened: a `diagnostics` row (`undeclared_dependency`, the input, the name) and the run's `undeclared_dependencies` count. A caller who spells ids as `m_Dependencies` spells them gets no such row for a declared bundle.
+- The metadata scope is the first AssetBundle in each selected own
+  SerializedFile, matching `SerializedFile::container()`. Its dependency lists
+  concatenate in own-file/list order; repeated undeclared names remain repeated.
+  The attempt opens every own directory row in order before this traversal, so
+  an earlier shadowed or unsupported row cannot be bypassed. Reads use checked
+  typetrees and cleaned attribute names; no Environment container pass runs.
 - Wherever bundles are ordered, it is by bytewise order of their ids.
 
 ### 4.2 Views
@@ -519,6 +525,17 @@ The head is the record of the run. For every key the final head lists as `writte
 - **Diagnostics.** `same_named_cab`: a registry key (`simplify_name`, 4.3) that two or more bundles of the input's view hold in their top-level directories, one row per key, `bundle` the top-level holder 4.3 ranks highest (`X` when it holds the key, else the greatest id) and `name` the full directory path of that bundle's last top-level row with that key. `undeclared_dependency`: `bundle` null, `name` the `m_Dependencies` name (4.1). `nested_container`: an entry of the input's own bundle that is itself a bundle, met while selecting, `bundle` the input, `name` the entry's path.
 
 A reason is a code of section 9.3. A string taken from the bytes is cut to its first 1,024 bytes, at a code point boundary (an invalid byte counting as one code point, 2.2), and its row's `cut` is then true. A string that is not valid UTF-8 (a name, a CAB, an entry path, a reason's argument) is written with each invalid byte replaced by U+FFFD, so every line is UTF-8 JSON that any parser reads; its original bytes are not recoverable from the manifest, and two stored paths that agree after cutting and that replacement are not told apart. A row holds at most four strings of at most 1,024 bytes each (an id, a key or path, a cut string), each escaped to at most 6 bytes per byte, so every line is at most 32 KiB (`batch.md` 2.8). Apart from the figures the normalised comparison leaves out (timings, peaks, the host's, `extract.md` section 5), a manifest is a function of the run's records and outcomes; byte identity with another implementation is not a goal.
+
+The sealed library API is `unityrs_batch::attempt::run_attempt(AttemptArgs) ->
+AttemptEnd` (provisional until B5–B7). It borrows prepared paths, export options,
+peek metadata and a directory owner; only `Done` is eligible for the controller's
+later commit. `Failed`, `Stopped` and `RunFailure` retain partial owned artifacts
+and discard pending records without flushing. After dropping charged locals it
+checks zero Input/Dependency use and allocator refusals; a leak is `internal`
+and keeps the slot reserved, an allocator refusal is `host_memory`, under 9.1's
+precedence. The end uses fixed reason/detail codes, a view-member index and
+bounded entry text; it owns no extraction buffers or permits. A successful
+summary's `ms` is sampled at the final seal boundary and reused by the end.
 
 **Attempt artifacts (provisional until B7's manifest).** `records.ndjson`
 contains typed objects with a `type` discriminator, in append order. They carry

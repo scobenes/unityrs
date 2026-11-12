@@ -65,6 +65,7 @@ impl Writer {
                 buffer: &mut self.buffer,
                 work,
                 failure: false,
+                stopped: &|| false,
             };
             encode::record(&mut sink, r)
         })();
@@ -76,17 +77,28 @@ impl Writer {
     /// Complete and close a successful artifact. The returned summary
     /// contains exactly the figures encoded, including its own last flush.
     pub fn finish<'a>(self, summary: Summary<'a>, work: &mut Work) -> Result<Summary<'a>, Error> {
+        self.finish_stoppable(summary, work, &|| false)
+    }
+    /// Successful seal with cancellation at each records claim and flush.
+    /// On cancellation, pending bytes are discarded and claims stay owned.
+    pub fn finish_stoppable<'a>(
+        self,
+        summary: Summary<'a>,
+        work: &mut Work,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Summary<'a>, Error> {
         if summary.status == Status::Failed || summary.figures.is_none() || summary.reason.is_some()
         {
             return Err(Error::Internal);
         }
-        self.seal(summary, work, false)
+        self.seal(summary, work, false, stopped)
     }
     fn seal<'a>(
         mut self,
         mut summary: Summary<'a>,
         work: &mut Work,
         failure: bool,
+        stopped: &dyn Fn() -> bool,
     ) -> Result<Summary<'a>, Error> {
         if self.failed {
             return Err(Error::Internal);
@@ -133,10 +145,11 @@ impl Writer {
                     buffer: &mut self.buffer,
                     work,
                     failure,
+                    stopped,
                 };
                 encode::summary(&mut sink, summary)?;
                 sink.flush()?;
-                self.file.finish()?;
+                self.file.finish_stoppable(stopped)?;
                 return Ok(summary);
             }
             previous = Some(state);
@@ -159,6 +172,7 @@ struct Buffered<'a> {
     buffer: &'a mut Vec<u8>,
     work: &'a mut Work,
     failure: bool,
+    stopped: &'a dyn Fn() -> bool,
 }
 impl Buffered<'_> {
     fn flush(&mut self) -> Result<(), Error> {
@@ -170,7 +184,7 @@ impl Buffered<'_> {
         } else {
             self.work.file(self.buffer.len() as u64)?;
         }
-        self.file.append(self.buffer)?;
+        self.file.append_stoppable(self.buffer, self.stopped)?;
         self.buffer.clear();
         Ok(())
     }
@@ -218,5 +232,5 @@ pub fn write_failure_record<'a>(
     if summary.status != Status::Failed {
         return Err(Error::Internal);
     }
-    Writer::new(directory, meter)?.seal(summary, &mut Work::new(0), true)
+    Writer::new(directory, meter)?.seal(summary, &mut Work::new(0), true, &|| false)
 }

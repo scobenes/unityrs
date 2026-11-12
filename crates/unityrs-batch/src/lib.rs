@@ -19,7 +19,9 @@
 //!   for SIGTTIN, SIGTTOU and SIGXFSZ, and `CLOCK_BOOTTIME`.
 //! - [`budget`], [`work`]: reservation accounts, leak snapshots and export work.
 //! - [`spool`], [`digest`], [`records`]: owned disk claims, checksums and
-//!   bounded typed attempt artifacts, without orchestration or publication.
+//!   bounded typed attempt artifacts.
+//! - [`attempt`]: staged-path sealed extraction, copy-out and post-drop audit;
+//!   dispatch and publication remain the caller's.
 //! - [`reason`]: exit codes and their precedence, the closed reason sets,
 //!   the limit-kind table and the map from outcomes to codes (9.1 to 9.3).
 //!
@@ -47,6 +49,7 @@
 
 #[allow(unsafe_code)]
 pub mod alloc;
+pub mod attempt;
 pub mod bound;
 pub mod budget;
 pub mod digest;

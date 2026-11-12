@@ -75,6 +75,12 @@ jobs:
         run: cargo clippy -p unityrs-core -p unityrs-testkit -p unityrs-tpk -p unityrs-export --all-targets --features unityrs-testkit/test-counters,unityrs-tpk/test-counters,unityrs-export/test-counters -- -D warnings
       - name: Test, CR8's test feature
         run: cargo test -p unityrs-core -p unityrs-testkit -p unityrs-tpk -p unityrs-export --features unityrs-testkit/test-counters,unityrs-tpk/test-counters,unityrs-export/test-counters
+      # The sealed attempt's test hooks (B4b): an injected decoder panic and
+      # Environment fault; the steps of `check` build the batch crate without them.
+      - name: Clippy, sealed attempt test hooks
+        run: cargo clippy -p unityrs-batch --all-targets --features test-hooks -- -D warnings
+      - name: Test, sealed attempt test hooks
+        run: cargo test -p unityrs-batch --features test-hooks
 
   licenses:
     runs-on: ubuntu-latest

@@ -9,7 +9,7 @@ use std::io::Write as _;
 use std::sync::Arc;
 
 use unityrs_core::classid::class_name;
-use unityrs_core::files::{File, SerializedFile};
+use unityrs_core::files::SerializedFile;
 use unityrs_core::limits::{Charge, MeteredVec};
 use unityrs_core::{ObjectRef, RawStr};
 use unityrs_texture::Format;
@@ -254,28 +254,11 @@ impl<'a> Attempt<'a> {
     /// `SerializedFile`s in `files()` order. Each open is under the probe.
     pub fn select(&mut self) -> Result<MeteredVec<Arc<SerializedFile>>, Failure> {
         let seam = self.seam;
-        let own = &seam.registered.own;
-        for (i, row) in own.directory().iter().enumerate() {
-            let entry = seam.probe(|| {
-                own.entry(i)
-                    .map_err(|e| classify::entry_error(&e, &row.path))
-            })?;
-            if let File::Bundle(_) = entry {
-                let nested = &mut self.records.nested;
-                seam.probe(|| table::push(nested, row.path.clone()))?;
-            }
-        }
-        let mut files = MeteredVec::new(seam.meter);
-        for slot in own.files() {
-            let entry = seam.probe(|| {
-                own.entry(slot.dir_index)
-                    .map_err(|e| classify::entry_error(&e, &slot.name))
-            })?;
-            if let File::Serialized(sf) = entry {
-                self.charged(|| table::push(&mut files, sf))?;
-            }
-        }
-        Ok(files)
+        let nested = &mut self.records.nested;
+        super::select_own(&seam.registered.own, seam.meter, seam.hooks, &mut |path| {
+            seam.probe(|| table::push(nested, path.clone()))
+                .map_err(Failure::from)
+        })
     }
 
     /// Counts an unresolved `m_Script`.

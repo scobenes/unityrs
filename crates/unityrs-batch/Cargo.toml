@@ -36,6 +36,9 @@ libc = "=0.2.191"
 md5 = { package = "md-5", version = "=0.11.0", default-features = false }
 crc32fast = "=1.5.3"
 
+[features]
+test-hooks = ["unityrs-export/test-hooks"]
+
 [dev-dependencies]
 # Scratch for the `JOB.json` cases, `mkfifo` through its child runner, and
 # the counting allocator of the validation measurement.

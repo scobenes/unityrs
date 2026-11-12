@@ -40,6 +40,7 @@ md5 = { package = "md-5", version = "=0.11.0", default-features = false }
 # join's late names, for tests/tag_walk.rs and tests/late_names.rs); CI's
 # feature step enables it.
 [features]
+test-hooks = []
 test-counters = ["unityrs-core/test-counters"]
 
 [dev-dependencies]

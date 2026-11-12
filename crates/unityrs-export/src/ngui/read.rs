@@ -253,6 +253,7 @@ impl Reader {
         seam: &Seam<'_>,
         obj: &ObjectRef,
     ) -> Result<Option<RawStr>, Class> {
+        let _sample = Sample(obj.file().meter(), seam.hooks);
         let found = seam.probe(|| obj.tree(None).map_err(|e| classify::parse(&e)))?;
         let Some(tree) = found else {
             return Err(Class::Skip(Reason::decode_error("asset_bundle")));
@@ -690,6 +691,7 @@ pub(super) fn material_name(
     let at = pptr(parsed, material).ok_or_else(shape)?;
     let target = deref(seam, atlas.file(), at)?;
     let _top = top_bundle(target.file());
+    let _sample = Sample(target.file().meter(), seam.hooks);
     let mat = seam.probe(|| {
         target
             .read_typetree(None, true)
@@ -730,6 +732,14 @@ pub(super) fn material_name(
         return reader.peek_name(seam, &texture).map(Some);
     }
     Ok(None)
+}
+
+/// Observation ends before the file handle drops; no retained dependency pin.
+pub(super) struct Sample<'a>(pub &'a Meter, pub &'a dyn super::Hooks);
+impl Drop for Sample<'_> {
+    fn drop(&mut self) {
+        self.1.meter(self.0);
+    }
 }
 
 #[cfg(test)]

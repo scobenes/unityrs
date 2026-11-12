@@ -33,6 +33,8 @@ impl Full {
 /// Run-level failures; never an input's data failure.
 #[derive(Debug)]
 pub enum Error {
+    /// Cooperative cancellation before a write or final flush. Claims remain owned.
+    Stopped,
     /// `spool_full`, exit 5.
     Full(Full),
     /// `host_io`, exit 74. The error is for diagnostics, not public paths.
