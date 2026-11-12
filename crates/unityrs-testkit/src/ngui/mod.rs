@@ -29,10 +29,10 @@ mod objects;
 mod scenes;
 
 pub use objects::{
-    PropName, atlas, format, material, material_tpk, mono_behaviour, mono_script, sprite, texture,
-    texture_streamed,
+    PropName, atlas, format, material, material_tpk, mono_behaviour, mono_script, set_field,
+    sprite, texture, texture_streamed,
 };
-pub use scenes::{AtlasScene, CutOptions, SceneBundle, scenes};
+pub use scenes::{AtlasScene, CutOptions, SceneBundle, failure_scenes, scenes};
 
 use crate::blob::NodeSpec;
 use crate::serialized::{ExternalSpec, ObjectSpec, SerializedSpec, TypeSpec};
@@ -349,6 +349,18 @@ pub fn file(
     objects: &[Object],
     type_trees: bool,
 ) -> Result<Vec<u8>, BuildError> {
+    file_on(None, externals, objects, type_trees)
+}
+
+/// [`file`], its target platform `platform` (a `BuildTarget` value) when
+/// that is set, else the default's.
+pub fn file_on(
+    platform: Option<i32>,
+    externals: &[&str],
+    objects: &[Object],
+    type_trees: bool,
+) -> Result<Vec<u8>, BuildError> {
+    let base = SerializedSpec::default();
     let mut types = Vec::new();
     let mut objs = Vec::new();
     for (i, o) in objects.iter().enumerate() {
@@ -375,6 +387,7 @@ pub fn file(
         });
     }
     Ok(crate::serialized::build(&SerializedSpec {
+        platform: platform.unwrap_or(base.platform),
         type_trees,
         types,
         objects: objs,

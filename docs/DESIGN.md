@@ -186,7 +186,7 @@ Writing has tiers of its own. Where UnityPy writes, unityrs follows the rule in 
 
 ## 4. Architecture
 
-A Cargo workspace. Licences are declared per crate. The table lists the planned crates and what each will hold; it is not the workspace today. P1 built `unityrs-core`, `unityrs-tpk` and `unityrs-cli` (with `dump` and `values` only), plus the three support crates at the end of the table. Every other crate lands in the phase section 5 gives it; of P1b's, `unityrs-imageio` holds so far the PNG writer and the visible-pixel hash (`docs/plans/extract.md` E19, E20), `unityrs-texture` the five formats' decoders and the texture selection (E15, E66), and `unityrs-meshdecode` the vertex-data unpack and `get_triangles`, CompressedMesh aside (E16).
+A Cargo workspace. Licences are declared per crate. The table lists the planned crates and what each will hold; it is not the workspace today. P1 built `unityrs-core`, `unityrs-tpk` and `unityrs-cli` (with `dump` and `values` only), plus the three support crates at the end of the table. Every other crate lands in the phase section 5 gives it; of P1b's, `unityrs-imageio` holds so far the PNG writer and the visible-pixel hash (`docs/plans/extract.md` E19, E20), `unityrs-texture` the five formats' decoders, the texture selection and the sprite renderer (E15, E66, E17), `unityrs-meshdecode` the vertex-data unpack and `get_triangles`, CompressedMesh aside (E16), and `unityrs-export` the NGUI atlas cutter and its JSON writer (E21 to E26).
 
 | crate | contents |
 |---|---|

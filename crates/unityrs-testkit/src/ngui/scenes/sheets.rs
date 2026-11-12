@@ -476,3 +476,46 @@ pub fn failed_sheet_rows() -> Built {
         options,
     ))
 }
+
+/// Two hops into a WebFile sibling (section 5 step 1): the atlas's
+/// `material` points into the dependency's `CAB-dv`, whose `_MainTex`
+/// `m_Texture` points through `CAB-dv`'s external at its own bundle's
+/// WebFile row `wv.resS`, which version 1's core refuses to open
+/// (`decode_error`, `unsupported`, 4.3). That error is the material path's,
+/// so it gives no name and records nothing, and step 2 takes the texture
+/// named as the atlas, `hop`, not `decoy`, the name the WebFile's entry
+/// holds at the pointer's path id.
+pub fn webfile_sibling() -> Built {
+    let dep = file(
+        &["archive:/CAB-dv/wv.resS"],
+        &[material(1, "mv", PropName::Plain, &[("_MainTex", (1, 5))])],
+        true,
+    )?;
+    let decoy = file(&[], &[rgba(5, "decoy", 0xA1, 1, 1)], true)?;
+    let cab = file(
+        &["archive:/CAB-dv/CAB-dv"],
+        &[
+            mono_script(1, "NGUIAtlas"),
+            atlas(
+                2,
+                b"hop",
+                SCRIPT,
+                (1, 1),
+                vec![plain("s", (0, 0, 1, 1))],
+                Vec::new(),
+            ),
+            rgba(3, "decoy", 0xA2, 1, 1),
+            rgba(4, "hop", 0xA3, 1, 1),
+        ],
+        true,
+    )?;
+    let web = web_file(&[("CAB-wv", decoy)]);
+    Ok(scene(
+        vec![
+            one("d.bundle", &[("CAB-dv", dep), ("wv.resS", web)], &[]),
+            one("x.bundle", &[("CAB-xv", cab)], &["d.bundle"]),
+        ],
+        &["x.bundle"],
+        CutOptions::default(),
+    ))
+}

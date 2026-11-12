@@ -46,7 +46,8 @@ pub use glob::{Glob, fnmatchcase, py_units};
 pub use index::Value;
 use name::Name;
 pub use printable::is_printable;
-pub use py::{PyStr, py_float_repr, py_str};
+pub use py::{PyStr, py_str};
+pub use unityrs_core::pyfloat::py_float_repr;
 
 /// The index entry kinds `--kind` defaults to (`unitypy_dump.py` `INDEX_KINDS`).
 pub const INDEX_KINDS: [&str; 2] = ["bundle", "unitypy-sample"];

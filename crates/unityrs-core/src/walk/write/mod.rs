@@ -61,8 +61,8 @@ mod pyobj;
 mod run;
 
 use lookup::{KeptTables, Lookup};
-pub use pyobj::python_attributes;
 use pyobj::{CLEAN_MAX, Obj, chars, clean_name, narrow};
+pub use pyobj::{cleans_to, python_attributes};
 
 /// Writes `parsed` through `tree` (the object's own tree, or a `nodes=`
 /// override: keys are then matched by name), appending to `out`, a buffer

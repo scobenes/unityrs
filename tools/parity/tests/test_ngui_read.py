@@ -5,6 +5,7 @@ Needs UnityPy 1.25.2 and Pillow 9.5.0 (the oracle image), skipped elsewhere; the
 (`ngui_scenes.py`).
 """
 
+import dataclasses
 import json
 import os
 import struct
@@ -12,6 +13,7 @@ import sys
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
@@ -462,6 +464,63 @@ class UnityPyDeparts(unittest.TestCase):
         self.assertEqual((caught.exception.reason, caught.exception.detail), ("decode_error", "negative_size"))
 
 
+class Wide:
+    """An image as `parse_image_data` made it, but one pixel wider than Pillow's PNG encoder takes in its mode: its
+    crops are the image's own, and it has no `save`, so a PNG made of it fails the test."""
+
+    def __init__(self, image):
+        self.image, self.mode, self.height = image, image.mode, image.height
+        self.width = rd.ENCODER_WIDTH_CAP[image.mode] + 1
+        self.size = (self.width, self.height)
+
+    def crop(self, box):
+        return self.image.crop(box)
+
+
+@unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
+class EncoderWidth(unittest.TestCase):
+    """Section 3's answer 11 at the reference's two texture-output sites (review round 4's A1 and A2): every image
+    `parse_image_data` makes is mocked too wide to write. Each texture output, a sheet's and a plain candidate's, is
+    skipped `pillow_memory_error`; the atlases cut the sheet as before, with textures exported or not."""
+
+    def test_a_texture_too_wide_to_write_skips_its_own_output_alone(self):
+        scene = ngui_scenes.scenes()["own_sheet_by_material_name"]
+        x = scene.inputs[0]
+        real = Texture2DConverter.parse_image_data
+
+        def cut(texture_key, wide):
+            options = dataclasses.replace(scene.options, texture_key=texture_key)
+            made = (lambda *a, **k: Wide(real(*a, **k))) if wide else real
+            with mock.patch.object(Texture2DConverter, "parse_image_data", made):
+                return ngui_cutter.cut(x, scene.view(x), options)
+
+        def rows(result):
+            outputs = [(o.kind, o.key, o.path_id) for o in result.outputs]
+            return outputs, [(s.path_id, s.output, s.reason, s.detail) for s in result.skips], result.outputs
+
+        for texture_key in ("{name}.png", None):
+            with self.subTest(texture_key=texture_key):
+                outputs, skips, files = rows(cut(texture_key, wide=False))
+                wide_outputs, wide_skips, wide_files = rows(cut(texture_key, wide=True))
+                textures = [o for o in outputs if o[0] == "texture"]
+                self.assertEqual(len(textures), 2 if texture_key else 0)
+                # The atlases' outputs, the same identities; the textures' outputs, skipped each in its place.
+                self.assertEqual(wide_outputs, [o for o in outputs if o[0] != "texture"])
+                # And the same bytes (review round 5's T3): each crop's, and each JSON's but its `texture_width`,
+                # which is the sheet's as decoded, the mocked width.
+                for want, got in zip([f for f in files if f.kind != "texture"], wide_files, strict=True):
+                    if got.kind != "atlas_json":
+                        self.assertEqual(got.data, want.data, got.key)
+                        continue
+                    want_json, got_json = json.loads(want.data), json.loads(got.data)
+                    wide = {cap + 1 for cap in rd.ENCODER_WIDTH_CAP.values()}
+                    self.assertIn(got_json["texture_width"], wide, got.key)
+                    self.assertEqual(got_json, {**want_json, "texture_width": got_json["texture_width"]}, got.key)
+                refused = [(p, "texture", "decode_error", "pillow_memory_error") for _, _, p in textures]
+                self.assertEqual([s for s in wide_skips if s[3] == "pillow_memory_error"], refused)
+                self.assertEqual([s for s in wide_skips if s[3] != "pillow_memory_error"], skips)
+
+
 @unittest.skipUnless(ORACLE, "needs UnityPy 1.25.2 (the oracle image)")
 class Bounds(unittest.TestCase):
     def test_texture_pixels_count_the_padded_size(self):
@@ -478,8 +537,9 @@ class Bounds(unittest.TestCase):
 
     def test_the_raw_decoder_s_width_cap(self):
         """Pillow's raw decoder refuses a row past `INT_MAX / bits - 7` pixels with `MemoryError`, after the image
-        is allocated; at the cap, too little data is `not enough image data`. The cap is `pillow_memory_error`'s
-        only source; any other `MemoryError` propagates."""
+        is allocated; at the cap, too little data is `not enough image data`. In `decode` this cap is the one
+        `MemoryError` read as `pillow_memory_error`, and any other propagates; the PNG encoder's cap (section 3's
+        answer 11) is the other source, a texture output's own (`encoder_refusal`)."""
         for fmt, cap in ((TextureFormat.RGBA32, 67_108_856), (TextureFormat.RGB24, 89_478_478)):
             with self.subTest(fmt=fmt.name):
                 self.assertEqual(rd.RAW_WIDTH_CAP[fmt.name], cap)
@@ -496,8 +556,8 @@ class Bounds(unittest.TestCase):
         with self.assertRaises(Image.DecompressionBombError):
             im.crop((0, 0, 20_000, 10_000))
         self.assertEqual(rd.crop_refusal(0, 0, 20_000, 10_000), "decompression_bomb")
-        self.assertEqual(rd.crop_refusal(0, 0, 178_956_970, 1), None)
-        self.assertEqual(rd.crop_refusal(0, 0, 178_956_971, 1), "decompression_bomb")
+        self.assertEqual(rd.crop_refusal(0, 0, 1, 178_956_970), None)
+        self.assertEqual(rd.crop_refusal(0, 0, 1, 178_956_971), "decompression_bomb")
         # An area past 64 bits: 2^33 x 2^31 = 2^64, which a 64-bit product wraps to 0; Pillow refuses it first.
         with self.assertRaises(Image.DecompressionBombError):
             im.crop((0, 0, 2**33, 2**31))
@@ -513,6 +573,27 @@ class Bounds(unittest.TestCase):
             self.assertEqual(rd.crop_refusal(*rect), "crop_overflow")
         self.assertEqual(im.crop((2**31 - 2, 0, 2**31 - 1, 1)).getpixel((0, 0)), (0, 0, 0, 0))
         self.assertIsNone(rd.crop_refusal(2**31 - 2, 0, 1, 1))
+
+    def test_the_png_encoder_s_width_cap(self):
+        """Section 3's answer 11 and section 5's crops: Pillow's PNG encoder refuses a row past `INT_MAX / bits - 7`
+        pixels in the image's mode, which the reference decides from the width and the mode, with no image made,
+        after the area and the edges."""
+        self.assertEqual(rd.ENCODER_WIDTH_CAP, {"RGBA": 67_108_856, "RGB": 89_478_478})
+        for mode, cap in rd.ENCODER_WIDTH_CAP.items():
+            with self.subTest(mode=mode):
+                self.assertIsNone(rd.crop_refusal(0, 0, cap, 1, mode))
+                self.assertEqual(rd.crop_refusal(0, 0, cap + 1, 1, mode), "pillow_memory_error")
+                # The area first, then the edges.
+                self.assertEqual(rd.crop_refusal(0, 0, cap + 1, 3, mode), "decompression_bomb")
+                self.assertEqual(rd.crop_refusal(2**31 - cap, 0, cap + 1, 1, mode), "crop_overflow")
+        # RGB's cap is wider than RGBA's: a width between them is refused only in RGBA.
+        self.assertIsNone(rd.crop_refusal(0, 0, 67_108_857, 1, "RGB"))
+        self.assertEqual(rd.crop_refusal(0, 0, 67_108_857, 1), "pillow_memory_error")
+        texture = type("Texture", (), {"m_TextureFormat": TextureFormat.RGB24.value})
+        self.assertEqual(rd.mode_of(texture), "RGB")
+        for fmt in (TextureFormat.RGBA32, TextureFormat.DXT1, TextureFormat.DXT5, TextureFormat.BC7):
+            texture.m_TextureFormat = fmt.value
+            self.assertEqual(rd.mode_of(texture), "RGBA", fmt.name)
 
     def test_the_integer_node_types(self):
         """Recognition 2's integer types: `FUNCTION_READ_MAP`'s, less `float`, `double`, `bool`, `string` and

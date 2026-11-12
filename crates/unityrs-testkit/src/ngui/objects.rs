@@ -309,3 +309,18 @@ pub fn texture_streamed(
     fields.push(("m_StreamData".to_owned(), stream));
     Object::new(path_id, 28, V::Struct("Texture2D".to_owned(), fields))
 }
+
+/// `object` with its field `name` set to `value` (in place, keeping its
+/// position) and renamed `rename` when that is set; a field it lacks is
+/// appended. A scene's way to give a builder's object another shape.
+#[must_use]
+pub fn set_field(mut object: Object, name: &str, value: V, rename: Option<&str>) -> Object {
+    if let V::Struct(_, fields) = &mut object.value {
+        let to = rename.unwrap_or(name).to_owned();
+        match fields.iter_mut().find(|(n, _)| n == name) {
+            Some(f) => *f = (to, value),
+            None => fields.push((to, value)),
+        }
+    }
+    object
+}

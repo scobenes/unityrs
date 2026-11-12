@@ -571,6 +571,29 @@ class Cutter(unittest.TestCase):
             [("CAB-x21", 5, "material_name", "CAB-x21", 3), ("CAB-x21", 6, "material_name", "CAB-x21", 3)],
         )
 
+    def test_an_atlas_s_fields_and_a_peeked_name_by_their_raw_names(self):
+        # Review round 2's C2: `mSprites?` and `mPixelSize?` after the atlas's own fields are other keys of its
+        # dict. C3: the peek selects `name`, the first of `m_Name` and `name`, and reads it by that raw key.
+        r = self.one("raw_names")
+        text = json.loads(by_key(r)["rn.json"].data)
+        self.assertEqual((text["sprite_count"], text["pixel_size"]), (1, 1.0))
+        self.assertEqual([s["name"] for s in text["sprites"]], ["one"])
+        units = (("rn.png", "rn.json", "rn/one.png"), ("right.png", "right.json", "right/s.png"))
+        kinds = ("texture", "atlas_json", "atlas_sprite")
+        self.assertEqual(
+            outputs(r), [(kind, key, keys[0]) for keys in units for kind, key in zip(kinds, keys, strict=True)]
+        )
+        self.assertEqual(r.sheets, [("CAB-xr", 3, "atlas_name", "CAB-xr", 2), ("CAB-xr", 5, "atlas_name", "CAB-xr", 4)])
+
+    def test_keys_past_1024_bytes_and_a_stream_read_to_its_end(self):
+        r = self.one("long_keys")
+        self.assertEqual(skips(r), [texture_skip("CAB-xk", i, "unwritable_key(too_long)") for i in (2, 3, 4)])
+        self.assertEqual(outputs(r), [("texture", "ok", None)])
+        # Review round 2's C1: a stream's size -1 reads to the end of the `.resS`, from offset 4 and from -4.
+        w = by_key(self.one("wide_texture_fields"))
+        for key in ("to_end.png", "neg_to_end.png"):
+            self.assertEqual(image(w[key].data), ("RGBA", (1, 1), [px(0xC5, 0, 0)]), key)
+
     def test_every_json_has_section_five_s_keys_in_order(self):
         for name, scene in self.scenes.items():
             for result in ngui_scenes.run(scene):
@@ -630,6 +653,33 @@ class Keys(unittest.TestCase):
         for key, want in cases:
             self.assertEqual(nc.key_refusal(key), want, key)
         self.assertEqual(nc.key_refusal(b"x", b"_unityrs/"), "reserved_prefix")  # after the sink's prefix
+
+    def test_a_key_past_1024_bytes_is_decided_on_its_first_1025(self):
+        # 2.3: a break past byte 1,025 is not seen, and the rules that need the key's end are not applied.
+        base = b"/".join([b"s" * 200] * 5) + b"/" + b"t" * 30  # 1,035 bytes, its segments within 255
+        self.assertEqual(len(base), 1035)
+        cases = [
+            (base + b"\x01", "too_long"),  # a control character past byte 1,025
+            (base + b"/", "too_long"),  # a trailing slash
+            (base + b"/..", "too_long"),  # a last segment `..`
+            (base[:1024] + "é".encode(), "too_long"),  # a code point cut at byte 1,025
+            (base[:1023] + b"\xff" + b"a" * 8, "not_utf8"),  # an invalid byte within the first 1,025
+            (b"a\x01" + base, "control_char"),
+            (b"a/../" + base, "dot_segment"),
+            (b"a//" + base, "empty_segment"),
+            (base[:1024], None),
+        ]
+        for key, want in cases:
+            with self.subTest(key=key[-8:]):
+                self.assertEqual(nc.key_refusal(key), want)
+        # A segment's length is its bytes as read: 254 bytes and two of a four-byte code point the stop cuts are
+        # 256, `segment_too_long`; 253 and two are 255, and the key is `too_long`.
+        smile = "\U0001f600".encode()
+        long_seg = b"aa/" + b"a/" * 383 + b"x" * 254 + smile
+        short_seg = b"aaa/" + b"a/" * 383 + b"x" * 253 + smile
+        self.assertEqual((len(long_seg), len(short_seg)), (1027, 1027))
+        self.assertEqual(nc.key_refusal(long_seg), "segment_too_long")
+        self.assertEqual(nc.key_refusal(short_seg), "too_long")
 
     def test_a_view(self):
         self.assertEqual(nc.view_of({"x": ["b", "a"], "a": ["c"], "b": [], "z": ["x"]}, "x"), ["a", "b", "c", "x"])

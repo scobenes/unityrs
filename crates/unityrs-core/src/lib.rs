@@ -47,6 +47,7 @@ pub mod once;
 pub mod options;
 pub mod pin;
 pub mod provider;
+pub mod pyfloat;
 pub mod pystr;
 pub mod raw;
 pub mod stream;
