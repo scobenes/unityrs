@@ -334,8 +334,9 @@ fn nameless(o: Object) -> Object {
 /// `CAB-x15d`, is stored with no typetrees, which the TPK reads: its
 /// texture `tl`'s name read fails (`asset_bundle`), so it owns no name and
 /// the later `tl`, of the second file, is the atlas `tl`'s sheet; its
-/// material `tlmat`, in the TPK's layout, names the second file's `tmx`,
-/// but is not read, so the atlas `tm` cuts the texture of its own name. The
+/// material `tlmat`, in the stripped layout
+/// ([`crate::ngui::material_tpk`]), names the second file's `tmx`, but is
+/// not read, so the atlas `tm` cuts the texture of its own name. The
 /// second file's typed material `tqmat` names the stripped `tl`, whose name
 /// read fails, so the atlas `tq` gets no name and cuts `tq`.
 fn typetree_reach() -> Result<(Vec<u8>, Vec<u8>), BuildError> {
