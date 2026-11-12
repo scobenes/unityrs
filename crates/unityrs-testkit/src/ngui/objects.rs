@@ -5,9 +5,10 @@
 
 use super::{Object, V, pair, pptr, s, st, vector};
 
-/// The MonoBehaviour head every MonoBehaviour starts with (the TPK's, so
-/// UnityPy's `parse_monobehaviour_head` reads it from a file with or
-/// without typetrees): `m_GameObject`, `m_Enabled`, `m_Script`, `m_Name`.
+/// The MonoBehaviour head every MonoBehaviour starts with, in the field
+/// order of UnityPy's generated `MonoBehaviour` class (`generated.py`, MIT),
+/// so UnityPy's `parse_monobehaviour_head` reads it from a file with or
+/// without typetrees: `m_GameObject`, `m_Enabled`, `m_Script`, `m_Name`.
 fn head(script: (i32, i64), name: &[u8]) -> Vec<(String, V)> {
     vec![
         ("m_GameObject".to_owned(), pptr("GameObject", (0, 0))),
@@ -31,8 +32,9 @@ pub fn mono_behaviour(
 }
 
 /// A MonoScript (class 115) of `class_name`, in no namespace, with the
-/// 2022.3 fields the TPK reads a stripped one by, `m_PropertiesHash` (a
-/// `Hash128`) among them.
+/// 2022.3 fields of UnityPy's generated `MonoScript` class (`generated.py`,
+/// MIT) and AssetStudio's `MonoScript` reader (MIT), the layout a stripped
+/// one is read by, `m_PropertiesHash` (a `Hash128`) among them.
 #[must_use]
 pub fn mono_script(path_id: i64, class_name: &str) -> Object {
     let hash = V::Struct(
@@ -192,11 +194,13 @@ pub fn material(path_id: i64, name: &str, kind: PropName, envs: &[(&str, (i32, i
     )
 }
 
-/// A Material (class 21) of every field of the 2022.3 layout, in the bytes
-/// the TPK reads a stripped one by, its `m_TexEnvs` holding `envs` (plain
+/// A Material (class 21) of every field of the 2022.3 layout, the one a
+/// stripped Material is read by, its `m_TexEnvs` holding `envs` (plain
 /// names): [`material`]'s value with the keyword lists, flags, tag map,
-/// shader passes, `m_Ints` and texture stacks between, all empty. The two
-/// flags are a `UInt8` and an aligned `bool`, the TPK's alignment.
+/// shader passes, `m_Ints` and texture stacks between, all empty. The
+/// fields and their order are UnityPy's generated `Material` class's
+/// (`generated.py`, MIT); the two flags are a `UInt8` and an aligned
+/// `bool`, as AssetStudio's `Material` reader (MIT) reads them.
 #[must_use]
 pub fn material_tpk(path_id: i64, name: &str, envs: &[(&str, (i32, i64))]) -> Object {
     let mut value = material(path_id, name, PropName::Plain, envs).value;
