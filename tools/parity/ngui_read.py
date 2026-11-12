@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import ntpath
 import struct
+from contextlib import contextmanager
 
 import UnityPy
 from PIL import Image
@@ -232,6 +233,27 @@ def name_of(obj) -> str:
     return field(read(lambda: obj.parse_as_dict(peek, check_read=False)), node.m_Children[at].m_Name, str)
 
 
+@contextmanager
+def sealed_images():
+    """Refuse every Texture2D image assignment during a reference's reads and rendering; restore on exit."""
+    # UnityPy 1.25.2's setter (classes/legacy_patch/Texture2D.py:78) delegates to set_image, whose non-image
+    # branch opens the value (classes/legacy_patch/Texture2D.py:25-26). A sealed attempt never opens a host path
+    # a file's data names. Raise instead, as an invalid non-image value does, at every construction, including
+    # nested fields and direct Sprite/atlas reads. UnityPy can fall back to UnknownObject; unused fields stay
+    # unused. Preserve the getter for SpriteHelper's image reads, and restore even on failure or nested use.
+    original = Texture2D.image
+
+    def refuse(self, value):
+        raise TypeError("Texture2D.image assignment is refused in a sealed reference")
+
+    Texture2D.image = original.setter(refuse)
+    try:
+        yield
+    finally:
+        Texture2D.image = original
+
+
+@sealed_images()
 def read(f, *args):
     """A UnityPy read: its value, or its `Failure`."""
     try:
@@ -240,6 +262,7 @@ def read(f, *args):
         raise Failure(*READ) from e
 
 
+@sealed_images()
 def checked(method):
     """A UnityPy object read with `check_read`, as UnityPy's default: `method(check_read=True)`'s value, or its
     `Failure`. A `ValueError` is the check's when the same read without it succeeds: `asset_bundle`."""
@@ -382,13 +405,28 @@ def maintex_name(tree: dict, obj) -> str | None:
 # ------------------------------------------------------------------ a texture's answers (BATCH_SPEC section 3)
 
 
+# A Texture2D's extra child `image` is set through `Texture2D.image`'s setter (classes/legacy_patch/Texture2D.py:78),
+# which opens any value that is no image as a path or a file (classes/legacy_patch/Texture2D.py:25-26, `Image.open`):
+# a string or bytes naming an image on the host builds the Texture2D from that file; a path Pillow cannot open fails
+# the set, leaving an `UnknownObject`. A sealed attempt never opens a host path a file's data names, so the engine
+# refuses every value (`ngui/read.rs`'s `SETTERLESS`), `read`. Both references replace the setter in
+# `sealed_images`; this root guard additionally preserves checked-read precedence. A stated divergence
+# (PARITY.md, Tier C), which `test_sprites_kind.py` pins against the real setter.
+IMAGE = "image"
+
+
 def texture_of(obj):
     """A Texture2D's object read, in 4.4 step 2's order: its typetree, the checked read, UnityPy's `Texture2D` (a
     typetree that lacks a field the class requires, classes/generated.py:5153-5164, is read as an `UnknownObject`,
     helpers/TypeTreeHelper.py:241-249), integer sides and format, an `m_StreamData`, when it has one, of a string path
     and two integers, `image_data` bytes, and `m_PlatformBlob` a list or absent; each failure but the first two the
-    read's (`read`)."""
-    texture = shaped(checked(typed(obj).read), Texture2D)
+    read's (`read`). A root with a child whose cleaned name is `image` is `read` whatever its value (`IMAGE`),
+    after its checked dict read, so this policy never invokes the setter or masks a checked read's failure."""
+    node = typed(obj).serialized_type.node
+    if any(child._clean_name == IMAGE for child in node.m_Children):
+        checked(obj.parse_as_dict)
+        raise Failure(*READ)
+    texture = shaped(checked(obj.read), Texture2D)
     for name in ("m_Width", "m_Height", "m_TextureFormat"):
         shaped(getattr(texture, name, None), int)
     stream = getattr(texture, "m_StreamData", None)

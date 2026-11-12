@@ -241,6 +241,20 @@ fn templates_parse_braces_and_refuse_unknown_variables() {
         Err(TemplateError::Empty)
     );
     assert!(Template::parse("{type}/{safe_name}_{path_id}", TemplateKind::Texture).is_ok());
+    // `outputs.sprites` takes a texture's variables, no atlas's (2.1).
+    let sprite = "{safe_input}/{type}/{name}-{safe_name}_{path_id}.png";
+    assert!(Template::parse(sprite, TemplateKind::Sprite).is_ok());
+    for name in ["atlas", "safe_atlas", "sprite", "safe_sprite"] {
+        assert_eq!(
+            Template::parse(&format!("{{{name}}}"), TemplateKind::Sprite),
+            Err(TemplateError::NotAllowed(name.to_owned()))
+        );
+    }
+    assert_eq!(
+        Template::parse("{name}", TemplateKind::AtlasJson),
+        Err(TemplateError::NotAllowed("name".to_owned()))
+    );
+    assert_eq!(TemplateKind::Sprite.name(), "sprite");
 }
 
 #[test]

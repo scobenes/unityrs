@@ -61,6 +61,8 @@ VARIABLES = {
     "texture": {"input", "safe_input", "type", "name", "safe_name", "path_id"},
     "atlas_json": {"input", "safe_input", "path_id", "atlas", "safe_atlas"},
     "atlas_sprite": {"input", "safe_input", "path_id", "atlas", "safe_atlas", "sprite", "safe_sprite"},
+    # The `sprites` kind's (`sprites_kind.py`).
+    "sprite": {"input", "safe_input", "type", "name", "safe_name", "path_id"},
 }
 bytewise = rd.bytewise
 
@@ -263,6 +265,7 @@ def own_textures(objects) -> list[Tex]:
     return out
 
 
+@rd.sealed_images()
 def cut(input_id: str, view: dict[str, bytes], opts: Options | None = None) -> Result:
     """Section 5 on one input over its view."""
     opts = opts or Options()

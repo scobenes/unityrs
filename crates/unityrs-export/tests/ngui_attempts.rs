@@ -285,7 +285,10 @@ fn each_read_refusal_is_its_objects_budget_skip() {
     // a refusal at a resource read, a name peek, a Material read, a
     // dereference or a texture read is the reading object's skip for the
     // budget, or the input's failure, or absorbed by the core (the cut
-    // whole); each site is seen to skip at least once. The rows are tied to
+    // whole); each site is seen to skip at least once, but a name peek: the
+    // textures' names are read once for all, and a refused one is read
+    // again by the next asker, which then reads it (B3's review round 3,
+    // S9), so it is seen and may skip nothing. The rows are tied to
     // the object read (review round 4's T3): an atlas's own Material read
     // or dereference skips that one atlas (a MonoBehaviour, its path id);
     // a texture's read or its data's skips that texture (a Texture2D) and
@@ -293,6 +296,7 @@ fn each_read_refusal_is_its_objects_budget_skip() {
     // row's exact object, found from the scene alone, is
     // `each_read_refusal_skips_the_object_its_scene_reads`'s.
     let mut skipped = BTreeSet::new();
+    let mut peeked = false;
     for name in [
         "material_in_dependency",
         "streamed_sheets",
@@ -318,6 +322,7 @@ fn each_read_refusal_is_its_objects_budget_skip() {
             ) {
                 continue;
             }
+            peeked |= site == "peek_name";
             match got {
                 Ok(ran) => {
                     ran.assert_units();
@@ -358,9 +363,10 @@ fn each_read_refusal_is_its_objects_budget_skip() {
             }
         }
     }
-    for site in ["resource", "peek_name", "material", "deref", "texture_read"] {
+    for site in ["resource", "material", "deref", "texture_read"] {
         assert!(skipped.contains(site), "no {site} skip: {skipped:?}");
     }
+    assert!(peeked, "no peek_name refusal");
 }
 
 /// A skip's identity: its file, path id, class and output.
@@ -474,9 +480,15 @@ fn each_read_refusal_skips_the_object_its_scene_reads() {
     //   dereference, the `_MainTex` texture's name): the atlas,
     //   `budget(input)`, and then, as step 1 says, no name and step 2 runs:
     //   no texture has the atlas's name `a`, so `sheet_not_found` too;
-    // - the sheet's read or its data's: the sheet and its atlas;
-    // - the sheet's name peek: the sheet, which then owns no name, so its
-    //   atlas finds none (4.4 step 1, section 5 step 2).
+    // - the sheet's data: the sheet and its atlas;
+    // - the sheet's object read: the one object that asked for it (the
+    //   atlas's plan, `plan_atlas`, or the sheet's own, `plan_textures`,
+    //   named from the stack: B3's review round 3, T3), its refusal not
+    //   kept for the next (round 2, S1), which asks again and reads it;
+    // - the sheet's name peek, which reads every texture's name once: not
+    //   kept, so the next asker (the sheet's own plan, or its atlas's sheet
+    //   lookup) reads it again and finds it, and nothing is skipped (round
+    //   3, S9).
     // One expected set for each refusal, chosen by the read it was in, from
     // its stack captured at the hook (review round 6's T1): step 1's path
     // (`material_name`), recognition's (`script_class`), or neither. Only
@@ -490,7 +502,8 @@ fn each_read_refusal_skips_the_object_its_scene_reads() {
         let atlas_only = rows(&[(&atlas_row, budget)]);
         let step_1 = rows(&[(&atlas_row, budget), (&atlas_row, "sheet_not_found")]);
         let both = rows(&[(&atlas_row, budget), (&sheet_row, budget)]);
-        let unnamed = rows(&[(&atlas_row, "sheet_not_found"), (&sheet_row, budget)]);
+        let unnamed = rows(&[]);
+        let sheet_only = rows(&[(&sheet_row, budget)]);
         for at in 0.. {
             assert!(at < 1 << 16);
             let (site, stack, got) = refused_with_stack(&s, "x.bundle", at);
@@ -522,14 +535,21 @@ fn each_read_refusal_skips_the_object_its_scene_reads() {
                     (id, k.reason.reason.clone())
                 })
                 .collect();
+            if site == "peek_name" && !step_1_path {
+                assert_eq!(got, unnamed, "{at} ({site})");
+                skipped.insert(site);
+                continue;
+            }
             if got.is_empty() {
                 continue;
             }
             let want = match site {
                 "deref" if recognition => &atlas_only,
                 "material" | "deref" | "peek_name" if step_1_path => &step_1,
-                "peek_name" => &unnamed,
-                "resource" | "texture_read" => &both,
+                "resource" => &both,
+                "texture_read" if stack.contains("Attempt::plan_atlas") => &atlas_only,
+                "texture_read" if stack.contains("Attempt::plan_textures") => &sheet_only,
+                "texture_read" => panic!("{at} ({site}) asked by no plan: {stack}"),
                 "material" | "deref" => panic!("{at} ({site}) outside its read: {stack}"),
                 _ => continue,
             };

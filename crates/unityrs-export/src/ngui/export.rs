@@ -1,4 +1,5 @@
-//! The export (4.4's export order): each sheet with the atlases that cut
+//! The export (4.4's export order): the sprite groups first
+//! ([`super::sprites`]), then each sheet with the atlases that cut
 //! it, the sheets in the order of each one's first atlas in plan order, the
 //! sheet's texture output first, then each atlas's JSON and crops; then
 //! every other texture in plan order. Every buffer an input sizes is
@@ -12,15 +13,16 @@
 use std::sync::Arc;
 
 use md5::{Digest, Md5};
+use unityrs_core::files::SerializedFile;
 use unityrs_core::limits::{Charge, ChargeError, Meter, MeteredVec, heap_cost};
 use unityrs_core::{Parsed, Value};
 use unityrs_imageio::{Buffer, Charger, EncodeError, ImageError, visible_hash};
-use unityrs_texture::{Image, Mode, decode, plan};
+use unityrs_texture::{Format, Image, Mode, decode, plan};
 
 use super::attempt::{Attempt, Site};
 use super::classify::{self, Class, Reason};
 use super::plan::{AtlasPlan, Planned, SpritePlan, TexturePlan, png_mode, too_wide};
-use super::read::field;
+use super::read::{Texture, field};
 use super::seam::Seam;
 use super::table;
 use super::{Failure, MemberPath, Output, OutputKind, Picture, SkipOutput, resource};
@@ -50,14 +52,41 @@ fn md5(bytes: &[u8]) -> [u8; 16] {
 }
 
 /// A made file: its bytes, their charge and, for a PNG, its picture.
-type File = (Vec<u8>, Charge, Option<Picture>);
+pub(super) type File = (Vec<u8>, Charge, Option<Picture>);
+
+/// The image of texture `t` of `file`, past section 3's answers 1 to 3
+/// (`format`): its data (answer 4, [`resource::data`], each core call
+/// probed), then its decode (answers 5 to 10, 12 and 13), its pixels
+/// counted as export work before they are made; the decode's plan and the
+/// decode each under the probe on their own. A `plain` candidate's image
+/// wider than the PNG encoder takes is its output's skip from the plan
+/// (answer 11), before the decode.
+pub(super) fn decoded(
+    seam: &Seam<'_>,
+    file: &Arc<SerializedFile>,
+    t: &Texture,
+    format: Format,
+    plain: bool,
+) -> Result<Image, Class> {
+    let data = resource::data(seam, file, t)?;
+    let (width, height) = t.sides();
+    let planned =
+        seam.probe(|| plan(format, data.len(), width, height).map_err(|e| classify::decode(&e)))?;
+    if plain && too_wide(planned.width, planned.mode) {
+        return Err(unwritable());
+    }
+    seam.work(planned.output_bytes)?;
+    seam.probe(|| {
+        decode(format, &data, width, height, seam.meter).map_err(|e| classify::decode(&e))
+    })
+}
 
 /// An image's pixels, to be written as a PNG.
-struct Pixels<'p> {
-    mode: Mode,
-    width: u32,
-    height: u32,
-    data: &'p [u8],
+pub(super) struct Pixels<'p> {
+    pub mode: Mode,
+    pub width: u32,
+    pub height: u32,
+    pub data: &'p [u8],
 }
 
 /// The encoder's refusal of an image as its class: a width past Pillow's
@@ -76,7 +105,7 @@ fn encoded(e: EncodeError<ChargeError>) -> Class {
 }
 
 /// A PNG of `p`, its bytes and charge, and its picture.
-fn png(p: &Pixels<'_>, meter: &Arc<Meter>) -> Result<(Vec<u8>, Charge, Picture), Class> {
+pub(super) fn png(p: &Pixels<'_>, meter: &Arc<Meter>) -> Result<(Vec<u8>, Charge, Picture), Class> {
     let image = unityrs_imageio::Image::new(p.width, p.height, png_mode(p.mode), p.data)
         .map_err(|e| encoded(EncodeError::Image(e)))?;
     let encoded = unityrs_imageio::encode(&image, &mut Metered(meter)).map_err(encoded)?;
@@ -195,11 +224,11 @@ fn atlas_json(
 }
 
 /// An output's identity: its kind, key, unit key and member paths.
-struct Made<'p> {
-    kind: OutputKind,
-    key: &'p str,
-    unit: Option<&'p str>,
-    members: &'p [MemberPath],
+pub(super) struct Made<'p> {
+    pub kind: OutputKind,
+    pub key: &'p str,
+    pub unit: Option<&'p str>,
+    pub members: &'p [MemberPath],
 }
 
 /// Section 3's answer 11: a texture output whose PNG the encoder refuses
@@ -224,7 +253,7 @@ impl Attempt<'_> {
     /// key and member paths charged with its bytes before they are copied;
     /// a refused charge is the output's skip. Whether the sink took it
     /// (review round 2's C6: a unit is set only by an output handed over).
-    fn output(
+    pub(super) fn output(
         &mut self,
         made: &Made<'_>,
         site: &Site<'_>,
@@ -277,29 +306,14 @@ impl Attempt<'_> {
     /// output's alone (review round 4's A1, [`Self::export_sheet`]).
     fn image(&mut self, i: usize, plain: bool) -> Result<Image, Class> {
         let internal = || Class::Run(Reason::plain("internal"));
-        let t = match self.texture(i) {
-            Some(Ok(t)) => t.clone(),
-            Some(Err(c)) => return Err(c.clone()),
-            None => return Err(internal()),
-        };
+        let t = self.texture(i)?;
         let Ok(format) = self.selection(i, &t) else {
             return Err(internal());
         };
         let Some(file) = self.texs.as_slice().get(i).map(|x| x.obj.file().clone()) else {
             return Err(internal());
         };
-        let seam = self.seam;
-        let data = resource::data(&seam, &file, &t)?;
-        let (width, height) = t.sides();
-        let planned = seam
-            .probe(|| plan(format, data.len(), width, height).map_err(|e| classify::decode(&e)))?;
-        if plain && too_wide(planned.width, planned.mode) {
-            return Err(unwritable());
-        }
-        seam.work(planned.output_bytes)?;
-        seam.probe(|| {
-            decode(format, &data, width, height, seam.meter).map_err(|e| classify::decode(&e))
-        })
+        decoded(&self.seam, &file, &t, format, plain)
     }
 
     /// The export, in export order: each sheet's group in the order its
@@ -310,6 +324,7 @@ impl Attempt<'_> {
     /// in object order). Each table is charged to `M_X` first.
     pub fn export(&mut self, planned: &Planned) -> Result<(), Failure> {
         self.exporting = true;
+        self.export_sprites(&planned.sprites)?;
         let meter = self.seam.meter;
         let atlases = planned.atlases.as_slice();
         let textures = planned.textures.as_slice();

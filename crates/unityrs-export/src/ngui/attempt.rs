@@ -15,23 +15,25 @@ use unityrs_core::{ObjectRef, RawStr};
 use unityrs_texture::Format;
 
 use super::classify::{self, Class, Reason};
+use super::kept::Kept;
 use super::keys::{
     KeyRule, KeyTable, STOP, Template, TemplateKind, Var, check_member, check_prefixed,
 };
-use super::read::{self, Reader, Texture, shape};
+use super::read::{self, Reader, Texture};
 use super::seam::Seam;
 use super::table;
 use super::{Cut, Failure, MemberPath, Options, Output, Rejected, SheetRow, Skip, SkipOutput};
 
 /// `BuildTarget.UnknownPlatform`, UnityPy's platform for a file that stores
 /// none (format 7 and below).
-const UNKNOWN_PLATFORM: i32 = 3716;
+pub(super) const UNKNOWN_PLATFORM: i32 = 3716;
 
-/// A texture of the input's own files, its name and object read once.
+/// A texture of the input's own files, its name and object read once,
+/// each failure kept as a [`Kept`] (charged, or words).
 pub(super) struct Tex {
     pub obj: ObjectRef,
-    pub name: Option<Result<RawStr, Class>>,
-    read: Option<Result<Texture, Class>>,
+    pub name: Option<Result<RawStr, Kept>>,
+    read: Option<Result<Texture, Kept>>,
 }
 
 impl Tex {
@@ -135,6 +137,14 @@ pub(super) struct Attempt<'a> {
     /// The textures with a name, sorted by (name, index), once every name
     /// is read: a name's first owner is the first of its run.
     owners: Option<MeteredVec<usize>>,
+    /// The textures whose name's read [`Self::names`] met a refusal of
+    /// `M_X`'s, in object order: read again by the next asker.
+    late: MeteredVec<usize>,
+    /// How many of `late`, from its first, are read, and how many of those
+    /// have a name: [`Self::join_late`]'s cursor, so a read done is never
+    /// looked at again (B3's review round 5, Q1).
+    late_read: usize,
+    late_named: usize,
     /// Whether the export runs: its skips are recorded apart.
     pub exporting: bool,
     records: Records,
@@ -178,6 +188,9 @@ impl<'a> Attempt<'a> {
             reader: Reader::new(meter)?,
             texs: MeteredVec::new(meter),
             owners: None,
+            late: MeteredVec::new(meter),
+            late_read: 0,
+            late_named: 0,
             exporting: false,
             records: Records {
                 plan_skips: MeteredVec::new(meter),
@@ -336,7 +349,11 @@ impl<'a> Attempt<'a> {
     }
 
     /// Reads every texture's name, in object order, and sorts the owners:
-    /// once.
+    /// once. A name's read that fails is kept for its texture; a refusal of
+    /// `M_X`'s is a state of the meter and is not (B3's review round 3, S9:
+    /// as round 2's S1 has it), so the texture is left unread and its name
+    /// read again by the next asker ([`Self::name`]), the refusal there that
+    /// asker's.
     pub fn names(&mut self) -> Result<(), Failure> {
         if self.owners.is_some() {
             return Ok(());
@@ -349,13 +366,21 @@ impl<'a> Attempt<'a> {
                 continue;
             };
             let obj = t.obj.clone();
-            let name = self.reader.peek_name(&seam, &obj);
-            match &name {
-                Err(Class::Input(r)) => return Err(Failure::Input(r.clone())),
-                Err(Class::Run(r)) => return Err(Failure::Run(r.clone())),
-                Ok(_) => named += 1,
-                Err(Class::Skip(_)) => {}
-            }
+            let name = match self.reader.peek_name(&seam, &obj) {
+                Ok(n) => {
+                    named += 1;
+                    Ok(n)
+                }
+                Err(c) => match Kept::keep(seam.meter, seam.hooks, c) {
+                    Ok(k) => Err(k),
+                    Err(c) if Kept::metered(&c) => {
+                        let late = &mut self.late;
+                        seam.probe(|| table::push(late, i)).map_err(Failure::from)?;
+                        continue;
+                    }
+                    Err(c) => return Err(c.into()),
+                },
+            };
             if let Some(t) = self.texs.as_mut_slice().get_mut(i) {
                 t.name = Some(name);
             }
@@ -375,24 +400,109 @@ impl<'a> Attempt<'a> {
         Ok(())
     }
 
+    /// Texture `i`'s name, read where [`Self::names`] left it unread: its
+    /// failure kept for it; a refusal of `M_X`'s returned, the asker's, and
+    /// not kept.
+    pub fn name(&mut self, i: usize) -> Result<(), Class> {
+        let seam = self.seam;
+        let Some(t) = self.texs.as_slice().get(i).filter(|t| t.name.is_none()) else {
+            return Ok(());
+        };
+        let obj = t.obj.clone();
+        let name = match self.reader.peek_name(&seam, &obj) {
+            Ok(n) => Ok(n),
+            Err(c) => Err(Kept::keep(seam.meter, seam.hooks, c)?),
+        };
+        if let Some(t) = self.texs.as_mut_slice().get_mut(i) {
+            t.name = Some(name);
+        }
+        Ok(())
+    }
+
     /// The first texture, in object order, named `name` ([`Self::names`]
-    /// first).
-    pub fn owner(&self, name: &[u8]) -> Option<usize> {
-        let owners = self.owners.as_ref()?.as_slice();
+    /// first): the sorted owners' first. The names read late are read first
+    /// ([`Self::name`], whose refusal is the asker's), and, once all are,
+    /// joined to the owners and sorted again, once, so `late` is empty after
+    /// and no asker scans it (B3's review round 4, R6).
+    pub fn owner(&mut self, name: &[u8]) -> Result<Option<usize>, Class> {
+        if self.owners.is_some() && !self.late.is_empty() {
+            self.join_late()?;
+        }
+        let Some(owners) = self.owners.as_ref().map(MeteredVec::as_slice) else {
+            return Ok(None);
+        };
         let texs = self.texs.as_slice();
         let of = |i: usize| texs.get(i).and_then(Tex::named).unwrap_or_default();
         let at = owners.partition_point(|i| of(*i) < name);
-        owners.get(at).copied().filter(|i| of(*i) == name)
+        Ok(owners.get(at).copied().filter(|i| of(*i) == name))
     }
 
-    /// Texture `i`'s object read, once, under the probe.
-    pub fn texture(&mut self, i: usize) -> Option<&Result<Texture, Class>> {
-        let seam = self.seam;
-        let t = self.texs.as_mut_slice().get_mut(i)?;
-        if t.read.is_none() {
-            t.read = Some(seam.probe(|| read::texture(&t.obj)));
+    /// Reads every name [`Self::names`] left unread, from its cursor on
+    /// (`late_read`: a refusal leaves it at the name refused, so an asker
+    /// after reads on from there and never looks at a name read before:
+    /// B3's review round 5, Q1), then joins the named ones to the owners,
+    /// sorted by (name, index) again, and empties `late`: the joined table
+    /// charged before it is made, the old one dropped. The join runs once,
+    /// as [`Self::names`]' own sort does; a refusal of its table looks at
+    /// nothing again.
+    fn join_late(&mut self) -> Result<(), Class> {
+        let internal = || Class::Run(Reason::plain("internal"));
+        while let Some(i) = self.late.as_slice().get(self.late_read).copied() {
+            #[cfg(feature = "test-counters")]
+            crate::testing::late_scan();
+            self.name(i)?;
+            if self.texs.as_slice().get(i).and_then(Tex::named).is_some() {
+                self.late_named += 1;
+            }
+            self.late_read += 1;
         }
-        t.read.as_ref()
+        let seam = self.seam;
+        let meter = seam.meter;
+        let Some(owners) = self.owners.as_ref() else {
+            return Err(internal());
+        };
+        let texs = self.texs.as_slice();
+        let named = |i: &usize| texs.get(*i).and_then(Tex::named).is_some();
+        let n = owners.len() + self.late_named;
+        let mut joined = seam.probe(|| table::with_capacity(meter, n))?;
+        for i in owners.as_slice().iter().chain(self.late.as_slice()) {
+            if named(i) {
+                seam.probe(|| table::push(&mut joined, *i))?;
+            }
+        }
+        let name = |i: usize| texs.get(i).and_then(Tex::named).unwrap_or_default();
+        joined
+            .as_mut_slice()
+            .sort_unstable_by(|a, b| name(*a).cmp(name(*b)).then(a.cmp(b)));
+        self.owners = Some(joined);
+        self.late = MeteredVec::new(meter);
+        (self.late_read, self.late_named) = (0, 0);
+        Ok(())
+    }
+
+    /// Texture `i`'s object read, once, under the probe: the texture, or
+    /// its skip (kept), or the input's or the run's failure (not kept). A
+    /// refusal of `M_X`'s, the read's or the keeping's, is the asker's and
+    /// not kept, so the next asks again (B3's review round 2, S1).
+    pub fn texture(&mut self, i: usize) -> Result<Texture, Class> {
+        let seam = self.seam;
+        let t = self
+            .texs
+            .as_mut_slice()
+            .get_mut(i)
+            .ok_or(Class::Run(Reason::plain("internal")))?;
+        if t.read.is_none() {
+            let read = match seam.probe(|| read::texture(&t.obj)) {
+                Ok(t) => Ok(t),
+                Err(c) => Err(Kept::keep(seam.meter, seam.hooks, c)?),
+            };
+            t.read = Some(read);
+        }
+        match &t.read {
+            Some(Ok(t)) => Ok(t.clone()),
+            Some(Err(k)) => Err(k.class()),
+            None => Err(Class::Run(Reason::plain("internal"))),
+        }
     }
 
     /// Texture `i`'s section 3 answers 1 to 3 ([`read::answer`]): its
@@ -410,11 +520,7 @@ impl<'a> Attempt<'a> {
     /// Texture `i`'s answer at the plan: its format, or the skip (its
     /// object read's failure, then a selection skip).
     pub fn sheet_answer(&mut self, i: usize) -> Result<Format, Class> {
-        let t = match self.texture(i) {
-            Some(Ok(t)) => t.clone(),
-            Some(Err(c)) => return Err(c.clone()),
-            None => return Err(shape()),
-        };
+        let t = self.texture(i)?;
         self.selection(i, &t)
     }
 

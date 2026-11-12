@@ -32,6 +32,10 @@
 //!   ([`in_fallible_reserve`]), so a test's allocator can refuse that
 //!   allocation alone (the engine's `point` hook's `refuse`).
 //!
+//! **Growth calls.** [`current_growth`] identifies this thread's active
+//! vector-growth invocation, so tests can tell its ladder's retries from
+//! separate calls at one source location, without allocating.
+//!
 //! **Span reads.** Each read of a bundle's joined data (`read_span_pinned`,
 //! `files::bundle`), which an entry's parse, `entry_range` and
 //! `entry_bytes` make with their row and `load_all` with the whole file, is
@@ -84,6 +88,10 @@ use crate::budget::Reservation;
 use crate::error::{Error, LimitKind};
 use crate::files::File;
 use crate::raw::RawStr;
+
+mod growth;
+pub(crate) use growth::Growing;
+pub use growth::current_growth;
 
 /// `$index`, the counter index of each `$ty` value, by an exhaustive match
 /// built from one list, and `$count`, the list's length: a variant added to

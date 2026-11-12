@@ -12,8 +12,11 @@
 //!   `max_attempt_evictions` X fails, `limit(attempt_evictions, <value>)`,
 //!   after the call's run-level class and before any other;
 //! - **export work** (step 10) at each pixel buffer's charge, before the
-//!   decode or render that fills it ([`Hooks::export_work`]); a file's
-//!   increment is the sink's, at its claim;
+//!   decode that fills it ([`Hooks::export_work`]); the exception is a
+//!   Sprite's render, whose intermediates are bounded by `M_X`'s charges
+//!   and its decode work, and whose image is counted when the render
+//!   returns it, after answer 11 and before its PNG; a file's increment is
+//!   the sink's, at its claim;
 //! - **the refusal probe** (2.7) around each core call on its own: a
 //!   `budget(...)` refusal during which the attempt budget's refusal count
 //!   did not move was no budget's, so it is `host_memory`, a stop.
@@ -24,6 +27,7 @@
 
 use std::sync::Arc;
 
+use unityrs_core::RawStr;
 use unityrs_core::env::Environment;
 use unityrs_core::files::BundleFile;
 use unityrs_core::limits::{Charge, Meter};
@@ -51,6 +55,18 @@ pub trait Hooks {
     fn export_work(&self, bytes: u64) -> Result<(), Reason> {
         let _ = bytes;
         Ok(())
+    }
+
+    /// A sprite group's export begins (4.4): told once for each of its
+    /// Sprites, in plan order, by the Sprite's file's name and its path id,
+    /// the group numbered `group` in export order. What the plan grouped,
+    /// for an observer (a test, B3's review round 3, T1); nothing is asked.
+    /// The name is the SerializedFile's, as an output's and a skip's are, so
+    /// two files of one CAB name (one nested) tell an observer the same
+    /// name: one that must tell such Sprites apart cannot from this alone
+    /// (review round 4, R8), as the records cannot.
+    fn sprite_group(&self, group: usize, file: &RawStr, path_id: i64) {
+        let _ = (group, file, path_id);
     }
 }
 

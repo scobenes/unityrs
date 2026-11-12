@@ -34,9 +34,10 @@ liblzma = { version = "=0.4.9", features = ["static"] }
 flate2 = { version = "=1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 
 # Test-only (docs/plans/batch.md section 6, CR8): the `testing` module's
-# refusal counters and span-read tables. The testkit's feature of the same
-# name enables it; a release build never does, and without it the core
-# compiles as it would without the counters (src/counters.rs).
+# refusal counters, span-read tables and growth invocation marks. The
+# testkit's feature of the same name enables it; a release build never
+# does, and without it the core compiles as it would without the counters
+# (src/counters.rs).
 [features]
 test-counters = []
 

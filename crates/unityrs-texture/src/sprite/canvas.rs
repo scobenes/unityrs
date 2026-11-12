@@ -79,11 +79,21 @@ impl<'a> Sheet<'a> {
         alpha: Option<&Image>,
         meter: &Arc<Meter>,
     ) -> Result<Self, SpriteError> {
-        let Some(alpha) = alpha else {
-            return Ok(Self {
+        match alpha {
+            None => Ok(Self {
                 image: SheetImage::Texture(texture),
-            });
-        };
+            }),
+            Some(alpha) => Sheet::merged(texture, alpha, meter),
+        }
+    }
+
+    /// [`Sheet::new`] with an alpha texture: the merged sheet, which
+    /// borrows neither image, so the caller may drop both once it is made.
+    pub fn merged(
+        texture: &Image,
+        alpha: &Image,
+        meter: &Arc<Meter>,
+    ) -> Result<Sheet<'static>, SpriteError> {
         if texture.width() != alpha.width() || texture.height() != alpha.height() {
             return Err(SpriteError::AlphaSizeMismatch);
         }
@@ -100,7 +110,7 @@ impl<'a> Sheet<'a> {
                 }
             }
         })?;
-        Ok(Self {
+        Ok(Sheet {
             image: SheetImage::Merged(merged.into_image()),
         })
     }

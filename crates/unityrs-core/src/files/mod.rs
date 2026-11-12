@@ -178,13 +178,20 @@ pub struct Parent {
 /// distinguish them.
 #[derive(Clone, Debug)]
 pub enum ParentKind {
-    /// A `BundleFile`, whose raw engine string chain 2 may take.
+    /// A `BundleFile`, whose raw engine string chain 2 may take. Its fields
+    /// may grow (P1b's sprites kind added `dir_index`), so a caller outside
+    /// the core matches it with `..` and cannot build one.
+    #[non_exhaustive]
     Bundle {
         /// `version_engine`, as read.
         version_engine: RawStr,
         /// The bundle, for `PPtr.deref`'s scan of its `files` dict (rule 5):
         /// weak, since the bundle holds its entries (`Arc::new_cyclic` at open).
         bundle: Weak<BundleFile>,
+        /// The directory row the child was opened from
+        /// ([`BundleFile::entry`]'s `dir_index`): of two rows of one path,
+        /// the child knows which it is, where `files()` names only the last.
+        dir_index: usize,
     },
     /// A `WebFile`, which gives no version.
     Web,

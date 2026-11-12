@@ -131,6 +131,7 @@ pub(crate) fn grow_counted<T>(
     max: usize,
     work: u64,
 ) -> Result<(), ChargeError> {
+    let _growth = crate::counters::Growing::enter();
     let have = vec.capacity();
     if need <= have {
         // Round 6: the work of a write into room already there went
