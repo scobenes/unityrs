@@ -13,7 +13,15 @@ so that nothing cargo-about would list is a licence cargo-deny never checks:
   for that crate, and every exception there has its `accepted` here;
 - each crate's `clarify` in about.toml has a clarification in deny.toml with
   the same expression and the same files, and the other way round. Each tool
-  checks its own hashes of those files (sha256 and xxHash32).
+  checks its own hashes of those files (sha256 and xxHash32);
+- a workspace member's clarification has the member's Cargo.toml `license`
+  as its expression, so that the two cannot drift apart;
+- fuzz/deny.toml (the fuzz crate's workspace, which CI's licenses job checks
+  with it) allows what deny.toml allows, in the same order, and for each crate
+  both Cargo.lock and fuzz/Cargo.lock hold, has the clarifications and
+  exceptions deny.toml has for it, entry for entry, hashes included.
+The last two are checked when `config` is given no paths (the repository's
+files); given two, it checks only those two files against each other.
 
 `notices` fails when the generated file still holds an SPDX template's
 placeholders (`<year>`, `<copyright holders>`, `<owner>`): cargo-about uses the
@@ -62,6 +70,7 @@ Python 3.11 or later).
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import tomllib
@@ -147,6 +156,54 @@ def config_problems(about: dict, deny: dict) -> list[str]:
                 "(expression, files); clarify it the same way in both"
             )
     return problems
+
+
+def _entries(deny: dict, kind: str) -> dict[str | None, list[str]]:
+    """deny.toml's `clarify` or `exceptions` entries by the crate each names, each as sorted JSON."""
+    out = {}
+    for e in deny.get("licenses", {}).get(kind, []):
+        out.setdefault(_crate_name(e), []).append(json.dumps(e, sort_keys=True))
+    return {name: sorted(v) for name, v in out.items()}
+
+
+def fuzz_problems(deny: dict, fuzz: dict, shared: set[str]) -> list[str]:
+    """fuzz/deny.toml against deny.toml: the allow list, and the entries of each crate both workspaces build."""
+    problems = []
+    allow, fuzz_allow = deny.get("licenses", {}).get("allow"), fuzz.get("licenses", {}).get("allow")
+    if fuzz_allow != allow:
+        problems.append(
+            f"fuzz/deny.toml allows {fuzz_allow}, but deny.toml allows {allow}; keep them equal, in the same order"
+        )
+    for kind in ("clarify", "exceptions"):
+        here, there = _entries(deny, kind), _entries(fuzz, kind)
+        for name in sorted(shared & (set(here) | set(there))):
+            if here.get(name, []) != there.get(name, []):
+                problems.append(
+                    f"{name}: both workspaces build it, but fuzz/deny.toml's {kind} entries for it "
+                    f"({there.get(name, [])}) are not deny.toml's ({here.get(name, [])}); copy deny.toml's"
+                )
+    return problems
+
+
+def member_problems(about: dict, root: Path) -> list[str]:
+    """Each workspace member's clarification in about.toml against the member's Cargo.toml `license`."""
+    problems = []
+    for name, entry in sorted(about.items()):
+        clarify = entry.get("clarify") if isinstance(entry, dict) and name not in ABOUT_GLOBAL else None
+        if clarify is None or not (root / "crates" / name / "Cargo.toml").is_file():
+            continue
+        if clarify.get("license") != _crate_licence(root, name):
+            problems.append(
+                f"{name}: about.toml clarifies it as {clarify.get('license')!r}, but its Cargo.toml license is "
+                f"{_crate_licence(root, name)!r}; give the clarification the crate's own expression"
+            )
+    return problems
+
+
+def lock_names(path: Path) -> set[str]:
+    """The names of the packages a Cargo.lock holds."""
+    with open(path, "rb") as fh:
+        return {p["name"] for p in tomllib.load(fh).get("package", [])}
 
 
 def notice_problems(text: str, root: Path | None = None) -> list[str]:
@@ -474,6 +531,11 @@ def main(argv=None) -> int:
         with open(deny_path, "rb") as fh:
             deny = tomllib.load(fh)
         problems = config_problems(about, deny)
+        if len(args) == 1:
+            with open(ROOT / "fuzz" / "deny.toml", "rb") as fh:
+                fuzz = tomllib.load(fh)
+            shared = lock_names(ROOT / "Cargo.lock") & lock_names(ROOT / "fuzz" / "Cargo.lock")
+            problems += fuzz_problems(deny, fuzz, shared) + member_problems(about, ROOT)
     elif args[:1] == ["notices"] and len(args) in (2, 3):
         root = Path(args[2]) if len(args) == 3 else ROOT
         problems = notice_problems(Path(args[1]).read_text(encoding="utf-8"), root)

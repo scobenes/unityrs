@@ -504,6 +504,7 @@ dependencies = [
  "sha2 0.11.1",
  "thiserror",
  "unityrs-core",
+ "unityrs-meshdecode",
  "unityrs-testkit",
 ]
 

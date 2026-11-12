@@ -7,11 +7,12 @@ when it is stale).
 
 It has two parts. The first holds the notices of code ported or vendored into
 unityrs from other projects (UnityPy and UnityPyBoost, liblz4, CPython's
-standard library, Pillow, zlib), and the provenance of bundled data; the
-notice of a new port is added to about.hbs, its licence to its crate's, and
-the notice to the crate's own files (a LICENSE-* file, and a NOTICE-* file
-for a text of ours its licence asks for), so that the crate's package
-carries it with the code. The second holds the licence of every crate the
+standard library, Pillow, zlib, OpenBLAS under BSD-3-Clause and its
+GotoBLAS2 code under BSD-2-Clause-Views), and the provenance of bundled
+data; the notice of a new port is added to about.hbs, its licence to its
+crate's, and the notice to the crate's own files (a LICENSE-* file, and a
+NOTICE-* file for a text of ours its licence asks for), so that the crate's
+package carries it with the code. The second holds the licence of every crate the
 unityrs workspace builds, its own members included, grouped by licence
 text. A crate offered under a choice of licences (such as "MIT OR
 Apache-2.0") is listed under the one about.toml prefers. liblzma-sys is also
@@ -263,6 +264,18 @@ crates/unityrs-texture/src/decode.rs ports Pillow 9.5.0's raw decoder as
 UnityPy 1.25.2 calls it (src/libImaging/RawDecode.c's row copy, and the
 width cap of src/decode.c's _setimage) and the decompression-bomb check of
 src/PIL/Image.py's crop, with its message.
+crates/unityrs-texture/src/sprite/ ports what UnityPy 1.25.2's SpriteHelper
+calls of Pillow 9.5.0: canvas.rs the crop (src/PIL/Image.py's crop and _crop,
+src/libImaging/Crop.c), the transposes (src/libImaging/Geometry.c),
+Image.merge's size check and the width cap every image Pillow makes passes
+(src/libImaging/Storage.c's ImagingNewPrologueSubtype); raster.rs the
+polygon fill of ImageDraw.polygon (src/libImaging/Draw.c's
+ImagingDrawPolygon, add_edge, polygon_generic, hline8, x_cmp and the
+ROUND_UP and ROUND_DOWN macros, and src/_imaging.c's _draw_polygon);
+affine.rs the nearest-neighbour affine transform (Geometry.c's
+ImagingTransformAffine, ImagingScaleAffine, check_fixed and affine_fixed);
+and render.rs Image.new's size check,
+paste, putalpha and composite (src/PIL/Image.py, src/libImaging/Paste.c).
 
 Pillow's LICENSE follows: Pillow calls its licence HPND, and its terms are
 the MIT-CMU licence's. It is the LICENSE-PILLOW of unityrs-imageio and of
@@ -298,6 +311,163 @@ INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
 LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
 OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
+
+--------------------------------------------------------------------------------
+OpenBLAS 0.3.31
+https://github.com/OpenMathLib/OpenBLAS
+Licence: BSD-3-Clause.
+
+crates/unityrs-texture/src/sprite/affine.rs ports the order in which
+OpenBLAS 0.3.31's Haswell kernels solve a 6 x 6 system for numpy's
+linalg.solve (interface/lapack/gesv.c, lapack/getrf/getrf_single.c,
+lapack/getf2/getf2_k.c, lapack/getrs/getrs_single.c,
+lapack/laswp/generic/laswp_k_4.c, driver/level2/trsv_L.c and trsv_U.c, and
+the x86_64 kernels ddot.c, dgemv_n_4.c with dgemv_n_microk_haswell-4.c,
+daxpy.c, dscal.c and iamax_sse2.S), so that a sprite's affine triangle is
+solved bit for bit as UnityPy 1.25.2's numpy solves it. Three notices
+follow, each listed under BSD-3-Clause below:
+- OpenBLAS's LICENSE, unityrs-texture's LICENSE-OPENBLAS, the licence of
+  all of those files;
+- the notice that ddot.c, dgemv_n_4.c, dgemv_n_microk_haswell-4.c and
+  daxpy.c each carry (2014, and a disclaimer naming the OpenBLAS project),
+  unityrs-texture's LICENSE-OPENBLAS-KERNELS;
+- the notice dscal.c carries (2013 - 2015), unityrs-texture's
+  LICENSE-OPENBLAS-DSCAL.
+The other files, from GotoBLAS2, carry The University of Texas at Austin's
+notice instead (the next section).
+
+Copyright (c) 2011-2014, The OpenBLAS Project
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   1. Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+
+   2. Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in
+      the documentation and/or other materials provided with the
+      distribution.
+   3. Neither the name of the OpenBLAS project nor the names of 
+      its contributors may be used to endorse or promote products 
+      derived from this software without specific prior written 
+      permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Copyright (c) 2014, The OpenBLAS Project
+All rights reserved.
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+1. Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in
+the documentation and/or other materials provided with the
+distribution.
+3. Neither the name of the OpenBLAS project nor the names of
+its contributors may be used to endorse or promote products
+derived from this software without specific prior written permission.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE OPENBLAS PROJECT OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Copyright (c) 2013 - 2015, The OpenBLAS Project
+All rights reserved.
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+1. Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in
+the documentation and/or other materials provided with the
+distribution.
+3. Neither the name of the OpenBLAS project nor the names of
+its contributors may be used to endorse or promote products
+derived from this software without specific prior written permission.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE OPENBLAS PROJECT OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--------------------------------------------------------------------------------
+GotoBLAS2 code in OpenBLAS 0.3.31
+https://github.com/OpenMathLib/OpenBLAS
+Licence: BSD-2-Clause-Views.
+
+Of the OpenBLAS 0.3.31 files whose order
+crates/unityrs-texture/src/sprite/affine.rs ports (the section above),
+interface/lapack/gesv.c, lapack/getrf/getrf_single.c,
+lapack/getf2/getf2_k.c, lapack/getrs/getrs_single.c,
+lapack/laswp/generic/laswp_k_4.c, driver/level2/trsv_L.c and trsv_U.c, and
+kernel/x86_64/iamax_sse2.S come from GotoBLAS2 and carry The University of
+Texas at Austin's licence, BSD-2-Clause with a "views and conclusions"
+paragraph (BSD-2-Clause-Views), beside OpenBLAS's LICENSE. It follows; it is
+unityrs-texture's LICENSE-OPENBLAS-UT, which about.toml's clarification of
+unityrs-texture names, since cargo-about does not recognise its text, and
+is listed under BSD-2-Clause-Views below.
+
+Copyright 2009, 2010 The University of Texas at Austin.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or
+without modification, are permitted provided that the following
+conditions are met:
+
+  1. Redistributions of source code must retain the above
+     copyright notice, this list of conditions and the following
+     disclaimer.
+
+  2. Redistributions in binary form must reproduce the above
+     copyright notice, this list of conditions and the following
+     disclaimer in the documentation and/or other materials
+     provided with the distribution.
+
+   THIS  SOFTWARE IS PROVIDED  BY THE  UNIVERSITY OF  TEXAS AT
+   AUSTIN  ``AS IS''  AND ANY  EXPRESS OR  IMPLIED WARRANTIES,
+   INCLUDING, BUT  NOT LIMITED  TO, THE IMPLIED  WARRANTIES OF
+   MERCHANTABILITY  AND FITNESS FOR  A PARTICULAR  PURPOSE ARE
+   DISCLAIMED.  IN  NO EVENT SHALL THE UNIVERSITY  OF TEXAS AT
+   AUSTIN OR CONTRIBUTORS BE  LIABLE FOR ANY DIRECT, INDIRECT,
+   INCIDENTAL,  SPECIAL, EXEMPLARY,  OR  CONSEQUENTIAL DAMAGES
+   (INCLUDING, BUT  NOT LIMITED TO,  PROCUREMENT OF SUBSTITUTE
+   GOODS  OR  SERVICES; LOSS  OF  USE,  DATA,  OR PROFITS;  OR
+   BUSINESS INTERRUPTION) HOWEVER CAUSED  AND ON ANY THEORY OF
+   LIABILITY, WHETHER  IN CONTRACT, STRICT  LIABILITY, OR TORT
+   (INCLUDING NEGLIGENCE OR OTHERWISE)  ARISING IN ANY WAY OUT
+   OF  THE  USE OF  THIS  SOFTWARE,  EVEN  IF ADVISED  OF  THE
+   POSSIBILITY OF SUCH DAMAGE.
+
+The views and conclusions contained in the software and
+documentation are those of the authors and should not be
+interpreted as representing official policies, either expressed
+or implied, of The University of Texas at Austin.
 
 --------------------------------------------------------------------------------
 zlib 1.2.13 (vendored)
@@ -381,12 +551,14 @@ Crates
 
 Licences:
 - MIT License (MIT)
+- BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
 - Python Software Foundation License 2.0 (PSF-2.0)
 - zlib License (Zlib)
 - CMU License (MIT-CMU)
 - BSD Zero Clause License (0BSD)
 - Apache License 2.0 (Apache-2.0)
 - BSD 2-Clause "Simplified" License (BSD-2-Clause)
+- BSD 2-Clause with views sentence (BSD-2-Clause-Views)
 - Unicode License v3 (Unicode-3.0)
 
 --------------------------------------------------------------------------------
@@ -646,6 +818,150 @@ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
 ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+--------------------------------------------------------------------------------
+BSD 2-Clause with views sentence (BSD-2-Clause-Views)
+
+Used by:
+- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+
+Copyright 2009, 2010 The University of Texas at Austin.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or
+without modification, are permitted provided that the following
+conditions are met:
+
+  1. Redistributions of source code must retain the above
+     copyright notice, this list of conditions and the following
+     disclaimer.
+
+  2. Redistributions in binary form must reproduce the above
+     copyright notice, this list of conditions and the following
+     disclaimer in the documentation and/or other materials
+     provided with the distribution.
+
+   THIS  SOFTWARE IS PROVIDED  BY THE  UNIVERSITY OF  TEXAS AT
+   AUSTIN  ``AS IS''  AND ANY  EXPRESS OR  IMPLIED WARRANTIES,
+   INCLUDING, BUT  NOT LIMITED  TO, THE IMPLIED  WARRANTIES OF
+   MERCHANTABILITY  AND FITNESS FOR  A PARTICULAR  PURPOSE ARE
+   DISCLAIMED.  IN  NO EVENT SHALL THE UNIVERSITY  OF TEXAS AT
+   AUSTIN OR CONTRIBUTORS BE  LIABLE FOR ANY DIRECT, INDIRECT,
+   INCIDENTAL,  SPECIAL, EXEMPLARY,  OR  CONSEQUENTIAL DAMAGES
+   (INCLUDING, BUT  NOT LIMITED TO,  PROCUREMENT OF SUBSTITUTE
+   GOODS  OR  SERVICES; LOSS  OF  USE,  DATA,  OR PROFITS;  OR
+   BUSINESS INTERRUPTION) HOWEVER CAUSED  AND ON ANY THEORY OF
+   LIABILITY, WHETHER  IN CONTRACT, STRICT  LIABILITY, OR TORT
+   (INCLUDING NEGLIGENCE OR OTHERWISE)  ARISING IN ANY WAY OUT
+   OF  THE  USE OF  THIS  SOFTWARE,  EVEN  IF ADVISED  OF  THE
+   POSSIBILITY OF SUCH DAMAGE.
+
+The views and conclusions contained in the software and
+documentation are those of the authors and should not be
+interpreted as representing official policies, either expressed
+or implied, of The University of Texas at Austin.
+
+
+--------------------------------------------------------------------------------
+BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
+
+Used by:
+- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+
+Copyright (c) 2011-2014, The OpenBLAS Project
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   1. Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+
+   2. Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in
+      the documentation and/or other materials provided with the
+      distribution.
+   3. Neither the name of the OpenBLAS project nor the names of 
+      its contributors may be used to endorse or promote products 
+      derived from this software without specific prior written 
+      permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+--------------------------------------------------------------------------------
+BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
+
+Used by:
+- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+
+Copyright (c) 2013 - 2015, The OpenBLAS Project
+All rights reserved.
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+1. Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in
+the documentation and/or other materials provided with the
+distribution.
+3. Neither the name of the OpenBLAS project nor the names of
+its contributors may be used to endorse or promote products
+derived from this software without specific prior written permission.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE OPENBLAS PROJECT OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+--------------------------------------------------------------------------------
+BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
+
+Used by:
+- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+
+Copyright (c) 2014, The OpenBLAS Project
+All rights reserved.
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+1. Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in
+the documentation and/or other materials provided with the
+distribution.
+3. Neither the name of the OpenBLAS project nor the names of
+its contributors may be used to endorse or promote products
+derived from this software without specific prior written permission.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE OPENBLAS PROJECT OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 --------------------------------------------------------------------------------

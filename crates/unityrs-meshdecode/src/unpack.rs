@@ -122,6 +122,57 @@ impl VertexArray {
     pub fn values(&self) -> &Values {
         &self.values
     }
+
+    /// Component `component` of tuple `tuple`, as a Python `float` or
+    /// `int`, whichever form holds it; `None` past the whole tuples
+    /// ([`Self::len`]: the values of a last, cut tuple are no tuple's) or
+    /// past the dimension.
+    #[must_use]
+    pub fn component(&self, tuple: usize, component: usize) -> Option<Component> {
+        if component >= self.dimension || tuple >= self.len() {
+            return None;
+        }
+        let at = tuple.checked_mul(self.dimension)?.checked_add(component)?;
+        match &self.values {
+            Values::Float(v) => v.get(at).copied().map(Component::Float),
+            Values::Int(v) => v.get(at).copied().map(Component::Int),
+        }
+    }
+}
+
+/// One component of a [`VertexArray`]'s tuple ([`VertexArray::component`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum Component {
+    /// A Python `float`.
+    Float(f64),
+    /// A Python `int`.
+    Int(i64),
+}
+
+const _: () = crate::send_sync::<Component>();
+
+impl Component {
+    /// The value as a Python `float`: an `int` converted as `float(i)`
+    /// converts it, to the nearest `f64`, ties to even.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Python's own rounding (doc above).
+    pub fn as_f64(self) -> f64 {
+        match self {
+            Self::Float(f) => f,
+            Self::Int(i) => i as f64,
+        }
+    }
+
+    /// Python's truth value: `0`, `0.0` and `-0.0` are false, every other
+    /// value (a NaN included) true.
+    #[must_use]
+    pub fn is_truthy(self) -> bool {
+        match self {
+            Self::Float(f) => f != 0.0,
+            Self::Int(i) => i != 0,
+        }
+    }
 }
 
 /// The arguments of `UnityPyBoost.unpack_vertexdata` after Python's
@@ -388,9 +439,9 @@ pub(crate) fn half(bits: u16) -> f64 {
 mod tests {
     use std::sync::Arc;
 
-    use unityrs_core::limits::Meter;
+    use unityrs_core::limits::{Charge, Meter};
 
-    use super::{Gather, half, unpack_vertexdata, widen};
+    use super::{Component, Gather, Values, VertexArray, half, unpack_vertexdata, widen};
     use crate::error::MeshError;
 
     fn args(vc: u32, soff: u32, stride: u32, choff: u32, dim: u32, cbs: u32) -> Gather {
@@ -459,5 +510,56 @@ mod tests {
         let a = args(8, 0, 4, 0, 1, 4);
         let e = unpack_vertexdata(&data, &a, &Arc::clone(&Meter::unlimited())).unwrap_err();
         assert!(matches!(e, MeshError::OutOfBounds), "{e:?}");
+    }
+
+    fn array(dimension: usize, values: Values) -> VertexArray {
+        VertexArray::new(dimension, values, Charge::zero(&Meter::unlimited()))
+    }
+
+    #[test]
+    fn a_component_is_a_python_float_or_int_by_the_form_that_holds_it() {
+        let floats = array(2, Values::Float(vec![0.5, -1.0, 2.0, 3.5]));
+        assert_eq!(floats.len(), 2);
+        assert_eq!(floats.component(0, 1), Some(Component::Float(-1.0)));
+        assert_eq!(floats.component(1, 0), Some(Component::Float(2.0)));
+        let ints = array(3, Values::Int(vec![1, -2, 3, i64::MAX, 0, -7]));
+        assert_eq!(ints.component(1, 0), Some(Component::Int(i64::MAX)));
+        assert_eq!(ints.component(0, 2), Some(Component::Int(3)));
+        // `float(i)`: the nearest f64, ties to even.
+        assert_eq!(
+            Component::Int(i64::MAX).as_f64(),
+            9_223_372_036_854_775_808.0
+        );
+        assert_eq!(
+            Component::Int((1 << 53) + 1).as_f64(),
+            9_007_199_254_740_992.0
+        );
+        assert_eq!(Component::Float(-0.25).as_f64(), -0.25);
+    }
+
+    #[test]
+    fn a_component_past_the_tuples_or_the_dimension_is_none() {
+        let a = array(2, Values::Float(vec![1.0, 2.0, 3.0]));
+        // Three values of dimension 2: one whole tuple.
+        assert_eq!(a.len(), 1);
+        assert_eq!(a.component(0, 2), None);
+        assert_eq!(a.component(0, 1), Some(Component::Float(2.0)));
+        // The cut tuple's one value is no tuple's.
+        assert_eq!(a.component(1, 0), None);
+        assert_eq!(a.component(1, 1), None);
+        assert_eq!(a.component(usize::MAX, 1), None);
+        assert_eq!(a.component(usize::MAX / 2 + 1, 0), None);
+        let empty = array(0, Values::Int(vec![1, 2]));
+        assert_eq!((empty.len(), empty.component(0, 0)), (0, None));
+    }
+
+    #[test]
+    fn truth_is_python_s() {
+        assert!(!Component::Float(0.0).is_truthy());
+        assert!(!Component::Float(-0.0).is_truthy());
+        assert!(Component::Float(f64::NAN).is_truthy());
+        assert!(Component::Float(f64::MIN_POSITIVE / 2.0).is_truthy());
+        assert!(!Component::Int(0).is_truthy());
+        assert!(Component::Int(-1).is_truthy());
     }
 }

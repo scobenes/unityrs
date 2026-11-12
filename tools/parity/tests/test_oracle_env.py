@@ -25,10 +25,10 @@ from unittest import mock
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
-import child  # noqa: E402
-import scratch  # noqa: E402
 import canonical as C  # noqa: E402
+import child  # noqa: E402
 import oracle_env  # noqa: E402
+import scratch  # noqa: E402
 
 
 def dist(site: Path, name: str, version: str, record: dict[str, str]):
@@ -484,6 +484,87 @@ class StartUpTests(unittest.TestCase):
                         self.assertEqual((found, on_path), ("None", "False"))
                     if flags:
                         self.assertEqual(enabled, "False")
+
+
+class CoreTests(unittest.TestCase):
+    """The OpenBLAS core numpy runs, against the pin (docs/plans/extract.md section 3, item 6)."""
+
+    def test_the_cpu_flags_are_cpuinfo_s_first_flags_line(self):
+        text = "processor\t: 0\nflags\t\t: fpu sse2 avx2 fma\n\nprocessor\t: 1\nflags\t\t: fpu\n"
+        self.assertEqual(oracle_env.cpu_flags(text), {"fpu", "sse2", "avx2", "fma"})
+        self.assertEqual(oracle_env.cpu_flags("processor\t: 0\n"), frozenset())
+        self.assertIsInstance(oracle_env.cpu_flags(), frozenset)
+
+    def test_a_pin_needs_the_haswell_core_and_a_reference_host_a_pin(self):
+        pin = {"OPENBLAS_CORETYPE": "Haswell"}
+        reference = frozenset({"sse2", "avx2", "fma"})
+        problems = oracle_env.core_problems
+        self.assertEqual(problems("Haswell", pin, reference), ([], []))
+        self.assertEqual(problems("Haswell", pin, frozenset({"fma"})), ([], []))
+        refused = "OPENBLAS_CORETYPE=Haswell is set, but numpy's OpenBLAS runs the Zen core, not the oracle's Haswell"
+        self.assertEqual(problems("Zen", pin, reference), ([refused], []))
+        self.assertEqual(
+            problems("Zen", {"OPENBLAS_CORETYPE": "Zen"}, reference)[0],
+            ["OPENBLAS_CORETYPE=Zen is set, but numpy's OpenBLAS runs the Zen core, not the oracle's Haswell"],
+        )
+        self.assertEqual(len(problems(None, pin, reference)[0]), 1)
+        # No pin: said on the reference host's CPU, silent elsewhere.
+        self.assertEqual(problems("SkylakeX", {}, frozenset({"fma"})), ([], []))
+        self.assertEqual(problems("SkylakeX", {"OPENBLAS_CORETYPE": ""}, frozenset()), ([], []))
+        _, notes = problems("SkylakeX", {}, reference)
+        self.assertEqual(len(notes), 1)
+        self.assertIn("avx2 and fma", notes[0])
+        self.assertIn("SkylakeX", notes[0])
+
+    def test_the_core_command(self):
+        cases = [
+            ("Haswell", {"OPENBLAS_CORETYPE": "Haswell"}, 0, "numpy's OpenBLAS runs the Haswell core"),
+            ("Zen", {"OPENBLAS_CORETYPE": "Haswell"}, 1, "runs the Zen core, not the oracle's Haswell"),
+            ("Zen", {}, 0, "numpy's OpenBLAS runs the Zen core"),
+        ]
+        for core, environ, code, said in cases:
+            with self.subTest(core=core, environ=environ):
+                out, err = io.StringIO(), io.StringIO()
+                with (
+                    mock.patch.object(oracle_env, "openblas_core", return_value=core),
+                    mock.patch.dict(oracle_env.os.environ, environ),
+                    mock.patch.object(oracle_env, "cpu_flags", return_value=frozenset()),
+                    contextlib.redirect_stdout(out),
+                    contextlib.redirect_stderr(err),
+                ):
+                    if "OPENBLAS_CORETYPE" not in environ:
+                        oracle_env.os.environ.pop("OPENBLAS_CORETYPE", None)
+                    self.assertEqual(oracle_env.main(["--core"]), code)
+                self.assertIn(said, out.getvalue() + err.getvalue())
+
+    def test_the_core_is_read_from_numpy_s_openblas(self):
+        """Where numpy is installed with a bundled OpenBLAS (the oracle image, CI's venv), it names a core; a numpy
+        linked to a system OpenBLAS bundles none, and the test is skipped there."""
+        try:
+            import numpy
+        except ImportError:
+            self.assertIsNone(oracle_env.openblas_core())
+            return
+        if not oracle_env.openblas_libraries(Path(numpy.__file__).resolve().parent):
+            self.skipTest("this numpy bundles no OpenBLAS (a system one)")
+        core = oracle_env.openblas_core()
+        self.assertIsInstance(core, str)
+        self.assertTrue(core)
+
+    def test_the_bundled_openblas_is_found_where_each_wheel_keeps_it(self):
+        """A manylinux wheel's `numpy.libs` beside the package and a macOS wheel's `numpy/.dylibs`; nothing else."""
+        with scratch.folder("unityrs-oracle-env-") as tmp:
+            site = Path(tmp)
+            package = site / "numpy"
+            for name in ("numpy.libs/libscipy_openblas64_-fdde5778.so", "numpy/.dylibs/libscipy_openblas64_.dylib",
+                         "numpy/.dylibs/libgfortran.5.dylib", "numpy/core/_multiarray_umath.so"):  # fmt: skip
+                (site / name).parent.mkdir(parents=True, exist_ok=True)
+                (site / name).write_bytes(b"")
+            self.assertEqual(
+                [Path(p).relative_to(site).as_posix() for p in oracle_env.openblas_libraries(package)],
+                ["numpy.libs/libscipy_openblas64_-fdde5778.so", "numpy/.dylibs/libscipy_openblas64_.dylib"],
+            )
+            self.assertEqual(oracle_env.openblas_libraries(site / "elsewhere" / "numpy"), [])
 
 
 class RecordsFileTests(unittest.TestCase):

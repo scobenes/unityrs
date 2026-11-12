@@ -73,6 +73,67 @@ accepted = ["PSF-2.0"]
 [unityrs-cli]
 accepted = ["PSF-2.0"]
 
+# unityrs-texture's sprite solve ports OpenBLAS files from GotoBLAS2, under
+# The University of Texas at Austin's licence: BSD-2-Clause with a "views and
+# conclusions" paragraph, BSD-2-Clause-Views (about.hbs, "Ported code"; the
+# crate's LICENSE-OPENBLAS-UT). cargo-about does not recognise that text, so
+# the clarification names each of the crate's licence files and its licence
+# (the OpenBLAS kernels' own notices, LICENSE-OPENBLAS-KERNELS and
+# LICENSE-OPENBLAS-DSCAL, among them, as BSD-3-Clause),
+# with the crate's own expression; the checksums tie it to the files, and a
+# changed file drops it with a warning, on which the script fails.
+# LICENSE-MIT, LICENSE-APACHE and LICENSE-UNITYPY are links to the
+# repository's and unityrs-core's files, so a change to those changes these
+# checksums too (and deny.toml's hashes, root and fuzz). The expression is
+# the crate's Cargo.toml `license`, which the script holds it to.
+# BSD-2-Clause-Views is accepted for this crate only, here and in deny.toml's
+# exception.
+[unityrs-texture]
+accepted = ["BSD-2-Clause-Views"]
+
+[unityrs-texture.clarify]
+license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views"
+
+[[unityrs-texture.clarify.files]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "62feb1c960db825f6100a158728819196f24f7a6358cff078bb9ec117233bd89"
+
+[[unityrs-texture.clarify.files]]
+path = "LICENSE-APACHE"
+license = "Apache-2.0"
+checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+
+[[unityrs-texture.clarify.files]]
+path = "LICENSE-UNITYPY"
+license = "MIT"
+checksum = "d86f8e7dd654370bfe954deb63a8fc972a0eaea943880ba691ff540104bd4c8f"
+
+[[unityrs-texture.clarify.files]]
+path = "LICENSE-PILLOW"
+license = "MIT-CMU"
+checksum = "0fdb68ffb39062553be40be4e6eaea9700b4f5e870a720ae86b8925d67613ddd"
+
+[[unityrs-texture.clarify.files]]
+path = "LICENSE-OPENBLAS"
+license = "BSD-3-Clause"
+checksum = "190b5a9c8d9723fe958ad33916bd7346d96fab3c5ea90832bb02d854f620fcff"
+
+[[unityrs-texture.clarify.files]]
+path = "LICENSE-OPENBLAS-KERNELS"
+license = "BSD-3-Clause"
+checksum = "858c562e3c097cb7d7fd1d44340024be5f98ffbba3a195af7e2829e1db05a085"
+
+[[unityrs-texture.clarify.files]]
+path = "LICENSE-OPENBLAS-DSCAL"
+license = "BSD-3-Clause"
+checksum = "a19111e670250d4d85bf2f436a4fffdb61ac4187ee07f56d5bbe76d10341344d"
+
+[[unityrs-texture.clarify.files]]
+path = "LICENSE-OPENBLAS-UT"
+license = "BSD-2-Clause-Views"
+checksum = "b5c81341a0b484b4b6c2856a41ffd7a9d9cf3a61ec63628557cae68d846ab0f3"
+
 # r-efi ships no licence file: its AUTHORS file holds the MIT permission
 # notice and the copyright lines, so the clarification takes the MIT text
 # from there instead of the SPDX template (whose "<year> <copyright holders>"

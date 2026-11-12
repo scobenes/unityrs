@@ -302,6 +302,7 @@ version = "0.0.1"
 dependencies = [
  "thiserror",
  "unityrs-core",
+ "unityrs-meshdecode",
 ]
 
 [[package]]

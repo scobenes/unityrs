@@ -88,7 +88,7 @@ pub use format::{
 };
 pub use handler::{FileResources, IndexBuffer, MeshHandler, Processed, Resources, Source};
 pub use triangles::{SubMeshTriangles, Triangles};
-pub use unpack::{ComponentBytes, Gather, Values, VertexArray, unpack_vertexdata};
+pub use unpack::{Component, ComponentBytes, Gather, Values, VertexArray, unpack_vertexdata};
 pub use version::Version;
 
 /// Asserts at compile time that `T` is `Send + Sync` (plan section 3.16).

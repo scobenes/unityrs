@@ -5,8 +5,9 @@
 # are held to the repository's licences all the same, so a copyleft
 # dependency cannot enter through the fuzz crate unnoticed.
 #
-# The allow list and the clarification and exceptions of the crates both
-# workspaces build are the repository's deny.toml's, copied; keep them equal.
+# The allow list and the clarifications and exceptions of the crates both
+# workspaces build are the repository's deny.toml's, copied; keep them equal
+# (scripts/third_party_licenses_check.py config checks it).
 [licenses]
 allow = [
     "MIT",
@@ -39,6 +40,29 @@ allow = ["0BSD"]
 [[licenses.exceptions]]
 crate = "unityrs-core"
 allow = ["PSF-2.0"]
+
+[[licenses.clarify]]
+crate = "unityrs-texture"
+expression = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views"
+license-files = [
+    { path = "LICENSE-MIT", hash = 0xb9a65ddd },
+    { path = "LICENSE-APACHE", hash = 0xb5518783 },
+    { path = "LICENSE-UNITYPY", hash = 0x25f1bbc9 },
+    { path = "LICENSE-PILLOW", hash = 0x14c14357 },
+    { path = "LICENSE-OPENBLAS", hash = 0x6722efcf },
+    { path = "LICENSE-OPENBLAS-KERNELS", hash = 0xa60839ef },
+    { path = "LICENSE-OPENBLAS-DSCAL", hash = 0x31711fb2 },
+    { path = "LICENSE-OPENBLAS-UT", hash = 0x443007d2 },
+]
+
+[[licenses.exceptions]]
+crate = "unityrs-texture"
+allow = ["BSD-2-Clause-Views"]
+
+[[licenses.clarify]]
+crate = "r-efi"
+expression = "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
+license-files = [{ path = "AUTHORS", hash = 0xb8c72415 }]
 
 # The fuzz crate's own: libfuzzer-sys builds LLVM's libFuzzer, which is
 # NCSA (University of Illinois/NCSA Open Source License), a permissive
