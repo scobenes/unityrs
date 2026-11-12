@@ -21,14 +21,16 @@ use super::{BadSpec, Rule, SPEC_VERSION, push_token};
 
 /// The typed spec of the top level's `members` and the parse's `store`,
 /// its string table still empty (the caller moves the document's text in),
-/// and the bundles' `deps` lists, which the cross-field pass resolves into
-/// the graph and drops: a validated spec keeps its ids once.
+/// the bundles' `deps` lists, which the cross-field pass resolves into the
+/// graph and drops (a validated spec keeps its ids once), and the sites of
+/// the templates and literal keys in document order.
 pub(super) fn spec(
     members: Vec<NodeMember<'_>>,
     store: Store,
-) -> Result<(Spec, DepsLists), BadSpec> {
+) -> Result<(Spec, DepsLists, Sites), BadSpec> {
     let mut b = Builder {
         ptr: String::new(),
+        sites: Sites::default(),
         text: PhantomData,
     };
     let Store {
@@ -54,7 +56,43 @@ pub(super) fn spec(
         inputs: inputs_deps,
         dependencies: dependencies_deps,
     };
-    Ok((spec, lists))
+    Ok((spec, lists, b.sites))
+}
+
+/// Where the spec's templates and literal keys stand, each list in
+/// document order, for the cross-field rules `template` and `key(<rule>)`
+/// (`docs/BATCH_SPEC.md` section 10: of two breaks of one rule, the first
+/// in document order is named). Dropped with the cross-field pass.
+#[derive(Debug, Default)]
+pub(super) struct Sites {
+    pub(super) templates: Vec<TemplateSite>,
+    pub(super) keys: Vec<KeySite>,
+}
+
+/// A template's place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TemplateSite {
+    /// `outputs.textures.key`.
+    Textures,
+    /// `outputs.sprites.key`.
+    Sprites,
+    /// `outputs.atlases.sprite_key`.
+    SpriteKey,
+    /// `outputs.atlases.json_key`.
+    JsonKey,
+    /// `archives[archive].members[member].path`.
+    Member { archive: usize, member: usize },
+}
+
+/// A literal key's place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum KeySite {
+    /// `prefer`'s keys, each in its order.
+    Prefer,
+    /// `archives[i].key`.
+    Archive(usize),
+    /// The object store sink's `prefix`.
+    Prefix,
 }
 
 /// Each bundle's `deps` as written: a run of `ids`, each a string of the
@@ -75,6 +113,7 @@ impl DepsLists {
 
 struct Builder<'a> {
     ptr: String,
+    sites: Sites,
     text: PhantomData<&'a str>,
 }
 
@@ -201,7 +240,8 @@ impl<'a> Builder<'a> {
                     "spool" => spool = Some(b.spool(value)?),
                     "http" => http = b.http(value)?,
                     "inputs" => inputs = Some(()),
-                    "dependencies" | "prefer" => {}
+                    "dependencies" => {}
+                    "prefer" => b.sites.keys.push(KeySite::Prefer),
                     "outputs" => outputs = Some(b.outputs(value)?),
                     "publish_incomplete" => publish_incomplete = b.bool(&value)?,
                     "resume" => resume = b.bool(&value)?,
@@ -341,8 +381,14 @@ impl<'a> Builder<'a> {
         for (name, value) in self.members(node)? {
             self.under(&name, |b| -> Result<(), BadSpec> {
                 match &*name {
-                    "textures" => out.textures = Some(b.template_object(value)?),
-                    "sprites" => out.sprites = Some(b.template_object(value)?),
+                    "textures" => {
+                        b.sites.templates.push(TemplateSite::Textures);
+                        out.textures = Some(b.template_object(value)?);
+                    }
+                    "sprites" => {
+                        b.sites.templates.push(TemplateSite::Sprites);
+                        out.sprites = Some(b.template_object(value)?);
+                    }
                     "atlases" => out.atlases = Some(b.atlases(value)?),
                     _ => return Err(b.err(Rule::UnknownField)),
                 }
@@ -359,8 +405,14 @@ impl<'a> Builder<'a> {
         for (name, value) in self.members(node)? {
             self.under(&name, |b| -> Result<(), BadSpec> {
                 match &*name {
-                    "sprite_key" => sprite_key = Some(b.string(value)?),
-                    "json_key" => json_key = Some(b.string(value)?),
+                    "sprite_key" => {
+                        b.sites.templates.push(TemplateSite::SpriteKey);
+                        sprite_key = Some(b.string(value)?);
+                    }
+                    "json_key" => {
+                        b.sites.templates.push(TemplateSite::JsonKey);
+                        json_key = Some(b.string(value)?);
+                    }
                     "script_classes" => script_classes = b.strings(value)?,
                     "skip_name_suffixes" => skip_name_suffixes = b.strings(value)?,
                     _ => return Err(b.err(Rule::UnknownField)),
@@ -396,7 +448,10 @@ impl<'a> Builder<'a> {
                     "root" => root = Some(b.string(value)?),
                     "bucket" => bucket = Some(b.string(value)?),
                     "region" => region = Some(b.string(value)?),
-                    "prefix" => store.prefix = b.string(value)?,
+                    "prefix" => {
+                        b.sites.keys.push(KeySite::Prefix);
+                        store.prefix = b.string(value)?;
+                    }
                     "endpoint" => store.endpoint = b.opt_string(value)?,
                     "path_style" => store.path_style = b.bool(&value)?,
                     "timeout_ms" => store.timeout_ms = b.u32(&value)?,
@@ -421,22 +476,28 @@ impl<'a> Builder<'a> {
         let items = self.items(node)?;
         let mut out = Vec::with_capacity(items.len());
         for (i, item) in items.into_iter().enumerate() {
-            out.push(self.under_index(i, |b| b.archive(item))?);
+            out.push(self.under_index(i, |b| b.archive(i, item))?);
         }
         Ok(out)
     }
 
-    fn archive(&mut self, node: Node<'a>) -> Result<Archive, BadSpec> {
+    fn archive(&mut self, archive: usize, node: Node<'a>) -> Result<Archive, BadSpec> {
         let (mut key, mut members) = (None, None);
         for (name, value) in self.members(node)? {
             self.under(&name, |b| -> Result<(), BadSpec> {
                 match &*name {
-                    "key" => key = Some(b.string(value)?),
+                    "key" => {
+                        b.sites.keys.push(KeySite::Archive(archive));
+                        key = Some(b.string(value)?);
+                    }
                     "members" => {
                         let items = b.items(value)?;
                         let mut ms = Vec::with_capacity(items.len());
-                        for (i, item) in items.into_iter().enumerate() {
-                            ms.push(b.under_index(i, |b| b.member(item))?);
+                        for (member, item) in items.into_iter().enumerate() {
+                            b.sites
+                                .templates
+                                .push(TemplateSite::Member { archive, member });
+                            ms.push(b.under_index(member, |b| b.member(item))?);
                         }
                         members = Some(ms);
                     }

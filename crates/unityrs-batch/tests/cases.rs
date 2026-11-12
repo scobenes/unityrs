@@ -631,15 +631,24 @@ fn the_validator_refuses_and_differs_only_as_item_4_lists() {
 }
 
 /// ECMA-262's `.` stops at a line terminator, so the schema's prefix
-/// pattern spells "any character" `[\s\S]`; both readers take these.
+/// pattern spells "any character" `[\s\S]`; both readers take these as
+/// the prefix's form. A control character among them is then the key
+/// rules' (`key(control_char)`, a cross-field rule, B2), which the schema
+/// leaves to the parser.
 #[test]
 fn a_prefix_may_hold_a_line_terminator() {
-    for prefix in ["a\n/", "a\r/", "a\u{2028}/", "a\u{2029}/", "\n/"] {
-        accepted(&with(|v| {
+    let at = |prefix: &str| {
+        with(|v| {
             v["deadline"] = json!("2026-01-01T00:00:00Z");
             v["sink"] = store();
             v["sink"]["prefix"] = json!(prefix);
-        }));
+        })
+    };
+    for prefix in ["a\u{2028}/", "a\u{2029}/", "\u{2029}/"] {
+        accepted(&at(prefix));
+    }
+    for prefix in ["a\n/", "a\r/", "\n/"] {
+        assert_eq!(refused(&at(prefix)), "key(control_char) /sink/prefix");
     }
     let v = with(|v| {
         v["deadline"] = json!("2026-01-01T00:00:00Z");

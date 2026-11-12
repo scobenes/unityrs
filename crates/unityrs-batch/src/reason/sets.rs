@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use super::{Budget, Code, InputLimit, KeyRule, LimitKind, ObjectLimit};
+use super::{Budget, Code, InputLimit, KeyRule, LimitClass, LimitKind, ObjectLimit};
 
 /// An input `not_run` (7.3).
 pub const STOPPED: &str = "stopped";
@@ -145,68 +145,168 @@ impl fmt::Display for Platform {
     }
 }
 
-/// An object's skip (9.3).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ObjectSkip {
+// Each variant and its test samples are declared together. A new variant
+// cannot compile without samples; the classification table test consumes
+// this generated list, so it must grow along with the enum.
+macro_rules! object_skips {
+    ($( $(#[$doc:meta])* $variant:ident $(($arg:ty))? => [$($sample:expr),+]; )*) => {
+        /// An object's skip (9.3).
+        #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+        pub enum ObjectSkip {
+            $( $(#[$doc])* $variant $(($arg))?, )*
+        }
+
+        #[cfg(test)]
+        pub(super) fn every_object_skip() -> Vec<ObjectSkip> {
+            vec![$($($sample),+),*]
+        }
+    };
+}
+
+object_skips! {
     /// `budget(input)`; `budget(dependency)` is never an object's skip
     /// (9.2).
-    BudgetInput,
+    BudgetInput => [ObjectSkip::BudgetInput];
     /// `limit(<kind>, <value>)`: a budget kind of the core's
     /// (`input_memory`, `input_bytes`, `decode_work`) or a data kind.
-    Limit(ObjectLimit),
+    Limit(ObjectLimit) => [ObjectSkip::Limit(sample_limit(LimitKind::InputMemory)),
+        ObjectSkip::Limit(sample_limit(LimitKind::TexturePixels))];
     /// `outside_view(<cab> | <path>)`.
-    OutsideView(String),
+    OutsideView(String) => [ObjectSkip::OutsideView("CAB-1".into())];
     /// `bad_pointer`.
-    BadPointer,
+    BadPointer => [ObjectSkip::BadPointer];
     /// `decode_error`.
-    DecodeError,
+    DecodeError => [ObjectSkip::DecodeError];
     /// `decoder_panic`.
-    DecoderPanic,
+    DecoderPanic => [ObjectSkip::DecoderPanic];
     /// `unsupported_format(<name>)`: UnityPy 1.25.2's `TextureFormat`
-    /// member name, or the decimal value.
-    UnsupportedFormat(String),
+    /// member name, or the decimal value of one it has no name for.
+    UnsupportedFormat(FormatName) => [ObjectSkip::UnsupportedFormat(FormatName::Named("ETC2_RGBA8".into())),
+        ObjectSkip::UnsupportedFormat(FormatName::Value(4_294_967_296))];
     /// `unsupported_platform(switch | xbox360)`.
-    UnsupportedPlatform(Platform),
+    UnsupportedPlatform(Platform) => [ObjectSkip::UnsupportedPlatform(Platform::Switch)];
     /// `empty_image`.
-    EmptyImage,
+    EmptyImage => [ObjectSkip::EmptyImage];
     /// `duplicate_name`.
-    DuplicateName,
+    DuplicateName => [ObjectSkip::DuplicateName];
     /// `duplicate_key`.
-    DuplicateKey,
+    DuplicateKey => [ObjectSkip::DuplicateKey];
     /// `unwritable_key(<rule>)`.
-    UnwritableKey(KeyRule),
+    UnwritableKey(KeyRule) => [ObjectSkip::UnwritableKey(KeyRule::DotSegment)];
     /// `empty_rect`.
-    EmptyRect,
+    EmptyRect => [ObjectSkip::EmptyRect];
     /// `unnamed_atlas`.
-    UnnamedAtlas,
+    UnnamedAtlas => [ObjectSkip::UnnamedAtlas];
     /// `reference_atlas`.
-    ReferenceAtlas,
+    ReferenceAtlas => [ObjectSkip::ReferenceAtlas];
     /// `sheet_not_found`.
-    SheetNotFound,
+    SheetNotFound => [ObjectSkip::SheetNotFound];
     /// `ngui_layout_unsupported`.
-    NguiLayoutUnsupported,
+    NguiLayoutUnsupported => [ObjectSkip::NguiLayoutUnsupported];
     /// `no_typetree`.
-    NoTypetree,
+    NoTypetree => [ObjectSkip::NoTypetree];
     /// `json_unwritable`.
-    JsonUnwritable,
+    JsonUnwritable => [ObjectSkip::JsonUnwritable];
+}
+
+#[cfg(test)]
+fn sample_limit(kind: LimitKind) -> ObjectLimit {
+    ObjectLimit::new(super::Limit { kind, value: 1 }).expect("an object's limit")
+}
+
+/// `unsupported_format`'s argument (9.3).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum FormatName {
+    /// UnityPy 1.25.2's `TextureFormat` member name.
+    Named(String),
+    /// The value as read, for one that enum has no member for (a format
+    /// outside a 32-bit `int` among them).
+    Value(i128),
+}
+
+impl fmt::Display for FormatName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Named(n) => f.write_str(n),
+            Self::Value(v) => write!(f, "{v}"),
+        }
+    }
+}
+
+/// An object skip's class (9.3's table): what decides whether it sets a
+/// code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SkipClass {
+    /// A budget's refusal: 5.
+    Budget,
+    /// An *expected skip*: the object reads correctly, and version 1 leaves
+    /// it without an output by its fixed scope or by a rule about the
+    /// object's own content or name. It sets no code.
+    Expected,
+    /// The data could not be read, resolved or decoded: 3.
+    Unreadable,
+    /// A format value UnityPy cannot name: 3.
+    UnnamedValue,
+    /// An object version 1 cannot read at all, its class's tree missing: 3.
+    NoTree,
+    /// A defect of the object's own data: 3.
+    Defect,
+    /// The caller's spec makes a key that cannot be written or collides:
+    /// 3.
+    CallerKey,
 }
 
 impl ObjectSkip {
-    /// Its code at a normal end (9.2): 5 for `budget(input)` or a limit of
-    /// kind `input_memory`, `input_bytes` or `decode_work`, else 3.
+    /// Its class (9.3's table), by an exhaustive match, so a new reason
+    /// is classed where it is added.
     #[must_use]
-    pub fn code(&self) -> Code {
+    pub fn class(&self) -> SkipClass {
         match self {
-            Self::BudgetInput => Code::Budget,
-            Self::Limit(l)
-                if matches!(
-                    l.get().kind,
-                    LimitKind::InputMemory | LimitKind::InputBytes | LimitKind::DecodeWork
-                ) =>
-            {
-                Code::Budget
+            Self::BudgetInput => SkipClass::Budget,
+            Self::Limit(l) => match l.get().kind.class() {
+                LimitClass::Budget | LimitClass::InputBudget => SkipClass::Budget,
+                LimitClass::Data | LimitClass::ObjectData => SkipClass::Unreadable,
+            },
+            Self::UnsupportedFormat(FormatName::Named(_))
+            | Self::UnsupportedPlatform(_)
+            | Self::NguiLayoutUnsupported
+            | Self::EmptyRect
+            | Self::EmptyImage
+            | Self::DuplicateName
+            | Self::ReferenceAtlas => SkipClass::Expected,
+            Self::OutsideView(_)
+            | Self::BadPointer
+            | Self::DecodeError
+            | Self::DecoderPanic
+            | Self::SheetNotFound => SkipClass::Unreadable,
+            Self::UnsupportedFormat(FormatName::Value(_)) => SkipClass::UnnamedValue,
+            Self::NoTypetree => SkipClass::NoTree,
+            Self::UnnamedAtlas => SkipClass::Defect,
+            Self::DuplicateKey | Self::UnwritableKey(_) | Self::JsonUnwritable => {
+                SkipClass::CallerKey
             }
-            _ => Code::CompleteWithSkips,
+        }
+    }
+
+    /// Whether it is an expected skip (9.3), which sets no code.
+    #[must_use]
+    pub fn is_expected(&self) -> bool {
+        self.class() == SkipClass::Expected
+    }
+
+    /// Its code at a normal end (9.2): none for an expected skip; 5 for a
+    /// budget's (`budget(input)`, a limit of kind `input_memory`,
+    /// `input_bytes` or `decode_work`); else 3.
+    #[must_use]
+    pub fn code(&self) -> Option<Code> {
+        match self.class() {
+            SkipClass::Expected => None,
+            SkipClass::Budget => Some(Code::Budget),
+            SkipClass::Unreadable
+            | SkipClass::UnnamedValue
+            | SkipClass::NoTree
+            | SkipClass::Defect
+            | SkipClass::CallerKey => Some(Code::CompleteWithSkips),
         }
     }
 }
@@ -459,7 +559,7 @@ pub enum Outcome<'a> {
 #[must_use]
 pub fn outcome_code(outcome: Outcome<'_>) -> Option<Code> {
     match outcome {
-        Outcome::ObjectSkipped(s) => Some(s.code()),
+        Outcome::ObjectSkipped(s) => s.code(),
         Outcome::InputFailed(r) | Outcome::BundleFailed(r) => Some(r.code()),
         Outcome::Output(r) => match r {
             OutputReason::PublishFailed

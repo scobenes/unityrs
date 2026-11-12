@@ -99,7 +99,10 @@ pub const TIMED_WAITS: &[&str] = &[
 /// Every `file:line` of a `.rs` file under `root` (`target` directories
 /// left out) that calls a [`TIMED_WAITS`] wait in a file that never names
 /// [`DEADLOCK_GUARD`], whose limit therefore comes from somewhere else.
-/// Comment lines are not scanned.
+/// Comment lines are not scanned. The engine's early `exit` line
+/// (`unityrs_batch::progress::early`), whose wait is the contract's own
+/// bound, is left out for its one wait only: a count there other than one
+/// is reported as `<file>: <n> timed waits, the exemption is for one`.
 ///
 /// # Panics
 /// When `root` cannot be read (a test helper).
@@ -115,14 +118,33 @@ pub fn unguarded(root: &Path) -> Vec<String> {
         if text.contains("DEADLOCK_GUARD") {
             continue;
         }
-        for (i, line) in text.lines().enumerate() {
-            if !line.trim_start().starts_with("//") && TIMED_WAITS.iter().any(|t| line.contains(t))
-            {
-                found.push(format!("{}:{}", path.display(), i + 1));
+        let hits: Vec<String> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                !line.trim_start().starts_with("//") && TIMED_WAITS.iter().any(|t| line.contains(t))
+            })
+            .map(|(i, _)| format!("{}:{}", path.display(), i + 1))
+            .collect();
+        // The engine's own early `exit` line waits on its writer thread
+        // for the contract's bound (`docs/BATCH_SPEC.md` section 10: at
+        // most 1 s, or the time left to the deadline), not for a test's:
+        // that one wait, and no other.
+        if path.ends_with("unityrs-batch/src/progress/early.rs") {
+            if hits.len() != 1 {
+                found.push(exemption_broken(&path, hits.len(), "timed waits"));
             }
+            continue;
         }
+        found.extend(hits);
     }
     found
+}
+
+/// A scan's report for an exempt file whose matches are not the one its
+/// exemption names.
+pub(crate) fn exemption_broken(path: &Path, n: usize, what: &str) -> String {
+    format!("{}: {n} {what}, the exemption is for one", path.display())
 }
 
 /// Every `.rs` file under `dir`, `target` directories left out.
@@ -144,6 +166,21 @@ pub(crate) fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
 #[cfg(test)]
 mod tests {
     use super::{finishes, hold, recv, unguarded, wait};
+
+    #[test]
+    fn an_exempt_writer_with_two_waits_is_reported() {
+        let dir = crate::scratch::Scratch::new("guard-exemption");
+        let file = dir.join("unityrs-batch/src/progress/early.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "rx.recv_timeout(a);\nrx.recv_timeout(b);\n").unwrap();
+        assert_eq!(
+            unguarded(dir.path()),
+            [format!(
+                "{}: 2 timed waits, the exemption is for one",
+                file.display()
+            )]
+        );
+    }
 
     /// Every crate's timed waits take their limit from [`super::DEADLOCK_GUARD`].
     #[test]

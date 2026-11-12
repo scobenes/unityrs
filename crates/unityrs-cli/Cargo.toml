@@ -18,6 +18,9 @@ name = "unityrs"
 path = "src/main.rs"
 
 [dependencies]
+# `startup_failed`'s errno name (src/batch.rs). Already in the lock.
+libc = "=0.2.191"
+unityrs-batch = { path = "../unityrs-batch" }
 unityrs-core = { path = "../unityrs-core" }
 unityrs-dump = { path = "../unityrs-dump" }
 

@@ -8,6 +8,8 @@
 //!   units, as `docs/BATCH_SPEC.md` sections 3, 4.3, 4.4 and 5 say, the
 //!   textures `outputs.textures` selects among them.
 //! - [`ngui::winners`]: 4.5's steps 1 to 3 over the cuts of several inputs.
+//! - [`keys`]: key templates, `safe()` and the key rules, which the
+//!   engine's validation checks a spec's templates and keys with.
 //! - [`pyjson`]: `CPython` 3.11's `json.dumps(value, indent=2)` of a typetree
 //!   value, byte for byte (E24).
 //!
@@ -37,3 +39,9 @@
 
 pub mod ngui;
 pub mod pyjson;
+
+/// Key templates, `safe()` and the key rules (`docs/BATCH_SPEC.md` 2.1 to
+/// 2.3), the engine's and the cutter's one copy: validation checks a spec's
+/// templates and literal keys through it ([`keys::check_template`],
+/// [`keys::check_prefixed`]), and an attempt expands and checks its keys.
+pub use ngui::keys;

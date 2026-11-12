@@ -257,6 +257,16 @@ const RULES: &[(&str, Break, &str)] = &[
         "unknown_input /prefer/k/input",
     ),
     (
+        "template",
+        |v| v["outputs"]["textures"]["key"] = json!("{atlas}"),
+        "template /outputs/textures/key",
+    ),
+    (
+        "key",
+        |v| v["prefer"] = json!({"k/": {"input": "a"}}),
+        "key(trailing_slash) /prefer/k~1",
+    ),
+    (
         "archive_key",
         |v| {
             let a = json!({"key": "a", "members": [{"kind": "sprite", "path": "p"}]});

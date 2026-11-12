@@ -3,8 +3,9 @@
 //! order.
 
 use super::{
-    KeyRule, STOP, Template, TemplateError, TemplateKind, Var, check, check_member, check_prefixed,
-    cut_tail, safe, safe_into,
+    KeyRule, STOP, Template, TemplateError, TemplateKind, TemplateRefusal, Token, Var, check,
+    check_member, check_member_template, check_prefixed, check_template, cut_tail, safe, safe_into,
+    tokens,
 };
 
 fn expanded<'v>(t: &Template, value: impl Fn(Var) -> &'v [u8]) -> Vec<u8> {
@@ -262,4 +263,170 @@ fn the_first_rule_broken_names_the_refusal() {
     assert_eq!(bad(b"a/.unityrs-tmp-1"), KeyRule::ReservedName);
     assert_eq!(check(b"_unityrsx/a.png").unwrap(), "_unityrsx/a.png");
     assert_eq!(check(b"..a/b.").unwrap(), "..a/b.");
+}
+
+#[test]
+fn the_sprites_kind_takes_the_object_variables() {
+    for t in [
+        "{type}/{name}.png",
+        "{safe_name}_{path_id}",
+        "{input}/{safe_input}",
+    ] {
+        assert!(Template::parse(t, TemplateKind::Sprite).is_ok(), "{t}");
+    }
+    for (t, name) in [("{atlas}", "atlas"), ("{safe_sprite}", "safe_sprite")] {
+        assert_eq!(
+            Template::parse(t, TemplateKind::Sprite),
+            Err(TemplateError::NotAllowed(name.to_owned()))
+        );
+    }
+}
+
+/// The tokens are the grammar's pieces: a brace pair is one brace's
+/// literal, borrowed from the text, and an error ends them.
+#[test]
+fn tokens_read_the_grammar_once() {
+    let got: Vec<_> = tokens("a{{b}}/{name}c", TemplateKind::Texture).collect();
+    assert_eq!(
+        got,
+        [
+            Ok(Token::Lit("a")),
+            Ok(Token::Lit("{")),
+            Ok(Token::Lit("b")),
+            Ok(Token::Lit("}")),
+            Ok(Token::Lit("/")),
+            Ok(Token::Var(Var::Name)),
+            Ok(Token::Lit("c")),
+        ]
+    );
+    let got: Vec<_> = tokens("a}b{name}", TemplateKind::Texture).collect();
+    assert_eq!(got, [Ok(Token::Lit("a")), Err(TemplateError::Brace(1))]);
+    assert_eq!(tokens("", TemplateKind::Texture).count(), 0);
+}
+
+fn literal_rule(text: &str) -> Option<KeyRule> {
+    match check_template(text, TemplateKind::Texture) {
+        Ok(()) => None,
+        Err(TemplateRefusal::Literal(r)) => Some(r),
+        Err(e) => panic!("{text}: {e}"),
+    }
+}
+
+/// 2.1's literal checks, one case per rule, and what they leave to each
+/// expansion.
+#[test]
+fn a_literal_part_that_breaks_a_key_rule_is_refused() {
+    let long = "x".repeat(256);
+    let cases: &[(&str, Option<KeyRule>)] = &[
+        ("{input}/{name}.png", None),
+        ("/{name}", Some(KeyRule::LeadingSlash)),
+        ("{name}/", Some(KeyRule::TrailingSlash)),
+        ("a/{name}/", Some(KeyRule::TrailingSlash)),
+        ("a//{name}", Some(KeyRule::EmptySegment)),
+        ("{input}//{name}", Some(KeyRule::EmptySegment)),
+        ("a/./{name}", Some(KeyRule::DotSegment)),
+        ("{name}/..", Some(KeyRule::DotSegment)),
+        ("{name}/.../x", None),
+        ("{name}/.x", None),
+        ("_unityrs", Some(KeyRule::ReservedPrefix)),
+        ("_unityrs/{name}", Some(KeyRule::ReservedPrefix)),
+        ("_unityrs{name}", None),
+        ("{name}_unityrs/x", None),
+        ("{input}/.unityrs-tmp-a", Some(KeyRule::ReservedName)),
+        ("{input}/.unityrs-tmp-{name}", None),
+        ("{input}/.unityrs-tm", None),
+        // A segment with a variable in it is each expansion's.
+        ("{input}/.{name}", None),
+        ("{input}/{{}}", None),
+        // A control character is each expansion's too (2.1's list).
+        ("{input}/a\u{1}", None),
+        // The first rule in 2.3's order names the refusal.
+        ("/a//./_x/", Some(KeyRule::LeadingSlash)),
+        ("a//./", Some(KeyRule::TrailingSlash)),
+    ];
+    for (text, want) in cases {
+        assert_eq!(literal_rule(text), *want, "{text}");
+    }
+    let t = format!("{{input}}/{long}");
+    assert_eq!(literal_rule(&t), Some(KeyRule::SegmentTooLong));
+    let t = format!("{{input}}/{}", &long[1..]);
+    assert_eq!(literal_rule(&t), None);
+    // A brace pair counts as the one byte it writes.
+    let t = format!("{{input}}/{}{{{{}}}}", &long[3..]);
+    assert_eq!(literal_rule(&t), None);
+    let t = format!("{{input}}/{}{{{{}}}}", &long[2..]);
+    assert_eq!(literal_rule(&t), Some(KeyRule::SegmentTooLong));
+    assert_eq!(
+        check_template("{nope}", TemplateKind::Texture),
+        Err(TemplateRefusal::Parse(TemplateError::Unknown(
+            "nope".into()
+        )))
+    );
+    assert_eq!(
+        check_template("", TemplateKind::Texture),
+        Err(TemplateRefusal::Parse(TemplateError::Empty))
+    );
+}
+
+/// A member path takes no `reserved_prefix` or `reserved_name` (4.7), in
+/// its literals either.
+#[test]
+fn a_member_template_skips_the_reserved_rules() {
+    for t in ["_unityrs/{atlas}", "_unityrs", "{atlas}/.unityrs-tmp-x"] {
+        assert!(check_template(t, TemplateKind::AtlasJson).is_err(), "{t}");
+        assert_eq!(
+            check_member_template(t, TemplateKind::AtlasJson),
+            Ok(()),
+            "{t}"
+        );
+    }
+    assert_eq!(
+        check_member_template("{atlas}//x", TemplateKind::AtlasJson),
+        Err(TemplateRefusal::Literal(KeyRule::EmptySegment))
+    );
+}
+
+/// A template of literals alone is one key: the literal checks refuse it
+/// exactly when the key's own check breaks one of their rules, by the same
+/// rule, and pass what only the rules they leave to an expansion refuse.
+#[test]
+fn a_literal_template_is_checked_as_its_key() {
+    let parts = [
+        "a",
+        "/",
+        ".",
+        "..",
+        "_unityrs",
+        ".unityrs-tmp-",
+        "x\u{1}",
+        "{{",
+        "}}",
+    ];
+    let checked = [
+        KeyRule::LeadingSlash,
+        KeyRule::TrailingSlash,
+        KeyRule::EmptySegment,
+        KeyRule::DotSegment,
+        KeyRule::SegmentTooLong,
+        KeyRule::ReservedPrefix,
+        KeyRule::ReservedName,
+    ];
+    let mut n = 0;
+    for a in parts {
+        for b in parts {
+            for c in parts {
+                let text = format!("{a}{b}{c}");
+                let key = text.replace("{{", "{").replace("}}", "}");
+                // The key's rules past a control character still apply to
+                // the literals: read the key without it.
+                let plain = key.replace('\u{1}', "");
+                let want = check(plain.as_bytes())
+                    .err()
+                    .filter(|r| checked.contains(r));
+                assert_eq!(literal_rule(&text), want, "{text:?}");
+                n += 1;
+            }
+        }
+    }
+    assert_eq!(n, 729);
 }

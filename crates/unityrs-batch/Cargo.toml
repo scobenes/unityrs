@@ -1,6 +1,6 @@
 [package]
 name = "unityrs-batch"
-description = "The batch engine behind `unityrs batch`: the job spec, its validation, views and the reason vocabulary."
+description = "The batch engine behind `unityrs batch`: the job spec and its validation, views, exit codes and reasons, the memory bound, the exit line and the counting allocator."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,8 +10,13 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-# The core's `LimitKind`, which docs/BATCH_SPEC.md 9.3's table maps.
+# The core's `LimitKind`, which docs/BATCH_SPEC.md 9.3's table maps, and
+# `heap_cost`, the counting allocator's unit.
 unityrs-core = { path = "../unityrs-core" }
+# The key templates and the key rules (docs/BATCH_SPEC.md 2.1 to 2.3),
+# which validation checks a spec's templates and literal keys with: one
+# copy, the cutter's.
+unityrs-export = { path = "../unityrs-export" }
 # The spec's order-preserving tree is built by a serde `Visitor` over
 # serde_json's parser (spec/parse), which keeps its recursion limit. Both
 # already in the lock. `float_roundtrip` reads a number as the nearest
@@ -23,8 +28,8 @@ serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
 # serializes them (docs/BATCH_SPEC.md 1.2, 1.6), and their form is its
 # parse.
 url = "=2.5.8"
-# `JOB.json`'s open flags, `O_NONBLOCK | O_NOCTTY` (spec/read.rs). Already
-# in the lock.
+# The open flags (spec/read.rs, progress/early.rs) and signal and clock
+# calls (sys.rs). Already in the lock.
 libc = "=0.2.191"
 
 [dev-dependencies]

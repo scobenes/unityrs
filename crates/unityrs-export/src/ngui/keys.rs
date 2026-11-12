@@ -27,6 +27,8 @@ use super::table::{self, Set};
 pub enum TemplateKind {
     /// `outputs.textures`' key.
     Texture,
+    /// `outputs.sprites`' key.
+    Sprite,
     /// `atlases.sprite_key`.
     AtlasSprite,
     /// `atlases.json_key`.
@@ -40,6 +42,7 @@ impl TemplateKind {
     pub fn name(self) -> &'static str {
         match self {
             Self::Texture => "texture",
+            Self::Sprite => "sprite",
             Self::AtlasSprite => "atlas_sprite",
             Self::AtlasJson => "atlas_json",
         }
@@ -105,8 +108,12 @@ impl Var {
     pub fn allowed(self, kind: TemplateKind) -> bool {
         match self {
             Self::Input | Self::SafeInput | Self::PathId => true,
-            Self::Type | Self::Name | Self::SafeName => kind == TemplateKind::Texture,
-            Self::Atlas | Self::SafeAtlas => kind != TemplateKind::Texture,
+            Self::Type | Self::Name | Self::SafeName => {
+                matches!(kind, TemplateKind::Texture | TemplateKind::Sprite)
+            }
+            Self::Atlas | Self::SafeAtlas => {
+                matches!(kind, TemplateKind::AtlasSprite | TemplateKind::AtlasJson)
+            }
             Self::Sprite | Self::SafeSprite => kind == TemplateKind::AtlasSprite,
         }
     }
@@ -141,47 +148,97 @@ pub enum TemplateError {
     NotAllowed(String),
 }
 
+/// A piece of a template's text as 2.1's grammar reads it, borrowed from
+/// the text: a run of literal characters, the one brace `{{` or `}}`
+/// writes, or a variable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Token<'t> {
+    /// Literal text, written as it is.
+    Lit(&'t str),
+    /// A variable 2.1 allows in the template's kind.
+    Var(Var),
+}
+
+/// The tokens of `text`, a template of `kind`, in order: the one reading
+/// of 2.1's grammar, which [`Template::parse`] and [`check_template`]
+/// share. It allocates nothing but an error's name, and ends after the
+/// first error. An empty text has no token (the grammar's `1*` is the
+/// caller's).
+#[must_use]
+pub fn tokens(text: &str, kind: TemplateKind) -> Tokens<'_> {
+    Tokens {
+        text,
+        kind,
+        at: 0,
+        done: false,
+    }
+}
+
+/// [`tokens`]' iterator.
+#[derive(Clone, Debug)]
+pub struct Tokens<'t> {
+    text: &'t str,
+    kind: TemplateKind,
+    at: usize,
+    done: bool,
+}
+
+impl<'t> Iterator for Tokens<'t> {
+    type Item = Result<Token<'t>, TemplateError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let at = self.at;
+        let rest = self.text.get(at..).unwrap_or_default();
+        if self.done || rest.is_empty() {
+            return None;
+        }
+        let token = if rest.starts_with("{{") || rest.starts_with("}}") {
+            self.at += 2;
+            Ok(Token::Lit(rest.get(..1).unwrap_or_default()))
+        } else if let Some(after) = rest.strip_prefix('{') {
+            match after.find('}') {
+                None => Err(TemplateError::Brace(at)),
+                Some(end) => {
+                    let name = after.get(..end).unwrap_or_default();
+                    self.at += end + 2;
+                    match Var::parse(name) {
+                        None => Err(TemplateError::Unknown(name.to_owned())),
+                        Some(var) if !var.allowed(self.kind) => {
+                            Err(TemplateError::NotAllowed(name.to_owned()))
+                        }
+                        Some(var) => Ok(Token::Var(var)),
+                    }
+                }
+            }
+        } else if rest.starts_with('}') {
+            Err(TemplateError::Brace(at))
+        } else {
+            let end = rest.find(['{', '}']).unwrap_or(rest.len());
+            self.at += end;
+            Ok(Token::Lit(rest.get(..end).unwrap_or_default()))
+        };
+        self.done = token.is_err();
+        Some(token)
+    }
+}
+
 impl Template {
-    /// Parses `text` for a template of `kind`.
+    /// Parses `text` for a template of `kind` ([`tokens`]).
     pub fn parse(text: &str, kind: TemplateKind) -> Result<Self, TemplateError> {
         if text.is_empty() {
             return Err(TemplateError::Empty);
         }
         let mut pieces = Vec::new();
         let mut lit = String::new();
-        let mut chars = text.char_indices().peekable();
-        while let Some((at, c)) = chars.next() {
-            match c {
-                '{' if chars.peek().map(|p| p.1) == Some('{') => {
-                    chars.next();
-                    lit.push('{');
-                }
-                '}' if chars.peek().map(|p| p.1) == Some('}') => {
-                    chars.next();
-                    lit.push('}');
-                }
-                '{' => {
-                    let rest = text.get(at + 1..).unwrap_or_default();
-                    let Some(end) = rest.find('}') else {
-                        return Err(TemplateError::Brace(at));
-                    };
-                    let name = rest.get(..end).unwrap_or_default();
-                    let Some(var) = Var::parse(name) else {
-                        return Err(TemplateError::Unknown(name.to_owned()));
-                    };
-                    if !var.allowed(kind) {
-                        return Err(TemplateError::NotAllowed(name.to_owned()));
-                    }
-                    for _ in 0..=name.chars().count() {
-                        chars.next();
-                    }
+        for token in tokens(text, kind) {
+            match token? {
+                Token::Lit(s) => lit.push_str(s),
+                Token::Var(var) => {
                     if !lit.is_empty() {
                         pieces.push(Piece::Lit(std::mem::take(&mut lit)));
                     }
                     pieces.push(Piece::Var(var));
                 }
-                '}' => return Err(TemplateError::Brace(at)),
-                _ => lit.push(c),
             }
         }
         if !lit.is_empty() {
@@ -350,8 +407,9 @@ pub fn safe(bytes: &[u8]) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-/// The rules of 2.3 an attempt checks, in the table's order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// The rules of 2.3 an attempt checks, in the table's order, which their
+/// order as values keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KeyRule {
     /// `empty`.
     Empty,
@@ -404,6 +462,16 @@ pub const KEY_MAX: usize = 1024;
 /// Where an expansion stops: one byte past [`KEY_MAX`], which is enough to
 /// know the key is `too_long`.
 pub const STOP: usize = KEY_MAX + 1;
+
+/// The key 2.3's `reserved_prefix` refuses, and every key under it.
+pub const RESERVED_PREFIX: &str = "_unityrs";
+/// What 2.3's `reserved_name` refuses a segment to start with.
+pub const RESERVED_NAME: &str = ".unityrs-tmp-";
+
+/// Whether 2.3's `dot_segment` refuses `segment`.
+fn dot_segment(segment: &str) -> bool {
+    segment == "." || segment == ".."
+}
 
 /// Which of 2.3's rules apply: every one to a key, all but
 /// `reserved_prefix` and `reserved_name` to an archive member path (4.7).
@@ -487,7 +555,7 @@ fn rules(key: &[u8], which: Rules) -> Result<&str, KeyRule> {
     } else {
         usize::MAX
     };
-    if segments.take(settled).any(|s| s == "." || s == "..") {
+    if segments.take(settled).any(dot_segment) {
         return Err(KeyRule::DotSegment);
     }
     // Measured on the bytes read: a code point the stop cuts still counts.
@@ -498,10 +566,14 @@ fn rules(key: &[u8], which: Rules) -> Result<&str, KeyRule> {
         return Err(KeyRule::TooLong);
     }
     if which == Rules::Key {
-        if text == "_unityrs" || text.starts_with("_unityrs/") {
+        if text == RESERVED_PREFIX
+            || text
+                .strip_prefix(RESERVED_PREFIX)
+                .is_some_and(|r| r.starts_with('/'))
+        {
             return Err(KeyRule::ReservedPrefix);
         }
-        if text.split('/').any(|s| s.starts_with(".unityrs-tmp-")) {
+        if text.split('/').any(|s| s.starts_with(RESERVED_NAME)) {
             return Err(KeyRule::ReservedName);
         }
     }
@@ -566,6 +638,10 @@ impl KeyTable {
         self.keys.is_empty()
     }
 }
+
+mod literal;
+
+pub use literal::{TemplateRefusal, check_member_template, check_template};
 
 #[cfg(test)]
 mod tests;
