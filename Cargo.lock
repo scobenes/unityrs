@@ -757,7 +757,9 @@ name = "unityrs-batch"
 version = "0.0.1"
 dependencies = [
  "boon",
+ "crc32fast",
  "libc",
+ "md-5",
  "serde",
  "serde_json",
  "unityrs-core",

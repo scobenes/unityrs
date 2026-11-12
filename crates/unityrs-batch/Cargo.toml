@@ -32,6 +32,10 @@ url = "=2.5.8"
 # calls (sys.rs). Already in the lock.
 libc = "=0.2.191"
 
+# Output digests, reusing the exact versions already locked.
+md5 = { package = "md-5", version = "=0.11.0", default-features = false }
+crc32fast = "=1.5.3"
+
 [dev-dependencies]
 # Scratch for the `JOB.json` cases, `mkfifo` through its child runner, and
 # the counting allocator of the validation measurement.

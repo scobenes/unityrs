@@ -1,5 +1,5 @@
 //! The batch engine behind `unityrs batch` (`docs/plans/batch.md`,
-//! `docs/BATCH_SPEC.md`): this crate starts with phase 1.
+//! `docs/BATCH_SPEC.md`): validation and sealed-attempt artifact primitives.
 //!
 //! - [`spec`]: the job spec, version 1 (`BATCH_SPEC` section 1), read from
 //!   `JOB.json` and validated in section 10's `bad_spec` order to a typed
@@ -17,6 +17,9 @@
 //!   main thread's own `exit` line, bounded in time ([`progress::early`]).
 //! - [`sys`]: the C library's calls std lacks: 2.11 step 1's `SIG_IGN`
 //!   for SIGTTIN, SIGTTOU and SIGXFSZ, and `CLOCK_BOOTTIME`.
+//! - [`budget`], [`work`]: reservation accounts, leak snapshots and export work.
+//! - [`spool`], [`digest`], [`records`]: owned disk claims, checksums and
+//!   bounded typed attempt artifacts, without orchestration or publication.
 //! - [`reason`]: exit codes and their precedence, the closed reason sets,
 //!   the limit-kind table and the map from outcomes to codes (9.1 to 9.3).
 //!
@@ -45,9 +48,14 @@
 #[allow(unsafe_code)]
 pub mod alloc;
 pub mod bound;
+pub mod budget;
+pub mod digest;
 pub mod progress;
 pub mod reason;
+pub mod records;
 pub mod spec;
+pub mod spool;
 #[allow(unsafe_code)]
 pub mod sys;
 pub mod view;
+pub mod work;

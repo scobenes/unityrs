@@ -112,3 +112,25 @@ pub(crate) fn terminal_pair() -> io::Result<(std::fs::File, std::fs::File)> {
         )
     })
 }
+
+/// `statvfs` caller-available bytes for the spool reserve check. Equality
+/// with the reserve succeeds. Overflow is a host I/O error, never wraparound.
+#[allow(clippy::useless_conversion)] // libc field widths vary across Unix targets.
+pub fn available_bytes(path: &std::path::Path) -> io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let mut facts = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: path is NUL-terminated and facts points to writable storage
+    // for one statvfs; both remain alive throughout the call.
+    if unsafe { libc::statvfs(path.as_ptr(), facts.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a successful statvfs initializes the complete output struct.
+    let facts = unsafe { facts.assume_init() };
+    let blocks = u64::from(facts.f_bavail);
+    let unit = u64::from(facts.f_frsize);
+    blocks
+        .checked_mul(unit)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
+}
