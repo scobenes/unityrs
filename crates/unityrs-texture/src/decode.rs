@@ -327,6 +327,24 @@ impl fmt::Debug for Image {
 }
 
 impl Image {
+    /// An image of pixels already charged by `charge` (the sprite renderer's
+    /// canvases).
+    pub(crate) fn from_parts(
+        mode: Mode,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+        charge: Charge,
+    ) -> Self {
+        Self {
+            mode,
+            width,
+            height,
+            pixels,
+            charge,
+        }
+    }
+
     /// The mode.
     #[must_use]
     pub fn mode(&self) -> Mode {

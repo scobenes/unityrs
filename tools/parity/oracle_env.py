@@ -5,6 +5,7 @@
     python tools/parity/oracle_env.py --exact            # ... and nothing else installed
     python tools/parity/oracle_env.py --image            # ... and the oracle image's zlib loaded
     python tools/parity/oracle_env.py --pin-records DIR  # re-pin oracle_records.json from the wheels in DIR
+    python tools/parity/oracle_env.py --core             # numpy's OpenBLAS core, against the pin
 
 The pins are the whole oracle (docs/DESIGN.md section 3): requirements-oracle.txt
 explains why numpy, cffi, pycryptodome and zstandard, which the stack imports
@@ -51,12 +52,19 @@ ORACLE_IMAGE_ZLIB: the Pillow wheel links the host's libz.so.1 and bundles none,
 so the image's zlib is the reference for Pillow's PNG, ICO and ICNS bytes
 (PARITY.md section 1), and an image rebuilt on a base with another zlib is refused.
 
+`--core` checks the OpenBLAS core numpy runs (docs/plans/extract.md section 3, item 6): the sprite renderer's
+affine solves follow the kernel's bits, and the oracle's are those of the Haswell kernel, pinned by
+OPENBLAS_CORETYPE=Haswell before the interpreter starts. It fails where the pin is set and the core numpy reports
+is not Haswell (core_problems), and, on a host whose CPU has avx2 and fma (the reference host's) with no pin set,
+says so. It is the one check here that imports a pin, numpy, to ask its bundled OpenBLAS (openblas_core).
+
 `--pin-records DIR` writes oracle_records.json from DIR, which must hold the
 pinned wheels and nothing else (each one's sha256 as requirements-oracle.txt
 pins it), as a re-pin takes them from PyPI (tools/parity/README.md).
 
 Exit status: 0 when the check passes, 1 when it fails (each difference on its
-own line on stderr), 2 for a usage error. Standard library only.
+own line on stderr), 2 for a usage error. Standard library only, but for
+`--core`'s numpy.
 """
 
 from __future__ import annotations
@@ -64,7 +72,9 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import ctypes
 import functools
+import glob
 import hashlib
 import importlib.util
 import io
@@ -378,6 +388,78 @@ def image_problems(runtime: str | None = None) -> list[str]:
     ]
 
 
+# The OpenBLAS core the oracle's affine solves run on (docs/plans/extract.md section 3, item 6), and the variable
+# that pins it before the interpreter starts.
+REFERENCE_CORE = "Haswell"
+CORE_PIN = "OPENBLAS_CORETYPE"
+# The CPU flags of the reference host: x86-64 with these runs the Haswell kernels natively.
+REFERENCE_FLAGS = frozenset(("avx2", "fma"))
+# The bundled OpenBLAS's report of its core, under each name scipy-openblas and OpenBLAS export it.
+_CORENAME = ("scipy_openblas_get_corename64_", "openblas_get_corename64_", "scipy_openblas_get_corename",
+             "openblas_get_corename")  # fmt: skip
+
+
+def openblas_libraries(package: Path) -> list[str]:
+    """The OpenBLAS libraries a numpy wheel installed at `package` bundles: a manylinux wheel's in `numpy.libs` beside
+    the package, a macOS wheel's in the package's `.dylibs`; none for a numpy linked to a system OpenBLAS."""
+    found = []
+    for folder in (package.parent / "numpy.libs", package / ".dylibs"):
+        found += sorted(glob.glob(str(folder / "*openblas*")))
+    return found
+
+
+def openblas_core() -> str | None:
+    """The OpenBLAS core numpy runs, as its bundled library reports it (`*get_corename*`, what threadpoolctl reads;
+    threadpoolctl itself is not among the pins), or None where numpy or a bundled OpenBLAS is not found
+    (`openblas_libraries`). numpy's config names the build's target, not the core chosen at run time, so it is not
+    read."""
+    try:
+        import numpy  # noqa: PLC0415 - a pin, imported for this check alone
+    except ImportError:
+        return None
+    for lib in openblas_libraries(Path(numpy.__file__).resolve().parent):
+        handle = ctypes.CDLL(lib)
+        for name in _CORENAME:
+            f = getattr(handle, name, None)
+            if f is not None:
+                f.restype = ctypes.c_char_p
+                return f().decode()
+    return None
+
+
+def cpu_flags(text: str | None = None) -> frozenset[str]:
+    """The CPU's flags, from /proc/cpuinfo's first `flags` line (`text` for tests); none where it has no such line or
+    there is no such file (not Linux)."""
+    if text is None:
+        try:
+            text = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return frozenset()
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip() == "flags":
+            return frozenset(value.split())
+    return frozenset()
+
+
+def core_problems(core: str | None, environ=None, flags=None) -> tuple[list[str], list[str]]:
+    """(problems, notes) for numpy's OpenBLAS `core` (item 6): a problem where the pin is set and the core is not
+    REFERENCE_CORE; a note where it is not set on a host with REFERENCE_FLAGS, whose solves then run the core the
+    host picks. The defaults are this process's environment and CPU."""
+    environ = os.environ if environ is None else environ
+    flags = cpu_flags() if flags is None else flags
+    pin = environ.get(CORE_PIN)
+    if pin:
+        if core != REFERENCE_CORE:
+            return [f"{CORE_PIN}={pin} is set, but numpy's OpenBLAS runs the {core} core, not the oracle's "
+                    f"{REFERENCE_CORE}"], []  # fmt: skip
+        return [], []
+    if flags >= REFERENCE_FLAGS:
+        return [], [f"this host's CPU has avx2 and fma, the reference host's, but {CORE_PIN} is not set: numpy's "
+                    f"OpenBLAS runs the {core} core, so the affine solves are not the oracle's"]  # fmt: skip
+    return [], []
+
+
 def pinned_wheels(path: Path = C.ORACLE_REQUIREMENTS) -> dict[str, tuple[str, str]]:
     """{normalised name: (version, wheel sha256)} from requirements-oracle.txt."""
     return {
@@ -425,7 +507,17 @@ def main(argv=None) -> int:
     group.add_argument("--exact", action="store_true", help="also refuse any package that is not pinned")
     group.add_argument("--image", action="store_true", help="also require the oracle image's zlib to be loaded")
     group.add_argument("--pin-records", metavar="DIR", help="write oracle_records.json from the pinned wheels in DIR")
+    group.add_argument("--core", action="store_true", help="check numpy's OpenBLAS core against the pin")
     args = ap.parse_args(argv)
+    if args.core:
+        core = openblas_core()
+        problems, notes = core_problems(core)
+        for line in problems + notes:
+            print(f"oracle_env: {line}", file=sys.stderr)
+        if problems:
+            return 1
+        print(f"oracle_env: numpy's OpenBLAS runs the {core} core")
+        return 0
     pins = C.oracle_pins()
     if args.pin_records:
         if not Path(args.pin_records).is_dir():

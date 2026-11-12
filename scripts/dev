@@ -4,7 +4,23 @@
 # The container shares the host's ~/.cargo, whose config may point the linker
 # and C compiler at host-only tools (zig on a box without gcc); the container
 # has gcc, so these overrides win over that config.
+#
+# On the reference host (x86-64 with avx2 and fma), numpy's OpenBLAS is pinned
+# to its Haswell kernel before the interpreter starts, so the sprite affine
+# solve is the oracle's bit for bit (docs/plans/extract.md section 3, item 6);
+# elsewhere no pin is set, and tools/fixtures/sprite.py --check skips the
+# cases that call solve, and says so. A pin set on the host
+# (`OPENBLAS_CORETYPE=Haswell scripts/dev ...`) is forwarded as it is, on any
+# host: the Haswell kernels run under emulation too, and
+# tools/parity/oracle_env.py --core says which core numpy runs.
+pin=
+if [ -n "${OPENBLAS_CORETYPE:-}" ]; then
+  pin=OPENBLAS_CORETYPE=$OPENBLAS_CORETYPE
+elif docker exec unityrs-dev sh -c 'grep -qw avx2 /proc/cpuinfo && grep -qw fma /proc/cpuinfo'; then
+  pin=OPENBLAS_CORETYPE=Haswell
+fi
 exec docker exec -i -u "$(id -u):$(id -g)" -w /work \
+  ${pin:+-e "$pin"} \
   -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc \
   -e CC_x86_64_unknown_linux_gnu=cc \
   -e AR_x86_64_unknown_linux_gnu=ar \

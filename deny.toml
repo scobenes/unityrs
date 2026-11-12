@@ -55,6 +55,27 @@ allow = ["PSF-2.0"]
 crate = "unityrs-cli"
 allow = ["PSF-2.0"]
 
+# unityrs-texture's sprite solve ports OpenBLAS files from GotoBLAS2, under
+# BSD-2-Clause-Views (see about.toml, whose clarification of the crate this
+# mirrors, with the crate's own expression).
+[[licenses.clarify]]
+crate = "unityrs-texture"
+expression = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views"
+license-files = [
+    { path = "LICENSE-MIT", hash = 0xb9a65ddd },
+    { path = "LICENSE-APACHE", hash = 0xb5518783 },
+    { path = "LICENSE-UNITYPY", hash = 0x25f1bbc9 },
+    { path = "LICENSE-PILLOW", hash = 0x14c14357 },
+    { path = "LICENSE-OPENBLAS", hash = 0x6722efcf },
+    { path = "LICENSE-OPENBLAS-KERNELS", hash = 0xa60839ef },
+    { path = "LICENSE-OPENBLAS-DSCAL", hash = 0x31711fb2 },
+    { path = "LICENSE-OPENBLAS-UT", hash = 0x443007d2 },
+]
+
+[[licenses.exceptions]]
+crate = "unityrs-texture"
+allow = ["BSD-2-Clause-Views"]
+
 # r-efi ships no licence file; its AUTHORS file holds the notices (see
 # about.toml). The expression is the crate's own.
 [[licenses.clarify]]

@@ -42,8 +42,10 @@ commits land on the worktree's branch.
   Only synthetic fixtures, or fixtures built with the Unity Editor, are checked
   in.
 - **Licences.** UnityPy, UnityPyBoost and AssetStudio are MIT and may be ported;
-  keep their notices. Pillow ports carry MIT-CMU, liblz4 ports BSD-2-Clause and
-  ports of CPython's standard library PSF-2.0. AssetRipper and other
+  keep their notices. Pillow ports carry MIT-CMU, liblz4 ports BSD-2-Clause,
+  ports of CPython's standard library PSF-2.0, OpenBLAS ports BSD-3-Clause
+  (with each file's own notice where it differs from OpenBLAS's LICENSE) and
+  ports of OpenBLAS's GotoBLAS2 files BSD-2-Clause-Views. AssetRipper and other
   GPL/AGPL projects are read for format knowledge only; never copy their code.
 - **Parity is measured, not assumed.** A behaviour claimed as UnityPy-equal needs
   a test against the pinned oracle. See `docs/DESIGN.md` section 3 for the tiers.

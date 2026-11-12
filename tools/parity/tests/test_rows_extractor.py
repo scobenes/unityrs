@@ -334,8 +334,9 @@ class ExportRows(unittest.TestCase):
                 texture, ((0, 0), (2, 0), (0, 2)), Image.new("RGBA", (4, 4)), ((2, 0), (0, 0), (2, 2))
             )
         self.assertEqual(solve.call_count, 1)
-        # A destination whose corners are collinear makes the affine matrix singular, and the error escapes, from
-        # copy_triangle and from a mesh whose positions round onto a line while its UVs do not (section 19.2).
+        # A destination whose system meets an exactly zero pivot in numpy's LU raises, and the error escapes, from
+        # copy_triangle and from a mesh whose positions round onto a line while its UVs do not (section 19.2). These
+        # collinear corners meet one; collinear corners need not (PARITY.md section 15.2, copy_triangle's row).
         for flat in (((0, 0), (1, 0), (2, 0)), ((0, 0), (1, 1), (2, 2))):
             with self.subTest(flat), self.assertRaisesRegex(SpriteHelper.np.linalg.LinAlgError, "^Singular matrix$"):
                 SpriteHelper.copy_triangle(texture, ((0, 0), (0, 2), (2, 0)), Image.new("RGBA", (4, 4)), flat)

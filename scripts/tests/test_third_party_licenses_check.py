@@ -80,6 +80,52 @@ class ConfigTests(unittest.TestCase):
             with self.subTest(label):
                 self.assertIn("clarify it the same way in both", "\n".join(self.problems(about, deny)))
 
+    def test_the_fuzz_workspace_copies_the_shared_entries(self):
+        fuzz = load("fuzz/deny.toml")
+        shared = T.lock_names(ROOT / "Cargo.lock") & T.lock_names(ROOT / "fuzz" / "Cargo.lock")
+        self.assertTrue({"unityrs-texture", "liblzma-sys", "r-efi", "unityrs-core"} <= shared)
+        self.assertNotIn("libfuzzer-sys", shared)
+        self.assertEqual(T.fuzz_problems(DENY, fuzz, shared), [])
+
+        def texture(kind):
+            return lambda d: d["licenses"][kind].remove(
+                next(e for e in d["licenses"][kind] if e["crate"] == "unityrs-texture")
+            )
+
+        def rehash(d):
+            entry = next(e for e in d["licenses"]["clarify"] if e["crate"] == "unityrs-texture")
+            entry["license-files"][-1]["hash"] ^= 1
+
+        changes = {
+            "a shared clarification missing (the review's case)": texture("clarify"),
+            "a shared exception missing": texture("exceptions"),
+            "a hash of its own": rehash,
+            "another allow order": lambda d: d["licenses"]["allow"].reverse(),
+            "an exception the root lacks": lambda d: d["licenses"]["exceptions"].append(
+                {"crate": "libc", "allow": ["NCSA"]}
+            ),
+        }
+        for label, change in changes.items():
+            changed = copy.deepcopy(fuzz)
+            change(changed)
+            with self.subTest(label):
+                self.assertTrue(T.fuzz_problems(DENY, changed, shared))
+        # The fuzz crate's own (libfuzzer-sys, which the root never builds) is its own business.
+        changed = copy.deepcopy(fuzz)
+        changed["licenses"]["exceptions"].append({"crate": "libfuzzer-sys", "allow": ["Zlib"]})
+        self.assertEqual(T.fuzz_problems(DENY, changed, shared), [])
+
+    def test_a_member_s_clarification_is_its_own_license(self):
+        self.assertEqual(T.member_problems(ABOUT, ROOT), [])
+        about = copy.deepcopy(ABOUT)
+        about["unityrs-texture"]["clarify"]["license"] = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause"
+        out = "\n".join(T.member_problems(about, ROOT))
+        self.assertIn("unityrs-texture: about.toml clarifies it as", out)
+        # A dependency's clarification is not held to a member's manifest.
+        about = copy.deepcopy(ABOUT)
+        about["r-efi"]["clarify"]["license"] = "MIT"
+        self.assertEqual(T.member_problems(about, ROOT), [])
+
     def test_the_command_line(self):
         script = SCRIPTS / "third_party_licenses_check.py"
         ok = child.run([sys.executable, str(script), "config"], capture_output=True, text=True)
@@ -316,6 +362,8 @@ class PortTests(unittest.TestCase):
                 "liblz4 1.9.4": ["LICENSE-LZ4"],
                 "CPython 3.11": ["NOTICE-PSF", "LICENSE-PSF"],
                 "Pillow 9.5.0": ["LICENSE-PILLOW"],
+                "OpenBLAS 0.3.31": ["LICENSE-OPENBLAS", "LICENSE-OPENBLAS-KERNELS", "LICENSE-OPENBLAS-DSCAL"],
+                "GotoBLAS2 code in OpenBLAS 0.3.31": ["LICENSE-OPENBLAS-UT"],
                 "zlib 1.2.13": ["LICENSE-ZLIB"],
             },
         )

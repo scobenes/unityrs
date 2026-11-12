@@ -63,6 +63,7 @@ mod contain;
 mod decode;
 mod format;
 mod select;
+pub mod sprite;
 
 pub use contain::{MESSAGE_BYTES, NON_STRING_PAYLOAD, Payload, contain};
 pub use decode::{DecodeError, Image, MAX_CROP_PIXELS, MAX_PIXELS, Plan, bcn_length, decode, plan};

@@ -10,9 +10,17 @@ rust-version.workspace = true
 # UnityPy calls it (MIT-CMU: src/libImaging/BcnDecode.c's BCn block decoders,
 # src/libImaging/RawDecode.c's row copy, the width cap of src/decode.c's
 # _setimage, and the decompression-bomb check of src/PIL/Image.py's crop),
-# whose notice is its LICENSE-PILLOW; its package carries both. See
-# THIRD_PARTY_LICENSES.
-license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU"
+# whose notice is its LICENSE-PILLOW; and, for the sprite renderer
+# (src/sprite/), the rest of Pillow's drawing, cropping and transforms that
+# UnityPy's SpriteHelper calls, and OpenBLAS 0.3.31's order for numpy's
+# linalg.solve (BSD-3-Clause: src/sprite/affine.rs), whose notices are its
+# LICENSE-OPENBLAS (the project's) and LICENSE-OPENBLAS-KERNELS and
+# LICENSE-OPENBLAS-DSCAL (the kernels' own), and of those files the ones
+# from GotoBLAS2 under The University of Texas at Austin's licence
+# (BSD-2-Clause-Views), its LICENSE-OPENBLAS-UT. about.toml's clarification
+# names each licence file, with this expression (the licence check holds
+# the two equal); its package carries all of them. See THIRD_PARTY_LICENSES.
+license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views"
 repository.workspace = true
 authors.workspace = true
 
@@ -20,6 +28,9 @@ authors.workspace = true
 # The meter every output buffer is charged to before it is allocated
 # (docs/plans/extract.md E59).
 unityrs-core = { path = "../unityrs-core" }
+# A tight sprite's mesh (MeshHandler.process, get_triangles), which the
+# sprite renderer reads (src/sprite.rs).
+unityrs-meshdecode = { path = "../unityrs-meshdecode" }
 thiserror = "=2.0.21"
 
 [dev-dependencies]
