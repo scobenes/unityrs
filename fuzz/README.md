@@ -6,6 +6,8 @@ liblz4); for `unityrs-texture`'s decoders and selection
 (`docs/plans/extract.md` E15, E18, E59, E66); and for `unityrs-meshdecode`'s
 vertex-data unpack and triangles (E16, E59). Any panic, timeout over 10 s,
 or allocation over 2 GiB is a bug.
+The `zlib_match` target also compares unityrs-imageio's derived deflate
+with pristine zlib 1.2.13, byte for byte at Pillow's settings.
 
 This crate is a workspace of its own. It builds only with a nightly
 toolchain and cargo-fuzz, and nothing in it ships.
@@ -15,6 +17,7 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | target | what it runs | input |
 |---|---|---|
 | `detect` | `detect::check_file_type` (the gzip check bounded by `max_inflate`) | any bytes |
+| `zlib_match` | derived deflate against pristine zlib 1.2.13, with 257-byte input and 509-byte output windows (`test-reference`) | any bytes, capped at 4 MiB |
 | `bundle` | `BundleFile::open` plus `load_all` (every block decoded, every entry parsed, nested bundles loaded), by the memory and the stream reader's rules | any bytes |
 | `serialized` | `SerializedFile::parse`, then every object's `parse_as_dict(true)` (UnityPyBoost's reader or the pure-Python one, by the object's size), by both readers' rules | any bytes |
 | `typetree` | `parse_blob` (format 10 and from 12) or `parse_old`, as the format says, then `NodeList::from_rows` and `Tree::compile` | `unityrs_testkit::fuzz::blob_case`: format, endian, stored tree |
@@ -59,6 +62,8 @@ before the data's are reached), on Windows, Switch and Xbox 360; and every
 mesh and sprite case `unityrs-meshdecode`'s handler fixture records
 (`crates/unityrs-meshdecode/tests/fixtures/process.json`, synthetic values
 from UnityPy's own class trees), each under meters 0, 1, 16 and 64.
+The `zlib_match` seeds are the builders' outputs (capped at 4 MiB), plus
+zero and periodic inputs around match and window boundaries.
 
 ## Running
 

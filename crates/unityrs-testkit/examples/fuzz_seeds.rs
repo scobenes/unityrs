@@ -42,7 +42,7 @@ use unityrs_testkit::depth::{Depth, Wrap, Z_ROWS};
 use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_case, lz4_case};
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 10] = [
+const TARGETS: [&str; 11] = [
     "detect",
     "bundle",
     "serialized",
@@ -53,6 +53,7 @@ const TARGETS: [&str; 10] = [
     "lz4",
     "texture",
     "meshdecode",
+    "zlib_match",
 ];
 
 /// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
@@ -586,6 +587,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     let outputs = unityrs_testkit::mutate::builder_outputs();
     for (name, bytes) in &outputs {
         s.file(name, bytes, 0)?;
+        s.add("zlib_match", name, &bytes[..bytes.len().min(4 << 20)])?;
         let plain = &bytes[..bytes.len().min(LZ4_MAX)];
         let block = compress(TestCodec::Lz4, plain);
         let exact = u32::try_from(plain.len()).unwrap_or(u32::MAX);
@@ -603,6 +605,11 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     s.add("lz4", "empty-over", &lz4_case(1, &[0]))?;
     texture(&mut s)?;
     meshdecode(&mut s)?;
+    for len in [2, 3, 257, 258, 259, 262, 32768, 65536, 65537, 131_333] {
+        s.add("zlib_match", &format!("zero-{len}"), &vec![0; len])?;
+        let periodic: Vec<_> = (0..len).map(|i| (i % 17).to_le_bytes()[0]).collect();
+        s.add("zlib_match", &format!("periodic-{len}"), &periodic)?;
+    }
     for (name, case) in depth_cases() {
         for r in case.refs.iter().filter_map(|r| r.rows.as_ref()) {
             let nodes = r

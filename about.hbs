@@ -496,9 +496,13 @@ Licence: Zlib.
 unityrs-imageio vendors the deflate side of zlib 1.2.13, unchanged, in
 crates/unityrs-imageio/vendor/zlib-1.2.13/ (each file's sha256 is in
 vendor/zlib-1.2.13.sha256, beside the release tarball's), and its build
-script compiles it into the crate, so that its PNG files deflate as Pillow
-9.5.0's do over the same zlib. zlib's LICENSE follows; it is
-unityrs-imageio's LICENSE-ZLIB, listed under Zlib below.
+script derives an altered deflate.c in OUT_DIR, replacing only longest_match
+with zlib-match/longest_match.c after checking the original span's SHA-256.
+The replacement uses equivalent memcpy word comparisons and a portable byte
+loop fallback; the vendored files remain unchanged. Tests compare the derived
+deflate with pristine zlib at Pillow's settings, and complete PNGs with Pillow
+9.5.0's fixtures. zlib's LICENSE follows; it is unityrs-imageio's LICENSE-ZLIB,
+listed under Zlib below.
 
 {{!-- notice: LICENSE-ZLIB --}}
 Copyright notice:
