@@ -32,6 +32,33 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      # G6 (docs/plans/core.md section 6): no stub is left in any crate.
+      - name: No stub is left (G6)
+        run: sh scripts/stub-check.sh
+      # No unmanageable files: no tracked Rust or Python file over 800 lines
+      # outside scripts/file-size-allowlist.txt (generated tables and fixture
+      # generators), and every entry there with its reason, within its limit
+      # and its pin.
+      - name: No file is over 800 lines
+        run: sh scripts/file-size-check.sh
+
+  # The feature-gated test builds, in parallel with `check`: each
+  # recompiles the crates it names with another feature set, which in
+  # one job with the default build pushed it past its timeout.
+  features:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      # Every locked package, as `check`'s workspace build fetches them: the
+      # flate2 backend test reads `cargo metadata --offline` for the whole
+      # workspace.
+      - name: Fetch the locked packages
+        run: cargo fetch --locked
       - name: Clippy, zlib reference feature
         run: cargo clippy -p unityrs-imageio --all-targets --features test-reference -- -D warnings
       - name: Test, zlib reference feature
@@ -43,20 +70,11 @@ jobs:
       # `test-counters` feature on, which each of the other three crates'
       # features of the same name enables (the TPK's and the exporters'
       # counter tests, tests/counters.rs, are built only under theirs). The
-      # steps above build the core without it.
+      # `check` job builds the core without it.
       - name: Clippy, CR8's test feature
         run: cargo clippy -p unityrs-core -p unityrs-testkit -p unityrs-tpk -p unityrs-export --all-targets --features unityrs-testkit/test-counters,unityrs-tpk/test-counters,unityrs-export/test-counters -- -D warnings
       - name: Test, CR8's test feature
         run: cargo test -p unityrs-core -p unityrs-testkit -p unityrs-tpk -p unityrs-export --features unityrs-testkit/test-counters,unityrs-tpk/test-counters,unityrs-export/test-counters
-      # G6 (docs/plans/core.md section 6): no stub is left in any crate.
-      - name: No stub is left (G6)
-        run: sh scripts/stub-check.sh
-      # No unmanageable files: no tracked Rust or Python file over 800 lines
-      # outside scripts/file-size-allowlist.txt (generated tables and fixture
-      # generators), and every entry there with its reason, within its limit
-      # and its pin.
-      - name: No file is over 800 lines
-        run: sh scripts/file-size-check.sh
 
   licenses:
     runs-on: ubuntu-latest
