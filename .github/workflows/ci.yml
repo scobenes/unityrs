@@ -32,6 +32,12 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Clippy, zlib reference feature
+        run: cargo clippy -p unityrs-imageio --all-targets --features test-reference -- -D warnings
+      - name: Test, zlib reference feature
+        run: cargo test -p unityrs-imageio --features test-reference
+      - name: Test, zlib byte comparison fallback
+        run: CFLAGS=-DUNITYRS_MATCH_BYTEWISE cargo test -p unityrs-imageio --features test-reference --test zlib_match
       # CR8's test-only counters (docs/plans/batch.md section 6): the core,
       # the testkit, the TPK provider and the exporters with the core's
       # `test-counters` feature on, which each of the other three crates'
@@ -131,7 +137,7 @@ jobs:
               -print_final_stats=1 > "$RUNNER_TEMP/fuzz-$1.log" 2>&1
           }
           failed=""
-          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture meshdecode"; do
+          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture meshdecode zlib_match"; do
             pids=""
             for t in $batch; do
               run "$t" &
@@ -141,7 +147,7 @@ jobs:
               wait "${p#*:}" || failed="$failed ${p%%:*}"
             done
           done
-          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture meshdecode; do
+          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture meshdecode zlib_match; do
             echo "== $t"
             grep -E '^(stat::|#[0-9]+ +DONE)' "$RUNNER_TEMP/fuzz-$t.log" || true
           done

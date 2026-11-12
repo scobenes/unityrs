@@ -7,11 +7,16 @@ rust-version.workspace = true
 # The encoder ports Pillow 9.5.0's PNG writer and its RGBA conversions
 # (MIT-CMU: src/png.rs, src/filter.rs, src/hash.rs), whose notice is its
 # LICENSE-PILLOW, and the build compiles the deflate side of zlib 1.2.13
-# (Zlib), vendored pristine in vendor/zlib-1.2.13/, whose licence is its
+# (Zlib), vendored pristine in vendor/zlib-1.2.13/. build.rs derives an
+# altered deflate.c with zlib-match/longest_match.c; its licence is
 # LICENSE-ZLIB (a link to the vendored LICENSE). See THIRD_PARTY_LICENSES.
 license = "(MIT OR Apache-2.0) AND MIT-CMU AND Zlib"
 repository.workspace = true
 authors.workspace = true
+
+[features]
+# Test/fuzz comparison only; normal builds do not compile the reference.
+test-reference = []
 
 [dependencies]
 # The visible-pixel hash (docs/plans/extract.md E20). Already in the lock
@@ -23,6 +28,8 @@ thiserror = "=2.0.21"
 # liblzma-sys.
 [build-dependencies]
 cc = "=1.10.0"
+# Already a runtime dependency: pins the replaced source span before patching.
+sha2 = "=0.11.1"
 
 [dev-dependencies]
 # tests/flate2_backends.rs runs `cargo metadata` through the testkit's child

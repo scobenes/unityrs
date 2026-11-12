@@ -1,4 +1,5 @@
-//! The zlib the encoder links is the vendored zlib 1.2.13, pristine
+//! The zlib the encoder derives its compiled deflate from is pristine
+//! zlib 1.2.13 (only `longest_match` is replaced in `OUT_DIR`).
 //! (`docs/plans/extract.md` E19): the library reports 1.2.13,
 //! `vendor/zlib-1.2.13/` holds exactly the files `vendor/zlib-1.2.13.sha256`
 //! lists, each with its hash there, and the archive build.rs compiles
@@ -175,11 +176,30 @@ fn the_archive_defines_no_name_an_unprefixed_zlib_does() {
         .collect();
     assert!(renames.len() > 100, "{} renames", renames.len());
     let unprefixed: BTreeSet<&str> = renames.iter().map(|r| r.0).chain(["z_errmsg"]).collect();
-    let prefixed: BTreeSet<&str> = renames
+    let mut prefixed: BTreeSet<&str> = renames
         .iter()
         .map(|r| r.1)
         .chain(["unityrs_z_errmsg"])
         .collect();
+    // The optional pristine reference is namespaced independently, and
+    // must export only deflate names that zconf.h also knows about.
+    let reference_names: Vec<String> = renames
+        .iter()
+        .filter(|(from, _)| from.starts_with("deflate"))
+        .map(|(from, _)| format!("unityrs_zref_{from}"))
+        .collect();
+    if cfg!(feature = "test-reference") {
+        prefixed.extend(reference_names.iter().map(String::as_str));
+        for name in [
+            "unityrs_zref_deflateInit2_",
+            "unityrs_zref_deflate",
+            "unityrs_zref_deflateEnd",
+        ] {
+            assert!(defined.contains(name), "missing reference symbol: {name}");
+        }
+    } else {
+        assert!(!defined.iter().any(|name| name.starts_with("unityrs_zref_")));
+    }
     let clashing: Vec<&&str> = defined.intersection(&unprefixed).collect();
     assert!(
         clashing.is_empty(),

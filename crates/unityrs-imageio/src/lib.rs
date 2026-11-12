@@ -13,8 +13,11 @@
 //!   the RGBA bytes, alpha-0 pixels cleared, other modes converted as
 //!   Pillow's `convert("RGBA")` converts them.
 //! - zlib is the vendored zlib 1.2.13 (`vendor/zlib-1.2.13/`, pristine,
-//!   each file's sha256 in `vendor/zlib-1.2.13.sha256`), compiled
-//!   statically by `build.rs` under `Z_PREFIX` and allocating through Rust's
+//!   each file's sha256 in `vendor/zlib-1.2.13.sha256`). `build.rs` derives
+//!   an altered deflate.c in `OUT_DIR`: a hash-guarded replacement of
+//!   `longest_match` (`zlib-match/longest_match.c`) with equivalent memcpy
+//!   word comparisons. It compiles statically under `Z_PREFIX`, at opt 3,
+//!   allocating through Rust's
 //!   global allocator ([`zlib_version`] says which zlib it is). The core's
 //!   gzip stays on zlib-rs: `tests/flate2_backends.rs` fails when any crate
 //!   enables a C zlib of flate2's.
@@ -60,6 +63,11 @@ pub use hash::visible_hash;
 pub use image::{Image, ImageError, Mode};
 pub use png::{EncodeError, Png, ZlibFailure, encode};
 pub use zlib::zlib_version;
+
+/// Test/fuzz support comparing the derived deflate with pristine zlib.
+#[cfg(feature = "test-reference")]
+#[doc(hidden)]
+pub use zlib::reference as test_reference;
 
 /// Asserts at compile time that `T` is `Send + Sync` (`docs/plans/core.md`
 /// 3.16).
