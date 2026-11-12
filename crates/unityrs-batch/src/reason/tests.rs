@@ -1,7 +1,7 @@
 use super::{
-    Budget, Code, InputLimit, InputReason, KeyRule, LeftOut, Limit, LimitClass, LimitKind,
-    ObjectLimit, ObjectSkip, Outcome, OutputReason, Platform, Preflight, StopReason, Warning,
-    normal_end, outcome_code,
+    Budget, Code, FormatName, InputLimit, InputReason, KeyRule, LeftOut, Limit, LimitClass,
+    LimitKind, ObjectLimit, ObjectSkip, Outcome, OutputReason, Platform, Preflight, StopReason,
+    Warning, normal_end, outcome_code,
 };
 
 fn limit(kind: LimitKind, value: u64) -> Limit {
@@ -104,7 +104,7 @@ fn reasons_render_as_name_and_arguments() {
     );
     assert_eq!(ObjectSkip::BudgetInput.to_string(), "budget(input)");
     assert_eq!(
-        ObjectSkip::UnsupportedFormat("ETC2_RGBA8".into()).to_string(),
+        ObjectSkip::UnsupportedFormat(FormatName::Named("ETC2_RGBA8".into())).to_string(),
         "unsupported_format(ETC2_RGBA8)"
     );
     assert_eq!(
@@ -430,7 +430,7 @@ fn outcomes_map_to_codes() {
 fn a_normal_end_takes_the_worst_code() {
     assert_eq!(normal_end([]), Code::Complete);
     assert_eq!(normal_end([Outcome::ArchiveEmpty]), Code::Complete);
-    let skip = ObjectSkip::EmptyImage;
+    let skip = ObjectSkip::DecodeError;
     let failed = InputReason::EntryError;
     let budget = ObjectSkip::BudgetInput;
     assert_eq!(
@@ -451,5 +451,129 @@ fn a_normal_end_takes_the_worst_code() {
             Outcome::ObjectSkipped(&budget),
         ]),
         Code::Budget
+    );
+}
+
+use super::sets::every_object_skip;
+
+/// 9.3's table: the seven expected skips set no code, the decimal form of
+/// `unsupported_format` among the rest, which keep 3, and the budget's 5.
+#[test]
+fn every_object_skip_has_9_3_s_class_and_code() {
+    use super::SkipClass as C;
+    let all = every_object_skip();
+    let table: Vec<(String, C, Option<u8>)> = all
+        .iter()
+        .map(|s| (s.to_string(), s.class(), s.code().map(Code::value)))
+        .collect();
+    let want = [
+        ("budget(input)", C::Budget, Some(5)),
+        ("limit(input_memory, 1)", C::Budget, Some(5)),
+        ("limit(texture_pixels, 1)", C::Unreadable, Some(3)),
+        ("outside_view(CAB-1)", C::Unreadable, Some(3)),
+        ("bad_pointer", C::Unreadable, Some(3)),
+        ("decode_error", C::Unreadable, Some(3)),
+        ("decoder_panic", C::Unreadable, Some(3)),
+        ("unsupported_format(ETC2_RGBA8)", C::Expected, None),
+        ("unsupported_format(4294967296)", C::UnnamedValue, Some(3)),
+        ("unsupported_platform(switch)", C::Expected, None),
+        ("empty_image", C::Expected, None),
+        ("duplicate_name", C::Expected, None),
+        ("duplicate_key", C::CallerKey, Some(3)),
+        ("unwritable_key(dot_segment)", C::CallerKey, Some(3)),
+        ("empty_rect", C::Expected, None),
+        ("unnamed_atlas", C::Defect, Some(3)),
+        ("reference_atlas", C::Expected, None),
+        ("sheet_not_found", C::Unreadable, Some(3)),
+        ("ngui_layout_unsupported", C::Expected, None),
+        ("no_typetree", C::NoTree, Some(3)),
+        ("json_unwritable", C::CallerKey, Some(3)),
+    ];
+    let want: Vec<(String, C, Option<u8>)> = want
+        .iter()
+        .map(|(n, c, v)| ((*n).to_owned(), *c, *v))
+        .collect();
+    assert_eq!(table, want);
+    for s in &all {
+        assert_eq!(s.is_expected(), s.class() == C::Expected, "{s}");
+        assert_eq!(
+            code(Outcome::ObjectSkipped(s)),
+            s.code().map(Code::value),
+            "{s}"
+        );
+    }
+    let negative = ObjectSkip::UnsupportedFormat(FormatName::Value(-1));
+    assert_eq!(negative.to_string(), "unsupported_format(-1)");
+    assert_eq!(code(Outcome::ObjectSkipped(&negative)), Some(3));
+}
+
+/// A normal end whose only skips are expected is 0, `complete`.
+#[test]
+fn an_expected_only_set_of_skips_exits_0() {
+    let expected: Vec<ObjectSkip> = every_object_skip()
+        .into_iter()
+        .filter(ObjectSkip::is_expected)
+        .collect();
+    assert_eq!(expected.len(), 7);
+    let end = normal_end(expected.iter().map(Outcome::ObjectSkipped));
+    assert_eq!(end, Code::Complete);
+    assert_eq!(end.value(), 0);
+    let with_empty = normal_end(
+        expected
+            .iter()
+            .map(Outcome::ObjectSkipped)
+            .chain([Outcome::ArchiveEmpty]),
+    );
+    assert_eq!(with_empty, Code::Complete);
+}
+
+/// One skip that is not expected among expected ones is 3, and every other
+/// code keeps its place in the precedence above them.
+#[test]
+fn a_mixed_set_exits_3_and_the_precedence_is_unchanged() {
+    let reference = ObjectSkip::ReferenceAtlas;
+    let name = ObjectSkip::DuplicateName;
+    let budget = ObjectSkip::BudgetInput;
+    let failed = InputReason::EntryError;
+    for other in every_object_skip()
+        .iter()
+        .filter(|s| !s.is_expected() && s.class() != super::SkipClass::Budget)
+    {
+        let mixed = [
+            Outcome::ObjectSkipped(&reference),
+            Outcome::ObjectSkipped(other),
+            Outcome::ObjectSkipped(&name),
+        ];
+        assert_eq!(normal_end(mixed), Code::CompleteWithSkips, "{other}");
+        assert_eq!(normal_end(mixed).value(), 3);
+    }
+    let worse = [
+        (Outcome::ObjectSkipped(&budget), Code::Budget),
+        (Outcome::InputFailed(&failed), Code::Incomplete),
+        (
+            Outcome::Output(&OutputReason::PublishFailed),
+            Code::Incomplete,
+        ),
+        (Outcome::NotWritten, Code::Incomplete),
+        (
+            Outcome::Output(&OutputReason::UnitConflict),
+            Code::CompleteWithSkips,
+        ),
+    ];
+    for (o, want) in worse {
+        assert_eq!(
+            normal_end([Outcome::ObjectSkipped(&reference), o]),
+            want,
+            "{o:?}"
+        );
+        assert_eq!(
+            normal_end([o, Outcome::ObjectSkipped(&name)]),
+            want,
+            "{o:?}"
+        );
+    }
+    assert_eq!(
+        Code::PRECEDENCE.map(Code::value),
+        [78, 69, 70, 74, 7, 6, 5, 4, 3, 0]
     );
 }

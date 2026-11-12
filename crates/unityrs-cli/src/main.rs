@@ -6,6 +6,8 @@
 //!     [--levels L0,L1,L2,L3] [-j N] [--stats PATH] [-q] [--tpk PATH] [--reverse-prepass]
 //!     [--unbounded KIND[,KIND...]]
 //! unityrs values CASES.json
+//! unityrs batch --check JOB.json | --schema | JOB.json
+//! unityrs --version
 //! ```
 //!
 //! `dump` takes `tools/parity/unitypy_dump.py`'s options, parsed as its
@@ -17,6 +19,13 @@
 //! memory), which says more about the machine than the inputs.
 //! `values` runs the spike's value-case protocol
 //! ([`unityrs_dump::values`]), which `tools/parity/value_cases.py` drives.
+//! `batch` is the engine's surface ([`batch`], `docs/BATCH_SPEC.md`), its
+//! exit codes section 9's; `--version` prints `unityrs <version> spec
+//! <highest spec_version>` (section 10).
+//!
+//! The binary's allocator is the engine's counting allocator
+//! ([`unityrs_batch::alloc`]), which counts each refusal and each thread's
+//! live bytes, and otherwise is `System`.
 
 // No panics on untrusted input (plan section 3.15): the CLI parses its
 // arguments, which a caller chooses. Tests may opt out.
@@ -34,20 +43,31 @@
 )]
 
 mod args;
+mod batch;
 
 use std::ffi::OsStr;
 use std::io::Write;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::Instant;
+
+use unityrs_batch::alloc::Counting;
+use unityrs_batch::progress::clock::Clock;
+use unityrs_batch::reason::Code;
 
 use unityrs_dump::DumpOptions;
 use unityrs_dump::run::{RunError, RunOptions, Summary};
 use unityrs_dump::select::{PyStr, Selection};
 
-const USAGE: &str = "usage: unityrs {dump,values} ...\n\n\
+#[global_allocator]
+static ALLOCATOR: Counting = Counting::new();
+
+const USAGE: &str = "usage: unityrs {dump,values,batch} ...\n\n\
   unityrs dump INPUT... -o OUT.jsonl[.gz] [options]   the canonical dump (dump -h)\n\
-  unityrs values CASES.json                           the value-case protocol";
+  unityrs values CASES.json                           the value-case protocol\n\
+  unityrs batch --check JOB.json | --schema           the batch engine\n\
+  unityrs --version                                   the version and spec version";
 
 const VALUES_USAGE: &str = "usage: unityrs values CASES.json";
 
@@ -154,7 +174,18 @@ fn values(path: &Path) -> ExitCode {
     }
 }
 
+/// The engine's surfaces, `batch` and `--version`: a panic on their path
+/// exits 70, with no `exit` line (`docs/BATCH_SPEC.md` section 10), and
+/// writes only the panic's message.
+fn engine(main_start: Instant, run: impl FnOnce(&Clock) -> ExitCode) -> ExitCode {
+    let clock = Clock::process(main_start);
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&clock)))
+        .unwrap_or_else(|_| ExitCode::from(Code::Internal.value()))
+}
+
 fn main() -> ExitCode {
+    // `ms`'s origin: the process's start on the boot clock, else this.
+    let main_start = Instant::now();
     let argv: Vec<Vec<u8>> = std::env::args_os()
         .skip(1)
         .map(OsStringExt::into_vec)
@@ -162,6 +193,8 @@ fn main() -> ExitCode {
     let rest = argv.get(1..).unwrap_or_default();
     match argv.first().map(Vec::as_slice) {
         Some(b"dump") => dump(rest),
+        Some(b"batch") => engine(main_start, |c| batch::main(c, rest)),
+        Some(b"--version") => engine(main_start, |c| batch::version(c, rest)),
         Some(b"values") => match rest {
             [h] if h == b"-h" || h == b"--help" => {
                 println!("{VALUES_USAGE}");
@@ -182,7 +215,7 @@ fn main() -> ExitCode {
             USAGE,
             "unityrs",
             &format!(
-                "argument command: invalid choice: {} (choose from 'dump', 'values')",
+                "argument command: invalid choice: {} (choose from 'dump', 'values', 'batch')",
                 args::py_repr(other)
             ),
         ),

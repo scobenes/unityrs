@@ -10,6 +10,7 @@
 //! cross-field rules on the typed spec.
 
 pub mod cross;
+mod templates;
 
 use super::fields::{DIRECTORY, Field, MAX_INT, OBJECT_STORE, SINK_KINDS, Str, Ty};
 use super::formats::{self, Verdict};

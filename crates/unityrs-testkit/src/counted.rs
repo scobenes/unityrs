@@ -114,12 +114,24 @@ pub trait Tally: Sync {
 /// A global allocator that forwards to `System` and tells its [`Tally`] of
 /// each block made or freed on a [`counted`] thread, once `System` has
 /// answered: a failure counts nothing, and a `realloc` that fails leaves its
-/// old block live and counted. A `realloc` that succeeds counts its new
-/// block before it frees the old one, the worst case of a moving `realloc`:
-/// both blocks live at once. A tally that panics aborts the process
+/// old block live and counted. A growing `realloc` that succeeds counts its
+/// new block before it frees the old one, the worst case of a moving
+/// `realloc`: both blocks live at once. A shrinking one frees the old block
+/// first, since glibc shrinks in place, unless `System` allocates, copies
+/// and frees instead (an alignment over `malloc`'s, or a new size below the
+/// alignment), which counts as a growth does: the engine's allocator's
+/// rule (`unityrs_batch::alloc`). A tally that panics aborts the process
 /// ([`Tally`]). A test file installs it with its own tally:
 /// `#[global_allocator] static ALLOC: Allocator<Mine> = Allocator(Mine);`.
 pub struct Allocator<T>(pub T);
+
+/// `malloc`'s alignment, below which std's `System` calls `realloc` itself
+/// (`library/std/src/sys/alloc`'s `MIN_ALIGN`).
+const MIN_ALIGN: usize = if cfg!(target_pointer_width = "64") {
+    16
+} else {
+    8
+};
 
 /// Aborts the process when dropped: armed around each call into a
 /// [`Tally`] and disarmed (forgotten) when the call returns, so it drops
@@ -188,7 +200,13 @@ unsafe impl<T: Tally> GlobalAlloc for Allocator<T> {
         let p = unsafe { System.realloc(ptr, layout, new_size) };
         if !p.is_null() && counted() {
             no_unwind(|| {
-                if new_size <= layout.size() {
+                // `System` calls `realloc` itself only for an alignment of
+                // at most `malloc`'s and no greater than the new size;
+                // otherwise it allocates, copies and frees (std's
+                // `realloc_fallback`), both blocks live: as the engine's
+                // allocator counts it (`unityrs_batch::alloc`).
+                let in_place = layout.align() <= MIN_ALIGN && layout.align() <= new_size;
+                if new_size <= layout.size() && in_place {
                     // glibc shrinks a block where it is (a heap chunk split
                     // in place, a mapped one cut by `mremap`): no second
                     // block ever exists (plan section 3.15, perf stage 2).
@@ -208,6 +226,10 @@ unsafe impl<T: Tally> GlobalAlloc for Allocator<T> {
 /// Every `file:line` of a `.rs` file under `root` (`target` directories
 /// left out) that implements `GlobalAlloc` itself, outside this module:
 /// a counting allocator of its own, whose accounting no test here checks.
+/// The engine's (`unityrs_batch::alloc`, the binary's) is the one other,
+/// its accounting held by its own tests, and its file is left out for that
+/// one implementation only: a count there other than one is reported as
+/// `<file>: <n> implementations, the exemption is for one`.
 /// Comment lines are not scanned.
 ///
 /// # Panics
@@ -219,16 +241,33 @@ pub fn stray_allocators(root: &Path) -> Vec<String> {
     files.sort();
     let mut found = Vec::new();
     for path in files {
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let hits: Vec<String> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                !line.trim_start().starts_with("//") && line.contains("GlobalAlloc for")
+            })
+            .map(|(i, _)| format!("{}:{}", path.display(), i + 1))
+            .collect();
+        // This module, whose scan names the pattern itself.
         if path.ends_with("unityrs-testkit/src/counted.rs") {
             continue;
         }
-        let text =
-            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        for (i, line) in text.lines().enumerate() {
-            if !line.trim_start().starts_with("//") && line.contains("GlobalAlloc for") {
-                found.push(format!("{}:{}", path.display(), i + 1));
+        // The engine's counting allocator, which its own tests check
+        // (`unityrs-batch`'s `tests/alloc.rs`): that one, and no other.
+        if path.ends_with("unityrs-batch/src/alloc.rs") {
+            if hits.len() != 1 {
+                found.push(crate::guard::exemption_broken(
+                    &path,
+                    hits.len(),
+                    "implementations",
+                ));
             }
+            continue;
         }
+        found.extend(hits);
     }
     found
 }
@@ -264,6 +303,47 @@ mod tests {
 
     /// No request `System` can meet: a `realloc` to it fails and returns null.
     const HUGE: usize = usize::MAX / 4;
+
+    #[test]
+    fn a_shrink_below_alignment_counts_both_live_blocks() {
+        count_this_thread();
+        let a = Allocator(Log(Mutex::new(Vec::new())));
+        // Alignment no greater than malloc's: only the new size forces
+        // System's allocate/copy/free fallback.
+        let layout = Layout::from_size_align(64, super::MIN_ALIGN).unwrap();
+        let small = Layout::from_size_align(1, layout.align()).unwrap();
+        // SAFETY: non-zero layouts; the live pointer is used with its
+        // current layout, retains its first byte, and is freed once.
+        unsafe {
+            let p = a.alloc(layout);
+            assert!(!p.is_null());
+            p.write(42);
+            let q = a.realloc(p, layout, small.size());
+            assert!(!q.is_null());
+            assert_eq!(q.read(), 42);
+            a.dealloc(q, small);
+        }
+        assert_eq!(a.0.take(), [64, 1, -64, -1]);
+    }
+
+    #[test]
+    fn an_exempt_allocator_with_two_implementations_is_reported() {
+        let dir = crate::scratch::Scratch::new("allocator-exemption");
+        let file = dir.join("unityrs-batch/src/alloc.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            "impl GlobalAlloc for A {}\nimpl GlobalAlloc for B {}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            stray_allocators(dir.path()),
+            [format!(
+                "{}: 2 implementations, the exemption is for one",
+                file.display()
+            )]
+        );
+    }
 
     /// A `realloc` that fails counts nothing: its old block stays live and
     /// counted (review round 4: the copies counted the new block, then freed
@@ -403,6 +483,10 @@ mod tests {
             out.status
         );
         assert!(err.contains("the tally's own panic"), "{spec}: {err}");
+        assert!(
+            !err.contains("panic in a function that cannot unwind"),
+            "{spec}: std's nounwind abort reached instead of our guard: {err}"
+        );
     }
 
     /// Refuses a fresh allocation of 12,345 bytes, never a `realloc`.
@@ -447,7 +531,8 @@ mod tests {
         }
     }
 
-    /// Every global allocator in the workspace is an [`Allocator`].
+    /// Every global allocator in the workspace is an [`Allocator`] or the
+    /// engine's counting allocator (`unityrs_batch::alloc`).
     #[test]
     fn every_global_allocator_in_the_workspace_is_this_one() {
         let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");

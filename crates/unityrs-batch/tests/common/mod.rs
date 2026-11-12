@@ -89,6 +89,8 @@ fn cross_field(rule: Rule) -> bool {
             | Rule::PathStyle
             | Rule::DeadlineRequired
             | Rule::UnknownInput
+            | Rule::Template
+            | Rule::Key(_)
             | Rule::ArchiveKey
             | Rule::ArchiveKind
             | Rule::Source

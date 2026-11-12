@@ -1,8 +1,8 @@
 //! The cross-field rules (`docs/BATCH_SPEC.md` 1.1), each with its
 //! pointer, in section 10's order: `budgets`, `duplicate_id`,
 //! `duplicate_header`, `backoff`, `deps`, `view_size`, `spool_in_sink`,
-//! `path_style`, `deadline_required`, `unknown_input`, [B2: `template`,
-//! `key(<rule>)`], `archive_key`, `archive_kind`, `source`,
+//! `path_style`, `deadline_required`, `unknown_input`, `template`,
+//! `key(<rule>)` (`super::templates`), `archive_key`, `archive_kind`, `source`,
 //! `headers_without_url`, `outputs_empty`, `prefer_empty`.
 //!
 //! Where a rule can break in several places, the first in document order
@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use super::super::build::DepsLists;
+use super::super::build::{DepsLists, Sites};
 use super::super::formats;
 use super::super::model::{BundleRef, Sink, Spec};
 use super::super::{BadSpec, Rule, pointer, push_token};
@@ -18,10 +18,12 @@ use crate::view::{self, Graph, Walker};
 
 /// Checks the cross-field rules, building the graph on the way.
 /// `lists` are the bundles' `deps` as written; they are dropped once
-/// resolved. The views' check reads at most `view_work` ids.
+/// resolved. `sites` place the templates and literal keys in document
+/// order. The views' check reads at most `view_work` ids.
 pub(in crate::spec) fn check(
     spec: &Spec,
     lists: DepsLists,
+    sites: &Sites,
     view_work: u64,
 ) -> Result<Graph, BadSpec> {
     budgets(spec)?;
@@ -35,9 +37,8 @@ pub(in crate::spec) fn check(
     path_style(spec)?;
     deadline_required(spec)?;
     unknown_input(spec)?;
-    // B2: `template`, then `key(<rule>)`, go here, through
-    // `unityrs_export::keys` (`BATCH_SPEC` 1.1's template and literal-key
-    // rules; section 10's order).
+    super::templates::template(spec, sites)?;
+    super::templates::key(spec, sites)?;
     archive_key(spec)?;
     archive_kind(spec)?;
     source(spec)?;

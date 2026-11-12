@@ -391,8 +391,8 @@ impl KeyRule {
 mod sets;
 
 pub use self::sets::{
-    BAD_SPEC, InputReason, LeftOut, ObjectSkip, Outcome, OutputReason, Platform, Preflight,
-    STOPPED, SUPERSEDED, StopReason, Warning, normal_end, outcome_code,
+    BAD_SPEC, FormatName, InputReason, LeftOut, ObjectSkip, Outcome, OutputReason, Platform,
+    Preflight, STOPPED, SUPERSEDED, SkipClass, StopReason, Warning, normal_end, outcome_code,
 };
 
 #[cfg(test)]

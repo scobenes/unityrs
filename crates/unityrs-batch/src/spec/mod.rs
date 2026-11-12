@@ -9,9 +9,9 @@
 //! - [`fields`]: the parser's field table, which
 //!   `docs/batch/spec-v1.schema.json` must equal (`tests/schema.rs`).
 //!
-//! Templates and literal keys stay raw strings here; their rules
-//! (`template`, `key(<rule>)`) join section 10's order at the place
-//! `validate::cross` marks.
+//! Templates and literal keys stay raw strings in the spec; their rules
+//! (`template`, `key(<rule>)`) are checked in section 10's order through
+//! `unityrs_export::keys` (`validate::cross`).
 
 pub mod fields;
 pub mod model;
@@ -27,10 +27,18 @@ pub(crate) mod validate;
 use std::fmt;
 use std::path::Path;
 
+use crate::reason::KeyRule;
 use crate::view::Graph;
 
 /// The highest `spec_version` this crate reads.
 pub const SPEC_VERSION: u64 = 1;
+
+/// `docs/batch/spec-v1.schema.json`, byte for byte: what `unityrs batch
+/// --schema` prints. `tests/schema.rs` holds it to the parser's tables.
+pub const SCHEMA: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../docs/batch/spec-v1.schema.json"
+));
 
 /// The largest `JOB.json`, in bytes (`docs/BATCH_SPEC.md` section 1).
 pub const MAX_SPEC_BYTES: u64 = 64 << 20;
@@ -90,6 +98,12 @@ pub enum Rule {
     DeadlineRequired,
     /// A `prefer` entry naming no input.
     UnknownInput,
+    /// A template that does not parse for its kind, or whose literals break
+    /// a key rule in every expansion (`docs/BATCH_SPEC.md` 2.1).
+    Template,
+    /// A literal key (`prefer`'s, an archive's, the sink's prefix) that
+    /// breaks this rule of 2.3: `key(<rule>)`.
+    Key(KeyRule),
     /// Two archive keys equal, or one an ancestor of the other.
     ArchiveKey,
     /// A member `kind` repeated in one archive.
@@ -102,6 +116,10 @@ pub enum Rule {
     OutputsEmpty,
     /// A Prefer whose fields are both null.
     PreferEmpty,
+    /// A bad command line: an unknown command or option, an argument
+    /// missing or extra (section 10). The CLI's, never the parser's; its
+    /// pointer is empty.
+    Usage,
 }
 
 impl Rule {
@@ -132,13 +150,36 @@ impl Rule {
             Self::PathStyle => "path_style",
             Self::DeadlineRequired => "deadline_required",
             Self::UnknownInput => "unknown_input",
+            Self::Template => "template",
+            Self::Key(rule) => key_rule_name(rule),
             Self::ArchiveKey => "archive_key",
             Self::ArchiveKind => "archive_kind",
             Self::Source => "source",
             Self::HeadersWithoutUrl => "headers_without_url",
             Self::OutputsEmpty => "outputs_empty",
             Self::PreferEmpty => "prefer_empty",
+            Self::Usage => "usage",
         }
+    }
+}
+
+/// `key(<rule>)`'s name, for each rule a literal key can break (2.3's but
+/// `prefix_conflict` and `archive_conflict`, which phase 6 decides).
+fn key_rule_name(rule: KeyRule) -> &'static str {
+    match rule {
+        KeyRule::Empty => "key(empty)",
+        KeyRule::NotUtf8 => "key(not_utf8)",
+        KeyRule::ControlChar => "key(control_char)",
+        KeyRule::LeadingSlash => "key(leading_slash)",
+        KeyRule::TrailingSlash => "key(trailing_slash)",
+        KeyRule::EmptySegment => "key(empty_segment)",
+        KeyRule::DotSegment => "key(dot_segment)",
+        KeyRule::SegmentTooLong => "key(segment_too_long)",
+        KeyRule::TooLong => "key(too_long)",
+        KeyRule::ReservedPrefix => "key(reserved_prefix)",
+        KeyRule::ReservedName => "key(reserved_name)",
+        KeyRule::PrefixConflict => "key(prefix_conflict)",
+        KeyRule::ArchiveConflict => "key(archive_conflict)",
     }
 }
 
@@ -160,6 +201,12 @@ pub struct BadSpec {
 }
 
 impl BadSpec {
+    /// A bad command line: `usage`, the rule alone.
+    #[must_use]
+    pub fn usage() -> Self {
+        Self::new(Rule::Usage, "")
+    }
+
     pub(crate) fn new(rule: Rule, pointer: impl Into<String>) -> Self {
         Self {
             rule,
@@ -254,7 +301,7 @@ pub struct Validated {
 
 /// Validates `JOB.json`'s bytes: `not_utf8`, `syntax`, then every rule of
 /// `docs/BATCH_SPEC.md` section 10's order but the document's first three
-/// (`read::read_job`'s) and B2's `template` and `key(<rule>)`. The bytes
+/// (`read::read_job`'s). The bytes
 /// are the spec's string table while the rules run, then dropped: the
 /// spec keeps a copy of only the strings it uses.
 pub fn parse(bytes: Vec<u8>) -> Result<Validated, BadSpec> {
@@ -266,7 +313,7 @@ pub fn parse(bytes: Vec<u8>) -> Result<Validated, BadSpec> {
 #[doc(hidden)]
 pub fn parse_with(bytes: Vec<u8>, view_work: u64) -> Result<Validated, BadSpec> {
     let text = String::from_utf8(bytes).map_err(|_| BadSpec::new(Rule::NotUtf8, ""))?;
-    let (mut spec, lists) = {
+    let (mut spec, lists, sites) = {
         let parsed = parse::parse(&text).map_err(|_| BadSpec::new(Rule::Syntax, ""))?;
         let Some(top) = parsed.top else {
             return Err(BadSpec::new(Rule::Type, ""));
@@ -282,7 +329,7 @@ pub fn parse_with(bytes: Vec<u8>, view_work: u64) -> Result<Validated, BadSpec> 
     spec.strings = text;
     #[cfg(test)]
     tests::VIEW_WORK_USED.set(Some(view_work));
-    let graph = validate::cross::check(&spec, lists, view_work)?;
+    let graph = validate::cross::check(&spec, lists, &sites, view_work)?;
     spec.compact();
     Ok(Validated { spec, graph })
 }
