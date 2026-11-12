@@ -531,6 +531,47 @@ impl Parsed {
         self.entries(map).find(|(n, _)| *n == name).map(|(_, v)| v)
     }
 
+    /// The value UnityPy's object mode gives the attribute `name` of `map`'s
+    /// class (`parse_class`, `UnityPyBoost/TypeTreeHelper.cpp:458-583`): its
+    /// keys are the children's cleaned names
+    /// ([`cleans_to`](crate::walk::write::cleans_to)), set in node order, so
+    /// of the children that clean to `name` the last wins. A dict merges a
+    /// repeated raw name into its first entry, which keeps the last value, so
+    /// the winner is found among the node's children and its value under its
+    /// raw name; a map whose node is not known (one a caller built) takes the
+    /// last entry that cleans to `name`.
+    #[must_use]
+    pub fn attr<'a>(&'a self, map: &'a Map, name: &[u8]) -> Option<&'a Value> {
+        let list = usize::try_from(map.list)
+            .ok()
+            .and_then(|i| self.lists.get(i));
+        // The first entry's key is the class's first child, which follows
+        // its node in pre-order.
+        let node = map
+            .entries()
+            .first()
+            .and_then(|(k, _)| k.0.checked_sub(1))
+            .map(crate::typetree::NodeId);
+        let kids = match (list, node) {
+            (Some(l), Some(n)) if l.children(n).first() == map.entries().first().map(|e| &e.0) => {
+                l.children(n)
+            }
+            _ => &[],
+        };
+        if let Some(list) = list.filter(|_| !kids.is_empty()) {
+            let raw = kids
+                .iter()
+                .rev()
+                .map(|k| list.name(*k))
+                .find(|n| crate::walk::write::cleans_to(n, name))?;
+            return self.field(map, raw);
+        }
+        self.entries(map)
+            .filter(|(n, _)| crate::walk::write::cleans_to(n, name))
+            .last()
+            .map(|(_, v)| v)
+    }
+
     /// Follows dict fields from the root value: `get(&[b"m_Name"])`.
     #[must_use]
     pub fn get(&self, path: &[&[u8]]) -> Option<&Value> {

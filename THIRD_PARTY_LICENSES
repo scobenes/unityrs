@@ -1174,6 +1174,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
+- md-5 0.11.0 (https://github.com/RustCrypto/hashes)
 - sha2 0.11.1 (https://github.com/RustCrypto/hashes)
 
 Copyright (c) 2016-2026 The RustCrypto Project Developers
@@ -1731,6 +1732,7 @@ Used by:
 - unityrs-cli 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-dump 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-export 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-imageio 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-meshdecode 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-testkit 0.0.1 (https://github.com/scobenes/unityrs)

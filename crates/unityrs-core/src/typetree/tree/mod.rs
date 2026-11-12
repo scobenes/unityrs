@@ -180,8 +180,10 @@ pub fn kind_of(type_name: &[u8]) -> Kind {
 /// compare `m_Type` as a whole Python `str` (`FUNCTION_READ_MAP.get`,
 /// `node.m_Type == "pair"`, `TypeTreeHelper.py:190-208`, `:416-429`), with no
 /// C string's end at a NUL and no `PPtr<` rule (that is object mode's). A
-/// name longer than every kind name is none of them, unread.
-pub(crate) fn py_kind_of(type_name: &[u8]) -> Kind {
+/// name longer than every kind name is none of them, unread. Public for the
+/// cutter's recognition, which reads a tree's nodes as that reader would.
+#[must_use]
+pub fn py_kind_of(type_name: &[u8]) -> Kind {
     if type_name.len() > LONGEST_KIND {
         return Kind::Unknown;
     }

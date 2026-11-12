@@ -235,6 +235,15 @@ pub(super) fn clean_name(name: &[u8], buf: &mut [u8; CLEAN_MAX]) -> Option<usize
     Some(len)
 }
 
+/// Whether UnityPyBoost's `clean_name` of `name` is `target` ([`clean_name`]),
+/// the key UnityPy's object mode gives a field (`parse_class`). A `target`
+/// longer than [`CLEAN_MAX`] bytes is never one.
+#[must_use]
+pub fn cleans_to(name: &[u8], target: &[u8]) -> bool {
+    let mut buf = [0; CLEAN_MAX];
+    clean_name(name, &mut buf).and_then(|n| buf.get(..n)) == Some(target)
+}
+
 /// The characters of a surrogate-escaped `str`: each valid UTF-8 character,
 /// and each byte that is not part of one (one escape character each).
 pub(super) fn chars(s: &[u8]) -> impl Iterator<Item = &[u8]> {

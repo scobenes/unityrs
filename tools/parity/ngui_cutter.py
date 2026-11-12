@@ -148,26 +148,37 @@ def expand(template: str, kind: str, values: dict[str, bytes]) -> bytes:
 
 
 def _rule(key: bytes) -> str | None:
+    """2.3's first broken rule of `key`, read to its first 1,025 bytes.
+
+    A key past 1,024 bytes is `too_long` unless a rule before it breaks within those bytes; the rules that need the
+    key's end (`trailing_slash`, `dot_segment` of its last segment, `not_utf8` of a code point cut at byte 1,025) are
+    not applied to it, and a segment's length is its bytes as read, a cut code point among them.
+    """
     if not key:
         return "empty"
+    long = len(key) > 1024
+    read = key[:1025]
     try:
-        text = key.decode("utf-8")
-    except UnicodeDecodeError:
-        return "not_utf8"
+        text = read.decode("utf-8")
+    except UnicodeDecodeError as e:
+        if not (long and e.reason == "unexpected end of data" and e.end == len(read)):
+            return "not_utf8"
+        text = read[: e.start].decode("utf-8")
     if any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
         return "control_char"
-    if key.startswith(b"/"):
+    if text.startswith("/"):
         return "leading_slash"
-    if key.endswith(b"/"):
+    if not long and text.endswith("/"):
         return "trailing_slash"
-    segments = key.split(b"/")
+    segments = text.split("/")
+    settled = segments[:-1] if long else segments
     checks = (
-        ("empty_segment", b"//" in key),
-        ("dot_segment", any(s in (b".", b"..") for s in segments)),
-        ("segment_too_long", any(len(s) > 255 for s in segments)),
-        ("too_long", len(key) > 1024),
-        ("reserved_prefix", key == b"_unityrs" or key.startswith(b"_unityrs/")),
-        ("reserved_name", any(s.startswith(b".unityrs-tmp-") for s in segments)),
+        ("empty_segment", "//" in text),
+        ("dot_segment", any(s in (".", "..") for s in settled)),
+        ("segment_too_long", any(len(s) > 255 for s in read.split(b"/"))),
+        ("too_long", long),
+        ("reserved_prefix", text == "_unityrs" or text.startswith("_unityrs/")),
+        ("reserved_name", any(s.startswith(".unityrs-tmp-") for s in segments)),
     )
     return next((name for name, broken in checks if broken), None)
 
@@ -352,7 +363,7 @@ def cut(input_id: str, view: dict[str, bytes], opts: Options | None = None) -> R
             x, y, width, height = (element[k] for k in rd.RECT)  # integers, by recognition 2
             spos = (2, n, i)
             refusal = "empty_rect" if width <= 0 or height <= 0 else None
-            crop = None if refusal else rd.crop_refusal(x, y, width, height)
+            crop = None if refusal else rd.crop_refusal(x, y, width, height, rd.mode_of(sheet.texture))
             if refusal or crop:
                 reason, detail = ("decode_error", crop) if crop else (refusal, None)
                 plan.append((spos, skip(sf, obj, "MonoBehaviour", "atlas_sprite", reason, i, detail)))
@@ -394,7 +405,8 @@ def cut(input_id: str, view: dict[str, bytes], opts: Options | None = None) -> R
 
 def export(result: Result, atlases: list[Atlas], sheet_items: dict[int, Item], skip) -> None:
     """4.4's export order: each sheet with the atlases that cut it, in the order of each group's first atlas,
-    then every other planned texture in plan order (a plain candidate)."""
+    then every other planned texture in plan order (a plain candidate). Section 3's answer 11 is asked at each
+    texture output, before its PNG: it skips that output alone, and the atlases still cut the sheet."""
     groups: dict[int, list[Atlas]] = {}
     for atlas in atlases:
         groups.setdefault(id(atlas.sheet.obj), []).append(atlas)
@@ -409,6 +421,8 @@ def export(result: Result, atlases: list[Atlas], sheet_items: dict[int, Item], s
         if titem is not None and not titem.dropped:
             if failure:
                 result.skips.append(skip(t.sf, t.obj, "Texture2D", "texture", failure.reason, detail=failure.detail))
+            elif refusal := rd.encoder_refusal(image):
+                result.skips.append(skip(t.sf, t.obj, "Texture2D", "texture", "decode_error", detail=refusal))
             else:
                 unit = titem.key.decode()
                 result.outputs.append(
@@ -436,6 +450,9 @@ def export(result: Result, atlases: list[Atlas], sheet_items: dict[int, Item], s
             image = rd.decode(item.tex.texture, item.obj)
         except rd.Failure as f:
             result.skips.append(skip(item.sf, item.obj, "Texture2D", "texture", f.reason, detail=f.detail))
+            continue
+        if refusal := rd.encoder_refusal(image):
+            result.skips.append(skip(item.sf, item.obj, "Texture2D", "texture", "decode_error", detail=refusal))
             continue
         result.outputs.append(
             Output("texture", item.key.decode(), png(image), item.sf.name, item.obj.path_id, mode=image.mode,

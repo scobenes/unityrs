@@ -57,7 +57,8 @@ crates/unityrs-core/src/env/resource_data.rs), where UnityPy's `get_cab`, which 
 with an earlier row. The own chain meets no WebFile row: the input's own rows are the only ones it walks, and an
 input with one is out of scope (`Divergence`). The bytes go to UnityPy's
 `parse_image_data`, as `Texture2D.image` gives them to it, so the image is UnityPy's and Pillow's, after section 3's
-answers 5 to 10 in their order.
+answers 5 to 10 in their order. Answer 11, the PNG encoder's width cap, is the texture output's own (`encoder_refusal`,
+asked where a texture's PNG would be made), not the image's: a sheet too wide to write is still cut.
 """
 
 from __future__ import annotations
@@ -82,6 +83,9 @@ TEXTURE_PIXELS = 268_435_456
 INT_MIN, INT_MAX = -(2**31), 2**31 - 1
 # Pillow's raw decoder refuses a row of more than `INT_MAX / bits - 7` pixels (BATCH_SPEC section 3's answer 8).
 RAW_WIDTH_CAP = {"RGBA32": INT_MAX // 32 - 7, "RGB24": INT_MAX // 24 - 7}
+# Pillow's PNG encoder refuses a row of more than `INT_MAX / bits - 7` pixels too, raising `MemoryError` at the save
+# (`src/encode.c`), by the image's mode (section 3's answer 11 and section 5's crops).
+ENCODER_WIDTH_CAP = {"RGBA": INT_MAX // 32 - 7, "RGB": INT_MAX // 24 - 7}
 # `Image._crop`'s decompression-bomb check refuses a crop of more pixels than this (section 5's crops).
 CROP_PIXELS = 2 * Image.MAX_IMAGE_PIXELS
 # The typetree types `FUNCTION_READ_MAP` reads as an integer (helpers/TypeTreeHelper.py:29-52): all but `float`,
@@ -474,6 +478,20 @@ def data_of(texture, sf: SerializedFile) -> bytes:
     return resource(sf, stream.path, stream.offset, stream.size)
 
 
+def mode_of(texture) -> str:
+    """The mode of the image of a texture of the five formats: `RGB` for RGB24, else `RGBA`."""
+    return "RGB" if TextureFormat(texture.m_TextureFormat).name == "RGB24" else "RGBA"
+
+
+def encoder_refusal(image) -> str | None:
+    """Section 3's answer 11, a texture output's own skip: `pillow_memory_error` when `image` is wider than Pillow's
+    PNG encoder takes in its mode, whose save would raise `MemoryError`; asked before the texture's PNG is made, so
+    only where one is (a sheet's atlases cut the image whatever its width)."""
+    if image.width > ENCODER_WIDTH_CAP.get(image.mode, image.width):
+        return "pillow_memory_error"
+    return None
+
+
 def decode(texture, obj):
     """Section 3's answers 4 to 10, then the image `Texture2D.image` gives (classes/legacy_patch/Texture2D.py:8-11),
     from the data `data_of` reads; a skip is a `Failure`."""
@@ -506,12 +524,15 @@ def decode(texture, obj):
         raise Failure("decode_error", "not_enough_data") from None
 
 
-def crop_refusal(x: int, y: int, width: int, height: int) -> str | None:
-    """Section 5: a crop Pillow 9.5.0 refuses, decided from the rectangle alone, after `empty_rect` (both sides
-    positive). `Image._crop` checks the area first (computed exactly: an unsigned 128-bit product), then its C crop
-    parses each edge as an `int`."""
+def crop_refusal(x: int, y: int, width: int, height: int, mode: str = "RGBA") -> str | None:
+    """Section 5: a crop Pillow 9.5.0 refuses, decided from the rectangle and the sheet's mode alone, after
+    `empty_rect` (both sides positive). `Image._crop` checks the area first (computed exactly: an unsigned 128-bit
+    product), then its C crop parses each edge as an `int`; then the PNG encoder refuses a crop wider than it takes in
+    `mode` (`pillow_memory_error`), at the save."""
     if width * height > CROP_PIXELS:
         return "decompression_bomb"
     if x < INT_MIN or y < INT_MIN or x + width > INT_MAX or y + height > INT_MAX:
         return "crop_overflow"
+    if width > ENCODER_WIDTH_CAP[mode]:
+        return "pillow_memory_error"
     return None

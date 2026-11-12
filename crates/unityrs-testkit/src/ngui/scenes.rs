@@ -13,18 +13,27 @@ use super::{
 };
 use crate::env::{bundle, res_bytes};
 
+mod failures;
 mod outputs;
 mod recognition;
+mod shapes;
 mod sheets;
 mod winners;
+
+pub use failures::failure_scenes;
 
 pub use outputs::{
     duplicates, floats, json_bytes, json_bytes_with_textures, non_ascii, sheet_texture_key_taken,
     texture_key_is_json_key, two_atlases_one_sheet, two_atlases_without_textures, two_sheet_groups,
 };
 pub use recognition::{failed_reads, layouts};
+pub use shapes::{
+    bad_script_pointer, cleaned_names, list_pairs, long_keys, platform_blobs, raw_names,
+    wide_texture_fields,
+};
 pub use sheets::{
     crop_bounds, failed_sheet_rows, fallback_rows, repeated_rows, sheet_skips, streamed_sheets,
+    webfile_sibling,
 };
 pub use winners::{textured_winners, winners};
 
@@ -93,7 +102,7 @@ pub struct AtlasScene {
 pub type Built = Result<AtlasScene, BuildError>;
 
 /// A scene's builder.
-type Make = fn() -> Built;
+pub(super) type Make = fn() -> Built;
 
 pub(super) fn one(id: &str, cabs: &[(&str, Vec<u8>)], deps: &[&str]) -> SceneBundle {
     SceneBundle {
@@ -382,7 +391,7 @@ pub fn missing_sheets() -> Built {
 
 /// Every scene, by name.
 pub fn scenes() -> Result<Vec<(&'static str, AtlasScene)>, BuildError> {
-    let all: [(&'static str, Make); 25] = [
+    let all: [(&'static str, Make); 33] = [
         ("own_sheet_by_material_name", own_sheet_by_material_name),
         ("struct_maintex_in_dependency", struct_maintex_in_dependency),
         ("material_in_dependency", material_in_dependency),
@@ -408,6 +417,14 @@ pub fn scenes() -> Result<Vec<(&'static str, AtlasScene)>, BuildError> {
         ("failed_sheet_rows", failed_sheet_rows),
         ("winners", winners),
         ("textured_winners", textured_winners),
+        ("webfile_sibling", webfile_sibling),
+        ("cleaned_names", cleaned_names),
+        ("wide_texture_fields", wide_texture_fields),
+        ("platform_blobs", platform_blobs),
+        ("list_pairs", list_pairs),
+        ("bad_script_pointer", bad_script_pointer),
+        ("raw_names", raw_names),
+        ("long_keys", long_keys),
     ];
     all.into_iter().map(|(name, f)| Ok((name, f()?))).collect()
 }

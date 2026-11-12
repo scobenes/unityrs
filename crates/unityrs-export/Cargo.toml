@@ -1,0 +1,38 @@
+[package]
+name = "unityrs-export"
+description = "Exports beside the textures: the NGUI atlas cutter, its crops, its JSON and its winners."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Written from docs/BATCH_SPEC.md and docs/plans/extract.md, not ported: the
+# reads go through unityrs-core, the decodes through unityrs-texture and the
+# PNGs through unityrs-imageio, which carry their own notices.
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+unityrs-core = { path = "../unityrs-core" }
+# The sheets' decoders and E66's texture selection.
+unityrs-texture = { path = "../unityrs-texture" }
+# The crops' and textures' PNGs, byte-equal to Pillow 9.5.0's, and the
+# visible-pixel hash.
+unityrs-imageio = { path = "../unityrs-imageio" }
+thiserror = "=2.0.21"
+# Each output's MD5, which the winners compare (docs/plans/extract.md E31).
+# RustCrypto's, on the digest 0.11 sha2 0.11 already brings; named by its
+# library's name, `md5`.
+md5 = { package = "md-5", version = "=0.11.0", default-features = false }
+
+[dev-dependencies]
+# The NGUI scenes, and the fixture their reference recorded
+# (tests/fixtures/ngui.json in unityrs-testkit, JSON, with sha256 digests).
+unityrs-testkit = { path = "../unityrs-testkit" }
+serde_json = "=1.0.154"
+sha2 = "=0.11.1"
+# tests/ngui_fixture.rs inflates each PNG to compare its pixels: the core's
+# backend, so no other is built.
+flate2 = { version = "=1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+
+[lints]
+workspace = true
