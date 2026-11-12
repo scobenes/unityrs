@@ -202,11 +202,18 @@ impl Walker {
     /// A walker for a graph of `bundles` bundles.
     #[must_use]
     pub fn new(bundles: usize) -> Self {
+        Self::with_capacity(bundles, 0)
+    }
+
+    /// Phase-1 controller scratch: allocate the bounded walk buffers now so
+    /// their retained capacity is inside the measurement, not the first walk.
+    #[must_use]
+    pub fn with_capacity(bundles: usize, max_view: usize) -> Self {
         Self {
             stamp: vec![0; bundles],
             generation: 0,
-            stack: Vec::new(),
-            members: Vec::new(),
+            stack: Vec::with_capacity(max_view),
+            members: Vec::with_capacity(max_view),
         }
     }
 

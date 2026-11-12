@@ -39,6 +39,7 @@ impl PermitHome for Account {
 pub struct SealedBudget {
     input: Arc<Account>,
     dependency: Arc<Account>,
+    input_only: bool,
     provider_refusals: AtomicU64,
 }
 impl SealedBudget {
@@ -48,7 +49,17 @@ impl SealedBudget {
         Self {
             input: Account::new(m),
             dependency: Account::new(d),
+            input_only: false,
             provider_refusals: AtomicU64::new(0),
+        }
+    }
+    /// A standalone peek: Dependency and Provider are refused even for zero
+    /// bytes. An ordinary attempt with `d == 0` keeps its existing semantics.
+    #[must_use]
+    pub fn input_only(m: u64) -> Self {
+        Self {
+            input_only: true,
+            ..Self::new(m, 0)
         }
     }
     /// Sample after all attempt locals drop for the leak check. During
@@ -71,7 +82,16 @@ impl MemoryBudget for SealedBudget {
     fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
         let account = match what {
             Reservation::Input => &self.input,
-            Reservation::Dependency => &self.dependency,
+            Reservation::Dependency => {
+                if self.input_only {
+                    refused(&self.dependency.refusals);
+                    return Err(BudgetExceeded {
+                        requested: bytes,
+                        what,
+                    });
+                }
+                &self.dependency
+            }
             Reservation::Provider => {
                 refused(&self.provider_refusals);
                 return Err(BudgetExceeded {

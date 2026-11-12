@@ -1,5 +1,4 @@
-use super::{Counter, Error, FileSystem, Full, output_name};
-use std::io::Write;
+use super::{Counter, Error, FileSystem, Full, Writer, output_name};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -96,7 +95,7 @@ impl Directory {
 /// length, while the caller counts work per flush or complete output.
 /// An error poisons the writer: no later append/flush is allowed.
 pub struct SpoolFile {
-    writer: Box<dyn Write + Send>,
+    writer: Box<dyn Writer>,
     directory: PathBuf,
     ledger: Arc<Ledger>,
     fs: Arc<dyn FileSystem>,

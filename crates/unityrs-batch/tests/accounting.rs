@@ -3,6 +3,27 @@ use unityrs_batch::{budget::SealedBudget, work::Work};
 use unityrs_core::budget::{MemoryBudget, Reservation};
 
 #[test]
+fn peek_budget_refuses_every_non_input_reservation_including_zero() {
+    let b = SealedBudget::input_only(10);
+    for bytes in [0, 1, u64::MAX] {
+        for what in [Reservation::Dependency, Reservation::Provider] {
+            assert!(b.try_reserve(bytes, what).is_err());
+        }
+    }
+    let p = b.try_reserve(10, Reservation::Input).unwrap();
+    assert!(b.try_reserve(0, Reservation::Input).is_ok());
+    assert!(b.try_reserve(1, Reservation::Input).is_err());
+    drop(p);
+    assert!(b.snapshot().is_clear());
+    assert_eq!(b.snapshot().refusals(), 7);
+    assert!(
+        SealedBudget::new(0, 0)
+            .try_reserve(0, Reservation::Dependency)
+            .is_ok()
+    );
+}
+
+#[test]
 fn reservations_keep_distinct_homes_and_peaks_after_release() {
     let b = SealedBudget::new(10, 20);
     let mut p = b.try_reserve(4, Reservation::Input).unwrap();

@@ -127,7 +127,7 @@ impl ngui::Hooks for Engine<'_> {
     }
 }
 /// Same refusal probe as extraction, for individual batch-side core calls.
-pub(super) fn probe<T>(
+pub(crate) fn probe<T>(
     hooks: &dyn ngui::Hooks,
     f: impl FnOnce() -> Result<T, Class>,
 ) -> Result<T, Failure> {

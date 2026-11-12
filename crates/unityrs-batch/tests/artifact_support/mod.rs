@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::io::{self, Write};
 use std::path::Path;
 use std::sync::{
@@ -7,7 +8,7 @@ use std::sync::{
 use unityrs_batch::{
     budget::SealedBudget,
     records::{Figures, Status, Summary},
-    spool::{FileSystem, Host},
+    spool::{FileSystem, Host, Writer},
 };
 use unityrs_core::{budget::Reservation, limits::Meter};
 
@@ -28,7 +29,7 @@ pub fn summary(status: Status) -> Summary<'static> {
         cut: false,
     }
 }
-/// Operation 1=create, 2=write, 3=flush, 4=delete. Wrapped writes use a
+/// Operation 1=create, 2=write, 3=flush, 4=delete directory, 5=seal, 6=delete file. Wrapped writes use a
 /// real file, preserving all side effects except the injected failure.
 #[derive(Clone, Default)]
 pub struct Faults {
@@ -55,7 +56,7 @@ impl FileSystem for Faults {
     fn available(&self, _: &Path) -> io::Result<u64> {
         Ok(u64::MAX)
     }
-    fn create(&self, path: &Path) -> io::Result<Box<dyn Write + Send>> {
+    fn create(&self, path: &Path) -> io::Result<Box<dyn Writer>> {
         self.check(1)?;
         Ok(Box::new(FaultFile {
             file: Host.create(path)?,
@@ -66,9 +67,13 @@ impl FileSystem for Faults {
         self.check(4)?;
         Host.remove(path)
     }
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        self.check(6)?;
+        Host.remove_file(path)
+    }
 }
 struct FaultFile {
-    file: Box<dyn Write + Send>,
+    file: Box<dyn Writer>,
     faults: Faults,
 }
 impl Write for FaultFile {
@@ -84,5 +89,12 @@ impl Write for FaultFile {
     fn flush(&mut self) -> io::Result<()> {
         self.faults.check(3)?;
         self.file.flush()
+    }
+}
+
+impl Writer for FaultFile {
+    fn seal(&self) -> io::Result<()> {
+        self.faults.check(5)?;
+        self.file.seal()
     }
 }

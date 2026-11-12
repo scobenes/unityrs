@@ -36,7 +36,7 @@ pub struct Constants {
     pub m_pool: u64,
     /// `m_dispatch`: the largest dispatch message, its heap included.
     pub m_dispatch: u64,
-    /// `m_end`: one end-channel slot, its 1 KiB path field included.
+    /// `m_end`: the end union, its bounded detail and channel overhead included.
     pub m_end: u64,
     /// `c_env`: a private Environment's fixed parts.
     pub c_env: u64,
@@ -52,10 +52,16 @@ pub const PROVISIONAL: Constants = Constants {
     m_thread: 128 * KIB,
     m_pool: 64 * KIB,
     m_dispatch: 2 * KIB,
-    m_end: 2 * KIB,
+    m_end: 8 * KIB,
     c_env: 128 * KIB,
     c_net: 4 * MIB,
 };
+
+/// Conservative provisional channel bookkeeping allowance per slot. B12
+/// measures this; the structural lower bound must hold in the meantime.
+pub const END_SLOT_OVERHEAD: usize = 256;
+const _: () =
+    assert!(PROVISIONAL.m_end >= (size_of::<crate::job::End>() + END_SLOT_OVERHEAD) as u64);
 
 /// The main thread's environment block as `--check` counts it: 6 MiB,
 /// Linux's cap on `execve`'s arguments and environment (three quarters of

@@ -1,6 +1,6 @@
 //! Immutable successful peek metadata supplied by dispatch.
-use super::{classify::internal, hooks::probe};
-use std::{fs::File, io::Read, path::Path, sync::Arc};
+use super::classify::internal;
+use std::{path::Path, sync::Arc};
 use unityrs_core::limits::Meter;
 use unityrs_export::ngui::{Bits, Failure, Hooks, PeekBits};
 
@@ -35,23 +35,6 @@ impl PeekBits for PeekTable<'_> {
             .binary_search_by(|e| e.id.as_bytes().cmp(id.as_bytes()))
             .map_err(|_| internal())?;
         let e = self.entries.get(index).ok_or_else(internal)?;
-        let mut bits = probe(hooks, || Bits::charged(e.rows, meter))?;
-        if let Some(path) = e.file {
-            let io = || Failure::Run(unityrs_export::ngui::Reason::plain("host_io"));
-            let mut file = File::open(path).map_err(|_| io())?;
-            if file.metadata().map_err(|_| io())?.len() != bits.bytes().len() as u64 {
-                return Err(internal());
-            }
-            file.read_exact(bits.bytes_mut()).map_err(|_| io())?;
-            let mut extra = [0u8; 1];
-            if file.read(&mut extra).map_err(|_| io())? != 0 {
-                return Err(internal());
-            }
-            let used = e.rows % 8;
-            if used != 0 && bits.bytes().last().is_some_and(|b| b >> used != 0) {
-                return Err(internal());
-            }
-        }
-        Ok(bits)
+        crate::peek::load_bits(e.rows, e.file, meter, hooks)
     }
 }
