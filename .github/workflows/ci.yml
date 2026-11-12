@@ -54,6 +54,11 @@ jobs:
           persist-credentials: false
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
+      # Every locked package, as `check`'s workspace build fetches them: the
+      # flate2 backend test reads `cargo metadata --offline` for the whole
+      # workspace.
+      - name: Fetch the locked packages
+        run: cargo fetch --locked
       - name: Clippy, zlib reference feature
         run: cargo clippy -p unityrs-imageio --all-targets --features test-reference -- -D warnings
       - name: Test, zlib reference feature
