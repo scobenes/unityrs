@@ -68,6 +68,7 @@ pub(super) fn decoded(
     format: Format,
     plain: bool,
 ) -> Result<Image, Class> {
+    let _sample = super::read::Sample(file.meter(), seam.hooks);
     let data = resource::data(seam, file, t)?;
     let (width, height) = t.sides();
     let planned =
@@ -77,7 +78,14 @@ pub(super) fn decoded(
     }
     seam.work(planned.output_bytes)?;
     seam.probe(|| {
-        decode(format, &data, width, height, seam.meter).map_err(|e| classify::decode(&e))
+        #[cfg(feature = "test-hooks")]
+        let result = unityrs_texture::contain(std::panic::AssertUnwindSafe(|| {
+            seam.hooks.decoder_fault();
+            decode(format, &data, width, height, seam.meter)
+        }));
+        #[cfg(not(feature = "test-hooks"))]
+        let result = decode(format, &data, width, height, seam.meter);
+        result.map_err(|e| classify::decode(&e))
     })
 }
 
@@ -225,6 +233,7 @@ fn atlas_json(
 
 /// An output's identity: its kind, key, unit key and member paths.
 pub(super) struct Made<'p> {
+    pub plan_index: u64,
     pub kind: OutputKind,
     pub key: &'p str,
     pub unit: Option<&'p str>,
@@ -278,6 +287,7 @@ impl Attempt<'_> {
             return Ok(false);
         }
         let output = Output {
+            plan_index: made.plan_index,
             key: made.key.to_owned(),
             kind: made.kind,
             unit: made.unit.map(str::to_owned),
@@ -389,6 +399,7 @@ impl Attempt<'_> {
                 sprite: None,
             };
             let made = Made {
+                plan_index: tp.plan_index,
                 kind: OutputKind::Texture,
                 key: &tp.key,
                 unit: None,
@@ -466,6 +477,7 @@ impl Attempt<'_> {
             match file {
                 Ok(file) => {
                     let made = Made {
+                        plan_index: tp.plan_index,
                         kind: OutputKind::Texture,
                         key: &tp.key,
                         unit: Some(&tp.key),
@@ -502,6 +514,7 @@ impl Attempt<'_> {
                 Ok(Some(file)) => {
                     let u = unit.unwrap_or(key);
                     let made = Made {
+                        plan_index: a.json_plan_index,
                         kind: OutputKind::AtlasJson,
                         key,
                         unit: Some(u),
@@ -535,6 +548,7 @@ impl Attempt<'_> {
             match made {
                 Ok((bytes, charge, pic)) => {
                     let made = Made {
+                        plan_index: s.plan_index,
                         kind: OutputKind::AtlasSprite,
                         key: &s.key,
                         unit,

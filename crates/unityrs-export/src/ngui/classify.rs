@@ -243,7 +243,19 @@ pub fn parse(e: &ParseError) -> Class {
             // is only the object's own tree failing (`ParseError::Tree`, 7.3).
             ReadDetail::Limit(l) | ReadDetail::Tree(TreeError::Limit(l)) => limit(l),
             ReadDetail::Charge(c) | ReadDetail::Tree(TreeError::Charge(c)) => charge(c),
-            _ => Class::Skip(Reason::decode_error("read")),
+            ReadDetail::Eof { .. }
+            | ReadDetail::NegativeLength(_)
+            | ReadDetail::ArrayChildren
+            | ReadDetail::PairChildren
+            | ReadDetail::NoRefTypes
+            | ReadDetail::RefTypeNotFound
+            | ReadDetail::RefTypeNoTree
+            | ReadDetail::Python(_)
+            | ReadDetail::Stream(_)
+            | ReadDetail::Tree(
+                TreeError::Empty | TreeError::LevelUnderflow { .. } | TreeError::TooManyNodes(_),
+            ) => Class::Skip(Reason::decode_error("read")),
+            _ => internal(),
         },
         ParseError::Tree(t) => tree(t),
         ParseError::Deref(d) => deref(d),
@@ -357,7 +369,21 @@ pub fn render(e: &SpriteError) -> Class {
         SpriteError::Charge(c) => return charge(c),
         SpriteError::Panicked(payload) => return panicked(payload),
         SpriteError::Mesh(m) => return mesh(m),
-        _ => "render",
+        SpriteError::CropRightLeft
+        | SpriteError::CropLowerUpper
+        | SpriteError::RoundNan
+        | SpriteError::RoundInfinity
+        | SpriteError::SolveCast
+        | SpriteError::Rotation(_)
+        | SpriteError::AlphaSizeMismatch
+        | SpriteError::NoVertices
+        | SpriteError::Unpack { .. }
+        | SpriteError::Index { .. }
+        | SpriteError::Sprite3d
+        | SpriteError::NoTriangles
+        | SpriteError::NegativeSize
+        | SpriteError::NoAtlasData => "render",
+        _ => return internal(),
     };
     Class::Skip(Reason::decode_error(code))
 }
@@ -372,7 +398,21 @@ fn mesh(e: &MeshError) -> Class {
         MeshError::Resource(e) => return error(e),
         MeshError::Unsupported(_) => "unsupported",
         MeshError::Malformed(_) => "read",
-        _ => "render",
+        MeshError::Assertion(_)
+        | MeshError::NoAttribute(_)
+        | MeshError::UnknownMeshType
+        | MeshError::VersionType(_)
+        | MeshError::InvalidFormat { .. }
+        | MeshError::UnknownChannel(_)
+        | MeshError::NoChannels
+        | MeshError::OutOfBounds
+        | MeshError::Struct(_)
+        | MeshError::Index(_)
+        | MeshError::Unpack { .. }
+        | MeshError::ByteRange
+        | MeshError::Topology
+        | MeshError::WrappedAccess => "render",
+        _ => return internal(),
     };
     Class::Skip(Reason::decode_error(code))
 }
@@ -403,6 +443,14 @@ pub fn entry_error(e: &Error, path: &RawStr) -> Class {
         Class::Skip(r) => Class::Input(r),
         other => other,
     }
+}
+
+/// Whether a prepared unsupported-format argument is a pinned format name.
+#[must_use]
+pub fn known_texture_format(name: &str) -> bool {
+    unityrs_texture::TEXTURE_FORMATS
+        .iter()
+        .any(|(_, n)| *n == name)
 }
 
 #[cfg(test)]

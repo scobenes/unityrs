@@ -30,6 +30,7 @@ pub const TEXTURE_2D: i32 = 28;
 
 /// A planned texture output.
 pub(super) struct TexturePlan {
+    pub plan_index: u64,
     pub tex: usize,
     pub key: String,
     pub members: MeteredVec<MemberPath>,
@@ -37,6 +38,7 @@ pub(super) struct TexturePlan {
 
 /// A planned sprite: its index, rectangle and key.
 pub(super) struct SpritePlan {
+    pub plan_index: u64,
     pub index: usize,
     pub x: i128,
     pub y: i128,
@@ -53,11 +55,31 @@ pub(super) struct AtlasPlan {
     pub parsed: Parsed,
     pub sheet: usize,
     pub json_key: Option<String>,
+    pub json_plan_index: u64,
     pub json_members: MeteredVec<MemberPath>,
     pub sprites: MeteredVec<SpritePlan>,
 }
 
 impl AtlasPlan {
+    fn new(
+        obj: ObjectRef,
+        name: RawStr,
+        parsed: Parsed,
+        sheet: usize,
+        meter: &Arc<unityrs_core::limits::Meter>,
+    ) -> Self {
+        Self {
+            obj,
+            name,
+            parsed,
+            sheet,
+            json_key: None,
+            json_plan_index: 0,
+            json_members: MeteredVec::new(meter),
+            sprites: MeteredVec::new(meter),
+        }
+    }
+
     /// Whether an output is still planned after step 3.
     pub fn has_outputs(&self) -> bool {
         self.json_key.is_some() || !self.sprites.is_empty()
@@ -211,17 +233,41 @@ impl Attempt<'_> {
                 }
             }
         }
-        let textures = match self.options.texture_key.clone() {
+        let mut textures = match self.options.texture_key.clone() {
             Some(t) => self.plan_textures(&t)?,
             None => MeteredVec::new(meter),
         };
-        let sprites = self.plan_sprites(files)?;
+        let mut sprites = self.plan_sprites(files)?;
         let mut atlases = MeteredVec::new(meter);
         let mut names: Set<RawStr> = Set::new(meter);
         for obj in behaviours.as_slice() {
             self.seam.stop()?;
             if let Some(a) = self.plan_atlas(obj, &mut names)? {
                 self.charged(|| table::push(&mut atlases, a))?;
+            }
+        }
+        // Stable plan order, independent of grouped export order. Export skips
+        // never renumber later outputs.
+        let mut ordinal = 0u64;
+        let mut next = || -> Result<u64, Failure> {
+            let current = ordinal;
+            ordinal = ordinal
+                .checked_add(1)
+                .ok_or_else(|| Failure::Run(Reason::plain("internal")))?;
+            Ok(current)
+        };
+        for t in textures.as_mut_slice() {
+            t.plan_index = next()?;
+        }
+        for s in sprites.planned.as_mut_slice() {
+            s.plan_index = next()?;
+        }
+        for a in atlases.as_mut_slice() {
+            if a.json_key.is_some() {
+                a.json_plan_index = next()?;
+            }
+            for s in a.sprites.as_mut_slice() {
+                s.plan_index = next()?;
             }
         }
         drop(names);
@@ -289,6 +335,7 @@ impl Attempt<'_> {
             if let Some(key) = self.take(&site)? {
                 let members = self.member_paths(TemplateKind::Texture, &obj, vars)?;
                 let plan = TexturePlan {
+                    plan_index: 0,
                     tex: i,
                     key,
                     members,
@@ -448,15 +495,7 @@ impl Attempt<'_> {
                 return Ok(None);
             }
         };
-        let mut atlas = AtlasPlan {
-            obj: obj.clone(),
-            name,
-            parsed,
-            sheet,
-            json_key: None,
-            json_members: MeteredVec::new(meter),
-            sprites: MeteredVec::new(meter),
-        };
+        let mut atlas = AtlasPlan::new(obj.clone(), name, parsed, sheet, meter);
         self.plan_keys(&mut atlas, elements.as_slice(), format.mode())?;
         Ok(Some(atlas))
     }
@@ -581,6 +620,7 @@ impl Attempt<'_> {
             };
             let members = self.member_paths(TemplateKind::AtlasSprite, &obj, vars)?;
             let plan = SpritePlan {
+                plan_index: 0,
                 index,
                 x: e.x,
                 y: e.y,

@@ -317,6 +317,12 @@ fn call<T>(
 ) -> Result<Result<T, Error>, Failure> {
     let before = admit.hooks.refusals();
     let out = f();
+    #[cfg(feature = "test-hooks")]
+    let out = match admit.hooks.environment_fault(env) {
+        Some(error) => Err(error),
+        None => out,
+    };
+    admit.hooks.environment(env);
     if let Err(e) = &out
         && let Class::Run(r) = seam::probed(admit.hooks, before, classify::error(e))
     {
@@ -367,6 +373,7 @@ fn reach(
 ) -> Result<(), Failure> {
     let meter = admit.meter;
     let dir = b.directory();
+    let _sample = super::read::Sample(b.meter(), admit.hooks);
     let n = dir.len();
     if u32::try_from(n).ok() != Some(bits.rows()) {
         return Err(internal());
@@ -490,6 +497,12 @@ impl<'a> Registration<'a> {
             ids,
             next: 0,
         })
+    }
+
+    /// Current private Environment figures, including a failed member call.
+    #[must_use]
+    pub fn stats(&self) -> unityrs_core::env::EnvStats {
+        self.env.stats()
     }
 
     /// X's own handle, on `M_X`: step 3 reads its AssetBundle object.

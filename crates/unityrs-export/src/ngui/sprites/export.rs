@@ -285,6 +285,7 @@ impl Attempt<'_> {
         match file {
             Ok((bytes, charge, picture)) => {
                 let made = Made {
+                    plan_index: s.plan_index,
                     kind: OutputKind::Sprite,
                     key: &s.key,
                     unit: None,

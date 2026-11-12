@@ -34,6 +34,7 @@ pub mod recognize;
 pub mod register;
 mod resource;
 pub mod seam;
+mod select;
 mod sprites;
 mod table;
 pub mod winners;
@@ -47,6 +48,7 @@ pub use register::{
     Admit, Bits, Data, PeekBits, Registration, Staged, peek, register, register_bytes, same_open,
 };
 pub use seam::{Context, Hooks, MemberTemplate, NoHooks, Registered};
+pub use select::select_own;
 pub use winners::{Candidate, Decision, Prefer, Rule, decide};
 
 /// What section 1.5's `atlases` (and `outputs.textures`) ask for.
@@ -183,6 +185,8 @@ pub struct Rejected {
 /// An output the cut made, handed to the sink as it is made.
 #[derive(Debug)]
 pub struct Output {
+    /// Stable planning ordinal, independent of export grouping.
+    pub plan_index: u64,
     /// Its key.
     pub key: String,
     /// Its kind.

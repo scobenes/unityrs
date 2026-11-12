@@ -122,16 +122,26 @@ impl SpoolFile {
     /// Claim before writing. Even a partial write keeps the complete claim
     /// until its directory is successfully deleted.
     pub fn append(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        self.append_stoppable(bytes, &|| false)
+    }
+    /// Like append, but observe cancellation before claiming and after the
+    /// claim, before writing. Cancellation retains every acquired claim.
+    pub fn append_stoppable(
+        &mut self,
+        bytes: &[u8],
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<(), Error> {
         if self.failed {
             return Err(Error::Internal);
         }
-        let result = self.write(bytes);
+        let result = self.write(bytes, stopped);
         if result.is_err() {
             self.failed = true;
         }
         result
     }
-    fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
+    fn write(&mut self, bytes: &[u8], stopped: &dyn Fn() -> bool) -> Result<(), Error> {
+        check_stop(stopped)?;
         let length = self
             .length
             .checked_add(bytes.len() as u64)
@@ -143,15 +153,29 @@ impl SpoolFile {
         self.ledger.counter.claim(claim)?;
         self.ledger.claimed.fetch_add(claim, Ordering::AcqRel);
         self.length = length;
+        check_stop(stopped)?;
         self.writer.write_all(bytes)?;
         Ok(())
     }
     /// Flush and close. Drop alone never flushes; no sync is requested.
-    pub fn finish(mut self) -> Result<(), Error> {
+    pub fn finish(self) -> Result<(), Error> {
+        self.finish_stoppable(&|| false)
+    }
+    /// The successful final flush is the seal's commit point.
+    pub fn finish_stoppable(mut self, stopped: &dyn Fn() -> bool) -> Result<(), Error> {
         if self.failed {
             return Err(Error::Internal);
         }
+        check_stop(stopped)?;
         self.writer.flush()?;
+        Ok(())
+    }
+}
+
+fn check_stop(stopped: &dyn Fn() -> bool) -> Result<(), Error> {
+    if stopped() {
+        Err(Error::Stopped)
+    } else {
         Ok(())
     }
 }

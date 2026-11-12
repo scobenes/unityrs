@@ -57,6 +57,23 @@ pub trait Hooks {
         Ok(())
     }
 
+    /// Test-only substitution, invoked inside texture panic containment.
+    #[cfg(feature = "test-hooks")]
+    fn decoder_fault(&self) {}
+
+    /// Test-only substitution of a registration Environment call's result,
+    /// after the real call has updated its eviction counters.
+    #[cfg(feature = "test-hooks")]
+    fn environment_fault(&self, _env: &Environment) -> Option<unityrs_core::Error> {
+        None
+    }
+
+    /// Meter sampled while the attempt holds a file, before its handle drops.
+    fn meter(&self, _meter: &Meter) {}
+
+    /// Environment figures after a call, including failed calls.
+    fn environment(&self, _env: &Environment) {}
+
     /// A sprite group's export begins (4.4): told once for each of its
     /// Sprites, in plan order, by the Sprite's file's name and its path id,
     /// the group numbered `group` in export order. What the plan grouped,
@@ -161,6 +178,7 @@ impl<'a> Seam<'a> {
     /// run-level class first, then the evictions, then the rest.
     pub fn env_call<T>(&self, f: impl FnOnce() -> Result<T, Class>) -> Result<T, Class> {
         let out = self.probe(f);
+        self.hooks.environment(self.env());
         if let Err(Class::Run(_)) = &out {
             return out;
         }

@@ -109,6 +109,7 @@ impl Attempt<'_> {
         let members = self.member_paths(TemplateKind::Sprite, obj, vars)?;
         let at = self.charged(|| join(out, group, sheet))?;
         let plan = SpritePlan {
+            plan_index: 0,
             obj: obj.clone(),
             data,
             group: at,

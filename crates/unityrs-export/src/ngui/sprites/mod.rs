@@ -96,6 +96,7 @@ pub(super) struct GroupSheet {
 /// A planned Sprite: its object, what it renders from, its group and its
 /// key.
 pub(super) struct SpritePlan {
+    pub plan_index: u64,
     /// The Sprite.
     pub obj: ObjectRef,
     /// Its render data's rectangle and settings, with its
