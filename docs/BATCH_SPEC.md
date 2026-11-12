@@ -386,6 +386,17 @@ Every failure this section meets is a reason of 9.3, as `batch.md` 2.7's `classi
 
 **A cgroup v2 memory limit** that holds a run is provisioned at `(1.5 x memory_bound + 10 MiB x (2 x download_concurrency + 1) + 3 MiB x (download_concurrency + 1)) / (1 - vm.dirty_ratio / 100)`, or, when `vm.dirty_bytes` is set, at `1.5 x memory_bound + 10 MiB x (2 x download_concurrency + 1) + 3 MiB x (download_concurrency + 1) + vm.dirty_bytes`, `memory_bound` being `--check`'s (section 10), which is **provisional** until `extract.md` X12 measures its constants (section 10's `detail`), so this limit is an estimate until then too; a `vm.dirty_ratio` of 100 needs `vm.dirty_bytes`. The terms are glibc's slack, the live sockets' buffers, glibc's uncounted lookup heap and the spool's dirty pages (`batch.md` 5.6 derives them). The heap's term is glibc's `files dns` path's: a host whose NSS uses another module (systemd's `resolve`) may need more, and its caller raises the cgroup. The rule does not cover a cgroup v1 limit, which preflight still checks against the bound (`batch.md` 2.7).
 
+Claims use the increase in a file's cumulative length rounded up to the
+preflight `st_blksize`, not the sum of separately rounded writes. Zero-length
+files claim zero bytes; claims do not preallocate or change content length.
+The reserve check uses caller-available `statvfs` bytes; equality succeeds.
+`ENOSPC` and `EDQUOT` at create, write, flush or delete are `spool_full`, with
+that exact detail; other I/O is `host_io`. A directory owner retains all claims
+through partial writes, failure, rename and drop. Only successful explicit
+deletion releases them; a failed or partial deletion retains the whole claim.
+A sealed artifact has completed writes and closed files, with no per-output
+fsync or crash-recovery promise.
+
 ### 6.1 Layout
 
 | path | holds |
@@ -508,6 +519,45 @@ The head is the record of the run. For every key the final head lists as `writte
 - **Diagnostics.** `same_named_cab`: a registry key (`simplify_name`, 4.3) that two or more bundles of the input's view hold in their top-level directories, one row per key, `bundle` the top-level holder 4.3 ranks highest (`X` when it holds the key, else the greatest id) and `name` the full directory path of that bundle's last top-level row with that key. `undeclared_dependency`: `bundle` null, `name` the `m_Dependencies` name (4.1). `nested_container`: an entry of the input's own bundle that is itself a bundle, met while selecting, `bundle` the input, `name` the entry's path.
 
 A reason is a code of section 9.3. A string taken from the bytes is cut to its first 1,024 bytes, at a code point boundary (an invalid byte counting as one code point, 2.2), and its row's `cut` is then true. A string that is not valid UTF-8 (a name, a CAB, an entry path, a reason's argument) is written with each invalid byte replaced by U+FFFD, so every line is UTF-8 JSON that any parser reads; its original bytes are not recoverable from the manifest, and two stored paths that agree after cutting and that replacement are not told apart. A row holds at most four strings of at most 1,024 bytes each (an id, a key or path, a cut string), each escaped to at most 6 bytes per byte, so every line is at most 32 KiB (`batch.md` 2.8). Apart from the figures the normalised comparison leaves out (timings, peaks, the host's, `extract.md` section 5), a manifest is a function of the run's records and outcomes; byte identity with another implementation is not a goal.
+
+**Attempt artifacts (provisional until B7's manifest).** `records.ndjson`
+contains typed objects with a `type` discriminator, in append order. They carry
+no run id, input position or spool path. Names shared with manifest rows have
+the same meaning and types as above; the additional fields are:
+
+| `type` | fields |
+|---|---|
+| `candidate` | `key`, `unit`, `input`, `serialized_file`, `kind`, signed `path_id`, `md5`, integer `crc32`, nullable `visible_hash` and `mode`, `size`, `etag` (null up to and including 16 MiB; multipart above it), `file` (`o<plan_index>`, a stable planning ordinal, with gaps allowed), `cut` |
+| `member` | integer `archive` (spec archive index), `path`, `key`, `input`, `md5`, nullable `reason` (an invalid expansion's `unwritable_path`), `cut`; one line per expansion |
+| `skip` | the `skips` row's fields |
+| `diagnostic` | the `diagnostics` row's fields |
+| `input_summary` | terminal: `id`, `status`, `reason`, `detail`, `input_peak`, `dependency_peak`, `evictions`, `export_work`, `decode_work_peak`, `ms`, `skips`, `unresolved_scripts`, `spooled_part`, `claimed_bytes`, `cut` |
+
+A successful summary includes its own final record flush in `export_work`,
+`spooled_part` and `claimed_bytes`, matching the attempt end message. A failure
+artifact has exactly one `input_summary`, status `failed`, zero `skips` and
+`unresolved_scripts`. The failure writer takes the failed attempt's own measured
+figures from its end message, including `export_work`, `spooled_part`, peaks,
+evictions and elapsed time; figures unavailable before dispatch are null.
+It preserves those figures, except for zeroing the two failed counters, and adds
+only its record's flush to the supplied `spooled_part`; it never changes
+`export_work`. The returned summary has exactly the figures written on disk.
+Candidate/member lines preserve export/expansion order. The diagnostic/skip
+subsequence is same-name diagnostics, undeclared-dependency diagnostics,
+nested-container diagnostics, plan skips, export skips, with source order
+within each, and no sorting. Strings already cut and repaired by the classifier
+keep their inherited `cut`; they are not cut a second time after replacement.
+Every line, including its newline, is at most 32 KiB. Serialization streams
+escaping into the charged 64 KiB buffer, flushing only full buffers and the
+final partial buffer; failure discards pending bytes without another flush.
+
+Export work counts each actual records flush or output file independently at
+`max(4096, ceil(size / 4096) * 4096)`, regardless of `st_blksize`, and pixel
+bytes unrounded. A member adds the largest final `archive_members` row encoding
+(including newline, the archive key, `cut`, and all included/left-out reason
+forms). Its compact artifact row is not the member's work unit. The spooled
+part has those file/flush and member units plus the failure-record flush,
+without pixels. Disk claims continue to use section 6's cumulative rule.
 
 ### 7.4 The manifest at each phase
 
