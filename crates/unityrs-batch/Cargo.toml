@@ -1,0 +1,44 @@
+[package]
+name = "unityrs-batch"
+description = "The batch engine behind `unityrs batch`: the job spec, its validation, views and the reason vocabulary."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Written from docs/BATCH_SPEC.md and docs/plans/batch.md, not ported.
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# The core's `LimitKind`, which docs/BATCH_SPEC.md 9.3's table maps.
+unityrs-core = { path = "../unityrs-core" }
+# The spec's order-preserving tree is built by a serde `Visitor` over
+# serde_json's parser (spec/parse), which keeps its recursion limit. Both
+# already in the lock. `float_roundtrip` reads a number as the nearest
+# double, as Python's `json` does (docs/BATCH_SPEC.md 1's conventions):
+# without it `9007199254740991.4` rounds twice, to 2^53.
+serde = "=1.0.229"
+serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+# A bundle's `url` and a sink's `endpoint` are capped as this crate
+# serializes them (docs/BATCH_SPEC.md 1.2, 1.6), and their form is its
+# parse.
+url = "=2.5.8"
+# `JOB.json`'s open flags, `O_NONBLOCK | O_NOCTTY` (spec/read.rs). Already
+# in the lock.
+libc = "=0.2.191"
+
+[dev-dependencies]
+# Scratch for the `JOB.json` cases, `mkfifo` through its child runner, and
+# the counting allocator of the validation measurement.
+unityrs-testkit = { path = "../unityrs-testkit" }
+# A JSON Schema 2020-12 validator, for the tests alone: every per-field
+# fixture goes through it and through the parser, which must agree
+# (docs/plans/extract.md section 3, item 4). The binary takes no schema
+# crate. The lock holds its tree at versions whose licences deny.toml and
+# about.toml already accept: borrow-or-share 0.2.1 ("CC0-1.0 OR MIT"; later
+# releases are MIT-0 alone) and ahash 0.8.11 (whose getrandom 0.2 needs no
+# second r-efi, whose clarification is per crate name).
+boon = "=0.6.1"
+
+[lints]
+workspace = true
