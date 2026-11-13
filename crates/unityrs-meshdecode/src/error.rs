@@ -1,4 +1,4 @@
-// Ported from UnityPy 1.25.2 (MIT): the exceptions UnityPy/helpers/MeshHelper.py's MeshHandler and UnityPyBoost/Mesh.cpp's unpack_vertexdata raise. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): the exceptions UnityPy/helpers/MeshHelper.py's MeshHandler, UnityPy/helpers/PackedBitVector.py's unpack_ints and unpack_floats, and UnityPyBoost/Mesh.cpp's unpack_vertexdata raise. See THIRD_PARTY_LICENSES.
 //! What [`crate::MeshHandler::process`] and
 //! [`crate::Processed::get_triangles`] return when they fail.
 //!
@@ -75,14 +75,25 @@ pub enum MeshError {
     #[error("{0}")]
     Index(IndexKind),
     /// `ValueError`: a strip's or a quad's indices unpacked from a slice
-    /// the index buffer cuts short (`helpers/MeshHelper.py:655`, `:673`).
+    /// the index buffer cuts short (`helpers/MeshHelper.py:655`, `:673`),
+    /// or a compressed normal's or tangent's pair, or a tangent's pair of
+    /// signs, that its vector's odd count cuts short (`:534`, `:552-553`).
     #[error("not enough values to unpack (expected {expected}, got {got})")]
     Unpack {
-        /// 3 for a strip, 4 for a quad.
+        /// 3 for a strip, 4 for a quad, 2 for a pair.
         expected: u8,
         /// What the slice held.
         got: u8,
     },
+    /// `StopIteration`: a compressed skin whose bone indices end where a
+    /// vertex's fourth is read (`next`, `helpers/MeshHelper.py:605`).
+    #[error("")]
+    StopIteration,
+    /// `OverflowError`: `normalize`'s square of a finite component past
+    /// the largest `float` (`v**2`, `helpers/MeshHelper.py:64`), the
+    /// message `CPython`'s `float_pow` gives `ERANGE`.
+    #[error("(34, 'Numerical result out of range')")]
+    Overflow,
     /// `ValueError`: `bytes()` of an index list holding a value past a
     /// byte (`helpers/MeshHelper.py:175`).
     #[error("bytes must be in range(0, 256)")]
@@ -140,6 +151,8 @@ impl MeshError {
             | Self::ByteRange
             | Self::Topology => "ValueError",
             Self::Struct(_) => "error",
+            Self::StopIteration => "StopIteration",
+            Self::Overflow => "OverflowError",
             Self::Index(_) => "IndexError",
             Self::Resource(_)
             | Self::Charge(_)
@@ -186,8 +199,14 @@ impl fmt::Display for StructError {
 #[non_exhaustive]
 pub enum IndexKind {
     /// "list index out of range": a 4.x channel's `stream` past the
-    /// file's streams (`helpers/MeshHelper.py:341`).
+    /// file's streams (`helpers/MeshHelper.py:341`), a packed vector's
+    /// item past its `m_Data` list (`helpers/PackedBitVector.py:56`), or a
+    /// compressed skin's vertex past the vertex count
+    /// (`helpers/MeshHelper.py:587`).
     List,
+    /// "index out of range": a packed vector's item past its `m_Data`
+    /// where that is `bytes` (`TypelessData`, `helpers/PackedBitVector.py:56`).
+    Bytes,
     /// "string index out of range": a 4.x channel's index past its
     /// stream's `bin(channelMask)` (`helpers/MeshHelper.py:346-347`).
     Str,
@@ -202,6 +221,7 @@ impl fmt::Display for IndexKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::List => "list index out of range",
+            Self::Bytes => "index out of range",
             Self::Str => "string index out of range",
             Self::ListAssignment => "list assignment index out of range",
         })
@@ -216,10 +236,6 @@ pub enum Unsupported {
     /// A version below 4: `get_channels`' fixed layout
     /// (`helpers/MeshHelper.py:283-321`), P4.
     FixedChannels,
-    /// A `CompressedMesh` with data `decompress_compressed_mesh` would
-    /// unpack (`helpers/MeshHelper.py:468-628`), with `PackedBitVector`
-    /// and `normalize`: P2a. The field named is the first that holds any.
-    CompressedMesh(&'static str),
     /// A Mesh's own vertex arrays (`m_Vertices`, `m_Normals`,
     /// `m_Tangents`, `m_UV`, `m_UV1`, `m_Colors`), which `copy_from_mesh`
     /// copies (`helpers/MeshHelper.py:206-224`): a Mesh has them only below
@@ -241,9 +257,6 @@ impl fmt::Display for Unsupported {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::FixedChannels => f.write_str("the fixed channels of a version below 4 (P4)"),
-            Self::CompressedMesh(field) => {
-                write!(f, "a CompressedMesh whose {field} holds data (P2a)")
-            }
             Self::MeshArray(field) => write!(f, "a Mesh's own {field} array (P2a)"),
             Self::SpriteVertices => f.write_str("a sprite's own vertices (P2a)"),
         }

@@ -19,8 +19,8 @@ use unityrs_core::typetree::{NodeList, NodeRow, Tree};
 use unityrs_core::walk::{self, ReadCtx, ReadOptions, RefTypes};
 use unityrs_core::{Bytes, Parsed, RawStr};
 use unityrs_meshdecode::{
-    Gather, IndexBuffer, MeshError, MeshHandler, Processed, Resources, Source, Values, Version,
-    VertexArray, unpack_vertexdata,
+    Component, Gather, IndexBuffer, MeshError, MeshHandler, Processed, Resources, Source, Values,
+    Version, VertexArray, unpack_vertexdata,
 };
 use unityrs_testkit::Rng;
 
@@ -114,11 +114,13 @@ fn cases() -> Vec<Case> {
         .collect()
 }
 
-/// The bytes a value holds: `f64`s and `i64`s at 8 bytes each.
+/// The bytes a value holds: `f64`s and `i64`s at 8 bytes each, a mixed
+/// value's components at their own size.
 fn held(a: Option<&VertexArray>) -> u64 {
     a.map_or(0, |a| match a.values() {
         Values::Float(v) => 8 * v.len() as u64,
         Values::Int(v) => 8 * v.len() as u64,
+        Values::Mixed(v) => (std::mem::size_of::<Component>() * v.len()) as u64,
         other => panic!("a form no case records: {other:?}"),
     })
 }
@@ -134,6 +136,7 @@ fn arrays_held(p: &Processed<'_>) -> u64 {
         p.colors(),
         p.bone_weights(),
         p.bone_indices(),
+        p.bind_pose(),
     ] {
         n += held(a);
     }
@@ -182,6 +185,7 @@ fn answer(c: &Case, meter: &Arc<Meter>) -> Result<String, MeshError> {
         p.colors(),
         p.bone_weights(),
         p.bone_indices(),
+        p.bind_pose(),
     ] {
         write!(a, " {:?}", v.map(VertexArray::values)).unwrap();
     }
