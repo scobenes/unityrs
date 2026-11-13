@@ -63,7 +63,7 @@ impl Sealed {
 pub struct Workspace {
     path: PathBuf,
     identity: u64,
-    next: u64,
+    next: AtomicU64,
     counter: Arc<Counter>,
     claimed: Arc<AtomicU64>,
     fs: Arc<dyn FileSystem>,
@@ -81,7 +81,7 @@ impl Workspace {
         Ok(Self {
             path,
             identity,
-            next: 0,
+            next: AtomicU64::new(0),
             counter,
             claimed: Arc::new(AtomicU64::new(0)),
             fs,
@@ -90,6 +90,21 @@ impl Workspace {
     #[must_use]
     pub fn claimed(&self) -> u64 {
         self.claimed.load(Ordering::Acquire)
+    }
+    /// Two generated paths can coexist while opening a list or scratch reader;
+    /// boxed file adapters and fixed ownership state fit the additional 8 KiB.
+    pub(crate) fn adapter_charge(&self) -> Result<u64, crate::phase::Error> {
+        let capacity = self
+            .path
+            .as_os_str()
+            .len()
+            .checked_add(22)
+            .ok_or_else(crate::phase::Error::internal)?;
+        let bytes = u64::try_from(capacity).map_err(|_| crate::phase::Error::internal())?;
+        unityrs_core::limits::heap_cost(bytes)
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(8192))
+            .ok_or_else(crate::phase::Error::internal)
     }
     fn path(&self, mut id: u64) -> Result<PathBuf, Error> {
         // Reserve the directory, separator, `f`, and all twenty u64 digits
@@ -125,8 +140,10 @@ impl Workspace {
     }
     pub fn create_file(&mut self, stopped: &dyn Fn() -> bool) -> Result<File, Error> {
         stop(stopped)?;
-        let id = self.next;
-        self.next = id.checked_add(1).ok_or(Error::Internal)?;
+        let id = self
+            .next
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+            .map_err(|_| Error::Internal)?;
         let owned = OwnedFile::create(self.path(id)?, self.counter.clone(), self.fs.clone())?;
         Ok(File {
             owned,
@@ -135,9 +152,29 @@ impl Workspace {
             ledger: self.claimed.clone(),
         })
     }
+    /// Independent scratch ownership for concurrent archive passes. Numeric
+    /// IDs share this workspace's namespace, including across regenerated passes.
+    /// No workspace borrow survives creation and no ownership token is cloned.
+    pub fn create_independent(&self, stopped: &dyn Fn() -> bool) -> Result<Independent, Error> {
+        stop(stopped)?;
+        let id = self
+            .next
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+            .map_err(|_| Error::Internal)?;
+        let owned = OwnedFile::create(self.path(id)?, self.counter.clone(), self.fs.clone())?;
+        Ok(Independent {
+            file: File {
+                owned,
+                id,
+                owner: self.identity,
+                ledger: self.claimed.clone(),
+            },
+            fs: self.fs.clone(),
+        })
+    }
     fn validate(&self, file: &Sealed) -> Result<PathBuf, Error> {
         if file.owner != self.identity
-            || file.id >= self.next
+            || file.id >= self.next.load(Ordering::Acquire)
             || crate::work::rounded(file.length, self.counter.block).ok_or(Error::Internal)?
                 != file.claimed
         {
@@ -230,5 +267,42 @@ fn read_error(error: std::io::Error) -> Error {
         Error::HostMemory
     } else {
         Error::HostIo(error)
+    }
+}
+
+/// Individually owned central scratch, on the same counter and aggregate
+/// ledger as framed workspace files. Drop closes descriptors and retains claims.
+pub struct Independent {
+    file: File,
+    fs: Arc<dyn FileSystem>,
+}
+impl Independent {
+    pub fn append(&mut self, bytes: &[u8], stopped: &dyn Fn() -> bool) -> Result<(), Error> {
+        self.file.append(bytes, stopped)
+    }
+    pub fn seal(&mut self, stopped: &dyn Fn() -> bool) -> Result<(), Error> {
+        self.file.owned.seal(stopped)
+    }
+    #[must_use]
+    pub fn length(&self) -> u64 {
+        self.file.owned.length()
+    }
+    pub fn open(&self, stopped: &dyn Fn() -> bool) -> Result<Box<dyn Read + Send>, Error> {
+        stop(stopped)?;
+        if !self.file.owned.is_sealed()
+            || self.fs.length(self.file.owned.path()).map_err(read_error)? != self.length()
+        {
+            return Err(Error::Internal);
+        }
+        self.fs.open(self.file.owned.path()).map_err(read_error)
+    }
+    /// Consume this pass's owner only after all readers have closed. No claim
+    /// is released if deletion fails or a stop precedes it.
+    pub fn retire(mut self, stopped: &dyn Fn() -> bool) -> Result<(), Error> {
+        stop(stopped)?;
+        let claimed = self.file.owned.claimed();
+        self.file.owned.remove()?;
+        self.file.ledger.fetch_sub(claimed, Ordering::AcqRel);
+        Ok(())
     }
 }

@@ -75,3 +75,109 @@ impl Hashes {
         }
     }
 }
+
+/// Incremental archive hashes. Three MD5 states, no retained part-digest list.
+/// Empty input and exactly one part use the whole-file MD5 as their `ETag`.
+#[derive(Default)]
+pub struct Incremental {
+    whole: Md5,
+    current: Md5,
+    combined: Md5,
+    size: u64,
+    part_size: usize,
+    parts: u64,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamHashes {
+    pub size: u64,
+    pub md5: [u8; 16],
+    pub etag: Etag,
+}
+impl Incremental {
+    pub fn update(&mut self, mut bytes: &[u8]) -> Result<(), crate::phase::Error> {
+        let size = self
+            .size
+            .checked_add(u64::try_from(bytes.len()).map_err(|_| crate::phase::Error::internal())?)
+            .ok_or_else(crate::phase::Error::internal)?;
+        self.whole.update(bytes);
+        while !bytes.is_empty() {
+            let n = bytes.len().min(PART - self.part_size);
+            let (part, rest) = bytes
+                .split_at_checked(n)
+                .ok_or_else(crate::phase::Error::internal)?;
+            self.current.update(part);
+            self.part_size += n;
+            bytes = rest;
+            if self.part_size == PART {
+                self.combined
+                    .update(std::mem::take(&mut self.current).finalize());
+                // At most u64::MAX / PART completed parts can exist: size was checked above.
+                self.parts += 1;
+                self.part_size = 0;
+            }
+        }
+        self.size = size;
+        Ok(())
+    }
+    #[must_use]
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+    #[must_use]
+    pub fn finish(mut self) -> StreamHashes {
+        let md5 = self.whole.finalize().into();
+        let etag = if self.size <= 16 * 1024 * 1024 {
+            Etag {
+                digest: md5,
+                parts: None,
+            }
+        } else {
+            if self.part_size > 0 {
+                self.combined.update(self.current.finalize());
+                self.parts += 1;
+            }
+            Etag {
+                digest: self.combined.finalize().into(),
+                parts: Some(self.parts),
+            }
+        };
+        StreamHashes {
+            size: self.size,
+            md5,
+            etag,
+        }
+    }
+}
+
+#[cfg(test)]
+mod incremental_tests {
+    use super::{Incremental, PART};
+    #[test]
+    fn arithmetic_near_ten_thousand_parts_adds_no_empty_part() {
+        // State seam checks counts only; it does not claim to hash 156.25 GiB.
+        for parts in [9_999, 10_000, 10_001] {
+            let digest = Incremental {
+                size: parts * u64::try_from(PART).unwrap(),
+                parts,
+                ..Incremental::default()
+            };
+            assert_eq!(digest.finish().etag.parts, Some(parts));
+            let mut digest = Incremental {
+                size: parts * u64::try_from(PART).unwrap(),
+                parts,
+                ..Incremental::default()
+            };
+            digest.update(b"x").unwrap();
+            assert_eq!(digest.finish().etag.parts, Some(parts + 1));
+        }
+    }
+    #[test]
+    fn byte_count_overflow_is_rejected_before_hashing() {
+        let mut digest = Incremental {
+            size: u64::MAX,
+            ..Incremental::default()
+        };
+        assert_eq!(digest.update(b"x"), Err(crate::phase::Error::internal()));
+        assert_eq!(digest.size(), u64::MAX);
+    }
+}
