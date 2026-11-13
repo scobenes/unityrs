@@ -117,6 +117,16 @@ impl<'a> Reader<'a> {
         })
     }
     pub fn next(&mut self, stopped: &dyn Fn() -> bool) -> Result<Option<&[u8]>, Error> {
+        self.read(stopped, true)
+    }
+    /// Unsorted pass output, validated by its following external sort.
+    pub(crate) fn next_unordered(
+        &mut self,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Option<&[u8]>, Error> {
+        self.read(stopped, false)
+    }
+    fn read(&mut self, stopped: &dyn Fn() -> bool, ordered: bool) -> Result<Option<&[u8]>, Error> {
         check(stopped)?;
         if self.remaining == 0 {
             return Ok(None);
@@ -137,7 +147,7 @@ impl<'a> Reader<'a> {
         let head = self.head.get_mut(..n - 4).ok_or_else(Error::internal)?;
         read_exact(&mut self.read, head, stopped)?;
         self.order.validate(head)?;
-        if self.populated && super::compare(self.order, &self.previous, head).is_gt() {
+        if ordered && self.populated && super::compare(self.order, &self.previous, head).is_gt() {
             return Err(Error::internal());
         }
         self.populated = true;
