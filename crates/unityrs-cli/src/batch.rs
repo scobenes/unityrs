@@ -17,7 +17,9 @@
 //! the counting allocator's measure, and writes the `exit` line with `seq`
 //! 0: for a valid spec code 0 and the detail `memory_bound <bytes>`, 5.1's
 //! bound (**provisional** until X12 measures its constants:
-//! `unityrs_batch::bound`), else 78 and the `bad_spec` detail. A bad
+//! `unityrs_batch::bound`; on a host whose pages are not 4 KiB also
+//! uncertified, which a stderr line says), else 78 and the `bad_spec`
+//! detail. A bad
 //! command line is 78 `usage`. `--schema` and `--version` write stdout and
 //! exit 74 when that write fails.
 //!
@@ -34,7 +36,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use unityrs_batch::alloc;
-use unityrs_batch::bound::{CHECK_ENV_BLOCK, PROVISIONAL, memory_bound};
+use unityrs_batch::bound::{CHECK_ENV_BLOCK, Certification, PROVISIONAL, memory_bound};
 use unityrs_batch::phase1::{self, PreparedRun};
 use unityrs_batch::progress::clock::Clock;
 use unityrs_batch::progress::{Exit, Snapshot, early, rss};
@@ -184,7 +186,12 @@ fn checked(clock: &Clock, v: &PreparedRun, m: alloc::Measured) -> ExitCode {
         reason: None,
         detail: Some(format!("memory_bound {}", bound.total())),
     };
-    early::write(snap.line(Some(&exit)).as_bytes(), b"");
+    // Uncertified off 4 KiB pages (`unityrs_batch::bound`): a stderr line.
+    let note = Certification::of(unityrs_batch::sys::page_size()).note("unityrs batch");
+    early::write(
+        snap.line(Some(&exit)).as_bytes(),
+        note.as_deref().unwrap_or_default().as_bytes(),
+    );
     code(Code::Complete)
 }
 

@@ -112,17 +112,33 @@ pub trait Tally: Sync {
         self.refuses(new_size)
     }
 
+    /// A block of `size` bytes is about to be asked of `System` on a
+    /// counted thread (a fresh block, or a `realloc`'s new one): told before
+    /// it can be live, so a tally that counts here never holds less than the
+    /// live heap. Nothing, by default.
+    fn growing(&self, size: usize) {
+        let _ = size;
+    }
+
+    /// The request [`Self::growing`] told of failed: no block was made.
+    /// Nothing, by default.
+    fn failed(&self, size: usize) {
+        let _ = size;
+    }
+
     /// A block of `size` bytes became live on a counted thread; `zeroed`
     /// when `alloc_zeroed` made it.
     fn grew(&self, size: usize, zeroed: bool);
 
-    /// A block of `size` bytes was freed on a counted thread.
+    /// A block of `size` bytes was freed on a counted thread: told once
+    /// `System` has freed it.
     fn shrank(&self, size: usize);
 }
 
 /// A global allocator that forwards to `System` and tells its [`Tally`] of
-/// each block made or freed on a [`counted`] thread, once `System` has
-/// answered: a failure counts nothing, and a `realloc` that fails leaves its
+/// each block made or freed on a [`counted`] thread: of a request before
+/// `System` sees it ([`Tally::growing`], undone by [`Tally::failed`]), and
+/// of its block once `System` has answered: a failure counts nothing, and a `realloc` that fails leaves its
 /// old block live and counted. A growing `realloc` that succeeds counts its
 /// new block before it frees the old one, the worst case of a moving
 /// `realloc`: both blocks live at once. A shrinking one frees the old block
@@ -163,6 +179,31 @@ fn no_unwind<R>(f: impl FnOnce() -> R) -> R {
     r
 }
 
+impl<T: Tally> Allocator<T> {
+    /// Tells the tally of a request on a counted thread, before `System`
+    /// sees it; whether it told.
+    fn before(&self, size: usize) -> bool {
+        let tell = counted();
+        if tell {
+            no_unwind(|| self.0.growing(size));
+        }
+        tell
+    }
+
+    /// Tells the tally what `System` answered a request [`Self::before`]
+    /// told of.
+    fn after(&self, tell: bool, p: *mut u8, size: usize, zeroed: bool) -> *mut u8 {
+        if tell {
+            if p.is_null() {
+                no_unwind(|| self.0.failed(size));
+            } else {
+                no_unwind(|| self.0.grew(size, zeroed));
+            }
+        }
+        p
+    }
+}
+
 // SAFETY: every method forwards to `System` under the caller's contract,
 // which is `System`'s, and only tells the tally sizes, through `no_unwind`,
 // so no panic of the tally's unwinds out of a method; a refusal returns
@@ -172,42 +213,43 @@ unsafe impl<T: Tally> GlobalAlloc for Allocator<T> {
         if no_unwind(|| self.0.refuses(layout.size())) {
             return ptr::null_mut();
         }
+        let tell = self.before(layout.size());
         // SAFETY: the caller's contract is `System.alloc`'s.
         let p = unsafe { System.alloc(layout) };
-        if !p.is_null() && counted() {
-            no_unwind(|| self.0.grew(layout.size(), false));
-        }
-        p
+        self.after(tell, p, layout.size(), false)
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         if no_unwind(|| self.0.refuses(layout.size())) {
             return ptr::null_mut();
         }
+        let tell = self.before(layout.size());
         // SAFETY: the caller's contract is `System.alloc_zeroed`'s.
         let p = unsafe { System.alloc_zeroed(layout) };
-        if !p.is_null() && counted() {
-            no_unwind(|| self.0.grew(layout.size(), true));
-        }
-        p
+        self.after(tell, p, layout.size(), true)
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if counted() {
-            no_unwind(|| self.0.shrank(layout.size()));
-        }
         // SAFETY: the caller's contract is `System.dealloc`'s: `ptr` came
         // from this allocator, which is `System`'s.
         unsafe { System.dealloc(ptr, layout) }
+        // Told once the block is gone, never while it is still live.
+        if counted() {
+            no_unwind(|| self.0.shrank(layout.size()));
+        }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if no_unwind(|| self.0.refuses_realloc(new_size)) {
             return ptr::null_mut();
         }
+        let tell = self.before(new_size);
         // SAFETY: the caller's contract is `System.realloc`'s.
         let p = unsafe { System.realloc(ptr, layout, new_size) };
-        if !p.is_null() && counted() {
+        if tell && p.is_null() {
+            no_unwind(|| self.0.failed(new_size));
+        }
+        if !p.is_null() && tell {
             no_unwind(|| {
                 // `System` calls `realloc` itself only for an alignment of
                 // at most `malloc`'s and no greater than the new size;

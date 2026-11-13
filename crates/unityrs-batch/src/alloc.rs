@@ -19,8 +19,9 @@
 //!   (an alignment over `malloc`'s, or a new size below the alignment:
 //!   std's `realloc_fallback`), which counts at its peak as a growth does.
 //!
-//! A [`Hook`] sees each block made or freed, and may refuse a request: the
-//! binary's is [`NoHook`]; a test's feeds the testkit's `Tally`
+//! A [`Hook`] sees each request before `System` does and each block made
+//! or freed after (a free once the block is gone), and may refuse a
+//! request: the binary's is [`NoHook`]; a test's feeds the testkit's `Tally`
 //! (`docs/plans/batch.md` 2.11's `tally` row), which a test file bridges
 //! to [`Hook`] (`tests/alloc.rs`), so the engine never depends on the
 //! testkit. A hook that panics aborts the process: a global allocator must
@@ -121,13 +122,25 @@ pub trait Hook: Sync {
         self.refuses(new_size)
     }
 
+    /// A block of `size` bytes is about to be asked of `System` (a fresh
+    /// block, or a `realloc`'s new one): told before it can be live, so a
+    /// hook that counts here never holds less than the live heap.
+    fn growing(&self, size: usize) {
+        let _ = size;
+    }
+
+    /// The request [`Self::growing`] told of failed: no block was made.
+    fn failed(&self, size: usize) {
+        let _ = size;
+    }
+
     /// A block of `size` bytes became live; `zeroed` when `alloc_zeroed`
     /// made it.
     fn grew(&self, size: usize, zeroed: bool) {
         let _ = (size, zeroed);
     }
 
-    /// A block of `size` bytes was freed.
+    /// A block of `size` bytes was freed: told once `System` has freed it.
     fn shrank(&self, size: usize) {
         let _ = size;
     }
@@ -202,6 +215,7 @@ impl<H: Hook> Counting<H> {
     fn made(&self, p: *mut u8, size: usize, zeroed: bool) -> *mut u8 {
         if p.is_null() {
             refused();
+            no_unwind(|| self.0.failed(size));
         } else {
             add(size);
             no_unwind(|| self.0.grew(size, zeroed));
@@ -222,6 +236,7 @@ unsafe impl<H: Hook> GlobalAlloc for Counting<H> {
             refused();
             return std::ptr::null_mut();
         }
+        no_unwind(|| self.0.growing(layout.size()));
         // SAFETY: the caller's contract is `System.alloc`'s.
         let p = unsafe { System.alloc(layout) };
         self.made(p, layout.size(), false)
@@ -232,6 +247,7 @@ unsafe impl<H: Hook> GlobalAlloc for Counting<H> {
             refused();
             return std::ptr::null_mut();
         }
+        no_unwind(|| self.0.growing(layout.size()));
         // SAFETY: the caller's contract is `System.alloc_zeroed`'s.
         let p = unsafe { System.alloc_zeroed(layout) };
         self.made(p, layout.size(), true)
@@ -239,10 +255,11 @@ unsafe impl<H: Hook> GlobalAlloc for Counting<H> {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         sub(layout.size());
-        no_unwind(|| self.0.shrank(layout.size()));
         // SAFETY: the caller's contract is `System.dealloc`'s: `ptr` came
         // from this allocator, which is `System`'s.
         unsafe { System.dealloc(ptr, layout) }
+        // The hook hears of a free once the block is gone.
+        no_unwind(|| self.0.shrank(layout.size()));
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
@@ -250,11 +267,13 @@ unsafe impl<H: Hook> GlobalAlloc for Counting<H> {
             refused();
             return std::ptr::null_mut();
         }
+        no_unwind(|| self.0.growing(new_size));
         // SAFETY: the caller's contract is `System.realloc`'s.
         let p = unsafe { System.realloc(ptr, layout, new_size) };
         if p.is_null() {
             // The old block stays live and counted.
             refused();
+            no_unwind(|| self.0.failed(new_size));
             return p;
         }
         let old = layout.size();

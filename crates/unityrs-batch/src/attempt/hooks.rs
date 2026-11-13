@@ -123,6 +123,11 @@ impl ngui::Hooks for Engine<'_> {
         self.observer.environment_fault(env)
     }
     #[cfg(feature = "test-hooks")]
+    fn skipped(&self, exporting: bool) {
+        crate::work::tap::tell(crate::work::tap::Event::Skip(exporting));
+        self.observer.skipped(exporting);
+    }
+    #[cfg(feature = "test-hooks")]
     fn decoder_fault(&self) {
         self.observer.decoder_fault();
     }

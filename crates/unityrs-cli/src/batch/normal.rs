@@ -2,6 +2,7 @@
 use super::{CHECK_ENV_BLOCK, PROVISIONAL, PreparedRun, alloc, code, early, memory_bound};
 use std::{fs::File, os::fd::AsFd, process::ExitCode, sync::Arc, time::Duration};
 use unityrs_batch::{
+    bound::Certification,
     progress::{self, Exit, Phase, Snapshot, clock::Clock, live::Service},
     reason::Code,
     run,
@@ -19,6 +20,12 @@ pub(super) fn run(clock: &Clock, prepared: PreparedRun, measured: alloc::Measure
     // Provisional until B12 measures the inherited environment block: normal
     // runs currently use --check's conservative 6 MiB allowance as well.
     let bound = memory_bound(&prepared.spec, measured, CHECK_ENV_BLOCK, &PROVISIONAL).total();
+    // Uncertified off 4 KiB pages (`unityrs_batch::bound`): the run says so
+    // at its start, on stderr alone, before any progress thread, and goes on
+    // (`docs/BATCH_SPEC.md` section 10).
+    if let Some(note) = Certification::of(unityrs_batch::sys::page_size()).note("unityrs batch") {
+        early::write(b"", note.as_bytes());
+    }
     if let Err(error) = run::host_check(&prepared, bound, &unityrs_batch::start::host::System) {
         return failed(clock, error);
     }

@@ -83,8 +83,9 @@ jobs:
         run: cargo test -p unityrs-batch --features test-hooks
 
   # The batch engine's scale cases (production-sized and million-record
-  # phase-6 runs, plus archive count, memory and digest boundaries), in
-  # release. Heavy cases are ignored in debug builds and run here alone.
+  # phase-6 runs, plus archive count, memory and digest boundaries, and
+  # X13's squeeze of every testkit scene), in release. Heavy cases are
+  # ignored in debug builds and run here alone.
   scale:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -103,6 +104,7 @@ jobs:
           --test archive_alloc --test archive_bytes --test archive_digest
           --test publication_alloc --test phase6_ledger --test http_alloc
           --test finish_alloc --test publication_pool --test golden_runs --test pool_alloc --test controller_alloc
+          --test limit_squeeze
           -- --include-ignored
 
   licenses:

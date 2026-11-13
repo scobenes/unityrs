@@ -29,6 +29,16 @@ impl<T: Tally> Hook for Fed<T> {
     fn refuses_realloc(&self, new_size: usize) -> bool {
         self.0.refuses_realloc(new_size)
     }
+    fn growing(&self, size: usize) {
+        if counted() {
+            self.0.growing(size);
+        }
+    }
+    fn failed(&self, size: usize) {
+        if counted() {
+            self.0.failed(size);
+        }
+    }
     fn grew(&self, size: usize, zeroed: bool) {
         if counted() {
             self.0.grew(size, zeroed);
