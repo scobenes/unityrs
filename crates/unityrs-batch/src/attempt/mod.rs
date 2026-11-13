@@ -21,7 +21,7 @@ use std::{
     cell::{Cell, RefCell},
     panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
-    sync::{Arc, atomic::AtomicBool},
+    sync::Arc,
     time::Instant,
 };
 use unityrs_core::{
@@ -76,7 +76,7 @@ pub struct AttemptArgs<'a> {
     pub limits: AttemptLimits,
     pub peeks: &'a dyn ngui::PeekBits,
     pub directory: &'a Directory,
-    pub stop: &'a AtomicBool,
+    pub stop: &'a dyn crate::control::Control,
     pub hooks: &'a dyn Hooks,
 }
 /// Open, register, extract, copy and seal, then drop and audit, on this thread.
@@ -130,6 +130,13 @@ pub fn run_attempt(args: AttemptArgs<'_>) -> AttemptEnd {
         end.skips_expected = 0;
     }
     if end.state == State::RunFailure {
+        args.stop.request_stop(
+            crate::job::RunFailure {
+                reason: end.reason.unwrap_or(ReasonCode::Internal),
+                detail: end.detail,
+            },
+            crate::control::Culprit::Input(u32::try_from(end.input_index).unwrap_or(u32::MAX)),
+        );
         // The observer cannot unwind across the public boundary either.
         if catch_unwind(AssertUnwindSafe(|| args.hooks.request_stop(&end))).is_err() {
             end.run_failure(ReasonCode::Internal);

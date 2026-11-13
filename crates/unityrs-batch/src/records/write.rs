@@ -229,8 +229,17 @@ pub fn write_failure_record<'a>(
     meter: &Arc<Meter>,
     summary: Summary<'a>,
 ) -> Result<Summary<'a>, Error> {
+    write_failure_record_stoppable(directory, meter, summary, &|| false)
+}
+/// Failure writer with the same cooperative flush checks as successful seals.
+pub fn write_failure_record_stoppable<'a>(
+    directory: &Directory,
+    meter: &Arc<Meter>,
+    summary: Summary<'a>,
+    stopped: &dyn Fn() -> bool,
+) -> Result<Summary<'a>, Error> {
     if summary.status != Status::Failed {
         return Err(Error::Internal);
     }
-    Writer::new(directory, meter)?.seal(summary, &mut Work::new(0), true, &|| false)
+    Writer::new(directory, meter)?.seal(summary, &mut Work::new(0), true, stopped)
 }

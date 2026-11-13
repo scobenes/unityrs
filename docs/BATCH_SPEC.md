@@ -402,6 +402,9 @@ through partial writes, failure, rename and drop. Only successful explicit
 deletion releases them; a failed or partial deletion retains the whole claim.
 A sealed artifact has completed writes and closed files, with no per-output
 fsync or crash-recovery promise.
+Cooperative directory removal uses no-follow directory descriptors and checks
+stop initially and every 1,000 entries. A stop during partial deletion keeps
+the whole claim and leaves cleanup to the next start.
 
 ### 6.1 Layout
 
@@ -528,6 +531,19 @@ The head is the record of the run. For every key the final head lists as `writte
 - **Diagnostics.** `same_named_cab`: a registry key (`simplify_name`, 4.3) that two or more bundles of the input's view hold in their top-level directories, one row per key, `bundle` the top-level holder 4.3 ranks highest (`X` when it holds the key, else the greatest id) and `name` the full directory path of that bundle's last top-level row with that key. `undeclared_dependency`: `bundle` null, `name` the `m_Dependencies` name (4.1). `nested_container`: an entry of the input's own bundle that is itself a bundle, met while selecting, `bundle` the input, `name` the entry's path.
 
 A reason is a code of section 9.3. A string taken from the bytes is cut to its first 1,024 bytes, at a code point boundary (an invalid byte counting as one code point, 2.2), and its row's `cut` is then true. A string that is not valid UTF-8 (a name, a CAB, an entry path, a reason's argument) is written with each invalid byte replaced by U+FFFD, so every line is UTF-8 JSON that any parser reads; its original bytes are not recoverable from the manifest, and two stored paths that agree after cutting and that replacement are not told apart. A row holds at most four strings of at most 1,024 bytes each (an id, a key or path, a cut string), each escaped to at most 6 bytes per byte, so every line is at most 32 KiB (`batch.md` 2.8). Apart from the figures the normalised comparison leaves out (timings, peaks, the host's, `extract.md` section 5), a manifest is a function of the run's records and outcomes; byte identity with another implementation is not a goal.
+
+The local library controller (provisional until B7/B9) commits attempts in
+controller receipt order and barrier failures in bytewise input-id order;
+manifest ordering remains the row ordering above. Every barrier marks all
+failed holders before its first failure write. Failure writes use vacated
+admission room, preserve the attempt's figures except zero skips and unresolved
+scripts, and add only their own flush to `spooled_part`. Commit stores the
+pending input, loads canonical `Control`, hands over uncommitted if stopped,
+then renames, emits the typed rename observation, clears the input bit and
+clears the pending slot. A rename error retains that slot, with fixed input
+and errno facts for B9's reconciliation. `ReadyForWinners` means extraction
+artifacts are committed; `HandOver` freezes received facts and leaves queued
+ends uncounted. Neither boundary writes a final manifest or publishes.
 
 The sealed library API is `unityrs_batch::attempt::run_attempt(AttemptArgs) ->
 AttemptEnd` (provisional until B5–B7). It borrows prepared paths, export options,

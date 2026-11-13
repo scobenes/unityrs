@@ -7,7 +7,7 @@ pub mod text;
 mod write;
 pub use model::*;
 pub use text::Text;
-pub use write::{Writer, copy_output, write_failure_record};
+pub use write::{Writer, copy_output, write_failure_record, write_failure_record_stoppable};
 
 /// Fixed charged buffer size. Full buffers and the final partial buffer
 /// are the only records-file writes that count as export work.

@@ -81,7 +81,7 @@ An **attempt** is one run of one input's extraction. Each attempt is sealed: eve
 ordered staged-path view, compiled export options and member templates, a
 successful immutable `ngui::PeekBits` implementation (`PeekTable` retains its
 sorted slice adapter, validated once by `PeekTable::new` outside attempts), a
-prepared `spool::Directory` (with its shared counter and filesystem facts), limits, a stop flag and hooks. `Prepared::from_spec`
+prepared `spool::Directory` (with its shared counter and filesystem facts), limits, the canonical `Control` stop query and hooks. `Prepared::from_spec`
 compiles the templates once outside extraction. It drives own open, own metadata,
 ordered private registration, `ngui::cut`, disk copy-out and seal. Internal hooks
 always count budget refusals and export work. After all charged locals drop it
@@ -95,7 +95,7 @@ the directory and every partial claim remain the caller's to clean up. Successfu
 `ms` is sampled at the final seal boundary and preserved in the summary/end;
 failed/stopped attempts sample after unwinding and audit. No call commits.
 
-**Preparation and peeks (provisional until B5b/B7).** `phase1::prepare`
+**Preparation and peeks (provisional until B7).** `phase1::prepare`
 constructs compiled templates, index tables, atomic peek words, received-fact
 slots, clear uncommitted bits, queue capacities and controller walk/active
 scratch inside `alloc::measured`, including for `--check`. It retains no input's
@@ -135,6 +135,29 @@ The view rules:
 5. **Members are bundles.** Every bundle is staged under a spool name (2.5), and the core keys a top-level raw or serialized dependency by its file name (`env/load.rs`, `register_file`), so such a member could never be found by its own name. Version 1 refuses it by rule 1.
 
 ### 2.4 The controller
+
+**Local library drive (provisional until B7/B9).** `controller::Controller`
+consumes phase-1 state and a trusted `PreparedSpool`; `execution::Execution`
+is constructed separately before staging and outlives the drive and handover.
+`drive_local` returns `ReadyForWinners` only after every input has a committed
+success or failure artifact and every extraction reservation is clear. It
+returns `HandOver` on a stop or controller panic, preserving received facts,
+uncommitted bits, active owners and the pending commit. Neither boundary
+publishes or writes a final head. No drop joins workers or blocking tasks;
+cooperative hosts/tests quiesce explicitly. B9 owns process parking and stop
+arbitration through the canonical, synchronous `control::Control` interface.
+
+The local controller uses a current-thread Tokio runtime with only `rt`,
+`download_concurrency + 1` prewarmed blocking threads with 2 MiB stacks, bounded
+worker channels, and end/stop wake descriptors. A completed pool handle is
+loaded with `block_on` only after readiness; a held pool call is waited under
+the wake descriptors instead. Admission refuses a zero-slot configuration.
+Ordinary commits follow receipt order; barrier failures follow bytewise input
+id order. Failure writes use the failed slot's released room and prevent refill
+until handling finishes; their peak is retained separately as controller work.
+Typed hooks observe dispatch/receipt/rename and the
+two commit fault points; they do not implement the official trace protocol.
+
 
 **Workers.** `threads` OS threads, each with an explicit stack of twice `Limits::stack_needed` plus core 3.15's per-level term, `CONTAINER_LEVEL_STACK x (max_container_depth + 1)`, as `unityrs-dump`'s `worker_stack` sizes it. The atlas JSON writer walks a value with a heap stack, not by recursion. **Test:** `the_deepest_value_and_nest_fit_a_worker_stack`, a value at `max_value_depth` and the deepest nest on a thread of `worker_stack`'s size, in debug and in release. Each runs one attempt, or one peek (2.6 step 4), from start to end, on that one thread, inside `catch_unwind`.
 
@@ -183,11 +206,11 @@ loop:
 
 ### 2.5 Staging
 
-**Local library seam (provisional until B5b/B7).** B5a operates on an exclusively
+**Local library seam (provisional until B7).** The driver operates on an exclusively
 prepared spool supplied by its caller. `stage::require_local` rejects any URL,
 an unused dependency's included, as a capability error before writes; validation
 still accepts URLs. `stage::local::open` checks/opens on the caller, then returns
-a movable `LocalCopy` job for B5b's blocking pool. `LocalCopy::run` only
+a movable `LocalCopy` job for the controller's blocking pool. `LocalCopy::run` only
 copies and hashes; its `LocalFinish` result returns the pinned source to the
 controller. The controller always calls `LocalFinish::finish`, including after
 a failed or stopped copy, to re-stat, check the size and SHA-256, and seal via
@@ -196,7 +219,8 @@ reopen is needed, so sealing is independent of the process umask. Ordinary
 data-failure cleanup also runs during finalisation; a run failure or stop
 retains the owner and claim for handover. Early EOF still re-stats before it
 becomes `host_io`, preserving `source_changed` precedence.
-Scheduling, barriers and commits belong to B5b; startup belongs to B7/B9.
+The controller stages in spec order, commits all staging failures before the
+peek queue, and commits all peek failures before attempts. Startup belongs to B7/B9.
 
 Every bundle the spec declares, input or dependency, is staged once, in phase 4, in the spec's order, its `inputs` and then its `dependencies`, into the spool file `in/i<n>` or `in/d<n>` (`BATCH_SPEC.md` 6.1). Every later read of the bundle, by any attempt, reads that file, never the source.
 - **The HTTP service** makes every request the engine sends, staging's and the store clients' (2.9), each on a connection of its own: no pool, no proxy, HTTP/1.1 alone. A request resolves its host in a `spawn_blocking` task of its own (std's `ToSocketAddrs`, which runs `getaddrinfo` as tokio's `lookup_host` does; W17). A request keeps its permit, or its runtime's spare permit (2.11), for all its tries, and each of these permits has one **lookup token**: a try takes its permit's token before its timers start, and each redirect hop's lookup retakes it, free by then; the lookup's closure (a store's reached through 2.9's task-local slot) holds it, with its host's `String` and `CString` copies, and gives it back when the lookup returns, the copies ending with the closure. So a timer that drops a try leaves the token with its lookup, the next try under that permit starts once the lookup returns, and a permit whose token is out goes back to its pool when the lookup's closure returns, not inside the request. It connects to the addresses `BATCH_SPEC.md` 1.4 allows, one at a time, in order, each through a tokio `TcpSocket` (`new_v4` or `new_v6`) on which it sets zero linger (`TcpSocket::set_zero_linger`, never the deprecated `set_linger`) before `connect`; a failure to make the socket or set its linger moves on to the next address, as a `connect` error does, and the address list is dropped once a `connect` succeeds. A connection carries one request, so any close, at `_exit`, a kill or a panic's unwind included, is an RST that discards what TCP still holds. Each socket is in the socket table (2.11, *Every exit*) from before its connect to its drop; a try that loads the closing flag set fails as `connect` without connecting. For `https` it runs the TLS handshake through tokio-rustls with step 4's `ClientConfig` (2.11), whose ALPN is `http/1.1`; for `http` it skips tokio-rustls, its IO an enum of the two streams, so one hyper `Connection` type serves both. A connection's resolve, connects and handshake run under its own `connect_timeout_ms` timer (`BATCH_SPEC.md` 1.4). Then it runs hyper's `http1::Builder::new().writev(true).max_buf_size(128 * 1024).max_header_size(128 * 1024).handshake(io)`, `io` the stream in hyper-util's `TokioIo`, and sends its one request in origin form, with `Host` from its URL. It never sets `max_headers`, so hyper's default of 100 fields holds (`BATCH_SPEC.md` 1.4's caps). The connection is never spawned: the request's future owns hyper's `Connection` and polls it beside the send, and once the head arrives the response body owns it, polls it before each read and drops it at its end. So a try's socket, TLS state, hyper buffers and request body end with its future: at its end, at its timer, or at `_exit` after a stop, which never drops a try's future (2.11). A request body reaches hyper in chunks of at most 64 KiB, each a slice of the payload's `Bytes`, with its exact size, so hyper writes `Content-Length`. Every request carries the user agent `unityrs/<version>` and `Accept: */*`, unless the bundle's `headers` names `Accept` (`BATCH_SPEC.md` 1.2), whose own then takes its place; X7 and X9 check both. In tests only, the hooks `resolve` and `extra_roots` apply (2.11's *Test hooks*). `reqwest` stays in the dependency tree through `object_store`'s `cloud` feature, but the engine builds no `reqwest` client, so none makes a request.

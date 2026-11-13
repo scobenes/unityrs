@@ -54,7 +54,10 @@ pub mod alloc;
 pub mod attempt;
 pub mod bound;
 pub mod budget;
+pub mod control;
+pub mod controller;
 pub mod digest;
+pub mod execution;
 pub mod job;
 pub mod peek;
 pub mod phase;
@@ -70,5 +73,6 @@ pub mod stage;
 pub mod sys;
 pub mod view;
 pub mod work;
+mod worker;
 
 pub mod winners;

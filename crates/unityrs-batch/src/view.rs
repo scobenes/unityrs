@@ -298,6 +298,49 @@ impl Walker {
     }
 }
 
+/// Worker-local visited indices, bounded by the view cap rather than the
+/// run's bundle count. The sorted index set avoids a full graph stamp table.
+/// Registration receives bytewise member order, with X excluded (X is last).
+pub struct BoundedWalker {
+    visited: Vec<u32>,
+    stack: Vec<u32>,
+    members: Vec<u32>,
+}
+impl BoundedWalker {
+    #[must_use]
+    pub fn new(max: usize) -> Self {
+        Self {
+            visited: Vec::with_capacity(max),
+            stack: Vec::with_capacity(max),
+            members: Vec::with_capacity(max),
+        }
+    }
+    pub fn view(&mut self, graph: &Graph, x: u32, max: u32) -> Result<&[u32], ViewTooLarge> {
+        self.visited.clear();
+        self.stack.clear();
+        self.members.clear();
+        if max == 0 || x as usize >= graph.len() {
+            return Err(ViewTooLarge);
+        }
+        self.visited.push(x);
+        self.stack.push(x);
+        while let Some(i) = self.stack.pop() {
+            for &j in graph.deps(i) {
+                if let Err(at) = self.visited.binary_search(&j) {
+                    if self.visited.len() >= max as usize {
+                        return Err(ViewTooLarge);
+                    }
+                    self.visited.insert(at, j);
+                    self.stack.push(j);
+                    self.members.push(j);
+                }
+            }
+        }
+        self.members.sort_unstable_by_key(|&i| graph.rank(i));
+        Ok(&self.members)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Graph, ViewTooLarge, Walker};

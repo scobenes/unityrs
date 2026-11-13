@@ -2,10 +2,7 @@ use super::{AttemptEnd, classify};
 use crate::{budget::SealedBudget, work::Work};
 use std::{
     cell::{Cell, RefCell},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
 };
 use unityrs_core::{RawStr, limits::Meter};
 use unityrs_export::ngui::{self, Class, Failure, Reason};
@@ -30,7 +27,7 @@ impl Hooks for ngui::NoHooks {}
 
 pub(super) struct Engine<'a> {
     pub budget: Arc<SealedBudget>,
-    pub stop: &'a AtomicBool,
+    pub stop: &'a dyn crate::control::Control,
     pub observer: &'a dyn Hooks,
     pub work: RefCell<Work>,
     pub decode_peak: Cell<u64>,
@@ -85,7 +82,7 @@ impl<'b> Engine<'b> {
 }
 impl ngui::Hooks for Engine<'_> {
     fn stopped(&self) -> bool {
-        self.fault.get() || self.stop.load(Ordering::Acquire) || self.observer.stopped()
+        self.fault.get() || self.stop.stopped() || self.observer.stopped()
     }
     fn refusals(&self) -> Option<u64> {
         Some(self.budget.snapshot().refusals())

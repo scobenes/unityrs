@@ -9,10 +9,7 @@ use crate::{
 };
 pub use disk::{PeekBits, load_bits};
 pub use run::run_peek;
-use std::{
-    path::Path,
-    sync::{Arc, atomic::AtomicBool},
-};
+use std::{path::Path, sync::Arc};
 use unityrs_core::RawStr;
 use unityrs_export::ngui;
 use word::{Outcome, Word};
@@ -63,6 +60,6 @@ pub struct PeekArgs<'a> {
     pub directory: &'a Path,
     pub counter: Arc<Counter>,
     pub fs: Arc<dyn FileSystem>,
-    pub stop: &'a AtomicBool,
+    pub stop: &'a dyn crate::control::Control,
     pub hooks: &'a dyn Hooks,
 }

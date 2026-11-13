@@ -137,7 +137,7 @@ pub struct AttemptEnd {
     pub slot_releasable: bool,
 }
 impl AttemptEnd {
-    pub(super) fn new(input_index: u64) -> Self {
+    pub(crate) fn new(input_index: u64) -> Self {
         Self {
             input_index,
             state: State::Done,
@@ -157,7 +157,7 @@ impl AttemptEnd {
             slot_releasable: true,
         }
     }
-    pub(super) fn run_failure(&mut self, reason: ReasonCode) {
+    pub(crate) fn run_failure(&mut self, reason: ReasonCode) {
         let code = match reason {
             ReasonCode::HostIo | ReasonCode::HostMemory => Code::Host,
             ReasonCode::SpoolFull => Code::Budget,

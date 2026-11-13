@@ -3,10 +3,11 @@
 mod claims;
 mod files;
 mod owned_file;
+pub(crate) mod path;
 pub mod workspace;
 pub use claims::Counter;
-pub use files::{Directory, SpoolFile};
-pub use owned_file::OwnedFile;
+pub use files::{Directory, DirectoryClaim, SpoolFile};
+pub use owned_file::{FileClaim, OwnedFile};
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -102,6 +103,15 @@ pub trait FileSystem: Send + Sync {
     /// Partial deletion followed by error retains the entire claim.
     fn remove(&self, path: &Path) -> io::Result<()> {
         std::fs::remove_dir_all(path)
+    }
+    /// Stop-aware descriptor traversal; partial deletion retains all claims.
+    fn remove_stoppable(
+        &self,
+        root: &std::fs::File,
+        path: &Path,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<(), Error> {
+        crate::sys::remove_tree(root, path, stopped)
     }
     /// Delete exactly one owned staged/peek file; never traverse a directory.
     fn remove_file(&self, path: &Path) -> io::Result<()> {

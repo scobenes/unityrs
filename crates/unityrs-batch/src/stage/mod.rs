@@ -32,10 +32,26 @@ pub struct Facts {
     pub size: u64,
     pub sha256: [u8; 32],
 }
+/// The failed integrity check, with size taking precedence over SHA-256.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Integrity {
+    Size,
+    Sha256,
+}
+impl Integrity {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Size => "size",
+            Self::Sha256 => "sha256",
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StageEnd {
     pub bundle: u32,
     pub failure: Option<Failure>,
+    pub integrity: Option<Integrity>,
     /// Only a staged body or a complete unchanged integrity mismatch has facts.
     pub facts: Option<Facts>,
     pub claimed_bytes: u64,
@@ -62,4 +78,29 @@ pub fn path(directory: &Path, bundle: u32, inputs: usize, peek: bool) -> PathBuf
         Some(n) => ('d', n),
     };
     directory.join(format!("{}{kind}{n}", if peek { "p" } else { "" }))
+}
+
+/// Fallible controller/worker counterpart to [`path`]. No derived path is
+/// retained in a per-bundle or per-input table.
+pub(crate) fn try_path(
+    directory: &Path,
+    bundle: u32,
+    inputs: usize,
+    peek: bool,
+) -> Result<PathBuf, crate::spool::Error> {
+    let (dependency, n) = match (bundle as usize).checked_sub(inputs) {
+        None => (false, bundle as usize),
+        Some(n) => (true, n),
+    };
+    let prefix = match (peek, dependency) {
+        (false, false) => "i",
+        (false, true) => "d",
+        (true, false) => "pi",
+        (true, true) => "pd",
+    };
+    crate::spool::path::indexed(
+        directory,
+        prefix,
+        u64::try_from(n).map_err(|_| crate::spool::Error::Internal)?,
+    )
 }
