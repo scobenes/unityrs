@@ -13,7 +13,7 @@ use unityrs_core::env::{EnvOptions, LoadMode};
 use unityrs_core::error::{Error, Unsupported};
 use unityrs_testkit::env::find_scenes;
 
-use super::run::{Run, error_kind, load};
+use super::run::{Run, error_kind, load, ops, recorded, scene_by_name};
 
 /// The recorded `find_file` scenes: each name and its steps.
 fn recorded_finds() -> Vec<(String, Vec<J>)> {
@@ -196,4 +196,91 @@ fn find_file_without_keep_resolver_loads_differs_by_its_row_alone() {
     for (what, options) in option_sets(false) {
         replay(&what, &options, without_keep);
     }
+}
+
+/// `Environment.get_cab` (`environment.py:266-280`): the registry under
+/// `simplify_name`, the lower-cased `ntpath.basename`. After every recorded
+/// scene, under `Eager`, each CAB key UnityPy registered is found under
+/// itself, in upper case, and behind a posix folder, a Windows folder or a
+/// drive: each time a file whose own name simplifies to the key. Where the
+/// recorded `env.files` hold a serialized or raw dependency of that name (a
+/// file the resolver returned, which `env.objects` leaves out), it is that
+/// file, by its exact name; otherwise, where the recorded `env.objects` hold the
+/// file's objects, a `SerializedFile` with exactly those path ids in that
+/// order (where two loaded files share the name, those of one of them). A
+/// name no key simplifies to is `None`.
+#[test]
+fn get_cab_finds_each_recorded_key_by_its_simplified_name() {
+    let simplify = |s: &str| {
+        let base = s.rsplit(['/', '\\']).next().unwrap_or(s);
+        base.to_ascii_lowercase()
+    };
+    let (mut keys, mut with_target) = (0, 0);
+    for (name, steps) in recorded() {
+        let run = Run::new(scene_by_name(&name), LoadMode::Eager);
+        run.steps(&ops(&steps));
+        let last = steps.last().unwrap();
+        for k in last["cabs"].as_array().unwrap() {
+            let k = k.as_str().unwrap();
+            // The recorded objects of the file the key names: (file, path id).
+            let objects: Vec<(&str, &J)> = last["objects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|o| simplify(o[0].as_str().unwrap()) == k)
+                .map(|o| (o[0].as_str().unwrap(), &o[1]))
+                .collect();
+            // One run of path ids per loaded file of that name: a path id
+            // seen again starts the next file's.
+            let mut copies: Vec<Vec<&J>> = Vec::new();
+            for (_, id) in &objects {
+                match copies.last_mut() {
+                    Some(run) if !run.contains(id) => run.push(id),
+                    _ => copies.push(vec![id]),
+                }
+            }
+            // A serialized or raw dependency of that name the recorded
+            // `env.files` hold (a bundle's key names its entry instead).
+            let dependency: Option<&str> = last["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|f| f[1] == true && (f[2] == "serialized" || f[2] == "raw"))
+                .map(|f| f[0].as_str().unwrap())
+                .find(|f| simplify(f) == k)
+                .map(|f| f.rsplit('/').next().unwrap());
+            let upper = k.to_ascii_uppercase();
+            let asks = json!([
+                k,
+                upper,
+                format!("Some/Dir/{upper}"),
+                format!("a\\b\\{upper}"),
+                format!("C:{upper}"),
+            ]);
+            let got = run.get_cabs(&asks);
+            for (ask, g) in asks.as_array().unwrap().iter().zip(got.as_array().unwrap()) {
+                let at = format!("{name}: {k} asked as {ask}: {g}");
+                let file = g[1].as_str().unwrap_or_else(|| panic!("{at}"));
+                assert_eq!(simplify(file), k, "{at}");
+                if let Some(dependency) = dependency {
+                    assert_eq!(file, dependency, "{at}");
+                } else if !copies.is_empty() {
+                    assert_eq!(g[0], "serialized", "{at}");
+                    let got_ids: Vec<&J> = g[2].as_array().unwrap().iter().collect();
+                    assert!(copies.contains(&got_ids), "{at}: recorded {copies:?}");
+                }
+            }
+            keys += 1;
+            with_target += usize::from(dependency.is_some() || !copies.is_empty());
+        }
+        assert_eq!(
+            run.get_cabs(&json!(["no-such-cab", "dir/no-such-cab"])),
+            json!([null, null]),
+            "{name}"
+        );
+    }
+    assert!(
+        keys > 50 && with_target > 40,
+        "{keys} keys, {with_target} with a recorded target"
+    );
 }

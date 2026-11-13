@@ -369,3 +369,35 @@ fn the_resolver_is_asked_the_names_unitypy_hands_on() {
         }
     }
 }
+
+/// A `.resS` read is `Position = offset; read_bytes(size)` on the CAB
+/// (`helpers/ResourceReader.py:36-38`): a range that runs past the end
+/// returns the bytes that exist, and one that starts past it returns none,
+/// with no error, under both load modes.
+#[test]
+fn a_resource_range_past_the_end_reads_the_bytes_that_exist() {
+    let res = res_bytes(32, 0);
+    let data = bundle(&[
+        (
+            "CAB-P",
+            serialized(
+                &[],
+                &[
+                    Obj::streamed(2, "tail", "archive:/CAB-P/CAB-P.resS", 28, 8),
+                    Obj::streamed(3, "past", "archive:/CAB-P/CAB-P.resS", 40, 4),
+                ],
+            ),
+        ),
+        ("CAB-P.resS", res.clone()),
+    ]);
+    for mode in [LoadMode::Eager, LoadMode::Lazy] {
+        let e = env(mode);
+        e.load(src("p.bundle", &data)).unwrap();
+        let cab = serialized_cab(&e, "CAB-P");
+        for (path_id, want) in [(2, &res[28..]), (3, &[][..])] {
+            let (path, offset, size) = stream(&object(&cab, path_id));
+            let got = e.resource(&cab, &path, offset, size).unwrap();
+            assert_eq!(got.as_ref(), want, "{mode:?} {path_id}");
+        }
+    }
+}
