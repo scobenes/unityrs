@@ -1,4 +1,4 @@
-//! An individually owned staged/peek file, with the directory owner's claim
+//! An individually owned staged/peek or central scratch file, with the directory owner's claim
 //! rules. No adoption and no release on Drop, including after a partial write.
 use super::{Counter, Error, FileSystem, Full, Writer};
 use std::{

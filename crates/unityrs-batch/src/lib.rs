@@ -51,6 +51,7 @@
 
 #[allow(unsafe_code)]
 pub mod alloc;
+pub mod archive;
 pub mod attempt;
 pub mod bound;
 pub mod budget;

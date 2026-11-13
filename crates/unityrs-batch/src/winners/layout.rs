@@ -40,6 +40,19 @@ impl End {
     }
 }
 impl Layout {
+    /// Test-only logical origin and arithmetic seams; never allocate the prefix.
+    /// Reject seeds whose complete end cannot be represented.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn seed(offset: u64, central: u64, count: u64) -> Result<Self, Error> {
+        let layout = Self {
+            offset,
+            central,
+            count,
+        };
+        layout.finish()?;
+        Ok(layout)
+    }
+
     /// Failed arithmetic leaves the accumulator unchanged.
     pub fn member(&mut self, path_bytes: u64, size: u64) -> Result<Entry, Error> {
         if !(1..=u64::from(u16::MAX)).contains(&path_bytes) {
