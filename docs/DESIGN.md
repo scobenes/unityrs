@@ -99,6 +99,7 @@ unityrs is the alternative, built around three things:
   - RGB48 decodes as packed 5-6-5;
   - ASTC_HDR is wrong in 1.25.2;
   - ETC2_RGBA1 keeps a transparent punch-through pixel's colour, where the Khronos Data Format Specification makes it (0, 0, 0, 0);
+  - EAC_R_SIGNED and EAC_RG_SIGNED compute with a base of -128, where the Khronos Data Format Specification reads -127;
   - Texture2DArray decodes R8G8B8_UInt as RGB48;
   - the MeshHelper.py:504 UV offset;
   - UNorm/SNorm values are not normalised;
@@ -218,7 +219,7 @@ The spike records LOC kept versus rewritten, whether upstream takes patches, obj
 **Licensing**
 - Crates carry accurate SPDX expressions, for example `(MIT OR Apache-2.0) AND MIT-CMU` for Pillow ports.
 - `cargo-deny` checks crates; `cargo-about` with overrides scans vendored C (libwebp BSD-3 plus PATENTS, zlib, xz).
-- `THIRD_PARTY_LICENSES` carries every notice: UnityPy and UnityPyBoost (MIT), liblz4's block decoder (BSD-2-Clause) and parts of CPython's standard library (PSF-2.0), both ported in P1, texture2ddecoder, astcenc (Apache-2.0), Pillow, libwebp. No AssetStudio code is ported yet, so it carries no AssetStudio notice; the format facts read from AssetStudio's MIT readers are cited where they are used. P3's UnityCN decryptor ports UnityPyBoost's `ArchiveStorageDecryptor.cpp`, which is based on RazTools/Studio's `AssetStudio/Crypto/UnityCN.cs`; P3 records that project's licence and carries its notice. A ported file names its source and licence in its header; its crate's expression requires that licence in every alternative it offers, and the crate carries the source's notice as a file of its own, so its package ships the notice with the code (`scripts/third_party_licenses_check.py ports` holds them together).
+- `THIRD_PARTY_LICENSES` carries every notice: UnityPy and UnityPyBoost (MIT), liblz4's block decoder (BSD-2-Clause) and parts of CPython's standard library (PSF-2.0), both ported in P1, texture2ddecoder, astcenc (Apache-2.0), Pillow, libwebp. No AssetStudio reader is ported; the format facts read from AssetStudio's MIT readers are cited where they are used. texture2ddecoder's ETC and EAC decoders, ported in P3 (`unityrs-texture`'s `src/etc.rs`), are AssetStudio's Texture2DDecoderNative code, itself mikunyan's (MIT), so it and the crate carry AssetStudio's and mikunyan's notices beside texture2ddecoder's. P3's UnityCN decryptor ports UnityPyBoost's `ArchiveStorageDecryptor.cpp`, which is based on RazTools/Studio's `AssetStudio/Crypto/UnityCN.cs`; P3 records that project's licence and carries its notice. A ported file names its source and licence in its header; its crate's expression requires that licence in every alternative it offers, and the crate carries the source's notice as a file of its own, so its package ships the notice with the code (`scripts/third_party_licenses_check.py ports` holds them together).
 - The provenance of bundled data is recorded, and a file of generated tables names their source and its licence in its header.
 - GPL/AGPL code is never read into the repo.
 - **Game data is never committed.** Corpora are private manifests of URLs plus sha256. Only synthetic and Unity-Editor-built fixtures are checked in.

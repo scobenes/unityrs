@@ -1,7 +1,8 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/enums/TextureFormat.py (the member names and values), and the output modes of export/Texture2DConverter.py's CONV_TABLE for the five formats. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/enums/TextureFormat.py (the member names and values), and the output modes and block sizes of export/Texture2DConverter.py's CONV_TABLE and TEXTURE_FORMAT_BLOCK_SIZE_TABLE for the formats decoded here. See THIRD_PARTY_LICENSES.
 //! Texture formats: every value UnityPy 1.25.2 names ([`texture_format_name`]),
-//! the five this crate decodes ([`Format`]), and the image modes they decode
-//! to ([`Mode`]).
+//! the ones this crate decodes ([`Format`]), of which version 1 of the batch
+//! engine exports five ([`Format::exported`]), and the image modes they
+//! decode to ([`Mode`]).
 
 /// UnityPy 1.25.2's `TextureFormat` members, value and name, in its order
 /// (`enums/TextureFormat.py:4-82`). Values 37 to 40 are unassigned.
@@ -96,7 +97,9 @@ pub fn texture_format_name(value: i32) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
-/// The five formats this crate decodes (`docs/plans/extract.md` E15).
+/// The formats this crate decodes: the five of `docs/plans/extract.md` E15,
+/// which Pillow decodes for UnityPy, and the eight ETC and EAC formats
+/// texture2ddecoder decodes for it (`etc`'s module docs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Format {
     /// `RGB24` (3): Pillow's raw `RGB` into `RGB`.
@@ -109,15 +112,65 @@ pub enum Format {
     Dxt5,
     /// `BC7` (25): Pillow's `bcn` 7 into `RGBA`.
     Bc7,
+    /// `ETC_RGB4` (34): texture2ddecoder's ETC1 into `RGBA`.
+    EtcRgb4,
+    /// `EAC_R` (41): texture2ddecoder's EAC R into `RGBA`.
+    EacR,
+    /// `EAC_R_SIGNED` (42): texture2ddecoder's signed EAC R into `RGBA`.
+    EacRSigned,
+    /// `EAC_RG` (43): texture2ddecoder's EAC RG into `RGBA`.
+    EacRg,
+    /// `EAC_RG_SIGNED` (44): texture2ddecoder's signed EAC RG into `RGBA`.
+    EacRgSigned,
+    /// `ETC2_RGB` (45): texture2ddecoder's ETC2 into `RGBA`.
+    Etc2Rgb,
+    /// `ETC2_RGBA1` (46): texture2ddecoder's ETC2 A1 into `RGBA`, with
+    /// its transparent pixels (0, 0, 0, 0) (Tier C, `PARITY.md` section
+    /// 19.1).
+    Etc2Rgba1,
+    /// `ETC2_RGBA8` (47): texture2ddecoder's ETC2 A8 into `RGBA`.
+    Etc2Rgba8,
 }
 
 const _: () = crate::send_sync::<Format>();
 
-impl Format {
-    /// The five, in `TextureFormat` order.
-    pub const ALL: [Self; 5] = [Self::Rgb24, Self::Rgba32, Self::Dxt1, Self::Dxt5, Self::Bc7];
+/// The library that decodes a [`Format`] for UnityPy, which decides how the
+/// data's length is read and which of Pillow's limits apply
+/// (`decode`'s module docs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Library {
+    /// Pillow's raw decoder, on the texture's own size.
+    PillowRaw,
+    /// Pillow's `bcn` decoder, on the size padded to whole 4x4 blocks.
+    PillowBcn,
+    /// texture2ddecoder, on the size padded to whole 4x4 blocks, its
+    /// output then read by Pillow's raw decoder as `BGRA`.
+    Texture2DDecoder,
+}
 
-    /// The format of a `TextureFormat` value, when it is one of the five.
+impl Format {
+    /// Every format, in `TextureFormat` order.
+    pub const ALL: [Self; 13] = [
+        Self::Rgb24,
+        Self::Rgba32,
+        Self::Dxt1,
+        Self::Dxt5,
+        Self::Bc7,
+        Self::EtcRgb4,
+        Self::EacR,
+        Self::EacRSigned,
+        Self::EacRg,
+        Self::EacRgSigned,
+        Self::Etc2Rgb,
+        Self::Etc2Rgba1,
+        Self::Etc2Rgba8,
+    ];
+
+    /// The five version 1 of the batch engine exports
+    /// (`docs/BATCH_SPEC.md` section 3), in `TextureFormat` order.
+    pub const EXPORTED: [Self; 5] = [Self::Rgb24, Self::Rgba32, Self::Dxt1, Self::Dxt5, Self::Bc7];
+
+    /// The format of a `TextureFormat` value, when this crate decodes it.
     #[must_use]
     pub const fn from_texture_format(value: i32) -> Option<Self> {
         match value {
@@ -126,6 +179,14 @@ impl Format {
             10 => Some(Self::Dxt1),
             12 => Some(Self::Dxt5),
             25 => Some(Self::Bc7),
+            34 => Some(Self::EtcRgb4),
+            41 => Some(Self::EacR),
+            42 => Some(Self::EacRSigned),
+            43 => Some(Self::EacRg),
+            44 => Some(Self::EacRgSigned),
+            45 => Some(Self::Etc2Rgb),
+            46 => Some(Self::Etc2Rgba1),
+            47 => Some(Self::Etc2Rgba8),
             _ => None,
         }
     }
@@ -139,6 +200,14 @@ impl Format {
             Self::Dxt1 => 10,
             Self::Dxt5 => 12,
             Self::Bc7 => 25,
+            Self::EtcRgb4 => 34,
+            Self::EacR => 41,
+            Self::EacRSigned => 42,
+            Self::EacRg => 43,
+            Self::EacRgSigned => 44,
+            Self::Etc2Rgb => 45,
+            Self::Etc2Rgba1 => 46,
+            Self::Etc2Rgba8 => 47,
         }
     }
 
@@ -151,31 +220,65 @@ impl Format {
             Self::Dxt1 => "DXT1",
             Self::Dxt5 => "DXT5",
             Self::Bc7 => "BC7",
+            Self::EtcRgb4 => "ETC_RGB4",
+            Self::EacR => "EAC_R",
+            Self::EacRSigned => "EAC_R_SIGNED",
+            Self::EacRg => "EAC_RG",
+            Self::EacRgSigned => "EAC_RG_SIGNED",
+            Self::Etc2Rgb => "ETC2_RGB",
+            Self::Etc2Rgba1 => "ETC2_RGBA1",
+            Self::Etc2Rgba8 => "ETC2_RGBA8",
         }
     }
 
+    /// Whether version 1 of the batch engine exports it: one of
+    /// [`Self::EXPORTED`], the five of `docs/plans/extract.md` E15
+    /// ([`crate::select()`]).
+    #[must_use]
+    pub const fn exported(self) -> bool {
+        matches!(
+            self,
+            Self::Rgb24 | Self::Rgba32 | Self::Dxt1 | Self::Dxt5 | Self::Bc7
+        )
+    }
+
     /// The mode UnityPy decodes it to (`CONV_TABLE`,
-    /// `export/Texture2DConverter.py:491-516`): `RGB` for `RGB24`, `RGBA`
-    /// for the other four. A texture with a side of 0 is an empty `RGBA`
-    /// image whatever its format ([`crate::decode()`]).
+    /// `export/Texture2DConverter.py:491-532`): `RGB` for `RGB24`, `RGBA`
+    /// for the rest. A texture with a side of 0 is an empty `RGBA` image
+    /// whatever its format ([`crate::decode()`]).
     #[must_use]
     pub const fn mode(self) -> Mode {
         match self {
             Self::Rgb24 => Mode::Rgb,
-            Self::Rgba32 | Self::Dxt1 | Self::Dxt5 | Self::Bc7 => Mode::Rgba,
+            _ => Mode::Rgba,
         }
     }
 
-    /// The bytes one 4x4 block holds, for a block format: 8 for DXT1, 16 for
-    /// DXT5 and BC7; `None` for the raw formats, which UnityPy does not pad
+    /// The bytes one 4x4 block holds, for a block format: 8 for DXT1,
+    /// `ETC_RGB4`, `EAC_R`, `EAC_R_SIGNED`, `ETC2_RGB` and `ETC2_RGBA1`, 16 for the
+    /// rest; `None` for the raw formats, which UnityPy does not pad
     /// (`get_compressed_image_size`, `export/Texture2DConverter.py:36-50`:
-    /// names starting `DXT` or `BC` are padded to 4x4 blocks).
+    /// names starting `DXT`, `BC`, `ETC` or `EAC` are padded to 4x4 blocks).
     #[must_use]
     pub const fn block_bytes(self) -> Option<u64> {
         match self {
-            Self::Dxt1 => Some(8),
-            Self::Dxt5 | Self::Bc7 => Some(16),
+            Self::Dxt1
+            | Self::EtcRgb4
+            | Self::EacR
+            | Self::EacRSigned
+            | Self::Etc2Rgb
+            | Self::Etc2Rgba1 => Some(8),
+            Self::Dxt5 | Self::Bc7 | Self::EacRg | Self::EacRgSigned | Self::Etc2Rgba8 => Some(16),
             Self::Rgb24 | Self::Rgba32 => None,
+        }
+    }
+
+    /// The library that decodes it for UnityPy (`CONV_TABLE`).
+    pub(crate) const fn library(self) -> Library {
+        match self {
+            Self::Rgb24 | Self::Rgba32 => Library::PillowRaw,
+            Self::Dxt1 | Self::Dxt5 | Self::Bc7 => Library::PillowBcn,
+            _ => Library::Texture2DDecoder,
         }
     }
 }

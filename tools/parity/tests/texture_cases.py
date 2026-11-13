@@ -182,11 +182,32 @@ ATC_SOLIDS = [
 RGB565_SOLIDS = [(0xF800, (255, 0, 0, 255)), (0x07E0, (0, 255, 0, 255)), (0x001F, (0, 0, 255, 255))]
 ETC1_SOLIDS = [etc1(15, 0, 0), etc1(0, 15, 0), etc1(0, 0, 15), etc1(8, 4, 12)]
 EAC_BASES = [16, 100, 200, 255]
-EAC_SIGNED_BASES = [100, -100, 0, -128]  # -128 is clamped to -127, so 0 after the +127
+EAC_SIGNED_BASES = [100, -100, 0, -128]
+# A signed base of -128 in a block of multiplier 1 (8 in 11 bits), table 0, every index 7 (+14): texture2ddecoder
+# computes with -128, (-1024 + 112 + 1023) >> 3 = 13, where the Khronos Data Format Specification 1.3, sections 22.7 and
+# 22.8, reads -127, (-1016 + 112 + 1023) >> 3 = 14. (At a modifier of 0, as `eac` builds, both give 0.)
+EAC_MIN_BLOCK = bytes([0x80, 0x10]) + b"\xff" * 6
 
 
-def eac_signed_value(base):
-    return max(base, -127) + 127
+def eac_signed(base):
+    """(block, reference value, UnityPy's value) of a signed EAC channel of `base`."""
+    if base == -128:
+        return EAC_MIN_BLOCK, 14, 13
+    return eac(base), base + 127, base + 127
+
+
+def eac_r_signed():
+    channels = [eac_signed(v) for v in EAC_SIGNED_BASES]
+    case = blocks(4, 4, "RGBA", [(block, (ref, 0, 0, 255)) for block, ref, _ in channels], 8)
+    kept = blocks(4, 4, "RGBA", [(block, (theirs, 0, 0, 255)) for block, _, theirs in channels], 8)
+    return case._replace(unitypy=("RGBA", kept.pixels))
+
+
+def eac_rg_signed():
+    pairs = [(eac_signed(r), eac_signed(g)) for r, g in zip(EAC_SIGNED_BASES, reversed(EAC_SIGNED_BASES), strict=True)]
+    case = blocks(4, 4, "RGBA", [(r[0] + g[0], (r[1], g[1], 0, 255)) for r, g in pairs], 16)
+    kept = blocks(4, 4, "RGBA", [(r[0] + g[0], (r[2], g[2], 0, 255)) for r, g in pairs], 16)
+    return case._replace(unitypy=("RGBA", kept.pixels))
 
 
 def rgba_half():
@@ -325,8 +346,8 @@ PIXEL_CASES = {
     ),
     "EAC_R": ("(R, 0, 0, 255)", lambda: blocks(4, 4, "RGBA", [(eac(v), (v, 0, 0, 255)) for v in EAC_BASES], 8)),
     "EAC_R_SIGNED": (
-        "(R + 127, 0, 0, 255), -128 clamped to -127: base 100 gives 227, -100 gives 27",
-        lambda: blocks(4, 4, "RGBA", [(eac(v), (eac_signed_value(v), 0, 0, 255)) for v in EAC_SIGNED_BASES], 8),
+        "(R + 127, 0, 0, 255): base 100 gives 227, -100 gives 27; a base of -128 is computed with as -128",
+        eac_r_signed,
     ),
     "EAC_RG": (
         "(R, G, 0, 255)",
@@ -338,19 +359,7 @@ PIXEL_CASES = {
             16,
         ),
     ),
-    "EAC_RG_SIGNED": (
-        "(R + 127, G + 127, 0, 255)",
-        lambda: blocks(
-            4,
-            4,
-            "RGBA",
-            [
-                (eac(r) + eac(g), (eac_signed_value(r), eac_signed_value(g), 0, 255))
-                for r, g in zip(EAC_SIGNED_BASES, reversed(EAC_SIGNED_BASES), strict=True)
-            ],
-            16,
-        ),
-    ),
+    "EAC_RG_SIGNED": ("(R + 127, G + 127, 0, 255); a base of -128 is computed with as -128", eac_rg_signed),
     "ATC_RGB4": ("alpha 255", lambda: blocks(4, 4, "RGBA", [(atc(c), px) for c, px in ATC_SOLIDS], 8)),
     "ATC_RGBA8": (
         "BGRA to RGBA",

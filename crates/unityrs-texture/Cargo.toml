@@ -1,6 +1,6 @@
 [package]
 name = "unityrs-texture"
-description = "Texture2D decoders with UnityPy 1.25.2's output: BC7, DXT1, DXT5, RGBA32 and RGB24."
+description = "Texture2D decoders with UnityPy 1.25.2's output: BC7, DXT1, DXT5, RGBA32, RGB24, and the ETC and EAC formats."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,11 @@ rust-version.workspace = true
 # UnityPy calls it (MIT-CMU: src/libImaging/BcnDecode.c's BCn block decoders,
 # src/libImaging/RawDecode.c's row copy, the width cap of src/decode.c's
 # _setimage, and the decompression-bomb check of src/PIL/Image.py's crop),
-# whose notice is its LICENSE-PILLOW; and, for the sprite renderer
+# whose notice is its LICENSE-PILLOW; texture2ddecoder 1.0.5's ETC and EAC
+# decoders (MIT: src/Texture2DDecoder/etc.cpp, in src/etc.rs), whose notices
+# are its LICENSE-TEXTURE2DDECODER and those of the code it carries,
+# AssetStudio's and mikunyan's, LICENSE-ASSETSTUDIO and LICENSE-MIKUNYAN;
+# and, for the sprite renderer
 # (src/sprite/), the rest of Pillow's drawing, cropping and transforms that
 # UnityPy's SpriteHelper calls, and OpenBLAS 0.3.31's order for numpy's
 # linalg.solve (BSD-3-Clause: src/sprite/affine.rs), whose notices are its

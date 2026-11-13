@@ -79,7 +79,9 @@ accepted = ["PSF-2.0"]
 # crate's LICENSE-OPENBLAS-UT). cargo-about does not recognise that text, so
 # the clarification names each of the crate's licence files and its licence
 # (the OpenBLAS kernels' own notices, LICENSE-OPENBLAS-KERNELS and
-# LICENSE-OPENBLAS-DSCAL, among them, as BSD-3-Clause),
+# LICENSE-OPENBLAS-DSCAL, among them, as BSD-3-Clause, and the MIT notices
+# of the ETC decoders' sources, LICENSE-TEXTURE2DDECODER, LICENSE-ASSETSTUDIO
+# and LICENSE-MIKUNYAN),
 # with the crate's own expression; the checksums tie it to the files, and a
 # changed file drops it with a warning, on which the script fails.
 # LICENSE-MIT, LICENSE-APACHE and LICENSE-UNITYPY are links to the
@@ -113,6 +115,21 @@ checksum = "d86f8e7dd654370bfe954deb63a8fc972a0eaea943880ba691ff540104bd4c8f"
 path = "LICENSE-PILLOW"
 license = "MIT-CMU"
 checksum = "0fdb68ffb39062553be40be4e6eaea9700b4f5e870a720ae86b8925d67613ddd"
+
+[[unityrs-texture.clarify.files]]
+path = "LICENSE-TEXTURE2DDECODER"
+license = "MIT"
+checksum = "f933e94e0f23cc8ee4da01a7c5f832221f509c190819c5e2985b6cda7dbb9066"
+
+[[unityrs-texture.clarify.files]]
+path = "LICENSE-ASSETSTUDIO"
+license = "MIT"
+checksum = "f0822cd8a4200ba360f8e623e1fb5ad3496ca579f44d94665ac2d3cf344e6b76"
+
+[[unityrs-texture.clarify.files]]
+path = "LICENSE-MIKUNYAN"
+license = "MIT"
+checksum = "9d4cfee9f1331c8413631b84b46248c4770daf4cb137f3b4df330087ebf3e3a3"
 
 [[unityrs-texture.clarify.files]]
 path = "LICENSE-OPENBLAS"

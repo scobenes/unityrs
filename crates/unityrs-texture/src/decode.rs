@@ -1,7 +1,7 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/export/Texture2DConverter.py's parse_image_data for the five formats (the checks, the block padding, the crop and the flip), and how Pillow 9.5.0, as it calls it, treats short and long data and the sizes it refuses. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/export/Texture2DConverter.py's parse_image_data for the formats decoded here (the checks, the block padding, the crop and the flip), and how Pillow 9.5.0 and texture2ddecoder 1.0.5, as it calls them, treat short and long data and the sizes they refuse. See THIRD_PARTY_LICENSES.
 // Ported from Pillow 9.5.0 (MIT-CMU): its raw decoder as UnityPy calls it (src/libImaging/RawDecode.c's row copy, and the width cap of src/decode.c's _setimage), and the decompression-bomb check of src/PIL/Image.py's crop, with its message. See THIRD_PARTY_LICENSES.
 //! [`decode()`]: a texture's mip 0 to pixels, as `parse_image_data` gives them
-//! for the five formats (`export/Texture2DConverter.py:254-320`), and
+//! for the formats of [`Format`] (`export/Texture2DConverter.py:254-320`), and
 //! [`plan()`]: what a decode of data of a given length will need and give,
 //! or why it fails, before the data is read.
 //!
@@ -9,7 +9,9 @@
 //! side of 0, raises for empty data, pads a block format's size to whole
 //! 4x4 blocks (`:291`, `get_compressed_image_size`; the raw formats are not
 //! padded), has Pillow decode the padded image (`Image.frombytes` with
-//! `CONV_TABLE`'s arguments, `:331-344`, `:491-516`), crops it back to size
+//! `CONV_TABLE`'s arguments, `:331-344`, `:491-516`), or for an ETC or EAC
+//! format texture2ddecoder, whose `BGRA` output Pillow's raw decoder then
+//! reads (`:405-432`, `:523-532`), crops it back to size
 //! (`:314-315`) and flips it top to bottom (`:317-318`). Pillow decodes the
 //! data from its start and stops when the image is full: bytes past it
 //! (later mips, anything else) are ignored, so a texture with mips decodes
@@ -25,7 +27,12 @@
 //! 3. A negative side is [`DecodeError::NegativeSize`]: Pillow's
 //!    `ValueError`, whichever of its checks meets it first ("Width and
 //!    height must be >= 0", or, where padding made a side 0, a crop or tile
-//!    error).
+//!    error). For an ETC or EAC format, where padding made a side 0
+//!    texture2ddecoder decodes nothing and the crop raises, but a side
+//!    padded below 0 (-4 and below) reaches it as a width or height near
+//!    2^32, which it multiplies in 32 bits and then reads and writes past
+//!    its buffers with: the error is unityrs's own refusal there
+//!    (`PARITY.md` section 19.3).
 //! 4. A texture of more than [`MAX_PIXELS`] pixels at its padded size is
 //!    [`DecodeError::TooLarge`], whatever the data's length once it is not
 //!    empty: the bound UnityPy does not have (below).
@@ -34,16 +41,25 @@
 //!    decoder refuses a row of more than `INT_MAX / bits - 7` pixels (32
 //!    bits a pixel for `RGBA`, 24 for `RGB`) with `MemoryError` when it is
 //!    set up, before it reads any data (`_setimage`, `src/decode.c:197-198`).
-//!    The `bcn` decoder has no such cap.
+//!    So is an ETC or EAC texture whose padded width passes 67,108,856
+//!    (67,108,857 and up, padded to 67,108,860): Pillow's raw decoder reads
+//!    texture2ddecoder's output as `BGRA` at that width, and refuses it
+//!    after texture2ddecoder has decoded it, which changes no pixel. The
+//!    `bcn` decoder has no such cap.
 //! 6. Data that runs out before mip 0 does is [`DecodeError::NotEnoughData`],
 //!    Pillow's `ValueError` "not enough image data" (`Image.frombytes`;
 //!    `RawDecode.c` reads whole rows, `BcnDecode.c` whole blocks). The `BCn`
 //!    decoder takes the data's length as a C `int` (`decode_bcn`'s
 //!    `bytes`), so data of 2 GiB or more is read as that length's low 32
 //!    bits, signed: data whose low 32 bits are below what the image needs,
-//!    or negative, is short too ([`bcn_length`]).
+//!    or negative, is short too ([`bcn_length`]). texture2ddecoder checks
+//!    no length, and reads on past the data's end where it is short (its
+//!    `decode` template, `src/pylink.cpp`, ignores the length it parses):
+//!    for an ETC or EAC format the error is unityrs's own refusal, which
+//!    reads nothing that is not there (`PARITY.md` section 19.3).
 //! 7. The decode.
-//! 8. A DXT1, DXT5 or BC7 texture with a side that is no multiple of 4 and
+//! 8. A block-format texture (DXT1, DXT5, BC7, ETC or EAC) with a side that
+//!    is no multiple of 4 and
 //!    more than [`MAX_CROP_PIXELS`] (178,956,970) pixels is
 //!    [`DecodeError::DecompressionBomb`]: UnityPy's crop of the padded image
 //!    runs Pillow's decompression-bomb check on the size it crops to, which
@@ -100,9 +116,9 @@ use std::sync::Arc;
 
 use unityrs_core::limits::{Charge, ChargeError, Meter, MeteredVec, heap_cost};
 
-use crate::bcn;
 use crate::contain::Payload;
-use crate::format::{Format, Mode};
+use crate::format::{Format, Library, Mode};
+use crate::{bcn, etc};
 
 /// The most pixels a texture may have, at its padded size: 16384 x 16384.
 /// UnityPy has no such bound (module docs; `PARITY.md` section 19.3).
@@ -118,7 +134,10 @@ const INT_MAX: u32 = 0x7FFF_FFFF;
 
 /// Why a texture did not decode, in the order of the module docs' checks.
 /// Every variant but [`Self::TooLarge`], [`Self::Charge`] and
-/// [`Self::Panicked`] is a case where UnityPy 1.25.2 raises too. [`plan()`]
+/// [`Self::Panicked`] is a case where UnityPy 1.25.2 raises too, but
+/// for an ETC or EAC format with short data or a side padded below 0,
+/// where texture2ddecoder reads past the data (module docs, steps 3 and
+/// 6). [`plan()`]
 /// returns the checks' variants only, never `Charge` or `Panicked`, which
 /// [`decode()`] alone gives, after a plan that passed.
 ///
@@ -150,18 +169,21 @@ pub enum DecodeError {
         /// [`MAX_PIXELS`].
         max: u64,
     },
-    /// An RGBA32 or RGB24 row wider than Pillow's raw decoder takes:
-    /// Pillow's `MemoryError`, raised before the data is read (module docs,
-    /// step 5).
+    /// An RGBA32 or RGB24 row, or an ETC or EAC texture's padded row,
+    /// wider than Pillow's raw decoder takes: Pillow's `MemoryError`
+    /// (module docs, step 5).
     #[error("Pillow's raw decoder refuses a row of {width} pixels, past {max} (MemoryError)")]
     PillowMemoryError {
-        /// `m_Width`.
+        /// The row's width as Pillow's raw decoder gets it: `m_Width`,
+        /// padded to whole 4x4 blocks for an ETC or EAC format.
         width: u32,
         /// The widest row it takes: `INT_MAX / bits - 7`.
         max: u32,
     },
     /// The data ends before mip 0 does: Pillow's `ValueError` "not enough
-    /// image data".
+    /// image data", or for an ETC or EAC format, where texture2ddecoder
+    /// reads on past the data's end, unityrs's own refusal (module docs,
+    /// step 6).
     #[error("not enough image data: {needed} bytes needed, {got} given")]
     NotEnoughData {
         /// What mip 0 holds, at its padded size.
@@ -260,27 +282,30 @@ pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<
         });
     }
     let mode = format.mode();
-    if block.is_none() {
+    let library = format.library();
+    if library != Library::PillowBcn {
+        // The width Pillow's raw decoder is set up with: the texture's, or
+        // for texture2ddecoder's output the padded one, at most 2^28 here.
+        let row = u32::try_from(padded_w).unwrap_or(u32::MAX);
         let max = match mode {
             Mode::Rgb => INT_MAX / 24 - 7,
             Mode::Rgba => INT_MAX / 32 - 7,
         };
-        if w > max {
-            return Err(DecodeError::PillowMemoryError { width: w, max });
+        if row > max {
+            return Err(DecodeError::PillowMemoryError { width: row, max });
         }
     }
     // From here every size is at most 4 x MAX_PIXELS.
-    let (input_bytes, seen) = match block {
-        Some(b) => (pixels / 16 * b, bcn_length(data_len)),
-        None => (
-            pixels * mode.bytes_per_pixel(),
-            u64::try_from(data_len).unwrap_or(u64::MAX),
-        ),
+    let len = u64::try_from(data_len).unwrap_or(u64::MAX);
+    let (input_bytes, seen) = match (block, library) {
+        (Some(b), Library::PillowBcn) => (pixels / 16 * b, bcn_length(data_len)),
+        (Some(b), _) => (pixels / 16 * b, len),
+        (None, _) => (pixels * mode.bytes_per_pixel(), len),
     };
     if seen < input_bytes {
         return Err(DecodeError::NotEnoughData {
             needed: input_bytes,
-            got: u64::try_from(data_len).unwrap_or(u64::MAX),
+            got: len,
         });
     }
     let shown = w64 * h64;
@@ -465,6 +490,14 @@ fn fill(format: Format, data: &[u8], w: usize, h: usize, out: &mut [u8]) {
         Format::Dxt1 => bcn::decode(bcn::Kind::Bc1, data, w, h, out),
         Format::Dxt5 => bcn::decode(bcn::Kind::Bc3, data, w, h, out),
         Format::Bc7 => bcn::decode(bcn::Kind::Bc7, data, w, h, out),
+        Format::EtcRgb4 => etc::decode(etc::Kind::Etc1, data, w, h, out),
+        Format::EacR => etc::decode(etc::Kind::EacR, data, w, h, out),
+        Format::EacRSigned => etc::decode(etc::Kind::EacRSigned, data, w, h, out),
+        Format::EacRg => etc::decode(etc::Kind::EacRg, data, w, h, out),
+        Format::EacRgSigned => etc::decode(etc::Kind::EacRgSigned, data, w, h, out),
+        Format::Etc2Rgb => etc::decode(etc::Kind::Etc2, data, w, h, out),
+        Format::Etc2Rgba1 => etc::decode(etc::Kind::Etc2A1, data, w, h, out),
+        Format::Etc2Rgba8 => etc::decode(etc::Kind::Etc2A8, data, w, h, out),
     }
 }
 

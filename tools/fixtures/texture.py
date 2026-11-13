@@ -1,6 +1,8 @@
-"""Oracle fixtures for unityrs-texture: the five decoders of docs/plans/extract.md E15 and the selection of E66.
+"""Oracle fixtures for unityrs-texture: the five decoders of docs/plans/extract.md E15, the selection of E66, and the
+ETC and EAC decoders of P3.
 
-Runs in the oracle image against UnityPy 1.25.2 and Pillow 9.5.0 and writes two JSON files under
+Runs in the oracle image against UnityPy 1.25.2, Pillow 9.5.0 and texture2ddecoder 1.0.5 and writes three JSON files
+under
 crates/unityrs-texture/tests/fixtures/, one case a line, which `cargo test -p unityrs-texture` replays without
 Python (crates/unityrs-texture/tests/oracle.rs). Every input is built here in code; no file is read.
 
@@ -32,6 +34,15 @@ speaks first); the most pixels it lets through, 12,470 x 14,351 (178,956,970, a 
 and an aligned texture past it, 4 x 44,739,244, which no crop checks. Recorded in the oracle container, the three
 past the bomb's own take about 12 s together and at most about 2.5 GB.
 
+**etc.json.** The cases of tools/fixtures/texture_etc.py (its docstring lists them), each the eight ETC and EAC
+formats' texture decoded by `get_image_from_texture2d` as decode.json's are, so through texture2ddecoder 1.0.5 and
+Pillow's raw `BGRA` mode (export/Texture2DConverter.py:405-432), and recorded as decode.json's are. The image of a
+format with a Tier C patch (PARITY.md section 19.1) also records `reference_sha256`, the sha256 of the Khronos Data
+Format Specification 1.3's answer, and `diverging`, how many pixels UnityPy's differs in: for ETC2_RGBA1 its bytes
+with every pixel of alpha 0 set to (0, 0, 0, 0), as section 22.9 makes a transparent punch-through pixel; for
+EAC_R_SIGNED and EAC_RG_SIGNED UnityPy's decode of the data with every signed base of -128 (each block's first byte
+0x80) made -127 (0x81), as sections 22.7 and 22.8 read it. The two limit cases take about 1.5 GB and a few seconds in the oracle container.
+
 **select.json.** The selection of docs/BATCH_SPEC.md section 3 (E66), computed with UnityPy's own predicates:
 `TextureFormat(value).name` (or the decimal value where the enum has none), `TextureSwizzler.is_switch_swizzled`
 (helpers/TextureSwizzler.py:121-127) and `Texture2DConverter.XBOX_SWAP_FORMATS` (export/Texture2DConverter.py:569),
@@ -50,6 +61,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import PIL
+import texture2ddecoder
 import UnityPy
 from UnityPy.enums import BuildTarget, TextureFormat
 from UnityPy.export import Texture2DConverter
@@ -57,6 +69,9 @@ from UnityPy.helpers import TextureSwizzler
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "crates/unityrs-texture/tests/fixtures"
+sys.path.insert(0, str(ROOT / "tools/fixtures"))
+
+import texture_etc  # noqa: E402
 
 M64 = (1 << 64) - 1
 VERSION = (2021, 3, 1, 1)
@@ -295,6 +310,42 @@ def platform_cases() -> list[dict]:
     return out
 
 
+def cleared(pixels: bytes) -> bytes:
+    """RGBA bytes with every pixel of alpha 0 set to (0, 0, 0, 0)."""
+    out = bytearray(pixels)
+    for at in range(0, len(out), 4):
+        if out[at + 3] == 0:
+            out[at : at + 4] = bytes(4)
+    return bytes(out)
+
+
+def decoded(data: bytes, w: int, h: int, fmt: int, platform: int, blob) -> bytes:
+    """The bytes of UnityPy's image of a texture."""
+    return Texture2DConverter.get_image_from_texture2d(fake_texture(data, w, h, fmt, platform, blob)).tobytes()
+
+
+def etc_cases() -> list[dict]:
+    """texture_etc.py's cases, recorded as decode.json's; the image of a Tier C format also with the reference's
+    sha256 (`reference_sha256`) and the count of pixels UnityPy's differs from it in (`diverging`)."""
+    out = []
+    for name, fmt, w, h, spec, *where in texture_etc.cases():
+        platform, blob = where or (WINDOWS, None)
+        c = case(name, TF(fmt), w, h, spec, platform=platform, blob=blob)
+        if fmt in (TF.ETC2_RGBA1, TF.EAC_R_SIGNED, TF.EAC_RG_SIGNED) and "mode" in c:
+            data = build(spec)
+            pixels = decoded(data, w, h, fmt, platform, blob)
+            if fmt == TF.ETC2_RGBA1:
+                reference = cleared(pixels)
+            else:
+                # Every block (8 bytes, an EAC_RG_SIGNED block two of them) begins with its signed base.
+                patched = bytes(0x81 if at % 8 == 0 and v == 0x80 else v for at, v in enumerate(data))
+                reference = decoded(patched, w, h, fmt, platform, blob)
+            c["reference_sha256"] = hashlib.sha256(reference).hexdigest()
+            c["diverging"] = sum(1 for at in range(0, len(pixels), 4) if pixels[at : at + 4] != reference[at : at + 4])
+        out.append(c)
+    return out
+
+
 def format_name(value: int) -> str:
     try:
         return TextureFormat(value).name
@@ -350,10 +401,12 @@ def names() -> list[dict]:
 
 def fixtures() -> dict[str, dict]:
     meta = {"generator": "tools/fixtures/texture.py", "unitypy": UnityPy.__version__, "pillow": PIL.__version__}
+    etc = {**meta, "texture2ddecoder": texture2ddecoder.__version__, "hex_pixels": HEX_PIXELS, "cases": etc_cases()}
     decode = size_cases() + length_cases() + side_cases() + bc7_cases() + crafted_cases() + platform_cases()
     decode += limit_cases()
     return {
         "decode.json": {**meta, "hex_pixels": HEX_PIXELS, "cases": decode},
+        "etc.json": etc,
         "select.json": {
             **meta,
             "xbox_swap_formats": [int(f) for f in Texture2DConverter.XBOX_SWAP_FORMATS],
@@ -387,8 +440,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--check", action="store_true", help="regenerate and compare, write nothing")
     args = ap.parse_args()
-    if UnityPy.__version__ != "1.25.2" or PIL.__version__ != "9.5.0":
-        print(f"needs UnityPy 1.25.2 and Pillow 9.5.0, found {UnityPy.__version__}, {PIL.__version__}", file=sys.stderr)
+    found = (UnityPy.__version__, PIL.__version__, texture2ddecoder.__version__)
+    if found != ("1.25.2", "9.5.0", "1.0.5"):
+        print(f"needs UnityPy 1.25.2, Pillow 9.5.0 and texture2ddecoder 1.0.5, found {found}", file=sys.stderr)
         return 2
     stale = []
     for name, body in fixtures().items():
