@@ -25,7 +25,7 @@ pub enum Class {
     HostMemory,
     InvalidPath,
 }
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Error {
     pub class: Class,
     pub call: &'static str,

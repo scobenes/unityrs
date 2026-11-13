@@ -4,6 +4,7 @@ mod claims;
 mod files;
 mod owned_file;
 pub(crate) mod path;
+pub mod random;
 pub mod workspace;
 pub use claims::Counter;
 pub use files::{Directory, DirectoryClaim, SpoolFile};
@@ -73,6 +74,9 @@ impl Writer for std::fs::File {
 /// wrap a real file to fail a write or flush; production uses [`Host`].
 /// Paths here are trusted prepared directories and generated basenames.
 pub trait FileSystem: Send + Sync {
+    fn create_random(&self, path: &Path) -> io::Result<Box<dyn random::Random>> {
+        Ok(crate::alloc::try_box(crate::sys::spool_file(path, true)?)?)
+    }
     /// Open an immutable internal artifact. Injectable for bounded read faults.
     fn open(&self, path: &Path) -> io::Result<Box<dyn std::io::Read + Send>> {
         let file = crate::sys::spool_file(path, false)?;

@@ -81,16 +81,34 @@ impl<'a> Cursor<'a> {
         cx: &super::Context<'_>,
         ordered: bool,
     ) -> Result<Self, Error> {
+        Self::read(
+            cx.workspace,
+            file,
+            order,
+            cx.account.meter(),
+            cx.stopped,
+            ordered,
+        )
+    }
+    /// Completed-stream reader independent of the selection context.
+    pub fn read(
+        workspace: &Workspace,
+        file: Option<&Sealed>,
+        order: &'a By,
+        meter: &std::sync::Arc<unityrs_core::limits::Meter>,
+        stopped: &dyn Fn() -> bool,
+        ordered: bool,
+    ) -> Result<Self, Error> {
         let reader = file
-            .map(|f| Reader::open(cx.workspace, f, order, cx.account.meter(), cx.stopped))
+            .map(|f| Reader::open(workspace, f, order, meter, stopped))
             .transpose()?;
         let mut out = Self {
             reader,
-            frame: Frame::new(cx.account.meter())?,
+            frame: Frame::new(meter)?,
             present: false,
             ordered,
         };
-        out.advance(cx.stopped)?;
+        out.advance(stopped)?;
         Ok(out)
     }
     pub fn advance(&mut self, stopped: &dyn Fn() -> bool) -> Result<(), Error> {

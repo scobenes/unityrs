@@ -143,6 +143,9 @@ impl Root {
         }
         Ok(file)
     }
+    pub(crate) fn matches_mount(&self, mount: Option<u64>) -> bool {
+        mount == self.mount
+    }
     pub(crate) fn file(&self) -> &File {
         &self.file
     }

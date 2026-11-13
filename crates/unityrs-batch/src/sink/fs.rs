@@ -11,8 +11,14 @@ pub trait FileSystem: Send + Sync {
     fn mount(&self, file: &File) -> io::Result<Option<u64>> {
         crate::sys::mount_id(file)
     }
+    fn entry(&self, parent: &File, name: &CStr) -> io::Result<crate::sys::Entry> {
+        crate::sys::rooted_entry(parent, name)
+    }
     fn open(&self, parent: &File, name: &CStr, flags: i32, beneath: bool) -> io::Result<File> {
         crate::sys::rooted_open(parent, name, flags, beneath)
+    }
+    fn reopen(&self, file: &File) -> io::Result<File> {
+        crate::sys::reopen_pinned(file)
     }
     fn mkdir(&self, parent: &File, name: &CStr) -> io::Result<()> {
         crate::sys::rooted_mkdir(parent, name)

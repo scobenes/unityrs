@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 /// The modules `lib.rs` lets hold `unsafe` code, by file.
-const ALLOWED: [&str; 2] = ["alloc.rs", "sys.rs"];
+const ALLOWED: [&str; 3] = ["alloc.rs", "sys.rs", "sys/entry.rs"];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap() {

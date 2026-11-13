@@ -324,17 +324,21 @@ fn independent_child_cannot_acquire_the_held_root_lock() {
     let scratch = Scratch::new("directory-lock");
     let owner = preflight(scratch.path(), 1, fs(true)).unwrap();
     let path = scratch.path().to_owned();
+    // B7a probe: libtest captures failed assertions in stdout. Keep the status
+    // and both streams so an unrelated child startup failure is diagnosable.
     let out = guard::finishes("independent root lock", move || {
         child::output(
             std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "root_lock_child"])
+                .args(["--exact", "root_lock_child", "--nocapture"])
                 .env("UNITYRS_ROOT_LOCK_PROBE", path),
         )
         .unwrap()
     });
     assert!(
         out.status.success(),
-        "{}",
+        "status={} stdout={} stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
     drop(owner);
@@ -352,7 +356,8 @@ fn root_lock_child() {
         fs(true),
         &mut vec![0; HEAD_LIMIT + 1],
     );
-    assert_eq!(result.err().unwrap().class, Class::OutputLocked);
+    let error = result.err().expect("child acquired the held root lock");
+    assert_eq!(error.class, Class::OutputLocked, "{error:?}");
 }
 
 #[test]

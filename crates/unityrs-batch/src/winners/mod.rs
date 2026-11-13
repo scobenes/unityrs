@@ -3,7 +3,7 @@
 pub mod archives;
 pub mod codec;
 pub mod committed;
-mod json;
+pub(crate) mod json;
 mod keys;
 pub mod layout;
 pub mod member;

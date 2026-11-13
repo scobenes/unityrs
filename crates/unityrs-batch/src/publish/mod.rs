@@ -1,0 +1,163 @@
+//! Cooperative serial blocking publication. The execution owner dispatches this
+//! seam on its existing pool; no task, path inventory or payload escapes it.
+mod local;
+pub mod payload;
+mod resume;
+use crate::{
+    outcomes::{Code, Outcomes},
+    phase::{self, Account, Error},
+    sink::directory::Directory,
+    spool::workspace::Workspace,
+    winners::{
+        self,
+        stream::{By, Cursor},
+    },
+};
+use std::sync::atomic::{AtomicBool, Ordering};
+use unityrs_core::limits::heap_cost;
+
+pub const BUFFER: usize = 16 * 1024 * 1024;
+pub const OVERHEAD: u64 = 1024 * 1024;
+/// Includes the buffer allocation's chunk header and every fixed reader/path.
+pub const WORKING_SET: u64 = 2 * OVERHEAD + heap_cost(16 * 1024 * 1024);
+#[derive(Default)]
+pub struct Gate(AtomicBool);
+// std's mutex can lazily allocate platform storage at its first lock. This
+// small non-reentrant mutex has no lazy heap, including on non-Linux hosts.
+struct Guard<'a>(&'a Gate);
+impl Drop for Guard<'_> {
+    fn drop(&mut self) {
+        self.0.0.store(false, Ordering::Release);
+    }
+}
+pub struct Frozen<'a> {
+    _guard: Guard<'a>,
+    pub outcomes: &'a Outcomes,
+}
+impl Gate {
+    fn lock(&self) -> Guard<'_> {
+        while self
+            .0
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        Guard(self)
+    }
+    pub fn freeze<'a>(&'a self, outcomes: &'a Outcomes) -> Result<Frozen<'a>, Error> {
+        Ok(Frozen {
+            _guard: self.lock(),
+            outcomes,
+        })
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Point {
+    Admission,
+    Resume,
+    /// Hashing has released its loan of the reusable driver buffer.
+    ResumeReleased,
+    Transfer,
+    Buffer,
+    BeforeCommit,
+    Authorized,
+    Outcome,
+    Drained,
+}
+/// Hooks run inside the audit and must not allocate. B9 adds process ownership.
+pub trait Hooks: Sync {
+    fn point(&self, _point: Point) {}
+}
+pub struct NoHooks;
+impl Hooks for NoHooks {}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Report {
+    pub written: u64,
+    pub present: u64,
+    pub failed: u64,
+}
+pub struct Context<'a> {
+    pub handoff: &'a winners::Handoff,
+    pub workspace: &'a Workspace,
+    pub payloads: &'a dyn payload::Payloads,
+    pub directory: &'a Directory,
+    pub outcomes: &'a Outcomes,
+    pub gate: &'a Gate,
+    pub account: &'a Account,
+    pub run_id: &'a str,
+    pub resume: bool,
+    pub stopped: &'a (dyn Fn() -> bool + Sync),
+    pub hooks: &'a dyn Hooks,
+}
+impl Context<'_> {
+    fn at(&self, point: Point) -> Result<(), Error> {
+        self.hooks.point(point);
+        phase::check(self.stopped)
+    }
+}
+/// No reservation is attempted while capacity is unavailable. Call again only
+/// after receiving work that releases capacity; busy is not an audited refusal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admission {
+    Busy,
+    Drained(Report),
+}
+pub fn drive(cx: &Context<'_>) -> Result<Admission, Error> {
+    phase::on_pool(|| cx.at(Point::Admission))?;
+    if cx.account.snapshot().input.used != 0 {
+        return Ok(Admission::Busy);
+    }
+    if !cx.account.admits(WORKING_SET) {
+        return Err(Error::internal());
+    }
+    cx.account.publication(|| run(cx)).map(Admission::Drained)
+}
+fn run(cx: &Context<'_>) -> Result<Report, Error> {
+    let _overhead = cx.account.meter().charge(OVERHEAD)?;
+    let mut report = Report::default();
+    if cx.handoff.publication_blocked {
+        cx.at(Point::Drained)?;
+        return Ok(report);
+    }
+    let mut winners = Cursor::read(
+        cx.workspace,
+        cx.handoff.winners.as_ref(),
+        &By::Key,
+        cx.account.meter(),
+        cx.stopped,
+        true,
+    )?;
+    let mut buffer = phase::Buffer::new(cx.account.meter(), BUFFER)?;
+    buffer.fill(0);
+    let mut index = 0;
+    while let Some(row) = winners.row()? {
+        if row.state != winners::State::Publish {
+            return Err(Error::internal());
+        }
+        let result = local::one(cx, row, index, &mut buffer);
+        match result {
+            Ok(Code::Written) => report.written += 1,
+            Ok(Code::Present) => report.present += 1,
+            Ok(Code::PublishFailed) => report.failed += 1,
+            Ok(_) => return Err(Error::internal()),
+            Err(e) => return Err(e),
+        }
+        index = index.checked_add(1).ok_or_else(Error::internal)?;
+        winners.advance(cx.stopped)?;
+    }
+    if index != cx.handoff.counts.winners {
+        return Err(Error::internal());
+    }
+    cx.at(Point::Drained)?;
+    Ok(report)
+}
+fn sink_error(e: crate::sink::Error) -> Error {
+    match e.class {
+        crate::sink::Class::HostMemory => Error::memory(),
+        crate::sink::Class::InvalidPath => Error::internal(),
+        _ => Error::Run(crate::job::RunFailure::new(
+            crate::attempt::ReasonCode::HostIo,
+        )),
+    }
+}

@@ -50,6 +50,14 @@ impl Faults {
         }
         Ok(())
     }
+    fn replace_resume(&self, point: &str) -> io::Result<()> {
+        let mut race = self.race.lock().unwrap();
+        if race.as_ref().is_some_and(|r| r.2 == point) {
+            let (from, to, _) = race.take().unwrap();
+            std::fs::rename(to, from)?;
+        }
+        Ok(())
+    }
 }
 impl FileSystem for Faults {
     fn release(&self) -> io::Result<(u32, u32)> {
@@ -62,6 +70,16 @@ impl FileSystem for Faults {
             || sys::beneath_probe(root),
             |n| Err(io::Error::from_raw_os_error(n)),
         )
+    }
+    fn entry(
+        &self,
+        parent: &std::fs::File,
+        name: &std::ffi::CStr,
+    ) -> std::io::Result<unityrs_batch::sys::Entry> {
+        let mut entry = unityrs_batch::sys::rooted_entry(parent, name)?;
+        entry.mount = self.mount(parent)?;
+        self.replace_resume("resume_checked")?;
+        Ok(entry)
     }
     fn mount(&self, file: &File) -> io::Result<Option<u64>> {
         self.point("mount")?;
@@ -84,6 +102,15 @@ impl FileSystem for Faults {
     }
     fn open(&self, dir: &File, name: &CStr, flags: i32, beneath: bool) -> io::Result<File> {
         self.point("open")?;
+        if name == c"key" && flags & libc::O_CREAT == 0 {
+            // A substituted device must never receive a readable pathname open.
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                flags & (libc::O_PATH | libc::O_NOFOLLOW),
+                libc::O_PATH | libc::O_NOFOLLOW
+            );
+            self.replace_resume("resume_open")?;
+        }
         if self.native_temp && name.to_bytes().starts_with(b".unityrs-tmp-") && !beneath {
             return Err(io::Error::from_raw_os_error(libc::EIO));
         }
@@ -110,6 +137,18 @@ impl FileSystem for Faults {
             let _ = beneath;
             sys::rooted_open(dir, name, flags, false)
         }
+    }
+    fn reopen(&self, file: &File) -> io::Result<File> {
+        self.point("reopen")?;
+        let mut race = self.race.lock().unwrap();
+        if race.as_ref().is_some_and(|r| r.2 == "resume_wrong_inode") {
+            return File::open(race.take().unwrap().1);
+        }
+        drop(race);
+        #[cfg(target_os = "linux")]
+        self.replace_resume("resume_checked")?;
+        self.replace_resume("resume_reopen")?;
+        sys::reopen_pinned(file)
     }
     fn mkdir(&self, dir: &File, name: &CStr) -> io::Result<()> {
         self.point("mkdir")?;

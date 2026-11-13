@@ -446,7 +446,10 @@ last, with checked offsets; a whole-record positional write is not assumed
 atomic. A missing winner byte is 0; a missing or partial 128-byte archive
 record is 0, not a partially advertised success. Other invalid codes are
 corrupt internal artifacts. Updates to an already claimed extent add no
-second claim. Directory archive ETags are null.
+second claim. An acknowledged archive's success metadata is immutable within
+this attempt: another success update is refused as an internal artifact error.
+Verification failure changes only the status byte, leaving the original metadata
+intact even if that status write fails. Directory archive ETags are null.
 
 ### 6.2 Start
 
@@ -568,7 +571,7 @@ supplies the bounded read buffer.
   After step 4, a winning unit withheld by propagation carries `unit_conflict`; losing instances keep their step-1 rule, and E61 units keep `withheld`. A directly refused plain candidate keeps its step-3 collision rule. Direct refusals retain their specific `unwritable_key` reason; propagation withholds the unit's other keys without promoting any loser or repeating the prefix pass.
 - **Diagnostics.** `same_named_cab`: a registry key (`simplify_name`, 4.3) that two or more bundles of the input's view hold in their top-level directories, one row per key, `bundle` the top-level holder 4.3 ranks highest (`X` when it holds the key, else the greatest id) and `name` the full directory path of that bundle's last top-level row with that key. `undeclared_dependency`: `bundle` null, `name` the `m_Dependencies` name (4.1). `nested_container`: an entry of the input's own bundle that is itself a bundle, met while selecting, `bundle` the input, `name` the entry's path.
 
-A reason is a code of section 9.3. A string taken from the bytes is cut to its first 1,024 bytes, at a code point boundary (an invalid byte counting as one code point, 2.2), and its row's `cut` is then true. A string that is not valid UTF-8 (a name, a CAB, an entry path, a reason's argument) is written with each invalid byte replaced by U+FFFD, so every line is UTF-8 JSON that any parser reads; its original bytes are not recoverable from the manifest, and two stored paths that agree after cutting and that replacement are not told apart. A row holds at most four strings of at most 1,024 bytes each (an id, a key or path, a cut string), each escaped to at most 6 bytes per byte, so every line is at most 32 KiB (`batch.md` 2.8). Apart from the figures the normalised comparison leaves out (timings, peaks, the host's, `extract.md` section 5), a manifest is a function of the run's records and outcomes; byte identity with another implementation is not a goal.
+A reason is a code of section 9.3. A string taken from the bytes is cut to its first 1,024 bytes, at a code point boundary (an invalid byte counting as one code point, 2.2), and its row's `cut` is then true. A string that is not valid UTF-8 (a name, a CAB, an entry path, a reason's argument) is written with each invalid byte replaced by U+FFFD, so every line is UTF-8 JSON that any parser reads; its original bytes are not recoverable from the manifest, and two stored paths that agree after cutting and that replacement are not told apart. A row holds at most four bounded strings (an id, a key or path, a cut string). The 1,024-byte source cut can expand to 3,072 UTF-8 bytes after repair; it is never reapplied to repaired text. Escaping takes at most six bytes per original source byte, so every final line remains at most 32 KiB (`batch.md` 2.8). Apart from the figures the normalised comparison leaves out (timings, peaks, the host's, `extract.md` section 5), a manifest is a function of the run's records and outcomes; byte identity with another implementation is not a goal.
 
 The local library controller (provisional until B7/B9) commits attempts in
 controller receipt order and barrier failures in bytewise input-id order;
@@ -640,9 +643,15 @@ Counts derived from a row file are zero when that file's `rows` entry is
 null. A final directory `syncfs` failure nulls every row entry and zeros all
 row-derived counts. Received run figures remain independent of publication
 success: the three diagnostic figures in `run` count logical received records,
-not successfully published diagnostic lines. Text is cut once by source-byte
+not successfully published diagnostic lines. A committed pre-dispatch failure
+has no attempt-end receipt; its failure-record flush is nevertheless included
+in `spooled_parts`, taken from its validated committed summary. Text is cut once by source-byte
 length, preserving inherited `cut`; repaired UTF-8 text is never cut again.
 The final line-bound tests must include invalid-byte-heavy source strings.
+The row assembler takes one frozen snapshot instant for dispatched `not_run`
+elapsed times; queued, never-dispatched inputs keep null reason and time.
+A family is acknowledged only after its last complete-line chunk. A failed later
+chunk nulls the entire family, including earlier physically written chunks.
 
 ### 7.4 The manifest at each phase
 
