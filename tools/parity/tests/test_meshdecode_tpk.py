@@ -12,14 +12,14 @@ against accidental writes and leaks, not code written to evade it (the module do
   `__import__` or `import_module` call included, with bytecode writes stopped before `import scratch`; a `--tp` run
   exits 2 (no abbreviation runs the pass without the hook).
 - **The real runs pass under it**: the cargo branch against a stub `cargo` (first on `PATH`, written by the case, no
-  build), which reads its standard input to its end and requires the fixture's 388 cases by name, the replay's argv,
+  build), which reads its standard input to its end and requires the fixture's 440 cases by name, the replay's argv,
   `UNITYRS_MESHDECODE_TPK_STDIN`, the checkout as its working folder, no `UNITYRS_MESHDECODE_TPK_VERBOSE` (the case
   sets it, the script clears it) and child.run's own per-run folder as its `UNITYRS_TEST_SCRATCH`, and prints the
   replay's count line, libtest's ok line and the core-dump limit it inherited (0). That run goes without `-B`, with
   `PYTHONPYCACHEPREFIX` an owned folder, which must hold no bytecode of this repository's modules after. The
   `--no-cargo` branch passes too, and so does a run handed no scratch folder (an empty `UNITYRS_TEST_SCRATCH`),
   whose per-run folder sits in the root the script makes itself (`scratch.own_root()`), in its `TMPDIR`.
-- **The stub's other modes fail the run**: `skip` (the ok line, no count line), `short` (`read 387`), `fail`
+- **The stub's other modes fail the run**: `skip` (the ok line, no count line), `short` (`read 439`), `fail`
   (`0 passed`), `exit` (the count and ok lines, exit 101) and `nook` (exit 0, the count line, no ok line), each with
   "--tpk: the crate's replay failed or did not run"; `kill` (the stub SIGKILLs itself, so child.run's second Popen is
   refused) with "was killed (SIGKILL)", and a `cargo` that cannot be executed with "could not run (PermissionError)"
@@ -227,8 +227,8 @@ class TheTpkPassWritesToNoPath(unittest.TestCase):
         ran = self.run_of("ok")
         self.assertEqual(ran.returncode, 0, said(ran))
         n = len(json.loads(FIXTURE.read_text())["cases"])
-        self.assertEqual(n, 388)
-        self.assertTrue(ran.stdout.startswith("--tpk: 388 cases on the TPK's trees, 0 outcomes differ\n"), said(ran))
+        self.assertEqual(n, 440)
+        self.assertTrue(ran.stdout.startswith("--tpk: 440 cases on the TPK's trees, 0 outcomes differ\n"), said(ran))
         self.assertTrue(f"read {n} cases from standard input\n" in ran.stdout, said(ran))
         self.assertTrue("test result: ok. 1 passed;" in ran.stdout, said(ran))
         self.assertTrue("stub cargo: core limit 0 0\n" in ran.stdout, said(ran))

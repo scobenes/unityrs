@@ -465,6 +465,18 @@ impl<'a> Obj<'a> {
         Ok(Some(n))
     }
 
+    /// The attribute `name`, a `float` (a `float` or `double` leaf, read as
+    /// Python reads it: a `float`'s bits widened as `struct`'s `f` widens
+    /// them, [`crate::unpack::widen`]).
+    pub(crate) fn float(&self, name: &'static str) -> Result<Option<f64>, MeshError> {
+        match self.get(name)? {
+            None => Ok(None),
+            Some((_, Value::F32(bits))) => Ok(Some(crate::unpack::widen(*bits))),
+            Some((_, Value::F64(bits))) => Ok(Some(f64::from_bits(*bits))),
+            Some(_) => Err(MeshError::malformed(format!("{name} is not a float"))),
+        }
+    }
+
     /// The attribute `name`, `bytes` (`TypelessData`).
     pub(crate) fn bytes(&self, name: &'static str) -> Result<Option<&'a [u8]>, MeshError> {
         match self.get(name)? {
@@ -679,6 +691,28 @@ impl<'a> Ints<'a> {
             },
             Self::Raw(b) => Ok(b.get(i).copied().unwrap_or(0)),
         }
+    }
+
+    /// Item `i` as `m_Data[i]` reads it (`helpers/PackedBitVector.py:56`):
+    /// `None` past the end, where Python raises `IndexError`; a value that
+    /// is no byte, which no typetree's `UInt8` holds, is `Malformed`.
+    pub(crate) fn item(&self, i: usize) -> Result<Option<u8>, MeshError> {
+        if i >= self.len() {
+            return Ok(None);
+        }
+        match self.byte(i) {
+            Ok(b) => Ok(Some(b)),
+            Err(MeshError::ByteRange) => {
+                Err(MeshError::malformed("m_Data holds a value past a byte"))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Whether Python holds it as `bytes`, whose index error reads "index
+    /// out of range", not a list's.
+    pub(crate) fn is_bytes(&self) -> bool {
+        matches!(self, Self::Raw(_))
     }
 
     /// The bytes themselves, where they need no check (a `U8` run, or

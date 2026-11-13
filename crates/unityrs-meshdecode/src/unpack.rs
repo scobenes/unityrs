@@ -35,7 +35,7 @@
 //! the half's sign and no payload ([`half`]). An oracle moved past Python
 //! 3.11 needs these checked again: 3.14 changes how `PyFloat_Unpack4`
 //! treats a NaN (gh-130317), which may change the bits [`widen`] matches
-//! (`PARITY.md` section 15.3's P2a notes). A format of
+//! (`PARITY.md` section 19.3's row on the mesh handler's later phases' parts). A format of
 //! no bytes (a dimension whose low four bits are 0) is `struct.error`
 //! "cannot iteratively unpack with a struct of length 0".
 //!
@@ -69,10 +69,7 @@ const _: () = crate::send_sync::<VertexArray>();
 ///
 /// Not `Clone`: the values are charged to the meter that `process` was
 /// given, for as long as the [`VertexArray`] holding them lives, and a copy
-/// would hold memory no charge covers. Non-exhaustive: P2a's
-/// `decompress_compressed_mesh` gives tuples that mix `int`s and `float`s
-/// (its zeros beside unpacked normals, tangents and bone weights), which a
-/// per-element mixed form will hold, flat in tuple order as these are.
+/// would hold memory no charge covers.
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
 pub enum Values {
@@ -80,6 +77,10 @@ pub enum Values {
     Float(Vec<f64>),
     /// `int`s (the integer codes; a skin's bone indices).
     Int(Vec<i64>),
+    /// Each value a `float` or an `int`, as Python holds it: a compressed
+    /// mesh's normals, tangents and bone weights, whose `zeros` are `int`s
+    /// beside the `float`s unpacked ([`crate::compressed`]).
+    Mixed(Vec<Component>),
 }
 
 const _: () = crate::send_sync::<Values>();
@@ -107,8 +108,20 @@ impl VertexArray {
         let n = match &self.values {
             Values::Float(v) => v.len(),
             Values::Int(v) => v.len(),
+            Values::Mixed(v) => v.len(),
         };
         n.checked_div(self.dimension).unwrap_or(0)
+    }
+
+    /// The number of tuples, a last one cut short counted: Python's
+    /// `len()` of `reshape`'s list.
+    pub(crate) fn tuples(&self) -> usize {
+        let n = match &self.values {
+            Values::Float(v) => v.len(),
+            Values::Int(v) => v.len(),
+            Values::Mixed(v) => v.len(),
+        };
+        n.div_ceil(self.dimension.max(1))
     }
 
     /// Whether it holds no tuple.
@@ -136,6 +149,7 @@ impl VertexArray {
         match &self.values {
             Values::Float(v) => v.get(at).copied().map(Component::Float),
             Values::Int(v) => v.get(at).copied().map(Component::Int),
+            Values::Mixed(v) => v.get(at).copied(),
         }
     }
 }

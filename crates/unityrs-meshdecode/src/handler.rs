@@ -1,4 +1,4 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/MeshHelper.py's MeshHandler (its constructor, process, copy_from_mesh, copy_from_spriterenderdata, and decompress_compressed_mesh's gates), with export/SpriteHelper.py's read of a Sprite's m_RD. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/MeshHelper.py's MeshHandler (its constructor, process, copy_from_mesh and copy_from_spriterenderdata), with export/SpriteHelper.py's read of a Sprite's m_RD. See THIRD_PARTY_LICENSES.
 //! `MeshHandler`: a Mesh's, or a sprite's render data's, vertex arrays and
 //! index buffer (`process`, `helpers/MeshHelper.py:110-195`), and its
 //! triangles ([`Processed::get_triangles`]).
@@ -25,17 +25,10 @@
 //! 4. The index buffer, when non-empty: `bytes()` of the list, unpacked as
 //!    `H` or `I` (`MeshHelper.py:174-186`).
 //! 5. The vertex data (`MeshHelper.py:188-189`, [`crate::vertex`]).
-//! 6. A Mesh's compressed mesh (`MeshHelper.py:191-192`), P2a: a `CompressedMesh` from
-//!    which `decompress_compressed_mesh` unpacks nothing sets the vertex
-//!    count and nothing else (`:468-628`), which this does; one it would
-//!    unpack from is [`Unsupported::CompressedMesh`], naming the first
-//!    array it would unpack, in its order. Each array is tested by its
-//!    `m_NumItems`, and `m_UV`'s by `m_UVInfo` besides (`:482-506`): with
-//!    a non-zero `m_UVInfo`, only a channel whose four bits hold
-//!    `kUVChannelExists` (4) unpacks, so one whose every channel lacks it
-//!    unpacks nothing; a zero one, or `None` on a built `CompressedMesh`
-//!    (the field's default), always unpacks `m_UV0`, while one absent from
-//!    an `UnknownObject` raises `AttributeError` when it is read, first.
+//! 6. A Mesh's compressed mesh (`MeshHelper.py:191-192`,
+//!    [`crate::compressed`]): the vertex count, always, and each array it
+//!    holds, over the vertex data's; its triangles' indices replace the
+//!    index buffer.
 //! 7. The vertex count, when 0, from the positions (`MeshHelper.py:194-195`).
 //!
 //! **What differs from UnityPy's object: the handler changes nothing it
@@ -62,13 +55,14 @@ use unityrs_core::limits::{Charge, Meter, MeteredVec};
 use unityrs_core::{Bytes, Parsed, RawStr, SerializedFile};
 
 use crate::Version;
+use crate::compressed::decompress_compressed_mesh;
 use crate::error::{MeshError, StructError, Unsupported};
 use crate::triangles::{Triangles, get_triangles};
 use crate::unpack::{Values, VertexArray, widen};
 use crate::vertex::{Attributes, Streams, VertexData, field, get_streams, read_vertex_data};
 use crate::view::{
-    BONE_WEIGHTS, CHANNEL_INFO, COMPRESSED_MESH, Ints, List, MESH, Obj, PACKED_BIT_VECTOR, SPRITE,
-    SPRITE_RENDER_DATA, STREAM_INFO, STREAMING_INFO, VERTEX_DATA,
+    BONE_WEIGHTS, CHANNEL_INFO, Ints, List, MESH, Obj, SPRITE, SPRITE_RENDER_DATA, STREAM_INFO,
+    STREAMING_INFO, VERTEX_DATA,
 };
 use unityrs_core::Value;
 
@@ -245,7 +239,7 @@ impl<'a> MeshHandler<'a> {
         };
 
         // UnityPy MeshHelper.py:174-186
-        let index_buffer = match index {
+        let mut index_buffer = match index {
             Some(ints) => Some(unpack_indices(ints, use_16bit, meter)?),
             None => None,
         };
@@ -273,14 +267,21 @@ impl<'a> MeshHandler<'a> {
 
         // UnityPy MeshHelper.py:191-192
         if self.src.is_mesh(&mesh) && version.at_least(&[2, 6])? {
-            vertex_count = decompress_compressed_mesh(version, &mesh)?;
+            let done = decompress_compressed_mesh(version, &mesh, &mut attrs, meter)?;
+            vertex_count = done.vertex_count;
+            if let Some((values, charge)) = done.triangles {
+                index_buffer = Some(IndexBuffer {
+                    values,
+                    _charge: charge,
+                });
+            }
         }
 
         // UnityPy MeshHelper.py:194-195
         if vertex_count == 0
-            && let Some(v) = attrs.vertices.as_ref().filter(|v| !v.is_empty())
+            && let Some(v) = attrs.vertices.as_ref().filter(|v| v.tuples() > 0)
         {
-            vertex_count = u64::try_from(v.len()).unwrap_or(u64::MAX);
+            vertex_count = u64::try_from(v.tuples()).unwrap_or(u64::MAX);
         }
 
         Ok(Processed {
@@ -507,69 +508,6 @@ fn unpack_indices(
     })
 }
 
-/// `decompress_compressed_mesh()`'s gates (`helpers/MeshHelper.py:468-628`):
-/// the vertex count it sets, `m_Vertices.m_NumItems // 3`, where it would
-/// unpack nothing; [`Unsupported::CompressedMesh`] at the first array it
-/// would unpack (P2a, module docs).
-fn decompress_compressed_mesh(version: Version, mesh: &Obj<'_>) -> Result<u64, MeshError> {
-    let cm = mesh
-        .class("m_CompressedMesh", &COMPRESSED_MESH)?
-        .ok_or_else(|| MeshError::malformed("m_CompressedMesh is None"))?;
-    let num = |name: &'static str| -> Result<u64, MeshError> {
-        let v = cm
-            .class(name, &PACKED_BIT_VECTOR)?
-            .ok_or(MeshError::NoAttribute(name))?;
-        field(&v, "m_NumItems", u64::from(u32::MAX))
-    };
-    // `x and x.m_NumItems > 0` of an optional vector.
-    let optional = |name: &'static str| -> Result<u64, MeshError> {
-        match cm.class(name, &PACKED_BIT_VECTOR)? {
-            Some(v) => field(&v, "m_NumItems", u64::from(u32::MAX)),
-            None => Ok(0),
-        }
-    };
-    let held = |name: &'static str, n: u64| {
-        if n > 0 {
-            Err(MeshError::Unsupported(Unsupported::CompressedMesh(name)))
-        } else {
-            Ok(())
-        }
-    };
-    // UnityPy MeshHelper.py:476-479
-    let vertices = num("m_Vertices")?;
-    let count = vertices / 3;
-    held("m_Vertices", vertices)?;
-    // UnityPy MeshHelper.py:482-506: with a non-zero `m_UVInfo`, a channel
-    // unpacks only where its four bits hold `kUVChannelExists`.
-    if num("m_UV")? > 0 {
-        let unpacks = match cm.uint("m_UVInfo", u64::from(u32::MAX))? {
-            Some(info) if info != 0 => (0..8).any(|ch| (info >> (4 * ch)) & 4 != 0),
-            _ => true,
-        };
-        held("m_UV", u64::from(unpacks))?;
-    }
-    // UnityPy MeshHelper.py:516-518
-    let major = version.major()?;
-    if major < 5 {
-        held("m_BindPoses", optional("m_BindPoses")?)?;
-    }
-    // UnityPy MeshHelper.py:528
-    held("m_Normals", num("m_Normals")?)?;
-    // UnityPy MeshHelper.py:547
-    held("m_Tangents", num("m_Tangents")?)?;
-    // UnityPy MeshHelper.py:568-570
-    if major >= 5 {
-        held("m_FloatColors", optional("m_FloatColors")?)?;
-    }
-    // UnityPy MeshHelper.py:573
-    held("m_Weights", num("m_Weights")?)?;
-    // UnityPy MeshHelper.py:615
-    held("m_Triangles", num("m_Triangles")?)?;
-    // UnityPy MeshHelper.py:618
-    held("m_Colors", optional("m_Colors")?)?;
-    Ok(count)
-}
-
 /// The unpacked index buffer (`m_IndexBuffer` after `process`).
 #[derive(Debug)]
 pub struct IndexBuffer {
@@ -661,6 +599,16 @@ impl Processed<'_> {
     #[must_use]
     pub fn bone_indices(&self) -> Option<&VertexArray> {
         self.attrs.bone_indices.as_ref()
+    }
+
+    /// `m_BindPose`, which a compressed mesh below 5 sets: each matrix's
+    /// 16 `float`s flat, row by row, so a tuple of 16 (UnityPy's
+    /// `reshape(shape=(4, 4))` gives each as four rows of 4, the last
+    /// matrix's rows cut short, then empty, where the count is no multiple
+    /// of 16).
+    #[must_use]
+    pub fn bind_pose(&self) -> Option<&VertexArray> {
+        self.attrs.bind_pose.as_ref()
     }
 
     /// `get_triangles()` ([`crate::triangles`]): the triangles charged to

@@ -9,7 +9,9 @@
 //! more each (`element_field_cases`), N and M of 4 and 32, which part each
 //! count plays: an element's unit, the fields its reads scan, and its
 //! class's build; and arrays of N (`array_scale_cases`), N of 4, 32 and 256,
-//! whose loops' counts grow by exactly their documented units.
+//! whose loops' counts grow by exactly their documented units, as do a
+//! compressed mesh's (`tools/fixtures/meshdecode_compressed.py`'s
+//! `scale_cases`).
 
 use std::sync::Arc;
 
@@ -255,6 +257,16 @@ fn each_array_counts_its_units_exactly() {
     grows("vertices_float", &|n| n * 3 * 4);
     grows("vertices_int", &|n| n * 4);
     grows("channels_2019", &|n| n * (1 + 1 + CHANNEL_READS * 2 * 4));
+    // A compressed mesh of N vertices' positions, N normals and N signs: a
+    // unit an item unpacked and a unit a float made of one (3N positions,
+    // 2N normal components), a unit a sign, a unit a zero of the 3N, and a
+    // unit a normal.
+    let [few, more, most] = [4, 32, 256].map(|n| work(&body, &format!("compressed_scale_{n}")));
+    assert_eq!(
+        (more - few, most - more),
+        (15 * 28, 15 * 224),
+        "compressed: {few} {more} {most}"
+    );
     for n in [4u32, 32, 256] {
         let data = vec![0u8; 12 * n as usize];
         let args = Gather {

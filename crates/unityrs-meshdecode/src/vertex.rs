@@ -79,6 +79,8 @@ pub(crate) struct Attributes {
     pub(crate) uv: [Option<VertexArray>; 8],
     pub(crate) bone_weights: Option<VertexArray>,
     pub(crate) bone_indices: Option<VertexArray>,
+    /// `m_BindPose`, which only `decompress_compressed_mesh` sets.
+    pub(crate) bind_pose: Option<VertexArray>,
 }
 
 /// A required integer field: absent only on an `UnknownObject`, which

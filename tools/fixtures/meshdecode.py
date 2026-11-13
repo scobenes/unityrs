@@ -31,12 +31,16 @@ f64 bits in hex, an int as itself), with the `get_resource_data` call `m_StreamD
 each submesh's list (its whole tuples, the one a buffer cut short and the count of empty ones, which is the shape
 a triangle list's slices take, checked here) and each submesh's `indexCount` after the call; for the second
 `process` (`again`), whether it left what the first did (`same`, `differs`), or its exception; or the exception,
-its class's `__name__` and message. Four parts of `MeshHandler` are later phases', and the crate returns
-`Unsupported` where UnityPy begins them; the script makes each raise a marker there and records `{"p2a": kind}`:
-`get_channels` (below 4, P4), the first `unpack_floats` or `unpack_ints` of `decompress_compressed_mesh` (the
-compressed mesh's arrays, by field), and the reads of a Mesh's own arrays and of a render data's `vertices` that
-begin `copy_from_mesh`'s and `copy_from_spriterenderdata`'s copies (each field read through a property that
-raises where the field is non-empty and the handler's own is unset); every other line is UnityPy's own.
+its class's `__name__` and message. A `process` that sets bind poses records them too (`m_BindPose`, each matrix
+its rows). Three parts of `MeshHandler` are later phases', and the crate returns `Unsupported` where UnityPy
+begins them; the script makes each raise a marker there and records `{"p2a": kind}`: `get_channels` (below 4, P4),
+and the reads of a Mesh's own arrays and of a render data's `vertices` that begin `copy_from_mesh`'s and
+`copy_from_spriterenderdata`'s copies (each field read through a property that raises where the field is non-empty
+and the handler's own is unset); every other line is UnityPy's own. Each case's `process` is run once more with
+`decompress_compressed_mesh` corrected: UnityPy's own source with PARITY.md section 19.1's two Tier C rows fixed in
+it (`FIXES`, the UV offset added, not assigned, and the fourth bone weight `(31 - sum) / 31`, not `1 - sum`), each
+line replaced exactly once, compiled in memory; where that answer differs, the case records it as `corrected`, the
+answer unityrs gives, and the crate's replay names each such case in its expected-divergence mask.
 
 **--tpk.** The same cases on UnityPy's own TPK trees (`Tpk.get_typetree_node`) in place of the hand-built ones, at
 run time. Nothing derived from a TPK may be committed (docs/plans/core.md section 9, Q2), so the TPK's trees and
@@ -215,8 +219,10 @@ if TPK:
 
 import argparse  # noqa: E402
 import hashlib  # noqa: E402
+import inspect  # noqa: E402
 import json  # noqa: E402
 import struct  # noqa: E402
+import textwrap  # noqa: E402
 import traceback  # noqa: E402
 from contextlib import ExitStack  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
@@ -239,8 +245,11 @@ from meshdecode_cases import cases  # noqa: E402
 
 ATTRS = ["m_Vertices", "m_Normals", "m_Tangents", "m_Colors", *[f"m_UV{i}" for i in range(8)], "m_BoneWeights",
          "m_BoneIndices"]  # fmt: skip
-COMPRESSED = ["m_Vertices", "m_UV", "m_BindPoses", "m_Normals", "m_NormalSigns", "m_Tangents", "m_TangentSigns",
-              "m_FloatColors", "m_Weights", "m_BoneIndices", "m_Triangles", "m_Colors"]  # fmt: skip
+# PARITY.md section 19.1's Tier C rows on decompress_compressed_mesh, as UnityPy's line and its correction.
+FIXES = (
+    ("uvSrcOffset = uvDim * m_VertexCount", "uvSrcOffset += uvDim * m_VertexCount"),
+    ("boneWeights[vertexIndex][j] = 1 - sum", "boneWeights[vertexIndex][j] = (31 - sum) / 31"),
+)
 # A Mesh's own arrays, and the handler field copy_from_mesh fills from each (helpers/MeshHelper.py:206-224).
 OWN = {"m_Vertices": "m_Vertices", "m_Normals": "m_Normals", "m_Tangents": "m_Tangents", "m_UV": "m_UV0",
        "m_UV1": "m_UV1", "m_Colors": "m_Colors"}  # fmt: skip
@@ -379,9 +388,26 @@ def triangles_shape(tris) -> dict:
     return {"tri": whole, "cut": cut, "empty": len(empty)}
 
 
+def corrected():
+    """`decompress_compressed_mesh` with `FIXES` made in UnityPy's own source (module docs), compiled in memory."""
+    source = textwrap.dedent(inspect.getsource(MeshHelper.MeshHandler.decompress_compressed_mesh))
+    for wrong, right in FIXES:
+        assert source.count(wrong) == 1, wrong
+        source = source.replace(wrong, right)
+    space: dict = {}
+    exec(compile(source, "<decompress_compressed_mesh, corrected>", "exec"), vars(MeshHelper), space)  # noqa: S102
+    return space["decompress_compressed_mesh"]
+
+
+CORRECTED = corrected()
+
+
 def left(handler) -> dict:
     """What `process` left on the handler."""
     attrs = {name: [[num(c) for c in t] for t in getattr(handler, name)] for name in ATTRS if getattr(handler, name) is not None}
+    poses = getattr(handler, "m_BindPose", None)
+    if poses is not None:
+        attrs["m_BindPose"] = [[[num(c) for c in row] for row in m] for m in poses]
     index = handler.m_IndexBuffer
     return {
         "vertex_count": handler.m_VertexCount,
@@ -408,35 +434,45 @@ def run(case: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         return {"process": err(e)}
 
-    def floats(packed, *a, **k):
-        cm = src.m_CompressedMesh
-        raise Marker("compressed:" + next(n for n in COMPRESSED if getattr(cm, n, None) is packed))
-
     def fixed(self, streams):
         raise Marker("fixed_channels")
 
     version = UnityVersion.from_list(*case["version"])
-    handler = MeshHelper.MeshHandler(src, version, case["endian"])
-    marks = [marking(Mesh, field, attr, f"mesh_array:{field}", handler) for field, attr in OWN.items()]
-    marks.append(marking(SpriteRenderData, "vertices", "m_Vertices", "sprite_vertices", handler))
-    patches = [
-        mock.patch.object(MeshHelper, "get_resource_data", resource),
-        mock.patch.object(MeshHelper, "unpack_floats", floats),
-        mock.patch.object(MeshHelper, "unpack_ints", floats),
-        mock.patch.object(MeshHelper.MeshHandler, "get_channels", fixed),
-        *marks,
-    ]
-    with ExitStack() as stack:
-        for p in patches:
+
+    def patched(handler, *more):
+        """The marks and mocks a run of `handler` goes under."""
+        marks = [marking(Mesh, field, attr, f"mesh_array:{field}", handler) for field, attr in OWN.items()]
+        marks.append(marking(SpriteRenderData, "vertices", "m_Vertices", "sprite_vertices", handler))
+        stack = ExitStack()
+        for p in (mock.patch.object(MeshHelper, "get_resource_data", resource),
+                  mock.patch.object(MeshHelper.MeshHandler, "get_channels", fixed), *marks, *more):  # fmt: skip
             stack.enter_context(p)
+        return stack
+
+    def first_process(handler) -> dict:
+        """`handler.process()`'s outcome, with the resource call it made."""
+        del calls[:]
         try:
             handler.process()
         except Marker as m:
-            return {"process": {"p2a": m.kind}}
+            return {"p2a": m.kind}
         except Exception as e:  # noqa: BLE001
-            return {"process": err(e)}
+            return err(e)
+        return {"ok": {**left(handler), "resource_call": calls[0] if calls else None}}
+
+    # PARITY.md section 19.1: the answer with UnityPy's two Tier C lines corrected, recorded where it differs.
+    fixed_handler = MeshHelper.MeshHandler(src, version, case["endian"])
+    with patched(fixed_handler, mock.patch.object(MeshHelper.MeshHandler, "decompress_compressed_mesh", CORRECTED)):
+        fixed_outcome = first_process(fixed_handler)
+
+    handler = MeshHelper.MeshHandler(src, version, case["endian"])
+    with patched(handler):
+        out["process"] = first_process(handler)
+        if fixed_outcome != out["process"]:
+            out["corrected"] = fixed_outcome
+        if "ok" not in out["process"]:
+            return out
         first = left(handler)
-        out["process"] = {"ok": {**first, "resource_call": calls[0] if calls else None}}
         try:
             tris = handler.get_triangles()
         except Exception as e:  # noqa: BLE001
@@ -514,7 +550,7 @@ def dump(body: dict) -> str:
 
 # --- --tpk
 
-OUTCOMES = ("process", "triangles", "again")
+OUTCOMES = ("process", "corrected", "triangles", "again")
 
 
 def types(rows: list[list]) -> dict[tuple, str]:
