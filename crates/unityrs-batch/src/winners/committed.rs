@@ -13,7 +13,7 @@ use std::{
 pub struct Committed<'a> {
     done: &'a Path,
     states: &'a [InputState],
-    failures: &'a [bool],
+    failures: Option<&'a [bool]>,
     fs: &'a dyn FileSystem,
 }
 impl<'a> Committed<'a> {
@@ -38,7 +38,41 @@ impl<'a> Committed<'a> {
         Ok(Self {
             done,
             states,
-            failures,
+            failures: Some(failures),
+            fs,
+        })
+    }
+    /// Uses only received terminal state and the controller's commit fact.
+    /// No post-extraction table and no filesystem-based failure inference.
+    pub fn received(
+        done: &'a Path,
+        states: &'a [InputState],
+        fs: &'a dyn FileSystem,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Self, Error> {
+        for state in states {
+            check(stopped)?;
+            if state.phase != InputPhase::Committed {
+                continue;
+            }
+            if state.committed.is_none()
+                || (state.failure_bundle.is_none() && state.received.is_none())
+            {
+                return Err(Error::internal());
+            }
+            if state.received.is_some_and(|r| {
+                !matches!(
+                    r.state,
+                    crate::attempt::State::Done | crate::attempt::State::Failed
+                )
+            }) {
+                return Err(Error::internal());
+            }
+        }
+        Ok(Self {
+            done,
+            states,
+            failures: None,
             fs,
         })
     }
@@ -89,9 +123,14 @@ impl super::Inputs for Committed<'_> {
         Ok(self.fs.open(&self.path(input)?)?)
     }
     fn failed(&self, input: u32) -> Result<bool, Error> {
-        self.failures
-            .get(self.index(input)?)
-            .copied()
-            .ok_or_else(Error::internal)
+        let index = self.index(input)?;
+        if let Some(failures) = self.failures {
+            return failures.get(index).copied().ok_or_else(Error::internal);
+        }
+        let state = self.states.get(index).ok_or_else(Error::internal)?;
+        Ok(state.failure_bundle.is_some()
+            || state
+                .received
+                .is_some_and(|r| r.state == crate::attempt::State::Failed))
     }
 }

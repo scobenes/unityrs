@@ -62,9 +62,29 @@ pub fn check(stopped: &dyn Fn() -> bool) -> Result<(), Error> {
     }
 }
 
+/// Run on the thread performing the blocking work, including pool callbacks.
+/// Thread-local refusals cannot be audited by the receiving controller alone.
+pub fn on_pool<T>(body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+    let before = crate::alloc::refusals();
+    let mut result =
+        catch_unwind(AssertUnwindSafe(body)).unwrap_or_else(|_| Err(Error::internal()));
+    let mut failure = match result.as_ref().err() {
+        Some(Error::Run(f)) => Some(*f),
+        _ => None,
+    };
+    if crate::alloc::refusals() != before {
+        RunFailure::reduce(&mut failure, RunFailure::new(ReasonCode::HostMemory));
+    }
+    if let Some(failure) = failure {
+        result = Err(Error::Run(failure));
+    }
+    result
+}
+
 pub struct Account {
     budget: Arc<SealedBudget>,
     meter: Arc<Meter>,
+    limit: u64,
 }
 impl Account {
     /// `limit` is the run's `I`; small values support refusal tests.
@@ -72,7 +92,11 @@ impl Account {
     pub fn new(limit: u64) -> Self {
         let budget = Arc::new(SealedBudget::input_only(limit));
         let meter = Meter::new(limit, budget.clone(), Reservation::Input);
-        Self { budget, meter }
+        Self {
+            budget,
+            meter,
+            limit,
+        }
     }
     #[must_use]
     pub fn meter(&self) -> &Arc<Meter> {
@@ -87,29 +111,48 @@ impl Account {
     /// workspace outside the unwind boundary. `T` must contain only a fixed
     /// handoff, never scratch allocations or permits. No thread is started.
     pub fn execute<T>(&self, body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
-        self.audit(0, body)
+        self.audit(0, WORKING_SET, body)
     }
     /// A sort borrows a charged source that can remain live between passes.
     /// The complete phase driver uses `execute` for the final zero audit.
     pub(crate) fn scoped<T>(&self, body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
-        self.audit(self.snapshot().input.used, body)
+        self.audit(self.snapshot().input.used, WORKING_SET, body)
     }
-    fn audit<T>(&self, expected: u64, body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
-        let before = crate::alloc::refusals();
-        let mut result =
-            catch_unwind(AssertUnwindSafe(body)).unwrap_or_else(|_| Err(Error::internal()));
+    /// Publication is a serial blocking-task boundary. Invoke on the pool
+    /// thread itself so its allocator refusals are included in this audit.
+    pub fn publication<T>(&self, body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+        self.audit(0, self.limit, body)
+    }
+    /// Scheduler capacity check, before attempting a meter reservation. A
+    /// busy account is not an allocation refusal. Caller retries after receipt.
+    #[must_use]
+    pub fn admits(&self, bytes: u64) -> bool {
+        self.snapshot()
+            .input
+            .used
+            .checked_add(bytes)
+            .is_some_and(|n| n <= self.limit)
+    }
+    #[must_use]
+    pub const fn limit(&self) -> u64 {
+        self.limit
+    }
+    fn audit<T>(
+        &self,
+        expected: u64,
+        bound: u64,
+        body: impl FnOnce() -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let mut result = on_pool(body);
         let snapshot = self.snapshot();
         let mut failure = match result.as_ref().err() {
             Some(Error::Run(f)) => Some(*f),
             _ => None,
         };
-        if crate::alloc::refusals() != before {
-            RunFailure::reduce(&mut failure, RunFailure::new(ReasonCode::HostMemory));
-        }
         if snapshot.input.used != expected
             || snapshot.dependency.used != 0
             || snapshot.refusals() != 0
-            || snapshot.input.peak > WORKING_SET
+            || snapshot.input.peak > bound
         {
             RunFailure::reduce(&mut failure, RunFailure::new(ReasonCode::Internal));
         }

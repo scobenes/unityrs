@@ -6,7 +6,7 @@ use crate::{
 };
 use std::fmt::{self, Write};
 
-pub(super) struct Json {
+pub(crate) struct Json {
     bytes: Buffer<u8>,
     failed: Option<Error>,
 }
@@ -61,6 +61,24 @@ impl Json {
             self.bytes.push(b'"')
         } else {
             self.bytes.extend(b"null")
+        }
+    }
+    /// Numeric/static reason formatting only; arbitrary text uses `text`.
+    pub(crate) fn display_text(
+        &mut self,
+        name: &str,
+        value: impl fmt::Display,
+    ) -> Result<(), Error> {
+        self.field(name)?;
+        self.bytes.push(b'"')?;
+        write!(self, "{value}").map_err(|_| self.failed.take().unwrap_or_else(Error::internal))?;
+        self.bytes.push(b'"')
+    }
+    pub(crate) fn optional(&mut self, name: &str, value: Option<u64>) -> Result<(), Error> {
+        if let Some(n) = value {
+            self.value(name, n)
+        } else {
+            self.text(name, None)
         }
     }
     pub fn end(&mut self) -> Result<&[u8], Error> {

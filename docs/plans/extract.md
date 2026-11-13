@@ -99,6 +99,11 @@ Levels: L9.
   - Each of these checks runs once, so phase 6 decides them in bounded memory (`docs/plans/batch.md` 2.9): a key a withheld unit claimed stays reserved.
 - **E33.** "Pixels differ" means a different visible hash (E20). A collision whose candidates share a visible hash is reported, but not as a pixel difference.
 - **E34.** The winners hold candidates until every input that can produce a key has run: a sink that holds output across jobs. `docs/plans/batch.md` 3.5's model allows it: candidates are copied out to the spool, and winners are decided after extraction, as a pure function of the committed records.
+  B7b supplies numeric committed payload access, accounted positional outcomes,
+  and eight bounded row streams. Its serial publication peak has a separate
+  bound in `batch.md` 5.1; the phase-6 40 MiB audit is unchanged. The disk ledger
+  in 2.9 includes outcomes under `6S + 2A`, with `A` at encoded key length.
+
 - **E60.** All or nothing per input. An input that fails commits no candidate and competes for no key. Only its failure record reaches the manifest.
 - **E61.** Withholding. A key whose `prefer` entry names an input that failed in this run is not published (`withheld`). Its rule-2 or rule-3 winner could otherwise overwrite what the next complete run publishes. A key with no such entry is published, even when a failed input might have won it by rule 3: a choice, since withholding every key a failed input could produce would withhold most of a run for one failure. A spec option `publish_incomplete` (default `true`) set to `false` publishes nothing when any input failed: every winner and every archive with a member is `withheld` (`publish_incomplete`), and neither resume nor verification runs (`docs/BATCH_SPEC.md` 7.3).
 
@@ -151,6 +156,11 @@ Levels: L9, with a test that runs every sink with known credentials, signed URLs
 ### 1.11 Resume and idempotence
 
 - **E43.** A re-run with resume LISTs the output root once, at phase 7's start, and skips a PUT whose key already holds the same MD5 (an archive's, or a file's over 16 MiB: its expected multipart ETag at 16 MiB parts, which for an archive takes a first pass over its bytes), marking it `present`. The LIST is merged with the sorted winners one page at a time, so its memory does not grow with the store (`docs/plans/batch.md` 2.9). A LIST that fails, for example on a foreign key `object_store` cannot parse (section 3, item 1), degrades resume to "PUT everything" with the warning `resume_list_failed`; it does not fail the run. In a directory, resume opens the destination's parent beneath the root (E62), then `statx`es the last component from it with `AT_SYMLINK_NOFOLLOW`, so a crossing is located, and hashes the destination, opened from the parent, only when that shows a regular file of the output's size on the root's mount; anything else, a symlink among them, is not `present`, as are a mount crossing at the destination itself, whose transfer then meets E62's `EBUSY` (4), and one resume cannot open or hash, short of an I/O error (`EIO`, 74).
+  B7b's library seam implements directory whole-file resume through the same
+  admission envelope as transfer, with a miss transferred before the next key.
+  It does not reuse extraction or spool artifacts. Concurrent scheduling and
+  normal finishing are integration work; archive execution remains unavailable.
+
 - **E44.** Every input is still read and decoded, so winners, archives and the manifest cover the whole job. There is no partial ("narrowed") re-run.
 
 Levels: L9: a run killed at each progress line, then resumed, writes the same keys and bytes under the root, `_unityrs/` and `.unityrs-tmp-*` entries aside, as an uninterrupted run, and leaves no open multipart upload.

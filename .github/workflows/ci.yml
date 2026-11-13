@@ -94,11 +94,12 @@ jobs:
           persist-credentials: false
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - name: Test, phase 6 and archives at scale (release)
+      - name: Test, phase 6, publication and archives at scale (release)
         run: >-
           cargo test --locked --release -p unityrs-batch
           --test winners_scale --test members_scale
           --test archive_alloc --test archive_bytes --test archive_digest
+          --test publication_alloc --test phase6_ledger
           -- --include-ignored
 
   licenses:

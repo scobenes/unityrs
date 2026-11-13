@@ -54,3 +54,45 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod publication {
+    fn rounded(n: u64, b: u64) -> u64 {
+        n.div_ceil(b) * b
+    }
+    #[test]
+    fn outcomes_keep_the_archive_and_retained_handoff_allowances() {
+        for raw in 1..=1024_u64 {
+            for encoded in [raw, 2 * raw] {
+                for block in (1..=2 * encoded + 1024).chain([5003, 65_536, 1_000_003]) {
+                    let allowance = rounded(encoded + 512, block);
+                    // Adds the complete128-byte outcome to the archive/list proof.
+                    assert!(
+                        encoded + raw + 192 + 67 + 16 + block - 1 + 128 <= 2 * allowance + encoded
+                    );
+                }
+            }
+        }
+        for block in (1..=8192_u64).chain([65_536, 1_000_003, 1 << 30]) {
+            let ratio = if block < 4096 && 4096 % block != 0 {
+                2
+            } else {
+                block.div_ceil(4096).max(1)
+            };
+            for candidates in [1, 2, 256, 100_000, 1_000_000] {
+                for width in [256, 6277, 32_768] {
+                    let records = candidates * width;
+                    for members in [0, 160, 1 << 20, 1 << 40] {
+                        let size =
+                            ratio * (rounded(records + 256, 4096) + 4096 * candidates + members);
+                        assert!(
+                            3 * records + 65 * candidates + 3 * members + 8 * block + 128
+                                <= 6 * size
+                        );
+                    }
+                }
+            }
+            assert!(3 * block + 16 <= 6 * 4096 * ratio);
+        }
+    }
+}

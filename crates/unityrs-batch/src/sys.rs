@@ -154,14 +154,15 @@ pub fn available_bytes(path: &std::path::Path) -> io::Result<u64> {
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
 }
 
-/// The spool's exclusive create or no-follow read, with fallible path storage.
+/// The spool's exclusive read/write create (also for positional outcomes) or
+/// no-follow immutable read, with fallible path storage.
 pub(crate) fn spool_file(path: &std::path::Path, create: bool) -> io::Result<std::fs::File> {
     use std::os::fd::FromRawFd;
     let path = terminated_path(path)?;
     let flags = libc::O_NOFOLLOW
         | libc::O_CLOEXEC
         | if create {
-            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL
         } else {
             libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOCTTY
         };
@@ -492,29 +493,6 @@ pub fn rooted_open(
     // SAFETY: successful openat transferred one newly owned descriptor.
     Ok(unsafe { File::from_raw_fd(fd) })
 }
-#[must_use]
-pub fn traversal_flags() -> i32 {
-    #[cfg(target_os = "linux")]
-    {
-        libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK
-    }
-}
-
-pub fn beneath_probe(root: &File) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        rooted_open(root, c".", libc::O_RDONLY | libc::O_DIRECTORY, true).map(drop)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = root;
-        Err(io::Error::from_raw_os_error(libc::ENOSYS))
-    }
-}
 pub fn rooted_mkdir(parent: &File, name: &std::ffi::CStr) -> io::Result<()> {
     // SAFETY: parent is live, name a valid C string; mkdirat retains neither.
     cvt(unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) })
@@ -534,6 +512,12 @@ pub fn rooted_rename(parent: &File, from: &std::ffi::CStr, to: &std::ffi::CStr) 
         )
     })
 }
+#[path = "sys/entry.rs"]
+mod entry;
+pub use entry::{
+    Entry, beneath_probe, reopen_pinned, resume_flags, rooted_entry, traversal_flags,
+    visit_directory,
+};
 pub fn mount_id(file: &File) -> io::Result<Option<u64>> {
     #[cfg(target_os = "linux")]
     {
@@ -637,21 +621,6 @@ impl Cursor {
             std::ffi::CStr::from_ptr((*entry).d_name.as_ptr())
         }))
     }
-}
-/// Visit entries using an independent directory description (not dup's shared
-/// directory offset). The callback consumes each name before the next read.
-pub fn visit_directory(
-    root: &File,
-    visit: &mut dyn FnMut(&std::ffi::CStr) -> io::Result<()>,
-) -> io::Result<()> {
-    let file = rooted_open(root, c".", directory_flags(), false)?;
-    let cursor = Cursor::new(file, None)?;
-    while let Some(name) = cursor.next_name()? {
-        if name != c"." && name != c".." {
-            visit(name)?;
-        }
-    }
-    Ok(())
 }
 pub fn canonical(path: &std::path::Path) -> io::Result<std::path::PathBuf> {
     use std::os::unix::ffi::OsStringExt;

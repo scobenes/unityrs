@@ -230,6 +230,10 @@ fn empty_archive_family_fits_six_s_plus_two_a() {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "scale: run in release, as CI's `scale` job does"
+)]
 fn scaled_empty_commits_fit_with_both_spec_streams_retained() {
     for inputs in [8, 64] {
         for block in [3072, 4096, 5003, 65_536] {
@@ -332,6 +336,18 @@ fn complete_empty_archive_families_fit_the_encoded_allowance() {
             };
             let s = spooled * k;
             let a = archive_allowance(&spec, block);
+            let outcome_root = scratch.join("outcomes");
+            std::fs::create_dir(&outcome_root).unwrap();
+            let _outcomes = unityrs_batch::outcomes::Outcomes::create(
+                &outcome_root,
+                result.counts.winners,
+                u64::try_from(spec.archives.len()).unwrap(),
+                &counter,
+                &Host,
+                &[0; 128],
+                &|| false,
+            )
+            .unwrap();
             let peak = counter.peak() - baseline;
             assert!(result.archives.as_ref().unwrap().claimed() <= a);
             assert!(result.metadata.as_ref().unwrap().claimed() <= a);
