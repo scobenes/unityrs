@@ -189,3 +189,21 @@ fn live_writers_block_owner_deletion_and_failed_writes_block_flushes() {
     d.remove().unwrap();
     assert_eq!(c.used(), 0);
 }
+
+#[test]
+fn host_length_open_and_unlink_preserve_large_sparse_files() {
+    let scratch = Scratch::new("spool-large-file");
+    let path = scratch.join("large");
+    let length = (1_u64 << 31) + 17;
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(length).unwrap();
+    drop(file);
+    assert_eq!(Host.length(&path).unwrap(), length);
+    let mut reader = Host.open(&path).unwrap();
+    let mut byte = [1];
+    std::io::Read::read_exact(&mut reader, &mut byte).unwrap();
+    assert_eq!(byte, [0]);
+    drop(reader);
+    Host.remove_file(&path).unwrap();
+    assert!(!path.exists());
+}

@@ -3,13 +3,12 @@
 mod claims;
 mod files;
 mod owned_file;
+pub mod workspace;
 pub use claims::Counter;
 pub use files::{Directory, SpoolFile};
 pub use owned_file::OwnedFile;
 
-use std::fs::OpenOptions;
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 /// Why the spool was full (`batch.md` 2.7).
@@ -41,6 +40,8 @@ pub enum Error {
     Full(Full),
     /// `host_io`, exit 74. The error is for diagnostics, not public paths.
     HostIo(io::Error),
+    /// A fallible path or file-adapter allocation was refused.
+    HostMemory,
     /// Invalid accounting state or reuse of a failed/removed owner.
     Internal,
 }
@@ -49,6 +50,7 @@ impl From<io::Error> for Error {
         match e.raw_os_error() {
             Some(libc::ENOSPC) => Self::Full(Full::Enospc),
             Some(libc::EDQUOT) => Self::Full(Full::Edquot),
+            _ if e.kind() == io::ErrorKind::OutOfMemory => Self::HostMemory,
             _ => Self::HostIo(e),
         }
     }
@@ -70,6 +72,18 @@ impl Writer for std::fs::File {
 /// wrap a real file to fail a write or flush; production uses [`Host`].
 /// Paths here are trusted prepared directories and generated basenames.
 pub trait FileSystem: Send + Sync {
+    /// Open an immutable internal artifact. Injectable for bounded read faults.
+    fn open(&self, path: &Path) -> io::Result<Box<dyn std::io::Read + Send>> {
+        let file = crate::sys::spool_file(path, false)?;
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        Ok(crate::alloc::try_box(file)?)
+    }
+    /// Used only to check sealed descriptors, never to reconstruct a claim.
+    fn length(&self, path: &Path) -> io::Result<u64> {
+        crate::sys::spool_length(path)
+    }
     /// Caller-available bytes, not root's free blocks.
     fn available(&self, directory: &Path) -> io::Result<u64>;
     /// Exclusive create: never truncate an earlier artifact.
@@ -91,7 +105,7 @@ pub trait FileSystem: Send + Sync {
     }
     /// Delete exactly one owned staged/peek file; never traverse a directory.
     fn remove_file(&self, path: &Path) -> io::Result<()> {
-        std::fs::remove_file(path)
+        crate::sys::spool_unlink(path)
     }
 }
 /// Production facts. No fsync per output: sealing completes writes and
@@ -102,13 +116,8 @@ impl FileSystem for Host {
         crate::sys::available_bytes(directory)
     }
     fn create(&self, path: &Path) -> io::Result<Box<dyn Writer>> {
-        let f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)?;
-        Ok(Box::new(f))
+        let f = crate::sys::spool_file(path, true)?;
+        Ok(crate::alloc::try_box(f)?)
     }
 }
 

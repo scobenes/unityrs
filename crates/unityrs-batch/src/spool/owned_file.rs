@@ -18,6 +18,37 @@ pub struct OwnedFile {
     removed: bool,
 }
 impl OwnedFile {
+    /// Only the workspace may transfer a successfully sealed file's claim
+    /// into a disk descriptor. Failed or partially written files stay owned.
+    pub(super) fn detach(self) -> Result<(u64, u64), Error> {
+        if self.is_sealed() {
+            Ok((self.length, self.claimed))
+        } else {
+            Err(Error::Internal)
+        }
+    }
+    /// A workspace descriptor transfers an existing sealed claim back to the
+    /// same deletion primitive. This never claims/adopts an arbitrary file.
+    pub(super) fn retire(
+        path: PathBuf,
+        counter: Arc<Counter>,
+        fs: Arc<dyn FileSystem>,
+        length: u64,
+        claimed: u64,
+    ) -> Result<(), Error> {
+        let mut file = Self {
+            path,
+            counter,
+            fs,
+            writer: None,
+            reserved: length,
+            claimed,
+            length,
+            failed: false,
+            removed: false,
+        };
+        file.remove()
+    }
     /// The parent is prepared. An existing file is never adopted or truncated.
     /// Initially empty; `reserve` makes the known-length claim before copying.
     pub fn create(
