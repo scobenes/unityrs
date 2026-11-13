@@ -7,7 +7,8 @@ when it is stale).
 
 It has two parts. The first holds the notices of code ported or vendored into
 unityrs from other projects (UnityPy and UnityPyBoost, liblz4, CPython's
-standard library, Pillow, zlib, OpenBLAS under BSD-3-Clause and its
+standard library, Pillow, texture2ddecoder with the AssetStudio and mikunyan
+code it carries, zlib, OpenBLAS under BSD-3-Clause and its
 GotoBLAS2 code under BSD-2-Clause-Views), and the provenance of bundled
 data; the notice of a new port is added to about.hbs, its licence to its
 crate's, and the notice to the crate's own files (a LICENSE-* file, and a
@@ -326,6 +327,101 @@ INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
 LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
 OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
+
+--------------------------------------------------------------------------------
+texture2ddecoder 1.0.5 (with the AssetStudio and mikunyan code it carries)
+https://github.com/K0lb3/texture2ddecoder
+Licence: MIT.
+
+crates/unityrs-texture/src/etc.rs translates texture2ddecoder 1.0.5's ETC
+and EAC block decoders to Rust (src/Texture2DDecoder/etc.cpp:
+decode_etc1_block, decode_etc2_block, decode_etc2a1_block,
+decode_etc2a8_block, decode_eac_block, decode_eac_signed_block, the tables
+they read, and the block loops decode_etc1 to decode_eacrg_signed with
+src/Texture2DDecoder/color.h's copy_block_buffer), so that an ETC_RGB4,
+ETC2_RGB, ETC2_RGBA1, ETC2_RGBA8, EAC_R, EAC_R_SIGNED, EAC_RG or
+EAC_RG_SIGNED texture decodes to the pixels UnityPy 1.25.2 gets from it,
+but for one Tier C change (ETC2_RGBA1's transparent pixels, PARITY.md
+section 19.1). The source is the release's sdist (texture2ddecoder-1.0.5.tar.gz,
+sha256 7767e865394ad8e0a0609d275caf3e8c99d03df107dfb961cb90ea21c9295dc2),
+whose LICENSE follows first. texture2ddecoder wraps the decoders of
+AssetStudio's Texture2DDecoderNative (its README says so), whose etc.cpp
+its own matches but for casts, and that file matches mikunyan's
+ext/decoders/native/etc.c nearly line for line; neither file carries a
+notice of its own, so the notices of all three projects, each MIT, follow,
+AssetStudio's and mikunyan's from their repositories' LICENSE files. They
+are unityrs-texture's LICENSE-TEXTURE2DDECODER, LICENSE-ASSETSTUDIO and
+LICENSE-MIKUNYAN, listed under MIT below.
+
+{{!-- notice: LICENSE-TEXTURE2DDECODER --}}
+MIT License
+
+Copyright (c) 2020 K0lb3
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+{{!-- notice: LICENSE-ASSETSTUDIO --}}
+MIT License
+
+Copyright (c) 2016 Radu
+Copyright (c) 2016-2020 Perfare
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+{{!-- notice: LICENSE-MIKUNYAN --}}
+The MIT License (MIT)
+
+Copyright (c) 2017 Ishotihadus
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 
 --------------------------------------------------------------------------------
 OpenBLAS 0.3.31

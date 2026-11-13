@@ -53,12 +53,14 @@ from texture_cells import (  # noqa: E402
     ORACLE,
     P1B,
     P1B_STATUS,
+    P3,
     SWITCH_BLOB,
     base_name,
     decode,
     expected_row,
     real_sized,
     stand_in_unpackers,
+    status_of,
     tier_of,
     unit,
 )
@@ -135,13 +137,16 @@ class ThisParityFile(unittest.TestCase):
     def test_p1b_formats_are_the_five_design_names(self):
         p1b = sorted(name for name, row in self.rows.items() if row["status"] == P1B_STATUS)
         self.assertEqual(p1b, P1B)
+        # And the ETC and EAC formats are the eight P3 has verified.
+        p3 = sorted(name for name, row in self.rows.items() if "verified P3" in row["status"])
+        self.assertEqual(p3, P3)
 
     def test_tier_and_status_follow_the_result(self):
         for name, row in self.rows.items():
             with self.subTest(name):
                 kind = RESULT.match(row["UnityPy 1.25.2"]).group(1)
                 self.assertEqual(row["tier"], tier_of(name, kind))
-                self.assertEqual(row["status"], P1B_STATUS if name in P1B else "pinned P0; impl P3")
+                self.assertEqual(row["status"], status_of(name))
 
 
 def matrix_errors(rows, expected):

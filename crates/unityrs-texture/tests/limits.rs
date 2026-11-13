@@ -27,8 +27,7 @@ fn the_largest_texture_plans_and_one_more_column_is_refused() {
         let want = match format {
             Format::Rgb24 => 3 * MAX_PIXELS,
             Format::Rgba32 => 4 * MAX_PIXELS,
-            Format::Dxt1 => MAX_PIXELS / 2,
-            Format::Dxt5 | Format::Bc7 => MAX_PIXELS,
+            _ => MAX_PIXELS / 16 * format.block_bytes().unwrap(),
         };
         assert_eq!(p.input_bytes, want, "{format:?}");
         assert_eq!(p.charge(), heap_cost(p.output_bytes));
@@ -240,7 +239,7 @@ fn no_panic_on_any_input() {
     // a byte more.
     let zeros = vec![0u8; usize::try_from(4 * MAX_PIXELS + 1).unwrap()];
     for round in 0..10_000 {
-        let format = Format::ALL[rng.below(5)];
+        let format = Format::ALL[rng.below(Format::ALL.len())];
         let side = |rng: &mut Rng| {
             if rng.below(2) == 0 {
                 EDGES[rng.below(EDGES.len())]

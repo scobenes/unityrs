@@ -1,10 +1,14 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/export/Texture2DConverter.py's texture export for BC7, DXT1, DXT5, RGBA32 and RGB24, with Pillow 9.5.0's decoders as it calls them. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/export/Texture2DConverter.py's texture export for BC7, DXT1, DXT5, RGBA32, RGB24 and the ETC and EAC formats, with Pillow 9.5.0's and texture2ddecoder 1.0.5's decoders as it calls them. See THIRD_PARTY_LICENSES.
 //! `Texture2D` decoding for the batch engine (`docs/plans/extract.md` E15,
 //! E18, E59, E66): the five formats P1b exports, BC7, DXT1, DXT5, RGBA32 and
-//! RGB24, decoded to the pixels UnityPy 1.25.2 with Pillow 9.5.0 gives
-//! (`Texture2D.image`, `export/Texture2DConverter.py:237-320`), bit for bit,
-//! in its mode (`RGB` for RGB24, `RGBA` for the rest) and its orientation
-//! (flipped top to bottom), and which textures are exported or skipped.
+//! RGB24, and the eight ETC and EAC formats of P3 (`ETC_RGB4`, `ETC2_RGB`,
+//! `ETC2_RGBA1`, `ETC2_RGBA8`, `EAC_R`, `EAC_R_SIGNED`, `EAC_RG` and `EAC_RG_SIGNED`),
+//! decoded to the pixels UnityPy 1.25.2 with Pillow 9.5.0 and
+//! texture2ddecoder 1.0.5 gives (`Texture2D.image`,
+//! `export/Texture2DConverter.py:237-320`), bit for bit, but for
+//! `ETC2_RGBA1`'s transparent pixels (Tier C, below), in its mode (`RGB` for
+//! RGB24, `RGBA` for the rest) and its orientation (flipped top to bottom),
+//! and which textures are exported or skipped.
 //!
 //! - [`select()`]: a texture's fields to [`Selection::Export`] with its
 //!   [`Format`], or [`Selection::Skip`] with the [`Skip`] reason the manifest
@@ -19,16 +23,25 @@
 //!   meter before they are allocated, its pixel loop run under [`contain()`]
 //!   so a panic is an error ([`DecodeError::Panicked`]).
 //!
-//! **How each format matches UnityPy.** UnityPy decodes these five with
+//! **How each format matches UnityPy.** UnityPy decodes the five with
 //! Pillow (`CONV_TABLE`, `export/Texture2DConverter.py:491-516`), so each
-//! decoder here is Pillow 9.5.0's, ported: RGB24 and RGBA32 are its raw
+//! of their decoders here is Pillow 9.5.0's, ported: RGB24 and RGBA32 are its raw
 //! decoder (`Image.frombytes(mode, size, data, "raw", mode)`, a row copy),
 //! DXT1, DXT5 and BC7 its `bcn` decoder with 1, 3 and 7
 //! (`src/libImaging/BcnDecode.c`, in the `bcn` module), on the image padded
 //! to whole 4x4 blocks, then cropped and flipped as UnityPy does
 //! (`decode`'s module docs). texture2ddecoder, UnityPy's other decoder
-//! library, decodes none of the five. `tests/oracle.rs` replays what the
-//! oracle recorded (`tools/fixtures/texture.py`): every format at sizes
+//! library, decodes none of the five; it decodes the ETC and EAC formats,
+//! and its decoders for them are ported in the `etc` module, which writes
+//! an `ETC2_RGBA1` pixel its punch-through rule makes transparent as
+//! (0, 0, 0, 0), as the Khronos Data Format Specification 1.3, section
+//! 22.9, does, where texture2ddecoder keeps its colour (`PARITY.md`
+//! section 19.1). `tests/etc_oracle.rs` replays what UnityPy recorded for
+//! them (`tools/fixtures/texture.py`, with `tools/fixtures/texture_etc.py`'s
+//! blocks): every block mode, every size
+//! class, long data, zero and negative sides, and Pillow's limits on
+//! texture2ddecoder's output. `tests/oracle.rs` replays what the
+//! oracle recorded (`tools/fixtures/texture.py`): each of the five at sizes
 //! from 1x1 to 257x3, every BC7 mode, short, long and empty data, zero and
 //! negative sides, Pillow's raw width cap and its crop's decompression-bomb
 //! check, and the skips.
@@ -61,6 +74,7 @@
 mod bcn;
 mod contain;
 mod decode;
+mod etc;
 mod format;
 mod select;
 pub mod sprite;

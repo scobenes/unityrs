@@ -523,7 +523,7 @@ pub(crate) fn formats(t: &Texture, platform: i32) -> Result<Format, Class> {
                 gobs[8..].copy_from_slice(&g);
                 Some(&gobs[..])
             }
-            None if Format::from_texture_format(format).is_some() => {
+            None if Format::from_texture_format(format).is_some_and(Format::exported) => {
                 return Err(Class::Skip(Reason::decode_error(BLOB_ELEMENT)));
             }
             None => None,

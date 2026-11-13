@@ -8,10 +8,13 @@
 //! `Texture2DConverter.XBOX_SWAP_FORMATS`, the `TextureFormat` names) and
 //! must agree with what the decoders accept: a texture [`select()`] exports is
 //! one [`crate::decode()`] decodes as UnityPy does, and a skipped one is never
-//! decoded as another format. The engine reads the fields (the object's
-//! `m_TextureFormat`, `m_Width`, `m_Height` and `m_PlatformBlob`, and the
-//! platform of the SerializedFile that holds it, as
-//! `get_image_from_texture2d` reads them,
+//! decoded as another format. It exports the five formats version 1 exports
+//! ([`Format::EXPORTED`]): the ETC and EAC formats [`crate::decode()`] also
+//! decodes are `unsupported_format` to it, as `docs/BATCH_SPEC.md` section
+//! 3 says, until a spec version exports them. The engine reads the fields
+//! (the object's `m_TextureFormat`, `m_Width`, `m_Height` and
+//! `m_PlatformBlob`, and the platform of the SerializedFile that holds it,
+//! as `get_image_from_texture2d` reads them,
 //! `export/Texture2DConverter.py:237-251`) and records the skip.
 //!
 //! **Order.** Where more than one skip applies, the first of: a side of 0
@@ -47,7 +50,7 @@ pub const SWITCH: i32 = 38;
 
 /// The formats UnityPy byte-swaps on Xbox 360: `RGB565`, `DXT1`,
 /// `DXT1Crunched`, `DXT5`, `DXT5Crunched`
-/// (`export/Texture2DConverter.py:569`). Of the five decoded here, DXT1 and
+/// (`export/Texture2DConverter.py:569`). Of the five exported, DXT1 and
 /// DXT5.
 pub const XBOX_SWAP_FORMATS: [i32; 5] = [7, 10, 28, 12, 29];
 
@@ -89,7 +92,8 @@ const _: () = crate::send_sync::<Selection>();
 pub enum Skip {
     /// A side of 0: `empty_image`.
     EmptyImage,
-    /// A format other than the five, by its `TextureFormat` value:
+    /// A format other than the five ([`Format::EXPORTED`]), by its
+    /// `TextureFormat` value:
     /// `unsupported_format(<name>)`, UnityPy's member name, or the decimal
     /// value where its enum has none.
     UnsupportedFormat(i32),
@@ -154,7 +158,11 @@ pub fn select(texture: &TextureFields<'_>) -> Selection {
     if texture.width == 0 || texture.height == 0 {
         return Selection::Skip(Skip::EmptyImage);
     }
-    let Some(format) = Format::from_texture_format(texture.texture_format) else {
+    // Version 1 exports the five of E15; the ETC and EAC formats this crate
+    // also decodes are `unsupported_format` to it (`docs/BATCH_SPEC.md`
+    // section 3).
+    let Some(format) = Format::from_texture_format(texture.texture_format).filter(|f| f.exported())
+    else {
         return Selection::Skip(Skip::UnsupportedFormat(texture.texture_format));
     };
     if is_switch_swizzled(texture.platform, texture.platform_blob) {

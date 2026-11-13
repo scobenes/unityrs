@@ -4,7 +4,7 @@ use std::sync::Arc;
 use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
 use unityrs_core::limits::Meter;
 
-use super::{DecodeError, Format, MAX_CROP_PIXELS, MAX_PIXELS, decode, decode_with, plan};
+use super::{DecodeError, Format, MAX_CROP_PIXELS, MAX_PIXELS, Plan, decode, decode_with, plan};
 
 /// The bound comes before the data (step 4): a texture past [`MAX_PIXELS`]
 /// is too large whatever its data, but empty data or a negative side is
@@ -145,6 +145,75 @@ fn a_bcn_length_past_2_gib_is_read_as_its_low_32_bits() {
     ));
     // The raw formats read the whole length.
     assert!(plan(Format::Rgba32, (1 << 31) + 16, 2, 2).is_ok());
+}
+
+/// The ETC and EAC formats: texture2ddecoder reads past short data and
+/// past a side padded below 0, which unityrs refuses (steps 3 and 6);
+/// Pillow's raw decoder reads its output at the padded width (step 5); its
+/// length is a `size_t`, read whole; and UnityPy's crop bound holds.
+#[test]
+fn texture2ddecoders_formats_refuse_what_it_reads_past() {
+    let etc = Format::ALL.iter().copied().filter(|f| !f.exported());
+    for format in etc {
+        let block = usize::try_from(format.block_bytes().unwrap()).unwrap();
+        // 7 x 9 is 2 x 3 blocks.
+        assert!(plan(format, 6 * block, 7, 9).is_ok(), "{format:?}");
+        assert_eq!(
+            plan(format, 6 * block - 1, 7, 9),
+            Err(DecodeError::NotEnoughData {
+                needed: u64::try_from(6 * block).unwrap(),
+                got: u64::try_from(6 * block - 1).unwrap()
+            }),
+            "{format:?}"
+        );
+        let meter = Meter::unlimited();
+        assert!(matches!(
+            decode(format, &vec![0; 6 * block - 1], 7, 9, &meter),
+            Err(DecodeError::NotEnoughData { .. })
+        ));
+        assert_eq!(meter.used(), 0);
+        // -1 to -3 pad to 0 (UnityPy's crop raises); -4 and below stay
+        // negative (texture2ddecoder would read and write past its
+        // buffers): each a negative side here.
+        for side in [-1, -3, -4, -5, -8, i32::MIN] {
+            for (w, h) in [(side, 4), (4, side), (side, side)] {
+                assert_eq!(
+                    plan(format, 1 << 20, w, h),
+                    Err(DecodeError::NegativeSize {
+                        width: w,
+                        height: h
+                    }),
+                    "{format:?} {w}x{h}"
+                );
+            }
+        }
+        // The padded width against Pillow's cap: 67,108,856 passes, and
+        // 67,108,857 pads to 67,108,860, past it, whatever the data.
+        let need = |w: u64| usize::try_from(w.div_ceil(4)).unwrap() * block;
+        assert!(plan(format, need(67_108_856), 67_108_856, 1).is_ok());
+        let refused = Err(DecodeError::PillowMemoryError {
+            width: 67_108_860,
+            max: 67_108_856,
+        });
+        for len in [1, need(67_108_860)] {
+            assert_eq!(plan(format, len, 67_108_857, 1), refused, "{format:?}");
+        }
+        // The crop bound, as for `BCn`.
+        assert!(matches!(
+            plan(format, 2 * 15 * 758_293 * 16, 59, 3_033_169),
+            Err(DecodeError::DecompressionBomb { .. })
+        ));
+    }
+    // texture2ddecoder takes the data's length whole: past 4 GiB too.
+    #[cfg(target_pointer_width = "64")]
+    assert!(matches!(
+        plan(Format::EtcRgb4, (1 << 32) + 7, 4, 4),
+        Ok(Plan { input_bytes: 8, .. })
+    ));
+    assert!(matches!(
+        plan(Format::EtcRgb4, (1 << 31) + 7, 4, 4),
+        Ok(Plan { input_bytes: 8, .. })
+    ));
 }
 
 /// A panic in the pixel loop is the decode's [`DecodeError::Panicked`], and

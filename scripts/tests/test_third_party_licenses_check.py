@@ -362,6 +362,7 @@ class PortTests(unittest.TestCase):
                 "liblz4 1.9.4": ["LICENSE-LZ4"],
                 "CPython 3.11": ["NOTICE-PSF", "LICENSE-PSF"],
                 "Pillow 9.5.0": ["LICENSE-PILLOW"],
+                "texture2ddecoder 1.0.5": ["LICENSE-TEXTURE2DDECODER", "LICENSE-ASSETSTUDIO", "LICENSE-MIKUNYAN"],
                 "OpenBLAS 0.3.31": ["LICENSE-OPENBLAS", "LICENSE-OPENBLAS-KERNELS", "LICENSE-OPENBLAS-DSCAL"],
                 "GotoBLAS2 code in OpenBLAS 0.3.31": ["LICENSE-OPENBLAS-UT"],
                 "zlib 1.2.13": ["LICENSE-ZLIB"],

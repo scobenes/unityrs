@@ -4,8 +4,9 @@
 //! (`docs/plans/extract.md` E15, E18, E59, E66), under the memory bound
 //! ([`crate::MEMORY`]) or a meter of about the decode's charge.
 //!
-//! A format outside the five decodes as one of them, so every input
-//! reaches a decoder. Besides a panic (libFuzzer's hook aborts at it,
+//! A format outside the thirteen the crate decodes (the five version 1
+//! exports, and the ETC and EAC formats) decodes as one of them, so every
+//! input reaches a decoder. Besides a panic (libFuzzer's hook aborts at it,
 //! before the decoder's containment can catch it), a finding is: a
 //! selection that exports a format the texture does not have; a decode
 //! whose answer is not its plan's, but for the meter's refusal of a charge
@@ -38,9 +39,10 @@ pub fn check(input: &[u8]) {
             "exported as another format"
         );
     }
-    let five = usize::try_from(case.format.rem_euclid(5)).unwrap_or(0);
+    let len = i32::try_from(Format::ALL.len()).unwrap_or(1);
+    let any = usize::try_from(case.format.rem_euclid(len)).unwrap_or(0);
     let format = Format::from_texture_format(case.format)
-        .or_else(|| Format::ALL.get(five).copied())
+        .or_else(|| Format::ALL.get(any).copied())
         .unwrap_or(Format::Rgba32);
     let planned = plan(format, case.data.len(), case.width, case.height);
     let charge = planned.as_ref().map_or(0, Plan::charge);
