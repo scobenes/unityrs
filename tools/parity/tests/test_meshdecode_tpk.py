@@ -12,7 +12,7 @@ against accidental writes and leaks, not code written to evade it (the module do
   `__import__` or `import_module` call included, with bytecode writes stopped before `import scratch`; a `--tp` run
   exits 2 (no abbreviation runs the pass without the hook).
 - **The real runs pass under it**: the cargo branch against a stub `cargo` (first on `PATH`, written by the case, no
-  build), which reads its standard input to its end and requires the fixture's 489 cases by name, the replay's argv,
+  build), which reads its standard input to its end and requires the fixture's 526 cases by name, the replay's argv,
   `UNITYRS_MESHDECODE_TPK_STDIN`, the checkout as its working folder, no `UNITYRS_MESHDECODE_TPK_VERBOSE` (the case
   sets it, the script clears it) and child.run's own per-run folder as its `UNITYRS_TEST_SCRATCH`, and prints the
   replay's count line, libtest's ok line and the core-dump limit it inherited (0). That run goes without `-B`, with
@@ -227,8 +227,8 @@ class TheTpkPassWritesToNoPath(unittest.TestCase):
         ran = self.run_of("ok")
         self.assertEqual(ran.returncode, 0, said(ran))
         n = len(json.loads(FIXTURE.read_text())["cases"])
-        self.assertEqual(n, 489)
-        self.assertTrue(ran.stdout.startswith("--tpk: 489 cases on the TPK's trees, 0 outcomes differ\n"), said(ran))
+        self.assertEqual(n, 526)
+        self.assertTrue(ran.stdout.startswith("--tpk: 526 cases on the TPK's trees, 0 outcomes differ\n"), said(ran))
         self.assertTrue(f"read {n} cases from standard input\n" in ran.stdout, said(ran))
         self.assertTrue("test result: ok. 1 passed;" in ran.stdout, said(ran))
         self.assertTrue("stub cargo: core limit 0 0\n" in ran.stdout, said(ran))

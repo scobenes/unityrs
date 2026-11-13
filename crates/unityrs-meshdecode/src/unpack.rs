@@ -39,6 +39,11 @@
 //! no bytes (a dimension whose low four bits are 0) is `struct.error`
 //! "cannot iteratively unpack with a struct of length 0".
 //!
+//! **Normalised** (`PARITY.md` section 19.1, Tier C): where the handler
+//! asks, a channel in a `UNorm`, `SNorm` or byte colour format is read as
+//! `float`s by its [`Norm`] rule, where `struct.iter_unpack` gives UnityPy
+//! the integers (`crate::format`'s module docs).
+//!
 //! **Bounds.** The output's `f64` or `i64` values (or bytes) are charged to
 //! the caller's meter, and then counted as decode work on it, before
 //! anything is read (`docs/plans/extract.md` E59), so a refused charge
@@ -49,7 +54,7 @@ use std::sync::Arc;
 use unityrs_core::limits::{Charge, Meter, MeteredVec};
 
 use crate::error::{MeshError, StructError};
-use crate::format::StructCode;
+use crate::format::{Norm, StructCode};
 
 /// One attribute: `len()` tuples of `dimension()` components, as
 /// `struct.iter_unpack` (or the copy of a `Mesh`'s skin) gives them, the
@@ -349,10 +354,14 @@ pub fn unpack_vertexdata(
 /// The gather and `struct.iter_unpack(f">{dimension}{code}", ...)` in one
 /// pass (`helpers/MeshHelper.py:366-392`), with no buffer between: the
 /// values of one channel, charged to `meter` before they are allocated.
+/// With `norm`, each integer is normalised to a `float` by its rule
+/// (`crate::format`'s module docs, Tier C), where UnityPy keeps the
+/// integer.
 pub(crate) fn unpack_channel(
     data: &[u8],
     args: &Gather,
     code: StructCode,
+    norm: Option<Norm>,
     meter: &Arc<Meter>,
 ) -> Result<VertexArray, MeshError> {
     let length = args.check(data.len())?;
@@ -368,11 +377,15 @@ pub(crate) fn unpack_channel(
     // (module docs); a component of one byte is never swapped. Each output
     // is charged, then counted: a refused charge counts no work.
     let little = args.swap;
-    if code.is_float() {
+    if code.is_float() || norm.is_some() {
         let mut out = MeteredVec::<f64>::with_capacity(meter, n)?;
         meter.count_decode(length)?;
         args.each(data, |src| {
-            out.push(float(code, src, little))?;
+            out.push(match norm {
+                // PARITY.md section 19.1: UnityPy keeps the integer.
+                Some(rule) if !code.is_float() => rule.value(code, int(code, src, little)),
+                _ => float(code, src, little),
+            })?;
             Ok(())
         })?;
         let (v, charge) = out.into_parts();

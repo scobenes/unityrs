@@ -9,11 +9,36 @@
 //! `ValueError` (`12 is not a valid VertexFormat`), which
 //! [`get_channel_dtype`] returns as [`MeshError::InvalidFormat`].
 //!
-//! **What a struct code reads** (`enums/VertexFormat.py:43-80`): `UNorm`,
-//! `SNorm` and the byte colour formats are read as the raw integers, never
-//! scaled, and `Float16` through Python's `e` code (`StructCode::F16`).
-//! [`get_channel_component_size`] is `struct.Struct(code).size`
-//! (`helpers/MeshHelper.py:464-466`).
+//! **What a struct code reads** (`enums/VertexFormat.py:43-80`): UnityPy
+//! reads `UNorm`, `SNorm` and the byte colour formats as the raw integers,
+//! never scaled, and `Float16` through Python's `e` code
+//! (`StructCode::F16`). [`get_channel_component_size`] is
+//! `struct.Struct(code).size` (`helpers/MeshHelper.py:464-466`).
+//!
+//! **Normalised** (`PARITY.md` section 19.1, Tier C): unityrs reads a
+//! Mesh's channel in a normalised format ([`Norm`]: each table's `UNorm8`,
+//! `SNorm8`, `UNorm16` and `SNorm16`, and the byte colour formats
+//! `kChannelFormatColor` and `kVertexFormatColor`) as a `float`, where
+//! UnityPy leaves the integer (`enums/VertexFormat.py:46`, `:54-58`,
+//! `:70-73`, read by `helpers/MeshHelper.py:392`). The reference is the
+//! normalised fixed-point conversion of the Vulkan specification
+//! ("Fixed-Point Data Conversions", its "Conversion from Normalized
+//! Fixed-Point to Floating-Point") and of Direct3D 10 and later's data
+//! conversion rules (`SNORM` and `UNORM` to `FLOAT`): an n-bit `UNorm` value
+//! `v` is `v / (2^n - 1)`, in [0, 1], and an n-bit `SNorm` value
+//! `max(v / (2^(n-1) - 1), -1)`, in [-1, 1], so the most negative value
+//! and the one above it both give -1. A compressed mesh's packed colours
+//! are already bytes over 255 in UnityPy (`helpers/MeshHelper.py:618-628`),
+//! the `UNorm8` rule. `kChannelFormatByte` and the integer formats stay
+//! integers, and so do the blend indices (channel 13 from 2018), which are
+//! bone indices whatever their format; the blend weights are normalised.
+//! A Sprite's render data is read as UnityPy reads it, its integers kept,
+//! whatever its formats: a deliberate compatibility policy, not Unity's
+//! meaning (a GPU would normalise a `UNorm` sprite UV), so that the sprite
+//! renderer (`unityrs-texture`), which ports `get_image_from_sprite` at
+//! Tier A on UnityPy's values, reads bit for bit what it reads there. A
+//! Tier C correction of the sprite path is deferred (`PARITY.md` section
+//! 19.1).
 
 use crate::Version;
 use crate::error::MeshError;
@@ -74,6 +99,36 @@ impl StructCode {
     }
 }
 
+/// A normalised format's rule (module docs, Tier C): how unityrs reads a
+/// Mesh's integer of that format as a `float`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Norm {
+    /// `UNorm`, and the byte colour formats: `v / (2^n - 1)`, in [0, 1].
+    UNorm,
+    /// `SNorm`: `max(v / (2^(n-1) - 1), -1)`, in [-1, 1].
+    SNorm,
+}
+
+const _: () = crate::send_sync::<Norm>();
+
+impl Norm {
+    /// The `float` an integer `raw` of `code` normalises to, by the
+    /// Vulkan and Direct3D rule (module docs): for an 8-bit `SNorm`, -128
+    /// and -127 give -1.0, 0 gives 0.0 and 127 gives 1.0; for an 8-bit
+    /// `UNorm`, 255 gives 1.0. Each value is the correctly rounded
+    /// quotient of two integers an `f64` holds exactly.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)] // A struct code's integer: at most 32 bits, exact.
+    pub fn value(self, code: StructCode, raw: i64) -> f64 {
+        let bits = code.size() * 8;
+        let v = raw as f64;
+        match self {
+            Self::UNorm => v / f64::from(u32::MAX >> (32 - bits)),
+            Self::SNorm => (v / f64::from(u32::MAX >> (33 - bits))).max(-1.0),
+        }
+    }
+}
+
 /// `VertexChannelFormat`, the formats below Unity 2017
 /// (`enums/VertexFormat.py:4-9`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -118,6 +173,16 @@ impl VertexChannelFormat {
             Self::kChannelFormatFloat16 => StructCode::F16,
             Self::kChannelFormatColor | Self::kChannelFormatByte => StructCode::U8,
             Self::kChannelFormatUInt32 => StructCode::U32,
+        }
+    }
+
+    /// Its rule, if unityrs normalises it (module docs): the colour bytes
+    /// only.
+    #[must_use]
+    pub const fn norm(self) -> Option<Norm> {
+        match self {
+            Self::kChannelFormatColor => Some(Norm::UNorm),
+            _ => None,
         }
     }
 }
@@ -198,6 +263,19 @@ impl VertexFormat2017 {
             Self::kVertexFormatSInt32 => StructCode::I32,
         }
     }
+
+    /// Its rule, if unityrs normalises it (module docs): the colour
+    /// bytes, `UNorm` and `SNorm`.
+    #[must_use]
+    pub const fn norm(self) -> Option<Norm> {
+        match self {
+            Self::kVertexFormatColor | Self::kVertexFormatUNorm8 | Self::kVertexFormatUNorm16 => {
+                Some(Norm::UNorm)
+            }
+            Self::kVertexFormatSNorm8 | Self::kVertexFormatSNorm16 => Some(Norm::SNorm),
+            _ => None,
+        }
+    }
 }
 
 /// `VertexFormat`, the formats from Unity 2019 (`enums/VertexFormat.py:28-40`).
@@ -270,6 +348,17 @@ impl VertexFormat {
             Self::kVertexFormatSInt32 => StructCode::I32,
         }
     }
+
+    /// Its rule, if unityrs normalises it (module docs): `UNorm` and
+    /// `SNorm`.
+    #[must_use]
+    pub const fn norm(self) -> Option<Norm> {
+        match self {
+            Self::kVertexFormatUNorm8 | Self::kVertexFormatUNorm16 => Some(Norm::UNorm),
+            Self::kVertexFormatSNorm8 | Self::kVertexFormatSNorm16 => Some(Norm::SNorm),
+            _ => None,
+        }
+    }
 }
 
 /// The three tables, as `get_channel_dtype` picks one by version.
@@ -305,6 +394,19 @@ impl FormatTable {
             Self::Channel => "VertexChannelFormat",
             Self::V2017 => "VertexFormat2017",
             Self::V2019 => "VertexFormat",
+        }
+    }
+
+    /// The rule unityrs normalises `format` of this table by, if any
+    /// (module docs): `None` for a format the enum lacks, too.
+    #[must_use]
+    pub fn norm(self, format: u8) -> Option<Norm> {
+        match self {
+            Self::Channel => {
+                VertexChannelFormat::from_value(format).and_then(VertexChannelFormat::norm)
+            }
+            Self::V2017 => VertexFormat2017::from_value(format).and_then(VertexFormat2017::norm),
+            Self::V2019 => VertexFormat::from_value(format).and_then(VertexFormat::norm),
         }
     }
 

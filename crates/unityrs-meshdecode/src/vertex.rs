@@ -24,7 +24,11 @@
 //! of every channel of a non-zero dimension it holds. Below 2018 the colour
 //! channel (2) of format 2 is read as 4 components whatever its
 //! dimension (`:348-357`). The data is then gathered ([`crate::unpack`]),
-//! and assigned by channel index ([`assign`]).
+//! and assigned by channel index ([`assign`]). A Mesh's channel in a
+//! `UNorm`, `SNorm` or byte colour format is normalised to `float`s, where
+//! UnityPy keeps the integers (`PARITY.md` section 19.1, Tier C;
+//! `crate::format`'s module docs); the blend indices, bone indices whatever
+//! their format, and a Sprite's render data keep them.
 //!
 //! **Work.** [`get_streams`] counts one unit a channel before its two
 //! passes, and charges the streams it derives before it allocates them;
@@ -38,7 +42,7 @@ use unityrs_core::limits::{Charge, Meter, MeteredVec};
 
 use crate::Version;
 use crate::error::{IndexKind, MeshError};
-use crate::format::get_channel_dtype;
+use crate::format::{FormatTable, get_channel_dtype};
 use crate::unpack::{Gather, VertexArray, unpack_channel};
 use crate::view::{List, Obj};
 
@@ -178,10 +182,14 @@ pub(crate) struct VertexData<'a> {
 }
 
 /// `read_vertex_data(m_Channels, m_Streams)` (`helpers/MeshHelper.py:323-393`,
-/// module docs): the vertex count it sets, if it reads at all.
+/// module docs): the vertex count it sets, if it reads at all. `normalise`
+/// (a Mesh's, not a Sprite's) reads each normalised format's integers as
+/// `float`s (Tier C).
+#[allow(clippy::too_many_arguments)] // The handler's state, each its own.
 pub(crate) fn read_vertex_data(
     version: Version,
     little: bool,
+    normalise: bool,
     vertex_data: VertexData<'_>,
     channels: &List<'_>,
     streams: &Streams<'_>,
@@ -239,7 +247,16 @@ pub(crate) fn read_vertex_data(
             (field(&ch, "dimension", 255)?, field(&ch, "format", 255)?)
         };
         // UnityPy MeshHelper.py:359-364
-        let code = get_channel_dtype(version, u8::try_from(format).unwrap_or(u8::MAX))?;
+        let format = u8::try_from(format).unwrap_or(u8::MAX);
+        let code = get_channel_dtype(version, format)?;
+        // PARITY.md section 19.1 (Tier C): UnityPy keeps the integers. The
+        // blend indices are bone indices, integers whatever their format.
+        let major = version.major()?;
+        let norm = if normalise && !is_blend_indices(major, chn) {
+            FormatTable::for_major(major).norm(format)
+        } else {
+            None
+        };
         let size = code.size();
         let swap = little && size > 1;
         let channel_dimension = u32::try_from(dimension & 0xF).unwrap_or(0);
@@ -266,10 +283,17 @@ pub(crate) fn read_vertex_data(
             channel_dimension,
             swap,
         };
-        let array = unpack_channel(data, &args, code, meter)?;
+        let array = unpack_channel(data, &args, code, norm, meter)?;
         assign(version, chn, array, attrs)?;
     }
     Ok(Some(count))
+}
+
+/// Whether channel `chn` holds the blend indices: channel 13 from 2018
+/// ([`assign`]'s `m_BoneIndices`); below, the vertex data holds none (the
+/// skin's indices come from `m_Skin`).
+fn is_blend_indices(major: u16, chn: usize) -> bool {
+    major >= 2018 && chn == 13
 }
 
 /// An `int`'s low 32 bits, as Python's `I` format takes them.
