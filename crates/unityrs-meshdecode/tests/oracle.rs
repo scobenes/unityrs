@@ -5,9 +5,15 @@
 //! core's typetree read, `MeshHandler::process` and `get_triangles`, each
 //! array bit for bit, each exception by type and message, and each part a
 //! later phase ports where UnityPy begins it; each call made twice, the
-//! second answering as the first. The same cases on UnityPy's TPK trees
-//! when `meshdecode.py --tpk` hands them over on standard input, and a
-//! streamed Mesh read through a real Environment.
+//! second answering as the first, each array read through the public
+//! accessors (`len`, `tuple_len`, `component`). Where `PARITY.md` section
+//! 19.1's Tier C rows on the compressed mesh show, the case's answer is
+//! the corrected one the script records beside UnityPy's ([`DIVERGES`],
+//! the expected-divergence mask), and a packed item past 32 bits is
+//! refused ([`REFUSED`]); `tests/compressed.rs` pins what each divergence
+//! changes. The same cases on UnityPy's TPK trees when `meshdecode.py
+//! --tpk` hands them over on standard input, and a streamed Mesh read
+//! through a real Environment.
 
 use std::sync::{Arc, Mutex};
 
@@ -20,8 +26,8 @@ use unityrs_core::typetree::{NodeList, NodeRow, Tree};
 use unityrs_core::walk::{self, ReadCtx, ReadOptions, RefTypes};
 use unityrs_core::{Bytes, Parsed, RawStr, SerializedFile};
 use unityrs_meshdecode::{
-    FileResources, Gather, GfxPrimitiveType, MeshError, MeshHandler, MeshTopology, Processed,
-    Resources, Source, SubMeshTriangles, Triangles, Unsupported, Values, Version, VertexArray,
+    Component, FileResources, Gather, GfxPrimitiveType, MeshError, MeshHandler, MeshTopology,
+    Processed, Resources, Source, SubMeshTriangles, Triangles, Unsupported, Version, VertexArray,
     VertexChannelFormat, VertexFormat, VertexFormat2017, get_channel_component_size,
     get_channel_dtype, unpack_vertexdata,
 };
@@ -32,7 +38,28 @@ use unityrs_testkit::serialized::{self, SerializedSpec, one_object};
 /// The cases `meshdecode.py` records.
 const FORMAT_VERSIONS: usize = 10;
 const UNPACK_CASES: usize = 251;
-const PROCESS_CASES: usize = 388;
+const PROCESS_CASES: usize = 489;
+
+/// The expected-divergence mask (`PARITY.md` section 19.1): each case whose
+/// answer UnityPy's three Tier C rows on `decompress_compressed_mesh`
+/// change (the UV offset, the fourth bone weight, `normalize`'s square),
+/// and what they change, the arrays (`outcome` where the corrected answer
+/// is another outcome); `tests/compressed.rs` pins each value changed. The
+/// script records the corrected answer beside UnityPy's
+/// (`tools/fixtures/meshdecode.py`'s `FIXES` and `NORMALIZE_FIX`).
+const DIVERGES: &[(&str, &[&str])] = &[
+    ("compressed_values", &["m_BoneWeights", "m_UV2"]),
+    ("compressed_uv_dims", &["m_UV5", "m_UV7"]),
+    ("compressed_uv_short", &["outcome"]),
+    ("compressed_uv_unaligned", &["m_UV2"]),
+    ("compressed_normals_pow", &["m_Normals"]),
+    ("compressed_skin_weights", &["m_BoneWeights"]),
+];
+
+/// The cases the crate refuses where UnityPy answers, by the refusal's
+/// detail (`PARITY.md` section 15.3's `unpack_ints` row): an item past 32
+/// bits.
+const REFUSED: &[(&str, &str)] = &[("compressed_ints_33", "a packed item wider than 32 bits")];
 
 /// A fixture, compiled in: this file opens no file at all, so the TPK
 /// replay reads only its standard input, and a source scan
@@ -84,7 +111,6 @@ fn error(e: &MeshError) -> J {
     if let MeshError::Unsupported(u) = e {
         let kind = match u {
             Unsupported::FixedChannels => "fixed_channels".to_owned(),
-            Unsupported::CompressedMesh(f) => format!("compressed:{f}"),
             Unsupported::MeshArray(f) => format!("mesh_array:{f}"),
             Unsupported::SpriteVertices => "sprite_vertices".to_owned(),
             other => panic!("{other:?}"),
@@ -253,23 +279,40 @@ fn parse(rows: &J, data: Vec<u8>) -> Result<Parsed, String> {
     walk::boost::read(&Bytes::from(data), &tree, &ctx).map_err(|e| failed("the read", &e))
 }
 
-fn array(a: &VertexArray) -> J {
-    let d = a.dimension();
-    match a.values() {
-        Values::Float(v) => v
-            .chunks(d)
-            .map(|t| {
-                t.iter()
-                    .map(|x| json!({ "f": format!("{:016x}", x.to_bits()) }))
-                    .collect::<J>()
-            })
-            .collect(),
-        Values::Int(v) => v
-            .chunks(d)
-            .map(|t| t.iter().map(|x| json!(x)).collect::<J>())
-            .collect(),
-        other => panic!("a form no case records: {other:?}"),
+fn component(c: Component) -> J {
+    match c {
+        Component::Float(x) => json!({ "f": format!("{:016x}", x.to_bits()) }),
+        Component::Int(i) => json!(i),
+        other => panic!("{other:?}"),
     }
+}
+
+/// Tuple `t` of `a`, through the public accessors: the components it
+/// holds ([`VertexArray::tuple_len`]), each by [`VertexArray::component`].
+fn tuple(a: &VertexArray, t: usize) -> Vec<J> {
+    let n = a.tuple_len(t).expect("a tuple within len()");
+    (0..n)
+        .map(|c| component(a.component(t, c).expect("a component within tuple_len()")))
+        .collect()
+}
+
+/// `m_BindPose` as UnityPy's `reshape(shape=(4, 4))` gives it: four rows
+/// a matrix, the last matrix's cut short, then empty.
+fn matrices(a: &VertexArray) -> J {
+    assert_eq!(a.dimension(), 16);
+    (0..a.len())
+        .map(|t| {
+            let m = tuple(a, t);
+            (0..4)
+                .map(|r| m.get(4 * r..m.len().min(4 * r + 4)).unwrap_or(&[]).to_vec())
+                .collect::<J>()
+        })
+        .collect()
+}
+
+/// An array as UnityPy's list of tuples, through the public accessors.
+fn array(a: &VertexArray) -> J {
+    (0..a.len()).map(|t| J::Array(tuple(a, t))).collect()
 }
 
 fn processed(p: &Processed<'_>, calls: Option<&Mutex<Vec<J>>>) -> J {
@@ -291,6 +334,9 @@ fn processed(p: &Processed<'_>, calls: Option<&Mutex<Vec<J>>>) -> J {
         if let Some(a) = p.uv(i) {
             attrs.insert(format!("m_UV{i}"), array(a));
         }
+    }
+    if let Some(a) = p.bind_pose() {
+        attrs.insert("m_BindPose".to_owned(), matrices(a));
     }
     let call = calls
         .and_then(|c| c.lock().unwrap().first().cloned())
@@ -365,11 +411,14 @@ fn replay(body: &J) -> Vec<String> {
             Err(e) => (error(&e), None),
         };
         let (have, done) = run();
-        if have != c["process"] {
-            bad.push(format!(
-                "{name} [process]\n  want {}\n  have {have}",
-                c["process"]
-            ));
+        // The corrected answer where UnityPy's differs (Tier C), and the
+        // crate's refusal where it refuses what UnityPy unpacks.
+        let want = match REFUSED.iter().find(|(n, _)| *n == name) {
+            Some((_, why)) => json!({ "rust": format!("Malformed({why:?})") }),
+            None => c.get("corrected").unwrap_or(&c["process"]).clone(),
+        };
+        if have != want {
+            bad.push(format!("{name} [process]\n  want {want}\n  have {have}"));
             continue;
         }
         if run().0 != have {
@@ -426,10 +475,10 @@ fn every_handler_case_is_unitypy_s() {
         *split.entry(kind.to_owned()).or_default() += 1;
     }
     let want = [
-        ("ValueError", 13),
+        ("ValueError", 38),
         ("differs", 66),
-        ("error", 222),
-        ("same", 2),
+        ("error", 291),
+        ("same", 26),
     ];
     let want: std::collections::BTreeMap<String, usize> =
         want.iter().map(|&(k, n)| (k.to_owned(), n)).collect();
@@ -597,4 +646,34 @@ fn a_streamed_mesh_reads_its_resource_through_an_environment() {
         "{e:?}"
     );
     assert_eq!(e.python(), None);
+}
+
+/// Each case whose corrected answer differs from UnityPy's is in the mask
+/// [`DIVERGES`], with what differs, and each masked case differs so.
+#[test]
+fn the_tier_c_divergences_are_the_mask() {
+    let body = load("process.json");
+    let mut found = Vec::new();
+    for c in body["cases"].as_array().unwrap() {
+        let Some(fixed) = c.get("corrected") else {
+            continue;
+        };
+        let theirs = &c["process"];
+        let mut what: Vec<String> = match (&theirs["ok"]["attrs"], &fixed["ok"]["attrs"]) {
+            (J::Object(a), J::Object(b)) => {
+                let mut keys: Vec<String> = a.keys().chain(b.keys()).cloned().collect();
+                keys.sort();
+                keys.dedup();
+                keys.into_iter().filter(|k| a.get(k) != b.get(k)).collect()
+            }
+            _ => vec!["outcome".to_owned()],
+        };
+        what.sort();
+        found.push((c["name"].as_str().unwrap().to_owned(), what));
+    }
+    let want: Vec<(String, Vec<String>)> = DIVERGES
+        .iter()
+        .map(|(n, w)| ((*n).to_owned(), w.iter().map(|s| (*s).to_owned()).collect()))
+        .collect();
+    assert_eq!(found, want);
 }

@@ -10,7 +10,7 @@ handler's `endianess`; and, for `m_StreamData`, `resource` (the bytes `get_resou
 `VertexFormat` table, half and float bit patterns, derived streams and their strides, 16-byte alignment and
 offsets, pre-2018 colour, channel assignment by version, 4.x's own streams and masks, the fixed streams below 4,
 index formats (2017.3's and 2017.4's rules, `m_Use16BitIndices`), every topology, the skin, `m_StreamData`, the
-compressed mesh's gates and their order, `m_UVInfo`, sprites, object mode's `UnknownObject`s, a Mesh's own
+compressed mesh's gates and their order, `m_UVInfo`, its arrays unpacked (meshdecode_compressed.py), sprites, object mode's `UnknownObject`s, a Mesh's own
 arrays, each error path, and channels, submeshes and fields by the count (the work tests' scale). Run on its own it
 only imports (tools/parity/tests/test_fixture_modules.py).
 """
@@ -415,7 +415,8 @@ def stream_data_cases() -> list[dict]:
 
 
 def compressed_cases() -> list[dict]:
-    """The compressed mesh's gates, in UnityPy's order: each P2a array with items, alone."""
+    """The compressed mesh's gates, in UnityPy's order: each array with items, alone; then its arrays unpacked."""
+    from meshdecode_compressed import decode_cases  # it builds on this module
     out = []
     for version, names in (("2019.4.0f1", ["m_Vertices", "m_UV", "m_Normals", "m_Tangents", "m_FloatColors",
                                            "m_Weights", "m_Triangles", "m_Colors", "m_BindPoses", "m_NormalSigns"]),
@@ -433,7 +434,7 @@ def compressed_cases() -> list[dict]:
             else:
                 o.vertex_data(3, {0: (0, 0, 0, 3)}, splitmix(19, 48))
             out.append(tri(o).case(f"compressed_{version}_{name}"))
-    out += compressed_order_cases() + uv_info_cases()
+    out += compressed_order_cases() + uv_info_cases() + decode_cases()
     return out
 
 

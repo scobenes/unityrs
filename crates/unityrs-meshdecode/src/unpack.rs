@@ -35,7 +35,7 @@
 //! the half's sign and no payload ([`half`]). An oracle moved past Python
 //! 3.11 needs these checked again: 3.14 changes how `PyFloat_Unpack4`
 //! treats a NaN (gh-130317), which may change the bits [`widen`] matches
-//! (`PARITY.md` section 15.3's P2a notes). A format of
+//! (`PARITY.md` section 19.3's row on the mesh handler's later phases' parts). A format of
 //! no bytes (a dimension whose low four bits are 0) is `struct.error`
 //! "cannot iteratively unpack with a struct of length 0".
 //!
@@ -53,7 +53,9 @@ use crate::format::StructCode;
 
 /// One attribute: `len()` tuples of `dimension()` components, as
 /// `struct.iter_unpack` (or the copy of a `Mesh`'s skin) gives them, the
-/// values flat in tuple order.
+/// values flat in tuple order. A compressed mesh's arrays are
+/// `PackedBitVector.reshape`'s lists, whose last tuple may be cut short:
+/// it is a tuple here too, of the components it holds.
 #[derive(Debug)]
 pub struct VertexArray {
     dimension: usize,
@@ -69,10 +71,7 @@ const _: () = crate::send_sync::<VertexArray>();
 ///
 /// Not `Clone`: the values are charged to the meter that `process` was
 /// given, for as long as the [`VertexArray`] holding them lives, and a copy
-/// would hold memory no charge covers. Non-exhaustive: P2a's
-/// `decompress_compressed_mesh` gives tuples that mix `int`s and `float`s
-/// (its zeros beside unpacked normals, tangents and bone weights), which a
-/// per-element mixed form will hold, flat in tuple order as these are.
+/// would hold memory no charge covers.
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
 pub enum Values {
@@ -80,6 +79,10 @@ pub enum Values {
     Float(Vec<f64>),
     /// `int`s (the integer codes; a skin's bone indices).
     Int(Vec<i64>),
+    /// Each value a `float` or an `int`, as Python holds it: a compressed
+    /// mesh's normals, tangents and bone weights, whose `zeros` are `int`s
+    /// beside the `float`s unpacked ([`crate::compressed`]).
+    Mixed(Vec<Component>),
 }
 
 const _: () = crate::send_sync::<Values>();
@@ -101,14 +104,35 @@ impl VertexArray {
         self.dimension
     }
 
-    /// The number of tuples.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        let n = match &self.values {
+    /// The number of values, flat.
+    fn values_len(&self) -> usize {
+        match &self.values {
             Values::Float(v) => v.len(),
             Values::Int(v) => v.len(),
-        };
-        n.checked_div(self.dimension).unwrap_or(0)
+            Values::Mixed(v) => v.len(),
+        }
+    }
+
+    /// The number of tuples, a last one cut short counted: Python's
+    /// `len()` of the list UnityPy holds. No values at dimension 0 is no
+    /// tuple.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        if self.dimension == 0 {
+            return 0;
+        }
+        self.values_len().div_ceil(self.dimension)
+    }
+
+    /// The components tuple `tuple` holds: [`Self::dimension`], or fewer
+    /// for a last tuple cut short; `None` past the tuples.
+    #[must_use]
+    pub fn tuple_len(&self, tuple: usize) -> Option<usize> {
+        if tuple >= self.len() {
+            return None;
+        }
+        let from = tuple.checked_mul(self.dimension)?;
+        Some((self.values_len() - from).min(self.dimension))
     }
 
     /// Whether it holds no tuple.
@@ -124,18 +148,20 @@ impl VertexArray {
     }
 
     /// Component `component` of tuple `tuple`, as a Python `float` or
-    /// `int`, whichever form holds it; `None` past the whole tuples
-    /// ([`Self::len`]: the values of a last, cut tuple are no tuple's) or
-    /// past the dimension.
+    /// `int`, whichever form holds it; `None` past the tuples
+    /// ([`Self::len`]) or past the tuple's components
+    /// ([`Self::tuple_len`]: a last tuple cut short holds fewer), where
+    /// Python's index raises `IndexError`.
     #[must_use]
     pub fn component(&self, tuple: usize, component: usize) -> Option<Component> {
-        if component >= self.dimension || tuple >= self.len() {
+        if component >= self.tuple_len(tuple)? {
             return None;
         }
         let at = tuple.checked_mul(self.dimension)?.checked_add(component)?;
         match &self.values {
             Values::Float(v) => v.get(at).copied().map(Component::Float),
             Values::Int(v) => v.get(at).copied().map(Component::Int),
+            Values::Mixed(v) => v.get(at).copied(),
         }
     }
 }
@@ -538,15 +564,20 @@ mod tests {
     }
 
     #[test]
-    fn a_component_past_the_tuples_or_the_dimension_is_none() {
+    fn a_component_past_the_tuples_or_its_tuple_is_none() {
         let a = array(2, Values::Float(vec![1.0, 2.0, 3.0]));
-        // Three values of dimension 2: one whole tuple.
-        assert_eq!(a.len(), 1);
+        // Three values of dimension 2: a whole tuple and one cut short, as
+        // `reshape` gives them.
+        assert_eq!(a.len(), 2);
+        assert_eq!(
+            (a.tuple_len(0), a.tuple_len(1), a.tuple_len(2)),
+            (Some(2), Some(1), None)
+        );
         assert_eq!(a.component(0, 2), None);
         assert_eq!(a.component(0, 1), Some(Component::Float(2.0)));
-        // The cut tuple's one value is no tuple's.
-        assert_eq!(a.component(1, 0), None);
+        assert_eq!(a.component(1, 0), Some(Component::Float(3.0)));
         assert_eq!(a.component(1, 1), None);
+        assert_eq!(a.component(2, 0), None);
         assert_eq!(a.component(usize::MAX, 1), None);
         assert_eq!(a.component(usize::MAX / 2 + 1, 0), None);
         let empty = array(0, Values::Int(vec![1, 2]));
