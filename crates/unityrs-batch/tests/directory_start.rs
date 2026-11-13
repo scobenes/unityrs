@@ -342,7 +342,22 @@ fn independent_child_cannot_acquire_the_held_root_lock() {
         String::from_utf8_lossy(&out.stderr)
     );
     drop(owner);
-    preflight(scratch.path(), 1, fs(true)).unwrap();
+    // The root lock is a `flock` on an open file description. A sibling test
+    // that spawns a child (`mkfifo`) forks this process, and until that child
+    // execs, its copy of the descriptor keeps the description, and the lock,
+    // alive. Dropping `owner` inside that window leaves the root locked for a
+    // moment, so the reacquire retries while the only refusal is that lock,
+    // up to the deadlock guard; any other error fails at once.
+    let start = std::time::Instant::now();
+    loop {
+        match preflight(scratch.path(), 1, fs(true)) {
+            Ok(_) => break,
+            Err(e) if e.class == Class::OutputLocked && start.elapsed() < guard::DEADLOCK_GUARD => {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(e) => panic!("reacquire after drop: {e:?}"),
+        }
+    }
 }
 #[test]
 fn root_lock_child() {
