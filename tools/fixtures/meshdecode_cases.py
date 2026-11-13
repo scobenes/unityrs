@@ -10,9 +10,10 @@ handler's `endianess`; and, for `m_StreamData`, `resource` (the bytes `get_resou
 `VertexFormat` table, half and float bit patterns, derived streams and their strides, 16-byte alignment and
 offsets, pre-2018 colour, channel assignment by version, 4.x's own streams and masks, the fixed streams below 4,
 index formats (2017.3's and 2017.4's rules, `m_Use16BitIndices`), every topology, the skin, `m_StreamData`, the
-compressed mesh's gates and their order, `m_UVInfo`, its arrays unpacked (meshdecode_compressed.py), sprites, object mode's `UnknownObject`s, a Mesh's own
-arrays, each error path, and channels, submeshes and fields by the count (the work tests' scale). Run on its own it
-only imports (tools/parity/tests/test_fixture_modules.py).
+compressed mesh's gates and their order, `m_UVInfo`, its arrays unpacked (meshdecode_compressed.py), sprites,
+object mode's `UnknownObject`s, a Mesh's own arrays, each error path, channels, submeshes and fields by the count (the
+work tests' scale), and the normalised formats' extremes (PARITY.md section 19.1). Run on its own it only imports
+(tools/parity/tests/test_fixture_modules.py).
 """
 
 from __future__ import annotations
@@ -674,9 +675,56 @@ def array_scale_cases() -> list[dict]:
     return out
 
 
+# PARITY.md section 19.1's UNorm/SNorm row: each width's extremes, two vertices of four components, by struct code.
+EXTREMES = {
+    "B": [0, 1, 127, 128, 254, 255, 64, 255],
+    "b": [-128, -127, -1, 0, 1, 126, 127, -64],
+    "H": [0, 1, 32767, 32768, 65534, 65535, 256, 65535],
+    "h": [-32768, -32767, -1, 0, 1, 32766, 32767, -256],
+}
+# The formats unityrs normalises, by the version that picks each table: the colour bytes, UNorm and SNorm.
+NORMALISED = {"5.6.7f1": (2,), "2017.4.0f1": (2, 3, 4, 5, 6), "2019.4.0f1": (2, 3, 4, 5)}
+
+
+def normalised_cases() -> list[dict]:
+    """Each normalised format's extremes in the positions, the colour channel and UV0 of a Mesh; big-endian too; a
+    skin's blend weights and indices; and a Sprite's positions and UV0 in each width, which UnityPy and the crate
+    read as integers."""
+    out = []
+    for version, formats in NORMALISED.items():
+        v = vtuple(version)
+        colour, uv0 = (3, 4) if v[0] >= 2018 else (2, 3)
+        for fmt in formats:
+            code = table(v)[fmt]
+            values = EXTREMES[code]
+            for chn, name in ((0, "positions"), (colour, "colour"), (uv0, "uv0")):
+                chans = {0: (0, 0, 0, 3), chn: (1, 0, fmt, 4)} if chn else {0: (0, 0, fmt, 4)}
+                rows = {0: ("f", [(0.0, 0.5, 1.0)] * 2), chn: (code, [values[:4], values[4:]])}
+                for endian in ("<", ">") if version == "2019.4.0f1" and chn == 0 else ("<",):
+                    data = lay_out(2, chans, sizes(v), rows, endian)
+                    o = tri(mesh(version).vertex_data(2, chans, data))
+                    big = "_big" if endian == ">" else ""
+                    out.append(o.case(f"normalised_{version}_{fmt}_{name}{big}", endian=endian))
+    v = vtuple("2019.4.0f1")
+    # A skin in the vertex data: UNorm8 blend weights (12), normalised, and blend indices (13) in UNorm8 too, bone
+    # indices whatever their format, which stay integers.
+    chans = {0: (0, 0, 0, 3), 12: (1, 0, 2, 4), 13: (1, 4, 2, 4)}
+    rows = {0: ("f", [(0.0, 0.5, 1.0)] * 2), 12: ("B", [EXTREMES["B"][:4], EXTREMES["B"][4:]]),
+            13: ("B", [(0, 1, 28, 255), (3, 2, 1, 0)])}  # fmt: skip
+    out.append(tri(mesh().vertex_data(2, chans, lay_out(2, chans, sizes(v), rows))).case("normalised_2019.4.0f1_skin"))
+    for pos, uv in ((5, 2), (3, 4)):  # SNorm16 positions and UNorm8 UV0; SNorm8 positions and UNorm16 UV0
+        chans = {0: (0, 0, pos, 3), 4: (1, 0, uv, 2)}
+        pc, uc = V2019[pos], V2019[uv]
+        rows = {0: (pc, [EXTREMES[pc][:3], EXTREMES[pc][3:6], EXTREMES[pc][5:8]]),
+                4: (uc, [EXTREMES[uc][:2], EXTREMES[uc][2:4], EXTREMES[uc][4:6]])}  # fmt: skip
+        o = sprite().vertex_data(3, chans, lay_out(3, chans, sizes(v), rows)).submeshes((0, 3, 0)).indices([0, 1, 2])
+        out.append(o.case(f"normalised_sprite_{pos}_{uv}"))
+    return out
+
+
 GROUPS = (format_cases, bit_cases, stream_cases, channel_cases, own_stream_cases, fixed_stream_cases, index_cases,
           topology_cases, skin_cases, stream_data_cases, compressed_cases, sprite_cases, object_cases, version_cases,
-          scale_cases, element_field_cases, big_cases, array_scale_cases)  # fmt: skip
+          scale_cases, element_field_cases, big_cases, array_scale_cases, normalised_cases)  # fmt: skip
 # What is being built or run, for meshdecode.py --tpk's failure line (a builder's name, then a case's).
 AT = ""
 

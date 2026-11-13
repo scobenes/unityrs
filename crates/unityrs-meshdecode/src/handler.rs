@@ -24,7 +24,8 @@
 //!    an `UnknownObject`, `ValueError` (`:168-172`).
 //! 4. The index buffer, when non-empty: `bytes()` of the list, unpacked as
 //!    `H` or `I` (`MeshHelper.py:174-186`).
-//! 5. The vertex data (`MeshHelper.py:188-189`, [`crate::vertex`]).
+//! 5. The vertex data (`MeshHelper.py:188-189`, [`crate::vertex`]), a
+//!    Mesh's normalised formats read as `float`s (Tier C).
 //! 6. A Mesh's compressed mesh (`MeshHelper.py:191-192`,
 //!    [`crate::compressed`]): the vertex count, always, and each array it
 //!    holds, over the vertex data's; its triangles' indices replace the
@@ -254,6 +255,7 @@ impl<'a> MeshHandler<'a> {
             let read = read_vertex_data(
                 version,
                 self.little,
+                self.src.is_mesh(&mesh),
                 data,
                 &channels,
                 &streams,

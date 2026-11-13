@@ -37,12 +37,17 @@ begins them; the script makes each raise a marker there and records `{"p2a": kin
 and the reads of a Mesh's own arrays and of a render data's `vertices` that begin `copy_from_mesh`'s and
 `copy_from_spriterenderdata`'s copies (each field read through a property that raises where the field is non-empty
 and the handler's own is unset); every other line is UnityPy's own. Each case's `process` is run once more with
-`decompress_compressed_mesh` corrected: UnityPy's own source with PARITY.md section 19.1's three Tier C rows on it
-fixed (`FIXES`, the UV offset added, not assigned, and the fourth bone weight `(31 - sum) / 31`, not `1 - sum`;
-`NORMALIZE_FIX`, `normalize`'s square `v * v`, correctly rounded, not `v**2`, the C library's `pow`), each line
-replaced exactly once, compiled in memory, so the corrected answer depends on no host's `pow`; where it differs, the
-case records it as `corrected`, the answer unityrs gives, and the crate's replay names each such case in its
-expected-divergence mask.
+`decompress_compressed_mesh` and `read_vertex_data` corrected: UnityPy's own source with PARITY.md section 19.1's
+Tier C rows on them fixed (`FIXES`, the UV offset added, not assigned, and the fourth bone weight `(31 - sum) / 31`,
+not `1 - sum`; `NORMALIZE_FIX`, `normalize`'s square `v * v`, correctly rounded, not `v**2`, the C library's `pow`;
+`READ_FIX`, a Mesh's channel in a UNorm, SNorm or byte colour format normalised by `normalised`), each line replaced
+exactly once, compiled in memory, so the corrected answer depends on no host's `pow`; where it differs, the case
+records it as `corrected`, the answer unityrs gives, and the crate's replay names each such case in its
+expected-divergence mask. `normalised` takes the format's rule from its enum member's name and its width from its
+struct code, never from the crate's tables: an n-bit UNorm value v (and a byte colour's) is `v / (2**n - 1)`, an SNorm
+value `max(v / (2**(n - 1) - 1), -1.0)`, the Vulkan and Direct3D conversion. It leaves the blend indices (channel 13
+from 2018, the one layout with them in the vertex data), which are bone indices, integers by their meaning whatever
+their format, and a Sprite's render data, as UnityPy reads them, as the crate leaves them.
 
 **--tpk.** The same cases on UnityPy's own TPK trees (`Tpk.get_typetree_node`) in place of the hand-built ones, at
 run time. Nothing derived from a TPK may be committed (docs/plans/core.md section 9, Q2), so the TPK's trees and
@@ -255,6 +260,11 @@ FIXES = (
 # PARITY.md section 19.1's square in normalize (helpers/MeshHelper.py:64): `v**2` is glibc's `pow`, not always
 # correctly rounded; `v * v` is.
 NORMALIZE_FIX = ("sum(v**2 for v in vector)", "sum(v * v for v in vector)")
+# PARITY.md section 19.1's UNorm/SNorm row, in read_vertex_data: each channel's data through `normalised`.
+READ_FIX = (
+    "self.assign_channel_vertex_data(chn, component_data)",
+    "self.assign_channel_vertex_data(chn, normalised(self, chn, m_Channel, component_data))",
+)
 # A Mesh's own arrays, and the handler field copy_from_mesh fills from each (helpers/MeshHelper.py:206-224).
 OWN = {"m_Vertices": "m_Vertices", "m_Normals": "m_Normals", "m_Tangents": "m_Tangents", "m_UV": "m_UV0",
        "m_UV1": "m_UV1", "m_Colors": "m_Colors"}  # fmt: skip
@@ -393,6 +403,23 @@ def triangles_shape(tris) -> dict:
     return {"tri": whole, "cut": cut, "empty": len(empty)}
 
 
+def normalised(handler, chn: int, channel, data: list) -> list:
+    """A Mesh's channel in a UNorm, SNorm or byte colour format as floats (PARITY.md section 19.1, module docs): the
+    rule by the format's enum member's name, the width by its struct code; any other format, the blend indices
+    (channel 13 from 2018) and a Sprite's render data as UnityPy reads them."""
+    major = handler.version[0]
+    if not isinstance(handler.src, Mesh) or (major >= 2018 and chn == 13):
+        return data
+    enum = VertexChannelFormat if major < 2017 else VertexFormat2017 if major < 2019 else VertexFormat
+    name = enum(channel.format).name
+    bits = 8 * struct.calcsize(handler.get_channel_dtype(channel))
+    if "UNorm" in name or name.endswith("FormatColor"):
+        return [tuple(v / (2**bits - 1) for v in t) for t in data]
+    if "SNorm" in name:
+        return [tuple(max(v / (2 ** (bits - 1) - 1), -1.0) for v in t) for t in data]
+    return data
+
+
 def fixed(function, fixes, namespace: dict):
     """`function`'s own source with each of `fixes` made exactly once, compiled in memory in `namespace`."""
     source = textwrap.dedent(inspect.getsource(function))
@@ -404,12 +431,17 @@ def fixed(function, fixes, namespace: dict):
     return space[function.__name__]
 
 
-def corrected():
-    """`decompress_compressed_mesh` with `FIXES` made in UnityPy's own source, calling `normalize` with
-    `NORMALIZE_FIX` made in its (module docs): both compiled in memory, in a copy of MeshHelper's globals."""
+def corrected() -> dict:
+    """The handler's methods with their fixes made in UnityPy's own source (module docs): `decompress_compressed_mesh`
+    with `FIXES`, calling `normalize` with `NORMALIZE_FIX` made in its, and `read_vertex_data` with `READ_FIX`, calling
+    `normalised`; all compiled in memory, in a copy of MeshHelper's globals."""
     namespace = dict(vars(MeshHelper))
     namespace["normalize"] = fixed(MeshHelper.normalize, (NORMALIZE_FIX,), namespace)
-    return fixed(MeshHelper.MeshHandler.decompress_compressed_mesh, FIXES, namespace)
+    namespace["normalised"] = normalised
+    return {
+        "decompress_compressed_mesh": fixed(MeshHelper.MeshHandler.decompress_compressed_mesh, FIXES, namespace),
+        "read_vertex_data": fixed(MeshHelper.MeshHandler.read_vertex_data, (READ_FIX,), namespace),
+    }
 
 
 CORRECTED = corrected()
@@ -473,9 +505,10 @@ def run(case: dict) -> dict:
             return err(e)
         return {"ok": {**left(handler), "resource_call": calls[0] if calls else None}}
 
-    # PARITY.md section 19.1: the answer with UnityPy's two Tier C lines corrected, recorded where it differs.
+    # PARITY.md section 19.1: the answer with UnityPy's Tier C lines corrected, recorded where it differs.
     fixed_handler = MeshHelper.MeshHandler(src, version, case["endian"])
-    with patched(fixed_handler, mock.patch.object(MeshHelper.MeshHandler, "decompress_compressed_mesh", CORRECTED)):
+    fixes = [mock.patch.object(MeshHelper.MeshHandler, method, fixed) for method, fixed in CORRECTED.items()]
+    with patched(fixed_handler, *fixes):
         fixed_outcome = first_process(fixed_handler)
 
     handler = MeshHelper.MeshHandler(src, version, case["endian"])

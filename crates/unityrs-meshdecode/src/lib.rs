@@ -28,7 +28,10 @@
 //!
 //! **Divergences** (`PARITY.md` sections 15.3, 19.1 and 19.3): a compressed
 //! mesh's third and later UV channels read from where the ones before end,
-//! and a skin's fourth weight in 31sts, where UnityPy errs (Tier C); a
+//! a skin's fourth weight in 31sts, and a Mesh's `UNorm`, `SNorm` and byte
+//! colour channels normalised to `float`s (its blend indices, and a
+//! Sprite's channels, kept as UnityPy's integers), where UnityPy errs
+//! (Tier C); a
 //! packed item wider than 32 bits is [`MeshError::Malformed`]; an array or a
 //! loop past the caller's meter is [`MeshError::Charge`]; a gather whose
 //! 32-bit offsets wrap past UnityPyBoost's check, where UnityPy reads or
@@ -89,8 +92,8 @@ mod view;
 
 pub use error::{IndexKind, MeshError, StructError, Unsupported};
 pub use format::{
-    FormatTable, GfxPrimitiveType, MeshTopology, StructCode, VertexChannelFormat, VertexFormat,
-    VertexFormat2017, get_channel_component_size, get_channel_dtype,
+    FormatTable, GfxPrimitiveType, MeshTopology, Norm, StructCode, VertexChannelFormat,
+    VertexFormat, VertexFormat2017, get_channel_component_size, get_channel_dtype,
 };
 pub use handler::{FileResources, IndexBuffer, MeshHandler, Processed, Resources, Source};
 pub use triangles::{SubMeshTriangles, Triangles};

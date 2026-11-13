@@ -7,10 +7,11 @@
 //! later phase ports where UnityPy begins it; each call made twice, the
 //! second answering as the first, each array read through the public
 //! accessors (`len`, `tuple_len`, `component`). Where `PARITY.md` section
-//! 19.1's Tier C rows on the compressed mesh show, the case's answer is
-//! the corrected one the script records beside UnityPy's ([`DIVERGES`],
-//! the expected-divergence mask), and a packed item past 32 bits is
-//! refused ([`REFUSED`]); `tests/compressed.rs` pins what each divergence
+//! 19.1's Tier C rows on the compressed mesh and on the normalised formats
+//! show, the case's answer is the corrected one the script records beside
+//! UnityPy's ([`DIVERGES`] and [`NORMALISED`], the expected-divergence
+//! mask), and a packed item past 32 bits is refused ([`REFUSED`]);
+//! `tests/compressed.rs` and `tests/normalised.rs` pin what each divergence
 //! changes. The same cases on UnityPy's TPK trees when `meshdecode.py
 //! --tpk` hands them over on standard input, and a streamed Mesh read
 //! through a real Environment.
@@ -38,7 +39,7 @@ use unityrs_testkit::serialized::{self, SerializedSpec, one_object};
 /// The cases `meshdecode.py` records.
 const FORMAT_VERSIONS: usize = 10;
 const UNPACK_CASES: usize = 251;
-const PROCESS_CASES: usize = 489;
+const PROCESS_CASES: usize = 526;
 
 /// The expected-divergence mask (`PARITY.md` section 19.1): each case whose
 /// answer UnityPy's three Tier C rows on `decompress_compressed_mesh`
@@ -55,6 +56,58 @@ const DIVERGES: &[(&str, &[&str])] = &[
     ("compressed_normals_pow", &["m_Normals"]),
     ("compressed_skin_weights", &["m_BoneWeights"]),
 ];
+
+/// The rest of the mask: the cases whose answer `PARITY.md` section 19.1's
+/// UNorm/SNorm row changes, a Mesh's channel in a `UNorm`, `SNorm` or byte
+/// colour format, by name: a name, or one with a `*` standing for any run
+/// of characters, and the arrays the normalised channel fills. A Sprite's
+/// case is never here (`tests/normalised.rs`).
+const NORMALISED: &[(&str, &[&str])] = &[
+    ("format_5.6.7f1_2_d*", &["m_Vertices"]),
+    ("format_2016.4.0f1_2_d*", &["m_Vertices"]),
+    ("format_2017.1.0f3_2_d*", &["m_Vertices"]),
+    ("format_2017.1.0f3_3_d*", &["m_Vertices"]),
+    ("format_2017.1.0f3_4_d*", &["m_Vertices"]),
+    ("format_2017.1.0f3_5_d*", &["m_Vertices"]),
+    ("format_2017.1.0f3_6_d*", &["m_Vertices"]),
+    ("format_2018.4.0f1_2_d*", &["m_Vertices"]),
+    ("format_2018.4.0f1_3_d*", &["m_Vertices"]),
+    ("format_2018.4.0f1_4_d*", &["m_Vertices"]),
+    ("format_2018.4.0f1_5_d*", &["m_Vertices"]),
+    ("format_2018.4.0f1_6_d*", &["m_Vertices"]),
+    ("format_2019.4.0f1_2_d*", &["m_Vertices"]),
+    ("format_2019.4.0f1_3_d*", &["m_Vertices"]),
+    ("format_2019.4.0f1_4_d*", &["m_Vertices"]),
+    ("format_2019.4.0f1_5_d*", &["m_Vertices"]),
+    ("format_6000.0.0f1_2_d*", &["m_Vertices"]),
+    ("format_6000.0.0f1_3_d*", &["m_Vertices"]),
+    ("format_6000.0.0f1_4_d*", &["m_Vertices"]),
+    ("format_6000.0.0f1_5_d*", &["m_Vertices"]),
+    ("bits_endian_*", &["m_Colors"]),
+    ("streams_three", &["m_Colors"]),
+    ("colour_5.6.7f1_d*", &["m_Colors"]),
+    ("colour_2017.4.0f1_d*", &["m_Colors"]),
+    ("colour_2018.1.0f2_d*", &["m_Tangents"]),
+    ("colour_past_end", &["m_Colors"]),
+    ("own_all", &["m_Colors"]),
+    ("own_mask_skips", &["m_Colors"]),
+    ("normalised_*_positions", &["m_Vertices"]),
+    ("normalised_*_positions_big", &["m_Vertices"]),
+    ("normalised_*_colour", &["m_Colors"]),
+    ("normalised_*_uv0", &["m_UV0"]),
+    ("normalised_2019.4.0f1_skin", &["m_BoneWeights"]),
+];
+
+/// Whether `name` is `pattern`, a `*` in it standing for any run of
+/// characters.
+fn matches(pattern: &str, name: &str) -> bool {
+    match pattern.split_once('*') {
+        Some((head, tail)) => {
+            name.len() >= head.len() + tail.len() && name.starts_with(head) && name.ends_with(tail)
+        }
+        None => pattern == name,
+    }
+}
 
 /// The cases the crate refuses where UnityPy answers, by the refusal's
 /// detail (`PARITY.md` section 15.3's `unpack_ints` row): an item past 32
@@ -477,7 +530,7 @@ fn every_handler_case_is_unitypy_s() {
     let want = [
         ("ValueError", 38),
         ("differs", 66),
-        ("error", 291),
+        ("error", 328),
         ("same", 26),
     ];
     let want: std::collections::BTreeMap<String, usize> =
@@ -649,12 +702,27 @@ fn a_streamed_mesh_reads_its_resource_through_an_environment() {
 }
 
 /// Each case whose corrected answer differs from UnityPy's is in the mask
-/// [`DIVERGES`], with what differs, and each masked case differs so.
+/// ([`DIVERGES`], then [`NORMALISED`]), with what differs, each masked case
+/// differs so, and each of the mask's names names a case.
 #[test]
 fn the_tier_c_divergences_are_the_mask() {
     let body = load("process.json");
     let mut found = Vec::new();
+    let mut want: Vec<(String, Vec<String>)> = Vec::new();
+    let mut unused: Vec<&str> = NORMALISED.iter().map(|(n, _)| *n).collect();
     for c in body["cases"].as_array().unwrap() {
+        let name = c["name"].as_str().unwrap();
+        let masked = DIVERGES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .or_else(|| NORMALISED.iter().find(|(n, _)| matches(n, name)));
+        if let Some((n, what)) = masked {
+            unused.retain(|u| u != n);
+            want.push((
+                name.to_owned(),
+                what.iter().map(|s| (*s).to_owned()).collect(),
+            ));
+        }
         let Some(fixed) = c.get("corrected") else {
             continue;
         };
@@ -669,11 +737,8 @@ fn the_tier_c_divergences_are_the_mask() {
             _ => vec!["outcome".to_owned()],
         };
         what.sort();
-        found.push((c["name"].as_str().unwrap().to_owned(), what));
+        found.push((name.to_owned(), what));
     }
-    let want: Vec<(String, Vec<String>)> = DIVERGES
-        .iter()
-        .map(|(n, w)| ((*n).to_owned(), w.iter().map(|s| (*s).to_owned()).collect()))
-        .collect();
     assert_eq!(found, want);
+    assert!(unused.is_empty(), "the mask names no case: {unused:?}");
 }
