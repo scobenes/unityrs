@@ -215,8 +215,14 @@ pub(crate) fn directory_identity(path: &std::path::Path) -> io::Result<(u64, u64
     if stat.st_mode & libc::S_IFMT != libc::S_IFDIR {
         return Err(io::Error::from(io::ErrorKind::InvalidData));
     }
-    #[allow(clippy::useless_conversion)]
-    Ok((u64::from(stat.st_dev), u64::from(stat.st_ino)))
+    // As std's `MetadataExt::dev` and `ino` do: `dev_t` is `i32` on macOS.
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap,
+        clippy::unnecessary_cast,
+        clippy::useless_conversion
+    )]
+    Ok((stat.st_dev as u64, stat.st_ino as u64))
 }
 
 /// Unlink exactly one generated file with fallible path storage.
