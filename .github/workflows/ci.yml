@@ -82,6 +82,22 @@ jobs:
       - name: Test, sealed attempt test hooks
         run: cargo test -p unityrs-batch --features test-hooks
 
+  # The batch engine's scale children (production-sized and million-record
+  # phase-6 runs, each within its spool allowance), in release: in a debug
+  # build, beside the rest of `check` or `features`, they passed the timeout.
+  # They are ignored in debug builds and run here alone.
+  scale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Test, phase 6 at scale (release)
+        run: cargo test --locked --release -p unityrs-batch --test winners_scale --test members_scale -- --include-ignored
+
   licenses:
     runs-on: ubuntu-latest
     timeout-minutes: 15

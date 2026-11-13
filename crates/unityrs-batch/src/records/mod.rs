@@ -1,6 +1,6 @@
 //! Typed, bounded NDJSON artifacts; no whole-line or JSON-tree allocation.
 mod encode;
-mod flat;
+pub(crate) mod flat;
 mod model;
 pub mod read;
 pub mod text;

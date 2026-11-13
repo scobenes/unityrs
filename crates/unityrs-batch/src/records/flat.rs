@@ -5,6 +5,13 @@ use crate::phase::Error;
 use std::{ops::Range, str::FromStr};
 
 const NAMES: &[&str] = &[
+    "winner",
+    "rule",
+    "flip",
+    "pixels_differ",
+    "included",
+    "members",
+    "left_out",
     "type",
     "key",
     "unit",
@@ -49,7 +56,7 @@ enum Atom {
     Bool(bool),
     Null,
 }
-pub(super) struct Fields {
+pub(crate) struct Fields {
     values: [Option<Atom>; NAMES.len()],
 }
 impl Fields {

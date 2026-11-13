@@ -147,6 +147,10 @@ fn scale_child() {
     );
 }
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "scale: run in release, as CI's `scale` job does"
+)]
 fn counted_production_and_million_candidate_forced_run_children() {
     for mode in ["production", "million", "unit"] {
         let output = child::output(

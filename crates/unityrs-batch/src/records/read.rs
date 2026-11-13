@@ -275,7 +275,7 @@ impl<'a, R: Read> Reader<'a, R> {
     }
 }
 
-fn hex<const N: usize>(text: &str) -> Result<[u8; N], Error> {
+pub(crate) fn hex<const N: usize>(text: &str) -> Result<[u8; N], Error> {
     if text.len() != N * 2 {
         return Err(Error::internal());
     }
