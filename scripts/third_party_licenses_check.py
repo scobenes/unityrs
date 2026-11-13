@@ -8,6 +8,7 @@
 `config` holds about.toml (cargo-about, which writes THIRD_PARTY_LICENSES) and
 deny.toml (cargo-deny, which gates the dependency graph) to the same licences,
 so that nothing cargo-about would list is a licence cargo-deny never checks:
+- about.toml's `targets` and deny.toml's `[graph] targets` select the same platforms;
 - about.toml's `accepted` is deny.toml's `[licenses] allow`, in the same order;
 - each crate's `accepted` in about.toml is the `allow` of deny.toml's exception
   for that crate, and every exception there has its `accepted` here;
@@ -20,7 +21,9 @@ so that nothing cargo-about would list is a licence cargo-deny never checks:
   with it) allows what deny.toml allows, in the same order, and for each crate
   both Cargo.lock and fuzz/Cargo.lock hold, has the clarifications and
   exceptions deny.toml has for it, entry for entry, hashes included.
-The last two are checked when `config` is given no paths (the repository's
+- deny-bans.toml mirrors deny.toml's bans without graph filters, so X15 also
+  checks dependencies exclusive to platforms outside the licence graph.
+The last three are checked when `config` is given no paths (the repository's
 files); given two, it checks only those two files against each other.
 
 `notices` fails when the generated file still holds an SPDX template's
@@ -121,6 +124,13 @@ def _crate_name(entry: dict) -> str | None:
 
 def config_problems(about: dict, deny: dict) -> list[str]:
     problems = []
+    about_targets = set(about.get("targets", []))
+    deny_targets = {t["triple"] for t in deny.get("graph", {}).get("targets", [])}
+    if about_targets != deny_targets:
+        problems.append(
+            f"about.toml targets {sorted(about_targets)}, but deny.toml targets {sorted(deny_targets)}; "
+            "keep target filters equal"
+        )
     licenses = deny.get("licenses", {})
     if about.get("accepted") != licenses.get("allow"):
         problems.append(
@@ -182,6 +192,16 @@ def fuzz_problems(deny: dict, fuzz: dict, shared: set[str]) -> list[str]:
                     f"{name}: both workspaces build it, but fuzz/deny.toml's {kind} entries for it "
                     f"({there.get(name, [])}) are not deny.toml's ({here.get(name, [])}); copy deny.toml's"
                 )
+    return problems
+
+
+def bans_problems(deny: dict, bans: dict) -> list[str]:
+    """X15's separate ban policy must cover the whole graph and match deny.toml."""
+    problems = []
+    if "graph" in bans:
+        problems.append("deny-bans.toml must not filter the dependency graph; omit its [graph] table")
+    if bans.get("bans") != deny.get("bans"):
+        problems.append("deny-bans.toml and deny.toml must keep bans equal, including dev-dependencies")
     return problems
 
 
@@ -534,8 +554,10 @@ def main(argv=None) -> int:
         if len(args) == 1:
             with open(ROOT / "fuzz" / "deny.toml", "rb") as fh:
                 fuzz = tomllib.load(fh)
+            with open(ROOT / "deny-bans.toml", "rb") as fh:
+                bans = tomllib.load(fh)
             shared = lock_names(ROOT / "Cargo.lock") & lock_names(ROOT / "fuzz" / "Cargo.lock")
-            problems += fuzz_problems(deny, fuzz, shared) + member_problems(about, ROOT)
+            problems += fuzz_problems(deny, fuzz, shared) + member_problems(about, ROOT) + bans_problems(deny, bans)
     elif args[:1] == ["notices"] and len(args) in (2, 3):
         root = Path(args[2]) if len(args) == 3 else ROOT
         problems = notice_problems(Path(args[1]).read_text(encoding="utf-8"), root)

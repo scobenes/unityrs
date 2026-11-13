@@ -140,6 +140,14 @@ class WorkflowTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(timeout_problems(text), [])
 
+    def test_x15_bans_check_the_unfiltered_graph_with_all_features(self):
+        workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text())
+        steps = workflow["jobs"]["licenses"]["steps"]
+        bans = [s for s in steps if s.get("with", {}).get("command") == "check bans"]
+        self.assertEqual(len(bans), 1)
+        self.assertEqual(bans[0]["with"]["arguments"], "--all-features --config deny-bans.toml")
+        self.assertNotIn("manifest-path", bans[0]["with"])
+
     def test_the_rules_catch_what_they_are_for(self):
         sha = "11d5960a326750d5838078e36cf38b85af677262"
         good = f"jobs:\n  a:\n    timeout-minutes: 5\n    steps:\n      - uses: actions/checkout@{sha} # v4.4.0\n"

@@ -40,12 +40,10 @@ impl Execution {
             .download_concurrency
             .checked_add(1)
             .ok_or(SetupError::Execution)? as usize;
-        let runtime = Builder::new_current_thread()
-            .max_blocking_threads(pool)
-            .thread_stack_size(2 << 20)
-            .thread_keep_alive(std::time::Duration::from_hours(24))
-            .build()
-            .map_err(|_| SetupError::Execution)?;
+        // B10c must enable the IO and time drivers before polling HTTP here.
+        // B10a keeps URL execution refused; Service::request requires both
+        // drivers on the polling runtime as well as this blocking pool.
+        let runtime = runtime(pool).map_err(|_| SetupError::Execution)?;
         let end_wake = Arc::new(Wake::new().map_err(|_| SetupError::Execution)?);
         let wake = Arc::new(Wake::new().map_err(|_| SetupError::Execution)?);
         let (send, ends) = mpsc::sync_channel(p.spec.threads as usize);
@@ -188,5 +186,86 @@ impl Drop for Execution {
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }
+    }
+}
+
+fn runtime(pool: usize) -> io::Result<Runtime> {
+    Builder::new_current_thread()
+        .max_blocking_threads(pool)
+        .thread_stack_size(2 << 20)
+        .thread_keep_alive(std::time::Duration::from_hours(24))
+        .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::http::{self, Error, Service, permit::PermitPool, socket::SocketTable};
+    use std::{os::fd::RawFd, sync::Arc, time::Duration};
+
+    struct NoSockets;
+    impl SocketTable for NoSockets {
+        fn register(&self, _: RawFd) -> Result<usize, Error> {
+            unreachable!("no IO driver")
+        }
+        fn remove(&self, _: usize) {
+            unreachable!("no socket registered")
+        }
+        fn closing(&self) -> bool {
+            false
+        }
+    }
+
+    // This guard intentionally demonstrates the integration precondition.
+    // B10c must replace it with a successful HTTP request on Execution's
+    // runtime when that runtime gains its IO and time drivers.
+    #[test]
+    #[should_panic(expected = "timers are disabled")]
+    fn execution_runtime_cannot_poll_http_until_b10c_enables_drivers() {
+        let runtime = super::runtime(1).unwrap();
+        let service = Service::new(runtime.handle().clone(), Arc::new(NoSockets)).unwrap();
+        let pool = PermitPool::new(1).unwrap();
+        let mut permit = pool.acquire().unwrap();
+        let url = url::Url::parse("http://127.0.0.1/").unwrap();
+        let request = http::prepare(
+            &url,
+            hyper::http::Method::GET,
+            hyper::http::HeaderMap::new(),
+            http::Payload::default(),
+        )
+        .unwrap();
+        let _ =
+            runtime.block_on(service.request(&mut permit, &url, request, Duration::from_secs(1)));
+    }
+
+    #[test]
+    #[should_panic(expected = "IO is disabled")]
+    fn a_time_driver_alone_is_insufficient_for_http() {
+        struct Table;
+        impl SocketTable for Table {
+            fn register(&self, _: RawFd) -> Result<usize, Error> {
+                Ok(0)
+            }
+            fn remove(&self, _: usize) {}
+            fn closing(&self) -> bool {
+                false
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let service = Service::new(runtime.handle().clone(), Arc::new(Table)).unwrap();
+        let pool = PermitPool::new(1).unwrap();
+        let mut permit = pool.acquire().unwrap();
+        let url = url::Url::parse("http://127.0.0.1/").unwrap();
+        let request = http::prepare(
+            &url,
+            hyper::http::Method::GET,
+            hyper::http::HeaderMap::new(),
+            http::Payload::default(),
+        )
+        .unwrap();
+        let _ =
+            runtime.block_on(service.request(&mut permit, &url, request, Duration::from_secs(1)));
     }
 }

@@ -59,6 +59,7 @@ pub mod control;
 pub mod controller;
 pub mod digest;
 pub mod execution;
+pub mod http;
 pub mod job;
 pub mod manifest;
 pub mod outcomes;

@@ -1,3 +1,13 @@
+[graph]
+# Licence checks cover the same supported platforms as about.toml's targets
+# list. CI checks bans separately with unfiltered deny-bans.toml (X15).
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-apple-darwin" },
+]
+
 # Licences any dependency may carry. Copyleft (GPL, AGPL, LGPL, MPL) is not
 # allowed: unityrs stays permissive, and GPL projects such as AssetRipper are
 # read for format knowledge only, never copied.
@@ -79,15 +89,46 @@ license-files = [
 crate = "unityrs-texture"
 allow = ["BSD-2-Clause-Views"]
 
-# r-efi ships no licence file; its AUTHORS file holds the notices (see
-# about.toml). The expression is the crate's own.
+[[licenses.exceptions]]
+crate = "webpki-roots"
+allow = ["CDLA-Permissive-2.0"]
+
+# Keep the constituent ring notices equal to about.toml's clarification.
 [[licenses.clarify]]
-crate = "r-efi"
-expression = "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
-license-files = [{ path = "AUTHORS", hash = 0xb8c72415 }]
+crate = "ring"
+expression = "Apache-2.0 AND ISC"
+license-files = [
+    { path = "LICENSE-BoringSSL", hash = 0x08f795a3 },
+    { path = "LICENSE-other-bits", hash = 0x8b770de2 },
+]
 
 [bans]
+# Mirrored in deny-bans.toml, whose graph has no target or crate filters.
+# scripts/third_party_licenses_check.py keeps both policies equal.
 multiple-versions = "warn"
+multiple-versions-include-dev = true
+
+[[bans.deny]]
+name = "openssl-sys"
+
+[[bans.deny]]
+name = "openssl"
+
+[[bans.deny]]
+name = "native-tls"
+
+[[bans.deny]]
+name = "aws-lc-rs"
+
+[[bans.deny]]
+name = "aws-lc-sys"
+
+[[bans.deny]]
+name = "aws-lc-fips-sys"
+
+[[bans.deny]]
+name = "rustls"
+deny-multiple-versions = true
 
 [advisories]
 yanked = "deny"
