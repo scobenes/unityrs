@@ -141,6 +141,30 @@ impl<'a, R: Read> Reader<'a, R> {
             failed: false,
         })
     }
+    /// Reuse the fixed charged parser storage after validated summary/EOF.
+    /// The caller drives `next` to `None` before changing committed inputs.
+    pub(crate) fn reopen(
+        &mut self,
+        read: R,
+        expected: &'a str,
+        failed_input: bool,
+    ) -> Result<(), Error> {
+        if !self.ended || self.failed || self.position != self.available {
+            return Err(Error::internal());
+        }
+        self.read = read;
+        self.expected = expected;
+        self.failed_input = failed_input;
+        self.position = 0;
+        self.available = 0;
+        self.line.clear();
+        self.last_key.clear();
+        self.last_md5 = None;
+        self.skips = 0;
+        self.rows = 0;
+        self.ended = false;
+        Ok(())
+    }
     fn refill(&mut self, stopped: &dyn Fn() -> bool) -> Result<bool, Error> {
         check(stopped)?;
         if self.position < self.available {

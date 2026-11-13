@@ -152,6 +152,19 @@ impl Spec {
         })
     }
 
+    /// Indexed preference accessor for phase 1's compact winner index.
+    #[must_use]
+    pub fn prefer_at(&self, index: u32) -> Option<(&str, Prefer<'_>)> {
+        let e = self.prefer.get(usize::try_from(index).ok()?)?;
+        Some((
+            self.str(e.key),
+            Prefer {
+                input: e.input.map(|s| self.str(s)),
+                md5: e.md5.map(|s| self.str(s)),
+            },
+        ))
+    }
+
     /// How many `prefer` entries.
     #[must_use]
     pub fn prefer_count(&self) -> usize {

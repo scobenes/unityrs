@@ -74,3 +74,5 @@ pub mod sys;
 pub mod view;
 pub mod work;
 mod worker;
+
+pub mod winners;

@@ -351,43 +351,154 @@ Preflight keeps refusals rare within the bound: the main thread, at its step 6 (
 - The decision is a pure function of the committed records, so it is the same whatever order the inputs finished in.
 - **Its working set** is at most 40 MiB: a run of 32 MiB, or a merge's 17 MiB, beside at most 8 stream buffers of 1 MiB. `I >= 64 MiB` holds it, so a refusal of the phase budget in phase 6 marks a leak, a run failure `internal`.
 
-**Phase-6 artifact-size and lifetime ledger (provisional for later decision passes).**
+**Phase-6 artifact-size and lifetime ledger.**
 Let `b` be preflight's block size, `E` the sum of encoded frames in one sort,
 `n` its initial run count, `P = E + n × (16 + b - 1)`, and
-`K = round_up(16 + 32 × n, b)`. These conservative bounds include file
-headers, the final short run, catalog descriptors and cumulative block rounding.
-A generation cannot increase frame bytes or run count. During a merge, completed
-next-generation files and the current partial output overlap only unread old
-runs; their combined claims are at most `2 × P`. Two catalogs cost at most
-`2 × K`. Consumed runs retire immediately, including within a merge group;
-old catalogs retire before the next generation starts.
+`K = round_up(16 + 32 × n, b)`. A merge has at most `2P` live run
+claims and `2K` catalog claims: consumed runs retire immediately, and old
+catalogs retire before the next generation. `R` includes every other live
+phase file, including a streamed pass's output while its input is read.
+Committed files are separately provisioned by `S` and are never retired here.
 
-| artifact | bound on live claims | last reader / retirement |
-|---|---|---|
-| committed records and payloads | `S`, already provided separately in 5.6 | publication/finisher; never retired by a sort |
-| sorted runs and current merge output | `2 × P` | exhausted input closes, then unlink |
-| input and output catalogs | `2 × K` | end of generation, before the following one |
-| retained decisions, winners, row streams and member lists | `R` | their final downstream reader; final handoff streams stay through finishing |
-| stopped/failed partials | acquired claims remain | run failure/handover; no further phase work |
+The allowance is **`R + 2P + 2K <= 6S + 2A`**, where
+`A = sum(round_up(e(key) + 512, b))` over declared archives. `A` is known
+from the spec alone: `e(key)` is the exact JSON-escaped byte length of the
+key as emitted in the archive row, excluding its surrounding quotes.
+Archive rows and `archives.bin` each fit `A`, including
+per-row rounding; their fixed fields use at most 512 bytes. The preference
+index stays in measured phase-1 memory, so it adds no disk term.
 
-Thus a sort beside retained streams needs `R + 2 × P + 2 × K` **additional**
-spool bytes. The `6 × S` allowance holds when this is at most `6 × S`;
-a sufficient pass schedule has `P + K <= 2 × S` and `R <= 2 × S`.
-Rescan committed records instead of retaining another full projection when a
-pass would exceed that schedule. The twice-counted-size condition by itself
-does not establish it: block rounding, catalogs and all retained streams must
-also be included. Forced tiny-run test settings can increase `P` and `K` and
-must be evaluated with the same formula.
+The motivating counterexample remains: one successful empty input has one
+4 KiB counted summary and no candidate or member work. At `b = 4,096`,
+256 archives with four-byte keys require 28,672 bytes of compact rows;
+1,024-byte keys require 290,816 bytes, or `71S`, against the old `6S =
+24,576`. Each compact empty row including newline is `e(key) + 102`
+bytes. Long keys use distinct first segments and four subsequent segments
+of lengths 255, 255, 255 and 251. These spec-derived rows cannot be charged
+to extraction work. The new `2A` term covers rows and private metadata
+living together, even when `S` contains no candidates.
 
-`tests/sort_scale.rs` checks this ledger against the shared counter, including
-two retained streams, production runs, over 256 small runs, three merge
-generations and block sizes 3,072, 4,096, 5,003 and 65,536. Its fixed-width test
-projection proves `128 + 4 <= 2 × 128` encoded bytes per counted source unit;
-it generates source data on disk before counting the sort's memory. This is
-an infrastructure proof. Each new decision projection must supply its own
-encoded-size test and each later pass must enumerate `R` and verify this
-lifetime inequality before claiming the complete pipeline fits 5.6. No sizing
-rule in 5.6 is changed here.
+The extraction schedule rescans immutable committed records rather than
+retaining an extra full candidate projection. All intermediate inventories
+are external streams, never per-key in-memory sets. A sorted source retires
+after its last reader closes, before the next sort; a replacement decision
+stream retires its predecessor at that boundary. Empty streams need no file.
+
+| pass | retained extraction streams (`R`, including current pass outputs) | spec-derived claims | retirement boundary |
+|---|---|---|---|
+| root/instance validation and root selection | root projection, unit decisions | 0 | instance projection after validation; root projection after selection |
+| reservation projection and least-unit keeper | unit decisions, claims/keepers and conflict markers | 0 | claims after keeper selection; markers after unit-state join |
+| whole-unit conflict join and reservation reorder | unit decisions, reserved keys and replacement streams | 0 | superseded states and reservation order after their join |
+| plain-key decisions | unit decisions, reservations, key decisions | 0 | reservations after key join; candidates are rescanned |
+| prefix refusal and unit propagation | unit decisions, key decisions, refusal/affected-unit streams | archive keys are read from prepared indices | refusals and affected-unit streams after final join; old decisions after replacement |
+| winners handoff | final unit/key decisions, winners | 0 | retained for B6c readers |
+| member selection and rows (B6c) | decisions, winners, member lists, output/collision/member rows | archive rows and metadata, at most `2A` | each intermediate at its final reader; handoff files through finishing |
+
+Here is the B6b upper bound, including rounding rather than relying only
+on the twice-size condition. Let `N` be the number of candidates, `T` the
+sum of their full private frame sizes, `J` their committed record bytes
+(the counted records flushes cover them), and `C` their counted output
+work after `k_blk`. Then `T <= J` and `C >= N × max(4,096, b)`.
+A full frame has at most 133 fixed/framing bytes and strings of at most
+1,024 + 1,024 + 1,024 + 3,072 bytes (the last permits repaired text), so
+one frame is at most 6,277 bytes. JSON's field names, digest hex and
+escaping cover the binary fixed fields, including decision fields absent
+from the source. A claim, decision, refusal or unit marker replaces a
+candidate; it never multiplies it in a single stream. Each projection
+therefore has `E <= T <= J <= S`, stronger than the required `2S`.
+
+At a sort boundary the table's retained extraction streams are at most
+four candidate-sized streams: unit state, key state, and two marker or
+replacement inputs. Each file's header and rounding cost at most `b + 15`.
+Thus `R <= 4T + 4(b + 15)`. Production runs have `n <= N`; hence
+
+`R + 2P + 2K <= 6T + (2N + 6)b + 94N + 90 <= 6J + 6C <= 6S`
+
+for `N >= 2`. The middle inequality follows directly from
+`C >= N × max(4,096, b)`; its smallest margin is at `N = 2`.
+A direct join, without a sorter, can have five streams while replacing
+unit/key state, so `R <= 5T + 5(b + 15) <= 6S` there. This covers the
+keepers/markers split, the unit-state replacement and the refusal overlay;
+there is no sorter running beside those growing output files.
+For `N = 1`, use the tighter retained-file bound
+`R <= 4 × round_up(T + 16, b)`, `n = 1`, and the records flush containing
+at least `T + 256` bytes including the terminal summary. The singleton
+arithmetic test exhausts every frame length through 6,277 and every block
+size through 6,293; above that all frames fit one block and the inequality
+reduces to `8b + 2T + 30 <= 12b`. With `N = 0`, B6b retains no phase
+files. An empty sort temporarily writes one catalog header, at most `b`
+bytes, and retires it; `2K <= 2S` covers that edge. Archive keys merge
+from prepared `/`-first indices, not spool runs.
+
+This is a pass-by-pass B6b proof: roots retain at most two streams;
+claim generation at most two; marker sorting at most three; reservation
+reorders at most two; key sorting at most two; prefix refusal/marker sorts
+at most four; propagation reorders at most three; final winners are a
+direct join with three streams. Closed readers precede every retirement.
+The instrumented tests check both each actual peak and each sort's
+`R + 2P + 2K` envelope. Forced tiny runs use their actual `n`; this
+production proof does not promise that every arbitrary test setting fits.
+
+The B6c row/member schedule remains an implementation obligation: output
+and collision rows derive from candidate records; member rows and member
+lists derive from counted expansions. Each encoded row/list record must
+fit twice its source's counted work and its simultaneous lifetimes must
+fit the same `6S` share, retiring decisions after their last row join.
+Archive rows and metadata alone use `2A`; no extraction stream is moved
+into `A`. B6b does not claim B6c's unwritten files have been measured.
+
+Measured production-setting additional spool peaks (bytes), with all retained
+files live, are below. The scene has 225 candidate records; `S` is 1,966,080,
+983,040, 1,966,080 and 15,728,640 bytes respectively, and `A = b` for its
+single declared archive. Both the measured peaks and each sort's conservative
+`R + 2P + 2K` envelope pass `6S + 2A` at every boundary.
+
+| pass | b = 3,072 | b = 4,096 | b = 5,003 | b = 65,536 |
+|---|---:|---:|---:|---:|
+| roots | 18,432 | 20,480 | 20,012 | 131,072 |
+| claims | 27,648 | 32,768 | 30,018 | 262,144 |
+| keepers/markers | 15,360 | 20,480 | 15,009 | 196,608 |
+| unit conflicts | 12,288 | 16,384 | 15,009 | 196,608 |
+| reservation joins | 18,432 | 24,576 | 20,012 | 262,144 |
+| plain keys | 43,008 | 45,056 | 45,027 | 262,144 |
+| prefix refusals | 27,648 | 28,672 | 35,021 | 393,216 |
+| unit propagation | 27,648 | 28,672 | 35,021 | 327,680 |
+| winner handoff | 15,360 | 16,384 | 20,012 | 196,608 |
+
+The empty-archive gate's retained rows plus metadata peak at 299,008 bytes
+for 256 long keys at 4 KiB, against `6S + 2A = 2,121,728`; the corresponding
+short-key peak is 36,864. The other three block sizes and both key lengths
+also pass, including 8- and 64-input scale cases and a refusal beyond the cap.
+The gate also covers maximum-byte keys containing quotes, backslashes, C1
+controls and multibyte Unicode at all four block sizes. Controls below U+0020
+and U+007F are forbidden in keys; permitted C1 characters stay UTF-8 in JSON.
+At `b = 512`, the quote and backslash families each claim 548,352 row bytes,
+exceeding the former raw-length `A = 393,216`, but fitting encoded-length
+`A = 655,360` (and `6S + 2A = 1,335,296`).
+
+The counted scale children write their dataset before measuring selection.
+At production settings, 350,000 candidates occupy 177,928,225 record bytes:
+`S = 1,611,530,240`, phase spool peak 264,867,840, counted heap peak
+34,010,752 and account peak 34,141,312 bytes. With 1,000,000 candidates and
+512 KiB forced runs, record bytes are 508,778,225, `S = 4,604,780,544`,
+phase spool peak 784,244,736, counted heap peak 2,493,072 and account peak
+2,623,088 bytes. The latter exceeds 256 initial runs, hence three merge
+generations at fan-in 16. All scratch charges clear; both memory peaks fit
+40 MiB. A 100,000-candidate single unit has `S = 460,980,224`, spool
+peak 105,312,256, counted heap peak 34,271,904 and account peak 34,402,480
+bytes, also with zero outstanding scratch. A separate child refuses all
+1,160 selection allocation ordinals,
+requiring `host_memory` and zero outstanding charges at every ordinal.
+
+`tests/phase6_ledger.rs` is the empty-archive gate: real B4 empty commits,
+256 archives, both key lengths, block sizes 3,072, 4,096, 5,003 and 65,536,
+and scaled input counts. It holds rows and independently encoded metadata
+at once, checks their peak against `6S + 2A`, then proves a write beyond
+that cap still returns `spool_full(size_bytes)` without returning claims
+on drop. `tests/sort_scale.rs` separately measures production runs and
+multi-generation forced runs. Selection tests must measure each actual
+pass with all retained files live; the table is a lifetime obligation,
+not a claim that the sorter alone proves the complete decision pipeline.
 
 **Publish**, in phase 7.
 - **Resume** (E43). With `resume` set, the object store's LIST of the output prefix (keys in ascending UTF-8 byte order) is merged with the winners file, one LIST page in memory at a time, beside the scheduler (Transfers, below). The merge never waits on the scheduler or on a hashing pass: it keeps the `ETag` and size listed for each of the spec's archives (`C_base`, 5.3), and the scheduler takes a winner or an archive only once the merge has passed its key (W19). A winner whose key is listed with its expected ETag (its MD5; a file's over 16 MiB: the multipart ETag its record carries, 2.8; an archive's: its multipart ETag at 16 MiB parts, `BATCH_SPEC.md` section 8) is `present` and not PUT. An archive's expected ETag, or in a directory its MD5, needs its bytes: resume computes it in a first pass over the archive's stream, without uploading, when the scheduler takes that archive. That pass and a directory destination's hash (E43) are **hashing passes**, each reading the stop flag before each buffer and returning when it is set, as 2.5's local copy does: each holds a `download_concurrency` permit and its buffers' `heap_cost` (an archive's: its stream's buffers, below) reserved from the phase budget, each waited for as a transfer's is (below); so at most `download_concurrency` central directories are live at once. A hashing pass returns its result to the controller and ends, returning both. The scheduler goes on to later keys meanwhile, and takes the transfer of a key whose pass found no match ahead of any later key once a permit and its reservation are free (Transfers, below). A listed location not above the one before it is skipped when its size is 0: `Path::parse` lists a folder marker `k/` as `k` (`src/path/mod.rs`), which no output can be, since none is empty. Any other LIST page out of order, or a LIST that fails, degrades to "PUT everything" with the warning `resume_list_failed`. In a directory, each winner's destination is checked as E43 says.
@@ -1218,7 +1329,7 @@ Each rule is a recommendation the manifest reports against, not a validation.
 | every input that fits at all completes | `M >= max(input_peak, dependency_peak, ceil(decode_work_peak / 4), the largest staged size)` from an earlier run's manifest (`BATCH_SPEC.md` 7.3; `max_decode_work` is `4 M`, 2.2), with `peek_peak` and `ceil(peek_work_peak / 4)` in that max, the peeks' figures (2.4), a guide, since `decode_work_peak` misses some work (7.3), and above the configured value for every input or bundle that failed on an `M` reason, a bundle's peek failure read from its `bundles` row's `peek` (`BATCH_SPEC.md` 7.3), which shows one that no record names, when a member of lesser id failed first; a bundle's peek runs within `M` and its own `4 M`, and one that fails fails its holders with its own reason, an `M` reason (a `Limit` of its meter), its open's error or another data limit (2.6 step 4); X13's need (`extract.md`) is the exact figure; and `D >= max` dependency peak, the blocks registration's reaches of marked entries decode included, and, until CR7, the blocks the interim's per-attempt peeks decode (2.6 step 4, 5.5) |
 | full parallelism | `I >= threads x (M + D)` |
 | no input fails on export work | `max_export_work >= export_work_peak` from an earlier run's manifest (`BATCH_SPEC.md` 7.3), and above the configured value for every input that failed on it |
-| the spool fits | `spool.size_bytes >= the staged bundles, each at its claimed size, + their peek files + S + threads x W + 6 x S + the download_concurrency largest central directories + the outcomes files`, where the peek files (2.6 step 4) are one per bundle with a nested container, a block of `b` per `8 x b` of its top-level rows, `W = max_export_work x k_blk` bounds one input's claims, `S = spooled_parts x k_blk` (2.6 step 10) bounds the inputs' claims and their records' counted size, one input's at most `W`, and `6 x S` holds phase 6's files, its row files among them: one sort's runs and its merged output, beside the step outputs later steps and the finisher read, each line at most twice its record's counted size, runs and intermediate outputs deleted once read (2.9). `S` from an earlier run's `spooled_parts`, plus `W` for each input whose output is not known, keeps one hostile input from stopping the run with `spool_full`: the claim refused there is a run failure (2.7), since what the spool holds depends on the order inputs ran in |
+| the spool fits | `spool.size_bytes >= the staged bundles, each at its claimed size, + their peek files + S + threads x W + 6 x S + 2 x A + the download_concurrency largest central directories + the outcomes files`, where the peek files (2.6 step 4) are one per bundle with a nested container, a block of `b` per `8 x b` of its top-level rows, `W = max_export_work x k_blk` bounds one input's claims, `S = spooled_parts x k_blk` (2.6 step 10) bounds the inputs' claims and their records' counted size, one input's at most `W`, `A = sum(round_up(e(key) + 512, b))` over the spec's declared archives, where `e(key)` is the exact JSON-escaped byte length of the key as the archive row writer emits it, excluding quotes, bounds one maximal archive row per archive, and `6 x S + 2 x A` holds phase 6's files, the archive row stream and its private metadata each within `A`, its extraction-derived row files among them: one sort's runs and its merged output, beside the step outputs later steps and the finisher read, each line at most twice its record's counted size, runs and intermediate outputs deleted once read (2.9). `S` from an earlier run's `spooled_parts`, plus `W` for each input whose output is not known, keeps one hostile input from stopping the run with `spool_full`: the claim refused there is a run failure (2.7), since what the spool holds depends on the order inputs ran in |
 | the spool's filesystem holds what no claim counts | free space at start `>= size_bytes + reserve_bytes +` the directories (about `inputs x 2 x st_blksize`, and an entry per spooled file) `+` the inodes' space where the filesystem allocates it (XFS: about 512 B each) `+` the uploads journal (a line per upload in flight or whose abort failed, at most `download_concurrency` plus the failed aborts, each its endpoint, bucket, key and an upload id under 1 KiB, 2.9; twice that while a removal rewrites it, `BATCH_SPEC.md` 6.1) `+` the sink's written bytes when the output root shares the spool's filesystem; and free inodes `>=` the spooled files `+ 2 x inputs`, the spooled files being at most `spooled_parts / 4 KiB`, plus `W / 4 KiB` for each input whose output is not known, plus the staged bundles and their peek files, phase 6's files and the row files; `reserve_bytes` is the filesystem's own margin (5.7) |
 | `I` above about 7 GiB | `vm.max_map_count` above its stock 65,530, which 2.7's `map_count_too_low` needs once `I` passes `(65,530 - 8,192) x 128 KiB`, about 7 GiB; under Kubernetes it is the node's sysctl, not the pod's |
 | a cgroup v2 memory limit holds the run | `BATCH_SPEC.md` section 6's limit: 1.5 times the bound, for glibc's slack (5.4); 10 MiB for each of `C_net`'s `2 x download_concurrency + 1` live sockets, whose buffers a v2 cgroup charges, at `tcp_rmem`'s and `tcp_wmem`'s maxima (6 MiB and 4 MiB by Linux's defaults); 1.5 MiB for each of the `2 x (download_concurrency + 1)` lookups' `getaddrinfo` heaps, at 5.4's estimate; and the spool's dirty pages, which the kernel holds to `vm.dirty_ratio` percent of the cgroup's memory, hence the divisor, or to `vm.dirty_bytes`, hence the sum, reclaiming the clean ones under the limit (A7). No arena term: an arena's 64 MiB is address space, which only `RLIMIT_AS` counts (2.7) |

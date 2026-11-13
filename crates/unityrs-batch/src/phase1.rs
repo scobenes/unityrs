@@ -15,6 +15,7 @@ pub struct PreparedRun {
     pub spec: Arc<Spec>,
     pub graph: Arc<Graph>,
     pub extraction: Arc<attempt::Prepared>,
+    pub winners: crate::winners::Prepared,
     /// Archive indices, not duplicated final key strings.
     pub archive_keys: Vec<u32>,
     /// Worker-published words are deliberately separate from received facts.
@@ -162,13 +163,18 @@ impl Bits {
     }
 }
 
+#[derive(Debug)]
+pub enum PreparationError {
+    Template(unityrs_export::ngui::TemplateError),
+    Winners(crate::phase::Error),
+}
+
 /// Validation already checked these templates. The error is retained in the
 /// library API for callers constructing a `Validated` value themselves.
-pub fn prepare(
-    validated: spec::Validated,
-) -> Result<PreparedRun, unityrs_export::ngui::TemplateError> {
+pub fn prepare(validated: spec::Validated) -> Result<PreparedRun, PreparationError> {
     let spec::Validated { spec, graph } = validated;
-    let extraction = attempt::Prepared::from_spec(&spec)?;
+    let extraction = attempt::Prepared::from_spec(&spec).map_err(PreparationError::Template)?;
+    let winners = crate::winners::Prepared::from_spec(&spec).map_err(PreparationError::Winners)?;
     let n = spec.bundle_count();
     let inputs = spec.input_count();
     let walker = Walker::with_capacity(n, (spec.max_view_bundles as usize).min(n));
@@ -193,5 +199,6 @@ pub fn prepare(
         spec: Arc::new(spec),
         graph: Arc::new(graph),
         extraction: Arc::new(extraction),
+        winners,
     })
 }
