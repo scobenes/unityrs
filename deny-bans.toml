@@ -1,0 +1,30 @@
+# X15 checks the entire workspace graph, with dev-dependencies and every
+# platform included. Do not add a [graph] table: supported-target filters
+# belong to deny.toml's licence checks and about.toml's generated notices.
+# CI passes --all-features. scripts/third_party_licenses_check.py keeps this
+# policy equal to deny.toml's [bans].
+[bans]
+multiple-versions = "warn"
+multiple-versions-include-dev = true
+
+[[bans.deny]]
+name = "openssl-sys"
+
+[[bans.deny]]
+name = "openssl"
+
+[[bans.deny]]
+name = "native-tls"
+
+[[bans.deny]]
+name = "aws-lc-rs"
+
+[[bans.deny]]
+name = "aws-lc-sys"
+
+[[bans.deny]]
+name = "aws-lc-fips-sys"
+
+[[bans.deny]]
+name = "rustls"
+deny-multiple-versions = true

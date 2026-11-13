@@ -16,6 +16,16 @@
 # exception there (scripts/third_party_licenses_check.py checks both ways), so
 # cargo-deny rejects what cargo-about would list.
 
+# Match deny.toml's licence graph: the Linux and macOS platforms we build.
+# This excludes Windows-only dependencies whose published notices are
+# templates. X15's bans use the unfiltered graph in deny-bans.toml.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
+
 # The same licences, in the same order, as deny.toml's [licenses] allow list;
 # the script checks that they match. The order is cargo-about's preference:
 # for an expression like "MIT OR Apache-2.0", the first one listed is used.
@@ -151,14 +161,20 @@ path = "LICENSE-OPENBLAS-UT"
 license = "BSD-2-Clause-Views"
 checksum = "b5c81341a0b484b4b6c2856a41ffd7a9d9cf3a61ec63628557cae68d846ab0f3"
 
-# r-efi ships no licence file: its AUTHORS file holds the MIT permission
-# notice and the copyright lines, so the clarification takes the MIT text
-# from there instead of the SPDX template (whose "<year> <copyright holders>"
-# scripts/third-party-licenses refuses). The expression is the crate's own.
-[r-efi.clarify]
-license = "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
+# Compiled trust anchors only; never an ambient licence exception.
+[webpki-roots]
+accepted = ["CDLA-Permissive-2.0"]
 
-[[r-efi.clarify.files]]
-path = "AUTHORS"
-license = "MIT"
-checksum = "d027e91dbc9cdbb2f1190068e498bd6b61cff022b6a032b191021ba658d96111"
+# ring's published composite expression, bound to both constituent notices.
+[ring.clarify]
+license = "Apache-2.0 AND ISC"
+
+[[ring.clarify.files]]
+path = "LICENSE-BoringSSL"
+license = "Apache-2.0"
+checksum = "005fc765ddc5115da796cca915baa9557abae13ff35e0a47c47affc56f6c414d"
+
+[[ring.clarify.files]]
+path = "LICENSE-other-bits"
+license = "ISC"
+checksum = "f025ccfb7dfb6bdfedc75ca0f67acc69e6fb4998143d834f7c2f38a29989680f"

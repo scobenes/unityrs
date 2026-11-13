@@ -62,11 +62,6 @@ license-files = [
 crate = "unityrs-texture"
 allow = ["BSD-2-Clause-Views"]
 
-[[licenses.clarify]]
-crate = "r-efi"
-expression = "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
-license-files = [{ path = "AUTHORS", hash = 0xb8c72415 }]
-
 # The fuzz crate's own: libfuzzer-sys builds LLVM's libFuzzer, which is
 # NCSA (University of Illinois/NCSA Open Source License), a permissive
 # licence, accepted for this crate only.

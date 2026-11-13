@@ -1,7 +1,7 @@
 //! The crate's `unsafe` policy, held by a scan of its sources: `lib.rs`
 //! denies `unsafe_code`, allows it for exactly two modules, `alloc` (the
-//! counting allocator) and `sys` (the C library's calls std lacks), and no
-//! other file of `src/` holds `unsafe` or allows it.
+//! counting allocator) and `sys` (the C library's calls std lacks), including
+//! their child modules. No other module of `src/` holds `unsafe` or allows it.
 
 use std::path::{Path, PathBuf};
 
@@ -87,7 +87,7 @@ fn unsafe_code_is_allowed_for_alloc_and_sys_alone() {
     let mut found = Vec::new();
     for path in &files {
         let name = path.strip_prefix(&src).unwrap();
-        let allowed = ALLOWED.iter().any(|a| name == Path::new(a));
+        let allowed = ALLOWED.iter().any(|a| name == Path::new(a)) || name.starts_with("sys");
         let lines = code(path);
         for (i, (n, l)) in lines.iter().enumerate() {
             let lib_rule = name == Path::new("lib.rs")

@@ -753,3 +753,15 @@ pub fn privileged() -> io::Result<bool> {
 mod paths;
 pub(crate) use paths::retry_interrupted;
 use paths::terminated_path;
+
+#[path = "sys/resolver.rs"]
+mod resolver;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use resolver::TestResolverAnswers;
+pub(crate) use resolver::resolve;
+
+#[cfg(any(test, feature = "test-hooks"))]
+#[path = "sys/socket.rs"]
+mod socket;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use socket::{test_set_zero_linger, test_socket_live, test_zero_linger};

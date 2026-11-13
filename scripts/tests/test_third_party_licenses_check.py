@@ -37,6 +37,45 @@ class ConfigTests(unittest.TestCase):
     def test_the_repository_agrees(self):
         self.assertEqual(self.problems(), [])
 
+    def test_target_filters_cover_the_same_platforms(self):
+        targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+        about, deny = copy.deepcopy(ABOUT), copy.deepcopy(DENY)
+        about["targets"] = targets
+        deny["graph"] = {"targets": [{"triple": t} for t in reversed(targets)]}
+        self.assertEqual(self.problems(about, deny), [])
+        for change in (
+            lambda a, d: a.pop("targets"),
+            lambda a, d: d.pop("graph"),
+            lambda a, d: d["graph"]["targets"].pop(),
+            lambda a, d: d["graph"]["targets"][0].update(triple="x86_64-pc-windows-msvc"),
+        ):
+            changed_about, changed_deny = copy.deepcopy(about), copy.deepcopy(deny)
+            change(changed_about, changed_deny)
+            with self.subTest(about=changed_about.get("targets"), graph=changed_deny.get("graph")):
+                self.assertIn("keep target filters equal", "\n".join(self.problems(changed_about, changed_deny)))
+
+    def test_whole_graph_bans_have_no_graph_filters_and_mirror_the_policy(self):
+        bans = {"bans": copy.deepcopy(DENY["bans"])}
+        self.assertEqual(T.bans_problems(DENY, bans), [])
+        self.assertEqual(T.bans_problems(DENY, load("deny-bans.toml")), [])
+        for graph in (
+            {"targets": [{"triple": "x86_64-unknown-linux-gnu"}]},
+            {"exclude": ["openssl"]},
+            {"no-default-features": True},
+        ):
+            with self.subTest(graph=graph):
+                out = T.bans_problems(DENY, {**bans, "graph": graph})
+                self.assertIn("must not filter the dependency graph", "\n".join(out))
+        for change in (
+            lambda b: b["bans"]["deny"].pop(),
+            lambda b: b["bans"].update(**{"multiple-versions-include-dev": False}),
+            lambda b: b["bans"]["deny"][-1].update(**{"deny-multiple-versions": False}),
+        ):
+            changed = copy.deepcopy(bans)
+            change(changed)
+            with self.subTest(bans=changed):
+                self.assertIn("keep bans equal", "\n".join(T.bans_problems(DENY, changed)))
+
     def test_the_allow_lists_must_match_in_order(self):
         deny = copy.deepcopy(DENY)
         deny["licenses"]["allow"] = [*deny["licenses"]["allow"][1:], deny["licenses"]["allow"][0]]
@@ -50,8 +89,8 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("liblzma-sys: about.toml accepts ['0BSD', 'GPL-3.0-or-later']", out)
 
         about = copy.deepcopy(ABOUT)
-        about["r-efi"]["accepted"] = ["LGPL-2.1-or-later"]
-        self.assertIn("r-efi: about.toml accepts ['LGPL-2.1-or-later']", "\n".join(self.problems(about=about)))
+        about["ring"]["accepted"] = ["LGPL-2.1-or-later"]
+        self.assertIn("ring: about.toml accepts ['LGPL-2.1-or-later']", "\n".join(self.problems(about=about)))
 
     def test_an_exception_needs_the_same_licences_accepted(self):
         for change in (
@@ -68,7 +107,7 @@ class ConfigTests(unittest.TestCase):
     def test_each_clarification_must_be_in_both(self):
         changes = {
             "deny lacks it": lambda a, d: d["licenses"]["clarify"].pop(0),
-            "about lacks it": lambda a, d: a.pop("r-efi"),
+            "about lacks it": lambda a, d: a.pop("ring"),
             "another expression": lambda a, d: d["licenses"]["clarify"][0].update(expression="MIT OR Apache-2.0"),
             "other files": lambda a, d: d["licenses"]["clarify"][0]["license-files"].pop(),
             "about's expression": lambda a, d: a["liblzma-sys"]["clarify"].update(license="MIT AND 0BSD"),
@@ -123,7 +162,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("unityrs-texture: about.toml clarifies it as", out)
         # A dependency's clarification is not held to a member's manifest.
         about = copy.deepcopy(ABOUT)
-        about["r-efi"]["clarify"]["license"] = "MIT"
+        about["ring"]["clarify"]["license"] = "MIT"
         self.assertEqual(T.member_problems(about, ROOT), [])
 
     def test_the_command_line(self):
