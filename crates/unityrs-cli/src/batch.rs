@@ -13,7 +13,7 @@
 //! so no write of a terminal stops it; a failure there is 69
 //! `startup_failed`.
 //!
-//! `--check` runs phase 1 (2.11 step 2: read and validate `JOB.json`) under
+//! `--check` runs phase 1 (2.11 step 2: read, validate and prepare `JOB.json`) under
 //! the counting allocator's measure, and writes the `exit` line with `seq`
 //! 0: for a valid spec code 0 and the detail `memory_bound <bytes>`, 5.1's
 //! bound (**provisional** until X12 measures its constants:
@@ -36,10 +36,11 @@ use std::process::ExitCode;
 
 use unityrs_batch::alloc;
 use unityrs_batch::bound::{CHECK_ENV_BLOCK, PROVISIONAL, memory_bound};
+use unityrs_batch::phase1::{self, PreparedRun};
 use unityrs_batch::progress::clock::Clock;
 use unityrs_batch::progress::{Exit, Snapshot, early, rss};
 use unityrs_batch::reason::Code;
-use unityrs_batch::spec::{self, BadSpec, SPEC_VERSION, Validated};
+use unityrs_batch::spec::{self, BadSpec, SPEC_VERSION};
 
 pub const USAGE: &str = "usage: unityrs batch --check JOB.json\n       \
                          unityrs batch --schema\n       \
@@ -78,7 +79,7 @@ pub fn main(clock: &Clock, args: &[Vec<u8>]) -> ExitCode {
         Some(Command::Schema) => stdout(spec::SCHEMA),
         Some(Command::Check(p)) => match phase1(p) {
             (Ok(v), m) => checked(clock, &v, m),
-            (Err(bad), _) => refused(clock, &bad, "unityrs batch", ""),
+            (Err(error), _) => phase1_failed(clock, error),
         },
         Some(Command::Run(p)) => match phase1(p) {
             (Ok(_), _) => refused(
@@ -87,7 +88,7 @@ pub fn main(clock: &Clock, args: &[Vec<u8>]) -> ExitCode {
                 "unityrs batch",
                 &format!("{USAGE}\n"),
             ),
-            (Err(bad), _) => refused(clock, &bad, "unityrs batch", ""),
+            (Err(error), _) => phase1_failed(clock, error),
         },
         None => refused(
             clock,
@@ -137,15 +138,43 @@ fn code(c: Code) -> ExitCode {
     ExitCode::from(c.value())
 }
 
-/// Phase 1 on `path`, measured from its read (2.7, 5.3).
-fn phase1(p: &[u8]) -> (Result<Validated, BadSpec>, alloc::Measured) {
+enum Phase1Error {
+    Validation(BadSpec),
+    Preparation,
+}
+/// Phase 1 on `path`, measured from its read through preparation (2.7, 5.3).
+fn phase1(p: &[u8]) -> (Result<PreparedRun, Phase1Error>, alloc::Measured) {
     use std::os::unix::ffi::OsStrExt;
     let path = Path::new(std::ffi::OsStr::from_bytes(p));
-    alloc::measured(|| spec::read::read_job(path).and_then(spec::parse))
+    alloc::measured(|| {
+        let validated = spec::read::read_job(path)
+            .and_then(spec::parse)
+            .map_err(Phase1Error::Validation)?;
+        // Validation used the same template parser. Its accepted templates
+        // compile here before phase 1's retained-heap measurement ends.
+        phase1::prepare(validated).map_err(|_| Phase1Error::Preparation)
+    })
+}
+
+fn phase1_failed(clock: &Clock, error: Phase1Error) -> ExitCode {
+    if let Phase1Error::Validation(bad) = error {
+        return refused(clock, &bad, "unityrs batch", "");
+    }
+    let exit = Exit {
+        status: None,
+        code: Code::Internal,
+        reason: Some("internal".into()),
+        detail: None,
+    };
+    early::write(
+        Snapshot::validate(clock.ms()).line(Some(&exit)).as_bytes(),
+        b"unityrs batch: internal\n",
+    );
+    code(Code::Internal)
 }
 
 /// `--check`'s line for a valid spec: code 0, `memory_bound <bytes>`.
-fn checked(clock: &Clock, v: &Validated, m: alloc::Measured) -> ExitCode {
+fn checked(clock: &Clock, v: &PreparedRun, m: alloc::Measured) -> ExitCode {
     let s = &v.spec;
     let bound = memory_bound(s, m, CHECK_ENV_BLOCK, &PROVISIONAL);
     let mut snap = Snapshot::validate(clock.ms());

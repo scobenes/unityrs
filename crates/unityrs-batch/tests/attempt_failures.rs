@@ -1,5 +1,4 @@
 //! E60, site classification, cooperative stops and the sealed lifetime audit.
-#[allow(dead_code)]
 mod artifact_support;
 mod attempt_support;
 use attempt_support::*;

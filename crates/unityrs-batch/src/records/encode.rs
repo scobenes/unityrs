@@ -81,6 +81,16 @@ impl Encoder<'_> {
         self.field(name)?;
         self.display(value)
     }
+    // A u64 needs at most 20 decimal digits. JSON whitespace belongs before
+    // the token: leading zeroes would make it invalid JSON. All summary
+    // integers use the same slot, including the self-referential figures.
+    fn slot(&mut self, value: u64) -> Result<(), Error> {
+        self.display(format_args!("{value:>20}"))
+    }
+    fn slot_field(&mut self, name: &'static str, value: u64) -> Result<(), Error> {
+        self.field(name)?;
+        self.slot(value)
+    }
     fn hex(&mut self, name: &'static str, value: &[u8]) -> Result<(), Error> {
         self.field(name)?;
         self.raw(b"\"")?;
@@ -220,15 +230,15 @@ impl Encoder<'_> {
         ] {
             self.field(name)?;
             if s.figures.is_some() {
-                self.display(value)?;
+                self.slot(value)?;
             } else {
                 self.raw(b"null")?;
             }
         }
-        self.num("skips", figures.skips)?;
-        self.num("unresolved_scripts", figures.unresolved_scripts)?;
-        self.num("spooled_part", s.spooled_part)?;
-        self.num("claimed_bytes", s.claimed_bytes)?;
+        self.slot_field("skips", figures.skips)?;
+        self.slot_field("unresolved_scripts", figures.unresolved_scripts)?;
+        self.slot_field("spooled_part", s.spooled_part)?;
+        self.slot_field("claimed_bytes", s.claimed_bytes)?;
         self.end(s.cut)
     }
 }

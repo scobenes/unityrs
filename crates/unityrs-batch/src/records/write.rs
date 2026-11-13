@@ -114,9 +114,9 @@ impl Writer {
         } else {
             work.spooled_part()
         };
-        // Summary size depends on the decimal figures of its own final
-        // flush. Costs and digit counts only increase; reach a fixed point
-        // without writing anything. At most 20 digits per u64 can change.
+        // Integer slots have fixed width, so measured figures cannot change
+        // the final flush's size. Converge the figures and the cut flag before
+        // writing; count actual encoded bytes, including slot whitespace.
         let mut previous = None;
         for _ in 0..128 {
             let mut count = Count(0);

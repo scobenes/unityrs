@@ -35,6 +35,7 @@ libc = "=0.2.191"
 # Output digests, reusing the exact versions already locked.
 md5 = { package = "md-5", version = "=0.11.0", default-features = false }
 crc32fast = "=1.5.3"
+sha2 = { version = "=0.11.1", default-features = false }
 
 [features]
 test-hooks = ["unityrs-export/test-hooks"]

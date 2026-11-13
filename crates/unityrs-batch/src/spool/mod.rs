@@ -2,8 +2,10 @@
 //! returns claims on drop. Only successful explicit deletion returns space.
 mod claims;
 mod files;
+mod owned_file;
 pub use claims::Counter;
 pub use files::{Directory, SpoolFile};
+pub use owned_file::OwnedFile;
 
 use std::fs::OpenOptions;
 use std::io::{self, Write};
@@ -52,6 +54,18 @@ impl From<io::Error> for Error {
     }
 }
 
+/// A spool writer that sets file permissions through its original descriptor.
+pub trait Writer: Write + Send {
+    /// Apply mode `0400` without reopening a path or depending on the umask.
+    fn seal(&self) -> io::Result<()>;
+}
+impl Writer for std::fs::File {
+    fn seal(&self) -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        self.set_permissions(std::fs::Permissions::from_mode(0o400))
+    }
+}
+
 /// Injectable filesystem facts and operations. Fault implementations may
 /// wrap a real file to fail a write or flush; production uses [`Host`].
 /// Paths here are trusted prepared directories and generated basenames.
@@ -59,7 +73,7 @@ pub trait FileSystem: Send + Sync {
     /// Caller-available bytes, not root's free blocks.
     fn available(&self, directory: &Path) -> io::Result<u64>;
     /// Exclusive create: never truncate an earlier artifact.
-    fn create(&self, path: &Path) -> io::Result<Box<dyn Write + Send>> {
+    fn create(&self, path: &Path) -> io::Result<Box<dyn Writer>> {
         Host.create(path)
     }
     /// Create only the requested directory; its parent is prepared.
@@ -75,6 +89,10 @@ pub trait FileSystem: Send + Sync {
     fn remove(&self, path: &Path) -> io::Result<()> {
         std::fs::remove_dir_all(path)
     }
+    /// Delete exactly one owned staged/peek file; never traverse a directory.
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        std::fs::remove_file(path)
+    }
 }
 /// Production facts. No fsync per output: sealing completes writes and
 /// closes files; crash durability belongs to later publication.
@@ -83,10 +101,11 @@ impl FileSystem for Host {
     fn available(&self, directory: &Path) -> io::Result<u64> {
         crate::sys::available_bytes(directory)
     }
-    fn create(&self, path: &Path) -> io::Result<Box<dyn Write + Send>> {
+    fn create(&self, path: &Path) -> io::Result<Box<dyn Writer>> {
         let f = OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(path)?;
         Ok(Box::new(f))

@@ -64,7 +64,7 @@ impl DetailCode {
             Self::Edquot => "EDQUOT",
         }
     }
-    pub(super) fn parse(s: &str) -> Option<Self> {
+    pub(crate) fn parse(s: &str) -> Option<Self> {
         [
             Self::Detect,
             Self::OutOfBounds,

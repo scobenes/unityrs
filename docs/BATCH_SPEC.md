@@ -73,7 +73,7 @@ A spec is one JSON object, at most 64 MiB (an average of about 670 bytes per inp
 | `sha256` | string | no | | 64 lowercase hex digits: the expected digest |
 | `deps` | array of string | no | `[]` | the ids this bundle needs (E11). A dependency may list its own |
 
-Every bundle is staged into the spool before extraction (`batch.md` 2.5), and every read of it reads the staged copy. A `size` or `sha256` that does not match the staged bytes fails the bundle (`integrity_mismatch`). A bundle over `M` bytes, by a stated size or by its body, fails before its bytes are claimed (`limit(input_bytes, <M>)`), since no meter could read it. A local path that does not exist or cannot be opened fails it (`source_missing`), one that `fstat` shows is not a regular file fails it (`source_not_regular`; the open is non-blocking, so a FIFO cannot hold it), and one written while it is copied fails it (`source_changed`). Every bundle in a view must be an AssetBundle file; a member that is not fails its inputs (`dependency_failed(<id>, not_a_bundle)`).
+Every bundle is staged into the spool before extraction (`batch.md` 2.5), and every read of it reads the staged copy. A `size` or `sha256` that does not match the staged bytes fails the bundle (`integrity_mismatch`). A bundle over `M` bytes, by a stated size or by its body, fails before its bytes are claimed (`limit(input_bytes, <M>)`), since no meter could read it. A local path that does not exist or cannot be opened fails it (`source_missing`), one that `fstat` shows is not a regular file fails it (`source_not_regular`; the open is non-blocking, so a FIFO cannot hold it), and one written while it is copied fails it (`source_changed`). For local sources, check both supplied size and initial `fstat` size against `M` before claims; claim and copy the initial `fstat` length. Re-stat after copying or early EOF: changed metadata (timestamps at full precision) is `source_changed`, unchanged early EOF is `host_io`; after a complete unchanged copy, check expected size before SHA-256. Every bundle in a view must be an AssetBundle file; a member that is not fails its inputs (`dependency_failed(<id>, not_a_bundle)`).
 
 ### 1.3 Spool
 
@@ -540,7 +540,10 @@ summary's `ms` is sampled at the final seal boundary and reused by the end.
 **Attempt artifacts (provisional until B7's manifest).** `records.ndjson`
 contains typed objects with a `type` discriminator, in append order. They carry
 no run id, input position or spool path. Names shared with manifest rows have
-the same meaning and types as above; the additional fields are:
+the same meaning and types as above. Summary integer tokens occupy 20-byte
+slots, padded before the decimal digits with JSON whitespace, so time and
+filesystem claim figures cannot change the encoded length or the actual-byte
+flush work. The additional fields are:
 
 | `type` | fields |
 |---|---|

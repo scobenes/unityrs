@@ -606,12 +606,12 @@ fn failure_record_preserves_end_message_figures_and_adds_only_its_flush() {
 #[test]
 fn terminal_summary_accounts_for_its_own_page_and_buffer_boundaries() {
     for (base, padding, expected) in [
-        (3, 335, 4095),
-        (3, 336, 4096),
-        (3, 337, 4097),
-        (57, 806, 65535),
-        (57, 807, 65536),
-        (57, 808, 65537),
+        (3, 154, 4095),
+        (3, 155, 4096),
+        (3, 156, 4097),
+        (57, 628, 65535),
+        (57, 629, 65536),
+        (57, 630, 65537),
     ] {
         let scratch = Scratch::new("summary-boundary");
         let (_, meter) = meter();
@@ -642,7 +642,8 @@ fn terminal_summary_accounts_for_its_own_page_and_buffer_boundaries() {
         let end = writer.finish(summary(Status::Complete), &mut work).unwrap();
         let bytes = std::fs::read(directory.path().join("records.ndjson")).unwrap();
         // These lengths are hand-counted from the documented artifact
-        // fields; they straddle both rounding and actual flush boundaries.
+        // fields, the summary's fixed-width integer slots included; they
+        // straddle both rounding and actual flush boundaries.
         assert_eq!(bytes.len(), expected);
         let expected_work = unityrs_batch::work::rounded(expected as u64, 4096).unwrap();
         assert_eq!(work.export_work(), expected_work);

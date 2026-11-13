@@ -1,8 +1,8 @@
 //! One sealed staged-path attempt. Dispatch, commits and publication are callers'.
-mod classify;
+pub(crate) mod classify;
 mod copy;
 mod end;
-mod hooks;
+pub(crate) mod hooks;
 mod metadata;
 mod options;
 mod peek;
@@ -74,7 +74,7 @@ pub struct AttemptArgs<'a> {
     /// Final archive keys, indexed by `MemberTemplate.archive`.
     pub archive_keys: &'a [&'a str],
     pub limits: AttemptLimits,
-    pub peeks: &'a PeekTable<'a>,
+    pub peeks: &'a dyn ngui::PeekBits,
     pub directory: &'a Directory,
     pub stop: &'a AtomicBool,
     pub hooks: &'a dyn Hooks,

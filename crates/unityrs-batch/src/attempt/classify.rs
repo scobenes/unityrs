@@ -6,7 +6,7 @@ use crate::{
 };
 use unityrs_export::ngui::{Failure, Reason};
 
-fn limit(s: &str) -> Option<Limit> {
+pub(crate) fn limit(s: &str) -> Option<Limit> {
     let (kind, value) = s
         .strip_prefix("limit(")?
         .strip_suffix(')')?
@@ -125,7 +125,7 @@ pub(super) fn failure(end: &mut AttemptEnd, failure: &Failure, view: AttemptView
         end.run_failure(ReasonCode::Internal);
     }
 }
-pub(super) fn record(e: records::Error) -> Failure {
+pub(crate) fn record(e: records::Error) -> Failure {
     match e {
         records::Error::Charge(e) => unityrs_export::ngui::classify::charge(&e).into(),
         records::Error::Work(l) => Failure::Input(Reason::plain(l.to_string())),
@@ -142,7 +142,7 @@ pub(super) fn record(e: records::Error) -> Failure {
         records::Error::Internal => internal(),
     }
 }
-pub(super) fn internal() -> Failure {
+pub(crate) fn internal() -> Failure {
     Failure::Run(Reason::plain("internal"))
 }
 /// Validate every skip vocabulary before recording it; unknown future mappings

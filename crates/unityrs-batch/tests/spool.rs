@@ -1,11 +1,11 @@
 //! Claims remain owned through partial writes, renames and failed deletion.
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use unityrs_batch::spool::{Counter, Directory, Error, FileSystem, Full, Host};
+use unityrs_batch::spool::{Counter, Directory, Error, FileSystem, Full, Host, Writer};
 use unityrs_testkit::scratch::Scratch;
 
 struct Facts {
@@ -24,7 +24,7 @@ impl FileSystem for Facts {
     fn available(&self, _: &Path) -> io::Result<u64> {
         Ok(self.available.load(Ordering::Relaxed))
     }
-    fn create(&self, p: &Path) -> io::Result<Box<dyn Write + Send>> {
+    fn create(&self, p: &Path) -> io::Result<Box<dyn Writer>> {
         if self.fail.load(Ordering::Relaxed) == 1 {
             return Err(io::Error::from_raw_os_error(libc::ENOSPC));
         }

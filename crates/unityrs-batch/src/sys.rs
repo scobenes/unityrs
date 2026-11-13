@@ -16,6 +16,22 @@
 use std::io;
 use std::time::Duration;
 
+/// Clear only `O_NONBLOCK` on an opened regular local source, after `fstat`.
+pub fn blocking_source(file: &std::fs::File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: file owns a live descriptor; F_GETFL uses no variadic argument.
+    let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: F_SETFL accepts this integer flag mask, preserving all flags
+    // except O_NONBLOCK. The descriptor remains owned throughout the call.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// The signals 2.11 step 1 sets to `SIG_IGN`.
 pub const IGNORED: [(libc::c_int, &str); 3] = [
     (libc::SIGTTIN, "SIGTTIN"),

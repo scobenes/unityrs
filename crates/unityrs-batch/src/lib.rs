@@ -1,5 +1,5 @@
 //! The batch engine behind `unityrs batch` (`docs/plans/batch.md`,
-//! `docs/BATCH_SPEC.md`): validation and sealed-attempt artifact primitives.
+//! `docs/BATCH_SPEC.md`): preparation, local staging, sealed peeks and attempts.
 //!
 //! - [`spec`]: the job spec, version 1 (`BATCH_SPEC` section 1), read from
 //!   `JOB.json` and validated in section 10's `bad_spec` order to a typed
@@ -17,6 +17,8 @@
 //!   main thread's own `exit` line, bounded in time ([`progress::early`]).
 //! - [`sys`]: the C library's calls std lacks: 2.11 step 1's `SIG_IGN`
 //!   for SIGTTIN, SIGTTOU and SIGXFSZ, and `CLOCK_BOOTTIME`.
+//! - [`phase1`]: measured spec-derived run state, including for `--check`.
+//! - [`stage`], [`peek`]: directly driven local copies and audited sealed peeks.
 //! - [`budget`], [`work`]: reservation accounts, leak snapshots and export work.
 //! - [`spool`], [`digest`], [`records`]: owned disk claims, checksums and
 //!   bounded typed attempt artifacts.
@@ -53,11 +55,15 @@ pub mod attempt;
 pub mod bound;
 pub mod budget;
 pub mod digest;
+pub mod job;
+pub mod peek;
+pub mod phase1;
 pub mod progress;
 pub mod reason;
 pub mod records;
 pub mod spec;
 pub mod spool;
+pub mod stage;
 #[allow(unsafe_code)]
 pub mod sys;
 pub mod view;
