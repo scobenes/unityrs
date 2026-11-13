@@ -1,9 +1,20 @@
-//! Phase 6 steps 1–4: external unit/key decisions, then a single prefix pass.
+//! Phase 6: external decisions, membership, ordered rows and bounded handoff.
 //! The fixed handoff owns capabilities, never candidate or path inventories.
+pub mod archives;
 pub mod codec;
+pub mod committed;
+mod json;
 mod keys;
+pub mod layout;
+pub mod member;
+mod members;
 mod prefix;
+pub mod rowread;
+mod rows;
 mod select;
+#[cfg(test)]
+#[path = "../../tests/winners_support/sizes.rs"]
+mod sizes;
 mod source;
 pub mod stream;
 mod units;
@@ -22,6 +33,7 @@ use stream::{By, retire};
 pub struct Prepared {
     preferences: Vec<u32>,
     archives: Vec<u32>,
+    archive_rows: Vec<u32>,
     inputs: Vec<u32>,
 }
 impl Prepared {
@@ -51,6 +63,12 @@ impl Prepared {
                     .map_or(&[], |a| a.key.as_bytes()),
             )
         });
+        let mut archive_rows = indices(spec.archives.len())?;
+        archive_rows.sort_unstable_by_key(|&i| {
+            spec.archives
+                .get(usize::try_from(i).unwrap_or(usize::MAX))
+                .map(|a| a.key.as_str())
+        });
         let mut inputs = indices(spec.input_count())?;
         inputs.sort_unstable_by_key(|&i| {
             spec.bundle(usize::try_from(i).unwrap_or(usize::MAX))
@@ -59,6 +77,7 @@ impl Prepared {
         Ok(Self {
             preferences,
             archives,
+            archive_rows,
             inputs,
         })
     }
@@ -101,6 +120,11 @@ pub enum Pass {
     Prefix,
     Propagation,
     Winners,
+    Expansions,
+    Membership,
+    MemberRows,
+    Rows,
+    Handoff,
 }
 /// Bounded test seam; callbacks must not allocate inside a counted phase.
 pub trait Observer {
@@ -128,7 +152,11 @@ impl Context<'_> {
         self.hooks.point(Point::Pass);
         check(self.stopped)
     }
-    fn sort(&mut self, source: &mut dyn Source, by: By) -> Result<Option<Sealed>, Error> {
+    fn sort(
+        &mut self,
+        source: &mut dyn Source,
+        by: impl sort::Order + Copy,
+    ) -> Result<Option<Sealed>, Error> {
         let retained = self.workspace.claimed();
         let report = sort::sort(
             source,
@@ -220,6 +248,59 @@ pub fn run(cx: &mut Context<'_>) -> Result<Artifacts, Error> {
     notify(cx, result)
 }
 fn notify(cx: &Context<'_>, result: Result<Artifacts, Error>) -> Result<Artifacts, Error> {
+    if let Err(Error::Run(failure)) = &result
+        && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cx.hooks.request_stop(*failure);
+        }))
+        .is_err()
+    {
+        return Err(Error::internal());
+    }
+    result
+}
+
+/// Fixed complete phase-6 handoff. B7 overlays outcomes by ordered merge;
+/// B8 opens each list through the archive metadata capability. All scratch
+/// has dropped and passed the zero/refusal/panic audit before readiness.
+#[derive(Debug)]
+pub struct Handoff {
+    pub winners: Option<Sealed>,
+    pub outputs: Option<Sealed>,
+    pub collisions: Option<Sealed>,
+    pub archives: Option<Sealed>,
+    pub archive_members: Option<Sealed>,
+    pub metadata: Option<Sealed>,
+    pub publication_blocked: bool,
+    pub counts: Counts,
+}
+/// Complete serial blocking seam, from immutable committed facts to B7/B8.
+/// On stop or failure, claims remain until successful explicit deletion.
+/// The controller must check its canonical stop again on receipt.
+pub fn complete(cx: &mut Context<'_>) -> Result<Handoff, Error> {
+    let result = cx.account.execute(|| {
+        check(cx.stopped)?;
+        let artifacts = structural(cx)?;
+        let _overhead = cx.account.meter().charge(64 * 1024)?;
+        let mut artifacts = prefix::finish(cx, artifacts)?;
+        let (outputs, collisions) = rows::materialize(cx, &mut artifacts)?;
+        let selected = members::select(cx, artifacts.winners.as_ref())?;
+        let archives = archives::materialize(cx, selected, artifacts.publication_blocked)?;
+        sort::Control {
+            stopped: cx.stopped,
+            hooks: cx.hooks,
+        }
+        .at(Point::BeforeReturn)?;
+        Ok(Handoff {
+            winners: artifacts.winners,
+            outputs,
+            collisions,
+            archives: archives.rows,
+            archive_members: archives.members,
+            metadata: archives.metadata,
+            publication_blocked: artifacts.publication_blocked,
+            counts: artifacts.counts,
+        })
+    });
     if let Err(Error::Run(failure)) = &result
         && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             cx.hooks.request_stop(*failure);

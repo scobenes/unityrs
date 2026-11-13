@@ -4,6 +4,8 @@ mod artifact_support;
 mod common;
 #[path = "ledger_support/empty_archives.rs"]
 mod empty_archives;
+#[path = "ledger_support/member_envelopes.rs"]
+mod member_envelopes;
 
 use serde_json::json;
 use std::{io::Read, sync::Arc};
@@ -282,4 +284,127 @@ fn escaped_1024_byte_keys_fit_their_individual_stream_allowance_at_512() {
     ] {
         measure(256, 1, keys, 512, false);
     }
+}
+
+/// Exercise the actual complete handoff alongside B6b's independent encoder.
+#[test]
+fn complete_empty_archive_families_fit_the_encoded_allowance() {
+    use unityrs_batch::{
+        sort::{NoHooks, Options},
+        winners::{self, Context, Prepared},
+    };
+    for block in [512, 3072, 4096, 5003, 65_536] {
+        for keys in empty_archives::FAMILIES {
+            let scratch = Scratch::new("complete-archive-gate");
+            let spec = specification(256, 1, keys).spec;
+            let counter = Counter::new(u64::MAX, 0, block).unwrap();
+            let account = Account::new(64 << 20);
+            let spooled = commit_empty_inputs(&scratch, &counter, &account, &spec);
+            let baseline = counter.used();
+            let states = [unityrs_batch::phase1::InputState {
+                phase: unityrs_batch::phase1::InputPhase::Committed,
+                failure_bundle: None,
+                ..Default::default()
+            }];
+            let done = scratch.join("done");
+            let inputs =
+                winners::committed::Committed::new(&done, &states, &[false], &Host, &|| false)
+                    .unwrap();
+            let prepared = Prepared::from_spec(&spec).unwrap();
+            let mut workspace =
+                Workspace::create(scratch.join("w"), counter.clone(), Arc::new(Host)).unwrap();
+            let result = winners::complete(&mut Context {
+                spec: &spec,
+                prepared: &prepared,
+                inputs: &inputs,
+                workspace: &mut workspace,
+                account: &account,
+                options: Options::default(),
+                stopped: &|| false,
+                hooks: &NoHooks,
+                observer: &winners::NoObserver,
+            })
+            .unwrap();
+            let k = if block < 4096 && 4096 % block != 0 {
+                2
+            } else {
+                block.div_ceil(4096).max(1)
+            };
+            let s = spooled * k;
+            let a = archive_allowance(&spec, block);
+            let peak = counter.peak() - baseline;
+            assert!(result.archives.as_ref().unwrap().claimed() <= a);
+            assert!(result.metadata.as_ref().unwrap().claimed() <= a);
+            assert!(peak <= 6 * s + 2 * a);
+            assert_eq!(account.snapshot().input.used, 0);
+            println!(
+                "COMPLETE_ARCHIVES keys={keys:?} block={block} S={s} A={a} peak={peak} allowance={}",
+                6 * s + 2 * a
+            );
+        }
+    }
+}
+
+/// Pin the original measured B6c gate under Addendum 3.
+#[test]
+fn escaped_keys_fit_the_complete_pipeline_disk_gate() {
+    use unityrs_batch::{
+        sort::{NoHooks, Options},
+        winners::{self, Context, Prepared},
+    };
+    let scratch = Scratch::new("escaped-archive-gate");
+    let mut doc = common::base();
+    doc["inputs"] = json!([{"id":"a","path":"/in/empty"}]);
+    doc["dependencies"] = json!([]);
+    doc["archives"] = (0..256).map(|i| json!({"key":empty_archives::escaped_key(i),"members":[{"kind":"texture","path":"{name}.png"}]})).collect();
+    let spec = common::accepted(&doc).spec;
+    let counter = Counter::new(u64::MAX, 0, 512).unwrap();
+    let account = Account::new(64 << 20);
+    let spooled = commit_empty_inputs(&scratch, &counter, &account, &spec);
+    let baseline = counter.used();
+    let states = [unityrs_batch::phase1::InputState {
+        phase: unityrs_batch::phase1::InputPhase::Committed,
+        failure_bundle: None,
+        ..Default::default()
+    }];
+    let done = scratch.join("done");
+    let inputs =
+        winners::committed::Committed::new(&done, &states, &[false], &Host, &|| false).unwrap();
+    let prepared = Prepared::from_spec(&spec).unwrap();
+    let mut workspace =
+        Workspace::create(scratch.join("w"), counter.clone(), Arc::new(Host)).unwrap();
+    let result = winners::complete(&mut Context {
+        spec: &spec,
+        prepared: &prepared,
+        inputs: &inputs,
+        workspace: &mut workspace,
+        account: &account,
+        options: Options::default(),
+        stopped: &|| false,
+        hooks: &NoHooks,
+        observer: &winners::NoObserver,
+    })
+    .unwrap();
+    let a: u64 = spec
+        .archives
+        .iter()
+        .map(|a| {
+            rounded(
+                u64::try_from(empty_archives::row(&a.key).len() - 102).unwrap() + 512,
+                512,
+            )
+            .unwrap()
+        })
+        .sum();
+    let allowance = 6 * spooled + 2 * a;
+    let retained = workspace.claimed();
+    assert_eq!(retained, 820_224);
+    assert_eq!(counter.peak() - baseline, retained);
+    assert_eq!(a, 655_360);
+    assert_eq!(allowance, 1_335_296);
+    assert!(retained <= allowance);
+    assert_eq!(result.archives.unwrap().length(), 548_608);
+    assert_eq!(result.metadata.unwrap().length(), 271_120);
+    assert_eq!(account.snapshot().input.used, 0);
+    println!("COMPLETE_ARCHIVE_GATE S={spooled} A={a} retained={retained} allowance={allowance}");
 }

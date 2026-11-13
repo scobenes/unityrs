@@ -104,4 +104,48 @@ Archive keys merge directly from prepared indices into the original sorted
 publish set, archive first on equality. Refusals do not change lookahead.
 Affected-unit markers are sorted once, then joined back; no loser is promoted
 and no second prefix pass runs. The artifact lifetime proof and measured peaks
-are in `plans/batch.md` 2.9; row/member materialization remains B6c's.
+are in `plans/batch.md` 2.9.
+
+
+## Complete handoff
+
+`winners::complete` drives the serial, audited phase from frozen committed
+artifacts to a fixed `Handoff`: winners, output/collision/archive/member base
+rows, archive metadata, counts and the publication-blocked fact. It releases
+all phase scratch before success. The caller retains workspace/execution owners
+and must check canonical stop again on receipt before entering B7. A stopped,
+failed or panicked task supplies no publishable handoff. Claims remain until
+successful explicit deletion; drop does not flush or release them.
+
+`winners::committed::Committed` borrows numeric `done/` directories and frozen
+controller receipts. Its separate borrowed final-failure table includes attempt
+failures; a receipt's dependency-failure index alone is insufficient. No
+scheduler, sink, outcome files or lifecycle machinery is included.
+
+`rowread::Reader` selects one of four closed public schemas through `File` and
+returns borrowed typed rows from charged bounded buffers. It checks framing,
+schema and order, without a JSON tree. B7 overlays publication outcomes by
+ordered merge. Archive rows keep MD5, ETag and size null, including oversized
+archives: phase 7 owns their outcomes. Membership is structural.
+
+`archives::Reader` streams archive-key ordered metadata: original spec index,
+included/left-out counts, checked expected ZIP length and optional included-list
+capability. `member::Reader` opens that capability in member order with path,
+numeric source/plan locator, size, CRC-32 and MD5. No capability or numeric
+locator appears in a public row. `layout::Layout` computes local and central
+ZIP64 extras and end-record sizes with checked arithmetic; it emits no bytes
+and computes no digest. B8 must reuse these decisions.
+
+Selection sorts valid expansions independently of invalid displayed paths,
+chooses the least loose key for each path, and checks its next distinct valid
+path once. Duplicate losers keep `duplicate_member` when their keeper is a
+prefix. A final display sort includes invalid paths in archive-byte/path
+`/`-first/key/input order. Prepared archive-row indices use byte order,
+independently of the `/`-first indices used by step 4.
+
+The complete-path ledger, including per-list rounding and both spec-derived
+streams, proves `R + 2P + 2K <= 6S + 2A` at production settings. `A` uses exact
+escaped key lengths. Production and scale measurements, counted children,
+allocation refusals and between-pass stop/fault checks are recorded in
+`plans/batch.md` 2.9. Controller task/permit integration remains at the B7/B9
+boundary; callers must retain ownership and recheck canonical stop on receipt.

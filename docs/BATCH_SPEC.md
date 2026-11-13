@@ -345,7 +345,7 @@ For each archive and each of its `members` entries, every winner of that kind is
 - of several members with one path, the one whose key is first in bytewise order is kept, and the others are left out (`duplicate_member`);
 - a path that is an ancestor of another remaining member's path is left out (`prefix_conflict`).
 
-Membership depends only on the winners, never on how their loose PUTs end, so an archive's bytes are a function of the committed records. With `publish_incomplete: false` and a failed input, nothing is published, and every archive with a member is `withheld` (`publish_incomplete`).
+Membership depends only on the winners, never on how their loose PUTs end, so an archive's bytes are a function of the committed records. With `publish_incomplete: false` and a failed input, nothing is published, and every archive with a member is `withheld` (`publish_incomplete`). Here "with a member" means at least one structurally included survivor after these rules. An archive with only left-out expansions stays `empty`, preserving its `left_out` count. Member rows use archive-key byte order, then displayed path in `/`-first order, then loose key and input; invalid paths enter only this display sort.
 
 ---
 

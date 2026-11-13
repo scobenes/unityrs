@@ -439,13 +439,135 @@ The instrumented tests check both each actual peak and each sort's
 `R + 2P + 2K` envelope. Forced tiny runs use their actual `n`; this
 production proof does not promise that every arbitrary test setting fits.
 
-The B6c row/member schedule remains an implementation obligation: output
-and collision rows derive from candidate records; member rows and member
-lists derive from counted expansions. Each encoded row/list record must
-fit twice its source's counted work and its simultaneous lifetimes must
-fit the same `6S` share, retiring decisions after their last row join.
-Archive rows and metadata alone use `2A`; no extraction stream is moved
-into `A`. B6b does not claim B6c's unwritten files have been measured.
+**B6c: complete rows, membership and handoff.** The same allowance holds
+for every pass at production run settings (32 MiB, fan-in 16). Let `J` now
+mean the total encoded committed candidate bytes, `N` their count, `F` the
+counted records-flush work, and `M` the sum of B4's largest final member-row
+work over **all expansions**, including losers and invalid paths. Thus
+`F >= max(J + 256, 4,096)` and `S >= k_blk × (F + 4,096N + M)`.
+Skipped/diagnostic records and actual payload sizes only increase `S`.
+Write `h = b + 15` for a framed file's header/rounding overhead.
+
+| B6c pass | retained extraction streams, including growing outputs | size envelope / retirement |
+|---|---|---|
+| row candidate projection and annotation reorder (`Rows`) | unit/key decisions, winners, candidate/annotation source | `R <= 4J + 4h`; same candidate-sort proof as B6b; candidate projection retires before annotation sort |
+| direct output/collision row join (`Rows`) | unit/key decisions, winners, annotations, output and collision rows | `R <= 6J + 64N + 6h`; decisions and annotations retire after their final readers close |
+| expansion identity sort (`Expansions`) | winners and output/collision rows | `R <= 3J + 64N + 3h`, `E <= M`; expansion input retires after winner join |
+| winner/member join and selection reorder (`Expansions`) | preceding three streams and expansion/replacement stream | direct join adds at most `2M + 2h`; sort retains at most `M + h`; loser expansions are discarded |
+| valid-path decisions (`Membership`) and display reorder (`MemberRows`) | preceding three streams, selection/replacement stream | same bounds; selection input retires before display sort; valid paths precede invalid paths only for selection |
+| final rows/lists and archive metadata (`Handoff`) | winners, output/collision rows, display input, growing member rows and included lists | `R <= 3J + 64N + 4M + 6b + 90 + 2A`; display input retires after its last reader; fixed handoff stays through finishing |
+
+The encoded-record bounds are stronger than twice counted size:
+
+- Candidate projections/annotations/winners have framed size at most their
+  committed candidate line size. Output base rows use at most that line plus
+  64 bytes (the longest refusal reason); collision rows use at most the line.
+  Every candidate line exceeds 64 bytes, so each is at most twice its counted
+  size. Output rows select one representative per key; collision rows select
+  at most one row per candidate. Neither duplicates candidates in one stream.
+- Every member projection, joined frame and included-list frame has 58 fixed
+  and framing bytes plus the four raw UTF-8 fields; its maximum is 6,202 bytes.
+  The counted final member row has those same strings JSON-escaped and more
+  fixed bytes, including hexadecimal MD5 and the largest reason. Therefore
+  each frame is at most that expansion's counted member work. A public member
+  row is at most that work by B4's definition. Selection never multiplies an
+  expansion within one stream. Headers and block rounding are accounted
+  separately below, rather than hidden in the twice-size test.
+
+`winners::sizes` tests the actual encoders against B4's actual accounting,
+including maximum escaped and repaired fields, every decision state and rule.
+Lists use exactly the tested included-member frame. No extraction stream is
+reclassified as spec-derived.
+
+For each member sort, the retained bound is
+`R <= 3J + 64N + M + 4h`; use the earlier `P` and `K` definitions to obtain
+
+`R + 2P + 2K <= 3J + 64N + 3M + (2n + 6)b + 94n + 90`.
+
+At production settings, every nonfinal run contains over 16 MiB of member
+frames: the arena is 25,159,680 bytes, no frame exceeds 6,202 bytes, and the
+index cannot fill first even with minimum-size frames. Consequently
+`n <= 1 + M / (16 MiB)`. The extra-run overhead is less than `k_blk M`,
+since `b <= 4,096 k_blk` and `(8,192 + 94) / (16 MiB) < 1`.
+For `N >= 1`, `3J <= 3 k_blk F`; the remaining `3 k_blk F` and
+`6 × 4,096N × k_blk` cover `8b + 64N + 184`, including the singleton.
+The remaining member allowance covers `3M` and the extra-run overhead.
+Thus the member-sort envelope is at most `6S`. The two direct member joins
+are smaller. The candidate-row direct bound in the table fits `6S` too:
+its payload is at most `6J`, while output-work floors and the counted summary
+cover `64N + 6h`. The arithmetic gate includes singleton, large-count, large
+member-work and unusual-block edges. Arbitrary tiny test cuts still use their
+actual measured `n`; no claim is made for every possible forced cut.
+
+Archive metadata uses raw key bytes plus **35 fixed bytes per empty framed
+record**, or **67** with a 32-byte list capability. There is one 16-byte file
+header. Even assigning that header to each record gives at most 83 fixed
+bytes, below 512. Base archive rows have at most 192 fixed bytes, including
+two maximal `u64` counts, status, reason and newline; digests/size remain null.
+Since raw key length is at most `e(key)`, each spec-derived stream separately
+fits `A`.
+
+The last pass also accounts for per-archive list headers/rounding, which cannot
+be bounded by pretending all lists are one file. For raw/encoded key lengths
+`r <= e`, `q = round_up(e + 512, b)`, a nonempty archive obeys
+
+`e + r + 192 + 67 + 16 + b - 1 <= 2q + e`.
+
+This follows by splitting at `b = e + 512`; the arithmetic gate exhausts the
+key-length boundaries. The extra `e` is already counted in at least one of
+that archive's expansions, so its sum is at most `M`. Pooled archive-row and
+metadata rounding/header costs at most another `2b + 15`. Combining these
+with list contents, member rows and the still-live display stream gives the
+last table entry. It is at most `6S + 2A`: `4M <= 6 k_blk M`, and records/output
+floors cover the remaining candidate and file overhead as above. Empty
+archives have no list; with `N = 0`, only archive rows/metadata remain and fit
+`2A`, while temporary empty-sort catalogs fit `6S`.
+
+The original quote-key gate now passes under encoded-length `A`, without
+changing its encoding or measured retention. At `b = 512`, its 256 keys have
+`A = 655,360`, `S = 4,096`, and allowance **1,335,296** bytes. The complete
+production handoff retains rows of 548,608 bytes (claim 548,864) and metadata
+of 271,120 bytes (claim 271,360), for **820,224** additional bytes. The actual
+counter peak equals that retention. Both the independent encoder and actual
+complete-path gate retain this case. Six key families (short, long, quotes,
+backslashes, permitted C1 and multibyte UTF-8) pass at blocks 512, 3,072,
+4,096, 5,003 and 65,536. Writes beyond the allowance still refuse with retained
+partial claims.
+
+Complete-path production-setting additional peaks for the membership fixture
+(bytes; each actual peak and each sort envelope fits `6S + 2A`):
+
+| B6c pass | b = 3,072 | b = 4,096 | b = 5,003 | b = 65,536 |
+|---|---:|---:|---:|---:|
+| rows, including annotation sorts | 15,360 | 20,480 | 25,015 | 327,680 |
+| expansions and winner join | 21,504 | 24,576 | 30,018 | 393,216 |
+| membership | 15,360 | 16,384 | 20,012 | 262,144 |
+| display reorder | 21,504 | 24,576 | 30,018 | 393,216 |
+| final lists/rows/metadata | 24,576 | 28,672 | 35,021 | 458,752 |
+
+At 4 KiB, the fixture has `S = 89,512`, `A = 16,384`, allowance 569,840;
+its largest conservative sort envelope is 34,410. At the other blocks the
+allowances are 1,098,720, 1,114,168 and 9,117,440 respectively.
+
+Counted release children on native aarch64 macOS (Rust 1.99.1) generate
+records incrementally and retain no dataset beside the measured phase.
+At 4 KiB, production runs with 350,000 candidates
+and members read 229,028,225 committed bytes; a forced 512 KiB-run case has
+1,000,000 of each; a 100,000-member unit exercises unit-size independence.
+
+| scene | `S` | allowance `6S + 2A` | actual additional peak | largest sort envelope | counted memory peak | phase-account peak |
+|---|---:|---:|---:|---:|---:|---:|
+| production, 350,000 | 1,727,731,936 | 10,366,399,808 | 529,735,680 | 598,553,814 | 34,010,688 | 34,141,312 |
+| forced scale, 1,000,000 | 4,936,778,368 | 29,620,678,400 | 1,513,861,120 | 1,717,254,508 | 2,493,008 | 2,623,088 |
+| production, 100,000-member unit | 494,178,368 | 2,965,078,400 | 165,826,560 | 175,536,892 | 34,271,888 | 34,402,480 |
+
+All fourteen pass peaks and sort envelopes pass. Counted children also refuse
+every reachable allocation ordinal in the complete path, concrete committed
+adapter and B7/B8 readers (3,325 member/withholding and 2,433 conflict-scene
+ordinals); every refusal is `host_memory`, with zero kept bytes and zero
+outstanding phase charges. Their maximum counted peak is 34,271,952 bytes and
+phase-account peak 34,402,480. A deliberately insufficient phase account is
+`internal`. These are local phase proofs, not B12's process-level acceptance.
 
 Measured production-setting additional spool peaks (bytes), with all retained
 files live, are below. The scene has 225 candidate records; `S` is 1,966,080,
@@ -465,10 +587,11 @@ single declared archive. Both the measured peaks and each sort's conservative
 | unit propagation | 27,648 | 28,672 | 35,021 | 327,680 |
 | winner handoff | 15,360 | 16,384 | 20,012 | 196,608 |
 
-The empty-archive gate's retained rows plus metadata peak at 299,008 bytes
-for 256 long keys at 4 KiB, against `6S + 2A = 2,121,728`; the corresponding
-short-key peak is 36,864. The other three block sizes and both key lengths
-also pass, including 8- and 64-input scale cases and a refusal beyond the cap.
+The independent B6b minimal-metadata gate peaks at 299,008 bytes for 256
+long keys at 4 KiB, against `6S + 2A = 2,121,728`; its short-key peak is
+36,864. The complete B6c metadata produces peaks of 565,248 and 40,960
+respectively; quotes/backslashes peak at 823,296. The other three block sizes
+and both key lengths also pass, including 8- and 64-input scale cases and a refusal beyond the cap.
 The gate also covers maximum-byte keys containing quotes, backslashes, C1
 controls and multibyte Unicode at all four block sizes. Controls below U+0020
 and U+007F are forbidden in keys; permitted C1 characters stay UTF-8 in JSON.

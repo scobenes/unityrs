@@ -137,3 +137,38 @@ mod tests {
         }
     }
 }
+
+/// The original B6c escaped-key gate, retained under encoded-length `A`.
+#[must_use]
+pub fn escaped_key(index: u32) -> String {
+    format!(
+        "{index:03}/{}/{}/{}/{}",
+        "\"".repeat(254),
+        "\"".repeat(254),
+        "\"".repeat(254),
+        "\"".repeat(255)
+    )
+}
+
+#[cfg(test)]
+mod encoded_gate {
+    use super::{escaped_key, row};
+    #[test]
+    fn escaped_archive_streams_fit_the_encoded_allowance() {
+        let rounded = |n: u64| n.div_ceil(512) * 512;
+        let mut rows = 0;
+        let mut metadata = 16;
+        let mut a = 0;
+        for i in 0..256 {
+            let key = escaped_key(i);
+            let encoded = u64::try_from(row(&key).len() - 102).unwrap();
+            rows += encoded + 102;
+            metadata += 35 + u64::try_from(key.len()).unwrap();
+            a += rounded(encoded + 512);
+        }
+        let retained = rounded(rows) + rounded(metadata);
+        assert_eq!((rows, metadata, a), (548_608, 271_120, 655_360));
+        assert_eq!(retained, 820_224);
+        assert!(retained <= 6 * 4096 + 2 * a);
+    }
+}

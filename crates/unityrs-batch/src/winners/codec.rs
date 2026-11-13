@@ -194,27 +194,27 @@ impl Codec {
         Ok(&self.bytes)
     }
 }
-struct Decode<'a>(&'a [u8]);
+pub(super) struct Decode<'a>(pub &'a [u8]);
 impl<'a> Decode<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8], Error> {
+    pub fn take(&mut self, n: usize) -> Result<&'a [u8], Error> {
         let value = self.0.get(..n).ok_or_else(Error::internal)?;
         self.0 = self.0.get(n..).ok_or_else(Error::internal)?;
         Ok(value)
     }
-    fn fixed<const N: usize>(&mut self) -> Result<[u8; N], Error> {
+    pub fn fixed<const N: usize>(&mut self) -> Result<[u8; N], Error> {
         self.take(N)?.try_into().map_err(|_| Error::internal())
     }
-    fn byte(&mut self) -> Result<u8, Error> {
+    pub fn byte(&mut self) -> Result<u8, Error> {
         Ok(u8::from_le_bytes(self.fixed()?))
     }
-    fn flag(&mut self) -> Result<bool, Error> {
+    pub fn flag(&mut self) -> Result<bool, Error> {
         match self.byte()? {
             0 => Ok(false),
             1 => Ok(true),
             _ => Err(Error::internal()),
         }
     }
-    fn text(&mut self, limit: usize) -> Result<&'a str, Error> {
+    pub fn text(&mut self, limit: usize) -> Result<&'a str, Error> {
         let n = usize::from(u16::from_le_bytes(self.fixed()?));
         if n > limit {
             return Err(Error::internal());

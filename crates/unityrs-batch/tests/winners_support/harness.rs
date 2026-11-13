@@ -47,8 +47,18 @@ impl Inputs for Commits {
         self.order[usize::try_from(ordinal).unwrap()]
     }
 }
+pub struct Expansion {
+    pub input: String,
+    pub key: String,
+    pub archive: usize,
+    pub path: String,
+    pub reason: Option<unityrs_batch::reason::LeftOut>,
+    pub cut: bool,
+}
 pub struct Case {
     pub candidates: Vec<Candidate>,
+    pub expansions: Vec<Expansion>,
+    pub kinds: BTreeMap<String, OutputKind>,
     pub prefer: BTreeMap<String, Prefer>,
     pub failed: BTreeSet<String>,
     pub inputs: Vec<String>,
@@ -65,6 +75,8 @@ impl Case {
             .collect();
         Self {
             candidates,
+            expansions: Vec::new(),
+            kinds: BTreeMap::new(),
             prefer: BTreeMap::new(),
             failed: BTreeSet::new(),
             inputs,
@@ -108,6 +120,7 @@ impl Case {
             .collect();
         unityrs_batch::spec::parse(serde_json::to_vec(&doc).unwrap()).unwrap()
     }
+    #[allow(clippy::too_many_lines)] // One synthetic commit keeps writer, work and summary ownership together.
     pub fn commit(
         &self,
         scratch: &Scratch,
@@ -146,6 +159,17 @@ impl Case {
                     let mut hashes =
                         records::copy_output(&directory, ordinal, b"x", &mut work).unwrap();
                     hashes.md5 = c.md5;
+                    let kind = self
+                        .kinds
+                        .get(&c.key)
+                        .copied()
+                        .unwrap_or(OutputKind::AtlasJson);
+                    let picture = unityrs_export::ngui::Picture {
+                        mode: "RGBA",
+                        width: 1,
+                        height: 1,
+                        visible_hash: [0; 32],
+                    };
                     writer
                         .append(
                             Record::Candidate(records::Candidate {
@@ -153,10 +177,10 @@ impl Case {
                                 unit: c.unit.as_deref(),
                                 input: id,
                                 serialized_file: "CAB-synthetic".into(),
-                                kind: OutputKind::AtlasJson,
+                                kind,
                                 path_id: 1,
                                 hashes,
-                                picture: None,
+                                picture: (kind != OutputKind::AtlasJson).then_some(&picture),
                                 size: 1,
                                 plan_index: ordinal,
                                 cut: false,
@@ -164,6 +188,27 @@ impl Case {
                             &mut work,
                         )
                         .unwrap();
+                    for m in self
+                        .expansions
+                        .iter()
+                        .filter(|m| m.input == id && m.key == c.key)
+                    {
+                        writer
+                            .member(
+                                &spec.archives[m.archive].key,
+                                records::Member {
+                                    archive: u64::try_from(m.archive).unwrap(),
+                                    path: records::Text::Prepared(&m.path, m.cut),
+                                    key: &m.key,
+                                    input: id,
+                                    md5: &c.md5,
+                                    reason: m.reason,
+                                    cut: m.cut,
+                                },
+                                &mut work,
+                            )
+                            .unwrap();
+                    }
                 }
                 spooled += writer.finish(summary, &mut work).unwrap().spooled_part;
             }
