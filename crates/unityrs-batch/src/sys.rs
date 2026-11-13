@@ -13,8 +13,7 @@
 //! - [`clock_ticks`]: `sysconf(_SC_CLK_TCK)`, the unit of
 //!   `/proc/self/stat`'s start time.
 
-use std::io;
-use std::time::Duration;
+use std::{io, time::Duration};
 
 // Match std's large-file ABI on 32-bit Linux as well as 64-bit hosts.
 #[cfg(not(all(target_os = "linux", any(target_env = "gnu", target_env = "uclibc"))))]
@@ -155,28 +154,6 @@ pub fn available_bytes(path: &std::path::Path) -> io::Result<u64> {
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
 }
 
-// std's Unix path adapters can allocate infallibly for long paths. Keep
-// these phase-path calls behind one fallible NUL-termination helper.
-fn terminated_path(path: &std::path::Path) -> io::Result<Vec<u8>> {
-    use std::os::unix::ffi::OsStrExt;
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.contains(&0) {
-        return Err(io::Error::from(io::ErrorKind::InvalidInput));
-    }
-    let mut terminated = Vec::new();
-    terminated
-        .try_reserve_exact(
-            bytes
-                .len()
-                .checked_add(1)
-                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?,
-        )
-        .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
-    terminated.extend_from_slice(bytes);
-    terminated.push(0);
-    Ok(terminated)
-}
-
 /// The spool's exclusive create or no-follow read, with fallible path storage.
 pub(crate) fn spool_file(path: &std::path::Path, create: bool) -> io::Result<std::fs::File> {
     use std::os::fd::FromRawFd;
@@ -202,27 +179,6 @@ pub(crate) fn spool_file(path: &std::path::Path, create: bool) -> io::Result<std
     Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
-/// How many times an interrupted call is retried before its `EINTR` is
-/// returned as an I/O error: enough for any ordinary signal, and a bound,
-/// so a signal storm cannot hold the phase in one call.
-pub(crate) const INTERRUPTED_RETRIES: u32 = 64;
-
-/// Run `call`, retrying it while it fails with `EINTR`, at most
-/// [`INTERRUPTED_RETRIES`] times after the first try.
-pub(crate) fn retry_interrupted<T>(mut call: impl FnMut() -> io::Result<T>) -> io::Result<T> {
-    let mut retries = 0;
-    loop {
-        match call() {
-            Err(error)
-                if error.kind() == io::ErrorKind::Interrupted && retries < INTERRUPTED_RETRIES =>
-            {
-                retries += 1;
-            }
-            result => return result,
-        }
-    }
-}
-
 /// Check a sealed regular file without following symlinks or adopting claims.
 /// On 32-bit GNU targets `lstat64` can refuse an out-of-range timestamp with
 /// `EOVERFLOW`, which is then `host_io`; 32-bit hosts are not a supported or
@@ -241,6 +197,32 @@ pub(crate) fn spool_length(path: &std::path::Path) -> io::Result<u64> {
         return Err(io::Error::from(io::ErrorKind::InvalidData));
     }
     u64::try_from(stat.st_size).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
+}
+
+/// The device and inode of the directory `path` names, without following a
+/// final symlink and with fallible path storage; anything but a directory
+/// is `InvalidData`.
+pub(crate) fn directory_identity(path: &std::path::Path) -> io::Result<(u64, u64)> {
+    let path = terminated_path(path)?;
+    let mut stat = std::mem::MaybeUninit::<SpoolStat>::uninit();
+    // SAFETY: path is NUL-terminated and stat points to writable storage for
+    // one stat. Both remain alive throughout lstat.
+    if unsafe { spool_lstat(path.as_ptr().cast(), stat.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a successful lstat initialized the complete structure.
+    let stat = unsafe { stat.assume_init() };
+    if stat.st_mode & libc::S_IFMT != libc::S_IFDIR {
+        return Err(io::Error::from(io::ErrorKind::InvalidData));
+    }
+    // As std's `MetadataExt::dev` and `ino` do: `dev_t` is `i32` on macOS.
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap,
+        clippy::unnecessary_cast,
+        clippy::useless_conversion
+    )]
+    Ok((stat.st_dev as u64, stat.st_ino as u64))
 }
 
 /// Unlink exactly one generated file with fallible path storage.
@@ -387,97 +369,6 @@ fn directory_flags() -> libc::c_int {
 /// for cleanup, while bounding cursor storage and open descriptors.
 pub const REMOVE_DEPTH: usize = 8;
 
-/// Cooperative deletion anchored to the spool's held root. Every relative
-/// component is opened with `openat`; even the top removal uses its parent fd.
-pub fn remove_tree(
-    root: &std::fs::File,
-    relative: &std::path::Path,
-    stopped: &dyn Fn() -> bool,
-) -> Result<(), crate::spool::Error> {
-    use crate::spool::Error;
-    use std::{ffi::CStr, os::fd::AsRawFd, path::Component};
-    if stopped() {
-        return Err(Error::Stopped);
-    }
-    let mut components = relative.components().peekable();
-    let mut parent = root.try_clone()?;
-    let top = loop {
-        let Some(Component::Normal(name)) = components.next() else {
-            return Err(Error::Internal);
-        };
-        let name = terminated_path(std::path::Path::new(name))?;
-        if components.peek().is_none() {
-            break name;
-        }
-        parent = directory_at(parent.as_raw_fd(), &name)?;
-    };
-    let file = directory_at(parent.as_raw_fd(), &top)?;
-    let mut stack = Vec::new();
-    stack
-        .try_reserve_exact(REMOVE_DEPTH)
-        .map_err(|_| Error::HostMemory)?;
-    stack.push(Cursor::new(file, None)?);
-    let mut entries = 0_u64;
-    while let Some(cursor) = stack.last() {
-        // SAFETY: errno is this thread's writable errno; cursor.dir is live.
-        let entry = unsafe {
-            *errno() = 0;
-            libc::readdir(cursor.dir)
-        };
-        if entry.is_null() {
-            // SAFETY: the thread-local errno pointer remains valid.
-            let error = unsafe { *errno() };
-            if error != 0 {
-                return Err(io::Error::from_raw_os_error(error).into());
-            }
-            let name = stack.pop().ok_or(Error::Internal)?.name.take();
-            if let Some(ancestor) = stack.last() {
-                unlink_at(
-                    ancestor.fd(),
-                    &name.ok_or(Error::Internal)?,
-                    libc::AT_REMOVEDIR,
-                )?;
-            }
-            continue;
-        }
-        // SAFETY: readdir's non-null entry holds a NUL-terminated d_name,
-        // valid until the next call. Copy before any subsequent readdir.
-        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
-        if name.to_bytes() == b"." || name.to_bytes() == b".." {
-            continue;
-        }
-        if entries.is_multiple_of(1_000) && stopped() {
-            return Err(Error::Stopped);
-        }
-        entries += 1;
-        // Fallible copy, including the trailing NUL, before advancing DIR.
-        let mut owned = Vec::new();
-        owned
-            .try_reserve_exact(name.to_bytes_with_nul().len())
-            .map_err(|_| Error::HostMemory)?;
-        owned.extend_from_slice(name.to_bytes_with_nul());
-        match directory_at(cursor.fd(), &owned) {
-            Ok(file) => {
-                if stack.len() == REMOVE_DEPTH {
-                    return Err(Error::Internal);
-                }
-                stack.push(Cursor::new(file, Some(owned))?);
-            }
-            Err(error) => {
-                if !matches!(error.raw_os_error(), Some(libc::ENOTDIR | libc::ELOOP)) {
-                    return Err(error.into());
-                }
-                unlink_at(cursor.fd(), &owned, 0)?;
-            }
-        }
-    }
-    if stopped() {
-        return Err(Error::Stopped);
-    }
-    unlink_at(parent.as_raw_fd(), &top, libc::AT_REMOVEDIR)?;
-    Ok(())
-}
-
 fn directory_at(parent: libc::c_int, name: &[u8]) -> io::Result<std::fs::File> {
     use std::os::fd::FromRawFd;
     // SAFETY: callers supply a live directory fd and a NUL-terminated name.
@@ -537,39 +428,359 @@ fn errno() -> *mut libc::c_int {
         libc::__error()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{INTERRUPTED_RETRIES, retry_interrupted};
-    use std::io;
-
-    #[test]
-    fn an_interrupted_call_is_retried_a_bounded_number_of_times() {
-        let mut calls = 0;
-        let result: io::Result<()> = retry_interrupted(|| {
-            calls += 1;
-            Err(io::Error::from(io::ErrorKind::Interrupted))
-        });
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
-        assert_eq!(calls, INTERRUPTED_RETRIES + 1);
-
-        let mut calls = 0;
-        let result = retry_interrupted(|| {
-            calls += 1;
-            if calls < 3 {
-                Err(io::Error::from(io::ErrorKind::Interrupted))
-            } else {
-                Ok(calls)
-            }
-        });
-        assert_eq!(result.unwrap(), 3);
-
-        let mut calls = 0;
-        let result: io::Result<()> = retry_interrupted(|| {
-            calls += 1;
-            Err(io::Error::from(io::ErrorKind::NotFound))
-        });
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
-        assert_eq!(calls, 1);
+/// Exclusive nonblocking lock. The inode must never be unlinked.
+pub fn lock_exclusive(file: &File) -> io::Result<()> {
+    // SAFETY: live descriptor and scalar flock flags; no borrowed memory.
+    cvt(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) })
+}
+fn cvt(rc: i32) -> io::Result<()> {
+    if rc == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
+/// Rooted single-component open. Only preflight selects the fallback.
+pub fn rooted_open(
+    parent: &File,
+    name: &std::ffi::CStr,
+    flags: i32,
+    beneath: bool,
+) -> io::Result<File> {
+    use std::os::fd::FromRawFd;
+    #[cfg(target_os = "linux")]
+    if beneath {
+        // SAFETY: open_how contains only unsigned integers, all zero bit
+        // patterns valid; zeroing also covers future reserved fields.
+        let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+        how.flags = u64::try_from(flags | libc::O_CLOEXEC)
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        how.mode = if flags & libc::O_CREAT == 0 { 0 } else { 0o600 };
+        how.resolve = libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_XDEV;
+        // SAFETY: live parent, valid C string and initialized open_how of
+        // the exact size passed; successful syscall transfers one new fd.
+        let fd = unsafe {
+            libc::syscall(
+                libc::SYS_openat2,
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                &raw const how,
+                size_of::<libc::open_how>(),
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let fd = i32::try_from(fd).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+        // SAFETY: fd is newly owned, transferred exactly once to File.
+        return Ok(unsafe { File::from_raw_fd(fd) });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = beneath;
+    // SAFETY: live parent and C string; mode is supplied for O_CREAT.
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_CLOEXEC,
+            0o600_u32,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful openat transferred one newly owned descriptor.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+#[must_use]
+pub fn traversal_flags() -> i32 {
+    #[cfg(target_os = "linux")]
+    {
+        libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK
+    }
+}
+
+pub fn beneath_probe(root: &File) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        rooted_open(root, c".", libc::O_RDONLY | libc::O_DIRECTORY, true).map(drop)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = root;
+        Err(io::Error::from_raw_os_error(libc::ENOSYS))
+    }
+}
+pub fn rooted_mkdir(parent: &File, name: &std::ffi::CStr) -> io::Result<()> {
+    // SAFETY: parent is live, name a valid C string; mkdirat retains neither.
+    cvt(unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) })
+}
+pub fn rooted_unlink(parent: &File, name: &std::ffi::CStr) -> io::Result<()> {
+    // SAFETY: live directory and C string. Flags 0 never recurse or follow.
+    cvt(unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) })
+}
+pub fn rooted_rename(parent: &File, from: &std::ffi::CStr, to: &std::ffi::CStr) -> io::Result<()> {
+    // SAFETY: live directory and two C strings; renameat retains no pointers.
+    cvt(unsafe {
+        libc::renameat(
+            parent.as_raw_fd(),
+            from.as_ptr(),
+            parent.as_raw_fd(),
+            to.as_ptr(),
+        )
+    })
+}
+pub fn mount_id(file: &File) -> io::Result<Option<u64>> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut stat = std::mem::MaybeUninit::<libc::statx>::uninit();
+        // SAFETY: empty C string with AT_EMPTY_PATH queries the live fd;
+        // stat is writable for the complete output structure.
+        cvt(unsafe {
+            libc::statx(
+                file.as_raw_fd(),
+                c"".as_ptr(),
+                libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+                libc::STATX_MNT_ID,
+                stat.as_mut_ptr(),
+            )
+        })?;
+        // SAFETY: successful statx initializes all output fields.
+        let stat = unsafe { stat.assume_init() };
+        Ok((stat.stx_mask & libc::STATX_MNT_ID != 0).then_some(stat.stx_mnt_id))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = file;
+        Err(io::Error::from_raw_os_error(libc::ENOSYS))
+    }
+}
+pub fn kernel_release() -> io::Result<(u32, u32)> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut name = std::mem::MaybeUninit::<libc::utsname>::uninit();
+        // SAFETY: name has writable storage for the complete utsname.
+        cvt(unsafe { libc::uname(name.as_mut_ptr()) })?;
+        // SAFETY: uname initialized name, including a terminated release.
+        let name = unsafe { name.assume_init() };
+        // SAFETY: successful uname guarantees a NUL-terminated release.
+        let text = unsafe { std::ffi::CStr::from_ptr(name.release.as_ptr()) }
+            .to_str()
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+        let mut parts = text.split('.');
+        let major = parts.next().and_then(|s| s.parse().ok());
+        let minor = parts.next().and_then(|s| s.parse().ok());
+        major
+            .zip(minor)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(io::Error::from_raw_os_error(libc::ENOSYS))
+    }
+}
+pub fn sync_filesystem(lock: &File) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    // SAFETY: the lock descriptor has remained open since preflight.
+    {
+        cvt(unsafe { libc::syncfs(lock.as_raw_fd()) })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = lock;
+        Err(io::Error::from_raw_os_error(libc::ENOSYS))
+    }
+}
+pub fn writeback(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    // SAFETY: live file, offset 0 and length 0 mean the whole file.
+    {
+        cvt(unsafe { libc::sync_file_range(file.as_raw_fd(), 0, 0, libc::SYNC_FILE_RANGE_WRITE) })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = file;
+        Err(io::Error::from_raw_os_error(libc::ENOSYS))
+    }
+}
+
+#[cfg(test)]
+#[path = "sys/tests.rs"]
+mod tests;
+
+#[path = "sys/remove.rs"]
+mod remove;
+pub use remove::remove_tree;
+impl Cursor {
+    fn next_name(&self) -> io::Result<Option<&std::ffi::CStr>> {
+        // SAFETY: errno is writable TLS and dir remains live. readdir's
+        // result is valid until the next call; callers consume it first.
+        let entry = unsafe {
+            *errno() = 0;
+            libc::readdir(self.dir)
+        };
+        if entry.is_null() {
+            // SAFETY: the TLS errno pointer remains valid on this thread.
+            let error = unsafe { *errno() };
+            return if error == 0 {
+                Ok(None)
+            } else {
+                Err(io::Error::from_raw_os_error(error))
+            };
+        }
+        // SAFETY: non-null readdir result contains a terminated d_name.
+        Ok(Some(unsafe {
+            std::ffi::CStr::from_ptr((*entry).d_name.as_ptr())
+        }))
+    }
+}
+/// Visit entries using an independent directory description (not dup's shared
+/// directory offset). The callback consumes each name before the next read.
+pub fn visit_directory(
+    root: &File,
+    visit: &mut dyn FnMut(&std::ffi::CStr) -> io::Result<()>,
+) -> io::Result<()> {
+    let file = rooted_open(root, c".", directory_flags(), false)?;
+    let cursor = Cursor::new(file, None)?;
+    while let Some(name) = cursor.next_name()? {
+        if name != c"." && name != c".." {
+            visit(name)?;
+        }
+    }
+    Ok(())
+}
+pub fn canonical(path: &std::path::Path) -> io::Result<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let name = terminated_path(path)?;
+    let capacity = usize::try_from(libc::PATH_MAX)
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?
+        + 1;
+    let mut bytes = Vec::<u8>::new();
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+    bytes.resize(capacity, 0);
+    // SAFETY: name is terminated; bytes holds at least PATH_MAX+1 writable
+    // bytes, as realpath requires, with no overlapping input/output memory.
+    if unsafe { libc::realpath(name.as_ptr().cast(), bytes.as_mut_ptr().cast()) }.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let n = bytes
+        .iter()
+        .position(|b| *b == 0)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+    bytes.truncate(n);
+    Ok(std::ffi::OsString::from_vec(bytes).into())
+}
+pub fn available_at(file: &File) -> io::Result<u64> {
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: live fd and writable storage for the whole statvfs output.
+    cvt(unsafe { libc::fstatvfs(file.as_raw_fd(), stat.as_mut_ptr()) })?;
+    // SAFETY: successful fstatvfs initialized every output field.
+    let stat = unsafe { stat.assume_init() };
+    #[allow(clippy::useless_conversion)] // libc widths differ across hosts.
+    u64::from(stat.f_bavail)
+        .checked_mul(u64::from(stat.f_frsize))
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
+}
+pub fn in_memory(file: &File) -> io::Result<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        // SAFETY: live fd and writable storage for the complete statfs.
+        cvt(unsafe { libc::fstatfs(file.as_raw_fd(), stat.as_mut_ptr()) })?;
+        // SAFETY: successful fstatfs initialized every output field.
+        let stat = unsafe { stat.assume_init() };
+        let kind = i128::from(stat.f_type) & 0xffff_ffff;
+        // RAMFS_MAGIC is Linux UAPI's value; libc does not export it.
+        Ok(kind == i128::from(libc::TMPFS_MAGIC) || kind == 0x8584_58f6)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = file;
+        Ok(false)
+    }
+}
+
+/// Read a resource limit, or raise its soft limit to the supplied hard limit.
+pub fn resource_limit(
+    resource: crate::start::host::Resource,
+    raise: Option<crate::start::host::Limit>,
+) -> io::Result<crate::start::host::Limit> {
+    use crate::start::host::{Limit, Resource};
+    let kind = match resource {
+        Resource::AddressSpace => libc::RLIMIT_AS,
+        Resource::Data => libc::RLIMIT_DATA,
+        Resource::OpenFiles => libc::RLIMIT_NOFILE,
+        Resource::FileSize => libc::RLIMIT_FSIZE,
+        Resource::Processes => libc::RLIMIT_NPROC,
+    };
+    let mut limits = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if let Some(limit) = raise {
+        limits.rlim_cur = limit.hard.unwrap_or(libc::RLIM_INFINITY);
+        limits.rlim_max = limits.rlim_cur;
+        // SAFETY: valid resource id and fully initialized rlimit input.
+        cvt(unsafe { libc::setrlimit(kind, &raw const limits) })?;
+    } else {
+        // SAFETY: valid resource id and writable rlimit output storage.
+        cvt(unsafe { libc::getrlimit(kind, &raw mut limits) })?;
+    }
+    Ok(Limit {
+        soft: (limits.rlim_cur != libc::RLIM_INFINITY).then_some(limits.rlim_cur),
+        hard: (limits.rlim_max != libc::RLIM_INFINITY).then_some(limits.rlim_max),
+    })
+}
+/// Initial-namespace exemption is checked separately against `uid_map`.
+pub fn privileged() -> io::Result<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        #[repr(C)]
+        struct Header {
+            version: u32,
+            pid: i32,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Data {
+            effective: u32,
+            permitted: u32,
+            inheritable: u32,
+        }
+        let mut header = Header {
+            version: 0x2008_0522,
+            pid: 0,
+        };
+        let mut data = [Data {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        }; 2];
+        // SAFETY: version 3 capget writes two initialized Data elements and
+        // may update header; both buffers have the required C layouts.
+        let rc = unsafe { libc::syscall(libc::SYS_capget, &raw mut header, data.as_mut_ptr()) };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: getuid has no inputs or borrowed memory.
+        Ok(unsafe { libc::getuid() } == 0
+            || data
+                .first()
+                .is_some_and(|d| d.effective & ((1 << 21) | (1 << 24)) != 0))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(io::Error::from_raw_os_error(libc::ENOSYS))
+    }
+}
+
+#[path = "sys/paths.rs"]
+mod paths;
+pub(crate) use paths::retry_interrupted;
+use paths::terminated_path;

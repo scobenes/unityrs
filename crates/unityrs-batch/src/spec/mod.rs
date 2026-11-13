@@ -293,6 +293,8 @@ pub fn pointer(tokens: &[&str]) -> String {
 /// A validated spec: the typed spec and its dependency graph.
 #[derive(Debug)]
 pub struct Validated {
+    /// SHA-256 of the exact buffer passed to parsing, before compaction.
+    pub spec_sha256: [u8; 32],
     /// The spec, defaults filled in.
     pub spec: model::Spec,
     /// The `deps` graph, its id table in bytewise order.
@@ -312,6 +314,8 @@ pub fn parse(bytes: Vec<u8>) -> Result<Validated, BadSpec> {
 /// tests' small graphs reach a lower budget's edge).
 #[doc(hidden)]
 pub fn parse_with(bytes: Vec<u8>, view_work: u64) -> Result<Validated, BadSpec> {
+    use sha2::{Digest, Sha256};
+    let spec_sha256 = Sha256::digest(&bytes).into();
     let text = String::from_utf8(bytes).map_err(|_| BadSpec::new(Rule::NotUtf8, ""))?;
     let (mut spec, lists, sites) = {
         let parsed = parse::parse(&text).map_err(|_| BadSpec::new(Rule::Syntax, ""))?;
@@ -331,7 +335,11 @@ pub fn parse_with(bytes: Vec<u8>, view_work: u64) -> Result<Validated, BadSpec> 
     tests::VIEW_WORK_USED.set(Some(view_work));
     let graph = validate::cross::check(&spec, lists, &sites, view_work)?;
     spec.compact();
-    Ok(Validated { spec, graph })
+    Ok(Validated {
+        spec_sha256,
+        spec,
+        graph,
+    })
 }
 
 /// Reads and validates `JOB.json` at `path` (`docs/plans/batch.md` 2.11

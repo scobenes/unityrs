@@ -12,6 +12,7 @@ use crate::{
 use std::{sync::Arc, time::Instant};
 
 pub struct PreparedRun {
+    pub spec_sha256: [u8; 32],
     pub spec: Arc<Spec>,
     pub graph: Arc<Graph>,
     pub extraction: Arc<attempt::Prepared>,
@@ -172,13 +173,18 @@ pub enum PreparationError {
 /// Validation already checked these templates. The error is retained in the
 /// library API for callers constructing a `Validated` value themselves.
 pub fn prepare(validated: spec::Validated) -> Result<PreparedRun, PreparationError> {
-    let spec::Validated { spec, graph } = validated;
+    let spec::Validated {
+        spec_sha256,
+        spec,
+        graph,
+    } = validated;
     let extraction = attempt::Prepared::from_spec(&spec).map_err(PreparationError::Template)?;
     let winners = crate::winners::Prepared::from_spec(&spec).map_err(PreparationError::Winners)?;
     let n = spec.bundle_count();
     let inputs = spec.input_count();
     let walker = Walker::with_capacity(n, (spec.max_view_bundles as usize).min(n));
     Ok(PreparedRun {
+        spec_sha256,
         archive_keys: (0..spec.archives.len())
             .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
             .collect(),
