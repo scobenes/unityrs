@@ -1,9 +1,10 @@
 //! What the compressed mesh's divergences and refusals change, against the
 //! oracle's fixture (`tests/fixtures/process.json`, the cases of
 //! `tools/fixtures/meshdecode_compressed.py`): `PARITY.md` section 19.1's
-//! two Tier C rows, each UnityPy's value pinned and the correct one
-//! asserted; section 15.3's division first in `unpack_floats`; and its
-//! refusal of an item past 32 bits. `tests/oracle.rs` replays every case
+//! three Tier C rows on it, each UnityPy's value pinned and the correct
+//! one asserted; section 15.3's division first in `unpack_floats`, and its
+//! refusal of an item past 32 bits; and a last tuple cut short, as the
+//! public accessors give it. `tests/oracle.rs` replays every case
 //! (each Tier C case against the corrected answer the script records, its
 //! expected-divergence mask `DIVERGES`).
 
@@ -16,7 +17,7 @@ use unityrs_core::typetree::{NodeList, NodeRow, Tree};
 use unityrs_core::walk::{self, ReadCtx, ReadOptions, RefTypes};
 use unityrs_core::{Bytes, Parsed};
 use unityrs_meshdecode::{
-    Component, MeshError, MeshHandler, Processed, Source, Values, Version, VertexArray,
+    Component, MeshError, MeshHandler, Processed, Source, Version, VertexArray,
 };
 
 fn body() -> J {
@@ -101,12 +102,19 @@ fn theirs(body: &J, case_name: &str, name: &str) -> Vec<Vec<f64>> {
         .collect()
 }
 
-/// The crate's array of floats, a tuple each.
+/// The crate's array of floats, a tuple each, through the public
+/// accessors.
 fn floats(a: &VertexArray) -> Vec<Vec<f64>> {
-    let Values::Float(v) = a.values() else {
-        panic!("not floats: {:?}", a.values())
-    };
-    v.chunks(a.dimension()).map(<[f64]>::to_vec).collect()
+    (0..a.len())
+        .map(|t| {
+            (0..a.tuple_len(t).unwrap())
+                .map(|c| match a.component(t, c) {
+                    Some(Component::Float(x)) => x,
+                    other => panic!("not a float: {other:?}"),
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// Items `first..` of a vector whose item k is `k + start`, `dim` a tuple,
@@ -154,6 +162,28 @@ fn the_uv_offset_adds_where_unitypy_assigns() {
         assert_eq!(floats(p.uv(2).unwrap()), items(2, 3, -2.0));
         assert_eq!(floats(p.uv(5).unwrap()), items(8, 4, -2.0));
         assert_eq!(floats(p.uv(7).unwrap()), items(16, 2, -2.0));
+    });
+    // Channels of 1, 2 and 2 components at 7 bits: the second starts at
+    // bit 14, the third at bit 42 (UnityPy's at bit 28), none at a byte.
+    let name = "compressed_uv_unaligned";
+    let (uv1, uv2) = (theirs(&body, name, "m_UV1"), theirs(&body, name, "m_UV2"));
+    // UnityPy's third channel is items 4 to 7: the second's second tuple,
+    // then items 6 and 7.
+    assert_eq!(uv2[0], uv1[1]);
+    let fixed: Vec<Vec<f64>> = case(&body, name)["corrected"]["ok"]["attrs"]["m_UV2"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_array().unwrap().iter().map(bits).collect())
+        .collect();
+    // The corrected one is items 6 to 9.
+    assert_eq!(fixed[0], uv2[1]);
+    assert_ne!(fixed[1], uv2[1]);
+    ours(&body, name, |p| {
+        let p = p.unwrap();
+        assert_eq!(floats(p.uv(0).unwrap()), theirs(&body, name, "m_UV0"));
+        assert_eq!(floats(p.uv(1).unwrap()), uv1);
+        assert_eq!(floats(p.uv(2).unwrap()), fixed);
     });
     // Ten items: UnityPy's third channel reads items 4 to 7; the crate's
     // runs past the vector.
@@ -247,5 +277,84 @@ fn a_packed_item_past_32_bits_is_refused() {
             format!("{e:?}"),
             "Malformed(\"a packed item wider than 32 bits\")"
         );
+    });
+}
+
+/// `PARITY.md` section 19.1's square in `normalize` (Tier C): UnityPy's
+/// `y**2` is the C library's `pow`, which on the oracle's glibc 2.36
+/// rounds `y`'s square here a bit otherwise than `y * y`; the crate's is
+/// the correctly rounded product, as the corrected answer's.
+#[test]
+fn the_normalised_normal_squares_correctly_where_unitypy_calls_pow() {
+    let body = body();
+    let name = "compressed_normals_pow";
+    let theirs = theirs_row(&body, name, "process");
+    assert_eq!(
+        theirs,
+        ["3fe8dd7a5dc166c4", "3fe4248187e3ecac", "0000000000000000"]
+    );
+    let fixed = theirs_row(&body, name, "corrected");
+    assert_eq!(
+        fixed,
+        ["3fe8dd7a5dc166c2", "3fe4248187e3ecab", "0000000000000000"]
+    );
+    // The pair: 24-bit quanta over a range of 2 from -1; z^2 < 0, so
+    // `normalize(x, y, 0)`.
+    let scale = 2.0 / f64::from((1u32 << 24) - 1);
+    let (x, y) = (15_447_649.0 * scale - 1.0, 14_106_951.0 * scale - 1.0);
+    assert!(1.0 - x * x - y * y < 0.0);
+    let inv = 1.0 / (x * x + y * y).sqrt();
+    let want = [x * inv, y * inv, 0.0];
+    assert_eq!(
+        want.map(|v| format!("{:016x}", v.to_bits())),
+        fixed.as_slice()
+    );
+    ours(&body, name, |p| {
+        let normals = p.unwrap();
+        let normals = normals.normals().unwrap();
+        for (c, &w) in want.iter().enumerate() {
+            assert_eq!(normals.component(0, c), Some(Component::Float(w)));
+        }
+        // The second vertex is past the one pair: `zeros`' `int`s.
+        assert_eq!(normals.component(1, 0), Some(Component::Int(0)));
+    });
+}
+
+/// The first normal of the case's `outcome` (`process`, UnityPy's, or
+/// `corrected`), each component's bits.
+fn theirs_row(body: &J, name: &str, outcome: &str) -> Vec<String> {
+    case(body, name)[outcome]["ok"]["attrs"]["m_Normals"][0]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["f"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// A last tuple cut short is a tuple of the components it holds, as
+/// `reshape` leaves it: 18 floats of bind poses are two matrices, the
+/// second of two values.
+#[test]
+fn a_cut_last_tuple_is_a_tuple_of_what_it_holds() {
+    let body = body();
+    let name = "compressed_4.7.2f1_bind_poses_cut";
+    let poses = &case(&body, name)["process"]["ok"]["attrs"]["m_BindPose"];
+    assert_eq!(poses.as_array().unwrap().len(), 2);
+    assert_eq!(
+        poses[1],
+        json!([[{ "f": format!("{:016x}", 8.0f64.to_bits()) }, { "f": format!("{:016x}", 8.5f64.to_bits()) }], [], [], []])
+    );
+    ours(&body, name, |p| {
+        let p = p.unwrap();
+        let a = p.bind_pose().unwrap();
+        assert_eq!((a.len(), a.dimension()), (2, 16));
+        assert_eq!(
+            (a.tuple_len(0), a.tuple_len(1), a.tuple_len(2)),
+            (Some(16), Some(2), None)
+        );
+        assert_eq!(a.component(1, 0), Some(Component::Float(8.0)));
+        assert_eq!(a.component(1, 1), Some(Component::Float(8.5)));
+        assert_eq!(a.component(1, 2), None);
+        assert!(!a.is_empty());
     });
 }

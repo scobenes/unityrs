@@ -279,9 +279,9 @@ impl<'a> MeshHandler<'a> {
 
         // UnityPy MeshHelper.py:194-195
         if vertex_count == 0
-            && let Some(v) = attrs.vertices.as_ref().filter(|v| v.tuples() > 0)
+            && let Some(v) = attrs.vertices.as_ref().filter(|v| !v.is_empty())
         {
-            vertex_count = u64::try_from(v.tuples()).unwrap_or(u64::MAX);
+            vertex_count = u64::try_from(v.len()).unwrap_or(u64::MAX);
         }
 
         Ok(Processed {

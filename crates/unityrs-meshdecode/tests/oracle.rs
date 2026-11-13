@@ -5,13 +5,15 @@
 //! core's typetree read, `MeshHandler::process` and `get_triangles`, each
 //! array bit for bit, each exception by type and message, and each part a
 //! later phase ports where UnityPy begins it; each call made twice, the
-//! second answering as the first. Where `PARITY.md` section 19.1's Tier C
-//! rows on the compressed mesh show, the case's answer is the corrected
-//! one the script records beside UnityPy's ([`DIVERGES`], the
-//! expected-divergence mask), and a packed item past 32 bits is refused
-//! ([`REFUSED`]); `tests/compressed.rs` pins what each divergence changes. The same cases on UnityPy's TPK trees
-//! when `meshdecode.py --tpk` hands them over on standard input, and a
-//! streamed Mesh read through a real Environment.
+//! second answering as the first, each array read through the public
+//! accessors (`len`, `tuple_len`, `component`). Where `PARITY.md` section
+//! 19.1's Tier C rows on the compressed mesh show, the case's answer is
+//! the corrected one the script records beside UnityPy's ([`DIVERGES`],
+//! the expected-divergence mask), and a packed item past 32 bits is
+//! refused ([`REFUSED`]); `tests/compressed.rs` pins what each divergence
+//! changes. The same cases on UnityPy's TPK trees when `meshdecode.py
+//! --tpk` hands them over on standard input, and a streamed Mesh read
+//! through a real Environment.
 
 use std::sync::{Arc, Mutex};
 
@@ -25,8 +27,8 @@ use unityrs_core::walk::{self, ReadCtx, ReadOptions, RefTypes};
 use unityrs_core::{Bytes, Parsed, RawStr, SerializedFile};
 use unityrs_meshdecode::{
     Component, FileResources, Gather, GfxPrimitiveType, MeshError, MeshHandler, MeshTopology,
-    Processed, Resources, Source, SubMeshTriangles, Triangles, Unsupported, Values, Version,
-    VertexArray, VertexChannelFormat, VertexFormat, VertexFormat2017, get_channel_component_size,
+    Processed, Resources, Source, SubMeshTriangles, Triangles, Unsupported, Version, VertexArray,
+    VertexChannelFormat, VertexFormat, VertexFormat2017, get_channel_component_size,
     get_channel_dtype, unpack_vertexdata,
 };
 use unityrs_testkit::blob::NodeSpec;
@@ -36,17 +38,21 @@ use unityrs_testkit::serialized::{self, SerializedSpec, one_object};
 /// The cases `meshdecode.py` records.
 const FORMAT_VERSIONS: usize = 10;
 const UNPACK_CASES: usize = 251;
-const PROCESS_CASES: usize = 440;
+const PROCESS_CASES: usize = 489;
 
 /// The expected-divergence mask (`PARITY.md` section 19.1): each case whose
-/// answer UnityPy's two Tier C errors in `decompress_compressed_mesh`
-/// change, and what they change, the arrays (`outcome` where the corrected
-/// answer is another outcome). The script records the corrected answer
-/// beside UnityPy's (`tools/fixtures/meshdecode.py`'s `FIXES`).
+/// answer UnityPy's three Tier C rows on `decompress_compressed_mesh`
+/// change (the UV offset, the fourth bone weight, `normalize`'s square),
+/// and what they change, the arrays (`outcome` where the corrected answer
+/// is another outcome); `tests/compressed.rs` pins each value changed. The
+/// script records the corrected answer beside UnityPy's
+/// (`tools/fixtures/meshdecode.py`'s `FIXES` and `NORMALIZE_FIX`).
 const DIVERGES: &[(&str, &[&str])] = &[
     ("compressed_values", &["m_BoneWeights", "m_UV2"]),
     ("compressed_uv_dims", &["m_UV5", "m_UV7"]),
     ("compressed_uv_short", &["outcome"]),
+    ("compressed_uv_unaligned", &["m_UV2"]),
+    ("compressed_normals_pow", &["m_Normals"]),
     ("compressed_skin_weights", &["m_BoneWeights"]),
 ];
 
@@ -281,47 +287,32 @@ fn component(c: Component) -> J {
     }
 }
 
+/// Tuple `t` of `a`, through the public accessors: the components it
+/// holds ([`VertexArray::tuple_len`]), each by [`VertexArray::component`].
+fn tuple(a: &VertexArray, t: usize) -> Vec<J> {
+    let n = a.tuple_len(t).expect("a tuple within len()");
+    (0..n)
+        .map(|c| component(a.component(t, c).expect("a component within tuple_len()")))
+        .collect()
+}
+
 /// `m_BindPose` as UnityPy's `reshape(shape=(4, 4))` gives it: four rows
 /// a matrix, the last matrix's cut short, then empty.
 fn matrices(a: &VertexArray) -> J {
-    let Values::Float(v) = a.values() else {
-        panic!("bind poses of ints")
-    };
-    v.chunks(16)
-        .map(|m| {
+    assert_eq!(a.dimension(), 16);
+    (0..a.len())
+        .map(|t| {
+            let m = tuple(a, t);
             (0..4)
-                .map(|r| {
-                    let row = m.get(4 * r..m.len().min(4 * r + 4)).unwrap_or(&[]);
-                    row.iter()
-                        .map(|&x| component(Component::Float(x)))
-                        .collect::<J>()
-                })
+                .map(|r| m.get(4 * r..m.len().min(4 * r + 4)).unwrap_or(&[]).to_vec())
                 .collect::<J>()
         })
         .collect()
 }
 
+/// An array as UnityPy's list of tuples, through the public accessors.
 fn array(a: &VertexArray) -> J {
-    let d = a.dimension();
-    match a.values() {
-        Values::Mixed(v) => v
-            .chunks(d)
-            .map(|t| t.iter().map(|&c| component(c)).collect::<J>())
-            .collect(),
-        Values::Float(v) => v
-            .chunks(d)
-            .map(|t| {
-                t.iter()
-                    .map(|x| json!({ "f": format!("{:016x}", x.to_bits()) }))
-                    .collect::<J>()
-            })
-            .collect(),
-        Values::Int(v) => v
-            .chunks(d)
-            .map(|t| t.iter().map(|x| json!(x)).collect::<J>())
-            .collect(),
-        other => panic!("a form no case records: {other:?}"),
-    }
+    (0..a.len()).map(|t| J::Array(tuple(a, t))).collect()
 }
 
 fn processed(p: &Processed<'_>, calls: Option<&Mutex<Vec<J>>>) -> J {
@@ -484,10 +475,10 @@ fn every_handler_case_is_unitypy_s() {
         *split.entry(kind.to_owned()).or_default() += 1;
     }
     let want = [
-        ("ValueError", 21),
+        ("ValueError", 38),
         ("differs", 66),
-        ("error", 263),
-        ("same", 22),
+        ("error", 291),
+        ("same", 26),
     ];
     let want: std::collections::BTreeMap<String, usize> =
         want.iter().map(|&(k, n)| (k.to_owned(), n)).collect();

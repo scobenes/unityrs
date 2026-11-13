@@ -39,16 +39,17 @@
 //! UnityPy sets the UV offset (`uvSrcOffset = uvDim * m_VertexCount`,
 //! `:504`), so a third channel starts where the second did; here it adds.
 //! UnityPy gives a fourth weight of `1 - sum`, `sum` counted in 31sts
-//! (`:604`), an `int` far below zero; here it is `(31 - sum) / 31`. Each
-//! divergence is pinned by `tests/oracle.rs`.
-//!
-//! **Squares.** `normalize` squares by `v**2` (`:64`), `CPython`'s
-//! `float_pow` through the C library's `pow`, which on the oracle's glibc
-//! rounds the last bit otherwise than the correctly rounded `v * v` for
-//! about one value in a thousand, depending on the host's `pow`; here the
-//! square is `v * v`, so the two agree where the square is exact (as every
-//! oracle case's is) and where `pow` rounds correctly. A finite component
-//! whose square passes the largest `float` is `OverflowError`, as there.
+//! (`:604`), an `int` far below zero; here it is `(31 - sum) / 31`.
+//! `normalize` squares by `v**2` (`:64`), `CPython`'s `float_pow` through
+//! the C library's `pow`, which is not correctly rounded: the oracle's
+//! glibc 2.36 rounds the last bit otherwise than `v * v` for about one
+//! value in a thousand, and another host's `pow` may round otherwise
+//! again, so UnityPy's value is the host's; here the square is the
+//! correctly rounded IEEE 754 product `v * v` (equal wherever the square
+//! is exact or `pow` rounds correctly). A finite component whose square
+//! passes the largest `float` is `OverflowError`, as there. Each
+//! divergence is pinned by `tests/compressed.rs`, and masked in
+//! `tests/oracle.rs`'s replay.
 //!
 //! **Bounds.** Every array is charged to the caller's meter before it is
 //! allocated, the unpacked items as [`crate::packed`] charges them, and
@@ -134,9 +135,9 @@ fn two<T: Copy>(v: &[T]) -> Result<(T, T), MeshError> {
     }
 }
 
-/// `v**2` of a `float` (module docs, squares): a NaN or an infinity as
-/// `float_pow`'s special cases give it, a finite square past the largest
-/// `float` `OverflowError`.
+/// `v**2` of a `float`, correctly rounded (module docs, Tier C): a NaN or
+/// an infinity as `float_pow`'s special cases give it, a finite square
+/// past the largest `float` `OverflowError`.
 fn square(v: f64) -> Result<f64, MeshError> {
     if v.is_nan() {
         return Ok(v);

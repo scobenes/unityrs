@@ -37,10 +37,12 @@ begins them; the script makes each raise a marker there and records `{"p2a": kin
 and the reads of a Mesh's own arrays and of a render data's `vertices` that begin `copy_from_mesh`'s and
 `copy_from_spriterenderdata`'s copies (each field read through a property that raises where the field is non-empty
 and the handler's own is unset); every other line is UnityPy's own. Each case's `process` is run once more with
-`decompress_compressed_mesh` corrected: UnityPy's own source with PARITY.md section 19.1's two Tier C rows fixed in
-it (`FIXES`, the UV offset added, not assigned, and the fourth bone weight `(31 - sum) / 31`, not `1 - sum`), each
-line replaced exactly once, compiled in memory; where that answer differs, the case records it as `corrected`, the
-answer unityrs gives, and the crate's replay names each such case in its expected-divergence mask.
+`decompress_compressed_mesh` corrected: UnityPy's own source with PARITY.md section 19.1's three Tier C rows on it
+fixed (`FIXES`, the UV offset added, not assigned, and the fourth bone weight `(31 - sum) / 31`, not `1 - sum`;
+`NORMALIZE_FIX`, `normalize`'s square `v * v`, correctly rounded, not `v**2`, the C library's `pow`), each line
+replaced exactly once, compiled in memory, so the corrected answer depends on no host's `pow`; where it differs, the
+case records it as `corrected`, the answer unityrs gives, and the crate's replay names each such case in its
+expected-divergence mask.
 
 **--tpk.** The same cases on UnityPy's own TPK trees (`Tpk.get_typetree_node`) in place of the hand-built ones, at
 run time. Nothing derived from a TPK may be committed (docs/plans/core.md section 9, Q2), so the TPK's trees and
@@ -250,6 +252,9 @@ FIXES = (
     ("uvSrcOffset = uvDim * m_VertexCount", "uvSrcOffset += uvDim * m_VertexCount"),
     ("boneWeights[vertexIndex][j] = 1 - sum", "boneWeights[vertexIndex][j] = (31 - sum) / 31"),
 )
+# PARITY.md section 19.1's square in normalize (helpers/MeshHelper.py:64): `v**2` is glibc's `pow`, not always
+# correctly rounded; `v * v` is.
+NORMALIZE_FIX = ("sum(v**2 for v in vector)", "sum(v * v for v in vector)")
 # A Mesh's own arrays, and the handler field copy_from_mesh fills from each (helpers/MeshHelper.py:206-224).
 OWN = {"m_Vertices": "m_Vertices", "m_Normals": "m_Normals", "m_Tangents": "m_Tangents", "m_UV": "m_UV0",
        "m_UV1": "m_UV1", "m_Colors": "m_Colors"}  # fmt: skip
@@ -388,15 +393,23 @@ def triangles_shape(tris) -> dict:
     return {"tri": whole, "cut": cut, "empty": len(empty)}
 
 
-def corrected():
-    """`decompress_compressed_mesh` with `FIXES` made in UnityPy's own source (module docs), compiled in memory."""
-    source = textwrap.dedent(inspect.getsource(MeshHelper.MeshHandler.decompress_compressed_mesh))
-    for wrong, right in FIXES:
+def fixed(function, fixes, namespace: dict):
+    """`function`'s own source with each of `fixes` made exactly once, compiled in memory in `namespace`."""
+    source = textwrap.dedent(inspect.getsource(function))
+    for wrong, right in fixes:
         assert source.count(wrong) == 1, wrong
         source = source.replace(wrong, right)
     space: dict = {}
-    exec(compile(source, "<decompress_compressed_mesh, corrected>", "exec"), vars(MeshHelper), space)  # noqa: S102
-    return space["decompress_compressed_mesh"]
+    exec(compile(source, f"<{function.__name__}, corrected>", "exec"), namespace, space)  # noqa: S102
+    return space[function.__name__]
+
+
+def corrected():
+    """`decompress_compressed_mesh` with `FIXES` made in UnityPy's own source, calling `normalize` with
+    `NORMALIZE_FIX` made in its (module docs): both compiled in memory, in a copy of MeshHelper's globals."""
+    namespace = dict(vars(MeshHelper))
+    namespace["normalize"] = fixed(MeshHelper.normalize, (NORMALIZE_FIX,), namespace)
+    return fixed(MeshHelper.MeshHandler.decompress_compressed_mesh, FIXES, namespace)
 
 
 CORRECTED = corrected()

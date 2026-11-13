@@ -4,15 +4,18 @@ arrays hold items, which `decompress_compressed_mesh` (helpers/MeshHelper.py:468
 meshdecode_cases.py's `mesh` on the tree `meshdecode_cases.TREES` gives (so `meshdecode.py --tpk` runs them on the
 TPK's trees too).
 
-Each vector is packed here from its items, least significant bit first, never by UnityPy: every bit size from 1 to
-32 for integers and floats, bit size 0, a vector one byte short, start offsets (the UV channels), floats whose range
+Each vector is packed here from its items, least significant bit first, never by UnityPy: every bit size from 0 to
+32 for integers and for floats, a vector one byte short, start offsets (the UV channels, at whole bytes and within
+one), floats whose range
 or start is a NaN or an infinity (each NaN a single operand, so its result is the same on every host), the
 normals' and tangents' branches and short pairs, the skin's weights in 31sts with a fourth weight, a vertex past the
 count and an exhausted index list, packed colours, bind poses cut short, a missing `m_BitSize` or `m_Range`, an
 `UnknownObject` vector, a bit size past 32 (which unityrs refuses), and vectors of N items for the work tests. The
 cases where PARITY.md section 19.1's two Tier C rows show (the UV offset, the fourth bone weight) are recorded twice
 by meshdecode.py: UnityPy's answer and the corrected one. Every float is exact in binary32, and every square
-`normalize` takes exact, so no case depends on the host's `pow` (crates/unityrs-meshdecode/src/compressed.rs).
+`normalize` takes exact but `normals_pow`'s, so only that case's UnityPy answer depends on the host's `pow`: there
+glibc 2.36's `v**2` rounds otherwise than `v * v`, PARITY.md section 19.1's third Tier C row on the compressed mesh,
+which its corrected answer (`v * v`) does not depend on (crates/unityrs-meshdecode/src/compressed.rs).
 Run on its own it only imports (tools/parity/tests/test_fixture_modules.py).
 """
 
@@ -105,16 +108,21 @@ def values_cases() -> list[dict]:
              m_UVInfo=0x4 | 0x6 << 8 | 0x7 << 20 | 0x5 << 28),  # fmt: skip
         # Ten items for three channels of two: UnityPy's third reads items 4 to 7, the corrected one runs out.
         case("uv_short", m_Vertices=floats(list(range(6)), 8), m_UV=floats(list(range(10)), 8), m_UVInfo=0x555),
+        # Channels 0, 1 and 2 of 1, 2 and 2 components at 7 bits: channel 1 starts at bit 14, the third at bit 42
+        # (UnityPy's at 28, Tier C), none at a whole byte.
+        case("uv_unaligned", m_Vertices=floats(list(range(6)), 8), m_UV=floats(seeded(5, 10, 7), 7, start=-1.5),
+             m_UVInfo=0x4 | 0x5 << 4 | 0x5 << 8),  # fmt: skip
     ]
     return out
 
 
 def packed_cases() -> list[dict]:
-    """unpack_ints and unpack_floats at each bit size, at 0, one byte short, NaN and infinite scales, and past 32."""
+    """unpack_ints and unpack_floats at every bit size from 0 to 32, one byte short, NaN and infinite scales, and
+    past 32."""
     out = []
-    for bits in (1, 3, 5, 7, 8, 9, 13, 16, 17, 24, 31, 32):
+    for bits in range(33):
         out.append(case(f"ints_{bits}", m_Triangles=ints(seeded(bits, 6, bits), bits), submesh=6))
-    for bits in (1, 7, 8, 13, 24, 32):
+    for bits in range(1, 33):
         quanta = seeded(100 + bits, 9, bits)
         out.append(case(f"floats_{bits}", m_Vertices=floats(quanta, bits, start=f32(0xC1A80000), value_range=f32(0x4295999A))))
     out += [
@@ -145,6 +153,9 @@ def normal_cases() -> list[dict]:
              m_NormalSigns=ints([0, 1], 1)),  # fmt: skip
         case("normals_count_short", m_Vertices=floats([0, 0, 0], 8), m_Normals=floats([1, 1, 2, 2], 8, **quarter),
              m_NormalSigns=ints([0, 0], 1)),  # fmt: skip
+        # 24-bit quanta whose length `normalize` takes: glibc's `y**2` is not `y * y` (Tier C, module docs).
+        case("normals_pow", m_Vertices=floats(list(range(6)), 8), m_NormalSigns=ints([1], 1),
+             m_Normals=floats([15447649, 14106951], 24, start=-1.0, value_range=2.0)),  # fmt: skip
         case("normals_nan", m_Vertices=three, m_Normals=floats([1, 2, 3, 4], 8, value_range=f32(0x7FC00007)),
              m_NormalSigns=ints([0, 1], 1)),  # fmt: skip
         case("tangents_branches", m_Vertices=floats(list(range(12)), 8), m_Tangents=floats([4, 0, 0, 0, 4, 4, 2, 2], 8, **quarter),

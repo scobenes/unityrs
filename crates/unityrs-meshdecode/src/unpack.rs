@@ -53,7 +53,9 @@ use crate::format::StructCode;
 
 /// One attribute: `len()` tuples of `dimension()` components, as
 /// `struct.iter_unpack` (or the copy of a `Mesh`'s skin) gives them, the
-/// values flat in tuple order.
+/// values flat in tuple order. A compressed mesh's arrays are
+/// `PackedBitVector.reshape`'s lists, whose last tuple may be cut short:
+/// it is a tuple here too, of the components it holds.
 #[derive(Debug)]
 pub struct VertexArray {
     dimension: usize,
@@ -102,26 +104,35 @@ impl VertexArray {
         self.dimension
     }
 
-    /// The number of tuples.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        let n = match &self.values {
+    /// The number of values, flat.
+    fn values_len(&self) -> usize {
+        match &self.values {
             Values::Float(v) => v.len(),
             Values::Int(v) => v.len(),
             Values::Mixed(v) => v.len(),
-        };
-        n.checked_div(self.dimension).unwrap_or(0)
+        }
     }
 
     /// The number of tuples, a last one cut short counted: Python's
-    /// `len()` of `reshape`'s list.
-    pub(crate) fn tuples(&self) -> usize {
-        let n = match &self.values {
-            Values::Float(v) => v.len(),
-            Values::Int(v) => v.len(),
-            Values::Mixed(v) => v.len(),
-        };
-        n.div_ceil(self.dimension.max(1))
+    /// `len()` of the list UnityPy holds. No values at dimension 0 is no
+    /// tuple.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        if self.dimension == 0 {
+            return 0;
+        }
+        self.values_len().div_ceil(self.dimension)
+    }
+
+    /// The components tuple `tuple` holds: [`Self::dimension`], or fewer
+    /// for a last tuple cut short; `None` past the tuples.
+    #[must_use]
+    pub fn tuple_len(&self, tuple: usize) -> Option<usize> {
+        if tuple >= self.len() {
+            return None;
+        }
+        let from = tuple.checked_mul(self.dimension)?;
+        Some((self.values_len() - from).min(self.dimension))
     }
 
     /// Whether it holds no tuple.
@@ -137,12 +148,13 @@ impl VertexArray {
     }
 
     /// Component `component` of tuple `tuple`, as a Python `float` or
-    /// `int`, whichever form holds it; `None` past the whole tuples
-    /// ([`Self::len`]: the values of a last, cut tuple are no tuple's) or
-    /// past the dimension.
+    /// `int`, whichever form holds it; `None` past the tuples
+    /// ([`Self::len`]) or past the tuple's components
+    /// ([`Self::tuple_len`]: a last tuple cut short holds fewer), where
+    /// Python's index raises `IndexError`.
     #[must_use]
     pub fn component(&self, tuple: usize, component: usize) -> Option<Component> {
-        if component >= self.dimension || tuple >= self.len() {
+        if component >= self.tuple_len(tuple)? {
             return None;
         }
         let at = tuple.checked_mul(self.dimension)?.checked_add(component)?;
@@ -552,15 +564,20 @@ mod tests {
     }
 
     #[test]
-    fn a_component_past_the_tuples_or_the_dimension_is_none() {
+    fn a_component_past_the_tuples_or_its_tuple_is_none() {
         let a = array(2, Values::Float(vec![1.0, 2.0, 3.0]));
-        // Three values of dimension 2: one whole tuple.
-        assert_eq!(a.len(), 1);
+        // Three values of dimension 2: a whole tuple and one cut short, as
+        // `reshape` gives them.
+        assert_eq!(a.len(), 2);
+        assert_eq!(
+            (a.tuple_len(0), a.tuple_len(1), a.tuple_len(2)),
+            (Some(2), Some(1), None)
+        );
         assert_eq!(a.component(0, 2), None);
         assert_eq!(a.component(0, 1), Some(Component::Float(2.0)));
-        // The cut tuple's one value is no tuple's.
-        assert_eq!(a.component(1, 0), None);
+        assert_eq!(a.component(1, 0), Some(Component::Float(3.0)));
         assert_eq!(a.component(1, 1), None);
+        assert_eq!(a.component(2, 0), None);
         assert_eq!(a.component(usize::MAX, 1), None);
         assert_eq!(a.component(usize::MAX / 2 + 1, 0), None);
         let empty = array(0, Values::Int(vec![1, 2]));
