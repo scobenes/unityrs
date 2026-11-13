@@ -3,6 +3,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// A committed directory needs only its claim; its input index derives the
+/// location under `done/`. Dropping this fact never returns disk space.
+#[derive(Clone, Copy, Debug)]
+pub struct DirectoryClaim {
+    pub claimed_bytes: u64,
+}
+
 struct Ledger {
     counter: Arc<Counter>,
     claimed: AtomicU64,
@@ -12,20 +19,59 @@ struct Ledger {
 /// It cannot be removed or renamed while a writer still holds it.
 pub struct Directory {
     path: PathBuf,
+    removal_root: Arc<std::fs::File>,
+    relative: PathBuf,
     ledger: Arc<Ledger>,
     fs: Arc<dyn FileSystem>,
     removed: bool,
 }
 impl Directory {
+    pub fn into_claim(self) -> Result<DirectoryClaim, Error> {
+        self.idle()?;
+        Ok(DirectoryClaim {
+            claimed_bytes: self.claimed(),
+        })
+    }
+
     /// Parent must already exist; an existing directory is never adopted.
     pub fn create(
         path: PathBuf,
         counter: Arc<Counter>,
         fs: Arc<dyn FileSystem>,
     ) -> Result<Self, Error> {
+        // Standalone owners pin the containing area's parent. Controllers
+        // supply the spool's already held descriptor through create_anchored.
+        let parent = path.parent().ok_or(Error::Internal)?;
+        let root = parent
+            .parent()
+            .filter(|_| parent.file_name().is_some())
+            .unwrap_or(parent);
+        let relative = super::path::join(
+            Path::new(""),
+            path.strip_prefix(root).map_err(|_| Error::Internal)?,
+        )?;
+        let root = if root.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            root
+        };
+        let removal_root = Arc::new(crate::sys::open_directory(root)?);
+        Self::create_anchored(path, removal_root, relative, counter, fs)
+    }
+    /// Create beneath an exclusively prepared root, retaining that descriptor
+    /// for cooperative deletion. `relative` contains generated components only.
+    pub fn create_anchored(
+        path: PathBuf,
+        removal_root: Arc<std::fs::File>,
+        relative: PathBuf,
+        counter: Arc<Counter>,
+        fs: Arc<dyn FileSystem>,
+    ) -> Result<Self, Error> {
         fs.mkdir(&path)?;
         Ok(Self {
             path,
+            removal_root,
+            relative,
             ledger: Arc::new(Ledger {
                 counter,
                 claimed: AtomicU64::new(0),
@@ -54,14 +100,34 @@ impl Directory {
     /// Controller-side relocation, without releasing a single claim.
     pub fn rename(&mut self, to: PathBuf) -> Result<(), Error> {
         self.idle()?;
+        let mut root = self.path.as_path();
+        for _ in self.relative.components() {
+            root = root.parent().ok_or(Error::Internal)?;
+        }
+        let relative = super::path::join(
+            Path::new(""),
+            to.strip_prefix(root).map_err(|_| Error::Internal)?,
+        )?;
         self.fs.rename(&self.path, &to)?;
         self.path = to;
+        self.relative = relative;
         Ok(())
     }
     /// Only a successful deletion releases claims. Can retry after failure.
     pub fn remove(&mut self) -> Result<(), Error> {
         self.idle()?;
         self.fs.remove(&self.path)?;
+        self.ledger.counter.release(self.claimed());
+        self.ledger.claimed.store(0, Ordering::Release);
+        self.removed = true;
+        Ok(())
+    }
+    /// Cooperative no-follow removal. A stop, like a partial I/O failure,
+    /// retains the complete claim for the next start.
+    pub fn remove_stoppable(&mut self, stopped: &dyn Fn() -> bool) -> Result<(), Error> {
+        self.idle()?;
+        self.fs
+            .remove_stoppable(&self.removal_root, &self.relative, stopped)?;
         self.ledger.counter.release(self.claimed());
         self.ledger.claimed.store(0, Ordering::Release);
         self.removed = true;

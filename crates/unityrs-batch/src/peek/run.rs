@@ -11,24 +11,21 @@ use crate::{
 use std::{
     cell::Cell,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
 };
 use unityrs_core::{FileContext, budget::Reservation, limits::Meter};
 use unityrs_export::ngui::{self, Data, Failure};
 
 struct Engine<'a> {
     budget: Arc<SealedBudget>,
-    stop: &'a AtomicBool,
+    stop: &'a dyn crate::control::Control,
     hooks: &'a dyn Hooks,
     decoded: Cell<u64>,
     fault: Cell<bool>,
 }
 impl ngui::Hooks for Engine<'_> {
     fn stopped(&self) -> bool {
-        self.stop.load(Ordering::Acquire) || self.fault.get() || self.hooks.stopped()
+        self.stop.stopped() || self.fault.get() || self.hooks.stopped()
     }
     fn refusals(&self) -> Option<u64> {
         Some(self.budget.snapshot().refusals())
@@ -119,6 +116,12 @@ pub fn run_peek(mut args: PeekArgs<'_>) -> PeekEnd {
     // A post-publication stop/fault keeps the word and file, but no successful
     // end. Resample for hooks that retained a meter or refused an allocation.
     audit(&mut end, &engine, before);
+    if end.state == State::RunFailure {
+        args.stop.request_stop(
+            end.failure.unwrap_or(RunFailure::new(ReasonCode::Internal)),
+            crate::control::Culprit::Bundle(end.bundle),
+        );
+    }
     if end.state == State::RunFailure
         && catch_unwind(AssertUnwindSafe(|| args.hooks.request_stop(&end))).is_err()
     {
@@ -169,7 +172,8 @@ fn execute(args: &mut PeekArgs<'_>, engine: &Engine<'_>) -> Result<Outcome, Fail
     if !bits.bytes().iter().any(|b| *b != 0) {
         return Ok(Outcome::Clear(bits.rows()));
     }
-    let path = crate::stage::path(args.directory, args.bundle, args.inputs, true);
+    let path = crate::stage::try_path(args.directory, args.bundle, args.inputs, true)
+        .map_err(spool_failure)?;
     *args.file = Some(
         OwnedFile::create(path, args.counter.clone(), args.fs.clone()).map_err(spool_failure)?,
     );

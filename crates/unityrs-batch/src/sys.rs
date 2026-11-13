@@ -253,6 +253,291 @@ pub(crate) fn spool_unlink(path: &std::path::Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Nonblocking wake descriptor. Linux uses `eventfd`; the portable test host
+/// uses a nonblocking socket pair with the same coalescing wake semantics.
+pub struct Wake {
+    read: std::os::fd::OwnedFd,
+    write: std::os::fd::OwnedFd,
+}
+impl Wake {
+    pub fn new() -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::{AsFd, FromRawFd};
+            // SAFETY: eventfd takes only scalar arguments and returns a new fd.
+            let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: the successful call transferred one newly owned fd.
+            let read = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+            let write = read.as_fd().try_clone_to_owned()?;
+            Ok(Self { read, write })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let (read, write) = std::os::unix::net::UnixStream::pair()?;
+            read.set_nonblocking(true)?;
+            write.set_nonblocking(true)?;
+            Ok(Self {
+                read: read.into(),
+                write: write.into(),
+            })
+        }
+    }
+    /// A full nonblocking wake already means the reader must run.
+    pub fn notify(&self) -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+        let word = 1_u64;
+        loop {
+            // SAFETY: word is readable for its complete size; fd is live.
+            let n = unsafe {
+                libc::write(
+                    self.write.as_raw_fd(),
+                    std::ptr::from_ref(&word).cast(),
+                    size_of::<u64>(),
+                )
+            };
+            if n == 8 {
+                return Ok(());
+            }
+            let e = io::Error::last_os_error();
+            match e.kind() {
+                io::ErrorKind::WouldBlock => return Ok(()),
+                io::ErrorKind::Interrupted => {}
+                _ => return Err(e),
+            }
+        }
+    }
+    /// Read before draining the end channel. `EAGAIN` is an empty wake.
+    pub fn drain(&self) -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+        loop {
+            let mut word = 0_u64;
+            // SAFETY: word is writable for its size and the descriptor is live.
+            let n = unsafe {
+                libc::read(
+                    self.read.as_raw_fd(),
+                    std::ptr::from_mut(&mut word).cast(),
+                    size_of::<u64>(),
+                )
+            };
+            if n > 0 {
+                continue;
+            }
+            let e = io::Error::last_os_error();
+            match e.kind() {
+                io::ErrorKind::WouldBlock => return Ok(()),
+                io::ErrorKind::Interrupted => {}
+                _ => return Err(e),
+            }
+        }
+    }
+}
+/// W1/W2: one bounded wait, including interruptions. The caller always drains
+/// the end wake and channel after return, even on a wake-only tick.
+pub fn poll_wakes(end: &Wake, wake: &Wake) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let mut fds = [
+        libc::pollfd {
+            fd: end.read.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: wake.read.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    // SAFETY: fds contains two initialized pollfd values for this call.
+    let rc = unsafe { libc::poll(fds.as_mut_ptr(), 2, 1_000) };
+    if rc < 0 {
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+    if fds
+        .iter()
+        .any(|f| f.revents & (libc::POLLERR | libc::POLLNVAL | libc::POLLHUP) != 0)
+    {
+        return Err(io::Error::other("wake descriptor closed"));
+    }
+    Ok(())
+}
+
+/// Open a trusted prepared root once, before any deletion can start.
+pub fn open_directory(path: &std::path::Path) -> io::Result<std::fs::File> {
+    use std::os::fd::FromRawFd;
+    let path = terminated_path(path)?;
+    // SAFETY: path is NUL-terminated and open returns a new owned descriptor.
+    let fd = unsafe { spool_open(path.as_ptr().cast(), directory_flags()) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the successful open transferred exactly one new descriptor.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+fn directory_flags() -> libc::c_int {
+    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK
+}
+
+/// Attempt outputs and records are flat. Allow seven extra directory levels
+/// for cleanup, while bounding cursor storage and open descriptors.
+pub const REMOVE_DEPTH: usize = 8;
+
+/// Cooperative deletion anchored to the spool's held root. Every relative
+/// component is opened with `openat`; even the top removal uses its parent fd.
+pub fn remove_tree(
+    root: &std::fs::File,
+    relative: &std::path::Path,
+    stopped: &dyn Fn() -> bool,
+) -> Result<(), crate::spool::Error> {
+    use crate::spool::Error;
+    use std::{ffi::CStr, os::fd::AsRawFd, path::Component};
+    if stopped() {
+        return Err(Error::Stopped);
+    }
+    let mut components = relative.components().peekable();
+    let mut parent = root.try_clone()?;
+    let top = loop {
+        let Some(Component::Normal(name)) = components.next() else {
+            return Err(Error::Internal);
+        };
+        let name = terminated_path(std::path::Path::new(name))?;
+        if components.peek().is_none() {
+            break name;
+        }
+        parent = directory_at(parent.as_raw_fd(), &name)?;
+    };
+    let file = directory_at(parent.as_raw_fd(), &top)?;
+    let mut stack = Vec::new();
+    stack
+        .try_reserve_exact(REMOVE_DEPTH)
+        .map_err(|_| Error::HostMemory)?;
+    stack.push(Cursor::new(file, None)?);
+    let mut entries = 0_u64;
+    while let Some(cursor) = stack.last() {
+        // SAFETY: errno is this thread's writable errno; cursor.dir is live.
+        let entry = unsafe {
+            *errno() = 0;
+            libc::readdir(cursor.dir)
+        };
+        if entry.is_null() {
+            // SAFETY: the thread-local errno pointer remains valid.
+            let error = unsafe { *errno() };
+            if error != 0 {
+                return Err(io::Error::from_raw_os_error(error).into());
+            }
+            let name = stack.pop().ok_or(Error::Internal)?.name.take();
+            if let Some(ancestor) = stack.last() {
+                unlink_at(
+                    ancestor.fd(),
+                    &name.ok_or(Error::Internal)?,
+                    libc::AT_REMOVEDIR,
+                )?;
+            }
+            continue;
+        }
+        // SAFETY: readdir's non-null entry holds a NUL-terminated d_name,
+        // valid until the next call. Copy before any subsequent readdir.
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+        if name.to_bytes() == b"." || name.to_bytes() == b".." {
+            continue;
+        }
+        if entries.is_multiple_of(1_000) && stopped() {
+            return Err(Error::Stopped);
+        }
+        entries += 1;
+        // Fallible copy, including the trailing NUL, before advancing DIR.
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(name.to_bytes_with_nul().len())
+            .map_err(|_| Error::HostMemory)?;
+        owned.extend_from_slice(name.to_bytes_with_nul());
+        match directory_at(cursor.fd(), &owned) {
+            Ok(file) => {
+                if stack.len() == REMOVE_DEPTH {
+                    return Err(Error::Internal);
+                }
+                stack.push(Cursor::new(file, Some(owned))?);
+            }
+            Err(error) => {
+                if !matches!(error.raw_os_error(), Some(libc::ENOTDIR | libc::ELOOP)) {
+                    return Err(error.into());
+                }
+                unlink_at(cursor.fd(), &owned, 0)?;
+            }
+        }
+    }
+    if stopped() {
+        return Err(Error::Stopped);
+    }
+    unlink_at(parent.as_raw_fd(), &top, libc::AT_REMOVEDIR)?;
+    Ok(())
+}
+
+fn directory_at(parent: libc::c_int, name: &[u8]) -> io::Result<std::fs::File> {
+    use std::os::fd::FromRawFd;
+    // SAFETY: callers supply a live directory fd and a NUL-terminated name.
+    let fd = unsafe { libc::openat(parent, name.as_ptr().cast(), directory_flags()) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: openat returned one newly owned descriptor.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+fn unlink_at(parent: libc::c_int, name: &[u8], flags: libc::c_int) -> io::Result<()> {
+    // SAFETY: live directory fd, NUL-terminated name; flags are 0 or AT_REMOVEDIR.
+    if unsafe { libc::unlinkat(parent, name.as_ptr().cast(), flags) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+use std::{fs::File, os::fd::AsRawFd};
+struct Cursor {
+    dir: *mut libc::DIR,
+    name: Option<Vec<u8>>,
+}
+impl Drop for Cursor {
+    fn drop(&mut self) {
+        // SAFETY: each cursor owns exactly one successful fdopendir.
+        unsafe {
+            libc::closedir(self.dir);
+        }
+    }
+}
+impl Cursor {
+    fn new(file: File, name: Option<Vec<u8>>) -> io::Result<Self> {
+        // SAFETY: file owns this directory fd; fdopendir borrows on
+        // failure and takes ownership on success.
+        let dir = unsafe { libc::fdopendir(file.as_raw_fd()) };
+        if dir.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        std::mem::forget(file);
+        Ok(Self { dir, name })
+    }
+    fn fd(&self) -> libc::c_int {
+        // SAFETY: dir remains owned and live until this cursor drops.
+        unsafe { libc::dirfd(self.dir) }
+    }
+}
+fn errno() -> *mut libc::c_int {
+    #[cfg(target_os = "linux")]
+    // SAFETY: libc supplies a valid thread-local errno location.
+    unsafe {
+        libc::__errno_location()
+    }
+    #[cfg(not(target_os = "linux"))]
+    // SAFETY: libc supplies a valid thread-local errno location.
+    unsafe {
+        libc::__error()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{INTERRUPTED_RETRIES, retry_interrupted};

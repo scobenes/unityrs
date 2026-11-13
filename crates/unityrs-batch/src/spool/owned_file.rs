@@ -6,6 +6,14 @@ use std::{
     sync::Arc,
 };
 
+/// Compact received ownership. The generated bundle index determines its
+/// path; the shared spool counter retains these bytes until explicit deletion.
+#[derive(Clone, Copy, Debug)]
+pub struct FileClaim {
+    pub length: u64,
+    pub claimed_bytes: u64,
+}
+
 pub struct OwnedFile {
     path: PathBuf,
     counter: Arc<Counter>,
@@ -18,6 +26,16 @@ pub struct OwnedFile {
     removed: bool,
 }
 impl OwnedFile {
+    /// Retire the completed writer and path without releasing disk claims.
+    /// Partial, stopped and removed files retain their actual remaining claim.
+    #[must_use]
+    pub fn into_claim(self) -> FileClaim {
+        FileClaim {
+            length: self.length,
+            claimed_bytes: self.claimed,
+        }
+    }
+
     /// Only the workspace may transfer a successfully sealed file's claim
     /// into a disk descriptor. Failed or partially written files stay owned.
     pub(super) fn detach(self) -> Result<(u64, u64), Error> {

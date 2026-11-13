@@ -83,7 +83,11 @@ impl ngui::PeekBits for PeekBits<'_> {
         match word {
             Outcome::Clear(rows) => load_bits(rows, None, meter, hooks),
             Outcome::Disk(rows) => {
-                let path = crate::stage::path(self.directory, index, self.spec.input_count(), true);
+                let path =
+                    crate::stage::try_path(self.directory, index, self.spec.input_count(), true)
+                        .map_err(|error| {
+                            crate::attempt::classify::record(crate::records::Error::Spool(error))
+                        })?;
                 load_bits(rows, Some(&path), meter, hooks)
             }
             Outcome::Pending | Outcome::Failed(_) => Err(internal()),

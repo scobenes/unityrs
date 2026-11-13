@@ -5,21 +5,22 @@ use crate::{
     attempt,
     peek::word::{Outcome, Word},
     spec::{self, model::Spec},
-    spool::{Directory, OwnedFile},
+    spool::{Directory, DirectoryClaim, FileClaim, OwnedFile},
     stage::StageEnd,
     view::{Graph, Walker},
 };
 use std::{sync::Arc, time::Instant};
 
 pub struct PreparedRun {
-    pub spec: Spec,
-    pub graph: Graph,
-    pub extraction: attempt::Prepared,
+    pub spec: Arc<Spec>,
+    pub graph: Arc<Graph>,
+    pub extraction: Arc<attempt::Prepared>,
     /// Archive indices, not duplicated final key strings.
     pub archive_keys: Vec<u32>,
     /// Worker-published words are deliberately separate from received facts.
-    pub peek_words: Vec<Word>,
+    pub peek_words: Arc<[Word]>,
     pub bundles: Vec<BundleState>,
+    pub files: Vec<BundleOwners>,
     pub inputs: Vec<InputState>,
     pub uncommitted: Bits,
     pub peek_members: Bits,
@@ -35,8 +36,14 @@ pub struct PreparedRun {
 pub struct BundleState {
     /// None until this staging completion is received.
     pub stage: Option<StageEnd>,
+
     /// None until the end is received, even if the word was published.
     pub peek: Option<PeekFacts>,
+}
+#[derive(Default)]
+pub struct BundleOwners {
+    pub staged: Option<FileClaim>,
+    pub peek: Option<FileClaim>,
 }
 /// Received figures only. Account audits and owners remain in bounded active
 /// slots, never duplicated in the per-bundle table.
@@ -54,11 +61,38 @@ pub enum InputPhase {
     Running,
     Committed,
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Default)]
 pub struct InputState {
     pub phase: InputPhase,
     /// The selected failure's bundle index; no copied id or reason strings.
     pub failure_bundle: Option<u32>,
+    pub received: Option<AttemptFacts>,
+    pub committed: Option<DirectoryClaim>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct AttemptFacts {
+    pub state: attempt::State,
+    pub figures: crate::records::Figures,
+    pub spooled_part: u64,
+    pub claimed_bytes: u64,
+    pub outputs: u64,
+    pub skips_expected: u64,
+    pub diagnostics: u64,
+    pub code: crate::reason::Code,
+}
+impl AttemptFacts {
+    pub(crate) fn from_end(e: &attempt::AttemptEnd) -> Self {
+        Self {
+            state: e.state,
+            figures: e.figures,
+            spooled_part: e.spooled_part,
+            claimed_bytes: e.claimed_bytes,
+            outputs: e.outputs,
+            skips_expected: e.skips_expected,
+            diagnostics: e.diagnostics,
+            code: e.code,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JobKind {
@@ -70,10 +104,11 @@ pub struct ActiveSlot {
     pub job: Option<(JobKind, u32)>,
     pub dispatched: Option<Instant>,
     pub directory: Option<Arc<Directory>>,
-    pub peek_file: Option<OwnedFile>,
+    pub peek_file: Option<Arc<std::sync::Mutex<Option<OwnedFile>>>>,
 }
 #[derive(Default)]
 pub struct StageSlot {
+    pub(crate) task: Option<tokio::task::JoinHandle<(crate::stage::local::LocalFinish, OwnedFile)>>,
     pub bundle: Option<u32>,
     pub file: Option<OwnedFile>,
 }
@@ -143,7 +178,8 @@ pub fn prepare(
             .collect(),
         peek_words: (0..n).map(|_| Word::default()).collect(),
         bundles: (0..n).map(|_| BundleState::default()).collect(),
-        inputs: vec![InputState::default(); inputs],
+        inputs: (0..inputs).map(|_| InputState::default()).collect(),
+        files: (0..n).map(|_| BundleOwners::default()).collect(),
         uncommitted: Bits::new(inputs),
         peek_members: Bits::new(n),
         peek_queue: Vec::with_capacity(n),
@@ -154,8 +190,8 @@ pub fn prepare(
         stages_active: (0..spec.download_concurrency)
             .map(|_| StageSlot::default())
             .collect(),
-        spec,
-        graph,
-        extraction,
+        spec: Arc::new(spec),
+        graph: Arc::new(graph),
+        extraction: Arc::new(extraction),
     })
 }

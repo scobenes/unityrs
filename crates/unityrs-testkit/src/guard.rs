@@ -103,6 +103,8 @@ pub const TIMED_WAITS: &[&str] = &[
 /// (`unityrs_batch::progress::early`), whose wait is the contract's own
 /// bound, is left out for its one wait only: a count there other than one
 /// is reported as `<file>: <n> timed waits, the exemption is for one`.
+/// W20's two production pool startup waits are exempted by their exact
+/// count in `unityrs_batch::execution`; a third wait is reported.
 ///
 /// # Panics
 /// When `root` cannot be read (a test helper).
@@ -133,6 +135,18 @@ pub fn unguarded(root: &Path) -> Vec<String> {
         if path.ends_with("unityrs-batch/src/progress/early.rs") {
             if hits.len() != 1 {
                 found.push(exemption_broken(&path, hits.len(), "timed waits"));
+            }
+            continue;
+        }
+        // W20 is a production startup deadline, not a test deadlock guard:
+        // exactly two bounded waits prewarm the controller's blocking pool.
+        if path.ends_with("unityrs-batch/src/execution.rs") {
+            if hits.len() != 2 {
+                found.push(format!(
+                    "{}: {} timed waits, the exemption is for two W20 startup waits",
+                    path.display(),
+                    hits.len()
+                ));
             }
             continue;
         }
@@ -180,6 +194,22 @@ mod tests {
                 file.display()
             )]
         );
+    }
+
+    #[test]
+    fn the_pool_startup_exemption_counts_both_waits_and_rejects_a_third() {
+        let dir = crate::scratch::Scratch::new("startup-waits");
+        let file = dir.join("unityrs-batch/src/execution.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        for n in [1, 2, 3] {
+            std::fs::write(&file, "rx.recv_timeout(a);\n".repeat(n)).unwrap();
+            let found = unguarded(dir.path());
+            if n == 2 {
+                assert_eq!(found.len(), 0);
+            } else {
+                assert_eq!(found.len(), 1);
+            }
+        }
     }
 
     /// Every crate's timed waits take their limit from [`super::DEADLOCK_GUARD`].

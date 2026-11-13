@@ -143,6 +143,7 @@ impl LocalCopy {
         let mut end = StageEnd {
             bundle,
             failure: None,
+            integrity: None,
             facts: None,
             claimed_bytes: 0,
         };
@@ -282,6 +283,7 @@ impl LocalFinish {
             None | Some(Failure::Data(DataFailure::IntegrityMismatch))
         ) {
             end.facts = None;
+            end.integrity = None;
         }
         if matches!(end.failure, Some(Failure::Run(_)))
             && catch_unwind(AssertUnwindSafe(|| hooks.request_stop(&end))).is_err()
@@ -301,9 +303,14 @@ impl LocalFinish {
         let received = self.received.ok_or_else(host_io)?;
         self.end.facts = Some(received);
         // A full, unchanged body is available: size has precedence over SHA.
-        if self.copy.size.is_some_and(|n| n != received.size)
-            || self.copy.sha256.is_some_and(|h| h != received.sha256)
-        {
+        self.end.integrity = if self.copy.size.is_some_and(|n| n != received.size) {
+            Some(super::Integrity::Size)
+        } else if self.copy.sha256.is_some_and(|h| h != received.sha256) {
+            Some(super::Integrity::Sha256)
+        } else {
+            None
+        };
+        if self.end.integrity.is_some() {
             return Err(Failure::Data(DataFailure::IntegrityMismatch));
         }
         hooks.point(Point::BeforeSeal);
