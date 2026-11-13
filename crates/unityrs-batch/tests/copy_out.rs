@@ -83,6 +83,29 @@ fn candidate_members_and_terminal_figures_roundtrip_from_disk() {
     assert_eq!(rows[3]["type"], "input_summary");
     assert_eq!(rows[3]["export_work"], work.export_work());
     assert_eq!(rows[3]["claimed_bytes"], counter.used());
+    let phase = unityrs_batch::phase::Account::new(64 << 20);
+    let mut typed = read::Reader::new(
+        std::fs::File::open(directory.path().join("records.ndjson")).unwrap(),
+        "input",
+        false,
+        1,
+        phase.meter(),
+    )
+    .unwrap();
+    assert!(
+        matches!(typed.next(&|| false).unwrap(), Some(read::Row::Candidate(c)) if c.plan_index == 19 && c.path_id == i64::MIN && c.md5 == hashes.md5)
+    );
+    for expected in ["a.json", "b.json"] {
+        assert!(
+            matches!(typed.next(&|| false).unwrap(), Some(read::Row::Member(m)) if m.path == expected && m.md5 == hashes.md5)
+        );
+    }
+    assert!(
+        matches!(typed.next(&|| false).unwrap(), Some(read::Row::Summary(s)) if s.claimed_bytes == counter.used() && s.figures.unwrap().export_work == work.export_work())
+    );
+    assert!(typed.next(&|| false).unwrap().is_none());
+    drop(typed);
+    assert_eq!(phase.snapshot().input.used, 0);
     assert!(budget.snapshot().is_clear());
     directory.remove().unwrap();
     assert_eq!(counter.used(), 0);

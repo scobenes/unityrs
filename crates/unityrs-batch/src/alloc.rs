@@ -28,7 +28,7 @@
 //!
 //! With [`crate::sys`], this is one of the crate's two modules with
 //! `unsafe` code (`tests/unsafe_scan.rs` pins both): `GlobalAlloc`'s
-//! methods, each forwarding to `System`.
+//! methods forwarding to `System`, and fallible boxed file-adapter storage.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -277,4 +277,25 @@ unsafe impl<H: Hook> GlobalAlloc for Counting<H> {
         }
         p
     }
+}
+
+/// Fallible storage for the spool's small file adapters. The caller's fixed
+/// overhead charge covers the allocation, including its `heap_cost`.
+pub(crate) fn try_box<T>(value: T) -> std::io::Result<Box<T>> {
+    let layout = Layout::new::<T>();
+    if layout.size() == 0 {
+        return Ok(Box::new(value));
+    }
+    // SAFETY: the layout has nonzero size and valid alignment. `alloc` uses
+    // the global allocator, including its refusal counter and test hook.
+    let ptr = unsafe { std::alloc::alloc(layout) }.cast::<T>();
+    if ptr.is_null() {
+        return Err(std::io::Error::from(std::io::ErrorKind::OutOfMemory));
+    }
+    // SAFETY: ptr owns one properly aligned T-sized block; initialize it once
+    // and transfer it to Box, which drops T and frees the same global layout.
+    Ok(unsafe {
+        ptr.write(value);
+        Box::from_raw(ptr)
+    })
 }

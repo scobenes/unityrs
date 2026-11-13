@@ -47,6 +47,7 @@ impl From<spool::Error> for RunFailure {
                 }),
             },
             spool::Error::HostIo(_) => Self::new(ReasonCode::HostIo),
+            spool::Error::HostMemory => Self::new(ReasonCode::HostMemory),
             spool::Error::Internal | spool::Error::Stopped => Self::new(ReasonCode::Internal),
         }
     }

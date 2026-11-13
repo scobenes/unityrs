@@ -34,7 +34,7 @@ pub(crate) fn limit(s: &str) -> Option<Limit> {
         value: value.parse().ok()?,
     })
 }
-fn input(s: &str) -> Option<ReasonCode> {
+pub(crate) fn input(s: &str) -> Option<ReasonCode> {
     Some(match s {
         "not_a_bundle" => ReasonCode::NotABundle,
         "container_error" => ReasonCode::ContainerError,
@@ -137,6 +137,7 @@ pub(crate) fn record(e: records::Error) -> Failure {
                 cut: false,
             }),
             spool::Error::HostIo(_) => Failure::Run(Reason::plain("host_io")),
+            spool::Error::HostMemory => Failure::Run(Reason::plain("host_memory")),
             spool::Error::Internal => internal(),
         },
         records::Error::Internal => internal(),
@@ -147,7 +148,7 @@ pub(crate) fn internal() -> Failure {
 }
 /// Validate every skip vocabulary before recording it; unknown future mappings
 /// stop internal. This matches strings only, never recursively matches errors.
-pub(super) fn skip_code(s: &str) -> Option<Code> {
+pub(crate) fn skip_code(s: &str) -> Option<Code> {
     Some(match s {
         "empty_image"
         | "empty_rect"
