@@ -59,3 +59,49 @@ The typed reader accepts every image mode in `BATCH_SPEC.md` section 7.3:
 vocabulary follows the spec regardless of which modes a current producer emits.
 `tests/records_read.rs` covers all four modes through the terminal summary and
 EOF. The existing null/digest relationship and invalid-mode checks still apply.
+
+## Unit, key and prefix handoff
+
+`winners::Prepared` keeps preference/input indices and `/`-first archive
+indices in phase-1 measured memory, including `--check`. `winners::Inputs`
+borrows a frozen set of committed artifacts: every numeric position appears
+exactly once and has its final success/failure fact. The test adapter opens
+synthetic B4 commits with the same fallible filesystem operations. The concrete
+controller adapter is B6c's integration work.
+
+`winners::steps123` is the structural X6 boundary. `winners::run` adds exactly
+one prefix pass, then unit propagation, and returns fixed capabilities:
+
+| capability | order | contents |
+|---|---|---|
+| `units` (`units.decisions`) | bytewise unit key | chosen root/input, E31 rule, E61 or whole-unit conflict state |
+| `keys` (`keys.decisions`) | bytewise key | representative metadata and numeric locator, state, E31 rule, flip, total candidate count |
+| `winners` (`winners.bin`) | bytewise key | structurally publishable representatives, with complete source/digest metadata |
+
+Names describe logical streams; workspace-generated basenames remain private.
+Empty streams use no file. Projection tags 101–106 identify key/input,
+instance, unit/member, key/unit, unit/key and `/`-first orders. They share v1
+sort framing. Frame payloads begin with checked rule/state/boolean/kind/mode
+tags, little-endian numeric fields and digests with explicit optional tags,
+then four `u16`-length UTF-8 fields: key, unit, input, serialized file. The first
+three allow 1,024 bytes, the last 3,072 for repaired source text. No spool path
+is encoded. A blank unit denotes a plain candidate. Root decisions retain
+their E31 rule independently of withholding; B6c derives each candidate's
+collision rule by joining unit state or the plain-key decision.
+
+`Artifacts::counts` counts collision keys and flip keys, including later
+refusals. `publication_state` applies `publish_incomplete` only to otherwise
+publishable states; it never changes structural winners or membership.
+
+The committed-source reader allocates all parser buffers before the sort's
+borrowed-source audit. Reopening the next committed input reuses that storage;
+allocation failure or cancellation cannot leave a newly charged reader inside
+the audit baseline. Unordered marker outputs use a crate-private framed reader
+that checks schema/framing but defers order validation to their external sort.
+Every final stream uses the ordered reader.
+
+Archive keys merge directly from prepared indices into the original sorted
+publish set, archive first on equality. Refusals do not change lookahead.
+Affected-unit markers are sorted once, then joined back; no loser is promoted
+and no second prefix pass runs. The artifact lifetime proof and measured peaks
+are in `plans/batch.md` 2.9; row/member materialization remains B6c's.
