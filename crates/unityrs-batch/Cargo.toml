@@ -37,8 +37,9 @@ md5 = { package = "md-5", version = "=0.11.0", default-features = false }
 crc32fast = "=1.5.3"
 sha2 = { version = "=0.11.1", default-features = false }
 
-# Controller runtime and its bounded blocking pool. Published 2025-10-14.
-tokio = { version = "=1.48.0", default-features = false, features = ["rt"] }
+# Controller runtime and its bounded blocking pool. Published 2026-10-13
+# (1.53.3: past RUSTSEC-2026-0386, which concerns `AsyncFd`, not built here).
+tokio = { version = "=1.53.3", default-features = false, features = ["rt"] }
 
 [features]
 test-hooks = ["unityrs-export/test-hooks"]

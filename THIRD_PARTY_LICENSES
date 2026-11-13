@@ -2216,7 +2216,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- tokio 1.48.0 (https://github.com/tokio-rs/tokio)
+- tokio 1.53.3 (https://github.com/tokio-rs/tokio)
 
 MIT License
 
