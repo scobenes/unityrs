@@ -1,5 +1,6 @@
 //! Bounded workers. The sole dispatch lock covers only idle receive (W3),
 //! and is dropped before preparation, adapters or any core call.
+use crate::sys::Shared;
 use crate::{
     attempt::{self, AttemptArgs, AttemptLimits, AttemptView, StagedBundle},
     control::{Control, Culprit},
@@ -24,8 +25,8 @@ use unityrs_export::ngui;
 pub(crate) struct Dispatch {
     pub kind: JobKind,
     pub id: u32,
-    pub directory: Option<Arc<Directory>>,
-    pub peek_file: Option<Arc<Mutex<Option<OwnedFile>>>>,
+    pub directory: Option<Shared<Directory>>,
+    pub peek_file: Option<Shared<crate::sys::Lock<Option<OwnedFile>>>>,
 }
 pub(crate) struct Context {
     spec: Arc<crate::spec::model::Spec>,
@@ -33,6 +34,7 @@ pub(crate) struct Context {
     extraction: Arc<attempt::Prepared>,
     words: Arc<[peek::word::Word]>,
     spool: PreparedSpool,
+    memory: Arc<crate::job_memory::Plan>,
     control: Arc<dyn Control>,
     hooks: Arc<dyn Hooks>,
 }
@@ -44,6 +46,7 @@ impl Context {
             extraction: c.prepared.extraction.clone(),
             words: c.prepared.peek_words.clone(),
             spool: c.spool.clone(),
+            memory: c.prepared.memory.clone(),
             control: c.control.clone(),
             hooks: c.hooks.clone(),
         }
@@ -66,7 +69,7 @@ pub fn worker_stack(limits: &Limits) -> usize {
         .saturating_add(levels.saturating_mul(LEVEL))
 }
 pub(crate) fn run(
-    context: &Context,
+    context: &std::sync::OnceLock<Context>,
     receive: &Mutex<Receiver<Dispatch>>,
     send: &SyncSender<End>,
     wake: &Wake,
@@ -79,6 +82,9 @@ pub(crate) fn run(
             receiver.recv()
         };
         let Ok(job) = job else {
+            return;
+        };
+        let Some(context) = context.get() else {
             return;
         };
         let kind = job.kind;
@@ -193,94 +199,90 @@ fn execute(context: &Context, job: &Dispatch) -> Result<End, ()> {
     let directory = context.spool.input().map_err(|_| ())?;
     let own_path =
         crate::stage::try_path(&directory, job.id, spec.input_count(), false).map_err(|_| ())?;
-    let name = staged_name(&own_path);
+    let name = context.memory.names.get(job.id as usize).ok_or(())?;
     match job.kind {
         JobKind::Peek => {
             let mut file = None;
-            let end = peek::run_peek(PeekArgs {
-                bundle: job.id,
-                inputs: spec.input_count(),
-                staged: &own_path,
-                name: &name,
-                m: spec.max_decoded_bytes,
-                word: context.words.get(job.id as usize).ok_or(())?,
-                file: &mut file,
-                directory: &directory,
-                counter: context.spool.counter.clone(),
-                fs: context.spool.fs.clone(),
-                stop: &*context.control,
-                hooks: &hooks,
-            });
+            let end = peek::run_reserved(
+                PeekArgs {
+                    bundle: job.id,
+                    inputs: spec.input_count(),
+                    staged: &own_path,
+                    name,
+                    m: spec.max_decoded_bytes,
+                    word: context.words.get(job.id as usize).ok_or(())?,
+                    file: &mut file,
+                    directory: &directory,
+                    counter: context.spool.counter.clone(),
+                    fs: context.spool.fs.clone(),
+                    stop: &*context.control,
+                    hooks: &hooks,
+                },
+                context.memory.peeks.get(job.id as usize).ok_or(())?,
+            );
             if let Some(file) = file {
-                job.peek_file
-                    .as_ref()
-                    .ok_or(())?
-                    .lock()
-                    .map_err(|_| ())?
-                    .replace(file);
+                job.peek_file.as_ref().ok_or(())?.lock().replace(file);
             }
             Ok(End::Peek(end))
         }
         JobKind::Attempt => {
-            let mut walk = crate::view::BoundedWalker::new(spec.max_view_bundles as usize);
+            let mut walk = crate::view::BoundedWalker::try_new(spec.max_view_bundles as usize)
+                .map_err(|_| ())?;
             let indices = walk
                 .view(&context.graph, job.id, spec.max_view_bundles)
                 .map_err(|_| ())?;
-            let paths: Vec<_> = indices
-                .iter()
-                .map(|&i| {
-                    crate::stage::try_path(&directory, i, spec.input_count(), false).map_err(|_| ())
-                })
-                .collect::<Result<_, _>>()?;
-            let names: Vec<_> = paths.iter().map(|p| staged_name(p)).collect();
-            let members: Vec<_> = indices
-                .iter()
-                .zip(&paths)
-                .zip(&names)
-                .map(|((&i, path), name)| {
-                    spec.bundle(i as usize)
-                        .map(|b| StagedBundle {
-                            id: b.id(),
-                            name,
-                            path,
-                        })
-                        .ok_or(())
-                })
-                .collect::<Result<_, _>>()?;
-            let keys: Vec<_> = spec.archives.iter().map(|a| a.key.as_str()).collect();
+            let mut paths = reserved(indices.len())?;
+            let mut members = reserved(indices.len())?;
+            let mut keys = reserved(spec.archives.len())?;
+            for &i in indices {
+                paths.push(
+                    crate::stage::try_path(&directory, i, spec.input_count(), false)
+                        .map_err(|_| ())?,
+                );
+            }
+            for (&i, path) in indices.iter().zip(&paths) {
+                members.push(StagedBundle {
+                    id: spec.bundle(i as usize).ok_or(())?.id(),
+                    name: context.memory.names.get(i as usize).ok_or(())?,
+                    path,
+                });
+            }
+            keys.extend(spec.archives.iter().map(|a| a.key.as_str()));
             let peeks = peek::PeekBits::new(spec, &context.graph, &context.words, &directory)
                 .map_err(|_| ())?;
-            Ok(End::Attempt(attempt::run_attempt(AttemptArgs {
-                view: AttemptView {
-                    input_index: u64::from(job.id),
-                    input: StagedBundle {
-                        id: input.id(),
-                        name: &name,
-                        path: &own_path,
+            Ok(End::Attempt(attempt::run_reserved(
+                AttemptArgs {
+                    view: AttemptView {
+                        input_index: u64::from(job.id),
+                        input: StagedBundle {
+                            id: input.id(),
+                            name,
+                            path: &own_path,
+                        },
+                        members: &members,
                     },
-                    members: &members,
+                    options: &context.extraction.options,
+                    prefix: match &spec.sink {
+                        crate::spec::model::Sink::ObjectStore(s) => &s.prefix,
+                        crate::spec::model::Sink::Directory { .. } => "",
+                    },
+                    members: &context.extraction.members,
+                    archive_keys: &keys,
+                    limits: attempt_limits(spec),
+                    peeks: &peeks,
+                    directory: job.directory.as_ref().ok_or(())?,
+                    stop: &*context.control,
+                    hooks: &hooks,
                 },
-                options: &context.extraction.options,
-                prefix: match &spec.sink {
-                    crate::spec::model::Sink::ObjectStore(s) => &s.prefix,
-                    crate::spec::model::Sink::Directory { .. } => "",
-                },
-                members: &context.extraction.members,
-                archive_keys: &keys,
-                limits: attempt_limits(spec),
-                peeks: &peeks,
-                directory: job.directory.as_ref().ok_or(())?,
-                stop: &*context.control,
-                hooks: &hooks,
-            })))
+                context.memory.attempts.get(job.id as usize).ok_or(())?,
+            )))
         }
     }
 }
-fn staged_name(path: &std::path::Path) -> RawStr {
-    RawStr::from(
-        path.file_name()
-            .map_or(&b""[..], std::ffi::OsStr::as_encoded_bytes),
-    )
+fn reserved<T>(len: usize) -> Result<Vec<T>, ()> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(len).map_err(|_| ())?;
+    Ok(values)
 }
 struct Adapter<'a> {
     context: &'a Context,

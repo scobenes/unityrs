@@ -1,11 +1,14 @@
 //! One checked loader for B4's slice table and B5's compact run words.
 use super::word::{Outcome, Word};
 use crate::{
-    attempt::{classify::internal, hooks::probe},
+    attempt::{
+        classify::{self, internal},
+        hooks::probe,
+    },
     spec::model::Spec,
     view::Graph,
 };
-use std::{fs::OpenOptions, io::Read, os::unix::fs::OpenOptionsExt, path::Path, sync::Arc};
+use std::{io::Read, path::Path, sync::Arc};
 use unityrs_core::limits::Meter;
 use unityrs_export::ngui::{self, Bits, Failure, Hooks};
 
@@ -22,19 +25,16 @@ pub fn load_bits(
     }
     let mut bits = probe(hooks, || Bits::charged(rows, meter))?;
     if let Some(path) = path {
-        let io = || Failure::Run(ngui::Reason::plain("host_io"));
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOCTTY)
-            .open(path)
-            .map_err(|_| io())?;
-        let meta = file.metadata().map_err(|_| io())?;
+        let io =
+            |error: std::io::Error| classify::record(crate::records::Error::Spool(error.into()));
+        let mut file = crate::sys::spool_file(path, false).map_err(io)?;
+        let meta = file.metadata().map_err(io)?;
         if !meta.is_file() || meta.len() != bits.bytes().len() as u64 {
             return Err(internal());
         }
-        file.read_exact(bits.bytes_mut()).map_err(|_| io())?;
+        file.read_exact(bits.bytes_mut()).map_err(io)?;
         let mut extra = [0u8; 1];
-        if file.read(&mut extra).map_err(|_| io())? != 0 {
+        if file.read(&mut extra).map_err(io)? != 0 {
             return Err(internal());
         }
         let used = rows % 8;

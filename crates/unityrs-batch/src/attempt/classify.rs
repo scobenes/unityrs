@@ -128,23 +128,62 @@ pub(super) fn failure(end: &mut AttemptEnd, failure: &Failure, view: AttemptView
 pub(crate) fn record(e: records::Error) -> Failure {
     match e {
         records::Error::Charge(e) => unityrs_export::ngui::classify::charge(&e).into(),
-        records::Error::Work(l) => Failure::Input(Reason::plain(l.to_string())),
+        records::Error::Work(l) => Failure::Input(limit_reason(l)),
         records::Error::Spool(e) => match e {
             spool::Error::Stopped => Failure::Stopped,
-            spool::Error::Full(f) => Failure::Run(Reason {
-                reason: "spool_full".into(),
-                detail: Some(f.detail().into()),
-                cut: false,
-            }),
-            spool::Error::HostIo(_) => Failure::Run(Reason::plain("host_io")),
-            spool::Error::HostMemory => Failure::Run(Reason::plain("host_memory")),
+            spool::Error::Full(f) => Failure::Run(reason("spool_full", Some(f.detail()))),
+            spool::Error::HostIo(_) => Failure::Run(plain("host_io")),
+            spool::Error::HostMemory => Failure::Run(plain("host_memory")),
             spool::Error::Internal => internal(),
         },
         records::Error::Internal => internal(),
     }
 }
+/// Export's Reason owns strings. Build batch-owned text fallibly; an empty
+/// sentinel needs no allocation. The enclosing attempt/peek refusal audit
+/// turns it into `host_memory`, including if allocation fails while classifying
+/// a different error. Never allocate another error string after a refusal.
+pub(crate) fn reason(name: &str, detail: Option<&str>) -> Reason {
+    fn owned(text: &str) -> Option<String> {
+        let mut result = String::new();
+        result.try_reserve_exact(text.len()).ok()?;
+        result.push_str(text);
+        Some(result)
+    }
+    let made = || {
+        Some(Reason {
+            reason: owned(name)?,
+            detail: match detail {
+                Some(text) => Some(owned(text)?),
+                None => None,
+            },
+            cut: false,
+        })
+    };
+    made().unwrap_or_else(|| Reason::plain(String::new()))
+}
+pub(crate) fn plain(name: &str) -> Reason {
+    reason(name, None)
+}
+pub(crate) fn limit_reason(limit: Limit) -> Reason {
+    use std::io::Write;
+    // Longest kind plus a u64's 20 digits fits without heap formatting.
+    let mut scratch = [0; 128];
+    let mut cursor = std::io::Cursor::new(&mut scratch[..]);
+    if write!(cursor, "{limit}").is_err() {
+        return plain("internal");
+    }
+    let text = usize::try_from(cursor.position())
+        .ok()
+        .and_then(|len| scratch.get(..len))
+        .and_then(|bytes| std::str::from_utf8(bytes).ok());
+    match text {
+        Some(text) => plain(text),
+        None => plain("internal"),
+    }
+}
 pub(crate) fn internal() -> Failure {
-    Failure::Run(Reason::plain("internal"))
+    Failure::Run(plain("internal"))
 }
 /// Validate every skip vocabulary before recording it; unknown future mappings
 /// stop internal. This matches strings only, never recursively matches errors.

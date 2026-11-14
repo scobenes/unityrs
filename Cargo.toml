@@ -29,7 +29,7 @@ unimplemented = "forbid"
 # Debug and test builds keep only file and line numbers (enough for panics and
 # backtraces), and dependencies none: full debug info made each build folder
 # 7-8 GB. To step through code in a debugger, set `debug = true` here while
-# doing so, and set it back after. Release builds already carry none.
+# doing so, and set it back after. Release builds carry none.
 [profile.dev]
 debug = "line-tables-only"
 
@@ -45,3 +45,12 @@ opt-level = 3
 
 [profile.dev.package.sha2]
 opt-level = 3
+
+# The scale tests' profile: release code generation (debug assertions off,
+# as the heavy tests require) plus enough debug info to name inlined frames,
+# which the CR10 refusal sweep reads from each aborting allocation's
+# backtrace and Linux cannot recover from the symbol table alone. Shipped
+# release binaries keep `[profile.release]`, which carries no debug info.
+[profile.sweep]
+inherits = "release"
+debug = "limited"

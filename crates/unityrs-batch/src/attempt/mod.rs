@@ -7,7 +7,6 @@ mod metadata;
 mod options;
 mod peek;
 use crate::{
-    budget::SealedBudget,
     records::{self, Figures, Status, Summary, Writer},
     spool::Directory,
     work::Work,
@@ -25,8 +24,7 @@ use std::{
     time::Instant,
 };
 use unityrs_core::{
-    FileContext, RawStr,
-    budget::Reservation,
+    RawStr,
     env::EnvOptions,
     limits::{Meter, MeteredVec},
 };
@@ -83,10 +81,19 @@ pub struct AttemptArgs<'a> {
 /// `Done` alone is eligible for a later controller commit. This never renames.
 #[must_use]
 pub fn run_attempt(args: AttemptArgs<'_>) -> AttemptEnd {
+    let memory =
+        crate::job_memory::Memory::new(args.limits.m, args.limits.d, false, args.hooks.usage());
+    run_reserved(args, &memory)
+}
+pub(crate) fn run_reserved(
+    args: AttemptArgs<'_>,
+    memory: &crate::job_memory::Memory,
+) -> AttemptEnd {
     let started = Instant::now();
     let before = crate::alloc::refusals();
-    let budget = Arc::new(SealedBudget::new(args.limits.m, args.limits.d));
+    let budget = &memory.budget;
     let engine = Engine {
+        memory,
         budget: budget.clone(),
         stop: args.stop,
         observer: args.hooks,
@@ -101,8 +108,14 @@ pub fn run_attempt(args: AttemptArgs<'_>) -> AttemptEnd {
         execute(&args, &engine, &mut end, started)
     }));
     match result {
-        Ok(Ok(())) => {}
-        Ok(Err(failure)) => classify::failure(&mut end, &failure, args.view),
+        // A classifier may return internal when a fallible core helper
+        // refused (fixed head-tree compilation does this too). Classify only
+        // without an allocator refusal; the audit below records host_memory.
+        // Panics, observer faults and leaked charges still win as internal.
+        Ok(Err(failure)) if crate::alloc::refusals() == before => {
+            classify::failure(&mut end, &failure, args.view);
+        }
+        Ok(_) => {}
         Err(_) => end.run_failure(ReasonCode::Internal),
     }
     if engine.fault.get() {
@@ -296,13 +309,8 @@ fn seal(
 }
 
 fn context(args: &AttemptArgs<'_>, engine: &Engine<'_>) -> (EnvOptions, Arc<Meter>) {
-    let mut ctx = FileContext::unitypy();
-    ctx.budget = engine.budget.clone();
-    ctx.limits.max_input_memory = args.limits.m;
-    ctx.limits.max_input_bytes = args.limits.m;
-    ctx.limits.max_decode_work = args.limits.m.saturating_mul(4);
-    let meter = Meter::for_input(&ctx.limits, engine.budget.clone(), Reservation::Input);
-    let mut env = EnvOptions::batch(Arc::new(ctx));
+    let meter = engine.memory.meter.clone();
+    let mut env = EnvOptions::batch(engine.memory.context.clone());
     env.dep_cache_bytes = args.limits.d;
     (env, meter)
 }

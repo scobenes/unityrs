@@ -65,7 +65,7 @@ pub struct Workspace {
     identity: u64,
     next: AtomicU64,
     counter: Arc<Counter>,
-    claimed: Arc<AtomicU64>,
+    claimed: crate::sys::Shared<AtomicU64>,
     fs: Arc<dyn FileSystem>,
 }
 impl Workspace {
@@ -83,7 +83,7 @@ impl Workspace {
             identity,
             next: AtomicU64::new(0),
             counter,
-            claimed: Arc::new(AtomicU64::new(0)),
+            claimed: crate::sys::Shared::new(AtomicU64::new(0)).map_err(Error::from)?,
             fs,
         })
     }
@@ -216,7 +216,7 @@ pub struct File {
     owned: OwnedFile,
     id: u64,
     owner: u64,
-    ledger: Arc<AtomicU64>,
+    ledger: crate::sys::Shared<AtomicU64>,
 }
 impl File {
     pub fn append(&mut self, bytes: &[u8], stopped: &dyn Fn() -> bool) -> Result<(), Error> {

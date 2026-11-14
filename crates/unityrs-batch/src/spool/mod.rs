@@ -97,11 +97,11 @@ pub trait FileSystem: Send + Sync {
     }
     /// Create only the requested directory; its parent is prepared.
     fn mkdir(&self, path: &Path) -> io::Result<()> {
-        std::fs::create_dir(path)
+        crate::sys::spool_mkdir(path)
     }
     /// Rename preserves claims.
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        std::fs::rename(from, to)
+        crate::sys::spool_rename(from, to)
     }
     /// Remove owned artifacts, without following directory symlinks.
     /// Partial deletion followed by error retains the entire claim.

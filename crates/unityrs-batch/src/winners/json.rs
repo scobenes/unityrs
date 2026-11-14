@@ -31,7 +31,7 @@ impl Json {
         self.text(name, Some(value))
     }
     fn field(&mut self, name: &str) -> Result<(), Error> {
-        if self.bytes.len() > 1 {
+        if self.bytes.last() != Some(&b'{') {
             self.bytes.push(b',')?;
         }
         self.bytes.push(b'"')?;
@@ -84,6 +84,13 @@ impl Json {
     pub fn end(&mut self) -> Result<&[u8], Error> {
         self.bytes.extend(b"}\n")?;
         Ok(&self.bytes)
+    }
+    pub(crate) fn object(&mut self, name: &str) -> Result<(), Error> {
+        self.field(name)?;
+        self.bytes.push(b'{')
+    }
+    pub(crate) fn close_object(&mut self) -> Result<(), Error> {
+        self.bytes.push(b'}')
     }
 }
 /// No file for an empty stream. Pending row buffers drop without flushing.

@@ -103,8 +103,11 @@ pub const TIMED_WAITS: &[&str] = &[
 /// (`unityrs_batch::progress::early`), whose wait is the contract's own
 /// bound, is left out for its one wait only: a count there other than one
 /// is reported as `<file>: <n> timed waits, the exemption is for one`.
-/// W20's two production pool startup waits are exempted by their exact
-/// count in `unityrs_batch::execution`; a third wait is reported.
+/// Execution's two production startup deadlines, three channel-priming
+/// waits and one startup-gate priming wait are exempted by their exact
+/// count; a seventh wait is reported. Normal progress (`progress/live.rs`)
+/// is exempted for its heartbeat, its final acknowledgment and one startup
+/// priming wait.
 ///
 /// # Panics
 /// When `root` cannot be read (a test helper).
@@ -138,12 +141,25 @@ pub fn unguarded(root: &Path) -> Vec<String> {
             }
             continue;
         }
-        // W20 is a production startup deadline, not a test deadlock guard:
-        // exactly two bounded waits prewarm the controller's blocking pool.
+        // Two production readiness deadlines plus three 1 ms waits that
+        // initialize the end/dispatch/pool channels' lazy wait contexts
+        // before the running head. These are not test deadlock guards.
         if path.ends_with("unityrs-batch/src/execution.rs") {
-            if hits.len() != 2 {
+            if hits.len() != 6 {
                 found.push(format!(
-                    "{}: {} timed waits, the exemption is for two W20 startup waits",
+                    "{}: {} timed waits, the exemption is for two startup deadlines, three channel-priming waits and one startup-gate priming wait",
+                    path.display(),
+                    hits.len()
+                ));
+            }
+            continue;
+        }
+        // Normal progress has two contractual waits (heartbeat and final
+        // acknowledgment) plus one zero-duration startup condvar priming wait.
+        if path.ends_with("unityrs-batch/src/progress/live.rs") {
+            if hits.len() != 3 {
+                found.push(format!(
+                    "{}: {} timed waits, the exemption is for two normal progress waits and one startup priming wait",
                     path.display(),
                     hits.len()
                 ));
@@ -197,18 +213,30 @@ mod tests {
     }
 
     #[test]
-    fn the_pool_startup_exemption_counts_both_waits_and_rejects_a_third() {
+    fn the_startup_exemption_counts_two_deadlines_and_three_priming_waits() {
         let dir = crate::scratch::Scratch::new("startup-waits");
         let file = dir.join("unityrs-batch/src/execution.rs");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        for n in [1, 2, 3] {
+        for n in [5, 6, 7] {
             std::fs::write(&file, "rx.recv_timeout(a);\n".repeat(n)).unwrap();
             let found = unguarded(dir.path());
-            if n == 2 {
+            if n == 6 {
                 assert_eq!(found.len(), 0);
             } else {
                 assert_eq!(found.len(), 1);
             }
+        }
+    }
+
+    #[test]
+    fn progress_exemption_counts_heartbeat_acknowledgment_and_startup_priming() {
+        let dir = crate::scratch::Scratch::new("progress-waits");
+        let file = dir.join("unityrs-batch/src/progress/live.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        for n in [2, 3, 4] {
+            std::fs::write(&file, "changed.wait_timeout(state, wait);\n".repeat(n)).unwrap();
+            let found = unguarded(dir.path());
+            assert_eq!(found.len(), usize::from(n != 3));
         }
     }
 

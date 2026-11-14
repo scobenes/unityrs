@@ -8,6 +8,7 @@ const TOKENS: &[&str] = &[
     ".lock(",
     ".recv(",
     ".recv_timeout(",
+    ".wait(",
     ".wait_timeout_while(",
     ".block_on(",
     "worker.join(",
@@ -40,6 +41,7 @@ fn scan(dir: &Path, root: &Path, out: &mut BTreeMap<(String, String), usize>) {
                     "execution.rs",
                     "worker.rs",
                     "sys.rs",
+                    "sys/shared.rs",
                     "control.rs",
                     "phase1.rs",
                 ]
@@ -56,14 +58,18 @@ fn every_engine_wait_has_a_bounded_or_idle_role_and_dispatch_unlocks_before_core
     let mut found = BTreeMap::new();
     scan(&root, &root, &mut found);
     let expected = [
-        ("execution.rs", ".lock(", 2),               // W20: prewarm gate only
-        ("execution.rs", ".recv_timeout(", 1),       // W20: startup deadline
-        ("execution.rs", ".wait_timeout_while(", 1), // W20: released at startup
-        ("execution.rs", ".block_on(", 1),           // W2: already-finished pool handle
-        ("execution.rs", "worker.join(", 1),         // explicit quiesce only
-        ("worker.rs", ".lock(", 2),                  // W3 receive, and moving a completed owner
-        ("worker.rs", ".recv(", 1),                  // W3 idle worker
-        ("sys.rs", "libc::poll(", 1),                // W1/W2: 1 s, stop and end descriptors
+        ("controller/failure.rs", ".wait(", 1), // W1/W2 via Execution's descriptor poll
+        ("controller/mod.rs", ".wait(", 1),     // W1/W2 via Execution's descriptor poll
+        ("controller/passes.rs", ".wait(", 2),  // W1/W2 via controller's wait adapter
+        ("execution.rs", ".lock(", 9), // W20 init and startup gate priming/wait/release, W3 receive, results
+        ("execution.rs", ".recv(", 1), // W3 idle pool drive, lock drops before job()
+        ("execution.rs", ".recv_timeout(", 5), // W20: end/pool/worker priming and startup deadlines
+        ("execution.rs", ".wait(", 1), // W20 shared parking gate; Drop always releases on setup failure
+        ("execution.rs", "worker.join(", 2), // explicit quiesce only: extraction and pool drives
+        ("worker.rs", ".lock(", 2),    // W3 receive, and moving a completed owner
+        ("worker.rs", ".recv(", 1),    // W3 idle worker
+        ("sys.rs", "libc::poll(", 1),  // W1/W2: 1 s, stop and end descriptors
+        ("sys/shared.rs", ".lock(", 1), // parking mutex, including publication filesystem I/O
     ]
     .into_iter()
     .map(|(file, token, n)| ((file.to_owned(), token.to_owned()), n))
@@ -80,6 +86,19 @@ fn every_engine_wait_has_a_bounded_or_idle_role_and_dispatch_unlocks_before_core
     assert!(lock.contains("receive.lock()") && lock.contains("receiver.recv()"));
     assert!(
         !lock.contains("execute(") && !lock.contains("run_attempt(") && !lock.contains("run_peek(")
+    );
+    let pool = live_code(&std::fs::read_to_string(root.join("execution.rs")).unwrap());
+    let receive = pool
+        .split("let job = match receive.lock()")
+        .nth(1)
+        .unwrap()
+        .split("let Ok(job)")
+        .next()
+        .unwrap();
+    assert!(receive.contains("receiver.recv()"));
+    assert!(
+        !receive.contains("job()"),
+        "pool receive guard must drop before work"
     );
     let mut mutant = BTreeMap::new();
     inventory(

@@ -12,11 +12,15 @@ mod common;
 
 use std::fs::File;
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(target_os = "linux")]
+use std::process::Stdio;
 
+#[cfg(target_os = "linux")]
+use common::unprivileged;
 use common::{
     INPUTS, assert_refused, assert_refused_by, check, enterable, job, line_of, u, unityrs,
-    unprivileged, write_job,
+    write_job,
 };
 use unityrs_batch::alloc::Measured;
 use unityrs_batch::bound::{CHECK_ENV_BLOCK, PROVISIONAL, memory_bound};
@@ -182,20 +186,20 @@ fn a_bad_command_line_exits_78_usage() {
     );
 }
 
-/// A run is not built yet (B7): a valid spec's run is 78 `usage`, its
-/// usage lines saying so; its spec is checked first.
+/// Unsupported execution capabilities stay 78 `usage`; validation still
+/// runs first and full-schema `--check` remains available.
 #[test]
-fn a_run_is_refused_78_and_its_spec_checked_first() {
+fn an_unsupported_run_is_refused_78_and_its_spec_checked_first() {
     let dir = Scratch::new("cli-batch-run");
     enterable(&dir);
-    let p = write_job(&dir, &job(INPUTS));
+    let p = write_job(
+        &dir,
+        &job(INPUTS).replace("\"path\":\"/a\"", "\"url\":\"https://example.invalid/a\""),
+    );
     let o = unityrs(&["batch", p.to_str().unwrap()]);
     assert_refused(&o, "usage");
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(
-        err.contains("unityrs batch JOB.json   (a run: not built yet, refused)"),
-        "{err}"
-    );
+    assert!(err.contains("temporary normal-run subset"), "{err}");
     let p = write_job(
         &dir,
         &job(INPUTS).replace(r#""threads":2"#, r#""threads":0"#),

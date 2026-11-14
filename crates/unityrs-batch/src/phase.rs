@@ -90,7 +90,11 @@ impl Account {
     /// `limit` is the run's `I`; small values support refusal tests.
     #[must_use]
     pub fn new(limit: u64) -> Self {
-        let budget = Arc::new(SealedBudget::input_only(limit));
+        Self::observed(limit, None)
+    }
+    #[must_use]
+    pub fn observed(limit: u64, telemetry: Option<Arc<std::sync::atomic::AtomicU64>>) -> Self {
+        let budget = Arc::new(SealedBudget::observed(limit, 0, true, telemetry));
         let meter = Meter::new(limit, budget.clone(), Reservation::Input);
         Self {
             budget,
@@ -118,8 +122,8 @@ impl Account {
     pub(crate) fn scoped<T>(&self, body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
         self.audit(self.snapshot().input.used, WORKING_SET, body)
     }
-    /// Publication is a serial blocking-task boundary. Invoke on the pool
-    /// thread itself so its allocator refusals are included in this audit.
+    /// Final zero-charge boundary for serial publication or a drained pool.
+    /// Concurrent drives separately audit allocator refusals on their threads.
     pub fn publication<T>(&self, body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
         self.audit(0, self.limit, body)
     }

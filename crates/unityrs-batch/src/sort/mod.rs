@@ -19,7 +19,7 @@ pub const FAN_IN: usize = 16;
 /// fields. Comparisons allocate nothing. Integer fields compare numerically,
 /// never by their little-endian encoding. Equal comparisons are completed by
 /// canonical payload bytes, so only identical records can use a run-index tie.
-pub trait Order {
+pub trait Order: Sync {
     fn tag(&self) -> u32;
     fn validate(&self, _record: &[u8]) -> Result<(), Error> {
         Ok(())

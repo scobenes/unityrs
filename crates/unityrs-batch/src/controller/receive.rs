@@ -1,4 +1,5 @@
 use super::{Controller, Event};
+use crate::sys::Shared;
 use crate::{
     attempt,
     execution::Execution,
@@ -6,7 +7,6 @@ use crate::{
     peek,
     phase1::{JobKind, PeekFacts},
 };
-use std::sync::Arc;
 
 impl Controller {
     pub(super) fn drain(&mut self, execution: &mut Execution) -> Result<(), super::Halt> {
@@ -63,11 +63,11 @@ impl Controller {
                 }
                 let slot = self.prepared.active.get_mut(at).ok_or(())?;
                 let owner = slot.peek_file.take().ok_or(())?;
-                self.prepared.files.get_mut(id as usize).ok_or(())?.peek = Arc::try_unwrap(owner)
-                    .map_err(|_| ())?
-                    .into_inner()
-                    .map_err(|_| ())?
-                    .map(crate::spool::OwnedFile::into_claim);
+                self.prepared.files.get_mut(id as usize).ok_or(())?.peek =
+                    Shared::try_unwrap(owner)
+                        .map_err(|_| ())?
+                        .into_inner()
+                        .map(crate::spool::OwnedFile::into_claim);
                 self.hooks.event(Event::PeekReceived(id));
                 match e.state {
                     peek::State::RunFailure => {
@@ -114,6 +114,8 @@ impl Controller {
         self.prepared.active.get_mut(at).ok_or(())?.directory = None;
         self.prepared.active.get_mut(at).ok_or(())?.job = None;
         self.prepared.active.get_mut(at).ok_or(())?.dispatched = None;
+        // A releasable end has already dropped every observed budget charge.
+        self.sample_reservations();
         Ok(())
     }
     fn finish_attempt(
@@ -130,11 +132,11 @@ impl Controller {
             .get_mut(at)
             .and_then(|s| s.directory.as_mut())
             .ok_or(())?;
-        if Arc::get_mut(owner).is_none() {
+        if Shared::get_mut(owner).is_none() {
             return Err(self.internal());
         }
         if e.state == attempt::State::Failed {
-            Arc::get_mut(owner)
+            Shared::get_mut(owner)
                 .ok_or(())?
                 .remove_stoppable(&|| self.control.stopped())
                 .map_err(|error| {
@@ -155,7 +157,7 @@ impl Controller {
                 .get_mut(at)
                 .and_then(|s| s.directory.take())
                 .ok_or(())?;
-            self.pending_directory = Some(Arc::try_unwrap(owner).map_err(|_| ())?);
+            self.pending_directory = Some(Shared::try_unwrap(owner).map_err(|_| ())?);
             self.commit(id)?;
         }
         Ok(())
@@ -171,7 +173,7 @@ mod tests {
         phase1, spec,
         spool::{Counter, Host},
     };
-    use std::sync::{Mutex, atomic::AtomicBool};
+    use std::sync::{Arc, atomic::AtomicBool};
     use unityrs_testkit::{guard, scratch::Scratch};
     fn fixture() -> (Scratch, Controller, Execution) {
         let scratch = Scratch::new("end-protocol");
@@ -218,7 +220,8 @@ mod tests {
                 let (_scratch, mut c, mut execution) = fixture();
                 if duplicate {
                     c.prepared.active[0].job = Some((JobKind::Peek, 0));
-                    c.prepared.active[0].peek_file = Some(Arc::new(Mutex::new(None)));
+                    c.prepared.active[0].peek_file =
+                        Some(Shared::new(crate::sys::Lock::new(None)).unwrap());
                     c.prepared.peek_words[0].publish(Outcome::Clear(0)).unwrap();
                     let end = End::Peek(peek::PeekEnd {
                         bundle: 0,

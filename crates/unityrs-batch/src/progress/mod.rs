@@ -12,12 +12,12 @@
 //!   thread's `exit` line*): phase 1's 78s, `--check`'s line, and the
 //!   69s of later PRs.
 //!
-//! The progress thread, its mailbox and its snapshots are later PRs'.
+//! [`live`] owns normal-run snapshots, the priority mailbox and writer.
+//! B9 supplies their process lifetime and stop ownership.
 
 pub mod clock;
 pub mod early;
-
-use std::fmt::Write as _;
+pub mod live;
 
 use crate::reason::Code;
 use crate::spec::{MAX_DETAIL_BYTES, escaped_len};
@@ -136,7 +136,7 @@ pub struct Exit {
     /// The exit code.
     pub code: Code,
     /// The reason that set the code, where section 10 names one.
-    pub reason: Option<String>,
+    pub reason: Option<&'static str>,
     /// Its detail: cut to [`MAX_DETAIL_BYTES`] as written when rendered.
     pub detail: Option<String>,
 }
@@ -163,13 +163,22 @@ impl Snapshot {
     #[allow(clippy::many_single_char_names)]
     #[must_use]
     pub fn line(&self, exit: Option<&Exit>) -> String {
-        let mut s = String::with_capacity(512);
+        let mut s = String::with_capacity(4096);
+        let _ = self.render(exit, &mut s);
+        s
+    }
+    #[allow(clippy::many_single_char_names)]
+    pub(crate) fn render(
+        &self,
+        exit: Option<&Exit>,
+        s: &mut impl std::fmt::Write,
+    ) -> std::fmt::Result {
         let kind = if exit.is_some() { "exit" } else { "snapshot" };
         let i = &self.inputs;
         let t = &self.transfers;
         let m = &self.memory;
         let o = &self.outputs;
-        let _ = write!(
+        write!(
             s,
             "{{\"p\":{P},\"type\":\"{kind}\",\"seq\":{},\"ms\":{},\"phase\":\"{}\",\
              \"inputs\":{{\"total\":{},\"complete\":{},\"failed\":{},\"running\":{},\"queued\":{},\"not_run\":{}}},\
@@ -205,34 +214,47 @@ impl Snapshot {
             o.published,
             o.present,
             o.failed,
-        );
+        )?;
         let status = exit.and_then(|e| e.status);
         let code = exit.map(|e| e.code.value());
-        let reason = exit.and_then(|e| e.reason.as_deref());
+        let reason = exit.and_then(|e| e.reason);
         let detail = exit.and_then(|e| e.detail.as_deref()).map(fit_detail);
-        s.push_str("\"status\":");
-        push_opt_str(&mut s, status);
-        s.push_str(",\"code\":");
+        s.write_str("\"status\":")?;
+        push_opt_str(s, status)?;
+        s.write_str(",\"code\":")?;
         match code {
             Some(c) => {
-                let _ = write!(s, "{c}");
+                write!(s, "{c}")?;
             }
-            None => s.push_str("null"),
+            None => s.write_str("null")?,
         }
-        s.push_str(",\"reason\":");
-        push_opt_str(&mut s, reason);
-        s.push_str(",\"detail\":");
-        push_opt_str(&mut s, detail);
-        s.push_str("}\n");
-        s
+        s.write_str(",\"reason\":")?;
+        push_opt_str(s, reason)?;
+        s.write_str(",\"detail\":")?;
+        push_opt_str(s, detail)?;
+        s.write_str("}\n")
     }
 }
 
-fn push_opt_str(s: &mut String, v: Option<&str>) {
-    match v {
-        Some(v) => s.push_str(&serde_json::Value::from(v).to_string()),
-        None => s.push_str("null"),
+fn push_opt_str(s: &mut impl std::fmt::Write, v: Option<&str>) -> std::fmt::Result {
+    let Some(v) = v else {
+        return s.write_str("null");
+    };
+    s.write_char('"')?;
+    for ch in v.chars() {
+        match ch {
+            '"' => s.write_str("\\\"")?,
+            '\\' => s.write_str("\\\\")?,
+            '\n' => s.write_str("\\n")?,
+            '\r' => s.write_str("\\r")?,
+            '\t' => s.write_str("\\t")?,
+            '\x08' => s.write_str("\\b")?,
+            '\x0c' => s.write_str("\\f")?,
+            c if c < ' ' => write!(s, "\\u{:04x}", u32::from(c))?,
+            c => s.write_char(c)?,
+        }
     }
+    s.write_char('"')
 }
 
 /// `detail` cut at a code point boundary so that its escaped form is at
@@ -253,15 +275,13 @@ fn fit_detail(detail: &str) -> &str {
 /// (Linux); 0 where it cannot be read.
 #[must_use]
 pub fn rss() -> u64 {
-    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
-        return 0;
-    };
-    status
-        .lines()
-        .find_map(|l| l.strip_prefix("VmRSS:"))
-        .and_then(|v| v.trim().strip_suffix("kB"))
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .map_or(0, |kb| kb.saturating_mul(1024))
+    proc_memory("VmRSS:")
+}
+
+/// Read only bounded procfs line storage; long unrelated lines are discarded.
+#[must_use]
+pub fn proc_memory(field: &str) -> u64 {
+    crate::sys::proc_memory(field)
 }
 
 #[cfg(all(test, target_os = "linux"))]

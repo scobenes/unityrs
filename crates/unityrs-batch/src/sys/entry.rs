@@ -159,3 +159,33 @@ pub fn reopen_pinned(file: &File) -> io::Result<File> {
         file.try_clone()
     }
 }
+
+/// Local staging sources use fallible path storage even beyond std's inline
+/// Unix path buffer. Preserve symlink-following and nonblocking open policy.
+pub fn local_source(path: &std::path::Path) -> io::Result<File> {
+    use std::os::fd::FromRawFd;
+    let path = super::terminated_path(path)?;
+    // SAFETY: path is NUL-terminated; a successful open owns one descriptor.
+    let fd = unsafe {
+        super::spool_open(
+            path.as_ptr().cast(),
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOCTTY,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful open transferred exactly one descriptor.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+pub fn spool_mkdir(path: &std::path::Path) -> io::Result<()> {
+    let path = super::terminated_path(path)?;
+    // SAFETY: path is a valid NUL-terminated string for this call.
+    cvt(unsafe { libc::mkdir(path.as_ptr().cast(), 0o777) })
+}
+pub fn spool_rename(from: &std::path::Path, to: &std::path::Path) -> io::Result<()> {
+    let from = super::terminated_path(from)?;
+    let to = super::terminated_path(to)?;
+    // SAFETY: both path buffers remain NUL-terminated and live across rename.
+    cvt(unsafe { libc::rename(from.as_ptr().cast(), to.as_ptr().cast()) })
+}

@@ -94,12 +94,15 @@ jobs:
           persist-credentials: false
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
+      - name: Check synthetic batch golden generators
+        run: python3 tools/goldens/generate.py --check
       - name: Test, phase 6, publication and archives at scale (release)
         run: >-
-          cargo test --locked --release -p unityrs-batch --features test-hooks
+          cargo test --locked --profile sweep -p unityrs-batch --features test-hooks
           --test winners_scale --test members_scale
           --test archive_alloc --test archive_bytes --test archive_digest
           --test publication_alloc --test phase6_ledger --test http_alloc
+          --test finish_alloc --test publication_pool --test golden_runs --test pool_alloc --test controller_alloc
           -- --include-ignored
 
   licenses:

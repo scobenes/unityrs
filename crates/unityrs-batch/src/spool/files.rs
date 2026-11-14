@@ -1,4 +1,5 @@
-use super::{Counter, Error, FileSystem, Full, Writer, output_name};
+use super::{Counter, Error, FileSystem, Full, Writer};
+use crate::sys::Shared;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,7 +22,7 @@ pub struct Directory {
     path: PathBuf,
     removal_root: Arc<std::fs::File>,
     relative: PathBuf,
-    ledger: Arc<Ledger>,
+    ledger: Shared<Ledger>,
     fs: Arc<dyn FileSystem>,
     removed: bool,
 }
@@ -72,10 +73,10 @@ impl Directory {
             path,
             removal_root,
             relative,
-            ledger: Arc::new(Ledger {
+            ledger: Shared::new(Ledger {
                 counter,
                 claimed: AtomicU64::new(0),
-            }),
+            })?,
             fs,
             removed: false,
         })
@@ -91,7 +92,7 @@ impl Directory {
         self.ledger.claimed.load(Ordering::Acquire)
     }
     fn idle(&self) -> Result<(), Error> {
-        if self.removed || Arc::strong_count(&self.ledger) != 1 {
+        if self.removed || Shared::strong_count(&self.ledger) != 1 {
             Err(Error::Internal)
         } else {
             Ok(())
@@ -137,10 +138,10 @@ impl Directory {
         if self.removed {
             return Err(Error::Internal);
         }
-        let writer = self.fs.create(&self.path.join(name))?;
+        let writer = self.fs.create(&super::path::join(&self.path, name)?)?;
         Ok(SpoolFile {
             writer,
-            directory: self.path.clone(),
+            directory: super::path::join(&self.path, Path::new(""))?,
             ledger: self.ledger.clone(),
             fs: self.fs.clone(),
             length: 0,
@@ -153,7 +154,7 @@ impl Directory {
     }
     /// An output named by its stable plan ordinal.
     pub fn output(&self, plan_index: u64) -> Result<SpoolFile, Error> {
-        self.file(&output_name(plan_index))
+        self.file(&super::path::indexed(Path::new(""), "o", plan_index)?)
     }
 }
 
@@ -163,7 +164,7 @@ impl Directory {
 pub struct SpoolFile {
     writer: Box<dyn Writer>,
     directory: PathBuf,
-    ledger: Arc<Ledger>,
+    ledger: Shared<Ledger>,
     fs: Arc<dyn FileSystem>,
     length: u64,
     failed: bool,

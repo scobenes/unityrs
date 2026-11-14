@@ -33,10 +33,11 @@ impl Clock {
     /// `main_start` (module docs).
     #[must_use]
     pub fn process(main_start: Instant) -> Self {
-        let start = std::fs::read("/proc/self/stat")
+        let mut buffer = [0; 4096];
+        let start = crate::sys::proc_stat(&mut buffer)
             .ok()
             .zip(crate::sys::clock_ticks())
-            .and_then(|(stat, ticks)| start_time(&stat, ticks));
+            .and_then(|(used, ticks)| buffer.get(..used).and_then(|stat| start_time(stat, ticks)));
         match start {
             Some(start) if crate::sys::boottime().is_some() => {
                 Self::on_boot_clock(start, crate::sys::boottime, main_start)

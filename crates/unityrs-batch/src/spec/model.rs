@@ -49,7 +49,7 @@ pub struct Spec {
     pub max_view_bundles: u32,
     /// `max_attempt_evictions`.
     pub max_attempt_evictions: u32,
-    /// `max_export_work`, by default `2 x M` (provisional, 1.1).
+    /// `max_export_work`, by default `2 x M` (final, 1.1).
     pub max_export_work: u64,
     /// `spool`.
     pub spool: Spool,

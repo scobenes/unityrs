@@ -2,8 +2,7 @@ use super::{copy_answers, resolve};
 use crate::http::resolve::MAX_ADDRESSES;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
-#[global_allocator]
-static ALLOCATOR: crate::alloc::Counting = crate::alloc::Counting::new();
+// Counted by the library test binary's one allocator (`crate::test_alloc`).
 
 #[test]
 fn system_lookup_uses_no_rust_heap() {

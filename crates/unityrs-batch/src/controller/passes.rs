@@ -1,4 +1,5 @@
 use super::{Controller, Event, Point};
+use crate::sys::Shared;
 use crate::{
     attempt::ReasonCode,
     execution::Execution,
@@ -8,10 +9,7 @@ use crate::{
     stage::{self, Failure, StageEnd},
     worker::Dispatch,
 };
-use std::{
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::time::Instant;
 
 impl Controller {
     pub(super) fn stage(&mut self, execution: &mut Execution) -> Result<(), super::Halt> {
@@ -43,7 +41,7 @@ impl Controller {
                     .stages_active
                     .get(slot)
                     .and_then(|s| s.task.as_ref())
-                    .is_some_and(tokio::task::JoinHandle::is_finished)
+                    .is_some_and(crate::execution::Task::is_finished)
                 {
                     // Stop freezes even completed-but-unreceived pool work.
                     self.check()?;
@@ -54,7 +52,7 @@ impl Controller {
                         .and_then(|s| s.task.take())
                         .ok_or(())?;
                     let (finish, mut file) =
-                        execution.finish(task).map_err(|()| self.internal())?;
+                        execution.finish(&task).map_err(|()| self.internal())?;
                     let bundle = self
                         .prepared
                         .stages_active
@@ -118,18 +116,19 @@ impl Controller {
                         .map_err(|e| self.io(e))?;
                 let control = self.control.clone();
                 let hooks = self.hooks.clone();
-                let wake = execution.end_wake();
+                let lease = self.spool.clone();
                 let task = execution
                     .spawn(move || {
+                        // Returning on hand-over must not unlock beside late I/O.
+                        let _lease = lease;
                         let adapter = StageHooks {
                             hooks: &*hooks,
                             bundle,
                         };
                         let finish = copy.run(bundle, &mut file, &|| control.stopped(), &adapter);
-                        let _ = wake.notify();
                         (finish, file)
                     })
-                    .map_err(|()| self.internal())?;
+                    .map_err(|e| self.io(e.into()))?;
                 self.prepared.stages_active.get_mut(slot).ok_or(())?.bundle = Some(bundle);
                 self.prepared.stages_active.get_mut(slot).ok_or(())?.task = Some(task);
             }
@@ -233,13 +232,20 @@ impl Controller {
         let directory = if peek {
             None
         } else {
-            Some(Arc::new(
-                self.spool
-                    .create_directory("attempts", id)
-                    .map_err(|e| self.io(e))?,
-            ))
+            Some(
+                Shared::new(
+                    self.spool
+                        .create_directory("attempts", id)
+                        .map_err(|e| self.io(e))?,
+                )
+                .map_err(|e| self.io(e.into()))?,
+            )
         };
-        let peek_file = peek.then(|| Arc::new(Mutex::new(None)));
+        let peek_file = if peek {
+            Some(Shared::new(crate::sys::Lock::new(None)).map_err(|e| self.io(e.into()))?)
+        } else {
+            None
+        };
         let slot = self.prepared.active.get_mut(at).ok_or(())?;
         // Reserve before sending, independent of current measured use.
         slot.job = Some((kind, id));
@@ -250,6 +256,8 @@ impl Controller {
             self.prepared.uncommitted.set(id as usize, true).ok_or(())?;
             self.prepared.inputs.get_mut(id as usize).ok_or(())?.phase = InputPhase::Running;
         }
+        // Publish before the dispatch can let a worker acquire budget charges.
+        self.sample_reservations();
         self.hooks.event(if peek {
             Event::PeekDispatched(id)
         } else {

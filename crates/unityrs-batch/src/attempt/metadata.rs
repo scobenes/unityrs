@@ -1,7 +1,7 @@
 //! Own metadata and the charged top-level registration name table.
 use super::{
     AttemptView,
-    classify::internal,
+    classify::{self, internal},
     hooks::{Engine, probe},
 };
 use crate::records::{self, DiagnosticKind, Record, Text, Writer};
@@ -20,7 +20,7 @@ fn charged(e: &unityrs_core::limits::ChargeError) -> Class {
 fn container(c: Class) -> Class {
     match c {
         Class::Skip(r) if r.reason == "decode_error" => Class::Input(Reason {
-            reason: "container_error".into(),
+            reason: classify::plain("container_error").reason,
             ..r
         }),
         c => c,
@@ -54,20 +54,18 @@ pub(super) fn dependencies(
             Value::List(v) => v.as_slice(),
             Value::Prims(p) if p.is_empty() => &[],
             _ => {
-                return Err(Failure::Input(Reason {
-                    reason: "container_error".into(),
-                    detail: Some("asset_bundle".into()),
-                    cut: false,
-                }));
+                return Err(Failure::Input(classify::reason(
+                    "container_error",
+                    Some("asset_bundle"),
+                )));
             }
         };
         for value in values {
             let Value::Str(name) = value else {
-                return Err(Failure::Input(Reason {
-                    reason: "container_error".into(),
-                    detail: Some("asset_bundle".into()),
-                    cut: false,
-                }));
+                return Err(Failure::Input(classify::reason(
+                    "container_error",
+                    Some("asset_bundle"),
+                )));
             };
             if name.as_bytes() == view.input.id.as_bytes()
                 || view

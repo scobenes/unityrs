@@ -765,3 +765,17 @@ pub(crate) use resolver::resolve;
 mod socket;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use socket::{test_set_zero_linger, test_socket_live, test_zero_linger};
+
+#[path = "sys/time.rs"]
+mod time;
+pub use time::utc_now;
+
+#[path = "sys/shared.rs"]
+mod shared;
+pub use shared::{Lock, Shared, Slot};
+
+pub use entry::{local_source, spool_mkdir, spool_rename};
+
+#[path = "sys/procfs.rs"]
+mod procfs;
+pub(crate) use procfs::{proc_memory, proc_stat};

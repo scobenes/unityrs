@@ -98,7 +98,7 @@ fn a_detail_is_cut_to_fit_as_written() {
     let exit = |detail: String| Exit {
         status: Some("failed"),
         code: Code::Internal,
-        reason: Some("bad_spec".into()),
+        reason: Some("bad_spec"),
         detail: Some(detail),
     };
     // A quote escapes to two bytes, U+0001 to six.

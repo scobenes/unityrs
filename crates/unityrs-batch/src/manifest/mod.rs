@@ -63,11 +63,13 @@ pub struct Report {
     pub run: figures::Figures,
     pub failure: Option<crate::job::RunFailure>,
     pub publication_failed: bool,
+    pub filesystem_sync_failed: bool,
 }
 impl Report {
     /// A final sync failure invalidates every published row-derived fact.
     /// Received run figures are stored separately and remain available.
     pub fn sync_failed(&mut self) {
+        self.filesystem_sync_failed = true;
         self.rows = [None; 8];
         self.counts = Counts::default();
         crate::job::RunFailure::reduce(
@@ -85,36 +87,65 @@ pub fn assemble(
     if !cx.account.admits(crate::publish::WORKING_SET) {
         return Err(Error::internal());
     }
-    cx.account.publication(|| {
-        let _overhead = cx.account.meter().charge(crate::publish::OVERHEAD)?;
-        let mut report = Report {
-            run: figures::complete(cx)?,
-            ..Report::default()
-        };
-        for family in Family::ALL {
-            let mut counts = Counts::default();
-            let result = (|| {
-                let mut chunks = chunks::Chunks::new(destination, family, cx.account)?;
-                rows::generate(family, cx, &mut chunks, &mut counts)?;
-                chunks.finish()
-            })();
-            match result {
-                Ok(n) => {
-                    *report
-                        .rows
-                        .get_mut(family as usize)
-                        .ok_or_else(Error::internal)? = Some(n);
-                    report.counts.add(counts)?;
-                }
-                Err(WriteError::Publish) => {
-                    report.publication_failed = true;
-                }
-                Err(WriteError::Phase(e)) => return Err(e),
-            }
-        }
-        Ok(report)
-    })
+    let mut report = Report::default();
+    cx.account
+        .publication(|| assemble_into(cx, destination, &mut report))?;
+    Ok(report)
 }
+/// Normal finishing retains acknowledged families even if a later parser or
+/// allocation fails. Scratch drops before the audit; the head can still name
+/// earlier complete families and the exact run failure.
+pub(crate) fn finishing(
+    cx: &rows::Context<'_>,
+    destination: &mut dyn chunks::Destination,
+) -> Report {
+    let mut report = Report {
+        run: figures::received(cx.prepared).unwrap_or_default(),
+        ..Report::default()
+    };
+    if let Err(error) = cx
+        .account
+        .publication(|| assemble_into(cx, destination, &mut report))
+    {
+        let failure = match error {
+            Error::Run(f) => f,
+            Error::Stopped => crate::job::RunFailure::new(crate::attempt::ReasonCode::Internal),
+        };
+        crate::job::RunFailure::reduce(&mut report.failure, failure);
+    }
+    report
+}
+fn assemble_into(
+    cx: &rows::Context<'_>,
+    destination: &mut dyn chunks::Destination,
+    report: &mut Report,
+) -> Result<(), Error> {
+    let _overhead = cx.account.meter().charge(crate::publish::OVERHEAD)?;
+    report.run = figures::complete(cx)?;
+    for family in Family::ALL {
+        let mut counts = Counts::default();
+        let result = (|| {
+            let mut chunks = chunks::Chunks::new(destination, family, cx.account)?;
+            rows::generate(family, cx, &mut chunks, &mut counts)?;
+            chunks.finish()
+        })();
+        match result {
+            Ok(n) => {
+                *report
+                    .rows
+                    .get_mut(family as usize)
+                    .ok_or_else(Error::internal)? = Some(n);
+                report.counts.add(counts)?;
+            }
+            Err(WriteError::Publish) => {
+                report.publication_failed = true;
+            }
+            Err(WriteError::Phase(e)) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 fn directory_error(e: crate::sink::Error) -> WriteError {
     match e.class {
         crate::sink::Class::HostMemory => WriteError::Phase(Error::memory()),

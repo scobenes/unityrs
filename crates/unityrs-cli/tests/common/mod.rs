@@ -94,7 +94,7 @@ pub fn refusal_line(ms: u64, rss: u64, detail: &str) -> String {
     s.line(Some(&Exit {
         status: None,
         code: Code::BadSpec,
-        reason: Some("bad_spec".into()),
+        reason: Some("bad_spec"),
         detail: Some(detail.into()),
     }))
 }
