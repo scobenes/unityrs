@@ -20,9 +20,9 @@ def main():
         generator.generate()
     root = REPO / "tests/specs/v1"
     different = []
-    for name, (case, ensure_ascii) in sorted(CASES.items()):
+    for name, case in sorted(CASES.items()):
         path = root / f"{name}.json"
-        data = encoded(case, ensure_ascii)
+        data = encoded(case)
         if args.check:
             if not path.exists() or path.read_bytes() != data:
                 different.append(path.relative_to(REPO))

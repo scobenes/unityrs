@@ -239,4 +239,4 @@ def generate():
                 }
             )
     for case in cases:
-        write_case(case, ensure_ascii=False)
+        write_case(case)

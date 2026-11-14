@@ -9,12 +9,13 @@ CASES = {}
 
 
 def load_case(name):
-    return copy.deepcopy(CASES[name][0])
+    return copy.deepcopy(CASES[name])
 
 
-def write_case(case, *, ensure_ascii=True):
-    CASES[case["name"]] = (copy.deepcopy(case), ensure_ascii)
+def write_case(case):
+    CASES[case["name"]] = copy.deepcopy(case)
 
 
-def encoded(case, ensure_ascii):
-    return (json.dumps(case, ensure_ascii=ensure_ascii, indent=2) + "\n").encode()
+def encoded(case):
+    """UTF-8 with non-ASCII characters written literally, as the canonical JSON does."""
+    return (json.dumps(case, ensure_ascii=False, indent=2) + "\n").encode()
