@@ -132,6 +132,7 @@ pub(super) fn png(p: &Pixels<'_>, meter: &Arc<Meter>) -> Result<(Vec<u8>, Charge
 /// and charged (under the probe, on its own) before it is allocated.
 fn crop(sheet: &Image, sprite: &SpritePlan, seam: &Seam<'_>) -> Result<(Vec<u8>, Charge), Class> {
     let bpp: u64 = match sheet.mode() {
+        Mode::L => 1,
         Mode::Rgb => 3,
         Mode::Rgba => 4,
     };

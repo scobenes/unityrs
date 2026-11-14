@@ -9,8 +9,9 @@
 //! must agree with what the decoders accept: a texture [`select()`] exports is
 //! one [`crate::decode()`] decodes as UnityPy does, and a skipped one is never
 //! decoded as another format. It exports the five formats version 1 exports
-//! ([`Format::EXPORTED`]): the ETC and EAC formats [`crate::decode()`] also
-//! decodes are `unsupported_format` to it, as `docs/BATCH_SPEC.md` section
+//! ([`Format::EXPORTED`]): the other formats [`crate::decode()`] also
+//! decodes, the rest of Pillow's raw and `bcn` formats and the ETC and EAC
+//! formats, are `unsupported_format` to it, as `docs/BATCH_SPEC.md` section
 //! 3 says, until a spec version exports them. The engine reads the fields
 //! (the object's `m_TextureFormat`, `m_Width`, `m_Height` and
 //! `m_PlatformBlob`, and the platform of the SerializedFile that holds it,
@@ -158,9 +159,9 @@ pub fn select(texture: &TextureFields<'_>) -> Selection {
     if texture.width == 0 || texture.height == 0 {
         return Selection::Skip(Skip::EmptyImage);
     }
-    // Version 1 exports the five of E15; the ETC and EAC formats this crate
-    // also decodes are `unsupported_format` to it (`docs/BATCH_SPEC.md`
-    // section 3).
+    // Version 1 exports the five of E15; the other formats this crate also
+    // decodes are `unsupported_format` to it (`docs/BATCH_SPEC.md` section
+    // 3).
     let Some(format) = Format::from_texture_format(texture.texture_format).filter(|f| f.exported())
     else {
         return Selection::Skip(Skip::UnsupportedFormat(texture.texture_format));

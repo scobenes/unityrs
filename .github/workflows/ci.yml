@@ -378,13 +378,14 @@ jobs:
       # walk_reentry.py, walk_runs.py and walk_write.py, env.py through env_paths.py and
       # env_race.py, dump.py through dump_inputs.py, tpk.py through
       # tpk_build.py, sprite.py through sprite_build.py, sprite_cases.py and
-      # sprite_solve.py, texture.py through texture_etc.py), as
+      # sprite_solve.py, texture.py through texture_etc.py and texture_raw.py), as
       # scripts/tests/test_ci_workflow.py checks, and each
       # module also runs on its own (tools/parity/tests/test_fixture_modules.py).
       # no_tree.py reads with tpk.py's synthetic TPKs, unityrs-tpk's test
       # replays it. texture.py records UnityPy's and Pillow's texture decodes
-      # and selection, and through texture_etc.py texture2ddecoder's ETC and
-      # EAC decodes, which unityrs-texture's tests replay. meshdecode.py
+      # and selection, through texture_etc.py texture2ddecoder's ETC and EAC
+      # decodes, and through texture_raw.py Pillow's other raw and bcn
+      # decodes, which unityrs-texture's tests replay. meshdecode.py
       # records UnityPy's MeshHandler and UnityPyBoost's unpack_vertexdata,
       # through meshdecode_build.py, meshdecode_cases.py and
       # meshdecode_trees.py (its hand-built trees), which

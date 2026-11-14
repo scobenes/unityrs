@@ -5,6 +5,7 @@ use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
 use unityrs_core::limits::Meter;
 
 use super::{DecodeError, Format, MAX_CROP_PIXELS, MAX_PIXELS, Plan, decode, decode_with, plan};
+use crate::format::Library;
 
 /// The bound comes before the data (step 4): a texture past [`MAX_PIXELS`]
 /// is too large whatever its data, but empty data or a negative side is
@@ -45,8 +46,27 @@ fn the_bound_comes_before_the_data() {
 /// pixels before it reads the data (step 5); the `bcn` decoder has no cap.
 #[test]
 fn pillows_raw_width_cap_comes_before_the_data() {
-    for (format, max) in [(Format::Rgba32, 67_108_856), (Format::Rgb24, 89_478_478)] {
-        let bpp = format.mode().bytes_per_pixel();
+    // Each raw format's cap, `INT_MAX / bits - 7`, and the bytes it reads a
+    // pixel.
+    let raw = [
+        (Format::Rgba32, 67_108_856, 4),
+        (Format::Bgra32, 67_108_856, 4),
+        (Format::Argb32, 67_108_856, 4),
+        (Format::Rgb24, 89_478_478, 3),
+        (Format::Bgr24, 89_478_478, 3),
+        (Format::Argb4444, 134_217_720, 2),
+        (Format::Rgba4444, 134_217_720, 2),
+        (Format::Rgb565, 134_217_720, 2),
+        (Format::Alpha8, 268_435_448, 1),
+        (Format::R8, 268_435_448, 1),
+    ];
+    let pillow_raw = Format::ALL
+        .iter()
+        .filter(|f| f.library() == Library::PillowRaw)
+        .count();
+    assert_eq!(raw.len(), pillow_raw);
+    for (format, max, bpp) in raw {
+        assert_eq!(format.raw_bits(), Some(8 * u32::try_from(bpp).unwrap()));
         assert_eq!(
             plan(format, 1, max, 1),
             Err(DecodeError::NotEnoughData {
@@ -64,7 +84,10 @@ fn pillows_raw_width_cap_comes_before_the_data() {
         for len in [1, need + usize::try_from(bpp).unwrap()] {
             assert_eq!(plan(format, len, max + 1, 1), refused, "{format:?}");
         }
-        assert_eq!(plan(format, 1, max + 1, 2), refused, "{format:?}");
+        // Two rows, where they are within the bound (which comes first).
+        if 2 * (u64::from(max.unsigned_abs()) + 1) <= MAX_PIXELS {
+            assert_eq!(plan(format, 1, max + 1, 2), refused, "{format:?}");
+        }
         let meter = Meter::unlimited();
         assert_eq!(
             decode(format, &[0], max + 1, 1, &meter).map(|_| ()),
@@ -153,7 +176,10 @@ fn a_bcn_length_past_2_gib_is_read_as_its_low_32_bits() {
 /// length is a `size_t`, read whole; and UnityPy's crop bound holds.
 #[test]
 fn texture2ddecoders_formats_refuse_what_it_reads_past() {
-    let etc = Format::ALL.iter().copied().filter(|f| !f.exported());
+    let etc = Format::ALL
+        .iter()
+        .copied()
+        .filter(|f| f.library() == Library::Texture2DDecoder);
     for format in etc {
         let block = usize::try_from(format.block_bytes().unwrap()).unwrap();
         // 7 x 9 is 2 x 3 blocks.
