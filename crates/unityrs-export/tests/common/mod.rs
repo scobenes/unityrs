@@ -622,10 +622,11 @@ fn two_refusals(s: &AtlasScene, input: &str, refuse: Refuse) -> (Sites, Result<R
 }
 
 /// The core call a stack is in: the frame just inside the cutter's
-/// innermost (a call the cutter made, which its probe takes on its own, or
-/// a charge it made itself; a free function prints with no path), up to
-/// any generic arguments, which run on after a space or `,` once `<` and
-/// `>` are taken out ([`site`]).
+/// innermost, including its shared texture-fetch implementation (a call
+/// the cutter made, which its probe takes on its own, or a charge it made
+/// itself; a free function prints with no path), up to any generic
+/// arguments, which run on after a space or `,` once `<` and `>` are taken
+/// out ([`site`]).
 pub fn core_call(stack: &str) -> String {
     let frames: Vec<&str> = stack
         .lines()
@@ -636,7 +637,9 @@ pub fn core_call(stack: &str) -> String {
         .collect();
     let call = frames
         .iter()
-        .position(|f| f.starts_with("unityrs_export::"))
+        .position(|f| {
+            f.starts_with("unityrs_export::") || f.starts_with("unityrs_texture::fetch::")
+        })
         .and_then(|cutter| frames.get(cutter.checked_sub(1)?))
         .copied()
         .unwrap_or("other");

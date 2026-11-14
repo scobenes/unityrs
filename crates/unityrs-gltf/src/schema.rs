@@ -3,14 +3,14 @@ use crate::json::Json;
 use crate::validate::invalid;
 use crate::{Attribute, Extras, GltfError, Kind, Layout, Mime, Scene, Text};
 type Result<T> = std::result::Result<T, GltfError>;
-fn name(j: &mut Json<'_>, n: Option<&Text>) -> Result<()> {
+pub(crate) fn name(j: &mut Json<'_>, n: Option<&Text>) -> Result<()> {
     if let Some(n) = n {
         j.raw(",\"name\":")?;
         j.string(n.as_bytes())?;
     }
     Ok(())
 }
-fn extras(j: &mut Json<'_>, e: &Extras) -> Result<()> {
+pub(crate) fn extras(j: &mut Json<'_>, e: &Extras) -> Result<()> {
     if !e.is_empty() {
         j.raw(",\"extras\":{")?;
         for (i, (k, v)) in e.as_slice().iter().enumerate() {
@@ -153,21 +153,8 @@ pub(crate) fn document(s: &Scene, l: &Layout, j: &mut Json<'_>) -> Result<()> {
         }
         j.raw("]")?;
     }
-    if !s.materials.is_empty() {
-        j.raw(",\"materials\":[")?;
-        for (i, m) in s.materials.as_slice().iter().enumerate() {
-            if i > 0 {
-                j.raw(",")?;
-            }
-            // A leading property lets the optional name/extras helpers keep
-            // one implementation; these are core material defaults.
-            j.raw("{\"doubleSided\":false")?;
-            name(j, m.name.as_ref())?;
-            extras(j, &m.extras)?;
-            j.raw("}")?;
-        }
-        j.raw("]")?;
-    }
+    crate::material_schema::materials(s, j)?;
+    crate::material_schema::extensions(s, j)?;
     if !s.images.is_empty() {
         j.raw(",\"images\":[")?;
         for (i, image) in s.images.as_slice().iter().enumerate() {
@@ -191,6 +178,24 @@ pub(crate) fn document(s: &Scene, l: &Layout, j: &mut Json<'_>) -> Result<()> {
         }
         j.raw("]")?;
     }
+    if !s.samplers.is_empty() {
+        j.raw(",\"samplers\":[")?;
+        for (i, sampler) in s.samplers.as_slice().iter().enumerate() {
+            if i > 0 {
+                j.raw(",")?;
+            }
+            j.raw("{\"wrapS\":")?;
+            j.number(sampler.wrap_s)?;
+            j.raw(",\"wrapT\":")?;
+            j.number(sampler.wrap_t)?;
+            j.raw(",\"magFilter\":")?;
+            j.number(sampler.mag_filter)?;
+            j.raw(",\"minFilter\":")?;
+            j.number(sampler.min_filter)?;
+            j.raw("}")?;
+        }
+        j.raw("]")?;
+    }
     if !s.textures.is_empty() {
         j.raw(",\"textures\":[")?;
         for (i, t) in s.textures.as_slice().iter().enumerate() {
@@ -199,6 +204,10 @@ pub(crate) fn document(s: &Scene, l: &Layout, j: &mut Json<'_>) -> Result<()> {
             }
             j.raw("{\"source\":")?;
             j.number(t.image)?;
+            if let Some(sampler) = t.sampler {
+                j.raw(",\"sampler\":")?;
+                j.number(sampler)?;
+            }
             j.raw("}")?;
         }
         j.raw("]")?;
@@ -258,6 +267,7 @@ fn semantic(j: &mut Json<'_>, k: Attribute) -> Result<()> {
         Attribute::Normal => j.raw("\"NORMAL\""),
         Attribute::Tangent => j.raw("\"TANGENT\""),
         Attribute::Color => j.raw("\"COLOR_0\""),
+        Attribute::CustomColor => j.raw("\"_COLOR_0\""),
         Attribute::Joints => j.raw("\"JOINTS_0\""),
         Attribute::Weights => j.raw("\"WEIGHTS_0\""),
         Attribute::TexCoord(n) => {

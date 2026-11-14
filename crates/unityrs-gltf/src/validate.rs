@@ -17,7 +17,7 @@ pub(crate) fn accessor(scene: &Scene, id: usize, kind: Kind) -> Result<&Accessor
     }
     Ok(a)
 }
-fn extras(e: &Extras, meter: &Meter) -> Result<()> {
+pub(crate) fn extras(e: &Extras, meter: &Meter) -> Result<()> {
     // Require sorted keys so uniqueness is linear, rather than quadratic.
     let mut previous: Option<&[u8]> = None;
     for (key, value) in e.as_slice() {
@@ -295,14 +295,24 @@ pub(crate) fn model(s: &Scene, opts: crate::Options, meter: &Arc<Meter>) -> Resu
     }
     for m in s.materials.as_slice() {
         meter.count_decode(1)?;
-        extras(&m.extras, meter)?;
+        crate::material_schema::validate_material(m, s.textures.len(), meter)?;
     }
     for i in s.images.as_slice() {
         crate::image::validate(i, meter)?;
     }
+    for sampler in s.samplers.as_slice() {
+        meter.count_decode(1)?;
+        if ![10497, 33071, 33648].contains(&sampler.wrap_s)
+            || ![10497, 33071, 33648].contains(&sampler.wrap_t)
+            || ![9728, 9729].contains(&sampler.mag_filter)
+            || ![9728, 9729, 9984, 9985, 9986, 9987].contains(&sampler.min_filter)
+        {
+            return Err(invalid("sampler constants"));
+        }
+    }
     for t in s.textures.as_slice() {
         meter.count_decode(1)?;
-        if t.image >= s.images.len() {
+        if t.image >= s.images.len() || t.sampler.is_some_and(|i| i >= s.samplers.len()) {
             return Err(invalid("texture image index"));
         }
     }

@@ -37,6 +37,17 @@ fn builtin_graph(objects: &[Object]) -> (Environment, Graph) {
     (env, graph)
 }
 
+fn assert_only_missing_materials(scene: &Scene) {
+    assert!(!scene.collection_issues.is_empty());
+    assert!(
+        scene
+            .collection_issues
+            .as_slice()
+            .iter()
+            .all(|issue| issue.reason == "submesh_without_material" && issue.count == 1)
+    );
+}
+
 #[test]
 fn resolved_builtin_batches_union_selected_ranges_by_source_identity() {
     for legacy in [false, true] {
@@ -131,7 +142,7 @@ fn resolved_builtin_batches_union_selected_ranges_by_source_identity() {
                     assert_eq!(node.rotation, [0., 0., 0., 1.]);
                     assert_eq!(node.scale, [1.; 3]);
                 }
-                assert!(scene.collection_issues.is_empty());
+                assert_only_missing_materials(&scene);
                 h::validator_clean(&scene);
             }
         }

@@ -399,10 +399,12 @@ fn a_refusal_after_one_the_core_absorbed_is_host_memory() {
     // uncounted, in the next core call of one operation. A probe begun
     // before the first would see the count move and read the second as the
     // budget's; one probe per core call reads it as `host_memory`. Over the
-    // resource's own-chain calls (each candidate's `joined` and each
-    // `simplify_name`) and X's own open (its bytes' charge, then its parse),
+    // resource's own-chain calls (each candidate's `joined_vec` and
+    // `simplify_name_vec`) and X's own open (its bytes' charge, then its parse),
     // each seen. (A row's `entry` then its `entry_range` cannot both
     // reserve in one read: `the_resource_reads_entry_reserves_nothing`.)
+    // CR10 keeps both candidate-name allocations in charged Vecs; row-name
+    // comparisons now borrow their bytes and allocate nothing.
     let s = scene("streamed_sheets");
     let mut seen = std::collections::BTreeSet::new();
     for at in 0.. {
@@ -433,11 +435,11 @@ fn a_refusal_after_one_the_core_absorbed_is_host_memory() {
             .any(|(s, c, t)| *s == site && c.ends_with(call) && t.ends_with(then))
     };
     assert!(
-        pair("resource", "simplify_name", "Candidate::joined"),
+        pair("resource", "simplify_name_vec", "Candidate::joined_vec"),
         "{seen:?}"
     );
     assert!(
-        pair("resource", "Candidate::joined", "simplify_name"),
+        pair("resource", "Candidate::joined_vec", "simplify_name_vec"),
         "{seen:?}"
     );
     assert!(

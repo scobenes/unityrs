@@ -101,6 +101,7 @@ mod bcn;
 mod contain;
 mod decode;
 mod etc;
+pub mod fetch;
 mod format;
 mod formats;
 mod raw;
