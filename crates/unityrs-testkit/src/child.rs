@@ -11,8 +11,9 @@
 //! system killed it. Every other ending is the child's own and comes back
 //! at once, after one run: an exit status, an abort (`SIGABRT`: the code
 //! under test's own abort, or Rust's report of a stack overflow), any other
-//! signal. A test that kills a child itself (`std::process::Child::kill`)
-//! does not run it through here: that `SIGKILL` is the test's own doing.
+//! signal. Live scenes use [`scene`] and [`live`]; their explicit
+//! `Scene::kill` marks a deliberate kill, which is never retried. All other
+//! outside kills restart the entire closure, including its services and FIFOs.
 //!
 //! Every Rust test in the workspace that runs a child process runs it
 //! through here: [`crate::stack`]'s and [`crate::address_space`]'s probes,
@@ -36,6 +37,11 @@
 use std::io;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Output};
+
+#[cfg(unix)]
+mod live;
+#[cfg(unix)]
+pub use live::{Fifo, Live, Scene, drain, live, scene};
 
 /// The most runs [`output`] and [`status`] make of a child that is killed
 /// by `SIGKILL` (module docs) before they fail the test.
@@ -134,6 +140,8 @@ pub(crate) fn tail(bytes: &[u8]) -> String {
 /// What runs a child process other than through this module: `Command`'s
 /// own runs, by method (`.output()`, `.spawn()`) or by path.
 pub const DIRECT: &[&str] = &[
+    ".kill()",
+    "Child::kill",
     ".output()",
     ".spawn()",
     "Command::output",
@@ -148,9 +156,8 @@ pub const DIRECT: &[&str] = &[
 /// is a process's), and each file that makes more commands
 /// (`Command::new(`) than it runs through this module (`child::output(`,
 /// `child::status(`), which is how a `.status()` on a command shows (a
-/// dump error's `.status()` is its exit code). A test that kills its own
-/// child (module docs) has no exemption here yet: one that needs it adds
-/// it, with a test.
+/// dump error's `.status()` is its exit code). Live children use `child::live`;
+/// direct `Child::kill` is refused too, preserving deliberate-kill bookkeeping.
 ///
 /// # Panics
 /// When a directory or a file under `root` cannot be read.
@@ -161,7 +168,11 @@ pub fn direct_runs(root: &Path) -> Vec<String> {
     files.sort();
     let mut found = Vec::new();
     for path in files {
-        if path.ends_with("unityrs-testkit/src/child.rs") {
+        if path.ends_with("unityrs-testkit/src/child.rs")
+            || path
+                .parent()
+                .is_some_and(|p| p.ends_with("unityrs-testkit/src/child"))
+        {
             continue;
         }
         let text =
@@ -176,7 +187,9 @@ pub fn direct_runs(root: &Path) -> Vec<String> {
                 found.push(format!("{}:{}: {}", path.display(), i + 1, code));
             }
             made += code.matches("Command::new(").count();
-            run += code.matches("child::output(").count() + code.matches("child::status(").count();
+            run += code.matches("child::output(").count()
+                + code.matches("child::status(").count()
+                + code.matches("child::live(").count();
         }
         if made > run {
             found.push(format!(
@@ -388,6 +401,7 @@ mod tests {
             "clean.rs",
             "let o = unityrs_testkit::child::output(Command::new(\"sh\").arg(\"x\"));\n\
              let s = child::status(&mut Command::new(\"sh\"));\n\
+             let mut c = Command::new(\"sh\"); let p = child::live(scene, &mut c, false);\n\
              // Command::new(\"sh\").output() in a comment\n\
              assert_eq!(err.status(), 1);\n\
              std::thread::scope(|s| { s.spawn(|| ()); });\n",
@@ -398,12 +412,21 @@ mod tests {
             "let s = Command::new(\"sh\")\n    .arg(\"x\")\n    .status();\n",
         );
         file("spawn.rs", "let c = cmd.spawn();\n");
+        file(
+            "kill.rs",
+            "child.kill();\nstd::process::Child::kill(&mut child);\n",
+        );
         file("path.rs", "let o = Command::output(&mut cmd);\n");
         let found = direct_runs(&marks.0);
         let at = |name: &str| marks.0.join(name).display().to_string();
         assert_eq!(
             found,
             [
+                format!("{}:1: child.kill();", at("kill.rs")),
+                format!(
+                    "{}:2: std::process::Child::kill(&mut child);",
+                    at("kill.rs")
+                ),
                 format!(
                     "{}:1: let o = Command::new(\"sh\").output();",
                     at("output.rs")

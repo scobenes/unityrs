@@ -15,6 +15,15 @@
 
 use std::{io, time::Duration};
 
+mod wake;
+pub use wake::{RegisteredWake, Wake, poll_wakes};
+pub mod lifecycle;
+pub mod reset;
+pub mod signals;
+pub(crate) mod stderr;
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod testing;
+
 // Match std's large-file ABI on 32-bit Linux as well as 64-bit hosts.
 #[cfg(not(all(target_os = "linux", any(target_env = "gnu", target_env = "uclibc"))))]
 use libc::{lstat as spool_lstat, open as spool_open, stat as SpoolStat};
@@ -236,120 +245,6 @@ pub(crate) fn spool_unlink(path: &std::path::Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Nonblocking wake descriptor. Linux uses `eventfd`; the portable test host
-/// uses a nonblocking socket pair with the same coalescing wake semantics.
-pub struct Wake {
-    read: std::os::fd::OwnedFd,
-    write: std::os::fd::OwnedFd,
-}
-impl Wake {
-    pub fn new() -> io::Result<Self> {
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::fd::{AsFd, FromRawFd};
-            // SAFETY: eventfd takes only scalar arguments and returns a new fd.
-            let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-            if fd < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: the successful call transferred one newly owned fd.
-            let read = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-            let write = read.as_fd().try_clone_to_owned()?;
-            Ok(Self { read, write })
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let (read, write) = std::os::unix::net::UnixStream::pair()?;
-            read.set_nonblocking(true)?;
-            write.set_nonblocking(true)?;
-            Ok(Self {
-                read: read.into(),
-                write: write.into(),
-            })
-        }
-    }
-    /// A full nonblocking wake already means the reader must run.
-    pub fn notify(&self) -> io::Result<()> {
-        use std::os::fd::AsRawFd;
-        let word = 1_u64;
-        loop {
-            // SAFETY: word is readable for its complete size; fd is live.
-            let n = unsafe {
-                libc::write(
-                    self.write.as_raw_fd(),
-                    std::ptr::from_ref(&word).cast(),
-                    size_of::<u64>(),
-                )
-            };
-            if n == 8 {
-                return Ok(());
-            }
-            let e = io::Error::last_os_error();
-            match e.kind() {
-                io::ErrorKind::WouldBlock => return Ok(()),
-                io::ErrorKind::Interrupted => {}
-                _ => return Err(e),
-            }
-        }
-    }
-    /// Read before draining the end channel. `EAGAIN` is an empty wake.
-    pub fn drain(&self) -> io::Result<()> {
-        use std::os::fd::AsRawFd;
-        loop {
-            let mut word = 0_u64;
-            // SAFETY: word is writable for its size and the descriptor is live.
-            let n = unsafe {
-                libc::read(
-                    self.read.as_raw_fd(),
-                    std::ptr::from_mut(&mut word).cast(),
-                    size_of::<u64>(),
-                )
-            };
-            if n > 0 {
-                continue;
-            }
-            let e = io::Error::last_os_error();
-            match e.kind() {
-                io::ErrorKind::WouldBlock => return Ok(()),
-                io::ErrorKind::Interrupted => {}
-                _ => return Err(e),
-            }
-        }
-    }
-}
-/// W1/W2: one bounded wait, including interruptions. The caller always drains
-/// the end wake and channel after return, even on a wake-only tick.
-pub fn poll_wakes(end: &Wake, wake: &Wake) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
-    let mut fds = [
-        libc::pollfd {
-            fd: end.read.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        },
-        libc::pollfd {
-            fd: wake.read.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        },
-    ];
-    // SAFETY: fds contains two initialized pollfd values for this call.
-    let rc = unsafe { libc::poll(fds.as_mut_ptr(), 2, 1_000) };
-    if rc < 0 {
-        let e = io::Error::last_os_error();
-        if e.kind() != io::ErrorKind::Interrupted {
-            return Err(e);
-        }
-    }
-    if fds
-        .iter()
-        .any(|f| f.revents & (libc::POLLERR | libc::POLLNVAL | libc::POLLHUP) != 0)
-    {
-        return Err(io::Error::other("wake descriptor closed"));
-    }
-    Ok(())
-}
-
 /// Open a trusted prepared root once, before any deletion can start.
 pub fn open_directory(path: &std::path::Path) -> io::Result<std::fs::File> {
     use std::os::fd::FromRawFd;
@@ -512,7 +407,7 @@ pub fn rooted_rename(parent: &File, from: &std::ffi::CStr, to: &std::ffi::CStr) 
         )
     })
 }
-#[path = "sys/entry.rs"]
+#[path = "entry.rs"]
 mod entry;
 pub use entry::{
     Entry, beneath_probe, reopen_pinned, resume_flags, rooted_entry, traversal_flags,
@@ -593,10 +488,10 @@ pub fn writeback(file: &File) -> io::Result<()> {
 }
 
 #[cfg(test)]
-#[path = "sys/tests.rs"]
+#[path = "tests.rs"]
 mod tests;
 
-#[path = "sys/remove.rs"]
+#[path = "remove.rs"]
 mod remove;
 pub use remove::remove_tree;
 impl Cursor {
@@ -749,33 +644,33 @@ pub fn privileged() -> io::Result<bool> {
     }
 }
 
-#[path = "sys/paths.rs"]
+#[path = "paths.rs"]
 mod paths;
 pub(crate) use paths::retry_interrupted;
 use paths::terminated_path;
 
-#[path = "sys/resolver.rs"]
+#[path = "resolver.rs"]
 mod resolver;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use resolver::TestResolverAnswers;
 pub(crate) use resolver::resolve;
 
 #[cfg(any(test, feature = "test-hooks"))]
-#[path = "sys/socket.rs"]
+#[path = "socket.rs"]
 mod socket;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use socket::{test_set_zero_linger, test_socket_live, test_zero_linger};
 
-#[path = "sys/time.rs"]
+#[path = "time.rs"]
 mod time;
 pub use time::utc_now;
 
-#[path = "sys/shared.rs"]
+#[path = "shared.rs"]
 mod shared;
 pub use shared::{Lock, Shared, Slot};
 
 pub use entry::{local_source, spool_mkdir, spool_rename};
 
-#[path = "sys/procfs.rs"]
+#[path = "procfs.rs"]
 mod procfs;
 pub(crate) use procfs::{proc_memory, proc_stat};
