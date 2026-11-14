@@ -1,6 +1,6 @@
 [package]
 name = "unityrs-texture"
-description = "Texture2D decoders with UnityPy 1.25.2's output: the formats it decodes with Pillow's raw and bcn decoders, and the ETC and EAC formats."
+description = "Texture2D decoders with UnityPy 1.25.2's output: the formats it decodes with Pillow's raw and bcn decoders, the ETC and EAC formats, and the ASTC LDR formats."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -25,8 +25,8 @@ rust-version.workspace = true
 # (BSD-2-Clause-Views), its LICENSE-OPENBLAS-UT. about.toml's clarification
 # names each licence file, with this expression (the licence check holds
 # the two equal); its package carries all of them. See THIRD_PARTY_LICENSES.
-# ASTC foundations (src/astc/) port Arm astcenc at commit 631fb04, the
-# revision astc-encoder-py 0.1.12 bundles (Apache-2.0), whose notice is
+# The ASTC LDR decoder (src/astc/) ports Arm astcenc at commit 631fb04,
+# the revision astc-encoder-py 0.1.12 bundles (Apache-2.0), whose notice is
 # LICENSE-ASTCENC.
 license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0"
 repository.workspace = true
@@ -43,8 +43,8 @@ thiserror = "=2.0.21"
 
 [dev-dependencies]
 unityrs-testkit = { path = "../unityrs-testkit" }
-# The oracle's fixtures (tests/fixtures/, written by tools/fixtures/texture.py)
-# are JSON, and record each image's sha256.
+# The oracle's fixtures (tests/fixtures/, written by tools/fixtures/texture.py
+# and tools/fixtures/texture_astc.py) are JSON, and record each image's sha256.
 serde_json = "=1.0.154"
 sha2 = "=0.11.1"
 

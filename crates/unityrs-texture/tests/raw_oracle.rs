@@ -245,9 +245,10 @@ fn every_raw_and_bcn_decode_is_the_oracle_image_or_error() {
     assert_eq!(raises, kinds);
 }
 
-/// Every format the crate decodes is one of the five, the eleven here, or
-/// an ETC or EAC format (`tests/etc_oracle.rs`): the oracle's three
-/// fixtures together replay every one.
+/// Every format the crate decodes is one of the five, the eleven here, an
+/// ETC or EAC format (`tests/etc_oracle.rs`) or an ASTC LDR format
+/// (`tests/astc_oracle.rs`): the oracle's four fixtures together replay
+/// every one.
 #[test]
 fn every_format_is_replayed_by_an_oracle_fixture() {
     let ours: BTreeSet<&str> = FORMATS.iter().map(|(f, _)| f.name()).collect();
@@ -257,9 +258,10 @@ fn every_format_is_replayed_by_an_oracle_fixture() {
             format.exported()
                 || ours.contains(name)
                 || name.starts_with("ETC")
-                || name.starts_with("EAC"),
+                || name.starts_with("EAC")
+                || name.starts_with("ASTC"),
             "{name}"
         );
     }
-    assert_eq!(Format::ALL.len(), 5 + 11 + 8);
+    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12);
 }

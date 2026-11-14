@@ -154,6 +154,13 @@ pub fn unguarded(root: &Path) -> Vec<String> {
             }
             continue;
         }
+        // W20: both pool tasks and main use the same absolute startup bound.
+        if path.ends_with("unityrs-batch/src/lifetime/runtimes.rs") {
+            if hits.len() != 2 {
+                found.push(exemption_broken(&path, hits.len(), "W20 startup waits"));
+            }
+            continue;
+        }
         // Normal progress has two contractual waits (heartbeat and final
         // acknowledgment) plus one zero-duration startup condvar priming wait.
         if path.ends_with("unityrs-batch/src/progress/live.rs") {

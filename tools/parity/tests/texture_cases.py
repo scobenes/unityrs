@@ -374,8 +374,8 @@ PIXEL_CASES = {
     **{f"ASTC_RGB_{n}x{n}": ("as decoded", lambda n=n: astc(n)) for n in (4, 5, 6, 8, 10, 12)},
     **{f"ASTC_RGBA_{n}x{n}": ("as decoded", lambda n=n: astc(n)) for n in (4, 5, 6, 8, 10, 12)},
     "ASTC_HDR_4x4": (
-        "HDR blocks decoded with the LDR profile: an FP16 constant-colour block decodes as white, because"
-        " astcenc's LDR profile writes 0xFFFF for one",
+        "HDR blocks decoded with the LDR profile: an FP16 constant-colour block decodes as white, an error block"
+        " in the LDR profile, which astcenc's AVX2 build stores as white (section 19.3)",
         lambda: astc_hdr(4),
     ),
     **{f"ASTC_HDR_{n}x{n}": (HDR_AS_4X4, lambda n=n: astc_hdr(n)) for n in (5, 6, 8, 10, 12)},

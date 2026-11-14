@@ -99,6 +99,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "astc"
+path = "fuzz_targets/astc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "meshdecode"
 path = "fuzz_targets/meshdecode.rs"
 test = false

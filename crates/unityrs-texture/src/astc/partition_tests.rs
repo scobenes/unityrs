@@ -65,7 +65,7 @@ fn compact_cache_matches_procedural_partitions_and_drops_its_charge() {
     let meter = Meter::unlimited();
     for (width, height) in [(4, 4), (8, 4), (12, 12)] {
         let charge = PartitionTable::charge_bytes(width, height).unwrap();
-        let table = PartitionTable::new(width, height, &meter).unwrap().unwrap();
+        let mut table = PartitionTable::new(width, height, &meter).unwrap().unwrap();
         assert_eq!(meter.used(), charge);
         for count in 1..=4 {
             for seed in 0..1024 {

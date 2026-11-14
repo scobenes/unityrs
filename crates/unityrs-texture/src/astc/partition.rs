@@ -1,4 +1,4 @@
-// Ported from Arm astcenc commit 631fb04 (Apache-2.0): Source/astcenc_partition_tables.cpp:114-263,283-302, hash52 and select_partition, and row-major assignments. See THIRD_PARTY_LICENSES.
+// Ported from Arm astcenc commit 631fb04 (Apache-2.0): Source/astcenc_partition_tables.cpp:114-263,283-302, hash52 and select_partition, and row-major assignments, which every seed's partitioning keeps for decoding (astcenc_partition_tables.cpp:382-457). See THIRD_PARTY_LICENSES.
 // Copyright 2011-2023 Arm Limited.
 use std::sync::Arc;
 
@@ -60,19 +60,31 @@ pub(super) fn select(seed: u16, count: u8, x: u8, y: u8, small: bool) -> Option<
     Some(best_partition)
 }
 
-/// Only the per-texel assignments needed by decoding, indexed by partition
-/// count (2..4), seed (0..1023), then row-major texel. A single partition
-/// always maps to zero and occupies no table storage.
+/// Only the per-texel assignments needed by decoding, for partition counts
+/// 2..4 and seeds 0..1023, each row row-major by texel. A single partition
+/// always maps to zero and occupies no table storage. The whole table's
+/// storage is charged and allocated up front; a seed's row is computed and
+/// appended the first time a block names it, so a decode of a few blocks
+/// does not pay for 3,072 rows it never reads.
 pub(super) struct PartitionTable {
     width: u8,
     height: u8,
     data: MeteredVec<u8>,
+    /// Each row's place in `data`, in rows, by `(count - 2) * 1024 + seed`;
+    /// [`UNBUILT`] until the row is computed.
+    at: [u16; ROWS],
 }
 const _: () = crate::send_sync::<PartitionTable>();
 
+/// The rows a table holds: 3 partition counts x 1,024 seeds.
+const ROWS: usize = 3 * 1024;
+
+/// A row not yet computed.
+const UNBUILT: u16 = u16::MAX;
+
 impl PartitionTable {
-    /// Bound storage to the 4..12 sides in the ASTC specification; the actual
-    /// supported footprint list will be checked by T2b's format selection.
+    /// Bound storage to the 4..12 sides in the ASTC specification; the
+    /// supported footprints are checked by `context::Footprint`.
     pub(super) fn charge_bytes(width: u8, height: u8) -> Option<u64> {
         if !(4..=12).contains(&width) || !(4..=12).contains(&height) {
             return None;
@@ -82,6 +94,7 @@ impl PartitionTable {
 
     /// Invalid dimensions return Ok(None); allocation or meter refusals
     /// remain `ChargeError`, with every charge released before returning.
+    #[cfg(test)]
     pub(super) fn new(
         width: u8,
         height: u8,
@@ -90,37 +103,55 @@ impl PartitionTable {
         if Self::charge_bytes(width, height).is_none() {
             return Ok(None);
         }
-        let texels = usize::from(width) * usize::from(height);
-        let mut data = MeteredVec::with_capacity(meter, 3 * 1024 * texels)?;
-        for count in 2..=4 {
-            for seed in 0..1024 {
-                for y in 0..height {
-                    for x in 0..width {
-                        // All select's input bounds were checked above.
-                        data.push(select(seed, count, x, y, texels < 32).unwrap_or(0))?;
-                    }
-                }
-            }
-        }
-        Ok(Some(Self {
-            width,
-            height,
-            data,
-        }))
+        Self::alloc(width, height, meter).map(Some)
     }
 
-    pub(super) fn get(&self, seed: u16, count: u8, x: u8, y: u8) -> Option<u8> {
+    /// [`Self::new`] for sides the caller has checked (a `Footprint`'s).
+    pub(super) fn alloc(width: u8, height: u8, meter: &Arc<Meter>) -> Result<Self, ChargeError> {
+        let len = ROWS * usize::from(width) * usize::from(height);
+        Ok(Self {
+            width,
+            height,
+            data: MeteredVec::with_capacity(meter, len)?,
+            at: [UNBUILT; ROWS],
+        })
+    }
+
+    /// The row-major partition of every texel for `count` partitions (2..4)
+    /// and `seed`, computed on first use.
+    pub(super) fn row(&mut self, seed: u16, count: u8) -> Option<&[u8]> {
+        if seed >= 1024 || !(2..=4).contains(&count) {
+            return None;
+        }
+        let texels = usize::from(self.width) * usize::from(self.height);
+        let at = self
+            .at
+            .get_mut(usize::from(count - 2) * 1024 + usize::from(seed))?;
+        if *at == UNBUILT {
+            let small = texels < 32;
+            let width = usize::from(self.width);
+            let mut row = [0; 144];
+            for (i, part) in row.iter_mut().take(texels).enumerate() {
+                let (x, y) = (u8::try_from(i % width).ok()?, u8::try_from(i / width).ok()?);
+                *part = select(seed, count, x, y, small)?;
+            }
+            *at = u16::try_from(self.data.len() / texels).ok()?;
+            // Within the capacity charged up front: no allocation.
+            self.data.extend_from_slice(row.get(..texels)?).ok()?;
+        }
+        let start = usize::from(*at) * texels;
+        self.data.as_slice().get(start..start + texels)
+    }
+
+    #[cfg(test)]
+    pub(super) fn get(&mut self, seed: u16, count: u8, x: u8, y: u8) -> Option<u8> {
         if seed >= 1024 || !(1..=4).contains(&count) || x >= self.width || y >= self.height {
             return None;
         }
         if count == 1 {
             return Some(0);
         }
-        let texels = usize::from(self.width) * usize::from(self.height);
-        let table = usize::from(count - 2) * 1024 + usize::from(seed);
-        self.data
-            .as_slice()
-            .get(table * texels + usize::from(y) * usize::from(self.width) + usize::from(x))
-            .copied()
+        let at = usize::from(y) * usize::from(self.width) + usize::from(x);
+        self.row(seed, count)?.get(at).copied()
     }
 }

@@ -1,13 +1,14 @@
 //! What the fuzz targets share: the limits every run is bounded by, the
 //! context and meter of one input, a thread with the stack a read needs,
 //! a [`TreeCase`]'s tree and ref types as the core's, and the `lz4`,
-//! `texture` and `meshdecode` targets' checks ([`lz4`], [`texture`],
-//! [`meshdecode`]), here so that their tests run.
+//! `texture`, `astc` and `meshdecode` targets' checks ([`lz4`],
+//! [`texture`], [`astc`], [`meshdecode`]), here so that their tests run.
 //!
 //! Every target uses the public API of the crate it runs (the core's,
 //! `unityrs-texture`'s or `unityrs-meshdecode`'s), as a caller would: no
 //! target needs an item a crate does not export.
 
+pub mod astc;
 pub mod lz4;
 pub mod meshdecode;
 #[cfg(test)]

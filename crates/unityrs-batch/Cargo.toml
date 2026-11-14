@@ -59,6 +59,13 @@ object_store = { version = "=0.14.2", default-features = false, features = ["aws
 [features]
 test-hooks = ["unityrs-export/test-hooks"]
 
+# Hook-dependent integration tests build only under `--features test-hooks`
+# (CI's features and scale jobs); a plain `cargo test --workspace` builds
+# the crate with no hooks.
+[[test]]
+name = "lifetime_process"
+required-features = ["test-hooks"]
+
 [dev-dependencies]
 # Parser fixtures collect response DATA; production polls its bounded body.
 http-body-util = { version = "=0.1.5", default-features = false }

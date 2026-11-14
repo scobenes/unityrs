@@ -19,33 +19,37 @@ const ENOUGH: usize = 1 << 30;
 
 #[test]
 fn the_largest_texture_plans_and_one_more_column_is_refused() {
-    let side = 16384;
     for format in Format::ALL {
-        let p = plan(format, ENOUGH, side, side).unwrap();
-        assert_eq!(u64::from(p.width) * u64::from(p.height), MAX_PIXELS);
-        assert_eq!(p.output_bytes, MAX_PIXELS * format.mode().bytes_per_pixel());
+        // The largest sides of whole blocks within 16384 (16384 but for
+        // ASTC blocks of 5, 6, 10 and 12, 16380).
+        let (bw, bh) = format
+            .block_size()
+            .map_or((1, 1), |(w, h)| (i32::from(w), i32::from(h)));
+        let (w, h) = (16384 / bw * bw, 16384 / bh * bh);
+        let pixels = u64::try_from(w * h).unwrap();
+        let p = plan(format, ENOUGH, w, h).unwrap();
+        assert_eq!(u64::from(p.width) * u64::from(p.height), pixels);
+        assert_eq!(p.output_bytes, pixels * format.mode().bytes_per_pixel());
         let want = match format {
             Format::Alpha8 | Format::R8 => MAX_PIXELS,
             Format::Argb4444 | Format::Rgba4444 | Format::Rgb565 => 2 * MAX_PIXELS,
             Format::Rgb24 | Format::Bgr24 => 3 * MAX_PIXELS,
             Format::Rgba32 | Format::Bgra32 | Format::Argb32 => 4 * MAX_PIXELS,
-            _ => MAX_PIXELS / 16 * format.block_bytes().unwrap(),
+            _ => pixels / u64::try_from(bw * bh).unwrap() * format.block_bytes().unwrap(),
         };
         assert_eq!(p.input_bytes, want, "{format:?}");
         assert_eq!(p.charge(), heap_cost(p.output_bytes));
-        // A block format pads the extra column to a whole block.
-        let columns = if format.block_bytes().is_some() {
-            side + 4
-        } else {
-            side + 1
-        };
+        // A block format pads the extra column to a whole block, and an
+        // ASTC side of 16384 to a whole block past it.
+        let pad =
+            |side: i32, block: i32| u64::try_from((side + block - 1) / block * block).unwrap();
         let too_large = Err(DecodeError::TooLarge {
-            pixels: u64::try_from(columns).unwrap() * u64::try_from(side).unwrap(),
+            pixels: pad(16385, bw) * pad(16384, bh),
             max: MAX_PIXELS,
         });
         // Whatever the data: enough, short, a byte.
         for len in [ENOUGH, 1 << 20, 1] {
-            assert_eq!(plan(format, len, side + 1, side), too_large, "{format:?}");
+            assert_eq!(plan(format, len, 16385, 16384), too_large, "{format:?}");
         }
     }
     // A block format's padding counts: 16383 pads to 16384, within the
@@ -99,7 +103,8 @@ fn sizes_do_not_wrap() {
                         width: 0,
                         height: 0,
                         input_bytes: 0,
-                        output_bytes: 0
+                        output_bytes: 0,
+                        scratch: 0,
                     })
                 );
             }
@@ -119,16 +124,18 @@ fn the_output_is_charged_before_it_is_allocated() {
     let data = vec![7u8; 4 * 64 * 64];
     for format in Format::ALL {
         let p = plan(format, data.len(), 64, 64).unwrap();
-        // One byte short of the charge: refused, nothing allocated.
-        let meter = Meter::new(p.charge() - 1, Arc::new(Unbounded), Reservation::Input);
+        // One byte short of the charge (and of an ASTC format's tables
+        // beside it): refused, nothing allocated.
+        let meter = Meter::new(p.peak_charge() - 1, Arc::new(Unbounded), Reservation::Input);
         let got = decode(format, &data, 64, 64, &meter);
         assert!(
             matches!(got, Err(DecodeError::Charge(ChargeError::Limit(_)))),
             "{format:?}: {got:?}"
         );
         assert_eq!(meter.used(), 0);
-        // Exactly the charge: decoded, held while the image lives.
-        let meter = Meter::new(p.charge(), Arc::new(Unbounded), Reservation::Input);
+        // Exactly the charge: decoded, the output's held while the image
+        // lives, the tables' returned.
+        let meter = Meter::new(p.peak_charge(), Arc::new(Unbounded), Reservation::Input);
         let image = decode(format, &data, 64, 64, &meter).unwrap();
         assert_eq!(meter.used(), p.charge());
         let (pixels, charge) = image.into_parts();
@@ -280,7 +287,7 @@ fn no_panic_on_any_input() {
             &zeros[..len]
         };
         let planned = plan(format, len, w, h);
-        let charge = planned.as_ref().map_or(0, Plan::charge);
+        let charge = planned.as_ref().map_or(0, Plan::peak_charge);
         let big = planned.as_ref().is_ok_and(|p| p.output_bytes > BIG);
         // A quarter, and every big one, under a meter of about the charge.
         let limit = if big {

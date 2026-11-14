@@ -72,13 +72,18 @@ jobs:
       # counter tests, tests/counters.rs, are built only under theirs). The
       # `check` job builds the core without it.
       - name: Clippy, CR8's test feature
-        run: cargo clippy -p unityrs-core -p unityrs-testkit -p unityrs-tpk -p unityrs-export --all-targets --features unityrs-testkit/test-counters,unityrs-tpk/test-counters,unityrs-export/test-counters -- -D warnings
+        run: cargo clippy -p unityrs-core -p unityrs-testkit -p unityrs-tpk -p unityrs-export -p unityrs-scene --all-targets --features unityrs-testkit/test-counters,unityrs-tpk/test-counters,unityrs-export/test-counters,unityrs-scene/test-counters -- -D warnings
       - name: Test, CR8's test feature
-        run: cargo test -p unityrs-core -p unityrs-testkit -p unityrs-tpk -p unityrs-export --features unityrs-testkit/test-counters,unityrs-tpk/test-counters,unityrs-export/test-counters
+        run: cargo test -p unityrs-core -p unityrs-testkit -p unityrs-tpk -p unityrs-export -p unityrs-scene --features unityrs-testkit/test-counters,unityrs-tpk/test-counters,unityrs-export/test-counters,unityrs-scene/test-counters
       # The sealed attempt's test hooks (B4b): an injected decoder panic and
       # Environment fault; the steps of `check` build the batch crate without them.
       - name: Clippy, sealed attempt test hooks
         run: cargo clippy -p unityrs-batch --all-targets --features test-hooks -- -D warnings
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor;
+      # the lifetime tests' PID-namespace scene (namespace_pid_one_handles_sigabrt)
+      # needs one, and refuses to skip when CI is set.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Test, sealed attempt test hooks
         run: cargo test -p unityrs-batch --features test-hooks
 
@@ -97,6 +102,11 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Check synthetic batch golden generators
         run: python3 tools/goldens/generate.py --check
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor;
+      # the lifetime tests' PID-namespace scene (namespace_pid_one_handles_sigabrt)
+      # needs one, and refuses to skip when CI is set.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Test, phase 6, publication and archives at scale (release)
         run: >-
           cargo test --locked --profile sweep -p unityrs-batch --features test-hooks
@@ -105,7 +115,7 @@ jobs:
           --test publication_alloc --test phase6_ledger --test http_alloc --test url_alloc
           --test controller_determinism
           --test finish_alloc --test publication_pool --test golden_runs --test pool_alloc --test controller_alloc
-          --test archive_publish --test limit_squeeze
+          --test archive_publish --test limit_squeeze --test lifetime_process
           -- --include-ignored
 
   licenses:
@@ -197,7 +207,7 @@ jobs:
               -print_final_stats=1 > "$RUNNER_TEMP/fuzz-$1.log" 2>&1
           }
           failed=""
-          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture meshdecode zlib_match unitycn"; do
+          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture astc meshdecode zlib_match unitycn"; do
             pids=""
             for t in $batch; do
               run "$t" &
@@ -207,7 +217,7 @@ jobs:
               wait "${p#*:}" || failed="$failed ${p%%:*}"
             done
           done
-          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture meshdecode zlib_match unitycn; do
+          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture astc meshdecode zlib_match unitycn; do
             echo "== $t"
             grep -E '^(stat::|#[0-9]+ +DONE)' "$RUNNER_TEMP/fuzz-$t.log" || true
           done
@@ -386,7 +396,10 @@ jobs:
       # replays it. texture.py records UnityPy's and Pillow's texture decodes
       # and selection, through texture_etc.py texture2ddecoder's ETC and EAC
       # decodes, and through texture_raw.py Pillow's other raw and bcn
-      # decodes, which unityrs-texture's tests replay. meshdecode.py
+      # decodes, which unityrs-texture's tests replay; texture_astc.py
+      # records astcenc's ASTC LDR decodes through UnityPy (with texture.py's
+      # helpers) on astc-encoder-py's AVX2 build, which the runner's CPU
+      # loads, and which they replay too. meshdecode.py
       # records UnityPy's MeshHandler and UnityPyBoost's unpack_vertexdata,
       # through meshdecode_build.py, meshdecode_cases.py and
       # meshdecode_trees.py (its hand-built trees), which
@@ -412,7 +425,9 @@ jobs:
           python tools/fixtures/folders.py --check
           python tools/fixtures/no_tree.py --check
           python tools/fixtures/texture.py --check
+          python tools/fixtures/texture_astc.py --check
           python tools/fixtures/meshdecode.py --check
+          python tools/fixtures/mesh_export.py --check
           python tools/fixtures/ngui.py --check
           python tools/fixtures/sprites.py --check
       # sprite.py records UnityPy's SpriteHelper on hand-built sprites (its

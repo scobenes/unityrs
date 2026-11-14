@@ -1500,9 +1500,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "unityrs-scene"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "unityrs-core",
+ "unityrs-testkit",
+]
+
+[[package]]
 name = "unityrs-testkit"
 version = "0.0.1"
 dependencies = [
+ "libc",
  "liblzma",
  "lz4_flex",
  "serde_json",
