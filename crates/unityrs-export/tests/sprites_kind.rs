@@ -9,7 +9,7 @@
 
 use unityrs_core::FileContext;
 use unityrs_core::limits::Meter;
-use unityrs_export::ngui::{Failure, OutputKind};
+use unityrs_export::ngui::{Failure, Format, Formats, OutputKind};
 use unityrs_testkit::ngui::{
     AtlasScene, CutOptions, SpriteSpec, atlas, file, format, mono_script, sheet, sprite,
     sprite_scenes, texture,
@@ -271,4 +271,91 @@ fn a_stop_ends_the_export_at_the_check_that_sees_it() {
             Err(f) => panic!("{at}: {f:?}"),
         }
     }
+}
+
+/// A version 2 spec may export BC4, whose sheet decodes to `L`, which the
+/// Sprite renderer is not verified on (`SpriteError::UnverifiedMode`):
+/// each Sprite on it is skipped, `decode_error` `unsupported`, as a
+/// merge's refusal is, and the input's other outputs go on: the BC4
+/// texture itself, an unrelated RGBA32 texture, and an atlas cutting the
+/// BC4 sheet (the cutter takes `L`).
+#[test]
+fn an_l_sheet_skips_its_sprites_and_nothing_else() {
+    let cab = file(
+        &[],
+        &[
+            mono_script(1, "NGUIAtlas"),
+            texture(
+                2,
+                b"l",
+                format::BC4,
+                (4, 4),
+                vec![0x40, 0xc0, 0, 0, 0, 0, 0, 0],
+            ),
+            SpriteSpec::rect("s", [0.0, 0.0, 2.0, 2.0], (0, 2)).object(3),
+            texture(4, b"x", format::RGBA32, (4, 4), sheet(0x20, 4, 4, false)),
+            atlas(
+                5,
+                b"l",
+                (0, 1),
+                (0, 0),
+                vec![sprite(b"y", (0, 0, 1, 1), [0; 8])],
+                Vec::new(),
+            ),
+        ],
+        true,
+    )
+    .unwrap();
+    let scene = AtlasScene {
+        bundles: vec![unityrs_testkit::ngui::SceneBundle {
+            id: "x.bundle".to_owned(),
+            data: unityrs_testkit::env::bundle(&[("CAB-l", cab)]),
+            deps: Vec::new(),
+        }],
+        inputs: vec!["x.bundle".to_owned()],
+        options: CutOptions {
+            sprite_key: "atlas/{sprite}.png".to_owned(),
+            json_key: "{atlas}.json".to_owned(),
+            texture_key: Some("{name}.png".to_owned()),
+            sprites_key: Some("sprites/{name}.png".to_owned()),
+            ..CutOptions::default()
+        },
+    };
+    let engine = Engine {
+        formats: Some(Formats::V1.with(Format::Bc4)),
+        ..Engine::default()
+    };
+    let ran = run_in(
+        &scene,
+        "x.bundle",
+        FileContext::default(),
+        &Meter::unlimited(),
+        &engine,
+    )
+    .unwrap_or_else(|f| panic!("an L sheet failed the input: {f:?}"));
+    let mut written = keys(&ran);
+    written.sort_unstable();
+    assert_eq!(written, ["atlas/y.png", "l.json", "l.png", "x.png"]);
+    assert_eq!(skips(&ran), [(3, "sprite", "decode_error")]);
+    assert_eq!(ran.skips[0].reason.detail.as_deref(), Some("unsupported"));
+    // The BC4 texture and the atlas's sprite are `L` PNGs (colour type 0);
+    // the unrelated texture is RGBA's.
+    let colour = |key: &str| {
+        let o = ran.outputs.iter().find(|o| o.key == key).unwrap();
+        o.bytes[25]
+    };
+    assert_eq!(colour("l.png"), 0);
+    assert_eq!(colour("atlas/y.png"), 0);
+    assert_eq!(colour("x.png"), 6);
+    // Under version 1's five, BC4 is never decoded: the texture and the
+    // Sprite are `unsupported_format(BC4)`, the atlas its sheet's skip.
+    let ran = run(&scene, "x.bundle");
+    assert_eq!(keys(&ran), ["x.png"]);
+    assert!(
+        ran.skips
+            .iter()
+            .all(|s| s.reason.reason == "unsupported_format(BC4)"),
+        "{:?}",
+        ran.skips
+    );
 }

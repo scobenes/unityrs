@@ -1,7 +1,9 @@
 //! A valid spec to break one rule at a time, and the refusal's detail.
 //!
 //! Every fixture these helpers parse goes through a JSON Schema 2020-12
-//! validator too, on `docs/batch/spec-v1.schema.json`, and the two must
+//! validator too, on `docs/batch/spec-v1.schema.json`, or
+//! `docs/batch/spec-v2.schema.json` for a document whose `spec_version` is
+//! 2, and the two must
 //! agree (`docs/plans/extract.md` section 3, item 4): the parser accepts
 //! what the validator accepts, and refuses by a per-value rule what it
 //! refuses, but for the differences item 4 lists, each of which is checked
@@ -20,10 +22,10 @@ struct Validator {
 }
 
 impl Validator {
-    fn new() -> Self {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/batch/spec-v1.schema.json"
+    fn new(version: u64) -> Self {
+        let path = format!(
+            "{}/../../docs/batch/spec-v{version}.schema.json",
+            env!("CARGO_MANIFEST_DIR")
         );
         let text = std::fs::read_to_string(path).expect("the schema");
         let schema: Value = serde_json::from_str(&text).expect("the schema is JSON");
@@ -45,12 +47,15 @@ impl Validator {
 }
 
 thread_local! {
-    static VALIDATOR: Validator = Validator::new();
+    static VALIDATORS: [Validator; 2] = [Validator::new(1), Validator::new(2)];
 }
 
-/// Whether the schema holds `doc`.
+/// Whether the schema of `doc`'s version holds `doc`: version 2's when its
+/// `spec_version` is 2, else version 1's.
 pub fn schema_valid(doc: &Value) -> bool {
-    VALIDATOR.with(|v| v.valid(doc))
+    // JSON Schema's `integer` holds 2.0 too (`Difference::IntegerToken`).
+    let at = usize::from(doc["spec_version"].as_f64() == Some(2.0));
+    VALIDATORS.with(|v| v[at].valid(doc))
 }
 
 /// Where the validator and the parser part by design
@@ -73,6 +78,9 @@ pub enum Difference {
     /// A repeated member, which `serde_json`'s `Value` drops: the
     /// validator never sees it.
     Unseen,
+    /// An `outputs.formats` item naming a `TextureFormat` member this
+    /// binary does not decode: the schema lists every name UnityPy has.
+    Undecoded,
 }
 
 /// The cross-field rules (`docs/BATCH_SPEC.md` 1.1), the parser's alone.
@@ -108,6 +116,15 @@ pub fn difference(doc: &Value, e: &BadSpec) -> Option<Difference> {
         |v: &Value| v.as_f64().is_some_and(|f| f.fract() == 0.0) && !v.is_i64() && !v.is_u64();
     match e.rule {
         Rule::DuplicateMember => Some(Difference::Unseen),
+        Rule::Range
+            if e.pointer.starts_with("/outputs/formats/")
+                && at.and_then(Value::as_str).is_some_and(|s| {
+                    unityrs_batch::spec::fields::texture_format_names().any(|n| n == s)
+                        && unityrs_export::ngui::Formats::decoded(s).is_err()
+                }) =>
+        {
+            Some(Difference::Undecoded)
+        }
         Rule::Type if at.is_some_and(integral) => Some(Difference::IntegerToken),
         Rule::Format | Rule::Range if last == "deadline" => Some(Difference::Format),
         Rule::Format | Rule::Range

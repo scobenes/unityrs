@@ -43,6 +43,7 @@ impl Prepared {
                     .collect()
             }),
             atlases: atlases.is_some(),
+            formats: spec.outputs.formats,
         };
         let mut members = Vec::new();
         for (archive, a) in spec.archives.iter().enumerate() {

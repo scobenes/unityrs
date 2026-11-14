@@ -56,7 +56,7 @@ use unityrs_core::files::{BundleFile, ParentKind, SerializedFile};
 use unityrs_core::limits::{Limits, Meter, MeteredVec};
 use unityrs_core::typetree::{NodeList, NodeRow, Tree};
 use unityrs_core::{Bytes, Map, ObjectRef, Parsed, PrimArray, RawStr, Value};
-use unityrs_texture::{Format, SWITCH, Selection, Skip, TextureFields, select};
+use unityrs_texture::{Format, Formats, SWITCH, Selection, Skip, TextureFields, select_in};
 
 use super::classify::{self, Class, Reason};
 use super::seam::Seam;
@@ -497,19 +497,20 @@ impl Texture {
     }
 }
 
-/// Section 3's answers 1 to 3 for `t` on `platform`: its format, or the
+/// Section 3's answers 1 to 3 for `t` on `platform`, exporting the formats
+/// of `allowed` (the spec's, `docs/BATCH_SPEC.md` 1.5): its format, or the
 /// skip. A format outside `i32` is `unsupported_format(<decimal>)`; a Switch
 /// blob is read as bytes ([`Blob`], [`BLOB_ELEMENT`]).
-pub fn answer(t: &Texture, platform: i32) -> Result<Format, Class> {
+pub fn answer(t: &Texture, platform: i32, allowed: Formats) -> Result<Format, Class> {
     if t.width == 0 || t.height == 0 {
         return Err(Class::Skip(Reason::plain(Skip::EmptyImage.to_string())));
     }
-    formats(t, platform)
+    formats(t, platform, allowed)
 }
 
 /// Section 3's answers 2 and 3 for `t`, whose sides are not 0, on
 /// `platform`: [`answer`] past its first.
-pub(crate) fn formats(t: &Texture, platform: i32) -> Result<Format, Class> {
+pub(crate) fn formats(t: &Texture, platform: i32, allowed: Formats) -> Result<Format, Class> {
     let Ok(format) = i32::try_from(t.format) else {
         return Err(Class::Skip(Reason::plain(format!(
             "unsupported_format({})",
@@ -523,7 +524,7 @@ pub(crate) fn formats(t: &Texture, platform: i32) -> Result<Format, Class> {
                 gobs[8..].copy_from_slice(&g);
                 Some(&gobs[..])
             }
-            None if Format::from_texture_format(format).is_some_and(Format::exported) => {
+            None if Format::from_texture_format(format).is_some_and(|f| allowed.contains(f)) => {
                 return Err(Class::Skip(Reason::decode_error(BLOB_ELEMENT)));
             }
             None => None,
@@ -531,13 +532,16 @@ pub(crate) fn formats(t: &Texture, platform: i32) -> Result<Format, Class> {
         _ => None,
     };
     let (width, height) = t.sides();
-    match select(&TextureFields {
-        texture_format: format,
-        width,
-        height,
-        platform,
-        platform_blob: blob,
-    }) {
+    match select_in(
+        &TextureFields {
+            texture_format: format,
+            width,
+            height,
+            platform,
+            platform_blob: blob,
+        },
+        allowed,
+    ) {
         Selection::Export(f) => Ok(f),
         Selection::Skip(s) => Err(Class::Skip(Reason::plain(s.to_string()))),
     }

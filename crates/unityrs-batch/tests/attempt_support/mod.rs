@@ -45,6 +45,7 @@ pub fn options(scene: &AtlasScene) -> Options {
             .map(|s| s.as_bytes().to_vec())
             .collect(),
         atlases: true,
+        formats: unityrs_export::ngui::Formats::V1,
     }
 }
 pub fn limits() -> AttemptLimits {

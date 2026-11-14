@@ -1,5 +1,6 @@
-//! `docs/batch/spec-v1.schema.json`, written by hand, equals the parser's
-//! field table (`unityrs_batch::spec::fields`): each object's properties,
+//! `docs/batch/spec-v1.schema.json` and `docs/batch/spec-v2.schema.json`,
+//! written by hand, equal the parser's field tables of their versions
+//! (`unityrs_batch::spec::fields`): each object's properties,
 //! required members and `additionalProperties: false`, each value's type,
 //! nullability, bounds, closed values, patterns and formats, each array's
 //! counts and uniqueness, and every default section 1 states as a value
@@ -128,6 +129,10 @@ fn ty(t: &Ty) -> Value {
             },
         }),
         Ty::Sink => json!({"oneOf": [object(&DIRECTORY), object(&OBJECT_STORE)]}),
+        Ty::TextureFormat => json!({
+            "type": "string",
+            "enum": fields::texture_format_names().collect::<Vec<_>>(),
+        }),
     }
 }
 
@@ -165,8 +170,9 @@ fn normalise(v: &Value, defs: &Map<String, Value>) -> Value {
     }
 }
 
-fn schema() -> Value {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/batch/spec-v1.schema.json");
+fn schema(version: u64) -> Value {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../../docs/batch/spec-v{version}.schema.json"));
     let text = std::fs::read_to_string(path).expect("the schema file");
     serde_json::from_str(&text).expect("the schema is JSON")
 }
@@ -198,29 +204,57 @@ fn first_difference(want: &Value, got: &Value, at: &str) -> Option<String> {
 }
 
 #[test]
-fn the_schema_equals_the_field_table() {
-    let file = schema();
-    assert_eq!(
-        file["$schema"],
-        json!("https://json-schema.org/draft/2020-12/schema")
-    );
-    let defs = file["$defs"].as_object().expect("$defs").clone();
-    let got = normalise(&file, &defs);
-    let want = object(&fields::TOP);
-    if let Some(d) = first_difference(&want, &got, "") {
-        panic!("the schema and the table differ at {d}");
+fn each_schema_equals_its_field_table() {
+    for version in 1..=unityrs_batch::spec::SPEC_VERSION {
+        let file = schema(version);
+        assert_eq!(
+            file["$schema"],
+            json!("https://json-schema.org/draft/2020-12/schema")
+        );
+        let defs = file["$defs"].as_object().expect("$defs").clone();
+        let got = normalise(&file, &defs);
+        let want = object(fields::top(version));
+        if let Some(d) = first_difference(&want, &got, "") {
+            panic!("version {version}'s schema and table differ at {d}");
+        }
+        assert_eq!(want, got);
     }
-    assert_eq!(want, got);
+}
+
+/// `--schema` prints the highest version's file.
+#[test]
+fn the_embedded_schema_is_the_highest_versions() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../docs/batch/spec-v{}.schema.json",
+        unityrs_batch::spec::SPEC_VERSION
+    ));
+    assert_eq!(std::fs::read(path).unwrap(), unityrs_batch::spec::SCHEMA);
+}
+
+/// Version 2's tables are version 1's but for what it adds.
+#[test]
+fn version_2_adds_three_members_and_changes_none() {
+    let (v1, v2) = (object(&fields::TOP), object(&fields::TOP_V2));
+    let mut v2_less = v2.clone();
+    let props = v2_less["properties"].as_object_mut().unwrap();
+    props.remove("unitycn_key");
+    props["spec_version"] = v1["properties"]["spec_version"].clone();
+    let outputs = props["outputs"]["properties"].as_object_mut().unwrap();
+    outputs.remove("formats");
+    outputs.remove("image");
+    assert_eq!(v1, v2_less);
 }
 
 #[test]
 fn every_def_is_used() {
-    let file = schema();
-    let text = file.to_string();
-    for name in file["$defs"].as_object().expect("$defs").keys() {
-        assert!(
-            text.contains(&format!("\"#/$defs/{name}\"")),
-            "{name} is never referenced"
-        );
+    for version in 1..=unityrs_batch::spec::SPEC_VERSION {
+        let file = schema(version);
+        let text = file.to_string();
+        for name in file["$defs"].as_object().expect("$defs").keys() {
+            assert!(
+                text.contains(&format!("\"#/$defs/{name}\"")),
+                "{name} is never referenced"
+            );
+        }
     }
 }

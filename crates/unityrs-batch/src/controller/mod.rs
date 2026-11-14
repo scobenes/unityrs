@@ -185,9 +185,12 @@ impl Controller {
         if prepared.memory.m != prepared.spec.max_decoded_bytes
             || prepared.memory.d != prepared.spec.dep_cache_bytes
         {
-            prepared.memory = Arc::new(
-                crate::job_memory::Plan::new(&prepared.spec).map_err(|_| SetupError::Admission)?,
-            );
+            let mut plan =
+                crate::job_memory::Plan::new(&prepared.spec).map_err(|_| SetupError::Admission)?;
+            if let Some(key) = prepared.memory.key {
+                plan.install_key(key).map_err(|()| SetupError::Admission)?;
+            }
+            prepared.memory = Arc::new(plan);
         }
         crate::stage::require_local(&prepared.spec).map_err(|_| SetupError::UrlUnsupported)?;
         let s = &prepared.spec;
