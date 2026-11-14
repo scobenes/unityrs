@@ -401,6 +401,18 @@ enum At {
 /// The longest element name the code scan compares.
 const NAME_MAX: usize = 16;
 
+/// A body's root element, as the code scan read it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Root {
+    /// No start tag has closed yet.
+    #[default]
+    None,
+    /// `<Error>`: an S3 error, whatever the status.
+    Error,
+    /// Any other element.
+    Other,
+}
+
 /// Where the code scan is with the root `<Error>`'s `<Code>`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum Capture {
@@ -425,7 +437,7 @@ pub struct CodeScan {
     /// The name ran past [`NAME_MAX`]: it is neither name compared.
     name_long: bool,
     depth: u32,
-    root_error: bool,
+    root: Root,
     capture: Capture,
     code: Code,
 }
@@ -469,8 +481,14 @@ impl CodeScan {
         }
         self.depth = self.depth.saturating_add(1);
         if self.depth == 1 {
-            self.root_error = self.name() == b"Error";
-        } else if self.depth == 2 && self.root_error && self.name() == b"Code" {
+            if self.root == Root::None {
+                self.root = if self.name() == b"Error" {
+                    Root::Error
+                } else {
+                    Root::Other
+                };
+            }
+        } else if self.depth == 2 && self.root == Root::Error && self.name() == b"Code" {
             self.capture = Capture::Capturing;
             self.code = Code::default();
         }
@@ -568,11 +586,35 @@ impl CodeScan {
     }
 
     pub fn feed(&mut self, chunk: &[u8]) {
-        const CDATA: &[u8] = b"[CDATA[";
         for &b in chunk {
             if self.capture == Capture::Done {
                 return;
             }
+            self.step(b);
+        }
+    }
+
+    /// As [`feed`](Self::feed), past a found code too, handing `text` each
+    /// byte and whether it is character data: in no tag, comment, CDATA
+    /// section, instruction or declaration.
+    pub fn feed_text(&mut self, chunk: &[u8], mut text: impl FnMut(u8, bool)) {
+        for &b in chunk {
+            let is_text = self.step(b);
+            text(b, is_text);
+        }
+    }
+
+    /// The root element, once its start tag closed.
+    #[must_use]
+    pub const fn root(&self) -> Root {
+        self.root
+    }
+
+    /// Reads one byte; whether it is character data.
+    fn step(&mut self, b: u8) -> bool {
+        const CDATA: &[u8] = b"[CDATA[";
+        let text = self.at == At::Text && b != b'<';
+        {
             self.at = match self.at {
                 At::Text if b == b'<' => At::Open,
                 At::Text => {
@@ -631,6 +673,7 @@ impl CodeScan {
                 self.spoil();
             }
         }
+        text
     }
 
     fn declaration(quote: u8, depth: u8, b: u8) -> At {

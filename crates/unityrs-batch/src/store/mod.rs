@@ -16,6 +16,7 @@ pub mod attempt;
 mod body;
 pub mod classify;
 pub mod client;
+mod complete;
 pub mod connector;
 pub mod credentials;
 pub mod etag;

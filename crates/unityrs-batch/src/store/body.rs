@@ -5,17 +5,16 @@
 //! chunk by chunk and uncopied, under its kind's cap, with a size hint
 //! clamped to that cap, so no server's `Content-Length` sizes an
 //! allocation: past the cap a head GET's read stops, any other's fails. A
-//! LIST page also passes the tag scan, and every body the `<Code>` scan; a
-//! complete's 2xx that names an error fails before `object_store` could
-//! render it. A body is read only in its own try. Past
-//! a cap or a breach nothing more is read.
+//! LIST page also passes the tag scan, and every body the `<Code>` scan. A
+//! complete's 2xx is read whole first (`super::complete`). A body is read
+//! only in its own try. Past a cap or a breach nothing more is read.
 use super::{
     ERROR_CAP, Kind, LIST_CAP,
     attempt::{BodyFault, Fault, TrySlot},
     connector::{decimal, refused},
     scan::{CodeScan, TagScan},
 };
-use crate::http::{self, Data, Response};
+use crate::http::{self, Data, Response, permit::Charge};
 use hyper::{
     body::{Body, Bytes, Frame, SizeHint},
     http::header::CONTENT_LENGTH,
@@ -32,13 +31,40 @@ use tokio::io::{AsyncRead, AsyncWrite};
 /// A LIST page's most `<Contents>` (`max_keys`).
 const MAX_KEYS: u32 = 1_000;
 
-fn content_length<I: AsyncRead + AsyncWrite + Unpin>(response: &Response<I>) -> Option<u64> {
+pub(super) fn content_length<I: AsyncRead + AsyncWrite + Unpin>(
+    response: &Response<I>,
+) -> Option<u64> {
     let mut values = response.headers().get_all(CONTENT_LENGTH).iter();
     let first = values.next()?;
     if values.next().is_some() {
         return None;
     }
     decimal(first.as_bytes())
+}
+
+/// A charged buffer of the connector's, uncopied into `Bytes`.
+pub(super) struct Owned {
+    pub(super) bytes: Vec<u8>,
+    pub(super) _charge: Option<Charge>,
+}
+impl AsRef<[u8]> for Owned {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// A body that fails at its first read: a 2xx the call returns as an
+/// error, holding nothing `object_store` could render.
+pub(super) struct Refusing;
+impl Body for Refusing {
+    type Data = Bytes;
+    type Error = HttpError;
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, HttpError>>> {
+        Poll::Ready(Some(Err(refused())))
+    }
 }
 
 /// A DATA piece of the service's, uncopied into `Bytes`; its charge lasts
@@ -100,7 +126,7 @@ pub(super) async fn drain<I: AsyncRead + AsyncWrite + Unpin>(
     HttpResponseBody::from(Bytes::new())
 }
 
-fn body_failed(slot: &TrySlot, error: http::Error) {
+pub(super) fn body_failed(slot: &TrySlot, error: http::Error) {
     match error {
         http::Error::Transport(failure) => {
             slot.update(|r| r.body = Some(BodyFault::Transport(failure.detail)));
@@ -113,34 +139,6 @@ fn body_failed(slot: &TrySlot, error: http::Error) {
 type Read<I> =
     Pin<Box<dyn Future<Output = (Response<I>, Result<Option<Data>, http::Error>)> + Send>>;
 
-/// `object_store` renders a 2xx body holding either word (`src/client/
-/// retry.rs`'s `body_contains_error`); neither's first byte recurs in it.
-const RENDERED: [&[u8]; 2] = [b"InternalError", b"SlowDown"];
-
-/// Whether a body so far holds one of [`RENDERED`], across chunks.
-#[derive(Clone, Copy, Default)]
-struct Words {
-    matched: [u8; 2],
-    found: bool,
-}
-impl Words {
-    fn feed(&mut self, chunk: &[u8]) {
-        for &b in chunk {
-            for (word, matched) in RENDERED.iter().zip(self.matched.iter_mut()) {
-                if word.get(usize::from(*matched)) == Some(&b) {
-                    *matched += 1;
-                    if usize::from(*matched) == word.len() {
-                        self.found = true;
-                        *matched = 0;
-                    }
-                } else {
-                    *matched = u8::from(word.first() == Some(&b));
-                }
-            }
-        }
-    }
-}
-
 struct Inner<I: AsyncRead + AsyncWrite + Unpin> {
     response: Option<Response<I>>,
     read: Option<Read<I>>,
@@ -148,9 +146,6 @@ struct Inner<I: AsyncRead + AsyncWrite + Unpin> {
     /// The try the body belongs to.
     generation: u32,
     kind: Kind,
-    /// For a complete's 2xx, the one `object_store` reads for error words
-    /// (`retry_error_body`) and renders when it holds one: whether it does.
-    words: Option<Words>,
     passed: u64,
     scan: Option<TagScan>,
     code: CodeScan,
@@ -185,7 +180,6 @@ pub(super) fn capped<I: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             slot: Arc::clone(slot),
             generation: slot.generation(),
             kind,
-            words: matches!(kind, Kind::Complete).then(Words::default),
             passed: 0,
             scan: (kind == Kind::ListPage).then(|| TagScan::new(MAX_KEYS)),
             code: CodeScan::default(),
@@ -275,15 +269,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Inner<I> {
             && scan.feed(piece).is_err()
         {
             return self.end(Some(BodyFault::Scan));
-        }
-        if let Some(words) = self.words.as_mut() {
-            words.feed(piece);
-            if words.found || !self.code.code().is_empty() {
-                // A 2xx naming an error: the call returns it as an error
-                // (1.6), before `object_store` could render the body.
-                let _ = self.end(None);
-                return Poll::Ready(Some(Err(refused())));
-            }
         }
         self.passed += length;
         self.response = Some(response);

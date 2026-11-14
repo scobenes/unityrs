@@ -14,7 +14,7 @@ use unityrs_batch::{
     http::Detail,
     store::{
         Kind,
-        attempt::{BodyFault, Fault, Record},
+        attempt::{BodyFault, Done, Fault, Record},
         classify::{Action, Ended, Verdict},
     },
 };
@@ -437,4 +437,83 @@ fn a_2xx_body_read_after_its_try_is_refused() {
     let read = store_support::run(async move { stream.next().await });
     assert!(matches!(read, Some(Err(_))));
     assert_eq!(h.slot.record().fault, Some(Fault::Internal));
+}
+
+/// A complete answered with `body`, its bytes cut every `size` bytes and at
+/// each of `cuts` (offsets in the body).
+fn complete(body: &[u8], size: usize, cuts: &[usize]) -> Done<object_store::PutResult> {
+    let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+    let mut bytes = head.clone().into_bytes();
+    bytes.extend_from_slice(body);
+    let mut at: Vec<usize> = (1..bytes.len()).filter(|i| i % size == 0).collect();
+    at.extend(cuts.iter().map(|c| head.len() + c));
+    at.sort_unstable();
+    at.dedup();
+    let mut chunks = Vec::new();
+    let mut from = 0;
+    for to in at.into_iter().chain([bytes.len()]) {
+        chunks.push(bytes[from..to].to_vec());
+        from = to;
+    }
+    let h = Harness::new([Reply::chunks(chunks, End::Eof)]);
+    let path = Path::parse("out/SlowDown.zip").unwrap();
+    let upload = "upload".to_owned();
+    h.run(Kind::Complete, |_| {
+        h.store.complete_multipart(
+            &path,
+            &upload,
+            vec![object_store::multipart::PartId {
+                content_id: "\"p1\"".to_owned(),
+            }],
+        )
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_complete_whose_answer_holds_an_error_word_succeeds() {
+    // Review round 2: the root decides, and `object_store`'s substring
+    // check never sees the words in the answer's text.
+    for (key, etag) in [
+        ("out/SlowDown.zip", "\"InternalError-1\""),
+        ("out/InternalError.zip", "\"SlowDownSlowDown\""),
+        ("out/a.zip", "&quot;SlowDown&quot;"),
+    ] {
+        let body = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CompleteMultipartUploadResult>\
+             <Location>https://s3.example.test/bucket/{key}</Location><Bucket>bucket</Bucket>\
+             <Key>{key}</Key><ETag>{etag}</ETag></CompleteMultipartUploadResult>"
+        );
+        let words: Vec<usize> = ["SlowDown", "InternalError"]
+            .iter()
+            .flat_map(|w| body.match_indices(w).map(|(i, _)| i + 3))
+            .collect();
+        for size in [1, 2, 5, 7, body.len() + 64] {
+            let done = complete(body.as_bytes(), size, &words);
+            assert_eq!(done.verdict, verdict(true, Action::Success), "{key} {size}");
+            let want = etag.replace("&quot;", "\"");
+            assert_eq!(done.value.unwrap().e_tag.as_deref(), Some(want.as_str()));
+        }
+    }
+}
+
+#[test]
+fn a_complete_answered_by_an_error_root_fails() {
+    for body in [
+        &b"<Error><Code>InternalError</Code><Message>m</Message></Error>"[..],
+        b"<?xml version=\"1.0\"?><!-- <CompleteMultipartUploadResult> --><Error><Code>SlowDown</Code></Error>",
+        // A word in markup would reach `object_store`'s check as sent.
+        b"<CompleteMultipartUploadResult><ETag>\"e\"</ETag><!-- SlowDown --></CompleteMultipartUploadResult>",
+    ] {
+        for size in [1, 3, 64] {
+            let done = complete(body, size, &[]);
+            assert_eq!(done.verdict, verdict(false, RETRY), "{}", String::from_utf8_lossy(body));
+            assert!(done.value.is_none());
+        }
+    }
+    let done = complete(b"<Error><Code>InternalError</Code></Error>", 4, &[]);
+    assert!(done.record.code.is("InternalError"));
+    // Past the cap, as before.
+    let done = complete(&vec![b' '; 70_000], 4_096, &[]);
+    assert_eq!(done.record.body, Some(BodyFault::OverCap));
 }

@@ -8,7 +8,7 @@
 use super::{
     Kind,
     attempt::{Fault, PermitGuard, TrySlot},
-    body,
+    body, complete,
 };
 use crate::http::{
     self, Payload, Response,
@@ -271,9 +271,15 @@ impl<T: Transport> Engine<T> {
             r.retry_after = after;
         });
         let code = StatusCode::from_u16(status).map_err(|_| Fault::Internal)?;
-        let head = forwarded(response.headers());
+        let mut head = forwarded(response.headers());
         let body = if !(200..300).contains(&status) {
             body::error_body(slot, &mut response).await
+        } else if kind == Kind::Complete {
+            // Its body can change length; `object_store` reads no
+            // `Content-Length` of a complete's.
+            head.remove(CONTENT_LENGTH);
+            let permit = guard.permit().ok_or(Fault::Internal)?;
+            complete::complete_body(slot, permit, &mut response).await?
         } else if kind == Kind::ListProof {
             body::drain(slot, &mut response).await
         } else {

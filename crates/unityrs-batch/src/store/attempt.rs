@@ -225,6 +225,9 @@ pub(crate) struct PermitGuard {
     token: Option<OperationToken>,
 }
 impl PermitGuard {
+    pub(crate) fn permit(&self) -> Option<&RequestPermit> {
+        self.permit.as_ref()
+    }
     /// The permit and its lookup token, which the request's lookup keeps
     /// until it returns.
     pub(crate) fn request(&mut self) -> Option<(&mut RequestPermit, OperationToken)> {
