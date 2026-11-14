@@ -124,11 +124,17 @@ fn counting<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-/// Runs a test's body alone (it holds [`SERIAL`]) on a thread of its own,
-/// failing past the deadlock guard instead of hanging.
+/// Runs a test's body alone on a thread of its own, failing past the
+/// deadlock guard instead of hanging. The worker, not the test's thread,
+/// holds [`SERIAL`], so the guard covers the wait for it, and a worker the
+/// guard leaves behind keeps it until it ends: the next body waits, under
+/// its own guard, instead of running beside a hung one that may still
+/// count blocks into its window or let [`GO`] go.
 fn serially(what: &str, body: fn()) {
-    let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
-    let () = guard::finishes(what, body);
+    let () = guard::finishes(what, move || {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        body();
+    });
 }
 
 /// A block made on one registered thread and freed on another balances in
