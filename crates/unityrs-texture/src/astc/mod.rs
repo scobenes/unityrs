@@ -9,9 +9,11 @@
 //! This module deliberately has no texture dispatch or image store. Invalid
 //! modes return `None`; T2b must turn these into astcenc's error colour.
 //! Void-extent markers are classified only; their payload belongs to T2b.
-//! The pinned `astcenc_decompress_symbolic.cpp` handles structural error blocks
-//! at :190-204, constant colours at :206-257, and texel interpolation at
-//! :274-309; these operations are outside this module's foundations.
+//! The pinned astcenc handles structural error blocks at
+//! `astcenc_decompress_symbolic.cpp:190-204`, constant colours at
+//! `astcenc_decompress_symbolic.cpp:206-257`, and texel interpolation at
+//! `astcenc_decompress_symbolic.cpp:274-309`; these operations are outside
+//! this module's foundations.
 //!
 //! Small decode maps are constants (see tables.rs and its reproducible
 //! generator). The only heap storage here is a compact partition cache:
