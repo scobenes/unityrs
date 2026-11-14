@@ -4,7 +4,7 @@
 //! head's reserve; unarmed, nothing is cut. The journal seam is B11's (an
 //! object store's uploads journal); the directory sink has no journal.
 use crate::{
-    lifetime::{Boot, Policy},
+    lifetime::{Boot, Policy, State},
     manifest::{Family, WriteError, chunks::Destination},
 };
 use std::time::Duration;
@@ -26,22 +26,44 @@ impl Clock for BootClock {
     }
 }
 
-/// `T_hard`, once armed, and whether 7.4's second row (a `running` write's
+/// Where the budget reads `T_hard`: on every question, so a deadline armed
+/// after the finisher began bounds every try that starts after it.
+pub trait Hard {
+    fn hard(&self) -> Option<Boot>;
+}
+/// The stop word's own `T_hard`, live.
+impl Hard for State {
+    fn hard(&self) -> Option<Boot> {
+        State::hard(self)
+    }
+}
+/// A fixed answer: never armed, or armed already (tests).
+pub struct Fixed(pub Option<Boot>);
+impl Hard for Fixed {
+    fn hard(&self) -> Option<Boot> {
+        self.0
+    }
+}
+/// `T_hard`'s source, and whether 7.4's second row (a `running` write's
 /// reconciliation) keeps 5 s for the head instead of 3 s.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Budget {
-    pub hard: Option<Boot>,
+#[derive(Clone, Copy)]
+pub struct Budget<'a> {
+    pub hard: &'a dyn Hard,
     pub reconcile: bool,
 }
-impl Budget {
+impl Budget<'static> {
     pub const UNARMED: Self = Self {
-        hard: None,
+        hard: &Fixed(None),
         reconcile: false,
     };
+}
+impl Budget<'_> {
     /// Where every try but the head's ends: `T_hard - head_reserve`.
     #[must_use]
     pub fn row_deadline(&self) -> Option<Boot> {
-        self.hard.map(|h| Policy::non_head_cut(h, self.reconcile))
+        self.hard
+            .hard()
+            .map(|h| Policy::non_head_cut(h, self.reconcile))
     }
     /// A row-file chunk starts only with the head's reserve still ahead.
     #[must_use]
@@ -51,13 +73,13 @@ impl Budget {
     /// The head's own requests end by `T_hard - 2 s`.
     #[must_use]
     pub fn head_deadline(&self) -> Option<Boot> {
-        self.hard.map(Policy::head_cut)
+        self.hard.hard().map(Policy::head_cut)
     }
     /// Step 2's per-abort timeout: `min(5 s, T_hard - now - head_reserve)`,
     /// 5 s unarmed, none under 500 ms.
     #[must_use]
     pub fn abort_timeout(&self, now: Boot) -> Option<Duration> {
-        match self.hard {
+        match self.hard.hard() {
             None => Some(Duration::from_secs(5)),
             Some(hard) => Policy::abort_ms(hard, now, self.reconcile).map(Duration::from_millis),
         }
@@ -107,7 +129,7 @@ pub struct Settled {
 /// Steps 1 and 2: close the journal, polling every 10 ms and giving up at
 /// `T_hard - head_reserve` once armed, then abort what it holds while each
 /// abort still has 500 ms. Giving up skips both steps.
-pub fn settle(backend: &mut dyn Backend, budget: Budget, clock: &dyn Clock) -> Settled {
+pub fn settle(backend: &mut dyn Backend, budget: Budget<'_>, clock: &dyn Clock) -> Settled {
     let mut out = Settled::default();
     loop {
         match backend.try_close() {
@@ -160,18 +182,19 @@ impl<D: Destination> Rows for D {
 /// which the head then names null (a 4).
 pub struct Budgeted<'a> {
     pub rows: &'a mut dyn Rows,
-    pub budget: Budget,
+    pub budget: Budget<'a>,
     pub clock: &'a dyn Clock,
     pub cut: bool,
 }
 impl Destination for Budgeted<'_> {
     fn publish(&mut self, family: Family, chunk: u64, bytes: &[u8]) -> Result<(), WriteError> {
-        if !self.budget.rows_open(self.clock.now()) {
+        // One read of `T_hard` per chunk: the check and the deadline agree.
+        let deadline = self.budget.row_deadline();
+        if deadline.is_some_and(|d| self.clock.now() >= d) {
             self.cut = true;
             return Err(WriteError::Publish);
         }
-        self.rows
-            .put(family, chunk, bytes, self.budget.row_deadline())
+        self.rows.put(family, chunk, bytes, deadline)
     }
 }
 

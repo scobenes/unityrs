@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    lifetime::{Boot, Policy},
+    lifetime::{Boot, Policy, State},
     manifest::{Family, WriteError, chunks::Destination},
 };
 use std::cell::{Cell, RefCell};
@@ -54,7 +54,7 @@ fn a_cut_row_cannot_take_the_heads_reserve() {
                 let hard = policy.hard(Boot(take)).unwrap();
                 assert_eq!(hard.0, take + grace - 500);
                 let budget = Budget {
-                    hard: Some(hard),
+                    hard: &Fixed(Some(hard)),
                     reconcile,
                 };
                 let clock = Script::default();
@@ -156,7 +156,7 @@ fn the_journal_close_polls_every_ten_ms_and_gives_up_at_the_heads_reserve() {
     let clock = Script::default();
     let hard = Boot(20_000);
     let budget = Budget {
-        hard: Some(hard),
+        hard: &Fixed(Some(hard)),
         reconcile: false,
     };
     let mut journal = Journal {
@@ -200,7 +200,7 @@ fn aborts_shrink_to_the_reserve_and_stop_under_half_a_second() {
     let clock = Script::default();
     clock.now.set(10_000);
     let budget = Budget {
-        hard: Some(Boot(19_000)),
+        hard: &Fixed(Some(Boot(19_000))),
         reconcile: false,
     };
     // Cut at 16 s: 6 s left, then 1 s, then 0.4 s (none).
@@ -222,4 +222,110 @@ fn aborts_shrink_to_the_reserve_and_stop_under_half_a_second() {
     );
     let mut none = NoJournal;
     assert_eq!(settle(&mut none, budget, &clock), Settled::default());
+}
+
+/// A store that arms `T_hard` from inside its third chunk, as a signal
+/// after the finisher began would: every later chunk sees it.
+struct Arming<'a> {
+    clock: &'a Script,
+    state: &'a State,
+    hard: Boot,
+    starts: Vec<(u64, Option<Boot>)>,
+}
+impl Rows for Arming<'_> {
+    fn put(
+        &mut self,
+        _: Family,
+        _: u64,
+        _: &[u8],
+        deadline: Option<Boot>,
+    ) -> Result<(), WriteError> {
+        self.starts.push((self.clock.now.get(), deadline));
+        if self.starts.len() == 3 {
+            self.state.arm(self.hard);
+        }
+        self.clock.sleep(1_000);
+        Ok(())
+    }
+}
+
+#[test]
+fn a_deadline_armed_after_the_finish_began_still_cuts_the_rows() {
+    let state = State::new();
+    let clock = Script::default();
+    let hard = Boot(20_000);
+    let mut store = Arming {
+        clock: &clock,
+        state: &state,
+        hard,
+        starts: Vec::new(),
+    };
+    let budget = Budget {
+        hard: &state,
+        reconcile: false,
+    };
+    assert_eq!(budget.row_deadline(), None);
+    let mut rows = Budgeted {
+        rows: &mut store,
+        budget,
+        clock: &clock,
+        cut: false,
+    };
+    for chunk in 0.. {
+        if rows.publish(Family::Inputs, chunk, b"x\n").is_err() {
+            break;
+        }
+    }
+    assert!(rows.cut);
+    let cut = Boot(hard.0 - 3_000);
+    assert_eq!(budget.row_deadline(), Some(cut));
+    // Three unarmed chunks, then every later one carries the cut and
+    // starts before it; the head's reserve is left whole.
+    assert_eq!(store.starts[..3], [(0, None), (1_000, None), (2_000, None)]);
+    assert_eq!(store.starts.len(), 17);
+    for &(start, deadline) in &store.starts[3..] {
+        assert!(start < cut.0);
+        assert_eq!(deadline, Some(cut));
+    }
+    assert!(clock.now.get() <= cut.0);
+}
+
+/// A journal held busy, whose holder arms `T_hard` on its fifth poll.
+struct LateArm<'a> {
+    state: &'a State,
+    polls: u32,
+}
+impl Backend for LateArm<'_> {
+    fn try_close(&mut self) -> Close {
+        self.polls += 1;
+        if self.polls == 5 {
+            self.state.arm(Boot(20_000));
+        }
+        Close::Busy
+    }
+    fn next_upload(&mut self) -> Option<u64> {
+        None
+    }
+    fn abort(&mut self, _: u64, _: Duration) -> bool {
+        true
+    }
+}
+
+#[test]
+fn settle_built_unarmed_gives_up_at_a_later_armed_reserve() {
+    let state = State::new();
+    let clock = Script::default();
+    let budget = Budget {
+        hard: &state,
+        reconcile: true,
+    };
+    let mut journal = LateArm {
+        state: &state,
+        polls: 0,
+    };
+    let settled = settle(&mut journal, budget, &clock);
+    assert!(!settled.closed);
+    // Reconciling keeps 5 s: given up at 15 s, not polled forever.
+    assert_eq!(clock.now.get(), 15_000);
+    assert_eq!(budget.abort_timeout(clock.now()), None);
 }

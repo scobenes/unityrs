@@ -155,6 +155,11 @@ fn conclude(
 ) -> ResultEnd {
     let mut code = ending.code;
     let mut report = manifest::finishing(cx, destination);
+    // A stop's finish that could not read or build its rows writes no head
+    // over `running` (7.4): a reader keeps the head that is true.
+    if let (Some(stop), Some(failure)) = (ending.stop, report.failure) {
+        return stopped::unwritten(stop, failure);
+    }
     if let Some(failure) = ending.failure {
         RunFailure::reduce(&mut report.failure, failure);
     }

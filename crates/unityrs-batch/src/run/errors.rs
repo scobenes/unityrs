@@ -109,6 +109,7 @@ pub(super) fn spool(e: &start::spool::Error) -> Error {
         Class::SinkRootUnusable => (Code::CouldNotStart, "sink_root_unusable"),
         Class::HostIo => (Code::Host, "host_io"),
         Class::HostMemory => (Code::Host, "host_memory"),
+        // The drive hands a stopped startup over instead (7.4's first row).
         Class::Stopped => (Code::Internal, "internal"),
     };
     if matches!(e.class, Class::Unusable | Class::SinkRootUnusable) {

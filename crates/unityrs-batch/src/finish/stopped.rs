@@ -24,7 +24,7 @@ pub struct Finisher<'a> {
     /// The finisher's own fixed storage (`bound::C_FIN`).
     pub account: &'a Account,
     pub identity: &'a Identity<'a>,
-    pub budget: Budget,
+    pub budget: Budget<'a>,
     pub clock: &'a dyn Clock,
     pub backend: &'a mut dyn Backend,
 }
@@ -70,22 +70,37 @@ pub fn run(h: &HandOver, taken: Option<Stop>, fin: &mut Finisher<'_>) -> Finishe
         }
         FinishCause::Stop => {
             let stop = taken.unwrap_or(Stop::external(StopReason::Internal));
-            if h.running {
-                if let Some(end) = stopped(h, stop, fin, &mut finished.reconcile) {
-                    finished.end = end;
-                }
+            finished.end = if h.running {
+                // Whatever stops the rows leaves `running`, never no head.
+                stopped(h, stop, fin, &mut finished.reconcile)
+                    .unwrap_or_else(|failure| unwritten(stop, failure))
             } else {
                 // 7.4's first row: no head, the stop's code.
-                finished.end = no_head(stop.reason.code(), Some(stop), "internal");
-            }
+                no_head(stop.reason.code(), Some(stop), "internal")
+            };
         }
-        FinishCause::Normal => {
-            if let Some(end) = normal(h, fin) {
-                finished.end = end;
-            }
+        // A normal end always follows `running`; one that cannot read its
+        // rows leaves that head, with the failure's code.
+        FinishCause::Normal if h.running => {
+            finished.end = normal(h, fin).unwrap_or_else(|failure| ResultEnd {
+                code: failure.code(),
+                status: Some("running"),
+                reason: Some(failure.name()),
+                detail: None,
+            });
         }
+        FinishCause::Normal => {}
     }
     finished
+}
+fn failure(error: Error) -> RunFailure {
+    match error {
+        Error::Run(f) => f,
+        Error::Stopped => internal(),
+    }
+}
+fn internal() -> RunFailure {
+    RunFailure::new(ReasonCode::Internal)
 }
 fn no_head(code: Code, stop: Option<Stop>, reason: &'static str) -> ResultEnd {
     ResultEnd {
@@ -99,13 +114,14 @@ fn ended_at(buffer: &mut [u8; 20]) -> Option<&str> {
     *buffer = crate::sys::utc_now().ok()?;
     std::str::from_utf8(buffer).ok()
 }
-fn normal(h: &HandOver, fin: &mut Finisher<'_>) -> Option<ResultEnd> {
+fn normal(h: &HandOver, fin: &mut Finisher<'_>) -> Result<ResultEnd, RunFailure> {
     let Some(Selected::Owned(owned)) = &h.selected else {
-        return None;
+        return Err(internal());
     };
-    let facts = h.facts.as_deref()?;
-    let directory = h.directory.as_deref()?;
-    let inputs = Committed::received(&owned.done, &facts.inputs, &*owned.fs, &|| false).ok()?;
+    let facts = h.facts.as_deref().ok_or_else(internal)?;
+    let directory = h.directory.as_deref().ok_or_else(internal)?;
+    let inputs =
+        Committed::received(&owned.done, &facts.inputs, &*owned.fs, &|| false).map_err(failure)?;
     let cx = manifest::rows::Context {
         facts,
         inputs: &inputs,
@@ -122,7 +138,7 @@ fn normal(h: &HandOver, fin: &mut Finisher<'_>) -> Option<ResultEnd> {
     };
     let mut rows = rows(facts, directory);
     let mut time = [0; 20];
-    Some(normal_into(
+    Ok(normal_into(
         &cx,
         &mut Budgeted {
             rows: &mut rows,
@@ -147,36 +163,28 @@ fn rows<'a>(
 }
 /// 7.4's rows for a stop after the `running` head: the received families,
 /// and in phase 7 every family, statuses from the outcomes as frozen. A
-/// failure to read what the rows need writes nothing more: the head stays
-/// `running`, and the failure's code meets the stop's.
+/// failure to read what the rows need (`Err`) writes nothing more: the head
+/// stays `running`, and the failure's code meets the stop's.
 fn stopped(
     h: &HandOver,
     stop: Stop,
     fin: &mut Finisher<'_>,
     reconcile: &mut Option<Reconcile>,
-) -> Option<ResultEnd> {
-    let facts = h.facts.as_deref()?;
-    let directory = h.directory.as_deref()?;
-    let spool = h.spool.as_ref()?;
-    let mut failure = None;
-    *reconcile = h.pending.map(|input| {
-        one_stat(spool, input).unwrap_or_else(|f| {
-            failure = Some(f);
-            Reconcile::Unknown(input, None)
-        })
-    });
+) -> Result<ResultEnd, RunFailure> {
+    let facts = h.facts.as_deref().ok_or_else(internal)?;
+    let directory = h.directory.as_deref().ok_or_else(internal)?;
+    let spool = h.spool.as_ref().ok_or_else(internal)?;
+    if let Some(input) = h.pending {
+        *reconcile = Some(Reconcile::Unknown(input, None));
+        *reconcile = Some(one_stat(spool, input)?);
+    }
     let found = match *reconcile {
         Some(Reconcile::Found(input)) => Some(input),
         _ => None,
     };
-    let unread = |e: Error| match e {
-        Error::Run(f) => unwritten(stop, f),
-        Error::Stopped => unwritten(stop, RunFailure::new(ReasonCode::Internal)),
-    };
-    let inputs = match Committed::received(&spool.done, &facts.inputs, &*spool.fs, &|| false) {
-        Ok(inputs) => inputs.with_found(found),
-        Err(e) => return Some(unread(e)),
-    };
+    let inputs = Committed::received(&spool.done, &facts.inputs, &*spool.fs, &|| false)
+        .map_err(failure)?
+        .with_found(found);
     let view;
     let selected = match h.selected.as_ref().filter(|_| h.phase == Phase::Publish) {
         None => None,
@@ -184,16 +192,15 @@ fn stopped(
             let outcomes: &dyn outcomes::Read = match sel {
                 Selected::Owned(owned) => &owned.outcomes,
                 Selected::Parts { handoff, .. } => {
-                    let archives = u64::try_from(facts.spec.archives.len()).ok()?;
-                    view = match outcomes::View::open(
+                    let archives =
+                        u64::try_from(facts.spec.archives.len()).map_err(|_| internal())?;
+                    view = outcomes::View::open(
                         &spool.run,
                         handoff.counts.winners,
                         archives,
                         &*spool.fs,
-                    ) {
-                        Ok(view) => view,
-                        Err(e) => return Some(unread(e)),
-                    };
+                    )
+                    .map_err(failure)?;
                     &view
                 }
             };
@@ -216,7 +223,7 @@ fn stopped(
     };
     let mut rows = rows(facts, directory);
     let mut time = [0; 20];
-    Some(conclude(
+    Ok(conclude(
         &cx,
         &mut Budgeted {
             rows: &mut rows,
@@ -229,7 +236,7 @@ fn stopped(
         ended_at(&mut time),
         Ending {
             code: stop.reason.code(),
-            failure,
+            failure: None,
             stop: Some(stop),
             phase: h.phase,
         },
@@ -237,7 +244,7 @@ fn stopped(
 }
 /// No rows or head after `running`: the more severe of the stop's code and
 /// the failure's, named by whichever set it.
-fn unwritten(stop: Stop, failure: RunFailure) -> ResultEnd {
+pub(super) fn unwritten(stop: Stop, failure: RunFailure) -> ResultEnd {
     let code = stop.reason.code().worst(failure.code());
     let by_stop = code == stop.reason.code();
     ResultEnd {
@@ -251,9 +258,10 @@ fn unwritten(stop: Stop, failure: RunFailure) -> ResultEnd {
         detail: stop.detail.filter(|_| by_stop).map(SpoolDetail::name),
     }
 }
-/// The stat itself never fails the finish: any errno is the conservative
-/// answer. Only a refused path allocation, ours or the stat's C string, is
-/// a failure (`host_memory`).
+/// The stat itself never fails the finish: any errno, `ENOMEM` included,
+/// is the conservative answer. Only a refused path allocation, ours or the
+/// stat's C string (an `OutOfMemory` with no errno), is a failure
+/// (`host_memory`).
 fn one_stat(spool: &super::Spool, input: u32) -> Result<Reconcile, RunFailure> {
     let path = crate::spool::path::indexed(&spool.done, "", u64::from(input))
         .map_err(|_| RunFailure::new(ReasonCode::HostMemory))?;
@@ -261,7 +269,7 @@ fn one_stat(spool: &super::Spool, input: u32) -> Result<Reconcile, RunFailure> {
         Ok(()) => Reconcile::Found(input),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Reconcile::Absent(input),
         // Our own refused path copy, not the stat's answer.
-        Err(e) if e.kind() == std::io::ErrorKind::OutOfMemory => {
+        Err(e) if e.kind() == std::io::ErrorKind::OutOfMemory && e.raw_os_error().is_none() => {
             return Err(RunFailure::new(ReasonCode::HostMemory));
         }
         Err(e) => Reconcile::Unknown(input, e.raw_os_error()),

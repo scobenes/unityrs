@@ -208,7 +208,11 @@ pub fn drive_with(
         &mut finish::Finisher {
             account: &fin,
             identity: &identity,
-            budget: finish::budget::Budget::UNARMED,
+            // `T_hard` read live: unarmed until a deadline is armed.
+            budget: finish::budget::Budget {
+                hard: &options.lifetime.state,
+                reconcile: false,
+            },
             clock: &finish::budget::BootClock,
             backend: &mut finish::budget::NoJournal,
         },
@@ -257,10 +261,17 @@ impl Body<'_> {
         let execution = parked.execution.insert(execution);
         let directory = phases::preflight(&local, self.sink_fs.clone(), self.fin)?;
         progress.update(|s| s.phase = Phase::Start);
-        let started = Arc::new(
-            start::spool::start(&local, self.spool_fs, &|| control.stopped())
-                .map_err(|e| errors::spool(&e))?,
-        );
+        let started = match start::spool::start(&local, self.spool_fs, &|| control.stopped()) {
+            Ok(started) => Arc::new(started),
+            // A stop before or during the spool's startup or cleanup is
+            // 7.4's first row, decided by the finisher like any later stop.
+            Err(e) if e.class == start::spool::Class::Stopped => {
+                let mut handover = HandOver::new(FinishCause::Stop, Phase::Start);
+                handover.directory = Some(directory);
+                return Ok(handover);
+            }
+            Err(e) => return Err(errors::spool(&e)),
+        };
         progress.spool(started.counter.clone());
         let fs = match &self.options.spool {
             Some(fs) => fs.clone(),

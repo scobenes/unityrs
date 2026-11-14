@@ -877,7 +877,9 @@ controller closes the commit gate at its hand-over: a commit under way
 lands first, and a transfer that reaches the closed gate fails its stop
 check. No lock is held across a filesystem open, so the finisher's reads
 never wait on a controller owner. The finisher takes the stop once and
-writes 7.4's table by the phase reached: before the `running` head, no head;
+writes 7.4's table by the phase reached: before the `running` head, no head
+and the stop's own code, a stop seen during the spool's startup or cleanup
+included;
 in phases 3 to 6, the received families (unstaged bundles `not_staged`,
 uncommitted inputs `not_run`, `stopped` iff the uncommitted bit is set, with
 `ms` from dispatch to the hand-over and the culprit's reason as `detail`) and
@@ -885,9 +887,14 @@ the selected families null; in phase 7, every family, statuses read from the
 outcome files, where a missing or short file reads `not_written`. When the
 hand-over names a pending commit, one stat of its `done/` directory decides
 it: found is committed, `ENOENT` uncommitted, any other error uncommitted
-with a `commit unknown at take` line. Once `T_hard` is armed the row files
-stop at `T_hard` less the head's reserve (3 s, or 5 s when reconciling), so
-a cut row never takes the head's time. Steps 1 and 2 run through a backend
+with a `commit unknown at take` line (`ENOMEM` from the stat included; only
+the engine's own refused path copy is `host_memory`). After `running`, a
+finish that cannot read or build its rows writes nothing more: the head
+stays `running`, and the exit code is the worse of the stop's and the
+failure's. The finisher reads `T_hard` from the stop word on every try, so
+once it is armed, even after the finish began, the row files stop at
+`T_hard` less the head's reserve (3 s, or 5 s when reconciling), and a cut
+row never takes the head's time. Steps 1 and 2 run through a backend
 trait; the directory sink's has no journal and no uploads.
 
 **Threads.** The main thread runs, in order:
