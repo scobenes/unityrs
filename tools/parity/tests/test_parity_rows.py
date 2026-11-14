@@ -83,10 +83,10 @@ class TestColumn(unittest.TestCase):
 
     def test_every_status_agrees_with_its_test_column(self):
         """Section 0's status rules: a row that names a test is pinned or verified, one that names none is
-        unverified (source reading), n/a (tier —) or a pointer to another row; `planned` is section 17.1's. A test
-        or the corpus dump named inside a `planned` clause probes nothing, every row states its own status, and
-        every test a test column names carries its module; a verified P1, P1b or P3 row names a Rust test, and that
-        test exists."""
+        unverified (source reading), n/a (tier —) or a pointer to another row; `planned` is sections 17.1's and 24's.
+        A test or the corpus dump named inside a `planned` clause probes nothing, every row states its own status,
+        and every test a test column names carries its module; a verified P1, P1b, P2a or P3 row names a Rust test,
+        and that test exists."""
         text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
         seen = 0
         for header, rows in inventory.tables(text):
@@ -101,20 +101,20 @@ class TestColumn(unittest.TestCase):
                     # Every test is named with its module, so a renamed test fails the check above.
                     self.assertIsNone(re.search(r"`test_[a-z_]+\.py` [a-z0-9_]+, [a-z]", cells[test]), "a bare name")
                     # A row P0 probed and P1 verified ("pinned P0; verified P1") takes both checks.
-                    if "verified P1" in state or "verified P3" in state:
+                    if any(f"verified {phase}" in state for phase in ("P1", "P2a", "P3")):
                         rust = self.RUST.findall(cells[test])
-                        self.assertTrue(rust, "a verified P1, P1b or P3 row names the Rust test that pins it")
+                        self.assertTrue(rust, "a verified P1, P1b, P2a or P3 row names the Rust test that pins it")
                         for path, name in rust:
                             source = (HERE.parent.parent / path).read_text(encoding="utf-8")
                             self.assertRegex(source, rf"\bfn {name}\(", f"{path} has no test {name}")
                     if state.startswith(("pinned P0", "verified P0")):
                         self.assertTrue(probed, "a probed row names what probes it")
-                    elif state.startswith(("verified P1", "verified P3")):
+                    elif state.startswith(("verified P1", "verified P2a", "verified P3")):
                         pass
                     elif state.startswith("unverified (source reading); impl P"):
                         self.assertFalse(probed, "a row a test runs is not unverified")
                     elif state.startswith("planned ("):
-                        self.assertIn("reference", header, "only section 17.1's references are planned")
+                        self.assertIn("reference", header, "only sections 17.1's and 24's references are planned")
                     elif state == "n/a":
                         self.assertEqual(cells[header.index("tier")], "—")
                     else:
@@ -595,12 +595,12 @@ class TestColumn(unittest.TestCase):
 
     def test_every_tier_has_a_design_rule(self):
         """Every tier PARITY.md section 0 defines, but `—`, which marks no behaviour of its own, is decided by a
-        bullet of DESIGN.md section 3's Reading list."""
+        bullet of DESIGN.md section 3's Reading list, and X (beyond UnityPy) by its 3D paragraph."""
         root = HERE.parent.parent
         parity = (root / "PARITY.md").read_text(encoding="utf-8")
         table = parity.split("| tier | meaning |", 1)[1].split("\n\n", 1)[0]
         tiers = [row.split(" | ", 1)[0][2:] for row in table.splitlines()[2:]]
-        self.assertEqual(tiers, ["A", "B", "C", "Tol", "HEAD", "U", "gap", "A, C (or A; C for …)", "—"])
+        self.assertEqual(tiers, ["A", "B", "C", "Tol", "HEAD", "U", "gap", "X", "A, C (or A; C for …)", "—"])
         design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
         reading = design.split("**Reading**", 1)[1].split("**Writing**", 1)[0]
         bullets = [lead.rstrip(".:") for lead in re.findall(r"^- \*\*(.+?)\*\*", reading, flags=re.M)]
@@ -616,6 +616,8 @@ class TestColumn(unittest.TestCase):
         for tier in tiers[:7]:
             with self.subTest(tier=tier):
                 self.assertIn(rule[tier], bullets)
+        three_d = r"\n\*\*3D \(beyond UnityPy\)\.\*\* [^\n]*`PARITY\.md` section 24 files these rows under tier X"
+        self.assertRegex(design.split("## 3. Parity", 1)[1].split("\n## 4.", 1)[0], three_d)
 
     def test_tol_metrics_are_stated_or_said_to_be_planned(self):
         """Both Tol definitions say each row states a metric and threshold. Until every Tol row does (a row names a
