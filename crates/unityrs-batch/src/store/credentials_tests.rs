@@ -86,6 +86,10 @@ fn caps_bytes_and_encoding_are_invalid() {
         // UTF-8, but `HeaderValue::from_str` would refuse it by panicking.
         with("AWS_ACCESS_KEY_ID", os("AKIDé")),
         with("AWS_SESSION_TOKEN", os("token\u{2028}")),
+        // Every credential is printable ASCII, the secret too.
+        with("AWS_SECRET_ACCESS_KEY", os("secré")),
+        with("AWS_SECRET_ACCESS_KEY", os("sec\u{7f}ret")),
+        with("AWS_SECRET_ACCESS_KEY", os("sec\nret")),
         with("AWS_CREDENTIAL_EXPIRATION", os("tomorrow")),
         with("AWS_CREDENTIAL_EXPIRATION", os("")),
         with("AWS_CREDENTIAL_EXPIRATION", os("2026-11-13T25:00:00Z")),
@@ -98,10 +102,14 @@ fn caps_bytes_and_encoding_are_invalid() {
             vars.last()
         );
     }
-    // At the caps, a secret of any UTF-8, and tabs and spaces pass.
+    // At the caps, the whole printable range, and tabs and spaces pass.
+    let printable: String = (0x20_u8..0x7f).map(char::from).collect();
     for vars in [
         with("AWS_ACCESS_KEY_ID", os(&"A".repeat(KEY_MAX))),
-        with("AWS_SECRET_ACCESS_KEY", os(&"é".repeat(KEY_MAX / 2))),
+        with("AWS_SECRET_ACCESS_KEY", os(&"s".repeat(KEY_MAX))),
+        with("AWS_SECRET_ACCESS_KEY", os(&printable)),
+        with("AWS_ACCESS_KEY_ID", os(&printable)),
+        with("AWS_SECRET_ACCESS_KEY", os("a b\tc")),
         with("AWS_SESSION_TOKEN", os(&"t".repeat(TOKEN_MAX))),
         with("AWS_SESSION_TOKEN", os("a b\tc")),
     ] {

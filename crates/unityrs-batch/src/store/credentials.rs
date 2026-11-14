@@ -2,14 +2,18 @@
 //! 1.6, `docs/plans/extract.md` E37): `AWS_ACCESS_KEY_ID`,
 //! `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN` when set and not empty,
 //! read once at preflight, with `AWS_CREDENTIAL_EXPIRATION` checked against
-//! the deadline. A credential renders as its length alone; the secret only
-//! keys the signature.
+//! the deadline. Each is printable ASCII (tab, and space to `~`). A
+//! credential renders as its length alone, through the engine's own
+//! provider too; the secret only keys the signature.
 use crate::{
     reason::Preflight,
     spec::{formats, model::DateTime},
 };
-use object_store::{StaticCredentialProvider, aws::AwsCredential, aws::AwsCredentialProvider};
-use std::{ffi::OsString, fmt, sync::Arc};
+use object_store::{
+    CredentialProvider,
+    aws::{AwsCredential, AwsCredentialProvider},
+};
+use std::{ffi::OsString, fmt, future::Future, pin::Pin, sync::Arc};
 
 /// An access key id's and a secret's most bytes.
 pub const KEY_MAX: usize = 128;
@@ -31,7 +35,14 @@ impl Secret {
 }
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<{} bytes>", self.0.len())
+        fmt::Debug::fmt(&Length(self.0.len()), f)
+    }
+}
+/// A credential's length, as every credential renders.
+struct Length(usize);
+impl fmt::Debug for Length {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{} bytes>", self.0)
     }
 }
 impl fmt::Display for Secret {
@@ -57,25 +68,60 @@ impl Credentials {
     /// strings move into it, uncopied.
     #[must_use]
     pub fn into_provider(self) -> AwsCredentialProvider {
-        Arc::new(StaticCredentialProvider::new(AwsCredential {
-            key_id: self.key_id.0,
-            secret_key: self.secret.0,
-            token: self.token.map(|token| token.0),
-        }))
+        Arc::new(Provider {
+            credential: Arc::new(AwsCredential {
+                key_id: self.key_id.0,
+                secret_key: self.secret.0,
+                token: self.token.map(|token| token.0),
+            }),
+        })
+    }
+}
+
+/// The sink's credentials as `object_store` signs with them. Unlike its
+/// `StaticCredentialProvider`, whose `AwsCredential` prints the key id, its
+/// `Debug` prints lengths alone, and so does every client's that holds it.
+pub struct Provider {
+    credential: Arc<AwsCredential>,
+}
+impl fmt::Debug for Provider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let credential = &self.credential;
+        f.debug_struct("Provider")
+            .field("key_id", &Length(credential.key_id.len()))
+            .field("secret", &Length(credential.secret_key.len()))
+            .field(
+                "token",
+                &credential.token.as_deref().map(|t| Length(t.len())),
+            )
+            .finish()
+    }
+}
+/// `async_trait`'s form of `CredentialProvider::get_credential`, written out.
+impl CredentialProvider for Provider {
+    type Credential = AwsCredential;
+    fn get_credential<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> Pin<Box<dyn Future<Output = object_store::Result<Arc<AwsCredential>>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        let credential = Arc::clone(&self.credential);
+        Box::pin(async move { Ok(credential) })
     }
 }
 
 /// [`Credentials::preflight`] over any environment, in 1.6's order: either
 /// of the first two unset or empty is `credentials_missing`; a value over
-/// its cap, not UTF-8, or (a key id's or token's) holding a byte outside the
-/// header-value set, or an expiration that is not RFC 3339, is
-/// `credentials_invalid`; an expiration before the deadline is
-/// `credentials_expire`.
+/// its cap, or holding a byte that is not printable ASCII (tab, or space to
+/// `~`), or an expiration that is not RFC 3339, is `credentials_invalid`; an
+/// expiration before the deadline is `credentials_expire`.
 ///
-/// The header-value set here is visible ASCII, space and tab: `object_store`
-/// puts the key id and the token in headers through `HeaderValue::from_str`,
-/// which refuses any other byte by panicking (`src/aws/credential.rs`), so a
-/// non-ASCII byte that 1.2's set would let through is refused here.
+/// `object_store` puts the key id and the token in headers through
+/// `HeaderValue::from_str`, which refuses any other byte by panicking
+/// (`src/aws/credential.rs`); the secret is held to the same bytes, as real
+/// stores issue them.
 pub fn read(
     env: impl Fn(&str) -> Option<OsString>,
     deadline: Option<&DateTime>,
@@ -86,9 +132,9 @@ pub fn read(
         return Err(Preflight::CredentialsMissing);
     };
     let token = env("AWS_SESSION_TOKEN").filter(|v| !v.is_empty());
-    let key_id = text(key_id, KEY_MAX, true)?;
-    let secret = text(secret, KEY_MAX, false)?;
-    let token = token.map(|t| text(t, TOKEN_MAX, true)).transpose()?;
+    let key_id = text(key_id, KEY_MAX)?;
+    let secret = text(secret, KEY_MAX)?;
+    let token = token.map(|t| text(t, TOKEN_MAX)).transpose()?;
     if let Some(expiration) = env("AWS_CREDENTIAL_EXPIRATION") {
         let at = expiration
             .to_str()
@@ -105,16 +151,17 @@ pub fn read(
     })
 }
 
-fn text(value: OsString, max: usize, header: bool) -> Result<String, Preflight> {
+/// Whether `b` is printable ASCII: tab, or space to `~`.
+#[must_use]
+pub const fn printable(b: u8) -> bool {
+    b == b'\t' || (b >= 0x20 && b < 0x7f)
+}
+
+fn text(value: OsString, max: usize) -> Result<String, Preflight> {
     let value = value
         .into_string()
         .map_err(|_| Preflight::CredentialsInvalid)?;
-    if value.len() > max
-        || (header
-            && !value
-                .bytes()
-                .all(|b| b == b'\t' || (0x20..0x7f).contains(&b)))
-    {
+    if value.len() > max || !value.bytes().all(printable) {
         return Err(Preflight::CredentialsInvalid);
     }
     Ok(value)

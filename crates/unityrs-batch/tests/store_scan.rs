@@ -5,6 +5,11 @@
 //! keeps it so) or to the environment's `AWS_*` settings.
 //! Comments are left out; the builder file itself never calls `from_env`
 //! and builds exactly one `AmazonS3Builder::new()`.
+//!
+//! The store's code (`src/store/`, `src/http/shared.rs`) also spawns
+//! nothing and uses none of `object_store`'s helpers that spawn: a task
+//! spawned on the controller's runtime runs outside every try, and the
+//! connector refuses it (`docs/plans/batch.md` 2.9).
 
 use std::path::{Path, PathBuf};
 
@@ -48,6 +53,56 @@ fn forbidden(line: &str) -> Vec<&'static str> {
         found.push("reqwest");
     }
     found
+}
+
+/// What the store's own code may not name: the helpers that spawn
+/// (`WriteMultipart`'s `JoinSet`, `buffered`'s `BufWriter`) and spawning.
+const SPAWNING: [&str; 5] = [
+    "WriteMultipart",
+    "BufWriter",
+    "JoinSet",
+    "spawn",
+    "spawn_blocking",
+];
+
+fn spawning(line: &str) -> Vec<&'static str> {
+    SPAWNING
+        .into_iter()
+        .filter(|name| words(line).any(|w| w == *name))
+        .collect()
+}
+
+#[test]
+fn the_spawn_scan_sees_each_spelling() {
+    assert_eq!(spawning("tokio::spawn(async {});"), ["spawn"]);
+    assert_eq!(spawning("let mut set = JoinSet::new();"), ["JoinSet"]);
+    assert_eq!(
+        spawning("tokio::task::spawn_blocking(f)"),
+        ["spawn_blocking"]
+    );
+    assert_eq!(
+        spawning("use object_store::{buffered::BufWriter, WriteMultipart};"),
+        ["WriteMultipart", "BufWriter"]
+    );
+    assert_eq!(spawning("fn spawned() {}"), [""; 0]);
+}
+
+#[test]
+fn the_store_code_spawns_nothing() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rust_files(&src.join("store"), &mut files);
+    files.push(src.join("http").join("shared.rs"));
+    assert!(files.len() > 2);
+    let mut bad = Vec::new();
+    for file in &files {
+        for (n, line) in code(file) {
+            for name in spawning(&line) {
+                bad.push(format!("{}:{n}: {name}", file.display()));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "the store code spawns:\n{}", bad.join("\n"));
 }
 
 #[test]

@@ -10,12 +10,18 @@ use super::{
     attempt::{Fault, PermitGuard, TrySlot},
     body,
 };
-use crate::http::{self, Payload, Response, permit::RequestPermit};
+use crate::http::{
+    self, Payload, Response,
+    permit::{OperationToken, RequestPermit},
+};
 use hyper::{
     body::{Body, Bytes},
     http::{
-        HeaderMap, StatusCode, Uri,
-        header::{ACCEPT, CONTENT_LENGTH, HOST, USER_AGENT},
+        HeaderMap, HeaderName, HeaderValue, StatusCode, Uri,
+        header::{
+            ACCEPT, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, HOST, LAST_MODIFIED,
+            LOCATION, USER_AGENT,
+        },
     },
 };
 use object_store::{
@@ -37,8 +43,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use url::Url;
 
 /// What sends one prepared request: the engine's [`http::Service`], or an
-/// in-memory transport in tests. `connected` is set once
-/// the connection is up.
+/// in-memory transport in tests. `token` is the permit's lookup token, which
+/// the try took before its timer started; `connected` is set once the
+/// connection is up.
 pub trait Transport: Send + Sync + 'static {
     type Io: AsyncRead + AsyncWrite + Unpin + Send + 'static;
     fn send<'a>(
@@ -47,6 +54,7 @@ pub trait Transport: Send + Sync + 'static {
         url: &'a Url,
         request: hyper::Request<Payload>,
         timeout: Duration,
+        token: OperationToken,
         connected: &'a AtomicBool,
     ) -> impl Future<Output = Result<Response<Self::Io>, http::Error>> + Send + 'a;
 }
@@ -59,9 +67,10 @@ impl Transport for http::Service {
         url: &'a Url,
         request: hyper::Request<Payload>,
         timeout: Duration,
+        token: OperationToken,
         connected: &'a AtomicBool,
     ) -> impl Future<Output = Result<Response<Self::Io>, http::Error>> + Send + 'a {
-        self.request_observed(permit, url, request, timeout, connected)
+        self.request_observed(permit, url, request, timeout, token, connected)
     }
 }
 
@@ -241,7 +250,7 @@ impl<T: Transport> Engine<T> {
                 _ => Fault::Internal,
             },
         )?;
-        let permit = guard.permit().ok_or(Fault::Internal)?;
+        let (permit, token) = guard.request().ok_or(Fault::Internal)?;
         let mut response = self
             .shared
             .transport
@@ -250,6 +259,7 @@ impl<T: Transport> Engine<T> {
                 &url,
                 request,
                 self.shared.connect_timeout,
+                token,
                 slot.connected_flag(),
             )
             .await
@@ -261,11 +271,9 @@ impl<T: Transport> Engine<T> {
             r.retry_after = after;
         });
         let code = StatusCode::from_u16(status).map_err(|_| Fault::Internal)?;
-        // The head's fields go to `object_store` as they came (`C_net`).
-        let head = response.headers().clone();
+        let head = forwarded(response.headers());
         let body = if !(200..300).contains(&status) {
-            let permit = guard.permit().ok_or(Fault::Internal)?;
-            body::error_body(slot, permit, &mut response).await?
+            body::error_body(slot, &mut response).await
         } else if kind == Kind::ListProof {
             body::drain(slot, &mut response).await
         } else {
@@ -276,6 +284,68 @@ impl<T: Transport> Engine<T> {
         *out.headers_mut() = head;
         Ok(out)
     }
+}
+
+/// The response fields `object_store` reads (`src/client/header.rs`,
+/// `src/client/get.rs`, `src/client/retry.rs`), each once (`C_net`). It
+/// renders `Last-Modified`, `Content-Length` and `Content-Range` in its
+/// errors, so each goes only when well formed; `Location` goes empty, as
+/// only its presence is read. No other field reaches it.
+fn forwarded(head: &HeaderMap) -> HeaderMap {
+    let mut out = HeaderMap::new();
+    let one = |name| {
+        let mut values = head.get_all(&name).iter();
+        let value = values.next()?;
+        values.next().is_none().then_some(value)
+    };
+    for name in [
+        ETAG,
+        CONTENT_TYPE,
+        HeaderName::from_static("x-amz-version-id"),
+    ] {
+        if let Some(value) = one(name.clone()) {
+            out.insert(name, value.clone());
+        }
+    }
+    if let Some(value) = one(LAST_MODIFIED)
+        && value
+            .to_str()
+            .is_ok_and(|text| httpdate::parse_http_date(text).is_ok())
+    {
+        out.insert(LAST_MODIFIED, value.clone());
+    }
+    if let Some(value) = one(CONTENT_LENGTH)
+        && decimal(value.as_bytes()).is_some()
+    {
+        out.insert(CONTENT_LENGTH, value.clone());
+    }
+    if let Some(value) = one(CONTENT_RANGE)
+        && content_range(value.as_bytes())
+    {
+        out.insert(CONTENT_RANGE, value.clone());
+    }
+    if head.contains_key(LOCATION) {
+        out.insert(LOCATION, HeaderValue::from_static(""));
+    }
+    out
+}
+
+/// `bytes <first>-<last>/<length or *>`, digits alone.
+fn content_range(bytes: &[u8]) -> bool {
+    let Some(rest) = bytes.strip_prefix(b"bytes ") else {
+        return false;
+    };
+    let mut parts = rest.splitn(2, |&b| b == b'/');
+    let (Some(range), Some(length)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    let mut ends = range.splitn(2, |&b| b == b'-');
+    let (Some(first), Some(last)) = (ends.next(), ends.next()) else {
+        return false;
+    };
+    decimal(first).is_some()
+        && decimal(last).is_some()
+        && (length == b"*" || decimal(length).is_some())
 }
 
 /// `object_store`'s `Uri` as the `url` crate reads it, which the service

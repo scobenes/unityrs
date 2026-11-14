@@ -240,7 +240,7 @@ Each item gives the recommendation and its reason. None is decided until this pl
 
 **Recommendation.** Keep `object_store` (0.12). Write a key only when `Path::parse(key)` gives back exactly `key`, the key is non-empty, valid UTF-8 and at most 1,024 bytes. Refuse any other key with `KeyRefused { key, rule }`, never rewriting it. `Path::from` and `from_iter` are never used.
 
-**What `object_store` 0.12.5 does**, as read in design round 1 and checked against the crate's source in design round 5 (what remains assumed is the store's side, `docs/plans/batch.md` A15):
+**What `object_store` does**: 0.12.5's, as read in design round 1 and checked against the crate's source in design round 5, and each point below rechecked against 0.14.2's source, the version the engine pins, in B11a's review fold (what remains assumed is the store's side, `docs/plans/batch.md` A15):
 - **`Path::parse`** (`src/path/mod.rs`, `src/path/parts.rs`):
   - strips one leading and one trailing `/`, silently, which is a rewrite;
   - refuses an empty segment, a segment that is `.` or `..`, and any ASCII control character (`PathPart::parse`);

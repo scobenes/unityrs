@@ -109,6 +109,22 @@ pub fn origin(settings: &Settings<'_>) -> Result<Origin, Fault> {
     Origin::of(&bucket_endpoint(settings)?)
 }
 
+/// A client of the sink. Its `Debug` names it alone; `object_store`'s, which
+/// it derefs to, renders the engine's [`Provider`](super::credentials::Provider),
+/// lengths alone.
+pub struct Store(AmazonS3);
+impl std::ops::Deref for Store {
+    type Target = AmazonS3;
+    fn deref(&self) -> &AmazonS3 {
+        &self.0
+    }
+}
+impl std::fmt::Debug for Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Store")
+    }
+}
+
 /// A client of the sink. `content_type` is a multipart client's default
 /// (E37): `create_multipart` takes no options, so the controller has one
 /// client per multipart Content-Type; a single PUT sets its own.
@@ -117,7 +133,7 @@ pub fn build<T: Transport>(
     content_type: Option<&str>,
     credentials: &AwsCredentialProvider,
     connector: &Connector<T>,
-) -> Result<AmazonS3, Fault> {
+) -> Result<Store, Fault> {
     settings.checked()?;
     let mut builder = AmazonS3Builder::new()
         .with_bucket_name(settings.bucket)
@@ -138,5 +154,5 @@ pub fn build<T: Transport>(
         builder = builder
             .with_client_options(ClientOptions::new().with_default_content_type(content_type));
     }
-    builder.build().map_err(|_| Fault::Internal)
+    builder.build().map(Store).map_err(|_| Fault::Internal)
 }

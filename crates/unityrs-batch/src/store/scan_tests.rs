@@ -140,8 +140,14 @@ fn quotes_comments_and_cdata_hide_markup() {
     assert_eq!(s.feed(b"<r/>"), Err(Breach));
 }
 
+fn code(body: &[u8]) -> Code {
+    let mut s = CodeScan::default();
+    s.feed(body);
+    s.code()
+}
+
 #[test]
-fn the_code_scan_finds_the_first_code_across_chunks() {
+fn the_code_scan_finds_the_error_code_across_chunks() {
     let body = b"<?xml version=\"1.0\"?><Error><Code>NoSuchUpload</Code><Code>Other</Code></Error>";
     for size in [1, 3, 7, body.len()] {
         let mut s = CodeScan::default();
@@ -152,17 +158,57 @@ fn the_code_scan_finds_the_first_code_across_chunks() {
         assert!(!s.code().is("Other"));
     }
     let mut s = CodeScan::default();
-    s.feed(b"<<Code>ExpiredToken");
+    s.feed(b"<Error><Code>ExpiredToken");
     assert!(!s.code().is("ExpiredToken"), "unclosed");
     s.feed(b"</Code>");
     assert!(s.code().is("ExpiredToken"));
-    let mut long = CodeScan::default();
-    long.feed(format!("<Code>{}</Code>", "A".repeat(CODE_MAX + 1)).as_bytes());
-    assert_eq!(long.code(), Code::default());
-    let mut at = CodeScan::default();
-    at.feed(format!("<Code>{}</Code>", "A".repeat(CODE_MAX)).as_bytes());
-    assert!(at.code().is(&"A".repeat(CODE_MAX)));
-    let mut none = CodeScan::default();
-    none.feed(b"<Error><Message>x</Message></Error>");
-    assert!(!none.code().is(""));
+    let long = format!("<Error><Code>{}</Code></Error>", "A".repeat(CODE_MAX + 1));
+    assert_eq!(code(long.as_bytes()), Code::default());
+    let at = format!("<Error><Code>{}</Code></Error>", "A".repeat(CODE_MAX));
+    assert!(code(at.as_bytes()).is(&"A".repeat(CODE_MAX)));
+    assert!(code(b"<Error><Message>x</Message></Error>").is_empty());
+    // Attributes, a namespace and a spaced end tag are still elements.
+    let spaced = b"<Error xmlns=\"a>b\" x='<Code>'><Code >SlowDown</Code ></Error>";
+    assert!(code(spaced).is("SlowDown"));
+}
+
+#[test]
+fn the_code_scan_reads_elements_alone() {
+    // Markup that is no element names no code (review round 1).
+    for (body, want) in [
+        (&b"<Error><!--<Code>NoSuchUpload</Code>--><Code>AccessDenied</Code></Error>"[..], "AccessDenied"),
+        (b"<Error><![CDATA[<Code>NoSuchUpload</Code>]]><Code>AccessDenied</Code></Error>", "AccessDenied"),
+        (b"<Error><?pi <Code>NoSuchUpload</Code>?><Code>AccessDenied</Code></Error>", "AccessDenied"),
+        (b"<!DOCTYPE Error [<!ENTITY a '<Code>NoSuchUpload</Code>'>]><Error><Code>AccessDenied</Code></Error>", "AccessDenied"),
+        (b"<Error><!-- - -> --><Code>AccessDenied</Code></Error>", "AccessDenied"),
+    ] {
+        for size in [1, 2, 5, body.len()] {
+            let mut s = CodeScan::default();
+            for chunk in body.chunks(size) {
+                s.feed(chunk);
+            }
+            assert!(s.code().is(want), "{} {size}", String::from_utf8_lossy(body));
+        }
+    }
+    for body in [
+        // A comment, CDATA or element inside the code: no plain text.
+        &b"<Error><Code>No<!---->SuchUpload</Code></Error>"[..],
+        b"<Error><Code><![CDATA[NoSuchUpload]]></Code></Error>",
+        b"<Error><Code><Code>NoSuchUpload</Code></Code></Error>",
+        b"<Error><Code>NoSuch&amp;Upload</Code></Error>",
+        // Nested below the root's child, or under another root.
+        b"<Error><Detail><Code>NoSuchUpload</Code></Detail></Error>",
+        b"<Result><Code>NoSuchUpload</Code></Result>",
+        b"<Code>NoSuchUpload</Code>",
+        // A close that is cut, or another element's.
+        b"<Error><Code>NoSuchUpload</Cod",
+        b"<Error><Code>NoSuchUpload</Codex>",
+        b"<Error><Code>NoSuchUpload<",
+        b"<Error><Code></Code></Error>",
+        // An unclosed comment or CDATA swallows the rest.
+        b"<Error><!--<Code>NoSuchUpload</Code>",
+        b"<Error><![CDATA[<Code>NoSuchUpload</Code>",
+    ] {
+        assert!(code(body).is_empty(), "{}", String::from_utf8_lossy(body));
+    }
 }

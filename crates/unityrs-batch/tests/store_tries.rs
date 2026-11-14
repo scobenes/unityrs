@@ -14,8 +14,8 @@ use unityrs_batch::{
     http::Detail,
     store::{
         Kind,
-        attempt::{BodyFault, Record},
-        classify::{Action, Verdict},
+        attempt::{BodyFault, Fault, Record},
+        classify::{Action, Ended, Verdict},
     },
 };
 
@@ -371,4 +371,70 @@ fn a_2xx_naming_an_error_is_retried() {
         .unwrap();
     assert_eq!(done.verdict, verdict(false, RETRY));
     assert!(done.record.code.is("InternalError"));
+}
+
+#[test]
+fn a_try_that_sent_no_request_is_internal_whatever_it_ended() {
+    // Review round 1: never a connect failure, never retried.
+    for ended in [Ended::Ok, Ended::Rejected, Ended::Error, Ended::TimedOut] {
+        let mut h = Harness::new([]);
+        h.policy.attempts = 3;
+        h.policy.timeout = Duration::from_millis(10);
+        let tries = std::cell::Cell::new(0);
+        let done = store_support::run(h.tries().run(&h.slot, Kind::Put, |_| {
+            tries.set(tries.get() + 1);
+            async move {
+                match ended {
+                    Ended::Ok => Ok(()),
+                    // The try's timer fires before any request goes out.
+                    Ended::TimedOut => std::future::pending().await,
+                    other => Err(other),
+                }
+            }
+        }));
+        assert_eq!(done.unwrap_err(), Fault::Internal, "{ended:?}");
+        assert_eq!(tries.get(), 1, "{ended:?}");
+        assert_eq!(h.script.seen.count(), 0);
+    }
+}
+
+#[test]
+fn a_slow_lookup_holds_its_token_outside_later_tries_timers() {
+    // Review round 1: the lookup a timed-out try left running holds the
+    // permit's token past several timers; the next try waits for it
+    // untimed and uncounted, then succeeds.
+    let mut h = Harness::new([Reply::SlowLookup(Duration::from_millis(300)), ok()]);
+    h.policy.attempts = 2;
+    h.policy.timeout = Duration::from_millis(30);
+    let (v, record, tries) = put(&h);
+    assert_eq!(v, verdict(true, Action::Success));
+    assert_eq!(record.status, Some(200));
+    assert_eq!(tries, 2);
+    // Past the cutoff, the wait ends the tries as stopped, starting none.
+    let mut h = Harness::new([Reply::SlowLookup(Duration::from_secs(60)), ok()]);
+    h.policy.attempts = 2;
+    h.policy.timeout = Duration::from_millis(30);
+    h.policy.cutoff = Some(tokio::time::Instant::now() + Duration::from_millis(200));
+    let path = Path::parse("out/a.png").unwrap();
+    let done = h
+        .run(Kind::Put, |_| {
+            h.store.put(&path, PutPayload::from_static(b"png"))
+        })
+        .unwrap();
+    assert!(done.stopped);
+    assert_eq!(done.tries, 1);
+    assert_eq!(h.script.sent.load(std::sync::atomic::Ordering::Acquire), 1);
+}
+
+#[test]
+fn a_2xx_body_read_after_its_try_is_refused() {
+    // Review round 1: a body only its own try's timer bounds.
+    let h = Harness::new([Reply::status(200, "", b"head")]);
+    let path = Path::parse("_unityrs/r/manifest.json").unwrap();
+    let done = h.run(Kind::HeadRead, |_| h.store.get(&path)).unwrap();
+    assert_eq!(done.verdict, verdict(true, Action::Success));
+    let mut stream = done.value.unwrap().into_stream();
+    let read = store_support::run(async move { stream.next().await });
+    assert!(matches!(read, Some(Err(_))));
+    assert_eq!(h.slot.record().fault, Some(Fault::Internal));
 }

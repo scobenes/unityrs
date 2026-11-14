@@ -13,16 +13,21 @@ use super::{
 };
 use crate::{
     control::Control,
-    http::{Detail, permit::RequestPermit},
+    http::{
+        Detail,
+        permit::{Operation, OperationToken, RequestPermit},
+    },
     spec::model::Http,
     stage::retry,
 };
 use std::{
-    future::Future,
+    fmt,
+    future::{Future, poll_fn},
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    task::{Context, Poll},
     time::{Duration, SystemTime},
 };
 use tokio::time::Instant;
@@ -83,6 +88,10 @@ impl Record {
 struct State {
     kind: Kind,
     permit: Option<RequestPermit>,
+    /// The permit's lookup token, taken before the try is counted or timed.
+    token: Option<OperationToken>,
+    /// The try in flight's number, so a body read in another try is refused.
+    generation: u32,
     record: Record,
 }
 
@@ -104,6 +113,8 @@ impl TrySlot {
             state: Mutex::new(State {
                 kind,
                 permit: Some(permit),
+                token: None,
+                generation: 0,
                 record: Record::default(),
             }),
         })
@@ -116,7 +127,43 @@ impl TrySlot {
         self.connected.store(false, Ordering::Release);
         let mut state = self.lock();
         state.kind = kind;
+        state.generation = state.generation.wrapping_add(1);
         state.record = Record::default();
+    }
+    /// Ready once the permit's lookup token is home: no earlier try's
+    /// lookup still holds it (`batch.md` 2.5).
+    fn poll_lookup(&self, cx: &mut Context<'_>) -> Poll<Result<(), Fault>> {
+        let state = self.lock();
+        if state.token.is_some() {
+            return Poll::Ready(Ok(()));
+        }
+        match state.permit.as_ref() {
+            Some(permit) => permit.poll_available(cx).map(Ok),
+            None => Poll::Ready(Err(Fault::Internal)),
+        }
+    }
+    /// Takes the lookup token the try's request will use.
+    fn take_lookup(&self) -> Result<(), Fault> {
+        let mut state = self.lock();
+        if state.token.is_none() {
+            let token = state
+                .permit
+                .as_mut()
+                .and_then(|permit| permit.begin(Operation::Lookup))
+                .ok_or(Fault::Internal)?;
+            state.token = Some(token);
+        }
+        Ok(())
+    }
+    /// The try in flight's number.
+    pub(crate) fn generation(&self) -> u32 {
+        self.lock().generation
+    }
+    /// Whether this task is running `generation`, this slot's try.
+    pub(crate) fn is_current(self: &Arc<Self>, generation: u32) -> bool {
+        SLOT.try_with(|slot| Arc::ptr_eq(slot, self))
+            .unwrap_or(false)
+            && self.generation() == generation
     }
     /// The record so far.
     #[must_use]
@@ -128,7 +175,9 @@ impl TrySlot {
     /// The request's permit back, once no call holds it.
     #[must_use]
     pub fn take_permit(&self) -> Option<RequestPermit> {
-        self.lock().permit.take()
+        let mut state = self.lock();
+        state.token = None;
+        state.permit.take()
     }
     /// The slot of the try this task is running, if any.
     pub(crate) fn current() -> Option<Arc<Self>> {
@@ -139,13 +188,12 @@ impl TrySlot {
     pub(crate) fn enter(self: &Arc<Self>) -> Result<(Kind, PermitGuard), Fault> {
         let mut state = self.lock();
         state.record.calls = state.record.calls.saturating_add(1);
-        let permit = if state.record.calls == 1 {
-            state.permit.take()
-        } else {
-            None
-        };
-        let Some(permit) = permit else {
+        // One request per try, with the permit and the token the try took.
+        if state.record.calls != 1 || state.permit.is_none() || state.token.is_none() {
             state.record.fault = Some(Fault::Internal);
+            return Err(Fault::Internal);
+        }
+        let (Some(permit), Some(token)) = (state.permit.take(), state.token.take()) else {
             return Err(Fault::Internal);
         };
         Ok((
@@ -153,6 +201,7 @@ impl TrySlot {
             PermitGuard {
                 slot: Arc::clone(self),
                 permit: Some(permit),
+                token: Some(token),
             },
         ))
     }
@@ -173,16 +222,25 @@ impl TrySlot {
 pub(crate) struct PermitGuard {
     slot: Arc<TrySlot>,
     permit: Option<RequestPermit>,
+    token: Option<OperationToken>,
 }
 impl PermitGuard {
-    pub(crate) fn permit(&mut self) -> Option<&mut RequestPermit> {
-        self.permit.as_mut()
+    /// The permit and its lookup token, which the request's lookup keeps
+    /// until it returns.
+    pub(crate) fn request(&mut self) -> Option<(&mut RequestPermit, OperationToken)> {
+        let token = self.token.take()?;
+        Some((self.permit.as_mut()?, token))
     }
 }
 impl Drop for PermitGuard {
     fn drop(&mut self) {
+        let mut state = self.slot.lock();
         if let Some(permit) = self.permit.take() {
-            self.slot.lock().permit = Some(permit);
+            state.permit = Some(permit);
+        }
+        // A token no lookup took stays the next try's.
+        if let Some(token) = self.token.take() {
+            state.token = Some(token);
         }
     }
 }
@@ -236,7 +294,6 @@ impl Policy {
 }
 
 /// How a request's tries ended.
-#[derive(Debug)]
 pub struct Done<T> {
     /// The last try's value, when its call returned one.
     pub value: Option<T>,
@@ -251,6 +308,19 @@ pub struct Done<T> {
     pub stopped: bool,
 }
 
+/// The value never renders: it can hold what a server sent.
+impl<T> fmt::Debug for Done<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Done")
+            .field("value", &self.value.as_ref().map(|_| ".."))
+            .field("verdict", &self.verdict)
+            .field("record", &self.record)
+            .field("tries", &self.tries)
+            .field("stopped", &self.stopped)
+            .finish()
+    }
+}
+
 /// The tries' shared state: the run's stop and its `unsettled_tries` count.
 pub struct Tries<'a> {
     pub policy: Policy,
@@ -259,6 +329,21 @@ pub struct Tries<'a> {
 }
 
 impl Tries<'_> {
+    /// Waits for the slot's lookup token and takes it; `false` when the
+    /// cutoff came first.
+    async fn lookup(&self, slot: &TrySlot) -> Result<bool, Fault> {
+        let ready = poll_fn(|cx| slot.poll_lookup(cx));
+        let ready = match self.policy.cutoff {
+            Some(cutoff) => match tokio::time::timeout_at(cutoff, ready).await {
+                Ok(ready) => ready,
+                Err(_) => return Ok(false),
+            },
+            None => ready.await,
+        };
+        ready?;
+        slot.take_lookup()?;
+        Ok(true)
+    }
     /// Runs `op` (its argument the try's number, from 1) once per try of
     /// `kind` in `slot`, until a try is not retried, the tries run out, or
     /// a stop or the cutoff comes. A fault fails the run, its try left
@@ -285,6 +370,13 @@ impl Tries<'_> {
                 done.stopped = true;
                 return Ok(done);
             }
+            // An earlier try's lookup may still hold the permit's token: the
+            // wait for it is neither counted nor timed, and ends at the
+            // cutoff (`batch.md` 2.5).
+            if !self.lookup(slot).await? || self.control.stopped() || self.policy.past_cutoff() {
+                done.stopped = true;
+                return Ok(done);
+            }
             done.tries += 1;
             if kind.counted() {
                 self.unsettled.fetch_add(1, Ordering::AcqRel);
@@ -305,8 +397,9 @@ impl Tries<'_> {
             if let Some(fault) = record.fault {
                 return Err(fault);
             }
-            if ended == Ended::Ok && record.calls == 0 {
-                // A value no request answered: not a try 1.6 can classify.
+            if record.calls == 0 {
+                // No request went out, so 1.6 has no row for the try: an
+                // error before sending is the engine's, not the store's.
                 return Err(Fault::Internal);
             }
             let verdict = classify::classify(kind, done.tries > 1, &record.facts(), ended);

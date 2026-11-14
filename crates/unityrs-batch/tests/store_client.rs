@@ -502,6 +502,7 @@ fn sentinel_credentials_render_nowhere() {
         "Credentials { key_id: <20 bytes>, secret: <36 bytes>, token: Some(<37 bytes>) }"
     );
     let provider = creds.into_provider();
+    rendered.push(format!("{provider:?}"));
     let url = endpoint();
     let settings = Settings {
         bucket: "bucket",
@@ -525,6 +526,11 @@ fn sentinel_credentials_render_nowhere() {
         Duration::from_secs(1),
     );
     let store = client::build(&settings, None, &provider, &connector).unwrap();
+    rendered.push(format!("{store:?} {:?}", *store));
+    assert_eq!(
+        rendered[3],
+        "Provider { key_id: <20 bytes>, secret: <36 bytes>, token: Some(<37 bytes>) }"
+    );
     let h = Harness::new([]);
     let path = Path::parse("k").unwrap();
     for _ in 0..4 {
@@ -545,7 +551,7 @@ fn sentinel_credentials_render_nowhere() {
     let error = run(store.put(&path, PutPayload::from_static(b"x"))).unwrap_err();
     rendered.push(format!("{error} {error:?}"));
     for text in &rendered {
-        for secret in [SECRET, TOKEN] {
+        for secret in [KEY, SECRET, TOKEN] {
             assert!(!text.contains(secret), "{text}");
         }
     }

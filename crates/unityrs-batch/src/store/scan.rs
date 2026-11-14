@@ -334,14 +334,34 @@ fn grow(n: u32) -> Result<u32, Breach> {
 /// The longest error code the engine keeps; a longer one names nothing.
 pub const CODE_MAX: usize = 32;
 
-/// The text of a body's first `<Code>` element, at most [`CODE_MAX`] bytes.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// The text of a body's `<Error><Code>` element, at most [`CODE_MAX`] bytes.
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
 pub struct Code {
     bytes: [u8; CODE_MAX],
     len: u8,
 }
 
+/// The codes the engine acts on (`BATCH_SPEC.md` 1.6's table, and the
+/// 2xx words `object_store` retries on), which alone render.
+const NAMED: [&str; 4] = ["NoSuchUpload", "ExpiredToken", "InternalError", "SlowDown"];
+
+/// A code the table names renders as itself; any other, as its length, as
+/// a server can put anything there.
+impl std::fmt::Debug for Code {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match NAMED.iter().find(|name| self.is(name)) {
+            Some(name) => write!(f, "Code({name})"),
+            None => write!(f, "Code(<{} bytes>)", self.len),
+        }
+    }
+}
+
 impl Code {
+    /// Whether the body named no code.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
     /// Whether the body named exactly this code.
     #[must_use]
     pub fn is(&self, name: &str) -> bool {
@@ -349,52 +369,294 @@ impl Code {
     }
 }
 
-/// Finds a body's first `<Code>…</Code>` across chunk boundaries, with no
-/// allocation.
+/// What the code scan is inside.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum At {
+    #[default]
+    Text,
+    /// After `<`.
+    Open,
+    /// After `<!`: `matched` bytes of `[CDATA[` so far.
+    Bang { matched: u8 },
+    /// After `<!-`.
+    Dash,
+    /// A start tag's name, then its attributes.
+    Start {
+        attributes: bool,
+        quote: u8,
+        slash: bool,
+    },
+    /// An end tag's name, then any space before its `>`.
+    End { spaced: bool },
+    /// A comment; `dashes` the run of `-` just read.
+    Comment { dashes: u8 },
+    /// A CDATA section; `brackets` the run of `]` just read.
+    Cdata { brackets: u8 },
+    /// A processing instruction; `question` whether `?` came last.
+    Instruction { question: bool },
+    /// Any other `<!…>`, with its quotes and brackets.
+    Declaration { quote: u8, depth: u8 },
+}
+
+/// The longest element name the code scan compares.
+const NAME_MAX: usize = 16;
+
+/// Where the code scan is with the root `<Error>`'s `<Code>`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum Capture {
+    #[default]
+    Idle,
+    /// Inside it, its text so far plain.
+    Capturing,
+    /// Closed: the code is found, and the scan reads no further.
+    Done,
+}
+
+/// Finds the S3 error code of a body (`<Error><Code>…</Code>`) across chunk
+/// boundaries, with no allocation. It reads elements alone: a `<Code>` in a
+/// comment, a CDATA section, an instruction or an attribute value is no
+/// element, and a code counts only as the root `<Error>`'s child, holding
+/// plain text and closed by its own `</Code>`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CodeScan {
-    matched: u8,
-    capturing: bool,
-    long: bool,
-    done: bool,
+    at: At,
+    name: [u8; NAME_MAX],
+    name_len: u8,
+    /// The name ran past [`NAME_MAX`]: it is neither name compared.
+    name_long: bool,
+    depth: u32,
+    root_error: bool,
+    capture: Capture,
     code: Code,
 }
 
 impl CodeScan {
-    pub fn feed(&mut self, chunk: &[u8]) {
-        const OPEN: &[u8] = b"<Code>";
-        for &b in chunk {
-            if self.done {
-                return;
+    fn name(&self) -> &[u8] {
+        if self.name_long {
+            &[]
+        } else {
+            self.name
+                .get(..usize::from(self.name_len))
+                .unwrap_or_default()
+        }
+    }
+    fn new_name(&mut self) {
+        self.name_len = 0;
+        self.name_long = false;
+    }
+    fn push_name(&mut self, b: u8) {
+        if let Some(slot) = self.name.get_mut(usize::from(self.name_len)) {
+            *slot = b;
+            self.name_len += 1;
+        } else {
+            self.name_long = true;
+        }
+    }
+    fn capturing(&self) -> bool {
+        self.capture == Capture::Capturing
+    }
+    /// Markup inside a candidate code: it holds more than plain text.
+    fn spoil(&mut self) {
+        if self.capturing() {
+            self.capture = Capture::Idle;
+            self.code = Code::default();
+        }
+    }
+    fn started(&mut self, empty: bool) {
+        self.spoil();
+        if empty {
+            return;
+        }
+        self.depth = self.depth.saturating_add(1);
+        if self.depth == 1 {
+            self.root_error = self.name() == b"Error";
+        } else if self.depth == 2 && self.root_error && self.name() == b"Code" {
+            self.capture = Capture::Capturing;
+            self.code = Code::default();
+        }
+    }
+    fn ended(&mut self) {
+        if self.capturing() && self.name() == b"Code" && self.code.len > 0 {
+            self.capture = Capture::Done;
+            return;
+        }
+        self.spoil();
+        self.depth = self.depth.saturating_sub(1);
+    }
+    fn text(&mut self, b: u8) {
+        if !self.capturing() {
+            return;
+        }
+        // A code is plain text: an entity or an overlong one is no code.
+        if b == b'&' {
+            self.spoil();
+        } else if let Some(slot) = self.code.bytes.get_mut(usize::from(self.code.len)) {
+            *slot = b;
+            self.code.len += 1;
+        } else {
+            self.spoil();
+        }
+    }
+
+    /// After `<`.
+    fn open(&mut self, b: u8) -> At {
+        match b {
+            b'!' => At::Bang { matched: 0 },
+            b'?' => At::Instruction { question: false },
+            b'/' => {
+                self.new_name();
+                At::End { spaced: false }
             }
-            if self.capturing {
-                if b == b'<' {
-                    self.done = true;
-                    if self.long {
-                        self.code = Code::default();
-                    }
-                } else if let Some(slot) = self.code.bytes.get_mut(usize::from(self.code.len)) {
-                    *slot = b;
-                    self.code.len += 1;
-                } else {
-                    self.long = true;
+            _ => {
+                self.new_name();
+                self.push_name(b);
+                At::Start {
+                    attributes: false,
+                    quote: 0,
+                    slash: false,
                 }
-                continue;
-            }
-            if OPEN.get(usize::from(self.matched)) == Some(&b) {
-                self.matched += 1;
-                if usize::from(self.matched) == OPEN.len() {
-                    self.capturing = true;
-                }
-            } else {
-                self.matched = u8::from(b == b'<');
             }
         }
     }
+
+    /// In a start tag.
+    fn start(&mut self, attributes: bool, quote: u8, slash: bool, b: u8) -> At {
+        let next = |quote, slash| At::Start {
+            attributes,
+            quote,
+            slash,
+        };
+        match b {
+            _ if quote != 0 => next(if b == quote { 0 } else { quote }, false),
+            b'>' => {
+                self.started(slash);
+                At::Text
+            }
+            b'"' | b'\'' if attributes => next(b, false),
+            b'/' => next(0, true),
+            b' ' | b'\t' | b'\r' | b'\n' => At::Start {
+                attributes: true,
+                quote: 0,
+                slash: false,
+            },
+            _ => {
+                if !attributes {
+                    self.push_name(b);
+                }
+                next(0, false)
+            }
+        }
+    }
+
+    /// In an end tag.
+    fn end(&mut self, spaced: bool, b: u8) -> At {
+        match b {
+            b'>' => {
+                self.ended();
+                At::Text
+            }
+            b' ' | b'\t' | b'\r' | b'\n' => At::End { spaced: true },
+            _ => {
+                if spaced {
+                    // A name with space inside: no end tag of ours.
+                    self.name_long = true;
+                }
+                self.push_name(b);
+                At::End { spaced }
+            }
+        }
+    }
+
+    pub fn feed(&mut self, chunk: &[u8]) {
+        const CDATA: &[u8] = b"[CDATA[";
+        for &b in chunk {
+            if self.capture == Capture::Done {
+                return;
+            }
+            self.at = match self.at {
+                At::Text if b == b'<' => At::Open,
+                At::Text => {
+                    self.text(b);
+                    At::Text
+                }
+                At::Open => self.open(b),
+                At::Bang { matched: 0 } if b == b'-' => At::Dash,
+                At::Bang { matched } if CDATA.get(usize::from(matched)) == Some(&b) => {
+                    if usize::from(matched) + 1 == CDATA.len() {
+                        At::Cdata { brackets: 0 }
+                    } else {
+                        At::Bang {
+                            matched: matched + 1,
+                        }
+                    }
+                }
+                At::Dash if b == b'-' => At::Comment { dashes: 0 },
+                At::Bang { .. } | At::Dash => Self::declaration(0, 0, b),
+                At::Start {
+                    attributes,
+                    quote,
+                    slash,
+                } => self.start(attributes, quote, slash, b),
+                At::End { spaced } => self.end(spaced, b),
+                At::Comment { dashes } => match b {
+                    b'-' => At::Comment {
+                        dashes: dashes.saturating_add(1),
+                    },
+                    b'>' if dashes >= 2 => At::Text,
+                    _ => At::Comment { dashes: 0 },
+                },
+                At::Cdata { brackets } => match b {
+                    b']' => At::Cdata {
+                        brackets: brackets.saturating_add(1),
+                    },
+                    b'>' if brackets >= 2 => At::Text,
+                    _ => At::Cdata { brackets: 0 },
+                },
+                At::Instruction { question } => match b {
+                    b'>' if question => At::Text,
+                    _ => At::Instruction {
+                        question: b == b'?',
+                    },
+                },
+                At::Declaration { quote, depth } => Self::declaration(quote, depth, b),
+            };
+            // A code holds plain text: no comment, CDATA or instruction.
+            if matches!(
+                self.at,
+                At::Comment { .. }
+                    | At::Cdata { .. }
+                    | At::Instruction { .. }
+                    | At::Declaration { .. }
+            ) {
+                self.spoil();
+            }
+        }
+    }
+
+    fn declaration(quote: u8, depth: u8, b: u8) -> At {
+        match b {
+            _ if quote != 0 => At::Declaration {
+                quote: if b == quote { 0 } else { quote },
+                depth,
+            },
+            b'"' | b'\'' => At::Declaration { quote: b, depth },
+            b'[' => At::Declaration {
+                quote: 0,
+                depth: depth.saturating_add(1),
+            },
+            b']' => At::Declaration {
+                quote: 0,
+                depth: depth.saturating_sub(1),
+            },
+            b'>' if depth == 0 => At::Text,
+            _ => At::Declaration { quote: 0, depth },
+        }
+    }
+
     /// The code, once its element closed; none before, or past [`CODE_MAX`].
     #[must_use]
     pub fn code(&self) -> Code {
-        if self.done {
+        if self.capture == Capture::Done {
             self.code
         } else {
             Code::default()

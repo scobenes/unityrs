@@ -16,12 +16,15 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use unityrs_batch::{
-    http::{self, Detail, Failure, Payload, Response, permit::PermitPool, permit::RequestPermit},
+    http::{
+        self, Detail, Failure, Payload, Response,
+        permit::{OperationToken, PermitPool, RequestPermit},
+    },
     store::{
         Kind,
         attempt::{Done, Fault, Policy, Tries, TrySlot},
         classify::Ended,
-        client::{self, Settings},
+        client::{self, Settings, Store},
         connector::{Connector, Transport},
     },
 };
@@ -55,6 +58,10 @@ pub enum Reply {
     Refuse(Detail),
     /// The connect never ends.
     StallConnect,
+    /// The lookup outlives its try, holding the permit's token this long, as
+    /// a resolver thread the try's timer cannot stop does; the try never
+    /// connects.
+    SlowLookup(Duration),
 }
 
 impl Reply {
@@ -150,6 +157,7 @@ impl Transport for Script {
         _url: &Url,
         request: hyper::Request<Payload>,
         _timeout: Duration,
+        token: OperationToken,
         connected: &AtomicBool,
     ) -> Result<Response<ScriptIo>, http::Error> {
         self.sent.fetch_add(1, Ordering::AcqRel);
@@ -159,7 +167,17 @@ impl Transport for Script {
             .unwrap()
             .pop_front()
             .expect("a scripted reply");
+        if let Reply::SlowLookup(hold) = reply {
+            tokio::spawn(async move {
+                tokio::time::sleep(hold).await;
+                drop(token);
+            });
+            return std::future::pending().await;
+        }
+        // The lookup returned: its token is home.
+        drop(token);
         match reply {
+            Reply::SlowLookup(_) => unreachable!(),
             Reply::Refuse(detail) => Err(http::Error::Transport(Failure {
                 detail,
                 errno: None,
@@ -265,7 +283,7 @@ pub fn policy(attempts: u32) -> Policy {
 /// A store over a scripted transport, its slot's permit from a pool of one.
 pub struct Harness {
     pub script: Script,
-    pub store: object_store::aws::AmazonS3,
+    pub store: Store,
     pub slot: Arc<TrySlot>,
     pub pool: PermitPool,
     pub stop: AtomicBool,

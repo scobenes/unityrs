@@ -1,18 +1,21 @@
 //! The bodies the connector hands `object_store` (`docs/plans/batch.md`
-//! 2.9). A non-2xx body is read by the connector, at most 64 KiB, into one
-//! buffer allocated once and charged to the permit, and cut there. A 2xx
-//! body passes through, chunk by chunk and uncopied, under its kind's cap,
-//! with a size hint clamped to that cap, so no server's `Content-Length`
-//! sizes an allocation: past the cap a head GET's read stops, any other's
-//! fails. A LIST page also passes the tag scan, and every body the `<Code>`
-//! scan. Past a cap or a breach nothing more is read.
+//! 2.9). A non-2xx body is read by the connector, at most 64 KiB, through
+//! the `<Code>` scan and kept nowhere: `object_store` gets an empty body, so
+//! no error of its renders what the server sent. A 2xx body passes through,
+//! chunk by chunk and uncopied, under its kind's cap, with a size hint
+//! clamped to that cap, so no server's `Content-Length` sizes an
+//! allocation: past the cap a head GET's read stops, any other's fails. A
+//! LIST page also passes the tag scan, and every body the `<Code>` scan; a
+//! complete's 2xx that names an error fails before `object_store` could
+//! render it. A body is read only in its own try. Past
+//! a cap or a breach nothing more is read.
 use super::{
     ERROR_CAP, Kind, LIST_CAP,
     attempt::{BodyFault, Fault, TrySlot},
     connector::{decimal, refused},
     scan::{CodeScan, TagScan},
 };
-use crate::http::{self, Data, Response, permit::Charge, permit::RequestPermit};
+use crate::http::{self, Data, Response};
 use hyper::{
     body::{Body, Bytes, Frame, SizeHint},
     http::header::CONTENT_LENGTH,
@@ -25,7 +28,6 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
-use unityrs_core::limits::heap_cost;
 
 /// A LIST page's most `<Contents>` (`max_keys`).
 const MAX_KEYS: u32 = 1_000;
@@ -39,17 +41,6 @@ fn content_length<I: AsyncRead + AsyncWrite + Unpin>(response: &Response<I>) -> 
     decimal(first.as_bytes())
 }
 
-/// The charged buffer a non-2xx body is read into, uncopied into `Bytes`.
-struct Owned {
-    bytes: Vec<u8>,
-    _charge: Option<Charge>,
-}
-impl AsRef<[u8]> for Owned {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes
-    }
-}
-
 /// A DATA piece of the service's, uncopied into `Bytes`; its charge lasts
 /// as long as `object_store` holds it.
 struct Piece(Data);
@@ -59,32 +50,24 @@ impl AsRef<[u8]> for Piece {
     }
 }
 
-/// Reads at most [`ERROR_CAP`] bytes of a non-2xx body. A body that fails
-/// leaves what arrived; the try keeps its status's row.
+/// Reads at most [`ERROR_CAP`] bytes of a non-2xx body for its code, and
+/// keeps none of them. A body that fails leaves the code it named so far;
+/// the try keeps its status's row.
 pub(super) async fn error_body<I: AsyncRead + AsyncWrite + Unpin>(
     slot: &TrySlot,
-    permit: &RequestPermit,
     response: &mut Response<I>,
-) -> Result<HttpResponseBody, Fault> {
-    let capacity = content_length(response).map_or(ERROR_CAP, |n| n.min(ERROR_CAP));
-    let size = usize::try_from(capacity).map_err(|_| Fault::Internal)?;
-    let charge = if size == 0 {
-        None
-    } else {
-        Some(permit.charge(heap_cost(capacity)).ok_or(Fault::Memory)?)
-    };
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(size).map_err(|_| Fault::Memory)?;
+) -> HttpResponseBody {
+    let size = content_length(response).map_or(ERROR_CAP, |n| n.min(ERROR_CAP));
+    let mut read = 0_u64;
     let mut code = CodeScan::default();
-    while bytes.len() < size {
+    while read < size {
         match response.data().await {
             Ok(Some(data)) => {
                 let piece = data.as_slice();
-                let take = piece
-                    .get(..piece.len().min(size - bytes.len()))
-                    .unwrap_or_default();
+                let room = usize::try_from(size - read).unwrap_or(usize::MAX);
+                let take = piece.get(..piece.len().min(room)).unwrap_or_default();
                 code.feed(take);
-                bytes.extend_from_slice(take);
+                read += take.len() as u64;
             }
             Ok(None) => break,
             Err(error) => {
@@ -94,10 +77,7 @@ pub(super) async fn error_body<I: AsyncRead + AsyncWrite + Unpin>(
         }
     }
     slot.update(|r| r.code = code.code());
-    Ok(HttpResponseBody::from(Bytes::from_owner(Owned {
-        bytes,
-        _charge: charge,
-    })))
+    HttpResponseBody::from(Bytes::new())
 }
 
 /// Preflight's bucket proof: its 2xx body is read under the LIST cap and
@@ -133,11 +113,44 @@ fn body_failed(slot: &TrySlot, error: http::Error) {
 type Read<I> =
     Pin<Box<dyn Future<Output = (Response<I>, Result<Option<Data>, http::Error>)> + Send>>;
 
+/// `object_store` renders a 2xx body holding either word (`src/client/
+/// retry.rs`'s `body_contains_error`); neither's first byte recurs in it.
+const RENDERED: [&[u8]; 2] = [b"InternalError", b"SlowDown"];
+
+/// Whether a body so far holds one of [`RENDERED`], across chunks.
+#[derive(Clone, Copy, Default)]
+struct Words {
+    matched: [u8; 2],
+    found: bool,
+}
+impl Words {
+    fn feed(&mut self, chunk: &[u8]) {
+        for &b in chunk {
+            for (word, matched) in RENDERED.iter().zip(self.matched.iter_mut()) {
+                if word.get(usize::from(*matched)) == Some(&b) {
+                    *matched += 1;
+                    if usize::from(*matched) == word.len() {
+                        self.found = true;
+                        *matched = 0;
+                    }
+                } else {
+                    *matched = u8::from(word.first() == Some(&b));
+                }
+            }
+        }
+    }
+}
+
 struct Inner<I: AsyncRead + AsyncWrite + Unpin> {
     response: Option<Response<I>>,
     read: Option<Read<I>>,
     slot: Arc<TrySlot>,
+    /// The try the body belongs to.
+    generation: u32,
     kind: Kind,
+    /// For a complete's 2xx, the one `object_store` reads for error words
+    /// (`retry_error_body`) and renders when it holds one: whether it does.
+    words: Option<Words>,
     passed: u64,
     scan: Option<TagScan>,
     code: CodeScan,
@@ -170,7 +183,9 @@ pub(super) fn capped<I: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             response: Some(response),
             read: None,
             slot: Arc::clone(slot),
+            generation: slot.generation(),
             kind,
+            words: matches!(kind, Kind::Complete).then(Words::default),
             passed: 0,
             scan: (kind == Kind::ListPage).then(|| TagScan::new(MAX_KEYS)),
             code: CodeScan::default(),
@@ -198,6 +213,13 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Inner<I> {
     fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, HttpError>>> {
         if self.done {
             return Poll::Ready(None);
+        }
+        // Only its own try's timer bounds a body: read after it, or in
+        // another try, it is the engine's fault.
+        if !self.slot.is_current(self.generation) {
+            self.slot.fail(Fault::Internal);
+            let _ = self.end(None);
+            return Poll::Ready(Some(Err(refused())));
         }
         if self.read.is_none() {
             let Some(mut response) = self.response.take() else {
@@ -253,6 +275,15 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Inner<I> {
             && scan.feed(piece).is_err()
         {
             return self.end(Some(BodyFault::Scan));
+        }
+        if let Some(words) = self.words.as_mut() {
+            words.feed(piece);
+            if words.found || !self.code.code().is_empty() {
+                // A 2xx naming an error: the call returns it as an error
+                // (1.6), before `object_store` could render the body.
+                let _ = self.end(None);
+                return Poll::Ready(Some(Err(refused())));
+            }
         }
         self.passed += length;
         self.response = Some(response);

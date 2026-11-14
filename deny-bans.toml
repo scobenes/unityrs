@@ -25,6 +25,11 @@ name = "aws-lc-sys"
 [[bans.deny]]
 name = "aws-lc-fips-sys"
 
+# `object_store`'s own HTTP client: the store speaks only through the
+# engine's connector (`docs/plans/batch.md` 2.9).
+[[bans.deny]]
+name = "reqwest"
+
 [[bans.deny]]
 name = "rustls"
 deny-multiple-versions = true
