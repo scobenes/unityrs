@@ -12,6 +12,8 @@
 //!   counts in (`docs/BATCH_SPEC.md` section 10), suspend included.
 //! - [`clock_ticks`]: `sysconf(_SC_CLK_TCK)`, the unit of
 //!   `/proc/self/stat`'s start time.
+//! - [`page_size`]: `sysconf(_SC_PAGESIZE)`, which the memory bound's
+//!   calibration is certified for at 4 KiB only ([`crate::bound`]).
 
 use std::{io, time::Duration};
 
@@ -109,6 +111,15 @@ pub fn clock_ticks() -> Option<u64> {
     // SAFETY: `sysconf` reads a configuration value and touches no memory
     // of ours.
     let n = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    u64::try_from(n).ok().filter(|&n| n > 0)
+}
+
+/// `sysconf(_SC_PAGESIZE)`: the page size in bytes; `None` when unknown.
+#[must_use]
+pub fn page_size() -> Option<u64> {
+    // SAFETY: `sysconf` reads a configuration value and touches no memory
+    // of ours.
+    let n = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     u64::try_from(n).ok().filter(|&n| n > 0)
 }
 

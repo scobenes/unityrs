@@ -4,8 +4,9 @@
 //! (`docs/plans/extract.md` E15, E18, E59, E66), under the memory bound
 //! ([`crate::MEMORY`]) or a meter of about the decode's charge.
 //!
-//! A format outside the thirteen the crate decodes (the five version 1
-//! exports, and the ETC and EAC formats) decodes as one of them, so every
+//! A format outside the twenty-four the crate decodes (the five version 1
+//! exports, the rest of Pillow's raw and `bcn` formats, and the ETC and EAC
+//! formats) decodes as one of them, so every
 //! input reaches a decoder. Besides a panic (libFuzzer's hook aborts at it,
 //! before the decoder's containment can catch it), a finding is: a
 //! selection that exports a format the texture does not have; a decode

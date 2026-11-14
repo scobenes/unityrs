@@ -88,8 +88,9 @@ jobs:
         run: cargo test -p unityrs-batch --features test-hooks
 
   # The batch engine's scale cases (production-sized and million-record
-  # phase-6 runs, plus archive count, memory and digest boundaries), in
-  # release. Heavy cases are ignored in debug builds and run here alone.
+  # phase-6 runs, plus archive count, memory and digest boundaries, and
+  # X13's squeeze of every testkit scene), in release. Heavy cases are
+  # ignored in debug builds and run here alone.
   scale:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -112,8 +113,9 @@ jobs:
           --test winners_scale --test members_scale
           --test archive_alloc --test archive_bytes --test archive_digest
           --test publication_alloc --test phase6_ledger --test http_alloc --test url_alloc
+          --test controller_determinism
           --test finish_alloc --test publication_pool --test golden_runs --test pool_alloc --test controller_alloc
-          --test archive_publish --test lifetime_process
+          --test archive_publish --test limit_squeeze --test lifetime_process
           -- --include-ignored
 
   licenses:
@@ -387,13 +389,14 @@ jobs:
       # walk_reentry.py, walk_runs.py and walk_write.py, env.py through env_paths.py and
       # env_race.py, dump.py through dump_inputs.py, tpk.py through
       # tpk_build.py, sprite.py through sprite_build.py, sprite_cases.py and
-      # sprite_solve.py, texture.py through texture_etc.py), as
+      # sprite_solve.py, texture.py through texture_etc.py and texture_raw.py), as
       # scripts/tests/test_ci_workflow.py checks, and each
       # module also runs on its own (tools/parity/tests/test_fixture_modules.py).
       # no_tree.py reads with tpk.py's synthetic TPKs, unityrs-tpk's test
       # replays it. texture.py records UnityPy's and Pillow's texture decodes
-      # and selection, and through texture_etc.py texture2ddecoder's ETC and
-      # EAC decodes, which unityrs-texture's tests replay. meshdecode.py
+      # and selection, through texture_etc.py texture2ddecoder's ETC and EAC
+      # decodes, and through texture_raw.py Pillow's other raw and bcn
+      # decodes, which unityrs-texture's tests replay. meshdecode.py
       # records UnityPy's MeshHandler and UnityPyBoost's unpack_vertexdata,
       # through meshdecode_build.py, meshdecode_cases.py and
       # meshdecode_trees.py (its hand-built trees), which

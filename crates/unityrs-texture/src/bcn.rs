@@ -1,7 +1,9 @@
-// Ported from Pillow 9.5.0 (MIT-CMU): src/libImaging/BcnDecode.c, its BC1, BC3 and BC7 block decoders and its block order (decode_bc1_color, decode_bc3_alpha, decode_bc7_block, put_block, decode_bcn); that file is dedicated to the public domain (CC0) in its own header, and Pillow's licence covers the rest. See THIRD_PARTY_LICENSES.
-//! Pillow 9.5.0's `BCn` decoders for DXT1 (`bcn` 1), DXT5 (`bcn` 3) and BC7
-//! (`bcn` 7), which UnityPy 1.25.2 calls through `Image.frombytes` in mode
-//! `RGBA` (`docs/plans/extract.md` E15), ported rule for rule:
+// Ported from Pillow 9.5.0 (MIT-CMU): src/libImaging/BcnDecode.c, its BC1, BC2, BC3, BC4, BC5 and BC7 block decoders and its block order (decode_bc1_color, decode_bc3_alpha, decode_bc2_block, decode_bc4_block, decode_bc5_block, decode_bc7_block, put_block, decode_bcn); that file is dedicated to the public domain (CC0) in its own header, and Pillow's licence covers the rest. See THIRD_PARTY_LICENSES.
+//! Pillow 9.5.0's `BCn` decoders for DXT1 (`bcn` 1), DXT3 (`bcn` 2), DXT5
+//! (`bcn` 3), BC4 (`bcn` 4), BC5 (`bcn` 5) and BC7 (`bcn` 7), which UnityPy
+//! 1.25.2 calls through `Image.frombytes` in mode `RGBA`, but `L` for BC4
+//! and `RGB` for BC5 (`docs/plans/extract.md` E15; `CONV_TABLE`), ported
+//! rule for rule:
 //! - **BC1** (`decode_bc1_color`): the two 5:6:5 endpoints widened by bit
 //!   replication; four colours when `c0 > c1` (the thirds, each `(2a + b) / 3`
 //!   truncated), else three and transparent black (the half, truncated, then
@@ -9,6 +11,15 @@
 //! - **BC3**: the colour block as BC1's, always in its four-colour form
 //!   (`separate_alpha`), and the alpha block (`decode_bc3_alpha`): eight
 //!   values when `a0 > a1` (sevenths, truncated), else six with 0 and 255.
+//! - **BC2** (`decode_bc2_block`): the colour block as BC1's, always in its
+//!   four-colour form, and each pixel's alpha its own 4 bits, pixel `n` in
+//!   bits `4n` to `4n + 3` of the first 8 bytes, widened as `(v << 4) | v`.
+//! - **BC4** (`decode_bc4_block`): BC3's alpha block, unsigned, into the
+//!   one band of `L`.
+//! - **BC5** (`decode_bc5_block`): two of BC3's alpha blocks, unsigned
+//!   (UnityPy passes no pixel format, so never `BC5S`), into red and green;
+//!   blue is the 0 of Pillow's zeroed block (`memset`), as is the alpha the
+//!   `RGB` image drops.
 //! - **BC7** (`decode_bc7_block`): Pillow's own reading of the modes, which
 //!   departs from the specification in one place: a block whose first byte
 //!   is 0 (no mode bit) gives (0, 0, 0, 255), where the specification gives
@@ -31,8 +42,14 @@ type Rgba = [u8; 4];
 pub(crate) enum Kind {
     /// `bcn` 1: DXT1.
     Bc1,
+    /// `bcn` 2: DXT3.
+    Bc2,
     /// `bcn` 3: DXT5.
     Bc3,
+    /// `bcn` 4: BC4, into `L`.
+    Bc4,
+    /// `bcn` 5: BC5, into `RGB`.
+    Bc5,
     /// `bcn` 7: BC7.
     Bc7,
 }
@@ -49,13 +66,23 @@ fn byte(v: u32) -> u8 {
 }
 
 /// Decodes `data` (at least the padded image's blocks) into `out`, the
-/// `w` x `h` image's rows top to bottom: block row `by` of the padded image
-/// holds source rows `4 by` to `4 by + 3`, and source row `y` is output row
-/// `h - 1 - y`.
+/// `w` x `h` image's rows top to bottom, each pixel the first bytes of the
+/// block's pixel its mode keeps (4 for `RGBA`, 3 for BC5's `RGB`, 1 for
+/// BC4's `L`): block row `by` of the padded image holds source rows `4 by`
+/// to `4 by + 3`, and source row `y` is output row `h - 1 - y`.
 pub(crate) fn decode(kind: Kind, data: &[u8], w: usize, h: usize, out: &mut [u8]) {
-    let block_bytes = if kind == Kind::Bc1 { 8 } else { 16 };
+    let block_bytes = if matches!(kind, Kind::Bc1 | Kind::Bc4) {
+        8
+    } else {
+        16
+    };
+    let bpp = match kind {
+        Kind::Bc4 => 1,
+        Kind::Bc5 => 3,
+        _ => 4,
+    };
     let (blocks_x, blocks_y) = (w.div_ceil(4), h.div_ceil(4));
-    let row = w.saturating_mul(4);
+    let row = w.saturating_mul(bpp);
     let mut blocks = data.chunks_exact(block_bytes);
     for by in 0..blocks_y {
         for bx in 0..blocks_x {
@@ -65,9 +92,18 @@ pub(crate) fn decode(kind: Kind, data: &[u8], w: usize, h: usize, out: &mut [u8]
             let mut col = [[0u8; 4]; 16];
             match kind {
                 Kind::Bc1 => bc1_color(src, &mut col, false),
+                Kind::Bc2 => {
+                    bc1_color(src.get(8..).unwrap_or_default(), &mut col, true);
+                    bc2_alpha(src, &mut col);
+                }
                 Kind::Bc3 => {
                     bc1_color(src.get(8..).unwrap_or_default(), &mut col, true);
-                    bc3_alpha(src, &mut col);
+                    bc3_alpha(src, &mut col, 3);
+                }
+                Kind::Bc4 => bc3_alpha(src, &mut col, 0),
+                Kind::Bc5 => {
+                    bc3_alpha(src, &mut col, 0);
+                    bc3_alpha(src.get(8..).unwrap_or_default(), &mut col, 1);
                 }
                 Kind::Bc7 => bc7_block(src, &mut col),
             }
@@ -76,9 +112,11 @@ pub(crate) fn decode(kind: Kind, data: &[u8], w: usize, h: usize, out: &mut [u8]
                 if x >= w || y >= h {
                     continue;
                 }
-                let at = (h - 1 - y).saturating_mul(row).saturating_add(x * 4);
-                if let Some(dst) = out.get_mut(at..at.saturating_add(4)) {
-                    dst.copy_from_slice(px);
+                let at = (h - 1 - y).saturating_mul(row).saturating_add(x * bpp);
+                if let (Some(dst), Some(src)) =
+                    (out.get_mut(at..at.saturating_add(bpp)), px.get(..bpp))
+                {
+                    dst.copy_from_slice(src);
                 }
             }
         }
@@ -142,9 +180,19 @@ fn bc1_color(src: &[u8], dst: &mut [Rgba; 16], separate_alpha: bool) {
     }
 }
 
-/// `decode_bc3_alpha`, unsigned, into each pixel's alpha: `src` is the BC3
-/// block, whose first 8 bytes are the alpha block.
-fn bc3_alpha(src: &[u8], dst: &mut [Rgba; 16]) {
+/// `decode_bc2_block`'s alpha: pixel `n`'s 4 bits from bit `4n` of the
+/// block, widened as `(av << 4) | av`.
+fn bc2_alpha(src: &[u8], dst: &mut [Rgba; 16]) {
+    for (n, px) in dst.iter_mut().enumerate() {
+        let bit = n * 4;
+        let av = 0xf & (u32::from(src.get(bit >> 3).copied().unwrap_or(0)) >> (bit & 7));
+        px[3] = byte((av << 4) | av);
+    }
+}
+
+/// `decode_bc3_alpha`, unsigned, into each pixel's band `channel` (its `o`):
+/// `src` begins with the 8-byte alpha block.
+fn bc3_alpha(src: &[u8], dst: &mut [Rgba; 16], channel: usize) {
     let (a0, a1) = (load(src, 0, 1), load(src, 1, 1));
     let (lut1, lut2) = (load(src, 2, 3), load(src, 5, 3));
     let a: [u8; 8] = if a0 > a1 {
@@ -172,7 +220,9 @@ fn bc3_alpha(src: &[u8], dst: &mut [Rgba; 16]) {
     };
     for (n, px) in dst.iter_mut().enumerate() {
         let lut = if n < 8 { lut1 } else { lut2 };
-        px[3] = pick(&a, ((lut >> (3 * (n % 8))) & 7) as usize);
+        if let Some(c) = px.get_mut(channel) {
+            *c = pick(&a, ((lut >> (3 * (n % 8))) & 7) as usize);
+        }
     }
 }
 

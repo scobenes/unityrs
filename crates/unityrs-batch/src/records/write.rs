@@ -72,6 +72,10 @@ impl Writer {
         if result.is_err() {
             self.failed = true;
         }
+        #[cfg(feature = "test-hooks")]
+        if result.is_ok() {
+            crate::work::tap::tell(crate::work::tap::Event::Record);
+        }
         result
     }
     /// Complete and close a successful artifact. The returned summary
@@ -182,7 +186,7 @@ impl Buffered<'_> {
         if self.failure {
             self.work.failure_record(self.buffer.len() as u64)?;
         } else {
-            self.work.file(self.buffer.len() as u64)?;
+            self.work.records(self.buffer.len() as u64)?;
         }
         self.file.append_stoppable(self.buffer, self.stopped)?;
         self.buffer.clear();

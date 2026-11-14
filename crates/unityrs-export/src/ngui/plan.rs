@@ -160,6 +160,7 @@ fn is_budget(r: &Reason) -> bool {
 /// The PNG encoder's mode of an image's.
 pub(super) fn png_mode(m: Mode) -> unityrs_imageio::Mode {
     match m {
+        Mode::L => unityrs_imageio::Mode::L,
         Mode::Rgb => unityrs_imageio::Mode::Rgb,
         Mode::Rgba => unityrs_imageio::Mode::Rgba,
     }

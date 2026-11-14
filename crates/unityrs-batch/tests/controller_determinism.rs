@@ -129,30 +129,58 @@ fn solo(scene: &AtlasScene, input: &str) -> AtlasScene {
     }
 }
 
+/// The scenes the full matrix covers.
+const SCENES: [&str; 6] = [
+    "struct_maintex_in_dependency",
+    "json_bytes_with_textures",
+    "streamed_sheets",
+    "repeated_rows",
+    "webfile_sibling",
+    "textured_winners",
+];
+
+/// A debug-build smoke test of the matrix below: two scenes, the extreme
+/// thread and slot counts, and two seeds.
 #[test]
+fn an_inputs_records_do_not_depend_on_what_runs_beside_it_smoke() {
+    matrix(
+        &["struct_maintex_in_dependency", "textured_winners"],
+        &[1, 8],
+        &[1, 4],
+        0..2,
+    );
+}
+
+/// About 780 controller runs; minutes in a debug build, so it runs in
+/// release, in CI's `scale` job.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "scale: run in release, as CI's `scale` job does"
+)]
 fn an_inputs_records_do_not_depend_on_what_runs_beside_it() {
-    let () = guard::finishes("determinism matrix", || {
+    matrix(&SCENES, &[1, 2, 8], &[1, 4], 0..20);
+}
+
+fn matrix(
+    names: &'static [&'static str],
+    threads_list: &'static [u32],
+    slots_list: &'static [u32],
+    seeds: std::ops::Range<u64>,
+) {
+    let () = guard::finishes("determinism matrix", move || {
         let mut scenes: Vec<_> = unityrs_testkit::ngui::scenes()
             .unwrap()
             .into_iter()
-            .filter(|(name, _)| {
-                [
-                    "struct_maintex_in_dependency",
-                    "json_bytes_with_textures",
-                    "streamed_sheets",
-                    "repeated_rows",
-                    "webfile_sibling",
-                    "textured_winners",
-                ]
-                .contains(name)
-            })
+            .filter(|(name, _)| names.contains(name))
             .collect();
+        assert_eq!(scenes.len(), names.len(), "every named scene exists");
         // Explicit same-named CAB/winner scene, plus staging and peek failures
         // outside successful views and two holders of the same failed member.
 
         for (_, scene) in &mut scenes {
             let mut same_cab = scene.bundles[0].clone();
-            same_cab.id = "same-cab-outside".to_owned();
+            "same-cab-outside".clone_into(&mut same_cab.id);
             let nested = SceneBundle {
                 id: "nested-other".to_owned(),
                 data: unityrs_testkit::env::bundle(&[("nested", same_cab.data.clone())]),
@@ -196,9 +224,9 @@ fn an_inputs_records_do_not_depend_on_what_runs_beside_it() {
                 expected.values().any(|(_, files)| !files.is_empty()),
                 "scene must compare candidate bytes"
             );
-            for threads in [1, 2, 8] {
-                for slots in [1, 4] {
-                    for seed in 0..20 {
+            for &threads in threads_list {
+                for &slots in slots_list {
+                    for seed in seeds.clone() {
                         let mut inputs: Vec<_> = scene.inputs.iter().map(String::as_str).collect();
                         let mut rng = Rng::new(seed);
                         for i in (1..inputs.len()).rev() {

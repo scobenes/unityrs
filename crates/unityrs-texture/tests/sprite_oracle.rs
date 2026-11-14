@@ -114,6 +114,7 @@ fn texture(t: &J, meter: &Arc<Meter>) -> Image {
 
 fn image(im: &Image) -> J {
     let (mode, bpp) = match im.mode() {
+        Mode::L => ("L", 1),
         Mode::Rgb => ("RGB", 3),
         Mode::Rgba => ("RGBA", 4),
     };

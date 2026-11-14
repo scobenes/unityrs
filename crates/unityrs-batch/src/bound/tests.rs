@@ -3,8 +3,8 @@
 use unityrs_core::limits::{Limits, heap_cost};
 
 use super::{
-    C_FIN, CHECK_ENV_BLOCK, CONTAINER_LEVEL_STACK, PANIC_SLOT, PER_BUNDLE, PROVISIONAL,
-    THREAD_STACK, WORKER_STATE, c_hdr, memory_bound,
+    C_FIN, CHECK_ENV_BLOCK, CONTAINER_LEVEL_STACK, PANIC_SLOT, PROVISIONAL, THREAD_STACK,
+    WORKER_STATE, c_hdr, memory_bound,
 };
 use crate::alloc::Measured;
 use crate::spec::model::Spec;
@@ -48,7 +48,7 @@ fn every_term_is_5_3_s() {
     );
     assert_eq!(b.c_env, 3 * (k.c_env + 10 * 1024));
     assert_eq!(b.c_net, 5 * k.c_net + 2 * 2 * MIB + 5 * 64 * 1024);
-    assert_eq!(b.c_spec, 10_000 + 2 * PER_BUNDLE);
+    assert_eq!(b.c_spec, 10_000, "the measure alone: no per-bundle term");
     assert_eq!(b.c_parse, 0, "p is far below I");
     assert_eq!(b.c_hdr, 0, "no header, no object store");
     assert_eq!(b.c_fin, C_FIN);
@@ -76,7 +76,7 @@ fn c_parse_is_the_peak_past_what_the_rest_holds() {
         r#","inputs":[{{"id":"a","path":"/a"}}]{DIRECTORY}"#
     ));
     let kept = 1000;
-    let c_spec = kept + PER_BUNDLE;
+    let c_spec = kept;
     let at = c_spec + 268_435_456 + C_FIN;
     for (peak, want) in [(at - 1, 0), (at, 0), (at + 5, 5)] {
         let b = memory_bound(&s, Measured { kept, peak }, 0, &PROVISIONAL);
@@ -109,4 +109,35 @@ fn c_hdr_counts_distinct_values_and_the_largest_block() {
         c_hdr(&store),
         6 * (heap_cost(128) * 2 + heap_cost(16 << 10))
     );
+}
+
+/// Calibration is certified for 4 KiB pages only: any other size, or an
+/// unknown one, is uncertified, with its stderr line; 4 KiB keeps the
+/// provisional label and adds no line.
+#[test]
+fn only_4_kib_pages_are_certified() {
+    use super::Certification;
+    assert_eq!(Certification::of(Some(4096)), Certification::Provisional);
+    assert_eq!(Certification::Provisional.note("unityrs batch"), None);
+    for page in [Some(16_384), Some(65_536), Some(8192), Some(0), None] {
+        let c = Certification::of(page);
+        assert_eq!(c, Certification::Uncertified { page_size: page });
+        let note = c.note("unityrs batch").unwrap();
+        assert!(
+            note.starts_with("unityrs batch: memory_bound uncertified: "),
+            "{note}"
+        );
+        assert!(
+            note.ends_with(", calibrated for 4096-byte pages only\n"),
+            "{note}"
+        );
+    }
+    assert!(
+        Certification::of(Some(16_384))
+            .note("p")
+            .unwrap()
+            .contains("16384-byte pages")
+    );
+    let page = crate::sys::page_size().unwrap();
+    assert!(page.is_power_of_two(), "{page}");
 }

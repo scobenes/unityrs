@@ -305,7 +305,8 @@ def copy_repository(dest: Path):
     and the generator of its tables."""
     shutil.copy(ROOT / "about.hbs", dest / "about.hbs")
     (dest / "tools" / "gen").mkdir(parents=True)
-    shutil.copy(ROOT / "tools" / "gen" / "gen_tables.py", dest / "tools" / "gen" / "gen_tables.py")
+    for generator in (ROOT / "tools" / "gen").glob("*.py"):
+        shutil.copy(generator, dest / "tools" / "gen" / generator.name)
     shutil.copy(ROOT / "Cargo.toml", dest / "Cargo.toml")
     for crate in (ROOT / "crates").iterdir():
         if not (crate / "Cargo.toml").is_file():
@@ -388,6 +389,9 @@ class PortTests(unittest.TestCase):
                 "crates/unityrs-core/src/typetree/commonstring.rs": [(None, *unitypy), (gen, *unitypy)],
                 "crates/unityrs-core/src/tables.rs": [(gen, *unicode)],
                 "crates/unityrs-dump/src/select/printable.rs": [(gen, *unicode)],
+                "crates/unityrs-texture/src/astc/tables.rs": [
+                    ("tools/gen/astc_tables.py", "Arm astcenc commit 631fb04", "Apache-2.0")
+                ],
             },
         )
         self.assertEqual(set(T.data_provenance((ROOT / "about.hbs").read_text())), set(generated))
@@ -405,6 +409,7 @@ class PortTests(unittest.TestCase):
                 "OpenBLAS 0.3.31": ["LICENSE-OPENBLAS", "LICENSE-OPENBLAS-KERNELS", "LICENSE-OPENBLAS-DSCAL"],
                 "GotoBLAS2 code in OpenBLAS 0.3.31": ["LICENSE-OPENBLAS-UT"],
                 "zlib 1.2.13": ["LICENSE-ZLIB"],
+                "Arm astcenc commit 631fb04": ["LICENSE-ASTCENC"],
             },
         )
 
