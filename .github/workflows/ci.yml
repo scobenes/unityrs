@@ -102,6 +102,7 @@ jobs:
           --test winners_scale --test members_scale
           --test archive_alloc --test archive_bytes --test archive_digest
           --test publication_alloc --test phase6_ledger --test http_alloc --test url_alloc
+          --test controller_determinism
           --test finish_alloc --test publication_pool --test golden_runs --test pool_alloc --test controller_alloc
           --test archive_publish
           -- --include-ignored
