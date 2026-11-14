@@ -15,9 +15,11 @@ license = "(MIT OR Apache-2.0) AND MIT AND BSD-2-Clause AND PSF-2.0"
 repository.workspace = true
 authors.workspace = true
 
-# The dependency list is final for P1 (docs/plans/core.md section 7.1): work
-# packages do not add dependencies, so Cargo.lock never conflicts between them.
+# UnityCN also carries the MIT notices in LICENSE-RAZTOOLS and LICENSE-RAZMOTH.
+# MIT is already required by every alternative of the crate licence above.
 [dependencies]
+# UnityCN AES-ECB vectors; RustCrypto, MSRV 1.56, released 2024-02-13.
+aes = "=0.8.4"
 # Zero-copy buffers: the input, each decoded block run, every entry, every
 # SerializedFile and every TypelessData value share one allocation.
 bytes = "=1.12.1"

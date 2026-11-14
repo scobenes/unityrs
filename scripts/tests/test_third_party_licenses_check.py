@@ -410,6 +410,8 @@ class PortTests(unittest.TestCase):
                 "GotoBLAS2 code in OpenBLAS 0.3.31": ["LICENSE-OPENBLAS-UT"],
                 "zlib 1.2.13": ["LICENSE-ZLIB"],
                 "Arm astcenc commit 631fb04": ["LICENSE-ASTCENC"],
+                "RazTools/Studio": ["LICENSE-RAZTOOLS"],
+                "Razmoth/PGRStudio": ["LICENSE-RAZMOTH"],
             },
         )
 

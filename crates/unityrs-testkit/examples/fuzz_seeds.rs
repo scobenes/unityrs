@@ -42,7 +42,7 @@ use unityrs_testkit::depth::{Depth, Wrap, Z_ROWS};
 use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_case, lz4_case};
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 11] = [
+const TARGETS: [&str; 12] = [
     "detect",
     "bundle",
     "serialized",
@@ -54,6 +54,7 @@ const TARGETS: [&str; 11] = [
     "texture",
     "meshdecode",
     "zlib_match",
+    "unitycn",
 ];
 
 /// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
@@ -590,6 +591,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
         s.add("zlib_match", name, &bytes[..bytes.len().min(4 << 20)])?;
         let plain = &bytes[..bytes.len().min(LZ4_MAX)];
         let block = compress(TestCodec::Lz4, plain);
+        s.add("unitycn", name, &block)?;
         let exact = u32::try_from(plain.len()).unwrap_or(u32::MAX);
         for (tag, declared) in [
             ("exact", exact),
@@ -603,6 +605,15 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     // `lz4.block.compress(b"")`, the empty block, declared 0 and 1.
     s.add("lz4", "empty", &lz4_case(0, &[0]))?;
     s.add("lz4", "empty-over", &lz4_case(1, &[0]))?;
+    for (name, bytes) in [
+        ("empty", b"".as_slice()),
+        ("zero", &[0]),
+        ("offset", &[0, 0]),
+        ("length", &[0xf0]),
+        ("extensions", &[0xff; 32]),
+    ] {
+        s.add("unitycn", name, bytes)?;
+    }
     texture(&mut s)?;
     meshdecode(&mut s)?;
     for len in [2, 3, 257, 258, 259, 262, 32768, 65536, 65537, 131_333] {

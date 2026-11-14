@@ -20,6 +20,35 @@ use unityrs_batch::{
 use unityrs_testkit::guard;
 
 #[test]
+fn keyless_encrypted_input_is_committed_as_a_refusal_and_the_run_continues() {
+    let encrypted = unityrs_testkit::bundle::build(&unityrs_testkit::bundle::BundleSpec {
+        encrypted: true,
+        ..Default::default()
+    });
+    let mut h = Harness::new(
+        &[
+            ("encrypted", encrypted, vec![]),
+            ("clear", clear(1), vec![]),
+        ],
+        &[],
+        1,
+        1,
+    );
+    let mut c = h.controller(Arc::new(NoHooks));
+    assert_eq!(
+        c.drive_local(h.execution.as_mut().unwrap()),
+        Boundary::ReadyForWinners
+    );
+    assert!(c.failure().is_none());
+    let rows = h.records(0);
+    assert_eq!(rows[0]["status"], "failed");
+    assert_eq!(rows[0]["reason"], "container_error");
+    assert_eq!(rows[0]["detail"], "unsupported");
+    assert_eq!(h.records(1)[0]["status"], "complete");
+    h.execution.as_mut().unwrap().quiesce().unwrap();
+}
+
+#[test]
 fn failed_attempt_candidates_are_removed_and_failure_figures_match_the_disk() {
     let () = guard::finishes("failed attempt cleanup and summary", || {
         let scene = unityrs_testkit::ngui::scenes()

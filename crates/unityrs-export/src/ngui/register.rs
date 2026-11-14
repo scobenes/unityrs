@@ -261,7 +261,10 @@ fn is_bundle_entry(b: &BundleFile, i: usize) -> Result<bool, Error> {
         },
         Err(e @ (Error::Limit(_) | Error::Io(_) | Error::Budget(_))) => Err(e),
         // Allocator provenance can be nested in an entry, tree, read or
-        // dereference error. Keep the single recursive classifier authoritative.
+        // dereference error. Keep the single recursive classifier authoritative:
+        // UnityCN header and walk refusals classify as per-input (Skip), so at
+        // this probe they mean "not a container", and registration/load_all
+        // later reports them as per-input failures.
         Err(e) => match classify::error(&e) {
             Class::Run(_) => Err(e),
             Class::Skip(_) | Class::Input(_) => Ok(false),

@@ -299,8 +299,15 @@ pub fn error(e: &Error) -> Class {
         Error::Io(_) => return Class::Run(Reason::plain("host_io")),
         Error::Detect(_) => "detect",
         Error::OutOfBounds { .. } => "out_of_bounds",
-        Error::Malformed { .. } => "malformed",
-        Error::Unsupported(_) => "unsupported",
+        // BATCH_SPEC 7.3: a bad signature (wrong key) or short AES vector
+        // is corrupt input, so reuse `malformed` rather than add a code.
+        Error::Malformed { .. } | Error::UnityCnSignature | Error::UnityCnVectorLength { .. } => {
+            "malformed"
+        }
+        // Preserve the pre-UnityCN encrypted-input refusal for key problems.
+        Error::UnityCnKeyMissing | Error::UnityCnKeyLength { .. } | Error::Unsupported(_) => {
+            "unsupported"
+        }
         Error::Decompress { .. } => "decompress",
         Error::Version(_) => "version",
         Error::TypeIndex { .. } => "type_index",

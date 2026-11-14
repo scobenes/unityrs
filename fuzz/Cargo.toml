@@ -111,3 +111,10 @@ path = "fuzz_targets/zlib_match.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "unitycn"
+path = "fuzz_targets/unitycn.rs"
+test = false
+doc = false
+bench = false

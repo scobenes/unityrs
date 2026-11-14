@@ -53,6 +53,7 @@ jobs:
           - texture
           - meshdecode
           - zlib_match
+          - unitycn
     env:
       TARGET: ${{ matrix.target }}
     steps:

@@ -13,6 +13,7 @@ use super::decode::{BlockContext, decode_one};
 use super::index::{Ends, RunIndex};
 use super::{BlockInfo, BundleFile, BundleHeader, DirEntry, FileSlot, LayoutKind};
 use crate::codec::Codec;
+use crate::codec::unitycn::UnityCnDecryptor;
 use crate::counters::Origin;
 use crate::detect::raw_by_name;
 use crate::error::{Error, Unsupported};
@@ -70,8 +71,9 @@ impl BundleFile {
             class,
             encrypted,
             block_alignment,
+            unitycn,
         } = read_fs_header(&mut r, &data, &mut charge, ctx)?;
-        let blocks_ctx = BlockContext::new(ctx, encrypted);
+        let blocks_ctx = BlockContext::new(ctx, encrypted, unitycn);
         // :133-139: at the end, `Position = Length - compressedSize` (which a
         // stream refuses when negative), the read, and back to the start.
         let start = r.position();
@@ -212,6 +214,7 @@ struct FsHeader {
     class: FlagsClass,
     encrypted: bool,
     block_alignment: bool,
+    unitycn: Option<UnityCnDecryptor>,
 }
 
 /// `BundleFile.__init__` up to the signature dispatch, then `read_fs` up to
@@ -263,18 +266,25 @@ fn read_fs_header(
         FlagsClass::New => 0x1400,
     };
     let encrypted = data_flags & mask != 0;
-    if encrypted {
-        if ctx.decryptor.is_none() {
-            return Err(Error::Unsupported(Unsupported::Encrypted));
+    let unitycn = if encrypted {
+        if ctx.decryptor.is_some() {
+            // A custom decryptor owns its header semantics; retain the existing
+            // hook's consumption of the 70-byte UnityCN envelope.
+            r.read_u32()?;
+            for _ in 0..2 {
+                r.read_bytes_short(32);
+                r.set_position(r.position() + 1)?;
+            }
+            None
+        } else {
+            Some(UnityCnDecryptor::read(
+                r,
+                ctx.assetbundle_decrypt_key.as_ref(),
+            )?)
         }
-        // `ArchiveStorageDecryptor(reader)`: a u32, then two vectors of
-        // 16 + 16 bytes and a skipped byte (UnityCN: P3).
-        r.read_u32()?;
-        for _ in 0..2 {
-            r.read_bytes_short(32);
-            r.set_position(r.position() + 1)?;
-        }
-    }
+    } else {
+        None
+    };
     // :129-131
     let block_alignment = uses_block_alignment(format, &engine.version)?;
     if block_alignment {
@@ -292,6 +302,7 @@ fn read_fs_header(
         class,
         encrypted,
         block_alignment,
+        unitycn,
     })
 }
 

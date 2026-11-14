@@ -52,6 +52,24 @@ pub enum Error {
     /// A format or feature unityrs does not read (yet), each named.
     #[error("unsupported: {0}")]
     Unsupported(Unsupported),
+    /// UnityPy's key setter raises `ValueError` for this length.
+    #[error("AssetBundle Key length is wrong. It should be 16 bytes and now is {length} bytes.")]
+    UnityCnKeyLength {
+        /// Supplied length in bytes.
+        length: usize,
+    },
+    /// UnityPy raises `LookupError` after reading an encrypted header without a key.
+    #[error("The BundleFile is encrypted, but no key was provided!")]
+    UnityCnKeyMissing,
+    /// AES raises `ValueError` for a short header key vector.
+    #[error("Data must be aligned to block boundary in ECB mode (got {length} bytes)")]
+    UnityCnVectorLength {
+        /// Bytes read from the vector.
+        length: usize,
+    },
+    /// UnityPy raises a plain `Exception` when the AES signature differs.
+    #[error("Invalid UnityCN signature")]
+    UnityCnSignature,
     /// A block failed to decode.
     #[error("{codec:?} block: {detail}")]
     Decompress {
@@ -244,9 +262,13 @@ pub enum Unsupported {
     /// `WebFile` (`UnityWebData`, `TuanjieWebData`): P3.
     #[error("WebFile")]
     WebFile,
-    /// An encrypted bundle without a decryptor (UnityCN: P3).
+    /// Legacy custom-decryptor refusal. The built-in UnityCN loader instead
+    /// returns [`Error::UnityCnKeyMissing`] for a missing load-local key.
     #[error("an encrypted bundle without a decryptor")]
     Encrypted,
+    /// Tier U: the token walk would read beyond Boost's trailing zero byte.
+    #[error("UnityCN token walk past the trailing zero byte")]
+    UnityCnWalk,
     /// A file inside a zip: P3.
     #[error("zip members")]
     Zip,
