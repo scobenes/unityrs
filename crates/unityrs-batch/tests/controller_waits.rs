@@ -10,6 +10,7 @@ const TOKENS: &[&str] = &[
     ".recv_timeout(",
     ".wait(",
     ".wait_timeout_while(",
+    ".wait_timeout(",
     ".block_on(",
     "worker.join(",
     "libc::poll(",
@@ -37,10 +38,14 @@ fn scan(dir: &Path, root: &Path, out: &mut BTreeMap<(String, String), usize>) {
             // Existing progress/early has its own bounded wait tests. This
             // inventory owns B5's added execution and orchestration only.
             if name.starts_with("controller/")
+                || name.starts_with("lifetime/")
                 || [
                     "execution.rs",
                     "worker.rs",
-                    "sys.rs",
+                    "sys/mod.rs",
+                    "sys/wake.rs",
+                    "sys/lifecycle.rs",
+                    "sys/reset.rs",
                     "sys/shared.rs",
                     "control.rs",
                     "phase1.rs",
@@ -65,10 +70,15 @@ fn every_engine_wait_has_a_bounded_or_idle_role_and_dispatch_unlocks_before_core
         ("execution.rs", ".recv(", 1), // W3 idle pool drive, lock drops before job()
         ("execution.rs", ".recv_timeout(", 5), // W20: end/pool/worker priming and startup deadlines
         ("execution.rs", ".wait(", 1), // W20 shared parking gate; Drop always releases on setup failure
+        ("execution.rs", ".wait_timeout(", 1), // zero-duration startup priming
         ("execution.rs", "worker.join(", 2), // explicit quiesce only: extraction and pool drives
         ("worker.rs", ".lock(", 2),    // W3 receive, and moving a completed owner
         ("worker.rs", ".recv(", 1),    // W3 idle worker
-        ("sys.rs", "libc::poll(", 1),  // W1/W2: 1 s, stop and end descriptors
+        ("sys/wake.rs", "libc::poll(", 1), // W1/W2: 1 s, stop and end descriptors
+        ("sys/lifecycle.rs", "libc::poll(", 1), // W9: BOOTTIME timer, bounded fallback
+        ("sys/reset.rs", "libc::poll(", 1), // zero-time disconnect inspection
+        ("lifetime/runtimes.rs", ".lock(", 3), // W20 start-count and close
+        ("lifetime/runtimes.rs", ".wait_timeout(", 2), // one shared absolute second
         ("sys/shared.rs", ".lock(", 1), // parking mutex, including publication filesystem I/O
     ]
     .into_iter()

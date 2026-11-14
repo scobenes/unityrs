@@ -152,8 +152,7 @@ impl Controller {
             .staged = file.map(OwnedFile::into_claim);
         if let Some(Failure::Run(f)) = end.failure {
             RunFailure::reduce(&mut self.failure, f);
-            self.control
-                .request_stop(f, crate::control::Culprit::Bundle(end.bundle));
+            self.control.request_stop(f, crate::control::Culprit::None);
         }
         self.hooks.event(Event::StageReceived(end.bundle));
         match end.failure {

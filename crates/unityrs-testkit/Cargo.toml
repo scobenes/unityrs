@@ -17,6 +17,7 @@ publish = false
 # core's), so core's tests can use it without a dependency cycle
 # (docs/plans/core.md section 7.1).
 [dependencies]
+libc = "=0.2.191"
 liblzma = { version = "=0.4.9", features = ["static"] }
 lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 # Only under `test-counters`, which turns the core's test-only counters on
