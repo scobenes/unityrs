@@ -72,7 +72,10 @@ impl<'a> Sheet<'a> {
     /// are [`SpriteError::AlphaSizeMismatch`] (`Image.merge`'s "size
     /// mismatch", Tier U). Either texture is one of the five formats, which
     /// decode to three or four bands, so the merge's band count always
-    /// holds. UnityPy's cache of the merged sheet is the caller's: a sheet
+    /// holds: the callers render sprites only of what [`crate::select()`]
+    /// exports. A BC4 texture's `L` image, one band, is not rendered here
+    /// yet (where UnityPy's merge raises "wrong number of bands", `PARITY.md`
+    /// section 15.2): it is read as the bytes it holds, never past them. UnityPy's cache of the merged sheet is the caller's: a sheet
     /// serves every sprite of its group.
     pub fn new(
         texture: &'a Image,
@@ -158,6 +161,7 @@ impl<'a> Sheet<'a> {
 /// The bytes of one pixel of `mode`.
 pub(crate) const fn bpp(mode: Mode) -> usize {
     match mode {
+        Mode::L => 1,
         Mode::Rgb => 3,
         Mode::Rgba => 4,
     }

@@ -44,6 +44,7 @@ fn slot(v: &mut MeteredVec<u32>, i: usize) -> Result<&mut u32, Failure> {
 /// Bytes a pixel of `mode` takes.
 fn bpp(mode: Mode) -> u64 {
     match mode {
+        Mode::L => 1,
         Mode::Rgb => 3,
         Mode::Rgba => 4,
     }

@@ -25,8 +25,10 @@ fn the_largest_texture_plans_and_one_more_column_is_refused() {
         assert_eq!(u64::from(p.width) * u64::from(p.height), MAX_PIXELS);
         assert_eq!(p.output_bytes, MAX_PIXELS * format.mode().bytes_per_pixel());
         let want = match format {
-            Format::Rgb24 => 3 * MAX_PIXELS,
-            Format::Rgba32 => 4 * MAX_PIXELS,
+            Format::Alpha8 | Format::R8 => MAX_PIXELS,
+            Format::Argb4444 | Format::Rgba4444 | Format::Rgb565 => 2 * MAX_PIXELS,
+            Format::Rgb24 | Format::Bgr24 => 3 * MAX_PIXELS,
+            Format::Rgba32 | Format::Bgra32 | Format::Argb32 => 4 * MAX_PIXELS,
             _ => MAX_PIXELS / 16 * format.block_bytes().unwrap(),
         };
         assert_eq!(p.input_bytes, want, "{format:?}");

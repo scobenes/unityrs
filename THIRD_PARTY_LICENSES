@@ -264,16 +264,20 @@ row's PNG filter; crates/unityrs-imageio/src/hash.rs translates the
 converters of convert("RGBA") in src/libImaging/Convert.c (l2rgb, la2rgb,
 rgb2rgba).
 
-crates/unityrs-texture/src/bcn.rs translates Pillow 9.5.0's BC1, BC3 and
-BC7 block decoders to Rust (src/libImaging/BcnDecode.c: decode_565,
-decode_bc1_color, decode_bc3_alpha, decode_bc7_block with the tables it
+crates/unityrs-texture/src/bcn.rs translates Pillow 9.5.0's BC1, BC2, BC3,
+BC4, BC5 and BC7 block decoders to Rust (src/libImaging/BcnDecode.c:
+decode_565, decode_bc1_color, decode_bc3_alpha, decode_bc2_block,
+decode_bc4_block, decode_bc5_block, decode_bc7_block with the tables it
 reads, and the block order of put_block and decode_bcn), so that a DXT1,
-DXT5 or BC7 texture decodes to the pixels UnityPy 1.25.2 gets from Pillow
-9.5.0. BcnDecode.c's own header dedicates that file to the public domain
-(CC0); the port keeps the notice of the release it comes from all the same.
-crates/unityrs-texture/src/decode.rs ports Pillow 9.5.0's raw decoder as
-UnityPy 1.25.2 calls it (src/libImaging/RawDecode.c's row copy, and the
-width cap of src/decode.c's _setimage) and the decompression-bomb check of
+DXT3, DXT5, BC4, BC5 or BC7 texture decodes to the pixels UnityPy 1.25.2
+gets from Pillow 9.5.0. BcnDecode.c's own header dedicates that file to the
+public domain (CC0); the port keeps the notice of the release it comes from
+all the same. crates/unityrs-texture/src/raw.rs ports Pillow 9.5.0's raw
+decoder as UnityPy 1.25.2 calls it (src/libImaging/RawDecode.c's row loop,
+and src/libImaging/Unpack.c's unpackers for the raw modes UnityPy names:
+band0, band3, ImagingUnpackBGR, unpackBGRA, unpackARGB, ImagingUnpackBGR16
+and ImagingUnpackRGBA4B); crates/unityrs-texture/src/decode.rs the width
+cap of src/decode.c's _setimage and the decompression-bomb check of
 src/PIL/Image.py's crop, with its message.
 crates/unityrs-texture/src/sprite/ ports what UnityPy 1.25.2's SpriteHelper
 calls of Pillow 9.5.0: canvas.rs the crop (src/PIL/Image.py's crop and _crop,

@@ -1,7 +1,7 @@
 """Oracle fixtures for unityrs-texture: the five decoders of docs/plans/extract.md E15, the selection of E66, and the
-ETC and EAC decoders of P3.
+ETC and EAC decoders and the rest of Pillow's raw and bcn formats of P3.
 
-Runs in the oracle image against UnityPy 1.25.2, Pillow 9.5.0 and texture2ddecoder 1.0.5 and writes three JSON files
+Runs in the oracle image against UnityPy 1.25.2, Pillow 9.5.0 and texture2ddecoder 1.0.5 and writes four JSON files
 under
 crates/unityrs-texture/tests/fixtures/, one case a line, which `cargo test -p unityrs-texture` replays without
 Python (crates/unityrs-texture/tests/oracle.rs). Every input is built here in code; no file is read.
@@ -43,6 +43,12 @@ with every pixel of alpha 0 set to (0, 0, 0, 0), as section 22.9 makes a transpa
 EAC_R_SIGNED and EAC_RG_SIGNED UnityPy's decode of the data with every signed base of -128 (each block's first byte
 0x80) made -127 (0x81), as sections 22.7 and 22.8 read it. The two limit cases take about 1.5 GB and a few seconds in the oracle container.
 
+**raw.json.** The cases of tools/fixtures/texture_raw.py (its docstring lists them), each a texture of Alpha8,
+ARGB4444, ARGB32, RGB565, BGR24, DXT3, RGBA4444, BGRA32, BC4, BC5 or R8 decoded by `get_image_from_texture2d` as
+decode.json's are, so through Pillow's raw decoder with each raw mode's unpacker and UnityPy's band order, or its
+`bcn` decoder with 2, 4 or 5 (export/Texture2DConverter.py:488-566), and recorded as decode.json's are. The width cap
+cases take up to about 1 GB each and the bomb's about 0.3 GB, a few seconds together in the oracle container.
+
 **select.json.** The selection of docs/BATCH_SPEC.md section 3 (E66), computed with UnityPy's own predicates:
 `TextureFormat(value).name` (or the decimal value where the enum has none), `TextureSwizzler.is_switch_swizzled`
 (helpers/TextureSwizzler.py:121-127) and `Texture2DConverter.XBOX_SWAP_FORMATS` (export/Texture2DConverter.py:569),
@@ -72,6 +78,7 @@ OUT = ROOT / "crates/unityrs-texture/tests/fixtures"
 sys.path.insert(0, str(ROOT / "tools/fixtures"))
 
 import texture_etc  # noqa: E402
+import texture_raw  # noqa: E402
 
 M64 = (1 << 64) - 1
 VERSION = (2021, 3, 1, 1)
@@ -113,6 +120,8 @@ def build(spec: dict) -> bytes:
         return bytes.fromhex(spec["hex"])
     if "zeros" in spec:
         return bytes(spec["zeros"])
+    if "ramp" in spec:
+        return texture_raw.ramp(spec["ramp"], spec["len"])
     data = splitmix(spec["seed"], spec["len"])
     return bc7_mode(data, spec["bc7_mode"]) if "bc7_mode" in spec else data
 
@@ -346,6 +355,15 @@ def etc_cases() -> list[dict]:
     return out
 
 
+def raw_cases() -> list[dict]:
+    """texture_raw.py's cases, recorded as decode.json's."""
+    out = []
+    for name, fmt, w, h, spec, *where in texture_raw.cases():
+        platform, blob = where or (WINDOWS, None)
+        out.append(case(name, TF(fmt), w, h, spec, platform=platform, blob=blob))
+    return out
+
+
 def format_name(value: int) -> str:
     try:
         return TextureFormat(value).name
@@ -407,6 +425,7 @@ def fixtures() -> dict[str, dict]:
     return {
         "decode.json": {**meta, "hex_pixels": HEX_PIXELS, "cases": decode},
         "etc.json": etc,
+        "raw.json": {**meta, "hex_pixels": HEX_PIXELS, "cases": raw_cases()},
         "select.json": {
             **meta,
             "xbox_swap_formats": [int(f) for f in Texture2DConverter.XBOX_SWAP_FORMATS],
