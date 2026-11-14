@@ -44,6 +44,8 @@ test-hooks = []
 test-counters = ["unityrs-core/test-counters"]
 
 [dev-dependencies]
+# Reuse core's synthetic UnityCN encryptor in the refusal regression.
+aes = "=0.8.4"
 # The NGUI scenes, and the fixture their reference recorded
 # (tests/fixtures/ngui.json in unityrs-testkit, JSON, with sha256 digests).
 # The core's growth invocation ids distinguish a ladder retry from a later

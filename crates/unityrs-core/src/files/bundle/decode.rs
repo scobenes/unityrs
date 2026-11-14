@@ -26,7 +26,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use crate::budget::DecodeBuf;
-use crate::codec::{Codec, decode_block};
+use crate::codec::unitycn::UnityCnDecryptor;
+use crate::codec::{BlockDecryptor, Codec, decode_block};
 use crate::error::{Error, LimitKind, Unsupported};
 use crate::limits::Meter;
 use crate::options::FileContext;
@@ -41,14 +42,20 @@ use crate::options::FileContext;
 pub(super) struct BlockContext {
     ctx: Arc<FileContext>,
     encrypted: bool,
+    unitycn: Option<UnityCnDecryptor>,
 }
 
 impl BlockContext {
     /// The context of a bundle whose header's encryption flag is `encrypted`.
-    pub(super) fn new(ctx: &Arc<FileContext>, encrypted: bool) -> Self {
+    pub(super) fn new(
+        ctx: &Arc<FileContext>,
+        encrypted: bool,
+        unitycn: Option<UnityCnDecryptor>,
+    ) -> Self {
         Self {
             ctx: ctx.clone(),
             encrypted,
+            unitycn,
         }
     }
 
@@ -184,7 +191,11 @@ fn decrypted(
     which: Codec,
     index: usize,
 ) -> Result<Bytes, Error> {
-    let Some(d) = ctx.decryptor.as_ref().filter(|_| ctx.encrypted) else {
+    let decryptor = ctx
+        .decryptor
+        .as_deref()
+        .or_else(|| ctx.unitycn.as_ref().map(|d| d as &dyn BlockDecryptor));
+    let Some(d) = decryptor.filter(|_| ctx.encrypted) else {
         return Ok(input);
     };
     if flags & 0x100 == 0 || which == Codec::None {

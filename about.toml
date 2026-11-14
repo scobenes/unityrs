@@ -1,3 +1,4 @@
+# UnityCN uses aes 0.8.4 (MIT OR Apache-2.0), accepted by the global list.
 # cargo-about configuration. THIRD_PARTY_LICENSES is generated from this file
 # and about.hbs by scripts/third-party-licenses, and CI runs the same script
 # with --check, which fails when the committed copy is stale.

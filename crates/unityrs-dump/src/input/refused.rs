@@ -103,6 +103,8 @@ fn refusal(e: &Error) -> Option<Refusal<'_>> {
         Error::Entry { source, .. } => refusal(source),
         Error::AssetBundle(p) => read_refusal(p),
         Error::Deref(d) => deref_refusal(d),
+        // Includes all four UnityCN header/key errors and Unsupported::UnityCnWalk:
+        // deliberately input parse errors, never host/budget refusals.
         _ => None,
     }
 }

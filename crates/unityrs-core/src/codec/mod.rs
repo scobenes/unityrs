@@ -56,6 +56,7 @@ use crate::error::{Error, LimitError, LimitKind};
 mod lz4;
 mod lzma;
 mod stored;
+pub mod unitycn;
 
 pub use lz4::Lz4;
 pub use lzma::Lzma;

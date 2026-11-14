@@ -8,6 +8,23 @@ use unityrs_core::{LimitKind, RawStr};
 use super::*;
 use crate::record::NOTE_MAX;
 
+#[test]
+fn unitycn_errors_stay_input_parse_errors_through_wrappers() {
+    for error in [
+        Error::UnityCnKeyMissing,
+        Error::UnityCnKeyLength { length: 15 },
+        Error::UnityCnSignature,
+        Error::UnityCnVectorLength { length: 15 },
+        Error::Unsupported(unityrs_core::Unsupported::UnityCnWalk),
+    ] {
+        assert_eq!(note(&error), error.to_string());
+        for wrapped in wrapped(&error) {
+            assert!(refusal(&wrapped).is_none(), "{wrapped}");
+            assert!(memory_refused(&wrapped).is_none());
+        }
+    }
+}
+
 fn limit() -> LimitError {
     LimitError::refused(
         LimitKind::ZeroSizeElements,

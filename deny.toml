@@ -1,3 +1,4 @@
+# UnityCN uses aes 0.8.4 (MIT OR Apache-2.0), accepted by the global list.
 [graph]
 # Licence checks cover the same supported platforms as about.toml's targets
 # list. CI checks bans separately with unfiltered deny-bans.toml (X15).

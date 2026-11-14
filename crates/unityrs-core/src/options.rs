@@ -32,8 +32,10 @@ pub struct FileContext {
     pub providers: Arc<ProviderChain>,
     /// Block codecs by compression type.
     pub codecs: Arc<Codecs>,
-    /// Block decryption (UnityCN: P3). `None` refuses encrypted bundles.
+    /// Custom block decryption, overriding the built-in UnityCN decryptor.
     pub decryptor: Option<Arc<dyn BlockDecryptor>>,
+    /// Load-local UnityCN key. Configure with `set_assetbundle_decrypt_key`.
+    pub(crate) assetbundle_decrypt_key: Option<[u8; 16]>,
     /// Where decoded buffers are paid for.
     pub budget: Arc<dyn MemoryBudget>,
     /// Hard bounds.
@@ -56,10 +58,24 @@ impl FileContext {
             providers: Arc::new(ProviderChain::empty()),
             codecs: Arc::new(Codecs::unitypy()),
             decryptor: None,
+            assetbundle_decrypt_key: None,
             budget: Arc::new(Unbounded),
             limits: Limits::default(),
             eager_asset_bundle: true,
         }
+    }
+
+    /// Sets this load's UnityCN key (16 bytes, including for UTF-8 strings).
+    /// An invalid length leaves the previous key intact. No global state.
+    pub fn set_assetbundle_decrypt_key(
+        &mut self,
+        key: impl AsRef<[u8]>,
+    ) -> Result<(), crate::Error> {
+        let key = key.as_ref();
+        let key = <[u8; 16]>::try_from(key)
+            .map_err(|_| crate::Error::UnityCnKeyLength { length: key.len() })?;
+        self.assetbundle_decrypt_key = Some(key);
+        Ok(())
     }
 
     /// The walker's options for this context.

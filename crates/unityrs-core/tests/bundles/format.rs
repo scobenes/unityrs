@@ -105,7 +105,7 @@ fn a_flagged_block_is_decrypted_in_a_charged_copy() {
     let plain = ctx();
     assert!(matches!(
         open_with(&data, &plain, &meter_for(&plain)),
-        Err(Error::Unsupported(Unsupported::Encrypted))
+        Err(Error::UnityCnKeyMissing)
     ));
     let c = ctx_with(|c| c.decryptor = Some(Arc::new(Xor(0x5A))));
     let m = meter_for(&c);
@@ -275,7 +275,7 @@ fn unsupported_bundles_are_named() {
     });
     assert!(matches!(
         open_with(&enc, &c, &m),
-        Err(Error::Unsupported(Unsupported::Encrypted))
+        Err(Error::UnityCnKeyMissing)
     ));
     let lzham = build(&BundleSpec {
         info_codec: TestCodec::Raw(4),

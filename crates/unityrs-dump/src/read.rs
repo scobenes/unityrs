@@ -114,6 +114,8 @@ pub fn read_on(
             format!("unityrs ran out of memory reading this input ({e})"),
         ),
         Err(Error::Io(e)) => return Err(std::io::Error::new(e.0.kind(), e.0.to_string())),
+        // read_path only reads bytes; it cannot produce UnityCN errors.
+        // Those arise in dump_on's parse and become per-input parse records.
         Err(e) => return Err(std::io::Error::other(e.to_string())),
     };
     let (size, digest) = prefix_sha256(path, &meter)?;
