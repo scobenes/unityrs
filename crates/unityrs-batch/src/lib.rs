@@ -59,6 +59,7 @@ pub mod control;
 pub mod controller;
 pub mod digest;
 pub mod execution;
+pub mod finish;
 pub mod http;
 pub mod job;
 pub mod manifest;
@@ -70,6 +71,7 @@ pub mod progress;
 pub mod publish;
 pub mod reason;
 pub mod records;
+pub mod run;
 pub mod sink;
 pub mod sort;
 pub mod spec;
@@ -83,3 +85,7 @@ pub mod work;
 mod worker;
 
 pub mod winners;
+
+mod job_memory;
+#[cfg(test)]
+mod test_alloc;

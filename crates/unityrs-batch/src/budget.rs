@@ -9,14 +9,20 @@ struct Account {
     used: AtomicU64,
     peak: AtomicU64,
     refusals: AtomicU64,
+    telemetry: std::sync::OnceLock<Arc<AtomicU64>>,
 }
 impl Account {
-    fn new(limit: u64) -> Arc<Self> {
+    fn new(limit: u64, telemetry: Option<Arc<AtomicU64>>) -> Arc<Self> {
+        let observed = std::sync::OnceLock::new();
+        if let Some(telemetry) = telemetry {
+            let _ = observed.set(telemetry);
+        }
         Arc::new(Self {
             limit,
             used: AtomicU64::new(0),
             peak: AtomicU64::new(0),
             refusals: AtomicU64::new(0),
+            telemetry: observed,
         })
     }
     fn snapshot(&self) -> AccountSnapshot {
@@ -30,6 +36,9 @@ impl Account {
 impl PermitHome for Account {
     fn release(&self, bytes: u64) {
         self.used.fetch_sub(bytes, Ordering::AcqRel);
+        if let Some(used) = self.telemetry.get() {
+            used.fetch_sub(bytes, Ordering::AcqRel);
+        }
     }
 }
 
@@ -46,10 +55,14 @@ impl SealedBudget {
     /// Small caps are allowed for library tests; spec validation owns floors.
     #[must_use]
     pub fn new(m: u64, d: u64) -> Self {
+        Self::observed(m, d, false, None)
+    }
+    #[must_use]
+    pub fn observed(m: u64, d: u64, input_only: bool, telemetry: Option<Arc<AtomicU64>>) -> Self {
         Self {
-            input: Account::new(m),
-            dependency: Account::new(d),
-            input_only: false,
+            input: Account::new(m, telemetry.clone()),
+            dependency: Account::new(d, telemetry),
+            input_only,
             provider_refusals: AtomicU64::new(0),
         }
     }
@@ -61,6 +74,10 @@ impl SealedBudget {
             input_only: true,
             ..Self::new(m, 0)
         }
+    }
+    pub(crate) fn observe(&self, usage: Arc<AtomicU64>) {
+        let _ = self.input.telemetry.set(usage.clone());
+        let _ = self.dependency.telemetry.set(usage);
     }
     /// Sample after all attempt locals drop for the leak check. During
     /// concurrent reservations this is observational, not a coherent census.
@@ -109,6 +126,9 @@ impl MemoryBudget for SealedBudget {
             account
                 .peak
                 .fetch_max(old.saturating_add(bytes), Ordering::AcqRel);
+            if let Some(used) = account.telemetry.get() {
+                used.fetch_add(bytes, Ordering::AcqRel);
+            }
             Ok(Permit::new(bytes, account.clone()))
         } else {
             refused(&account.refusals);

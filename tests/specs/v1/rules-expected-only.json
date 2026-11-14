@@ -1,0 +1,129 @@
+{
+  "name": "rules-expected-only",
+  "fixture": "synthetic:expected-only",
+  "spec": {
+    "spec_version": 1,
+    "run_id": "golden",
+    "attempt": 1,
+    "threads": 1,
+    "download_concurrency": 1,
+    "max_inflight_uncompressed_bytes": 268435456,
+    "max_decoded_bytes": 16777216,
+    "dep_cache_bytes": 33554432,
+    "spool": {
+      "dir": "$SPOOL",
+      "size_bytes": 1073741824,
+      "reserve_bytes": 0
+    },
+    "inputs": [
+      {
+        "id": "x.bundle",
+        "path": "$SOURCE:x.bundle",
+        "deps": []
+      }
+    ],
+    "dependencies": [],
+    "outputs": {
+      "textures": {
+        "key": "{name}.png"
+      }
+    },
+    "sink": {
+      "kind": "directory",
+      "root": "$SINK"
+    }
+  },
+  "exit_code": 0,
+  "outputs": {},
+  "normalized": {
+    "head": {
+      "status": "complete",
+      "exit_code": 0,
+      "stop_reason": null,
+      "counts": {
+        "bundles": 1,
+        "bundles_failed": 0,
+        "inputs": 1,
+        "inputs_complete": 0,
+        "inputs_with_skips": 1,
+        "inputs_failed": 0,
+        "inputs_not_run": 0,
+        "outputs_written": 0,
+        "outputs_not_written": 0,
+        "outputs_withheld": 0,
+        "outputs_failed": 0,
+        "outputs_unwritable": 0,
+        "skips": 1,
+        "skips_expected": 1,
+        "collisions": 0,
+        "flips": 0,
+        "archives_written": 0
+      },
+      "warnings": {
+        "resume_list_failed": 0,
+        "verify_list_failed": 0,
+        "etag_not_md5": 0,
+        "abort_failed": 0
+      },
+      "run": {
+        "same_named_cabs": 0,
+        "undeclared_dependencies": 0,
+        "nested_containers": 0
+      }
+    },
+    "rows": {
+      "bundles": [
+        {
+          "id": "x.bundle",
+          "status": "staged",
+          "reason": null,
+          "detail": null,
+          "size": "$BUNDLE_SIZE:x.bundle",
+          "sha256": "$BUNDLE_SHA256:x.bundle",
+          "peek": null
+        }
+      ],
+      "inputs": [
+        {
+          "id": "x.bundle",
+          "status": "complete_with_skips",
+          "reason": null,
+          "detail": null,
+          "skips": 1,
+          "unresolved_scripts": 0,
+          "cut": false,
+          "evictions": 0
+        }
+      ],
+      "skips": [
+        {
+          "input": "x.bundle",
+          "serialized_file": "CAB-five",
+          "path_id": 1,
+          "class": "Texture2D",
+          "output": "texture",
+          "sprite": null,
+          "reason": "unsupported_format(Alpha8)",
+          "detail": null,
+          "cut": false
+        }
+      ],
+      "diagnostics": [],
+      "outputs": [],
+      "collisions": [],
+      "archives": [],
+      "archive_members": []
+    }
+  },
+  "texture_inputs": [
+    {
+      "name": "skip",
+      "format": 1,
+      "data": {
+        "len": 1,
+        "seed": 1
+      }
+    }
+  ],
+  "missing_sources": []
+}

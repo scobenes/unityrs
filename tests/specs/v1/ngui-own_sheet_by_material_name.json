@@ -1,0 +1,227 @@
+{
+  "name": "ngui-own_sheet_by_material_name",
+  "fixture": "ngui:own_sheet_by_material_name",
+  "spec": {
+    "spec_version": 1,
+    "run_id": "golden",
+    "attempt": 1,
+    "threads": 1,
+    "download_concurrency": 1,
+    "max_inflight_uncompressed_bytes": 268435456,
+    "max_decoded_bytes": 16777216,
+    "dep_cache_bytes": 33554432,
+    "spool": {
+      "dir": "$SPOOL",
+      "size_bytes": 1073741824,
+      "reserve_bytes": 0
+    },
+    "inputs": [
+      {
+        "id": "x.bundle",
+        "path": "$SOURCE:x.bundle",
+        "deps": []
+      }
+    ],
+    "dependencies": [],
+    "outputs": {
+      "atlases": {
+        "sprite_key": "{atlas}/{sprite}.png",
+        "json_key": "{atlas}.json",
+        "script_classes": [
+          "NGUIAtlas"
+        ],
+        "skip_name_suffixes": []
+      }
+    },
+    "sink": {
+      "kind": "directory",
+      "root": "$SINK"
+    }
+  },
+  "exit_code": 0,
+  "outputs": {
+    "ui.json": {
+      "md5": "35a17c61182f7df94febfaecf8f37417",
+      "text": "{\n  \"name\": \"ui\",\n  \"texture_width\": 4,\n  \"texture_height\": 4,\n  \"pixel_size\": 1.0,\n  \"settings\": null,\n  \"sprite_count\": 6,\n  \"sprites\": [\n    {\n      \"name\": \"a\",\n      \"x\": 0,\n      \"y\": 0,\n      \"width\": 2,\n      \"height\": 2,\n      \"borderLeft\": 1,\n      \"borderRight\": 2,\n      \"borderTop\": 3,\n      \"borderBottom\": 4,\n      \"paddingLeft\": 5,\n      \"paddingRight\": 6,\n      \"paddingTop\": 7,\n      \"paddingBottom\": 8,\n      \"rotated\": true\n    },\n    {\n      \"name\": \"b\",\n      \"x\": 1,\n      \"y\": 2,\n      \"width\": 3,\n      \"height\": 2,\n      \"borderLeft\": 0,\n      \"borderRight\": 0,\n      \"borderTop\": 0,\n      \"borderBottom\": 0,\n      \"paddingLeft\": 0,\n      \"paddingRight\": 0,\n      \"paddingTop\": 0,\n      \"paddingBottom\": 0,\n      \"rotated\": false\n    },\n    {\n      \"name\": \"edge\",\n      \"x\": 3,\n      \"y\": 3,\n      \"width\": 2,\n      \"height\": 2,\n      \"borderLeft\": 0,\n      \"borderRight\": 0,\n      \"borderTop\": 0,\n      \"borderBottom\": 0,\n      \"paddingLeft\": 0,\n      \"paddingRight\": 0,\n      \"paddingTop\": 0,\n      \"paddingBottom\": 0,\n      \"rotated\": false\n    },\n    {\n      \"name\": \"neg\",\n      \"x\": -1,\n      \"y\": -1,\n      \"width\": 2,\n      \"height\": 2,\n      \"borderLeft\": 0,\n      \"borderRight\": 0,\n      \"borderTop\": 0,\n      \"borderBottom\": 0,\n      \"paddingLeft\": 0,\n      \"paddingRight\": 0,\n      \"paddingTop\": 0,\n      \"paddingBottom\": 0,\n      \"rotated\": false\n    },\n    {\n      \"name\": \"zero\",\n      \"x\": 0,\n      \"y\": 0,\n      \"width\": 0,\n      \"height\": 2,\n      \"borderLeft\": 0,\n      \"borderRight\": 0,\n      \"borderTop\": 0,\n      \"borderBottom\": 0,\n      \"paddingLeft\": 0,\n      \"paddingRight\": 0,\n      \"paddingTop\": 0,\n      \"paddingBottom\": 0,\n      \"rotated\": false\n    },\n    {\n      \"name\": \"negw\",\n      \"x\": 2,\n      \"y\": 2,\n      \"width\": -1,\n      \"height\": 1,\n      \"borderLeft\": 0,\n      \"borderRight\": 0,\n      \"borderTop\": 0,\n      \"borderBottom\": 0,\n      \"paddingLeft\": 0,\n      \"paddingRight\": 0,\n      \"paddingTop\": 0,\n      \"paddingBottom\": 0,\n      \"rotated\": false\n    }\n  ]\n}"
+    },
+    "ui/a.png": {
+      "md5": "132f10cf9f2383b5e3ce622f034b8a1b"
+    },
+    "ui/b.png": {
+      "md5": "f3ed43242673098cc543d239688c8fb6"
+    },
+    "ui/edge.png": {
+      "md5": "4ea3e7d2290790b2bfb99468d3173e8d"
+    },
+    "ui/neg.png": {
+      "md5": "d71797b2713f37f6ff2daccf9f441fa3"
+    }
+  },
+  "normalized": {
+    "head": {
+      "status": "complete",
+      "exit_code": 0,
+      "stop_reason": null,
+      "counts": {
+        "bundles": 1,
+        "bundles_failed": 0,
+        "inputs": 1,
+        "inputs_complete": 0,
+        "inputs_with_skips": 1,
+        "inputs_failed": 0,
+        "inputs_not_run": 0,
+        "outputs_written": 5,
+        "outputs_not_written": 0,
+        "outputs_withheld": 0,
+        "outputs_failed": 0,
+        "outputs_unwritable": 0,
+        "skips": 2,
+        "skips_expected": 2,
+        "collisions": 0,
+        "flips": 0,
+        "archives_written": 0
+      },
+      "warnings": {
+        "resume_list_failed": 0,
+        "verify_list_failed": 0,
+        "etag_not_md5": 0,
+        "abort_failed": 0
+      },
+      "run": {
+        "same_named_cabs": 0,
+        "undeclared_dependencies": 0,
+        "nested_containers": 0
+      }
+    },
+    "rows": {
+      "bundles": [
+        {
+          "id": "x.bundle",
+          "status": "staged",
+          "reason": null,
+          "detail": null,
+          "size": "$BUNDLE_SIZE:x.bundle",
+          "sha256": "5de30db596226d997ed842a5527644ec353a7967e3dc431627812ca915e150d8",
+          "peek": null
+        }
+      ],
+      "inputs": [
+        {
+          "evictions": 0,
+          "id": "x.bundle",
+          "status": "complete_with_skips",
+          "reason": null,
+          "detail": null,
+          "skips": 2,
+          "unresolved_scripts": 0,
+          "cut": false
+        }
+      ],
+      "skips": [
+        {
+          "input": "x.bundle",
+          "serialized_file": "CAB-x1",
+          "path_id": 5,
+          "class": "MonoBehaviour",
+          "output": "atlas_sprite",
+          "sprite": 4,
+          "reason": "empty_rect",
+          "detail": null,
+          "cut": false
+        },
+        {
+          "input": "x.bundle",
+          "serialized_file": "CAB-x1",
+          "path_id": 5,
+          "class": "MonoBehaviour",
+          "output": "atlas_sprite",
+          "sprite": 5,
+          "reason": "empty_rect",
+          "detail": null,
+          "cut": false
+        }
+      ],
+      "diagnostics": [],
+      "outputs": [
+        {
+          "key": "ui.json",
+          "kind": "atlas_json",
+          "unit": "ui.json",
+          "input": "x.bundle",
+          "serialized_file": "CAB-x1",
+          "path_id": 5,
+          "md5": "35a17c61182f7df94febfaecf8f37417",
+          "visible_hash": null,
+          "mode": null,
+          "size": "$OUTPUT_SIZE:ui.json",
+          "status": "published",
+          "reason": null,
+          "cut": false
+        },
+        {
+          "key": "ui/a.png",
+          "kind": "atlas_sprite",
+          "unit": "ui.json",
+          "input": "x.bundle",
+          "serialized_file": "CAB-x1",
+          "path_id": 5,
+          "md5": "132f10cf9f2383b5e3ce622f034b8a1b",
+          "visible_hash": "a1cc05145fbc93c0e9447eb36ced1c426de3442b3fa27163920716761d8c23c5",
+          "mode": "RGBA",
+          "size": "$OUTPUT_SIZE:ui/a.png",
+          "status": "published",
+          "reason": null,
+          "cut": false
+        },
+        {
+          "key": "ui/b.png",
+          "kind": "atlas_sprite",
+          "unit": "ui.json",
+          "input": "x.bundle",
+          "serialized_file": "CAB-x1",
+          "path_id": 5,
+          "md5": "f3ed43242673098cc543d239688c8fb6",
+          "visible_hash": "e143994a62d8b9a2afe9d59e9927f3c47e042fecd9279095b1183465db53f6de",
+          "mode": "RGBA",
+          "size": "$OUTPUT_SIZE:ui/b.png",
+          "status": "published",
+          "reason": null,
+          "cut": false
+        },
+        {
+          "key": "ui/edge.png",
+          "kind": "atlas_sprite",
+          "unit": "ui.json",
+          "input": "x.bundle",
+          "serialized_file": "CAB-x1",
+          "path_id": 5,
+          "md5": "4ea3e7d2290790b2bfb99468d3173e8d",
+          "visible_hash": "437feb00444f7af74482dce5992c8be9f8044decba21dc5a224b938bdcda1786",
+          "mode": "RGBA",
+          "size": "$OUTPUT_SIZE:ui/edge.png",
+          "status": "published",
+          "reason": null,
+          "cut": false
+        },
+        {
+          "key": "ui/neg.png",
+          "kind": "atlas_sprite",
+          "unit": "ui.json",
+          "input": "x.bundle",
+          "serialized_file": "CAB-x1",
+          "path_id": 5,
+          "md5": "d71797b2713f37f6ff2daccf9f441fa3",
+          "visible_hash": "feb46517b038f453ddd3888db800beebf609d0088796a54f6636fc3b01d74deb",
+          "mode": "RGBA",
+          "size": "$OUTPUT_SIZE:ui/neg.png",
+          "status": "published",
+          "reason": null,
+          "cut": false
+        }
+      ],
+      "collisions": [],
+      "archives": [],
+      "archive_members": []
+    }
+  }
+}

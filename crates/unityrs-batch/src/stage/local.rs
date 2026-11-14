@@ -4,9 +4,9 @@ use super::{DataFailure, Facts, Failure, StageEnd};
 use crate::{attempt::ReasonCode, job::RunFailure, spec::model::BundleRef, spool::OwnedFile};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::{self, Read},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    os::unix::fs::MetadataExt,
     panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
 };
@@ -57,11 +57,8 @@ pub trait Sources {
 pub struct Host;
 impl Sources for Host {
     fn open(&self, path: &Path) -> io::Result<Box<dyn Source>> {
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOCTTY)
-            .open(path)?;
-        Ok(Box::new(file))
+        let file = crate::sys::local_source(path)?;
+        Ok(crate::alloc::try_box(file)?)
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,9 +94,13 @@ pub fn open_with(
         return Err(Failure::Data(DataFailure::InputBytes(m)));
     }
     let path = bundle.path().ok_or_else(internal)?;
-    let source = sources
-        .open(Path::new(path))
-        .map_err(|_| Failure::Data(DataFailure::SourceMissing))?;
+    let source = sources.open(Path::new(path)).map_err(|e| {
+        if e.kind() == io::ErrorKind::OutOfMemory {
+            Failure::Run(RunFailure::new(ReasonCode::HostMemory))
+        } else {
+            Failure::Data(DataFailure::SourceMissing)
+        }
+    })?;
     let initial = source.snapshot().map_err(|_| host_io())?;
     if !initial.regular {
         return Err(Failure::Data(DataFailure::SourceNotRegular));

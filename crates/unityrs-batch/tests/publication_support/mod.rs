@@ -27,6 +27,7 @@ impl Scene {
     pub fn with_failure(keys: &[&str], archives: bool, block: u64, failed: bool) -> Self {
         let scratch = Scratch::new("publication");
         let mut spec = crate::common::base();
+        spec["run_id"] = serde_json::json!("r");
         if failed {
             spec["publish_incomplete"] = serde_json::json!(false);
         }
@@ -262,6 +263,9 @@ fn candidates(
 /// on every host; native resolver coverage belongs to the Linux gates.
 pub struct Portable;
 impl unityrs_batch::sink::fs::FileSystem for Portable {
+    fn syncfs(&self, _: &std::fs::File) -> std::io::Result<()> {
+        Ok(())
+    }
     fn release(&self) -> std::io::Result<(u32, u32)> {
         Ok((5, 8))
     }

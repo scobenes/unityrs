@@ -19,7 +19,7 @@
     "dep_cache_bytes": {"type": "integer", "minimum": 1048576, "maximum": 1099511627776},
     "max_view_bundles": {"type": "integer", "minimum": 1, "maximum": 65536, "default": 1024},
     "max_attempt_evictions": {"type": "integer", "minimum": 0, "maximum": 1048576, "default": 1024},
-    "max_export_work": {"type": "integer", "minimum": 1048576, "maximum": 9007199254740991, "description": "Default: 2 x max_decoded_bytes (provisional)."},
+    "max_export_work": {"type": "integer", "minimum": 1048576, "maximum": 9007199254740991, "description": "Default: 2 x max_decoded_bytes (final)."},
     "spool": {"$ref": "#/$defs/Spool"},
     "http": {"$ref": "#/$defs/Http", "default": {}},
     "inputs": {"type": "array", "items": {"$ref": "#/$defs/Bundle"}, "minItems": 1, "maxItems": 100000},

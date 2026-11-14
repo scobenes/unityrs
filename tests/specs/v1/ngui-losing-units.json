@@ -1,0 +1,406 @@
+{
+  "name": "ngui-losing-units",
+  "fixture": "ngui:winners",
+  "spec": {
+    "spec_version": 1,
+    "run_id": "golden",
+    "attempt": 1,
+    "threads": 1,
+    "download_concurrency": 1,
+    "max_inflight_uncompressed_bytes": 268435456,
+    "max_decoded_bytes": 16777216,
+    "dep_cache_bytes": 33554432,
+    "spool": {
+      "dir": "$SPOOL",
+      "size_bytes": 1073741824,
+      "reserve_bytes": 0
+    },
+    "inputs": [
+      {
+        "id": "a.bundle",
+        "path": "$SOURCE:a.bundle",
+        "deps": []
+      },
+      {
+        "id": "b.bundle",
+        "path": "$SOURCE:b.bundle",
+        "deps": []
+      },
+      {
+        "id": "c.bundle",
+        "path": "$SOURCE:c.bundle",
+        "deps": []
+      },
+      {
+        "id": "d.bundle",
+        "path": "$SOURCE:d.bundle",
+        "deps": []
+      }
+    ],
+    "dependencies": [],
+    "outputs": {
+      "atlases": {
+        "sprite_key": "{sprite}.png",
+        "json_key": "{atlas}.json",
+        "script_classes": [
+          "NGUIAtlas"
+        ],
+        "skip_name_suffixes": []
+      }
+    },
+    "sink": {
+      "kind": "directory",
+      "root": "$SINK"
+    }
+  },
+  "exit_code": 3,
+  "outputs": {
+    "h.png": {
+      "md5": "c085178920cec618c343b7850cadeb4c"
+    },
+    "j.png": {
+      "md5": "fa6537c2db2e711946b8ff1295b7ab6f"
+    },
+    "k.png": {
+      "md5": "51702cea4ce66bda60407f60c3e8818a"
+    },
+    "shared.json": {
+      "md5": "8245076aa15ce5f9c4d0cf36d16c3d25",
+      "text": "{\n  \"name\": \"shared\",\n  \"texture_width\": 2,\n  \"texture_height\": 1,\n  \"pixel_size\": 1.0,\n  \"settings\": null,\n  \"sprite_count\": 2,\n  \"sprites\": [\n    {\n      \"name\": \"k\",\n      \"x\": 0,\n      \"y\": 0,\n      \"width\": 1,\n      \"height\": 1,\n      \"borderLeft\": 0,\n      \"borderRight\": 0,\n      \"borderTop\": 0,\n      \"borderBottom\": 0,\n      \"paddingLeft\": 0,\n      \"paddingRight\": 0,\n      \"paddingTop\": 0,\n      \"paddingBottom\": 0\n    },\n    {\n      \"name\": \"j\",\n      \"x\": 1,\n      \"y\": 0,\n      \"width\": 1,\n      \"height\": 1,\n      \"borderLeft\": 0,\n      \"borderRight\": 0,\n      \"borderTop\": 0,\n      \"borderBottom\": 0,\n      \"paddingLeft\": 0,\n      \"paddingRight\": 0,\n      \"paddingTop\": 0,\n      \"paddingBottom\": 0\n    }\n  ]\n}"
+    }
+  },
+  "normalized": {
+    "head": {
+      "status": "complete_with_skips",
+      "exit_code": 3,
+      "stop_reason": null,
+      "counts": {
+        "bundles": 4,
+        "bundles_failed": 0,
+        "inputs": 4,
+        "inputs_complete": 3,
+        "inputs_with_skips": 1,
+        "inputs_failed": 0,
+        "inputs_not_run": 0,
+        "outputs_written": 4,
+        "outputs_not_written": 0,
+        "outputs_withheld": 1,
+        "outputs_failed": 0,
+        "outputs_unwritable": 0,
+        "skips": 1,
+        "skips_expected": 0,
+        "collisions": 3,
+        "flips": 3,
+        "archives_written": 0
+      },
+      "warnings": {
+        "resume_list_failed": 0,
+        "verify_list_failed": 0,
+        "etag_not_md5": 0,
+        "abort_failed": 0
+      },
+      "run": {
+        "same_named_cabs": 0,
+        "undeclared_dependencies": 0,
+        "nested_containers": 0
+      }
+    },
+    "rows": {
+      "bundles": [
+        {
+          "id": "a.bundle",
+          "status": "staged",
+          "reason": null,
+          "detail": null,
+          "size": "$BUNDLE_SIZE:a.bundle",
+          "sha256": "311a209ae8fecac775732fd662ade32dacccd91dfcbdbbc74b5c8d349f25e490",
+          "peek": null
+        },
+        {
+          "id": "b.bundle",
+          "status": "staged",
+          "reason": null,
+          "detail": null,
+          "size": "$BUNDLE_SIZE:b.bundle",
+          "sha256": "ffb1b55297c60ff1f0088228939b488abb894b9991520888542ff6a555be0523",
+          "peek": null
+        },
+        {
+          "id": "c.bundle",
+          "status": "staged",
+          "reason": null,
+          "detail": null,
+          "size": "$BUNDLE_SIZE:c.bundle",
+          "sha256": "98c39b6dcb8a6e657a835d6a83c32ce8d3768fa7ba6d088fd6a744f6c181951c",
+          "peek": null
+        },
+        {
+          "id": "d.bundle",
+          "status": "staged",
+          "reason": null,
+          "detail": null,
+          "size": "$BUNDLE_SIZE:d.bundle",
+          "sha256": "1673e5465157866fe1ba225c0ab1694f744954170a88949c4a7f4af849063f26",
+          "peek": null
+        }
+      ],
+      "inputs": [
+        {
+          "id": "a.bundle",
+          "status": "complete",
+          "reason": null,
+          "detail": null,
+          "evictions": 0,
+          "skips": 0,
+          "unresolved_scripts": 0,
+          "cut": false
+        },
+        {
+          "id": "b.bundle",
+          "status": "complete",
+          "reason": null,
+          "detail": null,
+          "evictions": 0,
+          "skips": 0,
+          "unresolved_scripts": 0,
+          "cut": false
+        },
+        {
+          "id": "c.bundle",
+          "status": "complete",
+          "reason": null,
+          "detail": null,
+          "evictions": 0,
+          "skips": 0,
+          "unresolved_scripts": 0,
+          "cut": false
+        },
+        {
+          "id": "d.bundle",
+          "status": "complete_with_skips",
+          "reason": null,
+          "detail": null,
+          "evictions": 0,
+          "skips": 1,
+          "unresolved_scripts": 0,
+          "cut": false
+        }
+      ],
+      "skips": [
+        {
+          "input": "d.bundle",
+          "serialized_file": "CAB-d",
+          "path_id": 4,
+          "class": "MonoBehaviour",
+          "output": "atlas_json",
+          "sprite": null,
+          "reason": "json_unwritable",
+          "detail": null,
+          "cut": false
+        }
+      ],
+      "diagnostics": [],
+      "outputs": [
+        {
+          "key": "h.png",
+          "kind": "atlas_sprite",
+          "unit": null,
+          "input": "d.bundle",
+          "serialized_file": "CAB-d",
+          "path_id": 4,
+          "md5": "c085178920cec618c343b7850cadeb4c",
+          "visible_hash": "e610f5f577e3a915ef1445c59a65544db1f162392a1b236e59351a4069ce48f5",
+          "mode": "RGBA",
+          "size": 70,
+          "status": "published",
+          "reason": null,
+          "cut": false
+        },
+        {
+          "key": "i.png",
+          "kind": "atlas_sprite",
+          "unit": "shared.json",
+          "input": "c.bundle",
+          "serialized_file": "CAB-c",
+          "path_id": 4,
+          "md5": "1b676dae5f9045bf30ea93f5d4235936",
+          "visible_hash": "8fee52f3c44378c190813132ce9b57dd24b91517570b40a589d537ec8f09ef82",
+          "mode": "RGBA",
+          "size": 70,
+          "status": "withheld",
+          "reason": "unit_lost",
+          "cut": false
+        },
+        {
+          "key": "j.png",
+          "kind": "atlas_sprite",
+          "unit": "shared.json",
+          "input": "a.bundle",
+          "serialized_file": "CAB-a",
+          "path_id": 4,
+          "md5": "fa6537c2db2e711946b8ff1295b7ab6f",
+          "visible_hash": "9e2e2f77c82c1705979e8a142f0854c40e3ea8935919656ee77575c6e50e62d8",
+          "mode": "RGBA",
+          "size": 70,
+          "status": "published",
+          "reason": null,
+          "cut": false
+        },
+        {
+          "key": "k.png",
+          "kind": "atlas_sprite",
+          "unit": "shared.json",
+          "input": "a.bundle",
+          "serialized_file": "CAB-a",
+          "path_id": 4,
+          "md5": "51702cea4ce66bda60407f60c3e8818a",
+          "visible_hash": "7560380e5c7cc297f33b4a3ad07b3b39d19026a8205a99ce6f51f1be7b225b46",
+          "mode": "RGBA",
+          "size": 70,
+          "status": "published",
+          "reason": null,
+          "cut": false
+        },
+        {
+          "key": "shared.json",
+          "kind": "atlas_json",
+          "unit": "shared.json",
+          "input": "a.bundle",
+          "serialized_file": "CAB-a",
+          "path_id": 4,
+          "md5": "8245076aa15ce5f9c4d0cf36d16c3d25",
+          "visible_hash": null,
+          "mode": null,
+          "size": 724,
+          "status": "published",
+          "reason": null,
+          "cut": false
+        }
+      ],
+      "collisions": [
+        {
+          "key": "j.png",
+          "input": "a.bundle",
+          "serialized_file": "CAB-a",
+          "md5": "fa6537c2db2e711946b8ff1295b7ab6f",
+          "visible_hash": "9e2e2f77c82c1705979e8a142f0854c40e3ea8935919656ee77575c6e50e62d8",
+          "winner": true,
+          "rule": "first_input",
+          "flip": true,
+          "pixels_differ": false,
+          "cut": false
+        },
+        {
+          "key": "j.png",
+          "input": "b.bundle",
+          "serialized_file": "CAB-b",
+          "md5": "fa6537c2db2e711946b8ff1295b7ab6f",
+          "visible_hash": "9e2e2f77c82c1705979e8a142f0854c40e3ea8935919656ee77575c6e50e62d8",
+          "winner": false,
+          "rule": "first_input",
+          "flip": true,
+          "pixels_differ": false,
+          "cut": false
+        },
+        {
+          "key": "j.png",
+          "input": "c.bundle",
+          "serialized_file": "CAB-c",
+          "md5": "814e460bf3ccec64c6100abc953b7ce6",
+          "visible_hash": "87f0e2ae66aa968a2717112343cc455a6e2ee6a4fa47a38acacec8dcfa7e07ea",
+          "winner": false,
+          "rule": "first_input",
+          "flip": true,
+          "pixels_differ": true,
+          "cut": false
+        },
+        {
+          "key": "k.png",
+          "input": "a.bundle",
+          "serialized_file": "CAB-a",
+          "md5": "51702cea4ce66bda60407f60c3e8818a",
+          "visible_hash": "7560380e5c7cc297f33b4a3ad07b3b39d19026a8205a99ce6f51f1be7b225b46",
+          "winner": true,
+          "rule": "first_input",
+          "flip": true,
+          "pixels_differ": false,
+          "cut": false
+        },
+        {
+          "key": "k.png",
+          "input": "b.bundle",
+          "serialized_file": "CAB-b",
+          "md5": "51702cea4ce66bda60407f60c3e8818a",
+          "visible_hash": "7560380e5c7cc297f33b4a3ad07b3b39d19026a8205a99ce6f51f1be7b225b46",
+          "winner": false,
+          "rule": "first_input",
+          "flip": true,
+          "pixels_differ": false,
+          "cut": false
+        },
+        {
+          "key": "k.png",
+          "input": "c.bundle",
+          "serialized_file": "CAB-c",
+          "md5": "1b676dae5f9045bf30ea93f5d4235936",
+          "visible_hash": "8fee52f3c44378c190813132ce9b57dd24b91517570b40a589d537ec8f09ef82",
+          "winner": false,
+          "rule": "first_input",
+          "flip": true,
+          "pixels_differ": true,
+          "cut": false
+        },
+        {
+          "key": "k.png",
+          "input": "d.bundle",
+          "serialized_file": "CAB-d",
+          "md5": "5bb4276ff427b4ba1e3d0e19c7bc5174",
+          "visible_hash": "b6eb60a010fa26ac18f65e104ba1fb5ba3f8de35ee40a09ad74c8c2b2e3bb449",
+          "winner": false,
+          "rule": "unit",
+          "flip": true,
+          "pixels_differ": true,
+          "cut": false
+        },
+        {
+          "key": "shared.json",
+          "input": "a.bundle",
+          "serialized_file": "CAB-a",
+          "md5": "8245076aa15ce5f9c4d0cf36d16c3d25",
+          "visible_hash": null,
+          "winner": true,
+          "rule": "first_input",
+          "flip": true,
+          "pixels_differ": false,
+          "cut": false
+        },
+        {
+          "key": "shared.json",
+          "input": "b.bundle",
+          "serialized_file": "CAB-b",
+          "md5": "8245076aa15ce5f9c4d0cf36d16c3d25",
+          "visible_hash": null,
+          "winner": false,
+          "rule": "first_input",
+          "flip": true,
+          "pixels_differ": false,
+          "cut": false
+        },
+        {
+          "key": "shared.json",
+          "input": "c.bundle",
+          "serialized_file": "CAB-c",
+          "md5": "070ebe5c807bc1696199e2aa98c51d99",
+          "visible_hash": null,
+          "winner": false,
+          "rule": "first_input",
+          "flip": true,
+          "pixels_differ": false,
+          "cut": false
+        }
+      ],
+      "archives": [],
+      "archive_members": []
+    }
+  }
+}

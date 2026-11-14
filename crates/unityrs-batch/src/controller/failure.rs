@@ -1,7 +1,7 @@
 use super::{Controller, Halt, Hooks, Point, PreparedSpool};
+use crate::sys::Shared;
 use crate::{
     attempt::{AttemptEnd, ReasonCode},
-    budget::SealedBudget,
     control::Control,
     execution::Execution,
     job::RunFailure,
@@ -16,7 +16,6 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, OnceLock},
 };
-use unityrs_core::{FileContext, budget::Reservation, limits::Meter};
 
 #[derive(Clone, Copy)]
 pub(crate) struct FailureEnd {
@@ -36,11 +35,12 @@ struct Write {
     input: u32,
     bundle: u32,
     selected: Selected,
-    owner: Arc<OnceLock<Directory>>,
+    owner: Shared<OnceLock<Directory>>,
     spec: Arc<Spec>,
     spool: PreparedSpool,
     control: Arc<dyn Control>,
     hooks: Arc<dyn Hooks>,
+    memory: Arc<crate::job_memory::Plan>,
 }
 impl Write {
     fn run(&self) -> Result<Option<FailureEnd>, RunFailure> {
@@ -64,13 +64,18 @@ impl Write {
             .bundle(self.bundle as usize)
             .ok_or_else(internal)?
             .id();
-        let (reason, detail) = text(&self.selected, self.spec.max_decoded_bytes)?;
+        let mut reason_text = [0; 128];
+        let (reason, detail) = text(
+            &self.selected,
+            self.spec.max_decoded_bytes,
+            &mut reason_text,
+        )?;
         let reason = if self.bundle == self.input {
-            Reason::Text(Text::Prepared(&reason, false))
+            Reason::Text(Text::Prepared(reason, false))
         } else {
             Reason::Dependency {
                 id: Text::from(bundle),
-                reason: Text::Prepared(&reason, false),
+                reason: Text::Prepared(reason, false),
             }
         };
         let end = match &self.selected {
@@ -78,11 +83,13 @@ impl Write {
             _ => None,
         };
         // Only this failed slot's M is available to the charged writer.
-        let budget = Arc::new(SealedBudget::input_only(self.spec.max_decoded_bytes));
-        let mut ctx = FileContext::unitypy();
-        ctx.budget = budget.clone();
-        ctx.limits.max_input_memory = self.spec.max_decoded_bytes;
-        let meter = Meter::for_input(&ctx.limits, budget.clone(), Reservation::Input);
+        let memory = self
+            .memory
+            .failures
+            .get(self.input as usize)
+            .ok_or_else(internal)?;
+        let budget = &memory.budget;
+        let meter = memory.meter.clone();
         let summary = records::write_failure_record_stoppable(
             self.owner.get().ok_or_else(internal)?,
             &meter,
@@ -90,7 +97,7 @@ impl Write {
                 input,
                 status: Status::Failed,
                 reason: Some(reason),
-                detail: detail.as_deref().map(|s| Text::Prepared(s, false)),
+                detail: detail.map(|s| Text::Prepared(s, false)),
                 figures: end.map(|e| Figures {
                     skips: 0,
                     unresolved_scripts: 0,
@@ -122,6 +129,20 @@ impl Write {
     }
 }
 impl Controller {
+    fn reserve_failure(&mut self, end: Option<&AttemptEnd>) {
+        // A failed attempt retains its slot until this writer completes. A
+        // stage/peek failure borrows one otherwise unused M instead.
+        self.failure_reservation = if end.is_none() {
+            self.prepared.spec.max_decoded_bytes
+        } else {
+            0
+        };
+        self.sample_reservations();
+    }
+    fn release_failure(&mut self) {
+        self.failure_reservation = 0;
+        self.sample_reservations();
+    }
     fn select_failure(
         &mut self,
         input: u32,
@@ -130,8 +151,10 @@ impl Controller {
     ) -> Result<(Selected, u32), Halt> {
         if let Some(end) = end {
             let bundle = if let Some(dependency) = end.dependency {
-                let mut walk =
-                    crate::view::BoundedWalker::new(self.prepared.spec.max_view_bundles as usize);
+                let mut walk = crate::view::BoundedWalker::try_new(
+                    self.prepared.spec.max_view_bundles as usize,
+                )
+                .map_err(|e| self.io(e.into()))?;
                 *walk
                     .view(
                         &self.prepared.graph,
@@ -176,7 +199,8 @@ impl Controller {
     ) -> Result<(), Halt> {
         self.check()?;
         let (selected, bundle) = self.select_failure(input, peeks, end)?;
-        let owner = Arc::new(OnceLock::new());
+        self.reserve_failure(end);
+        let owner = Shared::new(OnceLock::new()).map_err(|e| self.io(e.into()))?;
         self.failure_owner = Some(owner.clone());
         let args = Write {
             input,
@@ -187,9 +211,9 @@ impl Controller {
             spool: self.spool.clone(),
             control: self.control.clone(),
             hooks: self.hooks.clone(),
+            memory: self.prepared.memory.clone(),
         };
         let control = self.control.clone();
-        let wake = execution.end_wake();
         let task = execution
             .spawn(move || {
                 let before = crate::alloc::refusals();
@@ -205,15 +229,14 @@ impl Controller {
                 if let Err(f) = result {
                     control.request_stop(f, crate::control::Culprit::None);
                 }
-                let _ = wake.notify();
                 result.and_then(|s| s.ok_or(RunFailure::new(ReasonCode::Internal)))
             })
-            .map_err(|()| self.internal())?;
+            .map_err(|e| self.io(e.into()))?;
         self.failure_task = Some(task);
         while !self
             .failure_task
             .as_ref()
-            .is_some_and(tokio::task::JoinHandle::is_finished)
+            .is_some_and(crate::execution::Task::is_finished)
         {
             execution
                 .wait()
@@ -225,7 +248,7 @@ impl Controller {
         self.check()?;
         let task = self.failure_task.take().ok_or(())?;
         let result = execution
-            .finish(task)
+            .finish(&task)
             .map_err(|()| self.internal())?
             .map_err(|f| self.fail(f))?;
         self.failure_writer_peak = self.failure_writer_peak.max(result.memory_peak);
@@ -240,52 +263,75 @@ impl Controller {
             facts.claimed_bytes = result.claimed;
         }
         let owner = self.failure_owner.take().ok_or(())?;
-        self.pending_directory = Arc::try_unwrap(owner).map_err(|_| ())?.into_inner();
-        self.commit(input)
+        self.pending_directory = Shared::try_unwrap(owner).map_err(|_| ())?.into_inner();
+        self.commit(input)?;
+        self.release_failure();
+        Ok(())
     }
 }
-fn text(selected: &Selected, m: u64) -> Result<(String, Option<String>), RunFailure> {
+fn text<'a>(
+    selected: &'a Selected,
+    m: u64,
+    scratch: &'a mut [u8; 128],
+) -> Result<(&'a str, Option<&'a str>), RunFailure> {
+    let internal = || RunFailure::new(ReasonCode::Internal);
+    let mut limit = None;
     let (reason, detail) = match selected {
         Selected::Stage(f, integrity) => (
             match f {
-                DataFailure::SourceMissing => "source_missing".to_owned(),
-                DataFailure::SourceNotRegular => "source_not_regular".to_owned(),
-                DataFailure::SourceChanged => "source_changed".to_owned(),
-                DataFailure::IntegrityMismatch => "integrity_mismatch".to_owned(),
-                DataFailure::InputBytes(n) => Limit {
-                    kind: LimitKind::InputBytes,
-                    value: *n,
+                DataFailure::SourceMissing => "source_missing",
+                DataFailure::SourceNotRegular => "source_not_regular",
+                DataFailure::SourceChanged => "source_changed",
+                DataFailure::IntegrityMismatch => "integrity_mismatch",
+                DataFailure::InputBytes(n) => {
+                    limit = Some(Limit {
+                        kind: LimitKind::InputBytes,
+                        value: *n,
+                    });
+                    ""
                 }
-                .to_string(),
             },
-            integrity.map(|d| d.name().to_owned()),
+            integrity.map(crate::stage::Integrity::name),
         ),
         Selected::Peek(f) => match f {
-            FailureCode::NotABundle => ("not_a_bundle".to_owned(), None),
-            FailureCode::Container(d) => ("container_error".to_owned(), Some(d.name().to_owned())),
-            FailureCode::Limit(_) => (
-                f.limit(m)
-                    .ok_or(RunFailure::new(ReasonCode::Internal))?
-                    .to_string(),
-                None,
-            ),
+            FailureCode::NotABundle => ("not_a_bundle", None),
+            FailureCode::Container(d) => ("container_error", Some(d.name())),
+            FailureCode::Limit(_) => {
+                limit = Some(f.limit(m).ok_or_else(internal)?);
+                ("", None)
+            }
         },
         Selected::Attempt(e) => (
-            match e.reason.ok_or(RunFailure::new(ReasonCode::Internal))? {
-                ReasonCode::NotABundle => "not_a_bundle".to_owned(),
-                ReasonCode::ContainerError => "container_error".to_owned(),
-                ReasonCode::EntryError => "entry_error".to_owned(),
-                ReasonCode::BudgetInput => "budget(input)".to_owned(),
-                ReasonCode::BudgetDependency => "budget(dependency)".to_owned(),
-                ReasonCode::Limit(l) => l.to_string(),
-                _ => return Err(RunFailure::new(ReasonCode::Internal)),
+            match e.reason.ok_or_else(internal)? {
+                ReasonCode::NotABundle => "not_a_bundle",
+                ReasonCode::ContainerError => "container_error",
+                ReasonCode::EntryError => "entry_error",
+                ReasonCode::BudgetInput => "budget(input)",
+                ReasonCode::BudgetDependency => "budget(dependency)",
+                ReasonCode::Limit(l) => {
+                    limit = Some(l);
+                    ""
+                }
+                _ => return Err(internal()),
             },
             if e.reason == Some(ReasonCode::EntryError) {
-                Some(e.entry_detail.as_str().to_owned())
+                Some(e.entry_detail.as_str())
             } else {
-                e.detail.map(|d| d.name().to_owned())
+                e.detail.map(crate::attempt::DetailCode::name)
             },
         ),
     };
-    Ok((reason, detail))
+    if let Some(limit) = limit {
+        use std::io::Write;
+        let mut cursor = std::io::Cursor::new(&mut scratch[..]);
+        write!(cursor, "{limit}").map_err(|_| internal())?;
+        let len = usize::try_from(cursor.position()).map_err(|_| internal())?;
+        Ok((
+            std::str::from_utf8(scratch.get(..len).ok_or_else(internal)?)
+                .map_err(|_| internal())?,
+            detail,
+        ))
+    } else {
+        Ok((reason, detail))
+    }
 }

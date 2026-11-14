@@ -12,6 +12,15 @@ pub struct RunFailure {
 }
 impl RunFailure {
     #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self.reason {
+            ReasonCode::HostIo => "host_io",
+            ReasonCode::HostMemory => "host_memory",
+            ReasonCode::SpoolFull => "spool_full",
+            _ => "internal",
+        }
+    }
+    #[must_use]
     pub const fn new(reason: ReasonCode) -> Self {
         Self {
             reason,

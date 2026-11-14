@@ -1,146 +1,358 @@
+mod common;
 mod controller_support;
+mod publication_support;
+#[path = "controller_support/refusals.rs"]
+mod refusals;
 mod stage_support;
-use controller_support::*;
+use std::os::unix::process::ExitStatusExt;
 use std::{
     cell::Cell,
     process::Command,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 use unityrs_batch::{
     alloc::{Counting, Hook},
-    attempt,
-    controller::{Boundary, Event, Hooks, Point},
-    peek, records,
+    control::{Control, Culprit},
+    controller::{Boundary, Controller, Event, Hooks},
+    execution::Execution,
+    finish,
+    job::RunFailure,
+    phase::Account,
+    progress::{Exit, Snapshot, live::Service},
+    reason::Code,
+    sink::directory::Directory,
+    sys::Lock,
 };
-use unityrs_core::limits::Meter;
 use unityrs_testkit::{child, guard};
-thread_local! { static REFUSE: Cell<usize> = const { Cell::new(0) }; }
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+static SITE: AtomicUsize = AtomicUsize::new(0);
+static SEEN: AtomicUsize = AtomicUsize::new(0);
+thread_local! { static TRACING: Cell<bool> = const { Cell::new(false) }; }
 struct Refuse;
 impl Hook for Refuse {
-    fn refuses(&self, size: usize) -> bool {
-        REFUSE
-            .try_with(|r| {
-                size != 0 && size == r.get() && {
-                    r.set(0);
-                    true
-                }
-            })
-            .unwrap_or(false)
+    fn refuses(&self, bytes: usize) -> bool {
+        if TRACING.with(Cell::get) || !ACTIVE.load(Ordering::SeqCst) {
+            return false;
+        }
+        let site = SEEN.fetch_add(1, Ordering::SeqCst) + 1;
+        if site != SITE.load(Ordering::SeqCst) {
+            return false;
+        }
+        TRACING.with(|t| t.set(true));
+        eprintln!(
+            "REFUSED_ALLOCATION site={site} size={bytes}\n{}END_REFUSED_ALLOCATION",
+            std::backtrace::Backtrace::force_capture()
+        );
+        TRACING.with(|t| t.set(false));
+        true
     }
 }
 #[global_allocator]
 static ALLOC: Counting<Refuse> = Counting(Refuse);
-struct Fault {
-    mode: String,
-    armed: AtomicBool,
-    used: AtomicBool,
-}
-impl unityrs_export::ngui::Hooks for Fault {
-    fn meter(&self, meter: &Meter) {
-        if self.armed.load(Ordering::Acquire)
-            && self.mode.ends_with("leak")
-            && !self.used.swap(true, Ordering::AcqRel)
-        {
-            std::mem::forget(meter.reopen().charge(7).unwrap());
-        }
+#[derive(Default)]
+struct Stop(Lock<Option<RunFailure>>);
+impl Control for Stop {
+    fn stopped(&self) -> bool {
+        self.0.lock().is_some()
+    }
+    fn request_stop(&self, failure: RunFailure, _: Culprit) {
+        RunFailure::reduce(&mut self.0.lock(), failure);
     }
 }
-impl Hooks for Fault {
-    fn event(&self, e: Event) {
+struct ArmAt(&'static str);
+impl unityrs_export::ngui::Hooks for ArmAt {}
+impl Hooks for ArmAt {
+    fn event(&self, event: Event) {
         if matches!(
-            (self.mode.as_str(), e),
-            ("peek_leak", Event::PeekDispatched(_)) | ("attempt_leak", Event::AttemptDispatched(_))
+            (self.0, event),
+            ("attempt", Event::PeekReceived(_)) | ("failure", Event::AttemptReceived(_))
         ) {
-            self.armed.store(true, Ordering::Release);
+            ACTIVE.store(true, Ordering::SeqCst);
         }
     }
-    fn point(&self, p: Point) {
-        if self.mode == "failure_buffer" && matches!(p, Point::FailureCreated(_)) {
-            REFUSE.with(|r| r.set(records::BUFFER));
-        }
-        if self.mode == "buffer" && matches!(p, Point::Attempt(_, attempt::Point::Registered)) {
-            REFUSE.with(|r| r.set(records::BUFFER));
-        }
-        if self.mode == "adapter" {
-            assert!(
-                !matches!(p, Point::Peek(_, peek::Point::Open)),
-                "adapter panic"
-            );
-        }
-    }
+}
+fn scopes() -> impl Iterator<Item = &'static str> {
+    [
+        "stage", "peek", "attempt", "failure", "complete", "progress",
+    ]
+    .into_iter()
+    .chain(cfg!(feature = "test-hooks").then_some("progress-delayed"))
 }
 #[test]
-fn fault_child() {
-    let Ok(mode) = std::env::var("UNITYRS_CONTROLLER_FAULT") else {
-        return;
-    };
-    let () = guard::finishes("isolated controller fault", move || {
-        let mut h = Harness::new(
-            &[
-                (
-                    "a",
-                    if mode == "failure_buffer" {
-                        b"bad".to_vec()
-                    } else {
-                        clear(1)
-                    },
-                    vec![],
-                ),
-                ("b", clear(1), vec![]),
-            ],
-            &[],
-            8,
-            1,
-        );
-        let fault = Arc::new(Fault {
-            mode: mode.clone(),
-            armed: AtomicBool::new(false),
-            used: AtomicBool::new(false),
-        });
-        let mut c = h.controller(fault);
-        assert_eq!(
-            c.drive_local(h.execution.as_mut().unwrap()),
-            Boundary::HandOver
-        );
-        assert!(h.control.load(Ordering::Acquire));
-        assert_eq!(c.reserved_slots(), usize::from(mode != "failure_buffer"));
-        assert_eq!(
-            std::fs::read_dir(h.scratch.join("done")).unwrap().count(),
-            0
-        );
-        if mode.ends_with("leak") {
-            assert_eq!(
-                c.failure().map(|f| f.reason),
-                None,
-                "unreceived end has no controller failure fact"
+#[cfg_attr(debug_assertions, ignore = "scale: run in release")]
+fn every_controller_allocation_is_fallible_after_the_running_head() {
+    let () = guard::finishes("controller refusal sweep", || {
+        let mut passed = true;
+        for kind in scopes() {
+            let output = refusal_child(kind, 0);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            let sites: usize = stdout
+                .lines()
+                .find_map(|s| s.strip_prefix(&format!("CONTROLLER_SITES kind={kind} sites=")))
+                .unwrap()
+                .parse()
+                .unwrap();
+            if kind.starts_with("progress") {
+                assert_eq!(
+                    sites, 0,
+                    "progress writer must never allocate after startup"
+                );
+                let output = refusal_child(kind, 1);
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                println!(
+                    "CONTROLLER_RESULT kind={kind} sites=0 fallible=0 excluded=0 functions=0 failures=0"
+                );
+                continue;
+            }
+            let expected = refusals::INVENTORY
+                .iter()
+                .filter(|e| e.applies(kind))
+                .collect::<Vec<_>>();
+            let mut reached = std::collections::BTreeSet::new();
+            let mut excluded = 0;
+            let mut failures = 0;
+            for site in 1..=sites {
+                let output = refusal_child(kind, site);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if output.status.signal() == Some(libc::SIGABRT) {
+                    // Resolve the first owning function, never an ancestor or a
+                    // core/export type mentioned in a std generic argument.
+                    let function = refusals::innermost(&stderr);
+                    let core_or_export = function.as_deref().filter(|function| {
+                        function.starts_with("unityrs_core::")
+                            || function.starts_with("unityrs_export::")
+                    });
+                    if let Some(entry) =
+                        expected.iter().find(|e| core_or_export == Some(e.function))
+                    {
+                        reached.insert(entry.function);
+                        excluded += 1;
+                        println!(
+                            "CR10_EXCLUDED kind={kind} site={site} function={} name={}",
+                            entry.function, entry.name
+                        );
+                        continue;
+                    }
+                    failures += 1;
+                    eprintln!(
+                        "UNLISTED_ABORT kind={kind} site={site} function={function:?} status={}\n{stderr}",
+                        output.status
+                    );
+                } else if !output.status.success()
+                    || !stderr.contains(&format!("REFUSED_ALLOCATION site={site} size="))
+                {
+                    failures += 1;
+                    eprintln!(
+                        "UNHANDLED_REFUSAL kind={kind} site={site} status={}\n{stderr}",
+                        output.status
+                    );
+                }
+            }
+            let fallible = sites - excluded - failures;
+            for entry in &expected {
+                if !reached.contains(entry.function) {
+                    failures += 1;
+                    eprintln!("STALE_CR10 kind={kind} function={}", entry.function);
+                }
+            }
+            passed &= failures == 0;
+            println!(
+                "CONTROLLER_RESULT kind={kind} sites={sites} fallible={fallible} excluded={excluded} functions={} failures={failures}",
+                reached.len()
             );
         }
-        h.execution.as_mut().unwrap().quiesce().unwrap();
+        assert!(
+            passed,
+            "a post-head controller allocation did not report host_memory"
+        );
     });
 }
+fn refusal_child(kind: &str, site: usize) -> std::process::Output {
+    child::output(
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "controller_refusal_child", "--nocapture"])
+            .env("UNITYRS_CONTROLLER_REFUSALS", kind)
+            .env("UNITYRS_CONTROLLER_SITE", site.to_string()),
+    )
+    .unwrap()
+}
 #[test]
-fn allocator_refusals_adapter_panics_and_leaks_stop_without_refilling_slots() {
-    for mode in [
-        "peek_leak",
-        "attempt_leak",
-        "buffer",
-        "failure_buffer",
-        "adapter",
-    ] {
-        let output = child::output(
-            Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "fault_child", "--nocapture", "--test-threads=1"])
-                .env("UNITYRS_CONTROLLER_FAULT", mode),
-        )
-        .unwrap();
-        assert!(
-            output.status.success(),
-            "{mode}: {} {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+fn controller_refusal_child() {
+    if std::env::var_os("UNITYRS_CONTROLLER_REFUSALS").is_none() {
+        return;
     }
+    let selected = std::env::var("UNITYRS_CONTROLLER_REFUSALS").unwrap();
+    let site: usize = std::env::var("UNITYRS_CONTROLLER_SITE")
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(site < 4096, "controller refusal sweep exceeded cap");
+    if selected.starts_with("progress") {
+        progress_child(&selected, site);
+        return;
+    }
+    for kind in scopes() {
+        if selected == kind {
+            controller_child(kind, site);
+            return;
+        }
+    }
+    panic!("unknown controller scope: {selected}");
+}
+fn controller_child(kind: &'static str, site: usize) {
+    let mut harness =
+        controller_support::Harness::new(&[("a", controller_support::clear(1), vec![])], &[], 1, 1);
+    match kind {
+        "stage" => std::fs::remove_file(harness.source(0)).unwrap(),
+        "peek" => std::fs::write(harness.source(0), b"invalid").unwrap(),
+        "attempt" | "failure" => harness.configure(|s| s.max_export_work = 0),
+        _ => {}
+    }
+    let stop = Arc::new(Stop::default());
+    let mut controller = Controller::new(
+        harness.prepared.take().unwrap(),
+        harness.spool.clone(),
+        stop.clone(),
+        Arc::new(ArmAt(kind)),
+    )
+    .unwrap();
+    let mut execution = Execution::new(&controller).unwrap();
+    let progress_path = harness.scratch.join("progress");
+    let progress = Service::start(
+        std::fs::File::create(&progress_path).unwrap(),
+        Snapshot::validate(0),
+    )
+    .unwrap();
+    controller.progress(progress.sender());
+    let sink = harness.scratch.join("sink");
+    std::fs::create_dir(&sink).unwrap();
+    let directory = Directory::preflight(
+        &sink,
+        "r",
+        1,
+        Arc::new(publication_support::Portable),
+        &mut vec![0; unityrs_batch::manifest::head::HEAD_LIMIT + 1],
+    )
+    .unwrap();
+    finish::running(
+        controller.state(),
+        &directory,
+        &Account::new(unityrs_batch::bound::C_FIN),
+        &finish::Identity {
+            started_at: "2026-01-01T00:00:00Z",
+            memory_bound: 0,
+            spool_peak: 0,
+            vm_hwm: 0,
+        },
+    )
+    .unwrap();
+    println!("CONTROLLER_REFUSAL kind={kind} site={site}");
+    SEEN.store(0, Ordering::SeqCst);
+    SITE.store(site, Ordering::SeqCst);
+    ACTIVE.store(!matches!(kind, "attempt" | "failure"), Ordering::SeqCst);
+    let result = controller.drive_local(&mut execution);
+    execution.quiesce().unwrap();
+    let acknowledged = progress.exit(
+        progress.sender().snapshot().unwrap(),
+        Exit {
+            status: Some("running"),
+            code: Code::Host,
+            reason: Some("host_memory"),
+            detail: None,
+        },
+        std::time::Duration::from_secs(1),
+    );
+    ACTIVE.store(false, Ordering::SeqCst);
+    assert!(acknowledged, "progress terminal line was not acknowledged");
+    if site == 0 {
+        let sites = SEEN.load(Ordering::SeqCst);
+        assert_eq!(result, Boundary::ReadyForWinners);
+        assert!(sites > 0);
+        println!("CONTROLLER_SITES kind={kind} sites={sites}");
+    } else {
+        assert!(
+            SEEN.load(Ordering::SeqCst) >= site,
+            "unreached {kind} {site}"
+        );
+        assert_eq!(result, Boundary::HandOver, "{kind} {site}");
+        let failure = stop.0.lock().unwrap();
+        assert_eq!(
+            failure.reason,
+            unityrs_batch::attempt::ReasonCode::HostMemory,
+            "{kind} {site}"
+        );
+        assert_eq!(failure.code().value(), 74, "{kind} {site}");
+    }
+    let head: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(sink.join("_unityrs/r/manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(head["status"], "running");
+    assert_eq!(head["write_seq"], 0);
+}
+
+/// Refuse the first post-start allocation, even when the writer was held
+/// before its clock and mailbox initialization. There must be no such site.
+fn progress_child(kind: &str, site: usize) {
+    use std::{io::Read, time::Duration};
+    let (mut reader, writer) = std::io::pipe().unwrap();
+    let file = std::fs::File::from(std::os::fd::OwnedFd::from(writer));
+    let initial = Snapshot::validate(0);
+    let service = match kind {
+        #[cfg(feature = "test-hooks")]
+        "progress-delayed" => Service::test_start(file, initial, || {
+            std::thread::sleep(Duration::from_millis(50));
+        })
+        .unwrap(),
+        "progress" => Service::start(file, initial).unwrap(),
+        _ => panic!("unknown progress scope"),
+    };
+    SEEN.store(0, Ordering::SeqCst);
+    SITE.store(site, Ordering::SeqCst);
+    ACTIVE.store(true, Ordering::SeqCst);
+    let mut read_line = || {
+        let mut buffer = [0; 4096];
+        loop {
+            let n = reader.read(&mut buffer).unwrap();
+            assert!(n > 0, "progress writer closed without a line");
+            if buffer[..n].contains(&b'\n') {
+                break;
+            }
+        }
+    };
+    read_line();
+    service.post(initial);
+    read_line();
+    let acknowledged = service.exit(
+        initial,
+        Exit {
+            status: Some("running"),
+            code: Code::Host,
+            reason: Some("host_memory"),
+            detail: None,
+        },
+        Duration::from_secs(1),
+    );
+    ACTIVE.store(false, Ordering::SeqCst);
+    assert!(acknowledged);
+    let sites = SEEN.load(Ordering::SeqCst);
+    assert_eq!(sites, 0, "progress must use only its startup storage");
+    let mut terminal = String::new();
+    reader.read_to_string(&mut terminal).unwrap();
+    let exit: serde_json::Value = serde_json::from_str(&terminal).unwrap();
+    assert_eq!(exit["status"], "running");
+    assert_eq!(exit["reason"], "host_memory");
+    assert_eq!(exit["code"], 74);
+    println!("CONTROLLER_SITES kind={kind} sites={sites}");
 }

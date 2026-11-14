@@ -1,0 +1,216 @@
+{
+  "name": "sprites-own_sheets",
+  "fixture": "sprites:own_sheets",
+  "spec": {
+    "spec_version": 1,
+    "run_id": "golden",
+    "attempt": 1,
+    "threads": 1,
+    "download_concurrency": 1,
+    "max_inflight_uncompressed_bytes": 268435456,
+    "max_decoded_bytes": 16777216,
+    "dep_cache_bytes": 33554432,
+    "spool": {
+      "dir": "$SPOOL",
+      "size_bytes": 1073741824,
+      "reserve_bytes": 0
+    },
+    "inputs": [
+      {
+        "id": "x.bundle",
+        "path": "$SOURCE:x.bundle",
+        "deps": []
+      }
+    ],
+    "dependencies": [],
+    "outputs": {
+      "sprites": {
+        "key": "{type}/{name}.png"
+      }
+    },
+    "sink": {
+      "kind": "directory",
+      "root": "$SINK"
+    }
+  },
+  "exit_code": 0,
+  "outputs": {
+    "Sprite/a.png": {
+      "md5": "d63db3aeb6b9fb3dec966620e8dbf6ff"
+    },
+    "Sprite/c.png": {
+      "md5": "cfffa110451ab9f1ca4853396ec2f1c8"
+    },
+    "Sprite/mask.png": {
+      "md5": "7befda601fff736e6486446dbf793c1b"
+    },
+    "Sprite/flip.png": {
+      "md5": "384ab6364ed02b979368366ea45b78fb"
+    },
+    "Sprite/b.png": {
+      "md5": "95e5557aacb3795d4707d6fe715afe4a"
+    },
+    "Sprite/mask_rgb.png": {
+      "md5": "86cc493b3f24237ea8feb54b8df6232e"
+    }
+  },
+  "normalized": {
+    "head": {
+      "status": "complete",
+      "exit_code": 0,
+      "stop_reason": null,
+      "counts": {
+        "bundles": 1,
+        "bundles_failed": 0,
+        "inputs": 1,
+        "inputs_complete": 1,
+        "inputs_with_skips": 0,
+        "inputs_failed": 0,
+        "inputs_not_run": 0,
+        "outputs_written": 6,
+        "outputs_not_written": 0,
+        "outputs_withheld": 0,
+        "outputs_failed": 0,
+        "outputs_unwritable": 0,
+        "skips": 0,
+        "skips_expected": 0,
+        "collisions": 0,
+        "flips": 0,
+        "archives_written": 0
+      },
+      "warnings": {
+        "resume_list_failed": 0,
+        "verify_list_failed": 0,
+        "etag_not_md5": 0,
+        "abort_failed": 0
+      },
+      "run": {
+        "same_named_cabs": 0,
+        "undeclared_dependencies": 0,
+        "nested_containers": 0
+      }
+    },
+    "rows": {
+      "bundles": [
+        {
+          "id": "x.bundle",
+          "status": "staged",
+          "reason": null,
+          "detail": null,
+          "size": "$BUNDLE_SIZE:x.bundle",
+          "sha256": "095c506174cd431ee8467eb65ea400a4a694918284110aefd882d504544ae241",
+          "peek": null
+        }
+      ],
+      "inputs": [
+        {
+          "evictions": 0,
+          "id": "x.bundle",
+          "status": "complete",
+          "reason": null,
+          "detail": null,
+          "skips": 0,
+          "unresolved_scripts": 0,
+          "cut": false
+        }
+      ],
+      "skips": [],
+      "diagnostics": [],
+      "outputs": [
+        {
+          "key": "Sprite/a.png",
+          "kind": "sprite",
+          "unit": null,
+          "input": "x.bundle",
+          "serialized_file": "CAB-s1",
+          "path_id": 2,
+          "md5": "d63db3aeb6b9fb3dec966620e8dbf6ff",
+          "visible_hash": "420ff2bb852293004942db98d2bef2cc4d1d2623501036949228864d5d87bd84",
+          "mode": "RGBA",
+          "size": "$OUTPUT_SIZE:Sprite/a.png",
+          "status": "published",
+          "reason": null,
+          "cut": false
+        },
+        {
+          "key": "Sprite/b.png",
+          "kind": "sprite",
+          "unit": null,
+          "input": "x.bundle",
+          "serialized_file": "CAB-s1",
+          "path_id": 4,
+          "md5": "95e5557aacb3795d4707d6fe715afe4a",
+          "visible_hash": "ced1d6a7f762882a1e5dd5337477c4b8994b37c2ba567b6a0711093b515074de",
+          "mode": "RGB",
+          "size": "$OUTPUT_SIZE:Sprite/b.png",
+          "status": "published",
+          "reason": null,
+          "cut": false
+        },
+        {
+          "key": "Sprite/c.png",
+          "kind": "sprite",
+          "unit": null,
+          "input": "x.bundle",
+          "serialized_file": "CAB-s1",
+          "path_id": 5,
+          "md5": "cfffa110451ab9f1ca4853396ec2f1c8",
+          "visible_hash": "af9b2d681a59baf18f6f5738b7a0b52fb703f41dae120ef2e4e34d18f3c5eb0e",
+          "mode": "RGBA",
+          "size": "$OUTPUT_SIZE:Sprite/c.png",
+          "status": "published",
+          "reason": null,
+          "cut": false
+        },
+        {
+          "key": "Sprite/flip.png",
+          "kind": "sprite",
+          "unit": null,
+          "input": "x.bundle",
+          "serialized_file": "CAB-s1",
+          "path_id": 8,
+          "md5": "384ab6364ed02b979368366ea45b78fb",
+          "visible_hash": "063ee1bae8bd8eecb35bf801bb64a93fe5878f88d97a414e91a9fb95098c6450",
+          "mode": "RGBA",
+          "size": "$OUTPUT_SIZE:Sprite/flip.png",
+          "status": "published",
+          "reason": null,
+          "cut": false
+        },
+        {
+          "key": "Sprite/mask.png",
+          "kind": "sprite",
+          "unit": null,
+          "input": "x.bundle",
+          "serialized_file": "CAB-s1",
+          "path_id": 6,
+          "md5": "7befda601fff736e6486446dbf793c1b",
+          "visible_hash": "0c1520084103ed9d490be7b77928adb488505969bbb8ed0eb61221be1be1e2d8",
+          "mode": "RGBA",
+          "size": "$OUTPUT_SIZE:Sprite/mask.png",
+          "status": "published",
+          "reason": null,
+          "cut": false
+        },
+        {
+          "key": "Sprite/mask_rgb.png",
+          "kind": "sprite",
+          "unit": null,
+          "input": "x.bundle",
+          "serialized_file": "CAB-s1",
+          "path_id": 7,
+          "md5": "86cc493b3f24237ea8feb54b8df6232e",
+          "visible_hash": "659d4b19af68321b970745927914535d2da4d95685a7962d0706c004afc460cc",
+          "mode": "RGBA",
+          "size": "$OUTPUT_SIZE:Sprite/mask_rgb.png",
+          "status": "published",
+          "reason": null,
+          "cut": false
+        }
+      ],
+      "collisions": [],
+      "archives": [],
+      "archive_members": []
+    }
+  }
+}

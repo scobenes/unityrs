@@ -52,6 +52,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Instant;
 
+#[cfg(not(test))]
 use unityrs_batch::alloc::Counting;
 use unityrs_batch::progress::clock::Clock;
 use unityrs_batch::reason::Code;
@@ -60,6 +61,10 @@ use unityrs_dump::DumpOptions;
 use unityrs_dump::run::{RunError, RunOptions, Summary};
 use unityrs_dump::select::{PyStr, Selection};
 
+#[cfg(test)]
+mod test_alloc;
+
+#[cfg(not(test))]
 #[global_allocator]
 static ALLOCATOR: Counting = Counting::new();
 

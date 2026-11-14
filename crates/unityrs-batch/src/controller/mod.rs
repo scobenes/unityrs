@@ -3,8 +3,10 @@
 mod commit;
 pub(crate) mod failure;
 mod passes;
+mod progress;
 mod queue;
 mod receive;
+use crate::sys::Shared;
 use crate::{
     attempt,
     control::{Control, Culprit},
@@ -78,6 +80,10 @@ pub struct PreparedSpool {
     pub counter: Arc<Counter>,
     pub fs: Arc<dyn FileSystem>,
     held: Arc<std::fs::File>,
+    lease: Option<(
+        Arc<crate::start::spool::Started>,
+        Arc<crate::sink::directory::Directory>,
+    )>,
 }
 impl PreparedSpool {
     pub fn new(
@@ -91,7 +97,17 @@ impl PreparedSpool {
             counter,
             fs,
             held,
+            lease: None,
         })
+    }
+    #[must_use]
+    pub fn retained(
+        mut self,
+        spool: Arc<crate::start::spool::Started>,
+        sink: Arc<crate::sink::directory::Directory>,
+    ) -> Self {
+        self.lease = Some((spool, sink));
+        self
     }
     pub(crate) fn create_directory(
         &self,
@@ -136,19 +152,30 @@ pub struct Controller {
     pub(crate) rename_failure: Option<(u32, Option<i32>)>,
     pub(crate) pending_directory: Option<Directory>,
     pub(crate) failure_task:
-        Option<tokio::task::JoinHandle<Result<failure::FailureEnd, RunFailure>>>,
-    pub(crate) failure_owner: Option<Arc<OnceLock<Directory>>>,
+        Option<crate::execution::Task<Result<failure::FailureEnd, RunFailure>>>,
+    pub(crate) failure_owner: Option<Shared<OnceLock<Directory>>>,
+    pub(crate) failure_reservation: u64,
     pub(crate) failure: Option<RunFailure>,
     pub(crate) received: Option<End>,
     driven: bool,
+    pub(crate) progress: Option<crate::progress::live::Sender>,
 }
 impl Controller {
     pub fn new(
-        prepared: PreparedRun,
+        mut prepared: PreparedRun,
         spool: PreparedSpool,
         control: Arc<dyn Control>,
         hooks: Arc<dyn Hooks>,
     ) -> Result<Self, SetupError> {
+        // Library callers may edit the public prepared spec before setup.
+        // Rebuild envelopes here if their caps changed; still before the head.
+        if prepared.memory.m != prepared.spec.max_decoded_bytes
+            || prepared.memory.d != prepared.spec.dep_cache_bytes
+        {
+            prepared.memory = Arc::new(
+                crate::job_memory::Plan::new(&prepared.spec).map_err(|_| SetupError::Admission)?,
+            );
+        }
         crate::stage::require_local(&prepared.spec).map_err(|_| SetupError::UrlUnsupported)?;
         let s = &prepared.spec;
         let admission = Admission::new(
@@ -167,15 +194,25 @@ impl Controller {
             hooks,
             admission,
             pending_commit: AtomicU64::new(u64::MAX),
-            pending_directory: None,
-            rename_failure: None,
             failure_writer_peak: 0,
-            failure_owner: None,
+            rename_failure: None,
+            pending_directory: None,
             failure_task: None,
+            failure_owner: None,
+            failure_reservation: 0,
             failure: None,
             received: None,
             driven: false,
+            progress: None,
         })
+    }
+    pub fn progress(&mut self, sender: crate::progress::live::Sender) {
+        self.prepared.memory.observe(&sender.attempts());
+        self.progress = Some(sender);
+    }
+    /// Consume only after the normal boundary and after all receipts.
+    pub fn into_state(self) -> PreparedRun {
+        self.prepared
     }
     #[must_use]
     pub fn state(&self) -> &PreparedRun {
@@ -227,6 +264,9 @@ impl Controller {
                 Boundary::HandOver
             }
         };
+        if boundary == Boundary::ReadyForWinners {
+            self.sample_now();
+        }
         if boundary == Boundary::HandOver {
             // An observer fault cannot prevent the host from taking frozen state.
             let _ = catch_unwind(AssertUnwindSafe(|| self.hooks.event(Event::HandOver)));
@@ -235,8 +275,14 @@ impl Controller {
     }
     fn drive(&mut self, execution: &mut Execution) -> Result<(), Halt> {
         self.check()?;
+        if let Some(p) = &self.progress {
+            p.update(|s| s.phase = crate::progress::Phase::Stage);
+        }
         self.stage(execution)?;
         self.stage_barrier(execution)?;
+        if let Some(p) = &self.progress {
+            p.update(|s| s.phase = crate::progress::Phase::Extract);
+        }
         self.peek_queue()?;
         self.jobs(execution, true)?;
         self.peek_barrier(execution)?;
@@ -244,6 +290,7 @@ impl Controller {
         self.check()
     }
     pub(crate) fn check(&self) -> Result<(), Halt> {
+        self.sample();
         if self.control.stopped() {
             Err(Halt)
         } else {

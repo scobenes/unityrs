@@ -26,7 +26,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::path::Path;
 use std::ptr;
-use std::sync::Barrier;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 std::thread_local! {
     /// Whether this thread's allocations are counted.
@@ -57,20 +57,29 @@ pub fn count_this_thread() {
 ///
 /// When the other thread's allocation was counted.
 pub fn others_are_not_counted(live: impl Fn() -> usize) {
-    let barrier = Barrier::new(2);
+    // Barrier's first wait can box a pthread mutex/condvar on Darwin, on
+    // the counted thread and inside the before/during window. Atomics keep
+    // the probe itself allocation-free on both Darwin and Linux.
+    let step = AtomicU8::new(0);
     std::thread::scope(|s| {
         s.spawn(|| {
-            barrier.wait();
+            while step.load(Ordering::Acquire) != 1 {
+                std::thread::yield_now();
+            }
             let block = std::hint::black_box(vec![1_u8; 1 << 16]);
-            barrier.wait();
-            barrier.wait();
+            step.store(2, Ordering::Release);
+            while step.load(Ordering::Acquire) != 3 {
+                std::thread::yield_now();
+            }
             drop(block);
         });
         let before = live();
-        barrier.wait();
-        barrier.wait();
+        step.store(1, Ordering::Release);
+        while step.load(Ordering::Acquire) != 2 {
+            std::thread::yield_now();
+        }
         let during = live();
-        barrier.wait();
+        step.store(3, Ordering::Release);
         assert_eq!(
             during, before,
             "another thread's allocation moved the count"

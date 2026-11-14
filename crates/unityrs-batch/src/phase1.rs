@@ -1,6 +1,7 @@
 //! Spec-derived retained state. Construct this inside `alloc::measured`,
 //! beside validation, for both execution and `--check`. No filesystem calls,
 //! environment reads, threads, retained view closures or duplicated path table.
+use crate::sys::Shared;
 use crate::{
     attempt,
     peek::word::{Outcome, Word},
@@ -12,6 +13,7 @@ use crate::{
 use std::{sync::Arc, time::Instant};
 
 pub struct PreparedRun {
+    pub(crate) memory: Arc<crate::job_memory::Plan>,
     pub spec_sha256: [u8; 32],
     pub spec: Arc<Spec>,
     pub graph: Arc<Graph>,
@@ -105,12 +107,12 @@ pub enum JobKind {
 pub struct ActiveSlot {
     pub job: Option<(JobKind, u32)>,
     pub dispatched: Option<Instant>,
-    pub directory: Option<Arc<Directory>>,
-    pub peek_file: Option<Arc<std::sync::Mutex<Option<OwnedFile>>>>,
+    pub directory: Option<Shared<Directory>>,
+    pub peek_file: Option<Shared<crate::sys::Lock<Option<OwnedFile>>>>,
 }
 #[derive(Default)]
 pub struct StageSlot {
-    pub(crate) task: Option<tokio::task::JoinHandle<(crate::stage::local::LocalFinish, OwnedFile)>>,
+    pub(crate) task: Option<crate::execution::Task<(crate::stage::local::LocalFinish, OwnedFile)>>,
     pub bundle: Option<u32>,
     pub file: Option<OwnedFile>,
 }
@@ -183,7 +185,9 @@ pub fn prepare(validated: spec::Validated) -> Result<PreparedRun, PreparationErr
     let n = spec.bundle_count();
     let inputs = spec.input_count();
     let walker = Walker::with_capacity(n, (spec.max_view_bundles as usize).min(n));
+    let memory = crate::job_memory::Plan::new(&spec).map_err(PreparationError::Winners)?;
     Ok(PreparedRun {
+        memory: Arc::new(memory),
         spec_sha256,
         archive_keys: (0..spec.archives.len())
             .map(|i| u32::try_from(i).unwrap_or(u32::MAX))

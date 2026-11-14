@@ -314,8 +314,7 @@ pub fn parse(bytes: Vec<u8>) -> Result<Validated, BadSpec> {
 /// tests' small graphs reach a lower budget's edge).
 #[doc(hidden)]
 pub fn parse_with(bytes: Vec<u8>, view_work: u64) -> Result<Validated, BadSpec> {
-    use sha2::{Digest, Sha256};
-    let spec_sha256 = Sha256::digest(&bytes).into();
+    let spec_sha256 = crate::digest::sha256(&bytes);
     let text = String::from_utf8(bytes).map_err(|_| BadSpec::new(Rule::NotUtf8, ""))?;
     let (mut spec, lists, sites) = {
         let parsed = parse::parse(&text).map_err(|_| BadSpec::new(Rule::Syntax, ""))?;

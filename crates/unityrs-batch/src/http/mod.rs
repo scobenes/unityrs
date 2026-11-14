@@ -13,6 +13,8 @@ pub mod socket;
 mod tls;
 
 #[cfg(test)]
+mod driver_tests;
+#[cfg(test)]
 mod request_tests;
 
 use std::{sync::Arc, time::Duration};

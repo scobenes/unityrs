@@ -4,20 +4,18 @@ use super::{
 };
 use crate::{
     attempt::{DetailCode, ReasonCode, classify},
-    budget::SealedBudget,
     job::RunFailure,
     spool::{self, OwnedFile},
 };
 use std::{
     cell::Cell,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::Arc,
 };
-use unityrs_core::{FileContext, budget::Reservation, limits::Meter};
+use unityrs_core::limits::Meter;
 use unityrs_export::ngui::{self, Data, Failure};
 
 struct Engine<'a> {
-    budget: Arc<SealedBudget>,
+    memory: &'a crate::job_memory::Memory,
     stop: &'a dyn crate::control::Control,
     hooks: &'a dyn Hooks,
     decoded: Cell<u64>,
@@ -28,7 +26,7 @@ impl ngui::Hooks for Engine<'_> {
         self.stop.stopped() || self.fault.get() || self.hooks.stopped()
     }
     fn refusals(&self) -> Option<u64> {
-        Some(self.budget.snapshot().refusals())
+        Some(self.memory.budget.snapshot().refusals())
     }
     fn meter(&self, meter: &Meter) {
         self.decoded.set(self.decoded.get().max(meter.decoded()));
@@ -62,11 +60,14 @@ impl Drop for Sample<'_, '_> {
 }
 
 #[must_use]
-pub fn run_peek(mut args: PeekArgs<'_>) -> PeekEnd {
+pub fn run_peek(args: PeekArgs<'_>) -> PeekEnd {
+    let memory = crate::job_memory::Memory::new(args.m, 0, true, args.hooks.usage());
+    run_reserved(args, &memory)
+}
+pub(crate) fn run_reserved(mut args: PeekArgs<'_>, memory: &crate::job_memory::Memory) -> PeekEnd {
     let before = crate::alloc::refusals();
-    let budget = Arc::new(SealedBudget::input_only(args.m));
     let engine = Engine {
-        budget: budget.clone(),
+        memory,
         stop: args.stop,
         hooks: args.hooks,
         decoded: Cell::new(0),
@@ -85,7 +86,11 @@ pub fn run_peek(mut args: PeekArgs<'_>) -> PeekEnd {
     };
     match catch_unwind(AssertUnwindSafe(|| execute(&mut args, &engine))) {
         Ok(Ok(outcome)) => end.outcome = Some(outcome),
-        Ok(Err(failure)) => failed(&mut end, failure, args.m),
+        Ok(Err(failure)) => {
+            if crate::alloc::refusals() == before {
+                failed(&mut end, failure, args.m);
+            }
+        }
         Err(_) => run_failure(&mut end, RunFailure::new(ReasonCode::Internal)),
     }
     // BeforeWord is a fault/hold seam too: run it before the final audit so
@@ -130,7 +135,7 @@ pub fn run_peek(mut args: PeekArgs<'_>) -> PeekEnd {
     end
 }
 fn audit(end: &mut PeekEnd, engine: &Engine<'_>, before: u64) {
-    end.accounts = engine.budget.snapshot();
+    end.accounts = engine.memory.budget.snapshot();
     end.slot_releasable = end.accounts.is_clear();
     end.input_peak = end.accounts.input.peak;
     end.decode_work = engine.decoded.get();
@@ -151,20 +156,15 @@ fn execute(args: &mut PeekArgs<'_>, engine: &Engine<'_>) -> Result<Outcome, Fail
         return Err(classify::internal());
     }
     engine.check()?;
-    let mut ctx = FileContext::unitypy();
-    ctx.budget = engine.budget.clone();
-    ctx.limits.max_input_memory = args.m;
-    ctx.limits.max_input_bytes = args.m;
-    ctx.limits.max_decode_work = args.m.saturating_mul(4);
-    // Exactly one meter; the core receives the same one for every charge.
-    let meter = Meter::for_input(&ctx.limits, engine.budget.clone(), Reservation::Input);
+    // Context, sealed accounts and the first meter were reserved in phase 1.
+    let meter = engine.memory.meter.clone();
     let _sample = Sample(engine, &meter);
     ngui::Hooks::meter(engine, &meter);
     engine.point(Point::Open)?;
     let bits = ngui::peek(
         args.name,
         Data::Path(args.staged),
-        &Arc::new(ctx),
+        &engine.memory.context,
         &meter,
         engine,
     )?;

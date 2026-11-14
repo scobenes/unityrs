@@ -1,6 +1,8 @@
-//! Cooperative serial blocking publication. The execution owner dispatches this
-//! seam on its existing pool; no task, path inventory or payload escapes it.
+//! Bounded directory publication: a serial component seam and concurrent
+//! drives on the existing pool, with no per-winner task or path inventory.
 mod local;
+mod pool;
+pub use pool::{Owned, parallel};
 pub mod payload;
 mod resume;
 use crate::{

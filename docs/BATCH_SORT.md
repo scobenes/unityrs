@@ -5,6 +5,9 @@ comparators and later decision passes supply the selection semantics. The full
 phase remains subject to the retained-artifact and projection-size proofs in
 `plans/batch.md` section 2.9; this infrastructure alone establishes neither.
 
+`Order` comparators are `Sync`: B7c may move a sealed ordered reader between
+blocking-pool drives while its dispatcher serializes cursor advancement.
+
 ## Allocation and failure handling
 
 The controller prepares the `Account` and `Workspace` before entering the phase

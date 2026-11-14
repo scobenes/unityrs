@@ -2,6 +2,13 @@
 use md5::{Digest, Md5};
 use std::fmt;
 
+/// Exact-byte SHA-256, shared by spec identity and source validation.
+#[must_use]
+pub fn sha256(bytes: &[u8]) -> [u8; 32] {
+    use sha2::Sha256;
+    Sha256::digest(bytes).into()
+}
+
 /// Multipart upload/verification part size.
 pub const PART: usize = 16 * 1024 * 1024;
 /// Lowercase hex without an intermediate string.

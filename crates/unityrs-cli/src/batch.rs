@@ -4,7 +4,7 @@
 //! ```text
 //! unityrs batch --check JOB.json   validate; exit 0 or 78, one `exit` line
 //! unityrs batch --schema           the spec's JSON Schema; exit 0, 74, or 69 at step 1
-//! unityrs batch JOB.json           a run: not built yet, refused 78 (below)
+//! unityrs batch JOB.json           temporary local normal-run execution
 //! unityrs --version                one line; exit 0, 74, or 69 at step 1
 //! ```
 //!
@@ -21,11 +21,10 @@
 //! command line is 78 `usage`. `--schema` and `--version` write stdout and
 //! exit 74 when that write fails.
 //!
-//! A run, `unityrs batch JOB.json`, is not built yet (B7): once its spec is
-//! valid it is refused 78 `usage`, its usage lines saying so, so a caller
-//! never retries it as is and nothing is written anywhere (a 70 would tell
-//! the caller a retry may pass). Its spec's own refusal is its `bad_spec`,
-//! as a run's will be.
+//! Runs use the temporary local normal-run subset. Unsupported URL/store,
+//! archive and lifetime capabilities are refused with 78 before mutation.
+
+mod normal;
 
 use std::fs::File;
 use std::io::Write;
@@ -44,7 +43,7 @@ use unityrs_batch::spec::{self, BadSpec, SPEC_VERSION};
 
 pub const USAGE: &str = "usage: unityrs batch --check JOB.json\n       \
                          unityrs batch --schema\n       \
-                         unityrs batch JOB.json   (a run: not built yet, refused)";
+                         unityrs batch JOB.json   (temporary normal-run subset: local sources, directory sink; no archives or lifetime fields)";
 
 const VERSION_USAGE: &str = "usage: unityrs --version";
 
@@ -82,12 +81,7 @@ pub fn main(clock: &Clock, args: &[Vec<u8>]) -> ExitCode {
             (Err(error), _) => phase1_failed(clock, error),
         },
         Some(Command::Run(p)) => match phase1(p) {
-            (Ok(_), _) => refused(
-                clock,
-                &BadSpec::usage(),
-                "unityrs batch",
-                &format!("{USAGE}\n"),
-            ),
+            (Ok(prepared), measured) => normal::run(clock, prepared, measured),
             (Err(error), _) => phase1_failed(clock, error),
         },
         None => refused(
@@ -163,7 +157,7 @@ fn phase1_failed(clock: &Clock, error: Phase1Error) -> ExitCode {
     let exit = Exit {
         status: None,
         code: Code::Internal,
-        reason: Some("internal".into()),
+        reason: Some("internal"),
         detail: None,
     };
     early::write(
@@ -253,20 +247,20 @@ fn startup_failure_lines(ms: u64, e: &std::io::Error) -> (String, String) {
     let exit = Exit {
         status: None,
         code: Code::CouldNotStart,
-        reason: Some("startup_failed".into()),
+        reason: Some("startup_failed"),
         detail: Some(detail),
     };
     (Snapshot::validate(ms).line(Some(&exit)), err)
 }
 
 /// The `exit` line of an end in phase 1, and `err` on stderr.
-fn end(clock: &Clock, c: Code, reason: &str, detail: String, err: &str) -> ExitCode {
+fn end(clock: &Clock, c: Code, reason: &'static str, detail: String, err: &str) -> ExitCode {
     let mut snap = Snapshot::validate(clock.ms());
     snap.memory.rss = rss();
     let exit = Exit {
         status: None,
         code: c,
-        reason: Some(reason.into()),
+        reason: Some(reason),
         detail: Some(detail),
     };
     early::write(snap.line(Some(&exit)).as_bytes(), err.as_bytes());

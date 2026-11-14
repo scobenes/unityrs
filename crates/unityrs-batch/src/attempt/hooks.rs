@@ -19,6 +19,9 @@ pub enum Point {
 /// Observers may request stops or inject faults; they cannot replace internal
 /// budget or work accounting. Callbacks run inside the unwind boundary.
 pub trait Hooks: ngui::Hooks {
+    fn usage(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicU64>> {
+        None
+    }
     fn point(&self, _point: Point) {}
     fn sheets(&self, _sheets: &[ngui::SheetRow]) {}
     fn request_stop(&self, _end: &AttemptEnd) {}
@@ -26,6 +29,7 @@ pub trait Hooks: ngui::Hooks {
 impl Hooks for ngui::NoHooks {}
 
 pub(super) struct Engine<'a> {
+    pub memory: &'a crate::job_memory::Memory,
     pub budget: Arc<SealedBudget>,
     pub stop: &'a dyn crate::control::Control,
     pub observer: &'a dyn Hooks,
@@ -73,7 +77,7 @@ impl<'b> Engine<'b> {
                 && matches!(&failure,
                 Failure::Input(r) if r.reason.starts_with("budget("))
             {
-                Failure::Run(Reason::plain("host_memory"))
+                Failure::Run(classify::plain("host_memory"))
             } else {
                 failure
             }
@@ -91,7 +95,7 @@ impl ngui::Hooks for Engine<'_> {
         self.work
             .borrow_mut()
             .pixels(bytes)
-            .map_err(|l| Reason::plain(l.to_string()))
+            .map_err(classify::limit_reason)
     }
     fn meter(&self, meter: &Meter) {
         self.sample(meter);
@@ -132,7 +136,7 @@ pub(crate) fn probe<T>(
     f().map_err(|c| {
         let (Class::Skip(r) | Class::Input(r) | Class::Run(r)) = &c;
         if before.is_some() && before == hooks.refusals() && r.reason.starts_with("budget(") {
-            Failure::Run(Reason::plain("host_memory"))
+            Failure::Run(classify::plain("host_memory"))
         } else {
             c.into()
         }

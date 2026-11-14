@@ -122,7 +122,7 @@ impl Directory {
             run_id: Name::new(run_id)?,
         })
     }
-    /// Writes already encoded head bytes. B7b supplies the typed encoder.
+    /// Writes already encoded head bytes. The normal finisher supplies the typed encoder.
     pub fn write_head(&self, bytes: &[u8], running: bool) -> Result<(), Error> {
         let cx = if running {
             Context::RunningHead

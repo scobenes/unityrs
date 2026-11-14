@@ -315,6 +315,20 @@ impl BoundedWalker {
             members: Vec::with_capacity(max),
         }
     }
+    pub fn try_new(max: usize) -> std::io::Result<Self> {
+        let reserve = || {
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(max)
+                .map_err(|_| std::io::ErrorKind::OutOfMemory)?;
+            Ok::<_, std::io::Error>(values)
+        };
+        Ok(Self {
+            visited: reserve()?,
+            stack: reserve()?,
+            members: reserve()?,
+        })
+    }
     pub fn view(&mut self, graph: &Graph, x: u32, max: u32) -> Result<&[u32], ViewTooLarge> {
         self.visited.clear();
         self.stack.clear();

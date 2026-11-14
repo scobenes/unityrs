@@ -1,0 +1,207 @@
+{
+  "name": "sprites-atlas_lookup",
+  "fixture": "sprites:atlas_lookup",
+  "spec": {
+    "spec_version": 1,
+    "run_id": "golden",
+    "attempt": 1,
+    "threads": 1,
+    "download_concurrency": 1,
+    "max_inflight_uncompressed_bytes": 268435456,
+    "max_decoded_bytes": 16777216,
+    "dep_cache_bytes": 33554432,
+    "spool": {
+      "dir": "$SPOOL",
+      "size_bytes": 1073741824,
+      "reserve_bytes": 0
+    },
+    "inputs": [
+      {
+        "id": "x.bundle",
+        "path": "$SOURCE:x.bundle",
+        "deps": []
+      }
+    ],
+    "dependencies": [],
+    "outputs": {
+      "sprites": {
+        "key": "{name}.png"
+      }
+    },
+    "sink": {
+      "kind": "directory",
+      "root": "$SINK"
+    }
+  },
+  "exit_code": 3,
+  "outputs": {
+    "by_tag.png": {
+      "md5": "ad752f6eee32ed5f4709de1677a5e286"
+    },
+    "by_tag_2.png": {
+      "md5": "39ffbd296987d5cf407cf5851aa40ec8"
+    },
+    "direct.png": {
+      "md5": "39ffbd296987d5cf407cf5851aa40ec8"
+    }
+  },
+  "normalized": {
+    "head": {
+      "status": "complete_with_skips",
+      "exit_code": 3,
+      "stop_reason": null,
+      "counts": {
+        "bundles": 1,
+        "bundles_failed": 0,
+        "inputs": 1,
+        "inputs_complete": 0,
+        "inputs_with_skips": 1,
+        "inputs_failed": 0,
+        "inputs_not_run": 0,
+        "outputs_written": 3,
+        "outputs_not_written": 0,
+        "outputs_withheld": 0,
+        "outputs_failed": 0,
+        "outputs_unwritable": 0,
+        "skips": 4,
+        "skips_expected": 0,
+        "collisions": 0,
+        "flips": 0,
+        "archives_written": 0
+      },
+      "warnings": {
+        "resume_list_failed": 0,
+        "verify_list_failed": 0,
+        "etag_not_md5": 0,
+        "abort_failed": 0
+      },
+      "run": {
+        "same_named_cabs": 0,
+        "undeclared_dependencies": 0,
+        "nested_containers": 0
+      }
+    },
+    "rows": {
+      "bundles": [
+        {
+          "id": "x.bundle",
+          "status": "staged",
+          "reason": null,
+          "detail": null,
+          "size": "$BUNDLE_SIZE:x.bundle",
+          "sha256": "c5607f6abf2bcfcb0b47d93bde56a4bdd670b020459dfa1b2cf71a5df24a0179",
+          "peek": null
+        }
+      ],
+      "inputs": [
+        {
+          "evictions": 0,
+          "id": "x.bundle",
+          "status": "complete_with_skips",
+          "reason": null,
+          "detail": null,
+          "skips": 4,
+          "unresolved_scripts": 0,
+          "cut": false
+        }
+      ],
+      "skips": [
+        {
+          "input": "x.bundle",
+          "serialized_file": "CAB-a1",
+          "path_id": 12,
+          "class": "Sprite",
+          "output": "sprite",
+          "sprite": null,
+          "reason": "decode_error",
+          "detail": "render",
+          "cut": false
+        },
+        {
+          "input": "x.bundle",
+          "serialized_file": "CAB-a1",
+          "path_id": 13,
+          "class": "Sprite",
+          "output": "sprite",
+          "sprite": null,
+          "reason": "decode_error",
+          "detail": "read",
+          "cut": false
+        },
+        {
+          "input": "x.bundle",
+          "serialized_file": "CAB-a1",
+          "path_id": 15,
+          "class": "Sprite",
+          "output": "sprite",
+          "sprite": null,
+          "reason": "bad_pointer",
+          "detail": null,
+          "cut": false
+        },
+        {
+          "input": "x.bundle",
+          "serialized_file": "CAB-a1",
+          "path_id": 16,
+          "class": "Sprite",
+          "output": "sprite",
+          "sprite": null,
+          "reason": "decode_error",
+          "detail": "render",
+          "cut": false
+        }
+      ],
+      "diagnostics": [],
+      "outputs": [
+        {
+          "key": "by_tag.png",
+          "kind": "sprite",
+          "unit": null,
+          "input": "x.bundle",
+          "serialized_file": "CAB-a1",
+          "path_id": 10,
+          "md5": "ad752f6eee32ed5f4709de1677a5e286",
+          "visible_hash": "f571d04f52d0e44bd9978e9b08c1bcde5f04026140f585d287e688417c703360",
+          "mode": "RGBA",
+          "size": "$OUTPUT_SIZE:by_tag.png",
+          "status": "published",
+          "reason": null,
+          "cut": false
+        },
+        {
+          "key": "by_tag_2.png",
+          "kind": "sprite",
+          "unit": null,
+          "input": "x.bundle",
+          "serialized_file": "CAB-a1",
+          "path_id": 11,
+          "md5": "39ffbd296987d5cf407cf5851aa40ec8",
+          "visible_hash": "425956b4295ee9a93c13ef464f3a064d3589f368f43eceada71be839680bd937",
+          "mode": "RGBA",
+          "size": "$OUTPUT_SIZE:by_tag_2.png",
+          "status": "published",
+          "reason": null,
+          "cut": false
+        },
+        {
+          "key": "direct.png",
+          "kind": "sprite",
+          "unit": null,
+          "input": "x.bundle",
+          "serialized_file": "CAB-a1",
+          "path_id": 14,
+          "md5": "39ffbd296987d5cf407cf5851aa40ec8",
+          "visible_hash": "425956b4295ee9a93c13ef464f3a064d3589f368f43eceada71be839680bd937",
+          "mode": "RGBA",
+          "size": "$OUTPUT_SIZE:direct.png",
+          "status": "published",
+          "reason": null,
+          "cut": false
+        }
+      ],
+      "collisions": [],
+      "archives": [],
+      "archive_members": []
+    }
+  }
+}

@@ -9,6 +9,7 @@ use crate::{
 };
 pub use disk::{PeekBits, load_bits};
 pub use run::run_peek;
+pub(crate) use run::run_reserved;
 use std::{path::Path, sync::Arc};
 use unityrs_core::RawStr;
 use unityrs_export::ngui;
@@ -42,6 +43,9 @@ pub enum Point {
     AfterWord,
 }
 pub trait Hooks: ngui::Hooks {
+    fn usage(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicU64>> {
+        None
+    }
     fn point(&self, _point: Point) {}
     fn request_stop(&self, _end: &PeekEnd) {}
 }
