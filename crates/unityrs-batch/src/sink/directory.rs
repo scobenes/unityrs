@@ -16,7 +16,8 @@ pub struct Directory {
 impl Directory {
     /// Caller provides at least `HEAD_LIMIT + 1` bytes, charged to startup's
     /// fixed scratch (`C_base`), reused for reads. Supersession creates no
-    /// attempt row directory or output file.
+    /// attempt row directory or output file. A sink that folds case or
+    /// Unicode normalization is refused (`probe`).
     pub fn preflight(
         root: &Path,
         run_id: &str,
@@ -54,7 +55,7 @@ impl Directory {
         })?;
         let mut run_key = String::new();
         run_key
-            .try_reserve_exact(run_id.len() + 9)
+            .try_reserve_exact(run_id.len() + 15)
             .map_err(|_| Error::plain(Class::HostMemory, "parent"))?;
         run_key.push_str("_unityrs/");
         run_key.push_str(run_id);
@@ -115,6 +116,10 @@ impl Directory {
                 return Err(Error::plain(Class::Superseded, "head"));
             }
         }
+        // After the fence, so a superseded attempt creates nothing. The key
+        // the probes revalidate `run` at was reserved above.
+        run_key.push_str("/probe");
+        super::probe::sensitive(&root, &run, &run_key)?;
         Ok(Self {
             root,
             lock,

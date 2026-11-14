@@ -8,6 +8,14 @@ pub trait FileSystem: Send + Sync {
     fn probe(&self, root: &File) -> io::Result<()> {
         crate::sys::beneath_probe(root)
     }
+    /// Whether preflight probes the sink for case and normalization folding
+    /// (`docs/BATCH_SPEC.md` 7.2). A test-adapter seam: an adapter that fakes
+    /// the host (its kernel release) to run on any host, a case-insensitive
+    /// developer volume included, answers false. Production filesystems never
+    /// override it.
+    fn probe_sink_semantics(&self) -> bool {
+        true
+    }
     fn mount(&self, file: &File) -> io::Result<Option<u64>> {
         crate::sys::mount_id(file)
     }
