@@ -84,7 +84,9 @@ def status_of(name):
     if name in P3_TIER_C:
         return P3_TIER_C_STATUS
     if name in ("DXT1Crunched", "DXT5Crunched"):
-        return "pinned P0; impl P3 (legacy decoding before 2017.3); impl P3a (Unity 2017.3+ decoding and platform gates)"
+        return "pinned P0; impl P3 (legacy and Unity fork decoding); impl P3a (platform gates)"
+    if name in ("ETC_RGB4Crunched", "ETC2_RGBA8Crunched"):
+        return "pinned P0; impl P3 (Unity fork decoding); impl P3a (platform gates)"
     if name in P3:
         return P3_STATUS
     return "pinned P0; impl P3a"

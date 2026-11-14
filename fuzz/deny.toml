@@ -43,7 +43,7 @@ allow = ["PSF-2.0"]
 
 [[licenses.clarify]]
 crate = "unityrs-texture"
-expression = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0 AND LicenseRef-Crunch"
+expression = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0 AND LicenseRef-Crunch AND Zlib"
 license-files = [
     { path = "LICENSE-MIT", hash = 0xb9a65ddd },
     { path = "LICENSE-APACHE", hash = 0xb5518783 },
@@ -58,6 +58,7 @@ license-files = [
     { path = "LICENSE-OPENBLAS-UT", hash = 0x443007d2 },
     { path = "LICENSE-ASTCENC", hash = 0xb06ccc7a },
     { path = "LICENSE-CRUNCH", hash = 0x049cfc10 },
+    { path = "LICENSE-UNITYCRUNCH", hash = 0x9e44785d },
 ]
 
 [[licenses.exceptions]]

@@ -25,23 +25,25 @@ fn answer(t: &Texture, platform: i32, allowed: Formats) -> Result<unityrs_textur
 }
 
 #[test]
-fn modern_crunch_is_unsupported_before_a_malformed_switch_blob_is_read() {
+fn allowed_crunch_checks_a_malformed_switch_blob_at_every_version() {
     let mut t = tex(1, 1, 28);
     t.platform_blob = Some(Blob {
         len: 12,
         gobs: None,
     });
     let allowed = Formats::NONE.with(unityrs_texture::Format::Dxt1Crunched);
-    assert_eq!(
-        super::answer(&t, 38, allowed, (2017, 2)),
-        Err(Class::Skip(Reason::decode_error(super::BLOB_ELEMENT)))
-    );
-    assert_eq!(
-        super::answer(&t, 38, allowed, (2017, 3)),
-        Err(Class::Skip(Reason::plain(
-            "unsupported_format(DXT1Crunched)"
-        )))
-    );
+    for version in [(2017, 2), (2017, 3), (u16::MAX, u16::MAX)] {
+        assert_eq!(
+            super::answer(&t, 38, allowed, version),
+            Err(Class::Skip(Reason::decode_error(super::BLOB_ELEMENT)))
+        );
+        assert_eq!(
+            super::answer(&t, 38, Formats::NONE, version),
+            Err(Class::Skip(Reason::plain(
+                "unsupported_format(DXT1Crunched)"
+            )))
+        );
+    }
 }
 
 #[test]

@@ -32,7 +32,9 @@ rust-version.workspace = true
 # crunch/crn_decomp.h. Its actual notice is Richard Geldreich's modified
 # Zlib licence with required public credit (LicenseRef-Crunch), preserved
 # in LICENSE-CRUNCH; it is not the standard Zlib licence.
-license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0 AND LicenseRef-Crunch"
+# Unity fork unpacking ports unitycrunch/crn_decomp.h (standard Zlib),
+# preserved in LICENSE-UNITYCRUNCH.
+license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0 AND LicenseRef-Crunch AND Zlib"
 repository.workspace = true
 authors.workspace = true
 

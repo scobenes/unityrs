@@ -844,7 +844,9 @@ One row per `TextureFormat` value (78; 37-40 are unassigned). Lines are in `expo
 
 `test_texture_matrix.py` texture_matrix_matches_the_oracle builds every cell of every row from the oracle and the pixel cases, and requires the matrix to hold exactly that, so a change to any cell fails it. No builder reads this file: `test_texture_matrix.py` no_cell_is_built_from_this_file builds every row again in a new process, from a copy of this file with every matrix cell but the format names changed, and requires the same rows. pixels_match_the_matrix checks the pixels of every row that returns an image; switch_and_xbox_data_decode_as_the_gates_say decodes each pixel case swizzled with the stated Switch block, and byte-swapped on XBOX360; half_values_outside_a_byte_raise shows the half-float raises the `RHalf` and `RGBAHalf` rows state.
 
-The legacy `DXT1Crunched` and `DXT5Crunched` decoder is implemented in P3 for the `unpack_crunch` path before Unity 2017.3. `crates/unityrs-texture/tests/crunch_oracle.rs` every_legacy_crunch_decode_is_the_oracle_image replays synthetic one-face CRN streams from `tools/fixtures/texture_crunch.py` when the pinned oracle fixture has been recorded, and prints a clear skip while it is absent. The dependency-free native fixture always replays 14 streams and 32 mip levels against independently constructed BC blocks; this does not yet establish UnityPy pixel parity. Malformed streams and unsupported faces or CRN formats return named errors; cubemaps are refused because the legacy wrapper supplies one destination pointer. Version 2's `outputs.formats` accepts `DXT1Crunched` (28) and `DXT5Crunched` (29), and selection uses the texture's own SerializedFile's Unity version: below (2017, 3) it routes an allow-listed texture to legacy crunch; at or above (2017, 3) it skips `unsupported_format`. Formats 64/65 (`ETC_RGB4Crunched` and `ETC2_RGBA8Crunched`) always require Unity Crunch and remain unsupported. That separate decoder is T4b; the Switch/Xbox platform gates remain in force. A malformed legacy CRN stream is an object-level `decode_error` with detail `crunch`. `crates/unityrs-batch/tests/crunch_v2.rs` covers legacy exports, the 2017.3 split and batch continuation after malformed CRN. Version 1 export selection remains its five formats.
+The four crunched Unity formats are implemented in P3. Version 2's `outputs.formats` keeps Unity's names `DXT1Crunched` (28), `DXT5Crunched` (29), `ETC_RGB4Crunched` (64) and `ETC2_RGBA8Crunched` (65). `select_in(texture, formats, version)` is the single selection path: an allowed 28/29 uses legacy crunch below Unity 2017.3 and Unity's fork from 2017.3; an unknown version uses the fork, and 64/65 always use the fork (`export/Texture2DConverter.py:297-306`). The texture's own SerializedFile supplies the version, including referenced color and alpha sheets. Version indexing is deferred until after resource retrieval and the empty-data check, and applies only to crunched formats: `get_image_from_texture2d` fetches data first (`export/Texture2DConverter.py:237-251`), `get_image_data` returns inline data, fetches the stream or raises (`classes/legacy_patch/Texture2D.py:63-75`), and `parse_image_data` handles zero sides and empty data before its crunched-only version branch (`export/Texture2DConverter.py:265-269`, `:297-306`). `crates/unityrs-export/tests/crunch_versions.rs` and `crates/unityrs-batch/tests/crunch_v2.rs` cover malformed packed versions with absent data, both Sprite sheets, and unaffected RGBA32; the export tests also cover empty resource reads and missing resources. `select_crunch` delegates to this path with all four crunched values and version 1's five formats allowed. Switch/Xbox refusals remain in force; implementing their transforms is P3a. Version 1 keeps its five formats.
+
+Native block verification and oracle pixel verification remain distinct. `crates/unityrs-texture/tests/crunch_oracle.rs` synthetic_legacy_crunch_decodes_as_its_known_bc_blocks checks legacy blocks; `crates/unityrs-texture/tests/crunch_oracle.rs` every_legacy_crunch_decode_is_the_oracle_image replays the pinned UnityPy fixture. `crates/unityrs-texture/tests/unitycrunch_oracle.rs` fork_streams_decode_as_independently_constructed_blocks verifies the fork's 46 synthetic streams; `crates/unityrs-texture/tests/unitycrunch_oracle.rs` fork_pixels_replay_the_pinned_unitypy_oracle replays the pinned UnityPy fixture's `unity_cases` in `crunch.json`, recorded with every mip checked through `unpack_unity_crunch`. Malformed streams, unsupported CRN formats and faces return named errors; cubemaps are refused because the wrapper supplies one destination pointer. A malformed CRN is an object-level `decode_error` with detail `crunch`. `crates/unityrs-batch/tests/crunch_v2.rs` pre_2017_3_crunched_textures_export, `crates/unityrs-batch/tests/crunch_v2.rs` unity_2017_3_and_later_crunched_textures_export, `crates/unityrs-batch/tests/crunch_v2.rs` sprites_use_each_referenced_sheets_version_including_alpha and `crates/unityrs-batch/tests/crunch_v2.rs` malformed_crunch_skips_the_objects_and_continues_the_batch cover selection through batch publication.
 
 | value | format | decoder | mode | conversion | gates | UnityPy 1.25.2 | `set_image` writes | tier | status |
 |---|---|---|---|---|---|---|---|---|---|
@@ -875,8 +877,8 @@ The legacy `DXT1Crunched` and `DXT5Crunched` decoder is implemented in P3 for th
 | 25 | `BC7` | Pillow `bcn` 7 into `RGBA` | RGBA | as decoded | pad 4×4; sw 4×4 | works (`:516`) | raises `ValueError` (`:95`); Tier C (writing), section 19.2 | A | pinned P0; verified P1b (decoding); impl P3a |
 | 26 | `BC4` | Pillow `bcn` 4 into `L` | L | one channel | pad 4×4; sw 8×4 | works (`:513`) | `BC4` | A | pinned P0; verified P3 (decoding); impl P3a |
 | 27 | `BC5` | Pillow `bcn` 5 into `RGB` | RGB | (R, G, 0) | pad 4×4; sw 4×4 | works (`:514`) | `BC5` | A | pinned P0; verified P3 (decoding); impl P3a |
-| 28 | `DXT1Crunched` | crunch, then Pillow `bcn` 1 into `RGBA` | RGBA | 1-bit alpha | pad 4×4; sw —; xbox; crunch: `unpack_crunch` before 2017.3, `unpack_unity_crunch` from 2017.3 | crunch (`:517`) | `DXT1` | A | pinned P0; impl P3 (legacy decoding before 2017.3); impl P3a (Unity 2017.3+ decoding and platform gates) |
-| 29 | `DXT5Crunched` | crunch, then Pillow `bcn` 3 into `RGBA` | RGBA | interpolated alpha | pad 4×4; sw —; xbox; crunch: `unpack_crunch` before 2017.3, `unpack_unity_crunch` from 2017.3 | crunch (`:518`) | `DXT5` | A | pinned P0; impl P3 (legacy decoding before 2017.3); impl P3a (Unity 2017.3+ decoding and platform gates) |
+| 28 | `DXT1Crunched` | crunch, then Pillow `bcn` 1 into `RGBA` | RGBA | 1-bit alpha | pad 4×4; sw —; xbox; crunch: `unpack_crunch` before 2017.3, `unpack_unity_crunch` from 2017.3 | crunch (`:517`) | `DXT1` | A | pinned P0; impl P3 (legacy and Unity fork decoding); impl P3a (platform gates) |
+| 29 | `DXT5Crunched` | crunch, then Pillow `bcn` 3 into `RGBA` | RGBA | interpolated alpha | pad 4×4; sw —; xbox; crunch: `unpack_crunch` before 2017.3, `unpack_unity_crunch` from 2017.3 | crunch (`:518`) | `DXT5` | A | pinned P0; impl P3 (legacy and Unity fork decoding); impl P3a (platform gates) |
 | 30 | `PVRTC_RGB2` | texture2ddecoder PVRTC 2 bpp | RGBA | BGRA to RGBA | pad 8×4; sw — | works (`:519`) | `RGB24` | A | pinned P0; impl P3a |
 | 31 | `PVRTC_RGBA2` | texture2ddecoder PVRTC 2 bpp | RGBA | BGRA to RGBA | pad 8×4; sw — | works (`:520`) | `RGBA32` | A | pinned P0; impl P3a |
 | 32 | `PVRTC_RGB4` | texture2ddecoder PVRTC 4 bpp | RGBA | BGRA to RGBA | pad 4×4; sw — | works (`:521`) | `RGB24` | A | pinned P0; impl P3a |
@@ -907,8 +909,8 @@ The legacy `DXT1Crunched` and `DXT5Crunched` decoder is implemented in P3 for th
 | 61 | `ETC_RGBA8_3DS` | texture2ddecoder ETC1 | RGBA | the first half of the 16-byte-per-block data read as ETC1 blocks, alpha 255; the alpha is never decoded | pad 4×4; sw — | unverified (`:546`) | `RGBA32` | U | pinned P0; impl P3a |
 | 62 | `RG16` | `rg` (`RGB`, `raw`, `RG`) | — | — | no pad; sw 8×1 | raises `KeyError` `'raw'` (`:499`, `:461`) | `RGBA32` | B | pinned P0; impl P3a |
 | 63 | `R8` | Pillow raw `R` into `RGB` | RGB | (R, 0, 0) | no pad; sw 16×1 | works (`:497`) | `R8` | A | pinned P0; verified P3 (decoding); impl P3a |
-| 64 | `ETC_RGB4Crunched` | crunch, then texture2ddecoder ETC1 | RGBA | alpha 255 | pad 4×4; sw —; crunch: `unpack_unity_crunch` at any version | crunch (`:547`) | `ETC_RGB4Crunched` holding plain ETC1; Tier C (writing), section 19.2 | A | pinned P0; impl P3a |
-| 65 | `ETC2_RGBA8Crunched` | crunch, then texture2ddecoder ETC2 A8 | RGBA | BGRA to RGBA | pad 4×4; sw —; crunch: `unpack_unity_crunch` at any version | crunch (`:548`) | `ETC2_RGBA8` | A | pinned P0; impl P3a |
+| 64 | `ETC_RGB4Crunched` | crunch, then texture2ddecoder ETC1 | RGBA | alpha 255 | pad 4×4; sw —; crunch: `unpack_unity_crunch` at any version | crunch (`:547`) | `ETC_RGB4Crunched` holding plain ETC1; Tier C (writing), section 19.2 | A | pinned P0; impl P3 (Unity fork decoding); impl P3a (platform gates) |
+| 65 | `ETC2_RGBA8Crunched` | crunch, then texture2ddecoder ETC2 A8 | RGBA | BGRA to RGBA | pad 4×4; sw —; crunch: `unpack_unity_crunch` at any version | crunch (`:548`) | `ETC2_RGBA8` | A | pinned P0; impl P3 (Unity fork decoding); impl P3a (platform gates) |
 | 66 | `ASTC_HDR_4x4` | astcenc LDR, 4×4 blocks | RGBA | HDR blocks decoded with the LDR profile: an FP16 constant-colour block decodes as white, an error block in the LDR profile, which astcenc's AVX2 build stores as white (section 19.3) | pad 4×4; sw — | wrong (`:549`, `:371-377`) | `ASTC_RGBA_4x4` (`ASTC_RGB_4x4` from an RGB image) | C | pinned P0; impl P3a |
 | 67 | `ASTC_HDR_5x5` | astcenc LDR, 5×5 blocks | RGBA | HDR blocks decoded with the LDR profile, as `ASTC_HDR_4x4` | pad 5×5; sw — | wrong (`:550`, `:371-377`) | `ASTC_RGBA_5x5` (`ASTC_RGB_5x5` from an RGB image) | C | pinned P0; impl P3a |
 | 68 | `ASTC_HDR_6x6` | astcenc LDR, 6×6 blocks | RGBA | HDR blocks decoded with the LDR profile, as `ASTC_HDR_4x4` | pad 6×6; sw — | wrong (`:551`, `:371-377`) | `ASTC_RGBA_6x6` (`ASTC_RGB_6x6` from an RGB image) | C | pinned P0; impl P3a |
@@ -1118,7 +1120,96 @@ The remaining successful-reference/error-in-Rust classes are: more than 16 mip l
 
 Header and level-zero validation run before either image buffer is allocated. For N chunks, ordinary encoding consumes at least ceil(N/3) + 5N bits for DXT1 or ceil(N/3) + 10N for DXT5: one chunk symbol per three chunks, one endpoint and four selectors per channel per chunk, including skipped edge blocks (`crn_decomp.h:4196-4303`, `crn_decomp.h:4397-4470`). This is not an input-length lower bound: the zero-extending reader supplies missing bits indefinitely. A one-byte level with singleton models can decode 16384² pixels identically to the reference, including the round-1 187-byte DXT5 repro. The compatible minimum is a nonempty level region (`start_decoding` refuses zero bytes); `plan().input_bytes` is 75 (74 header bytes plus at least one level byte), independent of dimensions. The caller's meter bounds this inherent amplification; a bounded-meter regression exercises the large repro without allocating its output. The block buffer is filled in 4096-byte slices.
 
-Equal block extents with differing sub-block dimensions are accepted and cropped using Texture2D dimensions. This restriction lets the length-only `plan()` bound the unpacked buffer by the requested output size; its palette and 16383-symbol Huffman scratch estimate is conservative, while decode charges actual header-bounded allocations. Palette symbol work (6/8/2/8 u32 symbols per color endpoint/selector and alpha endpoint/selector entry) and model alphabet expansion/construction are charged to `Meter::count_decode` before their loops, independently of output dimensions. A tiny output with four 65535-entry palettes is therefore refused by the decode-work limit before setup, as is an excessive model alphabet under a small work allowance. CRN checksums are ignored, as in the reference wrapper, which supplies only one destination pointer even for a cubemap (`src/Texture2DDecoder/crunch.cpp:6-40`). Unity 2017.3+ DXT and all ETC crunched formats require the separately named T4b decoder through `select_crunch`; the `Format` crunch variants explicitly mean legacy input.
+Equal block extents with differing sub-block dimensions are accepted and cropped using Texture2D dimensions. This restriction lets the length-only `plan()` bound the unpacked buffer by the requested output size; its palette and 16383-symbol Huffman scratch estimate is conservative, while decode charges actual header-bounded allocations. Palette symbol work (6/8/2/8 u32 symbols per color endpoint/selector and alpha endpoint/selector entry) and model alphabet expansion/construction are charged to `Meter::count_decode` before their loops, independently of output dimensions. A tiny output with four 65535-entry palettes is therefore refused by the decode-work limit before setup, as is an excessive model alphabet under a small work allowance. CRN checksums are ignored, as in the reference wrapper, which supplies only one destination pointer even for a cubemap (`src/Texture2DDecoder/crunch.cpp:6-40`). `Dxt1Crunched` and `Dxt5Crunched` continue to mean legacy input. `select_in` and its `select_crunch` wrapper select their separate Unity fork variants from Unity 2017.3; formats 64/65 always use the fork.
+
+
+Unity fork CRN decoding (T4b) uses texture2ddecoder 1.0.5's
+`src/Texture2DDecoder/unitycrunch/crn_decomp.h`, under Zlib. The packed
+header is unchanged (`unitycrunch/crn_defs.h:244-291`); the format enum adds
+ETC1=10, ETC2=11, ETC2A=12, ETC1S=13 and ETC2AS=14
+(`unitycrunch/crnlib.h:48-81`). The implementation accepts 0/2 for the two
+Unity DXT variants, 10/11 for `EtcRgb4Crunched`, and 12 for
+`Etc2Rgba8Crunched`. CRN 11 follows the fork's ETC1 unpacker. Formats 13/14
+and all other CRN formats are explicitly refused. `select_in` uses the
+Unity fork for 28/29 at Unity >= 2017.3 and for 64/65 at every version
+(`export/Texture2DConverter.py:297-306`). The existing Switch/Xbox platform
+refusals still apply; Xbox swapping applies only to the DXT pair. The
+version-1 batch selector remains unchanged.
+
+Both forks gate palette descriptor reads on endpoint counts: colour endpoints and selectors on the colour endpoint count, alpha endpoints and selectors on the alpha endpoint count (`src/Texture2DDecoder/crunch/crn_decomp.h:3824-3839`, `src/Texture2DDecoder/unitycrunch/crn_decomp.h:3131-3147`, texture2ddecoder 1.0.5). Selector counts do not gate range validation for a live pair. Tables are always read (`crunch/crn_decomp.h:3796-3822`, `unitycrunch/crn_decomp.h:3102-3129`). Shared header validation follows those gates; ignored alpha descriptors may have out-of-buffer offsets and zero sizes without changing blocks or decode-work charges. Required palettes and live ranges remain checked. `texture_crunch.py` adds three legacy `descriptor_cases` (26 legacy streams total), and `texture_unitycrunch.py` adds six fork cases for ignored alpha endpoint, selector and combined descriptors in DXT and ETC. Existing case ids and bytes are preserved; these additions await regeneration of `crunch.json`, `crunch_native.json` and `unitycrunch_native.json` in the pinned container.
+
+The fork shares the legacy bit reader/static Huffman decoder and DXT color
+and alpha endpoint decoders where identical (`unitycrunch/crn_decomp.h:2554-2736`,
+`unitycrunch/crn_decomp.h:3149-3190`, `unitycrunch/crn_decomp.h:3221-3246`).
+Selector palettes instead use XOR state: 4-bit color groups and 6-bit alpha
+groups; ETC stores both selector orientations and derives RGB/table-byte
+endpoints (`unitycrunch/crn_decomp.h:3149-3299`). DXT reference symbols hold
+four two-bit references per 2x2 block group; ETC symbols hold two vertical
+references with subblock mode bits, including diagonal prediction. Traversal
+is raster order over even-rounded block extents, and all padded blocks
+consume stream state (`unitycrunch/crn_decomp.h:3352-3464`,
+`unitycrunch/crn_decomp.h:3581-3725`). DXT endpoints and selectors, plus ETC
+alpha endpoints and all ETC selectors, are fetched only for visible blocks.
+ETC color endpoints are fetched even for hidden blocks. Index updates use
+one subtraction and the reference's uint32/uint16/uint8 truncations; unused
+Huffman codewords return zero without consuming bits. Nonempty regions
+zero-extend indefinitely. The last mip ends at the supplied buffer's end,
+including retained bytes beyond declared data_size
+(`unitycrunch/crn_decomp.h:2989-3006`). Blocks then pass through the existing
+BC1/BC3 or ETC1/ETC2 A8 pixel decoder, including crop and vertical flip.
+
+Fork divergence classes, each an explicit refusal rather than an unchecked
+C++ read or allocation:
+
+- Unsafe header layout/ranges: fewer than 1 or more than 16 levels, header
+  not covering its offsets, non-increasing offsets, offsets or active
+  palette/table regions outside the declared data, header/data-size
+  inconsistency, or missing required palettes. Under-declared data_size
+  alone remains accepted if these ranges fit; the final mip still uses the
+  supplied buffer's end. The reference's `crnd_get_header` checks much less
+  (`unitycrunch/crn_decomp.h:2190-2203`).
+- Faces other than one: the native wrapper supplies one destination pointer
+  (`src/Texture2DDecoder/unitycrunch.cpp:6-34`). Segmented input is refused
+  because this API has no external level source. Unsupported CRN formats,
+  a CRN/Texture2D format-family mismatch, or differing block extents are
+  refused. Equal block extents with differing sub-block dimensions remain
+  accepted. These match T4a's safety and length-only planning policy.
+- Invalid, empty, over-subscribed or out-of-range Huffman model/run data
+  return `Huffman`; an empty bit region returns `Truncated`. The fork's
+  selector setup ignores some failed model reads, so Rust can refuse where
+  C++ instead uses invalid model storage. Incomplete models and repeated
+  unassigned codewords retain the shared reader's defined behavior.
+- Palette entries out of range at a required fetch return `Palette`.
+  Invisible selector indices and DXT endpoint indices are not fetched;
+  their state is retained. ETC invisible color endpoints remain checked.
+- A reference to never-initialized row/diagonal state returns `Reference`.
+  The fork constructs its row struct without initializing the scalar fields
+  (`unitycrunch/crn_decomp.h:173-188`, `unitycrunch/crn_decomp.h:3094-3100`);
+  using those values is indeterminate, so Rust does not invent pixels. The
+  initial ETC diagonal predictor itself is defined as palette index zero
+  and is accepted, with native and pending oracle regressions.
+- Allocation, size conversion and configured memory/work limits return a
+  typed refusal. Every input-sized allocation is charged first and
+  fallible. The length-only input minimum is 75 bytes; scratch covers the
+  unpacked blocks, 16-bit palette maxima (both ETC orientations), eight
+  14-bit Huffman alphabets plus temporary lengths, and row storage.
+  Palette symbol work (4/8/2/8 for ETC, 6/8/2/8 for DXT) and model expansion
+  are charged before their loops, independently of the output size.
+
+`tools/fixtures/texture_unitycrunch.py`, imported by `texture_crunch.py`,
+builds 46 synthetic fork streams and all their mip blocks without external
+packages. `crates/unityrs-texture/src/crunch/unity_tests.rs` every_fork_mip_matches_the_builder_blocks checks each mip; its other tests check palette fetch visibility,
+skipped endpoint state, uninitialized references, header/format refusals,
+zero header dimensions, allocation release and work limits.
+`crates/unityrs-texture/tests/unitycrunch_oracle.rs` fork_streams_decode_as_independently_constructed_blocks compares mip-zero pixels against those blocks.
+The pinned oracle records `crunch.json`'s `unity_cases`: it checks every mip
+through `unpack_unity_crunch`, then records real `Texture2D.image` pixels,
+which `crates/unityrs-texture/tests/unitycrunch_oracle.rs` fork_pixels_replay_the_pinned_unitypy_oracle
+replays; the test fails if the group is absent. Cases include
+all four formats, odd extents, 1x1, several mips, truncated nonempty levels,
+under-declared data sizes, ETC2 color and hidden out-of-range selectors.
+The `crunch` fuzz target and generated seeds cover both forks and all four
+meter modes; the generic texture target maps CRN to its plain block decoder.
 
 UnityPy has no bounds: a hostile input runs it out of memory, into Python's recursion limit or a C stack overflow, or on without end. `unityrs-core` bounds every input (`docs/plans/core.md` section 3.15), so where UnityPy answers, raises something else or dies, unityrs refuses with a named limit, its note holding `limit <Kind>: <value> > <max>` (in the canonical dump, the input's `file` record of kind `parse`, or of kind `detect` for detection's inflate bound and an input past `max_input_bytes`) or, inside an object, an L2 error of kind `other`. On the corpus game and UnityPy's samples none is met (G1's zero differences). Review round 9's sweep asked of each limit which well-formed input meets it before UnityPy itself fails. No Unity-built file meets `max_block_output` (a bundle states each block's size in 32 bits, `files/BundleFile.py`'s `read_u_int`, and the default is 4 GiB), `max_container_depth` (Unity does not nest bundles: `docs/plans/core.md` section 9, Q10), `max_tree_depth` or `max_value_depth` (a binary typetree stores a node's level in one byte, and Unity's serializer nests a class's fields only a few levels deep); `max_values_per_object` counts no value a well-formed object read by UnityPyBoost keeps, nor any it writes from one (the row below), and `max_prealloc` refuses nothing; `max_zero_size_elements` counts only an element that reads no byte and does work it keeps nothing of (the row below), so an array of a class with no fields is read at any count, its elements charged to the meter (plan section 9, Q15 (c)). Four can be met by a well-formed input UnityPy reads, given the memory and the time, and each stays, the owner's decision (plan section 9, Q9, and Q15 (a) and (b)): `max_input_memory` and `max_input_bytes` (an input past 8 GiB held, or a file past 4 GiB: a caller with bigger inputs raises them), `max_decode_work` (an input whose objects' values, read and written, cost more than 32 GiB of work: each value costs `walk::VALUE_WORK`, 40 bytes, so the 4 bytes of a `Color32` cost a read 200), and `max_inflate` (a gzip stream that is not a web file, inflating past 4 GiB; a web file's entries end below 2^32, `files/WebFile.py` reading each offset and length with `read_int`). G3b (every count and length field of every testkit builder's output set negative and huge, then seeded mutations) admits a limit refusal only where unityrs, run again with that limit lifted (`unityrs dump --unbounded`), gives UnityPy's records (`tools/parity/g3b.py`), and every other difference G3b may show is one of the rows below. An opt-in changes nothing unless a caller asks for it; the defaults are UnityPy's.
 

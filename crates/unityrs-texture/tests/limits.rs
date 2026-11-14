@@ -31,7 +31,7 @@ fn the_largest_texture_plans_and_one_more_column_is_refused() {
         assert_eq!(u64::from(p.width) * u64::from(p.height), pixels);
         assert_eq!(p.output_bytes, pixels * format.mode().bytes_per_pixel());
         let want = match format {
-            Format::Dxt1Crunched | Format::Dxt5Crunched => 75,
+            f if f.is_crunched() => 75,
             Format::Alpha8 | Format::R8 => MAX_PIXELS,
             Format::Argb4444 | Format::Rgba4444 | Format::Rgb565 => 2 * MAX_PIXELS,
             Format::Rgb24 | Format::Bgr24 => 3 * MAX_PIXELS,

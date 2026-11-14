@@ -4,9 +4,9 @@
 //! (`docs/plans/extract.md` E15, E18, E59, E66), under the memory bound
 //! ([`crate::MEMORY`]) or a meter of about the decode's charge.
 //!
-//! A format outside the thirty-six the crate decodes (the five version 1
+//! A format outside the forty Unity values the crate decodes (the five version 1
 //! exports, the rest of Pillow's raw and `bcn` formats, the ETC and EAC
-//! formats, and the ASTC LDR formats) decodes as one of them, so every
+//! formats, the ASTC LDR formats and the four crunched formats) decodes as one of them, so every
 //! input reaches a decoder. Besides a panic (libFuzzer's hook aborts at it,
 //! before the decoder's containment can catch it), a finding is: a
 //! selection that exports a format the texture does not have; a decode
@@ -50,8 +50,10 @@ pub fn check(input: &[u8]) {
     // target checks those later malformed-stream errors. Keep this
     // target's byte-independent plan equality on the plain decoders.
     let format = match format {
-        Format::Dxt1Crunched => Format::Dxt1,
-        Format::Dxt5Crunched => Format::Dxt5,
+        Format::Dxt1Crunched | Format::UnityDxt1Crunched => Format::Dxt1,
+        Format::Dxt5Crunched | Format::UnityDxt5Crunched => Format::Dxt5,
+        Format::EtcRgb4Crunched => Format::EtcRgb4,
+        Format::Etc2Rgba8Crunched => Format::Etc2Rgba8,
         other => other,
     };
     let planned = plan(format, case.data.len(), case.width, case.height);

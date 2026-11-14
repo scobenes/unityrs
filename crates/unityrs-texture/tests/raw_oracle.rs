@@ -264,5 +264,5 @@ fn every_format_is_replayed_by_an_oracle_fixture() {
             "{name}"
         );
     }
-    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12 + 2);
+    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12 + 4);
 }

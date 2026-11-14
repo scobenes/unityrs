@@ -1,8 +1,9 @@
 //! A set of [`Format`]s: the formats a batch spec lets [`crate::select_in`]
 //! export (`docs/BATCH_SPEC.md` 1.5 and section 3). Version 1 exports
 //! [`Formats::V1`], the five of `docs/plans/extract.md` E15; version 2 names
-//! its own, any of the formats this crate decodes. Legacy crunched DXT names
-//! are accepted; selection also requires a Unity version before 2017.3.
+//! its own, any of the formats this crate decodes. Crunched formats keep
+//! Unity's four names; [`crate::select_in`] uses the Unity version to choose
+//! the legacy or Unity fork DXT decoder. Crunched ETC always uses the fork.
 
 use std::fmt;
 
@@ -42,13 +43,13 @@ impl Formats {
         set
     }
 
-    /// The set with `format` added.
+    /// The set with `format`'s Unity value added, including both DXT crunch variants.
     #[must_use]
     pub const fn with(self, format: Format) -> Self {
         Self(self.0 | bit(format))
     }
 
-    /// Whether `format` is in the set.
+    /// Whether `format`'s Unity value is in the set, for either DXT crunch variant.
     #[must_use]
     pub const fn contains(self, format: Format) -> bool {
         self.0 & bit(format) != 0
@@ -60,7 +61,8 @@ impl Formats {
         self.0 == 0
     }
 
-    /// The formats of the set, in `TextureFormat` order.
+    /// One canonical format per Unity value, in `TextureFormat` order.
+    /// DXT crunch entries are legacy; selection chooses the versioned decoder.
     pub fn iter(self) -> impl Iterator<Item = Format> {
         Format::ALL.into_iter().filter(move |f| self.contains(*f))
     }

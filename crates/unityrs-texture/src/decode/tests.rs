@@ -179,7 +179,7 @@ fn texture2ddecoders_formats_refuse_what_it_reads_past() {
     let etc = Format::ALL
         .iter()
         .copied()
-        .filter(|f| f.library() == Library::Texture2DDecoder);
+        .filter(|f| f.library() == Library::Texture2DDecoder && !f.is_crunched());
     for format in etc {
         let block = usize::try_from(format.block_bytes().unwrap()).unwrap();
         // 7 x 9 is 2 x 3 blocks.
