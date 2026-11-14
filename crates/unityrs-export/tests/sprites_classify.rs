@@ -174,6 +174,10 @@ fn no_decoded_format_makes_a_sheet_an_inputs_failure() {
 
     let meter = Meter::unlimited();
     let data = [0x5a_u8; 64];
+    let crunch: serde_json::Value = serde_json::from_str(include_str!(
+        "../../unityrs-texture/tests/fixtures/crunch_native.json"
+    ))
+    .unwrap();
     let alpha = decode(Format::Rgba32, &data, 1, 1, &meter).unwrap();
     let skip_or_ok = |r: Result<Sheet<'_>, SpriteError>, f: Format, how: &str| match r {
         Ok(_) => true,
@@ -187,7 +191,22 @@ fn no_decoded_format_makes_a_sheet_an_inputs_failure() {
         }
     };
     for f in Format::ALL {
-        let image = decode(f, &data, 1, 1, &meter).unwrap_or_else(|e| panic!("{f:?}: {e:?}"));
+        // CRN needs a valid stream, unlike the fixed-size block/raw formats.
+        let crn = f.is_crunched().then(|| {
+            let case = crunch["cases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["format"] == f.texture_format() && c["width"] == 1 && c["height"] == 1)
+                .unwrap();
+            let hex = case["data"]["hex"].as_str().unwrap();
+            (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect::<Vec<_>>()
+        });
+        let image = decode(f, crn.as_deref().unwrap_or(&data), 1, 1, &meter)
+            .unwrap_or_else(|e| panic!("{f:?}: {e:?}"));
         assert_eq!(image.mode(), f.mode(), "{f:?}");
         let alone = skip_or_ok(Sheet::new(&image, None, &meter), f, "alone");
         let merged = skip_or_ok(Sheet::new(&image, Some(&alpha), &meter), f, "merged");

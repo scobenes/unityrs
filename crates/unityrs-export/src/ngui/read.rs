@@ -501,16 +501,35 @@ impl Texture {
 /// of `allowed` (the spec's, `docs/BATCH_SPEC.md` 1.5): its format, or the
 /// skip. A format outside `i32` is `unsupported_format(<decimal>)`; a Switch
 /// blob is read as bytes ([`Blob`], [`BLOB_ELEMENT`]).
-pub fn answer(t: &Texture, platform: i32, allowed: Formats) -> Result<Format, Class> {
+pub fn answer(
+    t: &Texture,
+    platform: i32,
+    allowed: Formats,
+    unity_version: (u16, u16),
+) -> Result<Format, Class> {
     if t.width == 0 || t.height == 0 {
         return Err(Class::Skip(Reason::plain(Skip::EmptyImage.to_string())));
     }
-    formats(t, platform, allowed)
+    formats(t, platform, allowed, unity_version)
+}
+
+/// Selection uses the resolved version of the texture's own file, including
+/// a dependency's. Without a usable version, never assume legacy crunch.
+pub(crate) fn unity_version(obj: &ObjectRef) -> (u16, u16) {
+    obj.file()
+        .version()
+        .and_then(|v| v.version.as_tuple().ok())
+        .map_or((u16::MAX, u16::MAX), |(major, minor, ..)| (major, minor))
 }
 
 /// Section 3's answers 2 and 3 for `t`, whose sides are not 0, on
 /// `platform`: [`answer`] past its first.
-pub(crate) fn formats(t: &Texture, platform: i32, allowed: Formats) -> Result<Format, Class> {
+pub(crate) fn formats(
+    t: &Texture,
+    platform: i32,
+    allowed: Formats,
+    unity_version: (u16, u16),
+) -> Result<Format, Class> {
     let Ok(format) = i32::try_from(t.format) else {
         return Err(Class::Skip(Reason::plain(format!(
             "unsupported_format({})",
@@ -523,9 +542,6 @@ pub(crate) fn formats(t: &Texture, platform: i32, allowed: Formats) -> Result<Fo
             Some(g) => {
                 gobs[8..].copy_from_slice(&g);
                 Some(&gobs[..])
-            }
-            None if Format::from_texture_format(format).is_some_and(|f| allowed.contains(f)) => {
-                return Err(Class::Skip(Reason::decode_error(BLOB_ELEMENT)));
             }
             None => None,
         },
@@ -541,7 +557,15 @@ pub(crate) fn formats(t: &Texture, platform: i32, allowed: Formats) -> Result<Fo
             platform_blob: blob,
         },
         allowed,
+        unity_version,
     ) {
+        Selection::Export(_)
+            if platform == SWITCH
+                && t.platform_blob
+                    .is_some_and(|b| b.len >= 12 && b.gobs.is_none()) =>
+        {
+            Err(Class::Skip(Reason::decode_error(BLOB_ELEMENT)))
+        }
         Selection::Export(f) => Ok(f),
         Selection::Skip(s) => Err(Class::Skip(Reason::plain(s.to_string()))),
     }

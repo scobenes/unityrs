@@ -16,6 +16,8 @@
 # crate's clarification and accepted licences here have a clarification and an
 # exception there (scripts/third_party_licenses_check.py checks both ways), so
 # cargo-deny rejects what cargo-about would list.
+# Named LicenseRef ids and their files are kept only in cargo-deny and the
+# Ported code notices; cargo-about 0.9.2 mislabels LicenseRef clarifications.
 
 # Match deny.toml's licence graph: the Linux and macOS platforms we build.
 # This excludes Windows-only dependencies whose published notices are
@@ -98,9 +100,13 @@ accepted = ["PSF-2.0"]
 # LICENSE-MIT, LICENSE-APACHE and LICENSE-UNITYPY are links to the
 # repository's and unityrs-core's files, so a change to those changes these
 # checksums too (and deny.toml's hashes, root and fuzz). The expression is
-# the crate's Cargo.toml `license`, which the script holds it to.
-# BSD-2-Clause-Views is accepted for this crate only, here and in deny.toml's
-# exception.
+# the crate's Cargo.toml `license` minus LicenseRef ids, checked by the script.
+# cargo-about 0.9.2 mislabels all clarification files under LicenseRef-Crunch
+# when that id is included. Omit the id and LICENSE-CRUNCH here: about.hbs
+# carries the full custom text and standalone credit under Ported code.
+# Cargo.toml and both deny.toml files retain the custom id and file.
+# BSD-2-Clause-Views is accepted for this crate only, here and in
+# deny.toml's exception; LicenseRef-Crunch is allowed only by cargo-deny.
 [unityrs-texture]
 accepted = ["BSD-2-Clause-Views"]
 

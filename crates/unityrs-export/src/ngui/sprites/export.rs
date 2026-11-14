@@ -248,7 +248,7 @@ impl Attempt<'_> {
             Format::Rgba32
         } else {
             let platform = obj.file().target_platform().unwrap_or(UNKNOWN_PLATFORM);
-            read::formats(&t, platform, self.options.formats)?
+            read::formats(&t, platform, self.options.formats, read::unity_version(obj))?
         };
         decoded(&seam, obj.file(), &t, format, false)
     }
