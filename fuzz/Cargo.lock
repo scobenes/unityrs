@@ -372,6 +372,7 @@ dependencies = [
 name = "unityrs-testkit"
 version = "0.0.1"
 dependencies = [
+ "libc",
  "liblzma",
  "lz4_flex",
 ]

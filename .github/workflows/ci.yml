@@ -79,6 +79,11 @@ jobs:
       # Environment fault; the steps of `check` build the batch crate without them.
       - name: Clippy, sealed attempt test hooks
         run: cargo clippy -p unityrs-batch --all-targets --features test-hooks -- -D warnings
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor;
+      # the lifetime tests' PID-namespace scene (namespace_pid_one_handles_sigabrt)
+      # needs one, and refuses to skip when CI is set.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Test, sealed attempt test hooks
         run: cargo test -p unityrs-batch --features test-hooks
 
@@ -96,6 +101,11 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Check synthetic batch golden generators
         run: python3 tools/goldens/generate.py --check
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor;
+      # the lifetime tests' PID-namespace scene (namespace_pid_one_handles_sigabrt)
+      # needs one, and refuses to skip when CI is set.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Test, phase 6, publication and archives at scale (release)
         run: >-
           cargo test --locked --profile sweep -p unityrs-batch --features test-hooks
