@@ -46,6 +46,14 @@ pub fn count_this_thread() {
     COUNTED.with(|c| c.set(true));
 }
 
+/// Stops counting the calling thread's allocations. A registered thread
+/// calls it before it ends: its exit's frees (its thread-locals'
+/// destructors, its handle) come after `thread::scope` has joined it, and
+/// counted they would land in whatever window a later test has armed.
+pub fn stop_counting_this_thread() {
+    COUNTED.with(|c| c.set(false));
+}
+
 /// Checks that an allocation on another thread does not move `live`, the
 /// allocator's count: a second thread allocates 64 KiB and holds it while
 /// the calling thread, which allocates nothing meanwhile, reads `live`

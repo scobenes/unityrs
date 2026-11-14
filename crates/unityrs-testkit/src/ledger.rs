@@ -126,13 +126,23 @@ impl Ledger {
         }
     }
 
+    /// Takes the critical section: a short spin, then the CPU given up
+    /// between tries (`sched_yield`, which allocates nothing), so a holder
+    /// preempted on a host with fewer cores than registered threads runs
+    /// again at once instead of after every spinner's time slice.
     fn hold(&self) -> Held<'_> {
+        let mut tries = 0_u32;
         while self
             .busy
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            spin_loop();
+            tries = tries.saturating_add(1);
+            if tries < 64 {
+                spin_loop();
+            } else {
+                std::thread::yield_now();
+            }
         }
         Held(&self.busy)
     }
