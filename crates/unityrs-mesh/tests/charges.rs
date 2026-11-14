@@ -85,7 +85,7 @@ fn allocations_are_charged_first_and_each_allocator_refusal_returns() {
         budget.clone(),
     );
     let object = file.object(1).unwrap();
-    let meter = Meter::new(u64::MAX, budget, Reservation::Input);
+    let meter = Meter::new(u64::MAX, budget.clone(), Reservation::Input);
     drop(read_mesh(&object, &env, &meter).unwrap());
     let baseline = HELD.load(Ordering::Relaxed);
     BASE_HELD.store(baseline, Ordering::Relaxed);
@@ -94,12 +94,14 @@ fn allocations_are_charged_first_and_each_allocator_refusal_returns() {
     CALLS.store(0, Ordering::Relaxed);
     ARMED.store(true, Ordering::Relaxed);
     let model = read_mesh(&object, &env, &meter).unwrap();
+    let text = unityrs_mesh::obj::export_mesh_obj_owned(&model, None, &meter).unwrap();
     ARMED.store(false, Ordering::Relaxed);
     let calls = CALLS.load(Ordering::Relaxed);
     let over = OVER.load(Ordering::Relaxed);
     assert_eq!(over, 0, "heap stood {over} bytes past charges");
     assert!(calls > 100, "{calls} allocations");
     // Moving an individual buffer keeps its charge after the rest of the mesh.
+    drop(text);
     let names = model.bone_name_hashes;
     drop(model.name);
     drop(model.processed);
@@ -118,7 +120,9 @@ fn allocations_are_charged_first_and_each_allocator_refusal_returns() {
         REFUSED.store(0, Ordering::Relaxed);
         FAIL_AT.store(at, Ordering::Relaxed);
         ARMED.store(true, Ordering::Relaxed);
-        let answer = read_mesh(&object, &env, &meter);
+        let answer = read_mesh(&object, &env, &meter).and_then(|model| {
+            unityrs_mesh::obj::export_mesh_obj_owned(&model, None, &meter).map(|text| (model, text))
+        });
         ARMED.store(false, Ordering::Relaxed);
         let e = answer.unwrap_err();
         assert!(budget_refusal(&e), "allocation {at}: {e:?}");
@@ -188,6 +192,94 @@ fn allocations_are_charged_first_and_each_allocator_refusal_returns() {
         }
     }
     FAIL_AT.store(usize::MAX, Ordering::Relaxed);
+    drop(object);
+    drop(file);
+    drop(env);
+    drop(meter);
+    assert_eq!(HELD.load(Ordering::Relaxed), 0);
+    renderer_allocations(budget);
+}
+
+#[allow(dead_code)]
+#[path = "support/export_cases.rs"]
+mod export_cases;
+struct NullSink(Arc<Meter>);
+impl unityrs_mesh::obj::ObjSink for NullSink {
+    fn file(
+        &mut self,
+        _: &[u8],
+        _: &'static str,
+        f: &mut dyn FnMut(&mut dyn unityrs_mesh::obj::MeteredWrite) -> Result<(), MeshError>,
+    ) -> Result<(), MeshError> {
+        f(&mut unityrs_mesh::obj::Writer::new(
+            std::io::sink(),
+            &self.0,
+        ))
+    }
+}
+fn renderer_allocations(budget: Arc<Budget>) {
+    let case = export_cases::cases()
+        .into_iter()
+        .find(|c| c.name == "fast_keys")
+        .unwrap();
+    let (env, file) = support::load_with_budget(MeshVersion::V6000, &case.objects, budget.clone());
+    let object = file.object(3).unwrap();
+    let meter = Meter::new(u64::MAX, budget, Reservation::Input);
+    let mut sink = NullSink(meter.clone());
+    unityrs_mesh::obj::export_mesh_renderer(&object, &env, &meter, &mut sink).unwrap();
+    let baseline = HELD.load(Ordering::Relaxed);
+    BASE_HELD.store(baseline, Ordering::Relaxed);
+    BASE.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+    OVER.store(0, Ordering::Relaxed);
+    CALLS.store(0, Ordering::Relaxed);
+    FAIL_AT.store(usize::MAX, Ordering::Relaxed);
+    ARMED.store(true, Ordering::Relaxed);
+    let result = unityrs_mesh::obj::export_mesh_renderer(&object, &env, &meter, &mut sink);
+    ARMED.store(false, Ordering::Relaxed);
+    result.unwrap();
+    assert_eq!(
+        OVER.load(Ordering::Relaxed),
+        0,
+        "renderer heap exceeded charges"
+    );
+    let calls = CALLS.load(Ordering::Relaxed);
+    assert!(calls > 100);
+    for at in 0..calls {
+        CALLS.store(0, Ordering::Relaxed);
+        REFUSED.store(0, Ordering::Relaxed);
+        FAIL_AT.store(at, Ordering::Relaxed);
+        ARMED.store(true, Ordering::Relaxed);
+        let result = unityrs_mesh::obj::export_mesh_renderer(&object, &env, &meter, &mut sink);
+        ARMED.store(false, Ordering::Relaxed);
+        let error = result.unwrap_err();
+        let refused = budget_refusal(&error)
+            || matches!(
+                &error,
+                MeshError::Charge(_)
+                    | MeshError::View(unityrs_core::objmode::ViewError::Charge(_))
+                    | MeshError::Texture(unityrs_texture::DecodeError::Charge(_))
+            )
+            || matches!(
+                &error,
+                MeshError::Scene(
+                    unityrs_scene::SceneError::Charge(_)
+                        | unityrs_scene::SceneError::View(
+                            unityrs_core::objmode::ViewError::Charge(_)
+                        )
+                )
+            )
+            || matches!(&error, MeshError::Scene(unityrs_scene::SceneError::Parse(unityrs_core::walk::ParseError::Read(e))) if matches!(e.detail, unityrs_core::walk::ReadDetail::Charge(_)));
+        assert!(refused, "renderer allocation {at}: {error:?}");
+        assert!(REFUSED.load(Ordering::Relaxed) > 0);
+        assert_eq!(
+            HELD.load(Ordering::Relaxed),
+            baseline,
+            "renderer allocation {at}"
+        );
+        assert_eq!(meter.used(), 0);
+    }
+    FAIL_AT.store(usize::MAX, Ordering::Relaxed);
+    drop(sink);
     drop(object);
     drop(file);
     drop(env);

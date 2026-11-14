@@ -428,6 +428,8 @@ jobs:
           python tools/fixtures/texture_astc.py --check
           python tools/fixtures/meshdecode.py --check
           python tools/fixtures/mesh_export.py --check
+          python tools/fixtures/obj_export.py --check
+          python tools/fixtures/pyfmt.py --check
           python tools/fixtures/ngui.py --check
           python tools/fixtures/sprites.py --check
       # sprite.py records UnityPy's SpriteHelper on hand-built sprites (its
@@ -554,6 +556,7 @@ jobs:
       - name: Build unityrs and the matrix writer (release)
         run: |
           cargo build --release --locked -p unityrs-cli
+          cargo build --release --locked -p unityrs-mesh --example mesh_l6
           cargo build --release --locked -p unityrs-dump --example write_matrix
           unitypy=$(python -c 'import os, UnityPy; print(os.path.dirname(UnityPy.__file__))')
           echo "TPK=$unitypy/resources/lzma.tpk" >> "$GITHUB_ENV"
@@ -565,6 +568,8 @@ jobs:
             -o "$RUNNER_TEMP/dumps/samples-unityrs.jsonl.gz"
           python tools/parity/compare.py --oracle "$RUNNER_TEMP/dumps/samples.jsonl.gz" \
             "$RUNNER_TEMP/dumps/samples-unityrs.jsonl.gz" --json "$RUNNER_TEMP/dumps/samples-report.json"
+      - name: L6, sample mesh arrays and raw OBJ against the corrected oracle
+        run: python tools/parity/mesh_samples.py "$UNITYRS_UNITYPY_SAMPLES" --replay target/release/examples/mesh_l6 --tpk "$TPK"
       - name: G2, the value cases through `unityrs values`
         run: python tools/parity/value_cases.py target/release/unityrs
       - name: G3, the synthetic matrix dumped by the oracle and by unityrs, compare equal

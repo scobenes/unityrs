@@ -1419,7 +1419,9 @@ dependencies = [
  "unityrs-batch",
  "unityrs-core",
  "unityrs-dump",
+ "unityrs-mesh",
  "unityrs-testkit",
+ "unityrs-tpk",
 ]
 
 [[package]]
@@ -1494,8 +1496,12 @@ dependencies = [
  "serde_json",
  "thiserror",
  "unityrs-core",
+ "unityrs-imageio",
  "unityrs-meshdecode",
+ "unityrs-scene",
  "unityrs-testkit",
+ "unityrs-texture",
+ "unityrs-tpk",
 ]
 
 [[package]]
