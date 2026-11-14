@@ -103,7 +103,7 @@ Each format group is a module of its own, so the shared tables (`format.rs`, `se
 
 **Licences.** ASTC adds Apache-2.0 (the crate's expression gains `AND Apache-2.0`, with a `LICENSE-ASTCENC` file and an `about.hbs` section). Crunch adds Zlib, Binomial's crunch's licence and, to be verified, that of Unity's fork (`AND Zlib`, `LICENSE-CRUNCH`, `LICENSE-UNITY-CRUNCH`). PVRTC and ATC are covered by the notices the crate already carries (texture2ddecoder, AssetStudio, mikunyan). The Tier B and C closed forms port no code.
 
-**Memory.** Output goes through `plan()` and `MeteredVec`. Crunch's unpacked block buffer (8 or 16 bytes a block) and its Huffman tables, bounded by the header, are charged as further buffers. ASTC's decimation and partition tables are computed per decode and charged; T2a measures their size (about 1-2 MB per block size), against generating them with `tools/gen`. PVRTC needs no intermediate buffer. Work stays linear in the output.
+**Memory.** Output goes through `plan()` and `MeteredVec`. Crunch's unpacked block buffer (8 or 16 bytes a block) and its Huffman tables, bounded by the header, are charged as further buffers. ASTC's decimation and partition tables are computed per decode and charged. T2a measured the partition table: 442,368 bytes at 12x12, the largest block size (3 partition counts × 1,024 seeds × one byte a texel), built per decode rather than generated with `tools/gen`. T2b measures the decimation tables. PVRTC needs no intermediate buffer. Work stays linear in the output.
 
 **Size:** about 9.2k non-test lines: raw and BCn remainder 650, ASTC LDR 2,500, ASTC HDR with BC6H 1,100, PVRTC and ATC 800, crunch 2,400, Tier B and C raw formats 800, gates and `Texture2DArray` 900.
 
@@ -248,7 +248,7 @@ About 400-1,500 non-test lines each. Each depends on the PRs it names; the first
 8. **Licences and provenance.** The FMOD-derived Vorbis table, RazTools/Studio, vgmstream, Unity's crunch fork and libwebp's PATENTS all need verifying. A failure blocks the PR that depends on it, not the phase.
 9. **Thin real-world evidence.** Section 4's corpus bullet.
 10. **Merge contention** in `unityrs-texture`'s shared tables and the core's `env/load`: per-format modules, and section 3's merge order.
-11. **Known red tests.** The parity suite's ASTC_HDR failures on arm and its lz4 failures are understood in T2a and B2a, so they do not mask new regressions.
+11. **Known red tests.** The parity suite's ASTC_HDR failures on arm and its lz4 failures are understood in T8 and B2a, so they do not mask new regressions.
 
 ---
 
