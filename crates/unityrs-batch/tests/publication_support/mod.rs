@@ -269,6 +269,9 @@ impl unityrs_batch::sink::fs::FileSystem for Portable {
     fn release(&self) -> std::io::Result<(u32, u32)> {
         Ok((5, 8))
     }
+    fn probe_sink_semantics(&self) -> bool {
+        false
+    }
     fn probe(&self, _: &std::fs::File) -> std::io::Result<()> {
         Err(std::io::Error::from_raw_os_error(libc::ENOSYS))
     }

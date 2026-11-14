@@ -391,6 +391,9 @@ impl unityrs_batch::sink::fs::FileSystem for PartialWrite {
     fn release(&self) -> std::io::Result<(u32, u32)> {
         Ok((5, 8))
     }
+    fn probe_sink_semantics(&self) -> bool {
+        false
+    }
     fn probe(&self, _: &std::fs::File) -> std::io::Result<()> {
         Err(std::io::Error::from_raw_os_error(libc::ENOSYS))
     }
@@ -494,6 +497,9 @@ impl unityrs_batch::sink::fs::FileSystem for FinalObstacle {
     fn release(&self) -> std::io::Result<(u32, u32)> {
         Ok((5, 8))
     }
+    fn probe_sink_semantics(&self) -> bool {
+        false
+    }
     fn probe(&self, _: &std::fs::File) -> std::io::Result<()> {
         Err(std::io::Error::from_raw_os_error(libc::ENOSYS))
     }
@@ -583,6 +589,9 @@ struct NoObstacleOpen(AtomicUsize, &'static str, std::sync::atomic::AtomicU64);
 impl unityrs_batch::sink::fs::FileSystem for NoObstacleOpen {
     fn release(&self) -> std::io::Result<(u32, u32)> {
         Ok((5, 8))
+    }
+    fn probe_sink_semantics(&self) -> bool {
+        false
     }
     fn probe(&self, _: &std::fs::File) -> std::io::Result<()> {
         Err(std::io::Error::from_raw_os_error(libc::ENOSYS))
