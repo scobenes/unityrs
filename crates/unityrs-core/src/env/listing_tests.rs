@@ -156,7 +156,12 @@ fn files_holds_unitypys_dict_whatever_order_the_loads_list_in() {
                 .collect();
             assert_eq!(json!(ids), want["objects"], "{what}: objects");
             for name in ["x", "y"] {
-                let got_match = env.files_match(&RawStr::from(name)).map(|f| load_of(&f));
+                let got_match =
+                    env.files_match(&RawStr::from(name))
+                        .and_then(|entry| match entry {
+                            super::listing::FileMatch::File(f) => Some(load_of(&f)),
+                            super::listing::FileMatch::ZipNone => None,
+                        });
                 assert_eq!(
                     json!(got_match),
                     want["rule4"][name],

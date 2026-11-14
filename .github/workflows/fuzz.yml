@@ -55,6 +55,7 @@ jobs:
           - meshdecode
           - zlib_match
           - unitycn
+          - zip
     env:
       TARGET: ${{ matrix.target }}
     steps:

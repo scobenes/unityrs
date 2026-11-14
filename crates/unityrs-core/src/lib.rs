@@ -64,6 +64,7 @@ pub mod typetree;
 pub mod value;
 pub mod version;
 pub mod walk;
+pub mod zip;
 
 pub use bytes::Bytes;
 pub use error::{Error, LimitError, LimitKind, NotFound, Unsupported};

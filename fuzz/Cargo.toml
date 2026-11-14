@@ -125,3 +125,10 @@ path = "fuzz_targets/unitycn.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "zip"
+path = "fuzz_targets/zip.rs"
+test = false
+doc = false
+bench = false

@@ -269,13 +269,13 @@ pub enum Unsupported {
     /// Tier U: the token walk would read beyond Boost's trailing zero byte.
     #[error("UnityCN token walk past the trailing zero byte")]
     UnityCnWalk,
-    /// A file inside a zip: P3.
+    /// A ZIP passed to the single-File parser. `Environment::load_file` and
+    /// `Environment::load_zip_file` provide container loading.
     #[error("zip members")]
     Zip,
     /// The parts of a split file (`name.split0`, `name.split1`, ...), which
     /// UnityPy joins before it reads them (`environment.py:25`, `:111-116`,
-    /// `:126-127`): P3. Refused before anything is read
-    /// ([`crate::pystr::is_split_path`]).
+    /// `:126-127`). Kept for compatibility; core path loading now joins them.
     #[error("split files (.splitN)")]
     Split,
     /// `obj.container` for an object of a dependency the Environment may
