@@ -1,6 +1,6 @@
 # P2a plan: static 3D
 
-**Status:** accepted, 2026-11-13, with its eight PRs (section 6) and the sixteen decisions of section 0. PR 1 is this document with the `PARITY.md` and `docs/DESIGN.md` changes it calls for. PRs 2, 3 and 4 can start at once, in parallel; the critical path is 2 and 3, then 6, then 8. One part waits on the project owner: the Editor-built fixture project (decision 6, section 8), on which no PR but the semantic glTF rows' verification waits.
+**Status:** accepted, 2026-11-13, with its eight PRs (section 6) and the sixteen decisions of section 0. PR 1 is this document with the `PARITY.md` and `docs/DESIGN.md` changes it calls for. PRs 2, 3 and 4 can start at once, in parallel; the critical path is 2 and 3, then 6, then 8. Review round 1 (Codex, one HIGH, eight MEDIUM, one LOW) is folded in: the metered OBJ sinks (2.2), mesh instances and UVs (2.4), non-finite data (decision 8), root order (decision 13), containment and the PNG peak (section 5), the orientation threshold (3.2) and the static-batching row (`PARITY.md` section 24). One part waits on the project owner: the Editor-built fixture project (decision 6, section 8), on which no PR but the semantic glTF rows' verification waits.
 
 **What it builds on.**
 - The core as merged in P1 (`docs/plans/core.md`), through its public API: `ObjectRef::parse_as_dict` and `Parsed` (`Parsed::field` in dict mode, `Parsed::attr` for object-mode clean names), `Environment::deref` across files with UnityPy's resolution, `Environment::resource`, the externals, object and container listings of `SerializedFile`, the meter (`Meter`, `Charge`, `MeteredVec`, `count_decode`, `heap_cost`), `pyfloat::py_float_repr`, and the class ids P2a reads (GameObject 1, Transform 4, Material 21, MeshRenderer 23, MeshFilter 33, Mesh 43, SkinnedMeshRenderer 137, LODGroup 205, RectTransform 224). A need the API does not cover is a request to the core, not an assumption.
@@ -26,13 +26,13 @@
 | 5 | glTF is not Tier B, which means "UnityPy raises on a valid request": UnityPy has no glTF request at all. `PARITY.md` section 24, "3D beyond UnityPy", files it under a new tier, **X**, at a new level, **L6g**: clean under the pinned glTF-Validator, every accessor equal to L6's arrays under the stated transform (2.4), and the normal-orientation check. | A tier for work with no UnityPy counterpart keeps A and B meaning what they mean; each X row states its reference instead. |
 | 6 | The semantic oracle `docs/DESIGN.md` section 3 names for 3D, Editor-built fixtures, is a planned project the owner builds with a licensed Unity Editor (section 8). PRs 2 to 6 do not wait for it; "verified P2a" on the glTF semantic rows does. | Hierarchy, TRS, skins, morphs and material semantics are known by construction only from such a project. Its bundles are checked in, as `CLAUDE.md` allows for Editor-built fixtures. |
 | 7 | Built-in meshes: `placeholder` by default (an empty node with extras and a report entry); `resolve` derefs as usual, through a file the user supplies via the existing `CabResolver`; `procedural`, opt-in, generates Cube, Quad and Plane tagged approximate. Their file ids are confirmed on the Editor fixtures. | UnityPy cannot resolve them, and the Editor's resource file cannot ship (2.6). |
-| 8 | glTF is spec-valid by default: normals renormalised, tangent w set to ±1, joint weights summed to 1 with negatives clamped, each rule documented and every value it touches counted in the report and the asset's extras. Profile `normalise: false` writes raw values and accepts the validator's errors. OBJ is always raw (Tier A). | Unity data often fails the validator as read; a silent change would be drift, a counted one is not. |
+| 8 | glTF is spec-valid by default: normals renormalised, tangent w set to ±1, joint weights summed to 1 with negatives clamped, and an all-zero weight row made weight 1 on joint 0. Data no rescaling can repair is handled by rule, never written: a primitive with a non-finite position is refused, with a reported reason; a non-finite or zero normal drops NORMAL (and TANGENT, which needs it) for that primitive, reported. Each rule is documented, and every value it touches is counted in the report and the asset's extras. Profile `normalise: false` writes raw values, documented as possibly spec-invalid, and accepts the validator's errors. OBJ is always raw (Tier A). | Unity data often fails the validator as read; a silent change would be drift, a counted one is not. |
 | 9 | A multi-frame blend-shape channel exports its last frame as the morph target, with the frame list in extras. Skins take the top four bone weights from the vertex data. `JOINTS_1`/`WEIGHTS_1` from `m_VariableBoneCountWeights` are P2b's, after the Editor fixtures confirm the layout. | glTF has no in-between frames; the variable-weight layout is not confirmed in any MIT source. |
 | 10 | A static-batched renderer is un-batched by default into a world-space node at the scene root, the original node keeping its TRS and `extras.static_batched`; profile `static_batch: keep_combined` is the alternative. | A combined mesh's vertices are in world space; exported under the original node they would be transformed twice. |
 | 11 | No batch integration in P2a: the library and the CLI only. P2b's batch unit export adds `glb` and `obj` output kinds under `spec_version` 2. | `docs/DESIGN.md` gives batch unit export to P2b; P2a's crates are built to drop into it (section 5). |
 | 12 | P2a's size is about 10k non-test lines (section 6), against the 4-5k `docs/DESIGN.md` section 5 gave it; the table now says so. Materials (PR 7) stay in P2a. | An honest estimate from the PR breakdown; cutting materials would save about 1.4k and leave glTF with factors only. |
-| 13 | A scene's root order is the object table's order (`objects_by_path`), documented, until the Editor fixtures show the order Unity keeps; it is decided again on them. | Player builds store no root order in a field known today. |
-| 14 | Unity's left-handed Y-up becomes glTF's right-handed Y-up by negating X. | UnityPy's OBJ negates X, so OBJ and glTF geometry agree by construction; so do the common Unity glTF exporters. |
+| 13 | A scene's root order is the object table's order (`SerializedFile::objects`, never `objects_by_path`, which sorts by signed path id), documented, until the Editor fixtures show the order Unity keeps; it is decided again on them. | Player builds store no root order in a field known today. |
+| 14 | Unity's left-handed Y-up becomes glTF's right-handed Y-up by negating X, and Unity's bottom-left UV origin becomes glTF's top-left by `v = 1 - v` (2.4). | UnityPy's OBJ negates X, so OBJ and glTF geometry agree by construction; so do the common Unity glTF exporters. Images stay as the existing PNG output writes them, top row first, which is glTF's image orientation. |
 | 15 | A Shader's name is read by a full, metered parse of the Shader, cached per unit. A core partial read ("build only this field path") is requested for P3 only if the corpus measurement shows the cost matters. | The name sits after the large sub-shader arrays, and the core has no partial read. |
 | 16 | A texture in a format `unityrs-texture` cannot decode leaves its material with factors only and a report reason, never a unit failure. More formats arrive with P3 without a change here. | P1b's five formats and ETC/EAC are what decode today. |
 
@@ -93,15 +93,18 @@ pub struct Mesh {                         // owned; charged to the meter while a
 }
 pub fn read_mesh(obj: &ObjectRef, env: &Environment, meter: &Arc<Meter>) -> Result<Mesh, MeshError>;
 pub mod obj {   // PARITY.md section 15.4
-    pub fn export_mesh_obj(m: &Mesh, material_names: Option<&[Option<&RawStr>]>) -> Result<Option<String>, MeshError>;
+    pub fn export_mesh_obj(m: &Mesh, material_names: Option<&[Option<&RawStr>]>, out: &mut dyn MeteredWrite)
+        -> Result<Written, MeshError>;          // Written::False: UnityPy's False, nothing written
     pub fn export_mesh_renderer(r: &RendererRef, env: &Environment, meter: &Arc<Meter>, sink: &mut dyn ObjSink)
-        -> Result<RendererExport, MeshError>;   // section 19.1's rules
-    pub fn export_material(m: &MaterialView) -> Result<String, MeshError>;
+        -> Result<RendererExport, MeshError>;   // section 19.1's rules; each file through a MeteredWrite of the sink's
+    pub fn export_material(m: &MaterialView, out: &mut dyn MeteredWrite) -> Result<(), MeshError>;
+    pub fn export_mesh_obj_owned(m: &Mesh, material_names: Option<&[Option<&RawStr>]>, meter: &Arc<Meter>)
+        -> Result<Option<ChargedBytes>, MeshError>;   // the convenience form: a charged byte owner
 }
-pub mod pyfmt { pub fn g9(x: PyNum) -> String; pub fn f4(x: f64) -> String; }  // ports of Python's format specs
+pub mod pyfmt { pub fn g9(x: PyNum, buf: &mut PyFmtBuf) -> &str; pub fn f4(x: f64, buf: &mut PyFmtBuf) -> &str; }
 ```
 
-`export_mesh_obj` returns `None` where UnityPy returns `False`. `Processed` borrows its `Parsed`; it gains `into_owned()` (or the Mesh keeps the `Parsed` in an `Arc` and borrows again). The owned arrays stay **f64 with the int/float tag**: OBJ text depends on it, since UnityPy negates x, so a compressed normal left as an `int` zero prints `0` where a float prints `-0`. glTF converts to f32 per accessor as it streams (section 5).
+No OBJ or MTL text is a bare `String`. It is written into a caller-supplied metered sink, `MeteredWrite`, an `io::Write` whose every growth is charged first and fallible (core 3.15), so a refusal is an error, never an abort; the convenience form returns a `ChargedBytes` that keeps its charge for as long as the bytes live. On an error, what the sink holds is the caller's to discard. `export_mesh_obj` decides UnityPy's `False` (no vertices, or no positions) before it writes anything. `pyfmt` formats into a fixed stack buffer (`PyFmtBuf`, sized for `{:.4f}` of the largest double, under 320 bytes), so it allocates nothing. `Processed` borrows its `Parsed`; it gains `into_owned()` (or the Mesh keeps the `Parsed` in an `Arc` and borrows again). The owned arrays stay **f64 with the int/float tag**: OBJ text depends on it, since UnityPy negates x, so a compressed normal left as an `int` zero prints `0` where a float prints `-0`. glTF converts to f32 per accessor as it streams (section 5).
 
 ### 2.3 `unityrs-scene`: the scene graph
 
@@ -149,18 +152,19 @@ pub struct Scene { pub nodes: Vec<GNode>, pub roots: Vec<usize>, pub meshes: Vec
 ```
 
 **Collect:** `collect(env, Graph, &Profile, &dyn MaterialMapper, meter) -> Result<Scene, GltfError>`.
-- Meshes, materials and textures are resolved and de-duplicated per unit by (file, path id).
-- **Coordinates** (decision 14): positions, normals and tangents become (-x, y, z), tangent w kept; rotations (x, -y, -z, w); winding flips to (c, b, a), as the OBJ's faces do; bind poses are conjugated by diag(-1, 1, 1, 1).
+- Meshes, materials and textures are resolved and de-duplicated per unit by (file, path id). **Mesh instances:** a source Mesh's geometry buffers (its accessors) are written once per unit and shared; a glTF mesh is keyed by (source Mesh, material bindings), so two renderers that share a Mesh with different materials get two glTF meshes over the same accessors.
+- **Coordinates** (decision 14): positions, normals and tangents become (-x, y, z); rotations (x, -y, -z, w); winding flips to (c, b, a), as the OBJ's faces do; bind poses are conjugated by diag(-1, 1, 1, 1).
+- **UVs** (decision 14): every TEXCOORD_n becomes (u, 1 - v), and images are embedded as the existing PNG output writes them, top row first. A `KHR_texture_transform` from Unity's `m_Scale` (sx, sy) and `m_Offset` (ox, oy) keeps its scale and takes offset (ox, 1 - sy - oy), the same lookup in glTF's flipped space. Tangent w follows the two mirrorings: negating x alone reverses the tangent frame's handedness, and the V flip reverses it back, so w is kept as read (after decision 8's ±1). An asymmetric textured fixture, with a normal map, pins the image's orientation, the offset and w's sign (4.3).
 - **Skins:** `m_Bones` become the joints, `m_BindPose` the inverse bind matrices, `m_RootBone` the skeleton; weights and indices come from the vertex data, the top four (decision 9).
-- **Blend shapes:** sparse morph targets from `m_Shapes`' deltas, a multi-frame channel's last frame with the frame list in extras (decision 9); `m_BlendShapeWeights` become the mesh's default weights.
+- **Blend shapes:** sparse morph targets from `m_Shapes`' deltas, a multi-frame channel's last frame with the frame list in extras (decision 9); `m_BlendShapeWeights` are per renderer, so they go in the node's `weights`, not the shared mesh's.
 - **Static batching** (decision 10): a renderer with `m_StaticBatchInfo` and `subMeshCount > 0` reads that range of the combined mesh, whose vertices are in world space.
 - **LODGroup:** the profile picks `lod0` or `all`.
 
 **Write:** `to_glb(&Scene, &Profile, sink: &mut dyn Write) -> Result<GlbStats, GltfError>`, and optionally `to_gltf` with separate JSON and BIN sinks.
 - **Deterministic bytes:** the writer fixes the JSON key order, writes floats by shortest round trip, orders buffer views by first reach, and aligns the BIN to 4 bytes.
-- A layout pass computes every buffer view's offset and the total length first, which the GLB header needs, then streams JSON and BIN, so the BIN is never built whole.
+- A layout pass computes every buffer view's offset and the total length first, which the GLB header needs, then streams JSON and BIN, so the BIN is never built whole. An embedded image's length is only known once it is encoded, so every PNG is encoded before the layout pass and kept, charged, until it is written (section 5); none is encoded twice.
 - POSITION accessors carry min and max. Indices are u16 where the largest index allows, else u32.
-- Every value written is spec-valid by decision 8's rules, and the count of values each rule touched goes into the report and the asset's extras.
+- Every value written is spec-valid by decision 8's rules (or the primitive or attribute is refused or dropped, by those rules), and the count of values each rule touched goes into the report and the asset's extras.
 
 **The material trait.**
 
@@ -183,7 +187,7 @@ pub struct CorePbr;     // base colour; normalTexture (_BumpMap/_NormalMap, scal
 
 ### 2.5 Scenes
 
-**Scene files.** A scene is a SerializedFile, a player's `levelN` or a scene bundle's `BuildPlayer-<name>` CAB, with its `.sharedAssets` sibling. Its roots are the Transforms whose `m_Father` is null, in the object table's order (decision 13); children follow `m_Children`. The profile's `scene_roots` and `exclusions` filter roots by name or path.
+**Scene files.** A scene is a SerializedFile, a player's `levelN` or a scene bundle's `BuildPlayer-<name>` CAB, with its `.sharedAssets` sibling. Its roots are the Transforms whose `m_Father` is null, in the object table's order, `SerializedFile::objects` (decision 13); children follow `m_Children`. The profile's `scene_roots` and `exclusions` filter roots by name or path.
 
 **Prefabs.** Each container entry of an AssetBundle whose PPtr targets a GameObject is one unit, rooted at that GameObject's Transform. P2b's batch export keys on this unit.
 
@@ -203,7 +207,7 @@ UnityPy does nothing special with them. A renderer or MeshFilter PPtr whose exte
 | an object-mode view shared beyond `meshdecode` | moves to `unityrs_core::objmode` in PR 2 (decision 4) |
 | a Shader's name without a full parse | a full metered parse, cached per unit (decision 15) |
 | a texture's data (`image_data`, or `m_StreamData` through `Environment::resource`) | the logic exists in `unityrs-export`'s NGUI reader; it is lifted to a shared helper, not copied |
-| `unityrs_texture::contain` (`catch_unwind`) | exists; collect and write are wrapped the same way |
+| `unityrs_texture::contain` (`catch_unwind`) | exists, for a closure that reserves nothing; collect and write wrap only such steps (section 5) |
 
 ---
 
@@ -238,8 +242,8 @@ Decision 2 moves `MeshHandler.copy_from_mesh`'s vertex arrays and `MeshHandler.c
 |---|---|
 | **Khronos glTF-Validator**, pinned | structure: zero errors, and warnings only from a committed allowlist of codes |
 | **the L6 arrays** | accessor content: each POSITION, NORMAL, TANGENT, TEXCOORD_n, COLOR_0, JOINTS_0, WEIGHTS_0 and index accessor equals UnityPy's `MeshHandler` arrays (the corrected oracle where Tier C applies) under 2.4's transform, rounded from f64 to f32 to nearest, after decision 8's rules. So glTF content is anchored to the Tier A oracle, not to an exporter of our own |
-| **the OBJ** | the same geometry as `export_mesh_obj`'s text, by construction: one transform |
-| **the normal-orientation check** | per primitive, the share of triangles whose winding normal agrees with the mean of their vertex normals is above a threshold; it catches handedness and winding flips |
+| **the OBJ** | the same positions, normals and faces as `export_mesh_obj`'s text, by construction: one transform. UVs differ by the stated V flip, which the OBJ, bottom-left like Unity, does not apply |
+| **the normal-orientation check** | per primitive, at least 99% of the eligible triangles agree: a triangle's winding normal has a positive dot product with the mean of its three vertex normals. Eligible means the primitive has normals and the triangle is not degenerate: its area is above 1e-12 times the square of the diagonal of the primitive's POSITION bounds. A primitive with no eligible triangle is N/A, recorded and not counted as a pass. It catches handedness and winding flips |
 | **Editor-built fixtures** | `docs/DESIGN.md` section 3's 3D oracle: hierarchy, TRS, skins, morphs and materials known by construction (decision 6, section 8) |
 
 Level **L6g** (`docs/DESIGN.md` section 6) is the first four together: validator clean, accessors equal to L6 under the stated transform, and the orientation check.
@@ -275,7 +279,7 @@ P1b's pattern: the recorder runs in the oracle image on inputs built in code, it
 **Exist:** `meshdecode`'s hand-built trees and cases; the testkit's SerializedFile, bundle and Environment builders; the NGUI Texture2D and material builders; UnityPy's pinned samples (few meshes, and game data, never committed).
 
 **To build:**
-1. `unityrs-testkit::scene3d`: GameObject, Transform, RectTransform, MeshFilter, MeshRenderer, SkinnedMeshRenderer, Material, LODGroup and Mesh writers at the 2019.4, 2022.3 and 6000.x layouts, and scenes built from them: a prefab in bundle A with its mesh in B and its material in C (cross-file PPtrs through `deref`); a skinned mesh with bones, bind poses and blend shapes, multi-frame ones included; a static-batched combined mesh; a scene file with several roots; built-in externals; and hostile inputs (an `m_Father`/`m_Children` cycle, a parent mismatch, a dangling PPtr, huge counts, a negative file id).
+1. `unityrs-testkit::scene3d`: GameObject, Transform, RectTransform, MeshFilter, MeshRenderer, SkinnedMeshRenderer, Material, LODGroup and Mesh writers at the 2019.4, 2022.3 and 6000.x layouts, and scenes built from them: a prefab in bundle A with its mesh in B and its material in C (cross-file PPtrs through `deref`); a skinned mesh with bones, bind poses and blend shapes, multi-frame ones included; a static-batched combined mesh; a scene file with several roots, whose object table's order differs from its path ids' order (decision 13); an asymmetric texture on a quad, with a normal map, whose orientation shows after the V flip (2.4); built-in externals; and hostile inputs (an `m_Father`/`m_Children` cycle, a parent mismatch, a dangling PPtr, huge counts, a negative file id).
 2. The Editor fixture project (section 8).
 3. Fuzz targets `scene_collect` (testkit scenes, mutated) and `obj_text`, seeded from the testkit as the existing ones are (`fuzz/`, CI's `fuzz-build`).
 
@@ -290,9 +294,9 @@ P1b's pattern: the recorder runs in the oracle image on inputs built in code, it
 ## 5. Performance and memory
 
 - **Charges.** Every buffer whose size an input chooses is charged before it is allocated, as `docs/plans/extract.md`'s E59 and core 3.15 require of every crate: graph nodes, the owned mesh arrays (already charged in `meshdecode`), f32 accessor staging, sparse morph arrays, JSON text, decoded texture pixels and PNG output. Work is counted with `count_decode` before each loop. An overrun is `LimitKind::InputMemory` or `DecodeWork`.
-- **Peak.** Within a unit, roughly the decoded meshes (f64, about 8 bytes a component), one texture at a time, and the JSON. The BIN streams from the meshes, converting f64 to f32 per accessor in fixed 64 KiB chunks, and is never built whole; images are encoded one at a time into charged buffers and written in order. An optional mode drops the f64 arrays after the layout pass, halving the resident size for a glTF-only run; OBJ needs them.
+- **Peak.** Within a unit, roughly the decoded meshes (f64, about 8 bytes a component), the sum of the encoded PNGs plus the largest texture decode, and the JSON. Textures are decoded and encoded one at a time, each decode freed once its PNG is made; the PNGs stay charged until the BIN writes them, since the layout needs their lengths (2.4). Re-encoding instead of keeping them would double the encode cost. The BIN streams from the meshes, converting f64 to f32 per accessor in fixed 64 KiB chunks, and is never built whole.
 - **Caches.** Meshes, materials and textures are de-duplicated per unit by (file, path id). A cross-unit LRU (prefabs of one bundle sharing meshes) is bounded by a byte budget charged to the meter, and off by default.
-- **Reuse in batch.** The crates run on the caller's thread with no waits (the testkit's `waits` scan), are Send + Sync, and are wrapped in `contain`, so P2b drops them into the engine's sealed attempts unchanged, dependency bundles coming through the view's Environment within `dep_cache_bytes`. An X12-style counting-allocator test (heap at most the charges plus a slack) covers collect and write, and a squeeze test runs in a child (`unityrs_testkit::child`).
+- **Reuse in batch.** The crates run on the caller's thread with no waits (the testkit's `waits` scan), are Send + Sync, and contain panics only around steps that reserve nothing: a unit's decode and collect steps are each wrapped in `contain`, and every reservation on the meter happens outside any contained closure, so a caught panic cannot leave bytes charged. So P2b drops them into the engine's sealed attempts unchanged, dependency bundles coming through the view's Environment within `dep_cache_bytes`. An X12-style counting-allocator test (heap at most the charges plus a slack) covers collect and write, and a squeeze test runs in a child (`unityrs_testkit::child`).
 - **Measured first:** decode time and peak for the corpus's 50 largest Meshes; the Shader parse's cost per material, which decides decision 15's request; GLB write throughput.
 
 ---
@@ -320,7 +324,7 @@ About 1-2.5k non-test lines each.
 
 1. **Python's number formatting.** `{:.9G}`, `int` against `float`, `-0` and NaN all change OBJ bytes. The `pyfmt` grid fixture, and Python's type tags kept through `ProcessedOwned`.
 2. **A lost int/float tag.** A refactor that turns `Values::Mixed` into plain f64 silently changes `vn` lines (`0` against `-0`); a fixture case pins it.
-3. **Static batching.** Most built scenes use combined meshes in world space, which a naive export transforms twice. Decision 10's rule waits on the Editor fixtures for confirmation.
+3. **Static batching.** Most built scenes use combined meshes in world space, which a naive export transforms twice. Decision 10's rule waits on the Editor fixtures for confirmation, and `PARITY.md` section 24's static-batching row is verified only on them.
 4. **No Editor fixtures yet.** Until they exist, glTF content is as right as L6 and the transform, and hierarchy, TRS and material semantics are unverified (section 8).
 5. **The validator against Unity data.** Non-unit normals, weights that do not sum to 1, negative or more than four influences, NaN and degenerate triangles are validator errors. Normalisation changes values, so it is documented, counted and reported, never silent (decision 8).
 6. **Cross-file PPtrs in batch.** A missing dependency is an `Issue`, never a failed unit; each dependency's charge sits under the attempt's `D`, and a large one can take a unit past `M + D`.
