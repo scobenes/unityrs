@@ -50,6 +50,11 @@ rustls = { version = "=0.23.46", default-features = false, features = ["ring", "
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"] }
 httpdate = "=1.0.3"
 webpki-roots = { version = "=1.0.11", default-features = false }
+# The S3 client (docs/plans/extract.md E37; docs/plans/batch.md 2.9),
+# published 2026-09-15: `aws-base` (the S3 client without a transport) and
+# `ring` (its signing), so no reqwest and no aws-lc-rs, which `aws` forces.
+# Every client is built in store/client.rs with the engine's own connector.
+object_store = { version = "=0.14.2", default-features = false, features = ["aws-base", "ring"] }
 
 [features]
 test-hooks = ["unityrs-export/test-hooks"]
@@ -64,6 +69,14 @@ required-features = ["test-hooks"]
 [dev-dependencies]
 # Parser fixtures collect response DATA; production polls its bounded body.
 http-body-util = { version = "=0.1.5", default-features = false }
+# A head GET's stream in the store's tests (`GetResult::into_stream`).
+# Already in the lock, through object_store.
+futures-util = { version = "=0.3.34", default-features = false }
+# The `<Code>` scan's reading of markup, checked against the reader and
+# the deserializer `object_store`'s parse uses. Already in the lock, through object_store.
+quick-xml = { version = "=0.41.0", default-features = false, features = ["serialize"] }
+# The same test deserializes as object_store does, into types of its own.
+serde = { version = "=1.0.229", features = ["derive"] }
 # Scratch for the `JOB.json` cases, `mkfifo` through its child runner, and
 # the counting allocator of the validation measurement. Its `test-counters`
 # turns on the core's CR8 refusal counters (docs/plans/batch.md section 6)

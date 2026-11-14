@@ -32,7 +32,7 @@ pub(crate) fn backoff(policy: &Http, retry: u32, after: Duration) -> Duration {
 }
 /// Preserve absolute dates until the failed try schedules its retry. Only the
 /// largest date and delta are needed; neither owns header storage.
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct After {
     seconds: u64,
     date: Option<SystemTime>,

@@ -19,7 +19,7 @@ pub mod read;
 pub mod store;
 
 mod build;
-mod formats;
+pub(crate) mod formats;
 pub(crate) mod node;
 mod parse;
 pub(crate) mod validate;
