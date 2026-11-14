@@ -183,7 +183,7 @@ def main():
     if UnityPy.__version__ != "1.25.2" or TypeTreeHelper.read_typetree_boost is None:
         print("requires UnityPy 1.25.2 with UnityPyBoost", file=sys.stderr)
         return 2
-    body = json.dumps(fixture(), indent=2, ensure_ascii=True) + "\n"
+    body = json.dumps(fixture(), indent=2, ensure_ascii=False) + "\n"
     if args.check:
         if not OUT.exists() or OUT.read_text() != body:
             print("stale fixture: accessors.json", file=sys.stderr)
