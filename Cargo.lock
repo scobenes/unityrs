@@ -1075,6 +1075,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "unityrs-gltf"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "unityrs-core",
+ "unityrs-testkit",
+]
+
+[[package]]
 name = "unityrs-imageio"
 version = "0.0.1"
 dependencies = [

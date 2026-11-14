@@ -1,0 +1,19 @@
+[package]
+name = "unityrs-gltf"
+description = "Metered glTF scene model and deterministic streaming GLB writer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+unityrs-core = { path = "../unityrs-core" }
+
+[dev-dependencies]
+unityrs-testkit = { path = "../unityrs-testkit" }
+serde_json = "=1.0.154"
+
+[lints]
+workspace = true
