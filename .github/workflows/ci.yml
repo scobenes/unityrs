@@ -542,7 +542,7 @@ jobs:
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=556
+          tools/parity/tests=570
           tools/perf/tests=10
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6
@@ -599,3 +599,5 @@ jobs:
           echo "UNITYRS_GLTF_VALIDATOR=$RUNNER_TEMP/gltf-validator/gltf_validator" >> "$GITHUB_ENV"
       - name: Golden GLBs, metering and structural validation
         run: cargo test --locked -p unityrs-gltf -- --nocapture
+      - name: Independent accessor and orientation checker
+        run: python3 -m unittest tools.parity.tests.test_gltf_check

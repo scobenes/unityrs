@@ -86,7 +86,24 @@ pub(crate) fn document(s: &Scene, l: &Layout, j: &mut Json<'_>) -> Result<()> {
         })?;
         j.raw("}")?;
     }
-    j.raw("]}}")?;
+    j.raw("]")?;
+    if !r.collection_issues.is_empty() {
+        j.raw(",\"collection_issues\":[")?;
+        for (i, issue) in r.collection_issues.as_slice().iter().enumerate() {
+            if i > 0 {
+                j.raw(",")?;
+            }
+            j.raw("{\"node\":")?;
+            j.number(issue.node)?;
+            j.raw(",\"reason\":")?;
+            j.string(issue.reason.as_bytes())?;
+            j.raw(",\"count\":")?;
+            j.number(issue.count)?;
+            j.raw("}")?;
+        }
+        j.raw("]")?;
+    }
+    j.raw("}}")?;
     if !s.roots.is_empty() {
         j.raw(",\"scene\":0,\"scenes\":[{\"nodes\":")?;
         j.indices(s.roots.as_slice())?;

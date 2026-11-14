@@ -1080,6 +1080,9 @@ version = "0.0.1"
 dependencies = [
  "serde_json",
  "unityrs-core",
+ "unityrs-mesh",
+ "unityrs-meshdecode",
+ "unityrs-scene",
  "unityrs-testkit",
 ]
 

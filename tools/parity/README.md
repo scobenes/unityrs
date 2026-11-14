@@ -39,6 +39,7 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `ngui_scenes.py` | unityrs-testkit's NGUI scenes, which cargo builds, for the reference's tests and `tools/fixtures/ngui.py` |
 | `sprites_kind.py` | the `sprites` output kind's reference (`docs/plans/extract.md` E17): one PNG per Sprite of one input's view, its plan and sprite groups by `docs/BATCH_SPEC.md` 4.4, each image UnityPy 1.25.2's `SpriteHelper` and Pillow 9.5.0's PNG writer; a library and a command |
 | `sprites_scenes.py` | unityrs-testkit's `sprites` scenes, which cargo builds, for `tools/fixtures/sprites.py` |
+| `gltf_check.py` | L6g's independent check of a written GLB (`docs/plans/static3d.md` sections 2.4 and 3.2): reads the accessors with the standard library and compares them with MeshHandler's rows in Unity coordinates, X mirrored, V flipped and winding reversed, after the writer's documented normalisation; no exporter is its oracle |
 | `ruff.toml` | the lint and format settings for this folder (`uvx ruff check`, `uvx ruff format`) |
 | `tests/` | unittest self-tests; `test_readme.py` checks that this table lists every file in this folder, and no other |
 
@@ -161,6 +162,7 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | `test_sprites_kind.py` | the `sprites` kind's reference on its own branches: a top-level WebFile row's `Divergence`, a `MemoryError` that is Pillow's (`pillow_memory_error`) and one that is not (propagated), the render data's selection on objects made in the test (the first atlas of the tag's name, names read only up to it, no match, a missing key, no tag) and a Sprite's fields of another shape | UnityPy, Pillow 9.5.0 |
 | `test_texture_seal.py` | every Texture2D either reference constructs, nested or read directly, refuses an `image` child without opening a host path: the sprite_attributes scene's unused path-valued textures under a texture, a Sprite and an atlas, each parent still exported, and `PIL.Image.open` never called while the references run | UnityPy, Pillow 9.5.0 |
 | `synth.py`, `dump_harness.py` | not tests: `synth.py` builds the synthetic inputs, and `dump_harness.py` holds what the `test_dump*.py` modules share (the sample pins included) | stdlib; UnityPy for `dump_harness.py`'s dumps |
+| `test_gltf_check.py` | `gltf_check.py` on hand-built GLBs: the orientation verdict (pass, a reversed winding, no normals, degenerate triangles), accessor reads (sparse, stride and offset, ranges, raw values), the UV, tangent, normal and weight conversions, morph deltas left unnormalised, and the attributes an invalid normal or tangent must omit | stdlib |
 
 **Samples.** The samples are UnityPy's `tests/samples` at commit `417d595`. They are read from `$UNITYRS_UNITYPY_SAMPLES` when set, else from the folder the corpus index (`$UNITYRS_CORPUS_INDEX`, default `/corpus/index.json`) gives for its `unitypy-sample` entries, and their sha256 is checked against pinned values. They are game bundles, so they are never copied into this repository. Without them the sample tests skip.
 
