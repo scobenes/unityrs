@@ -10,6 +10,8 @@
 //! - [`ngui::winners`]: 4.5's steps 1 to 3 over the cuts of several inputs.
 //! - [`keys`]: key templates, `safe()` and the key rules, which the
 //!   engine's validation checks a spec's templates and keys with.
+//! - [`simple`]: metered single-object `TextAsset`, Font, MonoBehaviour JSON
+//!   (or raw fallback), and Tier X `VideoClip` resource payloads.
 //! - [`pyjson`]: `CPython` 3.11's `json.dumps(value, indent=2)` of a typetree
 //!   value, byte for byte (E24).
 //!
@@ -44,6 +46,8 @@
 
 pub mod ngui;
 pub mod pyjson;
+mod pyjson_numbers;
+pub mod simple;
 #[cfg(feature = "test-counters")]
 pub mod testing;
 

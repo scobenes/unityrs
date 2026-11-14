@@ -247,6 +247,8 @@ pub struct BundleFile {
     directory: Box<[DirEntry]>,
     files: Box<[FileSlot]>,
     parent: Option<Parent>,
+    /// Enclosing ZIP levels when this is an Environment file.
+    source_depth: u32,
     /// Each block's outcome, once known: its actual decoded length (a stored
     /// block's at open while stored blocks are their own bytes,
     /// `Codecs::stores_as_is`; any other's when it is first decoded or
@@ -546,7 +548,7 @@ impl BundleFile {
             depth: self
                 .parent
                 .as_ref()
-                .map_or(0, |p| p.depth)
+                .map_or(self.source_depth, |p| p.depth)
                 .saturating_add(1),
             pinned: pinned.max(u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
         };

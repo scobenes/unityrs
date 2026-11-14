@@ -63,7 +63,7 @@ pub const INVENTORY: &[Exclusion] = &[
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        functions: &["unityrs_core::files::bundle::BundleFile::open_with_reader"],
+        functions: &["unityrs_core::files::bundle::BundleFile::open_at_depth"],
         platform: Platform::All,
         frame: None,
         via: &[],

@@ -48,6 +48,7 @@ pub mod serialized;
 pub mod stack;
 pub mod waits;
 pub mod writer;
+pub mod zip;
 
 pub use rng::Rng;
 pub use writer::ByteWriter;

@@ -6,6 +6,12 @@ standard library (CPython 3.11) to Rust:
 - crates/unityrs-core/src/detect.rs: Lib/gzip.py's _read_exact,
   _read_gzip_header, _GzipReader.read and _GzipReader._read_eof, how gzip
   detection reads each member's header, inflates it and checks its trailer;
+- crates/unityrs-core/src/zip.rs and src/zip/index.rs: Lib/zipfile.py's
+  _EndRecData, _EndRecData64, ZipInfo._decodeExtra, ZipFile._RealGetContents,
+  ZipFile.open and ZipExtFile.read, _read1 and seek; bounded ZIP indexing
+  and member reads;
+- crates/unityrs-core/src/env/paths/local.rs: Lib/posixpath.py's expanduser;
+  local filesystem paths with charged expansion buffers;
 - crates/unityrs-core/src/pystr.rs: Lib/ntpath.py's splitdrive and split
   (for basename), and Lib/genericpath.py's _splitext (for splitext);
 - crates/unityrs-dump/src/select/glob.rs: Lib/fnmatch.py's translate, and the
@@ -26,3 +32,5 @@ stops at unityrs's inflate bound and the open's work. The glob is matched by
 a wildcard matcher where Python compiles a regular expression. The JSON
 reader builds the values an index holds, as Python's json.loads does. The
 argument parser parses the dump's own options, with unityrs's extensions.
+The ZIP reader keeps stored and deflate methods, bounded charged buffers and
+fallible sorting and searches; encryption and other methods are refused.

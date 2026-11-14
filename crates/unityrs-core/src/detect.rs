@@ -133,6 +133,17 @@ pub fn check_entry_type(
     detect(data, limits, Some(meter), ReaderKind::Memory)
 }
 
+/// Container-entry detection preserving the reader semantics of ZIP member
+/// streams, while charging gzip probing to the enclosing input's work.
+pub(crate) fn check_entry_type_with_reader(
+    data: &[u8],
+    limits: &Limits,
+    meter: &Meter,
+    reader: ReaderKind,
+) -> Result<FileType, DetectError> {
+    detect(data, limits, Some(meter), reader)
+}
+
 fn detect(
     data: &[u8],
     limits: &Limits,

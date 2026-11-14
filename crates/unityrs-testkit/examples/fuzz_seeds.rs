@@ -42,8 +42,11 @@ use unityrs_testkit::bundle::{TestCodec, compress};
 use unityrs_testkit::depth::{Depth, Wrap, Z_ROWS};
 use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_case, lz4_case};
 
+#[path = "fuzz_seeds/zip.rs"]
+mod zip;
+
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 13] = [
+const TARGETS: [&str; 14] = [
     "detect",
     "bundle",
     "serialized",
@@ -57,6 +60,7 @@ const TARGETS: [&str; 13] = [
     "meshdecode",
     "zlib_match",
     "unitycn",
+    "zip",
 ];
 
 /// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
@@ -692,6 +696,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     ] {
         s.add("unitycn", name, bytes)?;
     }
+    zip::seeds(&mut s)?;
     texture(&mut s)?;
     astc(&mut s)?;
     meshdecode(&mut s)?;
