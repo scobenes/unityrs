@@ -122,14 +122,20 @@ impl Environment {
         let target = match self.deref(obj.file(), pptr) {
             Ok(t) => t,
             Err(DerefError::Null) => return Ok(None),
-            Err(e) => return Err(ParseError::Deref(Arc::new(e))),
+            Err(e) => return Err(ParseError::Deref(e)),
         };
-        // `parse_as_object()`, `check_read` on.
-        let script = match self.room(|| target.read_typetree(None, true)) {
+        // `parse_as_object()`, with check_read enforced locally below.
+        let script = match self.room(|| target.read_typetree(None, false)) {
             Ok(p) => p,
             Err(e) if is_value_error(&e) => return Ok(None),
             Err(e) => return Err(e),
         };
+        // UnityPy helpers/TypeTreeHelper.py:155-156 raises ValueError on a
+        // mismatch, swallowed by files/ObjectReader.py:301-304. Avoid
+        // allocating an Arc<Parsed> diagnostic just to discard it here.
+        if script.bytes_read != i64::from(target.info().byte_size) {
+            return Ok(None);
+        }
         let Some(sview) = View::new(&script) else {
             return Ok(None);
         };

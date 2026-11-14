@@ -133,7 +133,7 @@ A port of UnityPyBoost's `ArchiveStorageDecryptor.cpp` and UnityPy's `helpers/Ar
 
 ### 2.6 Exporters and the extractor (`unityrs-export` and the CLI, P3b)
 
-**TextAsset, Font, MonoBehaviour and VideoClip.** TextAsset writes `m_Script` with surrogateescape; Font writes `.ttf` always, since UnityPy's OTTO test never holds; MonoBehaviour writes `json.dumps(indent=4, ensure_ascii=False)`, so `pyjson.rs` gains non-ASCII output and surrogateescape; VideoClip writes the bytes of `m_ExternalResources`, which UnityPy has no exporter for (tier X). Tier A, L7. About 800 lines.
+**TextAsset, Font, MonoBehaviour and VideoClip.** TextAsset writes `m_Script` with surrogateescape; Font writes `.otf` for TypelessData bytes starting with OTTO, otherwise `.ttf` (including integer lists); MonoBehaviour writes `json.dumps(indent=4, ensure_ascii=False)`, so `pyjson.rs` gains non-ASCII output and surrogateescape; VideoClip writes the bytes of `m_ExternalResources`, which UnityPy has no exporter for (tier X). Tier A, L7. About 800 lines.
 
 **Shader.** A port of `export/ShaderConverter.py` (about 720 Python lines), Tier A up to 2021.3.10; then `PARITY.md` section 19.1's Tier C (`m_PlayerSubPrograms`, `m_ParameterBlobIndices`, the 6000.3 sub-program layout) and section 3's Tier U refusals (big-endian 5.3 and 5.4 blobs, `GpuProgramIndex`). Checked at L7 against UnityPy, and against a corrected-oracle run on the corpus's 980 Shaders (aggregates only). AssetStudio's MIT readers may be cited for layout facts; AssetRipper is read for knowledge only. About 1.4k lines for the port and 900 for the Tier C work.
 

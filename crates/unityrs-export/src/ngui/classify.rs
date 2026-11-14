@@ -511,9 +511,8 @@ mod tests {
             source: Arc::new(malformed.clone()),
         };
         let load = Error::Deref(Arc::new(DerefError::Load(entry.clone())));
-        let in_parse = Error::AssetBundle(Arc::new(ParseError::Deref(Arc::new(DerefError::Load(
-            load.clone(),
-        )))));
+        let in_parse =
+            Error::AssetBundle(Arc::new(ParseError::Deref(DerefError::Load(load.clone()))));
         for e in [&malformed, &entry, &load, &in_parse] {
             assert_eq!(error(e), skip("decode_error", Some("malformed")), "{e}");
         }
