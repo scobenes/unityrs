@@ -11,6 +11,10 @@ authors.workspace = true
 [dependencies]
 unityrs-core = { path = "../unityrs-core" }
 
+unityrs-mesh = { path = "../unityrs-mesh" }
+unityrs-meshdecode = { path = "../unityrs-meshdecode" }
+unityrs-scene = { path = "../unityrs-scene" }
+
 [dev-dependencies]
 unityrs-testkit = { path = "../unityrs-testkit" }
 serde_json = "=1.0.154"

@@ -33,6 +33,7 @@ pub struct Report {
     pub weight_components: u64,
     pub zero_weight_rows: u64,
     pub issues: MeteredVec<Issue>,
+    pub collection_issues: MeteredVec<crate::CollectionIssue>,
 }
 const _: () = crate::send_sync::<Report>();
 /// A BIN range; all starts are multiples of four, padding excluded from length.
@@ -120,6 +121,7 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
             weight_components: 0,
             zero_weight_rows: 0,
             issues: MeteredVec::new(meter),
+            collection_issues: crate::array(meter, s.collection_issues.as_slice())?,
         },
         accessors: MeteredVec::with_capacity(meter, s.accessors.len())?,
         accessor_order: MeteredVec::new(meter),
@@ -468,8 +470,25 @@ fn analyse(
     };
     let mut changes = 0;
     let mut zeros = 0;
+    let mut source = a;
+    if a.kind == Kind::Weights {
+        meter.count_decode(s.collected_weight_sources.len() as u64)?;
+        if let Some((_, original)) = s
+            .collected_weight_sources
+            .as_slice()
+            .iter()
+            .find(|(collected, _)| *collected == id)
+        {
+            source = s
+                .accessors
+                .as_slice()
+                .get(*original)
+                .filter(|source| source.kind == Kind::Weights && source.count == a.count)
+                .ok_or_else(|| validate::invalid("collected weight source"))?;
+        }
+    }
     for r in 0..rows {
-        let raw = normalise::row(a, r, false)?;
+        let raw = normalise::row(source, r, false)?;
         let out = normalise::row(a, r, opts.normalise)?;
         if opts.normalise {
             if a.kind == Kind::InverseBind {

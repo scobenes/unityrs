@@ -17,6 +17,16 @@ impl Text {
 pub type Extras = MeteredVec<(Text, Text)>;
 const _: () = crate::send_sync::<Extras>();
 
+/// A renderer repair or degradation, referring to its original model node.
+#[derive(Debug, Clone, Copy)]
+pub struct CollectionIssue {
+    pub node: usize,
+    pub reason: &'static str,
+    /// Number of repaired entries, or one for a degraded renderer.
+    pub count: u64,
+}
+const _: () = crate::send_sync::<CollectionIssue>();
+
 /// Editable scene, already in glTF's right-handed coordinate and UV space.
 #[derive(Debug)]
 pub struct Scene {
@@ -29,6 +39,11 @@ pub struct Scene {
     pub images: MeteredVec<Image>,
     pub textures: MeteredVec<Texture>,
     pub extras: Extras,
+    pub collection_issues: MeteredVec<CollectionIssue>,
+    /// (Collected weight accessor, original weight accessor) pairs. Analysis
+    /// compares against the source so repairs made while merging palettes are
+    /// counted once per emitted accessor, including clamping and zero rows.
+    pub collected_weight_sources: MeteredVec<(usize, usize)>,
 }
 const _: () = crate::send_sync::<Scene>();
 impl Scene {
@@ -45,6 +60,8 @@ impl Scene {
             images: MeteredVec::new(meter),
             textures: MeteredVec::new(meter),
             extras: MeteredVec::new(meter),
+            collection_issues: MeteredVec::new(meter),
+            collected_weight_sources: MeteredVec::new(meter),
         }
     }
 }

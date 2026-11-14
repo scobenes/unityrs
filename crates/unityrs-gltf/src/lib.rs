@@ -18,9 +18,9 @@
 //! and zero weight rows become [1,0,0,0]. Changed scalar components are counted
 //! once per emitted shared accessor, in the report and asset extras. Non-finite f32
 //! positions refuse their primitives; invalid normals drop NORMAL and TANGENT.
-//! Raw mode preserves f32 bits in BIN and may fail validation. Coordinates,
-//! UV conversion, material mapping and source-object collection belong to the
-//! caller, not this writer. Per-instance morph weights live on nodes.
+//! Raw mode preserves f32 bits in BIN and may fail validation. [`collect`]
+//! converts Unity coordinates and UVs into this model using a typed [`Profile`].
+//! Material mapping is separate work. Per-instance morph weights live on nodes.
 #![forbid(unsafe_code)]
 #![cfg_attr(
     not(test),
@@ -33,11 +33,15 @@
     )
 )]
 
+mod collect;
+pub use collect::collect;
 mod image;
 mod json;
 mod layout;
 mod model;
 mod normalise;
+mod profile;
+pub use profile::*;
 mod schema;
 mod validate;
 mod writer;
@@ -53,6 +57,8 @@ pub use writer::write_glb;
 pub enum GltfError {
     /// Memory, work or allocator refusal, preserving its provenance.
     Charge(ChargeError),
+    /// Unity mesh decoding failed, with resource provenance intact.
+    Mesh(unityrs_mesh::MeshError),
     /// Malformed model or a GLB beyond its 32-bit length limit.
     Invalid(&'static str),
     /// The output sink failed. It may contain a partial file.
@@ -63,6 +69,7 @@ impl fmt::Display for GltfError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Charge(e) => e.fmt(f),
+            Self::Mesh(e) => e.fmt(f),
             Self::Invalid(s) => f.write_str(s),
             Self::Io(e) => e.fmt(f),
         }

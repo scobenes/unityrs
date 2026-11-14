@@ -33,7 +33,9 @@ pub(crate) fn row(a: &Accessor, row: usize, normalise: bool) -> Result<[f32; 16]
                 if a.kind == Kind::Tangent
                     && let Some(w) = out.get_mut(3)
                 {
-                    *w = if *w < 0. { -1. } else { 1. };
+                    // Preserve the sign bit so X reflection commutes with
+                    // w normalisation, including signed zero and NaN.
+                    *w = 1.0f32.copysign(*w);
                 }
             }
             Kind::Weights => {
