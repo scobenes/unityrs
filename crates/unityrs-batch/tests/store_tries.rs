@@ -548,3 +548,61 @@ fn a_complete_with_a_doctype_is_read_as_object_store_reads_it() {
         assert!(done.record.code.is("InternalError"));
     }
 }
+
+#[test]
+fn refused_markup_ends_the_code_scan_and_counts_only_before_the_root_closes() {
+    // Review round 4: after the root's end tag `object_store`'s parse reads
+    // nothing, so what follows it fails no answer.
+    let answer =
+        "<CompleteMultipartUploadResult><ETag>\"e\"</ETag></CompleteMultipartUploadResult>";
+    for tail in ["<!x>", "<!x", "</b>", "x &bogus; <?>"] {
+        let body = format!("{answer}{tail}");
+        for size in [1, 3, body.len() + 64] {
+            let done = complete(body.as_bytes(), size, &[]);
+            assert_eq!(
+                done.verdict,
+                verdict(true, Action::Success),
+                "{tail} {size}"
+            );
+            assert_eq!(done.value.unwrap().e_tag.as_deref(), Some("\"e\""));
+        }
+    }
+    // Before it, the parse fails: the try is refused and retried.
+    for body in [
+        "<CompleteMultipartUploadResult><!x><ETag>\"e\"</ETag></CompleteMultipartUploadResult>",
+        "<!x><CompleteMultipartUploadResult><ETag>\"e\"</ETag></CompleteMultipartUploadResult>",
+        "x<CompleteMultipartUploadResult><ETag>\"e\"</ETag></CompleteMultipartUploadResult>",
+        "<CompleteMultipartUploadResult a><ETag>\"e\"</ETag></CompleteMultipartUploadResult>",
+        "<CompleteMultipartUploadResult>&bogus;<ETag>\"e\"</ETag></CompleteMultipartUploadResult>",
+        "<CompleteMultipartUploadResult><ETag>\"e\"</ETag></Other>",
+        "<CompleteMultipartUploadResult><ETag>\"e\"</ETag>",
+    ] {
+        for size in [1, 3, body.len() + 64] {
+            let done = complete(body.as_bytes(), size, &[]);
+            assert_eq!(done.verdict, verdict(false, RETRY), "{body} {size}");
+            assert!(done.value.is_none());
+        }
+    }
+    // No code is read past refused markup: this abort did not succeed.
+    let path = Path::parse("a.zip").unwrap();
+    let upload = "upload".to_owned();
+    for body in [
+        "<!x<Error><Code>NoSuchUpload</Code></Error>>",
+        "<Error><!x><Code>NoSuchUpload</Code></Error>",
+        "<Error>&<Code>NoSuchUpload</Code></Error>",
+    ] {
+        let h = Harness::new([Reply::status(400, "", body.as_bytes())]);
+        let done = h
+            .run(Kind::Abort, |_| h.store.abort_multipart(&path, &upload))
+            .unwrap();
+        assert_ne!(done.verdict, verdict(true, Action::Success), "{body}");
+        assert!(done.record.code.is_empty(), "{body}");
+    }
+    // As a control, the same code in good markup is a successful abort.
+    let body = "<Error><Code>NoSuchUpload</Code></Error><!x>";
+    let h = Harness::new([Reply::status(400, "", body.as_bytes())]);
+    let done = h
+        .run(Kind::Abort, |_| h.store.abort_multipart(&path, &upload))
+        .unwrap();
+    assert_eq!(done.verdict, verdict(true, Action::Success));
+}

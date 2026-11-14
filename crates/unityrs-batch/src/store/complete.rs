@@ -11,8 +11,9 @@
 //! parse reads back, so the `ETag` and key parse as sent and the raw text
 //! no longer holds the word. A word anywhere else (a tag, an attribute, a
 //! comment or a CDATA section) fails the try, since it would reach
-//! `object_store`'s check as sent. So does markup quick-xml's reader
-//! refuses, on which `object_store`'s parse would fail. The scan reads the
+//! `object_store`'s check as sent. So does a root that never closes, and
+//! markup quick-xml's reader refuses before the root closed, on which
+//! `object_store`'s parse would fail; after it, its parse reads nothing. The scan reads the
 //! body as that reader does, a DOCTYPE's internal subset included, which a
 //! test checks against quick-xml itself.
 use super::{
@@ -138,7 +139,9 @@ pub(super) async fn complete_body<I: AsyncRead + AsyncWrite + Unpin>(
     }
     let (in_text, in_raw, scan) = count(&bytes);
     slot.update(|r| r.code = scan.code());
-    if scan.root() == Root::Error || scan.malformed() || in_raw > in_text {
+    // An answer is a root that closed, is no `<Error>`, and met no markup
+    // the parse refuses before it closed; what follows it is never parsed.
+    if scan.root() != Root::Other || !scan.closed() || scan.malformed() || in_raw > in_text {
         return Ok(refuse());
     }
     if in_text == 0 {

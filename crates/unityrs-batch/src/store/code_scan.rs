@@ -4,9 +4,22 @@
 //! comment at `-->`, a CDATA section at `]]>`, an instruction at `?>`; and a
 //! `<!DOCTYPE …>` as its DTD parser reads it (`src/parser/dtd.rs`), past
 //! quoted literals, and past the comments, instructions and declarations of
-//! an internal subset, which ends at its first `]` outside them. Markup that
-//! reader refuses (`<!x`, `<!-x`, `<![x`, a DOCTYPE with no name, `<?>`)
-//! leaves the scan [`malformed`](CodeScan::malformed).
+//! an internal subset, which ends at its first `]` outside them.
+//!
+//! Markup that reader refuses (`<!x`, `<!-x`, `<![x`, a DOCTYPE with no
+//! name, `<?>`, an `&` with no `;`, an end tag naming another element)
+//! latches the scan: no code is captured from there on, and one being read
+//! is dropped. Before the root element closes, it also leaves the scan
+//! [`malformed`](CodeScan::malformed), as do the few things the deserializer
+//! checks past its reader ([`Attrs`], [`Ref`], and character data before
+//! the root).
+//!
+//! After the root's end tag `object_store`'s parse reads no further:
+//! quick-xml's `from_reader` returns once the root's map ends
+//! (`src/de/map.rs`, `next_key_seed` on the root's `End`, lines 325 to 330;
+//! `src/de/mod.rs`, `from_reader`, 2529 to 2536), and the one event its
+//! reader has read ahead (`next_impl`, 2368 to 2370) holds an error it
+//! never returns.
 
 /// The longest error code the engine keeps; a longer one names nothing.
 pub const CODE_MAX: usize = 32;
@@ -203,8 +216,63 @@ pub struct CodeScan {
     keyword: u8,
     /// A DOCTYPE's name: anything but whitespace after its keyword.
     doctype_named: bool,
-    /// Markup quick-xml's reader refuses.
-    malformed: bool,
+    /// Where the root element is.
+    phase: Phase,
+    /// Where markup quick-xml's reader refuses was met, if it was.
+    refusal: Refusal,
+    /// The tag name's hash, all of it.
+    hash: u64,
+    /// The hashes of the open elements' names, the first [`OPEN_MAX`]: an
+    /// end tag must name the element it closes (`emit_end`).
+    open: [u64; OPEN_MAX],
+    /// Bytes of a leading UTF-8 BOM read, which the reader drops; past
+    /// [`BOM`]'s length once the body's start is read.
+    bom: u8,
+    /// The reference being read in character data, after its `&`.
+    reference: Option<Ref>,
+    /// The root start tag's attributes.
+    attrs: Attrs,
+    /// The deepest an element opened: past [`OPEN_MAX`], its end tag went
+    /// unchecked.
+    deepest: u32,
+    /// What the deserializer refuses where its reader does not: character
+    /// data before the root but whitespace, a reference it cannot resolve
+    /// before the root or in the root's own text, or the root's attributes
+    /// misformed.
+    unparsed: bool,
+}
+
+/// Open elements whose end tags are checked; past them, an end tag is
+/// taken as named right, and the answer left to `object_store`'s parse.
+const OPEN_MAX: usize = 8;
+
+/// FNV-1a's offset basis and prime.
+const FNV: (u64, u64) = (0xcbf2_9ce4_8422_2325, 0x0100_0000_01b3);
+
+/// The UTF-8 byte order mark.
+const BOM: &[u8] = b"\xef\xbb\xbf";
+
+/// Where the root element is.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum Phase {
+    /// Not yet started.
+    #[default]
+    Prolog,
+    /// Started, not yet closed.
+    Open,
+    /// Closed: `object_store`'s parse reads nothing after it.
+    Closed,
+}
+
+/// Where the scan met markup quick-xml's reader refuses.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum Refusal {
+    #[default]
+    None,
+    /// Before the root closed: `object_store`'s parse fails there.
+    BeforeClose,
+    /// After it: no parse reads it.
+    AfterClose,
 }
 
 impl CodeScan {
@@ -220,8 +288,10 @@ impl CodeScan {
     fn new_name(&mut self) {
         self.name_len = 0;
         self.name_long = false;
+        self.hash = FNV.0;
     }
     fn push_name(&mut self, b: u8) {
+        self.hash = (self.hash ^ u64::from(b)).wrapping_mul(FNV.1);
         if let Some(slot) = self.name.get_mut(usize::from(self.name_len)) {
             *slot = b;
             self.name_len += 1;
@@ -241,18 +311,28 @@ impl CodeScan {
     }
     fn started(&mut self, empty: bool) {
         self.spoil();
-        if self.depth == 0 && self.root == Root::None {
+        if self.phase == Phase::Prolog {
             self.root = if self.name() == b"Error" {
                 Root::Error
             } else {
                 Root::Other
             };
+            self.phase = if empty { Phase::Closed } else { Phase::Open };
         }
         if empty {
             return;
         }
+        if let Some(slot) = usize::try_from(self.depth)
+            .ok()
+            .and_then(|depth| self.open.get_mut(depth))
+        {
+            *slot = self.hash;
+        }
         self.depth = self.depth.saturating_add(1);
+        self.deepest = self.deepest.max(self.depth);
         if self.depth == 2
+            && self.phase == Phase::Open
+            && self.refusal == Refusal::None
             && self.root == Root::Error
             && self.name() == b"Code"
             && self.capture == Capture::Idle
@@ -266,7 +346,21 @@ impl CodeScan {
             self.capture = Capture::Done;
         }
         self.spoil();
-        self.depth = self.depth.saturating_sub(1);
+        // An end tag with no element open, or naming another, is refused.
+        let Some(depth) = self.depth.checked_sub(1) else {
+            self.refuse();
+            return;
+        };
+        let opened = usize::try_from(depth)
+            .ok()
+            .and_then(|depth| self.open.get(depth));
+        if opened.is_some_and(|&hash| hash != self.hash) {
+            self.refuse();
+        }
+        self.depth = depth;
+        if self.depth == 0 && self.phase == Phase::Open {
+            self.phase = Phase::Closed;
+        }
     }
     fn text(&mut self, b: u8) {
         if !self.capturing() {
@@ -319,10 +413,83 @@ impl CodeScan {
         }
     }
 
-    /// Markup quick-xml's reader refuses: its parse fails there.
+    /// A byte before the root: the deserializer takes whitespace there, and
+    /// no other character data (a leading BOM its reader drops).
+    fn prolog(&mut self, b: u8, text: bool) {
+        if let Some(&want) = BOM.get(usize::from(self.bom)) {
+            if b == want {
+                self.bom += 1;
+                return;
+            }
+            // A start that is no BOM: what of one it held is data.
+            self.unparsed |= self.bom > 0;
+            self.bom = u8::MAX;
+        }
+        // A CDATA section's content is data too; its `]]>` is not.
+        if let At::Cdata { brackets } = self.at {
+            self.unparsed |= match b {
+                b']' => false,
+                b'>' if brackets >= 2 => brackets > 2,
+                _ => brackets > 0 || !is_space(b),
+            };
+        }
+        if text && !is_space(b) {
+            self.unparsed = true;
+        }
+    }
+
+    /// Reads a byte of character data as a reference's, `&` to `;`, if it
+    /// is one ([`Ref`]); whether it was.
+    fn reference(&mut self, b: u8) -> bool {
+        let Some(reference) = self.reference.as_mut() else {
+            if b == b'&' {
+                self.reference = Some(Ref::default());
+            }
+            return b == b'&';
+        };
+        match b {
+            b';' => {
+                let resolved = reference.resolved();
+                self.reference = None;
+                // Before the root the deserializer takes whitespace alone;
+                // in the root's own text, anything it resolves. Deeper,
+                // what it skips it does not resolve.
+                self.unparsed |= match self.phase {
+                    Phase::Prolog => resolved != Resolved::Blank,
+                    Phase::Open => self.depth == 1 && resolved == Resolved::Fails,
+                    Phase::Closed => false,
+                };
+                true
+            }
+            // An `&` with no `;` (`UnclosedReference`).
+            b'<' | b'&' => {
+                self.refuse();
+                self.reference = (b == b'&').then(Ref::default);
+                b == b'&'
+            }
+            _ => {
+                reference.feed(b);
+                true
+            }
+        }
+    }
+
+    /// Markup quick-xml's reader refuses: its reading ends there.
     fn refused(&mut self) -> At {
-        self.malformed = true;
+        self.refuse();
         At::Text
+    }
+    /// Latches the scan: no code from here on.
+    fn refuse(&mut self) {
+        self.spoil();
+        if self.refusal != Refusal::None {
+            return;
+        }
+        self.refusal = if self.phase == Phase::Closed {
+            Refusal::AfterClose
+        } else {
+            Refusal::BeforeClose
+        };
     }
 
     /// In a start tag: its name runs to the first whitespace, quotes and
@@ -331,6 +498,9 @@ impl CodeScan {
         let mut tag = tag;
         if tag.quote == 0 && b == b'>' {
             let empty = tag.slash;
+            if self.phase == Phase::Prolog && !self.attrs.ended(empty) {
+                self.unparsed = true;
+            }
             if empty && !tag.named && !self.name_long {
                 self.name_len = self.name_len.saturating_sub(1);
             }
@@ -343,6 +513,9 @@ impl CodeScan {
             } else {
                 self.push_name(b);
             }
+        }
+        if tag.named && self.phase == Phase::Prolog {
+            self.attrs.feed(b);
         }
         if tag.quote != 0 {
             if b == tag.quote {
@@ -366,8 +539,9 @@ impl CodeScan {
             spaced = true;
         } else {
             if spaced {
-                // A name with space inside: no end tag of ours.
+                // A name with space inside: no element's, and no code's.
                 self.name_long = true;
+                self.hash = (self.hash ^ u64::from(b' ')).wrapping_mul(FNV.1);
             }
             self.push_name(b);
         }
@@ -441,13 +615,13 @@ impl CodeScan {
         if next == At::Text {
             // `<!DOCTYPE`, any case, then a name (`emit_bang`).
             if usize::from(self.keyword) < b"DOCTYPE".len() || !self.doctype_named {
-                self.malformed = true;
+                self.refuse();
             }
         } else if let Some(&want) = b"DOCTYPE".get(usize::from(self.keyword)) {
             if b.eq_ignore_ascii_case(&want) {
                 self.keyword += 1;
             } else {
-                self.malformed = true;
+                self.refuse();
                 self.keyword = u8::MAX;
             }
         } else if !is_space(b) {
@@ -517,17 +691,45 @@ impl CodeScan {
         }
     }
 
-    /// Whether the body held markup quick-xml's reader refuses, on which
-    /// `object_store`'s parse fails.
+    /// Whether `object_store`'s parse fails before the root element closed:
+    /// on markup quick-xml's reader refuses; on character data before the
+    /// root, which its deserializer reads as a string where a struct is due
+    /// (`deserialize_struct`, `src/de/mod.rs` 3221 to 3246; whitespace
+    /// alone it skips, `skip_whitespaces`, 2769 to 2779); or on the root's
+    /// attributes misformed.
     #[must_use]
-    pub const fn malformed(&self) -> bool {
-        self.malformed
+    pub fn malformed(&self) -> bool {
+        self.refusal == Refusal::BeforeClose || self.unparsed
+    }
+
+    /// Whether the root element closed: the parse reads nothing after it.
+    #[must_use]
+    pub fn closed(&self) -> bool {
+        self.phase == Phase::Closed
+    }
+
+    /// Whether an end tag or an attribute's key went unchecked, past the
+    /// bounds the scan keeps: the scan may take what the parse refuses.
+    #[cfg(test)]
+    fn unchecked(&self) -> bool {
+        usize::try_from(self.deepest).map_or(true, |deepest| deepest > OPEN_MAX)
+            || self.attrs.unchecked()
+    }
+
+    /// Whether the scan met refused markup anywhere.
+    #[must_use]
+    pub fn refused_any(&self) -> bool {
+        self.refusal != Refusal::None
     }
 
     /// Reads one byte; whether it is character data.
     fn step(&mut self, b: u8) -> bool {
         const CDATA: &[u8] = b"CDATA[";
         let text = self.at == At::Text && b != b'<';
+        let reference = self.at == At::Text && self.reference(b);
+        if self.phase == Phase::Prolog {
+            self.prolog(b, text && !reference);
+        }
         self.at = match self.at {
             At::Text if b == b'<' => At::Open,
             At::Text => {
@@ -567,7 +769,7 @@ impl CodeScan {
                 if b == b'>' && question {
                     // `<?>` is no instruction (`emit_question_mark`).
                     if empty {
-                        self.malformed = true;
+                        self.refuse();
                     }
                     At::Text
                 } else {
@@ -585,6 +787,13 @@ impl CodeScan {
         text
     }
 }
+
+#[path = "code_attrs.rs"]
+mod attrs;
+#[path = "code_ref.rs"]
+mod reference;
+use attrs::Attrs;
+use reference::{Ref, Resolved};
 
 #[cfg(test)]
 #[path = "code_scan_tests.rs"]
