@@ -52,6 +52,9 @@ static AHEAD: AtomicUsize = AtomicUsize::new(0);
 thread_local! {
     /// The meter being watched: the test thread's, the only one counted.
     static WATCHED: Cell<Option<&'static Meter>> = const { Cell::new(None) };
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    // A second counted thread must not move the table watch's global heap.
+    static COUNT_ONLY: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The glibc chunk a request of `n` bytes takes (`heap_cost`).
@@ -63,6 +66,10 @@ struct Counting;
 
 impl Tally for Counting {
     fn grew(&self, size: usize, _zeroed: bool) {
+        let _ = ALLOCATIONS.try_with(|n| n.set(n.get().saturating_add(1)));
+        if COUNT_ONLY.try_with(Cell::get).unwrap_or(false) {
+            return;
+        }
         let c = chunk(size);
         let now = LIVE.fetch_add(c, Ordering::Relaxed) + c;
         let Some(m) = WATCHED.try_with(Cell::get).ok().flatten() else {
@@ -80,6 +87,9 @@ impl Tally for Counting {
     }
 
     fn shrank(&self, size: usize) {
+        if COUNT_ONLY.try_with(Cell::get).unwrap_or(false) {
+            return;
+        }
         LIVE.fetch_sub(chunk(size), Ordering::Relaxed);
     }
 }
@@ -261,4 +271,26 @@ fn every_table_the_provider_builds_is_charged_before_it_is_allocated() {
     assert_eq!(provider.blob.strings.len(), 120);
     assert_eq!(provider.common.len(), 64);
     assert_eq!(provider.roots.len(), 96);
+}
+
+#[test]
+fn allocator_load_errors_keep_provenance_without_allocating() {
+    use unityrs_core::{
+        budget::{AllocError, Reservation},
+        limits::ChargeError,
+    };
+    COUNT_ONLY.with(|c| c.set(true));
+    count_this_thread();
+    let a = AllocError {
+        requested: 4096,
+        what: Reservation::Provider,
+    };
+    let before = ALLOCATIONS.with(Cell::get);
+    let error = crate::blob::memory(ChargeError::Allocator(a));
+    assert_eq!(
+        ALLOCATIONS.with(Cell::get),
+        before,
+        "refusal conversion allocates nothing"
+    );
+    assert!(matches!(error, crate::TpkError::Allocator(got) if got == a));
 }

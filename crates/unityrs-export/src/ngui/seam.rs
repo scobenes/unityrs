@@ -50,6 +50,13 @@ pub trait Hooks {
         None
     }
 
+    /// Cumulative allocator observations for this attempt, separate from budget
+    /// refusals. Once nonzero, no further core call or publication is allowed,
+    /// even when optional work returned success after absorbing the failure.
+    fn allocator_refusals(&self) -> u64 {
+        0
+    }
+
     /// Counts `bytes` of export work (2.6 step 10): past
     /// `max_export_work`, X's failure, `limit(export_work, <value>)`.
     fn export_work(&self, bytes: u64) -> Result<(), Reason> {
@@ -157,6 +164,7 @@ impl<'a> Seam<'a> {
 
     /// The stop check: [`Failure::Stopped`] once the run stopped.
     pub fn stop(&self) -> Result<(), Failure> {
+        allocator_check(self.hooks).map_err(Failure::from)?;
         if self.hooks.stopped() {
             Err(Failure::Stopped)
         } else {
@@ -206,14 +214,30 @@ pub(super) fn probe<T>(
     hooks: &dyn Hooks,
     f: impl FnOnce() -> Result<T, Class>,
 ) -> Result<T, Class> {
+    allocator_check(hooks)?;
     let before = hooks.refusals();
-    f().map_err(|c| probed(hooks, before, c))
+    let out = f();
+    allocator_check(hooks)?;
+    out.map_err(|c| probed(hooks, before, c))
+}
+
+/// A sticky allocator audit also rejects successful calls that absorbed an
+/// optional failure. Check before running another call as well as afterwards.
+pub(super) fn allocator_check(hooks: &dyn Hooks) -> Result<(), Class> {
+    if hooks.allocator_refusals() != 0 {
+        Err(Class::Run(Reason::plain("host_memory")))
+    } else {
+        Ok(())
+    }
 }
 
 /// The probe's rule for one core call's class `c`, the refusal count
 /// having been `before` when the call began: a `budget(...)` refusal
 /// during which the count did not move is `host_memory`.
 pub(super) fn probed(hooks: &dyn Hooks, before: Option<u64>, c: Class) -> Class {
+    if let Err(c) = allocator_check(hooks) {
+        return c;
+    }
     if let Some(before) = before
         && is_refusal(&c)
         && hooks.refusals() == Some(before)
@@ -227,4 +251,50 @@ pub(super) fn probed(hooks: &dyn Hooks, before: Option<u64>, c: Class) -> Class 
 fn is_refusal(c: &Class) -> bool {
     let (Class::Skip(r) | Class::Input(r) | Class::Run(r)) = c;
     r.reason.starts_with("budget(")
+}
+
+#[cfg(test)]
+mod allocator_tests {
+    use super::*;
+    use std::cell::Cell;
+    #[derive(Default)]
+    struct Audit {
+        allocator: Cell<u64>,
+        budget: Cell<u64>,
+    }
+    impl Hooks for Audit {
+        fn refusals(&self) -> Option<u64> {
+            Some(self.budget.get())
+        }
+        fn allocator_refusals(&self) -> u64 {
+            self.allocator.get()
+        }
+    }
+    #[test]
+    fn absorbed_allocator_refusal_wins_even_after_a_budget_refusal() {
+        let hooks = Audit::default();
+        let result = probe(&hooks, || {
+            hooks.budget.set(1);
+            hooks.allocator.set(1);
+            Ok(())
+        });
+        assert!(matches!(result, Err(Class::Run(r)) if r.reason == "host_memory"));
+        let mut called = false;
+        let _ = probe(&hooks, || {
+            called = true;
+            Ok(())
+        });
+        assert!(!called, "a poisoned attempt must make no further call");
+    }
+    #[test]
+    fn an_absorbed_budget_refusal_alone_can_still_succeed() {
+        let hooks = Audit::default();
+        assert!(
+            probe(&hooks, || {
+                hooks.budget.set(1);
+                Ok(())
+            })
+            .is_ok()
+        );
+    }
 }

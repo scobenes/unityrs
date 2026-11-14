@@ -252,12 +252,9 @@ impl TypeTreeProvider for RefusingAt {
                 requested: 64,
                 what: Reservation::Provider,
             };
-            return Err(ProviderError {
-                provider: TpkProvider::NAME,
-                detail: b.to_string().into(),
-                limit: None,
-                memory: Some(b),
-            });
+            let mut failure = ProviderError::new(TpkProvider::NAME, b.to_string().into());
+            failure.memory = Some(b);
+            return Err(failure);
         }
         self.tpk.tree(req)
     }

@@ -41,6 +41,22 @@ pub enum Reservation {
     Provider,
 }
 
+/// A host allocator refusal, kept by value without a heap-owned source.
+///
+/// `requested` is the failed request or a documented reservation estimate.
+/// The tag attributes the request; it does not claim that a meter owns it.
+/// Before a meter exists, fixed Environment storage is attributed to Input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("allocator refused {requested} bytes for {what:?}")]
+pub struct AllocError {
+    /// Failed request size or reservation estimate, in bytes.
+    pub requested: u64,
+    /// The load or provider that requested the storage.
+    pub what: Reservation,
+}
+
+const _: () = crate::send_sync::<AllocError>();
+
 /// A refused reservation.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("memory budget refused {requested} bytes for {what:?}")]
@@ -69,6 +85,15 @@ pub struct BudgetExceeded {
 pub trait MemoryBudget: Send + Sync + fmt::Debug {
     /// Reserves `bytes`, or refuses at once.
     fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded>;
+
+    /// Observes a detected allocator refusal exactly once at its source.
+    /// Wrapping or cloning the error must not notify again. Optional work may
+    /// absorb it, including settle after a successful registry commit; a batch
+    /// caller must audit observations before continuing or publishing.
+    ///
+    /// The same nonblocking, non-reentrant contract as budget operations applies.
+    /// Implementations must also allocate nothing while reporting a refusal.
+    fn allocator_refused(&self, _error: AllocError) {}
 }
 
 /// Where a permit returns its bytes. The same contract as [`MemoryBudget`]:

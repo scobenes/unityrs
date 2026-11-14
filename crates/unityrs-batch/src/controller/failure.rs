@@ -111,6 +111,9 @@ impl Write {
         );
         drop(meter);
         let accounts = budget.snapshot();
+        if accounts.allocator_refusals != 0 {
+            return Err(RunFailure::new(ReasonCode::HostMemory));
+        }
         if !accounts.is_clear() {
             return Err(internal());
         }
@@ -358,6 +361,9 @@ fn text<'a>(
         Ok((reason, detail))
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 mod download_tests {

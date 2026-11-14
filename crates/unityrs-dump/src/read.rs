@@ -109,7 +109,7 @@ pub fn read_on(
     let (kind, text) = match read_path(path, &ctx.limits, &meter) {
         Ok(data) => return Ok(ReadInput::Bytes { data, meter }),
         Err(Error::Limit(l)) => (FileErrorKind::Detect, l.to_string()),
-        Err(e @ Error::Budget(_)) => (
+        Err(e @ (Error::Budget(_) | Error::Allocator(_))) => (
             FileErrorKind::Crash,
             format!("unityrs ran out of memory reading this input ({e})"),
         ),
@@ -122,7 +122,7 @@ pub fn read_on(
         Err(e) => {
             let limit = match &e {
                 ChargeError::Limit(l) => Some(l),
-                ChargeError::Budget(_) => None,
+                _ => None,
             };
             let text = format!("{text}; {}", not_taken(&e));
             (None, note_keeping(&text, limit))

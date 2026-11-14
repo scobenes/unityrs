@@ -254,12 +254,18 @@ fn open(
 /// is, and any other error "not a container".
 fn is_bundle_entry(b: &BundleFile, i: usize) -> Result<bool, Error> {
     match b.entry_range(i, 0..PEEK) {
-        Ok(head) => Ok(matches!(
-            check_file_type(&head, &Limits::default()),
-            Ok(FileType::BundleFile)
-        )),
+        Ok(head) => match check_file_type(&head, &Limits::default()) {
+            Ok(ty) => Ok(ty == FileType::BundleFile),
+            Err(e @ unityrs_core::detect::DetectError::Allocator(_)) => Err(e.into()),
+            Err(_) => Ok(false),
+        },
         Err(e @ (Error::Limit(_) | Error::Io(_) | Error::Budget(_))) => Err(e),
-        Err(_) => Ok(false),
+        // Allocator provenance can be nested in an entry, tree, read or
+        // dereference error. Keep the single recursive classifier authoritative.
+        Err(e) => match classify::error(&e) {
+            Class::Run(_) => Err(e),
+            Class::Skip(_) | Class::Input(_) => Ok(false),
+        },
     }
 }
 
@@ -299,7 +305,7 @@ pub fn peek(
         if hooks.stopped() {
             return Err(Failure::Stopped);
         }
-        if is_bundle_entry(&b, i).map_err(|e| peeked(opened(&e)))? {
+        if seam::probe(hooks, || is_bundle_entry(&b, i).map_err(|e| opened(&e))).map_err(peeked)? {
             bits.set(i);
         }
     }
@@ -315,6 +321,7 @@ fn call<T>(
     admit: &Admit<'_>,
     f: impl FnOnce() -> Result<T, Error>,
 ) -> Result<Result<T, Error>, Failure> {
+    seam::allocator_check(admit.hooks).map_err(Failure::from)?;
     let before = admit.hooks.refusals();
     let out = f();
     #[cfg(feature = "test-hooks")]
@@ -323,6 +330,7 @@ fn call<T>(
         None => out,
     };
     admit.hooks.environment(env);
+    seam::allocator_check(admit.hooks).map_err(Failure::from)?;
     if let Err(e) = &out
         && let Class::Run(r) = seam::probed(admit.hooks, before, classify::error(e))
     {

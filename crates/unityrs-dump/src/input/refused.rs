@@ -12,7 +12,7 @@
 //!   whole ([`crate::record::note_keeping`]) however long the names before
 //!   it.
 
-use unityrs_core::budget::BudgetExceeded;
+use unityrs_core::budget::{AllocError, BudgetExceeded};
 use unityrs_core::detect::DetectError;
 use unityrs_core::env::DerefError;
 use unityrs_core::limits::ChargeError;
@@ -27,14 +27,17 @@ use crate::record::note_keeping;
 enum Refusal<'a> {
     /// The caller's budget or the allocator.
     Memory(&'a BudgetExceeded),
+    /// Host allocator provenance.
+    Allocator(&'a AllocError),
     /// A bound of the open's limits.
     Limit(&'a LimitError),
 }
 
 impl<'a> Refusal<'a> {
-    fn memory(self) -> Option<&'a BudgetExceeded> {
+    fn memory(self) -> Option<Error> {
         match self {
-            Self::Memory(b) => Some(b),
+            Self::Memory(b) => Some(Error::Budget(b.clone())),
+            Self::Allocator(a) => Some(Error::Allocator(*a)),
             Self::Limit(_) => None,
         }
     }
@@ -42,7 +45,7 @@ impl<'a> Refusal<'a> {
     fn limit(self) -> Option<&'a LimitError> {
         match self {
             Self::Limit(l) => Some(l),
-            Self::Memory(_) => None,
+            Self::Memory(_) | Self::Allocator(_) => None,
         }
     }
 }
@@ -54,7 +57,7 @@ impl<'a> Refusal<'a> {
 pub(crate) fn out_of_memory(e: &ParseError) -> Result<(), Error> {
     read_refusal(e)
         .and_then(Refusal::memory)
-        .map_or(Ok(()), |b| Err(Error::Budget(b.clone())))
+        .map_or(Ok(()), Err)
 }
 
 /// `Err(Error::Budget)` when `e` is the caller's budget or the allocator
@@ -63,12 +66,12 @@ pub(crate) fn out_of_memory(e: &ParseError) -> Result<(), Error> {
 pub(crate) fn write_out_of_memory(e: &WriteError) -> Result<(), Error> {
     write_refusal(e)
         .and_then(Refusal::memory)
-        .map_or(Ok(()), |b| Err(Error::Budget(b.clone())))
+        .map_or(Ok(()), Err)
 }
 
 /// The budget's or the allocator's refusal under `e`, or `None`: what
 /// [`super::dump_on`] makes a `crash` record.
-pub(super) fn memory_refused(e: &Error) -> Option<&BudgetExceeded> {
+pub(super) fn memory_refused(e: &Error) -> Option<Error> {
     refusal(e).and_then(Refusal::memory)
 }
 
@@ -90,6 +93,9 @@ pub(super) fn write_note(e: &WriteError) -> String {
 fn refusal(e: &Error) -> Option<Refusal<'_>> {
     match e {
         Error::Budget(b) => Some(Refusal::Memory(b)),
+        Error::Allocator(a) | Error::Detect(DetectError::Allocator(a)) => {
+            Some(Refusal::Allocator(a))
+        }
         Error::Limit(l) | Error::Detect(DetectError::InflateLimit(l) | DetectError::Work(l)) => {
             Some(Refusal::Limit(l))
         }
@@ -105,15 +111,16 @@ fn read_refusal(e: &ParseError) -> Option<Refusal<'_>> {
     match e {
         ParseError::Read(r) => match &r.detail {
             ReadDetail::Limit(l) => Some(Refusal::Limit(l)),
-            ReadDetail::Charge(c) => Some(charge_refusal(c)),
+            ReadDetail::Charge(c) => charge_refusal(c),
             ReadDetail::Tree(t) => tree_refusal(t),
             _ => None,
         },
         ParseError::Tree(t) => tree_refusal(t),
         ParseError::Provider(p) => p
-            .memory
+            .allocator
             .as_ref()
-            .map(Refusal::Memory)
+            .map(Refusal::Allocator)
+            .or_else(|| p.memory.as_ref().map(Refusal::Memory))
             .or_else(|| p.limit.as_ref().map(Refusal::Limit)),
         ParseError::Deref(d) => deref_refusal(d),
         _ => None,
@@ -123,7 +130,7 @@ fn read_refusal(e: &ParseError) -> Option<Refusal<'_>> {
 fn write_refusal(e: &WriteError) -> Option<Refusal<'_>> {
     match e {
         WriteError::Limit(l) => Some(Refusal::Limit(l)),
-        WriteError::Charge(c) => Some(charge_refusal(c)),
+        WriteError::Charge(c) => charge_refusal(c),
         WriteError::Tree(p) => read_refusal(p),
         _ => None,
     }
@@ -139,15 +146,17 @@ fn deref_refusal(e: &DerefError) -> Option<Refusal<'_>> {
 fn tree_refusal(e: &TreeError) -> Option<Refusal<'_>> {
     match e {
         TreeError::Limit(l) => Some(Refusal::Limit(l)),
-        TreeError::Charge(c) => Some(charge_refusal(c)),
+        TreeError::Charge(c) => charge_refusal(c),
         _ => None,
     }
 }
 
-fn charge_refusal(e: &ChargeError) -> Refusal<'_> {
+fn charge_refusal(e: &ChargeError) -> Option<Refusal<'_>> {
     match e {
-        ChargeError::Budget(b) => Refusal::Memory(b),
-        ChargeError::Limit(l) => Refusal::Limit(l),
+        ChargeError::Budget(b) => Some(Refusal::Memory(b)),
+        ChargeError::Allocator(a) => Some(Refusal::Allocator(a)),
+        ChargeError::Limit(l) => Some(Refusal::Limit(l)),
+        _ => None,
     }
 }
 

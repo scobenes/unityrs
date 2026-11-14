@@ -213,6 +213,8 @@ pub fn charge(c: &ChargeError) -> Class {
     match c {
         ChargeError::Limit(l) => limit(l),
         ChargeError::Budget(b) => budget(b),
+        ChargeError::Allocator(_) => Class::Run(Reason::plain("host_memory")),
+        _ => Class::Run(Reason::plain("internal")),
     }
 }
 
@@ -234,6 +236,9 @@ pub fn tree(t: &TreeError) -> Class {
 #[must_use]
 pub fn parse(e: &ParseError) -> Class {
     match e {
+        ParseError::Provider(p) if p.allocator.is_some() => {
+            Class::Run(Reason::plain("host_memory"))
+        }
         ParseError::NoTypeTree { .. } | ParseError::CheckRead { .. } | ParseError::Provider(_) => {
             Class::Skip(Reason::decode_error("asset_bundle"))
         }
@@ -288,6 +293,9 @@ pub fn error(e: &Error) -> Class {
         Error::Tree(t) => return tree(t),
         Error::Limit(l) => return limit(l),
         Error::Budget(b) => return budget(b),
+        Error::Allocator(_) | Error::Detect(unityrs_core::detect::DetectError::Allocator(_)) => {
+            return Class::Run(Reason::plain("host_memory"));
+        }
         Error::Io(_) => return Class::Run(Reason::plain("host_io")),
         Error::Detect(_) => "detect",
         Error::OutOfBounds { .. } => "out_of_bounds",

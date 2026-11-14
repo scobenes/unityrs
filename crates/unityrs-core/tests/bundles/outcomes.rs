@@ -200,3 +200,97 @@ fn a_decode_the_inputs_meter_refuses_keeps_its_prepaid_work() {
     }
     assert!(refused >= 1, "no read reached the meter's refusal");
 }
+
+/// Allocator contention must not spend the next read's decode allowance.
+#[test]
+fn a_codec_allocator_refusal_refunds_prepaid_work_before_the_same_read_recovers() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use unityrs_core::Bytes;
+    use unityrs_core::budget::DecodeBuf;
+    use unityrs_core::codec::{BlockCodec, Codecs, Decoded, Stored};
+
+    struct RefuseOnce(AtomicBool);
+    impl BlockCodec for RefuseOnce {
+        fn decode(
+            &self,
+            input: &Bytes,
+            uncompressed: u32,
+            out: &mut DecodeBuf,
+        ) -> Result<Decoded, Error> {
+            if self.0.swap(false, Ordering::Relaxed) {
+                return Err(out.meter().allocator_refused(4096).into());
+            }
+            Stored.decode(input, uncompressed, out)
+        }
+    }
+    let data = build(&BundleSpec {
+        info_codec: TestCodec::None,
+        data_codec: TestCodec::Raw(5),
+        entries: vec![EntrySpec {
+            name: b"raw".to_vec(),
+            data: vec![7; 4096],
+            flags: 0,
+        }],
+        ..BundleSpec::default()
+    });
+    // Exercise both decoding into a run and decoding a block to measure it.
+    for route in ["bytes", "all", "entry"] {
+        let mut codecs = Codecs::unitypy();
+        codecs
+            .set(Codec::Other(5), Arc::new(RefuseOnce(AtomicBool::new(true))))
+            .unwrap();
+        let ctx = ctx_with(|c| {
+            c.codecs = Arc::new(codecs);
+            // Enough for one read and the open, but not two prepaid reads.
+            c.limits.max_decode_work = 5000;
+        });
+        let meter = meter_for(&ctx);
+        let b = open_with(&data, &ctx, &meter).unwrap();
+        let read = || match route {
+            "all" => b.load_all(),
+            "entry" => b.entry(0).map(|_| ()),
+            _ => b.entry_bytes(0).map(|_| ()),
+        };
+        let refused = read();
+        assert!(
+            matches!(refused, Err(Error::Allocator(_))),
+            "{route}: {refused:?}"
+        );
+        read().unwrap_or_else(|e| panic!("{route}: recovery must not hit DecodeWork: {e:?}"));
+        assert_eq!(&b.entry_bytes(0).unwrap()[..], &[7; 4096]);
+    }
+}
+
+#[test]
+fn a_nested_entry_allocator_refusal_is_returned_without_an_allocating_wrapper() {
+    use unityrs_core::Bytes;
+    use unityrs_core::budget::DecodeBuf;
+    use unityrs_core::codec::{BlockCodec, Codecs, Decoded};
+
+    struct Refuse;
+    impl BlockCodec for Refuse {
+        fn decode(&self, _: &Bytes, _: u32, out: &mut DecodeBuf) -> Result<Decoded, Error> {
+            Err(out.meter().allocator_refused(4096).into())
+        }
+    }
+    let nested = build(&BundleSpec {
+        info_codec: TestCodec::Raw(5),
+        ..BundleSpec::default()
+    });
+    let data = build(&BundleSpec {
+        info_codec: TestCodec::None,
+        data_codec: TestCodec::None,
+        entries: vec![EntrySpec {
+            name: b"nested".to_vec(),
+            data: nested,
+            flags: 0,
+        }],
+        ..BundleSpec::default()
+    });
+    let mut codecs = Codecs::unitypy();
+    codecs.set(Codec::Other(5), Arc::new(Refuse)).unwrap();
+    let ctx = ctx_with(|c| c.codecs = Arc::new(codecs));
+    let b = open_with(&data, &ctx, &meter_for(&ctx)).unwrap();
+    let refused = b.entry(0);
+    assert!(matches!(refused, Err(Error::Allocator(_))), "{refused:?}");
+}
