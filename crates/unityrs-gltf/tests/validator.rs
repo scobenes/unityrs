@@ -338,15 +338,23 @@ fn validate_image_cases(
         });
         assert_eq!(r["validatorVersion"], "2.0.0-dev.3.10");
         if let Some(code) = error {
+            // The writer refuses every body the validator flags, error or
+            // warning alike; the validator itself fails only on an error
+            // (severity 0), while a warning (severity 1, such as an
+            // unrecognized or unsupported image) leaves its exit status 0.
+            let severity = r["issues"]["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["code"] == code)
+                .unwrap_or_else(|| panic!("{name}: no {code}: {r}"))["severity"]
+                .as_u64()
+                .unwrap();
             assert!(
-                r["issues"]["messages"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|v| v["code"] == code),
-                "{name}: {r}"
+                severity <= 1,
+                "{name}: {code} is only severity {severity}: {r}"
             );
-            assert!(!output.status.success(), "{name}: {r}");
+            assert_eq!(output.status.success(), severity == 1, "{name}: {r}");
             assert!(
                 matches!(result, Err(GltfError::Invalid(_))),
                 "{name}: {result:?}"
