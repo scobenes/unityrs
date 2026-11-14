@@ -3,6 +3,7 @@
 import argparse
 import os
 
+import archive_case
 import edge_cases
 import oracle_cases
 import rule_cases
@@ -16,7 +17,7 @@ def main():
     parser.add_argument("--check", action="store_true", help="compare without writing")
     args = parser.parse_args()
     os.chdir(REPO)
-    for generator in [oracle_cases, texture_case, rule_cases, unit_case, edge_cases]:
+    for generator in [oracle_cases, texture_case, rule_cases, unit_case, edge_cases, archive_case]:
         generator.generate()
     root = REPO / "tests/specs/v1"
     different = []

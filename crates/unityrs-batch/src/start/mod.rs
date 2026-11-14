@@ -7,7 +7,6 @@ use crate::spec::model::{Sink, Spec};
 pub enum Unsupported {
     UrlSource,
     ObjectStore,
-    Archives,
     Deadline,
     StdinWatch,
     ParentWatch,
@@ -21,9 +20,6 @@ pub fn supported(spec: &Spec) -> Result<Local<'_>, Unsupported> {
     let Sink::Directory { root } = &spec.sink else {
         return Err(Unsupported::ObjectStore);
     };
-    if !spec.archives.is_empty() {
-        return Err(Unsupported::Archives);
-    }
     if spec.deadline.is_some() {
         return Err(Unsupported::Deadline);
     }

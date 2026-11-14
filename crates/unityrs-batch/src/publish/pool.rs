@@ -1,6 +1,6 @@
 //! One streaming dispatcher and bounded pool drives. Each drive retains its
 //! buffer across winners and lends it to resume before copying a miss.
-use super::{BUFFER, Context, Gate, Hooks, OVERHEAD, Point, Report, WORKING_SET, local, payload};
+use super::{BUFFER, Context, Gate, Hooks, OVERHEAD, Point, Report, archive, local, payload};
 use crate::{
     control::{Control, Culprit},
     execution::Execution,
@@ -34,8 +34,32 @@ pub struct Owned {
 struct Queue {
     cursor: Cursor<'static>,
     next: u64,
+    /// Archives follow every winner, in archive-key order.
+    archives: Option<winners::archives::Reader<'static>>,
+    taken: u64,
 }
 impl Queue {
+    fn open(owned: &Owned, stopped: &dyn Fn() -> bool) -> Result<Self, Error> {
+        let meter = owned.account.meter();
+        Ok(Self {
+            cursor: Cursor::read(
+                &owned.workspace,
+                owned.handoff.winners.as_ref(),
+                &By::Key,
+                meter,
+                stopped,
+                true,
+            )?,
+            next: 0,
+            archives: owned
+                .handoff
+                .metadata
+                .as_ref()
+                .map(|m| winners::archives::Reader::open(&owned.workspace, m, meter, stopped))
+                .transpose()?,
+            taken: 0,
+        })
+    }
     fn take(
         &mut self,
         frame: &mut crate::sort::Frame,
@@ -50,6 +74,24 @@ impl Queue {
         self.next = self.next.checked_add(1).ok_or_else(Error::internal)?;
         self.cursor.advance(stopped)?;
         Ok(Some(index))
+    }
+    /// Copies one bounded descriptor while holding the lock; nothing borrowed
+    /// from the reader's frame leaves it.
+    fn archive(
+        &mut self,
+        slot: &mut archive::Descriptor,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<bool, Error> {
+        phase::check(stopped)?;
+        let Some(reader) = self.archives.as_mut() else {
+            return Ok(false);
+        };
+        let Some(next) = reader.next(stopped)? else {
+            return Ok(false);
+        };
+        slot.take(next)?;
+        self.taken = self.taken.checked_add(1).ok_or_else(Error::internal)?;
+        Ok(true)
     }
 }
 /// Concurrent pool work uses thread-local allocator audits and one final
@@ -72,36 +114,21 @@ fn schedule(
     concurrency: u32,
 ) -> Result<Report, Error> {
     let stopped = || owned.control.stopped();
+    owned.hooks.point(Point::Admission);
     phase::check(&stopped)?;
     if owned.handoff.publication_blocked {
         return Ok(Report::default());
     }
-    let drives = u64::from(concurrency)
-        .min(owned.account.limit() / WORKING_SET)
-        .min(owned.handoff.counts.winners);
+    let (declared, drives) = drives(owned, concurrency)?;
     if drives == 0 {
-        return if owned.handoff.counts.winners == 0 {
-            Ok(Report::default())
-        } else {
-            Err(Error::internal())
-        };
+        return Ok(Report::default());
     }
-    // The second MiB in each envelope covers this shared reader and all task,
-    // frame and adapter storage. No descriptor is queued per winner.
-    // Keep half a MiB for fixed dispatcher bookkeeping. Its reader and the
+    // The second MiB in each envelope covers the shared readers and all task,
+    // frame and adapter storage. No descriptor is queued per winner/archive.
+    // Keep half a MiB for fixed dispatcher bookkeeping. Its readers and the
     // per-drive frames have separate exact charges within the other half.
     let _dispatcher = owned.account.meter().charge(OVERHEAD / 2)?;
-    let queue = Shared::new(Lock::new(Queue {
-        cursor: Cursor::read(
-            &owned.workspace,
-            owned.handoff.winners.as_ref(),
-            &By::Key,
-            owned.account.meter(),
-            &stopped,
-            true,
-        )?,
-        next: 0,
-    }))?;
+    let queue = Shared::new(Lock::new(Queue::open(owned, &stopped)?))?;
     let mut tasks = Buffer::new(
         owned.account.meter(),
         usize::try_from(drives).map_err(|_| Error::internal())?,
@@ -154,12 +181,36 @@ fn schedule(
             execution.wait()?;
         }
     }
-    if queue.lock().next != owned.handoff.counts.winners {
+    let drained = queue.lock();
+    if drained.next != owned.handoff.counts.winners || drained.taken != declared {
         return Err(Error::internal());
     }
+    drop(drained);
     owned.hooks.point(Point::Drained);
     phase::check(&stopped)?;
     Ok(report)
+}
+/// Declared archives and drive count. Every archive is taken once, so an
+/// archive-only run still starts a drive; zero means there is no work.
+fn drives(owned: &Owned, concurrency: u32) -> Result<(u64, u64), Error> {
+    let declared =
+        u64::try_from(owned.prepared.lock().spec.archives.len()).map_err(|_| Error::internal())?;
+    if (declared == 0) != owned.handoff.metadata.is_none() {
+        return Err(Error::internal());
+    }
+    let work = owned
+        .handoff
+        .counts
+        .winners
+        .checked_add(declared)
+        .ok_or_else(Error::internal)?;
+    let drives = u64::from(concurrency)
+        .min(owned.account.limit() / super::working_set(declared != 0))
+        .min(work);
+    if drives == 0 && work != 0 {
+        return Err(Error::internal());
+    }
+    Ok((declared, drives))
 }
 fn drive(owned: &Owned, queue: &Lock<Queue>) -> Result<Report, Error> {
     let _overhead = owned.account.meter().charge(OVERHEAD)?;
@@ -219,7 +270,39 @@ fn drive(owned: &Owned, queue: &Lock<Queue>) -> Result<Report, Error> {
             _ => return Err(Error::internal()),
         }
     }
+    if owned.handoff.metadata.is_some() {
+        let mut slot = archive::Descriptor::new(owned.account.meter())?;
+        while queue.lock().archive(&mut slot, &stopped)? {
+            archive_one(owned, &cx, &slot, &mut buffer)?;
+        }
+    }
     Ok(report)
+}
+/// Archive transfers count as uploads; `outputs` stays the loose winners'.
+fn archive_one(
+    owned: &Owned,
+    cx: &Context<'_>,
+    slot: &archive::Descriptor,
+    buffer: &mut [u8],
+) -> Result<(), Error> {
+    let progress = owned.progress.as_ref().filter(|_| {
+        slot.eligibility(owned.handoff.publication_blocked) == crate::archive::Eligibility::Eligible
+    });
+    if let Some(p) = progress {
+        p.update(|s| s.transfers.uploads_active += 1);
+    }
+    let result = archive::one(cx, slot, buffer);
+    if let Some(p) = progress {
+        p.update(|s| {
+            s.transfers.uploads_active -= 1;
+            match result {
+                Ok(Some(crate::outcomes::Code::Written)) => s.transfers.uploads_done += 1,
+                Ok(Some(crate::outcomes::Code::PublishFailed)) => s.transfers.uploads_failed += 1,
+                _ => {}
+            }
+        });
+    }
+    result.map(|_| ())
 }
 
 impl payload::Payloads for Owned {

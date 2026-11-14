@@ -1,14 +1,25 @@
 //! Whole-file MD5 under the same serial admission as the following transfer.
+//! Loose outputs compare their recorded MD5; archives their expected-hash pass's.
 use super::{Context, Point, sink_error};
 use crate::{
     phase::{Error, check},
     sink::{self, path::Name},
-    winners::Row,
 };
 use md5::{Digest, Md5};
 use std::{fs::File, io, os::unix::fs::MetadataExt};
 
-pub(super) fn present(cx: &Context<'_>, row: Row<'_>, bytes: &mut [u8]) -> Result<bool, Error> {
+/// The destination's expected identity: its key, size and whole-file MD5.
+#[derive(Clone, Copy)]
+pub(super) struct Expected<'a> {
+    pub key: &'a str,
+    pub size: u64,
+    pub md5: [u8; 16],
+}
+pub(super) fn present(
+    cx: &Context<'_>,
+    row: Expected<'_>,
+    bytes: &mut [u8],
+) -> Result<bool, Error> {
     cx.at(Point::Resume)?;
     let root = cx.directory.root();
     let parent = match root.parent(row.key, false, sink::Context::Output) {
