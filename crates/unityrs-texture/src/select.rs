@@ -10,8 +10,8 @@
 //! one [`crate::decode()`] decodes as UnityPy does, and a skipped one is never
 //! decoded as another format. It exports the five formats version 1 exports
 //! ([`Format::EXPORTED`]): the other formats [`crate::decode()`] also
-//! decodes, the rest of Pillow's raw and `bcn` formats and the ETC and EAC
-//! formats, are `unsupported_format` to it, as `docs/BATCH_SPEC.md` section
+//! decodes, the rest of Pillow's raw and `bcn` formats, the ETC and EAC
+//! formats and the ASTC LDR formats, are `unsupported_format` to it, as `docs/BATCH_SPEC.md` section
 //! 3 says, until a spec version exports them. The engine reads the fields
 //! (the object's `m_TextureFormat`, `m_Width`, `m_Height` and
 //! `m_PlatformBlob`, and the platform of the SerializedFile that holds it,

@@ -65,18 +65,20 @@ P1B = ["BC7", "DXT1", "DXT5", "RGB24", "RGBA32"]
 P1B_STATUS = "pinned P0; verified P1b (decoding); impl P3a"
 # The formats P3 decodes, and their status: the ETC and EAC formats (crates/unityrs-texture/tests/etc_oracle.rs
 # replays what tools/fixtures/texture.py records from tools/fixtures/texture_etc.py's cases), the Tier C ones' as
-# section 19.1's reference; and the rest of Pillow's raw and bcn formats (crates/unityrs-texture/tests/raw_oracle.rs,
-# from tools/fixtures/texture_raw.py's cases).
+# section 19.1's reference; the rest of Pillow's raw and bcn formats (crates/unityrs-texture/tests/raw_oracle.rs,
+# from tools/fixtures/texture_raw.py's cases); and the twelve ASTC LDR formats (crates/unityrs-texture/tests/
+# astc_oracle.rs, from tools/fixtures/texture_astc.py's cases).
 P3_ETC = ["EAC_R", "EAC_RG", "EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGB", "ETC2_RGBA1", "ETC2_RGBA8", "ETC_RGB4"]
 P3_PILLOW = ["ARGB32", "ARGB4444", "Alpha8", "BC4", "BC5", "BGR24", "BGRA32", "DXT3", "R8", "RGB565", "RGBA4444"]
-P3 = sorted(P3_ETC + P3_PILLOW)
+P3_ASTC = [f"ASTC_{kind}_{n}x{n}" for kind in ("RGB", "RGBA") for n in (4, 5, 6, 8, 10, 12)]
+P3 = sorted(P3_ETC + P3_PILLOW + P3_ASTC)
 P3_STATUS = "pinned P0; verified P3 (decoding); impl P3a"
 P3_TIER_C = ["EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGBA1"]
 P3_TIER_C_STATUS = "pinned P0; verified P3 (decoding, as section 19.1's reference); impl P3a"
 
 
 def status_of(name):
-    """A matrix row's status (section 17's text): the five P1b formats', the nineteen P3 ones', or every other's."""
+    """A matrix row's status (section 17's text): the five P1b formats', the thirty-one P3 ones', or every other's."""
     if name in P1B:
         return P1B_STATUS
     if name in P3_TIER_C:

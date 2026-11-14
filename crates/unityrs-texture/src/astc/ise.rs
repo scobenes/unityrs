@@ -45,6 +45,7 @@ impl Quant {
         BTQ.get(self.index()).copied().unwrap_or((0, 1))
     }
 
+    #[cfg(test)]
     pub(super) fn levels(self) -> u16 {
         let (bits, radix) = self.layout();
         u16::from(radix) << bits

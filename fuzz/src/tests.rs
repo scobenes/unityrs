@@ -143,6 +143,70 @@ fn the_texture_check_takes_each_answer_under_each_meter() {
     crate::texture::check(&[]);
 }
 
+/// The `astc` check passes `unityrs-texture`'s oracle fixture's crafted
+/// blocks of each square footprint (`tools/fixtures/texture_astc.py`: every
+/// block-mode class, partition count, dual-plane channel, void extent and
+/// error block) as an image of each of its formats' cut edges, with each
+/// block decoded alone, under each meter; and each of the plan's errors.
+#[test]
+fn the_astc_check_takes_each_answer_under_each_meter() {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/unityrs-texture/tests/fixtures/astc.json"
+    ))
+    .expect("the ASTC fixture");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+    let crafted = |side: usize| -> Vec<u8> {
+        let id = format!("astc-{side}x{side}-crafted");
+        let c = body["footprint_cases"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .find(|c| c["id"] == id.as_str())
+            .expect("a crafted case");
+        let h = c["data"]["hex"].as_str().expect("hex").as_bytes();
+        h.chunks(2)
+            .map(|p| u8::from_str_radix(std::str::from_utf8(p).expect("ascii"), 16).expect("hex"))
+            .collect()
+    };
+    let case = |format, width, height, meter, data: Vec<u8>| {
+        TextureCase {
+            format,
+            width,
+            height,
+            platform: 19,
+            meter,
+            blob: None,
+            data,
+        }
+        .encode()
+    };
+    for (i, side) in [4, 5, 6, 8, 10, 12].into_iter().enumerate() {
+        let data = crafted(side);
+        let blocks = i32::try_from(data.len() / 16).expect("an i32");
+        let side = i32::try_from(side).expect("an i32");
+        let rows = blocks / 8;
+        for format in [48 + i, 54 + i] {
+            let format = i32::try_from(format).expect("an i32");
+            for meter in 0..4 {
+                crate::astc::check(&case(
+                    format,
+                    8 * side - 3,
+                    rows * side - 1,
+                    meter,
+                    data.clone(),
+                ));
+            }
+            // Short data, a side of 0, a negative side, empty data.
+            crate::astc::check(&case(format, 8 * side, rows * side, 0, data.clone()));
+            crate::astc::check(&case(format, 0, 4, 0, data.clone()));
+            crate::astc::check(&case(format, -side, 4, 0, data.clone()));
+            crate::astc::check(&case(format, 4, 4, 0, Vec::new()));
+        }
+    }
+    crate::astc::check(&[]);
+}
+
 /// Every case of `unityrs-meshdecode`'s handler fixture as a `MeshCase`, as
 /// the seed command (`unityrs-testkit`'s `examples/fuzz_seeds.rs`) writes
 /// them, at meter 0.

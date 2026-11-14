@@ -4,14 +4,15 @@
 //! (`docs/plans/extract.md` E15, E18, E59, E66), under the memory bound
 //! ([`crate::MEMORY`]) or a meter of about the decode's charge.
 //!
-//! A format outside the twenty-four the crate decodes (the five version 1
-//! exports, the rest of Pillow's raw and `bcn` formats, and the ETC and EAC
-//! formats) decodes as one of them, so every
+//! A format outside the thirty-six the crate decodes (the five version 1
+//! exports, the rest of Pillow's raw and `bcn` formats, the ETC and EAC
+//! formats, and the ASTC LDR formats) decodes as one of them, so every
 //! input reaches a decoder. Besides a panic (libFuzzer's hook aborts at it,
 //! before the decoder's containment can catch it), a finding is: a
 //! selection that exports a format the texture does not have; a decode
 //! whose answer is not its plan's, but for the meter's refusal of a charge
-//! past its limit; an image whose size, mode or charge is not the plan's;
+//! past its limit (the peak charge, `Plan::peak_charge`: an ASTC format's
+//! tables beside the image); an image whose size, mode or charge is not the plan's;
 //! and a meter not back at 0 once the image drops.
 
 use std::sync::Arc;
@@ -46,8 +47,8 @@ pub fn check(input: &[u8]) {
         .or_else(|| Format::ALL.get(any).copied())
         .unwrap_or(Format::Rgba32);
     let planned = plan(format, case.data.len(), case.width, case.height);
-    let charge = planned.as_ref().map_or(0, Plan::charge);
-    // The memory bound, or the charge less 1, the charge, or plus 1.
+    let charge = planned.as_ref().map_or(0, Plan::peak_charge);
+    // The memory bound, or the peak charge less 1, the charge, or plus 1.
     let limit = match case.meter & 3 {
         0 => MEMORY,
         m => (charge + u64::from(m)).saturating_sub(2),
@@ -70,7 +71,7 @@ pub fn check(input: &[u8]) {
             assert_eq!(meter.used(), p.charge());
         }
         (Err(DecodeError::Charge(ChargeError::Limit(_))), Ok(p)) => {
-            assert!(limit < p.charge(), "refused within the charge");
+            assert!(limit < p.peak_charge(), "refused within the charge");
         }
         (got, planned) => assert_eq!(
             got.map(|_| ()),

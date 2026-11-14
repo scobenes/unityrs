@@ -137,7 +137,7 @@ class ThisParityFile(unittest.TestCase):
     def test_p1b_formats_are_the_five_design_names(self):
         p1b = sorted(name for name, row in self.rows.items() if row["status"] == P1B_STATUS)
         self.assertEqual(p1b, P1B)
-        # And the ETC and EAC formats and the rest of Pillow's are the nineteen P3 has verified.
+        # And the ETC and EAC formats, the rest of Pillow's and the ASTC LDR formats are the thirty-one P3 has verified.
         p3 = sorted(name for name, row in self.rows.items() if "verified P3" in row["status"])
         self.assertEqual(p3, P3)
 
