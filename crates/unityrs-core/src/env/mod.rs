@@ -187,12 +187,14 @@ mod listing;
 mod listing_tests;
 mod load;
 mod object_tree;
+mod paths;
 #[cfg(test)]
 mod preload_tests;
 #[cfg(test)]
 mod race_tests;
 mod resource_data;
 mod revisit;
+mod split;
 #[cfg(test)]
 mod threads_tests;
 mod watch;
@@ -538,7 +540,10 @@ enum Found {
 fn source_name(source: &Source) -> RawStr {
     match source {
         Source::Bytes { name, .. } | Source::Fetch { name, .. } => name.clone(),
-        Source::Path(p) => RawStr::from(p.as_os_str().as_encoded_bytes()),
+        Source::Path(p) => {
+            let name = p.as_os_str().as_encoded_bytes();
+            RawStr::from(split::base(name).unwrap_or(name))
+        }
     }
 }
 

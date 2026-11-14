@@ -66,6 +66,47 @@ impl Environment {
         Ok(file)
     }
 
+    pub(super) fn load_data(
+        &self,
+        name: RawStr,
+        data: bytes::Bytes,
+        reader: crate::stream::ReaderKind,
+        meter: &Arc<Meter>,
+    ) -> Result<Option<File>, Error> {
+        let ty = crate::detect::check_file_type_with_reader(&data, &self.ctx().limits, reader)?;
+        if ty == crate::detect::FileType::Zip {
+            self.load_zip_data(data, meter)?;
+            self.list_zip_none(name, meter)?;
+            return Ok(None);
+        }
+        self.load_detected(name, data, reader, ty, meter, 0)
+    }
+
+    pub(super) fn load_detected(
+        &self,
+        name: RawStr,
+        data: bytes::Bytes,
+        reader: crate::stream::ReaderKind,
+        ty: crate::detect::FileType,
+        meter: &Arc<Meter>,
+        depth: u32,
+    ) -> Result<Option<File>, Error> {
+        let file = crate::files::parse_file_at_depth(
+            name.clone(),
+            data,
+            ty,
+            None,
+            meter,
+            self.ctx(),
+            reader,
+            depth,
+        )?;
+        let load = self.register_file(&name, &file, &mut Target::Caller)?;
+        self.list(name, file.clone(), false, load, meter)?;
+        self.inner.loaded.fetch_add(1, Ordering::Relaxed);
+        Ok(Some(file))
+    }
+
     /// A load UnityPy's `load_file` makes (the caller's, or a resource
     /// fallback's under `keep_resolver_loads`): its own input meter, its
     /// CABs registered as a caller's, and a `files` entry under `name` at

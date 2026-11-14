@@ -1,4 +1,4 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py, UnityPy/classes/PPtr.py. See THIRD_PARTY_LICENSES.
 //! UnityPy's `env.files` dict ([`Files`]) and the listings that walk it:
 //! [`Environment::files`] and [`Environment::objects`]. "Module docs"
 //! below are [`super`]'s.
@@ -130,12 +130,18 @@ impl Iterator for FileEntries<'_> {
 /// One `files` entry, with the loads of its rank and the charge for its
 /// share of the list and the indexes.
 struct Listed {
-    entry: FileEntry,
+    entry: Option<FileEntry>,
     /// The key's position: the least load that listed it.
     position: u64,
     /// The load whose file is the value: the greatest that listed the key.
     value: u64,
     _charge: Charge,
+}
+
+/// The value under a matching key, including a ZIP's explicit None.
+pub(super) enum FileMatch {
+    File(File),
+    ZipNone,
 }
 
 /// `env.files`: a dict by rank, as the registry is ([`super::registry`]'s
@@ -178,11 +184,11 @@ impl Files {
         &mut self,
         name: &RawStr,
         position: u64,
-        file: File,
+        file: Option<File>,
         is_dependency: bool,
         load: u64,
         lowered: &RawStr,
-    ) -> File {
+    ) -> Option<File> {
         let Ok(i) = self.list.binary_search_by_key(&position, |l| l.position) else {
             // Never: every key of the index is listed at its position.
             return file;
@@ -192,8 +198,15 @@ impl Files {
         };
         let unused = if load > entry.value {
             entry.value = load;
-            entry.entry.is_dependency = is_dependency;
-            std::mem::replace(&mut entry.entry.file, file)
+            std::mem::replace(
+                &mut entry.entry,
+                file.map(|file| FileEntry {
+                    name: name.clone(),
+                    file,
+                    is_dependency,
+                }),
+            )
+            .map(|e| e.file)
         } else {
             file
         };
@@ -258,7 +271,11 @@ impl Environment {
     fn file_after(&self, after: Option<u64>) -> Option<(u64, FileEntry)> {
         let files = self.files_read();
         let i = after.map_or(0, |a| files.list.partition_point(|l| l.position <= a));
-        files.list.get(i).map(|l| (l.position, l.entry.clone()))
+        files
+            .list
+            .get(i..)?
+            .iter()
+            .find_map(|l| l.entry.clone().map(|e| (l.position, e)))
     }
 
     /// Adds `file` to `files` under `name` with dict semantics by rank, as
@@ -314,6 +331,19 @@ impl Environment {
         is_dependency: bool,
         load: u64,
     ) {
+        self.publish_value(listing, Some(file), is_dependency, load);
+    }
+
+    /// A ZIP load assigns None after its members finish; keep its dict
+    /// position while releasing the previous file and excluding its objects.
+    pub(super) fn list_zip_none(&self, name: RawStr, meter: &Arc<Meter>) -> Result<(), Error> {
+        let listing = Self::charge_listing(name, meter)?;
+        let load = self.inner.registry.next_load();
+        self.publish_value(listing, None, false, load);
+        Ok(())
+    }
+
+    fn publish_value(&self, listing: Listing, file: Option<File>, is_dependency: bool, load: u64) {
         let Listing {
             name,
             lowered,
@@ -325,17 +355,17 @@ impl Environment {
         let unused = {
             let mut files = self.files_write();
             let unused = if let Some(&position) = files.index.get(name.as_bytes()) {
-                Some(files.relist(&name, position, file, is_dependency, load, &lowered))
+                files.relist(&name, position, file, is_dependency, load, &lowered)
             } else {
                 let at = files.list.partition_point(|l| l.position < load);
                 files.list.insert(
                     at,
                     Listed {
-                        entry: FileEntry {
+                        entry: file.map(|file| FileEntry {
                             name: name.clone(),
                             file,
                             is_dependency,
-                        },
+                        }),
                         position: load,
                         value: load,
                         _charge: charge,
@@ -379,11 +409,16 @@ impl Environment {
 
     /// The first `files` entry whose key lower-cases to `clean` (the
     /// Environment as a top-level file's container, rule 4), by the lowered
-    /// index ([`Files`]).
-    pub(super) fn files_match(&self, clean: &RawStr) -> Option<File> {
+    /// index ([`Files`]). An existing ZIP None value is a matching key: the
+    /// sibling scan stops there and must not fall back to the CAB registry
+    /// (UnityPy/classes/PPtr.py:75-88).
+    pub(super) fn files_match(&self, clean: &RawStr) -> Option<FileMatch> {
         let files = self.files_read();
         let at = *files.lowered.get(clean.as_bytes())?;
-        files.at(at).map(|l| l.entry.file.clone())
+        files.at(at).map(|l| match &l.entry {
+            Some(entry) => FileMatch::File(entry.file.clone()),
+            None => FileMatch::ZipNone,
+        })
     }
 
     /// `objects`: every object of every non-dependency file of

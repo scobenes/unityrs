@@ -85,6 +85,11 @@ const CALLS: &[(&str, Pool, &[&str])] = &[
     ),
     ("Environment::object_tree", Pool::Own, &[TREE, TREE_FULL]),
     ("Environment::load", Pool::Inner, &[SETTLE]),
+    ("Environment::load_file", Pool::Inner, &[SETTLE]),
+    ("Environment::load_zip_file", Pool::Inner, &[SETTLE]),
+    ("Environment::load_path", Pool::Inner, &[SETTLE]),
+    ("Environment::load_files", Pool::Inner, &[SETTLE]),
+    ("Environment::load_folder", Pool::Inner, &[SETTLE]),
     ("Registry::register", Pool::Inner, &[SETTLE]),
     ("Registry::register_lazy", Pool::Inner, &[SETTLE]),
     ("Registry::keys", Pool::Inner, &[KEYS]),
@@ -352,6 +357,11 @@ fn sorted_keys(env: &Environment) -> Vec<String> {
 #[derive(Clone, Copy, Debug)]
 enum Dropper {
     Load,
+    LoadFile,
+    LoadZip,
+    LoadPath,
+    LoadFiles,
+    LoadFolder,
     Register,
 }
 
@@ -366,7 +376,12 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
     let env = batch_env(LoadMode::Lazy, u64::MAX, budget.clone());
     let held = load(&env, &d, 0..3);
     let inner = match how {
-        Dropper::Load => None,
+        Dropper::Load
+        | Dropper::LoadFile
+        | Dropper::LoadZip
+        | Dropper::LoadPath
+        | Dropper::LoadFiles
+        | Dropper::LoadFolder => None,
         Dropper::Register => {
             let side = Environment::new(EnvOptions::unitypy());
             drop(side.load(source(&d, 3)).unwrap());
@@ -379,7 +394,34 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
     };
     budget.refuse(refused);
     match inner {
-        None => drop(env.load(source(&d, 3)).unwrap()),
+        None => match how {
+            Dropper::Load => drop(env.load(source(&d, 3)).unwrap()),
+            Dropper::LoadFile => drop(env.load_file(source(&d, 3)).unwrap()),
+            Dropper::LoadZip => {
+                let (name, bytes) = &d.scene.files[3];
+                let zip = unityrs_testkit::zip::archive(&[(
+                    std::str::from_utf8(name).unwrap(),
+                    bytes,
+                    false,
+                )]);
+                env.load_zip_file(Source::Bytes {
+                    name: RawStr::from("synthetic.zip"),
+                    data: zip.into(),
+                })
+                .unwrap();
+            }
+            Dropper::LoadPath | Dropper::LoadFiles | Dropper::LoadFolder => {
+                let dir = unityrs_testkit::scratch::Scratch::new("load-entry-point");
+                let path = dir.path().join("p.bundle");
+                std::fs::write(&path, &d.scene.files[3].1).unwrap();
+                match how {
+                    Dropper::LoadPath => env.load_path(&path).unwrap(),
+                    Dropper::LoadFiles => env.load_files([&path]).unwrap(),
+                    _ => env.load_folder(dir.path()).unwrap(),
+                }
+            }
+            Dropper::Register => unreachable!(),
+        },
         Some(cab) => env
             .registry()
             .register(&RawStr::from("INNER"), cab, &Meter::unlimited())
@@ -400,7 +442,15 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
 #[test]
 fn a_registration_that_drops_a_dependencys_container_makes_room_to_reach_it() {
     let want = oracle_keys();
-    for how in [Dropper::Load, Dropper::Register] {
+    for how in [
+        Dropper::Load,
+        Dropper::LoadFile,
+        Dropper::LoadZip,
+        Dropper::LoadPath,
+        Dropper::LoadFiles,
+        Dropper::LoadFolder,
+        Dropper::Register,
+    ] {
         let (env, budget, _held) = drop_inner(how, 1);
         assert_eq!(budget.refused(), 1, "{how:?}: nothing was refused");
         assert_eq!(

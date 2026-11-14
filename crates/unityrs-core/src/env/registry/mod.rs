@@ -598,3 +598,5 @@ mod reach_tests;
 mod room_tests;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use dependency::read_source;

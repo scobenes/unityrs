@@ -15,11 +15,10 @@ use crate::budget::Reservation;
 use crate::counters::LoadId;
 use crate::detect::check_file_type_with_reader;
 use crate::env::{DerefError, Fetch, Source, within_input_bytes};
-use crate::error::{Error, Unsupported};
+use crate::error::Error;
 use crate::files::{BundleFile, File, RawFile, SerializedFile, parse_file_with_reader};
 use crate::limits::{ChargeError, Meter, pool_refusals, refusal};
 use crate::options::FileContext;
-use crate::pystr::is_split_path;
 use crate::raw::RawStr;
 use crate::stream::ReaderKind;
 use crate::typetree::TreeError;
@@ -163,9 +162,9 @@ impl WeakFile {
 /// [`crate::env::read_path`], charged first; a [`Source::Fetch`] from its
 /// fetcher; [`Source::Bytes`] as they are), detects them and parses them as
 /// a top-level file named `name`. A path UnityPy would read as the parts of
-/// a split file (`environment.reSplit`, [`is_split_path`]) is refused with
-/// [`Unsupported::Split`] before anything is read: UnityPy merges the parts
-/// (`environment.py:111-116`), which P1 does not (plan section 1). A path is
+/// a split file is joined into one bounded memory source
+/// (`environment.py:111-116`), with the terminal-suffix rule of PARITY
+/// section 19.2. Other paths are
 /// read by the stream reader's rules, as UnityPy reads the file it opens
 /// for one (`environment.py:136-139`); bytes, fetched or given, by the
 /// memory reader's ([`ReaderKind`]).
@@ -192,33 +191,7 @@ pub(crate) fn open_source(
     ctx: &Arc<FileContext>,
     load: LoadId,
 ) -> Result<File, Error> {
-    let reader = match source {
-        Source::Path(_) => ReaderKind::Stream,
-        Source::Bytes { .. } | Source::Fetch { .. } => ReaderKind::Memory,
-    };
-    let data = match source {
-        Source::Bytes { data, .. } => data.clone(),
-        Source::Path(p) => {
-            // UnityPy environment.py:111-127: a `.splitN` name, or a missing
-            // path whose `.split0` exists.
-            let parts = || {
-                let mut first = p.clone().into_os_string();
-                first.push(".split0");
-                !p.exists() && std::path::Path::new(&first).exists()
-            };
-            if is_split_path(p.as_os_str().as_encoded_bytes()) || parts() {
-                return Err(Error::Unsupported(Unsupported::Split));
-            }
-            crate::env::read_path(p, &ctx.limits, meter)?
-        }
-        Source::Fetch { fetch, .. } => {
-            if let Some(stated) = fetch.size_hint() {
-                within_input_bytes(stated, &ctx.limits)?;
-            }
-            fetched(fetch.as_ref())?
-        }
-    };
-    within_input_bytes(u64::try_from(data.len()).unwrap_or(u64::MAX), &ctx.limits)?;
+    let (data, reader) = read_source(source, meter, ctx)?;
     // UnityPy environment.py:139-154
     let ty = check_file_type_with_reader(&data, &ctx.limits, reader)?;
     let file = parse_file_with_reader(name.clone(), data, ty, None, meter, ctx, reader);
@@ -227,6 +200,26 @@ pub(crate) fn open_source(
     #[cfg(feature = "test-counters")]
     crate::testing::adopt(&file, || crate::testing::Key::load(load));
     file
+}
+
+/// Read a bounded source once, retaining the reader rules of its origin.
+pub(crate) fn read_source(
+    source: &Source,
+    meter: &Arc<Meter>,
+    ctx: &FileContext,
+) -> Result<(bytes::Bytes, ReaderKind), Error> {
+    let (data, reader) = match source {
+        Source::Bytes { data, .. } => (data.clone(), ReaderKind::Memory),
+        Source::Path(p) => crate::env::split::read_source_path(p, &ctx.limits, meter)?,
+        Source::Fetch { fetch, .. } => {
+            if let Some(stated) = fetch.size_hint() {
+                within_input_bytes(stated, &ctx.limits)?;
+            }
+            (fetched(fetch.as_ref())?, ReaderKind::Memory)
+        }
+    };
+    within_input_bytes(data.len() as u64, &ctx.limits)?;
+    Ok((data, reader))
 }
 
 /// [`open_source`] outside any load: the bare key.

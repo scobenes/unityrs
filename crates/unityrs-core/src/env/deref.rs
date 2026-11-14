@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use super::container_index::Siblings;
+use super::listing::FileMatch;
 use super::load::Asked;
 use super::registry::from_callers;
 use super::resource_data::top_bundle;
@@ -255,7 +256,18 @@ impl Environment {
                 }
                 ParentKind::Web => None,
             },
-            None => self.files_match(&clean).map(|f| (f, Reached::Lookup)),
+            None => match self.files_match(&clean) {
+                Some(FileMatch::File(f)) => Some((f, Reached::Lookup)),
+                // A matching key breaks the loop even when its value is
+                // None; only an absent key runs the for-else fallback
+                // (classes/PPtr.py:75-88).
+                Some(FileMatch::ZipNone) => {
+                    return Err(DerefError::NotFound {
+                        path: external.path.clone(),
+                    });
+                }
+                None => None,
+            },
         };
         match sibling {
             Some((f, reached)) => Ok((Found::File(f), reached)),

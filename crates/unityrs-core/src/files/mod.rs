@@ -226,15 +226,34 @@ pub fn parse_file_with_reader(
     ctx: &Arc<FileContext>,
     reader: ReaderKind,
 ) -> Result<File, Error> {
+    parse_file_at_depth(name, data, ty, parent, meter, ctx, reader, 0)
+}
+
+/// Parse a source nested inside ZIPs without giving it a fictitious bundle
+/// parent. ZIP members are Environment files, but their container depth still
+/// contributes to bundles opened from them and those bundles' descendants.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "internal reader API plus independent ZIP depth"
+)]
+pub(crate) fn parse_file_at_depth(
+    name: RawStr,
+    data: Bytes,
+    ty: FileType,
+    parent: Option<Parent>,
+    meter: &Arc<Meter>,
+    ctx: &Arc<FileContext>,
+    reader: ReaderKind,
+    source_depth: u32,
+) -> Result<File, Error> {
     // UnityPy helpers/ImportHelper.py:127-156; a zip input is refused (P3).
     let kind = parsed_as(ty, name.as_bytes(), parent.is_some());
     if matches!(kind, ParsedAs::BundleFile | ParsedAs::WebFile)
-        && let Some(p) = &parent
-        && p.depth > ctx.limits.max_container_depth
+        && parent.as_ref().map_or(source_depth, |p| p.depth) > ctx.limits.max_container_depth
     {
         return Err(Error::Limit(LimitError::refused(
             LimitKind::ContainerDepth,
-            u64::from(p.depth),
+            u64::from(parent.as_ref().map_or(source_depth, |p| p.depth)),
             u64::from(ctx.limits.max_container_depth),
         )));
     }
@@ -242,8 +261,14 @@ pub fn parse_file_with_reader(
         ParsedAs::SerializedFile => File::Serialized(SerializedFile::parse_with_reader(
             name, data, parent, meter, ctx, reader,
         )?),
-        ParsedAs::BundleFile => File::Bundle(BundleFile::open_with_reader(
-            name, data, parent, meter, ctx, reader,
+        ParsedAs::BundleFile => File::Bundle(BundleFile::open_at_depth(
+            name,
+            data,
+            parent,
+            meter,
+            ctx,
+            reader,
+            source_depth,
         )?),
         ParsedAs::WebFile => File::Web(WebFile::open(name, data, parent, meter, ctx)?),
         ParsedAs::Zip => return Err(Error::Unsupported(Unsupported::Zip)),

@@ -231,6 +231,11 @@ impl<T> MeteredVec<T> {
         Ok(Self { vec, charge })
     }
 
+    /// Removes the last element, retaining the charged capacity for reuse.
+    pub fn pop(&mut self) -> Option<T> {
+        self.vec.pop()
+    }
+
     /// The elements.
     #[must_use]
     pub fn as_slice(&self) -> &[T] {

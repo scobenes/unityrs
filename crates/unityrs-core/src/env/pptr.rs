@@ -35,7 +35,9 @@
 //!    compared with each key of the container's `files` dict lower-cased with
 //!    `str.lower` (no basename): a bundle's directory paths, or the
 //!    Environment's `files` keys, the names given to `load`, dependencies
-//!    included. The first equal key wins. Else `find_file` (the CAB registry,
+//!    included. The first equal key wins, even when its ZIP value is None:
+//!    that raises `FileNotFoundError` without trying the CAB registry
+//!    (`classes/PPtr.py:75-88`). Else `find_file` (the CAB registry,
 //!    then the resolver), whose miss is `FileNotFoundError`: its `None`, and
 //!    the walk's own `FileNotFoundError` (a resolver's
 //!    [`super::CabResolver::find_file`] error naming

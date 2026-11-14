@@ -55,6 +55,18 @@ impl BundleFile {
         ctx: &Arc<FileContext>,
         reader: ReaderKind,
     ) -> Result<Arc<Self>, Error> {
+        Self::open_at_depth(name, data, parent, meter, ctx, reader, 0)
+    }
+
+    pub(crate) fn open_at_depth(
+        name: RawStr,
+        data: Bytes,
+        parent: Option<Parent>,
+        meter: &Arc<Meter>,
+        ctx: &Arc<FileContext>,
+        reader: ReaderKind,
+        source_depth: u32,
+    ) -> Result<Arc<Self>, Error> {
         let mut charge = meter.charge(heap_cost(
             u64::try_from(std::mem::size_of::<Self>() + 16).unwrap_or(u64::MAX),
         ))?;
@@ -145,6 +157,7 @@ impl BundleFile {
             directory,
             files,
             parent,
+            source_depth,
             lengths,
             ends,
             runs: Mutex::new(RunIndex::new(meter)),
