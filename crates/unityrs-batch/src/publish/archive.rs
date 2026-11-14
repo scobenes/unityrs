@@ -15,7 +15,7 @@ use crate::{
 use std::sync::Arc;
 use unityrs_core::limits::Meter;
 
-/// Writeback is initiated after each 64 MiB of streamed archive output.
+/// Writeback is initiated at each 64 MiB of streamed archive output.
 pub const WRITEBACK: u64 = 64 * 1024 * 1024;
 const KEY: usize = 1024;
 
@@ -98,7 +98,9 @@ pub fn one(
         list: archive.list.as_ref().ok_or_else(Error::internal)?,
     };
     cx.at(Point::Transfer)?;
-    if cx.resume {
+    // A stat-only size miss transfers at once; only a same-size regular file
+    // is worth an expected-hash pass.
+    if cx.resume && resume::sized(cx, input.key, input.size)? {
         let expected = hash(cx, &input, buffer)?;
         let found = resume::present(
             cx,
@@ -171,19 +173,29 @@ impl From<sink::Error> for Failure {
         Self::Sink(e)
     }
 }
-/// Destination-kind conflicts surface at the parent/temp, before any central
-/// scratch exists, or at the rename, after retirement. Sink write and
-/// writeback errors are run failures, so no failed pass is ever skipped over.
+/// Destination-kind conflicts surface at the parent, at a no-follow pre-check
+/// of the final name (a directory or another mount), both before any central
+/// scratch or temp exists, or at the rename, after retirement. Any failure
+/// but a stop removes an existing temp best-effort before returning; write
+/// and writeback errors are run failures. Stops may leave the temp.
 fn transfer(
     cx: &Context<'_>,
     input: &archive::Input<'_>,
     buffer: &mut [u8],
 ) -> Result<Code, Failure> {
     check(cx.stopped)?;
-    let parent = cx
-        .directory
-        .root()
-        .parent(input.key, true, sink::Context::Output)?;
+    let root = cx.directory.root();
+    let parent = root.parent(input.key, true, sink::Context::Output)?;
+    let basename = input.key.rsplit('/').next().ok_or_else(Error::internal)?;
+    let name = sink::path::Name::new(basename)?;
+    match root.fs().entry(&parent.file, name.cstr()) {
+        Ok(entry) if entry.directory || !root.matches_mount(entry.mount) => {
+            return Err(sink::Error::plain(sink::Class::PublishFailed, "fstatat").into());
+        }
+        Ok(_) => {}
+        Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {}
+        Err(e) => return Err(sink::Error::io(sink::Context::Output, "fstatat", &e).into()),
+    }
     let ordinal = cx
         .handoff
         .counts
@@ -191,8 +203,42 @@ fn transfer(
         .checked_add(u64::from(input.index))
         .ok_or_else(Error::internal)?;
     let temp = parent.temporary(cx.run_id, ordinal, sink::Context::Output)?;
+    let summary = match stream(cx, input, &temp, buffer) {
+        Ok(summary) => summary,
+        // A stop may leave its temp; the next attempt's create replaces it.
+        Err(Failure::Run(Error::Stopped)) => return Err(Error::Stopped.into()),
+        Err(e) => {
+            temp.discard();
+            return Err(e);
+        }
+    };
+    cx.at(Point::BeforeCommit)?;
+    let _guard = cx.gate.lock();
+    check(cx.stopped)?;
+    cx.hooks.point(Point::Authorized);
+    // No stop check after authorization: rename and its outcome are one gate.
+    if let Err(e) = temp.rename(basename) {
+        temp.discard();
+        return Err(e.into());
+    }
+    cx.hooks.point(Point::Outcome);
+    cx.outcomes.set_archive(
+        u64::from(input.index),
+        &Record::success(Code::Written, summary.size, summary.md5, None)?,
+    )?;
+    Ok(Code::Written)
+}
+/// The transfer pass. Writeback starts each time the bytes written reach the
+/// next multiple of 64 MiB, and once more after the stream completes, so an
+/// archive of `size` bytes starts exactly `size / 64 MiB + 1` writebacks.
+fn stream(
+    cx: &Context<'_>,
+    input: &archive::Input<'_>,
+    temp: &sink::path::Temporary<'_>,
+    buffer: &mut [u8],
+) -> Result<archive::Summary, Failure> {
     let mut stream = archive::open(stream_context(cx), *input, cx.stopped)?;
-    let mut pending = 0_u64;
+    let (mut written, mut next) = (0_u64, WRITEBACK);
     loop {
         cx.at(Point::Buffer)?;
         let n = stream.read(buffer, cx.stopped)?;
@@ -201,24 +247,14 @@ fn transfer(
         }
         check(cx.stopped)?;
         temp.write_all(buffer.get(..n).ok_or_else(Error::internal)?)?;
-        pending += u64::try_from(n).map_err(|_| Error::internal())?;
-        if pending >= WRITEBACK {
+        written += u64::try_from(n).map_err(|_| Error::internal())?;
+        // Reads are at most 64 KiB, so one read crosses at most one multiple.
+        if written >= next {
             temp.writeback()?;
-            pending = 0;
+            next = next.checked_add(WRITEBACK).ok_or_else(Error::internal)?;
         }
     }
     let summary = stream.finish(cx.stopped)?;
     temp.writeback()?;
-    cx.at(Point::BeforeCommit)?;
-    let _guard = cx.gate.lock();
-    check(cx.stopped)?;
-    cx.hooks.point(Point::Authorized);
-    // No stop check after authorization: rename and its outcome are one gate.
-    temp.rename(input.key.rsplit('/').next().ok_or_else(Error::internal)?)?;
-    cx.hooks.point(Point::Outcome);
-    cx.outcomes.set_archive(
-        u64::from(input.index),
-        &Record::success(Code::Written, summary.size, summary.md5, None)?,
-    )?;
-    Ok(Code::Written)
+    Ok(summary)
 }

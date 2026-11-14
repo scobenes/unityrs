@@ -106,16 +106,32 @@ fn archives_follow_winners_and_resume_hashes_regenerated_bytes() {
     let first = assert_written(&scene, "sink", &out, Code::Written);
     // Matching destinations are `present`, with the expected pass's metadata.
     let out = scene.outcomes("out2", &Host);
-    drive(&scene, &dir, &out, true, &publish::NoHooks, &stop).unwrap();
+    let resumes = Resumes::default();
+    drive(&scene, &dir, &out, true, &resumes, &stop).unwrap();
     assert_eq!(assert_written(&scene, "sink", &out, Code::Present), first);
+    assert_eq!(resumes.0.load(Ordering::SeqCst), 3 + 2);
     // Same size, wrong content; and a wrong size: both regenerate identically.
     let mut damaged = first[0].clone();
     damaged[0] ^= 0xff;
     std::fs::write(scene.scratch.join("sink/z.zip"), damaged).unwrap();
     std::fs::write(scene.scratch.join("sink/a.zip"), b"short").unwrap();
     let out = scene.outcomes("out3", &Host);
-    drive(&scene, &dir, &out, true, &publish::NoHooks, &stop).unwrap();
+    let resumes = Resumes::default();
+    drive(&scene, &dir, &out, true, &resumes, &stop).unwrap();
     assert_eq!(assert_written(&scene, "sink", &out, Code::Written), first);
+    // The stat-only probe sends the wrong size straight to transfer: only
+    // the same-size `z.zip` (and the three loose rows) reach a hash pass.
+    assert_eq!(resumes.0.load(Ordering::SeqCst), 3 + 1);
+}
+/// Counts full resume comparisons (each follows an archive's hash pass).
+#[derive(Default)]
+struct Resumes(AtomicUsize);
+impl Hooks for Resumes {
+    fn point(&self, point: Point) {
+        if point == Point::Resume {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 }
 
 #[test]
@@ -134,6 +150,17 @@ fn archive_destination_conflict_fails_only_that_archive() {
     assert_eq!(failed.code, Code::PublishFailed);
     assert_eq!((failed.size, failed.md5), (0, [0; 16]));
     assert!(scene.scratch.join("sink/a.zip").is_dir());
+    // The no-follow pre-check fails it before any temp or scratch exists.
+    assert!(
+        !std::fs::read_dir(scene.scratch.join("sink"))
+            .unwrap()
+            .any(|e| e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".unityrs-tmp-r-")),
+        "no temp is left behind"
+    );
 }
 
 #[test]
@@ -343,10 +370,12 @@ fn central_scratch_is_retired_before_completion_and_before_a_miss_transfers() {
             .map(|b| central(b).0.div_ceil(block) * block)
             .max()
             .unwrap();
-        // Every destination misses (wrong size), so each archive runs an
-        // expected-hash pass and then a transfer.
-        for key in KEYS {
-            std::fs::write(scene.scratch.join(format!("sink/{key}")), b"x").unwrap();
+        // Every destination misses with the right size, so each archive
+        // runs an expected-hash pass and then a transfer.
+        for (key, archive) in KEYS.iter().zip(&bytes) {
+            let mut damaged = archive.clone();
+            damaged[0] ^= 0xff;
+            std::fs::write(scene.scratch.join(format!("sink/{key}")), damaged).unwrap();
         }
         let out = scene.outcomes("out2", &Host);
         let claimed = scene.counter.used();
@@ -421,8 +450,9 @@ fn pool_drives_publish_archives_within_the_archive_envelope() {
     execution.quiesce().unwrap();
 }
 
-/// An archive over 64 MiB starts writeback periodically and once more after
-/// its stream completes, always before its rename.
+/// An archive of `size` bytes starts writeback each time its written bytes
+/// reach a multiple of 64 MiB and once more after its stream completes,
+/// before its rename: exactly `size / 64 MiB + 1` writebacks.
 #[test]
 #[cfg_attr(
     debug_assertions,
@@ -455,12 +485,14 @@ fn large_archives_start_writeback_every_64_mib_and_before_rename() {
         .map(|(i, _)| i)
         .collect();
     assert_eq!(renames.len(), 4);
-    for pair in renames.windows(2).skip(1) {
+    // Archives run in key order: `a.zip` (spec index 1), then `z.zip`.
+    for (pair, index) in renames.windows(2).skip(1).zip([1, 0]) {
         let archive = &calls[pair[0] + 1..pair[1]];
+        let size = out.archive(index).unwrap().size;
         let writes = archive.iter().filter(|c| **c == "write").count();
         let writebacks = archive.iter().filter(|c| **c == "writeback").count();
         assert!(writes * (64 << 10) > 64 << 20, "{writes}");
-        assert!(writebacks >= 2, "{writebacks}");
+        assert_eq!(writebacks as u64, size / (64 << 20) + 1, "{size}");
         let last = |name: &str| archive.iter().rposition(|c| *c == name).unwrap();
         assert!(
             last("write") < last("writeback"),

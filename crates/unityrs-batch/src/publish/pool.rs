@@ -1,5 +1,7 @@
-//! One streaming dispatcher and bounded pool drives. Each drive retains its
-//! buffer across winners and lends it to resume before copying a miss.
+//! One streaming dispatcher and bounded pool drives, in two waves: winner
+//! drives, then, once every one has been received, archive drives. Each
+//! drive retains its buffer across its items and lends it to resume before
+//! copying a miss.
 use super::{BUFFER, Context, Gate, Hooks, OVERHEAD, Point, Report, archive, local, payload};
 use crate::{
     control::{Control, Culprit},
@@ -119,8 +121,8 @@ fn schedule(
     if owned.handoff.publication_blocked {
         return Ok(Report::default());
     }
-    let (declared, drives) = drives(owned, concurrency)?;
-    if drives == 0 {
+    let (declared, [winners, archives]) = drives(owned, concurrency)?;
+    if winners == 0 && archives == 0 {
         return Ok(Report::default());
     }
     // The second MiB in each envelope covers the shared readers and all task,
@@ -131,16 +133,43 @@ fn schedule(
     let queue = Shared::new(Lock::new(Queue::open(owned, &stopped)?))?;
     let mut tasks = Buffer::new(
         owned.account.meter(),
-        usize::try_from(drives).map_err(|_| Error::internal())?,
+        usize::try_from(winners.max(archives)).map_err(|_| Error::internal())?,
     )?;
-    for _ in 0..drives {
+    // Archives start only once every winner task has finished, not merely
+    // once the winner cursor is exhausted: a last winner may still be live.
+    let mut report = wave(owned, execution, &queue, &mut tasks, winners, false)?;
+    if queue.lock().next != owned.handoff.counts.winners {
+        return Err(Error::internal());
+    }
+    let late = wave(owned, execution, &queue, &mut tasks, archives, true)?;
+    report.written += late.written;
+    report.present += late.present;
+    report.failed += late.failed;
+    if queue.lock().taken != declared {
+        return Err(Error::internal());
+    }
+    owned.hooks.point(Point::Drained);
+    phase::check(&stopped)?;
+    Ok(report)
+}
+/// Spawns `count` drives of one kind and receives every one of them.
+fn wave(
+    owned: &(impl std::ops::Deref<Target = Owned> + Clone + Send + Sync + 'static),
+    execution: &Execution,
+    queue: &Shared<Lock<Queue>>,
+    tasks: &mut Buffer<Option<crate::execution::Task<Result<Report, Error>>>>,
+    count: u64,
+    archives: bool,
+) -> Result<Report, Error> {
+    let stopped = || owned.control.stopped();
+    for _ in 0..count {
         phase::check(&stopped)?;
         let state = owned.clone();
         let queue = queue.clone();
         tasks.push(Some(
             execution
                 .spawn(move || {
-                    let result = phase::on_pool(|| drive(&state, &queue));
+                    let result = phase::on_pool(|| drive(&state, &queue, archives));
                     if let Err(Error::Run(failure)) = result {
                         state.control.request_stop(failure, Culprit::None);
                     }
@@ -150,7 +179,7 @@ fn schedule(
         ))?;
     }
     let mut report = Report::default();
-    let mut left = drives;
+    let mut left = count;
     let mut failure = None;
     while left != 0 {
         for task in tasks.iter_mut() {
@@ -181,38 +210,36 @@ fn schedule(
             execution.wait()?;
         }
     }
-    let drained = queue.lock();
-    if drained.next != owned.handoff.counts.winners || drained.taken != declared {
-        return Err(Error::internal());
-    }
-    drop(drained);
-    owned.hooks.point(Point::Drained);
-    phase::check(&stopped)?;
+    tasks.clear();
     Ok(report)
 }
-/// Declared archives and drive count. Every archive is taken once, so an
-/// archive-only run still starts a drive; zero means there is no work.
-fn drives(owned: &Owned, concurrency: u32) -> Result<(u64, u64), Error> {
+/// Declared archives and the drive count of each wave. Winner drives carry
+/// the loose working set and archive drives the archive envelope; the waves
+/// never overlap, so each is bounded by the account on its own.
+fn drives(owned: &Owned, concurrency: u32) -> Result<(u64, [u64; 2]), Error> {
     let declared =
         u64::try_from(owned.prepared.lock().spec.archives.len()).map_err(|_| Error::internal())?;
     if (declared == 0) != owned.handoff.metadata.is_none() {
         return Err(Error::internal());
     }
-    let work = owned
-        .handoff
-        .counts
-        .winners
-        .checked_add(declared)
-        .ok_or_else(Error::internal)?;
-    let drives = u64::from(concurrency)
-        .min(owned.account.limit() / super::working_set(declared != 0))
-        .min(work);
-    if drives == 0 && work != 0 {
-        return Err(Error::internal());
-    }
-    Ok((declared, drives))
+    let wave = |work: u64, archives: bool| {
+        let drives = u64::from(concurrency)
+            .min(owned.account.limit() / super::working_set(archives))
+            .min(work);
+        if drives == 0 && work != 0 {
+            return Err(Error::internal());
+        }
+        Ok(drives)
+    };
+    Ok((
+        declared,
+        [
+            wave(owned.handoff.counts.winners, false)?,
+            wave(declared, true)?,
+        ],
+    ))
 }
-fn drive(owned: &Owned, queue: &Lock<Queue>) -> Result<Report, Error> {
+fn drive(owned: &Owned, queue: &Lock<Queue>, archives: bool) -> Result<Report, Error> {
     let _overhead = owned.account.meter().charge(OVERHEAD)?;
     let stopped = || owned.control.stopped();
     let spec = owned.prepared.lock().spec.clone();
@@ -229,9 +256,16 @@ fn drive(owned: &Owned, queue: &Lock<Queue>) -> Result<Report, Error> {
         stopped: &stopped,
         hooks: &*owned.hooks,
     };
-    let mut frame = crate::sort::Frame::new(owned.account.meter())?;
     let mut buffer = Buffer::new(owned.account.meter(), BUFFER)?;
     buffer.fill(0);
+    if archives {
+        let mut slot = archive::Descriptor::new(owned.account.meter())?;
+        while queue.lock().archive(&mut slot, &stopped)? {
+            archive_one(owned, &cx, &slot, &mut buffer)?;
+        }
+        return Ok(Report::default());
+    }
+    let mut frame = crate::sort::Frame::new(owned.account.meter())?;
     let mut report = Report::default();
     loop {
         let next = queue.lock().take(&mut frame, &stopped)?;
@@ -268,12 +302,6 @@ fn drive(owned: &Owned, queue: &Lock<Queue>) -> Result<Report, Error> {
             crate::outcomes::Code::Present => report.present += 1,
             crate::outcomes::Code::PublishFailed => report.failed += 1,
             _ => return Err(Error::internal()),
-        }
-    }
-    if owned.handoff.metadata.is_some() {
-        let mut slot = archive::Descriptor::new(owned.account.meter())?;
-        while queue.lock().archive(&mut slot, &stopped)? {
-            archive_one(owned, &cx, &slot, &mut buffer)?;
         }
     }
     Ok(report)

@@ -6,6 +6,7 @@ use std::{fs::File, io, os::fd::AsRawFd};
 #[derive(Clone, Copy, Debug)]
 pub struct Entry {
     pub regular: bool,
+    pub directory: bool,
     pub size: u64,
     pub mount: Option<u64>,
     pub identity: (u64, u64),
@@ -24,6 +25,7 @@ impl Entry {
                 stat.stx_ino,
             ),
             regular: u32::from(stat.stx_mode) & libc::S_IFMT == libc::S_IFREG,
+            directory: u32::from(stat.stx_mode) & libc::S_IFMT == libc::S_IFDIR,
             size: stat.stx_size,
             mount: (stat.stx_mask & libc::STATX_MNT_ID != 0).then_some(stat.stx_mnt_id),
         })
@@ -33,6 +35,7 @@ impl Entry {
         Ok(Self {
             identity: (u64::from(stat.st_dev.cast_unsigned()), stat.st_ino),
             regular: stat.st_mode & libc::S_IFMT == libc::S_IFREG,
+            directory: stat.st_mode & libc::S_IFMT == libc::S_IFDIR,
             size: u64::try_from(stat.st_size)
                 .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
             mount: Some(

@@ -15,6 +15,26 @@ pub(super) struct Expected<'a> {
     pub size: u64,
     pub md5: [u8; 16],
 }
+/// Stat-only probe: could the destination be `size` bytes of a regular file
+/// on the root's mount? A miss skips an archive's expected-hash pass; a hit
+/// still goes through [`present`]'s full pinned comparison.
+pub(super) fn sized(cx: &Context<'_>, key: &str, size: u64) -> Result<bool, Error> {
+    let root = cx.directory.root();
+    let parent = match root.parent(key, false, sink::Context::Output) {
+        Ok(p) => p,
+        Err(e) if e.errno == Some(libc::ENOENT) || e.class == sink::Class::PublishFailed => {
+            return Ok(false);
+        }
+        Err(e) => return Err(sink_error(e)),
+    };
+    let name =
+        Name::new(key.rsplit('/').next().ok_or_else(Error::internal)?).map_err(sink_error)?;
+    match root.fs().entry(&parent.file, name.cstr()) {
+        Ok(entry) => Ok(entry.regular && entry.size == size && root.matches_mount(entry.mount)),
+        Err(e) if miss(&e) => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
 pub(super) fn present(
     cx: &Context<'_>,
     row: Expected<'_>,
