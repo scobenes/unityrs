@@ -158,7 +158,20 @@ pub struct Controller {
     pub(crate) failure: Option<RunFailure>,
     pub(crate) received: Option<End>,
     driven: bool,
+    reached: crate::progress::Phase,
     pub(crate) progress: Option<crate::progress::live::Sender>,
+}
+/// Everything a controller owns besides its prepared state: the spool's
+/// lease, a pending failure directory and its write's pool task. A stopped
+/// host parks this with the [`crate::phase1::Owners`]; nothing drops it.
+pub struct Residue {
+    _spool: PreparedSpool,
+    _control: Arc<dyn Control>,
+    _hooks: Arc<dyn Hooks>,
+    _pending_directory: Option<Directory>,
+    _failure_task: Option<crate::execution::Task<Result<failure::FailureEnd, RunFailure>>>,
+    _failure_owner: Option<Shared<OnceLock<Directory>>>,
+    _progress: Option<crate::progress::live::Sender>,
 }
 impl Controller {
     pub fn new(
@@ -206,6 +219,7 @@ impl Controller {
             failure: None,
             received: None,
             driven: false,
+            reached: crate::progress::Phase::Start,
             progress: None,
         })
     }
@@ -216,6 +230,29 @@ impl Controller {
     /// Consume only after the normal boundary and after all receipts.
     pub fn into_state(self) -> PreparedRun {
         self.prepared
+    }
+    /// The hand-over's split: the state to freeze, and every other owner,
+    /// which the host parks. Valid at either boundary.
+    #[must_use]
+    pub fn into_parts(self) -> (PreparedRun, Residue) {
+        (
+            self.prepared,
+            Residue {
+                _spool: self.spool,
+                _control: self.control,
+                _hooks: self.hooks,
+                _pending_directory: self.pending_directory,
+                _failure_task: self.failure_task,
+                _failure_owner: self.failure_owner,
+                _progress: self.progress,
+            },
+        )
+    }
+    /// The phase this controller reached: stage, or extract once the
+    /// staging barrier passed (the stopped head's `phase`).
+    #[must_use]
+    pub fn reached(&self) -> crate::progress::Phase {
+        self.reached
     }
     #[must_use]
     pub fn state(&self) -> &PreparedRun {
@@ -278,11 +315,13 @@ impl Controller {
     }
     fn drive(&mut self, execution: &mut Execution) -> Result<(), Halt> {
         self.check()?;
+        self.reached = crate::progress::Phase::Stage;
         if let Some(p) = &self.progress {
             p.update(|s| s.phase = crate::progress::Phase::Stage);
         }
         self.stage(execution)?;
         self.stage_barrier(execution)?;
+        self.reached = crate::progress::Phase::Extract;
         if let Some(p) = &self.progress {
             p.update(|s| s.phase = crate::progress::Phase::Extract);
         }

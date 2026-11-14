@@ -8,7 +8,6 @@ use super::{
 };
 use crate::{
     phase::{Error, check},
-    phase1::InputPhase,
     records::{
         Status,
         read::{self, Row},
@@ -22,20 +21,28 @@ pub(super) fn bundles(
     counts: &mut Counts,
     json: &mut Json,
 ) -> Result<(), super::WriteError> {
-    for &index in cx.prepared.graph.order() {
+    for &index in cx.facts.graph.order() {
         check(cx.stopped)?;
         let i = usize::try_from(index).map_err(|_| Error::internal())?;
-        let state = cx.prepared.bundles.get(i).ok_or_else(Error::internal)?;
-        let id = cx.prepared.spec.bundle(i).ok_or_else(Error::internal)?.id();
+        let state = cx.facts.bundles.get(i).ok_or_else(Error::internal)?;
+        let id = cx.facts.spec.bundle(i).ok_or_else(Error::internal)?.id();
+        // A stop or a run failure ends a staging try without a data reason:
+        // the bundle is not staged, never a data-failure row (7.3).
+        let failure = state
+            .stage
+            .and_then(|s| s.failure)
+            .filter(|f| matches!(f, crate::stage::Failure::Data(_)));
         let status = match state.stage {
             Some(s) if s.failure.is_none() => "staged",
-            Some(_) => "failed",
-            None => "not_staged",
+            Some(_) if failure.is_some() => "failed",
+            _ => "not_staged",
         };
         json.start("id", id)?;
         json.text("status", Some(status))?;
-        bundle_reason(json, state.stage.and_then(|s| s.failure))?;
-        match state.stage.and_then(|s| s.failure) {
+        bundle_reason(json, failure)?;
+        let culprit = cx.culprit(crate::control::Culprit::Bundle(index));
+        match failure {
+            _ if culprit.is_some() => json.text("detail", culprit)?,
             Some(crate::stage::Failure::Data(crate::stage::DataFailure::DownloadFailed(d))) => {
                 json.display_text("detail", d)?;
             }
@@ -58,7 +65,7 @@ pub(super) fn bundles(
         peek_reason(
             json,
             state.peek.and_then(|p| p.outcome),
-            cx.prepared.spec.max_decoded_bytes,
+            cx.facts.spec.max_decoded_bytes,
         )?;
         out.put(json.end()?)?;
         counts.status(Family::Bundles, status)?;
@@ -84,8 +91,7 @@ fn bundle_reason(json: &mut Json, failure: Option<crate::stage::Failure>) -> Res
                 },
             ),
         },
-        // Stops and run failures do not turn a partial staging receipt into a
-        // data-failure row. The caller must reconcile its frozen snapshot.
+        // Filtered by the caller: a stop's staging end is `not_staged`.
         Some(Failure::Run(_) | Failure::Stopped) => Err(Error::internal()),
     }
 }
@@ -113,17 +119,16 @@ pub(super) fn inputs(
     counts: &mut Counts,
     json: &mut Json,
 ) -> Result<(), super::WriteError> {
-    for &index in cx.prepared.graph.order() {
+    for &index in cx.facts.graph.order() {
         check(cx.stopped)?;
         let i = usize::try_from(index).map_err(|_| Error::internal())?;
-        if i >= cx.prepared.spec.input_count() {
+        if i >= cx.facts.spec.input_count() {
             continue;
         }
-        let id = cx.prepared.spec.bundle(i).ok_or_else(Error::internal)?.id();
-        let state = cx.prepared.inputs.get(i).ok_or_else(Error::internal)?;
-        if state.phase != InputPhase::Committed {
+        let id = cx.facts.spec.bundle(i).ok_or_else(Error::internal)?.id();
+        if !cx.committed(index) {
             if family == Family::Inputs {
-                not_run(json, id, index, state, cx)?;
+                not_run(json, id, index, cx)?;
                 out.put(json.end()?)?;
                 counts.status(family, "not_run")?;
             }
@@ -133,7 +138,7 @@ pub(super) fn inputs(
             cx.inputs.open(index)?,
             id,
             cx.inputs.failed(index)?,
-            u64::try_from(cx.prepared.spec.archives.len()).map_err(|_| Error::internal())?,
+            u64::try_from(cx.facts.spec.archives.len()).map_err(|_| Error::internal())?,
             cx.account.meter(),
         )?;
         while let Some(row) = reader.next(cx.stopped)? {
@@ -157,32 +162,29 @@ pub(super) fn inputs(
     }
     Ok(())
 }
-fn not_run(
-    json: &mut Json,
-    id: &str,
-    index: u32,
-    state: &crate::phase1::InputState,
-    cx: &Context<'_>,
-) -> Result<(), Error> {
+/// Dispatched, or failed before dispatch, and not confirmed committed:
+/// `stopped`; never dispatched: no reason (2.4, `BATCH_SPEC.md` 7.3).
+fn not_run(json: &mut Json, id: &str, index: u32, cx: &Context<'_>) -> Result<(), Error> {
+    let uncommitted = cx
+        .facts
+        .uncommitted
+        .get(usize::try_from(index).map_err(|_| Error::internal())?)
+        .ok_or_else(Error::internal)?;
     json.start("id", id)?;
     json.text("status", Some("not_run"))?;
+    json.text("reason", uncommitted.then_some("stopped"))?;
     json.text(
-        "reason",
-        (state.phase == InputPhase::Running
-            || state.failure_bundle.is_some()
-            || state.received.is_some())
-        .then_some("stopped"),
+        "detail",
+        cx.culprit(crate::control::Culprit::Input(index))
+            .filter(|_| uncommitted),
     )?;
-    json.text("detail", None)?;
     for field in ["input_peak", "dependency_peak", "evictions", "export_work"] {
         json.text(field, None)?;
     }
-    let ms = cx
-        .prepared
-        .active
-        .iter()
-        .find(|slot| slot.job == Some((crate::phase1::JobKind::Attempt, index)))
-        .and_then(|slot| slot.dispatched)
+    // A dispatched `stopped` row's `ms` runs from dispatch to the hand-over.
+    let ms = uncommitted
+        .then(|| cx.facts.dispatched(index))
+        .flatten()
         .map(|start| {
             cx.taken_at
                 .checked_duration_since(start)

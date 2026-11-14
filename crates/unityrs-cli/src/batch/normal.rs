@@ -76,7 +76,14 @@ fn terminal(result: Result<unityrs_batch::finish::ResultEnd, run::Error>) -> Exi
             status: end.status,
             code: end.code,
             reason: end.reason,
-            detail: None,
+            // A stop's fixed detail (`spool_full`'s), copied fallibly: a
+            // refusal drops the detail, never the line.
+            detail: end.detail.and_then(|d| {
+                let mut text = String::new();
+                text.try_reserve_exact(d.len()).ok()?;
+                text.push_str(d);
+                Some(text)
+            }),
         },
         Err(error) => Exit {
             status: error.status,
@@ -134,6 +141,7 @@ mod tests {
             code: Code::Incomplete,
             reason: Some("publish_failed"),
             status: Some("running"),
+            detail: None,
         };
         // Refuse the allocation that used to copy publish_failed. Borrowing
         // the closed reason set must leave this refusal armed.

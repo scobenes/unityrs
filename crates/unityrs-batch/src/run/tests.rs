@@ -1,7 +1,9 @@
-use super::publication_done;
+use super::phases::done as publication_done;
 use crate::{reason::Code, test_alloc::REFUSE};
+/// The done path is reserved before the head: its refusal is a 74 with no
+/// head, never a refusal after the `running` acknowledgment.
 #[test]
-fn done_path_refusal_preserves_the_acknowledged_running_status() {
+fn done_path_refusal_is_a_host_memory_end_before_the_head() {
     REFUSE.with(|r| r.set(1));
     let result = publication_done(std::path::Path::new("/spool/runs/r"));
     assert!(
@@ -11,7 +13,7 @@ fn done_path_refusal_preserves_the_acknowledged_running_status() {
     let error = result.unwrap_err();
     assert_eq!(error.code, Code::Host);
     assert_eq!(error.reason, "host_memory");
-    assert_eq!(error.status, Some("running"));
+    assert_eq!(error.status, None);
 }
 
 #[test]

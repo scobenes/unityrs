@@ -13,7 +13,8 @@ use unityrs_testkit::scratch::Scratch;
 
 pub struct Scene {
     pub scratch: Scratch,
-    pub prepared: phase1::PreparedRun,
+    /// The frozen facts, as the controller hands them over.
+    pub prepared: phase1::Facts,
     pub done: PathBuf,
     pub counter: Arc<Counter>,
     pub workspace: Workspace,
@@ -125,7 +126,7 @@ impl Scene {
         .unwrap();
         Self {
             scratch,
-            prepared,
+            prepared: prepared.split().0,
             done,
             counter,
             workspace,

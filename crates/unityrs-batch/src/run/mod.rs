@@ -1,57 +1,114 @@
-//! Temporary B7 local normal-run host. Stops preserve artifacts and bypass
-//! normal finishing; B9 owns mandatory lifetime behavior and final ordering.
+//! The library run: the controller's body through hand-over, then the
+//! finisher, on the calling thread. Every end after the controller exists
+//! goes through one [`HandOver`] and [`finish::run`]; the owners stay parked
+//! in [`Parked`] until the finisher has returned, as the process host parks
+//! them until `_exit`. Cooperative quiescence is for tests alone.
 mod errors;
+mod phases;
 use crate::{
     control::{Control, Culprit},
-    controller::{Boundary, Controller, PreparedSpool},
+    controller::{self, Boundary, Controller, PreparedSpool},
     execution::Execution,
-    finish::{self, Identity, ResultEnd},
+    finish::{self, FinishCause, HandOver, Identity, ResultEnd, Selected},
     job::RunFailure,
-    manifest,
-    phase::{self, Account, Buffer},
-    phase1::PreparedRun,
+    lifetime::{State, Stop},
+    phase::{self, Account},
+    phase1::{Owners, PreparedRun},
     progress::{Phase, live::Sender},
-    publish,
-    sink::directory::Directory,
-    spool::{self, workspace::Workspace},
-    start,
-    sys::{Lock, Slot},
-    winners,
+    publish, spool, start,
+    sys::{Shared, Slot, Wake},
 };
 pub use errors::Error;
 use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+    Arc, OnceLock,
+    atomic::{AtomicUsize, Ordering},
 };
 
+/// The library's stop word: the process word's reduction and take, and a
+/// wake of the Execution's controller wait on every request.
 #[derive(Default)]
-struct Stop {
-    stopped: AtomicBool,
-    failure: Lock<Option<RunFailure>>,
+pub struct Lifetime {
+    pub state: State,
+    wake: OnceLock<Arc<Wake>>,
 }
-impl Control for Stop {
-    fn stopped(&self) -> bool {
-        self.stopped.load(Ordering::Acquire)
-    }
-    fn request_stop(&self, failure: RunFailure, _culprit: Culprit) {
-        RunFailure::reduce(&mut self.failure.lock(), failure);
-        self.stopped.store(true, Ordering::Release);
-    }
-}
-impl Stop {
-    fn error(&self, error: phase::Error) -> Error {
-        let failure = *self.failure.lock();
-        let selected = match error {
-            phase::Error::Run(f) => Some(f),
-            phase::Error::Stopped => None,
-        };
-        let mut result = failure;
-        if let Some(f) = selected {
-            RunFailure::reduce(&mut result, f);
+impl Lifetime {
+    /// An external stop (a signal, the deadline): what the host's handlers
+    /// and lifecycle thread request.
+    pub fn request(&self, stop: Stop) {
+        self.state.request(stop);
+        if let Some(wake) = self.wake.get() {
+            let _ = wake.notify();
         }
-        Error::failure(
-            result.unwrap_or_else(|| RunFailure::new(crate::attempt::ReasonCode::Internal)),
-        )
+    }
+}
+impl Control for Lifetime {
+    fn stopped(&self) -> bool {
+        self.state.live().is_some()
+    }
+    fn request_stop(&self, failure: RunFailure, culprit: Culprit) {
+        self.request((failure, culprit).into());
+    }
+}
+/// Observation points around the hand-over, for acceptance. They run on the
+/// controller's thread and must not drop anything they are shown.
+pub trait Observer: Send + Sync {
+    /// Just before a library step that has no hook of its own.
+    fn seam(&self, _: Seam) {}
+    fn handed_over(&self, _: &HandOver) {}
+    fn taken(&self, _: Option<Stop>) {}
+    /// After the finisher, while the parked owners are still alive.
+    fn finished(&self, _: &finish::Finished) {}
+}
+/// The library body's own seams, between the controller's and publication's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Seam {
+    /// Before phase 6's pool task is spawned.
+    Selection,
+    /// Before the outcome files are created.
+    Outcomes,
+    /// After publication's drain and its final audit, before the last check.
+    Verified,
+}
+pub struct NoObserver;
+impl Observer for NoObserver {}
+pub struct Options {
+    pub lifetime: Arc<Lifetime>,
+    pub controller_hooks: Arc<dyn controller::Hooks>,
+    pub publish_hooks: Arc<dyn publish::Hooks + Send>,
+    pub observer: Arc<dyn Observer>,
+    /// Counts the drop of the parked owners, which follows the finisher.
+    pub parked_drops: Option<Arc<AtomicUsize>>,
+    /// The spool's filesystem after startup; the host's when `None`.
+    pub spool: Option<Arc<dyn spool::FileSystem>>,
+}
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            lifetime: Arc::new(Lifetime::default()),
+            controller_hooks: Arc::new(controller::NoHooks),
+            publish_hooks: Arc::new(publish::NoHooks),
+            observer: Arc::new(NoObserver),
+            parked_drops: None,
+            spool: None,
+        }
+    }
+}
+/// What the controller keeps past its hand-over: its Execution (and so the
+/// pool's runtime), its slots and residue, publication's owner. Dropped
+/// only once the finisher has returned.
+#[derive(Default)]
+struct Parked {
+    execution: Option<Execution>,
+    owners: Option<Owners>,
+    residue: Option<controller::Residue>,
+    owned: Option<Shared<publish::Owned>>,
+    drops: Option<Arc<AtomicUsize>>,
+}
+impl Drop for Parked {
+    fn drop(&mut self) {
+        if let Some(drops) = &self.drops {
+            drops.fetch_add(1, Ordering::SeqCst);
+        }
     }
 }
 /// All unavailable capabilities are rejected before host checks or mutation.
@@ -93,12 +150,12 @@ pub fn drive(
     spool_fs: &dyn start::spool::FileSystem,
     sink_fs: Arc<dyn crate::sink::fs::FileSystem>,
 ) -> Result<ResultEnd, Error> {
-    hooked(
+    drive_with(
         prepared,
         bound,
         progress,
         (spool_fs, sink_fs),
-        Arc::new(publish::NoHooks),
+        &Options::default(),
     )
 }
 /// [`drive`] with publication observation points, for counted acceptance.
@@ -107,21 +164,25 @@ pub fn drive_hooked(
     prepared: PreparedRun,
     bound: u64,
     progress: &Sender,
-    (spool_fs, sink_fs): (
+    fs: (
         &dyn start::spool::FileSystem,
         Arc<dyn crate::sink::fs::FileSystem>,
     ),
     publish_hooks: Arc<dyn publish::Hooks + Send>,
 ) -> Result<ResultEnd, Error> {
-    hooked(
+    drive_with(
         prepared,
         bound,
         progress,
-        (spool_fs, sink_fs),
-        publish_hooks,
+        fs,
+        &Options {
+            publish_hooks,
+            ..Options::default()
+        },
     )
 }
-fn hooked(
+/// [`drive`] with its stop word, hooks and observer supplied.
+pub fn drive_with(
     prepared: PreparedRun,
     bound: u64,
     progress: &Sender,
@@ -129,272 +190,246 @@ fn hooked(
         &dyn start::spool::FileSystem,
         Arc<dyn crate::sink::fs::FileSystem>,
     ),
-    publish_hooks: Arc<dyn publish::Hooks + Send>,
+    options: &Options,
 ) -> Result<ResultEnd, Error> {
-    let local = start::supported(&prepared.spec).map_err(|_| Error::usage())?;
-    // The host reads a named key at preflight ([`unitycn_key`]).
-    if local.spec().unitycn_key.is_some() && prepared.memory.key.is_none() {
-        return Err(Error::internal());
-    }
-    let control = Arc::new(Stop::default());
+    start::supported(&prepared.spec).map_err(|_| Error::usage())?;
     let fin = Account::observed(crate::bound::C_FIN, Some(progress.phase()));
     let started_at = crate::sys::utc_now().map_err(|_| Error::host_io())?;
-    let identity = Identity {
-        started_at: std::str::from_utf8(&started_at).map_err(|_| Error::internal())?,
-        memory_bound: bound,
-        spool_peak: 0,
-        vm_hwm: 0,
+    let started_at = std::str::from_utf8(&started_at).map_err(|_| Error::internal())?;
+    let mut parked = Parked::default();
+    parked.drops.clone_from(&options.parked_drops);
+    let body = Body {
+        bound,
+        progress,
+        spool_fs,
+        sink_fs,
+        options,
+        fin: &fin,
+        started_at,
     };
-    progress.update(|s| {
-        s.phase = Phase::Preflight;
-        s.inputs.total = prepared.inputs.len() as u64;
-        s.inputs.queued = s.inputs.total;
-        s.memory.inflight_limit = prepared.spec.max_inflight_uncompressed_bytes;
-        s.spool.size = prepared.spec.spool.size_bytes;
-    });
-    let mut execution = Execution::prepare(&prepared).map_err(|_| Error::spawn())?;
-    let directory = preflight(&local, sink_fs, &fin, &control)?;
-    progress.update(|s| s.phase = Phase::Start);
-    let started = Arc::new(
-        start::spool::start(&local, spool_fs, &|| control.stopped())
-            .map_err(|e| errors::spool(&e))?,
-    );
-    progress.spool(started.counter.clone());
-    let fs: Arc<dyn spool::FileSystem> = Arc::new(spool::Host);
-    let spool = PreparedSpool::new(
-        crate::spool::path::join(&started.run, std::path::Path::new("")).map_err(Error::from)?,
-        started.counter.clone(),
-        fs.clone(),
-    )
-    .map_err(|_| Error::host_io())?
-    .retained(started.clone(), directory.clone());
-    let mut controller = Controller::new(
-        prepared,
-        spool,
-        control.clone(),
-        Arc::new(crate::controller::NoHooks),
-    )
-    .map_err(|_| Error::internal())?;
-    controller.progress(progress.clone());
-    execution.bind(&controller).map_err(|_| Error::internal())?;
-    let account = Arc::new(Account::observed(
-        controller.state().spec.max_inflight_uncompressed_bytes,
-        Some(progress.phase()),
-    ));
-    // Retained pool bookkeeping is reserved before acknowledging the head.
-    let owner_slot = Slot::<publish::Owned>::reserve().map_err(|e| control.error(e.into()))?;
-    finish::running(controller.state(), &directory, &fin, &identity)
-        .map_err(|e| control.error(e))?;
-    if controller.drive_local(&mut execution) != Boundary::ReadyForWinners {
-        return Err(control.error(phase::Error::Stopped).running());
-    }
-    let prepared = controller.into_state();
-    progress.update(|s| {
-        s.phase = Phase::Winners;
-        s.memory.slots_reserved = 0;
-    });
-    let (prepared, workspace, handoff) = select(
-        prepared, &started, &account, &control, &execution, &directory, &fs,
-    )
-    .map_err(Error::running)?;
-    let concurrency = prepared.spec.download_concurrency;
-    progress.update(|s| {
-        s.phase = Phase::Publish;
-        s.outputs.winners = handoff.counts.winners;
-        s.memory.slots_reserved = 0;
-    });
-    let archives = u64::try_from(prepared.spec.archives.len()).map_err(|_| Error::internal())?;
-    let outcomes = init_outcomes(
-        &started,
-        (handoff.counts.winners, archives),
-        &account,
-        &control,
-    )?;
-    let done = publication_done(&started.run)?;
-    let owned = owner_slot.write(publish::Owned {
-        prepared: Lock::new(prepared),
-        done,
-        workspace,
-        handoff,
-        directory,
-        outcomes,
-        account,
-        gate: publish::Gate::default(),
-        fs,
-        control: control.clone(),
-        hooks: publish_hooks,
-        progress: Some(progress.clone()),
-        spool_lease: Some(started.clone()),
-    });
-    publish::parallel(&owned, &execution, concurrency).map_err(|e| control.error(e).running())?;
-    // The last canonical stop check determines the normal snapshot permanently.
-    phase::check(&|| control.stopped()).map_err(|e| control.error(e).running())?;
-    execution
-        .quiesce()
-        .map_err(|_| Error::internal().running())?;
-    finish_owned(&owned, &fin, &identity, &started, progress, &control)
-}
-fn finish_owned(
-    owned: &publish::Owned,
-    fin: &Account,
-    identity: &Identity<'_>,
-    started: &start::spool::Started,
-    progress: &Sender,
-    control: &Stop,
-) -> Result<ResultEnd, Error> {
-    let frozen = owned
-        .gate
-        .freeze(&owned.outcomes)
-        .map_err(|e| control.error(e).running())?;
+    let handover = body
+        .run(prepared, &mut parked)
+        .map_err(|e| terminal(e, options.lifetime.state.take()))?;
+    options.observer.handed_over(&handover);
+    let taken = options.lifetime.state.take();
+    options.observer.taken(taken);
     progress.update(|s| s.phase = Phase::Finish);
-    let prepared = owned.prepared.lock();
-    let inputs =
-        winners::committed::Committed::received(&owned.done, &prepared.inputs, &*owned.fs, &|| {
-            false
-        })
-        .map_err(|e| control.error(e).running())?;
-    let cx = manifest::rows::Context {
-        prepared: &prepared,
-        inputs: &inputs,
-        handoff: &owned.handoff,
-        workspace: &owned.workspace,
-        frozen: &frozen,
-        account: fin,
-        stopped: &|| false,
-        taken_at: std::time::Instant::now(),
-    };
-    let ended = crate::sys::utc_now().map_err(|_| Error::host_io().running())?;
+    let started = handover.spool.as_ref().and_then(|s| s.lease.clone());
     let identity = Identity {
-        spool_peak: started.counter.peak(),
+        started_at,
+        memory_bound: bound,
+        spool_peak: started.as_ref().map_or(0, |s| s.counter.peak()),
         vm_hwm: crate::progress::proc_memory("VmHWM:"),
-        started_at: identity.started_at,
-        memory_bound: identity.memory_bound,
     };
-    let result = finish::normal(
-        &cx,
-        &owned.directory,
-        &identity,
-        std::str::from_utf8(&ended).map_err(|_| Error::internal().running())?,
-    )
-    .map_err(|e| control.error(e).running())?;
-    progress.update(|s| {
-        s.inputs.complete = prepared
-            .inputs
-            .iter()
-            .filter(|s| {
-                s.failure_bundle.is_none()
-                    && s.received
-                        .is_some_and(|r| r.state == crate::attempt::State::Done)
-            })
-            .count() as u64;
-        s.inputs.failed = s.inputs.total - s.inputs.complete;
-        s.inputs.running = 0;
-        s.inputs.queued = 0;
-    });
-    Ok(result)
+    let finished = finish::run(
+        &handover,
+        taken,
+        &mut finish::Finisher {
+            account: &fin,
+            identity: &identity,
+            // `T_hard` read live: unarmed until a deadline is armed.
+            budget: finish::budget::Budget {
+                hard: &options.lifetime.state,
+                reconcile: false,
+            },
+            clock: &finish::budget::BootClock,
+            backend: &mut finish::budget::NoJournal,
+        },
+    );
+    phases::post_finish(progress, &handover);
+    options.observer.finished(&finished);
+    drop(handover);
+    // The owners outlive the finisher, as the process host's do until _exit.
+    drop(parked);
+    Ok(finished.end)
 }
-fn select(
-    prepared: PreparedRun,
-    started: &Arc<start::spool::Started>,
-    account: &Arc<Account>,
-    control: &Arc<Stop>,
-    execution: &Execution,
-    directory: &Arc<Directory>,
-    fs: &Arc<dyn spool::FileSystem>,
-) -> Result<(PreparedRun, Workspace, winners::Handoff), Error> {
-    let fs = fs.clone();
-    let path = crate::spool::path::join(&started.run, std::path::Path::new("winners/workspace"))
-        .map_err(Error::from)?;
-    let mut workspace =
-        Workspace::create(path, started.counter.clone(), fs.clone()).map_err(Error::from)?;
-    let done = crate::spool::path::join(&started.run, std::path::Path::new("done"))
-        .map_err(Error::from)?;
-    let account = account.clone();
-    let stop = control.clone();
-    let lease = (started.clone(), directory.clone());
-    let task = execution
-        .spawn(move || {
-            let _lease = lease;
-            (|| {
-                let inputs = winners::committed::Committed::received(
-                    &done,
-                    &prepared.inputs,
-                    &*fs,
-                    &|| stop.stopped(),
-                )?;
-                let handoff = winners::complete(&mut winners::Context {
-                    spec: &prepared.spec,
-                    prepared: &prepared.winners,
-                    inputs: &inputs,
-                    workspace: &mut workspace,
-                    account: &account,
-                    options: crate::sort::Options::default(),
-                    stopped: &|| stop.stopped(),
-                    hooks: &crate::sort::NoHooks,
-                    observer: &winners::NoObserver,
-                })?;
-                Ok::<_, phase::Error>((prepared, workspace, handoff))
-            })()
-        })
-        .map_err(|e| control.error(e.into()))?;
-    while !task.is_finished() {
-        phase::check(&|| control.stopped()).map_err(|e| control.error(e))?;
-        execution.wait().map_err(|_| Error::host_io())?;
+/// A preflight end's code against the stop the finisher took (9.1).
+fn terminal(mut error: Error, taken: Option<Stop>) -> Error {
+    let code = finish::reduce(error.code, taken);
+    if let Some(stop) = taken.filter(|_| code != error.code) {
+        error = Error::failure_stop(stop);
     }
-    phase::check(&|| control.stopped()).map_err(|e| control.error(e))?;
-    let result = execution
-        .finish(&task)
-        .map_err(|()| Error::internal())?
-        .map_err(|e| control.error(e))?;
-    phase::check(&|| control.stopped()).map_err(|e| control.error(e))?;
-    Ok(result)
+    error
 }
-
-fn preflight(
-    local: &start::Local<'_>,
-    fs: Arc<dyn crate::sink::fs::FileSystem>,
-    fin: &Account,
-    control: &Stop,
-) -> Result<Arc<Directory>, Error> {
-    let mut scratch = Buffer::<u8>::new(fin.meter(), manifest::head::HEAD_LIMIT + 1)
-        .map_err(|e| control.error(e))?;
-    scratch.fill(0);
-    Ok(Arc::new(
-        Directory::preflight(
-            local.root(),
-            &local.spec().run_id,
-            local.spec().attempt,
-            fs,
-            &mut scratch,
+struct Body<'a> {
+    bound: u64,
+    progress: &'a Sender,
+    spool_fs: &'a dyn start::spool::FileSystem,
+    sink_fs: Arc<dyn crate::sink::fs::FileSystem>,
+    options: &'a Options,
+    fin: &'a Account,
+    started_at: &'a str,
+}
+impl Body<'_> {
+    /// The controller's body. `Err` is a terminal end before the `running`
+    /// head; every later end is a hand-over.
+    #[allow(clippy::too_many_lines)] // 2.11's order, start to hand-over, in one place.
+    fn run(&self, prepared: PreparedRun, parked: &mut Parked) -> Result<HandOver, Error> {
+        let local = start::supported(&prepared.spec).map_err(|_| Error::usage())?;
+        // The host reads a named key at preflight ([`unitycn_key`]).
+        if local.spec().unitycn_key.is_some() && prepared.memory.key.is_none() {
+            return Err(Error::internal());
+        }
+        let control = self.options.lifetime.clone();
+        let progress = self.progress;
+        progress.update(|s| {
+            s.phase = Phase::Preflight;
+            s.inputs.total = prepared.inputs.len() as u64;
+            s.inputs.queued = s.inputs.total;
+            s.memory.inflight_limit = prepared.spec.max_inflight_uncompressed_bytes;
+            s.spool.size = prepared.spec.spool.size_bytes;
+        });
+        let execution = Execution::prepare(&prepared).map_err(|_| Error::spawn())?;
+        let _ = control.wake.set(execution.wake());
+        let execution = parked.execution.insert(execution);
+        let directory = phases::preflight(&local, self.sink_fs.clone(), self.fin)?;
+        progress.update(|s| s.phase = Phase::Start);
+        let started = match start::spool::start(&local, self.spool_fs, &|| control.stopped()) {
+            Ok(started) => Arc::new(started),
+            // A stop before or during the spool's startup or cleanup is
+            // 7.4's first row, decided by the finisher like any later stop.
+            Err(e) if e.class == start::spool::Class::Stopped => {
+                let mut handover = HandOver::new(FinishCause::Stop, Phase::Start);
+                handover.directory = Some(directory);
+                return Ok(handover);
+            }
+            Err(e) => return Err(errors::spool(&e)),
+        };
+        progress.spool(started.counter.clone());
+        let fs = match &self.options.spool {
+            Some(fs) => fs.clone(),
+            None => Arc::new(spool::Host) as Arc<dyn spool::FileSystem>,
+        };
+        let spool = PreparedSpool::new(
+            crate::spool::path::join(&started.run, std::path::Path::new(""))
+                .map_err(Error::from)?,
+            started.counter.clone(),
+            fs.clone(),
         )
-        .map_err(errors::sink)?,
-    ))
+        .map_err(|_| Error::host_io())?
+        .retained(started.clone(), directory.clone());
+        let mut controller = Controller::new(
+            prepared,
+            spool,
+            control.clone(),
+            self.options.controller_hooks.clone(),
+        )
+        .map_err(|_| Error::internal())?;
+        controller.progress(progress.clone());
+        execution.bind(&controller).map_err(|_| Error::internal())?;
+        let account = Arc::new(Account::observed(
+            controller.state().spec.max_inflight_uncompressed_bytes,
+            Some(progress.phase()),
+        ));
+        // Retained bookkeeping is reserved before acknowledging the head.
+        let owner_slot = Slot::<publish::Owned>::reserve().map_err(|_| Error::memory())?;
+        let facts_slot = Slot::reserve().map_err(|_| Error::memory())?;
+        let done = phases::done(&started.run)?;
+        let mut handover = HandOver::new(FinishCause::Stop, Phase::Start);
+        handover.directory = Some(directory.clone());
+        handover.spool = Some(finish::Spool {
+            run: started.run.clone(),
+            done: done.clone(),
+            fs: fs.clone(),
+            lease: Some(started.clone()),
+        });
+        if control.stopped() {
+            // 7.4's first row: the `running` write was never sent.
+            return Ok(handover);
+        }
+        finish::running(
+            controller.state(),
+            &directory,
+            self.fin,
+            &Identity {
+                started_at: self.started_at,
+                memory_bound: self.bound,
+                spool_peak: 0,
+                vm_hwm: 0,
+            },
+        )
+        .map_err(errors::running)?;
+        handover.running = true;
+        let boundary = controller.drive_local(execution);
+        let reached = controller.reached();
+        let pending = controller.pending_commit();
+        let (prepared, residue) = controller.into_parts();
+        let (facts, owners) = prepared.split();
+        parked.owners = Some(owners);
+        parked.residue = Some(residue);
+        let facts = facts_slot.write(facts);
+        handover.facts = Some(facts.clone());
+        handover.pending = pending;
+        if boundary != Boundary::ReadyForWinners {
+            return Ok(stamp(handover, reached));
+        }
+        progress.update(|s| {
+            s.phase = Phase::Winners;
+            s.memory.slots_reserved = 0;
+        });
+        self.options.observer.seam(Seam::Selection);
+        let Some((workspace, handoff)) = phases::select(
+            &facts, &started, &account, &control, execution, &directory, &fs,
+        ) else {
+            return Ok(stamp(handover, Phase::Winners));
+        };
+        let concurrency = facts.spec.download_concurrency;
+        progress.update(|s| {
+            s.phase = Phase::Publish;
+            s.outputs.winners = handoff.counts.winners;
+            s.memory.slots_reserved = 0;
+        });
+        let archives = u64::try_from(facts.spec.archives.len()).map_err(|_| Error::internal())?;
+        self.options.observer.seam(Seam::Outcomes);
+        let Some(outcomes) = phases::outcomes(
+            &started,
+            (handoff.counts.winners, archives),
+            &account,
+            (&*control, &*fs),
+        ) else {
+            handover.selected = Some(Selected::Parts { workspace, handoff });
+            return Ok(stamp(handover, Phase::Publish));
+        };
+        let owned = owner_slot.write(publish::Owned {
+            facts,
+            done,
+            workspace,
+            handoff,
+            directory,
+            outcomes,
+            account,
+            gate: publish::Gate::default(),
+            fs,
+            control: control.clone(),
+            hooks: self.options.publish_hooks.clone(),
+            progress: Some(progress.clone()),
+            spool_lease: Some(started.clone()),
+        });
+        parked.owned = Some(owned.clone());
+        let published = publish::parallel(&owned, execution, concurrency);
+        if published.is_ok() {
+            self.options.observer.seam(Seam::Verified);
+        }
+        // The last canonical stop check determines the normal snapshot.
+        let ended = published.and_then(|_| phase::check(&|| control.stopped()));
+        if let Err(error) = ended {
+            phases::halt(&*control, error);
+        } else {
+            handover.cause = FinishCause::Normal;
+        }
+        // The hand-over takes the commit lock: a commit under way lands
+        // first, and none after (W15).
+        owned.gate.close();
+        handover.selected = Some(Selected::Owned(owned));
+        Ok(stamp(handover, Phase::Publish))
+    }
 }
-
-fn init_outcomes(
-    started: &start::spool::Started,
-    (winners, archives): (u64, u64),
-    account: &Account,
-    control: &Stop,
-) -> Result<crate::outcomes::Outcomes, Error> {
-    let mut zeros =
-        Buffer::<u8>::new(account.meter(), 64 * 1024).map_err(|e| control.error(e).running())?;
-    zeros.fill(0);
-    crate::outcomes::Outcomes::create(
-        &started.run,
-        winners,
-        archives,
-        &started.counter,
-        &spool::Host,
-        &zeros,
-        &|| control.stopped(),
-    )
-    .map_err(|e| control.error(e).running())
-}
-
-fn publication_done(run: &std::path::Path) -> Result<std::path::PathBuf, Error> {
-    crate::spool::path::join(run, std::path::Path::new("done"))
-        .map_err(|e| Error::from(e).running())
+/// The phase reached and the hand-over instant, sampled as it is made.
+fn stamp(mut handover: HandOver, phase: Phase) -> HandOver {
+    handover.phase = phase;
+    handover.at = std::time::Instant::now();
+    handover.boot = crate::lifetime::Boot::now().ok();
+    handover
 }
 
 #[cfg(test)]

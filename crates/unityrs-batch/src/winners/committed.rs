@@ -15,6 +15,9 @@ pub struct Committed<'a> {
     states: &'a [InputState],
     failures: Option<&'a [bool]>,
     fs: &'a dyn FileSystem,
+    /// An input the finisher's one stat found committed after a hand-over
+    /// left its commit's slot set (`docs/plans/batch.md` 2.4).
+    found: Option<u32>,
 }
 impl<'a> Committed<'a> {
     /// `failures` includes attempt failures as well as pre-dispatch failures;
@@ -40,6 +43,7 @@ impl<'a> Committed<'a> {
             states,
             failures: Some(failures),
             fs,
+            found: None,
         })
     }
     /// Uses only received terminal state and the controller's commit fact.
@@ -74,14 +78,22 @@ impl<'a> Committed<'a> {
             states,
             failures: None,
             fs,
+            found: None,
         })
+    }
+    /// Also read `input` as committed: its rename landed before the hand-over.
+    #[must_use]
+    pub fn with_found(mut self, input: Option<u32>) -> Self {
+        self.found = input;
+        self
     }
     fn index(&self, input: u32) -> Result<usize, Error> {
         let index = usize::try_from(input).map_err(|_| Error::internal())?;
-        if self
-            .states
-            .get(index)
-            .is_none_or(|s| s.phase != InputPhase::Committed)
+        if self.found != Some(input)
+            && self
+                .states
+                .get(index)
+                .is_none_or(|s| s.phase != InputPhase::Committed)
         {
             return Err(Error::internal());
         }

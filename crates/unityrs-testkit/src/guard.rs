@@ -103,9 +103,9 @@ pub const TIMED_WAITS: &[&str] = &[
 /// (`unityrs_batch::progress::early`), whose wait is the contract's own
 /// bound, is left out for its one wait only: a count there other than one
 /// is reported as `<file>: <n> timed waits, the exemption is for one`.
-/// Execution's two production startup deadlines, three channel-priming
+/// Execution's two production startup deadlines, two channel-priming
 /// waits and one startup-gate priming wait are exempted by their exact
-/// count; a seventh wait is reported. Normal progress (`progress/live.rs`)
+/// count; a sixth wait is reported. Normal progress (`progress/live.rs`)
 /// is exempted for its heartbeat, its final acknowledgment and one startup
 /// priming wait.
 ///
@@ -141,13 +141,14 @@ pub fn unguarded(root: &Path) -> Vec<String> {
             }
             continue;
         }
-        // Two production readiness deadlines plus three 1 ms waits that
-        // initialize the end/dispatch/pool channels' lazy wait contexts
-        // before the running head. These are not test deadlock guards.
+        // Two production readiness deadlines (the workers' and the pool
+        // prewarm's one second) plus two 1 ms waits that initialize the end
+        // and dispatch channels' lazy wait contexts before the running head.
+        // These are not test deadlock guards.
         if path.ends_with("unityrs-batch/src/execution.rs") {
-            if hits.len() != 6 {
+            if hits.len() != 5 {
                 found.push(format!(
-                    "{}: {} timed waits, the exemption is for two startup deadlines, three channel-priming waits and one startup-gate priming wait",
+                    "{}: {} timed waits, the exemption is for two startup deadlines, two channel-priming waits and one startup-gate priming wait",
                     path.display(),
                     hits.len()
                 ));
@@ -224,10 +225,10 @@ mod tests {
         let dir = crate::scratch::Scratch::new("startup-waits");
         let file = dir.join("unityrs-batch/src/execution.rs");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        for n in [5, 6, 7] {
+        for n in [4, 5, 6] {
             std::fs::write(&file, "rx.recv_timeout(a);\n".repeat(n)).unwrap();
             let found = unguarded(dir.path());
-            if n == 6 {
+            if n == 5 {
                 assert_eq!(found.len(), 0);
             } else {
                 assert_eq!(found.len(), 1);

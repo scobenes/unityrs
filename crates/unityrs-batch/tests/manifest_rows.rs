@@ -73,11 +73,15 @@ fn assemble_outcomes(
     };
     let report = manifest::assemble(
         &manifest::rows::Context {
-            prepared: &scene.prepared,
+            facts: &scene.prepared,
             inputs: &inputs,
-            handoff: &scene.handoff,
-            workspace: &scene.workspace,
-            frozen: &frozen,
+            selected: Some(manifest::rows::Selected {
+                handoff: &scene.handoff,
+                workspace: &scene.workspace,
+                outcomes: frozen.outcomes,
+            }),
+            stop: None,
+            found: None,
             account: &account,
             stopped: &|| false,
             taken_at: std::time::Instant::now(),
@@ -317,13 +321,16 @@ fn frozen_not_run_rows_distinguish_queued_from_dispatched() {
     }
     scene.prepared.inputs[0].phase = InputPhase::Ready;
     scene.prepared.inputs[1].phase = InputPhase::Running;
+    // Input 1 was dispatched: its bit is set until a commit clears it.
+    scene.prepared.uncommitted.set(1, true).unwrap();
     let taken_at = std::time::Instant::now();
-    scene.prepared.active[0].job = Some((JobKind::Attempt, 1));
-    scene.prepared.active[0].dispatched = Some(
+    scene.prepared.slots[0] = Some((
+        JobKind::Attempt,
+        1,
         taken_at
             .checked_sub(std::time::Duration::from_millis(1234))
             .unwrap(),
-    );
+    ));
     let out = scene.outcomes("snapshot", &Host);
     let gate = Gate::default();
     let frozen = gate.freeze(&out).unwrap();
@@ -340,11 +347,15 @@ fn frozen_not_run_rows_distinguish_queued_from_dispatched() {
     let mut rows = Rows::default();
     manifest::assemble(
         &manifest::rows::Context {
-            prepared: &scene.prepared,
+            facts: &scene.prepared,
             inputs: &inputs,
-            handoff: &scene.handoff,
-            workspace: &scene.workspace,
-            frozen: &frozen,
+            selected: Some(manifest::rows::Selected {
+                handoff: &scene.handoff,
+                workspace: &scene.workspace,
+                outcomes: frozen.outcomes,
+            }),
+            stop: None,
+            found: None,
             account: &account,
             stopped: &|| false,
             taken_at,
@@ -421,11 +432,15 @@ fn predispatched_failure_record_flush_is_included_in_run_work() {
     .unwrap();
     let report = manifest::assemble(
         &manifest::rows::Context {
-            prepared: &scene.prepared,
+            facts: &scene.prepared,
             inputs: &inputs,
-            handoff: &scene.handoff,
-            workspace: &scene.workspace,
-            frozen: &frozen,
+            selected: Some(manifest::rows::Selected {
+                handoff: &scene.handoff,
+                workspace: &scene.workspace,
+                outcomes: frozen.outcomes,
+            }),
+            stop: None,
+            found: None,
             account: &account,
             stopped: &|| false,
             taken_at: std::time::Instant::now(),
@@ -453,11 +468,15 @@ fn render_unwritten(
     let mut rows = Rows::default();
     let report = manifest::assemble(
         &manifest::rows::Context {
-            prepared: &scene.prepared,
+            facts: &scene.prepared,
             inputs: &inputs,
-            handoff: &scene.handoff,
-            workspace: &scene.workspace,
-            frozen: &frozen,
+            selected: Some(manifest::rows::Selected {
+                handoff: &scene.handoff,
+                workspace: &scene.workspace,
+                outcomes: frozen.outcomes,
+            }),
+            stop: None,
+            found: None,
             account: &account,
             stopped: &|| false,
             taken_at: std::time::Instant::now(),

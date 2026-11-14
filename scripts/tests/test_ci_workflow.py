@@ -148,6 +148,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(bans[0]["with"]["arguments"], "--all-features --config deny-bans.toml")
         self.assertNotIn("manifest-path", bans[0]["with"])
 
+    def test_gltf_job_requires_the_validator(self):
+        workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text())
+        job = workflow["jobs"]["gltf"]
+        self.assertEqual(str(job.get("env", {}).get("UNITYRS_GLTF_VALIDATOR_REQUIRED")), "1")
+
     def test_the_rules_catch_what_they_are_for(self):
         sha = "11d5960a326750d5838078e36cf38b85af677262"
         good = f"jobs:\n  a:\n    timeout-minutes: 5\n    steps:\n      - uses: actions/checkout@{sha} # v4.4.0\n"

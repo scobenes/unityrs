@@ -430,7 +430,7 @@ fn pool_archives_wait_for_the_final_winner_transfer_not_the_cursor() {
     let outcomes = scene.outcomes("out", &Host);
     let hooks = Arc::new(Final::default());
     let owned = Arc::new(publish::Owned {
-        prepared: unityrs_batch::sys::Lock::new(scene.prepared),
+        facts: unityrs_batch::sys::Shared::new(scene.prepared).unwrap(),
         done: scene.done,
         workspace: scene.workspace,
         handoff: scene.handoff,

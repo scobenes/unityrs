@@ -34,6 +34,93 @@ pub struct PreparedRun {
     pub walker: Walker,
     pub active: Vec<ActiveSlot>,
     pub stages_active: Vec<StageSlot>,
+    /// Phase-1 storage for the dispatch snapshot the split copies out of
+    /// `active`, so freezing the facts allocates nothing.
+    slots: Vec<Option<Dispatched>>,
+}
+/// A dispatched job at the controller's boundary: kind, index, instant.
+pub type Dispatched = (JobKind, u32, Instant);
+
+/// Received facts, frozen at the controller's boundary and shared
+/// read-only with phase 6, phase 7 and the finisher. Nothing here is a
+/// descriptor or a pool task, so a held task cannot keep a reader out.
+pub struct Facts {
+    pub spec_sha256: [u8; 32],
+    pub spec: Arc<Spec>,
+    pub graph: Arc<Graph>,
+    pub winners: crate::winners::Prepared,
+    pub peek_words: Arc<[Word]>,
+    pub bundles: Vec<BundleState>,
+    pub inputs: Vec<InputState>,
+    pub uncommitted: Bits,
+    /// Every job slot's dispatch at the boundary (at most `threads`).
+    pub slots: Vec<Option<Dispatched>>,
+}
+impl Facts {
+    /// The dispatch instant of an input's attempt still held at the boundary.
+    #[must_use]
+    pub fn dispatched(&self, input: u32) -> Option<Instant> {
+        self.slots.iter().flatten().find_map(|&(kind, index, at)| {
+            (kind == JobKind::Attempt && index == input).then_some(at)
+        })
+    }
+}
+/// What the controller owns past its boundary: job and stage slots, with
+/// their directories, files and pool tasks, and the scheduling queues. A
+/// stopped run parks these until `_exit`; nothing reads them after.
+pub struct Owners {
+    _memory: Arc<crate::job_memory::Plan>,
+    pub extraction: Arc<attempt::Prepared>,
+    pub archive_keys: Vec<u32>,
+    pub files: Vec<BundleOwners>,
+    pub peek_members: Bits,
+    pub peek_queue: Vec<u32>,
+    pub ready: Vec<u32>,
+    pub failures: Vec<u32>,
+    pub walker: Walker,
+    pub active: Vec<ActiveSlot>,
+    pub stages_active: Vec<StageSlot>,
+}
+impl PreparedRun {
+    /// Freeze at the boundary. No allocation: the dispatch snapshot fills
+    /// storage reserved in phase 1, at most one entry per job slot.
+    #[must_use]
+    pub fn split(self) -> (Facts, Owners) {
+        let mut slots = self.slots;
+        slots.clear();
+        slots.extend(
+            self.active
+                .iter()
+                .take(slots.capacity())
+                .map(|s| s.job.zip(s.dispatched).map(|((k, i), at)| (k, i, at))),
+        );
+        (
+            Facts {
+                spec_sha256: self.spec_sha256,
+                spec: self.spec,
+                graph: self.graph,
+                winners: self.winners,
+                peek_words: self.peek_words,
+                bundles: self.bundles,
+                inputs: self.inputs,
+                uncommitted: self.uncommitted,
+                slots,
+            },
+            Owners {
+                _memory: self.memory,
+                extraction: self.extraction,
+                archive_keys: self.archive_keys,
+                files: self.files,
+                peek_members: self.peek_members,
+                peek_queue: self.peek_queue,
+                ready: self.ready,
+                failures: self.failures,
+                walker: self.walker,
+                active: self.active,
+                stages_active: self.stages_active,
+            },
+        )
+    }
 }
 
 #[derive(Default)]
@@ -206,6 +293,7 @@ pub fn prepare(validated: spec::Validated) -> Result<PreparedRun, PreparationErr
         stages_active: (0..spec.download_concurrency)
             .map(|_| StageSlot::default())
             .collect(),
+        slots: Vec::with_capacity(spec.threads as usize),
         spec: Arc::new(spec),
         graph: Arc::new(graph),
         extraction: Arc::new(extraction),
