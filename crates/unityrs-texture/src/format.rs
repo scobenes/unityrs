@@ -100,8 +100,9 @@ pub fn texture_format_name(value: i32) -> Option<&'static str> {
 
 /// The formats this crate decodes: the five of `docs/plans/extract.md` E15
 /// and the rest of the formats UnityPy decodes with Pillow's raw and `bcn`
-/// decoders (`raw`'s and `bcn`'s module docs), and the eight ETC and EAC
-/// formats texture2ddecoder decodes for it (`etc`'s module docs).
+/// decoders (`raw`'s and `bcn`'s module docs), the eight ETC and EAC
+/// formats texture2ddecoder decodes for it (`etc`'s module docs), and the
+/// twelve ASTC LDR formats astcenc decodes for it (`astc`'s module docs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Format {
     /// `Alpha8` (1): Pillow's raw `A` into `RGBA`.
@@ -156,6 +157,42 @@ pub enum Format {
     Etc2Rgba8,
     /// `R8` (63): Pillow's raw `R` into `RGB`.
     R8,
+    /// `ASTC_RGB_4x4` (48): astcenc's LDR decode of 4x4 blocks into
+    /// `RGBA` (the `astc` module).
+    AstcRgb4x4,
+    /// `ASTC_RGB_5x5` (49): astcenc's LDR decode of 5x5 blocks into
+    /// `RGBA` (the `astc` module).
+    AstcRgb5x5,
+    /// `ASTC_RGB_6x6` (50): astcenc's LDR decode of 6x6 blocks into
+    /// `RGBA` (the `astc` module).
+    AstcRgb6x6,
+    /// `ASTC_RGB_8x8` (51): astcenc's LDR decode of 8x8 blocks into
+    /// `RGBA` (the `astc` module).
+    AstcRgb8x8,
+    /// `ASTC_RGB_10x10` (52): astcenc's LDR decode of 10x10 blocks into
+    /// `RGBA` (the `astc` module).
+    AstcRgb10x10,
+    /// `ASTC_RGB_12x12` (53): astcenc's LDR decode of 12x12 blocks into
+    /// `RGBA` (the `astc` module).
+    AstcRgb12x12,
+    /// `ASTC_RGBA_4x4` (54): astcenc's LDR decode of 4x4 blocks into
+    /// `RGBA` (the `astc` module).
+    AstcRgba4x4,
+    /// `ASTC_RGBA_5x5` (55): astcenc's LDR decode of 5x5 blocks into
+    /// `RGBA` (the `astc` module).
+    AstcRgba5x5,
+    /// `ASTC_RGBA_6x6` (56): astcenc's LDR decode of 6x6 blocks into
+    /// `RGBA` (the `astc` module).
+    AstcRgba6x6,
+    /// `ASTC_RGBA_8x8` (57): astcenc's LDR decode of 8x8 blocks into
+    /// `RGBA` (the `astc` module).
+    AstcRgba8x8,
+    /// `ASTC_RGBA_10x10` (58): astcenc's LDR decode of 10x10 blocks into
+    /// `RGBA` (the `astc` module).
+    AstcRgba10x10,
+    /// `ASTC_RGBA_12x12` (59): astcenc's LDR decode of 12x12 blocks into
+    /// `RGBA` (the `astc` module).
+    AstcRgba12x12,
 }
 
 const _: () = crate::send_sync::<Format>();
@@ -172,11 +209,14 @@ pub(crate) enum Library {
     /// texture2ddecoder, on the size padded to whole 4x4 blocks, its
     /// output then read by Pillow's raw decoder as `BGRA`.
     Texture2DDecoder,
+    /// astcenc (astc-encoder-py), on the size padded to whole blocks, its
+    /// output then read by Pillow's raw decoder as `RGBA`.
+    Astcenc,
 }
 
 impl Format {
     /// Every format, in `TextureFormat` order.
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 36] = [
         Self::Alpha8,
         Self::Argb4444,
         Self::Rgb24,
@@ -201,6 +241,18 @@ impl Format {
         Self::Etc2Rgba1,
         Self::Etc2Rgba8,
         Self::R8,
+        Self::AstcRgb4x4,
+        Self::AstcRgb5x5,
+        Self::AstcRgb6x6,
+        Self::AstcRgb8x8,
+        Self::AstcRgb10x10,
+        Self::AstcRgb12x12,
+        Self::AstcRgba4x4,
+        Self::AstcRgba5x5,
+        Self::AstcRgba6x6,
+        Self::AstcRgba8x8,
+        Self::AstcRgba10x10,
+        Self::AstcRgba12x12,
     ];
 
     /// The five version 1 of the batch engine exports
@@ -234,6 +286,18 @@ impl Format {
             45 => Some(Self::Etc2Rgb),
             46 => Some(Self::Etc2Rgba1),
             47 => Some(Self::Etc2Rgba8),
+            48 => Some(Self::AstcRgb4x4),
+            49 => Some(Self::AstcRgb5x5),
+            50 => Some(Self::AstcRgb6x6),
+            51 => Some(Self::AstcRgb8x8),
+            52 => Some(Self::AstcRgb10x10),
+            53 => Some(Self::AstcRgb12x12),
+            54 => Some(Self::AstcRgba4x4),
+            55 => Some(Self::AstcRgba5x5),
+            56 => Some(Self::AstcRgba6x6),
+            57 => Some(Self::AstcRgba8x8),
+            58 => Some(Self::AstcRgba10x10),
+            59 => Some(Self::AstcRgba12x12),
             63 => Some(Self::R8),
             _ => None,
         }
@@ -267,6 +331,18 @@ impl Format {
             Self::Etc2Rgba1 => 46,
             Self::Etc2Rgba8 => 47,
             Self::R8 => 63,
+            Self::AstcRgb4x4 => 48,
+            Self::AstcRgb5x5 => 49,
+            Self::AstcRgb6x6 => 50,
+            Self::AstcRgb8x8 => 51,
+            Self::AstcRgb10x10 => 52,
+            Self::AstcRgb12x12 => 53,
+            Self::AstcRgba4x4 => 54,
+            Self::AstcRgba5x5 => 55,
+            Self::AstcRgba6x6 => 56,
+            Self::AstcRgba8x8 => 57,
+            Self::AstcRgba10x10 => 58,
+            Self::AstcRgba12x12 => 59,
         }
     }
 
@@ -298,6 +374,18 @@ impl Format {
             Self::Etc2Rgba1 => "ETC2_RGBA1",
             Self::Etc2Rgba8 => "ETC2_RGBA8",
             Self::R8 => "R8",
+            Self::AstcRgb4x4 => "ASTC_RGB_4x4",
+            Self::AstcRgb5x5 => "ASTC_RGB_5x5",
+            Self::AstcRgb6x6 => "ASTC_RGB_6x6",
+            Self::AstcRgb8x8 => "ASTC_RGB_8x8",
+            Self::AstcRgb10x10 => "ASTC_RGB_10x10",
+            Self::AstcRgb12x12 => "ASTC_RGB_12x12",
+            Self::AstcRgba4x4 => "ASTC_RGBA_4x4",
+            Self::AstcRgba5x5 => "ASTC_RGBA_5x5",
+            Self::AstcRgba6x6 => "ASTC_RGBA_6x6",
+            Self::AstcRgba8x8 => "ASTC_RGBA_8x8",
+            Self::AstcRgba10x10 => "ASTC_RGBA_10x10",
+            Self::AstcRgba12x12 => "ASTC_RGBA_12x12",
         }
     }
 
@@ -327,12 +415,11 @@ impl Format {
         }
     }
 
-    /// The bytes one 4x4 block holds, for a block format: 8 for DXT1, BC4,
+    /// The bytes one block holds, for a block format: 8 for DXT1, BC4,
     /// `ETC_RGB4`, `EAC_R`, `EAC_R_SIGNED`, `ETC2_RGB` and `ETC2_RGBA1`, 16
-    /// for the rest; `None` for the raw formats, which UnityPy does not pad
-    /// (`get_compressed_image_size`, `export/Texture2DConverter.py:36-50`:
-    /// names starting `DXT`, `BC`, `ETC` or `EAC` are padded to 4x4 blocks,
-    /// `:22-33`).
+    /// for the rest, the ASTC formats' included (`calculate_astc_compressed_size`,
+    /// `export/Texture2DConverter.py:390-397`); `None` for the raw formats,
+    /// which UnityPy does not pad ([`Self::block_size`]).
     #[must_use]
     pub const fn block_bytes(self) -> Option<u64> {
         match self {
@@ -349,7 +436,19 @@ impl Format {
             | Self::Bc5
             | Self::EacRg
             | Self::EacRgSigned
-            | Self::Etc2Rgba8 => Some(16),
+            | Self::Etc2Rgba8
+            | Self::AstcRgb4x4
+            | Self::AstcRgb5x5
+            | Self::AstcRgb6x6
+            | Self::AstcRgb8x8
+            | Self::AstcRgb10x10
+            | Self::AstcRgb12x12
+            | Self::AstcRgba4x4
+            | Self::AstcRgba5x5
+            | Self::AstcRgba6x6
+            | Self::AstcRgba8x8
+            | Self::AstcRgba10x10
+            | Self::AstcRgba12x12 => Some(16),
             Self::Alpha8
             | Self::Argb4444
             | Self::Rgb24
@@ -363,18 +462,38 @@ impl Format {
         }
     }
 
+    /// The block a block format is padded to, width by height
+    /// (`get_compressed_image_size`, `export/Texture2DConverter.py:36-50`,
+    /// with `TEXTURE_FORMAT_BLOCK_SIZE_TABLE`, `:22-33`: an ASTC name's
+    /// own `WxH`, 4x4 for names starting `DXT`, `BC`, `ETC` or `EAC`);
+    /// `None` for the raw formats, which it does not pad.
+    #[must_use]
+    pub const fn block_size(self) -> Option<(u8, u8)> {
+        match self {
+            Self::AstcRgb4x4 | Self::AstcRgba4x4 => Some((4, 4)),
+            Self::AstcRgb5x5 | Self::AstcRgba5x5 => Some((5, 5)),
+            Self::AstcRgb6x6 | Self::AstcRgba6x6 => Some((6, 6)),
+            Self::AstcRgb8x8 | Self::AstcRgba8x8 => Some((8, 8)),
+            Self::AstcRgb10x10 | Self::AstcRgba10x10 => Some((10, 10)),
+            Self::AstcRgb12x12 | Self::AstcRgba12x12 => Some((12, 12)),
+            _ if self.block_bytes().is_some() => Some((4, 4)),
+            _ => None,
+        }
+    }
+
     /// The bits a pixel takes where Pillow's raw decoder reads the data:
     /// its unpacker's for the raw mode UnityPy names (`CONV_TABLE`;
     /// Pillow's `src/libImaging/Unpack.c`): 8 for `A` and `R`, 16 for
     /// `RGBA;4B` and `BGR;16`, 24 for `RGB` and `BGR`, 32 for `RGBA`,
     /// `BGRA` and `ARGB`; 32 for texture2ddecoder's output, which Pillow
-    /// reads as `BGRA`; `None` for the `bcn` decoder, which has no such
+    /// reads as `BGRA`, and astcenc's, which it reads as `RGBA`
+    /// (`export/Texture2DConverter.py:356-366`); `None` for the `bcn` decoder, which has no such
     /// reader. Pillow's raw decoder refuses a row of more than
     /// `INT_MAX / bits - 7` pixels (`decode`'s module docs).
     pub(crate) const fn raw_bits(self) -> Option<u32> {
         match self.library() {
             Library::PillowBcn => None,
-            Library::Texture2DDecoder => Some(32),
+            Library::Texture2DDecoder | Library::Astcenc => Some(32),
             Library::PillowRaw => Some(match self {
                 Self::Alpha8 | Self::R8 => 8,
                 Self::Argb4444 | Self::Rgba4444 | Self::Rgb565 => 16,
@@ -398,6 +517,18 @@ impl Format {
             | Self::Etc2Rgb
             | Self::Etc2Rgba1
             | Self::Etc2Rgba8 => Library::Texture2DDecoder,
+            Self::AstcRgb4x4
+            | Self::AstcRgb5x5
+            | Self::AstcRgb6x6
+            | Self::AstcRgb8x8
+            | Self::AstcRgb10x10
+            | Self::AstcRgb12x12
+            | Self::AstcRgba4x4
+            | Self::AstcRgba5x5
+            | Self::AstcRgba6x6
+            | Self::AstcRgba8x8
+            | Self::AstcRgba10x10
+            | Self::AstcRgba12x12 => Library::Astcenc,
             _ => Library::PillowRaw,
         }
     }

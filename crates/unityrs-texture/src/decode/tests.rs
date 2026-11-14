@@ -248,17 +248,24 @@ fn texture2ddecoders_formats_refuse_what_it_reads_past() {
 fn a_panic_in_the_pixel_loop_is_contained() {
     let meter = Meter::unlimited();
     let data = vec![0u8; 4 * 64 * 64];
-    let got = decode_with(Format::Rgba32, &data, 64, 64, &meter, |_, _, _, _, out| {
-        assert_eq!(out.len(), 4 * 64 * 64);
-        panic!("in the loop");
-    });
+    let got = decode_with(
+        Format::Rgba32,
+        &data,
+        64,
+        64,
+        &meter,
+        |_, _, _, _, out, _| {
+            assert_eq!(out.len(), 4 * 64 * 64);
+            panic!("in the loop");
+        },
+    );
     match got {
         Err(DecodeError::Panicked { payload }) => assert_eq!(payload.message(), "in the loop"),
         other => panic!("{other:?}"),
     }
     assert_eq!(meter.used(), 0);
     // The checks run outside it: their errors are their own.
-    let got = decode_with(Format::Rgba32, &[], 64, 64, &meter, |_, _, _, _, _| {
+    let got = decode_with(Format::Rgba32, &[], 64, 64, &meter, |_, _, _, _, _, _| {
         panic!("not reached")
     });
     assert_eq!(got.map(|_| ()), Err(DecodeError::NoImageData));

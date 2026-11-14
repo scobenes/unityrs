@@ -2,7 +2,8 @@
 //! at both of the value targets' memory bounds (`TreeCase::SMALL_MEMORY`
 //! clear and set), so a run from the seeds reaches the code that grows a
 //! charged buffer at the memory bound as soon as the work bound's; every
-//! `texture` seed as a `TextureCase`; and every `meshdecode` seed as a
+//! `texture` and `astc` seed as a `TextureCase`, the `astc` seeds of each of
+//! the twelve ASTC LDR formats; and every `meshdecode` seed as a
 //! `MeshCase`.
 
 #[path = "../examples/fuzz_seeds.rs"]
@@ -20,6 +21,7 @@ fn every_value_seed_is_written_at_each_memory_bound() {
     let dir = Scratch::new("fuzz-seeds");
     seeds::write(&dir).expect("the seeds are written");
     texture_seeds_are_cases(&dir);
+    astc_seeds_are_cases(&dir);
     mesh_seeds_are_cases(&dir);
     for target in ["boost_read", "python_read", "write_after_read"] {
         let (mut small, mut large) = (Vec::new(), Vec::new());
@@ -44,6 +46,22 @@ fn every_value_seed_is_written_at_each_memory_bound() {
             large.len()
         );
     }
+}
+
+/// Every `astc` seed is a `TextureCase` as written, of an ASTC LDR format,
+/// and each of the twelve has seeds of whole blocks.
+fn astc_seeds_are_cases(dir: &Path) {
+    let mut formats = BTreeSet::new();
+    for entry in std::fs::read_dir(dir.join("astc")).expect("the target's folder") {
+        let bytes = std::fs::read(entry.expect("an entry").path()).expect("a seed");
+        let case = TextureCase::decode(&bytes);
+        assert_eq!(case.encode(), bytes, "a seed that is not a case");
+        assert!((48..60).contains(&case.format), "{}", case.format);
+        if case.data.len().is_multiple_of(16) && !case.data.is_empty() {
+            formats.insert(case.format);
+        }
+    }
+    assert_eq!(formats, (48..60).collect());
 }
 
 /// Every `texture` seed is a `TextureCase` as written, and the seeds hold

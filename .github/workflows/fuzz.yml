@@ -51,6 +51,7 @@ jobs:
           - write_after_read
           - lz4
           - texture
+          - astc
           - meshdecode
           - zlib_match
           - unitycn

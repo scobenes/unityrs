@@ -207,7 +207,7 @@ jobs:
               -print_final_stats=1 > "$RUNNER_TEMP/fuzz-$1.log" 2>&1
           }
           failed=""
-          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture meshdecode zlib_match unitycn"; do
+          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture astc meshdecode zlib_match unitycn"; do
             pids=""
             for t in $batch; do
               run "$t" &
@@ -217,7 +217,7 @@ jobs:
               wait "${p#*:}" || failed="$failed ${p%%:*}"
             done
           done
-          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture meshdecode zlib_match unitycn; do
+          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture astc meshdecode zlib_match unitycn; do
             echo "== $t"
             grep -E '^(stat::|#[0-9]+ +DONE)' "$RUNNER_TEMP/fuzz-$t.log" || true
           done
@@ -396,7 +396,10 @@ jobs:
       # replays it. texture.py records UnityPy's and Pillow's texture decodes
       # and selection, through texture_etc.py texture2ddecoder's ETC and EAC
       # decodes, and through texture_raw.py Pillow's other raw and bcn
-      # decodes, which unityrs-texture's tests replay. meshdecode.py
+      # decodes, which unityrs-texture's tests replay; texture_astc.py
+      # records astcenc's ASTC LDR decodes through UnityPy (with texture.py's
+      # helpers) on astc-encoder-py's AVX2 build, which the runner's CPU
+      # loads, and which they replay too. meshdecode.py
       # records UnityPy's MeshHandler and UnityPyBoost's unpack_vertexdata,
       # through meshdecode_build.py, meshdecode_cases.py and
       # meshdecode_trees.py (its hand-built trees), which
@@ -422,6 +425,7 @@ jobs:
           python tools/fixtures/folders.py --check
           python tools/fixtures/no_tree.py --check
           python tools/fixtures/texture.py --check
+          python tools/fixtures/texture_astc.py --check
           python tools/fixtures/meshdecode.py --check
           python tools/fixtures/mesh_export.py --check
           python tools/fixtures/ngui.py --check

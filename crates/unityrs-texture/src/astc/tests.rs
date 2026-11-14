@@ -15,6 +15,8 @@ mod endpoints;
 mod integer_sequences;
 #[path = "memory_tests.rs"]
 mod memory;
+#[path = "oracle_tests.rs"]
+mod oracle;
 #[path = "partition_tests.rs"]
 mod partitions;
 

@@ -1,12 +1,14 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/export/Texture2DConverter.py's texture export for the formats it decodes with Pillow's raw and bcn decoders (Alpha8, ARGB4444, RGB24, RGBA32, ARGB32, RGB565, BGR24, DXT1, DXT3, DXT5, RGBA4444, BGRA32, BC7, BC4, BC5 and R8) and the ETC and EAC formats, with Pillow 9.5.0's and texture2ddecoder 1.0.5's decoders as it calls them. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/export/Texture2DConverter.py's texture export for the formats it decodes with Pillow's raw and bcn decoders (Alpha8, ARGB4444, RGB24, RGBA32, ARGB32, RGB565, BGR24, DXT1, DXT3, DXT5, RGBA4444, BGRA32, BC7, BC4, BC5 and R8), the ETC and EAC formats and the ASTC LDR formats, with Pillow 9.5.0's, texture2ddecoder 1.0.5's and astc-encoder-py 0.1.12's decoders as it calls them. See THIRD_PARTY_LICENSES.
 //! `Texture2D` decoding for the batch engine (`docs/plans/extract.md` E15,
 //! E18, E59, E66): the five formats P1b exports, BC7, DXT1, DXT5, RGBA32 and
 //! RGB24; of P3, the rest of the formats UnityPy decodes with Pillow's raw
 //! and `bcn` decoders (Alpha8, ARGB4444, ARGB32, RGB565, BGR24, DXT3,
 //! RGBA4444, BGRA32, BC4, BC5 and R8) and the eight ETC and EAC formats
 //! (`ETC_RGB4`, `ETC2_RGB`, `ETC2_RGBA1`, `ETC2_RGBA8`, `EAC_R`,
-//! `EAC_R_SIGNED`, `EAC_RG` and `EAC_RG_SIGNED`), decoded to the pixels
-//! UnityPy 1.25.2 with Pillow 9.5.0 and texture2ddecoder 1.0.5 gives
+//! `EAC_R_SIGNED`, `EAC_RG` and `EAC_RG_SIGNED`), and the twelve ASTC LDR
+//! formats (`ASTC_RGB_NxN` and `ASTC_RGBA_NxN`, N of 4, 5, 6, 8, 10 and
+//! 12), decoded to the pixels UnityPy 1.25.2 with Pillow 9.5.0,
+//! texture2ddecoder 1.0.5 and astc-encoder-py 0.1.12 gives
 //! (`Texture2D.image`, `export/Texture2DConverter.py:237-320`), bit for bit,
 //! but for `ETC2_RGBA1`'s transparent pixels and a signed EAC base of -128
 //! (Tier C, below), in its mode (`L` for BC4, `RGB` for RGB24, RGB565,
@@ -24,8 +26,9 @@
 //!   memory first.
 //! - [`decode()`]: a texture's data (mip 0 first; the rest is ignored, as
 //!   Pillow ignores it) to an [`Image`], its pixels charged to the caller's
-//!   meter before they are allocated, its pixel loop run under [`contain()`]
-//!   so a panic is an error ([`DecodeError::Panicked`]).
+//!   meter before they are allocated (and an ASTC format's tables, while
+//!   it runs), its pixel loop run under [`contain()`] so a panic is an
+//!   error ([`DecodeError::Panicked`]).
 //!
 //! **How each format matches UnityPy.** UnityPy decodes the five, and the
 //! eleven of P3's Pillow formats, with Pillow (`CONV_TABLE`,
@@ -56,7 +59,17 @@
 //! `tools/fixtures/texture_raw.py`'s data): every size class, every value of
 //! each packed field, every endpoint order of the block formats, long, short
 //! and empty data, zero and negative sides, each raw mode's width cap and
-//! the crop bound.
+//! the crop bound. UnityPy decodes the ASTC formats with astcenc
+//! (astc-encoder-py 0.1.12's, Arm astcenc at commit 631fb04), with the LDR
+//! profile into 8-bit output; the `astc` module ports its decoder, error
+//! colour and edge handling included. `tests/astc_oracle.rs` replays what
+//! UnityPy recorded for the twelve (`tools/fixtures/texture_astc.py`):
+//! blocks astcenc's encoder made, random blocks, cut edges, long, short and
+//! empty data, zero and negative sides, and Pillow's limits on astcenc's
+//! output; the crate's unit tests replay `Texture2DConverter.astc` alone at
+//! every footprint astcenc takes, on blocks crafted to reach every block
+//! mode class, partition count, dual-plane channel, endpoint mode, void
+//! extent and error block.
 //!
 //! **No panics, bounded work** (`docs/plans/core.md` section 3.15): indexing,
 //! `unwrap` and the like are denied outside tests; sizes are computed in

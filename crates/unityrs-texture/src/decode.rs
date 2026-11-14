@@ -1,4 +1,4 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/export/Texture2DConverter.py's parse_image_data for the formats decoded here (the checks, the block padding, the crop and the flip), and how Pillow 9.5.0 and texture2ddecoder 1.0.5, as it calls them, treat short and long data and the sizes they refuse. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/export/Texture2DConverter.py's parse_image_data for the formats decoded here (the checks, the block padding, the crop and the flip) and its astc's data check, and how Pillow 9.5.0, texture2ddecoder 1.0.5 and astc-encoder-py 0.1.12, as it calls them, treat short and long data and the sizes they refuse. See THIRD_PARTY_LICENSES.
 // Ported from Pillow 9.5.0 (MIT-CMU): its raw decoder as UnityPy calls it (src/libImaging/RawDecode.c's row copy, and the width cap of src/decode.c's _setimage), and the decompression-bomb check of src/PIL/Image.py's crop, with its message. See THIRD_PARTY_LICENSES.
 //! [`decode()`]: a texture's mip 0 to pixels, as `parse_image_data` gives them
 //! for the formats of [`Format`] (`export/Texture2DConverter.py:254-320`), and
@@ -8,10 +8,13 @@
 //! **What UnityPy does.** `parse_image_data` returns an empty image for a
 //! side of 0, raises for empty data, pads a block format's size to whole
 //! 4x4 blocks (`:291`, `get_compressed_image_size`; the raw formats are not
-//! padded), has Pillow decode the padded image (`Image.frombytes` with
+//! padded; an ASTC format to whole blocks of its footprint, `:36-50`), has
+//! Pillow decode the padded image (`Image.frombytes` with
 //! `CONV_TABLE`'s arguments, `:331-344`, `:488-566`), or for an ETC or EAC
 //! format texture2ddecoder, whose `BGRA` output Pillow's raw decoder then
-//! reads (`:405-432`, `:523-532`), crops it back to size
+//! reads (`:405-432`, `:523-532`), or for an ASTC format astcenc (the
+//! `astc` module), whose `RGBA` output it reads (`:356-366`, `:533-544`),
+//! crops it back to size
 //! (`:314-315`) and flips it top to bottom (`:317-318`). Pillow decodes the
 //! data from its start and stops when the image is full: bytes past it
 //! (later mips, anything else) are ignored, so a texture with mips decodes
@@ -32,7 +35,12 @@
 //!    padded below 0 (-4 and below) reaches it as a width or height near
 //!    2^32, which it multiplies in 32 bits and then reads and writes past
 //!    its buffers with: the error is unityrs's own refusal there
-//!    (`PARITY.md` section 19.3).
+//!    (`PARITY.md` section 19.3). So for an ASTC format: where padding made a
+//!    side 0 the crop raises, and a side padded below 0 reaches
+//!    astc-encoder-py as a negative size, which it refuses with `ASTCError`
+//!    when one side is, and with both reads and writes past astcenc's
+//!    buffers once the data holds the blocks the two negative counts'
+//!    product names.
 //! 4. A texture of more than [`MAX_PIXELS`] pixels at its padded size is
 //!    [`DecodeError::TooLarge`], whatever the data's length once it is not
 //!    empty: the bound UnityPy does not have (below).
@@ -44,11 +52,13 @@
 //!    (8 bits), 134,217,720 for ARGB4444, RGBA4444 and RGB565 (16),
 //!    89,478,478 for RGB24 and BGR24 (24), 67,108,856 for RGBA32, BGRA32
 //!    and ARGB32 (32).
-//!    So is an ETC or EAC texture whose padded width passes 67,108,856
-//!    (67,108,857 and up, padded to 67,108,860): Pillow's raw decoder reads
-//!    texture2ddecoder's output as `BGRA` at that width, and refuses it
-//!    after texture2ddecoder has decoded it, which changes no pixel. The
-//!    `bcn` decoder has no such cap.
+//!    So is an ETC, EAC or ASTC texture whose padded width passes
+//!    67,108,856 (67,108,857 and up, padded to 67,108,860 at 4x4): Pillow's
+//!    raw decoder reads texture2ddecoder's output as `BGRA`, or astcenc's
+//!    as `RGBA`, at that width, and refuses it after the decode, which
+//!    changes no pixel. The `bcn` decoder has no such cap. For an ASTC
+//!    format step 6 comes first: `astc` checks the data's length before
+//!    astcenc decodes and Pillow reads (`:356-366`).
 //! 6. Data that runs out before mip 0 does is [`DecodeError::NotEnoughData`],
 //!    Pillow's `ValueError` "not enough image data" (`Image.frombytes`;
 //!    `RawDecode.c` reads whole rows, of `bits / 8` bytes a pixel,
@@ -60,11 +70,14 @@
 //!    no length, and reads on past the data's end where it is short (its
 //!    `decode` template, `src/pylink.cpp`, ignores the length it parses):
 //!    for an ETC or EAC format the error is unityrs's own refusal, which
-//!    reads nothing that is not there (`PARITY.md` section 19.3).
+//!    reads nothing that is not there (`PARITY.md` section 19.3). For an
+//!    ASTC format it is `astc`'s
+//!    `ValueError("Invalid ASTC data size: {len} < {size}")`, mip 0's blocks
+//!    at 16 bytes each (`calculate_astc_compressed_size`, `:390-397`).
 //! 7. The decode.
-//! 8. A block-format texture (DXT1, DXT3, DXT5, BC4, BC5, BC7, ETC or EAC)
-//!    with a side that
-//!    is no multiple of 4 and
+//! 8. A block-format texture (DXT1, DXT3, DXT5, BC4, BC5, BC7, ETC, EAC or
+//!    ASTC) with a side that
+//!    is no multiple of its block's and
 //!    more than [`MAX_CROP_PIXELS`] (178,956,970) pixels is
 //!    [`DecodeError::DecompressionBomb`]: UnityPy's crop of the padded image
 //!    runs Pillow's decompression-bomb check on the size it crops to, which
@@ -77,7 +90,8 @@
 //!
 //! The decoders write straight into the output, cropped and flipped as they
 //! go, with no padded image between: each block is decoded into a 16-pixel
-//! array on the stack, and only the pixels inside the texture are copied,
+//! array on the stack (an ASTC block into one of up to 144 pixels), and only
+//! the pixels inside the texture are copied,
 //! each to its flipped row. That is the padded decode, then the crop and
 //! the flip, pixel for pixel.
 //!
@@ -103,7 +117,10 @@
 //!
 //! **Memory** (`docs/plans/extract.md` E59). The output is the only buffer a
 //! decode allocates in proportion to the texture (no scratch: a block is 64
-//! bytes on the stack). It is charged to the caller's [`Meter`] at
+//! bytes on the stack). An ASTC format's decode also builds its footprint's
+//! tables (the `astc` module, at most about 0.55 MB, at 12x12, whatever the
+//! texture's size), charged to the same meter after the output and dropped
+//! before the decode returns: [`Plan::scratch`]. The output is charged to the caller's [`Meter`] at
 //! [`heap_cost`] of its length before it is allocated (through
 //! [`MeteredVec`], whose refusal allocates nothing and whose allocation
 //! failure is a refusal too), once every check above has passed, and the
@@ -111,7 +128,8 @@
 //! returned after their buffer is freed, on every path, a panic's unwinding
 //! included. Only the pixel loop runs under [`crate::contain()`]. The
 //! engine calls [`plan()`] first: an `Ok` is a decode that will charge
-//! [`Plan::charge`] and write [`Plan::output_bytes`] (export work,
+//! [`Plan::charge`], at most [`Plan::peak_charge`] while it runs, and write
+//! [`Plan::output_bytes`] (export work,
 //! `docs/plans/batch.md` 2.6 step 10); an `Err` is the decode's error, which
 //! charges nothing.
 
@@ -123,13 +141,13 @@ use unityrs_core::limits::{Charge, ChargeError, Meter, MeteredVec, heap_cost};
 
 use crate::contain::Payload;
 use crate::format::{Format, Library, Mode};
-use crate::{bcn, etc, raw};
+use crate::{astc, bcn, etc, raw};
 
 /// The most pixels a texture may have, at its padded size: 16384 x 16384.
 /// UnityPy has no such bound (module docs; `PARITY.md` section 19.3).
 pub const MAX_PIXELS: u64 = 1 << 28;
 
-/// The most pixels UnityPy's crop of a padded `BCn` image takes: twice
+/// The most pixels UnityPy's crop of a padded block-format image takes: twice
 /// Pillow 9.5.0's `Image.MAX_IMAGE_PIXELS`, `1024 * 1024 * 1024 // 4 // 3`
 /// (module docs, step 8).
 pub const MAX_CROP_PIXELS: u64 = 2 * 89_478_485;
@@ -174,19 +192,20 @@ pub enum DecodeError {
         /// [`MAX_PIXELS`].
         max: u64,
     },
-    /// A raw texture's row, or an ETC or EAC texture's padded row,
+    /// A raw texture's row, or an ETC, EAC or ASTC texture's padded row,
     /// wider than Pillow's raw decoder takes: Pillow's `MemoryError`
     /// (module docs, step 5).
     #[error("Pillow's raw decoder refuses a row of {width} pixels, past {max} (MemoryError)")]
     PillowMemoryError {
         /// The row's width as Pillow's raw decoder gets it: `m_Width`,
-        /// padded to whole 4x4 blocks for an ETC or EAC format.
+        /// padded to whole blocks for an ETC, EAC or ASTC format.
         width: u32,
         /// The widest row it takes: `INT_MAX / bits - 7`.
         max: u32,
     },
     /// The data ends before mip 0 does: Pillow's `ValueError` "not enough
-    /// image data", or for an ETC or EAC format, where texture2ddecoder
+    /// image data", for an ASTC format UnityPy's `ValueError` "Invalid ASTC
+    /// data size", or for an ETC or EAC format, where texture2ddecoder
     /// reads on past the data's end, unityrs's own refusal (module docs,
     /// step 6).
     #[error("not enough image data: {needed} bytes needed, {got} given")]
@@ -238,6 +257,10 @@ pub struct Plan {
     pub input_bytes: u64,
     /// The image's bytes: width x height x the mode's bytes per pixel.
     pub output_bytes: u64,
+    /// What the decode charges beside the output while it runs, and returns
+    /// before it ends: an ASTC format's tables (the `astc` module), 0 for
+    /// the rest.
+    pub scratch: u64,
 }
 
 const _: () = crate::send_sync::<Plan>();
@@ -250,6 +273,13 @@ impl Plan {
     #[must_use]
     pub const fn charge(&self) -> u64 {
         heap_cost(self.output_bytes)
+    }
+
+    /// The most [`decode()`] has charged at once: [`Self::charge`] and
+    /// [`Self::scratch`].
+    #[must_use]
+    pub const fn peak_charge(&self) -> u64 {
+        self.charge().saturating_add(self.scratch)
     }
 }
 
@@ -264,6 +294,7 @@ pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<
             height: 0,
             input_bytes: 0,
             output_bytes: 0,
+            scratch: 0,
         });
     }
     if data_len == 0 {
@@ -274,11 +305,14 @@ pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<
     };
     let (w64, h64) = (u64::from(w), u64::from(h));
     let block = format.block_bytes();
-    let (padded_w, padded_h) = match block {
-        Some(_) => (w64.div_ceil(4) * 4, h64.div_ceil(4) * 4),
+    let (padded_w, padded_h) = match format.block_size() {
+        Some((bw, bh)) => {
+            let (bw, bh) = (u64::from(bw), u64::from(bh));
+            (w64.div_ceil(bw) * bw, h64.div_ceil(bh) * bh)
+        }
         None => (w64, h64),
     };
-    // Each side is at most 2^31, so the product fits a u64.
+    // Each side is at most 2^31 + 11, so the product fits a u64.
     let pixels = padded_w * padded_h;
     if pixels > MAX_PIXELS {
         return Err(DecodeError::TooLarge {
@@ -287,30 +321,46 @@ pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<
         });
     }
     let mode = format.mode();
-    let bits = format.raw_bits();
-    if let Some(bits) = bits {
+    let library = format.library();
+    // From here every size is at most 4 x MAX_PIXELS.
+    let len = u64::try_from(data_len).unwrap_or(u64::MAX);
+    let (input_bytes, seen) = match (block, format.block_size(), library) {
+        (Some(b), Some((bw, bh)), _) => {
+            let blocks = padded_w / u64::from(bw) * (padded_h / u64::from(bh));
+            let seen = if library == Library::PillowBcn {
+                bcn_length(data_len)
+            } else {
+                len
+            };
+            (blocks * b, seen)
+        }
+        // Pillow's raw decoder reads whole rows of `bits` a pixel, each a
+        // whole number of bytes here.
+        _ => (pixels * u64::from(format.raw_bits().unwrap_or(0) / 8), len),
+    };
+    let short = seen < input_bytes;
+    let not_enough = || DecodeError::NotEnoughData {
+        needed: input_bytes,
+        got: len,
+    };
+    // UnityPy checks an ASTC texture's data before astcenc decodes it and
+    // Pillow reads its output (`export/Texture2DConverter.py:356-366`); for
+    // the rest Pillow's width cap comes first (module docs, step 5).
+    if library == Library::Astcenc && short {
+        return Err(not_enough());
+    }
+    if let Some(bits) = format.raw_bits() {
         // The width Pillow's raw decoder is set up with: the texture's, or
-        // for texture2ddecoder's output the padded one, at most 2^28 here.
+        // for texture2ddecoder's and astcenc's output the padded one, at
+        // most 2^28 here.
         let row = u32::try_from(padded_w).unwrap_or(u32::MAX);
         let max = INT_MAX / bits - 7;
         if row > max {
             return Err(DecodeError::PillowMemoryError { width: row, max });
         }
     }
-    // From here every size is at most 4 x MAX_PIXELS.
-    let len = u64::try_from(data_len).unwrap_or(u64::MAX);
-    let (input_bytes, seen) = match (block, format.library()) {
-        (Some(b), Library::PillowBcn) => (pixels / 16 * b, bcn_length(data_len)),
-        (Some(b), _) => (pixels / 16 * b, len),
-        // Pillow's raw decoder reads whole rows of `bits` a pixel, each a
-        // whole number of bytes here.
-        (None, _) => (pixels * u64::from(bits.unwrap_or(0) / 8), len),
-    };
-    if seen < input_bytes {
-        return Err(DecodeError::NotEnoughData {
-            needed: input_bytes,
-            got: len,
-        });
+    if short {
+        return Err(not_enough());
     }
     let shown = w64 * h64;
     if (padded_w, padded_h) != (w64, h64) && shown > MAX_CROP_PIXELS {
@@ -325,7 +375,17 @@ pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<
         height: h,
         input_bytes,
         output_bytes: shown * mode.bytes_per_pixel(),
+        scratch: astc_footprint(format).map_or(0, astc::Tables::charge),
     })
+}
+
+/// An ASTC format's footprint.
+fn astc_footprint(format: Format) -> Option<astc::Footprint> {
+    if format.library() != Library::Astcenc {
+        return None;
+    }
+    let (w, h) = format.block_size()?;
+    astc::Footprint::new(w, h)
 }
 
 /// A decoded image: rows top to bottom, each pixel its mode's bytes, red
@@ -443,8 +503,9 @@ pub fn decode(
 }
 
 /// The pixels the loop writes: `out` is `w` x `h` pixels of the format's
-/// mode, and `data` holds at least mip 0 ([`plan()`]).
-type Fill = fn(Format, &[u8], usize, usize, &mut [u8]);
+/// mode, `data` holds at least mip 0 ([`plan()`]), and an ASTC format has
+/// its tables.
+type Fill = fn(Format, &[u8], usize, usize, &mut [u8], Option<&mut astc::Tables>);
 
 /// [`decode()`] with its pixel loop, which a test may replace.
 fn decode_with(
@@ -479,11 +540,18 @@ fn decode_with(
     // Within the capacity just reserved: no allocation.
     image.pixels.resize(out_len, 0);
     if out_len > 0 {
+        // An ASTC format's tables, charged after the output (`Plan::scratch`)
+        // and dropped before the decode returns.
+        let mut tables = match astc_footprint(format) {
+            Some(fp) => Some(astc::Tables::new(fp, meter)?),
+            None => None,
+        };
         let out = &mut image.pixels;
-        // Unwind-safe: on a panic `image` is dropped, never read, so its
-        // half-written pixels are seen by no one; `data` is only read.
+        // Unwind-safe: on a panic `image` and the tables are dropped, never
+        // read, so their half-written bytes are seen by no one; `data` is
+        // only read.
         crate::contain(AssertUnwindSafe(|| {
-            fill(format, data, w, h, out);
+            fill(format, data, w, h, out, tables.as_mut());
             Ok(())
         }))?;
     }
@@ -491,7 +559,20 @@ fn decode_with(
 }
 
 /// The format's decoder.
-fn fill(format: Format, data: &[u8], w: usize, h: usize, out: &mut [u8]) {
+fn fill(
+    format: Format,
+    data: &[u8],
+    w: usize,
+    h: usize,
+    out: &mut [u8],
+    tables: Option<&mut astc::Tables>,
+) {
+    if let Some(tables) = tables {
+        // Every ASTC format, and only they, has tables. UnityPy flips the
+        // padded image after astcenc's decode and its crop.
+        astc::decode_image(tables, data, (w, h), true, astc::ERROR, out);
+        return;
+    }
     match format {
         Format::Alpha8 => raw::decode(raw::Kind::A, data, w, h, out),
         Format::Argb4444 => raw::decode(raw::Kind::Rgba4BArgb, data, w, h, out),
@@ -517,6 +598,19 @@ fn fill(format: Format, data: &[u8], w: usize, h: usize, out: &mut [u8]) {
         Format::Etc2Rgb => etc::decode(etc::Kind::Etc2, data, w, h, out),
         Format::Etc2Rgba1 => etc::decode(etc::Kind::Etc2A1, data, w, h, out),
         Format::Etc2Rgba8 => etc::decode(etc::Kind::Etc2A8, data, w, h, out),
+        // Decoded above, with their tables.
+        Format::AstcRgb4x4
+        | Format::AstcRgb5x5
+        | Format::AstcRgb6x6
+        | Format::AstcRgb8x8
+        | Format::AstcRgb10x10
+        | Format::AstcRgb12x12
+        | Format::AstcRgba4x4
+        | Format::AstcRgba5x5
+        | Format::AstcRgba6x6
+        | Format::AstcRgba8x8
+        | Format::AstcRgba10x10
+        | Format::AstcRgba12x12 => {}
     }
 }
 
