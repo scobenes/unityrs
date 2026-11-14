@@ -141,6 +141,11 @@ pub struct OperationToken {
     slot: Arc<Slot>,
     operation: Operation,
 }
+impl OperationToken {
+    pub(crate) fn belongs_to(&self, permit: &RequestPermit) -> bool {
+        self.operation == Operation::Lookup && Arc::ptr_eq(&self.slot, &permit.slot)
+    }
+}
 impl Drop for OperationToken {
     fn drop(&mut self) {
         self.slot
@@ -170,6 +175,20 @@ impl Drop for Charge {
 }
 
 impl Charge {
+    /// Replace a completed phase's reservation without a second owner. The
+    /// state keeps its existing charge count; Drop releases the grown total.
+    pub(crate) fn grow(&mut self, bytes: u64) -> Option<()> {
+        let total = self.bytes.checked_add(bytes)?;
+        self.slot
+            .bytes
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(bytes)
+                    .filter(|&next| next <= NETWORK_ALLOWANCE)
+            })
+            .ok()?;
+        self.bytes = total;
+        Some(())
+    }
     pub(crate) fn additional(&self, bytes: u64) -> Option<Self> {
         charge(&self.slot, bytes)
     }

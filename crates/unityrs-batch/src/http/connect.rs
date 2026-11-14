@@ -2,7 +2,7 @@
 use super::{
     Detail, Error,
     io::Stream,
-    permit::RequestPermit,
+    permit::{Charge, OperationToken, RequestPermit},
     resolve::{self, Source},
     socket::{Registration, SocketTable},
 };
@@ -28,13 +28,17 @@ impl Connector {
         permit: &mut RequestPermit,
         url: &Url,
         timeout: Duration,
+        token: Option<OperationToken>,
+        envelope: &mut Charge,
     ) -> Result<Stream, Error> {
         // A previous timed-out lookup's wait is outside this connection timer.
-        poll_fn(|cx| permit.poll_available(cx)).await;
+        if token.is_none() {
+            poll_fn(|cx| permit.poll_available(cx)).await;
+        }
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or(Error::InvalidRequest)?;
-        timeout_at(deadline, self.until(permit, url, deadline))
+        timeout_at(deadline, self.until(permit, url, deadline, token, envelope))
             .await
             .unwrap_or_else(|_| Err(Error::transport(Detail::Connect)))
     }
@@ -43,6 +47,8 @@ impl Connector {
         permit: &mut RequestPermit,
         url: &Url,
         deadline: Instant,
+        token: Option<OperationToken>,
+        envelope: &mut Charge,
     ) -> Result<Stream, Error> {
         let host = url.host_str().ok_or(Error::InvalidRequest)?;
         // url's IPv6 host_str includes brackets; the resolver and ServerName
@@ -52,7 +58,11 @@ impl Connector {
             .and_then(|s| s.strip_suffix(']'))
             .unwrap_or(host);
         let port = url.port_or_known_default().ok_or(Error::InvalidRequest)?;
-        let addresses = resolve::lookup(&self.pool, permit, &self.resolver, host, port).await?;
+        let addresses =
+            resolve::lookup(&self.pool, permit, &self.resolver, host, port, token).await?;
+        envelope
+            .grow(resolve::LOOKUP_ENVELOPE)
+            .ok_or(Error::Memory)?;
         let mut last = Error::transport(Detail::Connect);
         let count = addresses.len();
         for index in 0..count {

@@ -34,6 +34,7 @@ pub enum Handshake {
     Eof,
     Reset,
     Stall,
+    Protocol,
 }
 static SERIAL: Mutex<()> = Mutex::new(());
 pub fn lock() -> std::sync::MutexGuard<'static, ()> {
@@ -73,6 +74,9 @@ impl Peer {
         Self { address, done }
     }
     pub fn handshake(mode: Handshake) -> Self {
+        Self::handshake_observed(mode, Arc::new(|| {}))
+    }
+    pub fn handshake_observed(mode: Handshake, entered: Arc<dyn Fn() + Send + Sync>) -> Self {
         use std::os::fd::AsRawFd;
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let address = listener.local_addr().unwrap();
@@ -84,12 +88,14 @@ impl Peer {
                 let mut buffer = [0; 4_096];
                 let count = socket.read(&mut buffer)?;
                 assert!(count > 0, "client entered TLS handshake");
+                entered();
                 match mode {
                     Handshake::Reset => {
                         unityrs_batch::sys::test_set_zero_linger(socket.as_raw_fd())?;
                     }
                     Handshake::Eof => socket.shutdown(std::net::Shutdown::Write)?,
                     Handshake::Stall => (),
+                    Handshake::Protocol => socket.write_all(&[22, 3, 3, 0, 4, 255, 0, 0, 0])?,
                 }
                 let reset = if matches!(mode, Handshake::Reset) {
                     drop(socket);

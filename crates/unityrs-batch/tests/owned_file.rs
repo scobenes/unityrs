@@ -158,3 +158,23 @@ fn cap_reserve_and_overflow_refuse_before_the_write() {
         file.remove().unwrap();
     }
 }
+
+#[test]
+fn positional_writes_recheck_free_space_inside_an_upfront_reservation() {
+    let scratch = Scratch::new("owned-positional-reserve");
+    let facts = Arc::new(Available(AtomicU64::new(10)));
+    let counter = Counter::new(4096, 10, 4096).unwrap();
+    let mut file = OwnedFile::create(scratch.join("i0"), counter.clone(), facts.clone()).unwrap();
+    file.reserve(4096).unwrap();
+    file.write_at(b"a", 0, &|| false).unwrap();
+    facts.0.store(9, Ordering::Relaxed);
+    assert!(matches!(
+        file.write_at(b"b", 1, &|| false),
+        Err(Error::Full(Full::Reserve))
+    ));
+    assert_eq!(std::fs::read(file.path()).unwrap(), b"a");
+    assert_eq!(file.length(), 1);
+    assert_eq!(counter.used(), 4096);
+    file.remove().unwrap();
+    assert_eq!(counter.used(), 0);
+}

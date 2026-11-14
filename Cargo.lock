@@ -960,6 +960,7 @@ dependencies = [
  "boon",
  "crc32fast",
  "http-body-util",
+ "httpdate",
  "hyper",
  "hyper-util",
  "libc",

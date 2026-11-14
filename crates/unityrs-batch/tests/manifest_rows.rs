@@ -573,3 +573,45 @@ fn globally_withheld_base_rows_still_reconcile_with_winners() {
     assert_eq!(rows.rows["outputs"][0]["status"], "withheld");
     assert_eq!(rows.rows["outputs"][0]["reason"], "publish_incomplete");
 }
+
+#[test]
+fn fixed_download_details_render_in_bundle_rows_without_peer_values() {
+    use unityrs_batch::{
+        http::Detail,
+        stage::{DataFailure, Failure, StageEnd},
+    };
+    for (failure, reason, detail) in [
+        (
+            DataFailure::DownloadFailed(Detail::Connect),
+            "download_failed",
+            "connect",
+        ),
+        (
+            DataFailure::DownloadFailed(Detail::Status(503)),
+            "download_failed",
+            "status 503",
+        ),
+        (
+            DataFailure::RedirectRefused(307),
+            "redirect_refused",
+            "status 307",
+        ),
+    ] {
+        let mut scene = Scene::new(&["z", "a", "m"], true, 4096);
+        scene.prepared.bundles[0].stage = Some(StageEnd {
+            bundle: 0,
+            failure: Some(Failure::Data(failure)),
+            integrity: None,
+            facts: None,
+            claimed_bytes: 0,
+        });
+        let (_, rows) = assemble(&scene, None);
+        let row = rows.rows["bundles"]
+            .iter()
+            .find(|r| r["reason"] == reason)
+            .unwrap();
+        assert_eq!(row["detail"], detail);
+        assert!(row["size"].is_null());
+        assert!(row["sha256"].is_null());
+    }
+}
