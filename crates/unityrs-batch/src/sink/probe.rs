@@ -23,34 +23,42 @@ const PAIRS: [(&CStr, &CStr, &str); 2] = [
     ),
 ];
 
-/// Creates each pair under the run's own directory `run`, held at `key`'s
-/// parent, and removes it. A pair whose second create fails with `EEXIST`,
-/// or resolves to the first's inode, refuses the sink. Skipped only for a
-/// test adapter that answers `probe_sink_semantics` false.
+/// Creates each pair in the root itself, held at a one-segment key, and in
+/// the run's own directory `run`, held at `key`'s parent, and removes it. A
+/// pair whose second create fails with `EEXIST`, or resolves to the first's
+/// inode, refuses the sink. Both directories, since a directory's folding is
+/// its own (ext4's casefold attribute): a root that folds can hold an
+/// `_unityrs` that does not. Skipped only for a test adapter that answers
+/// `probe_sink_semantics` false.
 pub(crate) fn sensitive(root: &Root, run: &File, key: &str) -> Result<(), Error> {
     if !root.fs().probe_sink_semantics() {
         return Ok(());
     }
-    for (first, second, detail) in PAIRS {
-        root.revalidate(run, key, Context::Preflight)?;
-        clear(root, run, first)?;
-        clear(root, run, second)?;
-        let folded = pair(root, run, key, first, second);
-        let cleared = clear(root, run, first).and_then(|()| clear(root, run, second));
-        if folded? {
-            return Err(Error::plain(Class::SinkRootUnusable, detail));
+    for (dir, key) in [(root.file(), "probe"), (run, key)] {
+        for (first, second, detail) in PAIRS {
+            root.revalidate(dir, key, Context::Preflight)?;
+            clear(root, dir, first)?;
+            clear(root, dir, second)?;
+            let folded = pair(root, dir, key, first, second);
+            // Both removals are tried, whatever the first gives; its error
+            // is the one kept.
+            let one = clear(root, dir, first);
+            let two = clear(root, dir, second);
+            if folded? {
+                return Err(Error::plain(Class::SinkRootUnusable, detail));
+            }
+            one.and(two)?;
         }
-        cleared?;
     }
     Ok(())
 }
-fn pair(root: &Root, run: &File, key: &str, first: &CStr, second: &CStr) -> Result<bool, Error> {
+fn pair(root: &Root, dir: &File, key: &str, first: &CStr, second: &CStr) -> Result<bool, Error> {
     let cx = Context::Preflight;
     let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW;
-    root.revalidate(run, key, cx)?;
-    let one = root.child(run, first, flags, cx)?;
-    root.revalidate(run, key, cx)?;
-    let two = match root.child(run, second, flags, cx) {
+    root.revalidate(dir, key, cx)?;
+    let one = root.child(dir, first, flags, cx)?;
+    root.revalidate(dir, key, cx)?;
+    let two = match root.child(dir, second, flags, cx) {
         Ok(two) => two,
         Err(e) if e.errno == Some(libc::EEXIST) => return Ok(true),
         Err(e) => return Err(e),
@@ -59,8 +67,8 @@ fn pair(root: &Root, run: &File, key: &str, first: &CStr, second: &CStr) -> Resu
     let two = two.metadata().map_err(|e| Error::io(cx, "fstat", &e))?;
     Ok((one.dev(), one.ino()) == (two.dev(), two.ino()))
 }
-fn clear(root: &Root, run: &File, name: &CStr) -> Result<(), Error> {
-    match root.fs().unlink(run, name) {
+fn clear(root: &Root, dir: &File, name: &CStr) -> Result<(), Error> {
+    match root.fs().unlink(dir, name) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(Error::io(Context::Preflight, "unlinkat", &e)),
