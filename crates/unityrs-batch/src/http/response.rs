@@ -24,6 +24,9 @@ pub const HEAD_CAP: usize = 128 * 1_024;
 /// acceptance gate; this reservation alone does not prove the library's bound.
 pub const LIBRARY_ENVELOPE: u64 = 3 * 1_024 * 1_024 + 512 * 1_024;
 type Driver<I> = Pin<Box<http1::Connection<TokioIo<I>, Payload>>>;
+/// A driver's storage, taken before its socket connects (`Service::request`).
+pub(crate) type DriverStorage<I> =
+    Box<std::mem::MaybeUninit<http1::Connection<TokioIo<I>, Payload>>>;
 
 /// No connection task or executor-owned future escapes this value.
 pub struct Response<I: AsyncRead + AsyncWrite + Unpin> {
@@ -92,9 +95,14 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Response<I> {
         let result = self.next_data(credit).await;
         if let Err(error) = result {
             self.terminal_error = Some(error);
-            self.pending = Bytes::new();
-            self.incoming.take();
-            self.driver.take();
+            // A refusal is the run's failure: its connection stays open in
+            // this response, which the run keeps until after its finisher
+            // (`stage/slot.rs`). Any other error ends the exchange here.
+            if !matches!(error, Error::Memory) {
+                self.pending = Bytes::new();
+                self.incoming.take();
+                self.driver.take();
+            }
         }
         result
     }
@@ -194,12 +202,16 @@ pub async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
 ) -> Result<Response<I>, Error> {
     super::request::validate_request(&request, None)?;
     let envelope = permit.charge(LIBRARY_ENVELOPE).ok_or(Error::Memory)?;
-    exchange_charged(io, envelope, request).await
+    let storage = crate::alloc::try_box_uninit().map_err(|_| Error::Memory)?;
+    exchange_charged(io, envelope, request, storage).await
 }
+/// No fallible step follows the handshake: the driver's `storage` was
+/// taken before `io` connected, so no refusal here drops the connection.
 pub(crate) async fn exchange_charged<I: AsyncRead + AsyncWrite + Unpin>(
     io: I,
     envelope: Charge,
     request: hyper::Request<Payload>,
+    storage: DriverStorage<I>,
 ) -> Result<Response<I>, Error> {
     let (mut sender, connection) = http1::Builder::new()
         .writev(true)
@@ -208,7 +220,7 @@ pub(crate) async fn exchange_charged<I: AsyncRead + AsyncWrite + Unpin>(
         .handshake(TokioIo::new(io))
         .await
         .map_err(|e| super::classify::head(&e))?;
-    let mut driver = Box::into_pin(crate::alloc::try_box(connection).map_err(|_| Error::Memory)?);
+    let mut driver = Box::into_pin(Box::write(storage, connection));
     let mut send = std::pin::pin!(sender.send_request(request));
     let mut done = false;
     let mut failed = false;

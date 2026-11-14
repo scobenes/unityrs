@@ -4,6 +4,7 @@ use super::Failure;
 use crate::control::Control;
 use std::{
     future::{Future, poll_fn},
+    sync::atomic::{AtomicU64, Ordering::Relaxed},
     task::Poll,
     time::{Duration, SystemTime},
 };
@@ -32,6 +33,59 @@ impl Clock for RuntimeClock {
             tokio::time::sleep_until(until).await;
         } else {
             std::future::pending::<()>().await;
+        }
+    }
+}
+/// The production stage clock. On Linux, `CLOCK_BOOTTIME` since boot: it
+/// counts a suspend, as the deadline's cutoff does (`lifetime::Policy`), so
+/// the cutoff is [`Self::cutoff`] of the policy's and a retry never starts
+/// past it after a suspend. A failing clock reads as `Duration::MAX`, which
+/// expires every timer rather than extending one. Off Linux (non-normative
+/// test hosts, with no boot clock and so no cutoff) a monotonic origin.
+#[cfg_attr(target_os = "linux", derive(Default))]
+pub struct BootClock {
+    #[cfg(not(target_os = "linux"))]
+    origin: std::time::Instant,
+}
+#[cfg(not(target_os = "linux"))]
+impl Default for BootClock {
+    fn default() -> Self {
+        Self {
+            origin: std::time::Instant::now(),
+        }
+    }
+}
+impl BootClock {
+    /// The cutoff on this clock: the policy's cutoff, milliseconds on
+    /// `CLOCK_BOOTTIME`, is this clock's reading at that instant.
+    #[must_use]
+    pub fn cutoff(cutoff: Option<crate::lifetime::Boot>) -> Option<Duration> {
+        cutoff.map(|boot| Duration::from_millis(boot.0))
+    }
+}
+impl Clock for BootClock {
+    fn now(&self) -> Duration {
+        #[cfg(target_os = "linux")]
+        {
+            crate::sys::boottime().unwrap_or(Duration::MAX)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.origin.elapsed()
+        }
+    }
+    fn wall(&self) -> SystemTime {
+        SystemTime::now()
+    }
+    /// Tokio's timers run on the monotonic clock, which a suspend stops:
+    /// sleep at most a second at a time, re-reading this clock between.
+    async fn sleep_until(&self, deadline: Duration) {
+        loop {
+            let left = deadline.saturating_sub(self.now());
+            if left.is_zero() {
+                return;
+            }
+            tokio::time::sleep(left.min(Duration::from_secs(1))).await;
         }
     }
 }
@@ -79,6 +133,8 @@ impl<C: Clock> Context<C> {
         if self.check().is_err() {
             // `output` may own the response, and `future` may still own a
             // connecting socket. Neither is dropped at the freeze boundary.
+            // An allocation refused in this poll is not lost with `output`:
+            // the stage's poll wrapper has already requested it (`url.rs`).
             std::future::pending::<()>().await;
         }
         output.ok_or(Failure::Stopped)
@@ -115,61 +171,77 @@ pub(crate) async fn race<C: Clock, F: Future>(
     .await
 }
 
+/// One try's active body time. Its moving parts are atomics, read and
+/// written by the one thread polling the stage, only so a shared borrow
+/// (the credit closure's and the wait's at once) keeps the stage's future
+/// `Send`: the controller retains it in a stage slot.
 pub(crate) struct BodyTime {
     start: Duration,
-    paused: Duration,
-    idle: Duration,
-    window: Duration,
     period: Duration,
     floor: u64,
-    bytes: u64,
+    paused: AtomicU64,
+    idle: AtomicU64,
+    window: AtomicU64,
+    bytes: AtomicU64,
+}
+fn nanos(d: Duration) -> u64 {
+    u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
+}
+fn load(cell: &AtomicU64) -> Duration {
+    Duration::from_nanos(cell.load(Relaxed))
 }
 impl BodyTime {
     pub fn new(start: Duration, period: Duration, floor: u32) -> Self {
         Self {
             start,
-            paused: Duration::ZERO,
-            idle: period,
-            window: period,
             period,
             floor: u64::from(floor),
-            bytes: 0,
+            paused: AtomicU64::new(0),
+            idle: AtomicU64::new(nanos(period)),
+            window: AtomicU64::new(nanos(period)),
+            bytes: AtomicU64::new(0),
         }
     }
     fn active(&self, now: Duration) -> Duration {
-        now.saturating_sub(self.start).saturating_sub(self.paused)
+        now.saturating_sub(self.start)
+            .saturating_sub(load(&self.paused))
     }
     pub fn deadline(&self) -> Duration {
         self.start
-            .saturating_add(self.paused)
-            .saturating_add(self.idle.min(self.window))
+            .saturating_add(load(&self.paused))
+            .saturating_add(load(&self.idle).min(load(&self.window)))
     }
     /// Complete windows are assessed before crediting a byte at their boundary.
-    pub fn advance(&mut self, now: Duration) -> bool {
+    pub fn advance(&self, now: Duration) -> bool {
         let active = self.active(now);
-        if active >= self.idle {
+        if active >= load(&self.idle) {
             return false;
         }
-        if active >= self.window {
-            if self.bytes < self.floor {
+        let window = load(&self.window);
+        if active >= window {
+            if self.bytes.load(Relaxed) < self.floor {
                 return false;
             }
-            self.bytes = 0;
-            self.window = self.window.saturating_add(self.period);
+            self.bytes.store(0, Relaxed);
+            let window = window.saturating_add(self.period);
+            self.window.store(nanos(window), Relaxed);
             // No DATA in any skipped, complete window.
-            if active >= self.window {
+            if active >= window {
                 return false;
             }
         }
         true
     }
-    pub fn data(&mut self, now: Duration, count: usize) {
+    pub fn data(&self, now: Duration, count: usize) {
         if count != 0 {
-            self.idle = self.active(now).saturating_add(self.period);
-            self.bytes = self.bytes.saturating_add(count as u64);
+            self.idle
+                .store(nanos(self.active(now).saturating_add(self.period)), Relaxed);
+            let bytes = self.bytes.load(Relaxed).saturating_add(count as u64);
+            self.bytes.store(bytes, Relaxed);
         }
     }
-    pub fn pause(&mut self, duration: Duration) {
-        self.paused = self.paused.saturating_add(duration);
+    pub fn pause(&self, duration: Duration) {
+        let paused = load(&self.paused).saturating_add(duration);
+        self.paused.store(nanos(paused), Relaxed);
     }
 }

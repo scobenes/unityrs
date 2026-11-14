@@ -1,6 +1,7 @@
-//! Standalone URL staging, driven on the caller's current-thread runtime.
-//! Retain both this owner and its run future outside the controller's unwind
-//! scope. B10c freezes polling at handover; dropping a run future is not stop.
+//! URL staging, driven on the caller's current-thread runtime: in a run, the
+//! owning future of `slot.rs`, retained in the controller's stage slot. The
+//! controller (`controller/network.rs`) stops polling it at the stop and
+//! parks it at the hand-over; dropping a run future is not a stop.
 use super::{
     DataFailure, Facts, Failure, Integrity, StageEnd,
     headers::Values,
@@ -26,7 +27,6 @@ use hyper::{
 };
 use sha2::{Digest, Sha256};
 use std::{
-    cell::RefCell,
     future::{Future, poll_fn},
     panic::{AssertUnwindSafe, catch_unwind},
     task::Poll,
@@ -173,6 +173,37 @@ impl<R: Body> Stage<R> {
         pool: &Handle,
         cx: &Context<C>,
     ) -> StageEnd {
+        let url = bundle.url().and_then(|text| Url::parse(text).ok());
+        self.run_parsed(
+            bundle_index,
+            bundle,
+            url.as_ref(),
+            m,
+            policy,
+            values,
+            transport,
+            permit,
+            pool,
+            cx,
+        )
+        .await
+    }
+    /// [`Self::run`] from the bundle's URL as phase 1 parsed it, so a run's
+    /// stage parses none (redirects aside, whose joins are the stage's own).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_parsed<C: Clock, T: Transport<Response = R>>(
+        &mut self,
+        bundle_index: u32,
+        bundle: BundleRef<'_>,
+        url: Option<&Url>,
+        m: u64,
+        policy: &Http,
+        values: &impl Values,
+        transport: &T,
+        permit: &mut RequestPermit,
+        pool: &Handle,
+        cx: &Context<C>,
+    ) -> StageEnd {
         let mut end = StageEnd {
             bundle: bundle_index,
             failure: None,
@@ -183,14 +214,21 @@ impl<R: Body> Stage<R> {
         let mut refused = false;
         end.failure = {
             let mut future = std::pin::pin!(self.download(
-                bundle, m, policy, values, transport, permit, pool, cx, &mut end,
+                bundle, url, m, policy, values, transport, permit, pool, cx, &mut end,
             ));
             poll_fn(|task| {
                 // A current-thread runtime may poll other stages between our
                 // polls. Only this synchronous poll belongs to our window.
                 let before = crate::alloc::refusals();
                 let result = future.as_mut().poll(task);
-                refused |= crate::alloc::refusals() != before;
+                if crate::alloc::refusals() != before && !refused {
+                    refused = true;
+                    // Requested at once: a stop seen later in this same poll
+                    // freezes the stage (`network_wait`) with its refusal
+                    // unreported. The control's severity orders the two.
+                    cx.control
+                        .request_stop(RunFailure::new(ReasonCode::HostMemory), Culprit::None);
+                }
                 result
             })
             .await
@@ -235,6 +273,7 @@ impl<R: Body> Stage<R> {
     async fn download<C: Clock, T: Transport<Response = R>>(
         &mut self,
         bundle: BundleRef<'_>,
+        url: Option<&Url>,
         m: u64,
         policy: &Http,
         values: &impl Values,
@@ -256,7 +295,7 @@ impl<R: Body> Stage<R> {
         {
             return Err(internal());
         }
-        let original = bundle.url().ok_or_else(internal)?;
+        let original = url.ok_or_else(internal)?;
         let mut attempt = 0;
         loop {
             cx.check()?;
@@ -271,7 +310,7 @@ impl<R: Body> Stage<R> {
             cx.check()?;
             attempt += 1;
             self.claimed = self.file.as_ref().map_or(0, OwnedFile::claimed);
-            let mut time = BodyTime::new(
+            let time = BodyTime::new(
                 start,
                 Duration::from_millis(u64::from(policy.idle_timeout_ms)),
                 policy.min_rate_bytes,
@@ -279,8 +318,8 @@ impl<R: Body> Stage<R> {
             let mut after = super::retry::After::default();
             let result = self
                 .try_download(
-                    bundle, m, policy, values, transport, permit, pool, cx, original, token,
-                    &mut time, &mut after, end,
+                    bundle, m, policy, values, transport, permit, pool, cx, original, token, &time,
+                    &mut after, end,
                 )
                 .await;
             let Err(failure) = result else {
@@ -324,13 +363,14 @@ impl<R: Body> Stage<R> {
         permit: &mut RequestPermit,
         pool: &Handle,
         cx: &Context<C>,
-        original: &str,
+        original: &Url,
         token: OperationToken,
-        time: &mut BodyTime,
+        time: &BodyTime,
         after: &mut super::retry::After,
         end: &mut StageEnd,
     ) -> Result<(), Failure> {
-        let mut url = Url::parse(original).map_err(|_| internal())?;
+        // The bundle's own URL until a redirect replaces it.
+        let mut redirected: Option<Url> = None;
         let mut followed = 0;
         let mut first_token = Some(token);
         loop {
@@ -343,14 +383,15 @@ impl<R: Body> Stage<R> {
                 cx.check()?;
                 token
             };
-            let request = super::headers::prepare(bundle, values, &url).map_err(transport_error)?;
+            let url = redirected.as_ref().unwrap_or(original);
+            let request = super::headers::prepare(bundle, values, url).map_err(transport_error)?;
             self.response = Some(
                 body_wait(
                     cx,
                     time,
                     transport.request(
                         permit,
-                        &url,
+                        url,
                         request,
                         Duration::from_millis(u64::from(policy.connect_timeout_ms)),
                         token,
@@ -362,10 +403,10 @@ impl<R: Body> Stage<R> {
             let response = self.response.as_ref().ok_or_else(internal)?;
             let status = response.status();
             if matches!(status, 301 | 302 | 303 | 307 | 308) {
-                let next = redirect(&url, response.headers(), status, followed, policy.redirects)?;
+                let next = redirect(url, response.headers(), status, followed, policy.redirects)?;
                 cx.check()?;
                 self.response.take();
-                url = next;
+                redirected = Some(next);
                 followed += 1;
             } else {
                 *after = super::retry::retry_after(response.headers());
@@ -394,7 +435,7 @@ impl<R: Body> Stage<R> {
         permit: &mut RequestPermit,
         pool: &Handle,
         cx: &Context<C>,
-        time: &mut BodyTime,
+        time: &BodyTime,
         end: &mut StageEnd,
     ) -> Result<(), Failure> {
         let mut hash = Sha256::new();
@@ -402,9 +443,7 @@ impl<R: Body> Stage<R> {
         loop {
             let response = self.response.as_mut().ok_or_else(internal)?;
             let received = {
-                let time = RefCell::new(&mut *time);
                 let mut credit = |count| {
-                    let mut time = time.borrow_mut();
                     let now = cx.clock.now();
                     if !time.advance(now) {
                         return Err(Error::transport(Detail::Timeout));
@@ -412,7 +451,7 @@ impl<R: Body> Stage<R> {
                     time.data(now, count);
                     Ok(())
                 };
-                body_wait_shared(cx, &time, response.data(&mut credit)).await?
+                body_wait(cx, time, response.data(&mut credit)).await?
             };
             let Some(data) = received.map_err(transport_error)? else {
                 break;
@@ -467,7 +506,7 @@ impl<R: Body> Stage<R> {
         permit: &mut RequestPermit,
         pool: &Handle,
         cx: &Context<C>,
-        time: &mut BodyTime,
+        time: &BodyTime,
     ) -> Result<Data, Failure> {
         let next = length
             .checked_add(data.as_slice().len() as u64)
@@ -485,7 +524,7 @@ impl<R: Body> Stage<R> {
         let control = cx.control.clone();
         let clock = cx.clock.clone();
         let start = cx.clock.now();
-        let task = pool.spawn_blocking(move || {
+        let task = crate::execution::blocking(pool, move || {
             let before = crate::alloc::refusals();
             let mut result = catch_unwind(AssertUnwindSafe(|| {
                 file.write_at_reserved(data.as_slice(), length, &|| control.stopped())
@@ -527,14 +566,7 @@ impl<R: Body> Stage<R> {
 }
 async fn body_wait<C: Clock, F: Future>(
     cx: &Context<C>,
-    time: &mut BodyTime,
-    future: F,
-) -> Result<F::Output, Failure> {
-    body_wait_shared(cx, &RefCell::new(time), future).await
-}
-async fn body_wait_shared<C: Clock, F: Future>(
-    cx: &Context<C>,
-    time: &RefCell<&mut BodyTime>,
+    time: &BodyTime,
     future: F,
 ) -> Result<F::Output, Failure> {
     let mut future = std::pin::pin!(future);
@@ -546,11 +578,11 @@ async fn body_wait_shared<C: Clock, F: Future>(
             }
             return Err(failure);
         }
-        if !time.borrow_mut().advance(cx.clock.now()) {
+        if !time.advance(cx.clock.now()) {
             return Err(download(Detail::Timeout));
         }
         started = true;
-        let deadline = time.borrow().deadline();
+        let deadline = time.deadline();
         let value = cx
             .network_wait(super::timers::race(
                 cx.clock.as_ref(),
@@ -558,7 +590,7 @@ async fn body_wait_shared<C: Clock, F: Future>(
                 future.as_mut(),
             ))
             .await?;
-        if !time.borrow_mut().advance(cx.clock.now()) {
+        if !time.advance(cx.clock.now()) {
             return Err(download(Detail::Timeout));
         }
         if let Some(value) = value {
@@ -584,6 +616,8 @@ fn redirect(
     if policy == Redirects::None || followed >= 5 || location.as_bytes().len() > 16 * 1024 {
         return Err(refused());
     }
+    // The join is url's, whose parser has no fallible storage: a refusal
+    // in it is A13's documented abort (`docs/plans/batch.md`).
     let next = url
         .join(
             location
@@ -591,10 +625,17 @@ fn redirect(
                 .map_err(|_| download(Detail::Status(status)))?,
         )
         .map_err(|_| download(Detail::Status(status)))?;
-    if http::request::validate_url(&next).is_err() || next.origin() != url.origin() {
+    if http::request::validate_url(&next).is_err() || !same_origin(&next, url) {
         return Err(refused());
     }
     Ok(next)
+}
+/// `Url::origin`'s tuple comparison, without its owned host copies: the
+/// scheme, the host as serialized and the port or the scheme's default.
+fn same_origin(a: &Url, b: &Url) -> bool {
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
 }
 /// Match pinned hyper's framing: TE overrides CL, otherwise every trimmed
 /// comma-separated value in every field must be digits and equal.

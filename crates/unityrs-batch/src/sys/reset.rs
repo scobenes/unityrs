@@ -11,6 +11,9 @@
 //! can close/reuse it. Reset errors leave it sealed. EINTR retries, all other
 //! failures are counted, and the scan continues. No reset waits for an owner.
 //!
+//! Each owner holds the table by `Arc`, so the table outlives every socket,
+//! a sealed one included, and no owner borrows a process-lived static.
+//!
 //! The opaque owner offers no cloning or borrowed owned-fd conversion. Its
 //! connect checks closing before the syscall AND after it: a syscall crossing
 //! the scan is disconnected again before the caller can use the connection.
@@ -28,7 +31,10 @@ use std::{
     net::SocketAddr,
     os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd},
     pin::Pin,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering::SeqCst},
+    },
     task::{Context, Poll, ready},
 };
 use tokio::io::{AsyncRead, AsyncWrite, Interest, ReadBuf, unix::AsyncFd};
@@ -67,9 +73,27 @@ impl SocketTable {
     pub fn reset_errors(&self) -> u64 {
         self.errors.load(SeqCst)
     }
+    /// Sockets created so far: the generations every entry has reached.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[must_use]
+    pub fn created(&self) -> u64 {
+        self.entries
+            .iter()
+            .map(|e| (e.load(SeqCst) >> 32) & MAX_GENERATION)
+            .sum()
+    }
+    /// Entries naming a live descriptor (published, not yet released).
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[must_use]
+    pub fn live(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| e.load(SeqCst) & u64::from(u32::MAX) != 0)
+            .count()
+    }
     /// One entry per runtime permit. Caller cannot install a duplicated socket:
     /// this method creates and owns a fresh nonblocking TCP description.
-    pub fn socket(&self, permit: usize, ipv6: bool) -> io::Result<Socket<'_>> {
+    pub fn socket(self: &Arc<Self>, permit: usize, ipv6: bool) -> io::Result<Socket> {
         let entry = self
             .entries
             .get(permit)
@@ -114,8 +138,8 @@ impl SocketTable {
             .map_err(|_| io::ErrorKind::WouldBlock)?;
         let owned = Socket {
             fd: Some(fd),
-            table: self,
-            entry,
+            table: self.clone(),
+            entry: permit,
             word,
         };
         // Publication precedes this load. Late publication never connects.
@@ -152,13 +176,13 @@ impl SocketTable {
 /// Ownership is deliberately opaque: no safe clone, dup, into-inner, or
 /// external close. A sealed owner is retained until _exit. Ordinary Drop
 /// clears the exact generation before close. Register this owner, not its fd.
-pub struct Socket<'a> {
+pub struct Socket {
     fd: Option<OwnedFd>,
-    table: &'a SocketTable,
-    entry: &'a AtomicU64,
+    table: Arc<SocketTable>,
+    entry: usize,
     word: u64,
 }
-impl<'a> Socket<'a> {
+impl Socket {
     pub fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
         if self.table.closing() {
             return Err(io::ErrorKind::ConnectionAborted.into());
@@ -305,7 +329,7 @@ impl<'a> Socket<'a> {
     /// Register with `handle`'s reactor (under `Handle::enter`, so a future
     /// holding only a runtime handle can register). The returned owner keeps
     /// the `AsyncFd` private, so the descriptor stays this owner's alone.
-    pub fn register(self, handle: &tokio::runtime::Handle) -> io::Result<RegisteredSocket<'a>> {
+    pub fn register(self, handle: &tokio::runtime::Handle) -> io::Result<RegisteredSocket> {
         let _entered = handle.enter();
         // SAFETY: AsyncFd owns this opaque Socket; its descriptor stays open
         // and unchanged, including during reset. RegisteredSocket exposes no
@@ -319,8 +343,13 @@ impl<'a> Socket<'a> {
 /// A [`Socket`] registered for readiness: what the HTTP layer adopts. Its
 /// operations are nonblocking I/O and readiness waits only; there is no clone,
 /// no descriptor access, no mutable inner access and no readiness guard.
-pub struct RegisteredSocket<'a>(AsyncFd<Socket<'a>>);
-impl RegisteredSocket<'_> {
+pub struct RegisteredSocket(AsyncFd<Socket>);
+impl RegisteredSocket {
+    /// [`Socket::connect`] on the registered owner: a connect left in
+    /// progress completes through [`Self::connected`].
+    pub fn connect(&self, address: SocketAddr) -> io::Result<()> {
+        self.0.get_ref().connect(address)
+    }
     /// Complete a connect [`Socket::connect`] left in progress (`EINPROGRESS`):
     /// wait for write readiness, then report `SO_ERROR`.
     pub async fn connected(&self) -> io::Result<()> {
@@ -383,7 +412,7 @@ impl RegisteredSocket<'_> {
         self.0.get_ref().disconnected()
     }
 }
-impl AsyncRead for RegisteredSocket<'_> {
+impl AsyncRead for RegisteredSocket {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -398,7 +427,7 @@ impl AsyncRead for RegisteredSocket<'_> {
         Poll::Ready(Ok(()))
     }
 }
-impl AsyncWrite for RegisteredSocket<'_> {
+impl AsyncWrite for RegisteredSocket {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -426,19 +455,18 @@ impl AsyncWrite for RegisteredSocket<'_> {
         Poll::Ready(Ok(()))
     }
 }
-impl AsRawFd for Socket<'_> {
+impl AsRawFd for Socket {
     fn as_raw_fd(&self) -> i32 {
         self.fd.as_ref().map_or(-1, AsRawFd::as_raw_fd)
     }
 }
-impl Drop for Socket<'_> {
+impl Drop for Socket {
     fn drop(&mut self) {
         let empty = self.word & !(u64::from(u32::MAX));
-        if self
-            .entry
-            .compare_exchange(self.word, empty, SeqCst, SeqCst)
-            .is_err()
-        {
+        if self.table.entries.get(self.entry).is_none_or(|e| {
+            e.compare_exchange(self.word, empty, SeqCst, SeqCst)
+                .is_err()
+        }) {
             // A reset owns the generation. Retain the description even if a
             // future/owner is accidentally dropped while the process finishes.
             if let Some(fd) = self.fd.take() {

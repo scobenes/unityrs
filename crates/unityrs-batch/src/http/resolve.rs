@@ -59,7 +59,7 @@ pub(crate) async fn lookup(
         .or_else(|| permit.begin(Operation::Lookup))
         .ok_or(Error::Busy)?;
     let source = source.clone();
-    pool.spawn_blocking(move || {
+    crate::execution::blocking(pool, move || {
         let result = {
             let source = source;
             source

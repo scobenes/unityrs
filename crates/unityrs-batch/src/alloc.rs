@@ -29,7 +29,8 @@
 //!
 //! With [`crate::sys`], this is one of the crate's two modules with
 //! `unsafe` code (`tests/unsafe_scan.rs` pins both): `GlobalAlloc`'s
-//! methods forwarding to `System`, and fallible boxed file-adapter storage.
+//! methods forwarding to `System`, and fallible boxed storage (the spool's
+//! file adapters, the transport's streams and drivers).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -301,20 +302,24 @@ unsafe impl<H: Hook> GlobalAlloc for Counting<H> {
 /// Fallible storage for the spool's small file adapters. The caller's fixed
 /// overhead charge covers the allocation, including its `heap_cost`.
 pub(crate) fn try_box<T>(value: T) -> std::io::Result<Box<T>> {
+    try_box_uninit().map(|storage| Box::write(storage, value))
+}
+/// [`try_box`]'s storage alone, taken before its value exists: the
+/// transport boxes a connected socket's TLS stream and hyper driver in
+/// storage taken before the connect, so no refusal can drop (reset) the
+/// socket it has just connected.
+pub(crate) fn try_box_uninit<T>() -> std::io::Result<Box<std::mem::MaybeUninit<T>>> {
     let layout = Layout::new::<T>();
     if layout.size() == 0 {
-        return Ok(Box::new(value));
+        return Ok(Box::new(std::mem::MaybeUninit::uninit()));
     }
     // SAFETY: the layout has nonzero size and valid alignment. `alloc` uses
     // the global allocator, including its refusal counter and test hook.
-    let ptr = unsafe { std::alloc::alloc(layout) }.cast::<T>();
+    let ptr = unsafe { std::alloc::alloc(layout) }.cast::<std::mem::MaybeUninit<T>>();
     if ptr.is_null() {
         return Err(std::io::Error::from(std::io::ErrorKind::OutOfMemory));
     }
-    // SAFETY: ptr owns one properly aligned T-sized block; initialize it once
-    // and transfer it to Box, which drops T and frees the same global layout.
-    Ok(unsafe {
-        ptr.write(value);
-        Box::from_raw(ptr)
-    })
+    // SAFETY: ptr owns one properly aligned block of `MaybeUninit<T>`'s
+    // layout, which needs no initialisation; Box frees the same layout.
+    Ok(unsafe { Box::from_raw(ptr) })
 }

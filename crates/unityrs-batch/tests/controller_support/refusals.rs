@@ -10,12 +10,20 @@ pub enum Platform {
 
 pub struct Exclusion {
     pub scopes: &'static [&'static str],
-    pub function: &'static str,
+    /// The innermost function of ours ([`innermost`]) the refusal is
+    /// under: any one of these.
+    pub functions: &'static [&'static str],
     pub platform: Platform,
     pub name: &'static str,
-    /// A third-party allocation: the frame the raw trace must also show,
+    /// A third-party allocation: what its allocating frame (the first above
+    /// the allocator outside std's library, [`allocating`]) must name,
     /// since `innermost` keys on our caller and skips the registry's frames.
     pub frame: Option<&'static str>,
+    /// For a third-party allocation, the chain from our function: the frame
+    /// it calls ([`callee`], std's library skipped) must name one of these,
+    /// the third party's entry point. So our own call to a listed allocator
+    /// (a `oneshot::channel` of ours) is not admitted as the library's.
+    pub via: &'static [&'static str],
 }
 
 impl Exclusion {
@@ -31,142 +39,162 @@ impl Exclusion {
 pub const INVENTORY: &[Exclusion] = &[
     Exclusion {
         scopes: &["peek", "attempt", "complete"],
-        function: "unityrs_core::budget::charged_bytes",
+        functions: &["unityrs_core::budget::charged_bytes"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "Bytes::from_owner owner box",
     },
     Exclusion {
         scopes: &["peek", "attempt", "complete"],
-        function: "unityrs_core::files::RawFile::with_reader",
+        functions: &["unityrs_core::files::RawFile::with_reader"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "RawFile Arc",
     },
     Exclusion {
         scopes: &["peek"],
-        function: "unityrs_export::ngui::classify::Reason::plain",
+        functions: &["unityrs_export::ngui::classify::Reason::plain"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "owned NGUI reason",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_core::files::bundle::BundleFile::open_with_reader",
+        functions: &["unityrs_core::files::bundle::BundleFile::open_with_reader"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "parsed-container cyclic Arc",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_core::env::Environment::new",
+        functions: &["unityrs_core::env::Environment::new"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "Environment and DepCache Arcs",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_core::limits::meter::Meter::with_decode_work",
+        functions: &["unityrs_core::limits::meter::Meter::with_decode_work"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "meter and account Arcs",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_core::env::Environment::try_load_dep",
+        functions: &["unityrs_core::env::Environment::try_load_dep"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "dependency Arc",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_core::env::registry::Registry::new_slot",
+        functions: &["unityrs_core::env::registry::Registry::new_slot"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "registry path owner and Slot Arcs in prepare",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_core::env::registry::Registry::apply",
+        functions: &["unityrs_core::env::registry::Registry::apply"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "registry maps",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_core::files::bundle::index::RunIndex::publish",
+        functions: &["unityrs_core::files::bundle::index::RunIndex::publish"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "run-index BTreeMap",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_core::env::registry::lru::Lru::use_key",
+        functions: &["unityrs_core::env::registry::lru::Lru::use_key"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "dependency-cache HashMap in touch_paid",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_export::ngui::read::head_rows",
+        functions: &["unityrs_export::ngui::read::head_rows"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "Reader head-row Vecs",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_core::typetree::rows::NodeRow::new",
+        functions: &["unityrs_core::typetree::rows::NodeRow::new"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "Reader head-row type and name copies",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_core::limits::meter::Meter::unlimited",
+        functions: &["unityrs_core::limits::meter::Meter::unlimited"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "head-tree meter Arcs through NodeList::trusted",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_export::ngui::read::Reader::new",
+        functions: &["unityrs_export::ngui::read::Reader::new"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "head NodeList and Tree Arcs",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_core::typetree::tree::Tree::compile_inner",
+        functions: &["unityrs_core::typetree::tree::Tree::compile_inner"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "compiled Tree Arc",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_export::ngui::keys::Template::clone",
+        functions: &["unityrs_export::ngui::keys::Template::clone"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "Attempt::plan template piece Vec clone",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_export::ngui::keys::Piece::clone",
+        functions: &["unityrs_export::ngui::keys::Piece::clone"],
         platform: Platform::All,
         frame: None,
+        via: &[],
         name: "Attempt::plan template text Vec clones",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_core::files::bundle::BundleFile::cached",
+        functions: &["unityrs_core::files::bundle::BundleFile::cached"],
         platform: Platform::Darwin,
         frame: None,
+        via: &[],
         name: "Darwin lazy mutex box in read_span_pinned",
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_core::env::held::lock",
+        functions: &["unityrs_core::env::held::lock"],
         platform: Platform::Darwin,
         frame: None,
+        via: &[],
         name: "Darwin lazy mutex box in DepCache::touch_paid",
     },
     // The one admitted third-party frame: tokio's `spawn_blocking`
@@ -178,26 +206,260 @@ pub const INVENTORY: &[Exclusion] = &[
     // the prewarm leaves tokio no thread to start or queue to grow.
     Exclusion {
         scopes: SPAWNING,
-        function: "unityrs_batch::execution::Execution::spawn",
+        functions: &["unityrs_batch::execution::Execution::spawn"],
         platform: Platform::All,
         frame: Some("tokio::runtime::task::core::Cell"),
+        via: &[SPAWN_BLOCKING],
         name: "tokio spawn_blocking task cell",
+    },
+    // A networked run's staging (`docs/plans/batch.md` 2.5, *URL staging in
+    // the controller*): a request's lookup and chunk write enter the pool
+    // through `execution::blocking`, the same admitted task cell.
+    Exclusion {
+        scopes: URL,
+        functions: &["unityrs_batch::execution::blocking"],
+        platform: Platform::All,
+        frame: Some("tokio::runtime::task::core::Cell"),
+        via: &[SPAWN_BLOCKING],
+        name: "tokio spawn_blocking task cell for a lookup or a chunk write",
+    },
+    // Each request's header map: http's map has no fallible constructor
+    // (`try_reserve` reports only its size limit), and hyper consumes the
+    // map with its request, so no storage made before the head can serve a
+    // later try or hop. Its values are copied into fallible storage first;
+    // its names are phase 1's, whose clones count a reference.
+    Exclusion {
+        scopes: URL,
+        functions: &["unityrs_batch::stage::headers::prepare"],
+        platform: Platform::All,
+        frame: Some("http::header::map::HeaderMap"),
+        via: &["<http::header::map::HeaderMap>::try_reserve"],
+        name: "http HeaderMap storage of a request",
+    },
+    // A redirect's join: url's parser has no fallible storage.
+    Exclusion {
+        scopes: &["url-redirect"],
+        functions: &["unityrs_batch::stage::url::redirect"],
+        platform: Platform::All,
+        frame: Some("url::"),
+        via: &["<url::Url>::join"],
+        name: "url join of a redirect's Location",
+    },
+    // Tokio's reactor: a socket's registration (`Arc<ScheduledIo>`), and
+    // the deregistration's `Vec::push` when a response's socket drops: at
+    // a body's end, or when a try or a hop drops its response.
+    Exclusion {
+        scopes: URL,
+        functions: &["unityrs_batch::sys::reset::Socket::register"],
+        platform: Platform::All,
+        frame: Some("RegistrationSet>::allocate"),
+        via: &["AsyncFd<unityrs_batch::sys::reset::Socket>>::register"],
+        name: "tokio ScheduledIo of a socket's registration",
+    },
+    Exclusion {
+        scopes: URL,
+        functions: &[
+            "unityrs_batch::http::response::Response::poll_frame",
+            "unityrs_batch::stage::url::Stage::download",
+            "unityrs_batch::stage::url::Stage::try_download",
+        ],
+        platform: Platform::All,
+        frame: Some("RegistrationSet>::deregister"),
+        via: &["AsyncFd<unityrs_batch::sys::reset::Socket> as core::ops::drop::Drop>::drop"],
+        name: "tokio deregistration push at a response's socket drop",
+    },
+    // hyper's client connection, beside the TLS stack below: its
+    // handshake's dispatch channel (a tokio unbounded mpsc and `want`'s
+    // `Arc`), write buffer and dispatcher; the oneshot of `send_request`;
+    // and, as its driver reads, its read buffer's growth and splits, the
+    // body channel's `Arc`, and a non-canonical reason phrase's extension.
+    Exclusion {
+        scopes: URL,
+        functions: &[EXCHANGE],
+        platform: Platform::All,
+        frame: Some("hyper::client::dispatch::Envelope"),
+        via: &[HANDSHAKE],
+        name: "hyper dispatch::channel mpsc",
+    },
+    Exclusion {
+        scopes: URL,
+        functions: &[EXCHANGE],
+        platform: Platform::All,
+        frame: Some("want::new"),
+        via: &[HANDSHAKE],
+        name: "hyper dispatch::channel want Arc",
+    },
+    Exclusion {
+        scopes: URL,
+        functions: &[EXCHANGE],
+        platform: Platform::All,
+        frame: Some("hyper::proto::h1::io::WriteBuf"),
+        via: &[HANDSHAKE],
+        name: "hyper WriteBuf::new",
+    },
+    Exclusion {
+        scopes: URL,
+        functions: &[EXCHANGE],
+        platform: Platform::All,
+        frame: Some("hyper::proto::h1::dispatch::Dispatcher"),
+        via: &[HANDSHAKE],
+        name: "hyper http1 handshake's dispatcher box",
+    },
+    Exclusion {
+        scopes: URL,
+        functions: &[EXCHANGE],
+        platform: Platform::All,
+        frame: Some("tokio::sync::oneshot::channel"),
+        via: &[
+            "hyper::client::conn::http1::SendRequest<unityrs_batch::http::request::Payload>>::send_request",
+        ],
+        name: "hyper send_request oneshot",
+    },
+    Exclusion {
+        scopes: URL,
+        functions: &[EXCHANGE, POLL_FRAME],
+        platform: Platform::All,
+        frame: Some("bytes::bytes_mut::BytesMut>::reserve_inner"),
+        via: &[DRIVER],
+        name: "hyper read buffer BytesMut reserve",
+    },
+    Exclusion {
+        scopes: URL,
+        functions: &[EXCHANGE, POLL_FRAME],
+        platform: Platform::All,
+        frame: Some("bytes::bytes_mut::BytesMut>::promote_to_shared"),
+        via: &[DRIVER],
+        name: "hyper read buffer BytesMut promote_to_shared",
+    },
+    Exclusion {
+        scopes: URL,
+        functions: &[EXCHANGE],
+        platform: Platform::All,
+        frame: Some("hyper::body::chan::channel"),
+        via: &[DRIVER],
+        name: "hyper body channel Arc",
+    },
+    Exclusion {
+        scopes: &["url-retry"],
+        functions: &[EXCHANGE],
+        platform: Platform::All,
+        frame: Some("hyper::ext::h1_reason_phrase::ReasonPhrase"),
+        via: &[DRIVER],
+        name: "hyper ReasonPhrase extension insert",
+    },
+    Exclusion {
+        scopes: &["url-retry"],
+        functions: &[EXCHANGE],
+        platform: Platform::All,
+        frame: Some("hashbrown::alloc::inner::do_alloc"),
+        via: &[DRIVER],
+        name: "hyper ReasonPhrase extension map",
+    },
+    Exclusion {
+        scopes: &["url-retry"],
+        functions: &[EXCHANGE],
+        platform: Platform::All,
+        frame: Some("<bytes::bytes::Bytes>::copy_from_slice"),
+        via: &[DRIVER],
+        name: "hyper ReasonPhrase copy",
+    },
+    // rustls (and ring under it) over `https`: the client connection's
+    // setup, the handshake, and each record read or written after it.
+    // rustls's API has no fallible allocation (A13).
+    Exclusion {
+        scopes: &["url-https"],
+        functions: &["unityrs_batch::http::connect::Connector::secure"],
+        platform: Platform::All,
+        frame: Some("rustls"),
+        via: &["<tokio_rustls::client::TlsConnector>::connect"],
+        name: "rustls client connection",
+    },
+    Exclusion {
+        scopes: &["url-https"],
+        functions: &["unityrs_batch::http::connect::Connector::secure"],
+        platform: Platform::All,
+        frame: Some("rustls"),
+        via: &[TLS_HANDSHAKE],
+        name: "rustls handshake",
+    },
+    Exclusion {
+        scopes: &["url-https"],
+        functions: &["unityrs_batch::http::connect::Connector::secure"],
+        platform: Platform::All,
+        frame: Some("<ring::"),
+        via: &[TLS_HANDSHAKE],
+        name: "ring big-integer limbs of the handshake's signature check",
+    },
+    Exclusion {
+        scopes: &["url-https"],
+        functions: &["unityrs_batch::http::io::Stream::poll_read"],
+        platform: Platform::All,
+        frame: Some("rustls"),
+        via: &[
+            "<tokio_rustls::client::TlsStream<unityrs_batch::sys::reset::RegisteredSocket> as tokio::io::async_read::AsyncRead>::poll_read",
+        ],
+        name: "rustls record read",
+    },
+    Exclusion {
+        scopes: &["url-https"],
+        functions: &[
+            "unityrs_batch::http::io::Stream::poll_write",
+            "unityrs_batch::http::io::Stream::poll_write_vectored",
+        ],
+        platform: Platform::All,
+        frame: Some("rustls"),
+        via: &[
+            "<tokio_rustls::client::TlsStream<unityrs_batch::sys::reset::RegisteredSocket> as tokio::io::async_write::AsyncWrite>::poll_write",
+        ],
+        name: "rustls record write",
     },
 ];
 /// The scopes whose armed span submits pool tasks.
-const SPAWNING: &[&str] = &["stage", "peek", "attempt", "failure", "complete", "archive"];
+const SPAWNING: &[&str] = &[
+    "stage",
+    "peek",
+    "attempt",
+    "failure",
+    "complete",
+    "archive",
+    "url",
+    "url-retry",
+    "url-redirect",
+    "url-drip",
+    "url-stop",
+    "url-https",
+];
+const SPAWN_BLOCKING: &str = "<tokio::runtime::handle::Handle>::spawn_blocking";
+const EXCHANGE: &str = "unityrs_batch::http::response::exchange_charged";
+const POLL_FRAME: &str = "unityrs_batch::http::response::Response::poll_frame";
+const HANDSHAKE: &str = "<hyper::client::conn::http1::Builder>::handshake";
+/// The driver's poll: hyper's connection, reading.
+const DRIVER: &str = "<hyper::client::conn::http1::Connection<hyper_util::rt::tokio::TokioIo<unityrs_batch::http::io::Stream>, unityrs_batch::http::request::Payload> as core::future::future::Future>::poll";
+const TLS_HANDSHAKE: &str = "<tokio_rustls::client::Connect<unityrs_batch::sys::reset::RegisteredSocket> as core::future::future::Future>::poll";
+/// Every networked scope (`url_scopes.rs`).
+const URL: &[&str] = &[
+    "url",
+    "url-retry",
+    "url-redirect",
+    "url-drip",
+    "url-stop",
+    "url-https",
+];
 
 impl Exclusion {
     /// Whether a refusal's trace, whose innermost owner is `function`, is
     /// this entry's: ours by name, a third party's by name and frame.
     pub fn admits(&self, function: Option<&str>, trace: &str) -> bool {
-        function == Some(self.function)
+        function.is_some_and(|f| self.functions.contains(&f))
             && match self.frame {
-                Some(frame) => trace.contains(frame),
-                None => {
-                    self.function.starts_with("unityrs_core::")
-                        || self.function.starts_with("unityrs_export::")
+                Some(frame) => {
+                    allocating(trace).is_some_and(|f| f.contains(frame))
+                        && callee(trace).is_some_and(|c| self.via.iter().any(|v| c.contains(v)))
                 }
+                None => self
+                    .functions
+                    .iter()
+                    .all(|f| f.starts_with("unityrs_core::") || f.starts_with("unityrs_export::")),
             }
     }
 }
@@ -235,6 +497,79 @@ pub fn innermost(stderr: &str) -> Option<String> {
             continue;
         }
         return Some(function);
+    }
+    None
+}
+
+/// The allocation's own frame: the first above the allocator that is not
+/// std's library code (`Box::new`, `Arc::new`, `Vec::with_capacity`, ...):
+/// a third party's function, or ours.
+pub fn allocating(stderr: &str) -> Option<String> {
+    let trace = stderr.split_once("REFUSED_ALLOCATION ")?.1;
+    let (trace, _) = trace.split_once("END_REFUSED_ALLOCATION")?;
+    let mut lines = trace.lines().peekable();
+    let mut above = false;
+    while let Some(line) = lines.next() {
+        let Some((index, symbol)) = line.trim().split_once(": ") else {
+            continue;
+        };
+        if index.parse::<usize>().is_err() {
+            continue;
+        }
+        if !above {
+            // The counting allocator's `alloc`, `alloc_zeroed` or `realloc`.
+            above = symbol.contains("as core::alloc::global::GlobalAlloc>::")
+                && !symbol.contains("{closure");
+            continue;
+        }
+        // std's library code, and the `#[global_allocator]` shim (`__rustc::
+        // __rust_alloc`), which its test file's location names.
+        if symbol.starts_with("__rustc::")
+            || lines.peek().is_some_and(|source| {
+                source.trim().starts_with("at ") && source.contains("/rustc/")
+            })
+        {
+            continue;
+        }
+        return Some(symbol.to_owned());
+    }
+    None
+}
+
+/// The frame [`innermost`]'s function calls: the nearest frame below it
+/// (toward the allocator) outside std's library and the allocator's
+/// plumbing. `None` when ours allocates directly.
+pub fn callee(stderr: &str) -> Option<String> {
+    let trace = stderr.split_once("REFUSED_ALLOCATION ")?.1;
+    let (trace, _) = trace.split_once("END_REFUSED_ALLOCATION")?;
+    let mut lines = trace.lines().peekable();
+    let mut above = false;
+    let mut last = None;
+    while let Some(line) = lines.next() {
+        let Some((index, symbol)) = line.trim().split_once(": ") else {
+            continue;
+        };
+        if index.parse::<usize>().is_err() {
+            continue;
+        }
+        if !above {
+            above = symbol.contains("as core::alloc::global::GlobalAlloc>::")
+                && !symbol.contains("{closure");
+            continue;
+        }
+        let source = lines
+            .peek()
+            .map(|s| s.trim())
+            .filter(|s| s.starts_with("at "));
+        if symbol.starts_with("__rustc::") || source.is_some_and(|s| s.contains("/rustc/")) {
+            continue;
+        }
+        let ours = function_key(symbol).is_some()
+            && !source.is_some_and(|s| s.contains("/.cargo/registry/"));
+        if ours {
+            return last;
+        }
+        last = Some(symbol.to_owned());
     }
     None
 }
@@ -336,4 +671,53 @@ fn inline_functions_are_keys_but_std_implementations_and_type_mentions_are_not()
         None
     );
     assert_eq!(innermost("0: unityrs_core::env::Environment::new"), None);
+}
+
+/// The chain from our function decides a third party's admission: hyper's
+/// `send_request` oneshot is listed, but the same allocation called by
+/// ours (an engine-side `oneshot::channel`) is not.
+#[test]
+fn a_listed_allocator_called_by_ours_is_unlisted() {
+    let trace = |callee: &str| {
+        format!(
+            "REFUSED_ALLOCATION site=22 size=64\n\
+            0: <controller_alloc::Refuse as unityrs_batch::alloc::Hook>::refuses\n\
+            1: unityrs_batch::alloc::no_unwind::<bool, controller_alloc::Refuse>\n\
+            2: <unityrs_batch::alloc::Counting<controller_alloc::Refuse> as core::alloc::global::GlobalAlloc>::alloc\n\
+            3: __rustc::__rust_alloc\n\
+            4: <alloc::sync::Arc<tokio::sync::oneshot::Inner<u8>>>::new\n\
+                     at /rustc/hash/library/alloc/src/sync.rs:1:1\n\
+            5: tokio::sync::oneshot::channel::<u8>\n\
+                     at /opt/cargo/registry/src/tokio/src/sync/oneshot.rs:1:1\n\
+            {callee}\
+            7: unityrs_batch::http::response::exchange_charged::<unityrs_batch::http::io::Stream>::{{closure#0}}\n\
+                     at ./crates/unityrs-batch/src/http/response.rs:1:1\n\
+            END_REFUSED_ALLOCATION"
+        )
+    };
+    let admitted = |trace: &str| {
+        INVENTORY
+            .iter()
+            .filter(|e| e.applies("url"))
+            .find(|e| e.admits(innermost(trace).as_deref(), trace))
+            .map(|e| e.name)
+    };
+    let hyper = trace(
+        "6: <hyper::client::conn::http1::SendRequest<unityrs_batch::http::request::Payload>>::send_request\n\
+                 at /opt/cargo/registry/src/hyper/src/client/conn/http1.rs:1:1\n",
+    );
+    assert_eq!(
+        innermost(&hyper).as_deref(),
+        Some("unityrs_batch::http::response::exchange_charged")
+    );
+    assert_eq!(admitted(&hyper), Some("hyper send_request oneshot"));
+    // Ours: `black_box(tokio::sync::oneshot::channel::<u8>())`, inlined.
+    let ours = trace(
+        "6: core::hint::black_box::<u8>\n         at /rustc/hash/library/core/src/hint.rs:1:1\n",
+    );
+    assert_eq!(
+        callee(&ours).as_deref(),
+        Some("tokio::sync::oneshot::channel::<u8>")
+    );
+    assert_eq!(admitted(&ours), None, "an engine-side oneshot is UNLISTED");
 }

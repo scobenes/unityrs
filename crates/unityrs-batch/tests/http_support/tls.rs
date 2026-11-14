@@ -1,4 +1,4 @@
-//! Synthetic localhost TLS peer and fixed socket-table adapter; no DNS fallback.
+//! Synthetic localhost TLS peer and the observed socket table; no DNS fallback.
 use rustls::{
     ServerConfig, ServerConnection, StreamOwned,
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
@@ -6,17 +6,14 @@ use rustls::{
 use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener},
-    os::fd::RawFd,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc,
-    },
+    sync::{Arc, Mutex, mpsc},
 };
-use unityrs_batch::http::{
-    Error, Service,
-    resolve::{Addresses, Resolver},
-    socket::SocketTable,
+use unityrs_batch::{
+    http::{
+        Service,
+        resolve::{Addresses, Resolver},
+    },
+    sys::reset::SocketTable,
 };
 use unityrs_testkit::guard::{self, DEADLOCK_GUARD};
 #[path = "reframe.rs"]
@@ -126,19 +123,24 @@ impl Peer {
         Self { address, done }
     }
     pub fn tls(response: Vec<u8>, hold_close: bool) -> Self {
-        Self::start(response, hold_close, false, false, LEAF)
+        Self::start(response, hold_close, false, false, LEAF, || ())
+    }
+    /// [`Self::tls`], calling `entered` first on the peer's thread (a
+    /// refusal sweep's exemption of its peer).
+    pub fn tls_entered(response: Vec<u8>, hold_close: bool, entered: fn()) -> Self {
+        Self::start(response, hold_close, false, false, LEAF, entered)
     }
     pub fn certificate(response: Vec<u8>, leaf: &'static [u8]) -> Self {
-        Self::start(response, false, false, false, leaf)
+        Self::start(response, false, false, false, leaf, || ())
     }
     pub fn tls_stress(response: Vec<u8>) -> Self {
-        Self::start(response, true, true, true, LEAF)
+        Self::start(response, true, true, true, LEAF, || ())
     }
     pub fn tls_large_chain(response: Vec<u8>) -> Self {
-        Self::start(response, true, true, false, LEAF)
+        Self::start(response, true, true, false, LEAF, || ())
     }
     pub fn tls_many_authorities(response: Vec<u8>) -> Self {
-        Self::start(response, true, false, true, LEAF)
+        Self::start(response, true, false, true, LEAF, || ())
     }
     pub fn twice(response: Vec<u8>) -> [Self; 2] {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -169,11 +171,13 @@ impl Peer {
         large_chain: bool,
         many_authorities: bool,
         leaf: &'static [u8],
+        entered: fn(),
     ) -> Self {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let address = listener.local_addr().unwrap();
         let (send, done) = mpsc::sync_channel(1);
         std::thread::spawn(move || {
+            entered();
             let config = Arc::new(server_config(large_chain, many_authorities, leaf));
             let _ = send.send(tls_peer(&listener, &response, hold_close, config, false));
         });
@@ -283,13 +287,10 @@ impl Resolver for FixedResolver {
         Ok(Addresses::first(self.0.iter().copied()))
     }
 }
+/// The production socket table, observed: sockets created and released.
 #[derive(Default)]
 pub struct Table {
-    pub closing: AtomicBool,
-    pub close_on_register: AtomicBool,
-    pub added: AtomicUsize,
-    pub removed: AtomicUsize,
-    descriptors: Mutex<[Option<RawFd>; 32]>,
+    pub sockets: Arc<SocketTable>,
 }
 impl Table {
     pub fn service(
@@ -303,39 +304,16 @@ impl Table {
         } else {
             Vec::new()
         };
-        Service::new(handle, self.clone())
+        Service::new(handle, self.sockets.clone())
             .unwrap()
             .with_test_hooks(Arc::new(FixedResolver(addresses.to_vec())), &roots)
             .unwrap()
     }
-}
-impl SocketTable for Table {
-    fn register(&self, descriptor: RawFd) -> Result<usize, Error> {
-        assert!(unityrs_batch::sys::test_zero_linger(descriptor).unwrap());
-        let entry = self.added.fetch_add(1, Ordering::AcqRel);
-        self.descriptors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)[entry] = Some(descriptor);
-        if self.close_on_register.load(Ordering::Acquire) {
-            self.closing.store(true, Ordering::Release);
-        }
-        Ok(entry)
+    pub fn added(&self) -> usize {
+        usize::try_from(self.sockets.created()).unwrap()
     }
-    fn closing(&self) -> bool {
-        self.closing.load(Ordering::Acquire)
-    }
-    fn remove(&self, entry: usize) {
-        let descriptor = self
-            .descriptors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)[entry]
-            .take()
-            .unwrap();
-        assert!(
-            !unityrs_batch::sys::test_socket_live(descriptor),
-            "descriptor closed before clearing table"
-        );
-        self.removed.fetch_add(1, Ordering::AcqRel);
+    pub fn removed(&self) -> usize {
+        self.added() - self.sockets.live()
     }
 }
 

@@ -109,7 +109,7 @@ fn stop_during_held_lookup_and_tls_freezes_the_request_until_retirement() {
         let service = if let Some(peer) = &peer {
             table.service(runtime.handle().clone(), &[peer.address], true)
         } else {
-            Service::new(runtime.handle().clone(), table.clone())
+            Service::new(runtime.handle().clone(), table.sockets.clone())
                 .unwrap()
                 .with_test_hooks(barrier.clone(), &[])
                 .unwrap()
@@ -166,8 +166,8 @@ fn stop_during_held_lookup_and_tls_freezes_the_request_until_retirement() {
             assert_eq!(transport.attempts.load(Ordering::Acquire), 1);
             assert_eq!(scene.counter.used(), 4096);
             assert_eq!(permits.snapshot().outstanding, usize::from(!tls));
-            assert_eq!(table.added.load(Ordering::Acquire), usize::from(tls));
-            assert_eq!(table.removed.load(Ordering::Acquire), 0);
+            assert_eq!(table.added(), usize::from(tls));
+            assert_eq!(table.removed(), 0);
             scene.stop.stopped.store(true, Ordering::Release);
             // Stop never turns a pending request into a received failure/facts.
             runtime.block_on(poll_fn(|task| {
@@ -176,7 +176,7 @@ fn stop_during_held_lookup_and_tls_freezes_the_request_until_retirement() {
             }));
             assert_eq!(transport.attempts.load(Ordering::Acquire), 1);
             assert_eq!(scene.counter.used(), 4096);
-            assert_eq!(table.removed.load(Ordering::Acquire), 0);
+            assert_eq!(table.removed(), 0);
             assert!(scene.stop.failures.lock().unwrap().is_empty());
         }
         retire(
@@ -210,7 +210,7 @@ fn retire(
     drop(runtime); // joins the now-released resolver, without wall sleeps
     assert_eq!(permits.snapshot().outstanding, 0);
     assert_eq!(permit.charged(), unityrs_batch::stage::url::STAGE_ENVELOPE);
-    assert_eq!(table.removed.load(Ordering::Acquire), usize::from(tls));
+    assert_eq!(table.removed(), usize::from(tls));
     if let Some(peer) = peer {
         assert!(peer.finish().unwrap().reset);
     }

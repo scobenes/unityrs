@@ -1,11 +1,16 @@
 mod common;
 mod controller_support;
+#[cfg(feature = "test-hooks")]
+mod http_support;
 mod publication_support;
 #[path = "controller_support/refusals.rs"]
 mod refusals;
 #[cfg(feature = "test-hooks")]
 mod run_support;
 mod stage_support;
+#[cfg(feature = "test-hooks")]
+#[path = "controller_support/url_scopes.rs"]
+mod url_scopes;
 use std::os::unix::process::ExitStatusExt;
 use std::{
     cell::Cell,
@@ -32,11 +37,15 @@ use unityrs_testkit::{child, guard};
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static SITE: AtomicUsize = AtomicUsize::new(0);
 static SEEN: AtomicUsize = AtomicUsize::new(0);
-thread_local! { static TRACING: Cell<bool> = const { Cell::new(false) }; }
+thread_local! {
+    static TRACING: Cell<bool> = const { Cell::new(false) };
+    /// A test peer's thread (the `url` scope's origin): never refused.
+    static EXEMPT: Cell<bool> = const { Cell::new(false) };
+}
 struct Refuse;
 impl Hook for Refuse {
     fn refuses(&self, bytes: usize) -> bool {
-        if TRACING.with(Cell::get) || !ACTIVE.load(Ordering::SeqCst) {
+        if TRACING.with(Cell::get) || EXEMPT.with(Cell::get) || !ACTIVE.load(Ordering::SeqCst) {
             return false;
         }
         let site = SEEN.fetch_add(1, Ordering::SeqCst) + 1;
@@ -85,7 +94,24 @@ fn scopes() -> impl Iterator<Item = &'static str> {
     // A whole `unityrs batch` run with archives, armed at publication's
     // admission: winners and archive transfers, then the normal finisher.
     .chain(cfg!(feature = "test-hooks").then_some("archive"))
+    // A networked library run's staging: two URLs and a local copy, armed
+    // at the first dispatch through staging's end, in each of its scenes
+    // (`controller_support/url_scopes.rs`).
+    .chain(URL_SCOPES.iter().copied())
 }
+#[cfg(feature = "test-hooks")]
+const URL_SCOPES: &[&str] = url_scopes::SCOPES;
+fn timed(kind: &str) -> bool {
+    #[cfg(feature = "test-hooks")]
+    return url_scopes::timed(kind);
+    #[cfg(not(feature = "test-hooks"))]
+    {
+        let _ = kind;
+        false
+    }
+}
+#[cfg(not(feature = "test-hooks"))]
+const URL_SCOPES: &[&str] = &[];
 #[test]
 #[cfg_attr(debug_assertions, ignore = "scale: run in release")]
 fn every_controller_allocation_is_fallible_after_the_running_head() {
@@ -117,7 +143,7 @@ fn every_controller_allocation_is_fallible_after_the_running_head() {
                     String::from_utf8_lossy(&output.stderr)
                 );
                 println!(
-                    "CONTROLLER_RESULT kind={kind} sites=0 fallible=0 excluded=0 functions=0 failures=0"
+                    "CONTROLLER_RESULT kind={kind} sites=0 fallible=0 excluded=0 functions=0 unreached=0 failures=0"
                 );
                 continue;
             }
@@ -128,9 +154,13 @@ fn every_controller_allocation_is_fallible_after_the_running_head() {
             let mut reached = std::collections::BTreeSet::new();
             let mut excluded = 0;
             let mut failures = 0;
-            for site in 1..=sites {
-                let output = refusal_child(kind, site);
+            let mut unreached = 0;
+            for (site, output) in children(kind, sites) {
                 let stderr = String::from_utf8_lossy(&output.stderr);
+                if unreached_site(kind, site, &output) {
+                    unreached += 1;
+                    continue;
+                }
                 if output.status.signal() == Some(libc::SIGABRT) {
                     // Resolve the first owning function, never an ancestor or a
                     // core/export type mentioned in a std generic argument.
@@ -139,17 +169,20 @@ fn every_controller_allocation_is_fallible_after_the_running_head() {
                         .iter()
                         .find(|e| e.admits(function.as_deref(), &stderr))
                     {
-                        reached.insert(entry.function);
+                        reached.insert(entry.name);
                         excluded += 1;
                         println!(
                             "CR10_EXCLUDED kind={kind} site={site} function={} name={}",
-                            entry.function, entry.name
+                            function.as_deref().unwrap_or_default(),
+                            entry.name
                         );
                         continue;
                     }
                     failures += 1;
                     eprintln!(
-                        "UNLISTED_ABORT kind={kind} site={site} function={function:?} status={}\n{stderr}",
+                        "UNLISTED_ABORT kind={kind} site={site} function={function:?} allocating={:?} callee={:?} status={}\n{stderr}",
+                        refusals::allocating(&stderr),
+                        refusals::callee(&stderr),
                         output.status
                     );
                 } else if !output.status.success()
@@ -162,16 +195,21 @@ fn every_controller_allocation_is_fallible_after_the_running_head() {
                     );
                 }
             }
-            let fallible = sites - excluded - failures;
+            let fallible = sites - excluded - failures - unreached;
             for entry in &expected {
-                if !reached.contains(entry.function) {
+                // A timed scope's reach follows its peer's timing; the
+                // fixed scopes hold each entry to staleness.
+                if !reached.contains(entry.name) && !timed(kind) {
                     failures += 1;
-                    eprintln!("STALE_CR10 kind={kind} function={}", entry.function);
+                    eprintln!(
+                        "STALE_CR10 kind={kind} functions={:?} name={}",
+                        entry.functions, entry.name
+                    );
                 }
             }
             passed &= failures == 0;
             println!(
-                "CONTROLLER_RESULT kind={kind} sites={sites} fallible={fallible} excluded={excluded} functions={} failures={failures}",
+                "CONTROLLER_RESULT kind={kind} sites={sites} fallible={fallible} excluded={excluded} functions={} unreached={unreached} failures={failures}",
                 reached.len()
             );
         }
@@ -180,6 +218,30 @@ fn every_controller_allocation_is_fallible_after_the_running_head() {
             "a post-head controller allocation did not report host_memory"
         );
     });
+}
+/// A timed url scope's child that allocated fewer than `site` times.
+fn unreached_site(kind: &str, site: usize, output: &std::process::Output) -> bool {
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout)
+            .contains(&format!("CONTROLLER_UNREACHED kind={kind} site={site}\n"))
+}
+/// Sites 1 to `sites`, each in its own child, a few at once: every child
+/// has its own scratch (and a url scope's, its own origin), so they share
+/// nothing but the machine.
+fn children(kind: &str, sites: usize) -> Vec<(usize, std::process::Output)> {
+    let at_once = std::thread::available_parallelism().map_or(1, |n| n.get().min(8));
+    let all: Vec<usize> = (1..=sites).collect();
+    let mut outputs = Vec::with_capacity(sites);
+    for batch in all.chunks(at_once) {
+        std::thread::scope(|scope| {
+            let running: Vec<_> = batch
+                .iter()
+                .map(|&site| scope.spawn(move || (site, refusal_child(kind, site))))
+                .collect();
+            outputs.extend(running.into_iter().map(|child| child.join().unwrap()));
+        });
+    }
+    outputs
 }
 fn refusal_child(kind: &str, site: usize) -> std::process::Output {
     child::output(
@@ -208,6 +270,11 @@ fn controller_refusal_child() {
     #[cfg(feature = "test-hooks")]
     if selected == "archive" {
         archive_child(site);
+        return;
+    }
+    #[cfg(feature = "test-hooks")]
+    if selected.starts_with("url") {
+        url_scopes::child(&selected, site);
         return;
     }
     for kind in scopes() {

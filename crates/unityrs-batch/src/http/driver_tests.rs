@@ -1,31 +1,20 @@
-//! What B10c's HTTP runtime needs: both of Tokio's IO and time drivers.
-use crate::http::{self, Error, Service, permit::PermitPool, socket::SocketTable};
-use std::{os::fd::RawFd, sync::Arc, time::Duration};
+//! What the Execution's HTTP runtime needs: both of Tokio's IO and time drivers.
+use crate::{
+    http::{self, Service, permit::PermitPool},
+    sys::reset::SocketTable,
+};
+use std::{sync::Arc, time::Duration};
 
-struct NoSockets;
-impl SocketTable for NoSockets {
-    fn register(&self, _: RawFd) -> Result<usize, Error> {
-        unreachable!("no IO driver")
-    }
-    fn remove(&self, _: usize) {
-        unreachable!("no socket registered")
-    }
-    fn closing(&self) -> bool {
-        false
-    }
-}
-
-// The integration precondition: `Execution` runs no Tokio runtime (its
-// pool is the engine's own reserved threads), so B10c must build HTTP's
-// runtime with the IO and time drivers. These guards show that a runtime
-// without them cannot poll a request.
+// The integration precondition: the runtime that polls a request needs both
+// of Tokio's drivers (the library Execution's and the host's controller
+// runtime enable both). These guards show that one without them cannot.
 #[test]
 #[should_panic(expected = "timers are disabled")]
 fn a_runtime_without_drivers_cannot_poll_http() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    let service = Service::new(runtime.handle().clone(), Arc::new(NoSockets)).unwrap();
+    let service = Service::new(runtime.handle().clone(), Arc::new(SocketTable::new())).unwrap();
     let pool = PermitPool::new(1).unwrap();
     let mut permit = pool.acquire().unwrap();
     let url = url::Url::parse("http://127.0.0.1/").unwrap();
@@ -42,21 +31,11 @@ fn a_runtime_without_drivers_cannot_poll_http() {
 #[test]
 #[should_panic(expected = "IO is disabled")]
 fn a_time_driver_alone_is_insufficient_for_http() {
-    struct Table;
-    impl SocketTable for Table {
-        fn register(&self, _: RawFd) -> Result<usize, Error> {
-            Ok(0)
-        }
-        fn remove(&self, _: usize) {}
-        fn closing(&self) -> bool {
-            false
-        }
-    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
         .unwrap();
-    let service = Service::new(runtime.handle().clone(), Arc::new(Table)).unwrap();
+    let service = Service::new(runtime.handle().clone(), Arc::new(SocketTable::new())).unwrap();
     let pool = PermitPool::new(1).unwrap();
     let mut permit = pool.acquire().unwrap();
     let url = url::Url::parse("http://127.0.0.1/").unwrap();
