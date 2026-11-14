@@ -43,7 +43,7 @@ use unityrs_core::limits::{Meter, MeteredVec};
 
 use crate::error::{IndexKind, MeshError};
 use crate::vertex::field;
-use crate::view::Obj;
+use unityrs_core::objmode::Obj;
 
 /// The widest item unpacked (module docs).
 const MAX_BITS: u64 = 32;
@@ -109,7 +109,10 @@ pub(crate) fn unpack_ints(
         None => field(packed, "m_NumItems", u64::from(u32::MAX))?,
     };
     if bits > MAX_BITS && count > 0 {
-        return Err(MeshError::malformed("a packed item wider than 32 bits"));
+        return Err(MeshError::malformed(
+            format_args!("a packed item wider than 32 bits"),
+            meter,
+        ));
     }
     // UnityPy PackedBitVector.py:31-33: Python's ints, so a `u128` here.
     let first = u128::from(bits) * u128::from(start);

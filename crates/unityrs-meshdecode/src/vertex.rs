@@ -34,7 +34,7 @@
 //! passes, and charges the streams it derives before it allocates them;
 //! [`read_vertex_data`] counts one unit a channel, those of dimension 0 it
 //! skips included, before its loop; and every field read counts its scans
-//! (`view`'s module docs).
+//! ([`unityrs_core::objmode`]).
 
 use std::sync::Arc;
 
@@ -44,7 +44,7 @@ use crate::Version;
 use crate::error::{IndexKind, MeshError};
 use crate::format::{FormatTable, get_channel_dtype};
 use crate::unpack::{Gather, VertexArray, unpack_channel};
-use crate::view::{List, Obj};
+use unityrs_core::objmode::{List, Obj};
 
 /// The most streams a mesh can have: a channel's `stream` is a `UInt8`, so
 /// a derived layout has at most 256, a fixed bound.

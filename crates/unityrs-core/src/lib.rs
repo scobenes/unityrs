@@ -48,6 +48,7 @@ pub mod error;
 pub mod files;
 pub mod limits;
 pub mod object;
+pub mod objmode;
 pub mod once;
 pub mod options;
 pub mod pin;

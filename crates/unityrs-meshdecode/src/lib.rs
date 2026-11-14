@@ -7,7 +7,7 @@
 //!
 //! - [`Source`]: what the handler reads, a Mesh object's value or a
 //!   Sprite's render data, from the core's typetree read, viewed as
-//!   UnityPy's object mode builds it (`view`'s module docs).
+//!   UnityPy's object mode builds it ([`unityrs_core::objmode`]).
 //! - [`MeshHandler::process`]: the channels and streams by version, a
 //!   Mesh's `m_StreamData` through [`Resources`], the index size and
 //!   buffer, and each channel's data, through the three `VertexFormat`
@@ -22,7 +22,7 @@
 //!
 //! **What is not here** (`docs/plans/extract.md` E16). A Mesh's own vertex
 //! arrays and a sprite's own `vertices`, which no version's typetree holds
-//! beside `m_VertexData`, are P2a's rest; below Unity 4, `get_channels`'
+//! beside `m_VertexData`, are P4's (docs/plans/static3d.md, decision 2); below Unity 4, `get_channels`'
 //! fixed layout is P4. Each is [`MeshError::Unsupported`], returned where
 //! UnityPy would begin it, so every failure before it is UnityPy's.
 //!
@@ -83,12 +83,12 @@ mod compressed;
 mod error;
 mod format;
 mod handler;
+mod owned;
 mod packed;
 mod triangles;
 mod unpack;
 mod version;
 mod vertex;
-mod view;
 
 pub use error::{IndexKind, MeshError, StructError, Unsupported};
 pub use format::{
@@ -96,6 +96,7 @@ pub use format::{
     VertexFormat, VertexFormat2017, get_channel_component_size, get_channel_dtype,
 };
 pub use handler::{FileResources, IndexBuffer, MeshHandler, Processed, Resources, Source};
+pub use owned::ProcessedOwned;
 pub use triangles::{SubMeshTriangles, Triangles};
 pub use unpack::{Component, ComponentBytes, Gather, Values, VertexArray, unpack_vertexdata};
 pub use version::Version;
