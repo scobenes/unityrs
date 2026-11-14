@@ -61,11 +61,17 @@ fn space() -> Space {
     }
 }
 #[test]
+fn directory_archives_are_in_the_execution_subset() {
+    let sink = Scratch::new("local-archives-sink");
+    let mut v = job(Path::new("/spool"), sink.path());
+    v["archives"] = json!([{"key":"archive.zip","members":[{"kind":"texture","path":"{name}"}]}]);
+    assert!(start::supported(&parse(&v)).is_ok());
+}
+#[test]
 fn unsupported_execution_fields_are_typed_and_mutate_nothing() {
     for kind in [
         Unsupported::UrlSource,
         Unsupported::ObjectStore,
-        Unsupported::Archives,
         Unsupported::Deadline,
         Unsupported::StdinWatch,
         Unsupported::ParentWatch,
@@ -82,10 +88,6 @@ fn unsupported_execution_fields_are_typed_and_mutate_nothing() {
                 v["sink"] =
                     json!({"kind":"object_store","bucket":"bucket","region":"region","prefix":""});
                 v["deadline"] = json!("2099-01-01T00:00:00Z");
-            }
-            Unsupported::Archives => {
-                v["archives"] =
-                    json!([{"key":"archive.zip","members":[{"kind":"texture","path":"{name}"}]}]);
             }
             Unsupported::Deadline => v["deadline"] = json!("2099-01-01T00:00:00Z"),
             Unsupported::StdinWatch => v["stop_on_stdin_eof"] = json!(true),

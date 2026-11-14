@@ -313,6 +313,16 @@ impl Temporary<'_> {
             .writeback(&self.file)
             .map_err(|e| Error::io(self.cx, "sync_file_range", &e))
     }
+    /// Best-effort removal of this temp after a sink failure. Errors are
+    /// ignored: the name may already be gone (an uncertain rename), and a
+    /// retry's create of the same ordinal unlinks it first.
+    pub fn discard(&self) {
+        let _ = self
+            .parent
+            .root
+            .fs()
+            .unlink(&self.parent.file, self.name.cstr());
+    }
     pub fn rename(&self, basename: &str) -> Result<(), Error> {
         let to = Name::new(basename)?;
         self.parent.revalidate(self.cx)?;

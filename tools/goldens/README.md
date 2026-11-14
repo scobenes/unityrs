@@ -20,6 +20,14 @@ oracle pins; the original command logs were unavailable. Its mixed-severity
 case combines an export-work budget failure (5) with a missing input (4),
 independently expecting exit 5 under sections 9.1 and 9.2.
 
+`archive_case.py` adds archives to those cases by `docs/BATCH_SPEC.md` 1.7,
+4.7 and 9.2's hand rules: member rows, duplicate and unwritable paths,
+`empty` before `withheld`, and the exit code. Its archive bytes come from a
+`struct` encoder written from section 8 alone, then are read back member by
+member with Python's `zipfile`; Python's ZIP writer is never the byte oracle.
+The harness compares the sink's archives with those pinned bytes, and resume
+regenerates a damaged one.
+
 The Rust harness creates the matching synthetic bundles, checks pinned bytes,
 and validates raw accounting, nullability, reported budgets, and resume results
 before normalizing schedule-dependent figures for golden comparisons.

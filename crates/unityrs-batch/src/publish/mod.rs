@@ -1,5 +1,6 @@
 //! Bounded directory publication: a serial component seam and concurrent
 //! drives on the existing pool, with no per-winner task or path inventory.
+pub mod archive;
 mod local;
 mod pool;
 pub use pool::{Owned, parallel};
@@ -22,6 +23,17 @@ pub const BUFFER: usize = 16 * 1024 * 1024;
 pub const OVERHEAD: u64 = 1024 * 1024;
 /// Includes the buffer allocation's chunk header and every fixed reader/path.
 pub const WORKING_SET: u64 = 2 * OVERHEAD + heap_cost(16 * 1024 * 1024);
+/// A drive that may also stream archives adds one stream envelope; the
+/// driver's buffer is the stream's transport, so no second buffer is charged.
+pub const ARCHIVE_WORKING_SET: u64 = WORKING_SET + crate::archive::ENVELOPE;
+#[must_use]
+pub const fn working_set(archives: bool) -> u64 {
+    if archives {
+        ARCHIVE_WORKING_SET
+    } else {
+        WORKING_SET
+    }
+}
 #[derive(Default)]
 pub struct Gate(AtomicBool);
 // std's mutex can lazily allocate platform storage at its first lock. This
@@ -110,7 +122,10 @@ pub fn drive(cx: &Context<'_>) -> Result<Admission, Error> {
     if cx.account.snapshot().input.used != 0 {
         return Ok(Admission::Busy);
     }
-    if !cx.account.admits(WORKING_SET) {
+    if !cx
+        .account
+        .admits(working_set(cx.handoff.metadata.is_some()))
+    {
         return Err(Error::internal());
     }
     cx.account.publication(|| run(cx)).map(Admission::Drained)
@@ -151,8 +166,24 @@ fn run(cx: &Context<'_>) -> Result<Report, Error> {
     if index != cx.handoff.counts.winners {
         return Err(Error::internal());
     }
+    drop(winners);
+    archives(cx, &mut buffer)?;
     cx.at(Point::Drained)?;
     Ok(report)
+}
+/// Archives follow winners, in archive-key order, through the same buffer.
+fn archives(cx: &Context<'_>, buffer: &mut [u8]) -> Result<(), Error> {
+    let Some(metadata) = cx.handoff.metadata.as_ref() else {
+        return Ok(());
+    };
+    let mut reader =
+        winners::archives::Reader::open(cx.workspace, metadata, cx.account.meter(), cx.stopped)?;
+    let mut slot = archive::Descriptor::new(cx.account.meter())?;
+    while let Some(next) = reader.next(cx.stopped)? {
+        slot.take(next)?;
+        archive::one(cx, &slot, buffer)?;
+    }
+    Ok(())
 }
 fn sink_error(e: crate::sink::Error) -> Error {
     match e.class {

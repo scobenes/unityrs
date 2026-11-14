@@ -163,6 +163,9 @@ pub fn check(
             .count(),
         outputs.len()
     );
+    for (key, bytes) in archives(&sink, case) {
+        outputs.insert(key, bytes);
+    }
     let mut physical = Vec::new();
     physical_keys(&sink, "", &mut physical);
     physical.sort();
@@ -186,30 +189,75 @@ fn normalize_row(row: &mut Value) {
     }
 }
 
+/// Archive pins from `tools/goldens/archive_case.py`: exact bytes, already
+/// read back member by member with Python's `zipfile` at generation.
+pub fn archive_keys(case: &Value) -> Vec<String> {
+    case["archives"]
+        .as_object()
+        .map(|a| a.keys().cloned().collect())
+        .unwrap_or_default()
+}
+fn archives(sink: &Path, case: &Value) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    for key in archive_keys(case) {
+        let pinned = &case["archives"][&key];
+        let bytes = fs::read(sink.join(&key)).unwrap();
+        assert_eq!(
+            format!("{}", Hex(&Hashes::of(&bytes).md5)),
+            pinned["md5"].as_str().unwrap(),
+            "{} {key}",
+            case["name"]
+        );
+        assert_eq!(format!("{}", Hex(&bytes)), pinned["hex"].as_str().unwrap());
+        out.push((key, bytes));
+    }
+    out
+}
+
 pub fn assert_raw_publication(
     scratch: &Scratch,
     spec: &Value,
-    count: usize,
+    (count, archives): (usize, usize),
     rewritten: Option<&str>,
 ) {
     let root = scratch.join(format!(
         "sink/_unityrs/{}",
         spec["run_id"].as_str().unwrap()
     ));
+    let resume = spec["resume"] == true;
+    let archive = rewritten.is_some_and(|key| {
+        spec["archives"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|a| a["key"] == key))
+    });
+    for (family, count, rewritten) in [
+        ("outputs", count, rewritten.filter(|_| !archive)),
+        ("archives", archives, rewritten.filter(|_| archive)),
+    ] {
+        raw_family(&root, spec, family, count, rewritten, resume);
+    }
+}
+fn raw_family(
+    root: &Path,
+    spec: &Value,
+    family: &str,
+    count: usize,
+    rewritten: Option<&str>,
+    resume: bool,
+) {
     let head: Value =
         serde_json::from_slice(&fs::read(root.join("manifest.json")).unwrap()).unwrap();
-    let resume = spec["resume"] == true;
     let written = if resume {
         usize::from(rewritten.is_some())
     } else {
         count
     };
-    assert_eq!(head["counts"]["outputs_present"], count - written);
-    assert_eq!(head["counts"]["outputs_written"], written);
+    assert_eq!(head["counts"][format!("{family}_present")], count - written);
+    assert_eq!(head["counts"][format!("{family}_written")], written);
     let mut published = 0;
-    for chunk in 0..head["rows"]["outputs"].as_u64().unwrap() {
+    for chunk in 0..head["rows"][family].as_u64().unwrap() {
         let bytes =
-            fs::read(root.join(format!("{}/outputs.{chunk}.ndjson", spec["attempt"]))).unwrap();
+            fs::read(root.join(format!("{}/{family}.{chunk}.ndjson", spec["attempt"]))).unwrap();
         for line in bytes.split(|b| *b == b'\n').filter(|line| !line.is_empty()) {
             let row: Value = serde_json::from_slice(line).unwrap();
             if row["status"] == "written" || row["status"] == "present" {

@@ -3,6 +3,8 @@ mod controller_support;
 mod publication_support;
 #[path = "controller_support/refusals.rs"]
 mod refusals;
+#[cfg(feature = "test-hooks")]
+mod run_support;
 mod stage_support;
 use std::os::unix::process::ExitStatusExt;
 use std::{
@@ -80,6 +82,9 @@ fn scopes() -> impl Iterator<Item = &'static str> {
     ]
     .into_iter()
     .chain(cfg!(feature = "test-hooks").then_some("progress-delayed"))
+    // A whole `unityrs batch` run with archives, armed at publication's
+    // admission: winners and archive transfers, then the normal finisher.
+    .chain(cfg!(feature = "test-hooks").then_some("archive"))
 }
 #[test]
 #[cfg_attr(debug_assertions, ignore = "scale: run in release")]
@@ -201,6 +206,11 @@ fn controller_refusal_child() {
     assert!(site < 4096, "controller refusal sweep exceeded cap");
     if selected.starts_with("progress") {
         progress_child(&selected, site);
+        return;
+    }
+    #[cfg(feature = "test-hooks")]
+    if selected == "archive" {
+        archive_child(site);
         return;
     }
     for kind in scopes() {
@@ -355,4 +365,82 @@ fn progress_child(kind: &str, site: usize) {
     assert_eq!(exit["reason"], "host_memory");
     assert_eq!(exit["code"], 74);
     println!("CONTROLLER_SITES kind={kind} sites={sites}");
+}
+
+#[cfg(feature = "test-hooks")]
+struct ArmAtAdmission;
+#[cfg(feature = "test-hooks")]
+impl unityrs_batch::publish::Hooks for ArmAtAdmission {
+    fn point(&self, point: unityrs_batch::publish::Point) {
+        if point == unityrs_batch::publish::Point::Admission {
+            ACTIVE.store(true, Ordering::SeqCst);
+        }
+    }
+}
+#[cfg(feature = "test-hooks")]
+struct Space;
+#[cfg(feature = "test-hooks")]
+impl unityrs_batch::start::spool::FileSystem for Space {
+    fn in_memory(&self, _: &std::fs::File) -> std::io::Result<bool> {
+        Ok(false)
+    }
+    fn available(&self, _: &std::fs::File) -> std::io::Result<u64> {
+        Ok(u64::MAX)
+    }
+}
+/// Every allocation from publication's admission through the final head of
+/// an archive run either succeeds or reports `host_memory`/74.
+#[cfg(feature = "test-hooks")]
+fn archive_child(site: usize) {
+    let case = run_support::cases()
+        .into_iter()
+        .find(|c| c["name"] == "archives-textures")
+        .unwrap();
+    let scene = run_support::scene(&case);
+    let scratch = unityrs_testkit::scratch::Scratch::new("archive-refusals");
+    std::fs::create_dir(scratch.join("spool")).unwrap();
+    std::fs::create_dir(scratch.join("sink")).unwrap();
+    let (mut spec, _) = run_support::instantiate(&case, &scene, &scratch);
+    // One thread and one drive keep allocation ordinals deterministic.
+    spec["threads"] = 1.into();
+    spec["download_concurrency"] = 1.into();
+    let prepared = unityrs_batch::phase1::prepare(
+        unityrs_batch::spec::parse(serde_json::to_vec(&spec).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let service = Service::start(
+        std::fs::File::create(scratch.join("progress")).unwrap(),
+        Snapshot::validate(0),
+    )
+    .unwrap();
+    println!("CONTROLLER_REFUSAL kind=archive site={site}");
+    SEEN.store(0, Ordering::SeqCst);
+    SITE.store(site, Ordering::SeqCst);
+    let result = unityrs_batch::run::drive_hooked(
+        prepared,
+        0,
+        &service.sender(),
+        (&Space, Arc::new(publication_support::Portable)),
+        Arc::new(ArmAtAdmission),
+    );
+    ACTIVE.store(false, Ordering::SeqCst);
+    if site == 0 {
+        let sites = SEEN.load(Ordering::SeqCst);
+        assert_eq!(result.unwrap().code, Code::Complete);
+        assert!(sites > 0);
+        println!("CONTROLLER_SITES kind=archive sites={sites}");
+        return;
+    }
+    assert!(
+        SEEN.load(Ordering::SeqCst) >= site,
+        "unreached archive {site}"
+    );
+    match result {
+        Err(e) => assert_eq!((e.code, e.reason), (Code::Host, "host_memory"), "{site}"),
+        Ok(end) => assert_eq!(
+            (end.code, end.reason),
+            (Code::Host, Some("host_memory")),
+            "{site}"
+        ),
+    }
 }

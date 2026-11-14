@@ -41,14 +41,20 @@ fn pinned_synthetic_goldens_across_threads_admission_and_resume() {
             spec["resume"] = resume.into();
             spec["attempt"] = (attempt + 1).into();
             let mut rewritten = None;
+            let archives = run_support::archive_keys(&case);
             if resume && let Some((_, outputs)) = &baseline {
                 for (key, bytes) in outputs {
                     let path = scratch.join(format!("sink/{key}"));
                     fs::create_dir_all(path.parent().unwrap()).unwrap();
                     let mut existing = bytes.clone();
-                    if corrupt && rewritten.is_none() {
-                        // BTreeMap order chooses exactly one deterministic key.
-                        // Keep the size identical so resume must inspect the bytes.
+                    // BTreeMap order chooses exactly one deterministic key: the
+                    // first archive when there is one, so its expected-hash pass
+                    // misses and regenerates. Keep the size identical so resume
+                    // must inspect the bytes.
+                    if corrupt
+                        && rewritten.is_none()
+                        && archives.first().is_none_or(|first| first == key)
+                    {
                         existing[0] ^= 0xff;
                         rewritten = Some(key.clone());
                     }
@@ -90,7 +96,7 @@ fn pinned_synthetic_goldens_across_threads_admission_and_resume() {
             run_support::assert_raw_publication(
                 &scratch,
                 &spec,
-                case["outputs"].as_object().unwrap().len(),
+                (case["outputs"].as_object().unwrap().len(), archives.len()),
                 rewritten.as_deref(),
             );
             let actual = run_support::check(&scratch, &spec, &case, expected, 123);
