@@ -2,7 +2,7 @@
 //! end, worker-published word or destination byte is used to reconstruct them.
 use crate::{
     phase::{Error, check},
-    phase1::PreparedRun,
+    phase1::Facts,
     records::{DiagnosticKind, read},
 };
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -21,7 +21,7 @@ pub struct Figures {
 }
 /// Fixed scalar projection of received ends. Diagnostic kinds require the
 /// separate validated scan below, since B5 retains only their combined count.
-pub fn received(prepared: &PreparedRun) -> Result<Figures, Error> {
+pub fn received(prepared: &Facts) -> Result<Figures, Error> {
     let mut out = Figures::default();
     for state in &prepared.inputs {
         if let Some(r) = state.received {
@@ -48,21 +48,21 @@ pub fn received(prepared: &PreparedRun) -> Result<Figures, Error> {
     Ok(out)
 }
 pub(super) fn complete(cx: &super::rows::Context<'_>) -> Result<Figures, Error> {
-    let mut out = received(cx.prepared)?;
-    for (i, state) in cx.prepared.inputs.iter().enumerate() {
+    let mut out = received(cx.facts)?;
+    for (i, state) in cx.facts.inputs.iter().enumerate() {
         check(cx.stopped)?;
+        let index = u32::try_from(i).map_err(|_| Error::internal())?;
         // Received records count only after a confirmed commit. A failed
         // attempt's discarded diagnostic rows do not become logical records.
-        if state.phase != crate::phase1::InputPhase::Committed {
+        if !cx.committed(index) {
             continue;
         }
-        let index = u32::try_from(i).map_err(|_| Error::internal())?;
-        let id = cx.prepared.spec.bundle(i).ok_or_else(Error::internal)?.id();
+        let id = cx.facts.spec.bundle(i).ok_or_else(Error::internal)?.id();
         let mut reader = read::Reader::new(
             cx.inputs.open(index)?,
             id,
             cx.inputs.failed(index)?,
-            u64::try_from(cx.prepared.spec.archives.len()).map_err(|_| Error::internal())?,
+            u64::try_from(cx.facts.spec.archives.len()).map_err(|_| Error::internal())?,
             cx.account.meter(),
         )?;
         while let Some(row) = reader.next(cx.stopped)? {

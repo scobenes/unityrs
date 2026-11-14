@@ -135,12 +135,9 @@ fn every_controller_allocation_is_fallible_after_the_running_head() {
                     // Resolve the first owning function, never an ancestor or a
                     // core/export type mentioned in a std generic argument.
                     let function = refusals::innermost(&stderr);
-                    let core_or_export = function.as_deref().filter(|function| {
-                        function.starts_with("unityrs_core::")
-                            || function.starts_with("unityrs_export::")
-                    });
-                    if let Some(entry) =
-                        expected.iter().find(|e| core_or_export == Some(e.function))
+                    if let Some(entry) = expected
+                        .iter()
+                        .find(|e| e.admits(function.as_deref(), &stderr))
                     {
                         reached.insert(entry.function);
                         excluded += 1;
@@ -273,7 +270,11 @@ fn controller_child(kind: &'static str, site: usize) {
     SITE.store(site, Ordering::SeqCst);
     ACTIVE.store(!matches!(kind, "attempt" | "failure"), Ordering::SeqCst);
     let result = controller.drive_local(&mut execution);
+    // Test-only quiescence: dropping the owned runtime is tokio's teardown,
+    // never on a hand-over path, so it is outside the armed span.
+    let armed = ACTIVE.swap(false, Ordering::SeqCst);
     execution.quiesce().unwrap();
+    ACTIVE.store(armed, Ordering::SeqCst);
     let acknowledged = progress.exit(
         progress.sender().snapshot().unwrap(),
         Exit {

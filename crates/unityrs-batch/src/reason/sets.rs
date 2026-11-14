@@ -440,9 +440,11 @@ impl StopReason {
     }
 }
 
-impl fmt::Display for StopReason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl StopReason {
+    /// Its name in a head's `stop_reason` and an `exit` line's `reason`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
             Self::Deadline => "deadline",
             Self::Sigterm => "sigterm",
             Self::Sigint => "sigint",
@@ -453,7 +455,13 @@ impl fmt::Display for StopReason {
             Self::HostIo => "host_io",
             Self::HostMemory => "host_memory",
             Self::Internal => "internal",
-        })
+        }
+    }
+}
+
+impl fmt::Display for StopReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
     }
 }
 

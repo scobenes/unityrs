@@ -92,6 +92,16 @@ pub trait FileSystem: Send + Sync {
     fn create_random(&self, path: &Path) -> io::Result<Box<dyn random::Random>> {
         Ok(crate::alloc::try_box(crate::sys::spool_file(path, true)?)?)
     }
+    /// Open an existing positional file read-only: a finisher's view of the
+    /// outcomes a stop left, however far their zero-writes got.
+    fn open_random(&self, path: &Path) -> io::Result<Box<dyn random::Random>> {
+        Ok(crate::alloc::try_box(crate::sys::spool_file(path, false)?)?)
+    }
+    /// The finisher's one stat of a committed input's directory (2.4): no
+    /// final symlink followed; `NotFound` is "not committed".
+    fn stat_directory(&self, path: &Path) -> io::Result<()> {
+        crate::sys::directory_identity(path).map(drop)
+    }
     /// Open an immutable internal artifact. Injectable for bounded read faults.
     fn open(&self, path: &Path) -> io::Result<Box<dyn std::io::Read + Send>> {
         let file = crate::sys::spool_file(path, false)?;
