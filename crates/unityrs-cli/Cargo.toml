@@ -22,6 +22,8 @@ path = "src/main.rs"
 libc = "=0.2.191"
 unityrs-batch = { path = "../unityrs-batch" }
 unityrs-core = { path = "../unityrs-core" }
+unityrs-mesh = { path = "../unityrs-mesh" }
+unityrs-tpk = { path = "../unityrs-tpk" }
 unityrs-dump = { path = "../unityrs-dump" }
 
 [dev-dependencies]

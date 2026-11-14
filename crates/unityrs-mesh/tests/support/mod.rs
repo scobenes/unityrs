@@ -16,7 +16,18 @@ pub fn load_with_budget(
     objects: &[Object],
     budget: Arc<dyn unityrs_core::budget::MemoryBudget>,
 ) -> (Environment, Arc<SerializedFile>) {
+    load_with_platform(version, objects, budget, 13)
+}
+
+#[allow(dead_code)]
+pub fn load_with_platform(
+    version: MeshVersion,
+    objects: &[Object],
+    budget: Arc<dyn unityrs_core::budget::MemoryBudget>,
+    platform: i32,
+) -> (Environment, Arc<SerializedFile>) {
     let spec = SerializedSpec {
+        platform,
         unity_version: version.version().as_bytes().to_vec(),
         types: objects
             .iter()

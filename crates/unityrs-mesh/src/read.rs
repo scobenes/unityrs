@@ -20,6 +20,25 @@ pub fn read_mesh(
     env: &Environment,
     meter: &Arc<Meter>,
 ) -> Result<Mesh, MeshError> {
+    read_impl(obj, env, meter, false)
+}
+
+/// Read for OBJ's early False result: skip triangle evaluation when there
+/// are no positions. The general reader retains its strict triangle errors.
+pub fn read_mesh_for_obj(
+    obj: &ObjectRef,
+    env: &Environment,
+    meter: &Arc<Meter>,
+) -> Result<Mesh, MeshError> {
+    read_impl(obj, env, meter, true)
+}
+
+fn read_impl(
+    obj: &ObjectRef,
+    env: &Environment,
+    meter: &Arc<Meter>,
+    obj_early_false: bool,
+) -> Result<Mesh, MeshError> {
     if obj.class_id() != 43 {
         return Err(MeshError::NotMesh);
     }
@@ -36,7 +55,16 @@ pub fn read_mesh(
     };
     let processed =
         MeshHandler::new(Source::mesh(&parsed), version).process(Some(&resources), meter)?;
-    let triangles = processed.get_triangles(meter)?;
+    let triangles = if obj_early_false
+        && (processed.vertex_count() == 0
+            || processed
+                .vertices()
+                .is_none_or(unityrs_meshdecode::VertexArray::is_empty))
+    {
+        unityrs_meshdecode::Triangles::empty(meter)
+    } else {
+        processed.get_triangles(meter)?
+    };
     let processed = processed.into_owned();
     let root = Fields::new(&parsed, parsed.value(), meter)?;
     let name = root.string("m_Name")?;

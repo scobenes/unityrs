@@ -55,6 +55,16 @@ pub struct Triangles {
 const _: () = crate::send_sync::<Triangles>();
 
 impl Triangles {
+    /// No triangle evaluation, for exporters that return before faces when
+    /// positions are absent. Allocates nothing; retains the caller's meter.
+    #[must_use]
+    pub fn empty(meter: &Arc<Meter>) -> Self {
+        Self {
+            submeshes: Vec::new(),
+            _charge: Charge::zero(meter),
+        }
+    }
+
     /// Each submesh's triangles, in the source's order.
     #[must_use]
     pub fn submeshes(&self) -> &[SubMeshTriangles] {

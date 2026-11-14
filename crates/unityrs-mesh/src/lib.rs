@@ -43,11 +43,13 @@
 
 mod fields;
 mod model;
+pub mod obj;
+pub mod pyfmt;
 mod read;
 mod shapes;
 
 pub use model::*;
-pub use read::read_mesh;
+pub use read::{read_mesh, read_mesh_for_obj};
 pub use unityrs_meshdecode::{ProcessedOwned, Triangles};
 
 /// A mesh could not be read. Errors retain no input-sized diagnostic text.
@@ -69,6 +71,21 @@ pub enum MeshError {
     /// A metadata field is missing, has the wrong type or is out of range.
     #[error("malformed mesh field: {0}")]
     Field(&'static str),
+    /// Renderer or component access failed.
+    #[error(transparent)]
+    Scene(#[from] unityrs_scene::SceneError),
+    /// A material or texture pointer failed to resolve.
+    #[error(transparent)]
+    Deref(#[from] unityrs_core::env::DerefError),
+    /// Texture decoding refused the input.
+    #[error(transparent)]
+    Texture(#[from] unityrs_texture::DecodeError),
+    /// Export output failed.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    /// Object-mode view refused a field.
+    #[error(transparent)]
+    View(#[from] unityrs_core::objmode::ViewError),
     /// A memory, budget, allocator or work refusal.
     #[error(transparent)]
     Charge(#[from] unityrs_core::limits::ChargeError),

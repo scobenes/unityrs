@@ -11,9 +11,13 @@ authors.workspace = true
 [dependencies]
 unityrs-core = { path = "../unityrs-core" }
 unityrs-meshdecode = { path = "../unityrs-meshdecode" }
+unityrs-scene = { path = "../unityrs-scene" }
+unityrs-texture = { path = "../unityrs-texture" }
+unityrs-imageio = { path = "../unityrs-imageio" }
 thiserror = "=2.0.21"
 
 [dev-dependencies]
+unityrs-tpk = { path = "../unityrs-tpk" }
 unityrs-testkit = { path = "../unityrs-testkit" }
 serde_json = "=1.0.154"
 
