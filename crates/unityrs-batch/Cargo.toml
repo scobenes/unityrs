@@ -58,8 +58,11 @@ test-hooks = ["unityrs-export/test-hooks"]
 # Parser fixtures collect response DATA; production polls its bounded body.
 http-body-util = { version = "=0.1.5", default-features = false }
 # Scratch for the `JOB.json` cases, `mkfifo` through its child runner, and
-# the counting allocator of the validation measurement.
-unityrs-testkit = { path = "../unityrs-testkit" }
+# the counting allocator of the validation measurement. Its `test-counters`
+# turns on the core's CR8 refusal counters (docs/plans/batch.md section 6)
+# for this crate's tests alone, which `tests/limit_squeeze.rs` (X13) reads;
+# a dev-dependency's feature never reaches the binary's graph.
+unityrs-testkit = { path = "../unityrs-testkit", features = ["test-counters"] }
 # A JSON Schema 2020-12 validator, for the tests alone: every per-field
 # fixture goes through it and through the parser, which must agree
 # (docs/plans/extract.md section 3, item 4). The binary takes no schema

@@ -16,7 +16,10 @@
 //! measure a stack, and tell an overflow from every other failure) and
 //! [`child`] (how every test runs a child process: a `SIGKILL` from
 //! outside is no result) and [`scratch`] (how every test's scratch is
-//! removed, whatever happens to the test or its child) are package B's; [`address_space`] (the cap that makes the C allocator
+//! removed, whatever happens to the test or its child) are package B's;
+//! [`ledger`] (one coherent observation of a counted engine's heap and
+//! charges) and [`search`] (a limit's need, its monotonicity checked) are
+//! the memory gates' (`docs/plans/extract.md` X12, X13); [`address_space`] (the cap that makes the C allocator
 //! refuse, for the tests of liblzma's own allocations) is package C's;
 //! [`mutate`] (G3b's mutator) is the integration's; [`fuzz`] (the fuzz
 //! targets' input layouts, which `examples/fuzz_seeds.rs` writes the seeds
@@ -33,12 +36,14 @@ pub mod depth;
 pub mod env;
 pub mod fuzz;
 pub mod guard;
+pub mod ledger;
 pub mod mutate;
 pub mod ngui;
 pub mod public_types;
 pub mod rng;
 pub mod scene3d;
 pub mod scratch;
+pub mod search;
 pub mod serialized;
 pub mod stack;
 pub mod waits;

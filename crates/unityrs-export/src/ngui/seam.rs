@@ -64,6 +64,11 @@ pub trait Hooks {
         Ok(())
     }
 
+    /// Test-only: the cut recorded a skip row, at export (`true`) or at
+    /// plan, as it recorded it (X13's reference model).
+    #[cfg(feature = "test-hooks")]
+    fn skipped(&self, _exporting: bool) {}
+
     /// Test-only substitution, invoked inside texture panic containment.
     #[cfg(feature = "test-hooks")]
     fn decoder_fault(&self) {}

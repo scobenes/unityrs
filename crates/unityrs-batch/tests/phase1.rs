@@ -60,7 +60,7 @@ fn retained_tables_words_and_walk_scratch_are_inside_phase1_measurement() {
     );
     assert_eq!(p.uncommitted.get(0), Some(false));
     let b = bound::memory_bound(&p.spec, measure, 0, &bound::PROVISIONAL);
-    assert_eq!(b.c_spec, measure.kept + 2 * bound::PER_BUNDLE);
+    assert_eq!(b.c_spec, measure.kept);
 }
 
 #[test]

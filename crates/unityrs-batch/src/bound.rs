@@ -12,6 +12,13 @@
 //! `docs/plans/extract.md` X12 measures them and the binary compiles the
 //! measured figures in; `c_net` is A1's stated bound. So the bound is
 //! provisional too: a caller sizes by it only as an estimate until then.
+//!
+//! **Certified for 4 KiB pages only.** The charge unit rounds a mapped
+//! chunk to a 4 KiB page (`heap_cost`), and the calibration is measured on
+//! hosts of 4 KiB pages (`x86_64` and `aarch64` Linux). On another page size, or
+//! one `sysconf` cannot tell, the bound is [`Certification::Uncertified`]:
+//! `--check` and a run say so on stderr ([`Certification::note`]) and go
+//! on, with no field of the manifest's or the progress stream's changed.
 
 use std::collections::HashSet;
 
@@ -63,6 +70,49 @@ pub const END_SLOT_OVERHEAD: usize = 256;
 const _: () =
     assert!(PROVISIONAL.m_end >= (size_of::<crate::job::End>() + END_SLOT_OVERHEAD) as u64);
 
+/// The page size the bound is calibrated on: 4 KiB (module docs).
+pub const CERTIFIED_PAGE: u64 = 4096;
+
+/// How far the bound's figure holds on this host (module docs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Certification {
+    /// 4 KiB pages: the bound is provisional, as [`PROVISIONAL`] is.
+    Provisional,
+    /// Another page size (`None`: unknown): no calibration covers it.
+    Uncertified { page_size: Option<u64> },
+}
+
+impl Certification {
+    /// The certification of a host whose page size is `page_size`
+    /// (`crate::sys::page_size`).
+    #[must_use]
+    pub fn of(page_size: Option<u64>) -> Self {
+        if page_size == Some(CERTIFIED_PAGE) {
+            Self::Provisional
+        } else {
+            Self::Uncertified { page_size }
+        }
+    }
+
+    /// The stderr line an uncertified bound adds to `--check`'s and a
+    /// run's output; none for a provisional one, whose label is the
+    /// documentation's (`docs/BATCH_SPEC.md` section 10).
+    #[must_use]
+    pub fn note(self, prog: &str) -> Option<String> {
+        let Self::Uncertified { page_size } = self else {
+            return None;
+        };
+        let pages = page_size.map_or_else(
+            || "an unknown page size".to_owned(),
+            |p| format!("{p}-byte pages"),
+        );
+        Some(format!(
+            "{prog}: memory_bound uncertified: {pages}, calibrated for {CERTIFIED_PAGE}-byte \
+             pages only\n"
+        ))
+    }
+}
+
 /// The main thread's environment block as `--check` counts it: 6 MiB,
 /// Linux's cap on `execve`'s arguments and environment (three quarters of
 /// `_STK_LIM`, `fs/exec.c`), since `--check` reads no environment
@@ -92,10 +142,6 @@ pub const CONTAINER_LEVEL_STACK: u64 = if cfg!(debug_assertions) {
 } else {
     3 * KIB
 };
-
-/// The controller's per-bundle state and the id permutation (5.3's
-/// `C_spec`, per declared bundle).
-pub const PER_BUNDLE: u64 = 256;
 
 /// The credentials at their caps (`docs/BATCH_SPEC.md` 1.6): the access
 /// key id and the secret at 128 bytes, the session token at 16 KiB.
@@ -182,8 +228,10 @@ pub fn memory_bound(spec: &Spec, phase1: Measured, env_block: u64, k: &Constants
     let c_net = mul(sockets, k.c_net)
         .saturating_add(mul(dc, 2 * MIB))
         .saturating_add(mul(sockets, 64 * KIB));
-    let bundles = spec.bundle_count() as u64;
-    let c_spec = phase1.kept.saturating_add(mul(PER_BUNDLE, bundles));
+    // No per-bundle allowance: every structure the controller keeps per
+    // bundle is built inside phase 1's measure (B12's audit,
+    // `tests/memory_constants.rs`).
+    let c_spec = phase1.kept;
     let i = spec.max_inflight_uncompressed_bytes;
     let c_parse = phase1
         .peak

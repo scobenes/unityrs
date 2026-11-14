@@ -328,7 +328,11 @@ impl<'a> Attempt<'a> {
             sprite: site.sprite,
             reason,
         };
-        seam.probe(|| table::push(rows, row)).map_err(Failure::from)
+        seam.probe(|| table::push(rows, row))
+            .map_err(Failure::from)?;
+        #[cfg(feature = "test-hooks")]
+        seam.hooks.skipped(self.exporting);
+        Ok(())
     }
 
     /// Reads every texture's name, in object order, and sorts the owners:
