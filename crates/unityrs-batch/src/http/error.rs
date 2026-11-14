@@ -61,3 +61,17 @@ impl Error {
         })
     }
 }
+
+impl std::fmt::Display for Detail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Connect => "connect",
+            Self::Tls => "tls",
+            Self::HeadTooLarge => "head_too_large",
+            Self::NoResponse => "no_response",
+            Self::Timeout => "timeout",
+            Self::Truncated => "truncated",
+            Self::Status(status) => return write!(f, "status {status}"),
+        })
+    }
+}

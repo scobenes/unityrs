@@ -276,9 +276,20 @@ fn text<'a>(
 ) -> Result<(&'a str, Option<&'a str>), RunFailure> {
     let internal = || RunFailure::new(ReasonCode::Internal);
     let mut limit = None;
+    // A download detail with a status (`status 503`) is rendered into
+    // `scratch`, as a limit's reason is; the two never coincide.
+    let mut formatted: Option<crate::http::Detail> = None;
     let (reason, detail) = match selected {
         Selected::Stage(f, integrity) => (
             match f {
+                DataFailure::DownloadFailed(d) => {
+                    formatted = Some(*d);
+                    "download_failed"
+                }
+                DataFailure::RedirectRefused(status) => {
+                    formatted = Some(crate::http::Detail::Status(*status));
+                    "redirect_refused"
+                }
                 DataFailure::SourceMissing => "source_missing",
                 DataFailure::SourceNotRegular => "source_not_regular",
                 DataFailure::SourceChanged => "source_changed",
@@ -331,7 +342,51 @@ fn text<'a>(
                 .map_err(|_| internal())?,
             detail,
         ))
+    } else if let Some(d) = formatted {
+        use std::io::Write;
+        let mut cursor = std::io::Cursor::new(&mut scratch[..]);
+        write!(cursor, "{d}").map_err(|_| internal())?;
+        let len = usize::try_from(cursor.position()).map_err(|_| internal())?;
+        Ok((
+            reason,
+            Some(
+                std::str::from_utf8(scratch.get(..len).ok_or_else(internal)?)
+                    .map_err(|_| internal())?,
+            ),
+        ))
     } else {
         Ok((reason, detail))
+    }
+}
+
+#[cfg(test)]
+mod download_tests {
+    #[test]
+    fn failure_record_mapping_keeps_typed_download_details() {
+        use crate::{http::Detail, stage::DataFailure};
+        for (failure, reason, detail) in [
+            (
+                DataFailure::DownloadFailed(Detail::Tls),
+                "download_failed",
+                "tls",
+            ),
+            (
+                DataFailure::DownloadFailed(Detail::Status(503)),
+                "download_failed",
+                "status 503",
+            ),
+            (
+                DataFailure::RedirectRefused(308),
+                "redirect_refused",
+                "status 308",
+            ),
+        ] {
+            let mut scratch = [0; 128];
+            let selected = super::Selected::Stage(failure, None);
+            let (actual_reason, actual_detail) =
+                super::text(&selected, 1024, &mut scratch).unwrap();
+            assert_eq!(actual_reason, reason);
+            assert_eq!(actual_detail, Some(detail));
+        }
     }
 }

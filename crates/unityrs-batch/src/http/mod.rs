@@ -54,10 +54,44 @@ impl Service {
         request: hyper::Request<Payload>,
         timeout: Duration,
     ) -> Result<Response<Stream>, Error> {
+        self.request_inner(permit, url, request, timeout, None)
+            .await
+    }
+    /// Staging acquires the lookup token itself, so it can check its canonical
+    /// cutoff after acquisition and start active body time before resolution.
+    pub async fn request_with_token(
+        &self,
+        permit: &mut permit::RequestPermit,
+        url: &Url,
+        request: hyper::Request<Payload>,
+        timeout: Duration,
+        token: permit::OperationToken,
+    ) -> Result<Response<Stream>, Error> {
+        if !token.belongs_to(permit) {
+            return Err(Error::InvalidRequest);
+        }
+        self.request_inner(permit, url, request, timeout, Some(token))
+            .await
+    }
+    async fn request_inner(
+        &self,
+        permit: &mut permit::RequestPermit,
+        url: &Url,
+        request: hyper::Request<Payload>,
+        timeout: Duration,
+        token: Option<permit::OperationToken>,
+    ) -> Result<Response<Stream>, Error> {
         request::validate_url(url)?;
         request::validate_request(&request, Some(url))?;
-        let envelope = permit.charge(LIBRARY_ENVELOPE).ok_or(Error::Memory)?;
-        let io = self.connector.connect(permit, url, timeout).await?;
+        // Lookup owns its independent charge until the closure returns. The
+        // TLS envelope grows by that amount only after lookup has quiesced.
+        let mut envelope = permit
+            .charge(LIBRARY_ENVELOPE - resolve::LOOKUP_ENVELOPE)
+            .ok_or(Error::Memory)?;
+        let io = self
+            .connector
+            .connect(permit, url, timeout, token, &mut envelope)
+            .await?;
         response::exchange_charged(io, envelope, request).await
     }
     /// Only the test build can replace DNS or add trust anchors. This consumes

@@ -1,7 +1,7 @@
 //! Bounded resolver output; blocking closures, rather than handles, own tokens.
 use super::{
     Error,
-    permit::{Operation, RequestPermit},
+    permit::{Operation, OperationToken, RequestPermit},
 };
 use std::io;
 use tokio::runtime::Handle;
@@ -41,6 +41,7 @@ pub(crate) async fn lookup(
     source: &Source,
     host: &str,
     port: u16,
+    token: Option<OperationToken>,
 ) -> Result<Addresses, Error> {
     let charge = permit.charge(LOOKUP_ENVELOPE).ok_or(Error::Memory)?;
     if host.as_bytes().contains(&0) {
@@ -54,7 +55,9 @@ pub(crate) async fn lookup(
         .map_err(|_| Error::Memory)?;
     name.extend_from_slice(host.as_bytes());
     name.push(0);
-    let token = permit.begin(Operation::Lookup).ok_or(Error::Busy)?;
+    let token = token
+        .or_else(|| permit.begin(Operation::Lookup))
+        .ok_or(Error::Busy)?;
     let source = source.clone();
     pool.spawn_blocking(move || {
         let result = {
@@ -92,6 +95,7 @@ mod tests {
                 &Source::System,
                 "bad\0host",
                 80,
+                None,
             ))
             .unwrap_err();
         assert_eq!(error.detail(), Some(Detail::Connect));

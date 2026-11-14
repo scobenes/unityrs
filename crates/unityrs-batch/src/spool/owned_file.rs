@@ -114,7 +114,11 @@ impl OwnedFile {
     /// rounded claim survives any later failure until explicit deletion.
     pub fn reserve(&mut self, length: u64) -> Result<(), Error> {
         self.writable()?;
-        let result = self.claim(length);
+        let result = if length == 0 {
+            Ok(())
+        } else {
+            self.claim(length)
+        };
         if result.is_err() {
             self.failed = true;
         }
@@ -149,6 +153,93 @@ impl OwnedFile {
                 .ok_or(Error::Internal)?
                 .write_all(bytes)?;
             self.length = length;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    /// A URL write extends the one contiguous received prefix. Claim before
+    /// persistence, including partial writes and perform-then-error faults.
+    pub fn write_at(
+        &mut self,
+        bytes: &[u8],
+        offset: u64,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<(), Error> {
+        self.write_at_inner(bytes, offset, stopped, false)
+    }
+    /// Staging has just checked free space and reserved this complete piece
+    /// before dispatching its pool task. Avoid only that duplicate check.
+    pub(crate) fn write_at_reserved(
+        &mut self,
+        bytes: &[u8],
+        offset: u64,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<(), Error> {
+        self.write_at_inner(bytes, offset, stopped, true)
+    }
+    fn write_at_inner(
+        &mut self,
+        mut bytes: &[u8],
+        mut offset: u64,
+        stopped: &dyn Fn() -> bool,
+        already_checked: bool,
+    ) -> Result<(), Error> {
+        self.writable()?;
+        let result = (|| {
+            if offset != self.length {
+                return Err(Error::Internal);
+            }
+            check_stop(stopped)?;
+            let length = offset
+                .checked_add(bytes.len() as u64)
+                .ok_or(Error::Full(Full::SizeBytes))?;
+            if already_checked {
+                if length > self.reserved {
+                    return Err(Error::Internal);
+                }
+            } else {
+                self.claim(length)?;
+            }
+            while !bytes.is_empty() {
+                check_stop(stopped)?;
+                match self
+                    .writer
+                    .as_mut()
+                    .ok_or(Error::Internal)?
+                    .write_at(bytes, offset)
+                {
+                    Ok(0) => return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into()),
+                    Ok(n) => {
+                        bytes = bytes.get(n..).ok_or(Error::Internal)?;
+                        offset = offset.checked_add(n as u64).ok_or(Error::Internal)?;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            self.length = length;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    /// No write can coexist with this exclusive borrow. Release only after
+    /// successful truncation; a failed reset poisons the owner and keeps every
+    /// byte claimed, even if an injected truncate performed before its error.
+    pub fn reset(&mut self, stopped: &dyn Fn() -> bool) -> Result<(), Error> {
+        self.writable()?;
+        let result = (|| {
+            check_stop(stopped)?;
+            self.writer.as_mut().ok_or(Error::Internal)?.truncate()?;
+            self.counter.release(self.claimed);
+            self.reserved = 0;
+            self.claimed = 0;
+            self.length = 0;
             Ok(())
         })();
         if result.is_err() {
