@@ -167,6 +167,7 @@ fn decode(
             max: l.max(),
         },
         unityrs_core::Error::Budget(b) => memory(ChargeError::Budget(b)),
+        unityrs_core::Error::Allocator(a) => memory(ChargeError::Allocator(a)),
         unityrs_core::Error::Decompress { detail, .. } => TpkError::Decompress {
             codec: name,
             detail: Box::from(&*detail),
@@ -192,5 +193,30 @@ fn decode(
     match codec::decode_block(which, codec, &data, uncompressed, &mut out, cap).map_err(fail)? {
         Some(input) => Ok(input),
         None => out.into_bytes().map_err(|e| fail(e.into())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unityrs_core::{Error, budget::AllocError, codec::Decoded};
+
+    struct Refused(AllocError);
+    impl BlockCodec for Refused {
+        fn decode(&self, _: &Bytes, _: u32, _: &mut DecodeBuf) -> Result<Decoded, Error> {
+            Err(self.0.into())
+        }
+    }
+
+    #[test]
+    fn a_codec_allocator_refusal_is_the_loads_allocator_refusal() {
+        let a = AllocError {
+            requested: 8192,
+            what: Reservation::Provider,
+        };
+        let meter = Meter::new(u64::MAX, Arc::new(Unbounded), Reservation::Provider);
+        let got = decode(Codec::Lz4, &Refused(a), b"block", 0, &meter);
+        assert!(matches!(got, Err(TpkError::Allocator(got)) if got == a));
+        assert_eq!(meter.used(), 0, "input copies dropped on refusal");
     }
 }

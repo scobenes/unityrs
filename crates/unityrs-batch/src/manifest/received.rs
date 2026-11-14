@@ -35,13 +35,21 @@ pub(super) fn bundles(
         json.start("id", id)?;
         json.text("status", Some(status))?;
         bundle_reason(json, state.stage.and_then(|s| s.failure))?;
-        json.text(
-            "detail",
-            state
-                .stage
-                .and_then(|s| s.integrity)
-                .map(crate::stage::Integrity::name),
-        )?;
+        match state.stage.and_then(|s| s.failure) {
+            Some(crate::stage::Failure::Data(crate::stage::DataFailure::DownloadFailed(d))) => {
+                json.display_text("detail", d)?;
+            }
+            Some(crate::stage::Failure::Data(crate::stage::DataFailure::RedirectRefused(
+                status,
+            ))) => json.display_text("detail", crate::http::Detail::Status(status))?,
+            _ => json.text(
+                "detail",
+                state
+                    .stage
+                    .and_then(|s| s.integrity)
+                    .map(crate::stage::Integrity::name),
+            )?,
+        }
         let facts = state.stage.and_then(|s| s.facts);
         json.optional("size", facts.map(|f| f.size))?;
         json.hex("sha256", facts.as_ref().map(|f| f.sha256.as_slice()))?;
@@ -62,6 +70,8 @@ fn bundle_reason(json: &mut Json, failure: Option<crate::stage::Failure>) -> Res
     match failure {
         None => json.text("reason", None),
         Some(Failure::Data(f)) => match f {
+            DataFailure::DownloadFailed(_) => json.text("reason", Some("download_failed")),
+            DataFailure::RedirectRefused(_) => json.text("reason", Some("redirect_refused")),
             DataFailure::SourceMissing => json.text("reason", Some("source_missing")),
             DataFailure::SourceNotRegular => json.text("reason", Some("source_not_regular")),
             DataFailure::SourceChanged => json.text("reason", Some("source_changed")),

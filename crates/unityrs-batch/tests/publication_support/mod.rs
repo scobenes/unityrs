@@ -25,6 +25,13 @@ impl Scene {
         Self::with_failure(keys, archives, block, false)
     }
     pub fn with_failure(keys: &[&str], archives: bool, block: u64, failed: bool) -> Self {
+        Self::build(keys, archives, block, failed, b"payload")
+    }
+    /// Every candidate's committed payload is `payload`.
+    pub fn with_payload(keys: &[&str], block: u64, payload: &[u8]) -> Self {
+        Self::build(keys, true, block, false, payload)
+    }
+    fn build(keys: &[&str], archives: bool, block: u64, failed: bool, payload: &[u8]) -> Self {
         let scratch = Scratch::new("publication");
         let mut spec = crate::common::base();
         spec["run_id"] = serde_json::json!("r");
@@ -72,7 +79,14 @@ impl Scene {
                 )
                 .unwrap()
             } else {
-                records(&owner, &account, &prepared, index, keys, archives)
+                records(
+                    &owner,
+                    &account,
+                    &prepared,
+                    index,
+                    (keys, payload),
+                    archives,
+                )
             };
             spooled += summary.spooled_part;
             owner.rename(done.join(index.to_string())).unwrap();
@@ -139,7 +153,7 @@ fn records<'a>(
     account: &Account,
     prepared: &'a phase1::PreparedRun,
     index: usize,
-    keys: &[&str],
+    (keys, payload): (&[&str], &[u8]),
     archives: bool,
 ) -> Summary<'a> {
     let id = prepared.spec.bundle(index).unwrap().id();
@@ -150,7 +164,7 @@ fn records<'a>(
         owner,
         prepared,
         index,
-        keys,
+        (keys, payload),
         archives,
         &mut work,
     );
@@ -206,7 +220,7 @@ fn candidates(
     owner: &Directory,
     prepared: &phase1::PreparedRun,
     index: usize,
-    keys: &[&str],
+    (keys, payload): (&[&str], &[u8]),
     archives: bool,
     work: &mut Work,
 ) {
@@ -218,7 +232,7 @@ fn candidates(
             .enumerate()
         {
             let ordinal = u64::try_from(ordinal).unwrap();
-            let hashes = records::copy_output(owner, ordinal, b"payload", work).unwrap();
+            let hashes = records::copy_output(owner, ordinal, payload, work).unwrap();
             writer
                 .append(
                     Record::Candidate(records::Candidate {
@@ -230,7 +244,7 @@ fn candidates(
                         path_id: 7,
                         hashes,
                         picture: None,
-                        size: 7,
+                        size: payload.len() as u64,
                         plan_index: ordinal,
                         cut: false,
                     }),
@@ -268,6 +282,9 @@ impl unityrs_batch::sink::fs::FileSystem for Portable {
     }
     fn release(&self) -> std::io::Result<(u32, u32)> {
         Ok((5, 8))
+    }
+    fn probe_sink_semantics(&self) -> bool {
+        false
     }
     fn probe(&self, _: &std::fs::File) -> std::io::Result<()> {
         Err(std::io::Error::from_raw_os_error(libc::ENOSYS))

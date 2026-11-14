@@ -74,6 +74,44 @@ pub fn drive(
     spool_fs: &dyn start::spool::FileSystem,
     sink_fs: Arc<dyn crate::sink::fs::FileSystem>,
 ) -> Result<ResultEnd, Error> {
+    hooked(
+        prepared,
+        bound,
+        progress,
+        (spool_fs, sink_fs),
+        Arc::new(publish::NoHooks),
+    )
+}
+/// [`drive`] with publication observation points, for counted acceptance.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn drive_hooked(
+    prepared: PreparedRun,
+    bound: u64,
+    progress: &Sender,
+    (spool_fs, sink_fs): (
+        &dyn start::spool::FileSystem,
+        Arc<dyn crate::sink::fs::FileSystem>,
+    ),
+    publish_hooks: Arc<dyn publish::Hooks + Send>,
+) -> Result<ResultEnd, Error> {
+    hooked(
+        prepared,
+        bound,
+        progress,
+        (spool_fs, sink_fs),
+        publish_hooks,
+    )
+}
+fn hooked(
+    prepared: PreparedRun,
+    bound: u64,
+    progress: &Sender,
+    (spool_fs, sink_fs): (
+        &dyn start::spool::FileSystem,
+        Arc<dyn crate::sink::fs::FileSystem>,
+    ),
+    publish_hooks: Arc<dyn publish::Hooks + Send>,
+) -> Result<ResultEnd, Error> {
     let local = start::supported(&prepared.spec).map_err(|_| Error::usage())?;
     let control = Arc::new(Stop::default());
     let fin = Account::observed(crate::bound::C_FIN, Some(progress.phase()));
@@ -120,7 +158,6 @@ pub fn drive(
         controller.state().spec.max_inflight_uncompressed_bytes,
         Some(progress.phase()),
     ));
-    let publish_hooks = Arc::new(publish::NoHooks);
     // Retained pool bookkeeping is reserved before acknowledging the head.
     let owner_slot = Slot::<publish::Owned>::reserve().map_err(|e| control.error(e.into()))?;
     finish::running(controller.state(), &directory, &fin, &identity)
@@ -143,7 +180,13 @@ pub fn drive(
         s.outputs.winners = handoff.counts.winners;
         s.memory.slots_reserved = 0;
     });
-    let outcomes = init_outcomes(&started, handoff.counts.winners, &account, &control)?;
+    let archives = u64::try_from(prepared.spec.archives.len()).map_err(|_| Error::internal())?;
+    let outcomes = init_outcomes(
+        &started,
+        (handoff.counts.winners, archives),
+        &account,
+        &control,
+    )?;
     let done = publication_done(&started.run)?;
     let owned = owner_slot.write(publish::Owned {
         prepared: Lock::new(prepared),
@@ -307,7 +350,7 @@ fn preflight(
 
 fn init_outcomes(
     started: &start::spool::Started,
-    winners: u64,
+    (winners, archives): (u64, u64),
     account: &Account,
     control: &Stop,
 ) -> Result<crate::outcomes::Outcomes, Error> {
@@ -317,7 +360,7 @@ fn init_outcomes(
     crate::outcomes::Outcomes::create(
         &started.run,
         winners,
-        0,
+        archives,
         &started.counter,
         &spool::Host,
         &zeros,

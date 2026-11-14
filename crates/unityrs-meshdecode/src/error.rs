@@ -164,8 +164,11 @@ impl MeshError {
     }
 
     /// A [`MeshError::Malformed`] naming what was wrong.
-    pub(crate) fn malformed(detail: impl Into<String>) -> Self {
-        Self::Malformed(detail.into())
+    pub(crate) fn malformed(
+        detail: fmt::Arguments<'_>,
+        meter: &unityrs_core::limits::Meter,
+    ) -> Self {
+        unityrs_core::objmode::ViewError::malformed(detail, meter).into()
     }
 }
 
@@ -259,6 +262,18 @@ impl fmt::Display for Unsupported {
             Self::FixedChannels => f.write_str("the fixed channels of a version below 4 (P4)"),
             Self::MeshArray(field) => write!(f, "a Mesh's own {field} array (P2a)"),
             Self::SpriteVertices => f.write_str("a sprite's own vertices (P2a)"),
+        }
+    }
+}
+
+impl From<unityrs_core::objmode::ViewError> for MeshError {
+    fn from(error: unityrs_core::objmode::ViewError) -> Self {
+        use unityrs_core::objmode::ViewError;
+        match error {
+            ViewError::NoAttribute(name) => Self::NoAttribute(name),
+            ViewError::Malformed(detail) => Self::Malformed(detail),
+            ViewError::ByteRange => Self::ByteRange,
+            ViewError::Charge(error) => Self::Charge(error),
         }
     }
 }

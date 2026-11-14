@@ -142,3 +142,45 @@ fn allocator_refusals_and_leaks_in_isolated_children() {
         );
     }
 }
+
+#[test]
+fn native_allocator_observation_alone_stops_before_outputs_and_releases_the_slot() {
+    struct Native {
+        observed: Cell<bool>,
+        registered: Cell<bool>,
+    }
+    impl ngui::Hooks for Native {
+        fn meter(&self, meter: &Meter) {
+            if !self.observed.replace(true) {
+                let _ = meter.allocator_refused(4096);
+            }
+        }
+    }
+    impl Hooks for Native {
+        fn point(&self, p: Point) {
+            if p == Point::Registered {
+                self.registered.set(true);
+            }
+        }
+    }
+    let scene = simple(&[texture(1, b"image", 4, (1, 1), vec![1, 2, 3, 4])]);
+    let h = Harness::new(&scene, &scene.inputs[0]);
+    let fault = Native {
+        observed: Cell::new(false),
+        registered: Cell::new(false),
+    };
+    let before = unityrs_batch::alloc::refusals();
+    let end = h.run(limits(), &fault);
+    assert_eq!(end.state, State::RunFailure, "{end:?}");
+    assert_eq!(end.reason, Some(ReasonCode::HostMemory));
+    assert_eq!(end.accounts.allocator_refusals, 1);
+    assert_eq!(end.accounts.refusals(), 0, "the pool did not refuse");
+    assert_eq!(
+        unityrs_batch::alloc::refusals(),
+        before,
+        "independent of Rust NULL counting"
+    );
+    assert!(!fault.registered.get());
+    assert_eq!(end.outputs, 0);
+    clear(&end);
+}

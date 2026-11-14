@@ -71,7 +71,7 @@ use super::super::Source;
 use super::Hook;
 use super::pending::{List, STEP};
 use super::{By, Cab, DepSlot, Dependency, Loads, RawCab, Registry, Slot, SlotKind};
-use crate::detect::{FileType, check_file_type};
+use crate::detect::{DetectError, FileType, check_file_type};
 use crate::error::Error;
 use crate::files::{BundleFile, File};
 use crate::limits::{GrantScope, Limits, Meter};
@@ -91,11 +91,17 @@ const PEEK: u64 = 21;
 /// nothing to register, and its reads fail with the error.
 fn is_bundle_entry(b: &BundleFile, i: usize) -> Result<bool, Error> {
     match b.entry_range(i, 0..PEEK) {
-        Ok(head) => Ok(matches!(
-            check_file_type(&head, &Limits::default()),
-            Ok(FileType::BundleFile)
-        )),
+        Ok(head) => bundle_detected(check_file_type(&head, &Limits::default())),
         Err(e) if e.is_transient() => Err(e),
+        Err(_) => Ok(false),
+    }
+}
+
+// Detection errors caused by input mean there is no nested bundle to register.
+fn bundle_detected(detected: Result<FileType, DetectError>) -> Result<bool, Error> {
+    match detected {
+        Ok(ty) => Ok(ty == FileType::BundleFile),
+        Err(e @ DetectError::Allocator(_)) => Err(e.into()),
         Err(_) => Ok(false),
     }
 }
@@ -569,5 +575,30 @@ impl Registry {
             }
             prev = Some(slot);
         }
+    }
+}
+
+#[cfg(test)]
+mod detection_tests {
+    use super::*;
+    use crate::budget::{AllocError, Reservation};
+
+    #[test]
+    fn allocator_detection_failures_are_returned() {
+        let a = AllocError {
+            requested: 65536,
+            what: Reservation::Dependency,
+        };
+        assert_eq!(
+            bundle_detected(Err(a.into())),
+            Err(Error::Detect(DetectError::Allocator(a)))
+        );
+    }
+
+    #[test]
+    fn ordinary_detection_errors_and_non_bundles_register_nothing() {
+        assert_eq!(bundle_detected(Err(DetectError::Unterminated)), Ok(false));
+        assert_eq!(bundle_detected(Ok(FileType::ResourceFile)), Ok(false));
+        assert_eq!(bundle_detected(Ok(FileType::BundleFile)), Ok(true));
     }
 }

@@ -960,6 +960,7 @@ dependencies = [
  "boon",
  "crc32fast",
  "http-body-util",
+ "httpdate",
  "hyper",
  "hyper-util",
  "libc",
@@ -1050,6 +1051,17 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "thiserror",
+ "unityrs-testkit",
+]
+
+[[package]]
+name = "unityrs-mesh"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "thiserror",
+ "unityrs-core",
+ "unityrs-meshdecode",
  "unityrs-testkit",
 ]
 

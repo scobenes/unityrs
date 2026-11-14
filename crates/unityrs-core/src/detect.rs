@@ -77,6 +77,9 @@ pub enum FileType {
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DetectError {
+    /// A host allocator refusal during detection.
+    #[error(transparent)]
+    Allocator(#[from] crate::budget::AllocError),
     /// A file of exactly 20 bytes with no NUL in them, read by the memory
     /// reader (bytes; from a path the stream reader's rule never raises
     /// here, [`check_file_type_with_reader`]).

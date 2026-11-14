@@ -46,7 +46,7 @@
 //! (`MeshHelper.py:95-108`).
 //!
 //! **Work.** Every read of a field counts its scans on the meter `process`
-//! is given (`view`'s module docs), so the source is resolved there, not
+//! is given ([`unityrs_core::objmode`]), so the source is resolved there, not
 //! when the [`Source`] is made.
 
 use std::sync::Arc;
@@ -55,17 +55,17 @@ use unityrs_core::env::Environment;
 use unityrs_core::limits::{Charge, Meter, MeteredVec};
 use unityrs_core::{Bytes, Parsed, RawStr, SerializedFile};
 
-use crate::Version;
 use crate::compressed::decompress_compressed_mesh;
 use crate::error::{MeshError, StructError, Unsupported};
 use crate::triangles::{Triangles, get_triangles};
 use crate::unpack::{Values, VertexArray, widen};
 use crate::vertex::{Attributes, Streams, VertexData, field, get_streams, read_vertex_data};
-use crate::view::{
+use crate::{ProcessedOwned, Version};
+use unityrs_core::Value;
+use unityrs_core::objmode::{
     BONE_WEIGHTS, CHANNEL_INFO, Ints, List, MESH, Obj, SPRITE, SPRITE_RENDER_DATA, STREAM_INFO,
     STREAMING_INFO, VERTEX_DATA,
 };
-use unityrs_core::Value;
 
 /// Where a Mesh's `m_StreamData` bytes come from: UnityPy's
 /// `get_resource_data(path, assets_file, offset, size)`
@@ -146,7 +146,7 @@ impl<'a> Source<'a> {
         'a: 'm,
     {
         match self.kind {
-            Kind::Mesh => Obj::root(self.parsed, &MESH, meter),
+            Kind::Mesh => Ok(Obj::root(self.parsed, &MESH, meter)?),
             Kind::RenderData => Obj::root(self.parsed, &SPRITE, meter)?
                 .class("m_RD", &SPRITE_RENDER_DATA)?
                 .ok_or(MeshError::NoAttribute("m_RD")),
@@ -234,7 +234,7 @@ impl<'a> MeshHandler<'a> {
             }
             copy_from_mesh(&mesh, &mut attrs, meter)?
         } else if self.src.is_render_data(&mesh) {
-            copy_from_spriterenderdata(&mesh)?
+            copy_from_spriterenderdata(&mesh, meter)?
         } else {
             return Err(MeshError::UnknownMeshType);
         };
@@ -363,13 +363,16 @@ fn stream_data(
 }
 
 /// The length of a list-valued field, which Python tests for truth.
-fn list_len(v: &Value, name: &'static str) -> Result<usize, MeshError> {
+fn list_len(v: &Value, name: &'static str, meter: &Meter) -> Result<usize, MeshError> {
     match v {
         Value::List(items) => Ok(items.len()),
         Value::Tuple(items) => Ok(items.len()),
         Value::Prims(p) => Ok(p.len()),
         Value::Bytes(b) => Ok(b.len()),
-        _ => Err(MeshError::malformed(format!("{name} is not a list"))),
+        _ => Err(MeshError::malformed(
+            format_args!("{name} is not a list"),
+            meter,
+        )),
     }
 }
 
@@ -381,7 +384,7 @@ fn copy_from_mesh<'a>(
     meter: &Arc<Meter>,
 ) -> Result<Option<Ints<'a>>, MeshError> {
     // UnityPy MeshHelper.py:203-204
-    let index = mesh.ints("m_IndexBuffer")?.filter(|i| i.len() > 0);
+    let index = mesh.ints("m_IndexBuffer")?.filter(|i| !i.is_empty());
     // UnityPy MeshHelper.py:206-224: the Mesh's own arrays (P2a).
     for name in [
         "m_Vertices",
@@ -392,14 +395,14 @@ fn copy_from_mesh<'a>(
         "m_Colors",
     ] {
         if let Some((_, v)) = mesh.get(name)?
-            && list_len(v, name)? > 0
+            && list_len(v, name, meter)? > 0
         {
             return Err(MeshError::Unsupported(Unsupported::MeshArray(name)));
         }
     }
     // UnityPy MeshHelper.py:226-233
     if let Some(skin) = mesh.list("m_Skin", &BONE_WEIGHTS)?
-        && skin.len() > 0
+        && !skin.is_empty()
     {
         let (indices, weights) = copy_skin(&skin, meter)?;
         attrs.bone_indices = Some(indices);
@@ -430,7 +433,12 @@ fn copy_skin(skin: &List<'_>, meter: &Arc<Meter>) -> Result<(VertexArray, Vertex
             let (_, v) = bone.get(name)?.ok_or(MeshError::NoAttribute(name))?;
             match v {
                 Value::Int(i) if i32::try_from(*i).is_ok() => indices.push(*i)?,
-                _ => return Err(MeshError::malformed(format!("{name} is not an int"))),
+                _ => {
+                    return Err(MeshError::malformed(
+                        format_args!("{name} is not an int"),
+                        meter,
+                    ));
+                }
             }
         }
     }
@@ -441,7 +449,12 @@ fn copy_skin(skin: &List<'_>, meter: &Arc<Meter>) -> Result<(VertexArray, Vertex
             match v {
                 Value::F32(bits) => weights.push(widen(*bits))?,
                 Value::F64(bits) => weights.push(f64::from_bits(*bits))?,
-                _ => return Err(MeshError::malformed(format!("{name} is not a float"))),
+                _ => {
+                    return Err(MeshError::malformed(
+                        format_args!("{name} is not a float"),
+                        meter,
+                    ));
+                }
             }
         }
     }
@@ -455,15 +468,18 @@ fn copy_skin(skin: &List<'_>, meter: &Arc<Meter>) -> Result<(VertexArray, Vertex
 
 /// `copy_from_spriterenderdata()` (`helpers/MeshHelper.py:235-251`): the
 /// index buffer to unpack.
-fn copy_from_spriterenderdata<'a>(rd: &Obj<'a>) -> Result<Option<Ints<'a>>, MeshError> {
+fn copy_from_spriterenderdata<'a>(
+    rd: &Obj<'a>,
+    meter: &Meter,
+) -> Result<Option<Ints<'a>>, MeshError> {
     // UnityPy MeshHelper.py:240-244: `m_IndexBuffer`, else `indices`.
-    let mut index = rd.ints("m_IndexBuffer")?.filter(|i| i.len() > 0);
+    let mut index = rd.ints("m_IndexBuffer")?.filter(|i| !i.is_empty());
     if index.is_none() {
-        index = rd.ints("indices")?.filter(|i| i.len() > 0);
+        index = rd.ints("indices")?.filter(|i| !i.is_empty());
     }
     // UnityPy MeshHelper.py:246-251: the sprite's own vertices (P2a).
     if let Some((_, v)) = rd.get("vertices")?
-        && list_len(v, "vertices")? > 0
+        && list_len(v, "vertices", meter)? > 0
     {
         return Err(MeshError::Unsupported(Unsupported::SpriteVertices));
     }
@@ -543,6 +559,18 @@ pub struct Processed<'a> {
 const _: () = crate::send_sync::<Processed<'static>>();
 
 impl Processed<'_> {
+    /// Moves every array and its charge, without allocating or retaining the source.
+    /// Compute triangles before this conversion if they are needed.
+    #[must_use]
+    pub fn into_owned(self) -> ProcessedOwned {
+        ProcessedOwned {
+            vertex_count: self.vertex_count,
+            use_16bit: self.use_16bit,
+            index_buffer: self.index_buffer,
+            attrs: self.attrs,
+        }
+    }
+
     /// `m_VertexCount`.
     #[must_use]
     pub fn vertex_count(&self) -> u64 {

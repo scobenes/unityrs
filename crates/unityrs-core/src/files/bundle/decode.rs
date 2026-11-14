@@ -132,7 +132,7 @@ pub(super) fn decode_block_into(
 /// every codec but the built-in stored one
 /// ([`crate::codec::Codecs::stores_as_is`]), which reads none. A decode
 /// that ends in the budget's or the allocator's refusal
-/// ([`Error::Budget`]) gives back the credit its writes did not use, as a
+/// ([`Error::Budget`] or [`Error::Allocator`]) refunds unused credit: a
 /// refused growth counts nothing: that depends on what else the process
 /// held, and contention must not use up an open's allowance. Anything else
 /// the decode ends in keeps it, the input's own meter refusing included, as
@@ -152,7 +152,7 @@ fn reading<T>(
     out.prepay(n)?;
     let got = decode(out);
     let unused = out.end_prepaid();
-    if matches!(got, Err(Error::Budget(_))) {
+    if matches!(got, Err(Error::Budget(_) | Error::Allocator(_))) {
         out.meter().uncount_decode(unused);
     }
     got

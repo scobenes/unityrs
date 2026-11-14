@@ -11,7 +11,7 @@ use crate::{
     phase::{Error, check},
     spool::workspace::{Sealed, Workspace},
 };
-use std::{io::Read, sync::Arc};
+use std::sync::Arc;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use stream::open_at;
 pub use stream::{Stream, open};
@@ -21,12 +21,12 @@ use unityrs_core::limits::Meter;
 /// at ordinary filesystem path bounds. Independent of payload/member counts.
 pub const ENVELOPE: u64 = 1024 * 1024;
 
-/// B7's committed numeric payload seam. Implementations must open only the
-/// selected immutable payload; no member path is used as a filesystem path.
-/// Boxed-reader allocation must be fallible and covered by the stream envelope.
-pub trait Payloads: Send + Sync {
-    fn open(&self, source: u32, plan_index: u64) -> Result<Box<dyn Read + Send>, Error>;
-}
+/// B7b's single committed numeric payload seam, shared with loose
+/// publication. Implementations open only the selected immutable payload; no
+/// member path is used as a filesystem path. Boxed-reader allocation must be
+/// fallible and covered by the stream envelope.
+pub use crate::publish::payload::Payloads;
+#[derive(Clone, Copy)]
 pub struct Input<'a> {
     pub key: &'a str,
     pub index: u32,

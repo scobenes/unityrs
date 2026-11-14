@@ -8,15 +8,7 @@ use unityrs_testkit::{child, scratch::Scratch};
 
 #[test]
 fn unavailable_capabilities_are_refused_before_mutation_but_check_accepts_them() {
-    for kind in [
-        "url",
-        "unused_url",
-        "store",
-        "archive",
-        "deadline",
-        "stdin",
-        "parent",
-    ] {
+    for kind in ["url", "unused_url", "store", "deadline", "stdin", "parent"] {
         let scratch = Scratch::new("batch-refusals");
         fs::create_dir(scratch.join("spool")).unwrap();
         fs::create_dir(scratch.join("sink")).unwrap();
@@ -34,10 +26,6 @@ fn unavailable_capabilities_are_refused_before_mutation_but_check_accepts_them()
                 spec["sink"] =
                     json!({"kind":"object_store","bucket":"bucket","region":"region","prefix":""});
                 spec["deadline"] = "2099-01-01T00:00:00Z".into();
-            }
-            "archive" => {
-                spec["archives"] =
-                    json!([{"key":"archive.zip","members":[{"kind":"texture","path":"{name}"}]}]);
             }
             "deadline" => spec["deadline"] = "2099-01-01T00:00:00Z".into(),
             "stdin" => spec["stop_on_stdin_eof"] = true.into(),

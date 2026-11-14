@@ -1,7 +1,9 @@
 //! Sealed, nonblocking attempt accounts (`batch.md` 2.2).
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, PermitHome, Reservation};
+use unityrs_core::budget::{
+    AllocError, BudgetExceeded, MemoryBudget, Permit, PermitHome, Reservation,
+};
 
 #[derive(Debug)]
 struct Account {
@@ -50,6 +52,7 @@ pub struct SealedBudget {
     dependency: Arc<Account>,
     input_only: bool,
     provider_refusals: AtomicU64,
+    allocator_refusals: AtomicU64,
 }
 impl SealedBudget {
     /// Small caps are allowed for library tests; spec validation owns floors.
@@ -64,6 +67,7 @@ impl SealedBudget {
             dependency: Account::new(d, telemetry),
             input_only,
             provider_refusals: AtomicU64::new(0),
+            allocator_refusals: AtomicU64::new(0),
         }
     }
     /// A standalone peek: Dependency and Provider are refused even for zero
@@ -79,6 +83,10 @@ impl SealedBudget {
         let _ = self.input.telemetry.set(usage.clone());
         let _ = self.dependency.telemetry.set(usage);
     }
+    /// Read the sticky allocator audit without sampling either account.
+    pub(crate) fn allocator_refusals(&self) -> u64 {
+        self.allocator_refusals.load(Ordering::Acquire)
+    }
     /// Sample after all attempt locals drop for the leak check. During
     /// concurrent reservations this is observational, not a coherent census.
     #[must_use]
@@ -87,6 +95,7 @@ impl SealedBudget {
             input: self.input.snapshot(),
             dependency: self.dependency.snapshot(),
             provider_refusals: self.provider_refusals.load(Ordering::Acquire),
+            allocator_refusals: self.allocator_refusals.load(Ordering::Acquire),
         }
     }
 }
@@ -96,6 +105,10 @@ fn refused(n: &AtomicU64) {
     });
 }
 impl MemoryBudget for SealedBudget {
+    fn allocator_refused(&self, _error: AllocError) {
+        refused(&self.allocator_refusals);
+    }
+
     fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
         let account = match what {
             Reservation::Input => &self.input,
@@ -159,6 +172,9 @@ pub struct Snapshot {
     pub dependency: AccountSnapshot,
     /// Unexpected provider reservations.
     pub provider_refusals: u64,
+    /// Host allocator refusals, independent of budget reservations. Sticky
+    /// for the attempt's lifetime, including when optional work absorbed one.
+    pub allocator_refusals: u64,
 }
 impl Snapshot {
     /// Both accounts are empty; a false result makes the slot unreleasable.
@@ -173,5 +189,26 @@ impl Snapshot {
             .refusals
             .saturating_add(self.dependency.refusals)
             .saturating_add(self.provider_refusals)
+    }
+}
+
+#[cfg(test)]
+mod allocator_tests {
+    use super::*;
+    #[test]
+    fn allocator_audit_is_independent_and_survives_charge_release() {
+        let budget = Arc::new(SealedBudget::new(10, 10));
+        let meter =
+            unityrs_core::limits::Meter::new(u64::MAX, budget.clone(), Reservation::Dependency);
+        let charge = meter.charge(10).unwrap();
+        let _ = meter.allocator_refused(4096);
+        assert_eq!(budget.snapshot().refusals(), 0);
+        assert_eq!(budget.snapshot().allocator_refusals, 1);
+        assert!(meter.charge(1).is_err());
+        drop(charge);
+        let snapshot = budget.snapshot();
+        assert!(snapshot.is_clear());
+        assert_eq!(snapshot.allocator_refusals, 1);
+        assert_eq!(snapshot.refusals(), 1);
     }
 }

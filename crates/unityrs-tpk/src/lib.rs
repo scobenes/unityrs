@@ -200,6 +200,10 @@ pub(crate) const fn send_sync<T: Send + Sync + ?Sized>() {}
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum TpkError {
+    /// The host allocator refused storage for the provider. Preserved by
+    /// value so reporting the refusal needs no additional allocation.
+    #[error(transparent)]
+    Allocator(#[from] unityrs_core::budget::AllocError),
     /// The file could not be read, or the memory for what it holds could not
     /// be had (the allocator refused a growth, or liblzma's own allocation
     /// of an LZMA payload's dictionary: `OutOfMemory`).

@@ -471,6 +471,9 @@ impl FileSystem for Reads {
     fn release(&self) -> io::Result<(u32, u32)> {
         Ok((5, 8))
     }
+    fn probe_sink_semantics(&self) -> bool {
+        false
+    }
     fn probe(&self, _: &File) -> io::Result<()> {
         Err(io::Error::from_raw_os_error(libc::ENOSYS))
     }

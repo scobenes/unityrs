@@ -1,11 +1,17 @@
 //! Directly driven local staging seams. B5b owns launch order/concurrency,
 //! barrier failure selection and commits; this layer starts no threads.
+pub mod headers;
 pub mod local;
+mod retry;
+pub mod timers;
+pub mod url;
 use crate::{job::RunFailure, spec::model::Spec};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DataFailure {
+    DownloadFailed(crate::http::Detail),
+    RedirectRefused(u16),
     SourceMissing,
     SourceNotRegular,
     SourceChanged,

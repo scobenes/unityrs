@@ -102,9 +102,9 @@ jobs:
           cargo test --locked --profile sweep -p unityrs-batch --features test-hooks
           --test winners_scale --test members_scale
           --test archive_alloc --test archive_bytes --test archive_digest
-          --test publication_alloc --test phase6_ledger --test http_alloc
+          --test publication_alloc --test phase6_ledger --test http_alloc --test url_alloc
           --test finish_alloc --test publication_pool --test golden_runs --test pool_alloc --test controller_alloc
-          --test limit_squeeze
+          --test archive_publish --test limit_squeeze
           -- --include-ignored
 
   licenses:

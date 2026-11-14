@@ -2,6 +2,7 @@
 pub mod directory;
 pub mod fs;
 pub mod path;
+mod probe;
 use std::io;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

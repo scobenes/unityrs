@@ -43,7 +43,9 @@ unityrs-meshdecode its mesh rules (UnityPy/helpers/MeshHelper.py's
 MeshHandler: the vertex data's channels, streams and formats, the index
 buffer and the triangles; UnityPy/enums/VertexFormat.py,
 UnityPy/enums/MeshTopology.py and UnityPy/enums/GfxPrimitiveType.py; and
-UnityPyBoost/Mesh.cpp's unpack_vertexdata), and unityrs-export its
+UnityPyBoost/Mesh.cpp's unpack_vertexdata), and unityrs-mesh its owned
+Mesh metadata (UnityPy/classes/generated.py's submeshes, bounds, bind poses,
+blend shapes and mesh LOD fields), and unityrs-export its
 sprites kind (UnityPy/export/SpriteHelper.py's get_image_from_sprite and
 get_image: which Sprites are read and rendered, the atlas lookup among them,
 and the sheet and alpha texture each takes; UnityPyBoost/TypeTreeHelper.cpp's
@@ -92,7 +94,7 @@ builds them.
 
 UnityPy 1.25.2's LICENSE follows. Each crate that holds UnityPy's code
 (unityrs-core, unityrs-tpk, unityrs-dump, unityrs-testkit, unityrs-bench-lzma,
-unityrs-texture, unityrs-meshdecode and unityrs-export) has it as its
+unityrs-texture, unityrs-meshdecode, unityrs-mesh and unityrs-export) has it as its
 LICENSE-UNITYPY, is under MIT as a term of its own licence ("AND MIT", never
 only as a choice), and is listed under this text below.
 

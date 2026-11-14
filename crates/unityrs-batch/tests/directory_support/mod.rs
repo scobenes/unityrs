@@ -38,6 +38,21 @@ pub struct Faults {
     pub calls: Mutex<Vec<&'static str>>,
     pub synced: Mutex<Vec<u64>>,
     pub race: Mutex<Option<(PathBuf, PathBuf, &'static str)>>,
+    /// A folding sink on any host: the second name opens and unlinks the
+    /// first's entry, so an exclusive create of it fails with `EEXIST`, or,
+    /// with `fold_opens`, opens the existing entry (one inode for both).
+    pub fold: Option<(&'static CStr, &'static CStr)>,
+    pub fold_opens: bool,
+    /// When set, `fold` folds in this directory alone, as ext4's
+    /// per-directory casefold attribute does.
+    pub fold_dir: Option<PathBuf>,
+    /// Fails the `n`th call (from 1) of a point with an errno, the others
+    /// passing.
+    pub fail_nth: Option<(&'static str, usize, i32)>,
+    /// Preflight's case and normalization probe runs only when set: the
+    /// adapter fakes the kernel release to run on any host, a folding one
+    /// included (`FileSystem::probe_sink_semantics`).
+    pub semantics: bool,
 }
 impl Faults {
     fn point(&self, name: &'static str) -> io::Result<()> {
@@ -48,7 +63,37 @@ impl Faults {
         {
             return Err(io::Error::from_raw_os_error(errno));
         }
+        if let Some((call, n, errno)) = self.fail_nth
+            && call == name
+            && self
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| **c == name)
+                .count()
+                == n
+        {
+            return Err(io::Error::from_raw_os_error(errno));
+        }
         Ok(())
+    }
+    fn folded<'a>(&self, dir: &File, name: &'a CStr, flags: i32) -> (&'a CStr, i32) {
+        let here = self.fold_dir.as_ref().is_none_or(|path| {
+            let (held, path) = (dir.metadata().unwrap(), std::fs::metadata(path).unwrap());
+            (held.dev(), held.ino()) == (path.dev(), path.ino())
+        });
+        match self.fold {
+            Some((first, second)) if here && name == second => (
+                first,
+                if self.fold_opens {
+                    flags & !libc::O_EXCL
+                } else {
+                    flags
+                },
+            ),
+            _ => (name, flags),
+        }
     }
     fn replace_resume(&self, point: &str) -> io::Result<()> {
         let mut race = self.race.lock().unwrap();
@@ -63,6 +108,9 @@ impl FileSystem for Faults {
     fn release(&self) -> io::Result<(u32, u32)> {
         self.point("uname")?;
         Ok(self.release.unwrap_or((5, 8)))
+    }
+    fn probe_sink_semantics(&self) -> bool {
+        self.semantics
     }
     fn probe(&self, root: &File) -> io::Result<()> {
         self.point("probe")?;
@@ -102,6 +150,7 @@ impl FileSystem for Faults {
     }
     fn open(&self, dir: &File, name: &CStr, flags: i32, beneath: bool) -> io::Result<File> {
         self.point("open")?;
+        let (name, flags) = self.folded(dir, name, flags);
         if name == c"key" && flags & libc::O_CREAT == 0 {
             // A substituted device must never receive a readable pathname open.
             #[cfg(target_os = "linux")]
@@ -168,6 +217,7 @@ impl FileSystem for Faults {
     }
     fn unlink(&self, dir: &File, name: &CStr) -> io::Result<()> {
         self.point("unlink")?;
+        let (name, _) = self.folded(dir, name, 0);
         let race = self.race.lock().unwrap().take();
         if let Some((from, to, point)) = race {
             if point == "unlink_move" {

@@ -148,3 +148,27 @@ fn allocator_refusals_leaks_and_panics_are_audited_before_publication() {
         );
     }
 }
+
+#[test]
+fn allocator_observation_prevents_peek_word_publication_without_a_rust_null() {
+    struct Native(Cell<bool>);
+    impl ngui::Hooks for Native {
+        fn meter(&self, meter: &Meter) {
+            if !self.0.replace(true) {
+                let _ = meter.allocator_refused(4096);
+            }
+        }
+    }
+    impl Hooks for Native {}
+    let mut h = Harness::new(&bytes(false));
+    let before = unityrs_batch::alloc::refusals();
+    let end = h.run(0, 1, 1 << 20, &Native(Cell::new(false)));
+    assert_eq!(end.state, State::RunFailure);
+    assert_eq!(end.failure.unwrap().reason, ReasonCode::HostMemory);
+    assert_eq!(end.accounts.allocator_refusals, 1);
+    assert_eq!(end.accounts.refusals(), 0);
+    assert_eq!(unityrs_batch::alloc::refusals(), before);
+    assert!(end.slot_releasable);
+    assert!(end.accounts.is_clear());
+    assert_eq!(h.word.load(), Ok(Outcome::Pending));
+}

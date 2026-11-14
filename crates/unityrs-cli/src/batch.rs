@@ -23,8 +23,9 @@
 //! command line is 78 `usage`. `--schema` and `--version` write stdout and
 //! exit 74 when that write fails.
 //!
-//! Runs use the temporary local normal-run subset. Unsupported URL/store,
-//! archive and lifetime capabilities are refused with 78 before mutation.
+//! Runs use the temporary local normal-run subset, archives included.
+//! Unsupported URL/store and lifetime capabilities are refused with 78
+//! before mutation.
 
 mod normal;
 
@@ -45,7 +46,7 @@ use unityrs_batch::spec::{self, BadSpec, SPEC_VERSION};
 
 pub const USAGE: &str = "usage: unityrs batch --check JOB.json\n       \
                          unityrs batch --schema\n       \
-                         unityrs batch JOB.json   (temporary normal-run subset: local sources, directory sink; no archives or lifetime fields)";
+                         unityrs batch JOB.json   (temporary normal-run subset: local sources, directory sink; no lifetime fields)";
 
 const VERSION_USAGE: &str = "usage: unityrs --version";
 

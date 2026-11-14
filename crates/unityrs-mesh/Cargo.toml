@@ -1,0 +1,21 @@
+[package]
+name = "unityrs-mesh"
+description = "Owned, metered Unity mesh geometry and metadata."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "(MIT OR Apache-2.0) AND MIT"
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+unityrs-core = { path = "../unityrs-core" }
+unityrs-meshdecode = { path = "../unityrs-meshdecode" }
+thiserror = "=2.0.21"
+
+[dev-dependencies]
+unityrs-testkit = { path = "../unityrs-testkit" }
+serde_json = "=1.0.154"
+
+[lints]
+workspace = true

@@ -145,6 +145,10 @@ impl Outcome {
                 out.kind = Some(L2Kind::Other.as_str());
                 out.note = Some(note);
             }
+            Stop::Allocator(a) => {
+                out.kind = Some(CRASH);
+                out.note = Some(format!("unityrs ran out of memory on this case ({a})"));
+            }
             Stop::Memory(b) => {
                 out.kind = Some(CRASH);
                 out.note = Some(format!("unityrs ran out of memory on this case ({b})"));
@@ -172,6 +176,8 @@ enum Stop {
     Limit(String),
     /// Of memory, by the budget or the allocator.
     Memory(BudgetExceeded),
+    /// Host allocator refusal.
+    Allocator(unityrs_core::budget::AllocError),
 }
 
 impl From<ChargeError> for Stop {
@@ -179,6 +185,8 @@ impl From<ChargeError> for Stop {
         match e {
             ChargeError::Limit(l) => Self::Limit(l.to_string()),
             ChargeError::Budget(b) => Self::Memory(b),
+            ChargeError::Allocator(a) => Self::Allocator(a),
+            _ => Self::Limit(e.to_string()),
         }
     }
 }
@@ -277,6 +285,7 @@ pub fn run_case_on(case: &Case, limits: &Limits, budget: &Arc<dyn MemoryBudget>)
 fn memory(e: Result<(), Error>) -> Result<(), Stop> {
     match e {
         Err(Error::Budget(b)) => Err(Stop::Memory(b)),
+        Err(Error::Allocator(a)) => Err(Stop::Allocator(a)),
         _ => Ok(()),
     }
 }

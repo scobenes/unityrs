@@ -22,7 +22,7 @@ pub const HEAD_CAP: usize = 128 * 1_024;
 /// Conservative reservation, including full hyper backing capacities, TLS
 /// state/certificates and their growth overlaps. Counted tests are an additional
 /// acceptance gate; this reservation alone does not prove the library's bound.
-pub const LIBRARY_ENVELOPE: u64 = 3 * 1_024 * 1_024;
+pub const LIBRARY_ENVELOPE: u64 = 3 * 1_024 * 1_024 + 512 * 1_024;
 type Driver<I> = Pin<Box<http1::Connection<TokioIo<I>, Payload>>>;
 
 /// No connection task or executor-owned future escapes this value.
@@ -42,6 +42,25 @@ pub struct Data {
     _charge: Charge,
 }
 impl Data {
+    /// Bounded charged DATA for deterministic transport adapters.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn with_test_bytes(permit: &RequestPermit, bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > PIECE {
+            return Err(Error::InvalidRequest);
+        }
+        let charge = permit
+            .charge(heap_cost(bytes.len().max(1) as u64))
+            .ok_or(Error::Memory)?;
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(bytes.len())
+            .map_err(|_| Error::Memory)?;
+        owned.extend_from_slice(bytes);
+        Ok(Self {
+            bytes: owned,
+            _charge: charge,
+        })
+    }
     #[must_use]
     pub fn as_slice(&self) -> &[u8] {
         &self.bytes
@@ -59,10 +78,18 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Response<I> {
     /// DATA only. Trailer frames are validated by hyper then discarded. No
     /// framing byte earns credit toward staging's body timers.
     pub async fn data(&mut self) -> Result<Option<Data>, Error> {
+        self.data_with_credit(&mut |_| Ok(())).await
+    }
+    /// Credit each DATA frame at receipt, before polling another frame. A
+    /// frame split across pieces is credited once, including its pending tail.
+    pub async fn data_with_credit(
+        &mut self,
+        credit: &mut impl FnMut(usize) -> Result<(), Error>,
+    ) -> Result<Option<Data>, Error> {
         if let Some(error) = self.terminal_error {
             return Err(error);
         }
-        let result = self.next_data().await;
+        let result = self.next_data(credit).await;
         if let Err(error) = result {
             self.terminal_error = Some(error);
             self.pending = Bytes::new();
@@ -71,24 +98,55 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Response<I> {
         }
         result
     }
-    async fn next_data(&mut self) -> Result<Option<Data>, Error> {
+    async fn next_data(
+        &mut self,
+        credit: &mut impl FnMut(usize) -> Result<(), Error>,
+    ) -> Result<Option<Data>, Error> {
         while self.pending.is_empty() {
             let Some(frame) = poll_fn(|cx| self.poll_frame(cx)).await? else {
                 return Ok(None);
             };
             if let Ok(data) = frame.into_data() {
+                credit(data.len())?;
                 self.pending = data;
             }
         }
-        let count = self.pending.len().min(PIECE);
         let charge = self
             .envelope
-            .additional(heap_cost(u64::try_from(count).map_err(|_| Error::Memory)?))
+            .additional(heap_cost(PIECE as u64))
             .ok_or(Error::Memory)?;
         let mut bytes = Vec::new();
-        bytes.try_reserve_exact(count).map_err(|_| Error::Memory)?;
-        bytes.extend_from_slice(self.pending.get(..count).ok_or(Error::InvalidRequest)?);
-        self.pending = self.pending.split_off(count);
+        bytes.try_reserve_exact(PIECE).map_err(|_| Error::Memory)?;
+        poll_fn(|cx| {
+            loop {
+                let count = self.pending.len().min(PIECE - bytes.len());
+                let Some(prefix) = self.pending.get(..count) else {
+                    return Poll::Ready(Err(Error::InvalidRequest));
+                };
+                bytes.extend_from_slice(prefix);
+                self.pending = self.pending.split_off(count);
+                if bytes.len() == PIECE {
+                    break;
+                }
+                match self.poll_frame(cx) {
+                    Poll::Ready(Ok(Some(frame))) => {
+                        if let Ok(data) = frame.into_data() {
+                            credit(data.len())?;
+                            self.pending = data;
+                        }
+                    }
+                    Poll::Ready(Err(error)) => {
+                        // Persist the already received prefix before reporting
+                        // a later parser/reset fault on the next call.
+                        self.terminal_error = Some(error);
+                        break;
+                    }
+                    Poll::Ready(Ok(None)) | Poll::Pending => break,
+                }
+            }
+            Poll::Ready(Ok(()))
+        })
+        .await?;
         Ok(Some(Data {
             bytes,
             _charge: charge,

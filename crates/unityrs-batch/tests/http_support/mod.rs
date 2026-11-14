@@ -30,6 +30,7 @@ pub fn get() -> hyper::Request<Payload> {
         .unwrap()
 }
 
+type ReadHook = dyn FnMut(usize, &mut Context<'_>) -> Poll<usize> + Send;
 pub struct MemoryIo {
     input: std::sync::Arc<[u8]>,
     offset: usize,
@@ -38,8 +39,16 @@ pub struct MemoryIo {
     read_error: Option<usize>,
     write_error: bool,
     reader: Option<Waker>,
+    read_hook: Option<Box<ReadHook>>,
 }
 impl MemoryIo {
+    pub fn on_read(
+        mut self,
+        hook: impl FnMut(usize, &mut Context<'_>) -> Poll<usize> + Send + 'static,
+    ) -> Self {
+        self.read_hook = Some(Box::new(hook));
+        self
+    }
     pub fn backing(&self) -> std::sync::Arc<[u8]> {
         self.input.clone()
     }
@@ -52,14 +61,18 @@ impl MemoryIo {
         self
     }
     pub fn new(input: Vec<u8>, fragment: usize) -> Self {
+        Self::shared(input.into(), fragment)
+    }
+    pub fn shared(input: std::sync::Arc<[u8]>, fragment: usize) -> Self {
         Self {
-            input: input.into(),
+            input,
             offset: 0,
             fragment,
             writes: Vec::new(),
             read_error: None,
             write_error: false,
             reader: None,
+            read_hook: None,
         }
     }
 }
@@ -82,9 +95,19 @@ impl AsyncRead for MemoryIo {
             .read_error
             .unwrap_or(self.input.len())
             .min(self.input.len());
+        let offset = self.offset;
+        let bound = if let Some(hook) = &mut self.read_hook {
+            match hook(offset, cx) {
+                Poll::Ready(bound) => bound,
+                Poll::Pending => return Poll::Pending,
+            }
+        } else {
+            usize::MAX
+        };
         let count = (available - self.offset)
             .min(buf.remaining())
-            .min(self.fragment);
+            .min(self.fragment)
+            .min(bound);
         let end = self.offset + count;
         buf.put_slice(&self.input[self.offset..end]);
         self.offset = end;

@@ -89,8 +89,19 @@ pub struct TreeRequest<'a> {
 }
 
 /// A provider failure.
+///
+/// Construct with [`ProviderError::new`] and set optional provenance fields;
+/// the struct may gain fields in future releases.
+/// ```compile_fail,E0639
+/// use unityrs_core::provider::ProviderError;
+/// let error = ProviderError {
+///     provider: "custom", detail: "failure".into(),
+///     limit: None, memory: None, allocator: None,
+/// };
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{provider}: {detail}")]
+#[non_exhaustive]
 pub struct ProviderError {
     /// The provider's name.
     pub provider: &'static str,
@@ -109,6 +120,24 @@ pub struct ProviderError {
     /// as a missing tree (the canonical dump's `crash` record, the oracle's
     /// `MemoryError`).
     pub memory: Option<crate::budget::BudgetExceeded>,
+    /// An allocator refusal, separate from a provider budget refusal. No
+    /// additional heap storage is needed to preserve its provenance.
+    pub allocator: Option<crate::budget::AllocError>,
+}
+
+impl ProviderError {
+    /// A provider failure with no limit or memory refusal attached.
+    /// Set the corresponding public field when the failure has provenance.
+    #[must_use]
+    pub fn new(provider: &'static str, detail: Arc<str>) -> Self {
+        Self {
+            provider,
+            detail,
+            limit: None,
+            memory: None,
+            allocator: None,
+        }
+    }
 }
 
 /// A source of class (or script) trees.

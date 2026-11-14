@@ -121,9 +121,12 @@ fn aggregates(
     assert!(number(&head["run"], "spool_peak") >= staged);
     assert!(number(&head["run"], "spool_peak") <= spec.spool.size_bytes);
     // Every input, including an input failed before dispatch, commits a
-    // records file. Part accounting rounds each file to the spool's 4 KiB unit.
+    // records file. Part accounting rounds each file to the spool's 4 KiB unit;
+    // archive member work adds its largest final row unrounded (`work.rs`).
     assert!(number(&head["run"], "spooled_parts") >= u64::try_from(inputs.len()).unwrap() * 4096);
-    assert!(number(&head["run"], "spooled_parts").is_multiple_of(4096));
+    assert!(
+        !spec.archives.is_empty() || number(&head["run"], "spooled_parts").is_multiple_of(4096)
+    );
     let output_bytes = case["outputs"]
         .as_object()
         .unwrap()

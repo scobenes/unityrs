@@ -1,5 +1,5 @@
 //! Accounted, uncommitted artifacts. Ownership outlives a writer and never
-//! returns claims on drop. Only successful explicit deletion returns space.
+//! returns claims on drop. Only successful explicit deletion or owned retry reset returns space.
 mod claims;
 mod files;
 mod owned_file;
@@ -62,8 +62,23 @@ impl From<io::Error> for Error {
 pub trait Writer: Write + Send {
     /// Apply mode `0400` without reopening a path or depending on the umask.
     fn seal(&self) -> io::Result<()>;
+    /// Positional writes on the original descriptor. Non-download adapters
+    /// may reject this operation; they must never emulate it by reopening.
+    fn write_at(&mut self, _bytes: &[u8], _offset: u64) -> io::Result<usize> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    /// Retry release: success means the original descriptor has length zero.
+    fn truncate(&mut self) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
 }
 impl Writer for std::fs::File {
+    fn write_at(&mut self, bytes: &[u8], offset: u64) -> io::Result<usize> {
+        std::os::unix::fs::FileExt::write_at(self, bytes, offset)
+    }
+    fn truncate(&mut self) -> io::Result<()> {
+        self.set_len(0)
+    }
     fn seal(&self) -> io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         self.set_permissions(std::fs::Permissions::from_mode(0o400))

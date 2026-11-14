@@ -42,7 +42,12 @@ impl From<sink::Error> for Failure {
     }
 }
 fn present(cx: &Context<'_>, row: Row<'_>, buffer: &mut [u8]) -> Result<bool, Error> {
-    let found = super::resume::present(cx, row, buffer)?;
+    let expected = super::resume::Expected {
+        key: row.key,
+        size: row.size,
+        md5: row.md5,
+    };
+    let found = super::resume::present(cx, expected, buffer)?;
     // The serial hashing pass releases its loan before transfer uses the same
     // storage; the driver's single fallible reservation remains charged.
     cx.at(Point::ResumeReleased)?;

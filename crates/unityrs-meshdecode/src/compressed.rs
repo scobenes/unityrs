@@ -64,7 +64,7 @@ use crate::error::{IndexKind, MeshError};
 use crate::packed::{add, div, mul, size, sub, unpack_floats, unpack_ints};
 use crate::unpack::{Component, Values, VertexArray};
 use crate::vertex::{Attributes, field};
-use crate::view::{COMPRESSED_MESH, Obj, PACKED_BIT_VECTOR};
+use unityrs_core::objmode::{COMPRESSED_MESH, Obj, PACKED_BIT_VECTOR};
 
 /// What `decompress_compressed_mesh` leaves beside the arrays: the vertex
 /// count, and the triangles' indices when it unpacked them.
@@ -183,7 +183,7 @@ pub(crate) fn decompress_compressed_mesh(
 ) -> Result<Decompressed, MeshError> {
     let cm = mesh
         .class("m_CompressedMesh", &COMPRESSED_MESH)?
-        .ok_or_else(|| MeshError::malformed("m_CompressedMesh is None"))?;
+        .ok_or_else(|| MeshError::malformed(format_args!("m_CompressedMesh is None"), meter))?;
     // UnityPy MeshHelper.py:476-479
     let vertices = vector(&cm, "m_Vertices")?;
     let count = items(&vertices)? / 3;
