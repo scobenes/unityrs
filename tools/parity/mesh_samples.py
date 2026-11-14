@@ -25,8 +25,11 @@ def arrays(h):
     names += [f'm_UV{i}' for i in range(8)]
     attrs = {name: [[number(x) for x in row] for row in getattr(h, name)]
              for name in names if getattr(h, name) is not None}
-    if h.m_BindPose is not None:
-        attrs['m_BindPose'] = [[[number(x) for x in row] for row in matrix] for matrix in h.m_BindPose]
+    # MeshHandler sets m_BindPose only when it unpacks a compressed mesh's bind poses (below 5), and never
+    # initialises it otherwise (helpers/MeshHelper.py:515-525).
+    bind_pose = getattr(h, 'm_BindPose', None)
+    if bind_pose is not None:
+        attrs['m_BindPose'] = [[[number(x) for x in row] for row in matrix] for matrix in bind_pose]
     return {'vertex_count': h.m_VertexCount, 'use16': h.m_Use16BitIndices,
             'index_buffer': None if h.m_IndexBuffer is None else list(h.m_IndexBuffer), 'attrs': attrs}
 
@@ -71,7 +74,10 @@ def main():
     if UnityPy.__version__ != '1.25.2':
         p.exit(2, 'requires UnityPy 1.25.2\n')
     import child
-    import meshdecode
+    # meshdecode turns on its own --tpk guard (no writes, no spawn but its cargo replay) when it sees --tpk in
+    # argv; this script spawns its own replay, so it imports meshdecode for CORRECTED alone, without the guard.
+    with mock.patch.object(sys, 'argv', sys.argv[:1]):
+        import meshdecode
     from UnityPy.helpers.MeshHelper import MeshHandler
     manifest = json.loads((ROOT / 'tools/parity/unitypy_samples.json').read_text())
     total = divergences = 0
