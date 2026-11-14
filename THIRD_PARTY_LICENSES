@@ -242,7 +242,10 @@ buffer and the triangles; UnityPy/enums/VertexFormat.py,
 UnityPy/enums/MeshTopology.py and UnityPy/enums/GfxPrimitiveType.py; and
 UnityPyBoost/Mesh.cpp's unpack_vertexdata), and unityrs-mesh its owned
 Mesh metadata (UnityPy/classes/generated.py's submeshes, bounds, bind poses,
-blend shapes and mesh LOD fields), and unityrs-export its
+blend shapes and mesh LOD fields), and unityrs-scene its
+GameObject component accessors and renderer mesh lookup
+(UnityPy/classes/legacy_patch/GameObject.py and
+UnityPy/export/MeshRendererExporter.py's get_mesh), and unityrs-export its
 sprites kind (UnityPy/export/SpriteHelper.py's get_image_from_sprite and
 get_image: which Sprites are read and rendered, the atlas lookup among them,
 and the sheet and alpha texture each takes; UnityPyBoost/TypeTreeHelper.cpp's
@@ -291,7 +294,7 @@ builds them.
 
 UnityPy 1.25.2's LICENSE follows. Each crate that holds UnityPy's code
 (unityrs-core, unityrs-tpk, unityrs-dump, unityrs-testkit, unityrs-bench-lzma,
-unityrs-texture, unityrs-meshdecode, unityrs-mesh and unityrs-export) has it as its
+unityrs-texture, unityrs-meshdecode, unityrs-mesh, unityrs-scene and unityrs-export) has it as its
 LICENSE-UNITYPY, is under MIT as a term of its own licence ("AND MIT", never
 only as a choice), and is listed under this text below.
 
@@ -3837,6 +3840,7 @@ Used by:
 - unityrs-export 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-mesh 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-meshdecode 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-scene 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-testkit 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-tpk 0.0.1 (https://github.com/scobenes/unityrs)
@@ -3935,6 +3939,7 @@ Used by:
 - unityrs-imageio 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-mesh 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-meshdecode 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-scene 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-testkit 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-tpk 0.0.1 (https://github.com/scobenes/unityrs)

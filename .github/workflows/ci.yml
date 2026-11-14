@@ -72,9 +72,9 @@ jobs:
       # counter tests, tests/counters.rs, are built only under theirs). The
       # `check` job builds the core without it.
       - name: Clippy, CR8's test feature
-        run: cargo clippy -p unityrs-core -p unityrs-testkit -p unityrs-tpk -p unityrs-export --all-targets --features unityrs-testkit/test-counters,unityrs-tpk/test-counters,unityrs-export/test-counters -- -D warnings
+        run: cargo clippy -p unityrs-core -p unityrs-testkit -p unityrs-tpk -p unityrs-export -p unityrs-scene --all-targets --features unityrs-testkit/test-counters,unityrs-tpk/test-counters,unityrs-export/test-counters,unityrs-scene/test-counters -- -D warnings
       - name: Test, CR8's test feature
-        run: cargo test -p unityrs-core -p unityrs-testkit -p unityrs-tpk -p unityrs-export --features unityrs-testkit/test-counters,unityrs-tpk/test-counters,unityrs-export/test-counters
+        run: cargo test -p unityrs-core -p unityrs-testkit -p unityrs-tpk -p unityrs-export -p unityrs-scene --features unityrs-testkit/test-counters,unityrs-tpk/test-counters,unityrs-export/test-counters,unityrs-scene/test-counters
       # The sealed attempt's test hooks (B4b): an injected decoder panic and
       # Environment fault; the steps of `check` build the batch crate without them.
       - name: Clippy, sealed attempt test hooks
@@ -413,6 +413,7 @@ jobs:
           python tools/fixtures/no_tree.py --check
           python tools/fixtures/texture.py --check
           python tools/fixtures/meshdecode.py --check
+          python tools/fixtures/mesh_export.py --check
           python tools/fixtures/ngui.py --check
           python tools/fixtures/sprites.py --check
       # sprite.py records UnityPy's SpriteHelper on hand-built sprites (its

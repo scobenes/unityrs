@@ -1,0 +1,555 @@
+{
+  "reference": "UnityPy 1.25.2",
+  "cases": [
+    {
+      "case": "all_first_match",
+      "form": "modern",
+      "input": [
+        [
+          4,
+          40
+        ],
+        [
+          95,
+          95
+        ],
+        [
+          111,
+          111
+        ],
+        [
+          23,
+          23
+        ],
+        [
+          137,
+          137
+        ],
+        [
+          33,
+          33
+        ],
+        [
+          4,
+          41
+        ]
+      ],
+      "oracle": {
+        "components": {
+          "value": [
+            40,
+            95,
+            111,
+            23,
+            137,
+            33,
+            41
+          ]
+        },
+        "m_Transform": {
+          "value": 40
+        },
+        "m_Animator": {
+          "value": 95
+        },
+        "m_Animation": {
+          "value": 111
+        },
+        "m_MeshRenderer": {
+          "value": 23
+        },
+        "m_SkinnedMeshRenderer": {
+          "value": 137
+        },
+        "m_MeshFilter": {
+          "value": 33
+        }
+      },
+      "answer": {
+        "components": [
+          40,
+          95,
+          111,
+          23,
+          137,
+          33,
+          41
+        ],
+        "m_Transform": 40,
+        "m_Animator": 95,
+        "m_Animation": 111,
+        "m_MeshRenderer": 23,
+        "m_SkinnedMeshRenderer": 137,
+        "m_MeshFilter": 33
+      }
+    },
+    {
+      "case": "rect_is_not_transform",
+      "form": "modern",
+      "input": [
+        [
+          224,
+          224
+        ],
+        [
+          33,
+          33
+        ]
+      ],
+      "oracle": {
+        "components": {
+          "value": [
+            224,
+            33
+          ]
+        },
+        "m_Transform": {
+          "value": null
+        },
+        "m_Animator": {
+          "value": null
+        },
+        "m_Animation": {
+          "value": null
+        },
+        "m_MeshRenderer": {
+          "value": null
+        },
+        "m_SkinnedMeshRenderer": {
+          "value": null
+        },
+        "m_MeshFilter": {
+          "value": 33
+        }
+      },
+      "answer": {
+        "components": [
+          224,
+          33
+        ],
+        "m_Transform": null,
+        "m_Animator": null,
+        "m_Animation": null,
+        "m_MeshRenderer": null,
+        "m_SkinnedMeshRenderer": null,
+        "m_MeshFilter": 33
+      }
+    },
+    {
+      "case": "empty",
+      "form": "empty",
+      "input": [],
+      "oracle": {
+        "components": {
+          "error": "IndexError"
+        },
+        "m_Transform": {
+          "error": "IndexError"
+        },
+        "m_Animator": {
+          "error": "IndexError"
+        },
+        "m_Animation": {
+          "error": "IndexError"
+        },
+        "m_MeshRenderer": {
+          "error": "IndexError"
+        },
+        "m_SkinnedMeshRenderer": {
+          "error": "IndexError"
+        },
+        "m_MeshFilter": {
+          "error": "IndexError"
+        }
+      },
+      "answer": {
+        "components": [],
+        "m_Transform": null,
+        "m_Animator": null,
+        "m_Animation": null,
+        "m_MeshRenderer": null,
+        "m_SkinnedMeshRenderer": null,
+        "m_MeshFilter": null
+      }
+    },
+    {
+      "case": "none",
+      "form": "none",
+      "input": [],
+      "oracle": {
+        "components": {
+          "value": []
+        },
+        "m_Transform": {
+          "value": null
+        },
+        "m_Animator": {
+          "value": null
+        },
+        "m_Animation": {
+          "value": null
+        },
+        "m_MeshRenderer": {
+          "value": null
+        },
+        "m_SkinnedMeshRenderer": {
+          "value": null
+        },
+        "m_MeshFilter": {
+          "value": null
+        }
+      },
+      "answer": {
+        "components": [],
+        "m_Transform": null,
+        "m_Animator": null,
+        "m_Animation": null,
+        "m_MeshRenderer": null,
+        "m_SkinnedMeshRenderer": null,
+        "m_MeshFilter": null
+      }
+    },
+    {
+      "case": "legacy_pairs",
+      "form": "legacy",
+      "input": [
+        [
+          4,
+          40
+        ],
+        [
+          33,
+          33
+        ],
+        [
+          33,
+          34
+        ]
+      ],
+      "oracle": {
+        "components": {
+          "error": "AttributeError"
+        },
+        "m_Transform": {
+          "error": "AttributeError"
+        },
+        "m_Animator": {
+          "error": "AttributeError"
+        },
+        "m_Animation": {
+          "error": "AttributeError"
+        },
+        "m_MeshRenderer": {
+          "error": "AttributeError"
+        },
+        "m_SkinnedMeshRenderer": {
+          "error": "AttributeError"
+        },
+        "m_MeshFilter": {
+          "error": "AttributeError"
+        }
+      },
+      "answer": {
+        "components": [
+          40,
+          33,
+          34
+        ],
+        "m_Transform": 40,
+        "m_Animator": null,
+        "m_Animation": null,
+        "m_MeshRenderer": null,
+        "m_SkinnedMeshRenderer": null,
+        "m_MeshFilter": 33
+      }
+    }
+  ],
+  "mesh_cases": [
+    {
+      "case": "skinned",
+      "skin": true,
+      "mesh": 9,
+      "filters": [],
+      "oracle": {
+        "value": 9
+      }
+    },
+    {
+      "case": "skinned_null",
+      "skin": true,
+      "mesh": 0,
+      "filters": [],
+      "oracle": {
+        "value": null
+      }
+    },
+    {
+      "case": "no_filter",
+      "skin": false,
+      "mesh": 0,
+      "filters": [],
+      "oracle": {
+        "value": null
+      }
+    },
+    {
+      "case": "filter",
+      "skin": false,
+      "mesh": 0,
+      "filters": [
+        9
+      ],
+      "oracle": {
+        "value": 9
+      }
+    },
+    {
+      "case": "null_then_mesh",
+      "skin": false,
+      "mesh": 0,
+      "filters": [
+        0,
+        9
+      ],
+      "oracle": {
+        "value": 9
+      }
+    },
+    {
+      "case": "null_filter",
+      "skin": false,
+      "mesh": 0,
+      "filters": [
+        0
+      ],
+      "oracle": {
+        "value": null
+      }
+    },
+    {
+      "case": "legacy_filter",
+      "skin": false,
+      "mesh": 0,
+      "filters": [
+        9
+      ],
+      "legacy": true,
+      "oracle": {
+        "value": 9
+      }
+    }
+  ],
+  "collision_cases": [
+    {
+      "case": "mesh_filter_clean_name_collision",
+      "input": {
+        "rows": [
+          [
+            0,
+            "MeshFilter",
+            "Base",
+            0
+          ],
+          [
+            1,
+            "PPtr<GameObject>",
+            "m_GameObject",
+            0
+          ],
+          [
+            2,
+            "int",
+            "m_FileID",
+            0
+          ],
+          [
+            2,
+            "SInt64",
+            "m_PathID",
+            0
+          ],
+          [
+            1,
+            "PPtr<Mesh>",
+            "m_Mesh",
+            0
+          ],
+          [
+            2,
+            "int",
+            "m_FileID",
+            0
+          ],
+          [
+            2,
+            "SInt64",
+            "m_PathID",
+            0
+          ],
+          [
+            1,
+            "PPtr<Mesh>",
+            "m.Mesh",
+            0
+          ],
+          [
+            2,
+            "int",
+            "m_FileID",
+            0
+          ],
+          [
+            2,
+            "SInt64",
+            "m_PathID",
+            0
+          ]
+        ],
+        "data": "000000000100000000000000000000000900000000000000000000000a00000000000000"
+      },
+      "oracle": {
+        "m_Mesh": {
+          "value": 10
+        },
+        "get_mesh": {
+          "value": 10
+        }
+      }
+    },
+    {
+      "case": "component_list_clean_name_collision",
+      "input": {
+        "rows": [
+          [
+            0,
+            "GameObject",
+            "Base",
+            0
+          ],
+          [
+            1,
+            "vector",
+            "m_Component",
+            0
+          ],
+          [
+            2,
+            "Array",
+            "Array",
+            0
+          ],
+          [
+            3,
+            "int",
+            "size",
+            0
+          ],
+          [
+            3,
+            "ComponentPair",
+            "data",
+            0
+          ],
+          [
+            4,
+            "PPtr<Component>",
+            "component",
+            0
+          ],
+          [
+            5,
+            "int",
+            "m_FileID",
+            0
+          ],
+          [
+            5,
+            "SInt64",
+            "m_PathID",
+            0
+          ],
+          [
+            1,
+            "vector",
+            "m.Component",
+            0
+          ],
+          [
+            2,
+            "Array",
+            "Array",
+            0
+          ],
+          [
+            3,
+            "int",
+            "size",
+            0
+          ],
+          [
+            3,
+            "ComponentPair",
+            "data",
+            0
+          ],
+          [
+            4,
+            "PPtr<Component>",
+            "component",
+            0
+          ],
+          [
+            5,
+            "int",
+            "m_FileID",
+            0
+          ],
+          [
+            5,
+            "SInt64",
+            "m_PathID",
+            0
+          ],
+          [
+            1,
+            "bool",
+            "m_IsActive",
+            0
+          ],
+          [
+            1,
+            "int",
+            "m_Layer",
+            0
+          ],
+          [
+            1,
+            "string",
+            "m_Name",
+            0
+          ],
+          [
+            1,
+            "int",
+            "m_Tag",
+            0
+          ]
+        ],
+        "data": "0100000000000000140000000000000001000000000000001500000000000000010000000009000000636f6c6c6973696f6e000000000000"
+      },
+      "oracle": {
+        "components": {
+          "value": [
+            21
+          ]
+        },
+        "m_MeshFilter": {
+          "value": 21
+        },
+        "get_mesh": {
+          "value": 10
+        }
+      }
+    }
+  ]
+}
