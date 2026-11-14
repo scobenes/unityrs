@@ -30,7 +30,7 @@
 //! meter, one unit each, before the loop over them; then each submesh's
 //! triangles are charged to it, and a list's tuples or a strip's or quads'
 //! loop counted, before the submesh is read (`docs/plans/extract.md` E59),
-//! and every field read counts its scans (`view`'s module docs). Empty
+//! and every field read counts its scans ([`unityrs_core::objmode`]). Empty
 //! tuples cost nothing, so a count of 2^32 past a short buffer is one
 //! number.
 
@@ -42,7 +42,7 @@ use crate::Version;
 use crate::error::{IndexKind, MeshError};
 use crate::format::MeshTopology;
 use crate::vertex::field;
-use crate::view::{Obj, SUB_MESH};
+use unityrs_core::objmode::{Obj, SUB_MESH};
 
 /// `get_triangles()`'s list: one [`SubMeshTriangles`] per submesh.
 #[derive(Debug)]

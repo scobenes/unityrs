@@ -37,6 +37,7 @@ pub mod mutate;
 pub mod ngui;
 pub mod public_types;
 pub mod rng;
+pub mod scene3d;
 pub mod scratch;
 pub mod serialized;
 pub mod stack;

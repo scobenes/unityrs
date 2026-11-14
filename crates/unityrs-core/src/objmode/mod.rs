@@ -1,5 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPyBoost/TypeTreeHelper.cpp's object mode (clean_name, parse_class) and the attrs fields of UnityPy/classes/generated.py's Mesh, Sprite, VertexData, ChannelInfo, StreamInfo, SubMesh, StreamingInfo, CompressedMesh, PackedBitVector, BoneWeights4, BoneInfluence and SpriteRenderData, as MeshHandler reads them. See THIRD_PARTY_LICENSES.
-//! The handler's input: a dict-mode value the core read, viewed as the
+//! An object-mode view: a dict-mode value the core read, viewed as the
 //! objects UnityPy's object mode builds from it.
 //!
 //! UnityPy hands `MeshHandler` an object (`obj.read()`), which UnityPyBoost
@@ -19,7 +19,7 @@
 //! clean name in the node list and its value under its raw name, never
 //! copying.
 //!
-//! **What is refused** ([`MeshError::Malformed`], Tier U): a node whose
+//! **What is refused** ([`ViewError::Malformed`], Tier U): a node whose
 //! type is not the class its field's typetree names (object mode would look
 //! up another class); a field whose value is not of a type some version's
 //! typetree gives it (an `int` field holding a string, a class field
@@ -37,30 +37,53 @@
 //! against each field it looks for. So reading a class of N fields is work
 //! in N, wherever the handler reads it.
 
-use unityrs_core::limits::Meter;
-use unityrs_core::typetree::{NodeId, NodeList};
-use unityrs_core::{Map, Parsed, PrimArray, RawStr, Value};
+use crate::limits::Meter;
+use crate::typetree::{NodeId, NodeList};
+use crate::{Map, Parsed, PrimArray, RawStr, Value};
 
-use crate::error::MeshError;
+use self::error::ViewError as MeshError;
+mod error;
+pub use error::ViewError;
 
-/// The most bytes of a node's type a [`MeshError::Malformed`] message holds
+/// The most bytes of a node's type a [`ViewError::Malformed`] message holds
 /// (module docs).
-pub(crate) const NAME_BYTES: usize = 64;
+pub const NAME_BYTES: usize = 64;
 
 /// `ty` for a message: its bytes as `escape_ascii` escapes them, at most
 /// [`NAME_BYTES`] of output, cut between two escapes and then followed by
 /// `…`.
-pub(crate) fn type_name(ty: &[u8]) -> String {
-    let mut out = String::new();
-    for &b in ty {
-        let escaped = b.escape_ascii();
-        if out.len().saturating_add(escaped.len()) > NAME_BYTES {
-            out.push('…');
-            break;
+struct TypeName<'a>(&'a [u8]);
+fn type_name(ty: &[u8]) -> TypeName<'_> {
+    TypeName(ty)
+}
+impl std::fmt::Display for TypeName<'_> {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write;
+        let mut written = 0;
+        for &b in self.0 {
+            let escaped = b.escape_ascii();
+            if written + escaped.len() > NAME_BYTES {
+                return out.write_str("…");
+            }
+            written += escaped.len();
+            for c in escaped {
+                out.write_char(char::from(c))?;
+            }
         }
-        out.extend(escaped.map(char::from));
+        Ok(())
     }
-    out
+}
+struct TypeNames(&'static [&'static str]);
+impl std::fmt::Display for TypeNames {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, ty) in self.0.iter().enumerate() {
+            if i > 0 {
+                out.write_str(" or ")?;
+            }
+            out.write_str(ty)?;
+        }
+        Ok(())
+    }
 }
 
 /// Counts `n` units of work on `meter` (module docs).
@@ -69,211 +92,8 @@ fn count(meter: &Meter, n: usize) -> Result<(), MeshError> {
     Ok(())
 }
 
-/// A class's attrs fields (`classes/generated.py`), and whether object
-/// mode builds it as an `UnknownObject` when given a field it lacks
-/// (`PARITY.md` section 9.2.1: a non-empty `__slots__`).
-#[derive(Debug)]
-pub(crate) struct Class {
-    /// The node types that look this class up (a node's `m_Type`).
-    pub(crate) types: &'static [&'static str],
-    /// Fields without a default.
-    pub(crate) required: &'static [&'static str],
-    /// Fields whose default is `None`.
-    pub(crate) optional: &'static [&'static str],
-    /// A non-empty `__slots__`: an extra field gives an `UnknownObject`.
-    pub(crate) slotted: bool,
-}
-
-/// `Mesh` (`classes/generated.py:4605-4642`), whose `__slots__` is `()`.
-pub(crate) const MESH: Class = Class {
-    types: &["Mesh"],
-    required: &[
-        "m_BindPose",
-        "m_CompressedMesh",
-        "m_IndexBuffer",
-        "m_LocalAABB",
-        "m_MeshCompression",
-        "m_MeshUsageFlags",
-        "m_Name",
-        "m_SubMeshes",
-    ],
-    optional: &[
-        "m_BakedConvexCollisionMesh",
-        "m_BakedTriangleCollisionMesh",
-        "m_BoneNameHashes",
-        "m_BonesAABB",
-        "m_CollisionTriangles",
-        "m_CollisionVertexCount",
-        "m_Colors",
-        "m_CookingOptions",
-        "m_IndexFormat",
-        "m_IsReadable",
-        "m_KeepIndices",
-        "m_KeepVertices",
-        "m_MeshLodInfo",
-        "m_MeshMetrics_0_",
-        "m_MeshMetrics_1_",
-        "m_Normals",
-        "m_RootBoneNameHash",
-        "m_ShapeVertices",
-        "m_Shapes",
-        "m_Skin",
-        "m_StreamCompression",
-        "m_StreamData",
-        "m_Tangents",
-        "m_UV",
-        "m_UV1",
-        "m_Use16BitIndices",
-        "m_VariableBoneCountWeights",
-        "m_VertexData",
-        "m_Vertices",
-    ],
-    slotted: false,
-};
-
-/// `Sprite` (`classes/generated.py:4867-4882`), whose `__slots__` is `()`.
-pub(crate) const SPRITE: Class = Class {
-    types: &["Sprite"],
-    required: &[
-        "m_Extrude",
-        "m_Name",
-        "m_Offset",
-        "m_PixelsToUnits",
-        "m_RD",
-        "m_Rect",
-    ],
-    optional: &[
-        "m_AtlasTags",
-        "m_Bones",
-        "m_Border",
-        "m_IsPolygon",
-        "m_PhysicsShape",
-        "m_Pivot",
-        "m_RenderDataKey",
-        "m_ScriptableObjects",
-        "m_SpriteAtlas",
-    ],
-    slotted: false,
-};
-
-/// `SpriteRenderData` (`classes/generated.py:10903-10919`).
-pub(crate) const SPRITE_RENDER_DATA: Class = Class {
-    types: &["SpriteRenderData"],
-    required: &["settingsRaw", "texture", "textureRect", "textureRectOffset"],
-    optional: &[
-        "alphaTexture",
-        "atlasRectOffset",
-        "downscaleMultiplier",
-        "indices",
-        "m_Bindpose",
-        "m_IndexBuffer",
-        "m_SourceSkin",
-        "m_SubMeshes",
-        "m_VertexData",
-        "secondaryTextures",
-        "uvTransform",
-        "vertices",
-    ],
-    slotted: true,
-};
-
-/// `VertexData` (`classes/generated.py:11800-11809`).
-pub(crate) const VERTEX_DATA: Class = Class {
-    types: &["VertexData"],
-    required: &["m_DataSize", "m_VertexCount"],
-    optional: &[
-        "m_Channels",
-        "m_CurrentChannels",
-        "m_Streams",
-        "m_Streams_0_",
-        "m_Streams_1_",
-        "m_Streams_2_",
-        "m_Streams_3_",
-    ],
-    slotted: true,
-};
-
-/// `ChannelInfo` (`classes/generated.py:7213-7217`).
-pub(crate) const CHANNEL_INFO: Class = Class {
-    types: &["ChannelInfo"],
-    required: &["dimension", "format", "offset", "stream"],
-    optional: &[],
-    slotted: true,
-};
-
-/// `StreamInfo` (`classes/generated.py:11043-11049`).
-pub(crate) const STREAM_INFO: Class = Class {
-    types: &["StreamInfo"],
-    required: &["channelMask", "offset", "stride"],
-    optional: &["align", "dividerOp", "frequency"],
-    slotted: true,
-};
-
-/// `SubMesh` (`classes/generated.py:11098-11107`).
-pub(crate) const SUB_MESH: Class = Class {
-    types: &["SubMesh"],
-    required: &[
-        "firstByte",
-        "firstVertex",
-        "indexCount",
-        "localAABB",
-        "vertexCount",
-    ],
-    optional: &["baseVertex", "isTriStrip", "topology", "triangleCount"],
-    slotted: true,
-};
-
-/// `StreamingInfo` (`classes/generated.py:11067-11070`).
-pub(crate) const STREAMING_INFO: Class = Class {
-    types: &["StreamingInfo"],
-    required: &["offset", "path", "size"],
-    optional: &[],
-    slotted: true,
-};
-
-/// `CompressedMesh` (`classes/generated.py:7488-7501`).
-pub(crate) const COMPRESSED_MESH: Class = Class {
-    types: &["CompressedMesh"],
-    required: &[
-        "m_BoneIndices",
-        "m_NormalSigns",
-        "m_Normals",
-        "m_TangentSigns",
-        "m_Tangents",
-        "m_Triangles",
-        "m_UV",
-        "m_Vertices",
-        "m_Weights",
-    ],
-    optional: &["m_BindPoses", "m_Colors", "m_FloatColors", "m_UVInfo"],
-    slotted: true,
-};
-
-/// `PackedBitVector` (`classes/generated.py:9160-9165`).
-pub(crate) const PACKED_BIT_VECTOR: Class = Class {
-    types: &["PackedBitVector"],
-    required: &["m_Data", "m_NumItems"],
-    optional: &["m_BitSize", "m_Range", "m_Start"],
-    slotted: true,
-};
-
-/// A skin element: `BoneWeights4` or `BoneInfluence`, the same fields
-/// (`classes/generated.py:6956-6976`); `m_Skin` is a list of either.
-pub(crate) const BONE_WEIGHTS: Class = Class {
-    types: &["BoneWeights4", "BoneInfluence"],
-    required: &[
-        "boneIndex_0_",
-        "boneIndex_1_",
-        "boneIndex_2_",
-        "boneIndex_3_",
-        "weight_0_",
-        "weight_1_",
-        "weight_2_",
-        "weight_3_",
-    ],
-    optional: &[],
-    slotted: true,
-};
+pub use classes::*;
+mod classes;
 
 /// Whether UnityPyBoost's `clean_name(name)`
 /// (`UnityPyBoost/TypeTreeHelper.cpp:28-65`) is `target`, a plain
@@ -320,7 +140,7 @@ fn builds(list: &NodeList, node: NodeId, class: &Class, meter: &Meter) -> Result
 /// One object, as object mode builds it from a class node (module docs),
 /// with the meter its reads count their work on.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Obj<'a> {
+pub struct Obj<'a> {
     list: &'a NodeList,
     node: NodeId,
     map: &'a Map,
@@ -333,15 +153,14 @@ const _: () = crate::send_sync::<Obj<'static>>();
 impl<'a> Obj<'a> {
     /// The root object of `parsed`, a node of `class`, its reads counted on
     /// `meter`.
-    pub(crate) fn root(
+    pub fn root(
         parsed: &'a Parsed,
         class: &'static Class,
         meter: &'a Meter,
     ) -> Result<Self, MeshError> {
-        let list = parsed
-            .lists()
-            .first()
-            .ok_or_else(|| MeshError::malformed("a value without a tree"))?;
+        let list = parsed.lists().first().ok_or_else(|| {
+            MeshError::malformed(format_args!("{}", "a value without a tree"), meter)
+        })?;
         Self::new(
             list,
             list.root(),
@@ -363,19 +182,26 @@ impl<'a> Obj<'a> {
     ) -> Result<Self, MeshError> {
         let ty = list.type_name(node);
         if !class.types.iter().any(|t| t.as_bytes() == ty) {
-            return Err(MeshError::malformed(format!(
-                "{field} has type {}, not {}",
-                type_name(ty),
-                class.types.join(" or ")
-            )));
+            return Err(MeshError::malformed(
+                format_args!(
+                    "{field} has type {}, not {}",
+                    type_name(ty),
+                    TypeNames(class.types)
+                ),
+                meter,
+            ));
         }
         let Value::Dict(map) = value else {
-            return Err(MeshError::malformed(format!("{field} is not a class")));
+            return Err(MeshError::malformed(
+                format_args!("{field} is not a class"),
+                meter,
+            ));
         };
         if map.list() != 0 {
-            return Err(MeshError::malformed(format!(
-                "{field} is read through a referenced type"
-            )));
+            return Err(MeshError::malformed(
+                format_args!("{field} is read through a referenced type"),
+                meter,
+            ));
         }
         Ok(Self {
             list,
@@ -387,7 +213,8 @@ impl<'a> Obj<'a> {
     }
 
     /// Whether object mode built the class, not an `UnknownObject`.
-    pub(crate) fn built(&self) -> bool {
+    #[must_use]
+    pub fn built(&self) -> bool {
         self.built
     }
 
@@ -406,7 +233,7 @@ impl<'a> Obj<'a> {
     /// default, on a class that was built; `AttributeError` on an
     /// `UnknownObject`. Its scans, of the children and of the dict, are
     /// counted first, a unit a name.
-    pub(crate) fn get(&self, name: &'static str) -> Result<Option<(NodeId, &'a Value)>, MeshError> {
+    pub fn get(&self, name: &'static str) -> Result<Option<(NodeId, &'a Value)>, MeshError> {
         let scanned = self
             .list
             .children(self.node)
@@ -430,7 +257,7 @@ impl<'a> Obj<'a> {
 
     /// The attribute `name`, an integer from 0 to `max` (a Python `bool`
     /// reads as its `int`, as Python's arithmetic takes it).
-    pub(crate) fn uint(&self, name: &'static str, max: u64) -> Result<Option<u64>, MeshError> {
+    pub fn uint(&self, name: &'static str, max: u64) -> Result<Option<u64>, MeshError> {
         let Some((_, v)) = self.get(name)? else {
             return Ok(None);
         };
@@ -439,18 +266,24 @@ impl<'a> Obj<'a> {
             Value::Int(i) => u64::try_from(*i).ok(),
             Value::UInt(u) => Some(*u),
             _ => {
-                return Err(MeshError::malformed(format!("{name} is not an integer")));
+                return Err(MeshError::malformed(
+                    format_args!("{name} is not an integer"),
+                    self.meter,
+                ));
             }
         };
         match n {
             Some(n) if n <= max => Ok(Some(n)),
-            _ => Err(MeshError::malformed(format!("{name} is out of its range"))),
+            _ => Err(MeshError::malformed(
+                format_args!("{name} is out of its range"),
+                self.meter,
+            )),
         }
     }
 
     /// The attribute `name`, a 32-bit signed integer (a `bool` as its
     /// `int`).
-    pub(crate) fn int32(&self, name: &'static str) -> Result<Option<i64>, MeshError> {
+    pub fn int32(&self, name: &'static str) -> Result<Option<i64>, MeshError> {
         let Some((_, v)) = self.get(name)? else {
             return Ok(None);
         };
@@ -458,45 +291,62 @@ impl<'a> Obj<'a> {
             Value::Bool(b) => i64::from(*b),
             Value::Int(i) if i32::try_from(*i).is_ok() => *i,
             Value::Int(_) | Value::UInt(_) => {
-                return Err(MeshError::malformed(format!("{name} is out of its range")));
+                return Err(MeshError::malformed(
+                    format_args!("{name} is out of its range"),
+                    self.meter,
+                ));
             }
-            _ => return Err(MeshError::malformed(format!("{name} is not an integer"))),
+            _ => {
+                return Err(MeshError::malformed(
+                    format_args!("{name} is not an integer"),
+                    self.meter,
+                ));
+            }
         };
         Ok(Some(n))
     }
 
     /// The attribute `name`, a `float` (a `float` or `double` leaf, read as
     /// Python reads it: a `float`'s bits widened as `struct`'s `f` widens
-    /// them, [`crate::unpack::widen`]).
-    pub(crate) fn float(&self, name: &'static str) -> Result<Option<f64>, MeshError> {
+    /// them, [`widen`]).
+    pub fn float(&self, name: &'static str) -> Result<Option<f64>, MeshError> {
         match self.get(name)? {
             None => Ok(None),
-            Some((_, Value::F32(bits))) => Ok(Some(crate::unpack::widen(*bits))),
+            Some((_, Value::F32(bits))) => Ok(Some(widen(*bits))),
             Some((_, Value::F64(bits))) => Ok(Some(f64::from_bits(*bits))),
-            Some(_) => Err(MeshError::malformed(format!("{name} is not a float"))),
+            Some(_) => Err(MeshError::malformed(
+                format_args!("{name} is not a float"),
+                self.meter,
+            )),
         }
     }
 
     /// The attribute `name`, `bytes` (`TypelessData`).
-    pub(crate) fn bytes(&self, name: &'static str) -> Result<Option<&'a [u8]>, MeshError> {
+    pub fn bytes(&self, name: &'static str) -> Result<Option<&'a [u8]>, MeshError> {
         match self.get(name)? {
             None => Ok(None),
             Some((_, Value::Bytes(b))) => Ok(Some(b)),
-            Some(_) => Err(MeshError::malformed(format!("{name} is not bytes"))),
+            Some(_) => Err(MeshError::malformed(
+                format_args!("{name} is not bytes"),
+                self.meter,
+            )),
         }
     }
 
     /// The attribute `name`, a `str`.
-    pub(crate) fn string(&self, name: &'static str) -> Result<Option<&'a RawStr>, MeshError> {
+    pub fn string(&self, name: &'static str) -> Result<Option<&'a RawStr>, MeshError> {
         match self.get(name)? {
             None => Ok(None),
             Some((_, Value::Str(s))) => Ok(Some(s)),
-            Some(_) => Err(MeshError::malformed(format!("{name} is not a string"))),
+            Some(_) => Err(MeshError::malformed(
+                format_args!("{name} is not a string"),
+                self.meter,
+            )),
         }
     }
 
     /// The attribute `name`, an object of `class`.
-    pub(crate) fn class(
+    pub fn class(
         &self,
         name: &'static str,
         class: &'static Class,
@@ -508,7 +358,7 @@ impl<'a> Obj<'a> {
     }
 
     /// The attribute `name`, a list of objects of `class`.
-    pub(crate) fn list(
+    pub fn list(
         &self,
         name: &'static str,
         class: &'static Class,
@@ -521,9 +371,10 @@ impl<'a> Obj<'a> {
             Value::Tuple(items) => items,
             Value::Prims(p) if p.is_empty() => &[],
             _ => {
-                return Err(MeshError::malformed(format!(
-                    "{name} is not a list of classes"
-                )));
+                return Err(MeshError::malformed(
+                    format_args!("{name} is not a list of classes"),
+                    self.meter,
+                ));
             }
         };
         // UnityPy TypeTreeHelper.cpp:812-874: a vector's element is its
@@ -536,7 +387,10 @@ impl<'a> Obj<'a> {
             [] => None,
         };
         let Some(elem) = elem else {
-            return Err(MeshError::malformed(format!("{name} is not a vector")));
+            return Err(MeshError::malformed(
+                format_args!("{name} is not a vector"),
+                self.meter,
+            ));
         };
         Ok(Some(List {
             nodes: self.list,
@@ -550,10 +404,10 @@ impl<'a> Obj<'a> {
     }
 
     /// The attribute `name`, a list of integers.
-    pub(crate) fn ints(&self, name: &'static str) -> Result<Option<Ints<'a>>, MeshError> {
+    pub fn ints(&self, name: &'static str) -> Result<Option<Ints<'a>>, MeshError> {
         match self.get(name)? {
             None => Ok(None),
-            Some((_, v)) => Ints::of(v, name).map(Some),
+            Some((_, v)) => Ints::of(v, name, self.meter).map(Some),
         }
     }
 }
@@ -561,7 +415,7 @@ impl<'a> Obj<'a> {
 /// A list of objects of one class (one element node, so one answer to
 /// whether object mode builds them).
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct List<'a> {
+pub struct List<'a> {
     nodes: &'a NodeList,
     elem: NodeId,
     items: &'a [Value],
@@ -575,12 +429,20 @@ const _: () = crate::send_sync::<List<'static>>();
 
 impl<'a> List<'a> {
     /// The number of elements.
-    pub(crate) fn len(&self) -> usize {
+    #[must_use]
+    pub fn len(&self) -> usize {
         self.items.len()
     }
 
+    /// Whether there are no elements.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Element `i`, if there is one.
-    pub(crate) fn get(&self, i: usize) -> Option<Result<Obj<'a>, MeshError>> {
+    #[must_use]
+    pub fn get(&self, i: usize) -> Option<Result<Obj<'a>, MeshError>> {
         let v = self.items.get(i)?;
         Some(self.element(v))
     }
@@ -588,23 +450,22 @@ impl<'a> List<'a> {
     fn element(&self, v: &'a Value) -> Result<Obj<'a>, MeshError> {
         let ty = self.nodes.type_name(self.elem);
         if !self.class.types.iter().any(|t| t.as_bytes() == ty) {
-            return Err(MeshError::malformed(format!(
-                "{}'s elements have type {}",
-                self.name,
-                type_name(ty)
-            )));
+            return Err(MeshError::malformed(
+                format_args!("{}'s elements have type {}", self.name, type_name(ty)),
+                self.meter,
+            ));
         }
         let Value::Dict(map) = v else {
-            return Err(MeshError::malformed(format!(
-                "{}'s elements are not classes",
-                self.name
-            )));
+            return Err(MeshError::malformed(
+                format_args!("{}'s elements are not classes", self.name),
+                self.meter,
+            ));
         };
         if map.list() != 0 {
-            return Err(MeshError::malformed(format!(
-                "{} is read through a referenced type",
-                self.name
-            )));
+            return Err(MeshError::malformed(
+                format_args!("{} is read through a referenced type", self.name),
+                self.meter,
+            ));
         }
         Ok(Obj {
             list: self.nodes,
@@ -616,58 +477,74 @@ impl<'a> List<'a> {
     }
 
     /// The elements in order.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = Result<Obj<'a>, MeshError>> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = Result<Obj<'a>, MeshError>> + '_ {
         self.items.iter().map(|v| self.element(v))
     }
 }
 
 /// A list of integers: a primitive run, or a list or tuple of `int`s.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Ints<'a> {
+pub enum Ints<'a> {
     /// A primitive run.
-    Run(&'a PrimArray),
+    Run(&'a PrimArray, &'a Meter),
     /// A list or tuple of values, each checked as it is read.
-    Items(&'a [Value], &'static str),
+    Items(&'a [Value], &'static str, &'a Meter),
     /// `bytes` (`TypelessData`), which `bytes()` copies as it is.
-    Raw(&'a [u8]),
+    Raw(&'a [u8], &'a Meter),
 }
 
 const _: () = crate::send_sync::<Ints<'static>>();
 
 impl<'a> Ints<'a> {
-    fn of(v: &'a Value, name: &'static str) -> Result<Self, MeshError> {
+    fn meter(&self) -> &Meter {
+        match self {
+            Self::Run(_, m) | Self::Items(_, _, m) | Self::Raw(_, m) => m,
+        }
+    }
+
+    fn of(v: &'a Value, name: &'static str, meter: &'a Meter) -> Result<Self, MeshError> {
         match v {
             Value::Prims(p) => match p {
                 PrimArray::F32(_) | PrimArray::F64(_) if !p.is_empty() => Err(
-                    MeshError::malformed(format!("{name} is not a list of integers")),
+                    MeshError::malformed(format_args!("{name} is not a list of integers"), meter),
                 ),
-                _ => Ok(Self::Run(p)),
+                _ => Ok(Self::Run(p, meter)),
             },
-            Value::List(items) => Ok(Self::Items(items, name)),
-            Value::Tuple(items) => Ok(Self::Items(items, name)),
-            Value::Bytes(b) => Ok(Self::Raw(b)),
-            _ => Err(MeshError::malformed(format!("{name} is not a list"))),
+            Value::List(items) => Ok(Self::Items(items, name, meter)),
+            Value::Tuple(items) => Ok(Self::Items(items, name, meter)),
+            Value::Bytes(b) => Ok(Self::Raw(b, meter)),
+            _ => Err(MeshError::malformed(
+                format_args!("{name} is not a list"),
+                meter,
+            )),
         }
     }
 
     /// The number of integers.
-    pub(crate) fn len(&self) -> usize {
+    #[must_use]
+    pub fn len(&self) -> usize {
         match self {
-            Self::Run(p) => p.len(),
-            Self::Items(items, _) => items.len(),
-            Self::Raw(b) => b.len(),
+            Self::Run(p, _) => p.len(),
+            Self::Items(items, _, _) => items.len(),
+            Self::Raw(b, _) => b.len(),
         }
+    }
+
+    /// Whether there are no integers.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Element `i` of `bytes(self)`: the value, which must be a byte
     /// (`ValueError` "bytes must be in range(0, 256)" otherwise; a `bool`
     /// is its `int`). `i` past the end reads as 0.
-    pub(crate) fn byte(&self, i: usize) -> Result<u8, MeshError> {
+    pub fn byte(&self, i: usize) -> Result<u8, MeshError> {
         fn byte<T: TryInto<u8>>(v: Option<T>) -> Result<u8, MeshError> {
             v.map_or(Ok(0), |v| v.try_into().map_err(|_| MeshError::ByteRange))
         }
         match self {
-            Self::Run(p) => match p {
+            Self::Run(p, _) => match p {
                 PrimArray::U8(b) => Ok(b.get(i).copied().unwrap_or(0)),
                 PrimArray::Bool(v) => Ok(v.get(i).copied().map_or(0, u8::from)),
                 PrimArray::I8(v) => byte(v.get(i).copied()),
@@ -680,49 +557,66 @@ impl<'a> Ints<'a> {
                 // Refused by `of` unless empty.
                 PrimArray::F32(_) | PrimArray::F64(_) => Ok(0),
             },
-            Self::Items(items, name) => match items.get(i) {
+            Self::Items(items, name, _) => match items.get(i) {
                 None => Ok(0),
                 Some(Value::Bool(b)) => Ok(u8::from(*b)),
                 Some(Value::Int(v)) => byte(Some(*v)),
                 Some(Value::UInt(v)) => byte(Some(*v)),
-                Some(_) => Err(MeshError::malformed(format!(
-                    "{name} holds a value that is not an integer"
-                ))),
+                Some(_) => Err(MeshError::malformed(
+                    format_args!("{name} holds a value that is not an integer"),
+                    self.meter(),
+                )),
             },
-            Self::Raw(b) => Ok(b.get(i).copied().unwrap_or(0)),
+            Self::Raw(b, _) => Ok(b.get(i).copied().unwrap_or(0)),
         }
     }
 
     /// Item `i` as `m_Data[i]` reads it (`helpers/PackedBitVector.py:56`):
     /// `None` past the end, where Python raises `IndexError`; a value that
     /// is no byte, which no typetree's `UInt8` holds, is `Malformed`.
-    pub(crate) fn item(&self, i: usize) -> Result<Option<u8>, MeshError> {
+    pub fn item(&self, i: usize) -> Result<Option<u8>, MeshError> {
         if i >= self.len() {
             return Ok(None);
         }
         match self.byte(i) {
             Ok(b) => Ok(Some(b)),
-            Err(MeshError::ByteRange) => {
-                Err(MeshError::malformed("m_Data holds a value past a byte"))
-            }
+            Err(MeshError::ByteRange) => Err(MeshError::malformed(
+                format_args!("{}", "m_Data holds a value past a byte"),
+                self.meter(),
+            )),
             Err(e) => Err(e),
         }
     }
 
     /// Whether Python holds it as `bytes`, whose index error reads "index
     /// out of range", not a list's.
-    pub(crate) fn is_bytes(&self) -> bool {
-        matches!(self, Self::Raw(_))
+    #[must_use]
+    pub fn is_bytes(&self) -> bool {
+        matches!(self, Self::Raw(_, _))
     }
 
     /// The bytes themselves, where they need no check (a `U8` run, or
     /// `bytes`).
-    pub(crate) fn as_u8(&self) -> Option<&'a [u8]> {
+    #[must_use]
+    pub fn as_u8(&self) -> Option<&'a [u8]> {
         match self {
-            Self::Run(PrimArray::U8(b)) => Some(b),
-            Self::Raw(b) => Some(b),
+            Self::Run(PrimArray::U8(b), _) => Some(b),
+            Self::Raw(b, _) => Some(b),
             _ => None,
         }
+    }
+}
+
+fn widen(bits: u32) -> f64 {
+    let value = f32::from_bits(bits);
+    if value.is_nan() {
+        f64::from_bits(
+            (u64::from(bits >> 31) << 63)
+                | 0x7ff0_0000_0000_0000
+                | (u64::from((bits & 0x007f_ffff) | 0x0040_0000) << 29),
+        )
+    } else {
+        f64::from(value)
     }
 }
 
@@ -732,20 +626,23 @@ mod tests {
 
     #[test]
     fn a_type_name_is_cut_between_escapes() {
-        assert_eq!(type_name(b"Mesh"), "Mesh");
+        assert_eq!(type_name(b"Mesh").to_string(), "Mesh");
         let exact = "x".repeat(NAME_BYTES);
-        assert_eq!(type_name(exact.as_bytes()), exact);
+        assert_eq!(type_name(exact.as_bytes()).to_string(), exact);
         let long = "y".repeat(1 << 20);
         assert_eq!(
-            type_name(long.as_bytes()),
+            type_name(long.as_bytes()).to_string(),
             format!("{}…", &long[..NAME_BYTES])
         );
         // Each 0xFF escapes to four bytes, `\xff`: sixteen fit.
-        let cut = type_name(&[0xFF; 100]);
+        let cut = type_name(&[0xFF; 100]).to_string();
         assert_eq!(cut, format!("{}…", "\\xff".repeat(NAME_BYTES / 4)));
         // An escape that would cross the bound is left out whole.
         let mut ty = vec![b'a'; NAME_BYTES - 2];
         ty.push(0xFF);
-        assert_eq!(type_name(&ty), format!("{}…", "a".repeat(NAME_BYTES - 2)));
+        assert_eq!(
+            type_name(&ty).to_string(),
+            format!("{}…", "a".repeat(NAME_BYTES - 2))
+        );
     }
 }
