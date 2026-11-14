@@ -71,6 +71,7 @@
     )
 )]
 
+mod astc;
 mod bcn;
 mod contain;
 mod decode;

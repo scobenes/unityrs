@@ -104,7 +104,7 @@ accepted = ["PSF-2.0"]
 accepted = ["BSD-2-Clause-Views"]
 
 [unityrs-texture.clarify]
-license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views"
+license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0"
 
 [[unityrs-texture.clarify.files]]
 path = "LICENSE-MIT"
@@ -160,6 +160,11 @@ checksum = "a19111e670250d4d85bf2f436a4fffdb61ac4187ee07f56d5bbe76d10341344d"
 path = "LICENSE-OPENBLAS-UT"
 license = "BSD-2-Clause-Views"
 checksum = "b5c81341a0b484b4b6c2856a41ffd7a9d9cf3a61ec63628557cae68d846ab0f3"
+
+[[unityrs-texture.clarify.files]]
+path = "LICENSE-ASTCENC"
+license = "Apache-2.0"
+checksum = "8c1470ba845552d8585169e9a819a9d7c59783469a3b6b6aefa7280a67ea1973"
 
 # Compiled trust anchors only; never an ambient licence exception.
 [webpki-roots]
