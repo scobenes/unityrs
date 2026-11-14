@@ -160,3 +160,39 @@ fn every_mesh_error_takes_its_class() {
         assert_eq!(render(&e), want, "{e:?}");
     }
 }
+
+/// Every format a version 2 spec may list (`outputs.formats`: this
+/// binary's `Format::ALL`, ASTC's included) decodes to a sheet the Sprite
+/// renderer either takes or refuses as an object's skip, alone and beside
+/// an alpha texture: no listed format makes a Sprite its input's failure
+/// (`sprites/export.rs` routes each refusal through its group's skips).
+#[test]
+fn no_decoded_format_makes_a_sheet_an_inputs_failure() {
+    use unityrs_core::limits::Meter;
+    use unityrs_texture::sprite::Sheet;
+    use unityrs_texture::{Format, Mode, decode};
+
+    let meter = Meter::unlimited();
+    let data = [0x5a_u8; 64];
+    let alpha = decode(Format::Rgba32, &data, 1, 1, &meter).unwrap();
+    let skip_or_ok = |r: Result<Sheet<'_>, SpriteError>, f: Format, how: &str| match r {
+        Ok(_) => true,
+        Err(e) => {
+            let class = render(&e);
+            assert!(
+                matches!(class, Class::Skip(_)),
+                "{f:?} {how}: {e:?} is {class:?}"
+            );
+            false
+        }
+    };
+    for f in Format::ALL {
+        let image = decode(f, &data, 1, 1, &meter).unwrap_or_else(|e| panic!("{f:?}: {e:?}"));
+        assert_eq!(image.mode(), f.mode(), "{f:?}");
+        let alone = skip_or_ok(Sheet::new(&image, None, &meter), f, "alone");
+        let merged = skip_or_ok(Sheet::new(&image, Some(&alpha), &meter), f, "merged");
+        // Only `L` (BC4's) is refused, alone and merged alike.
+        assert_eq!(alone, f.mode() != Mode::L, "{f:?}");
+        assert_eq!(merged, f.mode() != Mode::L, "{f:?}");
+    }
+}

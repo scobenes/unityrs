@@ -244,6 +244,8 @@ pub mod format {
     pub const RGBA32: i32 = 4;
     /// `DXT1`.
     pub const DXT1: i32 = 10;
+    /// `BC4`, which decodes to `L`.
+    pub const BC4: i32 = 26;
 }
 
 /// A `Texture2D`'s fields up to `image_data`, which UnityPy 1.25.2's class

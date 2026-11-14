@@ -111,6 +111,27 @@ fn c_hdr_counts_distinct_values_and_the_largest_block() {
     );
 }
 
+/// A version 2 spec's UnityCN key variable is one more `{"env": NAME}`
+/// value at its 16 KiB cap; a spec naming none adds nothing.
+#[test]
+fn c_hdr_counts_the_unitycn_key_at_its_cap() {
+    let at = |version: u32, key: &str| {
+        let text = format!(
+            r#"{{"spec_version":{version},"run_id":"r","attempt":1,"threads":3,
+            "download_concurrency":2,"max_inflight_uncompressed_bytes":268435456,
+            "max_decoded_bytes":16777216,"dep_cache_bytes":33554432,
+            "spool":{{"dir":"/spool","size_bytes":1073741824,"reserve_bytes":0}},
+            "outputs":{{"textures":{{"key":"{{name}}.png"}}}},
+            "inputs":[{{"id":"a","path":"/a"}}]{key}{DIRECTORY}}}"#
+        );
+        c_hdr(&crate::spec::parse(text.into_bytes()).unwrap().spec)
+    };
+    assert_eq!(at(1, ""), 0);
+    assert_eq!(at(2, ""), 0);
+    assert_eq!(at(2, r#","unitycn_key":null"#), 0);
+    assert_eq!(at(2, r#","unitycn_key":{"env":"K"}"#), heap_cost(16 << 10));
+}
+
 /// Calibration is certified for 4 KiB pages only: any other size, or an
 /// unknown one, is uncertified, with its stderr line; 4 KiB keeps the
 /// provisional label and adds no line.

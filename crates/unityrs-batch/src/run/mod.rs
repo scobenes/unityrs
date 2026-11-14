@@ -65,6 +65,25 @@ pub fn host_check(
         start::host::Requirements::new(&prepared.spec, bound).map_err(|e| errors::host(&e))?;
     start::host::check(host, needs).map_err(|e| errors::host(&e))
 }
+/// Preflight's read of the UnityCN key a version 2 spec names
+/// (`docs/BATCH_SPEC.md` 1.1, `start::key`) from `env`, the process's
+/// environment in the binary: the key is set in every load's options of
+/// `prepared`, before [`drive`], which refuses a spec naming a key that was
+/// not read. A spec naming none reads nothing. The 69's detail is the
+/// variable's name, never its value.
+pub fn unitycn_key(
+    prepared: &mut PreparedRun,
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<(), Error> {
+    let Some(name) = prepared.spec.unitycn_key.as_deref() else {
+        return Ok(());
+    };
+    let key = start::key::read(name, env).map_err(|reason| Error::preflight(reason, name))?;
+    Arc::get_mut(&mut prepared.memory)
+        .ok_or(())
+        .and_then(|plan| plan.install_key(key))
+        .map_err(|()| Error::internal())
+}
 /// The caller owns the progress service and its final acknowledgment. Injectable
 /// host adapters keep synthetic acceptance independent of OS-specific probes.
 pub fn drive(
@@ -113,6 +132,10 @@ fn hooked(
     publish_hooks: Arc<dyn publish::Hooks + Send>,
 ) -> Result<ResultEnd, Error> {
     let local = start::supported(&prepared.spec).map_err(|_| Error::usage())?;
+    // The host reads a named key at preflight ([`unitycn_key`]).
+    if local.spec().unitycn_key.is_some() && prepared.memory.key.is_none() {
+        return Err(Error::internal());
+    }
     let control = Arc::new(Stop::default());
     let fin = Account::observed(crate::bound::C_FIN, Some(progress.phase()));
     let started_at = crate::sys::utc_now().map_err(|_| Error::host_io())?;

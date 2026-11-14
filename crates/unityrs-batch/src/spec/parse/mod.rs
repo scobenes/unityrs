@@ -28,6 +28,8 @@ use std::num::NonZeroU64;
 use serde::Deserialize;
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
+use unityrs_export::ngui::Formats;
+
 use super::fields::{self, Array, BUNDLE, Field, MAX_VIEW_BUNDLES, Str, Ty};
 use super::model::{Bundle, ESCAPED, Header, PreferEntry};
 use super::node::{Held, Member, Name, Node};
@@ -61,6 +63,8 @@ pub(super) struct Store {
 
 /// What the parse found.
 pub(super) struct Parsed<'a> {
+    /// The version whose table the document was read by ([`scan`]).
+    pub(super) spec_version: u64,
     /// The top level's members but `spec_version`, in document order, or
     /// `None` when the document is not an object.
     pub(super) top: Option<Vec<Member<'a>>>,
@@ -73,6 +77,7 @@ pub(super) struct Parsed<'a> {
 
 /// Parses `text`; the error is `serde_json`'s (`syntax`).
 pub(super) fn parse(text: &str) -> Result<Parsed<'_>, serde_json::Error> {
+    let spec_version = scan::version(text);
     let mut cx = Cx {
         text,
         ptr: String::new(),
@@ -86,7 +91,7 @@ pub(super) fn parse(text: &str) -> Result<Parsed<'_>, serde_json::Error> {
         version: Err(Rule::Missing),
     };
     let mut de = serde_json::Deserializer::from_str(text);
-    let top = Top(&mut cx).deserialize(&mut de)?;
+    let top = Top(&mut cx, fields::top(spec_version)).deserialize(&mut de)?;
     de.end()?;
     let version = match cx.versions {
         0 => Err(Rule::Missing),
@@ -94,6 +99,7 @@ pub(super) fn parse(text: &str) -> Result<Parsed<'_>, serde_json::Error> {
         _ => Err(Rule::DuplicateMember),
     };
     Ok(Parsed {
+        spec_version,
         top,
         version,
         err: cx.err,
@@ -217,13 +223,15 @@ macro_rules! wrong_kinds {
 }
 
 mod members;
+mod scan;
 mod skip;
 
 use members::{Version, headers, prefer, sink};
 use skip::{Skip, drain_map, drain_seq};
 
-/// The document: an object, or `None` (`type`, the rule alone).
-struct Top<'c, 'a>(&'c mut Cx<'a>);
+/// The document, read by its version's table: an object, or `None`
+/// (`type`, the rule alone).
+struct Top<'c, 'a>(&'c mut Cx<'a>, &'static [Field]);
 
 impl<'de> DeserializeSeed<'de> for Top<'_, 'de> {
     type Value = Option<Vec<Member<'de>>>;
@@ -241,7 +249,7 @@ impl<'de> Visitor<'de> for Top<'_, 'de> {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-        object(self.0, map, &fields::TOP, true).map(Some)
+        object(self.0, map, self.1, true).map(Some)
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
@@ -370,6 +378,7 @@ impl<'de> Value<'_, 'de> {
     fn string(self, s: &str) -> bool {
         let rule = match self.ty {
             Ty::Str(st) => validate::str_rule(s, st),
+            Ty::TextureFormat => Formats::decoded(s).err().map(|_| Rule::Range),
             _ => Some(Rule::Type),
         };
         if let Some(r) = rule {

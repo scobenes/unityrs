@@ -122,7 +122,7 @@ fn schema_prints_the_schema_byte_for_byte() {
     let o = unityrs(&["batch", "--schema"]);
     assert_eq!(o.status.code(), Some(0));
     let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/batch/spec-v1.schema.json");
+        .join(format!("../../docs/batch/spec-v{SPEC_VERSION}.schema.json"));
     assert_eq!(o.stdout, std::fs::read(file).unwrap());
     assert_eq!(o.stdout, SCHEMA);
     assert_eq!(o.stderr, b"");

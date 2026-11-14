@@ -186,6 +186,7 @@ pub fn scene_harness(
                 script_classes: scene.options.script_classes.clone(),
                 skip_name_suffixes: scene.options.skip_name_suffixes.clone(),
             }),
+            ..s.outputs.clone()
         }
     });
     h

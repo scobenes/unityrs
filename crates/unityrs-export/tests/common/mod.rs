@@ -55,6 +55,7 @@ pub fn options(scene: &AtlasScene) -> Options {
             .map(|c| c.as_bytes().to_vec())
             .collect(),
         atlases: true,
+        formats: unityrs_export::ngui::Formats::V1,
     }
 }
 
@@ -362,6 +363,8 @@ pub struct Engine {
     /// Each sprite group's Sprites, as the export told them: the group's
     /// number, the Sprite's file and its path id.
     pub groups: RefCell<Vec<(usize, String, i64)>>,
+    /// The spec's formats (`outputs.formats`), when not version 1's five.
+    pub formats: Option<unityrs_export::ngui::Formats>,
 }
 
 impl Hooks for Engine {
@@ -462,7 +465,11 @@ pub fn run_in(
         keys: &mut keys,
         sink: &mut sink,
     };
-    let cut = ngui::cut(ctx, &options(scene))?;
+    let mut options = options(scene);
+    if let Some(formats) = engine.formats {
+        options.formats = formats;
+    }
+    let cut = ngui::cut(ctx, &options)?;
     let plan_skips = cut.plan_skips.len();
     let mut skips = cut.plan_skips.clone();
     skips.extend(cut.export_skips.iter().cloned());

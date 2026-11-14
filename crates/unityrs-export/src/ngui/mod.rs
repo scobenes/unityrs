@@ -49,6 +49,7 @@ pub use register::{
 };
 pub use seam::{Context, Hooks, MemberTemplate, NoHooks, Registered};
 pub use select::select_own;
+pub use unityrs_texture::{Format, Formats, TEXTURE_FORMATS};
 pub use winners::{Candidate, Decision, Prefer, Rule, decide};
 
 /// What section 1.5's `atlases` (and `outputs.textures`) ask for.
@@ -69,6 +70,10 @@ pub struct Options {
     /// Whether atlases are cut (`atlases` present in the spec): without
     /// it, the plan's atlas stage does not run.
     pub atlases: bool,
+    /// The formats a texture is exported in, a sheet's included
+    /// (`outputs.formats`, `docs/BATCH_SPEC.md` 1.5 and section 3):
+    /// [`Formats::V1`] for a version 1 spec.
+    pub formats: Formats,
 }
 
 /// A bundle of the view: its spec id and its bytes.

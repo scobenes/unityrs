@@ -107,8 +107,10 @@ fn spec_version_by_value() {
             &format!(r#""spec_version":{token}"#),
         ))
     };
-    // By token (N1): an integer token that fits in 64 bits is a version.
-    assert_eq!(version("2"), "version /spec_version");
+    // By token (N1): an integer token that fits in 64 bits is a version,
+    // of which this binary reads 1 and 2.
+    assert_eq!(version("0"), "version /spec_version");
+    assert_eq!(version("3"), "version /spec_version");
     assert_eq!(version("-3"), "version /spec_version");
     assert_eq!(version("18446744073709551615"), "version /spec_version");
     // Every other number is `type`, whatever the double it reads as.
@@ -525,7 +527,7 @@ fn the_validator_refuses_and_differs_only_as_item_4_lists() {
         with(|v| v["sink"] = json!({"kind": "s3"})),
         with(|v| v["inputs"][0]["id"] = json!("a\u{85}")),
         with(|v| v["zzz"] = json!(1)),
-        with(|v| v["spec_version"] = json!(2.0)),
+        with(|v| v["spec_version"] = json!(3.0)),
         // A URL's ASCII form and its cap as written are the schema's too.
         with(|v| v["dependencies"][0]["url"] = json!("https://\u{e9}.net/")),
         with(|v| {

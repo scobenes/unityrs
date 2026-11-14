@@ -8,7 +8,7 @@ use unityrs_batch::{
     run,
 };
 
-pub(super) fn run(clock: &Clock, prepared: PreparedRun, measured: alloc::Measured) -> ExitCode {
+pub(super) fn run(clock: &Clock, mut prepared: PreparedRun, measured: alloc::Measured) -> ExitCode {
     if unityrs_batch::start::supported(&prepared.spec).is_err() {
         return super::refused(
             clock,
@@ -25,6 +25,12 @@ pub(super) fn run(clock: &Clock, prepared: PreparedRun, measured: alloc::Measure
     // (`docs/BATCH_SPEC.md` section 10).
     if let Some(note) = Certification::of(unityrs_batch::sys::page_size()).note("unityrs batch") {
         early::write(b"", note.as_bytes());
+    }
+    // A version 2 spec's UnityCN key, from the environment, as a header's
+    // variable is read (`docs/BATCH_SPEC.md` 1.1): before the host checks
+    // (`docs/plans/batch.md` 2.11 step 6, then 2.7).
+    if let Err(error) = run::unitycn_key(&mut prepared, |name| std::env::var_os(name)) {
+        return failed(clock, error);
     }
     if let Err(error) = run::host_check(&prepared, bound, &unityrs_batch::start::host::System) {
         return failed(clock, error);

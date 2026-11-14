@@ -51,6 +51,10 @@ impl Error {
             failure.detail.map(crate::attempt::DetailCode::name),
         )
     }
+    /// A preflight reason (exit 69) and its detail.
+    pub(super) fn preflight(reason: crate::reason::Preflight, detail: &str) -> Self {
+        Self::plain(Code::CouldNotStart, reason.name(), Some(detail))
+    }
     pub(super) fn running(mut self) -> Self {
         self.status = Some("running");
         self

@@ -78,6 +78,10 @@ unityrs-testkit = { path = "../unityrs-testkit", features = ["test-counters"] }
 # releases are MIT-0 alone) and ahash 0.8.11 (whose getrandom 0.2 needs no
 # second r-efi, whose clarification is per crate name).
 boon = "=0.6.1"
+# The core's synthetic UnityCN encryptor (`unityrs-core/tests/support`),
+# which the encrypted golden spec's bundle is built with; already in the
+# lock through unityrs-core.
+aes = "=0.8.4"
 
 [lints]
 workspace = true

@@ -1,7 +1,8 @@
 # Synthetic batch goldens
 
 Run `python3 tools/goldens/generate.py --check` to reproduce and compare every
-`tests/specs/v1/*.json` pin without writing. Omit `--check` to regenerate.
+`tests/specs/v<N>/*.json` pin, each under its spec's `spec_version`, without
+writing. Omit `--check` to regenerate.
 Only Python's standard library is needed. No batch binary, corpus, downloaded
 data, UnityPy installation, child process, or scratch directory is used.
 
@@ -19,6 +20,14 @@ truncation and excluded nested/repeated CABs) from their hand rules and existing
 oracle pins; the original command logs were unavailable. Its mixed-severity
 case combines an export-work budget failure (5) with a missing input (4),
 independently expecting exit 5 under sections 9.1 and 9.2.
+
+`v2_cases.py` writes the version 2 pins (`tests/specs/v2/`) from
+`textures-five` by `docs/BATCH_SPEC.md` 1.5, section 3 and 7.3's hand rules:
+version 1's defaults, with the head's three new fields; a list of its own,
+whose RGB565 and BC4 textures come from `raw.json`'s pinned pixels and whose
+unlisted formats are expected `unsupported_format` skips; and the same
+through a UnityCN-encrypted bundle, which the Rust harness builds with the
+core's synthetic test encryptor and a made-up key the case's `env` holds.
 
 `archive_case.py` adds archives to those cases by `docs/BATCH_SPEC.md` 1.7,
 4.7 and 9.2's hand rules: member rows, duplicate and unwritable paths,

@@ -1,5 +1,9 @@
 #![allow(dead_code)]
 mod accounting;
+/// The core's synthetic UnityCN encryptor (C3), for the encrypted golden.
+#[path = "../../../unityrs-core/tests/support/unitycn.rs"]
+#[allow(dead_code, clippy::all, clippy::pedantic)]
+mod unitycn;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, path::Path};
 use unityrs_batch::{
@@ -11,10 +15,12 @@ use unityrs_testkit::{
     scratch::Scratch,
 };
 pub type Checked = (Value, BTreeMap<String, Vec<u8>>);
+/// Every pin, of every version (`tests/specs/v<N>/`).
 pub fn cases() -> Vec<Value> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/specs/v1");
-    let mut files: Vec<_> = fs::read_dir(root)
-        .unwrap()
+    let specs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/specs");
+    let mut files: Vec<_> = ["v1", "v2"]
+        .iter()
+        .flat_map(|v| fs::read_dir(specs.join(v)).unwrap())
         .map(|p| p.unwrap().path())
         .filter(|p| p.extension().is_some_and(|e| e == "json"))
         .collect();
@@ -25,9 +31,8 @@ pub fn cases() -> Vec<Value> {
         .collect()
 }
 pub fn scene(case: &Value) -> AtlasScene {
-    if case["fixture"] == "textures:five"
-        || case["fixture"].as_str().unwrap().starts_with("synthetic:")
-    {
+    let fixture = case["fixture"].as_str().unwrap();
+    if fixture.starts_with("textures:") || fixture.starts_with("synthetic:") {
         return textures(case);
     }
     let (family, name) = case["fixture"].as_str().unwrap().split_once(':').unwrap();
@@ -338,6 +343,8 @@ fn textures(case: &Value) -> AtlasScene {
                 unityrs_testkit::env::bundle(&[("CAB-child", hidden)]),
             ),
         ])
+    } else if case["encrypted"] == true {
+        unitycn::serialized_bundle(&file, serialized_name.as_bytes())
     } else {
         unityrs_testkit::env::bundle(&[(serialized_name, file.clone())])
     };
@@ -364,10 +371,24 @@ fn textures(case: &Value) -> AtlasScene {
     }
 }
 
+/// The environment a case's run reads: its `env` map (the UnityCN
+/// golden's key), nothing else.
+pub fn env(case: &Value) -> impl Fn(&str) -> Option<std::ffi::OsString> + '_ {
+    |name| case["env"][name].as_str().map(Into::into)
+}
+
 fn validate_head(head: &Value, spec: &Value) {
-    assert_eq!(head["manifest_version"], 1);
+    // A version 2 spec's head is `manifest_version` 2 (7.3).
+    assert_eq!(head["manifest_version"], spec["spec_version"]);
     assert_eq!(head["run_id"], spec["run_id"]);
-    assert_eq!(head["spec_version"], 1);
+    assert_eq!(head["spec_version"], spec["spec_version"]);
+    for field in ["formats", "image", "unitycn_key"] {
+        assert_eq!(
+            head.get(field).is_some(),
+            spec["spec_version"] == 2,
+            "{field}"
+        );
+    }
     assert!(head["binary_version"].is_string());
     assert!(head["deadline"].is_null());
     assert!(head["stop_detail"].is_null());
@@ -458,6 +479,9 @@ fn normalize_head(mut head: Value) -> Value {
             "counts",
             "warnings",
             "run",
+            "formats",
+            "image",
+            "unitycn_key",
         ]
         .contains(&name.as_str())
     });

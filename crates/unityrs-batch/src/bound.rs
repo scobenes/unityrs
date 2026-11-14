@@ -265,7 +265,9 @@ pub fn memory_bound(spec: &Spec, phase1: Measured, env_block: u64, k: &Constants
 /// entries, `4 x download_concurrency` copies of the largest bundle's
 /// header block (`name: value\r\n` each), and, with an object store sink,
 /// whose credentials the engine reads, six copies of the credentials at
-/// their caps.
+/// their caps; with a UnityCN key (`unitycn_key`, version 2), its
+/// variable's value read at preflight, at the same 16 KiB cap
+/// (`start::key`).
 #[must_use]
 pub fn c_hdr(spec: &Spec) -> u64 {
     let mut literals: HashSet<&str> = HashSet::new();
@@ -321,11 +323,17 @@ pub fn c_hdr(spec: &Spec) -> u64 {
     } else {
         0
     };
+    let key = if spec.unitycn_key.is_some() {
+        heap_cost(MAX_HEADER_VALUE)
+    } else {
+        0
+    };
     values
         .saturating_add(table)
         .saturating_add(masker)
         .saturating_add(blocks)
         .saturating_add(credentials)
+        .saturating_add(key)
 }
 
 #[cfg(test)]

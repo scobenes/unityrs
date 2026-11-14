@@ -10,14 +10,16 @@ use std::fmt::Write as _;
 use std::marker::PhantomData;
 
 use super::formats;
+use unityrs_export::ngui::Formats;
+
 use super::model::{
-    Archive, Atlases, Deadline, Fencing, Http, Member, MemberKind, ObjectStore, Outputs, Redirects,
-    RetryOn, Sink, Spec, Spool, TryClass,
+    Archive, Atlases, Deadline, Fencing, Http, Image, Member, MemberKind, ObjectStore, Outputs,
+    Redirects, RetryOn, Sink, Spec, Spool, TryClass,
 };
 use super::node::{Member as NodeMember, Node};
 use super::parse::Store;
 use super::store::{Chunks, Seg};
-use super::{BadSpec, Rule, SPEC_VERSION, push_token};
+use super::{BadSpec, Rule, push_token};
 
 /// The typed spec of the top level's `members` and the parse's `store`,
 /// its string table still empty (the caller moves the document's text in),
@@ -27,6 +29,7 @@ use super::{BadSpec, Rule, SPEC_VERSION, push_token};
 pub(super) fn spec(
     members: Vec<NodeMember<'_>>,
     store: Store,
+    spec_version: u64,
 ) -> Result<(Spec, DepsLists, Sites), BadSpec> {
     let mut b = Builder {
         ptr: String::new(),
@@ -45,6 +48,7 @@ pub(super) fn spec(
         inputs_first,
     } = store;
     let mut spec = b.top(members)?;
+    spec.spec_version = spec_version;
     spec.inputs = inputs;
     spec.dependencies = dependencies;
     spec.inputs_first = inputs_first;
@@ -215,6 +219,7 @@ impl<'a> Builder<'a> {
         let mut outputs = None;
         let (mut publish_incomplete, mut resume) = (true, false);
         let (mut sink, mut archives, mut fencing) = (None, Vec::new(), Fencing::Conditional);
+        let mut unitycn_key = None;
         for (name, value) in members {
             self.under(&name, |b| -> Result<(), BadSpec> {
                 match &*name {
@@ -241,6 +246,7 @@ impl<'a> Builder<'a> {
                     "http" => http = b.http(value)?,
                     "inputs" => inputs = Some(()),
                     "dependencies" => {}
+                    "unitycn_key" => unitycn_key = b.env(value)?,
                     "prefer" => b.sites.keys.push(KeySite::Prefer),
                     "outputs" => outputs = Some(b.outputs(value)?),
                     "publish_incomplete" => publish_incomplete = b.bool(&value)?,
@@ -260,7 +266,8 @@ impl<'a> Builder<'a> {
         }
         let max_decoded_bytes = self.need(decoded, "max_decoded_bytes")?;
         Ok(Spec {
-            spec_version: SPEC_VERSION,
+            // The caller sets the version the document was read by.
+            spec_version: 1,
             run_id: self.need(run_id, "run_id")?,
             attempt: self.need(attempt, "attempt")?,
             deadline,
@@ -293,6 +300,7 @@ impl<'a> Builder<'a> {
             sink: self.need(sink, "sink")?,
             archives,
             manifest_fencing: fencing,
+            unitycn_key,
             strings: String::new(),
             escaped: String::new(),
         })
@@ -372,11 +380,39 @@ impl<'a> Builder<'a> {
         self.need(key, "key")
     }
 
+    /// A nullable `{"env": NAME}`: the variable's name.
+    fn env(&mut self, node: Node<'a>) -> Result<Option<String>, BadSpec> {
+        if matches!(node, Node::Null) {
+            return Ok(None);
+        }
+        let mut name = None;
+        for (field, value) in self.members(node)? {
+            self.under(&field, |b| match &*field {
+                "env" => b.string(value).map(|s| name = Some(s)),
+                _ => Err(b.err(Rule::UnknownField)),
+            })?;
+        }
+        self.need(name, "env").map(Some)
+    }
+
+    /// `outputs.formats`' names, each a format this binary decodes.
+    fn formats(&mut self, node: Node<'a>) -> Result<Formats, BadSpec> {
+        let mut set = Formats::NONE;
+        for (i, name) in self.strings(node)?.into_iter().enumerate() {
+            let format =
+                Formats::decoded(&name).map_err(|_| self.under_index(i, |b| b.err(Rule::Range)))?;
+            set = set.with(format);
+        }
+        Ok(set)
+    }
+
     fn outputs(&mut self, node: Node<'a>) -> Result<Outputs, BadSpec> {
         let mut out = Outputs {
             textures: None,
             sprites: None,
             atlases: None,
+            formats: Formats::V1,
+            image: Image::Png,
         };
         for (name, value) in self.members(node)? {
             self.under(&name, |b| -> Result<(), BadSpec> {
@@ -390,6 +426,13 @@ impl<'a> Builder<'a> {
                         out.sprites = Some(b.template_object(value)?);
                     }
                     "atlases" => out.atlases = Some(b.atlases(value)?),
+                    "formats" => out.formats = b.formats(value)?,
+                    "image" => {
+                        out.image = match &*b.string(value)? {
+                            "png" => Image::Png,
+                            _ => return Err(b.err(Rule::Range)),
+                        };
+                    }
                     _ => return Err(b.err(Rule::UnknownField)),
                 }
                 Ok(())

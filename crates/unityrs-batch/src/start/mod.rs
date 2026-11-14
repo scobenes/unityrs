@@ -1,5 +1,6 @@
 //! Reusable startup components. B9 owns their final process-level ordering.
 pub mod host;
+pub mod key;
 pub mod spool;
 use crate::spec::model::{Sink, Spec};
 

@@ -17,7 +17,8 @@ pub(super) fn head(
     let spec = &prepared.spec;
     let mut json = Json::new(account)?;
     json.start("run_id", &spec.run_id)?;
-    json.value("manifest_version", 1)?;
+    // A version 2 spec's head adds its options (7.3): `manifest_version` 2.
+    json.value("manifest_version", spec.spec_version.min(2))?;
     json.value("attempt", spec.attempt)?;
     json.value("write_seq", u8::from(final_head.is_some()))?;
     json.text(
@@ -49,6 +50,12 @@ pub(super) fn head(
     json.text("binary_version", Some(env!("CARGO_PKG_VERSION")))?;
     json.value("spec_version", spec.spec_version)?;
     json.hex("spec_sha256", Some(&prepared.spec_sha256))?;
+    if spec.spec_version >= 2 {
+        // The effective options, never the key: whether one was named.
+        json.value("formats", FormatList(spec.outputs.formats))?;
+        json.text("image", Some(spec.outputs.image.name()))?;
+        json.value("unitycn_key", spec.unitycn_key.is_some())?;
+    }
     json.text("started_at", Some(identity.started_at))?;
     json.text("deadline", None)?;
     json.text("ended_at", ended_at)?;
@@ -77,6 +84,21 @@ pub(super) fn head(
     }
     json.close_object()?;
     Ok(json)
+}
+/// `formats` (7.3): the names, in `TextureFormat` order, as a JSON array.
+/// Each is a `TextureFormat` member name, which needs no escaping.
+struct FormatList(unityrs_export::ngui::Formats);
+impl std::fmt::Display for FormatList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[")?;
+        for (i, format) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "\"{}\"", format.name())?;
+        }
+        f.write_str("]")
+    }
 }
 fn counts(json: &mut Json, counts: &manifest::counts::Counts) -> Result<(), Error> {
     json.object("counts")?;

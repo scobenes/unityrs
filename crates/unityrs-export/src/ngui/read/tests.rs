@@ -15,6 +15,8 @@ use unityrs_core::{Bytes, FileContext, PrimArray, RawStr, Value};
 use unityrs_testkit::blob::NodeSpec;
 use unityrs_testkit::serialized::{self, SerializedSpec, TypeSpec};
 
+use unityrs_texture::Formats;
+
 use super::{Blob, Span, Stream, Texture, answer, field, head_rows, integer, pptr, python_slice};
 use crate::ngui::classify::{Class, Reason};
 
@@ -208,23 +210,23 @@ fn the_answers_narrow_only_where_they_use_a_value() {
     // A side of 0 is `empty_image` whatever the other side and the
     // format, however wide.
     assert_eq!(
-        answer(&tex(0, i128::from(u64::MAX), 1 << 40), 13),
+        answer(&tex(0, i128::from(u64::MAX), 1 << 40), 13, Formats::V1),
         skip("empty_image")
     );
     // A format outside `i32` is its decimal.
     assert_eq!(
-        answer(&tex(1, 1, 1 << 40), 13),
+        answer(&tex(1, 1, 1 << 40), 13, Formats::V1),
         skip("unsupported_format(1099511627776)")
     );
     assert_eq!(
-        answer(&tex(1, 1, -(1 << 40)), 13),
+        answer(&tex(1, 1, -(1 << 40)), 13, Formats::V1),
         skip("unsupported_format(-1099511627776)")
     );
     // A side past `i32` reaches the decoder as `i32::MAX`, more pixels
     // than its bound; one below as `i32::MIN`, negative.
     let wide = tex(i128::from(u32::MAX), 1, 4);
     assert_eq!(wide.sides(), (i32::MAX, 1));
-    assert!(answer(&wide, 13).is_ok());
+    assert!(answer(&wide, 13, Formats::V1).is_ok());
     assert_eq!(tex(-(1 << 40), 1, 4).sides(), (i32::MIN, 1));
 }
 
@@ -233,23 +235,60 @@ fn a_switch_blob_is_read_as_bytes() {
     let blob = |len, gobs| Some(Blob { len, gobs });
     let mut t = tex(1, 1, 4);
     t.platform_blob = blob(12, Some([1, 0, 0, 0]));
-    assert_eq!(answer(&t, 38), skip("unsupported_platform(switch)"));
+    assert_eq!(
+        answer(&t, 38, Formats::V1),
+        skip("unsupported_platform(switch)")
+    );
     // Off Switch the blob is never read.
-    assert!(answer(&t, 13).is_ok());
+    assert!(answer(&t, 13, Formats::V1).is_ok());
     t.platform_blob = blob(12, Some([0; 4]));
-    assert!(answer(&t, 38).is_ok());
+    assert!(answer(&t, 38, Formats::V1).is_ok());
     // Fewer than 12 elements: not swizzled, whatever they hold.
     t.platform_blob = blob(11, None);
-    assert!(answer(&t, 38).is_ok());
+    assert!(answer(&t, 38, Formats::V1).is_ok());
     // An element 8 to 12 that is no byte: `int.from_bytes` raises.
     t.platform_blob = blob(12, None);
     assert_eq!(
-        answer(&t, 38),
+        answer(&t, 38, Formats::V1),
         Err(Class::Skip(Reason::decode_error("read")))
     );
-    // ... for a texture of the five formats only: another is answer 2.
+    // ... for a texture of the spec's formats only: another is answer 2.
     t.format = 1;
-    assert_eq!(answer(&t, 38), skip("unsupported_format(Alpha8)"));
+    assert_eq!(
+        answer(&t, 38, Formats::V1),
+        skip("unsupported_format(Alpha8)")
+    );
+    let alpha8 = Formats::NONE.with(unityrs_texture::Format::Alpha8);
+    assert_eq!(
+        answer(&t, 38, alpha8),
+        Err(Class::Skip(Reason::decode_error("read")))
+    );
+}
+
+#[test]
+fn the_spec_formats_decide_answer_2() {
+    let rgb565 = Formats::NONE.with(unityrs_texture::Format::Rgb565);
+    let t = tex(1, 1, 7);
+    assert_eq!(
+        answer(&t, 13, Formats::V1),
+        skip("unsupported_format(RGB565)")
+    );
+    assert_eq!(answer(&t, 13, rgb565), Ok(unityrs_texture::Format::Rgb565));
+    // A version 1 format outside the list is skipped like any other.
+    assert_eq!(
+        answer(&tex(1, 1, 4), 13, rgb565),
+        skip("unsupported_format(RGBA32)")
+    );
+    // A side of 0 is answer 1 whatever the list.
+    assert_eq!(
+        answer(&tex(0, 1, 7), 13, Formats::NONE),
+        skip("empty_image")
+    );
+    // The Xbox 360 swap list holds RGB565 (`XBOX_SWAP_FORMATS`).
+    assert_eq!(
+        answer(&t, 11, rgb565),
+        skip("unsupported_platform(xbox360)")
+    );
 }
 
 #[test]

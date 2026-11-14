@@ -102,6 +102,7 @@ mod contain;
 mod decode;
 mod etc;
 mod format;
+mod formats;
 mod raw;
 mod select;
 pub mod sprite;
@@ -109,9 +110,10 @@ pub mod sprite;
 pub use contain::{MESSAGE_BYTES, NON_STRING_PAYLOAD, Payload, contain};
 pub use decode::{DecodeError, Image, MAX_CROP_PIXELS, MAX_PIXELS, Plan, bcn_length, decode, plan};
 pub use format::{Format, Mode, TEXTURE_FORMATS, texture_format_name};
+pub use formats::Formats;
 pub use select::{
     SWITCH, Selection, Skip, SkippedPlatform, TextureFields, XBOX_SWAP_FORMATS, XBOX360,
-    is_switch_swizzled, select,
+    is_switch_swizzled, select, select_in,
 };
 
 /// Asserts at compile time that `T` is `Send + Sync` (plan section 3.16).
