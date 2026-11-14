@@ -1,8 +1,12 @@
 mod common;
 mod controller_support;
 mod publication_support;
+#[allow(dead_code)] // Scopes are the controller sweep's; this one is one scope.
+#[path = "controller_support/refusals.rs"]
+mod refusals;
 mod stage_support;
 use std::{
+    cell::Cell,
     path::PathBuf,
     process::Command,
     sync::{
@@ -17,18 +21,43 @@ use unityrs_batch::{
     publish,
     sink::directory::Directory,
     spool::{FileSystem, Host, workspace::Workspace},
-    sys::{Lock, Slot},
+    sys::Slot,
     winners,
 };
 use unityrs_testkit::{child, guard, scratch::Scratch};
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static SITE: AtomicUsize = AtomicUsize::new(0);
 static SEEN: AtomicUsize = AtomicUsize::new(0);
+/// Sites the inventory's third-party entry admitted: allowed, not refused.
+static ADMITTED: AtomicUsize = AtomicUsize::new(0);
+thread_local! { static TRACING: Cell<bool> = const { Cell::new(false) }; }
 struct Refuse;
 impl Hook for Refuse {
     fn refuses(&self, _: usize) -> bool {
-        ACTIVE.load(Ordering::SeqCst)
-            && SEEN.fetch_add(1, Ordering::SeqCst) + 1 == SITE.load(Ordering::SeqCst)
+        if TRACING.with(Cell::get)
+            || !ACTIVE.load(Ordering::SeqCst)
+            || SEEN.fetch_add(1, Ordering::SeqCst) + 1 != SITE.load(Ordering::SeqCst)
+        {
+            return false;
+        }
+        // This sweep is one process: a refusal of the admitted third-party
+        // frame is its documented abort (A13), so it is allowed here and
+        // counted, and every other site must still return host_memory.
+        TRACING.with(|t| t.set(true));
+        let trace = format!(
+            "REFUSED_ALLOCATION site={}\n{}END_REFUSED_ALLOCATION",
+            SITE.load(Ordering::SeqCst),
+            std::backtrace::Backtrace::force_capture()
+        );
+        TRACING.with(|t| t.set(false));
+        let function = refusals::innermost(&trace);
+        let admitted = refusals::INVENTORY
+            .iter()
+            .any(|e| e.frame.is_some() && e.admits(function.as_deref(), &trace));
+        if admitted {
+            ADMITTED.fetch_add(1, Ordering::SeqCst);
+        }
+        !admitted
     }
 }
 #[global_allocator]
@@ -54,7 +83,8 @@ fn every_normal_tail_allocation_is_fallible_after_the_running_head() {
 }
 
 struct Tail {
-    prepared: unityrs_batch::phase1::PreparedRun,
+    prepared: unityrs_batch::phase1::Facts,
+    facts: Slot<unityrs_batch::phase1::Facts>,
     done: PathBuf,
     counter: Arc<unityrs_batch::spool::Counter>,
     directory: Arc<Directory>,
@@ -96,6 +126,7 @@ impl Tail {
             control: Arc::new(AtomicBool::new(false)),
             hooks: Arc::new(publish::NoHooks),
             slot: Slot::reserve().unwrap(),
+            facts: Slot::reserve().unwrap(),
             workspace_path,
             outcomes_path,
             head_path,
@@ -155,7 +186,7 @@ impl Tail {
         )?;
         stages[2] = SEEN.load(Ordering::SeqCst);
         let owned = self.slot.write(publish::Owned {
-            prepared: Lock::new(self.prepared),
+            facts: self.facts.write(self.prepared),
             done: self.done,
             workspace,
             handoff,
@@ -197,11 +228,15 @@ fn pool_refusal_child() {
         println!("refusing site {site}");
         SITE.store(site, Ordering::SeqCst);
         SEEN.store(0, Ordering::SeqCst);
+        let admitted = ADMITTED.load(Ordering::SeqCst);
         ACTIVE.store(true, Ordering::SeqCst);
         let result = phase::on_pool(|| tail.run(&execution, &mut stages));
-        // A refused task can still be unwinding its charged owner.
-        execution.quiesce().unwrap();
+        // Test-only quiescence, outside the armed span: a refused task can
+        // still be unwinding its charged owner, and the owned runtime's drop
+        // is tokio's teardown, never on a hand-over path.
         ACTIVE.store(false, Ordering::SeqCst);
+        execution.quiesce().unwrap();
+        let admitted = ADMITTED.load(Ordering::SeqCst) != admitted;
         if site == 0 {
             sites = SEEN.load(Ordering::SeqCst);
             assert_eq!(result.unwrap().written, 2);
@@ -211,6 +246,9 @@ fn pool_refusal_child() {
                 "POOL_TAIL_BOUNDARIES workspace={} selection={} outcomes={} publication={}",
                 stages[0], stages[1], stages[2], stages[3]
             );
+        } else if admitted {
+            println!("POOL_ADMITTED site={site} name=tokio spawn_blocking task cell");
+            assert_eq!(result.unwrap().written, 2, "admitted site {site}");
         } else {
             assert!(SEEN.load(Ordering::SeqCst) >= site, "unreached {site}");
             assert_eq!(
@@ -226,7 +264,10 @@ fn pool_refusal_child() {
         assert_eq!(head["status"], "running", "site {site}");
         assert_eq!(head["write_seq"], 0, "site {site}");
         if site == sites {
-            println!("POOL_REFUSALS sites={sites}");
+            let admitted = ADMITTED.load(Ordering::SeqCst);
+            // The entry is not stale: phase 6's and publication's tasks.
+            assert!(admitted > 0, "the admitted frame was never reached");
+            println!("POOL_REFUSALS sites={sites} admitted={admitted}");
             return;
         }
     }

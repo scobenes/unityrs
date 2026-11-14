@@ -2,19 +2,28 @@ use super::Identity;
 use crate::{
     manifest::{self, Family},
     phase::{Account, Error},
-    phase1::PreparedRun,
+    progress::Phase,
     reason::Code,
+    spec::model::Spec,
     winners::json::Json,
 };
 
+/// A final head: its report and code, the phase the controller reached,
+/// and the stop it names with its detail (7.3's `stop_reason`).
+pub(super) struct Final<'a> {
+    pub report: &'a manifest::Report,
+    pub code: Code,
+    pub phase: Phase,
+    pub stop: Option<(&'static str, Option<&'static str>)>,
+}
 pub(super) fn head(
-    prepared: &PreparedRun,
+    spec: &Spec,
+    spec_sha256: &[u8; 32],
     account: &Account,
     identity: &Identity<'_>,
-    final_head: Option<(&manifest::Report, Code)>,
+    final_head: Option<&Final<'_>>,
     ended_at: Option<&str>,
 ) -> Result<Json, Error> {
-    let spec = &prepared.spec;
     let mut json = Json::new(account)?;
     json.start("run_id", &spec.run_id)?;
     json.value("manifest_version", 1)?;
@@ -22,33 +31,19 @@ pub(super) fn head(
     json.value("write_seq", u8::from(final_head.is_some()))?;
     json.text(
         "status",
-        final_head.map_or(Some("running"), |(_, code)| code.status()),
+        final_head.map_or(Some("running"), |f| f.code.status()),
     )?;
     json.text(
         "phase",
-        Some(if final_head.is_some() {
-            "publish"
-        } else {
-            "start"
-        }),
+        Some(final_head.map_or(Phase::Start, |f| f.phase).name()),
     )?;
-    json.optional(
-        "exit_code",
-        final_head.map(|(_, code)| u64::from(code.value())),
-    )?;
-    json.text(
-        "stop_reason",
-        final_head.and_then(|(report, _)| {
-            report
-                .failure
-                .filter(|_| report.filesystem_sync_failed)
-                .map(crate::job::RunFailure::name)
-        }),
-    )?;
-    json.text("stop_detail", None)?;
+    json.optional("exit_code", final_head.map(|f| u64::from(f.code.value())))?;
+    let stop = final_head.and_then(|f| f.stop);
+    json.text("stop_reason", stop.map(|(reason, _)| reason))?;
+    json.text("stop_detail", stop.and_then(|(_, detail)| detail))?;
     json.text("binary_version", Some(env!("CARGO_PKG_VERSION")))?;
     json.value("spec_version", spec.spec_version)?;
-    json.hex("spec_sha256", Some(&prepared.spec_sha256))?;
+    json.hex("spec_sha256", Some(spec_sha256))?;
     json.text("started_at", Some(identity.started_at))?;
     json.text("deadline", None)?;
     json.text("ended_at", ended_at)?;
@@ -56,7 +51,7 @@ pub(super) fn head(
     json.value("verified_by_size", 0)?;
     json.value("unsettled_tries", 0)?;
     let empty = manifest::Report::default();
-    let report = final_head.map_or(&empty, |(r, _)| r);
+    let report = final_head.map_or(&empty, |f| f.report);
     counts(&mut json, &report.counts)?;
     run(&mut json, spec, &report.run, identity, final_head.is_some())?;
     json.object("warnings")?;

@@ -20,6 +20,17 @@ impl Error {
     pub(super) fn host_io() -> Self {
         Self::plain(Code::Host, "host_io", None)
     }
+    pub(super) fn memory() -> Self {
+        Self::plain(Code::Host, "host_memory", None)
+    }
+    /// A stop more severe than a preflight end's code replaces it (9.1).
+    pub(super) fn failure_stop(stop: crate::lifetime::Stop) -> Self {
+        Self::plain(
+            stop.reason.code(),
+            stop.reason.name(),
+            stop.detail.map(crate::lifetime::SpoolDetail::name),
+        )
+    }
     fn plain(code: Code, reason: &'static str, detail: Option<&str>) -> Self {
         let detail = detail
             .map(|s| {
@@ -51,9 +62,13 @@ impl Error {
             failure.detail.map(crate::attempt::DetailCode::name),
         )
     }
-    pub(super) fn running(mut self) -> Self {
-        self.status = Some("running");
-        self
+}
+/// A preflight scratch refusal, or a directory sink's `running` write:
+/// any error of that write is 74, with no head (`BATCH_SPEC.md` 7.4).
+pub(super) fn running(e: crate::phase::Error) -> Error {
+    match e {
+        crate::phase::Error::Run(f) => Error::failure(f),
+        crate::phase::Error::Stopped => Error::host_io(),
     }
 }
 impl From<crate::spool::Error> for Error {

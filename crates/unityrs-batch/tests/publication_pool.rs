@@ -27,7 +27,7 @@ fn pool_drives_share_admission_and_preserve_winner_indices() {
         .unwrap();
         let outcomes = scene.outcomes("out", &Host);
         let owned = Arc::new(publish::Owned {
-            prepared: unityrs_batch::sys::Lock::new(scene.prepared),
+            facts: unityrs_batch::sys::Shared::new(scene.prepared).unwrap(),
             done: scene.done,
             workspace: scene.workspace,
             handoff: scene.handoff,
@@ -101,7 +101,7 @@ fn dispatcher_releases_its_lock_before_concurrent_transfers() {
     let outcomes = scene.outcomes("out", &Host);
     let overlap = Arc::new(Overlap::default());
     let owned = Arc::new(publish::Owned {
-        prepared: unityrs_batch::sys::Lock::new(scene.prepared),
+        facts: unityrs_batch::sys::Shared::new(scene.prepared).unwrap(),
         done: scene.done,
         workspace: scene.workspace,
         handoff: scene.handoff,
@@ -208,7 +208,7 @@ fn pool_buffers_child() {
         let outcomes = scene.outcomes("out", &Host);
         let control = Arc::new(FailureControl::default());
         let owned = Arc::new(publish::Owned {
-            prepared: unityrs_batch::sys::Lock::new(scene.prepared),
+            facts: unityrs_batch::sys::Shared::new(scene.prepared).unwrap(),
             done: scene.done,
             workspace: scene.workspace,
             handoff: scene.handoff,

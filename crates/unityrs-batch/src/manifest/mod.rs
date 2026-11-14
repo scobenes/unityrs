@@ -1,5 +1,5 @@
-//! Bounded manifest recognition and assembly. Normal head publication and
-//! finishing order are owned by the orchestration layer.
+//! Bounded manifest recognition and assembly. Head publication and
+//! finishing order are the finisher's (`finish`).
 pub mod chunks;
 pub mod counts;
 pub mod figures;
@@ -32,6 +32,14 @@ pub enum Family {
     ArchiveMembers,
 }
 impl Family {
+    /// Written from phase 6's sealed artifacts and the outcomes.
+    #[must_use]
+    pub const fn selected(self) -> bool {
+        matches!(
+            self,
+            Self::Outputs | Self::Collisions | Self::Archives | Self::ArchiveMembers
+        )
+    }
     pub const ALL: [Self; 8] = [
         Self::Bundles,
         Self::Inputs,
@@ -78,8 +86,8 @@ impl Report {
         );
     }
 }
-/// The caller supplies the finisher's stop/try-budget query. The canonical
-/// phase-7 stop has already been frozen: B9 can supply its own finish snapshot.
+/// The caller supplies the finisher's try-budget query. The canonical stop
+/// was taken at the hand-over; the context is the finisher's snapshot.
 pub fn assemble(
     cx: &rows::Context<'_>,
     destination: &mut dyn chunks::Destination,
@@ -100,7 +108,7 @@ pub(crate) fn finishing(
     destination: &mut dyn chunks::Destination,
 ) -> Report {
     let mut report = Report {
-        run: figures::received(cx.prepared).unwrap_or_default(),
+        run: figures::received(cx.facts).unwrap_or_default(),
         ..Report::default()
     };
     if let Err(error) = cx
@@ -123,6 +131,10 @@ fn assemble_into(
     let _overhead = cx.account.meter().charge(crate::publish::OVERHEAD)?;
     report.run = figures::complete(cx)?;
     for family in Family::ALL {
+        // Before phase 7 the selected families are null (7.4).
+        if cx.selected.is_none() && family.selected() {
+            continue;
+        }
         let mut counts = Counts::default();
         let result = (|| {
             let mut chunks = chunks::Chunks::new(destination, family, cx.account)?;

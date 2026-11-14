@@ -29,11 +29,15 @@ fn normal_head_is_complete_and_self_consistent() {
     )
     .unwrap();
     let cx = manifest::rows::Context {
-        prepared: &scene.prepared,
+        facts: &scene.prepared,
         inputs: &inputs,
-        handoff: &scene.handoff,
-        workspace: &scene.workspace,
-        frozen: &frozen,
+        selected: Some(manifest::rows::Selected {
+            handoff: &scene.handoff,
+            workspace: &scene.workspace,
+            outcomes: frozen.outcomes,
+        }),
+        stop: None,
+        found: None,
         account: &account,
         stopped: &|| false,
         taken_at: std::time::Instant::now(),
@@ -98,11 +102,15 @@ fn fault(
     )
     .unwrap();
     let cx = manifest::rows::Context {
-        prepared: &scene.prepared,
+        facts: &scene.prepared,
         inputs: &inputs,
-        handoff: &scene.handoff,
-        workspace: &scene.workspace,
-        frozen: &frozen,
+        selected: Some(manifest::rows::Selected {
+            handoff: &scene.handoff,
+            workspace: &scene.workspace,
+            outcomes: frozen.outcomes,
+        }),
+        stop: None,
+        found: None,
         account: &account,
         stopped: &|| false,
         taken_at: std::time::Instant::now(),
@@ -238,11 +246,15 @@ fn corrupt_internal_head(sync_failed: bool) {
     };
     finish::running(&scene.prepared, &directory, &account, &identity).unwrap();
     let cx = manifest::rows::Context {
-        prepared: &scene.prepared,
+        facts: &scene.prepared,
         inputs: &CorruptRecords,
-        handoff: &scene.handoff,
-        workspace: &scene.workspace,
-        frozen: &frozen,
+        selected: Some(manifest::rows::Selected {
+            handoff: &scene.handoff,
+            workspace: &scene.workspace,
+            outcomes: frozen.outcomes,
+        }),
+        stop: None,
+        found: None,
         account: &account,
         stopped: &|| false,
         taken_at: std::time::Instant::now(),

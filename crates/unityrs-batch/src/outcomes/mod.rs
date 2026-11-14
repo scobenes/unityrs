@@ -219,6 +219,62 @@ pub fn read_archive(file: Option<&dyn Random>, index: u64) -> Result<Archive, Er
         if n == 0 { None } else { Some(text) },
     )
 }
+/// Outcome reads: the run's own files, or a view of what a stop left.
+pub trait Read: Sync {
+    fn loose(&self, index: u64) -> Result<Code, Error>;
+    fn archive(&self, index: u64) -> Result<Archive, Error>;
+}
+/// A read view over outcome files a stop may have left missing or short
+/// (their zero-writes interrupted): a missing file, or a record past its
+/// end, reads `not_written`. Indices are still checked against the plan.
+pub struct View {
+    loose: Option<Box<dyn Random>>,
+    archives: Option<Box<dyn Random>>,
+    winners: u64,
+    count: u64,
+}
+impl View {
+    pub fn open(
+        root: &Path,
+        winners: u64,
+        archives: u64,
+        fs: &dyn FileSystem,
+    ) -> Result<Self, Error> {
+        let open = |archive: bool| match fs.open_random(&spool::random::location(root, archive)?) {
+            Ok(file) => Ok(Some(file)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(Error::from(spool::Error::from(e))),
+        };
+        Ok(Self {
+            loose: open(false)?,
+            archives: open(true)?,
+            winners,
+            count: archives,
+        })
+    }
+}
+impl Read for View {
+    fn loose(&self, index: u64) -> Result<Code, Error> {
+        if index >= self.winners {
+            return Err(Error::internal());
+        }
+        read_loose(self.loose.as_deref(), index)
+    }
+    fn archive(&self, index: u64) -> Result<Archive, Error> {
+        if index >= self.count {
+            return Err(Error::internal());
+        }
+        read_archive(self.archives.as_deref(), index)
+    }
+}
+impl Read for Outcomes {
+    fn loose(&self, index: u64) -> Result<Code, Error> {
+        Outcomes::loose(self, index)
+    }
+    fn archive(&self, index: u64) -> Result<Archive, Error> {
+        Outcomes::archive(self, index)
+    }
+}
 pub struct Outcomes {
     loose: Mutable,
     archives: Mutable,
