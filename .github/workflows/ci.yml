@@ -86,6 +86,12 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Test, sealed attempt test hooks
         run: cargo test -p unityrs-batch --features test-hooks
+      # The process host's scenes through the binary (docs/plans/batch.md
+      # 2.11, tests/batch_lifetime.rs), its hooks read from their variables.
+      - name: Clippy, the binary's test hooks
+        run: cargo clippy -p unityrs-cli --all-targets --features test-hooks -- -D warnings
+      - name: Test, the binary's test hooks
+        run: cargo test -p unityrs-cli --features test-hooks
 
   # The batch engine's scale cases (production-sized and million-record
   # phase-6 runs, plus archive count, memory and digest boundaries, and

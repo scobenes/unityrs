@@ -118,7 +118,10 @@ pub(crate) fn run_reserved(
             classify::failure(&mut end, &failure, args.view);
         }
         Ok(_) => {}
-        Err(_) => end.run_failure(ReasonCode::Internal),
+        Err(_) => {
+            crate::diagnostic::pending::panic(format_args!("an attempt: "));
+            end.run_failure(ReasonCode::Internal);
+        }
     }
     if engine.fault.get() {
         end.run_failure(ReasonCode::Internal);
@@ -154,6 +157,7 @@ pub(crate) fn run_reserved(
         );
         // The observer cannot unwind across the public boundary either.
         if catch_unwind(AssertUnwindSafe(|| args.hooks.request_stop(&end))).is_err() {
+            crate::diagnostic::pending::panic(format_args!("an attempt's stop: "));
             end.run_failure(ReasonCode::Internal);
         }
     }

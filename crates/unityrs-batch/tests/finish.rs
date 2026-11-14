@@ -47,6 +47,7 @@ fn normal_head_is_complete_and_self_consistent() {
         memory_bound: 123,
         spool_peak: 456,
         vm_hwm: 789,
+        warnings: unityrs_batch::finish::Warnings::default(),
     };
     finish::running(&scene.prepared, &dir, &account, &identity).unwrap();
     let result = finish::normal(&cx, &dir, &identity, "2026-01-01T00:00:01Z").unwrap();
@@ -120,6 +121,7 @@ fn fault(
         memory_bound: 1,
         spool_peak: 2,
         vm_hwm: 3,
+        warnings: unityrs_batch::finish::Warnings::default(),
     };
     finish::running(&scene.prepared, &directory, &account, &identity).unwrap();
     if row_obstacle {
@@ -243,6 +245,7 @@ fn corrupt_internal_head(sync_failed: bool) {
         memory_bound: 0,
         spool_peak: 0,
         vm_hwm: 0,
+        warnings: unityrs_batch::finish::Warnings::default(),
     };
     finish::running(&scene.prepared, &directory, &account, &identity).unwrap();
     let cx = manifest::rows::Context {

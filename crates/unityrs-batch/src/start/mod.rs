@@ -8,14 +8,13 @@ use crate::spec::model::{Sink, Spec};
 pub enum Unsupported {
     UrlSource,
     ObjectStore,
-    Deadline,
-    StdinWatch,
-    ParentWatch,
 }
 /// Validate the execution subset before any host inspection or mutation.
 /// Full schema validation and `--check` remain independent of this guard.
 /// A URL is refused here until the CLI activates URL staging; a library run
-/// given a network admits it through [`supported_with`].
+/// given a network admits it through [`supported_with`]. The lifetime
+/// fields (`deadline`, `stop_on_stdin_eof`, `parent_pid`) are the process
+/// host's (`run::process`); a library run ignores them.
 pub fn supported(spec: &Spec) -> Result<Local<'_>, Unsupported> {
     supported_with(spec, false)
 }
@@ -27,15 +26,6 @@ pub(crate) fn supported_with(spec: &Spec, urls: bool) -> Result<Local<'_>, Unsup
     let Sink::Directory { root } = &spec.sink else {
         return Err(Unsupported::ObjectStore);
     };
-    if spec.deadline.is_some() {
-        return Err(Unsupported::Deadline);
-    }
-    if spec.stop_on_stdin_eof {
-        return Err(Unsupported::StdinWatch);
-    }
-    if spec.parent_pid.is_some() {
-        return Err(Unsupported::ParentWatch);
-    }
     Ok(Local { spec, root })
 }
 /// An execution-subset proof, obtainable only via [`supported`].

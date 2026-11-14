@@ -116,7 +116,9 @@ impl Policy {
         (left >= 500).then_some(left)
     }
 }
-fn unix_ns(d: &DateTime) -> Result<i128, TimingError> {
+/// `d` in nanoseconds since the Unix epoch, checked (a leap second 60 is
+/// the following POSIX second).
+pub fn unix_ns(d: &DateTime) -> Result<i128, TimingError> {
     let leap =
         d.year.is_multiple_of(4) && (!d.year.is_multiple_of(100) || d.year.is_multiple_of(400));
     let months = [

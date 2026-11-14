@@ -69,13 +69,7 @@ fn directory_archives_are_in_the_execution_subset() {
 }
 #[test]
 fn unsupported_execution_fields_are_typed_and_mutate_nothing() {
-    for kind in [
-        Unsupported::UrlSource,
-        Unsupported::ObjectStore,
-        Unsupported::Deadline,
-        Unsupported::StdinWatch,
-        Unsupported::ParentWatch,
-    ] {
+    for kind in [Unsupported::UrlSource, Unsupported::ObjectStore] {
         let scratch = Scratch::new("local-refusal");
         let sink = Scratch::new("local-refusal-sink");
         old(scratch.path());
@@ -89,9 +83,6 @@ fn unsupported_execution_fields_are_typed_and_mutate_nothing() {
                     json!({"kind":"object_store","bucket":"bucket","region":"region","prefix":""});
                 v["deadline"] = json!("2099-01-01T00:00:00Z");
             }
-            Unsupported::Deadline => v["deadline"] = json!("2099-01-01T00:00:00Z"),
-            Unsupported::StdinWatch => v["stop_on_stdin_eof"] = json!(true),
-            Unsupported::ParentWatch => v["parent_pid"] = json!(2),
         }
         let spec = parse(&v);
         assert_eq!(start::supported(&spec).err(), Some(kind));
@@ -102,6 +93,16 @@ fn unsupported_execution_fields_are_typed_and_mutate_nothing() {
         assert!(!scratch.join("lock").exists());
         assert!(!sink.join("_unityrs").exists());
     }
+}
+/// The lifetime fields are the process host's, accepted by the subset.
+#[test]
+fn lifetime_fields_are_in_the_execution_subset() {
+    let sink = Scratch::new("local-lifetime-sink");
+    let mut v = job(Path::new("/spool"), sink.path());
+    v["deadline"] = json!("2099-01-01T00:00:00Z");
+    v["stop_on_stdin_eof"] = json!(true);
+    v["parent_pid"] = json!(2);
+    assert!(start::supported(&parse(&v)).is_ok());
 }
 #[test]
 fn cleanup_is_no_follow_and_creates_only_fresh_run_layout_and_zero_claims() {

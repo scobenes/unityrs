@@ -529,7 +529,10 @@ impl<R: Body> Stage<R> {
             let mut result = catch_unwind(AssertUnwindSafe(|| {
                 file.write_at_reserved(data.as_slice(), length, &|| control.stopped())
             }))
-            .map_err(|_| internal())
+            .map_err(|_| {
+                crate::diagnostic::pending::panic(format_args!("a download's write: "));
+                internal()
+            })
             .and_then(|r| r.map_err(Failure::from));
             if crate::alloc::refusals() != before {
                 let mut failure = match result {

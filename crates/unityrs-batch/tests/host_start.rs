@@ -296,3 +296,47 @@ fn hostile_mountinfo_octal_escapes_are_typed_unreadable_refusals() {
         assert_eq!(error.subject, "/proc/self/mountinfo", "{escape}");
     }
 }
+
+/// The thread floor (`RLIMIT_NPROC`, 2.7): `threads + 7 + 2 x dc`, and one
+/// more for the stdin watch's own thread; refused at `n - 1`, met at `n`.
+#[test]
+fn the_thread_floor_counts_the_stdin_watch() {
+    for (watch, threads, dc) in [(false, 2, 1), (true, 2, 1), (true, 8, 3)] {
+        let spec = unityrs_batch::spec::parse(
+            serde_json::to_vec(&serde_json::json!({"spec_version":1,"run_id":"r","attempt":1,
+                "threads":threads,"download_concurrency":dc,"stop_on_stdin_eof":watch,
+                "max_inflight_uncompressed_bytes":268_435_456,"max_decoded_bytes":16_777_216,
+                "dep_cache_bytes":33_554_432,
+                "spool":{"dir":"/spool","size_bytes":1_073_741_824,"reserve_bytes":0},
+                "inputs":[{"id":"a","path":"/a"}],"outputs":{"textures":{"key":"{input}/{name}.png"}},
+                "sink":{"kind":"directory","root":"/out"}}))
+            .unwrap(),
+        )
+        .unwrap()
+        .spec;
+        let n = Requirements::new(&spec, 1024 * 1024).unwrap().threads;
+        assert_eq!(n, threads + 7 + 2 * dc + u64::from(watch));
+        let mut facts = Facts::new();
+        facts.set("/proc/self/uid_map", "0 1000 1");
+        let floor = Requirements {
+            threads: n,
+            ..needs()
+        };
+        for (soft, ok) in [(n - 1, false), (n, true)] {
+            facts.finite = Some((
+                Resource::Processes,
+                Limit {
+                    soft: Some(soft),
+                    hard: None,
+                },
+            ));
+            let result = host::check(&facts, floor);
+            assert_eq!(result.is_ok(), ok, "{watch} {soft}");
+            if !ok {
+                let e = result.unwrap_err();
+                assert_eq!(e.class, Class::RlimitTooLow);
+                assert_eq!((e.needed, e.found), (Some(n), Some(n - 1)));
+            }
+        }
+    }
+}

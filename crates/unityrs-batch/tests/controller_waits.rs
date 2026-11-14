@@ -43,12 +43,16 @@ fn scan(dir: &Path, root: &Path, out: &mut BTreeMap<(String, String), usize>) {
                     "execution.rs",
                     "worker.rs",
                     "sys/mod.rs",
+                    "sys/borrowed.rs",
                     "sys/wake.rs",
                     "sys/lifecycle.rs",
                     "sys/reset.rs",
                     "sys/shared.rs",
                     "control.rs",
                     "phase1.rs",
+                    "run/process.rs",
+                    "run/process/threads.rs",
+                    "run/process/early.rs",
                 ]
                 .contains(&name)
             {
@@ -86,7 +90,31 @@ fn every_engine_wait_has_a_bounded_or_idle_role_and_dispatch_unlocks_before_core
         ("worker.rs", ".recv(", 1), // W3 idle worker
         ("sys/wake.rs", "libc::poll(", 1), // W1/W2: 1 s, stop and end descriptors
         ("sys/lifecycle.rs", "libc::poll(", 1), // W9: BOOTTIME timer, bounded fallback
+        // `test-hooks` only: `exit_now`'s `spin` hold, after the resets
+        ("sys/lifecycle.rs", "spin_loop(", 1),
+        // The host (2.11): the finisher's wait for the hand-over on its
+        // registered wake, idle until the controller or lifecycle wakes it
+        ("run/process/threads.rs", ".block_on(", 1),
+        ("run/process/threads.rs", ".wait(", 1),
+        // the hand-over slot, set once and taken once, never held across I/O
+        ("run/process/threads.rs", ".lock(", 2),
+        // the finisher's retry after a failed wake wait (a stop requested)
+        ("run/process/threads.rs", "thread::sleep(", 1),
+        // the parked controller with the owners
+        ("run/process/threads.rs", "thread::park(", 1),
+        // the workers' Execution, set once by the main thread and taken
+        // once by the controller at its start
+        ("run/process.rs", ".lock(", 2),
+        // step 8's main thread
+        ("run/process.rs", "thread::park(", 1),
+        // the main thread's spare descriptors, closed before its lines and
+        // opened again after a line that ends nothing
+        ("run/process/early.rs", ".lock(", 2),
         ("sys/reset.rs", "libc::poll(", 1), // zero-time disconnect inspection
+        // an early line on an undupable descriptor: its thread's poll, and
+        // the main thread's wait for it, both bounded by the budget
+        ("sys/borrowed.rs", "libc::poll(", 1),
+        ("sys/borrowed.rs", ".recv_timeout(", 1),
         ("lifetime/runtimes.rs", ".lock(", 3), // W20 start-count and close
         ("lifetime/runtimes.rs", ".wait_timeout(", 2), // one shared absolute second
         ("sys/shared.rs", ".lock(", 1), // parking mutex, including publication filesystem I/O
