@@ -115,13 +115,8 @@ fn a_limit_refusal_is_kept_whole_in_its_note_behind_any_names() {
     assert!(cut >= 8 * 6, "{cut} notes cut");
     // An object's read and its resave, the dereference `m_Script` names
     // failing in a long-named entry among them.
-    let deref = |len| {
-        ParseError::Deref(Arc::new(DerefError::Load(in_entries(
-            Error::Limit(limit()),
-            len,
-            2,
-        ))))
-    };
+    let deref =
+        |len| ParseError::Deref(DerefError::Load(in_entries(Error::Limit(limit()), len, 2)));
     let mut provider = ProviderError::new("tpk", format!("{}{tail}", "d".repeat(400)).into());
     provider.limit = Some(limit());
     let reads = [
